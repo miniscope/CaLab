@@ -1,6 +1,7 @@
 import { type JSX, createMemo, createSignal, For, Show } from 'solid-js';
 import { SegmentedControl } from '@calab/ui';
 import { MetricCard } from './MetricCard.tsx';
+import { LocalBuildNote } from './LocalBuildNote.tsx';
 import { ChartCard, Empty } from './charts/ChartCard.tsx';
 import { StackedColumns } from './charts/StackedColumns.tsx';
 import { HBars } from './charts/HBars.tsx';
@@ -192,6 +193,7 @@ export function CalaView(): JSX.Element {
         <Empty text="No Cala sessions for this filter (the app filter may exclude Cala)." />
       </Show>
       <Show when={cala().sessions.length > 0}>
+        <LocalBuildNote />
         <div class="metric-grid">
           <MetricCard label="Cala sessions" value={fmtNum(cala().sessions.length)} />
           <MetricCard label="Runs finished" value={fmtNum(runs().length)} />
@@ -249,25 +251,27 @@ export function CalaView(): JSX.Element {
           </ChartCard>
           <ChartCard
             title="Runs by stage and mode"
-            subtitle="Finished runs"
+            subtitle="Finished runs and sessions processed; a Joint run is one run over all its sessions"
             table={{
-              columns: ['Stage', 'Mode', 'Runs', 'Median fps', 'Median s'],
+              columns: ['Stage', 'Mode', 'Runs', 'Sessions', 'Median fps', 'Median s'],
               rows: stageRows().map((r) => [
                 r.stage,
                 r.mode,
                 r.runs,
+                r.sessions,
                 fps(r.medianFps),
                 fmtNum(r.medianDuration),
               ]),
             }}
           >
             <DataTable
-              caption="Finished Cala runs by stage and mode"
+              caption="Finished Cala runs and the sessions they processed, by stage and mode"
               defaultSort={{ key: 'runs', asc: false }}
               columns={[
                 { key: 'stage', label: 'Stage' },
                 { key: 'mode', label: 'Mode' },
                 { key: 'runs', label: 'Runs', bar: true },
+                { key: 'sessions', label: 'Sessions', align: 'right' },
                 {
                   key: 'medianFps',
                   label: 'Median fps',

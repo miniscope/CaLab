@@ -160,7 +160,8 @@
 //!   covariances; its standard error falls as frames come in. A cell is
 //!   refined from it when the estimate disagrees with the current footprint
 //!   beyond its own noise (a χ² test) *and* the change lowers held-out χ²
-//!   (paired z ≥ `refine_z`). Converged footprints stop being proposed. The
+//!   (paired held-out gain above `refine_z`, 0 by default: the χ² test
+//!   already used all frames). Converged footprints stop being proposed. The
 //!   reservoir's noisier estimate is used only for young cells.
 //! * **Add vs absorb vs merge-in.** A residual candidate competes with the
 //!   overlapping cells re-estimated to take it up: from their statistics,
@@ -542,8 +543,16 @@ pub struct SlowLoopConfig {
     /// light (Bonferroni over the tested pixels). Edits of the cell set
     /// keep their own rates.
     pub support_alpha: f32,
-    /// A refinement is accepted when its per-frame held-out χ² gains are
-    /// positive with a paired z (mean over standard error) above this...
+    /// A refinement from the running statistics is accepted when its
+    /// per-frame held-out χ² gains are positive with a paired z (mean over
+    /// standard error) above this. The default 0 accepts any held-out
+    /// gain: the proposal has already passed the statistics' own test over
+    /// all fitting frames ([`RefineGate::SplitHalf`]), and a second z ≥ 3
+    /// on a tile's few dozen held-out frames vetoed most real changes, in
+    /// particular the refill of a footprint born without the light under an
+    /// older neighbour (3 was the value before the refine-gate fix). Under
+    /// [`RefineGate::Legacy`] a stricter value may be wanted. Refinements
+    /// from the reservoir use `absorb_z`...
     pub refine_z: f32,
     /// ...and an absorption (the best of several alternatives) above this.
     pub absorb_z: f32,
@@ -654,7 +663,7 @@ impl Default for SlowLoopConfig {
             support_z: 2.0,
             support_rule: SupportRule::BasinSkirt,
             support_alpha: 0.05,
-            refine_z: 3.0,
+            refine_z: 0.0,
             absorb_z: 3.0,
             absorb_share: 0.8,
             refine_min_change: 0.03,
@@ -3244,7 +3253,6 @@ impl SlowLoop {
                 canvas,
                 h,
                 mask,
-                a: &a,
                 low: &low,
                 col: &col,
                 se,
@@ -5096,10 +5104,16 @@ impl SlowLoop {
     /// Refinement of the tile's cells. A cell whose running statistics are
     /// precise enough is re-estimated from them (all fitting frames so
     /// far); otherwise from the reservoir's fitting frames where it is
-    /// active. The new footprint is kept when it lowers held-out χ² by
-    /// `refine_z` sd of the noise-column null. Converged footprints (the
+    /// active. The new footprint is kept when it lowers held-out χ² with a
+    /// paired z above `refine_z` (statistics path, 0 by default) or
+    /// `absorb_z` (reservoir path). Converged footprints (the
     /// statistics' estimate within `refine_min_change` of the current one)
-    /// are not proposed, so refinements die out as the estimates settle.
+    /// are not proposed. (Under the split-half gate with `refine_z` 0,
+    /// refinements do not die out in count: later passes keep accepting
+    /// thousands of small ones on a dense recording. They move footprints
+    /// less and less: on the dense sims the share of cells whose footprint
+    /// correlates < 0.99 with the previous pass falls to about 2 % by pass
+    /// 5, below the old gate's 4 %.)
     fn refine(&mut self, ti: usize, solved: &Solved, test_fr: &Frames) {
         let core = self.tiles[ti].core;
         let rect = self.tiles[ti].rect;
@@ -5234,19 +5248,6 @@ fn column_on(lib: &Library, slot: usize, pix: &[u32]) -> Vec<f32> {
             Err(_) => 0.0,
         })
         .collect()
-}
-
-/// Set `out[i]` for every `pix[i]` in `sub` (both sorted).
-fn mark(pix: &[u32], sub: &[u32], out: &mut [bool]) {
-    let mut j = 0;
-    for (i, &p) in pix.iter().enumerate() {
-        while j < sub.len() && sub[j] < p {
-            j += 1;
-        }
-        if j < sub.len() && sub[j] == p {
-            out[i] = true;
-        }
-    }
 }
 
 /// The single-peaked basin of the light `q` from `seed` (S1.6): a pixel

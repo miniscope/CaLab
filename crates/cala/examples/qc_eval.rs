@@ -43,6 +43,16 @@
 //!                      the signed (unclipped) traces (`dump_signed.f32`) and,
 //!                      with GT, each cell's correlation with its best GT unit
 //!                      for both (`traces_signed_gt.tsv`)
+//!   --lib-at F,F,..    write the library as `footprints_t{frame}.bin` /
+//!                      `final_t{frame}.tsv` when pass 1 reaches each given
+//!                      share of the recording (fractions in (0, 1), e.g.
+//!                      0.25,0.5,0.75): the live library at that moment, for
+//!                      quality-over-time curves (`tools/cala-eval/
+//!                      demix_stages.py`); examples only, no behaviour change
+//!   --wrap-libs        with `--passes N`: also write the library every wrap
+//!                      publishes (`footprints_wrap{k}.bin`, `final_wrap{k}.tsv`,
+//!                      k = passes completed), i.e. what the app's Discover
+//!                      (k = 1) and each Refine stage end with
 //!   --no-signed        with --dump: do not compute the signed traces (to time
 //!                      their cost; the clipped traces are the same either way)
 //!   --label-bundle C   `real` only, standalone: read candidate footprints from
@@ -107,6 +117,9 @@
 //!                      estimate's split-half noise, Î > 0) | legacy (χ²
 //!                      disagreement and refine_min_change, the rule
 //!                      before S2.1c)
+//!   --refine-z Z       held-out paired z a statistics-path refinement must
+//!                      exceed (default 0: any held-out gain; 3 = the gate
+//!                      before the refine-gate fix)
 //!   --merge-rule M     which merge tests may merge: split-half (default;
 //!                      a pair overlapping less than ½ must also be one
 //!                      soma by the cells' split-half measured light) |
@@ -294,6 +307,12 @@
 //! accepted or not).
 
 use std::collections::HashMap;
+#[path = "common/oracle.rs"]
+mod oracle;
+#[cfg(test)]
+use oracle::Unit;
+use oracle::{read_f32s, read_oracle, read_u32, Oracle};
+
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -448,92 +467,6 @@ impl Recording {
             }
         }
         binned
-    }
-}
-
-struct Unit {
-    detectable: bool,
-    in_focus: bool,
-    center: (f32, f32),
-    full: Footprint,
-    core: Footprint,
-}
-
-struct Oracle {
-    dims: Dims,
-    units: Vec<Unit>,
-    n_frames: usize,
-    /// `C[unit * n_frames + t]`.
-    c: Vec<f32>,
-}
-
-fn read_u32(r: &mut impl Read) -> u32 {
-    let mut b = [0u8; 4];
-    r.read_exact(&mut b).unwrap();
-    u32::from_le_bytes(b)
-}
-
-fn read_f32s(r: &mut impl Read, n: usize) -> Vec<f32> {
-    let mut b = vec![0u8; 4 * n];
-    r.read_exact(&mut b).unwrap();
-    b.as_chunks::<4>()
-        .0
-        .iter()
-        .map(|c| f32::from_le_bytes(*c))
-        .collect()
-}
-
-fn read_oracle(path: &Path) -> Oracle {
-    let mut r = BufReader::new(File::open(path).unwrap_or_else(|e| panic!("{path:?}: {e}")));
-    let mut magic = [0u8; 8];
-    r.read_exact(&mut magic).unwrap();
-    assert_eq!(&magic, b"CALAORC1");
-    let h = read_u32(&mut r) as usize;
-    let w = read_u32(&mut r) as usize;
-    let n = read_u32(&mut r) as usize;
-    let t = read_u32(&mut r) as usize;
-    let mut units = Vec::with_capacity(n);
-    for _ in 0..n {
-        let id = read_u32(&mut r);
-        let mut flags = [0u8; 4];
-        r.read_exact(&mut flags).unwrap();
-        let cy = read_f32s(&mut r, 1)[0];
-        let cx = read_f32s(&mut r, 1)[0];
-        let mut fps = Vec::new();
-        for _ in 0..2 {
-            let y0 = read_u32(&mut r) as i32;
-            let x0 = read_u32(&mut r) as i32;
-            let ph = read_u32(&mut r) as usize;
-            let pw = read_u32(&mut r) as usize;
-            let values: Vec<f32> = read_f32s(&mut r, ph * pw)
-                .into_iter()
-                .map(|v| v.max(0.0))
-                .collect();
-            fps.push(Footprint {
-                id: u64::from(id),
-                y0: y0.max(0) as usize,
-                x0: x0.max(0) as usize,
-                height: ph,
-                width: pw,
-                values,
-            });
-        }
-        let core = fps.pop().unwrap();
-        let full = fps.pop().unwrap();
-        units.push(Unit {
-            detectable: flags[0] != 0,
-            in_focus: flags[1] != 0,
-            center: (cy, cx),
-            full,
-            core,
-        });
-    }
-    let c = read_f32s(&mut r, n * t);
-    Oracle {
-        dims: Dims::new(w, h).unwrap(),
-        units,
-        n_frames: t,
-        c,
     }
 }
 
@@ -3267,6 +3200,18 @@ fn main() {
         }
     };
     let churn_log = args.iter().any(|a| a == "--churn-log");
+    let wrap_libs = args.iter().any(|a| a == "--wrap-libs");
+    let lib_at: Vec<f64> = arg_value(&args, "--lib-at").map_or(Vec::new(), |s| {
+        s.split(',')
+            .map(|v| {
+                let f: f64 = v
+                    .parse()
+                    .unwrap_or_else(|_| panic!("--lib-at: bad number {v}"));
+                assert!(f > 0.0 && f < 1.0, "--lib-at: fractions must be in (0, 1)");
+                f
+            })
+            .collect()
+    });
     let boundary_flag = args.iter().any(|a| a == "--boundary-log");
     assert!(
         !boundary_flag || cfg!(feature = "diagnostics"),
@@ -3439,6 +3384,10 @@ fn main() {
             "split-half" => RefineGate::SplitHalf,
             other => panic!("--refine-gate: legacy|split-half, not {other}"),
         };
+    }
+    if let Some(v) = arg_value(&args, "--refine-z") {
+        scfg.refine_z = v.parse().unwrap();
+        println!("refine z: {}", scfg.refine_z);
     }
     if let Some(v) = arg_value(&args, "--merge-rule") {
         scfg.merge_rule = match v.as_str() {
@@ -3673,6 +3622,10 @@ fn main() {
     let mut ho_cells_out = String::from("frame\tslot\tid\tho_marginal\tho_frames\tho_marginal_z\n");
     let mut conv = calab_cala::qc::convergence::Tracker::new();
     let mut conv_out = calab_cala::qc::convergence::header();
+    let lib_at_frames: Vec<usize> = lib_at
+        .iter()
+        .map(|f| ((f * t_len as f64).round() as usize).clamp(1, t_len.saturating_sub(1).max(1)))
+        .collect();
     let t_all = Instant::now();
     let mut passes_out = String::from(
         "pass\tframe\tcells\tslow_cells\tadds\tmerges\tdeletes\tsplits\tslow_frames\twall_s\n",
@@ -3698,6 +3651,17 @@ fn main() {
                 // behaviour: no publish at the wrap.)
                 if later_scope != EditScope::All && timed.is_none() {
                     engine.set_library(sl.finalize().unwrap()).unwrap();
+                    if wrap_libs {
+                        write_library(
+                            &out_dir,
+                            &format!("_wrap{pass}"),
+                            &engine.library().clone(),
+                            dims,
+                            gt.as_ref(),
+                            ho.as_ref(),
+                            Some(&*sl),
+                        );
+                    }
                 }
                 sl.set_edit_scope(later_scope);
             }
@@ -4176,6 +4140,17 @@ fn main() {
                 }
                 let t_end = t + 1;
                 let cp = t_end.is_multiple_of(every) || last;
+                if pass == 0 && !last && lib_at_frames.contains(&t_end) {
+                    write_library(
+                        &out_dir,
+                        &format!("_t{t_end}"),
+                        &engine.library().clone(),
+                        dims,
+                        gt.as_ref(),
+                        ho.as_ref(),
+                        slow.as_ref(),
+                    );
+                }
                 let ho_win: Option<HeldOutWindow> = if cp {
                     ho.as_mut().map(|h| {
                         for (sl_, c) in h.cells(lib.ids()).iter().enumerate() {

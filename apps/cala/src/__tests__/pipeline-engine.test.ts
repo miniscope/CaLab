@@ -1,8 +1,5 @@
 // @vitest-environment node
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { initCalaWasm } from '../lib/cala-wasm.ts';
 import type { FramePixels } from '../lib/frame-source.ts';
 import {
   PipelineEngine,
@@ -10,12 +7,9 @@ import {
   type FrameReader,
   type PipelineStepResult,
 } from '../lib/pipeline-engine.ts';
+import { initTestWasm } from './wasm-test.ts';
 
-beforeAll(async () => {
-  await initCalaWasm(
-    readFileSync(resolve(import.meta.dirname, '../../../../crates/cala/pkg/calab_cala_bg.wasm')),
-  );
-});
+beforeAll(initTestWasm);
 
 const W = 96;
 const H = 80;

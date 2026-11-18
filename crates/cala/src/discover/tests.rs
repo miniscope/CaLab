@@ -1997,8 +1997,12 @@ fn largest_support(slow: &SlowLoop) -> usize {
 }
 
 /// Under the skirt rule, refinement-only passes over the same movie keep
-/// the supports bounded: the largest support does not grow from pass 1 to
-/// pass 3, and every statistics disk follows its support.
+/// the supports bounded: the refinements the later passes keep accepting
+/// move the largest support up to a plateau (at most 15 % over pass 1,
+/// and within 5 % over passes 5 to 7: no runaway, no oscillation), and
+/// every statistics disk follows its support. (Here: 165 px after pass 1,
+/// 178 to 185 px over passes 3 to 10. Under the old refine gate, z 3, it
+/// was 179 px from pass 1 on and almost no refinement was accepted after.)
 #[test]
 fn refine_only_passes_keep_supports_bounded() {
     let t = 1500;
@@ -2011,13 +2015,26 @@ fn refine_only_passes_keep_supports_bounded() {
     let mut deleted = Vec::new();
     drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
     let pass1 = largest_support(&slow);
+    let refines1 = slow.stats().refines;
     slow.set_edit_scope(EditScope::Refine);
-    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
-    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
-    let pass3 = largest_support(&slow);
+    let mut later = Vec::new();
+    for _ in 2..=7 {
+        drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+        later.push(largest_support(&slow));
+    }
     let s = slow.stats();
-    assert!(s.refines > 0, "{s:?}");
-    assert!(pass3 <= pass1, "largest support {pass1} -> {pass3}");
+    assert!(s.refines > refines1, "{s:?}");
+    let hi = *later.iter().max().unwrap();
+    assert!(
+        hi as f64 <= 1.15 * pass1 as f64,
+        "largest support {pass1} -> {later:?}"
+    );
+    let late = &later[3..];
+    let (lo, top) = (*late.iter().min().unwrap(), *late.iter().max().unwrap());
+    assert!(
+        (top - lo) as f64 <= 0.05 * lo as f64,
+        "no plateau: largest support {pass1} -> {later:?}"
+    );
     let margin = slow.cfg.stats_margin_cells * slow.cfg.cell_diameter_px;
     let lib = slow.finalize().unwrap();
     for (slot, id) in lib.ids().iter().enumerate() {
@@ -2587,4 +2604,68 @@ fn merge_rules_match_jobs() {
         assert!(s.merge_tests > 0, "{rule:?} {s:?}");
         assert_eq!(s, b.stats(), "{rule:?}");
     }
+}
+
+// ---- refine gate: a footprint born without its neighbour-side light ------
+
+/// Peak-normalised unfiltered footprint value of `id` at pixel (y, x).
+fn fp_at(lib: &Library, id: u64, y: usize, x: usize) -> f32 {
+    let (px, v) = lib.unfiltered(lib.slot(id).expect("cell kept"));
+    let peak = v.iter().cloned().fold(0.0f32, f32::max);
+    let k = (y * N + x) as u32;
+    px.iter().position(|&p| p == k).map_or(0.0, |i| v[i] / peak)
+}
+
+/// Two neighbours 3.5 px apart (about 0.6 soma diameters at half max),
+/// independent activity. The second cell is seeded with a hole at the
+/// first cell's centre, as Discover births a close newcomer (no light
+/// where the older cell already explains the data). Returns the second
+/// cell's footprint value there (truth exp(-3.5²/(2·2.5²)) ≈ 0.38) after
+/// 4000 frames with refine gate `z`, and the number of refinements.
+fn bitten_refill(z: f32) -> (f32, u64) {
+    let t = 4000;
+    let mut rng = Lcg(411);
+    let (a, b) = ((46.0, 44.0), (46.0, 47.5));
+    let cells = vec![
+        (blob_w(0, a.0, a.1, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        (blob_w(1, b.0, b.1, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+    ];
+    let m = movie(&cells, t, 423);
+    let mut bitten = blob_w(2, b.0, b.1, 2.5);
+    for y in 0..bitten.height {
+        for x in 0..bitten.width {
+            let (dy, dx) = ((bitten.y0 + y) as f32 - a.0, (bitten.x0 + x) as f32 - a.1);
+            if dy * dy + dx * dx <= 2.5 * 2.5 {
+                bitten.values[y * bitten.width + x] = 0.0;
+            }
+        }
+    }
+    let cfg = SlowLoopConfig {
+        refine_z: z,
+        ..v2_config()
+    };
+    let (mut slow, mut eng) = start(cfg, &[blob_w(1, a.0, a.1, 2.5), bitten]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    assert_eq!(lib.ids(), &[1, 2], "stats {:?}", slow.stats());
+    (
+        fp_at(&lib, 2, a.0 as usize, a.1 as usize),
+        slow.stats().refines,
+    )
+}
+
+/// The refine gate accepts a statistics-path refill with a positive
+/// held-out gain: the bitten footprint takes up light at its neighbour's
+/// centre. Under the old gate (paired z > 3 on the held-out frames) the
+/// same proposals are vetoed and the hole stays.
+#[test]
+fn a_bitten_footprint_is_refilled_from_its_statistics() {
+    let (now, refines) = bitten_refill(SlowLoopConfig::default().refine_z);
+    let (old, _) = bitten_refill(3.0);
+    assert!(
+        now > 0.1,
+        "value at the neighbour centre {now} (truth 0.38), {refines} refines"
+    );
+    assert!(old < 0.05 && now > old + 0.1, "new {now}, old gate {old}");
 }

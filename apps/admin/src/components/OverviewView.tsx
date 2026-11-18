@@ -1,6 +1,8 @@
 import { type JSX, createMemo, createSignal, For, Show } from 'solid-js';
 import { SegmentedControl } from '@calab/ui';
 import { MetricCard } from './MetricCard.tsx';
+import { LocalBuildNote } from './LocalBuildNote.tsx';
+import { SchemaStatus } from './SchemaStatus.tsx';
 import { ChartCard, Empty } from './charts/ChartCard.tsx';
 import { StackedColumns } from './charts/StackedColumns.tsx';
 import { appColor } from './charts/palette.ts';
@@ -84,6 +86,7 @@ export function OverviewView(): JSX.Element {
           onClick={() => setActiveView('submissions')}
         />
       </div>
+      <LocalBuildNote />
       <Show when={o().noUserId > 0}>
         <p class="note">
           {fmtNum(o().noUserId)} older sessions have no user_id and are not counted as browsers.
@@ -169,6 +172,8 @@ export function OverviewView(): JSX.Element {
           />
         </Show>
       </ChartCard>
+
+      <SchemaStatus />
 
       <details class="definitions">
         <summary>Definitions and caveats</summary>

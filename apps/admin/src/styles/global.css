@@ -1150,3 +1150,12 @@ main {
   display: flex;
   gap: 8px;
 }
+
+.note--muted {
+  opacity: 0.8;
+  font-size: 0.75rem;
+}
+
+.schema-status__bad {
+  color: var(--error);
+}

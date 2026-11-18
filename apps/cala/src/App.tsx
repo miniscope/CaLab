@@ -63,7 +63,7 @@ import {
   rememberProject,
   type RecentProject,
 } from './lib/recent-projects.ts';
-import { LIBRARY_MODE_LABEL } from './lib/session-run.ts';
+import { LIBRARY_MODE_LABEL, refinePlanText } from './lib/session-run.ts';
 import type { ExportInput } from './lib/export.ts';
 import type { ProjectResult } from './lib/project-index.ts';
 import { openResult, type LoadedResult } from './lib/result-file.ts';
@@ -569,6 +569,10 @@ const App: Component = () => {
               </strong>{' '}
               <span class="cala-muted" data-testid="session-run-status">
                 {multiRun.statusText()}
+              </span>
+              <span class="cala-muted" data-testid="session-run-refine">
+                {' '}
+                &middot; {refinePlanText(p().settings.refineRuns)}
               </span>
             </div>
             <Show when={project.running() && project.planState().kind === 'running'}>

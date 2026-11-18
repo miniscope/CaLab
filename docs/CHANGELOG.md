@@ -5,6 +5,34 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Added
+
+- Admin: a read-only **Schema status** panel on the Overview tab reporting which database migrations are applied (production migrations are applied by hand, and 008 and 015 were once skipped unnoticed). It uses the new optional `supabase/migrations/019_schema_fingerprint.sql` (`schema_fingerprint()`, admin-only, read-only, booleans only); **the project owner must apply 019 by hand** to enable it, and until then the panel shows "unknown" without affecting the dashboard. `supabase/README.md` lists the expected fingerprint per migration.
+
+### Changed
+
+- Docs and Admin: a note that runs from local or dev builds send no analytics (no Supabase environment) and are not counted in Admin.
+
+## [2.20.0] - 2026-11-17
+
+Web apps `v2.20.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Cala no longer leaves "bites" in footprints where a close neighbour sits, which
+also cuts the crosstalk between close cells' traces. A new Correlation tab plots
+pairwise trace correlation against distance. Plans and run status show the Refine
+setting, and analytics count sessions per run (Admin splits them by Joint, Separate
+and single-session runs). Plus internal cleanup. No database migration needed.
+
+### Added
+
+- Cala: a **Correlation** tab (live run and saved result) with the pairwise trace correlation against centre distance diagnostic for incomplete demixing: median and IQR of Pearson r per distance bin (<0.5 to 3-6 soma diameters, traces high-passed with a 15 s moving average), a dotted far-pair (1.5-3 D) reference line and a fixed -0.1 to 0.5 y axis, drawn over a small semi-transparent scatter of the individual pairs (continuous distance axis 0-6 D, off-scale points counted). Computed once on demand in a worker from all pairs within 6 D (thinned uniformly only above 400,000), 0.2-1 s for 650 cells x 18,000 frames.
+
+### Changed
+
+- Cala: neighbouring footprints are no longer left "bitten". A cell found after its neighbour was born without the light under that neighbour's centre and kept the hole, which leaked its events into the neighbour's trace. The refine gate now accepts a refinement from the running statistics when it lowers the held-out error at all (`SlowLoopConfig::refine_z` 3 → 0; the split-half test still applies, reservoir refinements keep `absorb_z`). On the dense static sims the footprint value at a neighbour 0.75-1 soma diameter away goes from 0.00 to 0.51 of truth (pairs sims: 0.11 → 0.61), trace leak there falls by a fifth to two fifths and close-pair trace correlation excess by about a fifth, with matched cells 991 → 1016 and no more false cells; Refine passes accept about 5× more (small) refinements. Discover is affected as well as Refine. `qc_eval --refine-z` sets it for comparison. See `tools/cala-eval/results/2026-11-17-refine-gate-refill.md`.
+- Analytics (Cala): run events now describe what the run processed. `sessions` is the sessions in that stage run (Joint: all of the plan's, Separate and single: 1), and new `plan_sessions` and `refine_runs` fields carry the plan's size and its Refine setting (plans only; aggregate numbers, no migration). Admin: the Cala "Runs by stage and mode" table adds the sessions processed per stage, split Joint, Separate and single, and still reads older events (a Separate or single run counts as one session).
+- Cala: the plan summary (project view and session list) and the run status show the Refine setting ("Refine runs: N before Extract"), with a warning when it is 0 (Extract runs straight after Discover and footprints are not refined). A regression test pins that Joint and Separate plans run Refine once per Refine run before Extract.
+- Cala: removed unused internal discovery and motion fields, an uncalled discovery helper, and unused overlay/GPU binding code and worker types. Refine and Extract share their replay startup configuration; the native evaluation tools share their ground-truth reader. Consolidated local WASM initialization across 11 test suites while retaining all test cases.
+
 ## [2.19.1] - 2026-11-16
 
 Web apps `v2.19.1`; the Python package `calab` is unchanged (`py/v0.5.0`).

@@ -1,7 +1,4 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { initCalaWasm } from '../lib/cala-wasm.ts';
 import {
   entriesFromFiles,
   FrameSource,
@@ -21,13 +18,9 @@ import {
   parseTimeStamps,
 } from '../lib/miniscope-meta.ts';
 import { buildAvi, expectedPixels, makeFile, type SynthOptions } from './synth-avi.ts';
+import { initTestWasm } from './wasm-test.ts';
 
-beforeAll(async () => {
-  const wasm = readFileSync(
-    resolve(import.meta.dirname, '../../../../crates/cala/pkg/calab_cala_bg.wasm'),
-  );
-  await initCalaWasm(wasm);
-});
+beforeAll(initTestWasm);
 
 const open = (files: File[]) => FrameSource.open(entriesFromFiles(files));
 

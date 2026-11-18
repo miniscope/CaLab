@@ -382,13 +382,7 @@ export class GpuMotion {
       d.queue.writeBuffer(this.uni!, i * UB, u);
     });
 
-    const bind = (
-      pipe: GPUComputePipeline,
-      s: GPUBuffer,
-      t: GPUBuffer,
-      aux: GPUBuffer,
-      i: number,
-    ): GPUBindGroup =>
+    const bind = (s: GPUBuffer, t: GPUBuffer, aux: GPUBuffer, i: number): GPUBindGroup =>
       d.createBindGroup({
         layout: bgl,
         entries: [
@@ -413,7 +407,7 @@ export class GpuMotion {
       [D, B],
       [B, D],
       [D, B],
-      [B, 'filt' as unknown as GPUBuffer],
+      [B, 'filt'],
     ];
 
     this.warpUni = buf(32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
@@ -431,8 +425,8 @@ export class GpuMotion {
         this.batch * this.px * f32Bytes,
         GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
       );
-      const bgFirst = bind(this.pipes.median, frames, A, this.kernBuf!, 0);
-      const bgLast = bind(this.pipes.box_cols, B, filt, C, passDefs.length - 1);
+      const bgFirst = bind(frames, A, this.kernBuf!, 0);
+      const bgLast = bind(B, filt, C, passDefs.length - 1);
       const wb = (pipe: GPUComputePipeline, s: GPUBuffer, t: GPUBuffer) =>
         d.createBindGroup({
           layout: pipe.getBindGroupLayout(0),
@@ -474,7 +468,7 @@ export class GpuMotion {
           ? 'first'
           : i === passDefs.length - 1
             ? 'last'
-            : bind(pipe, s as GPUBuffer, t as GPUBuffer, this.kernBuf!, i);
+            : bind(s as GPUBuffer, t as GPUBuffer, this.kernBuf!, i);
       return { pipeline: pipe, bg, gx: gridX, gy: gridY, uniformOffset: i * UB };
     });
     this.next = 0;

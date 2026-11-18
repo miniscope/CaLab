@@ -730,8 +730,6 @@ struct Engine {
 
 /// Outcome of registering one frame's crop against the template.
 struct Registration {
-    /// Total registering shift.
-    shift: (f32, f32),
     /// Shift of the final crop relative to its offset.
     rel: (f32, f32),
     ncc: f32,
@@ -799,7 +797,6 @@ impl Engine {
         }
         let rel = (peak.dy, peak.dx);
         Ok(Registration {
-            shift: (self.offset.0 as f32 + rel.0, self.offset.1 as f32 + rel.1),
             rel,
             ncc: peak.ncc,
             energy,
