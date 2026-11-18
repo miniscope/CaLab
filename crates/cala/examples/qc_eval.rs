@@ -279,6 +279,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
+use calab_cala::compress::blend::{BlendLayout, Tiling};
+use calab_cala::compress::{CompressConfig, WindowCompressor, WindowFactors};
 use calab_cala::discover::{
     CoreTest, EditScope, MergeRule, RefineGate, SlowLoop, SlowLoopConfig, SupportRule, VisitResult,
     VisitRunner,
@@ -2869,43 +2871,117 @@ fn write_library(
     }
 }
 
+/// Frames per compressed window (the app's).
+const FACTOR_WINDOW: usize = 600;
+
 /// `--factors-out`: compresses the preprocessed frames window by window and
-/// writes each window's factors (`CALAFAC1`) to `dir/w<start frame>.fac`.
+/// writes each window's factors to `<dir>/w<start>.fac`; `finish` writes
+/// `<dir>/factors.tsv` (a row per window).
 struct FactorDump {
     dir: PathBuf,
     tile: usize,
-    wc: calab_cala::compress::WindowCompressor,
+    wc: WindowCompressor,
+    /// Seconds spent buffering and compressing.
+    seconds: f64,
+    log: String,
 }
 
 impl FactorDump {
-    fn new(dir: &Path, dims: Dims) -> FactorDump {
+    fn new(dir: &Path, dims: Dims, tiling: Tiling) -> FactorDump {
         std::fs::create_dir_all(dir).unwrap();
-        let cfg = calab_cala::compress::CompressConfig {
-            window: 600,
-            ..calab_cala::compress::CompressConfig::default()
+        let cfg = CompressConfig {
+            window: FACTOR_WINDOW,
+            ..CompressConfig::default()
         };
+        let layout = BlendLayout::new(dims, cfg.tile, tiling);
         FactorDump {
             dir: dir.to_path_buf(),
             tile: cfg.tile,
-            wc: calab_cala::compress::WindowCompressor::new(dims, cfg),
+            wc: WindowCompressor::with_grid(dims, cfg, layout.grid().to_vec()),
+            seconds: 0.0,
+            log: String::from("start\tframes\ttiles\tmean_rank\tkept\tbytes\tcompress_s\n"),
         }
     }
 
-    fn write(&self, wf: calab_cala::compress::WindowFactors) {
+    fn write(&mut self, wf: WindowFactors) {
+        let _ = writeln!(
+            self.log,
+            "{}\t{}\t{}\t{:.2}\t{:.5}\t{}\t{:.3}",
+            wf.start,
+            wf.frames,
+            wf.tiles.len(),
+            wf.mean_rank(),
+            wf.kept_fraction(),
+            wf.bytes(),
+            wf.compress_seconds
+        );
         let name = format!("w{:07}.fac", wf.start);
         std::fs::write(self.dir.join(name), wf.to_bytes(self.tile)).unwrap();
     }
 
     fn push(&mut self, frame: &[f32]) {
-        if let Some(wf) = self.wc.push(frame) {
+        let t0 = Instant::now();
+        let done = self.wc.push(frame);
+        self.seconds += t0.elapsed().as_secs_f64();
+        if let Some(wf) = done {
             self.write(wf);
         }
     }
 
-    /// Write the last, shorter window.
+    /// Write the last, shorter window and `factors.tsv`.
     fn finish(&mut self) {
-        if let Some(wf) = self.wc.flush() {
+        let t0 = Instant::now();
+        let done = self.wc.flush();
+        self.seconds += t0.elapsed().as_secs_f64();
+        if let Some(wf) = done {
             self.write(wf);
+        }
+        std::fs::write(self.dir.join("factors.tsv"), &self.log).unwrap();
+    }
+}
+
+/// `--replay-source factors`: frames rebuilt from the factor files a
+/// [`FactorDump`] wrote with the same tiling.
+struct FactorReplay {
+    dir: PathBuf,
+    layout: BlendLayout,
+    cur: Option<WindowFactors>,
+    buf: Vec<f32>,
+}
+
+impl FactorReplay {
+    fn new(dir: &Path, dims: Dims, tiling: Tiling) -> FactorReplay {
+        FactorReplay {
+            dir: dir.to_path_buf(),
+            layout: BlendLayout::new(dims, CompressConfig::default().tile, tiling),
+            cur: None,
+            buf: vec![0.0; dims.pixels()],
+        }
+    }
+
+    /// Replace the pixels of `y` (recording frame `t`) by the frame rebuilt
+    /// from the factors. A missing pixel (NaN) stays missing, so the two
+    /// replay sources differ only in what the compression drops.
+    fn frame(&mut self, t: usize, y: &mut [f32]) {
+        let start = (t / FACTOR_WINDOW) * FACTOR_WINDOW;
+        if self.cur.as_ref().map(|w| w.start as usize) != Some(start) {
+            let path = self.dir.join(format!("w{start:07}.fac"));
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+            let wf = WindowFactors::from_bytes(&bytes)
+                .unwrap_or_else(|| panic!("{path:?}: not a factor file"));
+            self.cur = Some(wf);
+        }
+        let wf = self.cur.as_ref().unwrap();
+        assert!(
+            t - start < wf.frames,
+            "frame {t} is beyond the factors in {:?}",
+            self.dir
+        );
+        self.layout.reconstruct(wf, t - start, &mut self.buf);
+        for (o, &r) in y.iter_mut().zip(&self.buf) {
+            if !o.is_nan() {
+                *o = r;
+            }
         }
     }
 }
@@ -3550,7 +3626,9 @@ fn main() {
     );
     // `--factors-out`: the compressed history of pass 1.
     let factors_out: Option<PathBuf> = arg_value(&args, "--factors-out").map(PathBuf::from);
-    let mut factors = factors_out.as_deref().map(|d| FactorDump::new(d, dims));
+    let mut factors = factors_out
+        .as_deref()
+        .map(|d| FactorDump::new(d, dims, Tiling::Plain));
     for pass in 0..passes {
         // Virtual frame of this pass's recording frame 0.
         let off = pass * t_len;
@@ -4560,6 +4638,60 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A blob on the tile line x = 64 whose brightness follows a slow sine.
+    fn slow_stream(dims: Dims, frames: usize) -> Vec<Vec<f32>> {
+        (0..frames)
+            .map(|t| {
+                let g = 1.0 + 0.5 * (0.07 * t as f32).sin();
+                (0..dims.pixels())
+                    .map(|p| {
+                        let (y, x) = ((p / dims.width) as f32, (p % dims.width) as f32);
+                        let d2 = (y - 35.0).powi(2) + (x - 64.0).powi(2);
+                        g * (20.0 + 30.0 * (-d2 / 50.0).exp())
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn factor_replay_returns_the_dumped_frames() {
+        let dims = Dims::new(96, 70).unwrap();
+        // One full window and a short last one.
+        let frames = slow_stream(dims, FACTOR_WINDOW + 50);
+        for (k, tiling) in [Tiling::Plain, Tiling::Overlap(8), Tiling::Offset]
+            .into_iter()
+            .enumerate()
+        {
+            let dir =
+                std::env::temp_dir().join(format!("qc_eval_factors_{}_{k}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let mut fd = FactorDump::new(&dir, dims, tiling);
+            for f in &frames {
+                fd.push(f);
+            }
+            fd.finish();
+            let log = std::fs::read_to_string(dir.join("factors.tsv")).unwrap();
+            assert_eq!(log.lines().count(), 3, "header and two windows: {log}");
+            let mut fr = FactorReplay::new(&dir, dims, tiling);
+            for t in [0, FACTOR_WINDOW - 1, FACTOR_WINDOW, FACTOR_WINDOW + 49] {
+                let mut y = vec![0.0f32; dims.pixels()];
+                y[5] = f32::NAN;
+                fr.frame(t, &mut y);
+                assert!(y[5].is_nan(), "{tiling:?}: a missing pixel stays missing");
+                for (p, (a, b)) in y.iter().zip(&frames[t]).enumerate() {
+                    if p != 5 {
+                        assert!(
+                            (a - b).abs() < 0.1,
+                            "{tiling:?} frame {t} pixel {p}: {a} vs {b}"
+                        );
+                    }
+                }
+            }
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+    }
 
     /// A Gaussian blob of sd `sd` centred at `(cy, cx)` (sub-pixel), on a
     /// patch reaching 4 sd.
