@@ -1,6 +1,5 @@
-//! Tilings with overlapping or offset tiles and a blending window
-//! (evaluation prototype for the factor pipeline; the factor file format
-//! is unchanged).
+//! Tilings with overlapping or offset tiles and a blending window. The
+//! tiling of a window is part of its factor file (format v2).
 //!
 //! Every tile is compressed on its own, as before. A frame is rebuilt as
 //! the weighted sum of the tiles that cover each pixel, with weights that
@@ -11,9 +10,10 @@ use super::WindowFactors;
 use crate::preprocess::Dims;
 
 /// How a frame is cut into tiles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tiling {
     /// Square tiles side by side (the app's grid).
+    #[default]
     Plain,
     /// Each tile grown by this many px on every side that has a neighbour;
     /// the weight ramps over the shared band (raised cosine).
@@ -27,6 +27,35 @@ pub enum Tiling {
 }
 
 impl Tiling {
+    /// The tiling as two numbers for a file header: the kind (0 plain,
+    /// 1 overlap, 2 offset) and the overlap in px (0 for the others).
+    pub fn code(self) -> (u32, u32) {
+        match self {
+            Tiling::Plain => (0, 0),
+            Tiling::Overlap(o) => (1, o as u32),
+            Tiling::Offset => (2, 0),
+        }
+    }
+
+    /// Inverse of [`Tiling::code`]; `None` for an unknown kind or an overlap of 0.
+    pub fn from_code(kind: u32, param: u32) -> Option<Tiling> {
+        match (kind, param) {
+            (0, 0) => Some(Tiling::Plain),
+            (1, o) if o > 0 => Some(Tiling::Overlap(o as usize)),
+            (2, 0) => Some(Tiling::Offset),
+            _ => None,
+        }
+    }
+
+    /// `plain`, `overlap:N` or `offset` (what [`Tiling::parse`] reads).
+    pub fn name(self) -> String {
+        match self {
+            Tiling::Plain => "plain".into(),
+            Tiling::Overlap(o) => format!("overlap:{o}"),
+            Tiling::Offset => "offset".into(),
+        }
+    }
+
     /// `plain`, `overlap:N` (N > 0) or `offset`.
     pub fn parse(s: &str) -> Option<Tiling> {
         match s {
@@ -207,6 +236,22 @@ mod tests {
     ];
 
     #[test]
+    fn tiling_codes_and_names_round_trip() {
+        for t in [Tiling::Plain, Tiling::Overlap(8), Tiling::Offset] {
+            let (kind, param) = t.code();
+            assert_eq!(Tiling::from_code(kind, param), Some(t));
+            assert_eq!(Tiling::parse(&t.name()), Some(t));
+        }
+        assert_eq!(Tiling::default(), Tiling::Plain);
+        assert_eq!(Tiling::from_code(7, 0), None);
+        assert_eq!(
+            Tiling::from_code(1, 0),
+            None,
+            "an overlap of 0 is plain, not overlap"
+        );
+    }
+
+    #[test]
     fn parse_names() {
         assert_eq!(Tiling::parse("plain"), Some(Tiling::Plain));
         assert_eq!(Tiling::parse("overlap:16"), Some(Tiling::Overlap(16)));
@@ -289,9 +334,10 @@ mod tests {
             let cfg = CompressConfig {
                 window: frames,
                 k0: 8,
+                tiling,
                 ..CompressConfig::default()
             };
-            let mut wc = WindowCompressor::with_grid(dims, cfg, lay.grid().to_vec());
+            let mut wc = WindowCompressor::new(dims, cfg);
             let mut wf = None;
             for f in y.chunks_exact(px) {
                 if let Some(w) = wc.push(f) {

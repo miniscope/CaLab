@@ -1184,7 +1184,6 @@ fn compress_report(
 struct History {
     dir: Option<PathBuf>,
     keep: bool,
-    tile: usize,
     wc: WindowCompressor,
     windows: Vec<WindowFactors>,
 }
@@ -1202,7 +1201,6 @@ impl History {
         History {
             dir: dir.map(Path::to_path_buf),
             keep,
-            tile: cfg.tile,
             wc: WindowCompressor::new(dims, cfg),
             windows: Vec::new(),
         }
@@ -1211,7 +1209,7 @@ impl History {
     fn take(&mut self, wf: WindowFactors) {
         if let Some(d) = &self.dir {
             let name = format!("w{:07}.fac", wf.start);
-            std::fs::write(d.join(name), wf.to_bytes(self.tile)).unwrap();
+            std::fs::write(d.join(name), wf.to_bytes()).unwrap();
         }
         if self.keep {
             self.windows.push(wf);

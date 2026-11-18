@@ -34,6 +34,7 @@ pub mod review;
 #[cfg(feature = "jsbindings")]
 mod js;
 
+use blend::{BlendLayout, Tiling};
 use linalg::{qr_q, sym_eig};
 
 use crate::preprocess::Dims;
@@ -42,9 +43,12 @@ use crate::preprocess::Dims;
 const N_OVERSAMPLES: usize = 10;
 /// Trailing components that must all fail the cut for the rank to stop growing.
 const ADAPT_MARGIN: usize = 10;
-/// Magic and header length of a factor file ([`WindowFactors::to_bytes`]).
-const FILE_MAGIC: &[u8; 8] = b"CALAFAC1";
-const FILE_HEADER: usize = 36;
+/// Magic and header length of a factor file ([`WindowFactors::to_bytes`]),
+/// and of the files written before format v2.
+const FILE_MAGIC: &[u8; 8] = b"CALAFAC2";
+const FILE_HEADER: usize = 44;
+const FILE_MAGIC_V1: &[u8; 8] = b"CALAFAC1";
+const FILE_HEADER_V1: usize = 36;
 /// Frames converted to float32 at a time for a product with `Y`.
 const CHUNK: usize = 512;
 
@@ -73,6 +77,10 @@ pub struct CompressConfig {
     pub quant: f32,
     /// Threads that share a window's tiles (native builds; wasm uses one).
     pub threads: usize,
+    /// How the frame is cut into tiles. Plain for the live factors of
+    /// Discover (the history review reads them as side-by-side tiles); the
+    /// factors that Refine and Extract use are cut on the offset grids.
+    pub tiling: Tiling,
 }
 
 impl Default for CompressConfig {
@@ -88,6 +96,7 @@ impl Default for CompressConfig {
             seed: 0,
             quant: 64.0,
             threads: 1,
+            tiling: Tiling::Plain,
         }
     }
 }
@@ -229,6 +238,9 @@ pub struct WindowFactors {
     /// Index of the window's first frame, and its length.
     pub start: u64,
     pub frames: usize,
+    /// Edge of the grid the tiles were cut on, px, and how they were cut.
+    pub tile: usize,
+    pub tiling: Tiling,
     pub tiles: Vec<TileFactors>,
     /// Compute time summed over the tiles (single-thread cost), seconds
     /// (0 on wasm, which has no clock here).
@@ -236,8 +248,22 @@ pub struct WindowFactors {
 }
 
 impl WindowFactors {
-    /// Frame `t` of the window (`0..frames`) rebuilt into `out`.
+    /// The tiles and blending weights of this window's tiling.
+    pub fn layout(&self) -> BlendLayout {
+        BlendLayout::new(self.dims, self.tile, self.tiling)
+    }
+
+    /// Frame `t` of the window (`0..frames`) rebuilt into `out`: the tiles
+    /// side by side for a plain tiling, their weighted sum otherwise.
     pub fn reconstruct(&self, t: usize, out: &mut [f32]) {
+        if self.tiling == Tiling::Plain {
+            self.reconstruct_plain(t, out);
+        } else {
+            self.layout().reconstruct(self, t, out);
+        }
+    }
+
+    fn reconstruct_plain(&self, t: usize, out: &mut [f32]) {
         let width = self.dims.width;
         for tf in &self.tiles {
             let v = &tf.temporal[t * tf.rank..(t + 1) * tf.rank];
@@ -260,8 +286,12 @@ impl WindowFactors {
     /// after frame.
     pub fn reconstruct_range(&self, t0: usize, count: usize, out: &mut [f32]) {
         let px = self.dims.pixels();
+        let layout = (self.tiling != Tiling::Plain).then(|| self.layout());
         for (i, frame) in out.chunks_exact_mut(px).take(count).enumerate() {
-            self.reconstruct(t0 + i, frame);
+            match &layout {
+                Some(l) => l.reconstruct(self, t0 + i, frame),
+                None => self.reconstruct_plain(t0 + i, frame),
+            }
         }
     }
 
@@ -269,23 +299,41 @@ impl WindowFactors {
         self.tiles.iter().map(TileFactors::bytes).sum()
     }
 
-    /// The window as a factor file: `CALAFAC1`, u32 width, height, tile,
-    /// frames, tiles, f64 stream index of the first frame, then per tile a
-    /// u32 byte length and [`TileFactors::to_bytes`]. `tile` is the edge of
-    /// the grid the tiles were cut on.
-    pub fn to_bytes(&self, tile: usize) -> Vec<u8> {
-        let mut b = Vec::with_capacity(FILE_HEADER + self.bytes() + 52 * self.tiles.len());
+    /// The header of a factor file: `CALAFAC2`, u32 width, height, tile,
+    /// frames, tiles, f64 stream index of the first frame, u32 tiling kind
+    /// and parameter ([`Tiling::code`]).
+    pub fn header_bytes(
+        dims: Dims,
+        tile: usize,
+        tiling: Tiling,
+        frames: usize,
+        tiles: usize,
+        start: u64,
+    ) -> Vec<u8> {
+        let mut b = Vec::with_capacity(FILE_HEADER);
         b.extend_from_slice(FILE_MAGIC);
-        for v in [
-            self.dims.width,
-            self.dims.height,
-            tile,
-            self.frames,
-            self.tiles.len(),
-        ] {
+        for v in [dims.width, dims.height, tile, frames, tiles] {
             b.extend_from_slice(&(v as u32).to_le_bytes());
         }
-        b.extend_from_slice(&(self.start as f64).to_le_bytes());
+        b.extend_from_slice(&(start as f64).to_le_bytes());
+        let (kind, param) = tiling.code();
+        b.extend_from_slice(&kind.to_le_bytes());
+        b.extend_from_slice(&param.to_le_bytes());
+        b
+    }
+
+    /// The window as a factor file: [`WindowFactors::header_bytes`], then per
+    /// tile a u32 byte length and [`TileFactors::to_bytes`].
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut b = WindowFactors::header_bytes(
+            self.dims,
+            self.tile,
+            self.tiling,
+            self.frames,
+            self.tiles.len(),
+            self.start,
+        );
+        b.reserve(self.bytes() + 52 * self.tiles.len());
         for t in &self.tiles {
             let tb = t.to_bytes();
             b.extend_from_slice(&(tb.len() as u32).to_le_bytes());
@@ -294,23 +342,32 @@ impl WindowFactors {
         b
     }
 
-    /// Inverse of [`WindowFactors::to_bytes`]: `None` for truncated input or
-    /// tiles that do not fit the frame or the window's length.
+    /// Inverse of [`WindowFactors::to_bytes`], also for v1 files (`CALAFAC1`,
+    /// plain tiling). `None` for truncated input, tiles that do not fit the
+    /// frame or the window's length, an unknown tiling, or (v2) tiles that
+    /// are not the grid of the tiling the header names.
     pub fn from_bytes(b: &[u8]) -> Option<WindowFactors> {
-        if b.get(..8)? != FILE_MAGIC {
-            return None;
-        }
+        let v2 = match b.get(..8)? {
+            m if m == FILE_MAGIC => true,
+            m if m == FILE_MAGIC_V1 => false,
+            _ => return None,
+        };
         let u = |o: usize| -> Option<usize> {
             Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?) as usize)
         };
-        let (width, height, frames, n) = (u(8)?, u(12)?, u(20)?, u(24)?);
+        let (width, height, tile, frames, n) = (u(8)?, u(12)?, u(16)?, u(20)?, u(24)?);
         let start = f64::from_le_bytes(b.get(28..36)?.try_into().ok()?);
         if !(start.is_finite() && start >= 0.0) {
             return None;
         }
+        let tiling = if v2 {
+            Tiling::from_code(u(36)? as u32, u(40)? as u32)?
+        } else {
+            Tiling::Plain
+        };
         let dims = Dims::new(width, height).ok()?;
         let mut tiles = Vec::with_capacity(n.min(1 << 16));
-        let mut at = FILE_HEADER;
+        let mut at = if v2 { FILE_HEADER } else { FILE_HEADER_V1 };
         for _ in 0..n {
             let len = u(at)?;
             let end = at.checked_add(4)?.checked_add(len)?;
@@ -324,13 +381,35 @@ impl WindowFactors {
             tiles.push(t);
             at = end;
         }
-        (at == b.len()).then_some(WindowFactors {
+        if at != b.len() {
+            return None;
+        }
+        let wf = WindowFactors {
             dims,
             start: start as u64,
             frames,
+            tile,
+            tiling,
             tiles,
             compress_seconds: 0.0,
-        })
+        };
+        // A blended rebuild pairs tiles and weights by index: refuse a file
+        // whose tiles are not the grid of its tiling.
+        if v2 && tile >= 2 {
+            let layout = wf.layout();
+            let same = layout.grid().len() == wf.tiles.len()
+                && layout
+                    .grid()
+                    .iter()
+                    .zip(&wf.tiles)
+                    .all(|(g, t)| *g == (t.x0, t.y0, t.w, t.h));
+            if !same {
+                return None;
+            }
+        } else if v2 {
+            return None;
+        }
+        Some(wf)
     }
 
     /// Mean rank over the tiles.
@@ -364,18 +443,9 @@ pub struct WindowCompressor {
 }
 
 impl WindowCompressor {
+    /// Buffers frames for the tiles of `cfg.tiling` on a grid of `cfg.tile` px.
     pub fn new(dims: Dims, cfg: CompressConfig) -> WindowCompressor {
-        let grid = tile_grid(dims, cfg.tile);
-        WindowCompressor::with_grid(dims, cfg, grid)
-    }
-
-    /// As [`WindowCompressor::new`] with the tiles given as `(x0, y0, w, h)`;
-    /// they may overlap (see [`blend::BlendLayout`]).
-    pub fn with_grid(
-        dims: Dims,
-        cfg: CompressConfig,
-        grid: Vec<(usize, usize, usize, usize)>,
-    ) -> WindowCompressor {
+        let grid = BlendLayout::new(dims, cfg.tile, cfg.tiling).grid().to_vec();
         let buf = grid
             .iter()
             .map(|g| Vec::with_capacity(g.2 * g.3 * cfg.window))
@@ -474,6 +544,8 @@ impl WindowCompressor {
             dims: self.dims,
             start: self.start,
             frames: t,
+            tile: self.cfg.tile,
+            tiling: self.cfg.tiling,
             tiles,
             compress_seconds,
         };
@@ -503,22 +575,24 @@ pub fn tile_grid(dims: Dims, tile: usize) -> Vec<(usize, usize, usize, usize)> {
 }
 
 /// Quantize `count` frames (frame after frame in `frames`) into tile order:
-/// for each tile of [`tile_grid`], its `count x P` values, a frame per row,
-/// which is what [`compress_tile`] reads. `out` holds as many values as
-/// `frames`.
+/// for each tile of `grid` (`(x0, y0, w, h)`, see [`tile_grid`] and
+/// [`blend::BlendLayout::grid`]), its `count x P` values, a frame per row,
+/// which is what [`compress_tile`] reads. `out` holds `count` times the
+/// pixels of all tiles.
 pub fn quantize_tiles(
     frames: &[f32],
     count: usize,
     dims: Dims,
-    tile: usize,
+    grid: &[(usize, usize, usize, usize)],
     quant: f32,
     out: &mut [i16],
 ) {
     let (width, px) = (dims.width, dims.pixels());
+    let total: usize = grid.iter().map(|g| g.2 * g.3).sum();
     debug_assert_eq!(frames.len(), count * px);
-    debug_assert_eq!(out.len(), count * px);
+    debug_assert_eq!(out.len(), count * total);
     let mut o = 0;
-    for (x0, y0, w, h) in tile_grid(dims, tile) {
+    for &(x0, y0, w, h) in grid {
         for t in 0..count {
             for y in 0..h {
                 let row = t * px + (y0 + y) * width + x0;
@@ -1137,7 +1211,7 @@ mod tests {
         assert!(tf.discarded.iter().all(|&d| d >= 0.0 && d.is_finite()));
         assert!(tf.valid.iter().all(|&v| v == 1.0));
         let d: f64 = tf.discarded.iter().map(|&v| f64::from(v)).sum::<f64>() * t as f64;
-        let rel = (d - (tf.energy - tf.kept_energy)).abs() / tf.energy;
+        let rel = (d - (tf.energy - tf.kept_energy)).abs() / (tf.energy - tf.kept_energy);
         assert!(
             rel < 0.02,
             "discarded {d}, energy {} kept {}",
@@ -1167,6 +1241,7 @@ mod tests {
         );
         assert_eq!(back.discarded, tf.discarded);
         assert_eq!(back.valid, tf.valid);
+        assert_eq!(back.mean, tf.mean);
         assert_eq!(back.spatial, tf.spatial);
         assert_eq!(back.temporal, tf.temporal);
         let old = TileFactors::from_bytes(&v1_record(&tf)).expect("v1 record");
@@ -1181,14 +1256,35 @@ mod tests {
     }
 
     #[test]
+    fn a_tile_with_a_missing_pixel_keeps_its_valid_share_through_a_record() {
+        let (t, side) = (120, 6);
+        let (mut noisy, _) = synth(t, side, 2, 0.5);
+        for i in (0..t).step_by(3) {
+            noisy[i * side * side + 8] = f32::NAN;
+        }
+        let mut tf = compress_tile(
+            &quantized(&noisy),
+            t,
+            side * side,
+            &CompressConfig::default(),
+            2,
+        );
+        (tf.w, tf.h) = (side, side);
+        assert!(tf.valid[8] < 1.0, "valid {}", tf.valid[8]);
+        let back = TileFactors::from_bytes(&tf.to_bytes()).expect("v2 record");
+        assert_eq!(back.valid, tf.valid);
+        assert!(back.valid[8] < 1.0);
+    }
+
+    #[test]
     fn tile_order_and_bytes_round_trip() {
         // 2 frames of 5 x 3 px in 2 px tiles: quantize_tiles lays out each
         // tile's frames one after the other.
         let dims = Dims::new(5, 3).unwrap();
         let frames: Vec<f32> = (0..30).map(|i| i as f32).collect();
         let mut out = vec![0i16; 30];
-        quantize_tiles(&frames, 2, dims, 2, 1.0, &mut out);
         let grid = tile_grid(dims, 2);
+        quantize_tiles(&frames, 2, dims, &grid, 1.0, &mut out);
         assert_eq!(grid.len(), 6);
         assert_eq!(grid[2], (4, 0, 1, 2));
         // Tile 0 (x 0..2, y 0..2): frame 0 then frame 1.
@@ -1235,7 +1331,7 @@ mod tests {
         }
         let mut wf = wf.expect("one window");
         wf.start = 1200;
-        let bytes = wf.to_bytes(8);
+        let bytes = wf.to_bytes();
         let back = WindowFactors::from_bytes(&bytes).expect("decodes");
         assert_eq!((back.start, back.frames, back.tiles.len()), (1200, t, 6));
         // Rebuilding a range from the decoded window gives the frames back.
@@ -1252,6 +1348,121 @@ mod tests {
         let mut bad = bytes.clone();
         bad[8..12].copy_from_slice(&10u32.to_le_bytes()); // frame narrower than its tiles
         assert!(WindowFactors::from_bytes(&bad).is_none());
+    }
+
+    /// Frame `t` of a slow movie of rank 2 on `dims`.
+    fn smooth_frame(dims: Dims, t: usize) -> Vec<f32> {
+        let a = t as f32 / 9.0;
+        (0..dims.pixels())
+            .map(|i| {
+                let (x, y) = ((i % dims.width) as f32, (i / dims.width) as f32);
+                let b = (x + 2.0 * y) / 11.0;
+                20.0 + 9.0 * a.sin() * b.cos() + 5.0 * (0.7 * a).cos() * (2.0 * b).sin()
+            })
+            .collect()
+    }
+
+    fn window_of(dims: Dims, tiling: Tiling, frames: usize) -> WindowFactors {
+        let cfg = CompressConfig {
+            window: frames,
+            tiling,
+            ..CompressConfig::default()
+        };
+        let mut wc = WindowCompressor::new(dims, cfg);
+        let mut out = None;
+        for t in 0..frames {
+            out = wc.push(&smooth_frame(dims, t)).or(out);
+        }
+        out.expect("a full window")
+    }
+
+    fn worst_error(wf: &WindowFactors, t: usize) -> f32 {
+        let mut got = vec![0.0f32; wf.dims.pixels()];
+        wf.reconstruct(t, &mut got);
+        got.iter()
+            .zip(&smooth_frame(wf.dims, t))
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn a_v2_window_file_keeps_its_tiling_and_rebuilds_blended() {
+        // 96 x 70: a thin last tile in y; 40 x 24: a frame smaller than a tile.
+        for dims in [Dims::new(96, 70).unwrap(), Dims::new(40, 24).unwrap()] {
+            for tiling in [Tiling::Plain, Tiling::Overlap(8), Tiling::Offset] {
+                let wf = window_of(dims, tiling, 90);
+                assert_eq!((wf.tile, wf.tiling), (64, tiling));
+                let bytes = wf.to_bytes();
+                assert_eq!(&bytes[..8], b"CALAFAC2");
+                let back = WindowFactors::from_bytes(&bytes).expect("v2 file");
+                assert_eq!((back.tile, back.tiling), (64, tiling));
+                assert_eq!(back.tiles.len(), wf.tiles.len());
+                assert!(worst_error(&back, 45) < 0.1, "{dims:?} {tiling:?}");
+                let px = dims.pixels();
+                let mut range = vec![0.0f32; 2 * px];
+                back.reconstruct_range(44, 2, &mut range);
+                let mut one = vec![0.0f32; px];
+                back.reconstruct(45, &mut one);
+                assert_eq!(&range[px..], &one[..]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_v1_window_file_still_reads_as_plain() {
+        let dims = Dims::new(96, 70).unwrap();
+        let wf = window_of(dims, Tiling::Plain, 90);
+        let mut v1 = b"CALAFAC1".to_vec();
+        for v in [dims.width, dims.height, 64, wf.frames, wf.tiles.len()] {
+            v1.extend_from_slice(&(v as u32).to_le_bytes());
+        }
+        v1.extend_from_slice(&(wf.start as f64).to_le_bytes());
+        for t in &wf.tiles {
+            let rec = v1_record(t);
+            v1.extend_from_slice(&(rec.len() as u32).to_le_bytes());
+            v1.extend_from_slice(&rec);
+        }
+        let old = WindowFactors::from_bytes(&v1).expect("v1 file");
+        assert_eq!((old.tile, old.tiling), (64, Tiling::Plain));
+        let (mut a, mut b) = (vec![0.0f32; dims.pixels()], vec![0.0f32; dims.pixels()]);
+        old.reconstruct(10, &mut a);
+        wf.reconstruct(10, &mut b);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn a_file_whose_tiles_do_not_match_its_tiling_is_refused() {
+        let dims = Dims::new(96, 70).unwrap();
+        let wf = window_of(dims, Tiling::Plain, 90);
+        let mut bytes = wf.to_bytes();
+        // Header: kind at 36, parameter at 40. Claim the offset grids.
+        bytes[36..40].copy_from_slice(&2u32.to_le_bytes());
+        assert!(WindowFactors::from_bytes(&bytes).is_none());
+        bytes[36..40].copy_from_slice(&9u32.to_le_bytes());
+        assert!(
+            WindowFactors::from_bytes(&bytes).is_none(),
+            "unknown tiling kind"
+        );
+    }
+
+    #[test]
+    fn quantize_tiles_follows_the_grid_it_is_given() {
+        let dims = Dims::new(40, 24).unwrap();
+        let layout = blend::BlendLayout::new(dims, 16, Tiling::Offset);
+        let grid = layout.grid();
+        let total: usize = grid.iter().map(|g| g.2 * g.3).sum();
+        assert!(
+            total > dims.pixels(),
+            "the offset grids cover every pixel twice or more"
+        );
+        let frames: Vec<f32> = (0..2 * dims.pixels()).map(|i| i as f32 / 8.0).collect();
+        let mut out = vec![0i16; 2 * total];
+        quantize_tiles(&frames, 2, dims, grid, QUANT, &mut out);
+        // Second tile, second frame, its first pixel.
+        let (x0, y0, w, h) = grid[1];
+        let at = 2 * grid[0].2 * grid[0].3 + w * h;
+        let want = quantize(frames[dims.pixels() + y0 * dims.width + x0], QUANT);
+        assert_eq!(out[at], want);
     }
 
     #[test]
