@@ -407,6 +407,11 @@ pub(crate) struct MeasuredSupport {
     pub phi: f64,
     pub z_fw: f64,
     pub n: usize,
+    /// DIAG: the smoothed light and its threshold per canvas pixel.
+    #[cfg(feature = "diagnostics")]
+    pub q: Vec<f32>,
+    #[cfg(feature = "diagnostics")]
+    pub tol: Vec<f32>,
 }
 
 /// Which structural edits the slow loop may make (S2.3b: refinement-only
@@ -1005,6 +1010,11 @@ pub struct SlowLoop {
     /// Held-out edit tests since the last `take_test_log` (bounded).
     #[cfg(feature = "diagnostics")]
     test_log: Vec<TestEvent>,
+    /// DIAG: pixels to sample in `finish_basin` and the samples (h, the
+    /// smoothed target, q, tol, in S0, in X, the inverted light before
+    /// normalisation, on the mask).
+    #[cfg(feature = "diagnostics")]
+    pub(crate) probe: Option<(Vec<u32>, Vec<[f32; 8]>)>,
     /// Running footprint statistics per published cell, by id, and the
     /// current weight of a new frame (grows by the inverse forgetting
     /// factor; renormalised).
@@ -1346,6 +1356,8 @@ impl SlowLoop {
             edit_log: Vec::new(),
             #[cfg(feature = "diagnostics")]
             test_log: Vec::new(),
+            #[cfg(feature = "diagnostics")]
+            probe: None,
             fpstats: HashMap::new(),
             clusters: Vec::new(),
             cluster_of: HashMap::new(),
@@ -3533,6 +3545,10 @@ impl SlowLoop {
             phi,
             z_fw,
             n: n_test,
+            #[cfg(feature = "diagnostics")]
+            q,
+            #[cfg(feature = "diagnostics")]
+            tol,
         })
     }
 
@@ -3559,6 +3575,29 @@ impl SlowLoop {
         self.filter
             .invert(canvas.h, canvas.w, &ms.s0, target, &mut a, 40);
         self.work += (canvas.len() * 40 * 60) as u64;
+        #[cfg(feature = "diagnostics")]
+        if let Some((px, out)) = self.probe.as_mut() {
+            let w = self.dims.width;
+            out.clear();
+            for &g in px.iter() {
+                out.push(
+                    canvas
+                        .local(g as usize / w, g as usize % w)
+                        .map_or([f32::NAN; 8], |l| {
+                            [
+                                h[l],
+                                target[l],
+                                ms.q[l],
+                                ms.tol[l],
+                                f32::from(u8::from(ms.s0[l])),
+                                f32::from(u8::from(ms.x[l])),
+                                a[l],
+                                f32::from(u8::from(mask[l])),
+                            ]
+                        }),
+                );
+            }
+        }
         let peak = a.iter().copied().fold(0.0f32, f32::max);
         if !(peak > 0.0) {
             return None;

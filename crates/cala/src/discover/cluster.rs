@@ -884,80 +884,144 @@ impl SlowLoop {
             let n = st.pix.len();
             let kk = ids.len();
             self.work += (st.stored() * kk * (kk + 8) + n * kk * kk * 4) as u64;
-            let Some(rep) = st.replay(gamma, self.cfg.joint_sign_rule, self.cfg.joint_iters) else {
-                self.replay_stats.replay_none += 1;
-                self.cluster_ok[ci] = false;
-                continue;
-            };
-            let cpix = self.clusters[ci].pix.clone();
-            // Each member's estimate on its own statistics disk.
-            let mut props: Vec<(usize, Vec<u32>, Vec<f32>, Vec<f32>, Vec<f32>)> = Vec::new();
-            for (k, id) in ids.iter().enumerate() {
-                let Some(st) = self.fpstats.get(id) else {
-                    continue;
+            let rep = st.replay(gamma, self.cfg.joint_sign_rule, self.cfg.joint_iters);
+            #[cfg(feature = "diagnostics")]
+            let mut sd = StageDiag::new(kk);
+            'cluster: {
+                let Some(rep) = rep.as_ref() else {
+                    self.replay_stats.replay_none += 1;
+                    self.cluster_ok[ci] = false;
+                    #[cfg(feature = "diagnostics")]
+                    sd.all("none");
+                    break 'cluster;
                 };
-                let pick = |v: &[f32]| -> Vec<f32> {
-                    st.pix
+                let cpix = self.clusters[ci].pix.clone();
+                // Each member's estimate on its own statistics disk.
+                let mut props: Vec<(usize, Vec<u32>, Vec<f32>, Vec<f32>, Vec<f32>)> = Vec::new();
+                for (k, id) in ids.iter().enumerate() {
+                    let Some(st) = self.fpstats.get(id) else {
+                        continue;
+                    };
+                    let pick = |v: &[f32]| -> Vec<f32> {
+                        st.pix
+                            .iter()
+                            .map(|p| cpix.binary_search(p).map_or(0.0, |i| v[i]))
+                            .collect()
+                    };
+                    let h = pick(&rep.h[k]);
+                    let peak = h
                         .iter()
-                        .map(|p| cpix.binary_search(p).map_or(0.0, |i| v[i]))
-                        .collect()
-                };
-                let h = pick(&rep.h[k]);
-                let peak = h
-                    .iter()
-                    .zip(&st.pix)
-                    .map(|(&v, &p)| v * self.inv_sigma[p as usize])
-                    .fold(0.0f32, f32::max);
-                if f64::from(peak) >= f64::from(self.cfg.stats_min_snr) * rep.se[k] {
-                    props.push((k, st.pix.clone(), h, pick(&rep.ha[k]), pick(&rep.hb[k])));
+                        .zip(&st.pix)
+                        .map(|(&v, &p)| v * self.inv_sigma[p as usize])
+                        .fold(0.0f32, f32::max);
+                    if f64::from(peak) >= f64::from(self.cfg.stats_min_snr) * rep.se[k] {
+                        props.push((k, st.pix.clone(), h, pick(&rep.ha[k]), pick(&rep.hb[k])));
+                    }
                 }
-            }
-            if props.is_empty() {
-                self.replay_stats.low_snr += 1;
-                self.cluster_ok[ci] = false;
-                continue;
-            }
-            self.cluster_ok[ci] = true;
-            let excess: f64 = props
-                .iter()
-                .map(|(k, pix, h, ha, hb)| self.half_excess(&cells[*k], pix, h, ha, hb))
-                .sum();
-            if !(excess > 0.0) {
-                self.replay_stats.converged += 1;
-                continue;
-            }
-            let mut news: Vec<Cell> = Vec::new();
-            for (k, pix, h, ha, hb) in props {
-                self.fast_tmp = None;
-                self.support_tmp = Some((pix.clone(), ha, hb, rep.sa[k], rep.sb[k]));
-                let new = self.make_cell_global(ids[k], &pix, &h, Some(&cells[k]), Some(rep.se[k]));
-                self.support_tmp = None;
-                if let Some(mut new) = new {
-                    new.born = cells[k].born;
-                    news.push(new);
+                #[cfg(feature = "diagnostics")]
+                {
+                    sd.all("lowsnr");
+                    for p in &props {
+                        sd.exit[p.0] = "conv";
+                    }
+                }
+                if props.is_empty() {
+                    self.replay_stats.low_snr += 1;
+                    self.cluster_ok[ci] = false;
+                    break 'cluster;
+                }
+                self.cluster_ok[ci] = true;
+                let excess: f64 = props
+                    .iter()
+                    .map(|(k, pix, h, ha, hb)| self.half_excess(&cells[*k], pix, h, ha, hb))
+                    .sum();
+                if !(excess > 0.0) {
+                    self.replay_stats.converged += 1;
+                    break 'cluster;
+                }
+                let mut news: Vec<Cell> = Vec::new();
+                for (k, pix, h, ha, hb) in props {
+                    self.fast_tmp = None;
+                    self.support_tmp = Some((pix.clone(), ha, hb, rep.sa[k], rep.sb[k]));
+                    #[cfg(feature = "diagnostics")]
+                    {
+                        sd.exit[k] = "fnone";
+                        if stage_dump_on() {
+                            let wd = self.dims.width;
+                            let at = |c: (f32, f32)| {
+                                (c.0.round() as usize * wd + c.1.round() as usize) as u32
+                            };
+                            self.probe = Some((cells.iter().map(|c| at(c.center)).collect(), Vec::new()));
+                        }
+                    }
+                    let new =
+                        self.make_cell_global(ids[k], &pix, &h, Some(&cells[k]), Some(rep.se[k]));
+                    self.support_tmp = None;
+                    #[cfg(feature = "diagnostics")]
+                    {
+                        sd.probe[k] = self.probe.take().map(|p| p.1);
+                    }
+                    if let Some(mut new) = new {
+                        new.born = cells[k].born;
+                        #[cfg(feature = "diagnostics")]
+                        {
+                            sd.exit[k] = "rej";
+                            sd.news[k] = Some(new.clone());
+                        }
+                        news.push(new);
+                    }
+                }
+                #[cfg(feature = "diagnostics")]
+                dump_replay(self, &cells, &cpix, rep);
+                if news.is_empty() {
+                    break 'cluster;
+                }
+                self.replay_stats.proposals += 1;
+                let skip: Vec<u64> = news.iter().map(|c| c.id).collect();
+                let refs: Vec<&Cell> = news.iter().collect();
+                let cols = self.columns(rect, &skip, &refs);
+                let pr = self.problem(ti, cols);
+                let f = self.solve_all(&pr, test_fr);
+                let gain = (chi_base - SlowLoop::total_chi2(&f)) / s2;
+                let z = paired_z(base_test, &f);
+                let accepted = gain > 0.0 && z > f64::from(self.cfg.refine_z);
+                #[cfg(feature = "diagnostics")]
+                {
+                    sd.gain = gain;
+                    sd.z = z;
+                    sd.frames = rep.frames;
+                    if stage_dump_on() {
+                        // Counterfactual: each member's new column alone
+                        // (its work is not charged to the budget).
+                        let w0 = self.work;
+                        for nc in &news {
+                            let Some(k) = ids.iter().position(|&x| x == nc.id) else {
+                                continue;
+                            };
+                            let cols = self.columns(rect, &[nc.id], &[nc]);
+                            let pr = self.problem(ti, cols);
+                            let f = self.solve_all(&pr, test_fr);
+                            sd.solo[k] = (chi_base - SlowLoop::total_chi2(&f)) / s2;
+                        }
+                        self.work = w0;
+                    }
+                }
+                if accepted {
+                    self.replay_stats.accepted += 1;
+                    self.replay_stats.members_replaced += news.len() as u64;
+                    #[cfg(feature = "diagnostics")]
+                    for e in sd.exit.iter_mut() {
+                        if *e == "rej" {
+                            *e = "acc";
+                        }
+                    }
+                    for new in news {
+                        updates.push((new.id, new, z as f32, 3));
+                    }
                 }
             }
             #[cfg(feature = "diagnostics")]
-            dump_replay(self, &cells, &cpix, &rep);
-            if news.is_empty() {
-                continue;
-            }
-            self.replay_stats.proposals += 1;
-            let skip: Vec<u64> = news.iter().map(|c| c.id).collect();
-            let refs: Vec<&Cell> = news.iter().collect();
-            let cols = self.columns(rect, &skip, &refs);
-            let pr = self.problem(ti, cols);
-            let f = self.solve_all(&pr, test_fr);
-            let gain = (chi_base - SlowLoop::total_chi2(&f)) / s2;
-            let z = paired_z(base_test, &f);
-            let accepted = gain > 0.0 && z > f64::from(self.cfg.refine_z);
-            if accepted {
-                self.replay_stats.accepted += 1;
-                self.replay_stats.members_replaced += news.len() as u64;
-                for new in news {
-                    updates.push((new.id, new, z as f32, 3));
-                }
-            }
+            dump_stages(self, &cells, rep.as_ref(), &self.clusters[ci].pix.clone(), &sd);
         }
         let _ = w;
         tile_ids
@@ -1074,6 +1138,150 @@ impl SlowLoop {
             );
         }
         out
+    }
+}
+
+/// DIAG (`CALA_REPLAY_STAGES=path`): where a replay's estimate goes in
+/// the finish path, per member: its exit (`none` no replay, `lowsnr` under
+/// the minimum SNR, `conv` the cluster's split-half excess ≤ 0, `fnone` the
+/// finish path gave no footprint, `rej` / `acc` gated), the samples of
+/// `finish_basin` at the members' centres, and the new cell.
+#[cfg(feature = "diagnostics")]
+pub(super) struct StageDiag {
+    pub exit: Vec<&'static str>,
+    pub probe: Vec<Option<Vec<[f32; 8]>>>,
+    pub news: Vec<Option<Cell>>,
+    pub gain: f64,
+    pub z: f64,
+    pub frames: usize,
+    pub solo: Vec<f64>,
+}
+
+#[cfg(feature = "diagnostics")]
+impl StageDiag {
+    pub fn new(kk: usize) -> StageDiag {
+        StageDiag {
+            exit: vec!["none"; kk],
+            probe: vec![None; kk],
+            news: vec![None; kk],
+            gain: f64::NAN,
+            z: f64::NAN,
+            frames: 0,
+            solo: vec![f64::NAN; kk],
+        }
+    }
+
+    pub fn all(&mut self, e: &'static str) {
+        self.exit.iter_mut().for_each(|x| *x = e);
+    }
+}
+
+#[cfg(feature = "diagnostics")]
+pub(super) fn stage_dump_on() -> bool {
+    std::env::var_os("CALA_REPLAY_STAGES").is_some()
+}
+
+/// One row per ordered member pair (i, j): frame, ids, K, distance, i's
+/// exit, gate gain and z, the raw replay estimate of i at c_j over c_i
+/// (cluster pixels, filtered), `finish_basin`'s samples of i at c_i and at
+/// c_j (h, smoothed target, q, tol, S0, X, inverted light, mask), and the
+/// new and the current footprint of i at c_j over c_i (unfiltered raw,
+/// filtered column).
+#[cfg(feature = "diagnostics")]
+fn dump_stages(
+    slow: &SlowLoop,
+    cells: &[Cell],
+    rep: Option<&Replay>,
+    cpix: &[u32],
+    sd: &StageDiag,
+) {
+    use std::io::Write;
+    let Ok(path) = std::env::var("CALA_REPLAY_STAGES") else {
+        return;
+    };
+    let w = slow.dims.width;
+    let at = |c: (f32, f32)| (c.0.round() as usize * w + c.1.round() as usize) as u32;
+    let block = slow.filter.moat().map_or(0, |m| m.0);
+    let raw_at = |c: &Cell, p: u32| {
+        c.pix
+            .iter()
+            .position(|&q| q == p)
+            .map_or(0.0, |k| c.raw[k])
+    };
+    let ratio = |a: f32, b: f32| if a > 0.0 { b / a } else { f32::NAN };
+    let mut s = String::new();
+    for (i, ci) in cells.iter().enumerate() {
+        let pi = at(ci.center);
+        let in_disk = |p: u32| {
+            slow.fpstats
+                .get(&ci.id)
+                .is_some_and(|st| st.pix.binary_search(&p).is_ok())
+        };
+        for (j, cj) in cells.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let pj = at(cj.center);
+            let r_rep = rep.map_or(f32::NAN, |r| {
+                let get = |p: u32| cpix.binary_search(&p).map_or(f32::NAN, |x| r.h[i][x]);
+                ratio(get(pi), get(pj))
+            });
+            let pr = |k: usize| -> String {
+                sd.probe[i]
+                    .as_ref()
+                    .and_then(|v| v.get(k))
+                    .map_or_else(
+                        || "nan\tnan\tnan\tnan\tnan\tnan\tnan\tnan".to_string(),
+                        |v| {
+                            v.iter()
+                                .map(|x| format!("{x:.5}"))
+                                .collect::<Vec<_>>()
+                                .join("\t")
+                        },
+                    )
+            };
+            let (nr, nc) = sd.news[i].as_ref().map_or((f32::NAN, f32::NAN), |c| {
+                (
+                    ratio(raw_at(c, pi), raw_at(c, pj)),
+                    ratio(c.column_at(pi, w, block), c.column_at(pj, w, block)),
+                )
+            });
+            let (or, oc) = (
+                ratio(raw_at(ci, pi), raw_at(ci, pj)),
+                ratio(ci.column_at(pi, w, block), ci.column_at(pj, w, block)),
+            );
+            let d =
+                ((ci.center.0 - cj.center.0).powi(2) + (ci.center.1 - cj.center.1).powi(2)).sqrt();
+            s.push_str(&format!(
+                "{}\t{}\t{}\t{}\t{:.2}\t{}\t{:.3}\t{:.3}\t{}\t{:.4}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{:.3}\t{:.3}\n",
+                slow.frames,
+                ci.id,
+                cj.id,
+                cells.len(),
+                d,
+                sd.exit[i],
+                sd.gain,
+                sd.z,
+                u8::from(in_disk(pj)),
+                r_rep,
+                pr(i),
+                pr(j),
+                nr,
+                nc,
+                or,
+                oc,
+                sd.frames,
+                sd.solo[i],
+                sd.solo[j]
+            ));
+        }
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = f.write_all(s.as_bytes());
     }
 }
 
