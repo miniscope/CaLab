@@ -649,6 +649,14 @@ pub struct SlowLoopConfig {
     /// exceed it is refused and that overlap is left to the per-cell
     /// statistics' coupling.
     pub cluster_max: usize,
+    /// Experimental: the replay's footprint step keeps each member's
+    /// coefficient ≥ 0 where its current filtered column is positive (the
+    /// non-negative footprint step of the design's toys; the moat stays
+    /// free). Off: a plain per-pixel joint least-squares fit, the sign rule
+    /// entering only through the finish path's inversion (`a ≥ 0`).
+    pub joint_sign_rule: bool,
+    /// Experimental: alternations per replay (the design: 1).
+    pub joint_iters: usize,
     /// Classification of adds (new / re-add / churned) for the QC; does not
     /// change any decision.
     pub churn: ChurnConfig,
@@ -715,6 +723,8 @@ impl Default for SlowLoopConfig {
             joint_update: JointUpdate::Off,
             cluster_rho_min: 0.05,
             cluster_max: 6,
+            joint_sign_rule: false,
+            joint_iters: 1,
             churn: ChurnConfig::default(),
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {

@@ -3280,6 +3280,22 @@ fn main() {
             scfg.joint_update, scfg.cluster_rho_min, scfg.cluster_max
         );
     }
+    if args.iter().any(|a| a == "--joint-sign-rule") {
+        scfg.joint_sign_rule = true;
+        println!("joint update: sign rule on the footprint step");
+    }
+    if let Some(v) = arg_value(&args, "--bg") {
+        scfg.background = match v.as_str() {
+            "none" => calab_cala::trace::BackgroundModel::None,
+            "ring" => scfg.background.clone(),
+            other => panic!("--bg: none|ring, not {other}"),
+        };
+        println!("slow-loop background model: {:?}", scfg.background);
+    }
+    if let Some(v) = arg_value(&args, "--joint-iters") {
+        scfg.joint_iters = v.parse().unwrap();
+        println!("joint update: {} alternations per replay", scfg.joint_iters);
+    }
     let cluster_census = args.iter().any(|a| a == "--cluster-census");
     if let Some(v) = arg_value(&args, "--merge-rule") {
         scfg.merge_rule = match v.as_str() {

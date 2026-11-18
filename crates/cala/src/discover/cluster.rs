@@ -472,7 +472,11 @@ impl ClusterStore {
     /// (each pixel over the members whose disk covers it). `gamma` is the
     /// per-frame forgetting factor. `None` when too few frames are stored
     /// or a trace has no variance.
-    pub fn replay(&mut self, gamma: f64) -> Option<Replay> {
+    /// With `sign_rule`, a member's coefficient is kept ≥ 0 at the pixels
+    /// where its current filtered column is positive (its own light; the
+    /// high-pass moat, negative in filtered space, stays free).
+    /// `iters` alternations are run on the store (the design: 1).
+    pub fn replay(&mut self, gamma: f64, sign_rule: bool, iters: usize) -> Option<Replay> {
         let (n, kk) = (self.pix.len(), self.ids.len());
         if self.hist.stored() < 4 * (kk + 1) || self.sw <= 0.0 {
             return None;
@@ -482,39 +486,14 @@ impl ClusterStore {
         if r == 0 {
             return None;
         }
-        let a = self.white_cols();
-        // G = ÃᵀÃ, B = ÃᵀU.
-        let mut g = vec![0.0f64; kk * kk];
-        let mut bm = vec![0.0f64; kk * r];
-        for i in 0..n {
-            let ar = &a[i * kk..(i + 1) * kk];
-            let ur = &self.u[i * r..(i + 1) * r];
-            for p in 0..kk {
-                for q in 0..kk {
-                    g[p * kk + q] += ar[p] * ar[q];
-                }
-                for j in 0..r {
-                    bm[p * r + j] += ar[p] * ur[j];
-                }
-            }
-        }
-        if (0..kk).any(|k| !(g[k * kk + k] > 0.0)) {
-            return None;
-        }
-        // Trace step on every stored frame.
+        // The stored frames: coordinates, forgetting weights, halves.
         let m = self.hist.stored();
-        let mut cs = vec![0.0f64; m * kk];
         let mut ws = vec![0.0f64; m];
         let mut hs = vec![false; m];
         let mut vv = vec![0.0f64; m * r];
-        let mut b = vec![0.0f64; kk];
         let now = self.k - 1;
         let mut s = 0usize;
         self.hist.for_each(r, &mut |vs, at, half| {
-            for p in 0..kk {
-                b[p] = (0..r).map(|j| bm[p * r + j] * f64::from(vs[j])).sum();
-            }
-            nnls(&g, &b, kk, &mut cs[s * kk..(s + 1) * kk]);
             ws[s] = gamma.powf((now - at) as f64);
             hs[s] = half;
             for j in 0..r {
@@ -522,8 +501,10 @@ impl ClusterStore {
             }
             s += 1;
         });
+        // Trace step on every stored frame, with the current columns.
+        let mut cs = solve_traces(&self.white_cols(), &self.u, n, kk, r, &vv)?;
         // Footprint step per subset of frames: all, half A, half B.
-        let fit = |sel: &dyn Fn(usize) -> bool| -> Option<(Vec<Vec<f32>>, Vec<f64>)> {
+        let fit = |cs: &[f64], sel: &dyn Fn(usize) -> bool| -> Option<(Vec<Vec<f32>>, Vec<f64>)> {
             let (mut sw, mut sc, mut sv) = (0.0f64, vec![0.0f64; kk], vec![0.0f64; r]);
             for s in 0..m {
                 if sel(s) {
@@ -600,16 +581,43 @@ impl ClusterStore {
                 }
                 let ns = idx.len();
                 let is = f64::from(self.is[i]);
+                let mut x: Vec<f64> = (0..ns)
+                    .map(|a_| (0..ns).map(|b_| inv[a_ * ns + b_] * rhs[b_]).sum())
+                    .collect();
+                if sign_rule {
+                    let lo: Vec<bool> = idx.iter().map(|&p| self.cols[p * n + i] > 0.0).collect();
+                    if x.iter().zip(&lo).any(|(&v, &l)| l && v < 0.0) {
+                        let mut sub = vec![0.0f64; ns * ns];
+                        for (a_, &p) in idx.iter().enumerate() {
+                            for (b_, &q_) in idx.iter().enumerate() {
+                                sub[a_ * ns + b_] = mr[p * kk + q_];
+                            }
+                        }
+                        bounded_ls(&sub, &rhs[..ns], &lo, ns, &mut x);
+                    }
+                }
                 for (a_, &p) in idx.iter().enumerate() {
-                    let x: f64 = (0..ns).map(|b_| inv[a_ * ns + b_] * rhs[b_]).sum();
-                    h[p][i] = (x / is) as f32;
+                    h[p][i] = (x[a_] / is) as f32;
                 }
             }
             Some((h, se))
         };
-        let (h, se) = fit(&|_| true)?;
-        let (ha, sa) = fit(&|s| hs[s])?;
-        let (hb, sb) = fit(&|s| !hs[s])?;
+        // Further alternations inside the store (diagnostic; 1 = the
+        // design's one alternation per visit): the joint estimate becomes
+        // the columns the traces are re-solved with.
+        for _ in 1..iters.max(1) {
+            let (h, _) = fit(&cs, &|_| true)?;
+            let mut a = vec![0.0f64; n * kk];
+            for k in 0..kk {
+                for i in 0..n {
+                    a[i * kk + k] = f64::from(h[k][i]) * f64::from(self.is[i]);
+                }
+            }
+            cs = solve_traces(&a, &self.u, n, kk, r, &vv)?;
+        }
+        let (h, se) = fit(&cs, &|_| true)?;
+        let (ha, sa) = fit(&cs, &|s| hs[s])?;
+        let (hb, sb) = fit(&cs, &|s| !hs[s])?;
         Some(Replay {
             h,
             ha,
@@ -871,7 +879,7 @@ impl SlowLoop {
             let n = st.pix.len();
             let kk = ids.len();
             self.work += (st.stored() * kk * (kk + 8) + n * kk * kk * 4) as u64;
-            let Some(rep) = st.replay(gamma) else {
+            let Some(rep) = st.replay(gamma, self.cfg.joint_sign_rule, self.cfg.joint_iters) else {
                 self.replay_stats.replay_none += 1;
                 self.cluster_ok[ci] = false;
                 continue;
@@ -1132,6 +1140,47 @@ fn dump_replay(slow: &SlowLoop, cells: &[Cell], cpix: &[u32], rep: &Replay) {
     }
 }
 
+/// The traces of `m` stored frames (`vv`, `m x r` coordinates in the basis
+/// `u`, pixel-major `n x r`) under the whitened columns `a` (pixel-major
+/// `n x kk`): `argmin_{c ≥ 0} ‖U v − A c‖²` per frame. `None` when a
+/// column is empty.
+fn solve_traces(
+    a: &[f64],
+    u: &[f64],
+    n: usize,
+    kk: usize,
+    r: usize,
+    vv: &[f64],
+) -> Option<Vec<f64>> {
+    let mut g = vec![0.0f64; kk * kk];
+    let mut bm = vec![0.0f64; kk * r];
+    for i in 0..n {
+        let ar = &a[i * kk..(i + 1) * kk];
+        let ur = &u[i * r..(i + 1) * r];
+        for p in 0..kk {
+            for q in 0..kk {
+                g[p * kk + q] += ar[p] * ar[q];
+            }
+            for j in 0..r {
+                bm[p * r + j] += ar[p] * ur[j];
+            }
+        }
+    }
+    if (0..kk).any(|k| !(g[k * kk + k] > 0.0)) {
+        return None;
+    }
+    let m = vv.len() / r;
+    let mut cs = vec![0.0f64; m * kk];
+    let mut b = vec![0.0f64; kk];
+    for s in 0..m {
+        for p in 0..kk {
+            b[p] = (0..r).map(|j| bm[p * r + j] * vv[s * r + j]).sum();
+        }
+        nnls(&g, &b, kk, &mut cs[s * kk..(s + 1) * kk]);
+    }
+    Some(cs)
+}
+
 /// Orthonormal basis of the columns of `b` (pixel-major `n x k`) by
 /// modified Gram–Schmidt; columns that are (numerically) in the span of
 /// the earlier ones are dropped. Returns `(U, rank)`, `U` pixel-major.
@@ -1178,6 +1227,37 @@ fn inverse(a: &[f64], k: usize) -> Option<Vec<f64>> {
         }
     }
     Some(out)
+}
+
+/// `argmin xᵀ G x − 2 xᵀ b` with `x_p ≥ 0` where `lo[p]` (projected
+/// Gauss–Seidel from `x`, clipped).
+fn bounded_ls(g: &[f64], b: &[f64], lo: &[bool], k: usize, x: &mut [f64]) {
+    for p in 0..k {
+        if lo[p] {
+            x[p] = x[p].max(0.0);
+        }
+    }
+    for _ in 0..200 {
+        let (mut change, mut scale) = (0.0f64, 0.0f64);
+        for p in 0..k {
+            let mut s = b[p];
+            for q in 0..k {
+                if q != p {
+                    s -= g[p * k + q] * x[q];
+                }
+            }
+            let mut new = s / g[p * k + p];
+            if lo[p] {
+                new = new.max(0.0);
+            }
+            change = change.max((new - x[p]).abs());
+            scale = scale.max(new.abs());
+            x[p] = new;
+        }
+        if change <= 1e-9 * scale.max(1e-12) {
+            break;
+        }
+    }
 }
 
 /// `argmin_{x ≥ 0} xᵀ G x − 2 xᵀ b` for a small positive-definite `G`
@@ -1318,7 +1398,7 @@ mod tests {
             wgt /= gamma;
             st.push(&y, &[x[0] as f32, x[1] as f32], wgt);
             if t % 200 == 199 && t > 512 {
-                let rep = st.replay(gamma).expect("replay");
+                let rep = st.replay(gamma, false, 1).expect("replay");
                 let norm = |h: &[f32]| {
                     let m = h.iter().cloned().fold(0.0f32, f32::max).max(1e-12);
                     h.iter().map(|v| v.max(0.0) / m).collect::<Vec<f32>>()
