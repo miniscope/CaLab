@@ -84,6 +84,15 @@ File or folder names, paths, animal or session names, trace or footprint data, e
 recording timestamps, anything else the user typed (except the optional tag). Error message
 text is never sent, only a category and, when it matches a closed list, the error class name.
 
+## Local builds send nothing
+
+Analytics is only enabled in builds that have the Supabase environment (`VITE_SUPABASE_URL` and
+`VITE_SUPABASE_ANON_KEY`, set by the deploy workflow). A local build (`npm run dev`, `npm run build`
+without those variables) has no Supabase client, so it creates no session and sends no events.
+Runs from local or dev builds therefore never appear in Admin; if a lab member's local runs are
+missing from the counts, this is why. Only the deployed site is counted (plus any build that was
+given the credentials, which Admin hides under "Include dev builds" when its version is `dev`).
+
 ## Database migration
 
 `supabase/migrations/017_analytics_event_name_shape.sql` replaces the fixed `event_name` list
@@ -95,7 +104,7 @@ The 4096-byte `event_data` limit (008) fits every payload above and is unchanged
 
 `apps/admin` (hidden from the app list, admin role only: RLS limits `analytics_*` reads to
 `app_metadata.role = 'admin'`). Reads use keyset pagination (1000 rows per page, newest first, 30 s timeout and one retry per page). Sessions and submissions load first and events stream in afterwards (current period only), so views render immediately and show an "events still loading" note. Row caps: 100k sessions, 150k events; a banner appears when a table hits one. Sessions and events are read with `select('*')`: columns the database lacks (for example `is_anonymous`, migration 008) are listed in a banner and the related metric shows n/a. No database migration
-is required: aggregation is client-side (the optional `018_analytics_admin_read_performance.sql` adds indexes for the keyset reads and a cheaper admin RLS expression). Filters live in the URL hash
+is required: aggregation is client-side (the optional `018_analytics_admin_read_performance.sql` adds indexes for the keyset reads and a cheaper admin RLS expression). The Overview tab ends with a read-only **Schema status** panel that reports which migrations the live database has applied (via the optional `019_schema_fingerprint.sql`; "unknown" when it is not installed; see `supabase/README.md`). Filters live in the URL hash
 (`#/cala?app=cala&range=90d&ver=2.18.1&dev=1`).
 
 ### Definitions
