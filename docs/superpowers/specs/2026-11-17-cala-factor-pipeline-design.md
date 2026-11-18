@@ -265,14 +265,14 @@ frames) against 8.2 kB as `i16`; phase 0 measures the real mean rank.
 Each phase gets its own implementation plan. A phase starts only when the gate
 before it has passed.
 
-| Phase | Work                                                                                         | Gate at the end                                                             |
-| ----- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| 0     | Harness (`examples/factor_eval.rs`), arms A and B, null spread, tiling arms, baseline timing | Loss of A against B within the null spread for QC-pass cells; tiling chosen |
-| 1     | Format v2: overlap and blending, discarded variance, valid share                             | v1 and v2 files read; compression time within the live frame budget         |
-| 2     | Extract on factors (Rust, WASM binding, compress worker); replaces the back-fill             | B against C to float32 rounding; A against C within the null spread         |
-| 3     | Refine on factors with the settle stop                                                       | Same checks on footprints, against a settled raw Refine                     |
-| 4     | App: stages, Run panel, compression on by default, factors kept for live runs                | e2e run of Discover, Refine, Extract on a file and on a simulated stream    |
-| 5     | Browser benchmark report in `tools/cala-eval/results/`; decide the default                   | Decision recorded                                                           |
+| Phase | Work                                                                                              | Gate at the end                                                             |
+| ----- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| 0     | Harness (flags on `examples/qc_eval.rs`), arms A and B, null spread, tiling arms, baseline timing | Loss of A against B within the null spread for QC-pass cells; tiling chosen |
+| 1     | Format v2: overlap and blending, discarded variance, valid share                                  | v1 and v2 files read; compression time within the live frame budget         |
+| 2     | Extract on factors (Rust, WASM binding, compress worker); replaces the back-fill                  | B against C to float32 rounding; A against C within the null spread         |
+| 3     | Refine on factors with the settle stop                                                            | Same checks on footprints, against a settled raw Refine                     |
+| 4     | App: stages, Run panel, compression on by default, factors kept for live runs                     | e2e run of Discover, Refine, Extract on a file and on a simulated stream    |
+| 5     | Browser benchmark report in `tools/cala-eval/results/`; decide the default                        | Decision recorded                                                           |
 
 Raw replay stays available behind `?compress=off` at least until phase 5.
 
@@ -284,7 +284,9 @@ Raw replay stays available behind `?compress=off` at least until phase 5.
 - `crates/cala/src/discover/fpstats.rs`, `discover/factor_refine.rs` (new):
   sums from factors, the iteration.
 - `crates/cala/src/compress/js.rs`: bindings.
-- `crates/cala/examples/factor_eval.rs` (new), `tools/cala-eval`: harness.
+- `crates/cala/examples/qc_eval.rs` (new flags; built as flags on the
+  existing example, not as a new `examples/factor_eval.rs`), `tools/cala-eval`:
+  harness.
 - `apps/cala/src/lib/compress-runner.ts`, `run-stages.ts`, the replay module
   of #411, `components/RunPanel.tsx`, `window-store.ts`.
 

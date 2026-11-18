@@ -86,7 +86,10 @@ and twice the slow-loop budget in the replays; their distance to `raw` is the nu
 `overlap16` and `offset` ran the replays and the Extract pass on frames rebuilt from the pass-1 factors, under that
 tiling (`offset` is two grids offset by half a tile). `plain_recal` is `plain` with the factors of the first replay,
 which carry the final flat field from frame 0. `x_raw` and `x_<tiling>` ran Discover and Extract only, so both
-Extracts solve with one and the same cell library. Cells were matched by id between runs.
+Extracts solve with one and the same cell library. Cells were matched by id between runs. As read in the code, the slow
+loop is not reset when a replay pass starts, so the refine replays of a factor arm start from the state that Discover
+built on raw frames, and the noise map also comes from raw frames; the factor arms therefore measure "Discover on raw
+frames, later passes on factors".
 `factor_closeness.py` computed the per-cell measures and the verdicts.
 
 The plan asked for 5 refine replays on every recording at full length. This was bounded, by the controller's ruling,
@@ -205,7 +208,9 @@ Each row splits the QC-pass cells into those under 8 px from a tile line and tho
 and footprint loss and the verdict of each. The last two columns are the footprint jump at tile lines for `raw` and
 for the factor arm (1 means the tile lines do not show). No tiling brings the near-line cells within the null on any
 recording. The jump measure is not 1 for `raw` either (0.895 to 1.150), so a factor arm is compared with the raw value
-of the same recording.
+of the same recording. A property of the `offset` layout, computed from its blending weights and not measured on cells:
+where a line of one grid crosses a line of the other, a tile keeps a weight of up to about 0.5 on its own edge (the
+overlap tilings at most about 0.004), so the two grids do not hide every tile line.
 
 ## Discover-time preprocessing
 
@@ -350,7 +355,9 @@ the same mean rank and size.
 ### Native
 
 Seconds per stage of the `raw` arm, from `qc_eval`'s own clock (`stage_times.tsv`). `pass1` is Discover, `pass2` is
-the first refine replay, `extract` is the Extract pass. The table with every refine replay is in the appendix.
+the first refine replay, `extract` is the Extract pass. The table with every refine replay is in the appendix. The
+stage columns do not add up to the wall time: the QC monitor, the held-out score and the checkpoint output are in no
+column.
 
 | recording | stage   | read | preprocess | solve | slow loop | wall   |
 | --------- | ------- | ---- | ---------- | ----- | --------- | ------ |
@@ -479,8 +486,8 @@ correlation median 0.7608 for raw and 0.8486 for `plain` over 28 cells (paired d
 - Browser: the driver's own status file gives other stage times than the app's stage records (for example Discover of
   `wl24_01` default 15.0 s against 33.0 s). The driver polls in steps of about 15 s, so its times are coarse. The table
   uses the app's records.
-- `tools/cala-eval/stage_times.py` stops with an error on the CaDecon export (it has no `meta_json`) instead of
-  printing "no stage records". The browser table was made from the cala exports only.
+- The browser table uses the four cala exports: the CaDecon exports hold no stage records
+  (`tools/cala-eval/stage_times.py` prints "no stage records" for them).
 - QC pass is read from the reference run of each comparison, so `x_raw` and `raw` count slightly different QC-pass cells
   (for example 62 against 63 on `wl200`).
 

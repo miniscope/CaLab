@@ -47,11 +47,18 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
   `qc_eval --replay-source factors --factors-out DIR [--tiling T] [--factors-pass P]` makes the
   passes after the compressed one, and `--extract-pass`, solve frames rebuilt from the factors;
   `--later-budget U` gives the null spread of a refine replay; `stage_times.tsv` has the seconds
-  per pass.
+  per pass (its stage columns do not add up to `wall_s`: the QC monitor, the held-out score and
+  the checkpoint output are in no column).
 - `factor_arms.py --rec AVI_DIR --out DIR`: the phase-0 arms of the factor pipeline on one
   recording (raw, two null runs, four tilings, factors of the first replay, and the Extract-only
   pairs) and `DIR/report.md`. `factor_closeness.py --ref RUN --test RUN [--null RUN ...]` compares
   two of its runs. Both need numpy.
+- `stage_times.py EXPORT.npz [...]`: seconds and frames per second of each Discover, Refine and
+  Extract run of a cala browser run, from its export's stage records; an export without them (a
+  CaDecon export) prints "no stage records". Needs numpy.
+- `apps/cala/scripts/batch-session.mjs --data <raw folder> --out DIR`: an unattended browser run
+  of cala (Discover, N x Refine, Extract, both exports) through the real UI, for the timings of the
+  app.
 - `baseline_table.py`: per-arm mean and sd over seeds of one or more run trees
   (`main=<runs>/base [LABEL=DIR ...] [--arms ...]`); the reference numbers in
   `results/2026-11-baseline.md`.

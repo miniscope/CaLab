@@ -22,7 +22,7 @@ One deliberate difference from the spec: the harness is a set of flags on `examp
 - Rust: run cargo from `crates/cala`. Before each commit: `cargo fmt --all --check` and `cargo clippy --all-targets --no-default-features --features jsbindings -- -D warnings` pass.
 - Python: type hints on every function; `ruff format` and `ruff check --fix` before each commit; run with `uv run --no-project --with numpy python`, never a global environment.
 - Markdown and `.mjs`: `npx prettier --check` passes.
-- Branch `feat/cala-factor-eval`, cut from `docs/cala-factor-pipeline-spec`. Commit messages are one sentence, with no Claude or Anthropic attribution.
+- Branch `feat/cala-factor-eval`, cut from `docs/cala-factor-pipeline-spec`. Commit messages are one sentence, with no co-author trailer and no tool or assistant attribution.
 - Line numbers in this plan are those of main `20de18c0`; find each place by the quoted code, not by the number.
 
 ## Review Focus

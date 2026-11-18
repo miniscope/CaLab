@@ -11,7 +11,8 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 - cala evaluation: `qc_eval` can run the refine replays and an Extract pass on frames rebuilt from
   the compressed factors (`--replay-source factors`, `--tiling`, `--factors-pass`, `--extract-pass`),
   with overlapping and offset tilings in `compress::blend`; `tools/cala-eval/factor_arms.py` and
-  `factor_closeness.py` compare them with the raw replay. No change to the app.
+  `factor_closeness.py` compare them with the raw replay. Every `qc_eval` run now also writes
+  `stage_times.tsv` (seconds per pass). No change to the app.
 
 ### Changed
 
