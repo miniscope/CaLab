@@ -22,6 +22,13 @@ Definitions (the measure scripts of the 17 Nov 2026 refine-gate work, folded in)
   C_i_est ~ beta_i C_i + beta_j C_j + 1.
 * Trace correlation pairs: all matched pairs closer than 3 D, Pearson r of the estimated traces after a
   15 s (300 frame) moving-average high-pass; excess = median r at < 1 D minus median r at 1.5-3 D.
+* Birth (Lookback metrics, 17 Nov 2026): each estimated cell's birth frame is the `recording_frame` of its row in
+  `adds.tsv` (cell id = the `cid` of `footprints.bin`); `--ledger DIR` takes `adds.tsv` from another run directory
+  (the stage and checkpoint libraries of `demix_stages.py` are extracted in runs that have no ledger of their own).
+  Bite rows carry `born_i` and `born_j` (j only when its GT unit is matched), corr rows `born_min` / `born_max`;
+  `demix_report.py` splits by birth order and by late birth from them. Undetected neighbours need no new column:
+  the bite rows already hold GT neighbours j with `jmatched` 0 (and `jdet` 1 when detectable).
+* Overlap clusters of the library (`demix_clusters.py`; rho >= 0.05, K_max 6) go to `demix_det.json` (`clusters`).
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import demix_clusters as CL
 from scipy.ndimage import shift as nd_shift
 from scipy.ndimage import uniform_filter1d
 from scipy.optimize import linear_sum_assignment
@@ -47,9 +55,9 @@ MIN_OFFSET_PX = 0.2  # smaller estimated offsets are ignored
 
 PAIR_COLS = [
     "sim", "i", "ui", "j", "jdet", "jmatched", "d_px", "d_diam", "true_ring", "est_ring",
-    "true_at_cj", "est_at_cj", "r_fp", "leak_sd", "corr_CiCj",
+    "true_at_cj", "est_at_cj", "r_fp", "leak_sd", "corr_CiCj", "born_i", "born_j",
 ]  # fmt: skip
-CORR_COLS = ["sim", "ui", "uj", "d_diam", "c_est", "c_true"]
+CORR_COLS = ["sim", "ui", "uj", "d_diam", "c_est", "c_true", "born_min", "born_max"]
 
 
 # --------------------------------------------------------------------------- I/O
@@ -82,20 +90,39 @@ def read_oracle(path):
 
 def read_footprints(path):
     """CALAFP01: (h, w, [(flat pixel index, value)]) per cell, library order."""
+    h, w, _ids, cells, _filt = read_library(path)
+    return h, w, cells
+
+
+def read_library(path):
+    """CALAFP01: (h, w, ids, cells, filtered). Per cell the unfiltered (flat pixel index, value) and the
+    filtered (pixel index, value) footprints; ids are the cells' library ids (`cid`)."""
     b = Path(path).read_bytes()
     assert b[:8] == b"CALAFP01", "not a CALAFP01 file"
     h, w, n = struct.unpack("<3I", b[8:20])
     o = 20
-    cells = []
+    cells, filt, ids = [], [], []
     for _ in range(n):
-        _cid, m = struct.unpack("<2I", b[o : o + 8])
+        cid, m = struct.unpack("<2I", b[o : o + 8])
         o += 8
         idx = np.frombuffer(b, "<u4", m, o).astype(np.int64)
         o += 4 * m
         val = np.frombuffer(b, "<f4", m, o).astype(np.float64)
-        o += 8 * m  # values then a second per-pixel array (unused here)
+        o += 4 * m
+        fval = np.frombuffer(b, "<f4", m, o).astype(np.float64)
+        o += 4 * m
+        ids.append(cid)
         cells.append((idx, val))
-    return h, w, cells
+        filt.append((idx, fval))
+    return h, w, ids, cells, filt
+
+
+def read_births(ledger: Path):
+    """{cell id: recording frame of its add} from `ledger/adds.tsv` (the last add of an id wins); {} when absent."""
+    p = Path(ledger) / "adds.tsv"
+    if not p.exists():
+        return {}
+    return {int(float(r["id"])): int(float(r["recording_frame"])) for r in read_tsv(p)}
 
 
 def dense_patch(fp, h, w):
@@ -183,9 +210,15 @@ def leak_sd(est, Ci, Cj):
     return float(beta[1] * Cj.std() / (abs(beta[0]) * Ci.std() + 1e-12))
 
 
-def bite_rows(sim_name, cells, G, units, cen, nonempty, diam, match_i, matched_units, h, w, R, det_idx, est_tr, gt_tr):
-    """One dict per (matched i, GT neighbour j). est_tr / gt_tr may be None (footprint metrics only)."""
+def bite_rows(sim_name, cells, G, units, cen, nonempty, diam, match_i, matched_units, h, w, R, det_idx, est_tr, gt_tr, born=None):
+    """One dict per (matched i, GT neighbour j). est_tr / gt_tr may be None (footprint metrics only).
+
+    born: birth frame per estimated cell index (array, nan = unknown) or None. `born_j` is filled when j's GT
+    unit is matched (the estimate that stands for j).
+    """
     rows = []
+    est_of_unit = {u: i for i, u in match_i.items()}
+    bf = (lambda k: float(born[k]) if born is not None and np.isfinite(born[k]) else np.nan)
     col_of = {u: k for k, u in enumerate(det_idx)}
     half = int(np.ceil(5 * diam))
     for i, ui in match_i.items():
@@ -223,6 +256,7 @@ def bite_rows(sim_name, cells, G, units, cen, nonempty, diam, match_i, matched_u
                 "true_at_cj": gin[cyj - y0, cxj - x0], "est_at_cj": ain[cyj - y0, cxj - x0],
                 "r_fp": R[i, col_of[ui]] if ui in col_of else np.nan,
                 "leak_sd": np.nan, "corr_CiCj": np.nan,
+                "born_i": bf(i), "born_j": bf(est_of_unit[j]) if j in est_of_unit else np.nan,
             }  # fmt: skip
             if est_tr is not None:
                 row["leak_sd"] = leak_sd(est_tr[:, i], gt_tr[ui], gt_tr[j])
@@ -241,11 +275,13 @@ def zscore_rows(X):
     return X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-12)
 
 
-def corr_pairs(sim_name, est, gt, cen_u, diam, units_u):
+def corr_pairs(sim_name, est, gt, cen_u, diam, units_u, born=None):
     """Matched pairs closer than 3 D: estimated-trace and true-trace correlation after high-pass.
 
-    est, gt: (n, T) traces of the matched estimates and their GT units; cen_u: (n, 2) GT centres.
+    est, gt: (n, T) traces of the matched estimates and their GT units; cen_u: (n, 2) GT centres;
+    born: birth frame of each estimate (nan unknown) or None.
     """
+    bn = np.full(len(est), np.nan) if born is None else np.asarray(born, float)
     ze, zg = zscore_rows(highpass(est)), zscore_rows(highpass(gt))
     ce, cg = ze @ ze.T, zg @ zg.T
     d = np.hypot(cen_u[:, None, 0] - cen_u[None, :, 0], cen_u[:, None, 1] - cen_u[None, :, 1]) / diam
@@ -253,7 +289,8 @@ def corr_pairs(sim_name, est, gt, cen_u, diam, units_u):
     keep = d[iu] < NEIGHBOUR_D
     a, b = iu[0][keep], iu[1][keep]
     return [
-        {"sim": sim_name, "ui": units_u[x], "uj": units_u[y], "d_diam": d[x, y], "c_est": ce[x, y], "c_true": cg[x, y]}
+        {"sim": sim_name, "ui": units_u[x], "uj": units_u[y], "d_diam": d[x, y], "c_est": ce[x, y], "c_true": cg[x, y],
+         "born_min": np.fmin(bn[x], bn[y]), "born_max": np.fmax(bn[x], bn[y])}  # fmt: skip
         for x, y in zip(a, b)
     ]
 
@@ -335,11 +372,15 @@ def write_tsv(path, cols, rows):
             f.write("\t".join(("%.5g" % r[c]) if isinstance(r[c], (float, np.floating)) else str(r[c]) for c in cols) + "\n")
 
 
-def compute_run(sim: Path, run: Path, all_det=False, force=False):
+LATE_FRAC = 0.2  # "late-born": born in the last fifth of the recording
+
+
+def compute_run(sim: Path, run: Path, all_det=False, force=False, ledger: Path | None = None):
     if not force and (run / "demix_det.json").exists():
         return json.loads((run / "demix_det.json").read_text())
     h, w, units, Ct = read_oracle(sim / "oracle.bin")
-    cells_h, cells_w, cells = read_footprints(run / "footprints.bin")
+    cells_h, cells_w, ids, cells, filt = read_library(run / "footprints.bin")
+    births = read_births(ledger or run)
     assert (cells_h, cells_w) == (h, w), "footprints and oracle disagree on frame size"
     n = len(cells)
     # ground-truth images of all non-empty units, flat float32 (n_gt, h*w)
@@ -363,12 +404,13 @@ def compute_run(sim: Path, run: Path, all_det=False, force=False):
     if tr_path.exists() and tr_path.stat().st_size > 0:
         est_tr = np.fromfile(tr_path, "<f4").reshape(-1, n).astype(np.float64)
         gt_tr = Ct[:, : est_tr.shape[0]].astype(np.float64)
-    pairs = bite_rows(sim.name, cells, G, units, cen, nonempty, diam, match_i, matched_units, h, w, R, det_idx, est_tr, gt_tr)
+    born = np.array([births.get(c, np.nan) for c in ids], dtype=float)
+    pairs = bite_rows(sim.name, cells, G, units, cen, nonempty, diam, match_i, matched_units, h, w, R, det_idx, est_tr, gt_tr, born)
     corr_rows = []
     if est_tr is not None and len(match_i) >= 2:
         I = np.array(list(match_i.keys()))
         U = [match_i[i] for i in I]
-        corr_rows = corr_pairs(sim.name, est_tr[:, I].T, gt_tr[U], cen[U], diam, U)
+        corr_rows = corr_pairs(sim.name, est_tr[:, I].T, gt_tr[U], cen[U], diam, U, born[I])
     write_tsv(run / "demix_pairs.tsv", PAIR_COLS, pairs)
     write_tsv(run / "demix_corr.tsv", CORR_COLS, corr_rows)
     det = detection_row(run, cells)
@@ -377,6 +419,15 @@ def compute_run(sim: Path, run: Path, all_det=False, force=False):
     det["pair_res"] = pair_resolution(run, diam, all_det)
     for k, v in (det["pair_res"] or {}).items():
         det[f"both_{k}"] = v[0]
+    T = Ct.shape[1]
+    known = np.isfinite(born)
+    late = known & (born >= (1 - LATE_FRAC) * T)
+    mi = np.zeros(n, bool)
+    mi[list(match_i)] = True
+    det["frames"] = int(T)
+    det["births_known"] = int(known.sum())
+    det["n_late"], det["matched_late"] = int(late.sum()), int((late & mi).sum())
+    det["clusters"] = CL.cluster_stats(filt, h * w)
     det.update({"sim": sim.name, "diam_px": diam, "offset": [dy, dx], "n_cells": n, "n_matched_strict": len(match_i),
                 "n_pairs": len(pairs), "n_corr_pairs": len(corr_rows), "traces": est_tr is not None})  # fmt: skip
     (run / "demix_det.json").write_text(json.dumps(det, indent=1))
@@ -389,8 +440,9 @@ def main(argv=None):
     ap.add_argument("run", type=Path)
     ap.add_argument("--all-det", action="store_true", help="treat every GT unit as detectable (pairs sims)")
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--ledger", type=Path, help="run directory whose adds.tsv gives the birth frames (default: RUN itself)")
     a = ap.parse_args(argv)
-    d = compute_run(a.sim, a.run, a.all_det, a.force)
+    d = compute_run(a.sim, a.run, a.all_det, a.force, a.ledger)
     print(f"{d['sim']}: {d['n_cells']} cells, {d['n_matched_strict']} matched (r>=0.7), D {d['diam_px']:.1f}px, "
           f"offset ({d['offset'][0]:+.2f}, {d['offset'][1]:+.2f}), {d['n_pairs']} bite pairs, {d['n_corr_pairs']} corr pairs")  # fmt: skip
     return 0

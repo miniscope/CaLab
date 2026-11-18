@@ -132,6 +132,10 @@ $MINISIM_PY tools/cala-eval/demix_suite.py --tier full --base-bin <main qc_eval>
   matched pairs within 3 D after a 15 s high-pass. Writes `demix_pairs.tsv`, `demix_corr.tsv`,
   `demix_det.json`.
 - `demix_report.py --base RUNS/a --new RUNS/b`: the table.
+- Birth frames (look-back metrics): cala logs every add in `adds.tsv` (`recording_frame`, `id`); the id is the `cid` of
+  `footprints.bin`, so no extra qc_eval output was needed for births. `demix_metrics.py --ledger DIR` takes `adds.tsv`
+  from another run (the stage libraries below are scored in runs without a ledger). Missing births put a cell in no
+  birth group (no crash, the n column shows it).
 
 | metric (per arm)                                                         | what                                                                                                                                                                                                                | better                                       |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
@@ -144,6 +148,12 @@ $MINISIM_PY tools/cala-eval/demix_suite.py --tier full --base-bin <main qc_eval>
 | **final cells matching 2+ GT units**                                     | estimates with footprint r >= 0.5 to two or more GT footprints (the harmful merges; mlog.py's `diff`)                                                                                                               | lower                                        |
 | **close-pair resolution**                                                | GT neuron pairs binned 0-0.25, 0.25-0.5, 0.5-0.75, 0.75-1 D: counts with both / one / neither neuron matched in the final library (`final.tsv`, `gt.tsv`); a table of pooled counts plus a both-matched row per bin | both up                                      |
 | merge edits                                                              | rows of `passes.tsv` merges; about 2/3 fold a duplicate back into its own cell, so read them with the two rows above                                                                                                | none                                         |
+| **bite share, later-born vs earlier-born cell** (0-0.5, 0.5-0.75, 0.75-1 D) | within a matched close pair, the rows whose cell i was born later (or earlier) by more than 3 % of the recording; the bite hypothesis says the later-born one is bitten, the older one is not                    | lower                                        |
+| leak_sd share > 0.1, later- / earlier-born, < 1 D                        | same split for the neighbour's trace in the estimate                                                                                                                                                                | lower                                        |
+| **late-born cells**: bite share per bin, leak share, corr excess of pairs with a late-born member | cell i born in the last 20 % of the recording (`demix_report.LATE_FRAC`); the corr excess uses the same 1.5-3 D reference as the headline                                                  | lower                                        |
+| late-born cells in the library / matched                                 | counts of final cells born in the last 20 % and how many match a GT unit                                                                                                                                            | matched up                                   |
+| **over-fill at an undetected neighbour**                                 | matched cell with a detectable GT neighbour within 1 D that no estimate matches: share of est/true > 1.3 at the neighbour's centre (per bin and < 1 D) and the median ratio; > 1.3 = the cell absorbed the missing neighbour's light | lower                                        |
+| cells in a cluster of 2+, largest component                              | overlap clusters of the final library (`demix_clusters.py`, rho >= 0.05, K_max 6), plus a pooled cluster-size table under the main table                                                                              | none                                         |
 
 **Error bars.** Pair metrics are pooled over the sims of the tier; the `[..]` is a 95 % bootstrap CI over
 pairs (5000 resamples, each arm on its own pairs) and `sd` is the spread of the per-sim values across seeds.
@@ -156,8 +166,41 @@ many rows as a lead; the headline, the 0.75-1 D bite share and `matched`/`net` m
 A rerun of the same binary and flags reproduces the numbers (fixed `--slow-seed`), so the error bars are
 sim-to-sim and pair-to-pair spread, not run noise.
 
-Tests: `python -m unittest discover tools/cala-eval`. Validation run (refine gate z 3 vs 0, quick tier):
-`results/2026-11-17-demix-suite-validation.md`.
+Tests: `python -m unittest discover tools/cala-eval` (`test_demix.py`: the suite; `test_demix_lookback.py`: birth
+order, late-born, undetected neighbours, clusters, stage logic, all on synthetic fixtures with planted effects).
+Validation run (refine gate z 3 vs 0, quick tier): `results/2026-11-17-demix-suite-validation.md`.
+
+### Quality by stage and over time (`demix_stages.py`)
+
+For judging "Discover with look-back" against "Discover + N Refines" (`design_discover_lookback.md` sections 6-7).
+One qc_eval main run per sim and arm (`--passes 4 --later-passes refine --dump --wrap-libs --lib-at ...`), then
+fast-loop-only extract runs (`--passes 1 --library F --dump`) for each library scored, then the same
+`demix_metrics.py`. About 12 min main + 7 x ~1 min per sim, one run at a time.
+
+```
+$MINISIM_PY tools/cala-eval/demix_stages.py run --label z3 --flags "--refine-z 3" --bin <qc_eval of this branch> \
+    --only static_s5,pairs_s5 --name lookback-z3-vs-z0        # then again with --label z0 --flags "--refine-z 0"
+$MINISIM_PY tools/cala-eval/demix_stages.py report --name lookback-z3-vs-z0 --md results/<date>-<task>.md [--ref z3:1]
+```
+
+- **Stages**: S0 Discover only, S1 Discover + 1 Refine, S2, S3, each the library the app ends that step with
+  (`footprints_wrap{k}.bin`, the library the wrap publishes; the last stage is the main run's final library). The
+  header of each column carries the cumulative wall seconds (sum of `passes.tsv` `wall_s`: the qc_eval pass loop,
+  GT scoring included, identical across arms; excludes the finalize at a wrap and the metric extraction).
+- **Checkpoints inside Discover**: the live library at 25 / 50 / 75 % of the frames (`footprints_t{frame}.bin`) and at
+  100 % (`footprints_pass1.bin`, before the finalize). Cells not yet born are absent, so the undetected-neighbour row
+  at early checkpoints measures the cost of cells found later.
+- **Time to good footprints**: against a reference stage R (default the arm's last stage; `--ref LABEL:K` takes
+  another arm's stage K), a stage is *good* when both the headline correlation excess and the 0.75-1 D bite share are at
+  or below the upper bound of R's 95 % bootstrap CI (lower is better, so better than R is good). The time is the
+  cumulative wall of the arm's first good stage (stage granularity only), also as a ratio to R's own wall time (the
+  design's Stage 4 asks for <= 0.7 against Discover + 1 Refine). A single-stage arm that is never good reads
+  "not reached".
+- **Cluster churn**: libraries at 12.5 % steps of pass 1 (footprints only, no traces); per interval the share of
+  surviving cells whose overlap cluster changed, split into birth (a new cell joined), loss, regroup, and the implied
+  frames between changes for cells in a cluster of 2+.
+- qc_eval additions (examples only, no library behaviour change): `--lib-at F,F,..` writes the live library when pass 1
+  reaches those shares; `--wrap-libs` writes the library each wrap publishes. Births needed no change.
 
 ## Statistics
 

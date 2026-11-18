@@ -43,6 +43,16 @@
 //!                      the signed (unclipped) traces (`dump_signed.f32`) and,
 //!                      with GT, each cell's correlation with its best GT unit
 //!                      for both (`traces_signed_gt.tsv`)
+//!   --lib-at F,F,..    write the library as `footprints_t{frame}.bin` /
+//!                      `final_t{frame}.tsv` when pass 1 reaches each given
+//!                      share of the recording (fractions in (0, 1), e.g.
+//!                      0.25,0.5,0.75): the live library at that moment, for
+//!                      quality-over-time curves (`tools/cala-eval/
+//!                      demix_stages.py`); examples only, no behaviour change
+//!   --wrap-libs        with `--passes N`: also write the library every wrap
+//!                      publishes (`footprints_wrap{k}.bin`, `final_wrap{k}.tsv`,
+//!                      k = passes completed), i.e. what the app's Discover
+//!                      (k = 1) and each Refine stage end with
 //!   --no-signed        with --dump: do not compute the signed traces (to time
 //!                      their cost; the clipped traces are the same either way)
 //!   --label-bundle C   `real` only, standalone: read candidate footprints from
@@ -3061,6 +3071,18 @@ fn main() {
         }
     };
     let churn_log = args.iter().any(|a| a == "--churn-log");
+    let wrap_libs = args.iter().any(|a| a == "--wrap-libs");
+    let lib_at: Vec<f64> = arg_value(&args, "--lib-at").map_or(Vec::new(), |s| {
+        s.split(',')
+            .map(|v| {
+                let f: f64 = v
+                    .parse()
+                    .unwrap_or_else(|_| panic!("--lib-at: bad number {v}"));
+                assert!(f > 0.0 && f < 1.0, "--lib-at: fractions must be in (0, 1)");
+                f
+            })
+            .collect()
+    });
     let boundary_flag = args.iter().any(|a| a == "--boundary-log");
     assert!(
         !boundary_flag || cfg!(feature = "diagnostics"),
@@ -3471,6 +3493,10 @@ fn main() {
     let mut ho_cells_out = String::from("frame\tslot\tid\tho_marginal\tho_frames\tho_marginal_z\n");
     let mut conv = calab_cala::qc::convergence::Tracker::new();
     let mut conv_out = calab_cala::qc::convergence::header();
+    let lib_at_frames: Vec<usize> = lib_at
+        .iter()
+        .map(|f| ((f * t_len as f64).round() as usize).clamp(1, t_len.saturating_sub(1).max(1)))
+        .collect();
     let t_all = Instant::now();
     let mut passes_out = String::from(
         "pass\tframe\tcells\tslow_cells\tadds\tmerges\tdeletes\tsplits\tslow_frames\twall_s\n",
@@ -3490,6 +3516,17 @@ fn main() {
                 // behaviour: no publish at the wrap.)
                 if later_scope != EditScope::All && timed.is_none() {
                     engine.set_library(sl.finalize().unwrap()).unwrap();
+                    if wrap_libs {
+                        write_library(
+                            &out_dir,
+                            &format!("_wrap{pass}"),
+                            &engine.library().clone(),
+                            dims,
+                            gt.as_ref(),
+                            ho.as_ref(),
+                            Some(&*sl),
+                        );
+                    }
                 }
                 sl.set_edit_scope(later_scope);
             }
@@ -3948,6 +3985,17 @@ fn main() {
                 }
                 let t_end = t + 1;
                 let cp = t_end.is_multiple_of(every) || last;
+                if pass == 0 && !last && lib_at_frames.contains(&t_end) {
+                    write_library(
+                        &out_dir,
+                        &format!("_t{t_end}"),
+                        &engine.library().clone(),
+                        dims,
+                        gt.as_ref(),
+                        ho.as_ref(),
+                        slow.as_ref(),
+                    );
+                }
                 let ho_win: Option<HeldOutWindow> = if cp {
                     ho.as_mut().map(|h| {
                         for (sl_, c) in h.cells(lib.ids()).iter().enumerate() {
