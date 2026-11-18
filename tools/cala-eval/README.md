@@ -55,6 +55,8 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
 - `support_sizes.py`: footprint support sizes per pass of `--passes N` runs
   (`LABEL=RUN_TREE ... [--count pos|disk]`): median, p99, largest, runs above
   50k px and the pass-k / pass-1 ratios (S2.1). Needs numpy.
+- `demix_suite.py`, `demix_metrics.py`, `demix_report.py`, `make_pair_spec.py`: the demixing suite
+  (next section). `test_demix.py` tests the metric and report code (numpy and scipy; skipped without).
 - `test_summarize.py`: `python -m unittest discover tools/cala-eval`.
 
 ## Run
@@ -89,6 +91,73 @@ contains `qc_eval` or `/cala-eval/bin/` towards the cap, so keep them there.
 
 `qc_eval` ignores flags it does not know, without a warning; check the spelling
 of every flag (`--every`, not `--checkpoints`; there is no `--no-pass2`).
+
+## Demixing suite: judge a change with error bars
+
+One command runs a baseline and a candidate over a tier of sims and prints a Markdown diff table with a
+flag per metric (`better`, `worse`, `within noise`, `changed`). It exists because single-seed bite numbers
+misled twice in the refine-gate work (`results/2026-11-17-refine-gate-refill.md`): about half the close
+pairs sit at a bite ratio of exactly 0, so the _median_ ratio at 0.75-1 D flips between 0 and 0.5 on tiny
+changes. The robust bite metric is the **share of close pairs with ratio < 0.5**; the median is shown as a
+secondary row. Run it with the minisim venv python (numpy, scipy):
+
+```
+source ~/Projects/cala-data/sims.env     # CALA_SIMS, CALA_PAIRS, MINISIM_PY, QC_EVAL_BIN
+# one binary, two flag sets (here the refine gate z 3 vs 0): quick tier, ~35-40 min
+$MINISIM_PY tools/cala-eval/demix_suite.py --tier quick --bin $QC_EVAL_BIN \
+    --base-label z3 --new-label z0 --base-flags "--refine-z 3" --new-flags "--refine-z 0" \
+    --md tools/cala-eval/results/<date>-<task>.md
+# two binaries (main vs branch build): full tier, ~1.7 h
+$MINISIM_PY tools/cala-eval/demix_suite.py --tier full --base-bin <main qc_eval> --new-bin <branch qc_eval> \
+    --base-label main --new-label branch --md ...
+```
+
+- Tiers (`demix_suite.TIERS`): `quick` = static s5-s7 + pairs s5-s6 (5 sims); `full` = static s5-s9, motion
+  s5-s9, pairs s5-s8 (14 sims). `--only static_s5,pairs_s6` runs a subset (smoke test). Static and motion
+  sims come from `$CALA_SIMS` (`sims-gt110`), the designed isolated-pairs sims (54 pairs at 4-24 px, soma
+  diameter 14.5 px; `make_pair_spec.py`) from `$CALA_PAIRS` (`demix-bench/measure/pairsim_v2191`).
+- Each run is `qc_eval sim SIM RUN --passes 2 --later-passes refine --batch 8 --budget 30000000
+--slow-seed 1 --dump` (Discover + one Refine pass; `--motion` on the motion sims), so footprints are the
+  app's Refine library and traces its Extract. `--base-flags`/`--new-flags` add or replace flags per arm
+  (same rule as `run_arms.py --extra`); `qc_eval` ignores misspelt flags, check them.
+- Output goes to `$CALA_DATA/demix-suite/<name>/<arm>/<sim>/` (`--name` to resume: finished runs and
+  metrics are skipped; a rebuilt binary needs a new name), with `report.md` beside them.
+  `--report-only` re-renders an existing tree. At most 2 `qc_eval sim` runs at once (machine-wide count,
+  cap 2, about 1 GB each); the metrics step peaks near 2.5 GB.
+- `demix_metrics.py SIM RUN` (per run, also usable alone): Hungarian match on footprint correlation
+  (r >= 0.7); the motion-frame offset is estimated from matched centroids and the GT moved into cala's
+  frame (motion sims; the same offset `qc_eval` reports in `motion_offset.tsv`); bite ratio at each GT
+  neighbour within 3 D (estimated A_i at c_j over true, peak-normalised), control ring on the side facing
+  away; `leak_sd` from the OLS of the estimated trace on the two true traces; trace correlation of all
+  matched pairs within 3 D after a 15 s high-pass. Writes `demix_pairs.tsv`, `demix_corr.tsv`,
+  `demix_det.json`.
+- `demix_report.py --base RUNS/a --new RUNS/b`: the table.
+
+| metric (per arm)                                                         | what                                                                                                                                                                                                                | better                                       |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| **trace corr excess < 1 D** (headline)                                   | median r of matched pairs < 1 D minus median r at 1.5-3 D, 15 s high-pass                                                                                                                                           | lower                                        |
+| bite share ratio < 0.5 at 0-0.5, 0.5-0.75, 0.75-1 D                      | share of close GT-neighbour pairs whose estimate lost more than half the true light at the neighbour's centre                                                                                                       | lower                                        |
+| bite ratio median per bin (secondary)                                    | unstable when half the pairs are 0; read with the share                                                                                                                                                             | higher                                       |
+| control ring ratio median (< 1 D)                                        | same ratio on the far side, truncation not bite                                                                                                                                                                     | none                                         |
+| leak_sd median and share > 0.1 (< 1 D)                                   | neighbour's trace in the estimate, in units of the cell's own                                                                                                                                                       | lower                                        |
+| matched, false, net, splits, median support / half-max area, QC ms/frame | `final.tsv`, `passes.tsv`, `footprints.bin`, `QC cost per frame`                                                                                                                                                    | matched, net up; false, ms down; others none |
+| **final cells matching 2+ GT units**                                     | estimates with footprint r >= 0.5 to two or more GT footprints (the harmful merges; mlog.py's `diff`)                                                                                                               | lower                                        |
+| **close-pair resolution**                                                | GT neuron pairs binned 0-0.25, 0.25-0.5, 0.5-0.75, 0.75-1 D: counts with both / one / neither neuron matched in the final library (`final.tsv`, `gt.tsv`); a table of pooled counts plus a both-matched row per bin | both up                                      |
+| merge edits                                                              | rows of `passes.tsv` merges; about 2/3 fold a duplicate back into its own cell, so read them with the two rows above                                                                                                | none                                         |
+
+**Error bars.** Pair metrics are pooled over the sims of the tier; the `[..]` is a 95 % bootstrap CI over
+pairs (5000 resamples, each arm on its own pairs) and `sd` is the spread of the per-sim values across seeds.
+The diff CI is the percentile CI of the paired bootstrap draws. Run metrics (counts, area, cost) are
+per-sim values with a paired t CI over sims (needs >= 3). A metric is `better`/`worse` only if the diff CI
+excludes 0 **and** at least 2/3 of the sims moved the same way (the pairs of one sim are not independent,
+so the pooled bootstrap alone is optimistic); a CI that excludes 0 with disagreeing seeds is
+`within noise (seeds disagree)`. Metrics with no good direction report `changed`. Treat one `better` among
+many rows as a lead; the headline, the 0.75-1 D bite share and `matched`/`net` moving together is a result.
+A rerun of the same binary and flags reproduces the numbers (fixed `--slow-seed`), so the error bars are
+sim-to-sim and pair-to-pair spread, not run noise.
+
+Tests: `python -m unittest discover tools/cala-eval`. Validation run (refine gate z 3 vs 0, quick tier):
+`results/2026-11-17-demix-suite-validation.md`.
 
 ## Statistics
 
