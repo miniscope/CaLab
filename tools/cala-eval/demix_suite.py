@@ -165,7 +165,8 @@ def main(argv=None) -> int:
     if not names:
         sys.exit(f"no finished runs with metrics under {out_root}")
     md = REP.render(names, rows, a.base_label, a.new_label, f"Demixing evaluation: {a.new_label} vs {a.base_label} ({a.tier} tier)", meta,
-                    [REP.pair_res_totals(arm_b, names), REP.pair_res_totals(arm_n, names)])
+                    [REP.pair_res_totals(arm_b, names), REP.pair_res_totals(arm_n, names)],
+                    [REP.cluster_totals(arm_b, names), REP.cluster_totals(arm_n, names)])
     (out_root / "report.md").write_text(md)
     if a.md:
         a.md.write_text(md)
