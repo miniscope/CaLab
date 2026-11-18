@@ -7,8 +7,9 @@ Design spec, 17 Nov 2026. Based on main `20de18c0` (v2.19.1).
 Make the low-rank compression of the frame stream a regular part of a cala run:
 
 1. **Extract** solves the traces from the factors, without the frames.
-2. **Refine** updates the footprints from the factors and repeats until no
-   refinement passes the gate. The number of Refine runs is no longer a setting.
+2. **Refine** updates the footprints from the factors and repeats until the
+   footprints have stopped changing. The number of Refine runs is no longer a
+   setting.
 3. **A live stream is kept as factors**, so a live run can Refine and Extract.
 4. **Tile lines do not hurt cells** that sit on them.
 5. **Measured**: how close the results are to today's, how much faster the
@@ -38,13 +39,15 @@ Make the low-rank compression of the frame stream a regular part of a cala run:
 - How much a Refine run refines depends on the machine's speed, and the user
   sets the number of runs (0 to 5 in a multi-session run).
 
-Open PRs this builds on or must be measured against:
+PRs and branches this builds on or must be measured against (#411 and #416
+are in v2.20.0):
 
-| PR   | What                                                 | Effect here                                            |
-| ---- | ---------------------------------------------------- | ------------------------------------------------------ |
-| #411 | Replay setup of Refine and Extract in one module     | The factor path plugs in at that module                |
-| #416 | Refine gate accepts any held-out gain (`refine_z` 0) | Changes the raw baseline; factor Refine uses this rule |
-| #412 | Neighbour-shadow ring floor, default off             | None while off; rerun the closeness check if it flips  |
+| PR or branch               | What                                                               | Effect here                                                                         |
+| -------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| #411                       | Replay setup of Refine and Extract in one module                   | The factor path plugs in at that module                                             |
+| #416                       | Refine gate accepts any held-out gain (`refine_z` 0)               | Changes the raw baseline; factor Refine uses this rule; sets the stop rule (§5)     |
+| #412                       | Neighbour-shadow ring floor, default off                           | None while off; rerun the closeness check if it flips                               |
+| `feat/cala-cluster-replay` | Joint refit of overlapping cells in Refine from stored frames, off | Its `ClusterHistory` frame store can be backed by the factors in phase 3, if merged |
 
 `test/svd-dim-cells` (local) has `examples/svd_dimcells.rs`, which dumps the
 compressor's input and compresses a recording at chosen ranks. The harness of
@@ -171,8 +174,18 @@ One iteration, with the cell set frozen (`EditScope::Refine`):
    factors on the held-out frames.
 4. **Publish** the accepted refinements as the next library.
 
-Stop when an iteration publishes no refinement. A cap (`max_iterations`,
+Stop when the footprints have settled: fewer than 2 % of the cells have a
+footprint that correlates below 0.99 with its footprint of the previous
+iteration (`settle_corr` 0.99, `settle_share` 0.02). A cap (`max_iterations`,
 default 20) ends a run that does not settle, and the stage log says so.
+
+The stop is on the size of the changes, not on their count. Since v2.20.0 the
+gate accepts any held-out gain (`refine_z` 0, #416), and the accepted
+refinements of a raw Refine then do not die out in number: later passes keep
+accepting thousands of small ones while the footprints move less and less
+(`tools/cala-eval/results/2026-11-17-refine-gate-refill.md`: 1.7 % of cells
+below 0.99 by pass 5). The two thresholds start at that level and are checked
+in phase 3 against the footprint accuracy on the synthetic sets.
 
 Differences from today's Refine, all to be measured:
 
@@ -186,8 +199,9 @@ Differences from today's Refine, all to be measured:
 ### 6. Stages and UI
 
 - **Refine**: one action, "Refine until settled". The readout shows the
-  iteration, refinements published and the median footprint change per
-  iteration (the existing plots, with iterations on the x axis). The
+  iteration, refinements published, the share of cells still changing (the
+  stop measure) and the median footprint change per iteration (the existing
+  plots, with iterations on the x axis). The
   multi-session setting "number of Refine runs" becomes on or off.
 - **Extract**: runs on the factors, after Refine without asking (it takes
   seconds).
