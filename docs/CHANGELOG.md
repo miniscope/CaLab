@@ -5,6 +5,15 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.20.0] - 2026-11-17
+
+Web apps `v2.20.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Cala no longer leaves "bites" in footprints where a close neighbour sits, which
+also cuts the crosstalk between close cells' traces. A new Correlation tab plots
+pairwise trace correlation against distance. Plans and run status show the Refine
+setting, and analytics count sessions per run (Admin splits them by Joint, Separate
+and single-session runs). Plus internal cleanup. No database migration needed.
+
 ### Added
 
 - Cala: a **Correlation** tab (live run and saved result) with the pairwise trace correlation against centre distance diagnostic for incomplete demixing: median and IQR of Pearson r per distance bin (<0.5 to 3-6 soma diameters, traces high-passed with a 15 s moving average), a dotted far-pair (1.5-3 D) reference line and a fixed -0.1 to 0.5 y axis, drawn over a small semi-transparent scatter of the individual pairs (continuous distance axis 0-6 D, off-scale points counted). Computed once on demand in a worker from all pairs within 6 D (thinned uniformly only above 400,000), 0.2-1 s for 650 cells x 18,000 frames.
