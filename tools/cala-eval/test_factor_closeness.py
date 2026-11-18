@@ -81,6 +81,7 @@ class Closeness(unittest.TestCase):
         for r in rows:
             self.assertAlmostEqual(r["trace_r"], 1.0, places=6)
             self.assertAlmostEqual(r["fp_cos"], 1.0, places=6)
+            self.assertAlmostEqual(r["trace_r1"], 1.0, places=6)
             self.assertEqual(r["in_test"], 1.0)
 
     def test_distance_to_tile_lines_and_border(self) -> None:
@@ -104,6 +105,8 @@ class Closeness(unittest.TestCase):
         self.assertTrue(math.isnan(rows[11]["fp_cos"]))
         self.assertTrue(math.isnan(rows[11]["trace_r"]))
         self.assertTrue(math.isnan(rows[7]["trace_r"]))
+        self.assertTrue(math.isnan(rows[11]["trace_r1"]))
+        self.assertTrue(math.isnan(rows[7]["trace_r1"]))
         self.assertAlmostEqual(F.loss(list(rows.values()), "trace_r"), 0.0, places=6)
         self.assertEqual(F.dropped(list(rows.values()), "trace_r"), 2)
         self.assertEqual(F.dropped(list(rows.values()), "fp_cos"), 1)
@@ -125,6 +128,26 @@ class Closeness(unittest.TestCase):
         with open(self.root / "a" / "cells.tsv", "a") as f:
             f.write("600\t0\t7.00000\t1.00000\n600\t1\t9.00000\t0.00000\n")
         self.assertEqual(F.read_qc(self.root / "a"), {7: True, 9: False})
+
+    def test_lag1_correlation_ignores_white_noise(self) -> None:
+        rng = np.random.default_rng(3)
+        t = np.arange(4000)
+        signal = np.sin(t * 0.05) + 0.5 * np.sin(t * 0.013)
+        noisy = signal + rng.normal(0.0, 1.0, len(t))
+        self.assertLess(F.pearson(noisy, signal), 0.75)
+        self.assertGreater(F.lag1_r(noisy, signal), 0.97)
+        self.assertAlmostEqual(F.lag1_r(signal, signal), 1.0, places=9)
+        self.assertLess(F.lag1_r(signal, np.cos(t * 0.21)), 0.2)
+
+    def test_lag1_correlation_is_undefined_without_slow_structure(self) -> None:
+        self.assertTrue(
+            math.isnan(F.lag1_r(np.zeros(100), np.sin(np.arange(100) * 0.1)))
+        )
+        self.assertTrue(
+            math.isnan(F.lag1_r(np.asarray([1.0, 2.0]), np.asarray([1.0, 2.0])))
+        )
+        alternating = np.asarray([1.0, -1.0] * 50)
+        self.assertTrue(math.isnan(F.lag1_r(alternating, np.sin(np.arange(100) * 0.1))))
 
     def test_verdict(self) -> None:
         self.assertEqual(F.verdict(0.01, [0.02, 0.005]), "within")
@@ -192,6 +215,8 @@ class Closeness(unittest.TestCase):
         write_run(self.root / "n", CELLS, noisy)
         text = F.report(self.root / "a", self.root / "b", [self.root / "n"])
         self.assertIn("| within |", text)
+        self.assertIn("| not gated |", text)
+        self.assertIn("trace r, lag 1", text)
         write_run(
             self.root / "c", {7: CELLS[7], 9: CELLS[9]}, {7: TRACES[7], 9: TRACES[9]}
         )

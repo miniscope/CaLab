@@ -12,14 +12,18 @@ Per cell of the reference run (cells are matched by id; pass 1 is the same in
 all runs, and a refine replay keeps the cell set):
 
 - `trace_r`: Pearson correlation of the Extract traces (`extract_trace.f32`);
+- `trace_r1`: the same from lag-1 cross-covariances, which noise that is white in time
+  does not enter; the trace gate uses it, because the factors remove noise that a raw
+  trace keeps;
 - `fp_cos`: cosine of the unfiltered footprints (`footprints.bin`);
 - `edge_px`: distance of the centroid to the nearest tile line;
 - `border_px`: distance of the centroid to the frame border;
 - `truth_r_*` (with `--truth`): the best correlation with a ground-truth unit
   whose centroid is within 6 px.
 
-A loss is the median of `1 - value` over the QC-pass cells. The test run is
-`within` the null spread when its loss is at most the largest null loss.
+A loss is the median of `1 - value` over the QC-pass cells. The judged measures
+are `trace_r1` and `fp_cos`; the plain `trace_r` is printed but not gated. The test
+run is `within` the null spread when its loss is at most the largest null loss.
 Needs numpy.
 """
 
@@ -124,6 +128,30 @@ def pearson(a: np.ndarray, b: np.ndarray) -> float:
     return float((x * y).sum() / d) if d > 0 else NAN
 
 
+def lag1_r(a: np.ndarray, b: np.ndarray) -> float:
+    """Correlation of the temporally correlated parts of two traces.
+
+    Built from lag-1 cross-covariances, `C(p, q) = mean of (p[t] q[t+1] + p[t+1] q[t]) / 2`,
+    as `C(a, b) / sqrt(C(a, a) C(b, b))`. Noise that is white in time adds nothing to them in
+    expectation, so a trace and its denoised version score near 1, where the plain correlation
+    drops by the share of noise. NaN when either trace has no positive lag-1 autocovariance
+    (a constant trace, or noise only) or fewer than 3 samples.
+    """
+    n = min(len(a), len(b))
+    if n < 3:
+        return NAN
+    x, y = a[:n].astype(np.float64), b[:n].astype(np.float64)
+    x, y = x - x.mean(), y - y.mean()
+
+    def c(p: np.ndarray, q: np.ndarray) -> float:
+        return float(0.5 * ((p[:-1] * q[1:]).sum() + (p[1:] * q[:-1]).sum()))
+
+    cxx, cyy = c(x, x), c(y, y)
+    if cxx <= 0 or cyy <= 0:
+        return NAN
+    return c(x, y) / float(np.sqrt(cxx * cyy))
+
+
 def fp_cosine(a: Cell, b: Cell) -> float:
     da = dict(zip(a[0].tolist(), a[1].tolist()))
     dot = sum(da.get(p, 0.0) * v for p, v in zip(b[0].tolist(), b[1].tolist()))
@@ -168,6 +196,7 @@ def compare(
                 "in_test": float(cid in fb),
                 "fp_cos": fp_cosine(fa[cid], fb[cid]) if cid in fb else NAN,
                 "trace_r": pearson(ta[cid], tb[cid]) if both else NAN,
+                "trace_r1": lag1_r(ta[cid], tb[cid]) if both else NAN,
                 "truth_r_ref": truth_r(ta[cid], (cy, cx), truth)
                 if truth and cid in ta
                 else NAN,
@@ -309,13 +338,14 @@ def report(
     )
     out += [
         "",
-        "| cells | n | n with trace r | n with footprint cos | trace r median | trace r 5th pct | footprint cos median | footprint cos 5th pct |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| cells | n | n with trace r | n with trace r1 | n with footprint cos | trace r median | trace r 5th pct | trace r1 median | trace r1 5th pct | footprint cos median | footprint cos 5th pct |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for name, g in groups(rows, band):
-        tr, fc = finite(g, "trace_r"), finite(g, "fp_cos")
+        tr, tr1, fc = finite(g, "trace_r"), finite(g, "trace_r1"), finite(g, "fp_cos")
         out.append(
-            f"| {name} | {len(g)} | {len(tr)} | {len(fc)} | {q(tr, 50)} | {q(tr, 5)} | {q(fc, 50)} | {q(fc, 5)} |"
+            f"| {name} | {len(g)} | {len(tr)} | {len(tr1)} | {len(fc)} | {q(tr, 50)} | {q(tr, 5)} "
+            f"| {q(tr1, 50)} | {q(tr1, 5)} | {q(fc, 50)} | {q(fc, 5)} |"
         )
     out += [
         "",
@@ -324,14 +354,23 @@ def report(
     ]
     for k, (name, g) in enumerate(subsets(rows)):
         n_qc = sum(1 for r in g if r["qc_pass"])
-        for key, label in (("trace_r", "trace r"), ("fp_cos", "footprint cos")):
+        for key, label, gated in (
+            ("trace_r1", "trace r, lag 1", True),
+            ("fp_cos", "footprint cos", True),
+            ("trace_r", "trace r, plain", False),
+        ):
             mine = loss(g, key)
             theirs = [loss(subsets(n)[k][1], key) for n in null_rows]
             null_drop = [dropped(subsets(n)[k][1], key) for n in null_rows]
             top = max([x for x in theirs if not math.isnan(x)], default=NAN)
+            judged = (
+                verdict(mine, theirs, dropped(g, key), null_drop)
+                if gated
+                else "not gated"
+            )
             out.append(
                 f"| {name} | {label} | {n_qc} | {dropped(g, key)} | {max(null_drop, default=0)} "
-                f"| {mine:.5f} | {top:.5f} | {verdict(mine, theirs, dropped(g, key), null_drop)} |"
+                f"| {mine:.5f} | {top:.5f} | {judged} |"
             )
     if truth_path:
         a, b = finite(rows, "truth_r_ref"), finite(rows, "truth_r_test")
@@ -339,6 +378,16 @@ def report(
             "",
             f"Trace correlation with the truth, median: reference {q(a, 50)}, test {q(b, 50)}.",
         ]
+        both = [
+            r["truth_r_test"] - r["truth_r_ref"]
+            for r in rows
+            if math.isfinite(r["truth_r_ref"]) and math.isfinite(r["truth_r_test"])
+        ]
+        d = np.asarray(both, dtype=np.float64)
+        out.append(
+            f"Truth correlation, test minus reference, over {len(d)} cells: "
+            f"median {q(d, 50)}, 5th pct {q(d, 5)}."
+        )
     ja, jb = line_jump(fa, dims, tile), line_jump(fb, dims, tile)
     out += [
         "",
