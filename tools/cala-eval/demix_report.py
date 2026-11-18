@@ -105,7 +105,7 @@ def load_run(run: Path):
     cells = _read(run / "demix_cells.tsv") if (run / "demix_cells.tsv").exists() else []
     nn = _col(cells, "nn_diam") if cells else np.array([])
     return {
-        "name": run.name, "d": d[ok], "ratio": ratio[ok], "ring": ring[ok], "leak": leak[ok],
+        "name": run.name, "d": d[ok], "ratio": ratio[ok], "excess": (est_c - true_c)[ok], "ring": ring[ok], "leak": leak[ok],
         "cd": _col(corr, "d_diam"), "cc": _col(corr, "c_est"), "det": det,
         # birth order and late birth, aligned with d / ratio / leak (nan birth: in neither group)
         "later": gap > BIRTH_TIE_FRAC, "earlier": gap < -BIRTH_TIE_FRAC,
@@ -237,6 +237,20 @@ def share_over(x):
     return np.mean(x > OVERFILL_THR, axis=-1)
 
 
+def _overabs(r):
+    """1 where a pair < 1 D is over-filled by ratio AND by an absolute excess above 0.05 of the peak, else 0."""
+    if "excess" not in r:
+        return np.array([])
+    m = r["d"] < 1.0
+    x, e = r["ratio"][m], r["excess"][m]
+    ok = np.isfinite(x) & np.isfinite(e)
+    return ((x[ok] > OVERFILL_THR) & (e[ok] > 0.05)).astype(float)
+
+
+def share_pos(x):
+    return np.mean(x > 0.5, axis=-1)
+
+
 def _und(r, lo, hi):
     d, v = _g(r, "und_d"), _g(r, "und_ratio")
     return finite(v[(d >= lo) & (d < hi)]) if len(d) == len(v) else np.array([])
@@ -268,6 +282,10 @@ def pair_metrics():
         ms.append((f"Bite share ratio < 0.5, {lo}-{hi} D", "bite", lambda r, lo=lo, hi=hi: (_bin(r, lo, hi, "ratio"),), share_below, "lower", "{:.3f}"))
     for lo, hi in BINS:
         ms.append((f"Bite ratio median, {lo}-{hi} D (secondary)", "bite_med", lambda r, lo=lo, hi=hi: (_bin(r, lo, hi, "ratio"),), med, "higher", "{:.3f}"))
+    # over-fill toward a matched neighbour (the mirror of a bite): ratio, and with an absolute excess
+    for lo, hi in BINS + [(0.0, 1.0)]:
+        ms.append((f"Over-fill share est/true > 1.3, matched neighbour, {lo}-{hi} D", "overfill", lambda r, lo=lo, hi=hi: (_bin(r, lo, hi, "ratio"),), share_over, "lower", "{:.3f}"))
+    ms.append(("Over-fill share est/true > 1.3 and est - true > 0.05 of peak, matched neighbour, < 1 D", "overfill", lambda r: (_overabs(r),), share_pos, "lower", "{:.3f}"))
     ms.append(("Control ring ratio median, < 1 D", "control", lambda r: (finite(r["ring"][r["d"] < 1.0]),), med, None, "{:.3f}"))
     ms.append(("leak_sd median, < 1 D", "leak", lambda r: (finite(r["leak"][r["d"] < 1.0]),), med, "lower", "{:.4f}"))
     ms.append(("leak_sd share > 0.1, < 1 D", "leak", lambda r: (finite(r["leak"][r["d"] < 1.0]),), share_leak, "lower", "{:.3f}"))
@@ -294,6 +312,8 @@ RUN_METRICS = [
     ("False cells", "false", "lower", "{:.1f}"),
     ("Net (matched - false)", "net", "higher", "{:.1f}"),
     ("Final cells matching 2+ GT units (footprint r >= 0.5)", "multi_gt", "lower", "{:.1f}"),
+    ("... of which absorption (est/true > 1.3 at another of its GT units)", "multi_gt_absorb", "lower", "{:.1f}"),
+    ("... of which light regained (matched, est/true <= 1.3 at its other GT units)", "multi_gt_regained", None, "{:.1f}"),
     ("Close GT pairs, both matched, 0-0.25 D", "both_0.0-0.25", "higher", "{:.1f}"),
     ("Close GT pairs, both matched, 0.25-0.5 D", "both_0.25-0.5", "higher", "{:.1f}"),
     ("Close GT pairs, both matched, 0.5-0.75 D", "both_0.5-0.75", "higher", "{:.1f}"),

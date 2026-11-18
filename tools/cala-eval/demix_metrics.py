@@ -470,6 +470,20 @@ def compute_run(sim: Path, run: Path, all_det=False, force=False, ledger: Path |
     det = detection_row(run, cells)
     # cells that look like two neurons: footprint r >= 0.5 to two or more GT units (mlog.py's `diff`)
     det["multi_gt"] = int(((R >= LOOSE_R).sum(1) >= 2).sum())
+    # split the 2+ GT cells: absorption (est/true > 1.3 at the centre of another GT unit it resembles) vs light
+    # regained (a matched cell whose footprint stays <= 1.3 x the truth there); unmatched ones are in neither
+    multi = set(np.where((R >= LOOSE_R).sum(1) >= 2)[0].tolist())
+    absorb, seen = set(), set()
+    col_of = {u: k for k, u in enumerate(det_idx)}
+    for p in pairs:
+        i, j = int(p["i"]), int(p["j"])
+        if i not in multi or j not in col_of or R[i, col_of[j]] < LOOSE_R or not p["true_at_cj"] > 0:
+            continue
+        seen.add(i)
+        if p["est_at_cj"] / p["true_at_cj"] > 1.3:
+            absorb.add(i)
+    det["multi_gt_absorb"] = len(absorb)
+    det["multi_gt_regained"] = len(seen - absorb)
     det["pair_res"] = pair_resolution(run, diam, all_det)
     for k, v in (det["pair_res"] or {}).items():
         det[f"both_{k}"] = v[0]

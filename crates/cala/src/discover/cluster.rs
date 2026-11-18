@@ -164,10 +164,30 @@ impl RingHistory {
     fn slot(&self, s: usize) -> usize {
         (self.head + self.cap - 1 - s) % self.cap
     }
+
+    /// Room for `width` coordinates per frame (the new ones zero).
+    fn widen(&mut self, width: usize) {
+        let mut v = vec![0.0f32; self.cap * width];
+        for s in 0..self.cap {
+            v[s * width..s * width + self.width]
+                .copy_from_slice(&self.v[s * self.width..(s + 1) * self.width]);
+        }
+        self.v = v;
+        self.width = width;
+    }
+
+    /// Forget every stored frame.
+    fn clear(&mut self) {
+        self.head = 0;
+        self.len = 0;
+    }
 }
 
 impl ClusterHistory for RingHistory {
     fn append(&mut self, v: &[f32], at: u64, half: bool) {
+        if v.len() > self.width {
+            self.widen(v.len());
+        }
         let w = self.width;
         let dst = &mut self.v[self.head * w..(self.head + 1) * w];
         dst.iter_mut().for_each(|x| *x = 0.0);
@@ -179,6 +199,9 @@ impl ClusterHistory for RingHistory {
     }
 
     fn reexpress(&mut self, r: &[f64], r_new: usize, r_old: usize) {
+        if r_new > self.width {
+            self.widen(r_new);
+        }
         let w = self.width;
         let mut tmp = vec![0.0f64; r_new];
         for s in 0..self.len {
@@ -257,6 +280,20 @@ pub(crate) struct ClusterStore {
     /// The store's own last joint estimate, whitened (pixel-major `n x K`),
     /// carried to the next replay's trace step (`joint_carry`).
     est: Option<Vec<f64>>,
+    /// Leftover-light directions requested (`joint_leftover`). The basis
+    /// is `[U | L]`: its first `ru` columns span the members' light
+    /// (`orth(CY)`), the rest (`L`, at most `m`) the strongest residual
+    /// patterns outside that span.
+    m: usize,
+    ru: usize,
+    /// Streaming power iteration for `L`: `Σ w r̃ s_j` (leftover-major,
+    /// `m x n`) and `Σ w s_j`, `s_j = L_jᵀ r̃` the frame's leftover
+    /// coordinates.
+    zl: Vec<f32>,
+    sl: Vec<f64>,
+    /// The provisional components (whitened, non-negative, pixel-major
+    /// `n x mp`): fitted in every replay like a member, never published.
+    prov: Option<(Vec<f64>, usize)>,
 }
 
 /// Per pixel of `pix`: the member whose ring level is subtracted there (the
@@ -321,6 +358,7 @@ impl ClusterStore {
         version: u64,
         cols: Vec<f32>,
         cap: usize,
+        m: usize,
     ) -> ClusterStore {
         let kk = ids.len();
         let n = pix.len();
@@ -342,16 +380,61 @@ impl ClusterStore {
             sw: 0.0,
             u: Vec::new(),
             rank: 0,
-            hist: RingHistory::new(cap, kk),
+            hist: RingHistory::new(cap, kk + m),
             k: 0,
             est: None,
+            m,
+            ru: 0,
+            zl: vec![0.0; m * n],
+            sl: vec![0.0; m],
+            prov: None,
         };
         // The first basis is the members' current whitened columns (the
         // statistics have not accumulated yet).
         let a = s.white_cols();
         let (u, rank) = orth(&a, n, kk);
+        s.ru = rank;
+        let (u, rank) = s.with_leftover(u, rank);
         s.set_basis(u, rank);
         s
+    }
+
+    /// `[U | L]`: the member basis `u` (pixel-major `n x ru`) extended by
+    /// the leftover directions, `L = orth((I − U Uᵀ) Z)` with `Z` the
+    /// centred power-iteration sums (one step of a streaming subspace
+    /// iteration on the residual's second moment); a direction with no
+    /// sums yet keeps its current column, or a fixed pseudo-random start.
+    fn with_leftover(&self, u: Vec<f64>, ru: usize) -> (Vec<f64>, usize) {
+        let n = self.pix.len();
+        if self.m == 0 || n <= ru {
+            return (u, ru);
+        }
+        let k = ru + self.m;
+        let mut b = vec![0.0f64; n * k];
+        for i in 0..n {
+            b[i * k..i * k + ru].copy_from_slice(&u[i * ru..(i + 1) * ru]);
+        }
+        let old_l = self.rank.saturating_sub(self.ru);
+        for j in 0..self.m {
+            let zj = &self.zl[j * n..(j + 1) * n];
+            let live = self.sw > 0.0 && zj.iter().any(|&x| x != 0.0);
+            for i in 0..n {
+                b[i * k + ru + j] = if live {
+                    f64::from(zj[i]) - f64::from(self.sr[i]) * self.sl[j] / self.sw
+                } else if j < old_l && self.u.len() == n * self.rank {
+                    self.u[i * self.rank + self.ru + j]
+                } else {
+                    // Fixed pseudo-random start (by pixel and direction).
+                    let h = (u64::from(self.pix[i]) ^ ((j as u64 + 1) << 32))
+                        .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                    ((h >> 11) as f64 / (1u64 << 53) as f64) - 0.5
+                };
+            }
+        }
+        let (q, r) = orth(&b, n, k);
+        // Gram–Schmidt keeps the member columns first; if a member column
+        // dropped out the leftover ones simply follow.
+        (q, r)
     }
 
     fn set_basis(&mut self, u: Vec<f64>, rank: usize) {
@@ -409,6 +492,8 @@ impl ClusterStore {
         self.sc.iter_mut().for_each(|v| *v *= f);
         self.scc.iter_mut().for_each(|v| *v *= f);
         self.sw *= f;
+        self.zl.iter_mut().for_each(|v| *v *= f32_);
+        self.sl.iter_mut().for_each(|v| *v *= f);
     }
 
     /// Add one fitting frame: `r` the whitened cluster residual on `pix`
@@ -447,16 +532,32 @@ impl ClusterStore {
                     .sum()
             })
             .collect();
+        // Leftover directions: one more step of the power iteration.
+        for j in 0..self.rank - self.ru {
+            let s = v[self.ru + j];
+            self.sl[j] += w * f64::from(s);
+            let a = wf * s;
+            for (z, &x) in self.zl[j * n..(j + 1) * n].iter_mut().zip(r) {
+                *z += a * x;
+            }
+        }
         self.hist
             .append(&v, self.k, (self.k / 256).is_multiple_of(2));
         self.k += 1;
+        // With leftover directions the basis follows the data between
+        // replays too, so the stored frames carry new leftover light.
+        if self.m > 0 && self.k.is_multiple_of(256) {
+            self.refresh_basis();
+        }
     }
 
     /// Refresh the basis to `orth(CY)` (centred; a member whose trace has no
     /// variance yet keeps its current column) and re-express the stored
     /// frames in it, `V ← U'ᵀ U V`.
     fn refresh_basis(&mut self) {
-        let (u2, r2) = self.cy_basis();
+        let (u2, ru) = self.cy_basis();
+        let (u2, r2) = self.with_leftover(u2, ru);
+        self.ru = ru;
         let n = self.pix.len();
         // R = U'ᵀ U (r2 x rank).
         let mut rm = vec![0.0f64; r2 * self.rank];
@@ -557,6 +658,7 @@ impl ClusterStore {
         }
         let mut cy = vec![0.0f32; n1 * kk];
         let mut sr = vec![0.0f32; n1];
+        let mut zl = vec![0.0f32; n1 * self.m];
         let mut rc = vec![0.0f64; n1 * r0];
         for i in 0..n1 {
             match self.pix.binary_search(&pix[i]) {
@@ -564,6 +666,9 @@ impl ClusterStore {
                     sr[i] = self.sr[i0];
                     for k in 0..kk {
                         cy[k * n1 + i] = self.cy[k * n0 + i0];
+                    }
+                    for j in 0..self.m {
+                        zl[j * n1 + i] = self.zl[j * n0 + i0];
                     }
                     rc[i * r0..(i + 1) * r0].copy_from_slice(&self.u[i0 * r0..(i0 + 1) * r0]);
                 }
@@ -599,10 +704,16 @@ impl ClusterStore {
         self.cols = cols;
         self.cy = cy;
         self.sr = sr;
+        self.zl = zl;
         self.est = est;
+        self.prov = None;
         // The basis on the new pixels, and every stored frame in it:
-        // v' = U'ᵀ Rc v.
-        let (u1, r1) = self.cy_basis();
+        // v' = U'ᵀ Rc v. (The old leftover columns live on the old pixels:
+        // the new ones come from the moved sums.)
+        let (u1, ru1) = self.cy_basis();
+        self.rank = self.ru;
+        let (u1, r1) = self.with_leftover(u1, ru1);
+        self.ru = ru1;
         let mut rm = vec![0.0f64; r1 * r0];
         for i in 0..n1 {
             for a_ in 0..r1 {
@@ -615,6 +726,274 @@ impl ClusterStore {
         self.hist.reexpress(&rm, r1, r0);
         self.set_basis(u1, r1);
         true
+    }
+
+    /// Re-express the store for a new member set (`design_discover_lookback`
+    /// §3.2): `ids` (sorted) with their statistics `disks`, the store's new
+    /// pixels `pix` (sorted, whitening `is`) and the members' current
+    /// filtered columns there (`cols`, member-major). `old[k]` is the new
+    /// member `k`'s index in the store, or `None` for a cell new to it.
+    /// `newborn[k]`: the cell was not in the library at the last build (its
+    /// light is in every stored frame's residual); an established cell
+    /// joining from outside the store had its light subtracted at push
+    /// time, so its stored coordinates are truthfully zero. Kept members
+    /// keep their sums; new pixels start at the current model (as
+    /// [`ClusterStore::move_to`]); the members' basis is rebuilt and the
+    /// leftover directions become the strongest stored light outside it,
+    /// so a departed member's light stays in the history as leftover
+    /// light. Returns `false` (the store must start over) when a newborn's
+    /// light is mostly outside the stored span (the old frames would then
+    /// say all its light had the older cells' shape) or the stored span
+    /// is degenerate.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rebase(
+        &mut self,
+        ids: Vec<u64>,
+        disks: Vec<((f32, f32), f32)>,
+        pix: Vec<u32>,
+        is: Vec<f32>,
+        width: usize,
+        version: u64,
+        cols: Vec<f32>,
+        old: &[Option<usize>],
+        newborn: &[bool],
+    ) -> bool {
+        let (n0, r0, kk0) = (self.pix.len(), self.rank, self.ids.len());
+        let (n1, kk1) = (pix.len(), ids.len());
+        if n1 == 0 || r0 == 0 {
+            return false;
+        }
+        // The new members' whitened columns on the new pixels and, through
+        // the shared pixels, the stored basis' view of them.
+        let mut a1 = vec![0.0f64; n1 * kk1];
+        for k in 0..kk1 {
+            for i in 0..n1 {
+                a1[i * kk1 + k] = f64::from(cols[k * n1 + i]) * f64::from(is[i]);
+            }
+        }
+        let map: Vec<Option<usize>> = pix.iter().map(|p| self.pix.binary_search(p).ok()).collect();
+        let mut b = vec![0.0f64; r0 * kk1];
+        for (i, i0) in map.iter().enumerate() {
+            let Some(i0) = *i0 else { continue };
+            for j in 0..r0 {
+                let uij = self.u[i0 * r0 + j];
+                for k in 0..kk1 {
+                    b[j * kk1 + k] += uij * a1[i * kk1 + k];
+                }
+            }
+        }
+        // A newborn's light must lie mostly in the stored span.
+        for k in 0..kk1 {
+            if !newborn[k] {
+                continue;
+            }
+            let tot: f64 = (0..n1).map(|i| a1[i * kk1 + k].powi(2)).sum();
+            let inside: f64 = (0..r0).map(|j| b[j * kk1 + k].powi(2)).sum();
+            if !(tot > 0.0) || inside < 0.5 * tot {
+                return false;
+            }
+        }
+        // Least-squares traces of a stored frame under the new members
+        // (those with light in the stored span): c = P v.
+        let live: Vec<usize> = (0..kk1)
+            .filter(|&k| (0..r0).any(|j| b[j * kk1 + k] != 0.0))
+            .collect();
+        let nl = live.len();
+        let mut g = vec![0.0f64; nl * nl];
+        for (p, &kp) in live.iter().enumerate() {
+            for (q, &kq) in live.iter().enumerate() {
+                g[p * nl + q] = (0..r0).map(|j| b[j * kk1 + kp] * b[j * kk1 + kq]).sum();
+            }
+        }
+        let gi = if nl > 0 {
+            inverse(&g, nl)
+        } else {
+            Some(Vec::new())
+        };
+        let Some(gi) = gi else {
+            return false;
+        };
+        let mut pm = vec![0.0f64; kk1 * r0];
+        for (p, &kp) in live.iter().enumerate() {
+            for j in 0..r0 {
+                pm[kp * r0 + j] = (0..nl).map(|q| gi[p * nl + q] * b[j * kk1 + live[q]]).sum();
+            }
+        }
+        // Sums of the kept members; zero for cells new to the store.
+        let mut sc = vec![0.0f64; kk1];
+        let mut scc = vec![0.0f64; kk1 * kk1];
+        for k in 0..kk1 {
+            let Some(k0) = old[k] else { continue };
+            sc[k] = self.sc[k0];
+            for l in 0..kk1 {
+                if let Some(l0) = old[l] {
+                    scc[k * kk1 + l] = self.scc[k0 * kk0 + l0];
+                }
+            }
+        }
+        // A newborn takes over its light in the stored frames: its sums
+        // start from its least-squares traces there (clipped at zero),
+        // `Σ v c` in the stored coordinates, scaled to the store's weight.
+        let born: Vec<usize> = (0..kk1).filter(|&k| newborn[k]).collect();
+        let mut vc = vec![0.0f64; r0 * born.len()];
+        if !born.is_empty() {
+            let (mut cnt, mut s1, mut s2) =
+                (0usize, vec![0.0f64; born.len()], vec![0.0f64; born.len()]);
+            self.hist.for_each(r0, &mut |v, _, _| {
+                cnt += 1;
+                for (x, &k) in born.iter().enumerate() {
+                    let c: f64 = (0..r0)
+                        .map(|j| pm[k * r0 + j] * f64::from(v[j]))
+                        .sum::<f64>()
+                        .max(0.0);
+                    s1[x] += c;
+                    s2[x] += c * c;
+                    for j in 0..r0 {
+                        vc[j * born.len() + x] += f64::from(v[j]) * c;
+                    }
+                }
+            });
+            let f = if cnt > 0 { self.sw / cnt as f64 } else { 0.0 };
+            vc.iter_mut().for_each(|x| *x *= f);
+            for (x, &k) in born.iter().enumerate() {
+                sc[k] = s1[x] * f;
+                scc[k * kk1 + k] = s2[x] * f;
+            }
+        }
+        let mut cy = vec![0.0f32; n1 * kk1];
+        let mut sr = vec![0.0f32; n1];
+        let mut zl = vec![0.0f32; n1 * self.m];
+        let mut rc = vec![0.0f64; n1 * r0];
+        for i in 0..n1 {
+            match map[i] {
+                Some(i0) => {
+                    sr[i] = self.sr[i0];
+                    for k in 0..kk1 {
+                        if let Some(k0) = old[k] {
+                            cy[k * n1 + i] = self.cy[k0 * n0 + i0];
+                        }
+                    }
+                    for j in 0..self.m {
+                        zl[j * n1 + i] = self.zl[j * n0 + i0];
+                    }
+                    rc[i * r0..(i + 1) * r0].copy_from_slice(&self.u[i0 * r0..(i0 + 1) * r0]);
+                }
+                None => {
+                    let ai = &a1[i * kk1..(i + 1) * kk1];
+                    sr[i] = (0..kk1).map(|l| ai[l] * sc[l]).sum::<f64>() as f32;
+                    for k in 0..kk1 {
+                        cy[k * n1 + i] =
+                            (0..kk1).map(|l| ai[l] * scc[l * kk1 + k]).sum::<f64>() as f32;
+                    }
+                    for j in 0..r0 {
+                        rc[i * r0 + j] = (0..kk1).map(|l| ai[l] * pm[l * r0 + j]).sum();
+                    }
+                }
+            }
+        }
+        for (x, &k) in born.iter().enumerate() {
+            for i in 0..n1 {
+                cy[k * n1 + i] = (0..r0)
+                    .map(|j| rc[i * r0 + j] * vc[j * born.len() + x])
+                    .sum::<f64>() as f32;
+            }
+        }
+        // The stored frames' second moment (r0 x r0), for the leftover
+        // directions.
+        let mut sm = vec![0.0f64; r0 * r0];
+        self.hist.for_each(r0, &mut |v, _, _| {
+            for a_ in 0..r0 {
+                for b_ in 0..r0 {
+                    sm[a_ * r0 + b_] += f64::from(v[a_]) * f64::from(v[b_]);
+                }
+            }
+        });
+        let (owner, cover) = owner_cover(&pix, &disks, &cols, width);
+        self.ids = ids;
+        self.disks = disks;
+        self.pix = pix;
+        self.is = is;
+        self.owner = owner;
+        self.cover = cover;
+        self.version = version;
+        self.cols = cols;
+        self.cy = cy;
+        self.sr = sr;
+        self.sc = sc;
+        self.scc = scc;
+        self.zl = zl;
+        self.est = None;
+        self.prov = None;
+        let (u1, ru1) = self.cy_basis();
+        // Leftover directions: the strongest stored light in span(Rc)
+        // outside the members' new basis (top eigenvectors of the stored
+        // second moment there).
+        let mut cand = vec![0.0f64; n1 * r0];
+        for j in 0..r0 {
+            let col: Vec<f64> = (0..n1).map(|i| rc[i * r0 + j]).collect();
+            let proj: Vec<f64> = (0..ru1)
+                .map(|a_| (0..n1).map(|i| u1[i * ru1 + a_] * col[i]).sum())
+                .collect();
+            for i in 0..n1 {
+                cand[i * r0 + j] =
+                    col[i] - (0..ru1).map(|a_| u1[i * ru1 + a_] * proj[a_]).sum::<f64>();
+            }
+        }
+        let (qc, q) = orth(&cand, n1, r0);
+        let ml = self.m.min(q);
+        let mut full = vec![0.0f64; n1 * (ru1 + ml)];
+        for i in 0..n1 {
+            full[i * (ru1 + ml)..i * (ru1 + ml) + ru1].copy_from_slice(&u1[i * ru1..(i + 1) * ru1]);
+        }
+        if ml > 0 {
+            // T = Qcᵀ Rc (q x r0); M = T S Tᵀ.
+            let mut t = vec![0.0f64; q * r0];
+            for i in 0..n1 {
+                for a_ in 0..q {
+                    let x = qc[i * q + a_];
+                    for j in 0..r0 {
+                        t[a_ * r0 + j] += x * rc[i * r0 + j];
+                    }
+                }
+            }
+            let mut mm = vec![0.0f64; q * q];
+            for a_ in 0..q {
+                for b_ in 0..q {
+                    let mut acc = 0.0;
+                    for j in 0..r0 {
+                        let tj: f64 = (0..r0).map(|l| sm[j * r0 + l] * t[b_ * r0 + l]).sum();
+                        acc += t[a_ * r0 + j] * tj;
+                    }
+                    mm[a_ * q + b_] = acc;
+                }
+            }
+            let (_, vecs) = sym_eig(&mm, q);
+            for j in 0..ml {
+                for i in 0..n1 {
+                    full[i * (ru1 + ml) + ru1 + j] =
+                        (0..q).map(|a_| qc[i * q + a_] * vecs[a_ * q + j]).sum();
+                }
+            }
+        }
+        let (u1, r1) = orth(&full, n1, ru1 + ml);
+        let mut rm = vec![0.0f64; r1 * r0];
+        for i in 0..n1 {
+            for a_ in 0..r1 {
+                let x = u1[i * r1 + a_];
+                for b_ in 0..r0 {
+                    rm[a_ * r0 + b_] += x * rc[i * r0 + b_];
+                }
+            }
+        }
+        self.hist.reexpress(&rm, r1, r0);
+        self.ru = ru1;
+        self.set_basis(u1, r1);
+        true
+    }
+
+    /// Forget the stored frames (the sums stay).
+    pub fn drop_history(&mut self) {
+        self.hist.clear();
     }
 
     /// One alternation on the stored window (see the module docs): refresh
@@ -661,20 +1040,55 @@ impl ClusterStore {
             }
             s += 1;
         });
-        // Trace step on every stored frame, with the current columns.
+        // The provisional components (leftover light no member may claim):
+        // seeded from the leftover directions (rectified, the sign with
+        // more positive light), then carried from replay to replay like a
+        // member's footprint; seeded again after a member-set change.
+        let ml = r - self.ru;
+        if self.prov.as_ref().is_none_or(|p| p.1 != ml) {
+            self.prov = (ml > 0).then(|| {
+                let mut p = vec![0.0f64; n * ml];
+                for j in 0..ml {
+                    let col = |i: usize| self.u[i * r + self.ru + j];
+                    let pos: f64 = (0..n).map(|i| col(i).max(0.0).powi(2)).sum();
+                    let neg: f64 = (0..n).map(|i| col(i).min(0.0).powi(2)).sum();
+                    let sg = if pos >= neg { 1.0 } else { -1.0 };
+                    for i in 0..n {
+                        p[i * ml + j] = (sg * col(i)).max(0.0);
+                    }
+                }
+                (p, ml)
+            });
+        }
+        let mp = self.prov.as_ref().map_or(0, |p| p.1);
+        let kt = kk + mp;
+        // Trace step on every stored frame, with the current columns (and
+        // the provisional components).
         let start = match (&self.est, carry) {
             (Some(e), true) => e.clone(),
             _ => self.white_cols(),
         };
-        let mut cs = solve_traces(&start, &self.u, n, kk, r, &vv)?;
+        let extend = |a: &[f64]| -> Vec<f64> {
+            let Some((p, _)) = self.prov.as_ref() else {
+                return a.to_vec();
+            };
+            let mut x = vec![0.0f64; n * kt];
+            for i in 0..n {
+                x[i * kt..i * kt + kk].copy_from_slice(&a[i * kk..(i + 1) * kk]);
+                x[i * kt + kk..(i + 1) * kt].copy_from_slice(&p[i * mp..(i + 1) * mp]);
+            }
+            x
+        };
+        let mut cs = solve_traces(&extend(&start), &self.u, n, kt, r, &vv)?;
         // Footprint step per subset of frames: all, half A, half B.
+        let cover = |i: usize| -> usize { (self.cover[i] as usize) | (((1usize << mp) - 1) << kk) };
         let fit = |cs: &[f64], sel: &dyn Fn(usize) -> bool| -> Option<(Vec<Vec<f32>>, Vec<f64>)> {
-            let (mut sw, mut sc, mut sv) = (0.0f64, vec![0.0f64; kk], vec![0.0f64; r]);
+            let (mut sw, mut sc, mut sv) = (0.0f64, vec![0.0f64; kt], vec![0.0f64; r]);
             for s in 0..m {
                 if sel(s) {
                     sw += ws[s];
-                    for p in 0..kk {
-                        sc[p] += ws[s] * cs[s * kk + p];
+                    for p in 0..kt {
+                        sc[p] += ws[s] * cs[s * kt + p];
                     }
                     for j in 0..r {
                         sv[j] += ws[s] * vv[s * r + j];
@@ -686,82 +1100,85 @@ impl ClusterStore {
             }
             sc.iter_mut().for_each(|x| *x /= sw);
             sv.iter_mut().for_each(|x| *x /= sw);
-            let mut mr = vec![0.0f64; kk * kk];
-            let mut q = vec![0.0f64; kk * kk];
-            let mut wv = vec![0.0f64; r * kk];
+            let mut mr = vec![0.0f64; kt * kt];
+            let mut q = vec![0.0f64; kt * kt];
+            let mut wv = vec![0.0f64; r * kt];
             for s in 0..m {
                 if !sel(s) {
                     continue;
                 }
                 let w = ws[s];
-                for p in 0..kk {
-                    let dp = cs[s * kk + p] - sc[p];
-                    for q_ in 0..kk {
-                        let d = dp * (cs[s * kk + q_] - sc[q_]);
-                        mr[p * kk + q_] += w * d;
-                        q[p * kk + q_] += w * w * d;
+                for p in 0..kt {
+                    let dp = cs[s * kt + p] - sc[p];
+                    for q_ in 0..kt {
+                        let d = dp * (cs[s * kt + q_] - sc[q_]);
+                        mr[p * kt + q_] += w * d;
+                        q[p * kt + q_] += w * w * d;
                     }
                     for j in 0..r {
-                        wv[j * kk + p] += w * (vv[s * r + j] - sv[j]) * dp;
+                        wv[j * kt + p] += w * (vv[s * r + j] - sv[j]) * dp;
                     }
                 }
             }
             // Standard errors from the full set: diag(M⁻¹ Q M⁻¹).
-            let minv = inverse(&mr, kk)?;
-            let mut se = vec![0.0f64; kk];
-            for k in 0..kk {
+            let minv = inverse(&mr, kt)?;
+            let mut se = vec![0.0f64; kt];
+            for k in 0..kt {
                 let mut acc = 0.0;
-                for p in 0..kk {
-                    for q_ in 0..kk {
-                        acc += minv[k * kk + p] * q[p * kk + q_] * minv[q_ * kk + k];
+                for p in 0..kt {
+                    for q_ in 0..kt {
+                        acc += minv[k * kt + p] * q[p * kt + q_] * minv[q_ * kt + k];
                     }
                 }
                 se[k] = acc.max(0.0).sqrt();
             }
-            // Per pixel: rhs = U_p Wv, solved over the covering members.
-            let mut inv_by_mask: Vec<Option<Vec<f64>>> = vec![None; 1 << kk];
-            let mut h = vec![vec![0.0f32; n]; kk];
-            let mut rhs = vec![0.0f64; kk];
+            // Per pixel: rhs = U_p Wv, solved over the covering members
+            // (and the provisional components, which cover every pixel).
+            let mut inv_by_mask: HashMap<usize, Vec<f64>> = HashMap::new();
+            let mut h = vec![vec![0.0f32; n]; kt];
+            let mut rhs = vec![0.0f64; kt];
             for i in 0..n {
-                let mask = self.cover[i] as usize;
+                let mask = cover(i);
                 if mask == 0 {
                     continue;
                 }
-                let idx: Vec<usize> = (0..kk).filter(|&k| mask & (1 << k) != 0).collect();
-                if inv_by_mask[mask].is_none() {
-                    let ns = idx.len();
+                let idx: Vec<usize> = (0..kt).filter(|&k| mask & (1 << k) != 0).collect();
+                let ns = idx.len();
+                if !inv_by_mask.contains_key(&mask) {
                     let mut sub = vec![0.0f64; ns * ns];
                     for (a_, &p) in idx.iter().enumerate() {
                         for (b_, &q_) in idx.iter().enumerate() {
-                            sub[a_ * ns + b_] = mr[p * kk + q_];
+                            sub[a_ * ns + b_] = mr[p * kt + q_];
                         }
                     }
-                    inv_by_mask[mask] = Some(inverse(&sub, idx.len())?);
+                    inv_by_mask.insert(mask, inverse(&sub, ns)?);
                 }
-                let inv = inv_by_mask[mask].as_ref().expect("set");
+                let inv = &inv_by_mask[&mask];
                 let ur = &self.u[i * r..(i + 1) * r];
                 for (a_, &p) in idx.iter().enumerate() {
-                    rhs[a_] = (0..r).map(|j| ur[j] * wv[j * kk + p]).sum();
+                    rhs[a_] = (0..r).map(|j| ur[j] * wv[j * kt + p]).sum();
                 }
-                let ns = idx.len();
                 let is = f64::from(self.is[i]);
                 let mut x: Vec<f64> = (0..ns)
                     .map(|a_| (0..ns).map(|b_| inv[a_ * ns + b_] * rhs[b_]).sum())
                     .collect();
-                if sign_rule != JointSign::Off {
-                    let lo: Vec<bool> = idx
-                        .iter()
-                        .map(|&p| sign_rule == JointSign::All || self.cols[p * n + i] > 0.0)
-                        .collect();
-                    if x.iter().zip(&lo).any(|(&v, &l)| l && v < 0.0) {
-                        let mut sub = vec![0.0f64; ns * ns];
-                        for (a_, &p) in idx.iter().enumerate() {
-                            for (b_, &q_) in idx.iter().enumerate() {
-                                sub[a_ * ns + b_] = mr[p * kk + q_];
-                            }
+                // The provisional components are light: never negative.
+                let lo: Vec<bool> = idx
+                    .iter()
+                    .map(|&p| {
+                        p >= kk
+                            || sign_rule == JointSign::All
+                            || (sign_rule == JointSign::Own && self.cols[p * n + i] > 0.0)
+                    })
+                    .collect();
+                if x.iter().zip(&lo).any(|(&v, &l)| l && v < 0.0) {
+                    let mut sub = vec![0.0f64; ns * ns];
+                    for (a_, &p) in idx.iter().enumerate() {
+                        for (b_, &q_) in idx.iter().enumerate() {
+                            sub[a_ * ns + b_] = mr[p * kt + q_];
                         }
-                        bounded_ls(&sub, &rhs[..ns], &lo, ns, &mut x);
                     }
+                    bounded_ls(&sub, &rhs[..ns], &lo, ns, &mut x);
                 }
                 for (a_, &p) in idx.iter().enumerate() {
                     h[p][i] = (x[a_] / is) as f32;
@@ -772,19 +1189,44 @@ impl ClusterStore {
         // Further alternations inside the store (diagnostic; 1 = the
         // design's one alternation per visit): the joint estimate becomes
         // the columns the traces are re-solved with.
-        for _ in 1..iters.max(1) {
-            let (h, _) = fit(&cs, &|_| true)?;
-            let mut a = vec![0.0f64; n * kk];
-            for k in 0..kk {
+        let white = |h: &[Vec<f32>]| -> Vec<f64> {
+            let mut a = vec![0.0f64; n * kt];
+            for k in 0..kt {
                 for i in 0..n {
-                    a[i * kk + k] = f64::from(h[k][i]) * f64::from(self.is[i]);
+                    let v = f64::from(h[k][i]) * f64::from(self.is[i]);
+                    a[i * kt + k] = if k >= kk { v.max(0.0) } else { v };
                 }
             }
-            cs = solve_traces(&a, &self.u, n, kk, r, &vv)?;
+            a
+        };
+        for _ in 1..iters.max(1) {
+            let (h, _) = fit(&cs, &|_| true)?;
+            cs = solve_traces(&white(&h), &self.u, n, kt, r, &vv)?;
         }
-        let (h, se) = fit(&cs, &|_| true)?;
-        let (ha, sa) = fit(&cs, &|s| hs[s])?;
-        let (hb, sb) = fit(&cs, &|s| !hs[s])?;
+        let (mut h, mut se) = fit(&cs, &|_| true)?;
+        let (mut ha, mut sa) = fit(&cs, &|s| hs[s])?;
+        let (mut hb, mut sb) = fit(&cs, &|s| !hs[s])?;
+        if mp > 0 {
+            let a = white(&h);
+            let mut p = vec![0.0f64; n * mp];
+            let mut live = true;
+            for j in 0..mp {
+                let mut any = false;
+                for i in 0..n {
+                    p[i * mp + j] = a[i * kt + kk + j];
+                    any |= p[i * mp + j] > 0.0;
+                }
+                live &= any;
+            }
+            // One that holds no light starts again from its direction.
+            self.prov = live.then_some((p, mp));
+            for v in [&mut h, &mut ha, &mut hb] {
+                v.truncate(kk);
+            }
+            for v in [&mut se, &mut sa, &mut sb] {
+                v.truncate(kk);
+            }
+        }
         if carry {
             let mut e = vec![0.0f64; n * kk];
             for k in 0..kk {
@@ -837,6 +1279,7 @@ impl SlowLoop {
             lib.version(),
             cols,
             cap,
+            self.cfg.joint_leftover,
         ))
     }
 
@@ -874,7 +1317,9 @@ impl SlowLoop {
     }
 
     /// Clusters of the library's cells (greedy, `cluster_rho_min`,
-    /// `cluster_max`). A store whose member set is unchanged is kept.
+    /// `cluster_max`). A store whose member set is unchanged is kept; with
+    /// `joint_rebase` a changed member set is re-expressed from the old
+    /// store with the most members in common ([`ClusterStore::rebase`]).
     fn build_clusters(&mut self, lib: &Library) {
         let edges = overlap_edges(lib);
         let (groups, _) = greedy_clusters(
@@ -883,29 +1328,133 @@ impl SlowLoop {
             self.cfg.cluster_rho_min,
             self.cfg.cluster_max,
         );
-        let mut old: HashMap<Vec<u64>, (ClusterStore, bool)> = self
+        let olds: Vec<(ClusterStore, bool)> = self
             .clusters
             .drain(..)
             .zip(self.cluster_ok.drain(..))
-            .map(|(c, ok)| (c.ids.clone(), (c, ok)))
             .collect();
+        let mut by_set: HashMap<Vec<u64>, usize> = HashMap::new();
+        let mut store_of: HashMap<u64, usize> = HashMap::new();
+        for (x, (c, _)) in olds.iter().enumerate() {
+            by_set.insert(c.ids.clone(), x);
+            for &id in &c.ids {
+                store_of.insert(id, x);
+            }
+        }
+        let mut taken = vec![false; olds.len()];
+        let mut olds: Vec<Option<(ClusterStore, bool)>> = olds.into_iter().map(Some).collect();
+        let prev = std::mem::take(&mut self.cluster_ids);
         self.cluster_of.clear();
         let ids = lib.ids();
-        for g in groups {
-            let mut m: Vec<u64> = g.iter().map(|&s| ids[s]).collect();
-            m.sort_unstable();
-            let (store, ok) = match old.remove(&m) {
-                Some(kept) => kept,
-                None => match self.new_store(lib, m.clone()) {
-                    Some(s) => (s, false),
-                    None => continue,
-                },
+        // Exact member sets first (moved, not copied), so a store shared by
+        // a split is only copied for the changed parts.
+        let sets: Vec<Vec<u64>> = groups
+            .iter()
+            .map(|g| {
+                let mut m: Vec<u64> = g.iter().map(|&s| ids[s]).collect();
+                m.sort_unstable();
+                m
+            })
+            .collect();
+        let mut out: Vec<Option<(ClusterStore, bool)>> = vec![None; sets.len()];
+        for (gi, m) in sets.iter().enumerate() {
+            if let Some(&x) = by_set.get(m) {
+                taken[x] = true;
+                out[gi] = olds[x].take();
+            }
+        }
+        for gi in 0..sets.len() {
+            if out[gi].is_some() {
+                continue;
+            }
+            let m = sets[gi].clone();
+            let had: Vec<usize> = {
+                let mut v: Vec<usize> = m
+                    .iter()
+                    .filter_map(|id| store_of.get(id).copied())
+                    .collect();
+                v.sort_unstable();
+                v.dedup();
+                v
             };
-            for &id in &m {
+            if !self.cfg.joint_rebase || had.is_empty() {
+                if had.is_empty() {
+                    self.replay_stats.fresh += 1;
+                } else {
+                    self.replay_stats.set_restarts += 1;
+                }
+                out[gi] = self.new_store(lib, m).map(|s| (s, false));
+                continue;
+            }
+            if had.len() > 1 {
+                self.replay_stats.unions += 1;
+            }
+            // The base: the old store with the most members in common
+            // (then the most stored frames, then the first).
+            let count = |x: usize| m.iter().filter(|id| store_of.get(id) == Some(&x)).count();
+            let base = had
+                .iter()
+                .copied()
+                .max_by(|&x, &y| {
+                    let sx = olds[x].as_ref().map_or(0, |o| o.0.stored());
+                    let sy = olds[y].as_ref().map_or(0, |o| o.0.stored());
+                    count(x).cmp(&count(y)).then(sx.cmp(&sy)).then(y.cmp(&x))
+                })
+                .expect("non-empty");
+            // Each changed group gets its own copy (a split feeds several);
+            // the last user takes the original.
+            let last_user = !sets[gi + 1..]
+                .iter()
+                .zip(&out[gi + 1..])
+                .any(|(mm, o)| o.is_none() && mm.iter().any(|id| store_of.get(id) == Some(&base)));
+            let src = if last_user && !taken[base] {
+                taken[base] = true;
+                olds[base].take()
+            } else {
+                olds[base].clone()
+            };
+            let Some((mut st, _)) = src else {
+                out[gi] = self.new_store(lib, m).map(|s| (s, false));
+                continue;
+            };
+            let old_idx: Vec<Option<usize>> = m
+                .iter()
+                .map(|id| st.ids.iter().position(|x| x == id))
+                .collect();
+            let newborn: Vec<bool> = m.iter().map(|id| prev.binary_search(id).is_err()).collect();
+            let has_birth = newborn.iter().any(|&b| b);
+            let ok = self
+                .store_geometry(lib, &m)
+                .is_some_and(|(disks, pix, is, cols)| {
+                    st.rebase(
+                        m.clone(),
+                        disks,
+                        pix,
+                        is,
+                        self.dims.width,
+                        lib.version(),
+                        cols,
+                        &old_idx,
+                        &newborn,
+                    )
+                });
+            if ok {
+                self.replay_stats.rebased += 1;
+                if has_birth {
+                    self.replay_stats.rebased_birth += 1;
+                }
+                out[gi] = Some((st, false));
+            } else {
+                self.replay_stats.dropped += 1;
+                out[gi] = self.new_store(lib, m).map(|s| (s, false));
+            }
+        }
+        for (store, ok) in out.into_iter().flatten() {
+            for &id in &store.ids {
                 self.cluster_of.insert(id, self.clusters.len());
             }
             self.replay_stats.clusters += 1;
-            self.replay_stats.members += m.len() as u64;
+            self.replay_stats.members += store.ids.len() as u64;
             self.clusters.push(store);
             self.cluster_ok.push(ok);
         }
@@ -1649,6 +2198,65 @@ fn inverse(a: &[f64], k: usize) -> Option<Vec<f64>> {
     Some(out)
 }
 
+/// Eigen-decomposition of the symmetric `k x k` matrix `a` (cyclic
+/// Jacobi): eigenvalues in descending order and the eigenvectors as the
+/// columns of a row-major `k x k` matrix, in the same order.
+fn sym_eig(a: &[f64], k: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut m = a.to_vec();
+    let mut v = vec![0.0f64; k * k];
+    for i in 0..k {
+        v[i * k + i] = 1.0;
+    }
+    for _ in 0..64 {
+        let off: f64 = (0..k)
+            .flat_map(|i| (0..k).filter(move |&j| j != i).map(move |j| (i, j)))
+            .map(|(i, j)| m[i * k + j].powi(2))
+            .sum();
+        let diag: f64 = (0..k).map(|i| m[i * k + i].powi(2)).sum();
+        if off <= 1e-24 * diag.max(1e-300) {
+            break;
+        }
+        for p in 0..k {
+            for q in p + 1..k {
+                let apq = m[p * k + q];
+                if apq == 0.0 {
+                    continue;
+                }
+                let theta = (m[q * k + q] - m[p * k + p]) / (2.0 * apq);
+                let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
+                let t = if theta == 0.0 { 1.0 } else { t };
+                let c = 1.0 / (t * t + 1.0).sqrt();
+                let s = t * c;
+                for r in 0..k {
+                    let (mrp, mrq) = (m[r * k + p], m[r * k + q]);
+                    m[r * k + p] = c * mrp - s * mrq;
+                    m[r * k + q] = s * mrp + c * mrq;
+                }
+                for r in 0..k {
+                    let (mpr, mqr) = (m[p * k + r], m[q * k + r]);
+                    m[p * k + r] = c * mpr - s * mqr;
+                    m[q * k + r] = s * mpr + c * mqr;
+                }
+                for r in 0..k {
+                    let (vrp, vrq) = (v[r * k + p], v[r * k + q]);
+                    v[r * k + p] = c * vrp - s * vrq;
+                    v[r * k + q] = s * vrp + c * vrq;
+                }
+            }
+        }
+    }
+    let mut order: Vec<usize> = (0..k).collect();
+    order.sort_by(|&x, &y| m[y * k + y].total_cmp(&m[x * k + x]));
+    let vals = order.iter().map(|&i| m[i * k + i]).collect();
+    let mut vecs = vec![0.0f64; k * k];
+    for (c, &i) in order.iter().enumerate() {
+        for r in 0..k {
+            vecs[r * k + c] = v[r * k + i];
+        }
+    }
+    (vals, vecs)
+}
+
 /// `argmin xᵀ G x − 2 xᵀ b` with `x_p ≥ 0` where `lo[p]` (projected
 /// Gauss–Seidel from `x`, clipped).
 fn bounded_ls(g: &[f64], b: &[f64], lo: &[bool], k: usize, x: &mut [f64]) {
@@ -1785,6 +2393,7 @@ mod tests {
             0,
             cols(&cur_j, &cur_i),
             3000,
+            0,
         );
         let (mut c1, mut c2) = (0.0f64, 0.0f64);
         let gamma = 0.5f64.powf(1.0 / 3000.0);
@@ -1879,6 +2488,7 @@ mod tests {
             0,
             cols,
             3000,
+            0,
         );
         let mut rng = seed;
         let mut unif = || {
@@ -2024,5 +2634,221 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn sym_eig_diagonalises() {
+        let a = [4.0, 1.0, 0.5, 1.0, 3.0, 0.2, 0.5, 0.2, 1.0];
+        let (vals, v) = sym_eig(&a, 3);
+        assert!(vals[0] >= vals[1] && vals[1] >= vals[2]);
+        for c in 0..3 {
+            for r in 0..3 {
+                let av: f64 = (0..3).map(|k| a[r * 3 + k] * v[k * 3 + c]).sum();
+                assert!((av - vals[c] * v[r * 3 + c]).abs() < 1e-9);
+            }
+        }
+    }
+
+    /// Gaussian cells of diameter 14 px on a 24 x `w` canvas at the given
+    /// centres (peak 1).
+    fn cells_at(w: usize, centres: &[(f32, f32)]) -> Vec<Vec<f32>> {
+        let sig = 14.0f32 / 2.3548;
+        centres
+            .iter()
+            .map(|&c| {
+                (0..24 * w)
+                    .map(|p| {
+                        let (y, x) = ((p / w) as f32, (p % w) as f32);
+                        (-((y - c.0).powi(2) + (x - c.1).powi(2)) / (2.0 * sig * sig)).exp()
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Feeds `frames` noisy frames of the true cells `truth` (independent
+    /// sparse traces) to `st`, whose members' fast traces are solved with
+    /// the store's columns; every 200 frames (after 512) the members'
+    /// columns become the replay's joint estimate (clipped, peak 1).
+    fn run_store(
+        st: &mut ClusterStore,
+        truth: &[Vec<f32>],
+        frames: usize,
+        rng: &mut u64,
+        replays: bool,
+    ) {
+        let n = st.pix.len();
+        let kk = st.ids.len();
+        let mut unif = || {
+            *rng ^= *rng << 13;
+            *rng ^= *rng >> 7;
+            *rng ^= *rng << 17;
+            (*rng >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut c = vec![0.0f64; truth.len()];
+        let mut x = vec![0.0f64; kk];
+        for t in 0..frames {
+            for ck in c.iter_mut() {
+                *ck *= 0.95;
+                if unif() < 0.01 {
+                    *ck += -unif().max(1e-12).ln();
+                }
+            }
+            let y: Vec<f32> = st
+                .pix
+                .iter()
+                .map(|&p| {
+                    let z = (-2.0 * unif().max(1e-12).ln()).sqrt()
+                        * (2.0 * std::f64::consts::PI * unif()).cos();
+                    let l: f64 = truth
+                        .iter()
+                        .zip(&c)
+                        .map(|(a, ck)| f64::from(a[p as usize]) * ck)
+                        .sum();
+                    (l + 0.5 * z) as f32
+                })
+                .collect();
+            let a = st.white_cols();
+            let mut g = vec![0.0f64; kk * kk];
+            let mut b = vec![0.0f64; kk];
+            for p in 0..n {
+                for k in 0..kk {
+                    b[k] += a[p * kk + k] * f64::from(y[p]);
+                    for l in 0..kk {
+                        g[k * kk + l] += a[p * kk + k] * a[p * kk + l];
+                    }
+                }
+            }
+            nnls(&g, &b, kk, &mut x);
+            let xf: Vec<f32> = x.iter().map(|&v| v as f32).collect();
+            st.push(&y, &xf, 1.0);
+            if replays && t % 200 == 199 && st.stored() > 512 {
+                if let Some(rep) = st.replay(1.0, JointSign::All, 1, false) {
+                    let mut cols = Vec::with_capacity(kk * n);
+                    for h in &rep.h {
+                        let m = h.iter().cloned().fold(0.0f32, f32::max).max(1e-12);
+                        cols.extend(h.iter().map(|v| v.max(0.0) / m));
+                    }
+                    st.cols = cols;
+                }
+            }
+        }
+    }
+
+    /// Three cells in a line, j - i - k, one diameter apart; k is not in
+    /// the library. Without leftover light the replay lets i swallow k;
+    /// with one leftover direction (a provisional component) it does not
+    /// (`design_discover_lookback.md` toy B).
+    #[test]
+    fn an_undetected_neighbour_is_not_absorbed() {
+        let w = 64usize;
+        let (cj, ci, ck) = ((12.0f32, 18.0f32), (12.0f32, 32.0f32), (12.0f32, 46.0f32));
+        let t = cells_at(w, &[cj, ci, ck]);
+        let pix: Vec<u32> = (0..(24 * w) as u32).collect();
+        let pk = 12 * w + 46;
+        let pi = 12 * w + 32;
+        let mut res = Vec::new();
+        for m in [0usize, 1] {
+            let mut worst = 0.0f32;
+            let mut own = f32::INFINITY;
+            for seed in [3u64, 4, 5] {
+                let cols = [on(&t[0], &pix), on(&t[1], &pix)].concat();
+                let mut st = ClusterStore::new(
+                    vec![1, 2],
+                    vec![(cj, 40.0), (ci, 40.0)],
+                    pix.clone(),
+                    vec![1.0; pix.len()],
+                    w,
+                    0,
+                    cols,
+                    3000,
+                    m,
+                );
+                // Disks cover the whole canvas (no support rule here).
+                st.cover.iter_mut().for_each(|c| *c = 3);
+                let mut rng = seed * 7919;
+                run_store(&mut st, &t, 6000, &mut rng, true);
+                let n = pix.len();
+                let ci_col = &st.cols[n..2 * n];
+                worst = worst.max(ci_col[pk] / t[1][pk]);
+                own = own.min(ci_col[pi]);
+            }
+            res.push((worst, own));
+        }
+        assert!(
+            res[0].0 > 1.3,
+            "without leftover light i at k / truth = {}",
+            res[0].0
+        );
+        assert!(
+            res[1].0 < 1.3,
+            "with a provisional component i at k / truth = {}",
+            res[1].0
+        );
+    }
+
+    /// A cell born next to a store whose leftover direction already holds
+    /// its light keeps the store's history (no restart) and starts filling
+    /// where its older neighbour sits from the first replays (a restarted
+    /// store waits for 4 (K + 1) frames and then 512 in this toy, and sits
+    /// at 0 for its first 400 frames); the older cell is not over-filled
+    /// toward it. (In this toy the restarted store catches up after about
+    /// 1500 frames: 0.66 vs 0.57 at 1600-2200 frames after the birth.)
+    #[test]
+    fn a_store_survives_a_birth() {
+        let w = 40usize;
+        let d = 14.0f32;
+        let (cj, ci) = ((12.0f32, 20.0 - 0.375 * d), (12.0f32, 20.0 + 0.375 * d));
+        let t = cells_at(w, &[cj, ci]);
+        let pix: Vec<u32> = (0..(24 * w) as u32).collect();
+        let n = pix.len();
+        let (pj, pi) = (
+            12 * w + cj.1.round() as usize,
+            12 * w + ci.1.round() as usize,
+        );
+        let mut st = ClusterStore::new(
+            vec![1],
+            vec![(cj, 30.0)],
+            pix.clone(),
+            vec![1.0; n],
+            w,
+            0,
+            on(&t[0], &pix),
+            3000,
+            1,
+        );
+        let mut rng = 4242u64;
+        // j alone for 3000 frames: i's light is leftover light.
+        run_store(&mut st, &t, 3000, &mut rng, false);
+        let stored = st.stored();
+        // i is born bitten: nothing on j's side of the midpoint.
+        let bitten: Vec<f32> = (0..n)
+            .map(|p| if (p % w) as f32 > 20.0 { t[1][p] } else { 0.0 })
+            .collect();
+        let cols = [on(&t[0], &pix), bitten].concat();
+        assert!(st.rebase(
+            vec![1, 2],
+            vec![(cj, 30.0), (ci, 30.0)],
+            pix.clone(),
+            vec![1.0; n],
+            w,
+            1,
+            cols,
+            &[Some(0), None],
+            &[false, true],
+        ));
+        assert_eq!(st.stored(), stored, "history kept across the birth");
+        run_store(&mut st, &t, 1000, &mut rng, true);
+        let truth_i = t[1][pj];
+        let fill = st.cols[n + pj] / truth_i;
+        assert!(
+            fill > 0.3,
+            "newborn at the older cell's centre / truth = {fill}"
+        );
+        let over = st.cols[pi] / t[0][pi];
+        assert!(
+            over < 1.3,
+            "older cell at the newborn's centre / truth = {over}"
+        );
     }
 }

@@ -3309,6 +3309,17 @@ fn main() {
         scfg.joint_carry = true;
         println!("joint update: the store carries its own estimate across replays");
     }
+    if let Some(v) = arg_value(&args, "--joint-leftover") {
+        scfg.joint_leftover = v.parse().unwrap();
+        println!(
+            "joint update: {} leftover-light directions per store",
+            scfg.joint_leftover
+        );
+    }
+    if args.iter().any(|a| a == "--joint-rebase") {
+        scfg.joint_rebase = true;
+        println!("joint update: stores re-expressed on member-set changes");
+    }
     if let Some(v) = arg_value(&args, "--joint-iters") {
         scfg.joint_iters = v.parse().unwrap();
         println!("joint update: {} alternations per replay", scfg.joint_iters);

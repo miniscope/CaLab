@@ -721,6 +721,22 @@ pub struct SlowLoopConfig {
     /// (0.75-1 D share 0.23 -> 0.17) but raised over-fill (est/true > 1.3,
     /// pairs < 1 D) 0.075 -> 0.112, as more alternations did in Stage 1.
     pub joint_carry: bool,
+    /// Leftover-light directions per cluster store
+    /// (`design_discover_lookback.md` §3.1): besides its members' basis,
+    /// each store keeps `m` more coordinates per frame along the strongest
+    /// patterns of its residual that the members' basis does not span
+    /// (tracked by a streaming power iteration), and fits `m` provisional
+    /// components in every replay (non-negative trace and footprint, never
+    /// published, never seen by the fast loop) that hold light no member
+    /// may claim. 0: Stage 2 (no leftover directions).
+    pub joint_leftover: usize,
+    /// On a change of a cluster's member set (birth, death, a cell joining
+    /// or leaving), re-express the store with the most members in common
+    /// in the new member set instead of starting over
+    /// (`design_discover_lookback.md` §3.2). A newborn's pre-birth frames
+    /// are kept only when most of its light lies in the stored span
+    /// (needs leftover directions); else the cluster's history is dropped.
+    pub joint_rebase: bool,
     /// Classification of adds (new / re-add / churned) for the QC; does not
     /// change any decision.
     pub churn: ChurnConfig,
@@ -791,6 +807,8 @@ impl Default for SlowLoopConfig {
             joint_iters: 1,
             joint_admit: JointAdmit::Cluster,
             joint_carry: false,
+            joint_leftover: 0,
+            joint_rebase: false,
             churn: ChurnConfig::default(),
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
@@ -850,6 +868,7 @@ impl SlowLoopConfig {
             && self.cluster_rho_min < 1.0
             && (2..=8).contains(&self.cluster_max)
             && self.joint_iters >= 1
+            && self.joint_leftover <= 2
             && self.churn.is_valid();
         if ok {
             Ok(())
@@ -968,6 +987,20 @@ pub struct ReplayStats {
     pub moves: u64,
     /// Frames a cluster skipped (a missing pixel).
     pub skipped_frames: u64,
+    /// Member-set changes (`joint_rebase`): new clusters with no member
+    /// in an old store (`fresh`), clusters re-expressed from an old store
+    /// keeping its history (`rebased`), of which with a newborn member
+    /// (`rebased_birth`), clusters whose history was dropped because a
+    /// newborn's light lay outside the stored span (`dropped`), clusters
+    /// whose members came from two or more old stores (`unions`; the
+    /// others' history is not carried), and member-set changes that started
+    /// a store over without `joint_rebase` (`set_restarts`).
+    pub fresh: u64,
+    pub rebased: u64,
+    pub rebased_birth: u64,
+    pub dropped: u64,
+    pub unions: u64,
+    pub set_restarts: u64,
     /// Replays run, replays without a result (too few frames, singular),
     /// replays where no member's estimate was significant, replays whose
     /// estimate did not differ from the current footprints beyond its
