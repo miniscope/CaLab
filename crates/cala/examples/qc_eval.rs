@@ -305,8 +305,8 @@ use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
-    CoreTest, EditScope, JointSign, JointUpdate, MergeRule, RefineGate, SlowLoop, SlowLoopConfig,
-    SupportRule, VisitResult, VisitRunner,
+    CoreTest, EditScope, JointAdmit, JointSign, JointUpdate, MergeRule, RefineGate, SlowLoop,
+    SlowLoopConfig, SupportRule, VisitResult, VisitRunner,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -3315,6 +3315,18 @@ fn main() {
         };
         println!("slow-loop background model: {:?}", scfg.background);
     }
+    if let Some(v) = arg_value(&args, "--joint-admit") {
+        scfg.joint_admit = match v.as_str() {
+            "cluster" => JointAdmit::Cluster,
+            "member" => JointAdmit::Member,
+            other => panic!("--joint-admit: cluster|member, not {other}"),
+        };
+        println!("joint update: admission {:?}", scfg.joint_admit);
+    }
+    if args.iter().any(|a| a == "--joint-carry") {
+        scfg.joint_carry = true;
+        println!("joint update: the store carries its own estimate across replays");
+    }
     if let Some(v) = arg_value(&args, "--joint-iters") {
         scfg.joint_iters = v.parse().unwrap();
         println!("joint update: {} alternations per replay", scfg.joint_iters);
@@ -3551,6 +3563,9 @@ fn main() {
     // Wall time of the slow loop's `observe` (the per-frame part of the
     // slow worker), per pass.
     let mut slow_obs_s = 0.0f64;
+    let mut slow_step_s = 0.0f64;
+    let mut slow_cost = String::from("pass\tframes\tobserve_ms_per_frame\tstep_ms_per_frame\tslow_ms_per_frame\twork_stats_per_frame\twork_refine_per_frame\twork_per_frame\n");
+    let mut work_prev = (0u64, 0u64, 0u64);
     let mut summary = Vec::new();
     let mut ho: Option<HeldOutScore> = None;
     let mut ho_cells_out = String::from("frame\tslot\tid\tho_marginal\tho_frames\tho_marginal_z\n");
@@ -4033,10 +4048,12 @@ fn main() {
                             } else if !drop_step {
                                 continue;
                             }
+                            let a = Instant::now();
                             let published = match via.as_mut() {
                                 Some(r) => sl.step_via(budget, r).unwrap(),
                                 None => sl.step(budget).unwrap(),
                             };
+                            slow_step_s += a.elapsed().as_secs_f64();
                             if let Some(l) = published {
                                 engine.set_library(l).unwrap();
                             }
@@ -4223,7 +4240,31 @@ fn main() {
                     rs.cluster_ns as f64 * 1e-6 / t_len as f64,
                     rs
                 );
+                // Slow-loop cost of the pass (wall, and the loop's own
+                // deterministic work counts), for the demixing suite.
+                let st = sl.stats();
+                let wk = (st.work_stats, st.work_refine, sl.work());
+                let per = |x: f64| x / t_len as f64;
+                let _ = writeln!(
+                    slow_cost,
+                    "{}\t{t_len}\t{:.4}\t{:.4}\t{:.4}\t{:.0}\t{:.0}\t{:.0}",
+                    pass + 1,
+                    per(slow_obs_s * 1e3),
+                    per(slow_step_s * 1e3),
+                    per((slow_obs_s + slow_step_s) * 1e3),
+                    per(wk.0.saturating_sub(work_prev.0) as f64),
+                    per(wk.1.saturating_sub(work_prev.1) as f64),
+                    per(wk.2.saturating_sub(work_prev.2) as f64),
+                );
+                println!(
+                    "pass {}: slow step {:.3} ms/frame, slow loop {:.3} ms/frame",
+                    pass + 1,
+                    per(slow_step_s * 1e3),
+                    per((slow_obs_s + slow_step_s) * 1e3)
+                );
+                work_prev = wk;
                 slow_obs_s = 0.0;
+                slow_step_s = 0.0;
                 if cluster_census {
                     print!(
                         "pass {}: {}",
@@ -4490,6 +4531,9 @@ fn main() {
     }
     print!("{msg}");
     std::fs::write(out_dir.join("cost.txt"), &msg).unwrap();
+    if slow_cost.lines().count() > 1 {
+        std::fs::write(out_dir.join("slow_cost.tsv"), &slow_cost).unwrap();
+    }
 
     // Final library (finalize publishes pending edits).
     let lib = match slow.as_mut() {

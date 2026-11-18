@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import re
 import struct
 import sys
@@ -298,6 +299,27 @@ def corr_pairs(sim_name, est, gt, cen_u, diam, units_u, born=None):
 # ------------------------------------------------------------ detection row
 
 
+CELL_COLS = ["sim", "i", "u", "fp_r", "tr_r", "nn_diam"]
+ISOLATED_D = 1.5  # a matched cell is "isolated" when no other GT unit's centre is within this many D
+CLOSE_D = 1.0  # ... and "close-pair" when one is within 1 D
+
+
+def cell_accuracy(sim_name, R, det_idx, match_i, cen, nonempty, diam, est_tr=None, gt_tr=None):
+    """Per matched cell: footprint Pearson r with its GT unit (R, motion-corrected), trace Pearson r with the
+    unit's GT trace (nan without traces) and the distance (D) from the unit's centre to the nearest other
+    non-empty GT unit (detectable or not)."""
+    col = {u: c for c, u in enumerate(det_idx)}
+    ne = np.where(nonempty)[0]
+    rows = []
+    for i, u in sorted(match_i.items()):
+        d = np.hypot(cen[ne, 0] - cen[u, 0], cen[ne, 1] - cen[u, 1]) / diam
+        d = d[ne != u]
+        tr = corr(est_tr[:, i], gt_tr[u]) if est_tr is not None else math.nan
+        rows.append({"sim": sim_name, "i": int(i), "u": int(u), "fp_r": float(R[i, col[u]]), "tr_r": tr,
+                     "nn_diam": float(d.min()) if d.size else math.inf})  # fmt: skip
+    return rows
+
+
 def footprint_areas(cells):
     nnz = [int((v > 0).sum()) for _, v in cells]
     hm = [int((v >= 0.5 * v.max()).sum()) if v.size and v.max() > 0 else 0 for _, v in cells]
@@ -318,6 +340,36 @@ def qc_ms_per_frame(run: Path):
             if m:
                 return float(m.group(1))
     return float("nan")
+
+
+def slow_cost(run: Path):
+    """Slow-loop cost of the last pass (the Refine pass of the suite's 2-pass runs, Discover with
+    `--passes 1`): wall ms/frame of `observe` + `step` and the loop's deterministic work units per
+    frame (`slow_cost.tsv`, qc_eval since the Stage 2 replay branch). Older runs: `observe` alone,
+    parsed from stdout.log. Also the cluster stores' peak bytes (ReplayStats) and peak RSS (run.json).
+    """
+    out = {"slow_ms": math.nan, "slow_obs_ms": math.nan, "slow_step_ms": math.nan, "slow_work": math.nan,
+           "store_mb": math.nan, "rss_gb": math.nan}  # fmt: skip
+    p = run / "slow_cost.tsv"
+    if p.exists():
+        rows = read_tsv(p)
+        if rows:
+            r = rows[-1]
+            out.update(slow_ms=float(r["slow_ms_per_frame"]), slow_obs_ms=float(r["observe_ms_per_frame"]),
+                       slow_step_ms=float(r["step_ms_per_frame"]), slow_work=float(r["work_per_frame"]))  # fmt: skip
+    log = run / "stdout.log"
+    if log.exists():
+        txt = log.read_text(errors="replace")
+        obs = re.findall(r"pass \d+: slow observe ([\d.]+) ms/frame", txt)
+        if obs and math.isnan(out["slow_obs_ms"]):
+            out["slow_obs_ms"] = float(obs[-1])
+        pk = re.findall(r"peak_bytes: (\d+)", txt)
+        if pk:
+            out["store_mb"] = max(int(x) for x in pk) / 2**20
+    rj = run / "run.json"
+    if rj.exists():
+        out["rss_gb"] = float(json.loads(rj.read_text()).get("rss_gb", math.nan))
+    return out
 
 
 RES_BINS = [(0.0, 0.25), (0.25, 0.5), (0.5, 0.75), (0.75, 1.0)]
@@ -359,6 +411,7 @@ def detection_row(run: Path, cells):
         "splits": int(float(passes.get("splits", "nan"))) if passes else None,
         "area_support": a_nnz, "area_halfmax": a_hm, "ms_per_frame": qc_ms_per_frame(run),
     }  # fmt: skip
+    out.update(slow_cost(run))
     return out
 
 
@@ -413,6 +466,7 @@ def compute_run(sim: Path, run: Path, all_det=False, force=False, ledger: Path |
         corr_rows = corr_pairs(sim.name, est_tr[:, I].T, gt_tr[U], cen[U], diam, U, born[I])
     write_tsv(run / "demix_pairs.tsv", PAIR_COLS, pairs)
     write_tsv(run / "demix_corr.tsv", CORR_COLS, corr_rows)
+    write_tsv(run / "demix_cells.tsv", CELL_COLS, cell_accuracy(sim.name, R, det_idx, match_i, cen, nonempty, diam, est_tr, gt_tr))
     det = detection_row(run, cells)
     # cells that look like two neurons: footprint r >= 0.5 to two or more GT units (mlog.py's `diff`)
     det["multi_gt"] = int(((R >= LOOSE_R).sum(1) >= 2).sum())

@@ -342,7 +342,8 @@ pub enum JointUpdate {
     /// stage); the store accumulates only there.
     Refine,
     /// Joint replay in every visit (Discover too): the clusters follow the
-    /// library's cell set, and a store restarts when its members change.
+    /// library's cell set, and a store restarts when its members change (a
+    /// member's disk moving keeps the store, re-expressed on the new pixels).
     All,
 }
 
@@ -368,6 +369,30 @@ pub enum JointSign {
     /// back through the finish path's inversion).
     #[default]
     All,
+}
+
+/// Which members of a replayed cluster are proposed. The replay's split
+/// halves are fitted in the store's one basis, which is estimated from all
+/// stored frames; their difference therefore misses the basis's own noise
+/// and understates the estimate's noise (toy: `a_member_at_the_truth_is_not_proposed`).
+/// Even so `Cluster` is the default: on static s5 + pairs s5 (18 Nov 2026)
+/// `Member` proposed about half as often, and the bites healed less
+/// (0.75-1 D bite share 0.34 -> 0.46): a bitten member heals by small
+/// accepted steps, each below its own split-half noise. The held-out gate
+/// decides either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JointAdmit {
+    /// Stage 1: every significant member, when the members' summed
+    /// split-half excess (from the replay's halves) is positive.
+    #[default]
+    Cluster,
+    /// Each member on its own evidence, the per-cell path's rule: proposed
+    /// when its estimate differs from its current column by more than its
+    /// split-half noise, taken from the joint fit's standard errors
+    /// (`½ n (s_A² + s_B²)` whitened, the expectation of `½‖h_A − h_B‖²`
+    /// for a per-pixel fit). The others keep their columns; the proposed
+    /// members are still gated together.
+    Member,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -407,6 +432,11 @@ pub(crate) struct MeasuredSupport {
     pub phi: f64,
     pub z_fw: f64,
     pub n: usize,
+    /// DIAG: the smoothed light and its threshold per canvas pixel.
+    #[cfg(feature = "diagnostics")]
+    pub q: Vec<f32>,
+    #[cfg(feature = "diagnostics")]
+    pub tol: Vec<f32>,
 }
 
 /// Which structural edits the slow loop may make (S2.3b: refinement-only
@@ -700,6 +730,17 @@ pub struct SlowLoopConfig {
     /// 1; more converge the stored window's factorisation further, but the
     /// published footprints then move by more than the gate tests well).
     pub joint_iters: usize,
+    /// Which members of a replayed cluster are proposed (see
+    /// [`JointAdmit`]).
+    pub joint_admit: JointAdmit,
+    /// Experimental: the store keeps its own last joint estimate and
+    /// re-solves the next replay's traces with it (one more alternation per
+    /// visit, carried across visits) instead of with the published columns.
+    /// The estimate is never published except through the cluster gate.
+    /// Off: on static s5 + pairs s5 (18 Nov 2026) it healed more bites
+    /// (0.75-1 D share 0.23 -> 0.17) but raised over-fill (est/true > 1.3,
+    /// pairs < 1 D) 0.075 -> 0.112, as more alternations did in Stage 1.
+    pub joint_carry: bool,
     /// Classification of adds (new / re-add / churned) for the QC; does not
     /// change any decision.
     pub churn: ChurnConfig,
@@ -771,6 +812,8 @@ impl Default for SlowLoopConfig {
             cluster_max: 6,
             joint_sign_rule: JointSign::All,
             joint_iters: 1,
+            joint_admit: JointAdmit::Cluster,
+            joint_carry: false,
             churn: ChurnConfig::default(),
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
@@ -947,6 +990,9 @@ pub struct ReplayStats {
     /// Stores started over because a member's statistics disk left the
     /// cluster's pixels.
     pub restarts: u64,
+    /// Stores moved to a member's new statistics disk by re-expression
+    /// (history kept; new pixels start at the current model).
+    pub moves: u64,
     /// Frames a cluster skipped (a missing pixel).
     pub skipped_frames: u64,
     /// Replays run, replays without a result (too few frames, singular),
@@ -1032,6 +1078,11 @@ pub struct SlowLoop {
     /// Held-out edit tests since the last `take_test_log` (bounded).
     #[cfg(feature = "diagnostics")]
     test_log: Vec<TestEvent>,
+    /// DIAG: pixels to sample in `finish_basin` and the samples (h, the
+    /// smoothed target, q, tol, in S0, in X, the inverted light before
+    /// normalisation, on the mask).
+    #[cfg(feature = "diagnostics")]
+    pub(crate) probe: Option<(Vec<u32>, Vec<[f32; 8]>)>,
     /// Running footprint statistics per published cell, by id, and the
     /// current weight of a new frame (grows by the inverse forgetting
     /// factor; renormalised).
@@ -1373,6 +1424,8 @@ impl SlowLoop {
             edit_log: Vec::new(),
             #[cfg(feature = "diagnostics")]
             test_log: Vec::new(),
+            #[cfg(feature = "diagnostics")]
+            probe: None,
             fpstats: HashMap::new(),
             clusters: Vec::new(),
             cluster_of: HashMap::new(),
@@ -3560,6 +3613,10 @@ impl SlowLoop {
             phi,
             z_fw,
             n: n_test,
+            #[cfg(feature = "diagnostics")]
+            q,
+            #[cfg(feature = "diagnostics")]
+            tol,
         })
     }
 
@@ -3586,6 +3643,29 @@ impl SlowLoop {
         self.filter
             .invert(canvas.h, canvas.w, &ms.s0, target, &mut a, 40);
         self.work += (canvas.len() * 40 * 60) as u64;
+        #[cfg(feature = "diagnostics")]
+        if let Some((px, out)) = self.probe.as_mut() {
+            let w = self.dims.width;
+            out.clear();
+            for &g in px.iter() {
+                out.push(
+                    canvas
+                        .local(g as usize / w, g as usize % w)
+                        .map_or([f32::NAN; 8], |l| {
+                            [
+                                h[l],
+                                target[l],
+                                ms.q[l],
+                                ms.tol[l],
+                                f32::from(u8::from(ms.s0[l])),
+                                f32::from(u8::from(ms.x[l])),
+                                a[l],
+                                f32::from(u8::from(mask[l])),
+                            ]
+                        }),
+                );
+            }
+        }
         let peak = a.iter().copied().fold(0.0f32, f32::max);
         if !(peak > 0.0) {
             return None;
@@ -4555,31 +4635,35 @@ impl SlowLoop {
     /// [`Self::split_half_excess`] of an estimate `h` with split halves
     /// `ha`, `hb` (all on `pix`).
     fn half_excess(&self, cell: &Cell, pix: &[u32], h: &[f32], ha: &[f32], hb: &[f32]) -> f64 {
+        self.excess_over(cell, pix, h, Some((ha, hb)), 0.0)
+    }
+
+    /// [`Self::half_excess`] with the split-half term replaced by its
+    /// expectation for a per-pixel fit whose halves have standard errors
+    /// (per unit pixel noise) with `var_ab = s_A² + s_B²`: `½ n var_ab / a²`.
+    pub(super) fn noise_excess(&self, cell: &Cell, pix: &[u32], h: &[f32], var_ab: f64) -> f64 {
+        self.excess_over(cell, pix, h, None, var_ab)
+    }
+
+    fn excess_over(
+        &self,
+        cell: &Cell,
+        pix: &[u32],
+        h: &[f32],
+        halves: Option<(&[f32], &[f32])>,
+        var_ab: f64,
+    ) -> f64 {
         let block = self.filter.moat().map_or(0, |m| m.0);
         let w = self.dims.width;
         let cur: Vec<f64> = pix
             .iter()
             .map(|&g| f64::from(cell.column_at(g, w, block)))
             .collect();
-        let (mut hc, mut cc) = (0.0f64, 0.0f64);
-        for (k, &p) in pix.iter().enumerate() {
-            let is = f64::from(self.inv_sigma[p as usize]);
-            hc += f64::from(h[k]) * cur[k] * is * is;
-            cc += cur[k] * cur[k] * is * is;
-        }
-        if !(cc > 0.0) || !(hc > 0.0) {
-            return f64::INFINITY;
-        }
-        let a = hc / cc;
-        let (mut d2, mut half) = (0.0f64, 0.0f64);
-        for (k, &p) in pix.iter().enumerate() {
-            let is = f64::from(self.inv_sigma[p as usize]);
-            let d = (f64::from(h[k]) / a - cur[k]) * is;
-            d2 += d * d;
-            let e = f64::from(ha[k] - hb[k]) / a * is;
-            half += 0.5 * e * e;
-        }
-        d2 - half
+        let is: Vec<f64> = pix
+            .iter()
+            .map(|&p| f64::from(self.inv_sigma[p as usize]))
+            .collect();
+        split_excess(h, &cur, &is, halves, var_ab)
     }
 
     /// The split-half merge statistic of a pair (see [`MergeRule::SplitHalf`]):
@@ -5578,6 +5662,42 @@ impl SlowLoop {
         }
         self.mirrored(nb, &[(dy / d, dx / d)], f32::min)
     }
+}
+
+/// `Î = D² − ½‖h_A − h_B‖²` of an estimate `h` against the current column
+/// `cur` (whitening `is` per pixel; see [`SlowLoop::half_excess`]), with
+/// the split-half term from `halves` or, without them, its expectation
+/// `½ n var_ab / a²` for halves of per-pixel standard error
+/// `var_ab = s_A² + s_B²`.
+pub(crate) fn split_excess(
+    h: &[f32],
+    cur: &[f64],
+    is: &[f64],
+    halves: Option<(&[f32], &[f32])>,
+    var_ab: f64,
+) -> f64 {
+    let (mut hc, mut cc) = (0.0f64, 0.0f64);
+    for k in 0..h.len() {
+        hc += f64::from(h[k]) * cur[k] * is[k] * is[k];
+        cc += cur[k] * cur[k] * is[k] * is[k];
+    }
+    if !(cc > 0.0) || !(hc > 0.0) {
+        return f64::INFINITY;
+    }
+    let a = hc / cc;
+    let (mut d2, mut half) = (0.0f64, 0.0f64);
+    for k in 0..h.len() {
+        let d = (f64::from(h[k]) / a - cur[k]) * is[k];
+        d2 += d * d;
+        half += match halves {
+            Some((ha, hb)) => {
+                let e = f64::from(ha[k] - hb[k]) / a * is[k];
+                0.5 * e * e
+            }
+            None => 0.5 * var_ab / (a * a),
+        };
+    }
+    d2 - half
 }
 
 /// The filtered column of the cell in `slot` on the sorted pixels `pix`, as
