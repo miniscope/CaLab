@@ -68,10 +68,32 @@
 //!   --frames-per-tile N / --reservoir-max-mb M   reservoir size target and cap
 //!   --readd-window N / --churn-frames N   add classification windows
 //!   --joint            add test with the joint neighbour-trace check
-//!   --factors-out DIR  compress pass 1's preprocessed frames in 600-frame
+//!   --factors-out DIR  compress one pass's preprocessed frames in 600-frame
 //!                      windows ([`calab_cala::compress`]) and write every
-//!                      window's factors to `DIR/w<start>.fac` (`CALAFAC1`), the
+//!                      window's factors to `DIR/w<start>.fac` (`CALAFAC1`) and
+//!                      `DIR/factors.tsv` (rank, size and time per window); the
 //!                      input of tools/cala-diagnostics/history_wholetest.py
+//!   --factors-pass P   the pass whose frames `--factors-out` compresses (1:
+//!                      Discover's frames, as the app; 2: the first replay,
+//!                      which has the final flat field from frame 0)
+//!   --tiling T         tiles of `--factors-out`: plain (default, 64 px side
+//!                      by side) | overlap:N (each tile grown N px per inner
+//!                      side, blended) | offset (a second grid shifted 32 px)
+//!   --replay-source S  what the passes after `--factors-pass` and
+//!                      `--extract-pass` solve: raw (default, the replayed
+//!                      frames) | factors (those frames rebuilt from
+//!                      `--factors-out`; missing pixels stay missing)
+//!   --later-budget U   slow-loop work units per frame in passes >= 2
+//!                      (default: `--budget`; ignored with `--offered-fps`);
+//!                      two raw runs that differ only in it give the null
+//!                      spread of a refine replay
+//!   --extract-pass     the app's Extract stage: after the last pass, replay
+//!                      the recording once more with the final library and no
+//!                      slow loop; writes `extract_trace.f32` (frames x cells,
+//!                      f32 LE) and `extract_ids.tsv`. Not with `--sessions`
+//!   Every run writes `stage_times.tsv`: seconds per pass (and for the
+//!   Extract pass) spent reading, preprocessing, compressing, solving traces
+//!   and in the slow loop.
 //!   --core-test M      transient-band core test: off (default) | report
 //!                      (also writes fast.tsv, split.tsv) | trim | delete
 //!   --basin-trim       trim refined footprints to their significant basin
@@ -3207,6 +3229,37 @@ fn main() {
     let heldout_on = !args.iter().any(|a| a == "--no-heldout");
     let passes: usize = arg_value(&args, "--passes").map_or(1, |s| s.parse().unwrap());
     assert!(passes >= 1, "--passes must be at least 1");
+    let tiling = arg_value(&args, "--tiling").map_or(Tiling::Plain, |s| {
+        Tiling::parse(&s)
+            .unwrap_or_else(|| panic!("--tiling: plain, overlap:N or offset, not {s:?}"))
+    });
+    let replay_factors = match arg_value(&args, "--replay-source").as_deref() {
+        None | Some("raw") => false,
+        Some("factors") => true,
+        Some(o) => panic!("--replay-source: raw or factors, not {o:?}"),
+    };
+    let factors_pass: usize = arg_value(&args, "--factors-pass").map_or(1, |s| s.parse().unwrap());
+    let later_budget: u64 =
+        arg_value(&args, "--later-budget").map_or(budget, |s| s.parse().unwrap());
+    let extract_pass = args.iter().any(|a| a == "--extract-pass");
+    assert!(
+        (1..=passes).contains(&factors_pass),
+        "--factors-pass must be between 1 and --passes ({passes})"
+    );
+    if replay_factors {
+        assert!(
+            arg_value(&args, "--factors-out").is_some(),
+            "--replay-source factors needs --factors-out DIR"
+        );
+        assert!(
+            factors_pass < passes || extract_pass,
+            "--replay-source factors: nothing runs after pass {factors_pass}; add passes or --extract-pass"
+        );
+        assert!(
+            arg_value(&args, "--offered-fps").is_none(),
+            "--replay-source factors is not supported with --offered-fps"
+        );
+    }
     let later_scope = match arg_value(&args, "--later-passes").as_deref() {
         None => EditScope::All,
         Some(m) => {
@@ -3566,7 +3619,7 @@ fn main() {
     );
 
     let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, motion, 200);
-    pipe.keep_records = passes > 1;
+    pipe.keep_records = passes > 1 || extract_pass;
     pipe.null_on = session_fix.register && !sessions.is_empty();
     pipe.null_ref = session_ref_frames;
     pipe.null_fit = session_fit_frames;
@@ -3628,7 +3681,11 @@ fn main() {
     let factors_out: Option<PathBuf> = arg_value(&args, "--factors-out").map(PathBuf::from);
     let mut factors = factors_out
         .as_deref()
-        .map(|d| FactorDump::new(d, dims, Tiling::Plain));
+        .map(|d| FactorDump::new(d, dims, tiling));
+    let mut replay =
+        replay_factors.then(|| FactorReplay::new(factors_out.as_deref().unwrap(), dims, tiling));
+    let mut stage_times =
+        String::from("stage\tread_s\tpre_s\tcompress_s\tsolve_s\tslow_s\twall_s\n");
     for pass in 0..passes {
         // Virtual frame of this pass's recording frame 0.
         let off = pass * t_len;
@@ -3646,10 +3703,14 @@ fn main() {
             }
         }
         let t_pass = Instant::now();
+        let budget_now = if pass == 0 { budget } else { later_budget };
+        let (mut read_s, mut pre_s, mut solve_s, mut slow_s) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
         let mut s = 0u32;
         while s < frames {
             let cnt = 64.min(frames - s);
+            let t0 = Instant::now();
             let mut raw = rec.read(s, cnt);
+            read_s += t0.elapsed().as_secs_f64();
             if let Some(d) = &drift {
                 for (k, f) in raw.chunks_exact_mut(n_px).enumerate() {
                     d.apply(f, s as usize + k);
@@ -3768,11 +3829,13 @@ fn main() {
                         }
                     }
                 }
+                let t0 = Instant::now();
                 let shift = if pass == 0 {
                     pipe.frame(f, &mut y)
                 } else {
                     pipe.frame_replay(f, &mut y, t_rec)
                 };
+                pre_s += t0.elapsed().as_secs_f64();
                 if let Some(v) = pipe.null_last.take() {
                     let _ = writeln!(null_log, "{t_rec}\t{v:.5}");
                 }
@@ -3947,11 +4010,21 @@ fn main() {
                         engine.set_library(l).unwrap();
                     }
                 }
-                if let (Some(fd), 0) = (factors.as_mut(), pass) {
+                // Arm B: the passes after the compressed one solve the frames
+                // rebuilt from its factors. Everything upstream (replayed
+                // motion, preprocessor state, noise map) is as in a raw run.
+                if let (Some(fr), true) = (replay.as_mut(), pass >= factors_pass) {
+                    let t0 = Instant::now();
+                    fr.frame(t_rec, &mut y);
+                    pre_s += t0.elapsed().as_secs_f64();
+                }
+                if let (Some(fd), true) = (factors.as_mut(), pass + 1 == factors_pass) {
                     fd.push(&y);
                 }
                 let warm = diverge.as_ref().map(|_| engine.state());
+                let t0 = Instant::now();
                 let tr = engine.process(&y).unwrap();
+                solve_s += t0.elapsed().as_secs_f64();
                 if let (Some(dv), Some(warm)) = (diverge.as_mut(), warm) {
                     dv.frame(t, &y, &engine, &warm, &tr);
                 }
@@ -4076,16 +4149,20 @@ fn main() {
                         }
                         for (yy, tt, ll, tf) in pending.drain(..) {
                             if forward {
+                                let t0 = Instant::now();
                                 sl.observe(&yy, &ll, &tt).unwrap();
+                                slow_s += t0.elapsed().as_secs_f64();
                                 slow_rec.push(tf as u32);
                                 fwd_frames += 1;
                             } else if !drop_step {
                                 continue;
                             }
+                            let t0 = Instant::now();
                             let published = match via.as_mut() {
-                                Some(r) => sl.step_via(budget, r).unwrap(),
-                                None => sl.step(budget).unwrap(),
+                                Some(r) => sl.step_via(budget_now, r).unwrap(),
+                                None => sl.step(budget_now).unwrap(),
                             };
+                            slow_s += t0.elapsed().as_secs_f64();
                             if let Some(l) = published {
                                 engine.set_library(l).unwrap();
                             }
@@ -4249,6 +4326,20 @@ fn main() {
                 (sl.stats(), sl.frames(), sl.len())
             });
             let wall = t_pass.elapsed().as_secs_f64();
+            // The compressed pass ends: its last, short window must be on
+            // disk before the next pass replays it.
+            let compress_s = match factors.as_mut() {
+                Some(fd) if pass + 1 == factors_pass => {
+                    fd.finish();
+                    fd.seconds
+                }
+                _ => 0.0,
+            };
+            let _ = writeln!(
+                stage_times,
+                "pass{}\t{read_s:.2}\t{pre_s:.2}\t{compress_s:.2}\t{solve_s:.2}\t{slow_s:.2}\t{wall:.2}",
+                pass + 1
+            );
             let _ = writeln!(
                 passes_out,
                 "{}\t{}\t{}\t{sn}\t{}\t{}\t{}\t{}\t{sf}\t{wall:.1}",
@@ -4352,9 +4443,6 @@ fn main() {
             );
         }
         std::fs::write(out_dir.join("traces_gt.tsv"), t).unwrap();
-    }
-    if let Some(fd) = factors.as_mut() {
-        fd.finish();
     }
     std::fs::write(out_dir.join("cells.tsv"), &cells_out).unwrap();
     if let Some(b) = &boundary {
@@ -4516,6 +4604,63 @@ fn main() {
         ho.as_ref(),
         slow.as_ref(),
     );
+    // `--extract-pass`: the app's Extract stage. One more replay from frame
+    // 0 with the final library and no slow loop.
+    if extract_pass {
+        assert!(
+            sessions.is_empty(),
+            "--extract-pass does not support --sessions"
+        );
+        let mut eng = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+        eng.set_consolidated_ring_gradient(true);
+        let mut out = BufWriter::new(File::create(out_dir.join("extract_trace.f32")).unwrap());
+        let mut tr = FrameTraces::default();
+        let (mut read_s, mut pre_s, mut solve_s) = (0.0f64, 0.0f64, 0.0f64);
+        let t_ex = Instant::now();
+        let mut s = 0u32;
+        while s < frames {
+            let cnt = 64.min(frames - s);
+            let t0 = Instant::now();
+            let mut raw = rec.read(s, cnt);
+            read_s += t0.elapsed().as_secs_f64();
+            if let Some(d) = &drift {
+                for (k, f) in raw.chunks_exact_mut(n_px).enumerate() {
+                    d.apply(f, s as usize + k);
+                }
+            }
+            for (k, f) in raw.chunks_exact(n_px).enumerate() {
+                let t = s as usize + k;
+                let t0 = Instant::now();
+                pipe.frame_replay(f, &mut y, t);
+                if let Some(fr) = replay.as_mut() {
+                    fr.frame(t, &mut y);
+                }
+                pre_s += t0.elapsed().as_secs_f64();
+                let t0 = Instant::now();
+                eng.process_into(&y, &mut tr).unwrap();
+                solve_s += t0.elapsed().as_secs_f64();
+                write_f32s(&mut out, &tr.traces);
+            }
+            s += cnt;
+        }
+        drop(out);
+        let mut ids = String::from("slot\tid\n");
+        for (k, id) in lib.ids().iter().enumerate() {
+            let _ = writeln!(ids, "{k}\t{id}");
+        }
+        std::fs::write(out_dir.join("extract_ids.tsv"), ids).unwrap();
+        let wall = t_ex.elapsed().as_secs_f64();
+        let _ = writeln!(
+            stage_times,
+            "extract\t{read_s:.2}\t{pre_s:.2}\t0.00\t{solve_s:.2}\t0.00\t{wall:.2}"
+        );
+        println!(
+            "extract pass: {} cells x {t_len} frames, {wall:.1} s ({} source)",
+            lib.len(),
+            if replay.is_some() { "factors" } else { "raw" }
+        );
+    }
+    std::fs::write(out_dir.join("stage_times.tsv"), &stage_times).unwrap();
     if !dump {
         return;
     }

@@ -43,6 +43,11 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
   score is held out in pass 1 only. `qc_eval --later-passes MODE` (`refine`,
   `refine-prune`, `refine-merge`; default `all`) restricts the slow loop's
   edits in passes ≥ 2 (S2.3b, `results/2026-11-12-refine-only-passes.md`).
+- Factor pipeline, phase 0 (`docs/superpowers/specs/2026-11-17-cala-factor-pipeline-design.md`):
+  `qc_eval --replay-source factors --factors-out DIR [--tiling T] [--factors-pass P]` makes the
+  passes after the compressed one, and `--extract-pass`, solve frames rebuilt from the factors;
+  `--later-budget U` gives the null spread of a refine replay; `stage_times.tsv` has the seconds
+  per pass.
 - `baseline_table.py`: per-arm mean and sd over seeds of one or more run trees
   (`main=<runs>/base [LABEL=DIR ...] [--arms ...]`); the reference numbers in
   `results/2026-11-baseline.md`.
