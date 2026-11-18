@@ -25,7 +25,9 @@ use std::collections::HashMap;
 
 use super::fpstats::disk_pixels;
 use super::local::{Cell, Fit, Problem};
-use super::{column_on, paired_z, solve_dense, EditScope, Frames, JointUpdate, SlowLoop};
+use super::{
+    column_on, paired_z, solve_dense, EditScope, Frames, JointSign, JointUpdate, SlowLoop,
+};
 use crate::trace::{FrameTraces, Library};
 
 /// The normalised whitened Gram overlaps `ρ_ij = G_ij / sqrt(G_ii G_jj)`
@@ -476,7 +478,7 @@ impl ClusterStore {
     /// where its current filtered column is positive (its own light; the
     /// high-pass moat, negative in filtered space, stays free).
     /// `iters` alternations are run on the store (the design: 1).
-    pub fn replay(&mut self, gamma: f64, sign_rule: bool, iters: usize) -> Option<Replay> {
+    pub fn replay(&mut self, gamma: f64, sign_rule: JointSign, iters: usize) -> Option<Replay> {
         let (n, kk) = (self.pix.len(), self.ids.len());
         if self.hist.stored() < 4 * (kk + 1) || self.sw <= 0.0 {
             return None;
@@ -584,8 +586,11 @@ impl ClusterStore {
                 let mut x: Vec<f64> = (0..ns)
                     .map(|a_| (0..ns).map(|b_| inv[a_ * ns + b_] * rhs[b_]).sum())
                     .collect();
-                if sign_rule {
-                    let lo: Vec<bool> = idx.iter().map(|&p| self.cols[p * n + i] > 0.0).collect();
+                if sign_rule != JointSign::Off {
+                    let lo: Vec<bool> = idx
+                        .iter()
+                        .map(|&p| sign_rule == JointSign::All || self.cols[p * n + i] > 0.0)
+                        .collect();
                     if x.iter().zip(&lo).any(|(&v, &l)| l && v < 0.0) {
                         let mut sub = vec![0.0f64; ns * ns];
                         for (a_, &p) in idx.iter().enumerate() {
@@ -1398,7 +1403,7 @@ mod tests {
             wgt /= gamma;
             st.push(&y, &[x[0] as f32, x[1] as f32], wgt);
             if t % 200 == 199 && t > 512 {
-                let rep = st.replay(gamma, false, 1).expect("replay");
+                let rep = st.replay(gamma, JointSign::Off, 1).expect("replay");
                 let norm = |h: &[f32]| {
                     let m = h.iter().cloned().fold(0.0f32, f32::max).max(1e-12);
                     h.iter().map(|v| v.max(0.0) / m).collect::<Vec<f32>>()

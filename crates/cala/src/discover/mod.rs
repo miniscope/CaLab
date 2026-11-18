@@ -346,6 +346,30 @@ pub enum JointUpdate {
     All,
 }
 
+/// Sign rule of the joint replay's footprint step (filtered space, where a
+/// true footprint is slightly negative in its high-pass moat). The
+/// rotation between a bitten newcomer and its over-filled neighbour is a
+/// free direction of a linear footprint fit (`A R`, `R⁻¹ C`); what pins it
+/// is the newcomer's light clipped at zero on the older cell's far side.
+/// On the quick demixing tier (17 Nov 2026) `All` lowered the 0.75-1 D bite
+/// share 0.50 -> 0.36 and the < 1 D trace correlation excess +0.14 ->
+/// +0.10; `Off` gave 0.50 -> 0.42 and no correlation gain; `Own` was no
+/// different from `Off` (`tools/cala-eval/results/2026-11-17-cluster-replay.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JointSign {
+    /// A plain per-pixel joint least-squares fit; the sign rule enters only
+    /// through the finish path's inversion (`a ≥ 0`).
+    Off,
+    /// Each member's coefficient ≥ 0 where its current filtered column is
+    /// positive (the moat stays free).
+    Own,
+    /// Each member's coefficient ≥ 0 on its whole disk (the design toys'
+    /// non-negative footprint step; the moat is clipped there and comes
+    /// back through the finish path's inversion).
+    #[default]
+    All,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MergeRule {
     /// The held-out test alone: a single column (merged footprint, or
@@ -649,13 +673,12 @@ pub struct SlowLoopConfig {
     /// exceed it is refused and that overlap is left to the per-cell
     /// statistics' coupling.
     pub cluster_max: usize,
-    /// Experimental: the replay's footprint step keeps each member's
-    /// coefficient ≥ 0 where its current filtered column is positive (the
-    /// non-negative footprint step of the design's toys; the moat stays
-    /// free). Off: a plain per-pixel joint least-squares fit, the sign rule
-    /// entering only through the finish path's inversion (`a ≥ 0`).
-    pub joint_sign_rule: bool,
-    /// Experimental: alternations per replay (the design: 1).
+    /// Experimental: the sign rule of the replay's footprint step (see
+    /// [`JointSign`]).
+    pub joint_sign_rule: JointSign,
+    /// Experimental: alternations per replay inside the store (the design:
+    /// 1; more converge the stored window's factorisation further, but the
+    /// published footprints then move by more than the gate tests well).
     pub joint_iters: usize,
     /// Classification of adds (new / re-add / churned) for the QC; does not
     /// change any decision.
@@ -723,7 +746,7 @@ impl Default for SlowLoopConfig {
             joint_update: JointUpdate::Off,
             cluster_rho_min: 0.05,
             cluster_max: 6,
-            joint_sign_rule: false,
+            joint_sign_rule: JointSign::All,
             joint_iters: 1,
             churn: ChurnConfig::default(),
             library: LibraryConfig::default(),
@@ -783,6 +806,7 @@ impl SlowLoopConfig {
             && self.cluster_rho_min > 0.0
             && self.cluster_rho_min < 1.0
             && (2..=8).contains(&self.cluster_max)
+            && self.joint_iters >= 1
             && self.churn.is_valid();
         if ok {
             Ok(())

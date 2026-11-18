@@ -299,8 +299,8 @@ use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
-    CoreTest, EditScope, JointUpdate, MergeRule, RefineGate, SlowLoop, SlowLoopConfig, SupportRule,
-    VisitResult, VisitRunner,
+    CoreTest, EditScope, JointSign, JointUpdate, MergeRule, RefineGate, SlowLoop, SlowLoopConfig,
+    SupportRule, VisitResult, VisitRunner,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -3280,9 +3280,14 @@ fn main() {
             scfg.joint_update, scfg.cluster_rho_min, scfg.cluster_max
         );
     }
-    if args.iter().any(|a| a == "--joint-sign-rule") {
-        scfg.joint_sign_rule = true;
-        println!("joint update: sign rule on the footprint step");
+    if let Some(v) = arg_value(&args, "--joint-sign") {
+        scfg.joint_sign_rule = match v.as_str() {
+            "off" => JointSign::Off,
+            "own" => JointSign::Own,
+            "all" => JointSign::All,
+            other => panic!("--joint-sign: off|own|all, not {other}"),
+        };
+        println!("joint update: sign rule {:?}", scfg.joint_sign_rule);
     }
     if let Some(v) = arg_value(&args, "--bg") {
         scfg.background = match v.as_str() {
