@@ -39,16 +39,26 @@ the pixel margin the statistics margin).
 0.18 at 1-1.25 D (94 % ≥ 0.05), 0.10 at 1.25-1.5 D (81 %). ρ ≥ 0.05 catches every pair closer than one GT diameter.
 About 15 % of clustered cells sit in uncut components larger than 6; the cap cuts only 3-8 edges, all weak.
 
-Slow-loop `observe` (static s5, alone, `--features diagnostics` timers): 1.95 ms/frame in Discover, of which the
-per-cell running statistics are 0.89 (46 %). The cluster push cost 1.08 ms/frame before and about 0.85 after vectorising
-(clusters cover about 3x the pixels the design assumed: disks plus margin). The QC monitor's ms/frame (the suite's row)
-does not include the slow loop.
+**Motion s5** (end of Refine, 557 cells): at ρ ≥ 0.05, 376 cells clustered (uncut sizes 2:52 3:24 4:12 5:7 6:5 7:3 8:3
+9:1 10:2 13:1; after the cap 2:56 3:26 4:13 5:10 6:13, 16 edges cut); 129 of 138 pairs closer than 1 config D have
+ρ ≥ 0.05 and all 129 stay in one cluster. No cluster frame was skipped for missing pixels (`skipped_frames` 0), and
+stores restarted 217 times for 123 clusters (a member's statistics disk leaving the cluster's pixels).
+
+Slow-loop `observe` per frame, `--features diagnostics` timers, each run alone on the machine:
+
+| sim       | Discover: observe / per-cell statistics | Refine with replay: observe / per-cell / cluster push |
+| --------- | --------------------------------------- | ----------------------------------------------------- |
+| static s5 | 1.95 / 0.89 ms (46 %)                   | 3.39 / 1.10 / 1.08 ms (before vectorising the push)   |
+| motion s5 | 2.04 / 0.96 ms (47 %)                   | 3.26 / 1.20 / 0.86 ms                                 |
+
+The cluster push costs about as much as the per-cell statistics: the clusters cover about 3x the pixels the design
+assumed (disks plus the statistics margin plus one more margin) and the stores hold 38-43 MB, not 10-12. The QC
+monitor's ms/frame (the suite's row) does not include the slow loop.
 
 ## Results: main (flag off) vs replay, full tier (14 sims: static s5-s9, motion s5-s9, pairs s5-s8)
 
 `qc_eval sim ... --passes 2 --later-passes refine`; candidate adds `--joint-update refine --joint-sign all`. With the
-flag off the binary's output is identical to main (`final.tsv` of static s5 equal to the `z0` arm of the suite's
-validation run).
+flag off the binary's output is identical to main (see "Reproduction" below).
 
 | metric                                           | main        | replay      | diff [95 % CI]          | sims agreeing | flag                |
 | ------------------------------------------------ | ----------- | ----------- | ----------------------- | ------------- | ------------------- |
@@ -106,15 +116,58 @@ centre now correlate ≥ 0.5 with that neighbour too (the suite notes the metric
   changed nothing. The toys' rule, every member ≥ 0 on its whole disk (`JointSign::All`), gave the table above. Without
   it the rotation between a bitten newcomer and its over-filled neighbour is a free direction of the footprint fit
   (`A R`, `R⁻¹ C`); only the clip of the newcomer's light on the older cell's far side pins it.
-- **Raw replay estimate** (static s5, `CALA_REPLAY_DUMP`, member i's filtered value at j's centre over its own, final
-  replay, GT pairs 0.5-1 D whose published ratio is < 0.5): plain fit, 1 alternation: median -0.005; 10 alternations in
-  the store: -0.085 (worse); `All`, 1 alternation: 0.000; `All`, 10 alternations: **0.128**, against 0.13-0.17 for
-  healthy pairs (65 % above the published value by 0.1). The published footprints of those pairs stayed at about 0.
-  So with the sign rule the stored history does carry the fix, and the per-member finish path (support, inversion)
-  takes it out again: the design's Stage 2 signal (cluster support rule).
+- **Raw replay estimate** (static s5, `CALA_REPLAY_DUMP`: member i's filtered value at j's centre over its own value,
+  final replay). Fixed pair set: the 196 GT pairs at 0.5-1 D that main leaves bitten (published ratio < 0.5), and 147
+  healthy ones (0.7-1.3); ids are the same in every arm (pass 1 is identical, Refine freezes the cell set).
+
+  | arm                        | raw, bitten set | raw, healthy set | published est/true median, bitten set | still < 0.5 |
+  | -------------------------- | --------------- | ---------------- | ------------------------------------- | ----------- |
+  | plain fit, 1 alternation   | +0.029          | +0.108           | 0.00                                  | 70 %        |
+  | plain fit, 10 alternations | -0.005          | +0.003           | 0.00                                  | 78 %        |
+  | `All`, 1 alternation       | +0.036          | +0.137           | 0.33                                  | 60 %        |
+  | `All`, 10 alternations     | +0.107          | +0.179           | 0.00                                  | 65 %        |
+
+  With the sign rule, more alternations in the store bring the raw estimate of bitten pairs close to healthy pairs', but
+  the published footprints do not follow (and 10 alternations raise over-fill to 11.5 % and inflate healthy pairs).
+  Something after the replay, the per-member finish path (support, inversion) or the cluster gate, holds the bite back.
+  That points to the design's Stage 2 (cluster support rule) as the likely next lever. It is a lead, not yet a
+  measurement of which step it is.
+
 - **Ring background.** Bite share at 0.5-0.75 / 0.75-1 D on static s5 and pairs s5-s6, main and replay (plain fit): with
   the ring 0.330 / 0.559 and 0.244 / 0.488; with `--bg none` 0.325 / 0.589 and 0.351 / 0.577. Without a background the
   bites are no smaller and the replay gains nothing; the ring is not what makes the bite.
+
+## Replay in Discover too (pass 1 only, quick tier)
+
+`--passes 1`, main vs `--joint-update all` (the same code path called from Discover visits; a store restarts whenever
+its cluster's member set changes, 88 cluster rebuilds on static s6, so stores stay young: 770 replays in pass 1 against
+about 8000 in a Refine pass):
+
+| metric                                 | main pass 1           | replay in Discover    | diff                    | sims     |
+| -------------------------------------- | --------------------- | --------------------- | ----------------------- | -------- |
+| Trace corr excess < 1 D                | +0.147                | +0.112                | -0.035 [-0.054, -0.018] | better   |
+| Bite share 0-0.5 / 0.5-0.75 / 0.75-1 D | 0.473 / 0.479 / 0.669 | 0.340 / 0.314 / 0.507 | -0.13 / -0.17 / -0.16   | 5/5 each |
+| Matched cells                          | 346.8                 | 338.4                 | -8.4 [-17.1, 0.3]       | 4/5 down |
+| False cells                            | 15.0                  | 15.2                  | +0.2                    |          |
+| Over-fill (ratio > 1.3)                | 0.059                 | 0.054                 |                         |          |
+| Slow-loop observe                      | 1.77 ms/frame         | 2.16 ms/frame         | +22 %                   |          |
+
+Demixing improves in Discover alone about as much as one Refine pass of main gives, but matched cells fall 2.4 %, over
+the design's 1 % limit for Discover: not a candidate as is (absorption guard and store re-expression first).
+
+## Reproduction
+
+The PR's HEAD, flag off and `--joint-update refine` alone (sign rule `All` is the default), reproduces the measured
+arms byte for byte on pairs s5 (`footprints.bin`, `footprints_pass1.bin`, `final.tsv`), and the flag-off arm's static
+s5 `footprints.bin` and `final.tsv` are identical to main's (`z0` arm of the suite's validation run).
+
+## Caveats
+
+- `JointSign::All` clips in filtered space, the moat included; the moat comes back through the finish path's inversion.
+  The alternative of clipping in unfiltered space (invert, clip, re-filter) was not tested.
+- The reading of the "2+ GT units" rise (footprints that took back light under a neighbour, not merges) agrees with the
+  close-pair table but was not checked footprint by footprint.
+- The demixing suite (`tools/cala-eval/demix_suite.py`) is in the unmerged PR #420.
 
 ## Not done (later stages)
 
