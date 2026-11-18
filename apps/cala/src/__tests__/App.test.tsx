@@ -236,6 +236,7 @@ describe('App', () => {
       'Cell',
       'QC',
       'History',
+      'Correlation',
       'Flat field',
       'Timing',
       'Raw file',
