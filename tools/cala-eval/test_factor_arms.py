@@ -10,9 +10,26 @@ import factor_arms as A
 
 
 class Arms(unittest.TestCase):
+    def test_remedy_arms_are_plain_recal_with_another_cut_and_not_run_by_default(
+        self,
+    ) -> None:
+        a = A.arms(5)
+        self.assertEqual(
+            a["recal_full"],
+            a["plain_recal"] + ["--factors-rho-min", "-1", "--factors-z", "-100"],
+        )
+        self.assertEqual(a["recal_k80"], a["plain_recal"] + ["--factors-k0", "80"])
+        self.assertEqual(
+            a["recal_r40"][-8:],
+            ["--factors-rho-min", "-1", "--factors-z", "-100"]
+            + ["--factors-k0", "40", "--factors-max-rank", "40"],
+        )
+        self.assertEqual(a["recal_iter2"], a["plain_recal"] + ["--factors-n-iter", "2"])
+        self.assertEqual(sorted(set(a) - set(A.default_arms(a))), sorted(A.REMEDIES))
+
     def test_arm_names(self) -> None:
         self.assertEqual(
-            sorted(A.arms(5)),
+            sorted(A.default_arms(A.arms(5))),
             sorted(
                 [
                     "raw",

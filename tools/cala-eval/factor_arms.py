@@ -14,6 +14,9 @@ Arms (each a `qc_eval real` run in `DIR/<arm>`; pass 1 is the same in all):
   solve frames rebuilt from the factors of pass 1, under that tiling.
 - `plain_recal`: as `plain`, but the factors are those of the first replay
   (the final flat field from frame 0).
+- `recal_rho0`, `recal_z2`, `recal_k80`, `recal_full`, `recal_iter2` and the rank
+  sweep `recal_r10` to `recal_r80`: `plain_recal` with another rank cut or SVD
+  setting of the compressor (`REMEDIES`); only run when named in `--arms`.
 - `x_raw` and `x_<tiling>`: Discover and the Extract pass only, so the two
   Extracts solve with one and the same library.
 
@@ -41,6 +44,31 @@ TILINGS: dict[str, str] = {
     "overlap16": "overlap:16",
     "offset": "offset",
 }
+# Remedy arms: `plain_recal` with another rank cut of the compressor. Not in the default set.
+REMEDIES: dict[str, list[str]] = {
+    # cut at the whiteness rule alone, 4 / sqrt(window) = 0.16 instead of 0.2
+    "recal_rho0": ["--factors-rho-min", "0"],
+    # cut at 2 / sqrt(window) = 0.08
+    "recal_z2": ["--factors-rho-min", "0", "--factors-z", "2"],
+    # starting rank 80 instead of 40
+    "recal_k80": ["--factors-k0", "80"],
+    # no cut: every component up to the largest rank (the ceiling of what the cut can gain)
+    "recal_full": ["--factors-rho-min", "-1", "--factors-z", "-100"],
+    # two power iterations of the randomized SVD instead of one, default cut
+    "recal_iter2": ["--factors-n-iter", "2"],
+}
+# Rank sweep: a fixed rank per tile and no cut (thin edge tiles keep fewer).
+for _rank in (10, 20, 40, 80):
+    REMEDIES[f"recal_r{_rank}"] = [
+        "--factors-rho-min",
+        "-1",
+        "--factors-z",
+        "-100",
+        "--factors-k0",
+        str(_rank),
+        "--factors-max-rank",
+        str(_rank),
+    ]
 DEFAULT_QC_EVAL = (
     Path(__file__).resolve().parents[2] / "crates/cala/target/release/examples/qc_eval"
 )
@@ -63,7 +91,14 @@ def arms(refine: int, budget: int = DEFAULT_BUDGET) -> dict[str, list[str]]:
         out[name] = full + factors
         out[f"x_{name}"] = extract + factors
     out["plain_recal"] = out["plain"] + ["--factors-pass", "2"]
+    for name, cut in REMEDIES.items():
+        out[name] = out["plain_recal"] + cut
     return out
+
+
+def default_arms(table: dict[str, list[str]]) -> list[str]:
+    """The arms run without `--arms`: all but the remedy arms."""
+    return [n for n in table if n not in REMEDIES]
 
 
 def command(
@@ -215,7 +250,7 @@ def report(
         text.append("")
     nulls = [out_dir / n for n in ("null_lo", "null_hi") if n in have]
     for n in have:
-        if n in TILINGS or n == "plain_recal":
+        if n in TILINGS or n == "plain_recal" or n in REMEDIES:
             if "raw" in have:
                 text.append(
                     factor_closeness.report(
@@ -261,7 +296,7 @@ def main() -> None:
     if a.budget < 2:
         ap.error("--budget must be at least 2 (the null arms use half of it)")
     table = arms(a.refine, a.budget)
-    names = a.arms.split(",") if a.arms else list(table)
+    names = a.arms.split(",") if a.arms else default_arms(table)
     unknown = [n for n in names if n not in table]
     assert not unknown, f"unknown arms: {unknown}"
     budget = None if a.budget == DEFAULT_BUDGET else a.budget

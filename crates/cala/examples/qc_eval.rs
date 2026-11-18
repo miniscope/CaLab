@@ -89,6 +89,17 @@
 //!   --tiling T         tiles of `--factors-out`: plain (default, 64 px side
 //!                      by side) | overlap:N (each tile grown N px per inner
 //!                      side, blended) | offset (a second grid shifted 32 px)
+//!   --factors-rho-min R, --factors-z Z, --factors-k0 K
+//!                      the rank cut of `--factors-out` (defaults: the
+//!                      compressor's, 0.2, 4 and 40): a component is kept when
+//!                      its lag-1 autocorrelation exceeds
+//!                      max(Z / sqrt(window), R); K is the starting rank.
+//!                      R -1 with Z -100 keeps every component up to the
+//!                      largest rank
+//!   --factors-max-rank M, --factors-n-iter I
+//!                      the largest rank of a tile (default 300) and the power
+//!                      iterations of the randomized SVD (default 1). K and M
+//!                      equal, with no cut, give a fixed rank
 //!   --replay-source S  what the passes after `--factors-pass` and
 //!                      `--extract-pass` solve: raw (default, the replayed
 //!                      frames) | factors (those frames rebuilt from
@@ -2830,6 +2841,29 @@ fn write_library(
 /// Frames per compressed window (the app's).
 const FACTOR_WINDOW: usize = 600;
 
+/// The compressor settings of `--factors-out`: the app's, with the rank cut
+/// of `--factors-rho-min`, `--factors-z`, `--factors-k0` and
+/// `--factors-max-rank` and the SVD's `--factors-n-iter` when given.
+fn factor_config(args: &[String]) -> CompressConfig {
+    let d = CompressConfig::default();
+    let cfg = CompressConfig {
+        window: FACTOR_WINDOW,
+        rho_min: arg_value(args, "--factors-rho-min").map_or(d.rho_min, |s| s.parse().unwrap()),
+        z: arg_value(args, "--factors-z").map_or(d.z, |s| s.parse().unwrap()),
+        k0: arg_value(args, "--factors-k0").map_or(d.k0, |s| s.parse().unwrap()),
+        max_rank: arg_value(args, "--factors-max-rank").map_or(d.max_rank, |s| s.parse().unwrap()),
+        n_iter: arg_value(args, "--factors-n-iter").map_or(d.n_iter, |s| s.parse().unwrap()),
+        ..d
+    };
+    assert!(cfg.k0 >= 1, "--factors-k0 must be at least 1");
+    assert!(cfg.max_rank >= 1, "--factors-max-rank must be at least 1");
+    assert!(
+        cfg.rho_min.is_finite() && cfg.z.is_finite(),
+        "--factors-rho-min and --factors-z must be finite"
+    );
+    cfg
+}
+
 /// `--factors-out`: compresses the preprocessed frames window by window and
 /// writes each window's factors to `<dir>/w<start>.fac`; `finish` writes
 /// `<dir>/factors.tsv` (a row per window).
@@ -2843,12 +2877,8 @@ struct FactorDump {
 }
 
 impl FactorDump {
-    fn new(dir: &Path, dims: Dims, tiling: Tiling) -> FactorDump {
+    fn new(dir: &Path, dims: Dims, tiling: Tiling, cfg: CompressConfig) -> FactorDump {
         std::fs::create_dir_all(dir).unwrap();
-        let cfg = CompressConfig {
-            window: FACTOR_WINDOW,
-            ..CompressConfig::default()
-        };
         let layout = BlendLayout::new(dims, cfg.tile, tiling);
         FactorDump {
             dir: dir.to_path_buf(),
@@ -3646,7 +3676,7 @@ fn main() {
     let factors_out: Option<PathBuf> = arg_value(&args, "--factors-out").map(PathBuf::from);
     let mut factors = factors_out
         .as_deref()
-        .map(|d| FactorDump::new(d, dims, tiling));
+        .map(|d| FactorDump::new(d, dims, tiling, factor_config(&args)));
     let mut replay =
         replay_factors.then(|| FactorReplay::new(factors_out.as_deref().unwrap(), dims, tiling));
     let mut stage_times =
@@ -4784,6 +4814,45 @@ mod tests {
     }
 
     #[test]
+    fn factor_config_is_the_apps_unless_a_cut_flag_is_given() {
+        let app = CompressConfig {
+            window: FACTOR_WINDOW,
+            ..CompressConfig::default()
+        };
+        assert_eq!(factor_config(&[]), app);
+        let args: Vec<String> = [
+            "--factors-rho-min",
+            "-1",
+            "--factors-z",
+            "-100",
+            "--factors-k0",
+            "80",
+            "--factors-max-rank",
+            "80",
+            "--factors-n-iter",
+            "2",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        let cut = factor_config(&args);
+        assert_eq!((cut.rho_min, cut.z, cut.k0), (-1.0, -100.0, 80));
+        assert_eq!((cut.max_rank, cut.n_iter), (80, 2));
+        assert_eq!(
+            CompressConfig {
+                rho_min: app.rho_min,
+                z: app.z,
+                k0: app.k0,
+                max_rank: app.max_rank,
+                n_iter: app.n_iter,
+                ..cut
+            },
+            app,
+            "nothing else changes"
+        );
+    }
+
+    #[test]
     fn factor_replay_returns_the_dumped_frames() {
         let dims = Dims::new(96, 70).unwrap();
         // One full window and a short last one.
@@ -4795,7 +4864,7 @@ mod tests {
             let dir =
                 std::env::temp_dir().join(format!("qc_eval_factors_{}_{k}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
-            let mut fd = FactorDump::new(&dir, dims, tiling);
+            let mut fd = FactorDump::new(&dir, dims, tiling, factor_config(&[]));
             for f in &frames {
                 fd.push(f);
             }
