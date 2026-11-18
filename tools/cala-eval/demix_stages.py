@@ -15,13 +15,16 @@ Needs the qc_eval of this branch or later (`--lib-at`, `--wrap-libs`). Per sim a
 extract-only run `qc_eval sim SIM RUN/lib_X --passes 1 --library FILE --dump` (fast loop only, the traces the same
 fixed-library path `--dump` uses) followed by `demix_metrics.py --ledger RUN/main` (the birth frames come from
 the main run's `adds.tsv`; ids survive the fixed-library rebuild). One qc_eval at a time (this script is serial);
-the machine-wide cap of 2 `qc_eval sim` runs of `run_arms.run_one` still applies. Outputs: `$CALA_DATA/demix-suite/<name>/<label>/<sim>/`.
+`run_arms.run_one` still waits while `run_arms.MAX_LIGHT` `qc_eval sim` runs are going machine-wide. Outputs: `$CALA_DATA/demix-suite/<name>/<label>/<sim>/`.
 
 Stages (what the app ends each step with):
 
   S0 Discover only        `footprints_wrap1.bin`, the library the first wrap publishes (`SlowLoop::finalize`)
   S1 Discover + 1 Refine  `footprints_wrap2.bin` (for --passes 2: the main run's final footprints.bin)
-  S2, S3 ...              wrap3 ..., the last stage is the main run's own final library and `--dump`
+  S2, S3 ...              wrap3 ..., the last stage is the main run's final `footprints.bin` (finalized after the last pass)
+  All stages are scored from extract-only runs (`--library`), never from the main run's own `--dump`: the fixed-library
+  rebuild is not bit-identical to the main dump (pairs_s5: headline +0.122 vs +0.138, trace r median 0.99995), so mixing
+  the two would put a small systematic step between the last stage and the others.
   cumulative wall         the sum of `passes.tsv` wall_s up to and including the stage's pass: seconds of the qc_eval
                           pass loop (fast + slow loop and the GT scoring that rides along, the same for all arms).
                           It excludes the finalize at the wrap and the metric extraction.
@@ -80,6 +83,7 @@ EXTRACT_ARGS = ["--passes", "1", "--batch", "8", "--budget", "30000000", "--slow
 def lib_files(main: Path, passes: int):
     """Libraries of one main run as [(kind, key, file)]: kind 'stage' (key = stage index) or 'ckpt' (key = frame)."""
     out = [("stage", k - 1, main / f"footprints_wrap{k}.bin") for k in range(1, passes)]
+    out.append(("stage", passes - 1, main / "footprints.bin"))  # the last stage: the finalized library of the main run
     out += [("ckpt", int(m.group(1)), p) for p in sorted(main.glob("footprints_t*.bin")) if (m := re.search(r"_t(\d+)\.bin$", p.name))]
     if (main / "footprints_pass1.bin").exists():
         out.append(("ckpt", None, main / "footprints_pass1.bin"))  # 100 %: the live library at the end of pass 1
@@ -100,7 +104,7 @@ def scored(run: Path) -> bool:
 
 def run_arm(a):
     root = SUITE.data_root() / "demix-suite" / a.name / a.label
-    state = {"lock": threading.Lock(), "parallel": 2}  # machine-wide cap of 2; this script runs one at a time
+    state = {"lock": threading.Lock(), "parallel": RA.MAX_LIGHT}  # machine-wide cap of run_arms; this script itself runs one at a time
     sims = SUITE.tier_sims("full", a.only) if a.only else [(k, s) for k, seeds in SUITE.TIERS["quick"] for s in seeds]
     extra = a.flags.split()
     for kind, seed in sims:
@@ -161,7 +165,7 @@ def load_stages(root: Path):
     for k in range(n_stage):
         runs = {}
         for name, (sd, passes, walls, T) in per_sim.items():
-            run = sd / "main" if k == passes - 1 else sd / f"lib_wrap{k + 1}"
+            run = sd / ("lib_footprints" if k == passes - 1 else f"lib_wrap{k + 1}")  # every stage through the same extract path
             if scored(run):
                 run_ = REP.load_run(run)
                 run_["name"] = name

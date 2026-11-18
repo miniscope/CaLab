@@ -184,7 +184,7 @@ $MINISIM_PY tools/cala-eval/demix_stages.py report --name lookback-z3-vs-z0 --md
 ```
 
 - **Stages**: S0 Discover only, S1 Discover + 1 Refine, S2, S3, each the library the app ends that step with
-  (`footprints_wrap{k}.bin`, the library the wrap publishes; the last stage is the main run's final library). The
+  (`footprints_wrap{k}.bin`, the library the wrap publishes; the last stage is the main run's final `footprints.bin`). Every stage is scored through the same extract-only run, never from the main run's own `--dump` (the two differ slightly: pairs_s5 headline +0.122 vs +0.138, trace r median 0.99995). The
   header of each column carries the cumulative wall seconds (sum of `passes.tsv` `wall_s`: the qc_eval pass loop,
   GT scoring included, identical across arms; excludes the finalize at a wrap and the metric extraction).
 - **Checkpoints inside Discover**: the live library at 25 / 50 / 75 % of the frames (`footprints_t{frame}.bin`) and at

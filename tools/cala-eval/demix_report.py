@@ -276,8 +276,8 @@ RUN_METRICS = [
     ("Close GT pairs, both matched, 0.75-1 D", "both_0.75-1.0", "higher", "{:.1f}"),
     ("Late-born cells in the final library (born in the last 20 %)", "n_late", None, "{:.1f}"),
     ("Late-born cells matched", "matched_late", "higher", "{:.1f}"),
-    ("Cells in an overlap cluster of 2+ (rho >= 0.05, K_max 6)", "clusters.cells_in_2plus", None, "{:.1f}"),
-    ("Largest overlap component (before the K_max cut)", "clusters.max_component", None, "{:.1f}"),
+    ("Cells in an overlap cluster of 2+ (rho >= 0.05, K_max 6)", "clusters/cells_in_2plus", None, "{:.1f}"),
+    ("Largest overlap component (before the K_max cut)", "clusters/max_component", None, "{:.1f}"),
     ("Merge edits (about 2/3 harmless folds; see two-GT cells)", "merges", None, "{:.1f}"),
     ("Splits", "splits", None, "{:.1f}"),
     ("Median support area (px)", "area_support", None, "{:.0f}"),
@@ -343,8 +343,8 @@ def compare(base, new, seed=0):
 
 
 def _dig(d, key):
-    """d[key], where key may be 'a.b' for d['a']['b']; None when missing."""
-    for k in key.split("."):
+    """d[key], where key may be 'a/b' for d['a']['b'] (keys such as 'both_0.5-0.75' contain dots); None when missing."""
+    for k in ([key] if key in d else key.split("/")):
         d = d.get(k) if isinstance(d, dict) else None
     return d
 

@@ -286,6 +286,18 @@ class ReportAdditions(unittest.TestCase):
         und = by["Over-fill share est/true > 1.3 at undetected neighbour, 0.75-1.0 D"]
         self.assertAlmostEqual(und["base"], 0.5, delta=0.01)
 
+    def test_dig_handles_dotted_keys_and_nesting(self):
+        d = {"both_0.5-0.75": 7, "clusters": {"max_component": 4}}
+        self.assertEqual(REP._dig(d, "both_0.5-0.75"), 7)
+        self.assertEqual(REP._dig(d, "clusters/max_component"), 4)
+        self.assertIsNone(REP._dig(d, "clusters/nope"))
+        self.assertIsNone(REP._dig({}, "clusters/max_component"))
+        # the close-pair rows are real run metrics
+        runs = [Stats().fake_run(f"s{k}", [0.5] * 6, [0.9] * 6, [0.1] * 4, [0.5, 0.5, 2, 2], **{"both_0.5-0.75": 10 + k}) for k in range(4)]
+        _, rows = REP.compare(runs, runs)
+        row = next(r for r in rows if r["name"].startswith("Close GT pairs, both matched, 0.5-0.75"))
+        self.assertAlmostEqual(row["base"], 11.5)
+
     def test_cluster_section_renders_pooled_counts(self):
         c = {"hist": {"1": 10, "2": 4}, "n_cells": 18, "cells_in_2plus": 8, "edges": 5, "edges_cut": 1, "cells_in_big_component": 0, "max_component": 3}
         runs = [{"name": "s5", "det": {"clusters": c}}, {"name": "s6", "det": {"clusters": c}}, {"name": "s7", "det": {}}]
@@ -344,12 +356,12 @@ class Stages(unittest.TestCase):
     def test_lib_files_and_pass_walls(self):
         with tempfile.TemporaryDirectory() as tmp:
             main = Path(tmp)
-            for n in ("footprints_wrap1.bin", "footprints_wrap2.bin", "footprints_t2400.bin", "footprints_t1200.bin", "footprints_pass1.bin", "footprints_pass2.bin"):
+            for n in ("footprints.bin", "footprints_wrap1.bin", "footprints_wrap2.bin", "footprints_t2400.bin", "footprints_t1200.bin", "footprints_pass1.bin", "footprints_pass2.bin"):
                 (main / n).write_bytes(b"x")
             (main / "passes.tsv").write_text("pass\tframe\tcells\tslow_cells\tadds\tmerges\tdeletes\tsplits\tslow_frames\twall_s\n"
                                               "1\t9600\t5\t5\t5\t0\t0\t0\t9550\t180.5\n2\t19200\t5\t5\t5\t0\t0\t0\t19150\t170.0\n3\t28800\t5\t5\t5\t0\t0\t0\t28750\t171.0\n")  # fmt: skip
             got = ST.lib_files(main, 3)
-            self.assertEqual([(k, key) for k, key, _ in got], [("stage", 0), ("stage", 1), ("ckpt", 1200), ("ckpt", 2400), ("ckpt", None)])
+            self.assertEqual([(k, key) for k, key, _ in got], [("stage", 0), ("stage", 1), ("stage", 2), ("ckpt", 1200), ("ckpt", 2400), ("ckpt", None)])
             self.assertEqual(ST.pass_walls(main), ([180.5, 170.0, 171.0], 9600))
 
 
