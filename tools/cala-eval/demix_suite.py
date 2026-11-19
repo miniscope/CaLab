@@ -155,6 +155,9 @@ def main(argv=None) -> int:
     ap.add_argument("--sims-dir", type=Path, help="static/motion sims (default $CALA_SIMS)")
     ap.add_argument("--pairs-dir", type=Path, help="pairs sims (default $CALA_PAIRS)")
     ap.add_argument("--parallel", type=int, default=MAX_PARALLEL, help="this suite's concurrent qc_eval runs (default and cap: the machine-wide light-run cap, run_arms.MAX_LIGHT)")
+    ap.add_argument("--branch-after", choices=["off", "discover", "drain"], default="off",
+                    help="arms of one sim that differ only in post-Discover flags (--passes, --later-passes, --lookback-drain*) "
+                         "run as ONE branched qc_eval (see README); outputs and cache entries are those of separate runs")
     ap.add_argument("--no-cache", action="store_true", help="neither read nor write the run cache")
     ap.add_argument("--cache-dir", type=Path, help="run cache root (default $CALA_SUITE_CACHE or $CALA_DATA/suite-cache)")
     ap.add_argument("--md", type=Path, help="write the report here")
@@ -196,6 +199,24 @@ def main(argv=None) -> int:
         (out_root / "suite.json").write_text(json.dumps({k: str(v) for k, v in meta.items()}, indent=1))
         state = {"lock": threading.Lock(), "parallel": a.parallel, "own_only": True}
         t0 = time.time()
+        groups, _ = RA.branch_groups([j for j in todo if not (cache and not a.force and cache.has_run(SC.run_key(j["bin"], j["args"], j["sim"])))], a.branch_after)
+        if groups:
+            if not all(RA.supports_branching(g[0]["bin"]) for g in groups):
+                sys.exit("--branch-after: this qc_eval build lacks --branch-after")
+            print(f"{len(groups)} branched groups ({sum(map(len, groups))} arms share a Discover each)", flush=True)
+            berrs = []
+            def run_group(g):
+                infos = RA.run_branched(g, state, a.branch_after)
+                for j, info in zip(g, infos):
+                    if info["rc"] == 0 and cache:
+                        cache.store_run(SC.run_key(j["bin"], j["args"], j["sim"]), j["out"])
+                    elif info["rc"] != 0:
+                        berrs.append(f"{j['label']}/{j['out'].name}: branched qc_eval failed (see {j['out']}/stdout.log)")
+            with ThreadPoolExecutor(a.parallel) as ex:
+                list(ex.map(run_group, groups))
+            if berrs:
+                print("\n".join(berrs), file=sys.stderr)
+                return 1
         with ThreadPoolExecutor(a.parallel) as ex:
             errs = [e for e in ex.map(lambda j: run_job(j, state, sys.executable, a.force, a.recompute, cache), jobs) if e]
         print(f"runs and metrics done in {(time.time() - t0) / 60:.1f} min", flush=True)

@@ -3439,11 +3439,222 @@ fn signed_vs_gt(
     );
 }
 
+/// The options that act only AFTER Discover's last frame (later passes, the
+/// look-back drain and its settle step). They are the only options a branch
+/// (`--branch`) may change; add a new tail option here and in [`TAIL_FLAGS`].
+#[derive(Clone)]
+struct Tail {
+    passes: usize,
+    later_scope: EditScope,
+    drain: usize,
+    drain_rate: f64,
+    settle_all: usize,
+}
+
+/// Flags [`Tail::parse`] reads. `drain` ones act inside the drain, so a
+/// `--branch-after drain` branch cannot set them.
+const TAIL_FLAGS: &[&str] = &[
+    "--passes",
+    "--later-passes",
+    "--lookback-drain",
+    "--lookback-drain-rate",
+    "--lookback-settle-all",
+];
+const DRAIN_FLAGS: &[&str] = &[
+    "--lookback-drain",
+    "--lookback-drain-rate",
+    "--lookback-settle-all",
+];
+
+impl Tail {
+    /// The tail options of an argument list (first occurrence of a flag wins).
+    fn parse(args: &[String]) -> Tail {
+        let passes: usize = arg_value(args, "--passes").map_or(1, |s| s.parse().unwrap());
+        assert!(passes >= 1, "--passes must be at least 1");
+        let later_scope = match arg_value(args, "--later-passes").as_deref() {
+            None => EditScope::All,
+            Some(m) => EditScope::from_name(m)
+                .unwrap_or_else(|| panic!("--later-passes: unknown mode {m}")),
+        };
+        let drain_rate: f64 =
+            arg_value(args, "--lookback-drain-rate").map_or(0.0, |s| s.parse().unwrap());
+        assert!(drain_rate >= 0.0, "--lookback-drain-rate must be >= 0");
+        Tail {
+            passes,
+            later_scope,
+            drain: arg_value(args, "--lookback-drain").map_or(0, |s| s.parse().unwrap()),
+            drain_rate,
+            settle_all: arg_value(args, "--lookback-settle-all").map_or(0, |s| s.parse().unwrap()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BranchPoint {
+    /// End of Discover (pass 1), before the look-back drain.
+    Discover,
+    /// After the look-back drain, before any later pass.
+    Drain,
+}
+
+/// `--branch-after POINT --branch 'NAME:FLAGS'` (repeatable): run to POINT
+/// once, then fork the whole process once per branch (copy-on-write: the
+/// state is bit-for-bit what an unbranched run has there), one after another.
+/// Each child applies its tail flags, runs on and writes its normal outputs
+/// to `<out>/NAME/`.
+struct Branching {
+    point: BranchPoint,
+    /// (name, flag tokens)
+    branches: Vec<(String, Vec<String>)>,
+}
+
+extern "C" {
+    fn fork() -> i32;
+    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+}
+
+/// What a forked branch changes about the run.
+struct BranchChild {
+    tail: Tail,
+    out_dir: PathBuf,
+}
+
+impl Branching {
+    fn parse(args: &[String]) -> Option<Branching> {
+        let point = match arg_value(args, "--branch-after").as_deref() {
+            None => {
+                assert!(
+                    !args.iter().any(|a| a == "--branch"),
+                    "--branch needs --branch-after discover|drain"
+                );
+                return None;
+            }
+            Some("discover") => BranchPoint::Discover,
+            Some("drain") => BranchPoint::Drain,
+            Some(p) => panic!("--branch-after: unknown point {p} (discover | drain)"),
+        };
+        let mut branches = Vec::new();
+        for (i, a) in args.iter().enumerate() {
+            if a != "--branch" {
+                continue;
+            }
+            let spec = args.get(i + 1).expect("--branch NAME:FLAGS");
+            let (name, flags) = spec.split_once(':').unwrap_or((spec, ""));
+            assert!(
+                !name.is_empty() && !name.contains('/') && name != "..",
+                "--branch: bad name {name:?}"
+            );
+            let toks: Vec<String> = flags.split_whitespace().map(String::from).collect();
+            for t in toks.iter().filter(|t| t.starts_with("--")) {
+                assert!(
+                    TAIL_FLAGS.contains(&t.as_str()),
+                    "--branch {name}: {t} is not a tail flag (allowed: {TAIL_FLAGS:?})"
+                );
+                assert!(
+                    !(point == BranchPoint::Drain && DRAIN_FLAGS.contains(&t.as_str())),
+                    "--branch {name}: {t} acts before `--branch-after drain`"
+                );
+            }
+            assert!(
+                !branches.iter().any(|(n, _)| n == name),
+                "--branch: duplicate name {name}"
+            );
+            branches.push((name.to_string(), toks));
+        }
+        assert!(
+            !branches.is_empty(),
+            "--branch-after needs --branch NAME:FLAGS"
+        );
+        // State the children would share on disk or in a global.
+        for f in [
+            "--churn-log",
+            "--merge-log",
+            "--factors-out",
+            "--offered-fps",
+        ] {
+            assert!(
+                !args.iter().any(|a| a == f),
+                "{f} cannot be combined with --branch-after"
+            );
+        }
+        Some(Branching { point, branches })
+    }
+
+    /// Branch args first: the first occurrence of a flag wins in `arg_value`.
+    fn branch_args(&self, args: &[String], toks: &[String]) -> Vec<String> {
+        toks.iter().chain(args.iter()).cloned().collect()
+    }
+
+    fn max_passes(&self, args: &[String]) -> usize {
+        self.branches
+            .iter()
+            .map(|(_, t)| Tail::parse(&self.branch_args(args, t)).passes)
+            .max()
+            .unwrap_or(1)
+    }
+
+    /// In the parent: run every branch as a child process in turn, then exit
+    /// (never returns). In a child: its [`BranchChild`].
+    fn fork(&self, args: &[String], out_dir: &Path) -> Option<BranchChild> {
+        let mut failed = 0;
+        for (name, toks) in &self.branches {
+            let tail = Tail::parse(&self.branch_args(args, toks));
+            let dir = out_dir.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            // Files the prefix already wrote (e.g. `--lib-at` libraries).
+            for e in std::fs::read_dir(out_dir).unwrap().flatten() {
+                if e.file_type().is_ok_and(|t| t.is_file()) {
+                    std::fs::copy(e.path(), dir.join(e.file_name())).unwrap();
+                }
+            }
+            let _ = std::io::stdout().flush();
+            // SAFETY: the process is single-threaded here (the crate's
+            // scoped worker threads are joined), so the child may run on.
+            let pid = unsafe { fork() };
+            assert!(pid >= 0, "fork failed");
+            if pid == 0 {
+                println!("branch {name}: {toks:?}");
+                return Some(BranchChild { tail, out_dir: dir });
+            }
+            let mut status = 0i32;
+            // SAFETY: `pid` is our child.
+            unsafe { waitpid(pid, &mut status, 0) };
+            if status != 0 {
+                eprintln!("branch {name} failed (wait status {status})");
+                failed += 1;
+            }
+        }
+        std::process::exit(i32::from(failed > 0));
+    }
+}
+
+impl BranchChild {
+    fn apply(
+        self,
+        tail: &mut Tail,
+        out_dir: &mut PathBuf,
+        lookback: Option<&mut LookBack>,
+        passes: &mut usize,
+        later_scope: &mut EditScope,
+        lb_drain: &mut usize,
+    ) {
+        *passes = self.tail.passes;
+        *later_scope = self.tail.later_scope;
+        *lb_drain = self.tail.drain;
+        if let Some(l) = lookback {
+            l.drain_rate = self.tail.drain_rate;
+            l.settle_all = self.tail.settle_all;
+        }
+        *tail = self.tail;
+        *out_dir = self.out_dir;
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).expect("mode: sim | oracle | real").clone();
     let input = PathBuf::from(args.get(2).expect("input dir"));
-    let out_dir = PathBuf::from(args.get(3).expect("out dir"));
+    let mut out_dir = PathBuf::from(args.get(3).expect("out dir"));
     std::fs::create_dir_all(&out_dir).unwrap();
     // DIAG: per-candidate merge log (no decision changes).
     if args.iter().any(|a| a == "--merge-log") {
@@ -3480,14 +3691,14 @@ fn main() {
     let job_ms: f64 = arg_value(&args, "--job-ms").map_or(1.0, |s| s.parse().unwrap());
     let pool: usize = arg_value(&args, "--pool").map_or(2, |s| s.parse().unwrap());
     let heldout_on = !args.iter().any(|a| a == "--no-heldout");
-    let passes: usize = arg_value(&args, "--passes").map_or(1, |s| s.parse().unwrap());
-    assert!(passes >= 1, "--passes must be at least 1");
-    let later_scope = match arg_value(&args, "--later-passes").as_deref() {
-        None => EditScope::All,
-        Some(m) => {
-            EditScope::from_name(m).unwrap_or_else(|| panic!("--later-passes: unknown mode {m}"))
-        }
-    };
+    let branching = Branching::parse(&args);
+    let mut tail = Tail::parse(&args);
+    if let Some(b) = &branching {
+        // The shared prefix must record whatever any branch's tail replays.
+        tail.passes = tail.passes.max(b.max_passes(&args));
+    }
+    let mut passes = tail.passes;
+    let mut later_scope = tail.later_scope;
     let churn_log = args.iter().any(|a| a == "--churn-log");
     let wrap_libs = args.iter().any(|a| a == "--wrap-libs");
     let lib_at: Vec<f64> = arg_value(&args, "--lib-at").map_or(Vec::new(), |s| {
@@ -3943,11 +4154,7 @@ fn main() {
         Some("newest") => true,
         Some(m) => panic!("--lookback-order: unknown mode {m}"),
     };
-    let lb_drain: usize = arg_value(&args, "--lookback-drain").map_or(0, |s| s.parse().unwrap());
-    // Frames of look-back budget per drain step (default: R, at least 1).
-    let lb_drain_rate: f64 =
-        arg_value(&args, "--lookback-drain-rate").map_or(0.0, |s| s.parse().unwrap());
-    assert!(lb_drain_rate >= 0.0, "--lookback-drain-rate must be >= 0");
+    let mut lb_drain: usize = tail.drain;
     let lb_frames: usize =
         arg_value(&args, "--lookback-frames").map_or(3000, |s| s.parse().unwrap());
     assert!(lb_rate >= 0.0, "--lookback must be >= 0");
@@ -3963,8 +4170,8 @@ fn main() {
         )
     });
     if let Some(l) = lookback.as_mut() {
-        l.drain_rate = lb_drain_rate;
-        l.settle_all = arg_value(&args, "--lookback-settle-all").map_or(0, |s| s.parse().unwrap());
+        l.drain_rate = tail.drain_rate;
+        l.settle_all = tail.settle_all;
     }
     if lookback.is_some() {
         println!(
@@ -4043,7 +4250,11 @@ fn main() {
     // `--factors-out`: the compressed history of pass 1.
     let factors_out: Option<PathBuf> = arg_value(&args, "--factors-out").map(PathBuf::from);
     let mut factors = factors_out.as_deref().map(|d| FactorDump::new(d, dims));
-    for pass in 0..passes {
+    for pass in 0.. {
+        // `passes` can change at a branch point (the child applies its tail).
+        if pass >= passes {
+            break;
+        }
         // Virtual frame of this pass's recording frame 0.
         let off = pass * t_len;
         if pass > 0 {
@@ -4552,6 +4763,26 @@ fn main() {
                         sl,
                         n_px,
                     );
+                }
+                // Branch point `discover`: Discover's last frame is done, the
+                // look-back drain has not started.
+                if let (true, 0, Some(b)) = (last, pass, &branching) {
+                    if b.point == BranchPoint::Discover {
+                        if let Some(c) = b.fork(&args, &out_dir) {
+                            c.apply(
+                                &mut tail,
+                                &mut out_dir,
+                                lookback.as_mut(),
+                                &mut passes,
+                                &mut later_scope,
+                                &mut lb_drain,
+                            );
+                        }
+                    }
+                }
+                if let (Some(lbk), Some(sl), 0, None) =
+                    (lookback.as_mut(), slow.as_mut(), pass, timed.as_ref())
+                {
                     if last && lb_drain > 0 {
                         let (st, fr) = lbk.drain(
                             lb_drain,
@@ -4568,6 +4799,21 @@ fn main() {
                             "lookback drain: {st} steps, {fr} frames, {:.1} s",
                             lbk.drain_wall_s
                         );
+                    }
+                }
+                // Branch point `drain`: the drain (if any) is done too.
+                if let (true, 0, Some(b)) = (last, pass, &branching) {
+                    if b.point == BranchPoint::Drain {
+                        if let Some(c) = b.fork(&args, &out_dir) {
+                            c.apply(
+                                &mut tail,
+                                &mut out_dir,
+                                lookback.as_mut(),
+                                &mut passes,
+                                &mut later_scope,
+                                &mut lb_drain,
+                            );
+                        }
                     }
                 }
                 let t_end = t + 1;
@@ -5381,5 +5627,44 @@ mod tests {
             assert_eq!(i, j);
             assert!(r > 0.99, "cell {i}: r {r}");
         }
+    }
+
+    fn argv(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn branch_tail_overrides_base_and_other_flags_are_rejected() {
+        let base = argv("sim in out --passes 1 --lookback-drain 100 --branch-after discover");
+        let mut full = base.clone();
+        full.extend(argv("--branch"));
+        full.push("r:--passes 2 --later-passes refine --lookback-drain 0".into());
+        let b = Branching::parse(&full).unwrap();
+        assert!(b.point == BranchPoint::Discover);
+        let toks = &b.branches[0].1;
+        let t = Tail::parse(&b.branch_args(&full, toks));
+        assert_eq!((t.passes, t.drain), (2, 0));
+        assert!(t.later_scope == EditScope::Refine);
+        // The shared prefix records for the deepest branch.
+        assert_eq!(b.max_passes(&full), 2);
+        // A branch that sets nothing keeps the base tail.
+        let t0 = Tail::parse(&b.branch_args(&full, &[]));
+        assert_eq!((t0.passes, t0.drain), (1, 100));
+    }
+
+    #[test]
+    #[should_panic(expected = "not a tail flag")]
+    fn branch_rejects_a_prefix_flag() {
+        let mut a = argv("sim in out --branch-after discover --branch");
+        a.push("x:--budget 5".into());
+        Branching::parse(&a);
+    }
+
+    #[test]
+    #[should_panic(expected = "acts before")]
+    fn drain_point_rejects_drain_flags() {
+        let mut a = argv("sim in out --branch-after drain --branch");
+        a.push("x:--lookback-drain 5".into());
+        Branching::parse(&a);
     }
 }

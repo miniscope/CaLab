@@ -92,12 +92,47 @@ python tools/cala-eval/summarize.py --base <runs>/base --new <runs>/new \
 
 Arguments after `--` go to every run; `--extra LABEL="..."` replaces or adds
 flags for one binary. `--budget-mult 4` scales `--budget` (the 4x runs).
-Check `ps` before generating sims or running `qc_eval real`: no more than 2
+`qc_eval real` counts as a light run (PI, 19 Nov 2026): it shares the 6-run machine-wide cap with sim runs
+(keep the >=5 GB free guard, under ~2.5 GB peak each). Check `ps` before generating sims: no more than 2
 heavy processes machine-wide. `run_arms.py` only counts binaries whose path
 contains `qc_eval` or `/cala-eval/bin/` towards the cap, so keep them there.
 
 `qc_eval` ignores flags it does not know, without a warning; check the spelling
 of every flag (`--every`, not `--checkpoints`; there is no `--no-pass2`).
+
+### Branched runs: Discover once, several end stages
+
+Experiments that differ only AFTER Discover (settling / look-back drain, Refine passes, settle rules) can share one
+Discover. `qc_eval` runs to a branch point once, then forks the process (copy-on-write, so the state is exactly the
+unbranched run's, with no `Clone` of the pipeline) once per branch, one after another; each child applies its tail
+flags, runs on and writes its normal outputs to `<out>/<name>/`.
+
+```bash
+qc_eval sim SIM OUT <common flags> --branch-after discover \
+    --branch 'refine:--passes 2 --later-passes refine' \
+    --branch 'plain:--passes 1 --lookback-drain 4800'
+```
+
+- Points: `discover` (end of pass 1, before the look-back drain) and `drain` (after the drain, before later passes).
+- Branch flags are the post-Discover ones only (`qc_eval` `TAIL_FLAGS`: `--passes`, `--later-passes`,
+  `--lookback-drain`, `--lookback-drain-rate`, `--lookback-settle-all`); any other flag in a branch panics. At `drain` the
+  three drain flags belong to the common flags. A new post-Discover option: add it to `Tail` and `TAIL_FLAGS` in
+  `qc_eval.rs` and to `run_arms.TAIL_FLAGS`.
+- Not combinable with `--churn-log`, `--merge-log`, `--factors-out`, `--offered-fps` (shared files/globals).
+- Files the prefix already wrote into `<out>/` (e.g. `--lib-at`) are copied into each branch directory. Wall-time
+  columns (`passes.tsv`, `cost.txt`, ...) of a branch include the shared prefix.
+- Memory: the parent stays resident while a child runs (COW), so peak is about one run plus the child's dirty pages.
+- Saving (static_s5, 4 arms with `--passes 1`, `2 refine`, `3 refine`, `2 all`, 19 Nov 2026, machine shared): separate runs
+  220 + 389 + 407 + 555 = 1571 s of run wall (about 1580 CPU-s), one branched run 1039 s (-34 %); peak RSS 0.85 GB
+  (largest single process; the parent's pages are shared copy-on-write). The saving grows with the Discover share:
+  real-recording arms (Discover is about half the wall) gain more.
+- Gate: `footprints.bin`, `dump_trace.f32` and the metrics of a branch are byte-identical to the separate run (below).
+
+`run_arms.py --branch-after discover|drain` and `demix_suite.py --branch-after discover|drain` do it for you: arms of
+one sim whose args differ only in tail flags run as one branched `qc_eval`, and every arm's directory, `run.json`
+(plus `"branched": [labels]`), `stdout.log`, `time.txt`, suite-cache entry and metrics look exactly as for separate runs
+(so reports and the cache are unchanged; the arm's `wall_s`/`rss_gb` in `run.json` are the whole group's). Default `off`;
+the binary must be built from a tree with `--branch-after` (checked). `test_branch.py` tests the grouping.
 
 ## Demixing suite: judge a change with error bars
 
