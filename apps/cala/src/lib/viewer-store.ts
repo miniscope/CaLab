@@ -91,21 +91,24 @@ export function createViewerStore(client: FrameClient) {
   }
 
   /** What the open recording was opened from (look-back opens its own reader on it); null for a live source. */
-  let openedFrom: { entries: FolderEntry[] } | { sessions: SessionInput[] } | null = null;
+  // A signal: the look-back toggle's enabled state follows it (it is set after `info`).
+  const [openedFrom, setOpenedFrom] = createSignal<
+    { entries: FolderEntry[] } | { sessions: SessionInput[] } | null
+  >(null);
 
   async function openFiles(entries: FolderEntry[], name: string): Promise<void> {
-    openedFrom = null;
-    if (await openWith(() => client.open(entries), name)) openedFrom = { entries };
+    setOpenedFrom(null);
+    if (await openWith(() => client.open(entries), name)) setOpenedFrom({ entries });
   }
 
   /** Several sessions as one recording (a Joint run). */
   async function openSessions(sessions: SessionInput[], name: string): Promise<void> {
-    openedFrom = null;
+    setOpenedFrom(null);
     const ok = await openWith(() => {
       if (!client.openSessions) throw new Error('This frame client cannot open sessions.');
       return client.openSessions(sessions);
     }, name);
-    if (ok) openedFrom = { sessions };
+    if (ok) setOpenedFrom({ sessions });
   }
 
   /** Returns whether the recording opened. */
@@ -131,7 +134,7 @@ export function createViewerStore(client: FrameClient) {
 
   /** Connect to a live source; the frames shown come from the pipeline's previews. */
   async function openLive(url: string): Promise<void> {
-    openedFrom = null;
+    setOpenedFrom(null);
     pause();
     generation++;
     setError(null);
@@ -151,7 +154,7 @@ export function createViewerStore(client: FrameClient) {
   }
 
   function close(): void {
-    openedFrom = null;
+    setOpenedFrom(null);
     pause();
     generation++;
     wanted = null;
@@ -180,7 +183,7 @@ export function createViewerStore(client: FrameClient) {
     openSessions,
     openLive,
     /** The files the open recording came from (null: none, or a live source). */
-    source: () => openedFrom,
+    source: openedFrom,
     showFrame,
     play,
     pause,
