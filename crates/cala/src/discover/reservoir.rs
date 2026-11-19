@@ -23,7 +23,7 @@ pub(crate) use crate::compress::MISSING;
 
 /// Decode a stored value: NaN for [`MISSING`].
 #[inline]
-fn decode(v: i16) -> f32 {
+pub(super) fn decode(v: i16) -> f32 {
     if v == MISSING {
         f32::NAN
     } else {
@@ -76,9 +76,9 @@ pub(crate) fn quantize_round(v: f32) -> i16 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-use quantize_round as quantize;
+pub(super) use quantize_round as quantize;
 #[cfg(target_arch = "wasm32")]
-use quantize_trunc as quantize;
+pub(super) use quantize_trunc as quantize;
 
 /// `quantize_round` without `f32::round`, which WASM has no instruction
 /// for (a libm call per pixel; this is ~8x faster there, a little slower

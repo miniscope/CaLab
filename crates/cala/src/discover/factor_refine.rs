@@ -36,7 +36,7 @@ use std::sync::Arc;
 
 use super::fpstats::{add_mom, parity_block, FpStats, Mom, PixMoments, MIN_VALID_SHARE};
 use super::local::BgBasis;
-use super::reservoir::{mix, take_missing};
+use super::reservoir::{decode, mix, quantize, take_missing};
 use super::{column_on, Frames, SlowLoop};
 use crate::compress::blend::BlendLayout;
 use crate::compress::project::{FactorExtractor, WindowProjector};
@@ -215,6 +215,43 @@ struct Pass {
     has_cells: Vec<bool>,
     frames: usize,
     fitting: u64,
+}
+
+/// The held-out patches of one slow-loop tile, stored as the reservoir
+/// stores a slot (quantised whitened values, [`MISSING`](super::reservoir::MISSING)
+/// for a missing pixel), so the gate reads the values a raw pass would.
+#[derive(Debug, Clone, Default)]
+struct TestTile {
+    data: Vec<Vec<i16>>,
+    /// Background projections and energy of each decoded patch.
+    proj: Vec<(Vec<f64>, f64)>,
+    /// Slow-loop frame index of each.
+    idx: Vec<u64>,
+}
+
+impl TestTile {
+    fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// The patches decoded into the form the refine visit reads.
+    fn frames(&self) -> Frames {
+        let (y, miss) = self.data.iter().map(|d| decode_patch(d)).unzip();
+        Frames {
+            y,
+            proj: self.proj.clone(),
+            idx: self.idx.clone(),
+            miss,
+        }
+    }
+}
+
+/// A stored patch decoded as `load` decodes a slot: values in σ units, a
+/// missing pixel 0 and listed.
+fn decode_patch(data: &[i16]) -> (Vec<f32>, Vec<u32>) {
+    let mut v: Vec<f32> = data.iter().map(|&q| decode(q)).collect();
+    let miss = take_missing(&mut v);
+    (v, miss)
 }
 
 /// Per frame pixel: the blended share of the window's frames in which it
@@ -732,16 +769,25 @@ impl SlowLoop {
     /// where its cells are most active, the rest uniformly (a hash of the
     /// frame, the tile and the seed); `(frame, slow-loop index)` by frame.
     fn pick_tests(&self, scores: &[Vec<(f32, usize, u64)>], k: usize) -> Vec<Vec<(usize, u64)>> {
-        let k_r = ((k as f32 * self.cfg.random_share).round() as usize).min(k);
+        // At least one uniform frame, as the reservoir keeps one random slot.
+        let k_r = ((k as f32 * self.cfg.random_share).round() as usize)
+            .max(1)
+            .min(k);
         let k_e = k - k_r;
         scores
             .iter()
             .enumerate()
             .map(|(ti, s)| {
+                let key = |slow: u64| self.test_key(ti, slow);
                 let mut ev: Vec<&(f32, usize, u64)> = s.iter().collect();
-                ev.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+                // Equal scores (quiet frames score exactly 0) go by the
+                // hash, so they are not the recording's earliest frames.
+                ev.sort_by(|a, b| {
+                    b.0.total_cmp(&a.0)
+                        .then(key(a.2).cmp(&key(b.2)))
+                        .then(a.1.cmp(&b.1))
+                });
                 let mut out: Vec<(usize, u64)> = ev.iter().take(k_e).map(|e| (e.1, e.2)).collect();
-                let key = |slow: u64| mix(slow ^ ((ti as u64) << 40) ^ self.cfg.seed);
                 let mut rest: Vec<&(f32, usize, u64)> = ev.into_iter().skip(k_e).collect();
                 rest.sort_by_key(|e| (key(e.2), e.1));
                 out.extend(rest.iter().take(k_r).map(|e| (e.1, e.2)));
@@ -751,16 +797,22 @@ impl SlowLoop {
             .collect()
     }
 
+    /// The uniform order of held-out frame `slow` in tile `ti`.
+    fn test_key(&self, ti: usize, slow: u64) -> u64 {
+        mix(slow ^ ((ti as u64) << 40) ^ self.cfg.seed)
+    }
+
     /// Pass B: the chosen held-out frames of every tile, its patch rebuilt
-    /// from the factors and whitened as the reservoir stores a frame
-    /// (`y · σ⁻¹`; a pixel below the valid share missing). `t_len`: the
-    /// frames pass A read. A refused call leaves the loop as it was.
+    /// from the factors and stored as the reservoir stores a frame
+    /// (`y · σ⁻¹` quantised; a pixel below the valid share missing).
+    /// `t_len`: the frames pass A read. A refused call leaves the loop as
+    /// it was.
     fn test_frames(
         &mut self,
         src: &mut dyn FactorSource,
         pick: &[Vec<(usize, u64)>],
         t_len: usize,
-    ) -> Result<Vec<Frames>, TraceError> {
+    ) -> Result<Vec<TestTile>, TraceError> {
         if pick.len() != self.tiles.len() {
             return Err(TraceError::InvalidConfig(format!(
                 "held-out frames for {} tiles, the slow loop has {}",
@@ -777,14 +829,8 @@ impl SlowLoop {
             .zip(&self.bgs)
             .map(|(t, b)| b.is_none().then(|| BgBasis::new(t.rect)))
             .collect();
-        let mut out: Vec<Frames> = (0..self.tiles.len())
-            .map(|_| Frames {
-                y: Vec::new(),
-                proj: Vec::new(),
-                idx: Vec::new(),
-                miss: Vec::new(),
-            })
-            .collect();
+        let mut out: Vec<TestTile> = (0..self.tiles.len()).map(|_| TestTile::default()).collect();
+        let mut v = Vec::new();
         let mut t0 = 0usize;
         for w in 0..src.windows() {
             let wf = src.window(w)?;
@@ -798,7 +844,8 @@ impl SlowLoop {
                 };
                 let in_window = chosen.iter().filter(|c| c.0 >= t0 && c.0 < t0 + wf.frames);
                 for &(t, slow) in in_window {
-                    let mut v = vec![0.0f32; rect.len()];
+                    v.clear();
+                    v.resize(rect.len(), 0.0f32);
                     let r = (rect.x0, rect.y0, rect.w, rect.h);
                     if !layout.reconstruct_rect(&wf, t - t0, r, &mut v) {
                         return Err(TraceError::InvalidConfig(format!(
@@ -816,11 +863,12 @@ impl SlowLoop {
                             };
                         }
                     }
-                    let miss = take_missing(&mut v);
-                    out[ti].proj.push(bg.project(&v));
+                    let data: Vec<i16> = v.iter().map(|&z| quantize(z)).collect();
+                    // The projections of the decoded patch, as `load` takes them.
+                    let (y, _) = decode_patch(&data);
+                    out[ti].proj.push(bg.project(&y));
                     out[ti].idx.push(slow);
-                    out[ti].miss.push(miss);
-                    out[ti].y.push(v);
+                    out[ti].data.push(data);
                 }
             }
             t0 += wf.frames;
@@ -852,6 +900,7 @@ mod tests {
     use super::*;
     use crate::compress::blend::Tiling;
     use crate::compress::{CompressConfig, WindowCompressor};
+    use crate::discover::reservoir::{MISSING, QUANT};
     use crate::discover::tests::{blob_w, dims, flattener, movie, trace, v2_config, Lcg, N};
     use crate::discover::EditScope;
     use crate::discover::SlowLoopConfig;
@@ -1254,18 +1303,41 @@ mod tests {
                 assert!(p.iter().any(|&(t, _)| t == top.1));
             }
         }
-        // A source that lost a window between the passes is refused, and the
-        // loop's tile bases stay as they were.
+        // Refused: a source that lost a window between the passes, picks for
+        // another number of tiles, a picked frame past the windows. Each
+        // leaves the loop's tile bases as they were.
         let unset: Vec<bool> = sl.bgs.iter().map(Option::is_none).collect();
         assert!(unset.iter().any(|&u| u), "a tile without a basis yet");
+        let mut past = pick.clone();
+        past[0].push((T + 5, sl.frames() + (T + 5) as u64));
         let mut short = windows[..windows.len() - 1].to_vec();
-        assert!(sl.test_frames(&mut short, &pick, pass.frames).is_err());
-        assert_eq!(
-            sl.bgs.iter().map(Option::is_none).collect::<Vec<_>>(),
-            unset
-        );
-        let frames = sl.test_frames(&mut src, &pick, pass.frames).unwrap();
-        assert_eq!(frames.len(), sl.tiles.len());
+        let refused = [
+            (
+                "short source",
+                sl.test_frames(&mut short, &pick, pass.frames).err(),
+            ),
+            (
+                "pick length",
+                sl.test_frames(&mut src, &pick[..1], pass.frames).err(),
+            ),
+            (
+                "past the windows",
+                sl.test_frames(&mut src, &past, pass.frames).err(),
+            ),
+        ];
+        for (name, err) in refused {
+            assert!(
+                matches!(err, Some(TraceError::InvalidConfig(_))),
+                "{name}: {err:?}"
+            );
+            assert_eq!(
+                sl.bgs.iter().map(Option::is_none).collect::<Vec<_>>(),
+                unset,
+                "{name}: bases changed"
+            );
+        }
+        let stored = sl.test_frames(&mut src, &pick, pass.frames).unwrap();
+        assert_eq!(stored.len(), sl.tiles.len());
         assert!(pick.iter().any(|p| p.len() == k), "a tile with K frames");
         // A tile with fewer held-out frames than asked for gets all of them.
         let all = sl.pick_tests(&pass.scores, T);
@@ -1276,7 +1348,9 @@ mod tests {
         }
         let mut full = vec![0.0f32; dims().pixels()];
         let mut gone_listed = 0;
-        for (ti, fr) in frames.iter().enumerate() {
+        for (ti, tt) in stored.iter().enumerate() {
+            assert_eq!(tt.len(), pick[ti].len());
+            let fr = tt.frames();
             assert_eq!(fr.len(), pick[ti].len());
             let rect = sl.tiles[ti].rect;
             for (j, &(t, slow)) in pick[ti].iter().enumerate() {
@@ -1288,16 +1362,27 @@ mod tests {
                     for xx in 0..rect.w {
                         let g = (rect.y0 + yy) * N + rect.x0 + xx;
                         let l = yy * rect.w + xx;
+                        let at = format!("tile {ti} frame {t} pixel {g}");
                         let gone = vmap[g] < MIN_VALID_SHARE as f32;
+                        let z = if gone {
+                            f32::NAN
+                        } else {
+                            full[g] * sl.inv_sigma[g]
+                        };
+                        // Stored exactly as the reservoir stores `z`.
+                        let q = tt.data[j][l];
+                        assert_eq!(q, quantize(z), "{at}");
+                        assert_eq!(q == MISSING, gone, "{at}");
                         let listed = fr.miss[j].binary_search(&(l as u32)).is_ok();
-                        assert_eq!(listed, gone, "tile {ti} frame {t} pixel {g}");
+                        assert_eq!(listed, gone, "{at}");
                         gone_listed += usize::from(listed && g == GONE);
-                        let want = if gone { 0.0 } else { full[g] * sl.inv_sigma[g] };
-                        assert_eq!(
-                            fr.y[j][l].to_bits(),
-                            want.to_bits(),
-                            "tile {ti} frame {t} pixel {g}"
-                        );
+                        let y = fr.y[j][l];
+                        if gone {
+                            assert_eq!(y.to_bits(), 0.0f32.to_bits(), "{at}");
+                        } else {
+                            assert_eq!(y.to_bits(), decode(q).to_bits(), "{at}");
+                            assert!((y - z).abs() <= 0.5 / QUANT, "{at}: {y} vs {z}");
+                        }
                     }
                 }
                 assert_eq!(fr.proj[j], sl.bgs[ti].as_ref().unwrap().project(&fr.y[j]));
@@ -1307,6 +1392,45 @@ mod tests {
             gone_listed > 0,
             "GONE missing in a held-out patch of window 1"
         );
+    }
+
+    #[test]
+    fn quiet_frames_are_picked_by_the_hash_and_one_frame_is_uniform() {
+        let (sl, windows) = fixture(cfg(BackgroundModel::None));
+        let rc = FactorRefineConfig::default();
+        let lib = sl.library().unwrap().clone();
+        let mut pass = sl.sum_pass(&lib, &mut windows.clone(), &rc).unwrap();
+        // Tile 0 quiet: every held-out frame scores 0.
+        for e in &mut pass.scores[0] {
+            e.0 = 0.0;
+        }
+        let k = sl.test_count(&rc);
+        assert!(pass.scores[0].len() > 2 * k, "candidates to choose from");
+        let pick = sl.pick_tests(&pass.scores, k);
+        assert_eq!(pick, sl.pick_tests(&pass.scores, k), "deterministic");
+        let mut earliest: Vec<(usize, u64)> = pass.scores[0].iter().map(|e| (e.1, e.2)).collect();
+        earliest.sort_unstable();
+        earliest.truncate(k);
+        assert_eq!(pick[0].len(), k);
+        assert_ne!(pick[0], earliest, "not the recording's earliest frames");
+        // With every score equal, event and uniform parts both follow the hash.
+        let mut by_hash: Vec<(usize, u64)> = pass.scores[0].iter().map(|e| (e.1, e.2)).collect();
+        by_hash.sort_by_key(|&(t, slow)| (sl.test_key(0, slow), t));
+        by_hash.truncate(k);
+        by_hash.sort_unstable();
+        assert_eq!(pick[0], by_hash, "the hash's first k");
+        // One frame per tile: the uniform one (the hash's first), not the
+        // most active.
+        let one = sl.pick_tests(&pass.scores, 1);
+        for (ti, s) in pass.scores.iter().enumerate() {
+            let want: Vec<(usize, u64)> = s
+                .iter()
+                .min_by_key(|e| (sl.test_key(ti, e.2), e.1))
+                .map(|e| (e.1, e.2))
+                .into_iter()
+                .collect();
+            assert_eq!(one[ti], want, "tile {ti}");
+        }
     }
 
     #[test]
