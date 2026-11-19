@@ -54,6 +54,12 @@ describe('the factors of a run', () => {
     expect(extractSourceText('unusable', st())).toBe(
       'Extract replays the file: the factors do not cover the recording.',
     );
+    expect(extractSourceText('ready', st(), true)).toBe(
+      'Extract replays the file: the last Extract on the factors failed.',
+    );
+    expect(extractSourceText('none', null, true)).toBe(
+      'Extract replays the file; the first replay compresses the frames for later Extracts.',
+    );
   });
 
   const OFFSET = { compress: true, compressTiling: 'offset', compressSession: 7 };

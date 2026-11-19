@@ -75,6 +75,11 @@
  * Version 3 also renamed `pass2_seconds` to `extract_seconds` and the flat
  * field's `pass2` / `pass1_maps` to `extract` / `discover_maps`.
  *
+ * Stage sources (format version 7): each stage record has `source`: `raw` (the
+ * stage read the recording) or `factors` (it read the compressed factors); a
+ * factor stage also has `tiling` (`plain`, `offset`) and `mean_rank` (mean kept
+ * rank per tile).
+ *
  * Field-of-view images (format version 5; optional to readers, absent when the
  * run kept none). Both are projections over Extract's frames (every frame of
  * the export's span, with the final flat field and Discover's motion; see
@@ -157,7 +162,7 @@ import type { StageRun } from './run-stages.ts';
 import { seriesMeta } from './refine-metrics.ts';
 import type { HistoryExport } from '@calab/compute';
 
-export const EXPORT_FORMAT_VERSION = 6;
+export const EXPORT_FORMAT_VERSION = 7;
 
 /** Largest CaDecon trace matrix written the classic in-memory way (C order, no ZIP64), bytes. */
 export const CADECON_MEMORY_BYTES = 512 * 1048576;
@@ -242,6 +247,9 @@ export function stageMeta(r: StageRun): Record<string, unknown> {
     ['refined_share', r.refinedShare],
   ];
   for (const [k, v] of counts) if (v !== undefined) out[k] = v;
+  if (r.source) out.source = r.source;
+  if (r.tiling) out.tiling = r.tiling;
+  if (r.meanRank !== undefined) out.mean_rank = r.meanRank;
   if (r.series) out.series = seriesMeta(r.series);
   return out;
 }

@@ -3,7 +3,7 @@ import { MetricTile, ProgressBar, SegmentedControl, type ProgressState } from '@
 import { formatClock, formatElapsed, windowPresets } from '@calab/ui/chart';
 import type { ByteSink } from '@calab/io';
 import type { CellStore } from '../lib/cell-store.ts';
-import { compressReadout, type CompressStore } from '../lib/compress-store.ts';
+import { compressReadout, extractSourceText, type CompressStore } from '../lib/compress-store.ts';
 import { reviewReadout, type ReviewStore } from '../lib/review-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { LookbackStatus } from '../workers/lookback-types.ts';
@@ -297,14 +297,18 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   });
 
   const pass2Text = () => {
+    const fromFactors = p().source() === 'factors';
     switch (p().status()) {
       case 'running':
-        return 'Extract: solving the traces of every frame with the final footprints';
+        return fromFactors
+          ? 'Extract: solving the traces of every frame from the factors'
+          : 'Extract: solving the traces of every frame with the final footprints';
       case 'done': {
         const res = p().result();
+        const from = fromFactors ? ' (from the factors)' : '';
         return res
-          ? `Extract done: ${res.cells} cells x ${res.frames.toLocaleString()} frames in ${res.seconds.toFixed(1)} s (${(res.frames / res.seconds).toFixed(0)} frames/s)`
-          : 'Extract done';
+          ? `Extract done${from}: ${res.cells} cells x ${res.frames.toLocaleString()} frames in ${res.seconds.toFixed(1)} s (${(res.frames / res.seconds).toFixed(0)} frames/s)`
+          : `Extract done${from}`;
       }
       case 'error':
         return `Extract stopped: ${p().error() ?? 'error'}`;
@@ -913,6 +917,19 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           </span>
         </Show>
       </div>
+      <Show
+        when={
+          props.compress && !props.live && s().status() === 'done' && p().status() !== 'running'
+        }
+      >
+        <p class="cala-muted cala-run__line" data-testid="extract-source">
+          {extractSourceText(
+            props.compress!.factors(s().record().frames),
+            props.compress!.status(),
+            p().factorsFailed(),
+          )}
+        </p>
+      </Show>
       <div class="cala-run__footer">
         <Show
           when={p().status() !== 'running' && !props.live}

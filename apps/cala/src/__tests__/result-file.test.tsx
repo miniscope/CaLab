@@ -232,7 +232,7 @@ describe('export format 5 and the result reader', () => {
     const blob = new Blob([await buildCalaExport(await input({ start: 5, end: 10 }))]);
     const r = await openResult(blob);
     expect(r.formatVersion).toBe(EXPORT_FORMAT_VERSION);
-    expect(r.formatVersion).toBe(6);
+    expect(r.formatVersion).toBe(7);
     expect([r.width, r.height, r.frames, r.fps]).toEqual([W, H, 5, 20]);
     expect(r.label).toBe('mouse1/s1');
     expect(r.missing.size).toBe(0);

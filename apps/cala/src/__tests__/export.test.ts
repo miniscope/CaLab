@@ -10,9 +10,11 @@ import {
   cadeconCells,
   EXPORT_FORMAT_VERSION,
   fileStem,
+  stageMeta,
 } from '../lib/export.ts';
 import type { Pass2Result } from '../lib/pass2-store.ts';
 import { memoryTraceFile } from '../lib/trace-file.ts';
+import { stagesFromMeta } from '../lib/result-file.ts';
 import { RunRecord } from '../lib/run-record.ts';
 import type { LibraryView } from '../workers/slow-types.ts';
 
@@ -357,5 +359,41 @@ describe('export', () => {
   it('makes a safe file stem', () => {
     expect(fileStem('my folder/2026')).toBe('my_folder_2026');
     expect(fileStem('///')).toBe('recording');
+  });
+});
+
+describe('stage records (format 7)', () => {
+  const base = {
+    index: 1,
+    startedAt: '2026-11-19T10:00:00.000Z',
+    endedAt: '2026-11-19T10:00:05.000Z',
+    outcome: 'done',
+    frames: 8,
+    cells: 2,
+    libraryVersion: 3,
+  } as const;
+
+  it('say where each stage read its frames, and read back', () => {
+    expect(EXPORT_FORMAT_VERSION).toBe(7);
+    const factors = stageMeta({
+      ...base,
+      stage: 'extract',
+      source: 'factors',
+      tiling: 'offset',
+      meanRank: 4.5,
+    });
+    expect(factors).toMatchObject({ source: 'factors', tiling: 'offset', mean_rank: 4.5 });
+    const raw = stageMeta({ ...base, stage: 'refine', source: 'raw' });
+    expect(raw.source).toBe('raw');
+    expect('tiling' in raw).toBe(false);
+    expect('mean_rank' in raw).toBe(false);
+    const old = stageMeta({ ...base, stage: 'discover' });
+    expect('source' in old).toBe(false);
+    const [legacy] = stagesFromMeta([old]);
+    expect('source' in legacy || 'tiling' in legacy || 'meanRank' in legacy).toBe(false);
+    expect(stagesFromMeta([factors, raw])).toMatchObject([
+      { stage: 'extract', source: 'factors', tiling: 'offset', meanRank: 4.5 },
+      { stage: 'refine', source: 'raw' },
+    ]);
   });
 });

@@ -60,9 +60,15 @@ export type ExtractMessage =
   | { type: 'abort'; message: string };
 
 /** What Extract will read now (the Run panel, compression on). */
-export function extractSourceText(state: FactorState, s: CompressStatus | null): string {
+export function extractSourceText(
+  state: FactorState,
+  s: CompressStatus | null,
+  factorsFailed = false,
+): string {
   switch (state) {
     case 'ready':
+      // After a failed factor Extract the next one replays the file.
+      if (factorsFailed) return 'Extract replays the file: the last Extract on the factors failed.';
       return 'Extract reads the factors (seconds).';
     case 'compressing':
       return `Extract replays the file: the factors are being compressed${

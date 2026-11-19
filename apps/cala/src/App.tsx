@@ -289,6 +289,7 @@ const App: Component = () => {
       merges: c?.merges ?? 0,
       deletes: c?.deletes ?? 0,
       splits: c?.splits ?? 0,
+      source: 'raw',
     };
     stageLog.end('discover', 'done', data);
     logStage('discover', `Discover done: ${data.cells} cells`);
@@ -321,6 +322,9 @@ const App: Component = () => {
             frames: r?.frames ?? 0,
             cells: r?.cells ?? 0,
             libraryVersion: r?.version ?? 0,
+            ...(r?.source ? { source: r.source } : {}),
+            ...(r?.tiling ? { tiling: r.tiling } : {}),
+            ...(r?.meanRank !== undefined ? { meanRank: r.meanRank } : {}),
           });
           logStage('extract', 'Extract done');
           const result = r;

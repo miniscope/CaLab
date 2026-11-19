@@ -13,7 +13,7 @@
  *
  * Every format version opens: 1 to 4 lack the FOV images and the flat-field
  * map (5), 1 to 3 the signed traces (4), 1 the history and events (2), and 1
- * and 2 the stage list (3). What is
+ * and 2 the stage list (3); 7 adds the stage sources. What is
  * missing is listed in `missing` so the viewer can say "not in this export".
  */
 import { parseBoundaryFlag, type BoundaryFlag } from './boundary-flags.ts';
@@ -113,6 +113,9 @@ export function stagesFromMeta(v: unknown): StageRun[] {
     ];
     for (const [k, key] of opt)
       if (key in x) (r as unknown as Record<string, unknown>)[k] = x[key] as number | null;
+    if (x.source === 'raw' || x.source === 'factors') r.source = x.source;
+    if (x.tiling === 'plain' || x.tiling === 'offset') r.tiling = x.tiling;
+    if (typeof x.mean_rank === 'number') r.meanRank = x.mean_rank;
     return r;
   });
 }
