@@ -338,6 +338,57 @@ describe('CompressRunner', () => {
     expect(first.mean[0]).toBeCloseTo(mean, 1);
   });
 
+  it('refuses a tile below 2 in the feed', () => {
+    expect(() => feedWith({ tile: 1 })).toThrow(RangeError);
+    expect(() => feedWith({ tile: 2 })).not.toThrow();
+  });
+
+  it('keeps no half-initialised session when the layout is refused', async () => {
+    const { feed, sent } = feedWith({});
+    feed.push(batch(0, 50), 0, 50);
+    feed.end();
+    const { r, store, toMain } = runner();
+    let broken = true;
+    const deps = (r as unknown as { deps: { layout: typeof tileLayout } }).deps;
+    const layout = deps.layout;
+    deps.layout = (...a) => {
+      if (broken) throw new Error('layout refused');
+      return layout(...a);
+    };
+    await expect(r.handle(sent[0])).rejects.toThrow('layout refused');
+    for (const m of sent.slice(1)) await r.handle(m); // late chunks of the refused session
+    await r.idle();
+    expect(store.files.size).toBe(0);
+    broken = false;
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    expect([...store.files.keys()]).toEqual([factorName(0)]);
+    expect(toMain.some((m) => m.type === 'error')).toBe(false);
+  });
+
+  it('compresses a frame whose edge tile is one pixel (33 x 33, tile 16)', async () => {
+    const n = 33;
+    const sent: FastToCompress[] = [];
+    const feed = new CompressFeed(
+      { width: n, height: n, session: 7, tile: 16, window: 20, quant: QUANT, tiling: 'offset' },
+      { postMessage: (m) => sent.push(m) },
+    );
+    const frames = new Float32Array(20 * n * n);
+    for (let t = 0; t < 20; t++)
+      for (let i = 0; i < n * n; i++) frames[t * n * n + i] = 10 + Math.sin(t / 4 + i / 9);
+    feed.push(frames, 0, 20);
+    const { r, store, toMain } = runner();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    expect(toMain.some((m) => m.type === 'error')).toBe(false);
+    const win = FactorWindow.fromBytes(store.files.get(factorName(0))!);
+    try {
+      expect([win.frames, win.tiling]).toEqual([20, 'offset']);
+    } finally {
+      win.free();
+    }
+  });
+
   it('drops its files on reset and ignores another session', async () => {
     const { feed, sent } = collectingFeed(10);
     feed.push(batch(0, 14), 0, 14);
