@@ -13,6 +13,14 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   with overlapping and offset tilings in `compress::blend`; `tools/cala-eval/factor_arms.py` and
   `factor_closeness.py` compare them with the raw replay. Every `qc_eval` run now also writes
   `stage_times.tsv` (seconds per pass). No change to the app.
+- cala evaluation, factor pipeline phase 4a (what a live run may claim): `qc_eval --from F` runs a later stretch of a
+  recording, `--ff-seed-run DIR` starts a run with the flat field map that an earlier run ended with (as the app stores
+  it per device), and `--lookback-source factors` lets main's look-back read Discover's factor windows instead of the
+  raw file. `factor_closeness.py --match` pairs cells by footprint (for runs whose Discover differed) and reports the
+  footprint correlation with the truth footprint. `factor_arms.py` has the arms `live`, `seed`, `raw_seed`,
+  `live_seed`, `lb_raw`, `lb_fac` and `lb_live` and `--seed-from F`. On the bounded runs, Discover's factors without
+  recalibration fail gate A1 on both real 200 px recordings and on `motion`; a flat field seed brought one of two
+  cross-session runs inside the gate: `tools/cala-eval/results/2026-11-19-factor-phase4a.md`. No change to the app.
 
 - Cala (experimental, off by default): a joint footprint update for overlapping cells in the Refine stage (`SlowLoopConfig::joint_update`, `qc_eval --joint-update refine`). Cells whose footprints overlap (normalised whitened overlap ≥ 0.05, at most 6 per cluster) keep a compact history of their residual (K numbers per fitting frame over one statistics half-life). A refine visit re-solves the stored frames' traces with the current footprints, refits the footprints jointly (non-negative) and accepts the members' new footprints together or not at all. On the 14-sim demixing suite it lowers the close-pair trace correlation excess +0.150 → +0.106 and the share of bitten neighbours at 0.75-1 soma diameters 0.49 → 0.34 (14/14 and 13/14 sims), with matched and false cells unchanged; the Refine pass's slow-loop frame cost rises about 30 %. The cluster support rule and Discover use are not done yet. See `tools/cala-eval/results/2026-11-17-cluster-replay.md`.
 

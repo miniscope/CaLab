@@ -58,6 +58,14 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
   Each factor arm's section of `report.md` ends with the gate A1 table (rules 1 to 4 of spec Amendment 1, on QC-pass
   cells; a lost cell counts as the worst case) and `Gate A1: pass.` or `fail.`
   (`results/2026-11-18-factor-phase1.md`).
+- Factor pipeline, phase 4a (what a live run may claim, `results/2026-11-19-factor-phase4a.md`): the arms `live`
+  (Extract and the refine replays read Discover's own factors on the offset grids), `seed` (a run on a later stretch,
+  `qc_eval --from F`, that makes a flat field map; `factor_arms.py --seed-from F`), `raw_seed` and `live_seed` (as
+  `raw` and `live`, started with that map by `qc_eval --ff-seed-run DIR`), `lb_raw` (main's look-back on raw frames,
+  joint flags on), `lb_fac` (its cursor reads the factor windows, `--lookback-source factors`) and `lb_live` (that plus
+  Extract on the factors). `factor_closeness.py --match` pairs cells by footprint instead of by id, for arms whose
+  Discover differs (`raw_seed` against `raw`, the look-back arms), and prints the footprint correlation with the truth
+  footprint.
 - `tools/cala-diagnostics/history_wholetest.py` reads v1 and v2 factor files (plain tiles only).
 - `stage_times.py EXPORT.npz [...]`: seconds and frames per second of each Discover, Refine and
   Extract run of a cala browser run, from its export's stage records; an export without them (a

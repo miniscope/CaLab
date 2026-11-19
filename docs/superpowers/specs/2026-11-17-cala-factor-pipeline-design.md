@@ -600,9 +600,12 @@ Decided:
 - **The look-back gets a second frame source: the factors written so far in
   the run.** They are already preprocessed and motion-corrected, with the
   calibration of their time (flat field, background floor, noise map,
-  flicker), so neither the preprocessing nor the warp is applied again. The
-  samples that the stored motion record marks missing are set missing again,
-  so both sources skip the same samples. A frame can be read once its window is
+  flicker), so neither the preprocessing nor the warp is applied again. Only
+  the pixels whose valid share in the window is 0 are marked missing, read from
+  the factor file (corrected 19 Nov after the review of phase 4a's look-back
+  source: the live frame holds a finite filler at samples the motion mask
+  removes once the pixel had a valid sample, so the stored motion records are
+  not used). A frame can be read once its window is
   written: at most one window (600 frames, 30 s at 20 fps) behind the live
   frame. A cell born in the newest window waits for it. At the end of a stream
   the last window is flushed before the look-back's drain.
@@ -659,8 +662,11 @@ overrule:
 - A9: a live look-back reads the factors, rather than a buffer of the last few
   thousand raw frames kept for it (about 120 MB at 200 px, over 1 GB at
   600 px).
-- A9: the missing samples of a look-back frame are restored from the stored
-  motion records.
+- A9: with the factor source, a look-back frame marks as missing only the
+  pixels whose valid share in the window is 0 (read from the factor file); the
+  stored motion records are not used. The live frame holds a finite filler at
+  samples the motion mask removes once the pixel had a valid sample (corrected
+  19 Nov after the review of phase 4a's look-back source).
 - A9: a cell born in the newest window waits up to one window for its
   look-back frames.
 - Phase 4a: an earlier session of the same sensor is simulated by a later
