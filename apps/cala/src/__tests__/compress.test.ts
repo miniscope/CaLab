@@ -13,6 +13,7 @@ import {
 import { createCellStore } from '../lib/cell-store.ts';
 import { CompressFeed, compressFeedFor, compressFeedOptions } from '../lib/compress-feed.ts';
 import { CompressRunner, factorName, tilesOf } from '../lib/compress-runner.ts';
+import type { CompressRunnerDeps } from '../lib/compress-runner.ts';
 import { compressReadout, createCompressStore } from '../lib/compress-store.ts';
 import { memoryStore } from '../lib/window-store.ts';
 import type { CompressToMain, FastToCompress } from '../workers/compress-types.ts';
@@ -59,7 +60,7 @@ function collectingFeed(window: number) {
   return { feed, sent };
 }
 
-function runner(store = memoryStore()) {
+function runner(store = memoryStore(), extra: Partial<CompressRunnerDeps> = {}) {
   const toMain: CompressToMain[] = [];
   const r = new CompressRunner({
     store,
@@ -81,6 +82,7 @@ function runner(store = memoryStore()) {
     factors: (bytes) => FactorWindow.fromBytes(bytes),
     toMain: { postMessage: (m) => toMain.push(m) },
     yieldNow: () => Promise.resolve(),
+    ...extra,
   });
   return { r, store, toMain };
 }
@@ -397,10 +399,20 @@ describe('CompressRunner', () => {
   });
 
   it('keeps no half-initialised session when the layout is refused', async () => {
-    const { feed, sent } = feedWith({});
+    // A runner with a valid session: Discover's window 0 compressed, window 1 open.
+    const old = feedWith({});
+    old.feed.push(batch(0, 60), 0, 60);
+    const oldChunks = old.sent.filter((m) => m.type === 'chunk');
+    expect(oldChunks.length).toBeGreaterThan(1);
+    const { r, store, toMain } = runner();
+    for (const m of old.sent) await r.handle(m);
+    await r.idle();
+    expect(store.files.has(factorName(0))).toBe(true);
+    // Extract's replay reuses the session number; its layout is refused.
+    const { feed, sent } = feedWith({ tiling: 'offset', source: 'replay' });
     feed.push(batch(0, 50), 0, 50);
     feed.end();
-    const { r, store, toMain } = runner();
+    expect(sent[0]).toMatchObject({ type: 'init', session: old.sent[0].session });
     let broken = true;
     const deps = (r as unknown as { deps: { layout: typeof tileLayout } }).deps;
     const layout = deps.layout;
@@ -409,6 +421,8 @@ describe('CompressRunner', () => {
       return layout(...a);
     };
     await expect(r.handle(sent[0])).rejects.toThrow('layout refused');
+    // A stray chunk of the old session (same number) is not cut on its plain grid.
+    await r.handle(oldChunks[oldChunks.length - 1]);
     for (const m of sent.slice(1)) await r.handle(m); // late chunks of the refused session
     await r.idle();
     expect(store.files.size).toBe(0);
@@ -417,6 +431,42 @@ describe('CompressRunner', () => {
     await r.idle();
     expect([...store.files.keys()]).toEqual([factorName(0)]);
     expect(toMain.some((m) => m.type === 'error')).toBe(false);
+  });
+
+  it('reports the compute time per frame as the mean over all windows', async () => {
+    // A clock that only quantizing (1 ms per frame) and compressing move: 2 ms
+    // per tile for the window of 50 frames, 7 ms per tile for the one of 20.
+    let clock = 0;
+    const { feed, sent } = feedWith({});
+    feed.push(batch(0, 70), 0, 70);
+    feed.end();
+    const { r, toMain } = runner(memoryStore(), {
+      now: () => clock,
+      quantize: (frames, count, ...rest) => {
+        clock += count;
+        quantizeTiles(frames, count, ...rest);
+      },
+      create: (quant) => {
+        const c = new TileCompressor(quant);
+        return {
+          compress: (raw, frames, x0, y0, w, h, seed) => {
+            clock += frames === 50 ? 2 : 7;
+            return c.compress(raw, frames, x0, y0, w, h, seed);
+          },
+          free: () => c.free(),
+        };
+      },
+    });
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    const tiles = tileLayout(W, H, TILE, 'plain').length / 4;
+    const statuses = toMain.flatMap((m) => (m.type === 'status' ? [m.status] : []));
+    const first = statuses.find((s) => s.windows === 1)!;
+    const last = statuses[statuses.length - 1];
+    expect(last).toMatchObject({ windows: 2, frames: 70, final: true });
+    expect(first.msPerFrame).toBeCloseTo((50 + 2 * tiles) / 50, 9);
+    // Not the last window's (20 + 7 * tiles) / 20.
+    expect(last.msPerFrame).toBeCloseTo((70 + 9 * tiles) / 70, 9);
   });
 
   it('compresses a frame whose edge tile is one pixel (33 x 33, tile 16)', async () => {
@@ -597,6 +647,31 @@ describe('back-fill from the factors', () => {
     expect(compressReadout(store.status(), store.backfill())).toMatch(
       /traces back-filled \(100 frames, 2\.5 ms\/frame\)$/,
     );
+  });
+
+  it("is not requested on the final status of Extract's replay", () => {
+    const store = createCompressStore();
+    store.reset(3);
+    const status = {
+      windows: 2,
+      frames: 100,
+      pending: 0,
+      pendingFrames: 0,
+      meanRank: 2,
+      msPerFrame: 8,
+      factorBytes: 1 << 20,
+      final: true,
+      tiling: 'offset' as const,
+      source: 'replay' as const,
+    };
+    store.onMessage({ type: 'status', session: 3, status });
+    expect(store.takeBackfill(true, true, 4)).toBe(false);
+    store.onMessage({
+      type: 'status',
+      session: 3,
+      status: { ...status, tiling: 'plain', source: 'discover' },
+    });
+    expect(store.takeBackfill(true, true, 4)).toBe(true);
   });
 });
 

@@ -174,7 +174,8 @@ export class CompressRunner {
   private frames = 0;
   private factorBytes = 0;
   private meanRank = 0;
-  private msPerFrame = 0;
+  /** Compute time (quantizing and compressing) of all compressed windows, ms. */
+  private computeMs = 0;
 
   constructor(private readonly deps: CompressRunnerDeps) {
     this.yieldNow = deps.yieldNow ?? macrotask;
@@ -185,6 +186,10 @@ export class CompressRunner {
   async handle(msg: FastToCompress): Promise<void> {
     if (msg.type === 'init') {
       await this.clear();
+      // No session until the new one is laid out: a refused layout must not
+      // leave the previous session's `init` taking chunks.
+      this.session = -1;
+      this.init = null;
       // The layout first: a refused one must not leave a half-initialised session.
       const tiles = tilesOf(this.deps.layout(msg.width, msg.height, msg.tile, msg.tiling));
       this.tiles = tiles;
@@ -455,7 +460,7 @@ export class CompressRunner {
       this.frames += job.frames;
       this.factorBytes += at;
       this.meanRank = rank / Math.max(1, this.tiles.length);
-      this.msPerFrame = (ms + job.quantMs) / job.frames;
+      this.computeMs += ms + job.quantMs;
     } finally {
       close();
     }
@@ -497,7 +502,7 @@ export class CompressRunner {
       pending: this.pending.length,
       pendingFrames: this.pending.reduce((s, w) => s + w.frames, 0),
       meanRank: this.meanRank,
-      msPerFrame: this.msPerFrame,
+      msPerFrame: this.computeMs / Math.max(1, this.frames),
       factorBytes: this.factorBytes,
       final: this.final && this.pending.length === 0,
       tiling: this.init?.tiling ?? 'plain',
@@ -524,7 +529,7 @@ export class CompressRunner {
     this.frames = 0;
     this.factorBytes = 0;
     this.meanRank = 0;
-    this.msPerFrame = 0;
+    this.computeMs = 0;
     await this.deps.store.clear();
   }
 }

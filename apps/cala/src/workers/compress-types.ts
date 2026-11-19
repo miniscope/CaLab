@@ -65,7 +65,10 @@ export interface CompressStatus {
   pendingFrames: number;
   /** Mean kept rank per tile of the last window. */
   meanRank: number;
-  /** Compute time of the last window per frame (quantizing and compressing), ms. */
+  /**
+   * Compute time per frame (quantizing and compressing), ms: the total over all
+   * windows compressed in this session divided by their frames (0 before the first).
+   */
   msPerFrame: number;
   /** Bytes of all factor files. */
   factorBytes: number;

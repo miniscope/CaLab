@@ -9,6 +9,9 @@
  *        [--query compress]   appended to the app URL (Cala/?debug&compress)
  *                         `--query compress`: `status.json` then holds the compress status
  *                         at the end of Discover and of Extract
+ *        [--compress-wait 120]  seconds to wait after a stage for its last window to be
+ *                         compressed; if it is not, the status is recorded with
+ *                         `settled: false` and its `pending` and `windows`
  *
  * Serves dist/ (npm run build:e2e) with e2e/serve.mjs, opens Cala/?debug in
  * Chromium and drives the real UI buttons, so the result is what a user gets
@@ -40,6 +43,8 @@ const port = Number(opt('--port', '4181'));
 const every = Number(opt('--every', '15')) * 1000;
 const maxMs = Number(opt('--max-hours', '4')) * 3600_000;
 const headed = args.includes('--headed');
+const compressWaitMs = Number(opt('--compress-wait', '120')) * 1000;
+if (!(compressWaitMs >= 0)) throw new Error('--compress-wait takes seconds');
 mkdirSync(out, { recursive: true });
 
 const logFile = join(out, `${tag}.log`);
@@ -155,19 +160,22 @@ const shot = async (name) => {
 
 /**
  * The compress status of a finished stage. The compress worker closes its last
- * window after the stage reports done, so poll (up to 120 s) until the status
- * is that stage's final one; else record what is there with `settled: false`.
+ * window after the stage reports done, so poll (up to --compress-wait s) until the
+ * status is that stage's final one; else record what is there with `settled: false`
+ * and the status's `pending` and `windows` (null when no status arrived), so the
+ * reader sees how far it got.
  * Null without `?compress`; with it, also waits while no status has arrived yet.
  */
 async function settledCompress(expectedSource, on, current) {
   if (!on) return null;
   const t0 = Date.now();
   let c = current;
-  while (!compressSettled(c, expectedSource) && Date.now() - t0 < 120_000) {
+  while (!compressSettled(c, expectedSource) && Date.now() - t0 < compressWaitMs) {
     await page.waitForTimeout(500);
     c = await page.evaluate(() => window.__cala.compress?.status?.() ?? null);
   }
-  return { ...c, settled: compressSettled(c, expectedSource) };
+  if (compressSettled(c, expectedSource)) return { ...c, settled: true };
+  return { ...c, settled: false, pending: c?.pending ?? null, windows: c?.windows ?? null };
 }
 
 // ---- run ----

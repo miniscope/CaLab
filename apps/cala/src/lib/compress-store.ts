@@ -45,10 +45,13 @@ export function createCompressStore(sink?: BackfillSink) {
     /**
      * True once per run, when everything a back-fill needs is there: the
      * recording ended, the final library is out and has cells, and every
-     * window is compressed.
+     * window of Discover's live factors is compressed. The windows of
+     * Extract's replay (source `replay`) are never back-filled.
      */
     takeBackfill(pipelineDone: boolean, libraryFinal: boolean, version: number): boolean {
-      if (!pipelineDone || !libraryFinal || version <= 0 || !status()?.final) return false;
+      const s = status();
+      if (!pipelineDone || !libraryFinal || version <= 0 || !s?.final) return false;
+      if (s.source !== 'discover') return false;
       if (requested === session) return false;
       requested = session;
       return true;
