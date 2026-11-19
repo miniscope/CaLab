@@ -504,3 +504,50 @@ impl LookBack {
         true
     }
 }
+
+/// The held-out decision of every stream frame, for look-back in a driver
+/// whose slow loop does not see every frame (the app's Discover drops
+/// batches when the slow loop is busy, so a stream frame's slow-loop index
+/// is unknown when it is re-read). Two bits per stream frame: observed by
+/// the slow loop, and held out there. A frame the slow loop never observed
+/// (dropped, or before it started) gets the decision of index
+/// `u64::MAX - stream`, as qc_eval gives warm-up frames, so it is
+/// deterministic and about as often held out. About 0.5 MB per day at
+/// 30 fps.
+#[derive(Clone, Debug, Default)]
+pub struct HeldOutRecord {
+    observed: Vec<u64>,
+    held: Vec<u64>,
+}
+
+impl HeldOutRecord {
+    /// Stream frame `stream` was observed by the slow loop as its frame
+    /// `slow_index`.
+    pub fn note(&mut self, stream: u64, slow_index: u64, sl: &SlowLoop) {
+        let (w, b) = ((stream / 64) as usize, stream % 64);
+        if self.observed.len() <= w {
+            self.observed.resize(w + 1, 0);
+            self.held.resize(w + 1, 0);
+        }
+        self.observed[w] |= 1 << b;
+        if sl.is_test(slow_index) {
+            self.held[w] |= 1 << b;
+        } else {
+            self.held[w] &= !(1 << b);
+        }
+    }
+
+    /// Whether stream frame `stream` is held out (see the type docs).
+    pub fn held_out(&self, stream: u64, sl: &SlowLoop) -> bool {
+        let (w, b) = ((stream / 64) as usize, stream % 64);
+        match self.observed.get(w) {
+            Some(o) if o >> b & 1 == 1 => self.held[w] >> b & 1 == 1,
+            _ => sl.is_test(u64::MAX - stream),
+        }
+    }
+
+    /// Bytes held.
+    pub fn bytes(&self) -> usize {
+        16 * self.observed.len()
+    }
+}

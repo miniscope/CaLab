@@ -2877,3 +2877,64 @@ fn lookback_drops_cells_no_longer_in_the_library() {
     assert_eq!(lb_take(&mut lb, &slow, &empty, 1000.0), vec![]);
     assert_eq!(lb.in_need(), 0);
 }
+
+/// The held-out record returns the decision `observe` made for each stream
+/// frame the slow loop saw (whatever its slow-loop index), and the
+/// `u64::MAX - stream` decision for frames it never saw; the flagged
+/// look-back observe is the indexed one with that decision.
+#[test]
+fn held_out_record_keeps_observes_decisions_and_flagged_lookback_matches() {
+    let (slow, _) = start(config(), &[]);
+    let mut rec = HeldOutRecord::default();
+    // Stream frames 100..400 seen as slow frames 0..300 except a dropped
+    // batch 200..216.
+    let mut k = 0u64;
+    for s in 100..400u64 {
+        if (200..216).contains(&s) {
+            continue;
+        }
+        rec.note(s, k, &slow);
+        k += 1;
+    }
+    let mut k = 0u64;
+    for s in 0..500u64 {
+        let seen = (100..400).contains(&s) && !(200..216).contains(&s);
+        let want = if seen {
+            slow.is_test(k)
+        } else {
+            slow.is_test(u64::MAX - s)
+        };
+        assert_eq!(rec.held_out(s, &slow), want, "stream {s}");
+        k += u64::from(seen);
+    }
+    let held = (0..500).filter(|&s| rec.held_out(s, &slow)).count();
+    assert!(held > 100 && held < 250, "{held}");
+
+    // Flagged == indexed.
+    let t = 120;
+    let mut rng = Lcg(9);
+    let cells = vec![(blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0))];
+    let m = movie(&cells, t, 3);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let (mut sa, mut eng) = start(config(), &seed);
+    let (mut sb, _) = start(config(), &seed);
+    let lib = eng.library().clone();
+    let n_px = N * N;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let a = sa.observe_lookback(f, &lib, &tr, k as u64, None).unwrap();
+        let held = sb.is_test(k as u64);
+        let b = sb
+            .observe_lookback_flagged(f, &lib, &tr, held, None)
+            .unwrap();
+        assert_eq!(a, b);
+    }
+    sa.mark_all_due();
+    sb.mark_all_due();
+    for _ in 0..20 {
+        sa.step(5_000_000).unwrap();
+        sb.step(5_000_000).unwrap();
+    }
+    assert!(sa.finalize().unwrap().to_bytes()[16..] == sb.finalize().unwrap().to_bytes()[16..]);
+}

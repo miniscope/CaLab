@@ -236,8 +236,8 @@ pub use ledger::{
     CellInfo, CellStatus, DeleteReason, DeletedCell, EditCounts, EditEvent, EditKind, TestEvent,
 };
 pub use lookback::{
-    LookBack, LookbackConfig, LookbackNext, LookbackOrder, LookbackOutcome, LookbackRequest,
-    LB_BLOCK,
+    HeldOutRecord, LookBack, LookbackConfig, LookbackNext, LookbackOrder, LookbackOutcome,
+    LookbackRequest, LB_BLOCK,
 };
 #[cfg(feature = "diagnostics")]
 pub use mergelog::{flush as merge_log_flush, set_gt as merge_log_set_gt};
@@ -2017,6 +2017,42 @@ impl SlowLoop {
         if self.is_test(slow_index) {
             return Ok(false);
         }
+        self.observe_lookback_fit(frame, lib, traces, only)
+    }
+
+    /// [`SlowLoop::observe_lookback`] with the held-out decision given
+    /// instead of the slow-loop index: a driver whose slow loop did not see
+    /// every frame (the app drops batches) records the decision `observe`
+    /// made per stream frame ([`HeldOutRecord`]) and passes it here.
+    pub fn observe_lookback_flagged(
+        &mut self,
+        frame: &[f32],
+        lib: &Library,
+        traces: &FrameTraces,
+        held_out: bool,
+        only: Option<&[u64]>,
+    ) -> Result<bool, TraceError> {
+        let n_px = self.dims.pixels();
+        crate::trace::check_len("frame", n_px, frame.len())?;
+        if lib.dims() != self.dims || traces.library_version != lib.version() {
+            return Err(TraceError::Incompatible(
+                "traces do not come from this library / frame size".into(),
+            ));
+        }
+        if held_out {
+            return Ok(false);
+        }
+        self.observe_lookback_fit(frame, lib, traces, only)
+    }
+
+    fn observe_lookback_fit(
+        &mut self,
+        frame: &[f32],
+        lib: &Library,
+        traces: &FrameTraces,
+        only: Option<&[u64]>,
+    ) -> Result<bool, TraceError> {
+        let n_px = self.dims.pixels();
         let bg = match lib.background_model() {
             BackgroundModel::Basis(_) => Some(traces.background.as_slice()),
             _ => None,
