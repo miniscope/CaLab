@@ -115,6 +115,9 @@ the final traces. Discover's traces were solved with whatever library was
 current at the time. Extract walks the recording again through the same three
 workers and solves **every** frame with the **final** library, so cells found
 late have traces from frame 0.
+With compression on (the default), Extract reads the compressed factors instead
+of walking the file when the first replay after Discover has made them; see
+Compression below.
 
 - **Recorded during Discover** (`src/lib/run-record.ts`, 17 bytes per frame, kept in
   full): the rigid shift `(dy, dx)`, the motion flags, and the global flicker
@@ -152,7 +155,15 @@ Safari build the file in OPFS and hand it to the download (disk-backed, no RAM).
 Extract's file, no transpose): `np.load` still returns the (cells, frames) array.
 `meta_json.stages` lists the stages that ran, with counts and timestamps.
 
-- `<folder>_cala.npz`, self-describing (format version 5): `traces` (cells x
+Format 7 adds to each stage record `source` (`raw`: the stage read the
+recording; `factors`: it read the compressed factors). A stage that read
+factors also has `tiling` (`plain` or `offset`) and `mean_rank` (the mean kept
+rank per tile), and `low_valid` (the number of cells with `min_valid` below 1)
+when any cell is flagged. An Extract on the factors also writes the per-cell
+array `extract_min_valid` (float32, in the row order of `traces`); a raw
+Extract has neither it nor `low_valid`. Older files still load.
+
+- `<folder>_cala.npz`, self-describing (format version 7): `traces` (cells x
   frames, float32), `traces_signed` (the same, unclipped; absent from a live
   run, which has no Extract), `cell_ids`, `centroids_yx`, `radii_px`, sparse footprints
   (`footprint_starts` / `footprint_pixels` / `footprint_values`, CSR over the
@@ -329,24 +340,87 @@ model the DAQ's own frame drops beyond `--drop`; with a real board, the
 arrival-indexed stream means a dropped frame shifts the trace timeline by one
 sample at that point (it is counted and shown, not interpolated).
 
-## Compression (experimental, `?compress`)
+## Compression (on by default; `?compress=off`)
 
-With `?compress` in the URL the run also compresses the preprocessed,
-motion-corrected frames (the fast loop's input) into low-rank factors per
-64 px tile and 600-frame window (`crates/cala/src/compress`, ported from
-MiniMe), so past frames can be revisited without the raw video (Extract above
-re-reads the file; the factors are for a source that has none). When the
-recording has been read, the final library is out and every window is
-compressed, the traces of the whole recording are solved again from the
-factors with that library (back-fill): a cell found late gets its trace from
-the first frame on, and the trace viewer shows the back-filled traces. The
-back-fill solves from the factors directly (`FactorExtractor`): it takes each
-frame's projections from the stored factors and rebuilds no frame.
+Compression is on unless the URL has `?compress=off`. The old `?compress` still
+works and means on; only `off` turns it off. Every run compresses the
+preprocessed, motion-corrected frames (the fast loop's input) into low-rank
+factors per 64 px tile and 600-frame window (`crates/cala/src/compress`, ported
+from MiniMe). The first replay after Discover (the first Refine run, or Extract
+when no Refine runs) compresses again, on two offset grids with the final
+calibration, and keeps those factors. No later replay compresses again; a
+replay that is cancelled releases this, so the next replay compresses.
 
-- Discover compresses on plain 64 px tiles. Extract's replay, which has the
+Extract then reads the factors (`FactorExtractor` in the compress worker,
+signed traces too) once they are ready, in seconds, and replays the file
+otherwise. The Run panel shows a line under Extract that says which. It is one
+of these five texts:
+
+- "Extract reads the factors (seconds)."
+- "Extract replays the file; the first replay compresses the frames for later Extracts."
+- "Extract replays the file: the factors are being compressed." (with "(N windows waiting)" when windows wait)
+- "Extract replays the file: the factors do not cover the recording."
+- "Extract replays the file: the last Extract on the factors failed."
+
+Extract replays the file when the factors are not ready, when they do not cover
+the recording (for example a recording of 600 k + 1 frames: the last window of
+one frame is skipped on the offset grids), after a compression error (for
+example no browser storage, as in a private window), and for the next Extract
+after an Extract on the factors has failed. The export's stage records say
+which source each stage read (`source`, format 7; see Run stages and export).
+`?compress=off` replays the file for Refine and Extract as before.
+
+**What the default switches on.** After Discover of a file, the trace view is
+filled again from Discover's own factors with the final library and replaces
+the live history (display only; nothing is exported without an Extract). Live
+streams compress too, although Extract on a stream's factors is not built yet
+(phase 4.2) and nothing caps the storage yet (phase 4.3). With look-back on,
+both run together: look-back re-reads the recording's file during Discover and
+uses no browser storage.
+
+**Known differences from a file replay.**
+
+- A pixel that is never valid in a window is read as 0 by the factor engine and
+  as missing by a replay. There are 30 to 105 such fixed pixels on the three
+  real recordings (66 to 105 on the two wireless ones;
+  `tools/cala-eval/results/2026-11-19-factor-phase2.md`).
+- The factors drop most of the white noise, so the traces of low-SNR cells
+  differ more.
+
+**Cells with pixels without data.** A factor Extract records for each cell
+`min_valid`: the smallest, over the pixels of the cell's support and over the
+windows, of each pixel's valid share. 1 means every support pixel had data in
+every frame. Where a pixel has no data the factor engine uses the value stored
+in the window, where the frame engine leaves the pixel out of the frame, so the
+trace of a cell below 1 can differ from a file replay's. The Run panel says so
+after the Extract: "N cells have pixels without data in their footprint; their
+traces can differ from a file replay's." (singular: "1 cell has pixels without
+data in its footprint; its trace can differ from a file replay's."). The export
+has the count (`low_valid`) and the per-cell array (`extract_min_valid`).
+
+**Known limits.**
+
+- A factor Extract writes each window to the trace files as it arrives, and
+  nothing bounds the write queue when the worker solves faster than the files
+  are written (an acknowledgement per window is planned).
+- A cancelled factor Extract keeps running in the worker until its next check;
+  its late messages are dropped.
+- Refine is always a raw replay in this phase. Refine on factors is phase 4.2,
+  behind a switch.
+
+The factors are also used as follows.
+
+- The back-fill after Discover: when the recording has been read, the final
+  library is out and every window is compressed, the traces of the whole
+  recording are solved again from the factors with that library: a cell found
+  late gets its trace from the first frame on, and the trace viewer shows the
+  back-filled traces. It solves from the factors directly (`FactorExtractor`):
+  it takes each frame's projections from the stored factors and rebuilds no
+  frame.
+- Discover compresses on plain 64 px tiles. The first replay, which has the
   final calibration, compresses again on two offset grids (the second shifted
   32 px, blended) and its recalibrated factors replace Discover's (same session
-  and file names). A cancelled Extract leaves no factors.
+  and file names).
 - The randomized SVD runs two power iterations.
 - Factor files are format v2 (`CALAFAC2`): the header names the tiling, and
   each tile adds per pixel the variance the rank cut discarded and the valid
@@ -378,12 +452,12 @@ frame's projections from the stored factors and rebuilds no frame.
 - `scripts/compress-bench.mjs`: local timing of the WASM compressor on a
   window dumped by `discover_eval --compress-dump`.
 
-### History review (`?compress&review`)
+### History review (`?review`)
 
 With `&review` as well (`review=N`: every N windows, default 8), the run looks
 through its compressed history for cells the slow loop missed
 (`crates/cala/src/compress/review.rs`; not the History tab, which plots a
-run's metrics). It needs `?compress` and is off without it. It reads
+run's metrics). It needs compression (on by default) and is off with `?compress=off`. It reads
 Discover's side-by-side plain tiles only: Extract's offset-grid factors are not
 sent to it, and it refuses a window that is not plain.
 

@@ -54,6 +54,19 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 - Cala (experimental joint update): a cluster's history now follows its cells when their statistics disks move (re-expressed onto the new pixels, new pixels starting at the current model) instead of starting over, and stores cover only the cells' statistics disks. On the 14-sim suite against the first version: bitten neighbours at 0.75-1 soma diameters 0.34 → 0.20, close-pair trace correlation excess +0.106 → +0.084, footprint correlation with ground truth 0.9899 → 0.9920 (close pairs 0.9879 → 0.9917, 14/14 sims), isolated cells and matched/false cells unchanged; one Refine pass now beats three Refine passes without it. Open: footprints over-filled at a neighbour's centre 6.7 % → 7.5 % (main 5.9 %), and the Refine pass's slow-loop cost is +9 % (static) / +14 % (motion) over the flag-off pass. Off by default; `qc_eval --joint-admit`, `--joint-carry` are measured, unadopted switches. See `tools/cala-eval/results/2026-11-18-replay-stage2.md`.
 
+- Cala, factor pipeline phase 4.1, Extract on the factors: **compression is on by default** (`?compress=off` replays
+  the file as before; the old `?compress` still means on). The first replay after Discover (the first Refine run, or
+  Extract when no Refine runs) also compresses the frames on the offset grids, and Extract then reads those factors in
+  seconds. Extract replays the file when the factors are not ready, do not cover the recording, after a compression
+  error, and after an Extract on the factors has failed; the Run panel says which. **Export format 7:** every stage
+  record has `source` (`raw` or `factors`); a factor Extract's record also has `tiling`, `mean_rank` and, when cells
+  are flagged, `low_valid`, and its export has the per-cell array `extract_min_valid` (the smallest valid share of a
+  cell's pixels over the windows; the factor engine uses the stored value where a replay leaves the pixel out, so a
+  cell below 1 can differ from a file replay, and the Run panel flags such cells). Older files still load.
+  `FactorExtractor.setSigned` / `lastSigned` give the signed traces and `FactorExtractor.minValid` the valid shares.
+  What the default switches on: after Discover of a file the trace view is filled again from Discover's own factors and
+  live streams compress too (Extract on a stream's factors and a cap on its storage are not built yet).
+
 ### Changed
 
 - Docs and Admin: a note that runs from local or dev builds send no analytics (no Supabase environment) and are not counted in Admin.

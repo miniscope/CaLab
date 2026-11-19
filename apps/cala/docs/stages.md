@@ -8,12 +8,19 @@ run's event log and these docs.
 | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ------------------------------------------------------------- |
 | **Discover** | Finds cells and builds their footprints from an empty library, with live traces. Every edit is allowed: adds, absorbs, splits, merges, keep tests and deletions.            | yes       | yes (first)                                                   |
 | **Refine**   | Replays the recording from frame 0 into the same slow loop. Footprints keep converging; the cell set is frozen (no adds, absorbs, splits, merges, keep tests or deletions). | no        | after Discover, repeatable                                    |
-| **Extract**  | Solves the final traces of every frame with the footprints frozen.                                                                                                          | no        | after Discover; once at the end, again if the library changed |
+| **Extract**  | Solves the final traces of every frame with the footprints frozen. It reads the factors when the first replay has made them (compression on), else replays the file.        | no        | after Discover; once at the end, again if the library changed |
 
 ## Order
 
 - Refine and Extract run only after Discover has finished and the slow loop has
   published its final library (`stageAvailability` in `src/lib/run-stages.ts`).
+- With compression on (the default; `?compress=off` turns it off), the first
+  replay after Discover (Refine or Extract) also compresses the frames for
+  later Extracts. No later replay compresses again; a cancelled replay
+  releases this, so the next one compresses. Extract reads the factors once
+  they are ready and replays the file when they are not ready, do not cover the
+  recording, after a compression error, and after an Extract on the factors has
+  failed. Refine is always a raw replay.
 - One replay runs at a time: no Extract while Refine runs and no Refine while
   Extract runs.
 - Refine can run any number of times. Each run starts from the library the
