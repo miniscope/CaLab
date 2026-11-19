@@ -64,6 +64,7 @@ import {
   type RecentProject,
 } from './lib/recent-projects.ts';
 import { LIBRARY_MODE_LABEL, refinePlanText } from './lib/session-run.ts';
+import { createLookbackClient } from './lib/lookback-client.ts';
 import type { ExportInput } from './lib/export.ts';
 import type { ProjectResult } from './lib/project-index.ts';
 import { openResult, type LoadedResult } from './lib/result-file.ts';
@@ -126,6 +127,30 @@ const App: Component = () => {
         review && reviewClient ? { port: reviewClient.port, every: review.every } : undefined,
       )
     : undefined;
+  // Look-back (experimental): Discover refines footprints as it goes by re-reading
+  // past frames in a worker of its own, and settles at the end (no Refine needed).
+  // A recording on disk with one session, pipelined workers only.
+  const pipelined = params.get('pipeline') !== '0';
+  const lookbackClient = createLookbackClient({
+    slow,
+    source: () => store.source(),
+    blocked: () => {
+      const i = store.info();
+      if (!pipelined) return 'Look-back needs the pipelined workers (not ?pipeline=0).';
+      if (!i) return 'Open a recording first.';
+      if (i.live) return 'Look-back needs a recording on disk (not a live stream).';
+      if ((i.sessions?.length ?? 1) > 1) return 'Look-back runs on one session (not a Joint run).';
+      return null;
+    },
+    onError: (session, message) => {
+      console.warn(`cala look-back worker (session ${session}): ${message}`);
+      runHistory.log({
+        frame: pipeline.processed(),
+        kind: 'warning',
+        detail: `Look-back: ${message}`,
+      });
+    },
+  });
   // `?flatfield=0`: start with the sensor flat field off (to compare frame rates).
   const pipeline = createPipelineStore(
     client,
@@ -159,7 +184,10 @@ const App: Component = () => {
           },
         }
       : compress,
+    lookbackClient,
   );
+  // `?lookback`: look-back on from the first Discover start.
+  if (params.has('lookback') && params.get('lookback') !== '0') pipeline.setLookback(true);
   // ---- Run stages (docs/stages.md): Discover, Refine (repeatable), Extract ----
   const stageLog = createStageLog();
   const discoverActivity = (): StageActivity => {
@@ -345,6 +373,9 @@ const App: Component = () => {
       historyUi,
       compress,
       review,
+      /** Look-back counters of the current run (null: off), and the setting. */
+      lookback: () => cells.status()?.lookback ?? null,
+      lookbackOn: () => pipeline.lookbackRun(),
     };
   }
 
@@ -677,6 +708,7 @@ const App: Component = () => {
               ui={historyUi}
               compress={compress}
               review={review}
+              onStopSettling={() => slow.stopSettling(cells.session())}
               fixed
               visible={tab.active() === 'run'}
             />

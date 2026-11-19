@@ -1,0 +1,104 @@
+/**
+ * Messages of look-back (concurrent Refine inside Discover, experimental;
+ * see `lib/lookback-reader.ts`): between the slow worker, which owns the
+ * scheduler (`SlowLoop.lookbackTake`), the look-back worker, which re-reads
+ * the frames it asks for from the recording and preprocesses and solves
+ * them, and the main thread, which feeds the look-back worker what the live
+ * pipeline recorded (motion and flicker per frame, the back half's state, the
+ * flat field).
+ *
+ * The slow worker and the look-back worker talk over a `MessageChannel` the
+ * main thread wires, so frames never go through the UI thread. Every message
+ * carries the pipeline `session`; stale ones are dropped.
+ */
+import type { FlatFieldMap } from '../lib/flat-field.ts';
+import type { FolderEntry, SessionInput } from '../lib/frame-source.ts';
+
+/** Slow worker -> look-back worker. */
+export type SlowToLookback =
+  /**
+   * Frames to supply: `SlowLoop.lookbackTake` output, `[frame, block, n,
+   * id_1..id_n, ...]` (transferred). Answered by one `frames` (or `error`)
+   * with the same `id`. At most one is outstanding.
+   */
+  | { type: 'request'; session: number; id: number; items: Float64Array }
+  /** A library the slow loop published (`TraceLibrary.toBytes()`, a copy; transferred). */
+  | { type: 'library'; session: number; version: number; bytes: Uint8Array }
+  /** The `frames` buffer of a reply, back for reuse (transferred). */
+  | { type: 'release'; session: number; frames: Float32Array };
+
+/** Look-back worker -> slow worker. */
+export type LookbackToSlow =
+  | {
+      type: 'frames';
+      session: number;
+      /** The request answered. */
+      id: number;
+      /** Library version the traces were solved with (0: none yet, nothing solved). */
+      version: number;
+      /** Frames, in request order. */
+      count: number;
+      /** Cells per frame in `traces`. */
+      cells: number;
+      /** Pooled buffer, at least `count * width * height` preprocessed frames (send it back with `release`). */
+      frames: Float32Array;
+      /** `count * cells` traces, library slot order. */
+      traces: Float32Array;
+      /** The background coefficients of the same solve, frame after frame (absent: no cells). */
+      background?: Float32Array;
+    }
+  | { type: 'error'; session: number; id: number; message: string };
+
+/** The recording the look-back worker opens (its own `FrameSource`, from the same `File`s). */
+export type LookbackSource = { entries: FolderEntry[] } | { sessions: SessionInput[] };
+
+/** Main thread -> look-back worker. */
+export type MainToLookback =
+  /** The port to the slow worker (transferred). */
+  | { type: 'connect'; port: MessagePort }
+  /** A Discover run with look-back starts: open the recording. */
+  | { type: 'begin'; session: number; source: LookbackSource }
+  /** What the live pipeline recorded for frames `start..start + dy.length` (copies; transferred). */
+  | {
+      type: 'rows';
+      session: number;
+      start: number;
+      dy: Float32Array;
+      dx: Float32Array;
+      flags: Uint8Array;
+      flickerOffset: Float32Array;
+      flickerGain: Float32Array;
+    }
+  /**
+   * The live back half's state (`Preprocessor.state()` of stage C) after
+   * stream frame `frame`: a look-back block starts from the newest one.
+   */
+  | { type: 'back-state'; session: number; frame: number; state: Uint8Array }
+  /** The newest flat-field map (null: none). */
+  | { type: 'flat'; session: number; map: FlatFieldMap | null }
+  /** The run stopped: close the recording, drop everything. */
+  | { type: 'reset'; session: number };
+
+/** Look-back worker -> main thread. */
+export type LookbackToMain = { type: 'error'; session: number; message: string };
+
+/** Slow status: look-back counters (absent: look-back off). */
+export interface LookbackStatus {
+  /** Look-back frames handed out, observed, held out, dropped (library version gone). */
+  requested: number;
+  pushed: number;
+  heldOut: number;
+  dropped: number;
+  /** Cell births noted, and cells that still need look-back frames. */
+  births: number;
+  inNeed: number;
+  /** Size of the held-out record, bytes. */
+  recordBytes: number;
+  /** Settling (the drain after the last frame): running, and its steps so far. */
+  settling: boolean;
+  drainSteps: number;
+  /** Settling stopped at its step cap with cells still in need. */
+  capped: boolean;
+  /** Look-back stopped by an error (Discover goes on without it). */
+  error?: string;
+}

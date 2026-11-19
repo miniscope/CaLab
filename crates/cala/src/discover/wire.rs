@@ -10,7 +10,7 @@ use super::SlowStats;
 use crate::discover::fpstats::{Fast, FpStats, PixMoments, FAST_GROUPS};
 
 /// Format tag at the start of every buffer (bump on any layout change).
-pub(crate) const MAGIC: u32 = 0x5649_5339; // "VIS9"
+pub(crate) const MAGIC: u32 = 0x5649_5341; // "VISA"
 
 #[derive(Default)]
 pub(crate) struct Writer {

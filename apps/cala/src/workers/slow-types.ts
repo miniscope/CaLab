@@ -8,6 +8,8 @@
  * of the old session are dropped.
  */
 
+import type { LookbackStatus } from './lookback-types.ts';
+
 /**
  * The structural edits the slow loop may make (`SlowLoop.setEditScope`, the
  * engine's `EditScope` names). Discover runs with `all`, Refine with `refine`;
@@ -29,6 +31,13 @@ export interface SlowInit {
   flattenSigmaPx: number;
   /** Slow-loop work units per observed frame (about multiply-adds). */
   budget: number;
+  /**
+   * Look-back (experimental; absent = off): the slow loop is built with the
+   * options look-back runs with (`SlowLoop.withConfig(.., 'all', 'all', 0.6)`,
+   * visit workers alike), re-reads past frames through the look-back worker
+   * during Discover and settles after the last frame (see `SlowRunner`).
+   */
+  lookback?: boolean;
 }
 
 /** Fast worker -> slow worker. */
@@ -167,6 +176,8 @@ export interface SlowStatus {
   editScope: EditScopeName;
   /** Probation/established per cell, about once a second. */
   cellStatus?: CellStatusView;
+  /** Look-back counters (absent: look-back off). */
+  lookback?: LookbackStatus;
 }
 
 /** A published library, flattened for drawing (unfiltered footprints). */
@@ -218,7 +229,26 @@ export interface SlowReviewed {
   candidates: Float32Array;
 }
 
-export type MainToSlow = SlowConnect | SlowReviewed;
+/**
+ * Main thread -> slow worker: the port to the look-back worker (transferred),
+ * for runs with look-back (`SlowInit.lookback`).
+ */
+export interface SlowLookbackPort {
+  type: 'lookback-port';
+  port: MessagePort;
+}
+
+/**
+ * Main thread -> slow worker: stop settling (the drain after a look-back
+ * run's last frame) now; the footprints refined so far are published as the
+ * final library.
+ */
+export interface SlowStopSettling {
+  type: 'stop-settling';
+  session: number;
+}
+
+export type MainToSlow = SlowConnect | SlowReviewed | SlowLookbackPort | SlowStopSettling;
 
 /** Main thread -> visit worker: the port to the slow worker. */
 export interface VisitConnect {

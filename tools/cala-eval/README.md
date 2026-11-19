@@ -52,6 +52,13 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
   `qc_eval real --churn-log` run (`RUN_DIR [LABEL_BUNDLE_DIR] > note.md`); reads
   `edits.tsv`, `fp_history.bin`, `adds.tsv`, `removals.tsv` and, with a binary
   built with `--features diagnostics`, `tests.tsv`. Needs numpy.
+- `merge_labels.py OUT.tsv RUN...`: labelled merge tests from `qc_eval --merge-log` runs (diagnostics build):
+  every test at footprint overlap >= 0.5 with its features (held-out z, `one`, traces, drop-one losses, the refitted
+  pair, centre and peak distances), labelled duplicate / real pair from the GT matches and linked to the removal it
+  caused (`harm` = the gone cell's unit is unmatched at the end). `merge_rules_eval.py LABELS.tsv [name=expr ...]`
+  replays candidate rules over the accepted merges; `merge_saddle.py` adds a single-peaked-union feature.
+  `multi_gt_split.py ROOT ARM...` splits "final cells matching 2+ GT units" into resolved close pairs and blends and
+  counts duplicates of matched units (`results/2026-11-19-merge-close-pairs.md`).
 - `support_sizes.py`: footprint support sizes per pass of `--passes N` runs
   (`LABEL=RUN_TREE ... [--count pos|disk]`): median, p99, largest, runs above
   50k px and the pass-k / pass-1 ratios (S2.1). Needs numpy.
@@ -405,3 +412,28 @@ sim recordings they name are kept in `~/Projects/cala-data/sims` (see Run).
 | `2026-11-13-merge-rule.md`            | S2.1c merge redesign: split-half merge rule cuts distinct-cell merges 52–67 %; the default               |
 | `2026-11-13-app-background-levels.md` | the app's slow loop without the ring-background levels: within noise; fixed so the app matches `qc_eval` |
 | `2026-11-17-refine-gate-refill.md`    | refine gate z 3 → 0: bitten neighbours refilled, leak and close-pair corr down, detection unchanged      |
+
+### What a Refine does to a library (`lookback_settled.py`)
+
+For the question "is a library settled, or does one more Refine still move it?"
+(`results/2026-11-19-lookback-review.md`). It reads the libraries one run writes with `qc_eval --wrap-libs
+--noise-dump` (wrap k = the library after pass k) and compares the same cell (by id) before and after a pass: the
+app's Refine readout (relative L2 of the footprint weights), a shape-only change (1 - cosine), the split-half footprint
+noise before the pass, and on sims the change in r with ground truth, by the suite's groups (isolated, close-pair,
+born in the last 20 %). Always compare against a null step: a second Refine after Discover + 1 Refine.
+
+```
+# sims: per-sim medians, mean and paired t CI over the tier
+$MINISIM_PY tools/cala-eval/lookback_settled.py sims --root $CALA_DATA/demix-suite/<name> \
+    --step "COMBO->COMBO+R=COMBO+R:wrap1:final" --step "D->D+R=DRR:wrap1:wrap2" \
+    --step "D+R->D+2R=DRR:wrap2:final" --null "D+R->D+2R" --md out.md
+# real data: change by id per run, and agreement between libraries (Hungarian on footprint r >= 0.7), Minian optional
+$MINISIM_PY tools/cala-eval/lookback_settled.py real --run A=DIR --run B=DIR --pair A:wrap1,B:final \
+    --pair A:final,Minian --minian <minian_out> --md out.md
+```
+
+qc_eval flags that go with it (example only): `--lookback-drain N` now also works with `--passes N` > 1 (the drain
+runs at the end of pass 1, then the later passes: a Refine after a settled look-back Discover);
+`--lookback-drain-rate F` sets the look-back frames per drain step; `--noise-dump` with `--wrap-libs` writes
+`fp_noise_wrap{k}.tsv` at every wrap. RAM: about 3.5 GB peak on a motion sim (one sim and step at a time). In zsh, quote
+`NAME:wrapK` arguments (`:w` is a modifier).

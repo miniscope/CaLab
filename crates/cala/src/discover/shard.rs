@@ -106,6 +106,9 @@ pub struct VisitJob {
     visits: u32,
     id_base: u64,
     noise_gen: u64,
+    /// The owner's visit-relevant options ([`SlowLoopConfig::visit_fingerprint`]):
+    /// a runner built with other options refuses the job.
+    cfg_fp: u64,
     /// The owner's edit scope when the job was made.
     scope: EditScope,
     tile: Tile,
@@ -172,6 +175,7 @@ impl VisitJob {
         w.u32(self.visits);
         w.u64(self.id_base);
         w.u64(self.noise_gen);
+        w.u64(self.cfg_fp);
         w.u8(self.scope.code());
         w.tile(&self.tile, slots, shared);
         w.usize(self.others.len());
@@ -229,6 +233,7 @@ impl VisitJob {
         let visits = r.u32()?;
         let id_base = r.u64()?;
         let noise_gen = r.u64()?;
+        let cfg_fp = r.u64()?;
         let scope = EditScope::from_code(r.u8()?)?;
         let tile = r.tile()?;
         let n = r.count(24)?;
@@ -266,6 +271,7 @@ impl VisitJob {
             visits,
             id_base,
             noise_gen,
+            cfg_fp,
             scope,
             tile,
             others,
@@ -669,6 +675,7 @@ impl SlowLoop {
             visits: self.tile_visits[ti],
             id_base: self.next_id,
             noise_gen: self.noise_gen,
+            cfg_fp: self.cfg.visit_fingerprint(),
             scope: self.scope,
             tile,
             others,
@@ -940,6 +947,13 @@ impl VisitRunner {
         {
             return Err(TraceError::Incompatible(
                 "visit job from a slow loop with another tile layout".into(),
+            ));
+        }
+        if job.cfg_fp != s.cfg.visit_fingerprint() {
+            return Err(TraceError::Incompatible(
+                "visit job from a slow loop with other options (joint update, sign rule or merge \
+                 guard): build the visit workers with the slow loop's options"
+                    .into(),
             ));
         }
         if job.noise_gen != s.noise_gen {

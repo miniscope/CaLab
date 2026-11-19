@@ -6,6 +6,7 @@ import type { CellStore } from '../lib/cell-store.ts';
 import { compressReadout, type CompressStore } from '../lib/compress-store.ts';
 import { reviewReadout, type ReviewStore } from '../lib/review-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
+import type { LookbackStatus } from '../workers/lookback-types.ts';
 import type { Pass2Result, Pass2Store } from '../lib/pass2-store.ts';
 import type { RefineStore } from '../lib/refine-store.ts';
 import {
@@ -128,6 +129,23 @@ export interface RunPanelProps {
   fixed?: boolean;
   /** False while its tab is hidden: the plots stop drawing (the panel stays mounted for its state). Default true. */
   visible?: boolean;
+  /** Stop a look-back run's settling: the footprints refined so far become the final library. */
+  onStopSettling?: () => void;
+}
+
+/** One line on a look-back run (experimental): what it re-read, and the settling after the last frame. */
+export function lookbackText(lb: LookbackStatus, final: boolean): string {
+  if (lb.settling)
+    return `Settling: ${lb.inNeed} cells still need data (step ${lb.drainSteps.toLocaleString()}) · ${lb.pushed.toLocaleString()} frames re-read`;
+  const read = `${lb.pushed.toLocaleString()} frames re-read for ${lb.births} new cells`;
+  const err = lb.error ? ` · look-back stopped: ${lb.error}` : '';
+  if (final) {
+    const end = lb.capped
+      ? `settling stopped at the cap with ${lb.inNeed} cells still in need`
+      : `settled after ${lb.drainSteps.toLocaleString()} steps`;
+    return `Look-back: ${read} · ${end}${err}`;
+  }
+  return `Look-back: ${read} · ${lb.inNeed} cells still need data${err}`;
 }
 
 /** `0.0123` -> `1.2%`. */
@@ -182,7 +200,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     const st = s().status();
     if (st === 'starting') return 'Starting';
     if (st === 'error') return 'Stopped by an error';
-    if (st === 'done') return 'Done';
+    if (st === 'done') return c().status()?.lookback?.settling ? 'Settling' : 'Done';
     const setup = s().setup();
     const prefix = st === 'paused' ? 'Paused: ' : '';
     if (s().processed() === 0 && setup) {
@@ -728,6 +746,24 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         <Show when={!props.live}>
           <label
             class="cala-check"
+            title={
+              s().lookbackBlocked() ??
+              'Experimental: Discover also re-reads earlier frames for each new cell and settles at the end, so footprints converge without a Refine run (Refine stays available to compare). Takes effect when Discover starts: tick it, then restart (↻), or open with ?lookback.'
+            }
+          >
+            <input
+              type="checkbox"
+              data-testid="lookback-toggle"
+              disabled={s().lookbackBlocked() !== null}
+              checked={s().lookback() && s().lookbackBlocked() === null}
+              onChange={(e) => s().setLookback(e.currentTarget.checked)}
+            />
+            Look-back refinement (experimental)
+          </label>
+        </Show>
+        <Show when={!props.live}>
+          <label
+            class="cala-check"
             title="Start Extract as soon as Discover has its final library (not after a Refine run)."
           >
             <input
@@ -739,6 +775,40 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           </label>
         </Show>
       </div>
+      <Show when={!props.live && (s().lookback() || s().lookbackRun())}>
+        <p class="cala-muted cala-run__line" data-testid="lookback-note">
+          <Show
+            when={s().lookbackBlocked()}
+            fallback={
+              s().lookbackRun()
+                ? 'Look-back refines footprints during Discover; Refine is not needed.'
+                : 'Look-back starts with the next Discover run (restart with ↻).'
+            }
+          >
+            {(why) => `Look-back off: ${why()}`}
+          </Show>
+        </p>
+      </Show>
+      <Show when={s().lookbackRun() ? c().status()?.lookback : undefined}>
+        {(lb) => (
+          <div class="cala-run__footer">
+            <span class="cala-readout cala-wrap" data-testid="lookback-readout">
+              {lookbackText(lb(), c().status()?.final ?? false)}
+            </span>
+            <Show when={lb().settling && props.onStopSettling}>
+              <button
+                type="button"
+                class="btn-secondary btn-small"
+                data-testid="lookback-stop-settling"
+                title="Stop settling now: the footprints refined so far become the final library."
+                onClick={() => props.onStopSettling?.()}
+              >
+                Stop settling
+              </button>
+            </Show>
+          </div>
+        )}
+      </Show>
       <Show when={props.live}>
         <p class="cala-muted cala-run__line" data-testid="live-stage-note">
           {LIVE_NOTE}
