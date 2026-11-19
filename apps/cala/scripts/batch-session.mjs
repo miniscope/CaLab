@@ -9,6 +9,7 @@
  *        [--query compress]   appended to the app URL (Cala/?debug&compress)
  *                         `--query compress`: `status.json` then holds the compress status
  *                         at the end of Discover and of Extract
+ *        [--stale-build]      run although dist/ is older than a source file
  *        [--compress-wait 120]  seconds to wait after a stage for its last window to be
  *                         compressed; if it is not, the status is recorded with
  *                         `settled: false` and its `pending` and `windows`
@@ -24,7 +25,7 @@ import { chromium } from '@playwright/test';
 
 /* global window, document */ // page.evaluate callbacks run in the browser
 import { spawn } from 'node:child_process';
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { compressSettled } from './compress-settled.mjs';
 
@@ -62,8 +63,40 @@ const saveStatus = () =>
   writeFileSync(join(out, `${tag}.status.json`), JSON.stringify(status, null, 2));
 saveStatus();
 
-// ---- static server for dist/ ----
+// ---- the served build must be of this checkout's sources ----
 const repo = resolve(import.meta.dirname, '../../..');
+/** Newest file under `dirs` (build outputs and dependencies left out). */
+function newestSource(dirs) {
+  let newest = { path: '', mtimeMs: 0 };
+  for (const dir of dirs) {
+    for (const e of readdirSync(dir, { recursive: true, withFileTypes: true })) {
+      const path = join(e.parentPath, e.name);
+      if (!e.isFile() || /\/(node_modules|dist|pkg|target)\//.test(path)) continue;
+      // Sources only: caches such as tsconfig.tsbuildinfo change without a build being due.
+      if (!/\.(tsx?|mts|m?js|css|html|rs|toml|wgsl)$/.test(e.name)) continue;
+      const mtimeMs = statSync(path).mtimeMs;
+      if (mtimeMs > newest.mtimeMs) newest = { path, mtimeMs };
+    }
+  }
+  return newest;
+}
+const built = statSync(join(repo, 'dist/CaLab/Cala/index.html'), {
+  throwIfNoEntry: false,
+})?.mtimeMs;
+if (built === undefined) throw new Error('dist/CaLab/Cala is missing: run npm run build:e2e');
+const newest = newestSource(
+  ['apps/cala/src', 'crates/cala/src', 'crates/solver/src', 'packages'].map((d) => join(repo, d)),
+);
+// A build older than a source file is not what this checkout would give.
+if (newest.mtimeMs > built && !args.includes('--stale-build')) {
+  throw new Error(
+    `dist/ is older than ${newest.path}: run npm run build:e2e, or pass --stale-build`,
+  );
+}
+status.built = new Date(built).toISOString();
+saveStatus();
+
+// ---- static server for dist/ ----
 const base = `http://127.0.0.1:${port}/CaLab/`;
 // A server that already answers on the port belongs to another checkout: this
 // run would then drive that checkout's build without any sign of it.
@@ -182,12 +215,24 @@ async function settledCompress(expectedSource, on, current) {
   if (!on) return null;
   const t0 = Date.now();
   let c = current;
-  while (!compressSettled(c, expectedSource) && Date.now() - t0 < compressWaitMs) {
+  // An error of the compress worker ends the wait: no later status follows it.
+  let error = null;
+  while (!compressSettled(c, expectedSource) && !error && Date.now() - t0 < compressWaitMs) {
     await page.waitForTimeout(500);
-    c = await page.evaluate(() => window.__cala.compress?.status?.() ?? null);
+    [c, error] = await page.evaluate(() => [
+      window.__cala.compress?.status?.() ?? null,
+      window.__cala.compress?.error?.() ?? null,
+    ]);
   }
-  if (compressSettled(c, expectedSource)) return { ...c, settled: true };
-  return { ...c, settled: false, pending: c?.pending ?? null, windows: c?.windows ?? null };
+  if (error) L(`compress worker error: ${error}`);
+  if (compressSettled(c, expectedSource) && !error) return { ...c, settled: true };
+  return {
+    ...c,
+    settled: false,
+    pending: c?.pending ?? null,
+    windows: c?.windows ?? null,
+    ...(error ? { error } : {}),
+  };
 }
 
 // ---- run ----
