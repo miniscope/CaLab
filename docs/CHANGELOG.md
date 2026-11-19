@@ -12,15 +12,36 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   the compressed factors (`--replay-source factors`, `--tiling`, `--factors-pass`, `--extract-pass`),
   with overlapping and offset tilings in `compress::blend`; `tools/cala-eval/factor_arms.py` and
   `factor_closeness.py` compare them with the raw replay. Every `qc_eval` run now also writes
-  `stage_times.tsv` (seconds per pass). No change to the app.
+  `stage_times.tsv` (seconds per pass). This entry changes nothing in the app; the phase 2 entry below does.
+- Cala (experimental `?compress`), factor pipeline phase 2, Extract on factors: `FactorExtractor` (and
+  `WindowProjector`) in `crates/cala/src/compress/project.rs` solve a frame's traces from the stored low-rank factors
+  of a 600-frame window and rebuild no frame (`TraceEngine::process_projected`). **The app's back-fill changed:** the
+  compress worker now solves it on a WASM `FactorExtractor`, 64 frames per yield, and the status bar's mean rank is
+  the mean over the compressed windows weighted by frames; Extract in the app still replays the raw file.
+  `qc_eval --extract-engine frames|factors` selects the engine of the Extract pass (the factor engine also writes
+  `extract_min_valid.tsv`), and `factor_arms.py` has the arm `c_chosen` and `--extra` flags for every arm. On the
+  bounded runs `c_chosen` meets gate A1 on all six recordings; against the frame engine the traces agree to about 1e-4
+  in unit tests but differ by a median of 0.015 of the trace's sd on the two real WL24 recordings (pixels never valid in
+  a window are stored as 0); Extract takes 0.5 to 1.1 s instead of 18 to 78 s; with main's cluster replay on,
+  `wl24_01` fails the footprint rule for both engines: `tools/cala-eval/results/2026-11-19-factor-phase2.md`.
 - cala evaluation, factor pipeline phase 4a (what a live run may claim): `qc_eval --from F` runs a later stretch of a
   recording, `--ff-seed-run DIR` starts a run with the flat field map that an earlier run ended with (as the app stores
   it per device), and `--lookback-source factors` lets main's look-back read Discover's factor windows instead of the
   raw file. `factor_closeness.py --match` pairs cells by footprint (for runs whose Discover differed) and reports the
   footprint correlation with the truth footprint. `factor_arms.py` has the arms `live`, `seed`, `raw_seed`,
-  `live_seed`, `lb_raw`, `lb_fac` and `lb_live` and `--seed-from F`. On the bounded runs, Discover's factors without
-  recalibration fail gate A1 on both real 200 px recordings and on `motion`; a flat field seed brought one of two
-  cross-session runs inside the gate: `tools/cala-eval/results/2026-11-19-factor-phase4a.md`. No change to the app.
+  `live_seed`, `lb_raw`, `lb_fac` and `lb_live` and `--seed-from F`. On the bounded runs, Discover's factors without recalibration fail gate A1 on the two real WL24 wireless recordings and on `motion`. A flat field seed from another session of the same mouse and scope model (scope unit, field of view and optical path not confirmed) brought one of two runs inside the gate (a seed from three days earlier passed, one from three days later failed). Look-back on factors: one of six look-back comparisons fails rule 1, marginally (`wl200`, 5th percentile -0.0702 against -0.05); gate A1 caps lost cells nowhere under pairing. The live arms still read the raw file in the refine replays: `tools/cala-eval/results/2026-11-19-factor-phase4a.md`. No change to the app.
+- Cala, factor pipeline phase 3a, Refine on factors (crate and harness only, no change to the app): `SlowLoop::refine_on_factors`
+  and `refine_until_settled` (`crates/cala/src/discover/factor_refine.rs`) run Refine on the stored low-rank windows with
+  the cell set frozen: the footprint statistics are filled from the factors, the held-out frame patches are rebuilt
+  from them (not whole frames), the existing proposal and gate code runs, and the iterations stop when fewer than 2 %
+  of the cells have a footprint that correlates below 0.99 with the iteration before (cap 20). The joint update (cluster
+  history replay) is refused until phase 3b. `qc_eval --refine-engine raw|factors` with `--settle-corr`, `--settle-share`,
+  `--max-iterations` and `--test-frames` runs it after a compression-only pass 2 and writes `iterations.tsv` and
+  `footprints_iter{k}.bin`; `factor_arms.py` has the arms `f_chosen` and `f_null` (a repeat run) and the report has the
+  settle and iteration tables. On the bounded runs `f_chosen` passes gate A1 on four of six recordings and fails the
+  footprint rule on the two real WL24 recordings (loss 0.0345 and 0.0389 against 0.02); the raw reference is 5 or 2
+  Refine replays, not a settled Refine, and the runs are the first 12000 or 6000 frames at a tenth of the budget:
+  `tools/cala-eval/results/2026-11-19-factor-phase3.md`.
 
 - Cala (experimental, off by default): a joint footprint update for overlapping cells in the Refine stage (`SlowLoopConfig::joint_update`, `qc_eval --joint-update refine`). Cells whose footprints overlap (normalised whitened overlap ≥ 0.05, at most 6 per cluster) keep a compact history of their residual (K numbers per fitting frame over one statistics half-life). A refine visit re-solves the stored frames' traces with the current footprints, refits the footprints jointly (non-negative) and accepts the members' new footprints together or not at all. On the 14-sim demixing suite it lowers the close-pair trace correlation excess +0.150 → +0.106 and the share of bitten neighbours at 0.75-1 soma diameters 0.49 → 0.34 (14/14 and 13/14 sims), with matched and false cells unchanged; the Refine pass's slow-loop frame cost rises about 30 %. The cluster support rule and Discover use are not done yet. See `tools/cala-eval/results/2026-11-17-cluster-replay.md`.
 
