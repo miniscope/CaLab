@@ -78,6 +78,10 @@
 //!                      With `--passes N` > 1 it runs at the end of pass 1,
 //!                      before the later passes (a Refine after a settled
 //!                      look-back Discover)
+//!   --lookback-settle-all N  after the drain, feed about N frames spread
+//!                      evenly over the recording to every cell (frozen
+//!                      cell set, untargeted look-back frames), with visits
+//!                      (experiment: a convergence pass inside Discover)
 //!   --lookback-drain-rate F  look-back frames per drain step instead of
 //!                      R (bigger batches once Discover has ended)
 //!   --catchup X        reference arm: every X Discover frames give all
@@ -653,6 +657,8 @@ struct LookBack {
     drain_rate: f64,
     /// Wall seconds of the drain (stdout only).
     drain_wall_s: f64,
+    /// `--lookback-settle-all N` (0: off).
+    settle_all: usize,
     /// Look-back frames and cell-frames per tenth of the recording (row
     /// 10: the drain).
     by_tenth: [(u64, u64); 11],
@@ -704,6 +710,7 @@ impl LookBack {
             drain_frames: 0,
             drain_rate: 0.0,
             drain_wall_s: 0.0,
+            settle_all: 0,
             by_tenth: [(0, 0); 11],
             target,
             by_twentieth: [0; 20],
@@ -841,6 +848,31 @@ impl LookBack {
             }
             if !more {
                 break;
+            }
+        }
+        // `--lookback-settle-all N`: then about N frames spread evenly over
+        // the recording go to every cell (untargeted, so the forgetting
+        // clock advances and old statistics are replaced), with the same
+        // step, visit and publish cadence as the drain above.
+        if self.settle_all > 0 {
+            let t_len = rec.total as usize;
+            let stride = (t_len / self.settle_all).max(1);
+            let mut pre = pipe.pre.clone();
+            self.block = None;
+            for (i, f) in (0..t_len).step_by(stride).enumerate() {
+                self.frame(
+                    f, &mut pre, None, start, rec, drift, pipe, engine, sl, n_px, 10,
+                );
+                if i % 2 == 1 {
+                    let st = i / 2;
+                    if st % 64 == 0 {
+                        sl.mark_all_due();
+                    }
+                    sl.step(budget).unwrap();
+                    if st % 64 == 63 {
+                        engine.set_library(sl.finalize().unwrap()).unwrap();
+                    }
+                }
             }
         }
         // A last round of visits on everything the look-back fed.
@@ -3928,6 +3960,7 @@ fn main() {
     });
     if let Some(l) = lookback.as_mut() {
         l.drain_rate = lb_drain_rate;
+        l.settle_all = arg_value(&args, "--lookback-settle-all").map_or(0, |s| s.parse().unwrap());
     }
     if lookback.is_some() {
         println!(

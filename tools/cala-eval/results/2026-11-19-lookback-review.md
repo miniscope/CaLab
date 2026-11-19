@@ -285,3 +285,23 @@ By the rule above: **no-go for hiding Refine now.** T1 shows a broad gain from a
 late-born cells; T3 and T6 show the settled library is not converged; T6 shows that on real data it is at
 plain-Discover level. Look-back as built does meet the PI's bar on the sims (equal to Discover + 1 Refine), which is
 why the earlier full-tier result read as a pass.
+
+## Follow-up experiment: settling over all cells (targets written before the runs)
+
+The review's first recommendation is a hypothesis: what a Refine adds after look-back is frames for every cell, solved
+with the final frozen cell set, that replace the older statistics. Earlier arms bear on it: the precision demand
+(`LBP-x2`, [2026-11-19-concurrent-refine.md](2026-11-19-concurrent-refine.md)) fed most cells most blocks as targeted
+look-back frames, which do not advance the forgetting clock, and gained nothing over the `K`-window; the catch-up arm
+(`CU-2400`), untargeted with the clock advancing, did close the isolated-cell gap.
+
+New flag `--lookback-settle-all N` (example only): after the drain, about N frames spread evenly over the recording go
+to every cell as untargeted look-back frames (the clock advances), cell set frozen, one slow-loop step per 2 frames,
+all tiles marked due and the library published every 64 steps.
+
+Arms (quick tier: static s5-s7, pairs s5-s6): `COMBO-SA9600` (every frame) and `COMBO-SA4800` (every second frame),
+against `COMBO` and `COMBO+R` from the full-tier runs.
+
+- Hypothesis supported when `COMBO-SA9600` is within 0.001 of `COMBO+R` on footprint r median (all, isolated,
+  close-pair) and its gain over `COMBO` is at least 0.002 on all cells with a CI that excludes 0.
+- Not supported when its gain over `COMBO` is under 0.001 on all cells.
+- Reported: born-late rows, headline, bites, and `COMBO-SA4800` (does half the frames do).
