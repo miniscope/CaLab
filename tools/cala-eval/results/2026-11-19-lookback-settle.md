@@ -267,3 +267,37 @@ Hungarian match (footprint r >= 0.7) between the plain-Discover library and the 
   the residual, so fewer weak, overlapping components are proposed. Most of the loss is such components, not solid
   cells; the 20-30 fewer Minian matches are real and sit among them. The files cannot say why a given place was not
   added (there is no per-place rejection log). D was taken as the 10 px default.
+
+### M7. Workshop recording, three slow seeds (`runs/lbsettle/real/m7_agreement.md`)
+
+`SETTLE` = `COMBO` + one settle pass (18,000 frames, 16 frames per request, no early stop), followed by a Refine pass
+to measure what a Refine would still do. References: the review's D + R and `COMBO+R` runs for seeds 1 and 2, and
+seed 3 run here with the same flags. Seed pairs are 1-2, 1-3, 2-3. Peak memory 1.2-1.3 GB per run.
+
+| library                 | cells           | same cells found by two seeds (share of cells; median footprint r), three pairs | Minian units matched; median r      | split-half noise, median |
+| ----------------------- | --------------- | -------------------------------------------------------------------------------- | ----------------------------------- | ------------------------ |
+| Discover                | 831 / 838 / 811 | 81 %; 0.951 / 0.950 / 0.952                                                      | 525 / 514 / 519; 0.937 / 0.942 / 0.935 | 17.4-17.6 %           |
+| `COMBO` (look-back)     | 751 / 760 / 738 | 82 %; 0.953 / 0.958 / 0.954                                                      | 494 / 500 / 497; 0.939 / 0.935 / 0.943 | 14.2-14.5 %           |
+| D + R                   | 831 / 838 / 811 | 85-87 %; 0.976 / 0.971 / 0.974                                                   | 535 / 531 / 530; 0.953 / 0.958 / 0.957 | 9.9-10.7 %            |
+| `COMBO+R`               | 751 / 760 / 738 | 85-87 %; 0.976 / 0.975 / 0.976                                                   | 508 / 518 / 512; 0.950 / 0.949 / 0.949 | 13.1 % (seed 1)       |
+| **`SETTLE`**            | 751 / 760 / 738 | **85-86 %; 0.978 / 0.975 / 0.977**                                               | **514 / 515 / 512; 0.949 / 0.950 / 0.949** | **13.1-13.2 %**   |
+| `SETTLE` + R            | 751 / 760 / 738 | 87 %; 0.980 / 0.977 / 0.982                                                      | 517 / 518 / 509; 0.948 / 0.949 / 0.948 | -                     |
+| D + 2R                  | 831 / 838 / 811 | 87 %; 0.981 / 0.979 / 0.980                                                      | 540 / 533 / 532; 0.956 / 0.958 / 0.960 | -                     |
+
+| step, by id (median, three seeds)       | change, app metric     | shape-only change        | change / noise     |
+| --------------------------------------- | ---------------------- | ------------------------ | ------------------ |
+| Refine after `SETTLE`                   | 11.8 / 11.2 / 11.3 %   | 0.0065 / 0.0060 / 0.0060 | 0.97 / 0.95 / 0.94 |
+| second Refine after Discover (the null) | 10.0 / 9.8 / 10.9 %    | 0.0048 / 0.0043 / 0.0057 | 1.12 / 1.08 / 1.10 |
+| Refine after `COMBO`                    | 30.4 / 28.3 / 30.9 %   | 0.039 / 0.035 / 0.041    | 2.2 / 2.1 / 2.2    |
+| first Refine after Discover             | 25.7 / 23.9 / 24.8 %   | 0.029 / 0.026 / 0.028    | 1.5 / 1.4 / 1.4    |
+
+- `SETTLE` and `COMBO+R` of the same seed are the same library: 98 % of cells match with median r 0.997.
+- Against the M7 lines: seed-to-seed median r 0.975-0.978 (line 0.970: met) with 85-86 % matched (line 84 %: met);
+  Minian median r 0.949-0.950 (line 0.945: met); a Refine after `SETTLE` moves footprints 1.1 x the null on the app's
+  metric and 1.25 x on shape (line 1.5 x: met; after `COMBO` it was 3 x and 8 x).
+- **The split-half noise line (at most 11 %) is not met: 13.1-13.2 %.** That line was taken from D + R (9.9-10 %).
+  `COMBO+R` itself is at 13.1 %, so the reference fails it too: libraries built with the cluster replay settings have
+  a higher split-half noise reading than plain ones at the same seed-to-seed agreement. I did not find out why (the
+  two configurations estimate footprints of overlapping cells from different statistics). By the rule as written M7
+  is therefore "between its lines", with this row named; whether the row should count is the PI's call.
+- `SETTLE` matches about 20 fewer Minian units than D + R (514 against 532), as `COMBO+R` does; see M8.
