@@ -64,6 +64,7 @@ function setup(
     status?: string;
     flatMap?: FlatFieldMap | null;
     noSigned?: boolean;
+    compressSession?: number;
   } = {},
 ) {
   const rec = new RunRecord();
@@ -98,7 +99,18 @@ function setup(
     libraryBytes: () => Uint8Array.of(1, 2, 3),
     status: () => ({ final: opts.final ?? true }),
   } as unknown as CellStore;
-  return { store: createPass2Store(client, pipeline, cells), started, steps };
+  return {
+    store: createPass2Store(
+      client,
+      pipeline,
+      cells,
+      undefined,
+      undefined,
+      opts.compressSession === undefined ? undefined : () => opts.compressSession ?? null,
+    ),
+    started,
+    steps,
+  };
 }
 
 async function settle(): Promise<void> {
@@ -106,6 +118,24 @@ async function settle(): Promise<void> {
 }
 
 describe('Extract (pass 2) store', () => {
+  it('feeds the compressor on the offset grids when compression is on', async () => {
+    const { store, started } = setup({ compressSession: 4 });
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('done');
+    expect(started[0].cells).toEqual({
+      session: 0,
+      discover: false,
+      qc: false,
+      signed: true,
+      projection: true,
+      library: Uint8Array.of(1, 2, 3),
+      compress: true,
+      compressTiling: 'offset',
+      compressSession: 4,
+    });
+  });
+
   it('replays the recorded frames with the final library and gathers the traces', async () => {
     const { store, started } = setup();
     expect(store.blockedReason()).toBeNull();

@@ -174,6 +174,39 @@ describe('CompressFeed', () => {
 });
 
 describe('CompressRunner', () => {
+  it('a replay of the same session replaces the windows of Discover', async () => {
+    const discover = feedWith({});
+    discover.feed.push(batch(0, 100), 0, 100);
+    discover.feed.end();
+    const replay = feedWith({ tiling: 'offset', source: 'replay' });
+    replay.feed.push(batch(0, 60), 0, 60);
+    replay.feed.end();
+    const { r, store, toMain } = runner();
+    // The replay starts while Discover's windows are still being compressed.
+    for (const m of [...discover.sent, ...replay.sent]) await r.handle(m);
+    await r.idle();
+
+    expect([...store.files.keys()].sort()).toEqual([0, 1].map(factorName));
+    const win = FactorWindow.fromBytes(store.files.get(factorName(1))!);
+    try {
+      expect([win.frames, win.start, win.tiling]).toEqual([10, 50, 'offset']);
+    } finally {
+      win.free();
+    }
+    const last = toMain[toMain.length - 1];
+    if (last.type !== 'status') throw new Error('the last message is not a status');
+    expect(last.status).toMatchObject({
+      windows: 2,
+      frames: 60,
+      final: true,
+      tiling: 'offset',
+      source: 'replay',
+    });
+    expect(compressReadout(last.status, { version: 3, frames: 100, msPerFrame: 1 })).toMatch(
+      /^Recalibrated factors: 2 windows · rank \d[^(]*$/,
+    );
+  });
+
   it('lays out the tiles like the quantizer', () => {
     const grid = tilesOf(tileLayout(W, H, TILE, 'plain'));
     expect(grid.map((t) => [t.x0, t.y0, t.w, t.h])).toEqual([

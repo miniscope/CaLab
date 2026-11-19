@@ -4,6 +4,7 @@ import type {
   FramePixels,
   SessionInput,
 } from '../lib/frame-source.ts';
+import type { CompressTiling } from './compress-types.ts';
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelineOptions, PipelinePlan } from '../lib/pipeline-plan.ts';
 import type { FlatFieldMap } from '../lib/flat-field.ts';
@@ -32,6 +33,10 @@ export interface CellsSettings {
   forwardBuffers?: number;
   /** Feed the compress worker (default off; needs its port). */
   compress?: boolean;
+  /** With `compress`: how the frame is cut into tiles (default plain). */
+  compressTiling?: CompressTiling;
+  /** With `compress`: the session the windows' messages carry (default `session`). */
+  compressSession?: number;
   /** Return a residual preview with each batch (the residual view is shown). */
   residual?: boolean;
   /** Return the signed (unclipped) traces with each batch (Extract; `CellsBatch.signed`). */

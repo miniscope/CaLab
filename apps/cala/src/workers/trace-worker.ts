@@ -70,7 +70,15 @@ function handle(msg: StageMsg): void {
         traceBackend,
         cells?.compress && compressPort
           ? new CompressFeed(
-              { width: msg.fast.width, height: msg.fast.height, session: cells.session },
+              {
+                width: msg.fast.width,
+                height: msg.fast.height,
+                session: cells.compressSession ?? cells.session,
+                ...(cells.compressTiling ? { tiling: cells.compressTiling } : {}),
+                // A stage that solves with a given library is a replay: its
+                // frames have the final calibration.
+                source: cells.library ? 'replay' : 'discover',
+              },
               compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
             )
           : null,

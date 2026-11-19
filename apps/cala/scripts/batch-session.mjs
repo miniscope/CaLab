@@ -7,6 +7,8 @@
  *        [--tag name] [--refine-runs 1] [--port 4181] [--every 15] [--max-hours 4] [--headed]
  *        [--channel chrome]
  *        [--query compress]   appended to the app URL (Cala/?debug&compress)
+ *                         `--query compress`: `status.json` then holds the compress status
+ *                         at the end of Discover and of Extract
  *
  * Serves dist/ (npm run build:e2e) with e2e/serve.mjs, opens Cala/?debug in
  * Chromium and drives the real UI buttons, so the result is what a user gets
@@ -134,6 +136,7 @@ const snap = () =>
         extractEnabled: !document.querySelector('[data-testid=pass2-run]')?.disabled,
         exportEnabled: !document.querySelector('[data-testid=export-npz]')?.disabled,
         motion: txt('motion-backend') || '',
+        compress: c.compress?.status?.() ?? null,
         convergence: txt('convergence-status'),
         qc: txt('qc-counts'),
       };
@@ -199,6 +202,7 @@ try {
       if (!ready) continue;
       status.stages.discover.end = Date.now();
       status.stages.discover.cells = s.cells;
+      status.stages.discover.compress = s.compress;
       await shot('discover');
       phase = refineRuns > 0 ? 'refine' : 'extract';
       if (phase === 'refine') {
@@ -229,6 +233,7 @@ try {
     } else if (phase === 'extract' && s.extract === 'done' && s.exportEnabled) {
       status.stages.extract.end = Date.now();
       status.stages.extract.cells = s.cells;
+      status.stages.extract.compress = s.compress;
       phase = 'export';
       status.stages.export = { start: Date.now() };
       await page.locator('[data-testid=export-menu] summary').click();

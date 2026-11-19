@@ -33,6 +33,7 @@ import { MAX_IN_FLIGHT, ThroughputMeter, type PipelineStore } from './pipeline-s
 import { createTraceFile, type TraceFile } from './trace-file.ts';
 import type { LibraryView } from '../workers/slow-types.ts';
 import type { FovProjections } from './fov-projection.ts';
+import type { CellsSettings } from '../workers/frame-types.ts';
 import { startReplayPipeline } from './replay-pipeline.ts';
 
 export type Pass2Status = 'idle' | 'running' | 'done' | 'error' | 'cancelled';
@@ -75,6 +76,15 @@ export interface Pass2Result {
   projection?: FovProjections;
 }
 
+/** The compress settings of Extract's replay (none when compression is off). */
+function compressCells(
+  session: number | null,
+): Pick<CellsSettings, 'compress' | 'compressTiling' | 'compressSession'> {
+  return session === null
+    ? {}
+    : { compress: true, compressTiling: 'offset', compressSession: session };
+}
+
 export function createPass2Store(
   client: PipelineClient,
   pipeline: PipelineStore,
@@ -82,6 +92,12 @@ export function createPass2Store(
   clock: () => number = () => performance.now(),
   /** Another stage's reason to wait (a Refine run going on), checked after Discover's. */
   blocked?: () => string | null,
+  /**
+   * With `?compress`: the session of the compress store. The replay then also
+   * feeds the compress worker, on the offset grids, and leaves the recalibrated
+   * factors (its frames have the final calibration). Null or absent: off.
+   */
+  compressSession?: () => number | null,
 ) {
   const [status, setStatus] = createSignal<Pass2Status>('idle');
   const [processed, setProcessed] = createSignal(0);
@@ -308,6 +324,7 @@ export function createPass2Store(
           library: bytes,
           signed: true,
           projection: true,
+          ...compressCells(compressSession?.() ?? null),
         },
         { frames, record: rec, flatField: flatMap },
       );
