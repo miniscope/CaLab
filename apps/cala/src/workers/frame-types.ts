@@ -28,6 +28,13 @@ export interface CellsSettings {
    * this `session`, which keeps its state and may only refine footprints.
    */
   refine?: boolean;
+  /**
+   * Look-back (experimental; Discover of a recording only): the slow loop
+   * runs with it (`SlowInit.lookback`) and stage C reports its back half's
+   * state now and then (`PipelineStepResult` `backState`) for the look-back
+   * worker. Pipelined workers only.
+   */
+  lookback?: boolean;
   /** Batches in flight to the slow worker (default `FAST_LOOP_DEFAULTS.poolSize`). */
   forwardBuffers?: number;
   /** Feed the compress worker (default off; needs its port). */

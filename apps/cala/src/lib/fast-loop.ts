@@ -145,6 +145,8 @@ export interface FastLoopOptions {
    * (`ForwardPool` lossless): the main thread paces the batches instead.
    */
   refine?: boolean;
+  /** Discover with look-back (experimental): the slow loop's `init` says so (`SlowInit.lookback`). */
+  lookback?: boolean;
   /** Return the model residual of each batch's last frame (the app's residual view). */
   residual?: boolean;
   /**
@@ -166,6 +168,7 @@ export const FAST_LOOP_DEFAULTS = {
   qcEveryS: 1,
   residual: false,
   refine: false,
+  lookback: false,
   signed: false,
 } as const;
 
@@ -526,6 +529,7 @@ export class FastLoop {
           cellDiameterPx: this.o.cellDiameterPx,
           flattenSigmaPx: this.o.flattenSigmaPx,
           budget: this.o.budget,
+          ...(this.o.lookback ? { lookback: true } : {}),
         },
         [],
       );

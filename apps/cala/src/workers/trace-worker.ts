@@ -28,6 +28,8 @@ let slowPort: MessagePort | null = null;
 let compressPort: MessagePort | null = null;
 let stage: BackStage | null = null;
 let queue: Promise<void> = Promise.resolve();
+/** Look-back runs: frames between snapshots of the back half's state (look-back blocks start from the newest). */
+const LOOKBACK_SNAPSHOT_EVERY = 256;
 /** Session of the slow loop the last Discover run started (-1: none). */
 let slowSession = -1;
 
@@ -64,6 +66,7 @@ function handle(msg: StageMsg): void {
           signed: cells?.signed ?? false,
           ...(cells?.library ? { initialLibrary: cells.library } : {}),
           ...(cells?.refine ? { refine: true } : {}),
+          ...(cells?.lookback && !cells.library ? { lookback: true } : {}),
           ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
         },
         port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
@@ -81,6 +84,7 @@ function handle(msg: StageMsg): void {
         cells?.projection
           ? new FovProjector(msg.setup.width, msg.setup.height, msg.setup.boundaries ?? [])
           : null,
+        cells?.lookback && !cells.library ? LOOKBACK_SNAPSHOT_EVERY : 0,
       );
       break;
     }
@@ -99,7 +103,12 @@ function handle(msg: StageMsg): void {
     case 'end': {
       stage?.end();
       const projection = stage?.projector?.result();
-      const step: PipelineStepResult = projection ? { kind: 'done', projection } : { kind: 'done' };
+      const backState = stage?.finalBackState();
+      const step: PipelineStepResult = {
+        kind: 'done',
+        ...(projection ? { projection } : {}),
+        ...(backState ? { backState } : {}),
+      };
       workerScope.postMessage({ type: 'pipeline-step', id: msg.id, step }, transferablesOf(step));
       break;
     }
