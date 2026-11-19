@@ -3727,6 +3727,10 @@ fn main() {
         scfg.joint_carry = true;
         println!("joint update: the store carries its own estimate across replays");
     }
+    if let Some(v) = arg_value(&args, "--joint-l1") {
+        scfg.joint_l1 = v.parse().unwrap();
+        println!("joint update: trace-step L1 weight {}", scfg.joint_l1);
+    }
     if let Some(v) = arg_value(&args, "--joint-iters") {
         scfg.joint_iters = v.parse().unwrap();
         println!("joint update: {} alternations per replay", scfg.joint_iters);
