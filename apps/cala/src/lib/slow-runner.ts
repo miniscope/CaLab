@@ -799,6 +799,8 @@ export class SlowRunner {
         iterations: 0,
         stop: 'error',
         message: refused,
+        // Not a failure of the factors: the main thread may still read them.
+        refused: true,
       });
       return;
     }

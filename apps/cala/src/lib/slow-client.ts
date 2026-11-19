@@ -76,8 +76,14 @@ export function createSlowClient(
   const worker = makeWorker();
   const channel = new MessageChannel();
   worker.onmessage = (e: MessageEvent<SlowToMain>) => onMessage(e.data);
+  // Tagged: only the slow worker's own crash frees the factor files it holds.
   worker.onerror = (e) =>
-    onMessage({ type: 'error', session: -1, message: e.message || 'The slow worker crashed.' });
+    onMessage({
+      type: 'error',
+      session: -1,
+      message: e.message || 'The slow worker crashed.',
+      worker: 'slow',
+    });
   const helpers: SlowWorkerLike[] = [];
   const ports: MessagePort[] = [];
   for (let i = 0; i < visitWorkers; i++) {

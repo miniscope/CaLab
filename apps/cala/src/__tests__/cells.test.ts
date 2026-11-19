@@ -1228,13 +1228,15 @@ describe('SlowRunner: Refine on the factors', () => {
         iterations: 0,
         stop: 'error',
         message: 'The slow loop has not published its final library yet.',
+        refused: true,
       },
     ]);
     expect(t.loop.refineOnFactors).not.toHaveBeenCalled();
     await t.r.refineOnFactors({ ...msg, session: 9 });
-    expect(t.toMain.of('factor-end')[1].message).toBe(
-      'No slow loop to refine: run Discover first.',
-    );
+    expect(t.toMain.of('factor-end')[1]).toMatchObject({
+      message: 'No slow loop to refine: run Discover first.',
+      refused: true,
+    });
   });
 
   it('refuses a cap that is not a whole number of iterations from 1', async () => {
@@ -1248,6 +1250,7 @@ describe('SlowRunner: Refine on the factors', () => {
           iterations: 0,
           stop: 'error',
           message: `maxIterations must be a whole number from 1, not ${maxIterations}.`,
+          refused: true,
         },
       ]);
       expect(t.opened).toEqual([]);
@@ -1266,6 +1269,7 @@ describe('SlowRunner: Refine on the factors', () => {
         iterations: 0,
         stop: 'error',
         message: 'Refine on the factors is already running.',
+        refused: true,
       },
     ]);
     expect(t.opened).toEqual(['run-x 3']);
@@ -1424,6 +1428,35 @@ describe('SlowRunner: Refine on the factors', () => {
     expect(posted.slice(1)).toEqual([
       { type: 'refine-factors', session: 4, folder: 'run-x', windows: 2, ...settings },
       { type: 'stop-factors', session: 4 },
+    ]);
+    c.dispose();
+  });
+
+  it('the slow client tags only the slow worker crash as its own (it frees the factor files)', async () => {
+    const got: SlowToMain[] = [];
+    const make = () =>
+      ({
+        postMessage() {},
+        terminate() {},
+        onmessage: null,
+        onerror: null,
+      }) as unknown as SlowWorkerLike;
+    const worker = make();
+    const visit = make();
+    const c = createSlowClient(
+      { connectSlow: async () => Promise.reject(new Error('no port')) },
+      (m) => void got.push(m),
+      () => worker,
+      1,
+      () => visit,
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    (visit.onerror as (e: ErrorEvent) => void)({ message: '' } as ErrorEvent);
+    (worker.onerror as (e: ErrorEvent) => void)({ message: '' } as ErrorEvent);
+    expect(got).toEqual([
+      { type: 'error', session: -1, message: 'no port' },
+      { type: 'error', session: -1, message: 'A visit worker crashed.' },
+      { type: 'error', session: -1, message: 'The slow worker crashed.', worker: 'slow' },
     ]);
     c.dispose();
   });

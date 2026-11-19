@@ -213,11 +213,29 @@ export type SlowToMain =
       /** The same library as `TraceLibrary.toBytes()` (a copy), so pass 2 can solve with the final one. */
       bytes: Uint8Array;
     }
-  | { type: 'error'; session: number; message: string }
+  | {
+      type: 'error';
+      session: number;
+      message: string;
+      /**
+       * `slow`: the slow worker itself crashed (its `onerror`, session -1), so
+       * it holds no file any more. Absent: anything else, a visit worker's
+       * crash or a failed `connectSlow` included.
+       */
+      worker?: 'slow';
+    }
   /** One iteration of Refine on the factors is done (its library went out just before). */
   | { type: 'factor-iteration'; session: number; report: FactorIteration }
   /** Refine on the factors ended; its files are closed. Sent on every path, refusals included. */
-  | { type: 'factor-end'; session: number; iterations: number; stop: FactorStop; message?: string };
+  | {
+      type: 'factor-end';
+      session: number;
+      iterations: number;
+      stop: FactorStop;
+      message?: string;
+      /** The run was refused before it opened the files (`stop` is `error`, `iterations` 0): no failure of the factors. */
+      refused?: true;
+    };
 
 /**
  * Main thread -> slow worker: the port to the fast worker, and one port to
