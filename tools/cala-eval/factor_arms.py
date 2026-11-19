@@ -19,6 +19,7 @@ Arms (each a `qc_eval real` run in `DIR/<arm>`; pass 1 is the same in all):
   setting of the compressor (`REMEDIES`); only run when named in `--arms`.
 - `chosen`: the combination chosen after phase 0: the offset grids on recalibrated factors
   (the compressor's default of two power iterations).
+- `c_chosen`: as `chosen`, with the Extract pass solved by the factor engine (arm C).
 - `x_raw` and `x_<tiling>`: Discover and the Extract pass only, so the two
   Extracts solve with one and the same library.
 
@@ -95,6 +96,7 @@ def arms(refine: int, budget: int = DEFAULT_BUDGET) -> dict[str, list[str]]:
         out[f"x_{name}"] = extract + factors
     out["plain_recal"] = out["plain"] + ["--factors-pass", "2"]
     out["chosen"] = out["offset"] + ["--factors-pass", "2"]
+    out["c_chosen"] = out["chosen"] + ["--extract-engine", "factors"]
     for name, cut in REMEDIES.items():
         out[name] = out["plain_recal"] + cut
     return out
@@ -196,6 +198,22 @@ def cost_row(run: Path) -> tuple[str, float, float, float] | None:
     return (run.name, rank, mb, ms)
 
 
+def extract_row(run: Path) -> tuple[str, float, float, float] | None:
+    """(arm, seconds preparing, seconds solving, wall seconds) of the Extract pass."""
+    path = run / "stage_times.tsv"
+    if not path.exists():
+        return None
+    for r in factor_closeness.read_tsv(path):
+        if r["stage"] == "extract":
+            return (
+                run.name,
+                float(r["pre_s"]),
+                float(r["solve_s"]),
+                float(r["wall_s"]),
+            )
+    return None
+
+
 def stage_table(run: Path) -> list[str]:
     path = run / "stage_times.tsv"
     if not path.exists():
@@ -269,7 +287,7 @@ def report(
         text.append("")
     nulls = [out_dir / n for n in ("null_lo", "null_hi") if n in have]
     for n in have:
-        if n in TILINGS or n in ("plain_recal", "chosen") or n in REMEDIES:
+        if n in TILINGS or n in ("plain_recal", "chosen", "c_chosen") or n in REMEDIES:
             if "raw" in have:
                 text.append(
                     factor_closeness.report(
@@ -290,6 +308,18 @@ def report(
                     truth_path=truth,
                 )
             )
+    if "chosen" in have and "c_chosen" in have:
+        text.append(
+            factor_closeness.engine_report(out_dir / "chosen", out_dir / "c_chosen")
+        )
+    rows = [r for r in (extract_row(out_dir / n) for n in have) if r]
+    if rows:
+        text += [
+            "| arm | Extract: preparing s | solving s | wall s |",
+            "| --- | --- | --- | --- |",
+        ]
+        text += [f"| {a} | {p:.2f} | {s:.2f} | {w:.2f} |" for a, p, s, w in rows]
+        text.append("")
     return "\n".join(text)
 
 

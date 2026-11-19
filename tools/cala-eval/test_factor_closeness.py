@@ -484,5 +484,26 @@ class A1Gate(unittest.TestCase):
         self.assertFalse(F.a1_passes(F.a1_gate([], 1.0, 1.0)))
 
 
+class TraceGap(unittest.TestCase):
+    def test_gap_is_the_largest_difference_in_units_of_the_first_traces_sd(
+        self,
+    ) -> None:
+        a = np.array([0.0, 2.0, 0.0, 2.0], dtype=np.float32)  # sd 1
+        bump = np.array([0.0, 0.5, 0.0, 0.0], dtype=np.float32)
+        flat = np.zeros(4, dtype=np.float32)
+        gap = F.trace_gap(
+            {1: a, 2: a, 3: flat, 5: a}, {1: a + bump, 2: a, 3: flat + 1, 4: a}
+        )
+        self.assertAlmostEqual(gap[1], 0.5)
+        self.assertEqual(gap[2], 0.0)
+        self.assertTrue(math.isnan(gap[3]), "a constant first trace has no sd")
+        self.assertEqual(sorted(gap), [1, 2, 3], "only cells of both runs")
+
+    def test_traces_of_different_length_compare_over_the_common_part(self) -> None:
+        a = np.array([0.0, 2.0, 0.0, 2.0, 9.0], dtype=np.float32)
+        gap = F.trace_gap({1: a[:4]}, {1: a})
+        self.assertEqual(gap[1], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

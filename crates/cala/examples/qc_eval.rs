@@ -112,6 +112,10 @@
 //!                      the recording once more with the final library and no
 //!                      slow loop; writes `extract_trace.f32` (frames x cells,
 //!                      f32 LE) and `extract_ids.tsv`. Not with `--sessions`
+//!   --extract-engine E  with `--extract-pass`: frames (default; solve each
+//!                      replayed frame) | factors (the factor engine on the
+//!                      files of `--factors-out`, no frame is read or
+//!                      rebuilt; needs `--replay-source factors`)
 //!   Every run writes `stage_times.tsv`: seconds per pass (and for the
 //!   Extract pass) spent reading, preprocessing, compressing, solving traces
 //!   and in the slow loop. The columns do not add up to `wall_s`: the QC
@@ -333,6 +337,7 @@ use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::compress::blend::{BlendLayout, Tiling};
+use calab_cala::compress::project::{FactorExtractor, WindowProjector};
 use calab_cala::compress::{CompressConfig, WindowCompressor, WindowFactors};
 use calab_cala::discover::{
     CoreTest, EditScope, MergeRule, RefineGate, SlowLoop, SlowLoopConfig, SupportRule, VisitResult,
@@ -2970,6 +2975,52 @@ impl FactorReplay {
     }
 }
 
+/// `--extract-engine factors`: solve every frame of the recording from the
+/// factor files in `dir` (a [`FactorDump`]'s) with the factor engine; `sink`
+/// gets each frame's traces. Returns the seconds spent reading the files,
+/// building the projectors and solving. A failed solve stops the run with the
+/// window and frame in the message.
+fn extract_from_factors(
+    dir: &Path,
+    lib: &Arc<Library>,
+    cfg: SolverConfig,
+    t_len: usize,
+    mut sink: impl FnMut(&[f32]),
+) -> (f64, f64, f64) {
+    let mut ex = FactorExtractor::new(lib.clone(), cfg).unwrap();
+    ex.engine_mut().set_consolidated_ring_gradient(true);
+    let (mut read_s, mut pre_s, mut solve_s) = (0.0f64, 0.0f64, 0.0f64);
+    let mut start = 0usize;
+    while start < t_len {
+        let path = dir.join(format!("w{start:07}.fac"));
+        let t0 = Instant::now();
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let wf = WindowFactors::from_bytes(&bytes)
+            .unwrap_or_else(|| panic!("{path:?}: not a factor file"));
+        read_s += t0.elapsed().as_secs_f64();
+        assert!(wf.frames > 0, "{path:?}: an empty window");
+        let t0 = Instant::now();
+        let proj = WindowProjector::new(ex.library(), &wf)
+            .unwrap_or_else(|e| panic!("{path:?}: projector: {e}"));
+        pre_s += t0.elapsed().as_secs_f64();
+        let t0 = Instant::now();
+        let mut done = 0usize;
+        ex.solve(&wf, &proj, 0, wf.frames, |tr| {
+            sink(&tr.traces);
+            done += 1;
+        })
+        .unwrap_or_else(|e| {
+            panic!(
+                "factor engine failed in window {path:?} at frame {}: {e}",
+                start + done
+            )
+        });
+        solve_s += t0.elapsed().as_secs_f64();
+        start += wf.frames;
+    }
+    (read_s, pre_s, solve_s)
+}
+
 /// DIAG (`CALA_DIVERGE_DIR`): per-frame solver log (sweeps, largest
 /// |trace|) and, at the first frames that hit the sweep cap or go
 /// non-finite, the library bytes, the frame and the warm start.
@@ -3211,6 +3262,15 @@ fn main() {
     let later_budget: u64 =
         arg_value(&args, "--later-budget").map_or(budget, |s| s.parse().unwrap());
     let extract_pass = args.iter().any(|a| a == "--extract-pass");
+    let extract_factors = match arg_value(&args, "--extract-engine").as_deref() {
+        None | Some("frames") => false,
+        Some("factors") => true,
+        Some(o) => panic!("--extract-engine: frames or factors, not {o:?}"),
+    };
+    assert!(
+        !extract_factors || (extract_pass && replay_factors),
+        "--extract-engine factors needs --extract-pass and --replay-source factors"
+    );
     assert!(
         (1..=passes).contains(&factors_pass),
         "--factors-pass must be between 1 and --passes ({passes})"
@@ -4628,31 +4688,41 @@ fn main() {
         let mut tr = FrameTraces::default();
         let (mut read_s, mut pre_s, mut solve_s) = (0.0f64, 0.0f64, 0.0f64);
         let t_ex = Instant::now();
-        let mut s = 0u32;
-        while s < frames {
-            let cnt = 64.min(frames - s);
-            let t0 = Instant::now();
-            let mut raw = rec.read(s, cnt);
-            read_s += t0.elapsed().as_secs_f64();
-            if let Some(d) = &drift {
-                for (k, f) in raw.chunks_exact_mut(n_px).enumerate() {
-                    d.apply(f, s as usize + k);
-                }
-            }
-            for (k, f) in raw.chunks_exact(n_px).enumerate() {
-                let t = s as usize + k;
+        if extract_factors {
+            let dir = factors_out
+                .as_deref()
+                .expect("--extract-engine factors needs --factors-out");
+            (read_s, pre_s, solve_s) =
+                extract_from_factors(dir, &lib, SolverConfig::default(), t_len, |tr| {
+                    write_f32s(&mut out, tr);
+                });
+        } else {
+            let mut s = 0u32;
+            while s < frames {
+                let cnt = 64.min(frames - s);
                 let t0 = Instant::now();
-                pipe.frame_replay(f, &mut y, t);
-                if let Some(fr) = replay.as_mut() {
-                    fr.frame(t, &mut y);
+                let mut raw = rec.read(s, cnt);
+                read_s += t0.elapsed().as_secs_f64();
+                if let Some(d) = &drift {
+                    for (k, f) in raw.chunks_exact_mut(n_px).enumerate() {
+                        d.apply(f, s as usize + k);
+                    }
                 }
-                pre_s += t0.elapsed().as_secs_f64();
-                let t0 = Instant::now();
-                eng.process_into(&y, &mut tr).unwrap();
-                solve_s += t0.elapsed().as_secs_f64();
-                write_f32s(&mut out, &tr.traces);
+                for (k, f) in raw.chunks_exact(n_px).enumerate() {
+                    let t = s as usize + k;
+                    let t0 = Instant::now();
+                    pipe.frame_replay(f, &mut y, t);
+                    if let Some(fr) = replay.as_mut() {
+                        fr.frame(t, &mut y);
+                    }
+                    pre_s += t0.elapsed().as_secs_f64();
+                    let t0 = Instant::now();
+                    eng.process_into(&y, &mut tr).unwrap();
+                    solve_s += t0.elapsed().as_secs_f64();
+                    write_f32s(&mut out, &tr.traces);
+                }
+                s += cnt;
             }
-            s += cnt;
         }
         drop(out);
         let mut ids = String::from("slot\tid\n");
@@ -4668,7 +4738,13 @@ fn main() {
         println!(
             "extract pass: {} cells x {t_len} frames, {wall:.1} s ({} source)",
             lib.len(),
-            if replay.is_some() { "factors" } else { "raw" }
+            if extract_factors {
+                "factor engine"
+            } else if replay.is_some() {
+                "factors"
+            } else {
+                "raw"
+            }
         );
     }
     std::fs::write(out_dir.join("stage_times.tsv"), &stage_times).unwrap();
@@ -4794,6 +4870,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calab_cala::trace::IdentityFilter;
 
     /// A blob on the tile line x = 64 whose brightness follows a slow sine.
     fn slow_stream(dims: Dims, frames: usize) -> Vec<Vec<f32>> {
@@ -5049,5 +5126,63 @@ mod tests {
             assert_eq!(i, j);
             assert!(r > 0.99, "cell {i}: r {r}");
         }
+    }
+
+    #[test]
+    fn extract_from_factors_matches_the_replayed_frames() {
+        let dims = Dims::new(96, 70).unwrap();
+        // One full window and a short last one.
+        let frames = slow_stream(dims, FACTOR_WINDOW + 50);
+        let dir = std::env::temp_dir().join(format!("qc_eval_extract_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Offset, factor_config(&[]));
+        for f in &frames {
+            fd.push(f);
+        }
+        fd.finish();
+        let mut b = LibraryBuilder::new(dims);
+        for (id, (y0, x0)) in [(10usize, 12usize), (40, 58)].into_iter().enumerate() {
+            b.push(Footprint {
+                id: id as u64,
+                y0,
+                x0,
+                height: 9,
+                width: 9,
+                values: vec![1.0; 81],
+            });
+        }
+        let lib = Arc::new(b.build(&mut IdentityFilter(dims)).unwrap());
+        let tight = SolverConfig {
+            tol: 1e-4,
+            max_sweeps: 20_000,
+            relax: 1.5,
+        };
+        let mut got: Vec<f32> = Vec::new();
+        let (read_s, pre_s, solve_s) =
+            extract_from_factors(&dir, &lib, tight, frames.len(), |tr| {
+                got.extend_from_slice(tr)
+            });
+        assert!(read_s >= 0.0 && pre_s >= 0.0 && solve_s >= 0.0);
+        assert_eq!(got.len(), frames.len() * 2);
+        let mut eng = TraceEngine::new(lib.clone(), tight).unwrap();
+        eng.set_consolidated_ring_gradient(true);
+        let mut fr = FactorReplay::new(&dir, dims);
+        let mut tr = FrameTraces::default();
+        let mut y = vec![0.0f32; dims.pixels()];
+        let mut worst = 0.0f32;
+        for t in 0..frames.len() {
+            fr.frame(t, &mut y);
+            eng.process_into(&y, &mut tr).unwrap();
+            for (i, a) in tr.traces.iter().enumerate() {
+                let b = got[t * 2 + i];
+                worst = worst.max((a - b).abs() / (1.0 + a.abs()));
+                assert!(
+                    (a - b).abs() <= 1e-3 * (1.0 + a.abs()),
+                    "frame {t} cell {i}: {a} from frames, {b} from factors"
+                );
+            }
+        }
+        eprintln!("largest relative gap between the engines: {worst:e}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

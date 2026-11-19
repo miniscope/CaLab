@@ -436,6 +436,58 @@ def a1_passes(gate: list[tuple[str, str, bool | None]]) -> bool:
     return all(ok is not False for _, _, ok in gate)
 
 
+def trace_gap(ta: dict[int, np.ndarray], tb: dict[int, np.ndarray]) -> dict[int, float]:
+    """Per cell of both runs: the largest absolute difference of its two traces, over the
+    standard deviation of the first (NaN when the first trace is constant)."""
+    out: dict[int, float] = {}
+    for cid in sorted(set(ta) & set(tb)):
+        n = min(len(ta[cid]), len(tb[cid]))
+        a = ta[cid][:n].astype(np.float64)
+        b = tb[cid][:n].astype(np.float64)
+        sd = float(np.std(a)) if n else 0.0
+        out[cid] = float(np.max(np.abs(a - b))) / sd if sd > 0 else NAN
+    return out
+
+
+def engine_report(ref: Path, test: Path, band: float = 16.0) -> str:
+    """Markdown: the traces of the factor engine (`test`) against those of the frame engine
+    on frames rebuilt from the same factors (`ref`), by the cell's distance to the border.
+
+    The two engines differ where pixels are missing: the frame engine fills them per frame,
+    the factors hold the pixel's mean over the window. That is the border band.
+    """
+    (h, w), _ = read_footprints(ref / "footprints.bin")
+    same = (ref / "footprints.bin").read_bytes() == (
+        test / "footprints.bin"
+    ).read_bytes()
+    gap = trace_gap(read_traces(ref), read_traces(test))
+    cen = read_centroids(ref)
+
+    def border(cid: int) -> float:
+        cy, cx = cen.get(cid, (NAN, NAN))
+        return NAN if math.isnan(cy) else min(cy, cx, h - 1 - cy, w - 1 - cx)
+
+    sets = [
+        ("all cells", list(gap)),
+        (f"{band:g} px or more from the border", [c for c in gap if border(c) >= band]),
+        (f"under {band:g} px from the border", [c for c in gap if border(c) < band]),
+    ]
+    out = [
+        f"### `{test.name}` against `{ref.name}`: factor engine against rebuilt frames",
+        "",
+        f"The two runs have the same footprints: {'yes' if same else 'no'}.",
+        "",
+        "| cells | n | largest trace difference over the trace's sd, median | largest |",
+        "| --- | --- | --- | --- |",
+    ]
+    for name, ids in sets:
+        v = np.asarray([gap[c] for c in ids], dtype=np.float64)
+        v = v[np.isfinite(v)]
+        top = f"{v.max():.4f}" if len(v) else "n/a"
+        out.append(f"| {name} | {len(v)} | {q(v, 50)} | {top} |")
+    return "\n".join(out + [""])
+
+
 def groups(rows: list[Row], band: float) -> list[tuple[str, list[Row]]]:
     out = [
         ("all cells", rows),

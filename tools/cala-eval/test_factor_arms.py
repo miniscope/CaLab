@@ -43,10 +43,31 @@ class Arms(unittest.TestCase):
                     "offset",
                     "plain_recal",
                     "chosen",
+                    "c_chosen",
                 ]
                 + ["x_raw", "x_plain", "x_overlap8", "x_overlap16", "x_offset"]
             ),
         )
+
+    def test_the_factor_engine_arm_differs_from_chosen_only_in_the_extract_engine(
+        self,
+    ) -> None:
+        a = A.arms(5)
+        self.assertEqual(a["c_chosen"], a["chosen"] + ["--extract-engine", "factors"])
+        self.assertEqual(A.line_step(a["c_chosen"]), 32)
+        self.assertIn("c_chosen", A.default_arms(a))
+
+    def test_extract_row_reads_the_extract_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d) / "c_chosen"
+            run.mkdir()
+            (run / "stage_times.tsv").write_text(
+                "stage\tread_s\tpre_s\tcompress_s\tsolve_s\tslow_s\twall_s\n"
+                "pass1\t1.00\t2.00\t0.00\t3.00\t4.00\t11.00\n"
+                "extract\t0.10\t0.20\t0.00\t0.70\t0.00\t1.10\n"
+            )
+            self.assertEqual(A.extract_row(run), ("c_chosen", 0.2, 0.7, 1.1))
+            self.assertIsNone(A.extract_row(Path(d) / "missing"))
 
     def test_the_chosen_arm_is_offset_grids_on_recalibrated_factors(self) -> None:
         a = A.arms(5)
