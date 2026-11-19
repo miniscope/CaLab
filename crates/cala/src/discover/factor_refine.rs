@@ -913,9 +913,11 @@ pub struct IterationReport {
     /// median of `1 − r`.
     pub changed_share: f64,
     pub median_change: f64,
-    /// Cells whose statistics disk held a pixel with a valid share below 1
-    /// in some window (its window mean entered as data; below
-    /// `MIN_VALID_SHARE` the pixel was left out of that window).
+    /// Cells whose smallest valid share, over every pixel of the statistics
+    /// disk and every window of the iteration, is below [`LOW_VALID`] (0.999:
+    /// 1 up to the blending's rounding). Such a pixel's window mean entered as
+    /// data; a pixel below `MIN_VALID_SHARE` was left out of that window and
+    /// counts too.
     pub low_valid: usize,
     /// Tiles with cells whose gate had fewer than `min_test_frames`
     /// held-out frames (not refined).
@@ -1105,9 +1107,6 @@ impl SlowLoop {
         }
         if self.pending {
             return Some("unpublished edits: finalize before Refine on factors");
-        }
-        if self.published.is_none() {
-            return Some("no published library");
         }
         None
     }
