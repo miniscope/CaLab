@@ -60,6 +60,17 @@
 //!                      (default 3000)
 //!   --lookback-order O `shared` (default): the 64-frame block most cells
 //!                      need first; `newest`: the newest cell's next block
+//!   --lookback-target E  precision demand instead of the K-frame window:
+//!                      every cell whose split-half footprint noise
+//!                      (`SlowLoop::footprint_noise`) is above E needs
+//!                      look-back frames it has not had from look-back
+//!                      (frames before its birth first); newborns and their
+//!                      neighbours are served first, noisy settled cells
+//!                      after them, from the same block scheduler; a cell
+//!                      stops at the target, the cursor idles when no cell
+//!                      needs data (writes `fp_noise.tsv`)
+//!   --noise-dump       write `fp_noise.tsv` (id, birth, final footprint
+//!                      noise) at the end; examples only
 //!   --lookback-drain N recorded data: after Discover's last frame keep
 //!                      serving the cells in need, with Refine-scope visits,
 //!                      for at most N steps (one step = R look-back frames
@@ -632,9 +643,40 @@ struct LookBack {
     wall_s: f64,
     drain_steps: usize,
     drain_frames: u64,
-    /// Look-back frames and cell-frames per tenth of the recording.
-    by_tenth: [(u64, u64); 10],
+    /// Look-back frames and cell-frames per tenth of the recording (row
+    /// 10: the drain).
+    by_tenth: [(u64, u64); 11],
+    /// `--lookback-target E` (0: the `K`-frame window): the precision
+    /// demand's cells (see [`LbCell`]).
+    target: f64,
+    cells: std::collections::BTreeMap<u64, LbCell>,
+    /// Look-back frames when the noise was last evaluated.
+    noise_eval_at: u64,
+    /// Held-out frames passed over (read and preprocessed, not solved).
+    skipped: u64,
+    /// Look-back frames per 1/20 of the recording (precision mode report).
+    by_twentieth: [u64; 20],
+    /// Discover frames seen (recording frames `0..seen`).
+    seen: usize,
 }
+
+/// A cell of the precision demand (`--lookback-target`).
+struct LbCell {
+    /// Frame (recording) at which it entered the published library.
+    born: usize,
+    /// Look-back blocks already served to it (never twice).
+    served: std::collections::HashSet<usize>,
+    /// Born, or a neighbour of a birth, and still above the target.
+    prio: bool,
+    /// Above the target (with hysteresis), or no usable noise yet.
+    need: bool,
+    noise: Option<f64>,
+}
+
+/// Re-enter need only above this multiple of the target (hysteresis).
+const LB_REENTER: f64 = 1.15;
+/// Look-back frames between two noise evaluations of every cell.
+const LB_NOISE_EVERY: u64 = 256;
 
 const LB_BLOCK: usize = 64;
 
@@ -676,8 +718,124 @@ impl LookBack {
             wall_s: 0.0,
             drain_steps: 0,
             drain_frames: 0,
-            by_tenth: [(0, 0); 10],
+            by_tenth: [(0, 0); 11],
+            target: 0.0,
+            cells: Default::default(),
+            noise_eval_at: 0,
+            skipped: 0,
+            by_twentieth: [0; 20],
+            seen: 0,
         }
+    }
+
+    /// Precision mode: births (new ids) and neighbours of births get
+    /// priority; every new id starts in need.
+    fn note_births_target(&mut self, lib: &Library, seen: usize) {
+        if lib.version() == self.lib_version {
+            return;
+        }
+        self.lib_version = lib.version();
+        let ids = lib.ids();
+        let fresh: Vec<usize> = (0..ids.len())
+            .filter(|&s| !self.cells.contains_key(&ids[s]))
+            .collect();
+        let live: std::collections::HashSet<u64> = ids.iter().copied().collect();
+        self.cells.retain(|id, _| live.contains(id));
+        self.births += fresh.len() as u64;
+        for &f in &fresh {
+            self.cells.insert(
+                ids[f],
+                LbCell {
+                    born: seen,
+                    served: Default::default(),
+                    prio: true,
+                    need: true,
+                    noise: None,
+                },
+            );
+        }
+        if fresh.is_empty() {
+            return;
+        }
+        for (s, id) in ids.iter().enumerate() {
+            let ((y, x), r) = lib.support(s);
+            let touch = fresh.iter().any(|&f| {
+                let ((fy, fx), fr) = lib.support(f);
+                (fy - y).hypot(fx - x) < fr + r
+            });
+            if touch {
+                let c = self.cells.get_mut(id).expect("cell");
+                c.prio = true;
+                c.need = true;
+            }
+        }
+    }
+
+    /// Precision mode: every cell's split-half footprint noise against the
+    /// target (at most every `LB_NOISE_EVERY` look-back frames).
+    fn eval_noise(&mut self, sl: &SlowLoop, lib: &Library, force: bool) {
+        if !force && self.frames < self.noise_eval_at + LB_NOISE_EVERY {
+            return;
+        }
+        self.noise_eval_at = self.frames;
+        for slot in 0..lib.len() {
+            let id = lib.ids()[slot];
+            let Some(c) = self.cells.get_mut(&id) else {
+                continue;
+            };
+            let (pix, _) = lib.filtered(slot);
+            c.noise = sl.footprint_noise(id, pix);
+            c.need = match c.noise {
+                None => true,
+                Some(n) if c.need => n > self.target,
+                Some(n) => n > self.target * LB_REENTER,
+            };
+            if !c.need {
+                c.prio = false;
+            }
+        }
+    }
+
+    /// Precision mode: the next block. A cell in need wants the blocks of
+    /// frames before its birth it has not had, then any other seen block it
+    /// has not had from look-back. The block chosen has the most priority
+    /// cells wanting it, then the most cells, then is the oldest; every
+    /// cell in need that has not had it takes it.
+    fn next_block_target(&mut self, seen: usize, pipe: &Pipeline) -> bool {
+        let nb = seen / LB_BLOCK;
+        if nb == 0 {
+            return false;
+        }
+        let mut count = vec![(0u32, 0u32); nb];
+        let mut any = false;
+        for c in self.cells.values().filter(|c| c.need) {
+            let pre = c.born.div_ceil(LB_BLOCK).min(nb);
+            let pre_left = (0..pre).any(|b| !c.served.contains(&b));
+            let range = if pre_left { 0..pre } else { 0..nb };
+            for b in range {
+                if !c.served.contains(&b) {
+                    count[b].0 += u32::from(c.prio);
+                    count[b].1 += 1;
+                    any = true;
+                }
+            }
+        }
+        if !any {
+            return false;
+        }
+        let blk = (0..nb)
+            .filter(|&b| count[b].1 > 0)
+            .max_by_key(|&b| (count[b].0, count[b].1, std::cmp::Reverse(b)))
+            .expect("block");
+        let (lo, hi) = (blk * LB_BLOCK, (blk + 1) * LB_BLOCK);
+        let mut cells = Vec::new();
+        for (&id, c) in self.cells.iter_mut() {
+            if c.need && c.served.insert(blk) {
+                cells.push((id, lo, hi));
+            }
+        }
+        self.block = Some((lo, hi, cells, pipe.pre.clone()));
+        true
     }
 
     /// New ids in the live library since the last call: they and the cells
@@ -780,7 +938,12 @@ impl LookBack {
                 }
             }
         } else {
-            self.note_births(live.library(), seen);
+            self.seen = seen;
+            if self.target > 0.0 {
+                self.note_births_target(live.library(), seen);
+            } else {
+                self.note_births(live.library(), seen);
+            }
             let rate = self.rate;
             self.spend(rate, tenth, start, rec, drift, pipe, live, sl, n_px);
         }
@@ -804,7 +967,17 @@ impl LookBack {
     ) -> bool {
         self.credit += add;
         while self.credit >= 1.0 {
-            if self.block.as_ref().is_none_or(|b| b.0 >= b.1) && !self.next_block(pipe) {
+            let done = self.block.as_ref().is_none_or(|b| b.0 >= b.1);
+            if done && self.target > 0.0 {
+                self.eval_noise(sl, live.library(), false);
+            }
+            if done
+                && !(if self.target > 0.0 {
+                    self.next_block_target(self.seen, pipe)
+                } else {
+                    self.next_block(pipe)
+                })
+            {
                 // Nothing needed: idle budget is not banked.
                 self.block = None;
                 self.credit = self.credit.min(1.0);
@@ -819,7 +992,7 @@ impl LookBack {
                 .map(|c| c.0)
                 .collect();
             if !ids.is_empty() {
-                self.frame(
+                let solved = self.frame(
                     cur,
                     &mut pre,
                     Some(&ids),
@@ -832,7 +1005,11 @@ impl LookBack {
                     n_px,
                     tenth,
                 );
-                self.credit -= 1.0;
+                // Precision mode: a held-out frame passed over costs no
+                // budget (it is not solved).
+                if solved || self.target <= 0.0 {
+                    self.credit -= 1.0;
+                }
             }
             // No cell left: the block ends here.
             let end = if cells.is_empty() { cur + 1 } else { end };
@@ -864,7 +1041,7 @@ impl LookBack {
         let rate = self.rate.max(1.0);
         let mut steps = 0;
         while steps < max_steps {
-            let more = self.spend(rate, 9, start, rec, drift, pipe, engine, sl, n_px);
+            let more = self.spend(rate, 10, start, rec, drift, pipe, engine, sl, n_px);
             if steps % 64 == 0 {
                 sl.mark_all_due();
             }
@@ -903,7 +1080,7 @@ impl LookBack {
         sl: &mut SlowLoop,
         n_px: usize,
         tenth: usize,
-    ) {
+    ) -> bool {
         if f < self.raw_start || f >= self.raw_start + self.raw_n {
             let lo = f - f % LB_BLOCK;
             let cnt = LB_BLOCK.min(rec.total as usize - lo);
@@ -916,6 +1093,17 @@ impl LookBack {
             self.raw_start = lo;
             self.raw_n = cnt;
         }
+        // The frame's slow-loop index in Discover (all batches forwarded):
+        // a held-out frame stays held out. Warm-up frames, never in the
+        // slow loop, get their own range.
+        let idx = if f >= start {
+            (f - start) as u64
+        } else {
+            u64::MAX - f as u64
+        };
+        // Precision mode: a held-out frame is still preprocessed (the block's
+        // preprocessor copy runs forward) but not solved.
+        let skip = self.target > 0.0 && sl.is_test(idx);
         let o = (f - self.raw_start) * n_px;
         let raw = &self.raw[o..o + n_px];
         pre.front(raw, &mut self.buf).unwrap();
@@ -936,29 +1124,31 @@ impl LookBack {
             self.y.copy_from_slice(&self.buf);
             pre.back(&mut self.y).unwrap();
         }
+        if skip {
+            self.skipped += 1;
+            return false;
+        }
         let lib = live.library();
         let eng = self.engine.get_or_insert_with(|| live.clone());
         if eng.library().version() != lib.version() {
             eng.set_library(lib.clone()).unwrap();
         }
         let tr = eng.process(&self.y).unwrap();
-        // The frame's slow-loop index in Discover (all batches forwarded):
-        // a held-out frame stays held out. Warm-up frames, never in the
-        // slow loop, get their own range.
-        let idx = if f >= start {
-            (f - start) as u64
-        } else {
-            u64::MAX - f as u64
-        };
         let lib = eng.library().clone();
         let n_cells = only.map_or(lib.len(), <[u64]>::len) as u64;
-        if sl.observe_lookback(&self.y, &lib, &tr, idx, only).unwrap() {
+        let pushed = sl.observe_lookback(&self.y, &lib, &tr, idx, only).unwrap();
+        if pushed {
             self.pushed += 1;
         }
         self.frames += 1;
         self.cell_frames += n_cells;
         self.by_tenth[tenth].0 += 1;
         self.by_tenth[tenth].1 += n_cells;
+        if tenth < 10 {
+            let tw = (20 * self.seen.saturating_sub(1) / (rec.total as usize).max(1)).min(19);
+            self.by_twentieth[tw] += 1;
+        }
+        pushed
     }
 }
 
@@ -3912,11 +4102,21 @@ fn main() {
     let lb_frames: usize =
         arg_value(&args, "--lookback-frames").map_or(3000, |s| s.parse().unwrap());
     assert!(lb_rate >= 0.0, "--lookback must be >= 0");
-    let mut lookback = (lb_rate > 0.0 || lb_catchup > 0)
-        .then(|| LookBack::new(lb_rate, lb_frames, lb_newest, lb_catchup, lb_double, n_px));
+    let lb_target: f64 =
+        arg_value(&args, "--lookback-target").map_or(0.0, |s| s.parse().unwrap());
+    assert!(
+        lb_target >= 0.0 && (lb_target == 0.0 || lb_rate > 0.0),
+        "--lookback-target needs --lookback R"
+    );
+    let noise_dump = args.iter().any(|a| a == "--noise-dump") || lb_target > 0.0;
+    let mut lookback = (lb_rate > 0.0 || lb_catchup > 0).then(|| {
+        let mut l = LookBack::new(lb_rate, lb_frames, lb_newest, lb_catchup, lb_double, n_px);
+        l.target = lb_target;
+        l
+    });
     if lookback.is_some() {
         println!(
-            "lookback: rate {lb_rate} frames per Discover frame, at most {lb_frames} per job, catchup every {lb_catchup} frames{}",
+            "lookback: rate {lb_rate} frames per Discover frame, at most {lb_frames} per job, catchup every {lb_catchup} frames{}, noise target {lb_target}",
             if lb_double { " (doubling)" } else { "" }
         );
     }
@@ -4757,7 +4957,11 @@ fn main() {
             l.pushed,
             l.cell_frames,
             l.births,
-            l.need.len(),
+            if l.target > 0.0 {
+                l.cells.values().filter(|c| c.need).count()
+            } else {
+                l.need.len()
+            },
             l.wall_s
         );
         let mut t = format!(
@@ -4778,7 +4982,35 @@ fn main() {
         for (k, (a, b)) in l.by_tenth.iter().enumerate() {
             let _ = writeln!(t, "{k}\t{a}\t{b}");
         }
+        if l.target > 0.0 {
+            let above = l.cells.values().filter(|c| c.need).count();
+            let _ = write!(
+                t,
+                "\ntarget\tskipped\tcells\tabove_target\tprio_left\n{}\t{}\t{}\t{}\t{}\n\ntwentieth\tframes\n",
+                l.target,
+                l.skipped,
+                l.cells.len(),
+                above,
+                l.cells.values().filter(|c| c.prio).count()
+            );
+            for (k, a) in l.by_twentieth.iter().enumerate() {
+                let _ = writeln!(t, "{k}\t{a}");
+            }
+        }
         std::fs::write(out_dir.join("lookback.tsv"), t).unwrap();
+    }
+    if let (true, Some(sl)) = (noise_dump, slow.as_ref()) {
+        // Final footprint noise per cell (`--noise-dump`, precision mode).
+        let lib = engine.library().clone();
+        let born: HashMap<u64, u64> = sl.births().into_iter().collect();
+        let mut t = String::from("id\tborn_slow\tnoise\n");
+        for slot in 0..lib.len() {
+            let id = lib.ids()[slot];
+            let (pix, _) = lib.filtered(slot);
+            let n = sl.footprint_noise(id, pix).unwrap_or(f64::NAN);
+            let _ = writeln!(t, "{id}\t{}\t{n:.5}", born.get(&id).copied().unwrap_or(0));
+        }
+        std::fs::write(out_dir.join("fp_noise.tsv"), t).unwrap();
     }
     if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
         tm.ending = true;

@@ -181,3 +181,35 @@ recorded data.
   preprocessing state (`Preprocessor::state()`/`from_state`) and the stored motion records, its own trace engine on the
   current library, and a `observe_lookback` call into the slow loop's owner (the stats and cluster stores live there).
   The block scheduler is a few hundred lines on the owner side; frames could be solved on a patch only.
+
+## Round 2: precision demand (targets written 18 Nov 2026 before any result)
+
+**Change.** `--lookback-target E` replaces the fixed K-frame window with a precision demand: every cell whose
+split-half footprint noise (`SlowLoop::footprint_noise`, relative) is above E needs look-back frames, newborns and
+their neighbours first, noisy settled cells after them, from the same shared block scheduler. A cell wants the blocks
+before its birth first, then any other seen block it has not had from look-back; no block is served twice to a cell;
+it stops at E (re-enters above 1.15 E); the cursor idles when no cell needs data. Held-out frames are read and
+preprocessed but not solved and cost no budget (a third of the previous look-back frames were solved then dropped).
+
+**Target E.** End-of-Refine median noise in `DR-main` is ~0.047 (static_s5 `convergence.tsv`), end of Discover ~0.09.
+First arm E = 0.05; the calibration run (`cr-calib`, `DR-main` flags + `--noise-dump`) gives the per-cell
+distribution after Refine; E is moved to that distribution's median if it differs materially. Noise vs r is checked on
+the same run.
+
+**Arms (quick tier, vs cached `cr-quick/DR-main`).** All: `--passes 1 --joint-update all --joint-sign all --lookback 2
+--lookback-drain 4800 --lookback-target E`; `LBP-x2` (half-life 6000) and `LBP-x2-hl24k` (`--stats-half-life
+24000`). The round-1 drain arms `LBD-x2` / `LBD-x2-hl24k` (K = 3000 window) are the reference for change 3.
+
+**Targets (vs `DR-main`, paired, suite rules):**
+
+1. Footprint r median, all / isolated / close-pair: not below `DR-main` (diff CI not below 0, or within noise with the
+   point estimate >= `DR-main`). Near-match (PI relaxation, 18 Nov): each within 0.003.
+2. Share r < 0.9 (all, isolated): within noise or better.
+3. Trace corr excess < 1 D and bite shares: better than `DR-main`.
+4. Total compute lower than `DR-main`: pass-loop wall (sum over sims) and the deterministic measure, look-back frames
+   solved vs the 9600 frames x sims of the Refine pass (a look-back frame costs about a third of a Refine frame).
+5. Settling: look-back frames per twentieth of the recording fall as births slow; cells still above E at the end
+   reported (and whether the drain ended on the target or on its cap).
+6. Matched: reported only (merge-rule loss, fix/cala-merge-close-pairs).
+
+Full tier (with motion) only if the quick tier meets or near-matches 1-4.
