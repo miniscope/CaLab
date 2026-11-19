@@ -35,7 +35,7 @@ run is `within` the null spread when its loss is at most the largest null loss.
 The report ends with gate A1 of the spec's Amendment 1. Its rule 5 (Amendment 3) needs
 the null runs: the test run may lose at most as many QC-pass cells as the null run that
 lost most. With `--match` the null runs are paired with `--ref` by footprint too, so they
-should then be look-back runs (`lb_raw` at another `--budget`).
+should then be look-back runs (`lb_raw` with another `--slow-seed`).
 Needs numpy.
 """
 

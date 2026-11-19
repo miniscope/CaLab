@@ -78,7 +78,7 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
   joint flags on), `lb_fac` (its cursor reads the factor windows, `--lookback-source factors`) and `lb_live` (that plus
   Extract on the factors). `factor_closeness.py --match` pairs cells by footprint instead of by id, for arms whose
   Discover differs (`raw_seed` against `raw`, the look-back arms), and prints the footprint correlation with the truth
-  footprint. The arms `lb_null_lo` and `lb_null_hi` (`lb_raw` at half and twice the slow-loop budget) are the null runs of
+  footprint. The arms `lb_null_s1` and `lb_null_s2` (`lb_raw` with another slow-loop seed, `--slow-seed 1` and `2`) are the null runs of
   the look-back comparisons: they are paired by footprint too and give the limit of gate A1's rule 5 (the test run may
   lose at most as many QC-pass cells as the null run that lost most; without null runs the rule does not apply).
 - Factor pipeline, phase 3a (Refine on factors, `results/2026-11-19-factor-phase3.md`):
