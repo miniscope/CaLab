@@ -188,3 +188,41 @@ test('Cala: with compress=off a file replays the file for Extract, as before', a
   expect(bytes.includes('"source":"factors"')).toBe(false);
   expect(bytes.includes('extract_min_valid')).toBe(false);
 });
+
+/** Refine runs to its end and its replay's factors become ready. */
+async function refineToFactors(page: Page): Promise<void> {
+  await page.getByTestId('refine-run').click();
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as CalaDebug).__cala.refine.status()), {
+      timeout: 120_000,
+    })
+    .toBe('done');
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const c = (window as unknown as CalaDebug).__cala;
+          return c.compress?.factors(c.pipeline.record().frames) ?? null;
+        }),
+      { timeout: 120_000 },
+    )
+    .toBe('ready');
+}
+
+test("Cala: a second tab of the app leaves the first tab's factors alone", async ({
+  page,
+  context,
+}) => {
+  test.setTimeout(400_000);
+  await discover(page, '');
+  await refineToFactors(page);
+  // Between stages the first tab holds no file open: only its lock protects its folder.
+  const second = await context.newPage();
+  await discover(second, '');
+  await page.bringToFront();
+  await page.getByTestId('pass2-run').click();
+  await expect(page.getByTestId('pass2-status')).toContainText('Extract done (from the factors)', {
+    timeout: 60_000,
+  });
+  await second.close();
+});

@@ -445,6 +445,10 @@ The factors are also used as follows.
   once), and keeps the factors in `f<window>.bin`.
 - `src/lib/window-store.ts`: the files, in the origin private file system
   (`cala-compress/<run>`, removed at the next page load); in memory for tests.
+  The compress worker holds the Web Lock `cala-compress/<run>` while it lives,
+  and a sweep removes only folders whose lock is free, so a second tab of the
+  app never deletes the first tab's factors (without Web Locks every other
+  folder is removed, as before).
 - Back-fill (`CompressRunner.backfill`): reads each factor file back and
   solves it with a `FactorExtractor` (WASM) on the library the fast worker
   forwarded: the projections of each frame come from the stored factors and no
