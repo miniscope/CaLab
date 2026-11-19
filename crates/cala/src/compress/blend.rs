@@ -123,6 +123,36 @@ fn edge_window(span: Span, ramp: usize, cosine: bool) -> Vec<f32> {
         .collect()
 }
 
+/// (first cut, growth, ramp length, raised cosine) of each grid of a tiling.
+fn grids(tile: usize, tiling: Tiling) -> Vec<(usize, usize, usize, bool)> {
+    match tiling {
+        Tiling::Plain => vec![(tile, 0, 0, false)],
+        Tiling::Overlap(o) => {
+            let o = o.min(tile / 2);
+            vec![(tile, o, 2 * o, true)]
+        }
+        Tiling::Offset => vec![(tile, 0, tile / 2, false), (tile / 2, 0, tile / 2, false)],
+    }
+}
+
+/// `(x0, y0, w, h)` of the tiles of a tiling, in the order of
+/// [`BlendLayout::grid`] (which is built from this), without the blending
+/// weights (cost proportional to the tiles, not to the frame's area).
+pub fn grid_of(dims: Dims, tile: usize, tiling: Tiling) -> Vec<(usize, usize, usize, usize)> {
+    let tile = tile.max(2);
+    let mut grid = Vec::new();
+    for (first, grow, _, _) in grids(tile, tiling) {
+        let xs = spans(dims.width, tile, first, grow);
+        let ys = spans(dims.height, tile, first, grow);
+        for sy in &ys {
+            for sx in &xs {
+                grid.push((sx.0, sy.0, sx.1, sy.1));
+            }
+        }
+    }
+    grid
+}
+
 /// The tiles of a tiling and each tile's blending weights.
 pub struct BlendLayout {
     dims: Dims,
@@ -153,18 +183,9 @@ impl BlendLayout {
 
     pub fn new(dims: Dims, tile: usize, tiling: Tiling) -> BlendLayout {
         let tile = tile.max(2);
-        // (first cut, growth, ramp length, raised cosine) of each grid.
-        let grids: Vec<(usize, usize, usize, bool)> = match tiling {
-            Tiling::Plain => vec![(tile, 0, 0, false)],
-            Tiling::Overlap(o) => {
-                let o = o.min(tile / 2);
-                vec![(tile, o, 2 * o, true)]
-            }
-            Tiling::Offset => vec![(tile, 0, tile / 2, false), (tile / 2, 0, tile / 2, false)],
-        };
         let mut grid = Vec::new();
         let mut weights: Vec<Vec<f32>> = Vec::new();
-        for (first, grow, ramp, cosine) in grids {
+        for (first, grow, ramp, cosine) in grids(tile, tiling) {
             let xs = spans(dims.width, tile, first, grow);
             let ys = spans(dims.height, tile, first, grow);
             for &sy in &ys {
@@ -288,6 +309,24 @@ mod tests {
                         BlendLayout::new(dims, tile, tiling).grid().len(),
                         "{w}x{h} tile {tile} {tiling:?}"
                     );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn grid_of_is_the_grid_of_the_layout() {
+        for (w, h) in [(96, 70), (40, 24), (10, 10), (65, 1), (3, 130), (33, 33)] {
+            let dims = Dims::new(w, h).unwrap();
+            for tile in [2, 3, 16, 64, 100] {
+                for tiling in TILINGS {
+                    let g = grid_of(dims, tile, tiling);
+                    assert_eq!(
+                        g.as_slice(),
+                        BlendLayout::new(dims, tile, tiling).grid(),
+                        "{w}x{h} tile {tile} {tiling:?}"
+                    );
+                    assert_eq!(g.len(), BlendLayout::tile_count(dims, tile, tiling));
                 }
             }
         }

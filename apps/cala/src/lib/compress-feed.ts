@@ -57,8 +57,8 @@ export class CompressFeed implements CompressFeedLike {
     private readonly port: PortLike<FastToCompress>,
   ) {
     this.o = { ...COMPRESS_DEFAULTS, ...options };
-    if (!(this.o.window >= 2) || !(this.o.tile >= 1) || !(this.o.quant > 0)) {
-      throw new RangeError('CompressFeed needs window >= 2, tile >= 1, quant > 0.');
+    if (!(this.o.window >= 2) || !(this.o.tile >= 2) || !(this.o.quant > 0)) {
+      throw new RangeError('CompressFeed needs window >= 2, tile >= 2, quant > 0.');
     }
     this.px = options.width * options.height;
   }

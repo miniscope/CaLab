@@ -185,11 +185,13 @@ export class CompressRunner {
   async handle(msg: FastToCompress): Promise<void> {
     if (msg.type === 'init') {
       await this.clear();
+      // The layout first: a refused one must not leave a half-initialised session.
+      const tiles = tilesOf(this.deps.layout(msg.width, msg.height, msg.tile, msg.tiling));
+      this.tiles = tiles;
+      this.layoutPx = tiles.reduce((s, t) => s + t.w * t.h, 0);
       this.session = msg.session;
       this.init = msg;
-      this.tiles = tilesOf(this.deps.layout(msg.width, msg.height, msg.tile, msg.tiling));
-      this.layoutPx = this.tiles.reduce((s, t) => s + t.w * t.h, 0);
-      this.deps.review?.port.postMessage({
+      this.reviewOf(msg)?.port.postMessage({
         type: 'init',
         session: msg.session,
         width: msg.width,
@@ -200,7 +202,7 @@ export class CompressRunner {
     if (msg.session !== this.session || !this.init) return;
     if (msg.type === 'reset') {
       await this.clear();
-      this.deps.review?.port.postMessage({ type: 'reset', session: msg.session });
+      this.reviewOf(this.init)?.port.postMessage({ type: 'reset', session: msg.session });
       this.session = -1;
       this.init = null;
     } else if (msg.type === 'library') {
@@ -458,13 +460,18 @@ export class CompressRunner {
     await this.feedReview(job.index, epoch);
   }
 
+  /** The review worker's port, if there is one and the run's tiles are plain (the review reads no others). */
+  private reviewOf(init: CompressInit | null): CompressRunnerDeps['review'] {
+    return init?.tiling === 'plain' ? this.deps.review : undefined;
+  }
+
   /**
    * Hand window `index`'s factors to the review worker and, every `every`
    * windows, ask for a review against the newest library. Not after the end
    * of the recording: the slow loop takes no more cells then.
    */
   private async feedReview(index: number, epoch: number): Promise<void> {
-    const review = this.deps.review;
+    const review = this.reviewOf(this.init);
     if (!review || this.final) return;
     const file = await this.deps.store.open(factorName(index));
     const bytes = new Uint8Array(file.size());

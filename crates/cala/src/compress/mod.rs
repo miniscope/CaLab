@@ -457,7 +457,7 @@ impl WindowCompressor {
             tile: cfg.tile.max(2),
             ..cfg
         };
-        let grid = BlendLayout::new(dims, cfg.tile, cfg.tiling).grid().to_vec();
+        let grid = blend::grid_of(dims, cfg.tile, cfg.tiling);
         let buf = grid
             .iter()
             .map(|g| Vec::with_capacity(g.2 * g.3 * cfg.window))
@@ -1598,5 +1598,34 @@ mod tests {
         let (one, two) = (captured(1), captured(2));
         assert!(two >= one * 0.999, "one iteration {one}, two {two}");
         assert_eq!(CompressConfig::default().n_iter, 2);
+    }
+
+    #[test]
+    fn a_one_pixel_edge_tile_round_trips_natively() {
+        // 33 = 2 * 16 + 1: both frame edges end in a 1 px strip, whose corner
+        // is a 1 x 1 tile.
+        let dims = Dims::new(33, 33).unwrap();
+        for tiling in [Tiling::Plain, Tiling::Offset] {
+            let cfg = CompressConfig {
+                tile: 16,
+                window: 6,
+                k0: 2,
+                tiling,
+                ..CompressConfig::default()
+            };
+            let mut wc = WindowCompressor::new(dims, cfg);
+            let mut win = None;
+            for t in 0..6 {
+                let frame: Vec<f32> = (0..dims.pixels())
+                    .map(|i| 10.0 + (i % 7) as f32 + t as f32 * 0.5 * ((i % 3) as f32))
+                    .collect();
+                win = wc.push(&frame);
+            }
+            let w = win.expect("a full window");
+            assert!(w.tiles.iter().any(|t| t.w * t.h == 1), "{tiling:?}");
+            let back = WindowFactors::from_bytes(&w.to_bytes()).expect("reads back");
+            assert_eq!(back.tiles.len(), w.tiles.len());
+            assert_eq!(back.tiling, tiling);
+        }
     }
 }

@@ -10,7 +10,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use super::blend::{BlendLayout, Tiling};
+use super::blend::{grid_of, BlendLayout, Tiling};
 use super::review::{
     candidates, candidates_to_wire, scan_band, scan_rows, KnownCell, ReviewConfig, SpotStats,
 };
@@ -45,31 +45,33 @@ fn parse_tiling(func: &str, s: &str) -> Result<Tiling, JsError> {
         .ok_or_else(|| js_err(func, format!("tiling {s:?}: plain, overlap:N or offset")))
 }
 
-fn layout_of(
+/// The frame size, tile edge and tiling of a call, checked.
+fn checked(
     func: &str,
     width: u32,
     height: u32,
     tile: u32,
     tiling: &str,
-) -> Result<BlendLayout, JsError> {
+) -> Result<(Dims, usize, Tiling), JsError> {
     let dims = Dims::new(width as usize, height as usize).map_err(|e| js_err(func, e))?;
     if tile < 2 {
         return Err(js_err(func, "tile must be at least 2"));
     }
-    Ok(BlendLayout::new(
-        dims,
-        tile as usize,
-        parse_tiling(func, tiling)?,
-    ))
+    Ok((dims, tile as usize, parse_tiling(func, tiling)?))
+}
+
+/// Why a header with `tiles` records cannot describe this frame, if so.
+fn header_mismatch(dims: Dims, tile: usize, tiling: Tiling, tiles: usize) -> Option<String> {
+    let want = BlendLayout::tile_count(dims, tile, tiling);
+    (tiles != want).then(|| format!("{tiles} tiles, {want} expected for this frame and tiling"))
 }
 
 /// The tiles of a tiling, `(x0, y0, w, h)` one after the other, in the order
 /// `quantizeTiles` writes them and a factor file holds them.
 #[wasm_bindgen(js_name = tileLayout)]
 pub fn tile_layout(width: u32, height: u32, tile: u32, tiling: &str) -> Result<Vec<u32>, JsError> {
-    let layout = layout_of("tileLayout", width, height, tile, tiling)?;
-    Ok(layout
-        .grid()
+    let (dims, tile, tiling) = checked("tileLayout", width, height, tile, tiling)?;
+    Ok(grid_of(dims, tile, tiling)
         .iter()
         .flat_map(|g| [g.0 as u32, g.1 as u32, g.2 as u32, g.3 as u32])
         .collect())
@@ -87,14 +89,17 @@ pub fn factor_header(
     tiles: u32,
     start: f64,
 ) -> Result<Vec<u8>, JsError> {
-    let dims = Dims::new(width as usize, height as usize).map_err(|e| js_err("factorHeader", e))?;
+    let (dims, tile, tiling) = checked("factorHeader", width, height, tile, tiling)?;
     if !(start.is_finite() && start >= 0.0) {
         return Err(js_err("factorHeader", "start must be a frame index"));
     }
+    if let Some(e) = header_mismatch(dims, tile, tiling, tiles as usize) {
+        return Err(js_err("factorHeader", e));
+    }
     Ok(WindowFactors::header_bytes(
         dims,
-        tile as usize,
-        parse_tiling("factorHeader", tiling)?,
+        tile,
+        tiling,
         frames as usize,
         tiles as usize,
         start as u64,
@@ -118,10 +123,9 @@ pub fn quantize_tiles_js(
     quant: f32,
     out: &mut [i16],
 ) -> Result<(), JsError> {
-    let layout = layout_of("quantizeTiles", width, height, tile, tiling)?;
-    let dims =
-        Dims::new(width as usize, height as usize).map_err(|e| js_err("quantizeTiles", e))?;
-    let total: usize = layout.grid().iter().map(|g| g.2 * g.3).sum();
+    let (dims, tile, tiling) = checked("quantizeTiles", width, height, tile, tiling)?;
+    let grid = grid_of(dims, tile, tiling);
+    let total: usize = grid.iter().map(|g| g.2 * g.3).sum();
     let count = count as usize;
     if frames.len() != count * dims.pixels() || out.len() != count * total {
         return Err(js_err(
@@ -138,7 +142,7 @@ pub fn quantize_tiles_js(
     if !(quant.is_finite() && quant > 0.0) {
         return Err(js_err("quantizeTiles", "quant must be positive"));
     }
-    quantize_tiles(frames, count, dims, layout.grid(), quant, out);
+    quantize_tiles(frames, count, dims, &grid, quant, out);
     Ok(())
 }
 
@@ -190,7 +194,7 @@ impl JsTileCompressor {
         seed: u32,
     ) -> Result<JsTileFactors, JsError> {
         let (t, p) = (frames as usize, w as usize * h as usize);
-        if t < 2 || p < 2 || raw.len() != t * p {
+        if t < 2 || p < 1 || raw.len() != t * p {
             return Err(js_err(
                 "compress",
                 format!("{} values for {t} frames x {p} pixels", raw.len()),
@@ -508,6 +512,16 @@ mod tests {
             out = wc.push(&[t as f32; 64]);
         }
         out.expect("a full window")
+    }
+
+    #[test]
+    fn a_header_must_count_the_tiles_of_its_tiling() {
+        let dims = Dims::new(40, 24).unwrap();
+        for tiling in [Tiling::Plain, Tiling::Offset] {
+            let n = BlendLayout::tile_count(dims, 16, tiling);
+            assert!(header_mismatch(dims, 16, tiling, n).is_none());
+            assert!(header_mismatch(dims, 16, tiling, n + 1).is_some());
+        }
     }
 
     #[test]
