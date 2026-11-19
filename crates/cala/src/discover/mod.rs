@@ -223,6 +223,7 @@ mod fastcore;
 mod fpstats;
 mod ledger;
 mod local;
+mod lookback;
 #[cfg(feature = "diagnostics")]
 mod mergelog;
 mod noisecorr;
@@ -233,6 +234,10 @@ mod wire;
 pub use churn::{AddClass, AddRecord, ChurnConfig, ChurnCounts, RemovalKind, RemovalRecord};
 pub use ledger::{
     CellInfo, CellStatus, DeleteReason, DeletedCell, EditCounts, EditEvent, EditKind, TestEvent,
+};
+pub use lookback::{
+    LookBack, LookbackConfig, LookbackNext, LookbackOrder, LookbackOutcome, LookbackRequest,
+    LB_BLOCK,
 };
 #[cfg(feature = "diagnostics")]
 pub use mergelog::{flush as merge_log_flush, set_gt as merge_log_set_gt};
