@@ -166,6 +166,13 @@ the whole joint recording and each session's export carries those values, so a
 cell flagged for missing pixels in one session is flagged in every session's
 file. Older files still load.
 
+Refine on the factors adds `iterations`, `stop` (`settled`, `nothing-accepted`,
+`cap`, `stopped` or `error`) and `changed_share` (the share of cells still
+changing at the end). Stage records also carry `factors`: `replay` (a file's
+compression replay, on its factor Extract too) or `discover` (a live run's),
+with `factors_note` for `discover`. None of these appears under
+`?compress=off`.
+
 - `<folder>_cala.npz`, self-describing (format version 7): `traces` (cells x
   frames, float32), `traces_signed` (the same, unclipped; absent from a live
   run, which has no Extract), `cell_ids`, `centroids_yx`, `radii_px`, sparse footprints
@@ -303,13 +310,44 @@ What changes in a live run:
 - No progress bar, no total, no raw-file tab. "Stop the live run" ends the
   stream at the frames received (the slow loop publishes its final library);
   "Restart" connects again, and the source streams from wherever it is then.
-- A live stream runs Discover only: Refine and Extract cannot run (nothing to
-  re-read; save the stream and load it as a recording later), so a live run has no record of the
-  past beyond the traces the fast loop solved as the frames came in. The
-  export (`src/lib/live-export.ts`) takes those: the cells of the final
-  library over every frame, NaN before a cell was found and for frames the
-  bounded trace history no longer holds. A live run does not re-extract old
-  traces; the raw video saved by the acquisition is re-read downstream.
+- A live stream runs Discover, and with compression on (the default) Extract on
+  its factors afterwards (see "After the stream" below). It has no file to
+  re-read, so Refine on the file does not exist; the live run's own record of
+  the past is the traces the fast loop solved as the frames came in. The
+  export (`src/lib/live-export.ts`) takes those until you run Extract: the cells
+  of the final library over every frame, NaN before a cell was found and for
+  frames the bounded trace history no longer holds. A live run does not
+  re-extract old traces by itself; the raw video saved by the acquisition is
+  re-read downstream. With `?compress=off` a live run is Discover only, as
+  before (save the stream and load it as a recording to Refine and Extract).
+
+**After the stream.** With compression on (the default), Discover compresses the
+stream's windows as the frames arrive, on the offset grids (plain tiles with
+`?review`), at a higher CPU cost per frame. Once the stream has ended and its
+last window is compressed, the Run panel offers Extract on those factors. It
+replaces the live traces in the export only when you run it; until then the
+export is the live traces, unchanged. With `?refine=factors`, "Refine until
+settled" runs on them too (see Compression). With `?review` the factors stay on
+plain tiles; Refine and Extract on plain-tile factors are covered by the crate's
+tests, not by the app's tests. The stage records and the export say
+`factors: "discover"` and a note that these factors are not claimed to meet the
+closeness gate (phase 4a: they fail it on the two WL24 wireless recordings,
+trace loss 0.155 and 0.203 against 0.08). A stream whose last window has one
+frame has no factor Extract (the factors would miss that frame; the panel says
+so and the export keeps the live traces). With `?compress=off` a live run is
+Discover only, as before.
+
+What changes for you without a new URL switch (compression on):
+
+- Discover on a live stream compresses on the offset grids (plain tiles with
+  `?review`), at a higher CPU cost per frame.
+- A live run shows the Extract button, the `extract-source` line and a note
+  about the live factors.
+- A live run's export carries Extract's traces once you ran Extract; before
+  that it is the live traces.
+- A file's factor Extract record gains `factors: "replay"`.
+- Every Discover start waits for a running Refine on the factors to close its
+  files; a stop during that wait drops the start.
 
 ### Measured: the synthetic 5-min session streamed at 20 fps
 
@@ -381,6 +419,17 @@ recording, each session of a multi-session run), and a Refine run calls it while
 an Extract result exists. The export's stage records say
 which source each stage read (`source`, format 7; see Run stages and export).
 `?compress=off` replays the file for Refine and Extract as before.
+
+**Refine on the factors (`?refine=factors`).** Refine runs iterations on the
+factor files in the slow worker, until fewer than 2 % of the cells' footprints
+correlate below 0.99 with the previous iteration's, at most 20 iterations. A
+file without factors first gets a replay that only compresses. The Run panel
+reads out each iteration; Cancel takes effect between iterations. After a
+look-back Discover, a failed Refine on the factors, or unusable factors, Refine
+replays the file and the panel says why. Without the switch Refine replays the
+file, as before. Evidence (phase 3a): it passes on `wl200`, fails the footprint
+rule on both WL24 recordings (0.0345 and 0.0389 against 0.02) and reaches the
+cap on `wl24_01` (Amendment 3, A15), so it is not the default.
 
 **What the default switches on.** After Discover of a file, the trace view is
 filled again from Discover's own factors with the final library and replaces

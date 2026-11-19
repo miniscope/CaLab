@@ -4,11 +4,11 @@ A cala run is made of named stages. They replace the older "pass 1 / pass 2".
 The names are the same in the UI, the export metadata (`meta_json.stages`), the
 run's event log and these docs.
 
-| Stage        | What it does                                                                                                                                                                | Streaming | Recording                                                     |
-| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ------------------------------------------------------------- |
-| **Discover** | Finds cells and builds their footprints from an empty library, with live traces. Every edit is allowed: adds, absorbs, splits, merges, keep tests and deletions.            | yes       | yes (first)                                                   |
-| **Refine**   | Replays the recording from frame 0 into the same slow loop. Footprints keep converging; the cell set is frozen (no adds, absorbs, splits, merges, keep tests or deletions). | no        | after Discover, repeatable                                    |
-| **Extract**  | Solves the final traces of every frame with the footprints frozen. It reads the factors when the first replay has made them (compression on), else replays the file.        | no        | after Discover; once at the end, again if the library changed |
+| Stage        | What it does                                                                                                                                                                                                                                                            | Streaming | Recording                                                     |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ------------------------------------------------------------- |
+| **Discover** | Finds cells and builds their footprints from an empty library, with live traces. Every edit is allowed: adds, absorbs, splits, merges, keep tests and deletions.                                                                                                        | yes       | yes (first)                                                   |
+| **Refine**   | Replays the recording from frame 0 into the same slow loop. Footprints keep converging; the cell set is frozen (no adds, absorbs, splits, merges, keep tests or deletions). With `?refine=factors`: iterations on the factors until the footprints settle (at most 20). | no        | after Discover, repeatable                                    |
+| **Extract**  | Solves the final traces of every frame with the footprints frozen. It reads the factors when the first replay has made them (compression on), else replays the file.                                                                                                    | no        | after Discover; once at the end, again if the library changed |
 
 ## Order
 
@@ -39,9 +39,12 @@ run's event log and these docs.
   Turn the option on to extract straight away. The option is not saved
   between sessions.
 - A new Discover run (Restart) starts the stage log over.
-- **Streaming runs Discover only.** A live source has no file to replay, and
-  cala does no live re-processing. Save the stream and load it later as a
-  recording to Refine and Extract it.
+- **Streaming runs Discover, then Extract on its factors.** A live source has
+  no file to replay. With compression on, Extract reads the factors Discover
+  wrote once the stream has ended and its last window is compressed (and, with
+  `?refine=factors`, Refine on them); they are Discover's own and not claimed
+  to meet the closeness gate. With `?compress=off`, save the stream and load it
+  later as a recording to Refine and Extract it.
 
 ## What carries over between stages
 
