@@ -665,6 +665,16 @@ pub struct SlowLoopConfig {
     /// carries at least this share of the stronger one's fitted energy
     /// (and the two supports overlap by less than half).
     pub merge_refit_min_share: f32,
+    /// The neighbour guards of a merge test (the refitted-pair baseline and
+    /// the split-half shape gate) apply to pairs whose footprints overlap by
+    /// less than this (cosine). At 0.5 (the historic value) a pair whose
+    /// footprints largely coincide skips both guards; real neighbours closer
+    /// than ~0.4 cell diameters overlap that much once their footprints are
+    /// accurate. Above 1, the guards apply at every overlap.
+    pub merge_guard_max_ovl: f32,
+    /// The same bound for the refitted-pair baseline alone (the split-half
+    /// gate keeps `merge_guard_max_ovl`).
+    pub merge_refit_max_ovl: f32,
     /// Measure the spatial correlation of the noise and widen every noise
     /// null by the variance it adds at cell scale (see `noisecorr.rs`):
     /// sub-pixel motion correction resamples the noise, and a test that
@@ -778,6 +788,8 @@ impl Default for SlowLoopConfig {
             split_every_visits: 4,
             merge_refit_pair: true,
             merge_refit_min_share: 0.1,
+            merge_guard_max_ovl: 0.5,
+            merge_refit_max_ovl: 0.5,
             merge_z: 2.0,
             noise_corr: true,
             shift_nuisance: true,
@@ -4952,7 +4964,7 @@ impl SlowLoop {
             // footprint mismatch (on the minisim recording with motion,
             // letting that leftover count kept 4 in 5 pairs on one GT unit
             // apart); then the current pair is the baseline.
-            if self.cfg.merge_refit_pair && ovl < 0.5 {
+            if self.cfg.merge_refit_pair && ovl < self.cfg.merge_refit_max_ovl {
                 let mut ca: Vec<f32> = fits.iter().map(|f| f.c[i]).collect();
                 let mut cb: Vec<f32> = fits.iter().map(|f| f.c[j]).collect();
                 let mut other: Vec<Vec<f32>> = data
@@ -5049,7 +5061,9 @@ impl SlowLoop {
             // than half) whose measured shapes differ beyond their own
             // split-half noise stay two cells, whatever the held-out test
             // says. Without split halves the held-out test decides alone.
-            let gated = accept && self.cfg.merge_rule == MergeRule::SplitHalf && ovl < 0.5;
+            let gated = accept
+                && self.cfg.merge_rule == MergeRule::SplitHalf
+                && ovl < self.cfg.merge_guard_max_ovl;
             #[cfg(feature = "diagnostics")]
             let want_shape = gated || mergelog::on();
             #[cfg(not(feature = "diagnostics"))]
