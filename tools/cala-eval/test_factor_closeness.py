@@ -261,6 +261,97 @@ class Closeness(unittest.TestCase):
             (0.0, 0.0, 1),
         )
 
+    def test_truth_footprint_correlation_follows_the_offset(self) -> None:
+        a, b = self.root / "a", self.root / "b"
+        write_run(a, CELLS, TRACES)
+        moved = dict(CELLS)
+        moved[9] = blob(63, 91)
+        write_run(b, moved, TRACES)
+        truth = self._write_truth(
+            [(blob(cy - 3, cx + 7), i) for i, (cy, cx) in CELLS_XY.items()]
+        )
+        rows = {r["id"]: r for r in F.compare(a, b, truth_path=truth)}
+        for cid in (7, 9, 11):
+            self.assertAlmostEqual(rows[cid]["truth_fp_ref"], 1.0, places=6)
+            self.assertEqual(
+                rows[cid]["truth_overlap"], 0.0, "no cat_overlap: none overlaps"
+            )
+        self.assertAlmostEqual(rows[7]["truth_fp_test"], 1.0, places=6)
+        self.assertLess(rows[9]["truth_fp_test"], 0.9, "a footprint 1 px off")
+        text = F.report(a, b, [], truth_path=truth)
+        self.assertIn(
+            "Footprint correlation with the truth footprint, median: reference 1.0000",
+            text,
+        )
+        last = [ln for ln in text.splitlines() if ln][-1]
+        self.assertTrue(last.startswith("Gate A1: "), last)
+
+    def test_cells_are_paired_by_footprint_not_by_id(self) -> None:
+        a, b = self.root / "a", self.root / "b"
+        write_run(a, CELLS, TRACES)
+        # The test run numbers its cells otherwise, and its id 9 is another cell.
+        cells_b = {107: CELLS[7], 9: CELLS[11], 109: CELLS[9]}
+        traces_b = {107: TRACES[7], 9: TRACES[11], 109: TRACES[9]}
+        write_run(b, cells_b, traces_b)
+        _, fa = F.read_footprints(a / "footprints.bin")
+        _, fb = F.read_footprints(b / "footprints.bin")
+        pairs = F.match_cells(fa, fb, DIMS)
+        self.assertEqual(pairs, {7: 107, 9: 109, 11: 9})
+        rows = {r["id"]: r for r in F.compare(a, b, pairs=pairs)}
+        for r in rows.values():
+            self.assertAlmostEqual(r["fp_cos"], 1.0, places=6)
+            self.assertAlmostEqual(r["trace_r"], 1.0, places=6)
+        self.assertEqual(rows[9]["test_id"], 109.0)
+        by_id = {r["id"]: r for r in F.compare(a, b)}
+        self.assertLess(by_id[9]["fp_cos"], 0.5, "by id, cell 9 meets another cell")
+        text = F.report(a, b, [], match=True)
+        self.assertIn(": 3 pairs.", text)
+        self.assertIn("0 cells of the test run are not in the reference run.", text)
+        self.assertIn("0 of them are missing in the test run", text)
+
+    def test_a_moved_cell_stays_unpaired_and_counts_as_lost(self) -> None:
+        a, b = self.root / "a", self.root / "b"
+        write_run(a, CELLS, TRACES)
+        write_run(b, {7: CELLS[7], 9: CELLS[9], 11: blob(100, 50)}, TRACES)
+        _, fa = F.read_footprints(a / "footprints.bin")
+        _, fb = F.read_footprints(b / "footprints.bin")
+        self.assertEqual(F.match_cells(fa, fb, DIMS), {7: 7, 9: 9})
+        rows = {r["id"]: r for r in F.compare(a, b, pairs=F.match_cells(fa, fb, DIMS))}
+        self.assertEqual(rows[11]["in_test"], 0.0)
+        text = F.report(a, b, [], match=True)
+        self.assertIn(": 2 pairs.", text)
+        self.assertIn("1 cells of the test run are not in the reference run.", text)
+        self.assertIn("1 of them are missing in the test run", text)
+
+    def test_two_test_cells_on_one_reference_cell_pair_one_to_one(self) -> None:
+        fa = {1: blob(20, 20)}
+        fa = {k: (np.asarray(p), np.asarray(v)) for k, (p, v) in fa.items()}
+        fb = {
+            5: (np.asarray(blob(20, 20)[0]), np.asarray(blob(20, 20)[1])),
+            3: (np.asarray(blob(20, 20)[0]), np.asarray(blob(20, 20)[1])),
+        }
+        # Equal cosines: the lower test id wins, and the other stays unpaired.
+        self.assertEqual(F.match_cells(fa, fb, DIMS), {1: 3})
+
+    def test_pairing_handles_empty_runs_and_empty_footprints(self) -> None:
+        empty = np.zeros(0, dtype=np.int64), np.zeros(0)
+        cell = (np.asarray(blob(5, 5)[0]), np.asarray(blob(5, 5)[1]))
+        self.assertEqual(F.match_cells({}, {1: cell}, DIMS), {})
+        self.assertEqual(F.match_cells({1: cell}, {}, DIMS), {})
+        self.assertEqual(F.match_cells({1: empty}, {2: cell}, DIMS), {})
+        self.assertEqual(F.match_cells({1: cell}, {2: empty}, DIMS), {})
+
+    def test_pairing_works_at_the_frame_border(self) -> None:
+        cell = (np.asarray([0, 1, 128, 129]), np.asarray([1.0, 2.0, 2.0, 4.0]))
+        self.assertEqual(F.match_cells({4: cell}, {8: cell}, DIMS), {4: 8})
+        self.assertEqual(F.footprint_centroid(cell, 128)[0] > 0, True)
+
+    def test_footprint_correlation_is_nan_for_a_constant_footprint(self) -> None:
+        flat = (np.arange(DIMS[0] * DIMS[1]), np.ones(DIMS[0] * DIMS[1]))
+        unit = (np.asarray(blob(20, 20)[0]), np.asarray(blob(20, 20)[1]))
+        self.assertTrue(math.isnan(F.fp_truth_r(flat, unit, (0, 0), DIMS)))
+        self.assertTrue(math.isnan(F.fp_truth_r(unit, flat, (0, 0), DIMS)))
+
     def test_cells_only_in_the_test_run_are_reported(self) -> None:
         write_run(
             self.root / "a", {7: CELLS[7], 9: CELLS[9]}, {7: TRACES[7], 9: TRACES[9]}

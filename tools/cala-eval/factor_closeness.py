@@ -1,7 +1,7 @@
 """Closeness of two `qc_eval` runs of one recording, and gate A1 of the factor pipeline.
 
     python factor_closeness.py --ref RUN --test RUN [--null RUN ...]
-        [--truth truth.npz] [--tile 64] [--band 16] [--out cells.tsv]
+        [--truth truth.npz] [--match] [--tile 64] [--band 16] [--out cells.tsv]
 
 `--ref` is the raw run. `--test` is a run whose later passes solved frames
 rebuilt from the factors (`qc_eval --replay-source factors`). Each `--null` is
@@ -21,7 +21,13 @@ all runs, and a refine replay keeps the cell set):
 - `truth_r_*` (with `--truth`): the best correlation with a ground-truth unit
   whose centroid is within 6 px. One frame offset between the run and the truth is
   estimated first, from the units that best follow each cell's trace, and applied
-  before the 6 px radius.
+  before the 6 px radius;
+- `truth_fp_*` (with `--truth`): the footprint's correlation over the frame with the
+  footprint of the truth unit its trace follows best (main's "footprint r"), and
+  `truth_overlap`, that unit's `cat_overlap` flag;
+- with `--match`, cells are paired by footprint (cosine at least 0.5, centroids within
+  20 px) instead of by id, for runs whose Discover differed; a reference cell without a
+  partner counts as lost.
 
 A loss is the median of `1 - value` over the QC-pass cells. The judged measures
 are `trace_r1` and `fp_cos`; the plain `trace_r` is printed but not gated. The test
@@ -56,6 +62,10 @@ NEAR_PX = 8.0
 TRUTH_PX = 6.0
 TRUTH_MIN_R = 0.5
 TRUTH_MIN_CELLS = 3
+# Pairing of the cells of two runs whose Discover differed (look-back): footprint cosine at
+# least MATCH_COS, centroids at most MATCH_PX apart.
+MATCH_COS = 0.5
+MATCH_PX = 20.0
 NAN = float("nan")
 WHITE_Z = 4.0
 
@@ -129,6 +139,24 @@ def read_truth(path: Path, dims: tuple[int, int]) -> Truth:
     return cen, z["traces"]
 
 
+def read_truth_footprints(path: Path) -> tuple[list[Cell], np.ndarray]:
+    """Each truth unit's footprint `(pixels, values)` of a `truth.npz`, and its `cat_overlap`
+    flag (all False when the file has none)."""
+    z = np.load(path)
+    ptr = z["A_indptr"]
+    idx, val = z["A_indices"].astype(np.int64), z["A_data"].astype(np.float64)
+    units = [
+        (idx[ptr[k] : ptr[k + 1]], val[ptr[k] : ptr[k + 1]])
+        for k in range(len(ptr) - 1)
+    ]
+    overlap = (
+        np.asarray(z["cat_overlap"], dtype=bool)
+        if "cat_overlap" in z.files
+        else np.zeros(len(units), dtype=bool)
+    )
+    return units, overlap
+
+
 # ---------------------------------------------------------------------------
 # Per-cell measures
 # ---------------------------------------------------------------------------
@@ -177,6 +205,48 @@ def fp_cosine(a: Cell, b: Cell) -> float:
     dot = sum(da.get(p, 0.0) * v for p, v in zip(b[0].tolist(), b[1].tolist()))
     d = float(np.sqrt((a[1] ** 2).sum() * (b[1] ** 2).sum()))
     return float(dot / d) if d > 0 else NAN
+
+
+def footprint_centroid(cell: Cell, w: int) -> tuple[float, float]:
+    """Weighted centroid (y, x) of a footprint; NaN for an empty one."""
+    pix, val = cell
+    v = val.astype(np.float64)
+    s = float(v.sum())
+    if s <= 0:
+        return NAN, NAN
+    p = pix.astype(np.int64)
+    return float((p // w * v).sum()) / s, float((p % w * v).sum()) / s
+
+
+def match_cells(
+    fa: dict[int, Cell],
+    fb: dict[int, Cell],
+    dims: tuple[int, int],
+    min_cos: float = MATCH_COS,
+) -> dict[int, int]:
+    """Pairs (reference id to test id) of the cells of two runs whose cell sets differ: in
+    falling footprint cosine, each cell in at most one pair, cosine at least `min_cos`,
+    centroids at most `MATCH_PX` apart. Ids are not used: they do not correspond."""
+    w = dims[1]
+    cb = {k: footprint_centroid(c, w) for k, c in fb.items()}
+    cand: list[tuple[float, int, int]] = []
+    for ia, a in fa.items():
+        ya, xa = footprint_centroid(a, w)
+        for ib, b in fb.items():
+            yb, xb = cb[ib]
+            if not math.hypot(ya - yb, xa - xb) <= MATCH_PX:
+                continue
+            c = fp_cosine(a, b)
+            if c >= min_cos:
+                cand.append((c, ia, ib))
+    cand.sort(key=lambda x: (-x[0], x[1], x[2]))
+    out: dict[int, int] = {}
+    used: set[int] = set()
+    for _, ia, ib in cand:
+        if ia not in out and ib not in used:
+            out[ia] = ib
+            used.add(ib)
+    return out
 
 
 def line_distance(c: float, n: int, tile: int) -> float:
@@ -239,15 +309,66 @@ def truth_r(
     return max(rs) if rs else NAN
 
 
+def truth_best(
+    trace: np.ndarray,
+    c: tuple[float, float],
+    truth: Truth,
+    offset: tuple[float, float] = (0.0, 0.0),
+) -> tuple[int, float]:
+    """The truth unit within `TRUTH_PX` of `c` shifted by `offset` that the trace follows
+    best, and that correlation; (-1, NaN) when there is none."""
+    cen, tr = truth
+    y, x = c[0] + offset[0], c[1] + offset[1]
+    best = (-1, NAN)
+    for k in np.flatnonzero(np.hypot(cen[:, 0] - y, cen[:, 1] - x) <= TRUTH_PX):
+        r = pearson(trace, tr[k])
+        if not math.isnan(r) and (best[0] < 0 or r > best[1]):
+            best = (int(k), r)
+    return best
+
+
+def fp_truth_r(
+    cell: Cell, unit: Cell, shift: tuple[int, int], dims: tuple[int, int]
+) -> float:
+    """Correlation over the whole frame of a cell's footprint and a truth footprint moved
+    into the run's frame by `shift` (truth pixel (y, x) goes to (y - dy, x - dx)); NaN when
+    either is constant. main's demixing suite calls this the footprint r."""
+    h, w = dims
+    dy, dx = shift
+    up, uv = unit
+    y, x = up // w - dy, up % w - dx
+    ok = (y >= 0) & (y < h) & (x >= 0) & (x < w)
+    tp, tv = (y[ok] * w + x[ok]), uv[ok].astype(np.float64)
+    a = dict(zip(cell[0].tolist(), cell[1].astype(np.float64).tolist()))
+    sab = sum(a.get(p, 0.0) * v for p, v in zip(tp.tolist(), tv.tolist()))
+    av = cell[1].astype(np.float64)
+    n = h * w
+    sa, saa = float(av.sum()), float((av * av).sum())
+    sb, sbb = float(tv.sum()), float((tv * tv).sum())
+    va, vb = saa - sa * sa / n, sbb - sb * sb / n
+    if va <= 0 or vb <= 0:
+        return NAN
+    return float((sab - sa * sb / n) / math.sqrt(va * vb))
+
+
 def compare(
-    ref: Path, test: Path, tile: int = 64, truth_path: Path | None = None
+    ref: Path,
+    test: Path,
+    tile: int = 64,
+    truth_path: Path | None = None,
+    pairs: dict[int, int] | None = None,
 ) -> list[Row]:
-    """One row per cell of `ref`, compared with the cell of the same id in `test`."""
-    return _compare(ref, test, tile, truth_path)[0]
+    """One row per cell of `ref`, compared with the cell of the same id in `test`, or with
+    its partner in `pairs` (reference id to test id) when given."""
+    return _compare(ref, test, tile, truth_path, pairs)[0]
 
 
 def _compare(
-    ref: Path, test: Path, tile: int, truth_path: Path | None
+    ref: Path,
+    test: Path,
+    tile: int,
+    truth_path: Path | None,
+    pairs: dict[int, int] | None = None,
 ) -> tuple[list[Row], tuple[float, float, int]]:
     """The rows of `compare` and the truth offset `(dy, dx, n cells)` used for them."""
     (h, w), fa = read_footprints(ref / "footprints.bin")
@@ -255,31 +376,56 @@ def _compare(
     ta, tb = read_traces(ref), read_traces(test)
     cen, qc = read_centroids(ref), read_qc(ref)
     truth = read_truth(truth_path, (h, w)) if truth_path else None
+    units, overlap = (
+        read_truth_footprints(truth_path)
+        if truth_path
+        else ([], np.zeros(0, dtype=bool))
+    )
     dy, dx, n_off = truth_offset(ta, cen, truth) if truth else (0.0, 0.0, 0)
+    shift = (round(dy), round(dx))
     rows: list[Row] = []
     for cid in sorted(fa):
+        tid = cid if pairs is None else pairs.get(cid, -1)
         cy, cx = cen.get(cid, (NAN, NAN))
-        both = cid in ta and cid in tb
-        rows.append(
-            {
-                "id": cid,
-                "cy": cy,
-                "cx": cx,
-                "edge_px": min(line_distance(cy, h, tile), line_distance(cx, w, tile)),
-                "border_px": min(cy, cx, h - 1 - cy, w - 1 - cx),
-                "qc_pass": float(qc.get(cid, True)),
-                "in_test": float(cid in fb),
-                "fp_cos": fp_cosine(fa[cid], fb[cid]) if cid in fb else NAN,
-                "trace_r": pearson(ta[cid], tb[cid]) if both else NAN,
-                "trace_r1": lag1_r(ta[cid], tb[cid]) if both else NAN,
-                "truth_r_ref": truth_r(ta[cid], (cy, cx), truth, (dy, dx))
-                if truth and cid in ta
-                else NAN,
-                "truth_r_test": truth_r(tb[cid], (cy, cx), truth, (dy, dx))
-                if truth and cid in tb
-                else NAN,
-            }
+        both = cid in ta and tid in tb
+        ku = (
+            truth_best(ta[cid], (cy, cx), truth, (dy, dx))[0]
+            if truth and cid in ta
+            else -1
         )
+        kt = (
+            truth_best(tb[tid], (cy, cx), truth, (dy, dx))[0]
+            if truth and tid in tb
+            else -1
+        )
+        row: Row = {
+            "id": cid,
+            "cy": cy,
+            "cx": cx,
+            "edge_px": min(line_distance(cy, h, tile), line_distance(cx, w, tile)),
+            "border_px": min(cy, cx, h - 1 - cy, w - 1 - cx),
+            "qc_pass": float(qc.get(cid, True)),
+            "in_test": float(tid in fb),
+            "fp_cos": fp_cosine(fa[cid], fb[tid]) if tid in fb else NAN,
+            "trace_r": pearson(ta[cid], tb[tid]) if both else NAN,
+            "trace_r1": lag1_r(ta[cid], tb[tid]) if both else NAN,
+            "truth_r_ref": truth_r(ta[cid], (cy, cx), truth, (dy, dx))
+            if truth and cid in ta
+            else NAN,
+            "truth_r_test": truth_r(tb[tid], (cy, cx), truth, (dy, dx))
+            if truth and tid in tb
+            else NAN,
+            "truth_fp_ref": fp_truth_r(fa[cid], units[ku], shift, (h, w))
+            if ku >= 0
+            else NAN,
+            "truth_fp_test": fp_truth_r(fb[tid], units[kt], shift, (h, w))
+            if kt >= 0 and tid in fb
+            else NAN,
+            "truth_overlap": float(overlap[ku]) if ku >= 0 else NAN,
+        }
+        if pairs is not None:
+            row["test_id"] = float(tid)
+        rows.append(row)
     return rows, (dy, dx, n_off)
 
 
@@ -563,14 +709,20 @@ def report(
     tile: int = 64,
     band: float = 16.0,
     truth_path: Path | None = None,
+    match: bool = False,
 ) -> str:
-    """The Markdown comparison of `test` with `ref`, judged against the `nulls`."""
-    rows, (dy, dx, n_off) = _compare(ref, test, tile, truth_path)
-    null_rows = [compare(ref, n, tile, None) for n in nulls]
+    """The Markdown comparison of `test` with `ref`, judged against the `nulls`.
+
+    With `match`, cells are paired by footprint (`match_cells`) instead of by id: for runs
+    whose Discover differed (look-back)."""
     dims, fa = read_footprints(ref / "footprints.bin")
     _, fb = read_footprints(test / "footprints.bin")
+    pairs = match_cells(fa, fb, dims) if match else None
+    rows, (dy, dx, n_off) = _compare(ref, test, tile, truth_path, pairs)
+    null_rows = [compare(ref, n, tile, None) for n in nulls]
     missing = sum(1 for r in rows if not r["in_test"])
-    extra = len(set(fb) - set(fa))
+    partners = set(pairs.values()) if pairs is not None else set(fa)
+    extra = len(set(fb) - partners)
     no_centroid = sum(1 for r in rows if math.isnan(r["edge_px"]))
     out = [f"### `{test.name}` against `{ref.name}`", ""]
     out.append(
@@ -637,6 +789,42 @@ def report(
             f"Truth correlation, test minus reference, over {len(d)} cells (all cells): "
             f"median {q(d, 50)}, 5th pct {q(d, 5)}."
         )
+        fr, ft = finite(rows, "truth_fp_ref"), finite(rows, "truth_fp_test")
+        out.append(
+            "Footprint correlation with the truth footprint, median: "
+            f"reference {q(fr, 50)}, test {q(ft, 50)}."
+        )
+        for name, sel in (
+            ("all cells", rows),
+            (
+                "cells whose truth unit overlaps another",
+                [r for r in rows if r["truth_overlap"] == 1.0],
+            ),
+        ):
+            d = np.asarray(
+                [
+                    r["truth_fp_test"] - r["truth_fp_ref"]
+                    for r in sel
+                    if math.isfinite(r["truth_fp_ref"])
+                    and math.isfinite(r["truth_fp_test"])
+                ],
+                dtype=np.float64,
+            )
+            out.append(
+                f"Truth footprint correlation, test minus reference, {name}: {len(d)} cells, "
+                f"median {q(d, 50)}, 5th pct {q(d, 5)}."
+            )
+    if pairs is not None:
+        paired = [r for r in rows if r["qc_pass"] and r["in_test"]]
+        out += [
+            "",
+            (
+                f"Cells paired by footprint (cosine at least {MATCH_COS:g}, centroids at most "
+                f"{MATCH_PX:g} px apart): {len(pairs)} pairs. Over the {len(paired)} paired "
+                f"QC-pass cells alone: footprint loss {a1_loss(paired, 'fp_cos'):.4f}, "
+                f"trace loss {a1_loss(paired, 'trace_r1'):.4f}."
+            ),
+        ]
     ja, jb = line_jump(fa, dims, tile), line_jump(fb, dims, tile)
     gate = a1_gate(rows, ja, jb)
     n_qc = sum(1 for r in rows if r["qc_pass"])
@@ -673,10 +861,18 @@ def main() -> None:
     )
     ap.add_argument("--band", type=float, default=16.0)
     ap.add_argument("--out", type=Path, help="per-cell table (tsv)")
+    ap.add_argument(
+        "--match",
+        action="store_true",
+        help="pair cells by footprint, not by id (runs whose Discover differed)",
+    )
     a = ap.parse_args()
-    print(report(a.ref, a.test, a.null, a.tile, a.band, a.truth))
+    print(report(a.ref, a.test, a.null, a.tile, a.band, a.truth, match=a.match))
     if a.out:
-        rows = compare(a.ref, a.test, a.tile, a.truth)
+        dims, fa = read_footprints(a.ref / "footprints.bin")
+        _, fb = read_footprints(a.test / "footprints.bin")
+        pairs = match_cells(fa, fb, dims) if a.match else None
+        rows = compare(a.ref, a.test, a.tile, a.truth, pairs)
         keys = list(rows[0]) if rows else ["id"]
         lines = ["\t".join(keys)] + [
             "\t".join(f"{r[k]:.6g}" for k in keys) for r in rows
