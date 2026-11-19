@@ -12,15 +12,18 @@
 //! scans them a few grid rows per call, so its worker can read messages
 //! between calls.
 
+use std::sync::Arc;
+
 use wasm_bindgen::prelude::*;
 
 use super::blend::{grid_of, BlendLayout, Tiling};
+use super::project::{FactorExtractor, WindowProjector};
 use super::review::{
     candidates, candidates_to_wire, scan_band, scan_rows, KnownCell, ReviewConfig, SpotStats,
 };
 use super::{compress_tile, quantize_tiles, CompressConfig, TileFactors, WindowFactors};
 use crate::preprocess::Dims;
-use crate::trace::Library;
+use crate::trace::{Library, SolverConfig};
 
 fn js_err(func: &str, e: impl std::fmt::Display) -> JsError {
     JsError::new(&format!("{func}: {e}"))
@@ -311,6 +314,89 @@ impl JsFactorWindow {
         }
         self.inner.reconstruct_range(t0, count, out);
         Ok(())
+    }
+}
+
+/// Extract on factors: a library's traces from factor files, without
+/// rebuilding a frame.
+#[wasm_bindgen(js_name = FactorExtractor)]
+pub struct JsFactorExtractor {
+    inner: FactorExtractor,
+    ids: Vec<u32>,
+    /// The open window and the library's rows on it; they are replaced together.
+    window: Option<(WindowFactors, WindowProjector)>,
+}
+
+#[wasm_bindgen(js_class = FactorExtractor)]
+impl JsFactorExtractor {
+    /// `library`: `TraceLibrary.toBytes()`. `tol` (noise units) and
+    /// `max_sweeps`: 0 = defaults.
+    #[wasm_bindgen(constructor)]
+    pub fn new(library: &[u8], tol: f32, max_sweeps: u32) -> Result<JsFactorExtractor, JsError> {
+        console_error_panic_hook::set_once();
+        let lib = Library::from_bytes(library).map_err(|e| js_err("FactorExtractor", e))?;
+        let mut cfg = SolverConfig::default();
+        if tol > 0.0 {
+            cfg.tol = tol;
+        }
+        if max_sweeps > 0 {
+            cfg.max_sweeps = max_sweeps;
+        }
+        let ids = lib.ids().iter().map(|&v| v as u32).collect();
+        let inner =
+            FactorExtractor::new(Arc::new(lib), cfg).map_err(|e| js_err("FactorExtractor", e))?;
+        Ok(JsFactorExtractor {
+            inner,
+            ids,
+            window: None,
+        })
+    }
+
+    /// Cell ids in trace order.
+    pub fn ids(&self) -> Vec<u32> {
+        self.ids.clone()
+    }
+
+    /// Read a factor file and prepare its solve; returns the window's frames.
+    pub fn open(&mut self, bytes: &[u8]) -> Result<u32, JsError> {
+        // A failed open leaves no window behind: `solve` then says so.
+        self.window = None;
+        let wf = WindowFactors::from_bytes(bytes)
+            .ok_or_else(|| js_err("FactorExtractor.open", "truncated or corrupt factor file"))?;
+        let proj = WindowProjector::new(self.inner.library(), &wf)
+            .map_err(|e| js_err("FactorExtractor.open", e))?;
+        let frames = wf.frames as u32;
+        self.window = Some((wf, proj));
+        Ok(frames)
+    }
+
+    /// Stream index of the open window's first frame (0 before `open`).
+    #[wasm_bindgen(getter)]
+    pub fn start(&self) -> f64 {
+        self.window.as_ref().map_or(0.0, |w| w.0.start as f64)
+    }
+
+    /// Solve frames `t0..t0 + count` of the open window; returns
+    /// `count x cells` traces, frame after frame, in the library's id order.
+    pub fn solve(&mut self, t0: u32, count: u32) -> Result<Vec<f32>, JsError> {
+        let Some((wf, proj)) = self.window.as_ref() else {
+            return Err(js_err("FactorExtractor.solve", "no window is open"));
+        };
+        // Checked here too so that a wild `count` never sizes the buffer.
+        let end = (t0 as usize).saturating_add(count as usize);
+        if end > wf.frames {
+            return Err(js_err(
+                "FactorExtractor.solve",
+                format!("frames {t0}..{end} of {}", wf.frames),
+            ));
+        }
+        let mut out = Vec::with_capacity(count as usize * self.ids.len());
+        self.inner
+            .solve(wf, proj, t0 as usize, count as usize, |tr| {
+                out.extend_from_slice(&tr.traces);
+            })
+            .map_err(|e| js_err("FactorExtractor.solve", e))?;
+        Ok(out)
     }
 }
 

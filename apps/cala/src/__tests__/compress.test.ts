@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  FactorExtractor,
   FactorWindow,
   factorHeader,
   quantizeTiles,
@@ -68,18 +69,7 @@ function runner(store = memoryStore(), extra: Partial<CompressRunnerDeps> = {}) 
     layout: tileLayout,
     header: factorHeader,
     create: (quant) => new TileCompressor(quant),
-    engine: (bytes) => {
-      const lib = TraceLibrary.fromBytes(bytes);
-      const engine = new TraceEngine(lib, 0, 0);
-      const ids = lib.ids();
-      lib.free();
-      return {
-        ids: () => ids,
-        processFrames: (frames, count) => engine.processFrames(frames, count),
-        free: () => engine.free(),
-      };
-    },
-    factors: (bytes) => FactorWindow.fromBytes(bytes),
+    extract: (bytes) => new FactorExtractor(bytes, 0, 0),
     toMain: { postMessage: (m) => toMain.push(m) },
     yieldNow: () => Promise.resolve(),
     ...extra,
@@ -469,6 +459,35 @@ describe('CompressRunner', () => {
     expect(last.msPerFrame).toBeCloseTo((70 + 9 * tiles) / 70, 9);
   });
 
+  it('reports the mean rank as the mean over all windows, weighted by frames', async () => {
+    // Ranks by window of 50 and of 20 frames, summed over the tiles.
+    const sums = new Map<number, number>();
+    const { feed, sent } = feedWith({});
+    feed.push(batch(0, 70), 0, 70);
+    feed.end();
+    const { r, toMain } = runner(memoryStore(), {
+      create: (quant) => {
+        const c = new TileCompressor(quant);
+        return {
+          compress: (raw, frames, x0, y0, w, h, seed) => {
+            const f = c.compress(raw, frames, x0, y0, w, h, seed);
+            sums.set(frames, (sums.get(frames) ?? 0) + f.rank);
+            return f;
+          },
+          free: () => c.free(),
+        };
+      },
+    });
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    const tiles = tileLayout(W, H, TILE, 'plain').length / 4;
+    const statuses = toMain.flatMap((m) => (m.type === 'status' ? [m.status] : []));
+    const last = statuses[statuses.length - 1];
+    expect(last).toMatchObject({ windows: 2, frames: 70 });
+    const want = (50 * (sums.get(50) ?? 0) + 20 * (sums.get(20) ?? 0)) / tiles / 70;
+    expect(last.meanRank).toBeCloseTo(want, 9);
+  });
+
   it('compresses a frame whose edge tile is one pixel (33 x 33, tile 16)', async () => {
     const n = 33;
     const sent: FastToCompress[] = [];
@@ -591,6 +610,94 @@ describe('back-fill from the factors', () => {
     r.backfill(99, lib.version); // another session
     await r.idle();
     expect(toMain.filter((m) => m.type === 'backfilled').length).toBe(1);
+  });
+
+  it('gives the traces of the frame engine on the rebuilt frames', async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 100; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    feed.library(lib.version, lib.bytes);
+    feed.end();
+    const { r, store, toMain } = runner();
+    for (const m of sent) await r.handle(m);
+    r.backfill(7, lib.version);
+    await r.idle();
+    const windows = toMain.filter((m) => m.type === 'traces');
+    expect(windows.length).toBe(2);
+
+    const library = TraceLibrary.fromBytes(lib.bytes);
+    const engine = new TraceEngine(library, 0, 0);
+    const frames = new Float32Array(50 * PX);
+    try {
+      for (const [k, m] of windows.entries()) {
+        const win = FactorWindow.fromBytes(store.files.get(factorName(k))!);
+        try {
+          win.reconstruct(0, 50, frames);
+        } finally {
+          win.free();
+        }
+        const want = engine.processFrames(frames, 50);
+        expect(m.traces.length).toBe(want.length);
+        let worst = 0;
+        for (let i = 0; i < want.length; i++) {
+          worst = Math.max(worst, Math.abs(m.traces[i] - want[i]));
+        }
+        // Both solves stop at the default tolerance (0.05 of the trace noise);
+        // the tight comparison is the Rust test of `FactorExtractor`.
+        expect(worst, `window ${k}`).toBeLessThan(0.1);
+      }
+    } finally {
+      engine.free();
+      library.free();
+    }
+  });
+
+  it('frees the factor engine and posts nothing more when a reset cuts it short', async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 100; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    feed.library(lib.version, lib.bytes);
+    feed.end();
+    const toMain: CompressToMain[] = [];
+    let freed = 0;
+    let solving = false;
+    let cut: Promise<void> | null = null;
+    const r: CompressRunner = new CompressRunner({
+      store: memoryStore(),
+      quantize: quantizeTiles,
+      create: (quant) => new TileCompressor(quant),
+      layout: tileLayout,
+      header: factorHeader,
+      extract: (bytes) => {
+        const inner = new FactorExtractor(bytes, 0, 0);
+        return {
+          ids: () => inner.ids(),
+          open: (file) => inner.open(file),
+          get start() {
+            return inner.start;
+          },
+          solve: (t0, n) => {
+            solving = true;
+            return inner.solve(t0, n);
+          },
+          free: () => {
+            freed++;
+            inner.free();
+          },
+        };
+      },
+      toMain: { postMessage: (m) => toMain.push(m) },
+      // At the first yield after a solve, a reset arrives.
+      yieldNow: async () => {
+        if (solving && !cut) cut = r.handle({ type: 'reset', session: 7 });
+      },
+    });
+    for (const m of sent) await r.handle(m);
+    r.backfill(7, lib.version);
+    await r.idle();
+    await cut;
+    expect(freed).toBe(1);
+    expect(toMain.some((m) => m.type === 'traces' || m.type === 'backfilled')).toBe(false);
   });
 
   it('is requested once per run, and its traces replace the live history', () => {

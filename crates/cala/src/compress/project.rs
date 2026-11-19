@@ -350,6 +350,10 @@ impl WindowProjector {
 
     /// Version of the library this was built for. A library rebuilt with
     /// identical footprints has a new version, so its projector is rebuilt too.
+    /// A library read from bytes keeps its stored version, and the version
+    /// counter restarts in every process or WASM instance, so two libraries
+    /// from different sessions can share a version; the check guards a library
+    /// swap within one session.
     pub fn library_version(&self) -> u64 {
         self.library_version
     }

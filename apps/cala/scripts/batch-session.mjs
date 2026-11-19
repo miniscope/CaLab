@@ -8,7 +8,8 @@
  *        [--channel chrome]
  *        [--query compress]   appended to the app URL (Cala/?debug&compress)
  *                         `--query compress`: `status.json` then holds the compress status
- *                         at the end of Discover and of Extract
+ *                         at the end of Discover and of Extract, and the back-fill of
+ *                         Discover's recording (waited for, up to --compress-wait s)
  *        [--stale-build]      run although dist/ is older than a source file
  *        [--compress-wait 120]  seconds to wait after a stage for its last window to be
  *                         compressed; if it is not, the status is recorded with
@@ -238,6 +239,31 @@ async function settledCompress(expectedSource, on, current) {
   };
 }
 
+/**
+ * The back-fill of Discover's recording, which the app requests once the last
+ * window is compressed. Extract's replay clears the windows, so a back-fill that
+ * has not finished would be cut short: wait for it (up to --compress-wait s, and
+ * not past an error of the compress worker). Null when compression is off, the
+ * run has no cells, the compress status did not settle, or none arrived.
+ */
+async function settledBackfill(on, cells, compress) {
+  if (!on || cells <= 0 || !compress?.settled) return null;
+  const t0 = Date.now();
+  const poll = () =>
+    page.evaluate(() => [
+      window.__cala.compress?.backfill?.() ?? null,
+      window.__cala.compress?.error?.() ?? null,
+    ]);
+  let [b, error] = await poll();
+  while (!b && !error && Date.now() - t0 < compressWaitMs) {
+    await page.waitForTimeout(500);
+    [b, error] = await poll();
+  }
+  if (error) L(`compress worker error: ${error}`);
+  if (!b) L('no back-fill arrived');
+  return b;
+}
+
 // ---- run ----
 let exitCode = 0;
 try {
@@ -290,6 +316,11 @@ try {
       status.stages.discover.end = Date.now();
       status.stages.discover.cells = s.cells;
       status.stages.discover.compress = await settledCompress('discover', s.compressOn, s.compress);
+      status.stages.discover.backfill = await settledBackfill(
+        s.compressOn,
+        s.cells,
+        status.stages.discover.compress,
+      );
       await shot('discover');
       phase = refineRuns > 0 ? 'refine' : 'extract';
       if (phase === 'refine') {
