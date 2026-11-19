@@ -1,4 +1,4 @@
-"""Follow-up to match_diff.py: swaps vs two-to-one collapses, and whether the arm with two cells has two real traces."""
+"""Throwaway (execs match_diff.py's header). Follow-up to match_diff.py: swaps vs two-to-one collapses, and whether the arm with two cells has two real traces."""
 import sys
 from pathlib import Path
 import numpy as np, pandas as pd
