@@ -3,7 +3,7 @@
  * the back-fill and errors, for the status bar. Back-filled traces go to the
  * cell store's trace history.
  */
-import { createSignal } from 'solid-js';
+import { createSignal, untrack } from 'solid-js';
 import type { CompressStatus, CompressToMain } from '../workers/compress-types.ts';
 import type { FovProjections } from './fov-projection.ts';
 
@@ -81,8 +81,9 @@ export function createCompressStore(sink?: BackfillSink) {
   const [error, setError] = createSignal<string | null>(null);
   let session = -1;
   let requested = -1;
-  /** A replay that compresses has started and was not cut short. */
-  let replayCompressing = false;
+  /** The token of the replay that compresses and was not cut short (0: none); a signal, so the panel follows it. */
+  const [mark, setMark] = createSignal(0);
+  let lastMark = 0;
   /** Projections of the replay that made the factors (a factor Extract's FOV images). */
   let projection: FovProjections | null = null;
   const listeners = new Set<(m: ExtractMessage) => void>();
@@ -101,7 +102,7 @@ export function createCompressStore(sink?: BackfillSink) {
       abortJobs('The run was reset.');
       session = next;
       requested = -1;
-      replayCompressing = false;
+      setMark(0);
       projection = null;
       setStatus(null);
       setBackfill(null);
@@ -128,6 +129,8 @@ export function createCompressStore(sink?: BackfillSink) {
           if (msg.session === session) for (const l of [...listeners]) l(msg as ExtractMessage);
           return;
         }
+        // An error of an earlier run (or none: -1, a crashed worker) is not this run's.
+        if (msg.session !== session && msg.session !== -1) return;
         setError(msg.message);
         abortJobs(msg.message);
         return;
@@ -140,22 +143,32 @@ export function createCompressStore(sink?: BackfillSink) {
         setBackfill({ version: msg.version, frames: msg.frames, msPerFrame: msg.msPerFrame });
       } else for (const l of [...listeners]) l(msg);
     },
+    /** The session of this run: jobs go out under it and only its replies count. */
+    session: (): number => session,
     /** Where the factors of this run stand, for a recording of `frames` frames. */
-    factors: (frames: number): FactorState =>
-      factorState(status(), error(), replayCompressing, frames),
-    /** A replay that compresses starts. */
-    markReplay(): void {
-      replayCompressing = true;
-    },
-    /** That replay ended; `ok` false: cut short, its windows are dropped. */
-    replayEnded(ok: boolean): void {
-      if (!ok) replayCompressing = false;
+    factors: (frames: number): FactorState => factorState(status(), error(), mark() !== 0, frames),
+    /**
+     * A replay that compresses starts. Returns its release: `ended(false)`
+     * (cut short, its windows are dropped) frees the mark, `ended(true)` keeps
+     * it until the factors are ready. Only the replay that took the mark can
+     * free it; a call after a reset or a second call does nothing.
+     */
+    markReplay(): (ok: boolean) => void {
+      const token = ++lastMark;
+      setMark(token);
+      return (ok) => {
+        if (!ok && untrack(mark) === token) setMark(0);
+      };
     },
     keepProjection(p: FovProjections): void {
       projection = p;
     },
     projection: (): FovProjections | null => projection,
-    /** Listen to Extract jobs' messages; returns the unsubscribe. */
+    /**
+     * Listen to the messages of one Extract job; returns the unsubscribe. Every
+     * listener is dropped at a reset and at a compression error (after an
+     * `abort` message), so this is not a lasting subscription.
+     */
     onExtract(listener: (m: ExtractMessage) => void): () => void {
       listeners.add(listener);
       return () => listeners.delete(listener);

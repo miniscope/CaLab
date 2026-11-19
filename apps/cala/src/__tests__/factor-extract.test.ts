@@ -1,3 +1,4 @@
+import { createComputed, createRoot } from 'solid-js';
 import { describe, expect, it } from 'vitest';
 import { createCompressStore, extractSourceText, factorState } from '../lib/compress-store.ts';
 import { createPass2Factors } from '../lib/factor-extract.ts';
@@ -55,27 +56,23 @@ describe('the factors of a run', () => {
     );
   });
 
+  const OFFSET = { compress: true, compressTiling: 'offset', compressSession: 7 };
+
   it('let the first replay compress on the offset grids, and no later one', () => {
     const store = createCompressStore();
     store.reset(7);
-    const f = createPass2Factors(store, { extract() {} }, () => 7);
-    expect(f.replayCompress(100)).toEqual({
-      compress: true,
-      compressTiling: 'offset',
-      compressSession: 7,
-    });
+    const f = createPass2Factors(store, { extract() {} });
+    const r1 = f.replayCompress(100);
+    expect(r1.settings).toEqual(OFFSET);
     expect(f.state(100)).toBe('compressing');
-    expect(f.replayCompress(100)).toEqual({});
+    expect(f.replayCompress(100).settings).toEqual({});
     // A replay cut short releases the mark: the next replay compresses again.
-    f.replayEnded(false);
+    r1.ended(false);
     expect(f.state(100)).toBe('none');
-    expect(f.replayCompress(100)).toEqual({
-      compress: true,
-      compressTiling: 'offset',
-      compressSession: 7,
-    });
+    const r2 = f.replayCompress(100);
+    expect(r2.settings).toEqual(OFFSET);
     // A replay that ended leaves the mark until the factors are ready.
-    f.replayEnded(true);
+    r2.ended(true);
     expect(f.state(100)).toBe('compressing');
     const proj = { spans: [] } as unknown as FovProjections;
     f.keepProjection(proj);
@@ -92,19 +89,48 @@ describe('the factors of a run', () => {
   it('let the next replay compress after a cancelled one posted its reset status', () => {
     const store = createCompressStore();
     store.reset(7);
-    const f = createPass2Factors(store, { extract() {} }, () => 7);
-    expect(f.replayCompress(100).compress).toBe(true);
+    const f = createPass2Factors(store, { extract() {} });
+    const r1 = f.replayCompress(100);
+    expect(r1.settings.compress).toBe(true);
     store.onMessage({
       type: 'status',
       session: 7,
       status: st({ windows: 0, frames: 0, final: false }),
     });
-    f.replayEnded(false);
+    r1.ended(false);
     expect(f.state(100)).toBe('none');
-    expect(f.replayCompress(100)).toEqual({
-      compress: true,
-      compressTiling: 'offset',
-      compressSession: 7,
+    expect(f.replayCompress(100).settings).toEqual(OFFSET);
+  });
+
+  it("keeps a replay's mark when a replay that did not compress is cancelled", () => {
+    const store = createCompressStore();
+    store.reset(7);
+    store.onMessage({
+      type: 'status',
+      session: 7,
+      status: st({ source: 'discover', tiling: 'plain' }),
+    });
+    const f = createPass2Factors(store, { extract() {} });
+    f.replayCompress(100).ended(true); // replay 1 compresses; no replay status yet
+    const r2 = f.replayCompress(100);
+    expect(r2.settings).toEqual({});
+    r2.ended(false); // cancelled: it held nothing
+    r2.ended(false);
+    expect(f.state(100)).toBe('compressing');
+    expect(f.replayCompress(100).settings).toEqual({});
+  });
+
+  it('follows the mark in a reactive read', () => {
+    createRoot((dispose) => {
+      const store = createCompressStore();
+      store.reset(7);
+      const f = createPass2Factors(store, { extract() {} });
+      const seen: string[] = [];
+      createComputed(() => seen.push(f.state(100)));
+      const r = f.replayCompress(100);
+      r.ended(false);
+      expect(seen).toEqual(['none', 'compressing', 'none']);
+      dispose();
     });
   });
 });
@@ -123,7 +149,7 @@ describe('Extract on factors from the main thread', () => {
   const setup = () => {
     const store = createCompressStore();
     store.reset(7);
-    const f = createPass2Factors(store, { extract() {} }, () => 7);
+    const f = createPass2Factors(store, { extract() {} });
     return { store, f };
   };
 
@@ -131,11 +157,9 @@ describe('Extract on factors from the main thread', () => {
     const store = createCompressStore();
     store.reset(7);
     const posted: unknown[] = [];
-    const f = createPass2Factors(
-      store,
-      { extract: (session, job, library) => posted.push({ session, job, n: library.length }) },
-      () => 7,
-    );
+    const f = createPass2Factors(store, {
+      extract: (session, job, library) => posted.push({ session, job, n: library.length }),
+    });
     const got: number[] = [];
     const done = f.extract(Uint8Array.of(1, 2), (w) => got.push(w.start));
     expect(posted).toEqual([{ session: 7, job: 1, n: 2 }]);
@@ -147,6 +171,24 @@ describe('Extract on factors from the main thread', () => {
     await expect(done).resolves.toEqual({ frames: 4, msPerFrame: 0.5 });
     expect(got).toEqual([0, 2]);
     expect(store.error()).toBeNull();
+  });
+
+  it("ignores an error of an earlier run's session", async () => {
+    const { store, f } = setup();
+    const done = f.extract(Uint8Array.of(1), () => {});
+    store.onMessage({ type: 'error', session: 3, message: 'old quota error' });
+    expect(store.error()).toBeNull();
+    store.onMessage({ type: 'extract-done', session: 7, job: 1, frames: 4, msPerFrame: 0.5 });
+    await expect(done).resolves.toEqual({ frames: 4, msPerFrame: 0.5 });
+  });
+
+  it("sends jobs under the store's session", () => {
+    const store = createCompressStore();
+    store.reset(9);
+    const sent: number[] = [];
+    const f = createPass2Factors(store, { extract: (session) => sent.push(session) });
+    void f.extract(Uint8Array.of(1), () => {}).catch(() => {});
+    expect(sent).toEqual([9]);
   });
 
   it("rejects with the job's error and leaves the compression without one", async () => {

@@ -4,6 +4,7 @@
  * factors through the compress worker. Absent when compression is off
  * (`?compress=off`): the stores then replay the file as before.
  */
+import { untrack } from 'solid-js';
 import type { CompressClient } from './compress-client.ts';
 import type { CompressStore, FactorState } from './compress-store.ts';
 import type { FovProjections } from './fov-projection.ts';
@@ -19,14 +20,21 @@ export interface FactorWindowTraces {
   signed: Float32Array;
 }
 
+/** What a replay about to start gets: its compress settings and how it reports its end. */
+export interface ReplayCompress {
+  /** On the offset grids when no factors exist, else empty. */
+  settings: Pick<CellsSettings, 'compress' | 'compressTiling' | 'compressSession'>;
+  /**
+   * The replay ended; `ok` false: cut short (its windows are dropped). Frees
+   * the compress mark only when this replay took it; otherwise does nothing.
+   */
+  ended(ok: boolean): void;
+}
+
 /** What a replay needs: its compress settings, and where its outcome goes. */
 export interface ReplayCompressLike {
-  /** The compress settings of a replay about to start over `frames` frames: on the offset grids when no factors exist, else none. */
-  replayCompress(
-    frames: number,
-  ): Pick<CellsSettings, 'compress' | 'compressTiling' | 'compressSession'>;
-  /** The replay ended; `ok` false: cut short (its windows are dropped). */
-  replayEnded(ok: boolean): void;
+  /** The compress settings of a replay about to start over `frames` frames. */
+  replayCompress(frames: number): ReplayCompress;
   /** The replay's projections, for a later factor Extract's FOV images. */
   keepProjection(p: FovProjections): void;
 }
@@ -50,17 +58,19 @@ export interface Pass2Factors extends ReplayCompressLike {
 export function createPass2Factors(
   store: CompressStore,
   client: Pick<CompressClient, 'extract'>,
-  session: () => number,
 ): Pass2Factors {
   let nextJob = 1;
   return {
     state: (frames) => store.factors(frames),
     replayCompress(frames) {
-      if (store.factors(frames) !== 'none') return {};
-      store.markReplay();
-      return { compress: true, compressTiling: 'offset', compressSession: session() };
+      // Read untracked: a caller inside an effect must not re-run when the mark changes.
+      if (untrack(() => store.factors(frames)) !== 'none') return { settings: {}, ended() {} };
+      const ended = store.markReplay();
+      return {
+        settings: { compress: true, compressTiling: 'offset', compressSession: store.session() },
+        ended,
+      };
     },
-    replayEnded: (ok) => store.replayEnded(ok),
     keepProjection: (p) => store.keepProjection(p),
     projection: () => store.projection(),
     info() {
@@ -84,7 +94,7 @@ export function createPass2Factors(
             reject(new Error(m.message));
           }
         });
-        client.extract(session(), job, library.slice());
+        client.extract(store.session(), job, library.slice());
       });
     },
   };
