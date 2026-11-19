@@ -218,6 +218,30 @@ describe('pipeline store backpressure', () => {
     });
   });
 
+  it('offers the look-back toggle when the feed says nothing blocks it', () => {
+    const { client } = manualClient();
+    createRoot((dispose) => {
+      let why: string | null = null;
+      const feed = {
+        blocked: () => why,
+        begin: () => true,
+        rows: () => {},
+        backState: () => {},
+        flatField: () => {},
+        reset: () => {},
+      };
+      const args = [undefined, undefined, undefined, undefined, {}, undefined, undefined] as const;
+      const store = createPipelineStore(client, {}, ...args, feed);
+      expect(store.lookbackBlocked()).toBeNull();
+      why = 'Open a recording first.';
+      expect(store.lookbackBlocked()).toBe('Open a recording first.');
+      expect(createPipelineStore(client).lookbackBlocked()).toBe(
+        'Look-back is not available here.',
+      );
+      dispose();
+    });
+  });
+
   it('stops requesting while paused and resumes', async () => {
     const { client, steps } = manualClient();
     await createRoot(async (dispose) => {

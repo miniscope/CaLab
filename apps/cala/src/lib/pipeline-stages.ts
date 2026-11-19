@@ -515,11 +515,7 @@ export class FrontStage {
     out: Float32Array,
     start: number,
   ): Float64Array {
-    const rp = this.replay!;
-    const offset = rp.flickerOffset.subarray(start, start + count);
-    const gain = rp.flickerGain.subarray(start, start + count);
-    if (this.sixteen) return pre.frontFramesReplay16(raw as Uint16Array, count, offset, gain, out);
-    return pre.frontFramesReplay(raw as Uint8Array, count, offset, gain, out);
+    return frontReplay(pre, raw, count, out, this.replay!, start);
   }
 
   private async readRaw(start: number, count: number): Promise<FramePixels> {
@@ -527,6 +523,48 @@ export class FrontStage {
     if (this.raw.length < n) this.raw = this.sixteen ? new Uint16Array(n) : new Uint8Array(n);
     return this.reader.readFrames(start, count, this.raw.subarray(0, n));
   }
+}
+
+/**
+ * The preprocessing front half of `count` raw frames with the flicker
+ * recorded for frames `start..` in `rec` (`Preprocessor.frontFramesReplay`:
+ * no estimate, no state): a replay's stage A, and look-back's.
+ */
+export function frontReplay(
+  pre: Preprocessor,
+  raw: FramePixels,
+  count: number,
+  out: Float32Array,
+  rec: Pick<RunSpan, 'flickerOffset' | 'flickerGain'>,
+  start: number,
+): Float64Array {
+  const offset = rec.flickerOffset.subarray(start, start + count);
+  const gain = rec.flickerGain.subarray(start, start + count);
+  if (raw instanceof Uint16Array) return pre.frontFramesReplay16(raw, count, offset, gain, out);
+  return pre.frontFramesReplay(raw, count, offset, gain, out);
+}
+
+/**
+ * Motion records (`MotionCorrector.applyF32`) of `count` frames from their
+ * recorded rigid shifts and flags: what a replay's stage B, and look-back,
+ * warp by. Rigid only (a corrector with a residual field cannot replay).
+ */
+export function rigidRecords(
+  motion: Pick<MotionCorrector, 'recordLen'>,
+  dy: ArrayLike<number>,
+  dx: ArrayLike<number>,
+  flags: ArrayLike<number>,
+  count: number,
+): Float32Array {
+  const len = motion.recordLen;
+  if (len !== 4) throw new Error('The replay (Refine, Extract) uses rigid shifts only.');
+  const records = new Float32Array(count * len);
+  for (let i = 0; i < count; i++) {
+    records[i * len] = dy[i];
+    records[i * len + 1] = dx[i];
+    records[i * len + 3] = flags[i];
+  }
+  return records;
 }
 
 /** What `MotionStage.handleStaged` returns: the stage is free again, the job completes later. */
@@ -655,15 +693,9 @@ export class MotionStage {
   ): Promise<StagedJob> {
     const s = job.step;
     const n = s.count * this.px;
-    const len = motion.recordLen;
-    if (len !== 4 || !job.dy || !job.dx || !job.flags)
+    if (!job.dy || !job.dx || !job.flags)
       throw new Error('The replay (Refine, Extract) uses rigid shifts only.');
-    const records = new Float32Array(s.count * len);
-    for (let i = 0; i < s.count; i++) {
-      records[i * len] = job.dy[i];
-      records[i * len + 1] = job.dx[i];
-      records[i * len + 3] = job.flags[i];
-    }
+    const records = rigidRecords(motion, job.dy, job.dx, job.flags, s.count);
     const corrected = await this.acquireOut();
     const t0 = now();
     const out = corrected.subarray(0, n);
@@ -855,14 +887,22 @@ export class BackStage {
   private readonly px: number;
   private readonly factor: number;
 
+  /** Stream frame after the last state snapshot (-Infinity: none yet), and after the last batch. */
+  private snapshotAt = -Infinity;
+  private lastEnd = 0;
+
   /**
    * `fast`: the trace solver and slow-loop feed (none: no traces). It is owned (disposed) here.
    * `projector`: mean and max projections of every frame (Extract; see `fov-projection.ts`).
+   * `snapshotEvery`: a look-back run (Discover with look-back): every this many
+   * frames (and after the first batch) the batch result carries the back
+   * half's state, which look-back blocks start from (0: never).
    */
   constructor(
     private readonly setup: StageSetup,
     readonly fast: FastLoop | null,
     readonly projector: FovProjector | null = null,
+    private readonly snapshotEvery = 0,
   ) {
     this.px = setup.width * setup.height;
     this.factor = previewFactor(setup.width, setup.height, setup.plan.previewMaxSide);
@@ -916,6 +956,13 @@ export class BackStage {
       this.setup.height,
       this.factor,
     );
+    const end = s.start + s.count;
+    this.lastEnd = end;
+    const backState =
+      this.snapshotEvery > 0 && end - this.snapshotAt >= this.snapshotEvery
+        ? { frame: end, state: pre.state() }
+        : undefined;
+    if (backState) this.snapshotAt = end;
     const t3 = now();
     // The fused WASM call spans both operations, so attribute it to Stage C
     // as a whole rather than presenting an artificial split.
@@ -951,7 +998,23 @@ export class BackStage {
       ...(imaging ? { imaging } : {}),
       ...(session ? { session } : {}),
       ...(job.boundaryNull !== undefined ? { boundaryNull: job.boundaryNull } : {}),
+      ...(backState ? { backState } : {}),
     };
+  }
+
+  /**
+   * The back half's state now (`Preprocessor.state()`; null before
+   * calibration), with the stream frame after the last batch: a look-back
+   * run's last snapshot.
+   */
+  backState(): Uint8Array | null {
+    return this.pre?.state() ?? null;
+  }
+
+  /** Look-back run: the final snapshot (after the last batch), if snapshots are on. */
+  finalBackState(): { frame: number; state: Uint8Array } | undefined {
+    if (this.snapshotEvery <= 0 || !this.pre || this.lastEnd <= this.snapshotAt) return undefined;
+    return { frame: this.lastEnd, state: this.pre.state() };
   }
 
   /**

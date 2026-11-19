@@ -5,6 +5,7 @@
  * slow worker owns the cells and the reservoir (see `discover/shard.rs`).
  */
 import { initCalaWasm, VisitWorker } from '../lib/cala-wasm.ts';
+import { buildSlowLoop } from '../lib/slow-runner.ts';
 import type { OwnerToVisit, VisitConnect, VisitToOwner } from './slow-types.ts';
 
 const workerScope = globalThis as unknown as {
@@ -26,16 +27,8 @@ function handle(msg: OwnerToVisit): void {
     worker?.free();
     worker = null;
     session = msg.session;
-    if (msg.type === 'init') {
-      worker = new VisitWorker(
-        msg.width,
-        msg.height,
-        msg.fov,
-        msg.noise,
-        msg.cellDiameterPx,
-        msg.flattenSigmaPx,
-      );
-    }
+    // The slow loop's options (`new VisitWorker(..)` unless the run has look-back).
+    if (msg.type === 'init') worker = buildSlowLoop(VisitWorker, msg);
     return;
   }
   if (msg.session !== session || !worker) return;
