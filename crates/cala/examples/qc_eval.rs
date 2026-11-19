@@ -3618,7 +3618,7 @@ impl FactorFiles {
             let path = e
                 .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
                 .path();
-            let w = path
+            let w: Option<usize> = path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .and_then(|n| n.strip_prefix('w')?.strip_suffix(".fac")?.parse().ok());
