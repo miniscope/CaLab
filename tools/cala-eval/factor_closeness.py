@@ -505,9 +505,11 @@ def engine_report(ref: Path, test: Path, band: float = 16.0) -> str:
         out += [
             "",
             (
-                "`min_valid` is the smallest share of a window's frames in which every pixel under "
-                "the cell was present, over all windows; a pixel never present in a window is "
-                "stored as 0, which the factor engine reads and the frame engine treats as missing."
+                "`min_valid` is the smallest share of a window's frames in which every pixel of "
+                "the cell's support was present, over all windows; a pixel never present in a window is "
+                "stored as 0, which the factor engine reads and the frame engine treats as missing. "
+                "Only the support is counted: a cell whose moat or ring holds a missing pixel still "
+                "has `min_valid` 1 and can differ, so the row of cells at 1 is not a clean set."
             ),
         ]
     return "\n".join(out + [""])

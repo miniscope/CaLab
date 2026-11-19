@@ -944,10 +944,12 @@ mod tests {
         for i in [1, 2, 4] {
             assert!(gap.worst[i] <= ARM_TOL, "cell {i}: gap {:e}", gap.worst[i]);
         }
-        // Cell 0 differs. Measured 8.9e-2 (relative, as above); the bound is
-        // loose and the lower one says the arms do differ here.
+        // Cell 0 differs. Measured 8.9e-2 (relative, as above); the upper
+        // bound is loose. The lower one only says the missing pixel reaches
+        // the solve: closing this gap is a deliberate change of the engines
+        // and then changes this test.
         assert!(
-            (1e-3..=0.2).contains(&gap.worst[0]),
+            (ARM_TOL..=0.2).contains(&gap.worst[0]),
             "cell 0: gap {:e}",
             gap.worst[0]
         );
