@@ -1,9 +1,11 @@
 """Tests for factor_arms.py: `python -m unittest discover tools/cala-eval`."""
 
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import factor_arms as A
@@ -56,9 +58,33 @@ class Arms(unittest.TestCase):
         )
         self.assertIn("chosen", A.default_arms(a))
         self.assertEqual(
-            [A.line_step(n) for n in ("chosen", "offset", "x_offset", "plain", "raw")],
+            [
+                A.line_step(a[n])
+                for n in ("chosen", "offset", "x_offset", "plain", "raw")
+            ],
             [32, 32, 32, 64, 64],
         )
+        self.assertEqual(A.line_step(["--x", "--tiling", "offset"]), 32)
+        self.assertEqual(A.line_step(["--tiling", "overlap:16", "offset"]), 64)
+        self.assertEqual(A.line_step(["--tiling"]), 64)
+
+    def test_report_passes_the_line_step_of_the_arm_command(self) -> None:
+        a = A.arms(5)
+        with tempfile.TemporaryDirectory() as t:
+            out = Path(t)
+            for n in ("raw", "chosen", "plain"):
+                (out / n).mkdir()
+                rec = {"arm": n, "cmd": ["qc"] + a[n], "returncode": 0, "wall_s": 1.0}
+                (out / n / "run.json").write_text(json.dumps(rec))
+            seen: dict[str, int] = {}
+
+            def fake(ref: Path, test: Path, nulls: list[Path], **kw: object) -> str:
+                seen[test.name] = int(kw["tile"])
+                return ""
+
+            with mock.patch.object(A.factor_closeness, "report", fake):
+                A.report(out, ["raw", "chosen", "plain"], None)
+        self.assertEqual(seen, {"chosen": 32, "plain": 64})
 
     def test_raw_and_null_differ_only_in_the_later_budget(self) -> None:
         a = A.arms(5)

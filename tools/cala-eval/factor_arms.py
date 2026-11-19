@@ -104,9 +104,14 @@ def default_arms(table: dict[str, list[str]]) -> list[str]:
     return [n for n in table if n not in REMEDIES]
 
 
-def line_step(name: str) -> int:
-    """Distance between tile lines for an arm, px: 32 where the tiles are the two offset grids."""
-    return 32 if name in ("chosen", "offset", "x_offset") else 64
+def line_step(flags: list[str]) -> int:
+    """Distance between tile lines for an arm, px, from its flags or command: 32 where the
+    tiles are the two offset grids (`--tiling offset`), else 64."""
+    if "--tiling" in flags:
+        i = flags.index("--tiling")
+        if flags[i + 1 : i + 2] == ["offset"]:
+            return 32
+    return 64
 
 
 def command(
@@ -219,6 +224,11 @@ def stored_budget(cmd: list[str]) -> int:
     return int(cmd[cmd.index("--budget") + 1]) if "--budget" in cmd else DEFAULT_BUDGET
 
 
+def arm_cmd(out_dir: Path, name: str) -> list[str]:
+    """The command stored in the arm's `run.json`."""
+    return json.loads((out_dir / name / "run.json").read_text())["cmd"]
+
+
 def report(
     out_dir: Path,
     names: list[str],
@@ -265,7 +275,7 @@ def report(
                         out_dir / "raw",
                         out_dir / n,
                         nulls,
-                        tile=line_step(n),
+                        tile=line_step(arm_cmd(out_dir, n)),
                         truth_path=truth,
                     )
                 )
@@ -275,7 +285,7 @@ def report(
                     out_dir / "x_raw",
                     out_dir / n,
                     [],
-                    tile=line_step(n),
+                    tile=line_step(arm_cmd(out_dir, n)),
                     truth_path=truth,
                 )
             )

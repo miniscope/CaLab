@@ -281,6 +281,15 @@ class Closeness(unittest.TestCase):
         text = F.report(self.root / "a", self.root / "b", [])
         self.assertIn("1 cells have no centroid in final.tsv", text)
 
+    def test_report_ends_with_gate_a1_and_counts_the_cells_it_ran_over(self) -> None:
+        write_run(self.root / "a", CELLS, TRACES)
+        write_run(self.root / "b", CELLS, TRACES)
+        text = F.report(self.root / "a", self.root / "b", [])
+        last = [ln for ln in text.splitlines() if ln][-1]
+        self.assertTrue(last.startswith("Gate A1: "), last)
+        self.assertIn("QC-pass cells;", text)
+        self.assertIn("missing in the test run", text)
+
     def test_report_judges_against_a_null_run(self) -> None:
         write_run(self.root / "a", CELLS, TRACES)
         write_run(self.root / "b", CELLS, TRACES)
@@ -349,6 +358,78 @@ class A1Gate(unittest.TestCase):
         for r in bad:
             r["qc_pass"] = 0.0
         self.assertTrue(F.a1_passes(F.a1_gate(rows + bad, 1.0, 1.0)))
+
+    def ok(self, rows: list[dict[str, float]], ref: float = 1.0, test: float = 1.0):
+        return self.passed(F.a1_gate(rows, ref, test))
+
+    @staticmethod
+    def lost(n: int, ref: float) -> list[dict[str, float]]:
+        nan = float("nan")
+        return [
+            {
+                "qc_pass": 1.0,
+                "in_test": 0.0,
+                "truth_r_ref": ref,
+                "truth_r_test": nan,
+                "fp_cos": nan,
+                "trace_r1": nan,
+            }
+            for _ in range(n)
+        ]
+
+    def test_truth_median_limit(self) -> None:
+        self.assertEqual(self.ok(self.rows(25, 0.85, 0.85 - 0.009))[0], True)
+        self.assertEqual(self.ok(self.rows(25, 0.85, 0.85 - 0.011))[0], False)
+
+    def test_truth_fifth_percentile_limit(self) -> None:
+        good = self.rows(22, 0.85, 0.85)
+        self.assertEqual(self.ok(good + self.rows(3, 0.85, 0.85 - 0.049))[0], True)
+        self.assertEqual(self.ok(good + self.rows(3, 0.85, 0.85 - 0.051))[0], False)
+
+    def test_usable_truth_cell_count_and_raw_median_limits(self) -> None:
+        self.assertEqual(self.ok(self.rows(20, 0.85, 0.85))[0], True)
+        self.assertIsNone(self.ok(self.rows(19, 0.85, 0.85))[0])
+        self.assertEqual(self.ok(self.rows(25, 0.80, 0.80))[0], True)
+        self.assertIsNone(self.ok(self.rows(25, 0.79, 0.79))[0])
+
+    def test_footprint_loss_limit(self) -> None:
+        self.assertEqual(self.ok(self.rows(25, 0.85, 0.85, fp=0.985))[1], True)
+        self.assertEqual(self.ok(self.rows(25, 0.85, 0.85, fp=0.975))[1], False)
+
+    def test_trace_loss_limit_without_usable_truth(self) -> None:
+        nan = float("nan")
+        self.assertEqual(self.ok(self.rows(25, nan, nan, r1=0.93))[2], True)
+        self.assertEqual(self.ok(self.rows(25, nan, nan, r1=0.91))[2], False)
+
+    def test_jump_margin(self) -> None:
+        rows = self.rows(25, 0.85, 0.85)
+        self.assertEqual(self.ok(rows, 1.0, 1.09)[3], True)
+        self.assertEqual(self.ok(rows, 1.0, 1.11)[3], False)
+
+    def test_a_value_exactly_at_a_limit_passes(self) -> None:
+        self.assertEqual(self.ok(self.rows(25, 0.85, 0.85, fp=0.98))[1], True)
+        self.assertEqual(self.ok(self.rows(25, 0.85, 0.84))[0], True)
+        nan = float("nan")
+        self.assertEqual(self.ok(self.rows(25, nan, nan, r1=0.92))[2], True)
+        self.assertEqual(self.ok(self.rows(25, 0.85, 0.85), 1.0, 1.10)[3], True)
+
+    def test_cells_the_test_run_lost_count_as_the_worst_case(self) -> None:
+        rows = self.rows(20, 0.85, 0.85) + self.lost(20, 0.85)
+        gate = F.a1_gate(rows, 1.0, 1.0)
+        self.assertEqual(self.passed(gate), [False, False, None, True])
+        self.assertFalse(F.a1_passes(gate))
+
+    def test_usable_truth_is_decided_on_the_raw_run_alone(self) -> None:
+        half = self.rows(15, 0.85, 0.85) + self.lost(15, 0.85)
+        self.assertEqual(self.ok(half)[0], False)
+        # Raw median 0.70 over all matched cells, 0.85 over the kept ones: not usable.
+        weak = self.rows(20, 0.85, 0.85) + self.lost(20, 0.55)
+        self.assertIsNone(self.ok(weak)[0])
+
+    def test_a_missing_jump_or_no_cells_fail(self) -> None:
+        rows = self.rows(25, 0.85, 0.85)
+        self.assertEqual(self.ok(rows, 1.0, float("nan"))[3], False)
+        self.assertFalse(F.a1_passes(F.a1_gate([], 1.0, 1.0)))
 
 
 if __name__ == "__main__":

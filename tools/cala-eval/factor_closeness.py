@@ -346,6 +346,21 @@ A1_FOOTPRINT_LOSS = 0.02
 A1_TRACE_LOSS = 0.08
 A1_JUMP_OVER_RAW = 0.10
 A1_WORDS = {True: "pass", False: "fail", None: "does not apply"}
+# A value exactly at a limit passes; this absorbs floating-point rounding.
+A1_TOL = 1e-9
+
+
+def a1_value(r: Row, key: str) -> float:
+    """The row's value for gate A1: a missing one counts as 0, the worst case."""
+    v = r[key]
+    return v if math.isfinite(v) else 0.0
+
+
+def a1_loss(qc: list[Row], key: str) -> float:
+    """Median of `1 - value` over the QC-pass cells; a cell without a value loses 1."""
+    if not qc:
+        return NAN
+    return float(np.median([1.0 - a1_value(r, key) for r in qc]))
 
 
 def a1_gate(
@@ -353,49 +368,61 @@ def a1_gate(
 ) -> list[tuple[str, str, bool | None]]:
     """(rule, measured, passed) for the four rules of gate A1, on the QC-pass cells.
 
-    The truth rule applies when the truth is usable: at least `A1_TRUTH_MIN_CELLS`
-    cells have a truth correlation in both runs and the reference run's median is at
-    least `A1_TRUTH_MIN_R`. The trace rule applies when it is not. `passed` is `None`
-    for a rule that does not apply; a value that cannot be computed fails its rule.
+    A QC-pass cell that the test run lost, or whose value is not finite, counts as the
+    worst case in every rule (loss 1; truth correlation 0 in the test run).
+    The truth is usable when it is a property of the reference run alone: at least
+    `A1_TRUTH_MIN_CELLS` QC-pass cells have a finite reference truth correlation and
+    their median is at least `A1_TRUTH_MIN_R`. The truth rule applies then, the trace rule
+    otherwise. `passed` is `None` for a rule that does not apply; a value that cannot be
+    computed fails its rule.
     """
     qc = [r for r in rows if r["qc_pass"]]
-    pairs = [
-        (r["truth_r_ref"], r["truth_r_test"])
-        for r in qc
-        if math.isfinite(r["truth_r_ref"]) and math.isfinite(r["truth_r_test"])
-    ]
-    ref = np.asarray([a for a, _ in pairs], dtype=np.float64)
-    diff = np.asarray([b - a for a, b in pairs], dtype=np.float64)
-    usable = (
-        len(pairs) >= A1_TRUTH_MIN_CELLS and float(np.median(ref)) >= A1_TRUTH_MIN_R
-    )
+    truth = [r for r in qc if math.isfinite(r["truth_r_ref"])]
+    ref = np.asarray([r["truth_r_ref"] for r in truth], dtype=np.float64)
+    med_ref = float(np.median(ref)) if len(ref) else NAN
+    usable = len(truth) >= A1_TRUTH_MIN_CELLS and med_ref >= A1_TRUTH_MIN_R
     out: list[tuple[str, str, bool | None]] = []
     if usable:
+        diff = np.asarray(
+            [a1_value(r, "truth_r_test") - r["truth_r_ref"] for r in truth],
+            dtype=np.float64,
+        )
         med, p5 = float(np.median(diff)), float(np.percentile(diff, 5))
         out.append(
             (
                 "1 truth",
                 f"median {med:+.4f}, 5th pct {p5:+.4f} over {len(diff)} cells",
-                med >= A1_TRUTH_MEDIAN and p5 >= A1_TRUTH_P5,
+                med >= A1_TRUTH_MEDIAN - A1_TOL and p5 >= A1_TRUTH_P5 - A1_TOL,
             )
         )
     else:
-        out.append(("1 truth", f"no usable truth ({len(pairs)} matched cells)", None))
-    fp = loss(rows, "fp_cos")
-    out.append(("2 footprints", f"loss {fp:.4f}", fp <= A1_FOOTPRINT_LOSS))
-    tr = loss(rows, "trace_r1")
+        shown = "n/a" if math.isnan(med_ref) else f"{med_ref:.3f}"
+        out.append(
+            (
+                "1 truth",
+                (
+                    f"no usable truth: {len(truth)} cells with a reference truth "
+                    f"correlation (need {A1_TRUTH_MIN_CELLS}), median {shown} "
+                    f"(need {A1_TRUTH_MIN_R})"
+                ),
+                None,
+            )
+        )
+    fp = a1_loss(qc, "fp_cos")
+    out.append(("2 footprints", f"loss {fp:.4f}", fp <= A1_FOOTPRINT_LOSS + A1_TOL))
+    tr = a1_loss(qc, "trace_r1")
     out.append(
         (
             "3 traces without truth",
             f"loss {tr:.4f}",
-            None if usable else tr <= A1_TRACE_LOSS,
+            None if usable else tr <= A1_TRACE_LOSS + A1_TOL,
         )
     )
     out.append(
         (
             "4 tile lines",
             f"jump {jump_test:.3f} against {jump_ref:.3f}",
-            jump_test <= jump_ref + A1_JUMP_OVER_RAW,
+            jump_test <= jump_ref + A1_JUMP_OVER_RAW + A1_TOL,
         )
     )
     return out
@@ -525,14 +552,18 @@ def report(
         ]
         d = np.asarray(both, dtype=np.float64)
         out.append(
-            f"Truth correlation, test minus reference, over {len(d)} cells: "
+            f"Truth correlation, test minus reference, over {len(d)} cells (all cells): "
             f"median {q(d, 50)}, 5th pct {q(d, 5)}."
         )
     ja, jb = line_jump(fa, dims, tile), line_jump(fb, dims, tile)
     gate = a1_gate(rows, ja, jb)
+    n_qc = sum(1 for r in rows if r["qc_pass"])
+    n_lost = sum(1 for r in rows if r["qc_pass"] and not r["in_test"])
     out += [
         "",
         f"Footprint jump at tile lines over elsewhere: reference {ja:.3f}, test {jb:.3f}.",
+        "",
+        f"Gate A1 runs over {n_qc} QC-pass cells; {n_lost} of them are missing in the test run.",
         "",
         "| A1 rule | measured | result |",
         "| --- | --- | --- |",
