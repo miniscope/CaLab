@@ -10,6 +10,19 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import factor_arms as A
 
+FLAT_HEAD = (
+    "frame\toutcome\tfirst\tbins\tframes_used\tgain_sd\ttissue_sd\tresidual\tdark"
+    "\tchange_median\tchange_p99\tchange_max\tsolve_s\n"
+)
+FLAT_SKIPPED = "4199\tskipped: too little motion" + "\t" * 10 + "0.01\n"
+FLAT_TSV = (
+    FLAT_HEAD
+    + "2999\tupdated\t1\t12\t2400\t0.05000\t0.10000\t1.000e-3\t4.500\t0.1\t0.2\t0.3\t0.50\n"
+    + FLAT_SKIPPED
+    + "5399\tupdated\t0\t14\t4800\t0.04000\t0.10000\t1.000e-3\t4.750\t0.1\t0.2\t0.3\t0.40\n"
+)
+FLAT_TSV_NONE = FLAT_HEAD + FLAT_SKIPPED
+
 
 class Arms(unittest.TestCase):
     def test_remedy_arms_are_plain_recal_with_another_cut_and_not_run_by_default(
@@ -27,7 +40,10 @@ class Arms(unittest.TestCase):
             + ["--factors-k0", "40", "--factors-max-rank", "40"],
         )
         self.assertEqual(a["recal_iter2"], a["plain_recal"] + ["--factors-n-iter", "2"])
-        self.assertEqual(sorted(set(a) - set(A.default_arms(a))), sorted(A.REMEDIES))
+        self.assertEqual(
+            sorted(set(a) - set(A.default_arms(a))),
+            sorted(list(A.REMEDIES) + ["live", "lb_raw", "lb_fac", "lb_live"]),
+        )
 
     def test_arm_names(self) -> None:
         self.assertEqual(
@@ -56,6 +72,161 @@ class Arms(unittest.TestCase):
         self.assertEqual(a["c_chosen"], a["chosen"] + ["--extract-engine", "factors"])
         self.assertEqual(A.line_step(a["c_chosen"]), 32)
         self.assertIn("c_chosen", A.default_arms(a))
+
+    def test_existing_arms_keep_their_flags_token_for_token(self) -> None:
+        # A finished long run is skipped only when its stored command equals the current one.
+        for args, passes in (((5,), "6"), ((2, 3000000), "3")):
+            a = A.arms(*args)
+            raw = ["--passes", passes, "--later-passes", "refine", "--extract-pass"]
+            chosen = raw + ["--replay-source", "factors", "--tiling", "offset"]
+            chosen += ["--factors-pass", "2"]
+            self.assertEqual(a["raw"], raw)
+            self.assertEqual(a["chosen"], chosen)
+            self.assertEqual(a["c_chosen"], chosen + ["--extract-engine", "factors"])
+
+    def test_live_arms_use_discovers_own_factors(self) -> None:
+        a = A.arms(5)
+        self.assertEqual(
+            a["live"],
+            a["raw"]
+            + ["--replay-source", "factors", "--tiling", "offset"]
+            + ["--extract-engine", "factors"],
+        )
+        for n in ("live", "lb_fac", "lb_live"):
+            self.assertNotIn("--factors-pass", a[n], f"{n}: the factors are pass 1's")
+        self.assertEqual(A.line_step(a["live"]), 32)
+
+    def test_look_back_arms_are_mains_default_with_extract(self) -> None:
+        a = A.arms(5)
+        self.assertEqual(
+            a["lb_raw"],
+            ["--passes", "1", "--joint-update", "all", "--joint-sign", "all"]
+            + ["--lookback", "2", "--lookback-drain", "4800", "--extract-pass"],
+        )
+        self.assertEqual(
+            a["lb_fac"],
+            a["lb_raw"] + ["--lookback-source", "factors", "--tiling", "offset"],
+        )
+        self.assertEqual(
+            a["lb_live"],
+            a["lb_fac"] + ["--replay-source", "factors", "--extract-engine", "factors"],
+        )
+        cmd = A.command(
+            Path("qc"), Path("rec"), Path("out/lb_fac"), a["lb_fac"], True, 100
+        )
+        self.assertEqual(cmd[cmd.index("--factors-out") + 1], "out/lb_fac/factors")
+        cmd = A.command(
+            Path("qc"), Path("rec"), Path("out/lb_raw"), a["lb_raw"], True, 100
+        )
+        self.assertNotIn("--factors-out", cmd)
+
+    def test_extra_repeating_a_look_back_arms_joint_flags_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "--joint-update"):
+            A.command(
+                Path("qc"),
+                Path("rec"),
+                Path("out/lb_raw"),
+                A.arms(5)["lb_raw"],
+                True,
+                None,
+                extra=["--joint-update", "all"],
+            )
+
+    def test_seeded_arms_read_the_seed_runs_flat_field(self) -> None:
+        seed = Path("out") / "seed"
+        a = A.arms(5, seed=(12000, seed))
+        self.assertEqual(a["seed"], ["--passes", "1", "--from", "12000"])
+        self.assertEqual(a["raw_seed"], a["raw"] + ["--ff-seed-run", str(seed)])
+        self.assertEqual(a["live_seed"], a["live"] + ["--ff-seed-run", str(seed)])
+        self.assertNotIn("seed", A.arms(5))
+        self.assertEqual(
+            A.run_order(["raw", "live_seed", "seed", "raw_seed"]),
+            (["seed"], ["raw", "live_seed", "raw_seed"]),
+        )
+
+    def test_report_compares_each_live_arm_with_its_reference(self) -> None:
+        a = A.arms(5, seed=(12000, Path("out") / "seed"))
+        names = ["raw", "live", "raw_seed", "live_seed", "lb_raw", "lb_fac", "lb_live"]
+        with tempfile.TemporaryDirectory() as t:
+            out = Path(t)
+            for n in names:
+                (out / n).mkdir()
+                rec = {"arm": n, "cmd": ["qc"] + a[n], "returncode": 0, "wall_s": 1.0}
+                (out / n / "run.json").write_text(json.dumps(rec))
+            seen: dict[str, tuple[str, bool]] = {}
+
+            def fake(ref: Path, test: Path, nulls: list[Path], **kw: object) -> str:
+                seen[test.name] = (ref.name, bool(kw.get("match", False)))
+                return ""
+
+            with mock.patch.object(A.factor_closeness, "report", fake):
+                A.report(out, names, None)
+        self.assertEqual(
+            seen,
+            {
+                "live": ("raw", False),
+                "live_seed": ("raw_seed", False),
+                "lb_fac": ("lb_raw", True),
+                "lb_live": ("lb_raw", True),
+            },
+        )
+
+    def test_flat_field_and_look_back_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            run = Path(t) / "live_seed"
+            run.mkdir()
+            cmd = {"cmd": ["qc", "--ff-seed-run", "s"]}
+            (run / "run.json").write_text(json.dumps(cmd))
+            (run / "flat_field_updates.tsv").write_text(FLAT_TSV)
+            self.assertEqual(A.flat_row(run), ("live_seed", 2, "2999", True))
+            line = A.seed_line(run)
+            assert line is not None
+            self.assertIn(
+                "made at its frame 5399, 4800 frames used, gain sd 0.04000, dark 4.750",
+                line,
+            )
+            (run / "lookback.tsv").write_text(
+                "rate\tmax_frames\tcatchup\tdouble\tframes\tpushed\tcell_frames\tbirths"
+                "\tin_need\twall_s\tdrain_steps\tdrain_frames\n"
+                "2\t3000\t0\t0\t24000\t23000\t510000\t140\t3\t812.500\t900\t1800\n"
+                "\ntenth\tframes\tcell_frames\n0\t10\t20\n"
+            )
+            self.assertEqual(
+                A.lookback_row(run), ("live_seed", 24000, 510000, 3, 812.5)
+            )
+            self.assertIsNone(A.lookback_row(Path(t) / "missing"))
+            self.assertIsNone(A.flat_row(Path(t) / "missing"))
+
+    def test_a_seed_run_without_a_map_is_said_so_and_holds_the_seeded_arms(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            seed = Path(t) / "seed"
+            seed.mkdir()
+            self.assertFalse(A.seed_has_map(seed))
+            (seed / "flat_field_updates.tsv").write_text(FLAT_TSV_NONE)
+            self.assertFalse(A.seed_has_map(seed))
+            line = A.seed_line(seed)
+            assert line is not None
+            self.assertIn("made no flat field map", line)
+            (seed / "flat_field_updates.tsv").write_text(FLAT_TSV)
+            self.assertTrue(A.seed_has_map(seed))
+        self.assertEqual(
+            A.hold_seeded(["raw", "raw_seed", "live_seed", "lb_raw"]),
+            (["raw", "lb_raw"], ["raw_seed", "live_seed"]),
+        )
+
+    def test_the_report_says_when_the_seeded_arms_were_not_run(self) -> None:
+        a = A.arms(5, seed=(12000, Path("out") / "seed"))
+        with tempfile.TemporaryDirectory() as t:
+            out = Path(t)
+            (out / "seed").mkdir()
+            rec = {"arm": "seed", "cmd": ["qc"] + a["seed"], "returncode": 0}
+            (out / "seed" / "run.json").write_text(json.dumps({**rec, "wall_s": 1.0}))
+            (out / "seed" / "flat_field_updates.tsv").write_text(FLAT_TSV_NONE)
+            text = A.report(out, ["seed", "raw_seed", "live_seed"], None)
+        self.assertIn("made no flat field map", text)
+        self.assertIn("raw_seed, live_seed: not run", text)
 
     def test_extract_row_reads_the_extract_stage(self) -> None:
         with tempfile.TemporaryDirectory() as d:

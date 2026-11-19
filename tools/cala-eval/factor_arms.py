@@ -3,7 +3,7 @@ with gate A1.
 
     python factor_arms.py --rec AVI_DIR --out DIR [--frames N] [--no-motion]
         [--refine 5] [--budget U] [--jobs 3] [--arms raw,plain,...] [--truth truth.npz]
-        [--qc-eval PATH] [--dry-run]
+        [--qc-eval PATH] [--seed-from F] [--extra FLAGS] [--dry-run]
 
 Arms (each a `qc_eval real` run in `DIR/<arm>`; pass 1 is the same in all):
 
@@ -22,6 +22,16 @@ Arms (each a `qc_eval real` run in `DIR/<arm>`; pass 1 is the same in all):
 - `c_chosen`: as `chosen`, with the Extract pass solved by the factor engine (arm C).
 - `x_raw` and `x_<tiling>`: Discover and the Extract pass only, so the two
   Extracts solve with one and the same library.
+- Phase 4a, not in the default set:
+  - `live`: Discover's own factors (pass 1, offset grids) feed the refine replays
+    (rebuilt frames) and the Extract pass (factor engine); no factor comes from a replay.
+  - `seed` (needs `--seed-from F`): Discover alone on the later stretch of the recording
+    that starts at frame F; `raw_seed` and `live_seed` are `raw` and `live` with the flat
+    field it ended with in force from frame 0 (`--ff-seed-run`). `seed` runs first. When
+    it makes no flat field map the seeded arms are not run, and the report says so.
+  - `lb_raw`: main's default look-back arm (`LBD-x2`) with an Extract pass; `lb_fac`: the
+    same with the look-back reading Discover's factors; `lb_live`: `lb_fac` with Extract on
+    the factor engine. Their Discovers differ, so the report pairs cells by footprint.
 
 An arm is run again unless its `run.json` holds return code 0 and the same
 command as now; such a finished arm is reused, also by the report. Raw data is
@@ -79,10 +89,45 @@ DEFAULT_QC_EVAL = (
 )
 # qc_eval's default `--budget` (slow-loop work units per frame)
 DEFAULT_BUDGET = 30_000_000
+# Phase 4a: what a live run may claim. main's default look-back arm `LBD-x2`
+# (tools/cala-eval/results/2026-11-19-concurrent-refine.md), with the Extract pass added so
+# that the arms have traces to compare. The joint flags belong to the arm, not to `--extra`.
+LOOKBACK: list[str] = [
+    "--passes",
+    "1",
+    "--joint-update",
+    "all",
+    "--joint-sign",
+    "all",
+    "--lookback",
+    "2",
+    "--lookback-drain",
+    "4800",
+    "--extract-pass",
+]
+# The arms of phase 4a; not in the default set.
+LIVE_ARMS: tuple[str, ...] = (
+    "live",
+    "seed",
+    "raw_seed",
+    "live_seed",
+    "lb_raw",
+    "lb_fac",
+    "lb_live",
+)
+# Arms that read the flat field the run `seed` ended with.
+SEEDED: tuple[str, ...] = ("raw_seed", "live_seed")
 
 
-def arms(refine: int, budget: int = DEFAULT_BUDGET) -> dict[str, list[str]]:
-    """Arm name to its `qc_eval` flags (without recording, output and factor folder)."""
+def arms(
+    refine: int,
+    budget: int = DEFAULT_BUDGET,
+    seed: tuple[int, Path] | None = None,
+) -> dict[str, list[str]]:
+    """Arm name to its `qc_eval` flags (without recording, output and factor folder).
+
+    `seed`: (first frame of the later stretch the run `seed` reads, that run's folder); adds
+    the arms `seed`, `raw_seed` and `live_seed`."""
     full = ["--passes", str(refine + 1), "--later-passes", "refine", "--extract-pass"]
     extract = ["--passes", "1", "--extract-pass"]
     out = {
@@ -100,12 +145,26 @@ def arms(refine: int, budget: int = DEFAULT_BUDGET) -> dict[str, list[str]]:
     out["c_chosen"] = out["chosen"] + ["--extract-engine", "factors"]
     for name, cut in REMEDIES.items():
         out[name] = out["plain_recal"] + cut
+    out["live"] = out["offset"] + ["--extract-engine", "factors"]
+    out["lb_raw"] = list(LOOKBACK)
+    out["lb_fac"] = LOOKBACK + ["--lookback-source", "factors", "--tiling", "offset"]
+    out["lb_live"] = out["lb_fac"] + [
+        "--replay-source",
+        "factors",
+        "--extract-engine",
+        "factors",
+    ]
+    if seed is not None:
+        first, run = seed
+        out["seed"] = ["--passes", "1", "--from", str(first)]
+        out["raw_seed"] = full + ["--ff-seed-run", str(run)]
+        out["live_seed"] = out["live"] + ["--ff-seed-run", str(run)]
     return out
 
 
 def default_arms(table: dict[str, list[str]]) -> list[str]:
-    """The arms run without `--arms`: all but the remedy arms."""
-    return [n for n in table if n not in REMEDIES]
+    """The arms run without `--arms`: all but the remedy arms and the arms of phase 4a."""
+    return [n for n in table if n not in REMEDIES and n not in LIVE_ARMS]
 
 
 def line_step(flags: list[str]) -> int:
@@ -130,7 +189,7 @@ def command(
 ) -> list[str]:
     """The `qc_eval` command of an arm; `extra` flags end it (the same for every arm of a run)."""
     cmd = [str(qc_eval), "real", str(rec), str(run), *flags]
-    if "--replay-source" in flags:
+    if "--replay-source" in flags or "--lookback-source" in flags:
         cmd += ["--factors-out", str(run / "factors")]
     if motion:
         cmd.append("--motion")
@@ -221,6 +280,76 @@ def extract_row(run: Path) -> tuple[str, float, float, float] | None:
     return None
 
 
+def flat_maps(run: Path) -> list[dict[str, str]] | None:
+    """The flat field maps the run made (rows of its `flat_field_updates.tsv` with outcome
+    `updated`), or None when the run wrote no such file."""
+    path = run / "flat_field_updates.tsv"
+    if not path.exists():
+        return None
+    return [r for r in factor_closeness.read_tsv(path) if r["outcome"] == "updated"]
+
+
+def seed_has_map(run: Path) -> bool:
+    """True when the run made a flat field map (`qc_eval --ff-seed-run` refuses one that did not)."""
+    return bool(flat_maps(run))
+
+
+def flat_row(run: Path) -> tuple[str, int, str, bool] | None:
+    """(arm, flat field maps made, frame of the first map or "none", seeded) from the arm's
+    `flat_field_updates.tsv` and command."""
+    made = flat_maps(run)
+    if made is None:
+        return None
+    seeded = "--ff-seed-run" in json.loads((run / "run.json").read_text())["cmd"]
+    return (run.name, len(made), made[0]["frame"] if made else "none", seeded)
+
+
+def seed_line(run: Path) -> str | None:
+    """What the run `seed` left as the seed: its last map's frame, frames used, gain sd and
+    dark level; or that it made none."""
+    made = flat_maps(run)
+    if made is None:
+        return None
+    if not made:
+        return f"The run `{run.name}` made no flat field map: the seeded arms have no seed."
+    m = made[-1]
+    return (
+        f"Seed: the last flat field map of the run `{run.name}` (made at its frame "
+        f"{m['frame']}, {m['frames_used']} frames used, gain sd {m['gain_sd']}, "
+        f"dark {m['dark']})."
+    )
+
+
+def lookback_row(run: Path) -> tuple[str, int, int, int, float] | None:
+    """(arm, look-back frames, cell-frames, cells still in need, look-back wall s) from the
+    first row of `lookback.tsv`."""
+    path = run / "lookback.tsv"
+    if not path.exists():
+        return None
+    rows = factor_closeness.read_tsv(path)
+    if not rows:
+        return None
+    r = rows[0]
+    return (
+        run.name,
+        int(r["frames"]),
+        int(r["cell_frames"]),
+        int(r["in_need"]),
+        float(r["wall_s"]),
+    )
+
+
+def run_order(todo: list[str]) -> tuple[list[str], list[str]]:
+    """The arms to run first, one at a time (the run `seed`, whose flat field the seeded
+    arms read), and the rest."""
+    return [n for n in todo if n == "seed"], [n for n in todo if n != "seed"]
+
+
+def hold_seeded(todo: list[str]) -> tuple[list[str], list[str]]:
+    """Split off the seeded arms, for when the seed run gave no flat field to read."""
+    return [n for n in todo if n not in SEEDED], [n for n in todo if n in SEEDED]
+
+
 def stage_table(run: Path) -> list[str]:
     path = run / "stage_times.tsv"
     if not path.exists():
@@ -294,7 +423,11 @@ def report(
         text.append("")
     nulls = [out_dir / n for n in ("null_lo", "null_hi") if n in have]
     for n in have:
-        if n in TILINGS or n in ("plain_recal", "chosen", "c_chosen") or n in REMEDIES:
+        if (
+            n in TILINGS
+            or n in ("plain_recal", "chosen", "c_chosen", "live")
+            or n in REMEDIES
+        ):
             if "raw" in have:
                 text.append(
                     factor_closeness.report(
@@ -305,6 +438,28 @@ def report(
                         truth_path=truth,
                     )
                 )
+        elif n == "live_seed" and "raw_seed" in have:
+            text.append(
+                factor_closeness.report(
+                    out_dir / "raw_seed",
+                    out_dir / n,
+                    [],
+                    tile=line_step(arm_cmd(out_dir, n)),
+                    truth_path=truth,
+                )
+            )
+        elif n in ("lb_fac", "lb_live") and "lb_raw" in have:
+            # The look-back arms have their own Discovers, so cells are paired by footprint.
+            text.append(
+                factor_closeness.report(
+                    out_dir / "lb_raw",
+                    out_dir / n,
+                    [],
+                    tile=line_step(arm_cmd(out_dir, n)),
+                    truth_path=truth,
+                    match=True,
+                )
+            )
         elif n.startswith("x_") and n != "x_raw" and "x_raw" in have:
             text.append(
                 factor_closeness.report(
@@ -331,6 +486,31 @@ def report(
             "Preparing: projectors built (factor engine), or frames preprocessed (frame engine).",
             "",
         ]
+    if "seed" in have:
+        line = seed_line(out_dir / "seed")
+        if line:
+            text += [line, ""]
+        held = [n for n in names if n in SEEDED and n not in have]
+        if held and not seed_has_map(out_dir / "seed"):
+            text += [f"{', '.join(held)}: not run (the seed run made no map).", ""]
+    flats = [r for r in (flat_row(out_dir / n) for n in have) if r]
+    if flats:
+        text += [
+            "| arm | seeded | flat field maps made | first map at frame |",
+            "| --- | --- | --- | --- |",
+        ]
+        text += [
+            f"| {a} | {'yes' if s else 'no'} | {k} | {f} |" for a, k, f, s in flats
+        ]
+        text.append("")
+    lbs = [r for r in (lookback_row(out_dir / n) for n in have) if r]
+    if lbs:
+        text += [
+            "| arm | look-back frames | cell-frames | cells still in need | look-back wall s |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        text += [f"| {a} | {f} | {c} | {k} | {w:.1f} |" for a, f, c, k, w in lbs]
+        text.append("")
     return "\n".join(text)
 
 
@@ -361,7 +541,14 @@ def main() -> None:
         "--extra",
         default="",
         help="qc_eval flags added to every arm, in one quoted string "
-        "(for example '--joint-update all --joint-sign all')",
+        "(for example '--joint-iters 3'); must not repeat a flag an arm sets itself "
+        "(the look-back arms set the joint flags)",
+    )
+    ap.add_argument(
+        "--seed-from",
+        type=int,
+        help="phase 4a: first frame of the later stretch of the recording that the arm "
+        "`seed` runs on; its final flat field seeds the arms raw_seed and live_seed",
     )
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
@@ -369,10 +556,16 @@ def main() -> None:
     assert a.refine >= 2, "--refine must be at least 2 (plain_recal compresses pass 2)"
     if a.budget < 2:
         ap.error("--budget must be at least 2 (the null arms use half of it)")
-    table = arms(a.refine, a.budget)
+    seed = (a.seed_from, a.out / "seed") if a.seed_from is not None else None
+    table = arms(a.refine, a.budget, seed)
     names = a.arms.split(",") if a.arms else default_arms(table)
     unknown = [n for n in names if n not in table]
-    assert not unknown, f"unknown arms: {unknown}"
+    assert not unknown, (
+        f"unknown arms: {unknown} (seed, raw_seed and live_seed need --seed-from)"
+    )
+    assert "seed" in names or not set(SEEDED) & set(names), (
+        "raw_seed and live_seed need the arm seed in --arms"
+    )
     budget = None if a.budget == DEFAULT_BUDGET else a.budget
     cmds = {
         n: command(
@@ -395,8 +588,18 @@ def main() -> None:
         f"{a.qc_eval}: build it with `cargo build --release --example qc_eval`"
     )
     todo = [n for n in names if not done(a.out / n, cmds[n])]
+    first, rest = run_order(todo)
+    codes = [run_arm(n, cmds[n], a.out / n) for n in first]
+    if "seed" in names:
+        finished = done(a.out / "seed", cmds["seed"])
+        if not (finished and seed_has_map(a.out / "seed")):
+            rest, held = hold_seeded(rest)
+            if held:
+                why = "made no flat field map" if finished else "did not finish"
+                print(f"seed {why}: not run: {', '.join(held)}", flush=True)
+                codes.append(0 if finished else 1)
     with ThreadPoolExecutor(max_workers=a.jobs) as pool:
-        codes = list(pool.map(lambda n: run_arm(n, cmds[n], a.out / n), todo))
+        codes += list(pool.map(lambda n: run_arm(n, cmds[n], a.out / n), rest))
     (a.out / "report.md").write_text(report(a.out, names, a.truth, cmds))
     print(f"report: {a.out / 'report.md'}")
     if any(codes):
