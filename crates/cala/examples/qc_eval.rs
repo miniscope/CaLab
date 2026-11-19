@@ -80,7 +80,7 @@
 //!   --joint            add test with the joint neighbour-trace check
 //!   --factors-out DIR  compress one pass's preprocessed frames in 600-frame
 //!                      windows ([`calab_cala::compress`]) and write every
-//!                      window's factors to `DIR/w<start>.fac` (`CALAFAC1`) and
+//!                      window's factors to `DIR/w<start>.fac` (`CALAFAC2`, v1 still reads) and
 //!                      `DIR/factors.tsv` (rank, size and time per window); the
 //!                      input of tools/cala-diagnostics/history_wholetest.py
 //!   --factors-pass P   the pass whose frames `--factors-out` compresses (1:
@@ -332,7 +332,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
-use calab_cala::compress::blend::Tiling;
+use calab_cala::compress::blend::{BlendLayout, Tiling};
 use calab_cala::compress::{CompressConfig, WindowCompressor, WindowFactors};
 use calab_cala::discover::{
     CoreTest, EditScope, MergeRule, RefineGate, SlowLoop, SlowLoopConfig, SupportRule, VisitResult,
@@ -2928,7 +2928,8 @@ impl FactorDump {
 /// [`FactorDump`] wrote (the tiling is in the files).
 struct FactorReplay {
     dir: PathBuf,
-    cur: Option<WindowFactors>,
+    /// The loaded window and its layout (built once per window).
+    cur: Option<(WindowFactors, BlendLayout)>,
     buf: Vec<f32>,
 }
 
@@ -2946,20 +2947,21 @@ impl FactorReplay {
     /// replay sources differ only in what the compression drops.
     fn frame(&mut self, t: usize, y: &mut [f32]) {
         let start = (t / FACTOR_WINDOW) * FACTOR_WINDOW;
-        if self.cur.as_ref().map(|w| w.start as usize) != Some(start) {
+        if self.cur.as_ref().map(|c| c.0.start as usize) != Some(start) {
             let path = self.dir.join(format!("w{start:07}.fac"));
             let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
             let wf = WindowFactors::from_bytes(&bytes)
                 .unwrap_or_else(|| panic!("{path:?}: not a factor file"));
-            self.cur = Some(wf);
+            let layout = wf.layout();
+            self.cur = Some((wf, layout));
         }
-        let wf = self.cur.as_ref().unwrap();
+        let (wf, layout) = self.cur.as_ref().unwrap();
         assert!(
             t - start < wf.frames,
             "frame {t} is beyond the factors in {:?}",
             self.dir
         );
-        wf.reconstruct(t - start, &mut self.buf);
+        layout.reconstruct(wf, t - start, &mut self.buf);
         for (o, &r) in y.iter_mut().zip(&self.buf) {
             if !o.is_nan() {
                 *o = r;

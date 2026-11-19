@@ -396,6 +396,11 @@ impl WindowFactors {
         // A blended rebuild pairs tiles and weights by index: refuse a file
         // whose tiles are not the grid of its tiling.
         if v2 && tile >= 2 {
+            // Compare the count first: the weights of a hostile header's
+            // layout can take hundreds of MB.
+            if BlendLayout::tile_count(dims, tile, tiling) != wf.tiles.len() {
+                return None;
+            }
             let layout = wf.layout();
             let same = layout.grid().len() == wf.tiles.len()
                 && layout
@@ -444,7 +449,14 @@ pub struct WindowCompressor {
 
 impl WindowCompressor {
     /// Buffers frames for the tiles of `cfg.tiling` on a grid of `cfg.tile` px.
+    ///
+    /// A `tile` below 2 is raised to 2 (the smallest tile the layouts cut,
+    /// and the smallest a factor file accepts).
     pub fn new(dims: Dims, cfg: CompressConfig) -> WindowCompressor {
+        let cfg = CompressConfig {
+            tile: cfg.tile.max(2),
+            ..cfg
+        };
         let grid = BlendLayout::new(dims, cfg.tile, cfg.tiling).grid().to_vec();
         let buf = grid
             .iter()
@@ -1396,6 +1408,13 @@ mod tests {
                 assert_eq!(&bytes[..8], b"CALAFAC2");
                 let back = WindowFactors::from_bytes(&bytes).expect("v2 file");
                 assert_eq!((back.tile, back.tiling), (64, tiling));
+                if tiling != Tiling::Plain {
+                    // Blended, not the tiles side by side.
+                    let (mut a, mut b) = (vec![0.0f32; dims.pixels()], vec![0.0f32; dims.pixels()]);
+                    back.reconstruct(45, &mut a);
+                    back.layout().reconstruct(&back, 45, &mut b);
+                    assert_eq!(a, b, "{dims:?} {tiling:?}");
+                }
                 assert_eq!(back.tiles.len(), wf.tiles.len());
                 assert!(worst_error(&back, 45) < 0.1, "{dims:?} {tiling:?}");
                 let px = dims.pixels();
@@ -1443,6 +1462,39 @@ mod tests {
             WindowFactors::from_bytes(&bytes).is_none(),
             "unknown tiling kind"
         );
+    }
+
+    #[test]
+    fn a_hostile_header_is_refused_before_any_weights_are_built() {
+        // 4096 x 4096, tile 2, offset, no tiles: the weights of that layout
+        // would take hundreds of MB.
+        let dims = Dims::new(4096, 4096).unwrap();
+        for tiling in [Tiling::Offset, Tiling::Overlap(1), Tiling::Plain] {
+            let bytes = WindowFactors::header_bytes(dims, 2, tiling, 10, 0, 0);
+            assert_eq!(bytes.len(), 44);
+            assert!(WindowFactors::from_bytes(&bytes).is_none(), "{tiling:?}");
+        }
+    }
+
+    #[test]
+    fn a_compressor_with_a_tile_below_2_writes_a_readable_file() {
+        let dims = Dims::new(9, 5).unwrap();
+        for tile in [0, 1] {
+            let cfg = CompressConfig {
+                tile,
+                window: 30,
+                ..CompressConfig::default()
+            };
+            let mut wc = WindowCompressor::new(dims, cfg);
+            let mut out = None;
+            for t in 0..30 {
+                out = wc.push(&smooth_frame(dims, t)).or(out);
+            }
+            let wf = out.expect("a full window");
+            assert_eq!(wf.tile, 2);
+            let back = WindowFactors::from_bytes(&wf.to_bytes()).expect("readable");
+            assert_eq!(back.tiles.len(), wf.tiles.len());
+        }
     }
 
     #[test]

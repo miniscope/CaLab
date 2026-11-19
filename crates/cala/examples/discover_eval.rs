@@ -13,7 +13,7 @@
 //!   --no-pass2        skip re-extraction
 //!   --factors-out DIR compress pass 1's preprocessed frames in 600-frame
 //!                     windows and write every window's factors to
-//!                     `DIR/w<start>.fac` (`CALAFAC1`), the input of
+//!                     `DIR/w<start>.fac` (`CALAFAC2`, v1 still reads), the input of
 //!                     tools/cala-diagnostics/history_wholetest.py
 //!   --history-review N  every N compressed windows (600 frames each), review
 //!                     the history so far ([`calab_cala::compress::review`])
@@ -1179,7 +1179,7 @@ fn compress_report(
 
 /// The compressed history of pass 1 (`--factors-out`, `--history-review`):
 /// the preprocessed frames compressed window by window. With `dir` every
-/// window's factors (`CALAFAC1`) are written to `dir/w<start frame>.fac`;
+/// window's factors (`CALAFAC2`, v1 still reads) are written to `dir/w<start frame>.fac`;
 /// with `keep` they stay in memory for the review.
 struct History {
     dir: Option<PathBuf>,

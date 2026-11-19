@@ -202,7 +202,7 @@ pub struct JsFactorWindow {
 
 #[wasm_bindgen(js_class = FactorWindow)]
 impl JsFactorWindow {
-    /// `bytes`: a whole factor file (`CALAFAC1`, see `WindowFactors::to_bytes`).
+    /// `bytes`: a whole factor file (`CALAFAC2`, or v1 `CALAFAC1`; see `WindowFactors::to_bytes`).
     #[wasm_bindgen(js_name = fromBytes)]
     pub fn from_bytes(bytes: &[u8]) -> Result<JsFactorWindow, JsError> {
         console_error_panic_hook::set_once();
@@ -296,7 +296,7 @@ impl JsHistoryReview {
     }
 
     /// Add the next window, in stream order: a whole factor file
-    /// (`CALAFAC1`). Not while a review runs. Returns the windows held.
+    /// (`CALAFAC2`, or v1 `CALAFAC1`). Not while a review runs. Returns the windows held.
     #[wasm_bindgen(js_name = addWindow)]
     pub fn add_window(&mut self, bytes: &[u8]) -> Result<u32, JsError> {
         if self.run.is_some() {
