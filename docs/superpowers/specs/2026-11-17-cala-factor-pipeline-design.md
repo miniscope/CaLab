@@ -702,18 +702,23 @@ The rule:
    QC-pass cells as the null run that lost most. Without null runs the rule
    does not apply.
 
-The limit is measured from the null runs, not set by hand: they are the
-reference's own algorithm at half and twice the slow-loop budget (the same
-choice as for the null spread), compared with the reference the way the test
-run is. The pipeline is deterministic, so a repeat at the same budget would
-lose nothing; the limit is what a change of machine speed by a factor of two
-loses, not a confidence bound.
+The limit is measured from the null runs, not set by hand: they are other
+runs of the reference's own algorithm, compared with the reference the way
+the test run is. It is the largest of two counts, not a confidence bound.
 
 - Runs that share the reference's Discover are compared by cell id, against
-  `null_lo` and `null_hi` (the other budget in the replays).
-- Look-back runs are paired by footprint, against `lb_null_lo` and
-  `lb_null_hi` (`lb_raw` with the other budget in its one pass), paired the
-  same way.
+  `null_lo` and `null_hi` (half and twice the slow-loop budget in the
+  replays, as for the null spread).
+- Look-back runs are paired by footprint, against `lb_null_s1` and
+  `lb_null_s2`: `lb_raw` with another slow-loop seed (the held-out split and
+  the random slots) at the same budget, paired the same way.
+
+Why seeds and not budgets for the look-back runs: a look-back run has one
+pass, so another budget changes Discover itself. At half the budget the raw
+look-back run lost 4 of 61 (`wl200`), 64 of 139 (`plain`) and 79 of 160
+(`motion`) of the reference's QC-pass cells, and at twice the budget 2, 4 and
+18 (bounded runs, budget 3,000,000). A run with half the compute is a starved
+run, not a repeat, and its count would allow almost any loss.
 
 The report also gives the count in the other direction (cells of a run with
 no partner in the reference), for the test run and the null runs; it is not
