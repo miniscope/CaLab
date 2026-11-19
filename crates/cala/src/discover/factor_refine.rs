@@ -1232,6 +1232,67 @@ pub fn refine_until_settled(
     })
 }
 
+/// The bytes of factor files, one window at a time, in frame order (the
+/// app's reader of the run's files). An error is the reader's message.
+pub trait WindowBytes {
+    fn count(&self) -> usize;
+    fn bytes(&mut self, w: usize) -> Result<Vec<u8>, String>;
+}
+
+impl WindowBytes for Vec<Vec<u8>> {
+    fn count(&self) -> usize {
+        self.len()
+    }
+
+    fn bytes(&mut self, w: usize) -> Result<Vec<u8>, String> {
+        self.get(w).cloned().ok_or_else(|| format!("no window {w}"))
+    }
+}
+
+/// A [`FactorSource`] over factor files (`WindowFactors::to_bytes`): a file
+/// that cannot be read or parsed is a [`TraceError`], never a panic.
+pub struct ByteSource<B: WindowBytes>(pub B);
+
+impl<B: WindowBytes> FactorSource for ByteSource<B> {
+    fn windows(&self) -> usize {
+        self.0.count()
+    }
+
+    fn window(&mut self, w: usize) -> Result<WindowFactors, TraceError> {
+        let bytes = self
+            .0
+            .bytes(w)
+            .map_err(|m| TraceError::InvalidConfig(format!("factor window {w}: {m}")))?;
+        WindowFactors::from_bytes(&bytes).ok_or_else(|| {
+            TraceError::InvalidConfig(format!(
+                "factor window {w}: truncated or corrupt factor file"
+            ))
+        })
+    }
+}
+
+/// One Refine iteration on the factors as the app runs it, one call per
+/// iteration with the caller looping (qc_eval's `--refine-engine factors`
+/// does the same): [`refine_until_settled`] with a cap of 1, so the loop's
+/// refusals, the `finalize` before and after and the stop rule are the
+/// library's own. Returns the iteration's report and, when it settled, why
+/// (`None`: not settled; the caller's own cap decides).
+pub fn refine_one(
+    sl: &mut SlowLoop,
+    src: &mut dyn FactorSource,
+    cfg: &FactorRefineConfig,
+) -> Result<(IterationReport, Option<SettleStop>), TraceError> {
+    let one = FactorRefineConfig {
+        max_iterations: 1,
+        ..*cfg
+    };
+    let mut rep = None;
+    let done = refine_until_settled(sl, src, &one, |_, r| rep = Some(r.clone()))?;
+    let rep =
+        rep.ok_or_else(|| TraceError::InvalidConfig("Refine on factors ran no iteration".into()))?;
+    Ok((rep, done.settled.then_some(done.stop)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2247,5 +2308,140 @@ mod tests {
         assert_eq!(pearson(&[]), 1.0, "both empty");
         assert!(pearson(&[(1.0, 2.0), (1.0, 3.0)]).is_nan(), "constant");
         assert!((pearson(&[(0.0, 0.0), (1.0, 2.0), (2.0, 4.0)]) - 1.0).abs() < 1e-12);
+    }
+
+    /// The fixture's windows as factor files.
+    fn files(windows: &[WindowFactors]) -> Vec<Vec<u8>> {
+        windows.iter().map(|w| w.to_bytes()).collect()
+    }
+
+    #[test]
+    fn one_iteration_from_factor_files_equals_one_from_the_windows() {
+        let rc = FactorRefineConfig::default();
+        let (mut a, windows) = fixture(cfg(v2_config().background));
+        let (mut b, _) = fixture(cfg(v2_config().background));
+        let one = FactorRefineConfig {
+            max_iterations: 1,
+            ..rc
+        };
+        let mut want = None;
+        let done = refine_until_settled(&mut a, &mut windows.clone(), &one, |_, r| {
+            want = Some(r.clone())
+        })
+        .unwrap();
+        let (got, stop) = refine_one(&mut b, &mut ByteSource(files(&windows)), &rc).unwrap();
+        // Versions come from a process-wide counter: each loop reports its own.
+        assert_eq!(got.library_version, b.library().unwrap().version());
+        let want = want.unwrap();
+        assert_eq!(want.library_version, a.library().unwrap().version());
+        assert_eq!(
+            IterationReport {
+                library_version: 0,
+                ..got
+            },
+            IterationReport {
+                library_version: 0,
+                ..want
+            }
+        );
+        assert_eq!(stop, done.settled.then_some(done.stop));
+        assert_eq!(accepted_refines(&a), accepted_refines(&b));
+    }
+
+    #[test]
+    fn a_bad_factor_file_is_an_error_and_leaves_the_loop_as_it_was() {
+        let rc = FactorRefineConfig::default();
+        let (mut sl, windows) = fixture(cfg(v2_config().background));
+        let before = loop_state(&sl);
+        let mut bytes = files(&windows);
+        let n = bytes[1].len();
+        bytes[1].truncate(n - 1);
+        let err = refine_one(&mut sl, &mut ByteSource(bytes), &rc)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("factor window 1: truncated or corrupt factor file"),
+            "{err}"
+        );
+        assert_eq!(loop_state(&sl), before);
+        struct Failing;
+        impl WindowBytes for Failing {
+            fn count(&self) -> usize {
+                2
+            }
+            fn bytes(&mut self, w: usize) -> Result<Vec<u8>, String> {
+                Err(format!("the file of window {w} is gone"))
+            }
+        }
+        let err = refine_one(&mut sl, &mut ByteSource(Failing), &rc)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("factor window 0: the file of window 0 is gone"),
+            "{err}"
+        );
+        assert_eq!(loop_state(&sl), before);
+    }
+
+    #[test]
+    fn refine_one_says_why_it_settled_or_that_it_did_not() {
+        let (mut sl, windows) = fixture(cfg(v2_config().background));
+        let never = FactorRefineConfig {
+            settle_share: 0.0,
+            ..FactorRefineConfig::default()
+        };
+        let (_, stop) = refine_one(&mut sl, &mut ByteSource(files(&windows)), &never).unwrap();
+        assert_eq!(stop, None);
+        let always = FactorRefineConfig {
+            settle_share: 1.0,
+            ..FactorRefineConfig::default()
+        };
+        let (rep, stop) = refine_one(&mut sl, &mut ByteSource(files(&windows)), &always).unwrap();
+        assert_eq!(stop.is_some(), rep.changed_share < 1.0);
+        if let Some(s) = stop {
+            let want = if rep.accepted == 0 {
+                SettleStop::NothingAccepted
+            } else {
+                SettleStop::Settled
+            };
+            assert_eq!(s, want);
+        }
+    }
+
+    /// The JS surface's iteration, on the same files, reports what `refine_one` does.
+    #[cfg(feature = "jsbindings")]
+    #[test]
+    fn the_js_surface_runs_the_same_iteration() {
+        let rc = FactorRefineConfig::default();
+        let (mut a, windows) = fixture(cfg(v2_config().background));
+        let (b, _) = fixture(cfg(v2_config().background));
+        let lib = b.library().unwrap().clone();
+        let mut js = super::super::js::JsSlowLoop::from_parts(b, lib);
+        let (want, stop) = refine_one(&mut a, &mut ByteSource(files(&windows)), &rc).unwrap();
+        let got = js
+            .factor_iteration(&mut ByteSource(files(&windows)), 0.99, 0.02, 0)
+            .unwrap();
+        let settle = match stop {
+            None => 0.0,
+            Some(SettleStop::NothingAccepted) => 2.0,
+            Some(_) => 1.0,
+        };
+        // Versions come from a process-wide counter: each loop reports its own.
+        let version = js.inner().library().unwrap().version();
+        assert_eq!(
+            got,
+            vec![
+                version as f64,
+                want.cells as f64,
+                want.frames as f64,
+                want.fitting_frames as f64,
+                want.accepted as f64,
+                want.changed_share,
+                want.median_change,
+                want.low_valid as f64,
+                want.tiles_skipped as f64,
+                settle,
+            ]
+        );
     }
 }

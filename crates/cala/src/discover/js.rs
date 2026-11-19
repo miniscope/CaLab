@@ -24,15 +24,16 @@ use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
 use super::{
-    EditScope, HeldOutRecord, JointSign, JointUpdate, LookBack, LookbackConfig, LookbackNext,
-    LookbackOutcome, SlowLoop, SlowLoopConfig, VisitJob, VisitResult, VisitRunner,
+    refine_one, ByteSource, EditScope, FactorRefineConfig, FactorSource, HeldOutRecord, JointSign,
+    JointUpdate, LookBack, LookbackConfig, LookbackNext, LookbackOutcome, SettleStop, SlowLoop,
+    SlowLoopConfig, VisitJob, VisitResult, VisitRunner, WindowBytes,
 };
 use crate::compress::review::footprints_from_wire;
 use crate::preprocess::flatten::{FlattenConfig, GlowFlattener};
 use crate::preprocess::fov::FovMask;
 use crate::preprocess::Dims;
 use crate::trace::js::JsTraceLibrary;
-use crate::trace::{FrameTraces, Library, LibraryBuilder};
+use crate::trace::{FrameTraces, Library, LibraryBuilder, SolverConfig, TraceError};
 
 /// Published versions kept for `observe` (frames in flight from the fast
 /// worker may still carry traces of a recent older version).
@@ -100,6 +101,39 @@ fn slow_config(
         c.joint_sign_rule = js;
         c.merge_guard_min_sep = merge_guard_min_sep;
     })
+}
+
+#[wasm_bindgen]
+extern "C" {
+    /// The factor windows of a run, in frame order, as the slow worker reads
+    /// them (`openFactorReader` in apps/cala/src/lib/window-store.ts): any
+    /// object with a `windows` count and `read(w)` returning window `w`'s
+    /// whole factor file as a `Uint8Array`.
+    pub type FactorReader;
+    #[wasm_bindgen(method, getter)]
+    fn windows(this: &FactorReader) -> u32;
+    #[wasm_bindgen(method, catch)]
+    fn read(this: &FactorReader, w: u32) -> Result<Vec<u8>, JsValue>;
+    /// JS `String(v)`: an Error's name and message without its stack.
+    /// Caught, since a thrown value's own `toString` may throw too.
+    #[wasm_bindgen(js_name = String, catch)]
+    fn js_string(v: &JsValue) -> Result<String, JsValue>;
+}
+
+/// A [`FactorReader`] as the windows' bytes; an error it throws becomes its message.
+struct JsWindows<'a>(&'a FactorReader);
+
+impl WindowBytes for JsWindows<'_> {
+    fn count(&self) -> usize {
+        self.0.windows() as usize
+    }
+
+    fn bytes(&mut self, w: usize) -> Result<Vec<u8>, String> {
+        let w = u32::try_from(w).map_err(|_| format!("window index {w}"))?;
+        self.0
+            .read(w)
+            .map_err(|e| js_string(&e).unwrap_or_else(|_| "the reader threw".into()))
+    }
 }
 
 #[wasm_bindgen(js_class = SlowLoop)]
@@ -451,6 +485,32 @@ impl JsSlowLoop {
         Ok(self.keep(lib))
     }
 
+    /// One Refine iteration on the factors of `reader` (spec §5): the
+    /// library's `refine_until_settled` with a cap of 1, as qc_eval's
+    /// `--refine-engine factors` runs it. Call `setEditScope('refine')`
+    /// first; the caller loops, stops on the settle code or its own cap and
+    /// takes the library with `finalize`. Returns `[libraryVersion, cells,
+    /// frames, fittingFrames, accepted, changedShare, medianChange, lowValid,
+    /// tilesSkipped, settle]`, `settle` 0 = not settled, 1 = settled, 2 =
+    /// settled with nothing accepted. A refused or failed iteration is an
+    /// error and leaves the loop as it was.
+    #[wasm_bindgen(js_name = refineOnFactors)]
+    pub fn refine_on_factors(
+        &mut self,
+        reader: &FactorReader,
+        settle_corr: f32,
+        settle_share: f32,
+        test_frames: u32,
+    ) -> Result<Vec<f64>, JsError> {
+        self.factor_iteration(
+            &mut ByteSource(JsWindows(reader)),
+            settle_corr,
+            settle_share,
+            test_frames,
+        )
+        .map_err(|e| js_err("refineOnFactors", e))
+    }
+
     /// Cells in the working set (published or not).
     #[wasm_bindgen(getter, js_name = cellCount)]
     pub fn cell_count(&self) -> u32 {
@@ -685,6 +745,46 @@ impl JsSlowLoop {
     /// index (its held-out decision must be recorded).
     pub(crate) fn stream_ok(&self, stream: Option<f64>) -> bool {
         self.lookback.is_none() || stream.is_some()
+    }
+
+    /// `refineOnFactors` on any factor source (native tests use files in memory).
+    pub(crate) fn factor_iteration(
+        &mut self,
+        src: &mut dyn FactorSource,
+        settle_corr: f32,
+        settle_share: f32,
+        test_frames: u32,
+    ) -> Result<Vec<f64>, TraceError> {
+        if self.inner.jobs_in_flight() > 0 {
+            return Err(TraceError::InvalidConfig(
+                "tile visits are out: Refine on factors waits for them".into(),
+            ));
+        }
+        let cfg = FactorRefineConfig {
+            settle_corr,
+            settle_share,
+            max_iterations: 1,
+            test_frames: test_frames as usize,
+            solver: SolverConfig::default(),
+        };
+        let (r, stop) = refine_one(&mut self.inner, src, &cfg)?;
+        let settle = match stop {
+            None => 0.0,
+            Some(SettleStop::NothingAccepted) => 2.0,
+            Some(_) => 1.0,
+        };
+        Ok(vec![
+            r.library_version as f64,
+            r.cells as f64,
+            r.frames as f64,
+            r.fitting_frames as f64,
+            r.accepted as f64,
+            r.changed_share,
+            r.median_change,
+            r.low_valid as f64,
+            r.tiles_skipped as f64,
+            settle,
+        ])
     }
 
     /// A loop built from parts (tests: another config, a seeded library).

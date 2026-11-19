@@ -234,8 +234,8 @@ mod wire;
 
 pub use churn::{AddClass, AddRecord, ChurnConfig, ChurnCounts, RemovalKind, RemovalRecord};
 pub use factor_refine::{
-    footprint_change, refine_until_settled, FactorRefineConfig, FactorSource, IterationReport,
-    RefineStage, SettleStop, Settled,
+    footprint_change, refine_one, refine_until_settled, ByteSource, FactorRefineConfig,
+    FactorSource, IterationReport, RefineStage, SettleStop, Settled, WindowBytes,
 };
 pub use ledger::{
     CellInfo, CellStatus, DeleteReason, DeletedCell, EditCounts, EditEvent, EditKind, TestEvent,
