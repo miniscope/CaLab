@@ -582,10 +582,11 @@ fn write_f32s(f: &mut impl Write, v: &[f32]) {
 /// * Need-driven (`--lookback R`, the design): a cell born at frame `b`
 ///   (a new id in the published library; a merge or split result is new
 ///   too), and every cell whose support touches it, *needs* the frames
-///   before `b` it never had, newest first, up to `--lookback-frames K`
-///   frames per cell. The cursor serves the highest frame anyone needs,
-///   in 64-frame blocks (each block forward), to every cell that needs
-///   that block, so cells born close in time share frames. `R` look-back
+///   `b - K..b` it never had (`--lookback-frames K`, the per-cell bound).
+///   The cursor works in 64-frame blocks (each block forward): it takes the
+///   block the most cells still need (ties: the most recent block) and
+///   serves it to all of them, so one re-read serves every cell born
+///   within `K` frames of it. `R` look-back
 ///   frames per Discover frame; idle budget is not banked, so the work
 ///   follows the birth rate (proportional to new cells, not to the
 ///   recording's length).
@@ -599,9 +600,9 @@ struct LookBack {
     catchup_double: bool,
     next_catchup: usize,
     credit: f64,
-    /// Cells with look-back need: id -> (lowest frame got (frames
-    /// `low..born` are served), frames still wanted).
-    need: std::collections::BTreeMap<u64, (usize, usize)>,
+    /// Cells with look-back need: id -> (birth frame, blocks of
+    /// `born - K..born` not yet served).
+    need: std::collections::BTreeMap<u64, (usize, Vec<usize>)>,
     /// The block in progress: frames `cur..end`, its cells with the frames
     /// `from..to` each takes from it, and the preprocessor copy it runs on.
     block: Option<LbBlock>,
@@ -684,31 +685,40 @@ impl LookBack {
                 (fy - y).hypot(fx - x) < fr + r
             });
             if touch {
-                // A neighbour already in need keeps its place.
-                self.need.entry(id).or_insert((seen, self.max_frames));
+                // A neighbour already in need keeps its window.
+                let lo = seen.saturating_sub(self.max_frames) / LB_BLOCK;
+                let blocks = (lo..seen.div_ceil(LB_BLOCK)).collect();
+                self.need.entry(id).or_insert((seen, blocks));
             }
         }
     }
 
-    /// The next block: the highest frame any cell still needs, and the
-    /// cells that need frames in the 64 frames below it.
+    /// The next block: the one the most cells still need (ties: the most
+    /// recent), with each of those cells' frames in it.
     fn next_block(&mut self, pipe: &Pipeline) -> bool {
-        self.need.retain(|_, (low, left)| *low > 0 && *left > 0);
-        let Some(top) = self.need.values().map(|&(low, _)| low).max() else {
-            return false;
-        };
-        let lo = top.saturating_sub(LB_BLOCK);
-        let mut cells = Vec::new();
-        for (&id, (low, left)) in self.need.iter_mut() {
-            if *low > lo {
-                // Frames `low - take..low` (within its remaining want).
-                let take = (*low - lo).min(*left);
-                cells.push((id, *low - take, *low));
-                *left -= take;
-                *low = lo;
+        self.need.retain(|_, (_, blocks)| !blocks.is_empty());
+        let mut count: std::collections::BTreeMap<usize, usize> = Default::default();
+        for (_, blocks) in self.need.values() {
+            for &b in blocks {
+                *count.entry(b).or_default() += 1;
             }
         }
-        self.block = Some((lo, top, cells, pipe.pre.clone()));
+        let Some((&blk, _)) = count.iter().max_by_key(|&(&b, &n)| (n, b)) else {
+            return false;
+        };
+        let k = self.max_frames;
+        let mut cells = Vec::new();
+        for (&id, (born, blocks)) in self.need.iter_mut() {
+            if let Some(i) = blocks.iter().position(|&b| b == blk) {
+                blocks.swap_remove(i);
+                let from = (blk * LB_BLOCK).max(born.saturating_sub(k));
+                let to = ((blk + 1) * LB_BLOCK).min(*born);
+                cells.push((id, from, to));
+            }
+        }
+        let lo = cells.iter().map(|c| c.1).min().expect("cells");
+        let hi = cells.iter().map(|c| c.2).max().expect("cells");
+        self.block = Some((lo, hi, cells, pipe.pre.clone()));
         true
     }
 
