@@ -49,8 +49,11 @@ BITE_THR = 0.5
 OVERFILL_THR = 1.3  # est/true at an undetected neighbour's centre above this = over-fill (design: Stage 2 criterion)
 BIRTH_TIE_FRAC = 0.03  # birth gaps below this share of the recording count as simultaneous (about 15 s of a 480 s sim)
 LATE_FRAC = 0.2  # late-born = born in the last fifth of the recording
+BIRTH_GROUPS = {"born_first": (-math.inf, 0.5), "born_second": (0.5, math.inf), "born_late": (1 - LATE_FRAC, math.inf)}
 MIN_N = 5  # fewest pairs for a statistic
 N_BOOT = 5000
+ISOLATED_D, CLOSE_D = 1.5, 1.0  # as demix_metrics.cell_accuracy rows are split
+FP_LOW = 0.9  # footprint r with GT below this = a poor footprint
 CHUNK = 250
 SEED_AGREE = 2 / 3
 
@@ -100,6 +103,8 @@ def load_run(run: Path):
     gap = (bi - bj)[ok] / T  # > 0: i is the later-born of the pair (needs both births)
     und = (true_c > 0.1) & (_col(pairs, "jmatched") == 0) & (_col(pairs, "jdet") == 1)
     cmax = _col(corr, "born_max") / T
+    cells = _read(run / "demix_cells.tsv") if (run / "demix_cells.tsv").exists() else []
+    nn = _col(cells, "nn_diam") if cells else np.array([])
     return {
         "name": run.name, "d": d[ok], "ratio": ratio[ok], "ring": ring[ok], "leak": leak[ok],
         "cd": _col(corr, "d_diam"), "cc": _col(corr, "c_est"), "det": det,
@@ -109,6 +114,11 @@ def load_run(run: Path):
         "c_late": cmax >= 1 - LATE_FRAC,
         # undetected GT neighbours of matched cells: distance and est/true at their centre
         "und_d": d[und], "und_ratio": ratio[und],
+        # matched cells' footprint and trace accuracy against their GT unit, by nearest GT neighbour distance
+        "fp_r": _col(cells, "fp_r") if cells else np.array([]), "tr_r": _col(cells, "tr_r") if cells else np.array([]),
+        "nn": nn,
+        # birth frame of each matched cell as a share of the recording (nan: unknown or an older metrics file)
+        "born_frac": (_col(cells, "born") / T) if cells and "born" in cells[0] else np.full(len(nn), np.nan),
     }  # fmt: skip
 
 
@@ -235,9 +245,36 @@ def _und(r, lo, hi):
     return finite(v[(d >= lo) & (d < hi)]) if len(d) == len(v) else np.array([])
 
 
+def _acc(r, key, group):
+    v, nn = r.get(key, np.array([])), r.get("nn", np.array([]))
+    if len(v) != len(nn) or not len(v):
+        return np.array([])
+    if group in BIRTH_GROUPS:
+        bf = r.get("born_frac", np.array([]))
+        if len(bf) != len(v):
+            return np.array([])
+        lo, hi = BIRTH_GROUPS[group]
+        return finite(v[(bf >= lo) & (bf < hi)])
+    m = {"all": np.ones(len(v), bool), "isolated": nn >= ISOLATED_D, "close": nn < CLOSE_D}[group]
+    return finite(v[m])
+
+
+def share_fp_low(x):
+    return np.mean(x < FP_LOW, axis=-1)
+
+
 def pair_metrics():
     """[(name, group, getter(run) -> arrays, stat, better, fmt)]."""
     ms = []
+    # footprint and trace accuracy of ALL matched cells vs GT (Refine's purpose), isolated vs close-pair cells
+    for grp, label in (("all", "all matched cells"), ("isolated", f"isolated (no GT unit within {ISOLATED_D} D)"), ("close", f"close-pair (GT unit within {CLOSE_D} D)")):
+        ms.append((f"Footprint r with GT, median, {label}", "accuracy", lambda r, g=grp: (_acc(r, "fp_r", g),), med, "higher", "{:.4f}"))
+        ms.append((f"Footprint r with GT < {FP_LOW}, share, {label}", "accuracy", lambda r, g=grp: (_acc(r, "fp_r", g),), share_fp_low, "lower", "{:.3f}"))
+        ms.append((f"Trace r with GT, median, {label}", "accuracy", lambda r, g=grp: (_acc(r, "tr_r", g),), med, "higher", "{:.4f}"))
+    # footprint accuracy by birth time (share of the recording): look-back before birth is what late cells lack
+    for grp, label in (("born_first", "born in the first half"), ("born_second", "born in the second half"), ("born_late", f"born in the last {LATE_FRAC:.0%}")):
+        ms.append((f"Footprint r with GT, median, {label}", "accuracy", lambda r, g=grp: (_acc(r, "fp_r", g),), med, "higher", "{:.4f}"))
+        ms.append((f"Footprint r with GT < {FP_LOW}, share, {label}", "accuracy", lambda r, g=grp: (_acc(r, "fp_r", g),), share_fp_low, "lower", "{:.3f}"))
     ms.append(("Trace corr excess < 1 D (15 s high-pass; vs 1.5-3 D) HEADLINE", "headline", lambda r: _near_far(r), excess, "lower", "{:+.3f}"))
     ms.append(("Trace corr excess 0.5-1 D", "corr", lambda r: (finite(r["cc"][(r["cd"] >= 0.5) & (r["cd"] < 1)]), _near_far(r)[1]), excess, "lower", "{:+.3f}"))
     for lo, hi in BINS:
@@ -283,6 +320,12 @@ RUN_METRICS = [
     ("Median support area (px)", "area_support", None, "{:.0f}"),
     ("Median half-max area (px)", "area_halfmax", None, "{:.0f}"),
     ("QC ms/frame", "ms_per_frame", "lower", "{:.3f}"),
+    ("Slow loop ms/frame, last pass (observe + step; wall, 2 runs at a time)", "slow_ms", "lower", "{:.3f}"),
+    ("Slow loop observe ms/frame, last pass", "slow_obs_ms", "lower", "{:.3f}"),
+    ("Slow loop step ms/frame, last pass", "slow_step_ms", "lower", "{:.3f}"),
+    ("Slow loop work units/frame, last pass (deterministic)", "slow_work", "lower", "{:.0f}"),
+    ("Cluster stores, peak MB", "store_mb", "lower", "{:.1f}"),
+    ("Peak RSS (GB)", "rss_gb", "lower", "{:.2f}"),
 ]
 
 
@@ -457,7 +500,7 @@ def render(names, rows, base_label="base", new_label="new", title="Demixing eval
     if clusters:
         out += cluster_section(clusters, [base_label, new_label])
     out += ["", "## Per sim", "", f"| sim | metric | {base_label} | {new_label} | diff |", "|---|---|---|---|---|"]
-    show = ("Trace corr excess < 1 D", "Bite share ratio < 0.5, 0.75-1.0", "Matched cells", "False cells", "Merges", "Splits", "QC ms/frame")
+    show = ("Trace corr excess < 1 D", "Bite share ratio < 0.5, 0.75-1.0", "Matched cells", "False cells", "Merges", "Splits", "QC ms/frame", "Slow loop ms/frame")
     for r in rows:
         if not any(r["name"].startswith(s) for s in show):
             continue

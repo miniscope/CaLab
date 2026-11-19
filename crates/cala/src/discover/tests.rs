@@ -2623,6 +2623,14 @@ fn fp_at(lib: &Library, id: u64, y: usize, x: usize) -> f32 {
 /// cell's footprint value there (truth exp(-3.5²/(2·2.5²)) ≈ 0.38) after
 /// 4000 frames with refine gate `z`, and the number of refinements.
 fn bitten_refill(z: f32) -> (f32, u64) {
+    let (v, refines, _) = bitten_refill_with(z, JointUpdate::Off);
+    (v, refines)
+}
+
+/// [`bitten_refill`] with the joint update `joint`, in the Refine scope
+/// (the cell set frozen, as the app's Refine stage), also returning the
+/// joint update's counters.
+fn bitten_refill_with(z: f32, joint: JointUpdate) -> (f32, u64, ReplayStats) {
     let t = 4000;
     let mut rng = Lcg(411);
     let (a, b) = ((46.0, 44.0), (46.0, 47.5));
@@ -2642,9 +2650,13 @@ fn bitten_refill(z: f32) -> (f32, u64) {
     }
     let cfg = SlowLoopConfig {
         refine_z: z,
+        joint_update: joint,
         ..v2_config()
     };
     let (mut slow, mut eng) = start(cfg, &[blob_w(1, a.0, a.1, 2.5), bitten]);
+    if joint != JointUpdate::Off {
+        slow.set_edit_scope(EditScope::Refine);
+    }
     let mut deleted = Vec::new();
     drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
     let lib = slow.finalize().unwrap();
@@ -2652,7 +2664,21 @@ fn bitten_refill(z: f32) -> (f32, u64) {
     (
         fp_at(&lib, 2, a.0 as usize, a.1 as usize),
         slow.stats().refines,
+        slow.replay_stats,
     )
+}
+
+/// The cluster history replay ([`JointUpdate::Refine`]) refills the
+/// bitten footprint too, from the two cells' joint proposals.
+#[test]
+fn a_bitten_footprint_is_refilled_by_the_cluster_replay() {
+    let (v, refines, rs) = bitten_refill_with(0.0, JointUpdate::Refine);
+    assert!(rs.clusters >= 1 && rs.replays > 0, "{rs:?}");
+    assert!(rs.accepted > 0, "{rs:?}");
+    assert!(
+        v > 0.1,
+        "value at the neighbour centre {v} (truth 0.38), {refines} refines, {rs:?}"
+    );
 }
 
 /// The refine gate accepts a statistics-path refill with a positive
@@ -2668,4 +2694,98 @@ fn a_bitten_footprint_is_refilled_from_its_statistics() {
         "value at the neighbour centre {now} (truth 0.38), {refines} refines"
     );
     assert!(old < 0.05 && now > old + 0.1, "new {now}, old gate {old}");
+}
+
+/// The cluster history replay runs when the refine visits run as jobs
+/// (`step_via`, through the byte encoding of job and result): the same
+/// libraries as in process, frame by frame, the same joint-update
+/// counters, and the replay really happens in the runner (the stores
+/// travel in the job; the visit no longer falls back to the per-cell path).
+#[test]
+fn the_cluster_replay_runs_in_visit_jobs_and_matches_step() {
+    for carry in [false, true] {
+        let t = 4000;
+        let mut rng = Lcg(411);
+        let (a, b) = ((46.0, 44.0), (46.0, 47.5));
+        let cells = vec![
+            (blob_w(0, a.0, a.1, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+            (blob_w(1, b.0, b.1, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        ];
+        let m = movie(&cells, t, 423);
+        let mut bitten = blob_w(2, b.0, b.1, 2.5);
+        for y in 0..bitten.height {
+            for x in 0..bitten.width {
+                let (dy, dx) = ((bitten.y0 + y) as f32 - a.0, (bitten.x0 + x) as f32 - a.1);
+                if dy * dy + dx * dx <= 2.5 * 2.5 {
+                    bitten.values[y * bitten.width + x] = 0.0;
+                }
+            }
+        }
+        let cfg = SlowLoopConfig {
+            refine_z: 0.0,
+            joint_update: JointUpdate::Refine,
+            joint_carry: carry,
+            ..v2_config()
+        };
+        let seed = [blob_w(1, a.0, a.1, 2.5), bitten];
+        let (mut sa, mut ea) = start(cfg.clone(), &seed);
+        let (mut sb, mut eb) = start(cfg.clone(), &seed);
+        let mut runner = VisitRunner::new(new_loop(&cfg));
+        sa.set_edit_scope(EditScope::Refine);
+        sb.set_edit_scope(EditScope::Refine);
+        let n_px = N * N;
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+            let (la, lb) = (ea.library().clone(), eb.library().clone());
+            sa.observe(f, &la, &ta).unwrap();
+            sb.observe(f, &lb, &tb).unwrap();
+            let pa = sa.step(5_000_000).unwrap();
+            let pb = sb.step_via(5_000_000, &mut runner).unwrap();
+            assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+            if let (Some(la), Some(lb)) = (pa, pb) {
+                assert!(la.to_bytes()[16..] == lb.to_bytes()[16..], "frame {k}");
+                ea.set_library(la).unwrap();
+                eb.set_library(lb).unwrap();
+            }
+        }
+        let (ra, rb) = (sa.replay_stats, sb.replay_stats);
+        assert!(ra.replays > 0 && ra.accepted > 0, "{ra:?}");
+        assert_eq!(ra.visit_fields(), rb.visit_fields(), "{ra:?} vs {rb:?}");
+        assert!(rb.job_stores > 0 && rb.job_store_bytes > 0, "{rb:?}");
+        assert!(sa.finalize().unwrap().to_bytes()[16..] == sb.finalize().unwrap().to_bytes()[16..]);
+    }
+}
+
+/// Look-back frames (concurrent Refine) reach only the named cells'
+/// running statistics, keep held-out frames out and leave the slow loop's
+/// frame clock alone.
+#[test]
+fn lookback_frames_feed_only_the_named_cells_statistics() {
+    let t = 200;
+    let mut rng = Lcg(5);
+    let cells = vec![
+        (blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0)),
+        (blob(1, 70.0, 70.0), trace(&mut rng, t, 0.05, 6.0)),
+    ];
+    let m = movie(&cells, t, 7);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let (mut slow, mut eng) = start(config(), &seed);
+    let lib = eng.library().clone();
+    let (a, b) = (lib.ids()[0], lib.ids()[1]);
+    let n_px = N * N;
+    let mut fitted = 0;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let fit = slow
+            .observe_lookback(f, &lib, &tr, k as u64, Some(&[a]))
+            .unwrap();
+        assert_eq!(fit, !slow.is_test(k as u64));
+        fitted += usize::from(fit);
+    }
+    assert!(fitted > 0 && fitted < t);
+    assert_eq!(slow.frames(), 0);
+    assert!(slow.fpstats.contains_key(&a));
+    assert!(!slow.fpstats.contains_key(&b));
 }

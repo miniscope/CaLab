@@ -175,6 +175,28 @@ class Metrics(unittest.TestCase):
         self.assertAlmostEqual(dy, 0.0, delta=0.15)
         self.assertAlmostEqual(dx, 1.5, delta=0.15)
 
+    def test_cell_accuracy_splits_isolated_and_close_cells(self):
+        # units 0 and 1 are 0.5 D apart, unit 2 is isolated, unit 3 is empty (never a neighbour)
+        cen = np.array([[10.0, 10.0], [10.0, 15.0], [60.0, 60.0], [60.0, 62.0]])
+        nonempty = np.array([True, True, True, False])
+        R = np.array([[0.95, 0.2, 0.0], [0.1, 0.0, 0.99]])  # cells x det units [0, 1, 2]
+        rng = np.random.default_rng(0)
+        gt = rng.normal(size=(4, 500))
+        est = np.stack([gt[0] + 0.1 * rng.normal(size=500), -gt[2]], axis=1)
+        rows = DM.cell_accuracy("s", R, [0, 1, 2], {0: 0, 1: 2}, cen, nonempty, 10.0, est, gt)
+        self.assertEqual([r["u"] for r in rows], [0, 2])
+        self.assertAlmostEqual(rows[0]["fp_r"], 0.95)
+        self.assertAlmostEqual(rows[1]["fp_r"], 0.99)
+        self.assertAlmostEqual(rows[0]["nn_diam"], 0.5)
+        self.assertGreater(rows[1]["nn_diam"], 5.0)  # the empty unit 3 does not count
+        self.assertGreater(rows[0]["tr_r"], 0.9)
+        self.assertLess(rows[1]["tr_r"], -0.9)
+        run = {"fp_r": np.array([r["fp_r"] for r in rows]), "tr_r": np.array([r["tr_r"] for r in rows]),
+               "nn": np.array([r["nn_diam"] for r in rows])}  # fmt: skip
+        self.assertEqual(list(REP._acc(run, "fp_r", "close")), [0.95])
+        self.assertEqual(list(REP._acc(run, "fp_r", "isolated")), [0.99])
+        self.assertEqual(len(REP._acc(run, "fp_r", "all")), 2)
+
     def make_run(self, tmp, bite):
         """Two GT cells 6 px apart on an 80 px frame; the estimate of cell 0 optionally has cell 1's core cut out."""
         h = w = 80
