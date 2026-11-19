@@ -15,6 +15,7 @@
  */
 import { createSignal } from 'solid-js';
 import type { LibraryView } from '../workers/slow-types.ts';
+import type { CompressTiling } from '../workers/compress-types.ts';
 import { footprintChanges, quantile, type RefineSample } from './refine-metrics.ts';
 
 export type StageName = 'discover' | 'refine' | 'extract';
@@ -139,6 +140,11 @@ export interface StageRun {
   refinedShare?: number;
   /** Refine: the run's series over the replay (`refine-metrics.ts`). */
   series?: readonly RefineSample[];
+  /** Where the stage read its frames: the recording or the factors (format 7). */
+  source?: 'raw' | 'factors';
+  /** From the factors: their tiling and mean rank per tile. */
+  tiling?: CompressTiling;
+  meanRank?: number;
 }
 
 /** Runs of the stages since the last Discover start, in order. */
