@@ -1,8 +1,12 @@
 //! wasm-bindgen surface of the compression, for a Web Worker.
 //!
-//! The worker keeps a window of frames as `Int16Array` (`quantizeFrames`),
-//! cuts it into tiles and hands each tile to `TileCompressor.compress`, so
-//! only one tile at a time is copied into the WASM heap.
+//! The worker quantizes each incoming batch of frames into tile order
+//! (`quantizeTiles`, on the tiles of `tileLayout`) and appends it to the
+//! window's file. A closed window is compressed tile by tile from that file:
+//! each tile's frames go to `TileCompressor.compress`, so only one tile at a
+//! time is copied into the WASM heap. The factor file is `factorHeader`, then
+//! per tile a u32 byte length and `TileFactors.toBytes()`; `FactorWindow`
+//! reads it back to rebuild frames.
 //!
 //! `HistoryReview` (see `review.rs`) keeps the factors of every window and
 //! scans them a few grid rows per call, so its worker can read messages
@@ -14,30 +18,12 @@ use super::blend::{grid_of, BlendLayout, Tiling};
 use super::review::{
     candidates, candidates_to_wire, scan_band, scan_rows, KnownCell, ReviewConfig, SpotStats,
 };
-use super::{compress_tile, quantize, quantize_tiles, CompressConfig, TileFactors, WindowFactors};
+use super::{compress_tile, quantize_tiles, CompressConfig, TileFactors, WindowFactors};
 use crate::preprocess::Dims;
 use crate::trace::Library;
 
 fn js_err(func: &str, e: impl std::fmt::Display) -> JsError {
     JsError::new(&format!("{func}: {e}"))
-}
-
-/// `out[i] = round(frames[i] * quant)` in `i16` (a non-finite value gives the missing marker, -32768).
-#[wasm_bindgen(js_name = quantizeFrames)]
-pub fn quantize_frames(frames: &[f32], quant: f32, out: &mut [i16]) -> Result<(), JsError> {
-    if frames.len() != out.len() {
-        return Err(js_err(
-            "quantizeFrames",
-            format!("{} values in, {} out", frames.len(), out.len()),
-        ));
-    }
-    if !(quant.is_finite() && quant > 0.0) {
-        return Err(js_err("quantizeFrames", "quant must be positive"));
-    }
-    for (o, &v) in out.iter_mut().zip(frames) {
-        *o = quantize(v, quant);
-    }
-    Ok(())
 }
 
 fn parse_tiling(func: &str, s: &str) -> Result<Tiling, JsError> {
@@ -154,7 +140,7 @@ pub struct JsTileCompressor {
 
 #[wasm_bindgen(js_class = TileCompressor)]
 impl JsTileCompressor {
-    /// `quant`: the scale of the quantized frames (`quantizeFrames`).
+    /// `quant`: the scale of the quantized frames (`quantizeTiles`).
     #[wasm_bindgen(constructor)]
     pub fn new(quant: f32) -> Result<JsTileCompressor, JsError> {
         console_error_panic_hook::set_once();
@@ -418,16 +404,12 @@ impl JsHistoryReview {
         self.windows.len() as u32
     }
 
-    /// Bytes of the factors held.
+    /// Bytes of the factors held: every array of every tile
+    /// ([`WindowFactors::bytes`]), the per-pixel `discarded` and `valid`
+    /// included.
     #[wasm_bindgen(getter, js_name = factorBytes)]
     pub fn factor_bytes(&self) -> f64 {
-        let values: usize = self
-            .windows
-            .iter()
-            .flat_map(|w| &w.tiles)
-            .map(|t| t.spatial.len() + t.temporal.len() + t.mean.len())
-            .sum();
-        (4 * values) as f64
+        self.windows.iter().map(WindowFactors::bytes).sum::<usize>() as f64
     }
 
     /// Start a review against `library` (`TraceLibrary.toBytes()`; empty: no
@@ -522,6 +504,21 @@ mod tests {
             assert!(header_mismatch(dims, 16, tiling, n).is_none());
             assert!(header_mismatch(dims, 16, tiling, n + 1).is_some());
         }
+    }
+
+    #[test]
+    fn factor_bytes_counts_every_array_a_window_holds() {
+        let w = window(Tiling::Plain);
+        let mut review = JsHistoryReview::new(8, 8).unwrap();
+        review.add_window(&w.to_bytes()).unwrap();
+        review.add_window(&w.to_bytes()).unwrap();
+        let per_window: usize = w
+            .tiles
+            .iter()
+            .map(|t| 4 * (t.spatial.len() + t.temporal.len() + 3 * t.pixels()))
+            .sum();
+        assert_eq!(per_window, w.bytes());
+        assert_eq!(review.factor_bytes(), (2 * per_window) as f64);
     }
 
     #[test]
