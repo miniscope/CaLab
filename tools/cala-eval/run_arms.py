@@ -213,6 +213,10 @@ def run_branched(group: list[dict], state: dict, point: str) -> list[dict]:
         rc = info["rc"] if ok else (info["rc"] or 1)
         (out / "run.json").write_text(json.dumps({**info, "rc": rc, "args": j["args"], "branched": [x["label"] for x in group]}))
     shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        tmp.parent.rmdir()  # `_branched`, once the last group is done
+    except OSError:
+        pass
     return [json.loads((j["out"] / "run.json").read_text()) for j in group]
 
 

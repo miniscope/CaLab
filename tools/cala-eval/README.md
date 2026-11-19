@@ -122,6 +122,10 @@ qc_eval sim SIM OUT <common flags> --branch-after discover \
 - Files the prefix already wrote into `<out>/` (e.g. `--lib-at`) are copied into each branch directory. Wall-time
   columns (`passes.tsv`, `cost.txt`, ...) of a branch include the shared prefix.
 - Memory: the parent stays resident while a child runs (COW), so peak is about one run plus the child's dirty pages.
+- Saving (static_s5, 4 arms with `--passes 1`, `2 refine`, `3 refine`, `2 all`, 19 Nov 2026, machine shared): separate runs
+  220 + 389 + 407 + 555 = 1571 s of run wall (about 1580 CPU-s), one branched run 1039 s (-34 %); peak RSS 0.85 GB
+  (largest single process; the parent's pages are shared copy-on-write). The saving grows with the Discover share:
+  real-recording arms (Discover is about half the wall) gain more.
 - Gate: `footprints.bin`, `dump_trace.f32` and the metrics of a branch are byte-identical to the separate run (below).
 
 `run_arms.py --branch-after discover|drain` and `demix_suite.py --branch-after discover|drain` do it for you: arms of
