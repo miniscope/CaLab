@@ -61,8 +61,8 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
 - Factor pipeline, phase 2 (Extract on factors, `results/2026-11-19-factor-phase2.md`): `qc_eval --extract-engine frames|factors`
   (default `frames`) selects how the Extract pass gets each frame's traces. `factors` solves from the
   factor files of `--factors-out` with the factor engine (no frame is rebuilt; it needs `--extract-pass` and
-  `--replay-source factors`) and also writes `extract_min_valid.tsv` (per cell, the smallest valid share of its support
-  over the windows). The arm `c_chosen` of `factor_arms.py` is `chosen` with `--extract-engine factors`: a full run of
+  `--replay-source factors`) and also writes `extract_min_valid.tsv` (per cell, the smallest, over the pixels of its support
+  and over the windows, of each pixel's own valid share). The arm `c_chosen` of `factor_arms.py` is `chosen` with `--extract-engine factors`: a full run of
   its own, so its footprints should equal `chosen`'s. Each recording's `report.md` then has, after the A1 sections, `c_chosen`
   against `raw` and the engine comparison `c_chosen` against `chosen` (`factor_closeness.engine_report`: whether the
   two runs ended with the same footprints, and the largest trace difference over the trace's sd, median and largest,

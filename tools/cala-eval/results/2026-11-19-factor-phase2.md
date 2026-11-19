@@ -24,21 +24,28 @@ first trace (in units of "sd").
 
 - **A against C: `c_chosen` meets gate A1 on all six recordings.** No QC-pass cell is lost. Its A1 values equal
   `chosen`'s to four decimals, and its footprints are the same bytes as `chosen`'s.
-- **B against C: the unit tests agree to about 1e-4 absolute; on real recordings the two engines differ more.** The
-  unit test's largest gap is 8.2e-5 absolute (5.0e-5 relative), independent of the solver's stopping tolerance: it is
-  f32 rounding of the two input routes amplified by the solve (about 25 f32 steps at the trace scale, not one). The
-  spec's "to float32 rounding" is met in that sense only. On the data the two engines end with the same footprints on
-  all nine runs, but the trace difference has a median of 0.0147 and 0.0162 sd on the two WL24 recordings (largest
-  0.4454, one cell) and 0.0000 to 0.0021 on the other four.
-- **Extract is 22 to 137 times faster on the factors** (wall, `chosen` against `c_chosen`: 18 to 78 s against 0.5 to
-  1.1 s at the scale run here).
+- **B against C: the unit tests agree to about 1e-4 absolute; on the two real WL24 recordings the two engines differ by
+  about 1.5 percent of a trace's sd, which is not rounding.** The unit test's largest gap is 8.2e-5 absolute (5.0e-5
+  relative), independent of the solver's stopping tolerance: it is f32 rounding of the two input routes amplified by the
+  solve (about 25 f32 steps at the trace scale, not one). The spec's "to float32 rounding" is met in that sense only.
+  On the data the two engines end with the same footprints in all nine runs. The median trace difference is 0.0000 to
+  0.0004 sd on the simulated recordings (rounding level), 0.0021 on `v4` and 0.0162 and 0.0147 sd on `wl24_01` and
+  `wl24_04` (not rounding). The largest single value is 0.4454 sd (`wl24_04`, one cell).
+- **Extract is faster on the factors: the Extract pass alone is 22 to 137 times faster** (wall, `chosen` against
+  `c_chosen`: 18 to 78 s against 0.5 to 1.1 s at the scale run here). **The whole run takes the same time,** because
+  the factors are written during the replay in both arms (whole-run wall, `chosen` against `c_chosen`: 427 and 435 s on
+  `wl24_01`, 332 and 349 s on `wl200`).
 - Open points:
   - **Cluster replay (main's joint flags on):** on `joint_wl24_01` both `chosen` and `c_chosen` fail rule 2 (footprint
-    loss 0.0305 against 0.02). The largest null loss of that measure is 0.0143, and the same recording without the
-    replay had 0.0086. A result for the owner.
-  - **Missing pixels:** the engines differ where a pixel was never valid in a window. `min_valid` explains the one
-    large outlier, not the general level; the likely cause of the level is such pixels in the cells' moat blocks.
-    Likely, not shown.
+    loss 0.0305 against 0.02). With the replay the arm's loss is 0.0305 and the largest null loss 0.0143; without it the
+    arm's loss is 0.0086 and the largest null loss 0.0017. A result for the owner.
+  - **Missing pixels, cause of the difference:** the large single differences are in cells with a pixel that was never
+    valid under their support (`min_valid` below 1). The general level on the WL24 recordings is not explained by
+    never-valid pixels in the cells' moats: only 16 and 22 percent of the cells have one there and their differences are
+    no larger. The cause is open.
+  - **For the owner:** which treatment of a never-valid pixel is right for a user (the frame engine's per-frame
+    handling, or the factor engine's stored 0), and whether the spec's B-against-C gate stays "to float32 rounding" or
+    becomes a limit on the median trace difference on data.
   - **Browser:** the back-fill from the factors ran in Chrome on `wl24_01` and `v4`, once each, under load: it arrived,
     at 0.111 and 2.57 ms per frame, with no compress worker error. No before/after on the same machine state exists.
   - **Not measured:** the back-fill's longest batch, an idle-machine time, its traces against the frame engine's on data,
@@ -71,12 +78,13 @@ Trace difference over the trace's sd, `c_chosen` against `chosen` (cells; median
 | v4        | 219; 0.0021 / 0.0132 | 219; 0.0021 / 0.0132          | 0                           | 0                   | 219; 0.0021 / 0.0132   |
 | motion    | 262; 0.0000 / 0.0028 | 258; 0.0000 / 0.0028          | 4; 0.0001 / 0.0002          | 0                   | 262; 0.0000 / 0.0028   |
 
-`min_valid` is the smallest share of a window's frames in which every pixel of a cell's support was present, over all
-windows (from the file `extract_min_valid.tsv` of the factor-engine run). A pixel that was never valid in a window is
-stored as 0. The factor engine reads that 0; the frame engine on a replay treats the pixel as missing. Only the support
-is counted: a cell with a missing pixel in its moat or ring block still has `min_valid` 1 and can differ, so the
-column "equal to 1" is not a clean set. The border column is the earlier proxy (centroid distance to the frame
-rectangle).
+`min_valid` of a cell is the smallest, over the pixels of the cell's support and over all windows, of each pixel's own
+valid share (the share of the window's frames in which that pixel was present; from the file
+`extract_min_valid.tsv` of the factor-engine run). In these runs a pixel's share is 0 or 1 in every window (below).
+A pixel that was never valid in a window is stored as 0. The factor engine reads that 0; the frame engine on a replay
+treats the pixel as missing. Only the support is counted: a cell with a missing pixel in its moat or ring block still
+has `min_valid` 1 and can differ, so the column "equal to 1" is not a clean set. The border column is the earlier proxy
+(centroid distance to the frame rectangle).
 
 What the table says:
 
@@ -94,13 +102,40 @@ What the table says:
 - **`min_valid` does not explain the general level.** On `wl24_01` the two cells below 1 (median 0.0172) are no
   different from the 100 at 1 (median 0.0162).
 
-Inferred, not shown: the level of about 0.015 sd on the WL24 recordings comes from pixels that were never valid in a
-window and lie in the cells' moat blocks, which `min_valid` does not count. The reason to suspect it: the real
-recordings have fixed non-finite pixels (the whole-branch review counted 30 to 105 per real recording; not recounted
-here), and a unit test with one missing pixel in a neighbour's moat block measured 1.7e-3 relative while the cell with
-the pixel under its support differed by 8.9e-2. What would show it: count the missing pixels of the moat and ring
-blocks too and split the table by that count; or run the frame engine on the replay with the stored 0 instead of
-"missing" for those pixels (an arm B') and check that B' against C agrees to about 1e-4 as the unit test does.
+**Moat check: never-valid pixels in the cells' moats do not explain the level.** The solver's moat (the pixels around a
+cell that it fits as block means) reaches the support radius plus 2 sigma, with sigma the flattening filter's low-pass
+sigma: 20 px in these runs (the runs set neither `--cell-diameter` nor `--flatten-sigma`; the defaults are 10 px and 2 x
+that), so blocks of 8 px and a reach of 40 px. From the `valid` arrays of every window file of `c_chosen`, per recording:
+
+| recording | never-valid pixels (share 0) | pixels with a share between 0 and 1 | per 10000 pixels | cells with at least 1 in the moat | median difference, cells with none / with one or more | Spearman, difference with the count         |
+| --------- | ---------------------------- | ----------------------------------- | ---------------- | --------------------------------- | ----------------------------------------------------- | ------------------------------------------- |
+| wl200     | 0 of 40000                   | 0                                   | 0.00             | 0 of 72                           | 0.0002 / no cell                                      | n/a                                         |
+| wl24_01   | 105 of 40000                 | 0                                   | 26.25            | 16 of 102 (16 percent)            | 0.0159 / 0.0166                                       | 0.07                                        |
+| wl24_04   | 66 of 40000                  | 0                                   | 16.50            | 14 of 64 (22 percent)             | 0.0142 / 0.0177                                       | 0.24 (0.08 over the cells at `min_valid` 1) |
+| plain     | 0 of 360000                  | 0                                   | 0.00             | 0 of 188                          | 0.0004 / no cell                                      | n/a                                         |
+| v4        | 30 of 360000                 | 0                                   | 0.83             | 9 of 219 (4 percent)              | 0.0021 / 0.0035                                       | 0.18                                        |
+| motion    | 0 of 360000                  | 0                                   | 0.00             | 0 of 262                          | 0.0000 / no cell                                      | n/a                                         |
+
+The same pixels are never valid in every window (a share of 0, never a share between). A pixel counts for a cell when
+its distance to the cell's footprint centroid is at most the support radius (the largest distance of a support pixel)
+plus 40 px plus 5.7 px; this approximates the block rule of `moat_blocks`, it does not apply it. Result:
+
+- **Most cells have no never-valid pixel in their moat** (78 to 96 percent on the three recordings that have any), and
+  their median difference (0.0159 and 0.0142 sd on the WL24 recordings) is the level itself. The cells with one or more
+  differ only a little more (0.0166 and 0.0177).
+- **Within a recording the difference barely rises with the count** (Spearman 0.07 to 0.24).
+- **Across recordings the order agrees**: density of never-valid pixels 0, 0, 0, 0.83, 16.50 and 26.25 per 10000 pixels
+  against medians of 0.0002, 0.0004, 0.0000, 0.0021, 0.0147 and 0.0162 sd. Only six points, and the three recordings with
+  missing pixels are the three real ones, so it also follows real against simulated.
+
+So a pixel in a cell's moat does not explain a median of 0.015 sd: the level is present in cells that have none. The
+cause of the level is open. A candidate that this check does not exclude (not shown): terms that read pixels far from
+the cell, such as the background functionals (the ring and the basis maps), into which a never-valid pixel enters as 0
+for every cell. What would show it: a harness run in which the factor engine treats the never-valid pixels as the frame
+engine does (an arm B' or C' with the same pixels missing in both), or a unit test with one never-valid pixel far from
+all cells and a basis background. If B' against C then agrees to about 1e-4, the treatment of those pixels is the cause.
+The earlier unit-test figures stay as measured: one missing pixel under a cell's support gave a relative gap of 8.9e-2,
+a neighbour whose moat block held it 1.7e-3.
 
 ### (b) A against C: gate A1
 
@@ -119,11 +154,15 @@ correlation and their median is at least 0.8); rule 2 footprint loss at most 0.0
 | motion    | 178 (0)              | not usable (median 0.403): does not apply | 0.0006: pass     | 0.0009: pass           | 0.890 / 0.897: pass | pass |
 
 `c_chosen` meets A1 on all six recordings. These are the values of `chosen` in phase 1 to four decimals (the trace loss
-of `c_chosen` differs from `chosen`'s by 0.00001 on `wl24_01` and `wl24_04`). It is expected: both arms end with the
-same footprints, and the factor engine changes only the traces of the final Extract. The closest margins are the same
-as in phase 1: the tile-line jump on the two wireless recordings (up by 0.065 and 0.050 of an allowed 0.10) and the
-trace loss there (0.0441 and 0.0487 of 0.08). On `wl200` the pass rests on rule 1 over 22 cells, its 5th percentile
-(-0.0272) being one or two cells, as before.
+of `c_chosen` differs from `chosen`'s by 0.00001 on `wl24_01` and `wl24_04`). Rule 2 is equal because both arms end with
+the same footprints. Rules 1 and 3 read `c_chosen/extract_trace.f32`, so they use the factor engine's traces; they stay
+equal because a difference of 0.015 sd moves a lag-1 or truth correlation by about 1e-5 and the median over cells hides
+single cells. The cells with the large differences (`wl24_04` cells 58, 51, 52; `wl24_01` cell 41; `wl200` cell 15) are
+not QC-pass in the raw run, so gate A1 never reads them. The closest margins are the same as in phase 1: the tile-line
+jump on the two wireless recordings (up by 0.065 and 0.050 of an allowed 0.10) and the trace loss there (0.0441 and
+0.0487 of 0.08). On `wl200` the pass rests on rule 1 over 22 cells, its 5th percentile (-0.0272) being one or two cells;
+rule 1 applies only because the reference's truth median is just above the usability limit 0.8 and its 22 cells are above
+20 (the review read 0.813; not recomputed here), and rule 3 would read 0.1039 against 0.08.
 
 **Decision: open, for the user.**
 
@@ -176,8 +215,10 @@ per second (frames over wall). "Preparing" means, for the frame engines (`raw`, 
 | v4        | 6000   | 55.03 / 5.64 / 61.09 | 71.59 / 5.71 / 77.76 | 0.13 / 0.85 / 1.07 (1.24 wall) | 98 / 77 / 5607                                   | 73                                 |
 | motion    | 6000   | 68.65 / 5.41 / 74.55 | 69.64 / 4.45 / 74.54 | 0.16 / 0.80 / 1.04 (0.96 wall) | 80 / 80 / 5769                                   | 72                                 |
 
-The factor engine is 22 to 137 times faster in wall than the frame engine on rebuilt frames (by the rerun's wall; 22 to
-134 by the first run's). No frame is preprocessed or rebuilt, so the work that is left is the trace solve. On the factor engine, solving is 69 to 89 percent of the wall
+The Extract pass alone is 22 to 137 times faster in wall on the factor engine than on the frame engine with rebuilt
+frames (by the rerun's wall; 22 to 134 by the first run's). The whole run takes the same time: `chosen` and `c_chosen`
+write the factors during the replay either way, and Extract is a small part of a run (whole-run wall, `chosen` against
+`c_chosen`, from `run.json`: 427 and 435 s on `wl24_01`, 332 and 349 s on `wl200`). No frame is preprocessed or rebuilt, so the work that is left is the trace solve. On the factor engine, solving is 69 to 89 percent of the wall
 (69 percent on `plain`, 87 on `wl200`, 89 on `wl24_01`); building the projectors takes 0.07 to 0.16 s per recording,
 and the rest is reading the factor files. So what limits the factor engine is the solve, not the rows built per
 window. For `chosen`, preparing is 78 to 95 percent of the wall. For scale: the stream's frame interval is 50 ms, and
@@ -202,33 +243,36 @@ library code, which the app does not call). The back-fill is read after Discover
 
 BROWSER RESULTS: the back-fill arrived in both runs.
 
-|                                                                          | `wl24_01`                                            | `v4`                                                   |
-| ------------------------------------------------------------------------ | ---------------------------------------------------- | ------------------------------------------------------ |
-| frames, cells                                                            | 40234, 87                                            | 23711, 828                                             |
-| QC line                                                                  | 87 cells: 76 pass, 11 low SNR, 0 possible duplicates | 828 cells: 783 pass, 0 low SNR, 45 possible duplicates |
-| compress at the end of Discover: tiling, source                          | plain, discover                                      | plain, discover                                        |
-| windows, final, settled                                                  | 68, yes, yes                                         | 40, yes, yes                                           |
-| mean rank (frames-weighted over the session)                             | 10.65                                                | 8.40                                                   |
-| compress ms per frame (session mean)                                     | 1.53                                                 | 13.07                                                  |
-| MB of factors                                                            | 185.2                                                | 738.7                                                  |
-| back-fill: arrived, library version                                      | yes, 357                                             | yes, 190                                               |
-| back-fill: frames                                                        | 40234                                                | 23711                                                  |
-| back-fill: ms per frame                                                  | 0.111                                                | 2.570                                                  |
-| back-fill: frames per second (1000 over ms per frame)                    | 9012                                                 | 389                                                    |
-| back-fill: mean time of one 64-frame batch (a mean, not a maximum)       | 7.1 ms                                               | 164.5 ms                                               |
-| compress at the end of Extract: tiling, source                           | offset, replay                                       | offset, replay                                         |
-| windows, final, settled                                                  | 68, yes, yes                                         | 40, yes, yes                                           |
-| mean rank                                                                | 10.96                                                | 7.08                                                   |
-| compress ms per frame (session mean)                                     | 2.89                                                 | 24.32                                                  |
-| MB of factors                                                            | 370.0                                                | 1301.9                                                 |
-| Extract's raw replay, frames per second (`stage_times.py` on the export) | 1323 (30.4 s)                                        | 116 (205.1 s)                                          |
+|                                                                                            | `wl24_01`                                            | `v4`                                                   |
+| ------------------------------------------------------------------------------------------ | ---------------------------------------------------- | ------------------------------------------------------ |
+| frames, cells                                                                              | 40234, 87                                            | 23711, 828                                             |
+| QC line                                                                                    | 87 cells: 76 pass, 11 low SNR, 0 possible duplicates | 828 cells: 783 pass, 0 low SNR, 45 possible duplicates |
+| compress at the end of Discover: tiling, source                                            | plain, discover                                      | plain, discover                                        |
+| windows, final, settled                                                                    | 68, yes, yes                                         | 40, yes, yes                                           |
+| mean rank (frames-weighted over the session)                                               | 10.65                                                | 8.40                                                   |
+| compress ms per frame (session mean)                                                       | 1.53                                                 | 13.07                                                  |
+| MB of factors                                                                              | 185.2                                                | 738.7                                                  |
+| back-fill: arrived, library version                                                        | yes, 357                                             | yes, 190                                               |
+| back-fill: frames                                                                          | 40234                                                | 23711                                                  |
+| back-fill: ms per frame                                                                    | 0.111                                                | 2.570                                                  |
+| back-fill: frames per second (1000 over ms per frame)                                      | 9012                                                 | 389                                                    |
+| back-fill: mean wall per 64-frame batch, with read, open and yield (a mean, not a maximum) | 7.1 ms                                               | 164.5 ms                                               |
+| compress at the end of Extract: tiling, source                                             | offset, replay                                       | offset, replay                                         |
+| windows, final, settled                                                                    | 68, yes, yes                                         | 40, yes, yes                                           |
+| mean rank                                                                                  | 10.96                                                | 7.08                                                   |
+| compress ms per frame (session mean)                                                       | 2.89                                                 | 24.32                                                  |
+| MB of factors                                                                              | 370.0                                                | 1301.9                                                 |
+| Extract's raw replay, frames per second (`stage_times.py` on the export)                   | 1323 (30.4 s)                                        | 116 (205.1 s)                                          |
 
 - **Back-fill.** The driver read it after Discover: the factor engine on Discover's plain-tile factors, solving every
   frame of the recording. The library version is the one the compress worker held. The driver recorded no compress
   worker error, and the logs hold none; each log has one console error, a failed resource load (404) that was not
   identified.
 - **Mean batch.** The back-fill solves 64 frames per yield. The table's batch time is 64 times the mean ms per frame.
-  The longest single `solve` call is not logged: it was not measured, and the mean says nothing about it.
+  That figure is the back-fill's whole wall over its frames: it includes reading the files, opening each window (which
+  builds its projector) and one `setTimeout(0)` yield per batch. Nested timers are clamped to about 4 ms, so on
+  `wl24_01` (7.1 ms per batch) the yield may be over half of it (inferred). The longest single `solve` call is not
+  logged: it was not measured, and the mean says nothing about it.
 - **Cells.** `v4` has 828 cells, 9.5 times as many as `wl24_01` (87); the back-fill's ms per frame is 23 times higher.
 - **Compress status.** Extract's replay recompresses on the offset grids (two grids, so 1.8 to 2.0 times the bytes), as in
   phase 1; its session mean ms per frame is higher than Discover's on both recordings. These compress times are also
@@ -251,20 +295,19 @@ support was missing in part of a window. Per recording:
 | motion    | 262   | 0                   | 0           | n/a                                      | 0.0000 / 0.0028                  |
 
 Only the two WL24 recordings have cells with a missing support pixel, and a small share of them (2.0 and 4.7 percent).
-Those cells differ more between the engines than the rest (the large outlier is among them), but their number is small
-and they do not set the general level. How a missing pixel is treated, and what that implies:
+On `wl24_04` and `joint_wl24_01` those cells differ more between the engines than the rest (the large outliers are among
+them); on `wl24_01` they do not (0.0172 against 0.0162). They are few and they do not set the general level. How a
+missing pixel is treated, and what that implies:
 
 - **Where the engines differ.** The frame engine on a replay keeps a pixel that is not finite in the raw replay as
-  missing and treats it as such in each frame. The factors store a pixel that was never valid in a window as 0 (and a
-  partly valid pixel as the mean of its valid samples), and the factor engine reads that value. So B and C differ
-  under a cell exactly where a pixel is missing in a window.
-- **What `min_valid` counts.** The support only. The moat blocks (the pixels around a cell that the solve also reads)
-  and the ring are not counted.
-- **What a unit test measured.** One missing pixel under a cell's support: relative gap 8.9e-2 against `chosen`
-  (the test asserts that it lies between the tolerance and 0.2); a neighbour with `min_valid` 1 whose moat block held the pixel: 1.7e-3.
-  So a pixel in a moat block moves a trace by a few thousandths of its scale, and with 30 to 105 such pixels spread
-  over a recording, most cells would have one in a block (inferred). That is the likely cause of the level, as said
-  above; it is inferred, not shown.
+  missing and treats it as such in each frame. The factors store a pixel that was never valid in a window as 0, and the
+  factor engine reads that value. So B and C can differ under a cell where a pixel is missing in a window. (In these
+  runs every pixel's share is 0 or 1, so the "mean of the valid samples" of a partly valid pixel did not arise.)
+- **What `min_valid` counts.** The support only. The moat blocks and the ring are not counted; the moat check above
+  counts the moat and finds it does not explain the level.
+- **What a unit test measured.** One missing pixel under a cell's support: relative gap 8.9e-2 against `chosen` (the
+  test asserts that it lies between the tolerance and 0.2); a neighbour with `min_valid` 1 whose moat block held the
+  pixel: 1.7e-3.
 - **Phase 3's rule for footprint statistics** (the spec's `MIN_VALID_SHARE`) is not applied here; this phase measured
   what the per-window treatment costs in traces.
 
@@ -292,10 +335,12 @@ budget against `raw`):
 **Result for the owner.** The frame replay on factors carries the cluster replay mechanically: it runs, cells are kept,
 and on `wl200` and `plain` the gate passes as without it. On the real recording `wl24_01` its footprints differ from the
 raw run's by 0.0305, above the 0.02 of rule 2, in both `chosen` and `c_chosen`; the frame engine (`chosen`) fails the
-same way, so the factor engine is not the cause. The raw pipeline itself varies near the limit with the replay on: the largest null loss
-there is 0.0143 (without the replay 0.00167), so the arm's loss is 2.1 times the largest null and the nulls alone use
-72 percent of the limit. The loss is 3.5 times what the same recording gave without the replay. Why it differs is not
-known; it was not looked at further (this is not a failure of the factor engine, which does not change footprints).
+same way, so the Extract engine is not the cause (both arms differ from `raw` identically; this does not clear the
+factor route of Refine on rebuilt frames). With the replay, the arm's loss is 0.0305 and the largest null loss 0.0143;
+without it, the arm's loss is 0.0086 and the largest null loss 0.0017. The raw pipeline itself varies near the limit
+with the replay on: the arm's loss is 2.1 times the largest null, and the nulls alone use 72 percent of the limit. The
+arm's loss is 3.5 times what the same recording gave without the replay. Why it differs is not known; it was not looked
+at further.
 
 Engine comparison on these runs (`c_chosen` against `chosen`, rerun of `c_chosen` with the `min_valid` split): same
 footprints yes on all three; the rerun's traces are the same bytes as the first run's in all three.
@@ -336,8 +381,9 @@ Extract time with the replay on (frames engine against factor engine, wall): `jo
 
 ## What was not measured
 
-- **Missing pixels beyond the split.** B against C with a missing pixel in a moat or ring block on real data (the
-  claim about the level on the WL24 recordings is inferred).
+- **The cause of the level.** B against C with the never-valid pixels treated alike in both engines (an arm B'), which
+  would show whether those pixels cause the level of about 0.015 sd on the WL24 recordings; the cause of `wl200` cell
+  15 (0.0995 sd, no missing pixel).
 - **The app's setting on data.** The factor engine with the consolidated ring gradient off, on a recording.
 - **A short last window in the gate runs.** 12000 and 6000 frames divide into 600-frame windows exactly. The unit
   tests and a harness test cover a short window (600 plus 50 frames, a window of 50), the gate runs do not.
@@ -354,11 +400,12 @@ Extract time with the replay on (frames engine against factor engine, wall): `jo
 
 ## Provenance
 
-| item                                                                 | value                                                                                                                     |
-| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| harness for `raw`, nulls, `chosen`, `c_chosen` first run, joint arms | `qc_eval` built at da6759da (build commit in `run_all.log`; started 22:58, 18 Nov)                                        |
-| harness for the rerun of `c_chosen`                                  | built at b6990928 (`bin/BUILT_FROM`), copied to the path the arms' commands name                                          |
-| merge of main                                                        | cdccdbab (origin/main 63676444), before the runs                                                                          |
-| frame route against phase 1                                          | `raw` and `chosen` traces: same bytes on all six recordings (`cmp`)                                                       |
-| rerun against first run                                              | `c_chosen` traces: same bytes on all six gate recordings                                                                  |
-| cluster-replay reruns                                                | all three finished; `c_chosen` traces same bytes as the first run in all nine folders (`rerun_c.log`, "rerun done 02:17") |
+| item                                                                 | value                                                                                                                                                                                                          |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| harness for `raw`, nulls, `chosen`, `c_chosen` first run, joint arms | `qc_eval` built at da6759da (build commit in `run_all.log`; started 22:58, 18 Nov)                                                                                                                             |
+| harness for the rerun of `c_chosen`                                  | built at b6990928 (`bin/BUILT_FROM`), copied to the path the arms' commands name                                                                                                                               |
+| merge of main                                                        | cdccdbab (origin/main 63676444), before the runs                                                                                                                                                               |
+| frame route against phase 1                                          | `raw` and `chosen` traces: same bytes on all six recordings (`cmp`)                                                                                                                                            |
+| rerun against first run                                              | `c_chosen` traces: same bytes on all six gate recordings                                                                                                                                                       |
+| browser build and runs                                               | `npm run build:e2e` at the start of the series (commit 72805628 printed in `run_browser.log`), Chrome, port 4191, `batch-session.mjs --refine-runs 0 --query compress`, 19 Nov 2026, 02:18 to 02:49 local time |
+| cluster-replay reruns                                                | all three finished; `c_chosen` traces same bytes as the first run in all nine folders (`rerun_c.log`, "rerun done 02:17")                                                                                      |

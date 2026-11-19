@@ -21,9 +21,11 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   `qc_eval --extract-engine frames|factors` selects the engine of the Extract pass (the factor engine also writes
   `extract_min_valid.tsv`), and `factor_arms.py` has the arm `c_chosen` and `--extra` flags for every arm. On the
   bounded runs `c_chosen` meets gate A1 on all six recordings; against the frame engine the traces agree to about 1e-4
-  in unit tests but differ by a median of 0.015 of the trace's sd on the two real WL24 recordings (pixels never valid in
-  a window are stored as 0); Extract takes 0.5 to 1.1 s instead of 18 to 78 s; with main's cluster replay on,
-  `wl24_01` fails the footprint rule for both engines: `tools/cala-eval/results/2026-11-19-factor-phase2.md`.
+  in unit tests but differ by a median of 0.015 of the trace's sd on the two real WL24 recordings (the cause is open; a
+  pixel never valid in a window is stored as 0 and the factor engine reads it, which explains single cells, not the
+  level); the Extract pass alone takes 0.5 to 1.1 s instead of 18 to 78 s, while the whole run takes the same time
+  because the factors are written during the replay either way; with main's cluster replay on, `wl24_01` fails the
+  footprint rule for both Extract engines: `tools/cala-eval/results/2026-11-19-factor-phase2.md`.
 - cala evaluation, factor pipeline phase 4a (what a live run may claim): `qc_eval --from F` runs a later stretch of a
   recording, `--ff-seed-run DIR` starts a run with the flat field map that an earlier run ended with (as the app stores
   it per device), and `--lookback-source factors` lets main's look-back read Discover's factor windows instead of the
