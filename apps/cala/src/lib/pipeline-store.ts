@@ -655,7 +655,9 @@ export function createPipelineStore(
      */
     lookback,
     setLookback,
-    lookbackBlocked: () => lookbackFeed?.blocked() ?? 'Look-back is not available here.',
+    // (Not `??`: `blocked()` returns null when look-back can run.)
+    lookbackBlocked: () =>
+      lookbackFeed ? lookbackFeed.blocked() : 'Look-back is not available here.',
     lookbackRun,
     setResidual,
     plan,

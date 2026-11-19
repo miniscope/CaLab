@@ -289,7 +289,14 @@ if (single) {
   });
   if (lookback && toggle) {
     // The user's path: tick the checkbox, then restart Discover from frame 0.
-    await page.check('[data-testid=lookback-toggle]');
+    L(
+      'toggle: ' +
+        (await page.$eval(
+          '[data-testid=lookback-toggle]',
+          (e) => `disabled=${e.disabled} title=${e.closest('label')?.title}`,
+        )),
+    );
+    await page.check('[data-testid=lookback-toggle]', { timeout: 10000 });
     await page.click('button[aria-label=Restart]');
     await page.waitForFunction(() => window.__cala?.lookbackOn() === true, null, {
       timeout: 60000,
