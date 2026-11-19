@@ -42,7 +42,7 @@ The owner must decide or confirm:
 - **Setup identity.** Per the dataset notes, both WL24 sessions are Miniscope Zero, mouse WL24, with the same pipeline. Not confirmed by anything: the same scope unit, field of view and optical path (a flat field carries illumination and optics, not only the sensor). The cross-session seed results depend on it.
 - **A true earlier session.** The seeded comparisons used a later stretch of the same recording, or another session three days earlier (the app's direction; one pass) or three days later (one fail). Whether that is close enough to the app's use case.
 - **Live factors without recalibration on the WL24 setup.** `live` fails gate A1 on both real WL24 wireless recordings (trace loss 0.1550 and 0.2032 against 0.08), where the recalibrated factors of phase 1 had 0.0441 and 0.0487. That is two recordings of one setup; the only other real recording, `v4`, is another setup and passes. Whether to claim live factors for this setup at all, or only with a seed.
-- **A lost-cell rule for gate A1 under pairing** (a proposal, see "Gate A1 under pairing"). Whether to add it.
+- **A lost-cell rule for gate A1 under pairing** (a proposal, see "Gate A1 under pairing"). Decided on 19 Nov 2026: rule 5, with its limit from null runs; see "Rule 5, as decided". It changes no verdict above. New for the owner from its null runs: a repeat of the raw look-back run with another seed fails gate A1 against the raw reference in five of six cases, so under pairing the gate's fixed limits are tighter than the raw pipeline's own repeatability.
 
 ## Gate A1, live factors
 
@@ -214,6 +214,43 @@ The gate's wording is "a lost cell is the worst case in every rule". That is tru
 - **The ruling behind "worst case"** was made for comparisons by id, where no cell is lost. It does not carry over to pairing.
 
 **Proposal for the owner (not adopted; the gate was not changed in this phase).** Add a rule 5 for paired comparisons: the share of QC-pass reference cells without a partner is at most the reverse share (test cells without a reference partner) plus 2 percentage points; with usable truth, also: truth units recovered with correlation at least 0.8 in the test run are at least those in the reference run minus max(1, 2 percent).
+
+### Rule 5, as decided (added later on 19 Nov 2026)
+
+The owner decided on a rule 5 whose limit comes from null runs instead of a chosen number (the spec's Amendment 3, A13): the test run may lose at most as many QC-pass cells as the null run that lost most. The verdicts and tables above are the gate of four rules, as run during the phase; this section adds rule 5 and what the null runs show about the look-back comparisons.
+
+Runs: the folder `factor_merge_20261119`, harness built at 92b4e802 (the branch after the merge of main). Its `lb_raw`, `lb_fac` and `lb_live` are the same bytes (traces, footprints, cell ids) as this phase's on all three recordings, so the numbers above hold for them. The null runs are `lb_raw` with another slow-loop seed (`--slow-seed 1` and `2`; the seed sets the held-out split and the random slots), same budget, paired with `lb_raw` by footprint like the test arms.
+
+| recording | QC-pass cells of `lb_raw` | lost by `lb_fac` and `lb_live` | lost by the seed repeats | rule 5 | all cells without a partner in `lb_raw`: factor arms; seed repeats |
+| --------- | ------------------------- | ------------------------------ | ------------------------ | ------ | ------------------------------------------------------------------ |
+| `wl200`   | 61                        | 2                              | 4, 7                     | pass   | 0; 7, 6                                                            |
+| `plain`   | 139                       | 7                              | 12, 15                   | pass   | 13; 21, 16                                                         |
+| `motion`  | 160                       | 11                             | 34, 28                   | pass   | 21; 42, 45                                                         |
+
+The factor arms lose fewer cells than a repeat of the raw run with another seed, on all three recordings. Rule 5 changes no verdict of this phase.
+
+**A repeat of the raw run does not pass gate A1 itself.** Each seed repeat against `lb_raw`, by the same tool (paired by footprint, 32 px lines, the truth; rule 5 against the other repeat):
+
+| recording | repeat | 1 truth: median, 5th pct | 2 footprint loss | 3 trace loss           | 5 lost   | gate |
+| --------- | ------ | ------------------------ | ---------------- | ---------------------- | -------- | ---- |
+| `wl200`   | seed 1 | -0.0007, -0.0211: pass   | 0.0133: pass     | 0.0011: does not apply | 4: pass  | pass |
+| `wl200`   | seed 2 | -0.0011, -0.1560: fail   | 0.0202: fail     | 0.0027: does not apply | 7: fail  | fail |
+| `plain`   | seed 1 | -0.0001, -0.8710: fail   | 0.0041: pass     | 0.0002: does not apply | 12: pass | fail |
+| `plain`   | seed 2 | -0.0000, -0.8618: fail   | 0.0025: pass     | 0.0002: does not apply | 15: fail | fail |
+| `motion`  | seed 1 | no truth: does not apply | 0.0388: fail     | 0.0045: pass           | 34: fail | fail |
+| `motion`  | seed 2 | no truth: does not apply | 0.0391: fail     | 0.0073: pass           | 28: pass | fail |
+
+Rule 4 passes in all six. For comparison, the factor arms: footprint loss 0.0114 (`wl200`), 0.0011 (`plain`), 0.0183 (`motion`); rule 1's 5th percentile -0.0702 (`lb_fac`) and -0.0382 (`lb_live`) on `wl200`, -0.0279 and -0.0406 on `plain`.
+
+What follows from it:
+
+- **The one failing look-back comparison is inside the raw run's own repeat spread.** `wl200` `lb_fac` fails rule 1 with a 5th percentile of -0.0702; the two seed repeats of the raw run have -0.0211 and -0.1560.
+- **Under pairing, gate A1's fixed limits are tighter than the raw pipeline's own repeatability.** Five of six seed repeats fail it, on rule 1's 5th percentile (lost cells with a truth unit), on rule 2 (`motion`, 0.039 against 0.02) or on rule 5. The limits were set for comparisons by id, where the Discover is shared.
+- **The factor arms are closer to `lb_raw` than a seed repeat is.** Inferred reason: they share its seed, so their Discover differs only through the look-back's frame source. This is a statement about closeness to this reference, not about quality.
+
+Not measured: more than two repeats per recording (the limit is the larger of two counts, and each repeat's rule 5 is judged against one other repeat); the real recordings (the look-back arms were run on the three synthetic sets only); the truth result of the repeats over paired cells alone.
+
+The first null runs, not used: `lb_raw` at half and twice the slow-loop budget (folders `lb_null_lo`, `lb_null_hi`, reports `report_budget_nulls.md`). They lost 4 and 2 (`wl200`), 64 and 4 (`plain`), 79 and 18 (`motion`) QC-pass cells. A look-back run has one pass, so half the budget starves Discover itself (46 and 49 percent of the cells lost at 600 px); that is no repeat, and its count would allow almost any loss.
 
 ## How it was measured
 

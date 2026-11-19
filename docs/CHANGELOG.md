@@ -32,6 +32,11 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   raw file. `factor_closeness.py --match` pairs cells by footprint (for runs whose Discover differed) and reports the
   footprint correlation with the truth footprint. `factor_arms.py` has the arms `live`, `seed`, `raw_seed`,
   `live_seed`, `lb_raw`, `lb_fac` and `lb_live` and `--seed-from F`. On the bounded runs, Discover's factors without recalibration fail gate A1 on the two real WL24 wireless recordings and on `motion`. A flat field seed from another session of the same mouse and scope model (scope unit, field of view and optical path not confirmed) brought one of two runs inside the gate (a seed from three days earlier passed, one from three days later failed). Look-back on factors: one of six look-back comparisons fails rule 1, marginally (`wl200`, 5th percentile -0.0702 against -0.05); gate A1 caps lost cells nowhere under pairing. The live arms still read the raw file in the refine replays: `tools/cala-eval/results/2026-11-19-factor-phase4a.md`. No change to the app.
+- cala evaluation, gate A1 rule 5 (lost cells; the spec's Amendment 3): the test run may lose at most as many QC-pass
+  cells as the null run that lost most. `factor_arms.py` has the null arms `lb_null_s1` and `lb_null_s2` (the raw
+  look-back run with another `--slow-seed`), and `factor_closeness.py --match` pairs the null runs by footprint too.
+  On `wl200`, `plain` and `motion` the look-back arms on factors lose 2, 7 and 11 QC-pass cells, the seed repeats of the
+  raw run 4 to 7, 12 to 15 and 28 to 34; five of the six seed repeats themselves fail gate A1 against the raw reference.
 - Cala, factor pipeline phase 3a, Refine on factors (crate and harness only, no change to the app): `SlowLoop::refine_on_factors`
   and `refine_until_settled` (`crates/cala/src/discover/factor_refine.rs`) run Refine on the stored low-rank windows with
   the cell set frozen: the footprint statistics are filled from the factors, the held-out frame patches are rebuilt
