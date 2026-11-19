@@ -681,7 +681,23 @@ impl ClusterStore {
             (Some(e), true) => e.clone(),
             _ => self.white_cols(),
         };
-        let mut cs = solve_traces(&start, &self.u, n, kk, r, &vv, l1)?;
+        // The L1 trace step, unless it silences a member in either half of
+        // the stored frames (a dim member whose events all fall below the
+        // threshold leaves its footprint fit singular): then the plain one.
+        let traces = |a: &[f64]| -> Option<Vec<f64>> {
+            let cs = solve_traces(a, &self.u, n, kk, r, &vv, l1)?;
+            let live = |k: usize, half: bool| {
+                (0..m)
+                    .filter(|&s| hs[s] == half && cs[s * kk + k] > 0.0)
+                    .nth(1)
+                    .is_some()
+            };
+            if l1 > 0.0 && !(0..kk).all(|k| live(k, true) && live(k, false)) {
+                return solve_traces(a, &self.u, n, kk, r, &vv, 0.0);
+            }
+            Some(cs)
+        };
+        let mut cs = traces(&start)?;
         // Footprint step per subset of frames: all, half A, half B.
         let fit = |cs: &[f64], sel: &dyn Fn(usize) -> bool| -> Option<(Vec<Vec<f32>>, Vec<f64>)> {
             let (mut sw, mut sc, mut sv) = (0.0f64, vec![0.0f64; kk], vec![0.0f64; r]);
@@ -795,7 +811,7 @@ impl ClusterStore {
                     a[i * kk + k] = f64::from(h[k][i]) * f64::from(self.is[i]);
                 }
             }
-            cs = solve_traces(&a, &self.u, n, kk, r, &vv, l1)?;
+            cs = traces(&a)?;
         }
         let (h, se) = fit(&cs, &|_| true)?;
         let (ha, sa) = fit(&cs, &|s| hs[s])?;
