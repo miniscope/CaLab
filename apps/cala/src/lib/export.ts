@@ -529,6 +529,7 @@ export async function writeCalaExport(
         }
       : {}),
     ...(gain ? { 'flat_field_gain.npy': npy(gain.gain, [height, width]) } : {}),
+    // Joint run: the minima are over the whole joint recording, written as is into each session's file.
     ...(result.minValid && result.minValid.length === n
       ? { 'extract_min_valid.npy': npy(result.minValid, [n]) }
       : {}),

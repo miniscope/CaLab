@@ -67,7 +67,8 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 - Cala, factor pipeline phase 4.1: **compression is on by default** (`?compress=off` replays the file as before; the old
   `?compress` still means on). The first replay after Discover (the first Refine run, or Extract when no Refine runs)
   also compresses the frames on the offset grids, and Extract then reads those factors (the Extract pass alone took 0.5
-  to 1.1 s in native runs: `tools/cala-eval/results/2026-11-19-factor-phase2.md`). Extract replays the file when the
+  to 1.1 s in native runs on 6,000 to 12,000 frames: `tools/cala-eval/results/2026-11-19-factor-phase2.md`). Extract
+  replays the file when the
   factors are not ready, do not cover the recording, or after a compression error; after an Extract on the factors has
   failed (not cancelled, not aborted by a reset), every later Extract replays the file until the next Discover start
   (a new Discover, another recording, a session of a multi-session run) or a Refine run while an Extract result

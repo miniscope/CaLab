@@ -287,6 +287,7 @@ export function extractEndData(
 ): Partial<StageRun> {
   if (outcome !== 'done') return { frames: pass2.processed(), source: pass2.source() };
   const r = pass2.result();
+  // Joint run: counted over the whole joint recording; each session's export repeats it.
   const low = r?.source === 'factors' ? lowValidCells(r.minValid) : undefined;
   return {
     frames: r?.frames ?? 0,

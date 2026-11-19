@@ -2143,7 +2143,7 @@ Written in full after 4.1 is merged and the owner has answered the decisions abo
 - `factorState` is `compressing` only while the replay mark is held or windows are waiting or compressed, because a cancelled replay would otherwise have blocked every later compression. Only the replay that took the mark can release it.
 - A pending factor Extract always settles: a compression error, a reset or a new Discover aborts it. The `StageRun` fields were added in Task 4, not Task 5.
 - A factor Extract writes its windows to the run's trace files as they arrive and deletes them when the job fails.
-- After a failed factor Extract the next Extract replays the file. The brief left the state `ready` with no fallback, which made a deterministic failure a dead end.
+- After a failed factor Extract every later Extract replays the file until `pass2.clear()`. The brief left the state `ready` with no fallback, which made a deterministic failure a dead end.
 - Task 5b was added for the spec's Amendment 3, A14 (`min_valid`).
 - Departure from the spec, left for the owner: §6 says Extract on factors runs after Refine without asking; in 4.1 Extract stays a click.
 - Added to phase 4.3's list: an acknowledgement per window in the extract protocol; stopping the feed after a compression error; a cap on what a live stream compresses.

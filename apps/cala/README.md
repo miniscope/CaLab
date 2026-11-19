@@ -161,7 +161,10 @@ factors also has `tiling` (`plain` or `offset`), `mean_rank` (the mean kept rank
 per tile) and `low_valid` (the number of cells with `min_valid` below 1, 0 when
 none); a failed or cancelled one has `source` only. An Extract on the factors also writes the per-cell
 array `extract_min_valid` (float32, in the row order of `traces`); a raw
-Extract has neither it nor `low_valid`. Older files still load.
+Extract has neither it nor `low_valid`. In a Joint run both are computed over
+the whole joint recording and each session's export carries those values, so a
+cell flagged for missing pixels in one session is flagged in every session's
+file. Older files still load.
 
 - `<folder>_cala.npz`, self-describing (format version 7): `traces` (cells x
   frames, float32), `traces_signed` (the same, unclipped; absent from a live
@@ -352,7 +355,7 @@ calibration, and keeps those factors. No later replay compresses again; a
 replay that is cancelled releases this, so the next replay compresses.
 
 Extract then reads the factors (`FactorExtractor` in the compress worker,
-signed traces too) once they are ready (the Extract pass alone took 0.5 to 1.1 s in native runs,
+signed traces too) once they are ready (the Extract pass alone took 0.5 to 1.1 s in native runs on 6,000 to 12,000 frames,
 `tools/cala-eval/results/2026-11-19-factor-phase2.md`) and replays the file
 otherwise. The Run panel shows a line under Extract that says which. It is one
 of these six texts:
@@ -418,6 +421,10 @@ has the count (`low_valid`) and the per-cell array (`extract_min_valid`).
   new job waits behind it.
 - Refine is always a raw replay in this phase. Refine on factors is phase 4.2,
   behind a switch.
+- An Extract clicked right after a Refine is cancelled, before the compress
+  worker's reset status arrives, still sees the factors as being compressed:
+  it replays the file without compressing (the result is right, the
+  compression is lost until the next replay).
 
 The factors are also used as follows.
 

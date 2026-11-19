@@ -73,7 +73,7 @@ export function extractSourceText(
 ): string {
   switch (state) {
     case 'ready':
-      // After a failed factor Extract the next one replays the file.
+      // After a failed factor Extract every later one replays the file, until `clear`.
       if (factorsFailed) return 'Extract replays the file: the last Extract on the factors failed.';
       return 'Extract reads the factors (seconds).';
     case 'compressing':
@@ -179,7 +179,8 @@ export function createCompressStore(sink?: BackfillSink, isLive: () => boolean =
      * A replay that compresses starts. Returns its release: `ended(false)`
      * (cut short, its windows are dropped) frees the mark, `ended(true)` keeps
      * it until the factors are ready. Only the replay that took the mark can
-     * free it; a call after a reset or a second call does nothing.
+     * free it; a call after a reset does nothing. `ended(false)` after
+     * `ended(true)` would still free it: callers wrap it in `endOnce`.
      */
     markReplay(): (ok: boolean) => void {
       const token = ++lastMark;
