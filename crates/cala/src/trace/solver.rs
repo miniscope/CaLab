@@ -335,7 +335,9 @@ impl TraceEngine {
     /// with the new traces, up to [`EM_PASSES`] solves or until no trace
     /// moves by `tol` of its noise. At the fixed point the missing pixels
     /// pull no trace away from what the valid pixels say. Frames without
-    /// missing pixels take a single solve, as before.
+    /// missing pixels take a single solve, as before. A solve that fails
+    /// on a non-finite projection still advances the frame counter; a wrong
+    /// frame length does not.
     pub fn process_into(&mut self, frame: &[f32], out: &mut FrameTraces) -> Result<(), TraceError> {
         let lib = self.lib.clone();
         let lib = &*lib;
@@ -383,7 +385,9 @@ impl TraceEngine {
     /// caller's matter (there is no fill here).
     ///
     /// Inputs are checked before any engine state is written, so an error
-    /// leaves the engine as it was (the frame counter included).
+    /// leaves the engine as it was. A rejected input does not advance the
+    /// frame counter, so a caller that drops a rejected frame counts its own
+    /// frames.
     pub fn process_projected(
         &mut self,
         cells: &[f32],
@@ -578,7 +582,7 @@ impl TraceEngine {
         out: &mut FrameTraces,
         refill: bool,
     ) -> Result<(), TraceError> {
-        self.project_frame(lib, frame, refill);
+        self.project_frame(lib, frame, refill)?;
         self.solve_projected(lib, out)
     }
 
@@ -586,7 +590,12 @@ impl TraceEngine {
     /// projection `b`, and the background's sums (`q` for a basis, before
     /// the cells' share is taken off; `ring` for a ring). `refill`: see
     /// [`Self::solve_frame`].
-    fn project_frame(&mut self, lib: &Library, frame: &[f32], refill: bool) {
+    fn project_frame(
+        &mut self,
+        lib: &Library,
+        frame: &[f32],
+        refill: bool,
+    ) -> Result<(), TraceError> {
         let n_px = lib.dims().pixels();
         let n = lib.len();
         // Projections onto the filtered footprints: the support part, minus
@@ -652,6 +661,15 @@ impl TraceEngine {
             }
             self.b[i] = s;
         }
+        // Checked before the background's sums are written, so an error
+        // leaves `q` and `ring` as they were.
+        if let Some(i) = self.b.iter().position(|v| !v.is_finite()) {
+            return Err(TraceError::InvalidConfig(format!(
+                "frame {} has non-finite pixels under cell {}",
+                self.next_frame,
+                lib.ids()[i]
+            )));
+        }
         match &lib.bg {
             BgTerms::Basis { k, maps, .. } => {
                 let k = *k;
@@ -712,19 +730,13 @@ impl TraceEngine {
             }
             BgTerms::None => {}
         }
+        Ok(())
     }
 
     /// Solve from `b` and the background's sums as [`Self::project_frame`]
     /// or [`Self::process_projected`] left them, and fill `out`.
     fn solve_projected(&mut self, lib: &Library, out: &mut FrameTraces) -> Result<(), TraceError> {
         let n = lib.len();
-        if let Some(i) = self.b.iter().position(|v| !v.is_finite()) {
-            return Err(TraceError::InvalidConfig(format!(
-                "frame {} has non-finite pixels under cell {}",
-                self.next_frame,
-                lib.ids()[i]
-            )));
-        }
         match &lib.bg {
             BgTerms::Basis { k, x, .. } => {
                 let k = *k;
