@@ -11,6 +11,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import factor_arms as A
+from test_factor_closeness import write_fp
 
 FLAT_HEAD = (
     "frame\toutcome\tfirst\tbins\tframes_used\tgain_sd\ttissue_sd\tresidual\tdark"
@@ -342,6 +343,8 @@ class Arms(unittest.TestCase):
             "seed,raw_seed,live_seed",
             "--seed-from",
             "9000",
+            "--frames",
+            "8000",
             "--dry-run",
         ]
         buf = io.StringIO()
@@ -358,9 +361,9 @@ class Arms(unittest.TestCase):
     def test_seed_from_is_refused_without_motion_or_without_a_seed_arm(self) -> None:
         base = ["factor_arms.py", "--rec", "rec", "--out", "out", "--dry-run"]
         for extra in (
-            ["--seed-from", "9", "--no-motion", "--arms", "seed"],
-            ["--seed-from", "9", "--arms", "raw,live"],
-            ["--seed-from", "9"],
+            ["--seed-from", "9", "--frames", "5", "--no-motion", "--arms", "seed"],
+            ["--seed-from", "9", "--frames", "5", "--arms", "raw,live"],
+            ["--seed-from", "9", "--frames", "5"],
         ):
             with (
                 mock.patch.object(sys, "argv", base + extra),
@@ -386,7 +389,8 @@ class Arms(unittest.TestCase):
         )
 
         def fake(ref: Path, test: Path, nulls: list[Path], **kw: object) -> str:
-            return f"CMP {test.name}"
+            gate, title = kw.get("gate", True), kw.get("title")
+            return f"CMP {test.name} gate={gate} title={title}"
 
         with (
             tempfile.TemporaryDirectory() as t,
@@ -401,9 +405,14 @@ class Arms(unittest.TestCase):
             text = A.report(
                 out, ["raw", "seed", "raw_seed", "live_seed", "lb_raw"], None
             )
-            self.assertIn("CMP raw_seed", text)
+            # One heading, made by the comparison; no gate verdict for the not-a-gate pair.
+            self.assertIn(
+                "CMP raw_seed gate=False title=### `raw_seed` against `raw`", text
+            )
             self.assertIn("what the seed alone changes", text)
-            self.assertIn("no noise floor of its own", text)
+            self.assertIn("(not a gate)", text)
+            self.assertNotIn("###", text.replace("title=###", ""))
+            self.assertIn("CMP live_seed gate=True title=None", text)
             self.assertIn("Seed: the last flat field map", text)
             self.assertIn("| arm | seeded | flat field maps made", text)
             self.assertIn("| lb_raw | 24000 | 510000 | 3 | 812.5 |", text)
@@ -436,11 +445,24 @@ class Arms(unittest.TestCase):
                 + "1\t9\t100\t40\t0.21000\t0.004000\t3\t0\t1.00\t5.00\t1.00\t2.00\t0.10\t9.10\t-\n"
                 + "2\t10\t100\t12\t0.01000\t0.000500\t3\t0\t1.00\t5.00\t1.00\t2.00\t0.10\t8.10\tsettled\n"
             )
+            # No library files: the median of the changed cells is n/a, and the
+            # harness's all-cell median is not printed.
             t = A.iteration_table(run)
             self.assertIn(
-                "| 2 | 100 | 12 | 0.01000 | 0.000500 | 3 | 0 | 8.10 |", "\n".join(t)
+                "| 2 | 100 | 12 | 0.01000 | n/a | 3 | 0 | 8.10 |", "\n".join(t)
             )
+            self.assertNotIn("0.000500", "\n".join(t))
+            self.assertIn("median 1 - r of changed cells", "\n".join(t))
+            self.assertNotIn("median change", "\n".join(t))
             self.assertIn("Stopped: settled.", t)
+            # With libraries: iteration 2 moved the one cell by a pixel (1 - r = 20/19).
+            cell = ([10, 11, 12], [1.0, 3.0, 1.0])
+            write_fp(run / "footprints_pass2.bin", {1: cell})
+            write_fp(run / "footprints_iter1.bin", {1: cell})
+            write_fp(run / "footprints_iter2.bin", {1: ([11, 12, 13], [1.0, 3.0, 1.0])})
+            joined = "\n".join(A.iteration_table(run))
+            self.assertIn("| 1 | 100 | 40 | 0.21000 | n/a | 3 | 0 | 9.10 |", joined)
+            self.assertIn("| 2 | 100 | 12 | 0.01000 | 1.05263 | 3 | 0 | 8.10 |", joined)
             (run / "iterations.tsv").write_text(head)
             self.assertTrue(any("no iterations" in ln for ln in A.iteration_table(run)))
             t = A.iteration_table(Path(d) / "missing")
@@ -714,6 +736,62 @@ class Arms(unittest.TestCase):
             )
             rc = A.run_arm("raw", [sys.executable, "-c", check, str(old)], run)
             self.assertEqual(rc, 0)
+
+    def test_a_rerun_of_a_factor_refine_arm_clears_its_window_files(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            for name in ("f_chosen", "chosen"):
+                (out / name / "factors").mkdir(parents=True)
+                for f in ("w0.fac", "w1.fac", "factors.tsv"):
+                    (out / name / "factors" / f).write_bytes(b"x")
+            # `-c pass` ignores the flag and its value; only the command line matters here.
+            base = [sys.executable, "-c", "pass"]
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                A.run_arm(
+                    "f_chosen",
+                    [*base, "--refine-engine", "factors"],
+                    out / "f_chosen",
+                )
+                A.run_arm("chosen", base, out / "chosen")
+            left = sorted(p.name for p in (out / "f_chosen" / "factors").iterdir())
+            self.assertEqual(left, ["factors.tsv"])
+            kept = sorted(p.name for p in (out / "chosen" / "factors").iterdir())
+            self.assertEqual(kept, ["factors.tsv", "w0.fac", "w1.fac"])
+            self.assertIn("removed 2 window files", buf.getvalue())
+            self.assertEqual(A.clear_factor_windows(base, out / "f_chosen"), 0)
+
+    def test_the_seed_stretch_must_come_after_the_frames_the_seeded_arms_read(
+        self,
+    ) -> None:
+        base = ["factor_arms.py", "--rec", "rec", "--out", "out", "--dry-run"]
+        base += ["--arms", "seed,raw_seed"]
+
+        def run(extra: list[str]) -> tuple[bool, str]:
+            err = io.StringIO()
+            try:
+                with (
+                    mock.patch.object(sys, "argv", base + extra),
+                    contextlib.redirect_stderr(err),
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    A.main()
+            except SystemExit:
+                return False, err.getvalue()
+            return True, ""
+
+        ok, msg = run(["--seed-from", "1000"])
+        self.assertFalse(ok)
+        self.assertIn("--frames", msg)
+        ok, msg = run(["--seed-from", "1000", "--frames", "12000"])
+        self.assertFalse(ok)
+        self.assertIn("do not process", msg)
+        ok, _ = run(["--seed-from", "11999", "--frames", "12000"])
+        self.assertFalse(ok)
+        ok, _ = run(["--seed-from", "12000", "--frames", "12000"])
+        self.assertTrue(ok)
+        ok, _ = run(["--seed-from", "13000", "--frames", "12000"])
+        self.assertTrue(ok)
 
 
 if __name__ == "__main__":

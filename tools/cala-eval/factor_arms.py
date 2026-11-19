@@ -5,7 +5,10 @@ with gate A1.
         [--refine 5] [--budget U] [--jobs 3] [--arms raw,plain,...] [--truth truth.npz]
         [--qc-eval PATH] [--seed-from F] [--extra FLAGS] [--dry-run]
 
-Arms (each a `qc_eval real` run in `DIR/<arm>`; pass 1 is the same in all):
+Arms (each a `qc_eval real` run in `DIR/<arm>`). Pass 1 is the same Discover in `raw`, the
+`null_*`, the tiling and remedy arms, `chosen`, `c_chosen`, `x_*`, `live` and the `f_*` arms. It
+differs in `seed` (later frames), in `raw_seed` and `live_seed` (a flat field seeded from frame
+0) and in the `lb_*` arms (joint flags and a look-back):
 
 - `raw`: Discover, `--refine` refine replays and the Extract pass on the raw replay.
 - `null_lo`, `null_hi`: `raw` with half and twice the slow-loop budget in the
@@ -265,9 +268,25 @@ def max_rss_mb(log: str) -> float | None:
     return int(m.group(1)) / 1e6 if m else None
 
 
+def clear_factor_windows(cmd: list[str], run: Path) -> int:
+    """Remove `<run>/factors/w*.fac` when the command carries `--refine-engine`; returns how
+    many. The harness refuses at start a factors folder that already holds window files for
+    that flag, so a rerun of a failed or changed arm needs them gone. Only the arm's own
+    derived files are touched; other arms and other files stay."""
+    if "--refine-engine" not in cmd:
+        return 0
+    old = sorted((run / "factors").glob("w*.fac"))
+    for f in old:
+        f.unlink()
+    return len(old)
+
+
 def run_arm(name: str, cmd: list[str], run: Path) -> int:
     """Run one arm; its output goes to `<run>/run.log`, the result to `<run>/run.json`."""
     run.mkdir(parents=True, exist_ok=True)
+    removed = clear_factor_windows(cmd, run)
+    if removed:
+        print(f"{name}: removed {removed} window files of an earlier run", flush=True)
     # An interrupted rerun must not leave the old record to be taken as finished.
     (run / "run.json").unlink(missing_ok=True)
     timed = ["/usr/bin/time", "-l", *cmd] if sys.platform == "darwin" else cmd
@@ -336,24 +355,23 @@ def iteration_table(run: Path) -> list[str]:
             f"Refine on factors, `{run.name}`: no iterations in `iterations.tsv`.",
             "",
         ]
-    keys = [
-        "iteration",
-        "cells",
-        "accepted",
-        "changed_share",
-        "median_change",
-        "low_valid",
-        "tiles_skipped",
-        "wall_s",
-        "settled",
-    ]
+    # The harness's `median_change` is over all cells and reads 0 whenever fewer than half
+    # change; this column is computed here from the library files, over the changed cells.
+    moved = factor_closeness.iteration_changes(run)
+    before = ["iteration", "cells", "accepted", "changed_share"]
+    after = ["low_valid", "tiles_skipped", "wall_s", "settled"]
     out = [
         f"Refine on factors, `{run.name}`:",
         "",
-        "| iteration | cells | accepted | changed share | median change | low valid | tiles skipped | wall s | settled |",
+        "| iteration | cells | accepted | changed share | median 1 - r of changed cells | low valid | tiles skipped | wall s | settled |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
-    out += ["| " + " | ".join(r.get(k, "n/a") for k in keys) + " |" for r in rows]
+    for r in rows:
+        k = int(r["iteration"]) if r.get("iteration", "").isdigit() else -1
+        cells = [r.get(c, "n/a") for c in before]
+        cells.append(factor_closeness.num(moved.get(k, float("nan")), 5))
+        cells += [r.get(c, "n/a") for c in after]
+        out.append("| " + " | ".join(cells) + " |")
     stop = rows[-1].get("settled", "")
     return out + (["", f"Stopped: {stop}.", ""] if stop in STOP_REASONS else [""])
 
@@ -555,14 +573,9 @@ def report(
                     )
                 )
         elif n == "raw_seed" and "raw" in have:
-            # Two Discovers, so cells are paired by footprint; the null runs would be
-            # compared by id against another Discover.
-            text += [
-                (
-                    f"### `{n}` against `raw`: what the seed alone changes in the raw "
-                    "pipeline (not a gate)"
-                ),
-                "",
+            # Two Discovers, so cells are paired by footprint; the heading is the
+            # comparison's own, and its gate verdict is replaced (this is not a gate).
+            text.append(
                 factor_closeness.report(
                     out_dir / "raw",
                     out_dir / n,
@@ -570,20 +583,23 @@ def report(
                     tile=line_step(arm_cmd(out_dir, n)),
                     truth_path=truth,
                     match=True,
-                ),
-            ]
+                    gate=False,
+                    title=(
+                        f"### `{n}` against `raw`: what the seed alone changes in the raw "
+                        "pipeline (not a gate)"
+                    ),
+                )
+            )
         elif n == "live_seed" and "raw_seed" in have:
-            text += [
+            text.append(
                 factor_closeness.report(
                     out_dir / "raw_seed",
                     out_dir / n,
                     [],
                     tile=line_step(arm_cmd(out_dir, n)),
                     truth_path=truth,
-                ),
-                "This pair has no null runs, so it has no noise floor of its own.",
-                "",
-            ]
+                )
+            )
         elif n in ("lb_fac", "lb_live") and "lb_raw" in have:
             # The look-back arms have their own Discovers, so cells are paired by footprint.
             text.append(
@@ -706,6 +722,11 @@ def main() -> None:
         ap.error("--budget must be at least 2 (the null arms use half of it)")
     if a.seed_from is not None and a.no_motion:
         ap.error("--seed-from needs motion: the flat field is only on with it")
+    if a.seed_from is not None and (a.frames is None or a.seed_from < a.frames):
+        ap.error(
+            "--seed-from needs --frames, and a value of at least --frames: the seed must "
+            "come from frames the seeded arms do not process (they read frames 0 to --frames)"
+        )
     seed = (a.seed_from, a.out / "seed") if a.seed_from is not None else None
     table = arms(a.refine, a.budget, seed)
     names = a.arms.split(",") if a.arms else default_arms(table)
