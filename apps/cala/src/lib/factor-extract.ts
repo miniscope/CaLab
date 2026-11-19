@@ -39,6 +39,23 @@ export interface ReplayCompressLike {
   keepProjection(p: FovProjections): void;
 }
 
+/** A replay that does not compress: no settings, and its end tells no one. */
+export const NO_COMPRESS: ReplayCompress = { settings: {}, ended() {} };
+
+/**
+ * `ended` that reports only its first call: a replay ends once, however many
+ * paths see it end (a finished replay stays finished when a later stop or
+ * error of its stage reports it again).
+ */
+export function endOnce(ended: (ok: boolean) => void): (ok: boolean) => void {
+  let open = true;
+  return (ok) => {
+    if (!open) return;
+    open = false;
+    ended(ok);
+  };
+}
+
 export interface Pass2Factors extends ReplayCompressLike {
   state(frames: number): FactorState;
   /**

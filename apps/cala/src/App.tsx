@@ -13,6 +13,7 @@ import { ASSUMED_FPS } from './lib/miniscope-meta.ts';
 import type { QcSnapshot } from './lib/qc.ts';
 import { createCompressClient } from './lib/compress-client.ts';
 import { createCompressStore } from './lib/compress-store.ts';
+import { createPass2Factors } from './lib/factor-extract.ts';
 import { createPass2Store, replayBlocked } from './lib/pass2-store.ts';
 import { createRefineStore } from './lib/refine-store.ts';
 import {
@@ -127,6 +128,9 @@ const App: Component = () => {
         review && reviewClient ? { port: reviewClient.port, every: review.every } : undefined,
       )
     : undefined;
+  // The run's factors for Extract and the replays (compression on).
+  const factors =
+    compress && compressClient ? createPass2Factors(compress, compressClient) : undefined;
   // Look-back (experimental): Discover refines footprints as it goes by re-reading
   // past frames in a worker of its own, and settles at the end (no Refine needed).
   // A recording on disk with one session, pipelined workers only.
@@ -213,7 +217,7 @@ const App: Component = () => {
       refine.status() === 'running' || refine.status() === 'finishing'
         ? 'Refine is running.'
         : null,
-    compress ? () => cells.session() : undefined,
+    factors,
   );
   // Refine's QC: the trace statistics of the replay's traces over the whole
   // recording, as after Extract (the replay runs no QC monitor).
@@ -232,6 +236,7 @@ const App: Component = () => {
         const range = { start: 0, end: traces.frames };
         return extractQc(traces, ids, range, rate, QC_SCOPE_DEFAULT, cells.qc(), backend);
       },
+      ...(factors ? { compress: factors } : {}),
     },
   );
   /** Log a stage event on the run's timeline (at the end of what Discover read). */

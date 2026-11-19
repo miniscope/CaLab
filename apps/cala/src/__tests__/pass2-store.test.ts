@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { CellStore } from '../lib/cell-store.ts';
+import type { FactorState } from '../lib/compress-store.ts';
+import type { FactorWindowTraces, Pass2Factors } from '../lib/factor-extract.ts';
 import type { FlatFieldMap } from '../lib/flat-field.ts';
+import type { FovProjections } from '../lib/fov-projection.ts';
 import type { PipelineClient } from '../lib/frame-client.ts';
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelinePlan } from '../lib/pipeline-plan.ts';
@@ -64,7 +67,13 @@ function setup(
     status?: string;
     flatMap?: FlatFieldMap | null;
     noSigned?: boolean;
-    compressSession?: number;
+    factors?: Pass2Factors;
+    /** The replay never answers a step (still running when the test cancels it). */
+    hang?: boolean;
+    /** The replay fails to start. */
+    startFails?: boolean;
+    /** The replay's start waits for this. */
+    startGate?: Promise<void>;
   } = {},
 ) {
   const rec = new RunRecord();
@@ -77,15 +86,21 @@ function setup(
     batch(4, 4, IDS, !opts.noSigned),
     { kind: 'done' },
   ];
+  const stops: unknown[] = [];
   const client: PipelineClient = {
     async startPipeline(options, cells, replay) {
       started.push({ options, cells, replay });
+      await opts.startGate;
+      if (opts.startFails) throw new Error('no worker');
       return PLAN;
     },
     async stepPipeline() {
+      if (opts.hang) return new Promise<PipelineStepResult>(() => {});
       return steps.shift() ?? { kind: 'done' };
     },
-    async stopPipeline() {},
+    async stopPipeline(o) {
+      stops.push(o);
+    },
   };
   const view = { version: 5, ids: IDS, centers: new Float32Array(4) } as unknown as LibraryView;
   const pipeline = {
@@ -100,29 +115,78 @@ function setup(
     status: () => ({ final: opts.final ?? true }),
   } as unknown as CellStore;
   return {
-    store: createPass2Store(
-      client,
-      pipeline,
-      cells,
-      undefined,
-      undefined,
-      opts.compressSession === undefined ? undefined : () => opts.compressSession ?? null,
-    ),
+    store: createPass2Store(client, pipeline, cells, undefined, undefined, opts.factors),
     started,
     steps,
+    stops,
   };
 }
 
+/** One window of a factor Extract, with the traces `batch` would give. */
+function win(start: number, count: number, ids = IDS): FactorWindowTraces {
+  const traces = new Float32Array(count * ids.length);
+  for (let f = 0; f < count; f++)
+    for (let c = 0; c < ids.length; c++) traces[f * ids.length + c] = 10 * (start + f) + c;
+  return { start, count, ids, traces, signed: traces.map((v) => v - 1000) };
+}
+
+/**
+ * Factors in `state`; Extract on them gives `windows`, then fails with
+ * `fail` or ends when `gate` resolves (at once when absent).
+ */
+function fakeFactors(
+  state: FactorState,
+  windows: FactorWindowTraces[] = [],
+  job: { fail?: string; gate?: Promise<void> } = {},
+) {
+  const calls: string[] = [];
+  const proj = { spans: [] } as unknown as FovProjections;
+  const kept: FovProjections[] = [];
+  const f: Pass2Factors = {
+    state: () => state,
+    replayCompress: () => {
+      calls.push('compress');
+      return state === 'none'
+        ? {
+            settings: { compress: true, compressTiling: 'offset', compressSession: 4 },
+            ended: (ok) => void calls.push(`ended ${ok}`),
+          }
+        : { settings: {}, ended: () => {} };
+    },
+    keepProjection: (p) => void kept.push(p),
+    projection: () => proj,
+    info: () => ({ tiling: 'offset', meanRank: 4.5 }),
+    async extract(library, onWindow) {
+      calls.push(`extract ${library.length}`);
+      for (const w of windows) onWindow(w);
+      await job.gate;
+      if (job.fail) throw new Error(job.fail);
+      return { frames: windows.reduce((s, w) => s + w.count, 0), msPerFrame: 0.1 };
+    },
+  };
+  return { f, calls, proj, kept };
+}
+
+/** A promise and its resolve. */
+function gate(): { promise: Promise<void>; open: () => void } {
+  let open = () => {};
+  const promise = new Promise<void>((r) => (open = r));
+  return { promise, open };
+}
+
 async function settle(): Promise<void> {
-  for (let i = 0; i < 20; i++) await Promise.resolve();
+  // A factor Extract writes its windows only after the job answers: more turns than a replay.
+  for (let i = 0; i < 60; i++) await Promise.resolve();
 }
 
 describe('Extract (pass 2) store', () => {
-  it('feeds the compressor on the offset grids when compression is on', async () => {
-    const { store, started } = setup({ compressSession: 4 });
+  it('feeds the compressor on the offset grids when compression is on and no factors exist', async () => {
+    const { f, calls } = fakeFactors('none');
+    const { store, started } = setup({ factors: f });
     await store.run();
     await settle();
     expect(store.status()).toBe('done');
+    expect(calls).toEqual(['compress', 'ended true']);
     expect(started[0].cells).toEqual({
       session: 0,
       discover: false,
@@ -134,6 +198,201 @@ describe('Extract (pass 2) store', () => {
       compressTiling: 'offset',
       compressSession: 4,
     });
+    expect(store.source()).toBe('raw');
+    expect(store.result()?.source).toBe('raw');
+  });
+
+  it('replays the file when the factors are not ready, compressing only when there are none', async () => {
+    for (const state of ['compressing', 'unusable'] as const) {
+      const { f, calls } = fakeFactors(state);
+      const { store, started } = setup({ factors: f });
+      await store.run();
+      await settle();
+      expect(store.status()).toBe('done');
+      expect(calls).toEqual([]);
+      const keys = Object.keys(started[0].cells as object);
+      expect(keys.filter((k) => k.startsWith('compress'))).toEqual([]);
+      expect(store.result()?.source).toBe('raw');
+    }
+  });
+
+  it('solves on the factors when they are ready, without replaying the file', async () => {
+    const { f, calls, proj } = fakeFactors('ready', [win(0, 4), win(4, 4)]);
+    const { store, started, stops } = setup({ factors: f });
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('done');
+    expect(started).toHaveLength(0);
+    expect(stops).toHaveLength(0);
+    expect(calls).toEqual(['extract 3']);
+    expect(store.source()).toBe('factors');
+    const r = store.result()!;
+    expect(r).toMatchObject({ source: 'factors', tiling: 'offset', meanRank: 4.5 });
+    expect(r.frames).toBe(8);
+    expect(r.cells).toBe(2);
+    expect(r.projection).toBe(proj);
+    expect([...(await r.traces.readFrames(5, 6))]).toEqual([50, 51]);
+    expect([...(await r.signed!.readFrames(5, 6))]).toEqual([-950, -949]);
+    expect(store.processed()).toBe(8);
+  });
+
+  it('keeps the clipped traces only when the factor engine returns no signed ones', async () => {
+    const unsigned = [win(0, 4), win(4, 4)].map((w) => ({ ...w, signed: new Float32Array(0) }));
+    const { f } = fakeFactors('ready', unsigned);
+    const { store } = setup({ factors: f });
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('done');
+    const r = store.result()!;
+    expect(r.signed).toBeNull();
+    expect([...(await r.traces.readFrames(5, 6))]).toEqual([50, 51]);
+  });
+
+  it('replays the file when asked, even with the factors ready', async () => {
+    const { f, calls } = fakeFactors('ready', [win(0, 4), win(4, 4)]);
+    const { store, started } = setup({ factors: f });
+    await store.run(undefined, 'raw');
+    await settle();
+    expect(store.status()).toBe('done');
+    expect(started).toHaveLength(1);
+    expect(calls).toEqual([]);
+    expect(store.source()).toBe('raw');
+    expect(store.result()?.source).toBe('raw');
+  });
+
+  it('ends with an error when the factor windows do not cover every frame', async () => {
+    const { f } = fakeFactors('ready', [win(0, 4)]);
+    const { store } = setup({ factors: f });
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('error');
+    expect(store.error()).toMatch(/4 of 8 frames/);
+    expect(store.result()).toBeNull();
+    expect(store.traceFile()).toBeNull();
+  });
+
+  it('ends with an error when the factor windows leave a gap', async () => {
+    const { f } = fakeFactors('ready', [win(0, 2), win(4, 4)]);
+    const { store } = setup({ factors: f });
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('error');
+    expect(store.error()).toMatch(/frames 2 to 3/);
+    expect(store.result()).toBeNull();
+  });
+
+  it('ends with an error when the factor windows are for another library', async () => {
+    const { f } = fakeFactors('ready', [win(0, 4, Uint32Array.of(3, 9)), win(4, 4)]);
+    const { store } = setup({ factors: f });
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('error');
+    expect(store.error()).toMatch(/final library/);
+    expect(store.result()).toBeNull();
+  });
+
+  it('keeps nothing of a factor job that fails after its windows arrived', async () => {
+    const g = gate();
+    const { f } = fakeFactors('ready', [win(0, 4), win(4, 4)], {
+      fail: 'solve failed',
+      gate: g.promise,
+    });
+    const { store } = setup({ factors: f });
+    await store.run();
+    await settle();
+    // Both windows are in; nothing is written until the job answers.
+    expect(store.processed()).toBe(8);
+    const file = store.traceFile()!;
+    expect([...(await file.readFrames(5, 6))]).toEqual([0, 0]);
+    g.open();
+    await settle();
+    expect(store.status()).toBe('error');
+    expect(store.error()).toBe('solve failed');
+    expect(store.result()).toBeNull();
+    expect(store.traceFile()).toBeNull();
+    // The run's file is gone.
+    await expect(file.readFrames(0, 1)).rejects.toThrow();
+  });
+
+  it('stops waiting for the factor job when cancelled, without touching the pipeline', async () => {
+    const g = gate();
+    const { f } = fakeFactors('ready', [win(0, 4), win(4, 4)], { gate: g.promise });
+    const { store, stops, started } = setup({ factors: f });
+    await store.run();
+    await settle();
+    store.cancel();
+    expect(store.status()).toBe('cancelled');
+    expect(stops).toHaveLength(0);
+    // The job ends late: nothing of it reaches the store.
+    g.open();
+    await settle();
+    expect(store.status()).toBe('cancelled');
+    expect(store.result()).toBeNull();
+    expect(store.traceFile()).toBeNull();
+    expect(started).toHaveLength(0);
+  });
+
+  it('keeps the projections of a replay that compressed', async () => {
+    const { f, calls, kept } = fakeFactors('none');
+    const { store, steps } = setup({ factors: f });
+    const proj = { spans: [] } as unknown as FovProjections;
+    steps[2] = { kind: 'done', projection: proj } as PipelineStepResult;
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('done');
+    expect(kept).toEqual([proj]);
+    expect(calls).toEqual(['compress', 'ended true']);
+  });
+
+  it('keeps no projections of a replay that did not compress', async () => {
+    const { f, kept } = fakeFactors('unusable');
+    const { store, steps } = setup({ factors: f });
+    steps[2] = { kind: 'done', projection: { spans: [] } } as unknown as PipelineStepResult;
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('done');
+    expect(kept).toEqual([]);
+  });
+
+  it('releases the compress mark when its replay is cancelled', async () => {
+    const { f, calls } = fakeFactors('none');
+    const { store, stops } = setup({ factors: f, hang: true });
+    await store.run();
+    store.cancel();
+    expect(calls).toEqual(['compress', 'ended false']);
+    expect(stops).toHaveLength(1);
+  });
+
+  it('releases the compress mark when its replay fails to start', async () => {
+    const { f, calls } = fakeFactors('none');
+    const { store } = setup({ factors: f, startFails: true });
+    await store.run();
+    expect(store.status()).toBe('error');
+    expect(calls).toEqual(['compress', 'ended false']);
+  });
+
+  it('releases the compress mark when its replay is cleared while starting', async () => {
+    const g = gate();
+    const { f, calls } = fakeFactors('none');
+    const { store } = setup({ factors: f, startGate: g.promise });
+    const running = store.run();
+    await settle();
+    expect(calls).toEqual(['compress']);
+    store.clear();
+    g.open();
+    await running;
+    expect(store.status()).toBe('idle');
+    expect(calls).toEqual(['compress', 'ended false']);
+  });
+
+  it('releases the compress mark when its replay stops with an error', async () => {
+    const { f, calls } = fakeFactors('none');
+    const { store, steps } = setup({ factors: f });
+    steps[0] = batch(0, 4, Uint32Array.of(3, 9));
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('error');
+    expect(calls).toEqual(['compress', 'ended false']);
   });
 
   it('replays the recorded frames with the final library and gathers the traces', async () => {

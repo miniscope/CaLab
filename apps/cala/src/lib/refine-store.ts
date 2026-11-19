@@ -36,12 +36,20 @@ import type { LibraryView } from '../workers/slow-types.ts';
 import type { QcSnapshot } from './qc.ts';
 import { createTraceFile, type TraceFile } from './trace-file.ts';
 import { startReplayPipeline } from './replay-pipeline.ts';
+import {
+  endOnce,
+  NO_COMPRESS,
+  type ReplayCompress,
+  type ReplayCompressLike,
+} from './factor-extract.ts';
 
 /** Refine's QC: the QC of the replay's traces (`traces`: frames x cells, ids `ids`). */
 export interface RefineQcOptions {
   qc?: (traces: TraceFile, ids: Uint32Array) => Promise<QcSnapshot | null>;
   /** Where the replay's traces go (default `createTraceFile`: OPFS, or memory). */
   traceFile?: (frames: number, cells: number) => Promise<TraceFile>;
+  /** Compression on: whether this replay compresses, and where its outcome goes (absent: off). */
+  compress?: ReplayCompressLike;
 }
 
 export type RefineStatus = 'idle' | 'running' | 'finishing' | 'done' | 'error' | 'cancelled';
@@ -108,6 +116,10 @@ export function createRefineStore(
     /** The replay's traces for the QC (null: no QC this run). */
     traces: TraceFile | null;
     ids: Uint32Array;
+    /** The replay feeds the compress worker (its projections are the factors' FOV images). */
+    compressed: boolean;
+    /** The replay ended; false: cut short. Reports only the first call. */
+    ended: (ok: boolean) => void;
   }
 
   /** Stop collecting traces for the QC (and free them). */
@@ -199,6 +211,7 @@ export function createRefineStore(
       changeP90: ctx.tracker.summary().changeP90,
       refinedShare: ctx.tracker.summary().refinedShare,
       series: ctx.tracker.samples().slice(),
+      source: 'raw',
     };
     log.end('refine', outcome, data);
   }
@@ -227,6 +240,7 @@ export function createRefineStore(
     setError(message);
     setStatus('error');
     if (ctx) {
+      ctx.ended(false);
       record(ctx, 'error');
       dropTraces(ctx);
     }
@@ -257,6 +271,10 @@ export function createRefineStore(
             exhausted = true;
             if (ctx.done !== ctx.frames)
               throw new Error(`Refine ended after ${ctx.done} of ${ctx.frames} frames.`);
+            // Every frame went to the compress worker: these are the factors' FOV images.
+            if (ctx.compressed && step.projection)
+              options.compress?.keepProjection(step.projection);
+            ctx.ended(true);
             setStatus('finishing');
             awaitFinal(gen, ctx);
           }
@@ -298,6 +316,8 @@ export function createRefineStore(
     setFps(0);
     const rec = pipeline.record();
     const flatMap = pipeline.flatFieldMap();
+    // The first replay after Discover compresses, when no factors exist yet.
+    const comp: ReplayCompress = options.compress?.replayCompress(rec.frames) ?? NO_COMPRESS;
     const ctx: Ctx = {
       frames: rec.frames,
       batch: plan1.batchSize,
@@ -310,24 +330,27 @@ export function createRefineStore(
       seriesAt: -Infinity,
       traces: null,
       ids: before.ids.slice(),
+      compressed: comp.settings.compress === true,
+      ended: endOnce(comp.ended),
     };
     current = ctx;
     setTotal(ctx.frames);
     setSeries({ samples: [], end: ctx.tracker.time(ctx.frames) });
     log.begin('refine');
-    // Room for the replay's traces (the QC); without it Refine runs, without a QC.
-    if (options.qc) {
-      try {
-        ctx.traces = await (options.traceFile ?? createTraceFile)(ctx.frames, ctx.ids.length);
-      } catch (err) {
-        console.warn('Refine QC skipped:', err instanceof Error ? err.message : String(err));
-      }
-      if (gen !== generation) {
-        dropTraces(ctx);
-        return;
-      }
-    }
+    let pumping = false;
     try {
+      // Room for the replay's traces (the QC); without it Refine runs, without a QC.
+      if (options.qc) {
+        try {
+          ctx.traces = await (options.traceFile ?? createTraceFile)(ctx.frames, ctx.ids.length);
+        } catch (err) {
+          console.warn('Refine QC skipped:', err instanceof Error ? err.message : String(err));
+        }
+        if (gen !== generation) {
+          dropTraces(ctx);
+          return;
+        }
+      }
       await startReplayPipeline(
         client,
         plan1,
@@ -337,13 +360,20 @@ export function createRefineStore(
           library: bytes,
           refine: true,
           forwardBuffers: REFINE_FORWARD_BUFFERS,
+          ...comp.settings,
+          // The FOV images of a factor Extract come from the replay that made the factors.
+          ...(ctx.compressed ? { projection: true } : {}),
         },
         { frames: ctx.frames, record: rec, flatField: flatMap },
       );
       if (gen !== generation) return;
+      pumping = true;
       pump(gen, ctx);
     } catch (err) {
       fail(gen, ctx, err instanceof Error ? err.message : String(err));
+    } finally {
+      // Until the pump has the replay, its end is here: a throw or a stop before it runs cuts it short.
+      if (!pumping) ctx.ended(false);
     }
   }
 
@@ -355,6 +385,7 @@ export function createRefineStore(
     inFlight = 0;
     setStatus('cancelled');
     if (current) {
+      current.ended(false);
       record(current, 'cancelled');
       dropTraces(current);
     }
@@ -364,7 +395,10 @@ export function createRefineStore(
   /** Forget the state (a new Discover run, another recording). */
   function clear(): void {
     if (status() === 'running' || status() === 'finishing') generation++;
-    if (current) dropTraces(current);
+    if (current) {
+      current.ended(false);
+      dropTraces(current);
+    }
     current = null;
     setStatus('idle');
     setError(null);

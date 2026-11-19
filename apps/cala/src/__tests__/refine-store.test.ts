@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CellStore } from '../lib/cell-store.ts';
+import type { ReplayCompressLike } from '../lib/factor-extract.ts';
 import type { FlatFieldMap } from '../lib/flat-field.ts';
+import type { FovProjections } from '../lib/fov-projection.ts';
 import type { PipelineClient } from '../lib/frame-client.ts';
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelinePlan } from '../lib/pipeline-plan.ts';
@@ -88,6 +90,14 @@ function setup(
     refineQc?: RefineQcOptions;
     clock?: () => number;
     flatMap?: FlatFieldMap;
+    /** What the replay's last step carries. */
+    projection?: FovProjections;
+    /** The replay never answers a step (still running when the test cancels it). */
+    hang?: boolean;
+    /** The replay fails to start. */
+    startFails?: boolean;
+    /** The slow loop never publishes its final library (the run stays `finishing`). */
+    noFinal?: boolean;
   } = {},
 ) {
   const frames = 4 * (opts.batches ?? 3);
@@ -108,7 +118,7 @@ function setup(
   const ahead: number[] = [];
   const steps: PipelineStepResult[] = [
     ...Array.from({ length: frames / 4 }, (_, i) => batch(4 * i, 4, opts.cellIds?.(i))),
-    { kind: 'done' },
+    { kind: 'done', ...(opts.projection ? { projection: opts.projection } : {}) },
   ];
   const started: { options: unknown; cells: unknown; replay: unknown }[] = [];
   const stops: unknown[] = [];
@@ -120,15 +130,17 @@ function setup(
       started.push({ options, cells, replay });
       // The slow worker takes the `replay` message with the first batch.
       slow = { ...slow, run: 2, final: false, frame: 0, consumed: 0, editScope: 'refine' };
+      if (opts.startFails) throw new Error('no worker');
       return PLAN;
     },
     async stepPipeline() {
+      if (opts.hang) return new Promise<PipelineStepResult>(() => {});
       const s = steps.shift() ?? { kind: 'done' };
       if (s.kind === 'batch') {
         forwarded = s.start + s.count;
         ahead.push(forwarded - (slow.consumed ?? 0));
         if (!opts.lagging) consume(forwarded);
-      } else if (s.kind === 'done') {
+      } else if (s.kind === 'done' && !opts.noFinal) {
         // The slow loop publishes its final library after the end.
         setTimeout(() => {
           slow = { ...slow, final: true, counters: { ...slow.counters, refines: 16 } };
@@ -383,5 +395,95 @@ describe('Refine store', () => {
     expect(store.status()).toBe('error');
     expect(store.error()).toBe('Extract is running.');
     expect(t.started).toHaveLength(0);
+  });
+
+  /** A compress option that logs what the replay does with it. */
+  function compressing(proj?: FovProjections): { compress: ReplayCompressLike; calls: string[] } {
+    const calls: string[] = [];
+    const compress: ReplayCompressLike = {
+      replayCompress: () => {
+        calls.push('compress');
+        return {
+          settings: { compress: true, compressTiling: 'offset', compressSession: 7 },
+          ended: (ok) => void calls.push(`ended ${ok}`),
+        };
+      },
+      keepProjection: (p) => void calls.push(p === proj ? 'projection' : 'other'),
+    };
+    return { compress, calls };
+  }
+
+  it('compresses its replay when the factors say so, and keeps its projections', async () => {
+    const proj = { spans: [] } as unknown as FovProjections;
+    const { compress, calls } = compressing(proj);
+    const t = setup({ refineQc: { compress }, projection: proj });
+    await t.store.run();
+    expect(t.started[0].cells).toMatchObject({
+      compress: true,
+      compressTiling: 'offset',
+      compressSession: 7,
+      projection: true,
+    });
+    await until(() => t.store.status() === 'done');
+    expect(calls).toEqual(['compress', 'projection', 'ended true']);
+    expect(t.log.last('refine')?.source).toBe('raw');
+  });
+
+  it('asks for no projections when its replay does not compress', async () => {
+    const t = setup({
+      refineQc: {
+        compress: { replayCompress: () => ({ settings: {}, ended() {} }), keepProjection() {} },
+      },
+    });
+    await t.store.run();
+    expect('projection' in (t.started[0].cells as object)).toBe(false);
+    await until(() => t.store.status() === 'done');
+  });
+
+  it('releases the compress mark when its replay is cancelled', async () => {
+    const { compress, calls } = compressing();
+    const t = setup({ hang: true, refineQc: { compress } });
+    await t.store.run();
+    expect(calls).toEqual(['compress']);
+    t.store.cancel();
+    expect(calls).toEqual(['compress', 'ended false']);
+    expect(t.log.last('refine')?.outcome).toBe('cancelled');
+  });
+
+  it('releases the compress mark when its replay fails to start', async () => {
+    const { compress, calls } = compressing();
+    const t = setup({ startFails: true, refineQc: { compress } });
+    await t.store.run();
+    expect(t.store.status()).toBe('error');
+    expect(calls).toEqual(['compress', 'ended false']);
+  });
+
+  it('releases the compress mark when it returns early, before its replay starts', async () => {
+    const { compress, calls } = compressing();
+    let made = (_f: TraceFile) => {};
+    const t = setup({
+      refineQc: {
+        compress,
+        qc: async () => null,
+        traceFile: () => new Promise<TraceFile>((r) => (made = r)),
+      },
+    });
+    const running = t.store.run();
+    await Promise.resolve();
+    t.store.clear();
+    made(await createTraceFile(12, 4, { forceMemory: true }));
+    await running;
+    expect(t.started).toHaveLength(0);
+    expect(calls).toEqual(['compress', 'ended false']);
+  });
+
+  it('keeps the compress mark of a replay that finished when the run is cancelled after it', async () => {
+    const { compress, calls } = compressing();
+    const t = setup({ noFinal: true, refineQc: { compress } });
+    await t.store.run();
+    await until(() => t.store.status() === 'finishing');
+    t.store.cancel();
+    expect(t.store.status()).toBe('cancelled');
+    expect(calls).toEqual(['compress', 'ended true']);
   });
 });
