@@ -138,6 +138,10 @@ def command(
         cmd += ["--frames", str(frames)]
     if budget is not None:
         cmd += ["--budget", str(budget)]
+    # `qc_eval` takes the first occurrence of a flag, so a repeat would be ignored silently.
+    for flag in (t for t in extra or [] if t.startswith("--")):
+        if flag in cmd:
+            raise ValueError(f"--extra {flag} is already set by the arm or the command")
     return cmd + (extra or [])
 
 

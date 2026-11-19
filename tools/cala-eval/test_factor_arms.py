@@ -162,6 +162,29 @@ class Arms(unittest.TestCase):
         )
         self.assertEqual(cmd[-2:], ["--joint-update", "all"])
 
+    def test_an_extra_flag_the_command_already_has_is_refused(self) -> None:
+        # qc_eval takes the first occurrence of a flag, so a repeat would be ignored.
+        for extra in (
+            ["--passes", "3"],
+            ["--motion"],
+            ["--frames", "10"],
+            ["--budget", "5"],
+            ["--joint-update", "all", "--extract-pass"],
+        ):
+            with self.assertRaisesRegex(
+                ValueError, extra[-1] if len(extra) > 2 else extra[0]
+            ):
+                A.command(
+                    Path("qc"),
+                    Path("rec"),
+                    Path("out/raw"),
+                    A.arms(5)["raw"],
+                    motion=True,
+                    frames=100,
+                    budget=7,
+                    extra=extra,
+                )
+
     def test_raw_command_has_no_factor_folder(self) -> None:
         cmd = A.command(
             Path("qc"),
