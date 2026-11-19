@@ -8,7 +8,9 @@ import type { FrameClient } from './frame-client.ts';
 import type {
   SlowConnect,
   SlowLookbackPort,
+  SlowRefineFactors,
   SlowReviewed,
+  SlowStopFactors,
   SlowStopSettling,
   SlowToMain,
   VisitConnect,
@@ -23,6 +25,10 @@ export interface SlowClient {
   connectLookback(port: MessagePort): void;
   /** Stop a look-back run's settling now: its final library is published with what was refined. */
   stopSettling(session: number): void;
+  /** Refine on the factors in the slow worker, on the files of `msg.folder`. */
+  refineOnFactors(msg: Omit<SlowRefineFactors, 'type'>): void;
+  /** Stop it after its current iteration. */
+  stopFactors(session: number): void;
   dispose(): void;
 }
 
@@ -106,6 +112,12 @@ export function createSlowClient(
     stopSettling(session) {
       const msg: SlowStopSettling = { type: 'stop-settling', session };
       worker.postMessage(msg);
+    },
+    refineOnFactors(msg) {
+      worker.postMessage({ type: 'refine-factors', ...msg } satisfies SlowRefineFactors);
+    },
+    stopFactors(session) {
+      worker.postMessage({ type: 'stop-factors', session } satisfies SlowStopFactors);
     },
     dispose() {
       worker.terminate();

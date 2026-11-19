@@ -262,22 +262,26 @@ export function createCellStore(
     if (msg.session !== session && !(msg.type === 'error' && msg.session === -1)) return;
     if (msg.type === 'library') onLibrary(msg.library, msg.bytes);
     else if (msg.type === 'status') {
-      if (!msg.status.final) {
-        pushRecent(slowBatchMs, msg.status.batchMs);
-        pushRecent(slowStepMs, msg.status.maxStepMs);
-      }
       const st = msg.status;
-      const c = st.counters;
-      editRates.push(st.frame / fps() / 60, {
-        adds: c.adds,
-        merges: c.merges,
-        splits: c.splits ?? 0,
-        deletes: c.deletes ?? 0,
-        newAdds: c.newAdds ?? 0,
-        reAdds: c.reAdds ?? 0,
-        churned: c.churned ?? 0,
-        establishedRemovals: c.establishedRemovals ?? 0,
-      });
+      // An iteration of Refine on the factors reads the whole recording at
+      // once: it has no batch timing, and its frame is no point in stream time.
+      if (!st.factorRun) {
+        if (!st.final) {
+          pushRecent(slowBatchMs, st.batchMs);
+          pushRecent(slowStepMs, st.maxStepMs);
+        }
+        const c = st.counters;
+        editRates.push(st.frame / fps() / 60, {
+          adds: c.adds,
+          merges: c.merges,
+          splits: c.splits ?? 0,
+          deletes: c.deletes ?? 0,
+          newAdds: c.newAdds ?? 0,
+          reAdds: c.reAdds ?? 0,
+          churned: c.churned ?? 0,
+          establishedRemovals: c.establishedRemovals ?? 0,
+        });
+      }
       if (st.cellStatus) {
         const m = new Map<number, boolean>();
         const { ids, established: est } = st.cellStatus;
@@ -286,6 +290,8 @@ export function createCellStore(
       }
       setStatus(st);
       for (const fn of statusListeners) fn(st);
+    } else if (msg.type === 'factor-iteration' || msg.type === 'factor-end') {
+      // Refine on the factors: the store that started it reads these (its errors come in `factor-end`).
     } else setError(msg.message);
   }
 
