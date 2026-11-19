@@ -35,6 +35,32 @@ describe('cellMovie', () => {
     expect(cornerMean).toBeLessThan(32);
     expect(centreMean).toBeGreaterThan(cornerMean + 3);
   });
+
+  it('has the frames asked for, 3000 by default', () => {
+    expect(cellMovie().frames).toBe(3000);
+    expect(cellMovie(96, 96, 1800).frames).toBe(1800);
+  });
+
+  it('keeps transients sparse: each cell is active in a small share of frames', () => {
+    // 600 frames hold about 6 transients per cell: enough for a share, quick to make.
+    const frames = 600;
+    const m = cellMovie(96, 96, frames);
+    const stride = rowStride(96, 8);
+    // Cell 0, cell 5 and cell 15; 15 grey levels over the background is 5 noise sds.
+    const watched = [0, 5, 15];
+    const active = watched.map(() => 0);
+    for (let f = 0; f < frames; f++) {
+      const p = m.payload(f);
+      watched.forEach((k, i) => {
+        const [y, x] = m.cells[k];
+        if (p[y * stride + x] > 45) active[i]++;
+      });
+    }
+    for (const n of active) {
+      expect(n / frames).toBeGreaterThan(0.03);
+      expect(n / frames).toBeLessThan(0.3);
+    }
+  });
 });
 
 describe('buildAvi payload', () => {
