@@ -62,6 +62,7 @@ export {
   TraceLibraryBuilder,
   VisitWorker,
 };
+export type { FactorReader } from '../../../../crates/cala/pkg/calab_cala.js';
 
 let ready: Promise<void> | null = null;
 let memory: WebAssembly.Memory | null = null;

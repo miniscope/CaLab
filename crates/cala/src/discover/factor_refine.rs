@@ -1249,6 +1249,14 @@ impl WindowBytes for Vec<Vec<u8>> {
     }
 }
 
+/// The most frames a factor file's window may claim. The compressor writes
+/// windows of `CompressConfig::default().window` (600) frames, the last one
+/// shorter; 16 times that leaves room for a longer window setting. The file
+/// length does not bound the count (a rank-0 tile has no per-frame data), and
+/// an iteration loops and allocates per frame, so a hostile header could ask
+/// for minutes of work and an allocation that traps on wasm32.
+pub(crate) const MAX_WINDOW_FRAMES: usize = 16 * 600;
+
 /// A [`FactorSource`] over factor files (`WindowFactors::to_bytes`): a file
 /// that cannot be read or parsed is a [`TraceError`], never a panic.
 pub struct ByteSource<B: WindowBytes>(pub B);
@@ -1263,11 +1271,30 @@ impl<B: WindowBytes> FactorSource for ByteSource<B> {
             .0
             .bytes(w)
             .map_err(|m| TraceError::InvalidConfig(format!("factor window {w}: {m}")))?;
-        WindowFactors::from_bytes(&bytes).ok_or_else(|| {
+        let wf = WindowFactors::from_bytes(&bytes).ok_or_else(|| {
             TraceError::InvalidConfig(format!(
                 "factor window {w}: truncated or corrupt factor file"
             ))
-        })
+        })?;
+        if !(1..=MAX_WINDOW_FRAMES).contains(&wf.frames) {
+            return Err(TraceError::InvalidConfig(format!(
+                "factor window {w}: {} frames, outside 1..={MAX_WINDOW_FRAMES}",
+                wf.frames
+            )));
+        }
+        // The iteration counts frames across windows in a usize (32 bits on
+        // wasm32): a window must end where that count cannot overflow.
+        let fits = wf
+            .start
+            .checked_add(wf.frames as u64)
+            .is_some_and(|end| end <= u64::from(u32::MAX));
+        if !fits {
+            return Err(TraceError::InvalidConfig(format!(
+                "factor window {w}: ends past frame {}",
+                u32::MAX
+            )));
+        }
+        Ok(wf)
     }
 }
 
@@ -2443,5 +2470,93 @@ mod tests {
                 settle,
             ]
         );
+    }
+
+    /// Window 0 of the fixture with rank-0 tiles (no per-frame data, so the
+    /// file stays small whatever its frame count) as a factor file.
+    fn rank0_file(windows: &[WindowFactors], frames: usize, start: u64) -> Vec<u8> {
+        let mut wf = windows[0].clone();
+        wf.frames = frames;
+        wf.start = start;
+        for t in &mut wf.tiles {
+            t.rank = 0;
+            t.spatial.clear();
+            t.temporal.clear();
+        }
+        wf.to_bytes()
+    }
+
+    #[test]
+    fn a_window_of_too_many_or_no_frames_is_refused_at_once() {
+        assert!(MAX_WINDOW_FRAMES >= 8 * CompressConfig::default().window);
+        let rc = FactorRefineConfig::default();
+        let (mut sl, windows) = fixture(cfg(v2_config().background));
+        let before = loop_state(&sl);
+        for frames in [MAX_WINDOW_FRAMES + 1, u32::MAX as usize, 0] {
+            let file = rank0_file(&windows, frames, 0);
+            assert!(file.len() < 1 << 20, "a small file");
+            let err = refine_one(&mut sl, &mut ByteSource(vec![file]), &rc)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains(&format!("factor window 0: {frames} frames")),
+                "{err}"
+            );
+            assert_eq!(loop_state(&sl), before);
+        }
+        // A window ending past what a frame index can count on wasm32.
+        let file = rank0_file(&windows, 600, u64::from(u32::MAX) - 10);
+        let err = refine_one(&mut sl, &mut ByteSource(vec![file]), &rc)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("factor window 0: ends past frame"), "{err}");
+        assert_eq!(loop_state(&sl), before);
+    }
+
+    /// The library an iteration publishes reaches the binding's versions
+    /// (what `observe` takes) only with the caller's `finalize`, which
+    /// returns it; a second `finalize` publishes nothing new.
+    #[cfg(feature = "jsbindings")]
+    #[test]
+    fn the_js_surface_publishes_the_iteration_on_finalize() {
+        let (b, windows) = fixture(cfg(v2_config().background));
+        let lib = b.library().unwrap().clone();
+        let before = lib.version() as f64;
+        let mut js = super::super::js::JsSlowLoop::from_parts(b, lib);
+        let r = js
+            .factor_iteration(&mut ByteSource(files(&windows)), 0.99, 0.02, 0)
+            .unwrap();
+        assert!(r[4] > 0.0, "the fixture accepts refinements");
+        assert_ne!(r[0], before, "so the version moves");
+        assert!(!js.knows_version(r[0]));
+        let frames = js.inner().frames();
+        let got = js.finalize().map_err(|_| "finalize").unwrap();
+        assert_eq!(got.version(), r[0]);
+        assert!(js.knows_version(r[0]));
+        let again = js.finalize().map_err(|_| "finalize").unwrap();
+        assert_eq!(again.version(), r[0]);
+        assert_eq!(js.inner().frames(), frames);
+    }
+
+    /// `testFrames` below the loop's `min_test_frames` (but not 0) would
+    /// skip every tile: refused, as qc_eval refuses `--test-frames`.
+    #[cfg(feature = "jsbindings")]
+    #[test]
+    fn the_js_surface_refuses_too_few_test_frames() {
+        let (b, windows) = fixture(cfg(v2_config().background));
+        let lib = b.library().unwrap().clone();
+        let mut js = super::super::js::JsSlowLoop::from_parts(b, lib);
+        let min = js.inner().config().min_test_frames as u32;
+        let before = loop_state(js.inner());
+        for k in [1, min - 1] {
+            let err = js
+                .factor_iteration(&mut ByteSource(files(&windows)), 0.99, 0.02, k)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("min_test_frames"), "{err}");
+            assert_eq!(loop_state(js.inner()), before);
+        }
+        js.factor_iteration(&mut ByteSource(files(&windows)), 0.99, 0.02, min)
+            .unwrap();
     }
 }

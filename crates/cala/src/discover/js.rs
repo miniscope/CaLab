@@ -103,15 +103,29 @@ fn slow_config(
     })
 }
 
+#[wasm_bindgen(typescript_custom_section)]
+const FACTOR_READER_TS: &str = r#"
+/** The factor windows of a run, in frame order (`SlowLoop.refineOnFactors`). */
+export interface FactorReader {
+  /** How many windows there are. */
+  readonly windows: number;
+  /** Window `w`'s whole factor file. */
+  read(w: number): Uint8Array;
+}
+"#;
+
 #[wasm_bindgen]
 extern "C" {
     /// The factor windows of a run, in frame order, as the slow worker reads
     /// them (`openFactorReader` in apps/cala/src/lib/window-store.ts): any
     /// object with a `windows` count and `read(w)` returning window `w`'s
     /// whole factor file as a `Uint8Array`.
+    #[wasm_bindgen(typescript_type = "FactorReader")]
     pub type FactorReader;
-    #[wasm_bindgen(method, getter)]
-    fn windows(this: &FactorReader) -> u32;
+    // Every import is caught: a JS exception through an uncaught import
+    // unwinds past Rust and leaves the `SlowLoop` borrowed for good.
+    #[wasm_bindgen(method, getter, catch)]
+    fn windows(this: &FactorReader) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(method, catch)]
     fn read(this: &FactorReader, w: u32) -> Result<Vec<u8>, JsValue>;
     /// JS `String(v)`: an Error's name and message without its stack.
@@ -120,19 +134,41 @@ extern "C" {
     fn js_string(v: &JsValue) -> Result<String, JsValue>;
 }
 
-/// A [`FactorReader`] as the windows' bytes; an error it throws becomes its message.
-struct JsWindows<'a>(&'a FactorReader);
+/// A thrown JS value as text.
+fn thrown(e: &JsValue) -> String {
+    js_string(e).unwrap_or_else(|_| "the reader threw".into())
+}
+
+/// `reader.windows`, read once: a whole number a window index can reach on
+/// wasm32 (0 to `u32::MAX`), else an error.
+fn window_count(reader: &FactorReader) -> Result<usize, String> {
+    let v = reader
+        .windows()
+        .map_err(|e| format!("reading reader.windows threw: {}", thrown(&e)))?;
+    match v.as_f64() {
+        Some(n) if n >= 0.0 && n <= f64::from(u32::MAX) && n.fract() == 0.0 => Ok(n as usize),
+        _ => Err(format!(
+            "reader.windows must be a whole number from 0 to {}",
+            u32::MAX
+        )),
+    }
+}
+
+/// A [`FactorReader`] with its window count as the windows' bytes; an error
+/// it throws becomes its message.
+struct JsWindows<'a> {
+    reader: &'a FactorReader,
+    count: usize,
+}
 
 impl WindowBytes for JsWindows<'_> {
     fn count(&self) -> usize {
-        self.0.windows() as usize
+        self.count
     }
 
     fn bytes(&mut self, w: usize) -> Result<Vec<u8>, String> {
         let w = u32::try_from(w).map_err(|_| format!("window index {w}"))?;
-        self.0
-            .read(w)
-            .map_err(|e| js_string(&e).unwrap_or_else(|_| "the reader threw".into()))
+        self.reader.read(w).map_err(|e| thrown(&e))
     }
 }
 
@@ -487,13 +523,24 @@ impl JsSlowLoop {
 
     /// One Refine iteration on the factors of `reader` (spec §5): the
     /// library's `refine_until_settled` with a cap of 1, as qc_eval's
-    /// `--refine-engine factors` runs it. Call `setEditScope('refine')`
-    /// first; the caller loops, stops on the settle code or its own cap and
-    /// takes the library with `finalize`. Returns `[libraryVersion, cells,
-    /// frames, fittingFrames, accepted, changedShare, medianChange, lowValid,
-    /// tilesSkipped, settle]`, `settle` 0 = not settled, 1 = settled, 2 =
-    /// settled with nothing accepted. A refused or failed iteration is an
-    /// error and leaves the loop as it was.
+    /// `--refine-engine factors` runs it.
+    ///
+    /// The caller's sequence: before the first iteration `setNoise` (the
+    /// current noise map), `setEditScope('refine')` and `finalize()`, so no
+    /// edit is pending; then one call per iteration, stopping on the settle
+    /// code or its own cap; after an iteration `finalize()` returns the
+    /// library it published (its version is `libraryVersion`), and only
+    /// from then on does `observe` take frames solved with that version.
+    /// `testFrames` is 0 (what a tile's reservoir holds on average) or at
+    /// least the loop's `min_test_frames`.
+    ///
+    /// Returns `[libraryVersion, cells, frames, fittingFrames, accepted,
+    /// changedShare, medianChange, lowValid, tilesSkipped, settle]`,
+    /// `settle` 0 = not settled, 1 = settled, 2 = settled with nothing
+    /// accepted. A refused or failed iteration is an error. A bad reader or
+    /// `testFrames`, or visits still out, change nothing; past those checks
+    /// pending edits are published first (as `finalize` would), and a later
+    /// failure leaves the loop as that left it.
     #[wasm_bindgen(js_name = refineOnFactors)]
     pub fn refine_on_factors(
         &mut self,
@@ -502,8 +549,9 @@ impl JsSlowLoop {
         settle_share: f32,
         test_frames: u32,
     ) -> Result<Vec<f64>, JsError> {
+        let count = window_count(reader).map_err(|m| js_err("refineOnFactors", m))?;
         self.factor_iteration(
-            &mut ByteSource(JsWindows(reader)),
+            &mut ByteSource(JsWindows { reader, count }),
             settle_corr,
             settle_share,
             test_frames,
@@ -759,6 +807,15 @@ impl JsSlowLoop {
             return Err(TraceError::InvalidConfig(
                 "tile visits are out: Refine on factors waits for them".into(),
             ));
+        }
+        // Below the minimum every tile is skipped and the run "settles"
+        // having refined nothing (qc_eval refuses `--test-frames` alike).
+        let min = self.inner.config().min_test_frames;
+        if test_frames != 0 && (test_frames as usize) < min {
+            return Err(TraceError::InvalidConfig(format!(
+                "testFrames {test_frames}: below the slow loop's min_test_frames ({min}), \
+                 so every tile would be skipped; use 0 or at least {min}"
+            )));
         }
         let cfg = FactorRefineConfig {
             settle_corr,
