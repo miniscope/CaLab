@@ -204,8 +204,16 @@ const App: Component = () => {
     replayBlocked: replayBlocked(pipeline),
   });
   const availability = () => stageAvailability(stageInput());
-  const pass2 = createPass2Store(client, pipeline, cells, undefined, () =>
-    refine.status() === 'running' || refine.status() === 'finishing' ? 'Refine is running.' : null,
+  const pass2 = createPass2Store(
+    client,
+    pipeline,
+    cells,
+    undefined,
+    () =>
+      refine.status() === 'running' || refine.status() === 'finishing'
+        ? 'Refine is running.'
+        : null,
+    compress ? () => cells.session() : undefined,
   );
   // Refine's QC: the trace statistics of the replay's traces over the whole
   // recording, as after Extract (the replay runs no QC monitor).

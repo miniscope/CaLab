@@ -3,6 +3,8 @@
  * synchronous access handles (see lib/opfs-writer.ts). One handle per open
  * file name; requests are answered in order.
  */
+import { pinned } from '../lib/window-store.ts';
+
 export type OpfsRequest =
   | { id: number; op: 'open'; name: string }
   | { id: number; op: 'write'; name: string; at: number; bytes: Uint8Array }
@@ -45,7 +47,8 @@ async function handle(req: OpfsRequest): Promise<number | undefined> {
     case 'open': {
       closeHandle(req.name);
       const fh = (await (await root()).getFileHandle(req.name, { create: true })) as SyncFileHandle;
-      const h = await fh.createSyncAccessHandle();
+      // Pinned: Chrome loses the open when the file handle is collected meanwhile (see window-store.ts).
+      const h = await pinned(fh, (f) => f.createSyncAccessHandle());
       h.truncate(0);
       handles.set(req.name, h);
       return;
@@ -77,7 +80,7 @@ async function handle(req: OpfsRequest): Promise<number | undefined> {
       // storage): the failure only shows when a synchronous handle is opened.
       const name = 'cala-probe';
       const fh = (await (await root()).getFileHandle(name, { create: true })) as SyncFileHandle;
-      const h = await fh.createSyncAccessHandle();
+      const h = await pinned(fh, (f) => f.createSyncAccessHandle());
       h.write(new Uint8Array(8), { at: 0 });
       h.close();
       await (await root()).removeEntry(name);

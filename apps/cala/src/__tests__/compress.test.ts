@@ -1,16 +1,20 @@
 // @vitest-environment node
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  FactorExtractor,
   FactorWindow,
+  factorHeader,
   quantizeTiles,
+  tileLayout,
   TileCompressor,
   TraceEngine,
   TraceLibrary,
   TraceLibraryBuilder,
 } from '../lib/cala-wasm.ts';
 import { createCellStore } from '../lib/cell-store.ts';
-import { CompressFeed } from '../lib/compress-feed.ts';
-import { CompressRunner, factorName, tileGrid } from '../lib/compress-runner.ts';
+import { CompressFeed, compressFeedFor, compressFeedOptions } from '../lib/compress-feed.ts';
+import { CompressRunner, factorName, tilesOf } from '../lib/compress-runner.ts';
+import type { CompressRunnerDeps } from '../lib/compress-runner.ts';
 import { compressReadout, createCompressStore } from '../lib/compress-store.ts';
 import { memoryStore } from '../lib/window-store.ts';
 import type { CompressToMain, FastToCompress } from '../workers/compress-types.ts';
@@ -57,44 +61,37 @@ function collectingFeed(window: number) {
   return { feed, sent };
 }
 
-function runner(store = memoryStore()) {
+function runner(store = memoryStore(), extra: Partial<CompressRunnerDeps> = {}) {
   const toMain: CompressToMain[] = [];
   const r = new CompressRunner({
     store,
     quantize: quantizeTiles,
+    layout: tileLayout,
+    header: factorHeader,
     create: (quant) => new TileCompressor(quant),
-    engine: (bytes) => {
-      const lib = TraceLibrary.fromBytes(bytes);
-      const engine = new TraceEngine(lib, 0, 0);
-      const ids = lib.ids();
-      lib.free();
-      return {
-        ids: () => ids,
-        processFrames: (frames, count) => engine.processFrames(frames, count),
-        free: () => engine.free(),
-      };
-    },
-    factors: (bytes) => FactorWindow.fromBytes(bytes),
+    extract: (bytes) => new FactorExtractor(bytes, 0, 0),
     toMain: { postMessage: (m) => toMain.push(m) },
     yieldNow: () => Promise.resolve(),
+    ...extra,
   });
   return { r, store, toMain };
 }
 
-/** The tiles of a factor file: position, rank and the three float arrays. */
+/** The tiles of a v2 factor file: position, rank and the five float arrays. */
 function readFactors(bytes: Uint8Array) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  expect(new TextDecoder().decode(bytes.subarray(0, 8))).toBe('CALAFAC1');
+  expect(new TextDecoder().decode(bytes.subarray(0, 8))).toBe('CALAFAC2');
   const [width, height, tile, frames, n] = [8, 12, 16, 20, 24].map((o) => view.getUint32(o, true));
   const start = view.getFloat64(28, true);
+  const [kind, param] = [36, 40].map((o) => view.getUint32(o, true));
   const tiles = [];
-  let at = 36;
+  let at = 44;
   for (let i = 0; i < n; i++) {
     const len = view.getUint32(at, true);
     const b = bytes.slice(at + 4, at + 4 + len);
     at += 4 + len;
     const v = new DataView(b.buffer);
-    expect(new TextDecoder().decode(b.subarray(0, 4))).toBe('CTF1');
+    expect(new TextDecoder().decode(b.subarray(0, 4))).toBe('CTF2');
     const [x0, y0, w, h, rank, t] = [4, 8, 12, 16, 20, 24].map((o) => v.getUint32(o, true));
     const p = w * h;
     const floats = new Float32Array(b.buffer.slice(48));
@@ -106,12 +103,14 @@ function readFactors(bytes: Uint8Array) {
       rank,
       frames: t,
       mean: floats.subarray(0, p),
-      spatial: floats.subarray(p, p + p * rank),
-      temporal: floats.subarray(p + p * rank),
+      discarded: floats.subarray(p, 2 * p),
+      valid: floats.subarray(2 * p, 3 * p),
+      spatial: floats.subarray(3 * p, 3 * p + p * rank),
+      temporal: floats.subarray(3 * p + p * rank),
     });
   }
   expect(at).toBe(bytes.length);
-  return { width, height, tile, frames, start, tiles };
+  return { width, height, tile, frames, start, kind, param, tiles };
 }
 
 describe('CompressFeed', () => {
@@ -167,8 +166,61 @@ describe('CompressFeed', () => {
 });
 
 describe('CompressRunner', () => {
+  it('a reset clears the status: no windows, no Recalibrated factors', async () => {
+    const { feed, sent } = feedWith({ tiling: 'offset', source: 'replay' });
+    feed.push(batch(0, 100), 0, 100);
+    feed.reset();
+    expect(sent[sent.length - 1].type).toBe('reset');
+    const { r, store, toMain } = runner();
+    for (const m of sent.slice(0, -1)) await r.handle(m);
+    await r.idle();
+    const mid = toMain[toMain.length - 1];
+    if (mid.type !== 'status') throw new Error('the last message is not a status');
+    expect(mid.status.windows).toBe(2);
+    await r.handle(sent[sent.length - 1]);
+    await r.idle();
+    expect(store.files.size).toBe(0);
+    const last = toMain[toMain.length - 1];
+    if (last.type !== 'status') throw new Error('the last message is not a status');
+    expect(last.status).toMatchObject({ windows: 0, frames: 0, pending: 0, final: false });
+    expect(compressReadout(last.status)).not.toMatch(/Recalibrated factors/);
+  });
+
+  it('a replay of the same session replaces the windows of Discover', async () => {
+    const discover = feedWith({});
+    discover.feed.push(batch(0, 100), 0, 100);
+    discover.feed.end();
+    const replay = feedWith({ tiling: 'offset', source: 'replay' });
+    replay.feed.push(batch(0, 60), 0, 60);
+    replay.feed.end();
+    const { r, store, toMain } = runner();
+    // The replay starts while Discover's windows are still being compressed.
+    for (const m of [...discover.sent, ...replay.sent]) await r.handle(m);
+    await r.idle();
+
+    expect([...store.files.keys()].sort()).toEqual([0, 1].map(factorName));
+    const win = FactorWindow.fromBytes(store.files.get(factorName(1))!);
+    try {
+      expect([win.frames, win.start, win.tiling]).toEqual([10, 50, 'offset']);
+    } finally {
+      win.free();
+    }
+    const last = toMain[toMain.length - 1];
+    if (last.type !== 'status') throw new Error('the last message is not a status');
+    expect(last.status).toMatchObject({
+      windows: 2,
+      frames: 60,
+      final: true,
+      tiling: 'offset',
+      source: 'replay',
+    });
+    expect(compressReadout(last.status, { version: 3, frames: 100, msPerFrame: 1 })).toMatch(
+      /^Recalibrated factors: 2 windows · rank \d[^(]*$/,
+    );
+  });
+
   it('lays out the tiles like the quantizer', () => {
-    const grid = tileGrid(W, H, TILE);
+    const grid = tilesOf(tileLayout(W, H, TILE, 'plain'));
     expect(grid.map((t) => [t.x0, t.y0, t.w, t.h])).toEqual([
       [0, 0, 16, 16],
       [16, 0, 16, 16],
@@ -212,12 +264,14 @@ describe('CompressRunner', () => {
         starts[k],
       ]);
       expect(f.tiles.length).toBe(6);
+      expect([f.kind, f.param]).toEqual([0, 0]);
       // Rebuild one frame of the window from the factors.
       const t = Math.floor(frames[k] / 2);
       const want = frame(starts[k] + t);
       let worst = 0;
       for (const tile of f.tiles) {
         expect(tile.frames).toBe(frames[k]);
+        expect([...tile.valid].every((v) => v === 1)).toBe(true);
         expect(tile.rank).toBeGreaterThanOrEqual(1);
         expect(tile.rank).toBeLessThanOrEqual(6);
         for (let y = 0; y < tile.h; y++) {
@@ -234,6 +288,229 @@ describe('CompressRunner', () => {
       // The 20-frame tail keeps fewer components: the white-noise test of the rank cut
       // (lag-1 autocorrelation above 4 / sqrt(frames)) is stricter on few frames.
       if (frames[k] === 50) expect(worst, `window ${k}`).toBeLessThan(0.1);
+    }
+  });
+
+  /** A feed with its own options whose messages are collected. */
+  function feedWith(options: Partial<ConstructorParameters<typeof CompressFeed>[0]>) {
+    const sent: FastToCompress[] = [];
+    const feed = new CompressFeed(
+      { width: W, height: H, session: 7, tile: TILE, window: 50, quant: QUANT, ...options },
+      { postMessage: (m) => sent.push(m) },
+    );
+    return { feed, sent };
+  }
+
+  it('compresses on the offset grids and rebuilds the frames blended', async () => {
+    const { feed, sent } = feedWith({ tiling: 'offset' });
+    for (let s = 0; s < 120; s += 7)
+      feed.push(batch(s, Math.min(7, 120 - s)), s, Math.min(7, 120 - s));
+    feed.end();
+    expect(sent[0]).toMatchObject({ type: 'init', tiling: 'offset', source: 'discover' });
+    const { r, store, toMain } = runner();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+
+    const tiles = tileLayout(W, H, TILE, 'offset').length / 4;
+    expect(tiles).toBe(12);
+    const last = toMain[toMain.length - 1];
+    if (last.type !== 'status') throw new Error('the last message is not a status');
+    expect(last.status).toMatchObject({
+      windows: 3,
+      frames: 120,
+      final: true,
+      tiling: 'offset',
+      source: 'discover',
+    });
+    const out = new Float32Array(PX);
+    const windows = [
+      [0, 50, 0],
+      [1, 50, 50],
+      [2, 20, 100],
+    ] as const;
+    for (const [k, frames, start] of windows) {
+      const bytes = store.files.get(factorName(k))!;
+      const f = readFactors(bytes);
+      expect([f.kind, f.tiles.length]).toEqual([2, tiles]);
+      const win = FactorWindow.fromBytes(bytes);
+      try {
+        expect([win.frames, win.start, win.tiling, win.tile]).toEqual([
+          frames,
+          start,
+          'offset',
+          TILE,
+        ]);
+        const t = Math.floor(frames / 2);
+        win.reconstruct(t, 1, out);
+        const want = frame(start + t);
+        let worst = 0;
+        for (let i = 0; i < PX; i++) worst = Math.max(worst, Math.abs(out[i] - want[i]));
+        if (frames === 50) expect(worst, `window ${k}`).toBeLessThan(0.1);
+      } finally {
+        win.free();
+      }
+    }
+  });
+
+  it('skips a last window of one frame under the offset grids', async () => {
+    const { feed, sent } = feedWith({ tiling: 'offset' });
+    feed.push(batch(0, 51), 0, 51);
+    feed.end();
+    const { r, store, toMain } = runner();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    expect([...store.files.keys()]).toEqual([factorName(0)]);
+    const last = toMain[toMain.length - 1];
+    if (last.type !== 'status') throw new Error('the last message is not a status');
+    expect(last.status).toMatchObject({ windows: 1, frames: 50, pending: 0, final: true });
+  });
+
+  it('marks a missing pixel as not valid instead of pulling its mean to 0', async () => {
+    const { feed, sent } = feedWith({});
+    const frames = batch(0, 50);
+    // Pixel (0, 0) is missing in the first 20 frames.
+    for (let t = 0; t < 20; t++) frames[t * PX] = Number.NaN;
+    feed.push(frames, 0, 50);
+    feed.end();
+    const { r, store } = runner();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    const first = readFactors(store.files.get(factorName(0))!).tiles[0];
+    expect(first.valid[0]).toBeCloseTo(0.6, 6);
+    expect(first.valid[1]).toBe(1);
+    let mean = 0;
+    for (let t = 20; t < 50; t++) mean += frame(t)[0] / 30;
+    expect(first.mean[0]).toBeCloseTo(mean, 1);
+  });
+
+  it('refuses a tile below 2 in the feed', () => {
+    expect(() => feedWith({ tile: 1 })).toThrow(RangeError);
+    expect(() => feedWith({ tile: 2 })).not.toThrow();
+  });
+
+  it('keeps no half-initialised session when the layout is refused', async () => {
+    // A runner with a valid session: Discover's window 0 compressed, window 1 open.
+    const old = feedWith({});
+    old.feed.push(batch(0, 60), 0, 60);
+    const oldChunks = old.sent.filter((m) => m.type === 'chunk');
+    expect(oldChunks.length).toBeGreaterThan(1);
+    const { r, store, toMain } = runner();
+    for (const m of old.sent) await r.handle(m);
+    await r.idle();
+    expect(store.files.has(factorName(0))).toBe(true);
+    // Extract's replay reuses the session number; its layout is refused.
+    const { feed, sent } = feedWith({ tiling: 'offset', source: 'replay' });
+    feed.push(batch(0, 50), 0, 50);
+    feed.end();
+    expect(sent[0]).toMatchObject({ type: 'init', session: old.sent[0].session });
+    let broken = true;
+    const deps = (r as unknown as { deps: { layout: typeof tileLayout } }).deps;
+    const layout = deps.layout;
+    deps.layout = (...a) => {
+      if (broken) throw new Error('layout refused');
+      return layout(...a);
+    };
+    await expect(r.handle(sent[0])).rejects.toThrow('layout refused');
+    // A stray chunk of the old session (same number) is not cut on its plain grid.
+    await r.handle(oldChunks[oldChunks.length - 1]);
+    for (const m of sent.slice(1)) await r.handle(m); // late chunks of the refused session
+    await r.idle();
+    expect(store.files.size).toBe(0);
+    broken = false;
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    expect([...store.files.keys()]).toEqual([factorName(0)]);
+    expect(toMain.some((m) => m.type === 'error')).toBe(false);
+  });
+
+  it('reports the compute time per frame as the mean over all windows', async () => {
+    // A clock that only quantizing (1 ms per frame) and compressing move: 2 ms
+    // per tile for the window of 50 frames, 7 ms per tile for the one of 20.
+    let clock = 0;
+    const { feed, sent } = feedWith({});
+    feed.push(batch(0, 70), 0, 70);
+    feed.end();
+    const { r, toMain } = runner(memoryStore(), {
+      now: () => clock,
+      quantize: (frames, count, ...rest) => {
+        clock += count;
+        quantizeTiles(frames, count, ...rest);
+      },
+      create: (quant) => {
+        const c = new TileCompressor(quant);
+        return {
+          compress: (raw, frames, x0, y0, w, h, seed) => {
+            clock += frames === 50 ? 2 : 7;
+            return c.compress(raw, frames, x0, y0, w, h, seed);
+          },
+          free: () => c.free(),
+        };
+      },
+    });
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    const tiles = tileLayout(W, H, TILE, 'plain').length / 4;
+    const statuses = toMain.flatMap((m) => (m.type === 'status' ? [m.status] : []));
+    const first = statuses.find((s) => s.windows === 1)!;
+    const last = statuses[statuses.length - 1];
+    expect(last).toMatchObject({ windows: 2, frames: 70, final: true });
+    expect(first.msPerFrame).toBeCloseTo((50 + 2 * tiles) / 50, 9);
+    // Not the last window's (20 + 7 * tiles) / 20.
+    expect(last.msPerFrame).toBeCloseTo((70 + 9 * tiles) / 70, 9);
+  });
+
+  it('reports the mean rank as the mean over all windows, weighted by frames', async () => {
+    // Ranks by window of 50 and of 20 frames, summed over the tiles.
+    const sums = new Map<number, number>();
+    const { feed, sent } = feedWith({});
+    feed.push(batch(0, 70), 0, 70);
+    feed.end();
+    const { r, toMain } = runner(memoryStore(), {
+      create: (quant) => {
+        const c = new TileCompressor(quant);
+        return {
+          compress: (raw, frames, x0, y0, w, h, seed) => {
+            const f = c.compress(raw, frames, x0, y0, w, h, seed);
+            sums.set(frames, (sums.get(frames) ?? 0) + f.rank);
+            return f;
+          },
+          free: () => c.free(),
+        };
+      },
+    });
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    const tiles = tileLayout(W, H, TILE, 'plain').length / 4;
+    const statuses = toMain.flatMap((m) => (m.type === 'status' ? [m.status] : []));
+    const last = statuses[statuses.length - 1];
+    expect(last).toMatchObject({ windows: 2, frames: 70 });
+    const want = (50 * (sums.get(50) ?? 0) + 20 * (sums.get(20) ?? 0)) / tiles / 70;
+    expect(last.meanRank).toBeCloseTo(want, 9);
+    // The weighting is what is pinned: the plain mean of the two windows' ranks differs.
+    const plain = (sums.get(50)! / tiles + sums.get(20)! / tiles) / 2;
+    expect(Math.abs(want - plain)).toBeGreaterThan(0.1);
+  });
+
+  it('compresses a frame whose edge tile is one pixel (33 x 33, tile 16)', async () => {
+    const n = 33;
+    const sent: FastToCompress[] = [];
+    const feed = new CompressFeed(
+      { width: n, height: n, session: 7, tile: 16, window: 20, quant: QUANT, tiling: 'offset' },
+      { postMessage: (m) => sent.push(m) },
+    );
+    const frames = new Float32Array(20 * n * n);
+    for (let t = 0; t < 20; t++)
+      for (let i = 0; i < n * n; i++) frames[t * n * n + i] = 10 + Math.sin(t / 4 + i / 9);
+    feed.push(frames, 0, 20);
+    const { r, store, toMain } = runner();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    expect(toMain.some((m) => m.type === 'error')).toBe(false);
+    const win = FactorWindow.fromBytes(store.files.get(factorName(0))!);
+    try {
+      expect([win.frames, win.tiling]).toEqual([20, 'offset']);
+    } finally {
+      win.free();
     }
   });
 
@@ -338,6 +615,213 @@ describe('back-fill from the factors', () => {
     expect(toMain.filter((m) => m.type === 'backfilled').length).toBe(1);
   });
 
+  it('gives the traces of the frame engine on the rebuilt frames', async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 100; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    feed.library(lib.version, lib.bytes);
+    feed.end();
+    const { r, store, toMain } = runner();
+    for (const m of sent) await r.handle(m);
+    r.backfill(7, lib.version);
+    await r.idle();
+    const windows = toMain.filter((m) => m.type === 'traces');
+    expect(windows.length).toBe(2);
+
+    const library = TraceLibrary.fromBytes(lib.bytes);
+    const engine = new TraceEngine(library, 0, 0);
+    const frames = new Float32Array(50 * PX);
+    try {
+      for (const [k, m] of windows.entries()) {
+        const win = FactorWindow.fromBytes(store.files.get(factorName(k))!);
+        try {
+          win.reconstruct(0, 50, frames);
+        } finally {
+          win.free();
+        }
+        const want = engine.processFrames(frames, 50);
+        expect(m.traces.length).toBe(want.length);
+        let worst = 0;
+        for (let i = 0; i < want.length; i++) {
+          worst = Math.max(worst, Math.abs(m.traces[i] - want[i]));
+        }
+        // The two routes agree to rounding (about 6e-6 seen); the bound is
+        // loose only to stay clear of platform differences.
+        expect(worst, `window ${k}`).toBeLessThan(1e-3);
+      }
+    } finally {
+      engine.free();
+      library.free();
+    }
+  });
+
+  it('gives the traces of the frame engine when the last window is short', async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 120; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    feed.library(lib.version, lib.bytes);
+    feed.end();
+    const { r, store, toMain } = runner();
+    for (const m of sent) await r.handle(m);
+    r.backfill(7, lib.version);
+    await r.idle();
+    const windows = toMain.filter((m) => m.type === 'traces');
+    expect(windows.map((m) => [m.start, m.count])).toEqual([
+      [0, 50],
+      [50, 50],
+      [100, 20],
+    ]);
+    expect(toMain[toMain.length - 1]).toMatchObject({ type: 'backfilled', frames: 120 });
+
+    const library = TraceLibrary.fromBytes(lib.bytes);
+    const engine = new TraceEngine(library, 0, 0);
+    const frames = new Float32Array(50 * PX);
+    try {
+      for (const [k, m] of windows.entries()) {
+        const win = FactorWindow.fromBytes(store.files.get(factorName(k))!);
+        try {
+          win.reconstruct(0, m.count, frames.subarray(0, m.count * PX));
+        } finally {
+          win.free();
+        }
+        const want = engine.processFrames(frames.subarray(0, m.count * PX), m.count);
+        expect(m.traces.length).toBe(want.length);
+        let worst = 0;
+        for (let i = 0; i < want.length; i++) {
+          worst = Math.max(worst, Math.abs(m.traces[i] - want[i]));
+        }
+        expect(worst, `window ${k}`).toBeLessThan(1e-3);
+      }
+    } finally {
+      engine.free();
+      library.free();
+    }
+  });
+
+  it('frees the factor engine and posts nothing more when a reset cuts it short', async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 100; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    feed.library(lib.version, lib.bytes);
+    feed.end();
+    const toMain: CompressToMain[] = [];
+    let freed = 0;
+    let solving = false;
+    let cut: Promise<void> | null = null;
+    const r: CompressRunner = new CompressRunner({
+      store: memoryStore(),
+      quantize: quantizeTiles,
+      create: (quant) => new TileCompressor(quant),
+      layout: tileLayout,
+      header: factorHeader,
+      extract: (bytes) => {
+        const inner = new FactorExtractor(bytes, 0, 0);
+        return {
+          ids: () => inner.ids(),
+          open: (file) => inner.open(file),
+          get start() {
+            return inner.start;
+          },
+          solve: (t0, n) => {
+            solving = true;
+            return inner.solve(t0, n);
+          },
+          free: () => {
+            freed++;
+            inner.free();
+          },
+        };
+      },
+      toMain: { postMessage: (m) => toMain.push(m) },
+      // At the first yield after a solve, a reset arrives.
+      yieldNow: async () => {
+        if (solving && !cut) cut = r.handle({ type: 'reset', session: 7 });
+      },
+    });
+    for (const m of sent) await r.handle(m);
+    r.backfill(7, lib.version);
+    await r.idle();
+    await cut;
+    expect(freed).toBe(1);
+    expect(toMain.some((m) => m.type === 'traces' || m.type === 'backfilled')).toBe(false);
+  });
+
+  describe('FactorExtractor as JS reaches it', () => {
+    /** A valid factor file and the library's bytes, from a compressed recording. */
+    async function fixture() {
+      const lib = cellLibrary();
+      const { feed, sent } = collectingFeed(50);
+      for (let s = 0; s < 50; s += 10) feed.push(cellFrames(s, 10), s, 10);
+      feed.end();
+      const { r, store } = runner();
+      for (const m of sent) await r.handle(m);
+      await r.idle();
+      return { lib, file: store.files.get(factorName(0))! };
+    }
+
+    /** The object still works: a valid open and solve, then free. */
+    function expectUsable(x: FactorExtractor, file: Uint8Array) {
+      expect(x.open(file)).toBe(50);
+      expect(x.solve(0, 5).length).toBe(5 * 2);
+      expect(() => x.free()).not.toThrow();
+    }
+
+    it('refuses bad files, a solve before open and ranges past the window, and stays usable', async () => {
+      const { lib, file } = await fixture();
+      const x = new FactorExtractor(lib.bytes, 0, 0);
+      try {
+        expect([...x.ids()]).toEqual(CELLS.map((c) => c.id));
+        expect(() => x.solve(0, 1)).toThrow(/no window is open/);
+        expect(() => x.open(new Uint8Array([1, 2, 3, 4]))).toThrow();
+        expect(() => x.open(file.slice(0, file.length - 7))).toThrow();
+        expect(() => x.open(file.slice(0, 20))).toThrow();
+        expect(() => x.solve(0, 1)).toThrow(/no window is open/);
+
+        expect(x.open(file)).toBe(50);
+        expect(x.start).toBe(0);
+        expect(() => x.solve(40, 11)).toThrow();
+        expect(() => x.solve(51, 0)).toThrow();
+        expect(() => x.solve(2, 0xffffffff)).toThrow(); // `t0 + count` wraps on wasm32
+        expect(() => x.solve(0xffffffff, 0xffffffff)).toThrow();
+        expect(x.solve(45, 5).length).toBe(5 * 2);
+        expect(x.solve(0, 0).length).toBe(0);
+        // A failed open drops the window.
+        expect(() => x.open(new Uint8Array(3))).toThrow();
+        expect(() => x.solve(0, 1)).toThrow(/no window is open/);
+        expectUsable(x, file);
+      } catch (e) {
+        x.free();
+        throw e;
+      }
+    });
+
+    it('takes a library without cells: no ids, and the back-fill posts nothing', async () => {
+      const b = new TraceLibraryBuilder(W, H);
+      const empty = b.buildUnfiltered();
+      const bytes = empty.toBytes();
+      const version = empty.version;
+      empty.free();
+      b.free();
+      const x = new FactorExtractor(bytes, 0, 0);
+      try {
+        expect(x.ids().length).toBe(0);
+      } finally {
+        x.free();
+      }
+
+      const { feed, sent } = collectingFeed(50);
+      for (let s = 0; s < 50; s += 10) feed.push(cellFrames(s, 10), s, 10);
+      feed.library(version, bytes);
+      feed.end();
+      const { r, toMain } = runner();
+      for (const m of sent) await r.handle(m);
+      r.backfill(7, version);
+      await r.idle();
+      expect(toMain.some((m) => m.type === 'traces' || m.type === 'backfilled')).toBe(false);
+      expect(toMain.some((m) => m.type === 'error')).toBe(false);
+    });
+  });
+
   it('is requested once per run, and its traces replace the live history', () => {
     const cells = createCellStore();
     const store = createCompressStore(cells);
@@ -352,6 +836,8 @@ describe('back-fill from the factors', () => {
       msPerFrame: 8,
       factorBytes: 1 << 20,
       final: false,
+      tiling: 'plain' as const,
+      source: 'discover' as const,
     };
     store.onMessage({ type: 'status', session: 3, status });
     expect(store.takeBackfill(true, true, 4)).toBe(false); // windows still open
@@ -390,5 +876,76 @@ describe('back-fill from the factors', () => {
     expect(compressReadout(store.status(), store.backfill())).toMatch(
       /traces back-filled \(100 frames, 2\.5 ms\/frame\)$/,
     );
+  });
+
+  it("is not requested on the final status of Extract's replay", () => {
+    const store = createCompressStore();
+    store.reset(3);
+    const status = {
+      windows: 2,
+      frames: 100,
+      pending: 0,
+      pendingFrames: 0,
+      meanRank: 2,
+      msPerFrame: 8,
+      factorBytes: 1 << 20,
+      final: true,
+      tiling: 'offset' as const,
+      source: 'replay' as const,
+    };
+    store.onMessage({ type: 'status', session: 3, status });
+    expect(store.takeBackfill(true, true, 4)).toBe(false);
+    store.onMessage({
+      type: 'status',
+      session: 3,
+      status: { ...status, tiling: 'plain', source: 'discover' },
+    });
+    expect(store.takeBackfill(true, true, 4)).toBe(true);
+  });
+});
+
+describe('the feed options of the cells of a worker', () => {
+  it('Discover: plain tiles, discover frames, its own session', () => {
+    expect(compressFeedOptions({ compress: true, session: 3 }, 64, 48)).toEqual({
+      width: 64,
+      height: 48,
+      session: 3,
+      source: 'discover',
+    });
+  });
+  it('Extract: offset tiles, replay frames, the compress session', () => {
+    const cells = {
+      compress: true,
+      session: 0,
+      library: Uint8Array.of(1),
+      compressTiling: 'offset' as const,
+      compressSession: 4,
+    };
+    expect(compressFeedOptions(cells, 64, 48)).toEqual({
+      width: 64,
+      height: 48,
+      session: 4,
+      tiling: 'offset',
+      source: 'replay',
+    });
+  });
+  it('without compress: no options and no feed', () => {
+    expect(compressFeedOptions({ session: 1 }, 64, 48)).toBeNull();
+    expect(compressFeedOptions(undefined, 64, 48)).toBeNull();
+    expect(compressFeedFor({ session: 1 }, 64, 48, { postMessage: () => {} })).toBeNull();
+    expect(compressFeedFor({ compress: true, session: 1 }, 64, 48, null)).toBeNull();
+  });
+});
+
+describe('the batch driver waits for the final status of a stage', () => {
+  const st = { source: 'replay', final: true, pending: 0 };
+  it('accepts only the final status of the expected source', async () => {
+    const { compressSettled } = await import('../../scripts/compress-settled.mjs');
+    expect(compressSettled(st, 'replay')).toBe(true);
+    expect(compressSettled({ ...st, source: 'discover' }, 'replay')).toBe(false);
+    expect(compressSettled({ ...st, final: false }, 'replay')).toBe(false);
+    expect(compressSettled({ ...st, pending: 2 }, 'replay')).toBe(false);
+    expect(compressSettled(null, 'replay')).toBe(false);
+    expect(compressSettled(null, 'discover')).toBe(false);
   });
 });

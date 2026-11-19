@@ -43,6 +43,73 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
   score is held out in pass 1 only. `qc_eval --later-passes MODE` (`refine`,
   `refine-prune`, `refine-merge`; default `all`) restricts the slow loop's
   edits in passes ≥ 2 (S2.3b, `results/2026-11-12-refine-only-passes.md`).
+- Factor pipeline, phase 0 (`docs/superpowers/specs/2026-11-17-cala-factor-pipeline-design.md`):
+  `qc_eval --replay-source factors --factors-out DIR [--tiling T] [--factors-pass P]` makes the
+  passes after the compressed one, and `--extract-pass`, solve frames rebuilt from the factors;
+  `--later-budget U` gives the null spread of a refine replay; `stage_times.tsv` has the seconds
+  per pass (its stage columns do not add up to `wall_s`: the QC monitor, the held-out score and
+  the checkpoint output are in no column).
+- `factor_arms.py --rec AVI_DIR --out DIR`: the phase-0 arms of the factor pipeline on one
+  recording (raw, two null runs, four tilings, factors of the first replay, and the Extract-only
+  pairs) and `DIR/report.md`. `factor_closeness.py --ref RUN --test RUN [--null RUN ...]` compares
+  two of its runs. Both need numpy.
+- Factor pipeline, phase 1: the arm `chosen` of `factor_arms.py` is the combination chosen after phase 0 (the two
+  offset grids, factors of the first replay, two power iterations; tile lines every 32 px in the tile-line measures).
+  Each factor arm's section of `report.md` ends with the gate A1 table (rules 1 to 4 of spec Amendment 1, on QC-pass
+  cells; a lost cell counts as the worst case) and `Gate A1: pass.` or `fail.`
+  (`results/2026-11-18-factor-phase1.md`).
+- Factor pipeline, phase 2 (Extract on factors, `results/2026-11-19-factor-phase2.md`): `qc_eval --extract-engine frames|factors`
+  (default `frames`) selects how the Extract pass gets each frame's traces. `factors` solves from the
+  factor files of `--factors-out` with the factor engine (no frame is rebuilt; it needs `--extract-pass` and
+  `--replay-source factors`) and also writes `extract_min_valid.tsv` (per cell, the smallest, over the pixels of its support
+  and over the windows, of each pixel's own valid share). The arm `c_chosen` of `factor_arms.py` is `chosen` with `--extract-engine factors`: a full run of
+  its own, so its footprints should equal `chosen`'s. Each recording's `report.md` then has, after the A1 sections, `c_chosen`
+  against `raw` and the engine comparison `c_chosen` against `chosen` (`factor_closeness.engine_report`: whether the
+  two runs ended with the same footprints, and the largest trace difference over the trace's sd, median and largest,
+  for all cells, by distance to the border, and by `min_valid` below or equal to 1), and a table of the Extract pass's
+  seconds preparing, solving and wall per arm (what "preparing" is differs by engine: projectors built for the factor
+  engine, frames preprocessed for the frame engines). `factor_arms.py --extra "FLAGS"` adds `qc_eval` flags to every arm
+  (for example `--joint-update all --joint-sign all`); a flag that an arm already sets is refused, because `qc_eval` takes
+  the first occurrence.
+- Factor pipeline, phase 4a (what a live run may claim, `results/2026-11-19-factor-phase4a.md`): the arms `live`
+  (Extract and the refine replays read Discover's own factors on the offset grids; the refine replays still read the raw file for the preprocessor's running state, the warp and the missing-pixel mask, and Discover itself runs on raw frames), `seed` (a run on a later stretch,
+  `qc_eval --from F`, that makes a flat field map; `factor_arms.py --seed-from F`), `raw_seed` and `live_seed` (as
+  `raw` and `live`, started with that map by `qc_eval --ff-seed-run DIR`), `lb_raw` (main's look-back on raw frames,
+  joint flags on), `lb_fac` (its cursor reads the factor windows, `--lookback-source factors`) and `lb_live` (that plus
+  Extract on the factors). `factor_closeness.py --match` pairs cells by footprint instead of by id, for arms whose
+  Discover differs (`raw_seed` against `raw`, the look-back arms), and prints the footprint correlation with the truth
+  footprint. The arms `lb_null_s1` and `lb_null_s2` (`lb_raw` with another slow-loop seed, `--slow-seed 1` and `2`) are the null runs of
+  the look-back comparisons: they are paired by footprint too and give the limit of gate A1's rule 5 (the test run may
+  lose at most as many QC-pass cells as the null run that lost most; without null runs the rule does not apply).
+- Factor pipeline, phase 3a (Refine on factors, `results/2026-11-19-factor-phase3.md`):
+  `qc_eval --refine-engine raw|factors` (default `raw`). With `factors`, pass 2 is a compression replay only (no fast or slow loop), then Refine
+  runs on the factor files of `--factors-out` in iterations with the cell set frozen, until fewer than a share
+  `--settle-share` (0.02) of the cells have a footprint that correlates below `--settle-corr` (0.99) with the iteration
+  before, or `--max-iterations` (20) is reached; `--test-frames K` sets the held-out frames per tile of the gate (0: the
+  reservoir's average). It needs `--passes 2 --later-passes refine --factors-pass 2` and `--factors-out`, and refuses the
+  joint flags (phase 3b) and `--core-test`. Outputs: `iterations.tsv` (one row per iteration: accepted refinements,
+  changed share, `low_valid`, `tiles_skipped`, seconds per stage, and in the last row why it stopped: `settled`,
+  `nothing_accepted` or `cap`), `footprints_iter{k}.bin` and `final_iter{k}.tsv`, a `refine_it{k}` row per iteration in
+  `stage_times.tsv`; `footprints.bin` is the settled library, and `cells.tsv`, `global.tsv` and `heldout.tsv` cover
+  pass 1 only. The arms `f_chosen` (`chosen` with `--refine-engine factors --extract-engine factors`) and `f_null` (the
+  same with another `--later-budget`: a factor Refine reads no budget, so it is a repeat run that shows reproducibility,
+  not machine speed) are not in the default arm set: name them in `--arms`. A rerun of an f arm deletes its old `factors/w*.fac` first, because the harness refuses a folder
+  that already holds window files. `factor_arms.py --extra` refuses the factor-Refine flags (`--refine-engine`,
+  `--settle-corr`, `--settle-share`, `--max-iterations`, `--test-frames`), so only the default thresholds run through the
+  tool. Each f arm's section of `report.md` has the settle table (`factor_closeness.settle_table`: per library, the share
+  of cells below the correlation with the library before, the median of 1 - r of the changed cells, and with a truth
+  the median truth footprint r; `raw` pass to pass with the same definition, so the two are comparable) and the iteration
+  table (accepted, changed share, `low_valid`, tiles skipped, wall, stop word), after the gate A1 table against `raw`.
+- `tools/cala-diagnostics/history_wholetest.py` reads v1 and v2 factor files (plain tiles only).
+- `stage_times.py EXPORT.npz [...]`: seconds and frames per second of each Discover, Refine and
+  Extract run of a cala browser run, from its export's stage records; an export without them (a
+  CaDecon export) prints "no stage records". Needs numpy.
+- `apps/cala/scripts/batch-session.mjs --data <raw folder> --out DIR`: an unattended browser run
+  of cala (Discover, N x Refine, Extract, both exports) through the real UI, for the timings of the
+  app. With `--query compress` its `status.json` holds the compress status at the end of Discover and of
+  Extract; `--compress-wait <seconds>` (default 120) waits for a stage's last window. It needs a free port
+  (`--port`, default 4181; it refuses one that already answers) and a fresh build (`npm run build:e2e`; it refuses a
+  `dist/` older than the sources, `--stale-build` overrides).
 - `baseline_table.py`: per-arm mean and sd over seeds of one or more run trees
   (`main=<runs>/base [LABEL=DIR ...] [--arms ...]`); the reference numbers in
   `results/2026-11-baseline.md`.

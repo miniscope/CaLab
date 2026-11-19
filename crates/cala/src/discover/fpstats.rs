@@ -866,7 +866,7 @@ impl FpStats {
 }
 
 #[inline]
-fn add_mom(m: &mut Mom, w: f64, z: f64, x: f64) {
+pub(super) fn add_mom(m: &mut Mom, w: f64, z: f64, x: f64) {
     m[0] += w;
     m[1] += w * w;
     m[2] += w * z;

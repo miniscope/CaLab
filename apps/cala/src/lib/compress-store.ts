@@ -45,10 +45,13 @@ export function createCompressStore(sink?: BackfillSink) {
     /**
      * True once per run, when everything a back-fill needs is there: the
      * recording ended, the final library is out and has cells, and every
-     * window is compressed.
+     * window of Discover's live factors is compressed. The windows of
+     * Extract's replay (source `replay`) are never back-filled.
      */
     takeBackfill(pipelineDone: boolean, libraryFinal: boolean, version: number): boolean {
-      if (!pipelineDone || !libraryFinal || version <= 0 || !status()?.final) return false;
+      const s = status();
+      if (!pipelineDone || !libraryFinal || version <= 0 || !s?.final) return false;
+      if (s.source !== 'discover') return false;
       if (requested === session) return false;
       requested = session;
       return true;
@@ -66,16 +69,21 @@ export function createCompressStore(sink?: BackfillSink) {
 
 export type CompressStore = ReturnType<typeof createCompressStore>;
 
-/** `4 windows · rank 5.6 · 8.6 ms/frame · 41 MB · traces back-filled (2,000 frames, 2.1 ms/frame)`. */
+/**
+ * `Compression: 4 windows · rank 5.6 · 8.6 ms/frame · 41 MB · traces back-filled (2,000 frames, 2.1 ms/frame)`,
+ * or `Recalibrated factors: ...` for the windows of Extract's replay.
+ */
 export function compressReadout(s: CompressStatus | null, b: BackfillInfo | null = null): string {
   if (!s || s.windows === 0) return 'Compression: waiting for the first window';
+  const replay = s.source === 'replay';
   const mb = (s.factorBytes / 1048576).toFixed(0);
   const waiting = s.pending > 0 ? ` · ${s.pending} waiting` : '';
-  const filled = b
-    ? ` · traces back-filled (${b.frames.toLocaleString('en-US')} frames, ${b.msPerFrame.toFixed(1)} ms/frame)`
-    : '';
+  const filled =
+    b && !replay
+      ? ` · traces back-filled (${b.frames.toLocaleString('en-US')} frames, ${b.msPerFrame.toFixed(1)} ms/frame)`
+      : '';
   return (
-    `Compression: ${s.windows} windows · rank ${s.meanRank.toFixed(1)} · ` +
-    `${s.msPerFrame.toFixed(1)} ms/frame · ${mb} MB${waiting}${filled}`
+    `${replay ? 'Recalibrated factors' : 'Compression'}: ${s.windows} windows · ` +
+    `rank ${s.meanRank.toFixed(1)} · ${s.msPerFrame.toFixed(1)} ms/frame · ${mb} MB${waiting}${filled}`
   );
 }

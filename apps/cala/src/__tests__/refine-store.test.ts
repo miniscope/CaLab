@@ -207,6 +207,14 @@ describe('Refine store', () => {
     await until(() => t.store.status() === 'done');
   });
 
+  it('starts its replays without any compress setting', async () => {
+    const t = setup();
+    await t.store.run();
+    const keys = Object.keys(t.started[0].cells as object);
+    expect(keys.filter((k) => k.startsWith('compress'))).toEqual([]);
+    await until(() => t.store.status() === 'done');
+  });
+
   it('replays the recording into the Discover slow loop and logs the run with its readout', async () => {
     const t = setup();
     await t.store.run();

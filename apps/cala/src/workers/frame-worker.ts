@@ -11,7 +11,7 @@
  * never waits for the slow worker: see `FastLoop` and `ForwardPool`.
  */
 import { initCalaWasm } from '../lib/cala-wasm.ts';
-import { CompressFeed } from '../lib/compress-feed.ts';
+import { compressFeedFor } from '../lib/compress-feed.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
 import { FLAT_FIELD_MAX_QUEUE } from '../lib/flat-field.ts';
 import type { FlatFieldBatch, FlatFieldSink, FlatFieldStart } from '../lib/flat-field-runner.ts';
@@ -21,7 +21,6 @@ import { PipelineEngine, transferablesOf, type FrameReader } from '../lib/pipeli
 import { FrontStage, jobTransferables } from '../lib/pipeline-stages.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import { traceBackend as backend } from '../lib/trace-backend.ts';
-import type { FastToCompress } from './compress-types.ts';
 import type { FrameRequest, FrameResponse, SessionProbeResult } from './frame-types.ts';
 import type { FlatFieldDown, FlatFieldUp } from './flat-field-types.ts';
 import type { StageFree, StageMsg, StageShifts } from './stage-types.ts';
@@ -258,12 +257,7 @@ async function handle(req: FrameRequest): Promise<void> {
             },
             port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
             backend,
-            cells?.compress && compressPort
-              ? new CompressFeed(
-                  { width: setup.width, height: setup.height, session: cells.session },
-                  compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
-                )
-              : null,
+            compressFeedFor(cells, setup.width, setup.height, compressPort),
           );
         });
         live?.setRetainFrames(

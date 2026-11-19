@@ -335,7 +335,9 @@ impl TraceEngine {
     /// with the new traces, up to [`EM_PASSES`] solves or until no trace
     /// moves by `tol` of its noise. At the fixed point the missing pixels
     /// pull no trace away from what the valid pixels say. Frames without
-    /// missing pixels take a single solve, as before.
+    /// missing pixels take a single solve, as before. A solve that fails
+    /// on a non-finite projection still advances the frame counter; a wrong
+    /// frame length does not.
     pub fn process_into(&mut self, frame: &[f32], out: &mut FrameTraces) -> Result<(), TraceError> {
         let lib = self.lib.clone();
         let lib = &*lib;
@@ -368,6 +370,62 @@ impl TraceEngine {
             self.solve_frame(lib, frame, out, false)
         };
         self.filled = filled;
+        self.next_frame += 1;
+        r
+    }
+
+    /// Solve one frame from its projections instead of its pixels.
+    ///
+    /// `cells[i]` is the dot product of the frame with cell `i`'s filtered
+    /// column (the support part minus the moat). `background` holds
+    /// [`Library::background_len`] values: for a basis model the dot product
+    /// of the frame with each map, for a ring model each cell's ring mean,
+    /// nothing without a background. The solve, the warm start and the
+    /// output are those of [`Self::process_into`]; missing pixels are the
+    /// caller's matter (there is no fill here).
+    ///
+    /// Inputs are checked before any engine state is written, so an error
+    /// leaves the engine as it was. A rejected input does not advance the
+    /// frame counter, so a caller that drops a rejected frame counts its own
+    /// frames.
+    pub fn process_projected(
+        &mut self,
+        cells: &[f32],
+        background: &[f32],
+        out: &mut FrameTraces,
+    ) -> Result<(), TraceError> {
+        let lib = self.lib.clone();
+        let lib = &*lib;
+        check_len("cell projections", lib.len(), cells.len())?;
+        check_len(
+            "background projections",
+            lib.background_len(),
+            background.len(),
+        )?;
+        if let Some(i) = cells.iter().position(|v| !v.is_finite()) {
+            return Err(TraceError::InvalidConfig(format!(
+                "frame {} has a non-finite projection for cell {}",
+                self.next_frame,
+                lib.ids()[i]
+            )));
+        }
+        if background.iter().any(|v| !v.is_finite()) {
+            return Err(TraceError::InvalidConfig(format!(
+                "frame {} has a non-finite background projection",
+                self.next_frame
+            )));
+        }
+        self.b.copy_from_slice(cells);
+        match &lib.bg {
+            BgTerms::Basis { .. } => {
+                for (q, &v) in self.q.iter_mut().zip(background) {
+                    *q = f64::from(v);
+                }
+            }
+            BgTerms::Ring { .. } => self.ring.copy_from_slice(background),
+            BgTerms::None => {}
+        }
+        let r = self.solve_projected(lib, out);
         self.next_frame += 1;
         r
     }
@@ -524,6 +582,20 @@ impl TraceEngine {
         out: &mut FrameTraces,
         refill: bool,
     ) -> Result<(), TraceError> {
+        self.project_frame(lib, frame, refill)?;
+        self.solve_projected(lib, out)
+    }
+
+    /// The frame's part of a solve: the moat's block sums, each cell's
+    /// projection `b`, and the background's sums (`q` for a basis, before
+    /// the cells' share is taken off; `ring` for a ring). `refill`: see
+    /// [`Self::solve_frame`].
+    fn project_frame(
+        &mut self,
+        lib: &Library,
+        frame: &[f32],
+        refill: bool,
+    ) -> Result<(), TraceError> {
         let n_px = lib.dims().pixels();
         let n = lib.len();
         // Projections onto the filtered footprints: the support part, minus
@@ -589,6 +661,8 @@ impl TraceEngine {
             }
             self.b[i] = s;
         }
+        // Checked before the background's sums are written, so an error
+        // leaves `q` and `ring` as they were.
         if let Some(i) = self.b.iter().position(|v| !v.is_finite()) {
             return Err(TraceError::InvalidConfig(format!(
                 "frame {} has non-finite pixels under cell {}",
@@ -597,7 +671,7 @@ impl TraceEngine {
             )));
         }
         match &lib.bg {
-            BgTerms::Basis { k, maps, x, .. } => {
+            BgTerms::Basis { k, maps, .. } => {
                 let k = *k;
                 let nc = n_px.div_ceil(BASIS_CHUNK);
                 let dot = |a: usize, c: usize| -> f32 {
@@ -632,18 +706,10 @@ impl TraceEngine {
                     }
                     self.q[a] = s;
                 }
-                for (i, &ci) in self.c.iter().enumerate() {
-                    if ci != 0.0 {
-                        for a in 0..k {
-                            self.q[a] -= f64::from(x[i * k + a]) * f64::from(ci);
-                        }
-                    }
-                }
             }
             BgTerms::Ring {
                 ring_start,
                 ring_pix,
-                s,
                 ..
             } => {
                 for i in 0..n {
@@ -660,8 +726,36 @@ impl TraceEngine {
                     } else {
                         sum / px.len() as f32
                     };
-                    if self.consolidated_ring_grad {
-                        self.ring_rhs[i] = self.b[i] - s[i] * self.ring[i];
+                }
+            }
+            BgTerms::None => {}
+        }
+        Ok(())
+    }
+
+    /// Solve from `b` and the background's sums as [`Self::project_frame`]
+    /// or [`Self::process_projected`] left them, and fill `out`.
+    fn solve_projected(&mut self, lib: &Library, out: &mut FrameTraces) -> Result<(), TraceError> {
+        let n = lib.len();
+        match &lib.bg {
+            BgTerms::Basis { k, x, .. } => {
+                let k = *k;
+                for (i, &ci) in self.c.iter().enumerate() {
+                    if ci != 0.0 {
+                        for a in 0..k {
+                            self.q[a] -= f64::from(x[i * k + a]) * f64::from(ci);
+                        }
+                    }
+                }
+            }
+            BgTerms::Ring { s, .. } => {
+                if self.consolidated_ring_grad {
+                    // For a cell a refill skipped, `b` and `ring` are unchanged, so this
+                    // writes the value it already has.
+                    for (((r, &b), &si), &ring) in
+                        self.ring_rhs.iter_mut().zip(&self.b).zip(s).zip(&self.ring)
+                    {
+                        *r = b - si * ring;
                     }
                 }
             }

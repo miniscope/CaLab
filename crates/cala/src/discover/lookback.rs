@@ -160,6 +160,9 @@ pub struct LookBack {
     births: u64,
     /// Discover frames seen (recording frames `0..seen`).
     seen: usize,
+    /// Frames the driver can re-read (`0..avail`); `usize::MAX` (the
+    /// default): every seen frame.
+    avail: usize,
 }
 
 impl LookBack {
@@ -178,7 +181,16 @@ impl LookBack {
             skipped: 0,
             births: 0,
             seen: 0,
+            avail: usize::MAX,
         }
+    }
+
+    /// Only frames `0..frames` can be re-read for now (a driver whose past
+    /// frames reach its store late, as `qc_eval`'s factor windows do). A
+    /// block that ends past them is not chosen and stays needed. Without a
+    /// call, every seen frame can be re-read.
+    pub fn set_available(&mut self, frames: usize) {
+        self.avail = frames;
     }
 
     pub fn config(&self) -> &LookbackConfig {
@@ -401,7 +413,7 @@ impl LookBack {
     /// cells wanting it, then the most cells, then is the oldest; every
     /// cell in need that has not had it takes it.
     fn next_block_target(&mut self) -> bool {
-        let nb = self.seen / LB_BLOCK;
+        let nb = self.seen.min(self.avail) / LB_BLOCK;
         if nb == 0 {
             return false;
         }
@@ -470,22 +482,9 @@ impl LookBack {
     /// recent), with each of those cells' frames in it.
     fn next_block(&mut self) -> bool {
         self.need.retain(|_, (_, blocks)| !blocks.is_empty());
-        let mut count: BTreeMap<usize, usize> = Default::default();
-        for (_, blocks) in self.need.values() {
-            for &b in blocks {
-                *count.entry(b).or_default() += 1;
-            }
-        }
-        let blk = match self.cfg.order {
-            // The newest cell in need, its most recent block not served.
-            LookbackOrder::Newest => self
-                .need
-                .values()
-                .max_by_key(|(born, _)| *born)
-                .and_then(|(_, blocks)| blocks.iter().max().copied()),
-            LookbackOrder::Shared => count.iter().max_by_key(|&(&b, &n)| (n, b)).map(|(&b, _)| b),
-        };
-        let Some(blk) = blk else {
+        let (seen, avail) = (self.seen, self.avail);
+        let servable = |b: usize| ((b + 1) * LB_BLOCK).min(seen) <= avail;
+        let Some(blk) = choose_block(&self.need, self.cfg.order, servable) else {
             return false;
         };
         let k = self.cfg.max_frames;
@@ -502,6 +501,34 @@ impl LookBack {
         let hi = cells.iter().map(|c| c.2).max().expect("cells");
         self.start_block(lo, hi, cells);
         true
+    }
+}
+
+/// The block [`LookBack::next_block`] serves: the one the most cells still
+/// need (ties: the most recent) or, newest order, the newest cell's most
+/// recent block. Only blocks for which `servable` holds count; with every
+/// block servable this is the choice the scheduler always made.
+fn choose_block(
+    need: &BTreeMap<u64, (usize, Vec<usize>)>,
+    order: LookbackOrder,
+    servable: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    match order {
+        // The newest cell in need, its most recent block not served.
+        LookbackOrder::Newest => need
+            .values()
+            .filter(|(_, blocks)| blocks.iter().any(|&b| servable(b)))
+            .max_by_key(|(born, _)| *born)
+            .and_then(|(_, blocks)| blocks.iter().copied().filter(|&b| servable(b)).max()),
+        LookbackOrder::Shared => {
+            let mut count: BTreeMap<usize, usize> = Default::default();
+            for (_, blocks) in need.values() {
+                for &b in blocks.iter().filter(|&&b| servable(b)) {
+                    *count.entry(b).or_default() += 1;
+                }
+            }
+            count.iter().max_by_key(|&(&b, &n)| (n, b)).map(|(&b, _)| b)
+        }
     }
 }
 
@@ -549,5 +576,135 @@ impl HeldOutRecord {
     /// Bytes held.
     pub fn bytes(&self) -> usize {
         16 * self.observed.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ORDERS: [LookbackOrder; 2] = [LookbackOrder::Shared, LookbackOrder::Newest];
+
+    fn three_cells() -> BTreeMap<u64, (usize, Vec<usize>)> {
+        let mut need = BTreeMap::new();
+        need.insert(1u64, (640usize, vec![7usize, 8, 9]));
+        need.insert(2u64, (700usize, vec![8usize, 9, 10]));
+        need.insert(3u64, (300usize, vec![2usize, 3]));
+        need
+    }
+
+    #[test]
+    fn choose_block_takes_only_servable_blocks() {
+        let need = three_cells();
+        // Frames 0..704 seen; `avail` of them can be re-read.
+        let upto = |avail: usize| move |b: usize| ((b + 1) * LB_BLOCK).min(704) <= avail;
+        // All servable: blocks 8 and 9 are needed twice, ties go to the most
+        // recent; newest order: the newest cell's most recent block.
+        let (sh, nw) = (LookbackOrder::Shared, LookbackOrder::Newest);
+        assert_eq!(choose_block(&need, sh, upto(usize::MAX)), Some(9));
+        assert_eq!(choose_block(&need, nw, upto(usize::MAX)), Some(10));
+        // Frames 0..600 only: blocks 9 (576..640) and 10 wait.
+        assert_eq!(choose_block(&need, sh, upto(600)), Some(8));
+        assert_eq!(choose_block(&need, nw, upto(600)), Some(8));
+        // Nothing yet.
+        assert_eq!(choose_block(&need, sh, upto(0)), None);
+        assert_eq!(choose_block(&need, nw, upto(0)), None);
+    }
+
+    #[test]
+    fn choose_block_picks_what_the_inline_scheduler_picked_when_all_are_servable() {
+        // The scheduler's choice before `choose_block`, verbatim.
+        let old = |need: &BTreeMap<u64, (usize, Vec<usize>)>, order: LookbackOrder| {
+            let mut count: BTreeMap<usize, usize> = Default::default();
+            for (_, blocks) in need.values() {
+                for &b in blocks {
+                    *count.entry(b).or_default() += 1;
+                }
+            }
+            match order {
+                LookbackOrder::Newest => need
+                    .values()
+                    .max_by_key(|(born, _)| *born)
+                    .and_then(|(_, blocks)| blocks.iter().max().copied()),
+                LookbackOrder::Shared => {
+                    count.iter().max_by_key(|&(&b, &n)| (n, b)).map(|(&b, _)| b)
+                }
+            }
+        };
+        let mut s = 12345u64;
+        let mut rnd = |m: u64| {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 33) % m) as usize
+        };
+        for _ in 0..2000 {
+            let mut need = BTreeMap::new();
+            for id in 0..rnd(6) as u64 {
+                // Equal births happen, as do repeated blocks.
+                let blocks: Vec<usize> = (0..1 + rnd(5)).map(|_| rnd(12)).collect();
+                need.insert(id, (rnd(4) * 100, blocks));
+            }
+            for order in ORDERS {
+                assert_eq!(choose_block(&need, order, |_| true), old(&need, order));
+            }
+        }
+    }
+
+    #[test]
+    fn an_unavailable_block_is_never_served_and_stays_needed() {
+        for order in ORDERS {
+            let mut lb = LookBack::new(LookbackConfig {
+                order,
+                ..Default::default()
+            });
+            lb.seen = 704;
+            lb.need = three_cells();
+            lb.set_available(600);
+            assert!(lb.next_block());
+            assert_eq!(lb.block.as_ref().map(|b| b.cur / LB_BLOCK), Some(8));
+            // Blocks 9 and 10 are kept for later.
+            assert_eq!(lb.need[&1].1, vec![7, 9]);
+            assert_eq!(lb.need[&2].1, vec![10, 9]);
+            lb.set_available(0);
+            assert!(!lb.next_block(), "nothing can be re-read");
+            assert_eq!(lb.need.len(), 3, "the need is kept");
+            lb.set_available(usize::MAX);
+            assert!(lb.next_block());
+            let want = if order == LookbackOrder::Shared {
+                9
+            } else {
+                10
+            };
+            assert_eq!(lb.block.as_ref().map(|b| b.cur / LB_BLOCK), Some(want));
+        }
+    }
+
+    #[test]
+    fn precision_mode_serves_only_available_blocks() {
+        let mut lb = LookBack::new(LookbackConfig {
+            target: 1.0,
+            ..Default::default()
+        });
+        lb.seen = 704;
+        lb.cells.insert(
+            1,
+            LbCell {
+                born: 704,
+                served: Default::default(),
+                prio: true,
+                need: true,
+            },
+        );
+        lb.set_available(600);
+        let mut chosen = Vec::new();
+        while lb.next_block_target() {
+            chosen.push(lb.block.as_ref().map_or(usize::MAX, |b| b.cur / LB_BLOCK));
+        }
+        // Blocks 0..9 end within frames 0..600; block 9 (576..640) waits.
+        assert_eq!(chosen, (0..9).collect::<Vec<_>>());
+        lb.set_available(usize::MAX);
+        assert!(lb.next_block_target());
+        assert_eq!(lb.block.as_ref().map(|b| b.cur / LB_BLOCK), Some(9));
     }
 }

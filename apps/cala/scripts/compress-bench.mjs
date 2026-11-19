@@ -65,7 +65,8 @@ for (let y0 = 0; y0 < height; y0 += tile) {
     ms += performance.now() - t0;
     rank += f.rank;
     svdRank += f.svdRank;
-    bytes += 4 * (f.rank * (w * h + frames) + w * h);
+    // Spatial and temporal factors, and per pixel mean, discarded and valid (as the native bench).
+    bytes += 4 * (f.rank * (w * h + frames) + 3 * w * h);
     f.free();
     tiles++;
   }

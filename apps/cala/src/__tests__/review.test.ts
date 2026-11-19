@@ -1,8 +1,10 @@
 // @vitest-environment node
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
+  factorHeader,
   HistoryReview,
   quantizeTiles,
+  tileLayout,
   SlowLoop,
   TileCompressor,
   TraceLibraryBuilder,
@@ -256,10 +258,10 @@ function batch(start: number, count: number): Float32Array {
 }
 
 describe('CompressRunner feeding the review worker', () => {
-  function run(every: number) {
+  function run(every: number, tiling: 'plain' | 'offset' = 'plain') {
     const sent: FastToCompress[] = [];
     const feed = new CompressFeed(
-      { width: W, height: H, session: 7, tile: 16, window: 10, quant: 64 },
+      { width: W, height: H, session: 7, tile: 16, window: 10, quant: 64, tiling },
       { postMessage: (m) => sent.push(m) },
     );
     const toReview: CompressToReview[] = [];
@@ -268,6 +270,8 @@ describe('CompressRunner feeding the review worker', () => {
     const r = new CompressRunner({
       store,
       quantize: quantizeTiles,
+      layout: tileLayout,
+      header: factorHeader,
       create: (quant) => new TileCompressor(quant),
       toMain: { postMessage: (m) => toMain.push(m) },
       review: { port: { postMessage: (m) => toReview.push(m) }, every },
@@ -313,6 +317,31 @@ describe('CompressRunner feeding the review worker', () => {
     for (const m of t.sent) await t.r.handle(m);
     await t.r.idle();
     expect(t.toReview.at(-1)).toEqual({ type: 'review', session: 7, version: 0, library: null });
+  });
+
+  it('sends nothing to the review under the offset tiling', async () => {
+    const t = run(1, 'offset');
+    t.feed.push(batch(0, 20), 0, 20);
+    for (const m of t.sent) await t.r.handle(m);
+    await t.r.idle();
+    expect(t.store.files.size).toBe(2);
+    expect(t.toReview).toEqual([]);
+    await t.r.handle({ type: 'reset', session: 7 });
+    expect(t.toReview).toEqual([]);
+  });
+
+  it('refuses an offset window in the WASM review', async () => {
+    const t = run(1, 'offset');
+    t.feed.push(batch(0, 10), 0, 10);
+    for (const m of t.sent) await t.r.handle(m);
+    await t.r.idle();
+    const review = new HistoryReview(W, H);
+    try {
+      expect(() => review.addWindow(t.store.files.get('f0.bin')!)).toThrow(/plain/);
+      expect(review.windows).toBe(0);
+    } finally {
+      review.free();
+    }
   });
 
   it('sends nothing once the recording ended', async () => {
@@ -658,6 +687,8 @@ describe('history review on real factors (WASM)', () => {
     const compress = new CompressRunner({
       store: memoryStore(),
       quantize: quantizeTiles,
+      layout: tileLayout,
+      header: factorHeader,
       create: (quant) => new TileCompressor(quant),
       toMain: { postMessage: () => {} },
       review: { port: { postMessage: (m) => review.handle(m) }, every: WINDOWS },

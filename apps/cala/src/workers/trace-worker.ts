@@ -7,13 +7,12 @@
  * `FastLoop`). See `lib/pipeline-stages.ts`.
  */
 import { initCalaWasm } from '../lib/cala-wasm.ts';
-import { CompressFeed } from '../lib/compress-feed.ts';
+import { compressFeedFor } from '../lib/compress-feed.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
 import { FovProjector } from '../lib/fov-projection.ts';
 import { transferablesOf, type PipelineStepResult } from '../lib/pipeline-engine.ts';
 import { BackStage } from '../lib/pipeline-stages.ts';
 import { traceBackend } from '../lib/trace-backend.ts';
-import type { FastToCompress } from './compress-types.ts';
 import type { FrameRequest, FrameResponse } from './frame-types.ts';
 import type { FastToSlow, SlowToFast } from './slow-types.ts';
 import type { StageFree, StageLink, StageMsg } from './stage-types.ts';
@@ -71,12 +70,7 @@ function handle(msg: StageMsg): void {
         },
         port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
         traceBackend,
-        cells?.compress && compressPort
-          ? new CompressFeed(
-              { width: msg.fast.width, height: msg.fast.height, session: cells.session },
-              compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
-            )
-          : null,
+        compressFeedFor(cells, msg.fast.width, msg.fast.height, compressPort),
       );
       stage = new BackStage(
         msg.setup,

@@ -5,6 +5,10 @@
 //! cargo run --release --example qc_eval -- oracle <sim dir> <out dir> [options]
 //! cargo run --release --example qc_eval -- real   <avi dir> <out dir> [options]
 //!   --frames N         first N frames (default all)
+//!   --from F           `real` only: the stream starts at frame F of the
+//!                      recording (`--frames` counts from F); a later stretch
+//!                      of the same recording, e.g. the run whose flat field
+//!                      `--ff-seed-run` reads
 //!   --motion           run the motion corrector upstream
 //!   --rescore RUN      `sim` only, standalone: score an earlier run's
 //!                      checkpoint footprints (`RUN/fp_history.bin`, from
@@ -75,6 +79,19 @@
 //!                      serving the cells in need, with Refine-scope visits,
 //!                      for at most N steps (one step = R look-back frames
 //!                      + one slow-loop step); ends when nothing is needed
+//!   --lookback-source S  where look-back frames come from: raw (default; the
+//!                      recording, preprocessed again with a copy of the live
+//!                      preprocessor and the stored motion records) | factors
+//!                      (rebuilt from the factor windows `--factors-out` has
+//!                      written so far in pass 1: no raw read, no
+//!                      preprocessing, no warp, no mask; pixels never valid
+//!                      in a window are missing in all its frames, as in the
+//!                      live frame; a block waits until its window is on
+//!                      disk, and the last window is flushed before the
+//!                      drain; without `--lookback-drain` the frames of the
+//!                      last, unflushed window are never read back, which
+//!                      the raw source does read). Needs `--factors-out`,
+//!                      `--factors-pass 1` and no `--catchup`
 //!   --catchup X        reference arm: every X Discover frames give all
 //!                      cells frames 0..t at once (`--catchup-double`: at
 //!                      X, 2X, 4X, ...)
@@ -107,10 +124,87 @@
 //!   --frames-per-tile N / --reservoir-max-mb M   reservoir size target and cap
 //!   --readd-window N / --churn-frames N   add classification windows
 //!   --joint            add test with the joint neighbour-trace check
-//!   --factors-out DIR  compress pass 1's preprocessed frames in 600-frame
+//!   --factors-out DIR  compress one pass's preprocessed frames in 600-frame
 //!                      windows ([`calab_cala::compress`]) and write every
-//!                      window's factors to `DIR/w<start>.fac` (`CALAFAC1`), the
+//!                      window's factors to `DIR/w<start>.fac` (`CALAFAC2`, v1 still reads) and
+//!                      `DIR/factors.tsv` (rank, size and time per window); the
 //!                      input of tools/cala-diagnostics/history_wholetest.py
+//!   --factors-pass P   the pass whose frames `--factors-out` compresses (1:
+//!                      Discover's frames, as the app; 2: the first replay,
+//!                      which has the final flat field from frame 0)
+//!   --tiling T         tiles of `--factors-out`: plain (default, 64 px side
+//!                      by side) | overlap:N (each tile grown N px per inner
+//!                      side, blended) | offset (a second grid shifted 32 px)
+//!   --factors-rho-min R, --factors-z Z, --factors-k0 K
+//!                      the rank cut of `--factors-out` (defaults: the
+//!                      compressor's, 0.2, 4 and 40): a component is kept when
+//!                      its lag-1 autocorrelation exceeds
+//!                      max(Z / sqrt(window), R); K is the starting rank.
+//!                      R -1 with Z -100 keeps every component up to the
+//!                      largest rank
+//!   --factors-max-rank M, --factors-n-iter I
+//!                      the largest rank of a tile (default 300) and the power
+//!                      iterations of the randomized SVD (default 2). K and M
+//!                      equal, with no cut, give a fixed rank
+//!   --replay-source S  what the passes after `--factors-pass` and
+//!                      `--extract-pass` solve: raw (default, the replayed
+//!                      frames) | factors (those frames rebuilt from
+//!                      `--factors-out`; missing pixels stay missing)
+//!   --later-budget U   slow-loop work units per frame in passes >= 2
+//!                      (default: `--budget`; ignored with `--offered-fps`);
+//!                      two raw runs that differ only in it give the null
+//!                      spread of a refine replay
+//!   --extract-pass     the app's Extract stage: after the last pass, replay
+//!                      the recording once more with the final library and no
+//!                      slow loop; writes `extract_trace.f32` (frames x cells,
+//!                      f32 LE) and `extract_ids.tsv`. Not with `--sessions`
+//!   --extract-engine E  with `--extract-pass`: frames (default; solve each
+//!                      replayed frame) | factors (the factor engine on the
+//!                      files of `--factors-out`, no frame is read or
+//!                      rebuilt; needs `--replay-source factors`)
+//!   --refine-engine E  raw (default: the passes after Discover replay the
+//!                      recording) | factors (Refine on factors: pass 2 is a
+//!                      compression replay only, no fast or slow loop runs
+//!                      in it, then Refine runs on its factor files until the
+//!                      footprints settle; needs --passes 2, --later-passes
+//!                      refine, --factors-out and --factors-pass 2; refused
+//!                      with oracle mode, --library, --offered-fps,
+//!                      --lookback, --catchup, and --joint-update or
+//!                      --core-test other than off). The final library
+//!                      (`footprints.bin`, `final.tsv`, `--extract-pass`) is
+//!                      the settled one; with `--extract-engine factors` the
+//!                      Extract reads the same factor files. Writes
+//!                      `iterations.tsv` (one row per iteration; the last
+//!                      row's `settled` says why it stopped: settled,
+//!                      nothing_accepted or cap, the others `-`),
+//!                      `footprints_iter{k}.bin` / `final_iter{k}.tsv` and a
+//!                      `refine_it{k}` row per iteration in `stage_times.tsv`
+//!                      (read_s: factor files; solve_s: Extract and the
+//!                      statistics; slow_s: held-out patches, gate and
+//!                      publish; reading is in read_s only). With `factors`,
+//!                      `cells.tsv`, `global.tsv`, `heldout.tsv` and
+//!                      `ho_cells.tsv` cover pass 1 only; `--later-budget` is
+//!                      ignored (Refine on factors spends no budget);
+//!                      `footprints_pass2.bin` and row 2 of `passes.tsv` hold
+//!                      Discover's finalized library, not a Refine replay's;
+//!                      `low_valid` in `iterations.tsv` counts the cells whose
+//!                      smallest valid share, over every pixel of the
+//!                      statistics disk and every window of the iteration, is
+//!                      below 0.999 (1 up to rounding; pixels below the
+//!                      minimum share, which are left out, count too)
+//!   --settle-corr C, --settle-share S, --max-iterations N
+//!                      the settle stop of --refine-engine factors (0.99,
+//!                      0.02, 20): a cell has settled when its footprint
+//!                      correlates at least C with the previous iteration's,
+//!                      the run when fewer than a share S of cells have not
+//!   --test-frames K    --refine-engine factors: held-out frames per tile of
+//!                      its gate (0: the reservoir's average, frames_per_tile
+//!                      / holdout_every; else at least the slow loop's
+//!                      `min_test_frames`, 8: fewer would skip every tile)
+//!   Every run writes `stage_times.tsv`: seconds per pass (and for the
+//!   Extract pass) spent reading, preprocessing, compressing, solving traces
+//!   and in the slow loop. The columns do not add up to `wall_s`: the QC
+//!   monitor, the held-out score and the checkpoint output are in no column.
 //!   --core-test M      transient-band core test: off (default) | report
 //!                      (also writes fast.tsv, split.tsv) | trim | delete
 //!   --basin-trim       trim refined footprints to their significant basin
@@ -182,6 +276,13 @@
 //!                      `flat_field.f32` (+ `_offset`)); `auto[:N]` estimates once from a first pass
 //!                      over frames 0..N (3000) and corrects from frame 0; a
 //!                      file path divides by that gain map (f32 LE per pixel)
+//!   --ff-seed-run DIR  with `--flat-field online`: seed from the flat field an
+//!                      earlier run of the same sensor ended with, as the app
+//!                      stores it per device: `DIR/flat_field.f32`,
+//!                      `DIR/flat_field_offset.f32` when present, and the dark
+//!                      level and frames of the last map in
+//!                      `DIR/flat_field_updates.tsv`; the map (gain, offsets,
+//!                      dark level) is in force from frame 0. Not with `--ff-seed`
 //!   --inject-drift gain=A,offset=B  add a synthetic sensor drift growing
 //!                      linearly over the run (pixel gain ±A, column offset
 //!                      ±B grey levels; patterns written to `drift_*.f32`)
@@ -330,10 +431,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
+use calab_cala::compress::blend::{BlendLayout, Tiling};
+use calab_cala::compress::project::{FactorExtractor, WindowProjector};
+use calab_cala::compress::{CompressConfig, WindowCompressor, WindowFactors};
 use calab_cala::discover::{
-    CoreTest, EditScope, JointAdmit, JointSign, JointUpdate, LookBack as LbSched, LookbackConfig,
-    LookbackNext, LookbackOrder, LookbackOutcome, MergeRule, RefineGate, SlowLoop, SlowLoopConfig,
-    SupportRule, VisitResult, VisitRunner, LB_BLOCK,
+    refine_until_settled, CoreTest, EditScope, FactorRefineConfig, FactorSource, IterationReport,
+    JointAdmit, JointSign, JointUpdate, LookBack as LbSched, LookbackConfig, LookbackNext,
+    LookbackOrder, LookbackOutcome, MergeRule, RefineGate, RefineStage, SettleStop, SlowLoop,
+    SlowLoopConfig, SupportRule, VisitResult, VisitRunner, LB_BLOCK,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -350,6 +455,7 @@ use calab_cala::qc::heldout::{HeldOutConfig, HeldOutScore, HeldOutWindow};
 use calab_cala::qc::{CellQc, GlobalQc, QcConfig, QcMonitor};
 use calab_cala::trace::{
     BackgroundModel, Footprint, FrameTraces, Library, LibraryBuilder, SolverConfig, TraceEngine,
+    TraceError,
 };
 use std::fmt::Write as _;
 
@@ -412,6 +518,8 @@ struct Recording {
     /// Frames are binned `bin` × `bin` (1 = as recorded); `dims` is binned.
     bin: usize,
     raw_dims: Dims,
+    /// `--from F`: recording frame of stream frame 0 (0 = from the start).
+    first: u32,
 }
 
 impl Recording {
@@ -442,6 +550,7 @@ impl Recording {
             total,
             bin,
             raw_dims,
+            first: 0,
         }
     }
 
@@ -449,8 +558,7 @@ impl Recording {
         let mut out = Vec::with_capacity(count as usize * self.raw_dims.pixels());
         let mut s = start;
         while s < start + count {
-            let k = self.starts.partition_point(|&x| x <= s) - 1;
-            let local = s - self.starts[k];
+            let (k, local) = self.locate(s);
             let n = (self.files[k].header.frame_count() - local).min(start + count - s);
             self.files[k].read(local, n, &mut out);
             s += n;
@@ -476,6 +584,26 @@ impl Recording {
             }
         }
         binned
+    }
+
+    /// The file and its frame that hold stream frame `s` (recording frame
+    /// `first + s`).
+    fn locate(&self, s: u32) -> (usize, u32) {
+        let f = self.first + s;
+        let k = self.starts.partition_point(|&x| x <= f) - 1;
+        (k, f - self.starts[k])
+    }
+
+    /// `--from F`: the stream starts at recording frame `first`; `total`
+    /// becomes the frames from there on.
+    fn skip(&mut self, first: u32) {
+        assert!(
+            first < self.total,
+            "--from {first}: the recording has {} frames",
+            self.total
+        );
+        self.first = first;
+        self.total -= first;
     }
 }
 
@@ -520,6 +648,50 @@ fn read_f32_file(f: &str) -> Vec<f32> {
         .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
+}
+
+/// `--ff-seed-run DIR`: the flat field an earlier `qc_eval` run of the same
+/// sensor ended with, as the app stores it per device: the gain map
+/// (`DIR/flat_field.f32`), the column offsets (`DIR/flat_field_offset.f32`,
+/// when that run had the offset model), and the dark level and frames of
+/// the last map (the last `updated` row of `DIR/flat_field_updates.tsv`).
+fn read_seed_run(dir: &Path, n_px: usize) -> FlatFieldSeed {
+    let gain = read_f32_file(dir.join("flat_field.f32").to_str().unwrap());
+    assert_eq!(
+        gain.len(),
+        n_px,
+        "{dir:?}: flat_field.f32 is not one value per pixel of this recording"
+    );
+    let off = dir.join("flat_field_offset.f32");
+    let offset = off.exists().then(|| read_f32_file(off.to_str().unwrap()));
+    if let Some(o) = &offset {
+        assert_eq!(
+            o.len(),
+            n_px,
+            "{dir:?}: flat_field_offset.f32 is not one value per pixel"
+        );
+    }
+    let path = dir.join("flat_field_updates.tsv");
+    let log = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+    let mut lines = log.lines();
+    let head: Vec<&str> = lines.next().unwrap_or("").split('\t').collect();
+    let col = |name: &str| {
+        head.iter()
+            .position(|h| *h == name)
+            .unwrap_or_else(|| panic!("{path:?}: no column {name}"))
+    };
+    let (c_out, c_frames, c_dark) = (col("outcome"), col("frames_used"), col("dark"));
+    let last = lines
+        .rev()
+        .find(|l| l.split('\t').nth(c_out) == Some("updated"))
+        .unwrap_or_else(|| panic!("{dir:?}: the run made no flat field map"));
+    let f: Vec<&str> = last.split('\t').collect();
+    FlatFieldSeed {
+        gain,
+        offset,
+        dark: f[c_dark].parse().unwrap(),
+        frames: f[c_frames].parse().unwrap(),
+    }
 }
 
 /// `--inject-drift gain=A,offset=B`: a synthetic sensor drift added to the
@@ -637,6 +809,10 @@ struct LookBack {
     target: f64,
     /// Look-back frames per 1/20 of the recording (precision mode report).
     by_twentieth: [u64; 20],
+    /// `--lookback-source factors`: past frames from Discover's factor
+    /// windows instead of the recording (`None`: raw). The frames that can
+    /// be read back are told to the scheduler (`LbSched::set_available`).
+    source: Option<FactorFrames>,
 }
 
 impl LookBack {
@@ -682,6 +858,7 @@ impl LookBack {
             by_tenth: [(0, 0); 11],
             target,
             by_twentieth: [0; 20],
+            source: None,
         }
     }
 
@@ -844,18 +1021,6 @@ impl LookBack {
         n_px: usize,
         tenth: usize,
     ) -> Option<bool> {
-        if f < self.raw_start || f >= self.raw_start + self.raw_n {
-            let lo = f - f % LB_BLOCK;
-            let cnt = LB_BLOCK.min(rec.total as usize - lo);
-            self.raw = rec.read(lo as u32, cnt as u32);
-            if let Some(d) = drift {
-                for (k, fr) in self.raw.chunks_exact_mut(n_px).enumerate() {
-                    d.apply(fr, lo + k);
-                }
-            }
-            self.raw_start = lo;
-            self.raw_n = cnt;
-        }
         // The frame's slow-loop index in Discover (all batches forwarded):
         // a held-out frame stays held out. Warm-up frames, never in the
         // slow loop, get their own range.
@@ -867,28 +1032,51 @@ impl LookBack {
         // Precision mode: a held-out frame is still preprocessed (the block's
         // preprocessor copy runs forward) but not solved.
         let skip = self.target > 0.0 && sl.is_test(idx);
-        let o = (f - self.raw_start) * n_px;
-        let raw = &self.raw[o..o + n_px];
-        pre.front(raw, &mut self.buf).unwrap();
-        if let Some(w) = pipe.warp_at(f) {
-            let mut tmp = Vec::new();
-            w.apply_in_place(&mut self.buf, &mut tmp).unwrap();
-        }
-        // The live corrector's `apply`/`validity` only warp by a stored
-        // record (scratch buffers, no estimation state), as a replay does.
-        if let Some(mc) = pipe.mc.as_mut() {
-            let r = &pipe.records[f];
-            mc.apply(Frame::F32(&self.buf), r, &mut self.y, None)
-                .unwrap();
-            mc.validity(r, pipe.src.as_ref().unwrap(), &mut self.valid)
-                .unwrap();
-            pre.back_masked(&mut self.y, &self.valid).unwrap();
+        if let Some(src) = self.source.as_mut() {
+            // `--lookback-source factors`: the frame as Discover compressed it,
+            // preprocessed and registered with the calibration of its time; no
+            // raw read, no preprocessing, no warp, no mask. A held-out frame is
+            // passed over without rebuilding it.
+            if skip {
+                return None;
+            }
+            src.frame(f, &mut self.y);
         } else {
-            self.y.copy_from_slice(&self.buf);
-            pre.back(&mut self.y).unwrap();
-        }
-        if skip {
-            return None;
+            if f < self.raw_start || f >= self.raw_start + self.raw_n {
+                let lo = f - f % LB_BLOCK;
+                let cnt = LB_BLOCK.min(rec.total as usize - lo);
+                self.raw = rec.read(lo as u32, cnt as u32);
+                if let Some(d) = drift {
+                    for (k, fr) in self.raw.chunks_exact_mut(n_px).enumerate() {
+                        d.apply(fr, lo + k);
+                    }
+                }
+                self.raw_start = lo;
+                self.raw_n = cnt;
+            }
+            let o = (f - self.raw_start) * n_px;
+            let raw = &self.raw[o..o + n_px];
+            pre.front(raw, &mut self.buf).unwrap();
+            if let Some(w) = pipe.warp_at(f) {
+                let mut tmp = Vec::new();
+                w.apply_in_place(&mut self.buf, &mut tmp).unwrap();
+            }
+            // The live corrector's `apply`/`validity` only warp by a stored
+            // record (scratch buffers, no estimation state), as a replay does.
+            if let Some(mc) = pipe.mc.as_mut() {
+                let r = &pipe.records[f];
+                mc.apply(Frame::F32(&self.buf), r, &mut self.y, None)
+                    .unwrap();
+                mc.validity(r, pipe.src.as_ref().unwrap(), &mut self.valid)
+                    .unwrap();
+                pre.back_masked(&mut self.y, &self.valid).unwrap();
+            } else {
+                self.y.copy_from_slice(&self.buf);
+                pre.back(&mut self.y).unwrap();
+            }
+            if skip {
+                return None;
+            }
         }
         let lib = live.library();
         let eng = self.engine.get_or_insert_with(|| live.clone());
@@ -3158,45 +3346,646 @@ fn write_library(
     }
 }
 
+/// Frames per compressed window (the app's).
+const FACTOR_WINDOW: usize = 600;
+
+/// The compressor settings of `--factors-out`: the app's, with the rank cut
+/// of `--factors-rho-min`, `--factors-z`, `--factors-k0` and
+/// `--factors-max-rank` and the SVD's `--factors-n-iter` when given.
+fn factor_config(args: &[String]) -> CompressConfig {
+    let d = CompressConfig::default();
+    let cfg = CompressConfig {
+        window: FACTOR_WINDOW,
+        rho_min: arg_value(args, "--factors-rho-min").map_or(d.rho_min, |s| s.parse().unwrap()),
+        z: arg_value(args, "--factors-z").map_or(d.z, |s| s.parse().unwrap()),
+        k0: arg_value(args, "--factors-k0").map_or(d.k0, |s| s.parse().unwrap()),
+        max_rank: arg_value(args, "--factors-max-rank").map_or(d.max_rank, |s| s.parse().unwrap()),
+        n_iter: arg_value(args, "--factors-n-iter").map_or(d.n_iter, |s| s.parse().unwrap()),
+        ..d
+    };
+    assert!(cfg.k0 >= 1, "--factors-k0 must be at least 1");
+    assert!(cfg.max_rank >= 1, "--factors-max-rank must be at least 1");
+    assert!(
+        cfg.rho_min.is_finite() && cfg.z.is_finite(),
+        "--factors-rho-min and --factors-z must be finite"
+    );
+    cfg
+}
+
 /// `--factors-out`: compresses the preprocessed frames window by window and
-/// writes each window's factors (`CALAFAC1`) to `dir/w<start frame>.fac`.
+/// writes each window's factors to `<dir>/w<start>.fac`; `finish` writes
+/// `<dir>/factors.tsv` (a row per window).
 struct FactorDump {
     dir: PathBuf,
-    tile: usize,
-    wc: calab_cala::compress::WindowCompressor,
+    wc: WindowCompressor,
+    /// Seconds spent buffering and compressing.
+    seconds: f64,
+    /// Frames in the window files written so far (the windows are written
+    /// in order).
+    written: usize,
+    log: String,
 }
 
 impl FactorDump {
-    fn new(dir: &Path, dims: Dims) -> FactorDump {
+    fn new(dir: &Path, dims: Dims, tiling: Tiling, cfg: CompressConfig) -> FactorDump {
         std::fs::create_dir_all(dir).unwrap();
-        let cfg = calab_cala::compress::CompressConfig {
-            window: 600,
-            ..calab_cala::compress::CompressConfig::default()
-        };
+        let cfg = CompressConfig { tiling, ..cfg };
         FactorDump {
             dir: dir.to_path_buf(),
-            tile: cfg.tile,
-            wc: calab_cala::compress::WindowCompressor::new(dims, cfg),
+            wc: WindowCompressor::new(dims, cfg),
+            seconds: 0.0,
+            written: 0,
+            log: String::from("start\tframes\ttiles\tmean_rank\tkept\tbytes\tcompress_s\n"),
         }
     }
 
-    fn write(&self, wf: calab_cala::compress::WindowFactors) {
+    fn write(&mut self, wf: WindowFactors) {
+        self.written += wf.frames;
+        let _ = writeln!(
+            self.log,
+            "{}\t{}\t{}\t{:.2}\t{:.5}\t{}\t{:.3}",
+            wf.start,
+            wf.frames,
+            wf.tiles.len(),
+            wf.mean_rank(),
+            wf.kept_fraction(),
+            wf.bytes(),
+            wf.compress_seconds
+        );
         let name = format!("w{:07}.fac", wf.start);
-        std::fs::write(self.dir.join(name), wf.to_bytes(self.tile)).unwrap();
+        std::fs::write(self.dir.join(name), wf.to_bytes()).unwrap();
     }
 
     fn push(&mut self, frame: &[f32]) {
-        if let Some(wf) = self.wc.push(frame) {
+        let t0 = Instant::now();
+        let done = self.wc.push(frame);
+        self.seconds += t0.elapsed().as_secs_f64();
+        if let Some(wf) = done {
             self.write(wf);
         }
     }
 
-    /// Write the last, shorter window.
+    /// Write the last, shorter window and `factors.tsv`.
     fn finish(&mut self) {
-        if let Some(wf) = self.wc.flush() {
+        let t0 = Instant::now();
+        let done = self.wc.flush();
+        self.seconds += t0.elapsed().as_secs_f64();
+        if let Some(wf) = done {
             self.write(wf);
         }
+        std::fs::write(self.dir.join("factors.tsv"), &self.log).unwrap();
     }
+}
+
+/// `--replay-source factors`: frames rebuilt from the factor files a
+/// [`FactorDump`] wrote (the tiling is in the files).
+struct FactorReplay {
+    dir: PathBuf,
+    /// The loaded window and its layout (built once per window).
+    cur: Option<(WindowFactors, BlendLayout)>,
+    buf: Vec<f32>,
+}
+
+impl FactorReplay {
+    fn new(dir: &Path, dims: Dims) -> FactorReplay {
+        FactorReplay {
+            dir: dir.to_path_buf(),
+            cur: None,
+            buf: vec![0.0; dims.pixels()],
+        }
+    }
+
+    /// Replace the pixels of `y` (recording frame `t`) by the frame rebuilt
+    /// from the factors. A missing pixel (NaN) stays missing, so the two
+    /// replay sources differ only in what the compression drops.
+    fn frame(&mut self, t: usize, y: &mut [f32]) {
+        let start = (t / FACTOR_WINDOW) * FACTOR_WINDOW;
+        if self.cur.as_ref().map(|c| c.0.start as usize) != Some(start) {
+            let path = self.dir.join(format!("w{start:07}.fac"));
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+            let wf = WindowFactors::from_bytes(&bytes)
+                .unwrap_or_else(|| panic!("{path:?}: not a factor file"));
+            let layout = wf.layout();
+            self.cur = Some((wf, layout));
+        }
+        let (wf, layout) = self.cur.as_ref().unwrap();
+        assert!(
+            t - start < wf.frames,
+            "frame {t} is beyond the factors in {:?}",
+            self.dir
+        );
+        layout.reconstruct(wf, t - start, &mut self.buf);
+        for (o, &r) in y.iter_mut().zip(&self.buf) {
+            if !o.is_nan() {
+                *o = r;
+            }
+        }
+    }
+}
+
+/// `--refine-engine`: `None` for `raw` (the default), the settings of
+/// Refine on factors for `factors`. Refuses, before any work, a run that
+/// cannot do it.
+fn refine_engine(
+    args: &[String],
+    passes: usize,
+    later_scope: EditScope,
+    factors_pass: usize,
+    oracle_mode: bool,
+) -> Option<FactorRefineConfig> {
+    fn parsed<T: std::str::FromStr>(args: &[String], key: &str, default: T) -> T {
+        arg_value(args, key).map_or(default, |s| {
+            s.parse()
+                .unwrap_or_else(|_| panic!("{key}: not a number: {s:?}"))
+        })
+    }
+    let factors = match arg_value(args, "--refine-engine").as_deref() {
+        None | Some("raw") => false,
+        Some("factors") => true,
+        Some(o) => panic!("--refine-engine: raw or factors, not {o:?}"),
+    };
+    if !factors {
+        let settle = [
+            "--settle-corr",
+            "--settle-share",
+            "--max-iterations",
+            "--test-frames",
+        ];
+        assert!(
+            !args.iter().any(|a| settle.contains(&a.as_str())),
+            "--settle-corr, --settle-share, --max-iterations and --test-frames need --refine-engine factors"
+        );
+        return None;
+    }
+    assert!(
+        passes == 2
+            && later_scope == EditScope::Refine
+            && factors_pass == 2
+            && arg_value(args, "--factors-out").is_some(),
+        "--refine-engine factors needs --passes 2, --later-passes refine, --factors-out DIR and --factors-pass 2"
+    );
+    assert!(
+        !oracle_mode && arg_value(args, "--library").is_none(),
+        "--refine-engine factors refines the slow loop's library: not in oracle mode, not with --library"
+    );
+    let off = |k: &str| arg_value(args, k).is_none_or(|v| v == "off");
+    assert!(
+        off("--joint-update"),
+        "--refine-engine factors: the cluster replay on factors is phase 3b, --joint-update must be off"
+    );
+    assert!(
+        off("--core-test"),
+        "--refine-engine factors needs --core-test off (the factor statistics build no transient band)"
+    );
+    // The look-back is pass 1's own Refine route and the virtual clock drops
+    // frames: an arm measures one route on every frame.
+    for f in ["--lookback", "--catchup", "--offered-fps"] {
+        assert!(
+            arg_value(args, f).is_none(),
+            "--refine-engine factors does not run with {f}"
+        );
+    }
+    let cfg = FactorRefineConfig {
+        settle_corr: parsed(args, "--settle-corr", 0.99),
+        settle_share: parsed(args, "--settle-share", 0.02),
+        max_iterations: parsed(args, "--max-iterations", 20),
+        test_frames: parsed(args, "--test-frames", 0),
+        solver: SolverConfig::default(),
+    };
+    // A tile with fewer held-out frames than the slow loop's minimum is skipped, so
+    // below it every tile would be skipped and the run would stop after one
+    // iteration having refined nothing.
+    let min = SlowLoopConfig::default().min_test_frames;
+    assert!(
+        cfg.test_frames == 0 || cfg.test_frames >= min,
+        "--test-frames {}: below the slow loop's min_test_frames ({min}), so every tile would be skipped; use 0 or at least {min}",
+        cfg.test_frames
+    );
+    cfg.validate()
+        .unwrap_or_else(|e| panic!("--refine-engine factors: {e}"));
+    Some(cfg)
+}
+
+/// `--refine-engine factors`: the window files of `--factors-out` as the
+/// windows of Refine on factors (stream frame order, from frame 0), with the
+/// seconds spent reading them and in each stage of the current iteration.
+struct FactorFiles {
+    dir: PathBuf,
+    /// First frame and length of each window.
+    starts: Vec<(usize, usize)>,
+    /// Seconds reading files in the current iteration.
+    read_s: f64,
+    /// Each stage as it started, and the seconds reading files in it.
+    marks: Vec<(RefineStage, Instant, f64)>,
+}
+
+impl FactorFiles {
+    /// The windows `w0000000.fac`, ... of `dir`, which must cover frames
+    /// `0..t_len` without a gap or overlap; any other window file in `dir`
+    /// is another run's and refused.
+    fn open(dir: &Path, t_len: usize) -> FactorFiles {
+        let mut starts = Vec::new();
+        let mut start = 0usize;
+        while start < t_len {
+            let path = dir.join(format!("w{start:07}.fac"));
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+                panic!(
+                    "the factor files in {} end at frame {start}, not {t_len}: {} is missing ({e})",
+                    dir.display(),
+                    path.display()
+                )
+            });
+            let wf = WindowFactors::from_bytes(&bytes)
+                .unwrap_or_else(|| panic!("{}: not a factor file", path.display()));
+            assert!(
+                wf.frames > 0 && wf.start as usize == start,
+                "{}: a window of {} frames at frame {}, expected one at frame {start}",
+                path.display(),
+                wf.frames,
+                wf.start
+            );
+            assert!(
+                start + wf.frames <= t_len,
+                "{}: the window ends at frame {}, past the {t_len} frames of the recording",
+                path.display(),
+                start + wf.frames
+            );
+            starts.push((start, wf.frames));
+            start += wf.frames;
+        }
+        let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+        for e in entries {
+            let path = e
+                .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+                .path();
+            let w: Option<usize> = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_prefix('w')?.strip_suffix(".fac")?.parse().ok());
+            if let Some(w) = w {
+                assert!(
+                    starts.iter().any(|s: &(usize, usize)| s.0 == w),
+                    "{}: a factor window outside frames 0..{t_len} of this run",
+                    path.display()
+                );
+            }
+        }
+        FactorFiles {
+            dir: dir.to_path_buf(),
+            starts,
+            read_s: 0.0,
+            marks: Vec::new(),
+        }
+    }
+
+    /// Start timing a new iteration.
+    fn begin(&mut self) {
+        self.read_s = 0.0;
+        self.marks.clear();
+    }
+
+    /// Seconds of the current iteration: reading the files, then pass A
+    /// (Extract and the statistics), the held-out patches, the gate and
+    /// publishing, each without the reading in it.
+    fn times(&self) -> (f64, f64, f64, f64, f64) {
+        let at = |s: RefineStage| self.marks.iter().find(|m| m.0 == s);
+        let span = |a: RefineStage, b: RefineStage| match (at(a), at(b)) {
+            (Some(x), Some(y)) => (y.1.duration_since(x.1).as_secs_f64() - x.2).max(0.0),
+            _ => 0.0,
+        };
+        (
+            self.read_s,
+            span(RefineStage::Sums, RefineStage::TestFrames),
+            span(RefineStage::TestFrames, RefineStage::Gate),
+            span(RefineStage::Gate, RefineStage::Publish),
+            span(RefineStage::Publish, RefineStage::Done),
+        )
+    }
+}
+
+impl FactorSource for FactorFiles {
+    fn windows(&self) -> usize {
+        self.starts.len()
+    }
+
+    fn window(&mut self, w: usize) -> Result<WindowFactors, TraceError> {
+        let &(start, frames) = self
+            .starts
+            .get(w)
+            .ok_or_else(|| TraceError::InvalidConfig(format!("no factor window {w}")))?;
+        let path = self.dir.join(format!("w{start:07}.fac"));
+        let t0 = Instant::now();
+        let bytes = std::fs::read(&path)
+            .map_err(|e| TraceError::InvalidConfig(format!("{}: {e}", path.display())))?;
+        let wf = WindowFactors::from_bytes(&bytes).ok_or_else(|| {
+            TraceError::InvalidConfig(format!("{}: not a factor file", path.display()))
+        })?;
+        let dt = t0.elapsed().as_secs_f64();
+        self.read_s += dt;
+        if let Some(m) = self.marks.last_mut() {
+            m.2 += dt;
+        }
+        // The files are read again every iteration: one that changed since
+        // `open` is refused.
+        if (wf.start as usize, wf.frames) != (start, frames) {
+            return Err(TraceError::InvalidConfig(format!(
+                "{}: changed since the run began (frames {}..{}, expected {start}..{})",
+                path.display(),
+                wf.start,
+                wf.start as usize + wf.frames,
+                start + frames
+            )));
+        }
+        Ok(wf)
+    }
+
+    fn stage(&mut self, stage: RefineStage) {
+        self.marks.push((stage, Instant::now(), 0.0));
+    }
+}
+
+/// `--refine-engine factors`: refuse, before pass 1, a `--factors-out`
+/// folder that already holds window files. [`FactorFiles::open`] would
+/// refuse a longer run's leftovers only after Discover; nothing is deleted.
+fn refuse_left_windows(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        // Not there yet: `FactorDump::new` creates it.
+        return;
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.starts_with('w') && n.ends_with(".fac"))
+        .collect();
+    names.sort();
+    if let Some(first) = names.first() {
+        panic!(
+            "--refine-engine factors: {} already holds window files ({first}, {} in all); \
+             use an empty --factors-out folder",
+            dir.display(),
+            names.len()
+        );
+    }
+}
+
+/// Header of `iterations.tsv`.
+const ITERATIONS_HEADER: &str = "iteration\tversion\tcells\taccepted\tchanged_share\tmedian_change\tlow_valid\ttiles_skipped\tread_s\tsums_s\ttest_s\tgate_s\tpublish_s\twall_s\tsettled\n";
+
+/// The `settled` column of the last row of `iterations.tsv`.
+fn stop_word(stop: SettleStop) -> &'static str {
+    match stop {
+        SettleStop::Settled => "settled",
+        SettleStop::NothingAccepted => "nothing_accepted",
+        SettleStop::Cap => "cap",
+    }
+}
+
+/// What [`refine_on_factor_files`] ran: the settled library, why it
+/// stopped, the iterations, `iterations.tsv` and the `stage_times.tsv` rows.
+struct FactorRefineRun {
+    library: Arc<Library>,
+    stop: SettleStop,
+    iterations: usize,
+    log: String,
+    stage_rows: String,
+}
+
+/// `--refine-engine factors`: Refine on the factor files until the
+/// footprints settle or `cfg.max_iterations` have run; `on_iteration` gets
+/// each iteration's report and library (counted from 1). An error of the
+/// library stops the run with the iteration in the message.
+fn refine_on_factor_files(
+    sl: &mut SlowLoop,
+    src: &mut FactorFiles,
+    cfg: &FactorRefineConfig,
+    mut on_iteration: impl FnMut(usize, &IterationReport, &Arc<Library>),
+) -> FactorRefineRun {
+    // The per-call config below has a cap of 1, so the library would not
+    // see a bad cap (0 would loop for ever).
+    cfg.validate()
+        .unwrap_or_else(|e| panic!("Refine on factors: {e}"));
+    // One iteration per call: the library's own refusals and stop rule,
+    // and the library after each iteration for its outputs, which the
+    // callback of `refine_until_settled` cannot reach.
+    let one = FactorRefineConfig {
+        max_iterations: 1,
+        ..*cfg
+    };
+    let mut log = String::from(ITERATIONS_HEADER);
+    let mut stage_rows = String::new();
+    let mut it = 0;
+    loop {
+        it += 1;
+        src.begin();
+        let t0 = Instant::now();
+        let mut rep: Option<IterationReport> = None;
+        let done = refine_until_settled(sl, src, &one, |_, r| rep = Some(r.clone()))
+            .unwrap_or_else(|e| panic!("Refine on factors, iteration {it}: {e}"));
+        let wall = t0.elapsed().as_secs_f64();
+        let rep = rep.expect("an Ok of refine_until_settled ran an iteration");
+        let stop = if done.settled {
+            Some(done.stop)
+        } else if it >= cfg.max_iterations {
+            Some(SettleStop::Cap)
+        } else {
+            None
+        };
+        let (read_s, sums_s, test_s, gate_s, publish_s) = src.times();
+        let _ = writeln!(
+            log,
+            "{it}\t{}\t{}\t{}\t{:.5}\t{:.6}\t{}\t{}\t{read_s:.2}\t{sums_s:.2}\t{test_s:.2}\t{gate_s:.2}\t{publish_s:.2}\t{wall:.2}\t{}",
+            rep.library_version,
+            rep.cells,
+            rep.accepted,
+            rep.changed_share,
+            rep.median_change,
+            rep.low_valid,
+            rep.tiles_skipped,
+            stop.map_or("-", stop_word)
+        );
+        let _ = writeln!(
+            stage_rows,
+            "refine_it{it}\t{read_s:.2}\t0.00\t0.00\t{sums_s:.2}\t{:.2}\t{wall:.2}",
+            test_s + gate_s + publish_s
+        );
+        on_iteration(it, &rep, &done.library);
+        if let Some(stop) = stop {
+            return FactorRefineRun {
+                library: done.library,
+                stop,
+                iterations: it,
+                log,
+                stage_rows,
+            };
+        }
+    }
+}
+
+/// Factor windows the look-back keeps in memory (first in, first out). Its
+/// reach of 3000 frames before a birth (`--lookback-frames`) spans at most
+/// six windows; older needs and the precision mode can ask for older blocks,
+/// which are then read again.
+const LB_WINDOWS: usize = 6;
+
+/// A cached factor window: the factors, their blend layout and, per pixel,
+/// whether the pixel was never valid in the window.
+type LbWindow = (WindowFactors, BlendLayout, Vec<bool>);
+
+/// Per pixel: true when no tile that covers it saw it valid in the window.
+fn never_valid(wf: &WindowFactors) -> Vec<bool> {
+    let width = wf.dims.width;
+    let mut never = vec![true; wf.dims.pixels()];
+    for tf in &wf.tiles {
+        for y in 0..tf.h {
+            let row = (tf.y0 + y) * width + tf.x0;
+            for x in 0..tf.w {
+                if tf.valid[y * tf.w + x] > 0.0 {
+                    never[row + x] = false;
+                }
+            }
+        }
+    }
+    never
+}
+
+/// `--lookback-source factors`: past frames as Discover compressed them,
+/// read from the factor windows a [`FactorDump`] has written so far in the
+/// first pass. A factor frame is the live frame as compressed: pixels never valid in
+/// its window are missing (NaN), as in the live frame; nothing is
+/// preprocessed, warped or masked again. A pixel that became valid partway
+/// through its first window reads its window mean before that point (a
+/// small difference from the live frame). Keeps the last `LB_WINDOWS`
+/// windows it read.
+struct FactorFrames {
+    dir: PathBuf,
+    cache: std::collections::VecDeque<LbWindow>,
+    /// Window files read (each miss of the cache).
+    reads: u64,
+}
+
+impl FactorFrames {
+    fn new(dir: &Path) -> FactorFrames {
+        FactorFrames {
+            dir: dir.to_path_buf(),
+            cache: Default::default(),
+            reads: 0,
+        }
+    }
+
+    /// Write stream frame `f`, rebuilt from its window, to every pixel of
+    /// `y` (frame 0 is the recording's frame F after `--from F`); the pixels
+    /// never valid in the window are NaN.
+    fn frame(&mut self, f: usize, y: &mut [f32]) {
+        let start = (f / FACTOR_WINDOW) * FACTOR_WINDOW;
+        let at = match self
+            .cache
+            .iter()
+            .position(|(wf, _, _)| wf.start as usize == start)
+        {
+            Some(i) => i,
+            None => {
+                let path = self.dir.join(format!("w{start:07}.fac"));
+                let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+                    panic!("look-back frame {f}: its window {path:?} is not on disk ({e})")
+                });
+                let wf = WindowFactors::from_bytes(&bytes)
+                    .unwrap_or_else(|| panic!("{path:?}: not a factor file"));
+                let layout = wf.layout();
+                let never = never_valid(&wf);
+                if self.cache.len() == LB_WINDOWS {
+                    self.cache.pop_front();
+                }
+                self.cache.push_back((wf, layout, never));
+                self.reads += 1;
+                self.cache.len() - 1
+            }
+        };
+        let (wf, layout, never) = &self.cache[at];
+        assert!(
+            f - start < wf.frames,
+            "look-back frame {f} is beyond the factors in {:?}",
+            self.dir
+        );
+        layout.reconstruct(wf, f - start, y);
+        for (v, &nv) in y.iter_mut().zip(never) {
+            if nv {
+                *v = f32::NAN;
+            }
+        }
+    }
+}
+
+/// `--extract-engine factors`: solve every frame of the recording from the
+/// factor files in `dir` (a [`FactorDump`]'s) with the factor engine; `sink`
+/// gets each frame's traces. Returns the seconds spent reading the files,
+/// building the projectors and solving, and per cell the smallest valid share
+/// over all windows (`WindowProjector::min_valid`). A failed solve stops the
+/// run with the window and frame in the message.
+fn extract_from_factors(
+    dir: &Path,
+    lib: &Arc<Library>,
+    cfg: SolverConfig,
+    t_len: usize,
+    mut sink: impl FnMut(&[f32]),
+) -> (f64, f64, f64, Vec<f32>) {
+    let mut ex = FactorExtractor::new(lib.clone(), cfg).unwrap();
+    ex.engine_mut().set_consolidated_ring_gradient(true);
+    let (mut read_s, mut pre_s, mut solve_s) = (0.0f64, 0.0f64, 0.0f64);
+    let mut min_valid = vec![1.0f32; ex.library().len()];
+    let mut start = 0usize;
+    while start < t_len {
+        let path = dir.join(format!("w{start:07}.fac"));
+        let t0 = Instant::now();
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let wf = WindowFactors::from_bytes(&bytes)
+            .unwrap_or_else(|| panic!("{path:?}: not a factor file"));
+        read_s += t0.elapsed().as_secs_f64();
+        assert!(wf.frames > 0, "{path:?}: an empty window");
+        assert!(
+            wf.start as usize == start,
+            "{path:?}: the window starts at frame {}, expected {start}",
+            wf.start
+        );
+        assert!(
+            start + wf.frames <= t_len,
+            "{path:?}: the window ends at frame {}, past the {t_len} frames of the recording",
+            start + wf.frames
+        );
+        let t0 = Instant::now();
+        let proj = WindowProjector::new(ex.library(), &wf)
+            .unwrap_or_else(|e| panic!("{path:?}: projector: {e}"));
+        pre_s += t0.elapsed().as_secs_f64();
+        for (m, &v) in min_valid.iter_mut().zip(proj.min_valid()) {
+            *m = m.min(v);
+        }
+        let t0 = Instant::now();
+        let mut done = 0usize;
+        ex.solve(&wf, &proj, 0, wf.frames, |tr| {
+            sink(&tr.traces);
+            done += 1;
+        })
+        .unwrap_or_else(|e| {
+            panic!(
+                "factor engine failed in window {path:?} at frame {}: {e}",
+                start + done
+            )
+        });
+        solve_s += t0.elapsed().as_secs_f64();
+        start += wf.frames;
+    }
+    assert!(
+        start == t_len,
+        "the factor files in {dir:?} end at frame {start}, not {t_len}"
+    );
+    (read_s, pre_s, solve_s, min_valid)
+}
+
+/// `extract_min_valid.tsv`: one row per cell in the library's id order.
+fn min_valid_tsv(ids: &[u64], min_valid: &[f32]) -> String {
+    let mut s = String::from("id\tmin_valid\n");
+    for (id, v) in ids.iter().zip(min_valid) {
+        let _ = writeln!(s, "{id}\t{v:.4}");
+    }
+    s
 }
 
 /// DIAG (`CALA_DIVERGE_DIR`): per-frame solver log (sweeps, largest
@@ -3420,12 +4209,65 @@ fn main() {
     let heldout_on = !args.iter().any(|a| a == "--no-heldout");
     let passes: usize = arg_value(&args, "--passes").map_or(1, |s| s.parse().unwrap());
     assert!(passes >= 1, "--passes must be at least 1");
+    let tiling = arg_value(&args, "--tiling").map_or(Tiling::Plain, |s| {
+        Tiling::parse(&s)
+            .unwrap_or_else(|| panic!("--tiling: plain, overlap:N or offset, not {s:?}"))
+    });
+    if let Tiling::Overlap(o) = tiling {
+        let limit = CompressConfig::default().tile / 2;
+        assert!(
+            o <= limit,
+            "--tiling overlap:{o}: N must be at most half the tile size ({limit} px)"
+        );
+    }
+    let replay_factors = match arg_value(&args, "--replay-source").as_deref() {
+        None | Some("raw") => false,
+        Some("factors") => true,
+        Some(o) => panic!("--replay-source: raw or factors, not {o:?}"),
+    };
+    let factors_pass: usize = arg_value(&args, "--factors-pass").map_or(1, |s| s.parse().unwrap());
+    let later_budget: u64 =
+        arg_value(&args, "--later-budget").map_or(budget, |s| s.parse().unwrap());
+    let extract_pass = args.iter().any(|a| a == "--extract-pass");
+    let extract_factors = match arg_value(&args, "--extract-engine").as_deref() {
+        None | Some("frames") => false,
+        Some("factors") => true,
+        Some(o) => panic!("--extract-engine: frames or factors, not {o:?}"),
+    };
+    assert!(
+        !extract_factors || (extract_pass && replay_factors),
+        "--extract-engine factors needs --extract-pass and --replay-source factors"
+    );
+    assert!(
+        (1..=passes).contains(&factors_pass),
+        "--factors-pass must be between 1 and --passes ({passes})"
+    );
+    if replay_factors {
+        assert!(
+            arg_value(&args, "--factors-out").is_some(),
+            "--replay-source factors needs --factors-out DIR"
+        );
+        assert!(
+            factors_pass < passes || extract_pass,
+            "--replay-source factors: nothing runs after pass {factors_pass}; add passes or --extract-pass"
+        );
+        assert!(
+            arg_value(&args, "--offered-fps").is_none(),
+            "--replay-source factors is not supported with --offered-fps"
+        );
+    }
     let later_scope = match arg_value(&args, "--later-passes").as_deref() {
         None => EditScope::All,
         Some(m) => {
             EditScope::from_name(m).unwrap_or_else(|| panic!("--later-passes: unknown mode {m}"))
         }
     };
+    let refine_factors = refine_engine(&args, passes, later_scope, factors_pass, oracle_mode);
+    if refine_factors.is_some() {
+        refuse_left_windows(Path::new(
+            &arg_value(&args, "--factors-out").expect("checked: --factors-out"),
+        ));
+    }
     let churn_log = args.iter().any(|a| a == "--churn-log");
     let wrap_libs = args.iter().any(|a| a == "--wrap-libs");
     let lib_at: Vec<f64> = arg_value(&args, "--lib-at").map_or(Vec::new(), |s| {
@@ -3470,6 +4312,10 @@ fn main() {
         "--session-fix needs --sessions"
     );
     assert!(!session_fix.any() || motion, "--session-fix needs --motion");
+    assert!(
+        !extract_pass || sessions.is_empty(),
+        "--extract-pass does not support --sessions"
+    );
     let session_fit_frames: usize =
         arg_value(&args, "--session-fit-frames").map_or(8, |s| s.parse().unwrap());
     let session_ref_frames: usize =
@@ -3495,6 +4341,11 @@ fn main() {
     let bin: usize = arg_value(&args, "--bin").map_or(1, |s| s.parse().unwrap());
     assert!(bin == 1 || mode == "real", "--bin is for `real` only");
     let mut rec = Recording::open(&avi_dir, bin);
+    if let Some(f) = arg_value(&args, "--from") {
+        assert!(mode == "real", "--from is for `real` only");
+        rec.skip(f.parse().unwrap());
+        println!("from frame {f}: {} frames", rec.total);
+    }
     if bin > 1 {
         println!(
             "binned {bin}x{bin}: {}x{} px",
@@ -3534,6 +4385,12 @@ fn main() {
         frames = frames.min(o.n_frames as u32);
     }
     let t_len = frames as usize;
+    // The slow loop starts at frame `--start` of pass 1; Refine on factors
+    // refines its library.
+    assert!(
+        refine_factors.is_none() || start < t_len,
+        "--refine-engine factors: --start {start} is not before the end of the run ({t_len} frames), so no slow loop runs"
+    );
     // `--fps R`: the recording's frame rate for the time-based preprocessing
     // and flat-field settings (default 20, the sims'; Miniscope V4 runs at 30).
     let fps: f32 = arg_value(&args, "--fps").map_or(20.0, |s| s.parse().unwrap());
@@ -3754,6 +4611,10 @@ fn main() {
     // Default: the online flat field (what the app runs) with motion, off without.
     let ff_mode = arg_value(&args, "--flat-field")
         .unwrap_or_else(|| if motion { "online" } else { "off" }.into());
+    assert!(
+        ff_mode == "online" || arg_value(&args, "--ff-seed-run").is_none(),
+        "--ff-seed-run needs the online flat field (--motion)"
+    );
     if ff_mode == "off" {
         println!("flat field: off");
     } else if ff_mode == "online" {
@@ -3780,8 +4641,25 @@ fn main() {
             .apply(&mut pre0)
             .unwrap();
         }
+        let seed_run =
+            arg_value(&args, "--ff-seed-run").map(|d| read_seed_run(Path::new(&d), n_px));
+        assert!(
+            seed.is_none() || seed_run.is_none(),
+            "--ff-seed and --ff-seed-run: one or the other"
+        );
+        let from_run = seed_run.is_some();
+        let seed = seed.or(seed_run);
         println!("flat field: online {c:?}, seed {}", seed.is_some());
-        online_ff = Some(OnlineFlatField::new(dims, &fov, c, seed).unwrap());
+        let o = OnlineFlatField::new(dims, &fov, c, seed).unwrap();
+        if from_run {
+            // As the app: the stored map, offsets and dark level included,
+            // is in force from frame 0.
+            o.current()
+                .expect("a seeded flat field has a map")
+                .apply(&mut pre0)
+                .unwrap();
+        }
+        online_ff = Some(o);
     } else if let Some(f) = Some(ff_mode.clone()) {
         let g: Vec<f32> = if let Some(k) = f.strip_prefix("auto") {
             // Dither flat field from a first pass over the opening frames.
@@ -3890,11 +4768,32 @@ fn main() {
         lb_target >= 0.0 && (lb_target == 0.0 || lb_rate > 0.0),
         "--lookback-target needs --lookback R"
     );
+    let lb_factors = match arg_value(&args, "--lookback-source").as_deref() {
+        None | Some("raw") => false,
+        Some("factors") => true,
+        Some(o) => panic!("--lookback-source: raw or factors, not {o:?}"),
+    };
+    assert!(
+        !lb_factors || (lb_rate > 0.0 && lb_catchup == 0),
+        "--lookback-source factors needs --lookback R and no --catchup"
+    );
+    assert!(
+        !lb_factors || factors_pass == 1,
+        "--lookback-source factors reads Discover's factors: --factors-pass 1"
+    );
+    let lb_source: Option<PathBuf> = lb_factors.then(|| {
+        PathBuf::from(
+            arg_value(&args, "--factors-out")
+                .expect("--lookback-source factors needs --factors-out"),
+        )
+    });
     let noise_dump = args.iter().any(|a| a == "--noise-dump") || lb_target > 0.0;
     let mut lookback = (lb_rate > 0.0 || lb_catchup > 0).then(|| {
-        LookBack::new(
+        let mut l = LookBack::new(
             lb_rate, lb_frames, lb_newest, lb_catchup, lb_double, lb_target, n_px,
-        )
+        );
+        l.source = lb_source.as_deref().map(FactorFrames::new);
+        l
     });
     if lookback.is_some() {
         println!(
@@ -3902,7 +4801,7 @@ fn main() {
             if lb_double { " (doubling)" } else { "" }
         );
     }
-    pipe.keep_records = passes > 1 || lookback.is_some();
+    pipe.keep_records = passes > 1 || extract_pass || lookback.is_some();
     pipe.null_on = session_fix.register && !sessions.is_empty();
     pipe.null_ref = session_ref_frames;
     pipe.null_fit = session_fit_frames;
@@ -3972,7 +4871,13 @@ fn main() {
     );
     // `--factors-out`: the compressed history of pass 1.
     let factors_out: Option<PathBuf> = arg_value(&args, "--factors-out").map(PathBuf::from);
-    let mut factors = factors_out.as_deref().map(|d| FactorDump::new(d, dims));
+    let mut factors = factors_out
+        .as_deref()
+        .map(|d| FactorDump::new(d, dims, tiling, factor_config(&args)));
+    let mut replay =
+        replay_factors.then(|| FactorReplay::new(factors_out.as_deref().unwrap(), dims));
+    let mut stage_times =
+        String::from("stage\tread_s\tpre_s\tcompress_s\tsolve_s\tslow_s\twall_s\n");
     for pass in 0..passes {
         // Virtual frame of this pass's recording frame 0.
         let off = pass * t_len;
@@ -4001,10 +4906,14 @@ fn main() {
             }
         }
         let t_pass = Instant::now();
+        let budget_now = if pass == 0 { budget } else { later_budget };
+        let (mut read_s, mut pre_s, mut solve_s) = (0.0f64, 0.0f64, 0.0f64);
         let mut s = 0u32;
         while s < frames {
             let cnt = 64.min(frames - s);
+            let t0 = Instant::now();
             let mut raw = rec.read(s, cnt);
+            read_s += t0.elapsed().as_secs_f64();
             if let Some(d) = &drift {
                 for (k, f) in raw.chunks_exact_mut(n_px).enumerate() {
                     d.apply(f, s as usize + k);
@@ -4123,11 +5032,13 @@ fn main() {
                         }
                     }
                 }
+                let t0 = Instant::now();
                 let shift = if pass == 0 {
                     pipe.frame(f, &mut y)
                 } else {
                     pipe.frame_replay(f, &mut y, t_rec)
                 };
+                pre_s += t0.elapsed().as_secs_f64();
                 if let Some(v) = pipe.null_last.take() {
                     let _ = writeln!(null_log, "{t_rec}\t{v:.5}");
                 }
@@ -4307,11 +5218,28 @@ fn main() {
                         engine.set_library(l).unwrap();
                     }
                 }
-                if let (Some(fd), 0) = (factors.as_mut(), pass) {
+                // Arm B: the passes after the compressed one solve the frames
+                // rebuilt from its factors. Everything upstream (replayed
+                // motion, preprocessor state, noise map) is as in a raw run.
+                if let (Some(fr), true) = (replay.as_mut(), pass >= factors_pass) {
+                    let t0 = Instant::now();
+                    fr.frame(t_rec, &mut y);
+                    pre_s += t0.elapsed().as_secs_f64();
+                }
+                if let (Some(fd), true) = (factors.as_mut(), pass + 1 == factors_pass) {
                     fd.push(&y);
                 }
+                // `--refine-engine factors`: pass 2 is the compression replay
+                // before Refine (A4, A7); the fast and the slow loop do not
+                // run. Nothing above depends on them, so the files are the
+                // ones a refine replay writes.
+                if refine_factors.is_some() && pass + 1 == factors_pass {
+                    continue;
+                }
                 let warm = diverge.as_ref().map(|_| engine.state());
+                let t0 = Instant::now();
                 let tr = engine.process(&y).unwrap();
+                solve_s += t0.elapsed().as_secs_f64();
                 if let (Some(dv), Some(warm)) = (diverge.as_mut(), warm) {
                     dv.frame(t, &y, &engine, &warm, &tr);
                 }
@@ -4446,8 +5374,8 @@ fn main() {
                             }
                             let a = Instant::now();
                             let published = match via.as_mut() {
-                                Some(r) => sl.step_via(budget, r).unwrap(),
-                                None => sl.step(budget).unwrap(),
+                                Some(r) => sl.step_via(budget_now, r).unwrap(),
+                                None => sl.step(budget_now).unwrap(),
                             };
                             slow_step_s += a.elapsed().as_secs_f64();
                             if let Some(l) = published {
@@ -4464,6 +5392,12 @@ fn main() {
                 if let (Some(lbk), Some(sl), 0, None) =
                     (lookback.as_mut(), slow.as_mut(), pass, timed.as_ref())
                 {
+                    if lbk.source.is_some() {
+                        // Only windows on disk can be read back: at most one
+                        // window behind the live frame.
+                        lbk.sched
+                            .set_available(factors.as_ref().map_or(0, |fd| fd.written));
+                    }
                     lbk.after_frame(
                         t_rec,
                         t_len,
@@ -4476,6 +5410,14 @@ fn main() {
                         n_px,
                     );
                     if last && lb_drain > 0 {
+                        if lbk.source.is_some() {
+                            // A stream's last window is flushed when it ends,
+                            // before the drain reads it.
+                            if let Some(fd) = factors.as_mut() {
+                                fd.finish();
+                                lbk.sched.set_available(fd.written);
+                            }
+                        }
                         let (st, fr) = lbk.drain(
                             lb_drain,
                             budget,
@@ -4653,6 +5595,21 @@ fn main() {
                 (sl.stats(), sl.frames(), sl.len())
             });
             let wall = t_pass.elapsed().as_secs_f64();
+            // The compressed pass ends: its last, short window must be on
+            // disk before the next pass replays it.
+            let compress_s = match factors.as_mut() {
+                Some(fd) if pass + 1 == factors_pass => {
+                    fd.finish();
+                    fd.seconds
+                }
+                _ => 0.0,
+            };
+            let slow_s = slow_obs_s + slow_step_s;
+            let _ = writeln!(
+                stage_times,
+                "pass{}\t{read_s:.2}\t{pre_s:.2}\t{compress_s:.2}\t{solve_s:.2}\t{slow_s:.2}\t{wall:.2}",
+                pass + 1
+            );
             if let Some(sl) = slow.as_mut() {
                 let rs = sl.replay_stats;
                 sl.replay_stats.per_cell_ns = 0;
@@ -4732,6 +5689,41 @@ fn main() {
         }
     }
     std::fs::write(out_dir.join("passes.tsv"), &passes_out).unwrap();
+    // `--refine-engine factors`: Refine on the factors of pass 2 until the
+    // footprints settle; each iteration's library and times are written, and
+    // the final library (`footprints.bin`, the Extract pass) is the settled one.
+    if let Some(fcfg) = &refine_factors {
+        let sl = slow
+            .as_mut()
+            .expect("--refine-engine factors: no slow loop ran (the run ends before --start)");
+        sl.set_noise(pipe.pre.noise().sigma())
+            .unwrap_or_else(|e| panic!("Refine on factors: noise map: {e}"));
+        let dir = factors_out.as_deref().expect("checked: --factors-out");
+        let mut src = FactorFiles::open(dir, t_len);
+        let run = refine_on_factor_files(sl, &mut src, fcfg, |it, rep, lib| {
+            write_library(
+                &out_dir,
+                &format!("_iter{it}"),
+                lib,
+                dims,
+                gt.as_ref(),
+                ho.as_ref(),
+                None,
+            );
+            println!(
+                "Refine on factors, iteration {it}: {} refinements, {:.4} of {} cells changed (median {:.5}), {} cells with low valid share, {} tiles skipped",
+                rep.accepted, rep.changed_share, rep.cells, rep.median_change, rep.low_valid, rep.tiles_skipped
+            );
+        });
+        println!(
+            "Refine on factors: {} after {} iterations",
+            stop_word(run.stop),
+            run.iterations
+        );
+        stage_times.push_str(&run.stage_rows);
+        std::fs::write(out_dir.join("iterations.tsv"), &run.log).unwrap();
+        engine.set_library(run.library).unwrap();
+    }
     if let Some(l) = &lookback {
         println!(
             "lookback: {} frames ({} pushed, {} cell-frames, {} births, {} cells still in need), {:.1} s wall",
@@ -4742,6 +5734,9 @@ fn main() {
             l.sched.in_need(),
             l.wall_s
         );
+        if let Some(s) = &l.source {
+            println!("lookback source: factors, {} window files read", s.reads);
+        }
         let mut t = format!(
             "rate\tmax_frames\tcatchup\tdouble\tframes\tpushed\tcell_frames\tbirths\tin_need\twall_s\tdrain_steps\tdrain_frames\n{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}\n\ntenth\tframes\tcell_frames\n",
             l.rate,
@@ -4859,9 +5854,6 @@ fn main() {
             );
         }
         std::fs::write(out_dir.join("traces_gt.tsv"), t).unwrap();
-    }
-    if let Some(fd) = factors.as_mut() {
-        fd.finish();
     }
     std::fs::write(out_dir.join("cells.tsv"), &cells_out).unwrap();
     if let Some(b) = &boundary {
@@ -5026,6 +6018,83 @@ fn main() {
         ho.as_ref(),
         slow.as_ref(),
     );
+    // `--extract-pass`: the app's Extract stage. One more replay from frame
+    // 0 with the final library and no slow loop.
+    if extract_pass {
+        let mut eng = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+        eng.set_consolidated_ring_gradient(true);
+        let mut out = BufWriter::new(File::create(out_dir.join("extract_trace.f32")).unwrap());
+        let mut tr = FrameTraces::default();
+        let (mut read_s, mut pre_s, mut solve_s) = (0.0f64, 0.0f64, 0.0f64);
+        let t_ex = Instant::now();
+        if extract_factors {
+            let dir = factors_out
+                .as_deref()
+                .expect("--extract-engine factors needs --factors-out");
+            let min_valid;
+            (read_s, pre_s, solve_s, min_valid) =
+                extract_from_factors(dir, &lib, SolverConfig::default(), t_len, |tr| {
+                    write_f32s(&mut out, tr);
+                });
+            // Cells whose support has a pixel missing in part of a window,
+            // where the two engines can differ.
+            std::fs::write(
+                out_dir.join("extract_min_valid.tsv"),
+                min_valid_tsv(lib.ids(), &min_valid),
+            )
+            .unwrap();
+        } else {
+            let mut s = 0u32;
+            while s < frames {
+                let cnt = 64.min(frames - s);
+                let t0 = Instant::now();
+                let mut raw = rec.read(s, cnt);
+                read_s += t0.elapsed().as_secs_f64();
+                if let Some(d) = &drift {
+                    for (k, f) in raw.chunks_exact_mut(n_px).enumerate() {
+                        d.apply(f, s as usize + k);
+                    }
+                }
+                for (k, f) in raw.chunks_exact(n_px).enumerate() {
+                    let t = s as usize + k;
+                    let t0 = Instant::now();
+                    pipe.frame_replay(f, &mut y, t);
+                    if let Some(fr) = replay.as_mut() {
+                        fr.frame(t, &mut y);
+                    }
+                    pre_s += t0.elapsed().as_secs_f64();
+                    let t0 = Instant::now();
+                    eng.process_into(&y, &mut tr).unwrap();
+                    solve_s += t0.elapsed().as_secs_f64();
+                    write_f32s(&mut out, &tr.traces);
+                }
+                s += cnt;
+            }
+        }
+        drop(out);
+        let mut ids = String::from("slot\tid\n");
+        for (k, id) in lib.ids().iter().enumerate() {
+            let _ = writeln!(ids, "{k}\t{id}");
+        }
+        std::fs::write(out_dir.join("extract_ids.tsv"), ids).unwrap();
+        let wall = t_ex.elapsed().as_secs_f64();
+        let _ = writeln!(
+            stage_times,
+            "extract\t{read_s:.2}\t{pre_s:.2}\t0.00\t{solve_s:.2}\t0.00\t{wall:.2}"
+        );
+        println!(
+            "extract pass: {} cells x {t_len} frames, {wall:.1} s ({} source)",
+            lib.len(),
+            if extract_factors {
+                "factor engine"
+            } else if replay.is_some() {
+                "factors"
+            } else {
+                "raw"
+            }
+        );
+    }
+    std::fs::write(out_dir.join("stage_times.tsv"), &stage_times).unwrap();
     if !dump {
         return;
     }
@@ -5148,6 +6217,100 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calab_cala::trace::IdentityFilter;
+
+    /// A blob on the tile line x = 64 whose brightness follows a slow sine.
+    fn slow_stream(dims: Dims, frames: usize) -> Vec<Vec<f32>> {
+        (0..frames)
+            .map(|t| {
+                let g = 1.0 + 0.5 * (0.07 * t as f32).sin();
+                (0..dims.pixels())
+                    .map(|p| {
+                        let (y, x) = ((p / dims.width) as f32, (p % dims.width) as f32);
+                        let d2 = (y - 35.0).powi(2) + (x - 64.0).powi(2);
+                        g * (20.0 + 30.0 * (-d2 / 50.0).exp())
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn factor_config_is_the_apps_unless_a_cut_flag_is_given() {
+        let app = CompressConfig {
+            window: FACTOR_WINDOW,
+            ..CompressConfig::default()
+        };
+        assert_eq!(factor_config(&[]), app);
+        let args: Vec<String> = [
+            "--factors-rho-min",
+            "-1",
+            "--factors-z",
+            "-100",
+            "--factors-k0",
+            "80",
+            "--factors-max-rank",
+            "80",
+            "--factors-n-iter",
+            "2",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        let cut = factor_config(&args);
+        assert_eq!((cut.rho_min, cut.z, cut.k0), (-1.0, -100.0, 80));
+        assert_eq!((cut.max_rank, cut.n_iter), (80, 2));
+        assert_eq!(
+            CompressConfig {
+                rho_min: app.rho_min,
+                z: app.z,
+                k0: app.k0,
+                max_rank: app.max_rank,
+                n_iter: app.n_iter,
+                ..cut
+            },
+            app,
+            "nothing else changes"
+        );
+    }
+
+    #[test]
+    fn factor_replay_returns_the_dumped_frames() {
+        let dims = Dims::new(96, 70).unwrap();
+        // One full window and a short last one.
+        let frames = slow_stream(dims, FACTOR_WINDOW + 50);
+        for (k, tiling) in [Tiling::Plain, Tiling::Overlap(8), Tiling::Offset]
+            .into_iter()
+            .enumerate()
+        {
+            let dir =
+                std::env::temp_dir().join(format!("qc_eval_factors_{}_{k}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let mut fd = FactorDump::new(&dir, dims, tiling, factor_config(&[]));
+            for f in &frames {
+                fd.push(f);
+            }
+            fd.finish();
+            let log = std::fs::read_to_string(dir.join("factors.tsv")).unwrap();
+            assert_eq!(log.lines().count(), 3, "header and two windows: {log}");
+            let mut fr = FactorReplay::new(&dir, dims);
+            for t in [0, FACTOR_WINDOW - 1, FACTOR_WINDOW, FACTOR_WINDOW + 49] {
+                let mut y = vec![0.0f32; dims.pixels()];
+                y[5] = f32::NAN;
+                fr.frame(t, &mut y);
+                assert!(y[5].is_nan(), "{tiling:?}: a missing pixel stays missing");
+                for (p, (a, b)) in y.iter().zip(&frames[t]).enumerate() {
+                    if p != 5 {
+                        assert!(
+                            (a - b).abs() < 0.1,
+                            "{tiling:?} frame {t} pixel {p}: {a} vs {b}"
+                        );
+                    }
+                }
+            }
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+    }
 
     /// A Gaussian blob of sd `sd` centred at `(cy, cx)` (sub-pixel), on a
     /// patch reaching 4 sd.
@@ -5310,5 +6473,757 @@ mod tests {
             assert_eq!(i, j);
             assert!(r > 0.99, "cell {i}: r {r}");
         }
+    }
+
+    /// Factor files of a short stream (one full window and a short last one)
+    /// and a one-cell library.
+    fn small_factor_run(tag: &str) -> (PathBuf, Arc<Library>, usize) {
+        let dims = Dims::new(96, 70).unwrap();
+        let frames = slow_stream(dims, FACTOR_WINDOW + 50);
+        let dir = std::env::temp_dir().join(format!("qc_eval_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Offset, factor_config(&[]));
+        for f in &frames {
+            fd.push(f);
+        }
+        fd.finish();
+        let mut b = LibraryBuilder::new(dims);
+        b.push(Footprint {
+            id: 0,
+            y0: 10,
+            x0: 12,
+            height: 9,
+            width: 9,
+            values: vec![1.0; 81],
+        });
+        let lib = Arc::new(b.build(&mut IdentityFilter(dims)).unwrap());
+        (dir, lib, frames.len())
+    }
+
+    #[test]
+    #[should_panic(expected = "past the 640 frames")]
+    fn extract_from_factors_refuses_a_window_past_the_recording() {
+        let (dir, lib, _) = small_factor_run("extract_long");
+        extract_from_factors(&dir, &lib, SolverConfig::default(), 640, |_| {});
+    }
+
+    #[test]
+    #[should_panic(expected = "w0000600.fac")]
+    fn extract_from_factors_refuses_a_missing_window() {
+        let (dir, lib, n) = small_factor_run("extract_missing");
+        std::fs::remove_file(dir.join("w0000600.fac")).unwrap();
+        extract_from_factors(&dir, &lib, SolverConfig::default(), n, |_| {});
+    }
+
+    #[test]
+    #[should_panic(expected = "starts at frame 0, expected 600")]
+    fn extract_from_factors_refuses_a_window_at_the_wrong_start() {
+        let (dir, lib, n) = small_factor_run("extract_stale");
+        std::fs::copy(dir.join("w0000000.fac"), dir.join("w0000600.fac")).unwrap();
+        extract_from_factors(&dir, &lib, SolverConfig::default(), n, |_| {});
+    }
+
+    #[test]
+    fn extract_from_factors_reports_the_valid_share_per_cell() {
+        let dims = Dims::new(96, 70).unwrap();
+        let mut frames = slow_stream(dims, FACTOR_WINDOW + 50);
+        // A pixel under the second cell, missing in the first 150 frames.
+        for f in frames.iter_mut().take(150) {
+            f[44 * dims.width + 62] = f32::NAN;
+        }
+        let dir = std::env::temp_dir().join(format!("qc_eval_valid_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Offset, factor_config(&[]));
+        for f in &frames {
+            fd.push(f);
+        }
+        fd.finish();
+        let mut b = LibraryBuilder::new(dims);
+        for (id, (y0, x0)) in [(10usize, 12usize), (40, 58)].into_iter().enumerate() {
+            b.push(Footprint {
+                id: id as u64,
+                y0,
+                x0,
+                height: 9,
+                width: 9,
+                values: vec![1.0; 81],
+            });
+        }
+        let lib = Arc::new(b.build(&mut IdentityFilter(dims)).unwrap());
+        let (.., min_valid) =
+            extract_from_factors(&dir, &lib, SolverConfig::default(), frames.len(), |_| {});
+        assert_eq!(min_valid.len(), 2);
+        assert!(min_valid[0] == 1.0, "{min_valid:?}");
+        assert!(min_valid[1] < 1.0, "{min_valid:?}");
+        assert_eq!(
+            min_valid_tsv(lib.ids(), &min_valid),
+            format!("id\tmin_valid\n0\t1.0000\n1\t{:.4}\n", min_valid[1])
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn extract_from_factors_matches_the_replayed_frames() {
+        let dims = Dims::new(96, 70).unwrap();
+        // One full window and a short last one.
+        let frames = slow_stream(dims, FACTOR_WINDOW + 50);
+        let dir = std::env::temp_dir().join(format!("qc_eval_extract_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Offset, factor_config(&[]));
+        for f in &frames {
+            fd.push(f);
+        }
+        fd.finish();
+        let mut b = LibraryBuilder::new(dims);
+        for (id, (y0, x0)) in [(10usize, 12usize), (40, 58)].into_iter().enumerate() {
+            b.push(Footprint {
+                id: id as u64,
+                y0,
+                x0,
+                height: 9,
+                width: 9,
+                values: vec![1.0; 81],
+            });
+        }
+        let lib = Arc::new(b.build(&mut IdentityFilter(dims)).unwrap());
+        let tight = SolverConfig {
+            tol: 1e-4,
+            max_sweeps: 20_000,
+            relax: 1.5,
+        };
+        let mut got: Vec<f32> = Vec::new();
+        let (read_s, pre_s, solve_s, min_valid) =
+            extract_from_factors(&dir, &lib, tight, frames.len(), |tr| {
+                got.extend_from_slice(tr)
+            });
+        assert_eq!(min_valid, vec![1.0, 1.0]);
+        assert!(read_s >= 0.0 && pre_s >= 0.0 && solve_s >= 0.0);
+        assert_eq!(got.len(), frames.len() * 2);
+        let mut eng = TraceEngine::new(lib.clone(), tight).unwrap();
+        eng.set_consolidated_ring_gradient(true);
+        let mut fr = FactorReplay::new(&dir, dims);
+        let mut tr = FrameTraces::default();
+        let mut y = vec![0.0f32; dims.pixels()];
+        let mut worst = 0.0f32;
+        for t in 0..frames.len() {
+            fr.frame(t, &mut y);
+            eng.process_into(&y, &mut tr).unwrap();
+            for (i, a) in tr.traces.iter().enumerate() {
+                let b = got[t * 2 + i];
+                worst = worst.max((a - b).abs() / (1.0 + a.abs()));
+                assert!(
+                    (a - b).abs() <= 1e-4 * (1.0 + a.abs()),
+                    "frame {t} cell {i}: {a} from frames, {b} from factors"
+                );
+            }
+        }
+        eprintln!("largest relative gap between the engines: {worst:e}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A recording of two files (1000 and 500 frames) without file handles: enough for the
+    /// frame bookkeeping.
+    fn two_file_recording() -> Recording {
+        let dims = Dims::new(4, 3).unwrap();
+        Recording {
+            files: Vec::new(),
+            starts: vec![0, 1000],
+            dims,
+            total: 1500,
+            bin: 1,
+            raw_dims: dims,
+            first: 0,
+        }
+    }
+
+    #[test]
+    fn from_moves_the_stream_origin_across_files() {
+        let mut r = two_file_recording();
+        assert_eq!(r.locate(0), (0, 0));
+        assert_eq!(r.locate(1200), (1, 200));
+        r.skip(900);
+        assert_eq!((r.first, r.total), (900, 600));
+        assert_eq!(
+            r.locate(0),
+            (0, 900),
+            "stream frame 0 is recording frame 900"
+        );
+        assert_eq!(
+            r.locate(150),
+            (1, 50),
+            "and stream frame 150 is in the second file"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "--from 1500")]
+    fn from_past_the_end_is_refused() {
+        two_file_recording().skip(1500);
+    }
+
+    const FF_HEAD: &str = "frame\toutcome\tfirst\tbins\tframes_used\tgain_sd\ttissue_sd\tresidual\tdark\tchange_median\tchange_p99\tchange_max\tsolve_s\n";
+
+    /// A folder as an online flat field run leaves it: a 4-pixel map, optionally the column
+    /// offsets, and the update log `log`.
+    fn seed_dir(name: &str, offset: bool, log: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("qc_eval_seed_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut f = File::create(dir.join("flat_field.f32")).unwrap();
+        write_f32s(&mut f, &[1.0, 1.1, 0.9, 1.2]);
+        if offset {
+            let mut f = File::create(dir.join("flat_field_offset.f32")).unwrap();
+            write_f32s(&mut f, &[2.0, 2.0, 3.0, 3.0]);
+        }
+        std::fs::write(dir.join("flat_field_updates.tsv"), log).unwrap();
+        dir
+    }
+
+    fn two_maps_log() -> String {
+        format!(
+            "{FF_HEAD}2999\tupdated\t1\t12\t2400\t0.05000\t0.10000\t1.000e-3\t4.500\t0.1\t0.2\t0.3\t0.50\n\
+             4199\tskipped: too little motion\t\t\t\t\t\t\t\t\t\t\t0.01\n\
+             5399\tupdated\t0\t14\t4800\t0.04000\t0.10000\t1.000e-3\t4.750\t0.1\t0.2\t0.3\t0.40\n"
+        )
+    }
+
+    #[test]
+    fn a_seed_run_gives_the_map_it_ended_with() {
+        let dir = seed_dir("full", true, &two_maps_log());
+        let s = read_seed_run(&dir, 4);
+        assert_eq!(s.gain, vec![1.0, 1.1, 0.9, 1.2]);
+        assert_eq!(s.offset, Some(vec![2.0, 2.0, 3.0, 3.0]));
+        assert_eq!(
+            (s.dark, s.frames),
+            (4.75, 4800.0),
+            "the last map's dark level and frames"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        let dir = seed_dir("gain", false, &two_maps_log());
+        assert_eq!(
+            read_seed_run(&dir, 4).offset,
+            None,
+            "no offset model, no offsets"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "made no flat field map")]
+    fn a_seed_run_without_a_map_is_refused() {
+        let log = format!("{FF_HEAD}2999\tskipped: too little motion\t\t\t\t\t\t\t\t\t\t\t0.01\n");
+        read_seed_run(&seed_dir("none", false, &log), 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "one value per pixel")]
+    fn a_seed_map_of_another_size_is_refused() {
+        read_seed_run(&seed_dir("size", false, &two_maps_log()), 5);
+    }
+
+    #[test]
+    fn lookback_factor_frames_are_the_dumped_frames_with_never_valid_pixels_missing() {
+        let dims = Dims::new(96, 70).unwrap();
+        let mut frames = slow_stream(dims, 2 * FACTOR_WINDOW + 50);
+        // Pixel 7: missing in every frame. Pixel 9: missing in the first 100 frames.
+        for (t, f) in frames.iter_mut().enumerate() {
+            f[7] = f32::NAN;
+            if t < 100 {
+                f[9] = f32::NAN;
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("qc_eval_lbfac_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Offset, factor_config(&[]));
+        for (t, f) in frames.iter().enumerate() {
+            fd.push(f);
+            assert_eq!(
+                fd.written,
+                (t + 1) / FACTOR_WINDOW * FACTOR_WINDOW,
+                "frame {t}"
+            );
+        }
+        fd.finish();
+        assert_eq!(
+            fd.written,
+            frames.len(),
+            "the short last window is written by finish"
+        );
+        let n = dims.pixels();
+        let mut ff = FactorFrames::new(&dir);
+        let mut want = vec![0.0f32; n];
+        // Back and forth between the three windows.
+        for t in [
+            FACTOR_WINDOW + 3,
+            5,
+            2 * FACTOR_WINDOW + 49,
+            5,
+            FACTOR_WINDOW - 1,
+        ] {
+            let w = (t / FACTOR_WINDOW) * FACTOR_WINDOW;
+            let wf = WindowFactors::from_bytes(
+                &std::fs::read(dir.join(format!("w{w:07}.fac"))).unwrap(),
+            )
+            .unwrap();
+            wf.layout().reconstruct(&wf, t - w, &mut want);
+            let mut y = vec![0.0f32; n];
+            ff.frame(t, &mut y);
+            assert!(y[7].is_nan(), "frame {t}: never valid in the window");
+            assert!(
+                y[9].is_finite(),
+                "frame {t}: valid in some frames of the window"
+            );
+            for p in (0..n).filter(|&p| p != 7) {
+                assert_eq!(y[p], want[p], "frame {t} pixel {p}");
+            }
+        }
+        assert_eq!(ff.reads, 3, "each window file is read once");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "is not on disk")]
+    fn a_lookback_frame_of_an_unwritten_window_is_refused() {
+        let dir = std::env::temp_dir().join(format!("qc_eval_lbnone_{}", std::process::id()));
+        let mut y = vec![0.0f32; 4];
+        FactorFrames::new(&dir).frame(0, &mut y);
+    }
+
+    #[test]
+    fn factor_files_serve_the_dumped_windows_in_order() {
+        let dims = Dims::new(96, 70).unwrap();
+        let frames = slow_stream(dims, FACTOR_WINDOW + 50);
+        let dir = std::env::temp_dir().join(format!("qc_eval_files_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Offset, factor_config(&[]));
+        for f in &frames {
+            fd.push(f);
+        }
+        fd.finish();
+        let mut src = FactorFiles::open(&dir, frames.len());
+        assert_eq!(src.windows(), 2);
+        src.begin();
+        src.stage(RefineStage::Sums);
+        let (a, b) = (src.window(0).unwrap(), src.window(1).unwrap());
+        assert_eq!((a.start, a.frames), (0, FACTOR_WINDOW));
+        assert_eq!((b.start, b.frames), (FACTOR_WINDOW as u64, 50));
+        assert!(src.window(2).is_err());
+        for s in [
+            RefineStage::TestFrames,
+            RefineStage::Gate,
+            RefineStage::Publish,
+            RefineStage::Done,
+        ] {
+            src.stage(s);
+        }
+        let (read_s, sums_s, test_s, gate_s, publish_s) = src.times();
+        assert!(read_s > 0.0, "two files read");
+        assert!([read_s, sums_s, test_s, gate_s, publish_s]
+            .iter()
+            .all(|&v| v >= 0.0));
+        src.begin();
+        assert_eq!(src.times(), (0.0, 0.0, 0.0, 0.0, 0.0), "a new iteration");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "end at frame")]
+    fn factor_files_refuse_a_recording_longer_than_the_factors() {
+        let dims = Dims::new(64, 40).unwrap();
+        let frames = slow_stream(dims, 30);
+        let dir = std::env::temp_dir().join(format!("qc_eval_files_short_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Plain, factor_config(&[]));
+        for f in &frames {
+            fd.push(f);
+        }
+        fd.finish();
+        let _ = FactorFiles::open(&dir, 31);
+    }
+
+    #[test]
+    #[should_panic(expected = "w0000600.fac is missing")]
+    fn factor_files_refuse_a_missing_window() {
+        let (dir, _, n) = small_factor_run("files_missing");
+        std::fs::remove_file(dir.join("w0000600.fac")).unwrap();
+        let _ = FactorFiles::open(&dir, n);
+    }
+
+    #[test]
+    #[should_panic(expected = "expected one at frame 600")]
+    fn factor_files_refuse_a_window_at_the_wrong_start() {
+        let (dir, _, n) = small_factor_run("files_stale");
+        std::fs::copy(dir.join("w0000000.fac"), dir.join("w0000600.fac")).unwrap();
+        let _ = FactorFiles::open(&dir, n);
+    }
+
+    #[test]
+    #[should_panic(expected = "past the 640 frames")]
+    fn factor_files_refuse_a_window_past_the_recording() {
+        let (dir, _, _) = small_factor_run("files_long");
+        let _ = FactorFiles::open(&dir, 640);
+    }
+
+    #[test]
+    #[should_panic(expected = "w0000600.fac: a factor window outside frames 0..600")]
+    fn factor_files_refuse_an_extra_window() {
+        // The 650-frame files read as a 600-frame recording: the second
+        // window is left over from another run.
+        let (dir, _, _) = small_factor_run("files_extra");
+        let _ = FactorFiles::open(&dir, FACTOR_WINDOW);
+    }
+
+    #[test]
+    fn factor_files_read_a_stream_after_from_by_stream_frame() {
+        // `--from 850` on a 1500-frame recording: the run pushes recording
+        // frames 850.. as stream frames 0..650; the windows and the Refine
+        // count stream frames.
+        let dims = Dims::new(96, 70).unwrap();
+        let recording = slow_stream(dims, 1500);
+        let mut r = two_file_recording();
+        r.skip(850);
+        let stream = &recording[r.first as usize..];
+        assert_eq!(stream.len(), r.total as usize);
+        let dir = std::env::temp_dir().join(format!("qc_eval_files_from_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Offset, factor_config(&[]));
+        for f in stream {
+            fd.push(f);
+        }
+        fd.finish();
+        let mut src = FactorFiles::open(&dir, r.total as usize);
+        assert_eq!(src.windows(), 2);
+        let mut y = vec![0.0f32; dims.pixels()];
+        let mut next = 0usize;
+        for w in 0..src.windows() {
+            let wf = src.window(w).unwrap();
+            assert_eq!(
+                wf.start as usize, next,
+                "window {w} starts at a stream frame"
+            );
+            let layout = wf.layout();
+            for k in [0, wf.frames - 1] {
+                layout.reconstruct(&wf, k, &mut y);
+                let rec_frame = r.first as usize + next + k;
+                let far = y
+                    .iter()
+                    .zip(&recording[rec_frame])
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0f32, f32::max);
+                assert!(
+                    far < 0.1,
+                    "stream frame {}: recording frame {rec_frame}, gap {far}",
+                    next + k
+                );
+            }
+            next += wf.frames;
+        }
+        assert_eq!(next, r.total as usize);
+        // Stream frame 0 is recording frame 850, not frame 0.
+        let wf = src.window(0).unwrap();
+        wf.layout().reconstruct(&wf, 0, &mut y);
+        let peak = 35 * dims.width + 64;
+        assert!((y[peak] - recording[0][peak]).abs() > 1.0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "w0000000.fac, 2 in all")]
+    fn a_factors_out_folder_with_window_files_is_refused_at_start() {
+        let (dir, _, _) = small_factor_run("left_windows");
+        refuse_left_windows(&dir);
+    }
+
+    #[test]
+    fn an_empty_or_new_factors_out_folder_is_accepted_at_start() {
+        let dir = std::env::temp_dir().join(format!("qc_eval_new_out_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        refuse_left_windows(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("factors.tsv"), "start\n").unwrap();
+        refuse_left_windows(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_factor_dump_writes_the_same_bytes_for_the_same_frames() {
+        // The compression replay of `--refine-engine factors` pushes the
+        // frames a refine replay pushes; this is why its files are the same.
+        let (a, _, _) = small_factor_run("same_a");
+        let (b, _, _) = small_factor_run("same_b");
+        for name in ["w0000000.fac", "w0000600.fac"] {
+            assert_eq!(
+                std::fs::read(a.join(name)).unwrap(),
+                std::fs::read(b.join(name)).unwrap(),
+                "{name}"
+            );
+        }
+        std::fs::remove_dir_all(&a).unwrap();
+        std::fs::remove_dir_all(&b).unwrap();
+    }
+
+    fn args_of(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    const FACTOR_ARGS: &str =
+        "qc_eval real in out --passes 2 --later-passes refine --factors-out f --factors-pass 2";
+
+    #[test]
+    fn refine_engine_raw_is_the_default() {
+        let a = args_of(FACTOR_ARGS);
+        assert_eq!(refine_engine(&a, 2, EditScope::Refine, 2, false), None);
+        let a = args_of(&format!("{FACTOR_ARGS} --refine-engine raw"));
+        assert_eq!(refine_engine(&a, 2, EditScope::Refine, 2, false), None);
+    }
+
+    #[test]
+    fn refine_engine_factors_reads_the_settle_flags() {
+        let a = args_of(&format!("{FACTOR_ARGS} --refine-engine factors"));
+        assert_eq!(
+            refine_engine(&a, 2, EditScope::Refine, 2, false),
+            Some(FactorRefineConfig::default())
+        );
+        let a = args_of(&format!(
+            "{FACTOR_ARGS} --refine-engine factors --settle-corr 0.95 --settle-share 0.1 --max-iterations 4 --test-frames 30 --joint-update off --core-test off --from 900 --replay-source factors"
+        ));
+        let c = refine_engine(&a, 2, EditScope::Refine, 2, false).unwrap();
+        assert_eq!(
+            (
+                c.settle_corr,
+                c.settle_share,
+                c.max_iterations,
+                c.test_frames
+            ),
+            (0.95, 0.1, 4, 30)
+        );
+    }
+
+    #[test]
+    fn refine_engine_factors_takes_test_frames_zero_or_the_slow_loops_minimum() {
+        let min = SlowLoopConfig::default().min_test_frames;
+        for k in [0, min, min + 1] {
+            let a = args_of(&format!(
+                "{FACTOR_ARGS} --refine-engine factors --test-frames {k}"
+            ));
+            let c = refine_engine(&a, 2, EditScope::Refine, 2, false).unwrap();
+            assert_eq!(c.test_frames, k);
+        }
+    }
+
+    #[test]
+    fn refine_engine_factors_refuses_what_it_cannot_run() {
+        let msg = |a: &str, passes: usize, scope: EditScope, fp: usize, oracle: bool| {
+            let a = args_of(a);
+            let e = std::panic::catch_unwind(|| refine_engine(&a, passes, scope, fp, oracle))
+                .expect_err(&format!("{a:?} must be refused"));
+            e.downcast_ref::<String>()
+                .cloned()
+                .or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                .unwrap()
+        };
+        let r = EditScope::Refine;
+        let f = format!("{FACTOR_ARGS} --refine-engine factors");
+        for (extra, want) in [
+            ("--joint-update refine", "--joint-update"),
+            ("--lookback 1", "--lookback"),
+            ("--catchup 600", "--catchup"),
+            ("--core-test report", "--core-test"),
+            ("--offered-fps 30", "--offered-fps"),
+            ("--library fp.bin", "--library"),
+            ("--settle-corr 2", "--refine-engine factors: "),
+            ("--test-frames 1", "min_test_frames"),
+            ("--test-frames 7", "min_test_frames"),
+        ] {
+            let m = msg(&format!("{f} {extra}"), 2, r, 2, false);
+            assert!(m.contains(want), "{extra}: {m}");
+        }
+        let needs =
+            "needs --passes 2, --later-passes refine, --factors-out DIR and --factors-pass 2";
+        assert!(msg(&f, 3, r, 2, false).contains(needs));
+        assert!(msg(&f, 2, EditScope::All, 2, false).contains(needs));
+        assert!(msg(&f, 2, r, 1, false).contains(needs));
+        let no_dir = f.replace("--factors-out f", "");
+        assert!(msg(&no_dir, 2, r, 2, false).contains(needs));
+        assert!(msg(&f, 2, r, 2, true).contains("oracle"));
+        let typo = format!("{FACTOR_ARGS} --refine-engine factor");
+        assert!(msg(&typo, 2, r, 2, false).contains("raw or factors, not \"factor\""));
+        let stray = format!("{FACTOR_ARGS} --max-iterations 3");
+        assert!(msg(&stray, 2, r, 2, false).contains("need --refine-engine factors"));
+    }
+
+    /// A slow loop in the Refine scope with the blob of `slow_stream` seeded
+    /// a pixel off its centre, published.
+    fn seeded_refine_loop(dims: Dims, scope: EditScope) -> SlowLoop {
+        let n = dims.pixels();
+        let fcfg = calab_cala::preprocess::flatten::FlattenConfig {
+            cell_diameter_px: 10.0,
+            ..Default::default()
+        };
+        let mask = calab_cala::preprocess::fov::FovMask::full(dims);
+        let flat = GlowFlattener::new(&mask, &fcfg).unwrap();
+        let mut sl = SlowLoop::new(
+            dims,
+            vec![1; n],
+            vec![1.0; n],
+            flat,
+            SlowLoopConfig::default(),
+        )
+        .unwrap();
+        sl.seed(&[blob(1, 36.0, 63.0, 3.5, dims)]).unwrap();
+        sl.finalize().unwrap();
+        sl.set_edit_scope(scope);
+        sl
+    }
+
+    #[test]
+    fn refine_on_factor_files_logs_every_iteration_and_ends_with_the_published_library() {
+        let (dir, _, n) = small_factor_run("refine_loop");
+        let dims = Dims::new(96, 70).unwrap();
+        for (cfg, want_cap) in [
+            (
+                FactorRefineConfig {
+                    max_iterations: 3,
+                    ..FactorRefineConfig::default()
+                },
+                false,
+            ),
+            // `settle_share` 0 asks for the cap.
+            (
+                FactorRefineConfig {
+                    max_iterations: 2,
+                    settle_share: 0.0,
+                    ..FactorRefineConfig::default()
+                },
+                true,
+            ),
+        ] {
+            let mut sl = seeded_refine_loop(dims, EditScope::Refine);
+            let mut src = FactorFiles::open(&dir, n);
+            let mut libs: Vec<(usize, Arc<Library>)> = Vec::new();
+            let run = refine_on_factor_files(&mut sl, &mut src, &cfg, |it, rep, lib| {
+                assert_eq!(rep.library_version, lib.version());
+                libs.push((it, lib.clone()));
+            });
+            let k = libs.len();
+            assert!((1..=cfg.max_iterations).contains(&k));
+            assert_eq!(run.iterations, k);
+            assert_eq!(
+                libs.iter().map(|l| l.0).collect::<Vec<_>>(),
+                (1..=k).collect::<Vec<_>>()
+            );
+            assert_eq!(run.stop == SettleStop::Cap, want_cap, "{:?}", run.stop);
+            if want_cap {
+                assert_eq!(k, cfg.max_iterations);
+            }
+            let rows: Vec<&str> = run.log.lines().collect();
+            assert_eq!(rows[0], ITERATIONS_HEADER.trim_end());
+            assert_eq!(rows.len(), 1 + k);
+            for (i, r) in rows[1..].iter().enumerate() {
+                let cols: Vec<&str> = r.split('\t').collect();
+                assert_eq!(cols.len(), 15, "{r}");
+                assert_eq!(cols[0], (i + 1).to_string());
+                let want = if i + 1 == k { stop_word(run.stop) } else { "-" };
+                assert_eq!(cols[14], want, "{r}");
+            }
+            assert!(Arc::ptr_eq(&run.library, &libs[k - 1].1));
+            assert!(Arc::ptr_eq(sl.library().unwrap(), &run.library));
+            let stage: Vec<&str> = run.stage_rows.lines().collect();
+            assert_eq!(stage.len(), k);
+            for (i, r) in stage.iter().enumerate() {
+                assert!(r.starts_with(&format!("refine_it{}\t", i + 1)), "{r}");
+                assert_eq!(r.split('\t').count(), 7, "{r}");
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Refine on factors, iteration 1: ")]
+    fn refine_on_factor_files_names_the_iteration_of_a_library_error() {
+        let (dir, _, n) = small_factor_run("refine_refused");
+        let dims = Dims::new(96, 70).unwrap();
+        // Not the Refine scope: the library refuses before it reads a window.
+        let mut sl = seeded_refine_loop(dims, EditScope::All);
+        let mut src = FactorFiles::open(&dir, n);
+        refine_on_factor_files(
+            &mut sl,
+            &mut src,
+            &FactorRefineConfig::default(),
+            |_, _, _| {},
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Refine on factors: ")]
+    fn refine_on_factor_files_refuses_a_cap_of_zero() {
+        let (dir, _, n) = small_factor_run("refine_cap0");
+        let dims = Dims::new(96, 70).unwrap();
+        let mut sl = seeded_refine_loop(dims, EditScope::Refine);
+        let mut src = FactorFiles::open(&dir, n);
+        let cfg = FactorRefineConfig {
+            max_iterations: 0,
+            ..FactorRefineConfig::default()
+        };
+        refine_on_factor_files(&mut sl, &mut src, &cfg, |_, _, _| {});
+    }
+
+    /// Every cell's id and unfiltered footprint, in slot order.
+    fn footprints_of(lib: &Library) -> Vec<(u64, Vec<u32>, Vec<f32>)> {
+        (0..lib.len())
+            .map(|s| {
+                let (p, v) = lib.unfiltered(s);
+                (lib.ids()[s], p.to_vec(), v.to_vec())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn refine_on_factor_files_runs_the_library_loop() {
+        // The harness calls `refine_until_settled` once per iteration; with
+        // the same cap it must end where one call ends. `SlowLoop` is not
+        // `Clone`: two loops built the same way stand in for two clones.
+        let (dir, _, n) = small_factor_run("refine_same");
+        let dims = Dims::new(96, 70).unwrap();
+        for cfg in [
+            FactorRefineConfig {
+                max_iterations: 3,
+                ..FactorRefineConfig::default()
+            },
+            FactorRefineConfig {
+                max_iterations: 2,
+                settle_share: 0.0,
+                ..FactorRefineConfig::default()
+            },
+        ] {
+            let mut a = seeded_refine_loop(dims, EditScope::Refine);
+            let mut b = seeded_refine_loop(dims, EditScope::Refine);
+            assert_eq!(
+                footprints_of(a.library().unwrap()),
+                footprints_of(b.library().unwrap()),
+                "the two loops start equal"
+            );
+            let mut src = FactorFiles::open(&dir, n);
+            let mut accepted_a = Vec::new();
+            let run = refine_on_factor_files(&mut a, &mut src, &cfg, |_, rep, _| {
+                accepted_a.push(rep.accepted)
+            });
+            let mut src = FactorFiles::open(&dir, n);
+            let mut accepted_b = Vec::new();
+            let done = refine_until_settled(&mut b, &mut src, &cfg, |_, rep| {
+                accepted_b.push(rep.accepted)
+            })
+            .unwrap();
+            assert_eq!(run.iterations, done.iterations, "{cfg:?}");
+            assert_eq!(run.stop, done.stop, "{cfg:?}");
+            assert_eq!(accepted_a, accepted_b, "{cfg:?}");
+            assert!(accepted_a.iter().sum::<u64>() > 0, "something was refined");
+            assert_eq!(
+                footprints_of(&run.library),
+                footprints_of(&done.library),
+                "{cfg:?}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

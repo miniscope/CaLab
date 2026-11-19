@@ -9,6 +9,14 @@
  * is dropped: a window with a missing frame could not be replayed.
  */
 
+/** How a frame is cut into tiles (`Tiling` in crates/cala): side by side, or on two grids offset by half a tile. */
+export type CompressTiling = 'plain' | 'offset';
+/**
+ * Which frames a run of windows holds: Discover's, preprocessed with the
+ * calibration of the moment, or a replay's, with the final calibration.
+ */
+export type CompressSource = 'discover' | 'replay';
+
 /** Geometry and quantization of a run. */
 export interface CompressInit {
   width: number;
@@ -19,6 +27,10 @@ export interface CompressInit {
   window: number;
   /** Quantized values are `round(value * quant)`. */
   quant: number;
+  /** How the frame is cut into tiles. */
+  tiling: CompressTiling;
+  /** Which frames the windows hold. */
+  source: CompressSource;
 }
 
 /** Fast worker -> compress worker. */
@@ -53,12 +65,19 @@ export interface CompressStatus {
   pendingFrames: number;
   /** Mean kept rank per tile of the last window. */
   meanRank: number;
-  /** Compute time of the last window per frame (quantizing and compressing), ms. */
+  /**
+   * Compute time per frame (quantizing and compressing), ms: the total over all
+   * windows compressed in this session divided by their frames (0 before the first).
+   */
   msPerFrame: number;
   /** Bytes of all factor files. */
   factorBytes: number;
   /** The recording ended and every window is compressed. */
   final: boolean;
+  /** How the tiles of the factor files are cut. */
+  tiling: CompressTiling;
+  /** Which frames the factor files hold. */
+  source: CompressSource;
 }
 
 /** Compress worker -> main thread. */

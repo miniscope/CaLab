@@ -8,6 +8,47 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 ### Added
 
 - Admin: a read-only **Schema status** panel on the Overview tab reporting which database migrations are applied (production migrations are applied by hand, and 008 and 015 were once skipped unnoticed). It uses the new optional `supabase/migrations/019_schema_fingerprint.sql` (`schema_fingerprint()`, admin-only, read-only, booleans only); **the project owner must apply 019 by hand** to enable it, and until then the panel shows "unknown" without affecting the dashboard. `supabase/README.md` lists the expected fingerprint per migration.
+- cala evaluation: `qc_eval` can run the refine replays and an Extract pass on frames rebuilt from
+  the compressed factors (`--replay-source factors`, `--tiling`, `--factors-pass`, `--extract-pass`),
+  with overlapping and offset tilings in `compress::blend`; `tools/cala-eval/factor_arms.py` and
+  `factor_closeness.py` compare them with the raw replay. Every `qc_eval` run now also writes
+  `stage_times.tsv` (seconds per pass). This entry changes nothing in the app; the phase 2 entry below does.
+- Cala (experimental `?compress`), factor pipeline phase 2, Extract on factors: `FactorExtractor` (and
+  `WindowProjector`) in `crates/cala/src/compress/project.rs` solve a frame's traces from the stored low-rank factors
+  of a 600-frame window and rebuild no frame (`TraceEngine::process_projected`). **The app's back-fill changed:** the
+  compress worker now solves it on a WASM `FactorExtractor`, 64 frames per yield, and the status bar's mean rank is
+  the mean over the compressed windows weighted by frames; Extract in the app still replays the raw file.
+  `qc_eval --extract-engine frames|factors` selects the engine of the Extract pass (the factor engine also writes
+  `extract_min_valid.tsv`), and `factor_arms.py` has the arm `c_chosen` and `--extra` flags for every arm. On the
+  bounded runs `c_chosen` meets gate A1 on all six recordings; against the frame engine the traces agree to about 1e-4
+  in unit tests but differ by a median of 0.015 of the trace's sd on the two real WL24 recordings (the cause is open; a
+  pixel never valid in a window is stored as 0 and the factor engine reads it, which explains single cells, not the
+  level); the Extract pass alone takes 0.5 to 1.1 s instead of 18 to 78 s, while the whole run takes the same time
+  because the factors are written during the replay either way; with main's cluster replay on, `wl24_01` fails the
+  footprint rule for both Extract engines: `tools/cala-eval/results/2026-11-19-factor-phase2.md`.
+- cala evaluation, factor pipeline phase 4a (what a live run may claim): `qc_eval --from F` runs a later stretch of a
+  recording, `--ff-seed-run DIR` starts a run with the flat field map that an earlier run ended with (as the app stores
+  it per device), and `--lookback-source factors` lets main's look-back read Discover's factor windows instead of the
+  raw file. `factor_closeness.py --match` pairs cells by footprint (for runs whose Discover differed) and reports the
+  footprint correlation with the truth footprint. `factor_arms.py` has the arms `live`, `seed`, `raw_seed`,
+  `live_seed`, `lb_raw`, `lb_fac` and `lb_live` and `--seed-from F`. On the bounded runs, Discover's factors without recalibration fail gate A1 on the two real WL24 wireless recordings and on `motion`. A flat field seed from another session of the same mouse and scope model (scope unit, field of view and optical path not confirmed) brought one of two runs inside the gate (a seed from three days earlier passed, one from three days later failed). Look-back on factors: one of six look-back comparisons fails rule 1, marginally (`wl200`, 5th percentile -0.0702 against -0.05); gate A1 caps lost cells nowhere under pairing. The live arms still read the raw file in the refine replays: `tools/cala-eval/results/2026-11-19-factor-phase4a.md`. No change to the app.
+- cala evaluation, gate A1 rule 5 (lost cells; the spec's Amendment 3): the test run may lose at most as many QC-pass
+  cells as the null run that lost most. `factor_arms.py` has the null arms `lb_null_s1` and `lb_null_s2` (the raw
+  look-back run with another `--slow-seed`), and `factor_closeness.py --match` pairs the null runs by footprint too.
+  On `wl200`, `plain` and `motion` the look-back arms on factors lose 2, 7 and 11 QC-pass cells, the seed repeats of the
+  raw run 4 to 7, 12 to 15 and 28 to 34; five of the six seed repeats themselves fail gate A1 against the raw reference.
+- Cala, factor pipeline phase 3a, Refine on factors (crate and harness only, no change to the app): `SlowLoop::refine_on_factors`
+  and `refine_until_settled` (`crates/cala/src/discover/factor_refine.rs`) run Refine on the stored low-rank windows with
+  the cell set frozen: the footprint statistics are filled from the factors, the held-out frame patches are rebuilt
+  from them (not whole frames), the existing proposal and gate code runs, and the iterations stop when fewer than 2 %
+  of the cells have a footprint that correlates below 0.99 with the iteration before (cap 20). The joint update (cluster
+  history replay) is refused until phase 3b. `qc_eval --refine-engine raw|factors` with `--settle-corr`, `--settle-share`,
+  `--max-iterations` and `--test-frames` runs it after a compression-only pass 2 and writes `iterations.tsv` and
+  `footprints_iter{k}.bin`; `factor_arms.py` has the arms `f_chosen` and `f_null` (a repeat run) and the report has the
+  settle and iteration tables. On the bounded runs `f_chosen` passes gate A1 on four of six recordings and fails the
+  footprint rule on the two real WL24 recordings (loss 0.0345 and 0.0389 against 0.02); the raw reference is 5 or 2
+  Refine replays, not a settled Refine, and the runs are the first 12000 or 6000 frames at a tenth of the budget:
+  `tools/cala-eval/results/2026-11-19-factor-phase3.md`.
 
 - Cala (experimental, off by default): a joint footprint update for overlapping cells in the Refine stage (`SlowLoopConfig::joint_update`, `qc_eval --joint-update refine`). Cells whose footprints overlap (normalised whitened overlap ≥ 0.05, at most 6 per cluster) keep a compact history of their residual (K numbers per fitting frame over one statistics half-life). A refine visit re-solves the stored frames' traces with the current footprints, refits the footprints jointly (non-negative) and accepts the members' new footprints together or not at all. On the 14-sim demixing suite it lowers the close-pair trace correlation excess +0.150 → +0.106 and the share of bitten neighbours at 0.75-1 soma diameters 0.49 → 0.34 (14/14 and 13/14 sims), with matched and false cells unchanged; the Refine pass's slow-loop frame cost rises about 30 %. The cluster support rule and Discover use are not done yet. See `tools/cala-eval/results/2026-11-17-cluster-replay.md`.
 
@@ -16,6 +57,11 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 ### Changed
 
 - Docs and Admin: a note that runs from local or dev builds send no analytics (no Supabase environment) and are not counted in Admin.
+- Cala (experimental `?compress`): factor files are format v2 (`CALAFAC2`: the tiling, and per pixel the discarded variance and the valid share; v1 files are still read, as plain tiles). A non-finite pixel is stored as a missing sample. The compressor runs two power iterations of the SVD. Extract's replay writes recalibrated factors on two offset grids, which replace Discover's plain factors; the history review reads only plain tiles and refuses others, and the status bar's ms per frame is the mean over the session's windows. `batch-session.mjs --compress-wait <s>` waits for a stage's last window; `history_wholetest.py` reads v1 and v2. `batch-session.mjs` refuses a port that already answers and a build older than the sources (`--stale-build`). The chosen factors pass gate A1 of the factor pipeline on all six test recordings in bounded native runs (first 12000 or 6000 frames); in Chrome both stages compress every window on both test recordings, at 1.45 to 24.25 ms per frame: `tools/cala-eval/results/2026-11-18-factor-phase1.md`.
+
+### Fixed
+
+- Cala (experimental `?compress`): compression in the browser could stop partway through a stage without an error when Chrome garbage-collected a file handle while its access handle was opening; the file stores now keep the handle referenced until the open settles.
 
 ## [2.20.0] - 2026-11-17
 

@@ -5,7 +5,8 @@
  * worker's work. Pure apart from the injected port, so the window bookkeeping
  * is unit-tested without workers.
  */
-import type { FastToCompress } from '../workers/compress-types.ts';
+import type { CompressSource, CompressTiling, FastToCompress } from '../workers/compress-types.ts';
+import type { CellsSettings } from '../workers/frame-types.ts';
 import type { PortLike } from '../workers/slow-types.ts';
 
 export interface CompressFeedOptions {
@@ -14,13 +15,57 @@ export interface CompressFeedOptions {
   session: number;
   /** Tile edge, px. */
   tile?: number;
+  /** How the frame is cut into tiles (default plain: the history review reads side-by-side tiles). */
+  tiling?: CompressTiling;
+  /** Which frames these are (default Discover's). */
+  source?: CompressSource;
   /** Frames per window. */
   window?: number;
   /** Quantized values are `round(value * quant)`: 1/64 grey level, ±512 grey levels. */
   quant?: number;
 }
 
-export const COMPRESS_DEFAULTS = { tile: 64, window: 600, quant: 64 } as const;
+export const COMPRESS_DEFAULTS = {
+  tile: 64,
+  window: 600,
+  quant: 64,
+  tiling: 'plain',
+  source: 'discover',
+} as const;
+
+/**
+ * The feed options of a worker's cells (null: this run does not compress).
+ * A stage that solves with a given library is a replay: its frames have the
+ * final calibration. Discover stays on plain tiles under its own session.
+ */
+export function compressFeedOptions(
+  cells:
+    | Pick<CellsSettings, 'compress' | 'compressTiling' | 'compressSession' | 'session' | 'library'>
+    | null
+    | undefined,
+  width: number,
+  height: number,
+): CompressFeedOptions | null {
+  if (!cells?.compress) return null;
+  return {
+    width,
+    height,
+    session: cells.compressSession ?? cells.session,
+    ...(cells.compressTiling ? { tiling: cells.compressTiling } : {}),
+    source: cells.library ? 'replay' : 'discover',
+  };
+}
+
+/** The feed of a worker's cells on its compress port (null: no compression). */
+export function compressFeedFor(
+  cells: Parameters<typeof compressFeedOptions>[0],
+  width: number,
+  height: number,
+  port: PortLike<FastToCompress> | null,
+): CompressFeed | null {
+  const options = compressFeedOptions(cells, width, height);
+  return options && port ? new CompressFeed(options, port) : null;
+}
 
 /** What the fast loop needs of a feed. */
 export interface CompressFeedLike {
@@ -47,8 +92,8 @@ export class CompressFeed implements CompressFeedLike {
     private readonly port: PortLike<FastToCompress>,
   ) {
     this.o = { ...COMPRESS_DEFAULTS, ...options };
-    if (!(this.o.window >= 2) || !(this.o.tile >= 1) || !(this.o.quant > 0)) {
-      throw new RangeError('CompressFeed needs window >= 2, tile >= 1, quant > 0.');
+    if (!(this.o.window >= 2) || !(this.o.tile >= 2) || !(this.o.quant > 0)) {
+      throw new RangeError('CompressFeed needs window >= 2, tile >= 2, quant > 0.');
     }
     this.px = options.width * options.height;
   }
@@ -56,9 +101,19 @@ export class CompressFeed implements CompressFeedLike {
   /** `count` frames that start at stream frame `start`. */
   push(batch: Float32Array, start: number, count: number): void {
     if (this.disposed || count <= 0) return;
-    const { session, width, height, tile, window, quant } = this.o;
+    const { session, width, height, tile, window, quant, tiling, source } = this.o;
     if (!this.initSent) {
-      this.port.postMessage({ type: 'init', session, width, height, tile, window, quant });
+      this.port.postMessage({
+        type: 'init',
+        session,
+        width,
+        height,
+        tile,
+        window,
+        quant,
+        tiling,
+        source,
+      });
       this.initSent = true;
     }
     // A gap in the stream ends the window: its frames must be consecutive.

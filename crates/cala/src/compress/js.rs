@@ -1,76 +1,138 @@
 //! wasm-bindgen surface of the compression, for a Web Worker.
 //!
-//! The worker keeps a window of frames as `Int16Array` (`quantizeFrames`),
-//! cuts it into tiles and hands each tile to `TileCompressor.compress`, so
-//! only one tile at a time is copied into the WASM heap.
+//! The worker quantizes each incoming batch of frames into tile order
+//! (`quantizeTiles`, on the tiles of `tileLayout`) and appends it to the
+//! window's file. A closed window is compressed tile by tile from that file:
+//! each tile's frames go to `TileCompressor.compress`, so only one tile at a
+//! time is copied into the WASM heap. The factor file is `factorHeader`, then
+//! per tile a u32 byte length and `TileFactors.toBytes()`; `FactorWindow`
+//! reads it back to rebuild frames, and `FactorExtractor` solves a library's
+//! traces from it without rebuilding any.
 //!
 //! `HistoryReview` (see `review.rs`) keeps the factors of every window and
 //! scans them a few grid rows per call, so its worker can read messages
 //! between calls.
 
+use std::sync::Arc;
+
 use wasm_bindgen::prelude::*;
 
+use super::blend::{grid_of, BlendLayout, Tiling};
+use super::project::{FactorExtractor, WindowProjector};
 use super::review::{
     candidates, candidates_to_wire, scan_band, scan_rows, KnownCell, ReviewConfig, SpotStats,
 };
-use super::{compress_tile, quantize, quantize_tiles, CompressConfig, TileFactors, WindowFactors};
+use super::{compress_tile, quantize_tiles, CompressConfig, TileFactors, WindowFactors};
 use crate::preprocess::Dims;
-use crate::trace::Library;
+use crate::trace::{Library, SolverConfig};
 
 fn js_err(func: &str, e: impl std::fmt::Display) -> JsError {
     JsError::new(&format!("{func}: {e}"))
 }
 
-/// `out[i] = round(frames[i] * quant)` in `i16` (non-finite values count as 0).
-#[wasm_bindgen(js_name = quantizeFrames)]
-pub fn quantize_frames(frames: &[f32], quant: f32, out: &mut [i16]) -> Result<(), JsError> {
-    if frames.len() != out.len() {
-        return Err(js_err(
-            "quantizeFrames",
-            format!("{} values in, {} out", frames.len(), out.len()),
-        ));
-    }
-    if !(quant.is_finite() && quant > 0.0) {
-        return Err(js_err("quantizeFrames", "quant must be positive"));
-    }
-    for (o, &v) in out.iter_mut().zip(frames) {
-        *o = quantize(v, quant);
-    }
-    Ok(())
+fn parse_tiling(func: &str, s: &str) -> Result<Tiling, JsError> {
+    Tiling::parse(s)
+        .ok_or_else(|| js_err(func, format!("tiling {s:?}: plain, overlap:N or offset")))
 }
 
-/// Quantize `count` frames into tile order: for each tile (row by row over
-/// the frame, `tile` px squares, smaller at the right and bottom edge), its
-/// `count x pixels` values, a frame per row. A tile's block of every batch
-/// of a window, one after the other, is the input of
-/// `TileCompressor.compress`.
+/// The frame size, tile edge and tiling of a call, checked.
+fn checked(
+    func: &str,
+    width: u32,
+    height: u32,
+    tile: u32,
+    tiling: &str,
+) -> Result<(Dims, usize, Tiling), JsError> {
+    let dims = Dims::new(width as usize, height as usize).map_err(|e| js_err(func, e))?;
+    if tile < 2 {
+        return Err(js_err(func, "tile must be at least 2"));
+    }
+    Ok((dims, tile as usize, parse_tiling(func, tiling)?))
+}
+
+/// Why a header with `tiles` records cannot describe this frame, if so.
+fn header_mismatch(dims: Dims, tile: usize, tiling: Tiling, tiles: usize) -> Option<String> {
+    let want = BlendLayout::tile_count(dims, tile, tiling);
+    (tiles != want).then(|| format!("{tiles} tiles, {want} expected for this frame and tiling"))
+}
+
+/// The tiles of a tiling, `(x0, y0, w, h)` one after the other, in the order
+/// `quantizeTiles` writes them and a factor file holds them.
+#[wasm_bindgen(js_name = tileLayout)]
+pub fn tile_layout(width: u32, height: u32, tile: u32, tiling: &str) -> Result<Vec<u32>, JsError> {
+    let (dims, tile, tiling) = checked("tileLayout", width, height, tile, tiling)?;
+    Ok(grid_of(dims, tile, tiling)
+        .iter()
+        .flat_map(|g| [g.0 as u32, g.1 as u32, g.2 as u32, g.3 as u32])
+        .collect())
+}
+
+/// The header of a factor file (`WindowFactors::header_bytes`): the tile
+/// records (`u32` byte length, then `TileFactors.toBytes()`) follow it.
+#[wasm_bindgen(js_name = factorHeader)]
+pub fn factor_header(
+    width: u32,
+    height: u32,
+    tile: u32,
+    tiling: &str,
+    frames: u32,
+    tiles: u32,
+    start: f64,
+) -> Result<Vec<u8>, JsError> {
+    let (dims, tile, tiling) = checked("factorHeader", width, height, tile, tiling)?;
+    if !(start.is_finite() && start >= 0.0) {
+        return Err(js_err("factorHeader", "start must be a frame index"));
+    }
+    if let Some(e) = header_mismatch(dims, tile, tiling, tiles as usize) {
+        return Err(js_err("factorHeader", e));
+    }
+    Ok(WindowFactors::header_bytes(
+        dims,
+        tile,
+        tiling,
+        frames as usize,
+        tiles as usize,
+        start as u64,
+    ))
+}
+
+/// Quantize `count` frames into tile order: for each tile of the tiling
+/// (`tileLayout`), its `count x pixels` values, a frame per row. A tile's
+/// block of every batch of a window, one after the other, is the input of
+/// `TileCompressor.compress`. `out` holds `count` times the pixels of all
+/// tiles (more than the frames when tiles overlap).
 #[wasm_bindgen(js_name = quantizeTiles)]
+#[allow(clippy::too_many_arguments)]
 pub fn quantize_tiles_js(
     frames: &[f32],
     count: u32,
     width: u32,
     height: u32,
     tile: u32,
+    tiling: &str,
     quant: f32,
     out: &mut [i16],
 ) -> Result<(), JsError> {
-    let dims =
-        Dims::new(width as usize, height as usize).map_err(|e| js_err("quantizeTiles", e))?;
-    let n = count as usize * dims.pixels();
-    if frames.len() != n || out.len() != n {
+    let (dims, tile, tiling) = checked("quantizeTiles", width, height, tile, tiling)?;
+    let grid = grid_of(dims, tile, tiling);
+    let total: usize = grid.iter().map(|g| g.2 * g.3).sum();
+    let count = count as usize;
+    if frames.len() != count * dims.pixels() || out.len() != count * total {
         return Err(js_err(
             "quantizeTiles",
             format!(
-                "{} values in, {} out, {n} expected",
+                "{} values in, {} out; {} and {} expected",
                 frames.len(),
-                out.len()
+                out.len(),
+                count * dims.pixels(),
+                count * total
             ),
         ));
     }
-    if tile == 0 || !(quant.is_finite() && quant > 0.0) {
-        return Err(js_err("quantizeTiles", "tile and quant must be positive"));
+    if !(quant.is_finite() && quant > 0.0) {
+        return Err(js_err("quantizeTiles", "quant must be positive"));
     }
-    quantize_tiles(frames, count as usize, dims, tile as usize, quant, out);
+    quantize_tiles(frames, count, dims, &grid, quant, out);
     Ok(())
 }
 
@@ -82,7 +144,7 @@ pub struct JsTileCompressor {
 
 #[wasm_bindgen(js_class = TileCompressor)]
 impl JsTileCompressor {
-    /// `quant`: the scale of the quantized frames (`quantizeFrames`).
+    /// `quant`: the scale of the quantized frames (`quantizeTiles`).
     #[wasm_bindgen(constructor)]
     pub fn new(quant: f32) -> Result<JsTileCompressor, JsError> {
         console_error_panic_hook::set_once();
@@ -122,7 +184,7 @@ impl JsTileCompressor {
         seed: u32,
     ) -> Result<JsTileFactors, JsError> {
         let (t, p) = (frames as usize, w as usize * h as usize);
-        if t < 2 || p < 2 || raw.len() != t * p {
+        if t < 2 || p < 1 || raw.len() != t * p {
             return Err(js_err(
                 "compress",
                 format!("{} values for {t} frames x {p} pixels", raw.len()),
@@ -193,7 +255,7 @@ pub struct JsFactorWindow {
 
 #[wasm_bindgen(js_class = FactorWindow)]
 impl JsFactorWindow {
-    /// `bytes`: a whole factor file (`CALAFAC1`, see `WindowFactors::to_bytes`).
+    /// `bytes`: a whole factor file (`CALAFAC2`, or v1 `CALAFAC1`; see `WindowFactors::to_bytes`).
     #[wasm_bindgen(js_name = fromBytes)]
     pub fn from_bytes(bytes: &[u8]) -> Result<JsFactorWindow, JsError> {
         console_error_panic_hook::set_once();
@@ -223,6 +285,18 @@ impl JsFactorWindow {
         self.inner.start as f64
     }
 
+    /// Edge of the grid the tiles were cut on, px.
+    #[wasm_bindgen(getter)]
+    pub fn tile(&self) -> u32 {
+        self.inner.tile as u32
+    }
+
+    /// `plain`, `overlap:N` or `offset`.
+    #[wasm_bindgen(getter)]
+    pub fn tiling(&self) -> String {
+        self.inner.tiling.name()
+    }
+
     /// Frames `t0..t0 + count` of the window rebuilt into `out`
     /// (`count * width * height` values, frame after frame).
     pub fn reconstruct(&self, t0: u32, count: u32, out: &mut [f32]) -> Result<(), JsError> {
@@ -241,6 +315,109 @@ impl JsFactorWindow {
         }
         self.inner.reconstruct_range(t0, count, out);
         Ok(())
+    }
+}
+
+/// Extract on factors: a library's traces from factor files, without
+/// rebuilding a frame.
+#[wasm_bindgen(js_name = FactorExtractor)]
+pub struct JsFactorExtractor {
+    inner: FactorExtractor,
+    ids: Vec<u32>,
+    /// The open window and the library's rows on it; they are replaced together.
+    window: Option<(WindowFactors, WindowProjector)>,
+}
+
+#[wasm_bindgen(js_class = FactorExtractor)]
+impl JsFactorExtractor {
+    /// `library`: `TraceLibrary.toBytes()`. `tol` (noise units) and
+    /// `max_sweeps`: 0 = defaults.
+    #[wasm_bindgen(constructor)]
+    pub fn new(library: &[u8], tol: f32, max_sweeps: u32) -> Result<JsFactorExtractor, JsError> {
+        console_error_panic_hook::set_once();
+        let lib = Library::from_bytes(library).map_err(|e| js_err("FactorExtractor", e))?;
+        let mut cfg = SolverConfig::default();
+        if tol > 0.0 {
+            cfg.tol = tol;
+        }
+        if max_sweeps > 0 {
+            cfg.max_sweeps = max_sweeps;
+        }
+        let ids = lib.ids().iter().map(|&v| v as u32).collect();
+        let inner =
+            FactorExtractor::new(Arc::new(lib), cfg).map_err(|e| js_err("FactorExtractor", e))?;
+        Ok(JsFactorExtractor {
+            inner,
+            ids,
+            window: None,
+        })
+    }
+
+    /// Cell ids in trace order.
+    pub fn ids(&self) -> Vec<u32> {
+        self.ids.clone()
+    }
+
+    /// Read a factor file and prepare its solve; returns the window's frames.
+    pub fn open(&mut self, bytes: &[u8]) -> Result<u32, JsError> {
+        // A failed open leaves no window behind: `solve` then says so.
+        self.window = None;
+        let wf = WindowFactors::from_bytes(bytes)
+            .ok_or_else(|| js_err("FactorExtractor.open", "truncated or corrupt factor file"))?;
+        let proj = WindowProjector::new(self.inner.library(), &wf)
+            .map_err(|e| js_err("FactorExtractor.open", e))?;
+        let frames = wf.frames as u32;
+        self.window = Some((wf, proj));
+        Ok(frames)
+    }
+
+    /// Stream index of the open window's first frame (0 before `open`).
+    #[wasm_bindgen(getter)]
+    pub fn start(&self) -> f64 {
+        self.window.as_ref().map_or(0.0, |w| w.0.start as f64)
+    }
+
+    /// Solve frames `t0..t0 + count` of the open window; returns
+    /// `count x cells` traces, frame after frame, in the library's id order.
+    /// The traces carry no frame index: the first row is frame `t0` of the
+    /// window, whose stream index is `start + t0`.
+    pub fn solve(&mut self, t0: u32, count: u32) -> Result<Vec<f32>, JsError> {
+        let Some((wf, proj)) = self.window.as_ref() else {
+            return Err(js_err("FactorExtractor.solve", "no window is open"));
+        };
+        // Checked here too so that a wild `count` never sizes the buffer.
+        let end = (t0 as usize).saturating_add(count as usize);
+        if end > wf.frames {
+            return Err(js_err(
+                "FactorExtractor.solve",
+                format!("frames {t0}..{end} of {}", wf.frames),
+            ));
+        }
+        let Some(len) = (count as usize).checked_mul(self.ids.len()) else {
+            return Err(js_err(
+                "FactorExtractor.solve",
+                format!("{count} frames of {} cells", self.ids.len()),
+            ));
+        };
+        let mut out = Vec::with_capacity(len);
+        self.inner
+            .solve(wf, proj, t0 as usize, count as usize, |tr| {
+                out.extend_from_slice(&tr.traces);
+            })
+            .map_err(|e| js_err("FactorExtractor.solve", e))?;
+        Ok(out)
+    }
+}
+
+/// The history review reads side-by-side tiles only; a blended tiling is refused.
+fn ensure_plain(w: &WindowFactors) -> Result<(), String> {
+    if w.tiling == Tiling::Plain {
+        Ok(())
+    } else {
+        Err(format!(
+            "the review reads plain tiles, this window is {}",
+            w.tiling.name()
+        ))
     }
 }
 
@@ -287,7 +464,7 @@ impl JsHistoryReview {
     }
 
     /// Add the next window, in stream order: a whole factor file
-    /// (`CALAFAC1`). Not while a review runs. Returns the windows held.
+    /// (`CALAFAC2`, or v1 `CALAFAC1`). Not while a review runs. Returns the windows held.
     #[wasm_bindgen(js_name = addWindow)]
     pub fn add_window(&mut self, bytes: &[u8]) -> Result<u32, JsError> {
         if self.run.is_some() {
@@ -298,6 +475,7 @@ impl JsHistoryReview {
         if w.dims != self.dims {
             return Err(js_err("addWindow", "window of another frame size"));
         }
+        ensure_plain(&w).map_err(|e| js_err("addWindow", e))?;
         self.windows.push(w);
         Ok(self.windows.len() as u32)
     }
@@ -321,16 +499,12 @@ impl JsHistoryReview {
         self.windows.len() as u32
     }
 
-    /// Bytes of the factors held.
+    /// Bytes of the factors held: every array of every tile
+    /// ([`WindowFactors::bytes`]), the per-pixel `discarded` and `valid`
+    /// included.
     #[wasm_bindgen(getter, js_name = factorBytes)]
     pub fn factor_bytes(&self) -> f64 {
-        let values: usize = self
-            .windows
-            .iter()
-            .flat_map(|w| &w.tiles)
-            .map(|t| t.spatial.len() + t.temporal.len() + t.mean.len())
-            .sum();
-        (4 * values) as f64
+        self.windows.iter().map(WindowFactors::bytes).sum::<usize>() as f64
     }
 
     /// Start a review against `library` (`TraceLibrary.toBytes()`; empty: no
@@ -393,5 +567,60 @@ impl JsHistoryReview {
     /// Drop a review in progress.
     pub fn cancel(&mut self) {
         self.run = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn window(tiling: Tiling) -> WindowFactors {
+        let dims = Dims::new(8, 8).unwrap();
+        let cfg = CompressConfig {
+            tile: 4,
+            window: 3,
+            k0: 1,
+            tiling,
+            ..CompressConfig::default()
+        };
+        let mut wc = super::super::WindowCompressor::new(dims, cfg);
+        let mut out = None;
+        for t in 0..3 {
+            out = wc.push(&[t as f32; 64]);
+        }
+        out.expect("a full window")
+    }
+
+    #[test]
+    fn a_header_must_count_the_tiles_of_its_tiling() {
+        let dims = Dims::new(40, 24).unwrap();
+        for tiling in [Tiling::Plain, Tiling::Offset] {
+            let n = BlendLayout::tile_count(dims, 16, tiling);
+            assert!(header_mismatch(dims, 16, tiling, n).is_none());
+            assert!(header_mismatch(dims, 16, tiling, n + 1).is_some());
+        }
+    }
+
+    #[test]
+    fn factor_bytes_counts_every_array_a_window_holds() {
+        let w = window(Tiling::Plain);
+        let mut review = JsHistoryReview::new(8, 8).unwrap();
+        review.add_window(&w.to_bytes()).unwrap();
+        review.add_window(&w.to_bytes()).unwrap();
+        let per_window: usize = w
+            .tiles
+            .iter()
+            .map(|t| 4 * (t.spatial.len() + t.temporal.len() + 3 * t.pixels()))
+            .sum();
+        assert_eq!(per_window, w.bytes());
+        assert_eq!(review.factor_bytes(), (2 * per_window) as f64);
+    }
+
+    #[test]
+    fn the_review_takes_plain_windows_only() {
+        assert!(ensure_plain(&window(Tiling::Plain)).is_ok());
+        let err = ensure_plain(&window(Tiling::Offset)).unwrap_err();
+        assert!(err.contains("offset"), "{err}");
+        assert!(ensure_plain(&window(Tiling::Overlap(2))).is_err());
     }
 }

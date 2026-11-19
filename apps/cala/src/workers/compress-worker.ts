@@ -7,12 +7,12 @@
  * review worker over a second port.
  */
 import {
-  FactorWindow,
+  FactorExtractor,
   initCalaWasm,
+  factorHeader,
   quantizeTiles,
+  tileLayout,
   TileCompressor,
-  TraceEngine,
-  TraceLibrary,
 } from '../lib/cala-wasm.ts';
 import { CompressRunner } from '../lib/compress-runner.ts';
 import { opfsStore } from '../lib/window-store.ts';
@@ -55,24 +55,10 @@ workerScope.onmessage = (e) => {
   const r = new CompressRunner({
     store,
     quantize: quantizeTiles,
+    layout: tileLayout,
+    header: factorHeader,
     create: (quant) => new TileCompressor(quant),
-    engine: (bytes) => {
-      const lib = TraceLibrary.fromBytes(bytes);
-      try {
-        // 0, 0: the solver's default tolerance and sweep cap. The engine
-        // holds its own reference to the library.
-        const engine = new TraceEngine(lib, 0, 0);
-        const ids = lib.ids();
-        return {
-          ids: () => ids,
-          processFrames: (frames, count) => engine.processFrames(frames, count),
-          free: () => engine.free(),
-        };
-      } finally {
-        lib.free();
-      }
-    },
-    factors: (bytes) => FactorWindow.fromBytes(bytes),
+    extract: (bytes) => new FactorExtractor(bytes, 0, 0),
     toMain: { postMessage: (m, t) => workerScope.postMessage(m, t) },
     ...(toReview && data.review
       ? {

@@ -12,10 +12,11 @@
  * wait and all factors are on disk.
  *
  * Back-fill (`backfill`): once no window is waiting and the requested library
- * has arrived, every factor file is read back, its frames are rebuilt a few
- * at a time and solved with that library, and the traces of each window go
- * to the main thread. A cell found late in the recording so gets its trace
- * from the first frame on, without the raw video being read again.
+ * has arrived, the factor engine (`FactorExtractor`) solves every window from
+ * its factor file with that library, without rebuilding a frame, and the
+ * traces of each window go to the main thread. A cell found late in the
+ * recording so gets its trace from the first frame on, without the raw video
+ * being read again.
  *
  * History review (`review`): each compressed window's factor file also goes
  * to the review worker, and after every `every` windows the newest library
@@ -23,9 +24,8 @@
  * never runs here: it would hold up the writes of the incoming batches.
  *
  * Window file `w<index>.i16`: the chunks as they arrived, each in tile order.
- * Factor file `f<index>.bin`: `CALAFAC1`, u32 width, height, tile, frames,
- * tiles, f64 stream index of the first frame, then per tile u32 byte length
- * and `TileFactors.toBytes()`.
+ * Factor file `f<index>.bin`: the header of `factorHeader` (`CALAFAC2`, with the
+ * tiling), then per tile u32 byte length and `TileFactors.toBytes()`.
  */
 import type {
   CompressInit,
@@ -44,6 +44,7 @@ export type QuantizeTiles = (
   width: number,
   height: number,
   tile: number,
+  tiling: string,
   quant: number,
   out: Int16Array,
 ) => void;
@@ -67,30 +68,39 @@ export interface TileCompressorLike {
   free(): void;
 }
 
-/** A trace solver for one library, and a compressed window read back from its file. */
-export interface BackfillEngineLike {
+/** The factor engine for one library: solves a compressed window from its file, without rebuilding frames. */
+export interface FactorExtractLike {
   ids(): Uint32Array;
-  processFrames(frames: Float32Array, count: number): Float32Array;
-  free(): void;
-}
-export interface FactorWindowLike {
-  readonly frames: number;
-  /** Stream index of the first frame. */
+  /** Read a factor file and prepare its solve; returns the window's frames. */
+  open(file: Uint8Array): number;
+  /** Stream index of the open window's first frame. */
   readonly start: number;
-  reconstruct(t0: number, count: number, out: Float32Array): void;
+  /** `count x cells` traces of frames `t0..t0 + count` of the open window. */
+  solve(t0: number, count: number): Float32Array;
   free(): void;
 }
 
-/** Frames rebuilt and solved per step of the back-fill. */
-const BACKFILL_BATCH = 16;
+/** Frames solved between two yields of the back-fill. */
+const BACKFILL_BATCH = 64;
 
 export interface CompressRunnerDeps {
   store: WindowStore;
   quantize: QuantizeTiles;
+  /** `tileLayout` of the WASM module: `(x0, y0, w, h)` of every tile. */
+  layout(width: number, height: number, tile: number, tiling: string): Uint32Array;
+  /** `factorHeader` of the WASM module: the first bytes of a factor file. */
+  header(
+    width: number,
+    height: number,
+    tile: number,
+    tiling: string,
+    frames: number,
+    tiles: number,
+    start: number,
+  ): Uint8Array;
   create(quant: number): TileCompressorLike;
   /** For the back-fill (absent: `backfill` does nothing). */
-  engine?(library: Uint8Array): BackfillEngineLike;
-  factors?(file: Uint8Array): FactorWindowLike;
+  extract?(library: Uint8Array): FactorExtractLike;
   toMain: PortLike<CompressToMain>;
   /** The review worker, and the compressed windows between two reviews (absent: no review). */
   review?: { port: PortLike<CompressToReview>; every: number };
@@ -119,24 +129,20 @@ interface WindowJob {
   quantMs: number;
 }
 
-/** Tiles of a frame, row by row (as `tile_grid` in crates/cala). */
-export function tileGrid(width: number, height: number, tile: number): Tile[] {
+/** The tiles of a layout (`tileLayout`: x0, y0, w, h each), with their place in a quantized chunk. */
+export function tilesOf(rects: Uint32Array): Tile[] {
   const out: Tile[] = [];
   let offset = 0;
-  for (let y0 = 0; y0 < height; y0 += tile) {
-    for (let x0 = 0; x0 < width; x0 += tile) {
-      const w = Math.min(tile, width - x0);
-      const h = Math.min(tile, height - y0);
-      out.push({ x0, y0, w, h, offset });
-      offset += w * h;
-    }
+  for (let i = 0; i + 3 < rects.length; i += 4) {
+    const [x0, y0, w, h] = [rects[i], rects[i + 1], rects[i + 2], rects[i + 3]];
+    out.push({ x0, y0, w, h, offset });
+    offset += w * h;
   }
   return out;
 }
 
 const windowName = (i: number): string => `w${i}.i16`;
 export const factorName = (i: number): string => `f${i}.bin`;
-const HEADER_BYTES = 36;
 
 const macrotask = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -146,6 +152,8 @@ export class CompressRunner {
   private session = -1;
   private init: CompressInit | null = null;
   private tiles: Tile[] = [];
+  /** Pixels of all tiles (more than a frame when tiles overlap). */
+  private layoutPx = 0;
   private compressor: TileCompressorLike | null = null;
   private open: (WindowJob & { file: StoreFile; bytes: number }) | null = null;
   /** The quantized chunk being written (reused; a write is synchronous). */
@@ -163,8 +171,10 @@ export class CompressRunner {
   private windows = 0;
   private frames = 0;
   private factorBytes = 0;
-  private meanRank = 0;
-  private msPerFrame = 0;
+  /** Mean tile rank of each compressed window, times its frames (for the session's mean). */
+  private rankFrames = 0;
+  /** Compute time (quantizing and compressing) of all compressed windows, ms. */
+  private computeMs = 0;
 
   constructor(private readonly deps: CompressRunnerDeps) {
     this.yieldNow = deps.yieldNow ?? macrotask;
@@ -175,10 +185,17 @@ export class CompressRunner {
   async handle(msg: FastToCompress): Promise<void> {
     if (msg.type === 'init') {
       await this.clear();
+      // No session until the new one is laid out: a refused layout must not
+      // leave the previous session's `init` taking chunks.
+      this.session = -1;
+      this.init = null;
+      // The layout first: a refused one must not leave a half-initialised session.
+      const tiles = tilesOf(this.deps.layout(msg.width, msg.height, msg.tile, msg.tiling));
+      this.tiles = tiles;
+      this.layoutPx = tiles.reduce((s, t) => s + t.w * t.h, 0);
       this.session = msg.session;
       this.init = msg;
-      this.tiles = tileGrid(msg.width, msg.height, msg.tile);
-      this.deps.review?.port.postMessage({
+      this.reviewOf(msg)?.port.postMessage({
         type: 'init',
         session: msg.session,
         width: msg.width,
@@ -189,7 +206,9 @@ export class CompressRunner {
     if (msg.session !== this.session || !this.init) return;
     if (msg.type === 'reset') {
       await this.clear();
-      this.deps.review?.port.postMessage({ type: 'reset', session: msg.session });
+      // Nothing is behind the last status any more: say so.
+      this.post();
+      this.reviewOf(this.init)?.port.postMessage({ type: 'reset', session: msg.session });
       this.session = -1;
       this.init = null;
     } else if (msg.type === 'library') {
@@ -208,11 +227,12 @@ export class CompressRunner {
         bytes: 0,
       };
       const w = this.open;
-      const { width, height, tile, quant } = this.init;
-      if (this.scratch.length < msg.data.length) this.scratch = new Int16Array(msg.data.length);
-      const data = this.scratch.subarray(0, msg.data.length);
+      const { width, height, tile, tiling, quant } = this.init;
+      const values = msg.count * this.layoutPx;
+      if (this.scratch.length < values) this.scratch = new Int16Array(values);
+      const data = this.scratch.subarray(0, values);
       const t0 = this.now();
-      this.deps.quantize(msg.data, msg.count, width, height, tile, quant, data);
+      this.deps.quantize(msg.data, msg.count, width, height, tile, tiling, quant, data);
       w.quantMs += this.now() - t0;
       w.file.write(data, w.bytes);
       w.bytes += data.byteLength;
@@ -264,11 +284,11 @@ export class CompressRunner {
 
   private maybeBackfill(): void {
     const lib = this.library;
-    const { engine, factors } = this.deps;
+    const { extract } = this.deps;
     if (this.loop || this.wanted === null || !lib || lib.version < this.wanted) return;
-    if (this.open || this.pending.length > 0 || !engine || !factors) return;
+    if (this.open || this.pending.length > 0 || !extract) return;
     this.wanted = null;
-    this.launch(this.runBackfill(lib, engine, factors));
+    this.launch(this.runBackfill(lib, extract));
   }
 
   /** Run `task` as the worker's one background loop. */
@@ -295,20 +315,16 @@ export class CompressRunner {
 
   private async runBackfill(
     lib: { version: number; bytes: Uint8Array },
-    makeEngine: (library: Uint8Array) => BackfillEngineLike,
-    openFactors: (file: Uint8Array) => FactorWindowLike,
+    makeExtractor: (library: Uint8Array) => FactorExtractLike,
   ): Promise<void> {
-    const init = this.init;
-    if (!init) return;
+    if (!this.init) return;
     const epoch = this.epoch;
     const session = this.session;
     const t0 = this.now();
-    const px = init.width * init.height;
-    const engine = makeEngine(lib.bytes);
+    const extractor = makeExtractor(lib.bytes);
     try {
-      const ids = engine.ids();
+      const ids = extractor.ids();
       if (ids.length === 0) return;
-      const buf = new Float32Array(BACKFILL_BATCH * px);
       let frames = 0;
       let first = true;
       for (const index of [...this.done]) {
@@ -316,36 +332,32 @@ export class CompressRunner {
         const bytes = new Uint8Array(file.size());
         file.read(bytes, 0);
         file.close();
-        const window = openFactors(bytes);
-        try {
-          const traces = new Float32Array(window.frames * ids.length);
-          for (let t = 0; t < window.frames; t += BACKFILL_BATCH) {
-            const n = Math.min(BACKFILL_BATCH, window.frames - t);
-            const view = buf.subarray(0, n * px);
-            window.reconstruct(t, n, view);
-            traces.set(engine.processFrames(view, n), t * ids.length);
-            await this.yieldNow();
-            if (epoch !== this.epoch) return;
-          }
-          const cellIds = ids.slice();
-          this.deps.toMain.postMessage(
-            {
-              type: 'traces',
-              session,
-              version: lib.version,
-              first,
-              start: window.start,
-              count: window.frames,
-              ids: cellIds,
-              traces,
-            },
-            [cellIds.buffer as ArrayBuffer, traces.buffer as ArrayBuffer],
-          );
-          first = false;
-          frames += window.frames;
-        } finally {
-          window.free();
+        if (epoch !== this.epoch) return;
+        const count = extractor.open(bytes);
+        const start = extractor.start;
+        const traces = new Float32Array(count * ids.length);
+        for (let t = 0; t < count; t += BACKFILL_BATCH) {
+          const n = Math.min(BACKFILL_BATCH, count - t);
+          traces.set(extractor.solve(t, n), t * ids.length);
+          await this.yieldNow();
+          if (epoch !== this.epoch) return;
         }
+        const cellIds = ids.slice();
+        this.deps.toMain.postMessage(
+          {
+            type: 'traces',
+            session,
+            version: lib.version,
+            first,
+            start,
+            count,
+            ids: cellIds,
+            traces,
+          },
+          [cellIds.buffer as ArrayBuffer, traces.buffer as ArrayBuffer],
+        );
+        first = false;
+        frames += count;
       }
       this.deps.toMain.postMessage({
         type: 'backfilled',
@@ -355,7 +367,7 @@ export class CompressRunner {
         msPerFrame: (this.now() - t0) / Math.max(1, frames),
       });
     } finally {
-      engine.free();
+      extractor.free();
     }
   }
 
@@ -378,7 +390,6 @@ export class CompressRunner {
       return;
     }
     this.compressor ??= this.deps.create(init.quant);
-    const px = init.width * init.height;
     const src = await store.open(windowName(job.index));
     const dst = await store.open(factorName(job.index));
     let closed = false;
@@ -389,14 +400,17 @@ export class CompressRunner {
       dst.close();
     };
     try {
-      const head = new DataView(new ArrayBuffer(HEADER_BYTES));
-      'CALAFAC1'.split('').forEach((c, i) => head.setUint8(i, c.charCodeAt(0)));
-      [init.width, init.height, init.tile, job.frames, this.tiles.length].forEach((v, i) =>
-        head.setUint32(8 + 4 * i, v, true),
+      const head = this.deps.header(
+        init.width,
+        init.height,
+        init.tile,
+        init.tiling,
+        job.frames,
+        this.tiles.length,
+        job.start,
       );
-      head.setFloat64(28, job.start, true);
       dst.write(head, 0);
-      let at = HEADER_BYTES;
+      let at = head.length;
       const largest = this.tiles.reduce((m, t) => Math.max(m, t.w * t.h), 0);
       const buf = new Int16Array(job.frames * largest);
       const len = new Uint32Array(1);
@@ -410,7 +424,7 @@ export class CompressRunner {
         let o = 0;
         for (const n of job.chunks) {
           src.read(raw.subarray(o, o + n * p), chunkAt + t.offset * n * 2);
-          chunkAt += n * px * 2;
+          chunkAt += n * this.layoutPx * 2;
           o += n * p;
         }
         const t0 = this.now();
@@ -436,12 +450,17 @@ export class CompressRunner {
       this.windows++;
       this.frames += job.frames;
       this.factorBytes += at;
-      this.meanRank = rank / Math.max(1, this.tiles.length);
-      this.msPerFrame = (ms + job.quantMs) / job.frames;
+      this.rankFrames += (job.frames * rank) / Math.max(1, this.tiles.length);
+      this.computeMs += ms + job.quantMs;
     } finally {
       close();
     }
     await this.feedReview(job.index, epoch);
+  }
+
+  /** The review worker's port, if there is one and the run's tiles are plain (the review reads no others). */
+  private reviewOf(init: CompressInit | null): CompressRunnerDeps['review'] {
+    return init?.tiling === 'plain' ? this.deps.review : undefined;
   }
 
   /**
@@ -450,7 +469,7 @@ export class CompressRunner {
    * of the recording: the slow loop takes no more cells then.
    */
   private async feedReview(index: number, epoch: number): Promise<void> {
-    const review = this.deps.review;
+    const review = this.reviewOf(this.init);
     if (!review || this.final) return;
     const file = await this.deps.store.open(factorName(index));
     const bytes = new Uint8Array(file.size());
@@ -473,10 +492,12 @@ export class CompressRunner {
       frames: this.frames,
       pending: this.pending.length,
       pendingFrames: this.pending.reduce((s, w) => s + w.frames, 0),
-      meanRank: this.meanRank,
-      msPerFrame: this.msPerFrame,
+      meanRank: this.rankFrames / Math.max(1, this.frames),
+      msPerFrame: this.computeMs / Math.max(1, this.frames),
       factorBytes: this.factorBytes,
       final: this.final && this.pending.length === 0,
+      tiling: this.init?.tiling ?? 'plain',
+      source: this.init?.source ?? 'discover',
     };
     this.deps.toMain.postMessage({ type: 'status', session: this.session, status });
   }
@@ -498,8 +519,8 @@ export class CompressRunner {
     this.windows = 0;
     this.frames = 0;
     this.factorBytes = 0;
-    this.meanRank = 0;
-    this.msPerFrame = 0;
+    this.rankFrames = 0;
+    this.computeMs = 0;
     await this.deps.store.clear();
   }
 }
