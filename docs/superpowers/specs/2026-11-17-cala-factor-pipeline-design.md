@@ -349,6 +349,8 @@ The rule, on QC-pass cells:
    at most 0.08.
 4. **Tile lines.** The footprint jump at tile lines is at most 0.10 above the
    raw run's.
+5. **Lost cells.** Added on 19 Nov 2026 by Amendment 3, A13: at most as many
+   QC-pass cells lost as in the null run that lost most.
 
 The limits are the user's, approved as proposed. The truth limits say "the
 typical cell is not worse and the worst cells lose little". The limits 0.02
@@ -678,3 +680,66 @@ overrule:
 - Phase 4a: runs whose Discover differs (look-back) are compared by pairing
   cells by footprint; a reference cell without a partner counts as lost.
 - A11: the order 4a, 3, 4, 5 stays.
+
+## Amendment 3, the owner's decisions after phases 2 to 4a (19 Nov 2026)
+
+**Status: decided by the owner on 19 Nov 2026**, after reading the summaries
+of the reports of phases 2, 4a and 3a. Evidence for A13:
+`tools/cala-eval/results/2026-11-19-factor-phase4a.md`.
+
+### A13. Gate A1, rule 5: lost cells
+
+Why: rules 1 to 3 are medians and a 5th percentile. A QC-pass cell that the
+test run lost counts as the worst case in them, but a median does not move
+until about half the cells are lost, and the truth rule, which would react,
+does not apply on every recording. Where two runs have their own Discover
+(look-back), cells are paired by footprint and some always stay unpaired, in
+both directions.
+
+The rule:
+
+5. **Lost cells.** The test run may lose at most as many of the reference's
+   QC-pass cells as the null run that lost most. Without null runs the rule
+   does not apply.
+
+The limit is measured from the null runs, not set by hand: they are the
+reference's own algorithm at half and twice the slow-loop budget (the same
+choice as for the null spread), compared with the reference the way the test
+run is. The pipeline is deterministic, so a repeat at the same budget would
+lose nothing; the limit is what a change of machine speed by a factor of two
+loses, not a confidence bound.
+
+- Runs that share the reference's Discover are compared by cell id, against
+  `null_lo` and `null_hi` (the other budget in the replays).
+- Look-back runs are paired by footprint, against `lb_null_lo` and
+  `lb_null_hi` (`lb_raw` with the other budget in its one pass), paired the
+  same way.
+
+The report also gives the count in the other direction (cells of a run with
+no partner in the reference), for the test run and the null runs; it is not
+gated.
+
+Known weaknesses: two null runs give a coarse limit, and with a limit of a few
+cells the verdict can turn on one cell. Where both null runs lose nothing, one
+lost cell fails the rule. A null run that ended without cells would allow any
+loss. The report states the counts of the test run and of each null run beside
+the verdict, so each case is visible.
+
+### A14. Missing pixels
+
+The frame engine stays the reference for a cell whose support holds pixels
+without data: it leaves such a pixel out of the frame, the factor engine uses
+the stored value. A few bad pixels must not decide a run, so such a cell is
+flagged by its `min_valid` (the smallest valid share over its support's
+pixels) and neither engine is changed for it. The wording of the gate between
+the two Extract engines ("to float32 rounding") stays as it is until the cause
+of the 1.5 percent trace difference on the two WL24 recordings is known; a
+limit on the median difference replaces it then.
+
+### A15. Refine on factors and the WL24 recordings
+
+Refine on factors fails rule 2 on the two WL24 recordings only (phase 3a). The
+owner accepts this for now: the phases after 3a go ahead with the failure on
+record. For the record, the two WL24 sessions are two of the three real
+recordings in the set and come from one mouse and one setup; the third, `v4`,
+passes with a margin smaller than its null spread.
