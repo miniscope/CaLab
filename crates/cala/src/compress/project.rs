@@ -26,8 +26,10 @@
 // Index loops over cells and tiles read more clearly than zipped iterators here.
 #![allow(clippy::needless_range_loop)]
 
+use std::sync::Arc;
+
 use super::WindowFactors;
-use crate::trace::{BgTerms, Library, TraceError};
+use crate::trace::{BgTerms, FrameTraces, Library, SolverConfig, TraceEngine, TraceError};
 
 /// The rows of the functionals that touch one tile.
 struct TileRows {
@@ -356,6 +358,92 @@ impl WindowProjector {
     }
 }
 
+/// Extract on factors: solves a library's traces frame by frame from the
+/// factors of a window, without rebuilding a frame.
+pub struct FactorExtractor {
+    engine: TraceEngine,
+    /// One frame's functionals: the cells', then the background's.
+    vals: Vec<f32>,
+    out: FrameTraces,
+}
+
+impl FactorExtractor {
+    pub fn new(lib: Arc<Library>, cfg: SolverConfig) -> Result<FactorExtractor, TraceError> {
+        let n = lib.len() + lib.background_len();
+        Ok(FactorExtractor {
+            engine: TraceEngine::new(lib, cfg)?,
+            vals: vec![0.0; n],
+            out: FrameTraces::default(),
+        })
+    }
+
+    /// The solver, for its settings (`set_consolidated_ring_gradient`, `set_signed`).
+    pub fn engine_mut(&mut self) -> &mut TraceEngine {
+        &mut self.engine
+    }
+
+    pub fn library(&self) -> &Arc<Library> {
+        self.engine.library()
+    }
+
+    /// Swap the library before the next frame (warm starts follow cell ids).
+    /// A projector built for the old library is refused by `solve` when its
+    /// sizes differ; one of the same sizes cannot be told apart, so build a
+    /// new projector with the library.
+    pub fn set_library(&mut self, lib: Arc<Library>) -> Result<(), TraceError> {
+        let n = lib.len() + lib.background_len();
+        self.engine.set_library(lib)?;
+        self.vals.resize(n, 0.0);
+        Ok(())
+    }
+
+    /// Solve frames `t0..t0 + count` of `wf` with the rows of `proj` (built
+    /// for this library and this window); `sink` gets each frame's result.
+    ///
+    /// The checks run before any frame, so a refused call never calls `sink`
+    /// and leaves the engine as it was. A solve that fails in frame `t` has
+    /// called `sink` for the frames before it; the engine has advanced
+    /// through them and stays usable (a rejected frame does not advance it).
+    pub fn solve(
+        &mut self,
+        wf: &WindowFactors,
+        proj: &WindowProjector,
+        t0: usize,
+        count: usize,
+        mut sink: impl FnMut(&FrameTraces),
+    ) -> Result<(), TraceError> {
+        let n = self.engine.library().len();
+        if !proj.matches(wf) {
+            return Err(TraceError::InvalidConfig(
+                "projector was built from another window".into(),
+            ));
+        }
+        if proj.cells() != n || proj.functionals() != self.vals.len() {
+            return Err(TraceError::InvalidConfig(format!(
+                "projector of {} cells and {} functionals, library of {n} and {}",
+                proj.cells(),
+                proj.functionals(),
+                self.vals.len()
+            )));
+        }
+        let end = t0.checked_add(count).filter(|&e| e <= wf.frames);
+        let Some(end) = end.filter(|_| proj.frames() == wf.frames) else {
+            return Err(TraceError::InvalidConfig(format!(
+                "frames {t0}+{count} of a window of {}",
+                wf.frames
+            )));
+        };
+        for t in t0..end {
+            proj.project(wf, t, &mut self.vals);
+            let (cells, background) = self.vals.split_at(n);
+            self.engine
+                .process_projected(cells, background, &mut self.out)?;
+            sink(&self.out);
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -640,6 +728,94 @@ mod tests {
         assert!(!proj.matches(&shorter));
         // Tiles that do not fit their layout are refused.
         assert!(WindowProjector::new(&lib, &shorter).is_err());
+    }
+
+    fn tight() -> SolverConfig {
+        SolverConfig {
+            tol: 1e-4,
+            max_sweeps: 20_000,
+            relax: 1.5,
+        }
+    }
+
+    #[test]
+    fn traces_from_the_factors_equal_traces_from_the_rebuilt_frames() {
+        // Arm C (the factor engine) against arm B (the frame engine on frames
+        // rebuilt from the same factors): float32 rounding apart.
+        for tiling in [Tiling::Plain, Tiling::Offset] {
+            let wf = window(tiling, 120, None);
+            for model in models() {
+                let lib = Arc::new(library(model, CENTRES.len()));
+                let mut by_frame = TraceEngine::new(lib.clone(), tight()).unwrap();
+                by_frame.set_consolidated_ring_gradient(true);
+                let mut ex = FactorExtractor::new(lib.clone(), tight()).unwrap();
+                ex.engine_mut().set_consolidated_ring_gradient(true);
+                let proj = WindowProjector::new(&lib, &wf).unwrap();
+                let mut c: Vec<Vec<f32>> = Vec::new();
+                // In two calls, as the app solves a window in batches.
+                ex.solve(&wf, &proj, 0, 50, |tr| c.push(tr.traces.clone()))
+                    .unwrap();
+                ex.solve(&wf, &proj, 50, 70, |tr| c.push(tr.traces.clone()))
+                    .unwrap();
+                assert_eq!(c.len(), 120);
+                let mut frame = vec![0.0f32; W * H];
+                let mut out = FrameTraces::default();
+                for (t, ct) in c.iter().enumerate() {
+                    wf.reconstruct(t, &mut frame);
+                    by_frame.process_into(&frame, &mut out).unwrap();
+                    for (i, (a, b)) in out.traces.iter().zip(ct).enumerate() {
+                        assert!(
+                            (a - b).abs() <= 1e-3 * (1.0 + a.abs()),
+                            "{tiling:?} frame {t} cell {i}: {a} from frames, {b} from factors"
+                        );
+                    }
+                }
+                assert!(
+                    ex.solve(&wf, &proj, 100, 21, |_| {}).is_err(),
+                    "beyond the window"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_extractor_refuses_a_projector_of_another_library() {
+        let wf = window(Tiling::Plain, 60, None);
+        let five = Arc::new(library(BackgroundModel::None, 5));
+        let three = library(BackgroundModel::None, 3);
+        let mut ex = FactorExtractor::new(five, tight()).unwrap();
+        let proj = WindowProjector::new(&three, &wf).unwrap();
+        assert!(ex.solve(&wf, &proj, 0, 1, |_| {}).is_err());
+        ex.set_library(Arc::new(three)).unwrap();
+        let mut n = 0;
+        ex.solve(&wf, &proj, 0, 2, |tr| n += tr.traces.len())
+            .unwrap();
+        assert_eq!(n, 6);
+    }
+
+    #[test]
+    fn an_extractor_refuses_a_projector_of_another_window_without_panicking() {
+        let plain = window(Tiling::Plain, 60, None);
+        let offset = window(Tiling::Offset, 60, None);
+        let lib = Arc::new(library(BackgroundModel::None, 3));
+        let mut ex = FactorExtractor::new(lib.clone(), tight()).unwrap();
+        let proj = WindowProjector::new(&lib, &plain).unwrap();
+        let mut calls = 0;
+        assert!(ex.solve(&offset, &proj, 0, 5, |_| calls += 1).is_err());
+        assert_eq!(calls, 0, "refused before any frame");
+        // The engine is untouched: the right window still solves from frame 0.
+        ex.solve(&plain, &proj, 0, 5, |_| calls += 1).unwrap();
+        assert_eq!(calls, 5);
+    }
+
+    #[test]
+    fn an_empty_range_solves_nothing_and_a_huge_one_is_refused() {
+        let wf = window(Tiling::Plain, 60, None);
+        let lib = Arc::new(library(BackgroundModel::None, 3));
+        let mut ex = FactorExtractor::new(lib.clone(), tight()).unwrap();
+        let proj = WindowProjector::new(&lib, &wf).unwrap();
+        ex.solve(&wf, &proj, 60, 0, |_| panic!("no frame")).unwrap();
+        assert!(ex.solve(&wf, &proj, 1, usize::MAX, |_| {}).is_err());
     }
 
     #[test]
