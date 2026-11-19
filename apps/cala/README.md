@@ -339,7 +339,9 @@ re-reads the file; the factors are for a source that has none). When the
 recording has been read, the final library is out and every window is
 compressed, the traces of the whole recording are solved again from the
 factors with that library (back-fill): a cell found late gets its trace from
-the first frame on, and the trace viewer shows the back-filled traces.
+the first frame on, and the trace viewer shows the back-filled traces. The
+back-fill solves from the factors directly (`FactorExtractor`): it takes each
+frame's projections from the stored factors and rebuilds no frame.
 
 - Discover compresses on plain 64 px tiles. Extract's replay, which has the
   final calibration, compresses again on two offset grids (the second shifted
@@ -360,14 +362,18 @@ the first frame on, and the trace viewer shows the back-filled traces.
   once), and keeps the factors in `f<window>.bin`.
 - `src/lib/window-store.ts`: the files, in the origin private file system
   (`cala-compress/<run>`, removed at the next page load); in memory for tests.
-- Back-fill (`CompressRunner.backfill`): reads each factor file back
-  (`FactorWindow`), rebuilds 16 frames at a time and solves them with a
-  `TraceEngine` on the library the fast worker forwarded; one `traces` message
-  per window goes to the main thread, where the first one replaces the live
-  trace history (`CellStore.onBackfill`).
+- Back-fill (`CompressRunner.backfill`): reads each factor file back and
+  solves it with a `FactorExtractor` (WASM) on the library the fast worker
+  forwarded: the projections of each frame come from the stored factors and no
+  frame is rebuilt. It solves 64 frames per yield; one `traces` message per
+  window goes to the main thread, where the first one replaces the live trace
+  history (`CellStore.onBackfill`). The extractor runs with the consolidated
+  ring gradient off, as the live trace path does. `FactorWindow` is no longer
+  used by the worker (tests only).
 - `src/lib/compress-store.ts`: the status bar readout (windows, mean rank,
   ms per frame as the mean over the session's windows, MB of factors, windows
-  waiting, the back-fill) and the once-per-run back-fill request (Discover's
+  waiting, the back-fill; the mean rank is the mean over the compressed
+  windows, weighted by frames) and the once-per-run back-fill request (Discover's
   status only).
 - `scripts/compress-bench.mjs`: local timing of the WASM compressor on a
   window dumped by `discover_eval --compress-dump`.

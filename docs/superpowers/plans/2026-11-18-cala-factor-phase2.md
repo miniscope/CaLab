@@ -44,7 +44,7 @@
 | `crates/cala/src/compress/project.rs`                                                                                      | create          | `WindowProjector`, `FactorExtractor`                            |
 | `crates/cala/src/compress/mod.rs`                                                                                          | modify          | `pub mod project;`                                              |
 | `crates/cala/src/compress/js.rs`                                                                                           | modify          | `FactorExtractor` binding                                       |
-| `crates/cala/examples/qc_eval.rs`                                                                                          | modify          | `--extract-engine frames                                        | factors` |
+| `crates/cala/examples/qc_eval.rs`                                                                                          | modify          | `--extract-engine frames \| factors`                            |
 | `tools/cala-eval/factor_closeness.py`, `test_factor_closeness.py`                                                          | modify          | `trace_gap`, `engine_report`                                    |
 | `tools/cala-eval/factor_arms.py`, `test_factor_arms.py`                                                                    | modify          | arm `c_chosen`, Extract times                                   |
 | `apps/cala/src/lib/cala-wasm.ts`, `lib/compress-runner.ts`, `workers/compress-worker.ts`                                   | modify          | the back-fill runs on the factor engine                         |
