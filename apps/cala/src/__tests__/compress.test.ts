@@ -949,13 +949,24 @@ describe('back-fill from the factors', () => {
   });
 });
 
+describe('the compress store and the errors of Extract jobs', () => {
+  it("an error that names a job is not the compression's", () => {
+    const store = createCompressStore();
+    store.reset(3);
+    store.onMessage({ type: 'error', session: 3, job: 1, message: 'job failed' });
+    expect(store.error()).toBeNull();
+    store.onMessage({ type: 'error', session: 3, message: 'compression failed' });
+    expect(store.error()).toBe('compression failed');
+  });
+});
+
 describe('Extract on factors (the compress worker)', () => {
   it('solves every window with the given library, with signed traces, and says when it is done', async () => {
     const lib = cellLibrary();
     const { feed, sent } = collectingFeed(50);
     for (let s = 0; s < 100; s += 10) feed.push(cellFrames(s, 10), s, 10);
     feed.end();
-    const { r, toMain } = runner();
+    const { r, store, toMain } = runner();
     for (const m of sent) await r.handle(m);
     await r.idle();
     r.extract(7, 3, lib.bytes.slice());
@@ -965,18 +976,27 @@ describe('Extract on factors (the compress worker)', () => {
       [3, 0, 50],
       [3, 50, 50],
     ]);
-    for (const m of windows) {
+    // The windows solved directly, in order, by one engine of the same class
+    // (it keeps state from one window to the next, as the runner's does).
+    const direct = new FactorExtractor(lib.bytes.slice(), 0, 0);
+    direct.setSigned(true);
+    windows.forEach((m, w) => {
       expect([...m.ids]).toEqual(CELLS.map((c) => c.id));
       expect(m.signed.length).toBe(m.traces.length);
+      expect(direct.open(store.files.get(factorName(w))!)).toBe(m.count);
+      const want = direct.solve(0, m.count);
+      const wantSigned = direct.lastSigned();
+      for (let k = 0; k < want.length; k++) {
+        expect(m.traces[k]).toBeCloseTo(want[k], 3);
+        expect(m.signed[k]).toBeCloseTo(wantSigned[k], 3);
+      }
       for (let i = 0; i < m.count; i++) {
         CELLS.forEach((c, j) => {
-          const k = i * CELLS.length + j;
-          expect(m.traces[k]).toBeCloseTo(c.trace(m.start + i), 1);
-          // These traces stay above 0, so the solve does not clip them.
-          expect(m.signed[k]).toBeCloseTo(m.traces[k], 0);
+          expect(m.traces[i * CELLS.length + j]).toBeCloseTo(c.trace(m.start + i), 1);
         });
       }
-    }
+    });
+    direct.free();
     expect(toMain[toMain.length - 1]).toMatchObject({
       type: 'extract-done',
       session: 7,
@@ -1009,20 +1029,45 @@ describe('Extract on factors (the compress worker)', () => {
     const { feed, sent } = collectingFeed(50);
     for (let s = 0; s < 100; s += 10) feed.push(cellFrames(s, 10), s, 10);
     feed.end();
+    let fail = true;
     const { r, toMain } = runner(memoryStore(), {
-      extract: () => {
-        throw new Error('out of memory');
+      extract: (bytes) => {
+        if (fail) throw new Error('out of memory');
+        return new FactorExtractor(bytes, 0, 0);
       },
     });
     for (const m of sent) await r.handle(m);
     await r.idle();
+    const before = toMain.length;
     r.extract(7, 6, lib.bytes.slice());
     await r.idle();
     expect(toMain.filter((m) => m.type === 'error')).toEqual([
       { type: 'error', session: 7, job: 6, message: 'out of memory' },
     ]);
-    const status = toMain.filter((m) => m.type === 'status').at(-1);
-    expect(status).toMatchObject({ status: { final: true, windows: 2 } });
+    // No message after the call marks the compression as failed or unfinished.
+    const after = toMain.slice(before);
+    expect(after.filter((m) => m.type === 'status' && !m.status.final)).toEqual([]);
+    // The windows are still readable: a second job with a working engine succeeds.
+    fail = false;
+    r.extract(7, 7, lib.bytes.slice());
+    await r.idle();
+    const second = toMain.slice(before).filter((m) => 'job' in m && m.job === 7);
+    expect(second.map((m) => m.type)).toEqual(['extracted', 'extracted', 'extract-done']);
+  });
+
+  it('answers a queued job with its own error when the runner is reset', async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 100; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    feed.end();
+    const { r, toMain } = runner();
+    for (const m of sent) await r.handle(m); // the last window is still being compressed
+    r.extract(7, 8, lib.bytes.slice());
+    await r.handle({ type: 'reset', session: 7 });
+    await r.idle();
+    const mine = toMain.filter((m) => 'job' in m && m.job === 8);
+    expect(mine.map((m) => m.type)).toEqual(['error']);
+    expect(toMain.some((m) => m.type === 'extracted' || m.type === 'extract-done')).toBe(false);
   });
 });
 

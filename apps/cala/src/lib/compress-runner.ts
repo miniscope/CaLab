@@ -302,7 +302,7 @@ export class CompressRunner {
     else if (this.open || this.pending.length > 0 || !this.final)
       this.refuse(next.session, next.job, 'the factors are not complete');
     else {
-      this.launch(this.runExtract(next, extract));
+      this.launch(this.runExtract(next, extract), next.job);
       return;
     }
     this.maybeExtract();
@@ -341,8 +341,8 @@ export class CompressRunner {
     this.launch(this.runBackfill(lib, extract));
   }
 
-  /** Run `task` as the worker's one background loop. */
-  private launch(task: Promise<void>): void {
+  /** Run `task` as the worker's one background loop; `job`: the Extract job it runs, if any. */
+  private launch(task: Promise<void>, job?: number): void {
     const session = this.session;
     let failed = false;
     this.loop = task
@@ -351,19 +351,85 @@ export class CompressRunner {
         this.deps.toMain.postMessage({
           type: 'error',
           session,
+          ...(job === undefined ? {} : { job }),
           message: err instanceof Error ? err.message : String(err),
         });
       })
       .finally(() => {
         this.loop = null;
         // A window closed, or a back-fill or an Extract was asked for, while the loop was busy.
-        if (failed) return;
+        if (failed) {
+          this.dropJobs('the compress loop failed');
+          return;
+        }
         if (this.pending.length > 0) this.kick();
         else {
           this.maybeBackfill();
           this.maybeExtract();
         }
       });
+  }
+
+  /** Answer every waiting Extract job with an error, so the main thread never waits for one. */
+  private dropJobs(why: string): void {
+    const jobs = this.jobs;
+    this.jobs = [];
+    for (const j of jobs) this.refuse(j.session, j.job, why);
+  }
+
+  /**
+   * Solve every compressed window from its factor file, in stream order, and
+   * hand each to `onWindow` (`signed`: only with `wantSigned` and when the
+   * engine gave it). Returns the frames solved, or null when the runner was
+   * reset meanwhile.
+   */
+  private async solveWindows(
+    extractor: FactorExtractLike,
+    ids: Uint32Array,
+    epoch: number,
+    wantSigned: boolean,
+    onWindow: (w: {
+      start: number;
+      count: number;
+      ids: Uint32Array;
+      traces: Float32Array;
+      signed: Float32Array | null;
+    }) => void,
+  ): Promise<number | null> {
+    const cells = ids.length;
+    let frames = 0;
+    for (const index of [...this.done]) {
+      const file = await this.deps.store.open(factorName(index));
+      const bytes = new Uint8Array(file.size());
+      try {
+        file.read(bytes, 0);
+      } finally {
+        file.close();
+      }
+      if (epoch !== this.epoch) return null;
+      const count = extractor.open(bytes);
+      const start = extractor.start;
+      const traces = new Float32Array(count * cells);
+      let signed: Float32Array | null = null;
+      let signedOk = wantSigned;
+      for (let t = 0; t < count; t += BACKFILL_BATCH) {
+        const n = Math.min(BACKFILL_BATCH, count - t);
+        traces.set(extractor.solve(t, n), t * cells);
+        const s = signedOk ? extractor.lastSigned?.() : undefined;
+        if (s && s.length === n * cells) {
+          signed ??= new Float32Array(count * cells);
+          signed.set(s, t * cells);
+        } else {
+          signedOk = false;
+          signed = null;
+        }
+        await this.yieldNow();
+        if (epoch !== this.epoch) return null;
+      }
+      onWindow({ start, count, ids: ids.slice(), traces, signed });
+      frames += count;
+    }
+    return frames;
   }
 
   private async runBackfill(
@@ -378,40 +444,24 @@ export class CompressRunner {
     try {
       const ids = extractor.ids();
       if (ids.length === 0) return;
-      let frames = 0;
       let first = true;
-      for (const index of [...this.done]) {
-        const file = await this.deps.store.open(factorName(index));
-        const bytes = new Uint8Array(file.size());
-        file.read(bytes, 0);
-        file.close();
-        if (epoch !== this.epoch) return;
-        const count = extractor.open(bytes);
-        const start = extractor.start;
-        const traces = new Float32Array(count * ids.length);
-        for (let t = 0; t < count; t += BACKFILL_BATCH) {
-          const n = Math.min(BACKFILL_BATCH, count - t);
-          traces.set(extractor.solve(t, n), t * ids.length);
-          await this.yieldNow();
-          if (epoch !== this.epoch) return;
-        }
-        const cellIds = ids.slice();
+      const frames = await this.solveWindows(extractor, ids, epoch, false, (w) => {
         this.deps.toMain.postMessage(
           {
             type: 'traces',
             session,
             version: lib.version,
             first,
-            start,
-            count,
-            ids: cellIds,
-            traces,
+            start: w.start,
+            count: w.count,
+            ids: w.ids,
+            traces: w.traces,
           },
-          [cellIds.buffer as ArrayBuffer, traces.buffer as ArrayBuffer],
+          [w.ids.buffer as ArrayBuffer, w.traces.buffer as ArrayBuffer],
         );
         first = false;
-        frames += count;
-      }
+      });
+      if (frames === null) return;
       this.deps.toMain.postMessage({
         type: 'backfilled',
         session,
@@ -435,34 +485,29 @@ export class CompressRunner {
     try {
       extractor = makeExtractor(req.library);
       extractor.setSigned?.(true);
-      const ids = extractor.ids();
-      let frames = 0;
-      for (const index of [...this.done]) {
-        const file = await this.deps.store.open(factorName(index));
-        const bytes = new Uint8Array(file.size());
-        file.read(bytes, 0);
-        file.close();
-        if (epoch !== this.epoch) return;
-        const count = extractor.open(bytes);
-        const start = extractor.start;
-        const traces = new Float32Array(count * ids.length);
-        let signed: Float32Array | null = new Float32Array(count * ids.length);
-        for (let t = 0; t < count; t += BACKFILL_BATCH) {
-          const n = Math.min(BACKFILL_BATCH, count - t);
-          traces.set(extractor.solve(t, n), t * ids.length);
-          const s = extractor.lastSigned?.();
-          if (signed && s && s.length === n * ids.length) signed.set(s, t * ids.length);
-          else signed = null;
-          await this.yieldNow();
-          if (epoch !== this.epoch) return;
-        }
-        const cellIds = ids.slice();
-        const sig = signed ?? new Float32Array(0);
+      const frames = await this.solveWindows(extractor, extractor.ids(), epoch, true, (w) => {
+        const signed = w.signed ?? new Float32Array(0);
         this.deps.toMain.postMessage(
-          { type: 'extracted', session, job, start, count, ids: cellIds, traces, signed: sig },
-          [cellIds.buffer as ArrayBuffer, traces.buffer as ArrayBuffer, sig.buffer as ArrayBuffer],
+          {
+            type: 'extracted',
+            session,
+            job,
+            start: w.start,
+            count: w.count,
+            ids: w.ids,
+            traces: w.traces,
+            signed,
+          },
+          [
+            w.ids.buffer as ArrayBuffer,
+            w.traces.buffer as ArrayBuffer,
+            signed.buffer as ArrayBuffer,
+          ],
         );
-        frames += count;
+      });
+      if (frames === null) {
+        this.refuse(session, job, 'cancelled by a reset');
+        return;
       }
       this.deps.toMain.postMessage({
         type: 'extract-done',
@@ -473,13 +518,17 @@ export class CompressRunner {
       });
     } catch (err) {
       // The job's error, not the compression's: the factors stay as they are.
-      if (epoch === this.epoch)
-        this.deps.toMain.postMessage({
-          type: 'error',
-          session,
-          job,
-          message: err instanceof Error ? err.message : String(err),
-        });
+      this.deps.toMain.postMessage({
+        type: 'error',
+        session,
+        job,
+        message:
+          epoch !== this.epoch
+            ? 'Extract on factors: cancelled by a reset.'
+            : err instanceof Error
+              ? err.message
+              : String(err),
+      });
     } finally {
       extractor?.free();
     }
@@ -622,7 +671,7 @@ export class CompressRunner {
     this.open?.file.close();
     this.open = null;
     this.pending = [];
-    this.jobs = [];
+    this.dropJobs('cancelled by a reset');
     this.wanted = null;
     await this.idle();
     this.compressor?.free();
