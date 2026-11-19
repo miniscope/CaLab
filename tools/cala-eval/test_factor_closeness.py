@@ -428,6 +428,52 @@ class Closeness(unittest.TestCase):
         text = F.report(self.root / "a", self.root / "c", [self.root / "n"])
         self.assertIn("| dropped cells |", text)
 
+    def test_a_pair_without_null_runs_says_it_has_no_noise_floor(self) -> None:
+        write_run(self.root / "a", CELLS, TRACES)
+        write_run(self.root / "b", CELLS, TRACES)
+        write_run(self.root / "n", CELLS, TRACES)
+        none = "no noise floor of its own"
+        self.assertIn(none, F.report(self.root / "a", self.root / "b", []))
+        self.assertIn(none, F.report(self.root / "a", self.root / "b", [], match=True))
+        with_null = F.report(self.root / "a", self.root / "b", [self.root / "n"])
+        self.assertNotIn(none, with_null)
+
+    def test_the_null_by_id_line_needs_null_runs(self) -> None:
+        write_run(self.root / "a", CELLS, TRACES)
+        write_run(self.root / "b", CELLS, TRACES)
+        write_run(self.root / "n", CELLS, TRACES)
+        by_id = "compared with the reference by id"
+        self.assertNotIn(
+            by_id, F.report(self.root / "a", self.root / "b", [], match=True)
+        )
+        text = F.report(self.root / "a", self.root / "b", [self.root / "n"], match=True)
+        self.assertIn(by_id, text)
+
+    def test_gate_off_keeps_the_tables_and_replaces_the_verdict(self) -> None:
+        write_run(self.root / "a", CELLS, TRACES)
+        write_run(self.root / "b", CELLS, TRACES)
+        text = F.report(self.root / "a", self.root / "b", [])
+        self.assertRegex(text, r"Gate A1: (pass|fail)\.")
+        off = F.report(
+            self.root / "a", self.root / "b", [], gate=False, title="### custom title"
+        )
+        self.assertNotRegex(off, r"Gate A1: (pass|fail)\.")
+        self.assertIn(
+            "Gate A1 is not applied: this comparison shows what the seed changes "
+            "in the raw pipeline.",
+            off,
+        )
+        self.assertIn("| A1 rule | measured | result |", off)
+        self.assertTrue(off.startswith("### custom title\n"))
+        self.assertEqual(off.count("###"), 1)
+
+    def test_report_rows_are_the_compare_rows(self) -> None:
+        write_run(self.root / "a", CELLS, TRACES)
+        write_run(self.root / "b", CELLS, TRACES)
+        text, rows = F.report_rows(self.root / "a", self.root / "b", [])
+        self.assertEqual(text, F.report(self.root / "a", self.root / "b", []))
+        self.assertEqual(rows, F.compare(self.root / "a", self.root / "b"))
+
 
 class A1Gate(unittest.TestCase):
     @staticmethod
@@ -705,6 +751,31 @@ class Settle(unittest.TestCase):
         _, med_nan, _ = F.changed_share({1: A_FP}, {})
         self.assertTrue(math.isnan(med_nan))
 
+    def test_changed_median_is_over_the_changed_cells_only(self) -> None:
+        # Cells 1..3 are the same, cell 4 moves one pixel (1 - r = 20/19), cell 5 has no
+        # partner: the median over all cells is 0, over the changed cell it is 20/19.
+        fa = {1: A_FP, 2: A_FP, 3: A_FP, 4: A_FP, 5: A_FP}
+        fb = {1: A_FP, 2: A_FP, 3: A_FP, 4: B_FP}
+        self.assertEqual(F.changed_share(fa, fb)[1], 0.0)
+        self.assertAlmostEqual(F.changed_median(fa, fb), 20 / 19)
+        self.assertTrue(math.isnan(F.changed_median(fa, fa)))
+        self.assertTrue(math.isnan(F.changed_median({}, {})))
+        self.assertTrue(math.isnan(F.changed_median({1: A_FP}, {})))
+
+    def test_iteration_changes_compare_each_step_with_the_one_before(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d) / "f_chosen"
+            run.mkdir()
+            cell = ([10, 11, 12], [1.0, 3.0, 1.0])
+            write_fp(run / "footprints_pass2.bin", {1: cell})
+            write_fp(run / "footprints_iter1.bin", {1: cell})
+            write_fp(run / "footprints_iter2.bin", {1: ([11, 12, 13], [1.0, 3.0, 1.0])})
+            got = F.iteration_changes(run)
+            self.assertEqual(sorted(got), [1, 2])
+            self.assertTrue(math.isnan(got[1]))
+            self.assertAlmostEqual(got[2], 20 / 19)
+            self.assertEqual(F.iteration_changes(Path(d) / "none"), {})
+
     def test_changed_share_threshold_is_the_corr_argument(self) -> None:
         near = (A_FP[0], A_FP[1] + np.array([0.0, 0.0, 0.05]))
         r = F.footprint_change(A_FP, near)
@@ -740,8 +811,12 @@ class Settle(unittest.TestCase):
             rows = [r for r in text if r.startswith("| ") and "---" not in r][1:]
             self.assertEqual(len(rows), 4)
             self.assertTrue(rows[0].startswith("| pass 1 | 1 | n/a |"))
-            self.assertIn("| iteration 1 | 1 | 0.0000 | 0.00000 |", rows[2])
-            self.assertIn("| iteration 2 | 1 | 1.0000 |", rows[3])
+            # Nothing changed in iteration 1: no median of changed cells.
+            self.assertIn("| iteration 1 | 1 | 0.0000 | n/a |", rows[2])
+            # Iteration 2: r = -1/19 for the one cell, so 1 - r = 20/19.
+            self.assertIn("| iteration 2 | 1 | 1.0000 | 1.05263 |", rows[3])
+            self.assertIn("median 1 - r of changed cells", "\n".join(text))
+            self.assertNotIn("median change", "\n".join(text))
             # Iteration 3 has no file: the row is left out and one line says so.
             self.assertTrue(
                 any("iteration 3" in r and "footprints_iter3.bin" in r for r in text)

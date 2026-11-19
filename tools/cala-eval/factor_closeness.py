@@ -8,8 +8,8 @@ rebuilt from the factors (`qc_eval --replay-source factors`). Each `--null` is
 a raw run that differs from `--ref` only in `--later-budget`: the spread
 between raw runs that the test run is judged against.
 
-Per cell of the reference run (cells are matched by id; pass 1 is the same in
-all runs, and a refine replay keeps the cell set):
+Per cell of the reference run (cells are matched by id unless `--match`; with the same
+Discover pass 1 is the same in all runs, and a refine replay keeps the cell set):
 
 - `trace_r`: Pearson correlation of the Extract traces (`extract_trace.f32`);
 - `trace_r1`: the same from lag-1 cross-covariances, which noise that is white in time
@@ -717,12 +717,31 @@ def report(
     band: float = 16.0,
     truth_path: Path | None = None,
     match: bool = False,
+    gate: bool = True,
+    title: str | None = None,
 ) -> str:
     """The Markdown comparison of `test` with `ref`, judged against the `nulls`.
 
     With `match`, cells are paired by footprint (`match_cells`) instead of by id: for runs
     whose Discover differed (look-back). The `nulls` are compared with `ref` by id either
-    way, which is right only for nulls that share the reference's Discover."""
+    way, which is right only for nulls that share the reference's Discover. With `gate`
+    false the A1 table stays but the verdict line says the gate is not applied. `title`
+    replaces the heading line."""
+    return report_rows(ref, test, nulls, tile, band, truth_path, match, gate, title)[0]
+
+
+def report_rows(
+    ref: Path,
+    test: Path,
+    nulls: list[Path],
+    tile: int = 64,
+    band: float = 16.0,
+    truth_path: Path | None = None,
+    match: bool = False,
+    gate: bool = True,
+    title: str | None = None,
+) -> tuple[str, list[Row]]:
+    """`report`, and the per-cell rows it was made from (what `compare` returns)."""
     dims, fa = read_footprints(ref / "footprints.bin")
     _, fb = read_footprints(test / "footprints.bin")
     pairs = match_cells(fa, fb, dims) if match else None
@@ -732,7 +751,7 @@ def report(
     partners = set(pairs.values()) if pairs is not None else set(fa)
     extra = len(set(fb) - partners)
     no_centroid = sum(1 for r in rows if math.isnan(r["edge_px"]))
-    out = [f"### `{test.name}` against `{ref.name}`", ""]
+    out = [title or f"### `{test.name}` against `{ref.name}`", ""]
     out.append(
         f"{len(rows)} cells in the reference run; {missing} of {len(rows)} cells are missing in the test run."
     )
@@ -776,6 +795,11 @@ def report(
                 f"| {name} | {label} | {n_qc} | {dropped(g, key)} | {max(null_drop, default=0)} "
                 f"| {mine:.5f} | {top:.5f} | {judged} |"
             )
+    if not nulls:
+        out += [
+            "",
+            "This pair has no null runs, so it has no noise floor of its own.",
+        ]
     if truth_path:
         a, b = finite(rows, "truth_r_ref"), finite(rows, "truth_r_test")
         k = len(a)
@@ -828,13 +852,14 @@ def report(
                 f"median over {len(d)} cells {q(d, 50)}, 5th pct {q(d, 5)}."
             )
     if pairs is not None:
-        out += [
-            "",
-            (
-                "The null runs are compared with the reference by id, which is right only "
-                "when they share the reference's Discover."
-            ),
-        ]
+        if nulls:
+            out += [
+                "",
+                (
+                    "The null runs are compared with the reference by id, which is right "
+                    "only when they share the reference's Discover."
+                ),
+            ]
         paired = [r for r in rows if r["qc_pass"] and r["in_test"]]
         out += [
             "",
@@ -846,7 +871,7 @@ def report(
             ),
         ]
     ja, jb = line_jump(fa, dims, tile), line_jump(fb, dims, tile)
-    gate = a1_gate(rows, ja, jb)
+    a1 = a1_gate(rows, ja, jb)
     n_qc = sum(1 for r in rows if r["qc_pass"])
     n_lost = sum(1 for r in rows if r["qc_pass"] and not r["in_test"])
     out += [
@@ -858,9 +883,17 @@ def report(
         "| A1 rule | measured | result |",
         "| --- | --- | --- |",
     ]
-    out += [f"| {rule} | {what} | {A1_WORDS[ok]} |" for rule, what, ok in gate]
-    out += ["", f"Gate A1: {'pass' if a1_passes(gate) else 'fail'}.", ""]
-    return "\n".join(out)
+    out += [f"| {rule} | {what} | {A1_WORDS[ok]} |" for rule, what, ok in a1]
+    verdict_line = (
+        f"Gate A1: {'pass' if a1_passes(a1) else 'fail'}."
+        if gate
+        else (
+            "Gate A1 is not applied: this comparison shows what the seed changes "
+            "in the raw pipeline."
+        )
+    )
+    out += ["", verdict_line, ""]
+    return "\n".join(out), rows
 
 
 # ---------------------------------------------------------------------------
@@ -910,6 +943,42 @@ def changed_share(
     below = sum(1 for r in rs if not r >= thr)
     fin = sorted(1.0 - r for r in rs if math.isfinite(r))
     return below / len(ids), fin[len(fin) // 2] if fin else NAN, len(ids)
+
+
+def changed_median(
+    fa: dict[int, Cell], fb: dict[int, Cell], corr: float = 0.99
+) -> float:
+    """Median of 1 - r over the cells that changed between two libraries (r below `corr`, as
+    `changed_share` counts them), the upper one of an even count. A cell in only one library
+    has no r and is left out. NaN when no cell changed (or none has a finite r).
+
+    The harness's `median_change` is taken over all cells, so it reads 0 whenever fewer than
+    half of them change; this is the median that shows how far the changed ones moved."""
+    thr = float(np.float32(corr))
+    moved: list[float] = []
+    for c in sorted(set(fa) & set(fb)):
+        r = footprint_change(fa[c], fb[c])
+        if math.isfinite(r) and not r >= thr:
+            moved.append(1.0 - r)
+    moved.sort()
+    return moved[len(moved) // 2] if moved else NAN
+
+
+def iteration_changes(run: Path, corr: float = 0.99) -> dict[int, float]:
+    """For each Refine-on-factors iteration with a readable library file, the `changed_median`
+    against the step before it (see `library_steps`); NaN where there is no step before, the
+    step before is unreadable or no cell changed."""
+    out: dict[int, float] = {}
+    prev: dict[int, Cell] | None = None
+    for name, path in library_steps(run):
+        lib = read_library(path)
+        cells = lib[1] if lib else None
+        if name.startswith("iteration ") and cells is not None:
+            k = step_number(path)
+            out[k] = changed_median(prev, cells, corr) if prev is not None else NAN
+        if cells is not None:
+            prev = cells
+    return out
 
 
 def truth_fp_median(
@@ -984,8 +1053,8 @@ def settle_table(
     run: Path, truth_path: Path | None = None, corr: float = 0.99
 ) -> list[str]:
     """Markdown: per library of the run, the share of cells whose footprint changed (below
-    `corr`) since the step before, the median change, and with a truth the median footprint
-    r with it. Says so in one line when the run left no libraries, and names the iterations
+    `corr`) since the step before, the median of 1 - r over those cells alone, and with a
+    truth the median footprint r with it. Says so in one line when the run left no libraries, and names the iterations
     whose file is missing (their rows are left out)."""
     steps = library_steps(run)
     if not steps:
@@ -1005,7 +1074,7 @@ def settle_table(
             "traces, for every step):"
         ),
         "",
-        "| step | cells | changed share | median change | truth footprint r median |",
+        "| step | cells | changed share | median 1 - r of changed cells | truth footprint r median |",
         "| --- | --- | --- | --- | --- |",
     ]
     prev: dict[int, Cell] | None = None
@@ -1020,7 +1089,8 @@ def settle_table(
         if prev is None:
             share, med, n = NAN, NAN, len(cells)
         else:
-            share, med, n = changed_share(prev, cells, corr)
+            share, _, n = changed_share(prev, cells, corr)
+            med = changed_median(prev, cells, corr)
         tr = NAN
         if truth_path is not None:
             frame = frame or truth_frame(run, truth_path, dims)
@@ -1076,12 +1146,11 @@ def main() -> None:
         help="pair cells by footprint, not by id (runs whose Discover differed)",
     )
     a = ap.parse_args()
-    print(report(a.ref, a.test, a.null, a.tile, a.band, a.truth, match=a.match))
+    text, rows = report_rows(
+        a.ref, a.test, a.null, a.tile, a.band, a.truth, match=a.match
+    )
+    print(text)
     if a.out:
-        dims, fa = read_footprints(a.ref / "footprints.bin")
-        _, fb = read_footprints(a.test / "footprints.bin")
-        pairs = match_cells(fa, fb, dims) if a.match else None
-        rows = compare(a.ref, a.test, a.tile, a.truth, pairs)
         keys = list(rows[0]) if rows else ["id"]
         lines = ["\t".join(keys)] + [
             "\t".join(f"{r[k]:.6g}" for k in keys) for r in rows
