@@ -5,6 +5,10 @@
 //! cargo run --release --example qc_eval -- oracle <sim dir> <out dir> [options]
 //! cargo run --release --example qc_eval -- real   <avi dir> <out dir> [options]
 //!   --frames N         first N frames (default all)
+//!   --from F           `real` only: the stream starts at frame F of the
+//!                      recording (`--frames` counts from F); a later stretch
+//!                      of the same recording, e.g. the run whose flat field
+//!                      `--ff-seed-run` reads
 //!   --motion           run the motion corrector upstream
 //!   --rescore RUN      `sim` only, standalone: score an earlier run's
 //!                      checkpoint footprints (`RUN/fp_history.bin`, from
@@ -217,6 +221,13 @@
 //!                      `flat_field.f32` (+ `_offset`)); `auto[:N]` estimates once from a first pass
 //!                      over frames 0..N (3000) and corrects from frame 0; a
 //!                      file path divides by that gain map (f32 LE per pixel)
+//!   --ff-seed-run DIR  with `--flat-field online`: seed from the flat field an
+//!                      earlier run of the same sensor ended with, as the app
+//!                      stores it per device: `DIR/flat_field.f32`,
+//!                      `DIR/flat_field_offset.f32` when present, and the dark
+//!                      level and frames of the last map in
+//!                      `DIR/flat_field_updates.tsv`; the map (gain, offsets,
+//!                      dark level) is in force from frame 0. Not with `--ff-seed`
 //!   --inject-drift gain=A,offset=B  add a synthetic sensor drift growing
 //!                      linearly over the run (pixel gain ±A, column offset
 //!                      ±B grey levels; patterns written to `drift_*.f32`)
@@ -449,6 +460,8 @@ struct Recording {
     /// Frames are binned `bin` × `bin` (1 = as recorded); `dims` is binned.
     bin: usize,
     raw_dims: Dims,
+    /// `--from F`: recording frame of stream frame 0 (0 = from the start).
+    first: u32,
 }
 
 impl Recording {
@@ -479,6 +492,7 @@ impl Recording {
             total,
             bin,
             raw_dims,
+            first: 0,
         }
     }
 
@@ -486,8 +500,7 @@ impl Recording {
         let mut out = Vec::with_capacity(count as usize * self.raw_dims.pixels());
         let mut s = start;
         while s < start + count {
-            let k = self.starts.partition_point(|&x| x <= s) - 1;
-            let local = s - self.starts[k];
+            let (k, local) = self.locate(s);
             let n = (self.files[k].header.frame_count() - local).min(start + count - s);
             self.files[k].read(local, n, &mut out);
             s += n;
@@ -513,6 +526,26 @@ impl Recording {
             }
         }
         binned
+    }
+
+    /// The file and its frame that hold stream frame `s` (recording frame
+    /// `first + s`).
+    fn locate(&self, s: u32) -> (usize, u32) {
+        let f = self.first + s;
+        let k = self.starts.partition_point(|&x| x <= f) - 1;
+        (k, f - self.starts[k])
+    }
+
+    /// `--from F`: the stream starts at recording frame `first`; `total`
+    /// becomes the frames from there on.
+    fn skip(&mut self, first: u32) {
+        assert!(
+            first < self.total,
+            "--from {first}: the recording has {} frames",
+            self.total
+        );
+        self.first = first;
+        self.total -= first;
     }
 }
 
@@ -557,6 +590,50 @@ fn read_f32_file(f: &str) -> Vec<f32> {
         .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
+}
+
+/// `--ff-seed-run DIR`: the flat field an earlier `qc_eval` run of the same
+/// sensor ended with, as the app stores it per device: the gain map
+/// (`DIR/flat_field.f32`), the column offsets (`DIR/flat_field_offset.f32`,
+/// when that run had the offset model), and the dark level and frames of
+/// the last map (the last `updated` row of `DIR/flat_field_updates.tsv`).
+fn read_seed_run(dir: &Path, n_px: usize) -> FlatFieldSeed {
+    let gain = read_f32_file(dir.join("flat_field.f32").to_str().unwrap());
+    assert_eq!(
+        gain.len(),
+        n_px,
+        "{dir:?}: flat_field.f32 is not one value per pixel of this recording"
+    );
+    let off = dir.join("flat_field_offset.f32");
+    let offset = off.exists().then(|| read_f32_file(off.to_str().unwrap()));
+    if let Some(o) = &offset {
+        assert_eq!(
+            o.len(),
+            n_px,
+            "{dir:?}: flat_field_offset.f32 is not one value per pixel"
+        );
+    }
+    let path = dir.join("flat_field_updates.tsv");
+    let log = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+    let mut lines = log.lines();
+    let head: Vec<&str> = lines.next().unwrap_or("").split('\t').collect();
+    let col = |name: &str| {
+        head.iter()
+            .position(|h| *h == name)
+            .unwrap_or_else(|| panic!("{path:?}: no column {name}"))
+    };
+    let (c_out, c_frames, c_dark) = (col("outcome"), col("frames_used"), col("dark"));
+    let last = lines
+        .rev()
+        .find(|l| l.split('\t').nth(c_out) == Some("updated"))
+        .unwrap_or_else(|| panic!("{dir:?}: the run made no flat field map"));
+    let f: Vec<&str> = last.split('\t').collect();
+    FlatFieldSeed {
+        gain,
+        offset,
+        dark: f[c_dark].parse().unwrap(),
+        frames: f[c_frames].parse().unwrap(),
+    }
 }
 
 /// `--inject-drift gain=A,offset=B`: a synthetic sensor drift added to the
@@ -3988,6 +4065,11 @@ fn main() {
     let bin: usize = arg_value(&args, "--bin").map_or(1, |s| s.parse().unwrap());
     assert!(bin == 1 || mode == "real", "--bin is for `real` only");
     let mut rec = Recording::open(&avi_dir, bin);
+    if let Some(f) = arg_value(&args, "--from") {
+        assert!(mode == "real", "--from is for `real` only");
+        rec.skip(f.parse().unwrap());
+        println!("from frame {f}: {} frames", rec.total);
+    }
     if bin > 1 {
         println!(
             "binned {bin}x{bin}: {}x{} px",
@@ -4228,6 +4310,10 @@ fn main() {
     // Default: the online flat field (what the app runs) with motion, off without.
     let ff_mode = arg_value(&args, "--flat-field")
         .unwrap_or_else(|| if motion { "online" } else { "off" }.into());
+    assert!(
+        ff_mode == "online" || arg_value(&args, "--ff-seed-run").is_none(),
+        "--ff-seed-run needs the online flat field (--motion)"
+    );
     if ff_mode == "off" {
         println!("flat field: off");
     } else if ff_mode == "online" {
@@ -4254,8 +4340,25 @@ fn main() {
             .apply(&mut pre0)
             .unwrap();
         }
+        let seed_run =
+            arg_value(&args, "--ff-seed-run").map(|d| read_seed_run(Path::new(&d), n_px));
+        assert!(
+            seed.is_none() || seed_run.is_none(),
+            "--ff-seed and --ff-seed-run: one or the other"
+        );
+        let from_run = seed_run.is_some();
+        let seed = seed.or(seed_run);
         println!("flat field: online {c:?}, seed {}", seed.is_some());
-        online_ff = Some(OnlineFlatField::new(dims, &fov, c, seed).unwrap());
+        let o = OnlineFlatField::new(dims, &fov, c, seed).unwrap();
+        if from_run {
+            // As the app: the stored map, offsets and dark level included,
+            // is in force from frame 0.
+            o.current()
+                .expect("a seeded flat field has a map")
+                .apply(&mut pre0)
+                .unwrap();
+        }
+        online_ff = Some(o);
     } else if let Some(f) = Some(ff_mode.clone()) {
         let g: Vec<f32> = if let Some(k) = f.strip_prefix("auto") {
             // Dither flat field from a first pass over the opening frames.
@@ -6139,5 +6242,105 @@ mod tests {
         }
         eprintln!("largest relative gap between the engines: {worst:e}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A recording of two files (1000 and 500 frames) without file handles: enough for the
+    /// frame bookkeeping.
+    fn two_file_recording() -> Recording {
+        let dims = Dims::new(4, 3).unwrap();
+        Recording {
+            files: Vec::new(),
+            starts: vec![0, 1000],
+            dims,
+            total: 1500,
+            bin: 1,
+            raw_dims: dims,
+            first: 0,
+        }
+    }
+
+    #[test]
+    fn from_moves_the_stream_origin_across_files() {
+        let mut r = two_file_recording();
+        assert_eq!(r.locate(0), (0, 0));
+        assert_eq!(r.locate(1200), (1, 200));
+        r.skip(900);
+        assert_eq!((r.first, r.total), (900, 600));
+        assert_eq!(
+            r.locate(0),
+            (0, 900),
+            "stream frame 0 is recording frame 900"
+        );
+        assert_eq!(
+            r.locate(150),
+            (1, 50),
+            "and stream frame 150 is in the second file"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "--from 1500")]
+    fn from_past_the_end_is_refused() {
+        two_file_recording().skip(1500);
+    }
+
+    const FF_HEAD: &str = "frame\toutcome\tfirst\tbins\tframes_used\tgain_sd\ttissue_sd\tresidual\tdark\tchange_median\tchange_p99\tchange_max\tsolve_s\n";
+
+    /// A folder as an online flat field run leaves it: a 4-pixel map, optionally the column
+    /// offsets, and the update log `log`.
+    fn seed_dir(name: &str, offset: bool, log: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("qc_eval_seed_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut f = File::create(dir.join("flat_field.f32")).unwrap();
+        write_f32s(&mut f, &[1.0, 1.1, 0.9, 1.2]);
+        if offset {
+            let mut f = File::create(dir.join("flat_field_offset.f32")).unwrap();
+            write_f32s(&mut f, &[2.0, 2.0, 3.0, 3.0]);
+        }
+        std::fs::write(dir.join("flat_field_updates.tsv"), log).unwrap();
+        dir
+    }
+
+    fn two_maps_log() -> String {
+        format!(
+            "{FF_HEAD}2999\tupdated\t1\t12\t2400\t0.05000\t0.10000\t1.000e-3\t4.500\t0.1\t0.2\t0.3\t0.50\n\
+             4199\tskipped: too little motion\t\t\t\t\t\t\t\t\t\t\t0.01\n\
+             5399\tupdated\t0\t14\t4800\t0.04000\t0.10000\t1.000e-3\t4.750\t0.1\t0.2\t0.3\t0.40\n"
+        )
+    }
+
+    #[test]
+    fn a_seed_run_gives_the_map_it_ended_with() {
+        let dir = seed_dir("full", true, &two_maps_log());
+        let s = read_seed_run(&dir, 4);
+        assert_eq!(s.gain, vec![1.0, 1.1, 0.9, 1.2]);
+        assert_eq!(s.offset, Some(vec![2.0, 2.0, 3.0, 3.0]));
+        assert_eq!(
+            (s.dark, s.frames),
+            (4.75, 4800.0),
+            "the last map's dark level and frames"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        let dir = seed_dir("gain", false, &two_maps_log());
+        assert_eq!(
+            read_seed_run(&dir, 4).offset,
+            None,
+            "no offset model, no offsets"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "made no flat field map")]
+    fn a_seed_run_without_a_map_is_refused() {
+        let log = format!("{FF_HEAD}2999\tskipped: too little motion\t\t\t\t\t\t\t\t\t\t\t0.01\n");
+        read_seed_run(&seed_dir("none", false, &log), 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "one value per pixel")]
+    fn a_seed_map_of_another_size_is_refused() {
+        read_seed_run(&seed_dir("size", false, &two_maps_log()), 5);
     }
 }
