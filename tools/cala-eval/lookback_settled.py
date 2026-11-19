@@ -20,12 +20,13 @@ A step is `NAME=ARM:BEFORE:AFTER` with BEFORE/AFTER one of `wrapK` (`footprints_
   the suite's groups (isolated: no other unit within 1.5 D; close-pair: one within 1 D; late: born in the last 20 %).
 
 Per sim the median (or mean) of each number; over sims the mean and a paired t 95 % CI (the suite's rule for run
-metrics). RAM: one sim at a time, the ground-truth stack is about 0.7 GB.
+metrics). RAM: one sim and step at a time; the ground-truth stack is 0.7-1.5 GB (peak about 3.5 GB on a motion sim).
 """
 
 from __future__ import annotations
 
 import argparse
+import gc
 import math
 import sys
 from pathlib import Path
@@ -118,6 +119,8 @@ def step_rows(run: Path, before: str, after: str, sim: Path | None = None, all_d
         d = np.hypot(cen[ne, 0] - cen[u, 0], cen[ne, 1] - cen[u, 1]) / diam
         d = d[ne != u]
         r["nn"] = float(d.min()) if d.size else math.inf
+    del G, R0, R1
+    gc.collect()  # the ground-truth stack is 0.7-1.5 GB; without this, steps pile up (9.9 GB peak over the full tier)
     return rows, info
 
 
