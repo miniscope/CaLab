@@ -129,6 +129,36 @@ Pass-loop wall over the 5 sims: `DR-main` 1721 s, `D-st2` 1066 s, `LB-x1` 1180 s
 Discover frame in qc_eval (it skips reservoir, ledger, QC and visits but solves the whole frame); in the app it could
 solve only the patch around the cells in need, so its cost would scale with cell-frames, not frames.
 
+### Drain after Discover (recorded data)
+
+`--lookback-drain 4800`: after the last Discover frame the look-back keeps serving the cells in need, with
+Refine-scope visits, until nothing is needed or 4800 steps. Arms `LBD-new-x1/x2` (newest-first order; the shared-order
+drain arms `LBD-x2` and `LBD-x2-hl24k`, stats half-life 24000, were still running when this was written; same tree).
+
+| metric                                 | DR-main | LBD-new-x1 | LBD-new-x2 |
+| -------------------------------------- | ------- | ---------- | ---------- |
+| Footprint r median, all                | 0.9892  | 0.9878 (~) | 0.9892 (~) |
+| Footprint r < 0.9 share, all           | 0.044   | 0.055 (~)  | 0.050 (~)  |
+| Footprint r median, isolated           | 0.9927  | 0.9883 (−) | 0.9891 (−) |
+| Footprint r median, born first half    | 0.9904  | 0.9892 (~) | 0.9906 (~) |
+| Footprint r median, born second half   | 0.9585  | 0.9531 (~) | 0.9523 (~) |
+| Footprint r median, born last 20 %     | 0.9449  | 0.9435 (~) | 0.9410 (~) |
+| Footprint r < 0.9 share, second half   | 0.148   | 0.201 (~)  | 0.230 (~)  |
+| Trace corr excess < 1 D                | +0.142  | +0.093 (+) | +0.084 (+) |
+| Bite share < 0.5, later-born, 0.75-1 D | 0.719   | 0.460 (+)  | 0.432 (+)  |
+| Matched                                | 349.0   | 343.0 (−)  | 341.0 (~)  |
+| Pass-loop wall, 5 sims (s)             | 1721    | 1282       | 1510       |
+| of which look-back (s) / frames        | 0 / 0   | 431 / 71k  | 658 / 136k |
+
+The drain closes the late-born gap (second half and last 20 % within noise of `DR-main`) at less wall than Discover +
+Refine, because it only re-reads what the cells in need lack (3000-9500 frames per sim at 2x, ending early on the pairs
+sims). Isolated cells remain the one footprint gap (−0.004 median), for the reason in point 3 above.
+
+**Revised answer.** For recorded data, Discover + look-back + drain matches Discover + 1 Refine on every footprint
+group except isolated cells, with much better crosstalk and bites and ~12-25 % less compute; it does not reach
+Discover + Refine with the replay (`DR-st2`). Adding an uncertainty-driven demand for all cells (point above) is the
+next step and the likely fix for isolated cells.
+
 ## Can this replace the separate Refine step?
 
 Not yet. For streaming it is a clear improvement over Discover alone at ~10-30 % extra compute (crosstalk, bites,
