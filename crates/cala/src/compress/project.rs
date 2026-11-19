@@ -42,6 +42,7 @@ struct TileRows {
 
 /// The solver's functionals of every frame of one window, for one library.
 pub struct WindowProjector {
+    library_version: u64,
     cells: usize,
     background: usize,
     frames: usize,
@@ -280,6 +281,7 @@ impl WindowProjector {
             });
         }
         Ok(WindowProjector {
+            library_version: lib.version(),
             cells: n,
             background: n_bg,
             frames: wf.frames,
@@ -346,6 +348,12 @@ impl WindowProjector {
         self.cells + self.background
     }
 
+    /// Version of the library this was built for. A library rebuilt with
+    /// identical footprints has a new version, so its projector is rebuilt too.
+    pub fn library_version(&self) -> u64 {
+        self.library_version
+    }
+
     /// Frames of the window this was built from.
     pub fn frames(&self) -> usize {
         self.frames
@@ -362,17 +370,17 @@ impl WindowProjector {
 /// factors of a window, without rebuilding a frame.
 pub struct FactorExtractor {
     engine: TraceEngine,
-    /// One frame's functionals: the cells', then the background's.
+    /// One frame's functionals: the cells', then the background's; sized in
+    /// `solve` from the engine's current library.
     vals: Vec<f32>,
     out: FrameTraces,
 }
 
 impl FactorExtractor {
     pub fn new(lib: Arc<Library>, cfg: SolverConfig) -> Result<FactorExtractor, TraceError> {
-        let n = lib.len() + lib.background_len();
         Ok(FactorExtractor {
             engine: TraceEngine::new(lib, cfg)?,
-            vals: vec![0.0; n],
+            vals: Vec::new(),
             out: FrameTraces::default(),
         })
     }
@@ -387,14 +395,10 @@ impl FactorExtractor {
     }
 
     /// Swap the library before the next frame (warm starts follow cell ids).
-    /// A projector built for the old library is refused by `solve` when its
-    /// sizes differ; one of the same sizes cannot be told apart, so build a
-    /// new projector with the library.
+    /// A projector built before the swap is refused by `solve` (its library
+    /// version differs); build a new one.
     pub fn set_library(&mut self, lib: Arc<Library>) -> Result<(), TraceError> {
-        let n = lib.len() + lib.background_len();
-        self.engine.set_library(lib)?;
-        self.vals.resize(n, 0.0);
-        Ok(())
+        self.engine.set_library(lib)
     }
 
     /// Solve frames `t0..t0 + count` of `wf` with the rows of `proj` (built
@@ -412,18 +416,24 @@ impl FactorExtractor {
         count: usize,
         mut sink: impl FnMut(&FrameTraces),
     ) -> Result<(), TraceError> {
-        let n = self.engine.library().len();
+        let lib = self.engine.library().clone();
+        let n = lib.len();
+        let functionals = n + lib.background_len();
         if !proj.matches(wf) {
             return Err(TraceError::InvalidConfig(
                 "projector was built from another window".into(),
             ));
         }
-        if proj.cells() != n || proj.functionals() != self.vals.len() {
+        if proj.library_version() != lib.version()
+            || proj.cells() != n
+            || proj.functionals() != functionals
+        {
             return Err(TraceError::InvalidConfig(format!(
-                "projector of {} cells and {} functionals, library of {n} and {}",
+                "projector of library {} ({} cells, {} functionals), engine library {} ({n}, {functionals})",
+                proj.library_version(),
                 proj.cells(),
                 proj.functionals(),
-                self.vals.len()
+                lib.version()
             )));
         }
         let end = t0.checked_add(count).filter(|&e| e <= wf.frames);
@@ -433,6 +443,7 @@ impl FactorExtractor {
                 wf.frames
             )));
         };
+        self.vals.resize(functionals, 0.0);
         for t in t0..end {
             proj.project(wf, t, &mut self.vals);
             let (cells, background) = self.vals.split_at(n);
@@ -499,12 +510,18 @@ mod tests {
 
     /// A library of `cells` of the centres on high-passed data (so with a moat).
     pub(super) fn library(model: BackgroundModel, cells: usize) -> Library {
+        library_v(model, cells, 1)
+    }
+
+    pub(super) fn library_v(model: BackgroundModel, cells: usize, version: u64) -> Library {
         let cfg = FlattenConfig {
             cell_diameter_px: 4.0,
             ..FlattenConfig::default()
         };
         let mut flat = GlowFlattener::new(&FovMask::full(dims()), &cfg).unwrap();
-        let mut b = LibraryBuilder::new(dims()).background(model).version(1);
+        let mut b = LibraryBuilder::new(dims())
+            .background(model)
+            .version(version);
         for (i, &c) in CENTRES.iter().take(cells).enumerate() {
             b.push(footprint(i as u64, c));
         }
@@ -741,8 +758,11 @@ mod tests {
     #[test]
     fn traces_from_the_factors_equal_traces_from_the_rebuilt_frames() {
         // Arm C (the factor engine) against arm B (the frame engine on frames
-        // rebuilt from the same factors): float32 rounding apart.
-        for tiling in [Tiling::Plain, Tiling::Offset] {
+        // rebuilt from the same factors): float32 rounding apart. The gap is
+        // set by the f32 rounding of the two input routes, amplified by the
+        // solve, not by the stopping tolerance (it does not move with `tol`);
+        // 2e-4 is about 2.5 times the worst gap measured.
+        for tiling in [Tiling::Plain, Tiling::Overlap(8), Tiling::Offset] {
             let wf = window(tiling, 120, None);
             for model in models() {
                 let lib = Arc::new(library(model, CENTRES.len()));
@@ -751,25 +771,45 @@ mod tests {
                 let mut ex = FactorExtractor::new(lib.clone(), tight()).unwrap();
                 ex.engine_mut().set_consolidated_ring_gradient(true);
                 let proj = WindowProjector::new(&lib, &wf).unwrap();
-                let mut c: Vec<Vec<f32>> = Vec::new();
+                // Per frame: traces, sweeps, frame index.
+                let mut c: Vec<(Vec<f32>, u32, u64)> = Vec::new();
                 // In two calls, as the app solves a window in batches.
-                ex.solve(&wf, &proj, 0, 50, |tr| c.push(tr.traces.clone()))
-                    .unwrap();
-                ex.solve(&wf, &proj, 50, 70, |tr| c.push(tr.traces.clone()))
-                    .unwrap();
+                ex.solve(&wf, &proj, 0, 50, |tr| {
+                    c.push((tr.traces.clone(), tr.sweeps, tr.frame_index));
+                })
+                .unwrap();
+                ex.solve(&wf, &proj, 50, 70, |tr| {
+                    c.push((tr.traces.clone(), tr.sweeps, tr.frame_index));
+                })
+                .unwrap();
                 assert_eq!(c.len(), 120);
                 let mut frame = vec![0.0f32; W * H];
                 let mut out = FrameTraces::default();
-                for (t, ct) in c.iter().enumerate() {
+                let mut total_gap = 0u32;
+                for (t, (ct, sweeps, index)) in c.iter().enumerate() {
                     wf.reconstruct(t, &mut frame);
                     by_frame.process_into(&frame, &mut out).unwrap();
+                    assert_eq!(*index, t as u64, "the frame index continues across calls");
                     for (i, (a, b)) in out.traces.iter().zip(ct).enumerate() {
                         assert!(
-                            (a - b).abs() <= 1e-3 * (1.0 + a.abs()),
+                            (a - b).abs() <= 2e-4 * (1.0 + a.abs()),
                             "{tiling:?} frame {t} cell {i}: {a} from frames, {b} from factors"
                         );
                     }
+                    // Both arms warm-start from the previous frame, so their
+                    // sweep counts stay together; a cold start would not.
+                    let gap = out.sweeps.abs_diff(*sweeps);
+                    assert!(
+                        gap <= 2,
+                        "{tiling:?} frame {t}: sweeps {} vs {sweeps}",
+                        out.sweeps
+                    );
+                    total_gap += gap;
                 }
+                assert!(
+                    total_gap <= 30,
+                    "{tiling:?}: sweeps differ by {total_gap} in all"
+                );
                 assert!(
                     ex.solve(&wf, &proj, 100, 21, |_| {}).is_err(),
                     "beyond the window"
@@ -806,6 +846,83 @@ mod tests {
         // The engine is untouched: the right window still solves from frame 0.
         ex.solve(&plain, &proj, 0, 5, |_| calls += 1).unwrap();
         assert_eq!(calls, 5);
+    }
+
+    #[test]
+    fn a_projector_of_a_same_sized_library_of_another_version_is_refused() {
+        let wf = window(Tiling::Plain, 60, None);
+        let first = Arc::new(library_v(BackgroundModel::None, 3, 1));
+        let second = Arc::new(library_v(BackgroundModel::None, 3, 2));
+        let mut ex = FactorExtractor::new(first.clone(), tight()).unwrap();
+        let old = WindowProjector::new(&first, &wf).unwrap();
+        ex.solve(&wf, &old, 0, 5, |_| {}).unwrap();
+        ex.set_library(second.clone()).unwrap();
+        assert!(ex.solve(&wf, &old, 5, 5, |_| panic!("refused")).is_err());
+        let new = WindowProjector::new(&second, &wf).unwrap();
+        assert_eq!(new.library_version(), 2);
+        let mut n = 0;
+        ex.solve(&wf, &new, 5, 5, |_| n += 1).unwrap();
+        assert_eq!(n, 5);
+    }
+
+    #[test]
+    fn a_library_swapped_through_the_engine_is_followed() {
+        let wf = window(Tiling::Plain, 60, None);
+        let five = Arc::new(library_v(BackgroundModel::None, 5, 1));
+        let three = Arc::new(library_v(BackgroundModel::None, 3, 2));
+        let mut ex = FactorExtractor::new(five.clone(), tight()).unwrap();
+        let old = WindowProjector::new(&five, &wf).unwrap();
+        ex.solve(&wf, &old, 0, 2, |_| {}).unwrap();
+        ex.engine_mut().set_library(three.clone()).unwrap();
+        assert!(ex.solve(&wf, &old, 2, 1, |_| {}).is_err());
+        let new = WindowProjector::new(&three, &wf).unwrap();
+        let mut n = 0;
+        ex.solve(&wf, &new, 2, 2, |tr| n += tr.traces.len())
+            .unwrap();
+        assert_eq!(n, 6);
+    }
+
+    #[test]
+    fn a_non_finite_projection_stops_the_solve_and_leaves_the_extractor_usable() {
+        let clean = window(Tiling::Plain, 60, None);
+        let mut bad = clean.clone();
+        // Frame 30 of the first tile (it holds cells) has a NaN in its row.
+        let rank = bad.tiles[0].rank;
+        bad.tiles[0].temporal[30 * rank] = f32::NAN;
+        let lib = Arc::new(library(BackgroundModel::None, 3));
+        let proj = WindowProjector::new(&lib, &bad).unwrap();
+        let mut ex = FactorExtractor::new(lib.clone(), tight()).unwrap();
+        let mut seen = 0u64;
+        let r = ex.solve(&bad, &proj, 0, 60, |tr| {
+            assert_eq!(tr.frame_index, seen);
+            seen += 1;
+        });
+        assert!(r.is_err());
+        assert_eq!(seen, 30, "the sink got the frames before the bad one");
+        // A rejected frame does not advance the engine: the clean window goes on
+        // from frame 30 and gives what a fresh extractor gives, to the solve's
+        // tolerance.
+        let good = WindowProjector::new(&lib, &clean).unwrap();
+        let mut again = Vec::new();
+        ex.solve(&clean, &good, 0, 10, |tr| {
+            again.push((tr.frame_index, tr.traces.clone()));
+        })
+        .unwrap();
+        assert_eq!(again[0].0, 30);
+        let mut fresh = FactorExtractor::new(lib.clone(), tight()).unwrap();
+        let mut k = 0;
+        fresh
+            .solve(&clean, &good, 0, 10, |tr| {
+                for (a, b) in tr.traces.iter().zip(&again[k].1) {
+                    assert!(
+                        (a - b).abs() <= 1e-3 * (1.0 + a.abs()),
+                        "frame {k}: {a} vs {b}"
+                    );
+                }
+                k += 1;
+            })
+            .unwrap();
+        assert_eq!(k, 10);
     }
 
     #[test]
