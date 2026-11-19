@@ -37,7 +37,7 @@ use std::sync::Arc;
 use super::fpstats::{add_mom, parity_block, FpStats, Mom, PixMoments, MIN_VALID_SHARE};
 use super::local::BgBasis;
 use super::reservoir::{decode, mix, quantize, take_missing};
-use super::{column_on, CoreTest, EditScope, Frames, JointUpdate, SlowLoop, Solved};
+use super::{column_on, CoreTest, EditScope, Frames, JointUpdate, SlowLoop};
 use crate::compress::blend::BlendLayout;
 use crate::compress::project::{FactorExtractor, WindowProjector};
 use crate::compress::WindowFactors;
@@ -1052,11 +1052,18 @@ fn settle_measure(prev: &Library, next: &Library, corr: f32) -> (f64, f64) {
 }
 
 impl SlowLoop {
-    /// The refine visit of every tile on its held-out patches: the tile's
-    /// base problem (as `solve_tile` builds it) and the existing `refine`,
-    /// with no fitting frames (so only the statistics path proposes).
-    /// Returns the tiles with cells skipped for too few held-out frames.
+    /// The refine visit of every tile on its held-out patches: the existing
+    /// visit's own `solve_tile` on no fitting frames (the tile's base
+    /// problem, no fits, no residuals, so only the statistics path
+    /// proposes), then the existing `refine`. Returns the tiles with cells
+    /// skipped for too few held-out frames.
     fn gate(&mut self, tests: &[TestTile], has_cells: &[bool]) -> usize {
+        let no_frames = Frames {
+            y: Vec::new(),
+            proj: Vec::new(),
+            idx: Vec::new(),
+            miss: Vec::new(),
+        };
         let mut skipped = 0;
         for ti in 0..self.tiles.len() {
             if tests[ti].len() < self.cfg.min_test_frames {
@@ -1068,21 +1075,15 @@ impl SlowLoop {
             if self.bgs[ti].is_none() {
                 self.bgs[ti] = Some(BgBasis::new(self.tiles[ti].rect));
             }
-            let rect = self.tiles[ti].rect;
-            let cols = self.columns(rect, &[], &[]);
-            let base = self.problem(ti, cols);
-            let solved = Solved {
-                base,
-                fits: Vec::new(),
-                resid: Vec::new(),
-            };
+            let solved = self.solve_tile(ti, &no_frames);
             self.refine(ti, &solved, &fr);
         }
         skipped
     }
 
-    /// Why this loop cannot run a factor iteration now, if it cannot.
-    fn factor_refusal(&self) -> Option<&'static str> {
+    /// Why this loop cannot run a factor iteration whatever is pending, if
+    /// it cannot (checked before `refine_until_settled` publishes).
+    fn frozen_refusal(&self) -> Option<&'static str> {
         if self.scope != EditScope::Refine {
             return Some("Refine on factors runs with the cell set frozen (EditScope::Refine)");
         }
@@ -1093,6 +1094,14 @@ impl SlowLoop {
         }
         if self.cfg.joint_update != JointUpdate::Off {
             return Some("the cluster replay on factors is phase 3b: joint_update must be off");
+        }
+        None
+    }
+
+    /// Why this loop cannot run a factor iteration now, if it cannot.
+    fn factor_refusal(&self) -> Option<&'static str> {
+        if let Some(m) = self.frozen_refusal() {
+            return Some(m);
         }
         if self.pending {
             return Some("unpublished edits: finalize before Refine on factors");
@@ -1141,12 +1150,23 @@ impl SlowLoop {
         let tiles_skipped = self.gate(&tests, &pass.has_cells);
         drop(tests);
         src.stage(RefineStage::Publish);
-        self.frames += pass.frames as u64;
+        // `publish` fails only on an internal invariant of the library
+        // build; then the statistics, tile bases, edited cells and the
+        // pending flag stay changed, but the frame counter does not.
         let next = if self.pending {
-            self.publish()?
+            let next = self.publish()?;
+            self.frames += pass.frames as u64;
+            // As if published at the end of the frames read, like a raw pass.
+            self.last_commit = self.frames;
+            next
         } else {
+            self.frames += pass.frames as u64;
             lib.clone()
         };
+        // The counter keeps counting, so the next iteration reads the
+        // recording under other slow-loop indices: a frame held out here can
+        // be a fitting frame there, as in repeated raw Refine passes (whether
+        // a fixed split is better is open, for both routes).
         let (changed_share, median_change) = settle_measure(&lib, &next, cfg.settle_corr);
         src.stage(RefineStage::Done);
         Ok(IterationReport {
@@ -1171,7 +1191,12 @@ impl SlowLoop {
 /// `finalize`, iterations until one reports [`IterationReport::settled`] or
 /// `max_iterations` have run; `on_iteration` gets each (counted from 1).
 /// An iteration that accepts nothing has changed nothing, so it settles
-/// (unless `settle_share` is 0, which asks for the cap).
+/// (unless `settle_share` is 0, which asks for the cap). Each iteration
+/// holds out another third of the recording: a frame held out in one
+/// iteration can be a fitting frame in the next, as in repeated raw Refine
+/// passes (whether a fixed split would be better is open, for both routes).
+/// A loop that cannot run one (scope, `core_test`, joint update) is refused
+/// before its pending edits are published.
 pub fn refine_until_settled(
     sl: &mut SlowLoop,
     src: &mut dyn FactorSource,
@@ -1179,6 +1204,9 @@ pub fn refine_until_settled(
     mut on_iteration: impl FnMut(usize, &IterationReport),
 ) -> Result<Settled, TraceError> {
     cfg.validate()?;
+    if let Some(m) = sl.frozen_refusal() {
+        return Err(TraceError::InvalidConfig(m.into()));
+    }
     sl.finalize()?;
     for it in 1..=cfg.max_iterations {
         let rep = sl.refine_on_factors(src, cfg)?;
@@ -1804,18 +1832,33 @@ mod tests {
         }
     }
 
-    #[test]
-    fn one_iteration_accepts_what_the_frame_route_accepts() {
-        let c = cfg(v2_config().background);
+    /// The refinements a loop accepted, `(id, paired z)`, from its edit log.
+    fn accepted_refines(sl: &SlowLoop) -> Vec<(u64, f32)> {
+        let mut v: Vec<(u64, f32)> = sl
+            .edit_log
+            .iter()
+            .filter(|e| e.kind == crate::discover::EditKind::Refine)
+            .map(|e| (e.id, e.margin))
+            .collect();
+        v.sort_by_key(|e| e.0);
+        v
+    }
+
+    /// One iteration in both arms on the fixture with config `c`: the factor
+    /// route (`refine_on_factors`), and the frame route's statistics with the
+    /// same held-out patches and gate. Asserts the same libraries and
+    /// returns each arm's accepted refinements.
+    fn both_arms(c: SlowLoopConfig, label: &str) -> (Vec<(u64, f32)>, Vec<(u64, f32)>) {
         let (mut fa, windows) = fixture(c.clone());
         let (mut fb, _) = fixture(c);
         let rc = FactorRefineConfig::default();
         let rep = fa.refine_on_factors(&mut windows.clone(), &rc).unwrap();
-        assert!(
-            rep.accepted >= 1,
-            "the fixture must give the gate a refinement: {rep:?}"
-        );
         assert_eq!((rep.frames, fa.frames()), (T, T as u64));
+        assert_eq!(
+            rep.library_version,
+            fa.library().unwrap().version(),
+            "{label}: the report is of the published library"
+        );
         // The frame route's statistics, the same held-out patches, the same gate.
         let libb = fb.library().unwrap().clone();
         let mut src = windows.clone();
@@ -1823,29 +1866,31 @@ mod tests {
         let pick = fb.pick_tests(&pass.scores, fb.test_count(&rc));
         let tests = fb.test_frames(&mut src, &pick, pass.frames).unwrap();
         frame_route(&mut fb, &windows, rc.solver);
-        let (r0a, r0b) = (0, fb.stats().refines);
-        assert_eq!(r0b, 0);
+        assert_eq!(fb.stats().refines, 0);
         let skipped = fb.gate(&tests, &pass.has_cells);
+        assert_eq!(skipped, rep.tiles_skipped, "{label}");
+        let nb = fb.finalize().unwrap();
         fb.frames += pass.frames as u64;
-        assert_eq!(skipped, rep.tiles_skipped);
-        let (na, nb) = (fa.library().unwrap().clone(), fb.finalize().unwrap());
-        eprintln!(
-            "accepted: factor route {}, frame route {}",
-            fa.stats().refines - r0a,
-            fb.stats().refines - r0b
+        let na = fa.library().unwrap().clone();
+        let (acc_a, acc_b) = (accepted_refines(&fa), accepted_refines(&fb));
+        eprintln!("{label}: accepted (id, z): factor route {acc_a:?}, frame route {acc_b:?}");
+        assert_eq!(rep.accepted, acc_a.len() as u64, "{label}");
+        assert_eq!(
+            acc_a.iter().map(|e| e.0).collect::<Vec<_>>(),
+            acc_b.iter().map(|e| e.0).collect::<Vec<_>>(),
+            "{label}: accepted cells"
         );
-        assert_eq!(fa.stats().refines, fb.stats().refines);
         assert_eq!(na.ids(), nb.ids());
         for s in 0..na.len() {
             let ((pa, va), (pb, vb)) = (na.unfiltered(s), nb.unfiltered(s));
-            assert_eq!(pa, pb, "cell {}: support", na.ids()[s]);
+            assert_eq!(pa, pb, "{label} cell {}: support", na.ids()[s]);
             let top = va.iter().fold(0.0f32, |m, v| m.max(v.abs()));
             let gap = va
                 .iter()
                 .zip(vb)
                 .fold(0.0f32, |m, (x, y)| m.max((x - y).abs()));
             eprintln!(
-                "cell {}: {} px, largest gap {:.2e} of the peak",
+                "{label} cell {}: {} px, largest gap {:.2e} of the peak",
                 na.ids()[s],
                 pa.len(),
                 gap / top
@@ -1853,10 +1898,49 @@ mod tests {
             for (x, y) in va.iter().zip(vb) {
                 assert!(
                     (x - y).abs() <= 1e-4 * top,
-                    "cell {}: {x} vs {y}",
+                    "{label} cell {}: {x} vs {y}",
                     na.ids()[s]
                 );
             }
+        }
+        (acc_a, acc_b)
+    }
+
+    #[test]
+    fn one_iteration_accepts_what_the_frame_route_accepts() {
+        let cases = [
+            ("Ring", v2_config().background),
+            ("Basis", BackgroundModel::Basis(ramps())),
+        ];
+        for (label, model) in cases {
+            let (acc, _) = both_arms(cfg(model.clone()), label);
+            assert!(
+                acc.len() >= 2,
+                "{label}: the fixture must give the gate two refinements: {acc:?}"
+            );
+            // A paired-z bar between the two: the gate must refuse the weaker
+            // proposal and keep the stronger, in both arms alike.
+            let mut z: Vec<f32> = acc.iter().map(|e| e.1).collect();
+            z.sort_by(f32::total_cmp);
+            let (lo, hi) = (z[0], z[z.len() - 1]);
+            assert!(hi - lo > 0.5, "{label}: z apart enough to split: {z:?}");
+            let strict = SlowLoopConfig {
+                refine_z: 0.5 * (lo + hi),
+                ..cfg(model)
+            };
+            let tag = format!("{label} refine_z {}", strict.refine_z);
+            let (a, b) = both_arms(strict, &tag);
+            let ids = |v: &[(u64, f32)]| v.iter().map(|e| e.0).collect::<Vec<u64>>();
+            assert_eq!(ids(&a), ids(&b), "{tag}: accepted");
+            let refused: Vec<u64> = ids(&acc)
+                .into_iter()
+                .filter(|i| !ids(&a).contains(i))
+                .collect();
+            assert!(!a.is_empty() && !refused.is_empty(), "{tag}: {a:?}");
+            eprintln!(
+                "{tag}: accepted {:?}, refused {refused:?} in both arms",
+                ids(&a)
+            );
         }
     }
 
@@ -1876,6 +1960,14 @@ mod tests {
         .unwrap();
         assert!(out.settled, "{reps:?}");
         assert_ne!(out.stop, SettleStop::Cap);
+        // Pinned to the published library: the first iteration moves a
+        // footprint, so the run needs a second to settle.
+        assert!(reps.len() >= 2, "{reps:?}");
+        assert!(reps[0].changed_share > 0.0, "{reps:?}");
+        assert_eq!(
+            reps.last().unwrap().library_version,
+            sl.library().unwrap().version()
+        );
         assert_eq!(out.iterations, reps.len());
         assert!(reps.last().unwrap().settled(&rc));
         assert!(reps[..reps.len() - 1].iter().all(|r| !r.settled(&rc)));
@@ -2046,6 +2138,16 @@ mod tests {
             "unpublished edits"
         );
         assert!(loop_state(&sl) == before, "unpublished edits");
+        // `refine_until_settled` refuses the wrong scope before it would
+        // publish the pending edits.
+        sl.set_edit_scope(EditScope::All);
+        assert!(
+            refine_until_settled(&mut sl, &mut windows.clone(), &rc, |_, _| {}).is_err(),
+            "until settled, edit scope"
+        );
+        assert!(sl.pending, "pending edits kept");
+        assert!(loop_state(&sl) == before, "until settled, edit scope");
+        sl.set_edit_scope(EditScope::Refine);
         for c in [
             SlowLoopConfig {
                 joint_update: JointUpdate::All,
@@ -2064,6 +2166,17 @@ mod tests {
                 "joint update or core test"
             );
             assert!(loop_state(&s) == before, "joint update or core test");
+            s.seed(&[blob_w(9, 20.0, 20.0, 2.5)]).unwrap();
+            let before = loop_state(&s);
+            assert!(
+                refine_until_settled(&mut s, &mut w.clone(), &rc, |_, _| {}).is_err(),
+                "until settled, joint update or core test"
+            );
+            assert!(s.pending, "pending edits kept");
+            assert!(
+                loop_state(&s) == before,
+                "until settled, joint update or core test"
+            );
         }
     }
 
@@ -2089,6 +2202,44 @@ mod tests {
             assert_eq!(a.0, b.0);
             assert!((a.1 - b.1).abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn a_raw_frame_after_an_iteration_enters_at_the_installed_weight() {
+        // Forgetting on: raw frames before the iteration raise `stats_w`.
+        let c = SlowLoopConfig {
+            stats_half_life_frames: 200.0,
+            ..cfg(v2_config().background)
+        };
+        let rc = FactorRefineConfig::default();
+        let (mut sl, windows) = fixture(c);
+        frame_route(&mut sl, &windows, rc.solver);
+        assert!(sl.stats_w > 2.0, "stats_w {}", sl.stats_w);
+        sl.refine_on_factors(&mut windows.clone(), &rc).unwrap();
+        // The next fitting frame through the existing frame path.
+        let lib = sl.library().unwrap().clone();
+        let mut ex = FactorExtractor::new(lib.clone(), rc.solver).unwrap();
+        ex.engine_mut().set_consolidated_ring_gradient(true);
+        let wf = &windows[0];
+        let proj = WindowProjector::new(&lib, wf).unwrap();
+        let mut trs: Vec<FrameTraces> = Vec::new();
+        ex.solve(wf, &proj, 0, wf.frames, |tr| trs.push(tr.clone()))
+            .unwrap();
+        let t = (0..wf.frames)
+            .find(|&t| !sl.is_test(sl.frames() + t as u64))
+            .unwrap();
+        let mut y = vec![0.0f32; dims().pixels()];
+        wf.reconstruct(t, &mut y);
+        let id = 3; // no pixel left out of a window: the plain push path
+        let m0 = sl.fpstats[&id].m[0][0];
+        let pushed = sl
+            .observe_lookback(&y, &lib, &trs[t], sl.frames() + t as u64, None)
+            .unwrap();
+        assert!(pushed);
+        let added = sl.fpstats[&id].m[0][0] - m0;
+        let want = 1.0 / f64::from(sl.stats_gamma);
+        // Weight 1 per installed frame, so the new frame enters at 1/γ.
+        assert!((added - want).abs() < 1e-6, "added {added}, want {want}");
     }
 
     #[test]
