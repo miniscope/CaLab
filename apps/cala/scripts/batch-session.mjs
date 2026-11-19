@@ -26,7 +26,7 @@ import { chromium } from '@playwright/test';
 /* global window, document */ // page.evaluate callbacks run in the browser
 import { spawn } from 'node:child_process';
 import { appendFileSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { compressSettled } from './compress-settled.mjs';
 
 // ---- options ----
@@ -65,15 +65,18 @@ saveStatus();
 
 // ---- the served build must be of this checkout's sources ----
 const repo = resolve(import.meta.dirname, '../../..');
-/** Newest file under `dirs` (build outputs and dependencies left out). */
+/** Newest source file under `dirs` (build outputs, dependencies, tests and scripts left out). */
 function newestSource(dirs) {
   let newest = { path: '', mtimeMs: 0 };
   for (const dir of dirs) {
     for (const e of readdirSync(dir, { recursive: true, withFileTypes: true })) {
       const path = join(e.parentPath, e.name);
-      if (!e.isFile() || /\/(node_modules|dist|pkg|target)\//.test(path)) continue;
+      // Relative to the scanned folder: a checkout below a folder named `dist` must not skip all.
+      const rel = `/${relative(dir, path)}`;
+      if (!e.isFile() || /\/(node_modules|dist|pkg|target|scripts|__tests__)\//.test(rel)) continue;
       // Sources only: caches such as tsconfig.tsbuildinfo change without a build being due.
-      if (!/\.(tsx?|mts|m?js|css|html|rs|toml|wgsl)$/.test(e.name)) continue;
+      if (!/\.(tsx?|mts|m?js|css|html|rs|toml|wgsl)$/.test(e.name) || /\.test\./.test(e.name))
+        continue;
       const mtimeMs = statSync(path).mtimeMs;
       if (mtimeMs > newest.mtimeMs) newest = { path, mtimeMs };
     }
@@ -85,7 +88,7 @@ const built = statSync(join(repo, 'dist/CaLab/Cala/index.html'), {
 })?.mtimeMs;
 if (built === undefined) throw new Error('dist/CaLab/Cala is missing: run npm run build:e2e');
 const newest = newestSource(
-  ['apps/cala/src', 'crates/cala/src', 'crates/solver/src', 'packages'].map((d) => join(repo, d)),
+  ['apps/cala', 'crates/cala/src', 'crates/solver/src', 'packages'].map((d) => join(repo, d)),
 );
 // A build older than a source file is not what this checkout would give.
 if (newest.mtimeMs > built && !args.includes('--stale-build')) {
