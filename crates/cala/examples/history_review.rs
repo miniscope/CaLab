@@ -1,5 +1,5 @@
 //! Run the history review ([`calab_cala::compress::review`]) on a finished
-//! run: `footprints.bin` (`CALAFP01`) and `factors/w*.fac` (`CALAFAC1`, from
+//! run: `footprints.bin` (`CALAFP01`) and `factors/w*.fac` (`CALAFAC2`, v1 still reads, from
 //! `discover_eval --factors-out`).
 //!
 //! ```text

@@ -28,11 +28,14 @@ pub enum Tiling {
 
 impl Tiling {
     /// The tiling as two numbers for a file header: the kind (0 plain,
-    /// 1 overlap, 2 offset) and the overlap in px (0 for the others).
+    /// 1 overlap, 2 offset) and the overlap in px (0 for the others). An
+    /// overlap of 0 is plain; one beyond `u32::MAX` is clamped (the layout
+    /// limits it to half a tile anyway).
     pub fn code(self) -> (u32, u32) {
         match self {
             Tiling::Plain => (0, 0),
-            Tiling::Overlap(o) => (1, o as u32),
+            Tiling::Overlap(0) => (0, 0),
+            Tiling::Overlap(o) => (1, u32::try_from(o).unwrap_or(u32::MAX)),
             Tiling::Offset => (2, 0),
         }
     }
@@ -128,6 +131,26 @@ pub struct BlendLayout {
 }
 
 impl BlendLayout {
+    /// How many tiles `new(dims, tile, tiling)` cuts, without building them
+    /// (cost proportional to the frame's edges, not its area).
+    pub fn tile_count(dims: Dims, tile: usize, tiling: Tiling) -> usize {
+        let tile = tile.max(2);
+        let per_axis = |n: usize, first: usize| {
+            // Cuts at first, first + tile, ... below n, plus the frame ends.
+            let first = first.max(1);
+            if first < n {
+                (n - 1 - first) / tile + 2
+            } else {
+                1
+            }
+        };
+        let grid = |first: usize| per_axis(dims.width, first) * per_axis(dims.height, first);
+        match tiling {
+            Tiling::Plain | Tiling::Overlap(_) => grid(tile),
+            Tiling::Offset => grid(tile) + grid(tile / 2),
+        }
+    }
+
     pub fn new(dims: Dims, tile: usize, tiling: Tiling) -> BlendLayout {
         let tile = tile.max(2);
         // (first cut, growth, ramp length, raised cosine) of each grid.
@@ -243,12 +266,31 @@ mod tests {
             assert_eq!(Tiling::parse(&t.name()), Some(t));
         }
         assert_eq!(Tiling::default(), Tiling::Plain);
+        assert_eq!(Tiling::Overlap(0).code(), (0, 0));
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(Tiling::Overlap((1usize << 32) + 8).code(), (1, u32::MAX));
         assert_eq!(Tiling::from_code(7, 0), None);
         assert_eq!(
             Tiling::from_code(1, 0),
             None,
             "an overlap of 0 is plain, not overlap"
         );
+    }
+
+    #[test]
+    fn tile_count_matches_the_layout() {
+        for (w, h) in [(96, 70), (40, 24), (64, 64), (65, 1), (3, 130)] {
+            let dims = Dims::new(w, h).unwrap();
+            for tile in [2, 3, 16, 64, 100] {
+                for tiling in TILINGS {
+                    assert_eq!(
+                        BlendLayout::tile_count(dims, tile, tiling),
+                        BlendLayout::new(dims, tile, tiling).grid().len(),
+                        "{w}x{h} tile {tile} {tiling:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
