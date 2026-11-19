@@ -9,10 +9,12 @@
  *        [--query compress]   appended to the app URL (Cala/?debug&compress)
  *                         `--query compress`: `status.json` then holds the compress status
  *                         at the end of Discover and of Extract, and the back-fill of
- *                         Discover's recording (waited for, up to --compress-wait s)
+ *                         Discover's recording (waited for, up to --compress-wait s;
+ *                         null: skipped, `{ arrived: false }`: none arrived in time)
  *        [--stale-build]      run although dist/ is older than a source file
  *        [--compress-wait 120]  seconds to wait after a stage for its last window to be
- *                         compressed; if it is not, the status is recorded with
+ *                         compressed, and then, after Discover, for its back-fill (each
+ *                         wait takes up to this long); if the window is not compressed, the status is recorded with
  *                         `settled: false` and its `pending` and `windows`
  *
  * Serves dist/ (npm run build:e2e) with e2e/serve.mjs, opens Cala/?debug in
@@ -243,11 +245,22 @@ async function settledCompress(expectedSource, on, current) {
  * The back-fill of Discover's recording, which the app requests once the last
  * window is compressed. Extract's replay clears the windows, so a back-fill that
  * has not finished would be cut short: wait for it (up to --compress-wait s, and
- * not past an error of the compress worker). Null when compression is off, the
- * run has no cells, the compress status did not settle, or none arrived.
+ * not past an error of the compress worker). Null when the wait is skipped
+ * (compression off, no cells, compress status not settled; one log line says
+ * which), `{ arrived: false }` when no back-fill arrived in time.
  */
 async function settledBackfill(on, cells, compress) {
-  if (!on || cells <= 0 || !compress?.settled) return null;
+  const skip = !on
+    ? 'compression is off'
+    : cells <= 0
+      ? 'the run has no cells'
+      : !compress?.settled
+        ? 'the compress status did not settle'
+        : null;
+  if (skip) {
+    L(`back-fill wait skipped: ${skip}`);
+    return null;
+  }
   const t0 = Date.now();
   const poll = () =>
     page.evaluate(() => [
@@ -261,7 +274,7 @@ async function settledBackfill(on, cells, compress) {
   }
   if (error) L(`compress worker error: ${error}`);
   if (!b) L('no back-fill arrived');
-  return b;
+  return b ?? { arrived: false };
 }
 
 // ---- run ----

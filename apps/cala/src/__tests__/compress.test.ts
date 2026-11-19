@@ -486,6 +486,9 @@ describe('CompressRunner', () => {
     expect(last).toMatchObject({ windows: 2, frames: 70 });
     const want = (50 * (sums.get(50) ?? 0) + 20 * (sums.get(20) ?? 0)) / tiles / 70;
     expect(last.meanRank).toBeCloseTo(want, 9);
+    // The weighting is what is pinned: the plain mean of the two windows' ranks differs.
+    const plain = (sums.get(50)! / tiles + sums.get(20)! / tiles) / 2;
+    expect(Math.abs(want - plain)).toBeGreaterThan(0.1);
   });
 
   it('compresses a frame whose edge tile is one pixel (33 x 33, tile 16)', async () => {
@@ -642,9 +645,9 @@ describe('back-fill from the factors', () => {
         for (let i = 0; i < want.length; i++) {
           worst = Math.max(worst, Math.abs(m.traces[i] - want[i]));
         }
-        // Both solves stop at the default tolerance (0.05 of the trace noise);
-        // the tight comparison is the Rust test of `FactorExtractor`.
-        expect(worst, `window ${k}`).toBeLessThan(0.1);
+        // The two routes agree to rounding (about 6e-6 seen); the bound is
+        // loose only to stay clear of platform differences.
+        expect(worst, `window ${k}`).toBeLessThan(1e-3);
       }
     } finally {
       engine.free();
@@ -698,6 +701,82 @@ describe('back-fill from the factors', () => {
     await cut;
     expect(freed).toBe(1);
     expect(toMain.some((m) => m.type === 'traces' || m.type === 'backfilled')).toBe(false);
+  });
+
+  describe('FactorExtractor as JS reaches it', () => {
+    /** A valid factor file and the library's bytes, from a compressed recording. */
+    async function fixture() {
+      const lib = cellLibrary();
+      const { feed, sent } = collectingFeed(50);
+      for (let s = 0; s < 50; s += 10) feed.push(cellFrames(s, 10), s, 10);
+      feed.end();
+      const { r, store } = runner();
+      for (const m of sent) await r.handle(m);
+      await r.idle();
+      return { lib, file: store.files.get(factorName(0))! };
+    }
+
+    /** The object still works: a valid open and solve, then free. */
+    function expectUsable(x: FactorExtractor, file: Uint8Array) {
+      expect(x.open(file)).toBe(50);
+      expect(x.solve(0, 5).length).toBe(5 * 2);
+      expect(() => x.free()).not.toThrow();
+    }
+
+    it('refuses bad files, a solve before open and ranges past the window, and stays usable', async () => {
+      const { lib, file } = await fixture();
+      const x = new FactorExtractor(lib.bytes, 0, 0);
+      try {
+        expect([...x.ids()]).toEqual(CELLS.map((c) => c.id));
+        expect(() => x.solve(0, 1)).toThrow(/no window is open/);
+        expect(() => x.open(new Uint8Array([1, 2, 3, 4]))).toThrow();
+        expect(() => x.open(file.slice(0, file.length - 7))).toThrow();
+        expect(() => x.open(file.slice(0, 20))).toThrow();
+        expect(() => x.solve(0, 1)).toThrow(/no window is open/);
+
+        expect(x.open(file)).toBe(50);
+        expect(x.start).toBe(0);
+        expect(() => x.solve(40, 11)).toThrow();
+        expect(() => x.solve(51, 0)).toThrow();
+        expect(() => x.solve(2, 0xffffffff)).toThrow(); // `t0 + count` wraps on wasm32
+        expect(() => x.solve(0xffffffff, 0xffffffff)).toThrow();
+        expect(x.solve(45, 5).length).toBe(5 * 2);
+        expect(x.solve(0, 0).length).toBe(0);
+        // A failed open drops the window.
+        expect(() => x.open(new Uint8Array(3))).toThrow();
+        expect(() => x.solve(0, 1)).toThrow(/no window is open/);
+        expectUsable(x, file);
+      } catch (e) {
+        x.free();
+        throw e;
+      }
+    });
+
+    it('takes a library without cells: no ids, and the back-fill posts nothing', async () => {
+      const b = new TraceLibraryBuilder(W, H);
+      const empty = b.buildUnfiltered();
+      const bytes = empty.toBytes();
+      const version = empty.version;
+      empty.free();
+      b.free();
+      const x = new FactorExtractor(bytes, 0, 0);
+      try {
+        expect(x.ids().length).toBe(0);
+      } finally {
+        x.free();
+      }
+
+      const { feed, sent } = collectingFeed(50);
+      for (let s = 0; s < 50; s += 10) feed.push(cellFrames(s, 10), s, 10);
+      feed.library(version, bytes);
+      feed.end();
+      const { r, toMain } = runner();
+      for (const m of sent) await r.handle(m);
+      r.backfill(7, version);
+      await r.idle();
+      expect(toMain.some((m) => m.type === 'traces' || m.type === 'backfilled')).toBe(false);
+      expect(toMain.some((m) => m.type === 'error')).toBe(false);
+    });
   });
 
   it('is requested once per run, and its traces replace the live history', () => {

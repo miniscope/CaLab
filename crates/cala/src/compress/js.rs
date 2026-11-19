@@ -6,7 +6,8 @@
 //! each tile's frames go to `TileCompressor.compress`, so only one tile at a
 //! time is copied into the WASM heap. The factor file is `factorHeader`, then
 //! per tile a u32 byte length and `TileFactors.toBytes()`; `FactorWindow`
-//! reads it back to rebuild frames.
+//! reads it back to rebuild frames, and `FactorExtractor` solves a library's
+//! traces from it without rebuilding any.
 //!
 //! `HistoryReview` (see `review.rs`) keeps the factors of every window and
 //! scans them a few grid rows per call, so its worker can read messages
