@@ -172,5 +172,5 @@ s5 `footprints.bin` and `final.tsv` are identical to main's (`z0` arm of the sui
 ## Not done (later stages)
 
 The cluster support rule (Stage 2), replay in Discover (`JointUpdate::All` exists and runs, but a membership change
-restarts a store, which suits Refine only), wire serialisation of the stores (a `VisitRunner` job carries none and its
-visit falls back to the per-cell path; the suite does not use jobs), and the cost work of Stage 4.
+restarts a store, which suits Refine only), wire serialisation of the stores (done in `results/2026-11-18-replay-worker-jobs.md`; before it a `VisitRunner` job carried none and its
+visit fell back to the per-cell path), and the cost work of Stage 4.

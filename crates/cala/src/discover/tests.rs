@@ -2695,3 +2695,64 @@ fn a_bitten_footprint_is_refilled_from_its_statistics() {
     );
     assert!(old < 0.05 && now > old + 0.1, "new {now}, old gate {old}");
 }
+
+/// The cluster history replay runs when the refine visits run as jobs
+/// (`step_via`, through the byte encoding of job and result): the same
+/// libraries as in process, frame by frame, the same joint-update
+/// counters, and the replay really happens in the runner (the stores
+/// travel in the job; the visit no longer falls back to the per-cell path).
+#[test]
+fn the_cluster_replay_runs_in_visit_jobs_and_matches_step() {
+    for carry in [false, true] {
+        let t = 4000;
+        let mut rng = Lcg(411);
+        let (a, b) = ((46.0, 44.0), (46.0, 47.5));
+        let cells = vec![
+            (blob_w(0, a.0, a.1, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+            (blob_w(1, b.0, b.1, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        ];
+        let m = movie(&cells, t, 423);
+        let mut bitten = blob_w(2, b.0, b.1, 2.5);
+        for y in 0..bitten.height {
+            for x in 0..bitten.width {
+                let (dy, dx) = ((bitten.y0 + y) as f32 - a.0, (bitten.x0 + x) as f32 - a.1);
+                if dy * dy + dx * dx <= 2.5 * 2.5 {
+                    bitten.values[y * bitten.width + x] = 0.0;
+                }
+            }
+        }
+        let cfg = SlowLoopConfig {
+            refine_z: 0.0,
+            joint_update: JointUpdate::Refine,
+            joint_carry: carry,
+            ..v2_config()
+        };
+        let seed = [blob_w(1, a.0, a.1, 2.5), bitten];
+        let (mut sa, mut ea) = start(cfg.clone(), &seed);
+        let (mut sb, mut eb) = start(cfg.clone(), &seed);
+        let mut runner = VisitRunner::new(new_loop(&cfg));
+        sa.set_edit_scope(EditScope::Refine);
+        sb.set_edit_scope(EditScope::Refine);
+        let n_px = N * N;
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+            let (la, lb) = (ea.library().clone(), eb.library().clone());
+            sa.observe(f, &la, &ta).unwrap();
+            sb.observe(f, &lb, &tb).unwrap();
+            let pa = sa.step(5_000_000).unwrap();
+            let pb = sb.step_via(5_000_000, &mut runner).unwrap();
+            assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+            if let (Some(la), Some(lb)) = (pa, pb) {
+                assert!(la.to_bytes()[16..] == lb.to_bytes()[16..], "frame {k}");
+                ea.set_library(la).unwrap();
+                eb.set_library(lb).unwrap();
+            }
+        }
+        let (ra, rb) = (sa.replay_stats, sb.replay_stats);
+        assert!(ra.replays > 0 && ra.accepted > 0, "{ra:?}");
+        assert_eq!(ra.visit_fields(), rb.visit_fields(), "{ra:?} vs {rb:?}");
+        assert!(rb.job_stores > 0 && rb.job_store_bytes > 0, "{rb:?}");
+        assert!(sa.finalize().unwrap().to_bytes()[16..] == sb.finalize().unwrap().to_bytes()[16..]);
+    }
+}

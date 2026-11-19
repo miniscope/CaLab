@@ -25,9 +25,10 @@ use std::collections::HashMap;
 
 use super::fpstats::disk_pixels;
 use super::local::{Cell, Fit, Problem};
+use super::wire::{Reader, Writer};
 use super::{
     column_on, paired_z, solve_dense, EditScope, Frames, JointAdmit, JointSign, JointUpdate,
-    SlowLoop,
+    ReplayStats, SlowLoop,
 };
 use crate::trace::{FrameTraces, Library};
 
@@ -257,6 +258,14 @@ pub(crate) struct ClusterStore {
     /// The store's own last joint estimate, whitened (pixel-major `n x K`),
     /// carried to the next replay's trace step (`joint_carry`).
     est: Option<Vec<f64>>,
+    /// Set by [`ClusterStore::replay`] once it has refreshed the basis, and
+    /// when it has set `est`; read by a visit job to tell the owner what its
+    /// copy of the store changed ([`ClusterOut`]). Not part of the store.
+    visited: bool,
+    est_dirty: bool,
+    /// On a runner: the visited tile owns this cluster (a visit may change
+    /// its flag and store), so the result reports it.
+    touched: bool,
 }
 
 /// Per pixel of `pix`: the member whose ring level is subtracted there (the
@@ -345,6 +354,9 @@ impl ClusterStore {
             hist: RingHistory::new(cap, kk),
             k: 0,
             est: None,
+            visited: false,
+            est_dirty: false,
+            touched: true,
         };
         // The first basis is the members' current whitened columns (the
         // statistics have not accumulated yet).
@@ -642,6 +654,7 @@ impl ClusterStore {
             return None;
         }
         self.refresh_basis();
+        self.visited = true;
         let r = self.rank;
         if r == 0 {
             return None;
@@ -793,6 +806,7 @@ impl ClusterStore {
                 }
             }
             self.est = Some(e);
+            self.est_dirty = true;
         }
         Some(Replay {
             h,
@@ -1707,6 +1721,514 @@ pub(crate) fn nnls(g: &[f64], b: &[f64], k: usize, x: &mut [f64]) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Visit jobs (`shard.rs`): a refine visit run by a `VisitRunner` replays the
+// stores it is sent and reports what its copies changed.
+//
+// The owner keeps the stores (frames keep arriving into them while a job is
+// out). A job carries the full store of every cluster the visited tile owns
+// and can replay (`ClusterStore::encode`; about 100-700 KB each, only the
+// visited tile's, not all stores), and the member ids and `ok` flag of the
+// other clusters its cells belong to (the visit reads those flags to decide
+// which cells the per-cell refinement skips). The runner installs them, runs
+// the unchanged visit (`refine_clusters`: replay, proposal, gate; the gate
+// needs the tile's held-out frames, which the job holds anyway) and returns,
+// per owned cluster, a [`ClusterOut`]: the `ok` flag, whether the replay
+// refreshed the basis, and its carried estimate. The owner re-does the cheap
+// basis refresh on its own, current store (it gives the same store as the
+// replay's own when no frame arrived in between, and the right one when
+// some did) and takes the estimate. The proposals themselves travel as
+// ordinary ops of the visit result, applied by the owner in order, so the
+// owner's gate-and-commit is the existing `apply_job`.
+// ---------------------------------------------------------------------------
+
+/// A cluster as a visit job carries it.
+#[derive(Debug, Clone)]
+pub(crate) struct JobCluster {
+    pub ids: Vec<u64>,
+    pub ok: bool,
+    /// The visited tile owns the cluster (its first member's centre is in
+    /// the tile's core).
+    pub owned: bool,
+    /// The store, when the visit can replay it (every member within reach
+    /// of the tile).
+    pub store: Option<ClusterStore>,
+}
+
+/// What a visit did to a cluster it owned, for the owner to apply.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ClusterOut {
+    pub ids: Vec<u64>,
+    pub ok: bool,
+    /// The replay refreshed the basis of the store.
+    pub refreshed: bool,
+    /// The store's carried estimate after the replay (`joint_carry`), with
+    /// the pixel set it is on.
+    pub est: Option<(Vec<f64>, (usize, u32, u32))>,
+}
+
+impl ReplayStats {
+    /// The counters a visit's replays move (the rest are the owner's).
+    pub(crate) fn visit_fields(&self) -> [u64; 7] {
+        [
+            self.replays,
+            self.replay_none,
+            self.low_snr,
+            self.converged,
+            self.proposals,
+            self.accepted,
+            self.members_replaced,
+        ]
+    }
+
+    pub(crate) fn from_visit_fields(v: [u64; 7]) -> ReplayStats {
+        ReplayStats {
+            replays: v[0],
+            replay_none: v[1],
+            low_snr: v[2],
+            converged: v[3],
+            proposals: v[4],
+            accepted: v[5],
+            members_replaced: v[6],
+            ..ReplayStats::default()
+        }
+    }
+
+    pub(crate) fn add_visit(&mut self, d: &ReplayStats) {
+        self.replays += d.replays;
+        self.replay_none += d.replay_none;
+        self.low_snr += d.low_snr;
+        self.converged += d.converged;
+        self.proposals += d.proposals;
+        self.accepted += d.accepted;
+        self.members_replaced += d.members_replaced;
+    }
+}
+
+impl RingHistory {
+    /// The frames newest first, with the ring's capacity and width.
+    fn write(&self, w: &mut Writer) {
+        w.usize(self.cap);
+        w.usize(self.width);
+        w.usize(self.len);
+        for s in 0..self.len {
+            let slot = self.slot(s);
+            for &x in &self.v[slot * self.width..(slot + 1) * self.width] {
+                w.f32(x);
+            }
+            w.u64(self.at[slot]);
+            w.bool(self.half[slot]);
+        }
+    }
+
+    fn read(r: &mut Reader) -> Option<RingHistory> {
+        let (cap, width, len) = (r.usize()?, r.usize()?, r.usize()?);
+        if cap == 0 || cap > 1 << 20 || width > 8 || len > cap {
+            return None;
+        }
+        // The empty tail of the ring is allocated here, not sent; every
+        // frame present is read with bounds checks below.
+        let mut h = RingHistory::new(cap, width);
+        for s in 0..len {
+            let slot = len - 1 - s;
+            for j in 0..width {
+                h.v[slot * width + j] = r.f32()?;
+            }
+            h.at[slot] = r.u64()?;
+            h.half[slot] = r.bool()?;
+        }
+        h.len = len;
+        h.head = len % cap;
+        Some(h)
+    }
+}
+
+impl ClusterStore {
+    /// A store of no pixels, standing for a cluster the visited tile does
+    /// not own (a visit only reads its members and `ok` flag) or owns but
+    /// cannot replay (`owned`: a member is out of reach of the tile, so the
+    /// visit only marks the cluster not ok).
+    pub fn stub(ids: Vec<u64>, owned: bool) -> ClusterStore {
+        let kk = ids.len();
+        ClusterStore {
+            ids,
+            disks: Vec::new(),
+            pix: Vec::new(),
+            is: Vec::new(),
+            owner: Vec::new(),
+            cover: Vec::new(),
+            version: 0,
+            cols: Vec::new(),
+            cy: Vec::new(),
+            sr: Vec::new(),
+            sc: vec![0.0; kk],
+            scc: vec![0.0; kk * kk],
+            sw: 0.0,
+            u: Vec::new(),
+            ut: Vec::new(),
+            rank: 0,
+            hist: RingHistory::new(1, kk),
+            k: 0,
+            est: None,
+            visited: false,
+            est_dirty: false,
+            touched: owned,
+        }
+    }
+
+    /// Identifies the pixel set (the carried estimate is only valid on it).
+    pub fn pix_key(&self) -> (usize, u32, u32) {
+        (
+            self.pix.len(),
+            self.pix.first().copied().unwrap_or(0),
+            self.pix.last().copied().unwrap_or(0),
+        )
+    }
+
+    /// What a visit's replay changed in its copy of this store.
+    pub fn out(&self, ok: bool) -> ClusterOut {
+        ClusterOut {
+            ids: self.ids.clone(),
+            ok,
+            refreshed: self.visited,
+            est: self
+                .est_dirty
+                .then(|| self.est.clone().map(|e| (e, self.pix_key())))
+                .flatten(),
+        }
+    }
+
+    /// Bytes of [`ClusterStore::encode`] (pinned by a test).
+    pub fn wire_bytes(&self) -> usize {
+        let (kk, n) = (self.ids.len(), self.pix.len());
+        let h = &self.hist;
+        8 + 8 * kk
+            + 8
+            + 12 * self.disks.len()
+            + 8
+            + 4 * n
+            + 8
+            + 4 * self.is.len()
+            + 8
+            + self.owner.len()
+            + 8
+            + self.cover.len()
+            + 8
+            + 8
+            + 4 * self.cols.len()
+            + 8
+            + 4 * self.cy.len()
+            + 8
+            + 4 * self.sr.len()
+            + 8
+            + 8 * self.sc.len()
+            + 8
+            + 8 * self.scc.len()
+            + 8
+            + 8
+            + 8
+            + 8 * self.u.len()
+            + 24
+            + h.len * (4 * h.width + 9)
+            + 8
+            + 1
+            + self.est.as_ref().map_or(0, |e| 8 + 8 * e.len())
+    }
+
+    pub fn encode(&self, w: &mut Writer) {
+        w.u64s(&self.ids);
+        w.usize(self.disks.len());
+        for &((cy, cx), r) in &self.disks {
+            w.f32(cy);
+            w.f32(cx);
+            w.f32(r);
+        }
+        w.u32s(&self.pix);
+        w.f32s(&self.is);
+        w.usize(self.owner.len());
+        self.owner.iter().for_each(|&b| w.u8(b));
+        w.usize(self.cover.len());
+        self.cover.iter().for_each(|&b| w.u8(b));
+        w.u64(self.version);
+        w.f32s(&self.cols);
+        w.f32s(&self.cy);
+        w.f32s(&self.sr);
+        w.f64s(&self.sc);
+        w.f64s(&self.scc);
+        w.f64(self.sw);
+        // `ut` is the same basis as f32, rebuilt on decode.
+        w.usize(self.rank);
+        w.f64s(&self.u);
+        self.hist.write(w);
+        w.u64(self.k);
+        w.bool(self.est.is_some());
+        if let Some(e) = &self.est {
+            w.f64s(e);
+        }
+    }
+
+    pub fn decode(r: &mut Reader) -> Option<ClusterStore> {
+        let ids = r.u64s()?;
+        let kk = ids.len();
+        if kk == 0 || kk > 8 {
+            return None;
+        }
+        let nd = r.count(12)?;
+        let disks = (0..nd)
+            .map(|_| Some(((r.f32()?, r.f32()?), r.f32()?)))
+            .collect::<Option<Vec<_>>>()?;
+        let pix = r.u32s()?;
+        let n = pix.len();
+        let is = r.f32s()?;
+        let bytes = |r: &mut Reader| -> Option<Vec<u8>> {
+            let m = r.count(1)?;
+            (0..m).map(|_| r.u8()).collect()
+        };
+        let owner = bytes(r)?;
+        let cover = bytes(r)?;
+        let version = r.u64()?;
+        let cols = r.f32s()?;
+        let cy = r.f32s()?;
+        let sr = r.f32s()?;
+        let sc = r.f64s()?;
+        let scc = r.f64s()?;
+        let sw = r.f64()?;
+        let rank = r.usize()?;
+        let u = r.f64s()?;
+        let hist = RingHistory::read(r)?;
+        let k = r.u64()?;
+        let est = if r.bool()? { Some(r.f64s()?) } else { None };
+        let ok = n > 0
+            && nd == kk
+            && is.len() == n
+            && owner.len() == n
+            && cover.len() == n
+            && cols.len() == kk * n
+            && cy.len() == kk * n
+            && sr.len() == n
+            && sc.len() == kk
+            && scc.len() == kk * kk
+            && rank <= kk
+            && u.len() == rank * n
+            && hist.width == kk
+            && est.as_ref().is_none_or(|e| e.len() == n * kk);
+        if !ok {
+            return None;
+        }
+        let mut s = ClusterStore {
+            ids,
+            disks,
+            pix,
+            is,
+            owner,
+            cover,
+            version,
+            cols,
+            cy,
+            sr,
+            sc,
+            scc,
+            sw,
+            u: Vec::new(),
+            ut: Vec::new(),
+            rank: 0,
+            hist,
+            k,
+            est,
+            visited: false,
+            est_dirty: false,
+            touched: true,
+        };
+        s.set_basis(u, rank);
+        Some(s)
+    }
+}
+
+impl JobCluster {
+    pub fn encode(&self, w: &mut Writer) {
+        w.u64s(&self.ids);
+        w.bool(self.ok);
+        w.bool(self.owned);
+        w.bool(self.store.is_some());
+        if let Some(s) = &self.store {
+            s.encode(w);
+        }
+    }
+
+    pub fn decode(r: &mut Reader) -> Option<JobCluster> {
+        let ids = r.u64s()?;
+        let ok = r.bool()?;
+        let owned = r.bool()?;
+        let store = if r.bool()? {
+            let s = ClusterStore::decode(r)?;
+            if s.ids != ids || !owned {
+                return None;
+            }
+            Some(s)
+        } else {
+            None
+        };
+        Some(JobCluster {
+            ids,
+            ok,
+            owned,
+            store,
+        })
+    }
+}
+
+impl ClusterOut {
+    pub fn encode(&self, w: &mut Writer) {
+        w.u64s(&self.ids);
+        w.bool(self.ok);
+        w.bool(self.refreshed);
+        w.bool(self.est.is_some());
+        if let Some((e, (n, a, b))) = &self.est {
+            w.f64s(e);
+            w.usize(*n);
+            w.u32(*a);
+            w.u32(*b);
+        }
+    }
+
+    pub fn decode(r: &mut Reader) -> Option<ClusterOut> {
+        let ids = r.u64s()?;
+        let ok = r.bool()?;
+        let refreshed = r.bool()?;
+        let est = if r.bool()? {
+            Some((r.f64s()?, (r.usize()?, r.u32()?, r.u32()?)))
+        } else {
+            None
+        };
+        Some(ClusterOut {
+            ids,
+            ok,
+            refreshed,
+            est,
+        })
+    }
+}
+
+impl SlowLoop {
+    /// The clusters visit `ti` needs (see above): for every cluster that has
+    /// a member among the job's cells `cell_ids`, its ids and `ok` flag, and
+    /// the store itself when its first member's centre lies in the tile's
+    /// core (the cluster the visit may replay).
+    pub(super) fn job_clusters(&self, ti: usize, cell_ids: &[u64]) -> Vec<JobCluster> {
+        if !self.joint_active() || self.clusters.is_empty() {
+            return Vec::new();
+        }
+        let core = self.tiles[ti].core;
+        // The visit replays a cluster only when every member is within the
+        // tile's rectangle; ship the store when they are within 2 px of it
+        // (a centre may move that far before the visit gets to the cluster).
+        let reach = super::shard::grow(self.tiles[ti].rect, 2, self.dims);
+        let mut seen: Vec<usize> = Vec::new();
+        for id in cell_ids {
+            if let Some(&ci) = self.cluster_of.get(id) {
+                if !seen.contains(&ci) {
+                    seen.push(ci);
+                }
+            }
+        }
+        seen.sort_unstable();
+        seen.into_iter()
+            .map(|ci| {
+                let st = &self.clusters[ci];
+                let centre = |id: u64| self.cells.iter().find(|c| c.id == id).map(|c| c.center);
+                let owned = centre(st.ids[0])
+                    .is_some_and(|c| core.local(c.0 as usize, c.1 as usize).is_some());
+                let reachable = owned
+                    && st.ids.iter().all(|&id| {
+                        centre(id)
+                            .is_some_and(|c| reach.local(c.0 as usize, c.1 as usize).is_some())
+                    });
+                JobCluster {
+                    ids: st.ids.clone(),
+                    ok: self.cluster_ok[ci],
+                    owned,
+                    store: reachable.then(|| st.clone()),
+                }
+            })
+            .collect()
+    }
+
+    /// [`SlowLoop::job_clusters`], counting what it sends.
+    pub(super) fn job_clusters_counted(&mut self, ti: usize, cell_ids: &[u64]) -> Vec<JobCluster> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let t0 = std::time::Instant::now();
+        let jc = self.job_clusters(ti, cell_ids);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.replay_stats.job_copy_ns += t0.elapsed().as_nanos() as u64;
+        }
+        for c in &jc {
+            if let Some(s) = &c.store {
+                let b = s.wire_bytes() as u64;
+                self.replay_stats.job_stores += 1;
+                self.replay_stats.job_store_bytes += b;
+                self.replay_stats.job_store_max = self.replay_stats.job_store_max.max(b);
+            }
+        }
+        jc
+    }
+
+    /// A runner's side of [`SlowLoop::job_clusters`]: the job's clusters
+    /// become this loop's, and the counters start from zero.
+    pub(super) fn install_clusters(&mut self, jc: Vec<JobCluster>) {
+        self.clear_clusters();
+        self.replay_stats = ReplayStats::default();
+        for c in jc {
+            let ci = self.clusters.len();
+            for &id in &c.ids {
+                self.cluster_of.insert(id, ci);
+            }
+            self.cluster_ok.push(c.ok);
+            self.clusters.push(
+                c.store
+                    .unwrap_or_else(|| ClusterStore::stub(c.ids, c.owned)),
+            );
+        }
+    }
+
+    /// After the visit: what it did to the stores it owned and the counters
+    /// it moved. The copies are dropped.
+    pub(super) fn take_cluster_outs(&mut self) -> (Vec<ClusterOut>, ReplayStats) {
+        let outs = self
+            .clusters
+            .iter()
+            .zip(&self.cluster_ok)
+            .filter(|(c, _)| c.touched)
+            .map(|(c, &ok)| c.out(ok))
+            .collect();
+        self.clear_clusters();
+        (outs, std::mem::take(&mut self.replay_stats))
+    }
+
+    /// The owner applies a visit's [`ClusterOut`]s to its own stores (found
+    /// by member ids; one that was rebuilt meanwhile is left alone).
+    pub(super) fn apply_cluster_outs(&mut self, outs: Vec<ClusterOut>) {
+        for o in outs {
+            let Some(&ci) = o.ids.first().and_then(|id| self.cluster_of.get(id)) else {
+                continue;
+            };
+            let st = &mut self.clusters[ci];
+            if st.ids != o.ids {
+                continue;
+            }
+            self.cluster_ok[ci] = o.ok;
+            if o.refreshed {
+                st.refresh_basis();
+            }
+            if let Some((e, key)) = o.est {
+                if key == st.pix_key() {
+                    st.est = Some(e);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1722,6 +2244,118 @@ mod tests {
         let (g, cut) = greedy_clusters(5, &edges, 0.05, 0);
         assert_eq!(g, vec![vec![0, 1, 2, 3]]);
         assert_eq!(cut, 0);
+    }
+
+    /// A small store with a wrapped ring, pushed with a fixed noise
+    /// sequence, as a visit job would copy it.
+    fn toy_store(frames: usize, cap: usize) -> ClusterStore {
+        let (h, w) = (10usize, 16usize);
+        let n = h * w;
+        let g = |cy: f32, cx: f32| -> Vec<f32> {
+            (0..n)
+                .map(|p| {
+                    let (y, x) = ((p / w) as f32, (p % w) as f32);
+                    (-((y - cy).powi(2) + (x - cx).powi(2)) / 8.0).exp()
+                })
+                .collect()
+        };
+        let (a, b) = (g(5.0, 6.0), g(5.0, 9.0));
+        let mut st = ClusterStore::new(
+            vec![3, 7],
+            vec![((5.0, 6.0), 9.0), ((5.0, 9.0), 9.0)],
+            (0..n as u32).collect(),
+            vec![1.0; n],
+            w,
+            4,
+            [a.clone(), b.clone()].concat(),
+            cap,
+        );
+        let mut rng = 99u64;
+        let mut unif = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for t in 0..frames {
+            let (c1, c2) = (unif() as f32 * 3.0, unif() as f32 * 3.0);
+            let y: Vec<f32> = (0..n)
+                .map(|p| a[p] * c1 + b[p] * c2 + 0.2 * (unif() as f32 - 0.5))
+                .collect();
+            st.push(&y, &[c1, c2], 1.0 + t as f64 * 1e-3);
+        }
+        st
+    }
+
+    fn encoded(s: &ClusterStore) -> Vec<u8> {
+        let mut w = Writer::default();
+        s.encode(&mut w);
+        w.buf
+    }
+
+    /// The job encoding of a store is lossless: a decoded copy encodes to
+    /// the same bytes, replays to the same footprints bit for bit (with a
+    /// full and with a wrapped ring), and a truncated or corrupted buffer
+    /// is refused rather than panicking.
+    #[test]
+    fn a_store_round_trips_through_the_job_encoding() {
+        for (frames, cap) in [(300, 600), (700, 280)] {
+            let st = toy_store(frames, cap);
+            let bytes = encoded(&st);
+            let mut back = ClusterStore::decode(&mut Reader::new(&bytes)).expect("decode");
+            assert_eq!(encoded(&back), bytes, "{frames} frames, ring {cap}");
+            assert_eq!(st.wire_bytes(), bytes.len());
+            let mut orig = st.clone();
+            let a = orig.replay(0.99, JointSign::All, 1, true).expect("replay");
+            let b = back.replay(0.99, JointSign::All, 1, true).expect("replay");
+            assert_eq!(a.h, b.h);
+            assert_eq!(a.ha, b.ha);
+            assert_eq!(a.hb, b.hb);
+            assert_eq!((a.se, a.sa, a.sb), (b.se, b.sa, b.sb));
+            assert_eq!(encoded(&orig), encoded(&back));
+        }
+        let bytes = encoded(&toy_store(300, 600));
+        for cut in [0, 1, 7, bytes.len() / 3, bytes.len() / 2, bytes.len() - 1] {
+            assert!(ClusterStore::decode(&mut Reader::new(&bytes[..cut])).is_none());
+        }
+        for at in (0..bytes.len()).step_by(37) {
+            let mut bad = bytes.clone();
+            bad[at] ^= 0xFF;
+            // May decode (a changed float) or not; must not panic.
+            let _ = ClusterStore::decode(&mut Reader::new(&bad));
+        }
+    }
+
+    /// A replay run on the job's copy, with its [`ClusterOut`] applied to
+    /// the owner's store, leaves the owner exactly as the replay in place
+    /// does (no frame arrives in between), and when frames did arrive the
+    /// owner keeps them and still refreshes its basis.
+    #[test]
+    fn a_replay_on_a_copy_and_its_out_equal_the_replay_in_place() {
+        let mut inplace = toy_store(400, 450);
+        let rep = inplace
+            .replay(0.99, JointSign::All, 1, true)
+            .expect("replay");
+        let owner0 = toy_store(400, 450);
+        let mut owner = owner0.clone();
+        // The worker's copy, through the wire.
+        let mut copy = ClusterStore::decode(&mut Reader::new(&encoded(&owner0))).expect("decode");
+        let rep2 = copy.replay(0.99, JointSign::All, 1, true).expect("replay");
+        assert_eq!(rep.h, rep2.h);
+        let out = copy.out(true);
+        assert!(out.refreshed && out.est.is_some());
+        // The result's own encoding is lossless.
+        let mut w = Writer::default();
+        out.encode(&mut w);
+        let out = ClusterOut::decode(&mut Reader::new(&w.buf)).expect("out");
+        // Apply as the owner does.
+        owner.refresh_basis();
+        let (e, key) = out.est.clone().unwrap();
+        assert_eq!(key, owner.pix_key());
+        owner.est = Some(e);
+        assert_eq!(encoded(&owner), encoded(&inplace));
+        // Stubs and flag-only outs stay empty-handed.
+        assert!(!ClusterStore::stub(vec![1, 2], false).out(true).refreshed);
     }
 
     #[test]
