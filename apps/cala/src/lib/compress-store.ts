@@ -31,7 +31,10 @@ export interface BackfillSink {
  * after a compression error or when a finished replay's windows do not hold
  * every frame (a skipped last window of one frame); `compressing` while a
  * replay that compresses runs or its windows wait; `none` otherwise (the next
- * replay may compress).
+ * replay may compress). A live run (`live`) has no replay: its factors are
+ * Discover's own windows, `ready` once the stream has ended, none waits and
+ * they hold every recorded frame (a last window of one frame is not
+ * compressed: `unusable`), on either tiling.
  */
 export type FactorState = 'none' | 'compressing' | 'ready' | 'unusable';
 
@@ -40,14 +43,47 @@ export function factorState(
   error: string | null,
   replayCompressing: boolean,
   frames: number,
+  live = false,
 ): FactorState {
   if (error) return 'unusable';
+  if (live) {
+    if (!s || s.source !== 'discover') return 'none';
+    if (s.final && s.pending === 0) return frames > 0 && s.frames === frames ? 'ready' : 'unusable';
+    return 'compressing';
+  }
   const replay = s !== null && s.source === 'replay';
   if (replay && s.final && s.pending === 0)
     return s.tiling === 'offset' && frames > 0 && s.frames === frames ? 'ready' : 'unusable';
   // A cancelled replay leaves a status without windows: that is not compressing.
   if (replayCompressing || (replay && (s.windows > 0 || s.pending > 0))) return 'compressing';
   return 'none';
+}
+
+/** The Run panel's line under Extract on a live run whose factors are ready. */
+export const LIVE_EXTRACT_READY =
+  'Extract reads the factors Discover wrote during the stream (seconds).';
+
+/**
+ * Why a live run's Extract (and Refine on the factors) cannot read the
+ * factors now; null when they can (`ready`).
+ */
+export function liveFactorsBlocked(
+  state: FactorState,
+  s: CompressStatus | null,
+  compressionFailed = false,
+): string | null {
+  switch (state) {
+    case 'ready':
+      return null;
+    case 'compressing':
+      return `The stream's last windows are being compressed${s && s.pending > 0 ? ` (${s.pending} waiting)` : ''}.`;
+    case 'unusable':
+      return compressionFailed
+        ? 'The compression failed: this stream has no factors to read. The export keeps the live traces.'
+        : 'The factors do not cover the stream (a last window of one frame is not compressed). The export keeps the live traces.';
+    default:
+      return 'This stream has no factors to read. The export keeps the live traces.';
+  }
 }
 
 /**
@@ -111,6 +147,8 @@ export function createCompressStore(sink?: BackfillSink, isLive: () => boolean =
   /** Projections of the replay that made the factors (a factor Extract's FOV images). */
   let projection: FovProjections | null = null;
   const listeners = new Set<(m: ExtractMessage) => void>();
+  /** Extract jobs sent and not answered yet by the worker (a cancelled job runs on there, reading the files). */
+  const jobs = new Set<number>();
   /** Fail every pending Extract job and forget it, so its later messages find no listener. */
   const abortJobs = (message: string, reset: boolean): void => {
     const pending = [...listeners];
@@ -124,6 +162,9 @@ export function createCompressStore(sink?: BackfillSink, isLive: () => boolean =
     /** A new pipeline run: forget the previous one. */
     reset(next: number): void {
       abortJobs('The run was reset.', true);
+      // Safe only because the compress worker's `clear` awaits `idle()` (compress-runner.ts)
+      // before it removes files: no job still runs on the files after a reset.
+      jobs.clear();
       session = next;
       requested = -1;
       setMark(0);
@@ -152,9 +193,14 @@ export function createCompressStore(sink?: BackfillSink, isLive: () => boolean =
       if (msg.type === 'error') {
         // An Extract job's error is the job's: the factors stay usable.
         if (msg.job !== undefined) {
-          if (msg.session === session) for (const l of [...listeners]) l(msg as ExtractMessage);
+          if (msg.session === session) {
+            jobs.delete(msg.job);
+            for (const l of [...listeners]) l(msg as ExtractMessage);
+          }
           return;
         }
+        // A crashed worker (-1) answers no job any more.
+        if (msg.session === -1) jobs.clear();
         // An error of an earlier run (or none: -1, a crashed worker) is not this run's.
         if (msg.session !== session && msg.session !== -1) return;
         setError(msg.message);
@@ -169,12 +215,24 @@ export function createCompressStore(sink?: BackfillSink, isLive: () => boolean =
         sink?.onBackfill(msg.first, msg.start, msg.count, msg.ids, msg.traces);
       } else if (msg.type === 'backfilled') {
         setBackfill({ version: msg.version, frames: msg.frames, msPerFrame: msg.msPerFrame });
+      } else if (msg.type === 'extract-done') {
+        jobs.delete(msg.job);
+        for (const l of [...listeners]) l(msg);
       } else for (const l of [...listeners]) l(msg);
     },
     /** The session of this run: jobs go out under it and only its replies count. */
     session: (): number => session,
     /** Where the factors of this run stand, for a recording of `frames` frames. */
-    factors: (frames: number): FactorState => factorState(status(), error(), mark() !== 0, frames),
+    factors: (frames: number): FactorState =>
+      factorState(status(), error(), mark() !== 0, frames, isLive()),
+    /** A live run (its factors are Discover's own). */
+    live: (): boolean => isLive(),
+    /** An Extract job went out (`Pass2Factors.extract`). */
+    jobSent(job: number): void {
+      jobs.add(job);
+    },
+    /** Extract jobs the worker has not answered: while any runs, no other context may open the factor files. */
+    jobsOut: (): number => jobs.size,
     /**
      * A replay that compresses starts. Returns its release: `ended(false)`
      * (cut short, its windows are dropped) frees the mark, `ended(true)` keeps
