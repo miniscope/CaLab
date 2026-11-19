@@ -1136,6 +1136,59 @@ describe('SlowRunner: Refine on the factors', () => {
     expect(t.closed()).toBe(1);
   });
 
+  it('never holds up a new session while an old run waits for its turn, and still ends the old one', async () => {
+    for (const during of ['open', 'iterations'] as const) {
+      let release = () => {};
+      const opening = new Promise<void>((r) => (release = r));
+      let closes = 0;
+      const t = setup(
+        [],
+        during === 'open'
+          ? async () => {
+              await opening;
+              return { windows: 3, read: () => new Uint8Array(0), close: () => void closes++ };
+            }
+          : undefined,
+      );
+      const p = t.r.refineOnFactors(msg);
+      if (during === 'open') await turns(() => false);
+      else await turns(() => t.later.length === 1);
+      // A new pipeline session gets a loop of its own.
+      t.create.mockImplementation(() => ({ ...t.loop, free: vi.fn() }));
+      t.r.handle({ ...INIT, session: 3 });
+      t.r.handle({
+        type: 'frames',
+        session: 3,
+        start: 0,
+        count: 1,
+        version: 0,
+        cells: 0,
+        frames: new Float32Array(2),
+        traces: new Float32Array(0),
+      });
+      t.r.handle({ type: 'end', session: 3 });
+      expect(t.toMain.of('error')).toEqual([]);
+      expect(t.observed).toHaveLength(1);
+      expect(t.toFast.of('ack').at(-1)).toMatchObject({ start: 0, count: 1, observed: 1 });
+      const mine = () => t.toMain.of('status').filter((m) => m.session === 3);
+      expect(mine().at(-1)!.status).toMatchObject({ final: true, run: 1, consumed: 1 });
+      expect(mine().some((m) => m.status.factorRun)).toBe(false);
+      // The old run ends on its next turn, without touching the new session.
+      const statuses = t.toMain.of('status').length;
+      if (during === 'open') release();
+      else t.later.shift()!();
+      await p;
+      expect(t.toMain.of('factor-end')).toEqual([
+        { type: 'factor-end', session: 2, iterations: during === 'open' ? 0 : 1, stop: 'stopped' },
+      ]);
+      expect(during === 'open' ? closes : t.closed()).toBe(1);
+      expect(t.toMain.of('status')).toHaveLength(statuses);
+      // The new session refines on its own factors.
+      await drive(t.r.refineOnFactors({ ...msg, session: 3 }), t.later);
+      expect(t.toMain.of('factor-end')[1]).toMatchObject({ session: 3, stop: 'cap' });
+    }
+  });
+
   it('reports a failed iteration as the end of the run, keeps the loop and closes the files', async () => {
     const t = setup([]);
     t.loop.refineOnFactors = () => {
@@ -1182,6 +1235,23 @@ describe('SlowRunner: Refine on the factors', () => {
     expect(t.toMain.of('factor-end')[1].message).toBe(
       'No slow loop to refine: run Discover first.',
     );
+  });
+
+  it('refuses a cap that is not a whole number of iterations from 1', async () => {
+    for (const maxIterations of [0, -1, Number.NaN, Infinity, 2.5]) {
+      const t = setup([]);
+      await t.r.refineOnFactors({ ...msg, maxIterations });
+      expect(t.toMain.of('factor-end')).toEqual([
+        {
+          type: 'factor-end',
+          session: 2,
+          iterations: 0,
+          stop: 'error',
+          message: `maxIterations must be a whole number from 1, not ${maxIterations}.`,
+        },
+      ]);
+      expect(t.opened).toEqual([]);
+    }
   });
 
   it('refuses a second run while one holds the files', async () => {
