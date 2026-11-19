@@ -2789,3 +2789,91 @@ fn lookback_frames_feed_only_the_named_cells_statistics() {
     assert!(slow.fpstats.contains_key(&a));
     assert!(!slow.fpstats.contains_key(&b));
 }
+
+// ---- look-back scheduler (`lookback.rs`) ----------------------------------
+
+fn lb_lib(version: u64, cells: &[Footprint]) -> Library {
+    let mut b = LibraryBuilder::new(dims()).version(version);
+    for c in cells {
+        b = b.footprint(c.clone());
+    }
+    b.build(&mut flattener()).unwrap()
+}
+
+/// Drain every request the scheduler makes with `credit` frames of budget:
+/// (frame, ids) per request, every one observed.
+fn lb_take(lb: &mut LookBack, sl: &SlowLoop, lib: &Library, credit: f64) -> Vec<(usize, Vec<u64>)> {
+    lb.add_credit(credit);
+    let mut out = Vec::new();
+    while let LookbackNext::Frame(r) = lb.next(sl, lib) {
+        out.push((r.frame, r.ids));
+        lb.frame_done(LookbackOutcome::Observed);
+    }
+    out
+}
+
+/// A birth asks for the `K` frames before it, for the newborn and the cells
+/// touching it only, block by block and within the budget; the scheduler
+/// idles (budget not banked) when no cell needs anything.
+#[test]
+fn lookback_serves_a_birth_and_its_neighbours_the_frames_before_it() {
+    let (slow, _) = start(config(), &[]);
+    let (a, far, c) = (
+        blob(1, 30.0, 30.0),
+        blob(2, 75.0, 75.0),
+        blob(3, 33.0, 31.0),
+    );
+    let mut lb = LookBack::new(LookbackConfig {
+        max_frames: 100,
+        ..LookbackConfig::default()
+    });
+    // The first library: its cells are births at frame 10 (window 0..10).
+    let lib1 = lb_lib(1, &[a.clone(), far.clone()]);
+    lb.note_frame(&lib1, 10);
+    assert_eq!(lb.births(), 2);
+    let got = lb_take(&mut lb, &slow, &lib1, 1000.0);
+    assert_eq!(got.len(), 10);
+    assert!(got.iter().enumerate().all(|(k, (f, _))| *f == k));
+    assert_eq!(lb.next(&slow, &lib1), LookbackNext::Idle);
+    // Idle budget is not banked: at most one frame's credit is kept.
+    assert_eq!(lb_take(&mut lb, &slow, &lib1, 500.0), vec![]);
+
+    // A cell born at frame 300 beside `a`: it and `a` need 200..300, `far`
+    // nothing.
+    let lib2 = lb_lib(2, &[a, far, c]);
+    lb.note_frame(&lib2, 300);
+    assert_eq!(lb.births(), 3);
+    let (ia, ic) = (lib2.ids()[0], lib2.ids()[2]);
+    let got = lb_take(&mut lb, &slow, &lib2, 30.0);
+    assert_eq!(got.len(), 31, "budget-limited (30 + the one kept)");
+    let mut got2 = got;
+    got2.extend(lb_take(&mut lb, &slow, &lib2, 1000.0));
+    let mut frames: Vec<usize> = got2.iter().map(|g| g.0).collect();
+    frames.sort_unstable();
+    assert_eq!(frames, (200..300).collect::<Vec<_>>());
+    for (_, ids) in &got2 {
+        let mut ids = ids.clone();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![ia.min(ic), ia.max(ic)]);
+    }
+    // Shared order: the most recent block (256..300) is served first.
+    assert_eq!(got2[0].0, 256);
+    assert_eq!(lb.in_need(), 0);
+    assert_eq!(lb.frames(), 110);
+}
+
+/// A cell dropped from the library stops taking frames; a block whose cells
+/// are all gone ends.
+#[test]
+fn lookback_drops_cells_no_longer_in_the_library() {
+    let (slow, _) = start(config(), &[]);
+    let mut lb = LookBack::new(LookbackConfig::default());
+    let lib1 = lb_lib(1, &[blob(1, 30.0, 30.0)]);
+    lb.note_frame(&lib1, 200);
+    let first = lb_take(&mut lb, &slow, &lib1, 3.0);
+    assert_eq!(first.len(), 3);
+    let empty = lb_lib(2, &[]);
+    lb.note_frame(&empty, 201);
+    assert_eq!(lb_take(&mut lb, &slow, &empty, 1000.0), vec![]);
+    assert_eq!(lb.in_need(), 0);
+}
