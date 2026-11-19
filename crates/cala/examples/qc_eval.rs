@@ -3909,6 +3909,29 @@ impl FactorSource for FactorFiles {
     }
 }
 
+/// `--refine-engine factors`: refuse, before pass 1, a `--factors-out`
+/// folder that already holds window files. [`FactorFiles::open`] would
+/// refuse a longer run's leftovers only after Discover; nothing is deleted.
+fn refuse_left_windows(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        // Not there yet: `FactorDump::new` creates it.
+        return;
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.starts_with('w') && n.ends_with(".fac"))
+        .collect();
+    names.sort();
+    if let Some(first) = names.first() {
+        panic!(
+            "--refine-engine factors: {} already holds window files ({first}, {} in all); \
+             use an empty --factors-out folder",
+            dir.display(),
+            names.len()
+        );
+    }
+}
+
 /// Header of `iterations.tsv`.
 const ITERATIONS_HEADER: &str = "iteration\tversion\tcells\taccepted\tchanged_share\tmedian_change\tlow_valid\ttiles_skipped\tread_s\tsums_s\ttest_s\tgate_s\tpublish_s\twall_s\tsettled\n";
 
@@ -3941,6 +3964,10 @@ fn refine_on_factor_files(
     cfg: &FactorRefineConfig,
     mut on_iteration: impl FnMut(usize, &IterationReport, &Arc<Library>),
 ) -> FactorRefineRun {
+    // The per-call config below has a cap of 1, so the library would not
+    // see a bad cap (0 would loop for ever).
+    cfg.validate()
+        .unwrap_or_else(|e| panic!("Refine on factors: {e}"));
     // One iteration per call: the library's own refusals and stop rule,
     // and the library after each iteration for its outputs, which the
     // callback of `refine_until_settled` cannot reach.
@@ -3962,7 +3989,7 @@ fn refine_on_factor_files(
         let rep = rep.expect("an Ok of refine_until_settled ran an iteration");
         let stop = if done.settled {
             Some(done.stop)
-        } else if it == cfg.max_iterations {
+        } else if it >= cfg.max_iterations {
             Some(SettleStop::Cap)
         } else {
             None
@@ -4466,6 +4493,11 @@ fn main() {
         }
     };
     let refine_factors = refine_engine(&args, passes, later_scope, factors_pass, oracle_mode);
+    if refine_factors.is_some() {
+        refuse_left_windows(Path::new(
+            &arg_value(&args, "--factors-out").expect("checked: --factors-out"),
+        ));
+    }
     let churn_log = args.iter().any(|a| a == "--churn-log");
     let wrap_libs = args.iter().any(|a| a == "--wrap-libs");
     let lib_at: Vec<f64> = arg_value(&args, "--lib-at").map_or(Vec::new(), |s| {
@@ -4583,6 +4615,12 @@ fn main() {
         frames = frames.min(o.n_frames as u32);
     }
     let t_len = frames as usize;
+    // The slow loop starts at frame `--start` of pass 1; Refine on factors
+    // refines its library.
+    assert!(
+        refine_factors.is_none() || start < t_len,
+        "--refine-engine factors: --start {start} is not before the end of the run ({t_len} frames), so no slow loop runs"
+    );
     // `--fps R`: the recording's frame rate for the time-based preprocessing
     // and flat-field settings (default 20, the sims'; Miniscope V4 runs at 30).
     let fps: f32 = arg_value(&args, "--fps").map_or(20.0, |s| s.parse().unwrap());
@@ -7107,15 +7145,74 @@ mod tests {
     }
 
     #[test]
-    fn factor_files_count_stream_frames_after_from() {
-        // `--from F`: the dump and the Refine both count stream frames from
-        // 0, so the windows line up whatever F is.
+    fn factor_files_read_a_stream_after_from_by_stream_frame() {
+        // `--from 850` on a 1500-frame recording: the run pushes recording
+        // frames 850.. as stream frames 0..650; the windows and the Refine
+        // count stream frames.
+        let dims = Dims::new(96, 70).unwrap();
+        let recording = slow_stream(dims, 1500);
         let mut r = two_file_recording();
         r.skip(850);
-        let (dir, _, n) = small_factor_run("files_from");
-        assert_eq!(n, r.total as usize);
-        let src = FactorFiles::open(&dir, r.total as usize);
-        assert_eq!(src.starts, vec![(0, FACTOR_WINDOW), (FACTOR_WINDOW, 50)]);
+        let stream = &recording[r.first as usize..];
+        assert_eq!(stream.len(), r.total as usize);
+        let dir = std::env::temp_dir().join(format!("qc_eval_files_from_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Offset, factor_config(&[]));
+        for f in stream {
+            fd.push(f);
+        }
+        fd.finish();
+        let mut src = FactorFiles::open(&dir, r.total as usize);
+        assert_eq!(src.windows(), 2);
+        let mut y = vec![0.0f32; dims.pixels()];
+        let mut next = 0usize;
+        for w in 0..src.windows() {
+            let wf = src.window(w).unwrap();
+            assert_eq!(
+                wf.start as usize, next,
+                "window {w} starts at a stream frame"
+            );
+            let layout = wf.layout();
+            for k in [0, wf.frames - 1] {
+                layout.reconstruct(&wf, k, &mut y);
+                let rec_frame = r.first as usize + next + k;
+                let far = y
+                    .iter()
+                    .zip(&recording[rec_frame])
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0f32, f32::max);
+                assert!(
+                    far < 0.1,
+                    "stream frame {}: recording frame {rec_frame}, gap {far}",
+                    next + k
+                );
+            }
+            next += wf.frames;
+        }
+        assert_eq!(next, r.total as usize);
+        // Stream frame 0 is recording frame 850, not frame 0.
+        let wf = src.window(0).unwrap();
+        wf.layout().reconstruct(&wf, 0, &mut y);
+        let peak = 35 * dims.width + 64;
+        assert!((y[peak] - recording[0][peak]).abs() > 1.0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "w0000000.fac, 2 in all")]
+    fn a_factors_out_folder_with_window_files_is_refused_at_start() {
+        let (dir, _, _) = small_factor_run("left_windows");
+        refuse_left_windows(&dir);
+    }
+
+    #[test]
+    fn an_empty_or_new_factors_out_folder_is_accepted_at_start() {
+        let dir = std::env::temp_dir().join(format!("qc_eval_new_out_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        refuse_left_windows(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("factors.tsv"), "start\n").unwrap();
+        refuse_left_windows(&dir);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -7312,5 +7409,78 @@ mod tests {
             &FactorRefineConfig::default(),
             |_, _, _| {},
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "Refine on factors: ")]
+    fn refine_on_factor_files_refuses_a_cap_of_zero() {
+        let (dir, _, n) = small_factor_run("refine_cap0");
+        let dims = Dims::new(96, 70).unwrap();
+        let mut sl = seeded_refine_loop(dims, EditScope::Refine);
+        let mut src = FactorFiles::open(&dir, n);
+        let cfg = FactorRefineConfig {
+            max_iterations: 0,
+            ..FactorRefineConfig::default()
+        };
+        refine_on_factor_files(&mut sl, &mut src, &cfg, |_, _, _| {});
+    }
+
+    /// Every cell's id and unfiltered footprint, in slot order.
+    fn footprints_of(lib: &Library) -> Vec<(u64, Vec<u32>, Vec<f32>)> {
+        (0..lib.len())
+            .map(|s| {
+                let (p, v) = lib.unfiltered(s);
+                (lib.ids()[s], p.to_vec(), v.to_vec())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn refine_on_factor_files_runs_the_library_loop() {
+        // The harness calls `refine_until_settled` once per iteration; with
+        // the same cap it must end where one call ends. `SlowLoop` is not
+        // `Clone`: two loops built the same way stand in for two clones.
+        let (dir, _, n) = small_factor_run("refine_same");
+        let dims = Dims::new(96, 70).unwrap();
+        for cfg in [
+            FactorRefineConfig {
+                max_iterations: 3,
+                ..FactorRefineConfig::default()
+            },
+            FactorRefineConfig {
+                max_iterations: 2,
+                settle_share: 0.0,
+                ..FactorRefineConfig::default()
+            },
+        ] {
+            let mut a = seeded_refine_loop(dims, EditScope::Refine);
+            let mut b = seeded_refine_loop(dims, EditScope::Refine);
+            assert_eq!(
+                footprints_of(a.library().unwrap()),
+                footprints_of(b.library().unwrap()),
+                "the two loops start equal"
+            );
+            let mut src = FactorFiles::open(&dir, n);
+            let mut accepted_a = Vec::new();
+            let run = refine_on_factor_files(&mut a, &mut src, &cfg, |_, rep, _| {
+                accepted_a.push(rep.accepted)
+            });
+            let mut src = FactorFiles::open(&dir, n);
+            let mut accepted_b = Vec::new();
+            let done = refine_until_settled(&mut b, &mut src, &cfg, |_, rep| {
+                accepted_b.push(rep.accepted)
+            })
+            .unwrap();
+            assert_eq!(run.iterations, done.iterations, "{cfg:?}");
+            assert_eq!(run.stop, done.stop, "{cfg:?}");
+            assert_eq!(accepted_a, accepted_b, "{cfg:?}");
+            assert!(accepted_a.iter().sum::<u64>() > 0, "something was refined");
+            assert_eq!(
+                footprints_of(&run.library),
+                footprints_of(&done.library),
+                "{cfg:?}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
