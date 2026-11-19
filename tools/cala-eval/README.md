@@ -125,6 +125,10 @@ $MINISIM_PY tools/cala-eval/demix_suite.py --tier full --base-bin <main qc_eval>
   which `demix_metrics.py` does not read. Do NOT use `--no-heldout` for runs that need the held-out score) (Discover + one Refine pass; `--motion` on the motion sims), so footprints are the
   app's Refine library and traces its Extract. `--base-flags`/`--new-flags` add or replace flags per arm
   (same rule as `run_arms.py --extra`); `qc_eval` ignores misspelt flags, check them.
+- `qc_eval --via-jobs` runs every visit as a worker job through the byte encoding; with
+  `--joint-update` the cluster replay runs in the runner and the run is byte-identical to the in-process one
+  (`results/2026-11-18-replay-worker-jobs.md`; the log's `ReplayStats` line gives `job_stores`, `job_store_bytes` and the
+  owner-side copy/apply time).
 - Output goes to `$CALA_DATA/demix-suite/<name>/<arm>/<sim>/` (`--name` to resume: finished runs and
   metrics are skipped; a rebuilt binary needs a new name), with `report.md` beside them.
   `--report-only` re-renders an existing tree. `--parallel` (default and cap 6 = `run_arms.MAX_LIGHT`, the

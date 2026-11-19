@@ -986,6 +986,14 @@ pub struct ReplayStats {
     /// footprint statistics, per-cell part and cluster part, ns.
     pub per_cell_ns: u64,
     pub cluster_ns: u64,
+    /// Visit jobs (owner side): cluster stores sent, their bytes in the job
+    /// encoding, the largest one, and the wall time (ns; not measured in
+    /// wasm) of copying them into jobs and of applying the results back.
+    pub job_stores: u64,
+    pub job_store_bytes: u64,
+    pub job_store_max: u64,
+    pub job_copy_ns: u64,
+    pub job_apply_ns: u64,
 }
 
 /// The slow loop. See the module docs.
