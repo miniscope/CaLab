@@ -18,6 +18,8 @@ import { createPass2Store, replayBlocked } from './lib/pass2-store.ts';
 import { createRefineStore } from './lib/refine-store.ts';
 import {
   createStageLog,
+  discoverErrorData,
+  extractEndData,
   perMinute,
   STAGE_LABEL,
   stageAvailability,
@@ -267,7 +269,7 @@ const App: Component = () => {
           refine.clear();
           stageLog.begin('discover');
         } else if (st === 'error') {
-          stageLog.end('discover', 'error', { frames: pipeline.processed() });
+          stageLog.end('discover', 'error', discoverErrorData(pipeline.processed()));
         }
       },
     ),
@@ -318,14 +320,7 @@ const App: Component = () => {
           logStage('extract', 'Extract started');
         } else if (st === 'done') {
           const r = pass2.result();
-          stageLog.end('extract', 'done', {
-            frames: r?.frames ?? 0,
-            cells: r?.cells ?? 0,
-            libraryVersion: r?.version ?? 0,
-            ...(r?.source ? { source: r.source } : {}),
-            ...(r?.tiling ? { tiling: r.tiling } : {}),
-            ...(r?.meanRank !== undefined ? { meanRank: r.meanRank } : {}),
-          });
+          stageLog.end('extract', 'done', extractEndData('done', pass2));
           logStage('extract', 'Extract done');
           const result = r;
           if (result)
@@ -335,7 +330,7 @@ const App: Component = () => {
               })
               .catch((err: unknown) => console.warn('Extract QC failed:', err));
         } else if (st === 'error' || st === 'cancelled') {
-          stageLog.end('extract', st, { frames: pass2.processed() });
+          stageLog.end('extract', st, extractEndData(st, pass2));
           logStage('extract', `Extract ${st === 'error' ? 'stopped by an error' : 'cancelled'}`);
         }
       },

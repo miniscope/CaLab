@@ -362,6 +362,57 @@ describe('export', () => {
   });
 });
 
+describe('the smallest valid share per cell (format 7)', () => {
+  it('writes extract_min_valid for a factor Extract and nothing for a raw one', async () => {
+    const withValid = { ...(await input()), result: await result() };
+    withValid.result.source = 'factors';
+    withValid.result.minValid = Float32Array.of(1, 0.5, 0.75);
+    const a = parseNpz(await buildCalaExport(withValid)).arrays;
+    expect(a.extract_min_valid.dtype).toBe('<f4');
+    expect(a.extract_min_valid.shape).toEqual([3]);
+    expect([...a.extract_min_valid.data]).toEqual([1, 0.5, 0.75]);
+    const raw = parseNpz(await buildCalaExport(await input())).arrays;
+    expect('extract_min_valid' in raw).toBe(false);
+  });
+
+  it('puts the number of low cells in the stage record, only for a factor Extract', () => {
+    const base = {
+      stage: 'extract',
+      index: 1,
+      startedAt: '2026-11-19T10:00:00.000Z',
+      endedAt: '2026-11-19T10:00:05.000Z',
+      outcome: 'done',
+      frames: 8,
+      cells: 2,
+      libraryVersion: 3,
+    } as const;
+    expect(stageMeta({ ...base, source: 'factors', lowValid: 2 }).low_valid).toBe(2);
+    expect(stageMeta({ ...base, source: 'factors', lowValid: 0 }).low_valid).toBe(0);
+    expect('low_valid' in stageMeta({ ...base, source: 'raw' })).toBe(false);
+    expect(
+      stagesFromMeta([stageMeta({ ...base, source: 'factors', lowValid: 2 })])[0].lowValid,
+    ).toBe(2);
+    expect('lowValid' in stagesFromMeta([stageMeta({ ...base, source: 'raw' })])[0]).toBe(false);
+  });
+
+  it('omits a mean rank that is not a finite number', () => {
+    const base = {
+      stage: 'extract',
+      index: 1,
+      startedAt: '2026-11-19T10:00:00.000Z',
+      endedAt: null,
+      outcome: 'done',
+      frames: 8,
+      cells: 2,
+      libraryVersion: 3,
+      source: 'factors',
+    } as const;
+    expect(stageMeta({ ...base, meanRank: 4.5 }).mean_rank).toBe(4.5);
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY])
+      expect('mean_rank' in stageMeta({ ...base, meanRank: bad })).toBe(false);
+  });
+});
+
 describe('stage records (format 7)', () => {
   const base = {
     index: 1,

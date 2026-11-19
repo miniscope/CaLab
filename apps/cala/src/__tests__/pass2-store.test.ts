@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CellStore } from '../lib/cell-store.ts';
 import type { FactorState } from '../lib/compress-store.ts';
+import { lowValidCells } from '../lib/factor-extract.ts';
 import type { FactorWindowTraces, Pass2Factors } from '../lib/factor-extract.ts';
 import type { FlatFieldMap } from '../lib/flat-field.ts';
 import type { FovProjections } from '../lib/fov-projection.ts';
@@ -124,11 +125,23 @@ function setup(
 }
 
 /** One window of a factor Extract, with the traces `batch` would give. */
-function win(start: number, count: number, ids = IDS): FactorWindowTraces {
+function win(
+  start: number,
+  count: number,
+  ids = IDS,
+  minValid: number[] = Array.from(ids, () => 1),
+): FactorWindowTraces {
   const traces = new Float32Array(count * ids.length);
   for (let f = 0; f < count; f++)
     for (let c = 0; c < ids.length; c++) traces[f * ids.length + c] = 10 * (start + f) + c;
-  return { start, count, ids, traces, signed: traces.map((v) => v - 1000) };
+  return {
+    start,
+    count,
+    ids,
+    traces,
+    signed: traces.map((v) => v - 1000),
+    minValid: Float32Array.from(minValid),
+  };
 }
 
 /**
@@ -240,6 +253,45 @@ describe('Extract (pass 2) store', () => {
     expect([...(await r.traces.readFrames(5, 6))]).toEqual([50, 51]);
     expect([...(await r.signed!.readFrames(5, 6))]).toEqual([-950, -949]);
     expect(store.processed()).toBe(8);
+  });
+
+  it('keeps, per cell, the smallest valid share over the windows of a factor Extract', async () => {
+    const { f } = fakeFactors('ready', [win(0, 4, IDS, [1, 0.75]), win(4, 4, IDS, [0.5, 1])]);
+    const { store } = setup({ factors: f });
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('done');
+    expect([...store.result()!.minValid!]).toEqual([0.5, 0.75]);
+    expect(lowValidCells(store.result()!.minValid)).toBe(2);
+    expect(lowValidCells(Float32Array.of(1, 1))).toBe(0);
+  });
+
+  it('leaves no valid shares when the factor job fails, and none for a raw Extract', async () => {
+    const job = { fail: 'solve failed' };
+    const windows = [win(0, 4, IDS, [0.5, 0.75]), win(4, 4)];
+    const failing = fakeFactors('ready', windows, job);
+    const a = setup({ factors: failing.f });
+    await a.store.run();
+    await settle();
+    expect(a.store.status()).toBe('error');
+    expect(a.store.result()).toBeNull();
+
+    const { store } = setup();
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('done');
+    expect(store.result()!.minValid).toBeUndefined();
+    expect(lowValidCells(store.result()!.minValid)).toBeUndefined();
+  });
+
+  it('ends a factor Extract whose window has no valid share for each cell', async () => {
+    const bad = { ...win(0, 4), minValid: new Float32Array(1) };
+    const { f } = fakeFactors('ready', [bad, win(4, 4)]);
+    const { store } = setup({ factors: f });
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('error');
+    expect(store.result()).toBeNull();
   });
 
   it('keeps the clipped traces only when the factor engine returns no signed ones', async () => {

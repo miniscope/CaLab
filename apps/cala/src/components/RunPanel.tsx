@@ -4,6 +4,7 @@ import { formatClock, formatElapsed, windowPresets } from '@calab/ui/chart';
 import type { ByteSink } from '@calab/io';
 import type { CellStore } from '../lib/cell-store.ts';
 import { compressReadout, extractSourceText, type CompressStore } from '../lib/compress-store.ts';
+import { lowValidCells, lowValidText } from '../lib/factor-extract.ts';
 import { reviewReadout, type ReviewStore } from '../lib/review-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { LookbackStatus } from '../workers/lookback-types.ts';
@@ -306,8 +307,10 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       case 'done': {
         const res = p().result();
         const from = fromFactors ? ' (from the factors)' : '';
+        const low = res?.source === 'factors' ? (lowValidCells(res.minValid) ?? 0) : 0;
+        const note = low > 0 ? ` ${lowValidText(low)}` : '';
         return res
-          ? `Extract done${from}: ${res.cells} cells x ${res.frames.toLocaleString()} frames in ${res.seconds.toFixed(1)} s (${(res.frames / res.seconds).toFixed(0)} frames/s)`
+          ? `Extract done${from}: ${res.cells} cells x ${res.frames.toLocaleString()} frames in ${res.seconds.toFixed(1)} s (${(res.frames / res.seconds).toFixed(0)} frames/s)${note}`
           : `Extract done${from}`;
       }
       case 'error':

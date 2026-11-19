@@ -18,6 +18,24 @@ export interface FactorWindowTraces {
   ids: Uint32Array;
   traces: Float32Array;
   signed: Float32Array;
+  /** The window's smallest valid share per cell, in trace order. */
+  minValid: Float32Array;
+}
+
+/** How many cells have a value below 1 (absent values: undefined, a replay of the file). */
+export function lowValidCells(minValid: Float32Array | undefined): number | undefined {
+  if (!minValid) return undefined;
+  let n = 0;
+  for (const v of minValid) if (v < 1) n++;
+  return n;
+}
+
+/** The Run panel's sentence on the cells of a factor Extract that are below 1 (empty: none). */
+export function lowValidText(n: number): string {
+  if (n <= 0) return '';
+  return n === 1
+    ? "1 cell has pixels without data in its footprint; its trace can differ from a file replay's."
+    : `${n} cells have pixels without data in their footprint; their traces can differ from a file replay's.`;
 }
 
 /** What a replay about to start gets: its compress settings and how it reports its end. */

@@ -99,6 +99,12 @@ export interface Pass2Result {
   /** From the factors: their tiling and mean rank per tile. */
   tiling?: CompressTiling;
   meanRank?: number;
+  /**
+   * From the factors: each cell's smallest valid share over the windows, in
+   * the column order of `traces` (1: every pixel of its support had data in
+   * every frame). Absent for a replay of the file.
+   */
+  minValid?: Float32Array;
 }
 
 export function createPass2Store(
@@ -248,7 +254,7 @@ export function createPass2Store(
   /** The result of a finished run; `extra`: what depends on where it read the frames. */
   function resultOf(
     ctx: Ctx,
-    extra: Pick<Pass2Result, 'projection' | 'source' | 'tiling' | 'meanRank'>,
+    extra: Pick<Pass2Result, 'projection' | 'source' | 'tiling' | 'meanRank' | 'minValid'>,
   ): Pass2Result {
     return {
       ids: ctx.ids,
@@ -453,6 +459,8 @@ export function createPass2Store(
     bytes: Uint8Array,
   ): Promise<void> {
     let broken = false;
+    // Kept here, not in the context: a failed job leaves none of it.
+    let minValid: Float32Array | null = null;
     let breakJob: (err: unknown) => void = () => {};
     // A bad window ends the run at once; the job's later windows are dropped.
     const badWindow = new Promise<never>((_, reject) => (breakJob = reject));
@@ -464,7 +472,13 @@ export function createPass2Store(
             `Extract on factors has no traces for frames ${ctx.done} to ${w.start - 1}.`,
           );
         if (w.start < ctx.done) throw new Error(`Extract on factors got frame ${w.start} twice.`);
+        if (w.minValid.length !== ctx.cellCount)
+          throw new Error('Extract on factors got no valid shares for the final library.');
         storeTraces(ctx, w.start, w.count, w);
+        if (!minValid) minValid = w.minValid.slice();
+        else
+          for (let i = 0; i < minValid.length; i++)
+            minValid[i] = Math.min(minValid[i], w.minValid[i]);
       } catch (err) {
         broken = true;
         breakJob(err);
@@ -493,6 +507,7 @@ export function createPass2Store(
           ...(projection ? { projection } : {}),
           source: 'factors',
           ...(info ? { tiling: info.tiling, meanRank: info.meanRank } : {}),
+          ...(minValid ? { minValid } : {}),
         }),
       );
       setStatus('done');

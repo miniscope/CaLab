@@ -310,6 +310,77 @@ describe('export format 5 and the result reader', () => {
     expect(r.images[0].data[1]).toBeCloseTo(4.5);
   });
 
+  it('round-trips extract_min_valid, and reads absent for a raw Extract or an older file', async () => {
+    const base = await input();
+    const factors = {
+      ...base,
+      result: { ...base.result, source: 'factors' as const, minValid: Float32Array.of(0.5, 1) },
+      stages: [STAGES[0], { ...STAGES[1], source: 'factors' as const, lowValid: 1 }],
+    };
+    const r = await openResult(new Blob([await buildCalaExport(factors)]));
+    expect([...r.minValid!]).toEqual([0.5, 1]);
+    expect(r.stages[1].lowValid).toBe(1);
+    const raw = await openResult(new Blob([await buildCalaExport(await input())]));
+    expect(raw.minValid).toBeNull();
+    expect('lowValid' in raw.stages[1]).toBe(false);
+    // A file written before the field: the same entries without it.
+    const z = await ZipArchive.open(new Blob([await buildCalaExport(factors)]));
+    const s = sink();
+    const out = new ZipStreamWriter(s);
+    for (const e of z.entries)
+      if (e.name !== 'extract_min_valid.npy') await out.addFile(e.name, await z.read(e.name));
+    await out.finish();
+    expect((await openResult(s.blob())).minValid).toBeNull();
+  });
+
+  it('opens format 6 (stage records without source, tiling or mean rank)', async () => {
+    const base = await input();
+    const factors = {
+      ...base,
+      result: { ...base.result, source: 'factors' as const, minValid: Float32Array.of(0.5, 1) },
+      stages: [
+        { ...STAGES[0], source: 'raw' as const },
+        {
+          ...STAGES[1],
+          source: 'factors' as const,
+          tiling: 'offset' as const,
+          meanRank: 4.5,
+          lowValid: 1,
+        },
+      ],
+    };
+    const z = await ZipArchive.open(new Blob([await buildCalaExport(factors)]));
+    const s = sink();
+    const out = new ZipStreamWriter(s);
+    for (const e of z.entries) {
+      if (e.name === 'extract_min_valid.npy') continue;
+      let bytes = await z.read(e.name);
+      if (e.name === 'meta_json.npy') {
+        const a = parseNpy(bytes.slice().buffer);
+        const meta = JSON.parse(new TextDecoder().decode(a.data as Uint8Array));
+        meta.format_version = 6;
+        for (const st of meta.stages) {
+          delete st.source;
+          delete st.tiling;
+          delete st.mean_rank;
+          delete st.low_valid;
+        }
+        const m = new TextEncoder().encode(JSON.stringify(meta));
+        bytes = new Uint8Array(writeNpy(m, [m.length]));
+      }
+      await out.addFile(e.name, bytes);
+    }
+    await out.finish();
+    const r = await openResult(s.blob());
+    expect(r.formatVersion).toBe(6);
+    expect(r.missing.size).toBe(0);
+    expect(r.stages.map((x) => x.stage)).toEqual(['discover', 'extract']);
+    for (const st of r.stages)
+      for (const k of ['source', 'tiling', 'meanRank', 'lowValid']) expect(k in st).toBe(false);
+    expect(r.minValid).toBeNull();
+    expect([...(await r.readFrames(0, 1))]).toEqual([0, 100]);
+  });
+
   it('opens format 4 (signed traces, no images)', async () => {
     const v4 = await downgrade(new Blob([await buildCalaExport(await input())]), 4);
     const r = await openResult(v4);

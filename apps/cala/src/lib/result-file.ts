@@ -65,6 +65,8 @@ export interface LoadedResult {
   readFrames(from: number, to: number): Promise<Float32Array>;
   /** The same from `traces_signed` (format 4; null when absent, e.g. a live run). */
   readSignedFrames: ((from: number, to: number) => Promise<Float32Array>) | null;
+  /** A factor Extract's smallest valid share per cell, in `ids` order (null when the export has none). */
+  minValid: Float32Array | null;
   /** Joint, sessions 2..: the health flag of the boundary the session starts with (format 6). */
   boundary: BoundaryFlag | null;
 }
@@ -86,6 +88,13 @@ async function readJson(zip: ZipArchive, name: string): Promise<unknown> {
 
 const num = (v: unknown, fallback: number): number =>
   typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+
+/** `extract_min_valid` (one value per cell), or null when the file has none. */
+async function readMinValid(zip: ZipArchive, n: number): Promise<Float32Array | null> {
+  if (!zip.has('extract_min_valid.npy')) return null;
+  const data = (await readNpy(zip, 'extract_min_valid')).data;
+  return data.length === n ? asF32(data) : null;
+}
 
 /** `meta_json.stages` (snake_case) as stage runs. */
 export function stagesFromMeta(v: unknown): StageRun[] {
@@ -116,6 +125,7 @@ export function stagesFromMeta(v: unknown): StageRun[] {
     if (x.source === 'raw' || x.source === 'factors') r.source = x.source;
     if (x.tiling === 'plain' || x.tiling === 'offset') r.tiling = x.tiling;
     if (typeof x.mean_rank === 'number') r.meanRank = x.mean_rank;
+    if (typeof x.low_valid === 'number') r.lowValid = x.low_valid;
     return r;
   });
 }
@@ -388,6 +398,7 @@ export async function openResult(src: ZipSource, label = ''): Promise<LoadedResu
     readSignedFrames: zip.has('traces_signed.npy')
       ? await traceReader(zip, n, frames, 'traces_signed.npy')
       : null,
+    minValid: await readMinValid(zip, n),
     boundary: parseBoundaryFlag((meta.session as Record<string, unknown> | undefined)?.boundary),
   };
 }
