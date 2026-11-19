@@ -133,4 +133,35 @@ describe('LookbackReader', () => {
     reader.dispose();
     src.dispose();
   });
+
+  it('dispose rejects a request still waiting for the back state', async () => {
+    const live = await liveRun();
+    const first = live.steps.find((s) => s.kind === 'batch');
+    if (!first || first.kind !== 'batch') throw new Error('no batch');
+    const src = await openAvi();
+    const reader = new LookbackReader(src);
+    reader.pushRows(
+      first.start,
+      first.dy,
+      first.dx,
+      first.flags,
+      first.flickerOffset,
+      first.flickerGain,
+    );
+    const y = new Float32Array(W * H);
+    // The rows are there, the back state is not: the request waits on it.
+    let chain: Promise<unknown> = Promise.resolve();
+    const run = () => reader.serve([{ frame: first.start, block: 0 }], y);
+    const waiting = run().then(
+      () => 'done',
+      (e: Error) => e.message,
+    );
+    chain = chain.then(() => waiting);
+    await new Promise((r) => setTimeout(r, 10));
+    reader.dispose();
+    await expect(waiting).resolves.toMatch(/stopped/);
+    // The serial chain (the worker's `requests`) moves on after the rejection.
+    await expect(chain).resolves.toBeDefined();
+    src.dispose();
+  });
 });

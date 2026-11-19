@@ -622,7 +622,14 @@ export class SlowRunner {
   handleLookback(msg: LookbackToSlow): void {
     const loop = this.loop;
     const req = this.lbReq;
-    if (msg.session !== this.session || !loop || !req || msg.id !== req.id) return;
+    if (msg.session !== this.session || !loop || !req || msg.id !== req.id) {
+      // An ignored answer still returns its buffer to the worker's pool (which drops a stale session's).
+      if (msg.type === 'frames')
+        this.lbPort?.postMessage({ type: 'release', session: msg.session, frames: msg.frames }, [
+          msg.frames.buffer as ArrayBuffer,
+        ]);
+      return;
+    }
     this.lbReq = null;
     this.lbCancelTimer?.();
     this.lbCancelTimer = null;

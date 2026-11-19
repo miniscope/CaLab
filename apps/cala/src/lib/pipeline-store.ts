@@ -527,7 +527,7 @@ export function createPipelineStore(
         map: seed ?? null,
       });
       // Look-back (experimental): from this start on, if the recording allows it.
-      const lb = lookback() && lookbackFeed?.begin(session) === true;
+      const lb = lookback() && discover() && lookbackFeed?.begin(session) === true;
       if (lb) {
         lookbackSession = session;
         setLookbackRun(true);
