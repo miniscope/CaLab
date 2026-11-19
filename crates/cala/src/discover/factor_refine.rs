@@ -30,9 +30,6 @@
 
 // Index loops over cells, tiles and pixels read more clearly here.
 #![allow(clippy::needless_range_loop)]
-// Pass A and its installation are called only by this module's tests until
-// Task 4's `refine_on_factors`, which also reads the held-out scores of
-// `Pass`. Remove this allowance with Task 4.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -264,6 +261,16 @@ fn check_window(wf: &WindowFactors, dims: Dims, start: usize) -> Result<(), Trac
         return Err(TraceError::InvalidConfig(
             "the tiles of the factors do not fit their layout".into(),
         ));
+    }
+    // A non-finite factor would spread into every sum it touches.
+    for (k, t) in wf.tiles.iter().enumerate() {
+        let arrays = [&t.mean, &t.spatial, &t.temporal, &t.valid];
+        if arrays.iter().any(|a| a.iter().any(|v| !v.is_finite())) {
+            return Err(TraceError::InvalidConfig(format!(
+                "the factor window at frame {}: tile {k} holds a non-finite value",
+                wf.start
+            )));
+        }
     }
     Ok(())
 }
@@ -604,6 +611,15 @@ impl SlowLoop {
             }
             pass.frames += frames;
         }
+        // Without a fitting frame `install` would replace every cell's
+        // statistics with empty ones.
+        if pass.fitting == 0 {
+            return Err(TraceError::InvalidConfig(format!(
+                "no fitting frame in {} factor windows ({} frames)",
+                src.windows(),
+                pass.frames
+            )));
+        }
         pass.cells = cells;
         Ok(pass)
     }
@@ -708,7 +724,7 @@ mod tests {
     use crate::discover::tests::{blob_w, dims, flattener, movie, trace, v2_config, Lcg, N};
     use crate::discover::EditScope;
     use crate::discover::SlowLoopConfig;
-    use crate::trace::{BackgroundModel, FrameTraces};
+    use crate::trace::{BackgroundModel, Footprint, FrameTraces};
 
     pub(super) const T: usize = 1500;
     pub(super) const WIN: usize = 300;
@@ -728,16 +744,50 @@ mod tests {
         }
     }
 
+    /// Centre of the third cell (id 3), a compact one ([`compact_blob`]):
+    /// its support's box stays off the boxes of the first two disks (which
+    /// reach x = 68), only its moat blocks reach them (see
+    /// [`assert_moat_only`]).
+    pub(super) const FAR: (f32, f32) = (46.0, 80.0);
+
+    /// A Gaussian soma (σ 2.5 px, peak 1) cut to the disk of radius 7 px, so
+    /// its support is small enough to stay off a neighbour's disk.
+    pub(super) fn compact_blob(id: u64, cy: f32, cx: f32) -> Footprint {
+        let r = 7usize;
+        let side = 2 * r + 1;
+        let (y0, x0) = (cy as usize - r, cx as usize - r);
+        let mut values = vec![0.0f32; side * side];
+        for y in 0..side {
+            for x in 0..side {
+                let (dy, dx) = ((y0 + y) as f32 - cy, (x0 + x) as f32 - cx);
+                let d2 = dy * dy + dx * dx;
+                if d2 <= (r * r) as f32 {
+                    values[y * side + x] = (-d2 / (2.0 * 2.5 * 2.5)).exp();
+                }
+            }
+        }
+        Footprint {
+            id,
+            y0,
+            x0,
+            height: side,
+            width: side,
+            values,
+        }
+    }
+
     /// The `bitten_refill` set of `discover::tests`: two neighbours, cell 2
     /// seeded without the light under cell 1's centre, so a Refine has
-    /// something to refill. The slow loop (Refine scope, library published)
-    /// and the movie's factors (offset grids, 300-frame windows).
+    /// something to refill, and a third cell at [`FAR`]. The slow loop
+    /// (Refine scope, library published) and the movie's factors (offset
+    /// grids, 300-frame windows).
     pub(super) fn fixture(c: SlowLoopConfig) -> (SlowLoop, Vec<WindowFactors>) {
         let mut rng = Lcg(411);
         let (a, b) = ((46.0, 44.0), (46.0, 47.5));
         let cells = vec![
             (blob_w(0, a.0, a.1, 2.5), trace(&mut rng, T, 0.03, 6.0)),
             (blob_w(1, b.0, b.1, 2.5), trace(&mut rng, T, 0.03, 6.0)),
+            (compact_blob(2, FAR.0, FAR.1), trace(&mut rng, T, 0.03, 6.0)),
         ];
         let m = movie(&cells, T, 423);
         let mut bitten = blob_w(2, b.0, b.1, 2.5);
@@ -751,7 +801,12 @@ mod tests {
         }
         let n_px = N * N;
         let mut sl = SlowLoop::new(dims(), vec![1; n_px], vec![1.0; n_px], flattener(), c).unwrap();
-        sl.seed(&[blob_w(1, a.0, a.1, 2.5), bitten]).unwrap();
+        sl.seed(&[
+            blob_w(1, a.0, a.1, 2.5),
+            bitten,
+            compact_blob(3, FAR.0, FAR.1),
+        ])
+        .unwrap();
         sl.finalize().unwrap();
         sl.set_edit_scope(EditScope::Refine);
         let ccfg = CompressConfig {
@@ -863,22 +918,81 @@ mod tests {
         out
     }
 
+    /// Two non-constant basis maps (horizontal and vertical ramps), so a map
+    /// read at the wrong pixel shows.
+    fn ramps() -> Vec<Vec<f32>> {
+        let ramp = |f: fn(usize) -> usize| (0..N * N).map(|p| f(p) as f32 / N as f32).collect();
+        vec![ramp(|p| p % N), ramp(|p| p / N)]
+    }
+
     fn models() -> Vec<BackgroundModel> {
         vec![
             v2_config().background,
             BackgroundModel::None,
-            BackgroundModel::Basis(vec![vec![1.0; N * N]]),
+            BackgroundModel::Basis(ramps()),
         ]
+    }
+
+    /// The third cell reaches the first two disks through its moat only: no
+    /// support pixel on the disk, a non-zero column there, and it is counted
+    /// as a neighbour. Pins the fixture so it cannot drift.
+    fn assert_moat_only(lib: &Library, pass: &Pass) {
+        let far = lib.slot(3).unwrap();
+        for id in [1, 2] {
+            let cp = &pass.cells[lib.slot(id).unwrap()];
+            let pix = &cp.st.pix;
+            let (sup, _) = lib.core_col(far);
+            assert!(
+                !boxes_meet(&pixel_box(sup, N), &cp.bx),
+                "cell {id}: the far cell's support box meets the disk box"
+            );
+            let col = column_on(lib, far, pix);
+            assert!(
+                col.iter().filter(|v| **v != 0.0).count() > 100,
+                "cell {id}: the far cell's moat does not reach the disk"
+            );
+            assert!(
+                cp.nb.contains(&far),
+                "cell {id}: the far cell is no neighbour"
+            );
+        }
+    }
+
+    /// `PART` keeps a valid share between [`MIN_VALID_SHARE`] and
+    /// [`LOW_VALID`] in window 2, and no disk leaves it out of any window.
+    fn assert_part_kept(windows: &[WindowFactors], pass: &Pass) {
+        let share = valid_map(&windows[2], &windows[2].layout())[PART];
+        assert!(
+            share >= MIN_VALID_SHARE as f32 && share < LOW_VALID,
+            "PART valid share {share}"
+        );
+        let mut on_disks = 0;
+        for cp in &pass.cells {
+            let Ok(q) = cp.st.pix.binary_search(&(PART as u32)) else {
+                continue;
+            };
+            on_disks += 1;
+            assert!(cp.min_valid <= share);
+            assert!(cp.excl.iter().all(|e| !e.px.contains(&q)), "PART left out");
+        }
+        assert!(on_disks >= 1, "PART lies on no disk");
     }
 
     #[test]
     fn statistics_from_the_factors_equal_the_frame_route_on_rebuilt_frames() {
         let rc = FactorRefineConfig::default();
         for model in models() {
+            // The basis maps would fill a failure message.
+            let label = match &model {
+                BackgroundModel::Basis(_) => "Basis".to_string(),
+                m => format!("{m:?}"),
+            };
             let (mut fa, windows) = fixture(cfg(model.clone()));
             let (mut fb, _) = fixture(cfg(model.clone()));
             let lib = fa.library().unwrap().clone();
             let pass = fa.sum_pass(&lib, &mut windows.clone(), &rc).unwrap();
+            assert_moat_only(&lib, &pass);
+            assert_part_kept(&windows, &pass);
             fa.install(&lib, &pass);
             assert_eq!(pass.frames, T);
             assert_eq!(
@@ -887,7 +1001,7 @@ mod tests {
                     .filter(|c| c.min_valid < LOW_VALID)
                     .count(),
                 2,
-                "both disks hold a pixel with a valid share below 1"
+                "the two near disks hold a pixel with a valid share below 1"
             );
             frame_route(&mut fb, &windows, rc.solver);
             let scale = term_scale(&fb, &windows, rc.solver);
@@ -895,12 +1009,15 @@ mod tests {
             assert_eq!(lib.ids(), libb.ids());
             for (slot, id) in lib.ids().iter().enumerate() {
                 let (a, b) = (&fa.fpstats[id], &fb.fpstats[id]);
-                assert_eq!(a.pix, b.pix, "{model:?} cell {id}: disk");
-                assert_eq!(a.col, b.col, "{model:?} cell {id}: column");
-                assert_eq!(a.m, b.m, "{model:?} cell {id}: class moments, bit for bit");
-                assert_eq!(a.half.2, b.half.2, "{model:?} cell {id}: half moments");
-                assert_eq!(a.k, b.k, "{model:?} cell {id}: pushes");
-                assert!(a.pm.is_some() && b.pm.is_some(), "GONE lies on both disks");
+                assert_eq!(a.pix, b.pix, "{label} cell {id}: disk");
+                assert_eq!(a.col, b.col, "{label} cell {id}: column");
+                assert_eq!(a.m, b.m, "{label} cell {id}: class moments, bit for bit");
+                assert_eq!(a.half.2, b.half.2, "{label} cell {id}: half moments");
+                assert_eq!(a.k, b.k, "{label} cell {id}: pushes");
+                let gone = a.pix.binary_search(&(GONE as u32)).ok();
+                assert_eq!(gone.is_some(), *id != 3, "GONE lies on the two near disks");
+                assert_eq!(a.pm.is_some(), gone.is_some(), "{label} cell {id}: pm");
+                assert_eq!(b.pm.is_some(), gone.is_some(), "{label} cell {id}: pm");
                 let (src, sr) = &scale[slot];
                 let sums = [
                     ("rc", &a.rc, &b.rc, src),
@@ -910,16 +1027,23 @@ mod tests {
                 ];
                 for (name, x, y, s) in sums {
                     for q in 0..x.len() {
-                        let tol = 1e-4 * s[q] + 1e-3;
+                        // The frame route's float32 accumulation (the
+                        // factor route sums in float64): measured gaps reach
+                        // up to 9 % of this tolerance, so a 1 % error in a
+                        // neighbour, level or basis term fails by far.
+                        let tol = 1e-5 * s[q] + 1e-4;
                         assert!(
                             f64::from((x[q] - y[q]).abs()) <= tol,
-                            "{model:?} cell {id} {name} at pixel {}: {} from factors, {} from frames (tol {tol})",
+                            "{label} cell {id} {name} at pixel {}: {} from factors, {} from frames (tol {tol})",
                             a.pix[q],
                             x[q],
                             y[q]
                         );
                     }
                 }
+                let Some(gone) = gone else {
+                    continue;
+                };
                 for (pa, pb) in [(&a.pm, &b.pm), (&a.half_pm, &b.half_pm)] {
                     let (pa, pb) = (pa.as_ref().unwrap(), pb.as_ref().unwrap());
                     for (x, y) in [
@@ -931,16 +1055,67 @@ mod tests {
                         for (u, v) in x.iter().zip(y) {
                             assert!(
                                 (u - v).abs() <= 1e-9 * u.abs().max(1.0),
-                                "{model:?} cell {id}: {u} vs {v}"
+                                "{label} cell {id}: {u} vs {v}"
                             );
                         }
                     }
                 }
-                let gone = a.pix.binary_search(&(GONE as u32)).unwrap();
                 assert!(
                     a.pm.as_ref().unwrap().n[gone] < a.m[0][0],
                     "GONE left out of window 1"
                 );
+                if let Ok(q) = a.pix.binary_search(&(PART as u32)) {
+                    assert_eq!(
+                        a.pm.as_ref().unwrap().n[q],
+                        a.m[0][0],
+                        "PART counted in every fitting frame"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_pass_without_fitting_frames_is_refused() {
+        let rc = FactorRefineConfig::default();
+        let (mut sl, windows) = fixture(cfg(BackgroundModel::None));
+        let lib = sl.library().unwrap().clone();
+        let none: &mut Vec<WindowFactors> = &mut Vec::new();
+        assert!(matches!(
+            sl.sum_pass(&lib, none, &rc),
+            Err(TraceError::InvalidConfig(_))
+        ));
+        // One frame, held out: move the loop's clock to a held-out index.
+        let mut one = windows[0].clone();
+        one.frames = 1;
+        for tf in &mut one.tiles {
+            tf.temporal.truncate(tf.rank);
+        }
+        sl.frames = (0..).find(|&f| sl.is_test(f)).unwrap();
+        let err = sl.sum_pass(&lib, &mut vec![one], &rc).err();
+        assert!(matches!(err, Some(TraceError::InvalidConfig(_))), "{err:?}");
+    }
+
+    #[test]
+    fn non_finite_factors_are_refused() {
+        let rc = FactorRefineConfig::default();
+        let (sl, windows) = fixture(cfg(BackgroundModel::None));
+        let lib = sl.library().unwrap().clone();
+        let edits: [(&str, fn(&mut WindowFactors)); 2] = [
+            ("valid", |w| w.tiles[3].valid[5] = f32::NAN),
+            ("spatial", |w| w.tiles[3].spatial[7] = f32::INFINITY),
+        ];
+        for (name, edit) in edits {
+            let mut ws = windows.clone();
+            edit(&mut ws[1]);
+            match sl.sum_pass(&lib, &mut ws, &rc) {
+                Err(TraceError::InvalidConfig(m)) => {
+                    assert!(
+                        m.contains("frame 300") && m.contains("tile 3"),
+                        "{name}: {m}"
+                    )
+                }
+                other => panic!("{name}: {:?}", other.err()),
             }
         }
     }
