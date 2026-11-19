@@ -213,3 +213,120 @@ the same run.
 6. Matched: reported only (merge-rule loss, fix/cala-merge-close-pairs).
 
 Full tier (with motion) only if the quick tier meets or near-matches 1-4.
+
+## Round 2: results (19 Nov 2026)
+
+Run tree `$CALA_DATA/demix-suite/cr-quick` (reports `report-DR-main-vs-{LBD-x2-lb9,LBP-x2,LBP-x2-hl24k}.md` and
+`report-LBD-x2-lb9-vs-LBP-x2*.md`). `LBD-x2-lb9` is the round-1 drain arm (`--passes 1 --joint-update all --joint-sign
+all --lookback 2 --lookback-drain 4800`) rerun on this branch's head binary: its footprints and traces are
+byte-identical to the round-1 `LBD-x2` on all 5 sims (the round-2 change to held-out frames only applies with
+`--lookback-target`), so every round-1 `LBD-x2` number stands for the PR binary.
+
+**Answer.** The precision demand does not beat the K-window drain: `LBP-x2` and `LBP-x2-hl24k` are within noise of
+`LBD-x2` on all 67 metrics but one, and cost more. **`LBD-x2` is the default arm.** Against `DR-main` it meets the
+near-match bar: footprint groups all within 0.003, r < 0.9 shares within noise, crosstalk and bites much better,
+and less compute.
+
+| metric (vs `DR-main`, quick tier)                | DR-main | LBD-x2         | LBP-x2         | LBP-x2-hl24k   |
+| ------------------------------------------------ | ------- | -------------- | -------------- | -------------- |
+| Footprint r median, all (suite `fp_r`)           | 0.9892  | 0.9907 (+)     | 0.9908 (+)     | 0.9908 (+)     |
+| Footprint r median, isolated (suite `fp_r`)      | 0.9927  | 0.9902 (−)     | 0.9900 (−)     | 0.9903 (~)     |
+| Footprint r median, close-pair (suite `fp_r`)    | 0.9860  | 0.9905 (+)     | 0.9905 (+)     | 0.9907 (+)     |
+| Footprint r < 0.9 share, all                     | 0.044   | 0.044 (~)      | 0.039 (~)      | 0.045 (~)      |
+| Footprint r < 0.9 share, isolated                | 0.022   | 0.036 (~)      | 0.022 (~)      | 0.022 (~)      |
+| Footprint r median, born in the first half       | 0.9904  | 0.9916 (+)     | 0.9917 (+)     | 0.9918 (+)     |
+| Footprint r median, born in the second half      | 0.9585  | 0.9546 (~)     | 0.9661 (~)     | 0.9609 (~)     |
+| Footprint r median, born in the last 20 %        | 0.9449  | 0.9375 (~)     | 0.9277 (~)     | 0.9393 (~)     |
+| Footprint r < 0.9 share, born in the second half | 0.148   | 0.205 (~)      | 0.176 (~)      | n/a            |
+| Trace corr excess < 1 D (headline)               | +0.142  | +0.071 (+)     | +0.065 (+)     | +0.072 (+)     |
+| Bite share ratio < 0.5, 0.75-1.0 D               | 0.498   | 0.257 (+)      | 0.252 (+)      | 0.261 (+)      |
+| Bite share < 0.5, later-born cell, 0.75-1.0 D    | 0.719   | 0.377 (+)      | n/a            | n/a            |
+| leak_sd share > 0.1, < 1 D                       | 0.342   | 0.204 (+)      | n/a            | n/a            |
+| Matched cells (mean per sim)                     | 349.0   | 342.6 (−)      | 339.6 (−)      | 342.0 (~)      |
+| False cells                                      | 12.8    | 12.4 (~)       | 13.4 (~)       | 11.4 (~)       |
+| Pass-loop wall, 5 sims (s)                       | 1721    | 1347           | 1585           | 1647           |
+| of which look-back (s)                           | 0       | 515            | 748            | 801            |
+| Look-back frames solved (vs 48000 Refine frames) | 0       | 118562 (2.47x) | 122225 (2.55x) | 126802 (2.64x) |
+
+Birth-time rows are the "born in" rows above (second half and last 20 % rest on 3 static sims; the pairs sims have
+few late births). Isolated diffs: `LBD-x2` −0.0025 [−0.0047, −0.0001], `LBP-x2` −0.0026 [−0.0041, −0.0004],
+`LBP-x2-hl24k` −0.0024 [−0.0036, +0.0001]. `LBP-x2` vs `LBD-x2`: headline −0.006 [−0.023, +0.017], isolated −0.0001,
+second half +0.0116 [−0.0029, +0.0224], all within noise.
+
+**Compute.** A look-back frame solves the whole frame but skips the reservoir, ledger, QC and visits, about a third
+of a Refine frame in qc_eval, so `LBD-x2`'s 118.6k look-back frames are ~40k Refine-frame equivalents against the
+48k of the Refine pass, and the pass-loop wall is 22 % lower (1347 vs 1721 s; noisy, 4-6 runs shared the machine).
+In the app the look-back could solve only the patch around the cells in need, so its cost would follow cell-frames.
+
+### Two footprint scores
+
+The suite's footprint r and `final.tsv`'s `best_r` differ in three ways: the suite (`demix_metrics.py`,
+`pearson_matrix`) correlates the **unfiltered** footprint with the GT full footprint over the **whole frame**, matched
+by Hungarian at r >= 0.7; `best_r` (`qc_eval` `write_library` -> `columns` -> `match_cells` -> `sparse_corr`)
+correlates the **filtered** footprint with the GT passed through the same glow flattener, over the **union of the two
+supports**, with its own match. Same matched cells (the suite's), pooled bootstrap CI:
+
+| arm (vs `DR-main`)   | group             | suite `fp_r` (headline)    | `final.tsv` `best_r` (filtered) |
+| -------------------- | ----------------- | -------------------------- | ------------------------------- |
+| DR-main              | all / iso / close | 0.9892 / 0.9927 / 0.9860   | 0.9853 / 0.9894 / 0.9815        |
+| LBD-x2               | all               | +0.0014 [+0.0006, +0.0025] | +0.0031 [+0.0021, +0.0040]      |
+| LBD-x2               | isolated          | −0.0025 [−0.0047, −0.0001] | −0.0010 [−0.0031, +0.0009]      |
+| LBD-x2               | close-pair        | +0.0044 [+0.0030, +0.0057] | +0.0061 [+0.0046, +0.0079]      |
+| LBP-x2               | isolated          | −0.0026 [−0.0040, −0.0004] | −0.0009 [−0.0025, +0.0005]      |
+| D-st2 (no look-back) | isolated          | −0.0046 [−0.0084, −0.0018] | −0.0026 [−0.0043, +0.0001]      |
+
+On the filtered score the isolated gap is within noise. This is consistent with noise in the unfiltered tails
+(look-back footprints are wider: median support 648 vs 616 px) but not proof, since the scores also differ in the
+correlation domain and the match. The suite's headline metric is unchanged.
+
+### Does the work settle?
+
+Look-back frames and cell-frames per tenth of the recording, summed over the 5 sims ("drain" = after the last
+Discover frame):
+
+| tenth | LBD-x2 frames | LBD-x2 cell-frames | per frame | LBP-x2 frames | LBP-x2 cell-frames | per frame |
+| ----- | ------------- | ------------------ | --------- | ------------- | ------------------ | --------- |
+| 0     | 7885          | 404417             | 51        | 7790          | 454186             | 58        |
+| 1     | 9600          | 974714             | 102       | 9600          | 967725             | 101       |
+| 2     | 9600          | 1221689            | 127       | 9600          | 1106267            | 115       |
+| 3     | 9600          | 1217819            | 127       | 9600          | 1123549            | 117       |
+| 4     | 9600          | 951486             | 99        | 9600          | 1133481            | 118       |
+| 5     | 9600          | 682701             | 71        | 9600          | 1080800            | 113       |
+| 6     | 9600          | 517565             | 54        | 9600          | 1042436            | 109       |
+| 7     | 9600          | 425820             | 44        | 9600          | 982914             | 102       |
+| 8     | 9600          | 356244             | 37        | 9600          | 970906             | 101       |
+| 9     | 9600          | 319813             | 33        | 9600          | 920618             | 96        |
+| drain | 24277         | 408367             | 17        | 28035         | 399007             | 14        |
+
+- **`LBD-x2` settles in cell-frames.** The frame budget is used throughout (an 8-minute sim never stops finding
+  cells), but the cell-frames it serves fall 4x from the 3rd-4th tenth to the last, following births; the drain
+  ends on its own with no cell in need on every sim (1930-2757 steps, cap 4800).
+- **`LBP-x2` does not settle.** Cell-frames stay flat (~1.0-1.1M per tenth). At the end 61-70 % of cells are still
+  above E = 0.05 on every sim (static_s5 363 / 507, static_s6 355 / 536, static_s7 330 / 516, pairs 63 / 103 and
+  61 / 103). The drain ends before its cap not because cells reached the target but because their pools are empty:
+  no block is served twice to a cell, and with 6000-frame forgetting the noise estimate never drops below E with
+  the frames a cell can still get. The 24000-frame half-life (`LBP-x2-hl24k`) does not change this (356 / 508 above
+  E on static_s5). E = 0.05 is the end-of-Refine median in `DR-main`, so half of the cells are above it there too;
+  a precision demand needs a target the forgetting allows, or a noise measure that is not limited by it.
+
+### Other checks
+
+- **Flag off:** `qc_eval` at this branch's head with no look-back flags is byte-identical to main `7155c62`
+  (`footprints*.bin`, `dump_trace.f32`, `final*.tsv`) on static_s5 and pairs_s5 (`cr-smoke/DR-lb9-off`).
+- **motion_s5** (`cr-motion`, one sim, `LBD-x2` vs `DR-main`): headline +0.174 -> +0.107 (better), bites 0.75-1 D
+  0.519 -> 0.311 (better), leak share 0.382 -> 0.272 (better); footprint r all +0.0019, isolated −0.0016 (both within
+  noise), close-pair +0.0041 (better); filtered `best_r` all 0.9830 -> 0.9854, isolated 0.9907 -> 0.9894. No metric
+  worse. Matched −16 and false −9 (net −7): a larger matched loss than the quick tier's −6.4, same merge-rule cause
+  as far as we can tell (fix on `fix/cala-merge-close-pairs`). Pass-loop wall about equal (509 vs 498 s).
+- **Full tier:** not run.
+
+### Targets, plainly
+
+1. Footprints within 0.003 of `DR-main`: **met** (all +0.0014, isolated −0.0025, close-pair +0.0044). Isolated is
+   the one group below `DR-main` on the suite score; the PI accepts a small isolated gap.
+2. Share r < 0.9: **met** (within noise in all groups; second-half +0.057, within noise).
+3. Crosstalk and bites better: **met** (headline halved, bites about half).
+4. Less compute: **met** (−22 % pass-loop wall, ~40k vs 48k Refine-frame equivalents).
+5. Settling: **met for `LBD-x2`** (cell-frames fall with births; drain ends on need); **not met for the precision
+   demand**.
+6. Matched: −6.4 per sim (quick), −16 (motion_s5): the merge-rule loss also seen in `D-st2` and `DR-st2`.
