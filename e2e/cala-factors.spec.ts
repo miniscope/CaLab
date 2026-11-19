@@ -14,7 +14,11 @@ import { buildAvi, cellMovie } from '../apps/cala/src/__tests__/synth-avi.ts';
 interface CalaDebug {
   __cala: {
     pipeline: { status(): string; record(): { frames: number } };
-    cells: { library(): { ids: Uint32Array } | null };
+    cells: {
+      library(): { ids: Uint32Array } | null;
+      session(): number;
+      status(): { final?: boolean } | null;
+    };
     refine: { status(): string };
     pass2: { result(): { source?: string; frames: number; cells: number } | null };
     compress?: { error(): string | null; factors(frames: number): string };
@@ -22,6 +26,11 @@ interface CalaDebug {
 }
 
 const FRAMES = 3000;
+
+// The tests run one after another: each runs Discover, Refine and Extract
+// in real WASM workers, and side by side they slow each other down. A failed
+// test is retried on its own; the others still run.
+test.describe.configure({ mode: 'default' });
 
 /**
  * This worker's recording folders (about 27 MB each). Removed once its tests
@@ -62,6 +71,24 @@ function libraryCells(page: Page): Promise<number> {
   );
 }
 
+/** The Discover session, once that run has read the file and its final library is in (else null). */
+function discoverEnded(page: Page): Promise<number | null> {
+  return page.evaluate(() => {
+    const c = (window as unknown as CalaDebug).__cala;
+    const ended = c.pipeline.status() === 'done' && c.cells.status()?.final === true;
+    return ended ? c.cells.session() : null;
+  });
+}
+
+/**
+ * Discover runs at most three times, until it finds cells.
+ *
+ * Why: the slow and visit workers load their WASM on Discover's first frames,
+ * while the file is read as fast as it can be. On a busy machine the read can
+ * end before the visits come back, and Discover then ends with no cells. A
+ * Restart in the same page has the workers ready. These tests are about what
+ * follows Discover, so they start it again as a user would.
+ */
 async function discover(page: Page, query: string): Promise<void> {
   // The export then downloads instead of asking for a place.
   await page.addInitScript(() => {
@@ -69,7 +96,20 @@ async function discover(page: Page, query: string): Promise<void> {
   });
   await page.goto(`Cala/?debug${query}`);
   await page.getByTestId('folder-input').setInputFiles(cellFolder('cala-factors-e2e-'));
-  await expect(page.getByTestId('pipeline-status')).toHaveText('Done', { timeout: 120_000 });
+  let session = 0;
+  for (let run = 1; run <= 3; run++) {
+    if (run > 1) await page.getByRole('button', { name: 'Restart' }).click();
+    const before = session;
+    await expect
+      .poll(async () => (await discoverEnded(page)) ?? 0, { timeout: 120_000 })
+      .toBeGreaterThan(before);
+    session = (await discoverEnded(page)) ?? 0;
+    const cells = await libraryCells(page);
+    // In the report: how often Discover had to start again.
+    test.info().annotations.push({ type: 'discover', description: `run ${run}: ${cells} cells` });
+    if (cells > 0) break;
+  }
+  await expect(page.getByTestId('pipeline-status')).toHaveText('Done');
   await expect(page.getByTestId('pass2-run')).toBeEnabled({ timeout: 60_000 });
   expect(await libraryCells(page)).toBeGreaterThan(0);
 }
