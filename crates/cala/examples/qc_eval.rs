@@ -179,7 +179,17 @@
 //!                      `refine_it{k}` row per iteration in `stage_times.tsv`
 //!                      (read_s: factor files; solve_s: Extract and the
 //!                      statistics; slow_s: held-out patches, gate and
-//!                      publish; reading is in read_s only)
+//!                      publish; reading is in read_s only). With `factors`,
+//!                      `cells.tsv`, `global.tsv`, `heldout.tsv` and
+//!                      `ho_cells.tsv` cover pass 1 only; `--later-budget` is
+//!                      ignored (Refine on factors spends no budget);
+//!                      `footprints_pass2.bin` and row 2 of `passes.tsv` hold
+//!                      Discover's finalized library, not a Refine replay's;
+//!                      `low_valid` in `iterations.tsv` counts the cells whose
+//!                      smallest valid share, over every pixel of the
+//!                      statistics disk and every window of the iteration, is
+//!                      below 0.999 (1 up to rounding; pixels below the
+//!                      minimum share, which are left out, count too)
 //!   --settle-corr C, --settle-share S, --max-iterations N
 //!                      the settle stop of --refine-engine factors (0.99,
 //!                      0.02, 20): a cell has settled when its footprint
@@ -187,7 +197,8 @@
 //!                      the run when fewer than a share S of cells have not
 //!   --test-frames K    --refine-engine factors: held-out frames per tile of
 //!                      its gate (0: the reservoir's average, frames_per_tile
-//!                      / holdout_every)
+//!                      / holdout_every; else at least the slow loop's
+//!                      `min_test_frames`, 8: fewer would skip every tile)
 //!   Every run writes `stage_times.tsv`: seconds per pass (and for the
 //!   Extract pass) spent reading, preprocessing, compressing, solving traces
 //!   and in the slow loop. The columns do not add up to `wall_s`: the QC
@@ -3766,6 +3777,15 @@ fn refine_engine(
         test_frames: parsed(args, "--test-frames", 0),
         solver: SolverConfig::default(),
     };
+    // A tile with fewer held-out frames than the slow loop's minimum is skipped, so
+    // below it every tile would be skipped and the run would stop after one
+    // iteration having refined nothing.
+    let min = SlowLoopConfig::default().min_test_frames;
+    assert!(
+        cfg.test_frames == 0 || cfg.test_frames >= min,
+        "--test-frames {}: below the slow loop's min_test_frames ({min}), so every tile would be skipped; use 0 or at least {min}",
+        cfg.test_frames
+    );
     cfg.validate()
         .unwrap_or_else(|e| panic!("--refine-engine factors: {e}"));
     Some(cfg)
@@ -4076,8 +4096,9 @@ impl FactorFrames {
         }
     }
 
-    /// Write recording frame `f`, rebuilt from its window, to every pixel
-    /// of `y`; the pixels never valid in the window are NaN.
+    /// Write stream frame `f`, rebuilt from its window, to every pixel of
+    /// `y` (frame 0 is the recording's frame F after `--from F`); the pixels
+    /// never valid in the window are NaN.
     fn frame(&mut self, f: usize, y: &mut [f32]) {
         let start = (f / FACTOR_WINDOW) * FACTOR_WINDOW;
         let at = match self
@@ -7271,6 +7292,18 @@ mod tests {
     }
 
     #[test]
+    fn refine_engine_factors_takes_test_frames_zero_or_the_slow_loops_minimum() {
+        let min = SlowLoopConfig::default().min_test_frames;
+        for k in [0, min, min + 1] {
+            let a = args_of(&format!(
+                "{FACTOR_ARGS} --refine-engine factors --test-frames {k}"
+            ));
+            let c = refine_engine(&a, 2, EditScope::Refine, 2, false).unwrap();
+            assert_eq!(c.test_frames, k);
+        }
+    }
+
+    #[test]
     fn refine_engine_factors_refuses_what_it_cannot_run() {
         let msg = |a: &str, passes: usize, scope: EditScope, fp: usize, oracle: bool| {
             let a = args_of(a);
@@ -7291,6 +7324,8 @@ mod tests {
             ("--offered-fps 30", "--offered-fps"),
             ("--library fp.bin", "--library"),
             ("--settle-corr 2", "--refine-engine factors: "),
+            ("--test-frames 1", "min_test_frames"),
+            ("--test-frames 7", "min_test_frames"),
         ] {
             let m = msg(&format!("{f} {extra}"), 2, r, 2, false);
             assert!(m.contains(want), "{extra}: {m}");
