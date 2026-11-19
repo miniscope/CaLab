@@ -665,6 +665,25 @@ pub struct SlowLoopConfig {
     /// carries at least this share of the stronger one's fitted energy
     /// (and the two supports overlap by less than half).
     pub merge_refit_min_share: f32,
+    /// The neighbour guards of a merge test (the refitted-pair baseline and
+    /// the split-half shape gate) apply to pairs whose footprints overlap by
+    /// less than this (cosine). At 0.5 (the historic value) a pair whose
+    /// footprints largely coincide skips both guards; real neighbours closer
+    /// than ~0.4 cell diameters overlap that much once their footprints are
+    /// accurate. Above 1, the guards apply at every overlap.
+    pub merge_guard_max_ovl: f32,
+    /// The same bound for the refitted-pair baseline alone (the split-half
+    /// gate keeps `merge_guard_max_ovl`).
+    pub merge_refit_max_ovl: f32,
+    /// Pairs whose centres are at least this many cell diameters apart
+    /// get the split-half shape gate whatever their overlap. Overlap
+    /// grows as two neighbours' footprints become accurate (a real pair
+    /// ~0.35 D apart passes 0.5 once neither is bitten), while two
+    /// estimates of one soma (a duplicate or a fragment) sit on the same
+    /// blob; the centre separation of somatic blobs does not depend on
+    /// how complete the footprints are. Infinite (the default) keeps the
+    /// overlap rule alone.
+    pub merge_guard_min_sep: f32,
     /// Measure the spatial correlation of the noise and widen every noise
     /// null by the variance it adds at cell scale (see `noisecorr.rs`):
     /// sub-pixel motion correction resamples the noise, and a test that
@@ -778,6 +797,9 @@ impl Default for SlowLoopConfig {
             split_every_visits: 4,
             merge_refit_pair: true,
             merge_refit_min_share: 0.1,
+            merge_guard_max_ovl: 0.5,
+            merge_refit_max_ovl: 0.5,
+            merge_guard_min_sep: f32::INFINITY,
             merge_z: 2.0,
             noise_corr: true,
             shift_nuisance: true,
@@ -4828,6 +4850,87 @@ impl SlowLoop {
             .sum()
     }
 
+    /// The pair `(i, j)` of `base` refitted on the union `dom` of their
+    /// supports: alternating rank-1 fits of each cell to `data` (the
+    /// residual plus both cells' fitted signal on the fit frames), the
+    /// other's signal removed, then both solved on `test_fr`. `fits` is
+    /// `None` unless the refit stays two cells: the weaker part carries
+    /// `merge_refit_min_share` of the stronger one's energy and both
+    /// make a cell.
+    #[allow(clippy::too_many_arguments)]
+    fn refit_pair(
+        &mut self,
+        ti: usize,
+        rect: Rect,
+        base: &Problem,
+        fits: &[Fit],
+        data: &[Vec<f32>],
+        dom: &[u32],
+        (i, j): (usize, usize),
+        test_fr: &Frames,
+        want_ovl: bool,
+    ) -> RefitPair {
+        let mut ca: Vec<f32> = fits.iter().map(|f| f.c[i]).collect();
+        let mut cb: Vec<f32> = fits.iter().map(|f| f.c[j]).collect();
+        let mut other: Vec<Vec<f32>> = data
+            .iter()
+            .zip(fits)
+            .map(|(d, f)| {
+                let mut d = d.clone();
+                base.cols[j].add_to(&mut d, -f.c[j]);
+                d
+            })
+            .collect();
+        let refs: Vec<&[f32]> = other.iter().map(|r| r.as_slice()).collect();
+        let ha = rank1(&refs, dom, &mut ca, 5, false);
+        for ((o, d), &ct) in other.iter_mut().zip(data).zip(&ca) {
+            o.copy_from_slice(d);
+            for (&p, &v) in dom.iter().zip(&ha) {
+                o[p as usize] -= v * ct;
+            }
+        }
+        let refs: Vec<&[f32]> = other.iter().map(|r| r.as_slice()).collect();
+        let hb = rank1(&refs, dom, &mut cb, 5, false);
+        self.work += (2 * dom.len() * data.len() * 30) as u64;
+        let energy = |h: &[f32], c: &[f32]| {
+            h.iter().map(|v| v * v).sum::<f32>() * c.iter().map(|v| v * v).sum::<f32>()
+        };
+        let (ea, eb) = (energy(&ha, &ca), energy(&hb, &cb));
+        let share = ea.min(eb) / ea.max(eb);
+        let two = ea.min(eb) >= self.cfg.merge_refit_min_share * ea.max(eb);
+        let (idi, idj) = (base.cols[i].id, base.cols[j].id);
+        let mut out = RefitPair {
+            share,
+            two,
+            ha,
+            hb,
+            cells: None,
+            fits: None,
+            ovl: f32::NAN,
+        };
+        if let (Some(na), Some(nb)) = (
+            self.make_cell(idi, rect, dom, &out.ha, None),
+            self.make_cell(idj, rect, dom, &out.hb, None),
+        ) {
+            if two || want_ovl {
+                let cols = self.columns(rect, &[idi, idj], &[&na, &nb]);
+                let rp = self.problem(ti, cols);
+                let (ka, kb) = (
+                    rp.cols.iter().position(|c| c.id == idi),
+                    rp.cols.iter().position(|c| c.id == idj),
+                );
+                if let (Some(ka), Some(kb)) = (ka, kb) {
+                    out.ovl = overlap(&rp.cols[ka], &rp.cols[kb], rect.len());
+                }
+                if two {
+                    out.fits = Some(self.solve_all(&rp, test_fr));
+                }
+            }
+            out.cells = Some((na, nb));
+        }
+        out
+    }
+
     fn merge(&mut self, ti: usize, fit_fr: &Frames, test_fr: &Frames) {
         let rect = self.tiles[ti].rect;
         let core = self.tiles[ti].core;
@@ -4952,49 +5055,26 @@ impl SlowLoop {
             // footprint mismatch (on the minisim recording with motion,
             // letting that leftover count kept 4 in 5 pairs on one GT unit
             // apart); then the current pair is the baseline.
-            if self.cfg.merge_refit_pair && ovl < 0.5 {
-                let mut ca: Vec<f32> = fits.iter().map(|f| f.c[i]).collect();
-                let mut cb: Vec<f32> = fits.iter().map(|f| f.c[j]).collect();
-                let mut other: Vec<Vec<f32>> = data
-                    .iter()
-                    .zip(&fits)
-                    .map(|(d, f)| {
-                        let mut d = d.clone();
-                        base.cols[j].add_to(&mut d, -f.c[j]);
-                        d
-                    })
-                    .collect();
-                let refs: Vec<&[f32]> = other.iter().map(|r| r.as_slice()).collect();
-                let ha = rank1(&refs, &dom, &mut ca, 5, false);
-                for ((o, d), &ct) in other.iter_mut().zip(&data).zip(&ca) {
-                    o.copy_from_slice(d);
-                    for (&p, &v) in dom.iter().zip(&ha) {
-                        o[p as usize] -= v * ct;
-                    }
-                }
-                let refs: Vec<&[f32]> = other.iter().map(|r| r.as_slice()).collect();
-                let hb = rank1(&refs, &dom, &mut cb, 5, false);
-                self.work += (2 * dom.len() * data.len() * 30) as u64;
-                let energy = |h: &[f32], c: &[f32]| {
-                    h.iter().map(|v| v * v).sum::<f32>() * c.iter().map(|v| v * v).sum::<f32>()
-                };
-                let (ea, eb) = (energy(&ha, &ca), energy(&hb, &cb));
-                let two = ea.min(eb) >= self.cfg.merge_refit_min_share * ea.max(eb);
-                let (idi, idj) = (ids[i], ids[j]);
-                if let (true, Some(na), Some(nb)) = (
-                    two,
-                    self.make_cell(idi, rect, &dom, &ha, None),
-                    self.make_cell(idj, rect, &dom, &hb, None),
-                ) {
-                    let cols = self.columns(rect, &[idi, idj], &[&na, &nb]);
-                    let rp = self.problem(ti, cols);
-                    let rf = self.solve_all(&rp, test_fr);
-                    chi_sep = chi_sep.min(Self::total_chi2(&rf));
+            if self.cfg.merge_refit_pair && ovl < self.cfg.merge_refit_max_ovl {
+                let rp =
+                    self.refit_pair(ti, rect, &base, &fits, &data, &dom, (i, j), test_fr, false);
+                if let Some(rf) = &rp.fits {
+                    chi_sep = chi_sep.min(Self::total_chi2(rf));
                     #[cfg(feature = "diagnostics")]
                     {
                         frames_log.refit = Some(rf.iter().map(|f| f.chi2).collect());
                     }
                 }
+            }
+            // DIAG: the refitted pair also where the rule skips it (the work
+            // counter is restored, so the trajectory does not depend on it).
+            #[cfg(feature = "diagnostics")]
+            if mergelog::on() {
+                let w0 = self.work;
+                let rp =
+                    self.refit_pair(ti, rect, &base, &fits, &data, &dom, (i, j), test_fr, true);
+                self.work = w0;
+                frames_log.refit_diag = Some(rp.diag());
             }
             let mut best_arm: Option<(f64, Option<Cell>, usize, usize)> = None;
             if let Some(m) = self.make_cell(keep, rect, &dom, &h, None) {
@@ -5049,7 +5129,14 @@ impl SlowLoop {
             // than half) whose measured shapes differ beyond their own
             // split-half noise stay two cells, whatever the held-out test
             // says. Without split halves the held-out test decides alone.
-            let gated = accept && self.cfg.merge_rule == MergeRule::SplitHalf && ovl < 0.5;
+            let apart = {
+                let (a, b) = (self.cells[ci].center, self.cells[cj].center);
+                ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
+                    >= self.cfg.merge_guard_min_sep * self.cfg.cell_diameter_px
+            };
+            let gated = accept
+                && self.cfg.merge_rule == MergeRule::SplitHalf
+                && (ovl < self.cfg.merge_guard_max_ovl || apart);
             #[cfg(feature = "diagnostics")]
             let want_shape = gated || mergelog::on();
             #[cfg(not(feature = "diagnostics"))]
@@ -5734,6 +5821,53 @@ fn paired_z(base: &[Fit], alt: &[Fit]) -> f64 {
 }
 
 /// Cosine similarity of two patch columns.
+/// A merge test's refitted pair (see `SlowLoop::refit_pair`).
+struct RefitPair {
+    /// Weaker over stronger part's energy.
+    share: f32,
+    /// `share >= merge_refit_min_share`.
+    two: bool,
+    /// The two refitted footprints on the union support.
+    ha: Vec<f32>,
+    hb: Vec<f32>,
+    /// The cells made from them (both, or none).
+    cells: Option<(Cell, Cell)>,
+    /// Their solve on the test frames, when `two` and both cells exist.
+    fits: Option<Vec<Fit>>,
+    /// Overlap of the two refitted columns (NaN without cells).
+    ovl: f32,
+}
+
+#[cfg(feature = "diagnostics")]
+impl RefitPair {
+    fn diag(&self) -> mergelog::RefitDiag {
+        let argmax = |h: &[f32]| {
+            h.iter()
+                .enumerate()
+                .fold((0, f32::MIN), |b, (k, &v)| if v > b.1 { (k, v) } else { b })
+        };
+        let ((pa, ma), (pb, mb)) = (argmax(&self.ha), argmax(&self.hb));
+        let cross = |h: &[f32], m: f32, p: usize| if m > 0.0 { h[p] / m } else { f32::NAN };
+        mergelog::RefitDiag {
+            share: self.share,
+            two: self.two,
+            made: self.cells.is_some(),
+            ovl: self.ovl,
+            // Each refitted footprint at the other's peak, over its own peak.
+            cross_a: cross(&self.ha, ma, pb),
+            cross_b: cross(&self.hb, mb, pa),
+            centers: self
+                .cells
+                .as_ref()
+                .map(|(a, b)| (a.center, b.center, a.radius, b.radius)),
+            chi: self
+                .fits
+                .as_ref()
+                .map(|f| f.iter().map(|x| x.chi2).collect()),
+        }
+    }
+}
+
 fn overlap(a: &Column, b: &Column, n: usize) -> f32 {
     let ab = b.dot(&a.dense(n));
     let (aa, bb) = (a.norm2(), b.norm2());

@@ -132,6 +132,9 @@
 //!                      soma by the cells' split-half measured light) |
 //!                      legacy (the held-out test alone, the rule before
 //!                      S2.1c)
+//!   --merge-guard-sep S  apply the split-half merge gate to every pair whose
+//!                      centres are >= S cell diameters apart, whatever
+//!                      their overlap (default: off, overlap rule alone)
 //!   --merge-log        DIAG (`--features diagnostics`): one JSON line per
 //!                      merge test (`merges.jsonl` in the output directory;
 //!                      `CALA_MERGE_LOG=<file>` does the same): the current
@@ -3912,6 +3915,25 @@ fn main() {
             "split-half" => MergeRule::SplitHalf,
             other => panic!("--merge-rule: legacy|split-half, not {other}"),
         };
+    }
+    if let Some(v) = arg_value(&args, "--merge-guard-max-ovl") {
+        scfg.merge_guard_max_ovl = v.parse().unwrap();
+        scfg.merge_refit_max_ovl = scfg.merge_guard_max_ovl;
+        println!("merge guards up to overlap {}", scfg.merge_guard_max_ovl);
+    }
+    if let Some(v) = arg_value(&args, "--merge-refit-max-ovl") {
+        scfg.merge_refit_max_ovl = v.parse().unwrap();
+        println!(
+            "merge refit baseline up to overlap {}",
+            scfg.merge_refit_max_ovl
+        );
+    }
+    if let Some(v) = arg_value(&args, "--merge-guard-sep") {
+        scfg.merge_guard_min_sep = v.parse().unwrap();
+        println!(
+            "merge shape gate for centres >= {} cell diameters apart",
+            scfg.merge_guard_min_sep
+        );
     }
     if scfg.merge_rule != MergeRule::SplitHalf {
         println!("merge rule: {:?}", scfg.merge_rule);
