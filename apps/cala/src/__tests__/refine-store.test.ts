@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CellStore } from '../lib/cell-store.ts';
-import type { ReplayCompressLike } from '../lib/factor-extract.ts';
+import type { FactorState } from '../lib/compress-store.ts';
+import type { FactorFilesLike, ReplayCompressLike } from '../lib/factor-extract.ts';
 import type { FlatFieldMap } from '../lib/flat-field.ts';
 import type { FovProjections } from '../lib/fov-projection.ts';
 import type { PipelineClient } from '../lib/frame-client.ts';
@@ -9,16 +10,19 @@ import type { PipelinePlan } from '../lib/pipeline-plan.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import {
   createRefineStore,
+  FACTOR_REFINE,
   REFINE_FORWARD_BUFFERS,
   REFINE_SLOW_LEAD,
+  refineOnFactorsOn,
   SERIES_EVERY_MS,
+  type RefineFactorsOptions,
   type RefineQcOptions,
 } from '../lib/refine-store.ts';
 import type { QcSnapshot } from '../lib/qc.ts';
 import { createTraceFile, type TraceFile } from '../lib/trace-file.ts';
 import { RunRecord } from '../lib/run-record.ts';
 import { createStageLog } from '../lib/run-stages.ts';
-import type { LibraryView, SlowStatus } from '../workers/slow-types.ts';
+import type { FactorIteration, LibraryView, SlowStatus } from '../workers/slow-types.ts';
 
 const PLAN: PipelinePlan = {
   frameCount: 12,
@@ -485,5 +489,450 @@ describe('Refine store', () => {
     t.store.cancel();
     expect(t.store.status()).toBe('cancelled');
     expect(calls).toEqual(['compress', 'ended true']);
+  });
+});
+
+describe('Refine on the factors', () => {
+  const report = (iteration: number, accepted = 3): FactorIteration => ({
+    iteration,
+    libraryVersion: 9 + iteration,
+    cells: 4,
+    frames: 12,
+    fittingFrames: 8,
+    accepted,
+    changedShare: 0.05,
+    medianChange: 0.01,
+    lowValid: 0,
+    tilesSkipped: 0,
+    ms: 5,
+  });
+
+  /** Factor files in `state` (openable once ready and no job reads them), and a slow worker that records what it is sent. */
+  function factorOpts(
+    o: {
+      state?: FactorState;
+      live?: boolean;
+      lookback?: boolean;
+      jobs?: number;
+      error?: string;
+    } = {},
+  ) {
+    const sent: unknown[] = [];
+    const calls: string[] = [];
+    let state: FactorState = o.state ?? 'ready';
+    let jobs = o.jobs ?? 0;
+    const factors: FactorFilesLike = {
+      state: () => state,
+      replayCompress: () => {
+        calls.push('compress');
+        return state === 'none'
+          ? {
+              settings: { compress: true, compressTiling: 'offset', compressSession: 7 },
+              ended: (ok) => void calls.push(`ended ${ok}`),
+            }
+          : { settings: {}, ended() {} };
+      },
+      keepProjection: () => void calls.push('projection'),
+      files: () => (state === 'ready' && jobs === 0 ? { folder: 'run-x', windows: 3 } : null),
+      info: () => ({ tiling: 'offset', meanRank: 4 }),
+      origin: () => (o.live ? 'discover' : 'replay'),
+      pending: () => 2,
+      compressionError: () => o.error ?? null,
+    };
+    const options: RefineFactorsOptions = {
+      factors,
+      slow: {
+        refineOnFactors: (m) => void sent.push(m),
+        stopFactors: (s) => void sent.push({ stop: s }),
+      },
+      live: () => o.live === true,
+      lookback: () => o.lookback === true,
+    };
+    return {
+      options,
+      sent,
+      calls,
+      setState: (s: FactorState) => void (state = s),
+      setJobs: (n: number) => void (jobs = n),
+    };
+  }
+
+  it('is switched on by refine=factors only', () => {
+    expect(refineOnFactorsOn(new URLSearchParams('refine=factors&debug'))).toBe(true);
+    expect(refineOnFactorsOn(new URLSearchParams(''))).toBe(false);
+    expect(refineOnFactorsOn(new URLSearchParams('refine'))).toBe(false);
+    expect(FACTOR_REFINE).toEqual({
+      settleCorr: 0.99,
+      settleShare: 0.02,
+      maxIterations: 20,
+      testFrames: 0,
+    });
+  });
+
+  it('says which settings it iterates with (FACTOR_REFINE unless given)', () => {
+    expect(setup().store.factorSettings()).toEqual(FACTOR_REFINE);
+    expect(setup({ refineQc: { factorRefine: factorOpts().options } }).store.factorSettings()).toBe(
+      FACTOR_REFINE,
+    );
+    const settings = { ...FACTOR_REFINE, maxIterations: 3 };
+    const f = factorOpts();
+    const t = setup({ refineQc: { factorRefine: { ...f.options, settings } } });
+    expect(t.store.factorSettings()).toBe(settings);
+  });
+
+  it('iterates on ready factors in the slow worker and logs the run with how it stopped', async () => {
+    const f = factorOpts();
+    const t = setup({ refineQc: { factorRefine: f.options } });
+    expect(t.store.route()).toBe('factors');
+    await t.store.run();
+    expect(t.started).toHaveLength(0);
+    expect(f.sent).toEqual([{ session: 7, folder: 'run-x', windows: 3, ...FACTOR_REFINE }]);
+    expect(t.store.phase()).toEqual({ kind: 'iterate', last: null, stopping: false });
+    t.store.onSlowMessage({ type: 'factor-iteration', session: 7, report: report(1) });
+    expect(t.store.phase()).toMatchObject({ kind: 'iterate', last: { iteration: 1 } });
+    expect([t.store.processed(), t.store.total()]).toEqual([1, FACTOR_REFINE.maxIterations]);
+    t.store.onSlowMessage({ type: 'factor-iteration', session: 3, report: report(9) }); // another run
+    t.store.onSlowMessage({ type: 'factor-iteration', session: 7, report: report(2, 1) });
+    expect(t.store.status()).toBe('running');
+    t.store.onSlowMessage({ type: 'factor-end', session: 7, iterations: 2, stop: 'settled' });
+    expect(t.store.status()).toBe('done');
+    expect(t.store.phase()).toBeNull();
+    expect(t.log.last('refine')).toMatchObject({
+      outcome: 'done',
+      frames: 12,
+      source: 'factors',
+      tiling: 'offset',
+      meanRank: 4,
+      factors: 'replay',
+      iterations: 2,
+      stop: 'settled',
+      refines: 4,
+      refinesPerMin: null,
+      changedShare: 0.05,
+    });
+  });
+
+  it('ends at the cap as done, and says so in its record', async () => {
+    const f = factorOpts();
+    const t = setup({ refineQc: { factorRefine: f.options } });
+    await t.store.run();
+    t.store.onSlowMessage({ type: 'factor-end', session: 7, iterations: 20, stop: 'cap' });
+    expect(t.store.status()).toBe('done');
+    expect(t.log.last('refine')).toMatchObject({ outcome: 'done', stop: 'cap', iterations: 20 });
+  });
+
+  it('makes the factors first with a replay that only compresses, then iterates once they are ready', async () => {
+    const f = factorOpts({ state: 'none' });
+    const proj = { spans: [] } as unknown as FovProjections;
+    const t = setup({ refineQc: { factorRefine: f.options }, projection: proj });
+    await t.store.run();
+    expect(t.started[0].cells).toEqual({
+      session: 0,
+      discover: false,
+      library: Uint8Array.of(5),
+      projection: true,
+      qc: false,
+      compress: true,
+      compressTiling: 'offset',
+      compressSession: 7,
+    });
+    await until(() => t.store.phase()?.kind === 'wait');
+    expect(f.calls).toEqual(['compress', 'projection', 'ended true']);
+    expect(t.store.phase()).toEqual({ kind: 'wait', for: 'compression', pending: 2 });
+    expect(f.sent).toEqual([]);
+    f.setState('ready');
+    await until(() => f.sent.length === 1);
+    expect(t.store.status()).toBe('running');
+    expect(t.store.phase()).toMatchObject({ kind: 'iterate' });
+  });
+
+  it('releases the compress mark when its compressing replay is cancelled', async () => {
+    const f = factorOpts({ state: 'none' });
+    const t = setup({ refineQc: { factorRefine: f.options }, hang: true });
+    await t.store.run();
+    t.store.cancel();
+    expect(t.store.status()).toBe('cancelled');
+    expect(f.calls).toEqual(['compress', 'ended false']);
+    expect(t.stops).toEqual([{ keepSlow: true }]);
+    expect(t.log.last('refine')).toMatchObject({
+      outcome: 'cancelled',
+      source: 'factors',
+      stop: 'stopped',
+      iterations: 0,
+    });
+  });
+
+  it('waits for a cancelled Extract job to end before the slow worker opens the files', async () => {
+    const f = factorOpts({ jobs: 1 });
+    const t = setup({ refineQc: { factorRefine: f.options } });
+    await t.store.run();
+    expect(t.store.phase()).toEqual({ kind: 'wait', for: 'extract', pending: 0 });
+    expect(f.sent).toEqual([]);
+    f.setJobs(0);
+    await until(() => f.sent.length === 1);
+  });
+
+  it('fails, without iterating, when the factors turn out unusable while it waits', async () => {
+    const f = factorOpts({ state: 'compressing' });
+    const t = setup({ refineQc: { factorRefine: f.options } });
+    await t.store.run();
+    f.setState('unusable');
+    await until(() => t.store.status() === 'error');
+    expect(t.store.error()).toBe(
+      'Refine on the factors: the factors do not cover the recording. The next Refine replays the file.',
+    );
+    expect(f.sent).toEqual([]);
+    expect(t.store.route()).toBe('raw');
+  });
+
+  it('stops after the current iteration when cancelled, and holds the files until the slow worker ends', async () => {
+    const f = factorOpts();
+    const t = setup({ refineQc: { factorRefine: f.options } });
+    await t.store.run();
+    t.store.onSlowMessage({ type: 'factor-iteration', session: 7, report: report(1) });
+    t.store.cancel();
+    expect(t.store.status()).toBe('finishing');
+    expect(t.store.phase()).toMatchObject({ kind: 'iterate', stopping: true });
+    expect(f.sent.at(-1)).toEqual({ stop: 7 });
+    expect(t.stops).toEqual([]);
+    let released = false;
+    void t.store.release().then(() => (released = true));
+    await wait(5);
+    expect(released).toBe(false);
+    t.store.onSlowMessage({ type: 'factor-end', session: 7, iterations: 1, stop: 'stopped' });
+    expect(t.store.status()).toBe('cancelled');
+    await wait(1);
+    expect(released).toBe(true);
+    expect(t.log.last('refine')).toMatchObject({
+      outcome: 'cancelled',
+      stop: 'stopped',
+      iterations: 1,
+    });
+  });
+
+  it("counts a failed iteration as failed: a file's next Refine replays the file, until clear", async () => {
+    const f = factorOpts();
+    const t = setup({ refineQc: { factorRefine: f.options } });
+    await t.store.run();
+    t.store.onSlowMessage({
+      type: 'factor-end',
+      session: 7,
+      iterations: 0,
+      stop: 'error',
+      message:
+        'refineOnFactors: invalid trace config: factor window 1: truncated or corrupt factor file',
+    });
+    expect(t.store.status()).toBe('error');
+    expect(t.store.error()).toBe(
+      'refineOnFactors: invalid trace config: factor window 1: truncated or corrupt factor file',
+    );
+    expect(t.log.last('refine')).toMatchObject({ outcome: 'error', stop: 'error' });
+    expect(t.store.route()).toBe('raw');
+    expect(t.store.routeNote()).toBe(
+      'Refine replays the file: the last Refine on the factors failed.',
+    );
+    t.store.clear();
+    expect(t.store.route()).toBe('factors');
+    expect(t.store.routeNote()).toBeNull();
+  });
+
+  it('counts a failed open of the files as failed', async () => {
+    const f = factorOpts();
+    const t = setup({ refineQc: { factorRefine: f.options } });
+    await t.store.run();
+    t.store.onSlowMessage({
+      type: 'factor-end',
+      session: 7,
+      iterations: 0,
+      stop: 'error',
+      message: 'The factor files of this run cannot be opened: f2.bin not found',
+    });
+    expect(t.store.status()).toBe('error');
+    expect(t.store.route()).toBe('raw');
+  });
+
+  it('a refusal of the slow worker is no failure of the factors: the next Refine reads them again', async () => {
+    const f = factorOpts();
+    const t = setup({ refineQc: { factorRefine: f.options } });
+    await t.store.run();
+    t.store.onSlowMessage({
+      type: 'factor-end',
+      session: 7,
+      iterations: 0,
+      stop: 'error',
+      message: 'The slow loop has not published its final library yet.',
+      refused: true,
+    });
+    expect(t.store.status()).toBe('error');
+    expect(t.store.error()).toBe('The slow loop has not published its final library yet.');
+    expect(t.log.last('refine')).toMatchObject({ outcome: 'error', stop: 'error', iterations: 0 });
+    expect(t.store.route()).toBe('factors');
+    expect(t.store.routeNote()).toBeNull();
+    await t.store.run();
+    expect(f.sent).toHaveLength(2);
+  });
+
+  it('replays the file after a look-back Discover, or when the factors cannot be read, and says why', async () => {
+    const lb = factorOpts({ lookback: true });
+    const t = setup({ refineQc: { factorRefine: lb.options } });
+    expect(t.store.route()).toBe('raw');
+    expect(t.store.routeNote()).toBe(
+      'Refine replays the file: Refine on the factors does not run after a look-back Discover (its slow loop runs the cluster replay).',
+    );
+    await t.store.run();
+    expect(t.started[0].cells).toMatchObject({ refine: true, discover: true });
+    expect(lb.sent).toEqual([]);
+    await until(() => t.store.status() === 'done');
+    expect(t.log.last('refine')?.source).toBe('raw');
+    const short = setup({ refineQc: { factorRefine: factorOpts({ state: 'unusable' }).options } });
+    expect(short.store.routeNote()).toBe(
+      'Refine replays the file: the factors do not cover the recording.',
+    );
+    const failed = setup({
+      refineQc: {
+        factorRefine: factorOpts({ state: 'unusable', error: 'QuotaExceededError' }).options,
+      },
+    });
+    expect(failed.store.routeNote()).toBe('Refine replays the file: the compression failed.');
+  });
+
+  it("reads the factors on a live run, also after a failure, and records them as Discover's", async () => {
+    const f = factorOpts({ live: true });
+    const t = setup({ refineQc: { factorRefine: f.options } });
+    await t.store.run();
+    t.store.onSlowMessage({
+      type: 'factor-end',
+      session: 7,
+      iterations: 0,
+      stop: 'error',
+      message: 'x',
+    });
+    expect(t.store.route()).toBe('factors');
+    await t.store.run();
+    expect(f.sent).toHaveLength(2);
+    t.store.onSlowMessage({ type: 'factor-end', session: 7, iterations: 3, stop: 'settled' });
+    expect(t.log.last('refine')).toMatchObject({ factors: 'discover', stop: 'settled' });
+  });
+
+  it('never replays a live run: it waits for the factors Discover is still compressing', async () => {
+    for (const state of ['none', 'compressing'] as const) {
+      const f = factorOpts({ live: true, state });
+      const t = setup({ refineQc: { factorRefine: f.options } });
+      await t.store.run();
+      expect(t.started).toHaveLength(0);
+      expect(f.calls).toEqual([]);
+      expect(t.store.phase()).toEqual({ kind: 'wait', for: 'compression', pending: 2 });
+      f.setState('ready');
+      await until(() => f.sent.length === 1);
+      expect(t.started).toHaveLength(0);
+      expect(f.calls).toEqual([]);
+    }
+    const bad = factorOpts({ live: true, state: 'unusable' });
+    const u = setup({ refineQc: { factorRefine: bad.options } });
+    await u.store.run();
+    expect(u.store.status()).toBe('error');
+    expect(u.store.error()).toBe(
+      'Refine on the factors: the factors of this stream cannot be read.',
+    );
+    expect([u.started, bad.calls, bad.sent]).toEqual([[], [], []]);
+  });
+
+  it('does not start on the factors while the slow worker still holds the files of the last run', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const f = factorOpts();
+    const t = setup({ refineQc: { factorRefine: f.options } });
+    await t.store.run();
+    t.store.cancel();
+    expect(t.store.status()).toBe('finishing');
+    await t.store.run();
+    expect(t.store.status()).toBe('finishing');
+    t.store.clear();
+    expect(t.store.status()).toBe('idle');
+    const n = f.sent.length;
+    await t.store.run();
+    expect(t.store.status()).toBe('idle');
+    expect(t.log.runs().filter((r) => r.stage === 'refine')).toHaveLength(1);
+    expect(f.sent).toHaveLength(n);
+    expect(warn).toHaveBeenCalledTimes(2);
+    t.store.onSlowMessage({ type: 'factor-end', session: 7, iterations: 1, stop: 'stopped' });
+    await t.store.run();
+    expect(t.store.status()).toBe('running');
+    expect(f.sent.at(-1)).toMatchObject({ session: 7, folder: 'run-x' });
+    warn.mockRestore();
+  });
+
+  it('a new Discover stops the iterations and release waits for the slow worker', async () => {
+    const f = factorOpts();
+    const t = setup({ refineQc: { factorRefine: f.options } });
+    await t.store.run();
+    t.store.clear();
+    expect(t.store.status()).toBe('idle');
+    expect(f.sent.at(-1)).toEqual({ stop: 7 });
+    let released = false;
+    const r = t.store.release().then(() => (released = true));
+    await wait(5);
+    expect(released).toBe(false);
+    // A late iteration of the stopped run changes nothing.
+    t.store.onSlowMessage({ type: 'factor-iteration', session: 7, report: report(1) });
+    expect(t.store.phase()).toBeNull();
+    t.store.onSlowMessage({ type: 'factor-end', session: 7, iterations: 1, stop: 'stopped' });
+    await r;
+    expect(t.store.status()).toBe('idle');
+    await expect(t.store.release()).resolves.toBeUndefined();
+  });
+
+  it('a crashed slow worker frees the files and ends the run', async () => {
+    const f = factorOpts();
+    const t = setup({ refineQc: { factorRefine: f.options } });
+    await t.store.run();
+    const r = t.store.release();
+    t.store.onSlowMessage({
+      type: 'error',
+      session: -1,
+      message: 'The slow worker crashed.',
+      worker: 'slow',
+    });
+    await r;
+    expect(t.store.status()).toBe('error');
+    expect(t.store.error()).toBe('Cell discovery stopped: The slow worker crashed.');
+    expect(t.log.last('refine')).toMatchObject({ outcome: 'error', stop: 'error' });
+    // A late end of the crashed run changes nothing.
+    t.store.onSlowMessage({ type: 'factor-end', session: 7, iterations: 2, stop: 'settled' });
+    expect(t.store.status()).toBe('error');
+    expect(t.log.last('refine')).toMatchObject({ outcome: 'error', stop: 'error' });
+  });
+
+  it('a crashed slow worker also ends a run that waits for the factors, which then never iterates', async () => {
+    const f = factorOpts({ state: 'compressing' });
+    const t = setup({ refineQc: { factorRefine: f.options } });
+    await t.store.run();
+    t.store.onSlowMessage({
+      type: 'error',
+      session: -1,
+      message: 'The slow worker crashed.',
+      worker: 'slow',
+    });
+    expect(t.store.status()).toBe('error');
+    expect(t.store.phase()).toBeNull();
+    f.setState('ready');
+    await wait(30);
+    expect(f.sent).toEqual([]);
+    await expect(t.store.release()).resolves.toBeUndefined();
+  });
+
+  it('holds the files through a crash of a visit worker or a failed connection (the slow worker still runs)', async () => {
+    const f = factorOpts();
+    const t = setup({ refineQc: { factorRefine: f.options } });
+    await t.store.run();
+    let released = false;
+    const r = t.store.release().then(() => (released = true));
+    t.store.onSlowMessage({ type: 'error', session: -1, message: 'A visit worker crashed.' });
+    t.store.onSlowMessage({ type: 'error', session: -1, message: 'no port' });
+    await wait(5);
+    expect(released).toBe(false);
+    expect(t.store.status()).toBe('running');
+    t.store.onSlowMessage({ type: 'factor-end', session: 7, iterations: 1, stop: 'stopped' });
+    await r;
+    expect(t.store.status()).toBe('cancelled');
   });
 });
