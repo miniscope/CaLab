@@ -91,7 +91,7 @@ export class LookbackReader {
   /** Waiting for rows: resolved when the record covers `frame`. */
   private rowWaiters: { frame: number; resolve: () => void; reject: (e: Error) => void }[] = [];
   private backState: Uint8Array | null = null;
-  private backWaiters: (() => void)[] = [];
+  private backWaiters: { resolve: () => void; reject: (e: Error) => void }[] = [];
   private flat: FlatFieldMap | null = null;
   private flatDirty = false;
   /** Front half (calibration and flat field only; replayed, so stateless). */
@@ -139,7 +139,7 @@ export class LookbackReader {
   /** The live back half's state, newest first (blocks started from now on use it). */
   setBackState(state: Uint8Array): void {
     this.backState = state;
-    for (const w of this.backWaiters.splice(0)) w();
+    for (const w of this.backWaiters.splice(0)) w.resolve();
   }
 
   /** The newest flat-field map (null: none known; the calibration's own stays). */
@@ -207,7 +207,9 @@ export class LookbackReader {
   private state(): Promise<Uint8Array> {
     const s = this.backState;
     if (s) return Promise.resolve(s);
-    return new Promise((resolve) => this.backWaiters.push(() => resolve(this.backState!)));
+    return new Promise((resolve, reject) =>
+      this.backWaiters.push({ resolve: () => resolve(this.backState!), reject }),
+    );
   }
 
   private blockPre(seq: number, state: Uint8Array): Preprocessor {
@@ -282,7 +284,7 @@ export class LookbackReader {
     this.disposed = true;
     for (const w of this.rowWaiters) w.reject(new Error('look-back stopped'));
     this.rowWaiters = [];
-    this.backWaiters = [];
+    for (const w of this.backWaiters.splice(0)) w.reject(new Error('look-back stopped'));
     this.block?.pre.free();
     this.block = null;
     this.front?.free();
