@@ -2002,6 +2002,16 @@ impl SlowLoop {
         Ok(true)
     }
 
+    /// Mark every tile due for a visit (no new frames needed): a driver
+    /// that fed look-back frames after the last live frame uses it so the
+    /// visits turn the new statistics into footprints.
+    pub fn mark_all_due(&mut self) {
+        let rects: Vec<Rect> = self.tiles.iter().map(|t| t.rect).collect();
+        for r in rects {
+            self.touch(r);
+        }
+    }
+
     /// Whitened frame (`z`) and the residual blurred to cell scale
     /// (`coarse_blur`), with the residual's robust noise scale.
     fn score_residual(

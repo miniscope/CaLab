@@ -56,7 +56,14 @@
 //!                      new cells' and their neighbours' running statistics
 //!                      and cluster stores, at R look-back frames per
 //!                      Discover frame (see `LookBack`; `lookback.tsv`)
-//!   --lookback-frames K  at most K frames per birth job (default 3000)
+//!   --lookback-frames K  at most K frames before its birth per cell
+//!                      (default 3000)
+//!   --lookback-order O `shared` (default): the 64-frame block most cells
+//!                      need first; `newest`: the newest cell's next block
+//!   --lookback-drain N recorded data: after Discover's last frame keep
+//!                      serving the cells in need, with Refine-scope visits,
+//!                      for at most N steps (one step = R look-back frames
+//!                      + one slow-loop step); ends when nothing is needed
 //!   --catchup X        reference arm: every X Discover frames give all
 //!                      cells frames 0..t at once (`--catchup-double`: at
 //!                      X, 2X, 4X, ...)
@@ -596,6 +603,9 @@ fn write_f32s(f: &mut impl Write, v: &[f32]) {
 struct LookBack {
     rate: f64,
     max_frames: usize,
+    /// `--lookback-order newest`: serve the newest cell's next block (to
+    /// every cell that needs it) instead of the block most cells need.
+    newest_first: bool,
     catchup: usize,
     catchup_double: bool,
     next_catchup: usize,
@@ -620,6 +630,8 @@ struct LookBack {
     cell_frames: u64,
     births: u64,
     wall_s: f64,
+    drain_steps: usize,
+    drain_frames: u64,
     /// Look-back frames and cell-frames per tenth of the recording.
     by_tenth: [(u64, u64); 10],
 }
@@ -633,6 +645,7 @@ impl LookBack {
     fn new(
         rate: f64,
         max_frames: usize,
+        newest_first: bool,
         catchup: usize,
         catchup_double: bool,
         n_px: usize,
@@ -640,6 +653,7 @@ impl LookBack {
         LookBack {
             rate,
             max_frames,
+            newest_first,
             catchup,
             catchup_double,
             next_catchup: catchup,
@@ -660,6 +674,8 @@ impl LookBack {
             cell_frames: 0,
             births: 0,
             wall_s: 0.0,
+            drain_steps: 0,
+            drain_frames: 0,
             by_tenth: [(0, 0); 10],
         }
     }
@@ -703,7 +719,16 @@ impl LookBack {
                 *count.entry(b).or_default() += 1;
             }
         }
-        let Some((&blk, _)) = count.iter().max_by_key(|&(&b, &n)| (n, b)) else {
+        let blk = if self.newest_first {
+            // The newest cell in need, its most recent block not served.
+            self.need
+                .values()
+                .max_by_key(|(born, _)| *born)
+                .and_then(|(_, blocks)| blocks.iter().max().copied())
+        } else {
+            count.iter().max_by_key(|&(&b, &n)| (n, b)).map(|(&b, _)| b)
+        };
+        let Some(blk) = blk else {
             return false;
         };
         let k = self.max_frames;
@@ -756,44 +781,112 @@ impl LookBack {
             }
         } else {
             self.note_births(live.library(), seen);
-            self.credit += self.rate;
-            while self.credit >= 1.0 {
-                if self.block.as_ref().is_none_or(|b| b.0 >= b.1) && !self.next_block(pipe) {
-                    // Nothing needed: idle budget is not banked.
-                    self.block = None;
-                    self.credit = self.credit.min(1.0);
-                    break;
-                }
-                let (cur, end, mut cells, mut pre) = self.block.take().expect("block");
-                let lib = live.library();
-                cells.retain(|&(id, _, to)| lib.slot(id).is_some() && to > cur);
-                let ids: Vec<u64> = cells
-                    .iter()
-                    .filter(|&&(_, from, _)| from <= cur)
-                    .map(|c| c.0)
-                    .collect();
-                if !ids.is_empty() {
-                    self.frame(
-                        cur,
-                        &mut pre,
-                        Some(&ids),
-                        start,
-                        rec,
-                        drift,
-                        pipe,
-                        live,
-                        sl,
-                        n_px,
-                        tenth,
-                    );
-                    self.credit -= 1.0;
-                }
-                // No cell left: the block ends here.
-                let end = if cells.is_empty() { cur + 1 } else { end };
-                self.block = Some((cur + 1, end, cells, pre));
-            }
+            let rate = self.rate;
+            self.spend(rate, tenth, start, rec, drift, pipe, live, sl, n_px);
         }
         self.wall_s += t0.elapsed().as_secs_f64();
+    }
+
+    /// Spend `add` look-back frames of budget on the cells in need;
+    /// `false` when nothing is needed.
+    #[allow(clippy::too_many_arguments)]
+    fn spend(
+        &mut self,
+        add: f64,
+        tenth: usize,
+        start: usize,
+        rec: &mut Recording,
+        drift: Option<&Drift>,
+        pipe: &mut Pipeline,
+        live: &TraceEngine,
+        sl: &mut SlowLoop,
+        n_px: usize,
+    ) -> bool {
+        self.credit += add;
+        while self.credit >= 1.0 {
+            if self.block.as_ref().is_none_or(|b| b.0 >= b.1) && !self.next_block(pipe) {
+                // Nothing needed: idle budget is not banked.
+                self.block = None;
+                self.credit = self.credit.min(1.0);
+                return false;
+            }
+            let (cur, end, mut cells, mut pre) = self.block.take().expect("block");
+            let lib = live.library();
+            cells.retain(|&(id, _, to)| lib.slot(id).is_some() && to > cur);
+            let ids: Vec<u64> = cells
+                .iter()
+                .filter(|&&(_, from, _)| from <= cur)
+                .map(|c| c.0)
+                .collect();
+            if !ids.is_empty() {
+                self.frame(
+                    cur,
+                    &mut pre,
+                    Some(&ids),
+                    start,
+                    rec,
+                    drift,
+                    pipe,
+                    live,
+                    sl,
+                    n_px,
+                    tenth,
+                );
+                self.credit -= 1.0;
+            }
+            // No cell left: the block ends here.
+            let end = if cells.is_empty() { cur + 1 } else { end };
+            self.block = Some((cur + 1, end, cells, pre));
+        }
+        true
+    }
+
+    /// `--lookback-drain N` (recorded data): after Discover's last frame,
+    /// keep serving the cells in need (at most `N` steps of `rate` frames)
+    /// with Refine-scope visits between them, as the app could before
+    /// Extract. Returns (steps, look-back frames).
+    #[allow(clippy::too_many_arguments)]
+    fn drain(
+        &mut self,
+        max_steps: usize,
+        budget: u64,
+        start: usize,
+        rec: &mut Recording,
+        drift: Option<&Drift>,
+        pipe: &mut Pipeline,
+        engine: &mut TraceEngine,
+        sl: &mut SlowLoop,
+        n_px: usize,
+    ) -> (usize, u64) {
+        let t0 = Instant::now();
+        let f0 = self.frames;
+        sl.set_edit_scope(EditScope::Refine);
+        let rate = self.rate.max(1.0);
+        let mut steps = 0;
+        while steps < max_steps {
+            let more = self.spend(rate, 9, start, rec, drift, pipe, engine, sl, n_px);
+            if steps % 64 == 0 {
+                sl.mark_all_due();
+            }
+            sl.step(budget).unwrap();
+            steps += 1;
+            if steps % 64 == 0 {
+                engine.set_library(sl.finalize().unwrap()).unwrap();
+            }
+            if !more {
+                break;
+            }
+        }
+        // A last round of visits on everything the look-back fed.
+        sl.mark_all_due();
+        for _ in 0..256 {
+            sl.step(budget).unwrap();
+        }
+        engine.set_library(sl.finalize().unwrap()).unwrap();
+        self.drain_steps = steps;
+        self.drain_frames = self.frames - f0;
+        self.wall_s += t0.elapsed().as_secs_f64();
+        (steps, self.frames - f0)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3806,11 +3899,21 @@ fn main() {
     let lb_rate: f64 = arg_value(&args, "--lookback").map_or(0.0, |s| s.parse().unwrap());
     let lb_catchup: usize = arg_value(&args, "--catchup").map_or(0, |s| s.parse().unwrap());
     let lb_double = args.iter().any(|a| a == "--catchup-double");
+    let lb_newest = match arg_value(&args, "--lookback-order").as_deref() {
+        None | Some("shared") => false,
+        Some("newest") => true,
+        Some(m) => panic!("--lookback-order: unknown mode {m}"),
+    };
+    let lb_drain: usize = arg_value(&args, "--lookback-drain").map_or(0, |s| s.parse().unwrap());
+    assert!(
+        lb_drain == 0 || passes == 1,
+        "--lookback-drain needs --passes 1"
+    );
     let lb_frames: usize =
         arg_value(&args, "--lookback-frames").map_or(3000, |s| s.parse().unwrap());
     assert!(lb_rate >= 0.0, "--lookback must be >= 0");
     let mut lookback = (lb_rate > 0.0 || lb_catchup > 0)
-        .then(|| LookBack::new(lb_rate, lb_frames, lb_catchup, lb_double, n_px));
+        .then(|| LookBack::new(lb_rate, lb_frames, lb_newest, lb_catchup, lb_double, n_px));
     if lookback.is_some() {
         println!(
             "lookback: rate {lb_rate} frames per Discover frame, at most {lb_frames} per job, catchup every {lb_catchup} frames{}",
@@ -4390,6 +4493,20 @@ fn main() {
                         sl,
                         n_px,
                     );
+                    if last && lb_drain > 0 {
+                        let (st, fr) = lbk.drain(
+                            lb_drain,
+                            budget,
+                            start,
+                            &mut rec,
+                            drift.as_ref(),
+                            &mut pipe,
+                            &mut engine,
+                            sl,
+                            n_px,
+                        );
+                        println!("lookback drain: {st} steps, {fr} frames");
+                    }
                 }
                 let t_end = t + 1;
                 let cp = t_end.is_multiple_of(every) || last;
@@ -4644,7 +4761,7 @@ fn main() {
             l.wall_s
         );
         let mut t = format!(
-            "rate\tmax_frames\tcatchup\tdouble\tframes\tpushed\tcell_frames\tbirths\tin_need\twall_s\n{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\n\ntenth\tframes\tcell_frames\n",
+            "rate\tmax_frames\tcatchup\tdouble\tframes\tpushed\tcell_frames\tbirths\tin_need\twall_s\tdrain_steps\tdrain_frames\n{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}\n\ntenth\tframes\tcell_frames\n",
             l.rate,
             l.max_frames,
             l.catchup,
@@ -4654,7 +4771,9 @@ fn main() {
             l.cell_frames,
             l.births,
             l.need.len(),
-            l.wall_s
+            l.wall_s,
+            l.drain_steps,
+            l.drain_frames
         );
         for (k, (a, b)) in l.by_tenth.iter().enumerate() {
             let _ = writeln!(t, "{k}\t{a}\t{b}");
