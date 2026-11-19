@@ -114,8 +114,11 @@ pub enum LookbackOutcome {
     /// Preprocessed, solved and passed to [`SlowLoop::observe_lookback`]
     /// (whether or not it was held out there).
     Observed,
-    /// Preprocessed (the block's preprocessor ran forward) but not solved:
-    /// a held-out frame in precision mode. It costs no budget there.
+    /// Passed over without a solve: a held-out frame in precision mode (it
+    /// costs no budget there), or one the driver chose not to solve in the
+    /// `K`-frame window mode (it still costs its budget, so the frames
+    /// served do not change). The driver may or may not have preprocessed
+    /// it (a frame from a [`FrameCache`] needs nothing).
     Skipped,
 }
 

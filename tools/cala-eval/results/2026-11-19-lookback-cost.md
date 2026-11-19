@@ -91,8 +91,10 @@ Not expected to move: slow-loop work units per frame (the cache changes what fee
 
 ## Results (19 Nov 2026; 8 sims: static s5-s7, pairs s5-s6, motion s5-s7)
 
-One binary for all arms (`qc_eval-lbcost-b`, branch commit 239d4d59 before the rebase onto #431), 4-6 runs at a
-time. Run tree `$CALA_DATA/demix-suite/lbcost` (reports `report-COMBO-vs-COMBO-cs.md`, `report-COMBO-vs-COMBO-c.md`,
+One binary for all arms (`qc_eval-lbcost-b`, this branch's levers before the rebase onto #431, #432 and #433).
+Run conditions: arms of a sim ran together (paired), 6 runs at once for motion s5-s6 and 4 after that (another
+agent needed two slots), the machine was swapping (swap nearly full, much memory compressed), and clippy and the
+tests ran during the static and pairs runs. So wall seconds are noisy; instructions retired is the anchor. Run tree `$CALA_DATA/demix-suite/lbcost` (reports `report-COMBO-vs-COMBO-cs.md`, `report-COMBO-vs-COMBO-c.md`,
 `report-DR-main-vs-COMBO-cs.md`, `report-DR-main-vs-COMBO.md`; their header names the default binary because they
 were rendered with `--report-only`). The PR's code is the same levers ported onto #431's crate scheduler; its build
 reproduces `COMBO-cs` on static_s5 and `COMBO` and `DR-main` with the new flags off byte for byte (below).
@@ -104,14 +106,20 @@ makes the look-back cheaper everywhere and fixes motion. On motion sims COMBO no
 Discover + Refine (it used 2 % more) and 10 % fewer instructions; over all 8 sims the saving against Discover + Refine
 grows from 8 % to 23 % of wall. Skipping held-out look-back frames adds a little more. Quality is unchanged against
 COMBO: all 67 suite metrics within noise; the late-born rows lean slightly worse but the sample is small. The price is
-memory: about 2 GB more per run (peak RSS 3.0-3.5 GB on 600 x 600 sims, with a 3072-frame cache).
+memory: about 2.3-2.5 GB more per run (peak memory footprint 3.2-4.05 GB on 600 x 600 sims with a 3072-frame
+cache, against 0.9-1.6 GB), which misses the 4 GB target by 0.05 GB on motion_s7.
+
+**The one quality caveat: cells born late.** Both cache arms lean worse on cells born in the second half
+(footprint r -0.0068 [-0.0160, +0.0035], share r < 0.9 +0.058 [-0.019, +0.138] vs COMBO), and against DR-main the
+share r < 0.9 of those cells now flags worse (+0.091 [0.018, 0.165]; COMBO alone: within noise). Within the targets,
+but on ~230 cells; the follow-up is COMBO vs COMBO-cs on the other six full-tier sims to double that sample.
 
 Recommended: `--lookback-cache 3072 --lookback-skip-heldout` (`COMBO-cs`).
 
 ### Cost
 
-Pass-loop wall summed over the sims (s), instructions retired (T, `time -l`), largest peak RSS (GB) and look-back
-wall (s):
+Pass-loop wall summed over the sims (s), instructions retired (T, `time -l`), largest "maximum resident set size"
+(GB; under-counts compressed pages, see the footprint line below) and look-back wall (s):
 
 | group      | DR-main                | COMBO                    | COMBO-c (cache)          | COMBO-cs (cache + skip)  |
 | ---------- | ---------------------- | ------------------------ | ------------------------ | ------------------------ |
@@ -119,6 +127,10 @@ wall (s):
 | static (3) | 1035 / 19.97 / 1.0 / 0 | 895 / 17.48 / 1.1 / 346  | 787 / 15.89 / 3.4 / 224  | 772 / 15.56 / 3.4 / 210  |
 | pairs (2)  | 476 / 9.27 / 0.8 / 0   | 351 / 7.12 / 0.9 / 109   | 298 / 6.26 / 3.2 / 47    | 288 / 6.04 / 3.2 / 37    |
 | all 8      | 3047 / 67.65           | 2814 / 65.73 (-8 %)      | 2405 / 56.98 (-21 %)     | 2358 / 56.03 (-23 %)     |
+
+Peak memory footprint (`time -l`, counts compressed pages; the right measure here), largest per group: DR-main
+1.58 / 1.05 / 0.85 GB (motion / static / pairs), COMBO 1.58 / 1.15 / 0.95, COMBO-c 4.04 / 3.50 / 3.21, COMBO-cs
+4.05 / 3.50 / 3.22.
 
 Per motion sim, wall and instructions of `COMBO-cs` vs `DR-main`: s5 428 vs 505 s, 11.47 vs 12.77 T; s6 437 vs 519 s,
 11.45 vs 12.85 T; s7 432 vs 512 s, 11.51 vs 12.79 T. Instructions are below `COMBO` on every one of the 8 sims.
@@ -133,7 +145,9 @@ the cache (age > 3072, ~5.5k per sim; births are served with a lag, so ages reac
 ~3k frames dropped when the first flat-field map arrives at frame 2999 (one clear per motion sim; later maps change
 by <= 0.06 sigma and keep the cache). The half-float rounding is at most 0.016 noise sigma. Held-out skip: 7.9-8.4k
 solves saved per static/motion sim (solve 21.5 -> 15.3 s on motion_s5). Slow-loop work units per frame unchanged
-(46.0 M vs 46.3 M, within noise).
+(46.0 M vs 46.3 M, within noise). With the skip on, `lookback.tsv`'s `frames` and `cell_frames` count solved frames
+only, so they fall by about a third without less being served; the skipped count is on stdout (`frames passed
+over`).
 
 ### Quality, `COMBO-cs` vs `COMBO` (targets 1-5; paired suite rules)
 
@@ -180,7 +194,7 @@ All met. One flag new against COMBO: share r < 0.9 among cells born in the secon
 | 6   | #430 targets vs DR-main                     | met                                                                      |
 | 7   | motion wall and instructions below DR-main  | met: wall -15 % (1298 vs 1536 s), instructions lower on every motion sim |
 | 8   | re-made frames halved, instructions < COMBO | met: -62 % (motion) to -76 % (static); instructions lower on all 8 sims  |
-| 9   | peak RSS <= 4 GB                            | met: 3.45 GB at most                                                     |
+| 9   | peak RSS <= 4 GB                            | missed by 0.05 GB: peak footprint 4.05 GB (motion_s7), 3.9 on s5/s6      |
 | 10  | flags off byte-identical                    | met (below)                                                              |
 
 ### Other checks
@@ -190,9 +204,9 @@ All met. One flag new against COMBO: share r < 0.9 among cells born in the secon
   flags). With `--lookback-cache 3072 --lookback-skip-heldout` it reproduces this run's `COMBO-cs` static_s5 byte for
   byte, so the measured numbers stand for the PR code.
 - **Tried and dropped.** Marking due only the tiles of cells the drain fed (instead of every tile every 64 drain
-  steps) saved nothing on motion_s5 (drain visits 28.6 s either way: `SlowLoop::step` spends its budget whichever tiles
-  are due). A 2048-frame cache (motion_s5 only) gave 444 s / 11.87 T against 428 s / 11.47 T for 3072, with 1.6 GB
-  instead of 1.7 GB peak RSS.
+  steps) saved nothing on motion_s5 as implemented (drain visits 28.6 s either way; the final mark-all and 256 steps were
+  kept). A 2048-frame cache (motion_s5 only) gave 444 s / 11.87 T against 428 s / 11.47 T for 3072, with a 2.96 GB
+  instead of 3.90 GB peak footprint (hit rate 51 % against 62 %).
 - **Not done.** A patch-only trace solve: with the frames cached, the solve is 15 s of the 124 s motion look-back, so
   it is the next lever only after the drain visits (25-34 s) and the remaining misses.
 
