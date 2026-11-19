@@ -326,7 +326,7 @@ pass-loop wall 303 s (`COMBO`), 367 s (SA4800), 400 s (SA9600), against 324 + 19
 different sessions, so approximate).
 
 **Verdict: partly supported.** Feeding every frame to every cell through the look-back path, cell set frozen and clock
-advancing, gains +0.0013 on all cells (between the 0.001 and 0.002 lines), about 40 % of what the Refine pass adds, and
+advancing, gains +0.0013 on all cells (between the 0.001 and 0.002 lines), about half of what the Refine pass adds on these sims (+0.0024), and
 stays 0.0011 below `COMBO+R`, with the late-born cells and the bites far from it. Half the frames give about two thirds
 of that gain. So frames for all cells with the final cell set are part of what Refine adds, not all of it. What the
 look-back path leaves out, and a Refine pass has, is not yet separated: the reservoir of residual frames that
