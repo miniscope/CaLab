@@ -98,7 +98,7 @@
 //!                      largest rank
 //!   --factors-max-rank M, --factors-n-iter I
 //!                      the largest rank of a tile (default 300) and the power
-//!                      iterations of the randomized SVD (default 1). K and M
+//!                      iterations of the randomized SVD (default 2). K and M
 //!                      equal, with no cut, give a fixed rank
 //!   --replay-source S  what the passes after `--factors-pass` and
 //!                      `--extract-pass` solve: raw (default, the replayed

@@ -90,7 +90,7 @@ impl Default for CompressConfig {
             window: 600,
             k0: 40,
             max_rank: 300,
-            n_iter: 1,
+            n_iter: 2,
             rho_min: 0.2,
             z: 4.0,
             seed: 0,
@@ -1583,5 +1583,20 @@ mod tests {
                 "{fast} {slow}"
             );
         }
+    }
+
+    #[test]
+    fn a_second_power_iteration_captures_at_least_as_much_energy() {
+        let (t, side) = (300, 24);
+        let (noisy, _) = synth(t, side, 6, 3.0);
+        let raw = quantized(&noisy);
+        let y = TileMatrix::new(&raw, t, side * side, QUANT);
+        let captured = |n_iter: usize| -> f64 {
+            let svd = rsvd(&y, 20, n_iter, &mut Normals::new(11));
+            svd.s.iter().map(|s| s * s).sum()
+        };
+        let (one, two) = (captured(1), captured(2));
+        assert!(two >= one * 0.999, "one iteration {one}, two {two}");
+        assert_eq!(CompressConfig::default().n_iter, 2);
     }
 }
