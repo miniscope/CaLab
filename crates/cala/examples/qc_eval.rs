@@ -854,9 +854,9 @@ impl LookBack {
         // the recording go to every cell (untargeted, so the forgetting
         // clock advances and old statistics are replaced), with the same
         // step, visit and publish cadence as the drain above.
-        if self.settle_all > 0 {
-            let t_len = rec.total as usize;
-            let stride = (t_len / self.settle_all).max(1);
+        let t_len = rec.total as usize;
+        if let Some(stride) = t_len.checked_div(self.settle_all) {
+            let stride = stride.max(1);
             let mut pre = pipe.pre.clone();
             self.block = None;
             for (i, f) in (0..t_len).step_by(stride).enumerate() {
