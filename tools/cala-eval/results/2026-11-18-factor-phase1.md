@@ -13,11 +13,15 @@ cells that pass QC (QC-pass cells). A loss is 1 minus the median of a measure ov
 
 Summary:
 
-- **Gate A1 (native runs): `chosen` passes on all six recordings.** No rule failed. The closest margins are on the two
+- **Gate A1 (native, bounded runs): `chosen` passes on all six recordings.** The runs used the first 12000 (200 px) or
+  6000 (600 px) frames and a tenth of the default slow-loop budget. No rule failed. The closest margins are on the two
   real wireless recordings (tile-line jump up by 0.065 and 0.050 of an allowed 0.10; trace loss 0.044 and 0.049 of
   0.08).
+- **On `wl200` the trace loss is 0.104, above the 0.08 limit of rule 3.** Rule 3 does not apply there because the
+  truth is usable, so the pass rests on rule 1 over 22 cells: its 5th percentile (-0.0272) is one or two cells.
 - **Browser: both stages compress to the end on both recordings,** after a fix for a file-handle stall in Chrome. The
-  compress worker needs 1.45 to 24.25 ms per frame, against a frame interval of 50 ms.
+  compress worker's compute time is 1.45 to 24.25 ms per frame (session means), against a frame interval of 50 ms.
+  This was measured on file recordings; live latency was not measured.
 - Open points:
   - The factors of `chosen` are about twice the bytes of plain tiles (the two v2 per-pixel arrays are 11 to 23 percent
     of them).
@@ -27,18 +31,19 @@ Summary:
 
 ## Gate A1
 
-| recording | QC-pass cells (lost) | 1 truth: median, 5th pct                  | 2 footprint loss | 3 trace loss           | 4 jump, arm against raw | gate |
-| --------- | -------------------- | ----------------------------------------- | ---------------- | ---------------------- | ----------------------- | ---- |
-| wl200     | 63 (0)               | +0.0132, -0.0272 (22 cells): pass         | 0.0052: pass     | 0.1039: does not apply | 0.968 / 0.976: pass     | pass |
-| wl24_01   | 58 (0)               | no truth: does not apply                  | 0.0086: pass     | 0.0441: pass           | 1.060 / 0.995: pass     | pass |
-| wl24_04   | 40 (0)               | no truth: does not apply                  | 0.0072: pass     | 0.0487: pass           | 1.099 / 1.049: pass     | pass |
-| plain     | 142 (0)              | +0.0016, -0.0050 (135 cells): pass        | 0.0000: pass     | 0.0015: does not apply | 0.965 / 0.962: pass     | pass |
-| v4        | 202 (0)              | no truth: does not apply                  | 0.0000: pass     | 0.0010: pass           | 0.931 / 0.929: pass     | pass |
-| motion    | 178 (0)              | not usable (median 0.403): does not apply | 0.0006: pass     | 0.0009: pass           | 0.890 / 0.897: pass     | pass |
+| recording | QC-pass cells (lost) | 1 truth: median, 5th pct                  | 2 footprint loss | 3 trace loss           | 4 jump, arm / raw   | gate |
+| --------- | -------------------- | ----------------------------------------- | ---------------- | ---------------------- | ------------------- | ---- |
+| wl200     | 63 (0)               | +0.0132, -0.0272 (22 cells): pass         | 0.0052: pass     | 0.1039: does not apply | 0.968 / 0.976: pass | pass |
+| wl24_01   | 58 (0)               | no truth: does not apply                  | 0.0086: pass     | 0.0441: pass           | 1.060 / 0.995: pass | pass |
+| wl24_04   | 40 (0)               | no truth: does not apply                  | 0.0072: pass     | 0.0487: pass           | 1.099 / 1.049: pass | pass |
+| plain     | 142 (0)              | +0.0016, -0.0050 (135 cells): pass        | 0.0000: pass     | 0.0015: does not apply | 0.965 / 0.962: pass | pass |
+| v4        | 202 (0)              | no truth: does not apply                  | 0.0000: pass     | 0.0010: pass           | 0.931 / 0.929: pass | pass |
+| motion    | 178 (0)              | not usable (median 0.403): does not apply | 0.0006: pass     | 0.0009: pass           | 0.890 / 0.897: pass | pass |
 
 The arm `chosen` against `raw`, per recording, as the A1 table at the end of each recording's `report.md` gives it.
 The limits are: rule 1 median at least -0.01 and 5th percentile at least -0.05; rule 2 at most 0.02; rule 3 at most
-0.08; rule 4 at most 0.10 above raw. `chosen` passes gate A1 on all six recordings. No rule failed.
+0.08; rule 4 at most 0.10 above raw. `chosen` passes gate A1 on all six recordings. No rule failed. On `wl200` the
+trace loss (0.104) is above the 0.08 of rule 3, which does not apply there; its pass rests on rule 1 over 22 cells.
 
 The closest margins:
 
@@ -69,9 +74,10 @@ Two points of the gate as built, for the user:
 folder, with the log `run_all.log`. All 27 arms ended with return code 0.
 
 - **Build.** The release `qc_eval` was built at commit 6e5871e6. `run_all.log` prints the checkout's HEAD at the start
-  of the runs (a99ee8c6); the Rust sources did not change between the two. The later commits, up to this report's,
-  change neither what the compressor computes nor what the gate computes; the review of the whole branch checked this.
-  The reports were rebuilt with the final gate code (c57a831c) from the same runs.
+  of the runs (a99ee8c6); the Rust sources did not change between the two. The later commits do not change what the
+  compressor computes; the review of the whole branch checked this. One later commit changed the gate: 333d62e3 makes
+  a lost cell fail by its flag and handles inconsistent inputs. The per-recording reports were therefore rebuilt from
+  the same runs with the final gate code (c57a831c); the verdicts did not change.
 - **Scale, as in phase 0.** 200 px recordings (`wl200`, `wl24_01`, `wl24_04`): first 12000 frames, 5 refine replays, 3
   runs at once. 600 px recordings (`plain`, `v4`, `motion`): first 6000 frames, 2 refine replays, 2 runs at once.
 - **Budget.** 3,000,000 slow-loop work units per frame on every arm, a tenth of `qc_eval`'s default. `null_lo` and
@@ -100,24 +106,24 @@ by hand.
 
 ## Against plain recalibrated factors
 
-| recording | arm           | trace loss (lag 1) | footprint loss | jump raw / arm | mean rank | MB per 1000 frames | compression ms per frame | gate A1 |
+| recording | arm           | trace loss (lag 1) | footprint loss | jump arm / raw | mean rank | MB per 1000 frames | compression ms per frame | gate A1 |
 | --------- | ------------- | ------------------ | -------------- | -------------- | --------- | ------------------ | ------------------------ | ------- |
-| wl200     | `plain_recal` | 0.11646            | 0.00628        | 0.979 / 1.738  | 5.8       | 2.6                | 1.17                     | fail    |
-| wl200     | `chosen`      | 0.10390            | 0.00519        | 0.976 / 0.968  | 5.0       | 4.9                | 2.20                     | pass    |
-| wl24_01   | `plain_recal` | 0.04440            | 0.00969        | 1.150 / 1.325  | 11.4      | 4.9                | 1.04                     | fail    |
-| wl24_01   | `chosen`      | 0.04411            | 0.00857        | 0.995 / 1.060  | 11.4      | 9.6                | 2.05                     | pass    |
-| wl24_04   | `plain_recal` | 0.05555            | 0.00838        | 1.071 / 1.507  | 9.3       | 4.0                | 1.10                     | fail    |
-| wl24_04   | `chosen`      | 0.04866            | 0.00722        | 1.049 / 1.099  | 9.4       | 8.1                | 2.16                     | pass    |
-| plain     | `plain_recal` | 0.00177            | 0.00006        | 0.933 / 0.960  | 4.5       | 20.5               | 8.55                     | pass    |
-| plain     | `chosen`      | 0.00147            | 0.00003        | 0.962 / 0.965  | 4.6       | 41.4               | 17.06                    | pass    |
-| v4        | `plain_recal` | 0.00136            | 0.00000        | 0.895 / 0.925  | 7.9       | 29.7               | 8.49                     | pass    |
-| v4        | `chosen`      | 0.00101            | 0.00000        | 0.929 / 0.931  | 8.0       | 60.4               | 17.16                    | pass    |
-| motion    | `plain_recal` | 0.00111            | 0.00081        | 0.929 / 0.958  | 6.1       | 25.0               | 8.73                     | pass    |
-| motion    | `chosen`      | 0.00091            | 0.00063        | 0.897 / 0.890  | 6.1       | 49.8               | 17.25                    | pass    |
+| wl200     | `plain_recal` | 0.11646            | 0.00628        | 1.738 / 0.979  | 5.8       | 2.6                | 1.17                     | fail    |
+| wl200     | `chosen`      | 0.10390            | 0.00519        | 0.968 / 0.976  | 5.0       | 4.9                | 2.20                     | pass    |
+| wl24_01   | `plain_recal` | 0.04440            | 0.00969        | 1.325 / 1.150  | 11.4      | 4.9                | 1.04                     | fail    |
+| wl24_01   | `chosen`      | 0.04411            | 0.00857        | 1.060 / 0.995  | 11.4      | 9.6                | 2.05                     | pass    |
+| wl24_04   | `plain_recal` | 0.05555            | 0.00838        | 1.507 / 1.071  | 9.3       | 4.0                | 1.10                     | fail    |
+| wl24_04   | `chosen`      | 0.04866            | 0.00722        | 1.099 / 1.049  | 9.4       | 8.1                | 2.16                     | pass    |
+| plain     | `plain_recal` | 0.00177            | 0.00006        | 0.960 / 0.933  | 4.5       | 20.5               | 8.55                     | pass    |
+| plain     | `chosen`      | 0.00147            | 0.00003        | 0.965 / 0.962  | 4.6       | 41.4               | 17.06                    | pass    |
+| v4        | `plain_recal` | 0.00136            | 0.00000        | 0.925 / 0.895  | 7.9       | 29.7               | 8.49                     | pass    |
+| v4        | `chosen`      | 0.00101            | 0.00000        | 0.931 / 0.929  | 8.0       | 60.4               | 17.16                    | pass    |
+| motion    | `plain_recal` | 0.00111            | 0.00081        | 0.958 / 0.929  | 6.1       | 25.0               | 8.73                     | pass    |
+| motion    | `chosen`      | 0.00091            | 0.00063        | 0.890 / 0.897  | 6.1       | 49.8               | 17.25                    | pass    |
 
 Losses of the QC-pass cells, footprint jump at tile lines, and the cost of the factors, for the two factor arms.
-`chosen` has a lower trace loss and a lower footprint loss than `plain_recal` on all six recordings; on `wl24_01` the
-trace loss is nearly the same (0.04411 against 0.04440). `plain_recal` fails rule 4 on the three 200 px recordings
+`chosen` has a lower trace loss than `plain_recal` on all six recordings, and a lower or equal footprint loss (equal on
+`v4`, both 0.00000); on `wl24_01` the trace loss is nearly the same (0.04411 against 0.04440). `plain_recal` fails rule 4 on the three 200 px recordings
 (jump up by 0.759, 0.175 and 0.436) and passes it at 600 px. `chosen` costs about twice the bytes and twice the
 compression time of `plain_recal`. Its mean rank is the same, except on `wl200` (5.0 against 5.8).
 
@@ -151,7 +157,11 @@ file), and phase 0's size for the closest arm. The v2 arrays are 11 to 23 percen
 0.53 MB per 1000 frames per grid at 200 px and 4.8 MB at 600 px, so the share is largest where the rank is low
 (`wl200`, `plain`). Without them, `plain_recal` at 200 px is the size of phase 0's `recal_iter2` (2.08 against 2.1).
 Phase 0 has no arm with the same factors as `chosen`: its `offset` arm used the factors of Discover with one power
-iteration, which have a higher rank on `v4` (12.2 against 8.0) and are larger there.
+iteration, which have a higher rank on `v4` (12.2 against 8.0) and are larger there. On the other five recordings
+`chosen` is larger than phase 0's `offset` even without the v2 arrays, with a higher mean rank (at 200 px 3.82, 8.50
+and 6.99 against 3.5, 7.2 and 6.2 MB per 1000 frames, rank 5.0, 11.4 and 9.4 against 4.7, 9.5 and 8.2; at 600 px
+31.78 and 40.23 against 30.2 and 37.5). Inferred: two power iterations keep more components, as phase 0 measured on
+plain tiles (`recal_iter2`); the two arms also differ in their calibration.
 
 ## Compression time against the frame budget
 
@@ -176,9 +186,10 @@ These times were measured under load: the runs shared the machine with the test 
 
 ### Browser
 
-With `?compress`, every window of both stages was compressed on both recordings, and the compress worker needs at most
-24.25 ms per frame, half the 50 ms frame interval. Compression runs in a worker of its own, in WebAssembly on the CPU;
-it does not slow the stages themselves by more than 4 percent.
+With `?compress`, every window of both stages was compressed on both recordings. The compress worker's compute time is
+at most 24.25 ms per frame as a session mean, half the 50 ms frame interval. Compression runs in a worker of its own,
+in WebAssembly on the CPU. Stage seconds differ by -5 to +4 percent between one default and one `?compress` run per
+recording; the cell counts differ and the spread is unknown.
 
 Stage seconds, from the app's own stage records in each export:
 
@@ -204,24 +215,33 @@ units of 2^20 bytes). The last two columns are measured from the app's stage end
 waits for the last window (polling every 0.5 s): an upper bound, close to the true time when the wait is long. In the
 default runs the same step took at most 0.1 s.
 
-- The stages run faster than real time (about 1200 frames per second at 200 px, 120 to 150 at 600 px), and compression
-  falls behind them on file recordings: on `v4` the last window of Extract's replay was compressed 708 s after Extract
-  ended. Against the camera's 20 fps it keeps up: from the start of a stage to its last window the worker took at most
-  38.14 ms per frame, three quarters of the frame interval, and its compute time is at most half of it.
+- The stages read the file faster than real time (about 1200 frames per second at 200 px, 120 to 150 at 600 px), and
+  compression falls behind them, with windows queued on disk: on `v4` the last window of Extract's replay was
+  compressed 708 s after Extract ended. From stage start to last window the chain took 1.67, 3.30, 18.08 and 38.14 ms
+  per frame. So it sustains at least 26 frames per second in the slowest case (`v4`, offset replay), a margin of 24
+  percent to the 50 ms interval; one run each.
+- A live run has no replay (spec A4), so the live case is Discover's plain factors: on `v4` 12.54 ms per frame of
+  compute and 18.08 from stage start to last window.
+- Not measured: the delay per window (last frame in to window compressed), the slowest window in the browser (the
+  ms per frame are session means), and any live source.
+- Load: no `qc_eval` or `discover_eval` process ran at the start of each run; that was checked at the start only, and
+  for those two programs only. A code review that read files ran during the two `wl24_01` runs (about 20:53 to 20:55).
+  The app and Rust test suites ran after 21:30, after the last run.
 - Extract's replay replaces Discover's factors in the store. The compress worker clears the store when a new
   compression session starts, so the 371.0 and 1301.6 MB of the replay are the only factors on disk after the run; the
   two sizes do not add up.
 - The cell counts differ between default and `?compress` runs (89 against 84, 822 against 808), as in phase 0, so the
-  stage times are not a like-for-like comparison. The stage ratios are close to 1 either way.
+  stage times are not a like-for-like comparison.
 - Each configuration ran once; there is no spread.
 
 ### The phase's gate sentence
 
-"Compression time of that combination within the live frame budget": natively, on one thread, `chosen` is within the
-budget on `wl24_01` (2.05 ms per frame against 50) and on `v4` (17.16 against 50), and on the other four recordings. In
-the browser the offset-grid replay needs 2.82 and 24.25 ms per frame of compute, within the budget on both recordings.
-Only the compression is compared with the budget; whether it fits beside the rest of the pipeline on a machine with
-fewer cores was not measured.
+The spec's sentence is "compression time of that combination within the live frame budget". The evidence is compute
+time on file recordings. Natively, on one thread, `chosen` needs 2.05 ms per frame on `wl24_01` and 17.16 on `v4`
+against 50, and at most 17.25 on the other four (bounded runs, under load). In Chrome the offset-grid replay needs
+2.82 and 24.25 ms per frame of compute (session means), and the chain from stage start to last window sustains at
+least 26 frames per second. Live latency was not measured, nor whether compression fits beside the rest of the
+pipeline on a machine with fewer cores.
 
 ## Valid share
 
@@ -255,16 +275,23 @@ Two earlier browser series are void. Their outputs are kept in the run folder as
 2. **Stale build.** The second series (18:09 and 19:12) served a build made at 16:32 from a99ee8c6, before the last
    fixes of the phase. Fixes a109d534 and ddb1fcdd: the driver refuses a build older than the sources (`--stale-build`
    overrides) and records the build time in `status.json` (`built`).
-3. **Compression stopped partway, without an error.** In both void series and in probes of the then-current build, the
-   compress status stopped growing during a stage and never turned final: `wl24_01` at 52, 23 and 21 of 68 windows,
-   `v4` at 10 of 40, Extract's replay once at 16 of 68. The cause: Chrome (version 158) never settles a pending
-   `createSyncAccessHandle()` when its file handle is garbage-collected during the call, and the compress file store
-   called it on a temporary handle. A lost open stops the compress worker's queue. In an isolated test with forced
-   collections, 19 of 20 opens on a temporary handle were lost, and none of 20 with the handle kept; `createWritable`
-   and `getFileHandle` lost none. The v2.19.1 build stalled the same way (43 windows, then a page crash), so the fault
-   predates this branch. Fix e683600e: the store keeps every handle referenced until its call settles. aeaabf85 does
-   the same in the export writer, where no failure was seen. With the fix, one probe and the two `?compress`
-   runs above compressed every window. Probe builds with extra logging never stalled, so they are not evidence for the fix.
+3. **Compression stopped partway, without an error.** The compress status stopped growing during a stage and never
+   turned final, in seven runs:
+   - stale-build series: `wl24_01` at 52 of 68 windows, `v4` at 10 of 40;
+   - probes of the current build: `probe1` at 23 and `clean_1` at 21 of 68 (`wl24_01`);
+   - the wrong (v2.19.1) build: 43 windows, then a page crash, so the fault predates this branch;
+   - a probe build with an unrelated one-line change (the message payload read earlier): `early_1` complete in
+     Discover and stopped at 16 of 68 in Extract's replay, `early_2` at 36 of 68.
+
+   Shown: in an isolated test (`opfs_gc_probe.mjs`, kept with the run notes, not in the repository; Chrome 158,
+   garbage collections forced during the call, 20 opens each), a pending `createSyncAccessHandle()` never settled in
+   19 of 20 opens when its file handle was a temporary, and in 0 of 20 when the handle was kept; `createWritable` and
+   `getFileHandle` lost none. Inferred: that this is what stopped the app. The compress file store used exactly that
+   pattern; the signature fits (the worker's queue stops, the pending windows drain to 0, no error); and after the fix
+   6 of 6 stages compressed every window (`fix_1`, `wl24_01_compress` and `v4_compress`, two stages each), against 7
+   stalled runs before. Fix e683600e: the store keeps every handle referenced until its call settles. aeaabf85 does
+   the same in the export writer, where no failure was seen. Probe builds with extra logging never stalled, so they
+   are not evidence for the fix.
 
 For phase 0 this means: its browser runs (18 Nov, 11:42 to 12:13) used port 4181 too, so their stage times were very
 probably measured on the v2.19.1 build, not on the phase 0 branch (inferred from the port and the server's start time;
@@ -299,14 +326,14 @@ native results, which carried its gate decision, are not affected.
 - The history review still reads Discover's factors on plain tiles; reading the offset grids belongs to phase 4.
 - Nothing reads the discarded variance or the valid share yet. Extract on factors (phase 2) and Refine on factors
   (phase 3) do.
+- A small code fix: the compress status's mean rank (also in the status bar) is the last window's, not the
+  session's (see "Notes on the data").
 
 ## Notes on the data
 
 - The browser's "mean rank" in the compress status is that of the last window only, which is short (34 frames on
   `wl24_01`, 311 on `v4`) and keeps few components: it reads 1.00 on `wl24_01` and 3.74 and 3.91 on `v4`. It is left
   out of the browser table. The status bar shows the same value.
-- `run_all.log` lists the lines of `raw`, `plain_recal` and `chosen` twice for `plain`. Each `run.json` holds one run
-  per arm, with return code 0.
 - `motion`'s truth match is as in phase 0: frame offset (+15.5, +0.7) px, 145 of 262 cells matched, raw median truth
   correlation 0.4602 over all matched cells. It is not usable for rule 1.
 - The flat field of the three synthetic sets got no map in any run (every update skipped: too little motion), as in

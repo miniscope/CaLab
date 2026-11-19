@@ -472,7 +472,7 @@ Two unrelated single-thread jobs started on the machine at about 12:07. The last
 `v4` with `?compress` (12:01 to 12:13) shared the machine with them; the other three runs did not. The cell counts
 differ between default and `?compress` (84 against 90, 825 against 839), so the frames per second are not a
 like-for-like comparison. With that caveat, compression added about 4 percent to Discover on `wl24_01` and about 26
-percent on `v4`.
+percent on `v4` (void, see the correction note above).
 
 ## Remedies: the rank cut (200 px recordings)
 
@@ -591,9 +591,9 @@ correlation median 0.7608 for raw and 0.8486 for `plain` over 28 cells (paired d
   This was not investigated; the truth numbers on `motion` should be read with care.
 - Browser: the driver's own status file gives other stage times than the app's stage records (for example Discover of
   `wl24_01` default 15.0 s against 33.0 s). The driver polls in steps of about 15 s, so its times are coarse. The table
-  uses the app's records.
+  uses the app's records (void, see the correction note in "Browser").
 - The browser table uses the four cala exports: the CaDecon exports hold no stage records
-  (`tools/cala-eval/stage_times.py` prints "no stage records" for them).
+  (`tools/cala-eval/stage_times.py` prints "no stage records" for them) (void, see the correction note in "Browser").
 - QC pass is read from the reference run of each comparison, so `x_raw` and `raw` count slightly different QC-pass cells
   (for example 62 against 63 on `wl200`).
 
@@ -611,7 +611,8 @@ correlation median 0.7608 for raw and 0.8486 for `plain` over 28 cells (paired d
 - Recall and precision against the truth were not computed, only the trace correlation of matched cells.
 - Peak memory was measured per run, not per stage. Frames of history per gigabyte were not computed.
 - The `x_` arms have no null run, so their loss has no verdict.
-- Each browser configuration ran once; there is no spread for the browser times.
+- Each browser configuration ran once; there is no spread for the browser times (void, see the correction note in
+  "Browser").
 - The spec's remedies for dim cells (lower `rho_min`, higher starting rank) were not tried.
 
 ## Appendix: native stage times of the `raw` arm
