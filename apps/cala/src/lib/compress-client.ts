@@ -4,6 +4,7 @@
  * worker), and passes its status to a listener.
  */
 import type { FrameClient } from './frame-client.ts';
+import { newRunFolder } from './window-store.ts';
 import type { CompressToMain, MainToCompress } from '../workers/compress-types.ts';
 
 export interface CompressClient {
@@ -11,6 +12,8 @@ export interface CompressClient {
   backfill(session: number, version: number): void;
   /** Extract on factors: solve every compressed window with `library` as job `job` (the bytes are transferred). */
   extract(session: number, job: number, library: Uint8Array): void;
+  /** The run folder the compress worker owns (`cala-compress/<folder>`): where its factor files are. */
+  readonly folder: string;
   dispose(): void;
 }
 
@@ -26,6 +29,8 @@ export function createCompressClient(
     new Worker(new URL('../workers/compress-worker.ts', import.meta.url), { type: 'module' }),
   /** History review: the port to the review worker and the windows between two reviews. */
   review?: { port: MessagePort; every: number },
+  /** The run folder's name (tests); default a new one. */
+  folder: string = newRunFolder(),
 ): CompressClient {
   const worker = makeWorker();
   const channel = new MessageChannel();
@@ -35,6 +40,7 @@ export function createCompressClient(
   const connect: MainToCompress = {
     type: 'connect',
     port: channel.port2,
+    run: folder,
     ...(review ? { review } : {}),
   };
   worker.postMessage(connect, [channel.port2, ...(review ? [review.port] : [])]);
@@ -42,6 +48,7 @@ export function createCompressClient(
     .connectCompress?.(channel.port1)
     .catch((err: unknown) => fail(err instanceof Error ? err.message : String(err)));
   return {
+    folder,
     backfill(session, version) {
       worker.postMessage({ type: 'backfill', session, version } satisfies MainToCompress);
     },

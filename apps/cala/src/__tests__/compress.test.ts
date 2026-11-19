@@ -12,6 +12,7 @@ import {
   TraceLibraryBuilder,
 } from '../lib/cala-wasm.ts';
 import { createCellStore } from '../lib/cell-store.ts';
+import { createCompressClient, type CompressWorkerLike } from '../lib/compress-client.ts';
 import { CompressFeed, compressFeedFor, compressFeedOptions } from '../lib/compress-feed.ts';
 import { CompressRunner, factorName, tilesOf } from '../lib/compress-runner.ts';
 import type { CompressRunnerDeps } from '../lib/compress-runner.ts';
@@ -1226,5 +1227,37 @@ describe('the batch driver waits for the final status of a stage', () => {
     expect(compressSettled({ ...st, pending: 2 }, 'replay')).toBe(false);
     expect(compressSettled(null, 'replay')).toBe(false);
     expect(compressSettled(null, 'discover')).toBe(false);
+  });
+});
+
+describe('the compress client', () => {
+  it('names the run folder its worker owns and tells the worker', () => {
+    const posted: unknown[] = [];
+    const worker = {
+      postMessage: (m: unknown) => void posted.push(m),
+      terminate() {},
+      onmessage: null,
+      onerror: null,
+    } as unknown as CompressWorkerLike;
+    const frames = { connectCompress: async () => {} };
+    const named = createCompressClient(
+      frames,
+      () => {},
+      () => worker,
+      undefined,
+      'run-test',
+    );
+    expect(named.folder).toBe('run-test');
+    expect(posted[0]).toMatchObject({ type: 'connect', run: 'run-test' });
+    const own = createCompressClient(
+      frames,
+      () => {},
+      () => worker,
+    );
+    expect(own.folder).toMatch(/^run-/);
+    expect(own.folder).not.toBe('run-test');
+    expect(posted[1]).toMatchObject({ type: 'connect', run: own.folder });
+    named.dispose();
+    own.dispose();
   });
 });

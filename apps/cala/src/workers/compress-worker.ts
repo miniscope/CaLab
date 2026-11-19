@@ -15,7 +15,7 @@ import {
   TileCompressor,
 } from '../lib/cala-wasm.ts';
 import { CompressRunner } from '../lib/compress-runner.ts';
-import { opfsStore } from '../lib/window-store.ts';
+import { opfsStore, type WindowStore } from '../lib/window-store.ts';
 import type { CompressToMain, FastToCompress, MainToCompress } from './compress-types.ts';
 import type { CompressToReview } from './review-types.ts';
 
@@ -29,7 +29,8 @@ let reviewPort: MessagePort | null = null;
 let runner: CompressRunner | null = null;
 // Messages are handled one at a time, after the WASM module is ready.
 let queue: Promise<void> = Promise.resolve();
-const store = opfsStore();
+/** The run folder's store, built at the first `connect` under the name the main thread gave. */
+let store: WindowStore | null = null;
 
 workerScope.onmessage = (e) => {
   const data = e.data;
@@ -63,8 +64,10 @@ workerScope.onmessage = (e) => {
   port = data.port;
   reviewPort = data.review?.port ?? null;
   const toReview = reviewPort;
+  // One folder per worker: the first connect names it (the main thread's `folder`).
+  const runStore = (store ??= opfsStore(data.run));
   const r = new CompressRunner({
-    store,
+    store: runStore,
     quantize: quantizeTiles,
     layout: tileLayout,
     header: factorHeader,

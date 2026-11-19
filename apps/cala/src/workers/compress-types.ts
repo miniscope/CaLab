@@ -128,7 +128,17 @@ export type MainToCompress =
    * The port to the fast worker and, with the history review on, the port to
    * the review worker and the closed windows between two reviews.
    */
-  | { type: 'connect'; port: MessagePort; review?: { port: MessagePort; every: number } }
+  | {
+      type: 'connect';
+      port: MessagePort;
+      /**
+       * The OPFS run folder this worker owns (`cala-compress/<run>`), named by
+       * the main thread so that the slow worker can read its factor files
+       * (absent: a name of the worker's own).
+       */
+      run?: string;
+      review?: { port: MessagePort; every: number };
+    }
   /**
    * Solve the traces of every compressed window with the library `version`
    * (or a newer one), once that library has arrived and no window is waiting.

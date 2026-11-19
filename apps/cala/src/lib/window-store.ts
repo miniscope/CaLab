@@ -42,6 +42,11 @@ interface DirHandle {
 /** The OPFS folder of every run's compression files. */
 export const COMPRESS_ROOT = 'cala-compress';
 
+/** A new run folder name (`cala-compress/<name>`), unique to this context. */
+export function newRunFolder(): string {
+  return `run-${Date.now().toString(36)}-${crypto.randomUUID()}`;
+}
+
 /**
  * Handles with a call in flight. Chrome (seen with 158) never settles the
  * promise of a pending `createSyncAccessHandle()` once its file handle is
@@ -130,7 +135,7 @@ const webLocks = (): Locks | null =>
  * fakes; null: none).
  */
 export function opfsStore(
-  run = `run-${Date.now().toString(36)}-${crypto.randomUUID()}`,
+  run = newRunFolder(),
   top: () => Promise<unknown> = () => navigator.storage.getDirectory(),
   locks: Locks | null = webLocks(),
 ): WindowStore {
@@ -171,6 +176,63 @@ export function opfsStore(
       const names: string[] = [];
       for await (const name of d.keys()) names.push(name);
       for (const name of names) await d.removeEntry(name).catch(() => {});
+    },
+  };
+}
+
+/** The factor windows of a run, as the slow worker reads them (Refine on the factors). */
+export interface FactorReader {
+  readonly windows: number;
+  /** Window `w`'s whole factor file. */
+  read(w: number): Uint8Array;
+  /** Close every file (once; later reads throw). */
+  close(): void;
+}
+
+/**
+ * Open the factor files `names` of the run folder `cala-compress/<run>` for
+ * reading, from a context that does not own the folder: it never creates,
+ * lists or removes anything (the owner's lock protects the folder; only the
+ * owner sweeps). Each awaited call runs through `pinned`. A missing folder or
+ * file rejects, after closing the files opened so far.
+ */
+export async function openFactorReader(
+  run: string,
+  names: readonly string[],
+  top: () => Promise<unknown> = () => navigator.storage.getDirectory(),
+): Promise<FactorReader> {
+  const handles: SyncHandle[] = [];
+  try {
+    const origin = (await top()) as DirHandle;
+    const root = await pinned(origin, (o) => o.getDirectoryHandle(COMPRESS_ROOT));
+    const dir = await pinned(root, (r) => r.getDirectoryHandle(run));
+    for (const name of names) {
+      const file = await pinned(dir, (d) => d.getFileHandle(name));
+      handles.push(await pinned(file, (f) => f.createSyncAccessHandle()));
+    }
+  } catch (err) {
+    for (const h of handles) h.close();
+    throw new Error(
+      `The factor files of this run cannot be opened: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+  let open = true;
+  return {
+    windows: names.length,
+    read(w) {
+      const h = open ? handles[w] : undefined;
+      if (!h) throw new Error(`No factor window ${w}.`);
+      const out = new Uint8Array(h.getSize());
+      const n = h.read(out, { at: 0 });
+      if (n !== out.length)
+        throw new Error(`Factor window ${w}: read ${n} of ${out.length} bytes.`);
+      return out;
+    },
+    close() {
+      if (!open) return;
+      open = false;
+      for (const h of handles) h.close();
     },
   };
 }
