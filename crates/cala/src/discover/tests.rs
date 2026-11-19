@@ -8,13 +8,13 @@ use crate::preprocess::flatten::{FlattenConfig, GlowFlattener};
 use crate::preprocess::fov::FovMask;
 use crate::trace::{Footprint, LibraryBuilder, SolverConfig, TraceEngine};
 
-const N: usize = 96;
+pub(super) const N: usize = 96;
 
-fn dims() -> Dims {
+pub(super) fn dims() -> Dims {
     Dims::new(N, N).unwrap()
 }
 
-fn flattener() -> GlowFlattener {
+pub(super) fn flattener() -> GlowFlattener {
     let cfg = FlattenConfig {
         cell_diameter_px: 10.0,
         ..FlattenConfig::default()
@@ -22,7 +22,7 @@ fn flattener() -> GlowFlattener {
     GlowFlattener::new(&FovMask::full(dims()), &cfg).unwrap()
 }
 
-struct Lcg(u64);
+pub(super) struct Lcg(pub(super) u64);
 impl Lcg {
     fn next(&mut self) -> f32 {
         self.0 = self
@@ -59,7 +59,7 @@ fn blob(id: u64, cy: f32, cx: f32) -> Footprint {
 }
 
 /// Sparse calcium-like trace: events at random times, exponential decay.
-fn trace(rng: &mut Lcg, t: usize, rate: f32, amp: f32) -> Vec<f32> {
+pub(super) fn trace(rng: &mut Lcg, t: usize, rate: f32, amp: f32) -> Vec<f32> {
     let mut c = vec![0.0f32; t];
     let mut v = 0.0f32;
     for k in 0..t {
@@ -73,7 +73,7 @@ fn trace(rng: &mut Lcg, t: usize, rate: f32, amp: f32) -> Vec<f32> {
 }
 
 /// The filtered movie `H Σ a_i c_i + noise` (σ = 1), frame-major.
-fn movie(cells: &[(Footprint, Vec<f32>)], t: usize, seed: u64) -> Vec<f32> {
+pub(super) fn movie(cells: &[(Footprint, Vec<f32>)], t: usize, seed: u64) -> Vec<f32> {
     let n_px = N * N;
     let mut flat = flattener();
     // Filtered footprints, once.
@@ -240,7 +240,7 @@ fn library_from_seed_matches_builder() {
 
 // ---- v2: evidence ledger, pruning, merging of established cells ----------
 
-fn v2_config() -> SlowLoopConfig {
+pub(super) fn v2_config() -> SlowLoopConfig {
     SlowLoopConfig {
         probation_frames: 300,
         probe_gap_frames: 20,
@@ -403,7 +403,7 @@ fn edit_counts_are_per_interval() {
 // ---- v3: model comparison, running statistics, splits ---------------------
 
 /// Gaussian soma of width `s` px (peak 1) as an unfiltered footprint.
-fn blob_w(id: u64, cy: f32, cx: f32, s: f32) -> Footprint {
+pub(super) fn blob_w(id: u64, cy: f32, cx: f32, s: f32) -> Footprint {
     let mut fp = blob(id, cy.round(), cx.round());
     for y in 0..fp.height {
         for x in 0..fp.width {
