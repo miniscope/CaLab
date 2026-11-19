@@ -965,6 +965,12 @@ git commit -m "feat(cala): the compressor's randomized SVD runs two power iterat
 
 ### Task 5: Gate A1 in the closeness report and the arm of the chosen combination
 
+> **Corrected in review (18 Nov 2026).** The code blocks of this task differ from what was built in three points, and the built version is the valid one:
+>
+> - "Usable truth" is decided on the raw run alone (QC-pass cells with a finite raw truth correlation, at least 20 of them, median at least 0.8), as spec A1 says. The code below decides it on cells matched in both runs.
+> - A QC-pass cell that the factor run lost, or whose value is not finite, counts as the worst case in every rule (loss 1.0; truth correlation 0). The spec does not settle this; it is a ruling made during review and is open to the user's decision. The gate table prints how many cells are missing.
+> - `line_step` reads `--tiling offset` from the arm's command instead of a list of arm names, and a value exactly at a limit passes (tolerance 1e-9).
+
 **Files:**
 
 - Modify: `tools/cala-eval/factor_closeness.py`, `tools/cala-eval/test_factor_closeness.py`
