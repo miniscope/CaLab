@@ -32,7 +32,10 @@ Discover pass 1 is the same in all runs, and a refine replay keeps the cell set)
 A loss is the median of `1 - value` over the QC-pass cells. The judged measures
 are `trace_r1` and `fp_cos`; the plain `trace_r` is printed but not gated. The test
 run is `within` the null spread when its loss is at most the largest null loss.
-The report ends with gate A1 of the spec's Amendment 1.
+The report ends with gate A1 of the spec's Amendment 1. Its rule 5 (Amendment 3) needs
+the null runs: the test run may lose at most as many QC-pass cells as the null run that
+lost most. With `--match` the null runs are paired with `--ref` by footprint too, so they
+should then be look-back runs (`lb_raw` at another `--budget`).
 Needs numpy.
 """
 
@@ -253,6 +256,19 @@ def match_cells(
             out[ia] = ib
             used.add(ib)
     return out
+
+
+def unpartnered(
+    fa: dict[int, Cell], fb: dict[int, Cell], pairs: dict[int, int] | None
+) -> set[int]:
+    """Cells of the second run with no cell of the first: no partner in `pairs`, or,
+    without pairs, an id the first run does not have."""
+    return set(fb) - (set(pairs.values()) if pairs is not None else set(fa))
+
+
+def counts(values: list[int]) -> str:
+    """Counts of several runs as text: `3, 5`."""
+    return ", ".join(str(v) for v in values)
 
 
 def line_distance(c: float, n: int, tile: int) -> float:
@@ -528,18 +544,29 @@ def a1_loss(qc: list[Row], key: str) -> float:
     return float(np.median([1.0 - a1_value(r, key) for r in qc]))
 
 
+def lost_qc(rows: list[Row]) -> int:
+    """QC-pass cells of the reference run that the other run does not have."""
+    return sum(1 for r in rows if r["qc_pass"] and not r.get("in_test", 1.0))
+
+
 def a1_gate(
-    rows: list[Row], jump_ref: float, jump_test: float
+    rows: list[Row],
+    jump_ref: float,
+    jump_test: float,
+    null_lost: list[int] | None = None,
 ) -> list[tuple[str, str, bool | None]]:
-    """(rule, measured, passed) for the four rules of gate A1, on the QC-pass cells.
+    """(rule, measured, passed) for the five rules of gate A1, on the QC-pass cells.
 
     A QC-pass cell that the test run lost, or whose value is not finite, counts as the
-    worst case in every rule (loss 1; truth correlation 0 in the test run).
+    worst case in rules 1 to 3 (loss 1; truth correlation 0 in the test run).
     The truth is usable when it is a property of the reference run alone: at least
     `A1_TRUTH_MIN_CELLS` QC-pass cells have a finite reference truth correlation and
     their median is at least `A1_TRUTH_MIN_R`. The truth rule applies then, the trace rule
-    otherwise. `passed` is `None` for a rule that does not apply; a value that cannot be
-    computed fails its rule.
+    otherwise. Rule 5 (the spec's Amendment 3) has no fixed limit: the test run may lose
+    at most as many QC-pass cells as the null run that lost most (`null_lost`, one count
+    per null run against the same reference); it does not apply without null runs.
+    `passed` is `None` for a rule that does not apply; a value that cannot be computed
+    fails its rule.
     """
     qc = [r for r in rows if r["qc_pass"]]
     truth = [r for r in qc if math.isfinite(r["truth_r_ref"])]
@@ -590,6 +617,18 @@ def a1_gate(
             jump_test <= jump_ref + A1_JUMP_OVER_RAW + A1_TOL,
         )
     )
+    n_lost = lost_qc(rows)
+    if null_lost:
+        most = max(null_lost)
+        out.append(
+            (
+                "5 lost cells",
+                f"{n_lost} of {len(qc)} lost, at most {most} in a null run",
+                n_lost <= most,
+            )
+        )
+    else:
+        out.append(("5 lost cells", f"{n_lost} of {len(qc)} lost, no null runs", None))
     return out
 
 
@@ -724,8 +763,8 @@ def report(
     """The Markdown comparison of `test` with `ref`, judged against the `nulls`.
 
     With `match`, cells are paired by footprint (`match_cells`) instead of by id: for runs
-    whose Discover differed (look-back). The `nulls` are compared with `ref` by id either
-    way, which is right only for nulls that share the reference's Discover. With `gate`
+    whose Discover differed (look-back). The `nulls` are paired with `ref` the way `test`
+    is, so with `match` they should be runs with their own Discover too. With `gate`
     false the A1 table stays but the verdict line says the gate is not applied. `title`
     replaces the heading line."""
     return report_rows(ref, test, nulls, tile, band, truth_path, match, gate, title)[0]
@@ -747,10 +786,16 @@ def report_rows(
     _, fb = read_footprints(test / "footprints.bin")
     pairs = match_cells(fa, fb, dims) if match else None
     rows, (dy, dx, n_off) = _compare(ref, test, tile, truth_path, pairs)
-    null_rows = [compare(ref, n, tile, None) for n in nulls]
+    null_rows: list[list[Row]] = []
+    null_extra: list[int] = []
+    for n in nulls:
+        _, fn = read_footprints(n / "footprints.bin")
+        # A null run is paired with the reference the way the test run is.
+        null_pairs = match_cells(fa, fn, dims) if match else None
+        null_rows.append(compare(ref, n, tile, None, null_pairs))
+        null_extra.append(len(unpartnered(fa, fn, null_pairs)))
     missing = sum(1 for r in rows if not r["in_test"])
-    partners = set(pairs.values()) if pairs is not None else set(fa)
-    extra = len(set(fb) - partners)
+    extra = len(unpartnered(fa, fb, pairs))
     no_centroid = sum(1 for r in rows if math.isnan(r["edge_px"]))
     out = [title or f"### `{test.name}` against `{ref.name}`", ""]
     out.append(
@@ -856,10 +901,7 @@ def report_rows(
         if nulls:
             out += [
                 "",
-                (
-                    "The null runs are compared with the reference by id, which is right "
-                    "only when they share the reference's Discover."
-                ),
+                "The null runs are paired with the reference by footprint, like the test run.",
             ]
         paired = [r for r in rows if r["qc_pass"] and r["in_test"]]
         out += [
@@ -872,14 +914,22 @@ def report_rows(
             ),
         ]
     ja, jb = line_jump(fa, dims, tile), line_jump(fb, dims, tile)
-    a1 = a1_gate(rows, ja, jb)
+    null_lost = [lost_qc(n) for n in null_rows]
+    a1 = a1_gate(rows, ja, jb, null_lost)
     n_qc = sum(1 for r in rows if r["qc_pass"])
-    n_lost = sum(1 for r in rows if r["qc_pass"] and not r["in_test"])
+    n_lost = lost_qc(rows)
     out += [
         "",
         f"Footprint jump at tile lines over elsewhere: reference {ja:.3f}, test {jb:.3f}.",
         "",
         f"Gate A1 runs over {n_qc} QC-pass cells; {n_lost} of them are missing in the test run.",
+    ]
+    if nulls:
+        out.append(
+            f"The null runs miss {counts(null_lost)} of them; cells of their own that are "
+            f"not in the reference run: {counts(null_extra)} (test run: {extra})."
+        )
+    out += [
         "",
         "| A1 rule | measured | result |",
         "| --- | --- | --- |",

@@ -48,6 +48,7 @@ class Arms(unittest.TestCase):
             sorted(
                 list(A.REMEDIES)
                 + ["live", "lb_raw", "lb_fac", "lb_live", "f_chosen", "f_null"]
+                + ["lb_null_lo", "lb_null_hi"]
             ),
         )
 
@@ -200,6 +201,33 @@ class Arms(unittest.TestCase):
         )
         self.assertNotIn("--factors-out", cmd)
 
+    def test_look_back_nulls_are_lb_raw_at_half_and_twice_the_budget(self) -> None:
+        a = A.arms(5, 3_000_000)
+        self.assertEqual(a["lb_null_lo"], a["lb_raw"] + ["--budget", "1500000"])
+        self.assertEqual(a["lb_null_hi"], a["lb_raw"] + ["--budget", "6000000"])
+        d = A.arms(5)
+        self.assertEqual(d["lb_null_lo"], d["lb_raw"] + ["--budget", "15000000"])
+        self.assertEqual(d["lb_null_hi"], d["lb_raw"] + ["--budget", "60000000"])
+        # qc_eval takes the first occurrence of a flag: the run's budget is not added again.
+        for budget in (None, 3_000_000):
+            cmd = A.command(
+                Path("qc"), Path("rec"), Path("o"), a["lb_null_lo"], True, 100, budget
+            )
+            self.assertEqual(cmd.count("--budget"), 1)
+            self.assertEqual(cmd[cmd.index("--budget") + 1], "1500000")
+        raw = A.command(Path("qc"), Path("rec"), Path("o"), a["lb_raw"], True, 100, 7)
+        self.assertEqual(raw[-2:], ["--budget", "7"])
+        with self.assertRaisesRegex(ValueError, "--budget"):
+            A.command(
+                Path("qc"),
+                Path("rec"),
+                Path("o"),
+                a["lb_null_hi"],
+                True,
+                100,
+                extra=["--budget", "9"],
+            )
+
     def test_extra_repeating_a_look_back_arms_joint_flags_is_refused(self) -> None:
         with self.assertRaisesRegex(ValueError, "--joint-update"):
             A.command(
@@ -251,6 +279,43 @@ class Arms(unittest.TestCase):
                 "lb_live": ("lb_raw", True),
             },
         )
+
+    def test_look_back_comparisons_are_judged_against_the_look_back_nulls(self) -> None:
+        a = A.arms(5)
+        names = ["raw", "null_lo", "live", "lb_raw", "lb_fac", "lb_live", "lb_null_hi"]
+        with tempfile.TemporaryDirectory() as t:
+            out = Path(t)
+            for n in names:
+                (out / n).mkdir()
+                rec = {"arm": n, "cmd": ["qc"] + a[n], "returncode": 0, "wall_s": 1.0}
+                (out / n / "run.json").write_text(json.dumps(rec))
+            seen: dict[str, list[str]] = {}
+
+            def fake(ref: Path, test: Path, nulls: list[Path], **kw: object) -> str:
+                seen[test.name] = [p.name for p in nulls]
+                return ""
+
+            with mock.patch.object(A.factor_closeness, "report", fake):
+                A.report(out, names, None)
+        # A null run is never a test run, and each comparison gets the nulls of its kind.
+        self.assertEqual(
+            seen,
+            {"live": ["null_lo"], "lb_fac": ["lb_null_hi"], "lb_live": ["lb_null_hi"]},
+        )
+
+    def test_the_reports_budget_is_not_read_from_a_look_back_null(self) -> None:
+        a = A.arms(5, 3_000_000)
+        with tempfile.TemporaryDirectory() as t:
+            out = Path(t)
+            for n in ("lb_null_lo", "lb_raw"):
+                (out / n).mkdir()
+                cmd = A.command(
+                    Path("qc"), Path("rec"), out / n, a[n], True, 100, 3_000_000
+                )
+                rec = {"arm": n, "cmd": cmd, "returncode": 0, "wall_s": 1.0}
+                (out / n / "run.json").write_text(json.dumps(rec))
+            text = A.report(out, ["lb_null_lo", "lb_raw"], None)
+        self.assertIn("Slow-loop budget: 3000000 work units per frame.", text)
 
     def test_flat_field_and_look_back_rows(self) -> None:
         with tempfile.TemporaryDirectory() as t:

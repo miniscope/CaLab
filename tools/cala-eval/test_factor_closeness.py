@@ -438,16 +438,93 @@ class Closeness(unittest.TestCase):
         with_null = F.report(self.root / "a", self.root / "b", [self.root / "n"])
         self.assertNotIn(none, with_null)
 
-    def test_the_null_by_id_line_needs_null_runs(self) -> None:
+    def test_the_null_pairing_line_needs_null_runs_and_pairing(self) -> None:
         write_run(self.root / "a", CELLS, TRACES)
         write_run(self.root / "b", CELLS, TRACES)
         write_run(self.root / "n", CELLS, TRACES)
-        by_id = "compared with the reference by id"
+        line = "The null runs are paired with the reference by footprint"
         self.assertNotIn(
-            by_id, F.report(self.root / "a", self.root / "b", [], match=True)
+            line, F.report(self.root / "a", self.root / "b", [], match=True)
+        )
+        self.assertNotIn(
+            line, F.report(self.root / "a", self.root / "b", [self.root / "n"])
         )
         text = F.report(self.root / "a", self.root / "b", [self.root / "n"], match=True)
-        self.assertIn(by_id, text)
+        self.assertIn(line, text)
+
+    def test_null_runs_with_their_own_ids_are_paired_by_footprint(self) -> None:
+        a, b, n = self.root / "a", self.root / "b", self.root / "n"
+        qc = {c: (100, 1.0) for c in CELLS}
+        write_run(a, CELLS, TRACES, qc)
+        write_run(b, CELLS, TRACES)
+        # The null run found the same three cells under other ids.
+        cells_n = {201: CELLS[7], 9: CELLS[11], 203: CELLS[9]}
+        traces_n = {201: TRACES[7], 9: TRACES[11], 203: TRACES[9]}
+        write_run(n, cells_n, traces_n)
+        text = F.report(a, b, [n], match=True)
+        self.assertIn("The null runs miss 0 of them;", text)
+        self.assertIn("not in the reference run: 0 (test run: 0).", text)
+        self.assertIn(
+            "| 5 lost cells | 0 of 3 lost, at most 0 in a null run | pass |", text
+        )
+        # By id the null's cell 9 would meet another cell and its loss would not be 0.
+        self.assertIn(
+            "| QC pass | footprint cos | 3 | 0 | 0 | 0.00000 | 0.00000 | within |", text
+        )
+
+    def test_the_report_fails_a_run_that_loses_more_cells_than_the_null(self) -> None:
+        a, b, n1, n2 = (self.root / k for k in ("a", "b", "n1", "n2"))
+        many = {k: blob(10 + 12 * (k // 8), 10 + 12 * (k % 8)) for k in range(40)}
+        traces = {k: list(np.roll(T, k)) for k in many}
+        write_run(a, many, traces, {c: (100, 1.0) for c in many})
+
+        def without(gone: set[int]) -> tuple[dict, dict]:
+            return (
+                {k: v for k, v in many.items() if k not in gone},
+                {k: v for k, v in traces.items() if k not in gone},
+            )
+
+        write_run(b, *without({3, 17}))
+        write_run(n1, *without({5}))
+        write_run(n2, *without(set()))
+        text = F.report(a, b, [n1, n2], match=True)
+        self.assertIn("2 of them are missing in the test run.", text)
+        self.assertIn("The null runs miss 1, 0 of them;", text)
+        self.assertIn(
+            "| 5 lost cells | 2 of 40 lost, at most 1 in a null run | fail |", text
+        )
+        self.assertIn("| 2 footprints | loss 0.0000 | pass |", text)
+        self.assertIn("Gate A1: fail.", text)
+        ok = F.report(a, n1, [b, n2], match=True)
+        self.assertIn(
+            "| 5 lost cells | 1 of 40 lost, at most 2 in a null run | pass |", ok
+        )
+
+    def test_by_id_the_lost_cell_rule_reads_the_null_runs_by_id(self) -> None:
+        a, b, n = self.root / "a", self.root / "b", self.root / "n"
+        write_run(a, CELLS, TRACES, {c: (100, 1.0) for c in CELLS})
+        write_run(b, {7: CELLS[7], 9: CELLS[9]}, {7: TRACES[7], 9: TRACES[9]})
+        write_run(n, CELLS, TRACES)
+        text = F.report(a, b, [n])
+        self.assertIn(
+            "| 5 lost cells | 1 of 3 lost, at most 0 in a null run | fail |", text
+        )
+        self.assertIn("The null runs miss 0 of them;", text)
+        # The other way round the null lost a cell, so the run that lost none passes.
+        ok = F.report(a, n, [b])
+        self.assertIn(
+            "| 5 lost cells | 0 of 3 lost, at most 1 in a null run | pass |", ok
+        )
+
+    def test_without_null_runs_the_lost_cell_rule_does_not_apply(self) -> None:
+        a, b = self.root / "a", self.root / "b"
+        write_run(a, CELLS, TRACES, {c: (100, 1.0) for c in CELLS})
+        write_run(b, {7: CELLS[7], 9: CELLS[9]}, {7: TRACES[7], 9: TRACES[9]})
+        text = F.report(a, b, [], match=True)
+        self.assertIn(
+            "| 5 lost cells | 1 of 3 lost, no null runs | does not apply |", text
+        )
+        self.assertNotIn("The null runs miss", text)
 
     def test_gate_off_keeps_the_tables_and_replaces_the_verdict(self) -> None:
         write_run(self.root / "a", CELLS, TRACES)
@@ -497,28 +574,28 @@ class A1Gate(unittest.TestCase):
 
     def test_usable_truth_decides_and_the_trace_rule_does_not_apply(self) -> None:
         gate = F.a1_gate(self.rows(25, 0.85, 0.85, r1=0.80), 1.00, 1.05)
-        self.assertEqual(self.passed(gate), [True, True, None, True])
+        self.assertEqual(self.passed(gate), [True, True, None, True, None])
         self.assertTrue(F.a1_passes(gate))
 
     def test_a_few_much_worse_cells_fail_the_truth_rule(self) -> None:
         rows = self.rows(22, 0.85, 0.85) + self.rows(3, 0.85, 0.70)
         gate = F.a1_gate(rows, 1.0, 1.0)
-        self.assertEqual(self.passed(gate), [False, True, None, True])
+        self.assertEqual(self.passed(gate), [False, True, None, True, None])
         self.assertFalse(F.a1_passes(gate))
 
     def test_without_usable_truth_the_trace_loss_decides(self) -> None:
         nan = float("nan")
         none = F.a1_gate(self.rows(25, nan, nan, r1=0.90), 1.0, 1.0)
-        self.assertEqual(self.passed(none), [None, True, False, True])
+        self.assertEqual(self.passed(none), [None, True, False, True, None])
         # Truth that the raw run itself does not follow is not usable.
         weak = F.a1_gate(self.rows(25, 0.46, 0.60, r1=0.95), 1.0, 1.0)
-        self.assertEqual(self.passed(weak), [None, True, True, True])
+        self.assertEqual(self.passed(weak), [None, True, True, True, None])
         few = F.a1_gate(self.rows(19, 0.9, 0.5, r1=0.95), 1.0, 1.0)
-        self.assertEqual(self.passed(few), [None, True, True, True])
+        self.assertEqual(self.passed(few), [None, True, True, True, None])
 
     def test_footprint_and_tile_line_limits(self) -> None:
         gate = F.a1_gate(self.rows(25, 0.85, 0.85, fp=0.97), 1.10, 1.25)
-        self.assertEqual(self.passed(gate), [True, False, None, False])
+        self.assertEqual(self.passed(gate), [True, False, None, False, None])
 
     def test_cells_that_fail_qc_do_not_count(self) -> None:
         rows = self.rows(25, 0.85, 0.85)
@@ -584,7 +661,7 @@ class A1Gate(unittest.TestCase):
     def test_cells_the_test_run_lost_count_as_the_worst_case(self) -> None:
         rows = self.rows(20, 0.85, 0.85) + self.lost(20, 0.85)
         gate = F.a1_gate(rows, 1.0, 1.0)
-        self.assertEqual(self.passed(gate), [False, False, None, True])
+        self.assertEqual(self.passed(gate), [False, False, None, True, None])
         self.assertFalse(F.a1_passes(gate))
 
     def test_usable_truth_is_decided_on_the_raw_run_alone(self) -> None:
@@ -631,6 +708,38 @@ class A1Gate(unittest.TestCase):
         gate = F.a1_gate(rows, 1.0, 1.0)
         self.assertIn("5th pct -0.0500", gate[0][1])
         self.assertEqual(gate[0][2], True)
+
+    def test_lost_cells_are_limited_by_the_null_run_that_lost_most(self) -> None:
+        nan = float("nan")
+        # 50 cells, 4 lost: far too few to move a median, so only rule 5 can see them.
+        rows = self.rows(46, nan, nan) + self.lost(4, nan)
+        at = F.a1_gate(rows, 1.0, 1.0, [2, 4])
+        self.assertEqual(self.passed(at), [None, True, True, True, True])
+        self.assertEqual(at[4][1], "4 of 50 lost, at most 4 in a null run")
+        over = F.a1_gate(rows, 1.0, 1.0, [3, 0])
+        self.assertEqual(self.passed(over), [None, True, True, True, False])
+        self.assertFalse(F.a1_passes(over))
+        # A null run that lost nothing allows nothing.
+        self.assertEqual(F.a1_gate(rows, 1.0, 1.0, [0])[4][2], False)
+        self.assertEqual(F.a1_gate(self.rows(50, nan, nan), 1.0, 1.0, [0])[4][2], True)
+
+    def test_the_lost_cell_rule_does_not_apply_without_null_runs(self) -> None:
+        nan = float("nan")
+        rows = self.rows(46, nan, nan) + self.lost(4, nan)
+        for none in (None, []):
+            gate = F.a1_gate(rows, 1.0, 1.0, none)
+            self.assertIsNone(gate[4][2])
+            self.assertEqual(gate[4][1], "4 of 50 lost, no null runs")
+            self.assertTrue(F.a1_passes(gate))
+
+    def test_lost_cells_that_fail_qc_do_not_count_in_rule_5(self) -> None:
+        nan = float("nan")
+        gone = self.lost(5, nan)
+        for r in gone:
+            r["qc_pass"] = 0.0
+        gate = F.a1_gate(self.rows(30, nan, nan) + gone, 1.0, 1.0, [0])
+        self.assertEqual(gate[4][1], "0 of 30 lost, at most 0 in a null run")
+        self.assertEqual(gate[4][2], True)
 
     def test_a_missing_jump_or_no_cells_fail(self) -> None:
         rows = self.rows(25, 0.85, 0.85)

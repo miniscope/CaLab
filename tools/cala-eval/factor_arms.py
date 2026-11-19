@@ -41,6 +41,9 @@ differs in `seed` (later frames), in `raw_seed` and `live_seed` (a flat field se
   - `lb_raw`: main's default look-back arm (`LBD-x2`) with an Extract pass; `lb_fac`: the
     same with the look-back reading Discover's factors; `lb_live`: `lb_fac` with Extract on
     the factor engine. Their Discovers differ, so the report pairs cells by footprint.
+  - `lb_null_lo`, `lb_null_hi`: `lb_raw` with half and twice the slow-loop budget (of its one
+    pass): the null runs of the look-back comparisons. They give the noise floor of the
+    losses and the limit of gate A1's rule 5 (QC-pass cells lost).
 
 An arm is run again unless its `run.json` holds return code 0 and the same
 command as now; such a finished arm is reused, also by the report. Raw data is
@@ -114,6 +117,9 @@ LOOKBACK: list[str] = [
     "4800",
     "--extract-pass",
 ]
+# `lb_raw` at half and twice the slow-loop budget: the look-back arms have one pass, so the
+# budget of that pass differs (their Discovers differ, as between any two look-back arms).
+LOOKBACK_NULLS: tuple[str, ...] = ("lb_null_lo", "lb_null_hi")
 # The arms of phase 4a; not in the default set.
 LIVE_ARMS: tuple[str, ...] = (
     "live",
@@ -123,6 +129,7 @@ LIVE_ARMS: tuple[str, ...] = (
     "lb_raw",
     "lb_fac",
     "lb_live",
+    *LOOKBACK_NULLS,
 )
 # Arms that read the flat field the run `seed` ended with.
 SEEDED: tuple[str, ...] = ("raw_seed", "live_seed")
@@ -185,6 +192,8 @@ def arms(
         "--extract-engine",
         "factors",
     ]
+    out["lb_null_lo"] = LOOKBACK + ["--budget", str(budget // 2)]
+    out["lb_null_hi"] = LOOKBACK + ["--budget", str(budget * 2)]
     if seed is not None:
         first, run = seed
         out["seed"] = ["--passes", "1", "--from", str(first)]
@@ -234,7 +243,8 @@ def command(
         cmd.append("--motion")
     if frames is not None:
         cmd += ["--frames", str(frames)]
-    if budget is not None:
+    # An arm that sets its own budget (the look-back nulls) keeps it.
+    if budget is not None and "--budget" not in flags:
         cmd += ["--budget", str(budget)]
     # `qc_eval` takes the first occurrence of a flag, so a repeat would be ignored silently.
     for flag in (t for t in extra or [] if t.startswith("--")):
@@ -527,8 +537,10 @@ def report(
     """The recording's Markdown report from the finished arms."""
     have = [n for n in names if done(out_dir / n, cmds[n] if cmds else None)]
     text = [f"## {out_dir.name}", ""]
-    if have:
-        first = json.loads((out_dir / have[0] / "run.json").read_text())
+    # The look-back nulls carry their own budget, so the run's budget is read from another arm.
+    own = [n for n in have if n not in LOOKBACK_NULLS]
+    if own:
+        first = json.loads((out_dir / own[0] / "run.json").read_text())
         text += [
             f"Slow-loop budget: {stored_budget(first['cmd'])} work units per frame.",
             "",
@@ -601,12 +613,13 @@ def report(
                 )
             )
         elif n in ("lb_fac", "lb_live") and "lb_raw" in have:
-            # The look-back arms have their own Discovers, so cells are paired by footprint.
+            # The look-back arms have their own Discovers, so cells are paired by footprint,
+            # those of the look-back nulls too.
             text.append(
                 factor_closeness.report(
                     out_dir / "lb_raw",
                     out_dir / n,
-                    [],
+                    [out_dir / k for k in LOOKBACK_NULLS if k in have],
                     tile=line_step(arm_cmd(out_dir, n)),
                     truth_path=truth,
                     match=True,

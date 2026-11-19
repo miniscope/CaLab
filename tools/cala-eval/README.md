@@ -78,7 +78,9 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
   joint flags on), `lb_fac` (its cursor reads the factor windows, `--lookback-source factors`) and `lb_live` (that plus
   Extract on the factors). `factor_closeness.py --match` pairs cells by footprint instead of by id, for arms whose
   Discover differs (`raw_seed` against `raw`, the look-back arms), and prints the footprint correlation with the truth
-  footprint.
+  footprint. The arms `lb_null_lo` and `lb_null_hi` (`lb_raw` at half and twice the slow-loop budget) are the null runs of
+  the look-back comparisons: they are paired by footprint too and give the limit of gate A1's rule 5 (the test run may
+  lose at most as many QC-pass cells as the null run that lost most; without null runs the rule does not apply).
 - Factor pipeline, phase 3a (Refine on factors, `results/2026-11-19-factor-phase3.md`):
   `qc_eval --refine-engine raw|factors` (default `raw`). With `factors`, pass 2 is a compression replay only (no fast or slow loop), then Refine
   runs on the factor files of `--factors-out` in iterations with the cell set frozen, until fewer than a share
