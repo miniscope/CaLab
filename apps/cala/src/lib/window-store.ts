@@ -42,27 +42,62 @@ interface DirHandle {
 const ROOT = 'cala-compress';
 
 /**
+ * Handles with a call in flight. Chrome (seen with 158) never settles the
+ * promise of a pending `createSyncAccessHandle()` once its file handle is
+ * garbage collected: with collections forced during the call, 19 of 20 opens
+ * of `(await dir.getFileHandle(name)).createSyncAccessHandle()` were lost and
+ * none with the handle kept. A lost open stops the compress worker without
+ * an error, so no call here runs on a handle that nothing else references.
+ */
+const inFlight = new Set<{ handle: object }>();
+
+/** `call(handle)`, with `handle` kept reachable until the promise settles. */
+export async function pinned<H extends object, T>(
+  handle: H,
+  call: (handle: H) => Promise<T>,
+): Promise<T> {
+  const pin = { handle };
+  inFlight.add(pin);
+  try {
+    return await call(handle);
+  } finally {
+    inFlight.delete(pin);
+  }
+}
+
+/** Whether a call on `handle` is in flight (for tests). */
+export function isPinned(handle: object): boolean {
+  for (const pin of inFlight) if (pin.handle === handle) return true;
+  return false;
+}
+
+/**
  * A store in its own OPFS directory (`cala-compress/<run>`). The first use
  * removes what earlier page loads left behind; a directory another tab still
- * holds open refuses removal and is left alone.
+ * holds open refuses removal and is left alone. `top` is the root of the
+ * origin private file system (tests pass a fake).
  */
 export function opfsStore(
   run = `run-${Date.now().toString(36)}-${crypto.randomUUID()}`,
+  top: () => Promise<unknown> = () => navigator.storage.getDirectory(),
 ): WindowStore {
   let dir: Promise<DirHandle> | null = null;
   const directory = (): Promise<DirHandle> =>
     (dir ??= (async () => {
-      const top = (await navigator.storage.getDirectory()) as unknown as DirHandle;
-      const root = await top.getDirectoryHandle(ROOT, { create: true });
+      const origin = (await top()) as DirHandle;
+      const root = await pinned(origin, (o) => o.getDirectoryHandle(ROOT, { create: true }));
       const stale: string[] = [];
       for await (const name of root.keys()) if (name !== run) stale.push(name);
-      for (const name of stale) await root.removeEntry(name, { recursive: true }).catch(() => {});
-      return root.getDirectoryHandle(run, { create: true });
+      for (const name of stale) {
+        await pinned(root, (r) => r.removeEntry(name, { recursive: true })).catch(() => {});
+      }
+      return pinned(root, (r) => r.getDirectoryHandle(run, { create: true }));
     })());
   return {
     async open(name) {
       const d = await directory();
-      const h = await (await d.getFileHandle(name, { create: true })).createSyncAccessHandle();
+      const file = await d.getFileHandle(name, { create: true });
+      const h = await pinned(file, (f) => f.createSyncAccessHandle());
       return {
         write: (data, at) => void h.write(data, { at }),
         read: (into, at) => h.read(into, { at }),
