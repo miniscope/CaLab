@@ -60,11 +60,16 @@ export type ExtractMessage =
   | (Extract<CompressToMain, { type: 'error' }> & { job: number })
   | { type: 'abort'; message: string; reset: boolean };
 
-/** What Extract will read now (the Run panel, compression on). */
+/**
+ * What Extract will read now (the Run panel, compression on).
+ * `compressionFailed`: the compress store has an error (the factors are then
+ * `unusable` whatever they hold).
+ */
 export function extractSourceText(
   state: FactorState,
   s: CompressStatus | null,
   factorsFailed = false,
+  compressionFailed = false,
 ): string {
   switch (state) {
     case 'ready':
@@ -76,6 +81,8 @@ export function extractSourceText(
         s && s.pending > 0 ? ` (${s.pending} windows waiting)` : ''
       }.`;
     case 'unusable':
+      // A storage error (no OPFS in a private window, a quota) is not a coverage gap.
+      if (compressionFailed) return 'Extract replays the file: the compression failed.';
       return 'Extract replays the file: the factors do not cover the recording.';
     default:
       return 'Extract replays the file; the first replay compresses the frames for later Extracts.';

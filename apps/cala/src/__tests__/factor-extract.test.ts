@@ -67,6 +67,26 @@ describe('the factors of a run', () => {
     );
   });
 
+  it('say when the factors are unusable because the compression failed', () => {
+    // A compression error (no browser storage in a private window, a quota error).
+    expect(extractSourceText('unusable', null, false, true)).toBe(
+      'Extract replays the file: the compression failed.',
+    );
+    expect(extractSourceText('unusable', st(), true, true)).toBe(
+      'Extract replays the file: the compression failed.',
+    );
+    // Factors without an error that miss frames keep the fourth text.
+    expect(extractSourceText('unusable', st({ frames: 99 }), false, false)).toBe(
+      'Extract replays the file: the factors do not cover the recording.',
+    );
+    const store = createCompressStore();
+    store.reset(7);
+    store.onMessage({ type: 'error', session: 7, message: 'QuotaExceededError' });
+    expect(
+      extractSourceText(store.factors(100), store.status(), false, store.error() !== null),
+    ).toBe('Extract replays the file: the compression failed.');
+  });
+
   const OFFSET = { compress: true, compressTiling: 'offset', compressSession: 7 };
 
   it('let the first replay compress on the offset grids, and no later one', () => {

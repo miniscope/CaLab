@@ -26,6 +26,8 @@ interface Setup {
   factorsFailed: boolean;
   source: 'raw' | 'factors';
   minValid?: Float32Array;
+  /** The compress store's error (absent: none). */
+  compressError?: string;
 }
 
 let dispose: (() => void) | undefined;
@@ -71,6 +73,7 @@ function mount(o: Setup): HTMLElement {
   const compress = stub<NonNullable<RunPanelProps['compress']>>({
     factors: () => o.factors,
     status: () => null,
+    error: () => o.compressError ?? null,
   });
   const ui = stub<RunPanelProps['ui']>({
     run: stub({
@@ -119,6 +122,20 @@ describe('the Run panel under Extract, with compression on', () => {
     const root = mount({ factors: 'ready', factorsFailed: true, source: 'raw' });
     expect(text(root, 'extract-source')).toBe(
       'Extract replays the file: the last Extract on the factors failed.',
+    );
+  });
+
+  it('says the compression failed when the compress store has an error', () => {
+    const root = mount({
+      factors: 'unusable',
+      factorsFailed: false,
+      source: 'raw',
+      compressError: 'QuotaExceededError',
+    });
+    expect(text(root, 'extract-source')).toBe('Extract replays the file: the compression failed.');
+    const short = mount({ factors: 'unusable', factorsFailed: false, source: 'raw' });
+    expect(text(short, 'extract-source')).toBe(
+      'Extract replays the file: the factors do not cover the recording.',
     );
   });
 

@@ -931,6 +931,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             props.compress!.factors(s().record().frames),
             props.compress!.status(),
             p().factorsFailed(),
+            Boolean(props.compress!.error()),
           )}
         </p>
       </Show>

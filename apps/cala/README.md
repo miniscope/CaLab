@@ -355,21 +355,23 @@ Extract then reads the factors (`FactorExtractor` in the compress worker,
 signed traces too) once they are ready (the Extract pass alone took 0.5 to 1.1 s in native runs,
 `tools/cala-eval/results/2026-11-19-factor-phase2.md`) and replays the file
 otherwise. The Run panel shows a line under Extract that says which. It is one
-of these five texts:
+of these six texts:
 
 - "Extract reads the factors (seconds)."
 - "Extract replays the file; the first replay compresses the frames for later Extracts."
 - "Extract replays the file: the factors are being compressed." (with "(N windows waiting)" when windows wait)
 - "Extract replays the file: the factors do not cover the recording."
 - "Extract replays the file: the last Extract on the factors failed."
+- "Extract replays the file: the compression failed."
 
 Extract replays the file when the factors are not ready, when they do not cover
 the recording (for example a recording of 600 k + 1 frames: the last window of
-one frame is skipped on the offset grids), and after a compression error (for
-example no browser storage, as in a private window); both show the fourth text.
-After an Extract on the factors has failed (a job error, a gap or overlap in its
-windows, a compression error during the job), every later Extract replays the
-file and shows the fifth text. A cancelled Extract does not count, nor one
+one frame is skipped on the offset grids: the fourth text), and after a
+compression error (for example no browser storage, as in a private window: the
+sixth text). After an Extract on the factors has failed (a job error, a gap or
+overlap in its windows, a compression error during the job), every later
+Extract replays the file; with the factors otherwise ready the panel shows the
+fifth text. A cancelled Extract does not count, nor one
 aborted because a new run reset the compress worker. Only `pass2.clear()` ends
 this; the Run panel calls it whenever a Discover starts (a new Discover, another
 recording, each session of a multi-session run), and a Refine run calls it while
