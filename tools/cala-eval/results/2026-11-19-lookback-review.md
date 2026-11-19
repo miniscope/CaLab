@@ -74,6 +74,18 @@ together, 3 runs at once and nothing else. Arms: `DR-main`, `DR-st2g` (`--joint-
   and the code is read for it.
 - In between: partly.
 
+**T4b. Refine speed in the app (added 19 Nov before any browser run; qc_eval's slow loop is budget-paced, so its
+pass-2 wall cannot show an app-side slowdown).** Headed Chrome, real GPU, `apps/cala/scripts/memory-measure.mjs
+--single --headed` on the workshop recording, dev build of main bbe6e287, one run at a time, 2 runs per arm: look-back
+off (Discover, Refine) and look-back on (`--lookback --refine`: Discover, settling, Refine). Measure: median Refine
+fps over the samples of the Refine run, Refine wall, settling wall.
+
+- The PI's observation is reproduced when Refine fps with look-back on is at most 0.7 x the look-back-off value in
+  both pairs.
+- If reproduced, one more arm from a build with `LOOKBACK.jointUpdate = 'off'` (look-back on, cluster replay off)
+  separates the settings from the look-back plumbing: the settings are the cause when that arm's Refine fps is back
+  within 15 % of look-back off.
+
 **T5. Bigger settling batches.** `COMBO-d16` and `COMBO-d64` vs `COMBO`, full tier.
 
 - Go when: footprint r median (all, isolated, close-pair) within 0.001 of `COMBO`; headline within 0.01; matched within
