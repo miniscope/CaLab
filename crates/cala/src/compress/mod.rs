@@ -29,6 +29,7 @@
 
 pub mod blend;
 mod linalg;
+pub mod project;
 pub mod review;
 
 #[cfg(feature = "jsbindings")]
