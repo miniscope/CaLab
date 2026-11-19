@@ -326,6 +326,8 @@ pub struct JsFactorExtractor {
     ids: Vec<u32>,
     /// The open window and the library's rows on it; they are replaced together.
     window: Option<(WindowFactors, WindowProjector)>,
+    /// Signed traces of the last `solve` (empty while `setSigned` is off).
+    signed: Vec<f32>,
 }
 
 #[wasm_bindgen(js_class = FactorExtractor)]
@@ -350,12 +352,28 @@ impl JsFactorExtractor {
             inner,
             ids,
             window: None,
+            signed: Vec::new(),
         })
     }
 
     /// Cell ids in trace order.
     pub fn ids(&self) -> Vec<u32> {
         self.ids.clone()
+    }
+
+    /// Also compute the signed (unclipped) traces (`TraceEngine.setSigned`);
+    /// off by default. The traces themselves are the same either way.
+    #[wasm_bindgen(js_name = setSigned)]
+    pub fn set_signed(&mut self, on: bool) {
+        self.inner.engine_mut().set_signed(on);
+    }
+
+    /// The signed traces of the last `solve`, laid out as its traces
+    /// (`count x cells`, frame after frame): each trace plus the residual's
+    /// projection on the cell. Empty unless `setSigned(true)`.
+    #[wasm_bindgen(js_name = lastSigned)]
+    pub fn last_signed(&self) -> Vec<f32> {
+        self.signed.clone()
     }
 
     /// Read a factor file and prepare its solve; returns the window's frames.
@@ -382,6 +400,8 @@ impl JsFactorExtractor {
     /// The traces carry no frame index: the first row is frame `t0` of the
     /// window, whose stream index is `start + t0`.
     pub fn solve(&mut self, t0: u32, count: u32) -> Result<Vec<f32>, JsError> {
+        self.signed.clear();
+        let signed_on = self.inner.engine_mut().signed();
         let Some((wf, proj)) = self.window.as_ref() else {
             return Err(js_err("FactorExtractor.solve", "no window is open"));
         };
@@ -400,11 +420,16 @@ impl JsFactorExtractor {
             ));
         };
         let mut out = Vec::with_capacity(len);
+        let mut signed = Vec::with_capacity(if signed_on { len } else { 0 });
         self.inner
             .solve(wf, proj, t0 as usize, count as usize, |tr| {
                 out.extend_from_slice(&tr.traces);
+                if signed_on {
+                    signed.extend_from_slice(&tr.signed);
+                }
             })
             .map_err(|e| js_err("FactorExtractor.solve", e))?;
+        self.signed = signed;
         Ok(out)
     }
 }

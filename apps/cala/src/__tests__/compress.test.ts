@@ -615,6 +615,51 @@ describe('back-fill from the factors', () => {
     expect(toMain.filter((m) => m.type === 'backfilled').length).toBe(1);
   });
 
+  it('gives the signed traces of the frame engine when asked', async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 50; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    feed.end();
+    const { r, store } = runner();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    const file = store.files.get(factorName(0))!;
+    const ex = new FactorExtractor(lib.bytes, 0, 0);
+    const library = TraceLibrary.fromBytes(lib.bytes);
+    const engine = new TraceEngine(library, 0, 0);
+    try {
+      expect(ex.lastSigned().length).toBe(0);
+      const n = ex.open(file);
+      ex.solve(0, 10);
+      expect(ex.lastSigned().length).toBe(0); // off by default
+      ex.setSigned(true);
+      const traces = ex.solve(10, n - 10);
+      const signed = ex.lastSigned();
+      expect(signed.length).toBe(traces.length);
+      const frames = new Float32Array(n * PX);
+      const win = FactorWindow.fromBytes(file);
+      try {
+        win.reconstruct(0, n, frames);
+      } finally {
+        win.free();
+      }
+      engine.setSigned(true);
+      engine.processFrames(frames, n);
+      const want = engine.lastSigned().subarray(10 * CELLS.length);
+      let worst = 0;
+      for (let i = 0; i < want.length; i++) worst = Math.max(worst, Math.abs(signed[i] - want[i]));
+      // Both solves stop at the default tolerance; the tight comparison is the Rust test.
+      expect(worst).toBeLessThan(0.1);
+      ex.setSigned(false);
+      ex.solve(0, 5);
+      expect(ex.lastSigned().length).toBe(0);
+    } finally {
+      ex.free();
+      engine.free();
+      library.free();
+    }
+  });
+
   it('gives the traces of the frame engine on the rebuilt frames', async () => {
     const lib = cellLibrary();
     const { feed, sent } = collectingFeed(50);
