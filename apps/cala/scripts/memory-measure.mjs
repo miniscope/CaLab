@@ -6,7 +6,13 @@
  *   node apps/cala/scripts/memory-measure.mjs --url http://localhost:5195/ --data <folder>
  *        --out <dir> [--keep name1,name2] [--tag x] [--mode joint|separate]
  *        [--refine-runs 1] [--every 10] [--max-min 90] [--cdp 9335] [--headed] [--single]
+ *        [--lookback] [--extract]
  *   `--single`: one recording folder (Discover, then one Refine, no export).
+ *   `--lookback` (with `--single`): opens with `&lookback` (experimental
+ *   look-back refinement), never presses Refine, and stops once Discover has
+ *   settled (the final library); it samples the look-back counters
+ *   (`__cala.lookback()`) and fails unless frames were re-read and no cell is
+ *   left in need. `--extract`: then press Extract once and wait for it.
  *   `--headed` runs system Chrome with a real GPU (headless SwiftShader hides memory behaviour).
  *
  * Opens `<folder>` (a session folder or a parent of several) through the
@@ -43,6 +49,8 @@ const mode = opt('--mode', 'joint');
 const every = Number(opt('--every', '10')) * 1000;
 const maxMin = Number(opt('--max-min', '90'));
 const cdpPort = Number(opt('--cdp', '9335'));
+const lookback = args.includes('--lookback');
+const extract = args.includes('--extract');
 mkdirSync(out, { recursive: true });
 const udd = join(out, `udd-${tag}`);
 rmSync(udd, { recursive: true, force: true });
@@ -222,6 +230,8 @@ async function sample(gc = false) {
         rfps: c.refine.fps?.() ?? 0,
         extract: c.pass2.status(),
         cells: c.cells.library?.()?.ids.length ?? 0,
+        final: c.cells.status?.()?.final ?? false,
+        lb: c.lookback?.() ?? null,
         run: document.querySelector('[data-testid=session-run-status]')?.textContent ?? '',
       };
     })
@@ -242,8 +252,11 @@ const fmt = (r) => {
   const w = r.workers;
   const sum = (k) => w.reduce((a, x) => a + (x[k] ?? 0), 0);
   const st = r.st || {};
+  const lb = st.lb
+    ? ` lb pushed ${st.lb.pushed} need ${st.lb.inNeed} births ${st.lb.births}${st.lb.settling ? ` settling ${st.lb.drainSteps}` : ''}${st.lb.capped ? ' CAPPED' : ''}${st.lb.error ? ` ERR ${st.lb.error}` : ''}${st.final ? ' final' : ''}`
+    : '';
   return (
-    `${r.t.toFixed(0)}s ${st.pst} ${st.pp} fps${(st.fps ?? 0).toFixed(0)} ref ${st.refine} ${st.rp} ext ${st.extract} cells ${st.cells} | ` +
+    `${r.t.toFixed(0)}s ${st.pst}${lb} ${st.pp} fps${(st.fps ?? 0).toFixed(0)} ref ${st.refine} ${st.rp} ext ${st.extract} cells ${st.cells} | ` +
     `rend rss ${r.rendererRss.toFixed(0)} foot ${r.rendererFoot.toFixed(0)} gpu ${r.gpuFoot.toFixed(0)} | ` +
     `main js ${r.main.jsUsed?.toFixed(0)} buf ${r.main.backing?.toFixed(0)} wasm ${r.main.wasm.toFixed(0)} | ` +
     `workers(${w.length}) js ${sum('jsUsed').toFixed(0)} buf ${sum('backing').toFixed(0)} wasm ${sum('wasm').toFixed(0)} :: ` +
@@ -257,7 +270,7 @@ const fmt = (r) => {
 };
 
 let t0 = Date.now();
-await page.goto(`${url}?debug`);
+await page.goto(`${url}?debug${lookback ? '&lookback' : ''}`);
 await attachPage();
 const single = args.includes('--single');
 await page.setInputFiles('[data-testid=folder-input]', data);
@@ -302,6 +315,8 @@ if (single) {
   t0 = Date.now();
 }
 let refineClicked = false;
+let extractClicked = false;
+let discoverDoneAt = null;
 const samples = [];
 let stop = null;
 let lastKey = '';
@@ -314,9 +329,23 @@ while (!stop) {
   const key = `${r.st?.pst}|${r.st?.refine}|${r.st?.extract}`;
   if (key !== lastKey) lastKey = key;
   const run = r.st?.run ?? '';
-  if (single) {
+  if (single && lookback) {
+    // Discover runs look-back alongside and settles after its last frame: no Refine.
+    const settled = r.st?.pst === 'done' && r.st?.final && !r.st?.lb?.settling;
+    if (settled && discoverDoneAt === null) {
+      discoverDoneAt = r.t;
+      L(`DISCOVER_SETTLED ${r.t.toFixed(1)}s ${JSON.stringify(r.st.lb)}`);
+      if (extract) {
+        extractClicked = true;
+        await page.click('[data-testid=pass2-run]');
+      } else stop = 'done';
+    }
+    if (extractClicked && r.st?.extract === 'done') stop = 'done';
+    if (r.st?.pst === 'error' || r.st?.extract === 'error') stop = 'error';
+  } else if (single) {
     if (r.st?.pst === 'done' && r.st?.refine === 'idle' && !refineClicked) {
       refineClicked = true;
+      L(`DISCOVER_DONE ${r.t.toFixed(1)}s`);
       await page.click('[data-testid=refine-run]');
     }
     if (refineClicked && r.st?.refine === 'done') stop = 'done';
@@ -327,6 +356,12 @@ while (!stop) {
   if (r.t > maxMin * 60) stop = 'time';
 }
 L('STOP ' + stop);
+if (lookback) {
+  const lb = samples.at(-1)?.st?.lb;
+  const ok = stop === 'done' && lb && lb.pushed > 0 && lb.inNeed === 0 && !lb.error;
+  L(`LOOKBACK_CHECK ${ok ? 'PASS' : 'FAIL'} ${JSON.stringify(lb)}`);
+  if (!ok) process.exitCode = 1;
+}
 await page.waitForTimeout(5000);
 const end = await sample(true);
 samples.push({ ...end, gc: true });
