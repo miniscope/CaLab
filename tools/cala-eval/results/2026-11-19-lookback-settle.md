@@ -223,8 +223,8 @@ from the suite's; workshop references from the review: D + R 86 %, 0.976; `COMBO
   `COMBO`, 2-3 % (range 1.5-4 %) once flat. The median ratio does not separate them (0.44 -> 0.52 on sims), as the
   review found.
 - A rule "at most 4 % of cells above 2 x noise at two checkpoints in a row" does not fire at the first checkpoint and
-  fires within one further pass on a settled library, as M5 asked. It fires at 4800 frames on the sims and at 9000 on
-  both workshop seeds.
+  fires within one further pass on a settled library, as M5 asked. Per run it fires at 2400 (pairs_s5), 4800
+  (static_s5, static_s7, pairs_s6) and 8400 frames (static_s6), and at 9000 on both workshop seeds.
 - **But the library at that stop does not meet M6/M7.** On the workshop recording the seed-to-seed median r is 0.969
   at 9000 frames against 0.978 after the full pass (the M7 line is 0.970), and it is still rising: 0.973, 0.976,
   0.978. On the sims late-born cells are at 0.972 at the stop against 0.979 after the pass. Footprint change per
@@ -256,19 +256,20 @@ Hungarian match (footprint r >= 0.7) between the plain-Discover library and the 
 
 - The net loss of 80 is 190-200 cells that only Discover has minus 110-120 that only `COMBO` has. The two libraries
   differ in about 320 cells, mostly the same places with differently shaped footprints.
-- **The merge guard and the replay's merges do not remove them.** Six or seven of the 200 were added and then merged or
-  deleted. `COMBO` merges fewer cells than Discover, not more. The difference is in adds: from frame 3600 on `COMBO`
-  adds 25-50 % fewer cells per 1800 frames, steadily.
+- **In `COMBO` the loss shows up as fewer adds, not more merges.** Six or seven of the 200 were added and then merged
+  or deleted, and `COMBO` merges fewer cells than Discover. From frame 3600 on `COMBO` adds 25-50 % fewer cells per
+  1800 frames, steadily. Which setting is responsible is in the addendum below (the replay setting, which by itself
+  does merge more).
 - The cells only Discover has are weaker and less reproducible than the matched ones: median peak z 12 against 19-20,
   half the transients, 51-57 % found again by the other seed against 90 %, 30-41 % matching a Minian unit against
   70 %. About a quarter sit within 0.6 D of, or overlap, another Discover cell (duplicate or fragment candidates). The
   cells only `COMBO` has look the same (37-40 % match Minian).
 - Where nothing was added in `COMBO`, the place is partly covered by an existing `COMBO` footprint (median 0.46 of the
   covering cell's peak at the missing cell's centre, against 0.94 at matched centres).
-- Reading (inference, not measured): with look-back the existing footprints fill in sooner and leave less light in
-  the residual, so fewer weak, overlapping components are proposed. Most of the loss is such components, not solid
-  cells; the 20-30 fewer Minian matches are real and sit among them. The files cannot say why a given place was not
-  added (there is no per-place rejection log). D was taken as the 10 px default.
+- Reading (inference, not measured): with the replay and look-back the existing footprints fill in sooner and leave
+  less light in the residual, so fewer weak, overlapping components are proposed. Most of the loss is such
+  components, not solid cells; the 20 or so fewer Minian matches are real and sit among them. The files cannot say
+  why a given place was not added (there is no per-place rejection log). D was taken as the 10 px default.
 
 ### M7. Workshop recording, three slow seeds (`runs/lbsettle/real/m7_agreement.md`)
 
@@ -298,7 +299,7 @@ seed 3 run here with the same flags. Seed pairs are 1-2, 1-3, 2-3. Peak memory 1
   Minian median r 0.949-0.950 (line 0.945: met); a Refine after `SETTLE` moves footprints 1.1 x the null on the app's
   metric and 1.25 x on shape (line 1.5 x: met; after `COMBO` it was 3 x and 8 x).
 - **The split-half noise line (at most 11 %) is not met: 13.1-13.2 %.** That line was taken from D + R (9.9-10 %).
-  `COMBO+R` itself is at 13.1 %, so the reference fails it too: libraries built with the cluster replay settings have
+  `COMBO+R` itself is at 12.8-13.1 %, so the reference fails it too: libraries built with the cluster replay settings have
   a higher split-half noise reading than plain ones at the same seed-to-seed agreement. I did not find out why (the
   two configurations estimate footprints of overlapping cells from different statistics). By the rule as written M7
   is therefore "between its lines", with this row named; whether the row should count is the PI's call.
@@ -329,8 +330,13 @@ this is a lower bound for it. It supports a frame cap with even spreading for lo
 | `--joint-update all --joint-sign all --merge-guard-sep 0.6` only | 764   | 879  | 159    | 6       | 50     |
 | all (`COMBO`)                                                    | 751   | 820  | 104    | 4       | 39     |
 
-The cluster replay accounts for about 65 of the 80 cells (fewer adds and, without look-back, more merges), look-back
-by itself for about 30, the merge guard for none. One seed per setting.
+- The merge guard costs none (829 against 831).
+- The cluster replay setting costs most: by itself 67 cells, with 34 more merges and 50 fewer adds than plain
+  Discover. So the replay's merges do remove cells when it runs without look-back.
+- Look-back by itself: 31 cells, with fewer adds and fewer merges. One seed; plain Discover alone ranges 811-838 over
+  three seeds, so this share is not resolved.
+- The effects overlap (67 + 31 > 80). With everything on, merges are below Discover's and the loss is all in adds.
+- Not done: a cell-by-cell match of the replay-only library against Discover's.
 
 ### M4 and M6. The deciding arm (full tier, 14 sims; `lbsettle-full/ladder.md`)
 
@@ -372,5 +378,7 @@ row (M7), which the reference `COMBO+R` fails as well.** Read strictly that is "
 the noise reading of replay-built libraries". The settle through `observe` gives the same library as look-back +
 Refine (workshop: 98 % of cells at median r 0.997), so whatever is decided about `COMBO+R` holds for it.
 
-Not done: `ST-quarter` and the `SETTLE-stop` arm (dropped for run slots; the checkpoint libraries of `ST-2x` and
-`CAL` show what an early stop costs), a second real recording (none under `~/Projects`), the app build.
+Not done: `ST-quarter` (the every-fourth-frame arm) and the `SETTLE-stop` arm (dropped for run slots; the checkpoint
+libraries of `ST-2x` and `CAL` show what an early stop costs); the rule acting in the deciding arm (logged only); an
+"extend when not settled" step (the flags can only stop early); a second real recording (none under `~/Projects`);
+the app build.
