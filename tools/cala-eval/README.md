@@ -115,8 +115,9 @@ qc_eval sim SIM OUT <common flags> --branch-after discover \
 
 - Points: `discover` (end of pass 1, before the look-back drain) and `drain` (after the drain, before later passes).
 - Branch flags are the post-Discover ones only (`qc_eval` `TAIL_FLAGS`: `--passes`, `--later-passes`,
-  `--lookback-drain`, `--lookback-drain-rate`, `--lookback-settle-all`); any other flag in a branch panics. At `drain` the
-  three drain flags belong to the common flags. A new post-Discover option: add it to `Tail` and `TAIL_FLAGS` in
+  `--lookback-drain`, `--lookback-drain-rate`, `--lookback-settle-all` and the settle's `--settle-*`); any other flag in
+  a branch panics. At `drain` the three drain flags belong to the common flags; the settle runs after the `drain`
+  point, so `--settle-*` may differ between branches at both points. A new post-Discover option: add it to `Tail` and `TAIL_FLAGS` in
   `qc_eval.rs` and to `run_arms.TAIL_FLAGS`.
 - Not combinable with `--churn-log`, `--merge-log`, `--factors-out`, `--offered-fps` (shared files/globals).
 - Files the prefix already wrote into `<out>/` (e.g. `--lib-at`) are copied into each branch directory. Wall-time

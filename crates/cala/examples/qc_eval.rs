@@ -6155,6 +6155,25 @@ mod tests {
     }
 
     #[test]
+    fn settle_flags_are_tail_flags_at_both_branch_points() {
+        for point in ["discover", "drain"] {
+            let mut full = argv("sim in out --passes 1 --lookback-drain 100 --branch-after");
+            full.push(point.into());
+            full.extend(argv("--branch"));
+            full.push("s:--settle-frames 9600 --settle-batch 16 --settle-libs".into());
+            full.extend(argv("--branch plain:"));
+            let b = Branching::parse(&full).unwrap();
+            let t = Tail::parse(&b.branch_args(&full, &b.branches[0].1));
+            assert_eq!(
+                (t.settle.frames, t.settle.batch, t.settle.libs),
+                (9600, 16, true)
+            );
+            let t0 = Tail::parse(&b.branch_args(&full, &b.branches[1].1));
+            assert_eq!(t0.settle.frames, 0);
+        }
+    }
+
+    #[test]
     #[should_panic(expected = "not a tail flag")]
     fn branch_rejects_a_prefix_flag() {
         let mut a = argv("sim in out --branch-after discover --branch");

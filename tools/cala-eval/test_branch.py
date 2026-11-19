@@ -39,6 +39,17 @@ class BranchGroups(unittest.TestCase):
         self.assertEqual([sorted(j["label"] for j in g) for g in groups], [["a", "b"]])
         self.assertEqual([j["label"] for j in rest], ["c"])
 
+    def test_settle_flags_branch_after_the_drain(self):
+        lb = ["--lookback", "2", "--lookback-drain", "100", "--passes", "1"]
+        a = job("a", lb)
+        b = job("b", lb + ["--settle-frames", "9600", "--settle-batch", "16"])
+        c = job("c", lb + ["--settle-frames", "4800", "--settle-libs"])
+        for point in ("discover", "drain"):
+            groups, rest = RA.branch_groups([a, b, c], point)
+            self.assertEqual([sorted(j["label"] for j in g) for g in groups], [["a", "b", "c"]])
+            self.assertEqual(rest, [])
+        self.assertEqual(RA.branch_split(b["args"], "drain")[1], ["--passes", "1", "--settle-frames", "9600", "--settle-batch", "16"])
+
     def test_off(self):
         self.assertEqual(RA.branch_groups([job("a", []), job("b", ["--passes", "2"])], "off")[0], [])
 
