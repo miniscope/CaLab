@@ -3041,3 +3041,52 @@ fn js_lookback_matches_the_native_driver() {
     assert_eq!(native.len(), via_js.len());
     assert!(native == via_js, "libraries differ");
 }
+
+/// Hardening: a visit runner built with other slow-loop options refuses the
+/// job; with look-back on, `observe` needs the stream index and
+/// `enableLookback` must come before the first frame.
+#[cfg(feature = "jsbindings")]
+#[test]
+fn lookback_misuse_is_refused() {
+    use super::js::JsSlowLoop;
+    let t = 400;
+    let (m, seed) = busy_movie(t);
+    let n_px = N * N;
+    let cfg = SlowLoopConfig {
+        joint_update: JointUpdate::All,
+        merge_guard_min_sep: 0.6,
+        ..shard_config()
+    };
+    let (mut sl, mut eng) = start(cfg.clone(), &seed);
+    let plain = SlowLoop::new(
+        dims(),
+        vec![1; n_px],
+        vec![1.0; n_px],
+        flattener(),
+        shard_config(),
+    )
+    .unwrap();
+    let mut runner = VisitRunner::new(plain);
+    let mut job = None;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let lib = eng.library().clone();
+        sl.observe(f, &lib, &tr).unwrap();
+        if let Some(b) = sl.take_job_bytes() {
+            job = Some(b);
+            break;
+        }
+    }
+    let job = VisitJob::from_bytes(&job.expect("a visit job")).unwrap();
+    let err = runner.run(job).unwrap_err();
+    assert!(err.to_string().contains("other options"), "{err}");
+
+    // (The JS error paths themselves need a wasm target; their guards:)
+    let (slow, _) = start(cfg, &seed);
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    assert!(js.stream_ok(None));
+    js.enable_lookback(2.0, 3000).unwrap();
+    assert!(!js.stream_ok(None));
+    assert!(js.stream_ok(Some(0.0)));
+}

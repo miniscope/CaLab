@@ -247,6 +247,11 @@ impl JsSlowLoop {
         background: Option<Vec<f32>>,
         stream: Option<f64>,
     ) -> Result<bool, JsError> {
+        if !self.stream_ok(stream) {
+            // Without it the frame's held-out decision is not recorded and a
+            // look-back re-read could fit on a test frame.
+            return Err(js_err("observe", "look-back is on: pass the stream index"));
+        }
         let Some(lib) = self.lib(version) else {
             return Ok(false);
         };
@@ -272,11 +277,21 @@ impl JsSlowLoop {
 
     /// Turn look-back on: `rate` look-back frames per Discover frame, at
     /// most `maxFrames` frames before its birth per cell (validated: 2,
-    /// 3000).
+    /// 3000). Only before the first observed frame; from then on `observe`
+    /// must be given the stream index (so every re-read frame keeps the
+    /// held-out decision `observe` made, or the hashed one for frames the
+    /// slow loop never saw).
     #[wasm_bindgen(js_name = enableLookback)]
     pub fn enable_lookback(&mut self, rate: f64, max_frames: u32) -> Result<(), JsError> {
         if !(rate > 0.0) || max_frames == 0 {
             return Err(js_err("enableLookback", "rate and maxFrames must be > 0"));
+        }
+        if self.inner.frames() > 0 {
+            // Earlier frames' held-out decisions were not recorded.
+            return Err(js_err(
+                "enableLookback",
+                "call it before the first observed frame",
+            ));
         }
         self.lookback = Some(LookBack::new(LookbackConfig {
             rate,
@@ -664,6 +679,12 @@ impl JsSlowLoop {
             lookback: None,
             lb: LbCounts::default(),
         }
+    }
+
+    /// `observe` may go ahead: with look-back on, only with the stream
+    /// index (its held-out decision must be recorded).
+    pub(crate) fn stream_ok(&self, stream: Option<f64>) -> bool {
+        self.lookback.is_none() || stream.is_some()
     }
 
     /// A loop built from parts (tests: another config, a seeded library).
