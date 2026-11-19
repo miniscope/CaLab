@@ -37,7 +37,7 @@ use std::sync::Arc;
 use super::fpstats::{add_mom, parity_block, FpStats, Mom, PixMoments, MIN_VALID_SHARE};
 use super::local::BgBasis;
 use super::reservoir::{decode, mix, quantize, take_missing};
-use super::{column_on, Frames, SlowLoop};
+use super::{column_on, CoreTest, EditScope, Frames, JointUpdate, SlowLoop, Solved};
 use crate::compress::blend::BlendLayout;
 use crate::compress::project::{FactorExtractor, WindowProjector};
 use crate::compress::WindowFactors;
@@ -895,6 +895,316 @@ impl SlowLoop {
     }
 }
 
+// ---- the iteration and the settle stop ------------------------------------
+
+/// What one iteration did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IterationReport {
+    /// The library after the iteration, and its cells.
+    pub library_version: u64,
+    pub cells: usize,
+    /// Frames read, and the fitting frames among them.
+    pub frames: usize,
+    pub fitting_frames: u64,
+    /// Refinements accepted.
+    pub accepted: u64,
+    /// Share of cells whose footprint correlates below `settle_corr` with
+    /// their footprint before the iteration ([`footprint_change`]), and the
+    /// median of `1 − r`.
+    pub changed_share: f64,
+    pub median_change: f64,
+    /// Cells whose statistics disk held a pixel with a valid share below 1
+    /// in some window (its window mean entered as data; below
+    /// `MIN_VALID_SHARE` the pixel was left out of that window).
+    pub low_valid: usize,
+    /// Tiles with cells whose gate had fewer than `min_test_frames`
+    /// held-out frames (not refined).
+    pub tiles_skipped: usize,
+}
+
+impl IterationReport {
+    /// The settle stop: fewer than `settle_share` of the cells still changing.
+    pub fn settled(&self, cfg: &FactorRefineConfig) -> bool {
+        self.changed_share < f64::from(cfg.settle_share)
+    }
+}
+
+/// Why [`refine_until_settled`] stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettleStop {
+    /// Fewer than `settle_share` of the cells changed, some refinement was
+    /// accepted.
+    Settled,
+    /// The last iteration accepted no refinement (so nothing changed); a
+    /// case of settled.
+    NothingAccepted,
+    /// `max_iterations` ran without settling.
+    Cap,
+}
+
+/// The end of [`refine_until_settled`].
+#[derive(Debug, Clone)]
+pub struct Settled {
+    pub library: Arc<Library>,
+    pub iterations: usize,
+    /// `false`: stopped by `max_iterations`.
+    pub settled: bool,
+    pub stop: SettleStop,
+}
+
+/// Pearson correlation of the pairs; 1 when they are identical (an
+/// unchanged footprint, also a constant or empty one), NaN when either side
+/// is constant but they differ.
+fn pearson(xs: &[(f64, f64)]) -> f64 {
+    if xs.iter().all(|x| x.0 == x.1) {
+        return 1.0;
+    }
+    let n = xs.len() as f64;
+    let (sa, sb) = xs.iter().fold((0.0, 0.0), |s, x| (s.0 + x.0, s.1 + x.1));
+    let (ma, mb) = (sa / n, sb / n);
+    let (mut ab, mut aa, mut bb) = (0.0f64, 0.0f64, 0.0f64);
+    for &(a, b) in xs {
+        ab += (a - ma) * (b - mb);
+        aa += (a - ma) * (a - ma);
+        bb += (b - mb) * (b - mb);
+    }
+    if aa > 0.0 && bb > 0.0 {
+        (ab / (aa * bb).sqrt()).clamp(-1.0, 1.0)
+    } else {
+        f64::NAN
+    }
+}
+
+/// A footprint's `(pixel, value)` pairs in pixel order.
+fn sorted_footprint(lib: &Library, slot: usize) -> Vec<(u32, f32)> {
+    let (pix, val) = lib.unfiltered(slot);
+    let mut v: Vec<(u32, f32)> = pix.iter().copied().zip(val.iter().copied()).collect();
+    v.sort_unstable_by_key(|e| e.0);
+    v
+}
+
+/// Correlation of two footprints over the union of their supports (a pixel
+/// outside a support counts 0).
+fn union_corr(a: &[(u32, f32)], b: &[(u32, f32)]) -> f64 {
+    let (mut i, mut j) = (0usize, 0usize);
+    let mut xs: Vec<(f64, f64)> = Vec::with_capacity(a.len().max(b.len()));
+    while i < a.len() || j < b.len() {
+        if j >= b.len() || (i < a.len() && a[i].0 < b[j].0) {
+            xs.push((f64::from(a[i].1), 0.0));
+            i += 1;
+        } else if i >= a.len() || b[j].0 < a[i].0 {
+            xs.push((0.0, f64::from(b[j].1)));
+            j += 1;
+        } else {
+            xs.push((f64::from(a[i].1), f64::from(b[j].1)));
+            i += 1;
+            j += 1;
+        }
+    }
+    pearson(&xs)
+}
+
+/// Per cell (by id, in `next`'s slot order, then the cells of `prev` that
+/// `next` lacks): the Pearson correlation of its unfiltered footprints in
+/// the two libraries over the union of the two supports (a pixel outside a
+/// support counts 0). 1 for an unchanged footprint; NaN when one side is
+/// constant and they differ, or the cell is in one library only (Refine
+/// freezes the cell set, so that is a change to count, not to hide). The
+/// settle measure of Refine on factors.
+pub fn footprint_change(prev: &Library, next: &Library) -> Vec<(u64, f64)> {
+    let mut out = Vec::with_capacity(next.len());
+    for (slot, &id) in next.ids().iter().enumerate() {
+        let r = match prev.slot(id) {
+            Some(ps) => union_corr(&sorted_footprint(prev, ps), &sorted_footprint(next, slot)),
+            None => f64::NAN,
+        };
+        out.push((id, r));
+    }
+    for &id in prev.ids() {
+        if next.slot(id).is_none() {
+            out.push((id, f64::NAN));
+        }
+    }
+    out
+}
+
+/// `(changed share, median 1 − r)` of [`footprint_change`] at `corr` (a
+/// cell without a correlation counts as changed).
+fn settle_measure(prev: &Library, next: &Library, corr: f32) -> (f64, f64) {
+    let ch = footprint_change(prev, next);
+    if ch.is_empty() {
+        return (0.0, 0.0);
+    }
+    let thr = f64::from(corr);
+    let below = ch.iter().filter(|c| !(c.1 >= thr)).count();
+    let mut d: Vec<f64> = ch
+        .iter()
+        .filter(|c| c.1.is_finite())
+        .map(|c| 1.0 - c.1)
+        .collect();
+    let med = if d.is_empty() {
+        f64::NAN
+    } else {
+        let m = d.len() / 2;
+        *d.select_nth_unstable_by(m, f64::total_cmp).1
+    };
+    (below as f64 / ch.len() as f64, med)
+}
+
+impl SlowLoop {
+    /// The refine visit of every tile on its held-out patches: the tile's
+    /// base problem (as `solve_tile` builds it) and the existing `refine`,
+    /// with no fitting frames (so only the statistics path proposes).
+    /// Returns the tiles with cells skipped for too few held-out frames.
+    fn gate(&mut self, tests: &[TestTile], has_cells: &[bool]) -> usize {
+        let mut skipped = 0;
+        for ti in 0..self.tiles.len() {
+            if tests[ti].len() < self.cfg.min_test_frames {
+                skipped += usize::from(has_cells[ti]);
+                continue;
+            }
+            // Decoded just before the visit: one tile's patches at a time.
+            let fr = tests[ti].frames();
+            if self.bgs[ti].is_none() {
+                self.bgs[ti] = Some(BgBasis::new(self.tiles[ti].rect));
+            }
+            let rect = self.tiles[ti].rect;
+            let cols = self.columns(rect, &[], &[]);
+            let base = self.problem(ti, cols);
+            let solved = Solved {
+                base,
+                fits: Vec::new(),
+                resid: Vec::new(),
+            };
+            self.refine(ti, &solved, &fr);
+        }
+        skipped
+    }
+
+    /// Why this loop cannot run a factor iteration now, if it cannot.
+    fn factor_refusal(&self) -> Option<&'static str> {
+        if self.scope != EditScope::Refine {
+            return Some("Refine on factors runs with the cell set frozen (EditScope::Refine)");
+        }
+        // The transient-band sums are a moving average along the push
+        // order, which the factor statistics do not build.
+        if self.cfg.core_test != CoreTest::Off {
+            return Some("Refine on factors needs core_test off");
+        }
+        if self.cfg.joint_update != JointUpdate::Off {
+            return Some("the cluster replay on factors is phase 3b: joint_update must be off");
+        }
+        if self.pending {
+            return Some("unpublished edits: finalize before Refine on factors");
+        }
+        if self.published.is_none() {
+            return Some("no published library");
+        }
+        None
+    }
+
+    /// One Refine iteration on the factors of `src` (see the module docs):
+    /// sums and traces with the current library, held-out patches, the
+    /// existing proposals and gate, publish. Needs [`EditScope::Refine`], a
+    /// published library and no pending edits, `core_test` off and, until
+    /// phase 3b, `joint_update` off. A refused or failed pass leaves the
+    /// loop as it was.
+    pub fn refine_on_factors(
+        &mut self,
+        src: &mut dyn FactorSource,
+        cfg: &FactorRefineConfig,
+    ) -> Result<IterationReport, TraceError> {
+        cfg.validate()?;
+        if let Some(m) = self.factor_refusal() {
+            return Err(TraceError::InvalidConfig(m.into()));
+        }
+        let Some(lib) = self.published.clone() else {
+            return Err(TraceError::InvalidConfig("no published library".into()));
+        };
+        if src.windows() == 0 {
+            return Err(TraceError::InvalidConfig("no factor windows".into()));
+        }
+        let k = self.test_count(cfg);
+        let refines0 = self.stats.refines;
+        src.stage(RefineStage::Sums);
+        let pass = self.sum_pass(&lib, src, cfg)?;
+        src.stage(RefineStage::TestFrames);
+        let pick = self.pick_tests(&pass.scores, k);
+        let tests = self.test_frames(src, &pick, pass.frames)?;
+        // Nothing below fails before `publish`: the loop changes from here.
+        self.install(&lib, &pass);
+        // The installed sums carry weight 1 per frame: the next frame a raw
+        // pass pushes must enter at weight 1 (divided by its forgetting
+        // factor), not at a weight left over from earlier frames.
+        self.stats_w = 1.0;
+        src.stage(RefineStage::Gate);
+        let tiles_skipped = self.gate(&tests, &pass.has_cells);
+        drop(tests);
+        src.stage(RefineStage::Publish);
+        self.frames += pass.frames as u64;
+        let next = if self.pending {
+            self.publish()?
+        } else {
+            lib.clone()
+        };
+        let (changed_share, median_change) = settle_measure(&lib, &next, cfg.settle_corr);
+        src.stage(RefineStage::Done);
+        Ok(IterationReport {
+            library_version: next.version(),
+            cells: next.len(),
+            frames: pass.frames,
+            fitting_frames: pass.fitting,
+            accepted: self.stats.refines - refines0,
+            changed_share,
+            median_change,
+            low_valid: pass
+                .cells
+                .iter()
+                .filter(|c| c.min_valid < LOW_VALID)
+                .count(),
+            tiles_skipped,
+        })
+    }
+}
+
+/// Refine on factors until the footprints have settled (spec §5): after
+/// `finalize`, iterations until one reports [`IterationReport::settled`] or
+/// `max_iterations` have run; `on_iteration` gets each (counted from 1).
+/// An iteration that accepts nothing has changed nothing, so it settles
+/// (unless `settle_share` is 0, which asks for the cap).
+pub fn refine_until_settled(
+    sl: &mut SlowLoop,
+    src: &mut dyn FactorSource,
+    cfg: &FactorRefineConfig,
+    mut on_iteration: impl FnMut(usize, &IterationReport),
+) -> Result<Settled, TraceError> {
+    cfg.validate()?;
+    sl.finalize()?;
+    for it in 1..=cfg.max_iterations {
+        let rep = sl.refine_on_factors(src, cfg)?;
+        on_iteration(it, &rep);
+        if rep.settled(cfg) {
+            let stop = if rep.accepted == 0 {
+                SettleStop::NothingAccepted
+            } else {
+                SettleStop::Settled
+            };
+            return Ok(Settled {
+                library: sl.finalize()?,
+                iterations: it,
+                settled: true,
+                stop,
+            });
+        }
+    }
+    Ok(Settled {
+        library: sl.finalize()?,
+        iterations: cfg.max_iterations,
+        settled: false,
+        stop: SettleStop::Cap,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -904,6 +1214,7 @@ mod tests {
     use crate::discover::tests::{blob_w, dims, flattener, movie, trace, v2_config, Lcg, N};
     use crate::discover::EditScope;
     use crate::discover::SlowLoopConfig;
+    use crate::discover::{CoreTest, JointUpdate};
     use crate::trace::{BackgroundModel, Footprint, FrameTraces};
 
     pub(super) const T: usize = 1500;
@@ -1455,5 +1766,336 @@ mod tests {
                 other => panic!("{name}: {:?}", other.err()),
             }
         }
+    }
+
+    /// The loop's state an iteration may change: frame counter, library
+    /// version, the statistics (ids and sums, bit for bit), which tiles have
+    /// a basis, and the statistics weight.
+    fn loop_state(s: &SlowLoop) -> (u64, u64, Vec<(u64, Vec<u32>)>, Vec<bool>, u32) {
+        let mut st: Vec<(u64, Vec<u32>)> = s
+            .fpstats
+            .iter()
+            .map(|(&id, f)| (id, f.rc.iter().chain(&f.r).map(|v| v.to_bits()).collect()))
+            .collect();
+        st.sort_by_key(|e| e.0);
+        let bgs = s.bgs.iter().map(Option::is_some).collect();
+        let ver = s.library().map_or(0, |l| l.version());
+        (s.frames(), ver, st, bgs, s.stats_w.to_bits())
+    }
+
+    /// A source that fails on its `fail_at`-th window read (counted from 0).
+    struct Flaky {
+        w: Vec<WindowFactors>,
+        reads: usize,
+        fail_at: usize,
+    }
+
+    impl FactorSource for Flaky {
+        fn windows(&self) -> usize {
+            self.w.len()
+        }
+
+        fn window(&mut self, w: usize) -> Result<WindowFactors, TraceError> {
+            self.reads += 1;
+            if self.reads - 1 == self.fail_at {
+                return Err(TraceError::InvalidConfig("read failed".into()));
+            }
+            self.w.window(w)
+        }
+    }
+
+    #[test]
+    fn one_iteration_accepts_what_the_frame_route_accepts() {
+        let c = cfg(v2_config().background);
+        let (mut fa, windows) = fixture(c.clone());
+        let (mut fb, _) = fixture(c);
+        let rc = FactorRefineConfig::default();
+        let rep = fa.refine_on_factors(&mut windows.clone(), &rc).unwrap();
+        assert!(
+            rep.accepted >= 1,
+            "the fixture must give the gate a refinement: {rep:?}"
+        );
+        assert_eq!((rep.frames, fa.frames()), (T, T as u64));
+        // The frame route's statistics, the same held-out patches, the same gate.
+        let libb = fb.library().unwrap().clone();
+        let mut src = windows.clone();
+        let pass = fb.sum_pass(&libb, &mut src, &rc).unwrap();
+        let pick = fb.pick_tests(&pass.scores, fb.test_count(&rc));
+        let tests = fb.test_frames(&mut src, &pick, pass.frames).unwrap();
+        frame_route(&mut fb, &windows, rc.solver);
+        let (r0a, r0b) = (0, fb.stats().refines);
+        assert_eq!(r0b, 0);
+        let skipped = fb.gate(&tests, &pass.has_cells);
+        fb.frames += pass.frames as u64;
+        assert_eq!(skipped, rep.tiles_skipped);
+        let (na, nb) = (fa.library().unwrap().clone(), fb.finalize().unwrap());
+        eprintln!(
+            "accepted: factor route {}, frame route {}",
+            fa.stats().refines - r0a,
+            fb.stats().refines - r0b
+        );
+        assert_eq!(fa.stats().refines, fb.stats().refines);
+        assert_eq!(na.ids(), nb.ids());
+        for s in 0..na.len() {
+            let ((pa, va), (pb, vb)) = (na.unfiltered(s), nb.unfiltered(s));
+            assert_eq!(pa, pb, "cell {}: support", na.ids()[s]);
+            let top = va.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            let gap = va
+                .iter()
+                .zip(vb)
+                .fold(0.0f32, |m, (x, y)| m.max((x - y).abs()));
+            eprintln!(
+                "cell {}: {} px, largest gap {:.2e} of the peak",
+                na.ids()[s],
+                pa.len(),
+                gap / top
+            );
+            for (x, y) in va.iter().zip(vb) {
+                assert!(
+                    (x - y).abs() <= 1e-4 * top,
+                    "cell {}: {x} vs {y}",
+                    na.ids()[s]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn refine_until_settled_stops_on_the_settle_rule_or_the_cap() {
+        let (mut sl, windows) = fixture(cfg(v2_config().background));
+        let mut reps: Vec<IterationReport> = Vec::new();
+        let rc = FactorRefineConfig::default();
+        let out = refine_until_settled(&mut sl, &mut windows.clone(), &rc, |it, r| {
+            assert_eq!(it, reps.len() + 1);
+            eprintln!(
+                "iteration {it}: accepted {}, changed share {}, median 1 - r {}",
+                r.accepted, r.changed_share, r.median_change
+            );
+            reps.push(r.clone());
+        })
+        .unwrap();
+        assert!(out.settled, "{reps:?}");
+        assert_ne!(out.stop, SettleStop::Cap);
+        assert_eq!(out.iterations, reps.len());
+        assert!(reps.last().unwrap().settled(&rc));
+        assert!(reps[..reps.len() - 1].iter().all(|r| !r.settled(&rc)));
+        assert_eq!(out.library.version(), sl.library().unwrap().version());
+        assert_eq!(
+            sl.frames(),
+            (T * reps.len()) as u64,
+            "each iteration holds out another third"
+        );
+
+        // Two runs give the same bytes.
+        let (mut s2, _) = fixture(cfg(v2_config().background));
+        let mut reps2: Vec<IterationReport> = Vec::new();
+        let out2 = refine_until_settled(&mut s2, &mut windows.clone(), &rc, |_, r| {
+            reps2.push(r.clone())
+        })
+        .unwrap();
+        assert_eq!(out2.iterations, out.iterations);
+        assert_eq!(out2.library.ids(), out.library.ids());
+        for s in 0..out.library.len() {
+            let (a, b) = (out.library.unfiltered(s), out2.library.unfiltered(s));
+            assert_eq!(a.0, b.0);
+            let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
+            assert_eq!(bits(a.1), bits(b.1), "deterministic");
+        }
+        for (a, b) in reps.iter().zip(&reps2) {
+            assert_eq!(
+                (a.accepted, a.changed_share.to_bits(), a.cells),
+                (b.accepted, b.changed_share.to_bits(), b.cells)
+            );
+        }
+
+        let (mut sl, _) = fixture(cfg(v2_config().background));
+        let capped = FactorRefineConfig {
+            max_iterations: 1,
+            settle_share: 0.0,
+            ..FactorRefineConfig::default()
+        };
+        let out = refine_until_settled(&mut sl, &mut windows.clone(), &capped, |_, _| {}).unwrap();
+        assert_eq!((out.iterations, out.settled), (1, false));
+        assert_eq!(out.stop, SettleStop::Cap);
+    }
+
+    #[test]
+    fn too_few_held_out_frames_skip_the_tile() {
+        let (mut sl, windows) = fixture(cfg(v2_config().background));
+        let rc = FactorRefineConfig {
+            test_frames: 4,
+            ..FactorRefineConfig::default()
+        };
+        assert!(4 < sl.config().min_test_frames);
+        let v0 = sl.library().unwrap().version();
+        let rep = sl.refine_on_factors(&mut windows.clone(), &rc).unwrap();
+        assert!(rep.tiles_skipped >= 1);
+        assert_eq!((rep.accepted, rep.changed_share), (0, 0.0));
+        assert!(rep.settled(&rc));
+        assert_eq!(sl.library().unwrap().version(), v0, "nothing to publish");
+        let out = refine_until_settled(&mut sl, &mut windows.clone(), &rc, |_, _| {}).unwrap();
+        assert_eq!(
+            (out.iterations, out.settled, out.stop),
+            (1, true, SettleStop::NothingAccepted)
+        );
+    }
+
+    #[test]
+    fn an_empty_library_settles_at_once() {
+        let n_px = N * N;
+        let mut sl = SlowLoop::new(
+            dims(),
+            vec![1; n_px],
+            vec![1.0; n_px],
+            flattener(),
+            cfg(v2_config().background),
+        )
+        .unwrap();
+        sl.finalize().unwrap();
+        sl.set_edit_scope(EditScope::Refine);
+        let (_, windows) = fixture(cfg(v2_config().background));
+        let out = refine_until_settled(
+            &mut sl,
+            &mut windows.clone(),
+            &FactorRefineConfig::default(),
+            |_, r| {
+                assert_eq!((r.cells, r.accepted, r.tiles_skipped), (0, 0, 0));
+            },
+        )
+        .unwrap();
+        assert_eq!((out.iterations, out.settled), (1, true));
+    }
+
+    #[test]
+    fn refused_inputs_leave_the_loop_as_it_was() {
+        let rc = FactorRefineConfig::default();
+        let (mut sl, windows) = fixture(cfg(v2_config().background));
+        let other = {
+            let d = crate::preprocess::Dims::new(64, 56).unwrap();
+            let mut wc = WindowCompressor::new(
+                d,
+                CompressConfig {
+                    window: 20,
+                    ..CompressConfig::default()
+                },
+            );
+            (0..20)
+                .find_map(|_| wc.push(&vec![1.0f32; 64 * 56]))
+                .unwrap()
+        };
+        let mut nan = windows.clone();
+        nan[2].tiles[0].temporal.fill(f32::NAN);
+        let n_w = windows.len();
+        let flaky = |fail_at: usize| Flaky {
+            w: windows.clone(),
+            reads: 0,
+            fail_at,
+        };
+        // Twice: on a fresh loop (no statistics, tiles without a basis),
+        // and after one iteration (statistics installed, every basis set).
+        for round in 0..2 {
+            let before = loop_state(&sl);
+            let bad: Vec<(&str, Box<dyn FactorSource>, FactorRefineConfig)> = vec![
+                ("no window", Box::new(Vec::<WindowFactors>::new()), rc),
+                ("a gap", Box::new(windows[1..].to_vec()), rc),
+                ("another frame size", Box::new(vec![other.clone()]), rc),
+                ("non-finite factors", Box::new(nan.clone()), rc),
+                ("pass A read", Box::new(flaky(n_w - 1)), rc),
+                ("pass B first read", Box::new(flaky(n_w)), rc),
+                ("pass B last read", Box::new(flaky(2 * n_w - 1)), rc),
+                (
+                    "settle_corr",
+                    Box::new(windows.clone()),
+                    FactorRefineConfig {
+                        settle_corr: 1.5,
+                        ..rc
+                    },
+                ),
+                (
+                    "max_iterations",
+                    Box::new(windows.clone()),
+                    FactorRefineConfig {
+                        max_iterations: 0,
+                        ..rc
+                    },
+                ),
+            ];
+            for (what, mut src, c) in bad {
+                assert!(
+                    sl.refine_on_factors(src.as_mut(), &c).is_err(),
+                    "{round} {what}"
+                );
+                assert!(loop_state(&sl) == before, "{round} {what}");
+            }
+            if round == 0 {
+                sl.refine_on_factors(&mut windows.clone(), &rc).unwrap();
+            }
+        }
+        let before = loop_state(&sl);
+        sl.set_edit_scope(EditScope::All);
+        assert!(
+            sl.refine_on_factors(&mut windows.clone(), &rc).is_err(),
+            "edit scope"
+        );
+        assert!(loop_state(&sl) == before, "edit scope");
+        sl.set_edit_scope(EditScope::Refine);
+        sl.seed(&[blob_w(9, 20.0, 20.0, 2.5)]).unwrap();
+        let before = loop_state(&sl);
+        assert!(
+            sl.refine_on_factors(&mut windows.clone(), &rc).is_err(),
+            "unpublished edits"
+        );
+        assert!(loop_state(&sl) == before, "unpublished edits");
+        for c in [
+            SlowLoopConfig {
+                joint_update: JointUpdate::All,
+                ..cfg(v2_config().background)
+            },
+            SlowLoopConfig {
+                core_test: CoreTest::Report,
+                support_rule: super::super::SupportRule::Rings,
+                ..cfg(v2_config().background)
+            },
+        ] {
+            let (mut s, w) = fixture(c);
+            let before = loop_state(&s);
+            assert!(
+                s.refine_on_factors(&mut w.clone(), &rc).is_err(),
+                "joint update or core test"
+            );
+            assert!(loop_state(&s) == before, "joint update or core test");
+        }
+    }
+
+    #[test]
+    fn footprint_change_is_a_correlation_over_both_supports() {
+        let (mut sl, windows) = fixture(cfg(v2_config().background));
+        let lib = sl.library().unwrap().clone();
+        let same = footprint_change(&lib, &lib);
+        assert_eq!(same.len(), lib.len());
+        assert!(same.iter().all(|&(_, r)| (r - 1.0).abs() < 1e-12));
+        // After an iteration: one entry per cell, a refined cell below 1,
+        // and the same measure both ways.
+        let rep = sl
+            .refine_on_factors(&mut windows.clone(), &FactorRefineConfig::default())
+            .unwrap();
+        let next = sl.library().unwrap().clone();
+        let ch = footprint_change(&lib, &next);
+        assert_eq!(ch.iter().map(|c| c.0).collect::<Vec<_>>(), next.ids());
+        assert!(ch.iter().all(|c| c.1 <= 1.0 + 1e-12 && c.1 >= -1.0 - 1e-12));
+        assert!(rep.accepted == 0 || ch.iter().any(|c| c.1 < 1.0));
+        let back = footprint_change(&next, &lib);
+        for (a, b) in ch.iter().zip(&back) {
+            assert_eq!(a.0, b.0);
+            assert!((a.1 - b.1).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn pearson_of_identical_or_constant_footprints() {
+        assert_eq!(pearson(&[(2.0, 2.0), (2.0, 2.0)]), 1.0, "unchanged");
+        assert_eq!(pearson(&[]), 1.0, "both empty");
+        assert!(pearson(&[(1.0, 2.0), (1.0, 3.0)]).is_nan(), "constant");
+        assert!((pearson(&[(0.0, 0.0), (1.0, 2.0), (2.0, 4.0)]) - 1.0).abs() < 1e-12);
     }
 }

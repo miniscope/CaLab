@@ -232,7 +232,10 @@ mod shard;
 mod wire;
 
 pub use churn::{AddClass, AddRecord, ChurnConfig, ChurnCounts, RemovalKind, RemovalRecord};
-pub use factor_refine::{FactorRefineConfig, FactorSource, RefineStage};
+pub use factor_refine::{
+    footprint_change, refine_until_settled, FactorRefineConfig, FactorSource, IterationReport,
+    RefineStage, SettleStop, Settled,
+};
 pub use ledger::{
     CellInfo, CellStatus, DeleteReason, DeletedCell, EditCounts, EditEvent, EditKind, TestEvent,
 };
