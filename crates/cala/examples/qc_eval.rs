@@ -2999,6 +2999,16 @@ fn extract_from_factors(
             .unwrap_or_else(|| panic!("{path:?}: not a factor file"));
         read_s += t0.elapsed().as_secs_f64();
         assert!(wf.frames > 0, "{path:?}: an empty window");
+        assert!(
+            wf.start as usize == start,
+            "{path:?}: the window starts at frame {}, expected {start}",
+            wf.start
+        );
+        assert!(
+            start + wf.frames <= t_len,
+            "{path:?}: the window ends at frame {}, past the {t_len} frames of the recording",
+            start + wf.frames
+        );
         let t0 = Instant::now();
         let proj = WindowProjector::new(ex.library(), &wf)
             .unwrap_or_else(|e| panic!("{path:?}: projector: {e}"));
@@ -3018,6 +3028,10 @@ fn extract_from_factors(
         solve_s += t0.elapsed().as_secs_f64();
         start += wf.frames;
     }
+    assert!(
+        start == t_len,
+        "the factor files in {dir:?} end at frame {start}, not {t_len}"
+    );
     (read_s, pre_s, solve_s)
 }
 
@@ -5128,6 +5142,54 @@ mod tests {
         }
     }
 
+    /// Factor files of a short stream (one full window and a short last one)
+    /// and a one-cell library.
+    fn small_factor_run(tag: &str) -> (PathBuf, Arc<Library>, usize) {
+        let dims = Dims::new(96, 70).unwrap();
+        let frames = slow_stream(dims, FACTOR_WINDOW + 50);
+        let dir = std::env::temp_dir().join(format!("qc_eval_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Offset, factor_config(&[]));
+        for f in &frames {
+            fd.push(f);
+        }
+        fd.finish();
+        let mut b = LibraryBuilder::new(dims);
+        b.push(Footprint {
+            id: 0,
+            y0: 10,
+            x0: 12,
+            height: 9,
+            width: 9,
+            values: vec![1.0; 81],
+        });
+        let lib = Arc::new(b.build(&mut IdentityFilter(dims)).unwrap());
+        (dir, lib, frames.len())
+    }
+
+    #[test]
+    #[should_panic(expected = "past the 640 frames")]
+    fn extract_from_factors_refuses_a_window_past_the_recording() {
+        let (dir, lib, _) = small_factor_run("extract_long");
+        extract_from_factors(&dir, &lib, SolverConfig::default(), 640, |_| {});
+    }
+
+    #[test]
+    #[should_panic(expected = "w0000600.fac")]
+    fn extract_from_factors_refuses_a_missing_window() {
+        let (dir, lib, n) = small_factor_run("extract_missing");
+        std::fs::remove_file(dir.join("w0000600.fac")).unwrap();
+        extract_from_factors(&dir, &lib, SolverConfig::default(), n, |_| {});
+    }
+
+    #[test]
+    #[should_panic(expected = "starts at frame 0, expected 600")]
+    fn extract_from_factors_refuses_a_window_at_the_wrong_start() {
+        let (dir, lib, n) = small_factor_run("extract_stale");
+        std::fs::copy(dir.join("w0000000.fac"), dir.join("w0000600.fac")).unwrap();
+        extract_from_factors(&dir, &lib, SolverConfig::default(), n, |_| {});
+    }
+
     #[test]
     fn extract_from_factors_matches_the_replayed_frames() {
         let dims = Dims::new(96, 70).unwrap();
@@ -5177,7 +5239,7 @@ mod tests {
                 let b = got[t * 2 + i];
                 worst = worst.max((a - b).abs() / (1.0 + a.abs()));
                 assert!(
-                    (a - b).abs() <= 1e-3 * (1.0 + a.abs()),
+                    (a - b).abs() <= 1e-4 * (1.0 + a.abs()),
                     "frame {t} cell {i}: {a} from frames, {b} from factors"
                 );
             }
