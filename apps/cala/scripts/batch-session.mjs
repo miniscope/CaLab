@@ -64,12 +64,24 @@ saveStatus();
 
 // ---- static server for dist/ ----
 const repo = resolve(import.meta.dirname, '../../..');
+const base = `http://127.0.0.1:${port}/CaLab/`;
+// A server that already answers on the port belongs to another checkout: this
+// run would then drive that checkout's build without any sign of it.
+const taken = await fetch(base).then(
+  () => true,
+  () => false,
+);
+if (taken) throw new Error(`port ${port} is already served by another process; pass --port`);
 const server = spawn(process.execPath, [join(repo, 'e2e/serve.mjs'), String(port)], {
   cwd: repo,
   stdio: 'ignore',
 });
-const base = `http://127.0.0.1:${port}/CaLab/`;
+let serverExit = null;
+server.on('exit', (code) => {
+  serverExit = code ?? 1;
+});
 for (let i = 0; ; i++) {
+  if (serverExit !== null) throw new Error(`static server exited with code ${serverExit}`);
   try {
     if ((await fetch(base)).ok) break;
   } catch {
