@@ -160,6 +160,34 @@
 //!                      replayed frame) | factors (the factor engine on the
 //!                      files of `--factors-out`, no frame is read or
 //!                      rebuilt; needs `--replay-source factors`)
+//!   --refine-engine E  raw (default: the passes after Discover replay the
+//!                      recording) | factors (Refine on factors: pass 2 is a
+//!                      compression replay only, no fast or slow loop runs
+//!                      in it, then Refine runs on its factor files until the
+//!                      footprints settle; needs --passes 2, --later-passes
+//!                      refine, --factors-out and --factors-pass 2; refused
+//!                      with oracle mode, --library, --offered-fps,
+//!                      --lookback, --catchup, and --joint-update or
+//!                      --core-test other than off). The final library
+//!                      (`footprints.bin`, `final.tsv`, `--extract-pass`) is
+//!                      the settled one; with `--extract-engine factors` the
+//!                      Extract reads the same factor files. Writes
+//!                      `iterations.tsv` (one row per iteration; the last
+//!                      row's `settled` says why it stopped: settled,
+//!                      nothing_accepted or cap, the others `-`),
+//!                      `footprints_iter{k}.bin` / `final_iter{k}.tsv` and a
+//!                      `refine_it{k}` row per iteration in `stage_times.tsv`
+//!                      (read_s: factor files; solve_s: Extract and the
+//!                      statistics; slow_s: held-out patches, gate and
+//!                      publish; reading is in read_s only)
+//!   --settle-corr C, --settle-share S, --max-iterations N
+//!                      the settle stop of --refine-engine factors (0.99,
+//!                      0.02, 20): a cell has settled when its footprint
+//!                      correlates at least C with the previous iteration's,
+//!                      the run when fewer than a share S of cells have not
+//!   --test-frames K    --refine-engine factors: held-out frames per tile of
+//!                      its gate (0: the reservoir's average, frames_per_tile
+//!                      / holdout_every)
 //!   Every run writes `stage_times.tsv`: seconds per pass (and for the
 //!   Extract pass) spent reading, preprocessing, compressing, solving traces
 //!   and in the slow loop. The columns do not add up to `wall_s`: the QC
@@ -391,7 +419,8 @@ use calab_cala::compress::blend::{BlendLayout, Tiling};
 use calab_cala::compress::project::{FactorExtractor, WindowProjector};
 use calab_cala::compress::{CompressConfig, WindowCompressor, WindowFactors};
 use calab_cala::discover::{
-    CoreTest, EditScope, JointAdmit, JointSign, JointUpdate, MergeRule, RefineGate, SlowLoop,
+    refine_until_settled, CoreTest, EditScope, FactorRefineConfig, FactorSource, IterationReport,
+    JointAdmit, JointSign, JointUpdate, MergeRule, RefineGate, RefineStage, SettleStop, SlowLoop,
     SlowLoopConfig, SupportRule, VisitResult, VisitRunner,
 };
 use calab_cala::motion::{
@@ -409,6 +438,7 @@ use calab_cala::qc::heldout::{HeldOutConfig, HeldOutScore, HeldOutWindow};
 use calab_cala::qc::{CellQc, GlobalQc, QcConfig, QcMonitor};
 use calab_cala::trace::{
     BackgroundModel, Footprint, FrameTraces, Library, LibraryBuilder, SolverConfig, TraceEngine,
+    TraceError,
 };
 use std::fmt::Write as _;
 
@@ -3667,6 +3697,307 @@ impl FactorReplay {
     }
 }
 
+/// `--refine-engine`: `None` for `raw` (the default), the settings of
+/// Refine on factors for `factors`. Refuses, before any work, a run that
+/// cannot do it.
+fn refine_engine(
+    args: &[String],
+    passes: usize,
+    later_scope: EditScope,
+    factors_pass: usize,
+    oracle_mode: bool,
+) -> Option<FactorRefineConfig> {
+    fn parsed<T: std::str::FromStr>(args: &[String], key: &str, default: T) -> T {
+        arg_value(args, key).map_or(default, |s| {
+            s.parse()
+                .unwrap_or_else(|_| panic!("{key}: not a number: {s:?}"))
+        })
+    }
+    let factors = match arg_value(args, "--refine-engine").as_deref() {
+        None | Some("raw") => false,
+        Some("factors") => true,
+        Some(o) => panic!("--refine-engine: raw or factors, not {o:?}"),
+    };
+    if !factors {
+        let settle = [
+            "--settle-corr",
+            "--settle-share",
+            "--max-iterations",
+            "--test-frames",
+        ];
+        assert!(
+            !args.iter().any(|a| settle.contains(&a.as_str())),
+            "--settle-corr, --settle-share, --max-iterations and --test-frames need --refine-engine factors"
+        );
+        return None;
+    }
+    assert!(
+        passes == 2
+            && later_scope == EditScope::Refine
+            && factors_pass == 2
+            && arg_value(args, "--factors-out").is_some(),
+        "--refine-engine factors needs --passes 2, --later-passes refine, --factors-out DIR and --factors-pass 2"
+    );
+    assert!(
+        !oracle_mode && arg_value(args, "--library").is_none(),
+        "--refine-engine factors refines the slow loop's library: not in oracle mode, not with --library"
+    );
+    let off = |k: &str| arg_value(args, k).is_none_or(|v| v == "off");
+    assert!(
+        off("--joint-update"),
+        "--refine-engine factors: the cluster replay on factors is phase 3b, --joint-update must be off"
+    );
+    assert!(
+        off("--core-test"),
+        "--refine-engine factors needs --core-test off (the factor statistics build no transient band)"
+    );
+    // The look-back is pass 1's own Refine route and the virtual clock drops
+    // frames: an arm measures one route on every frame.
+    for f in ["--lookback", "--catchup", "--offered-fps"] {
+        assert!(
+            arg_value(args, f).is_none(),
+            "--refine-engine factors does not run with {f}"
+        );
+    }
+    let cfg = FactorRefineConfig {
+        settle_corr: parsed(args, "--settle-corr", 0.99),
+        settle_share: parsed(args, "--settle-share", 0.02),
+        max_iterations: parsed(args, "--max-iterations", 20),
+        test_frames: parsed(args, "--test-frames", 0),
+        solver: SolverConfig::default(),
+    };
+    cfg.validate()
+        .unwrap_or_else(|e| panic!("--refine-engine factors: {e}"));
+    Some(cfg)
+}
+
+/// `--refine-engine factors`: the window files of `--factors-out` as the
+/// windows of Refine on factors (stream frame order, from frame 0), with the
+/// seconds spent reading them and in each stage of the current iteration.
+struct FactorFiles {
+    dir: PathBuf,
+    /// First frame and length of each window.
+    starts: Vec<(usize, usize)>,
+    /// Seconds reading files in the current iteration.
+    read_s: f64,
+    /// Each stage as it started, and the seconds reading files in it.
+    marks: Vec<(RefineStage, Instant, f64)>,
+}
+
+impl FactorFiles {
+    /// The windows `w0000000.fac`, ... of `dir`, which must cover frames
+    /// `0..t_len` without a gap or overlap; any other window file in `dir`
+    /// is another run's and refused.
+    fn open(dir: &Path, t_len: usize) -> FactorFiles {
+        let mut starts = Vec::new();
+        let mut start = 0usize;
+        while start < t_len {
+            let path = dir.join(format!("w{start:07}.fac"));
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+                panic!(
+                    "the factor files in {} end at frame {start}, not {t_len}: {} is missing ({e})",
+                    dir.display(),
+                    path.display()
+                )
+            });
+            let wf = WindowFactors::from_bytes(&bytes)
+                .unwrap_or_else(|| panic!("{}: not a factor file", path.display()));
+            assert!(
+                wf.frames > 0 && wf.start as usize == start,
+                "{}: a window of {} frames at frame {}, expected one at frame {start}",
+                path.display(),
+                wf.frames,
+                wf.start
+            );
+            assert!(
+                start + wf.frames <= t_len,
+                "{}: the window ends at frame {}, past the {t_len} frames of the recording",
+                path.display(),
+                start + wf.frames
+            );
+            starts.push((start, wf.frames));
+            start += wf.frames;
+        }
+        let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+        for e in entries {
+            let path = e
+                .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+                .path();
+            let w = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_prefix('w')?.strip_suffix(".fac")?.parse().ok());
+            if let Some(w) = w {
+                assert!(
+                    starts.iter().any(|s: &(usize, usize)| s.0 == w),
+                    "{}: a factor window outside frames 0..{t_len} of this run",
+                    path.display()
+                );
+            }
+        }
+        FactorFiles {
+            dir: dir.to_path_buf(),
+            starts,
+            read_s: 0.0,
+            marks: Vec::new(),
+        }
+    }
+
+    /// Start timing a new iteration.
+    fn begin(&mut self) {
+        self.read_s = 0.0;
+        self.marks.clear();
+    }
+
+    /// Seconds of the current iteration: reading the files, then pass A
+    /// (Extract and the statistics), the held-out patches, the gate and
+    /// publishing, each without the reading in it.
+    fn times(&self) -> (f64, f64, f64, f64, f64) {
+        let at = |s: RefineStage| self.marks.iter().find(|m| m.0 == s);
+        let span = |a: RefineStage, b: RefineStage| match (at(a), at(b)) {
+            (Some(x), Some(y)) => (y.1.duration_since(x.1).as_secs_f64() - x.2).max(0.0),
+            _ => 0.0,
+        };
+        (
+            self.read_s,
+            span(RefineStage::Sums, RefineStage::TestFrames),
+            span(RefineStage::TestFrames, RefineStage::Gate),
+            span(RefineStage::Gate, RefineStage::Publish),
+            span(RefineStage::Publish, RefineStage::Done),
+        )
+    }
+}
+
+impl FactorSource for FactorFiles {
+    fn windows(&self) -> usize {
+        self.starts.len()
+    }
+
+    fn window(&mut self, w: usize) -> Result<WindowFactors, TraceError> {
+        let &(start, frames) = self
+            .starts
+            .get(w)
+            .ok_or_else(|| TraceError::InvalidConfig(format!("no factor window {w}")))?;
+        let path = self.dir.join(format!("w{start:07}.fac"));
+        let t0 = Instant::now();
+        let bytes = std::fs::read(&path)
+            .map_err(|e| TraceError::InvalidConfig(format!("{}: {e}", path.display())))?;
+        let wf = WindowFactors::from_bytes(&bytes).ok_or_else(|| {
+            TraceError::InvalidConfig(format!("{}: not a factor file", path.display()))
+        })?;
+        let dt = t0.elapsed().as_secs_f64();
+        self.read_s += dt;
+        if let Some(m) = self.marks.last_mut() {
+            m.2 += dt;
+        }
+        // The files are read again every iteration: one that changed since
+        // `open` is refused.
+        if (wf.start as usize, wf.frames) != (start, frames) {
+            return Err(TraceError::InvalidConfig(format!(
+                "{}: changed since the run began (frames {}..{}, expected {start}..{})",
+                path.display(),
+                wf.start,
+                wf.start as usize + wf.frames,
+                start + frames
+            )));
+        }
+        Ok(wf)
+    }
+
+    fn stage(&mut self, stage: RefineStage) {
+        self.marks.push((stage, Instant::now(), 0.0));
+    }
+}
+
+/// Header of `iterations.tsv`.
+const ITERATIONS_HEADER: &str = "iteration\tversion\tcells\taccepted\tchanged_share\tmedian_change\tlow_valid\ttiles_skipped\tread_s\tsums_s\ttest_s\tgate_s\tpublish_s\twall_s\tsettled\n";
+
+/// The `settled` column of the last row of `iterations.tsv`.
+fn stop_word(stop: SettleStop) -> &'static str {
+    match stop {
+        SettleStop::Settled => "settled",
+        SettleStop::NothingAccepted => "nothing_accepted",
+        SettleStop::Cap => "cap",
+    }
+}
+
+/// What [`refine_on_factor_files`] ran: the settled library, why it
+/// stopped, the iterations, `iterations.tsv` and the `stage_times.tsv` rows.
+struct FactorRefineRun {
+    library: Arc<Library>,
+    stop: SettleStop,
+    iterations: usize,
+    log: String,
+    stage_rows: String,
+}
+
+/// `--refine-engine factors`: Refine on the factor files until the
+/// footprints settle or `cfg.max_iterations` have run; `on_iteration` gets
+/// each iteration's report and library (counted from 1). An error of the
+/// library stops the run with the iteration in the message.
+fn refine_on_factor_files(
+    sl: &mut SlowLoop,
+    src: &mut FactorFiles,
+    cfg: &FactorRefineConfig,
+    mut on_iteration: impl FnMut(usize, &IterationReport, &Arc<Library>),
+) -> FactorRefineRun {
+    // One iteration per call: the library's own refusals and stop rule,
+    // and the library after each iteration for its outputs, which the
+    // callback of `refine_until_settled` cannot reach.
+    let one = FactorRefineConfig {
+        max_iterations: 1,
+        ..*cfg
+    };
+    let mut log = String::from(ITERATIONS_HEADER);
+    let mut stage_rows = String::new();
+    let mut it = 0;
+    loop {
+        it += 1;
+        src.begin();
+        let t0 = Instant::now();
+        let mut rep: Option<IterationReport> = None;
+        let done = refine_until_settled(sl, src, &one, |_, r| rep = Some(r.clone()))
+            .unwrap_or_else(|e| panic!("Refine on factors, iteration {it}: {e}"));
+        let wall = t0.elapsed().as_secs_f64();
+        let rep = rep.expect("an Ok of refine_until_settled ran an iteration");
+        let stop = if done.settled {
+            Some(done.stop)
+        } else if it == cfg.max_iterations {
+            Some(SettleStop::Cap)
+        } else {
+            None
+        };
+        let (read_s, sums_s, test_s, gate_s, publish_s) = src.times();
+        let _ = writeln!(
+            log,
+            "{it}\t{}\t{}\t{}\t{:.5}\t{:.6}\t{}\t{}\t{read_s:.2}\t{sums_s:.2}\t{test_s:.2}\t{gate_s:.2}\t{publish_s:.2}\t{wall:.2}\t{}",
+            rep.library_version,
+            rep.cells,
+            rep.accepted,
+            rep.changed_share,
+            rep.median_change,
+            rep.low_valid,
+            rep.tiles_skipped,
+            stop.map_or("-", stop_word)
+        );
+        let _ = writeln!(
+            stage_rows,
+            "refine_it{it}\t{read_s:.2}\t0.00\t0.00\t{sums_s:.2}\t{:.2}\t{wall:.2}",
+            test_s + gate_s + publish_s
+        );
+        on_iteration(it, &rep, &done.library);
+        if let Some(stop) = stop {
+            return FactorRefineRun {
+                library: done.library,
+                stop,
+                iterations: it,
+                log,
+                stage_rows,
+            };
+        }
+    }
+}
+
 /// Factor windows the look-back keeps in memory (first in, first out). Its
 /// reach of 3000 frames before a birth (`--lookback-frames`) spans at most
 /// six windows; older needs and the precision mode can ask for older blocks,
@@ -4134,6 +4465,7 @@ fn main() {
             EditScope::from_name(m).unwrap_or_else(|| panic!("--later-passes: unknown mode {m}"))
         }
     };
+    let refine_factors = refine_engine(&args, passes, later_scope, factors_pass, oracle_mode);
     let churn_log = args.iter().any(|a| a == "--churn-log");
     let wrap_libs = args.iter().any(|a| a == "--wrap-libs");
     let lib_at: Vec<f64> = arg_value(&args, "--lib-at").map_or(Vec::new(), |s| {
@@ -5069,6 +5401,13 @@ fn main() {
                 if let (Some(fd), true) = (factors.as_mut(), pass + 1 == factors_pass) {
                     fd.push(&y);
                 }
+                // `--refine-engine factors`: pass 2 is the compression replay
+                // before Refine (A4, A7); the fast and the slow loop do not
+                // run. Nothing above depends on them, so the files are the
+                // ones a refine replay writes.
+                if refine_factors.is_some() && pass + 1 == factors_pass {
+                    continue;
+                }
                 let warm = diverge.as_ref().map(|_| engine.state());
                 let t0 = Instant::now();
                 let tr = engine.process(&y).unwrap();
@@ -5521,6 +5860,41 @@ fn main() {
         }
     }
     std::fs::write(out_dir.join("passes.tsv"), &passes_out).unwrap();
+    // `--refine-engine factors`: Refine on the factors of pass 2 until the
+    // footprints settle; each iteration's library and times are written, and
+    // the final library (`footprints.bin`, the Extract pass) is the settled one.
+    if let Some(fcfg) = &refine_factors {
+        let sl = slow
+            .as_mut()
+            .expect("--refine-engine factors: no slow loop ran (the run ends before --start)");
+        sl.set_noise(pipe.pre.noise().sigma())
+            .unwrap_or_else(|e| panic!("Refine on factors: noise map: {e}"));
+        let dir = factors_out.as_deref().expect("checked: --factors-out");
+        let mut src = FactorFiles::open(dir, t_len);
+        let run = refine_on_factor_files(sl, &mut src, fcfg, |it, rep, lib| {
+            write_library(
+                &out_dir,
+                &format!("_iter{it}"),
+                lib,
+                dims,
+                gt.as_ref(),
+                ho.as_ref(),
+                None,
+            );
+            println!(
+                "Refine on factors, iteration {it}: {} refinements, {:.4} of {} cells changed (median {:.5}), {} cells with low valid share, {} tiles skipped",
+                rep.accepted, rep.changed_share, rep.cells, rep.median_change, rep.low_valid, rep.tiles_skipped
+            );
+        });
+        println!(
+            "Refine on factors: {} after {} iterations",
+            stop_word(run.stop),
+            run.iterations
+        );
+        stage_times.push_str(&run.stage_rows);
+        std::fs::write(out_dir.join("iterations.tsv"), &run.log).unwrap();
+        engine.set_library(run.library).unwrap();
+    }
     if let Some(l) = &lookback {
         println!(
             "lookback: {} frames ({} pushed, {} cell-frames, {} births, {} cells still in need), {:.1} s wall",
@@ -6646,5 +7020,297 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("qc_eval_lbnone_{}", std::process::id()));
         let mut y = vec![0.0f32; 4];
         FactorFrames::new(&dir).frame(0, &mut y);
+    }
+
+    #[test]
+    fn factor_files_serve_the_dumped_windows_in_order() {
+        let dims = Dims::new(96, 70).unwrap();
+        let frames = slow_stream(dims, FACTOR_WINDOW + 50);
+        let dir = std::env::temp_dir().join(format!("qc_eval_files_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Offset, factor_config(&[]));
+        for f in &frames {
+            fd.push(f);
+        }
+        fd.finish();
+        let mut src = FactorFiles::open(&dir, frames.len());
+        assert_eq!(src.windows(), 2);
+        src.begin();
+        src.stage(RefineStage::Sums);
+        let (a, b) = (src.window(0).unwrap(), src.window(1).unwrap());
+        assert_eq!((a.start, a.frames), (0, FACTOR_WINDOW));
+        assert_eq!((b.start, b.frames), (FACTOR_WINDOW as u64, 50));
+        assert!(src.window(2).is_err());
+        for s in [
+            RefineStage::TestFrames,
+            RefineStage::Gate,
+            RefineStage::Publish,
+            RefineStage::Done,
+        ] {
+            src.stage(s);
+        }
+        let (read_s, sums_s, test_s, gate_s, publish_s) = src.times();
+        assert!(read_s > 0.0, "two files read");
+        assert!([read_s, sums_s, test_s, gate_s, publish_s]
+            .iter()
+            .all(|&v| v >= 0.0));
+        src.begin();
+        assert_eq!(src.times(), (0.0, 0.0, 0.0, 0.0, 0.0), "a new iteration");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "end at frame")]
+    fn factor_files_refuse_a_recording_longer_than_the_factors() {
+        let dims = Dims::new(64, 40).unwrap();
+        let frames = slow_stream(dims, 30);
+        let dir = std::env::temp_dir().join(format!("qc_eval_files_short_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Plain, factor_config(&[]));
+        for f in &frames {
+            fd.push(f);
+        }
+        fd.finish();
+        let _ = FactorFiles::open(&dir, 31);
+    }
+
+    #[test]
+    #[should_panic(expected = "w0000600.fac is missing")]
+    fn factor_files_refuse_a_missing_window() {
+        let (dir, _, n) = small_factor_run("files_missing");
+        std::fs::remove_file(dir.join("w0000600.fac")).unwrap();
+        let _ = FactorFiles::open(&dir, n);
+    }
+
+    #[test]
+    #[should_panic(expected = "expected one at frame 600")]
+    fn factor_files_refuse_a_window_at_the_wrong_start() {
+        let (dir, _, n) = small_factor_run("files_stale");
+        std::fs::copy(dir.join("w0000000.fac"), dir.join("w0000600.fac")).unwrap();
+        let _ = FactorFiles::open(&dir, n);
+    }
+
+    #[test]
+    #[should_panic(expected = "past the 640 frames")]
+    fn factor_files_refuse_a_window_past_the_recording() {
+        let (dir, _, _) = small_factor_run("files_long");
+        let _ = FactorFiles::open(&dir, 640);
+    }
+
+    #[test]
+    #[should_panic(expected = "w0000600.fac: a factor window outside frames 0..600")]
+    fn factor_files_refuse_an_extra_window() {
+        // The 650-frame files read as a 600-frame recording: the second
+        // window is left over from another run.
+        let (dir, _, _) = small_factor_run("files_extra");
+        let _ = FactorFiles::open(&dir, FACTOR_WINDOW);
+    }
+
+    #[test]
+    fn factor_files_count_stream_frames_after_from() {
+        // `--from F`: the dump and the Refine both count stream frames from
+        // 0, so the windows line up whatever F is.
+        let mut r = two_file_recording();
+        r.skip(850);
+        let (dir, _, n) = small_factor_run("files_from");
+        assert_eq!(n, r.total as usize);
+        let src = FactorFiles::open(&dir, r.total as usize);
+        assert_eq!(src.starts, vec![(0, FACTOR_WINDOW), (FACTOR_WINDOW, 50)]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_factor_dump_writes_the_same_bytes_for_the_same_frames() {
+        // The compression replay of `--refine-engine factors` pushes the
+        // frames a refine replay pushes; this is why its files are the same.
+        let (a, _, _) = small_factor_run("same_a");
+        let (b, _, _) = small_factor_run("same_b");
+        for name in ["w0000000.fac", "w0000600.fac"] {
+            assert_eq!(
+                std::fs::read(a.join(name)).unwrap(),
+                std::fs::read(b.join(name)).unwrap(),
+                "{name}"
+            );
+        }
+        std::fs::remove_dir_all(&a).unwrap();
+        std::fs::remove_dir_all(&b).unwrap();
+    }
+
+    fn args_of(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    const FACTOR_ARGS: &str =
+        "qc_eval real in out --passes 2 --later-passes refine --factors-out f --factors-pass 2";
+
+    #[test]
+    fn refine_engine_raw_is_the_default() {
+        let a = args_of(FACTOR_ARGS);
+        assert_eq!(refine_engine(&a, 2, EditScope::Refine, 2, false), None);
+        let a = args_of(&format!("{FACTOR_ARGS} --refine-engine raw"));
+        assert_eq!(refine_engine(&a, 2, EditScope::Refine, 2, false), None);
+    }
+
+    #[test]
+    fn refine_engine_factors_reads_the_settle_flags() {
+        let a = args_of(&format!("{FACTOR_ARGS} --refine-engine factors"));
+        assert_eq!(
+            refine_engine(&a, 2, EditScope::Refine, 2, false),
+            Some(FactorRefineConfig::default())
+        );
+        let a = args_of(&format!(
+            "{FACTOR_ARGS} --refine-engine factors --settle-corr 0.95 --settle-share 0.1 --max-iterations 4 --test-frames 30 --joint-update off --core-test off --from 900 --replay-source factors"
+        ));
+        let c = refine_engine(&a, 2, EditScope::Refine, 2, false).unwrap();
+        assert_eq!(
+            (
+                c.settle_corr,
+                c.settle_share,
+                c.max_iterations,
+                c.test_frames
+            ),
+            (0.95, 0.1, 4, 30)
+        );
+    }
+
+    #[test]
+    fn refine_engine_factors_refuses_what_it_cannot_run() {
+        let msg = |a: &str, passes: usize, scope: EditScope, fp: usize, oracle: bool| {
+            let a = args_of(a);
+            let e = std::panic::catch_unwind(|| refine_engine(&a, passes, scope, fp, oracle))
+                .expect_err(&format!("{a:?} must be refused"));
+            e.downcast_ref::<String>()
+                .cloned()
+                .or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                .unwrap()
+        };
+        let r = EditScope::Refine;
+        let f = format!("{FACTOR_ARGS} --refine-engine factors");
+        for (extra, want) in [
+            ("--joint-update refine", "--joint-update"),
+            ("--lookback 1", "--lookback"),
+            ("--catchup 600", "--catchup"),
+            ("--core-test report", "--core-test"),
+            ("--offered-fps 30", "--offered-fps"),
+            ("--library fp.bin", "--library"),
+            ("--settle-corr 2", "--refine-engine factors: "),
+        ] {
+            let m = msg(&format!("{f} {extra}"), 2, r, 2, false);
+            assert!(m.contains(want), "{extra}: {m}");
+        }
+        let needs =
+            "needs --passes 2, --later-passes refine, --factors-out DIR and --factors-pass 2";
+        assert!(msg(&f, 3, r, 2, false).contains(needs));
+        assert!(msg(&f, 2, EditScope::All, 2, false).contains(needs));
+        assert!(msg(&f, 2, r, 1, false).contains(needs));
+        let no_dir = f.replace("--factors-out f", "");
+        assert!(msg(&no_dir, 2, r, 2, false).contains(needs));
+        assert!(msg(&f, 2, r, 2, true).contains("oracle"));
+        let typo = format!("{FACTOR_ARGS} --refine-engine factor");
+        assert!(msg(&typo, 2, r, 2, false).contains("raw or factors, not \"factor\""));
+        let stray = format!("{FACTOR_ARGS} --max-iterations 3");
+        assert!(msg(&stray, 2, r, 2, false).contains("need --refine-engine factors"));
+    }
+
+    /// A slow loop in the Refine scope with the blob of `slow_stream` seeded
+    /// a pixel off its centre, published.
+    fn seeded_refine_loop(dims: Dims, scope: EditScope) -> SlowLoop {
+        let n = dims.pixels();
+        let fcfg = calab_cala::preprocess::flatten::FlattenConfig {
+            cell_diameter_px: 10.0,
+            ..Default::default()
+        };
+        let mask = calab_cala::preprocess::fov::FovMask::full(dims);
+        let flat = GlowFlattener::new(&mask, &fcfg).unwrap();
+        let mut sl = SlowLoop::new(
+            dims,
+            vec![1; n],
+            vec![1.0; n],
+            flat,
+            SlowLoopConfig::default(),
+        )
+        .unwrap();
+        sl.seed(&[blob(1, 36.0, 63.0, 3.5, dims)]).unwrap();
+        sl.finalize().unwrap();
+        sl.set_edit_scope(scope);
+        sl
+    }
+
+    #[test]
+    fn refine_on_factor_files_logs_every_iteration_and_ends_with_the_published_library() {
+        let (dir, _, n) = small_factor_run("refine_loop");
+        let dims = Dims::new(96, 70).unwrap();
+        for (cfg, want_cap) in [
+            (
+                FactorRefineConfig {
+                    max_iterations: 3,
+                    ..FactorRefineConfig::default()
+                },
+                false,
+            ),
+            // `settle_share` 0 asks for the cap.
+            (
+                FactorRefineConfig {
+                    max_iterations: 2,
+                    settle_share: 0.0,
+                    ..FactorRefineConfig::default()
+                },
+                true,
+            ),
+        ] {
+            let mut sl = seeded_refine_loop(dims, EditScope::Refine);
+            let mut src = FactorFiles::open(&dir, n);
+            let mut libs: Vec<(usize, Arc<Library>)> = Vec::new();
+            let run = refine_on_factor_files(&mut sl, &mut src, &cfg, |it, rep, lib| {
+                assert_eq!(rep.library_version, lib.version());
+                libs.push((it, lib.clone()));
+            });
+            let k = libs.len();
+            assert!((1..=cfg.max_iterations).contains(&k));
+            assert_eq!(run.iterations, k);
+            assert_eq!(
+                libs.iter().map(|l| l.0).collect::<Vec<_>>(),
+                (1..=k).collect::<Vec<_>>()
+            );
+            assert_eq!(run.stop == SettleStop::Cap, want_cap, "{:?}", run.stop);
+            if want_cap {
+                assert_eq!(k, cfg.max_iterations);
+            }
+            let rows: Vec<&str> = run.log.lines().collect();
+            assert_eq!(rows[0], ITERATIONS_HEADER.trim_end());
+            assert_eq!(rows.len(), 1 + k);
+            for (i, r) in rows[1..].iter().enumerate() {
+                let cols: Vec<&str> = r.split('\t').collect();
+                assert_eq!(cols.len(), 15, "{r}");
+                assert_eq!(cols[0], (i + 1).to_string());
+                let want = if i + 1 == k { stop_word(run.stop) } else { "-" };
+                assert_eq!(cols[14], want, "{r}");
+            }
+            assert!(Arc::ptr_eq(&run.library, &libs[k - 1].1));
+            assert!(Arc::ptr_eq(sl.library().unwrap(), &run.library));
+            let stage: Vec<&str> = run.stage_rows.lines().collect();
+            assert_eq!(stage.len(), k);
+            for (i, r) in stage.iter().enumerate() {
+                assert!(r.starts_with(&format!("refine_it{}\t", i + 1)), "{r}");
+                assert_eq!(r.split('\t').count(), 7, "{r}");
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Refine on factors, iteration 1: ")]
+    fn refine_on_factor_files_names_the_iteration_of_a_library_error() {
+        let (dir, _, n) = small_factor_run("refine_refused");
+        let dims = Dims::new(96, 70).unwrap();
+        // Not the Refine scope: the library refuses before it reads a window.
+        let mut sl = seeded_refine_loop(dims, EditScope::All);
+        let mut src = FactorFiles::open(&dir, n);
+        refine_on_factor_files(
+            &mut sl,
+            &mut src,
+            &FactorRefineConfig::default(),
+            |_, _, _| {},
+        );
     }
 }
