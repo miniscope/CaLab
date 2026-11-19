@@ -226,7 +226,11 @@ def match_cells(
 ) -> dict[int, int]:
     """Pairs (reference id to test id) of the cells of two runs whose cell sets differ: in
     falling footprint cosine, each cell in at most one pair, cosine at least `min_cos`,
-    centroids at most `MATCH_PX` apart. Ids are not used: they do not correspond."""
+    centroids at most `MATCH_PX` apart. Ids are not used: they do not correspond.
+
+    The pairing is greedy by cosine (ties: lower reference id, then lower test id). In a split
+    or merge triple it can leave a cell unpaired that an optimal assignment would pair; that
+    error is on the strict side, as the cell counts as lost."""
     w = dims[1]
     cb = {k: footprint_centroid(c, w) for k, c in fb.items()}
     cand: list[tuple[float, int, int]] = []
@@ -418,10 +422,11 @@ def _compare(
             "truth_fp_ref": fp_truth_r(fa[cid], units[ku], shift, (h, w))
             if ku >= 0
             else NAN,
-            "truth_fp_test": fp_truth_r(fb[tid], units[kt], shift, (h, w))
-            if kt >= 0 and tid in fb
+            "truth_fp_test": fp_truth_r(fb[tid], units[ku], shift, (h, w))
+            if ku >= 0 and tid in fb
             else NAN,
             "truth_overlap": float(overlap[ku]) if ku >= 0 else NAN,
+            "truth_other": float(kt != ku) if ku >= 0 and kt >= 0 else NAN,
         }
         if pairs is not None:
             row["test_id"] = float(tid)
@@ -714,7 +719,8 @@ def report(
     """The Markdown comparison of `test` with `ref`, judged against the `nulls`.
 
     With `match`, cells are paired by footprint (`match_cells`) instead of by id: for runs
-    whose Discover differed (look-back)."""
+    whose Discover differed (look-back). The `nulls` are compared with `ref` by id either
+    way, which is right only for nulls that share the reference's Discover."""
     dims, fa = read_footprints(ref / "footprints.bin")
     _, fb = read_footprints(test / "footprints.bin")
     pairs = match_cells(fa, fb, dims) if match else None
@@ -792,7 +798,12 @@ def report(
         fr, ft = finite(rows, "truth_fp_ref"), finite(rows, "truth_fp_test")
         out.append(
             "Footprint correlation with the truth footprint, median: "
-            f"reference {q(fr, 50)}, test {q(ft, 50)}."
+            f"reference {q(fr, 50)} over {len(fr)} cells, test {q(ft, 50)} over {len(ft)} cells."
+        )
+        n_other = sum(1 for r in rows if r["truth_other"] == 1.0)
+        out.append(
+            f"{n_other} paired cells whose test trace fits another truth unit best "
+            "(their footprints are still measured against the reference cell's unit)."
         )
         for name, sel in (
             ("all cells", rows),
@@ -811,10 +822,17 @@ def report(
                 dtype=np.float64,
             )
             out.append(
-                f"Truth footprint correlation, test minus reference, {name}: {len(d)} cells, "
-                f"median {q(d, 50)}, 5th pct {q(d, 5)}."
+                f"Truth footprint correlation, test minus reference, {name}: "
+                f"median over {len(d)} cells {q(d, 50)}, 5th pct {q(d, 5)}."
             )
     if pairs is not None:
+        out += [
+            "",
+            (
+                "The null runs are compared with the reference by id, which is right only "
+                "when they share the reference's Discover."
+            ),
+        ]
         paired = [r for r in rows if r["qc_pass"] and r["in_test"]]
         out += [
             "",

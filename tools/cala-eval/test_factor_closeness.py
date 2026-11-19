@@ -286,6 +286,23 @@ class Closeness(unittest.TestCase):
         last = [ln for ln in text.splitlines() if ln][-1]
         self.assertTrue(last.startswith("Gate A1: "), last)
 
+    def test_a_paired_cell_is_measured_against_the_reference_cells_unit(self) -> None:
+        a, b = self.root / "a", self.root / "b"
+        write_run(a, CELLS, TRACES)
+        traces_b = dict(TRACES)
+        traces_b[9] = TRACES[11]  # follows the extra unit beside cell 9
+        write_run(b, CELLS, traces_b)
+        units = [(blob(cy - 3, cx + 7), i) for i, (cy, cx) in CELLS_XY.items()]
+        units.append((blob(63 - 3 + 2, 90 + 7), 11))
+        truth = self._write_truth(units)
+        rows = {r["id"]: r for r in F.compare(a, b, truth_path=truth)}
+        self.assertAlmostEqual(rows[9]["truth_fp_test"], 1.0, places=6)
+        self.assertEqual(rows[9]["truth_other"], 1.0)
+        self.assertEqual(rows[7]["truth_other"], 0.0)
+        text = F.report(a, b, [], truth_path=truth)
+        self.assertIn("1 paired cells whose test trace fits another truth unit", text)
+        self.assertIn("reference 1.0000 over 3 cells", text)
+
     def test_cells_are_paired_by_footprint_not_by_id(self) -> None:
         a, b = self.root / "a", self.root / "b"
         write_run(a, CELLS, TRACES)
