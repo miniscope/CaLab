@@ -527,6 +527,25 @@ class EngineReport(unittest.TestCase):
             )
             self.assertIn("same footprints: no", F.engine_report(a, b))
 
+    def test_report_splits_cells_by_valid_share_when_the_file_is_there(self) -> None:
+        ref = {7: TRACES[7], 9: TRACES[9], 13: TRACES[11]}
+        test = {7: TRACES[7], 9: [v + 0.5 for v in TRACES[9]], 13: TRACES[11]}
+        cells = {7: CELLS[7], 9: CELLS[9]}
+        with tempfile.TemporaryDirectory() as d:
+            a, b = Path(d) / "ref", Path(d) / "test"
+            write_run(a, cells, ref)
+            write_run(b, cells, test)
+            plain = F.engine_report(a, b)
+            self.assertNotIn("min_valid", plain)
+            (b / "extract_min_valid.tsv").write_text(
+                "id\tmin_valid\n7\t1.0000\n9\t0.7500\n13\t1.0000\n"
+            )
+            text = F.engine_report(a, b)
+            sd = float(np.std(np.asarray(TRACES[9], "<f4")))
+            self.assertIn(f"| min_valid below 1 | 1 | {0.5 / sd:.4f} |", text)
+            self.assertIn("| min_valid equal to 1 | 2 | 0.0000 |", text)
+            self.assertIn("never present in a window is stored as 0", text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -82,6 +82,15 @@ def read_traces(run: Path) -> dict[int, np.ndarray]:
     return {cid: x[:, k] for k, cid in enumerate(ids)}
 
 
+def read_min_valid(run: Path) -> dict[int, float] | None:
+    """`{id: min_valid}` of a factor-engine run (`extract_min_valid.tsv`), or None for a
+    run without the file (older runs, the frames route)."""
+    path = run / "extract_min_valid.tsv"
+    if not path.exists():
+        return None
+    return {int(r["id"]): float(r["min_valid"]) for r in read_tsv(path)}
+
+
 def read_centroids(run: Path) -> dict[int, tuple[float, float]]:
     return {
         int(r["id"]): (float(r["cy"]), float(r["cx"]))
@@ -454,7 +463,8 @@ def engine_report(ref: Path, test: Path, band: float = 16.0) -> str:
     on frames rebuilt from the same factors (`ref`), by the cell's distance to the border.
 
     The two engines differ where pixels are missing: the frame engine fills them per frame,
-    the factors hold the pixel's mean over the window. That is the border band.
+    the factors hold the pixel's mean over the window. The border band is a proxy for those
+    cells; the `min_valid` rows (when the test run has `extract_min_valid.tsv`) pick them.
     """
     (h, w), _ = read_footprints(ref / "footprints.bin")
     same = (ref / "footprints.bin").read_bytes() == (
@@ -472,6 +482,12 @@ def engine_report(ref: Path, test: Path, band: float = 16.0) -> str:
         (f"{band:g} px or more from the border", [c for c in gap if border(c) >= band]),
         (f"under {band:g} px from the border", [c for c in gap if border(c) < band]),
     ]
+    valid = read_min_valid(test)
+    if valid is not None:
+        sets += [
+            ("min_valid below 1", [c for c in gap if valid.get(c, 1.0) < 1.0]),
+            ("min_valid equal to 1", [c for c in gap if valid.get(c, 1.0) >= 1.0]),
+        ]
     out = [
         f"### `{test.name}` against `{ref.name}`: factor engine against rebuilt frames",
         "",
@@ -485,6 +501,15 @@ def engine_report(ref: Path, test: Path, band: float = 16.0) -> str:
         v = v[np.isfinite(v)]
         top = f"{v.max():.4f}" if len(v) else "n/a"
         out.append(f"| {name} | {len(v)} | {q(v, 50)} | {top} |")
+    if valid is not None:
+        out += [
+            "",
+            (
+                "`min_valid` is the smallest share of a window's frames in which every pixel under "
+                "the cell was present, over all windows; a pixel never present in a window is "
+                "stored as 0, which the factor engine reads and the frame engine treats as missing."
+            ),
+        ]
     return "\n".join(out + [""])
 
 

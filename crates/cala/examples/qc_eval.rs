@@ -3570,18 +3570,20 @@ impl FactorReplay {
 /// `--extract-engine factors`: solve every frame of the recording from the
 /// factor files in `dir` (a [`FactorDump`]'s) with the factor engine; `sink`
 /// gets each frame's traces. Returns the seconds spent reading the files,
-/// building the projectors and solving. A failed solve stops the run with the
-/// window and frame in the message.
+/// building the projectors and solving, and per cell the smallest valid share
+/// over all windows (`WindowProjector::min_valid`). A failed solve stops the
+/// run with the window and frame in the message.
 fn extract_from_factors(
     dir: &Path,
     lib: &Arc<Library>,
     cfg: SolverConfig,
     t_len: usize,
     mut sink: impl FnMut(&[f32]),
-) -> (f64, f64, f64) {
+) -> (f64, f64, f64, Vec<f32>) {
     let mut ex = FactorExtractor::new(lib.clone(), cfg).unwrap();
     ex.engine_mut().set_consolidated_ring_gradient(true);
     let (mut read_s, mut pre_s, mut solve_s) = (0.0f64, 0.0f64, 0.0f64);
+    let mut min_valid = vec![1.0f32; ex.library().len()];
     let mut start = 0usize;
     while start < t_len {
         let path = dir.join(format!("w{start:07}.fac"));
@@ -3605,6 +3607,9 @@ fn extract_from_factors(
         let proj = WindowProjector::new(ex.library(), &wf)
             .unwrap_or_else(|e| panic!("{path:?}: projector: {e}"));
         pre_s += t0.elapsed().as_secs_f64();
+        for (m, &v) in min_valid.iter_mut().zip(proj.min_valid()) {
+            *m = m.min(v);
+        }
         let t0 = Instant::now();
         let mut done = 0usize;
         ex.solve(&wf, &proj, 0, wf.frames, |tr| {
@@ -3624,7 +3629,16 @@ fn extract_from_factors(
         start == t_len,
         "the factor files in {dir:?} end at frame {start}, not {t_len}"
     );
-    (read_s, pre_s, solve_s)
+    (read_s, pre_s, solve_s, min_valid)
+}
+
+/// `extract_min_valid.tsv`: one row per cell in the library's id order.
+fn min_valid_tsv(ids: &[u64], min_valid: &[f32]) -> String {
+    let mut s = String::from("id\tmin_valid\n");
+    for (id, v) in ids.iter().zip(min_valid) {
+        let _ = writeln!(s, "{id}\t{v:.4}");
+    }
+    s
 }
 
 /// DIAG (`CALA_DIVERGE_DIR`): per-frame solver log (sweeps, largest
@@ -5537,10 +5551,18 @@ fn main() {
             let dir = factors_out
                 .as_deref()
                 .expect("--extract-engine factors needs --factors-out");
-            (read_s, pre_s, solve_s) =
+            let min_valid;
+            (read_s, pre_s, solve_s, min_valid) =
                 extract_from_factors(dir, &lib, SolverConfig::default(), t_len, |tr| {
                     write_f32s(&mut out, tr);
                 });
+            // Cells whose support has a pixel missing in part of a window,
+            // where the two engines can differ.
+            std::fs::write(
+                out_dir.join("extract_min_valid.tsv"),
+                min_valid_tsv(lib.ids(), &min_valid),
+            )
+            .unwrap();
         } else {
             let mut s = 0u32;
             while s < frames {
@@ -6022,6 +6044,45 @@ mod tests {
     }
 
     #[test]
+    fn extract_from_factors_reports_the_valid_share_per_cell() {
+        let dims = Dims::new(96, 70).unwrap();
+        let mut frames = slow_stream(dims, FACTOR_WINDOW + 50);
+        // A pixel under the second cell, missing in the first 150 frames.
+        for f in frames.iter_mut().take(150) {
+            f[44 * dims.width + 62] = f32::NAN;
+        }
+        let dir = std::env::temp_dir().join(format!("qc_eval_valid_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Offset, factor_config(&[]));
+        for f in &frames {
+            fd.push(f);
+        }
+        fd.finish();
+        let mut b = LibraryBuilder::new(dims);
+        for (id, (y0, x0)) in [(10usize, 12usize), (40, 58)].into_iter().enumerate() {
+            b.push(Footprint {
+                id: id as u64,
+                y0,
+                x0,
+                height: 9,
+                width: 9,
+                values: vec![1.0; 81],
+            });
+        }
+        let lib = Arc::new(b.build(&mut IdentityFilter(dims)).unwrap());
+        let (.., min_valid) =
+            extract_from_factors(&dir, &lib, SolverConfig::default(), frames.len(), |_| {});
+        assert_eq!(min_valid.len(), 2);
+        assert!(min_valid[0] == 1.0, "{min_valid:?}");
+        assert!(min_valid[1] < 1.0, "{min_valid:?}");
+        assert_eq!(
+            min_valid_tsv(lib.ids(), &min_valid),
+            format!("id\tmin_valid\n0\t1.0000\n1\t{:.4}\n", min_valid[1])
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn extract_from_factors_matches_the_replayed_frames() {
         let dims = Dims::new(96, 70).unwrap();
         // One full window and a short last one.
@@ -6051,10 +6112,11 @@ mod tests {
             relax: 1.5,
         };
         let mut got: Vec<f32> = Vec::new();
-        let (read_s, pre_s, solve_s) =
+        let (read_s, pre_s, solve_s, min_valid) =
             extract_from_factors(&dir, &lib, tight, frames.len(), |tr| {
                 got.extend_from_slice(tr)
             });
+        assert_eq!(min_valid, vec![1.0, 1.0]);
         assert!(read_s >= 0.0 && pre_s >= 0.0 && solve_s >= 0.0);
         assert_eq!(got.len(), frames.len() * 2);
         let mut eng = TraceEngine::new(lib.clone(), tight).unwrap();
