@@ -2333,8 +2333,12 @@ mod tests {
             assert_eq!(encoded(&back), bytes, "{frames} frames, ring {cap}");
             assert_eq!(st.wire_bytes(), bytes.len());
             let mut orig = st.clone();
-            let a = orig.replay(0.99, JointSign::All, 1, true).expect("replay");
-            let b = back.replay(0.99, JointSign::All, 1, true).expect("replay");
+            let a = orig
+                .replay(0.99, JointSign::All, 1, true, 0.0)
+                .expect("replay");
+            let b = back
+                .replay(0.99, JointSign::All, 1, true, 0.0)
+                .expect("replay");
             assert_eq!(a.h, b.h);
             assert_eq!(a.ha, b.ha);
             assert_eq!(a.hb, b.hb);
@@ -2361,13 +2365,15 @@ mod tests {
     fn a_replay_on_a_copy_and_its_out_equal_the_replay_in_place() {
         let mut inplace = toy_store(400, 450);
         let rep = inplace
-            .replay(0.99, JointSign::All, 1, true)
+            .replay(0.99, JointSign::All, 1, true, 0.0)
             .expect("replay");
         let owner0 = toy_store(400, 450);
         let mut owner = owner0.clone();
         // The worker's copy, through the wire.
         let mut copy = ClusterStore::decode(&mut Reader::new(&encoded(&owner0))).expect("decode");
-        let rep2 = copy.replay(0.99, JointSign::All, 1, true).expect("replay");
+        let rep2 = copy
+            .replay(0.99, JointSign::All, 1, true, 0.0)
+            .expect("replay");
         assert_eq!(rep.h, rep2.h);
         let out = copy.out(true);
         assert!(out.refreshed && out.est.is_some());
