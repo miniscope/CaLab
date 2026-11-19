@@ -199,6 +199,5 @@ All met. One flag new against COMBO: share r < 0.9 among cells born in the secon
 ### For the app
 
 The ring is `calab_cala::discover::FrameCache` (half floats, `push` / `get` / `clear`). In the browser 3072 frames of
-600 x 600 are 2.2 GB, too much for a tab; the eval shows the hit rate falls from ~62 % (motion) / ~76 % (static) at
-3072 frames, and the app should size it to the memory it has (or to the precision-mode demand, which needs fewer old
-frames). The cache reads the live loop's output only; the fast loop is unchanged (QC ms/frame within noise).
+600 x 600 are 2.2 GB, too much for a tab. The hit rate is ~62 % (motion) / ~76 % (static) at 3072 frames and
+51 % at 2048 (motion_s5), so the app should size the ring to the memory it has. The cache reads the live loop's output only; the fast loop is unchanged (QC ms/frame within noise).
