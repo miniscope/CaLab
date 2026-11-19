@@ -489,7 +489,10 @@ export class SlowRunner {
           const frame = msg.frames.subarray(i * px, (i + 1) * px);
           const traces = msg.traces.subarray(i * msg.cells, (i + 1) * msg.cells);
           const background = bg?.subarray(i * nb, (i + 1) * nb);
-          if (!loop.observe(frame, msg.version, traces, background, msg.start + i)) {
+          // The stream index records the frame's held-out decision for look-back
+          // (required with it on); without look-back the call is as before.
+          const stream = this.lbOn ? msg.start + i : undefined;
+          if (!loop.observe(frame, msg.version, traces, background, stream)) {
             this.skipped++;
             continue;
           }

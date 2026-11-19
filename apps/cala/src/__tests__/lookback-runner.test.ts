@@ -212,14 +212,14 @@ describe('buildSlowLoop', () => {
 });
 
 describe('SlowRunner look-back (fake loop)', () => {
-  it('toggle off: no look-back calls or messages, but stream indices go to observe', () => {
+  it('toggle off: no look-back calls or messages, and observe gets no stream index (as before)', () => {
     const t = setup(5);
     t.r.handle(INIT);
     expect(t.created[0]).not.toHaveProperty('lookback');
     t.r.handle(frames(0));
     t.r.handle(frames(2));
     t.r.handle({ type: 'end', session: 1 });
-    expect(t.streams).toEqual([0, 1, 2, 3]);
+    expect(t.streams).toEqual([undefined, undefined, undefined, undefined]);
     expect(t.loop.lookbackNote).not.toHaveBeenCalled();
     expect(t.loop.lookbackTake).not.toHaveBeenCalled();
     expect(t.loop.setEditScope).not.toHaveBeenCalled();

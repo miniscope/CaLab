@@ -6,13 +6,16 @@
  *   node apps/cala/scripts/memory-measure.mjs --url http://localhost:5195/ --data <folder>
  *        --out <dir> [--keep name1,name2] [--tag x] [--mode joint|separate]
  *        [--refine-runs 1] [--every 10] [--max-min 90] [--cdp 9335] [--headed] [--single]
- *        [--lookback] [--extract]
+ *        [--lookback [--toggle] [--refine]] [--extract]
  *   `--single`: one recording folder (Discover, then one Refine, no export).
  *   `--lookback` (with `--single`): opens with `&lookback` (experimental
  *   look-back refinement), never presses Refine, and stops once Discover has
  *   settled (the final library); it samples the look-back counters
  *   (`__cala.lookback()`) and fails unless frames were re-read and no cell is
- *   left in need. `--extract`: then press Extract once and wait for it.
+ *   left in need. `--toggle`: instead of `&lookback`, tick the look-back
+ *   checkbox once Discover runs and restart it (the path a user takes).
+ *   `--refine`: after settling, one Refine run too (to compare). `--extract`:
+ *   then press Extract once and wait for it.
  *   `--headed` runs system Chrome with a real GPU (headless SwiftShader hides memory behaviour).
  *
  * Opens `<folder>` (a session folder or a parent of several) through the
@@ -51,6 +54,8 @@ const maxMin = Number(opt('--max-min', '90'));
 const cdpPort = Number(opt('--cdp', '9335'));
 const lookback = args.includes('--lookback');
 const extract = args.includes('--extract');
+const toggle = args.includes('--toggle');
+const refineAfter = args.includes('--refine');
 mkdirSync(out, { recursive: true });
 const udd = join(out, `udd-${tag}`);
 rmSync(udd, { recursive: true, force: true });
@@ -76,6 +81,9 @@ const ctx = await chromium.launchPersistentContext(udd, {
 const page = ctx.pages()[0] ?? (await ctx.newPage());
 page.on('pageerror', (e) => L(`[pageerror] ${e.message}`));
 page.on('crash', () => L('[PAGE CRASH]'));
+page.on('response', (r) => {
+  if (r.status() >= 400) L(`[http ${r.status()}] ${r.url().slice(0, 200)}`);
+});
 page.on('console', (m) => {
   if (m.type() === 'error' || m.type() === 'warning')
     L(`[console.${m.type()}] ${m.text().slice(0, 300)}`);
@@ -270,7 +278,7 @@ const fmt = (r) => {
 };
 
 let t0 = Date.now();
-await page.goto(`${url}?debug${lookback ? '&lookback' : ''}`);
+await page.goto(`${url}?debug${lookback && !toggle ? '&lookback' : ''}`);
 await attachPage();
 const single = args.includes('--single');
 await page.setInputFiles('[data-testid=folder-input]', data);
@@ -279,6 +287,16 @@ if (single) {
   await page.waitForFunction(() => window.__cala?.pipeline.status() === 'running', null, {
     timeout: 120000,
   });
+  if (lookback && toggle) {
+    // The user's path: tick the checkbox, then restart Discover from frame 0.
+    await page.check('[data-testid=lookback-toggle]');
+    await page.click('button[aria-label=Restart]');
+    await page.waitForFunction(() => window.__cala?.lookbackOn() === true, null, {
+      timeout: 60000,
+    });
+    t0 = Date.now();
+    L('toggle: look-back on after restart');
+  }
 } else {
   await page.waitForSelector('[data-testid=session-item]', { timeout: 120000 });
   await page.waitForTimeout(3000);
@@ -335,11 +353,22 @@ while (!stop) {
     if (settled && discoverDoneAt === null) {
       discoverDoneAt = r.t;
       L(`DISCOVER_SETTLED ${r.t.toFixed(1)}s ${JSON.stringify(r.st.lb)}`);
+      if (refineAfter) {
+        refineClicked = true;
+        await page.click('[data-testid=refine-run]');
+      } else if (extract) {
+        extractClicked = true;
+        await page.click('[data-testid=pass2-run]');
+      } else stop = 'done';
+    }
+    if (refineClicked && r.st?.refine === 'done' && !extractClicked) {
+      L(`REFINE_DONE ${r.t.toFixed(1)}s`);
       if (extract) {
         extractClicked = true;
         await page.click('[data-testid=pass2-run]');
       } else stop = 'done';
     }
+    if (r.st?.refine === 'error') stop = 'error';
     if (extractClicked && r.st?.extract === 'done') stop = 'done';
     if (r.st?.pst === 'error' || r.st?.extract === 'error') stop = 'error';
   } else if (single) {
