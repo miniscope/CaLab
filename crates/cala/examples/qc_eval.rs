@@ -82,6 +82,26 @@
 //!                      evenly over the recording to every cell (frozen
 //!                      cell set, untargeted look-back frames), with visits
 //!                      (experiment: a convergence pass inside Discover)
+//!   --settle-frames N  the end-of-Discover settle (needs --lookback-drain):
+//!                      after the drain, cell set frozen, re-read frames go
+//!                      to every cell until N were fed or the stop rule
+//!                      fires (`LookBack::settle`; `settle_checks.tsv`).
+//!                      Options: --settle-round F (frames per sweep of the
+//!                      recording, in 64-frame blocks; default all),
+//!                      --settle-observe full|frozen|stats (the ordinary
+//!                      observe; the same with the reservoir frozen; the
+//!                      look-back path), --settle-steps S (slow-loop steps
+//!                      per frame, default 1), --settle-batch B (frames per
+//!                      request, default 1), --settle-due D / --settle-publish P
+//!                      (mark all tiles due / publish every so many frames;
+//!                      default 0: by new reservoir slots / by `step`),
+//!                      --settle-check C (frames between checkpoints, 1200),
+//!                      --settle-stop-share Q with --settle-stop-k K (stop
+//!                      when at most a share Q of the cells moved more than
+//!                      K x their split-half noise since the last checkpoint;
+//!                      --settle-stop-checks M in a row; not before
+//!                      --settle-min-frames), --settle-libs (write the
+//!                      checkpoint libraries)
 //!   --lookback-drain-rate F  look-back frames per drain step instead of
 //!                      R (bigger batches once Discover has ended)
 //!   --catchup X        reference arm: every X Discover frames give all
@@ -615,6 +635,209 @@ fn write_noise(path: &Path, lib: &Library, sl: &SlowLoop) {
     std::fs::write(path, t).unwrap();
 }
 
+/// What a settle frame goes through (`--settle-observe`).
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+enum SettleObserve {
+    /// The look-back path: footprint statistics and cluster stores only.
+    Stats,
+    /// The ordinary `observe` with the reservoir frozen (statistics,
+    /// ledger and clocks; no new reservoir frames).
+    Frozen,
+    /// The ordinary `observe`, as a Refine pass feeds its frames.
+    #[default]
+    Full,
+}
+
+/// The end-of-Discover settle (`--settle-*`; see `LookBack::settle`).
+#[derive(Clone, Debug)]
+struct SettleCfg {
+    /// Frame cap (0: no settle).
+    frames: usize,
+    /// Frames per round (0: the whole recording).
+    round: usize,
+    observe: SettleObserve,
+    /// Slow-loop steps (of `--budget`) earned per frame fed.
+    steps_per_frame: f64,
+    /// Frames per request.
+    batch: usize,
+    /// Mark every tile due / publish every this many frames (0: left to
+    /// the reservoir's new slots / to `step`).
+    due_every: usize,
+    publish_every: usize,
+    /// Frames between checkpoints.
+    check: usize,
+    /// Stop rule (`stop_share` 0: none), not before `min_frames`.
+    stop_k: f64,
+    stop_share: f64,
+    stop_checks: usize,
+    min_frames: usize,
+    /// Keep the checkpoint libraries (`footprints_settle{k}.bin`).
+    libs: bool,
+}
+
+impl Default for SettleCfg {
+    fn default() -> SettleCfg {
+        SettleCfg {
+            frames: 0,
+            round: 0,
+            observe: SettleObserve::Full,
+            steps_per_frame: 1.0,
+            batch: 1,
+            due_every: 0,
+            publish_every: 0,
+            check: 1200,
+            stop_k: 2.0,
+            stop_share: 0.0,
+            stop_checks: 1,
+            min_frames: 0,
+            libs: false,
+        }
+    }
+}
+
+impl SettleCfg {
+    fn parse(args: &[String]) -> SettleCfg {
+        let num = |k: &str| arg_value(args, k).map(|s| s.parse::<f64>().unwrap());
+        let d = SettleCfg::default();
+        let observe = match arg_value(args, "--settle-observe").as_deref() {
+            None | Some("full") => SettleObserve::Full,
+            Some("frozen") => SettleObserve::Frozen,
+            Some("stats") => SettleObserve::Stats,
+            Some(m) => panic!("--settle-observe: unknown mode {m}"),
+        };
+        let c = SettleCfg {
+            frames: num("--settle-frames").map_or(d.frames, |v| v as usize),
+            round: num("--settle-round").map_or(d.round, |v| v as usize),
+            observe,
+            steps_per_frame: num("--settle-steps").unwrap_or(d.steps_per_frame),
+            batch: num("--settle-batch").map_or(d.batch, |v| (v as usize).max(1)),
+            due_every: num("--settle-due").map_or(d.due_every, |v| v as usize),
+            publish_every: num("--settle-publish").map_or(d.publish_every, |v| v as usize),
+            check: num("--settle-check").map_or(d.check, |v| (v as usize).max(1)),
+            stop_k: num("--settle-stop-k").unwrap_or(d.stop_k),
+            stop_share: num("--settle-stop-share").unwrap_or(d.stop_share),
+            stop_checks: num("--settle-stop-checks").map_or(d.stop_checks, |v| (v as usize).max(1)),
+            min_frames: num("--settle-min-frames").map_or(d.min_frames, |v| v as usize),
+            libs: args.iter().any(|a| a == "--settle-libs"),
+        };
+        assert!(c.steps_per_frame >= 0.0, "--settle-steps must be >= 0");
+        c
+    }
+}
+
+/// The published footprints at a settle checkpoint with their split-half
+/// noise: unit-peak weights on the support, as the app compares them.
+struct SettleSnap {
+    cells: HashMap<u64, (Vec<u32>, Vec<f32>, f64)>,
+}
+
+/// Per-cell change between two checkpoints.
+struct SettleChange {
+    /// Relative change over the cell's split-half noise, sorted.
+    ratio: Vec<f64>,
+    rel_med: f64,
+    shape_med: f64,
+    noise_med: f64,
+}
+
+impl SettleSnap {
+    fn take(lib: &Library, sl: &SlowLoop) -> SettleSnap {
+        let mut cells = HashMap::new();
+        for slot in 0..lib.len() {
+            let id = lib.ids()[slot];
+            let (pix, raw) = lib.unfiltered(slot);
+            let (fpix, _) = lib.filtered(slot);
+            let peak = raw.iter().fold(0.0f32, |a, &b| a.max(b));
+            let v: Vec<f32> = raw
+                .iter()
+                .map(|&x| if peak > 0.0 { x / peak } else { x })
+                .collect();
+            let noise = sl.footprint_noise(id, fpix).unwrap_or(f64::NAN);
+            cells.insert(id, (pix.to_vec(), v, noise));
+        }
+        SettleSnap { cells }
+    }
+
+    /// Change of every cell present in both, `prev` to `self`: the app's
+    /// relative L2 (`|a' - a| / |a|` over the union of the supports) and
+    /// 1 - cosine, against the noise at `self`.
+    fn change_from(&self, prev: &SettleSnap) -> SettleChange {
+        let (mut ratio, mut rel, mut shape, mut noise) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for (id, (pix, v, n)) in &self.cells {
+            let Some((ppix, pv, _)) = prev.cells.get(id) else {
+                continue;
+            };
+            let old: HashMap<u32, f32> = ppix.iter().copied().zip(pv.iter().copied()).collect();
+            let (mut d2, mut a2, mut b2, mut ab) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+            let mut seen = 0usize;
+            for (p, &b) in pix.iter().zip(v) {
+                let a = old.get(p).copied().unwrap_or(0.0);
+                if old.contains_key(p) {
+                    seen += 1;
+                }
+                let (a, b) = (f64::from(a), f64::from(b));
+                d2 += (b - a) * (b - a);
+                a2 += a * a;
+                b2 += b * b;
+                ab += a * b;
+            }
+            if seen < ppix.len() {
+                // Pixels the old support had and the new one dropped.
+                let new: std::collections::HashSet<u32> = pix.iter().copied().collect();
+                for (p, &a) in ppix.iter().zip(pv) {
+                    if !new.contains(p) {
+                        d2 += f64::from(a) * f64::from(a);
+                        a2 += f64::from(a) * f64::from(a);
+                    }
+                }
+            }
+            if !(a2 > 0.0 && b2 > 0.0) {
+                continue;
+            }
+            let r = (d2 / a2).sqrt();
+            rel.push(r);
+            shape.push(1.0 - ab / (a2 * b2).sqrt());
+            if n.is_finite() && *n > 0.0 {
+                noise.push(*n);
+                ratio.push(r / n);
+            }
+        }
+        ratio.sort_by(f64::total_cmp);
+        let med = |v: &mut Vec<f64>| {
+            v.sort_by(f64::total_cmp);
+            if v.is_empty() {
+                f64::NAN
+            } else {
+                v[v.len() / 2]
+            }
+        };
+        SettleChange {
+            rel_med: med(&mut rel),
+            shape_med: med(&mut shape),
+            noise_med: med(&mut noise),
+            ratio,
+        }
+    }
+}
+
+impl SettleChange {
+    fn q(&self, q: f64) -> f64 {
+        if self.ratio.is_empty() {
+            return f64::NAN;
+        }
+        self.ratio[((self.ratio.len() - 1) as f64 * q).round() as usize]
+    }
+
+    /// Share of cells that moved by more than `k` times their noise.
+    fn share_above(&self, k: f64) -> f64 {
+        if self.ratio.is_empty() {
+            return f64::NAN;
+        }
+        self.ratio.iter().filter(|&&r| r > k).count() as f64 / self.ratio.len() as f64
+    }
+}
+
 /// Concurrent Refine (`--lookback R`, `--catchup X`): the frame I/O around
 /// the crate's look-back scheduler ([`calab_cala::discover::LookBack`],
 /// which decides which past frames to re-read for which cells). Past frames
@@ -659,6 +882,13 @@ struct LookBack {
     drain_wall_s: f64,
     /// `--lookback-settle-all N` (0: off).
     settle_all: usize,
+    /// `--settle-frames N` and its options (the end-of-Discover settle).
+    settle: SettleCfg,
+    /// The settle feeds frames through the ordinary `observe`.
+    full_observe: bool,
+    /// `settle_checks.tsv` rows and the checkpoint libraries.
+    settle_out: String,
+    settle_libs: Vec<(usize, Arc<Library>)>,
     /// Look-back frames and cell-frames per tenth of the recording (row
     /// 10: the drain).
     by_tenth: [(u64, u64); 11],
@@ -711,6 +941,10 @@ impl LookBack {
             drain_rate: 0.0,
             drain_wall_s: 0.0,
             settle_all: 0,
+            settle: SettleCfg::default(),
+            full_observe: false,
+            settle_out: String::new(),
+            settle_libs: Vec::new(),
             by_tenth: [(0, 0); 11],
             target,
             by_twentieth: [0; 20],
@@ -888,6 +1122,176 @@ impl LookBack {
         (steps, self.frames - f0)
     }
 
+    /// `--settle-frames N`: the end-of-Discover settle (after the drain,
+    /// cell set frozen). Frames of the recording are re-read in rounds
+    /// (each round about `round` frames in whole `LB_BLOCK` blocks spread
+    /// evenly over the recording, later rounds on other blocks) and fed to
+    /// every cell, `batch` frames per request (the library the look-back
+    /// engine solves with is fixed within a request) followed by the
+    /// slow-loop steps those frames earn. At every checkpoint the footprint
+    /// change since the last one is compared with the cells' split-half
+    /// noise (`settle_checks.tsv`); with a stop rule the settle ends there.
+    /// Returns the frames fed.
+    #[allow(clippy::too_many_arguments)]
+    fn settle(
+        &mut self,
+        t_len: usize,
+        budget: u64,
+        start: usize,
+        rec: &mut Recording,
+        drift: Option<&Drift>,
+        pipe: &mut Pipeline,
+        engine: &mut TraceEngine,
+        sl: &mut SlowLoop,
+        n_px: usize,
+    ) -> usize {
+        let cfg = self.settle.clone();
+        let t0 = Instant::now();
+        // The frames Discover read (`--frames` may stop short of the file).
+        let t_len = t_len.min(rec.total as usize);
+        sl.set_edit_scope(EditScope::Refine);
+        engine.set_library(sl.finalize().unwrap()).unwrap();
+        self.full_observe = cfg.observe != SettleObserve::Stats;
+        sl.set_reservoir_frozen(cfg.observe == SettleObserve::Frozen);
+        let n_blocks = t_len.div_ceil(LB_BLOCK);
+        let round = if cfg.round == 0 { t_len } else { cfg.round };
+        // Every `stride`-th block per round; round r starts at block r % stride.
+        let stride = (t_len as f64 / round as f64).round().max(1.0) as usize;
+        let s0 = sl.stats();
+        let w0 = sl.work();
+        let mut prev = SettleSnap::take(engine.library(), sl);
+        self.settle_out = String::from(
+            "check\tframes\twall_s\tcells\trel_l2_med\tshape_med\tnoise_med\tratio_med\tratio_p75\tratio_p90\tshare_gt1\tshare_gt1p5\tshare_gt2\tshare_gt3\tvisits\trefines\tcommits\twork\tstop\n",
+        );
+        if cfg.libs {
+            self.settle_libs.push((0, engine.library().clone()));
+        }
+        let (mut fed, mut steps_owed, mut check, mut in_batch) = (0usize, 0.0f64, 0usize, 0usize);
+        let (mut next_due, mut next_pub, mut next_check) =
+            (cfg.due_every, cfg.publish_every, cfg.check);
+        let mut pre = pipe.pre.clone();
+        let mut expect = usize::MAX;
+        self.block = None;
+        let mut stopped = false;
+        let mut below = 0usize;
+        let mut r = 0usize;
+        'rounds: while fed < cfg.frames {
+            let first = r % stride;
+            r += 1;
+            for b in (first..n_blocks).step_by(stride) {
+                let lo = b * LB_BLOCK;
+                let hi = (lo + LB_BLOCK).min(t_len);
+                for f in lo..hi {
+                    if f != expect {
+                        // A block that does not follow the last one starts
+                        // from the live preprocessor's state, as a look-back
+                        // block does.
+                        pre = pipe.pre.clone();
+                    }
+                    expect = f + 1;
+                    self.frame(
+                        f, &mut pre, None, start, rec, drift, pipe, engine, sl, n_px, 10,
+                    );
+                    fed += 1;
+                    in_batch += 1;
+                    steps_owed += cfg.steps_per_frame;
+                    if fed.is_multiple_of(200) {
+                        sl.set_noise(pre.noise().sigma()).unwrap();
+                    }
+                    if in_batch < cfg.batch && fed < cfg.frames {
+                        continue;
+                    }
+                    in_batch = 0;
+                    if cfg.due_every > 0 && fed >= next_due {
+                        sl.mark_all_due();
+                        next_due += cfg.due_every;
+                    }
+                    // The steps this request's frames earn, as one visit
+                    // round at their summed budget.
+                    let n = steps_owed.floor();
+                    steps_owed -= n;
+                    if n >= 1.0 {
+                        let got = sl.step(budget.saturating_mul(n as u64)).unwrap();
+                        if let Some(l) = got {
+                            engine.set_library(l).unwrap();
+                        }
+                    }
+                    if cfg.publish_every > 0 && fed >= next_pub {
+                        engine.set_library(sl.finalize().unwrap()).unwrap();
+                        next_pub += cfg.publish_every;
+                    }
+                    if fed >= next_check || fed >= cfg.frames {
+                        next_check += cfg.check;
+                        check += 1;
+                        engine.set_library(sl.finalize().unwrap()).unwrap();
+                        let now = SettleSnap::take(engine.library(), sl);
+                        let m = now.change_from(&prev);
+                        // The stop rule: the share of cells that moved by
+                        // more than `stop_k` times their own split-half
+                        // noise since the last checkpoint is at most
+                        // `stop_share`, at `stop_checks` checkpoints in a row.
+                        let hit =
+                            cfg.stop_share > 0.0 && m.share_above(cfg.stop_k) <= cfg.stop_share;
+                        below = if hit { below + 1 } else { 0 };
+                        let stop = hit && below >= cfg.stop_checks && fed >= cfg.min_frames;
+                        let st = sl.stats();
+                        let _ = writeln!(
+                            self.settle_out,
+                            "{check}\t{fed}\t{:.1}\t{}\t{:.5}\t{:.6}\t{:.5}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{}\t{}\t{}",
+                            t0.elapsed().as_secs_f64(),
+                            m.ratio.len(),
+                            m.rel_med,
+                            m.shape_med,
+                            m.noise_med,
+                            m.q(0.5),
+                            m.q(0.75),
+                            m.q(0.9),
+                            m.share_above(1.0),
+                            m.share_above(1.5),
+                            m.share_above(2.0),
+                            m.share_above(3.0),
+                            st.visits - s0.visits,
+                            st.refines - s0.refines,
+                            st.commits - s0.commits,
+                            sl.work() - w0,
+                            u8::from(stop)
+                        );
+                        if cfg.libs {
+                            self.settle_libs.push((check, engine.library().clone()));
+                        }
+                        prev = now;
+                        if stop {
+                            stopped = true;
+                            break 'rounds;
+                        }
+                    }
+                    if fed >= cfg.frames {
+                        break 'rounds;
+                    }
+                }
+            }
+        }
+        // A last round of visits on what the settle fed.
+        sl.mark_all_due();
+        sl.step(budget.saturating_mul(64)).unwrap();
+        engine.set_library(sl.finalize().unwrap()).unwrap();
+        sl.set_reservoir_frozen(false);
+        self.full_observe = false;
+        let wall = t0.elapsed().as_secs_f64();
+        self.wall_s += wall;
+        let st = sl.stats();
+        println!(
+            "settle: {fed} frames in {wall:.1} s ({:.0} frames/s), {} visits, {} refines, {} publishes, work {:.3e}{}",
+            fed as f64 / wall.max(1e-9),
+            st.visits - s0.visits,
+            st.refines - s0.refines,
+            st.commits - s0.commits,
+            (sl.work() - w0) as f64,
+            if stopped { ", stopped by the rule" } else { ", stopped at the frame cap" }
+        );
+        fed
+    }
+
     /// Re-read, preprocess and (unless held out in precision mode) solve
     /// and observe recording frame `f`: `None` when passed over (held out,
     /// precision mode), else whether it was pushed.
@@ -960,7 +1364,12 @@ impl LookBack {
         let tr = eng.process(&self.y).unwrap();
         let lib = eng.library().clone();
         let n_cells = only.map_or(lib.len(), <[u64]>::len) as u64;
-        let pushed = sl.observe_lookback(&self.y, &lib, &tr, idx, only).unwrap();
+        let pushed = if self.full_observe {
+            sl.observe(&self.y, &lib, &tr).unwrap();
+            true
+        } else {
+            sl.observe_lookback(&self.y, &lib, &tr, idx, only).unwrap()
+        };
         if pushed {
             self.pushed += 1;
         }
@@ -4172,6 +4581,13 @@ fn main() {
     if let Some(l) = lookback.as_mut() {
         l.drain_rate = tail.drain_rate;
         l.settle_all = tail.settle_all;
+        // The settle's flags are not tail flags: every branch of a
+        // `--branch-after` run gets the same settle.
+        l.settle = SettleCfg::parse(&args);
+        assert!(
+            l.settle.frames == 0 || lb_drain > 0,
+            "--settle-frames needs --lookback-drain"
+        );
     }
     if lookback.is_some() {
         println!(
@@ -4799,6 +5215,32 @@ fn main() {
                             "lookback drain: {st} steps, {fr} frames, {:.1} s",
                             lbk.drain_wall_s
                         );
+                        if lbk.settle.frames > 0 {
+                            lbk.settle(
+                                t_len,
+                                budget,
+                                start,
+                                &mut rec,
+                                drift.as_ref(),
+                                &mut pipe,
+                                &mut engine,
+                                sl,
+                                n_px,
+                            );
+                            std::fs::write(out_dir.join("settle_checks.tsv"), &lbk.settle_out)
+                                .unwrap();
+                            for (k, l) in std::mem::take(&mut lbk.settle_libs) {
+                                write_library(
+                                    &out_dir,
+                                    &format!("_settle{k}"),
+                                    &l,
+                                    dims,
+                                    gt.as_ref(),
+                                    ho.as_ref(),
+                                    Some(&*sl),
+                                );
+                            }
+                        }
                     }
                 }
                 // Branch point `drain`: the drain (if any) is done too.

@@ -1178,6 +1178,8 @@ pub struct SlowLoop {
     job_seq: u64,
     /// Bumped by every `set_noise` (a visit must run on the same map).
     noise_gen: u64,
+    /// [`SlowLoop::set_reservoir_frozen`].
+    res_frozen: bool,
 }
 
 /// Record an edit for the slow loop a visit was run for (`shard.rs`).
@@ -1479,6 +1481,7 @@ impl SlowLoop {
             stats_gamma: 0.5f32.powf(1.0 / cfg.stats_half_life_frames),
             rbuf: Vec::new(),
             lb_only: None,
+            res_frozen: false,
             merge_rejected: Vec::new(),
             forced: Vec::new(),
             scope: EditScope::All,
@@ -1993,6 +1996,10 @@ impl SlowLoop {
         let frame_idx = self.frames;
         let test = self.is_test(frame_idx);
         self.update_fpstats(frame, lib, traces, !test);
+        if self.res_frozen {
+            self.frames += 1;
+            return Ok(());
+        }
         // Random slots: one uniform sample for every tile.
         self.rng = mix(self.rng);
         let w = self.dims.width;
@@ -2020,6 +2027,17 @@ impl SlowLoop {
         }
         self.frames += 1;
         Ok(())
+    }
+
+    /// Experimental (evaluation only, off by default): while frozen,
+    /// [`SlowLoop::observe`] leaves the reservoir and the probes as they
+    /// are (no slot is replaced, no tile becomes due through new slots);
+    /// everything else (statistics, ledger, clocks) runs as usual. It
+    /// separates what a replayed pass gains from fresh reservoir frames
+    /// from what it gains from the statistics.
+    #[doc(hidden)]
+    pub fn set_reservoir_frozen(&mut self, frozen: bool) {
+        self.res_frozen = frozen;
     }
 
     /// Feed one *past* frame re-read from the saved recording (the
