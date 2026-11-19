@@ -48,6 +48,13 @@ With real visit workers (`--visit-workers K --offered-fps R`, or the app) result
 visit sees the owner as it was at hand-out while frames keep arriving, and visits finish out of order. That is the
 same for the per-cell path; see the timed check below.
 
+Timed check with real hand-out and out-of-order results, pairs_s5, same flags without `--dump`, plus
+`--offered-fps 30 --visit-workers 2` (virtual clock, frames keep arriving while jobs are out, idle Refine visits made at hand-out):
+11777 replays ran in the runners (11780 stores sent, mean 144 KB, max 472 KB), 992 proposals accepted. The summary at the
+last frame: with the replay recall and precision 0.9533 and 0.9533, trace correlation 0.9883; the same run with the flag
+off 0.9533, 0.9533, 0.9873. Same cells (107), same explained variance (0.955). One recording, a sanity check
+that the asynchronous path runs and does no harm, not a measurement of its benefit; the demixing suite does not use workers.
+
 Rust tests: `a_store_round_trips_through_the_job_encoding` (lossless, same replay bit for bit with a wrapped ring,
 truncation and corruption refused), `a_replay_on_a_copy_and_its_out_equal_the_replay_in_place`,
 `the_cluster_replay_runs_in_visit_jobs_and_matches_step` (bitten-newcomer toy, with and without `joint_carry`: libraries
