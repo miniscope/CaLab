@@ -79,6 +79,16 @@
 //!                      serving the cells in need, with Refine-scope visits,
 //!                      for at most N steps (one step = R look-back frames
 //!                      + one slow-loop step); ends when nothing is needed
+//!   --lookback-source S  where look-back frames come from: raw (default; the
+//!                      recording, preprocessed again with a copy of the live
+//!                      preprocessor and the stored motion records) | factors
+//!                      (rebuilt from the factor windows `--factors-out` has
+//!                      written so far in pass 1: no raw read, no
+//!                      preprocessing, no warp; the samples the motion record
+//!                      marks missing stay missing; a block waits until its
+//!                      window is on disk, and the last window is flushed
+//!                      before the drain). Needs `--factors-out`,
+//!                      `--factors-pass 1` and no `--catchup`
 //!   --catchup X        reference arm: every X Discover frames give all
 //!                      cells frames 0..t at once (`--catchup-double`: at
 //!                      X, 2X, 4X, ...)
@@ -776,6 +786,12 @@ struct LookBack {
     by_twentieth: [u64; 20],
     /// Discover frames seen (recording frames `0..seen`).
     seen: usize,
+    /// `--lookback-source factors`: past frames from Discover's factor
+    /// windows instead of the recording (`None`: raw).
+    source: Option<FactorFrames>,
+    /// Frames that can be read back: with the factor source those in written
+    /// windows; `usize::MAX` with the raw source.
+    avail: usize,
 }
 
 /// A cell of the precision demand (`--lookback-target`).
@@ -843,6 +859,8 @@ impl LookBack {
             skipped: 0,
             by_twentieth: [0; 20],
             seen: 0,
+            source: None,
+            avail: usize::MAX,
         }
     }
 
@@ -920,7 +938,7 @@ impl LookBack {
     /// cells wanting it, then the most cells, then is the oldest; every
     /// cell in need that has not had it takes it.
     fn next_block_target(&mut self, seen: usize, pipe: &Pipeline) -> bool {
-        let nb = seen / LB_BLOCK;
+        let nb = seen.min(self.avail) / LB_BLOCK;
         if nb == 0 {
             return false;
         }
@@ -989,22 +1007,9 @@ impl LookBack {
     /// recent), with each of those cells' frames in it.
     fn next_block(&mut self, pipe: &Pipeline) -> bool {
         self.need.retain(|_, (_, blocks)| !blocks.is_empty());
-        let mut count: std::collections::BTreeMap<usize, usize> = Default::default();
-        for (_, blocks) in self.need.values() {
-            for &b in blocks {
-                *count.entry(b).or_default() += 1;
-            }
-        }
-        let blk = if self.newest_first {
-            // The newest cell in need, its most recent block not served.
-            self.need
-                .values()
-                .max_by_key(|(born, _)| *born)
-                .and_then(|(_, blocks)| blocks.iter().max().copied())
-        } else {
-            count.iter().max_by_key(|&(&b, &n)| (n, b)).map(|(&b, _)| b)
-        };
-        let Some(blk) = blk else {
+        let (seen, avail) = (self.seen, self.avail);
+        let servable = |b: usize| ((b + 1) * LB_BLOCK).min(seen) <= avail;
+        let Some(blk) = choose_block(&self.need, self.newest_first, servable) else {
             return false;
         };
         let k = self.max_frames;
@@ -1199,18 +1204,6 @@ impl LookBack {
         n_px: usize,
         tenth: usize,
     ) -> bool {
-        if f < self.raw_start || f >= self.raw_start + self.raw_n {
-            let lo = f - f % LB_BLOCK;
-            let cnt = LB_BLOCK.min(rec.total as usize - lo);
-            self.raw = rec.read(lo as u32, cnt as u32);
-            if let Some(d) = drift {
-                for (k, fr) in self.raw.chunks_exact_mut(n_px).enumerate() {
-                    d.apply(fr, lo + k);
-                }
-            }
-            self.raw_start = lo;
-            self.raw_n = cnt;
-        }
         // The frame's slow-loop index in Discover (all batches forwarded):
         // a held-out frame stays held out. Warm-up frames, never in the
         // slow loop, get their own range.
@@ -1222,29 +1215,66 @@ impl LookBack {
         // Precision mode: a held-out frame is still preprocessed (the block's
         // preprocessor copy runs forward) but not solved.
         let skip = self.target > 0.0 && sl.is_test(idx);
-        let o = (f - self.raw_start) * n_px;
-        let raw = &self.raw[o..o + n_px];
-        pre.front(raw, &mut self.buf).unwrap();
-        if let Some(w) = pipe.warp_at(f) {
-            let mut tmp = Vec::new();
-            w.apply_in_place(&mut self.buf, &mut tmp).unwrap();
-        }
-        // The live corrector's `apply`/`validity` only warp by a stored
-        // record (scratch buffers, no estimation state), as a replay does.
-        if let Some(mc) = pipe.mc.as_mut() {
-            let r = &pipe.records[f];
-            mc.apply(Frame::F32(&self.buf), r, &mut self.y, None)
-                .unwrap();
-            mc.validity(r, pipe.src.as_ref().unwrap(), &mut self.valid)
-                .unwrap();
-            pre.back_masked(&mut self.y, &self.valid).unwrap();
+        if let Some(src) = self.source.as_mut() {
+            // `--lookback-source factors`: the frame as Discover compressed it,
+            // preprocessed and registered with the calibration of its time; no
+            // raw read, no preprocessing, no warp. A held-out frame is passed
+            // over without rebuilding it.
+            if skip {
+                self.skipped += 1;
+                return false;
+            }
+            src.frame(f, &mut self.y);
+            let valid = match pipe.mc.as_mut() {
+                Some(mc) => {
+                    mc.validity(
+                        &pipe.records[f],
+                        pipe.src.as_ref().unwrap(),
+                        &mut self.valid,
+                    )
+                    .unwrap();
+                    Some(&self.valid[..])
+                }
+                None => None,
+            };
+            mark_missing(&mut self.y, valid, pipe.pre.calibration().fov().mask());
         } else {
-            self.y.copy_from_slice(&self.buf);
-            pre.back(&mut self.y).unwrap();
-        }
-        if skip {
-            self.skipped += 1;
-            return false;
+            if f < self.raw_start || f >= self.raw_start + self.raw_n {
+                let lo = f - f % LB_BLOCK;
+                let cnt = LB_BLOCK.min(rec.total as usize - lo);
+                self.raw = rec.read(lo as u32, cnt as u32);
+                if let Some(d) = drift {
+                    for (k, fr) in self.raw.chunks_exact_mut(n_px).enumerate() {
+                        d.apply(fr, lo + k);
+                    }
+                }
+                self.raw_start = lo;
+                self.raw_n = cnt;
+            }
+            let o = (f - self.raw_start) * n_px;
+            let raw = &self.raw[o..o + n_px];
+            pre.front(raw, &mut self.buf).unwrap();
+            if let Some(w) = pipe.warp_at(f) {
+                let mut tmp = Vec::new();
+                w.apply_in_place(&mut self.buf, &mut tmp).unwrap();
+            }
+            // The live corrector's `apply`/`validity` only warp by a stored
+            // record (scratch buffers, no estimation state), as a replay does.
+            if let Some(mc) = pipe.mc.as_mut() {
+                let r = &pipe.records[f];
+                mc.apply(Frame::F32(&self.buf), r, &mut self.y, None)
+                    .unwrap();
+                mc.validity(r, pipe.src.as_ref().unwrap(), &mut self.valid)
+                    .unwrap();
+                pre.back_masked(&mut self.y, &self.valid).unwrap();
+            } else {
+                self.y.copy_from_slice(&self.buf);
+                pre.back(&mut self.y).unwrap();
+            }
+            if skip {
+                self.skipped += 1;
+                return false;
+            }
         }
         let lib = live.library();
         let eng = self.engine.get_or_insert_with(|| live.clone());
@@ -3546,6 +3576,9 @@ struct FactorDump {
     wc: WindowCompressor,
     /// Seconds spent buffering and compressing.
     seconds: f64,
+    /// Frames in the window files written so far (the windows are written
+    /// in order).
+    written: usize,
     log: String,
 }
 
@@ -3557,11 +3590,13 @@ impl FactorDump {
             dir: dir.to_path_buf(),
             wc: WindowCompressor::new(dims, cfg),
             seconds: 0.0,
+            written: 0,
             log: String::from("start\tframes\ttiles\tmean_rank\tkept\tbytes\tcompress_s\n"),
         }
     }
 
     fn write(&mut self, wf: WindowFactors) {
+        self.written += wf.frames;
         let _ = writeln!(
             self.log,
             "{}\t{}\t{}\t{:.2}\t{:.5}\t{}\t{:.3}",
@@ -3641,6 +3676,106 @@ impl FactorReplay {
                 *o = r;
             }
         }
+    }
+}
+
+/// Factor windows the look-back keeps in memory: its reach of 3000 frames
+/// before a birth (`--lookback-frames`) spans at most six windows.
+const LB_WINDOWS: usize = 6;
+
+/// `--lookback-source factors`: past frames rebuilt from the factor windows
+/// a [`FactorDump`] has written so far in pass 1. Keeps the last
+/// `LB_WINDOWS` windows it read.
+struct FactorFrames {
+    dir: PathBuf,
+    cache: std::collections::VecDeque<(WindowFactors, BlendLayout)>,
+    /// Window files read (each miss of the cache).
+    reads: u64,
+}
+
+impl FactorFrames {
+    fn new(dir: &Path) -> FactorFrames {
+        FactorFrames {
+            dir: dir.to_path_buf(),
+            cache: Default::default(),
+            reads: 0,
+        }
+    }
+
+    /// Write recording frame `f`, rebuilt from its window, to every pixel
+    /// of `y`.
+    fn frame(&mut self, f: usize, y: &mut [f32]) {
+        let start = (f / FACTOR_WINDOW) * FACTOR_WINDOW;
+        let at = match self
+            .cache
+            .iter()
+            .position(|(wf, _)| wf.start as usize == start)
+        {
+            Some(i) => i,
+            None => {
+                let path = self.dir.join(format!("w{start:07}.fac"));
+                let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+                    panic!("look-back frame {f}: its window {path:?} is not on disk ({e})")
+                });
+                let wf = WindowFactors::from_bytes(&bytes)
+                    .unwrap_or_else(|| panic!("{path:?}: not a factor file"));
+                let layout = wf.layout();
+                if self.cache.len() == LB_WINDOWS {
+                    self.cache.pop_front();
+                }
+                self.cache.push_back((wf, layout));
+                self.reads += 1;
+                self.cache.len() - 1
+            }
+        };
+        let (wf, layout) = &self.cache[at];
+        assert!(
+            f - start < wf.frames,
+            "look-back frame {f} is beyond the factors in {:?}",
+            self.dir
+        );
+        layout.reconstruct(wf, f - start, y);
+    }
+}
+
+/// `--lookback-source factors`: mark a rebuilt frame's missing samples as
+/// the raw look-back path leaves them: NaN inside the FOV where the stored
+/// motion record marks a sample invalid (`valid` 0; `None` without motion:
+/// all valid). Outside the FOV the rebuilt value stays.
+fn mark_missing(y: &mut [f32], valid: Option<&[u8]>, fov: &[u8]) {
+    let Some(valid) = valid else {
+        return;
+    };
+    for ((v, &ok), &m) in y.iter_mut().zip(valid).zip(fov) {
+        if ok == 0 && m != 0 {
+            *v = f32::NAN;
+        }
+    }
+}
+
+/// The block [`LookBack::next_block`] serves: the one the most cells still
+/// need (ties: the most recent) or, with `newest_first`, the newest cell's
+/// most recent block. Only blocks for which `servable` holds count (the raw
+/// source: all; the factor source: blocks whose frames are in written
+/// windows).
+fn choose_block(
+    need: &std::collections::BTreeMap<u64, (usize, Vec<usize>)>,
+    newest_first: bool,
+    servable: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    if newest_first {
+        need.values()
+            .filter(|(_, blocks)| blocks.iter().any(|&b| servable(b)))
+            .max_by_key(|(born, _)| *born)
+            .and_then(|(_, blocks)| blocks.iter().copied().filter(|&b| servable(b)).max())
+    } else {
+        let mut count: std::collections::BTreeMap<usize, usize> = Default::default();
+        for (_, blocks) in need.values() {
+            for &b in blocks.iter().filter(|&&b| servable(b)) {
+                *count.entry(b).or_default() += 1;
+            }
+        }
+        count.iter().max_by_key(|&(&b, &n)| (n, b)).map(|(&b, _)| b)
     }
 }
 
@@ -4467,10 +4602,30 @@ fn main() {
         lb_target >= 0.0 && (lb_target == 0.0 || lb_rate > 0.0),
         "--lookback-target needs --lookback R"
     );
+    let lb_factors = match arg_value(&args, "--lookback-source").as_deref() {
+        None | Some("raw") => false,
+        Some("factors") => true,
+        Some(o) => panic!("--lookback-source: raw or factors, not {o:?}"),
+    };
+    assert!(
+        !lb_factors || (lb_rate > 0.0 && lb_catchup == 0),
+        "--lookback-source factors needs --lookback R and no --catchup"
+    );
+    assert!(
+        !lb_factors || factors_pass == 1,
+        "--lookback-source factors reads Discover's factors: --factors-pass 1"
+    );
+    let lb_source: Option<PathBuf> = lb_factors.then(|| {
+        PathBuf::from(
+            arg_value(&args, "--factors-out")
+                .expect("--lookback-source factors needs --factors-out"),
+        )
+    });
     let noise_dump = args.iter().any(|a| a == "--noise-dump") || lb_target > 0.0;
     let mut lookback = (lb_rate > 0.0 || lb_catchup > 0).then(|| {
         let mut l = LookBack::new(lb_rate, lb_frames, lb_newest, lb_catchup, lb_double, n_px);
         l.target = lb_target;
+        l.source = lb_source.as_deref().map(FactorFrames::new);
         l
     });
     if lookback.is_some() {
@@ -5063,6 +5218,11 @@ fn main() {
                 if let (Some(lbk), Some(sl), 0, None) =
                     (lookback.as_mut(), slow.as_mut(), pass, timed.as_ref())
                 {
+                    if lbk.source.is_some() {
+                        // Only windows on disk can be read back: at most one
+                        // window behind the live frame.
+                        lbk.avail = factors.as_ref().map_or(0, |fd| fd.written);
+                    }
                     lbk.after_frame(
                         t_rec,
                         t_len,
@@ -5075,6 +5235,14 @@ fn main() {
                         n_px,
                     );
                     if last && lb_drain > 0 {
+                        if lbk.source.is_some() {
+                            // A stream's last window is flushed when it ends,
+                            // before the drain reads it.
+                            if let Some(fd) = factors.as_mut() {
+                                fd.finish();
+                                lbk.avail = fd.written;
+                            }
+                        }
                         let (st, fr) = lbk.drain(
                             lb_drain,
                             budget,
@@ -5360,6 +5528,9 @@ fn main() {
             },
             l.wall_s
         );
+        if let Some(s) = &l.source {
+            println!("lookback source: factors, {} window files read", s.reads);
+        }
         let mut t = format!(
             "rate\tmax_frames\tcatchup\tdouble\tframes\tpushed\tcell_frames\tbirths\tin_need\twall_s\tdrain_steps\tdrain_frames\n{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}\n\ntenth\tframes\tcell_frames\n",
             l.rate,
@@ -6342,5 +6513,134 @@ mod tests {
     #[should_panic(expected = "one value per pixel")]
     fn a_seed_map_of_another_size_is_refused() {
         read_seed_run(&seed_dir("size", false, &two_maps_log()), 5);
+    }
+
+    #[test]
+    fn choose_block_takes_only_blocks_on_disk() {
+        let mut need = std::collections::BTreeMap::new();
+        need.insert(1u64, (640usize, vec![7usize, 8, 9]));
+        need.insert(2u64, (700usize, vec![8usize, 9, 10]));
+        need.insert(3u64, (300usize, vec![2usize, 3]));
+        // Frames 0..704 seen; `avail` of them in window files.
+        let upto = |avail: usize| move |b: usize| ((b + 1) * LB_BLOCK).min(704) <= avail;
+        // All on disk (the raw source): blocks 8 and 9 are needed twice, ties go to the
+        // most recent; newest first: the newest cell's most recent block.
+        assert_eq!(choose_block(&need, false, upto(usize::MAX)), Some(9));
+        assert_eq!(choose_block(&need, true, upto(usize::MAX)), Some(10));
+        // One window written (frames 0..600): blocks 9 (576..640) and 10 wait.
+        assert_eq!(choose_block(&need, false, upto(600)), Some(8));
+        assert_eq!(choose_block(&need, true, upto(600)), Some(8));
+        // Nothing written yet.
+        assert_eq!(choose_block(&need, false, upto(0)), None);
+        assert_eq!(choose_block(&need, true, upto(0)), None);
+    }
+
+    #[test]
+    fn choose_block_picks_what_the_inline_scheduler_picked_when_all_are_servable() {
+        // The scheduler before `choose_block`, verbatim.
+        let old = |need: &std::collections::BTreeMap<u64, (usize, Vec<usize>)>, newest: bool| {
+            let mut count: std::collections::BTreeMap<usize, usize> = Default::default();
+            for (_, blocks) in need.values() {
+                for &b in blocks {
+                    *count.entry(b).or_default() += 1;
+                }
+            }
+            if newest {
+                need.values()
+                    .max_by_key(|(born, _)| *born)
+                    .and_then(|(_, blocks)| blocks.iter().max().copied())
+            } else {
+                count.iter().max_by_key(|&(&b, &n)| (n, b)).map(|(&b, _)| b)
+            }
+        };
+        let mut s = 12345u64;
+        let mut rnd = |m: u64| {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 33) % m) as usize
+        };
+        for _ in 0..2000 {
+            let mut need = std::collections::BTreeMap::new();
+            for id in 0..rnd(6) as u64 {
+                // Equal births happen, as do repeated blocks.
+                let blocks: Vec<usize> = (0..1 + rnd(5)).map(|_| rnd(12)).collect();
+                need.insert(id, (rnd(4) * 100, blocks));
+            }
+            for newest in [false, true] {
+                assert_eq!(choose_block(&need, newest, |_| true), old(&need, newest));
+            }
+        }
+    }
+
+    #[test]
+    fn lookback_factor_frames_are_the_dumped_frames_with_missing_samples_marked() {
+        let dims = Dims::new(96, 70).unwrap();
+        let frames = slow_stream(dims, 2 * FACTOR_WINDOW + 50);
+        let dir = std::env::temp_dir().join(format!("qc_eval_lbfac_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Offset, factor_config(&[]));
+        for (t, f) in frames.iter().enumerate() {
+            fd.push(f);
+            assert_eq!(
+                fd.written,
+                (t + 1) / FACTOR_WINDOW * FACTOR_WINDOW,
+                "frame {t}"
+            );
+        }
+        fd.finish();
+        assert_eq!(
+            fd.written,
+            frames.len(),
+            "the short last window is written by finish"
+        );
+        let n = dims.pixels();
+        let mut fov = vec![1u8; n];
+        fov[0] = 0;
+        let mut valid = vec![1u8; n];
+        valid[0] = 0;
+        valid[7] = 0;
+        let mut fr = FactorReplay::new(&dir, dims);
+        let mut ff = FactorFrames::new(&dir);
+        // Back and forth between the three windows.
+        for t in [
+            FACTOR_WINDOW + 3,
+            5,
+            2 * FACTOR_WINDOW + 49,
+            5,
+            FACTOR_WINDOW - 1,
+        ] {
+            let mut want = vec![0.0f32; n];
+            fr.frame(t, &mut want);
+            let mut y = vec![f32::NAN; n];
+            ff.frame(t, &mut y);
+            mark_missing(&mut y, Some(&valid), &fov);
+            assert!(
+                y[7].is_nan(),
+                "frame {t}: an invalid sample inside the FOV is missing"
+            );
+            assert_eq!(
+                y[0], want[0],
+                "frame {t}: outside the FOV the rebuilt value stays"
+            );
+            for p in (1..n).filter(|&p| p != 7) {
+                assert_eq!(y[p], want[p], "frame {t} pixel {p}");
+            }
+        }
+        assert_eq!(ff.reads, 3, "each window file is read once");
+        // Without motion nothing is marked.
+        let mut y = vec![0.0f32; n];
+        ff.frame(5, &mut y);
+        mark_missing(&mut y, None, &fov);
+        assert!(y.iter().all(|v| v.is_finite()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "is not on disk")]
+    fn a_lookback_frame_of_an_unwritten_window_is_refused() {
+        let dir = std::env::temp_dir().join(format!("qc_eval_lbnone_{}", std::process::id()));
+        let mut y = vec![0.0f32; 4];
+        FactorFrames::new(&dir).frame(0, &mut y);
     }
 }
