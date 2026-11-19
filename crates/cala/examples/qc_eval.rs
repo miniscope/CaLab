@@ -1135,6 +1135,7 @@ impl LookBack {
     #[allow(clippy::too_many_arguments)]
     fn settle(
         &mut self,
+        t_len: usize,
         budget: u64,
         start: usize,
         rec: &mut Recording,
@@ -1146,7 +1147,8 @@ impl LookBack {
     ) -> usize {
         let cfg = self.settle.clone();
         let t0 = Instant::now();
-        let t_len = rec.total as usize;
+        // The frames Discover read (`--frames` may stop short of the file).
+        let t_len = t_len.min(rec.total as usize);
         sl.set_edit_scope(EditScope::Refine);
         engine.set_library(sl.finalize().unwrap()).unwrap();
         self.full_observe = cfg.observe != SettleObserve::Stats;
@@ -5215,6 +5217,7 @@ fn main() {
                         );
                         if lbk.settle.frames > 0 {
                             lbk.settle(
+                                t_len,
                                 budget,
                                 start,
                                 &mut rec,
