@@ -23,9 +23,8 @@
  * never runs here: it would hold up the writes of the incoming batches.
  *
  * Window file `w<index>.i16`: the chunks as they arrived, each in tile order.
- * Factor file `f<index>.bin`: `CALAFAC1`, u32 width, height, tile, frames,
- * tiles, f64 stream index of the first frame, then per tile u32 byte length
- * and `TileFactors.toBytes()`.
+ * Factor file `f<index>.bin`: the header of `factorHeader` (`CALAFAC2`, with the
+ * tiling), then per tile u32 byte length and `TileFactors.toBytes()`.
  */
 import type {
   CompressInit,
@@ -44,6 +43,7 @@ export type QuantizeTiles = (
   width: number,
   height: number,
   tile: number,
+  tiling: string,
   quant: number,
   out: Int16Array,
 ) => void;
@@ -87,6 +87,18 @@ const BACKFILL_BATCH = 16;
 export interface CompressRunnerDeps {
   store: WindowStore;
   quantize: QuantizeTiles;
+  /** `tileLayout` of the WASM module: `(x0, y0, w, h)` of every tile. */
+  layout(width: number, height: number, tile: number, tiling: string): Uint32Array;
+  /** `factorHeader` of the WASM module: the first bytes of a factor file. */
+  header(
+    width: number,
+    height: number,
+    tile: number,
+    tiling: string,
+    frames: number,
+    tiles: number,
+    start: number,
+  ): Uint8Array;
   create(quant: number): TileCompressorLike;
   /** For the back-fill (absent: `backfill` does nothing). */
   engine?(library: Uint8Array): BackfillEngineLike;
@@ -119,24 +131,20 @@ interface WindowJob {
   quantMs: number;
 }
 
-/** Tiles of a frame, row by row (as `tile_grid` in crates/cala). */
-export function tileGrid(width: number, height: number, tile: number): Tile[] {
+/** The tiles of a layout (`tileLayout`: x0, y0, w, h each), with their place in a quantized chunk. */
+export function tilesOf(rects: Uint32Array): Tile[] {
   const out: Tile[] = [];
   let offset = 0;
-  for (let y0 = 0; y0 < height; y0 += tile) {
-    for (let x0 = 0; x0 < width; x0 += tile) {
-      const w = Math.min(tile, width - x0);
-      const h = Math.min(tile, height - y0);
-      out.push({ x0, y0, w, h, offset });
-      offset += w * h;
-    }
+  for (let i = 0; i + 3 < rects.length; i += 4) {
+    const [x0, y0, w, h] = [rects[i], rects[i + 1], rects[i + 2], rects[i + 3]];
+    out.push({ x0, y0, w, h, offset });
+    offset += w * h;
   }
   return out;
 }
 
 const windowName = (i: number): string => `w${i}.i16`;
 export const factorName = (i: number): string => `f${i}.bin`;
-const HEADER_BYTES = 36;
 
 const macrotask = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -146,6 +154,8 @@ export class CompressRunner {
   private session = -1;
   private init: CompressInit | null = null;
   private tiles: Tile[] = [];
+  /** Pixels of all tiles (more than a frame when tiles overlap). */
+  private layoutPx = 0;
   private compressor: TileCompressorLike | null = null;
   private open: (WindowJob & { file: StoreFile; bytes: number }) | null = null;
   /** The quantized chunk being written (reused; a write is synchronous). */
@@ -177,7 +187,8 @@ export class CompressRunner {
       await this.clear();
       this.session = msg.session;
       this.init = msg;
-      this.tiles = tileGrid(msg.width, msg.height, msg.tile);
+      this.tiles = tilesOf(this.deps.layout(msg.width, msg.height, msg.tile, msg.tiling));
+      this.layoutPx = this.tiles.reduce((s, t) => s + t.w * t.h, 0);
       this.deps.review?.port.postMessage({
         type: 'init',
         session: msg.session,
@@ -208,11 +219,12 @@ export class CompressRunner {
         bytes: 0,
       };
       const w = this.open;
-      const { width, height, tile, quant } = this.init;
-      if (this.scratch.length < msg.data.length) this.scratch = new Int16Array(msg.data.length);
-      const data = this.scratch.subarray(0, msg.data.length);
+      const { width, height, tile, tiling, quant } = this.init;
+      const values = msg.count * this.layoutPx;
+      if (this.scratch.length < values) this.scratch = new Int16Array(values);
+      const data = this.scratch.subarray(0, values);
       const t0 = this.now();
-      this.deps.quantize(msg.data, msg.count, width, height, tile, quant, data);
+      this.deps.quantize(msg.data, msg.count, width, height, tile, tiling, quant, data);
       w.quantMs += this.now() - t0;
       w.file.write(data, w.bytes);
       w.bytes += data.byteLength;
@@ -378,7 +390,6 @@ export class CompressRunner {
       return;
     }
     this.compressor ??= this.deps.create(init.quant);
-    const px = init.width * init.height;
     const src = await store.open(windowName(job.index));
     const dst = await store.open(factorName(job.index));
     let closed = false;
@@ -389,14 +400,17 @@ export class CompressRunner {
       dst.close();
     };
     try {
-      const head = new DataView(new ArrayBuffer(HEADER_BYTES));
-      'CALAFAC1'.split('').forEach((c, i) => head.setUint8(i, c.charCodeAt(0)));
-      [init.width, init.height, init.tile, job.frames, this.tiles.length].forEach((v, i) =>
-        head.setUint32(8 + 4 * i, v, true),
+      const head = this.deps.header(
+        init.width,
+        init.height,
+        init.tile,
+        init.tiling,
+        job.frames,
+        this.tiles.length,
+        job.start,
       );
-      head.setFloat64(28, job.start, true);
       dst.write(head, 0);
-      let at = HEADER_BYTES;
+      let at = head.length;
       const largest = this.tiles.reduce((m, t) => Math.max(m, t.w * t.h), 0);
       const buf = new Int16Array(job.frames * largest);
       const len = new Uint32Array(1);
@@ -410,7 +424,7 @@ export class CompressRunner {
         let o = 0;
         for (const n of job.chunks) {
           src.read(raw.subarray(o, o + n * p), chunkAt + t.offset * n * 2);
-          chunkAt += n * px * 2;
+          chunkAt += n * this.layoutPx * 2;
           o += n * p;
         }
         const t0 = this.now();
@@ -477,6 +491,8 @@ export class CompressRunner {
       msPerFrame: this.msPerFrame,
       factorBytes: this.factorBytes,
       final: this.final && this.pending.length === 0,
+      tiling: this.init?.tiling ?? 'plain',
+      source: this.init?.source ?? 'discover',
     };
     this.deps.toMain.postMessage({ type: 'status', session: this.session, status });
   }

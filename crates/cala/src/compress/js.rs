@@ -10,12 +10,11 @@
 
 use wasm_bindgen::prelude::*;
 
+use super::blend::{BlendLayout, Tiling};
 use super::review::{
     candidates, candidates_to_wire, scan_band, scan_rows, KnownCell, ReviewConfig, SpotStats,
 };
-use super::{
-    compress_tile, quantize, quantize_tiles, tile_grid, CompressConfig, TileFactors, WindowFactors,
-};
+use super::{compress_tile, quantize, quantize_tiles, CompressConfig, TileFactors, WindowFactors};
 use crate::preprocess::Dims;
 use crate::trace::Library;
 
@@ -23,7 +22,7 @@ fn js_err(func: &str, e: impl std::fmt::Display) -> JsError {
     JsError::new(&format!("{func}: {e}"))
 }
 
-/// `out[i] = round(frames[i] * quant)` in `i16` (non-finite values count as 0).
+/// `out[i] = round(frames[i] * quant)` in `i16` (a non-finite value gives the missing marker, -32768).
 #[wasm_bindgen(js_name = quantizeFrames)]
 pub fn quantize_frames(frames: &[f32], quant: f32, out: &mut [i16]) -> Result<(), JsError> {
     if frames.len() != out.len() {
@@ -41,45 +40,105 @@ pub fn quantize_frames(frames: &[f32], quant: f32, out: &mut [i16]) -> Result<()
     Ok(())
 }
 
-/// Quantize `count` frames into tile order: for each tile (row by row over
-/// the frame, `tile` px squares, smaller at the right and bottom edge), its
-/// `count x pixels` values, a frame per row. A tile's block of every batch
-/// of a window, one after the other, is the input of
-/// `TileCompressor.compress`.
+fn parse_tiling(func: &str, s: &str) -> Result<Tiling, JsError> {
+    Tiling::parse(s)
+        .ok_or_else(|| js_err(func, format!("tiling {s:?}: plain, overlap:N or offset")))
+}
+
+fn layout_of(
+    func: &str,
+    width: u32,
+    height: u32,
+    tile: u32,
+    tiling: &str,
+) -> Result<BlendLayout, JsError> {
+    let dims = Dims::new(width as usize, height as usize).map_err(|e| js_err(func, e))?;
+    if tile < 2 {
+        return Err(js_err(func, "tile must be at least 2"));
+    }
+    Ok(BlendLayout::new(
+        dims,
+        tile as usize,
+        parse_tiling(func, tiling)?,
+    ))
+}
+
+/// The tiles of a tiling, `(x0, y0, w, h)` one after the other, in the order
+/// `quantizeTiles` writes them and a factor file holds them.
+#[wasm_bindgen(js_name = tileLayout)]
+pub fn tile_layout(width: u32, height: u32, tile: u32, tiling: &str) -> Result<Vec<u32>, JsError> {
+    let layout = layout_of("tileLayout", width, height, tile, tiling)?;
+    Ok(layout
+        .grid()
+        .iter()
+        .flat_map(|g| [g.0 as u32, g.1 as u32, g.2 as u32, g.3 as u32])
+        .collect())
+}
+
+/// The header of a factor file (`WindowFactors::header_bytes`): the tile
+/// records (`u32` byte length, then `TileFactors.toBytes()`) follow it.
+#[wasm_bindgen(js_name = factorHeader)]
+pub fn factor_header(
+    width: u32,
+    height: u32,
+    tile: u32,
+    tiling: &str,
+    frames: u32,
+    tiles: u32,
+    start: f64,
+) -> Result<Vec<u8>, JsError> {
+    let dims = Dims::new(width as usize, height as usize).map_err(|e| js_err("factorHeader", e))?;
+    if !(start.is_finite() && start >= 0.0) {
+        return Err(js_err("factorHeader", "start must be a frame index"));
+    }
+    Ok(WindowFactors::header_bytes(
+        dims,
+        tile as usize,
+        parse_tiling("factorHeader", tiling)?,
+        frames as usize,
+        tiles as usize,
+        start as u64,
+    ))
+}
+
+/// Quantize `count` frames into tile order: for each tile of the tiling
+/// (`tileLayout`), its `count x pixels` values, a frame per row. A tile's
+/// block of every batch of a window, one after the other, is the input of
+/// `TileCompressor.compress`. `out` holds `count` times the pixels of all
+/// tiles (more than the frames when tiles overlap).
 #[wasm_bindgen(js_name = quantizeTiles)]
+#[allow(clippy::too_many_arguments)]
 pub fn quantize_tiles_js(
     frames: &[f32],
     count: u32,
     width: u32,
     height: u32,
     tile: u32,
+    tiling: &str,
     quant: f32,
     out: &mut [i16],
 ) -> Result<(), JsError> {
+    let layout = layout_of("quantizeTiles", width, height, tile, tiling)?;
     let dims =
         Dims::new(width as usize, height as usize).map_err(|e| js_err("quantizeTiles", e))?;
-    let n = count as usize * dims.pixels();
-    if frames.len() != n || out.len() != n {
+    let total: usize = layout.grid().iter().map(|g| g.2 * g.3).sum();
+    let count = count as usize;
+    if frames.len() != count * dims.pixels() || out.len() != count * total {
         return Err(js_err(
             "quantizeTiles",
             format!(
-                "{} values in, {} out, {n} expected",
+                "{} values in, {} out; {} and {} expected",
                 frames.len(),
-                out.len()
+                out.len(),
+                count * dims.pixels(),
+                count * total
             ),
         ));
     }
-    if tile == 0 || !(quant.is_finite() && quant > 0.0) {
-        return Err(js_err("quantizeTiles", "tile and quant must be positive"));
+    if !(quant.is_finite() && quant > 0.0) {
+        return Err(js_err("quantizeTiles", "quant must be positive"));
     }
-    quantize_tiles(
-        frames,
-        count as usize,
-        dims,
-        &tile_grid(dims, tile as usize),
-        quant,
-        out,
-    );
+    quantize_tiles(frames, count, dims, layout.grid(), quant, out);
     Ok(())
 }
 
@@ -232,6 +291,18 @@ impl JsFactorWindow {
         self.inner.start as f64
     }
 
+    /// Edge of the grid the tiles were cut on, px.
+    #[wasm_bindgen(getter)]
+    pub fn tile(&self) -> u32 {
+        self.inner.tile as u32
+    }
+
+    /// `plain`, `overlap:N` or `offset`.
+    #[wasm_bindgen(getter)]
+    pub fn tiling(&self) -> String {
+        self.inner.tiling.name()
+    }
+
     /// Frames `t0..t0 + count` of the window rebuilt into `out`
     /// (`count * width * height` values, frame after frame).
     pub fn reconstruct(&self, t0: u32, count: u32, out: &mut [f32]) -> Result<(), JsError> {
@@ -250,6 +321,18 @@ impl JsFactorWindow {
         }
         self.inner.reconstruct_range(t0, count, out);
         Ok(())
+    }
+}
+
+/// The history review reads side-by-side tiles only; a blended tiling is refused.
+fn ensure_plain(w: &WindowFactors) -> Result<(), String> {
+    if w.tiling == Tiling::Plain {
+        Ok(())
+    } else {
+        Err(format!(
+            "the review reads plain tiles, this window is {}",
+            w.tiling.name()
+        ))
     }
 }
 
@@ -307,6 +390,7 @@ impl JsHistoryReview {
         if w.dims != self.dims {
             return Err(js_err("addWindow", "window of another frame size"));
         }
+        ensure_plain(&w).map_err(|e| js_err("addWindow", e))?;
         self.windows.push(w);
         Ok(self.windows.len() as u32)
     }
@@ -402,5 +486,35 @@ impl JsHistoryReview {
     /// Drop a review in progress.
     pub fn cancel(&mut self) {
         self.run = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn window(tiling: Tiling) -> WindowFactors {
+        let dims = Dims::new(8, 8).unwrap();
+        let cfg = CompressConfig {
+            tile: 4,
+            window: 3,
+            k0: 1,
+            tiling,
+            ..CompressConfig::default()
+        };
+        let mut wc = super::super::WindowCompressor::new(dims, cfg);
+        let mut out = None;
+        for t in 0..3 {
+            out = wc.push(&[t as f32; 64]);
+        }
+        out.expect("a full window")
+    }
+
+    #[test]
+    fn the_review_takes_plain_windows_only() {
+        assert!(ensure_plain(&window(Tiling::Plain)).is_ok());
+        let err = ensure_plain(&window(Tiling::Offset)).unwrap_err();
+        assert!(err.contains("offset"), "{err}");
+        assert!(ensure_plain(&window(Tiling::Overlap(2))).is_err());
     }
 }
