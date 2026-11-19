@@ -151,6 +151,7 @@ describe('Extract on factors from the main thread', () => {
     ids: Uint32Array.of(1),
     traces: new Float32Array(2),
     signed: new Float32Array(2),
+    minValid: Float32Array.of(1),
   });
   const setup = () => {
     const store = createCompressStore();

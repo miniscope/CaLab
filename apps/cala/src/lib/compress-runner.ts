@@ -82,6 +82,8 @@ export interface FactorExtractLike {
   readonly start: number;
   /** `count x cells` traces of frames `t0..t0 + count` of the open window. */
   solve(t0: number, count: number): Float32Array;
+  /** Each cell's smallest valid share on the open window, in trace order. */
+  minValid(): Float32Array;
   /** Also compute the signed traces (absent in older fakes: no signed traces). */
   setSigned?(on: boolean): void;
   /** The signed traces of the last `solve`, laid out as its traces (empty when off). */
@@ -394,6 +396,7 @@ export class CompressRunner {
       ids: Uint32Array;
       traces: Float32Array;
       signed: Float32Array | null;
+      minValid: Float32Array;
     }) => void,
   ): Promise<number | null> {
     const cells = ids.length;
@@ -409,6 +412,7 @@ export class CompressRunner {
       if (epoch !== this.epoch) return null;
       const count = extractor.open(bytes);
       const start = extractor.start;
+      const minValid = extractor.minValid();
       const traces = new Float32Array(count * cells);
       let signed: Float32Array | null = null;
       let signedOk = wantSigned;
@@ -426,7 +430,7 @@ export class CompressRunner {
         await this.yieldNow();
         if (epoch !== this.epoch) return null;
       }
-      onWindow({ start, count, ids: ids.slice(), traces, signed });
+      onWindow({ start, count, ids: ids.slice(), traces, signed, minValid });
       frames += count;
     }
     return frames;
@@ -497,11 +501,13 @@ export class CompressRunner {
             ids: w.ids,
             traces: w.traces,
             signed,
+            minValid: w.minValid,
           },
           [
             w.ids.buffer as ArrayBuffer,
             w.traces.buffer as ArrayBuffer,
             signed.buffer as ArrayBuffer,
+            w.minValid.buffer as ArrayBuffer,
           ],
         );
       });

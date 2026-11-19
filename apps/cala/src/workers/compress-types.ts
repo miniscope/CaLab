@@ -103,7 +103,8 @@ export type CompressToMain =
   /**
    * Extract on factors, job `job`: one window's traces and signed traces
    * (`count * ids.length` each, frame after frame; `signed` empty when the
-   * engine gave none), in stream order.
+   * engine gave none), in stream order. `minValid`: the window's smallest
+   * valid share per cell, in the order of the trace columns.
    */
   | {
       type: 'extracted';
@@ -114,6 +115,7 @@ export type CompressToMain =
       ids: Uint32Array;
       traces: Float32Array;
       signed: Float32Array;
+      minValid: Float32Array;
     }
   /** Extract on factors, job `job`, is complete. */
   | { type: 'extract-done'; session: number; job: number; frames: number; msPerFrame: number }

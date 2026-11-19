@@ -598,6 +598,7 @@ describe('back-fill from the factors', () => {
     const done = toMain[toMain.length - 1];
     expect(done).toMatchObject({ type: 'backfilled', session: 7, frames: 100 });
     for (const m of windows) {
+      expect('minValid' in m).toBe(false);
       expect([...m.ids]).toEqual(CELLS.map((c) => c.id));
       for (let i = 0; i < m.count; i++) {
         CELLS.forEach((c, j) => {
@@ -767,6 +768,7 @@ describe('back-fill from the factors', () => {
           get start() {
             return inner.start;
           },
+          minValid: () => inner.minValid(),
           solve: (t0, n) => {
             solving = true;
             return inner.solve(t0, n);
@@ -837,6 +839,35 @@ describe('back-fill from the factors', () => {
       } catch (e) {
         x.free();
         throw e;
+      }
+    });
+
+    it("reports each cell's smallest valid share, and not before a window is open", async () => {
+      const lib = cellLibrary();
+      const { feed, sent } = collectingFeed(50);
+      for (let s = 0; s < 50; s += 10) {
+        const frames = cellFrames(s, 10);
+        // Pixel (7, 9), the centre of cell 0's footprint, never has data.
+        for (let t = 0; t < 10; t++) frames[t * PX + 7 * W + 9] = Number.NaN;
+        feed.push(frames, s, 10);
+      }
+      feed.end();
+      const { r, store } = runner();
+      for (const m of sent) await r.handle(m);
+      await r.idle();
+      const x = new FactorExtractor(lib.bytes, 0, 0);
+      try {
+        expect(() => x.minValid()).toThrow(/no window is open/);
+        expect(x.open(store.files.get(factorName(0))!)).toBe(50);
+        const v = x.minValid();
+        expect(v.length).toBe(CELLS.length);
+        expect(v[0]).toBe(0);
+        expect(v[1]).toBe(1);
+        // A failed open drops the window again.
+        expect(() => x.open(new Uint8Array(3))).toThrow();
+        expect(() => x.minValid()).toThrow(/no window is open/);
+      } finally {
+        x.free();
       }
     });
 
@@ -1004,6 +1035,30 @@ describe('Extract on factors (the compress worker)', () => {
       frames: 100,
     });
     expect(toMain.some((m) => m.type === 'traces' || m.type === 'backfilled')).toBe(false);
+  });
+
+  it("carries each window's smallest valid shares, one per cell, in trace column order", async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 100; s += 10) {
+      const frames = cellFrames(s, 10);
+      // Cell 1's centre pixel has no data in the second window only.
+      if (s >= 50) for (let t = 0; t < 10; t++) frames[t * PX + 15 * W + 28] = Number.NaN;
+      feed.push(frames, s, 10);
+    }
+    feed.end();
+    const { r, toMain } = runner();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    r.extract(7, 3, lib.bytes.slice());
+    await r.idle();
+    const windows = toMain.filter((m) => m.type === 'extracted');
+    expect(windows.length).toBe(2);
+    expect(windows.map((m) => [...m.minValid])).toEqual([
+      [1, 1],
+      [1, 0],
+    ]);
+    for (const m of windows) expect(m.minValid.length).toBe(m.ids.length);
   });
 
   it('refuses, naming the job, while a window is open or for another session', async () => {

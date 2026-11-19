@@ -395,6 +395,17 @@ impl JsFactorExtractor {
         self.window.as_ref().map_or(0.0, |w| w.0.start as f64)
     }
 
+    /// Each cell's smallest valid share on the open window (1 = every support
+    /// pixel had data in every frame), in trace order. An error with no
+    /// window open.
+    #[wasm_bindgen(js_name = minValid)]
+    pub fn min_valid(&self) -> Result<Vec<f32>, JsError> {
+        let Some((_, proj)) = self.window.as_ref() else {
+            return Err(js_err("FactorExtractor.minValid", "no window is open"));
+        };
+        Ok(proj.min_valid().to_vec())
+    }
+
     /// Solve frames `t0..t0 + count` of the open window; returns
     /// `count x cells` traces, frame after frame, in the library's id order.
     /// The traces carry no frame index: the first row is frame `t0` of the
