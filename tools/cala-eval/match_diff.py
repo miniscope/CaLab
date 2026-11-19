@@ -3,7 +3,7 @@ import sys, json, os
 from pathlib import Path
 import numpy as np
 
-sys.path.insert(0, "/Users/daharoni/Projects/CaLab-wt-discloss/tools/cala-eval")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import demix_metrics as DM
 
 ROOT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.home() / "Projects/cala-data/demix-suite/quick-pass1-discover"
