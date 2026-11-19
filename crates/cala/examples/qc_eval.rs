@@ -5285,32 +5285,29 @@ fn main() {
                 if let (Some(lbk), Some(sl), 0, None) =
                     (lookback.as_mut(), slow.as_mut(), pass, timed.as_ref())
                 {
-                    if last && lb_drain > 0 {
-                        if lbk.settle.frames > 0 {
-                            lbk.settle(
-                                t_len,
-                                budget,
-                                start,
-                                &mut rec,
-                                drift.as_ref(),
-                                &mut pipe,
-                                &mut engine,
-                                sl,
-                                n_px,
+                    if last && lb_drain > 0 && lbk.settle.frames > 0 {
+                        lbk.settle(
+                            t_len,
+                            budget,
+                            start,
+                            &mut rec,
+                            drift.as_ref(),
+                            &mut pipe,
+                            &mut engine,
+                            sl,
+                            n_px,
+                        );
+                        std::fs::write(out_dir.join("settle_checks.tsv"), &lbk.settle_out).unwrap();
+                        for (k, l) in std::mem::take(&mut lbk.settle_libs) {
+                            write_library(
+                                &out_dir,
+                                &format!("_settle{k}"),
+                                &l,
+                                dims,
+                                gt.as_ref(),
+                                ho.as_ref(),
+                                Some(&*sl),
                             );
-                            std::fs::write(out_dir.join("settle_checks.tsv"), &lbk.settle_out)
-                                .unwrap();
-                            for (k, l) in std::mem::take(&mut lbk.settle_libs) {
-                                write_library(
-                                    &out_dir,
-                                    &format!("_settle{k}"),
-                                    &l,
-                                    dims,
-                                    gt.as_ref(),
-                                    ho.as_ref(),
-                                    Some(&*sl),
-                                );
-                            }
                         }
                     }
                 }
