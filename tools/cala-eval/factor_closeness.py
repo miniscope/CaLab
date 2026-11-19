@@ -966,8 +966,9 @@ def changed_median(
 
 def iteration_changes(run: Path, corr: float = 0.99) -> dict[int, float]:
     """For each Refine-on-factors iteration with a readable library file, the `changed_median`
-    against the step before it (see `library_steps`); NaN where there is no step before, the
-    step before is unreadable or no cell changed."""
+    against the last readable step before it (see `library_steps`): after an unreadable file
+    the next iteration is compared with the step two back. NaN where no readable step comes
+    before or no cell changed."""
     out: dict[int, float] = {}
     prev: dict[int, Cell] | None = None
     for name, path in library_steps(run):
