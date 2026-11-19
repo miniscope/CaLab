@@ -92,6 +92,34 @@ At ratio 0.5 the wide tails sat at 35-65 % of the truth, above the bite test; he
 
 QC cost per frame is unchanged (0.314 → 0.318 ms); wall time +2-3 %, within the noise of 2-4 parallel runs.
 
+## Demixing suite (quick tier)
+
+`demix_suite.py --tier quick`, main at 6752419b vs this branch with `--bite-refill` (static s5-s7, pairs s5-s6; sims
+made here with `gen_sims.py` and `make_pair_spec.py` under minisim 1.1.0). 61 metrics: 7 better, 1 worse, 49 within
+noise.
+
+| metric                                              | main   | bite-refill | diff [95 % CI]          | flag         |
+| --------------------------------------------------- | ------ | ----------- | ----------------------- | ------------ |
+| **Trace corr excess < 1 D (headline)**              | +0.142 | +0.150      | +0.008 [-0.011, +0.027] | within noise |
+| Bite share ratio < 0.5, 0-0.5 D                     | 0.378  | 0.214       | -0.164 [-0.240, -0.088] | better       |
+| Bite share ratio < 0.5, 0.5-0.75 D                  | 0.352  | 0.226       | -0.126 [-0.183, -0.072] | better       |
+| Bite share ratio < 0.5, 0.75-1 D                    | 0.498  | 0.474       | -0.024 [-0.086, +0.039] | within noise |
+| Bite share < 0.5, later-born cell, 0-0.5 D          | 0.744  | 0.447       | -0.297 [-0.418, -0.177] | better       |
+| Bite share < 0.5, later-born cell, 0.5-0.75 D       | 0.657  | 0.404       | -0.253 [-0.346, -0.159] | better       |
+| leak_sd median, < 1 D                               | 0.054  | 0.050       | -0.004 [-0.012, +0.003] | within noise |
+| leak_sd share > 0.1, earlier-born cell, < 1 D       | 0.431  | 0.332       | -0.099 [-0.159, -0.039] | better       |
+| leak_sd share > 0.1, later-born cell, < 1 D         | 0.225  | 0.293       | +0.067 [+0.012, +0.122] | worse        |
+| Trace corr excess < 1 D, pairs with a late-born one | +0.093 | +0.154      | +0.061 [-0.003, +0.150] | within noise |
+| Matched cells (mean over 5 sims)                    | 349.0  | 343.2       | -5.8 [-12.6, +1.0]      | within noise |
+| False cells                                         | 12.8   | 14.0        | +1.2 [-3.7, +6.1]       | within noise |
+| QC ms/frame                                         | 0.386  | 0.398       | +0.012 [-0.029, +0.053] | within noise |
+
+**Reading.** On Daniel's sims the refill does what it targets: the share of bitten close pairs falls by a third to a
+half below 0.75 D, most for the later-born (bitten) cell. It does not lower trace crosstalk: the headline is within
+noise and leans worse, and the leak moves from the earlier-born cell into the later-born one (better / worse rows
+above). Matched cells lean 6 lower per sim (4 of 5 sims), within noise. So on this suite the fix repairs footprint
+shape but not traces; on the MiniMe pair session it also cut the trace leak (above).
+
 ## Variants that did not help
 
 - **Guard** (block a statistics refinement that would re-bite a cell): blocked ~2,200 useful refinements; bitten 12.
@@ -105,7 +133,7 @@ QC cost per frame is unchanged (0.314 → 0.318 ms); wall time +2-3 %, within th
 
 ## Open
 
-- Not run on the demixing suite (`demix_suite.py`); the minisim sims are not on this machine.
+- Demixing suite run on the quick tier only (above); not the full tier with motion.
 - One or two seeds per setting: read differences of one or two cells as noise. The drop from 8 to 2-4 cells > 0.2 holds
   in both seeds.
 - 170 ← 22 (9 px, both wide) still leaks 0.31-0.36. The bite has moved both centres: 22's half-max centre sits about
