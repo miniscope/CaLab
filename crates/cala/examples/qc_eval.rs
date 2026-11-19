@@ -4102,8 +4102,7 @@ fn main() {
     let lb_frames: usize =
         arg_value(&args, "--lookback-frames").map_or(3000, |s| s.parse().unwrap());
     assert!(lb_rate >= 0.0, "--lookback must be >= 0");
-    let lb_target: f64 =
-        arg_value(&args, "--lookback-target").map_or(0.0, |s| s.parse().unwrap());
+    let lb_target: f64 = arg_value(&args, "--lookback-target").map_or(0.0, |s| s.parse().unwrap());
     assert!(
         lb_target >= 0.0 && (lb_target == 0.0 || lb_rate > 0.0),
         "--lookback-target needs --lookback R"
