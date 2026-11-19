@@ -1,6 +1,11 @@
 import { createComputed, createRoot } from 'solid-js';
 import { describe, expect, it } from 'vitest';
-import { createCompressStore, extractSourceText, factorState } from '../lib/compress-store.ts';
+import {
+  compressionOn,
+  createCompressStore,
+  extractSourceText,
+  factorState,
+} from '../lib/compress-store.ts';
 import { createPass2Factors } from '../lib/factor-extract.ts';
 import type { FovProjections } from '../lib/fov-projection.ts';
 import type { CompressStatus, CompressToMain } from '../workers/compress-types.ts';
@@ -256,5 +261,14 @@ describe('Extract on factors from the main thread', () => {
     await expect(done).rejects.toThrow('out of memory');
     store.onMessage(win(1, 2));
     expect(got).toEqual([0]);
+  });
+});
+
+describe('the compression switch', () => {
+  it('is on unless the URL says compress=off', () => {
+    expect(compressionOn(new URLSearchParams(''))).toBe(true);
+    expect(compressionOn(new URLSearchParams('compress'))).toBe(true);
+    expect(compressionOn(new URLSearchParams('debug&compress&review'))).toBe(true);
+    expect(compressionOn(new URLSearchParams('compress=off'))).toBe(false);
   });
 });

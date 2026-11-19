@@ -6,11 +6,12 @@
  *   node apps/cala/scripts/batch-session.mjs --data <raw folder> --out <dir>
  *        [--tag name] [--refine-runs 1] [--port 4181] [--every 15] [--max-hours 4] [--headed]
  *        [--channel chrome]
- *        [--query compress]   appended to the app URL (Cala/?debug&compress)
- *                         `--query compress`: `status.json` then holds the compress status
- *                         at the end of Discover and of Extract, and the back-fill of
+ *        [--query compress=off]   appended to the app URL (Cala/?debug&compress=off): the
+ *                         raw path. Compression is on by default, and `status.json` holds the
+ *                         compress status at the end of Discover and of Extract, the back-fill of
  *                         Discover's recording (waited for, up to --compress-wait s;
- *                         null: skipped, `{ arrived: false }`: none arrived in time)
+ *                         null: skipped, `{ arrived: false }`: none arrived in time) and
+ *                         Extract's source (`raw` or `factors`)
  *        [--stale-build]      run although dist/ is older than a source file
  *        [--compress-wait 120]  seconds to wait after a stage for its last window to be
  *                         compressed, and then, after Discover, for its back-fill (each
@@ -188,6 +189,7 @@ const snap = () =>
         ),
         extract: c.pass2.status(),
         extractFrame: c.pass2.processed?.() ?? 0,
+        extractSource: c.pass2.result?.()?.source ?? null,
         cells: c.cells.library?.()?.ids.length ?? 0,
         refineEnabled: !document.querySelector('[data-testid=refine-run]')?.disabled,
         extractEnabled: !document.querySelector('[data-testid=pass2-run]')?.disabled,
@@ -215,7 +217,7 @@ const shot = async (name) => {
  * status is that stage's final one; else record what is there with `settled: false`
  * and the status's `pending` and `windows` (null when no status arrived), so the
  * reader sees how far it got.
- * Null without `?compress`; with it, also waits while no status has arrived yet.
+ * Null with `compress=off`; otherwise also waits while no status has arrived yet.
  */
 async function settledCompress(expectedSource, on, current) {
   if (!on) return null;
@@ -364,6 +366,7 @@ try {
     } else if (phase === 'extract' && s.extract === 'done' && s.exportEnabled) {
       status.stages.extract.end = Date.now();
       status.stages.extract.cells = s.cells;
+      status.stages.extract.source = s.extractSource;
       status.stages.extract.compress = await settledCompress('replay', s.compressOn, s.compress);
       phase = 'export';
       status.stages.export = { start: Date.now() };

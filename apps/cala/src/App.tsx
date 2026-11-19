@@ -12,7 +12,7 @@ import { loadSpanStats } from './lib/extract-qc-wasm.ts';
 import { ASSUMED_FPS } from './lib/miniscope-meta.ts';
 import type { QcSnapshot } from './lib/qc.ts';
 import { createCompressClient } from './lib/compress-client.ts';
-import { createCompressStore } from './lib/compress-store.ts';
+import { compressionOn, createCompressStore } from './lib/compress-store.ts';
 import { createPass2Factors } from './lib/factor-extract.ts';
 import { createPass2Store, replayBlocked } from './lib/pass2-store.ts';
 import { createRefineStore } from './lib/refine-store.ts';
@@ -98,9 +98,11 @@ const App: Component = () => {
   // worker, with its tile visits spread over the spare cores.
   // `?visits=N`: that many visit workers (0 = the slow worker visits itself).
   const visits = params.get('visits');
-  // `?review` (with `?compress`): the history review, every 8 compressed windows
+  // Compression is on by default; `?compress=off` replays the file for Refine and Extract.
+  const compressOn = compressionOn(params);
+  // `?review`: the history review (compression on), every 8 compressed windows
   // (`?review=N`: every N), in a worker of its own. One core is left for it.
-  const reviewWindows = params.has('compress') ? reviewEvery(params.get('review')) : null;
+  const reviewWindows = compressOn ? reviewEvery(params.get('review')) : null;
   const slow = createSlowClient(
     client,
     (msg) => cells.onSlowMessage(msg),
@@ -110,9 +112,8 @@ const App: Component = () => {
       : visitWorkerCount(navigator.hardwareConcurrency - (reviewWindows === null ? 0 : 1)),
   );
   // `?noqc`: run without online quality control (to measure its cost).
-  // `?compress`: also compress the preprocessed frames into low-rank factors, window by
-  // window, in a worker of its own (experimental; windows and factors are files in OPFS).
-  const compress = params.has('compress') ? createCompressStore(cells) : undefined;
+  // The compress worker: windows and factors are files in OPFS (on by default; `?compress=off`).
+  const compress = compressOn ? createCompressStore(cells) : undefined;
   // The review worker gets the factors from the compress worker; the cells it
   // finds go to the slow loop, which takes them on probation.
   const review =

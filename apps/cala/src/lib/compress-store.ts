@@ -81,6 +81,15 @@ export function extractSourceText(
   }
 }
 
+/**
+ * Compression is on unless the URL has `compress=off` (then Refine and
+ * Extract replay the file as before phase 4). `?compress` alone, the old
+ * opt-in, still means on.
+ */
+export function compressionOn(params: URLSearchParams): boolean {
+  return params.get('compress') !== 'off';
+}
+
 export function createCompressStore(sink?: BackfillSink) {
   const [status, setStatus] = createSignal<CompressStatus | null>(null);
   const [backfill, setBackfill] = createSignal<BackfillInfo | null>(null);

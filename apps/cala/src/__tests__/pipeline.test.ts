@@ -242,6 +242,36 @@ describe('pipeline store backpressure', () => {
     });
   });
 
+  it('starts a run with look-back and compression both on, neither switching the other off', async () => {
+    const { client } = manualClient();
+    await createRoot(async (dispose) => {
+      const feed = {
+        blocked: () => null,
+        begin: () => true,
+        rows: () => {},
+        backState: () => {},
+        flatField: () => {},
+        reset: () => {},
+      };
+      const args = [
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {},
+        undefined,
+        { reset() {} },
+      ] as const;
+      const store = createPipelineStore(client, {}, ...args, feed);
+      store.setLookback(true);
+      await store.start();
+      expect(client.startPipeline).toHaveBeenCalledTimes(1);
+      const start = (client.startPipeline.mock.calls[0] as unknown[])[1];
+      expect(start).toMatchObject({ lookback: true, compress: true });
+      dispose();
+    });
+  });
+
   it('stops requesting while paused and resumes', async () => {
     const { client, steps } = manualClient();
     await createRoot(async (dispose) => {

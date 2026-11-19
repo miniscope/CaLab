@@ -6,7 +6,9 @@
  *   node apps/cala/scripts/memory-measure.mjs --url http://localhost:5195/ --data <folder>
  *        --out <dir> [--keep name1,name2] [--tag x] [--mode joint|separate]
  *        [--refine-runs 1] [--every 10] [--max-min 90] [--cdp 9335] [--headed] [--single]
- *        [--lookback [--toggle] [--refine]] [--extract]
+ *        [--lookback [--toggle] [--refine]] [--extract] [--query compress=off]
+ *   Compression is on by default (the app's default); `--query compress=off` (appended
+ *   to the app URL) measures the raw path.
  *   `--single`: one recording folder (Discover, then one Refine, no export).
  *   `--lookback` (with `--single`): opens with `&lookback` (experimental
  *   look-back refinement), never presses Refine, and stops once Discover has
@@ -55,6 +57,7 @@ const cdpPort = Number(opt('--cdp', '9335'));
 const lookback = args.includes('--lookback');
 const extract = args.includes('--extract');
 const toggle = args.includes('--toggle');
+const extraQuery = opt('--query', '');
 const refineAfter = args.includes('--refine');
 mkdirSync(out, { recursive: true });
 const udd = join(out, `udd-${tag}`);
@@ -278,7 +281,9 @@ const fmt = (r) => {
 };
 
 let t0 = Date.now();
-await page.goto(`${url}?debug${lookback && !toggle ? '&lookback' : ''}`);
+await page.goto(
+  `${url}?debug${lookback && !toggle ? '&lookback' : ''}${extraQuery ? `&${extraQuery}` : ''}`,
+);
 await attachPage();
 const single = args.includes('--single');
 await page.setInputFiles('[data-testid=folder-input]', data);

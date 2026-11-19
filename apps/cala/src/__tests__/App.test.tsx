@@ -53,6 +53,13 @@ vi.mock('../lib/slow-client.ts', () => ({
   PARALLEL_FORWARD_BUFFERS: 4,
   visitWorkerCount: () => 0,
 }));
+// Compression is on by default: no compress or review worker in jsdom either.
+vi.mock('../lib/compress-client.ts', () => ({
+  createCompressClient: () => ({ backfill() {}, extract() {}, dispose() {} }),
+}));
+vi.mock('../lib/review-client.ts', () => ({
+  createReviewClient: () => ({ port: {}, dispose() {} }),
+}));
 
 import App from '../App.tsx';
 
