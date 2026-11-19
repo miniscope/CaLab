@@ -721,6 +721,16 @@ pub struct SlowLoopConfig {
     /// (0.75-1 D share 0.23 -> 0.17) but raised over-fill (est/true > 1.3,
     /// pairs < 1 D) 0.075 -> 0.112, as more alternations did in Stage 1.
     pub joint_carry: bool,
+    /// Experimental: L1 weight `μ` of the replay's trace step. Each stored
+    /// frame's traces solve `argmin_{c ≥ 0} ‖U v − A c‖² + 2 μ Σ_k ‖a_k‖ c_k`
+    /// (whitened), a soft threshold of `μ` trace-noise SDs per member,
+    /// invariant to the footprints' scale. The bitten split (wide − λ·small,
+    /// small + λ·wide) reconstructs the frames as well as the true one but
+    /// gives the small cell extra events; with unit-norm footprints its L1
+    /// is higher by `Σ c_wide ‖a_wide‖ (√(1−ρ²) + ρ − 1) > 0`, so the
+    /// penalty breaks the tie towards the sparse, independent split.
+    /// 0 (default) is the plain non-negative trace step.
+    pub joint_l1: f32,
     /// Classification of adds (new / re-add / churned) for the QC; does not
     /// change any decision.
     pub churn: ChurnConfig,
@@ -791,6 +801,7 @@ impl Default for SlowLoopConfig {
             joint_iters: 1,
             joint_admit: JointAdmit::Cluster,
             joint_carry: false,
+            joint_l1: 0.0,
             churn: ChurnConfig::default(),
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
@@ -850,6 +861,8 @@ impl SlowLoopConfig {
             && self.cluster_rho_min < 1.0
             && (2..=8).contains(&self.cluster_max)
             && self.joint_iters >= 1
+            && self.joint_l1 >= 0.0
+            && self.joint_l1.is_finite()
             && self.churn.is_valid();
         if ok {
             Ok(())

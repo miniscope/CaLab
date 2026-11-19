@@ -642,12 +642,14 @@ impl ClusterStore {
     /// With `carry`, the traces are re-solved with the store's own last
     /// estimate (when it has one) instead of the published columns, and
     /// this replay's estimate is kept for the next one.
+    /// `l1` is the trace step's L1 weight (see `SlowLoopConfig::joint_l1`).
     pub fn replay(
         &mut self,
         gamma: f64,
         sign_rule: JointSign,
         iters: usize,
         carry: bool,
+        l1: f64,
     ) -> Option<Replay> {
         let (n, kk) = (self.pix.len(), self.ids.len());
         if self.hist.stored() < 4 * (kk + 1) || self.sw <= 0.0 {
@@ -679,7 +681,7 @@ impl ClusterStore {
             (Some(e), true) => e.clone(),
             _ => self.white_cols(),
         };
-        let mut cs = solve_traces(&start, &self.u, n, kk, r, &vv)?;
+        let mut cs = solve_traces(&start, &self.u, n, kk, r, &vv, l1)?;
         // Footprint step per subset of frames: all, half A, half B.
         let fit = |cs: &[f64], sel: &dyn Fn(usize) -> bool| -> Option<(Vec<Vec<f32>>, Vec<f64>)> {
             let (mut sw, mut sc, mut sv) = (0.0f64, vec![0.0f64; kk], vec![0.0f64; r]);
@@ -793,7 +795,7 @@ impl ClusterStore {
                     a[i * kk + k] = f64::from(h[k][i]) * f64::from(self.is[i]);
                 }
             }
-            cs = solve_traces(&a, &self.u, n, kk, r, &vv)?;
+            cs = solve_traces(&a, &self.u, n, kk, r, &vv, l1)?;
         }
         let (h, se) = fit(&cs, &|_| true)?;
         let (ha, sa) = fit(&cs, &|s| hs[s])?;
@@ -1100,6 +1102,7 @@ impl SlowLoop {
                 self.cfg.joint_sign_rule,
                 self.cfg.joint_iters,
                 self.cfg.joint_carry,
+                f64::from(self.cfg.joint_l1),
             );
             #[cfg(feature = "diagnostics")]
             let mut sd = StageDiag::new(kk);
@@ -1581,8 +1584,9 @@ fn dump_replay(slow: &SlowLoop, cells: &[Cell], cpix: &[u32], rep: &Replay) {
 
 /// The traces of `m` stored frames (`vv`, `m x r` coordinates in the basis
 /// `u`, pixel-major `n x r`) under the whitened columns `a` (pixel-major
-/// `n x kk`): `argmin_{c ≥ 0} ‖U v − A c‖²` per frame. `None` when a
-/// column is empty.
+/// `n x kk`): `argmin_{c ≥ 0} ‖U v − A c‖² + 2 l1 Σ_k ‖a_k‖ c_k` per
+/// frame (`l1` in trace-noise SDs, scale-invariant). `None` when a column
+/// is empty.
 fn solve_traces(
     a: &[f64],
     u: &[f64],
@@ -1590,6 +1594,7 @@ fn solve_traces(
     kk: usize,
     r: usize,
     vv: &[f64],
+    l1: f64,
 ) -> Option<Vec<f64>> {
     let mut g = vec![0.0f64; kk * kk];
     let mut bm = vec![0.0f64; kk * r];
@@ -1608,12 +1613,13 @@ fn solve_traces(
     if (0..kk).any(|k| !(g[k * kk + k] > 0.0)) {
         return None;
     }
+    let shrink: Vec<f64> = (0..kk).map(|k| l1 * g[k * kk + k].sqrt()).collect();
     let m = vv.len() / r;
     let mut cs = vec![0.0f64; m * kk];
     let mut b = vec![0.0f64; kk];
     for s in 0..m {
         for p in 0..kk {
-            b[p] = (0..r).map(|j| bm[p * r + j] * vv[s * r + j]).sum();
+            b[p] = (0..r).map(|j| bm[p * r + j] * vv[s * r + j]).sum::<f64>() - shrink[p];
         }
         nnls(&g, &b, kk, &mut cs[s * kk..(s + 1) * kk]);
     }
@@ -2458,7 +2464,9 @@ mod tests {
             wgt /= gamma;
             st.push(&y, &[x[0] as f32, x[1] as f32], wgt);
             if t % 200 == 199 && t > 512 {
-                let rep = st.replay(gamma, JointSign::Off, 1, false).expect("replay");
+                let rep = st
+                    .replay(gamma, JointSign::Off, 1, false, 0.0)
+                    .expect("replay");
                 let norm = |h: &[f32]| {
                     let m = h.iter().cloned().fold(0.0f32, f32::max).max(1e-12);
                     h.iter().map(|v| v.max(0.0) / m).collect::<Vec<f32>>()
@@ -2474,6 +2482,184 @@ mod tests {
         let over = cur_j[12 * w + ci.1.round() as usize]
             / (aj[12 * w + ci.1.round() as usize] / aj.iter().cloned().fold(0.0, f32::max));
         assert!(over < 1.3, "j over-fill at i's centre = {over}");
+    }
+
+    /// A wide cell `j` (1.4x the small cell's width) and a small cell `i`
+    /// `sep` diameters apart, started at the leak fixed point: `j` is
+    /// `max(a_j − λ a_i, 0)` (its tail under `i` cut away) and `i` is true,
+    /// so `i`'s fast trace carries `λ c_j`. Frames are fed for `frames`
+    /// steps, the store replayed every 200 (footprints clipped at zero,
+    /// peak 1, as the finish path publishes them; no gate). Returns `j` at
+    /// `i`'s centre over the truth, and the leak `b / a` of `i`'s and `j`'s
+    /// fast traces (`trace ~ a own + b partner + c`) over the last 1500
+    /// frames.
+    fn bitten_pair(l1: f64, sep: f32, bite: f32, frames: usize, seed: u64) -> (f32, f64, f64) {
+        let (h, w) = (28usize, 48usize);
+        let d = 12.0f32;
+        let (sig_i, sig_j) = (d / 2.3548, 1.4 * d / 2.3548);
+        let cj = (14.0f32, 24.0 - 0.5 * sep * d);
+        let ci = (14.0f32, 24.0 + 0.5 * sep * d);
+        let gauss = |c: (f32, f32), sig: f32| -> Vec<f32> {
+            (0..h * w)
+                .map(|p| {
+                    let (y, x) = ((p / w) as f32, (p % w) as f32);
+                    (-((y - c.0).powi(2) + (x - c.1).powi(2)) / (2.0 * sig * sig)).exp()
+                })
+                .collect()
+        };
+        let (aj, ai) = (gauss(cj, sig_j), gauss(ci, sig_i));
+        let n = h * w;
+        let pix: Vec<u32> = (0..n as u32).collect();
+        let pi = 14 * w + ci.1.round() as usize;
+        let dot = |a: &[f32], b: &[f32]| -> f32 { a.iter().zip(b).map(|(x, y)| x * y).sum() };
+        let lam = bite * dot(&aj, &ai) / dot(&ai, &ai);
+        let norm = |h: &[f32]| {
+            let m = h.iter().cloned().fold(0.0f32, f32::max).max(1e-12);
+            h.iter().map(|v| v.max(0.0) / m).collect::<Vec<f32>>()
+        };
+        let mut cur_j = norm(
+            &aj.iter()
+                .zip(&ai)
+                .map(|(a, b)| a - lam * b)
+                .collect::<Vec<_>>(),
+        );
+        let mut cur_i = ai.clone();
+        let mut rng = seed;
+        let mut unif = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let cols = |a: &[f32], b: &[f32]| [a, b].concat();
+        let mut st = ClusterStore::new(
+            vec![1, 2],
+            vec![(cj, 40.0), (ci, 40.0)],
+            pix,
+            vec![1.0; n],
+            w,
+            0,
+            cols(&cur_j, &cur_i),
+            3000,
+        );
+        let (mut c1, mut c2) = (0.0f64, 0.0f64);
+        let gamma = 0.5f64.powf(1.0 / 3000.0);
+        let mut wgt = 1.0f64;
+        let mut x = [0.0f64; 2];
+        let mut rec: Vec<[f64; 4]> = Vec::new();
+        for t in 0..frames {
+            for c in [&mut c1, &mut c2] {
+                *c *= 0.95;
+                if unif() < 0.01 {
+                    *c += -unif().max(1e-12).ln();
+                }
+            }
+            let y: Vec<f32> = (0..n)
+                .map(|p| {
+                    let z = (-2.0 * unif().max(1e-12).ln()).sqrt()
+                        * (2.0 * std::f64::consts::PI * unif()).cos();
+                    (f64::from(aj[p]) * c1 + f64::from(ai[p]) * c2 + 0.5 * z) as f32
+                })
+                .collect();
+            let a = st.white_cols();
+            let (mut g, mut b) = ([0.0f64; 4], [0.0f64; 2]);
+            for p in 0..n {
+                for k in 0..2 {
+                    b[k] += a[p * 2 + k] * f64::from(y[p]);
+                    for l in 0..2 {
+                        g[k * 2 + l] += a[p * 2 + k] * a[p * 2 + l];
+                    }
+                }
+            }
+            nnls(&g, &b, 2, &mut x);
+            if t + 1500 >= frames {
+                rec.push([x[0], x[1], c1, c2]);
+            }
+            wgt /= gamma;
+            st.push(&y, &[x[0] as f32, x[1] as f32], wgt);
+            if t % 200 == 199 && t > 512 {
+                let rep = st
+                    .replay(gamma, JointSign::All, 1, false, l1)
+                    .expect("replay");
+                cur_j = norm(&rep.h[0]);
+                cur_i = norm(&rep.h[1]);
+                st.cols = cols(&cur_j, &cur_i);
+            }
+        }
+        // trace ~ a own + b partner + c (least squares on the record).
+        let leak = |own: usize, other: usize, tr: usize| -> f64 {
+            let m = rec.len() as f64;
+            let mean = |k: usize| rec.iter().map(|r| r[k]).sum::<f64>() / m;
+            let (mo, mp, mt) = (mean(own), mean(other), mean(tr));
+            let (mut soo, mut spp, mut sop, mut sot, mut spt) = (0.0, 0.0, 0.0, 0.0, 0.0);
+            for r in &rec {
+                let (o, p, y) = (r[own] - mo, r[other] - mp, r[tr] - mt);
+                soo += o * o;
+                spp += p * p;
+                sop += o * p;
+                sot += o * y;
+                spt += p * y;
+            }
+            let det = soo * spp - sop * sop;
+            let a = (spp * sot - sop * spt) / det;
+            let b = (soo * spt - sop * sot) / det;
+            b / a
+        };
+        let truth_j = aj[pi] / aj.iter().cloned().fold(0.0, f32::max);
+        (cur_j[pi] / truth_j, leak(3, 2, 1), leak(2, 3, 0))
+    }
+
+    /// The leak fixed point: a wide cell bitten by its small neighbour's
+    /// light (`a_j − λ a_i`) reconstructs the frames as well as the truth,
+    /// so the plain replay stays there and the small cell's trace keeps
+    /// `λ c_j`. The L1 trace step (`joint_l1` 2) prefers the sparse split:
+    /// the wide tail comes back and both leaks vanish; started at the truth
+    /// it stays there.
+    #[test]
+    fn l1_trace_step_heals_the_leak_fixed_point() {
+        let (bite0, leak0, _) = bitten_pair(0.0, 0.5, 1.0, 20000, 7);
+        assert!(
+            leak0 > 0.3,
+            "plain replay left the fixed point: leak {leak0}, bite {bite0}"
+        );
+        let (bite, leak, back) = bitten_pair(2.0, 0.5, 1.0, 20000, 7);
+        assert!(
+            bite > 0.8,
+            "wide tail under the small cell / truth = {bite}"
+        );
+        assert!(leak < 0.1, "leak wide -> small {leak}");
+        assert!(back.abs() < 0.05, "leak small -> wide {back}");
+        let (bite, leak, back) = bitten_pair(2.0, 0.5, 0.0, 8000, 7);
+        assert!(
+            bite > 0.85,
+            "started at the truth: wide tail / truth = {bite}"
+        );
+        assert!(
+            leak < 0.08 && back.abs() < 0.05,
+            "started at the truth: leaks {leak} {back}"
+        );
+    }
+
+    /// Exploration (`cargo test --release -p calab-cala bitten_pair_sweep
+    /// -- --ignored --nocapture`): bite and leak by L1 weight.
+    #[test]
+    #[ignore]
+    fn bitten_pair_sweep() {
+        let frames: usize = std::env::var("PAIR_FRAMES").map_or(8000, |v| v.parse().unwrap());
+        let bite: f32 = std::env::var("PAIR_BITE").map_or(1.0, |v| v.parse().unwrap());
+        for sep in [0.5f32, 0.75, 1.0] {
+            for l1 in [0.0, 1.0, 2.0, 3.0] {
+                let mut acc = (0.0f32, 0.0f64, 0.0f64);
+                for seed in [7u64, 8, 9] {
+                    let r = bitten_pair(l1, sep, bite, frames, seed);
+                    acc = (acc.0 + r.0 / 3.0, acc.1 + r.1 / 3.0, acc.2 + r.2 / 3.0);
+                }
+                println!(
+                    "sep {sep} l1 {l1}: j at i / truth {:.2}, leak j->i {:.3}, i->j {:.3}",
+                    acc.0, acc.1, acc.2
+                );
+            }
+        }
     }
 
     /// Two Gaussian cells 0.75 diameters apart on a 24 x 40 canvas
@@ -2577,7 +2763,9 @@ mod tests {
             let cols = [on(&aj, &pix), on(&ai, &pix)].concat();
             let (mut st, aj, ai, _) = fed_store(pix.clone(), cols, 3000, seed);
             let gamma = 1.0;
-            let rep = st.replay(gamma, JointSign::All, 1, false).expect("replay");
+            let rep = st
+                .replay(gamma, JointSign::All, 1, false, 0.0)
+                .expect("replay");
             let is = vec![1.0f64; n];
             for (k, a) in [(0usize, &aj), (1, &ai)] {
                 let cur: Vec<f64> = a.iter().map(|&v| f64::from(v)).collect();
@@ -2616,7 +2804,9 @@ mod tests {
             .collect();
         let cols = [on(&aj, &old), on(&ai, &old)].concat();
         let (mut st, aj, ai, _) = fed_store(old.clone(), cols, 2500, 7);
-        let before = st.replay(1.0, JointSign::Off, 1, false).expect("replay");
+        let before = st
+            .replay(1.0, JointSign::Off, 1, false, 0.0)
+            .expect("replay");
         let stored = st.stored();
         // The new pixels: the right 34 columns (drops 6, adds 10).
         let new: Vec<u32> = full
@@ -2628,7 +2818,9 @@ mod tests {
         let disks = st.disks.clone();
         assert!(st.move_to(disks, new.clone(), vec![1.0; new.len()], w, 0, cols));
         assert_eq!(st.stored(), stored);
-        let after = st.replay(1.0, JointSign::Off, 1, false).expect("replay");
+        let after = st
+            .replay(1.0, JointSign::Off, 1, false, 0.0)
+            .expect("replay");
         for k in 0..2 {
             // Shared pixels: the estimate is unchanged.
             let (mut num, mut den) = (0.0f64, 0.0f64);
