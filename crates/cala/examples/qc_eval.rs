@@ -3858,6 +3858,9 @@ struct Tail {
     drain: usize,
     drain_rate: f64,
     settle_all: usize,
+    /// `--settle-*`: the end-of-Discover settle, run after the drain (and
+    /// after the `drain` branch point).
+    settle: SettleCfg,
 }
 
 /// Flags [`Tail::parse`] reads. `drain` ones act inside the drain, so a
@@ -3868,6 +3871,19 @@ const TAIL_FLAGS: &[&str] = &[
     "--lookback-drain",
     "--lookback-drain-rate",
     "--lookback-settle-all",
+    "--settle-frames",
+    "--settle-round",
+    "--settle-observe",
+    "--settle-steps",
+    "--settle-batch",
+    "--settle-due",
+    "--settle-publish",
+    "--settle-check",
+    "--settle-stop-k",
+    "--settle-stop-share",
+    "--settle-stop-checks",
+    "--settle-min-frames",
+    "--settle-libs",
 ];
 const DRAIN_FLAGS: &[&str] = &[
     "--lookback-drain",
@@ -3894,6 +3910,7 @@ impl Tail {
             drain: arg_value(args, "--lookback-drain").map_or(0, |s| s.parse().unwrap()),
             drain_rate,
             settle_all: arg_value(args, "--lookback-settle-all").map_or(0, |s| s.parse().unwrap()),
+            settle: SettleCfg::parse(args),
         }
     }
 }
@@ -4053,6 +4070,11 @@ impl BranchChild {
         if let Some(l) = lookback {
             l.drain_rate = self.tail.drain_rate;
             l.settle_all = self.tail.settle_all;
+            l.settle = self.tail.settle.clone();
+            assert!(
+                l.settle.frames == 0 || self.tail.drain > 0,
+                "--settle-frames needs --lookback-drain"
+            );
         }
         *tail = self.tail;
         *out_dir = self.out_dir;
@@ -4581,11 +4603,10 @@ fn main() {
     if let Some(l) = lookback.as_mut() {
         l.drain_rate = tail.drain_rate;
         l.settle_all = tail.settle_all;
-        // The settle's flags are not tail flags: every branch of a
-        // `--branch-after` run gets the same settle.
-        l.settle = SettleCfg::parse(&args);
+        l.settle = tail.settle.clone();
+        // With `--branch-after` each branch checks its own flags.
         assert!(
-            l.settle.frames == 0 || lb_drain > 0,
+            l.settle.frames == 0 || lb_drain > 0 || branching.is_some(),
             "--settle-frames needs --lookback-drain"
         );
     }
@@ -5215,32 +5236,6 @@ fn main() {
                             "lookback drain: {st} steps, {fr} frames, {:.1} s",
                             lbk.drain_wall_s
                         );
-                        if lbk.settle.frames > 0 {
-                            lbk.settle(
-                                t_len,
-                                budget,
-                                start,
-                                &mut rec,
-                                drift.as_ref(),
-                                &mut pipe,
-                                &mut engine,
-                                sl,
-                                n_px,
-                            );
-                            std::fs::write(out_dir.join("settle_checks.tsv"), &lbk.settle_out)
-                                .unwrap();
-                            for (k, l) in std::mem::take(&mut lbk.settle_libs) {
-                                write_library(
-                                    &out_dir,
-                                    &format!("_settle{k}"),
-                                    &l,
-                                    dims,
-                                    gt.as_ref(),
-                                    ho.as_ref(),
-                                    Some(&*sl),
-                                );
-                            }
-                        }
                     }
                 }
                 // Branch point `drain`: the drain (if any) is done too.
@@ -5256,6 +5251,41 @@ fn main() {
                                 &mut lb_drain,
                             );
                         }
+                    }
+                }
+                // The end-of-Discover settle (`--settle-frames`): after the
+                // drain and after the `drain` branch point, so a branch can
+                // set it.
+                if let (Some(lbk), Some(sl), 0, None) =
+                    (lookback.as_mut(), slow.as_mut(), pass, timed.as_ref())
+                {
+                    if last && lb_drain > 0 {
+                    if lbk.settle.frames > 0 {
+                        lbk.settle(
+                            t_len,
+                            budget,
+                            start,
+                            &mut rec,
+                            drift.as_ref(),
+                            &mut pipe,
+                            &mut engine,
+                            sl,
+                            n_px,
+                        );
+                        std::fs::write(out_dir.join("settle_checks.tsv"), &lbk.settle_out)
+                            .unwrap();
+                        for (k, l) in std::mem::take(&mut lbk.settle_libs) {
+                            write_library(
+                                &out_dir,
+                                &format!("_settle{k}"),
+                                &l,
+                                dims,
+                                gt.as_ref(),
+                                ho.as_ref(),
+                                Some(&*sl),
+                            );
+                        }
+                    }
                     }
                 }
                 let t_end = t + 1;
