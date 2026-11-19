@@ -122,9 +122,9 @@ export interface RunPanelProps {
   narrow?: boolean;
   /** The run's history views (shared time window and cursor). */
   ui: HistoryUi;
-  /** Present when the run compresses its frames (`?compress`). */
+  /** Present when the run compresses its frames (on unless `?compress=off`). */
   compress?: CompressStore;
-  /** Present when the run reviews its compressed history (`?compress&review`). */
+  /** Present when the run reviews its compressed history (compression on; `?review` sets how often). */
   review?: ReviewStore;
   /** In a tab of its own: not collapsible (the convergence plot always shows). */
   fixed?: boolean;

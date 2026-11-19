@@ -291,7 +291,7 @@ export function createCellStore(
 
   /**
    * Traces of one compressed window, solved again with the final library
-   * (`?compress`). The first window replaces the live history, so every cell
+   * (compression on). The first window replaces the live history, so every cell
    * has its trace from the first frame on.
    */
   function onBackfill(

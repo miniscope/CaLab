@@ -26,6 +26,7 @@ test('Cala: the landing page lists it as a beta and its start page loads cleanly
 });
 
 test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async ({ page }) => {
+  // Runs with compression on, the app default.
   await page.goto('Cala/');
   await expect(page.getByRole('heading', { level: 1, name: 'Cala' })).toBeVisible();
 
@@ -126,6 +127,7 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
 });
 
 test('Cala: a folder without Miniscope videos reports an error', async ({ page }) => {
+  // Runs with compression on, the app default.
   await page.goto('Cala/');
   await page
     .getByTestId('files-input')
@@ -136,6 +138,7 @@ test('Cala: a folder without Miniscope videos reports an error', async ({ page }
 test('Cala: long-session cell overview stays compact and navigates beyond retained detail', async ({
   page,
 }) => {
+  // Runs with compression on, the app default.
   await page.goto('Cala/?debug');
   const folder = mkdtempSync(join(tmpdir(), 'cala-overview-e2e-'));
   writeFileSync(join(folder, '0.avi'), buildAvi({ width: 24, height: 16, frames: 6 }));
