@@ -74,7 +74,12 @@
 //!   --lookback-drain N recorded data: after Discover's last frame keep
 //!                      serving the cells in need, with Refine-scope visits,
 //!                      for at most N steps (one step = R look-back frames
-//!                      + one slow-loop step); ends when nothing is needed
+//!                      + one slow-loop step); ends when nothing is needed.
+//!                      With `--passes N` > 1 it runs at the end of pass 1,
+//!                      before the later passes (a Refine after a settled
+//!                      look-back Discover)
+//!   --lookback-drain-rate F  look-back frames per drain step instead of
+//!                      R (bigger batches once Discover has ended)
 //!   --catchup X        reference arm: every X Discover frames give all
 //!                      cells frames 0..t at once (`--catchup-double`: at
 //!                      X, 2X, 4X, ...)
@@ -592,6 +597,20 @@ fn write_f32s(f: &mut impl Write, v: &[f32]) {
     }
 }
 
+/// `--noise-dump`: split-half footprint noise of every cell of `lib`
+/// (`id`, slow-loop birth frame, [`SlowLoop::footprint_noise`]).
+fn write_noise(path: &Path, lib: &Library, sl: &SlowLoop) {
+    let born: HashMap<u64, u64> = sl.births().into_iter().collect();
+    let mut t = String::from("id\tborn_slow\tnoise\n");
+    for slot in 0..lib.len() {
+        let id = lib.ids()[slot];
+        let (pix, _) = lib.filtered(slot);
+        let n = sl.footprint_noise(id, pix).unwrap_or(f64::NAN);
+        let _ = writeln!(t, "{id}\t{}\t{n:.5}", born.get(&id).copied().unwrap_or(0));
+    }
+    std::fs::write(path, t).unwrap();
+}
+
 /// Concurrent Refine (`--lookback R`, `--catchup X`): the frame I/O around
 /// the crate's look-back scheduler ([`calab_cala::discover::LookBack`],
 /// which decides which past frames to re-read for which cells). Past frames
@@ -630,6 +649,10 @@ struct LookBack {
     wall_s: f64,
     drain_steps: usize,
     drain_frames: u64,
+    /// `--lookback-drain-rate` (0: `rate`, at least 1).
+    drain_rate: f64,
+    /// Wall seconds of the drain (stdout only).
+    drain_wall_s: f64,
     /// Look-back frames and cell-frames per tenth of the recording (row
     /// 10: the drain).
     by_tenth: [(u64, u64); 11],
@@ -679,6 +702,8 @@ impl LookBack {
             wall_s: 0.0,
             drain_steps: 0,
             drain_frames: 0,
+            drain_rate: 0.0,
+            drain_wall_s: 0.0,
             by_tenth: [(0, 0); 11],
             target,
             by_twentieth: [0; 20],
@@ -798,7 +823,11 @@ impl LookBack {
         let t0 = Instant::now();
         let f0 = self.frames;
         sl.set_edit_scope(EditScope::Refine);
-        let rate = self.rate.max(1.0);
+        let rate = if self.drain_rate > 0.0 {
+            self.drain_rate
+        } else {
+            self.rate.max(1.0)
+        };
         let mut steps = 0;
         while steps < max_steps {
             let more = self.spend(rate, 10, start, rec, drift, pipe, engine, sl, n_px);
@@ -822,7 +851,8 @@ impl LookBack {
         engine.set_library(sl.finalize().unwrap()).unwrap();
         self.drain_steps = steps;
         self.drain_frames = self.frames - f0;
-        self.wall_s += t0.elapsed().as_secs_f64();
+        self.drain_wall_s = t0.elapsed().as_secs_f64();
+        self.wall_s += self.drain_wall_s;
         (steps, self.frames - f0)
     }
 
@@ -3878,10 +3908,10 @@ fn main() {
         Some(m) => panic!("--lookback-order: unknown mode {m}"),
     };
     let lb_drain: usize = arg_value(&args, "--lookback-drain").map_or(0, |s| s.parse().unwrap());
-    assert!(
-        lb_drain == 0 || passes == 1,
-        "--lookback-drain needs --passes 1"
-    );
+    // Frames of look-back budget per drain step (default: R, at least 1).
+    let lb_drain_rate: f64 =
+        arg_value(&args, "--lookback-drain-rate").map_or(0.0, |s| s.parse().unwrap());
+    assert!(lb_drain_rate >= 0.0, "--lookback-drain-rate must be >= 0");
     let lb_frames: usize =
         arg_value(&args, "--lookback-frames").map_or(3000, |s| s.parse().unwrap());
     assert!(lb_rate >= 0.0, "--lookback must be >= 0");
@@ -3896,6 +3926,9 @@ fn main() {
             lb_rate, lb_frames, lb_newest, lb_catchup, lb_double, lb_target, n_px,
         )
     });
+    if let Some(l) = lookback.as_mut() {
+        l.drain_rate = lb_drain_rate;
+    }
     if lookback.is_some() {
         println!(
             "lookback: rate {lb_rate} frames per Discover frame, at most {lb_frames} per job, catchup every {lb_catchup} frames{}, noise target {lb_target}",
@@ -3995,6 +4028,13 @@ fn main() {
                             ho.as_ref(),
                             Some(&*sl),
                         );
+                        if noise_dump {
+                            write_noise(
+                                &out_dir.join(format!("fp_noise_wrap{pass}.tsv")),
+                                engine.library(),
+                                sl,
+                            );
+                        }
                     }
                 }
                 sl.set_edit_scope(later_scope);
@@ -4487,7 +4527,10 @@ fn main() {
                             sl,
                             n_px,
                         );
-                        println!("lookback drain: {st} steps, {fr} frames");
+                        println!(
+                            "lookback drain: {st} steps, {fr} frames, {:.1} s",
+                            lbk.drain_wall_s
+                        );
                     }
                 }
                 let t_end = t + 1;
@@ -4779,16 +4822,7 @@ fn main() {
     }
     if let (true, Some(sl)) = (noise_dump, slow.as_ref()) {
         // Final footprint noise per cell (`--noise-dump`, precision mode).
-        let lib = engine.library().clone();
-        let born: HashMap<u64, u64> = sl.births().into_iter().collect();
-        let mut t = String::from("id\tborn_slow\tnoise\n");
-        for slot in 0..lib.len() {
-            let id = lib.ids()[slot];
-            let (pix, _) = lib.filtered(slot);
-            let n = sl.footprint_noise(id, pix).unwrap_or(f64::NAN);
-            let _ = writeln!(t, "{id}\t{}\t{n:.5}", born.get(&id).copied().unwrap_or(0));
-        }
-        std::fs::write(out_dir.join("fp_noise.tsv"), t).unwrap();
+        write_noise(&out_dir.join("fp_noise.tsv"), engine.library(), sl);
     }
     if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
         tm.ending = true;
