@@ -117,6 +117,13 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
   `qc_eval real --churn-log` run (`RUN_DIR [LABEL_BUNDLE_DIR] > note.md`); reads
   `edits.tsv`, `fp_history.bin`, `adds.tsv`, `removals.tsv` and, with a binary
   built with `--features diagnostics`, `tests.tsv`. Needs numpy.
+- `merge_labels.py OUT.tsv RUN...`: labelled merge tests from `qc_eval --merge-log` runs (diagnostics build):
+  every test at footprint overlap >= 0.5 with its features (held-out z, `one`, traces, drop-one losses, the refitted
+  pair, centre and peak distances), labelled duplicate / real pair from the GT matches and linked to the removal it
+  caused (`harm` = the gone cell's unit is unmatched at the end). `merge_rules_eval.py LABELS.tsv [name=expr ...]`
+  replays candidate rules over the accepted merges; `merge_saddle.py` adds a single-peaked-union feature.
+  `multi_gt_split.py ROOT ARM...` splits "final cells matching 2+ GT units" into resolved close pairs and blends and
+  counts duplicates of matched units (`results/2026-11-19-merge-close-pairs.md`).
 - `support_sizes.py`: footprint support sizes per pass of `--passes N` runs
   (`LABEL=RUN_TREE ... [--count pos|disk]`): median, p99, largest, runs above
   50k px and the pass-k / pass-1 ratios (S2.1). Needs numpy.

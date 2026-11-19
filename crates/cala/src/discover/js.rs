@@ -23,7 +23,10 @@ use std::sync::Arc;
 
 use wasm_bindgen::prelude::*;
 
-use super::{EditScope, SlowLoop, SlowLoopConfig, VisitJob, VisitResult, VisitRunner};
+use super::{
+    EditScope, HeldOutRecord, JointSign, JointUpdate, LookBack, LookbackConfig, LookbackNext,
+    LookbackOutcome, SlowLoop, SlowLoopConfig, VisitJob, VisitResult, VisitRunner,
+};
 use crate::compress::review::footprints_from_wire;
 use crate::preprocess::flatten::{FlattenConfig, GlowFlattener};
 use crate::preprocess::fov::FovMask;
@@ -46,6 +49,57 @@ pub struct JsSlowLoop {
     /// Version 0 (empty) and the most recent published versions.
     libs: Vec<Arc<Library>>,
     traces: FrameTraces,
+    /// Held-out decision per stream frame (`observe` with `stream`).
+    held: HeldOutRecord,
+    /// Look-back (concurrent Refine; off unless `enableLookback`).
+    lookback: Option<LookBack>,
+    lb: LbCounts,
+}
+
+/// Look-back counters of the JS surface (`lookbackStats`).
+#[derive(Clone, Copy, Debug, Default)]
+struct LbCounts {
+    pushed: u64,
+    held_out: u64,
+    dropped: u64,
+    idle: bool,
+}
+
+/// Slow-loop options the app can set (see `SlowLoop.withConfig`).
+fn slow_config(
+    func: &str,
+    joint_update: &str,
+    joint_sign: &str,
+    merge_guard_min_sep: f32,
+) -> Result<impl Fn(&mut SlowLoopConfig), JsError> {
+    let ju = match joint_update {
+        "off" => JointUpdate::Off,
+        "refine" => JointUpdate::Refine,
+        "all" => JointUpdate::All,
+        o => {
+            return Err(js_err(
+                func,
+                format!("jointUpdate: off|refine|all, not {o:?}"),
+            ))
+        }
+    };
+    let js = match joint_sign {
+        "off" => JointSign::Off,
+        "own" => JointSign::Own,
+        "all" => JointSign::All,
+        o => return Err(js_err(func, format!("jointSign: off|own|all, not {o:?}"))),
+    };
+    if !(merge_guard_min_sep >= 0.0) {
+        return Err(js_err(
+            func,
+            "mergeGuardMinSep must be >= 0 (Infinity = off)",
+        ));
+    }
+    Ok(move |c: &mut SlowLoopConfig| {
+        c.joint_update = ju;
+        c.joint_sign_rule = js;
+        c.merge_guard_min_sep = merge_guard_min_sep;
+    })
 }
 
 #[wasm_bindgen(js_class = SlowLoop)]
@@ -70,12 +124,43 @@ impl JsSlowLoop {
             noise,
             cell_diameter_px,
             flatten_sigma_px,
+            |_| {},
         )?;
-        Ok(JsSlowLoop {
-            inner,
-            libs: vec![Arc::new(empty)],
-            traces: FrameTraces::default(),
-        })
+        Ok(JsSlowLoop::wrap(inner, Arc::new(empty)))
+    }
+
+    /// As the constructor, with the slow-loop options look-back runs with:
+    /// `jointUpdate` (`off` = the default, `refine`, `all`: the cluster
+    /// history replay), `jointSign` (`off`, `own`, `all` = the default) and
+    /// `mergeGuardMinSep` (cell diameters; `Infinity` = the default, off).
+    /// Visit workers must be built with the same options
+    /// (`VisitWorker.withConfig`). The validated look-back configuration is
+    /// `all`, `all`, 0.6.
+    #[wasm_bindgen(js_name = withConfig)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_config(
+        width: u32,
+        height: u32,
+        fov: &[u8],
+        noise: &[f32],
+        cell_diameter_px: f32,
+        flatten_sigma_px: f32,
+        joint_update: &str,
+        joint_sign: &str,
+        merge_guard_min_sep: f32,
+    ) -> Result<JsSlowLoop, JsError> {
+        let set = slow_config("SlowLoop", joint_update, joint_sign, merge_guard_min_sep)?;
+        let (inner, empty) = build(
+            "SlowLoop",
+            width,
+            height,
+            fov,
+            noise,
+            cell_diameter_px,
+            flatten_sigma_px,
+            set,
+        )?;
+        Ok(JsSlowLoop::wrap(inner, Arc::new(empty)))
     }
 
     /// Hand out the next tile visit for a `VisitWorker` (bytes), or
@@ -160,33 +245,194 @@ impl JsSlowLoop {
         version: f64,
         traces: &[f32],
         background: Option<Vec<f32>>,
+        stream: Option<f64>,
     ) -> Result<bool, JsError> {
+        if !self.stream_ok(stream) {
+            // Without it the frame's held-out decision is not recorded and a
+            // look-back re-read could fit on a test frame.
+            return Err(js_err("observe", "look-back is on: pass the stream index"));
+        }
         let Some(lib) = self.lib(version) else {
             return Ok(false);
         };
-        self.traces.frame_index = self.inner.frames();
-        self.traces.library_version = lib.version();
-        self.traces.traces.clear();
-        self.traces.traces.extend_from_slice(traces);
-        self.traces.background.clear();
-        if let Some(bg) = background {
-            if bg.len() != lib.background_len() {
-                return Err(js_err(
-                    "observe",
-                    format!(
-                        "background has {} values, library {} expects {}",
-                        bg.len(),
-                        lib.version(),
-                        lib.background_len()
-                    ),
-                ));
-            }
-            self.traces.background = bg;
-        }
+        let slow_index = self.inner.frames();
+        self.fill_traces(&lib, traces, background, "observe")?;
         self.inner
             .observe(frame, &lib, &self.traces)
             .map_err(|e| js_err("observe", e))?;
+        if let Some(s) = stream {
+            self.held.note(s as u64, slow_index, &self.inner);
+        }
         Ok(true)
+    }
+
+    // ---- look-back (concurrent Refine inside Discover) -------------------
+    //
+    // The scheduler (`discover/lookback.rs`) lives here, beside the slow
+    // loop; a driver re-reads the frames it asks for (`lookbackTake`),
+    // preprocesses them as the live pipeline did, solves them with a trace
+    // engine on a published library and hands them back with
+    // `observeLookback`. Feed Discover's frames with `observe(.., stream)`
+    // so re-read frames keep their held-out decision.
+
+    /// Turn look-back on: `rate` look-back frames per Discover frame, at
+    /// most `maxFrames` frames before its birth per cell (validated: 2,
+    /// 3000). Only before the first observed frame; from then on `observe`
+    /// must be given the stream index (so every re-read frame keeps the
+    /// held-out decision `observe` made, or the hashed one for frames the
+    /// slow loop never saw).
+    #[wasm_bindgen(js_name = enableLookback)]
+    pub fn enable_lookback(&mut self, rate: f64, max_frames: u32) -> Result<(), JsError> {
+        if !(rate > 0.0) || max_frames == 0 {
+            return Err(js_err("enableLookback", "rate and maxFrames must be > 0"));
+        }
+        if self.inner.frames() > 0 {
+            // Earlier frames' held-out decisions were not recorded.
+            return Err(js_err(
+                "enableLookback",
+                "call it before the first observed frame",
+            ));
+        }
+        self.lookback = Some(LookBack::new(LookbackConfig {
+            rate,
+            max_frames: max_frames as usize,
+            ..LookbackConfig::default()
+        }));
+        Ok(())
+    }
+
+    /// Whether look-back is on.
+    #[wasm_bindgen(getter, js_name = lookbackEnabled)]
+    pub fn lookback_enabled(&self) -> bool {
+        self.lookback.is_some()
+    }
+
+    /// Discover has seen stream frames `0..seen`, `frames` of them new
+    /// since the last call: note births in the newest published library and
+    /// add `rate * frames` of look-back budget.
+    #[wasm_bindgen(js_name = lookbackNote)]
+    pub fn lookback_note(&mut self, seen: f64, frames: f64) {
+        let lib = self.libs.last().expect("version 0").clone();
+        if let Some(lb) = self.lookback.as_mut() {
+            lb.note_frame(&lib, seen.max(0.0) as usize);
+            let rate = lb.config().rate;
+            lb.add_credit(rate * frames.max(0.0));
+        }
+    }
+
+    /// Add look-back budget directly (frames; the drain after the last
+    /// frame).
+    #[wasm_bindgen(js_name = lookbackAddCredit)]
+    pub fn lookback_add_credit(&mut self, frames: f64) {
+        if let Some(lb) = self.lookback.as_mut() {
+            lb.add_credit(frames.max(0.0));
+        }
+    }
+
+    /// Take up to `max` look-back frames to supply, flattened as
+    /// `[frame, block, n, id_1..id_n, frame, block, n, ...]` (stream frame
+    /// index; block sequence number: start a fresh copy of the live
+    /// preprocessor state when it changes; the cell ids that take it). The
+    /// budget is spent at hand-out. Empty when the budget is spent or no
+    /// cell needs anything (`lookbackIdle`).
+    #[wasm_bindgen(js_name = lookbackTake)]
+    pub fn lookback_take(&mut self, max: u32) -> Vec<f64> {
+        let mut out = Vec::new();
+        let lib = self.libs.last().expect("version 0").clone();
+        let Some(lb) = self.lookback.as_mut() else {
+            return out;
+        };
+        self.lb.idle = false;
+        for _ in 0..max {
+            match lb.next(&self.inner, &lib) {
+                LookbackNext::Frame(r) => {
+                    out.push(r.frame as f64);
+                    out.push(r.block as f64);
+                    out.push(r.ids.len() as f64);
+                    out.extend(r.ids.iter().map(|&i| i as f64));
+                    lb.frame_done(LookbackOutcome::Observed);
+                }
+                LookbackNext::NoCredit => break,
+                LookbackNext::Idle => {
+                    self.lb.idle = true;
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether the last `lookbackTake` stopped because no cell needs
+    /// anything.
+    #[wasm_bindgen(getter, js_name = lookbackIdle)]
+    pub fn lookback_idle(&self) -> bool {
+        self.lb.idle
+    }
+
+    /// Feed a look-back frame (`lookbackTake`): the preprocessed stream
+    /// frame `stream`, its traces from library `version` (and background,
+    /// as `observe`), for the cells `ids` only. Only the running footprint
+    /// statistics and cluster stores take it; the slow loop's clocks do not
+    /// move. `false` when the version is no longer held (dropped) or the
+    /// frame is held out.
+    #[wasm_bindgen(js_name = observeLookback)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn observe_lookback(
+        &mut self,
+        frame: &[f32],
+        version: f64,
+        traces: &[f32],
+        background: Option<Vec<f32>>,
+        stream: f64,
+        ids: &[f64],
+    ) -> Result<bool, JsError> {
+        let Some(lib) = self.lib(version) else {
+            self.lb.dropped += 1;
+            return Ok(false);
+        };
+        self.fill_traces(&lib, traces, background, "observeLookback")?;
+        let held = self.held.held_out(stream.max(0.0) as u64, &self.inner);
+        let only: Vec<u64> = ids.iter().map(|&i| i as u64).collect();
+        let fit = self
+            .inner
+            .observe_lookback_flagged(frame, &lib, &self.traces, held, Some(&only))
+            .map_err(|e| js_err("observeLookback", e))?;
+        if fit {
+            self.lb.pushed += 1;
+        } else {
+            self.lb.held_out += 1;
+        }
+        Ok(fit)
+    }
+
+    /// Mark every tile due for a visit (the drain: visits turn the
+    /// look-back statistics into footprints without new frames).
+    #[wasm_bindgen(js_name = markAllDue)]
+    pub fn mark_all_due(&mut self) {
+        self.inner.mark_all_due();
+    }
+
+    /// `[requested, pushed, heldOut, dropped, births, inNeed, recordBytes]`:
+    /// look-back frames handed out, observed, held out, dropped (library
+    /// version gone), births noted, cells still in need, held-out record
+    /// size.
+    #[wasm_bindgen(js_name = lookbackStats)]
+    pub fn lookback_stats(&self) -> Vec<f64> {
+        let (req, births, need) = self
+            .lookback
+            .as_ref()
+            .map_or((0, 0, 0), |l| (l.frames(), l.births(), l.in_need()));
+        [
+            req,
+            self.lb.pushed,
+            self.lb.held_out,
+            self.lb.dropped,
+            births,
+            need as u64,
+            self.held.bytes() as u64,
+        ]
+        .map(|v| v as f64)
+        .to_vec()
     }
 
     /// Spend about `budget` work units on discovery; returns the new
@@ -305,6 +551,7 @@ impl JsSlowLoop {
 }
 
 /// The slow loop and the empty version-0 library, from the app's settings.
+#[allow(clippy::too_many_arguments)]
 fn build(
     func: &str,
     width: u32,
@@ -313,6 +560,7 @@ fn build(
     noise: &[f32],
     cell_diameter_px: f32,
     flatten_sigma_px: f32,
+    set: impl Fn(&mut SlowLoopConfig),
 ) -> Result<(SlowLoop, Library), JsError> {
     console_error_panic_hook::set_once();
     let dims = Dims::new(width as usize, height as usize).map_err(|e| js_err(func, e))?;
@@ -323,10 +571,11 @@ fn build(
         ..FlattenConfig::default()
     };
     let mut flat = GlowFlattener::new(&mask, &fcfg).map_err(|e| js_err(func, e))?;
-    let cfg = SlowLoopConfig {
+    let mut cfg = SlowLoopConfig {
         cell_diameter_px,
         ..SlowLoopConfig::default()
     };
+    set(&mut cfg);
     let empty = LibraryBuilder::new(dims)
         .fov(fov.to_vec())
         .noise(noise.to_vec())
@@ -366,6 +615,38 @@ impl JsVisitWorker {
             noise,
             cell_diameter_px,
             flatten_sigma_px,
+            |_| {},
+        )?;
+        Ok(JsVisitWorker {
+            inner: VisitRunner::new(inner),
+        })
+    }
+
+    /// As the constructor, with the slow loop's options
+    /// (`SlowLoop.withConfig`; they must match).
+    #[wasm_bindgen(js_name = withConfig)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_config(
+        width: u32,
+        height: u32,
+        fov: &[u8],
+        noise: &[f32],
+        cell_diameter_px: f32,
+        flatten_sigma_px: f32,
+        joint_update: &str,
+        joint_sign: &str,
+        merge_guard_min_sep: f32,
+    ) -> Result<JsVisitWorker, JsError> {
+        let set = slow_config("VisitWorker", joint_update, joint_sign, merge_guard_min_sep)?;
+        let (inner, _) = build(
+            "VisitWorker",
+            width,
+            height,
+            fov,
+            noise,
+            cell_diameter_px,
+            flatten_sigma_px,
+            set,
         )?;
         Ok(JsVisitWorker {
             inner: VisitRunner::new(inner),
@@ -389,14 +670,57 @@ impl JsVisitWorker {
 }
 
 impl JsSlowLoop {
-    /// A loop built from parts (tests: another config, a seeded library).
-    #[cfg(test)]
-    pub(crate) fn from_parts(inner: SlowLoop, start: Arc<Library>) -> JsSlowLoop {
+    fn wrap(inner: SlowLoop, start: Arc<Library>) -> JsSlowLoop {
         JsSlowLoop {
             inner,
             libs: vec![start],
             traces: FrameTraces::default(),
+            held: HeldOutRecord::default(),
+            lookback: None,
+            lb: LbCounts::default(),
         }
+    }
+
+    /// `observe` may go ahead: with look-back on, only with the stream
+    /// index (its held-out decision must be recorded).
+    pub(crate) fn stream_ok(&self, stream: Option<f64>) -> bool {
+        self.lookback.is_none() || stream.is_some()
+    }
+
+    /// A loop built from parts (tests: another config, a seeded library).
+    #[cfg(test)]
+    pub(crate) fn from_parts(inner: SlowLoop, start: Arc<Library>) -> JsSlowLoop {
+        JsSlowLoop::wrap(inner, start)
+    }
+
+    /// `self.traces` from a JS frame's traces and background.
+    fn fill_traces(
+        &mut self,
+        lib: &Library,
+        traces: &[f32],
+        background: Option<Vec<f32>>,
+        func: &str,
+    ) -> Result<(), JsError> {
+        self.traces.frame_index = self.inner.frames();
+        self.traces.library_version = lib.version();
+        self.traces.traces.clear();
+        self.traces.traces.extend_from_slice(traces);
+        self.traces.background.clear();
+        if let Some(bg) = background {
+            if bg.len() != lib.background_len() {
+                return Err(js_err(
+                    func,
+                    format!(
+                        "background has {} values, library {} expects {}",
+                        bg.len(),
+                        lib.version(),
+                        lib.background_len()
+                    ),
+                ));
+            }
+            self.traces.background = bg;
+        }
+        Ok(())
     }
 
     #[cfg(test)]

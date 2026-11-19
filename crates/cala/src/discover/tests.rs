@@ -2227,7 +2227,9 @@ fn js_observe_with_background_levels_matches_native() {
             let bg = eng.last_background();
             assert_eq!(bg.len(), eng.background_len() as usize);
             let version = eng.inner.library().version() as f64;
-            assert!(js.observe(f, version, &tr, levels.then_some(bg)).unwrap());
+            assert!(js
+                .observe(f, version, &tr, levels.then_some(bg), None)
+                .unwrap());
         }
         assert_eq!(eb.out.traces, ta.traces, "frame {k}");
         assert_eq!(eb.last_background(), ta.background, "frame {k}");
@@ -2352,7 +2354,7 @@ fn refine_js(
             let tr = eng.process(f).unwrap();
             let v = eng.library().version() as f64;
             assert!(
-                js.observe(f, v, &tr.traces, Some(tr.background.clone()))
+                js.observe(f, v, &tr.traces, Some(tr.background.clone()), None)
                     .unwrap(),
                 "frame {k}: version {v}"
             );
@@ -2788,4 +2790,303 @@ fn lookback_frames_feed_only_the_named_cells_statistics() {
     assert_eq!(slow.frames(), 0);
     assert!(slow.fpstats.contains_key(&a));
     assert!(!slow.fpstats.contains_key(&b));
+}
+
+// ---- look-back scheduler (`lookback.rs`) ----------------------------------
+
+fn lb_lib(version: u64, cells: &[Footprint]) -> Library {
+    let mut b = LibraryBuilder::new(dims()).version(version);
+    for c in cells {
+        b = b.footprint(c.clone());
+    }
+    b.build(&mut flattener()).unwrap()
+}
+
+/// Drain every request the scheduler makes with `credit` frames of budget:
+/// (frame, ids) per request, every one observed.
+fn lb_take(lb: &mut LookBack, sl: &SlowLoop, lib: &Library, credit: f64) -> Vec<(usize, Vec<u64>)> {
+    lb.add_credit(credit);
+    let mut out = Vec::new();
+    while let LookbackNext::Frame(r) = lb.next(sl, lib) {
+        out.push((r.frame, r.ids));
+        lb.frame_done(LookbackOutcome::Observed);
+    }
+    out
+}
+
+/// A birth asks for the `K` frames before it, for the newborn and the cells
+/// touching it only, block by block and within the budget; the scheduler
+/// idles (budget not banked) when no cell needs anything.
+#[test]
+fn lookback_serves_a_birth_and_its_neighbours_the_frames_before_it() {
+    let (slow, _) = start(config(), &[]);
+    let (a, far, c) = (
+        blob(1, 30.0, 30.0),
+        blob(2, 75.0, 75.0),
+        blob(3, 33.0, 31.0),
+    );
+    let mut lb = LookBack::new(LookbackConfig {
+        max_frames: 100,
+        ..LookbackConfig::default()
+    });
+    // The first library: its cells are births at frame 10 (window 0..10).
+    let lib1 = lb_lib(1, &[a.clone(), far.clone()]);
+    lb.note_frame(&lib1, 10);
+    assert_eq!(lb.births(), 2);
+    let got = lb_take(&mut lb, &slow, &lib1, 1000.0);
+    assert_eq!(got.len(), 10);
+    assert!(got.iter().enumerate().all(|(k, (f, _))| *f == k));
+    assert_eq!(lb.next(&slow, &lib1), LookbackNext::Idle);
+    // Idle budget is not banked: at most one frame's credit is kept.
+    assert_eq!(lb_take(&mut lb, &slow, &lib1, 500.0), vec![]);
+
+    // A cell born at frame 300 beside `a`: it and `a` need 200..300, `far`
+    // nothing.
+    let lib2 = lb_lib(2, &[a, far, c]);
+    lb.note_frame(&lib2, 300);
+    assert_eq!(lb.births(), 3);
+    let (ia, ic) = (lib2.ids()[0], lib2.ids()[2]);
+    let got = lb_take(&mut lb, &slow, &lib2, 30.0);
+    assert_eq!(got.len(), 31, "budget-limited (30 + the one kept)");
+    let mut got2 = got;
+    got2.extend(lb_take(&mut lb, &slow, &lib2, 1000.0));
+    let mut frames: Vec<usize> = got2.iter().map(|g| g.0).collect();
+    frames.sort_unstable();
+    assert_eq!(frames, (200..300).collect::<Vec<_>>());
+    for (_, ids) in &got2 {
+        let mut ids = ids.clone();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![ia.min(ic), ia.max(ic)]);
+    }
+    // Shared order: the most recent block (256..300) is served first.
+    assert_eq!(got2[0].0, 256);
+    assert_eq!(lb.in_need(), 0);
+    assert_eq!(lb.frames(), 110);
+}
+
+/// A cell dropped from the library stops taking frames; a block whose cells
+/// are all gone ends.
+#[test]
+fn lookback_drops_cells_no_longer_in_the_library() {
+    let (slow, _) = start(config(), &[]);
+    let mut lb = LookBack::new(LookbackConfig::default());
+    let lib1 = lb_lib(1, &[blob(1, 30.0, 30.0)]);
+    lb.note_frame(&lib1, 200);
+    let first = lb_take(&mut lb, &slow, &lib1, 3.0);
+    assert_eq!(first.len(), 3);
+    let empty = lb_lib(2, &[]);
+    lb.note_frame(&empty, 201);
+    assert_eq!(lb_take(&mut lb, &slow, &empty, 1000.0), vec![]);
+    assert_eq!(lb.in_need(), 0);
+}
+
+/// The held-out record returns the decision `observe` made for each stream
+/// frame the slow loop saw (whatever its slow-loop index), and the
+/// `u64::MAX - stream` decision for frames it never saw; the flagged
+/// look-back observe is the indexed one with that decision.
+#[test]
+fn held_out_record_keeps_observes_decisions_and_flagged_lookback_matches() {
+    let (slow, _) = start(config(), &[]);
+    let mut rec = HeldOutRecord::default();
+    // Stream frames 100..400 seen as slow frames 0..300 except a dropped
+    // batch 200..216.
+    let mut k = 0u64;
+    for s in 100..400u64 {
+        if (200..216).contains(&s) {
+            continue;
+        }
+        rec.note(s, k, &slow);
+        k += 1;
+    }
+    let mut k = 0u64;
+    for s in 0..500u64 {
+        let seen = (100..400).contains(&s) && !(200..216).contains(&s);
+        let want = if seen {
+            slow.is_test(k)
+        } else {
+            slow.is_test(u64::MAX - s)
+        };
+        assert_eq!(rec.held_out(s, &slow), want, "stream {s}");
+        k += u64::from(seen);
+    }
+    let held = (0..500).filter(|&s| rec.held_out(s, &slow)).count();
+    assert!(held > 100 && held < 250, "{held}");
+
+    // Flagged == indexed.
+    let t = 120;
+    let mut rng = Lcg(9);
+    let cells = vec![(blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0))];
+    let m = movie(&cells, t, 3);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let (mut sa, mut eng) = start(config(), &seed);
+    let (mut sb, _) = start(config(), &seed);
+    let lib = eng.library().clone();
+    let n_px = N * N;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let a = sa.observe_lookback(f, &lib, &tr, k as u64, None).unwrap();
+        let held = sb.is_test(k as u64);
+        let b = sb
+            .observe_lookback_flagged(f, &lib, &tr, held, None)
+            .unwrap();
+        assert_eq!(a, b);
+    }
+    sa.mark_all_due();
+    sb.mark_all_due();
+    for _ in 0..20 {
+        sa.step(5_000_000).unwrap();
+        sb.step(5_000_000).unwrap();
+    }
+    assert!(sa.finalize().unwrap().to_bytes()[16..] == sb.finalize().unwrap().to_bytes()[16..]);
+}
+
+/// Look-back through the app's JS `SlowLoop` surface (`observe` with the
+/// stream index, `lookbackNote`, `lookbackTake`, `observeLookback`) gives
+/// the libraries of the native driver (qc_eval's: the scheduler beside the
+/// slow loop, held-out by the slow-loop index), bit for bit; look-back
+/// frames reach the statistics without moving the slow loop's clock.
+#[cfg(feature = "jsbindings")]
+#[test]
+fn js_lookback_matches_the_native_driver() {
+    use super::js::JsSlowLoop;
+    let t = 1200;
+    let (m, seed) = busy_movie(t);
+    // Half the cells seeded: the rest are born during the run.
+    let seed = &seed[..seed.len() / 2];
+    let cfg = SlowLoopConfig {
+        joint_update: JointUpdate::All,
+        merge_guard_min_sep: 0.6,
+        ..shard_config()
+    };
+    let n_px = N * N;
+    let frame = |k: usize| &m[k * n_px..(k + 1) * n_px];
+
+    // Native.
+    let (mut sl, mut eng) = start(cfg.clone(), seed);
+    let mut lb = LookBack::new(LookbackConfig::default());
+    let mut lb_eng = eng.clone();
+    let mut native = Vec::new();
+    let mut pushed_native = 0;
+    for k in 0..t {
+        let tr = eng.process(frame(k)).unwrap();
+        let lib = eng.library().clone();
+        sl.observe(frame(k), &lib, &tr).unwrap();
+        if let Some(l) = sl.step(5_000_000).unwrap() {
+            native.push(l.to_bytes()[16..].to_vec());
+            eng.set_library(l).unwrap();
+        }
+        lb.note_frame(eng.library(), k + 1);
+        lb.add_credit(2.0);
+        while let LookbackNext::Frame(r) = lb.next(&sl, eng.library()) {
+            lb_eng.set_library(eng.library().clone()).unwrap();
+            let tr = lb_eng.process(frame(r.frame)).unwrap();
+            let lib = lb_eng.library().clone();
+            let fit = sl
+                .observe_lookback(frame(r.frame), &lib, &tr, r.frame as u64, Some(&r.ids))
+                .unwrap();
+            pushed_native += usize::from(fit);
+            lb.frame_done(LookbackOutcome::Observed);
+        }
+    }
+    native.push(sl.finalize().unwrap().to_bytes()[16..].to_vec());
+
+    // JS surface.
+    let (slow, mut eng) = start(cfg, seed);
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    js.enable_lookback(2.0, 3000).unwrap();
+    let mut lb_eng = eng.clone();
+    let mut via_js = Vec::new();
+    for k in 0..t {
+        let tr = eng.process(frame(k)).unwrap();
+        let v = eng.library().version() as f64;
+        let bg = Some(tr.background.clone());
+        assert!(js
+            .observe(frame(k), v, &tr.traces, bg, Some(k as f64))
+            .unwrap());
+        if let Some(l) = js.step(5_000_000.0).unwrap() {
+            via_js.push(l.arc().to_bytes()[16..].to_vec());
+            eng.set_library(l.arc().clone()).unwrap();
+        }
+        let frames_before = js.frames();
+        js.lookback_note((k + 1) as f64, 1.0);
+        let req = js.lookback_take(1000);
+        let mut i = 0;
+        while i < req.len() {
+            let (f, n) = (req[i] as usize, req[i + 2] as usize);
+            let ids = &req[i + 3..i + 3 + n];
+            i += 3 + n;
+            lb_eng.set_library(eng.library().clone()).unwrap();
+            let tr = lb_eng.process(frame(f)).unwrap();
+            let v = lb_eng.library().version() as f64;
+            js.observe_lookback(
+                frame(f),
+                v,
+                &tr.traces,
+                Some(tr.background.clone()),
+                f as f64,
+                ids,
+            )
+            .unwrap();
+        }
+        assert_eq!(js.frames(), frames_before, "look-back moved the clock");
+    }
+    via_js.push(js.finalize().unwrap().arc().to_bytes()[16..].to_vec());
+
+    let st = js.lookback_stats();
+    assert!(st[1] > 100.0, "pushed {st:?}");
+    assert_eq!(st[1] as usize, pushed_native, "{st:?}");
+    assert_eq!(st[3], 0.0, "dropped {st:?}");
+    assert!(st[4] > seed.len() as f64, "births {st:?}");
+    assert_eq!(native.len(), via_js.len());
+    assert!(native == via_js, "libraries differ");
+}
+
+/// Hardening: a visit runner built with other slow-loop options refuses the
+/// job; with look-back on, `observe` needs the stream index and
+/// `enableLookback` must come before the first frame.
+#[cfg(feature = "jsbindings")]
+#[test]
+fn lookback_misuse_is_refused() {
+    use super::js::JsSlowLoop;
+    let t = 400;
+    let (m, seed) = busy_movie(t);
+    let n_px = N * N;
+    let cfg = SlowLoopConfig {
+        joint_update: JointUpdate::All,
+        merge_guard_min_sep: 0.6,
+        ..shard_config()
+    };
+    let (mut sl, mut eng) = start(cfg.clone(), &seed);
+    let plain = SlowLoop::new(
+        dims(),
+        vec![1; n_px],
+        vec![1.0; n_px],
+        flattener(),
+        shard_config(),
+    )
+    .unwrap();
+    let mut runner = VisitRunner::new(plain);
+    let mut job = None;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let lib = eng.library().clone();
+        sl.observe(f, &lib, &tr).unwrap();
+        if let Some(b) = sl.take_job_bytes() {
+            job = Some(b);
+            break;
+        }
+    }
+    let job = VisitJob::from_bytes(&job.expect("a visit job")).unwrap();
+    let err = runner.run(job).unwrap_err();
+    assert!(err.to_string().contains("other options"), "{err}");
+
+    // (The JS error paths themselves need a wasm target; their guards:)
+    let (slow, _) = start(cfg, &seed);
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    assert!(js.stream_ok(None));
+    js.enable_lookback(2.0, 3000).unwrap();
+    assert!(!js.stream_ok(None));
+    assert!(js.stream_ok(Some(0.0)));
 }
