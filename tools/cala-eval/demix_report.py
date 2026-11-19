@@ -49,6 +49,7 @@ BITE_THR = 0.5
 OVERFILL_THR = 1.3  # est/true at an undetected neighbour's centre above this = over-fill (design: Stage 2 criterion)
 BIRTH_TIE_FRAC = 0.03  # birth gaps below this share of the recording count as simultaneous (about 15 s of a 480 s sim)
 LATE_FRAC = 0.2  # late-born = born in the last fifth of the recording
+BIRTH_GROUPS = {"born_first": (-math.inf, 0.5), "born_second": (0.5, math.inf), "born_late": (1 - LATE_FRAC, math.inf)}
 MIN_N = 5  # fewest pairs for a statistic
 N_BOOT = 5000
 ISOLATED_D, CLOSE_D = 1.5, 1.0  # as demix_metrics.cell_accuracy rows are split
@@ -116,6 +117,8 @@ def load_run(run: Path):
         # matched cells' footprint and trace accuracy against their GT unit, by nearest GT neighbour distance
         "fp_r": _col(cells, "fp_r") if cells else np.array([]), "tr_r": _col(cells, "tr_r") if cells else np.array([]),
         "nn": nn,
+        # birth frame of each matched cell as a share of the recording (nan: unknown or an older metrics file)
+        "born_frac": (_col(cells, "born") / T) if cells and "born" in cells[0] else np.full(len(nn), np.nan),
     }  # fmt: skip
 
 
@@ -246,6 +249,12 @@ def _acc(r, key, group):
     v, nn = r.get(key, np.array([])), r.get("nn", np.array([]))
     if len(v) != len(nn) or not len(v):
         return np.array([])
+    if group in BIRTH_GROUPS:
+        bf = r.get("born_frac", np.array([]))
+        if len(bf) != len(v):
+            return np.array([])
+        lo, hi = BIRTH_GROUPS[group]
+        return finite(v[(bf >= lo) & (bf < hi)])
     m = {"all": np.ones(len(v), bool), "isolated": nn >= ISOLATED_D, "close": nn < CLOSE_D}[group]
     return finite(v[m])
 
@@ -262,6 +271,10 @@ def pair_metrics():
         ms.append((f"Footprint r with GT, median, {label}", "accuracy", lambda r, g=grp: (_acc(r, "fp_r", g),), med, "higher", "{:.4f}"))
         ms.append((f"Footprint r with GT < {FP_LOW}, share, {label}", "accuracy", lambda r, g=grp: (_acc(r, "fp_r", g),), share_fp_low, "lower", "{:.3f}"))
         ms.append((f"Trace r with GT, median, {label}", "accuracy", lambda r, g=grp: (_acc(r, "tr_r", g),), med, "higher", "{:.4f}"))
+    # footprint accuracy by birth time (share of the recording): look-back before birth is what late cells lack
+    for grp, label in (("born_first", "born in the first half"), ("born_second", "born in the second half"), ("born_late", f"born in the last {LATE_FRAC:.0%}")):
+        ms.append((f"Footprint r with GT, median, {label}", "accuracy", lambda r, g=grp: (_acc(r, "fp_r", g),), med, "higher", "{:.4f}"))
+        ms.append((f"Footprint r with GT < {FP_LOW}, share, {label}", "accuracy", lambda r, g=grp: (_acc(r, "fp_r", g),), share_fp_low, "lower", "{:.3f}"))
     ms.append(("Trace corr excess < 1 D (15 s high-pass; vs 1.5-3 D) HEADLINE", "headline", lambda r: _near_far(r), excess, "lower", "{:+.3f}"))
     ms.append(("Trace corr excess 0.5-1 D", "corr", lambda r: (finite(r["cc"][(r["cd"] >= 0.5) & (r["cd"] < 1)]), _near_far(r)[1]), excess, "lower", "{:+.3f}"))
     for lo, hi in BINS:

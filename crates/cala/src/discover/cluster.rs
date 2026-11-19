@@ -952,6 +952,11 @@ impl SlowLoop {
         let mut work = 0u64;
         let mut cbuf = std::mem::take(&mut self.cbuf);
         for ci in 0..self.clusters.len() {
+            if let Some(o) = &self.lb_only {
+                if !self.clusters[ci].ids.iter().any(|id| o.contains(id)) {
+                    continue;
+                }
+            }
             let slots: Option<Vec<usize>> = self.clusters[ci]
                 .ids
                 .iter()

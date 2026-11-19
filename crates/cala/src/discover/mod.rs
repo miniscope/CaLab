@@ -1082,6 +1082,9 @@ pub struct SlowLoop {
     stats_w: f32,
     stats_gamma: f32,
     rbuf: Vec<f32>,
+    /// During [`SlowLoop::observe_lookback`] with a cell set: only these
+    /// cells' statistics (and clusters with one of them) take the frame.
+    lb_only: Option<std::collections::HashSet<u64>>,
     /// Pairs whose merge was rejected: `(id, id, until_frame)`.
     merge_rejected: Vec<(u64, u64, u64)>,
     /// Pairs the keep tests found redundant, to be merge-tested regardless
@@ -1417,6 +1420,7 @@ impl SlowLoop {
             stats_w: 1.0,
             stats_gamma: 0.5f32.powf(1.0 / cfg.stats_half_life_frames),
             rbuf: Vec::new(),
+            lb_only: None,
             merge_rejected: Vec::new(),
             forced: Vec::new(),
             scope: EditScope::All,
@@ -1960,6 +1964,44 @@ impl SlowLoop {
         Ok(())
     }
 
+    /// Feed one *past* frame re-read from the saved recording (the
+    /// look-back cursor of concurrent Refine): only the running footprint
+    /// statistics and the cluster stores take it, solved with the current
+    /// library (`traces` from a separate trace engine on `lib`). Nothing
+    /// else sees it: no frame counter, ledger, probes, reservoir or noise
+    /// correlation, so the slow loop's clocks and held-out tests are those
+    /// of Discover alone. `slow_index` is the index the frame had (or would
+    /// have had) in the slow loop: a held-out frame stays held out.
+    pub fn observe_lookback(
+        &mut self,
+        frame: &[f32],
+        lib: &Library,
+        traces: &FrameTraces,
+        slow_index: u64,
+        only: Option<&[u64]>,
+    ) -> Result<bool, TraceError> {
+        let n_px = self.dims.pixels();
+        crate::trace::check_len("frame", n_px, frame.len())?;
+        if lib.dims() != self.dims || traces.library_version != lib.version() {
+            return Err(TraceError::Incompatible(
+                "traces do not come from this library / frame size".into(),
+            ));
+        }
+        if self.is_test(slow_index) {
+            return Ok(false);
+        }
+        let bg = match lib.background_model() {
+            BackgroundModel::Basis(_) => Some(traces.background.as_slice()),
+            _ => None,
+        };
+        lib.render(&traces.traces, bg, &mut self.model)?;
+        self.work += n_px as u64;
+        self.lb_only = only.map(|ids| ids.iter().copied().collect());
+        self.update_fpstats(frame, lib, traces, true);
+        self.lb_only = None;
+        Ok(true)
+    }
+
     /// Whitened frame (`z`) and the residual blurred to cell scale
     /// (`coarse_blur`), with the residual's robust noise scale.
     fn score_residual(
@@ -2116,7 +2158,12 @@ impl SlowLoop {
             self.fast_checked.retain(|id, _| ids.contains(id));
             self.fast_strikes.retain(|id, _| ids.contains(id));
         }
-        self.stats_w /= self.stats_gamma;
+        // A look-back frame for a few cells leaves the forgetting clock
+        // alone (it would age every other cell's statistics): it enters at
+        // the weight of the current frame.
+        if self.lb_only.is_none() {
+            self.stats_w /= self.stats_gamma;
+        }
         if self.stats_w > 1024.0 {
             let f = 1.0 / self.stats_w;
             self.fpstats.values_mut().for_each(|s| s.scale(f));
@@ -2131,6 +2178,9 @@ impl SlowLoop {
         let version = lib.version();
         let mut work = 0u64;
         for (slot, &id) in lib.ids().iter().enumerate() {
+            if self.lb_only.as_ref().is_some_and(|o| !o.contains(&id)) {
+                continue;
+            }
             let (center, radius) = lib.support(slot);
             let want = radius + margin;
             let st = self.fpstats.entry(id).or_insert_with(|| {

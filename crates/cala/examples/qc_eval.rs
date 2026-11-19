@@ -49,6 +49,17 @@
 //!                      0.25,0.5,0.75): the live library at that moment, for
 //!                      quality-over-time curves (`tools/cala-eval/
 //!                      demix_stages.py`); examples only, no behaviour change
+//!   --lookback R       concurrent Refine (pass 1, off by default): when
+//!                      cells are born, re-read the frames before the birth
+//!                      from the recording and feed them, solved with the
+//!                      current library by a separate trace engine, to the
+//!                      new cells' and their neighbours' running statistics
+//!                      and cluster stores, at R look-back frames per
+//!                      Discover frame (see `LookBack`; `lookback.tsv`)
+//!   --lookback-frames K  at most K frames per birth job (default 3000)
+//!   --catchup X        reference arm: every X Discover frames give all
+//!                      cells frames 0..t at once (`--catchup-double`: at
+//!                      X, 2X, 4X, ...)
 //!   --wrap-libs        with `--passes N`: also write the library every wrap
 //!                      publishes (`footprints_wrap{k}.bin`, `final_wrap{k}.tsv`,
 //!                      k = passes completed), i.e. what the app's Discover
@@ -560,6 +571,294 @@ fn write_f32s(f: &mut impl Write, v: &[f32]) {
 }
 
 /// Preprocessing (and optionally motion correction) of raw frames.
+/// Concurrent Refine (`--lookback R`, `--catchup X`): Discover's slow loop
+/// is also fed *past* frames, re-read from the saved recording (raw is
+/// always saved), preprocessed with a copy of the live preprocessor, solved
+/// with a separate trace engine on the *current* library, and pushed into
+/// the running footprint statistics and cluster stores only
+/// ([`SlowLoop::observe_lookback`]). The live fast loop and the slow loop's
+/// clocks are never touched.
+///
+/// * Need-driven (`--lookback R`, the design): a cell born at frame `b`
+///   (a new id in the published library; a merge or split result is new
+///   too), and every cell whose support touches it, *needs* the frames
+///   before `b` it never had, newest first, up to `--lookback-frames K`
+///   frames per cell. The cursor serves the highest frame anyone needs,
+///   in 64-frame blocks (each block forward), to every cell that needs
+///   that block, so cells born close in time share frames. `R` look-back
+///   frames per Discover frame; idle budget is not banked, so the work
+///   follows the birth rate (proportional to new cells, not to the
+///   recording's length).
+/// * Catch-up (`--catchup X`, the PI's simple reference): every `X`
+///   Discover frames (`--catchup-double`: at X, 2X, 4X, ...) all cells get
+///   frames `0..t` at once, as a Refine pass over the history would give.
+struct LookBack {
+    rate: f64,
+    max_frames: usize,
+    catchup: usize,
+    catchup_double: bool,
+    next_catchup: usize,
+    credit: f64,
+    /// Cells with look-back need: id -> (lowest frame got (frames
+    /// `low..born` are served), frames still wanted).
+    need: std::collections::BTreeMap<u64, (usize, usize)>,
+    /// The block in progress: frames `cur..end`, its cells with the frames
+    /// `from..to` each takes from it, and the preprocessor copy it runs on.
+    block: Option<LbBlock>,
+    known: std::collections::HashSet<u64>,
+    lib_version: u64,
+    engine: Option<TraceEngine>,
+    buf: Vec<f32>,
+    y: Vec<f32>,
+    valid: Vec<u8>,
+    raw: Vec<u8>,
+    raw_start: usize,
+    raw_n: usize,
+    frames: u64,
+    pushed: u64,
+    cell_frames: u64,
+    births: u64,
+    wall_s: f64,
+    /// Look-back frames and cell-frames per tenth of the recording.
+    by_tenth: [(u64, u64); 10],
+}
+
+const LB_BLOCK: usize = 64;
+
+/// A look-back block: next frame, end, `(cell, from, to)`, preprocessor.
+type LbBlock = (usize, usize, Vec<(u64, usize, usize)>, Preprocessor);
+
+impl LookBack {
+    fn new(
+        rate: f64,
+        max_frames: usize,
+        catchup: usize,
+        catchup_double: bool,
+        n_px: usize,
+    ) -> LookBack {
+        LookBack {
+            rate,
+            max_frames,
+            catchup,
+            catchup_double,
+            next_catchup: catchup,
+            credit: 0.0,
+            need: Default::default(),
+            block: None,
+            known: Default::default(),
+            lib_version: u64::MAX,
+            engine: None,
+            buf: vec![0.0; n_px],
+            y: vec![0.0; n_px],
+            valid: vec![0; n_px],
+            raw: Vec::new(),
+            raw_start: 0,
+            raw_n: 0,
+            frames: 0,
+            pushed: 0,
+            cell_frames: 0,
+            births: 0,
+            wall_s: 0.0,
+            by_tenth: [(0, 0); 10],
+        }
+    }
+
+    /// New ids in the live library since the last call: they and the cells
+    /// whose supports touch theirs need the frames before `seen`.
+    fn note_births(&mut self, lib: &Library, seen: usize) {
+        if lib.version() == self.lib_version {
+            return;
+        }
+        self.lib_version = lib.version();
+        let ids = lib.ids();
+        let fresh: Vec<usize> = (0..ids.len())
+            .filter(|&s| !self.known.contains(&ids[s]))
+            .collect();
+        self.known = ids.iter().copied().collect();
+        self.need.retain(|id, _| self.known.contains(id));
+        self.births += fresh.len() as u64;
+        for (s, &id) in ids.iter().enumerate() {
+            let ((y, x), r) = lib.support(s);
+            let touch = fresh.iter().any(|&f| {
+                let ((fy, fx), fr) = lib.support(f);
+                (fy - y).hypot(fx - x) < fr + r
+            });
+            if touch {
+                // A neighbour already in need keeps its place.
+                self.need.entry(id).or_insert((seen, self.max_frames));
+            }
+        }
+    }
+
+    /// The next block: the highest frame any cell still needs, and the
+    /// cells that need frames in the 64 frames below it.
+    fn next_block(&mut self, pipe: &Pipeline) -> bool {
+        self.need.retain(|_, (low, left)| *low > 0 && *left > 0);
+        let Some(top) = self.need.values().map(|&(low, _)| low).max() else {
+            return false;
+        };
+        let lo = top.saturating_sub(LB_BLOCK);
+        let mut cells = Vec::new();
+        for (&id, (low, left)) in self.need.iter_mut() {
+            if *low > lo {
+                // Frames `low - take..low` (within its remaining want).
+                let take = (*low - lo).min(*left);
+                cells.push((id, *low - take, *low));
+                *left -= take;
+                *low = lo;
+            }
+        }
+        self.block = Some((lo, top, cells, pipe.pre.clone()));
+        true
+    }
+
+    /// Spend the budget after Discover frame `t_rec` (recording frame).
+    #[allow(clippy::too_many_arguments)]
+    fn after_frame(
+        &mut self,
+        t_rec: usize,
+        t_len: usize,
+        start: usize,
+        rec: &mut Recording,
+        drift: Option<&Drift>,
+        pipe: &mut Pipeline,
+        live: &TraceEngine,
+        sl: &mut SlowLoop,
+        n_px: usize,
+    ) {
+        let t0 = Instant::now();
+        let seen = t_rec + 1;
+        let tenth = (10 * t_rec / t_len.max(1)).min(9);
+        if self.catchup > 0 {
+            // None at the last frame: nothing would use it.
+            if seen >= self.next_catchup && seen < t_len {
+                self.next_catchup = if self.catchup_double {
+                    2 * self.next_catchup
+                } else {
+                    self.next_catchup + self.catchup
+                };
+                let mut pre = pipe.pre.clone();
+                for f in 0..seen {
+                    self.frame(
+                        f, &mut pre, None, start, rec, drift, pipe, live, sl, n_px, tenth,
+                    );
+                }
+            }
+        } else {
+            self.note_births(live.library(), seen);
+            self.credit += self.rate;
+            while self.credit >= 1.0 {
+                if self.block.as_ref().is_none_or(|b| b.0 >= b.1) && !self.next_block(pipe) {
+                    // Nothing needed: idle budget is not banked.
+                    self.block = None;
+                    self.credit = self.credit.min(1.0);
+                    break;
+                }
+                let (cur, end, mut cells, mut pre) = self.block.take().expect("block");
+                let lib = live.library();
+                cells.retain(|&(id, _, to)| lib.slot(id).is_some() && to > cur);
+                let ids: Vec<u64> = cells
+                    .iter()
+                    .filter(|&&(_, from, _)| from <= cur)
+                    .map(|c| c.0)
+                    .collect();
+                if !ids.is_empty() {
+                    self.frame(
+                        cur,
+                        &mut pre,
+                        Some(&ids),
+                        start,
+                        rec,
+                        drift,
+                        pipe,
+                        live,
+                        sl,
+                        n_px,
+                        tenth,
+                    );
+                    self.credit -= 1.0;
+                }
+                // No cell left: the block ends here.
+                let end = if cells.is_empty() { cur + 1 } else { end };
+                self.block = Some((cur + 1, end, cells, pre));
+            }
+        }
+        self.wall_s += t0.elapsed().as_secs_f64();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn frame(
+        &mut self,
+        f: usize,
+        pre: &mut Preprocessor,
+        only: Option<&[u64]>,
+        start: usize,
+        rec: &mut Recording,
+        drift: Option<&Drift>,
+        pipe: &mut Pipeline,
+        live: &TraceEngine,
+        sl: &mut SlowLoop,
+        n_px: usize,
+        tenth: usize,
+    ) {
+        if f < self.raw_start || f >= self.raw_start + self.raw_n {
+            let lo = f - f % LB_BLOCK;
+            let cnt = LB_BLOCK.min(rec.total as usize - lo);
+            self.raw = rec.read(lo as u32, cnt as u32);
+            if let Some(d) = drift {
+                for (k, fr) in self.raw.chunks_exact_mut(n_px).enumerate() {
+                    d.apply(fr, lo + k);
+                }
+            }
+            self.raw_start = lo;
+            self.raw_n = cnt;
+        }
+        let o = (f - self.raw_start) * n_px;
+        let raw = &self.raw[o..o + n_px];
+        pre.front(raw, &mut self.buf).unwrap();
+        if let Some(w) = pipe.warp_at(f) {
+            let mut tmp = Vec::new();
+            w.apply_in_place(&mut self.buf, &mut tmp).unwrap();
+        }
+        // The live corrector's `apply`/`validity` only warp by a stored
+        // record (scratch buffers, no estimation state), as a replay does.
+        if let Some(mc) = pipe.mc.as_mut() {
+            let r = &pipe.records[f];
+            mc.apply(Frame::F32(&self.buf), r, &mut self.y, None)
+                .unwrap();
+            mc.validity(r, pipe.src.as_ref().unwrap(), &mut self.valid)
+                .unwrap();
+            pre.back_masked(&mut self.y, &self.valid).unwrap();
+        } else {
+            self.y.copy_from_slice(&self.buf);
+            pre.back(&mut self.y).unwrap();
+        }
+        let lib = live.library();
+        let eng = self.engine.get_or_insert_with(|| live.clone());
+        if eng.library().version() != lib.version() {
+            eng.set_library(lib.clone()).unwrap();
+        }
+        let tr = eng.process(&self.y).unwrap();
+        // The frame's slow-loop index in Discover (all batches forwarded):
+        // a held-out frame stays held out. Warm-up frames, never in the
+        // slow loop, get their own range.
+        let idx = if f >= start {
+            (f - start) as u64
+        } else {
+            u64::MAX - f as u64
+        };
+        let lib = eng.library().clone();
+        let n_cells = only.map_or(lib.len(), <[u64]>::len) as u64;
+        if sl.observe_lookback(&self.y, &lib, &tr, idx, only).unwrap() {
+            self.pushed += 1;
+        }
+        self.frames += 1;
+        self.cell_frames += n_cells;
+        self.by_tenth[tenth].0 += 1;
+        self.by_tenth[tenth].1 += n_cells;
+    }
+}
+
 struct Pipeline {
     pre: Preprocessor,
     mc: Option<MotionCorrector>,
@@ -3493,7 +3792,22 @@ fn main() {
     );
 
     let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, motion, 200);
-    pipe.keep_records = passes > 1;
+    // `--lookback R` / `--catchup X` (concurrent Refine, pass 1 only).
+    let lb_rate: f64 = arg_value(&args, "--lookback").map_or(0.0, |s| s.parse().unwrap());
+    let lb_catchup: usize = arg_value(&args, "--catchup").map_or(0, |s| s.parse().unwrap());
+    let lb_double = args.iter().any(|a| a == "--catchup-double");
+    let lb_frames: usize =
+        arg_value(&args, "--lookback-frames").map_or(3000, |s| s.parse().unwrap());
+    assert!(lb_rate >= 0.0, "--lookback must be >= 0");
+    let mut lookback = (lb_rate > 0.0 || lb_catchup > 0)
+        .then(|| LookBack::new(lb_rate, lb_frames, lb_catchup, lb_double, n_px));
+    if lookback.is_some() {
+        println!(
+            "lookback: rate {lb_rate} frames per Discover frame, at most {lb_frames} per job, catchup every {lb_catchup} frames{}",
+            if lb_double { " (doubling)" } else { "" }
+        );
+    }
+    pipe.keep_records = passes > 1 || lookback.is_some();
     pipe.null_on = session_fix.register && !sessions.is_empty();
     pipe.null_ref = session_ref_frames;
     pipe.null_fit = session_fit_frames;
@@ -3751,6 +4065,11 @@ fn main() {
                             RefineOutcome::Updated(u) => {
                                 let ff = o.current().unwrap();
                                 ff.apply(&mut pipe.pre).unwrap();
+                                if let Some((_, _, _, p)) =
+                                    lookback.as_mut().and_then(|l| l.block.as_mut())
+                                {
+                                    ff.apply(p).unwrap();
+                                }
                                 let _ = writeln!(
                                 ff_log,
                                 "{t}\tupdated\t{}\t{}\t{}\t{:.5}\t{:.5}\t{:.3e}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{dt:.2}",
@@ -4047,6 +4366,21 @@ fn main() {
                         }
                     }
                 }
+                if let (Some(lbk), Some(sl), 0, None) =
+                    (lookback.as_mut(), slow.as_mut(), pass, timed.as_ref())
+                {
+                    lbk.after_frame(
+                        t_rec,
+                        t_len,
+                        start,
+                        &mut rec,
+                        drift.as_ref(),
+                        &mut pipe,
+                        &engine,
+                        sl,
+                        n_px,
+                    );
+                }
                 let t_end = t + 1;
                 let cp = t_end.is_multiple_of(every) || last;
                 if pass == 0 && !last && lib_at_frames.contains(&t_end) {
@@ -4289,6 +4623,34 @@ fn main() {
         }
     }
     std::fs::write(out_dir.join("passes.tsv"), &passes_out).unwrap();
+    if let Some(l) = &lookback {
+        println!(
+            "lookback: {} frames ({} pushed, {} cell-frames, {} births, {} cells still in need), {:.1} s wall",
+            l.frames,
+            l.pushed,
+            l.cell_frames,
+            l.births,
+            l.need.len(),
+            l.wall_s
+        );
+        let mut t = format!(
+            "rate\tmax_frames\tcatchup\tdouble\tframes\tpushed\tcell_frames\tbirths\tin_need\twall_s\n{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\n\ntenth\tframes\tcell_frames\n",
+            l.rate,
+            l.max_frames,
+            l.catchup,
+            u8::from(l.catchup_double),
+            l.frames,
+            l.pushed,
+            l.cell_frames,
+            l.births,
+            l.need.len(),
+            l.wall_s
+        );
+        for (k, (a, b)) in l.by_tenth.iter().enumerate() {
+            let _ = writeln!(t, "{k}\t{a}\t{b}");
+        }
+        std::fs::write(out_dir.join("lookback.tsv"), t).unwrap();
+    }
     if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
         tm.ending = true;
         tm.advance(f64::INFINITY, sl, &mut slow_rec);

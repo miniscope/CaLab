@@ -299,15 +299,15 @@ def corr_pairs(sim_name, est, gt, cen_u, diam, units_u, born=None):
 # ------------------------------------------------------------ detection row
 
 
-CELL_COLS = ["sim", "i", "u", "fp_r", "tr_r", "nn_diam"]
+CELL_COLS = ["sim", "i", "u", "fp_r", "tr_r", "nn_diam", "born"]
 ISOLATED_D = 1.5  # a matched cell is "isolated" when no other GT unit's centre is within this many D
 CLOSE_D = 1.0  # ... and "close-pair" when one is within 1 D
 
 
-def cell_accuracy(sim_name, R, det_idx, match_i, cen, nonempty, diam, est_tr=None, gt_tr=None):
+def cell_accuracy(sim_name, R, det_idx, match_i, cen, nonempty, diam, est_tr=None, gt_tr=None, born=None):
     """Per matched cell: footprint Pearson r with its GT unit (R, motion-corrected), trace Pearson r with the
-    unit's GT trace (nan without traces) and the distance (D) from the unit's centre to the nearest other
-    non-empty GT unit (detectable or not)."""
+    unit's GT trace (nan without traces), the distance (D) from the unit's centre to the nearest other
+    non-empty GT unit (detectable or not) and the cell's birth frame (nan unknown)."""
     col = {u: c for c, u in enumerate(det_idx)}
     ne = np.where(nonempty)[0]
     rows = []
@@ -316,7 +316,8 @@ def cell_accuracy(sim_name, R, det_idx, match_i, cen, nonempty, diam, est_tr=Non
         d = d[ne != u]
         tr = corr(est_tr[:, i], gt_tr[u]) if est_tr is not None else math.nan
         rows.append({"sim": sim_name, "i": int(i), "u": int(u), "fp_r": float(R[i, col[u]]), "tr_r": tr,
-                     "nn_diam": float(d.min()) if d.size else math.inf})  # fmt: skip
+                     "nn_diam": float(d.min()) if d.size else math.inf,
+                     "born": float(born[i]) if born is not None else math.nan})  # fmt: skip
     return rows
 
 
@@ -466,7 +467,7 @@ def compute_run(sim: Path, run: Path, all_det=False, force=False, ledger: Path |
         corr_rows = corr_pairs(sim.name, est_tr[:, I].T, gt_tr[U], cen[U], diam, U, born[I])
     write_tsv(run / "demix_pairs.tsv", PAIR_COLS, pairs)
     write_tsv(run / "demix_corr.tsv", CORR_COLS, corr_rows)
-    write_tsv(run / "demix_cells.tsv", CELL_COLS, cell_accuracy(sim.name, R, det_idx, match_i, cen, nonempty, diam, est_tr, gt_tr))
+    write_tsv(run / "demix_cells.tsv", CELL_COLS, cell_accuracy(sim.name, R, det_idx, match_i, cen, nonempty, diam, est_tr, gt_tr, born))
     det = detection_row(run, cells)
     # cells that look like two neurons: footprint r >= 0.5 to two or more GT units (mlog.py's `diff`)
     det["multi_gt"] = int(((R >= LOOSE_R).sum(1) >= 2).sum())
