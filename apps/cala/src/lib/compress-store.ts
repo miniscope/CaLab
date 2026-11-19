@@ -52,12 +52,13 @@ export function factorState(
 
 /**
  * The messages of an Extract job. `abort` is the store's own: the job can no
- * longer be answered (a compression error, a new run), so it fails.
+ * longer be answered, so it fails. `reset`: a new run reset the store (not a
+ * failure of the factors); false: a compression error.
  */
 export type ExtractMessage =
   | Extract<CompressToMain, { type: 'extracted' | 'extract-done' }>
   | (Extract<CompressToMain, { type: 'error' }> & { job: number })
-  | { type: 'abort'; message: string };
+  | { type: 'abort'; message: string; reset: boolean };
 
 /** What Extract will read now (the Run panel, compression on). */
 export function extractSourceText(
@@ -104,10 +105,10 @@ export function createCompressStore(sink?: BackfillSink, isLive: () => boolean =
   let projection: FovProjections | null = null;
   const listeners = new Set<(m: ExtractMessage) => void>();
   /** Fail every pending Extract job and forget it, so its later messages find no listener. */
-  const abortJobs = (message: string): void => {
+  const abortJobs = (message: string, reset: boolean): void => {
     const pending = [...listeners];
     listeners.clear();
-    for (const l of pending) l({ type: 'abort', message });
+    for (const l of pending) l({ type: 'abort', message, reset });
   };
   return {
     status,
@@ -115,7 +116,7 @@ export function createCompressStore(sink?: BackfillSink, isLive: () => boolean =
     error,
     /** A new pipeline run: forget the previous one. */
     reset(next: number): void {
-      abortJobs('The run was reset.');
+      abortJobs('The run was reset.', true);
       session = next;
       requested = -1;
       setMark(0);
@@ -150,7 +151,7 @@ export function createCompressStore(sink?: BackfillSink, isLive: () => boolean =
         // An error of an earlier run (or none: -1, a crashed worker) is not this run's.
         if (msg.session !== session && msg.session !== -1) return;
         setError(msg.message);
-        abortJobs(msg.message);
+        abortJobs(msg.message, false);
         return;
       }
       if (msg.session !== session) return;

@@ -274,7 +274,8 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     }
   }
 
-  // A new Discover run invalidates Extract's result.
+  // A new Discover run (also another recording, a session of a multi-session
+  // run) invalidates Extract's result and forgets a failed factor Extract.
   createEffect(
     on(
       () => s().status(),

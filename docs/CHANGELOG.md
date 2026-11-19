@@ -69,7 +69,9 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
   also compresses the frames on the offset grids, and Extract then reads those factors (the Extract pass alone took 0.5
   to 1.1 s in native runs: `tools/cala-eval/results/2026-11-19-factor-phase2.md`). Extract replays the file when the
   factors are not ready, do not cover the recording, or after a compression error; after an Extract on the factors has
-  failed, every later Extract of the run replays the file until the next Discover. The Run panel says which. What the
+  failed (not cancelled, not aborted by a reset), every later Extract replays the file until the next Discover start
+  (a new Discover, another recording, a session of a multi-session run) or a Refine run while an Extract result
+  exists. The Run panel says which. What the
   default switches on: after Discover of a file the trace view is filled again from Discover's own factors (display
   only); a live stream compresses too, but its trace view and export keep the traces solved live (Extract on a stream's
   factors and a cap on its storage are not built yet).

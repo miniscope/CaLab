@@ -74,12 +74,21 @@ export function endOnce(ended: (ok: boolean) => void): (ok: boolean) => void {
   };
 }
 
+/**
+ * A factor Extract job ended because a new run reset the compress store (a
+ * new Discover, another recording, the next session). Not a failure of the
+ * factors: the next Extract may read them.
+ */
+export class ExtractAborted extends Error {
+  override name = 'ExtractAborted';
+}
+
 export interface Pass2Factors extends ReplayCompressLike {
   state(frames: number): FactorState;
   /**
    * Solve every window with `library`; `onWindow` gets them in stream order.
-   * Rejects when the job fails or can no longer be answered; a caller keeps
-   * the windows only once it resolves.
+   * Rejects when the job fails or can no longer be answered (`ExtractAborted`
+   * after a reset); a caller keeps the windows only once it resolves.
    */
   extract(
     library: Uint8Array,
@@ -118,7 +127,7 @@ export function createPass2Factors(
         const stop = store.onExtract((m) => {
           if (m.type === 'abort') {
             stop();
-            reject(new Error(m.message));
+            reject(m.reset ? new ExtractAborted(m.message) : new Error(m.message));
           } else if (m.job !== job) return;
           else if (m.type === 'extracted') onWindow(m);
           else if (m.type === 'extract-done') {

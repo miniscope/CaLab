@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CellStore } from '../lib/cell-store.ts';
 import type { FactorState } from '../lib/compress-store.ts';
-import { lowValidCells } from '../lib/factor-extract.ts';
+import { createCompressStore } from '../lib/compress-store.ts';
+import { createPass2Factors, lowValidCells } from '../lib/factor-extract.ts';
 import type { FactorWindowTraces, Pass2Factors } from '../lib/factor-extract.ts';
 import type { FlatFieldMap } from '../lib/flat-field.ts';
 import type { FovProjections } from '../lib/fov-projection.ts';
@@ -464,13 +465,80 @@ describe('Extract (pass 2) store', () => {
     const keys = Object.keys(started[0].cells as object);
     expect(keys.filter((k) => k.startsWith('compress'))).toEqual([]);
     expect(calls).toEqual(['extract 3']);
-    // A new Discover clears the store: Extract reads the factors again.
+    // `clear` (called when a Discover starts; App.test.tsx covers that wiring)
+    // resets it: Extract reads the factors again.
     store.clear();
     expect(store.factorsFailed()).toBe(false);
     await store.run();
     await settle();
     expect(store.source()).toBe('factors');
     expect(store.status()).toBe('done');
+  });
+
+  it('does not count a factor Extract aborted by a reset of the run as failed', async () => {
+    const compress = createCompressStore();
+    compress.reset(7);
+    compress.onMessage({
+      type: 'status',
+      session: 7,
+      status: {
+        windows: 1,
+        frames: 8,
+        pending: 0,
+        pendingFrames: 0,
+        meanRank: 2,
+        msPerFrame: 1,
+        factorBytes: 1,
+        final: true,
+        tiling: 'offset',
+        source: 'replay',
+      },
+    });
+    const { store } = setup({ factors: createPass2Factors(compress, { extract() {} }) });
+    const running = store.run();
+    await settle();
+    expect(store.source()).toBe('factors');
+    // A new run resets the compress store: the job is aborted, not failed.
+    compress.reset(8);
+    await running;
+    expect(store.status()).toBe('error');
+    expect(store.factorsFailed()).toBe(false);
+  });
+
+  it('counts a gap and a compression error during the job as failed', async () => {
+    const gap = setup({ factors: fakeFactors('ready', [win(0, 2), win(4, 4)]).f }).store;
+    await gap.run();
+    await settle();
+    expect(gap.factorsFailed()).toBe(true);
+    const twice = setup({ factors: fakeFactors('ready', [win(0, 4), win(2, 4)]).f }).store;
+    await twice.run();
+    await settle();
+    expect(twice.factorsFailed()).toBe(true);
+    const compress = createCompressStore();
+    compress.reset(7);
+    compress.onMessage({
+      type: 'status',
+      session: 7,
+      status: {
+        windows: 1,
+        frames: 8,
+        pending: 0,
+        pendingFrames: 0,
+        meanRank: 2,
+        msPerFrame: 1,
+        factorBytes: 1,
+        final: true,
+        tiling: 'offset',
+        source: 'replay',
+      },
+    });
+    const { store } = setup({ factors: createPass2Factors(compress, { extract() {} }) });
+    const running = store.run();
+    await settle();
+    compress.onMessage({ type: 'error', session: 7, message: 'QuotaExceededError' });
+    await running;
+    expect(store.error()).toBe('QuotaExceededError');
+    expect(store.factorsFailed()).toBe(true);
   });
 
   it('reads the factors again after a factor Extract was cancelled', async () => {

@@ -30,8 +30,8 @@
  * final library (`FactorExtractor`, signed traces too) and the traces go to
  * the same files; the FOV images come from the replay that made the factors.
  * Otherwise it replays the file, and that replay compresses the frames on the
- * offset grids when no factors exist yet. After a factor Extract fails, the
- * next Extract of the run replays the file (`factorsFailed`).
+ * offset grids when no factors exist yet. After a factor Extract fails, every
+ * later Extract replays the file until `clear` (`factorsFailed`).
  *
  * Unlike the replay, a factor Extract has no backpressure: the worker sends
  * one message per window and each is queued for writing as it arrives, so
@@ -49,6 +49,7 @@ import type { FovProjections } from './fov-projection.ts';
 import type { CompressTiling } from '../workers/compress-types.ts';
 import {
   endOnce,
+  ExtractAborted,
   NO_COMPRESS,
   type FactorWindowTraces,
   type Pass2Factors,
@@ -131,9 +132,12 @@ export function createPass2Store(
   const [motionBackend, setMotionBackend] = createSignal<string | null>(null);
   const [source, setSource] = createSignal<'raw' | 'factors'>('raw');
   /**
-   * The last Extract on the factors failed (not cancelled): the next Extract
-   * replays the file instead of failing the same way again. Cleared by
-   * `clear` (a new Discover).
+   * The last Extract on the factors failed (a job error, a gap or overlap, a
+   * compression error; not a cancel, not an abort by a reset): every later
+   * Extract replays the file instead of failing the same way again. Only
+   * `clear` resets it: the Run panel calls it whenever a Discover starts (a
+   * new Discover, another recording, a session of a multi-session run), and
+   * the app calls it for a Refine run while an Extract result exists.
    */
   const [factorsFailed, setFactorsFailed] = createSignal(false);
 
@@ -515,7 +519,8 @@ export function createPass2Store(
       if (gen !== generation) return;
       // Later windows of this job see a stale generation and write nothing.
       generation++;
-      setFactorsFailed(true);
+      // A reset by a new run is no failure of the factors; anything else is.
+      if (!(err instanceof ExtractAborted)) setFactorsFailed(true);
       setError(err instanceof Error ? err.message : String(err));
       setStatus('error');
       // The job's windows are in this run's files only: deleting them leaves nothing.

@@ -367,9 +367,13 @@ Extract replays the file when the factors are not ready, when they do not cover
 the recording (for example a recording of 600 k + 1 frames: the last window of
 one frame is skipped on the offset grids), and after a compression error (for
 example no browser storage, as in a private window); both show the fourth text.
-After an Extract on the factors has failed, every later Extract of the run
-replays the file and shows the fifth text. Only `pass2.clear()` ends this: a new
-Discover, or a Refine run while an Extract result exists. The export's stage records say
+After an Extract on the factors has failed (a job error, a gap or overlap in its
+windows, a compression error during the job), every later Extract replays the
+file and shows the fifth text. A cancelled Extract does not count, nor one
+aborted because a new run reset the compress worker. Only `pass2.clear()` ends
+this; the Run panel calls it whenever a Discover starts (a new Discover, another
+recording, each session of a multi-session run), and a Refine run calls it while
+an Extract result exists. The export's stage records say
 which source each stage read (`source`, format 7; see Run stages and export).
 `?compress=off` replays the file for Refine and Extract as before.
 

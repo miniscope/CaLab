@@ -6,7 +6,7 @@ import {
   extractSourceText,
   factorState,
 } from '../lib/compress-store.ts';
-import { createPass2Factors } from '../lib/factor-extract.ts';
+import { createPass2Factors, ExtractAborted } from '../lib/factor-extract.ts';
 import type { FovProjections } from '../lib/fov-projection.ts';
 import type { CompressStatus, CompressToMain } from '../workers/compress-types.ts';
 
@@ -243,6 +243,22 @@ describe('Extract on factors from the main thread', () => {
     store.onMessage({ type: 'extract-done', session: 8, job: 1, frames: 4, msPerFrame: 0.5 });
     store.onMessage({ type: 'extract-done', session: 8, job: 2, frames: 6, msPerFrame: 0.5 });
     await expect(next).resolves.toEqual({ frames: 6, msPerFrame: 0.5 });
+  });
+
+  it('tells a reset (an abort) from a compression error', async () => {
+    const a = setup();
+    const reset = a.f.extract(Uint8Array.of(1), () => {});
+    a.store.reset(8);
+    await expect(reset).rejects.toBeInstanceOf(ExtractAborted);
+    const b = setup();
+    const failed = b.f.extract(Uint8Array.of(1), () => {});
+    b.store.onMessage({ type: 'error', session: 7, message: 'QuotaExceededError' });
+    await expect(failed).rejects.toThrow('QuotaExceededError');
+    await expect(failed).rejects.not.toBeInstanceOf(ExtractAborted);
+    const c = setup();
+    const jobError = c.f.extract(Uint8Array.of(1), () => {});
+    c.store.onMessage({ type: 'error', session: 7, job: 1, message: 'out of memory' });
+    await expect(jobError).rejects.not.toBeInstanceOf(ExtractAborted);
   });
 
   it('fails a pending job when the store is cleared for a new run of the same session', async () => {

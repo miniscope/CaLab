@@ -20,8 +20,10 @@ run's event log and these docs.
   releases this, so the next one compresses. Extract reads the factors once
   they are ready and replays the file when they are not ready, do not cover the
   recording, and after a compression error. After an Extract on the factors has
-  failed, every later Extract of the run replays the file until the next
-  Discover (or a Refine run while an Extract result exists). Refine is always a raw replay.
+  failed (not cancelled, not aborted by a reset), every later Extract replays
+  the file until the next Discover start (a new Discover, another recording, a
+  session of a multi-session run) or a Refine run while an Extract result
+  exists. Refine is always a raw replay.
 - One replay runs at a time: no Extract while Refine runs and no Refine while
   Extract runs.
 - Refine can run any number of times. Each run starts from the library the
