@@ -12,11 +12,10 @@ a flag already present, replaces) arguments for one binary only. `--motion` is
 added for the motion arms. Output: `<runs>/<label>/<arm>_s<seed>/` holding the
 `qc_eval` outputs plus `run.json` (rc, wall s, max RSS) and `time.txt`.
 
-Limits: at most `--parallel` (cap 6) light `sim` runs at once *machine-wide*
-(other `qc_eval sim` processes count), no new run while free memory is below
+Limits: at most `--parallel` (cap 6) light runs at once *machine-wide*
+(other `qc_eval sim` and `qc_eval real` processes count: since 19 Nov 2026 real runs are light, under ~2.5 GB peak each), no new run while free memory is below
 5 GB (the `vm_stat` rule), and a run whose max RSS exceeds 6 GB is reported.
-Heavy jobs (`qc_eval real`, sim generation) are not started here; they are
-limited to 2 machine-wide and are launched by hand after checking `ps`.
+Sim generation is not started here; it is limited to 2 machine-wide and launched by hand after checking `ps`.
 Finished runs (run.json with rc 0) are skipped unless `--force`.
 """
 
@@ -26,6 +25,7 @@ import argparse
 import json
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -53,12 +53,13 @@ def free_gb() -> float:
 
 
 def light_running() -> int:
-    """`qc_eval sim` processes on the machine, whoever started them."""
+    """`qc_eval sim` and `qc_eval real` processes on the machine, whoever started them (PI, 19 Nov 2026: real runs
+    count as light and share the cap; keep each under ~2.5 GB peak)."""
     out = subprocess.run(["ps", "-axo", "command"], capture_output=True, text=True).stdout
     n = 0
     for line in out.splitlines():
         words = line.split()
-        if len(words) > 2 and words[1] == "sim" and ("qc_eval" in words[0] or "/cala-eval/bin/" in words[0]):
+        if len(words) > 2 and words[1] in ("sim", "real") and ("qc_eval" in words[0] or "/cala-eval/bin/" in words[0]):
             n += 1
     return n
 
@@ -142,6 +143,79 @@ def run_one(job: dict, state: dict) -> dict:
     return info
 
 
+# --- branched runs: arms that share Discover run as ONE qc_eval ------------------------------------
+# qc_eval `--branch-after POINT --branch NAME:FLAGS` runs to POINT once and forks the process per branch.
+# Only these flags act after Discover's last frame (qc_eval `TAIL_FLAGS`); arms whose args differ only in them
+# can share the prefix. DRAIN_FLAGS act inside the look-back drain, so they must match for `drain`.
+TAIL_FLAGS = ("--passes", "--later-passes", "--lookback-drain", "--lookback-drain-rate", "--lookback-settle-all")
+DRAIN_FLAGS = ("--lookback-drain", "--lookback-drain-rate", "--lookback-settle-all")
+
+
+def _split_flags(args: list[str]) -> list[tuple[str, list[str]]]:
+    out: list[tuple[str, list[str]]] = []
+    for t in args:
+        if t.startswith("--"):
+            out.append((t, []))
+        elif out:
+            out[-1][1].append(t)
+    return out
+
+
+def supports_branching(binary: Path) -> bool:
+    """Does this qc_eval build know `--branch-after`? (An older build would silently ignore it.)"""
+    return b"--branch-after" in Path(binary).read_bytes()
+
+
+def branch_split(args: list[str], point: str) -> tuple[list[str], list[str]]:
+    """(prefix args, tail args) of one arm: the tail holds the flags that may differ between branches."""
+    movable = TAIL_FLAGS if point == "discover" else tuple(f for f in TAIL_FLAGS if f not in DRAIN_FLAGS)
+    prefix, tail = [], []
+    for k, v in _split_flags(args):
+        (tail if k in movable else prefix).extend([k, *v])
+    return prefix, tail
+
+
+def branch_groups(jobs: list[dict], point: str) -> tuple[list[list[dict]], list[dict]]:
+    """Split jobs into branched groups (same binary, sim and prefix args, 2+ arms) and the rest."""
+    if point == "off":
+        return [], list(jobs)
+    keyed: dict[tuple, list[dict]] = {}
+    for j in jobs:
+        prefix, _ = branch_split(j["args"], point)
+        keyed.setdefault((str(j["bin"]), str(j["sim"]), tuple(sorted(map(tuple, ((k, *v) for k, v in _split_flags(prefix)))))), []).append(j)
+    groups = [g for g in keyed.values() if len(g) > 1 and len({j["label"] for j in g}) == len(g)]
+    in_group = {id(j) for g in groups for j in g}
+    return groups, [j for j in jobs if id(j) not in in_group]
+
+
+def run_branched(group: list[dict], state: dict, point: str) -> list[dict]:
+    """Run a group as one qc_eval; lay each arm's outputs out as a separate run (`<out>/run.json` etc.)."""
+    first = group[0]
+    prefix, _ = branch_split(first["args"], point)
+    args = list(prefix)
+    for j in group:
+        _, tail = branch_split(j["args"], point)
+        args += ["--branch", f"{j['label']}:{' '.join(tail)}"]
+    args += ["--branch-after", point]
+    tmp = first["out"].parent.parent / "_branched" / first["out"].name
+    shutil.rmtree(tmp, ignore_errors=True)
+    info = run_one({**first, "out": tmp, "args": args, "label": "+".join(j["label"] for j in group)}, state)
+    for j in group:
+        out: Path = j["out"]
+        shutil.rmtree(out, ignore_errors=True)
+        ok = info["rc"] == 0 and (tmp / j["label"]).is_dir()
+        if ok:
+            shutil.move(str(tmp / j["label"]), out)
+        else:
+            out.mkdir(parents=True, exist_ok=True)
+        for f in ("stdout.log", "time.txt"):
+            shutil.copy2(tmp / f, out / f)
+        rc = info["rc"] if ok else (info["rc"] or 1)
+        (out / "run.json").write_text(json.dumps({**info, "rc": rc, "args": j["args"], "branched": [x["label"] for x in group]}))
+    shutil.rmtree(tmp, ignore_errors=True)
+    return [json.loads((j["out"] / "run.json").read_text()) for j in group]
+
+
 def main() -> int:
     argv = sys.argv[1:]
     rest: list[str] = []
@@ -158,6 +232,8 @@ def main() -> int:
     ap.add_argument("--parallel", type=int, default=MAX_LIGHT)
     ap.add_argument("--budget-mult", type=float, default=1.0)
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--branch-after", choices=["off", "discover", "drain"], default="off",
+                    help="run the arms of one sim that share their args up to POINT as one branched qc_eval")
     a = ap.parse_args(argv)
     if a.parallel > MAX_LIGHT:
         sys.exit(f"--parallel is capped at {MAX_LIGHT} light runs")
@@ -195,8 +271,14 @@ def main() -> int:
                 jobs.append({"label": label, "bin": path, "sim": sim.resolve(), "out": out, "args": args})
     print(f"{len(jobs)} runs queued, parallel {a.parallel}", flush=True)
     state = {"lock": __import__("threading").Lock(), "parallel": a.parallel}
+    groups, singles = branch_groups(jobs, a.branch_after)
+    if groups and not all(supports_branching(g[0]["bin"]) for g in groups):
+        sys.exit("--branch-after: a qc_eval build lacks --branch-after")
+    if groups:
+        print(f"{len(groups)} branched groups ({sum(map(len, groups))} arms share a Discover)", flush=True)
     with ThreadPoolExecutor(a.parallel) as ex:
-        infos = list(ex.map(lambda j: run_one(j, state), jobs))
+        futs = [ex.submit(run_one, j, state) for j in singles] + [ex.submit(run_branched, g, state, a.branch_after) for g in groups]
+        infos = [i for f in futs for i in (f.result() if isinstance(f.result(), list) else [f.result()])]
     return 1 if any(i["rc"] != 0 for i in infos) else 0
 
 
