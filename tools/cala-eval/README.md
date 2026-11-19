@@ -472,3 +472,26 @@ runs at the end of pass 1, then the later passes: a Refine after a settled look-
 `--lookback-drain-rate F` sets the look-back frames per drain step; `--noise-dump` with `--wrap-libs` writes
 `fp_noise_wrap{k}.tsv` at every wrap. RAM: about 3.5 GB peak on a motion sim (one sim and step at a time). In zsh, quote
 `NAME:wrapK` arguments (`:w` is a modifier).
+
+`real --tags a,b,c` names the libraries of each run in order (default `wrap1,wrap2,final`), for example the settle's
+checkpoint libraries `settle0,settle5,settle10`.
+
+### The end-of-Discover settle (`qc_eval --settle-frames`, `settle_ladder.py`, `settle_checks.py`)
+
+For the question "what does a Refine pass add to a settled look-back Discover, and can settling include it?"
+(`results/2026-11-19-lookback-settle.md`). `qc_eval --settle-frames N` (with `--lookback-drain`) adds a tail after the
+drain: re-read frames go to every cell with the cell set frozen, by default through the ordinary `observe` (as a
+Refine pass feeds them); `--settle-observe frozen|stats` are the ablations (reservoir frozen; look-back path). Options
+are in the header of `qc_eval.rs` (`--settle-batch`, `--settle-round`, `--settle-check`, the stop rule, `--settle-libs`).
+It writes `settle_checks.tsv` (per checkpoint: footprint change since the last checkpoint against split-half noise)
+and with `--settle-libs` the checkpoint libraries `footprints_settle{k}.bin` / `final_settle{k}.tsv`.
+
+```
+# several arms of a suite run tree against one reference, the rungs between them, and what each tail did
+$MINISIM_PY tools/cala-eval/settle_ladder.py --root $CALA_DATA/demix-suite/<name> --ref COMBO+R \
+    --arms COMBO,ST-stats,ST-frozen,ST-full --steps --md ladder.md
+# the checkpoints of settle runs: change against noise, and on sims footprint r of the checkpoint libraries
+$MINISIM_PY tools/cala-eval/settle_checks.py $CALA_DATA/demix-suite/<name>/<arm>/* --md checks.md
+```
+
+`run_arms.py`'s machine-wide guard counts `qc_eval real` runs as light runs too (same cap of 6, since 19 Nov 2026).

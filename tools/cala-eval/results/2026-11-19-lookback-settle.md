@@ -17,15 +17,15 @@ written before any run of this study (commit order shows it). Results go below t
 A Refine pass feeds each frame to `SlowLoop::observe`; the look-back path feeds it to `observe_lookback`. The
 differences, all of them:
 
-| part                                     | Refine pass (`observe`)                                    | settle-all (`observe_lookback`, review arm)                |
-| ---------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------- |
-| footprint statistics and cluster stores  | every fitting frame, forgetting clock advances             | the same (untargeted frames advance the clock)             |
-| reservoir (fit and held-out frames)      | every frame is offered; slots turn over                    | frozen at the end of Discover                              |
-| what makes a tile due for a visit        | new reservoir slots (6)                                    | `mark_all_due` every 64 steps (128 frames)                 |
-| the held-out frames the refine gate uses | turn over with the reservoir, chosen by the *current* fit's residual | the same few dozen frames at every visit         |
-| frame counter (`frames`)                 | advances: publishes every 100 frames, cells age past the reservoir-refine window | stands still: published by the driver every 128 frames |
-| slow-loop steps                          | one per frame                                              | one per 2 frames                                           |
-| evidence ledger, probes, noise correlation, noise map | updated                                       | not updated (not used by Refine-scope visits)              |
+| part                                                  | Refine pass (`observe`)                                                          | settle-all (`observe_lookback`, review arm)            |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| footprint statistics and cluster stores               | every fitting frame, forgetting clock advances                                   | the same (untargeted frames advance the clock)         |
+| reservoir (fit and held-out frames)                   | every frame is offered; slots turn over                                          | frozen at the end of Discover                          |
+| what makes a tile due for a visit                     | new reservoir slots (6)                                                          | `mark_all_due` every 64 steps (128 frames)             |
+| the held-out frames the refine gate uses              | turn over with the reservoir, chosen by the _current_ fit's residual             | the same few dozen frames at every visit               |
+| frame counter (`frames`)                              | advances: publishes every 100 frames, cells age past the reservoir-refine window | stands still: published by the driver every 128 frames |
+| slow-loop steps                                       | one per frame                                                                    | one per 2 frames                                       |
+| evidence ledger, probes, noise correlation, noise map | updated                                                                          | not updated (not used by Refine-scope visits)          |
 
 Counts from the review's runs (static_s5): the Refine pass accepted 9456 refinements with 19.7 M work units of refine
 work per frame; the settle-all tail accepted 5845 with about 10.8 M per frame fed.
@@ -41,17 +41,17 @@ cell set frozen (Refine scope). References reused from the review's run trees af
 
 Screen (quick tier: static s5-s7, pairs s5-s6; 9600 frames per tail unless named):
 
-| arm           | tail flags                                                                          | adds to the previous rung               |
-| ------------- | ----------------------------------------------------------------------------------- | --------------------------------------- |
-| `COMBO-SA9600`| review arm (look-back path, 1 step per 2 frames, due and publish every 128 frames)  | -                                       |
-| `ST-stats`    | `--settle-observe stats --settle-steps 1 --settle-due 64 --settle-publish 100`      | twice the steps and visit rounds        |
-| `ST-frozen`   | `--settle-observe frozen --settle-due 64`                                           | frame counter, ledger (reservoir frozen) |
-| `ST-full-due` | `--settle-observe full --settle-due 64`                                             | reservoir turns over                    |
-| `ST-full`     | `--settle-observe full` (visits by new slots only, as in a Refine pass)             | the Refine pass through the look-back path |
-| `ST-half`     | `ST-full` with `--settle-frames 4800 --settle-round 4800`                           | every second 64-frame block             |
-| `ST-quarter`  | `ST-full` with `--settle-frames 2400 --settle-round 2400`                           | every fourth block                      |
-| `ST-b16`      | `ST-full` with `--settle-batch 16`                                                  | 16 frames per request                   |
-| `COMBO+R`     | `--passes 2 --later-passes refine`                                                  | the reference                           |
+| arm            | tail flags                                                                         | adds to the previous rung                  |
+| -------------- | ---------------------------------------------------------------------------------- | ------------------------------------------ |
+| `COMBO-SA9600` | review arm (look-back path, 1 step per 2 frames, due and publish every 128 frames) | -                                          |
+| `ST-stats`     | `--settle-observe stats --settle-steps 1 --settle-due 64 --settle-publish 100`     | twice the steps and visit rounds           |
+| `ST-frozen`    | `--settle-observe frozen --settle-due 64`                                          | frame counter, ledger (reservoir frozen)   |
+| `ST-full-due`  | `--settle-observe full --settle-due 64`                                            | reservoir turns over                       |
+| `ST-full`      | `--settle-observe full` (visits by new slots only, as in a Refine pass)            | the Refine pass through the look-back path |
+| `ST-half`      | `ST-full` with `--settle-frames 4800 --settle-round 4800`                          | every second 64-frame block                |
+| `ST-quarter`   | `ST-full` with `--settle-frames 2400 --settle-round 2400`                          | every fourth block                         |
+| `ST-b16`       | `ST-full` with `--settle-batch 16`                                                 | 16 frames per request                      |
+| `COMBO+R`      | `--passes 2 --later-passes refine`                                                 | the reference                              |
 
 Arms may be added after the screen (a rung split further, a stride from the Refine side); each is listed with its
 flags and judged by the same rules. An arm that clearly fails on the first sims is stopped.
@@ -128,8 +128,8 @@ Binaries `qc_eval-lbsettle-a` (sims) and `qc_eval-lbsettle-b` (workshop recordin
 at `--frames` when the file is longer). Run trees: `$CALA_DATA/demix-suite/lbsettle-q` (screen, `ladder.md`),
 `$CALA_DATA/demix-suite/lbsettle-full` (deciding arm), `$CALA_DATA/runs/lbsettle/real` (workshop recording),
 `$CALA_DATA/runs/lbsettle/missing` (M8). References `COMBO`, `COMBO+R`, `DR-main`, `COMBO-SA9600` are the review's
-runs (not re-run; the settle tail starts after an unchanged Discover and drain, and `ST-full` reproduces `COMBO+R` to
-the fourth decimal, below).
+runs, not re-run. Byte check: the library each settle starts from (`footprints_settle0.bin` of `ST-full`) is
+byte-identical to the review's `COMBO` library on static_s5, static_s6 and pairs_s5.
 
 Deviations from the plan above, all decided before the affected runs: `ST-quarter` ran on the three static sims only
 and the separate quick-tier `ST-b16` arm was dropped (the full-tier `SETTLE` arm is that arm on 14 sims), to keep the
@@ -156,15 +156,15 @@ shared six run slots for the deciding runs. The workshop runs kept the held-out 
 
 ### M1 and M2. The ladder (quick tier, 5 sims; diffs are to the arm named)
 
-| arm           | what the tail feeds                         | fp r all vs `COMBO+R`      | fp r born 2nd half vs `COMBO+R` | bite share 0.75-1 D vs `COMBO+R` | cluster proposals / accepted in the tail | refinements accepted per sim | visits per frame |
-| ------------- | ------------------------------------------- | -------------------------- | ------------------------------- | -------------------------------- | ---------------------------------------- | ---------------------------- | ---------------- |
-| `COMBO`       | no tail                                     | -0.0024 [-0.0032, -0.0017] | -0.0269 [-0.0354, -0.0187]      | +0.107 [0.054, 0.156]            | -                                        | -                            | -                |
-| `COMBO-SA9600`| statistics; 1 step per 2 frames             | -0.0011 [-0.0018, -0.0005] | -0.0169 [-0.0246, -0.0058]      | +0.075 [0.027, 0.122]            | 12,250 / 1,859 (15 %)                    | -                            | about 0.6        |
-| `ST-stats`    | statistics; 1 step per frame, twice the visit rounds | -0.0012 (step from SA: -0.0000 [-0.0007, 0.0006]) | step: +0.0017 [-0.0121, 0.0136] | step: +0.016 [-0.035, 0.068] | 23,987 / 2,900 (12 %)                    | 3,053                        | 1.31             |
-| `ST-frozen`   | ordinary `observe`, reservoir frozen        | step: -0.0001 [-0.0006, 0.0006] | step: -0.0001 [-0.0127, 0.0118] | step: -0.010 [-0.063, 0.043]  | 24,254 / 3,072 (13 %)                    | 3,070                        | 1.32             |
-| `ST-full-due` | ordinary `observe`, reservoir turns over    | step: +0.0012 [0.0007, 0.0018] | step: +0.0146 [0.0054, 0.0242] | step: -0.077 [-0.124, -0.030]   | 27,004 / 9,655 (36 %)                    | 8,060                        | 1.81             |
-| `ST-full`     | the same, visits by new slots only          | -0.0000 [-0.0006, 0.0006]  | -0.0006 [-0.0056, 0.0050]       | -0.007 [-0.054, 0.035]           | 26,976 / 9,656 (36 %)                    | 8,067                        | 1.81             |
-| `COMBO+R`     | a Refine pass                               | reference                  | reference                       | reference                        | 26,820 / 9,760 (36 %)                    | -                            | -                |
+| arm            | what the tail feeds                                  | fp r all vs `COMBO+R`                             | fp r born 2nd half vs `COMBO+R` | bite share 0.75-1 D vs `COMBO+R` | cluster proposals / accepted in the tail | refinements accepted per sim | visits per frame |
+| -------------- | ---------------------------------------------------- | ------------------------------------------------- | ------------------------------- | -------------------------------- | ---------------------------------------- | ---------------------------- | ---------------- |
+| `COMBO`        | no tail                                              | -0.0024 [-0.0032, -0.0017]                        | -0.0269 [-0.0354, -0.0187]      | +0.107 [0.054, 0.156]            | -                                        | -                            | -                |
+| `COMBO-SA9600` | statistics; 1 step per 2 frames                      | -0.0011 [-0.0018, -0.0005]                        | -0.0169 [-0.0246, -0.0058]      | +0.075 [0.027, 0.122]            | 12,250 / 1,859 (15 %)                    | -                            | about 0.6        |
+| `ST-stats`     | statistics; 1 step per frame, twice the visit rounds | -0.0012 (step from SA: -0.0000 [-0.0007, 0.0006]) | step: +0.0017 [-0.0121, 0.0136] | step: +0.016 [-0.035, 0.068]     | 23,987 / 2,900 (12 %)                    | 3,053                        | 1.31             |
+| `ST-frozen`    | ordinary `observe`, reservoir frozen                 | step: -0.0001 [-0.0006, 0.0006]                   | step: -0.0001 [-0.0127, 0.0118] | step: -0.010 [-0.063, 0.043]     | 24,254 / 3,072 (13 %)                    | 3,070                        | 1.32             |
+| `ST-full-due`  | ordinary `observe`, reservoir turns over             | step: +0.0012 [0.0007, 0.0018]                    | step: +0.0146 [0.0054, 0.0242]  | step: -0.077 [-0.124, -0.030]    | 27,004 / 9,655 (36 %)                    | 8,060                        | 1.81             |
+| `ST-full`      | the same, visits by new slots only                   | -0.0000 [-0.0006, 0.0006]                         | -0.0006 [-0.0056, 0.0050]       | -0.007 [-0.054, 0.035]           | 26,976 / 9,656 (36 %)                    | 8,067                        | 1.81             |
+| `COMBO+R`      | a Refine pass                                        | reference                                         | reference                       | reference                        | 26,820 / 9,760 (36 %)                    | -                            | -                |
 
 - **M1 met.** `ST-full` equals `COMBO+R` on every row (footprint r all / isolated / close-pair -0.0000 / -0.0001 /
   +0.0001; born second half -0.0006; born last 20 % -0.0010; headline -0.000; matched and false cells within 1). A
@@ -180,19 +180,21 @@ shared six run slots for the deciding runs. The workshop runs kept the held-out 
   under the current library, so the test set keeps moving to where the footprints are still wrong (a bitten footprint
   leaves light in the residual). `observe_lookback` does not touch the reservoir. During settling the test set is
   whatever Discover left, a refinement that fails on it fails again at the next visit, and late-born cells, whose
-  light the old frames barely contain, gain least.
+  light the old frames barely contain, gain least. (The ablation separates the reservoir as a whole. That it is the
+  held-out half, and the choice of frames by residual, is read from the code and the accept rates, not ablated.)
 
 ### M3. How few frames (quick tier; vs `ST-full`, 9600 frames)
 
-| arm                                   | frames | fp r all                   | fp r isolated | fp r close-pair | fp r born 2nd half         | bite share later-born 0.5-0.75 D | settle wall, s |
-| ------------------------------------- | ------ | -------------------------- | ------------- | --------------- | -------------------------- | -------------------------------- | -------------- |
-| `ST-half` (every 2nd 64-frame block)  | 4800   | -0.0003 [-0.0009, 0.0002]  | -0.0006       | -0.0003         | -0.0061 [-0.0109, 0.0024]  | +0.078 [0.009, 0.148]            | 77             |
-| `ST-full`                             | 9600   | reference                  | -             | -               | -                          | -                                | 179            |
-| `ST-2x` (two passes)                  | 19,200 | +0.0003 [-0.0002, 0.0008]  | +0.0005       | +0.0003         | +0.0028 [-0.0018, 0.0091]  | -0.006 [-0.065, 0.053]           | 313            |
+| arm                                  | frames | fp r all                  | fp r isolated | fp r close-pair | fp r born 2nd half        | bite share later-born 0.5-0.75 D | settle wall, s |
+| ------------------------------------ | ------ | ------------------------- | ------------- | --------------- | ------------------------- | -------------------------------- | -------------- |
+| `ST-half` (every 2nd 64-frame block) | 4800   | -0.0003 [-0.0009, 0.0002] | -0.0006       | -0.0003         | -0.0061 [-0.0109, 0.0024] | +0.078 [0.009, 0.148]            | 77             |
+| `ST-full`                            | 9600   | reference                 | -             | -               | -                         | -                                | 179            |
+| `ST-2x` (two passes)                 | 19,200 | +0.0003 [-0.0002, 0.0008] | +0.0005       | +0.0003         | +0.0028 [-0.0018, 0.0091] | -0.006 [-0.065, 0.053]           | 313            |
 
 By the written rule half the frames are not quite enough: the overall rows are within 0.001, but cells born in the
 second half are 0.006 lower (over the 0.005 line; the CI includes 0) and later-born bites are worse. Two passes add
-+0.0003. `ST-quarter`: see the addendum below.
++0.0003. `ST-quarter` was not run. The strided arm restarts the preprocessor at every 64-frame block, so its shortfall
+cannot be pinned on the frame count alone.
 
 ### M5. Stop rule calibration
 
@@ -240,17 +242,17 @@ from the suite's; workshop references from the review: D + R 86 %, 0.976; `COMBO
 
 Hungarian match (footprint r >= 0.7) between the plain-Discover library and the `COMBO` library of the same seed.
 
-|                                              | seed 1 | seed 2 |
-| -------------------------------------------- | ------ | ------ |
-| Discover / `COMBO` cells                     | 831 / 751 | 838 / 760 |
-| matched                                      | 629    | 649    |
-| Discover only                                | 202    | 189    |
-| `COMBO` only                                 | 122    | 111    |
-| Discover only: a `COMBO` cell covers the place with a different footprint (best r 0.4-0.7) | 135 | 140 |
-| Discover only: nothing was ever added there in the `COMBO` run | 50 | 38 |
-| Discover only: added in the `COMBO` run, then merged or deleted | 6 | 7 |
-| adds / merges / deletes, Discover            | 929 / 125 / 9 | 934 / 130 / 12 |
-| adds / merges / deletes, `COMBO`             | 820 / 104 / 4 | 842 / 115 / 8 |
+|                                                                                            | seed 1        | seed 2         |
+| ------------------------------------------------------------------------------------------ | ------------- | -------------- |
+| Discover / `COMBO` cells                                                                   | 831 / 751     | 838 / 760      |
+| matched                                                                                    | 629           | 649            |
+| Discover only                                                                              | 202           | 189            |
+| `COMBO` only                                                                               | 122           | 111            |
+| Discover only: a `COMBO` cell covers the place with a different footprint (best r 0.4-0.7) | 135           | 140            |
+| Discover only: nothing was ever added there in the `COMBO` run                             | 50            | 38             |
+| Discover only: added in the `COMBO` run, then merged or deleted                            | 6             | 7              |
+| adds / merges / deletes, Discover                                                          | 929 / 125 / 9 | 934 / 130 / 12 |
+| adds / merges / deletes, `COMBO`                                                           | 820 / 104 / 4 | 842 / 115 / 8  |
 
 - The net loss of 80 is 190-200 cells that only Discover has minus 110-120 that only `COMBO` has. The two libraries
   differ in about 320 cells, mostly the same places with differently shaped footprints.
@@ -274,22 +276,22 @@ Hungarian match (footprint r >= 0.7) between the plain-Discover library and the 
 to measure what a Refine would still do. References: the review's D + R and `COMBO+R` runs for seeds 1 and 2, and
 seed 3 run here with the same flags. Seed pairs are 1-2, 1-3, 2-3. Peak memory 1.2-1.3 GB per run.
 
-| library                 | cells           | same cells found by two seeds (share of cells; median footprint r), three pairs | Minian units matched; median r      | split-half noise, median |
-| ----------------------- | --------------- | -------------------------------------------------------------------------------- | ----------------------------------- | ------------------------ |
-| Discover                | 831 / 838 / 811 | 81 %; 0.951 / 0.950 / 0.952                                                      | 525 / 514 / 519; 0.937 / 0.942 / 0.935 | 17.4-17.6 %           |
-| `COMBO` (look-back)     | 751 / 760 / 738 | 82 %; 0.953 / 0.958 / 0.954                                                      | 494 / 500 / 497; 0.939 / 0.935 / 0.943 | 14.2-14.5 %           |
-| D + R                   | 831 / 838 / 811 | 85-87 %; 0.976 / 0.971 / 0.974                                                   | 535 / 531 / 530; 0.953 / 0.958 / 0.957 | 9.9-10.7 %            |
-| `COMBO+R`               | 751 / 760 / 738 | 85-87 %; 0.976 / 0.975 / 0.976                                                   | 508 / 518 / 512; 0.950 / 0.949 / 0.949 | 13.1 % (seed 1)       |
-| **`SETTLE`**            | 751 / 760 / 738 | **85-86 %; 0.978 / 0.975 / 0.977**                                               | **514 / 515 / 512; 0.949 / 0.950 / 0.949** | **13.1-13.2 %**   |
-| `SETTLE` + R            | 751 / 760 / 738 | 87 %; 0.980 / 0.977 / 0.982                                                      | 517 / 518 / 509; 0.948 / 0.949 / 0.948 | -                     |
-| D + 2R                  | 831 / 838 / 811 | 87 %; 0.981 / 0.979 / 0.980                                                      | 540 / 533 / 532; 0.956 / 0.958 / 0.960 | -                     |
+| library             | cells           | same cells found by two seeds (share of cells; median footprint r), three pairs | Minian units matched; median r             | split-half noise, median |
+| ------------------- | --------------- | ------------------------------------------------------------------------------- | ------------------------------------------ | ------------------------ |
+| Discover            | 831 / 838 / 811 | 81 %; 0.951 / 0.950 / 0.952                                                     | 525 / 514 / 519; 0.937 / 0.942 / 0.935     | 17.4-17.6 %              |
+| `COMBO` (look-back) | 751 / 760 / 738 | 82 %; 0.953 / 0.958 / 0.954                                                     | 494 / 500 / 497; 0.939 / 0.935 / 0.943     | 14.2-14.5 %              |
+| D + R               | 831 / 838 / 811 | 85-87 %; 0.976 / 0.971 / 0.974                                                  | 535 / 531 / 530; 0.953 / 0.958 / 0.957     | 9.9-10.7 %               |
+| `COMBO+R`           | 751 / 760 / 738 | 85-87 %; 0.976 / 0.975 / 0.976                                                  | 508 / 518 / 512; 0.950 / 0.949 / 0.949     | 13.1 % (seed 1)          |
+| **`SETTLE`**        | 751 / 760 / 738 | **85-86 %; 0.978 / 0.975 / 0.977**                                              | **514 / 515 / 512; 0.949 / 0.950 / 0.949** | **13.1-13.2 %**          |
+| `SETTLE` + R        | 751 / 760 / 738 | 87 %; 0.980 / 0.977 / 0.982                                                     | 517 / 518 / 509; 0.948 / 0.949 / 0.948     | -                        |
+| D + 2R              | 831 / 838 / 811 | 87 %; 0.981 / 0.979 / 0.980                                                     | 540 / 533 / 532; 0.956 / 0.958 / 0.960     | -                        |
 
-| step, by id (median, three seeds)       | change, app metric     | shape-only change        | change / noise     |
-| --------------------------------------- | ---------------------- | ------------------------ | ------------------ |
-| Refine after `SETTLE`                   | 11.8 / 11.2 / 11.3 %   | 0.0065 / 0.0060 / 0.0060 | 0.97 / 0.95 / 0.94 |
-| second Refine after Discover (the null) | 10.0 / 9.8 / 10.9 %    | 0.0048 / 0.0043 / 0.0057 | 1.12 / 1.08 / 1.10 |
-| Refine after `COMBO`                    | 30.4 / 28.3 / 30.9 %   | 0.039 / 0.035 / 0.041    | 2.2 / 2.1 / 2.2    |
-| first Refine after Discover             | 25.7 / 23.9 / 24.8 %   | 0.029 / 0.026 / 0.028    | 1.5 / 1.4 / 1.4    |
+| step, by id (median, three seeds)       | change, app metric   | shape-only change        | change / noise     |
+| --------------------------------------- | -------------------- | ------------------------ | ------------------ |
+| Refine after `SETTLE`                   | 11.8 / 11.2 / 11.3 % | 0.0065 / 0.0060 / 0.0060 | 0.97 / 0.95 / 0.94 |
+| second Refine after Discover (the null) | 10.0 / 9.8 / 10.9 %  | 0.0048 / 0.0043 / 0.0057 | 1.12 / 1.08 / 1.10 |
+| Refine after `COMBO`                    | 30.4 / 28.3 / 30.9 % | 0.039 / 0.035 / 0.041    | 2.2 / 2.1 / 2.2    |
+| first Refine after Discover             | 25.7 / 23.9 / 24.8 % | 0.029 / 0.026 / 0.028    | 1.5 / 1.4 / 1.4    |
 
 - `SETTLE` and `COMBO+R` of the same seed are the same library: 98 % of cells match with median r 0.997.
 - Against the M7 lines: seed-to-seed median r 0.975-0.978 (line 0.970: met) with 85-86 % matched (line 84 %: met);
@@ -306,11 +308,11 @@ seed 3 run here with the same flags. Seed pairs are 1-2, 1-3, 2-3. Peak memory 1
 
 `HALF` = `COMBO` + 9000 settle frames in every second 64-frame block over the whole recording, 16 per request.
 
-| settle                                   | frames | seed 1 vs seed 2: matched share, median r | Minian median r |
-| ---------------------------------------- | ------ | ----------------------------------------- | --------------- |
-| first 9000 frames in a row (`CAL`, checkpoint 5) | 9000 | 85.0 %, 0.9693                      | 0.946 / 0.945   |
-| every second block (`HALF`)              | 9000   | 85.5 %, 0.9740                            | 0.949 / 0.951   |
-| one pass (`CAL`, checkpoint 10)          | 18,000 | 86.0 %, 0.9776                            | 0.949 / 0.948   |
+| settle                                           | frames | seed 1 vs seed 2: matched share, median r | Minian median r |
+| ------------------------------------------------ | ------ | ----------------------------------------- | --------------- |
+| first 9000 frames in a row (`CAL`, checkpoint 5) | 9000   | 85.0 %, 0.9693                            | 0.946 / 0.945   |
+| every second block (`HALF`)                      | 9000   | 85.5 %, 0.9740                            | 0.949 / 0.951   |
+| one pass (`CAL`, checkpoint 10)                  | 18,000 | 86.0 %, 0.9776                            | 0.949 / 0.948   |
 
 Half the frames spread over the recording do better than the same number from its first half, and come close to the
 full pass. Coverage matters more than the frame count. The strided arm restarts the preprocessor at every block, so
@@ -329,3 +331,46 @@ this is a lower bound for it. It supports a frame cap with even spreading for lo
 
 The cluster replay accounts for about 65 of the 80 cells (fewer adds and, without look-back, more merges), look-back
 by itself for about 30, the merge guard for none. One seed per setting.
+
+### M4 and M6. The deciding arm (full tier, 14 sims; `lbsettle-full/ladder.md`)
+
+`SETTLE` = `COMBO` + `--settle-frames 9600 --settle-batch 16`: one pass through the ordinary `observe`, 16 frames per
+request, no early stop (the rule was logged only). Fixed after M1-M3 and the calibration, before this run. The
+separate 16-frame screen had not been run when it started; the five quick-tier sims inside it serve as M4.
+
+| metric                                 | DR-main | COMBO  | COMBO+R | SETTLE | SETTLE - COMBO+R          | SETTLE - DR-main          |
+| -------------------------------------- | ------- | ------ | ------- | ------ | ------------------------- | ------------------------- |
+| footprint r, all                       | 0.9879  | 0.9899 | 0.9928  | 0.9928 | +0.0000 [-0.0003, 0.0003] | +0.0048 [0.0043, 0.0054]  |
+| footprint r, isolated                  | 0.9922  | 0.9899 | 0.9924  | 0.9922 | -0.0002 [-0.0010, 0.0008] | +0.0000 [-0.0008, 0.0013] |
+| footprint r, close-pair                | 0.9843  | 0.9895 | 0.9928  | 0.9927 | -0.0000 [-0.0005, 0.0004] | +0.0085 [0.0075, 0.0093]  |
+| footprint r, born second half          | 0.9560  | 0.9575 | 0.9781  | 0.9773 | -0.0008 [-0.0060, 0.0045] | +0.0212 [0.0151, 0.0281]  |
+| footprint r, born last 20 %            | 0.9306  | 0.9235 | 0.9646  | 0.9670 | +0.0024 [-0.0101, 0.0117] | +0.0364 [0.0203, 0.0465]  |
+| share r < 0.9, all                     | 0.056   | 0.052  | 0.036   | 0.037  | +0.000 [-0.007, 0.008]    | -0.019 [-0.027, -0.012]   |
+| crosstalk headline (corr excess < 1 D) | +0.150  | +0.086 | +0.074  | +0.074 | -0.000 [-0.008, 0.009]    | -0.076 [-0.084, -0.066]   |
+| bite share < 0.5, 0.75-1 D             | 0.486   | 0.283  | 0.165   | 0.168  | +0.003 [-0.022, 0.028]    | -0.318 [-0.347, -0.288]   |
+| bite share, later-born, 0.5-0.75 D     | 0.638   | 0.292  | 0.133   | 0.129  | -0.004 [-0.041, 0.032]    | -0.510 [-0.554, -0.465]   |
+| matched cells                          | 400.1   | 400.9  | 401.9   | 401.9  | +0.1 [-0.4, 0.5]          | +1.8 [-0.3, 3.9]          |
+| false cells                            | 21.9    | 18.1   | 17.1    | 17.1   | -0.1 [-0.5, 0.4]          | -4.8 [-7.7, -1.9]         |
+
+- **M6: go.** Every row is within the go lines against `COMBO+R` (no footprint group lower by more than 0.0008), and
+  no group is worse than `DR-main`.
+- **M4: go.** Sixteen frames per request against one (`SETTLE` against `ST-full`, the five common sims): footprint r
+  all / isolated / close-pair +0.0000 / +0.0000 / -0.0000, born second half -0.0003 [-0.0049, 0.0053], bite rows
+  within noise, and the same visit counts (static_s5 10,789 against 10,772; pairs_s5 27,976 against 27,947). Batching
+  the frames costs nothing once the visits are driven by the frames fed and not by lock-step rounds.
+- Cost in qc_eval, per sim: settle 170 s (static), 211 s (motion), 116 s (pairs) for 9600 frames; the Refine pass of
+  `COMBO+R` took 205 / 248 / 135 s (review's runs, a different session, so approximate). The settle costs what a
+  Refine pass costs.
+- The rule as a floor: at the last two checkpoints the share of cells above 2 x noise was at most 4 % in 12 of the 14
+  sims and all three workshop runs; two motion sims ended at 4.2 % and 5.2 %. With the 4 % line those two would have
+  asked for more frames. The line was calibrated on static sims and is tight for motion.
+
+### Decision
+
+By the rule above: **go on sims (M6), and on the workshop recording every line is met except the split-half noise
+row (M7), which the reference `COMBO+R` fails as well.** Read strictly that is "go on sims only, real-data gap named:
+the noise reading of replay-built libraries". The settle through `observe` gives the same library as look-back +
+Refine (workshop: 98 % of cells at median r 0.997), so whatever is decided about `COMBO+R` holds for it.
+
+Not done: `ST-quarter` and the `SETTLE-stop` arm (dropped for run slots; the checkpoint libraries of `ST-2x` and
+`CAL` show what an early stop costs), a second real recording (none under `~/Projects`), the app build.
