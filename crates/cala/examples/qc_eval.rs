@@ -56,6 +56,11 @@
 //!                      new cells' and their neighbours' running statistics
 //!                      and cluster stores, at R look-back frames per
 //!                      Discover frame (see `LookBack`; `lookback.tsv`)
+//!   --lookback-reservoir M  experimental: look-back frames are also
+//!                      offered to the reservoir, on the held-out side they
+//!                      had as live frames: `test` (held-out frames only) or
+//!                      `all`; --lookback-reservoir-share S offers the share
+//!                      S of them (`LookbackReservoir`). Default off.
 //!   --lookback-frames K  at most K frames before its birth per cell
 //!                      (default 3000)
 //!   --lookback-order O `shared` (default): the 64-frame block most cells
@@ -361,8 +366,8 @@ use std::time::Instant;
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
     CoreTest, EditScope, JointAdmit, JointSign, JointUpdate, LookBack as LbSched, LookbackConfig,
-    LookbackNext, LookbackOrder, LookbackOutcome, MergeRule, RefineGate, SlowLoop, SlowLoopConfig,
-    SupportRule, VisitResult, VisitRunner, LB_BLOCK,
+    LookbackNext, LookbackOrder, LookbackOutcome, LookbackReservoir, MergeRule, RefineGate,
+    SlowLoop, SlowLoopConfig, SupportRule, VisitResult, VisitRunner, LB_BLOCK,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -4585,6 +4590,24 @@ fn main() {
         Some("newest") => true,
         Some(m) => panic!("--lookback-order: unknown mode {m}"),
     };
+    // `--lookback-reservoir test|all` (experimental, default off): look-back
+    // frames are also offered to the reservoir (`LookbackReservoir`);
+    // `--lookback-reservoir-share S` offers that share of them.
+    let lb_res = match arg_value(&args, "--lookback-reservoir").as_deref() {
+        None | Some("off") => LookbackReservoir::Off,
+        Some("test") => LookbackReservoir::Test,
+        Some("all") => LookbackReservoir::All,
+        Some(m) => panic!("--lookback-reservoir: unknown mode {m} (off | test | all)"),
+    };
+    let lb_res_share: f32 =
+        arg_value(&args, "--lookback-reservoir-share").map_or(1.0, |s| s.parse().unwrap());
+    assert!(
+        lb_res_share > 0.0 && lb_res_share <= 1.0,
+        "--lookback-reservoir-share must be in (0, 1]"
+    );
+    if lb_res != LookbackReservoir::Off {
+        println!("lookback reservoir: {lb_res:?}, share {lb_res_share}");
+    }
     let mut lb_drain: usize = tail.drain;
     let lb_frames: usize =
         arg_value(&args, "--lookback-frames").map_or(3000, |s| s.parse().unwrap());
@@ -4988,6 +5011,9 @@ fn main() {
                             .unwrap()
                         };
                         slow = Some(mk());
+                        if let Some(s) = slow.as_mut() {
+                            s.set_lookback_reservoir(lb_res, lb_res_share);
+                        }
                         if let Some(s) = &slow {
                             let p = s.reservoir_plan();
                             println!(
@@ -5260,32 +5286,32 @@ fn main() {
                     (lookback.as_mut(), slow.as_mut(), pass, timed.as_ref())
                 {
                     if last && lb_drain > 0 {
-                    if lbk.settle.frames > 0 {
-                        lbk.settle(
-                            t_len,
-                            budget,
-                            start,
-                            &mut rec,
-                            drift.as_ref(),
-                            &mut pipe,
-                            &mut engine,
-                            sl,
-                            n_px,
-                        );
-                        std::fs::write(out_dir.join("settle_checks.tsv"), &lbk.settle_out)
-                            .unwrap();
-                        for (k, l) in std::mem::take(&mut lbk.settle_libs) {
-                            write_library(
-                                &out_dir,
-                                &format!("_settle{k}"),
-                                &l,
-                                dims,
-                                gt.as_ref(),
-                                ho.as_ref(),
-                                Some(&*sl),
+                        if lbk.settle.frames > 0 {
+                            lbk.settle(
+                                t_len,
+                                budget,
+                                start,
+                                &mut rec,
+                                drift.as_ref(),
+                                &mut pipe,
+                                &mut engine,
+                                sl,
+                                n_px,
                             );
+                            std::fs::write(out_dir.join("settle_checks.tsv"), &lbk.settle_out)
+                                .unwrap();
+                            for (k, l) in std::mem::take(&mut lbk.settle_libs) {
+                                write_library(
+                                    &out_dir,
+                                    &format!("_settle{k}"),
+                                    &l,
+                                    dims,
+                                    gt.as_ref(),
+                                    ho.as_ref(),
+                                    Some(&*sl),
+                                );
+                            }
                         }
-                    }
                     }
                 }
                 let t_end = t + 1;
@@ -5540,6 +5566,13 @@ fn main() {
             l.sched.in_need(),
             l.wall_s
         );
+        if let (Some(sl), true) = (slow.as_ref(), lb_res != LookbackReservoir::Off) {
+            let c = sl.lookback_reservoir_counts();
+            println!(
+                "lookback reservoir: {} frames scored, {} event slots and {} random slots taken",
+                c[0], c[1], c[2]
+            );
+        }
         let mut t = format!(
             "rate\tmax_frames\tcatchup\tdouble\tframes\tpushed\tcell_frames\tbirths\tin_need\twall_s\tdrain_steps\tdrain_frames\n{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}\n\ntenth\tframes\tcell_frames\n",
             l.rate,

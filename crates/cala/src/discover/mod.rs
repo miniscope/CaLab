@@ -329,6 +329,24 @@ pub enum RefineGate {
 }
 
 /// Which merge tests may merge (S2.1c merge redesign).
+/// Experimental (off by default): which look-back frames
+/// ([`SlowLoop::observe_lookback`]) are also offered to the frame reservoir
+/// while Discover runs, so the held-out frames a footprint change is tested
+/// on keep turning over without an end-of-recording pass (a live stream has
+/// none). A look-back frame keeps the held-out decision it had as a live
+/// frame: a held-out frame can only become a test slot and never reaches
+/// the footprint statistics; a fitting frame can only become a fitting slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LookbackReservoir {
+    /// Look-back frames feed the statistics and cluster stores only.
+    #[default]
+    Off,
+    /// Held-out look-back frames are offered (as test frames).
+    Test,
+    /// Every look-back frame is offered, on the side it had.
+    All,
+}
+
 /// Where footprints of overlapping cells are updated jointly from a
 /// replay of their stored history (`cluster.rs`, the Stage 1 design in
 /// `demix-bench/design_joint_update.md`): a cluster of cells whose
@@ -1180,6 +1198,11 @@ pub struct SlowLoop {
     noise_gen: u64,
     /// [`SlowLoop::set_reservoir_frozen`].
     res_frozen: bool,
+    /// [`SlowLoop::set_lookback_reservoir`] and its counters (look-back
+    /// frames scored, event slots and random slots they took).
+    lb_res: LookbackReservoir,
+    lb_res_share: f32,
+    lb_res_counts: [u64; 3],
 }
 
 /// Record an edit for the slow loop a visit was run for (`shard.rs`).
@@ -1482,6 +1505,9 @@ impl SlowLoop {
             rbuf: Vec::new(),
             lb_only: None,
             res_frozen: false,
+            lb_res: LookbackReservoir::Off,
+            lb_res_share: 1.0,
+            lb_res_counts: [0; 3],
             merge_rejected: Vec::new(),
             forced: Vec::new(),
             scope: EditScope::All,
@@ -2046,7 +2072,8 @@ impl SlowLoop {
     /// library (`traces` from a separate trace engine on `lib`). Nothing
     /// else sees it: no frame counter, ledger, probes, reservoir or noise
     /// correlation, so the slow loop's clocks and held-out tests are those
-    /// of Discover alone. `slow_index` is the index the frame had (or would
+    /// of Discover alone (the reservoir only with the experimental
+    /// [`SlowLoop::set_lookback_reservoir`]). `slow_index` is the index the frame had (or would
     /// have had) in the slow loop: a held-out frame stays held out.
     pub fn observe_lookback(
         &mut self,
@@ -2063,10 +2090,92 @@ impl SlowLoop {
                 "traces do not come from this library / frame size".into(),
             ));
         }
-        if self.is_test(slow_index) {
+        let test = self.is_test(slow_index);
+        // Only a frame the loop has already seen live has an index of its
+        // own to be stored under (warm-up frames do not).
+        if slow_index < self.frames
+            && match self.lb_res {
+                LookbackReservoir::Off => false,
+                LookbackReservoir::Test => test,
+                LookbackReservoir::All => true,
+            }
+        {
+            self.offer_lookback(frame, lib, traces, slow_index, test)?;
+        }
+        if test {
             return Ok(false);
         }
         self.observe_lookback_fit(frame, lib, traces, only)
+    }
+
+    /// Experimental (off by default): offer look-back frames to the
+    /// reservoir as well (see [`LookbackReservoir`]); `share` in (0, 1] is
+    /// the share of the eligible frames offered (chosen by a hash of the
+    /// frame index). Only [`SlowLoop::observe_lookback`] does it: the
+    /// flagged variant has no slow-loop index to store a frame under.
+    pub fn set_lookback_reservoir(&mut self, mode: LookbackReservoir, share: f32) {
+        self.lb_res = mode;
+        self.lb_res_share = share.clamp(0.0, 1.0);
+    }
+
+    /// Look-back frames scored for the reservoir, and the event slots and
+    /// random slots they took ([`SlowLoop::set_lookback_reservoir`]).
+    pub fn lookback_reservoir_counts(&self) -> [u64; 3] {
+        self.lb_res_counts
+    }
+
+    /// Offer past frame `slow_index` (its side: `test`) to the reservoir,
+    /// scored by the current library's residual and dated now. A frame a
+    /// tile already holds is not stored again. No probes, ledger or frame
+    /// counter.
+    fn offer_lookback(
+        &mut self,
+        frame: &[f32],
+        lib: &Library,
+        traces: &FrameTraces,
+        slow_index: u64,
+        test: bool,
+    ) -> Result<(), TraceError> {
+        if self.lb_res_share < 1.0 {
+            let u = (mix(slow_index ^ 0x6c62_7265_7331) >> 40) as f32 / (1u64 << 24) as f32;
+            if u >= self.lb_res_share {
+                return Ok(());
+            }
+        }
+        let n_px = self.dims.pixels();
+        let scale = self.score_residual(frame, lib, traces)?;
+        self.work += (n_px * 4 + self.coarse.len() * 30) as u64;
+        self.lb_res_counts[0] += 1;
+        let clock = self.frames;
+        let w = self.dims.width;
+        let took = if self.shared.frames.iter().any(|f| f.frame == slow_index) {
+            None
+        } else {
+            self.rng = mix(self.rng);
+            self.shared
+                .offer(&self.z, w, slow_index, test, self.cap_random, self.rng)
+        };
+        self.lb_res_counts[2] += u64::from(took.is_some());
+        for ti in 0..self.tiles.len() {
+            let score = self.tile_score(ti, scale);
+            let tile = &mut self.tiles[ti];
+            let before = tile.fresh;
+            tile.offer_at(
+                &self.z,
+                w,
+                slow_index,
+                clock,
+                score,
+                test,
+                self.cap_events,
+                self.ln_decay,
+            );
+            self.lb_res_counts[1] += u64::from(tile.fresh - before);
+            if let Some(j) = took {
+                tile.set_random(j, slow_index, test);
+            }
+        }
+        Ok(())
     }
 
     /// [`SlowLoop::observe_lookback`] with the held-out decision given

@@ -2825,6 +2825,111 @@ fn frozen_reservoir_takes_no_frames_but_statistics_and_clock_run() {
     assert!(slow.reservoir_bytes() > 0);
 }
 
+/// Look-back frames offered to the reservoir (experimental switch) keep
+/// the held-out side they had as live frames: a held-out frame becomes a
+/// test slot only and leaves the footprint statistics untouched, a fitting
+/// frame becomes a fitting slot only, no tile stores a frame twice, and
+/// `Test` mode adds no fitting slot. Off (the default) stores nothing.
+#[test]
+fn lookback_reservoir_keeps_the_held_out_side_and_stores_no_frame_twice() {
+    let t = 90;
+    let mut rng = Lcg(5);
+    let cells = vec![(blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0))];
+    let m = movie(&cells, t, 7);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let n_px = N * N;
+    // Live frames with the reservoir frozen (the clock runs, nothing is
+    // stored), then the same frames as look-back frames, twice.
+    let run = |mode: LookbackReservoir, skip_held: bool| {
+        let (mut slow, mut eng) = start(config(), &seed);
+        let lib = eng.library().clone();
+        slow.set_reservoir_frozen(true);
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let tr = eng.process(f).unwrap();
+            slow.observe(f, &lib, &tr).unwrap();
+        }
+        slow.set_reservoir_frozen(false);
+        slow.set_lookback_reservoir(mode, 1.0);
+        for _ in 0..2 {
+            for k in 0..t {
+                let held = slow.is_test(k as u64);
+                let f = &m[k * n_px..(k + 1) * n_px];
+                let tr = eng.process(f).unwrap();
+                if held && skip_held {
+                    continue;
+                }
+                let pushed = slow.observe_lookback(f, &lib, &tr, k as u64, None).unwrap();
+                assert_eq!(pushed, !held);
+            }
+        }
+        // A frame that was never live (index beyond the clock) is not stored.
+        let f = &m[..n_px];
+        let tr = eng.process(f).unwrap();
+        let before = slow.lookback_reservoir_counts();
+        slow.observe_lookback(f, &lib, &tr, t as u64 + 5, None)
+            .unwrap();
+        assert_eq!(slow.lookback_reservoir_counts(), before);
+        slow
+    };
+    let slots = |slow: &SlowLoop| -> Vec<Vec<(u64, bool)>> {
+        slow.tiles
+            .iter()
+            .map(|tile| {
+                tile.slots()
+                    .into_iter()
+                    .map(|w| (tile.slot(w).frame, tile.slot(w).test))
+                    .collect()
+            })
+            .collect()
+    };
+    let off = run(LookbackReservoir::Off, false);
+    assert_eq!(off.reservoir_bytes(), 0);
+    assert_eq!(off.lookback_reservoir_counts(), [0; 3]);
+
+    let all = run(LookbackReservoir::All, false);
+    let (mut n_test, mut n_fit) = (0, 0);
+    for tile in slots(&all) {
+        let mut seen = std::collections::HashSet::new();
+        for (frame, test) in tile {
+            assert!(frame < t as u64);
+            assert_eq!(test, all.is_test(frame), "frame {frame} changed side");
+            assert!(seen.insert(frame), "frame {frame} stored twice");
+            n_test += usize::from(test);
+            n_fit += usize::from(!test);
+        }
+    }
+    assert!(n_test > 0 && n_fit > 0, "{n_test} test, {n_fit} fit slots");
+    for tile in &all.tiles {
+        let mut ev: Vec<u64> = tile.events.iter().map(|s| s.frame).collect();
+        ev.sort_unstable();
+        assert!(ev.windows(2).all(|w| w[0] != w[1]));
+    }
+    // Held-out frames never reach the statistics: the same run without them
+    // (or with the switch off) has the same statistics.
+    let no_held = run(LookbackReservoir::All, true);
+    let id = all.fpstats.keys().next().copied().unwrap();
+    // (The library version is a process-wide counter: left out.)
+    let dbg = |s: &SlowLoop| {
+        let mut st = s.fpstats[&id].clone();
+        st.version = 0;
+        format!("{st:?}")
+    };
+    assert!(dbg(&all) == dbg(&no_held));
+    assert!(dbg(&all) == dbg(&off));
+
+    let test_only = run(LookbackReservoir::Test, false);
+    let mut n = 0;
+    for tile in slots(&test_only) {
+        for (frame, test) in tile {
+            assert!(test && test_only.is_test(frame));
+            n += 1;
+        }
+    }
+    assert!(n > 0);
+    assert!(dbg(&test_only) == dbg(&off));
+}
+
 // ---- look-back scheduler (`lookback.rs`) ----------------------------------
 
 fn lb_lib(version: u64, cells: &[Footprint]) -> Library {

@@ -110,3 +110,30 @@ Refine; 3 slow seeds; `--fps 30 --motion`.
   settle moves footprints by at most 1.5 x the second-Refine null. Not consistent: seed-to-seed r below D + R's by
   more than 0.01, or the Refine after it moves footprints more than 2 x the null.
 - Reported: cell counts, split-half noise, and the replay-on against replay-off cell difference if both are run.
+
+## Decided before the runs (after the targets, before any result)
+
+- **Run slots.** A branched run shows two qc_eval processes while a branch runs (the waiting parent and the branch),
+  and both count against the machine-wide cap of 6. To keep the study inside a day: on the sims the `OFF` Discover is
+  branched after the drain into `OFF` and `OFF+S` only (`OFF+R` is not run); on the workshop recording each seed is one
+  run, `OFF` + S + a Refine pass with `--settle-libs --wrap-libs --noise-dump` (library at the start of the settle =
+  `OFF`, at the wrap = `OFF+S`, final = `OFF+S+R`), and `SETTLE` seed 1 is re-run beside them for the timing.
+- **Timing reference on the sims.** `SETTLE` is re-run on the quick tier (5 sims) in the same batch as `OFF+S`; the
+  speed ratio of P3 is the mean over those 5 sims. The other 9 sims use the settle study's `SETTLE` runs for quality
+  only.
+- **P4 arms** (binary `qc_eval-lbs2-b`; new switch `SlowLoop::set_lookback_reservoir`, qc_eval `--lookback-reservoir`):
+
+  | arm        | added to the base's Discover flags                       | what it does                                                        |
+  | ---------- | -------------------------------------------------------- | ------------------------------------------------------------------- |
+  | `LBR-test` | `--lookback-reservoir test`                              | held-out look-back frames are offered to the reservoir (test side)  |
+  | `LBR-all`  | `--lookback-reservoir all`                               | every look-back frame is offered, on the side it had as a live frame |
+  | `LBR-half` | `--lookback-reservoir all --lookback-reservoir-share 0.5` | half of them (only if `LBR-all` passes the screen; cost arm)        |
+
+  How a look-back frame enters the reservoir: it is scored by the current library's residual, as a live frame is; its
+  slot keeps the frame's own index (so "events after a deletion" and the no-duplicate rule read the true frame) and is
+  dated now for the age-fading priority; a frame a tile already holds is passed over; no probes, no ledger, no frame
+  counter. Feeding look-back frames through the full `observe` during Discover is not run: it would give each frame a
+  new held-out draw (a fitted frame could become a test frame) and count the same transients twice in the evidence
+  ledger that add decisions use.
+- **P5.** The Samara sessions have 17,880 and 17,876 frames (timestamps); all frames are read (no `--frames`), the
+  settle is one pass of 17,856 frames (279 blocks of 64).
