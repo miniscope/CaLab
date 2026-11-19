@@ -748,7 +748,10 @@ impl SettleSnap {
             let (pix, raw) = lib.unfiltered(slot);
             let (fpix, _) = lib.filtered(slot);
             let peak = raw.iter().fold(0.0f32, |a, &b| a.max(b));
-            let v: Vec<f32> = raw.iter().map(|&x| if peak > 0.0 { x / peak } else { x }).collect();
+            let v: Vec<f32> = raw
+                .iter()
+                .map(|&x| if peak > 0.0 { x / peak } else { x })
+                .collect();
             let noise = sl.footprint_noise(id, fpix).unwrap_or(f64::NAN);
             cells.insert(id, (pix.to_vec(), v, noise));
         }
@@ -759,7 +762,8 @@ impl SettleSnap {
     /// relative L2 (`|a' - a| / |a|` over the union of the supports) and
     /// 1 - cosine, against the noise at `self`.
     fn change_from(&self, prev: &SettleSnap) -> SettleChange {
-        let (mut ratio, mut rel, mut shape, mut noise) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut ratio, mut rel, mut shape, mut noise) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (id, (pix, v, n)) in &self.cells {
             let Some((ppix, pv, _)) = prev.cells.get(id) else {
                 continue;
@@ -802,7 +806,11 @@ impl SettleSnap {
         ratio.sort_by(f64::total_cmp);
         let med = |v: &mut Vec<f64>| {
             v.sort_by(f64::total_cmp);
-            if v.is_empty() { f64::NAN } else { v[v.len() / 2] }
+            if v.is_empty() {
+                f64::NAN
+            } else {
+                v[v.len() / 2]
+            }
         };
         SettleChange {
             rel_med: med(&mut rel),
@@ -1220,7 +1228,8 @@ impl LookBack {
                         // more than `stop_k` times their own split-half
                         // noise since the last checkpoint is at most
                         // `stop_share`, at `stop_checks` checkpoints in a row.
-                        let hit = cfg.stop_share > 0.0 && m.share_above(cfg.stop_k) <= cfg.stop_share;
+                        let hit =
+                            cfg.stop_share > 0.0 && m.share_above(cfg.stop_k) <= cfg.stop_share;
                         below = if hit { below + 1 } else { 0 };
                         let stop = hit && below >= cfg.stop_checks && fed >= cfg.min_frames;
                         let st = sl.stats();

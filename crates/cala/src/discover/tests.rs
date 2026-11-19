@@ -2792,6 +2792,39 @@ fn lookback_frames_feed_only_the_named_cells_statistics() {
     assert!(!slow.fpstats.contains_key(&b));
 }
 
+/// With the reservoir frozen (evaluation switch), `observe` still feeds
+/// the statistics and advances the frame clock but stores no frame and
+/// makes no tile due; unfrozen, it stores frames again.
+#[test]
+fn frozen_reservoir_takes_no_frames_but_statistics_and_clock_run() {
+    let t = 60;
+    let mut rng = Lcg(5);
+    let cells = vec![(blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0))];
+    let m = movie(&cells, t, 7);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let (mut slow, mut eng) = start(config(), &seed);
+    let lib = eng.library().clone();
+    let n_px = N * N;
+    slow.set_reservoir_frozen(true);
+    for k in 0..t / 2 {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        slow.observe(f, &lib, &tr).unwrap();
+    }
+    assert_eq!(slow.frames(), (t / 2) as u64);
+    assert!(slow.fpstats.contains_key(&lib.ids()[0]));
+    assert_eq!(slow.reservoir_bytes(), 0);
+    assert!(slow.tiles.iter().all(|tile| tile.fresh == 0));
+    slow.set_reservoir_frozen(false);
+    for k in t / 2..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        slow.observe(f, &lib, &tr).unwrap();
+    }
+    assert_eq!(slow.frames(), t as u64);
+    assert!(slow.reservoir_bytes() > 0);
+}
+
 // ---- look-back scheduler (`lookback.rs`) ----------------------------------
 
 fn lb_lib(version: u64, cells: &[Footprint]) -> Library {

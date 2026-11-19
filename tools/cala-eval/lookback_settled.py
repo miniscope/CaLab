@@ -277,7 +277,7 @@ def cmd_real(a):
     libs, L = {}, []
     for name, d in runs.items():
         d = Path(d)
-        for tag in ["wrap1", "wrap2", "final"]:
+        for tag in a.tags.split(","):
             p = lib_path(d, tag)
             if p.exists():
                 h, w, ids, cells, _ = DM.read_library(p)
@@ -286,7 +286,7 @@ def cmd_real(a):
           "| run | step | cells before / after / in both | moved at all | change, app metric (rel. L2), median [IQR] | shape-only change, median [IQR] | split-half noise before, median | change / noise, median |",
           "| --- | --- | --- | --- | --- | --- | --- | --- |"]  # fmt: skip
     for name, d in runs.items():
-        tags = [t for t in ["wrap1", "wrap2", "final"] if f"{name}:{t}" in libs]
+        tags = [t for t in a.tags.split(",") if f"{name}:{t}" in libs]
         for b, af in zip(tags, tags[1:]):
             rows, info = step_rows(Path(d), b, af)
             rel = np.array([r["rel_l2"] for r in rows])
@@ -326,6 +326,7 @@ def main(argv=None):
     r.add_argument("--run", action="append", required=True, help="NAME=DIR")
     r.add_argument("--pair", action="append", help="NAME:TAG,NAME:TAG (or Minian) to compare")
     r.add_argument("--minian", type=Path, help="Minian output directory (A.zarr)")
+    r.add_argument("--tags", default="wrap1,wrap2,final", help="libraries of each run, in order (e.g. settle0,settle5,final)")
     r.add_argument("--md", type=Path)
     a = ap.parse_args(argv)
     {"sims": cmd_sims, "real": cmd_real}[a.cmd](a)
