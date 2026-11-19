@@ -665,6 +665,9 @@ impl<'a> TileMatrix<'a> {
         let q = f64::from(quant);
         // A missing sample counts as the mean of the pixel's valid samples,
         // which is 0 after centring; a pixel with no valid sample is all 0.
+        // So the stored mean is 0 for a pixel that was never valid in this
+        // window, and a factor solve reads that 0 where a frame solve on a
+        // replay sees a missing pixel.
         let mean = acc
             .iter()
             .zip(&cnt)

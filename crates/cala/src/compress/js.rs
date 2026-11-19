@@ -379,6 +379,8 @@ impl JsFactorExtractor {
 
     /// Solve frames `t0..t0 + count` of the open window; returns
     /// `count x cells` traces, frame after frame, in the library's id order.
+    /// The traces carry no frame index: the first row is frame `t0` of the
+    /// window, whose stream index is `start + t0`.
     pub fn solve(&mut self, t0: u32, count: u32) -> Result<Vec<f32>, JsError> {
         let Some((wf, proj)) = self.window.as_ref() else {
             return Err(js_err("FactorExtractor.solve", "no window is open"));
@@ -391,7 +393,13 @@ impl JsFactorExtractor {
                 format!("frames {t0}..{end} of {}", wf.frames),
             ));
         }
-        let mut out = Vec::with_capacity(count as usize * self.ids.len());
+        let Some(len) = (count as usize).checked_mul(self.ids.len()) else {
+            return Err(js_err(
+                "FactorExtractor.solve",
+                format!("{count} frames of {} cells", self.ids.len()),
+            ));
+        };
+        let mut out = Vec::with_capacity(len);
         self.inner
             .solve(wf, proj, t0 as usize, count as usize, |tr| {
                 out.extend_from_slice(&tr.traces);
