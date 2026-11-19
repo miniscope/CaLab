@@ -319,7 +319,11 @@ def report(
             "| --- | --- | --- | --- |",
         ]
         text += [f"| {a} | {p:.2f} | {s:.2f} | {w:.2f} |" for a, p, s, w in rows]
-        text.append("")
+        text += [
+            "",
+            "Preparing: projectors built (factor engine), or frames preprocessed (frame engine).",
+            "",
+        ]
     return "\n".join(text)
 
 

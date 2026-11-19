@@ -505,5 +505,28 @@ class TraceGap(unittest.TestCase):
         self.assertEqual(gap[1], 0.0)
 
 
+class EngineReport(unittest.TestCase):
+    def test_report_counts_cells_without_a_centroid_and_states_the_footprints(
+        self,
+    ) -> None:
+        # Cell 13 has traces but no footprint, so no centroid.
+        ref = {7: TRACES[7], 9: TRACES[9], 13: TRACES[11]}
+        test = {7: TRACES[7], 9: [v + 0.5 for v in TRACES[9]], 13: TRACES[11]}
+        sd = float(np.std(np.asarray(TRACES[9], "<f4")))
+        cells = {7: CELLS[7], 9: CELLS[9]}
+        with tempfile.TemporaryDirectory() as d:
+            a, b = Path(d) / "ref", Path(d) / "test"
+            write_run(a, cells, ref)
+            write_run(b, cells, test)
+            text = F.engine_report(a, b, band=16.0)
+            self.assertIn("same footprints: yes", text)
+            self.assertIn("| all cells | 3 |", text)
+            self.assertIn(f"{0.5 / sd:.4f} |", text)
+            (b / "footprints.bin").write_bytes(
+                b"x" + (a / "footprints.bin").read_bytes()
+            )
+            self.assertIn("same footprints: no", F.engine_report(a, b))
+
+
 if __name__ == "__main__":
     unittest.main()
