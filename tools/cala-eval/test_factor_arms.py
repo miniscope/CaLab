@@ -126,6 +126,32 @@ class Arms(unittest.TestCase):
         self.assertNotIn("f_null", A.default_arms(a))
         self.assertEqual(A.line_step(a["f_chosen"]), 32)
 
+    def test_extra_with_a_factor_refine_flag_is_refused_for_every_arm(self) -> None:
+        for flag in A.FACTOR_REFINE_FLAGS:
+            with self.assertRaisesRegex(ValueError, "factor Refine arms"):
+                A.command(
+                    Path("qc"),
+                    Path("rec"),
+                    Path("out/raw"),
+                    A.arms(5)["raw"],
+                    True,
+                    None,
+                    None,
+                    [flag, "2"],
+                )
+        # Other extras still pass.
+        cmd = A.command(
+            Path("qc"),
+            Path("rec"),
+            Path("out/raw"),
+            A.arms(5)["raw"],
+            True,
+            None,
+            None,
+            ["--joint-iters", "3"],
+        )
+        self.assertEqual(cmd[-2:], ["--joint-iters", "3"])
+
     def test_the_factor_folder_follows_the_refine_engine_flag_too(self) -> None:
         cmd = A.command(
             Path("qc"),
@@ -407,7 +433,7 @@ class Arms(unittest.TestCase):
             run.mkdir()
             (run / "iterations.tsv").write_text(
                 head
-                + "1\t9\t100\t40\t0.21000\t0.004000\t3\t0\t1.00\t5.00\t1.00\t2.00\t0.10\t9.10\t\n"
+                + "1\t9\t100\t40\t0.21000\t0.004000\t3\t0\t1.00\t5.00\t1.00\t2.00\t0.10\t9.10\t-\n"
                 + "2\t10\t100\t12\t0.01000\t0.000500\t3\t0\t1.00\t5.00\t1.00\t2.00\t0.10\t8.10\tsettled\n"
             )
             t = A.iteration_table(run)
@@ -460,10 +486,13 @@ class Arms(unittest.TestCase):
             self.assertIn("SETTLE raw", text)
             self.assertIn("SETTLE f_chosen", text)
             self.assertIn("no `iterations.tsv`", text)
-            self.assertIn("has the footprints of `f_chosen`: yes", text)
+            self.assertIn("`f_null` repeats `f_chosen` with another later budget", text)
+            self.assertIn("this is a repeat run", text)
+            self.assertNotIn("speed", text)
+            self.assertIn("footprints identical to `f_chosen`: yes", text)
             (out / "f_null" / "footprints.bin").write_bytes(b"b")
             text = A.report(out, ["raw", "f_chosen", "f_null"], None)
-            self.assertIn("has the footprints of `f_chosen`: no", text)
+            self.assertIn("footprints identical to `f_chosen`: no", text)
             (out / "f_null" / "footprints.bin").unlink()
             text = A.report(out, ["raw", "f_chosen", "f_null"], None)
             self.assertIn("n/a", text)

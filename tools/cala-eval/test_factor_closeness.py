@@ -747,6 +747,29 @@ class Settle(unittest.TestCase):
                 any("iteration 3" in r and "footprints_iter3.bin" in r for r in text)
             )
 
+    def test_a_truncated_library_file_is_n_a_and_the_next_step_still_compares(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d) / "f_chosen"
+            run.mkdir()
+            cell = ([10, 11, 12], [1.0, 3.0, 1.0])
+            write_fp(run / "footprints_pass1.bin", {1: cell})
+            write_fp(run / "footprints_iter1.bin", {1: cell, 2: cell})
+            whole = (run / "footprints_iter1.bin").read_bytes()
+            (run / "footprints_iter1.bin").write_bytes(whole[:40])
+            write_fp(run / "footprints_iter2.bin", {1: cell})
+            (run / "footprints_iter3.bin").write_bytes(b"CALA")
+            text = F.settle_table(run)
+            rows = [r for r in text if r.startswith("| ") and "---" not in r][1:]
+            self.assertEqual(rows[1], "| iteration 1 | n/a | n/a | n/a | n/a |")
+            self.assertTrue(rows[2].startswith("| iteration 2 | 1 | 0.0000 |"))
+            self.assertEqual(rows[3], "| iteration 3 | n/a | n/a | n/a | n/a |")
+            joined = "\n".join(text)
+            self.assertIn("`footprints_iter1.bin`", joined)
+            self.assertIn("`footprints_iter3.bin`", joined)
+            self.assertIn("one offset", joined)
+
     def test_settle_table_without_libraries_says_n_a(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             run = Path(d) / "raw"

@@ -22,12 +22,12 @@ Arms (each a `qc_eval real` run in `DIR/<arm>`; pass 1 is the same in all):
 - `c_chosen`: as `chosen`, with the Extract pass solved by the factor engine (arm C).
 - `x_raw` and `x_<tiling>`: Discover and the Extract pass only, so the two
   Extracts solve with one and the same library.
-- Phase 3, not in the default set:
+- Phase 3, not in the default set (name them in `--arms`):
   - `f_chosen`: Discover, a compression replay (pass 2: offset grids, recalibrated), Refine
     on factors until the footprints settle, the Extract pass on the factor engine. The report
     compares it with `raw` by cell id (the same Discover) and adds settle and iteration tables.
-  - `f_null`: `f_chosen` with twice the slow-loop budget after Discover; its footprints must
-    be the same bytes.
+  - `f_null`: `f_chosen` with another `--later-budget`. A factor Refine uses no budget, so
+    this is a repeat run of `f_chosen`; the report says whether its footprints are identical.
 - Phase 4a, not in the default set:
   - `live`: Discover's own factors (pass 1, offset grids) feed the refine replays
     (rebuilt frames) and the Extract pass (factor engine); no factor comes from a replay.
@@ -126,6 +126,14 @@ SEEDED: tuple[str, ...] = ("raw_seed", "live_seed")
 # The arms of phase 3 (Refine on factors); run when named, so that runs started without
 # `--arms` keep their set.
 FACTOR_REFINE_ARMS: tuple[str, ...] = ("f_chosen", "f_null")
+# Flags only the factor Refine arms may carry; `--extra` goes to every arm.
+FACTOR_REFINE_FLAGS: tuple[str, ...] = (
+    "--settle-corr",
+    "--settle-share",
+    "--max-iterations",
+    "--test-frames",
+    "--refine-engine",
+)
 
 
 def arms(
@@ -160,8 +168,8 @@ def arms(
         *["--factors-pass", "2", "--extract-engine", "factors"],
         *["--refine-engine", "factors"],
     ]
-    # With another slow-loop budget after Discover: Refine on factors has none, so its
-    # footprints must be byte-identical (the result does not depend on the machine's speed).
+    # A repeat run of `f_chosen`: Refine on factors reads no budget, so the other
+    # `--later-budget` changes nothing; the report checks the footprints are the same bytes.
     out["f_null"] = out["f_chosen"] + ["--later-budget", str(budget * 2)]
     for name, cut in REMEDIES.items():
         out[name] = out["plain_recal"] + cut
@@ -227,6 +235,11 @@ def command(
         cmd += ["--budget", str(budget)]
     # `qc_eval` takes the first occurrence of a flag, so a repeat would be ignored silently.
     for flag in (t for t in extra or [] if t.startswith("--")):
+        if flag in FACTOR_REFINE_FLAGS:
+            raise ValueError(
+                f"--extra {flag} belongs to the factor Refine arms ({', '.join(FACTOR_REFINE_ARMS)}); "
+                "it goes to every arm and the raw arms would fail at start"
+            )
         if flag in cmd:
             raise ValueError(f"--extra {flag} is already set by the arm or the command")
     return cmd + (extra or [])
@@ -346,7 +359,8 @@ def iteration_table(run: Path) -> list[str]:
 
 
 def f_null_line(out_dir: Path) -> list[str]:
-    """Whether `f_null` ended with the footprints of `f_chosen` byte for byte."""
+    """Whether the repeat run `f_null` ended with the footprints of `f_chosen` byte for byte.
+    A factor Refine reads no budget, so this checks repeatability, not speed independence."""
     a, b = (out_dir / n / "footprints.bin" for n in ("f_chosen", "f_null"))
     if not (a.exists() and b.exists()):
         return [
@@ -355,7 +369,10 @@ def f_null_line(out_dir: Path) -> list[str]:
         ]
     same = a.read_bytes() == b.read_bytes()
     return [
-        f"`f_null` (another slow-loop budget after Discover) has the footprints of `f_chosen`: {'yes' if same else 'no'}.",
+        (
+            "`f_null` repeats `f_chosen` with another later budget; a factor Refine uses no "
+            f"budget, so this is a repeat run: footprints identical to `f_chosen`: {'yes' if same else 'no'}."
+        ),
         "",
     ]
 
@@ -661,7 +678,11 @@ def main() -> None:
         default=DEFAULT_BUDGET,
         help="slow-loop work units per frame (qc_eval --budget); the null arms use half and twice it",
     )
-    ap.add_argument("--arms", help="comma-separated subset")
+    ap.add_argument(
+        "--arms",
+        help="comma-separated subset; the arms of phase 3 (f_chosen, and f_null, a repeat "
+        "run of f_chosen with another --later-budget) run only when named here",
+    )
     ap.add_argument("--truth", type=Path)
     ap.add_argument("--qc-eval", type=Path, default=DEFAULT_QC_EVAL)
     ap.add_argument(

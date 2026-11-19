@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import math
 import re
+import struct
 import sys
 from pathlib import Path
 
@@ -999,15 +1000,23 @@ def settle_table(
     out = [
         (
             f"Footprint change per step, `{run.name}` (cells below a correlation of {corr:g} "
-            "with the step before; a cell in only one library counts as changed):"
+            "with the step before; a cell in only one library counts as changed; the truth "
+            "footprint r uses one offset to the truth, taken from the run's final Extract "
+            "traces, for every step):"
         ),
         "",
         "| step | cells | changed share | median change | truth footprint r median |",
         "| --- | --- | --- | --- | --- |",
     ]
     prev: dict[int, Cell] | None = None
+    unreadable: list[Path] = []
     for name, path in steps:
-        dims, cells = read_footprints(path)
+        lib = read_library(path)
+        if lib is None:
+            unreadable.append(path)
+            out.append(f"| {name} | n/a | n/a | n/a | n/a |")
+            continue
+        dims, cells = lib
         if prev is None:
             share, med, n = NAN, NAN, len(cells)
         else:
@@ -1022,7 +1031,21 @@ def settle_table(
     if gone:
         files = ", ".join(f"iteration {k} (`footprints_iter{k}.bin`)" for k in gone)
         out += ["", f"Left out, no library file: {files}."]
+    if unreadable:
+        names = ", ".join(f"`{q.name}`" for q in unreadable)
+        out += [
+            "",
+            f"n/a, the file is truncated or corrupt: {names}; the next step is compared with the last readable one.",
+        ]
     return out + [""]
+
+
+def read_library(path: Path) -> tuple[tuple[int, int], dict[int, Cell]] | None:
+    """A `footprints*.bin` as `read_footprints` reads it, or None when truncated or corrupt."""
+    try:
+        return read_footprints(path)
+    except (AssertionError, ValueError, OSError, struct.error):
+        return None
 
 
 def num(v: float, digits: int) -> str:
