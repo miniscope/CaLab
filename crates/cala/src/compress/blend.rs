@@ -12,7 +12,7 @@ use crate::preprocess::Dims;
 /// How a frame is cut into tiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tiling {
-    /// Square tiles side by side (the app's grid).
+    /// Square tiles side by side (Discover's live factors in the app).
     #[default]
     Plain,
     /// Each tile grown by this many px on every side that has a neighbour;
@@ -135,22 +135,32 @@ fn grids(tile: usize, tiling: Tiling) -> Vec<(usize, usize, usize, bool)> {
     }
 }
 
-/// `(x0, y0, w, h)` of the tiles of a tiling, in the order of
-/// [`BlendLayout::grid`] (which is built from this), without the blending
-/// weights (cost proportional to the tiles, not to the frame's area).
-pub fn grid_of(dims: Dims, tile: usize, tiling: Tiling) -> Vec<(usize, usize, usize, usize)> {
+/// Each tile of a tiling, in the order of [`grid_of`]: its spans along x and
+/// y, and its grid's ramp length and shape. The one statement of the cut.
+fn tile_spans(dims: Dims, tile: usize, tiling: Tiling) -> Vec<(Span, Span, usize, bool)> {
     let tile = tile.max(2);
-    let mut grid = Vec::new();
-    for (first, grow, _, _) in grids(tile, tiling) {
+    let mut out = Vec::new();
+    for (first, grow, ramp, cosine) in grids(tile, tiling) {
         let xs = spans(dims.width, tile, first, grow);
         let ys = spans(dims.height, tile, first, grow);
-        for sy in &ys {
-            for sx in &xs {
-                grid.push((sx.0, sy.0, sx.1, sy.1));
+        for &sy in &ys {
+            for &sx in &xs {
+                out.push((sx, sy, ramp, cosine));
             }
         }
     }
-    grid
+    out
+}
+
+/// `(x0, y0, w, h)` of the tiles of a tiling, grid after grid and row by row
+/// within a grid; a `tile` below 2 is raised to 2. [`BlendLayout::new`] takes
+/// its grid from this; here without the blending weights (cost proportional
+/// to the tiles, not to the frame's area).
+pub fn grid_of(dims: Dims, tile: usize, tiling: Tiling) -> Vec<(usize, usize, usize, usize)> {
+    tile_spans(dims, tile, tiling)
+        .iter()
+        .map(|(sx, sy, _, _)| (sx.0, sy.0, sx.1, sy.1))
+        .collect()
 }
 
 /// The tiles of a tiling and each tile's blending weights.
@@ -182,25 +192,17 @@ impl BlendLayout {
     }
 
     pub fn new(dims: Dims, tile: usize, tiling: Tiling) -> BlendLayout {
-        let tile = tile.max(2);
-        let mut grid = Vec::new();
-        let mut weights: Vec<Vec<f32>> = Vec::new();
-        for (first, grow, ramp, cosine) in grids(tile, tiling) {
-            let xs = spans(dims.width, tile, first, grow);
-            let ys = spans(dims.height, tile, first, grow);
-            for &sy in &ys {
+        let grid = grid_of(dims, tile, tiling);
+        let mut weights: Vec<Vec<f32>> = tile_spans(dims, tile, tiling)
+            .into_iter()
+            .map(|(sx, sy, ramp, cosine)| {
                 let wy = edge_window(sy, ramp, cosine);
-                for &sx in &xs {
-                    let wx = edge_window(sx, ramp, cosine);
-                    grid.push((sx.0, sy.0, sx.1, sy.1));
-                    weights.push(
-                        wy.iter()
-                            .flat_map(|&a| wx.iter().map(move |&b| a * b))
-                            .collect(),
-                    );
-                }
-            }
-        }
+                let wx = edge_window(sx, ramp, cosine);
+                wy.iter()
+                    .flat_map(|&a| wx.iter().map(move |&b| a * b))
+                    .collect()
+            })
+            .collect();
         // Normalise: the weights of the tiles that cover a pixel sum to 1.
         let mut sum = vec![0.0f32; dims.pixels()];
         for (g, w) in grid.iter().zip(&weights) {
@@ -270,7 +272,7 @@ impl BlendLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compress::{tile_grid, CompressConfig, WindowCompressor};
+    use crate::compress::{CompressConfig, WindowCompressor};
 
     const TILINGS: [Tiling; 4] = [
         Tiling::Plain,
@@ -365,10 +367,19 @@ mod tests {
     }
 
     #[test]
-    fn plain_layout_is_the_tile_grid() {
+    fn the_plain_grid_is_square_tiles_row_by_row() {
+        // 200 x 136 in 64 px tiles: 4 columns (the last 8 px wide), 3 rows
+        // (the last 8 px high).
         let dims = Dims::new(200, 136).unwrap();
+        let mut want = Vec::new();
+        for y0 in [0, 64, 128] {
+            for x0 in [0, 64, 128, 192] {
+                want.push((x0, y0, 64.min(200 - x0), 64.min(136 - y0)));
+            }
+        }
+        assert_eq!(grid_of(dims, 64, Tiling::Plain), want);
         let lay = BlendLayout::new(dims, 64, Tiling::Plain);
-        assert_eq!(lay.grid(), tile_grid(dims, 64).as_slice());
+        assert_eq!(lay.grid(), want.as_slice());
     }
 
     #[test]

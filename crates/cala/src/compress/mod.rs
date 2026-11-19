@@ -343,9 +343,9 @@ impl WindowFactors {
     }
 
     /// Inverse of [`WindowFactors::to_bytes`], also for v1 files (`CALAFAC1`,
-    /// plain tiling). `None` for truncated input, tiles that do not fit the
-    /// frame or the window's length, an unknown tiling, or (v2) tiles that
-    /// are not the grid of the tiling the header names.
+    /// read as plain). `None` for truncated input, tiles that do not fit the
+    /// frame or the window's length, an unknown tiling, or tiles that are not
+    /// the grid of the tiling the header names (for v1: the plain grid).
     pub fn from_bytes(b: &[u8]) -> Option<WindowFactors> {
         let v2 = match b.get(..8)? {
             m if m == FILE_MAGIC => true,
@@ -393,28 +393,20 @@ impl WindowFactors {
             tiles,
             compress_seconds: 0.0,
         };
-        // A blended rebuild pairs tiles and weights by index: refuse a file
-        // whose tiles are not the grid of its tiling.
-        if v2 && tile >= 2 {
-            // Compare the count first: the weights of a hostile header's
-            // layout can take hundreds of MB.
-            if BlendLayout::tile_count(dims, tile, tiling) != wf.tiles.len() {
-                return None;
-            }
-            let layout = wf.layout();
-            let same = layout.grid().len() == wf.tiles.len()
-                && layout
-                    .grid()
-                    .iter()
-                    .zip(&wf.tiles)
-                    .all(|(g, t)| *g == (t.x0, t.y0, t.w, t.h));
-            if !same {
-                return None;
-            }
-        } else if v2 {
+        // A blended rebuild pairs tiles and weights by index, and a plain
+        // one writes the tiles side by side: refuse a file whose tiles are
+        // not the grid of its tiling. A v1 file names no tiling and is read
+        // as plain, so its tiles must be the plain grid (v1 files with
+        // overlapping or offset tiles exist and would overwrite each other).
+        // Compare the count first: it costs nothing for a hostile header.
+        if tile < 2 || BlendLayout::tile_count(dims, tile, tiling) != wf.tiles.len() {
             return None;
         }
-        Some(wf)
+        let same = blend::grid_of(dims, tile, tiling)
+            .iter()
+            .zip(&wf.tiles)
+            .all(|(g, t)| *g == (t.x0, t.y0, t.w, t.h));
+        same.then_some(wf)
     }
 
     /// Mean rank over the tiles.
@@ -568,27 +560,8 @@ impl WindowCompressor {
     }
 }
 
-/// `(x0, y0, w, h)` of the tiles of a frame, row by row; the tiles at the
-/// right and bottom edge are smaller when `tile` does not divide the frame.
-pub fn tile_grid(dims: Dims, tile: usize) -> Vec<(usize, usize, usize, usize)> {
-    let tile = tile.max(1);
-    let mut grid = Vec::new();
-    for y0 in (0..dims.height).step_by(tile) {
-        for x0 in (0..dims.width).step_by(tile) {
-            grid.push((
-                x0,
-                y0,
-                tile.min(dims.width - x0),
-                tile.min(dims.height - y0),
-            ));
-        }
-    }
-    grid
-}
-
 /// Quantize `count` frames (frame after frame in `frames`) into tile order:
-/// for each tile of `grid` (`(x0, y0, w, h)`, see [`tile_grid`] and
-/// [`blend::BlendLayout::grid`]), its `count x P` values, a frame per row,
+/// for each tile of `grid` (`(x0, y0, w, h)`, see [`blend::grid_of`]), its `count x P` values, a frame per row,
 /// which is what [`compress_tile`] reads. `out` holds `count` times the
 /// pixels of all tiles.
 pub fn quantize_tiles(
@@ -618,7 +591,8 @@ pub fn quantize_tiles(
 }
 
 /// The quantized value of a missing sample (a non-finite pixel). `quantize`
-/// clamps to `±32767`, so no finite value maps to it.
+/// clamps to `±32767`, so no finite value maps to it. The one definition of
+/// the marker: Discover's reservoir (`discover::reservoir`) uses it too.
 pub const MISSING: i16 = i16::MIN;
 
 /// `round(v * quant)` in `i16`; a non-finite value gives [`MISSING`].
@@ -1295,7 +1269,7 @@ mod tests {
         let dims = Dims::new(5, 3).unwrap();
         let frames: Vec<f32> = (0..30).map(|i| i as f32).collect();
         let mut out = vec![0i16; 30];
-        let grid = tile_grid(dims, 2);
+        let grid = blend::grid_of(dims, 2, Tiling::Plain);
         quantize_tiles(&frames, 2, dims, &grid, 1.0, &mut out);
         assert_eq!(grid.len(), 6);
         assert_eq!(grid[2], (4, 0, 1, 2));
@@ -1427,12 +1401,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_v1_window_file_still_reads_as_plain() {
-        let dims = Dims::new(96, 70).unwrap();
-        let wf = window_of(dims, Tiling::Plain, 90);
+    /// A window as a v1 file (`CALAFAC1`, no tiling in the header).
+    fn v1_file(wf: &WindowFactors) -> Vec<u8> {
         let mut v1 = b"CALAFAC1".to_vec();
-        for v in [dims.width, dims.height, 64, wf.frames, wf.tiles.len()] {
+        for v in [
+            wf.dims.width,
+            wf.dims.height,
+            wf.tile,
+            wf.frames,
+            wf.tiles.len(),
+        ] {
             v1.extend_from_slice(&(v as u32).to_le_bytes());
         }
         v1.extend_from_slice(&(wf.start as f64).to_le_bytes());
@@ -1441,6 +1419,104 @@ mod tests {
             v1.extend_from_slice(&(rec.len() as u32).to_le_bytes());
             v1.extend_from_slice(&rec);
         }
+        v1
+    }
+
+    #[test]
+    fn a_v1_file_whose_tiles_are_not_the_plain_grid_is_refused() {
+        // Overlap 8 on 96 x 70 cuts as many tiles as the plain grid (2 x 2),
+        // but the second starts at x = 56, inside the first: read as plain,
+        // the tiles would overwrite each other.
+        let dims = Dims::new(96, 70).unwrap();
+        let wf = window_of(dims, Tiling::Overlap(8), 90);
+        assert_eq!(
+            wf.tiles.len(),
+            BlendLayout::tile_count(dims, 64, Tiling::Plain)
+        );
+        let (a, b) = (&wf.tiles[0], &wf.tiles[1]);
+        assert!(b.x0 < a.x0 + a.w, "the second tile overlaps the first");
+        assert!(WindowFactors::from_bytes(&v1_file(&wf)).is_none());
+        // The offset grids: more tiles than the plain grid.
+        let wf = window_of(dims, Tiling::Offset, 90);
+        assert!(WindowFactors::from_bytes(&v1_file(&wf)).is_none());
+        // A v1 file on the plain grid reads.
+        let wf = window_of(dims, Tiling::Plain, 90);
+        assert!(WindowFactors::from_bytes(&v1_file(&wf)).is_some());
+    }
+
+    /// Frame `t` of one tile at frame pixel `(x, y)`.
+    fn tile_value(tf: &TileFactors, t: usize, x: usize, y: usize) -> f32 {
+        let p = (y - tf.y0) * tf.w + (x - tf.x0);
+        let v = &tf.temporal[t * tf.rank..(t + 1) * tf.rank];
+        let w = &tf.spatial[p * tf.rank..(p + 1) * tf.rank];
+        tf.mean[p] + w.iter().zip(v).map(|(a, b)| a * b).sum::<f32>()
+    }
+
+    #[test]
+    fn where_the_offset_grids_disagree_the_rebuild_is_their_weighted_mean() {
+        let dims = Dims::new(96, 70).unwrap();
+        let mut wf = window_of(dims, Tiling::Offset, 90);
+        // The second grid (cut at 32, 96) comes after the first grid's tiles.
+        let first = BlendLayout::tile_count(dims, 64, Tiling::Plain);
+        for tf in &mut wf.tiles[first..] {
+            for m in &mut tf.mean {
+                *m += 10.0;
+            }
+        }
+        // Pixel (40, 10): in the first grid's tile (0, 0, 64, 64) and the
+        // second grid's tile (32, 0, 64, 32), and in no other.
+        let (x, y, t) = (40usize, 10usize, 45usize);
+        let covers = |tf: &TileFactors| {
+            (tf.x0..tf.x0 + tf.w).contains(&x) && (tf.y0..tf.y0 + tf.h).contains(&y)
+        };
+        let i1 = wf.tiles[..first].iter().position(covers).unwrap();
+        let i2 = first + wf.tiles[first..].iter().position(covers).unwrap();
+        assert_eq!(wf.tiles.iter().filter(|tf| covers(tf)).count(), 2);
+        assert_eq!(
+            (
+                wf.tiles[i1].x0,
+                wf.tiles[i1].y0,
+                wf.tiles[i2].x0,
+                wf.tiles[i2].y0
+            ),
+            (0, 0, 32, 0)
+        );
+        let (s1, s2) = (
+            tile_value(&wf.tiles[i1], t, x, y),
+            tile_value(&wf.tiles[i2], t, x, y),
+        );
+        assert!(
+            (s2 - s1 - 10.0).abs() < 0.5,
+            "the grids disagree: {s1} {s2}"
+        );
+        // Triangular weights over 32 px towards the inner edges: tile 1 at
+        // x 40 of 64 (high side ramp), y 10 of 64 (beyond the ramp); tile 2
+        // at x 8 of 64 (low side ramp), y 10 of 32 (high side ramp).
+        let w1 = (64.0f32 - 40.5) / 32.0;
+        let w2 = (8.5f32 / 32.0) * ((32.0 - 10.5) / 32.0);
+        let (n1, n2) = (w1 / (w1 + w2), w2 / (w1 + w2));
+        let lay = wf.layout();
+        let at = |i: usize| {
+            let g = lay.grid()[i];
+            lay.weights()[i][(y - g.1) * g.2 + (x - g.0)]
+        };
+        assert!((at(i1) - n1).abs() < 1e-6 && (at(i2) - n2).abs() < 1e-6);
+        let mut out = vec![0.0f32; dims.pixels()];
+        wf.reconstruct(t, &mut out);
+        let want = n1 * s1 + n2 * s2;
+        let got = out[y * dims.width + x];
+        assert!((got - want).abs() < 1e-3, "{got} vs {want}");
+        assert!(
+            (got - s1).abs() > 1.0 && (got - s2).abs() > 1.0,
+            "a blend, not one tile"
+        );
+    }
+
+    #[test]
+    fn a_v1_window_file_still_reads_as_plain() {
+        let dims = Dims::new(96, 70).unwrap();
+        let wf = window_of(dims, Tiling::Plain, 90);
+        let v1 = v1_file(&wf);
         let old = WindowFactors::from_bytes(&v1).expect("v1 file");
         assert_eq!((old.tile, old.tiling), (64, Tiling::Plain));
         let (mut a, mut b) = (vec![0.0f32; dims.pixels()], vec![0.0f32; dims.pixels()]);

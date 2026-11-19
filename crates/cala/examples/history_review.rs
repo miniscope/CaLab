@@ -1,6 +1,7 @@
 //! Run the history review ([`calab_cala::compress::review`]) on a finished
 //! run: `footprints.bin` (`CALAFP01`) and `factors/w*.fac` (`CALAFAC2`, v1 still reads, from
-//! `discover_eval --factors-out`).
+//! `discover_eval --factors-out`). The factors must be on plain tiles; a
+//! folder on the offset grids (`qc_eval --tiling offset`) is refused.
 //!
 //! ```text
 //! cargo run --release --example history_review -- <run dir> [--threads N] [--stride S]
@@ -14,6 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use calab_cala::compress::blend::Tiling;
 use calab_cala::compress::review::{candidates, scan, KnownCell, ReviewConfig};
 use calab_cala::compress::WindowFactors;
 use calab_cala::preprocess::Dims;
@@ -63,6 +65,20 @@ fn main() {
         .iter()
         .map(|p| WindowFactors::from_bytes(&fs::read(p).unwrap()).expect("factor file"))
         .collect();
+    // The review reads side-by-side tiles; it would stack both offset grids
+    // without their weights.
+    if let Some((p, w)) = files
+        .iter()
+        .zip(&windows)
+        .find(|(_, w)| w.tiling != Tiling::Plain)
+    {
+        eprintln!(
+            "{}: tiling {}; the history review reads plain tiles only",
+            p.display(),
+            w.tiling.name()
+        );
+        std::process::exit(2);
+    }
     let cfg = ReviewConfig {
         threads: arg_value(&args, "--threads").map_or(8, |s| s.parse().unwrap()),
         stride: arg_value(&args, "--stride").map_or(4, |s| s.parse().unwrap()),
