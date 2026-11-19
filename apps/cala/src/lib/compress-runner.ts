@@ -202,6 +202,8 @@ export class CompressRunner {
     if (msg.session !== this.session || !this.init) return;
     if (msg.type === 'reset') {
       await this.clear();
+      // Nothing is behind the last status any more: say so.
+      this.post();
       this.reviewOf(this.init)?.port.postMessage({ type: 'reset', session: msg.session });
       this.session = -1;
       this.init = null;

@@ -6,6 +6,7 @@
  * is unit-tested without workers.
  */
 import type { CompressSource, CompressTiling, FastToCompress } from '../workers/compress-types.ts';
+import type { CellsSettings } from '../workers/frame-types.ts';
 import type { PortLike } from '../workers/slow-types.ts';
 
 export interface CompressFeedOptions {
@@ -31,6 +32,40 @@ export const COMPRESS_DEFAULTS = {
   tiling: 'plain',
   source: 'discover',
 } as const;
+
+/**
+ * The feed options of a worker's cells (null: this run does not compress).
+ * A stage that solves with a given library is a replay: its frames have the
+ * final calibration. Discover stays on plain tiles under its own session.
+ */
+export function compressFeedOptions(
+  cells:
+    | Pick<CellsSettings, 'compress' | 'compressTiling' | 'compressSession' | 'session' | 'library'>
+    | null
+    | undefined,
+  width: number,
+  height: number,
+): CompressFeedOptions | null {
+  if (!cells?.compress) return null;
+  return {
+    width,
+    height,
+    session: cells.compressSession ?? cells.session,
+    ...(cells.compressTiling ? { tiling: cells.compressTiling } : {}),
+    source: cells.library ? 'replay' : 'discover',
+  };
+}
+
+/** The feed of a worker's cells on its compress port (null: no compression). */
+export function compressFeedFor(
+  cells: Parameters<typeof compressFeedOptions>[0],
+  width: number,
+  height: number,
+  port: PortLike<FastToCompress> | null,
+): CompressFeed | null {
+  const options = compressFeedOptions(cells, width, height);
+  return options && port ? new CompressFeed(options, port) : null;
+}
 
 /** What the fast loop needs of a feed. */
 export interface CompressFeedLike {

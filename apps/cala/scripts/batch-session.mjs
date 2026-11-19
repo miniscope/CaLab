@@ -23,6 +23,7 @@ import { chromium } from '@playwright/test';
 import { spawn } from 'node:child_process';
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { compressSettled } from './compress-settled.mjs';
 
 // ---- options ----
 const args = process.argv.slice(2);
@@ -151,6 +152,23 @@ const shot = async (name) => {
   }
 };
 
+/**
+ * The compress status of a finished stage. The compress worker closes its last
+ * window after the stage reports done, so poll (up to 120 s) until the status
+ * is that stage's final one; else record what is there with `settled: false`.
+ * Null without `?compress`.
+ */
+async function settledCompress(expectedSource, current) {
+  if (current === null) return null;
+  const t0 = Date.now();
+  let c = current;
+  while (!compressSettled(c, expectedSource) && Date.now() - t0 < 120_000) {
+    await page.waitForTimeout(500);
+    c = await page.evaluate(() => window.__cala.compress?.status?.() ?? null);
+  }
+  return { ...c, settled: compressSettled(c, expectedSource) };
+}
+
 // ---- run ----
 let exitCode = 0;
 try {
@@ -202,7 +220,7 @@ try {
       if (!ready) continue;
       status.stages.discover.end = Date.now();
       status.stages.discover.cells = s.cells;
-      status.stages.discover.compress = s.compress;
+      status.stages.discover.compress = await settledCompress('discover', s.compress);
       await shot('discover');
       phase = refineRuns > 0 ? 'refine' : 'extract';
       if (phase === 'refine') {
@@ -233,7 +251,7 @@ try {
     } else if (phase === 'extract' && s.extract === 'done' && s.exportEnabled) {
       status.stages.extract.end = Date.now();
       status.stages.extract.cells = s.cells;
-      status.stages.extract.compress = s.compress;
+      status.stages.extract.compress = await settledCompress('replay', s.compress);
       phase = 'export';
       status.stages.export = { start: Date.now() };
       await page.locator('[data-testid=export-menu] summary').click();

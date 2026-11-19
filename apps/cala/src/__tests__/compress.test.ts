@@ -11,7 +11,7 @@ import {
   TraceLibraryBuilder,
 } from '../lib/cala-wasm.ts';
 import { createCellStore } from '../lib/cell-store.ts';
-import { CompressFeed } from '../lib/compress-feed.ts';
+import { CompressFeed, compressFeedFor, compressFeedOptions } from '../lib/compress-feed.ts';
 import { CompressRunner, factorName, tilesOf } from '../lib/compress-runner.ts';
 import { compressReadout, createCompressStore } from '../lib/compress-store.ts';
 import { memoryStore } from '../lib/window-store.ts';
@@ -174,6 +174,26 @@ describe('CompressFeed', () => {
 });
 
 describe('CompressRunner', () => {
+  it('a reset clears the status: no windows, no Recalibrated factors', async () => {
+    const { feed, sent } = feedWith({ tiling: 'offset', source: 'replay' });
+    feed.push(batch(0, 100), 0, 100);
+    feed.reset();
+    expect(sent[sent.length - 1].type).toBe('reset');
+    const { r, store, toMain } = runner();
+    for (const m of sent.slice(0, -1)) await r.handle(m);
+    await r.idle();
+    const mid = toMain[toMain.length - 1];
+    if (mid.type !== 'status') throw new Error('the last message is not a status');
+    expect(mid.status.windows).toBe(2);
+    await r.handle(sent[sent.length - 1]);
+    await r.idle();
+    expect(store.files.size).toBe(0);
+    const last = toMain[toMain.length - 1];
+    if (last.type !== 'status') throw new Error('the last message is not a status');
+    expect(last.status).toMatchObject({ windows: 0, frames: 0, pending: 0, final: false });
+    expect(compressReadout(last.status)).not.toMatch(/Recalibrated factors/);
+  });
+
   it('a replay of the same session replaces the windows of Discover', async () => {
     const discover = feedWith({});
     discover.feed.push(batch(0, 100), 0, 100);
@@ -577,5 +597,50 @@ describe('back-fill from the factors', () => {
     expect(compressReadout(store.status(), store.backfill())).toMatch(
       /traces back-filled \(100 frames, 2\.5 ms\/frame\)$/,
     );
+  });
+});
+
+describe('the feed options of the cells of a worker', () => {
+  it('Discover: plain tiles, discover frames, its own session', () => {
+    expect(compressFeedOptions({ compress: true, session: 3 }, 64, 48)).toEqual({
+      width: 64,
+      height: 48,
+      session: 3,
+      source: 'discover',
+    });
+  });
+  it('Extract: offset tiles, replay frames, the compress session', () => {
+    const cells = {
+      compress: true,
+      session: 0,
+      library: Uint8Array.of(1),
+      compressTiling: 'offset' as const,
+      compressSession: 4,
+    };
+    expect(compressFeedOptions(cells, 64, 48)).toEqual({
+      width: 64,
+      height: 48,
+      session: 4,
+      tiling: 'offset',
+      source: 'replay',
+    });
+  });
+  it('without compress: no options and no feed', () => {
+    expect(compressFeedOptions({ session: 1 }, 64, 48)).toBeNull();
+    expect(compressFeedOptions(undefined, 64, 48)).toBeNull();
+    expect(compressFeedFor({ session: 1 }, 64, 48, { postMessage: () => {} })).toBeNull();
+    expect(compressFeedFor({ compress: true, session: 1 }, 64, 48, null)).toBeNull();
+  });
+});
+
+describe('the batch driver waits for the final status of a stage', () => {
+  const st = { source: 'replay', final: true, pending: 0 };
+  it('accepts only the final status of the expected source', async () => {
+    const { compressSettled } = await import('../../scripts/compress-settled.mjs');
+    expect(compressSettled(st, 'replay')).toBe(true);
+    expect(compressSettled({ ...st, source: 'discover' }, 'replay')).toBe(false);
+    expect(compressSettled({ ...st, final: false }, 'replay')).toBe(false);
+    expect(compressSettled({ ...st, pending: 2 }, 'replay')).toBe(false);
+    expect(compressSettled(null, 'replay')).toBe(false);
   });
 });
