@@ -19,12 +19,12 @@ settle, `--settle-frames N --settle-batch 16` with N = one pass (9600 on sims, 1
 Refine pass (`--passes 2 --later-passes refine`). Tails branch after the drain from one Discover per sim/seed
 (`--branch-after drain`), once the byte check of the branching has passed.
 
-| arm      | Discover flags                                                                           | tail |
-| -------- | ---------------------------------------------------------------------------------------- | ---- |
-| `DR-main` | none (plain Discover)                                                                   | R    |
-| `COMBO`, `COMBO+R`, `SETTLE` | `--joint-update all --joint-sign all --lookback 2 --lookback-drain 4800 --merge-guard-sep 0.6` | none, R, S |
-| `OFF`, `OFF+R`, `OFF+S` | `--lookback 2 --lookback-drain 4800 --merge-guard-sep 0.6` (joint update off, the default) | none, R, S |
-| `REF+S`  | as `COMBO` with `--joint-update refine`: the replay runs only once the cell set is frozen (in the settle), not in Discover | S |
+| arm                          | Discover flags                                                                                                             | tail       |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| `DR-main`                    | none (plain Discover)                                                                                                      | R          |
+| `COMBO`, `COMBO+R`, `SETTLE` | `--joint-update all --joint-sign all --lookback 2 --lookback-drain 4800 --merge-guard-sep 0.6`                             | none, R, S |
+| `OFF`, `OFF+R`, `OFF+S`      | `--lookback 2 --lookback-drain 4800 --merge-guard-sep 0.6` (joint update off, the default)                                 | none, R, S |
+| `REF+S`                      | as `COMBO` with `--joint-update refine`: the replay runs only once the cell set is frozen (in the settle), not in Discover | S          |
 
 `SETTLE`, `COMBO+R`, `COMBO`, `DR-main` on the sims are reused from `lbsettle-full` if this study's binary reproduces
 `SETTLE/static_s5` byte for byte; otherwise they are re-run. `REF+S` separates the two things "off" removes (the
@@ -123,11 +123,11 @@ Refine; 3 slow seeds; `--fps 30 --motion`.
   only.
 - **P4 arms** (binary `qc_eval-lbs2-b`; new switch `SlowLoop::set_lookback_reservoir`, qc_eval `--lookback-reservoir`):
 
-  | arm        | added to the base's Discover flags                       | what it does                                                        |
-  | ---------- | -------------------------------------------------------- | ------------------------------------------------------------------- |
-  | `LBR-test` | `--lookback-reservoir test`                              | held-out look-back frames are offered to the reservoir (test side)  |
-  | `LBR-all`  | `--lookback-reservoir all`                               | every look-back frame is offered, on the side it had as a live frame |
-  | `LBR-half` | `--lookback-reservoir all --lookback-reservoir-share 0.5` | half of them (only if `LBR-all` passes the screen; cost arm)        |
+  | arm        | added to the base's Discover flags                        | what it does                                                         |
+  | ---------- | --------------------------------------------------------- | -------------------------------------------------------------------- |
+  | `LBR-test` | `--lookback-reservoir test`                               | held-out look-back frames are offered to the reservoir (test side)   |
+  | `LBR-all`  | `--lookback-reservoir all`                                | every look-back frame is offered, on the side it had as a live frame |
+  | `LBR-half` | `--lookback-reservoir all --lookback-reservoir-share 0.5` | half of them (only if `LBR-all` passes the screen; cost arm)         |
 
   How a look-back frame enters the reservoir: it is scored by the current library's residual, as a live frame is; its
   slot keeps the frame's own index (so "events after a deletion" and the no-duplicate rule read the true frame) and is
@@ -135,5 +135,6 @@ Refine; 3 slow seeds; `--fps 30 --motion`.
   counter. Feeding look-back frames through the full `observe` during Discover is not run: it would give each frame a
   new held-out draw (a fitted frame could become a test frame) and count the same transients twice in the evidence
   ledger that add decisions use.
+
 - **P5.** The Samara sessions have 17,880 and 17,876 frames (timestamps); all frames are read (no `--frames`), the
   settle is one pass of 17,856 frames (279 blocks of 64).
