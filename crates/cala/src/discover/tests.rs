@@ -2756,3 +2756,36 @@ fn the_cluster_replay_runs_in_visit_jobs_and_matches_step() {
         assert!(sa.finalize().unwrap().to_bytes()[16..] == sb.finalize().unwrap().to_bytes()[16..]);
     }
 }
+
+/// Look-back frames (concurrent Refine) reach only the named cells'
+/// running statistics, keep held-out frames out and leave the slow loop's
+/// frame clock alone.
+#[test]
+fn lookback_frames_feed_only_the_named_cells_statistics() {
+    let t = 200;
+    let mut rng = Lcg(5);
+    let cells = vec![
+        (blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0)),
+        (blob(1, 70.0, 70.0), trace(&mut rng, t, 0.05, 6.0)),
+    ];
+    let m = movie(&cells, t, 7);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let (mut slow, mut eng) = start(config(), &seed);
+    let lib = eng.library().clone();
+    let (a, b) = (lib.ids()[0], lib.ids()[1]);
+    let n_px = N * N;
+    let mut fitted = 0;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let fit = slow
+            .observe_lookback(f, &lib, &tr, k as u64, Some(&[a]))
+            .unwrap();
+        assert_eq!(fit, !slow.is_test(k as u64));
+        fitted += usize::from(fit);
+    }
+    assert!(fitted > 0 && fitted < t);
+    assert_eq!(slow.frames(), 0);
+    assert!(slow.fpstats.contains_key(&a));
+    assert!(!slow.fpstats.contains_key(&b));
+}
