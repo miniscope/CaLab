@@ -75,6 +75,12 @@
 //!                      serving the cells in need, with Refine-scope visits,
 //!                      for at most N steps (one step = R look-back frames
 //!                      + one slow-loop step); ends when nothing is needed
+//!   --lookback-cache W keep the live loop's last W preprocessed, registered
+//!                      frames (half floats, 0.72 MB per 600x600 frame); a
+//!                      look-back frame found there is not re-read,
+//!                      preprocessed or registered again (off by default)
+//!   --lookback-skip-heldout  do not solve held-out look-back frames in the
+//!                      K-frame window mode (they still cost their budget)
 //!   --catchup X        reference arm: every X Discover frames give all
 //!                      cells frames 0..t at once (`--catchup-double`: at
 //!                      X, 2X, 4X, ...)
@@ -331,9 +337,9 @@ use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
-    CoreTest, EditScope, JointAdmit, JointSign, JointUpdate, LookBack as LbSched, LookbackConfig,
-    LookbackNext, LookbackOrder, LookbackOutcome, MergeRule, RefineGate, SlowLoop, SlowLoopConfig,
-    SupportRule, VisitResult, VisitRunner, LB_BLOCK,
+    f16_to_f32, f32_to_f16, CoreTest, EditScope, FrameCache, JointAdmit, JointSign, JointUpdate,
+    LookBack as LbSched, LookbackConfig, LookbackNext, LookbackOrder, LookbackOutcome, MergeRule,
+    RefineGate, SlowLoop, SlowLoopConfig, SupportRule, VisitResult, VisitRunner, LB_BLOCK,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -637,7 +643,30 @@ struct LookBack {
     target: f64,
     /// Look-back frames per 1/20 of the recording (precision mode report).
     by_twentieth: [u64; 20],
+    /// `--lookback-skip-heldout`: held-out frames are not solved in the
+    /// `K`-frame window mode either (they never enter the statistics); each
+    /// still costs its budget, so the frames served do not change.
+    skip_heldout: bool,
+    /// `--lookback-cache W`: the live loop's last `W` preprocessed,
+    /// registered frames; a look-back frame found there is not re-read,
+    /// preprocessed or registered again.
+    cache: Option<FrameCache>,
+    /// Profile (stdout): wall seconds of [read, front, warp + validity,
+    /// back, solve, observe, drain visits]; counters [raw blocks read,
+    /// engine library loads, held-out frames solved, frames passed over,
+    /// cache hits, cache misses, cache clears]; look-back frames by age
+    /// (`seen - f`: <= 512, 1024, 2048, 3072, more); the largest half-float
+    /// rounding of a cached pixel in noise sigmas (every 64th live frame).
+    prof_s: [f64; 7],
+    prof_n: [u64; 7],
+    age_hist: [u64; 5],
+    cache_err: f32,
 }
+
+/// A flat-field update whose 99th-percentile change exceeds this many noise
+/// sigmas (in practice the first map) drops the cached look-back frames,
+/// which carry the old flat field; later refinements (~0.05 sigma) keep them.
+const LB_CACHE_FF_CLEAR_SIGMA: f64 = 0.5;
 
 impl LookBack {
     fn new(
@@ -682,6 +711,12 @@ impl LookBack {
             by_tenth: [(0, 0); 11],
             target,
             by_twentieth: [0; 20],
+            skip_heldout: false,
+            cache: None,
+            prof_s: [0.0; 7],
+            prof_n: [0; 7],
+            age_hist: [0; 5],
+            cache_err: 0.0,
         }
     }
 
@@ -805,7 +840,9 @@ impl LookBack {
             if steps % 64 == 0 {
                 sl.mark_all_due();
             }
+            let tv = Instant::now();
             sl.step(budget).unwrap();
+            self.prof_s[6] += tv.elapsed().as_secs_f64();
             steps += 1;
             if steps % 64 == 0 {
                 engine.set_library(sl.finalize().unwrap()).unwrap();
@@ -816,9 +853,11 @@ impl LookBack {
         }
         // A last round of visits on everything the look-back fed.
         sl.mark_all_due();
+        let tv = Instant::now();
         for _ in 0..256 {
             sl.step(budget).unwrap();
         }
+        self.prof_s[6] += tv.elapsed().as_secs_f64();
         engine.set_library(sl.finalize().unwrap()).unwrap();
         self.drain_steps = steps;
         self.drain_frames = self.frames - f0;
@@ -844,18 +883,13 @@ impl LookBack {
         n_px: usize,
         tenth: usize,
     ) -> Option<bool> {
-        if f < self.raw_start || f >= self.raw_start + self.raw_n {
-            let lo = f - f % LB_BLOCK;
-            let cnt = LB_BLOCK.min(rec.total as usize - lo);
-            self.raw = rec.read(lo as u32, cnt as u32);
-            if let Some(d) = drift {
-                for (k, fr) in self.raw.chunks_exact_mut(n_px).enumerate() {
-                    d.apply(fr, lo + k);
-                }
-            }
-            self.raw_start = lo;
-            self.raw_n = cnt;
-        }
+        let tp = Instant::now();
+        let age = self.sched.seen().saturating_sub(f);
+        let bucket = [512, 1024, 2048, 3072]
+            .iter()
+            .position(|&a| age <= a)
+            .unwrap_or(4);
+        self.age_hist[bucket] += 1;
         // The frame's slow-loop index in Discover (all batches forwarded):
         // a held-out frame stays held out. Warm-up frames, never in the
         // slow loop, get their own range.
@@ -864,43 +898,44 @@ impl LookBack {
         } else {
             u64::MAX - f as u64
         };
-        // Precision mode: a held-out frame is still preprocessed (the block's
-        // preprocessor copy runs forward) but not solved.
-        let skip = self.target > 0.0 && sl.is_test(idx);
-        let o = (f - self.raw_start) * n_px;
-        let raw = &self.raw[o..o + n_px];
-        pre.front(raw, &mut self.buf).unwrap();
-        if let Some(w) = pipe.warp_at(f) {
-            let mut tmp = Vec::new();
-            w.apply_in_place(&mut self.buf, &mut tmp).unwrap();
-        }
-        // The live corrector's `apply`/`validity` only warp by a stored
-        // record (scratch buffers, no estimation state), as a replay does.
-        if let Some(mc) = pipe.mc.as_mut() {
-            let r = &pipe.records[f];
-            mc.apply(Frame::F32(&self.buf), r, &mut self.y, None)
-                .unwrap();
-            mc.validity(r, pipe.src.as_ref().unwrap(), &mut self.valid)
-                .unwrap();
-            pre.back_masked(&mut self.y, &self.valid).unwrap();
-        } else {
-            self.y.copy_from_slice(&self.buf);
-            pre.back(&mut self.y).unwrap();
-        }
-        if skip {
+        // Precision mode (and `--lookback-skip-heldout`): a held-out frame is
+        // still preprocessed (the block's preprocessor copy runs forward) but
+        // not solved; from the cache it needs nothing at all.
+        let skip = (self.target > 0.0 || self.skip_heldout) && sl.is_test(idx);
+        if skip && self.cache.as_ref().is_some_and(|c| c.has(f)) {
+            self.prof_n[3] += 1;
+            self.prof_n[4] += 1;
             return None;
         }
+        let hit = self.cache.as_ref().is_some_and(|c| c.get(f, &mut self.y));
+        if self.cache.is_some() {
+            self.prof_n[if hit { 4 } else { 5 }] += 1;
+        }
+        if !hit {
+            self.preprocess(f, pre, rec, drift, pipe, n_px, tp);
+        }
+        if skip {
+            self.prof_n[3] += 1;
+            return None;
+        }
+        let t4 = Instant::now();
         let lib = live.library();
         let eng = self.engine.get_or_insert_with(|| live.clone());
         if eng.library().version() != lib.version() {
             eng.set_library(lib.clone()).unwrap();
+            self.prof_n[1] += 1;
         }
         let tr = eng.process(&self.y).unwrap();
         let lib = eng.library().clone();
         let n_cells = only.map_or(lib.len(), <[u64]>::len) as u64;
+        let t5 = Instant::now();
         let pushed = sl.observe_lookback(&self.y, &lib, &tr, idx, only).unwrap();
+        self.prof_s[4] += (t5 - t4).as_secs_f64();
+        self.prof_s[5] += t5.elapsed().as_secs_f64();
         if pushed {
             self.pushed += 1;
+        } else {
+            self.prof_n[2] += 1;
         }
         self.frames += 1;
         self.cell_frames += n_cells;
@@ -912,6 +947,64 @@ impl LookBack {
             self.by_twentieth[tw] += 1;
         }
         Some(pushed)
+    }
+
+    /// Re-read, preprocess and register recording frame `f` into `self.y`
+    /// with the block's preprocessor copy `pre`.
+    #[allow(clippy::too_many_arguments)]
+    fn preprocess(
+        &mut self,
+        f: usize,
+        pre: &mut Preprocessor,
+        rec: &mut Recording,
+        drift: Option<&Drift>,
+        pipe: &mut Pipeline,
+        n_px: usize,
+        tp: Instant,
+    ) {
+        if f < self.raw_start || f >= self.raw_start + self.raw_n {
+            let lo = f - f % LB_BLOCK;
+            let cnt = LB_BLOCK.min(rec.total as usize - lo);
+            self.raw = rec.read(lo as u32, cnt as u32);
+            if let Some(d) = drift {
+                for (k, fr) in self.raw.chunks_exact_mut(n_px).enumerate() {
+                    d.apply(fr, lo + k);
+                }
+            }
+            self.raw_start = lo;
+            self.raw_n = cnt;
+            self.prof_n[0] += 1;
+        }
+        let o = (f - self.raw_start) * n_px;
+        let raw = &self.raw[o..o + n_px];
+        let t1 = Instant::now();
+        pre.front(raw, &mut self.buf).unwrap();
+        let t2 = Instant::now();
+        if let Some(w) = pipe.warp_at(f) {
+            let mut tmp = Vec::new();
+            w.apply_in_place(&mut self.buf, &mut tmp).unwrap();
+        }
+        // The live corrector's `apply`/`validity` only warp by a stored
+        // record (scratch buffers, no estimation state), as a replay does.
+        let t3;
+        if let Some(mc) = pipe.mc.as_mut() {
+            let r = &pipe.records[f];
+            mc.apply(Frame::F32(&self.buf), r, &mut self.y, None)
+                .unwrap();
+            mc.validity(r, pipe.src.as_ref().unwrap(), &mut self.valid)
+                .unwrap();
+            t3 = Instant::now();
+            pre.back_masked(&mut self.y, &self.valid).unwrap();
+        } else {
+            self.y.copy_from_slice(&self.buf);
+            t3 = Instant::now();
+            pre.back(&mut self.y).unwrap();
+        }
+        let t4 = Instant::now();
+        self.prof_s[0] += (t1 - tp).as_secs_f64();
+        self.prof_s[1] += (t2 - t1).as_secs_f64();
+        self.prof_s[2] += (t3 - t2).as_secs_f64();
+        self.prof_s[3] += (t4 - t3).as_secs_f64();
     }
 }
 
@@ -3892,9 +3985,16 @@ fn main() {
     );
     let noise_dump = args.iter().any(|a| a == "--noise-dump") || lb_target > 0.0;
     let mut lookback = (lb_rate > 0.0 || lb_catchup > 0).then(|| {
-        LookBack::new(
+        let mut l = LookBack::new(
             lb_rate, lb_frames, lb_newest, lb_catchup, lb_double, lb_target, n_px,
-        )
+        );
+        l.skip_heldout = args.iter().any(|a| a == "--lookback-skip-heldout");
+        l.cache = arg_value(&args, "--lookback-cache").map(|w| {
+            let w: usize = w.parse().unwrap();
+            assert!(w > 0, "--lookback-cache needs W > 0 frames");
+            FrameCache::new(w, n_px)
+        });
+        l
     });
     if lookback.is_some() {
         println!(
@@ -4165,6 +4265,17 @@ fn main() {
                                 {
                                     ff.apply(p).unwrap();
                                 }
+                                // Cached look-back frames carry the old flat
+                                // field: a large change (the first map) drops
+                                // them.
+                                if let Some(l) = lookback.as_mut() {
+                                    if let (Some(c), true) =
+                                        (l.cache.as_mut(), u.change_p99 > LB_CACHE_FF_CLEAR_SIGMA)
+                                    {
+                                        c.clear();
+                                        l.prof_n[6] += 1;
+                                    }
+                                }
                                 let _ = writeln!(
                                 ff_log,
                                 "{t}\tupdated\t{}\t{}\t{}\t{:.5}\t{:.5}\t{:.3e}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{dt:.2}",
@@ -4312,6 +4423,20 @@ fn main() {
                 }
                 let warm = diverge.as_ref().map(|_| engine.state());
                 let tr = engine.process(&y).unwrap();
+                if let (0, Some(l)) = (pass, lookback.as_mut()) {
+                    if let Some(c) = l.cache.as_mut() {
+                        c.push(t_rec, &y);
+                        if t_rec.is_multiple_of(64) {
+                            let sd = pipe.pre.noise().sigma();
+                            for (&v, &s) in y.iter().zip(&sd) {
+                                if v.is_finite() && s > 0.0 {
+                                    let e = (f16_to_f32(f32_to_f16(v)) - v).abs() / s;
+                                    l.cache_err = l.cache_err.max(e);
+                                }
+                            }
+                        }
+                    }
+                }
                 if let (Some(dv), Some(warm)) = (diverge.as_mut(), warm) {
                     dv.frame(t, &y, &engine, &warm, &tr);
                 }
@@ -4741,6 +4866,25 @@ fn main() {
             l.sched.births(),
             l.sched.in_need(),
             l.wall_s
+        );
+        println!(
+            "lookback profile: read {:.1} s, front {:.1} s, warp {:.1} s, back {:.1} s, solve {:.1} s, observe {:.1} s, drain visits {:.1} s; raw blocks read {}, engine library loads {}, held-out frames solved {}, frames passed over {}; cache hits {}, misses {}, clears {}, max f16 error {:.2e} sigma; age <=512/1024/2048/3072/more {:?}",
+            l.prof_s[0],
+            l.prof_s[1],
+            l.prof_s[2],
+            l.prof_s[3],
+            l.prof_s[4],
+            l.prof_s[5],
+            l.prof_s[6],
+            l.prof_n[0],
+            l.prof_n[1],
+            l.prof_n[2],
+            l.prof_n[3],
+            l.prof_n[4],
+            l.prof_n[5],
+            l.prof_n[6],
+            l.cache_err,
+            l.age_hist
         );
         let mut t = format!(
             "rate\tmax_frames\tcatchup\tdouble\tframes\tpushed\tcell_frames\tbirths\tin_need\twall_s\tdrain_steps\tdrain_frames\n{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}\n\ntenth\tframes\tcell_frames\n",

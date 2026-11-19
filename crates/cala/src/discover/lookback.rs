@@ -551,3 +551,200 @@ impl HeldOutRecord {
         16 * self.observed.len()
     }
 }
+
+/// A ring of the live loop's last `capacity` preprocessed, registered frames
+/// (exactly the frames the live trace engine and slow loop got), so the
+/// driver can serve a look-back frame from memory instead of re-reading,
+/// re-preprocessing and re-registering it. Births need the
+/// [`LookbackConfig::max_frames`] frames before them, so a capacity near
+/// that serves most of the look-back (on the motion sims ~60 % of it, the
+/// rest being older frames or frames from before the first flat field).
+///
+/// Frames are stored as IEEE half floats (relative rounding at most 2^-11,
+/// about 0.01 of the noise sigma on the eval sims; NaN, the missing-pixel
+/// mark, is kept): 2 bytes per pixel, 0.72 MB per 600 x 600 frame.
+///
+/// A cached frame was preprocessed with the preprocessor state of its own
+/// time, not the state at the moment of the look-back; after a large
+/// flat-field change the driver should [`clear`](Self::clear) it.
+#[derive(Clone, Debug)]
+pub struct FrameCache {
+    n_px: usize,
+    data: Vec<u16>,
+    frame_of: Vec<usize>,
+}
+
+impl FrameCache {
+    /// Room for `capacity` frames of `n_px` pixels.
+    pub fn new(capacity: usize, n_px: usize) -> FrameCache {
+        assert!(capacity > 0, "a frame cache needs room for a frame");
+        FrameCache {
+            n_px,
+            data: vec![0; capacity * n_px],
+            frame_of: vec![usize::MAX; capacity],
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.frame_of.len()
+    }
+
+    /// Store recording frame `f` (evicts frame `f - capacity`).
+    pub fn push(&mut self, f: usize, frame: &[f32]) {
+        assert_eq!(frame.len(), self.n_px, "frame size");
+        let s = f % self.capacity();
+        for (d, &v) in self.data[s * self.n_px..(s + 1) * self.n_px]
+            .iter_mut()
+            .zip(frame)
+        {
+            *d = f32_to_f16(v);
+        }
+        self.frame_of[s] = f;
+    }
+
+    /// Whether recording frame `f` is held.
+    pub fn has(&self, f: usize) -> bool {
+        self.frame_of[f % self.capacity()] == f
+    }
+
+    /// Recording frame `f` into `out`; `false` (and `out` untouched) when it
+    /// is not held.
+    pub fn get(&self, f: usize, out: &mut [f32]) -> bool {
+        assert_eq!(out.len(), self.n_px, "frame size");
+        if !self.has(f) {
+            return false;
+        }
+        let s = f % self.capacity();
+        for (o, &d) in out
+            .iter_mut()
+            .zip(&self.data[s * self.n_px..(s + 1) * self.n_px])
+        {
+            *o = f16_to_f32(d);
+        }
+        true
+    }
+
+    /// Drop every frame (e.g. after a large flat-field change).
+    pub fn clear(&mut self) {
+        self.frame_of.fill(usize::MAX);
+    }
+}
+
+/// f32 -> IEEE 754 half, round to nearest even; overflow saturates to
+/// +-inf, NaN stays NaN.
+pub fn f32_to_f16(v: f32) -> u16 {
+    let b = v.to_bits();
+    let sign = ((b >> 16) & 0x8000) as u16;
+    let exp = ((b >> 23) & 0xff) as i32;
+    let man = b & 0x7f_ffff;
+    if exp == 0xff {
+        return sign | 0x7c00 | if man != 0 { 0x200 } else { 0 };
+    }
+    let e = exp - 127 + 15;
+    if e >= 0x1f {
+        return sign | 0x7c00;
+    }
+    if e <= 0 {
+        if e < -10 {
+            return sign;
+        }
+        // Subnormal half.
+        let m = man | 0x80_0000;
+        let shift = (14 - e) as u32;
+        let half = m >> shift;
+        let rem = m & ((1 << shift) - 1);
+        let mid = 1 << (shift - 1);
+        let r = if rem > mid || (rem == mid && half & 1 == 1) {
+            half + 1
+        } else {
+            half
+        };
+        return sign | r as u16;
+    }
+    let half = ((e as u32) << 10) | (man >> 13);
+    let rem = man & 0x1fff;
+    let r = if rem > 0x1000 || (rem == 0x1000 && half & 1 == 1) {
+        half + 1
+    } else {
+        half
+    };
+    // A carry into the exponent is the correct rounding (up to inf).
+    sign | r as u16
+}
+
+/// IEEE 754 half -> f32 (exact).
+pub fn f16_to_f32(h: u16) -> f32 {
+    let sign = u32::from(h & 0x8000) << 16;
+    let exp = u32::from((h >> 10) & 0x1f);
+    let man = u32::from(h & 0x3ff);
+    let bits = if exp == 0 {
+        if man == 0 {
+            sign
+        } else {
+            // Subnormal: normalise.
+            let mut e: u32 = 127 - 15 + 1;
+            let mut m = man;
+            while m & 0x400 == 0 {
+                m <<= 1;
+                e -= 1;
+            }
+            sign | (e << 23) | ((m & 0x3ff) << 13)
+        }
+    } else if exp == 0x1f {
+        sign | 0x7f80_0000 | (man << 13)
+    } else {
+        sign | ((exp + 127 - 15) << 23) | (man << 13)
+    };
+    f32::from_bits(bits)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Exact on representable values, within half an ulp elsewhere, NaN and
+    /// saturation kept, ties to even.
+    #[test]
+    fn f16_round_trip() {
+        for v in [
+            0.0f32,
+            -0.0,
+            1.0,
+            -2.5,
+            65504.0,
+            6.103_515_6e-5,
+            5.960_464_5e-8,
+        ] {
+            assert_eq!(f16_to_f32(f32_to_f16(v)).to_bits(), v.to_bits(), "{v}");
+        }
+        for k in 0..20_000 {
+            let v = (k as f32 - 10_000.0) * 0.731_3;
+            let r = f16_to_f32(f32_to_f16(v));
+            assert!(
+                (r - v).abs() <= v.abs() * 2f32.powi(-11) + 1e-7,
+                "{v} -> {r}"
+            );
+        }
+        assert!(f16_to_f32(f32_to_f16(f32::NAN)).is_nan());
+        assert_eq!(f16_to_f32(f32_to_f16(1e6)), f32::INFINITY);
+        assert_eq!(f16_to_f32(f32_to_f16(-1e6)), f32::NEG_INFINITY);
+        assert_eq!(f16_to_f32(f32_to_f16(2049.0)), 2048.0);
+        assert_eq!(f16_to_f32(f32_to_f16(2051.0)), 2052.0);
+    }
+
+    /// The cache returns a frame only while its slot holds it.
+    #[test]
+    fn frame_cache_holds_the_last_frames() {
+        let mut c = FrameCache::new(3, 2);
+        let mut out = [0.0f32; 2];
+        for f in 0..5 {
+            c.push(f, &[f as f32, f32::NAN]);
+        }
+        assert!(!c.has(1) && !c.get(1, &mut out));
+        assert!(c.get(3, &mut out));
+        assert_eq!(out[0], 3.0);
+        assert!(out[1].is_nan());
+        c.clear();
+        assert!(!c.has(4));
+    }
+}
