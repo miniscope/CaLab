@@ -642,5 +642,6 @@ describe('the batch driver waits for the final status of a stage', () => {
     expect(compressSettled({ ...st, final: false }, 'replay')).toBe(false);
     expect(compressSettled({ ...st, pending: 2 }, 'replay')).toBe(false);
     expect(compressSettled(null, 'replay')).toBe(false);
+    expect(compressSettled(null, 'discover')).toBe(false);
   });
 });

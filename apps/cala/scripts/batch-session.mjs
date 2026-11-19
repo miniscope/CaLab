@@ -137,6 +137,7 @@ const snap = () =>
         extractEnabled: !document.querySelector('[data-testid=pass2-run]')?.disabled,
         exportEnabled: !document.querySelector('[data-testid=export-npz]')?.disabled,
         motion: txt('motion-backend') || '',
+        compressOn: c.compress != null,
         compress: c.compress?.status?.() ?? null,
         convergence: txt('convergence-status'),
         qc: txt('qc-counts'),
@@ -156,10 +157,10 @@ const shot = async (name) => {
  * The compress status of a finished stage. The compress worker closes its last
  * window after the stage reports done, so poll (up to 120 s) until the status
  * is that stage's final one; else record what is there with `settled: false`.
- * Null without `?compress`.
+ * Null without `?compress`; with it, also waits while no status has arrived yet.
  */
-async function settledCompress(expectedSource, current) {
-  if (current === null) return null;
+async function settledCompress(expectedSource, on, current) {
+  if (!on) return null;
   const t0 = Date.now();
   let c = current;
   while (!compressSettled(c, expectedSource) && Date.now() - t0 < 120_000) {
@@ -220,7 +221,7 @@ try {
       if (!ready) continue;
       status.stages.discover.end = Date.now();
       status.stages.discover.cells = s.cells;
-      status.stages.discover.compress = await settledCompress('discover', s.compress);
+      status.stages.discover.compress = await settledCompress('discover', s.compressOn, s.compress);
       await shot('discover');
       phase = refineRuns > 0 ? 'refine' : 'extract';
       if (phase === 'refine') {
@@ -251,7 +252,7 @@ try {
     } else if (phase === 'extract' && s.extract === 'done' && s.exportEnabled) {
       status.stages.extract.end = Date.now();
       status.stages.extract.cells = s.cells;
-      status.stages.extract.compress = await settledCompress('replay', s.compress);
+      status.stages.extract.compress = await settledCompress('replay', s.compressOn, s.compress);
       phase = 'export';
       status.stages.export = { start: Date.now() };
       await page.locator('[data-testid=export-menu] summary').click();
