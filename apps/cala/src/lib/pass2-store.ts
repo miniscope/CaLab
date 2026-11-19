@@ -30,7 +30,13 @@
  * final library (`FactorExtractor`, signed traces too) and the traces go to
  * the same files; the FOV images come from the replay that made the factors.
  * Otherwise it replays the file, and that replay compresses the frames on the
- * offset grids when no factors exist yet.
+ * offset grids when no factors exist yet. After a factor Extract fails, the
+ * next Extract of the run replays the file (`factorsFailed`).
+ *
+ * Unlike the replay, a factor Extract has no backpressure: the worker sends
+ * one message per window and each is queued for writing as it arrives, so
+ * nothing bounds the write queue when the worker solves faster than the disk
+ * writes. A per-window acknowledgement in the extract protocol is planned.
  */
 import { createSignal } from 'solid-js';
 import type { CellStore } from './cell-store.ts';
@@ -118,6 +124,12 @@ export function createPass2Store(
   const [result, setResult] = createSignal<Pass2Result | null>(null);
   const [motionBackend, setMotionBackend] = createSignal<string | null>(null);
   const [source, setSource] = createSignal<'raw' | 'factors'>('raw');
+  /**
+   * The last Extract on the factors failed (not cancelled): the next Extract
+   * replays the file instead of failing the same way again. Cleared by
+   * `clear` (a new Discover).
+   */
+  const [factorsFailed, setFactorsFailed] = createSignal(false);
 
   let generation = 0;
   /** The trace files of the current run or result (deleted when replaced or cleared). */
@@ -222,21 +234,33 @@ export function createPass2Store(
         await ctx.traces.finish();
         await ctx.signed?.finish();
         if (gen !== generation) return;
-        setResult({
-          ids: ctx.ids,
-          traces: ctx.traces,
-          signed: ctx.signed,
-          frames: ctx.frames,
-          cells: ctx.cellCount,
-          version: ctx.library.version,
-          library: ctx.library,
-          seconds: (clock() - ctx.t0) / 1000,
-          ...(step.projection ? { projection: step.projection } : {}),
-          source: 'raw',
-        });
+        setResult(
+          resultOf(ctx, {
+            ...(step.projection ? { projection: step.projection } : {}),
+            source: 'raw',
+          }),
+        );
         setStatus('done');
         return;
     }
+  }
+
+  /** The result of a finished run; `extra`: what depends on where it read the frames. */
+  function resultOf(
+    ctx: Ctx,
+    extra: Pick<Pass2Result, 'projection' | 'source' | 'tiling' | 'meanRank'>,
+  ): Pass2Result {
+    return {
+      ids: ctx.ids,
+      traces: ctx.traces,
+      signed: ctx.signed,
+      frames: ctx.frames,
+      cells: ctx.cellCount,
+      version: ctx.library.version,
+      library: ctx.library,
+      seconds: (clock() - ctx.t0) / 1000,
+      ...extra,
+    };
   }
 
   interface Ctx {
@@ -254,6 +278,8 @@ export function createPass2Store(
     compressed: boolean;
     /** The replay ended; false: cut short. Reports only the first call. */
     ended: (ok: boolean) => void;
+    /** The pump has the replay: its end is reported there, by cancel or by clear; before, by `run`. */
+    pumping: boolean;
     /** Stop waiting for the factor job. */
     stopWait: () => void;
   }
@@ -291,7 +317,9 @@ export function createPass2Store(
    * Extract every recorded frame with the final library (or `use`, a library
    * published earlier: lets a run be compared with pass 1, which solved its
    * last frames with an earlier version than the final one). From the
-   * factors when they are ready, else by replaying the file.
+   * factors when they are ready, else by replaying the file. Resolves once
+   * the replay has started (the pump runs on), or once Extract on the
+   * factors has ended, failed or been cancelled.
    */
   async function run(
     use?: { library: LibraryView; bytes: Uint8Array },
@@ -308,6 +336,14 @@ export function createPass2Store(
     inFlight = 0;
     exhausted = false;
     current = null;
+    const rec = pipeline.record();
+    const frames = rec.frames;
+    const state = factors?.state(frames) ?? 'none';
+    // After a failed factor Extract the file is replayed, so a repeating failure is no dead end.
+    const onFactors =
+      factors !== undefined && from === 'auto' && state === 'ready' && !factorsFailed();
+    // Before the first await: a cancel from here on knows whether a pipeline runs.
+    setSource(onFactors ? 'factors' : 'raw');
     setStatus('running');
     setError(null);
     await discard();
@@ -316,15 +352,10 @@ export function createPass2Store(
     setStageBusy([]);
     setMotionBackend(null);
     const plan1 = pipeline.plan() as PipelinePlan;
-    const rec = pipeline.record();
     const library = use?.library ?? cells.library()!;
     const bytes = use?.bytes ?? cells.libraryBytes()!;
-    const frames = rec.frames;
     const flatMap = pipeline.flatFieldMap();
     const cellCount = library.ids.length;
-    const state = factors?.state(frames) ?? 'none';
-    const onFactors = factors !== undefined && from === 'auto' && state === 'ready';
-    setSource(onFactors ? 'factors' : 'raw');
     setTotal(frames);
     let traces: TraceFile | undefined;
     let signed: TraceFile;
@@ -366,11 +397,12 @@ export function createPass2Store(
       t0: clock(),
       compressed: false,
       ended: NO_COMPRESS.ended,
+      pumping: false,
       stopWait: () => {},
     };
     current = ctx;
     if (onFactors && factors) {
-      void runOnFactors(gen, ctx, factors, bytes);
+      await runOnFactors(gen, ctx, factors, bytes);
       return;
     }
     // The first replay after Discover compresses, when no factors exist yet.
@@ -378,7 +410,6 @@ export function createPass2Store(
       factors && state === 'none' ? factors.replayCompress(frames) : NO_COMPRESS;
     ctx.compressed = comp.settings.compress === true;
     ctx.ended = endOnce(comp.ended);
-    let pumping = false;
     try {
       await startReplayPipeline(
         client,
@@ -395,7 +426,7 @@ export function createPass2Store(
       );
       if (gen !== generation) return;
       ctx.t0 = clock();
-      pumping = true;
+      ctx.pumping = true;
       pump(gen, ctx);
     } catch (err) {
       if (gen !== generation) return;
@@ -404,15 +435,16 @@ export function createPass2Store(
       setStatus('error');
     } finally {
       // Until the pump has the replay, its end is here: a throw or a stop while starting cuts it short.
-      if (!pumping) ctx.ended(false);
+      if (!ctx.pumping) ctx.ended(false);
     }
   }
 
   /**
    * Extract on factors: the compress worker solves every window with the
-   * final library. Each window goes to this run's trace files as it arrives
-   * (memory holds one window at a time); they become the result only when the
-   * job answers, and a job that fails deletes them.
+   * final library. Each window is queued for this run's trace files as it
+   * arrives; nothing bounds that queue (no backpressure in the extract
+   * protocol yet). The files become the result only when the job answers,
+   * and a job that fails deletes them.
    */
   async function runOnFactors(
     gen: number,
@@ -456,24 +488,19 @@ export function createPass2Store(
       if (gen !== generation) return;
       const info = f.info();
       const projection = f.projection();
-      setResult({
-        ids: ctx.ids,
-        traces: ctx.traces,
-        signed: ctx.signed,
-        frames: ctx.frames,
-        cells: ctx.cellCount,
-        version: ctx.library.version,
-        library: ctx.library,
-        seconds: (clock() - ctx.t0) / 1000,
-        ...(projection ? { projection } : {}),
-        source: 'factors',
-        ...(info ? { tiling: info.tiling, meanRank: info.meanRank } : {}),
-      });
+      setResult(
+        resultOf(ctx, {
+          ...(projection ? { projection } : {}),
+          source: 'factors',
+          ...(info ? { tiling: info.tiling, meanRank: info.meanRank } : {}),
+        }),
+      );
       setStatus('done');
     } catch (err) {
       if (gen !== generation) return;
       // Later windows of this job see a stale generation and write nothing.
       generation++;
+      setFactorsFailed(true);
       setError(err instanceof Error ? err.message : String(err));
       setStatus('error');
       // The job's windows are in this run's files only: deleting them leaves nothing.
@@ -483,7 +510,7 @@ export function createPass2Store(
 
   /** The running run stops early: its replay is cut short, or the wait for its job ends. */
   function endRun(): void {
-    current?.ended(false);
+    if (current?.pumping) current.ended(false);
     current?.stopWait();
     current = null;
   }
@@ -512,6 +539,7 @@ export function createPass2Store(
     }
     setStatus('idle');
     void discard();
+    setFactorsFailed(false);
     setError(null);
     setProcessed(0);
     setTotal(0);
@@ -530,6 +558,7 @@ export function createPass2Store(
     result,
     motionBackend,
     source,
+    factorsFailed,
     blockedReason,
     /** The trace file of the current run (for measurements). */
     traceFile: () => file,

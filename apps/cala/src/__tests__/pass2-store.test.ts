@@ -132,13 +132,13 @@ function win(start: number, count: number, ids = IDS): FactorWindowTraces {
 }
 
 /**
- * Factors in `state`; Extract on them gives `windows`, then fails with
- * `fail` or ends when `gate` resolves (at once when absent).
+ * Factors in `state`; Extract on them calls `before`, gives `windows`, then
+ * fails with `fail` or ends when `gate` resolves (at once when absent).
  */
 function fakeFactors(
   state: FactorState,
   windows: FactorWindowTraces[] = [],
-  job: { fail?: string; gate?: Promise<void> } = {},
+  job: { fail?: string; gate?: Promise<void>; before?: () => void } = {},
 ) {
   const calls: string[] = [];
   const proj = { spans: [] } as unknown as FovProjections;
@@ -161,6 +161,7 @@ function fakeFactors(
     async extract(library, onWindow) {
       calls.push(`extract ${library.length}`);
       sink = onWindow;
+      job.before?.();
       for (const w of windows) onWindow(w);
       await job.gate;
       if (job.fail) throw new Error(job.fail);
@@ -180,7 +181,7 @@ function gate(): { promise: Promise<void>; open: () => void } {
 }
 
 async function settle(): Promise<void> {
-  // A factor Extract writes its windows only after the job answers: more turns than a replay.
+  // A factor Extract takes more turns than a replay (the job, the writes, finish).
   for (let i = 0; i < 60; i++) await Promise.resolve();
 }
 
@@ -312,7 +313,7 @@ describe('Extract (pass 2) store', () => {
     windows.pop();
     job.fail = 'solve failed';
     job.gate = g.promise;
-    await store.run();
+    const running = store.run();
     await settle();
     expect(store.result()).toBeNull();
     await expect(earlier.traces.readFrames(0, 1)).rejects.toThrow();
@@ -321,6 +322,7 @@ describe('Extract (pass 2) store', () => {
     const file = store.traceFile()!;
     expect([...(await file.readFrames(5, 6))]).toEqual([50, 51]);
     g.open();
+    await running;
     await settle();
     expect(store.status()).toBe('error');
     expect(store.error()).toBe('solve failed');
@@ -338,16 +340,18 @@ describe('Extract (pass 2) store', () => {
 
   it('ends a factor Extract at the first bad window and deletes what it wrote', async () => {
     const g = gate();
-    const { f } = fakeFactors('ready', [win(0, 4), win(2, 4)], { gate: g.promise });
+    let file: TraceFile | null = null;
+    const job = { gate: g.promise, before: () => (file = store.traceFile()) };
+    const { f } = fakeFactors('ready', [win(0, 4), win(2, 4)], job);
     const { store } = setup({ factors: f });
+    // The job has not answered when `run` returns: the bad window alone ended the run.
     await store.run();
-    const file = store.traceFile()!;
     await settle();
-    // The job has not answered: the bad window alone ends the run.
     expect(store.status()).toBe('error');
     expect(store.error()).toMatch(/frame 2 twice/);
     expect(store.traceFile()).toBeNull();
-    await expect(file.readFrames(0, 1)).rejects.toThrow();
+    expect(file).not.toBeNull();
+    await expect(file!.readFrames(0, 1)).rejects.toThrow();
     g.open();
     await settle();
     expect(store.status()).toBe('error');
@@ -357,17 +361,80 @@ describe('Extract (pass 2) store', () => {
     const g = gate();
     const { f } = fakeFactors('ready', [win(0, 4), win(4, 4)], { gate: g.promise });
     const { store, stops, started } = setup({ factors: f });
-    await store.run();
+    const running = store.run();
     await settle();
     store.cancel();
     expect(store.status()).toBe('cancelled');
     expect(stops).toHaveLength(0);
+    // The wait ends although the job has not answered.
+    let settled = false;
+    void running.then(() => (settled = true));
+    await settle();
+    expect(settled).toBe(true);
     // The job ends late: nothing of it reaches the store.
     g.open();
     await settle();
     expect(store.status()).toBe('cancelled');
     expect(store.result()).toBeNull();
     expect(store.traceFile()).toBeNull();
+    expect(started).toHaveLength(0);
+  });
+
+  it('cancels a factor Extract during its first wait without stopping a pipeline', async () => {
+    const { f } = fakeFactors('ready', [win(0, 4), win(4, 4)]);
+    const { store, stops, started } = setup({ factors: f });
+    // The last run replayed the file.
+    await store.run(undefined, 'raw');
+    await settle();
+    expect(store.source()).toBe('raw');
+    const running = store.run();
+    store.cancel();
+    await running;
+    expect(store.status()).toBe('cancelled');
+    expect(stops).toHaveLength(0);
+    expect(started).toHaveLength(1);
+  });
+
+  it('replays the file, without compressing, after a factor Extract failed', async () => {
+    const job: { fail?: string } = { fail: 'solve failed' };
+    const { f, calls } = fakeFactors('ready', [win(0, 4), win(4, 4)], job);
+    const { store, started } = setup({ factors: f });
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('error');
+    expect(store.factorsFailed()).toBe(true);
+    job.fail = undefined;
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('done');
+    expect(store.source()).toBe('raw');
+    expect(started).toHaveLength(1);
+    const keys = Object.keys(started[0].cells as object);
+    expect(keys.filter((k) => k.startsWith('compress'))).toEqual([]);
+    expect(calls).toEqual(['extract 3']);
+    // A new Discover clears the store: Extract reads the factors again.
+    store.clear();
+    expect(store.factorsFailed()).toBe(false);
+    await store.run();
+    await settle();
+    expect(store.source()).toBe('factors');
+    expect(store.status()).toBe('done');
+  });
+
+  it('reads the factors again after a factor Extract was cancelled', async () => {
+    const g = gate();
+    const job: { gate?: Promise<void> } = { gate: g.promise };
+    const { f } = fakeFactors('ready', [win(0, 4), win(4, 4)], job);
+    const { store, started } = setup({ factors: f });
+    const running = store.run();
+    await settle();
+    store.cancel();
+    await running;
+    expect(store.factorsFailed()).toBe(false);
+    job.gate = undefined;
+    await store.run();
+    await settle();
+    expect(store.source()).toBe('factors');
     expect(started).toHaveLength(0);
   });
 

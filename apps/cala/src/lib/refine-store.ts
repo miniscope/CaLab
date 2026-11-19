@@ -120,6 +120,8 @@ export function createRefineStore(
     compressed: boolean;
     /** The replay ended; false: cut short. Reports only the first call. */
     ended: (ok: boolean) => void;
+    /** The pump has the replay: its end is reported there, by fail, cancel or clear; before, by `run`. */
+    pumping: boolean;
   }
 
   /** Stop collecting traces for the QC (and free them). */
@@ -240,7 +242,7 @@ export function createRefineStore(
     setError(message);
     setStatus('error');
     if (ctx) {
-      ctx.ended(false);
+      if (ctx.pumping) ctx.ended(false);
       record(ctx, 'error');
       dropTraces(ctx);
     }
@@ -332,12 +334,12 @@ export function createRefineStore(
       ids: before.ids.slice(),
       compressed: comp.settings.compress === true,
       ended: endOnce(comp.ended),
+      pumping: false,
     };
     current = ctx;
     setTotal(ctx.frames);
     setSeries({ samples: [], end: ctx.tracker.time(ctx.frames) });
     log.begin('refine');
-    let pumping = false;
     try {
       // Room for the replay's traces (the QC); without it Refine runs, without a QC.
       if (options.qc) {
@@ -367,13 +369,13 @@ export function createRefineStore(
         { frames: ctx.frames, record: rec, flatField: flatMap },
       );
       if (gen !== generation) return;
-      pumping = true;
+      ctx.pumping = true;
       pump(gen, ctx);
     } catch (err) {
       fail(gen, ctx, err instanceof Error ? err.message : String(err));
     } finally {
       // Until the pump has the replay, its end is here: a throw or a stop before it runs cuts it short.
-      if (!pumping) ctx.ended(false);
+      if (!ctx.pumping) ctx.ended(false);
     }
   }
 
@@ -385,7 +387,7 @@ export function createRefineStore(
     inFlight = 0;
     setStatus('cancelled');
     if (current) {
-      current.ended(false);
+      if (current.pumping) current.ended(false);
       record(current, 'cancelled');
       dropTraces(current);
     }
@@ -396,7 +398,7 @@ export function createRefineStore(
   function clear(): void {
     if (status() === 'running' || status() === 'finishing') generation++;
     if (current) {
-      current.ended(false);
+      if (current.pumping) current.ended(false);
       dropTraces(current);
     }
     current = null;

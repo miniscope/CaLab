@@ -81,7 +81,7 @@ export function createPass2Factors(
     state: (frames) => store.factors(frames),
     replayCompress(frames) {
       // Read untracked: a caller inside an effect must not re-run when the mark changes.
-      if (untrack(() => store.factors(frames)) !== 'none') return { settings: {}, ended() {} };
+      if (untrack(() => store.factors(frames)) !== 'none') return NO_COMPRESS;
       const ended = store.markReplay();
       return {
         settings: { compress: true, compressTiling: 'offset', compressSession: store.session() },
