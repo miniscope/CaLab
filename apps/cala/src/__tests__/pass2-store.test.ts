@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { CellStore } from '../lib/cell-store.ts';
 import type { FactorState } from '../lib/compress-store.ts';
 import type { FactorWindowTraces, Pass2Factors } from '../lib/factor-extract.ts';
@@ -10,6 +10,7 @@ import type { PipelinePlan } from '../lib/pipeline-plan.ts';
 import { createPass2Store } from '../lib/pass2-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { RunRecord } from '../lib/run-record.ts';
+import { TraceFile } from '../lib/trace-file.ts';
 import type { LibraryView } from '../workers/slow-types.ts';
 
 const PLAN: PipelinePlan = {
@@ -142,6 +143,7 @@ function fakeFactors(
   const calls: string[] = [];
   const proj = { spans: [] } as unknown as FovProjections;
   const kept: FovProjections[] = [];
+  let sink: (w: FactorWindowTraces) => void = () => {};
   const f: Pass2Factors = {
     state: () => state,
     replayCompress: () => {
@@ -158,13 +160,16 @@ function fakeFactors(
     info: () => ({ tiling: 'offset', meanRank: 4.5 }),
     async extract(library, onWindow) {
       calls.push(`extract ${library.length}`);
+      sink = onWindow;
       for (const w of windows) onWindow(w);
       await job.gate;
       if (job.fail) throw new Error(job.fail);
       return { frames: windows.reduce((s, w) => s + w.count, 0), msPerFrame: 0.1 };
     },
   };
-  return { f, calls, proj, kept };
+  /** A window of the last job that arrives after the job ended. */
+  const late = (w: FactorWindowTraces) => sink(w);
+  return { f, calls, proj, kept, late };
 }
 
 /** A promise and its resolve. */
@@ -291,19 +296,30 @@ describe('Extract (pass 2) store', () => {
     expect(store.result()).toBeNull();
   });
 
-  it('keeps nothing of a factor job that fails after its windows arrived', async () => {
+  it('keeps nothing of a factor job that fails after its windows were written', async () => {
     const g = gate();
-    const { f } = fakeFactors('ready', [win(0, 4), win(4, 4)], {
-      fail: 'solve failed',
-      gate: g.promise,
-    });
-    const { store } = setup({ factors: f });
+    const job: { fail?: string; gate?: Promise<void> } = {};
+    const windows = [win(0, 4), win(4, 4), win(8, 4)];
+    const { f, late } = fakeFactors('ready', windows, job);
+    const { store } = setup({ factors: f, frames: 12 });
+    // An earlier Extract of the run finished; a new run clears its result at
+    // its start, as a raw Extract does.
     await store.run();
     await settle();
-    // Both windows are in; nothing is written until the job answers.
+    const earlier = store.result()!;
+    expect(store.status()).toBe('done');
+    // The next job sends two of the three windows, then fails.
+    windows.pop();
+    job.fail = 'solve failed';
+    job.gate = g.promise;
+    await store.run();
+    await settle();
+    expect(store.result()).toBeNull();
+    await expect(earlier.traces.readFrames(0, 1)).rejects.toThrow();
+    // Both windows are written to this run's file as they arrive.
     expect(store.processed()).toBe(8);
     const file = store.traceFile()!;
-    expect([...(await file.readFrames(5, 6))]).toEqual([0, 0]);
+    expect([...(await file.readFrames(5, 6))]).toEqual([50, 51]);
     g.open();
     await settle();
     expect(store.status()).toBe('error');
@@ -312,6 +328,29 @@ describe('Extract (pass 2) store', () => {
     expect(store.traceFile()).toBeNull();
     // The run's file is gone.
     await expect(file.readFrames(0, 1)).rejects.toThrow();
+    // The failed job's missing window, arriving late, writes nothing.
+    const append = vi.spyOn(TraceFile.prototype, 'append');
+    late(win(8, 4));
+    expect(append).not.toHaveBeenCalled();
+    expect(store.processed()).toBe(8);
+    append.mockRestore();
+  });
+
+  it('ends a factor Extract at the first bad window and deletes what it wrote', async () => {
+    const g = gate();
+    const { f } = fakeFactors('ready', [win(0, 4), win(2, 4)], { gate: g.promise });
+    const { store } = setup({ factors: f });
+    await store.run();
+    const file = store.traceFile()!;
+    await settle();
+    // The job has not answered: the bad window alone ends the run.
+    expect(store.status()).toBe('error');
+    expect(store.error()).toMatch(/frame 2 twice/);
+    expect(store.traceFile()).toBeNull();
+    await expect(file.readFrames(0, 1)).rejects.toThrow();
+    g.open();
+    await settle();
+    expect(store.status()).toBe('error');
   });
 
   it('stops waiting for the factor job when cancelled, without touching the pipeline', async () => {

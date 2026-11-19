@@ -410,8 +410,9 @@ export function createPass2Store(
 
   /**
    * Extract on factors: the compress worker solves every window with the
-   * final library. Its windows are held until the job answers and only then
-   * go to the trace files, so a job that fails leaves nothing of itself.
+   * final library. Each window goes to this run's trace files as it arrives
+   * (memory holds one window at a time); they become the result only when the
+   * job answers, and a job that fails deletes them.
    */
   async function runOnFactors(
     gen: number,
@@ -419,29 +420,35 @@ export function createPass2Store(
     f: Pass2Factors,
     bytes: Uint8Array,
   ): Promise<void> {
-    const staged: FactorWindowTraces[] = [];
+    let broken = false;
+    let breakJob: (err: unknown) => void = () => {};
+    // A bad window ends the run at once; the job's later windows are dropped.
+    const badWindow = new Promise<never>((_, reject) => (breakJob = reject));
     const take = (w: FactorWindowTraces): void => {
-      if (gen !== generation) return;
-      staged.push(w);
-      setProcessed(w.start + w.count);
-      setFps(ctx.meter.record(clock(), w.count));
-    };
-    // Cancel and clear stop the wait: the job runs on in the worker, and the
-    // compress store drops its late messages.
-    const stopped = new Promise<null>((resolve) => (ctx.stopWait = () => resolve(null)));
-    try {
-      const job = await Promise.race([f.extract(bytes, take), stopped]);
-      if (job === null || gen !== generation) return;
-      for (const w of staged) {
+      if (gen !== generation || broken) return;
+      try {
         if (w.start > ctx.done)
           throw new Error(
             `Extract on factors has no traces for frames ${ctx.done} to ${w.start - 1}.`,
           );
         if (w.start < ctx.done) throw new Error(`Extract on factors got frame ${w.start} twice.`);
         storeTraces(ctx, w.start, w.count, w);
-        await drained(ctx);
-        if (gen !== generation) return;
+      } catch (err) {
+        broken = true;
+        breakJob(err);
+        return;
       }
+      setProcessed(ctx.done);
+      setFps(ctx.meter.record(clock(), w.count));
+    };
+    // Cancel and clear stop the wait: the job runs on in the worker, and the
+    // compress store drops its late messages.
+    const stopped = new Promise<null>((resolve) => (ctx.stopWait = () => resolve(null)));
+    try {
+      const job = await Promise.race([f.extract(bytes, take), stopped, badWindow]);
+      if (job === null || gen !== generation) return;
+      await drained(ctx);
+      if (gen !== generation) return;
       if (ctx.done !== ctx.frames)
         throw new Error(`Extract on factors ended after ${ctx.done} of ${ctx.frames} frames.`);
       await ctx.traces.finish();
@@ -465,9 +472,11 @@ export function createPass2Store(
       setStatus('done');
     } catch (err) {
       if (gen !== generation) return;
+      // Later windows of this job see a stale generation and write nothing.
       generation++;
       setError(err instanceof Error ? err.message : String(err));
       setStatus('error');
+      // The job's windows are in this run's files only: deleting them leaves nothing.
       void discard();
     }
   }
