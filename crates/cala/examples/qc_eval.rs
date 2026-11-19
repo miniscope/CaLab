@@ -84,10 +84,11 @@
 //!                      preprocessor and the stored motion records) | factors
 //!                      (rebuilt from the factor windows `--factors-out` has
 //!                      written so far in pass 1: no raw read, no
-//!                      preprocessing, no warp; the samples the motion record
-//!                      marks missing stay missing; a block waits until its
-//!                      window is on disk, and the last window is flushed
-//!                      before the drain). Needs `--factors-out`,
+//!                      preprocessing, no warp, no mask; pixels never valid
+//!                      in a window are missing in all its frames, as in the
+//!                      live frame; a block waits until its window is on
+//!                      disk, and the last window is flushed before the
+//!                      drain). Needs `--factors-out`,
 //!                      `--factors-pass 1` and no `--catchup`
 //!   --catchup X        reference arm: every X Discover frames give all
 //!                      cells frames 0..t at once (`--catchup-double`: at
@@ -1218,26 +1219,13 @@ impl LookBack {
         if let Some(src) = self.source.as_mut() {
             // `--lookback-source factors`: the frame as Discover compressed it,
             // preprocessed and registered with the calibration of its time; no
-            // raw read, no preprocessing, no warp. A held-out frame is passed
-            // over without rebuilding it.
+            // raw read, no preprocessing, no warp, no mask. A held-out frame is
+            // passed over without rebuilding it.
             if skip {
                 self.skipped += 1;
                 return false;
             }
             src.frame(f, &mut self.y);
-            let valid = match pipe.mc.as_mut() {
-                Some(mc) => {
-                    mc.validity(
-                        &pipe.records[f],
-                        pipe.src.as_ref().unwrap(),
-                        &mut self.valid,
-                    )
-                    .unwrap();
-                    Some(&self.valid[..])
-                }
-                None => None,
-            };
-            mark_missing(&mut self.y, valid, pipe.pre.calibration().fov().mask());
         } else {
             if f < self.raw_start || f >= self.raw_start + self.raw_n {
                 let lo = f - f % LB_BLOCK;
@@ -3679,16 +3667,44 @@ impl FactorReplay {
     }
 }
 
-/// Factor windows the look-back keeps in memory: its reach of 3000 frames
-/// before a birth (`--lookback-frames`) spans at most six windows.
+/// Factor windows the look-back keeps in memory (first in, first out). Its
+/// reach of 3000 frames before a birth (`--lookback-frames`) spans at most
+/// six windows; older needs and the precision mode can ask for older blocks,
+/// which are then read again.
 const LB_WINDOWS: usize = 6;
 
-/// `--lookback-source factors`: past frames rebuilt from the factor windows
-/// a [`FactorDump`] has written so far in pass 1. Keeps the last
-/// `LB_WINDOWS` windows it read.
+/// A cached factor window: the factors, their blend layout and, per pixel,
+/// whether the pixel was never valid in the window.
+type LbWindow = (WindowFactors, BlendLayout, Vec<bool>);
+
+/// Per pixel: true when no tile that covers it saw it valid in the window.
+fn never_valid(wf: &WindowFactors) -> Vec<bool> {
+    let width = wf.dims.width;
+    let mut never = vec![true; wf.dims.pixels()];
+    for tf in &wf.tiles {
+        for y in 0..tf.h {
+            let row = (tf.y0 + y) * width + tf.x0;
+            for x in 0..tf.w {
+                if tf.valid[y * tf.w + x] > 0.0 {
+                    never[row + x] = false;
+                }
+            }
+        }
+    }
+    never
+}
+
+/// `--lookback-source factors`: past frames as Discover compressed them,
+/// read from the factor windows a [`FactorDump`] has written so far in the
+/// first pass. A factor frame is the live frame as compressed: pixels never valid in
+/// its window are missing (NaN), as in the live frame; nothing is
+/// preprocessed, warped or masked again. A pixel that became valid partway
+/// through its first window reads its window mean before that point (a
+/// small difference from the live frame). Keeps the last `LB_WINDOWS`
+/// windows it read.
 struct FactorFrames {
     dir: PathBuf,
-    cache: std::collections::VecDeque<(WindowFactors, BlendLayout)>,
+    cache: std::collections::VecDeque<LbWindow>,
     /// Window files read (each miss of the cache).
     reads: u64,
 }
@@ -3703,13 +3719,13 @@ impl FactorFrames {
     }
 
     /// Write recording frame `f`, rebuilt from its window, to every pixel
-    /// of `y`.
+    /// of `y`; the pixels never valid in the window are NaN.
     fn frame(&mut self, f: usize, y: &mut [f32]) {
         let start = (f / FACTOR_WINDOW) * FACTOR_WINDOW;
         let at = match self
             .cache
             .iter()
-            .position(|(wf, _)| wf.start as usize == start)
+            .position(|(wf, _, _)| wf.start as usize == start)
         {
             Some(i) => i,
             None => {
@@ -3720,35 +3736,26 @@ impl FactorFrames {
                 let wf = WindowFactors::from_bytes(&bytes)
                     .unwrap_or_else(|| panic!("{path:?}: not a factor file"));
                 let layout = wf.layout();
+                let never = never_valid(&wf);
                 if self.cache.len() == LB_WINDOWS {
                     self.cache.pop_front();
                 }
-                self.cache.push_back((wf, layout));
+                self.cache.push_back((wf, layout, never));
                 self.reads += 1;
                 self.cache.len() - 1
             }
         };
-        let (wf, layout) = &self.cache[at];
+        let (wf, layout, never) = &self.cache[at];
         assert!(
             f - start < wf.frames,
             "look-back frame {f} is beyond the factors in {:?}",
             self.dir
         );
         layout.reconstruct(wf, f - start, y);
-    }
-}
-
-/// `--lookback-source factors`: mark a rebuilt frame's missing samples as
-/// the raw look-back path leaves them: NaN inside the FOV where the stored
-/// motion record marks a sample invalid (`valid` 0; `None` without motion:
-/// all valid). Outside the FOV the rebuilt value stays.
-fn mark_missing(y: &mut [f32], valid: Option<&[u8]>, fov: &[u8]) {
-    let Some(valid) = valid else {
-        return;
-    };
-    for ((v, &ok), &m) in y.iter_mut().zip(valid).zip(fov) {
-        if ok == 0 && m != 0 {
-            *v = f32::NAN;
+        for (v, &nv) in y.iter_mut().zip(never) {
+            if nv {
+                *v = f32::NAN;
+            }
         }
     }
 }
@@ -6574,9 +6581,16 @@ mod tests {
     }
 
     #[test]
-    fn lookback_factor_frames_are_the_dumped_frames_with_missing_samples_marked() {
+    fn lookback_factor_frames_are_the_dumped_frames_with_never_valid_pixels_missing() {
         let dims = Dims::new(96, 70).unwrap();
-        let frames = slow_stream(dims, 2 * FACTOR_WINDOW + 50);
+        let mut frames = slow_stream(dims, 2 * FACTOR_WINDOW + 50);
+        // Pixel 7: missing in every frame. Pixel 9: missing in the first 100 frames.
+        for (t, f) in frames.iter_mut().enumerate() {
+            f[7] = f32::NAN;
+            if t < 100 {
+                f[9] = f32::NAN;
+            }
+        }
         let dir = std::env::temp_dir().join(format!("qc_eval_lbfac_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut fd = FactorDump::new(&dir, dims, Tiling::Offset, factor_config(&[]));
@@ -6595,13 +6609,8 @@ mod tests {
             "the short last window is written by finish"
         );
         let n = dims.pixels();
-        let mut fov = vec![1u8; n];
-        fov[0] = 0;
-        let mut valid = vec![1u8; n];
-        valid[0] = 0;
-        valid[7] = 0;
-        let mut fr = FactorReplay::new(&dir, dims);
         let mut ff = FactorFrames::new(&dir);
+        let mut want = vec![0.0f32; n];
         // Back and forth between the three windows.
         for t in [
             FACTOR_WINDOW + 3,
@@ -6610,29 +6619,24 @@ mod tests {
             5,
             FACTOR_WINDOW - 1,
         ] {
-            let mut want = vec![0.0f32; n];
-            fr.frame(t, &mut want);
-            let mut y = vec![f32::NAN; n];
+            let w = (t / FACTOR_WINDOW) * FACTOR_WINDOW;
+            let wf = WindowFactors::from_bytes(
+                &std::fs::read(dir.join(format!("w{w:07}.fac"))).unwrap(),
+            )
+            .unwrap();
+            wf.layout().reconstruct(&wf, t - w, &mut want);
+            let mut y = vec![0.0f32; n];
             ff.frame(t, &mut y);
-            mark_missing(&mut y, Some(&valid), &fov);
+            assert!(y[7].is_nan(), "frame {t}: never valid in the window");
             assert!(
-                y[7].is_nan(),
-                "frame {t}: an invalid sample inside the FOV is missing"
+                y[9].is_finite(),
+                "frame {t}: valid in some frames of the window"
             );
-            assert_eq!(
-                y[0], want[0],
-                "frame {t}: outside the FOV the rebuilt value stays"
-            );
-            for p in (1..n).filter(|&p| p != 7) {
+            for p in (0..n).filter(|&p| p != 7) {
                 assert_eq!(y[p], want[p], "frame {t} pixel {p}");
             }
         }
         assert_eq!(ff.reads, 3, "each window file is read once");
-        // Without motion nothing is marked.
-        let mut y = vec![0.0f32; n];
-        ff.frame(5, &mut y);
-        mark_missing(&mut y, None, &fov);
-        assert!(y.iter().all(|v| v.is_finite()));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
