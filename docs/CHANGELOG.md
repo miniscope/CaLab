@@ -54,20 +54,25 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 - Cala (experimental joint update): a cluster's history now follows its cells when their statistics disks move (re-expressed onto the new pixels, new pixels starting at the current model) instead of starting over, and stores cover only the cells' statistics disks. On the 14-sim suite against the first version: bitten neighbours at 0.75-1 soma diameters 0.34 → 0.20, close-pair trace correlation excess +0.106 → +0.084, footprint correlation with ground truth 0.9899 → 0.9920 (close pairs 0.9879 → 0.9917, 14/14 sims), isolated cells and matched/false cells unchanged; one Refine pass now beats three Refine passes without it. Open: footprints over-filled at a neighbour's centre 6.7 % → 7.5 % (main 5.9 %), and the Refine pass's slow-loop cost is +9 % (static) / +14 % (motion) over the flag-off pass. Off by default; `qc_eval --joint-admit`, `--joint-carry` are measured, unadopted switches. See `tools/cala-eval/results/2026-11-18-replay-stage2.md`.
 
-- Cala, factor pipeline phase 4.1, Extract on the factors: **compression is on by default** (`?compress=off` replays
-  the file as before; the old `?compress` still means on). The first replay after Discover (the first Refine run, or
-  Extract when no Refine runs) also compresses the frames on the offset grids, and Extract then reads those factors in
-  seconds. Extract replays the file when the factors are not ready, do not cover the recording, after a compression
-  error, and after an Extract on the factors has failed; the Run panel says which. **Export format 7:** every stage
-  record has `source` (`raw` or `factors`); a factor Extract's record also has `tiling`, `mean_rank` and, when cells
-  are flagged, `low_valid`, and its export has the per-cell array `extract_min_valid` (the smallest valid share of a
-  cell's pixels over the windows; the factor engine uses the stored value where a replay leaves the pixel out, so a
-  cell below 1 can differ from a file replay, and the Run panel flags such cells). Older files still load.
-  `FactorExtractor.setSigned` / `lastSigned` give the signed traces and `FactorExtractor.minValid` the valid shares.
-  What the default switches on: after Discover of a file the trace view is filled again from Discover's own factors and
-  live streams compress too (Extract on a stream's factors and a cap on its storage are not built yet).
+- Cala, factor pipeline phase 4.1, Extract on the factors: Extract reads the factors after the first replay (see
+  Changed). **Export format 7:** every stage record has `source` (`raw` or `factors`); a finished factor Extract's
+  record also has `tiling`, `mean_rank` and `low_valid` (the number of cells below 1, 0 when none), and its export has
+  the per-cell array `extract_min_valid` (the smallest valid share of a cell's pixels over the windows; the factor
+  engine uses the stored value where a replay leaves the pixel out, so a cell below 1 can differ from a file replay,
+  and the Run panel flags such cells). Older files still load. `FactorExtractor.setSigned` / `lastSigned` give the
+  signed traces and `FactorExtractor.minValid` the valid shares.
 
 ### Changed
+
+- Cala, factor pipeline phase 4.1: **compression is on by default** (`?compress=off` replays the file as before; the old
+  `?compress` still means on). The first replay after Discover (the first Refine run, or Extract when no Refine runs)
+  also compresses the frames on the offset grids, and Extract then reads those factors (the Extract pass alone took 0.5
+  to 1.1 s in native runs: `tools/cala-eval/results/2026-11-19-factor-phase2.md`). Extract replays the file when the
+  factors are not ready, do not cover the recording, or after a compression error; after an Extract on the factors has
+  failed, every later Extract of the run replays the file until the next Discover. The Run panel says which. What the
+  default switches on: after Discover of a file the trace view is filled again from Discover's own factors (display
+  only); a live stream compresses too, but its trace view and export keep the traces solved live (Extract on a stream's
+  factors and a cap on its storage are not built yet).
 
 - Docs and Admin: a note that runs from local or dev builds send no analytics (no Supabase environment) and are not counted in Admin.
 - Cala (experimental `?compress`): factor files are format v2 (`CALAFAC2`: the tiling, and per pixel the discarded variance and the valid share; v1 files are still read, as plain tiles). A non-finite pixel is stored as a missing sample. The compressor runs two power iterations of the SVD. Extract's replay writes recalibrated factors on two offset grids, which replace Discover's plain factors; the history review reads only plain tiles and refuses others, and the status bar's ms per frame is the mean over the session's windows. `batch-session.mjs --compress-wait <s>` waits for a stage's last window; `history_wholetest.py` reads v1 and v2. `batch-session.mjs` refuses a port that already answers and a build older than the sources (`--stale-build`). The chosen factors pass gate A1 of the factor pipeline on all six test recordings in bounded native runs (first 12000 or 6000 frames); in Chrome both stages compress every window on both test recordings, at 1.45 to 24.25 ms per frame: `tools/cala-eval/results/2026-11-18-factor-phase1.md`.

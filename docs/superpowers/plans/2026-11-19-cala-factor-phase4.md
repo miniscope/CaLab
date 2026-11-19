@@ -2148,3 +2148,5 @@ Written in full after 4.1 is merged and the owner has answered the decisions abo
 - Departure from the spec, left for the owner: §6 says Extract on factors runs after Refine without asking; in 4.1 Extract stays a click.
 - Added to phase 4.3's list: an acknowledgement per window in the extract protocol; stopping the feed after a compression error; a cap on what a live stream compresses.
 - The e2e tests of Task 7 were run locally with a cached browser build through a temporary configuration, because the repository's Playwright browser build was not installed on the machine. CI runs the repository's own.
+- The back-fill is not applied to a live run in 4.1 (commit c69a2fc0): a live export would otherwise have carried traces solved from Discover's own factors without saying so, and the plan's decision 5 puts live streams in 4.2.
+- Found while reviewing Task 6: without browser storage the factors are unusable and all three stages run on the raw path. The history review still needs `?review`, so the visit worker count is unchanged by the default.

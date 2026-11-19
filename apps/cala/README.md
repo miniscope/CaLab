@@ -156,10 +156,10 @@ Extract's file, no transpose): `np.load` still returns the (cells, frames) array
 `meta_json.stages` lists the stages that ran, with counts and timestamps.
 
 Format 7 adds to each stage record `source` (`raw`: the stage read the
-recording; `factors`: it read the compressed factors). A stage that read
-factors also has `tiling` (`plain` or `offset`) and `mean_rank` (the mean kept
-rank per tile), and `low_valid` (the number of cells with `min_valid` below 1)
-when any cell is flagged. An Extract on the factors also writes the per-cell
+recording; `factors`: it read the compressed factors). A finished Extract on the
+factors also has `tiling` (`plain` or `offset`), `mean_rank` (the mean kept rank
+per tile) and `low_valid` (the number of cells with `min_valid` below 1, 0 when
+none); a failed or cancelled one has `source` only. An Extract on the factors also writes the per-cell
 array `extract_min_valid` (float32, in the row order of `traces`); a raw
 Extract has neither it nor `low_valid`. Older files still load.
 
@@ -343,16 +343,17 @@ sample at that point (it is counted and shown, not interpolated).
 ## Compression (on by default; `?compress=off`)
 
 Compression is on unless the URL has `?compress=off`. The old `?compress` still
-works and means on; only `off` turns it off. Every run compresses the
+works and means on; only `off` turns it off. Discover compresses the
 preprocessed, motion-corrected frames (the fast loop's input) into low-rank
 factors per 64 px tile and 600-frame window (`crates/cala/src/compress`, ported
-from MiniMe). The first replay after Discover (the first Refine run, or Extract
+from MiniMe; Discover uses plain tiles, with `?review` too). The first replay after Discover (the first Refine run, or Extract
 when no Refine runs) compresses again, on two offset grids with the final
 calibration, and keeps those factors. No later replay compresses again; a
 replay that is cancelled releases this, so the next replay compresses.
 
 Extract then reads the factors (`FactorExtractor` in the compress worker,
-signed traces too) once they are ready, in seconds, and replays the file
+signed traces too) once they are ready (the Extract pass alone took 0.5 to 1.1 s in native runs,
+`tools/cala-eval/results/2026-11-19-factor-phase2.md`) and replays the file
 otherwise. The Run panel shows a line under Extract that says which. It is one
 of these five texts:
 
@@ -364,16 +365,19 @@ of these five texts:
 
 Extract replays the file when the factors are not ready, when they do not cover
 the recording (for example a recording of 600 k + 1 frames: the last window of
-one frame is skipped on the offset grids), after a compression error (for
-example no browser storage, as in a private window), and for the next Extract
-after an Extract on the factors has failed. The export's stage records say
+one frame is skipped on the offset grids), and after a compression error (for
+example no browser storage, as in a private window); both show the fourth text.
+After an Extract on the factors has failed, every later Extract of the run
+replays the file and shows the fifth text. Only `pass2.clear()` ends this: a new
+Discover, or a Refine run while an Extract result exists. The export's stage records say
 which source each stage read (`source`, format 7; see Run stages and export).
 `?compress=off` replays the file for Refine and Extract as before.
 
 **What the default switches on.** After Discover of a file, the trace view is
 filled again from Discover's own factors with the final library and replaces
-the live history (display only; nothing is exported without an Extract). Live
-streams compress too, although Extract on a stream's factors is not built yet
+the live history (display only: a file's export needs an Extract). A live
+stream compresses too, but its trace view and its export keep the traces the
+fast loop solved live, as before; Extract on a stream's factors is not built yet
 (phase 4.2) and nothing caps the storage yet (phase 4.3). With look-back on,
 both run together: look-back re-reads the recording's file during Discover and
 uses no browser storage.
@@ -403,8 +407,9 @@ has the count (`low_valid`) and the per-cell array (`extract_min_valid`).
 - A factor Extract writes each window to the trace files as it arrives, and
   nothing bounds the write queue when the worker solves faster than the files
   are written (an acknowledgement per window is planned).
-- A cancelled factor Extract keeps running in the worker until its next check;
-  its late messages are dropped.
+- Cancelling a factor Extract sends no message to the worker. The job runs to
+  its last window unless the run is reset, its late messages are dropped, and a
+  new job waits behind it.
 - Refine is always a raw replay in this phase. Refine on factors is phase 4.2,
   behind a switch.
 
@@ -454,7 +459,7 @@ The factors are also used as follows.
 
 ### History review (`?review`)
 
-With `&review` as well (`review=N`: every N windows, default 8), the run looks
+With `?review` (`review=N`: every N windows, default 8), the run looks
 through its compressed history for cells the slow loop missed
 (`crates/cala/src/compress/review.rs`; not the History tab, which plots a
 run's metrics). It needs compression (on by default) and is off with `?compress=off`. It reads

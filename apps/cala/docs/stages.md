@@ -19,8 +19,9 @@ run's event log and these docs.
   later Extracts. No later replay compresses again; a cancelled replay
   releases this, so the next one compresses. Extract reads the factors once
   they are ready and replays the file when they are not ready, do not cover the
-  recording, after a compression error, and after an Extract on the factors has
-  failed. Refine is always a raw replay.
+  recording, and after a compression error. After an Extract on the factors has
+  failed, every later Extract of the run replays the file until the next
+  Discover (or a Refine run while an Extract result exists). Refine is always a raw replay.
 - One replay runs at a time: no Extract while Refine runs and no Refine while
   Extract runs.
 - Refine can run any number of times. Each run starts from the library the
