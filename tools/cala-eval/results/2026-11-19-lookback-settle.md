@@ -301,3 +301,31 @@ seed 3 run here with the same flags. Seed pairs are 1-2, 1-3, 2-3. Peak memory 1
   two configurations estimate footprints of overlapping cells from different statistics). By the rule as written M7
   is therefore "between its lines", with this row named; whether the row should count is the PI's call.
 - `SETTLE` matches about 20 fewer Minian units than D + R (514 against 532), as `COMBO+R` does; see M8.
+
+### Addendum: frames or coverage (workshop recording, arm added after M5; two seeds)
+
+`HALF` = `COMBO` + 9000 settle frames in every second 64-frame block over the whole recording, 16 per request.
+
+| settle                                   | frames | seed 1 vs seed 2: matched share, median r | Minian median r |
+| ---------------------------------------- | ------ | ----------------------------------------- | --------------- |
+| first 9000 frames in a row (`CAL`, checkpoint 5) | 9000 | 85.0 %, 0.9693                      | 0.946 / 0.945   |
+| every second block (`HALF`)              | 9000   | 85.5 %, 0.9740                            | 0.949 / 0.951   |
+| one pass (`CAL`, checkpoint 10)          | 18,000 | 86.0 %, 0.9776                            | 0.949 / 0.948   |
+
+Half the frames spread over the recording do better than the same number from its first half, and come close to the
+full pass. Coverage matters more than the frame count. The strided arm restarts the preprocessor at every block, so
+this is a lower bound for it. It supports a frame cap with even spreading for long recordings; it is one recording of
+13 minutes, so for much sparser sampling that remains a hypothesis.
+
+### Addendum to M8: which setting loses the cells (workshop recording, seed 1, Discover only)
+
+| run                                                              | cells | adds | merges | deletes | splits |
+| ---------------------------------------------------------------- | ----- | ---- | ------ | ------- | ------ |
+| plain Discover                                                   | 831   | 929  | 125    | 9       | 36     |
+| `--merge-guard-sep 0.6` only                                     | 829   | 911  | 114    | 7       | 40     |
+| `--lookback 2 --lookback-drain 4800` only                        | 800   | 857  | 93     | 8       | 44     |
+| `--joint-update all --joint-sign all --merge-guard-sep 0.6` only | 764   | 879  | 159    | 6       | 50     |
+| all (`COMBO`)                                                    | 751   | 820  | 104    | 4       | 39     |
+
+The cluster replay accounts for about 65 of the 80 cells (fewer adds and, without look-back, more merges), look-back
+by itself for about 30, the merge guard for none. One seed per setting.
