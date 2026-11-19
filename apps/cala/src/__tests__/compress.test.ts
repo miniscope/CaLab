@@ -949,6 +949,83 @@ describe('back-fill from the factors', () => {
   });
 });
 
+describe('Extract on factors (the compress worker)', () => {
+  it('solves every window with the given library, with signed traces, and says when it is done', async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 100; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    feed.end();
+    const { r, toMain } = runner();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    r.extract(7, 3, lib.bytes.slice());
+    await r.idle();
+    const windows = toMain.filter((m) => m.type === 'extracted');
+    expect(windows.map((m) => [m.job, m.start, m.count])).toEqual([
+      [3, 0, 50],
+      [3, 50, 50],
+    ]);
+    for (const m of windows) {
+      expect([...m.ids]).toEqual(CELLS.map((c) => c.id));
+      expect(m.signed.length).toBe(m.traces.length);
+      for (let i = 0; i < m.count; i++) {
+        CELLS.forEach((c, j) => {
+          const k = i * CELLS.length + j;
+          expect(m.traces[k]).toBeCloseTo(c.trace(m.start + i), 1);
+          // These traces stay above 0, so the solve does not clip them.
+          expect(m.signed[k]).toBeCloseTo(m.traces[k], 0);
+        });
+      }
+    }
+    expect(toMain[toMain.length - 1]).toMatchObject({
+      type: 'extract-done',
+      session: 7,
+      job: 3,
+      frames: 100,
+    });
+    expect(toMain.some((m) => m.type === 'traces' || m.type === 'backfilled')).toBe(false);
+  });
+
+  it('refuses, naming the job, while a window is open or for another session', async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 60; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    const { r, toMain } = runner();
+    for (const m of sent) await r.handle(m); // window 1 is open: the recording has not ended
+    await r.idle();
+    r.extract(7, 4, lib.bytes.slice());
+    r.extract(99, 5, lib.bytes.slice());
+    await r.idle();
+    const errors = toMain.filter((m) => m.type === 'error');
+    expect(errors.map((m) => [m.session, m.job])).toEqual([
+      [7, 4],
+      [99, 5],
+    ]);
+    expect(toMain.some((m) => m.type === 'extracted')).toBe(false);
+  });
+
+  it("reports a failed solve as the job's error and keeps compressing later windows", async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 100; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    feed.end();
+    const { r, toMain } = runner(memoryStore(), {
+      extract: () => {
+        throw new Error('out of memory');
+      },
+    });
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    r.extract(7, 6, lib.bytes.slice());
+    await r.idle();
+    expect(toMain.filter((m) => m.type === 'error')).toEqual([
+      { type: 'error', session: 7, job: 6, message: 'out of memory' },
+    ]);
+    const status = toMain.filter((m) => m.type === 'status').at(-1);
+    expect(status).toMatchObject({ status: { final: true, windows: 2 } });
+  });
+});
+
 describe('the feed options of the cells of a worker', () => {
   it('Discover: plain tiles, discover frames, its own session', () => {
     expect(compressFeedOptions({ compress: true, session: 3 }, 64, 48)).toEqual({

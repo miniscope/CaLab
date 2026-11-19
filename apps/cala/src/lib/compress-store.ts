@@ -57,8 +57,11 @@ export function createCompressStore(sink?: BackfillSink) {
       return true;
     },
     onMessage(msg: CompressToMain): void {
-      if (msg.type === 'error') setError(msg.message);
-      else if (msg.session !== session) return;
+      // An Extract job's messages carry a job number and are not the compression's.
+      if (msg.type === 'extracted' || msg.type === 'extract-done') return;
+      if (msg.type === 'error') {
+        if (msg.job === undefined) setError(msg.message);
+      } else if (msg.session !== session) return;
       else if (msg.type === 'status') setStatus(msg.status);
       else if (msg.type === 'traces') {
         sink?.onBackfill(msg.first, msg.start, msg.count, msg.ids, msg.traces);
