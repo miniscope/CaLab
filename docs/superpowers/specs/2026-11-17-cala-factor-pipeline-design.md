@@ -492,3 +492,182 @@ about them.
   lines of the offset grids are every 32 px in the tile-line measures (phase 0
   measured the offset arm on the 64 px lines only). The phase 1 gate run gives
   the numbers under these definitions.
+
+## Amendment 2, after main's replay and look-back prototypes (19 Nov 2026)
+
+**Status: decided overnight on 19 Nov 2026 by the implementing agent on the
+owner's instruction to plan what is not planned and to carry main's flagged
+features; for the owner's review.** The text above is not edited; where it
+differs, this amendment holds. Evidence: the code of the branch after main was
+merged into it (merge `cdccdbab`), and main's reports
+`tools/cala-eval/results/2026-11-17-cluster-replay.md`,
+`2026-11-18-replay-stage2.md`, `2026-11-18-replay-worker-jobs.md` and
+`2026-11-19-concurrent-refine.md`.
+
+On 18 Nov main gained three prototypes. All are behind flags that are off:
+
+- **Cluster history replay** (`--joint-update`, `--joint-sign`;
+  `crates/cala/src/discover/cluster.rs`): overlapping cells are refit together
+  from a stored history of their cluster.
+- **The replay in worker visit jobs**: the visit jobs carry the cluster stores
+  (`--via-jobs`, `--visit-workers`).
+- **Look-back** (`--lookback`, in the harness only: `LookBack` in
+  `crates/cala/examples/qc_eval.rs`): while Discover runs, cells born recently
+  and their neighbours are fed past frames again.
+
+The owner has decided that these become part of the pipeline. This amendment
+says what that means for the factor design.
+
+### A8. Cluster history replay
+
+What the code does:
+
+- The history is filled in `SlowLoop::observe`, from the frames the slow loop
+  is fed (`update_clusters` in `cluster.rs`, about line 935). Per fitting frame
+  and cluster it stores `K` numbers, `v_t = Uᵀ r̃_t`. `r̃` is the cluster's
+  whitened residual on its pixels against the model of that frame:
+  `r̃ = is ⊙ (y − model − ring level + Σ_k a_k c_k)`, with the fast loop's
+  traces of the frame. Held-out frames are not stored. No frame store is read.
+- The coordinates are kept behind the trait `ClusterHistory` (about line 123).
+  Its documentation names another possible backing: "a compressed store of the
+  frames that can project any past frame onto a new basis".
+- A frame whose residual is not finite on the cluster's pixels is skipped
+  (`skipped_frames`, about line 1021).
+
+What follows:
+
+- **Refine replays on rebuilt frames carry the replay unchanged.** A replay on
+  frames rebuilt from factors (arm B) feeds `observe` as a raw replay does.
+  Phase 2 measures this: its `joint_*` runs are the gate arms with
+  `--joint-update all --joint-sign all`, the reference setting of main's
+  reports (arm `DR-st2`).
+- **Missing samples.** In the harness, a rebuilt frame keeps the missing
+  samples of the raw replay (`FactorReplay::frame` writes only where the
+  replayed frame is finite), so arm B skips the same frames as a raw run. A
+  frame made from the factors alone has no missing sample: the factors store a
+  missing sample as the pixel's mean over the window (A7), and a pixel with no
+  valid sample in the window as 0. So without a raw replay (the factor engine,
+  a live stream, phase 3) the replay skips no frame. A cluster at the edge of a
+  moving field of view then takes window means as data where a raw run skips
+  the frame; its residual there is too small and its noise is understated.
+  This touches clusters in the motion band only. Phase 3 reports them with the
+  border cells, as phase 2 does for the traces.
+- **Refine on factors without rebuilding frames (§5, phase 3).** The replay
+  needs each fitting frame's coordinates `Uᵀ r̃_t` from the factors. Every term
+  of `r̃` is linear in the frame or known in the iteration:
+
+  ```text
+  Uᵀ diag(is) ŷ_t = Σ_k (Uᵀ diag(is) diag(b_k) W_k) · v_k(t)  +  Σ_k Uᵀ diag(is) (b_k ⊙ μ_k)
+  ```
+
+  The bracket is the cluster's basis projected through the window's spatial
+  factors: `K` rows per tile, formed once per window and cluster, as
+  `WindowProjector` forms the rows of the solver's functionals. The model terms
+  come from the library and the traces of that iteration: `Uᵀ diag(is) a_j`
+  once per member and library, times `c_j(t)`, and the ring level of each
+  owner. This is the compressed backing that `ClusterHistory` names. On a
+  change of basis the coordinates are computed again from the factors instead
+  of being re-expressed. The sums the store keeps beside the coordinates (`CY`,
+  the sums of `r̃` and `c`) are filled from the factors as the footprint
+  statistics of §5 are. The replay's own test (`refine_clusters`) reads the
+  tile's held-out frames from the reservoir; in phase 3 they come from the
+  factors, like the other held-out tests of §5.
+
+Decided: **phase 3 carries the cluster history replay this way.** Its gate
+(footprints against a settled raw Refine) is checked with the joint flags on
+(`--joint-update all --joint-sign all`) and off.
+
+Not measured: what the window means at missing samples do to the replay at the
+border; the cost of the projection per cluster and window.
+
+### A9. Look-back
+
+What the code does: `LookBack::frame` (`qc_eval.rs`, about line 1111) is the
+only place that reads raw frames for the look-back. It reads 64-frame blocks of
+the recording by frame range (`rec.read`), preprocesses them again with a copy
+of the live preprocessor (`pre.front`, which estimates the flicker again),
+applies the stored motion records (`mc.apply`, `mc.validity`,
+`pre.back_masked`), solves them with a separate trace engine on the current
+library and feeds them to `SlowLoop::observe_lookback`. Everything else in the
+three prototypes reads preprocessed frames. Main's report lists what the app
+needs: a worker that re-reads the saved raw file by frame range, a copy of the
+preprocessing state, and the stored motion records.
+
+A live stream has no raw file.
+
+Decided:
+
+- **The look-back gets a second frame source: the factors written so far in
+  the run.** They are already preprocessed and motion-corrected, with the
+  calibration of their time (flat field, background floor, noise map,
+  flicker), so neither the preprocessing nor the warp is applied again. The
+  samples that the stored motion record marks missing are set missing again,
+  so both sources skip the same samples. A frame can be read once its window is
+  written: at most one window (600 frames, 30 s at 20 fps) behind the live
+  frame. A cell born in the newest window waits for it. At the end of a stream
+  the last window is flushed before the look-back's drain.
+- **In the harness** this is a flag on the existing prototype,
+  `--lookback-source raw|factors` (phase 4a).
+- **In the app** it arrives when main brings the look-back to the app. The
+  factor store must then give another worker random access to a window by
+  frame range: either the compress worker answers a request with the window's
+  factors, or the look-back worker opens a finished window file itself. In
+  OPFS, a file with an open synchronous access handle is locked to the worker
+  that holds it, so the writer must have closed the file first.
+- **Whether look-back on factors is as good as look-back on raw is not
+  known.** The factors lose what the rank cut drops (A1, A5), and they carry
+  the calibration of their time where a raw look-back applies the current one
+  (before the first flat field map, none). Phase 4a measures it together with
+  the flat field seed, because both answer the same question: what a live run
+  may claim.
+
+### A10. Worker visit jobs
+
+No change to the factor design. The jobs carry the cluster stores and the
+replay's results between the slow loop's owner and the visit workers
+(`VisitJob`, wire format `VIS9`), and what a store holds is computed in
+`observe` on the owner. Whatever feeds `observe` (raw frames, rebuilt frames,
+or in phase 3 the coordinates from the factors) fills the stores the jobs
+carry.
+
+### A11. Phases
+
+This table replaces the phases table above.
+
+| Phase | Work                                                                                                                                                                                                                                                                         | Gate at the end                                                                                                                                             |
+| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0     | Harness, arms A and B, null spread, tiling arms, baseline timing                                                                                                                                                                                                             | Done. Failed as first written (null spread); gate A1 adopted; recalibrated factors with two SVD iterations pass rules 1 to 3 where run; offset grids chosen |
+| 1     | Format v2, offset grids, two SVD iterations, recalibrated factors written during Extract's replay                                                                                                                                                                            | Done. `chosen` meets A1 on all six recordings (bounded runs); compression within the live frame budget on file recordings                                   |
+| 2     | Extract on factors (`FactorExtractor`; the compress worker's back-fill)                                                                                                                                                                                                      | B against C to float32 rounding; A against C meets A1; also measured with main's joint flags on. Outcome: see its report                                    |
+| 4a    | What a live run may claim, in the harness and the tools only: Discover's factors (offset grids) with and without a flat field seed; look-back on factors against look-back on raw                                                                                            | Measured against A1. A failed rule limits what a live run may claim; it does not stop the phase                                                             |
+| 3     | Refine on factors with the settle stop, carrying the cluster history replay (A8); the compression replay before Refine for files                                                                                                                                             | Footprints against a settled raw Refine, with the joint flags on and off                                                                                    |
+| 4     | App: stages, Run panel, compression on by default, factors kept for live runs, a flat field seed for live streams (A7), the history review on the offset grids. Main's flags are exposed only where main's app side exists (look-back: the factor store's random access, A9) | e2e run of Discover, Refine, Extract on a file and on a simulated stream                                                                                    |
+| 5     | Browser benchmark report in `tools/cala-eval/results/`; decide the default                                                                                                                                                                                                   | Decision recorded                                                                                                                                           |
+
+Raw replay stays available behind `?compress=off` at least until phase 5.
+
+### A12. Open for the owner
+
+Decisions of this amendment and of the phase 4a plan that the owner may want to
+overrule:
+
+- A8: phase 3 computes the cluster coordinates from the factors, rather than
+  rebuilding frames for the replay or leaving the replay off in a factor Refine.
+- A8: without a raw replay, missing samples at the border enter the replay as
+  window means instead of being skipped.
+- A8: the gate of phase 3 runs twice, with the joint flags on and off.
+- A9: a live look-back reads the factors, rather than a buffer of the last few
+  thousand raw frames kept for it (about 120 MB at 200 px, over 1 GB at
+  600 px).
+- A9: the missing samples of a look-back frame are restored from the stored
+  motion records.
+- A9: a cell born in the newest window waits up to one window for its
+  look-back frames.
+- Phase 4a: an earlier session of the same sensor is simulated by a later
+  stretch of the same recording; the synthetic sets, which never get a flat
+  field map, get no seed.
+- Phase 4a: Discover's factors are measured on the offset grids, although A7
+  keeps the app's live factors on plain tiles until phase 4.
+- Phase 4a: runs whose Discover differs (look-back) are compared by pairing
+  cells by footprint; a reference cell without a partner counts as lost.
+- A11: the order 4a, 3, 4, 5 stays.
