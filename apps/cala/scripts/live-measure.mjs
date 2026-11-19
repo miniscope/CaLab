@@ -7,6 +7,9 @@
  *
  *   node apps/cala/scripts/live-measure.mjs <folder> --url http://localhost:5207
  *        --out <dir> [--mode live|file|both] [--fps 20] [--port 8766] [--headed]
+ *        [--query compress=off]
+ *   Compression is on by default (the app's default); `--query compress=off`
+ *   (appended to the app URL) measures the raw path.
  *
  * `live`: starts `live-sim.mjs` on the folder, opens the app on it with
  * `?live=...&debug`, waits for the stream to end and the final library, and
@@ -41,6 +44,8 @@ const mode = option('--mode', 'live');
 const fps = option('--fps', undefined);
 const port = Number(option('--port', '8766'));
 const headed = flag('--headed');
+const extraQuery = option('--query', '');
+const withQuery = extraQuery ? `&${extraQuery}` : '';
 const folder = resolve(args[0] ?? '.');
 mkdirSync(out, { recursive: true });
 const here = import.meta.dirname;
@@ -122,7 +127,7 @@ async function liveRun(browser) {
     const page = await browser.newPage();
     page.on('pageerror', (e) => console.error('page error:', e.message));
     const t0 = Date.now();
-    await page.goto(`${url}/?live=ws://localhost:${port}&debug`);
+    await page.goto(`${url}/?live=ws://localhost:${port}&debug${withQuery}`);
     await until(page, () => window.__cala?.pipeline.status() === 'running', 30_000, 'the live run');
     console.log('live run started');
     await until(
@@ -207,7 +212,7 @@ async function liveRun(browser) {
 async function fileRun(browser) {
   const page = await browser.newPage();
   page.on('pageerror', (e) => console.error('page error:', e.message));
-  await page.goto(`${url}/?debug`);
+  await page.goto(`${url}/?debug${withQuery}`);
   await page.setInputFiles('[data-testid=folder-input]', folder);
   const t0 = Date.now();
   await until(page, () => window.__cala?.pipeline.status() === 'running', 60_000, 'the file run');

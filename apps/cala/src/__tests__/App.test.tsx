@@ -4,6 +4,11 @@ import type { FrameSourceInfo } from '../lib/frame-source.ts';
 import type { FrameClient } from '../lib/frame-client.ts';
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelinePlan } from '../lib/pipeline-plan.ts';
+import type { CellStore } from '../lib/cell-store.ts';
+import type { CompressStore } from '../lib/compress-store.ts';
+import type { Pass2Store } from '../lib/pass2-store.ts';
+import type { PipelineStore } from '../lib/pipeline-store.ts';
+import type { LibraryView, SlowStatus } from '../workers/slow-types.ts';
 import { makeFile } from './synth-avi.ts';
 
 // uPlot needs a real browser (matchMedia); the shared barrels pull it in but
@@ -52,6 +57,15 @@ vi.mock('../lib/slow-client.ts', () => ({
   RESERVED_THREADS: 5,
   PARALLEL_FORWARD_BUFFERS: 4,
   visitWorkerCount: () => 0,
+}));
+// Compression is on by default: no compress or review worker in jsdom either.
+// Extract jobs are recorded so a test can answer them through the compress store.
+const compressFake = vi.hoisted(() => ({ extract: vi.fn() }));
+vi.mock('../lib/compress-client.ts', () => ({
+  createCompressClient: () => ({ backfill() {}, extract: compressFake.extract, dispose() {} }),
+}));
+vi.mock('../lib/review-client.ts', () => ({
+  createReviewClient: () => ({ port: {}, dispose() {} }),
 }));
 
 import App from '../App.tsx';
@@ -638,5 +652,188 @@ describe('App: animal project', () => {
     await vi.waitFor(() => expect(rows(root)).toHaveLength(2));
     expect(root.querySelector('[data-testid="project-name"]')!.textContent).toBe('m2');
     expect(rows(root)[0].textContent).toContain(sid(days[0]));
+  });
+});
+
+describe('App: a failed Extract on the factors', () => {
+  /** The stores `?debug` exposes. */
+  interface Stores {
+    cells: CellStore;
+    pipeline: PipelineStore;
+    pass2: Pass2Store;
+    compress: CompressStore;
+  }
+  const stores = (): Stores => (globalThis as { __cala?: Stores }).__cala!;
+  const LIB: LibraryView = {
+    version: 1,
+    frame: 50,
+    width: 4,
+    height: 3,
+    ids: Uint32Array.of(1, 2),
+    centers: Float32Array.of(1, 1, 1, 2),
+    radii: Float32Array.of(1, 1),
+    starts: Uint32Array.of(0, 1, 2),
+    pixels: Uint32Array.of(5, 6),
+    values: Float32Array.of(1, 1),
+  };
+  const finalStatus = {
+    frame: 50,
+    observed: 50,
+    skipped: 0,
+    cells: 2,
+    version: 1,
+    counters: { adds: 2, merges: 0, refines: 0 },
+    reservoirBytes: 0,
+    framesPerTile: 0,
+    batchMs: 0,
+    maxStepMs: 0,
+    visitWorkers: 0,
+    jobs: 0,
+    jobsInFlight: 0,
+    visitMs: 0,
+    jobOwnerMs: 0,
+    work: 0,
+    final: true,
+    run: 1,
+  } as unknown as SlowStatus;
+
+  beforeEach(() => {
+    window.history.replaceState(null, '', '/?debug');
+    fake.open.mockResolvedValue(INFO);
+    fake.readFrame.mockImplementation(async () => new Uint8Array(12));
+  });
+  afterEach(() => {
+    window.history.replaceState(null, '', '/');
+    delete (globalThis as { __cala?: unknown }).__cala;
+  });
+
+  /** Discover done with a final library of two cells, and the factors of a replay ready. */
+  async function discovered(root: HTMLElement): Promise<Stores> {
+    const status = () => root.querySelector('[data-testid="pipeline-status"]')?.textContent;
+    await vi.waitFor(() => expect(status()).toBe('Done'));
+    const s = stores();
+    const session = s.cells.session();
+    s.cells.onSlowMessage({ type: 'library', session, library: LIB, bytes: Uint8Array.of(1) });
+    s.cells.onSlowMessage({ type: 'status', session, status: finalStatus });
+    s.compress.onMessage({
+      type: 'status',
+      session: s.compress.session(),
+      status: {
+        windows: 1,
+        frames: 50,
+        pending: 0,
+        pendingFrames: 0,
+        meanRank: 2,
+        msPerFrame: 1,
+        factorBytes: 10,
+        final: true,
+        tiling: 'offset',
+        source: 'replay',
+      },
+    });
+    expect(s.compress.factors(50)).toBe('ready');
+    return s;
+  }
+
+  /** Start an Extract on the factors; resolves once its job went to the compress worker. */
+  async function startFactorExtract(s: Stores): Promise<{ run: Promise<void>; job: number }> {
+    const before = compressFake.extract.mock.calls.length;
+    const run = s.pass2.run();
+    await vi.waitFor(() => expect(compressFake.extract.mock.calls.length).toBe(before + 1));
+    expect(s.pass2.source()).toBe('factors');
+    return { run, job: compressFake.extract.mock.calls[before][1] as number };
+  }
+
+  /** An Extract on the factors that fails with a job error. */
+  async function failFactorExtract(s: Stores): Promise<void> {
+    const { run, job } = await startFactorExtract(s);
+    s.compress.onMessage({ type: 'error', session: s.compress.session(), job, message: 'disk' });
+    await run;
+    expect(s.pass2.status()).toBe('error');
+    expect(s.pass2.factorsFailed()).toBe(true);
+  }
+
+  const openAnother = (root: HTMLElement): void =>
+    root.querySelectorAll<HTMLButtonElement>('.compact-header__actions button')[0].click();
+
+  async function pickAgain(root: HTMLElement, files: File[]): Promise<void> {
+    const opened = fake.open.mock.calls.length;
+    const input = root.querySelector<HTMLInputElement>('[data-testid="folder-input"]')!;
+    Object.defineProperty(input, 'files', { value: files, configurable: true });
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await vi.waitFor(() => expect(fake.open.mock.calls.length).toBe(opened + 1));
+  }
+
+  it('is forgotten when a new Discover starts', async () => {
+    const root = mount();
+    await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
+    const s = await discovered(root);
+    await failFactorExtract(s);
+    void s.pipeline.start();
+    await vi.waitFor(() => expect(fake.startPipeline).toHaveBeenCalledTimes(2));
+    expect(s.pass2.factorsFailed()).toBe(false);
+  });
+
+  it('is forgotten when another recording is opened', async () => {
+    const root = mount();
+    await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
+    const s = await discovered(root);
+    await failFactorExtract(s);
+    openAnother(root);
+    // Closing the recording alone keeps it: only a new Discover start ends it.
+    expect(s.pass2.factorsFailed()).toBe(true);
+    await pickAgain(root, [makeFile('0.avi', new Uint8Array(4), 'other')]);
+    await vi.waitFor(() => expect(fake.startPipeline).toHaveBeenCalledTimes(2));
+    expect(s.pass2.factorsFailed()).toBe(false);
+  });
+
+  it('is forgotten when a multi-session run opens a session', async () => {
+    // A Separate run opens each session through the same path (`openOne`); a
+    // failed Extract stops the run, so the flag can only come from before it.
+    fake.probe.mockImplementation(async (sessions: unknown[]) =>
+      sessions.map(() => ({ info: INFO })),
+    );
+    const root = mount();
+    await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
+    const s = await discovered(root);
+    await failFactorExtract(s);
+    openAnother(root);
+    const day = (d: string) => [
+      makeFile('0.avi', new Uint8Array(4), `data/${d}/12_00_00/My_V4_Miniscope`),
+      makeFile(
+        'metaData.json',
+        JSON.stringify({ recordingStartTime: { msecSinceEpoch: d === 'day1' ? 1000 : 2000 } }),
+        `data/${d}/12_00_00`,
+      ),
+    ];
+    const input = root.querySelector<HTMLInputElement>('[data-testid="folder-input"]')!;
+    Object.defineProperty(input, 'files', {
+      value: [...day('day1'), ...day('day2')],
+      configurable: true,
+    });
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await vi.waitFor(() =>
+      expect(root.querySelectorAll('[data-testid="session-item"]')).toHaveLength(2),
+    );
+    root.querySelector<HTMLInputElement>('[data-testid="mode-separate"]')!.click();
+    const start = root.querySelector<HTMLButtonElement>('[data-testid="sessions-start"]')!;
+    await vi.waitFor(() => expect(start.disabled).toBe(false));
+    expect(s.pass2.factorsFailed()).toBe(true);
+    start.click();
+    await vi.waitFor(() => expect(fake.startPipeline).toHaveBeenCalledTimes(2));
+    expect(s.pass2.factorsFailed()).toBe(false);
+  });
+
+  it('is not set by an Extract that a new run aborts', async () => {
+    const root = mount();
+    await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
+    const s = await discovered(root);
+    const { run } = await startFactorExtract(s);
+    // Another recording opened while the job runs: the reset aborts it.
+    openAnother(root);
+    await pickAgain(root, [makeFile('0.avi', new Uint8Array(4), 'other')]);
+    await run;
+    await vi.waitFor(() => expect(fake.startPipeline).toHaveBeenCalledTimes(2));
+    expect(s.pass2.factorsFailed()).toBe(false);
   });
 });

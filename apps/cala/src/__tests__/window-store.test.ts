@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
+import { OpfsWriterClient } from '../lib/opfs-writer.ts';
 import { isPinned, opfsStore, pinned } from '../lib/window-store.ts';
 
 /** A promise settled from outside. */
@@ -84,5 +85,110 @@ describe('opfsStore', () => {
     expect(f.size()).toBe(3);
     f.close();
     expect(closed).toEqual(['flush', 'close']);
+  });
+});
+
+describe("opfsStore's sweep of other runs' folders", () => {
+  /**
+   * Web Locks as the store uses them: a lock is held until its callback's
+   * promise settles; `ifAvailable` gets null when the name is held.
+   */
+  function fakeLocks(events: string[] = []) {
+    const held = new Set<string>();
+    type Cb = (lock: { name: string } | null) => Promise<unknown> | unknown;
+    const locks = {
+      held,
+      request(name: string, a: { ifAvailable?: boolean } | Cb, b?: Cb): Promise<unknown> {
+        const cb = (typeof a === 'function' ? a : b)!;
+        const ifAvailable = typeof a === 'object' && a.ifAvailable === true;
+        if (held.has(name)) {
+          if (ifAvailable) return Promise.resolve(cb(null));
+          return new Promise(() => {}); // queued behind the holder (not needed here)
+        }
+        held.add(name);
+        events.push(`lock ${name}`);
+        return Promise.resolve(cb({ name })).finally(() => held.delete(name));
+      },
+    };
+    return locks;
+  }
+
+  /** An OPFS root holding the run folders `names` under `cala-compress`. */
+  function fakeOpfs(names: string[], events: string[] = []) {
+    const folders = new Set(names);
+    const run = {
+      getFileHandle: async () => ({}),
+      removeEntry: async () => {},
+      keys: async function* () {},
+    };
+    const root = {
+      getDirectoryHandle: async (name: string) => {
+        events.push(`create ${name}`);
+        folders.add(name);
+        return run;
+      },
+      removeEntry: async (name: string) => {
+        events.push(`remove ${name}`);
+        folders.delete(name);
+      },
+      keys: async function* () {
+        yield* [...folders];
+      },
+    };
+    const top = { getDirectoryHandle: async () => root };
+    return { folders, top };
+  }
+
+  it('leaves a folder whose owner holds its lock, and removes one whose lock is free', async () => {
+    const locks = fakeLocks();
+    // Another tab's compress worker owns run-live.
+    void locks.request('cala-compress/run-live', () => new Promise(() => {}));
+    const { folders, top } = fakeOpfs(['run-live', 'run-dead']);
+    const store = opfsStore('run-mine', async () => top, locks);
+    await store.remove('nothing');
+    expect([...folders].sort()).toEqual(['run-live', 'run-mine']);
+  });
+
+  it('removes every other folder as before where Web Locks do not exist', async () => {
+    const { folders, top } = fakeOpfs(['run-a', 'run-b']);
+    const store = opfsStore('run-mine', async () => top, null);
+    await store.remove('nothing');
+    expect([...folders]).toEqual(['run-mine']);
+  });
+
+  it('holds the lock of its own folder from before the folder exists, for its lifetime', async () => {
+    const events: string[] = [];
+    const locks = fakeLocks(events);
+    const { top } = fakeOpfs([], events);
+    const store = opfsStore('run-mine', async () => top, locks);
+    await store.remove('nothing');
+    expect(events.indexOf('lock cala-compress/run-mine')).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf('lock cala-compress/run-mine')).toBeLessThan(
+      events.indexOf('create run-mine'),
+    );
+    await tick();
+    expect(locks.held.has('cala-compress/run-mine')).toBe(true);
+    // A second tab's sweep finds it owned and leaves it.
+    const other = fakeOpfs(['run-mine']);
+    await opfsStore('run-other', async () => other.top, locks).remove('nothing');
+    expect(other.folders.has('run-mine')).toBe(true);
+  });
+});
+
+describe("the trace files' sweep", () => {
+  it("never removes the compression's folder (its run folders have their own locks)", async () => {
+    const sent: { op: string; keep?: string[] }[] = [];
+    const worker = {
+      onmessage: null as ((e: { data: unknown }) => void) | null,
+      onerror: null,
+      postMessage(msg: { id: number; op: string; keep?: string[] }) {
+        sent.push(msg);
+        setTimeout(() => worker.onmessage?.({ data: { id: msg.id, ok: true, count: 0 } }), 0);
+      },
+    };
+    const client = new OpfsWriterClient(worker as unknown as Worker);
+    await client.sweep(['cala-pass2-a.bin']);
+    expect(sent[0].op).toBe('sweep');
+    expect(sent[0].keep).toEqual(expect.arrayContaining(['cala-pass2-a.bin', 'cala-compress']));
   });
 });

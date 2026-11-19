@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   createStageLog,
+  discoverErrorData,
   EXTRACT_AFTER_DISCOVER_DEFAULT,
+  extractEndData,
   footprintChange,
   LIVE_NOTE,
   NEXT_STEP_HINT,
@@ -12,6 +14,7 @@ import {
   type StageInput,
   type StageRun,
 } from '../lib/run-stages.ts';
+import type { Pass2Result } from '../lib/pass2-store.ts';
 import type { LibraryView } from '../workers/slow-types.ts';
 
 const READY: StageInput = {
@@ -232,5 +235,61 @@ describe('Extract after Discover default and the next-step hint', () => {
     expect(showNextStepHint({ ...HINT_IN, refineRuns: 1 })).toBe(false);
     expect(showNextStepHint({ ...HINT_IN, extract: 'running' })).toBe(false);
     expect(showNextStepHint({ ...HINT_IN, extract: 'done' })).toBe(false);
+  });
+});
+
+describe('what the stage records carry when a stage ends', () => {
+  const result = (extra: object = {}) =>
+    ({
+      frames: 8,
+      cells: 2,
+      version: 3,
+      source: 'factors',
+      tiling: 'offset',
+      meanRank: 4.5,
+      minValid: Float32Array.of(0.5, 0.75),
+      ...extra,
+    }) as unknown as Pass2Result;
+  const store = (res: Pass2Result | null, source: 'raw' | 'factors') => ({
+    result: () => res,
+    processed: () => 5,
+    source: () => source,
+  });
+
+  it('a failed Discover says it read the recording', () => {
+    expect(discoverErrorData(12)).toEqual({ frames: 12, source: 'raw' });
+  });
+
+  it('a failed or cancelled Extract says where it was reading', () => {
+    for (const outcome of ['error', 'cancelled'] as const) {
+      expect(extractEndData(outcome, store(null, 'factors'))).toEqual({
+        frames: 5,
+        source: 'factors',
+      });
+      expect(extractEndData(outcome, store(null, 'raw'))).toEqual({ frames: 5, source: 'raw' });
+    }
+  });
+
+  it('a factor Extract that finished counts its cells below 1, a raw one has none', () => {
+    expect(extractEndData('done', store(result(), 'factors'))).toEqual({
+      frames: 8,
+      cells: 2,
+      libraryVersion: 3,
+      source: 'factors',
+      tiling: 'offset',
+      meanRank: 4.5,
+      lowValid: 2,
+    });
+    const allValid = result({ minValid: Float32Array.of(1, 1) });
+    expect(extractEndData('done', store(allValid, 'factors')).lowValid).toBe(0);
+    const raw = result({
+      source: 'raw',
+      tiling: undefined,
+      meanRank: undefined,
+      minValid: undefined,
+    });
+    const data = extractEndData('done', store(raw, 'raw'));
+    expect(data).toEqual({ frames: 8, cells: 2, libraryVersion: 3, source: 'raw' });
+    expect('lowValid' in data).toBe(false);
   });
 });

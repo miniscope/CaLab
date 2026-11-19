@@ -12,11 +12,14 @@ import { loadSpanStats } from './lib/extract-qc-wasm.ts';
 import { ASSUMED_FPS } from './lib/miniscope-meta.ts';
 import type { QcSnapshot } from './lib/qc.ts';
 import { createCompressClient } from './lib/compress-client.ts';
-import { createCompressStore } from './lib/compress-store.ts';
+import { compressionOn, createCompressStore } from './lib/compress-store.ts';
+import { createPass2Factors } from './lib/factor-extract.ts';
 import { createPass2Store, replayBlocked } from './lib/pass2-store.ts';
 import { createRefineStore } from './lib/refine-store.ts';
 import {
   createStageLog,
+  discoverErrorData,
+  extractEndData,
   perMinute,
   STAGE_LABEL,
   stageAvailability,
@@ -95,9 +98,11 @@ const App: Component = () => {
   // worker, with its tile visits spread over the spare cores.
   // `?visits=N`: that many visit workers (0 = the slow worker visits itself).
   const visits = params.get('visits');
-  // `?review` (with `?compress`): the history review, every 8 compressed windows
+  // Compression is on by default; `?compress=off` replays the file for Refine and Extract.
+  const compressOn = compressionOn(params);
+  // `?review`: the history review (compression on), every 8 compressed windows
   // (`?review=N`: every N), in a worker of its own. One core is left for it.
-  const reviewWindows = params.has('compress') ? reviewEvery(params.get('review')) : null;
+  const reviewWindows = compressOn ? reviewEvery(params.get('review')) : null;
   const slow = createSlowClient(
     client,
     (msg) => cells.onSlowMessage(msg),
@@ -107,9 +112,10 @@ const App: Component = () => {
       : visitWorkerCount(navigator.hardwareConcurrency - (reviewWindows === null ? 0 : 1)),
   );
   // `?noqc`: run without online quality control (to measure its cost).
-  // `?compress`: also compress the preprocessed frames into low-rank factors, window by
-  // window, in a worker of its own (experimental; windows and factors are files in OPFS).
-  const compress = params.has('compress') ? createCompressStore(cells) : undefined;
+  // The compress worker: windows and factors are files in OPFS (on by default; `?compress=off`).
+  const compress = compressOn
+    ? createCompressStore(cells, () => store.info()?.live !== undefined)
+    : undefined;
   // The review worker gets the factors from the compress worker; the cells it
   // finds go to the slow loop, which takes them on probation.
   const review =
@@ -127,6 +133,9 @@ const App: Component = () => {
         review && reviewClient ? { port: reviewClient.port, every: review.every } : undefined,
       )
     : undefined;
+  // The run's factors for Extract and the replays (compression on).
+  const factors =
+    compress && compressClient ? createPass2Factors(compress, compressClient) : undefined;
   // Look-back (experimental): Discover refines footprints as it goes by re-reading
   // past frames in a worker of its own, and settles at the end (no Refine needed).
   // A recording on disk with one session, pipelined workers only.
@@ -213,7 +222,7 @@ const App: Component = () => {
       refine.status() === 'running' || refine.status() === 'finishing'
         ? 'Refine is running.'
         : null,
-    compress ? () => cells.session() : undefined,
+    factors,
   );
   // Refine's QC: the trace statistics of the replay's traces over the whole
   // recording, as after Extract (the replay runs no QC monitor).
@@ -232,6 +241,7 @@ const App: Component = () => {
         const range = { start: 0, end: traces.frames };
         return extractQc(traces, ids, range, rate, QC_SCOPE_DEFAULT, cells.qc(), backend);
       },
+      ...(factors ? { compress: factors } : {}),
     },
   );
   /** Log a stage event on the run's timeline (at the end of what Discover read). */
@@ -262,7 +272,7 @@ const App: Component = () => {
           refine.clear();
           stageLog.begin('discover');
         } else if (st === 'error') {
-          stageLog.end('discover', 'error', { frames: pipeline.processed() });
+          stageLog.end('discover', 'error', discoverErrorData(pipeline.processed()));
         }
       },
     ),
@@ -284,6 +294,7 @@ const App: Component = () => {
       merges: c?.merges ?? 0,
       deletes: c?.deletes ?? 0,
       splits: c?.splits ?? 0,
+      source: 'raw',
     };
     stageLog.end('discover', 'done', data);
     logStage('discover', `Discover done: ${data.cells} cells`);
@@ -312,11 +323,7 @@ const App: Component = () => {
           logStage('extract', 'Extract started');
         } else if (st === 'done') {
           const r = pass2.result();
-          stageLog.end('extract', 'done', {
-            frames: r?.frames ?? 0,
-            cells: r?.cells ?? 0,
-            libraryVersion: r?.version ?? 0,
-          });
+          stageLog.end('extract', 'done', extractEndData('done', pass2));
           logStage('extract', 'Extract done');
           const result = r;
           if (result)
@@ -326,7 +333,7 @@ const App: Component = () => {
               })
               .catch((err: unknown) => console.warn('Extract QC failed:', err));
         } else if (st === 'error' || st === 'cancelled') {
-          stageLog.end('extract', st, { frames: pass2.processed() });
+          stageLog.end('extract', st, extractEndData(st, pass2));
           logStage('extract', `Extract ${st === 'error' ? 'stopped by an error' : 'cancelled'}`);
         }
       },

@@ -886,6 +886,43 @@ mod tests {
         }
     }
 
+    #[test]
+    fn signed_traces_from_the_factors_equal_signed_traces_from_the_rebuilt_frames() {
+        // The signed trace is the trace plus the gradient over the curvature at
+        // the solution; the gradient reads the projections only, so the factor
+        // engine gives the frame engine's signed traces to the same rounding.
+        for tiling in [Tiling::Plain, Tiling::Offset] {
+            let wf = window(tiling, 60, None);
+            for model in models() {
+                let lib = Arc::new(library(model, CENTRES.len()));
+                let mut by_frame = TraceEngine::new(lib.clone(), tight()).unwrap();
+                by_frame.set_signed(true);
+                let mut ex = FactorExtractor::new(lib.clone(), tight()).unwrap();
+                ex.engine_mut().set_signed(true);
+                let proj = WindowProjector::new(&lib, &wf).unwrap();
+                let mut signed: Vec<Vec<f32>> = Vec::new();
+                ex.solve(&wf, &proj, 0, wf.frames, |tr| {
+                    signed.push(tr.signed.clone())
+                })
+                .unwrap();
+                assert_eq!(signed.len(), wf.frames);
+                let mut frame = vec![0.0f32; W * H];
+                let mut out = FrameTraces::default();
+                for (t, s) in signed.iter().enumerate() {
+                    wf.reconstruct(t, &mut frame);
+                    by_frame.process_into(&frame, &mut out).unwrap();
+                    assert_eq!(s.len(), lib.len(), "{tiling:?} frame {t}");
+                    for (i, (a, b)) in out.signed.iter().zip(s).enumerate() {
+                        assert!(
+                            (a - b).abs() <= 10.0 * ARM_TOL * (1.0 + a.abs()),
+                            "{tiling:?} frame {t} cell {i}: {a} from the frame, {b} from the factors"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// The centres' library with the right 20 columns and the bottom 10 rows
     /// outside the field of view.
     fn library_with_a_partial_fov(model: BackgroundModel) -> Library {

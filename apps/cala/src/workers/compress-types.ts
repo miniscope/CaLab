@@ -100,7 +100,27 @@ export type CompressToMain =
     }
   /** The back-fill is complete: frames solved and wall time per frame, ms. */
   | { type: 'backfilled'; session: number; version: number; frames: number; msPerFrame: number }
-  | { type: 'error'; session: number; message: string };
+  /**
+   * Extract on factors, job `job`: one window's traces and signed traces
+   * (`count * ids.length` each, frame after frame; `signed` empty when the
+   * engine gave none), in stream order. `minValid`: the window's smallest
+   * valid share per cell, in the order of the trace columns.
+   */
+  | {
+      type: 'extracted';
+      session: number;
+      job: number;
+      start: number;
+      count: number;
+      ids: Uint32Array;
+      traces: Float32Array;
+      signed: Float32Array;
+      minValid: Float32Array;
+    }
+  /** Extract on factors, job `job`, is complete. */
+  | { type: 'extract-done'; session: number; job: number; frames: number; msPerFrame: number }
+  /** `job`: the error of that Extract job (the factors stay usable); absent: the compression's. */
+  | { type: 'error'; session: number; message: string; job?: number };
 
 /** Main thread -> compress worker. */
 export type MainToCompress =
@@ -113,4 +133,9 @@ export type MainToCompress =
    * Solve the traces of every compressed window with the library `version`
    * (or a newer one), once that library has arrived and no window is waiting.
    */
-  | { type: 'backfill'; session: number; version: number };
+  | { type: 'backfill'; session: number; version: number }
+  /**
+   * Extract on factors: solve every compressed window with `library`
+   * (`TraceLibrary.toBytes()`, transferred) and post them as job `job`.
+   */
+  | { type: 'extract'; session: number; job: number; library: Uint8Array };

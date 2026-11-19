@@ -50,6 +50,7 @@ test('Cala: a live source streams through the pipeline to the end', async ({ pag
   // Frame 7 is never sent: the stream stays contiguous, the gap is counted.
   await startSim(folder, ['--drop', '7']);
 
+  // Runs with compression on, the app default.
   await page.goto(`Cala/?live=ws://127.0.0.1:${PORT}&debug`);
   const header = page.getByRole('banner');
   await expect(header.getByText('32 x 24')).toBeVisible();
@@ -78,6 +79,7 @@ test('Cala: a live run can be stopped, and reconnects on restart', async ({ page
   writeFileSync(join(folder, 'metaData.json'), '{"frameRate":"20FPS"}');
   await startSim(folder);
 
+  // Runs with compression on, the app default.
   await page.goto(`Cala/?live=ws://127.0.0.1:${PORT}`);
   await expect(page.getByTestId('pipeline-readout')).toContainText('frame 4', { timeout: 30_000 });
   await page.getByTestId('pass2-finish').click(); // "Stop the live run"
@@ -90,6 +92,7 @@ test('Cala: a live run can be stopped, and reconnects on restart', async ({ page
 });
 
 test('Cala: an unreachable live source reports an error', async ({ page }) => {
+  // Runs with compression on, the app default.
   await page.goto('Cala/');
   await page.getByTestId('live-url').fill(`ws://127.0.0.1:${PORT + 50}`);
   await page.getByTestId('live-connect').click();

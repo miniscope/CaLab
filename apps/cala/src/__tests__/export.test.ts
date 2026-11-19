@@ -10,9 +10,11 @@ import {
   cadeconCells,
   EXPORT_FORMAT_VERSION,
   fileStem,
+  stageMeta,
 } from '../lib/export.ts';
 import type { Pass2Result } from '../lib/pass2-store.ts';
 import { memoryTraceFile } from '../lib/trace-file.ts';
+import { stagesFromMeta } from '../lib/result-file.ts';
 import { RunRecord } from '../lib/run-record.ts';
 import type { LibraryView } from '../workers/slow-types.ts';
 
@@ -357,5 +359,92 @@ describe('export', () => {
   it('makes a safe file stem', () => {
     expect(fileStem('my folder/2026')).toBe('my_folder_2026');
     expect(fileStem('///')).toBe('recording');
+  });
+});
+
+describe('the smallest valid share per cell (format 7)', () => {
+  it('writes extract_min_valid for a factor Extract and nothing for a raw one', async () => {
+    const withValid = { ...(await input()), result: await result() };
+    withValid.result.source = 'factors';
+    withValid.result.minValid = Float32Array.of(1, 0.5, 0.75);
+    const a = parseNpz(await buildCalaExport(withValid)).arrays;
+    expect(a.extract_min_valid.dtype).toBe('<f4');
+    expect(a.extract_min_valid.shape).toEqual([3]);
+    expect([...a.extract_min_valid.data]).toEqual([1, 0.5, 0.75]);
+    const raw = parseNpz(await buildCalaExport(await input())).arrays;
+    expect('extract_min_valid' in raw).toBe(false);
+  });
+
+  it('puts the number of low cells in the stage record, only for a factor Extract', () => {
+    const base = {
+      stage: 'extract',
+      index: 1,
+      startedAt: '2026-11-19T10:00:00.000Z',
+      endedAt: '2026-11-19T10:00:05.000Z',
+      outcome: 'done',
+      frames: 8,
+      cells: 2,
+      libraryVersion: 3,
+    } as const;
+    expect(stageMeta({ ...base, source: 'factors', lowValid: 2 }).low_valid).toBe(2);
+    expect(stageMeta({ ...base, source: 'factors', lowValid: 0 }).low_valid).toBe(0);
+    expect('low_valid' in stageMeta({ ...base, source: 'raw' })).toBe(false);
+    expect(
+      stagesFromMeta([stageMeta({ ...base, source: 'factors', lowValid: 2 })])[0].lowValid,
+    ).toBe(2);
+    expect('lowValid' in stagesFromMeta([stageMeta({ ...base, source: 'raw' })])[0]).toBe(false);
+  });
+
+  it('omits a mean rank that is not a finite number', () => {
+    const base = {
+      stage: 'extract',
+      index: 1,
+      startedAt: '2026-11-19T10:00:00.000Z',
+      endedAt: null,
+      outcome: 'done',
+      frames: 8,
+      cells: 2,
+      libraryVersion: 3,
+      source: 'factors',
+    } as const;
+    expect(stageMeta({ ...base, meanRank: 4.5 }).mean_rank).toBe(4.5);
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY])
+      expect('mean_rank' in stageMeta({ ...base, meanRank: bad })).toBe(false);
+  });
+});
+
+describe('stage records (format 7)', () => {
+  const base = {
+    index: 1,
+    startedAt: '2026-11-19T10:00:00.000Z',
+    endedAt: '2026-11-19T10:00:05.000Z',
+    outcome: 'done',
+    frames: 8,
+    cells: 2,
+    libraryVersion: 3,
+  } as const;
+
+  it('say where each stage read its frames, and read back', () => {
+    expect(EXPORT_FORMAT_VERSION).toBe(7);
+    const factors = stageMeta({
+      ...base,
+      stage: 'extract',
+      source: 'factors',
+      tiling: 'offset',
+      meanRank: 4.5,
+    });
+    expect(factors).toMatchObject({ source: 'factors', tiling: 'offset', mean_rank: 4.5 });
+    const raw = stageMeta({ ...base, stage: 'refine', source: 'raw' });
+    expect(raw.source).toBe('raw');
+    expect('tiling' in raw).toBe(false);
+    expect('mean_rank' in raw).toBe(false);
+    const old = stageMeta({ ...base, stage: 'discover' });
+    expect('source' in old).toBe(false);
+    const [legacy] = stagesFromMeta([old]);
+    expect('source' in legacy || 'tiling' in legacy || 'meanRank' in legacy).toBe(false);
+    expect(stagesFromMeta([factors, raw])).toMatchObject([
+      { stage: 'extract', source: 'factors', tiling: 'offset', meanRank: 4.5 },
+      { stage: 'refine', source: 'raw' },
+    ]);
   });
 });

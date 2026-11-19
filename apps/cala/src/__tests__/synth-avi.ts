@@ -21,6 +21,8 @@ export interface SynthOptions {
   zeroMoviSize?: boolean;
   /** A JUNK chunk before the first frame inside movi (no fixed stride then). */
   junkInMovi?: boolean;
+  /** The frame payloads, padded rows (default: the `pixelAt` ramp). */
+  payload?: (f: number) => Uint8Array;
 }
 
 const enc = new TextEncoder();
@@ -149,7 +151,7 @@ export function buildAvi(o: SynthOptions): Uint8Array {
   }
   for (let f = 0; f < o.frames; f++) {
     offsets.push(rel);
-    const c = chunk('00dc', framePayload(o, f + (o.frameOffset ?? 0)));
+    const c = chunk('00dc', o.payload ? o.payload(f) : framePayload(o, f + (o.frameOffset ?? 0)));
     frames.push(c);
     rel += c.length;
   }
@@ -181,4 +183,70 @@ export function makeFile(name: string, data: Uint8Array | string, dir?: string):
     Object.defineProperty(file, 'webkitRelativePath', { value: `${dir}/${name}` });
   }
   return file;
+}
+
+/** A deterministic 8-bit calcium movie for the browser tests. */
+export interface CellMovie {
+  width: number;
+  height: number;
+  frames: number;
+  /** Cell centres `(y, x)`. */
+  cells: [number, number][];
+  /** Frame `f`'s payload (8-bit, rows padded), for `buildAvi`'s `payload`. Call in frame order. */
+  payload(f: number): Uint8Array;
+}
+
+/**
+ * 16 Gaussian cells (sigma 2.5 px) on a 4 x 4 grid 24 px apart, each with
+ * transients about every 5 s at 20 fps (50 to 90 grey levels, decay 8
+ * frames), on a background of 30 with Gaussian noise of sd 3. No motion.
+ */
+export function cellMovie(width = 96, height = 96, frames = 3000, seed = 7): CellMovie {
+  let s = seed >>> 0;
+  const rand = (): number => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+  const gauss = (): number =>
+    Math.sqrt(-2 * Math.log(rand() + 1e-12)) * Math.cos(2 * Math.PI * rand());
+  const cells: [number, number][] = [];
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) cells.push([12 + 24 * i, 12 + 24 * j]);
+  const traces = cells.map(() => {
+    const t = new Float32Array(frames);
+    let v = 0;
+    for (let f = 0; f < frames; f++) {
+      v *= Math.exp(-1 / 8);
+      if (rand() < 0.01) v += 50 + 40 * rand();
+      t[f] = v;
+    }
+    return t;
+  });
+  const r = 8;
+  const shape = new Float32Array((2 * r + 1) * (2 * r + 1));
+  for (let dy = -r; dy <= r; dy++)
+    for (let dx = -r; dx <= r; dx++)
+      shape[(dy + r) * (2 * r + 1) + dx + r] = Math.exp(-(dy * dy + dx * dx) / (2 * 2.5 * 2.5));
+  const stride = rowStride(width, 8);
+  const image = new Float32Array(width * height);
+  return {
+    width,
+    height,
+    frames,
+    cells,
+    payload(f) {
+      for (let p = 0; p < image.length; p++) image[p] = 30 + 3 * gauss();
+      cells.forEach(([cy, cx], k) => {
+        const a = traces[k][f];
+        if (a < 0.5) return;
+        for (let dy = -r; dy <= r; dy++)
+          for (let dx = -r; dx <= r; dx++)
+            image[(cy + dy) * width + cx + dx] += a * shape[(dy + r) * (2 * r + 1) + dx + r];
+      });
+      const out = new Uint8Array(stride * height);
+      for (let y = 0; y < height; y++)
+        for (let x = 0; x < width; x++)
+          out[y * stride + x] = Math.max(0, Math.min(255, Math.round(image[y * width + x])));
+      return out;
+    },
+  };
 }

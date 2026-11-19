@@ -15,6 +15,9 @@
  */
 import { createSignal } from 'solid-js';
 import type { LibraryView } from '../workers/slow-types.ts';
+import type { CompressTiling } from '../workers/compress-types.ts';
+import { lowValidCells } from './factor-extract.ts';
+import type { Pass2Result } from './pass2-store.ts';
 import { footprintChanges, quantile, type RefineSample } from './refine-metrics.ts';
 
 export type StageName = 'discover' | 'refine' | 'extract';
@@ -139,6 +142,13 @@ export interface StageRun {
   refinedShare?: number;
   /** Refine: the run's series over the replay (`refine-metrics.ts`). */
   series?: readonly RefineSample[];
+  /** Where the stage read its frames: the recording or the factors (format 7). */
+  source?: 'raw' | 'factors';
+  /** From the factors: their tiling and mean rank per tile. */
+  tiling?: CompressTiling;
+  meanRank?: number;
+  /** A factor Extract: cells whose smallest valid share is below 1 (pixels without data in the footprint). */
+  lowValid?: number;
 }
 
 /** Runs of the stages since the last Discover start, in order. */
@@ -259,4 +269,33 @@ export function refineComparison(runs: readonly StageRun[]): RefineComparison | 
   const settled =
     run.refines === 0 || (ratio !== null && before !== null && ratio <= 1 && ratio >= before);
   return { run, previous, ratio, settled };
+}
+
+/** The record of a Discover that failed: it read the recording. */
+export function discoverErrorData(frames: number): Partial<StageRun> {
+  return { frames, source: 'raw' };
+}
+
+/** What an Extract run's end writes into its record (`pass2`: the Extract store). */
+export function extractEndData(
+  outcome: 'done' | 'error' | 'cancelled',
+  pass2: {
+    result(): Pass2Result | null;
+    processed(): number;
+    source(): 'raw' | 'factors';
+  },
+): Partial<StageRun> {
+  if (outcome !== 'done') return { frames: pass2.processed(), source: pass2.source() };
+  const r = pass2.result();
+  // Joint run: counted over the whole joint recording; each session's export repeats it.
+  const low = r?.source === 'factors' ? lowValidCells(r.minValid) : undefined;
+  return {
+    frames: r?.frames ?? 0,
+    cells: r?.cells ?? 0,
+    libraryVersion: r?.version ?? 0,
+    ...(r?.source ? { source: r.source } : {}),
+    ...(r?.tiling ? { tiling: r.tiling } : {}),
+    ...(r?.meanRank !== undefined ? { meanRank: r.meanRank } : {}),
+    ...(low !== undefined ? { lowValid: low } : {}),
+  };
 }

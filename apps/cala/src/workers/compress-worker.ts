@@ -33,15 +33,26 @@ const store = opfsStore();
 
 workerScope.onmessage = (e) => {
   const data = e.data;
-  if (data.type === 'backfill') {
+  if (data.type === 'backfill' || data.type === 'extract') {
     const r = runner;
     queue = queue
       .then(() => initCalaWasm())
-      .then(() => r?.backfill(data.session, data.version))
+      .then(() => {
+        if (data.type === 'backfill') r?.backfill(data.session, data.version);
+        else if (r) r.extract(data.session, data.job, data.library);
+        else
+          workerScope.postMessage({
+            type: 'error',
+            session: data.session,
+            job: data.job,
+            message: 'Extract on factors: the compress worker is not connected.',
+          });
+      })
       .catch((err: unknown) => {
         workerScope.postMessage({
           type: 'error',
           session: data.session,
+          ...(data.type === 'extract' ? { job: data.job } : {}),
           message: err instanceof Error ? err.message : String(err),
         });
       });

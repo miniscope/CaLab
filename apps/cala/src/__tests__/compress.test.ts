@@ -598,6 +598,7 @@ describe('back-fill from the factors', () => {
     const done = toMain[toMain.length - 1];
     expect(done).toMatchObject({ type: 'backfilled', session: 7, frames: 100 });
     for (const m of windows) {
+      expect('minValid' in m).toBe(false);
       expect([...m.ids]).toEqual(CELLS.map((c) => c.id));
       for (let i = 0; i < m.count; i++) {
         CELLS.forEach((c, j) => {
@@ -613,6 +614,51 @@ describe('back-fill from the factors', () => {
     r.backfill(99, lib.version); // another session
     await r.idle();
     expect(toMain.filter((m) => m.type === 'backfilled').length).toBe(1);
+  });
+
+  it('gives the signed traces of the frame engine when asked', async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 50; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    feed.end();
+    const { r, store } = runner();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    const file = store.files.get(factorName(0))!;
+    const ex = new FactorExtractor(lib.bytes, 0, 0);
+    const library = TraceLibrary.fromBytes(lib.bytes);
+    const engine = new TraceEngine(library, 0, 0);
+    try {
+      expect(ex.lastSigned().length).toBe(0);
+      const n = ex.open(file);
+      ex.solve(0, 10);
+      expect(ex.lastSigned().length).toBe(0); // off by default
+      ex.setSigned(true);
+      const traces = ex.solve(10, n - 10);
+      const signed = ex.lastSigned();
+      expect(signed.length).toBe(traces.length);
+      const frames = new Float32Array(n * PX);
+      const win = FactorWindow.fromBytes(file);
+      try {
+        win.reconstruct(0, n, frames);
+      } finally {
+        win.free();
+      }
+      engine.setSigned(true);
+      engine.processFrames(frames, n);
+      const want = engine.lastSigned().subarray(10 * CELLS.length);
+      let worst = 0;
+      for (let i = 0; i < want.length; i++) worst = Math.max(worst, Math.abs(signed[i] - want[i]));
+      // Both solves stop at the default tolerance; the tight comparison is the Rust test.
+      expect(worst).toBeLessThan(0.1);
+      ex.setSigned(false);
+      ex.solve(0, 5);
+      expect(ex.lastSigned().length).toBe(0);
+    } finally {
+      ex.free();
+      engine.free();
+      library.free();
+    }
   });
 
   it('gives the traces of the frame engine on the rebuilt frames', async () => {
@@ -722,6 +768,7 @@ describe('back-fill from the factors', () => {
           get start() {
             return inner.start;
           },
+          minValid: () => inner.minValid(),
           solve: (t0, n) => {
             solving = true;
             return inner.solve(t0, n);
@@ -792,6 +839,35 @@ describe('back-fill from the factors', () => {
       } catch (e) {
         x.free();
         throw e;
+      }
+    });
+
+    it("reports each cell's smallest valid share, and not before a window is open", async () => {
+      const lib = cellLibrary();
+      const { feed, sent } = collectingFeed(50);
+      for (let s = 0; s < 50; s += 10) {
+        const frames = cellFrames(s, 10);
+        // Pixel (7, 9), the centre of cell 0's footprint, never has data.
+        for (let t = 0; t < 10; t++) frames[t * PX + 7 * W + 9] = Number.NaN;
+        feed.push(frames, s, 10);
+      }
+      feed.end();
+      const { r, store } = runner();
+      for (const m of sent) await r.handle(m);
+      await r.idle();
+      const x = new FactorExtractor(lib.bytes, 0, 0);
+      try {
+        expect(() => x.minValid()).toThrow(/no window is open/);
+        expect(x.open(store.files.get(factorName(0))!)).toBe(50);
+        const v = x.minValid();
+        expect(v.length).toBe(CELLS.length);
+        expect(v[0]).toBe(0);
+        expect(v[1]).toBe(1);
+        // A failed open drops the window again.
+        expect(() => x.open(new Uint8Array(3))).toThrow();
+        expect(() => x.minValid()).toThrow(/no window is open/);
+      } finally {
+        x.free();
       }
     });
 
@@ -901,6 +977,209 @@ describe('back-fill from the factors', () => {
       status: { ...status, tiling: 'plain', source: 'discover' },
     });
     expect(store.takeBackfill(true, true, 4)).toBe(true);
+  });
+});
+
+describe('the back-fill and a live run', () => {
+  const status = {
+    windows: 2,
+    frames: 100,
+    pending: 0,
+    pendingFrames: 0,
+    meanRank: 2,
+    msPerFrame: 8,
+    factorBytes: 1 << 20,
+    final: true,
+    tiling: 'plain' as const,
+    source: 'discover' as const,
+  };
+  const backfillMsg = {
+    type: 'traces' as const,
+    session: 3,
+    version: 4,
+    first: true,
+    start: 0,
+    count: 50,
+    ids: Uint32Array.of(5),
+    traces: Float32Array.from({ length: 50 }, (_, i) => i),
+  };
+
+  function setup(live: boolean) {
+    const cells = createCellStore();
+    const store = createCompressStore(cells, () => live);
+    cells.reset(3);
+    store.reset(3);
+    store.onMessage({ type: 'status', session: 3, status });
+    // The fast loop's history: cell 5 is born at frame 60.
+    cells.history().push(60, 2, [5], [1, 2]);
+    return { cells, store };
+  }
+
+  it('does not ask for a back-fill of a live run', () => {
+    const { store } = setup(true);
+    expect(store.takeBackfill(true, true, 4)).toBe(false);
+  });
+
+  it('keeps the fast loop traces when a back-fill arrives on a live run', () => {
+    const { cells, store } = setup(true);
+    store.onMessage(backfillMsg);
+    expect(cells.history().span(5)).toEqual({ first: 60, end: 62 });
+    const t = cells.history().range(5, 0, 62);
+    expect(Number.isNaN(t[0])).toBe(true);
+    expect(Array.from(t.slice(60))).toEqual([1, 2]);
+  });
+
+  it('replaces the history after the back-fill of a file run', () => {
+    const { cells, store } = setup(false);
+    expect(store.takeBackfill(true, true, 4)).toBe(true);
+    store.onMessage(backfillMsg);
+    expect(cells.history().span(5)).toEqual({ first: 0, end: 50 });
+  });
+});
+
+describe('the compress store and the errors of Extract jobs', () => {
+  it("an error that names a job is not the compression's", () => {
+    const store = createCompressStore();
+    store.reset(3);
+    store.onMessage({ type: 'error', session: 3, job: 1, message: 'job failed' });
+    expect(store.error()).toBeNull();
+    store.onMessage({ type: 'error', session: 3, message: 'compression failed' });
+    expect(store.error()).toBe('compression failed');
+  });
+});
+
+describe('Extract on factors (the compress worker)', () => {
+  it('solves every window with the given library, with signed traces, and says when it is done', async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 100; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    feed.end();
+    const { r, store, toMain } = runner();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    r.extract(7, 3, lib.bytes.slice());
+    await r.idle();
+    const windows = toMain.filter((m) => m.type === 'extracted');
+    expect(windows.map((m) => [m.job, m.start, m.count])).toEqual([
+      [3, 0, 50],
+      [3, 50, 50],
+    ]);
+    // The windows solved directly, in order, by one engine of the same class
+    // (it keeps state from one window to the next, as the runner's does).
+    const direct = new FactorExtractor(lib.bytes.slice(), 0, 0);
+    direct.setSigned(true);
+    windows.forEach((m, w) => {
+      expect([...m.ids]).toEqual(CELLS.map((c) => c.id));
+      expect(m.signed.length).toBe(m.traces.length);
+      expect(direct.open(store.files.get(factorName(w))!)).toBe(m.count);
+      const want = direct.solve(0, m.count);
+      const wantSigned = direct.lastSigned();
+      for (let k = 0; k < want.length; k++) {
+        expect(m.traces[k]).toBeCloseTo(want[k], 3);
+        expect(m.signed[k]).toBeCloseTo(wantSigned[k], 3);
+      }
+      for (let i = 0; i < m.count; i++) {
+        CELLS.forEach((c, j) => {
+          expect(m.traces[i * CELLS.length + j]).toBeCloseTo(c.trace(m.start + i), 1);
+        });
+      }
+    });
+    direct.free();
+    expect(toMain[toMain.length - 1]).toMatchObject({
+      type: 'extract-done',
+      session: 7,
+      job: 3,
+      frames: 100,
+    });
+    expect(toMain.some((m) => m.type === 'traces' || m.type === 'backfilled')).toBe(false);
+  });
+
+  it("carries each window's smallest valid shares, one per cell, in trace column order", async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 100; s += 10) {
+      const frames = cellFrames(s, 10);
+      // Cell 1's centre pixel has no data in the second window only.
+      if (s >= 50) for (let t = 0; t < 10; t++) frames[t * PX + 15 * W + 28] = Number.NaN;
+      feed.push(frames, s, 10);
+    }
+    feed.end();
+    const { r, toMain } = runner();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    r.extract(7, 3, lib.bytes.slice());
+    await r.idle();
+    const windows = toMain.filter((m) => m.type === 'extracted');
+    expect(windows.length).toBe(2);
+    expect(windows.map((m) => [...m.minValid])).toEqual([
+      [1, 1],
+      [1, 0],
+    ]);
+    for (const m of windows) expect(m.minValid.length).toBe(m.ids.length);
+  });
+
+  it('refuses, naming the job, while a window is open or for another session', async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 60; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    const { r, toMain } = runner();
+    for (const m of sent) await r.handle(m); // window 1 is open: the recording has not ended
+    await r.idle();
+    r.extract(7, 4, lib.bytes.slice());
+    r.extract(99, 5, lib.bytes.slice());
+    await r.idle();
+    const errors = toMain.filter((m) => m.type === 'error');
+    expect(errors.map((m) => [m.session, m.job])).toEqual([
+      [7, 4],
+      [99, 5],
+    ]);
+    expect(toMain.some((m) => m.type === 'extracted')).toBe(false);
+  });
+
+  it("reports a failed solve as the job's error and keeps compressing later windows", async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 100; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    feed.end();
+    let fail = true;
+    const { r, toMain } = runner(memoryStore(), {
+      extract: (bytes) => {
+        if (fail) throw new Error('out of memory');
+        return new FactorExtractor(bytes, 0, 0);
+      },
+    });
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    const before = toMain.length;
+    r.extract(7, 6, lib.bytes.slice());
+    await r.idle();
+    expect(toMain.filter((m) => m.type === 'error')).toEqual([
+      { type: 'error', session: 7, job: 6, message: 'out of memory' },
+    ]);
+    // No message after the call marks the compression as failed or unfinished.
+    const after = toMain.slice(before);
+    expect(after.filter((m) => m.type === 'status' && !m.status.final)).toEqual([]);
+    // The windows are still readable: a second job with a working engine succeeds.
+    fail = false;
+    r.extract(7, 7, lib.bytes.slice());
+    await r.idle();
+    const second = toMain.slice(before).filter((m) => 'job' in m && m.job === 7);
+    expect(second.map((m) => m.type)).toEqual(['extracted', 'extracted', 'extract-done']);
+  });
+
+  it('answers a queued job with its own error when the runner is reset', async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 100; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    feed.end();
+    const { r, toMain } = runner();
+    for (const m of sent) await r.handle(m); // the last window is still being compressed
+    r.extract(7, 8, lib.bytes.slice());
+    await r.handle({ type: 'reset', session: 7 });
+    await r.idle();
+    const mine = toMain.filter((m) => 'job' in m && m.job === 8);
+    expect(mine.map((m) => m.type)).toEqual(['error']);
+    expect(toMain.some((m) => m.type === 'extracted' || m.type === 'extract-done')).toBe(false);
   });
 });
 

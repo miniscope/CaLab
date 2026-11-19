@@ -39,7 +39,8 @@ interface DirHandle {
   keys(): AsyncIterable<string>;
 }
 
-const ROOT = 'cala-compress';
+/** The OPFS folder of every run's compression files. */
+export const COMPRESS_ROOT = 'cala-compress';
 
 /**
  * Handles with a call in flight. Chrome (seen with 158) never settles the
@@ -71,26 +72,80 @@ export function isPinned(handle: object): boolean {
   return false;
 }
 
+/** The part of the Web Locks API used here (tests pass a fake). */
+export interface Locks {
+  request(name: string, callback: (lock: unknown) => Promise<unknown>): Promise<unknown>;
+  request(
+    name: string,
+    options: { ifAvailable: boolean },
+    callback: (lock: unknown) => Promise<unknown>,
+  ): Promise<unknown>;
+}
+
+/** The Web Lock that marks a run folder as owned by a live context. */
+const lockName = (run: string): string => `${COMPRESS_ROOT}/${run}`;
+
 /**
- * A store in its own OPFS directory (`cala-compress/<run>`). The first use
- * removes what earlier page loads left behind; a directory another tab still
- * holds open refuses removal and is left alone. `top` is the root of the
- * origin private file system (tests pass a fake).
+ * Take the lock `name` and keep it until this context ends (the browser
+ * releases it when the worker or the tab goes). Resolves once it is held,
+ * or at once when the request fails (the folder is then unprotected).
+ */
+function holdForever(locks: Locks, name: string): Promise<void> {
+  return new Promise((held) => {
+    locks
+      .request(name, () => {
+        held();
+        return new Promise(() => {});
+      })
+      .catch(() => held());
+  });
+}
+
+/**
+ * Remove another run's folder unless a live context owns it. Between stages
+ * no file of a run is open, so only its lock protects it from another tab.
+ */
+async function sweepFolder(root: DirHandle, name: string, locks: Locks | null): Promise<void> {
+  const remove = (): Promise<void> =>
+    pinned(root, (r) => r.removeEntry(name, { recursive: true })).catch(() => {});
+  // Without Web Locks the sweep removes every other folder, as before.
+  if (!locks) return remove();
+  await locks
+    .request(lockName(name), { ifAvailable: true }, async (lock) => {
+      // Null: the lock is held, a live tab owns the folder.
+      if (lock) await remove();
+    })
+    .catch(() => {});
+}
+
+const webLocks = (): Locks | null =>
+  typeof navigator !== 'undefined' && navigator.locks ? navigator.locks : null;
+
+/**
+ * A store in its own OPFS directory (`cala-compress/<run>`). The context that
+ * creates it holds the Web Lock `cala-compress/<run>` for its lifetime. The
+ * first use removes the folders of other runs whose lock is free (what earlier
+ * page loads left behind) and leaves those a live tab owns. `top` is the root
+ * of the origin private file system and `locks` the Web Locks (tests pass
+ * fakes; null: none).
  */
 export function opfsStore(
   run = `run-${Date.now().toString(36)}-${crypto.randomUUID()}`,
   top: () => Promise<unknown> = () => navigator.storage.getDirectory(),
+  locks: Locks | null = webLocks(),
 ): WindowStore {
   let dir: Promise<DirHandle> | null = null;
   const directory = (): Promise<DirHandle> =>
     (dir ??= (async () => {
+      // Owned before it exists: no other tab's sweep can find it unowned.
+      if (locks) await holdForever(locks, lockName(run));
       const origin = (await top()) as DirHandle;
-      const root = await pinned(origin, (o) => o.getDirectoryHandle(ROOT, { create: true }));
+      const root = await pinned(origin, (o) =>
+        o.getDirectoryHandle(COMPRESS_ROOT, { create: true }),
+      );
       const stale: string[] = [];
       for await (const name of root.keys()) if (name !== run) stale.push(name);
-      for (const name of stale) {
-        await pinned(root, (r) => r.removeEntry(name, { recursive: true })).catch(() => {});
-      }
+      for (const name of stale) await sweepFolder(root, name, locks);
       return pinned(root, (r) => r.getDirectoryHandle(run, { create: true }));
     })());
   return {

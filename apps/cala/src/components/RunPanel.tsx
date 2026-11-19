@@ -3,7 +3,8 @@ import { MetricTile, ProgressBar, SegmentedControl, type ProgressState } from '@
 import { formatClock, formatElapsed, windowPresets } from '@calab/ui/chart';
 import type { ByteSink } from '@calab/io';
 import type { CellStore } from '../lib/cell-store.ts';
-import { compressReadout, type CompressStore } from '../lib/compress-store.ts';
+import { compressReadout, extractSourceText, type CompressStore } from '../lib/compress-store.ts';
+import { lowValidCells, lowValidText } from '../lib/factor-extract.ts';
 import { reviewReadout, type ReviewStore } from '../lib/review-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { LookbackStatus } from '../workers/lookback-types.ts';
@@ -121,9 +122,9 @@ export interface RunPanelProps {
   narrow?: boolean;
   /** The run's history views (shared time window and cursor). */
   ui: HistoryUi;
-  /** Present when the run compresses its frames (`?compress`). */
+  /** Present when the run compresses its frames (on unless `?compress=off`). */
   compress?: CompressStore;
-  /** Present when the run reviews its compressed history (`?compress&review`). */
+  /** Present when the run reviews its compressed history (compression on; `?review` sets how often). */
   review?: ReviewStore;
   /** In a tab of its own: not collapsible (the convergence plot always shows). */
   fixed?: boolean;
@@ -273,7 +274,8 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     }
   }
 
-  // A new Discover run invalidates Extract's result.
+  // A new Discover run (also another recording, a session of a multi-session
+  // run) invalidates Extract's result and forgets a failed factor Extract.
   createEffect(
     on(
       () => s().status(),
@@ -297,14 +299,20 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   });
 
   const pass2Text = () => {
+    const fromFactors = p().source() === 'factors';
     switch (p().status()) {
       case 'running':
-        return 'Extract: solving the traces of every frame with the final footprints';
+        return fromFactors
+          ? 'Extract: solving the traces of every frame from the factors'
+          : 'Extract: solving the traces of every frame with the final footprints';
       case 'done': {
         const res = p().result();
+        const from = fromFactors ? ' (from the factors)' : '';
+        const low = res?.source === 'factors' ? (lowValidCells(res.minValid) ?? 0) : 0;
+        const note = low > 0 ? ` ${lowValidText(low)}` : '';
         return res
-          ? `Extract done: ${res.cells} cells x ${res.frames.toLocaleString()} frames in ${res.seconds.toFixed(1)} s (${(res.frames / res.seconds).toFixed(0)} frames/s)`
-          : 'Extract done';
+          ? `Extract done${from}: ${res.cells} cells x ${res.frames.toLocaleString()} frames in ${res.seconds.toFixed(1)} s (${(res.frames / res.seconds).toFixed(0)} frames/s)${note}`
+          : `Extract done${from}`;
       }
       case 'error':
         return `Extract stopped: ${p().error() ?? 'error'}`;
@@ -913,6 +921,20 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           </span>
         </Show>
       </div>
+      <Show
+        when={
+          props.compress && !props.live && s().status() === 'done' && p().status() !== 'running'
+        }
+      >
+        <p class="cala-muted cala-run__line" data-testid="extract-source">
+          {extractSourceText(
+            props.compress!.factors(s().record().frames),
+            props.compress!.status(),
+            p().factorsFailed(),
+            Boolean(props.compress!.error()),
+          )}
+        </p>
+      </Show>
       <div class="cala-run__footer">
         <Show
           when={p().status() !== 'running' && !props.live}
