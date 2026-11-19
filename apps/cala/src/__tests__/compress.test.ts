@@ -655,6 +655,49 @@ describe('back-fill from the factors', () => {
     }
   });
 
+  it('gives the traces of the frame engine when the last window is short', async () => {
+    const lib = cellLibrary();
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 120; s += 10) feed.push(cellFrames(s, 10), s, 10);
+    feed.library(lib.version, lib.bytes);
+    feed.end();
+    const { r, store, toMain } = runner();
+    for (const m of sent) await r.handle(m);
+    r.backfill(7, lib.version);
+    await r.idle();
+    const windows = toMain.filter((m) => m.type === 'traces');
+    expect(windows.map((m) => [m.start, m.count])).toEqual([
+      [0, 50],
+      [50, 50],
+      [100, 20],
+    ]);
+    expect(toMain[toMain.length - 1]).toMatchObject({ type: 'backfilled', frames: 120 });
+
+    const library = TraceLibrary.fromBytes(lib.bytes);
+    const engine = new TraceEngine(library, 0, 0);
+    const frames = new Float32Array(50 * PX);
+    try {
+      for (const [k, m] of windows.entries()) {
+        const win = FactorWindow.fromBytes(store.files.get(factorName(k))!);
+        try {
+          win.reconstruct(0, m.count, frames.subarray(0, m.count * PX));
+        } finally {
+          win.free();
+        }
+        const want = engine.processFrames(frames.subarray(0, m.count * PX), m.count);
+        expect(m.traces.length).toBe(want.length);
+        let worst = 0;
+        for (let i = 0; i < want.length; i++) {
+          worst = Math.max(worst, Math.abs(m.traces[i] - want[i]));
+        }
+        expect(worst, `window ${k}`).toBeLessThan(1e-3);
+      }
+    } finally {
+      engine.free();
+      library.free();
+    }
+  });
+
   it('frees the factor engine and posts nothing more when a reset cuts it short', async () => {
     const lib = cellLibrary();
     const { feed, sent } = collectingFeed(50);

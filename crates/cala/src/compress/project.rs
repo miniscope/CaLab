@@ -365,6 +365,8 @@ impl WindowProjector {
 
     /// Per cell: the smallest share of the window's frames in which a pixel
     /// of its support was not missing (1: none of its pixels was ever missing).
+    /// Only the support counts: a missing pixel in the moat or the ring is not
+    /// seen here.
     pub fn min_valid(&self) -> &[f32] {
         &self.min_valid
     }
@@ -408,6 +410,9 @@ impl FactorExtractor {
     /// Solve frames `t0..t0 + count` of `wf` with the rows of `proj` (built
     /// for this library and this window); `sink` gets each frame's result.
     ///
+    /// `FrameTraces::frame_index` counts the frames this extractor has solved,
+    /// not the stream index; the window's `start` gives the stream index.
+    ///
     /// The checks run before any frame, so a refused call never calls `sink`
     /// and leaves the engine as it was. A solve that fails in frame `t` has
     /// called `sink` for the frames before it; the engine has advanced
@@ -440,8 +445,7 @@ impl FactorExtractor {
                 lib.version()
             )));
         }
-        let end = t0.checked_add(count).filter(|&e| e <= wf.frames);
-        let Some(end) = end.filter(|_| proj.frames() == wf.frames) else {
+        let Some(end) = t0.checked_add(count).filter(|&e| e <= wf.frames) else {
             return Err(TraceError::InvalidConfig(format!(
                 "frames {t0}+{count} of a window of {}",
                 wf.frames
@@ -759,67 +763,202 @@ mod tests {
         }
     }
 
+    /// What the two arms gave over a window.
+    struct ArmGap {
+        /// Per cell: the largest `|a - b| / (1 + |a|)` over the frames, a from
+        /// the frame engine, b from the factor engine.
+        worst: Vec<f32>,
+        /// Largest and summed difference of the sweep counts.
+        sweeps_max: u32,
+        sweeps_sum: u32,
+    }
+
+    /// Arm C (the factor engine, in two calls as the app solves a window in
+    /// batches) against arm B (the frame engine on frames rebuilt from the same
+    /// factors). `missing`: a `(pixel, n)` that was not finite in the first `n`
+    /// frames of the window; B gets it back as NaN in those frames, as the
+    /// harness's replay does.
+    fn compare_arms(
+        wf: &WindowFactors,
+        lib: &Arc<Library>,
+        consolidated: bool,
+        missing: Option<(usize, usize)>,
+    ) -> ArmGap {
+        let frames = wf.frames;
+        let mut by_frame = TraceEngine::new(lib.clone(), tight()).unwrap();
+        by_frame.set_consolidated_ring_gradient(consolidated);
+        let mut ex = FactorExtractor::new(lib.clone(), tight()).unwrap();
+        ex.engine_mut().set_consolidated_ring_gradient(consolidated);
+        let proj = WindowProjector::new(lib, wf).unwrap();
+        // Per frame: traces, sweeps, frame index.
+        let mut c: Vec<(Vec<f32>, u32, u64)> = Vec::new();
+        let split = frames / 2;
+        for (t0, count) in [(0, split), (split, frames - split)] {
+            ex.solve(wf, &proj, t0, count, |tr| {
+                c.push((tr.traces.clone(), tr.sweeps, tr.frame_index));
+            })
+            .unwrap();
+        }
+        assert_eq!(c.len(), frames);
+        let mut frame = vec![0.0f32; W * H];
+        let mut out = FrameTraces::default();
+        let mut gap = ArmGap {
+            worst: vec![0.0; lib.len()],
+            sweeps_max: 0,
+            sweeps_sum: 0,
+        };
+        for (t, (ct, sweeps, index)) in c.iter().enumerate() {
+            wf.reconstruct(t, &mut frame);
+            if let Some((pixel, n)) = missing {
+                if t < n {
+                    frame[pixel] = f32::NAN;
+                }
+            }
+            by_frame.process_into(&frame, &mut out).unwrap();
+            assert_eq!(*index, t as u64, "the frame index continues across calls");
+            for (w, (a, b)) in gap.worst.iter_mut().zip(out.traces.iter().zip(ct)) {
+                *w = w.max((a - b).abs() / (1.0 + a.abs()));
+            }
+            // Both arms warm-start from the previous frame, so their sweep
+            // counts stay together; a cold start would not.
+            let d = out.sweeps.abs_diff(*sweeps);
+            gap.sweeps_max = gap.sweeps_max.max(d);
+            gap.sweeps_sum += d;
+        }
+        gap
+    }
+
+    /// The gap the two arms may have: set by the f32 rounding of the two input
+    /// routes, amplified by the solve, not by the stopping tolerance (it does
+    /// not move with `tol`); 2e-4 is about 2.5 times the worst gap measured.
+    const ARM_TOL: f32 = 2e-4;
+
+    /// `loose`: a cell with its own, recorded bound.
+    fn assert_arms_agree(label: &str, gap: &ArmGap, loose: Option<(usize, f32)>) {
+        for (i, w) in gap.worst.iter().enumerate() {
+            let tol = match loose {
+                Some((cell, bound)) if cell == i => bound,
+                _ => ARM_TOL,
+            };
+            assert!(*w <= tol, "{label} cell {i}: gap {w:e}");
+        }
+        assert!(
+            gap.sweeps_max <= 2,
+            "{label}: sweeps differ by {} in a frame",
+            gap.sweeps_max
+        );
+        assert!(
+            gap.sweeps_sum <= 30,
+            "{label}: sweeps differ by {} in all",
+            gap.sweeps_sum
+        );
+    }
+
     #[test]
     fn traces_from_the_factors_equal_traces_from_the_rebuilt_frames() {
-        // Arm C (the factor engine) against arm B (the frame engine on frames
-        // rebuilt from the same factors): float32 rounding apart. The gap is
-        // set by the f32 rounding of the two input routes, amplified by the
-        // solve, not by the stopping tolerance (it does not move with `tol`);
-        // 2e-4 is about 2.5 times the worst gap measured.
         for tiling in [Tiling::Plain, Tiling::Overlap(8), Tiling::Offset] {
             let wf = window(tiling, 120, None);
             for model in models() {
                 let lib = Arc::new(library(model, CENTRES.len()));
-                let mut by_frame = TraceEngine::new(lib.clone(), tight()).unwrap();
-                by_frame.set_consolidated_ring_gradient(true);
-                let mut ex = FactorExtractor::new(lib.clone(), tight()).unwrap();
-                ex.engine_mut().set_consolidated_ring_gradient(true);
+                let gap = compare_arms(&wf, &lib, true, None);
+                assert_arms_agree(&format!("{tiling:?}"), &gap, None);
                 let proj = WindowProjector::new(&lib, &wf).unwrap();
-                // Per frame: traces, sweeps, frame index.
-                let mut c: Vec<(Vec<f32>, u32, u64)> = Vec::new();
-                // In two calls, as the app solves a window in batches.
-                ex.solve(&wf, &proj, 0, 50, |tr| {
-                    c.push((tr.traces.clone(), tr.sweeps, tr.frame_index));
-                })
-                .unwrap();
-                ex.solve(&wf, &proj, 50, 70, |tr| {
-                    c.push((tr.traces.clone(), tr.sweeps, tr.frame_index));
-                })
-                .unwrap();
-                assert_eq!(c.len(), 120);
-                let mut frame = vec![0.0f32; W * H];
-                let mut out = FrameTraces::default();
-                let mut total_gap = 0u32;
-                for (t, (ct, sweeps, index)) in c.iter().enumerate() {
-                    wf.reconstruct(t, &mut frame);
-                    by_frame.process_into(&frame, &mut out).unwrap();
-                    assert_eq!(*index, t as u64, "the frame index continues across calls");
-                    for (i, (a, b)) in out.traces.iter().zip(ct).enumerate() {
-                        assert!(
-                            (a - b).abs() <= 2e-4 * (1.0 + a.abs()),
-                            "{tiling:?} frame {t} cell {i}: {a} from frames, {b} from factors"
-                        );
-                    }
-                    // Both arms warm-start from the previous frame, so their
-                    // sweep counts stay together; a cold start would not.
-                    let gap = out.sweeps.abs_diff(*sweeps);
-                    assert!(
-                        gap <= 2,
-                        "{tiling:?} frame {t}: sweeps {} vs {sweeps}",
-                        out.sweeps
-                    );
-                    total_gap += gap;
-                }
-                assert!(
-                    total_gap <= 30,
-                    "{tiling:?}: sweeps differ by {total_gap} in all"
-                );
+                let mut ex = FactorExtractor::new(lib.clone(), tight()).unwrap();
                 assert!(
                     ex.solve(&wf, &proj, 100, 21, |_| {}).is_err(),
                     "beyond the window"
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_arms_agree_with_the_ring_gradient_not_consolidated() {
+        // The app's FactorExtractor leaves the setting at its default (off);
+        // the harness and the test above turn it on.
+        for tiling in [Tiling::Plain, Tiling::Offset] {
+            let wf = window(tiling, 120, None);
+            for model in models() {
+                let lib = Arc::new(library(model, CENTRES.len()));
+                let gap = compare_arms(&wf, &lib, false, None);
+                assert_arms_agree(&format!("{tiling:?} unconsolidated"), &gap, None);
+            }
+        }
+    }
+
+    /// The centres' library with the right 20 columns and the bottom 10 rows
+    /// outside the field of view.
+    fn library_with_a_partial_fov(model: BackgroundModel) -> Library {
+        let mask: Vec<u8> = (0..W * H)
+            .map(|i| u8::from(i % W < W - 20 && i / W < H - 10))
+            .collect();
+        let cfg = FlattenConfig {
+            cell_diameter_px: 4.0,
+            ..FlattenConfig::default()
+        };
+        let fov = FovMask::from_mask(dims(), &mask).unwrap();
+        let mut flat = GlowFlattener::new(&fov, &cfg).unwrap();
+        let mut b = LibraryBuilder::new(dims())
+            .background(model)
+            .fov(mask)
+            .version(1);
+        for (i, &c) in CENTRES.iter().enumerate() {
+            b.push(footprint(i as u64, c));
+        }
+        b.build(&mut flat).unwrap()
+    }
+
+    #[test]
+    fn the_arms_agree_with_a_ring_or_basis_background_and_a_partial_field_of_view() {
+        let wf = window(Tiling::Offset, 120, None);
+        for (name, model) in ["basis", "ring"]
+            .into_iter()
+            .zip(models().into_iter().skip(1))
+        {
+            for consolidated in [true, false] {
+                let lib = Arc::new(library_with_a_partial_fov(model.clone()));
+                let gap = compare_arms(&wf, &lib, consolidated, None);
+                // Cell 4 straddles the edge of the field of view. Measured 2.1e-4
+                // (ring, consolidated) and 2.0e-4 (ring, not), just past the
+                // other cells' bound; still rounding, not a different model
+                // (a different treatment of the ring would be far larger).
+                let label = format!("fov {name}, consolidated {consolidated}");
+                assert_arms_agree(&label, &gap, Some((4, 3e-4)));
+            }
+        }
+    }
+
+    #[test]
+    fn a_pixel_missing_in_part_of_the_window_is_read_differently_by_the_two_arms() {
+        // Cell 0's centre pixel, missing in the first 30 of 120 frames: the
+        // factors hold its mean over the other 90 frames, arm B puts the NaN
+        // back and its engine treats the pixel as missing in those frames.
+        let (pixel, n) = (20 * W + 20, 30);
+        let wf = window(Tiling::Offset, 120, Some((pixel, n)));
+        let lib = Arc::new(library(BackgroundModel::None, CENTRES.len()));
+        let proj = WindowProjector::new(&lib, &wf).unwrap();
+        assert!(proj.min_valid()[0] < 1.0);
+        assert!(proj.min_valid()[1..].iter().all(|&v| v == 1.0));
+        let gap = compare_arms(&wf, &lib, true, Some((pixel, n)));
+        // Cells far from the pixel agree as before.
+        for i in [1, 2, 4] {
+            assert!(gap.worst[i] <= ARM_TOL, "cell {i}: gap {:e}", gap.worst[i]);
+        }
+        // Cell 0 differs. Measured 8.9e-2 (relative, as above); the bound is
+        // loose and the lower one says the arms do differ here.
+        assert!(
+            (1e-3..=0.2).contains(&gap.worst[0]),
+            "cell 0: gap {:e}",
+            gap.worst[0]
+        );
+        // Cell 3 has no missing pixel in its support (`min_valid` is 1) but
+        // its low-pass term takes in the block of the pixel: measured 1.7e-3.
+        // `min_valid` does not see a missing pixel in the moat.
+        assert!(
+            (ARM_TOL..=5e-3).contains(&gap.worst[3]),
+            "cell 3: gap {:e}",
+            gap.worst[3]
+        );
     }
 
     #[test]
