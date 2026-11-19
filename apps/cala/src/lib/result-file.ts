@@ -20,7 +20,7 @@ import { parseBoundaryFlag, type BoundaryFlag } from './boundary-flags.ts';
 import { parseNpy, parseNpyHeader, ZipArchive, type ZipSource } from '@calab/io';
 import type { HistoryExport } from '@calab/compute';
 import type { NumericTypedArray } from '@calab/core';
-import type { LibraryView } from '../workers/slow-types.ts';
+import { FACTOR_STOPS, type FactorStop, type LibraryView } from '../workers/slow-types.ts';
 import { FLAT_FIELD_DISPLAY_RANGE } from './flat-field.ts';
 import { fovDisplayRanges, storedRange } from './fov-display.ts';
 import type { DisplayRange } from './frame-display.ts';
@@ -126,6 +126,10 @@ export function stagesFromMeta(v: unknown): StageRun[] {
     if (x.tiling === 'plain' || x.tiling === 'offset') r.tiling = x.tiling;
     if (typeof x.mean_rank === 'number') r.meanRank = x.mean_rank;
     if (typeof x.low_valid === 'number') r.lowValid = x.low_valid;
+    if (x.factors === 'replay' || x.factors === 'discover') r.factors = x.factors;
+    if (typeof x.iterations === 'number') r.iterations = x.iterations;
+    if (FACTOR_STOPS.includes(x.stop as FactorStop)) r.stop = x.stop as FactorStop;
+    if (typeof x.changed_share === 'number') r.changedShare = x.changed_share;
     return r;
   });
 }

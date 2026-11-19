@@ -424,6 +424,40 @@ describe('stage records (format 7)', () => {
     libraryVersion: 3,
   } as const;
 
+  it('say whose factors a stage read, and how Refine on the factors stopped, and read back', () => {
+    const refine = stageMeta({
+      ...base,
+      stage: 'refine',
+      source: 'factors',
+      tiling: 'offset',
+      factors: 'discover',
+      iterations: 20,
+      stop: 'cap',
+      changedShare: 0.031,
+    });
+    expect(refine).toMatchObject({
+      source: 'factors',
+      factors: 'discover',
+      factors_note:
+        'Live run: Extract and Refine read the factors Discover wrote during the stream; they are not claimed to meet the closeness gate.',
+      iterations: 20,
+      stop: 'cap',
+      changed_share: 0.031,
+    });
+    const file = stageMeta({ ...base, stage: 'extract', source: 'factors', factors: 'replay' });
+    expect(file.factors).toBe('replay');
+    expect('factors_note' in file).toBe(false);
+    const raw = stageMeta({ ...base, stage: 'refine', source: 'raw' });
+    for (const k of ['factors', 'factors_note', 'iterations', 'stop', 'changed_share'])
+      expect(k in raw).toBe(false);
+    expect(stagesFromMeta([refine, file, { ...raw, stop: 'unknown' }])).toMatchObject([
+      { factors: 'discover', iterations: 20, stop: 'cap', changedShare: 0.031 },
+      { factors: 'replay' },
+      { source: 'raw' },
+    ]);
+    expect('stop' in stagesFromMeta([{ ...raw, stop: 'unknown' }])[0]).toBe(false);
+  });
+
   it('say where each stage read its frames, and read back', () => {
     expect(EXPORT_FORMAT_VERSION).toBe(7);
     const factors = stageMeta({

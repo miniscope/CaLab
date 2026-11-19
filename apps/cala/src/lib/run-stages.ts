@@ -14,7 +14,12 @@
  * (`pipeline-store`, `refine-store`, `pass2-store`) run the stages.
  */
 import { createSignal } from 'solid-js';
-import type { LibraryView } from '../workers/slow-types.ts';
+import type {
+  FactorIteration,
+  FactorRefineSettings,
+  FactorStop,
+  LibraryView,
+} from '../workers/slow-types.ts';
 import type { CompressTiling } from '../workers/compress-types.ts';
 import { lowValidCells } from './factor-extract.ts';
 import type { Pass2Result } from './pass2-store.ts';
@@ -53,10 +58,25 @@ export interface StageInput {
   cells: number;
   /** Why the recorded motion and flicker cannot be replayed (null: they can). */
   replayBlocked: string | null;
+  /**
+   * A live run with compression on: why its factors cannot be read now (null:
+   * they can). Absent: not a live run, or compression off (Discover only).
+   */
+  liveFactors?: string | null;
+  /** `?refine=factors` (compression on): Refine reads the factors. */
+  refineOnFactors?: boolean;
 }
 
 export const LIVE_NOTE =
   'A live stream runs Discover only: there is no file to replay. Save the stream and load it as a recording later to Refine or Extract.';
+
+/** A live run with compression on: what its Extract and Refine read. */
+export const LIVE_FACTORS_NOTE =
+  'Live run: Extract and Refine read the factors Discover wrote during the stream; they are not claimed to meet the closeness gate.';
+
+/** A live run's Refine without `?refine=factors`. */
+export const LIVE_REFINE_OFF =
+  'A live stream has no file to replay: Refine runs on the factors only with ?refine=factors.';
 
 /**
  * "Extract after Discover" default for recordings: off, so a Discover then
@@ -96,12 +116,19 @@ export function stageAvailability(i: StageInput): Record<StageName, string | nul
           ? 'Extract is running.'
           : null;
   const after = (stage: string): string | null => {
-    if (i.live) return LIVE_NOTE;
+    const liveFactors = i.live && i.liveFactors !== undefined;
+    if (i.live) {
+      // Compression off: a stream has nothing to read again.
+      if (!liveFactors) return LIVE_NOTE;
+      if (stage === 'Refine' && !i.refineOnFactors) return LIVE_REFINE_OFF;
+    }
     if (busy) return busy;
     if (i.discover !== 'done') return `${stage} runs after Discover finishes.`;
-    if (i.replayBlocked) return i.replayBlocked;
+    // A stream has no replay: a replay reason does not apply to its factors.
+    if (i.replayBlocked && !liveFactors) return i.replayBlocked;
     if (!i.finalLibrary) return 'Waiting for the final library.';
     if (i.cells === 0) return 'No cells were found.';
+    if (liveFactors && i.liveFactors) return i.liveFactors;
     return null;
   };
   return {
@@ -149,6 +176,12 @@ export interface StageRun {
   meanRank?: number;
   /** A factor Extract: cells whose smallest valid share is below 1 (pixels without data in the footprint). */
   lowValid?: number;
+  /** A factor stage: whose factors it read (`replay`: a file's compression replay; `discover`: a live run's Discover). */
+  factors?: 'replay' | 'discover';
+  /** Refine on the factors: iterations run, why it stopped, and the share of cells still changing after the last. */
+  iterations?: number;
+  stop?: FactorStop;
+  changedShare?: number;
 }
 
 /** Runs of the stages since the last Discover start, in order. */
@@ -296,6 +329,66 @@ export function extractEndData(
     ...(r?.source ? { source: r.source } : {}),
     ...(r?.tiling ? { tiling: r.tiling } : {}),
     ...(r?.meanRank !== undefined ? { meanRank: r.meanRank } : {}),
+    ...(r?.factors ? { factors: r.factors } : {}),
     ...(low !== undefined ? { lowValid: low } : {}),
   };
+}
+
+/** What a running Refine on the factors does (`RefineStore.phase`). */
+export type FactorPhase =
+  | { kind: 'compress'; done: number; total: number }
+  | { kind: 'wait'; for: 'compression' | 'extract'; pending: number }
+  | { kind: 'iterate'; last: FactorIteration | null; stopping: boolean };
+
+/** `0.0123` -> `1.2%` (`n/a` when not a finite number). */
+function pct(v: number | null | undefined): string {
+  return v === null || v === undefined || !Number.isFinite(v) ? 'n/a' : `${(100 * v).toFixed(1)}%`;
+}
+
+const iterationsText = (n: number): string => `${n} iteration${n === 1 ? '' : 's'}`;
+
+/** The Run panel's readout of a running Refine on the factors (Refine run `index`). */
+export function factorRefineRunningText(
+  index: number,
+  phase: FactorPhase,
+  settings: Pick<FactorRefineSettings, 'maxIterations' | 'settleShare'>,
+): string {
+  switch (phase.kind) {
+    case 'compress':
+      return `Refine ${index}: preparing the factors: frame ${phase.done.toLocaleString('en-US')} / ${phase.total.toLocaleString('en-US')}`;
+    case 'wait':
+      return phase.for === 'extract'
+        ? `Refine ${index}: waiting for the last Extract on the factors to end`
+        : `Refine ${index}: waiting for the factors${phase.pending > 0 ? ` (${phase.pending} windows still to compress)` : ''}`;
+    default: {
+      const l = phase.last;
+      const head = l
+        ? `Refine ${index} on the factors: iteration ${l.iteration} of at most ${settings.maxIterations} done · ${l.accepted} refinements accepted · ${pct(l.changedShare)} of cells still changing (settled below ${pct(settings.settleShare)}) · median change ${pct(l.medianChange)}`
+        : `Refine ${index} on the factors: iteration 1 of at most ${settings.maxIterations}`;
+      return phase.stopping ? `${head} · stopping after this iteration` : head;
+    }
+  }
+}
+
+/** The readout of a finished Refine on the factors (`run.source === 'factors'`). */
+export function factorRefineDoneText(run: StageRun): string {
+  const n = run.iterations ?? 0;
+  const tail = `${run.footprintsRefined ?? 0} of ${run.cells} footprints refined · median change of those ${pct(run.medianFootprintChange)}`;
+  const name = `Refine ${run.index} on the factors`;
+  // A record without `stop` falls back on its outcome.
+  const stop: FactorStop =
+    run.stop ??
+    (run.outcome === 'cancelled' ? 'stopped' : run.outcome === 'error' ? 'error' : 'settled');
+  switch (stop) {
+    case 'settled':
+      return `${name}: settled after ${iterationsText(n)} · ${tail}`;
+    case 'nothing-accepted':
+      return `${name}: settled after ${iterationsText(n)} (the last accepted no refinement) · ${tail}`;
+    case 'cap':
+      return `${name}: stopped at the cap of ${iterationsText(n)} without settling (${pct(run.changedShare)} of cells still changing) · ${tail}`;
+    case 'stopped':
+      return `${name} (cancelled after ${iterationsText(n)}): ${tail}`;
+    default:
+      return `${name} (stopped by an error after ${iterationsText(n)}): ${tail}`;
+  }
 }

@@ -87,6 +87,15 @@
  * engine uses the value stored in the window, so the trace of a cell below 1
  * can differ from a replay of the file.
  *
+ * A factor stage also says whose factors it read, `factors`: `replay` (a
+ * file's compression replay, with the final calibration) or `discover` (a
+ * live run's own windows, with the calibration of their time; then also
+ * `factors_note`, the sentence the Run panel shows: they are not claimed to
+ * meet the closeness gate). Refine on the factors adds `iterations`, `stop`
+ * (`settled`, `nothing-accepted`, `cap`, `stopped`, `error`) and
+ * `changed_share` (the share of cells still changing after the last
+ * iteration). Added within format 7 (not released before them).
+ *
  * Field-of-view images (format version 5; optional to readers, absent when the
  * run kept none). Both are projections over Extract's frames (every frame of
  * the export's span, with the final flat field and Discover's motion; see
@@ -165,7 +174,7 @@ import {
 import { projectionFor } from './fov-projection.ts';
 import { fovDisplayRanges } from './fov-display.ts';
 import type { RunSpan } from './run-record.ts';
-import type { StageRun } from './run-stages.ts';
+import { LIVE_FACTORS_NOTE, type StageRun } from './run-stages.ts';
 import { seriesMeta } from './refine-metrics.ts';
 import type { HistoryExport } from '@calab/compute';
 
@@ -258,6 +267,13 @@ export function stageMeta(r: StageRun): Record<string, unknown> {
   if (r.tiling) out.tiling = r.tiling;
   if (finite(r.meanRank) !== null) out.mean_rank = r.meanRank;
   if (r.lowValid !== undefined) out.low_valid = r.lowValid;
+  if (r.factors) {
+    out.factors = r.factors;
+    if (r.factors === 'discover') out.factors_note = LIVE_FACTORS_NOTE;
+  }
+  if (r.iterations !== undefined) out.iterations = r.iterations;
+  if (r.stop) out.stop = r.stop;
+  if (finite(r.changedShare) !== null) out.changed_share = r.changedShare;
   if (r.series) out.series = seriesMeta(r.series);
   return out;
 }

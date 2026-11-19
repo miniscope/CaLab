@@ -106,6 +106,8 @@ export interface Pass2Result {
    * every frame). Absent for a replay of the file.
    */
   minValid?: Float32Array;
+  /** From the factors: whose they are (`replay`: a file's compression replay; `discover`: a live run's own). */
+  factors?: 'replay' | 'discover';
 }
 
 export function createPass2Store(

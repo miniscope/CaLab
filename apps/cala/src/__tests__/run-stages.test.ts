@@ -4,8 +4,12 @@ import {
   discoverErrorData,
   EXTRACT_AFTER_DISCOVER_DEFAULT,
   extractEndData,
+  factorRefineDoneText,
+  factorRefineRunningText,
   footprintChange,
+  LIVE_FACTORS_NOTE,
   LIVE_NOTE,
+  LIVE_REFINE_OFF,
   NEXT_STEP_HINT,
   perMinute,
   refineComparison,
@@ -15,7 +19,7 @@ import {
   type StageRun,
 } from '../lib/run-stages.ts';
 import type { Pass2Result } from '../lib/pass2-store.ts';
-import type { LibraryView } from '../workers/slow-types.ts';
+import type { FactorIteration, LibraryView } from '../workers/slow-types.ts';
 
 const READY: StageInput = {
   live: false,
@@ -256,6 +260,13 @@ describe('what the stage records carry when a stage ends', () => {
     source: () => source,
   });
 
+  it('a factor Extract says whose factors it read', () => {
+    expect(extractEndData('done', store(result({ factors: 'discover' }), 'factors')).factors).toBe(
+      'discover',
+    );
+    expect('factors' in extractEndData('done', store(result(), 'factors'))).toBe(false);
+  });
+
   it('a failed Discover says it read the recording', () => {
     expect(discoverErrorData(12)).toEqual({ frames: 12, source: 'raw' });
   });
@@ -291,5 +302,152 @@ describe('what the stage records carry when a stage ends', () => {
     const data = extractEndData('done', store(raw, 'raw'));
     expect(data).toEqual({ frames: 8, cells: 2, libraryVersion: 3, source: 'raw' });
     expect('lowValid' in data).toBe(false);
+  });
+});
+
+describe('stage availability of a live run with compression on', () => {
+  const LIVE: StageInput = { ...READY, live: true, liveFactors: null };
+
+  it('offers Extract once the stream ended and its factors are ready, Refine only with ?refine=factors', () => {
+    expect(stageAvailability(LIVE)).toEqual({
+      discover: null,
+      refine: LIVE_REFINE_OFF,
+      extract: null,
+    });
+    expect(stageAvailability({ ...LIVE, refineOnFactors: true }).refine).toBeNull();
+    expect(stageAvailability({ ...LIVE, discover: 'running' }).extract).toBe(
+      'Discover is running.',
+    );
+    expect(stageAvailability({ ...LIVE, discover: 'error' }).extract).toBe(
+      'Extract runs after Discover finishes.',
+    );
+    const blocked = { ...LIVE, liveFactors: "The stream's last windows are being compressed." };
+    expect(stageAvailability(blocked).extract).toBe(
+      "The stream's last windows are being compressed.",
+    );
+    expect(stageAvailability({ ...blocked, refineOnFactors: true }).refine).toBe(
+      "The stream's last windows are being compressed.",
+    );
+    expect(stageAvailability({ ...LIVE, cells: 0 }).extract).toMatch(/No cells/);
+    expect(stageAvailability({ ...LIVE, refine: 'running', refineOnFactors: true }).extract).toBe(
+      'Refine is running.',
+    );
+    expect(LIVE_REFINE_OFF).toBe(
+      'A live stream has no file to replay: Refine runs on the factors only with ?refine=factors.',
+    );
+    expect(LIVE_FACTORS_NOTE).toBe(
+      'Live run: Extract and Refine read the factors Discover wrote during the stream; they are not claimed to meet the closeness gate.',
+    );
+  });
+
+  it('does not report a replay reason for a stream, which replays nothing', () => {
+    const gap = { ...LIVE, refineOnFactors: true, replayBlocked: 'motion record has a gap' };
+    expect(stageAvailability(gap)).toMatchObject({ refine: null, extract: null });
+    expect(
+      stageAvailability({ ...gap, liveFactors: 'The last windows are being compressed.' }).extract,
+    ).toBe('The last windows are being compressed.');
+  });
+
+  it('keeps the live note when compression is off, with or without the switch', () => {
+    expect(stageAvailability({ ...READY, live: true, refineOnFactors: true })).toMatchObject({
+      refine: LIVE_NOTE,
+      extract: LIVE_NOTE,
+    });
+  });
+});
+
+describe('the readouts of Refine on the factors', () => {
+  const S = { maxIterations: 20, settleShare: 0.02 };
+  const it2: FactorIteration = {
+    iteration: 2,
+    libraryVersion: 9,
+    cells: 40,
+    frames: 1200,
+    fittingFrames: 800,
+    accepted: 5,
+    changedShare: 0.04,
+    medianChange: 0.003,
+    lowValid: 0,
+    tilesSkipped: 0,
+    ms: 10,
+  };
+
+  it('say what a running one does', () => {
+    expect(factorRefineRunningText(1, { kind: 'compress', done: 1200, total: 3000 }, S)).toBe(
+      'Refine 1: preparing the factors: frame 1,200 / 3,000',
+    );
+    expect(factorRefineRunningText(1, { kind: 'wait', for: 'compression', pending: 3 }, S)).toBe(
+      'Refine 1: waiting for the factors (3 windows still to compress)',
+    );
+    expect(factorRefineRunningText(1, { kind: 'wait', for: 'compression', pending: 0 }, S)).toBe(
+      'Refine 1: waiting for the factors',
+    );
+    expect(factorRefineRunningText(1, { kind: 'wait', for: 'extract', pending: 0 }, S)).toBe(
+      'Refine 1: waiting for the last Extract on the factors to end',
+    );
+    expect(factorRefineRunningText(1, { kind: 'iterate', last: null, stopping: false }, S)).toBe(
+      'Refine 1 on the factors: iteration 1 of at most 20',
+    );
+    expect(factorRefineRunningText(2, { kind: 'iterate', last: it2, stopping: true }, S)).toBe(
+      'Refine 2 on the factors: iteration 2 of at most 20 done · 5 refinements accepted · 4.0% of cells still changing (settled below 2.0%) · median change 0.3% · stopping after this iteration',
+    );
+  });
+
+  it('say how a finished one stopped', () => {
+    const run = {
+      stage: 'refine',
+      index: 1,
+      startedAt: '',
+      endedAt: '',
+      outcome: 'done',
+      frames: 1200,
+      cells: 40,
+      libraryVersion: 9,
+      footprintsRefined: 30,
+      medianFootprintChange: 0.012,
+      source: 'factors',
+      iterations: 6,
+      changedShare: 0.031,
+    } as const;
+    const tail = '30 of 40 footprints refined · median change of those 1.2%';
+    expect(factorRefineDoneText({ ...run, stop: 'settled' })).toBe(
+      `Refine 1 on the factors: settled after 6 iterations · ${tail}`,
+    );
+    expect(factorRefineDoneText({ ...run, iterations: 1, stop: 'nothing-accepted' })).toBe(
+      `Refine 1 on the factors: settled after 1 iteration (the last accepted no refinement) · ${tail}`,
+    );
+    expect(factorRefineDoneText({ ...run, iterations: 20, stop: 'cap' })).toBe(
+      `Refine 1 on the factors: stopped at the cap of 20 iterations without settling (3.1% of cells still changing) · ${tail}`,
+    );
+    expect(
+      factorRefineDoneText({ ...run, outcome: 'cancelled', iterations: 4, stop: 'stopped' }),
+    ).toBe(`Refine 1 on the factors (cancelled after 4 iterations): ${tail}`);
+    expect(factorRefineDoneText({ ...run, outcome: 'error', iterations: 0, stop: 'error' })).toBe(
+      `Refine 1 on the factors (stopped by an error after 0 iterations): ${tail}`,
+    );
+  });
+
+  it('falls back on the outcome when a record has no stop', () => {
+    const run = {
+      stage: 'refine',
+      index: 1,
+      startedAt: '',
+      endedAt: '',
+      outcome: 'cancelled',
+      frames: 1200,
+      cells: 40,
+      libraryVersion: 9,
+      footprintsRefined: 30,
+      medianFootprintChange: 0.012,
+      source: 'factors',
+      iterations: 4,
+    } as const;
+    const tail = '30 of 40 footprints refined · median change of those 1.2%';
+    expect(factorRefineDoneText(run)).toBe(
+      `Refine 1 on the factors (cancelled after 4 iterations): ${tail}`,
+    );
+    expect(factorRefineDoneText({ ...run, outcome: 'error' })).toBe(
+      `Refine 1 on the factors (stopped by an error after 4 iterations): ${tail}`,
+    );
   });
 });
