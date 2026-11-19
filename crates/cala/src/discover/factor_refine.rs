@@ -35,7 +35,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::fpstats::{add_mom, parity_block, FpStats, Mom, PixMoments, MIN_VALID_SHARE};
-use super::{column_on, SlowLoop};
+use super::local::BgBasis;
+use super::reservoir::{mix, take_missing};
+use super::{column_on, Frames, SlowLoop};
 use crate::compress::blend::BlendLayout;
 use crate::compress::project::{FactorExtractor, WindowProjector};
 use crate::compress::WindowFactors;
@@ -714,6 +716,135 @@ impl SlowLoop {
         }
         self.fpstats = out;
     }
+
+    /// Held-out frames per tile for the gate: `cfg.test_frames`, or what a
+    /// tile's reservoir holds on average.
+    fn test_count(&self, cfg: &FactorRefineConfig) -> usize {
+        if cfg.test_frames > 0 {
+            cfg.test_frames
+        } else {
+            let k = self.plan.frames_per_tile as f64 / f64::from(self.cfg.holdout_every);
+            (k.round() as usize).max(1)
+        }
+    }
+
+    /// Per tile, `k` of its held-out frames: the share `1 − random_share`
+    /// where its cells are most active, the rest uniformly (a hash of the
+    /// frame, the tile and the seed); `(frame, slow-loop index)` by frame.
+    fn pick_tests(&self, scores: &[Vec<(f32, usize, u64)>], k: usize) -> Vec<Vec<(usize, u64)>> {
+        let k_r = ((k as f32 * self.cfg.random_share).round() as usize).min(k);
+        let k_e = k - k_r;
+        scores
+            .iter()
+            .enumerate()
+            .map(|(ti, s)| {
+                let mut ev: Vec<&(f32, usize, u64)> = s.iter().collect();
+                ev.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+                let mut out: Vec<(usize, u64)> = ev.iter().take(k_e).map(|e| (e.1, e.2)).collect();
+                let key = |slow: u64| mix(slow ^ ((ti as u64) << 40) ^ self.cfg.seed);
+                let mut rest: Vec<&(f32, usize, u64)> = ev.into_iter().skip(k_e).collect();
+                rest.sort_by_key(|e| (key(e.2), e.1));
+                out.extend(rest.iter().take(k_r).map(|e| (e.1, e.2)));
+                out.sort_unstable();
+                out
+            })
+            .collect()
+    }
+
+    /// Pass B: the chosen held-out frames of every tile, its patch rebuilt
+    /// from the factors and whitened as the reservoir stores a frame
+    /// (`y · σ⁻¹`; a pixel below the valid share missing). `t_len`: the
+    /// frames pass A read. A refused call leaves the loop as it was.
+    fn test_frames(
+        &mut self,
+        src: &mut dyn FactorSource,
+        pick: &[Vec<(usize, u64)>],
+        t_len: usize,
+    ) -> Result<Vec<Frames>, TraceError> {
+        if pick.len() != self.tiles.len() {
+            return Err(TraceError::InvalidConfig(format!(
+                "held-out frames for {} tiles, the slow loop has {}",
+                pick.len(),
+                self.tiles.len()
+            )));
+        }
+        let dims = self.dims;
+        let width = dims.width;
+        // Bases of tiles not visited yet; installed only on success.
+        let fresh: Vec<Option<BgBasis>> = self
+            .tiles
+            .iter()
+            .zip(&self.bgs)
+            .map(|(t, b)| b.is_none().then(|| BgBasis::new(t.rect)))
+            .collect();
+        let mut out: Vec<Frames> = (0..self.tiles.len())
+            .map(|_| Frames {
+                y: Vec::new(),
+                proj: Vec::new(),
+                idx: Vec::new(),
+                miss: Vec::new(),
+            })
+            .collect();
+        let mut t0 = 0usize;
+        for w in 0..src.windows() {
+            let wf = src.window(w)?;
+            check_window(&wf, dims, t0)?;
+            let layout = wf.layout();
+            let vmap = valid_map(&wf, &layout);
+            for (ti, chosen) in pick.iter().enumerate() {
+                let rect = self.tiles[ti].rect;
+                let Some(bg) = self.bgs[ti].as_ref().or(fresh[ti].as_ref()) else {
+                    continue;
+                };
+                let in_window = chosen.iter().filter(|c| c.0 >= t0 && c.0 < t0 + wf.frames);
+                for &(t, slow) in in_window {
+                    let mut v = vec![0.0f32; rect.len()];
+                    let r = (rect.x0, rect.y0, rect.w, rect.h);
+                    if !layout.reconstruct_rect(&wf, t - t0, r, &mut v) {
+                        return Err(TraceError::InvalidConfig(format!(
+                            "window {w}: patch of tile {ti}"
+                        )));
+                    }
+                    for yy in 0..rect.h {
+                        for xx in 0..rect.w {
+                            let g = (rect.y0 + yy) * width + rect.x0 + xx;
+                            let l = yy * rect.w + xx;
+                            v[l] = if vmap[g] < MIN_VALID_SHARE as f32 {
+                                f32::NAN
+                            } else {
+                                v[l] * self.inv_sigma[g]
+                            };
+                        }
+                    }
+                    let miss = take_missing(&mut v);
+                    out[ti].proj.push(bg.project(&v));
+                    out[ti].idx.push(slow);
+                    out[ti].miss.push(miss);
+                    out[ti].y.push(v);
+                }
+            }
+            t0 += wf.frames;
+        }
+        if t0 != t_len {
+            return Err(TraceError::InvalidConfig(format!(
+                "the factors held {t_len} frames in pass A and {t0} in pass B"
+            )));
+        }
+        // A chosen frame past the windows would leave its tile short.
+        if let Some(ti) = (0..pick.len()).find(|&ti| out[ti].len() != pick[ti].len()) {
+            return Err(TraceError::InvalidConfig(format!(
+                "tile {ti}: {} of {} held-out frames in the windows",
+                out[ti].len(),
+                pick[ti].len()
+            )));
+        }
+        for (slot, b) in self.bgs.iter_mut().zip(fresh) {
+            if slot.is_none() {
+                *slot = b;
+            }
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -1094,6 +1225,88 @@ mod tests {
         sl.frames = (0..).find(|&f| sl.is_test(f)).unwrap();
         let err = sl.sum_pass(&lib, &mut vec![one], &rc).err();
         assert!(matches!(err, Some(TraceError::InvalidConfig(_))), "{err:?}");
+    }
+
+    #[test]
+    fn held_out_patches_are_the_whitened_rebuilt_frames() {
+        let (mut sl, windows) = fixture(cfg(v2_config().background));
+        let rc = FactorRefineConfig::default();
+        let lib = sl.library().unwrap().clone();
+        let mut src = windows.clone();
+        let pass = sl.sum_pass(&lib, &mut src, &rc).unwrap();
+        let k = sl.test_count(&rc);
+        assert_eq!(k, (sl.plan.frames_per_tile as f64 / 3.0).round() as usize);
+        let pick = sl.pick_tests(&pass.scores, k);
+        assert_eq!(pick, sl.pick_tests(&pass.scores, k), "deterministic");
+        for (ti, p) in pick.iter().enumerate() {
+            assert!(p.len() <= k);
+            assert!(p.windows(2).all(|w| w[0].0 < w[1].0), "sorted, no repeat");
+            assert!(p
+                .iter()
+                .all(|&(t, slow)| sl.is_test(slow) && slow == sl.frames() + t as u64));
+            if pass.scores[ti].len() >= k {
+                assert_eq!(p.len(), k);
+                // The event part holds the most active frame of the tile.
+                let top = pass.scores[ti]
+                    .iter()
+                    .max_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)))
+                    .unwrap();
+                assert!(p.iter().any(|&(t, _)| t == top.1));
+            }
+        }
+        // A source that lost a window between the passes is refused, and the
+        // loop's tile bases stay as they were.
+        let unset: Vec<bool> = sl.bgs.iter().map(Option::is_none).collect();
+        assert!(unset.iter().any(|&u| u), "a tile without a basis yet");
+        let mut short = windows[..windows.len() - 1].to_vec();
+        assert!(sl.test_frames(&mut short, &pick, pass.frames).is_err());
+        assert_eq!(
+            sl.bgs.iter().map(Option::is_none).collect::<Vec<_>>(),
+            unset
+        );
+        let frames = sl.test_frames(&mut src, &pick, pass.frames).unwrap();
+        assert_eq!(frames.len(), sl.tiles.len());
+        assert!(pick.iter().any(|p| p.len() == k), "a tile with K frames");
+        // A tile with fewer held-out frames than asked for gets all of them.
+        let all = sl.pick_tests(&pass.scores, T);
+        for (p, s) in all.iter().zip(&pass.scores) {
+            let mut want: Vec<(usize, u64)> = s.iter().map(|e| (e.1, e.2)).collect();
+            want.sort_unstable();
+            assert_eq!(*p, want);
+        }
+        let mut full = vec![0.0f32; dims().pixels()];
+        let mut gone_listed = 0;
+        for (ti, fr) in frames.iter().enumerate() {
+            assert_eq!(fr.len(), pick[ti].len());
+            let rect = sl.tiles[ti].rect;
+            for (j, &(t, slow)) in pick[ti].iter().enumerate() {
+                assert_eq!(fr.idx[j], slow);
+                let (w, tw) = (t / WIN, t % WIN);
+                windows[w].layout().reconstruct(&windows[w], tw, &mut full);
+                let vmap = valid_map(&windows[w], &windows[w].layout());
+                for yy in 0..rect.h {
+                    for xx in 0..rect.w {
+                        let g = (rect.y0 + yy) * N + rect.x0 + xx;
+                        let l = yy * rect.w + xx;
+                        let gone = vmap[g] < MIN_VALID_SHARE as f32;
+                        let listed = fr.miss[j].binary_search(&(l as u32)).is_ok();
+                        assert_eq!(listed, gone, "tile {ti} frame {t} pixel {g}");
+                        gone_listed += usize::from(listed && g == GONE);
+                        let want = if gone { 0.0 } else { full[g] * sl.inv_sigma[g] };
+                        assert_eq!(
+                            fr.y[j][l].to_bits(),
+                            want.to_bits(),
+                            "tile {ti} frame {t} pixel {g}"
+                        );
+                    }
+                }
+                assert_eq!(fr.proj[j], sl.bgs[ti].as_ref().unwrap().project(&fr.y[j]));
+            }
+        }
+        assert!(
+            gone_listed > 0,
+            "GONE missing in a held-out patch of window 1"
+        );
     }
 
     #[test]
