@@ -1956,7 +1956,8 @@ git commit -m "docs(cala-eval): phase 1 results of the factor pipeline against g
 - The history review does not blend overlapping tiles (it stacks the components of every tile that covers a pixel). Discover's live factors therefore stay on plain tiles. Making the review read the offset grids belongs to phase 4, where a live stream's factors are also the ones Refine and Extract use.
 - A compression replay that does not solve traces. In this phase the recalibrated factors come from Extract's replay. Phase 3 (Refine on factors) needs them before Refine and adds the separate replay.
 - `?compress` on by default, the Run panel and the export's stage record of the factors (phase 4).
-- Nothing reads `discarded` or `valid` yet. Extract on factors (phase 2) and Refine on factors (phase 3) do.
+- Nothing reads `discarded` or `valid` yet. Extract on factors (phase 2) and Refine on factors (phase 3) do. The limit `MIN_VALID_SHARE` is applied by those consumers, not here.
+- The copy of the factors in the results folder (phase 4, with the export's stage record).
 
 ## Self-review notes
 
