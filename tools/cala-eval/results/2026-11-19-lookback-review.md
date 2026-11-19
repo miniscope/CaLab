@@ -148,7 +148,8 @@ wrap-1 library is byte-identical to `COMBO`'s final library (static_s5, motion_s
   recording). With the replay off and look-back on, Refine is back to full speed.
 - **Settling is slow because of lock-step, not work.** In the app it re-reads about 14 frames per second, against
   about 200 per second while Discover runs. Sixteen frames per step keeps overall quality on the sims with 8 x fewer
-  steps, but the visits that go with the steps matter for late-born cells.
+  steps, but late-born cells get more bites, because the visit rounds fell with the steps. Batching frames while
+  keeping the visit rounds was not tested.
 
 ### T1. Refine after look-back, sims (full tier, 14 sims; diff = `COMBO+R` - `COMBO`, 95 % CI)
 
@@ -275,9 +276,10 @@ budget per frame, the sims have smaller overlap clusters than the workshop recor
 Drain wall in qc_eval (static_s5 / motion_s5): 23.8 / 46.8 s at 16 frames per step, 22.7 / 50.2 s at 64; qc_eval has no
 message round trip, so its drain wall says nothing about the app's.
 
-**Verdict T5: go for 16 frames per step, with a condition.** Overall quality is unchanged and steps fall 8 x, but the
-late-born bite rows get worse as steps fall (one row at 16, two at 64; few cell pairs). The visits that come with
-the steps do part of the drain's work, so the app should batch the frames and keep the number of visit rounds.
+**Verdict T5: not met as tested.** The rule asked for the birth-time rows within noise, and a late-born bite row is
+flagged worse at 16 frames per step (two at 64); few cell pairs carry those rows. Everything else passes and steps fall
+8 x. In this test the visit rounds fell together with the steps, so it cannot say whether batching the frames while
+keeping the visit rounds would be clean. That variant was not run and is the one to test.
 
 ### Decision
 
@@ -305,3 +307,28 @@ against `COMBO` and `COMBO+R` from the full-tier runs.
   close-pair) and its gain over `COMBO` is at least 0.002 on all cells with a CI that excludes 0.
 - Not supported when its gain over `COMBO` is under 0.001 on all cells.
 - Reported: born-late rows, headline, bites, and `COMBO-SA4800` (does half the frames do).
+
+### Result (quick tier, 5 sims; binary `qc_eval-lbreview-b`, run tree `$CALA_DATA/demix-suite/lbreview-sa`)
+
+| metric                        | COMBO        | COMBO-SA4800 | COMBO-SA9600 | COMBO+R      | SA9600 - COMBO            | SA9600 - COMBO+R           |
+| ----------------------------- | ------------ | ------------ | ------------ | ------------ | ------------------------- | -------------------------- |
+| footprint r, all              | 0.9911       | 0.9919       | 0.9923       | 0.9935       | +0.0013 [0.0005, 0.0021]  | -0.0011 [-0.0018, -0.0005] |
+| footprint r, isolated         | 0.9901       | 0.9908       | 0.9914       | 0.9923       | +0.0013 [-0.0012, 0.0038] | -0.0009 [-0.0033, 0.0006]  |
+| footprint r, close-pair       | 0.9911       | 0.9920       | 0.9923       | 0.9937       | +0.0012 [0.0001, 0.0025]  | -0.0013 [-0.0024, -0.0006] |
+| footprint r, born second half | 0.9556       | 0.9635       | 0.9656       | 0.9825       | +0.0100 [0.0004, 0.0241]  | -0.0169 [-0.0246, -0.0058] |
+| footprint r, born last 20 %   | 0.9205       | 0.9385       | 0.9288       | 0.9729       | +0.0083 [-0.051, 0.061]   | -0.0441 [-0.1016, -0.0035] |
+| crosstalk headline            | +0.072       | +0.073       | +0.076       | +0.059       | +0.003 [-0.019, 0.019]    | +0.017 [-0.007, 0.032]     |
+| bite share < 0.5, 0.75-1 D    | 0.253        | 0.234        | 0.221        | 0.146        | -0.032 [-0.085, 0.021]    | +0.075 [0.027, 0.122]      |
+| matched / false               | 348.8 / 11.0 | 349.0 / 10.8 | 348.6 / 11.2 | 349.2 / 10.6 | within noise              | within noise               |
+
+Cost on static_s5: the settle-all phase raises the drain from 4761 to 14,361 frames (9561 at every second frame);
+pass-loop wall 303 s (`COMBO`), 367 s (SA4800), 400 s (SA9600), against 324 + 198 = 522 s for `COMBO+R` (walls from
+different sessions, so approximate).
+
+**Verdict: partly supported.** Feeding every frame to every cell through the look-back path, cell set frozen and clock
+advancing, gains +0.0013 on all cells (between the 0.001 and 0.002 lines), about 40 % of what the Refine pass adds, and
+stays 0.0011 below `COMBO+R`, with the late-born cells and the bites far from it. Half the frames give about two thirds
+of that gain. So frames for all cells with the final cell set are part of what Refine adds, not all of it. What the
+look-back path leaves out, and a Refine pass has, is not yet separated: the reservoir of residual frames that
+reservoir-based refines read, one slow-loop step per frame batch at the full work budget (this arm ran one step per 2
+frames, about half the visit work), and the ordinary `observe` path. Those are the next ablations.
