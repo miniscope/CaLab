@@ -199,10 +199,10 @@ All met. One flag new against COMBO: share r < 0.9 among cells born in the secon
 
 ### Other checks
 
-- **Byte identity.** The PR build (rebased onto #431) with no new flags: `footprints.bin`, `dump_trace.f32` and
-  `final.tsv` identical to `combo-full/COMBO` (static_s5, COMBO flags) and `combo-full/DR-main` (pairs_s5, default
-  flags). With `--lookback-cache 3072 --lookback-skip-heldout` it reproduces this run's `COMBO-cs` static_s5 byte for
-  byte, so the measured numbers stand for the PR code.
+- **Byte identity.** The PR build (rebased onto #431, #432 and #433) with no new flags: `footprints.bin`,
+  `dump_trace.f32` and `final.tsv` identical to `combo-full/COMBO` (static_s5 and pairs_s5, COMBO flags) and
+  `combo-full/DR-main` (pairs_s5, default flags). With `--lookback-cache 3072 --lookback-skip-heldout` it reproduces
+  this run's `COMBO-cs` on static_s5 and motion_s5 byte for byte, so the measured numbers stand for the PR code.
 - **Tried and dropped.** Marking due only the tiles of cells the drain fed (instead of every tile every 64 drain
   steps) saved nothing on motion_s5 as implemented (drain visits 28.6 s either way; the final mark-all and 256 steps were
   kept). A 2048-frame cache (motion_s5 only) gave 444 s / 11.87 T against 428 s / 11.47 T for 3072, with a 2.96 GB
