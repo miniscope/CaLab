@@ -12,24 +12,37 @@ Arms per recording: `raw` (the file pipeline with Refine replays on the raw fram
 
 ## Summary
 
-| recording | gate A1 | failing rule                      | QC-pass cells (lost) | iterations, stop | footprint loss | largest null footprint loss |
-| --------- | ------- | --------------------------------- | -------------------- | ---------------- | -------------- | --------------------------- |
-| wl200     | pass    | -                                 | 63 (0)               | 6, settled       | 0.0113         | 0.00025                     |
-| wl24_01   | fail    | 2 footprints: 0.0345 against 0.02 | 58 (0)               | 20, cap          | 0.0345         | 0.00167                     |
-| wl24_04   | fail    | 2 footprints: 0.0389 against 0.02 | 40 (0)               | 19, settled      | 0.0389         | 0.00159                     |
-| plain     | pass    | -                                 | 142 (0)              | 4, settled       | 0.0009         | 0.00022                     |
-| v4        | pass    | -                                 | 202 (0)              | 5, settled       | 0.0189         | 0.00549                     |
-| motion    | pass    | -                                 | 178 (0)              | 20, cap          | 0.0177         | 0.00632                     |
+| recording | gate A1 | failing rule                      | QC-pass cells (lost) | iterations, stop | footprint loss against raw | largest null footprint loss |
+| --------- | ------- | --------------------------------- | -------------------- | ---------------- | -------------------------- | --------------------------- |
+| wl200     | pass    | -                                 | 63 (0)               | 6, settled       | 0.0113                     | 0.00025                     |
+| wl24_01   | fail    | 2 footprints: 0.0345 against 0.02 | 58 (0)               | 20, cap          | 0.0345                     | 0.00167                     |
+| wl24_04   | fail    | 2 footprints: 0.0389 against 0.02 | 40 (0)               | 19, settled      | 0.0389                     | 0.00159                     |
+| plain     | pass    | -                                 | 142 (0)              | 4, settled       | 0.0009                     | 0.00022                     |
+| v4        | pass    | -                                 | 202 (0)              | 5, settled       | 0.0189                     | 0.00549                     |
+| motion    | pass    | -                                 | 178 (0)              | 20, cap          | 0.0177                     | 0.00632                     |
 
-`f_chosen` passes gate A1 on four recordings and fails rule 2 (footprints) on the two WL24 recordings: loss 0.0345 and 0.0389 against 0.02, with no QC-pass cell lost and trace loss and tile lines passing. On those two the loss is 21 and 24 times the largest null loss and 4 and 5 times phase 1's `chosen` (the frame replay on the same kind of factors), and it does not fall with further iterations, so an earlier stop would not pass either. `v4` and `motion` pass with 0.0189 and 0.0177, which is 0.0011 and 0.0023 under the limit and less than their null spread (0.0055 and 0.0063). The reference is not a settled raw Refine: on its last pass between 4 and 41 percent of its cells still changed by the phase's own measure, so the spec's gate "against a settled raw Refine" is met only approximately. The footprints settled on four recordings (4 to 19 iterations); two stopped at the cap of 20, each with one cell more changed than the rule allows (3 against 2; 6 against 5). Phase 3b is not built, and the gate with the joint flags on was not run.
+"Footprint loss against raw" is 1 minus the median footprint cosine between the arm's library and the final `raw` library, over the QC-pass cells; the limit of rule 2 is 0.02. The null column is the largest such loss of a null run (`raw` at another budget): a same-algorithm baseline that gives the scale of the raw pipeline's own run-to-run variation, not a significance test.
+
+**Where it passes and fails.** `f_chosen` passes gate A1 on `wl200`, `plain`, `v4` and `motion`. It fails rule 2 on `wl24_01` (0.0345) and `wl24_04` (0.0389), with no QC-pass cell lost and with trace loss and tile lines passing there.
+
+**`wl200` passes on the truth rule only.** Its trace loss is 0.1082, which would fail rule 3 (0.08). Rule 3 does not apply because the truth is usable: 22 QC-pass cells match a truth unit (20 needed) and the reference's median truth correlation is 0.813 (0.8 needed).
+
+**The WL24 failures are not the reference's own movement.** The raw reference's last step (the loss between its last two passes) is 0.0022 and 0.0030, under a tenth of 0.0345 and 0.0389. On the WL24 pair the loss against `raw` falls in the first iterations (`wl24_01`: 0.0698 for Discover's library, 0.0419 after iteration 1) and then plateaus above 0.02: 0.0334 to 0.0362 from iteration 3 on `wl24_01`, 0.0388 to 0.0441 from iteration 5 on `wl24_04`. More iterations did not bring it to the limit.
+
+**The passes on `v4` and `motion` are not robust.** `v4` passes with 0.0189: its margin (0.0011) is smaller than its null spread (0.0055). `motion` passes with 0.0177: its margin (0.0023) is smaller than the reference's own last step (0.0059).
+
+**Against the truth, where one exists** (`wl200`, `plain`, `motion`; none exists for the WL24 recordings). The library median of the truth footprint correlation at the stop is at or above the last raw pass (+0.0072, +0.0003, +0.0020). The paired per-cell measure (factor arm minus `raw`, same cell) has a median of 0.0000 on `wl200` and `plain` and -0.0009 on `motion`, and a worse 5th percentile on `wl200` (-0.0549) and `motion` (-0.0885) than on `plain` (-0.0118).
+
+**The reference is not a settled raw Refine** (5 replays at 200 px, 2 at 600 px; on its last pass 4 to 41 percent of its cells still changed), so the spec's gate is met only approximately. The footprints settled on four recordings (4 to 19 iterations; `wl24_04` by one step, after shares of 0.03 to 0.09 over iterations 10 to 18); two stopped at the cap of 20, each with one cell more changed than the rule allows (3 against 2; 6 against 5). Phase 3b is not built, and the gate with the joint flags on was not run.
 
 Decision: open, for the owner. The owner must decide:
 
-- **Whether Refine on factors is good enough to go on to 3b and the app,** given that it fails rule 2 on both WL24 recordings and passes `v4` and `motion` inside their null spread. The data: the table above, "Where the footprint loss sits" and "Settling".
-- **Whether the gate is to be run again against a raw Refine that has settled** (more raw passes; one raw Refine replay took 43 to 119 s of wall under this run's load, see "Cost"), before the verdict on the WL24 recordings is taken as final.
+- **Whether Refine on factors is good enough to go on to 3b and the app,** given that it fails rule 2 on both WL24 recordings by a plateau that more iterations did not move, and that its passes on `v4` and `motion` are not robust. The data: the table above, "Where the footprint loss sits" and "Settling".
+- **Which difference between the factor Refine's algorithm and the raw Refine's to isolate first.** The gate cannot be met on the WL24 recordings by iterating longer. The candidates are listed under "What the baselines are" (no forgetting, fixed noise map and library per iteration, every cell on the statistics path, held-out patches chosen and stored differently); an arm that applies the raw Refine's forgetting to the factor statistics, or a raw Refine without forgetting, would test the first. No arm isolates any of them.
+- **Whether the gate is to be run again against a raw Refine that has settled** (more raw passes; one raw Refine replay took 43 to 119 s of wall under this run's load, see "Cost"). It would firm up the two marginal passes (`v4`, `motion`); it would not change the WL24 failures, since the reference's last step there is under a tenth of the loss.
 - **The settle thresholds or the cap,** with the per-iteration evidence of "Settling": the share and loss by iteration, and what a share limit of 0.03 or 0.05 would have stopped at. The tool does not run non-default thresholds (it refuses those flags in `--extra`).
 - **The rotating held-out split** (below): keep parity with the raw route, or fix the split on both routes.
-- **The departures from the spec** (section "What differs from the spec"), each marked "for the owner".
+- **The departures from the spec** (section "What differs from the spec", now including "no forgetting"), each marked "for the owner".
 
 ## Gate (3a, joint flags off)
 
@@ -61,7 +74,7 @@ What they do not show:
 
 Every row: no QC-pass cell lost. The truth rule applies on `wl200` and `plain` only: `motion` has truth, but its match is not usable (92 cells, median 0.403, 0.8 needed), so rule 3 applies there; `wl24_01`, `wl24_04` and `v4` have no truth. On `wl200` the trace loss (0.1082) is above 0.08; rule 3 does not apply there because the truth is usable (phase 1's `chosen`: 0.1039). The footprint loss recomputed from `footprints.bin` equals the tool's value on all six.
 
-The footprint and trace losses beside the null spread (the largest loss of a null run against `raw`: how much the raw pipeline itself varies between budgets) and beside phase 1's `chosen` (the frame replay on factors, same reference: the raw and null arms of this run reproduce phase 1's null losses and jump to the printed digits on all six recordings):
+The footprint and trace losses beside two baselines. Both run the same raw Refine algorithm as `raw`: the null runs (`raw` at half and twice the slow-loop budget; "null spread" is the largest loss of a null run against `raw`) and phase 1's `chosen` (the raw Refine code on frames rebuilt from the factors). They sit near `raw` by construction, so the ratios below give scale, not significance. The `raw` and `null_lo` footprint files of this run are the same bytes as phase 1's on all six recordings (checked), so the numbers share one reference:
 
 | recording | `f_chosen` footprint loss | largest null footprint loss | phase 1 `chosen` footprint loss | `f_chosen` / null | `f_chosen` trace loss (lag 1) | largest null trace loss | phase 1 `chosen` trace loss | footprint loss, percent of the 0.02 limit |
 | --------- | ------------------------- | --------------------------- | ------------------------------- | ----------------- | ----------------------------- | ----------------------- | --------------------------- | ----------------------------------------- |
@@ -74,12 +87,20 @@ The footprint and trace losses beside the null spread (the largest loss of a nul
 
 What the table shows:
 
-- **WL24: the factor Refine's footprint loss is larger than the null spread and than `chosen`'s.** `wl24_01` 0.0345 against a null spread of 0.0017 and 0.0086 for `chosen`; `wl24_04` 0.0389 against 0.0016 and 0.0072. The trace losses are also above `chosen`'s (0.0611 against 0.0441; 0.0570 against 0.0487) and pass rule 3.
-- **`wl200`** is also above `chosen`'s (0.0113 against 0.0052) and passes with 57 percent of the limit.
-- **`v4` and `motion` pass close to the limit:** 0.0189 is 95 percent of 0.02 and 0.0177 is 88 percent. The margin (0.0011 and 0.0023) is less than the null spread (0.0055 and 0.0063), so on these two the verdict is not robust to run-to-run variation of the reference (inferred from the null spread). On `motion` the loss lay at 0.0198 and 0.0197 in iterations 12 and 13 (table "Loss against `raw` by iteration" below) and the run could have ended there.
-- On `plain` the loss (0.0009) is 4 times the null spread and far below the limit.
+- **WL24, scale:** the factor Refine's footprint loss is 0.0345 and 0.0389, against null spreads of 0.0017 and 0.0016 and phase 1 `chosen` losses of 0.0086 and 0.0072 (about 21 and 24 times the null spread, 4 and 5 times `chosen`). The trace losses are also above `chosen`'s (0.0611 against 0.0441; 0.0570 against 0.0487) and pass rule 3.
+- **`wl200`:** 0.0113 against 0.0052 for `chosen`; it passes with 57 percent of the limit.
+- **`v4` and `motion` pass close to the limit:** 0.0189 is 95 percent of 0.02 and 0.0177 is 88 percent. The margin (0.0011 and 0.0023) is less than the null spread (0.0055 and 0.0063) and, on `motion`, less than the reference's own last step (0.0059). On `motion` the stop rule could not have ended the run at iterations 12 or 13 (5 cells are allowed to change; 10 and 13 changed), but a manual stop there would have passed with losses of 0.0198 and 0.0197.
+- **`plain`:** 0.0009, 4 times the null spread, far below the limit.
 
-No arm isolates why the WL24 loss is larger than `chosen`'s: the two differ in the route (statistics and gate on factors, against Refine replays on rebuilt frames), in the number of passes (a settled run of 19 or 20 iterations against 4 or 5 replays), and in the library each starts from.
+### What the baselines are not
+
+The factor Refine differs from the raw Refine in its algorithm, not only in its route. Each difference below is an untested candidate cause of the WL24 plateau; no arm isolates any of them.
+
+- **No forgetting.** Every fitting frame has weight 1 in the footprint statistics; the raw Refine forgets with a half-life (an infinite half-life is what the frame route's equality test uses).
+- **A fixed noise map and a fixed library per iteration.** The noise map is set once after the compression replay (a raw pass refreshes it every 200 frames); the library does not change inside an iteration.
+- **Every cell on the statistics path.** The reservoir path for young cells is not used.
+- **Held-out patches chosen and stored differently:** by trace activity plus a hash, rebuilt from the factors, stored quantised (see "What differs from the spec").
+- Also the route (factors), the number of passes (19 or 20 iterations against 4 or 5 replays) and the library each starts from.
 
 ### Where the footprint loss sits
 
@@ -93,7 +114,7 @@ No arm isolates why the WL24 loss is larger than `chosen`'s: the two differ in t
 | motion    | 0.01768                               | 0.01768            | null_lo 0.00632                  | 0.112                                        | 0.0176 (143 cells) / 0.0205 (35 cells)  |
 
 - On `wl24_01` 28 percent of the QC-pass cells (16 of 58) and on `wl24_04` 18 percent (7 of 40) have a footprint cosine to `raw` below 0.9, against 1 to 2 percent on `wl200` and `plain`. The loss is a tail of cells, not a shift of all.
-- Near or far from a tile line (8 px): no difference on `wl24_01` (0.0356 against 0.0334); on `wl24_04` the loss is larger near lines (0.0483 against 0.0175, over 30 and 10 cells).
+- Near or far from a tile line (8 px): no difference on `wl24_01` (0.0356 against 0.0334); on `wl24_04` the loss is larger near lines (0.0483 against 0.0175), but the group away from lines is 10 cells, so this is thin.
 - `low_valid` (below) counts 3 cells on each WL24 recording: too few to move a median over 58 and 40 cells (inferred).
 
 ### (c) The reference is not a settled raw Refine
@@ -130,19 +151,20 @@ At these cell counts the rule lets 1 cell change on `wl200` (72 cells) and `wl24
 
 What the changed share did at the end of the runs that hit the cap:
 
-- **`wl24_01`:** a slow fall with plateaus, not an oscillation. The last five shares are 0.049, 0.039, 0.039, 0.039, 0.029. Over iterations 12 to 20, 23 distinct cells changed (52 changes, 12 cells in two or more iterations), and 4 of the 42 changes put the cell back within 0.99 of its state two iterations before.
-- **`motion`:** a plateau at 0.02 to 0.05 from iteration 10 on, with ups and downs (0.046, 0.046, 0.038, 0.050, 0.046, 0.046, 0.042, 0.031, 0.034, 0.038, 0.023 for iterations 10 to 20). Over iterations 12 to 20, 41 distinct cells changed (91 changes, 16 cells in two or more), and 9 of the 81 changes returned to within 0.99 of the state two before.
+- **`wl24_04` (settled, for comparison):** shares of 0.03 to 0.09 over iterations 10 to 18, then 0.031, 0.031 and 0.000 at iteration 19: it settled by one step and is close to the capped runs.
+- **`wl24_01`:** a slow fall with plateaus, not an oscillation. The last five shares are 0.049, 0.039, 0.039, 0.039, 0.029. Over iterations 12 to 20, 23 distinct cells changed (52 changes, 12 cells in two or more iterations), and 5 of the 52 changes put the cell back within 0.99 of its state two iterations before. The cells that change are not the same each iteration: only cell 81 changed in all of the last three iterations.
+- **`motion`:** a plateau at 0.02 to 0.05 from iteration 10 on, with ups and downs (0.046, 0.046, 0.038, 0.050, 0.046, 0.046, 0.042, 0.031, 0.034, 0.038, 0.023 for iterations 10 to 20). Over iterations 12 to 20, 41 distinct cells changed (91 changes, 16 cells in two or more), and 9 of the 91 changes returned to within 0.99 of the state two before. Four cells (21, 75, 84, 176) changed in all of the last three iterations.
 
 | recording | iterations | cell changes (r below 0.99 to the iteration before) | distinct cells that changed | cells that changed in two or more of them | changes that are back within 0.99 of the iteration two before |
 | --------- | ---------- | --------------------------------------------------- | --------------------------- | ----------------------------------------- | ------------------------------------------------------------- |
 | wl200     | 2 to 6     | 13                                                  | 12                          | 1                                         | 0 of 11                                                       |
-| wl24_01   | 12 to 20   | 52                                                  | 23                          | 12                                        | 4 of 42                                                       |
-| wl24_04   | 11 to 19   | 28                                                  | 17                          | 5                                         | 1 of 23                                                       |
+| wl24_01   | 12 to 20   | 52                                                  | 23                          | 12                                        | 5 of 52                                                       |
+| wl24_04   | 11 to 19   | 28                                                  | 17                          | 5                                         | 1 of 28                                                       |
 | plain     | 2 to 4     | 32                                                  | 29                          | 3                                         | 0 of 12                                                       |
 | v4        | 2 to 5     | 81                                                  | 68                          | 11                                        | 1 of 42                                                       |
-| motion    | 12 to 20   | 91                                                  | 41                          | 16                                        | 9 of 81                                                       |
+| motion    | 12 to 20   | 91                                                  | 41                          | 16                                        | 9 of 91                                                       |
 
-So a small set of cells keeps moving; only a minority of its moves are a swing back and forth (inferred: slow drift of those cells rather than a two-state oscillation).
+(For runs of 10 iterations or fewer the first iteration has no iteration two before, so its changes are in the third column but not in the last column's denominator.) A small set of cells keeps moving; only a minority of its moves are a swing back and forth (inferred: slow drift of those cells rather than a two-state oscillation).
 
 ### Loss against `raw` by iteration: does more settling help?
 
@@ -183,7 +205,15 @@ Truth footprint r (median over all cells; each cell is compared with the truth u
 | plain     | 0.9712                      | 0.9896          | 0.9862                 | 0.9899                 | 0.9899 (iteration 4) | +0.0037                | +0.0003                                      |
 | motion    | 0.9402                      | 0.9325          | 0.9306                 | 0.9345                 | 0.9347 (iteration 4) | +0.0039                | +0.0020                                      |
 
-`f_chosen` at the stop is at or above the last raw pass on all three (+0.0072, +0.0003, +0.0020), so a footprint loss against `raw` of 0.0113 on `wl200` does not mean a worse footprint against the truth (inferred: the median of this measure is over all cells, not the QC-pass cells). After iteration 1 the truth r changes by at most 0.0039 on these three, and by 0.0002 in the last iteration of `plain`. On `wl200` and on `motion` it is flat or moves up and down by under 0.005 from iteration 3 or 4 on, up to the cap on `motion` (0.9304 to 0.9347). On these three recordings nothing shows accuracy still rising after the stop, so nothing says the thresholds (0.99, 0.02) are too loose. Nothing is known for the WL24 recordings (no truth). The runs stop at the rule, so none shows what iterations past the stop would do on `plain` or `v4`.
+That is the library median: at the stop `f_chosen` is at or above the last raw pass on all three (+0.0072, +0.0003, +0.0020). It is not the paired per-cell measure of the gate's report (truth footprint correlation, test minus reference, same cell, over the cells whose truth unit is found):
+
+| recording | cells | median, `f_chosen` minus `raw` | 5th percentile |
+| --------- | ----- | ------------------------------ | -------------- |
+| wl200     | 25    | 0.0000                         | -0.0549        |
+| plain     | 180   | 0.0000                         | -0.0118        |
+| motion    | 145   | -0.0009                        | -0.0885        |
+
+On the paired measure the median change is about 0 (not +0.0072 on `wl200`), and the lower tail is worse on `wl200` and `motion` than on `plain`. So a loss against `raw` is not shown to be harmless against the truth, nor to be harmful: the library median is at or above raw's, the tail of cells is worse. No truth exists for the WL24 recordings, where the failures are. After iteration 1 the truth r (library median) changes by at most 0.0041 on these three (`motion`: highest minus iteration 1), and by 0.0002 in the last iteration of `plain`. On `wl200` and on `motion` it is flat or moves up and down by under 0.005 from iteration 3 or 4 on, up to the cap on `motion` (0.9304 to 0.9347). On these three recordings nothing shows accuracy still rising after the stop, so nothing says the thresholds (0.99, 0.02) are too loose. Nothing is known for the WL24 recordings (no truth). The runs stop at the rule, so none shows what iterations past the stop would do on `plain` or `v4`.
 
 ### Per-iteration tables
 
@@ -402,7 +432,8 @@ Each point is a decision made in the plan or in a review ruling. All are for the
 - **The settle measure.** The spec does not define "correlates below 0.99": it is the Pearson correlation of the unfiltered footprints over the union of both supports (a pixel outside a support counts 0), per cell by id, and a cell in only one library counts as changed. For the owner.
 - **Pixels with few valid samples.** A pixel with a valid share below 0.1 in a window is left out of that window's statistics (as a pixel missing in every frame is on the frame route); from 0.1 to 1 the window mean enters as data. Spec 1 and A8 say the second part differently for the cluster replay (3b). For the owner.
 - **Reference.** The spec says a raw Refine repeated until settled (5 passes); this run has 5 passes at 200 px and 2 at 600 px, not settled (see 1(c)). Only the default settle thresholds were run (the tool refuses the settle flags in `--extra`), although the spec says they are "checked in phase 3". For the owner.
-- **The statistics path for every cell** and **the noise map fixed once** after the compression replay (a raw pass refreshes it every 200 frames) are as the plan's design notes say; the first is in the spec's list of differences.
+- **No forgetting.** The factor iteration weights every fitting frame 1 in the footprint statistics (the library is fixed within an iteration, so the spec says the statistics need no half-life); the raw Refine forgets with a half-life. The spec lists the missing half-life as a difference "to be measured"; it was not measured separately, and it is a candidate cause of the WL24 plateau. For the owner.
+- **The statistics path for every cell** (the spec lists it) and **the noise map fixed once** after the compression replay (a raw pass refreshes it every 200 frames) are as the plan's design notes say.
 
 ## How it was measured
 
