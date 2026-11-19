@@ -22,6 +22,12 @@ Arms (each a `qc_eval real` run in `DIR/<arm>`; pass 1 is the same in all):
 - `c_chosen`: as `chosen`, with the Extract pass solved by the factor engine (arm C).
 - `x_raw` and `x_<tiling>`: Discover and the Extract pass only, so the two
   Extracts solve with one and the same library.
+- Phase 3, not in the default set:
+  - `f_chosen`: Discover, a compression replay (pass 2: offset grids, recalibrated), Refine
+    on factors until the footprints settle, the Extract pass on the factor engine. The report
+    compares it with `raw` by cell id (the same Discover) and adds settle and iteration tables.
+  - `f_null`: `f_chosen` with twice the slow-loop budget after Discover; its footprints must
+    be the same bytes.
 - Phase 4a, not in the default set:
   - `live`: Discover's own factors (pass 1, offset grids) feed the refine replays
     (rebuilt frames) and the Extract pass (factor engine); no factor comes from a replay.
@@ -117,6 +123,9 @@ LIVE_ARMS: tuple[str, ...] = (
 )
 # Arms that read the flat field the run `seed` ended with.
 SEEDED: tuple[str, ...] = ("raw_seed", "live_seed")
+# The arms of phase 3 (Refine on factors); run when named, so that runs started without
+# `--arms` keep their set.
+FACTOR_REFINE_ARMS: tuple[str, ...] = ("f_chosen", "f_null")
 
 
 def arms(
@@ -143,6 +152,17 @@ def arms(
     out["plain_recal"] = out["plain"] + ["--factors-pass", "2"]
     out["chosen"] = out["offset"] + ["--factors-pass", "2"]
     out["c_chosen"] = out["chosen"] + ["--extract-engine", "factors"]
+    # Phase 3: pass 2 only compresses; Refine on factors then runs until the footprints
+    # settle. The harness wants exactly two passes, so `refine` does not count here.
+    out["f_chosen"] = [
+        *["--passes", "2", "--later-passes", "refine", "--extract-pass"],
+        *["--replay-source", "factors", "--tiling", "offset"],
+        *["--factors-pass", "2", "--extract-engine", "factors"],
+        *["--refine-engine", "factors"],
+    ]
+    # With another slow-loop budget after Discover: Refine on factors has none, so its
+    # footprints must be byte-identical (the result does not depend on the machine's speed).
+    out["f_null"] = out["f_chosen"] + ["--later-budget", str(budget * 2)]
     for name, cut in REMEDIES.items():
         out[name] = out["plain_recal"] + cut
     out["live"] = out["offset"] + ["--extract-engine", "factors"]
@@ -163,8 +183,12 @@ def arms(
 
 
 def default_arms(table: dict[str, list[str]]) -> list[str]:
-    """The arms run without `--arms`: all but the remedy arms and the arms of phase 4a."""
-    return [n for n in table if n not in REMEDIES and n not in LIVE_ARMS]
+    """The arms run without `--arms`: all but the remedy arms and the arms of phases 4a and 3."""
+    return [
+        n
+        for n in table
+        if n not in REMEDIES and n not in LIVE_ARMS and n not in FACTOR_REFINE_ARMS
+    ]
 
 
 def line_step(flags: list[str]) -> int:
@@ -189,7 +213,11 @@ def command(
 ) -> list[str]:
     """The `qc_eval` command of an arm; `extra` flags end it (the same for every arm of a run)."""
     cmd = [str(qc_eval), "real", str(rec), str(run), *flags]
-    if "--replay-source" in flags or "--lookback-source" in flags:
+    if (
+        "--replay-source" in flags
+        or "--lookback-source" in flags
+        or "--refine-engine" in flags
+    ):
         cmd += ["--factors-out", str(run / "factors")]
     if motion:
         cmd.append("--motion")
@@ -278,6 +306,58 @@ def extract_row(run: Path) -> tuple[str, float, float, float] | None:
                 float(r["wall_s"]),
             )
     return None
+
+
+STOP_REASONS: tuple[str, ...] = ("settled", "nothing_accepted", "cap")
+
+
+def iteration_table(run: Path) -> list[str]:
+    """Markdown rows of a Refine-on-factors run's `iterations.tsv`; one line saying why when the
+    run has none (a raw arm) or it is empty. The last row's `settled` field is the stop reason."""
+    path = run / "iterations.tsv"
+    if not path.exists():
+        return [f"Refine on factors, `{run.name}`: n/a (no `iterations.tsv`).", ""]
+    rows = factor_closeness.read_tsv(path)
+    if not rows:
+        return [
+            f"Refine on factors, `{run.name}`: no iterations in `iterations.tsv`.",
+            "",
+        ]
+    keys = [
+        "iteration",
+        "cells",
+        "accepted",
+        "changed_share",
+        "median_change",
+        "low_valid",
+        "tiles_skipped",
+        "wall_s",
+        "settled",
+    ]
+    out = [
+        f"Refine on factors, `{run.name}`:",
+        "",
+        "| iteration | cells | accepted | changed share | median change | low valid | tiles skipped | wall s | settled |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    out += ["| " + " | ".join(r.get(k, "n/a") for k in keys) + " |" for r in rows]
+    stop = rows[-1].get("settled", "")
+    return out + (["", f"Stopped: {stop}.", ""] if stop in STOP_REASONS else [""])
+
+
+def f_null_line(out_dir: Path) -> list[str]:
+    """Whether `f_null` ended with the footprints of `f_chosen` byte for byte."""
+    a, b = (out_dir / n / "footprints.bin" for n in ("f_chosen", "f_null"))
+    if not (a.exists() and b.exists()):
+        return [
+            "`f_null` and `f_chosen` have the same footprints: n/a (a `footprints.bin` is missing).",
+            "",
+        ]
+    same = a.read_bytes() == b.read_bytes()
+    return [
+        f"`f_null` (another slow-loop budget after Discover) has the footprints of `f_chosen`: {'yes' if same else 'no'}.",
+        "",
+    ]
 
 
 def flat_maps(run: Path) -> list[dict[str, str]] | None:
@@ -429,7 +509,7 @@ def report(
             f"| {n} | {rec['wall_s']:.0f} | {'n/a' if rss is None else f'{rss:.0f}'} |"
         )
     text.append("")
-    for n in ("raw", "plain"):
+    for n in ("raw", "plain", "f_chosen"):
         if n in have:
             text += stage_table(out_dir / n)
     costs = [c for c in (cost_row(out_dir / n) for n in have) if c]
@@ -444,7 +524,7 @@ def report(
     for n in have:
         if (
             n in TILINGS
-            or n in ("plain_recal", "chosen", "c_chosen", "live")
+            or n in ("plain_recal", "chosen", "c_chosen", "live", "f_chosen")
             or n in REMEDIES
         ):
             if "raw" in have:
@@ -525,6 +605,14 @@ def report(
             "Preparing: projectors built (factor engine), or frames preprocessed (frame engine).",
             "",
         ]
+    if "f_chosen" in have:
+        # The raw arm is the reference: the same Discover, so cells are paired by id.
+        for n in ("raw", "f_chosen"):
+            if n in have:
+                text += factor_closeness.settle_table(out_dir / n, truth)
+        text += iteration_table(out_dir / "f_chosen")
+        if "f_null" in have:
+            text += f_null_line(out_dir)
     if "seed" in have:
         line = seed_line(out_dir / "seed")
         if line:

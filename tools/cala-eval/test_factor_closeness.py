@@ -655,5 +655,131 @@ class EngineReport(unittest.TestCase):
             self.assertIn("never present in a window is stored as 0", text)
 
 
+def write_fp(path: Path, cells: dict[int, tuple[list[int], list[float]]]) -> None:
+    h, w = DIMS
+    with open(path, "wb") as f:
+        f.write(b"CALAFP01" + struct.pack("<III", h, w, len(cells)))
+        for cid, (pix, val) in cells.items():
+            f.write(struct.pack("<II", cid, len(pix)))
+            f.write(np.asarray(pix, "<u4").tobytes())
+            f.write(np.asarray(val, "<f4").tobytes())
+            f.write(np.asarray(val, "<f4").tobytes())
+
+
+A_FP = (np.array([1, 2, 3]), np.array([1.0, 3.0, 1.0]))
+# Shifted by one pixel: over the union 1..4 the two are [1,3,1,0] and [0,1,3,1], means 1.25,
+# deviations [-.25,1.75,-.25,-1.25] and [-1.25,-.25,1.75,-.25]; the cross sum is -0.25 and
+# each sum of squares 4.75, so r = -0.25 / 4.75 = -1/19.
+B_FP = (np.array([2, 3, 4]), np.array([1.0, 3.0, 1.0]))
+
+
+class Settle(unittest.TestCase):
+    def test_footprint_change_is_a_correlation_over_both_supports(self) -> None:
+        self.assertEqual(F.footprint_change(A_FP, A_FP), 1.0)
+        self.assertAlmostEqual(F.footprint_change(A_FP, (A_FP[0], 2 * A_FP[1])), 1.0)
+        self.assertAlmostEqual(F.footprint_change(A_FP, B_FP), -1 / 19)
+        self.assertAlmostEqual(F.footprint_change(B_FP, A_FP), -1 / 19)
+
+    def test_footprint_change_edge_cases_are_the_librarys(self) -> None:
+        empty = (np.zeros(0, dtype=np.int64), np.zeros(0))
+        self.assertEqual(F.footprint_change(empty, empty), 1.0)
+        # One side zero over the union, the other not: no variance on one side.
+        self.assertTrue(math.isnan(F.footprint_change(empty, A_FP)))
+        flat2 = (np.array([5, 6]), np.array([2.0, 2.0]))
+        flat3 = (np.array([5, 6]), np.array([3.0, 3.0]))
+        self.assertTrue(math.isnan(F.footprint_change(flat2, flat3)))
+        self.assertEqual(F.footprint_change(flat2, flat2), 1.0)
+
+    def test_changed_share_counts_a_cell_of_one_side_as_changed(self) -> None:
+        # Ids 1..4: r = 1, -1/19, and no partner for 3 and 4 (NaN, counted as changed).
+        share, med, n = F.changed_share(
+            {1: A_FP, 2: A_FP, 3: A_FP}, {1: A_FP, 2: B_FP, 4: A_FP}
+        )
+        self.assertEqual(n, 4)
+        self.assertAlmostEqual(share, 0.75)
+        # Median of 1 - r over the finite ones [0, 20/19], the upper of the two as the library takes.
+        self.assertAlmostEqual(med, 20 / 19)
+        self.assertEqual(F.changed_share({}, {}), (0.0, 0.0, 0))
+        same = F.changed_share({1: A_FP}, {1: A_FP})
+        self.assertEqual(same, (0.0, 0.0, 1))
+        _, med_nan, _ = F.changed_share({1: A_FP}, {})
+        self.assertTrue(math.isnan(med_nan))
+
+    def test_changed_share_threshold_is_the_corr_argument(self) -> None:
+        near = (A_FP[0], A_FP[1] + np.array([0.0, 0.0, 0.05]))
+        r = F.footprint_change(A_FP, near)
+        self.assertLess(r, 1.0)
+        self.assertEqual(F.changed_share({1: A_FP}, {1: near}, corr=r - 1e-3)[0], 0.0)
+        self.assertEqual(F.changed_share({1: A_FP}, {1: near}, corr=r + 1e-3)[0], 1.0)
+
+    def test_library_steps_order_and_missing_iterations(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d) / "f_chosen"
+            run.mkdir()
+            cell = ([10, 11, 12], [1.0, 3.0, 1.0])
+            write_fp(run / "footprints_pass2.bin", {1: cell})
+            write_fp(run / "footprints_pass1.bin", {1: cell})
+            write_fp(run / "footprints_iter10.bin", {1: cell})
+            write_fp(run / "footprints_iter2.bin", {1: cell})
+            self.assertEqual(
+                [s for s, _ in F.library_steps(run)],
+                ["pass 1", "pass 2", "iteration 2", "iteration 10"],
+            )
+
+    def test_settle_table_lists_passes_then_iterations(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d) / "f_chosen"
+            run.mkdir()
+            cell = ([10, 11, 12], [1.0, 3.0, 1.0])
+            write_fp(run / "footprints_pass1.bin", {1: cell})
+            write_fp(run / "footprints_pass2.bin", {1: cell})
+            write_fp(run / "footprints_iter1.bin", {1: cell})
+            write_fp(run / "footprints_iter2.bin", {1: ([11, 12, 13], [1.0, 3.0, 1.0])})
+            (run / "iterations.tsv").write_text("iteration\tcells\n1\t1\n2\t1\n3\t1\n")
+            text = F.settle_table(run)
+            rows = [r for r in text if r.startswith("| ") and "---" not in r][1:]
+            self.assertEqual(len(rows), 4)
+            self.assertTrue(rows[0].startswith("| pass 1 | 1 | n/a |"))
+            self.assertIn("| iteration 1 | 1 | 0.0000 | 0.00000 |", rows[2])
+            self.assertIn("| iteration 2 | 1 | 1.0000 |", rows[3])
+            # Iteration 3 has no file: the row is left out and one line says so.
+            self.assertTrue(
+                any("iteration 3" in r and "footprints_iter3.bin" in r for r in text)
+            )
+
+    def test_settle_table_without_libraries_says_n_a(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d) / "raw"
+            run.mkdir()
+            text = F.settle_table(run)
+            self.assertEqual(len(text), 2)
+            self.assertIn("n/a", text[0])
+
+    def test_truth_footprint_median_uses_the_footprint_r_of_the_near_units(
+        self,
+    ) -> None:
+        h, w = DIMS
+        pix, val = CELLS[7]
+        units = [(np.asarray(pix), np.asarray(val)), blob_cell(100, 100)]
+        cen = np.array([footprint_centroid_of(u) for u in units])
+        cells = {7: (np.asarray(pix), np.asarray(val)), 8: blob_cell(60, 60)}
+        # Cell 7 matches unit 0 exactly (r = 1); cell 8 has no unit within the radius.
+        self.assertAlmostEqual(
+            F.truth_fp_median(cells, (h, w), units, cen, (0.0, 0.0)), 1.0
+        )
+        self.assertTrue(
+            math.isnan(F.truth_fp_median({8: cells[8]}, (h, w), units, cen))
+        )
+
+
+def blob_cell(cy: int, cx: int) -> tuple[np.ndarray, np.ndarray]:
+    pix, val = blob(cy, cx)
+    return np.asarray(pix), np.asarray(val)
+
+
+def footprint_centroid_of(cell: tuple[np.ndarray, np.ndarray]) -> tuple[float, float]:
+    return F.footprint_centroid(cell, DIMS[1])
+
+
 if __name__ == "__main__":
     unittest.main()

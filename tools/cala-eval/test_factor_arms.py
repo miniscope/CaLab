@@ -44,7 +44,10 @@ class Arms(unittest.TestCase):
         self.assertEqual(a["recal_iter2"], a["plain_recal"] + ["--factors-n-iter", "2"])
         self.assertEqual(
             sorted(set(a) - set(A.default_arms(a))),
-            sorted(list(A.REMEDIES) + ["live", "lb_raw", "lb_fac", "lb_live"]),
+            sorted(
+                list(A.REMEDIES)
+                + ["live", "lb_raw", "lb_fac", "lb_live", "f_chosen", "f_null"]
+            ),
         )
 
     def test_arm_names(self) -> None:
@@ -85,6 +88,54 @@ class Arms(unittest.TestCase):
             self.assertEqual(a["raw"], raw)
             self.assertEqual(a["chosen"], chosen)
             self.assertEqual(a["c_chosen"], chosen + ["--extract-engine", "factors"])
+
+    def test_the_factor_refine_arms_flags_are_pinned(self) -> None:
+        for budget in (A.DEFAULT_BUDGET, 3000000):
+            a = A.arms(5, budget)
+            f = [
+                *["--passes", "2", "--later-passes", "refine", "--extract-pass"],
+                *["--replay-source", "factors", "--tiling", "offset"],
+                *["--factors-pass", "2", "--extract-engine", "factors"],
+                *["--refine-engine", "factors"],
+            ]
+            self.assertEqual(a["f_chosen"], f)
+            self.assertEqual(a["f_null"], f + ["--later-budget", str(budget * 2)])
+        # Its own pass count, whatever --refine says.
+        self.assertEqual(A.arms(2)["f_chosen"], A.arms(7)["f_chosen"])
+
+    def test_the_factor_refine_arms_meet_the_harness_rules(self) -> None:
+        a = A.arms(5)
+        for name in ("f_chosen", "f_null"):
+            cmd = A.command(
+                Path("qc"), Path("rec"), Path("out") / name, a[name], True, None
+            )
+            self.assertEqual(cmd[cmd.index("--factors-out") + 1], f"out/{name}/factors")
+            self.assertEqual(cmd.count("--factors-out"), 1)
+            self.assertEqual(cmd[cmd.index("--passes") + 1], "2")
+            self.assertEqual(cmd[cmd.index("--factors-pass") + 1], "2")
+            self.assertEqual(cmd[cmd.index("--later-passes") + 1], "refine")
+            for refused in (
+                "--offered-fps",
+                "--joint-update",
+                "--lookback",
+                "--catchup",
+            ):
+                self.assertNotIn(refused, cmd)
+        # Not in the default set: runs started with today's options do not gain them.
+        self.assertNotIn("f_chosen", A.default_arms(a))
+        self.assertNotIn("f_null", A.default_arms(a))
+        self.assertEqual(A.line_step(a["f_chosen"]), 32)
+
+    def test_the_factor_folder_follows_the_refine_engine_flag_too(self) -> None:
+        cmd = A.command(
+            Path("qc"),
+            Path("rec"),
+            Path("out/x"),
+            ["--refine-engine", "factors"],
+            False,
+            None,
+        )
+        self.assertEqual(cmd[cmd.index("--factors-out") + 1], "out/x/factors")
 
     def test_live_arms_use_discovers_own_factors(self) -> None:
         a = A.arms(5)
@@ -345,6 +396,77 @@ class Arms(unittest.TestCase):
             write(out, "raw", {})
             text = A.report(out, ["raw", "seed", "raw_seed"], None)
             self.assertIn("seed run did not finish", text)
+
+    def test_iteration_table_reads_iterations_tsv(self) -> None:
+        head = (
+            "iteration\tversion\tcells\taccepted\tchanged_share\tmedian_change\tlow_valid"
+            "\ttiles_skipped\tread_s\tsums_s\ttest_s\tgate_s\tpublish_s\twall_s\tsettled\n"
+        )
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d) / "f_chosen"
+            run.mkdir()
+            (run / "iterations.tsv").write_text(
+                head
+                + "1\t9\t100\t40\t0.21000\t0.004000\t3\t0\t1.00\t5.00\t1.00\t2.00\t0.10\t9.10\t\n"
+                + "2\t10\t100\t12\t0.01000\t0.000500\t3\t0\t1.00\t5.00\t1.00\t2.00\t0.10\t8.10\tsettled\n"
+            )
+            t = A.iteration_table(run)
+            self.assertIn(
+                "| 2 | 100 | 12 | 0.01000 | 0.000500 | 3 | 0 | 8.10 |", "\n".join(t)
+            )
+            self.assertIn("Stopped: settled.", t)
+            (run / "iterations.tsv").write_text(head)
+            self.assertTrue(any("no iterations" in ln for ln in A.iteration_table(run)))
+            t = A.iteration_table(Path(d) / "missing")
+            self.assertEqual(len(t), 2)
+            self.assertIn("n/a", t[0])
+
+    def test_report_adds_the_settle_and_iteration_tables_for_the_factor_refine_arm(
+        self,
+    ) -> None:
+        a = A.arms(5)
+
+        def write(out: Path, n: str, files: dict[str, bytes]) -> None:
+            (out / n).mkdir()
+            rec = {"arm": n, "cmd": ["qc"] + a[n], "returncode": 0, "wall_s": 1.0}
+            (out / n / "run.json").write_text(json.dumps(rec))
+            for f, body in files.items():
+                (out / n / f).write_bytes(body)
+
+        def fake(ref: Path, test: Path, nulls: list[Path], **kw: object) -> str:
+            return f"CMP {ref.name} {test.name} {len(nulls)}"
+
+        with (
+            tempfile.TemporaryDirectory() as t,
+            mock.patch.object(A.factor_closeness, "report", fake),
+            mock.patch.object(
+                A.factor_closeness,
+                "settle_table",
+                lambda run, truth=None: [f"SETTLE {run.name}", ""],
+            ),
+        ):
+            out = Path(t)
+            write(out, "raw", {})
+            write(out, "null_lo", {})
+            # A run without the factor arm: report text as before.
+            plain = A.report(out, ["raw", "null_lo"], None)
+            self.assertNotIn("SETTLE", plain)
+            self.assertNotIn("Refine on factors", plain)
+            write(out, "f_chosen", {"footprints.bin": b"a"})
+            write(out, "f_null", {"footprints.bin": b"a"})
+            text = A.report(out, ["raw", "null_lo", "f_chosen", "f_null"], None)
+            self.assertIn("CMP raw f_chosen 1", text)
+            self.assertNotIn("CMP raw f_null", text)
+            self.assertIn("SETTLE raw", text)
+            self.assertIn("SETTLE f_chosen", text)
+            self.assertIn("no `iterations.tsv`", text)
+            self.assertIn("has the footprints of `f_chosen`: yes", text)
+            (out / "f_null" / "footprints.bin").write_bytes(b"b")
+            text = A.report(out, ["raw", "f_chosen", "f_null"], None)
+            self.assertIn("has the footprints of `f_chosen`: no", text)
+            (out / "f_null" / "footprints.bin").unlink()
+            text = A.report(out, ["raw", "f_chosen", "f_null"], None)
+            self.assertIn("n/a", text)
 
     def test_extract_row_reads_the_extract_stage(self) -> None:
         with tempfile.TemporaryDirectory() as d:

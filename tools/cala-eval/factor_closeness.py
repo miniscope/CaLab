@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -859,6 +860,173 @@ def report(
     out += [f"| {rule} | {what} | {A1_WORDS[ok]} |" for rule, what, ok in gate]
     out += ["", f"Gate A1: {'pass' if a1_passes(gate) else 'fail'}.", ""]
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# Footprint change between libraries (the settle measure of Refine on factors)
+# ---------------------------------------------------------------------------
+
+
+def footprint_change(a: Cell, b: Cell) -> float:
+    """Pearson correlation of two footprints over the union of their supports (a pixel
+    outside a support counts 0), on the footprints as stored (unfiltered).
+
+    The same definition as `footprint_change` and `pearson` in
+    `crates/cala/src/discover/factor_refine.rs`; the two must stay in step, so that this
+    table for a raw run (pass to pass) and the harness's `changed_share` for a factor run
+    (iteration to iteration) mean the same. Edge cases as there: identical values (also two
+    empty footprints) give 1; a footprint without variance over the union gives NaN.
+    """
+    pix = np.union1d(a[0], b[0])
+    va = np.zeros(len(pix))
+    vb = np.zeros(len(pix))
+    va[np.searchsorted(pix, a[0])] = a[1]
+    vb[np.searchsorted(pix, b[0])] = b[1]
+    if np.array_equal(va, vb):
+        return 1.0
+    da, db = va - va.mean(), vb - vb.mean()
+    aa, bb = float((da * da).sum()), float((db * db).sum())
+    if aa > 0 and bb > 0:
+        return float(np.clip((da * db).sum() / math.sqrt(aa * bb), -1.0, 1.0))
+    return NAN
+
+
+def changed_share(
+    fa: dict[int, Cell], fb: dict[int, Cell], corr: float = 0.99
+) -> tuple[float, float, int]:
+    """`(share of cells below `corr`, median of 1 - r, number of cells)` between two
+    libraries, cells matched by id (the library's `settle_measure`; keep in step with it).
+
+    A cell in only one of the two has no correlation and counts as changed. The median is
+    over the finite correlations, the upper one of an even count as the library takes it
+    (NaN when none is finite); with no cells at all both are 0. The library compares
+    against `corr` as a 32-bit float, so this does too."""
+    ids = sorted(set(fa) | set(fb))
+    if not ids:
+        return 0.0, 0.0, 0
+    rs = [footprint_change(fa[c], fb[c]) if c in fa and c in fb else NAN for c in ids]
+    thr = float(np.float32(corr))
+    below = sum(1 for r in rs if not r >= thr)
+    fin = sorted(1.0 - r for r in rs if math.isfinite(r))
+    return below / len(ids), fin[len(fin) // 2] if fin else NAN, len(ids)
+
+
+def truth_fp_median(
+    cells: dict[int, Cell],
+    dims: tuple[int, int],
+    units: list[Cell],
+    cen: np.ndarray,
+    offset: tuple[float, float] = (0.0, 0.0),
+) -> float:
+    """Median over `cells` of the best `fp_truth_r` with a truth unit within `TRUTH_PX` of the
+    cell's centroid (`cen`: the units' centroids, `offset`: truth minus run, as
+    `truth_offset` gives it). Libraries carry no traces, so the unit is picked by position,
+    not by trace as `compare` does. NaN when no cell has a unit near."""
+    shift = (round(offset[0]), round(offset[1]))
+    best: list[float] = []
+    for c in cells.values():
+        cy, cx = footprint_centroid(c, dims[1])
+        if math.isnan(cy):
+            continue
+        d = np.hypot(cen[:, 0] - (cy + offset[0]), cen[:, 1] - (cx + offset[1]))
+        rs = [
+            fp_truth_r(c, units[k], shift, dims) for k in np.flatnonzero(d <= TRUTH_PX)
+        ]
+        rs = [r for r in rs if not math.isnan(r)]
+        if rs:
+            best.append(max(rs))
+    return float(np.median(best)) if best else NAN
+
+
+def step_number(p: Path) -> int:
+    m = re.search(r"(\d+)\.bin$", p.name)
+    return int(m.group(1)) if m else -1
+
+
+def library_steps(run: Path) -> list[tuple[str, Path]]:
+    """The libraries a run wrote, in order: after each pass, then after each Refine-on-factors
+    iteration (files `footprints_pass{k}.bin` and `footprints_iter{k}.bin`)."""
+    passes = sorted(run.glob("footprints_pass*.bin"), key=step_number)
+    iters = sorted(run.glob("footprints_iter*.bin"), key=step_number)
+    return [(f"pass {step_number(p)}", p) for p in passes] + [
+        (f"iteration {step_number(p)}", p) for p in iters
+    ]
+
+
+def missing_iterations(run: Path) -> list[int]:
+    """Iterations listed in the run's `iterations.tsv` that have no library file."""
+    path = run / "iterations.tsv"
+    if not path.exists():
+        return []
+    return [
+        k
+        for k in (int(r["iteration"]) for r in read_tsv(path))
+        if not (run / f"footprints_iter{k}.bin").exists()
+    ]
+
+
+def truth_frame(
+    run: Path, truth_path: Path, dims: tuple[int, int]
+) -> tuple[list[Cell], np.ndarray, tuple[float, float]]:
+    """The truth units, their centroids and the offset to the run's frame (zero when the run
+    has no Extract pass to find it with)."""
+    units, _ = read_truth_footprints(truth_path)
+    truth = read_truth(truth_path, dims)
+    offset = (0.0, 0.0)
+    if (run / "extract_ids.tsv").exists() and (run / "final.tsv").exists():
+        dy, dx, _ = truth_offset(read_traces(run), read_centroids(run), truth)
+        offset = (dy, dx)
+    return units, truth[0], offset
+
+
+def settle_table(
+    run: Path, truth_path: Path | None = None, corr: float = 0.99
+) -> list[str]:
+    """Markdown: per library of the run, the share of cells whose footprint changed (below
+    `corr`) since the step before, the median change, and with a truth the median footprint
+    r with it. Says so in one line when the run left no libraries, and names the iterations
+    whose file is missing (their rows are left out)."""
+    steps = library_steps(run)
+    if not steps:
+        return [
+            (
+                f"Footprint change per step, `{run.name}`: n/a (no `footprints_pass*.bin` or "
+                "`footprints_iter*.bin` in the run)."
+            ),
+            "",
+        ]
+    frame = None
+    out = [
+        (
+            f"Footprint change per step, `{run.name}` (cells below a correlation of {corr:g} "
+            "with the step before; a cell in only one library counts as changed):"
+        ),
+        "",
+        "| step | cells | changed share | median change | truth footprint r median |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    prev: dict[int, Cell] | None = None
+    for name, path in steps:
+        dims, cells = read_footprints(path)
+        if prev is None:
+            share, med, n = NAN, NAN, len(cells)
+        else:
+            share, med, n = changed_share(prev, cells, corr)
+        tr = NAN
+        if truth_path is not None:
+            frame = frame or truth_frame(run, truth_path, dims)
+            tr = truth_fp_median(cells, dims, *frame)
+        out.append(f"| {name} | {n} | {num(share, 4)} | {num(med, 5)} | {num(tr, 4)} |")
+        prev = cells
+    gone = missing_iterations(run)
+    if gone:
+        files = ", ".join(f"iteration {k} (`footprints_iter{k}.bin`)" for k in gone)
+        out += ["", f"Left out, no library file: {files}."]
+    return out + [""]
+
+
+def num(v: float, digits: int) -> str:
+    return "n/a" if math.isnan(v) else f"{v:.{digits}f}"
 
 
 def main() -> None:
