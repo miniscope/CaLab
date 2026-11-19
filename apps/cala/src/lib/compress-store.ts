@@ -5,6 +5,7 @@
  */
 import { createSignal } from 'solid-js';
 import type { CompressStatus, CompressToMain } from '../workers/compress-types.ts';
+import type { FovProjections } from './fov-projection.ts';
 
 /** A finished back-fill. */
 export interface BackfillInfo {
@@ -24,20 +25,84 @@ export interface BackfillSink {
   ): void;
 }
 
+/**
+ * Where the recalibrated factors of a run stand: `ready` once a replay's
+ * windows on the offset grids hold every frame and none waits; `unusable`
+ * after a compression error or when a finished replay's windows do not hold
+ * every frame (a skipped last window of one frame); `compressing` while a
+ * replay that compresses runs or its windows wait; `none` otherwise (the next
+ * replay may compress).
+ */
+export type FactorState = 'none' | 'compressing' | 'ready' | 'unusable';
+
+export function factorState(
+  s: CompressStatus | null,
+  error: string | null,
+  replayCompressing: boolean,
+  frames: number,
+): FactorState {
+  if (error) return 'unusable';
+  const replay = s !== null && s.source === 'replay';
+  if (replay && s.final && s.pending === 0)
+    return s.tiling === 'offset' && frames > 0 && s.frames === frames ? 'ready' : 'unusable';
+  // A cancelled replay leaves a status without windows: that is not compressing.
+  if (replayCompressing || (replay && (s.windows > 0 || s.pending > 0))) return 'compressing';
+  return 'none';
+}
+
+/**
+ * The messages of an Extract job. `abort` is the store's own: the job can no
+ * longer be answered (a compression error, a new run), so it fails.
+ */
+export type ExtractMessage =
+  | Extract<CompressToMain, { type: 'extracted' | 'extract-done' }>
+  | (Extract<CompressToMain, { type: 'error' }> & { job: number })
+  | { type: 'abort'; message: string };
+
+/** What Extract will read now (the Run panel, compression on). */
+export function extractSourceText(state: FactorState, s: CompressStatus | null): string {
+  switch (state) {
+    case 'ready':
+      return 'Extract reads the factors (seconds).';
+    case 'compressing':
+      return `Extract replays the file: the factors are being compressed${
+        s && s.pending > 0 ? ` (${s.pending} windows waiting)` : ''
+      }.`;
+    case 'unusable':
+      return 'Extract replays the file: the factors do not cover the recording.';
+    default:
+      return 'Extract replays the file; the first replay compresses the frames for later Extracts.';
+  }
+}
+
 export function createCompressStore(sink?: BackfillSink) {
   const [status, setStatus] = createSignal<CompressStatus | null>(null);
   const [backfill, setBackfill] = createSignal<BackfillInfo | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   let session = -1;
   let requested = -1;
+  /** A replay that compresses has started and was not cut short. */
+  let replayCompressing = false;
+  /** Projections of the replay that made the factors (a factor Extract's FOV images). */
+  let projection: FovProjections | null = null;
+  const listeners = new Set<(m: ExtractMessage) => void>();
+  /** Fail every pending Extract job and forget it, so its later messages find no listener. */
+  const abortJobs = (message: string): void => {
+    const pending = [...listeners];
+    listeners.clear();
+    for (const l of pending) l({ type: 'abort', message });
+  };
   return {
     status,
     backfill,
     error,
     /** A new pipeline run: forget the previous one. */
     reset(next: number): void {
+      abortJobs('The run was reset.');
       session = next;
       requested = -1;
+      replayCompressing = false;
+      projection = null;
       setStatus(null);
       setBackfill(null);
       setError(null);
@@ -57,15 +122,43 @@ export function createCompressStore(sink?: BackfillSink) {
       return true;
     },
     onMessage(msg: CompressToMain): void {
-      // An Extract job's messages carry a job number and are not the compression's.
-      if (msg.type === 'extracted' || msg.type === 'extract-done') return;
       if (msg.type === 'error') {
-        if (msg.job === undefined) setError(msg.message);
-      } else if (msg.session !== session) return;
-      else if (msg.type === 'status') setStatus(msg.status);
+        // An Extract job's error is the job's: the factors stay usable.
+        if (msg.job !== undefined) {
+          if (msg.session === session) for (const l of [...listeners]) l(msg as ExtractMessage);
+          return;
+        }
+        setError(msg.message);
+        abortJobs(msg.message);
+        return;
+      }
+      if (msg.session !== session) return;
+      if (msg.type === 'status') setStatus(msg.status);
       else if (msg.type === 'traces') {
         sink?.onBackfill(msg.first, msg.start, msg.count, msg.ids, msg.traces);
-      } else setBackfill({ version: msg.version, frames: msg.frames, msPerFrame: msg.msPerFrame });
+      } else if (msg.type === 'backfilled') {
+        setBackfill({ version: msg.version, frames: msg.frames, msPerFrame: msg.msPerFrame });
+      } else for (const l of [...listeners]) l(msg);
+    },
+    /** Where the factors of this run stand, for a recording of `frames` frames. */
+    factors: (frames: number): FactorState =>
+      factorState(status(), error(), replayCompressing, frames),
+    /** A replay that compresses starts. */
+    markReplay(): void {
+      replayCompressing = true;
+    },
+    /** That replay ended; `ok` false: cut short, its windows are dropped. */
+    replayEnded(ok: boolean): void {
+      if (!ok) replayCompressing = false;
+    },
+    keepProjection(p: FovProjections): void {
+      projection = p;
+    },
+    projection: (): FovProjections | null => projection,
+    /** Listen to Extract jobs' messages; returns the unsubscribe. */
+    onExtract(listener: (m: ExtractMessage) => void): () => void {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
   };
 }
