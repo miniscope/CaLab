@@ -88,3 +88,117 @@ Cost:
 10. Flags off: byte-identical to main (COMBO flags vs `combo-full/COMBO`, default flags vs `combo-full/DR-main`).
 
 Not expected to move: slow-loop work units per frame (the cache changes what feeds the statistics, not the visits).
+
+## Results (19 Nov 2026; 8 sims: static s5-s7, pairs s5-s6, motion s5-s7)
+
+One binary for all arms (`qc_eval-lbcost-b`, branch commit 239d4d59 before the rebase onto #431), 4-6 runs at a
+time. Run tree `$CALA_DATA/demix-suite/lbcost` (reports `report-COMBO-vs-COMBO-cs.md`, `report-COMBO-vs-COMBO-c.md`,
+`report-DR-main-vs-COMBO-cs.md`, `report-DR-main-vs-COMBO.md`; their header names the default binary because they
+were rendered with `--report-only`). The PR's code is the same levers ported onto #431's crate scheduler; its build
+reproduces `COMBO-cs` on static_s5 and `COMBO` and `DR-main` with the new flags off byte for byte (below).
+
+### In plain language
+
+Keeping the live loop's recent frames in memory, so the look-back does not re-read, re-preprocess and re-warp them,
+makes the look-back cheaper everywhere and fixes motion. On motion sims COMBO now uses 15 % less pass-loop wall than
+Discover + Refine (it used 2 % more) and 10 % fewer instructions; over all 8 sims the saving against Discover + Refine
+grows from 8 % to 23 % of wall. Skipping held-out look-back frames adds a little more. Quality is unchanged against
+COMBO: all 67 suite metrics within noise; the late-born rows lean slightly worse but the sample is small. The price is
+memory: about 2 GB more per run (peak RSS 3.0-3.5 GB on 600 x 600 sims, with a 3072-frame cache).
+
+Recommended: `--lookback-cache 3072 --lookback-skip-heldout` (`COMBO-cs`).
+
+### Cost
+
+Pass-loop wall summed over the sims (s), instructions retired (T, `time -l`), largest peak RSS (GB) and look-back
+wall (s):
+
+| group      | DR-main                | COMBO                    | COMBO-c (cache)          | COMBO-cs (cache + skip)  |
+| ---------- | ---------------------- | ------------------------ | ------------------------ | ------------------------ |
+| motion (3) | 1536 / 38.41 / 1.3 / 0 | 1568 / 41.13 / 1.7 / 661 | 1320 / 34.83 / 3.4 / 400 | 1298 / 34.43 / 3.5 / 376 |
+| static (3) | 1035 / 19.97 / 1.0 / 0 | 895 / 17.48 / 1.1 / 346  | 787 / 15.89 / 3.4 / 224  | 772 / 15.56 / 3.4 / 210  |
+| pairs (2)  | 476 / 9.27 / 0.8 / 0   | 351 / 7.12 / 0.9 / 109   | 298 / 6.26 / 3.2 / 47    | 288 / 6.04 / 3.2 / 37    |
+| all 8      | 3047 / 67.65           | 2814 / 65.73 (-8 %)      | 2405 / 56.98 (-21 %)     | 2358 / 56.03 (-23 %)     |
+
+Per motion sim, wall and instructions of `COMBO-cs` vs `DR-main`: s5 428 vs 505 s, 11.47 vs 12.77 T; s6 437 vs 519 s,
+11.45 vs 12.85 T; s7 432 vs 512 s, 11.51 vs 12.79 T. Instructions are below `COMBO` on every one of the 8 sims.
+
+Where the motion look-back time went (motion_s5, s): COMBO read 1.7, front 40.5, warp 79.4, back 27.1, solve 21.5,
+observe 16.2, drain visits 24.3 (213 in all); `COMBO-cs` read 0.5, front 15.7, warp 30.2, back 10.3, solve 15.3,
+observe 16.7, drain visits 28.6 (124).
+
+Deterministic counters (per sim): look-back frames re-made (re-read, preprocessed, registered) fall from ~23.6k to
+5.4-5.8k on static (-76 %), 2.7-3.8k on pairs, and 8.7-9.1k on motion (-62 %). The misses are the frames older than
+the cache (age > 3072, ~5.5k per sim; births are served with a lag, so ages reach past `K`) plus, on motion, the
+~3k frames dropped when the first flat-field map arrives at frame 2999 (one clear per motion sim; later maps change
+by <= 0.06 sigma and keep the cache). The half-float rounding is at most 0.016 noise sigma. Held-out skip: 7.9-8.4k
+solves saved per static/motion sim (solve 21.5 -> 15.3 s on motion_s5). Slow-loop work units per frame unchanged
+(46.0 M vs 46.3 M, within noise).
+
+### Quality, `COMBO-cs` vs `COMBO` (targets 1-5; paired suite rules)
+
+All 67 metrics within noise except peak RSS (worse, +1.8 GB). Headline +0.087 -> +0.091 (+0.004 [-0.010, +0.019]).
+
+| metric                                        | COMBO                 | COMBO-cs              | diff [95 % CI]                                  |
+| --------------------------------------------- | --------------------- | --------------------- | ----------------------------------------------- |
+| Footprint r median, all                       | 0.9900                | 0.9898                | -0.0002 [-0.0009, 0.0004]                       |
+| Footprint r median, isolated                  | 0.9902                | 0.9898                | -0.0004 [-0.0021, 0.0016]                       |
+| Footprint r median, close-pair                | 0.9898                | 0.9895                | -0.0003 [-0.0013, 0.0006]                       |
+| Share r < 0.9, all / isolated                 | 0.053 / 0.027         | 0.058 / 0.035         | +0.005 [-0.006, 0.015] / +0.008 [-0.023, 0.039] |
+| Trace corr excess < 1 D (headline)            | +0.087                | +0.091                | +0.004 [-0.010, +0.019]                         |
+| Bite share < 0.5, 0-0.5 / 0.5-0.75 / 0.75-1 D | 0.181 / 0.163 / 0.276 | 0.204 / 0.165 / 0.288 | all CIs include 0                               |
+| Matched cells (mean per sim)                  | 411.4                 | 409.2                 | -2.1 [-6.0, 1.8] (-0.5 %)                       |
+| False cells                                   | 20.2                  | 23.0                  | +2.8 [-0.6, 6.1]                                |
+| Footprint r median, born second half          | 0.9545                | 0.9478                | -0.0068 [-0.0160, 0.0035]                       |
+| Share r < 0.9, born second half               | 0.228                 | 0.286                 | +0.058 [-0.019, 0.138]                          |
+| Footprint r median, born last 20 %            | 0.9217                | 0.9172                | -0.0045 [-0.0414, 0.0294]                       |
+
+`COMBO-c` (cache only) vs `COMBO`: the same picture (all within noise except RSS; second half -0.0058 [-0.0163,
+0.0035], last 20 % -0.0190 [-0.0494, 0.0175]). The late-born rows lean worse in both cache arms, but per sim the
+sign is mixed (static_s5 and motion_s7 second-half medians go up, static_s6 and static_s7 down) and they rest on
+~230 cells, so this is "not shown different", not "shown equal". A cached frame was preprocessed with the background
+floor and noise map of its own time rather than today's; that is the one mechanism that could matter for cells born
+late, and a larger late-born sample would be needed to see it.
+
+### Against `DR-main` (target 6: the #430 targets, 8 sims)
+
+`COMBO-cs` vs `DR-main`: footprint r all +0.0016 [0.0009, 0.0023], isolated -0.0024 [-0.0040, -0.0009] (inside the
+0.003 allowance, as for COMBO's -0.0020), close-pair +0.0049; share r < 0.9 all / isolated within noise; headline
++0.149 -> +0.091 (better), bite shares better in every bin; matched -3.0 [-6.9, 0.9] (-0.7 %), false within noise.
+All met. One flag new against COMBO: share r < 0.9 among cells born in the second half, +0.091 [0.018, 0.165]
+(COMBO: +0.032 [-0.034, 0.101]); not a #430 target, same caveat as above.
+
+### Targets, judged
+
+| #   | target                                      | result                                                                   |
+| --- | ------------------------------------------- | ------------------------------------------------------------------------ |
+| 1   | footprint r within 0.002 of COMBO           | met (-0.0002 / -0.0004 / -0.0003)                                        |
+| 2   | share r < 0.9 within noise                  | met                                                                      |
+| 3   | crosstalk and bites within noise            | met                                                                      |
+| 4   | matched within 1 %, false within noise      | met (-0.5 %; false +2.8, CI includes 0)                                  |
+| 5   | late-born rows within noise                 | met, leaning worse (see above)                                           |
+| 6   | #430 targets vs DR-main                     | met                                                                      |
+| 7   | motion wall and instructions below DR-main  | met: wall -15 % (1298 vs 1536 s), instructions lower on every motion sim |
+| 8   | re-made frames halved, instructions < COMBO | met: -62 % (motion) to -76 % (static); instructions lower on all 8 sims  |
+| 9   | peak RSS <= 4 GB                            | met: 3.45 GB at most                                                     |
+| 10  | flags off byte-identical                    | met (below)                                                              |
+
+### Other checks
+
+- **Byte identity.** The PR build (rebased onto #431) with no new flags: `footprints.bin`, `dump_trace.f32` and
+  `final.tsv` identical to `combo-full/COMBO` (static_s5, COMBO flags) and `combo-full/DR-main` (pairs_s5, default
+  flags). With `--lookback-cache 3072 --lookback-skip-heldout` it reproduces this run's `COMBO-cs` static_s5 byte for
+  byte, so the measured numbers stand for the PR code.
+- **Tried and dropped.** Marking due only the tiles of cells the drain fed (instead of every tile every 64 drain
+  steps) saved nothing on motion_s5 (drain visits 28.6 s either way: `SlowLoop::step` spends its budget whichever tiles
+  are due). A 2048-frame cache (motion_s5 only) gave 444 s / 11.87 T against 428 s / 11.47 T for 3072, with 1.6 GB
+  instead of 1.7 GB peak RSS.
+- **Not done.** A patch-only trace solve: with the frames cached, the solve is 15 s of the 124 s motion look-back, so
+  it is the next lever only after the drain visits (25-34 s) and the remaining misses.
+
+### For the app
+
+The ring is `calab_cala::discover::FrameCache` (half floats, `push` / `get` / `clear`). In the browser 3072 frames of
+600 x 600 are 2.2 GB, too much for a tab; the eval shows the hit rate falls from ~62 % (motion) / ~76 % (static) at
+3072 frames, and the app should size it to the memory it has (or to the precision-mode demand, which needs fewer old
+frames). The cache reads the live loop's output only; the fast loop is unchanged (QC ms/frame within noise).
