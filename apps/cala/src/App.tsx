@@ -12,10 +12,11 @@ import { loadSpanStats } from './lib/extract-qc-wasm.ts';
 import { ASSUMED_FPS } from './lib/miniscope-meta.ts';
 import type { QcSnapshot } from './lib/qc.ts';
 import { createCompressClient } from './lib/compress-client.ts';
-import { compressionOn, createCompressStore } from './lib/compress-store.ts';
+import { compressionOn, createCompressStore, liveFactorsBlocked } from './lib/compress-store.ts';
 import { createPass2Factors } from './lib/factor-extract.ts';
 import { createPass2Store, replayBlocked } from './lib/pass2-store.ts';
-import { createRefineStore } from './lib/refine-store.ts';
+import { createRefineStore, refineOnFactorsOn } from './lib/refine-store.ts';
+import type { SlowToMain } from './workers/slow-types.ts';
 import {
   createStageLog,
   discoverErrorData,
@@ -103,9 +104,14 @@ const App: Component = () => {
   // `?review`: the history review (compression on), every 8 compressed windows
   // (`?review=N`: every N), in a worker of its own. One core is left for it.
   const reviewWindows = compressOn ? reviewEvery(params.get('review')) : null;
+  /** The slow worker's messages of Refine on the factors go to the Refine store (set once it exists). */
+  let toRefine: (msg: SlowToMain) => void = () => {};
   const slow = createSlowClient(
     client,
-    (msg) => cells.onSlowMessage(msg),
+    (msg) => {
+      cells.onSlowMessage(msg);
+      toRefine(msg);
+    },
     undefined,
     visits !== null && visits !== ''
       ? visitWorkerCount(Number(visits) + RESERVED_THREADS)
@@ -136,6 +142,8 @@ const App: Component = () => {
   // The run's factors for Extract and the replays (compression on).
   const factors =
     compress && compressClient ? createPass2Factors(compress, compressClient) : undefined;
+  // `?refine=factors` (compression on): Refine reads the factors until they settle.
+  const factorRefineOn = factors !== undefined && refineOnFactorsOn(params);
   // Look-back (experimental): Discover refines footprints as it goes by re-reading
   // past frames in a worker of its own, and settles at the end (no Refine needed).
   // A recording on disk with one session, pipelined workers only.
@@ -194,6 +202,12 @@ const App: Component = () => {
         }
       : compress,
     lookbackClient,
+    {
+      // A new Discover waits until Refine on the factors has closed the factor files.
+      beforeStart: () => refine.release(),
+      // A live stream's Discover compresses on the offset grids (`?review` reads plain tiles only).
+      ...(reviewWindows === null ? { liveTiling: 'offset' as const } : {}),
+    },
   );
   // `?lookback`: look-back on from the first Discover start.
   if (params.has('lookback') && params.get('lookback') !== '0') pipeline.setLookback(true);
@@ -203,8 +217,19 @@ const App: Component = () => {
     const st = pipeline.status();
     return st === 'starting' || st === 'paused' ? 'running' : st;
   };
+  /** A live run with compression on: why its factors cannot be read now (null: they can); undefined otherwise. */
+  const liveFactors = (): string | null | undefined =>
+    store.info()?.live !== undefined && compress
+      ? liveFactorsBlocked(
+          compress.factors(pipeline.record().frames),
+          compress.status(),
+          compress.error() !== null,
+        )
+      : undefined;
   const stageInput = () => ({
     live: store.info()?.live !== undefined,
+    liveFactors: liveFactors(),
+    refineOnFactors: factorRefineOn,
     discover: discoverActivity(),
     refine: ((st) => (st === 'finishing' ? 'running' : st))(refine.status()) as StageActivity,
     extract: pass2.status(),
@@ -223,6 +248,10 @@ const App: Component = () => {
         ? 'Refine is running.'
         : null,
     factors,
+    {
+      on: () => store.info()?.live !== undefined && compress !== undefined,
+      blocked: () => liveFactors() ?? null,
+    },
   );
   // Refine's QC: the trace statistics of the replay's traces over the whole
   // recording, as after Extract (the replay runs no QC monitor).
@@ -242,8 +271,19 @@ const App: Component = () => {
         return extractQc(traces, ids, range, rate, QC_SCOPE_DEFAULT, cells.qc(), backend);
       },
       ...(factors ? { compress: factors } : {}),
+      ...(factors && factorRefineOn
+        ? {
+            factorRefine: {
+              factors,
+              slow,
+              live: () => store.info()?.live !== undefined,
+              lookback: () => pipeline.lookbackRun(),
+            },
+          }
+        : {}),
     },
   );
+  toRefine = (msg) => refine.onSlowMessage(msg);
   /** Log a stage event on the run's timeline (at the end of what Discover read). */
   const logStage = (stage: StageName, detail: string) =>
     runHistory.log({
@@ -714,6 +754,8 @@ const App: Component = () => {
               onRefine={runRefine}
               cells={cells}
               live={lp.info.live !== undefined}
+              liveFactors={liveFactors()}
+              refineFactors={factorRefineOn}
               label={store.label()}
               width={lp.info.width}
               height={lp.info.height}
