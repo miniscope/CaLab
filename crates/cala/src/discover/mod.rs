@@ -236,8 +236,8 @@ pub use ledger::{
     CellInfo, CellStatus, DeleteReason, DeletedCell, EditCounts, EditEvent, EditKind, TestEvent,
 };
 pub use lookback::{
-    HeldOutRecord, LookBack, LookbackConfig, LookbackNext, LookbackOrder, LookbackOutcome,
-    LookbackRequest, LB_BLOCK,
+    f16_to_f32, f32_to_f16, FrameCache, HeldOutRecord, LookBack, LookbackConfig, LookbackNext,
+    LookbackOrder, LookbackOutcome, LookbackRequest, LB_BLOCK,
 };
 #[cfg(feature = "diagnostics")]
 pub use mergelog::{flush as merge_log_flush, set_gt as merge_log_set_gt};
