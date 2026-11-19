@@ -2,7 +2,9 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   FactorWindow,
+  factorHeader,
   quantizeTiles,
+  tileLayout,
   TileCompressor,
   TraceEngine,
   TraceLibrary,
@@ -10,7 +12,7 @@ import {
 } from '../lib/cala-wasm.ts';
 import { createCellStore } from '../lib/cell-store.ts';
 import { CompressFeed } from '../lib/compress-feed.ts';
-import { CompressRunner, factorName, tileGrid } from '../lib/compress-runner.ts';
+import { CompressRunner, factorName, tilesOf } from '../lib/compress-runner.ts';
 import { compressReadout, createCompressStore } from '../lib/compress-store.ts';
 import { memoryStore } from '../lib/window-store.ts';
 import type { CompressToMain, FastToCompress } from '../workers/compress-types.ts';
@@ -62,6 +64,8 @@ function runner(store = memoryStore()) {
   const r = new CompressRunner({
     store,
     quantize: quantizeTiles,
+    layout: tileLayout,
+    header: factorHeader,
     create: (quant) => new TileCompressor(quant),
     engine: (bytes) => {
       const lib = TraceLibrary.fromBytes(bytes);
@@ -81,20 +85,21 @@ function runner(store = memoryStore()) {
   return { r, store, toMain };
 }
 
-/** The tiles of a factor file: position, rank and the three float arrays. */
+/** The tiles of a v2 factor file: position, rank and the five float arrays. */
 function readFactors(bytes: Uint8Array) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  expect(new TextDecoder().decode(bytes.subarray(0, 8))).toBe('CALAFAC1');
+  expect(new TextDecoder().decode(bytes.subarray(0, 8))).toBe('CALAFAC2');
   const [width, height, tile, frames, n] = [8, 12, 16, 20, 24].map((o) => view.getUint32(o, true));
   const start = view.getFloat64(28, true);
+  const [kind, param] = [36, 40].map((o) => view.getUint32(o, true));
   const tiles = [];
-  let at = 36;
+  let at = 44;
   for (let i = 0; i < n; i++) {
     const len = view.getUint32(at, true);
     const b = bytes.slice(at + 4, at + 4 + len);
     at += 4 + len;
     const v = new DataView(b.buffer);
-    expect(new TextDecoder().decode(b.subarray(0, 4))).toBe('CTF1');
+    expect(new TextDecoder().decode(b.subarray(0, 4))).toBe('CTF2');
     const [x0, y0, w, h, rank, t] = [4, 8, 12, 16, 20, 24].map((o) => v.getUint32(o, true));
     const p = w * h;
     const floats = new Float32Array(b.buffer.slice(48));
@@ -106,12 +111,14 @@ function readFactors(bytes: Uint8Array) {
       rank,
       frames: t,
       mean: floats.subarray(0, p),
-      spatial: floats.subarray(p, p + p * rank),
-      temporal: floats.subarray(p + p * rank),
+      discarded: floats.subarray(p, 2 * p),
+      valid: floats.subarray(2 * p, 3 * p),
+      spatial: floats.subarray(3 * p, 3 * p + p * rank),
+      temporal: floats.subarray(3 * p + p * rank),
     });
   }
   expect(at).toBe(bytes.length);
-  return { width, height, tile, frames, start, tiles };
+  return { width, height, tile, frames, start, kind, param, tiles };
 }
 
 describe('CompressFeed', () => {
@@ -168,7 +175,7 @@ describe('CompressFeed', () => {
 
 describe('CompressRunner', () => {
   it('lays out the tiles like the quantizer', () => {
-    const grid = tileGrid(W, H, TILE);
+    const grid = tilesOf(tileLayout(W, H, TILE, 'plain'));
     expect(grid.map((t) => [t.x0, t.y0, t.w, t.h])).toEqual([
       [0, 0, 16, 16],
       [16, 0, 16, 16],
@@ -212,12 +219,14 @@ describe('CompressRunner', () => {
         starts[k],
       ]);
       expect(f.tiles.length).toBe(6);
+      expect([f.kind, f.param]).toEqual([0, 0]);
       // Rebuild one frame of the window from the factors.
       const t = Math.floor(frames[k] / 2);
       const want = frame(starts[k] + t);
       let worst = 0;
       for (const tile of f.tiles) {
         expect(tile.frames).toBe(frames[k]);
+        expect([...tile.valid].every((v) => v === 1)).toBe(true);
         expect(tile.rank).toBeGreaterThanOrEqual(1);
         expect(tile.rank).toBeLessThanOrEqual(6);
         for (let y = 0; y < tile.h; y++) {
@@ -235,6 +244,98 @@ describe('CompressRunner', () => {
       // (lag-1 autocorrelation above 4 / sqrt(frames)) is stricter on few frames.
       if (frames[k] === 50) expect(worst, `window ${k}`).toBeLessThan(0.1);
     }
+  });
+
+  /** A feed with its own options whose messages are collected. */
+  function feedWith(options: Partial<ConstructorParameters<typeof CompressFeed>[0]>) {
+    const sent: FastToCompress[] = [];
+    const feed = new CompressFeed(
+      { width: W, height: H, session: 7, tile: TILE, window: 50, quant: QUANT, ...options },
+      { postMessage: (m) => sent.push(m) },
+    );
+    return { feed, sent };
+  }
+
+  it('compresses on the offset grids and rebuilds the frames blended', async () => {
+    const { feed, sent } = feedWith({ tiling: 'offset' });
+    for (let s = 0; s < 120; s += 7)
+      feed.push(batch(s, Math.min(7, 120 - s)), s, Math.min(7, 120 - s));
+    feed.end();
+    expect(sent[0]).toMatchObject({ type: 'init', tiling: 'offset', source: 'discover' });
+    const { r, store, toMain } = runner();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+
+    const tiles = tileLayout(W, H, TILE, 'offset').length / 4;
+    expect(tiles).toBe(12);
+    const last = toMain[toMain.length - 1];
+    if (last.type !== 'status') throw new Error('the last message is not a status');
+    expect(last.status).toMatchObject({
+      windows: 3,
+      frames: 120,
+      final: true,
+      tiling: 'offset',
+      source: 'discover',
+    });
+    const out = new Float32Array(PX);
+    const windows = [
+      [0, 50, 0],
+      [1, 50, 50],
+      [2, 20, 100],
+    ] as const;
+    for (const [k, frames, start] of windows) {
+      const bytes = store.files.get(factorName(k))!;
+      const f = readFactors(bytes);
+      expect([f.kind, f.tiles.length]).toEqual([2, tiles]);
+      const win = FactorWindow.fromBytes(bytes);
+      try {
+        expect([win.frames, win.start, win.tiling, win.tile]).toEqual([
+          frames,
+          start,
+          'offset',
+          TILE,
+        ]);
+        const t = Math.floor(frames / 2);
+        win.reconstruct(t, 1, out);
+        const want = frame(start + t);
+        let worst = 0;
+        for (let i = 0; i < PX; i++) worst = Math.max(worst, Math.abs(out[i] - want[i]));
+        if (frames === 50) expect(worst, `window ${k}`).toBeLessThan(0.1);
+      } finally {
+        win.free();
+      }
+    }
+  });
+
+  it('skips a last window of one frame under the offset grids', async () => {
+    const { feed, sent } = feedWith({ tiling: 'offset' });
+    feed.push(batch(0, 51), 0, 51);
+    feed.end();
+    const { r, store, toMain } = runner();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    expect([...store.files.keys()]).toEqual([factorName(0)]);
+    const last = toMain[toMain.length - 1];
+    if (last.type !== 'status') throw new Error('the last message is not a status');
+    expect(last.status).toMatchObject({ windows: 1, frames: 50, pending: 0, final: true });
+  });
+
+  it('marks a missing pixel as not valid instead of pulling its mean to 0', async () => {
+    const { feed, sent } = feedWith({});
+    const frames = batch(0, 50);
+    // Pixel (0, 0) is missing in the first 20 frames.
+    for (let t = 0; t < 20; t++) frames[t * PX] = Number.NaN;
+    feed.push(frames, 0, 50);
+    feed.end();
+    const { r, store } = runner();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    const first = readFactors(store.files.get(factorName(0))!).tiles[0];
+    expect(first.valid[0]).toBeCloseTo(0.6, 6);
+    expect(first.valid[1]).toBe(1);
+    let mean = 0;
+    for (let t = 20; t < 50; t++) mean += frame(t)[0] / 30;
+    expect(first.mean[0]).toBeCloseTo(mean, 1);
   });
 
   it('drops its files on reset and ignores another session', async () => {
@@ -352,6 +453,8 @@ describe('back-fill from the factors', () => {
       msPerFrame: 8,
       factorBytes: 1 << 20,
       final: false,
+      tiling: 'plain' as const,
+      source: 'discover' as const,
     };
     store.onMessage({ type: 'status', session: 3, status });
     expect(store.takeBackfill(true, true, 4)).toBe(false); // windows still open

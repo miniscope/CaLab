@@ -5,7 +5,7 @@
  * worker's work. Pure apart from the injected port, so the window bookkeeping
  * is unit-tested without workers.
  */
-import type { FastToCompress } from '../workers/compress-types.ts';
+import type { CompressSource, CompressTiling, FastToCompress } from '../workers/compress-types.ts';
 import type { PortLike } from '../workers/slow-types.ts';
 
 export interface CompressFeedOptions {
@@ -14,13 +14,23 @@ export interface CompressFeedOptions {
   session: number;
   /** Tile edge, px. */
   tile?: number;
+  /** How the frame is cut into tiles (default plain: the history review reads side-by-side tiles). */
+  tiling?: CompressTiling;
+  /** Which frames these are (default Discover's). */
+  source?: CompressSource;
   /** Frames per window. */
   window?: number;
   /** Quantized values are `round(value * quant)`: 1/64 grey level, ±512 grey levels. */
   quant?: number;
 }
 
-export const COMPRESS_DEFAULTS = { tile: 64, window: 600, quant: 64 } as const;
+export const COMPRESS_DEFAULTS = {
+  tile: 64,
+  window: 600,
+  quant: 64,
+  tiling: 'plain',
+  source: 'discover',
+} as const;
 
 /** What the fast loop needs of a feed. */
 export interface CompressFeedLike {
@@ -56,9 +66,19 @@ export class CompressFeed implements CompressFeedLike {
   /** `count` frames that start at stream frame `start`. */
   push(batch: Float32Array, start: number, count: number): void {
     if (this.disposed || count <= 0) return;
-    const { session, width, height, tile, window, quant } = this.o;
+    const { session, width, height, tile, window, quant, tiling, source } = this.o;
     if (!this.initSent) {
-      this.port.postMessage({ type: 'init', session, width, height, tile, window, quant });
+      this.port.postMessage({
+        type: 'init',
+        session,
+        width,
+        height,
+        tile,
+        window,
+        quant,
+        tiling,
+        source,
+      });
       this.initSent = true;
     }
     // A gap in the stream ends the window: its frames must be consecutive.

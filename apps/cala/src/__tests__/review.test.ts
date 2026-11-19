@@ -1,8 +1,10 @@
 // @vitest-environment node
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
+  factorHeader,
   HistoryReview,
   quantizeTiles,
+  tileLayout,
   SlowLoop,
   TileCompressor,
   TraceLibraryBuilder,
@@ -268,6 +270,8 @@ describe('CompressRunner feeding the review worker', () => {
     const r = new CompressRunner({
       store,
       quantize: quantizeTiles,
+      layout: tileLayout,
+      header: factorHeader,
       create: (quant) => new TileCompressor(quant),
       toMain: { postMessage: (m) => toMain.push(m) },
       review: { port: { postMessage: (m) => toReview.push(m) }, every },
@@ -658,6 +662,8 @@ describe('history review on real factors (WASM)', () => {
     const compress = new CompressRunner({
       store: memoryStore(),
       quantize: quantizeTiles,
+      layout: tileLayout,
+      header: factorHeader,
       create: (quant) => new TileCompressor(quant),
       toMain: { postMessage: () => {} },
       review: { port: { postMessage: (m) => review.handle(m) }, every: WINDOWS },

@@ -9,7 +9,9 @@
 import {
   FactorWindow,
   initCalaWasm,
+  factorHeader,
   quantizeTiles,
+  tileLayout,
   TileCompressor,
   TraceEngine,
   TraceLibrary,
@@ -55,6 +57,8 @@ workerScope.onmessage = (e) => {
   const r = new CompressRunner({
     store,
     quantize: quantizeTiles,
+    layout: tileLayout,
+    header: factorHeader,
     create: (quant) => new TileCompressor(quant),
     engine: (bytes) => {
       const lib = TraceLibrary.fromBytes(bytes);
