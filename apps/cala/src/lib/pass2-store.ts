@@ -123,6 +123,12 @@ export function createPass2Store(
    * yet. Absent (`?compress=off`): Extract replays the file, as before.
    */
   factors?: Pass2Factors,
+  /**
+   * A live run with compression on: Extract reads Discover's factors or
+   * nothing (a stream has no file to replay); `blocked` says why it cannot
+   * read them now (null: it can).
+   */
+  live?: { on(): boolean; blocked(): string | null },
 ) {
   const [status, setStatus] = createSignal<Pass2Status>('idle');
   const [processed, setProcessed] = createSignal(0);
@@ -171,11 +177,13 @@ export function createPass2Store(
     if (st !== 'done') return 'Extract runs after Discover finishes.';
     const other = blocked?.();
     if (other) return other;
-    const replay = replayBlocked(pipeline);
+    // A live Extract replays nothing: no replay reason applies to it.
+    const replay = live?.on() ? null : replayBlocked(pipeline);
     if (replay) return replay;
     if (!cells.library() || !cells.libraryBytes()) return 'No cells were found.';
     if ((cells.library()?.ids.length ?? 0) === 0) return 'No cells were found.';
     if (!cells.status()?.final) return 'Waiting for the final library.';
+    if (live?.on()) return live.blocked();
     return null;
   }
 
@@ -260,7 +268,10 @@ export function createPass2Store(
   /** The result of a finished run; `extra`: what depends on where it read the frames. */
   function resultOf(
     ctx: Ctx,
-    extra: Pick<Pass2Result, 'projection' | 'source' | 'tiling' | 'meanRank' | 'minValid'>,
+    extra: Pick<
+      Pass2Result,
+      'projection' | 'source' | 'tiling' | 'meanRank' | 'minValid' | 'factors'
+    >,
   ): Pass2Result {
     return {
       ids: ctx.ids,
@@ -351,9 +362,18 @@ export function createPass2Store(
     const rec = pipeline.record();
     const frames = rec.frames;
     const state = factors?.state(frames) ?? 'none';
-    // After a failed factor Extract the file is replayed, so a repeating failure is no dead end.
+    // After a failed factor Extract the file is replayed, so a repeating failure is no dead
+    // end; a stream has no file and reads the factors again.
+    const isLive = live?.on() === true;
     const onFactors =
-      factors !== undefined && from === 'auto' && state === 'ready' && !factorsFailed();
+      factors !== undefined && from === 'auto' && state === 'ready' && (isLive || !factorsFailed());
+    if (isLive && !onFactors) {
+      setError(
+        'A live stream has no file to replay: Extract reads the factors once they are ready.',
+      );
+      setStatus('error');
+      return;
+    }
     // Before the first await: a cancel from here on knows whether a pipeline runs.
     setSource(onFactors ? 'factors' : 'raw');
     setStatus('running');
@@ -414,7 +434,7 @@ export function createPass2Store(
     };
     current = ctx;
     if (onFactors && factors) {
-      await runOnFactors(gen, ctx, factors, bytes);
+      await runOnFactors(gen, ctx, factors, bytes, isLive ? 'discover' : 'replay');
       return;
     }
     // The first replay after Discover compresses, when no factors exist yet.
@@ -463,6 +483,7 @@ export function createPass2Store(
     ctx: Ctx,
     f: Pass2Factors,
     bytes: Uint8Array,
+    origin: 'replay' | 'discover',
   ): Promise<void> {
     let broken = false;
     // Kept here, not in the context: a failed job leaves none of it.
@@ -512,6 +533,7 @@ export function createPass2Store(
         resultOf(ctx, {
           ...(projection ? { projection } : {}),
           source: 'factors',
+          factors: origin,
           ...(info ? { tiling: info.tiling, meanRank: info.meanRank } : {}),
           ...(minValid ? { minValid } : {}),
         }),

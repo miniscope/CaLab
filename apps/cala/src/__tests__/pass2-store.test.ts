@@ -67,10 +67,13 @@ function setup(
   opts: {
     final?: boolean;
     frames?: number;
+    /** The motion record misses frame 3 (a file's replay is refused). */
+    gap?: boolean;
     status?: string;
     flatMap?: FlatFieldMap | null;
     noSigned?: boolean;
     factors?: Pass2Factors;
+    live?: { on(): boolean; blocked(): string | null };
     /** The replay never answers a step (still running when the test cancels it). */
     hang?: boolean;
     /** The replay fails to start. */
@@ -81,7 +84,8 @@ function setup(
 ) {
   const rec = new RunRecord();
   const frames = opts.frames ?? 8;
-  for (let t = 0; t < frames; t++) rec.push(t, [t], [-t], [0], [0.5], [0.01]);
+  for (let t = 0; t < frames; t++)
+    if (!(opts.gap && t === 3)) rec.push(t, [t], [-t], [0], [0.5], [0.01]);
   rec.noteSession(1, [0.25, 2, -3]);
   const started: { options: unknown; cells: unknown; replay: unknown }[] = [];
   const steps: PipelineStepResult[] = [
@@ -118,7 +122,7 @@ function setup(
     status: () => ({ final: opts.final ?? true }),
   } as unknown as CellStore;
   return {
-    store: createPass2Store(client, pipeline, cells, undefined, undefined, opts.factors),
+    store: createPass2Store(client, pipeline, cells, undefined, undefined, opts.factors, opts.live),
     started,
     steps,
     stops,
@@ -200,6 +204,74 @@ async function settle(): Promise<void> {
 }
 
 describe('Extract (pass 2) store', () => {
+  const LIVE = { on: () => true, blocked: () => null };
+
+  it("reads the factors of a live run, as Discover's", async () => {
+    const { f, calls } = fakeFactors('ready', [win(0, 4), win(4, 4)]);
+    const { store, started } = setup({ factors: f, live: LIVE });
+    expect(store.blockedReason()).toBeNull();
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('done');
+    expect(started).toHaveLength(0);
+    expect(calls).toEqual(['extract 3']);
+    expect(store.result()).toMatchObject({ source: 'factors', factors: 'discover' });
+  });
+
+  it('does not apply a replay reason to a live run', async () => {
+    const { f, calls } = fakeFactors('ready', [win(0, 2), win(2, 1)]);
+    const file = setup({ factors: f, gap: true });
+    expect(file.store.blockedReason()).toBe('Discover has a gap in its motion record.');
+    const { store, started } = setup({ factors: f, live: LIVE, gap: true });
+    expect(store.blockedReason()).toBeNull();
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('done');
+    expect(started).toHaveLength(0);
+    expect(calls).toEqual(['extract 3']);
+  });
+
+  it("marks a file's factor Extract as reading the replay's factors", async () => {
+    const { f } = fakeFactors('ready', [win(0, 4), win(4, 4)]);
+    const { store } = setup({ factors: f });
+    await store.run();
+    await settle();
+    expect(store.result()?.factors).toBe('replay');
+  });
+
+  it('refuses to replay a stream, and says why the factors cannot be read yet', async () => {
+    const why = "The stream's last windows are being compressed (2 waiting).";
+    const { f, calls } = fakeFactors('compressing');
+    const { store, started } = setup({ factors: f, live: { on: () => true, blocked: () => why } });
+    expect(store.blockedReason()).toBe(why);
+    await store.run();
+    expect(store.status()).toBe('error');
+    expect(store.error()).toBe(why);
+    expect(started).toHaveLength(0);
+    expect(calls).toEqual([]);
+    const ready = fakeFactors('ready', [win(0, 4), win(4, 4)]);
+    const raw = setup({ factors: ready.f, live: LIVE });
+    await raw.store.run(undefined, 'raw');
+    expect(raw.store.status()).toBe('error');
+    expect(raw.store.error()).toBe(
+      'A live stream has no file to replay: Extract reads the factors once they are ready.',
+    );
+    expect(raw.started).toHaveLength(0);
+  });
+
+  it('reads the factors of a live run again after a factor Extract failed', async () => {
+    const { f, calls } = fakeFactors('ready', [win(0, 4), win(4, 4)], { fail: 'out of memory' });
+    const { store, started } = setup({ factors: f, live: LIVE });
+    await store.run();
+    await settle();
+    expect(store.status()).toBe('error');
+    expect(store.factorsFailed()).toBe(true);
+    await store.run();
+    await settle();
+    expect(calls).toEqual(['extract 3', 'extract 3']);
+    expect(started).toHaveLength(0);
+  });
+
   it('feeds the compressor on the offset grids when compression is on and no factors exist', async () => {
     const { f, calls } = fakeFactors('none');
     const { store, started } = setup({ factors: f });
