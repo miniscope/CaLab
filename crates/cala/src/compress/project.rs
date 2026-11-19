@@ -12,7 +12,7 @@
 //! [`WindowProjector`] holds the row `fᵀ diag(b_k) W_k` of every functional
 //! and tile it touches and the constant; a frame then costs `rank`
 //! multiply-adds per row. The functionals are those of
-//! [`TraceEngine::process_projected`]: each cell's filtered column (its
+//! [`crate::trace::TraceEngine::process_projected`]: each cell's filtered column (its
 //! support part minus the moat's block means against the block sums over
 //! the field of view), and the background model's (a dot product with each
 //! map of a basis, a mean over each cell's ring).
@@ -20,7 +20,7 @@
 //! Missing samples: a factor window holds no missing pixel (a missing
 //! sample is the pixel's mean over the window, [`super::TileFactors::valid`]
 //! says how often), so nothing is filled per frame as
-//! [`TraceEngine::process_into`] does. [`WindowProjector::min_valid`] tells
+//! [`crate::trace::TraceEngine::process_into`] does. [`WindowProjector::min_valid`] tells
 //! which cells that concerns.
 
 // Index loops over cells and tiles read more clearly than zipped iterators here.
@@ -43,6 +43,10 @@ pub struct WindowProjector {
     cells: usize,
     background: usize,
     frames: usize,
+    /// Index of the window's first frame.
+    start: u64,
+    /// Per tile of the window: `(x0, y0, w, h, rank)`.
+    geometry: Vec<(usize, usize, usize, usize, usize)>,
     /// The constant of every functional: `Σ_k fᵀ diag(b_k) μ_k`.
     offset: Vec<f32>,
     tiles: Vec<TileRows>,
@@ -84,10 +88,21 @@ impl WindowProjector {
                 wf.dims
             )));
         }
+        let layout = wf.layout();
+        let fits = layout.grid().len() == wf.tiles.len()
+            && layout
+                .grid()
+                .iter()
+                .zip(&wf.tiles)
+                .all(|(g, t)| *g == (t.x0, t.y0, t.w, t.h));
+        if !fits {
+            return Err(TraceError::InvalidConfig(
+                "the tiles of the factors do not fit their layout".into(),
+            ));
+        }
         let (n, n_bg) = (lib.len(), lib.background_len());
         let (width, height) = (wf.dims.width, wf.dims.height);
         let n_px = wf.dims.pixels();
-        let layout = wf.layout();
         let fov = lib.fov();
         let (bs, gl) = (lib.block_px(), lib.grid_len());
         let gw = if bs > 0 { width.div_ceil(bs) } else { 0 };
@@ -119,7 +134,8 @@ impl WindowProjector {
             _ => Vec::new(),
         };
 
-        let mut offset = vec![0.0f32; n + n_bg];
+        // Summed in float64 across tiles, as the frame route sums its basis terms.
+        let mut offset = vec![0.0f64; n + n_bg];
         let mut min_valid = vec![1.0f32; n];
         let mut tiles = Vec::with_capacity(wf.tiles.len());
         // Reused per tile: the place of each moat block's sums, `u32::MAX` for none.
@@ -202,7 +218,7 @@ impl WindowProjector {
                 if hit {
                     funcs.push(i as u32);
                     rows.extend_from_slice(&row);
-                    offset[i] += c0;
+                    offset[i] += f64::from(c0);
                 }
             }
             match &lib.bg {
@@ -220,7 +236,7 @@ impl WindowProjector {
                         }
                         funcs.push((n + a) as u32);
                         rows.extend_from_slice(&row);
-                        offset[n + a] += c0;
+                        offset[n + a] += f64::from(c0);
                     }
                 }
                 BgTerms::Ring {
@@ -246,7 +262,7 @@ impl WindowProjector {
                         if hit {
                             funcs.push((n + i) as u32);
                             rows.extend_from_slice(&row);
-                            offset[n + i] += c0;
+                            offset[n + i] += f64::from(c0);
                         }
                     }
                 }
@@ -265,16 +281,42 @@ impl WindowProjector {
             cells: n,
             background: n_bg,
             frames: wf.frames,
-            offset,
+            start: wf.start,
+            geometry: wf
+                .tiles
+                .iter()
+                .map(|t| (t.x0, t.y0, t.w, t.h, t.rank))
+                .collect(),
+            offset: offset.into_iter().map(|v| v as f32).collect(),
             tiles,
             min_valid,
         })
+    }
+
+    /// Whether `wf` is the window this was built from (same start, length,
+    /// tile rectangles and ranks). The check a caller makes once before
+    /// projecting frames of `wf`.
+    pub fn matches(&self, wf: &WindowFactors) -> bool {
+        wf.start == self.start
+            && wf.frames == self.frames
+            && wf.tiles.len() == self.geometry.len()
+            && wf
+                .tiles
+                .iter()
+                .zip(&self.geometry)
+                .all(|(t, g)| (t.x0, t.y0, t.w, t.h, t.rank) == *g)
     }
 
     /// The functionals of frame `t` (`0..frames`) of the window this was
     /// built from: `out` holds [`Self::functionals`] values, the cells'
     /// projections, then the background's.
     pub fn project(&self, wf: &WindowFactors, t: usize, out: &mut [f32]) {
+        assert!(
+            self.matches(wf),
+            "the factors are not the window this projector was built from"
+        );
+        assert!(t < self.frames, "frame {t} of a window of {}", self.frames);
+        assert_eq!(out.len(), self.functionals(), "wrong output length");
         out.copy_from_slice(&self.offset);
         for (rows, tf) in self.tiles.iter().zip(&wf.tiles) {
             let r = rows.rank;
@@ -433,12 +475,20 @@ mod tests {
     /// (full field of view), in float64, and the summed size of each one's terms.
     fn reference(lib: &Library, frame: &[f32]) -> (Vec<f32>, Vec<f32>) {
         let bs = lib.block_px();
+        let fov = lib.fov();
         let mut blocks = vec![0.0f64; lib.grid_len()];
         if bs > 0 {
             let gw = W.div_ceil(bs);
             for (y, row) in frame.chunks(W).enumerate() {
                 for (bx, seg) in row.chunks(bs).enumerate() {
-                    blocks[(y / bs) * gw + bx] += seg.iter().map(|&v| f64::from(v)).sum::<f64>();
+                    // The frame route leaves pixels outside the field of view out of the block sums.
+                    let m = &fov[y * W + bx * bs..y * W + bx * bs + seg.len()];
+                    blocks[(y / bs) * gw + bx] += seg
+                        .iter()
+                        .zip(m)
+                        .filter(|(_, &m)| m != 0)
+                        .map(|(&v, _)| f64::from(v))
+                        .sum::<f64>();
                 }
             }
         }
@@ -493,7 +543,7 @@ mod tests {
 
     #[test]
     fn projections_equal_the_dot_products_with_the_rebuilt_frame() {
-        for tiling in [Tiling::Plain, Tiling::Offset] {
+        for tiling in [Tiling::Plain, Tiling::Overlap(8), Tiling::Offset] {
             let wf = window(tiling, 120, None);
             for model in models() {
                 let lib = library(model, CENTRES.len());
@@ -518,6 +568,78 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn projections_leave_pixels_outside_the_field_of_view_out_of_the_block_sums() {
+        let wf = window(Tiling::Offset, 60, None);
+        // Dark band: the right 20 columns and the bottom 10 rows.
+        let mask: Vec<u8> = (0..W * H)
+            .map(|i| u8::from(i % W < W - 20 && i / W < H - 10))
+            .collect();
+        let cfg = FlattenConfig {
+            cell_diameter_px: 4.0,
+            ..FlattenConfig::default()
+        };
+        let fov = FovMask::from_mask(dims(), &mask).unwrap();
+        let mut flat = GlowFlattener::new(&fov, &cfg).unwrap();
+        let mut b = LibraryBuilder::new(dims())
+            .background(BackgroundModel::None)
+            .fov(mask)
+            .version(1);
+        for (i, &c) in CENTRES.iter().enumerate() {
+            b.push(footprint(i as u64, c));
+        }
+        let lib = b.build(&mut flat).unwrap();
+        let proj = WindowProjector::new(&lib, &wf).unwrap();
+        let mut frame = vec![0.0f32; W * H];
+        let mut got = vec![0.0f32; proj.functionals()];
+        for t in [0, 29, 59] {
+            wf.reconstruct(t, &mut frame);
+            proj.project(&wf, t, &mut got);
+            let (want, scale) = reference(&lib, &frame);
+            for (j, ((g, w), s)) in got.iter().zip(&want).zip(&scale).enumerate() {
+                assert!(
+                    (g - w).abs() <= 1e-4 * s + 1e-3,
+                    "frame {t} functional {j}: {g} vs {w} (terms {s})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_basis_background_with_an_empty_library() {
+        let wf = window(Tiling::Offset, 60, None);
+        let lib = library(models().remove(1), 0);
+        let proj = WindowProjector::new(&lib, &wf).unwrap();
+        assert_eq!((proj.cells(), proj.functionals()), (0, 1));
+        let mut got = [0.0f32];
+        let mut frame = vec![0.0f32; W * H];
+        wf.reconstruct(5, &mut frame);
+        proj.project(&wf, 5, &mut got);
+        let want: f64 = (0..W * H)
+            .map(|i| f64::from(0.6 + 0.4 * (i % W) as f32 / W as f32) * f64::from(frame[i]))
+            .sum();
+        assert!((f64::from(got[0]) - want).abs() <= 1e-4 * want.abs());
+    }
+
+    #[test]
+    fn matches_only_the_window_it_was_built_from() {
+        let wf = window(Tiling::Offset, 60, None);
+        let lib = library(BackgroundModel::None, 2);
+        let proj = WindowProjector::new(&lib, &wf).unwrap();
+        assert!(proj.matches(&wf));
+        let mut later = wf.clone();
+        later.start += 60;
+        assert!(!proj.matches(&later));
+        let mut other_rank = wf.clone();
+        other_rank.tiles[0].rank += 1;
+        assert!(!proj.matches(&other_rank));
+        let mut shorter = wf.clone();
+        shorter.tiles.pop();
+        assert!(!proj.matches(&shorter));
+        // Tiles that do not fit their layout are refused.
+        assert!(WindowProjector::new(&lib, &shorter).is_err());
     }
 
     #[test]
