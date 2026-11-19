@@ -90,7 +90,8 @@ export function compressionOn(params: URLSearchParams): boolean {
   return params.get('compress') !== 'off';
 }
 
-export function createCompressStore(sink?: BackfillSink) {
+/** `isLive`: whether the run is a live stream (its back-fill is never asked for nor applied). */
+export function createCompressStore(sink?: BackfillSink, isLive: () => boolean = () => false) {
   const [status, setStatus] = createSignal<CompressStatus | null>(null);
   const [backfill, setBackfill] = createSignal<BackfillInfo | null>(null);
   const [error, setError] = createSignal<string | null>(null);
@@ -133,6 +134,8 @@ export function createCompressStore(sink?: BackfillSink) {
       const s = status();
       if (!pipelineDone || !libraryFinal || version <= 0 || !s?.final) return false;
       if (s.source !== 'discover') return false;
+      // A live run keeps the fast loop's traces: the factors of a stream are not validated for this yet.
+      if (isLive()) return false;
       if (requested === session) return false;
       requested = session;
       return true;
@@ -153,6 +156,8 @@ export function createCompressStore(sink?: BackfillSink) {
       if (msg.session !== session) return;
       if (msg.type === 'status') setStatus(msg.status);
       else if (msg.type === 'traces') {
+        // Second line: a late back-fill must not clear a live run's history.
+        if (isLive()) return;
         sink?.onBackfill(msg.first, msg.start, msg.count, msg.ids, msg.traces);
       } else if (msg.type === 'backfilled') {
         setBackfill({ version: msg.version, frames: msg.frames, msPerFrame: msg.msPerFrame });

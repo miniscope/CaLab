@@ -980,6 +980,63 @@ describe('back-fill from the factors', () => {
   });
 });
 
+describe('the back-fill and a live run', () => {
+  const status = {
+    windows: 2,
+    frames: 100,
+    pending: 0,
+    pendingFrames: 0,
+    meanRank: 2,
+    msPerFrame: 8,
+    factorBytes: 1 << 20,
+    final: true,
+    tiling: 'plain' as const,
+    source: 'discover' as const,
+  };
+  const backfillMsg = {
+    type: 'traces' as const,
+    session: 3,
+    version: 4,
+    first: true,
+    start: 0,
+    count: 50,
+    ids: Uint32Array.of(5),
+    traces: Float32Array.from({ length: 50 }, (_, i) => i),
+  };
+
+  function setup(live: boolean) {
+    const cells = createCellStore();
+    const store = createCompressStore(cells, () => live);
+    cells.reset(3);
+    store.reset(3);
+    store.onMessage({ type: 'status', session: 3, status });
+    // The fast loop's history: cell 5 is born at frame 60.
+    cells.history().push(60, 2, [5], [1, 2]);
+    return { cells, store };
+  }
+
+  it('does not ask for a back-fill of a live run', () => {
+    const { store } = setup(true);
+    expect(store.takeBackfill(true, true, 4)).toBe(false);
+  });
+
+  it('keeps the fast loop traces when a back-fill arrives on a live run', () => {
+    const { cells, store } = setup(true);
+    store.onMessage(backfillMsg);
+    expect(cells.history().span(5)).toEqual({ first: 60, end: 62 });
+    const t = cells.history().range(5, 0, 62);
+    expect(Number.isNaN(t[0])).toBe(true);
+    expect(Array.from(t.slice(60))).toEqual([1, 2]);
+  });
+
+  it('replaces the history after the back-fill of a file run', () => {
+    const { cells, store } = setup(false);
+    expect(store.takeBackfill(true, true, 4)).toBe(true);
+    store.onMessage(backfillMsg);
+    expect(cells.history().span(5)).toEqual({ first: 0, end: 50 });
+  });
+});
+
 describe('the compress store and the errors of Extract jobs', () => {
   it("an error that names a job is not the compression's", () => {
     const store = createCompressStore();

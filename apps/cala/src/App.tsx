@@ -113,7 +113,9 @@ const App: Component = () => {
   );
   // `?noqc`: run without online quality control (to measure its cost).
   // The compress worker: windows and factors are files in OPFS (on by default; `?compress=off`).
-  const compress = compressOn ? createCompressStore(cells) : undefined;
+  const compress = compressOn
+    ? createCompressStore(cells, () => store.info()?.live !== undefined)
+    : undefined;
   // The review worker gets the factors from the compress worker; the cells it
   // finds go to the slow loop, which takes them on probation.
   const review =
