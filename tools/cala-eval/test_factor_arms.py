@@ -150,6 +150,18 @@ class Arms(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--frames") + 1], "6000")
         self.assertEqual(cmd[cmd.index("--factors-out") + 1], "out/plain/factors")
 
+    def test_extra_flags_end_every_command(self) -> None:
+        cmd = A.command(
+            Path("qc"),
+            Path("rec"),
+            Path("out/raw"),
+            A.arms(5)["raw"],
+            motion=False,
+            frames=None,
+            extra=["--joint-update", "all"],
+        )
+        self.assertEqual(cmd[-2:], ["--joint-update", "all"])
+
     def test_raw_command_has_no_factor_folder(self) -> None:
         cmd = A.command(
             Path("qc"),

@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -125,7 +126,9 @@ def command(
     motion: bool,
     frames: int | None,
     budget: int | None = None,
+    extra: list[str] | None = None,
 ) -> list[str]:
+    """The `qc_eval` command of an arm; `extra` flags end it (the same for every arm of a run)."""
     cmd = [str(qc_eval), "real", str(rec), str(run), *flags]
     if "--replay-source" in flags:
         cmd += ["--factors-out", str(run / "factors")]
@@ -135,7 +138,7 @@ def command(
         cmd += ["--frames", str(frames)]
     if budget is not None:
         cmd += ["--budget", str(budget)]
-    return cmd
+    return cmd + (extra or [])
 
 
 def done(run: Path, cmd: list[str] | None = None) -> bool:
@@ -350,6 +353,12 @@ def main() -> None:
     ap.add_argument("--arms", help="comma-separated subset")
     ap.add_argument("--truth", type=Path)
     ap.add_argument("--qc-eval", type=Path, default=DEFAULT_QC_EVAL)
+    ap.add_argument(
+        "--extra",
+        default="",
+        help="qc_eval flags added to every arm, in one quoted string "
+        "(for example '--joint-update all --joint-sign all')",
+    )
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     assert 1 <= a.jobs <= 4, "--jobs must be 1 to 4"
@@ -363,7 +372,14 @@ def main() -> None:
     budget = None if a.budget == DEFAULT_BUDGET else a.budget
     cmds = {
         n: command(
-            a.qc_eval, a.rec, a.out / n, table[n], not a.no_motion, a.frames, budget
+            a.qc_eval,
+            a.rec,
+            a.out / n,
+            table[n],
+            not a.no_motion,
+            a.frames,
+            budget,
+            shlex.split(a.extra),
         )
         for n in names
     }
