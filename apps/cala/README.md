@@ -422,7 +422,7 @@ which source each stage read (`source`, format 7; see Run stages and export).
 
 **Refine on the factors (`?refine=factors`).** Refine runs iterations on the
 factor files in the slow worker, until fewer than 2 % of the cells' footprints
-correlate below 0.99 with the previous iteration's, at most 20 iterations. A
+correlate below 0.99 with the same cell's footprint in the previous iteration, at most 20 iterations. A
 file without factors first gets a replay that only compresses. The Run panel
 reads out each iteration; Cancel takes effect between iterations. After a
 look-back Discover, a failed Refine on the factors, or unusable factors, Refine
@@ -435,8 +435,8 @@ cap on `wl24_01` (Amendment 3, A15), so it is not the default.
 filled again from Discover's own factors with the final library and replaces
 the live history (display only: a file's export needs an Extract). A live
 stream compresses too, but its trace view and its export keep the traces the
-fast loop solved live, as before; Extract on a stream's factors is not built yet
-(phase 4.2) and nothing caps the storage yet (phase 4.3). With look-back on,
+fast loop solved live until you run Extract on its factors (see "After the
+stream"); nothing caps the storage yet (phase 4.3). With look-back on,
 both run together: look-back re-reads the recording's file during Discover and
 uses no browser storage.
 
@@ -468,8 +468,8 @@ has the count (`low_valid`) and the per-cell array (`extract_min_valid`).
 - Cancelling a factor Extract sends no message to the worker. The job runs to
   its last window unless the run is reset, its late messages are dropped, and a
   new job waits behind it.
-- Refine is always a raw replay in this phase. Refine on factors is phase 4.2,
-  behind a switch.
+- Refine replays the file unless `?refine=factors` is set; with the switch it
+  refines on the factors.
 - An Extract clicked right after a Refine is cancelled, before the compress
   worker's reset status arrives, still sees the factors as being compressed:
   it replays the file without compressing (the result is right, the

@@ -23,7 +23,7 @@ run's event log and these docs.
   failed (not cancelled, not aborted by a reset), every later Extract replays
   the file until the next Discover start (a new Discover, another recording, a
   session of a multi-session run) or a Refine run while an Extract result
-  exists. Refine is always a raw replay.
+  exists. Refine replays the file unless `?refine=factors` is set.
 - One replay runs at a time: no Extract while Refine runs and no Refine while
   Extract runs.
 - Refine can run any number of times. Each run starts from the library the
