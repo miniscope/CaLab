@@ -350,6 +350,25 @@ def hold_seeded(todo: list[str]) -> tuple[list[str], list[str]]:
     return [n for n in todo if n not in SEEDED], [n for n in todo if n in SEEDED]
 
 
+def pending(out_dir: Path, names: list[str], cmds: dict[str, list[str]]) -> list[str]:
+    """The arms to run: those not finished with the current command. When the run `seed` is
+    among them, the seeded arms too: their stored command names only the seed folder, so a
+    finished one may have read the seed that is about to be replaced."""
+    todo = [n for n in names if not done(out_dir / n, cmds[n])]
+    if "seed" in todo:
+        todo += [n for n in names if n in SEEDED and n not in todo]
+    return [n for n in names if n in todo]
+
+
+def held_reason(out_dir: Path, have: list[str]) -> str:
+    """Why a seeded arm of the report has no run."""
+    if "seed" not in have:
+        return "the seed run did not finish"
+    if not seed_has_map(out_dir / "seed"):
+        return "the seed run made no flat field map"
+    return "its own run did not finish"
+
+
 def stage_table(run: Path) -> list[str]:
     path = run / "stage_times.tsv"
     if not path.exists():
@@ -438,16 +457,36 @@ def report(
                         truth_path=truth,
                     )
                 )
+        elif n == "raw_seed" and "raw" in have:
+            # Two Discovers, so cells are paired by footprint; the null runs would be
+            # compared by id against another Discover.
+            text += [
+                (
+                    f"### `{n}` against `raw`: what the seed alone changes in the raw "
+                    "pipeline (not a gate)"
+                ),
+                "",
+                factor_closeness.report(
+                    out_dir / "raw",
+                    out_dir / n,
+                    [],
+                    tile=line_step(arm_cmd(out_dir, n)),
+                    truth_path=truth,
+                    match=True,
+                ),
+            ]
         elif n == "live_seed" and "raw_seed" in have:
-            text.append(
+            text += [
                 factor_closeness.report(
                     out_dir / "raw_seed",
                     out_dir / n,
                     [],
                     tile=line_step(arm_cmd(out_dir, n)),
                     truth_path=truth,
-                )
-            )
+                ),
+                "This pair has no null runs, so it has no noise floor of its own.",
+                "",
+            ]
         elif n in ("lb_fac", "lb_live") and "lb_raw" in have:
             # The look-back arms have their own Discovers, so cells are paired by footprint.
             text.append(
@@ -490,9 +529,9 @@ def report(
         line = seed_line(out_dir / "seed")
         if line:
             text += [line, ""]
-        held = [n for n in names if n in SEEDED and n not in have]
-        if held and not seed_has_map(out_dir / "seed"):
-            text += [f"{', '.join(held)}: not run (the seed run made no map).", ""]
+    held = [n for n in names if n in SEEDED and n not in have]
+    if "seed" in names and held:
+        text += [f"{', '.join(held)}: not run ({held_reason(out_dir, have)}).", ""]
     flats = [r for r in (flat_row(out_dir / n) for n in have) if r]
     if flats:
         text += [
@@ -556,6 +595,8 @@ def main() -> None:
     assert a.refine >= 2, "--refine must be at least 2 (plain_recal compresses pass 2)"
     if a.budget < 2:
         ap.error("--budget must be at least 2 (the null arms use half of it)")
+    if a.seed_from is not None and a.no_motion:
+        ap.error("--seed-from needs motion: the flat field is only on with it")
     seed = (a.seed_from, a.out / "seed") if a.seed_from is not None else None
     table = arms(a.refine, a.budget, seed)
     names = a.arms.split(",") if a.arms else default_arms(table)
@@ -566,6 +607,8 @@ def main() -> None:
     assert "seed" in names or not set(SEEDED) & set(names), (
         "raw_seed and live_seed need the arm seed in --arms"
     )
+    if a.seed_from is not None and not {"seed", *SEEDED} & set(names):
+        ap.error("--seed-from needs the arms seed, raw_seed or live_seed in --arms")
     budget = None if a.budget == DEFAULT_BUDGET else a.budget
     cmds = {
         n: command(
@@ -587,7 +630,7 @@ def main() -> None:
     assert a.qc_eval.exists(), (
         f"{a.qc_eval}: build it with `cargo build --release --example qc_eval`"
     )
-    todo = [n for n in names if not done(a.out / n, cmds[n])]
+    todo = pending(a.out, names, cmds)
     first, rest = run_order(todo)
     codes = [run_arm(n, cmds[n], a.out / n) for n in first]
     if "seed" in names:

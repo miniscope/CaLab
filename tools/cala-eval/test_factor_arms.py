@@ -1,5 +1,7 @@
 """Tests for factor_arms.py: `python -m unittest discover tools/cala-eval`."""
 
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -165,6 +167,7 @@ class Arms(unittest.TestCase):
             seen,
             {
                 "live": ("raw", False),
+                "raw_seed": ("raw", True),
                 "live_seed": ("raw_seed", False),
                 "lb_fac": ("lb_raw", True),
                 "lb_live": ("lb_raw", True),
@@ -227,6 +230,121 @@ class Arms(unittest.TestCase):
             text = A.report(out, ["seed", "raw_seed", "live_seed"], None)
         self.assertIn("made no flat field map", text)
         self.assertIn("raw_seed, live_seed: not run", text)
+
+    def test_a_redone_seed_reruns_the_seeded_arms_that_were_finished(self) -> None:
+        a = A.arms(5, seed=(12000, Path("out") / "seed"))
+        names = ["raw", "live_seed", "seed", "raw_seed"]
+        cmds = {n: ["qc"] + a[n] for n in names}
+        with tempfile.TemporaryDirectory() as t:
+            out = Path(t)
+            for n in names:
+                (out / n).mkdir()
+                rec = {"arm": n, "cmd": cmds[n], "returncode": 0, "wall_s": 1.0}
+                (out / n / "run.json").write_text(json.dumps(rec))
+            self.assertEqual(A.pending(out, names, cmds), [])
+            (out / "seed" / "run.json").unlink()
+            todo = A.pending(out, names, cmds)
+            self.assertEqual(todo, ["live_seed", "seed", "raw_seed"])
+            self.assertEqual(A.run_order(todo)[0], ["seed"])
+            # only the seeded arms asked for
+            self.assertEqual(
+                A.pending(out, ["seed", "raw_seed"], cmds), ["seed", "raw_seed"]
+            )
+
+    def test_run_order_with_a_partial_todo(self) -> None:
+        self.assertEqual(
+            A.run_order(["raw_seed", "lb_raw"]), ([], ["raw_seed", "lb_raw"])
+        )
+        self.assertEqual(A.run_order(["seed"]), (["seed"], []))
+        self.assertEqual(A.run_order([]), ([], []))
+
+    def test_dry_run_prints_the_seed_arms_in_order(self) -> None:
+        argv = ["factor_arms.py", "--rec", "rec", "--out", "out", "--qc-eval", "qc"]
+        argv += [
+            "--arms",
+            "seed,raw_seed,live_seed",
+            "--seed-from",
+            "9000",
+            "--dry-run",
+        ]
+        buf = io.StringIO()
+        with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(buf):
+            A.main()
+        lines = buf.getvalue().splitlines()
+        self.assertEqual(
+            [ln.split()[3] for ln in lines],
+            ["out/seed", "out/raw_seed", "out/live_seed"],
+        )
+        self.assertIn("--from 9000", lines[0])
+        self.assertTrue(all("--ff-seed-run out/seed" in ln for ln in lines[1:]))
+
+    def test_seed_from_is_refused_without_motion_or_without_a_seed_arm(self) -> None:
+        base = ["factor_arms.py", "--rec", "rec", "--out", "out", "--dry-run"]
+        for extra in (
+            ["--seed-from", "9", "--no-motion", "--arms", "seed"],
+            ["--seed-from", "9", "--arms", "raw,live"],
+            ["--seed-from", "9"],
+        ):
+            with (
+                mock.patch.object(sys, "argv", base + extra),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                A.main()
+
+    def test_the_report_tables_and_not_run_lines(self) -> None:
+        a = A.arms(5, seed=(12000, Path("out") / "seed"))
+
+        def write(out: Path, n: str, files: dict[str, str]) -> None:
+            (out / n).mkdir()
+            rec = {"arm": n, "cmd": ["qc"] + a[n], "returncode": 0, "wall_s": 1.0}
+            (out / n / "run.json").write_text(json.dumps(rec))
+            for f, body in files.items():
+                (out / n / f).write_text(body)
+
+        lb = (
+            "rate\tmax_frames\tcatchup\tdouble\tframes\tpushed\tcell_frames\tbirths"
+            "\tin_need\twall_s\tdrain_steps\tdrain_frames\n"
+            "2\t3000\t0\t0\t24000\t23000\t510000\t140\t3\t812.500\t900\t1800\n"
+        )
+
+        def fake(ref: Path, test: Path, nulls: list[Path], **kw: object) -> str:
+            return f"CMP {test.name}"
+
+        with (
+            tempfile.TemporaryDirectory() as t,
+            mock.patch.object(A.factor_closeness, "report", fake),
+        ):
+            out = Path(t)
+            write(out, "raw", {})
+            write(out, "seed", {"flat_field_updates.tsv": FLAT_TSV})
+            write(out, "raw_seed", {"flat_field_updates.tsv": FLAT_TSV})
+            write(out, "live_seed", {})
+            write(out, "lb_raw", {"lookback.tsv": lb})
+            text = A.report(
+                out, ["raw", "seed", "raw_seed", "live_seed", "lb_raw"], None
+            )
+            self.assertIn("CMP raw_seed", text)
+            self.assertIn("what the seed alone changes", text)
+            self.assertIn("no noise floor of its own", text)
+            self.assertIn("Seed: the last flat field map", text)
+            self.assertIn("| arm | seeded | flat field maps made", text)
+            self.assertIn("| lb_raw | 24000 | 510000 | 3 | 812.5 |", text)
+            self.assertNotIn("not run", text)
+        with tempfile.TemporaryDirectory() as t:
+            out = Path(t)
+            write(out, "raw", {})
+            write(out, "seed", {"flat_field_updates.tsv": FLAT_TSV_NONE})
+            text = A.report(out, ["raw", "seed", "raw_seed", "live_seed"], None)
+            self.assertIn(
+                "raw_seed, live_seed: not run (the seed run made no flat field map)",
+                text,
+            )
+        with tempfile.TemporaryDirectory() as t:
+            out = Path(t)
+            write(out, "raw", {})
+            text = A.report(out, ["raw", "seed", "raw_seed"], None)
+            self.assertIn("seed run did not finish", text)
 
     def test_extract_row_reads_the_extract_stage(self) -> None:
         with tempfile.TemporaryDirectory() as d:
