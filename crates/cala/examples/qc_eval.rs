@@ -88,7 +88,9 @@
 //!                      in a window are missing in all its frames, as in the
 //!                      live frame; a block waits until its window is on
 //!                      disk, and the last window is flushed before the
-//!                      drain). Needs `--factors-out`,
+//!                      drain; without `--lookback-drain` the frames of the
+//!                      last, unflushed window are never read back, which
+//!                      the raw source does read). Needs `--factors-out`,
 //!                      `--factors-pass 1` and no `--catchup`
 //!   --catchup X        reference arm: every X Discover frames give all
 //!                      cells frames 0..t at once (`--catchup-double`: at
