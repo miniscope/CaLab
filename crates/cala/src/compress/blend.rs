@@ -267,6 +267,62 @@ impl BlendLayout {
             }
         }
     }
+
+    /// The rectangle `rect = (x0, y0, w, h)` of frame `t`, rebuilt into `out`
+    /// (`w * h`, row-major) with the arithmetic of [`Self::reconstruct`], so
+    /// equal to those pixels of the whole frame bit for bit. `false` (and
+    /// `out` untouched) when `wf` is not of this layout, `t` is past the
+    /// window, the rectangle leaves the frame or `out` has another length.
+    pub fn reconstruct_rect(
+        &self,
+        wf: &WindowFactors,
+        t: usize,
+        rect: (usize, usize, usize, usize),
+        out: &mut [f32],
+    ) -> bool {
+        let (rx, ry, rw, rh) = rect;
+        let fits = wf.tiles.len() == self.grid.len()
+            && self
+                .grid
+                .iter()
+                .zip(&wf.tiles)
+                .all(|(g, tf)| *g == (tf.x0, tf.y0, tf.w, tf.h));
+        // Checked sums: a huge rectangle is refused, not a panic.
+        let (Some(rx1), Some(ry1), Some(len)) =
+            (rx.checked_add(rw), ry.checked_add(rh), rw.checked_mul(rh))
+        else {
+            return false;
+        };
+        if !fits
+            || t >= wf.frames
+            || out.len() != len
+            || rx1 > self.dims.width
+            || ry1 > self.dims.height
+        {
+            return false;
+        }
+        out.fill(0.0);
+        for (tf, wt) in wf.tiles.iter().zip(&self.weights) {
+            let (x0, x1) = (rx.max(tf.x0), rx1.min(tf.x0 + tf.w));
+            let (y0, y1) = (ry.max(tf.y0), ry1.min(tf.y0 + tf.h));
+            if x0 >= x1 || y0 >= y1 {
+                continue;
+            }
+            let v = &tf.temporal[t * tf.rank..(t + 1) * tf.rank];
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let p = (y - tf.y0) * tf.w + (x - tf.x0);
+                    let wrow = &tf.spatial[p * tf.rank..(p + 1) * tf.rank];
+                    let mut s = tf.mean[p];
+                    for (a, b) in wrow.iter().zip(v) {
+                        s += a * b;
+                    }
+                    out[(y - ry) * rw + (x - rx)] += wt[p] * s;
+                }
+            }
+        }
+        true
+    }
 }
 
 #[cfg(test)]
@@ -466,5 +522,111 @@ mod tests {
         wf.reconstruct(50, &mut a);
         lay.reconstruct(&wf, 50, &mut b);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn a_rectangle_is_rebuilt_as_the_frame_is() {
+        let dims = Dims::new(128, 80).unwrap();
+        let (frames, px) = (60, dims.pixels());
+        let y = movie(dims, frames);
+        for tiling in [Tiling::Plain, Tiling::Offset] {
+            let cfg = CompressConfig {
+                window: frames,
+                k0: 8,
+                tiling,
+                ..CompressConfig::default()
+            };
+            let mut wc = WindowCompressor::new(dims, cfg);
+            let wf = y.chunks_exact(px).find_map(|f| wc.push(f)).unwrap();
+            let lay = BlendLayout::new(dims, 64, tiling);
+            let mut full = vec![0.0f32; px];
+            lay.reconstruct(&wf, 17, &mut full);
+            // Inside one tile, across the lines x = 64 and y = 32, at the frame's corner.
+            for rect in [(4, 4, 20, 10), (50, 20, 40, 30), (100, 60, 28, 20)] {
+                let (x0, y0, w, h) = rect;
+                let mut part = vec![f32::NAN; w * h];
+                assert!(lay.reconstruct_rect(&wf, 17, rect, &mut part));
+                for yy in 0..h {
+                    for xx in 0..w {
+                        assert_eq!(
+                            part[yy * w + xx].to_bits(),
+                            full[(y0 + yy) * dims.width + x0 + xx].to_bits(),
+                            "{tiling:?} {rect:?} at ({yy}, {xx})"
+                        );
+                    }
+                }
+            }
+            let mut out = vec![7.0f32; 4];
+            assert!(
+                !lay.reconstruct_rect(&wf, 17, (0, 0, 2, 3), &mut out),
+                "length"
+            );
+            assert!(
+                !lay.reconstruct_rect(&wf, frames, (0, 0, 2, 2), &mut out),
+                "frame"
+            );
+            assert!(
+                !lay.reconstruct_rect(&wf, 0, (127, 0, 2, 2), &mut out),
+                "outside"
+            );
+            let other = BlendLayout::new(dims, 32, tiling);
+            assert!(
+                !other.reconstruct_rect(&wf, 0, (0, 0, 2, 2), &mut out),
+                "layout"
+            );
+            assert_eq!(out, vec![7.0f32; 4], "a refused call leaves out alone");
+        }
+    }
+
+    #[test]
+    fn rectangles_match_the_frame_under_every_tiling_and_extent() {
+        let dims = Dims::new(128, 80).unwrap();
+        let (frames, px) = (40, dims.pixels());
+        let y = movie(dims, frames);
+        for tiling in TILINGS {
+            let cfg = CompressConfig {
+                window: frames,
+                k0: 6,
+                tiling,
+                ..CompressConfig::default()
+            };
+            let mut wc = WindowCompressor::new(dims, cfg);
+            let wf = y.chunks_exact(px).find_map(|f| wc.push(f)).unwrap();
+            let lay = BlendLayout::new(dims, 64, tiling);
+            let mut full = vec![0.0f32; px];
+            for t in [0, 39] {
+                lay.reconstruct(&wf, t, &mut full);
+                // One pixel, a whole row, the whole frame, and a block over several tiles.
+                for rect in [
+                    (70, 33, 1, 1),
+                    (0, 79, 128, 1),
+                    (0, 0, 128, 80),
+                    (30, 10, 90, 60),
+                ] {
+                    let (x0, y0, w, h) = rect;
+                    let mut part = vec![f32::NAN; w * h];
+                    assert!(lay.reconstruct_rect(&wf, t, rect, &mut part));
+                    for yy in 0..h {
+                        for xx in 0..w {
+                            assert_eq!(
+                                part[yy * w + xx].to_bits(),
+                                full[(y0 + yy) * dims.width + x0 + xx].to_bits(),
+                                "{tiling:?} t={t} {rect:?} at ({yy}, {xx})"
+                            );
+                        }
+                    }
+                }
+            }
+            let mut none: [f32; 0] = [];
+            assert!(
+                lay.reconstruct_rect(&wf, 0, (5, 5, 0, 3), &mut none),
+                "empty"
+            );
+            let mut four = [0.0f32; 4];
+            assert!(
+                !lay.reconstruct_rect(&wf, 0, (usize::MAX, 0, 2, 2), &mut four),
+                "overflow"
+            );
+        }
     }
 }
