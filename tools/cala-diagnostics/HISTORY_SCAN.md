@@ -38,7 +38,7 @@ more history there is. Beyond 3 GB of factors the oldest windows are dropped.
 ### Inputs → outputs
 
 ```sh
-# 1. a run that also writes the factors (600-frame windows, CALAFAC1)
+# 1. a run that also writes the factors (600-frame windows, CALAFAC2 on plain tiles; CALAFAC1 still reads)
 discover_eval real RAW RUN --motion --fps F --factors-out RUN/factors
 # 2. test every 4th pixel in the field of view  ->  RUN/history_wholetest_scan.tsv
 python tools/cala-diagnostics/history_wholetest.py RUN --scan 4 --keep-known-activity \

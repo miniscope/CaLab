@@ -1,4 +1,5 @@
-"""Run the phase-0 arms of the factor pipeline on one recording and write the report.
+"""Run the arms of the factor pipeline on one recording and write the closeness report
+with gate A1.
 
     python factor_arms.py --rec AVI_DIR --out DIR [--frames N] [--no-motion]
         [--refine 5] [--budget U] [--jobs 3] [--arms raw,plain,...] [--truth truth.npz]
@@ -9,7 +10,6 @@ Arms (each a `qc_eval real` run in `DIR/<arm>`; pass 1 is the same in all):
 - `raw`: Discover, `--refine` refine replays and the Extract pass on the raw replay.
 - `null_lo`, `null_hi`: `raw` with half and twice the slow-loop budget in the
   replays (`--budget`, default `DEFAULT_BUDGET`). Their distance to `raw` is the null spread.
-  A finished arm is skipped only when its stored command equals the current one.
 - `plain`, `overlap8`, `overlap16`, `offset`: the replays and the Extract pass
   solve frames rebuilt from the factors of pass 1, under that tiling.
 - `plain_recal`: as `plain`, but the factors are those of the first replay
@@ -22,8 +22,9 @@ Arms (each a `qc_eval real` run in `DIR/<arm>`; pass 1 is the same in all):
 - `x_raw` and `x_<tiling>`: Discover and the Extract pass only, so the two
   Extracts solve with one and the same library.
 
-A finished arm (`run.json` with return code 0) is skipped. Raw data is only
-read. Needs numpy (for the report).
+An arm is run again unless its `run.json` holds return code 0 and the same
+command as now; such a finished arm is reused, also by the report. Raw data is
+only read. Needs numpy (for the report).
 """
 
 from __future__ import annotations

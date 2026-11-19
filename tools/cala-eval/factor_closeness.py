@@ -1,4 +1,4 @@
-"""Closeness of two `qc_eval` runs of one recording (factor pipeline, phase 0).
+"""Closeness of two `qc_eval` runs of one recording, and gate A1 of the factor pipeline.
 
     python factor_closeness.py --ref RUN --test RUN [--null RUN ...]
         [--truth truth.npz] [--tile 64] [--band 16] [--out cells.tsv]
@@ -351,7 +351,10 @@ A1_TOL = 1e-9
 
 
 def a1_value(r: Row, key: str) -> float:
-    """The row's value for gate A1: a missing one counts as 0, the worst case."""
+    """The row's value for gate A1: 0, the worst case, for a cell the test run lost
+    (`in_test` 0, whatever its other columns hold) or a value that is not finite."""
+    if not r.get("in_test", 1.0):
+        return 0.0
     v = r[key]
     return v if math.isfinite(v) else 0.0
 
@@ -579,7 +582,16 @@ def main() -> None:
     ap.add_argument("--test", type=Path, required=True)
     ap.add_argument("--null", type=Path, action="append", default=[])
     ap.add_argument("--truth", type=Path)
-    ap.add_argument("--tile", type=int, default=64)
+    ap.add_argument(
+        "--tile",
+        type=int,
+        default=64,
+        help=(
+            "spacing of the tile lines, px, for the edge distances and the footprint "
+            "jump of both runs (default 64, plain tiles); arms on the offset grids "
+            "need 32"
+        ),
+    )
     ap.add_argument("--band", type=float, default=16.0)
     ap.add_argument("--out", type=Path, help="per-cell table (tsv)")
     a = ap.parse_args()

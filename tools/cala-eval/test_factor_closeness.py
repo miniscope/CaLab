@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -290,6 +291,19 @@ class Closeness(unittest.TestCase):
         self.assertIn("QC-pass cells;", text)
         self.assertIn("missing in the test run", text)
 
+    def test_report_measures_both_footprint_jumps_on_its_tile(self) -> None:
+        write_run(self.root / "a", CELLS, TRACES)
+        write_run(self.root / "b", CELLS, TRACES)
+        seen: list[int] = []
+
+        def jump(cells: dict, dims: tuple[int, int], tile: int) -> float:
+            seen.append(tile)
+            return 1.0
+
+        with mock.patch.object(F, "line_jump", side_effect=jump):
+            F.report(self.root / "a", self.root / "b", [], tile=32)
+        self.assertEqual(seen, [32, 32])
+
     def test_report_judges_against_a_null_run(self) -> None:
         write_run(self.root / "a", CELLS, TRACES)
         write_run(self.root / "b", CELLS, TRACES)
@@ -425,6 +439,44 @@ class A1Gate(unittest.TestCase):
         # Raw median 0.70 over all matched cells, 0.85 over the kept ones: not usable.
         weak = self.rows(20, 0.85, 0.85) + self.lost(20, 0.55)
         self.assertIsNone(self.ok(weak)[0])
+
+    @staticmethod
+    def flagged(n: int, ref: float) -> list[dict[str, float]]:
+        """QC-pass cells the test run lost (`in_test` 0) whose other columns are finite."""
+        return [
+            {
+                "qc_pass": 1.0,
+                "in_test": 0.0,
+                "truth_r_ref": ref,
+                "truth_r_test": ref,
+                "fp_cos": 0.99,
+                "trace_r1": 0.95,
+            }
+            for _ in range(n)
+        ]
+
+    def test_a_lost_cell_is_the_worst_case_even_with_finite_values(self) -> None:
+        truth = self.rows(20, 0.85, 0.85) + self.flagged(20, 0.85)
+        self.assertEqual(self.ok(truth)[0], False)
+        nan = float("nan")
+        traces = self.rows(20, nan, nan, r1=0.95) + self.flagged(20, nan)
+        self.assertEqual(self.ok(traces)[2], False)
+
+    def test_a_lost_cell_without_reference_truth_counts_in_rules_2_and_3(self) -> None:
+        rows = self.rows(25, 0.85, 0.85) + self.lost(30, float("nan"))
+        gate = F.a1_gate(rows, 1.0, 1.0)
+        self.assertIn("over 25 cells", gate[0][1])
+        self.assertEqual(gate[0][2], True)
+        self.assertEqual(gate[1][1], "loss 1.0000")
+        self.assertEqual(gate[1][2], False)
+        self.assertEqual(gate[2][1], "loss 1.0000")
+        self.assertIsNone(gate[2][2])
+
+    def test_a_fifth_percentile_exactly_at_the_limit_passes(self) -> None:
+        rows = self.rows(22, 0.85, 0.85) + self.rows(3, 0.85, 0.80)
+        gate = F.a1_gate(rows, 1.0, 1.0)
+        self.assertIn("5th pct -0.0500", gate[0][1])
+        self.assertEqual(gate[0][2], True)
 
     def test_a_missing_jump_or_no_cells_fail(self) -> None:
         rows = self.rows(25, 0.85, 0.85)
