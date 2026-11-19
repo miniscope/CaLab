@@ -298,5 +298,58 @@ class Closeness(unittest.TestCase):
         self.assertIn("| dropped cells |", text)
 
 
+class A1Gate(unittest.TestCase):
+    @staticmethod
+    def rows(
+        n: int, ref: float, test: float, fp: float = 0.99, r1: float = 0.95
+    ) -> list[dict[str, float]]:
+        return [
+            {
+                "qc_pass": 1.0,
+                "truth_r_ref": ref,
+                "truth_r_test": test,
+                "fp_cos": fp,
+                "trace_r1": r1,
+            }
+            for _ in range(n)
+        ]
+
+    @staticmethod
+    def passed(gate: list[tuple[str, str, bool | None]]) -> list[bool | None]:
+        return [ok for _, _, ok in gate]
+
+    def test_usable_truth_decides_and_the_trace_rule_does_not_apply(self) -> None:
+        gate = F.a1_gate(self.rows(25, 0.85, 0.85, r1=0.80), 1.00, 1.05)
+        self.assertEqual(self.passed(gate), [True, True, None, True])
+        self.assertTrue(F.a1_passes(gate))
+
+    def test_a_few_much_worse_cells_fail_the_truth_rule(self) -> None:
+        rows = self.rows(22, 0.85, 0.85) + self.rows(3, 0.85, 0.70)
+        gate = F.a1_gate(rows, 1.0, 1.0)
+        self.assertEqual(self.passed(gate), [False, True, None, True])
+        self.assertFalse(F.a1_passes(gate))
+
+    def test_without_usable_truth_the_trace_loss_decides(self) -> None:
+        nan = float("nan")
+        none = F.a1_gate(self.rows(25, nan, nan, r1=0.90), 1.0, 1.0)
+        self.assertEqual(self.passed(none), [None, True, False, True])
+        # Truth that the raw run itself does not follow is not usable.
+        weak = F.a1_gate(self.rows(25, 0.46, 0.60, r1=0.95), 1.0, 1.0)
+        self.assertEqual(self.passed(weak), [None, True, True, True])
+        few = F.a1_gate(self.rows(19, 0.9, 0.5, r1=0.95), 1.0, 1.0)
+        self.assertEqual(self.passed(few), [None, True, True, True])
+
+    def test_footprint_and_tile_line_limits(self) -> None:
+        gate = F.a1_gate(self.rows(25, 0.85, 0.85, fp=0.97), 1.10, 1.25)
+        self.assertEqual(self.passed(gate), [True, False, None, False])
+
+    def test_cells_that_fail_qc_do_not_count(self) -> None:
+        rows = self.rows(25, 0.85, 0.85)
+        bad = self.rows(10, 0.85, 0.10, fp=0.1, r1=0.1)
+        for r in bad:
+            r["qc_pass"] = 0.0
+        self.assertTrue(F.a1_passes(F.a1_gate(rows + bad, 1.0, 1.0)))
+
+
 if __name__ == "__main__":
     unittest.main()

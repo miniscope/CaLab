@@ -17,6 +17,8 @@ Arms (each a `qc_eval real` run in `DIR/<arm>`; pass 1 is the same in all):
 - `recal_rho0`, `recal_z2`, `recal_k80`, `recal_full`, `recal_iter2` and the rank
   sweep `recal_r10` to `recal_r80`: `plain_recal` with another rank cut or SVD
   setting of the compressor (`REMEDIES`); only run when named in `--arms`.
+- `chosen`: the combination chosen after phase 0: the offset grids on recalibrated factors
+  (the compressor's default of two power iterations).
 - `x_raw` and `x_<tiling>`: Discover and the Extract pass only, so the two
   Extracts solve with one and the same library.
 
@@ -91,6 +93,7 @@ def arms(refine: int, budget: int = DEFAULT_BUDGET) -> dict[str, list[str]]:
         out[name] = full + factors
         out[f"x_{name}"] = extract + factors
     out["plain_recal"] = out["plain"] + ["--factors-pass", "2"]
+    out["chosen"] = out["offset"] + ["--factors-pass", "2"]
     for name, cut in REMEDIES.items():
         out[name] = out["plain_recal"] + cut
     return out
@@ -99,6 +102,11 @@ def arms(refine: int, budget: int = DEFAULT_BUDGET) -> dict[str, list[str]]:
 def default_arms(table: dict[str, list[str]]) -> list[str]:
     """The arms run without `--arms`: all but the remedy arms."""
     return [n for n in table if n not in REMEDIES]
+
+
+def line_step(name: str) -> int:
+    """Distance between tile lines for an arm, px: 32 where the tiles are the two offset grids."""
+    return 32 if name in ("chosen", "offset", "x_offset") else 64
 
 
 def command(
@@ -250,17 +258,25 @@ def report(
         text.append("")
     nulls = [out_dir / n for n in ("null_lo", "null_hi") if n in have]
     for n in have:
-        if n in TILINGS or n == "plain_recal" or n in REMEDIES:
+        if n in TILINGS or n in ("plain_recal", "chosen") or n in REMEDIES:
             if "raw" in have:
                 text.append(
                     factor_closeness.report(
-                        out_dir / "raw", out_dir / n, nulls, truth_path=truth
+                        out_dir / "raw",
+                        out_dir / n,
+                        nulls,
+                        tile=line_step(n),
+                        truth_path=truth,
                     )
                 )
         elif n.startswith("x_") and n != "x_raw" and "x_raw" in have:
             text.append(
                 factor_closeness.report(
-                    out_dir / "x_raw", out_dir / n, [], truth_path=truth
+                    out_dir / "x_raw",
+                    out_dir / n,
+                    [],
+                    tile=line_step(n),
+                    truth_path=truth,
                 )
             )
     return "\n".join(text)

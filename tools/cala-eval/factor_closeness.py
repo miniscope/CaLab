@@ -26,6 +26,7 @@ all runs, and a refine replay keeps the cell set):
 A loss is the median of `1 - value` over the QC-pass cells. The judged measures
 are `trace_r1` and `fp_cos`; the plain `trace_r` is printed but not gated. The test
 run is `within` the null spread when its loss is at most the largest null loss.
+The report ends with gate A1 of the spec's Amendment 1.
 Needs numpy.
 """
 
@@ -336,6 +337,75 @@ def verdict(
     return "within"
 
 
+# Gate A1 of the spec's Amendment 1 (limits approved 18 Nov 2026).
+A1_TRUTH_MEDIAN = -0.01
+A1_TRUTH_P5 = -0.05
+A1_TRUTH_MIN_R = 0.8
+A1_TRUTH_MIN_CELLS = 20
+A1_FOOTPRINT_LOSS = 0.02
+A1_TRACE_LOSS = 0.08
+A1_JUMP_OVER_RAW = 0.10
+A1_WORDS = {True: "pass", False: "fail", None: "does not apply"}
+
+
+def a1_gate(
+    rows: list[Row], jump_ref: float, jump_test: float
+) -> list[tuple[str, str, bool | None]]:
+    """(rule, measured, passed) for the four rules of gate A1, on the QC-pass cells.
+
+    The truth rule applies when the truth is usable: at least `A1_TRUTH_MIN_CELLS`
+    cells have a truth correlation in both runs and the reference run's median is at
+    least `A1_TRUTH_MIN_R`. The trace rule applies when it is not. `passed` is `None`
+    for a rule that does not apply; a value that cannot be computed fails its rule.
+    """
+    qc = [r for r in rows if r["qc_pass"]]
+    pairs = [
+        (r["truth_r_ref"], r["truth_r_test"])
+        for r in qc
+        if math.isfinite(r["truth_r_ref"]) and math.isfinite(r["truth_r_test"])
+    ]
+    ref = np.asarray([a for a, _ in pairs], dtype=np.float64)
+    diff = np.asarray([b - a for a, b in pairs], dtype=np.float64)
+    usable = (
+        len(pairs) >= A1_TRUTH_MIN_CELLS and float(np.median(ref)) >= A1_TRUTH_MIN_R
+    )
+    out: list[tuple[str, str, bool | None]] = []
+    if usable:
+        med, p5 = float(np.median(diff)), float(np.percentile(diff, 5))
+        out.append(
+            (
+                "1 truth",
+                f"median {med:+.4f}, 5th pct {p5:+.4f} over {len(diff)} cells",
+                med >= A1_TRUTH_MEDIAN and p5 >= A1_TRUTH_P5,
+            )
+        )
+    else:
+        out.append(("1 truth", f"no usable truth ({len(pairs)} matched cells)", None))
+    fp = loss(rows, "fp_cos")
+    out.append(("2 footprints", f"loss {fp:.4f}", fp <= A1_FOOTPRINT_LOSS))
+    tr = loss(rows, "trace_r1")
+    out.append(
+        (
+            "3 traces without truth",
+            f"loss {tr:.4f}",
+            None if usable else tr <= A1_TRACE_LOSS,
+        )
+    )
+    out.append(
+        (
+            "4 tile lines",
+            f"jump {jump_test:.3f} against {jump_ref:.3f}",
+            jump_test <= jump_ref + A1_JUMP_OVER_RAW,
+        )
+    )
+    return out
+
+
+def a1_passes(gate: list[tuple[str, str, bool | None]]) -> bool:
+    """True when no rule of the gate failed."""
+    return all(ok is not False for _, _, ok in gate)
+
+
 def groups(rows: list[Row], band: float) -> list[tuple[str, list[Row]]]:
     out = [
         ("all cells", rows),
@@ -459,11 +529,16 @@ def report(
             f"median {q(d, 50)}, 5th pct {q(d, 5)}."
         )
     ja, jb = line_jump(fa, dims, tile), line_jump(fb, dims, tile)
+    gate = a1_gate(rows, ja, jb)
     out += [
         "",
         f"Footprint jump at tile lines over elsewhere: reference {ja:.3f}, test {jb:.3f}.",
         "",
+        "| A1 rule | measured | result |",
+        "| --- | --- | --- |",
     ]
+    out += [f"| {rule} | {what} | {A1_WORDS[ok]} |" for rule, what, ok in gate]
+    out += ["", f"Gate A1: {'pass' if a1_passes(gate) else 'fail'}.", ""]
     return "\n".join(out)
 
 

@@ -40,9 +40,24 @@ class Arms(unittest.TestCase):
                     "overlap16",
                     "offset",
                     "plain_recal",
+                    "chosen",
                 ]
                 + ["x_raw", "x_plain", "x_overlap8", "x_overlap16", "x_offset"]
             ),
+        )
+
+    def test_the_chosen_arm_is_offset_grids_on_recalibrated_factors(self) -> None:
+        a = A.arms(5)
+        self.assertEqual(
+            a["chosen"],
+            a["raw"]
+            + ["--replay-source", "factors", "--tiling", "offset"]
+            + ["--factors-pass", "2"],
+        )
+        self.assertIn("chosen", A.default_arms(a))
+        self.assertEqual(
+            [A.line_step(n) for n in ("chosen", "offset", "x_offset", "plain", "raw")],
+            [32, 32, 32, 64, 64],
         )
 
     def test_raw_and_null_differ_only_in_the_later_budget(self) -> None:
