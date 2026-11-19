@@ -443,6 +443,15 @@ raw was 238 MB. The extra is freed chunk buffers that the allocator keeps. Reusi
 
 ### Browser
 
+**Correction (18 Nov 2026, evening).** These browser runs (18 Nov, 11:42 to 12:13) used the driver's default port 4181. A static server of another checkout had held that port since 16 Nov, 22:23, serving a v2.19.1 build. So these
+stage times were very probably measured on v2.19.1, not on the phase 0 branch. This is inferred from the port and the
+server's start time; it was not re-measured on that build. The `?compress` runs of that time were also exposed to a
+Chrome fault that can stop compression partway without an error. The `outcome` column below reads `done / done` in
+every row, but it records the stage, not the compression, so it could not show such a stop; the driver did not yet
+record the compress status. Re-measured numbers on the right build, and the fault and its fix, are in
+`results/2026-11-18-factor-phase1.md`. The native results of this report, which carried its gate decision, are not
+affected.
+
 Whole recordings in Chrome, one refine run each, one run at a time, after the native arms had ended. `?compress` adds
 window compression in a worker of its own. It also starts a back-fill once the recording is read, the final library is
 out and every window is compressed: the compress worker rebuilds the windows from the factors and solves the traces of

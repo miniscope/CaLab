@@ -17,6 +17,11 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 ### Changed
 
 - Docs and Admin: a note that runs from local or dev builds send no analytics (no Supabase environment) and are not counted in Admin.
+- Cala (experimental `?compress`): factor files are format v2 (`CALAFAC2`: the tiling, and per pixel the discarded variance and the valid share; v1 files are still read, as plain tiles). A non-finite pixel is stored as a missing sample. The compressor runs two power iterations of the SVD. Extract's replay writes recalibrated factors on two offset grids, which replace Discover's plain factors; the history review reads only plain tiles and refuses others, and the status bar's ms per frame is the mean over the session's windows. `batch-session.mjs --compress-wait <s>` waits for a stage's last window; `history_wholetest.py` reads v1 and v2. `batch-session.mjs` refuses a port that already answers and a build older than the sources (`--stale-build`). The chosen factors pass gate A1 of the factor pipeline on all six test recordings in native runs; in Chrome both stages compress every window on both test recordings, at 1.45 to 24.25 ms per frame: `tools/cala-eval/results/2026-11-18-factor-phase1.md`.
+
+### Fixed
+
+- Cala (experimental `?compress`): compression in the browser could stop partway through a stage without an error when Chrome garbage-collected a file handle while its access handle was opening; the file stores now keep the handle referenced until the open settles.
 
 ## [2.20.0] - 2026-11-17
 

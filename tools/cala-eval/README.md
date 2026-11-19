@@ -53,12 +53,21 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
   recording (raw, two null runs, four tilings, factors of the first replay, and the Extract-only
   pairs) and `DIR/report.md`. `factor_closeness.py --ref RUN --test RUN [--null RUN ...]` compares
   two of its runs. Both need numpy.
+- Factor pipeline, phase 1: the arm `chosen` of `factor_arms.py` is the combination chosen after phase 0 (the two
+  offset grids, factors of the first replay, two power iterations; tile lines every 32 px in the tile-line measures).
+  Each factor arm's section of `report.md` ends with the gate A1 table (rules 1 to 4 of spec Amendment 1, on QC-pass
+  cells; a lost cell counts as the worst case) and `Gate A1: pass.` or `fail.`
+  (`results/2026-11-18-factor-phase1.md`).
+- `tools/cala-diagnostics/history_wholetest.py` reads v1 and v2 factor files (plain tiles only).
 - `stage_times.py EXPORT.npz [...]`: seconds and frames per second of each Discover, Refine and
   Extract run of a cala browser run, from its export's stage records; an export without them (a
   CaDecon export) prints "no stage records". Needs numpy.
 - `apps/cala/scripts/batch-session.mjs --data <raw folder> --out DIR`: an unattended browser run
   of cala (Discover, N x Refine, Extract, both exports) through the real UI, for the timings of the
-  app.
+  app. With `--query compress` its `status.json` holds the compress status at the end of Discover and of
+  Extract; `--compress-wait <seconds>` (default 120) waits for a stage's last window. It needs a free port
+  (`--port`, default 4181; it refuses one that already answers) and a fresh build (`npm run build:e2e`; it refuses a
+  `dist/` older than the sources, `--stale-build` overrides).
 - `baseline_table.py`: per-arm mean and sd over seeds of one or more run trees
   (`main=<runs>/base [LABEL=DIR ...] [--arms ...]`); the reference numbers in
   `results/2026-11-baseline.md`.

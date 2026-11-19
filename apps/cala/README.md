@@ -341,6 +341,16 @@ compressed, the traces of the whole recording are solved again from the
 factors with that library (back-fill): a cell found late gets its trace from
 the first frame on, and the trace viewer shows the back-filled traces.
 
+- Discover compresses on plain 64 px tiles. Extract's replay, which has the
+  final calibration, compresses again on two offset grids (the second shifted
+  32 px, blended) and its recalibrated factors replace Discover's (same session
+  and file names). A cancelled Extract leaves no factors.
+- The randomized SVD runs two power iterations.
+- Factor files are format v2 (`CALAFAC2`): the header names the tiling, and
+  each tile adds per pixel the variance the rank cut discarded and the valid
+  share. A non-finite pixel is a missing sample (`-32768` in the quantized
+  batch, counted per pixel). v1 files are still read, as plain tiles.
+
 - `src/lib/compress-feed.ts`: in the fast worker, cuts the stream into windows,
   quantizes each batch in tile order (int16, 1/64 grey level) and transfers it.
   Nothing is dropped, unlike the feed to the slow worker.
@@ -356,8 +366,9 @@ the first frame on, and the trace viewer shows the back-filled traces.
   per window goes to the main thread, where the first one replaces the live
   trace history (`CellStore.onBackfill`).
 - `src/lib/compress-store.ts`: the status bar readout (windows, mean rank,
-  ms per frame, MB of factors, windows waiting, the back-fill) and the
-  once-per-run back-fill request.
+  ms per frame as the mean over the session's windows, MB of factors, windows
+  waiting, the back-fill) and the once-per-run back-fill request (Discover's
+  status only).
 - `scripts/compress-bench.mjs`: local timing of the WASM compressor on a
   window dumped by `discover_eval --compress-dump`.
 
@@ -366,7 +377,9 @@ the first frame on, and the trace viewer shows the back-filled traces.
 With `&review` as well (`review=N`: every N windows, default 8), the run looks
 through its compressed history for cells the slow loop missed
 (`crates/cala/src/compress/review.rs`; not the History tab, which plots a
-run's metrics). It needs `?compress` and is off without it.
+run's metrics). It needs `?compress` and is off without it. It reads
+Discover's side-by-side plain tiles only: Extract's offset-grid factors are not
+sent to it, and it refuses a window that is not plain.
 
 - `src/lib/compress-runner.ts`: after compressing a window, sends its factor
   file to the review worker and, every N windows, the newest library with the
@@ -385,7 +398,12 @@ run's metrics). It needs `?compress` and is off without it.
 Beyond 3 GB of factors the review worker drops its oldest windows.
 
 A window waits on disk (432 MB at 600 x 600) until it is compressed, so a
-replay faster than the compressor (about 8 ms per frame) queues windows there.
+replay faster than the compressor queues windows there. Measured in Chrome
+(`tools/cala-eval/results/2026-11-18-factor-phase1.md`): 1.45 ms per frame on
+plain tiles and 2.82 on the offset grids at 200 x 200, 12.5 and 24.3 at
+600 x 600, against 50 ms per frame at 20 fps. A file stage at 600 x 600 runs at
+120 to 150 frames per second, so its last window is compressed minutes after
+the stage ends.
 A short last window keeps fewer components (the rank cut's white-noise test is
 stricter on few frames) and costs more per frame, but on the synthetic test
 session 200-frame windows gave traces as close to the truth as 600-frame
