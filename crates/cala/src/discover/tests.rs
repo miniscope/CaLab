@@ -2227,7 +2227,9 @@ fn js_observe_with_background_levels_matches_native() {
             let bg = eng.last_background();
             assert_eq!(bg.len(), eng.background_len() as usize);
             let version = eng.inner.library().version() as f64;
-            assert!(js.observe(f, version, &tr, levels.then_some(bg)).unwrap());
+            assert!(js
+                .observe(f, version, &tr, levels.then_some(bg), None)
+                .unwrap());
         }
         assert_eq!(eb.out.traces, ta.traces, "frame {k}");
         assert_eq!(eb.last_background(), ta.background, "frame {k}");
@@ -2352,7 +2354,7 @@ fn refine_js(
             let tr = eng.process(f).unwrap();
             let v = eng.library().version() as f64;
             assert!(
-                js.observe(f, v, &tr.traces, Some(tr.background.clone()))
+                js.observe(f, v, &tr.traces, Some(tr.background.clone()), None)
                     .unwrap(),
                 "frame {k}: version {v}"
             );
@@ -2937,4 +2939,105 @@ fn held_out_record_keeps_observes_decisions_and_flagged_lookback_matches() {
         sb.step(5_000_000).unwrap();
     }
     assert!(sa.finalize().unwrap().to_bytes()[16..] == sb.finalize().unwrap().to_bytes()[16..]);
+}
+
+/// Look-back through the app's JS `SlowLoop` surface (`observe` with the
+/// stream index, `lookbackNote`, `lookbackTake`, `observeLookback`) gives
+/// the libraries of the native driver (qc_eval's: the scheduler beside the
+/// slow loop, held-out by the slow-loop index), bit for bit; look-back
+/// frames reach the statistics without moving the slow loop's clock.
+#[cfg(feature = "jsbindings")]
+#[test]
+fn js_lookback_matches_the_native_driver() {
+    use super::js::JsSlowLoop;
+    let t = 1200;
+    let (m, seed) = busy_movie(t);
+    // Half the cells seeded: the rest are born during the run.
+    let seed = &seed[..seed.len() / 2];
+    let cfg = SlowLoopConfig {
+        joint_update: JointUpdate::All,
+        merge_guard_min_sep: 0.6,
+        ..shard_config()
+    };
+    let n_px = N * N;
+    let frame = |k: usize| &m[k * n_px..(k + 1) * n_px];
+
+    // Native.
+    let (mut sl, mut eng) = start(cfg.clone(), seed);
+    let mut lb = LookBack::new(LookbackConfig::default());
+    let mut lb_eng = eng.clone();
+    let mut native = Vec::new();
+    let mut pushed_native = 0;
+    for k in 0..t {
+        let tr = eng.process(frame(k)).unwrap();
+        let lib = eng.library().clone();
+        sl.observe(frame(k), &lib, &tr).unwrap();
+        if let Some(l) = sl.step(5_000_000).unwrap() {
+            native.push(l.to_bytes()[16..].to_vec());
+            eng.set_library(l).unwrap();
+        }
+        lb.note_frame(eng.library(), k + 1);
+        lb.add_credit(2.0);
+        while let LookbackNext::Frame(r) = lb.next(&sl, eng.library()) {
+            lb_eng.set_library(eng.library().clone()).unwrap();
+            let tr = lb_eng.process(frame(r.frame)).unwrap();
+            let lib = lb_eng.library().clone();
+            let fit = sl
+                .observe_lookback(frame(r.frame), &lib, &tr, r.frame as u64, Some(&r.ids))
+                .unwrap();
+            pushed_native += usize::from(fit);
+            lb.frame_done(LookbackOutcome::Observed);
+        }
+    }
+    native.push(sl.finalize().unwrap().to_bytes()[16..].to_vec());
+
+    // JS surface.
+    let (slow, mut eng) = start(cfg, seed);
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    js.enable_lookback(2.0, 3000).unwrap();
+    let mut lb_eng = eng.clone();
+    let mut via_js = Vec::new();
+    for k in 0..t {
+        let tr = eng.process(frame(k)).unwrap();
+        let v = eng.library().version() as f64;
+        let bg = Some(tr.background.clone());
+        assert!(js
+            .observe(frame(k), v, &tr.traces, bg, Some(k as f64))
+            .unwrap());
+        if let Some(l) = js.step(5_000_000.0).unwrap() {
+            via_js.push(l.arc().to_bytes()[16..].to_vec());
+            eng.set_library(l.arc().clone()).unwrap();
+        }
+        let frames_before = js.frames();
+        js.lookback_note((k + 1) as f64, 1.0);
+        let req = js.lookback_take(1000);
+        let mut i = 0;
+        while i < req.len() {
+            let (f, n) = (req[i] as usize, req[i + 2] as usize);
+            let ids = &req[i + 3..i + 3 + n];
+            i += 3 + n;
+            lb_eng.set_library(eng.library().clone()).unwrap();
+            let tr = lb_eng.process(frame(f)).unwrap();
+            let v = lb_eng.library().version() as f64;
+            js.observe_lookback(
+                frame(f),
+                v,
+                &tr.traces,
+                Some(tr.background.clone()),
+                f as f64,
+                ids,
+            )
+            .unwrap();
+        }
+        assert_eq!(js.frames(), frames_before, "look-back moved the clock");
+    }
+    via_js.push(js.finalize().unwrap().arc().to_bytes()[16..].to_vec());
+
+    let st = js.lookback_stats();
+    assert!(st[1] > 100.0, "pushed {st:?}");
+    assert_eq!(st[1] as usize, pushed_native, "{st:?}");
+    assert_eq!(st[3], 0.0, "dropped {st:?}");
+    assert!(st[4] > seed.len() as f64, "births {st:?}");
+    assert_eq!(native.len(), via_js.len());
+    assert!(native == via_js, "libraries differ");
 }
