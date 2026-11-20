@@ -145,8 +145,7 @@ minus `LIVE`.
 | false cells per sim              | 13.6   | -3.2 [-6.9, 0.5]         | +1.8 [-2.0, 5.6]          | +0.6 [-5.6, 6.8]         | +1.6 [-3.6, 6.8]         |
 
 - **`CS-visits`: no-go.** Refinement visits on a budget of their own close 7 % of the gap on footprint r (all
-  cells) and 17 % on bitten share. So the settle2 study's reading "what limits footprints during Discover is the
-  amount of refinement" is wrong: 9,400 extra refinement visits and 7,700 accepted refinements per sim (static_s5)
+  cells) and 17 % on bitten share. So the settle2 study's reading "what limits footprints during Discover is the amount of refinement" does not hold by itself (the visits do add to the frames, see the schedules below): 9,400 extra refinement visits and 7,700 accepted refinements per sim (static_s5)
   change almost nothing by themselves.
 - **`CS-stats`: go.** Re-read frames to the statistics close 96 % of the gap on footprint r (all cells) and 69 % on
   bitten share, with matched and false cells within noise. What the settle adds is the re-estimation of the
@@ -208,7 +207,7 @@ All in `stats` mode. Arm minus `SETTLE` [95 % CI].
 - **The settle visits are needed, on top of the frames.** `CS-frames` against `LIVE` closes 74 % of the gap on
   footprint r (all cells) and 32 % on bitten share; with the visits (`CS-stats`) 96 % and 69 %. Visits alone: 7 %
   and 17 %. The frames carry most of it; the visits turn the better statistics into footprints sooner.
-- **T2: no-go for "less total settle work".** No arm equals `SETTLE` at 0.8 x its units or less. The arms that
+- **T2: not met ("less total settle work").** Slow-loop work of the whole run against `SETTLE`'s (`slow_cost.tsv`, mean ratio over the 5 sims): `LIVE` 0.50, `LIVE+S4800` 0.75, `CS-stats` 0.93, `CS-late` 0.93, `CS-late+S2400` 1.05, `CS-late+S4800` 1.18, `CS-33+S4800` 0.97, `CS-quiet` 0.90, `CS-quiet+S4800` 1.16, `CS-frames+S4800` 0.78. Re-read frames (outside the work count) follow the unit column. No arm equals `SETTLE` at 0.8 x or less on either count: the cheapest that does (`CS-late+S2400`) costs 1.05 x the work and 1.25 x the re-read frames, which is "same cost" by work and above it by frames. The arms that
   equal it on every line need 1.25 x (`CS-late+S2400`, bitten share exactly on its line) to 1.5 x
   (`CS-late+S4800`, `CS-quiet+S4800`). The cheapest near-miss is plain half an end pass (`LIVE+S4800`, 0.5 x: -0.0005
   overall, -0.010 on late-born cells). Settle work is worth most when the cell set is final: a unit spent early is
@@ -237,8 +236,7 @@ Virtual clock, one slow worker, `stats` mode. Units per sim and shares of the ow
 | `T20-CS` (share 1)      | 0                          | 82-85 %    | 41-50 %       | 1-2 %               | 15-18 % | 11,900-15,700        |
 
 - **Dropped frames: share 1 fails at 30 fps on one sim** (one batch of 8 frames of 9,550). The arrival guard does
-  not prevent it (the same batch is dropped), so the cause is not a unit started just before a batch but the owner
-  running near 90 % busy when a long ordinary step comes. With a quarter of the idle time left free there is no drop
+  not prevent it (the same batch is dropped), so the cause is probably not a unit started just before a batch; a likely one, not investigated, is a long ordinary step arriving while the owner runs near 90 % busy (whether the guard fired at all was not logged). With a quarter of the idle time left free there is no drop
   on the five sims. At 20 fps share 1 has no drop. About 12 % of the time stays idle even at share 1, because a unit
   only starts when the worker has nothing waiting.
 - At 60 fps one slow worker cannot keep up with Discover alone (smoke run: 262 of 2,350 frames dropped with no
@@ -303,7 +301,7 @@ relative L2 change of each footprint's shape since the checkpoint 1200 frames be
   for comparison a cell's split-half footprint noise is about 10 %. A closed-loop user who needs a frozen readout
   can lower the share late in the session; that is a scheduler setting.
 
-### T3, deciding arm on the full tier (14 sims; `demix-suite/cs-full`, binary `qc_eval-cs-d`)
+### T3, deciding arm on the full tier (14 sims; `demix-suite/cs-full`, binaries `qc_eval-cs-d` and, for the five quick-tier sims of the `T30` arms, `qc_eval-cs-b`)
 
 `T30-CS75` = `--offered-fps 30 --csettle 0.75 --csettle-mode stats` (the share that dropped nothing on the quick
 tier). The five quick-tier sims of `T30`, its tails and `T30-CS75` are the quick-tier runs, linked in.
@@ -378,31 +376,32 @@ study's nulls (a second Refine: workshop 10 %, Samara 7-9 % over a whole pass) a
   settle adds a fifth more. On Samara the baseline drops nothing and the settle costs one 24-frame stretch in two of
   the four runs. By the rule, share 0.75 on the owner is a no-go on real data. The app's visit workers are not in
   this model.
+- **End settle still needed.** Workshop seed-to-seed r after half a pass (9000 frames): 0.969-0.973 with the concurrent settle, 0.967-0.971 without; after 5400 frames 0.962-0.966 against 0.960-0.964. Samara after half a pass: 0.990 against 0.988 and 0.988 against 0.980 (one seed pair each). So on the workshop recording the concurrent settle saves almost none of the end pass.
 - **Cells.** Workshop: 13 fewer on average (CI just excludes 0, 3 seeds); Samara: within the seed range. Minian
   (workshop): 498-500 units matched at median r 0.943-0.947, against 508-514 at 0.935-0.941.
-- **Why less than on the sims.** The settle got about the same number of units per live frame as on the sims (0.5),
+- **Why less than on the sims: not tested; a reading.** The settle got about the same number of units per live frame as on the sims (0.5),
   but on these recordings cells keep being found to the end (workshop: 382 cells at one eighth, 753 at the end), and
   a unit buys fewer visits (0.4 per frame on the workshop recording against 1.8 on the sims, settle study). The
   lock-step arms already showed that a unit is worth less while the cell set is still changing. The settle study's
   end settle reached 64 % of the same gap with 9000 frames on the frozen cell set; the concurrent settle spent 8,700
   units for 16 %.
 - **Footprint movement between checkpoints (2250 frames) is much larger with the settle on the workshop recording**:
-  17-23 % median shape change in the second half of the session against 0-16 % without. On Samara 9-18 % against
+  17-23 % median shape change in the second half of the session against 0-16 % without (a median of 0: more than half of the cells did not change at all between two checkpoints). On Samara 9-18 % against
   7-16 %. The statistics are re-estimated continually and each re-estimate moves a footprint by about its own
   noise (split-half noise 13 % on this recording). For a closed-loop readout that is a cost, not a gain.
 
 ### Verdicts
 
-| target                                   | verdict                                                                                             |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| T0 flags off = main                      | pass                                                                                                |
-| T1 screen                                | `visits` no-go; `stats` go; `full` go, no better than `stats`; `frames` (added) partial             |
-| T2 pre-recorded, less total settle work  | no-go: equal quality needs 1.25-1.5 x the units of settling at the end                              |
-| T3 stream, sims: dropped frames          | share 1: no-go at 30 fps (one batch on one of five sims); share 0.75: 0 on 14 sims                  |
-| T3 stream, sims: live library            | go on footprint r (62 % of the gap at 30 fps, 96 % at 20 fps), between the lines on bites at 30 fps |
-| T3 stream, sims: checkpoints             | better at every checkpoint, CIs exclude 0                                                           |
-| T3 stream, sims: end settle still needed | half a pass, except for late-born cells (a full pass); half a pass is nearly enough without it too  |
-| T4 real data                             | no-go at this share: 15-36 % of the gap, drops on two of four Samara runs, not settled              |
+| target                                   | verdict                                                                                                              |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| T0 flags off = main                      | pass                                                                                                                 |
+| T1 screen                                | `visits` no-go; `stats` go; `full` go, no better than `stats`; `frames` (added) partial                              |
+| T2 pre-recorded, less total settle work  | not met: equal quality costs 1.05-1.18 x the slow-loop work and 1.25-1.5 x the re-read frames of settling at the end |
+| T3 stream, sims: dropped frames          | share 1: no-go at 30 fps (one batch on one of five sims); share 0.75: 0 on 14 sims                                   |
+| T3 stream, sims: live library            | go on footprint r (62 % of the gap at 30 fps, 96 % at 20 fps), between the lines on bites at 30 fps                  |
+| T3 stream, sims: checkpoints             | better at every checkpoint, CIs exclude 0                                                                            |
+| T3 stream, sims: end settle still needed | half a pass, except for late-born cells (a full pass); half a pass is nearly enough without it too                   |
+| T4 real data                             | no-go at this share: 15-36 % of the gap, drops on two of four Samara runs, not settled                               |
 
 ### Not done
 
@@ -411,4 +410,6 @@ study's nulls (a second Refine: workshop 10 %, Samara 7-9 % over a whole pass) a
 - Design B (settle a snapshot with its cell set frozen, merge back): not prototyped.
 - `CS-quiet` and `CS-late` on the stream and on real data; shares other than 0.75 on real data; a third Samara seed.
 - A Refine pass after the live library (replaced as stated above); any app build or browser measurement.
+- The end settle as "the same unit at share 1" (every end settle here is `--settle-frames`, the ordinary `observe`).
+- The study binaries (`qc_eval-cs-b/c/d`) were built before the rebase onto main (#447); the check after the rebase is in the PR.
 - The scheduler skips nothing: held-out re-read frames are still read and solved in `stats` mode.
