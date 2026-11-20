@@ -95,14 +95,22 @@ test('Cala: a live run can be stopped, and reconnects on restart', async ({ page
   await page.getByTestId('pass2-finish').click(); // "Stop the live run"
   await expect(page.getByTestId('pipeline-status')).toHaveText('Done', { timeout: 15_000 });
   await expect(page.getByTestId('pass2-status')).toContainText('Live run ended');
+  // Without ?refine=factors no Refine is offered, and the note says Extract only.
+  await expect(page.getByTestId('live-stage-note')).toHaveText(
+    'Live run: Extract reads the factors Discover wrote during the stream; they are not claimed to meet the closeness gate.',
+  );
   // A restart connects again and streams from the start.
   await page.getByRole('button', { name: 'Restart' }).click();
   await expect(page.getByTestId('pipeline-status')).not.toHaveText('Done');
   await expect(page.getByTestId('pipeline-readout')).toContainText('frame 4', { timeout: 30_000 });
-  // The compression of the offset grids raised no error, stop and restart included.
+  // The compression of the offset grids raised no error, stop and restart included
+  // (the compress store is there: with compression on, the debug handle has it).
   expect(
-    await page.evaluate(() => (window as unknown as CalaDebug).__cala.compress?.error() ?? null),
-  ).toBeNull();
+    await page.evaluate(() => {
+      const compress = (window as unknown as CalaDebug).__cala.compress;
+      return compress ? { error: compress.error() } : 'no compress store';
+    }),
+  ).toEqual({ error: null });
 });
 
 test('Cala: an unreachable live source reports an error', async ({ page }) => {
