@@ -13,6 +13,6 @@
     "@supabase/supabase-js": "^2.119.0"
   },
   "peerDependencies": {
-    "solid-js": "^1.9.18"
+    "solid-js": "^1.9.19"
   }
 }
