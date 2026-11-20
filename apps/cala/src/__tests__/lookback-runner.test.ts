@@ -2,11 +2,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildSlowLoop,
-  LOOKBACK,
   SlowRunner,
   type PublishedLibrary,
   type SlowLoopLike,
 } from '../lib/slow-runner.ts';
+import { lookbackFrames } from '../lib/lookback-reader.ts';
+import { SETTLE } from '../lib/settle.ts';
 import type { LookbackToSlow, SlowToLookback } from '../workers/lookback-types.ts';
 import type {
   FastToSlow,
@@ -68,6 +69,7 @@ function fakeLoop(need: number) {
   const loop: SlowLoopLike = {
     observe: (_f, _v, _t, _b, stream) => {
       streams.push(stream);
+      calls.push('observe');
       return true;
     },
     step: vi.fn(() => undefined),
@@ -109,6 +111,7 @@ function fakeLoop(need: number) {
     }),
     markAllDue: vi.fn(() => void calls.push('markAllDue')),
     lookbackStats: () => Float64Array.of(need - left, observed.length, 0, 0, 1, left, 8),
+    footprintNoise: vi.fn(() => Float64Array.of(1, 0.1)),
   };
   return { loop, calls, observed, streams };
 }
@@ -143,7 +146,7 @@ function setup(need: number, opts: { visits?: number; lookback?: boolean } = {})
     const req = pending();
     if (!req) throw new Error('no request');
     answered.add(req.id);
-    const n = req.items.length / 4;
+    const n = lookbackFrames(req.items).length;
     const reply: LookbackToSlow = {
       type: 'frames',
       session: 1,
@@ -265,44 +268,109 @@ describe('SlowRunner look-back (fake loop)', () => {
     expect(libs.length).toBeGreaterThan(0);
   });
 
-  it('settles after the last frame: refine scope, look-back until idle, visits, then final', () => {
-    const t = setup(6);
+  /** The settle requests (frames without ids) sent so far, as frames. */
+  const settleReqs = (t: { toLb: SlowToLookback[] }) =>
+    t.toLb.flatMap((m) =>
+      m.type === 'request' && m.items[2] === 0 ? [lookbackFrames(m.items)] : [],
+    );
+
+  it('settles after the last frame: refine scope, one pass through observe, last visits, final once', () => {
+    const t = setup(0);
     t.r.handle({ ...INIT, lookback: true });
-    t.r.handle(frames(0, 1));
-    t.answer();
+    t.r.handle(frames(0, 20));
+    t.r.handle(frames(20, 20));
+    const discoverObserves = t.streams.length;
     t.r.handle({ type: 'end', session: 1 });
     expect(t.loop.setEditScope).toHaveBeenCalledWith('refine');
     expect(finals(t)).toHaveLength(0);
-    expect(statuses(t).at(-1)!.lookback?.settling).toBe(true);
+    const first = statuses(t).at(-1)!;
+    expect(first.lookback?.settling).toBe(true);
+    expect(first.lookback?.settle).toMatchObject({ fed: 0, total: 40, recording: 40, done: false });
+    // Requests of SETTLE.batch frames, in order, one preprocessor block (no gap).
+    const reqs = settleReqs(t);
+    expect(reqs).toHaveLength(1);
+    expect(reqs[0].map((f) => f.frame)).toEqual([...Array(SETTLE.batch).keys()]);
+    expect(new Set(reqs[0].map((f) => f.block))).toEqual(new Set([-1]));
     t.run();
-    // Every needed frame was observed, then the last visits, then the final library.
-    expect(t.observed).toHaveLength(6);
+    // Every frame once, through the ordinary observe with its stream index.
+    expect(t.streams.slice(discoverObserves)).toEqual([...Array(40).keys()]);
+    expect(t.observed).toHaveLength(0);
     expect(finals(t)).toHaveLength(1);
     const last = statuses(t).at(-1)!;
-    expect(last.final).toBe(true);
     expect(last.editScope).toBe('refine');
-    expect(last.lookback).toMatchObject({ settling: false, inNeed: 0, capped: false });
-    expect(last.lookback!.drainSteps).toBeGreaterThan(0);
-    // markAllDue at the first drain step and once more for the settle phase.
-    expect(t.calls.filter((c) => c === 'markAllDue').length).toBeGreaterThanOrEqual(2);
-    // Without visit workers: steps run here (drain steps + 256 settle steps).
-    expect((t.loop.step as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(
-      LOOKBACK.settleSteps,
-    );
+    expect(last.lookback).toMatchObject({ settling: false });
+    expect(last.lookback?.settle).toMatchObject({ fed: 40, total: 40, done: true, stopped: false });
+    // Steps earn the frames' budget (16 + 16 + 8), then one last round on every tile.
+    const steps = (t.loop.step as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    const settleSteps = steps.slice(-4);
+    expect(settleSteps).toEqual([16 * 123, 16 * 123, 8 * 123, SETTLE.finalSteps * 123]);
+    expect(t.calls.filter((c) => c === 'markAllDue')).toHaveLength(1);
+    // The final status carries the cells' noise (the Refine readout).
+    expect(finals(t)[0].footprintNoise).toEqual(Float64Array.of(1, 0.1));
   });
 
-  it('stop settling publishes the final library with what was refined', () => {
-    const t = setup(1000);
+  it('the next request goes out before the answer is observed', () => {
+    const t = setup(0);
     t.r.handle({ ...INIT, lookback: true });
-    t.r.handle(frames(0, 1));
-    t.answer();
+    t.r.handle(frames(0, 40));
     t.r.handle({ type: 'end', session: 1 });
-    for (let k = 0; k < 20; k++) t.run(3);
+    const before = t.calls.length;
+    t.answer();
+    const reqs = t.toLb.filter((m) => m.type === 'request');
+    expect(reqs).toHaveLength(2);
+    // The second request was sent while the first answer had not been observed yet.
+    expect(t.calls.slice(before).filter((c) => c === 'observe')).toHaveLength(SETTLE.batch);
+    const order = t.toLb.map((m) => m.type);
+    expect(order.lastIndexOf('request')).toBeLessThan(order.lastIndexOf('release'));
+  });
+
+  it('checkpoints publish the library and count the cells still moving', () => {
+    const t = setup(0);
+    t.r.handle({ ...INIT, lookback: true });
+    t.r.handle(frames(0, 2 * SETTLE.checkEvery));
+    t.r.handle({ type: 'end', session: 1 });
+    const finalize = t.loop.finalize as ReturnType<typeof vi.fn>;
+    const atStart = finalize.mock.calls.length;
+    t.run();
+    // The start, two checkpoints, and the final library.
+    expect(finalize.mock.calls.length - atStart).toBe(3);
+    // The fake's footprint never changes: no cell moves.
+    expect(statuses(t).at(-1)!.lookback?.settle?.moving).toEqual({ cells: 1, above: 0 });
+  });
+
+  it('a long recording is sampled up to the cap', () => {
+    const t = setup(0);
+    t.r.handle({ ...INIT, lookback: true });
+    const n = SETTLE.maxFrames + 6400;
+    t.r.handle(frames(0, n));
+    t.r.handle({ type: 'end', session: 1 });
+    t.run();
+    const st = statuses(t).at(-1)!.lookback!.settle!;
+    expect(st.recording).toBe(n);
+    expect(st.total).toBeLessThanOrEqual(SETTLE.maxFrames + SETTLE.block);
+    expect(st.fed).toBe(st.total);
+    // Blocks restart the preprocessor at each gap.
+    const blocks = new Set(settleReqs(t).flatMap((r) => r.map((f) => f.block)));
+    expect(blocks.size).toBeGreaterThan(1);
+  });
+
+  it('stop settling publishes the final library with what was fed', () => {
+    const t = setup(0);
+    t.r.handle({ ...INIT, lookback: true });
+    t.r.handle(frames(0, 1000));
+    t.r.handle({ type: 'end', session: 1 });
+    t.answer();
+    t.answer();
     expect(finals(t)).toHaveLength(0);
     t.r.stopSettling(1);
     t.run();
     expect(finals(t)).toHaveLength(1);
-    expect(t.observed.length).toBeLessThan(1000);
+    const st = statuses(t).at(-1)!.lookback!.settle!;
+    expect(st.stopped).toBe(true);
+    expect(st.fed).toBe(2 * SETTLE.batch);
+    // A late answer to the dropped request changes nothing.
+    t.r.stopSettling(1);
+    expect(finals(t)).toHaveLength(1);
   });
 
   it('a look-back error ends look-back, and settling still ends', () => {
@@ -330,28 +398,52 @@ describe('SlowRunner look-back (fake loop)', () => {
     expect(statuses(t).at(-1)!.lookback?.error).toMatch(/not connected/);
   });
 
-  it('with visit workers: each drain step waits for its visits', () => {
-    const t = setup(3, { visits: 2 });
+  it('with visit workers: due tiles go out as frames come in, and the last round waits for them', () => {
+    const t = setup(0, { visits: 2 });
     let due = 0;
     t.loop.takeJob = () => (due-- > 0 ? Uint8Array.of(1) : undefined);
     t.loop.applyJob = vi.fn();
     t.loop.housekeep = () => undefined;
     t.r.handle({ ...INIT, lookback: true });
-    t.r.handle(frames(0, 1));
-    t.answer();
-    due = 2;
+    t.r.handle(frames(0, 20));
     t.r.handle({ type: 'end', session: 1 });
-    // Two visits out: the step waits for them.
     const jobs = () => t.toVisit.flat().filter((m) => m.type === 'job').length;
+    due = 2;
+    t.answer();
     expect(jobs()).toBe(2);
     t.run();
+    // Every frame fed, but the visits out hold the final library.
+    expect(statuses(t).at(-1)!.lookback?.settle?.fed).toBe(20);
     expect(finals(t)).toHaveLength(0);
     const res: VisitToOwner = { type: 'result', session: 1, bytes: Uint8Array.of(1), ms: 1 };
     t.r.handleVisit(0, res);
     t.r.handleVisit(1, res);
     t.run();
     expect(finals(t)).toHaveLength(1);
-    expect(t.observed).toHaveLength(3);
+    expect(t.loop.step).not.toHaveBeenCalled();
+  });
+
+  it('with visit workers: the last round ends at its work cap even when tiles stay due', () => {
+    const t = setup(0, { visits: 1 });
+    let work = 0;
+    t.loop.takeJob = () => Uint8Array.of(1);
+    t.loop.applyJob = vi.fn(() => {
+      work += 123 * 16;
+    });
+    t.loop.housekeep = () => undefined;
+    Object.defineProperty(t.loop, 'work', { get: () => work });
+    t.r.handle({ ...INIT, lookback: true });
+    t.r.handle(frames(0, 16));
+    t.r.handle({ type: 'end', session: 1 });
+    t.run();
+    const res: VisitToOwner = { type: 'result', session: 1, bytes: Uint8Array.of(1), ms: 1 };
+    for (let k = 0; k < 100 && finals(t).length === 0; k++) {
+      t.r.handleVisit(0, res);
+      t.run();
+    }
+    expect(finals(t)).toHaveLength(1);
+    // About SETTLE.finalSteps budgets of visits after the frames, not more.
+    expect(work).toBeLessThanOrEqual(123 * (SETTLE.finalSteps + 3 * 16));
   });
 
   it('a Refine run after it does no look-back', () => {
@@ -371,11 +463,34 @@ describe('SlowRunner look-back (fake loop)', () => {
   it('a reset drops the settling run', () => {
     const t = setup(1000);
     t.r.handle({ ...INIT, lookback: true });
-    t.r.handle(frames(0, 1));
+    t.r.handle(frames(0, 100));
     t.answer();
     t.r.handle({ type: 'end', session: 1 });
+    t.answer();
     t.r.handle({ type: 'reset', session: 2 });
     t.run();
     expect(finals(t)).toHaveLength(0);
+    // An answer that arrives after the reset is ignored (its buffer still goes back).
+    expect(statuses(t).at(-1)!.lookback?.settle?.done).toBe(false);
+  });
+
+  it('a settle error from the look-back worker ends the settle with what was fed', () => {
+    const t = setup(0);
+    t.r.handle({ ...INIT, lookback: true });
+    t.r.handle(frames(0, 100));
+    t.r.handle({ type: 'end', session: 1 });
+    t.answer();
+    const req = t.toLb.filter((m) => m.type === 'request').at(-1)!;
+    t.r.handleLookback({
+      type: 'error',
+      session: 1,
+      id: req.type === 'request' ? req.id : 0,
+      message: 'disk',
+    });
+    t.run();
+    expect(finals(t)).toHaveLength(1);
+    const st = statuses(t).at(-1)!.lookback!;
+    expect(st.error).toBe('disk');
+    expect(st.settle).toMatchObject({ fed: SETTLE.batch, done: true });
   });
 });

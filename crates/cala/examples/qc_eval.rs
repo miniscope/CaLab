@@ -87,8 +87,9 @@
 //!                      evenly over the recording to every cell (frozen
 //!                      cell set, untargeted look-back frames), with visits
 //!                      (experiment: a convergence pass inside Discover)
-//!   --settle-frames N  the end-of-Discover settle (needs --lookback-drain):
-//!                      after the drain, cell set frozen, re-read frames go
+//!   --settle-frames N  the end-of-Discover settle (needs --lookback; after
+//!                      the drain if any, `--lookback-drain 0` for none):
+//!                      cell set frozen, re-read frames go
 //!                      to every cell until N were fed or the stop rule
 //!                      fires (`LookBack::settle`; `settle_checks.tsv`).
 //!                      Options: --settle-round F (frames per sweep of the
@@ -4076,10 +4077,6 @@ impl BranchChild {
             l.drain_rate = self.tail.drain_rate;
             l.settle_all = self.tail.settle_all;
             l.settle = self.tail.settle.clone();
-            assert!(
-                l.settle.frames == 0 || self.tail.drain > 0,
-                "--settle-frames needs --lookback-drain"
-            );
         }
         *tail = self.tail;
         *out_dir = self.out_dir;
@@ -4627,11 +4624,6 @@ fn main() {
         l.drain_rate = tail.drain_rate;
         l.settle_all = tail.settle_all;
         l.settle = tail.settle.clone();
-        // With `--branch-after` each branch checks its own flags.
-        assert!(
-            l.settle.frames == 0 || lb_drain > 0 || branching.is_some(),
-            "--settle-frames needs --lookback-drain"
-        );
     }
     if lookback.is_some() {
         println!(
@@ -5285,7 +5277,7 @@ fn main() {
                 if let (Some(lbk), Some(sl), 0, None) =
                     (lookback.as_mut(), slow.as_mut(), pass, timed.as_ref())
                 {
-                    if last && lb_drain > 0 && lbk.settle.frames > 0 {
+                    if last && lbk.settle.frames > 0 {
                         lbk.settle(
                             t_len,
                             budget,

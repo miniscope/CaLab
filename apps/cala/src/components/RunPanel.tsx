@@ -6,7 +6,8 @@ import type { CellStore } from '../lib/cell-store.ts';
 import { compressReadout, type CompressStore } from '../lib/compress-store.ts';
 import { reviewReadout, type ReviewStore } from '../lib/review-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
-import type { LookbackStatus } from '../workers/lookback-types.ts';
+import { lookbackText } from '../lib/lookback-text.ts';
+export { lookbackText };
 import type { Pass2Result, Pass2Store } from '../lib/pass2-store.ts';
 import type { RefineStore } from '../lib/refine-store.ts';
 import {
@@ -133,21 +134,6 @@ export interface RunPanelProps {
   onStopSettling?: () => void;
 }
 
-/** One line on a look-back run (experimental): what it re-read, and the settling after the last frame. */
-export function lookbackText(lb: LookbackStatus, final: boolean): string {
-  if (lb.settling)
-    return `Settling: ${lb.inNeed} cells still need data (step ${lb.drainSteps.toLocaleString()}) · ${lb.pushed.toLocaleString()} frames re-read`;
-  const read = `${lb.pushed.toLocaleString()} frames re-read for ${lb.births} new cells`;
-  const err = lb.error ? ` · look-back stopped: ${lb.error}` : '';
-  if (final) {
-    const end = lb.capped
-      ? `settling stopped at the cap with ${lb.inNeed} cells still in need`
-      : `settled after ${lb.drainSteps.toLocaleString()} steps`;
-    return `Look-back: ${read} · ${end}${err}`;
-  }
-  return `Look-back: ${read} · ${lb.inNeed} cells still need data${err}`;
-}
-
 /** `0.0123` -> `1.2%`. */
 function percent(v: number | null | undefined): string {
   return v === null || v === undefined ? 'n/a' : `${(100 * v).toFixed(1)}%`;
@@ -184,12 +170,18 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       last.refinesPerMin === null || last.refinesPerMin === undefined
         ? `${last.refines ?? 0} refines`
         : `${last.refinesPerMin.toFixed(1)} refines/min`;
+    // No rate ratio against a look-back Discover: its refines include the settle's.
     const vs =
-      cmp && cmp.run === last && cmp.previous && cmp.ratio !== null
+      cmp && cmp.run === last && cmp.previous && cmp.ratio !== null && !cmp.previous.lookback
         ? ` (${cmp.ratio.toFixed(2)}× ${runName(cmp.previous)})`
         : '';
     const end = last.outcome === 'done' ? '' : ` (${last.outcome})`;
-    return `${runName(last)}${end}: ${last.footprintsRefined ?? 0} of ${last.cells} footprints refined · median change of those ${percent(last.medianFootprintChange)} · ${rate}${vs}`;
+    const m = last.movedAboveNoise;
+    const moved =
+      m && m.cells > 0
+        ? `${percent(m.above1 / m.cells)} of ${m.cells} cells changed more than their split-half noise (${percent(m.above2 / m.cells)} more than twice)`
+        : `${last.cells} cells`;
+    return `${runName(last)}${end}: ${moved} · median change ${percent(last.medianFootprintChange)} · ${rate}${vs}`;
   };
 
   // ---- Discover ----
@@ -781,7 +773,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             when={s().lookbackBlocked()}
             fallback={
               s().lookbackRun()
-                ? 'Look-back refines footprints during Discover; Refine is not needed.'
+                ? 'Look-back refines footprints during Discover and settles them after its last frame; Refine should not be needed (it stays available to compare).'
                 : 'Look-back starts with the next Discover run (restart with ↻).'
             }
           >

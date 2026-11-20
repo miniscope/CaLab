@@ -3171,6 +3171,28 @@ fn js_lookback_matches_the_native_driver() {
     }
     via_js.push(js.finalize().unwrap().arc().to_bytes()[16..].to_vec());
 
+    // Split-half noise of every published cell, by id, as the native call.
+    let lib = js.finalize().unwrap();
+    let noise = js.footprint_noise();
+    let lib = lib.arc();
+    assert_eq!(noise.len(), 2 * lib.len());
+    let mut finite = 0;
+    for slot in 0..lib.len() {
+        let id = lib.ids()[slot];
+        assert_eq!(noise[2 * slot], id as f64);
+        let want = js
+            .inner()
+            .footprint_noise(id, lib.filtered(slot).0)
+            .unwrap_or(f64::NAN);
+        let got = noise[2 * slot + 1];
+        assert!(
+            got == want || (got.is_nan() && want.is_nan()),
+            "{id}: {got} {want}"
+        );
+        finite += usize::from(got.is_finite() && got > 0.0);
+    }
+    assert!(finite > 0, "no cell has a noise estimate");
+
     let st = js.lookback_stats();
     assert!(st[1] > 100.0, "pushed {st:?}");
     assert_eq!(st[1] as usize, pushed_native, "{st:?}");

@@ -11,8 +11,8 @@
  *   `--lookback` (with `--single`): opens with `&lookback` (experimental
  *   look-back refinement), never presses Refine, and stops once Discover has
  *   settled (the final library); it samples the look-back counters
- *   (`__cala.lookback()`) and fails unless frames were re-read and no cell is
- *   left in need. `--toggle`: instead of `&lookback`, tick the look-back
+ *   (`__cala.lookback()`) and fails unless frames were re-read and the
+ *   settle pass fed its whole plan (or was stopped). `--toggle`: instead of `&lookback`, tick the look-back
  *   checkbox once Discover runs and restart it (the path a user takes).
  *   `--refine`: after settling, one Refine run too (to compare). `--extract`:
  *   then press Extract once and wait for it.
@@ -261,7 +261,7 @@ const fmt = (r) => {
   const sum = (k) => w.reduce((a, x) => a + (x[k] ?? 0), 0);
   const st = r.st || {};
   const lb = st.lb
-    ? ` lb pushed ${st.lb.pushed} need ${st.lb.inNeed} births ${st.lb.births}${st.lb.settling ? ` settling ${st.lb.drainSteps}` : ''}${st.lb.capped ? ' CAPPED' : ''}${st.lb.error ? ` ERR ${st.lb.error}` : ''}${st.final ? ' final' : ''}`
+    ? ` lb pushed ${st.lb.pushed} need ${st.lb.inNeed} births ${st.lb.births}${st.lb.settling ? ' settling' : ''}${st.lb.settle ? ` settle ${st.lb.settle.fed}/${st.lb.settle.total}${st.lb.settle.moving ? ` moving ${st.lb.settle.moving.above}/${st.lb.settle.moving.cells}` : ''}` : ''}${st.lb.error ? ` ERR ${st.lb.error}` : ''}${st.final ? ' final' : ''}`
     : '';
   return (
     `${r.t.toFixed(0)}s ${st.pst}${lb} ${st.pp} fps${(st.fps ?? 0).toFixed(0)} ref ${st.refine} ${st.rp} ext ${st.extract} cells ${st.cells} | ` +
@@ -342,6 +342,7 @@ if (single) {
 let refineClicked = false;
 let extractClicked = false;
 let discoverDoneAt = null;
+let framesDoneAt = null;
 const samples = [];
 let stop = null;
 let lastKey = '';
@@ -356,6 +357,10 @@ while (!stop) {
   const run = r.st?.run ?? '';
   if (single && lookback) {
     // Discover runs look-back alongside and settles after its last frame: no Refine.
+    if (r.st?.pst === 'done' && framesDoneAt === null) {
+      framesDoneAt = r.t;
+      L(`DISCOVER_FRAMES_DONE ${r.t.toFixed(1)}s`);
+    }
     const settled = r.st?.pst === 'done' && r.st?.final && !r.st?.lb?.settling;
     if (settled && discoverDoneAt === null) {
       discoverDoneAt = r.t;
@@ -376,7 +381,10 @@ while (!stop) {
       } else stop = 'done';
     }
     if (r.st?.refine === 'error') stop = 'error';
-    if (extractClicked && r.st?.extract === 'done') stop = 'done';
+    if (extractClicked && r.st?.extract === 'done') {
+      L(`EXTRACT_DONE ${r.t.toFixed(1)}s`);
+      stop = 'done';
+    }
     if (r.st?.pst === 'error' || r.st?.extract === 'error') stop = 'error';
   } else if (single) {
     if (r.st?.pst === 'done' && r.st?.refine === 'idle' && !refineClicked) {
@@ -384,7 +392,10 @@ while (!stop) {
       L(`DISCOVER_DONE ${r.t.toFixed(1)}s`);
       await page.click('[data-testid=refine-run]');
     }
-    if (refineClicked && r.st?.refine === 'done') stop = 'done';
+    if (refineClicked && r.st?.refine === 'done') {
+      L(`REFINE_DONE ${r.t.toFixed(1)}s`);
+      stop = 'done';
+    }
     if (r.st?.pst === 'error' || r.st?.refine === 'error') stop = 'error';
   }
   if (!single && downloads > 0 && /done|finished|complete|saved/i.test(run)) stop = 'done';
@@ -392,9 +403,21 @@ while (!stop) {
   if (r.t > maxMin * 60) stop = 'time';
 }
 L('STOP ' + stop);
+const readouts = await page
+  .$$eval('.cala-readout', (els) => els.map((e) => e.textContent?.trim()).filter(Boolean))
+  .catch(() => []);
+for (const t of readouts) L(`READOUT ${t}`);
 if (lookback) {
   const lb = samples.at(-1)?.st?.lb;
-  const ok = stop === 'done' && lb && lb.pushed > 0 && lb.inNeed === 0 && !lb.error;
+  const sp = lb?.settle;
+  const ok =
+    stop === 'done' &&
+    lb &&
+    lb.pushed > 0 &&
+    sp &&
+    sp.done &&
+    (sp.fed === sp.total || sp.stopped) &&
+    !lb.error;
   L(`LOOKBACK_CHECK ${ok ? 'PASS' : 'FAIL'} ${JSON.stringify(lb)}`);
   if (!ok) process.exitCode = 1;
 }
