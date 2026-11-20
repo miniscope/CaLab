@@ -4,8 +4,8 @@ A **Donate data** button in browser cala lets users send a raw recording to the
 lab, compressed without loss, with metadata. The goal is more varied datasets
 (regions, indicators, scopes, settings) to benchmark and improve cala on.
 
-Status: proposal. Nothing below exists yet except what the "Builds on" list
-names.
+Status: phases 0–1 done (codec chosen, file format with browser writer and
+Python reader). Backend, UI, moderation and ingest are not built.
 
 ## Why people donate
 
@@ -49,20 +49,31 @@ An earlier version of this design uploaded cala's low-rank factors
 - `CALAFAC1` is a prototype format; donations must stay readable when it
   changes.
 
-Measured on `real_v4/v4_dataverse_20min` (UCLA V4, 600×600, 8-bit), one
-360 MB AVI segment:
+## Codec (phase 0, measured 2026-11-19)
 
-| Encoding      | Size   | Ratio |
-| ------------- | ------ | ----- |
-| raw AVI       | 360 MB | 1.0×  |
-| zstd -19      | 215 MB | 1.7×  |
-| FFV1 (ffmpeg) | 184 MB | 2.0×  |
+Lossless compression of miniscope video is bounded by the sensor noise: every
+codec tried lands at 1.4–2.0×. Measured on 300 frames of
+`real_v4/v4_dataverse_20min` (UCLA V4, 600×600, 8-bit) and 2000 frames of
+`real_wireless/wl24_20251201` (200×200, 8-bit):
 
-So about 0.2 GB per minute of V4 recording: a 20-min V4 session is ~4.3 GB,
-the 200×200 wireless session (40k frames) ~0.8 GB. Upload of 4 GB at 50 Mbit/s
-is ~11 min. The browser uses zstd (WASM, streaming); FFV1 would need
-ffmpeg.wasm and is too slow. The ratio at the zstd level the browser can afford
-is still to be measured (phase 0).
+| Codec                            | V4    | Wireless |
+| -------------------------------- | ----- | -------- |
+| gzip                             | 1.44× | 1.72×    |
+| **up predictor + gzip** (chosen) | 1.65× | 1.81×    |
+| best predictor + zstd -3         | 1.84× | 1.91×    |
+| zstd -19 (one 360 MB V4 segment) | 1.7×  |          |
+| FFV1 (one 360 MB V4 segment)     | 2.0×  |          |
+
+Chosen: the "up" predictor (each pixel minus the one above) and the browser's
+own `CompressionStream('gzip')`. It is within ~10% of zstd, needs no WASM
+codec or new dependency (Chrome has no zstd `CompressionStream`), and Chrome's
+gzip compresses ~5% smaller than Node's, so the numbers above (Node) are a
+lower bound. FFV1 would need ffmpeg.wasm.
+
+At 1.65×: ~260 MB per recorded minute of V4, so a 20-min V4 session is
+~5.2 GB; the 33-min wireless session is ~0.9 GB. Encoding runs at ~25–30
+MB/s on one thread (Node), far above an upload link (50 Mbit/s ≈ 6 MB/s:
+~15 min for 5 GB). Re-run with `apps/cala/scripts/donation-codec-bench.mjs`.
 
 ## Builds on
 
@@ -86,9 +97,9 @@ metadata form + consent
         │ insert row ──────▶ cala_donations (pending)
         │ request upload ──▶ edge fn donation-upload
         │                    checks auth, quotas, caps
-        │ ◀── presigned multipart URLs ──────────────────────
-decode → CALARAW1 → zstd
-        │ PUT parts ─────────────────────────────────────────▶ pending/<id>/
+        │ ◀── presigned PUT URL per chunk ───────────────────
+decode → CALARAW1 → gzip
+        │ PUT chunks ────────────────────────────────────────▶ pending/<id>/
         │ finish ──────────▶ edge fn: sizes + magic check
         │                    status=uploaded
                              admin app: preview, approve ──────▶ move to approved/<id>/
@@ -107,23 +118,34 @@ write to it exists outside it.
 
 All objects go under `pending/<donation_id>/` in the R2 bucket.
 
-| File             | Format             | Purpose                                             |
-| ---------------- | ------------------ | --------------------------------------------------- |
-| `frames.raw.zst` | `CALARAW1` + zstd  | Every frame as decoded, native bit depth            |
-| `timestamps.csv` | CSV, optional      | Frame timestamps if the recording has them          |
-| `meta.json`      | JSON (also in row) | Metadata, cala version, source file list (no paths) |
+| File                                   | Format             | Purpose                                             |
+| -------------------------------------- | ------------------ | --------------------------------------------------- |
+| `frames-0000.calaraw.gz`, `-0001`, ... | `CALARAW1` + gzip  | Every frame as decoded, native bit depth            |
+| `timestamps.csv`                       | CSV, optional      | Frame timestamps if the recording has them          |
+| `meta.json`                            | JSON (also in row) | Metadata, cala version, source file list (no paths) |
 
-`CALARAW1` (new, deliberately trivial): magic, u32 width, height, frames, u8
-bytes per pixel, f64 fps, then frames row-major little-endian. One canonical
+`CALARAW1` (built, phase 1): each chunk file is a plain gzip of a 40-byte
+header (magic, width, height, first frame, frames in chunk, frames in
+recording, bytes per pixel, predictor, fps) and ~64 MB of whole frames. The
+byte layout is documented in `packages/io/src/calaraw.ts`. One canonical
 stream instead of the original AVI/TIFF files means:
 
 - one format to validate, no untrusted AVI/TIFF parsing on the lab side;
 - any input cala can open becomes a donation the same way;
-- the frames are exactly what cala decoded, so a decoding bug shows up as a
-  mismatch with the source file list rather than silently.
+- the frames are exactly what cala decoded.
 
-zstd runs in independent frames of ~64 MB so that upload parts, resume and
-the admin preview do not need the whole file.
+Self-describing chunk files rather than one multipart object: each chunk
+uploads, resumes, is checked and can be previewed on its own, with a plain PUT
+(no multipart) and a signed content length per file. A 20-min V4 session is
+~130 chunks.
+
+Code: writer and decoder `packages/io/src/calaraw.ts` (browser, tests in
+`packages/io/src/__tests__/calaraw.test.ts`); lab reader
+`calab.read_calaraw` / `calab.iter_calaraw` (`python/src/calab/_calaraw.py`).
+`python/tests/test_calaraw.py` decodes fixtures written by the browser encoder
+(`packages/io/src/__fixtures__/gen-calaraw-fixtures.ts`). Both decoders reject
+bad headers, payloads that are not exactly the declared frames, trailing data
+and declared sizes above a cap, and inflate no further than the declared size.
 
 ## Metadata (table `cala_donations`)
 
@@ -136,7 +158,7 @@ New migration (next free number, `019_...`), following the base template.
 - Optics: `scope` (e.g. UCLA v4, Inscopix, own wireless), `fps`, `width`,
   `height`, `n_frames`, `bytes_per_pixel`, `depth_um`, `led_power` (optional)
 - Provenance: `cala_version`, `dataset_hash`
-- Files: `declared_bytes`, `n_parts`
+- Files: `declared_bytes`, `n_chunks`
 - Consent: `license` (`cc-by-4.0` | `lab-use-only`), `rights_attested`,
   `protocol_attested` (both must be true), `contact_ok` (may we contact them
   about co-authorship)
@@ -153,7 +175,7 @@ function only. CHECKs on every column (as in 014).
 
 Initial caps:
 
-- per donation ≤ 10 GB compressed (a ~45 min V4 session),
+- per donation ≤ 10 GB compressed (a ~38 min V4 session),
 - per user ≤ 2 donations not yet ingested,
 - **global ≤ 200 GB** in the bucket; the edge function refuses new uploads
   above it. This alone bounds the R2 bill.
@@ -163,12 +185,13 @@ free; 1M writes/month free.
 
 | Scenario                                   | R2 cost        |
 | ------------------------------------------ | -------------- |
-| 50 donations/month, ~3 days in bucket each | ~$0.20 / month |
+| 50 donations/month, ~3 days in bucket each | ~$0.25 / month |
 | Bucket at the 200 GB global cap all month  | ~$2.85 / month |
 | Keep everything in the cloud instead, 1 TB | ~$15 / month   |
 
 Supabase stays on the free plan (rows, auth, edge function calls). The real
-long-term cost is lab-server disk: ~2.5 TB per year at 50 donations/month.
+long-term cost is lab-server disk: ~3 TB per year at 50 donations/month
+(20-min V4 sessions).
 
 Fallbacks: Supabase Pro ($25/month, 100 GB storage, 250 GB egress, then
 $0.09/GB) if one vendor matters more than cost; Backblaze B2 ($6.95/TB-month)
@@ -179,10 +202,10 @@ is equivalent to R2.
 | Risk                                    | Mitigation                                                                                                                                                     |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Anyone uploads anything                 | Real sign-in required; anonymous sessions rejected (012 pattern).                                                                                              |
-| Huge uploads / cost                     | Edge function checks caps before presigning; presigned parts carry a signed content length; global bucket cap.                                                 |
-| Arbitrary files                         | Only the three object names; finish step checks sizes against `declared_bytes` and the zstd + `CALARAW1` magic.                                                |
+| Huge uploads / cost                     | Edge function checks caps before presigning; each presigned PUT carries a signed content length; global bucket cap.                                            |
+| Arbitrary files                         | Only the chunk, timestamp and meta names; finish step checks sizes against `declared_bytes` and the gzip + `CALARAW1` magic.                                   |
 | Malicious bytes reaching the lab server | Pull only `approved/`; decompress and parse `CALARAW1` (bounds-checked, size must equal header) in a container without network. Nothing else is opened or run. |
-| Non-imaging content                     | Admin preview decodes the first zstd frame and shows the mean image and a few frames before approval.                                                          |
+| Non-imaging content                     | Admin preview decodes the first chunk and shows the mean image and a few frames before approval.                                                               |
 | Lab server exposure                     | Outbound pull only; the ingest key can read and delete `approved/` and nothing else.                                                                           |
 | Leaked personal info                    | No paths uploaded, only base file names (strippable); email stays in auth, never in public views.                                                              |
 | Spam / flooding                         | Per-user limit, global cap, admin can disable the edge function.                                                                                               |
@@ -205,13 +228,13 @@ is equivalent to R2.
 
 ## Phases
 
-0. **Measure.** zstd WASM in the browser on the V4 and wireless sessions:
-   ratio and MB/s per level; pick the level.
-1. **Format.** `CALARAW1` writer (browser) and reader (Rust, used by ingest),
-   with round-trip tests.
+0. **Measure.** Done: up predictor + native gzip (see Codec).
+1. **Format.** Done: `CALARAW1` writer/decoder (TypeScript) and reader
+   (Python), with round-trip and cross-language tests.
 2. **Backend.** R2 bucket, migration `019_cala_donations.sql`, edge function
-   `donation-upload` (caps, presign multipart, finish check), RLS tests in
-   `supabase/tests/rls`.
+   `donation-upload` (caps, presign one PUT per chunk, finish check), RLS
+   tests in `supabase/tests/rls`. Needs a Cloudflare account; Supabase is
+   already set up.
 3. **UI.** Donate panel in cala: why-donate text, metadata form (field
    options), consent, resumable upload with progress; "my donations" list with
    status and `in_benchmark`.

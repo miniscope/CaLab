@@ -23,6 +23,7 @@ from ._compute import (
     solve_trace,
     tau_to_ar2,
 )
+from ._calaraw import CalarawError, CalarawMeta, iter_calaraw, read_calaraw
 from ._io import deconvolve_from_export, load_export_params, load_tuning_data, save_for_tuning
 from ._loaders import load_caiman, load_minian
 from ._simulate import (
@@ -79,6 +80,10 @@ __all__ = [
     "solve_trace",
     "tau_to_ar2",
     # I/O
+    "CalarawError",
+    "CalarawMeta",
+    "iter_calaraw",
+    "read_calaraw",
     "deconvolve_from_export",
     "load_export_params",
     "load_tuning_data",
