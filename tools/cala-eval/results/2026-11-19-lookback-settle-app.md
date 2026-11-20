@@ -52,3 +52,20 @@ s per sim in qc_eval (3,500-5,100 look-back frames) and 128 s on the workshop re
 
 **Verdict: the drain adds nothing once the settle follows. The app drops it**: after Discover's last frame it goes
 straight to the settle.
+
+## App measurement (headed Chrome, Metal; 5 s samples)
+
+`apps/cala/scripts/memory-measure.mjs --single [--lookback --extract] --headed --every 5`; logs in
+`~/Projects/cala-data/runs/lbsa/browser`. Off = Discover then Refine; on = look-back Discover with its settle.
+
+| recording (frames)       | run | Discover frames | Refine / settle       | total | cells | peak tab memory |
+| ------------------------ | --- | --------------- | --------------------- | ----- | ----- | --------------- |
+| workshop (23,711)        | off | 110 s (173 fps) | Refine 159 s          | 269 s | 831   | 3.0 GB          |
+|                          | on  | 119 s (167 fps) | settle 191 s (94 fps) | 309 s | 756   | 3.3 GB          |
+| Samara 10_43_21 (17,879) | off | 56 s (332 fps)  | Refine 82 s           | 137 s | 332   | 2.8 GB          |
+|                          | on  | 56 s (334 fps)  | settle 87 s (205 fps) | 143 s | 327   | 3.2 GB          |
+| Samara 14_57_02 (17,875) | off | 56 s (328 fps)  | Refine 76 s           | 132 s | 298   | 2.2 GB          |
+|                          | on  | 56 s (336 fps)  | settle 92 s (194 fps) | 149 s | 276   | 2.7 GB          |
+
+The workshop settle fed 17,984 frames spread over the recording (the 18,000 cap); Extract after it took 146 s. Load
+average 3-7, other qc_eval runs 0-1 (the workshop look-back run overlapped the end of the quick-tier suite).
