@@ -20,7 +20,7 @@
     "@calab/community": "*",
     "@calab/community-ui": "*",
     "@calab/ui": "*",
-    "solid-js": "^1.9.18"
+    "solid-js": "^1.9.19"
   },
   "devDependencies": {
     "@calab/vite-config": "*"
