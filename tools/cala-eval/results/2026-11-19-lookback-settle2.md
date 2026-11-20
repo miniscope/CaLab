@@ -225,14 +225,14 @@ Refine would still do. Seed pairs 1-2, 1-3, 2-3.
 | ------------------------------ | --------------- | ---------------------- | ---------------------------------------------- | -------------------------------------- | ---------------- | ------------------------------ |
 | D + R                          | 831 / 838 / 811 | 929 / 125              | 85-87 %; 0.976 / 0.971 / 0.974                 | 535 / 531 / 530; 0.953 / 0.958 / 0.957 | 9.9-10.7 %       | 10.0 / 9.8 / 10.9 % (the null) |
 | `SETTLE` (replay on)           | 751 / 760 / 738 | 820 / 104              | 85-86 %; 0.978 / 0.975 / 0.977                 | 514 / 515 / 512; 0.949 / 0.950 / 0.949 | 13.1-13.2 %      | 11.8 / 11.2 / 11.3 %           |
-| `OFF` (look-back, no replay)   | 812 / 829 / 813 | 851 / 70               | 83-84 %; 0.968 / 0.969 / 0.970                 | 525 / 531 / 530; 0.948 / 0.947 / 0.945 | -                | -                              |
-| **`OFF+S`** (replay off)       | 812 / 829 / 813 | 851 / 70               | 84-86 %; 0.978 / 0.977 / 0.978                 | 535 / 538 / 534; 0.955 / 0.954 / 0.952 | 9.6-9.8 %        | 9.8 / 9.1 / 9.8 %              |
-| **`REF+S`** (replay in settle) | 812 / 829 / 813 | 851 / 70               | 85-86 %; 0.976 / 0.973 / 0.976                 | 538 / 540 / 522; 0.947 / 0.949 / 0.949 | 12.2-12.9 %      | 12.0 / 11.6 / 11.2 %           |
+| `OFF` (look-back, no replay)   | 812 / 829 / 813 | 851 / 70               | 83-85 %; 0.968 / 0.969 / 0.970                 | 525 / 531 / 530; 0.948 / 0.947 / 0.945 | -                | -                              |
+| **`OFF+S`** (replay off)       | 812 / 829 / 813 | 851 / 70               | 84-87 %; 0.978 / 0.977 / 0.978                 | 535 / 538 / 534; 0.955 / 0.954 / 0.952 | 9.6-9.8 %        | 9.8 / 9.1 / 9.8 %              |
+| **`REF+S`** (replay in settle) | 812 / 829 / 813 | 851 / 70               | 85-87 %; 0.976 / 0.973 / 0.976                 | 538 / 540 / 522; 0.947 / 0.949 / 0.949 | 12.2-12.9 %      | 12.0 / 11.6 / 11.2 %           |
 
 - **Cells: go.** 818 on average (line 790), 536 Minian units matched (line 522). The replay during Discover is what
   costs the cells; with it off in Discover both arms have Discover + Refine's count within its seed range.
-- **Quality: go** for `OFF+S` (seed-to-seed r 0.977-0.978, line 0.970; matched share 84-86 %; Minian r 0.952-0.955,
-  line 0.945) and for `REF+S` (0.973-0.976; 85-86 %; 0.947-0.949).
+- **Quality: go** for `OFF+S` (seed-to-seed r 0.977-0.978, line 0.970; matched share 84-87 %; Minian r 0.952-0.955,
+  line 0.945) and for `REF+S` (0.973-0.976; 85-87 %; 0.947-0.949).
 - **Split-half noise follows the replay.** 9.6-9.8 % without it, 12-13 % whenever the settle uses it, at the same
   seed-to-seed agreement. That is the 13 % row the settle study could not explain. The replay's footprints share
   less between the two halves of the statistics the estimate is built from; the estimate is not comparable between
@@ -305,7 +305,7 @@ session needed the spare. Three slow seeds per arm; seed pairs 1-2, 1-3, 2-3. No
 
 - **Consistent with the workshop, both sessions, both settle arms**: seed-to-seed r is at or above D + R's (line: not
   more than 0.005 below), the matched share is 1-2 points above it, and a Refine after the settle moves footprints
-  0.9-1.0 x the second-Refine null (line 1.5 x).
+  0.7-1.0 x the second-Refine null (line 1.5 x).
 - The replay costs cells here too, fewer than on the workshop recording: 353 against 369 (-4 %) and 313 against 324
   (-3 %); workshop 750 against 818 (-9 %). The split-half noise reading is again higher with the replay.
 - The settle check interval differs from the settle study's workshop runs (1200 frames here, 1800 there), which
