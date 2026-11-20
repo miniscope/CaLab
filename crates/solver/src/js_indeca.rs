@@ -247,3 +247,117 @@ pub fn seed_trace(trace: &[f32], fs: f64) -> Result<JsValue, JsError> {
     let result = peak_seed::seed_trace(trace, fs);
     to_js(F, &result)
 }
+
+/// [`indeca_solve_trace`] with a given single-spike unit `unit` (> 0,
+/// raw-trace units, from [`blind_units`]) in place of the rate-cap size
+/// search. The per-frame cap still bounds the relaxed box and the placement.
+/// `occ` = `[shared, rho]` (the recording's shared combination index and the
+/// cell's count-law parameter from [`blind_units`]) turns on the noise / event
+/// classing of the relaxed runs and the burst-count rule; empty = counts
+/// `round(mass / unit)`. Same result object as [`indeca_solve_trace`].
+#[wasm_bindgen]
+pub fn indeca_solve_trace_unit(
+    trace: &[f32],
+    tau_r: f64,
+    tau_d: f64,
+    fs: f64,
+    max_firing_rate: f64,
+    max_iters: u32,
+    tol: f64,
+    hp_enabled: bool,
+    lp_enabled: bool,
+    lambda: f64,
+    unit: f64,
+    occ: &[f64],
+) -> Result<JsValue, JsError> {
+    const F: &str = "indeca_solve_trace_unit";
+    validate::validate_finite_f32("trace", trace).map_err(|e| js_err(F, e))?;
+    validate::validate_indeca_params(trace.len(), tau_r, tau_d, fs, max_firing_rate, lambda, tol)
+        .map_err(|e| js_err(F, e))?;
+    if !(unit.is_finite() && unit > 0.0) {
+        return Err(JsError::new(&format!(
+            "{F}: unit must be finite and > 0, got {unit}"
+        )));
+    }
+    let cfg = indeca::SolveConfig {
+        unit: Some(unit),
+        occupancy: match occ {
+            [i, rho, ..] => crate::blind_unit::combos()
+                .get(*i as usize)
+                .map(|&(q, g, s_)| (q, g, s_, *rho)),
+            _ => None,
+        },
+        ..Default::default()
+    };
+    let (result, _) = indeca::solve_trace_cfg(
+        trace,
+        tau_r,
+        tau_d,
+        fs,
+        max_firing_rate,
+        max_iters,
+        tol,
+        hp_enabled,
+        lp_enabled,
+        lambda,
+        cfg,
+    );
+    to_js(F, &result)
+}
+
+/// The single-spike unit of every cell of a recording, from the raw traces
+/// (`n_cells` traces of `n_tp` samples, cell-major) and the kernel
+/// (`blind_unit::recording`). Returns { shared, u, rho }: the index of the
+/// recording's shared combination, and per cell the unit (always finite and
+/// positive, raw-trace units) and the count-law parameter (the recording's
+/// median for a cell that could not be fitted; NaN if none could).
+/// Non-finite samples are tolerated here (windows that touch one are
+/// skipped): a recording with one bad cell still gets its units, and that
+/// cell's own solve is rejected by [`indeca_solve_trace_unit`].
+#[wasm_bindgen]
+pub fn blind_units(
+    traces_flat: &[f32],
+    n_cells: usize,
+    n_tp: usize,
+    tau_r: f64,
+    tau_d: f64,
+    fs: f64,
+) -> Result<JsValue, JsError> {
+    const F: &str = "blind_units";
+    let finite = tau_r.is_finite() && tau_d.is_finite() && fs.is_finite();
+    if n_tp == 0
+        || traces_flat.len() != n_cells * n_tp
+        || !(finite && tau_r > 0.0 && tau_d > tau_r && fs > 0.0)
+    {
+        return Err(JsError::new(&format!(
+            "{F}: need n_cells * n_tp samples (n_tp > 0), 0 < tau_r < tau_d and fs > 0"
+        )));
+    }
+    let st = crate::blind_unit::setup_for(tau_r, tau_d, fs);
+    let traces: Vec<Vec<f64>> = traces_flat
+        .chunks_exact(n_tp)
+        .map(|y| y.iter().map(|&v| v as f64).collect())
+        .collect();
+    let r = crate::blind_unit::recording(&traces, &st);
+    #[derive(serde::Serialize)]
+    struct Out {
+        shared: usize,
+        u: Vec<f64>,
+        rho: Vec<f64>,
+    }
+    let fitted: Vec<f64> = r.rho.iter().cloned().filter(|v| v.is_finite()).collect();
+    let med = crate::blind_unit::median(&fitted);
+    let rho = r
+        .rho
+        .iter()
+        .map(|&v| if v.is_finite() { v } else { med })
+        .collect();
+    to_js(
+        F,
+        &Out {
+            shared: r.shared,
+            u: r.u,
+            rho,
+        },
+    )
+}
