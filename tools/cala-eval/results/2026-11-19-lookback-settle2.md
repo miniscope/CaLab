@@ -138,3 +138,196 @@ Refine; 3 slow seeds; `--fps 30 --motion`.
 
 - **P5.** The Samara sessions have 17,880 and 17,876 frames (timestamps); all frames are read (no `--frames`), the
   settle is one pass of 17,856 frames (279 blocks of 64).
+
+## Results (19 Nov 2026)
+
+Binaries: `qc_eval-lbs2-a` (settle flags as tail flags) and `qc_eval-lbs2-b` (`a` plus the default-off look-back
+reservoir switch); `b` was used for every result run. Run trees under `$CALA_DATA`: `demix-suite/lbs2-full` (`OFF`,
+`OFF+S`, links to the settle study's `SETTLE`, `COMBO+R`, `DR-main`), `demix-suite/lbs2-q` (`SETTLE`, `REF+S`, quick
+tier), `demix-suite/lbs2-p4{a,t,c}` and `lbs2-p4` (streaming screen), `runs/lbs2/real` (workshop), `runs/lbs2/samara`
+(Samara sessions), `runs/lbs2/bytecheck`.
+
+### In plain language
+
+- **Dropping the replay does not keep the quality on the sims.** Without it the settled library falls back to
+  Discover + Refine level for overlapping cells: close-pair footprints, late-born cells, crosstalk and bitten
+  footprints all lose what the replay gave. Isolated cells are unchanged. P1: no-go.
+- **It does recover the cells on real data, and the real-data measures see no loss.** Workshop: 818 cells on average
+  against 750, 536 Minian units matched against 514, the same seed-to-seed agreement, and split-half noise back at
+  10 %. The two Samara sessions show the same, smaller (3-4 % more cells). These measures have no ground truth: they
+  measure whether a footprint reproduces, and a bitten footprint reproduces.
+- **It does not halve the settle cost in qc_eval.** Sims: 1.01 x the frames per second. Workshop: 1.3 x. Samara:
+  1.07 x. qc_eval gives the slow loop a fixed work budget per frame, so the replay's cost shows mostly as fewer tile
+  visits (1.1-1.5 x more visits without it). The 0.6 x is an app number and was not re-measured here.
+- **The two things the replay does can be separated.** With the replay only in the settle (`--joint-update refine`)
+  Discover is the replay-off Discover, so the workshop cells are all back (812 / 829 / 813), and on the quick tier
+  the sims keep most of the quality (close-pair r 0.0009 lower, bitten share 0.04 higher with a CI that includes 0).
+  The settle is as slow as with the replay on. The full tier of this arm was not run (see below).
+- **Feeding look-back frames to the reservoir during Discover does not help.** Neither arm closes any of the gap to
+  the settled library; the test-frames-only arm adds false cells and bites. P4: no-go, stopped at the screen.
+- **The settle holds on two more recordings.** On both Samara sessions the settled library agrees between seeds as
+  well as Discover + Refine does, and a Refine after it moves footprints no more than a second Refine does.
+
+### Task 1. Settle flags as branch flags
+
+`--settle-*` are in `Tail`/`TAIL_FLAGS` (qc_eval) and `run_arms.TAIL_FLAGS`; the settle now runs after the `drain`
+branch point. Check on static_s5 (`runs/lbs2/bytecheck`, `cmpruns.py`: every output file, wall-time fields masked):
+three separate runs (`COMBO`, `SETTLE`, `COMBO+R`) against one run branched after `discover` and one branched after
+`drain`, each into the same three tails: all six branch directories are byte-identical to the separate runs. The
+separate `COMBO` and `SETTLE` runs are byte-identical to the settle study's (`COMBO+R` too, apart from the files its
+`--wrap-libs --noise-dump` add), and `b` with the reservoir switch off reproduces `a`.
+
+One thing found on the way: `demix_suite.py --branch-after` keeps its temporary directory at `<root>/_branched/<sim>`,
+so two suites must not share a root while they run (three of mine collided and were re-run in separate roots).
+
+### P1. Replay off, full tier (14 sims)
+
+| measure                          | `DR-main`    | `SETTLE` (replay on) | `OFF+S` (replay off) | `OFF+S` minus `SETTLE`     | `OFF+S` minus `DR-main`   |
+| -------------------------------- | ------------ | -------------------- | -------------------- | -------------------------- | ------------------------- |
+| footprint r, all cells           | 0.9879       | 0.9928               | 0.9886               | -0.0042 [-0.0048, -0.0037] | +0.0006 [-0.0001, 0.0013] |
+| footprint r, isolated            | 0.9922       | 0.9922               | 0.9921               | -0.0001 [-0.0010, 0.0009]  | -0.0001 [-0.0009, 0.0013] |
+| footprint r, close pairs         | 0.9843       | 0.9927               | 0.9850               | -0.0077 [-0.0087, -0.0071] | +0.0007 [-0.0005, 0.0017] |
+| footprint r, born in second half | 0.9560       | 0.9773               | 0.9495               | -0.028 [-0.034, -0.019]    | -0.007 [-0.014, 0.003]    |
+| footprint r, born in last 20 %   | 0.9306       | 0.9670               | 0.9272               | -0.040 [-0.051, -0.023]    | -0.003 [-0.021, 0.013]    |
+| crosstalk (corr excess < 1 D)    | +0.150       | +0.074               | +0.141               | +0.067 [0.058, 0.076]      | -0.008 [-0.018, 0.001]    |
+| bitten footprints, 0.75-1 D      | 0.486        | 0.168                | 0.461                | +0.293 [0.262, 0.323]      | -0.025 [-0.059, 0.008]    |
+| matched / false cells per sim    | 400.1 / 21.9 | 401.9 / 17.1         | 401.5 / 21.9         | -0.4 / +4.8 [0.4, 9.2]     | +1.4 / 0.0                |
+
+**No-go** (all-cell r, close-pair r, bitten share and crosstalk each pass their no-go line with a CI that excludes 0).
+Against `DR-main` no group is worse. So look-back + settle without the replay is Discover + Refine on the sims; the
+gain of the look-back path over Discover + Refine is the replay's, and it sits in overlapping cells (close pairs,
+late-born cells next to older ones). Isolated cells do not need it.
+
+Which replay matters, quick tier (5 sims), `REF+S` (replay only once the cell set is frozen) against `SETTLE`:
+
+| measure                          | `SETTLE`     | `REF+S`      | difference                          |
+| -------------------------------- | ------------ | ------------ | ----------------------------------- |
+| footprint r, all cells           | 0.9934       | 0.9929       | -0.0005 [-0.0011, 0.0001]           |
+| footprint r, isolated            | 0.9922       | 0.9923       | +0.0001 [-0.0013, 0.0018]           |
+| footprint r, close pairs         | 0.9937       | 0.9928       | -0.0009 [-0.0017, -0.0001]          |
+| footprint r, born in second half | 0.9816       | 0.9754       | -0.006 [-0.013, 0.002]              |
+| crosstalk                        | +0.060       | +0.069       | +0.009 [-0.008, 0.027]              |
+| bitten footprints, 0.75-1 D      | 0.148        | 0.190        | +0.042 [-0.005, 0.088]              |
+| matched / false cells per sim    | 349.4 / 10.4 | 347.2 / 12.4 | -2.2 [-6.3, 1.9] / +2.0 [-2.7, 6.7] |
+
+The replay in the settle carries most of the gain (about 0.007 of the 0.0077 on close pairs, 0.25 of the 0.29 on
+bitten share, taking the full-tier gap as the scale); the replay during Discover adds the rest. By the P1 lines
+`REF+S` is "partial" on five sims: close pairs miss by 0.0009 against a line of 0.001 with a CI that excludes 0,
+bitten share misses the 0.03 line with a CI that includes 0. **The full tier of `REF+S` (9 more sims) was not run:**
+its launch was refused by the session's permission system and is held for the PI's decision.
+
+### P2. Workshop recording, three slow seeds (`runs/lbs2/real/off_agreement.md`, `ref_agreement.md`)
+
+`SETTLE`, D + R: the settle study's runs. All settled libraries are followed by a Refine pass to measure what a
+Refine would still do. Seed pairs 1-2, 1-3, 2-3.
+
+| library                        | cells           | adds / merges (seed 1) | same cells found by two seeds: share; median r | Minian units matched; median r         | split-half noise | Refine after it moves (median) |
+| ------------------------------ | --------------- | ---------------------- | ---------------------------------------------- | -------------------------------------- | ---------------- | ------------------------------ |
+| D + R                          | 831 / 838 / 811 | 929 / 125              | 85-87 %; 0.976 / 0.971 / 0.974                 | 535 / 531 / 530; 0.953 / 0.958 / 0.957 | 9.9-10.7 %       | 10.0 / 9.8 / 10.9 % (the null) |
+| `SETTLE` (replay on)           | 751 / 760 / 738 | 820 / 104              | 85-86 %; 0.978 / 0.975 / 0.977                 | 514 / 515 / 512; 0.949 / 0.950 / 0.949 | 13.1-13.2 %      | 11.8 / 11.2 / 11.3 %           |
+| `OFF` (look-back, no replay)   | 812 / 829 / 813 | 851 / 70               | 83-84 %; 0.968 / 0.969 / 0.970                 | 525 / 531 / 530; 0.948 / 0.947 / 0.945 | -                | -                              |
+| **`OFF+S`** (replay off)       | 812 / 829 / 813 | 851 / 70               | 84-86 %; 0.978 / 0.977 / 0.978                 | 535 / 538 / 534; 0.955 / 0.954 / 0.952 | 9.6-9.8 %        | 9.8 / 9.1 / 9.8 %              |
+| **`REF+S`** (replay in settle) | 812 / 829 / 813 | 851 / 70               | 85-86 %; 0.976 / 0.973 / 0.976                 | 538 / 540 / 522; 0.947 / 0.949 / 0.949 | 12.2-12.9 %      | 12.0 / 11.6 / 11.2 %           |
+
+- **Cells: go.** 818 on average (line 790), 536 Minian units matched (line 522). The replay during Discover is what
+  costs the cells; with it off in Discover both arms have Discover + Refine's count within its seed range.
+- **Quality: go** for `OFF+S` (seed-to-seed r 0.977-0.978, line 0.970; matched share 84-86 %; Minian r 0.952-0.955,
+  line 0.945) and for `REF+S` (0.973-0.976; 85-86 %; 0.947-0.949).
+- **Split-half noise follows the replay.** 9.6-9.8 % without it, 12-13 % whenever the settle uses it, at the same
+  seed-to-seed agreement. That is the 13 % row the settle study could not explain. The replay's footprints share
+  less between the two halves of the statistics the estimate is built from; the estimate is not comparable between
+  replay and non-replay libraries, so it should not gate one against the other.
+- Sims and recording disagree about the replay, and the reason is what each can see. The sims score bias against
+  ground truth (a footprint bitten by its neighbour); the recording's measures score reproducibility. Minian r is
+  slightly higher without the replay (0.954 against 0.949), which may only say that Minian's footprints are closer
+  to the non-replay kind.
+
+### P3. Settle cost (qc_eval, native; frames per second of the settle pass)
+
+| data                             | `SETTLE` (replay on)   | replay off | ratio  | visits per settle frame, on / off |
+| -------------------------------- | ---------------------- | ---------- | ------ | --------------------------------- |
+| quick-tier sims (5), same batch  | 56-80 (mean of ratios) | 58-84      | 1.01 x | 1.81 / 2.03 (1.14 x more)         |
+| workshop, seed 1 against 3 seeds | 33                     | 43-44      | 1.31 x | 0.41 / 0.56 (1.36 x)              |
+| Samara, 2 sessions x 3 seeds     | 47-49                  | 51-52      | 1.07 x | 1.09 / 1.66 (1.52 x)              |
+
+`REF+S` settles at `SETTLE`'s speed (sims 1.00 x; workshop 33-34 frames per second). The Samara arms ran in separate
+batches under different load, so their ratio is rough. Work units per settle frame are within 5 % everywhere, by
+construction of the budget. **Sims: no gain (line 1.25 x). Workshop: between the lines (1.6 x to go).** qc_eval
+cannot confirm or refute the app's 0.6 x; that needs a headed-Chrome measurement.
+
+### P4. Reservoir fed during Discover (quick tier, 5 sims; `demix-suite/lbs2-p4`)
+
+Base = `COMBO` Discover (replay on, as P1 keeps it). `-nd` = the library at the end of Discover with no drain, which
+is what a live stream has.
+
+| measure                          | `COMBO-nd`   | `COMBO` + drain | `SETTLE`     | `LBR-all` no drain: minus `COMBO-nd` | `LBR-test` no drain: minus `COMBO-nd` |
+| -------------------------------- | ------------ | --------------- | ------------ | ------------------------------------ | ------------------------------------- |
+| footprint r, all cells           | 0.9906       | 0.9911          | 0.9934       | -0.0005 [-0.0013, 0.0005]            | -0.0007 [-0.0016, 0.0003]             |
+| footprint r, close pairs         | 0.9905       | 0.9911          | 0.9937       | -0.0006 [-0.0021, 0.0007]            | -0.0010 [-0.0027, 0.0005]             |
+| footprint r, born in second half | 0.9422       | 0.9556          | 0.9816       | -0.006 [-0.039, 0.024]               | -0.001 [-0.022, 0.026]                |
+| footprint r, born in last 20 %   | 0.842        | 0.921           | 0.974        | -0.039 [-0.086, 0.045]               | -0.001 [-0.049, 0.063]                |
+| bitten footprints, 0.75-1 D      | 0.271        | 0.253           | 0.148        | +0.025 [-0.032, 0.082]               | +0.084 [0.028, 0.140]                 |
+| matched / false cells per sim    | 346.2 / 13.6 | 348.8 / 11.0    | 349.4 / 10.4 | +8.0 / +1.0                          | +8.0 / +5.8                           |
+
+- The gap from `COMBO-nd` to `SETTLE` is +0.0028 on all-cell r and -0.12 on bitten share. **Both arms close none of
+  it** (the point estimates go the wrong way). `LBR-test` also adds false cells and bites. **No-go**; `LBR-half` and
+  the full tier were not run.
+- The switch does what it says: on static_s5 18,507 look-back frames were scored during Discover and took 341,000
+  event slots (`LBR-all`); 6,217 frames and 200,000 slots (`LBR-test`). Slow-loop work per Discover frame rose from
+  3.95e7 to 4.76e7 (+20 %) and 4.23e7 (+7 %). With drain + settle after them the arms equal `SETTLE` (all-cell r
+  -0.0000 and -0.0002).
+- Why it does not help, as far as the counters go (not tested further): during Discover the slow loop spends about
+  6 % of its work on refinement (2.3e6 of 3.95e7 units per frame); the rest goes to finding cells. Fresher test
+  frames do not buy more refinement there. In the settle the cell set is frozen and all of the budget refines; that,
+  with the renewed frames, is what the settle adds. The extra reservoir turnover instead feeds the add tests (more
+  cells, matched and false).
+- Held-out frames: a look-back frame keeps the side it had as a live frame; unit test
+  `lookback_reservoir_keeps_the_held_out_side_and_stores_no_frame_twice` asserts that held-out frames only become
+  test slots and leave the footprint statistics bit-for-bit unchanged, that fitting frames only become fitting slots,
+  and that no tile stores a frame twice. Fast loop: the change is inside `SlowLoop::observe_lookback`, called by the
+  slow worker; nothing was added to the fast loop. Not measured in the app.
+
+### P5. Samara sessions (animal 1560; `runs/lbs2/samara/*_agreement.md`)
+
+600 x 600, 30 fps (`--fps 30 --motion`), 17,879 and 17,875 frames, motion within about 4 px, 310-380 cells; neither
+session needed the spare. Three slow seeds per arm; seed pairs 1-2, 1-3, 2-3. No Minian, no ground truth.
+
+| session (ewl)  | library  | cells           | same cells found by two seeds: share; median r | split-half noise | a Refine after it moves (median) |
+| -------------- | -------- | --------------- | ---------------------------------------------- | ---------------- | -------------------------------- |
+| 10_43_21 (-50) | Discover | 370 / 360 / 377 | 88 %; 0.979 / 0.978 / 0.981                    | 16.1-17.0 %      | 18.2 / 14.6 / 15.0 %             |
+|                | D + R    | 370 / 360 / 377 | 90 %; 0.989 / 0.987 / 0.989                    | 11.2-12.7 %      | 6.6 / 6.6 / 9.4 % (the null)     |
+|                | `SETTLE` | 358 / 353 / 349 | 91 %; 0.991 / 0.992 / 0.990                    | 11.7-12.3 %      | 6.4 / 7.1 / 7.4 %                |
+|                | `OFF+S`  | 376 / 368 / 363 | 91 %; 0.993 / 0.993 / 0.992                    | 10.9-11.2 %      | 5.4 / 5.3 / 6.0 %                |
+| 14_57_02 (-30) | Discover | 329 / 311 / 328 | 87 %; 0.978 / 0.978 / 0.977                    | 16.2-17.4 %      | 16.8 / 17.7 / 16.4 %             |
+|                | D + R    | 329 / 311 / 328 | 89 %; 0.989 / 0.988 / 0.989                    | 11.2-12.7 %      | 6.8 / 8.0 / 8.9 % (the null)     |
+|                | `SETTLE` | 308 / 319 / 312 | 90 %; 0.989 / 0.989 / 0.990                    | 12.3-13.5 %      | 8.2 / 8.0 / 8.1 %                |
+|                | `OFF+S`  | 321 / 327 / 325 | 91 %; 0.990 / 0.991 / 0.989                    | 10.8-11.3 %      | 5.8 / 6.4 / 6.0 %                |
+
+- **Consistent with the workshop, both sessions, both settle arms**: seed-to-seed r is at or above D + R's (line: not
+  more than 0.005 below), the matched share is 1-2 points above it, and a Refine after the settle moves footprints
+  0.9-1.0 x the second-Refine null (line 1.5 x).
+- The replay costs cells here too, fewer than on the workshop recording: 353 against 369 (-4 %) and 313 against 324
+  (-3 %); workshop 750 against 818 (-9 %). The split-half noise reading is again higher with the replay.
+- The settle check interval differs from the settle study's workshop runs (1200 frames here, 1800 there), which
+  moves visit counts by about 1 % and nothing else.
+
+### Decision
+
+- **Question 1.** P1 no-go, P2 go, P3 no gain on sims and between the lines on the workshop recording. By the rule
+  the replay is not dropped. Per part: the replay matters for overlapping cells (close-pair r +0.008, bitten share
+  -0.29, crosstalk -0.07, late-born r +0.03 on the sims) and for nothing else measured; its cost is 3-9 % of the
+  cells on real recordings, taken during Discover, and 0-25 % of the settle's frames per second in qc_eval. Most of
+  the quality comes from the replay in the settle, and all of the cell loss from the replay in Discover, so the
+  candidate that keeps both is the replay in the settle only (`REF+S`): go on the workshop recording, partial on five
+  sims, full tier not run.
+- **Question 2.** No-go. A live stream keeps the Discover-only library (`COMBO-nd`: all-cell r 0.9906 against 0.9934
+  settled; bitten share 0.27 against 0.15), which is still better than Discover + Refine on overlapping cells
+  (bitten share 0.49) because the replay runs during Discover.
+- **Question 3.** The settle result holds on both Samara sessions.
+
+### Not done
+
+- `REF+S` on the full tier (held, see P1) and on the Samara sessions.
+- `OFF+R`, and `OFF`'s metrics on the workshop Refine reference (dropped for run slots before the runs).
+- `LBR-half`; any app build or headed-Chrome timing; the settle study's open items (every-fourth-frame arm, the stop
+  rule acting, "extend when not settled").
