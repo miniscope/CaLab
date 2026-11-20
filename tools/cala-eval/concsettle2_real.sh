@@ -31,18 +31,26 @@ run)
   OUT=$ROOT/$2; REC=$3; SEED=$4; shift 4
   [ -f $OUT.done ] && exit 0
   mkdir -p $ROOT
-  sleep $((RANDOM % 20))
+  # One starter at a time looks at the slot count and launches (so waiters cannot overshoot the cap together).
+  LOCK=$ROOT/.start.lock
   while true; do
-    n=$(ps -axo command | grep -E "qc_eval[^ ]* (sim|real) " | grep -v "time -l" | grep -v grep | wc -l)
-    free=$(vm_stat | awk '/Pages free|Pages inactive|Pages speculative/ {s+=$NF} END {print int(s*16384/1e9)}')
-    [ $n -lt ${MAXN:-6} ] && [ $free -ge 5 ] && break
+    if mkdir $LOCK 2> /dev/null; then
+      n=$(ps -axo command | grep -E "qc_eval[^ ]* (sim|real) " | grep -v "time -l" | grep -v grep | wc -l)
+      free=$(vm_stat | awk '/Pages free|Pages inactive|Pages speculative/ {s+=$NF} END {print int(s*16384/1e9)}')
+      if [ $n -lt ${MAXN:-6} ] && [ $free -ge 5 ]; then break; fi
+      rmdir $LOCK
+    fi
     sleep $((15 + RANDOM % 20))
   done
   mkdir -p $OUT
   /usr/bin/time -l $BIN real "$REC" $OUT --motion --batch 8 --budget 30000000 --slow-seed $SEED \
     --passes 1 --joint-update all --joint-sign all --lookback 2 --merge-guard-sep 0.6 \
     --offered-fps 30 --visit-workers 4 --pool 4 --lb-ms 5 --lib-at 0.125,0.25,0.375,0.5,0.625,0.75,0.875 \
-    --settle-frames 18000 --settle-batch 16 --settle-libs --settle-check 1800 "$@" > $OUT.log 2> $OUT.time
+    --settle-frames 18000 --settle-batch 16 --settle-libs --settle-check 1800 "$@" > $OUT.log 2> $OUT.time &
+  PID=$!
+  sleep 5
+  rmdir $LOCK
+  wait $PID
   echo "rc $?" > $OUT.done
   ;;
 all)
