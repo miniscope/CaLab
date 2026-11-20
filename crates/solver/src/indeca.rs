@@ -524,6 +524,14 @@ pub(crate) struct SolveConfig {
     pub scoring: Scoring,
     /// Which method solves the relaxed problem (same optimum either way).
     pub relaxed: Relaxed,
+    /// A given single-spike unit (peak amplitude of one spike in the raw
+    /// trace's units, from `blind_unit`). `None` = the rate-cap size search
+    /// of [`event_mass_search`].
+    pub unit: Option<f64>,
+    /// With `unit`: the unit estimator's level model `(q, g, s_, rho)`, which
+    /// turns on the noise / event classing of each relaxed run and the
+    /// burst-count rule (`event_mass::unit_counts`). `None` = `round(m / a)`.
+    pub occupancy: Option<(f64, f64, f64, f64)>,
     /// Test-only counterfactual applied to the frame masses before the
     /// binarization (exp/exact-vs-fista diagnostics).
     #[cfg(test)]
@@ -565,6 +573,8 @@ impl Default for SolveConfig {
             alpha_init: AlphaInit::PeakToTrough,
             scoring: Scoring::Chain,
             relaxed: Relaxed::Ipm,
+            unit: None,
+            occupancy: None,
             #[cfg(test)]
             x_hook: XHook::None,
         }
@@ -785,6 +795,25 @@ pub(crate) fn solve_trace_cfg(
     // The selection's resolution: one standard error of the noise energy
     // over the interior it scores on (trace units).
     let std_error = noise_model.map_or(0.0, |nm| nm.std_error(n_grid));
+    // A given unit's height in the working (bandpassed) trace: the
+    // bandpass's gain on the peak of one kernel (linear, data-free).
+    let unit_gain = match (cfg.unit, prep.filter.as_mut()) {
+        (Some(_), Some(f)) if n > 0 => {
+            let mut d = vec![0.0_f32; n];
+            d[n / 2] = 1.0;
+            let mut kv = vec![0.0_f32; n];
+            prep.banded.convolve_forward(&d, &mut kv);
+            let pk = kv.iter().cloned().fold(0.0_f32, f32::max) as f64;
+            f.apply(&mut kv);
+            let pf = kv.iter().cloned().fold(0.0_f32, f32::max) as f64;
+            if pk > 0.0 && pf > 0.0 {
+                pf / pk
+            } else {
+                1.0
+            }
+        }
+        _ => 1.0,
+    };
     let chain = (cfg.scoring == Scoring::Chain).then(|| prep.take_chain());
 
     let alpha_est = match cfg.alpha_init {
@@ -886,14 +915,26 @@ pub(crate) fn solve_trace_cfg(
             },
             None => Scorer::Plain { y: &prep.working },
         };
-        event_mass_search(
-            &x,
-            &mut scorer,
-            &prep.banded,
-            pad,
-            cap_spikes as usize,
-            noise_model,
-        )
+        match cfg.unit {
+            // Counts at the given unit (prescale units).
+            Some(u) => crate::event_mass::event_mass_at(
+                &x,
+                &mut scorer,
+                &prep.banded,
+                pad,
+                cap_spikes as usize,
+                u * unit_gain / alpha_est,
+                cfg.occupancy,
+            ),
+            None => event_mass_search(
+                &x,
+                &mut scorer,
+                &prep.banded,
+                pad,
+                cap_spikes as usize,
+                noise_model,
+            ),
+        }
     };
 
     let stats = SolveStats {
@@ -924,7 +965,19 @@ pub(crate) fn solve_trace_cfg(
     let (alpha_out, baseline_out) = {
         let mut cv = vec![0.0_f32; n];
         prep.banded.convolve_forward(&em.counts, &mut cv);
-        crate::threshold::lstsq_alpha_baseline(&cv, &prep.working, pad, f64::INFINITY)
+        match cfg.unit {
+            // The reported amplitude IS the given unit; offset by least
+            // squares at that amplitude over the same interior.
+            Some(u) => {
+                let (lo_, hi_) = (pad.min(n), n.saturating_sub(pad));
+                let cnt = hi_.saturating_sub(lo_).max(1) as f64;
+                let r: f64 = (lo_..hi_)
+                    .map(|i| prep.working[i] as f64 - u * cv[i] as f64)
+                    .sum();
+                (u, r / cnt)
+            }
+            None => crate::threshold::lstsq_alpha_baseline(&cv, &prep.working, pad, f64::INFINITY),
+        }
     };
     let threshold = if em.diag.a_max > 0.0 {
         em.diag.a_pick / em.diag.a_max
