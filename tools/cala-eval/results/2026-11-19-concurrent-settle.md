@@ -303,4 +303,52 @@ relative L2 change of each footprint's shape since the checkpoint 1200 frames be
   for comparison a cell's split-half footprint noise is about 10 %. A closed-loop user who needs a frozen readout
   can lower the share late in the session; that is a scheduler setting.
 
-(full tier and real data below as the runs finish)
+### T3, deciding arm on the full tier (14 sims; `demix-suite/cs-full`, binary `qc_eval-cs-d`)
+
+`T30-CS75` = `--offered-fps 30 --csettle 0.75 --csettle-mode stats` (the share that dropped nothing on the quick
+tier). The five quick-tier sims of `T30`, its tails and `T30-CS75` are the quick-tier runs, linked in.
+
+- **Dropped frames: 0 on all 14 sims**, baseline and `T30-CS75`. Owner busy 53-60 % without the settle, 81-84 % with
+  it: 22-28 % of the worker's time on the settle (4,300-5,800 units per sim), 16-19 % left idle.
+
+| measure                          | `T30`  | gap (`T30+S9600` minus `T30`) | `T30-CS75` minus `T30`    | share of gap | `T30-CS75+S4800` minus `T30+S9600` | `T30+S4800` minus `T30+S9600` |
+| -------------------------------- | ------ | ----------------------------- | ------------------------- | ------------ | ---------------------------------- | ----------------------------- |
+| footprint r, all cells           | 0.9894 | +0.0034 [0.0029, 0.0038]      | +0.0021 [0.0016, 0.0026]  | 62 %         | -0.0004 [-0.0007, -0.0001]         | -0.0007 [-0.0010, -0.0004]    |
+| footprint r, isolated            | 0.9902 | +0.0023 [0.0013, 0.0038]      | +0.0013 [0.0002, 0.0028]  | 57 %         | -0.0003 [-0.0013, 0.0005]          | -0.0007 [-0.0018, 0.0001]     |
+| footprint r, close pairs         | 0.9885 | +0.0042 [0.0034, 0.0048]      | +0.0025 [0.0016, 0.0033]  | 60 %         | -0.0004 [-0.0008, 0.0001]          | -0.0006 [-0.0010, -0.0001]    |
+| footprint r, born in second half | 0.9459 | +0.031 [0.025, 0.040]         | +0.006 [-0.003, 0.016]    | 19 %         | -0.006 [-0.012, -0.001]            | -0.006 [-0.012, -0.001]       |
+| footprint r, born in last 20 %   | 0.852  | +0.121 [0.085, 0.175]         | +0.023 [-0.027, 0.097]    | 19 %         | -0.011 [-0.020, 0.001]             | -0.009 [-0.022, 0.003]        |
+| crosstalk (headline)             | 0.089  | -0.016 [-0.026, -0.006]       | -0.010 [-0.019, -0.001]   | 63 %         | -0.002 [-0.011, 0.007]             | +0.000 [-0.009, 0.011]        |
+| bitten footprints, 0.75-1 D      | 0.302  | -0.136 [-0.165, -0.108]       | -0.062 [-0.092, -0.032]   | 46 %         | +0.008 [-0.016, 0.033]             | +0.018 [-0.008, 0.043]        |
+| matched cells per sim            | 398.1  | +2.9 [1.3, 4.6]               | +3.1 [0.2, 6.0]           |              | +1.8 [-0.4, 3.9]                   | +0.3                          |
+| false cells per sim              | 20.2   | -2.9 [-4.6, -1.3]             | +0.4 [-2.5, 3.2]          |              | +1.6 [-0.7, 4.0]                   | -0.3                          |
+
+- **Live library at the end of the stream: go on footprint r (62 % of the gap, CI excludes 0), between the lines on
+  bitten share (46 %; the line is half, the no-go line a quarter).** Matched cells +3.1, false cells within noise.
+  Late-born cells gain little (19 %): a cell born near the end has had too little settle time at a 22-28 % share.
+- **End-of-stream settle still needed: half a pass brings everything but the late-born cells to the settled
+  level.** `T30-CS75+S4800` is inside the lines on footprint r (all, isolated, close pairs), bitten share, crosstalk
+  and cell counts; born-second-half is 0.006 short (line 0.005, CI excludes 0). Half a pass with no concurrent
+  settle (`T30+S4800`) misses footprint r for all cells by 0.0002 and has the same late-born shortfall. So the
+  concurrent settle is worth about 0.0003 of footprint r after half an end pass: small. For late-born cells a full
+  pass is still the answer; the quick-tier arm that settled only tiles with a stable cell set points the same way.
+
+Live library through the session, full tier (`cs-full/checkpoints.md`; qc_eval's own match):
+
+| frames seen | `T30` r | `T30-CS75` minus `T30`    | false cells, `T30-CS75` minus `T30` | change per 1200 frames, `T30` | `T30-CS75` |
+| ----------- | ------- | ------------------------- | ----------------------------------- | ----------------------------- | ---------- |
+| 1200        | 0.9016  | +0.0642 [0.0495, 0.0789]  | -1.8 [-4.7, 1.1]                    | -                             | -          |
+| 2400 (25 %) | 0.9709  | +0.0067 [0.0053, 0.0081]  | -0.6 [-3.0, 1.8]                    | 26.7 %                        | 11.8 %     |
+| 3600        | 0.9796  | +0.0033 [0.0026, 0.0041]  | +3.1 [-0.7, 6.9]                    | 4.8 %                         | 6.7 %      |
+| 4800 (50 %) | 0.9831  | +0.0025 [0.0019, 0.0031]  | +1.9 [-1.0, 4.7]                    | 2.6 %                         | 5.2 %      |
+| 6000        | 0.9848  | +0.0025 [0.0020, 0.0030]  | +2.5 [-0.4, 5.4]                    | 2.4 %                         | 4.7 %      |
+| 7200 (75 %) | 0.9861  | +0.0020 [0.0017, 0.0024]  | +1.7 [-1.3, 4.7]                    | 1.6 %                         | 3.6 %      |
+| 8400        | 0.9870  | +0.0015 [0.0012, 0.0018]  | +1.8 [-1.5, 5.1]                    | 1.5 %                         | 3.5 %      |
+| end         | 0.9874  | +0.0014 [0.0011, 0.0018]  | +0.4 [-2.5, 3.2]                    | 1.0 %                         | 3.0 %      |
+
+- **Better at every checkpoint, CIs exclude 0.** In the first eighth the baseline's median footprint r is 0.90 and
+  the concurrent library's 0.97. From the half-way point the lead is about 1200-2400 frames of session time.
+- Unmatched cells read 2-3 higher in mid-session (CIs include 0) and equal at the end.
+- Footprint movement: 3-5 % per 1200 frames against 1-2.6 %, falling through the session in both.
+
+(real data below as the runs finish)
