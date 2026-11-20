@@ -3280,7 +3280,9 @@ impl Timed {
             if t >= limit {
                 break;
             }
-            if self.cs_guard > 0.0 && t + self.cs_guard * self.cs_mean > self.last_arr + self.batch_ms {
+            if self.cs_guard > 0.0
+                && t + self.cs_guard * self.cs_mean > self.last_arr + self.batch_ms
+            {
                 // Too close to the next batch: wait for it.
                 self.cs_next = self.last_arr + self.batch_ms;
                 break;
