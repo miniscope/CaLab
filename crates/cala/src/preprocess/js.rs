@@ -12,6 +12,9 @@
 
 use wasm_bindgen::prelude::*;
 
+use crate::qc::js::JsQcMonitor;
+use crate::trace::js::JsTraceEngine;
+
 use super::flatfield::{
     FlatFieldSeed, FlatFieldUpdate, OnlineFlatField, OnlineFlatFieldConfig, RefineOutcome,
 };
@@ -467,6 +470,103 @@ impl JsPreprocessor {
             ]);
         }
         Ok(rec)
+    }
+
+    /// Back-process and solve one registered batch while its pixels are in
+    /// WASM memory. `frames` is copied back to JS once, after both operations;
+    /// the separate calls copy the whole batch into WASM twice.
+    #[wasm_bindgen(js_name = backTraceFramesRegistered)]
+    pub fn back_trace_frames_registered(
+        &mut self,
+        engine: &mut JsTraceEngine,
+        frames: &mut [f32],
+        count: u32,
+        dy: &[f32],
+        dx: &[f32],
+    ) -> Result<Vec<f32>, JsError> {
+        self.back_frames_registered(frames, count, dy, dx)?;
+        engine.process_frames(frames, count)
+    }
+
+    /// As `backTraceFramesRegistered`, with online QC. A newly made or
+    /// periodically refreshed monitor receives the post-back noise map,
+    /// matching the separate back and solve calls.
+    #[wasm_bindgen(js_name = backTraceQcFramesRegistered)]
+    #[allow(clippy::too_many_arguments)] // Flat batch ABI: objects, pixels, shifts, refresh policy.
+    pub fn back_trace_qc_frames_registered(
+        &mut self,
+        engine: &mut JsTraceEngine,
+        qc: &mut JsQcMonitor,
+        frames: &mut [f32],
+        count: u32,
+        dy: &[f32],
+        dx: &[f32],
+        refresh_qc_noise: bool,
+    ) -> Result<Vec<f32>, JsError> {
+        self.back_frames_registered(frames, count, dy, dx)?;
+        if refresh_qc_noise {
+            qc.set_noise(&self.inner.noise().sigma())?;
+        }
+        qc.process_frames_shifted(engine, frames, count, dy, dx)
+    }
+
+    /// A new session starts with the next frame of `frontFrames`: re-seat
+    /// the flicker reference (see the Rust `preprocess::session` module).
+    #[wasm_bindgen(js_name = beginSessionFront)]
+    pub fn begin_session_front(&mut self) {
+        self.inner.begin_session_front();
+    }
+
+    /// A new session starts with the next frame of `backFramesRegistered`:
+    /// `frames` are its first registered frames (whole frames, read only),
+    /// `dy`, `dx` their shifts. Rescales the background floor and / or the
+    /// noise map to the new session. Returns `[floor gain, floor offset,
+    /// floor fit kept share, noise ratio]`.
+    #[wasm_bindgen(js_name = beginSessionBack)]
+    pub fn begin_session_back(
+        &mut self,
+        frames: &[f32],
+        count: u32,
+        dy: &[f32],
+        dx: &[f32],
+        rescale_floor: bool,
+        rescale_noise: bool,
+    ) -> Result<Vec<f64>, JsError> {
+        let n = self.inner.dims().pixels();
+        let count = check_batch("beginSessionBack", frames.len(), count, n)?;
+        if dy.len() < count || dx.len() < count {
+            return Err(JsError::new("beginSessionBack: one shift per frame"));
+        }
+        let shifts: Vec<(f32, f32)> = dy
+            .iter()
+            .zip(dx)
+            .take(count)
+            .map(|(&a, &b)| (a, b))
+            .collect();
+        let cfg = super::session::SessionBackConfig {
+            rescale_floor,
+            rescale_noise,
+        };
+        let fit = self
+            .inner
+            .begin_session_back_rigid(&frames[..count * n], &shifts, &cfg)
+            .map_err(|e| js_err("beginSessionBack", e))?;
+        Ok(vec![
+            f64::from(fit.floor.gain),
+            f64::from(fit.floor.offset),
+            f64::from(fit.floor.kept_fraction),
+            f64::from(fit.noise_ratio),
+        ])
+    }
+
+    /// The validity source of `backFramesRegistered` from now on: `mask`
+    /// (the FOV mask as a session warp moved it, `SessionAligner.sourceMask`),
+    /// or the FOV mask again when empty.
+    #[wasm_bindgen(js_name = setSourceMask)]
+    pub fn set_source_mask(&mut self, mask: &[u8]) -> Result<(), JsError> {
+        self.inner
+            .set_source_mask((!mask.is_empty()).then_some(mask))
+            .map_err(|e| js_err("setSourceMask", e))
     }
 
     /// Serialized config, calibration and running state.

@@ -163,7 +163,7 @@ render(
         </div>
         <div style={{ ...card, flex: '1', 'min-height': '0', display: 'flex' }}>
           <div style={{ flex: '1', 'min-height': '0' }}>
-            <HistoryTab ui={ui} minHeight={330} />
+            <HistoryTab ui={ui} />
           </div>
         </div>
       </div>

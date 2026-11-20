@@ -7,10 +7,13 @@
  * `FastLoop`). See `lib/pipeline-stages.ts`.
  */
 import { initCalaWasm } from '../lib/cala-wasm.ts';
+import { CompressFeed } from '../lib/compress-feed.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
-import { transferablesOf } from '../lib/pipeline-engine.ts';
+import { FovProjector } from '../lib/fov-projection.ts';
+import { transferablesOf, type PipelineStepResult } from '../lib/pipeline-engine.ts';
 import { BackStage } from '../lib/pipeline-stages.ts';
 import { traceBackend } from '../lib/trace-backend.ts';
+import type { FastToCompress } from './compress-types.ts';
 import type { FrameRequest, FrameResponse } from './frame-types.ts';
 import type { FastToSlow, SlowToFast } from './slow-types.ts';
 import type { StageFree, StageLink, StageMsg } from './stage-types.ts';
@@ -22,21 +25,37 @@ const workerScope = globalThis as unknown as {
 
 let up: MessagePort | null = null;
 let slowPort: MessagePort | null = null;
+let compressPort: MessagePort | null = null;
 let stage: BackStage | null = null;
 let queue: Promise<void> = Promise.resolve();
+/** Look-back runs: frames between snapshots of the back half's state (look-back blocks start from the newest). */
+const LOOKBACK_SNAPSHOT_EVERY = 256;
+/** Session of the slow loop the last Discover run started (-1: none). */
+let slowSession = -1;
 
-function stopStage(): void {
-  stage?.dispose();
+/**
+ * Stop the running stage. `keepSlow`: a replay stage follows or is stopped,
+ * so the slow loop stays (a stopped Refine run is told to publish what it
+ * has); otherwise it is dropped, also when the stage was an Extract run,
+ * which never talks to it.
+ */
+function stopStage(keepSlow = false): void {
+  stage?.dispose(keepSlow);
   stage = null;
+  if (!keepSlow && slowSession >= 0) {
+    slowPort?.postMessage({ type: 'reset', session: slowSession } satisfies FastToSlow);
+    slowSession = -1;
+  }
 }
 
 function handle(msg: StageMsg): void {
   switch (msg.type) {
     case 'start': {
-      stopStage();
       const cells = msg.cells;
-      // Pass 2 (a library is given) is not connected to the slow loop.
-      const port = cells?.library ? null : slowPort;
+      // A replay stage keeps the slow loop; Extract (a library, no refine) is not connected to it.
+      stopStage(cells?.library !== undefined);
+      const port = cells?.library && !cells.refine ? null : slowPort;
+      if (port && !cells?.library && (cells?.discover ?? true)) slowSession = cells?.session ?? 0;
       const fast = new FastLoop(
         {
           ...msg.fast,
@@ -44,13 +63,29 @@ function handle(msg: StageMsg): void {
           discover: (cells?.discover ?? true) && port !== null,
           qc: cells?.qc ?? true,
           residual: cells?.residual ?? false,
+          signed: cells?.signed ?? false,
           ...(cells?.library ? { initialLibrary: cells.library } : {}),
+          ...(cells?.refine ? { refine: true } : {}),
+          ...(cells?.lookback && !cells.library ? { lookback: true } : {}),
           ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
         },
         port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
         traceBackend,
+        cells?.compress && compressPort
+          ? new CompressFeed(
+              { width: msg.fast.width, height: msg.fast.height, session: cells.session },
+              compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
+            )
+          : null,
       );
-      stage = new BackStage(msg.setup, fast);
+      stage = new BackStage(
+        msg.setup,
+        fast,
+        cells?.projection
+          ? new FovProjector(msg.setup.width, msg.setup.height, msg.setup.boundaries ?? [])
+          : null,
+        cells?.lookback && !cells.library ? LOOKBACK_SNAPSHOT_EVERY : 0,
+      );
       break;
     }
     case 'job': {
@@ -65,12 +100,20 @@ function handle(msg: StageMsg): void {
       }
       break;
     }
-    case 'end':
+    case 'end': {
       stage?.end();
-      workerScope.postMessage({ type: 'pipeline-step', id: msg.id, step: { kind: 'done' } });
+      const projection = stage?.projector?.result();
+      const backState = stage?.finalBackState();
+      const step: PipelineStepResult = {
+        kind: 'done',
+        ...(projection ? { projection } : {}),
+        ...(backState ? { backState } : {}),
+      };
+      workerScope.postMessage({ type: 'pipeline-step', id: msg.id, step }, transferablesOf(step));
       break;
+    }
     case 'stop':
-      stopStage();
+      stopStage(msg.keepSlow === true);
       break;
   }
 }
@@ -100,6 +143,10 @@ workerScope.onmessage = (e) => {
     slowPort = data.port;
     // Slow-worker answers only record state; they are applied between batches.
     slowPort.onmessage = (ev: MessageEvent<SlowToFast>) => stage?.fast?.handleSlow(ev.data);
+    workerScope.postMessage({ type: 'ok', id: data.id });
+  } else if (data.type === 'connect-compress') {
+    compressPort?.close();
+    compressPort = data.port;
     workerScope.postMessage({ type: 'ok', id: data.id });
   } else if (data.type === 'set-discovery') {
     stage?.fast?.setDiscovery(data.on && slowPort !== null);

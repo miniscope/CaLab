@@ -14,7 +14,8 @@ npm test -w apps/cala     # Vitest
 What is here:
 
 - `src/lib/frame-source.ts`: the frame source. Given the files of a Miniscope
-  folder it sorts `N.avi` naturally, parses each header from a 64 KB prefix and
+  folder it finds the numbered `.avi` series (`0.avi` or `msCam0.avi`, optionally
+  zero-padded; `src/lib/video-series.ts` groups, ranks and sorts them), parses each header from a 64 KB prefix and
   the `idx1` region with the wasm `AviHeader` (`crates/cala/src/avi.rs`), and
   exposes `readFrame(globalIndex)` using `File.slice`; a whole video is never
   loaded. The frame rate comes from `timeStamps.csv`, else `metaData.json`,
@@ -23,7 +24,8 @@ What is here:
 - `src/workers/frame-worker.ts` + `src/lib/frame-client.ts`: the worker that
   holds the frame source and the promise-based client; frames are transferred.
 - `src/lib/viewer-store.ts`, `src/components/`: open-folder screen (directory
-  picker, drag and drop), frame canvas, scrubber, play/pause, info panel.
+  picker, drag and drop; `lib/directory-picker.ts` uses `showDirectoryPicker` in read
+  mode where it exists, else the `webkitdirectory` input), frame canvas, scrubber, play/pause, info panel.
 - `src/lib/pipeline-plan.ts`, `src/lib/pipeline-engine.ts`: the streaming
   preprocess + motion pipeline. Three walks over the recording in small
   batches: preprocessing calibration (200 raw frames), motion warm-up template
@@ -41,6 +43,14 @@ What is here:
   visits to `src/workers/visit-worker.ts` workers, one visit each at a time;
   visits out together never touch the same cells
   (`crates/cala/src/discover/shard.rs`). With none it visits tiles itself.
+  It runs with the library's `SlowLoopConfig` defaults; a footprint's support
+  is the significant single-peaked basin around its peak plus a measured skirt
+  (`SupportRule::BasinSkirt`, see `tools/cala-eval/README.md`), and the
+  statistics path refines a footprint only when the change exceeds the
+  estimate's own split-half noise (`RefineGate::SplitHalf`). Two cells whose
+  footprints overlap less than half merge only when the held-out test accepts
+  the merge and their measured shapes agree within their own split-half noise
+  (`MergeRule::SplitHalf`).
 - `src/components/FovPanel.tsx`: the field of view, one image (raw,
   preprocessed, motion-corrected, background-removed or the model residual)
   with zoom, pan, a minimap and the cell overlay (contours or full-extent
@@ -87,38 +97,43 @@ estimated from the recording's own motion dither (`FlatFieldEstimator`, crates/c
   ...), else the live source name, else the recording folder name. Miniscope
   `metaData.json` has no serial (`deviceID` is a camera index), so folders are
   keyed by name. See `flatFieldKey` in `src/lib/flat-field.ts`.
-- **Pass 2** applies pass 1's newest map from frame 0 and estimates nothing.
+- **Refine and Extract** apply Discover's newest map from frame 0 and estimate nothing.
 - **Single-worker `PipelineEngine`** (`?pipeline=0`) has no flat field: estimating
   there would put the solve on the frame path.
 - The Flat field tab shows the gain map at a fixed 0.9 to 1.1 range (no
   auto-contrast), the status, the last update's change, and the on/off setting
-  (`PipelineOptions.flatField`, applied at the next start of pass 1).
+  (`PipelineOptions.flatField`, applied at the next start of Discover).
 
-## Pass 2 and export
+## Run stages and export
 
-Pass 1 discovers the footprint library while the recording streams by, and the
-traces it emits along the way were solved with whatever library was current at
-the time. Pass 2 (`src/lib/pass2-store.ts`) walks the recording again through
-the same three workers and solves **every** frame with the **final** library,
-so cells found late have traces from frame 0.
+A run has named stages (design note: [docs/stages.md](docs/stages.md)):
+**Discover** builds the footprint library while the recording streams by;
+**Refine** (recordings only, repeatable; `src/lib/refine-store.ts`) replays
+the recording into the same slow loop with the refine-only edit scope; and
+**Extract** (recordings only; `src/lib/pass2-store.ts`, the older name) solves
+the final traces. Discover's traces were solved with whatever library was
+current at the time. Extract walks the recording again through the same three
+workers and solves **every** frame with the **final** library, so cells found
+late have traces from frame 0.
 
-- **Recorded in pass 1** (`src/lib/run-record.ts`, 17 bytes per frame, kept in
+- **Recorded during Discover** (`src/lib/run-record.ts`, 17 bytes per frame, kept in
   full): the rigid shift `(dy, dx)`, the motion flags, and the global flicker
-  `(offset, gain)`. Nothing is estimated in pass 2: the frame worker replays the
+  `(offset, gain)`. Nothing is estimated in a replay: the frame worker replays the
   recorded flicker (`Preprocessor.frontFramesReplay`), the motion worker warps
-  by the recorded shifts (the same WebGPU warp as pass 1 when available), and
+  by the recorded shifts (the same WebGPU warp as Discover when available), and
   the trace worker solves with the final library
   (`FastLoop` option `initialLibrary`).
 - **Background and noise** restart from the calibrated state. Calibration
   depends only on the first frames, so it is recomputed identically, and the
   back half is a deterministic function of the corrected frames in order, so
-  replaying from frame 0 rebuilds the state pass 1 had at every frame. No
+  replaying from frame 0 rebuilds the state Discover had at every frame. No
   checkpoints are needed while the whole recording is replayed.
-- **End pass 1** ends the stream at the frames read so far (the slow
-  loop publishes its final library and pass 2 covers those frames). Pass 2 runs
-  automatically after pass 1 (checkbox) or with **Run pass 2**, shows progress
-  and frames/s, and the UI stays live (the work is in workers).
-- Pass 2 streams its traces (frames x cells float32, frame-major) into a file in
+- **End Discover** ends the stream at the frames read so far (the slow
+  loop publishes its final library and Refine and Extract cover those frames).
+  Extract runs automatically after Discover (checkbox; not after a Refine run)
+  or with **Extract**, shows progress and frames/s, and the UI stays live (the
+  work is in workers).
+- Extract streams its traces (frames x cells float32, frame-major) into a file in
   the browser's origin private file system (OPFS) as it runs, so memory stays at
   a few batches whatever the recording length; the limit is browser storage
   quota (checked up front, with a clear error). Old files are swept when a new
@@ -134,30 +149,91 @@ records are written for entries of 4 GiB or more). Chrome and Edge ask where to
 save the file (File System Access API) and write straight into it; Firefox and
 Safari build the file in OPFS and hand it to the download (disk-backed, no RAM).
 `traces` is stored in Fortran order (column per frame, the same bytes as the
-pass-2 file, no transpose): `np.load` still returns the (cells, frames) array.
+Extract's file, no transpose): `np.load` still returns the (cells, frames) array.
+`meta_json.stages` lists the stages that ran, with counts and timestamps.
 
-- `<folder>_cala.npz`, self-describing: `traces` (cells x frames, float32),
-  `cell_ids`, `centroids_yx`, `radii_px`, sparse footprints
+- `<folder>_cala.npz`, self-describing (format version 5): `traces` (cells x
+  frames, float32), `traces_signed` (the same, unclipped; absent from a live
+  run, which has no Extract), `cell_ids`, `centroids_yx`, `radii_px`, sparse footprints
   (`footprint_starts` / `footprint_pixels` / `footprint_values`, CSR over the
   flat pixel index `row * W + column`) with `fov_shape`, per-frame
   `motion_shift_yx`, `motion_flags`, `flicker_offset`, `flicker_gain`, per-cell
   `first_seen_frame`, `qc_peak_snr`, `qc_pass` (1 / 0 / -1 not measured),
-  `qc_flags`, `sampling_rate_hz`, and `meta_json` (UTF-8 JSON: provenance and the
-  cell table). The full layout is the header of `src/lib/export.ts`.
+  `qc_flags` (trace statistics recomputed on the extracted traces over all of the
+  file's own frames, the whole session; `src/lib/extract-qc.ts`),
+  `sampling_rate_hz`, `meta_json` (UTF-8 JSON: provenance and the
+  cell table), the run's History bins and event log, and (format 5) `fov_mean` /
+  `fov_max` (mean and max projections over Extract's frames, `src/lib/fov-projection.ts`)
+  and `flat_field_gain`. The full layout is the header of `src/lib/export.ts`.
 - `<folder>_cala_cadecon.npz`: only `traces` (QC-passing cells by default),
-  `cell_ids` and `sampling_rate_hz`. CaDecon's existing `.npz` import takes the
+  `cell_ids` and `sampling_rate_hz`. Its `traces` are Extract's signed traces
+  (the clipped ones for a live run). CaDecon's existing `.npz` import takes the
   one cells x timepoints array without asking; it then asks for the sampling
   rate (shown on the button's tooltip). Up to 512 MB of traces it is the classic
   C-order, non-ZIP64 file. Beyond that it is streamed like the main export, and
   CaDecon's importer (1 GiB limit, no ZIP64) cannot open it: for very long
   recordings use `np.load` on the cala `.npz`, or export fewer cells.
 
+**Signed traces.** The trace solve keeps every trace non-negative (for
+stability and against crosstalk between overlapping cells), so a quiet cell's
+`traces` row sits at exactly 0 with half-rectified noise. Deconvolution (CaDecon)
+wants a zero baseline with symmetric noise, so Extract also writes
+`traces_signed`: each trace plus the residual's projection on the cell,
+`c_i + g_i / m_i` with `g_i` the gradient of the cell's coordinate equation at
+the converged solution (background terms included) and `m_i` its curvature,
+the analogue of CNMF's `C + YrA`. Where the solve clips a cell, its negative
+noise comes back; where it does not, `traces_signed` equals `traces` to within
+the solver's tolerance. `traces` is unchanged, bit for bit
+(`TraceEngine::set_signed`, `TraceEngine.setSigned` / `lastSigned` in JS).
+
 ```python
 import json, numpy as np
 z = np.load("raw_cala.npz")
 traces = z["traces"]                      # (cells, frames)
+signed = z["traces_signed"]               # (cells, frames), unclipped: for deconvolution
 meta = json.loads(z["meta_json"].tobytes().decode())
 ```
+
+## Animal projects
+
+An animal folder of sessions as one project (design and index schema:
+[docs/projects.md](docs/projects.md)). **Open animal project** scans the sessions
+(`discoverSessions`), probes them, and reads `cala-results/cala-project.json`
+(`lib/project-index.ts`: validated, schema version 1) or rebuilds it from the run
+folders (every `cala-run.json` and `cala-session.json`, including #377 trees). The
+session table (`components/ProjectView.tsx`) shows each session's stage status, shared
+cell ids (`id_space`) and current result. Selected rows go into a run plan
+(`lib/run-plan.ts`) of Joint chains and Separate sets that `lib/project-store.ts` runs
+group by group through `lib/multi-run.ts`, writing each to `cala-results/runs/<id>/`
+and updating the index from `MultiRunPlan.onProgress` as sessions finish. Recent
+projects keep directory handles in IndexedDB (`lib/recent-projects.ts`). An experiment
+folder of several animals is offered as one project per animal (`suggestSplit`).
+**View results** opens a saved export read-only (`lib/result-file.ts` reads it lazily
+through `ZipArchive` from `@calab/io`; `components/ResultView.tsx` hydrates a fresh cell
+store, run history and FOV source and reuses the viewer's panels).
+
+## Multi-session runs
+
+Several sessions of one animal in one run (design: [docs/stages.md](docs/stages.md),
+"Sessions"). Picking a parent folder finds every numbered series at any depth
+and groups them into kinds (`src/lib/sessions.ts`: prefix, or device folder
+name for V4); the Miniscope kind's series are the sessions, behaviour cameras
+are dropped, and an unclear kind asks the user. The session list
+(`components/SessionSetup.tsx`, `lib/session-list.ts`) probes each session in
+the frame worker (`probe`), orders them by `recordingStartTime` (else path) and
+validates size and bit depth (error) and frame rate (warning).
+
+- **Joint:** `FrameSource.openSessions` concatenates the sessions;
+  `info.sessions` holds each session's span. One Discover, Refine and Extract;
+  the export is cut per session (`ExportInput.frameRange`).
+- **Separate:** each session is opened alone and run in turn.
+- `lib/multi-run.ts` drives the run (`nextAutoAction` in `lib/session-run.ts`)
+  and writes the results (`lib/session-export.ts`): `cala-results/<session
+path>/cala-export.npz` and `cala-session.json`, plus `cala-results/cala-run.json`,
+  through the File System Access API (`readwrite` on the picked folder), or as
+  one zip elsewhere. An existing `cala-results` is never overwritten.
+- Boundaries: `onSessionBoundary` in `lib/session-boundary.ts` is called by both
+  engines and does nothing yet; `session` events go to the run's event log.
 
 ## Live source (experimental)
 
@@ -213,7 +289,8 @@ What changes in a live run:
 - No progress bar, no total, no raw-file tab. "Stop the live run" ends the
   stream at the frames received (the slow loop publishes its final library);
   "Restart" connects again, and the source streams from wherever it is then.
-- Pass 2 cannot run (nothing to re-read), so a live run has no record of the
+- A live stream runs Discover only: Refine and Extract cannot run (nothing to
+  re-read; save the stream and load it as a recording later), so a live run has no record of the
   past beyond the traces the fast loop solved as the frames came in. The
   export (`src/lib/live-export.ts`) takes those: the cells of the final
   library over every frame, NaN before a cell was found and for frames the
@@ -230,14 +307,14 @@ processed 24 frames/s here against 175-215 in the app itself). The
 live run is paced by the stream, so its throughput is 20 frames/s by
 construction.
 
-|                                                                 | live                                                                                                                                                               | file (pass 1 + pass 2)     |
-| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
-| frames received / processed / dropped (queue) / missed (source) | 6,000 / 6,000 / 0 / 0                                                                                                                                              | 6,000 read                 |
-| frames forwarded to the slow loop / dropped there               | 5,952 / 0 (the first 48 precede its start)                                                                                                                         | 5,952 / 0                  |
-| wall time                                                       | 301 s (300 s of stream)                                                                                                                                            | 249 s pass 1 + 79 s pass 2 |
-| fast loop behind the stream                                     | steady state 0 frames (p99 0, max 6), a batch solved 38 ms (p99 53 ms) after its last frame; the processing walk starts 218 frames behind and catches up in 10.3 s | -                          |
-| slow loop behind the fast loop (frames)                         | mean 8.2, p99 8, max 56                                                                                                                                            | mean 8.2, p99 8, max 56    |
-| cells (final library)                                           | 290                                                                                                                                                                | 286                        |
+|                                                                 | live                                                                                                                                                               | file (Discover + Extract)     |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------- |
+| frames received / processed / dropped (queue) / missed (source) | 6,000 / 6,000 / 0 / 0                                                                                                                                              | 6,000 read                    |
+| frames forwarded to the slow loop / dropped there               | 5,952 / 0 (the first 48 precede its start)                                                                                                                         | 5,952 / 0                     |
+| wall time                                                       | 301 s (300 s of stream)                                                                                                                                            | 249 s Discover + 79 s Extract |
+| fast loop behind the stream                                     | steady state 0 frames (p99 0, max 6), a batch solved 38 ms (p99 53 ms) after its last frame; the processing walk starts 218 frames behind and catches up in 10.3 s | -                             |
+| slow loop behind the fast loop (frames)                         | mean 8.2, p99 8, max 56                                                                                                                                            | mean 8.2, p99 8, max 56       |
+| cells (final library)                                           | 290                                                                                                                                                                | 286                           |
 
 The lag numbers hide one structural step: the pipeline's three walks mean
 the processing walk starts when the warm-ups are done, about 200 frames
@@ -251,6 +328,70 @@ a slow machine) would lose frames rather than memory. The simulator does not
 model the DAQ's own frame drops beyond `--drop`; with a real board, the
 arrival-indexed stream means a dropped frame shifts the trace timeline by one
 sample at that point (it is counted and shown, not interpolated).
+
+## Compression (experimental, `?compress`)
+
+With `?compress` in the URL the run also compresses the preprocessed,
+motion-corrected frames (the fast loop's input) into low-rank factors per
+64 px tile and 600-frame window (`crates/cala/src/compress`, ported from
+MiniMe), so past frames can be revisited without the raw video (Extract above
+re-reads the file; the factors are for a source that has none). When the
+recording has been read, the final library is out and every window is
+compressed, the traces of the whole recording are solved again from the
+factors with that library (back-fill): a cell found late gets its trace from
+the first frame on, and the trace viewer shows the back-filled traces.
+
+- `src/lib/compress-feed.ts`: in the fast worker, cuts the stream into windows,
+  quantizes each batch in tile order (int16, 1/64 grey level) and transfers it.
+  Nothing is dropped, unlike the feed to the slow worker.
+- `src/workers/compress-worker.ts` + `src/lib/compress-runner.ts`: writes the
+  batches of a window to a file, compresses closed windows tile by tile from
+  that file (yielding after every tile so incoming batches are written at
+  once), and keeps the factors in `f<window>.bin`.
+- `src/lib/window-store.ts`: the files, in the origin private file system
+  (`cala-compress/<run>`, removed at the next page load); in memory for tests.
+- Back-fill (`CompressRunner.backfill`): reads each factor file back
+  (`FactorWindow`), rebuilds 16 frames at a time and solves them with a
+  `TraceEngine` on the library the fast worker forwarded; one `traces` message
+  per window goes to the main thread, where the first one replaces the live
+  trace history (`CellStore.onBackfill`).
+- `src/lib/compress-store.ts`: the status bar readout (windows, mean rank,
+  ms per frame, MB of factors, windows waiting, the back-fill) and the
+  once-per-run back-fill request.
+- `scripts/compress-bench.mjs`: local timing of the WASM compressor on a
+  window dumped by `discover_eval --compress-dump`.
+
+### History review (`?compress&review`)
+
+With `&review` as well (`review=N`: every N windows, default 8), the run looks
+through its compressed history for cells the slow loop missed
+(`crates/cala/src/compress/review.rs`; not the History tab, which plots a
+run's metrics). It needs `?compress` and is off without it.
+
+- `src/lib/compress-runner.ts`: after compressing a window, sends its factor
+  file to the review worker and, every N windows, the newest library with the
+  request to review.
+- `src/workers/review-worker.ts` + `src/lib/review-runner.ts`: keep the factors
+  of every window in memory (`HistoryReview`) and scan them a few grid rows at
+  a time. One review at a time: one that comes due meanwhile is skipped. A
+  review takes seconds to minutes, which is why it has a worker to itself;
+  one core is left free for it when the visit workers are counted.
+- `src/lib/review-store.ts`: passes the candidates to the slow worker
+  (`SlowClient.addReviewed`) and makes the Run panel's readout (reviews,
+  candidates, cells added, seconds of the last review).
+- `src/lib/slow-runner.ts`: adds the candidates (`SlowLoop.addReviewed`, on
+  probation like any add) once no tile visit is out.
+
+Beyond 3 GB of factors the review worker drops its oldest windows.
+
+A window waits on disk (432 MB at 600 x 600) until it is compressed, so a
+replay faster than the compressor (about 8 ms per frame) queues windows there.
+A short last window keeps fewer components (the rank cut's white-noise test is
+stricter on few frames) and costs more per frame, but on the synthetic test
+session 200-frame windows gave traces as close to the truth as 600-frame
+windows. Back-filled traces match the live ones closely for
+cells that pass QC; for low-SNR cells they differ, because the factors drop
+most of the noise such a live trace consists of.
 
 ## Long-recording display limits
 

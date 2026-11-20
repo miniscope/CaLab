@@ -555,6 +555,123 @@ impl Preprocessor {
         rec
     }
 
+    /// A new session starts with the next frame fed to [`Self::front`]: the
+    /// flicker reference is re-seated on it (see [`super::session`]).
+    pub fn begin_session_front(&mut self) {
+        self.flicker.reseat();
+    }
+
+    /// A new session starts with the next frame fed to the back half.
+    /// `frames` are its first registered frames (as they will be fed to
+    /// [`Self::back_masked`], whole frames) and `valid` their validity masks
+    /// (`None`: every finite sample). Fits the new session's brightness
+    /// against the background's boxcar of the previous session's last frames
+    /// and maps the floor into it, and scales the noise map by the new
+    /// session's noise, as `cfg` says. Reads `frames` only; the frames are
+    /// then processed as usual.
+    pub fn begin_session_back(
+        &mut self,
+        frames: &[f32],
+        valid: Option<&[u8]>,
+        cfg: &super::session::SessionBackConfig,
+    ) -> Result<super::session::SessionBackFit, PreprocessError> {
+        use super::session::{fit_gain_offset, noise_ratio, valid_mean, GainOffset};
+        let px = self.dims().pixels();
+        if frames.is_empty() || !frames.len().is_multiple_of(px) {
+            return Err(PreprocessError::InvalidConfig(
+                "session frames must be whole frames".into(),
+            ));
+        }
+        if let Some(v) = valid {
+            self.dims()
+                .check("session validity masks", v.len() / (frames.len() / px))?;
+            if v.len() != frames.len() {
+                return Err(PreprocessError::InvalidConfig(
+                    "one validity mask per session frame".into(),
+                ));
+            }
+        }
+        let mut fit = super::session::SessionBackFit {
+            floor: GainOffset::IDENTITY,
+            noise_ratio: 1.0,
+        };
+        // The noise map before any rescale: the noise of the floor's boxcar
+        // (the fit's `x`) and the unit of the new session's noise.
+        let sigma = (self.noise.frames() > 1).then(|| self.noise.sigma());
+        if cfg.rescale_floor && self.background.state().frames() > 0 {
+            let fov = self.calib.fov.mask();
+            let (mut x, cnt) = self.background.boxcar_mean_counts();
+            let x_var: Option<Vec<f32>> = sigma.as_ref().map(|s| {
+                s.iter()
+                    .zip(&cnt)
+                    .map(|(&v, &c)| if c > 0 { v * v / c as f32 } else { 0.0 })
+                    .collect()
+            });
+            let mut y = valid_mean(frames, valid, px);
+            for ((a, b), &m) in x.iter_mut().zip(y.iter_mut()).zip(fov) {
+                if m == 0 {
+                    *a = f32::NAN;
+                    *b = f32::NAN;
+                }
+            }
+            let g = fit_gain_offset(&x, &y, x_var.as_deref());
+            if g.pixels > 0 {
+                self.background.rescale(g.gain, g.offset);
+            }
+            fit.floor = g;
+        }
+        if let (true, Some(sigma)) = (cfg.rescale_noise, &sigma) {
+            if let Some(r) = noise_ratio(frames, valid, sigma, px) {
+                self.noise.rescale(r);
+                fit.noise_ratio = r;
+            }
+        }
+        Ok(fit)
+    }
+
+    /// [`Self::begin_session_back`] for frames registered by rigid shifts
+    /// (`shifts[k]` = frame `k`'s `(dy, dx)`, bicubic), with validity from
+    /// the current source mask as [`Self::back_rigid`] computes it.
+    pub fn begin_session_back_rigid(
+        &mut self,
+        frames: &[f32],
+        shifts: &[(f32, f32)],
+        cfg: &super::session::SessionBackConfig,
+    ) -> Result<super::session::SessionBackFit, PreprocessError> {
+        let px = self.dims().pixels();
+        if shifts.len() * px != frames.len() {
+            return Err(PreprocessError::InvalidConfig(
+                "one shift per session frame".into(),
+            ));
+        }
+        let mut valid = vec![0u8; frames.len()];
+        for (k, &s) in shifts.iter().enumerate() {
+            self.source_mask()
+                .fill_rigid(s, &mut valid[k * px..(k + 1) * px])
+                .map_err(|e| PreprocessError::Registration(e.to_string()))?;
+        }
+        self.begin_session_back(frames, Some(&valid), cfg)
+    }
+
+    /// Replace the warp source mask of [`Self::back_rigid`] (by default the
+    /// sensor FOV mask) with `mask`, e.g. the FOV mask as a session-level
+    /// warp moved it ([`crate::motion::SessionWarp::source_mask`]); `None`
+    /// goes back to the FOV mask.
+    pub fn set_source_mask(&mut self, mask: Option<&[u8]>) -> Result<(), PreprocessError> {
+        self.src_mask = match mask {
+            None => None,
+            Some(m) => {
+                self.dims().check("source mask", m.len())?;
+                let d = self.dims();
+                Some(
+                    SourceMask::new(d.height, d.width, m, Interpolation::Bicubic)
+                        .map_err(|e| PreprocessError::Registration(e.to_string()))?,
+                )
+            }
+        };
+        Ok(())
+    }
+
     /// The whole chain with motion correction in the middle.
     pub fn process<T: RawPixel, R: FrameRegistrar>(
         &mut self,

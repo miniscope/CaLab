@@ -1,5 +1,5 @@
 /**
- * Export of a finished cala run (pass 2): the footprints, the full-length
+ * Export of a finished cala run (after Extract): the footprints, the full-length
  * traces and the per-frame motion and flicker, as one self-describing `.npz`
  * (`writeCalaExport`), and the traces alone in the layout CaDecon already
  * imports (`writeCaDeconExport`).
@@ -13,8 +13,8 @@
  *
  * Streaming. The archive is written incrementally (`ZipStreamWriter` in
  * `@calab/io`, ZIP64-capable) to a `ByteSink`, so nothing the size of the
- * trace matrix is ever in memory: the matrix is read from the pass-2
- * `TraceFile` in blocks of about 16 MB and written as it goes. The pass-2 file
+ * trace matrix is ever in memory: the matrix is read from Extract's
+ * `TraceFile` in blocks of about 16 MB and written as it goes. That file
  * is frame-major, which is byte for byte the layout of a Fortran-order `.npy`
  * of shape (N, T), so `traces.npy` is written with `fortran_order: True` and
  * needs no transpose. `np.load` returns the same (N, T) array a C-order file
@@ -29,7 +29,7 @@
  * dtypes and shapes are unchanged from format version 1; only the memory order
  * of `traces` differs (Fortran, see above):
  *
- *   traces              float32 [N, T]   pass-2 traces, one row per cell (preprocessed grey levels);
+ *   traces              float32 [N, T]   Extract's traces, one row per cell (preprocessed grey levels);
  *                                        stored Fortran-order (column per frame)
  *   cell_ids            uint32  [N]      library ids, row order of `traces`
  *   centroids_yx        float32 [N, 2]   footprint centre, (row, column) in pixels
@@ -62,7 +62,40 @@
  * and each series' key, label, unit, kind, group, initial and final display
  * range (see `StreamHistory.toExport`).
  *
- * QC comes from the last online snapshot of pass 1 (cells added after it are
+ * Run stages (format version 3): `meta_json.stages` lists the runs of the
+ * stages (docs/stages.md) since Discover started, in order: `stage`
+ * (discover, refine, extract), `index` (1-based per stage), `started_at`,
+ * `ended_at` (ISO), `outcome`, `frames`, `cells`, `library_version`, and the
+ * stage's counts (Discover: refines, adds, merges, deletes, splits; Refine:
+ * refines, refines_per_min, footprints_refined, median_footprint_change,
+ * change_p90, refined_share, and `series`: the run's samples over the replay
+ * as columns `t` (stream s), `refines`, `refines_per_min`, `changed`,
+ * `change_median`, `change_p90` (at library publishes, else null) and
+ * `refined_share`; see `refine-metrics.ts`).
+ * Version 3 also renamed `pass2_seconds` to `extract_seconds` and the flat
+ * field's `pass2` / `pass1_maps` to `extract` / `discover_maps`.
+ *
+ * Field-of-view images (format version 5; optional to readers, absent when the
+ * run kept none). Both are projections over Extract's frames (every frame of
+ * the export's span, with the final flat field and Discover's motion; see
+ * `fov-projection.ts`), at full resolution in preprocessed grey levels, NaN
+ * where a pixel never had data:
+ *
+ *   fov_mean            float32 [H, W]   mean of the registered, preprocessed frames, before the
+ *                                        background floor is removed (anatomy; the glow is
+ *                                        already flattened, so it sits near 0)
+ *   fov_max             float32 [H, W]   max of the same frames with the background floor removed
+ *                                        (every cell that fired)
+ *   flat_field_gain     float32 [H, W]   the sensor gain map Extract divided out (1 = nominal);
+ *                                        present when a flat field was applied
+ *
+ * `meta_json.fov_images` describes them: per image its `key`, `domain`,
+ * `frames` and `display_range` [lo, hi] (the fixed transfer the viewer
+ * draws it with; see `fov-display.ts`), and `full_scale` (2^bit depth - 1).
+ * `meta_json.flat_field.map` names the gain array, with `gain_sd` (SD of the
+ * log gain inside the FOV) and its `display_range`.
+ *
+ * QC comes from the last online snapshot of Discover (cells added after it are
  * "not measured"); first-seen is the frame count when the library that first
  * held the cell arrived.
  *
@@ -70,7 +103,30 @@
  * 4000 cells x 270k frames) get ZIP64 records, which Python's `zipfile`,
  * `np.load`, `unzip` and 7-zip read.
  *
- * CaDecon hand-off. For ordinary sizes (the selected traces up to
+ * Signed traces (format version 4; absent from live runs, which have no Extract):
+ *
+ *   traces_signed       float32 [N, T]   Extract's signed (unclipped) traces, same layout and units
+ *                                        as `traces`: each trace plus the residual's projection on
+ *                                        the cell (CNMF's C + YrA), so a quiet cell sits at 0 with
+ *                                        symmetric noise where `traces` is clipped at 0
+ *
+ * Session-boundary flags (format version 6; Joint runs, sessions 2..):
+ * `meta_json.session.boundary` is the health flag of the boundary the session
+ * starts with (`boundary-flags.ts`, docs/stages.md "Boundary flags"):
+ * `session_index`, `frame` (on the run's axis), `severity` (ok, warning,
+ * failed), `pending` (the run ended before a check's window played),
+ * `reason` (plain language), `suggestion` (failed: run Separate), and
+ * `checks`: per check its `key`, `group` (alignment, change, outcome),
+ * `severity`, `judged`, `value`, `null_centre`, `null_spread`, `z` and
+ * `reason`. Observers only: nothing else in the export depends on them.
+ *
+ * `traces` stays the solver's non-negative estimate (the solve itself clips
+ * at 0, for stability and against crosstalk); `traces_signed` is what a
+ * deconvolution wants (a zero baseline with symmetric noise).
+ *
+ * CaDecon hand-off. The CaDecon file carries the signed traces as its
+ * `traces` when the result has them (Extract), else the non-negative ones
+ * (a live run). For ordinary sizes (the selected traces up to
  * `CADECON_MEMORY_BYTES`) the file is the classic one: C-order `traces`,
  * non-ZIP64. Above that it is written streaming, Fortran-order, ZIP64 when
  * needed. CaDecon's own importer (fflate, 1 GiB decompressed cap, no ZIP64)
@@ -89,11 +145,19 @@ import { verdict, type QcSnapshot } from './qc.ts';
 import type { Pass2Result } from './pass2-store.ts';
 import type { TraceFile } from './trace-file.ts';
 import { opfsUsable, OpfsWriterClient } from './opfs-writer.ts';
-import type { FlatFieldApplied } from './flat-field.ts';
+import {
+  FLAT_FIELD_DISPLAY_RANGE,
+  type FlatFieldApplied,
+  type FlatFieldMap,
+} from './flat-field.ts';
+import { projectionFor } from './fov-projection.ts';
+import { fovDisplayRanges } from './fov-display.ts';
 import type { RunSpan } from './run-record.ts';
+import type { StageRun } from './run-stages.ts';
+import { seriesMeta } from './refine-metrics.ts';
 import type { HistoryExport } from '@calab/compute';
 
-export const EXPORT_FORMAT_VERSION = 2;
+export const EXPORT_FORMAT_VERSION = 6;
 
 /** Largest CaDecon trace matrix written the classic in-memory way (C order, no ZIP64), bytes. */
 export const CADECON_MEMORY_BYTES = 512 * 1048576;
@@ -109,14 +173,20 @@ export interface ExportInput {
   /** Frame rate, Hz (0 or undefined: unknown). */
   fps: number;
   result: Pass2Result;
-  /** Pass 1's per-frame motion and flicker (at least `result.frames` long). */
+  /** Discover's per-frame motion and flicker (at least `result.frames` long). */
   run: RunSpan;
   /**
-   * The sensor flat field of pass 1 (omit: none): the maps that took effect and
-   * the frame each did. Pass 2 (the traces here) corrected every frame with the
-   * last map, from frame 0.
+   * The sensor flat field of Discover (omit: none): the maps that took effect
+   * and the frame each did. Extract (the traces here) corrected every frame
+   * with the last map, from frame 0.
    */
   flatField?: readonly FlatFieldApplied[];
+  /** The flat-field map Extract applied (omit: none; written as `flat_field_gain`). */
+  flatFieldMap?: FlatFieldMap | null;
+  /** Bits per pixel of the recording (sets the FOV images' display ranges; default 8). */
+  bitDepth?: number;
+  /** The runs of the stages since Discover started (omit: none recorded). */
+  stages?: readonly StageRun[];
   /** The last QC snapshot, if any. */
   qc: QcSnapshot | null;
   /** Frame at which a cell was first seen. */
@@ -127,6 +197,14 @@ export interface ExportInput {
   version: string;
   /** ISO timestamp. */
   createdAt?: string;
+  /**
+   * Write only frames `[start, end)` of the result (one session of a Joint
+   * run): traces, motion and flicker are sliced; frame numbers elsewhere
+   * (`first_seen_frame`, stages, history) stay on the run's axis.
+   */
+  frameRange?: { start: number; end: number };
+  /** Extra `meta_json.session` block (a multi-session run; see `session-export.ts`). */
+  session?: Record<string, unknown>;
 }
 
 /** Options of the writers. */
@@ -137,6 +215,35 @@ export interface ExportWriteOptions {
   cadeconMemoryBytes?: number;
   /** Called as trace bytes are written. */
   onProgress?: (doneBytes: number, totalBytes: number) => void;
+}
+
+/** One stage run in `meta_json.stages` (snake_case; absent counts omitted). */
+export function stageMeta(r: StageRun): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    stage: r.stage,
+    index: r.index,
+    started_at: r.startedAt,
+    ended_at: r.endedAt,
+    outcome: r.outcome,
+    frames: r.frames,
+    cells: r.cells,
+    library_version: r.libraryVersion,
+  };
+  const counts: [string, number | null | undefined][] = [
+    ['refines', r.refines],
+    ['refines_per_min', r.refinesPerMin],
+    ['adds', r.adds],
+    ['merges', r.merges],
+    ['deletes', r.deletes],
+    ['splits', r.splits],
+    ['footprints_refined', r.footprintsRefined],
+    ['median_footprint_change', r.medianFootprintChange],
+    ['change_p90', r.changeP90],
+    ['refined_share', r.refinedShare],
+  ];
+  for (const [k, v] of counts) if (v !== undefined) out[k] = v;
+  if (r.series) out.series = seriesMeta(r.series);
+  return out;
 }
 
 /** One cell's row in `meta_json`. */
@@ -209,8 +316,9 @@ export async function* traceChunks(
   file: TraceFile,
   cols: readonly number[] | null,
   onBytes?: (n: number) => void,
+  range: { start: number; end: number } = { start: 0, end: file.frames },
 ): AsyncGenerator<Uint8Array> {
-  const T = file.frames;
+  const T = range.end;
   const width = cols ? cols.length : file.cells;
   const step = Math.max(1, Math.floor(CHUNK_BYTES / (4 * Math.max(file.cells, 1))));
   const read = (f: number): Promise<Float32Array> | null => {
@@ -219,8 +327,8 @@ export async function* traceChunks(
     p.catch(() => {}); // surfaced when awaited; no unhandled rejection if the consumer stops early
     return p;
   };
-  let next = read(0);
-  for (let f = 0; next; f += step) {
+  let next = read(range.start);
+  for (let f = range.start; next; f += step) {
     const block = await next;
     next = read(f + step);
     const frames = Math.min(T, f + step) - f;
@@ -261,10 +369,11 @@ export function calaExportBytes(input: ExportInput): number {
   const { result } = input;
   const nnz = result.library.pixels.length;
   return (
-    result.frames * result.ids.length * 4 +
+    result.frames * result.ids.length * 4 * (result.signed ? 2 : 1) +
     8 * nnz +
     17 * result.frames +
     1000 * result.ids.length +
+    12 * input.width * input.height +
     (input.history
       ? input.history.bins.levels.reduce((a, l) => a + l.data.byteLength, 0) +
         input.history.eventsJson.length
@@ -285,16 +394,27 @@ export async function writeCalaExport(
   const { result, run, width, height } = input;
   const { ids, library } = result;
   const n = ids.length;
-  const T = result.frames;
-  if (run.dy.length < T) throw new RangeError('The motion record is shorter than the traces.');
+  const range = input.frameRange ?? { start: 0, end: result.frames };
+  if (range.start < 0 || range.end > result.frames || range.end <= range.start)
+    throw new RangeError(`Frames ${range.start}..${range.end} are not in the result.`);
+  const F0 = range.start;
+  const T = range.end - range.start;
+  if (run.dy.length < range.end)
+    throw new RangeError('The motion record is shorter than the traces.');
   const motion = new Float32Array(2 * T);
   for (let t = 0; t < T; t++) {
-    motion[2 * t] = run.dy[t];
-    motion[2 * t + 1] = run.dx[t];
+    motion[2 * t] = run.dy[F0 + t];
+    motion[2 * t + 1] = run.dx[F0 + t];
   }
   const seen = new Int32Array(n);
   for (let i = 0; i < n; i++) seen[i] = input.firstSeen(ids[i]) ?? -1;
   const { snr, pass, flags } = qcColumns(ids, input.qc);
+  const fovImages = projectionFor(result.projection, range);
+  const gain =
+    input.flatFieldMap && input.flatFieldMap.gain.length === width * height
+      ? input.flatFieldMap
+      : null;
+  const ranges = fovDisplayRanges(input.bitDepth ?? 8);
   const meta = {
     format: 'cala-export',
     format_version: EXPORT_FORMAT_VERSION,
@@ -311,21 +431,59 @@ export async function writeCalaExport(
     trace_units:
       'preprocessed grey levels (flicker removed, flattened, background floor subtracted)',
     traces_layout: 'cells x frames, float32 (stored in Fortran order)',
+    ...(result.signed
+      ? {
+          traces_signed:
+            'traces plus the residual projection on each cell (C + YrA): unclipped, zero baseline, symmetric noise',
+        }
+      : {}),
     footprints: 'sparse CSR over flat pixel index row * width + column, unfiltered weights',
-    pass2_seconds: result.seconds,
+    extract_seconds: result.seconds,
+    stages: (input.stages ?? []).map(stageMeta),
     ...(input.flatField && input.flatField.length > 0
       ? {
           flat_field: {
-            pass2: 'every frame divided by the last map of pass 1, from frame 0',
-            pass1_maps: input.flatField.map((a) => ({
+            extract: 'every frame divided by the last map of Discover, from frame 0',
+            discover_maps: input.flatField.map((a) => ({
               frame: a.frame,
               source: a.source,
               first: a.first,
             })),
+            ...(gain
+              ? {
+                  map: 'flat_field_gain',
+                  gain_sd: gain.gainSd,
+                  display_range: [...FLAT_FIELD_DISPLAY_RANGE],
+                }
+              : {}),
           },
         }
       : {}),
+    ...(fovImages
+      ? {
+          fov_images: {
+            full_scale: ranges.fullScale,
+            images: [
+              {
+                key: 'fov_mean',
+                domain:
+                  'mean of the registered, preprocessed frames before the background floor is removed',
+                frames: fovImages.frames,
+                display_range: ranges.mean,
+              },
+              {
+                key: 'fov_max',
+                domain: 'max of the registered frames with the background floor removed',
+                frames: fovImages.frames,
+                display_range: ranges.max,
+              },
+            ],
+          },
+        }
+      : {}),
+    bit_depth: input.bitDepth ?? null,
     ...(input.history ? { history: input.history.bins.meta } : {}),
+    ...(input.session ? { session: input.session } : {}),
     cell_table: cellTable(input),
   };
   const metaBytes = new TextEncoder().encode(JSON.stringify(meta));
@@ -338,9 +496,9 @@ export async function writeCalaExport(
     'footprint_values.npy': npy(library.values, [library.values.length]),
     'fov_shape.npy': npy(Int32Array.of(height, width), [2]),
     'motion_shift_yx.npy': npy(motion, [T, 2]),
-    'motion_flags.npy': npy(run.flags.slice(0, T), [T]),
-    'flicker_offset.npy': npy(run.flickerOffset.slice(0, T), [T]),
-    'flicker_gain.npy': npy(run.flickerGain.slice(0, T), [T]),
+    'motion_flags.npy': npy(run.flags.slice(F0, F0 + T), [T]),
+    'flicker_offset.npy': npy(run.flickerOffset.slice(F0, F0 + T), [T]),
+    'flicker_gain.npy': npy(run.flickerGain.slice(F0, F0 + T), [T]),
     'first_seen_frame.npy': npy(seen, [n]),
     'qc_peak_snr.npy': npy(snr, [n]),
     'qc_pass.npy': npy(pass, [n]),
@@ -348,9 +506,25 @@ export async function writeCalaExport(
     'sampling_rate_hz.npy': npy(Float32Array.of(input.fps > 0 ? input.fps : 0), [1]),
     'meta_json.npy': npy(metaBytes, [metaBytes.length]),
     ...historyEntries(input.history),
+    ...(fovImages
+      ? {
+          'fov_mean.npy': npy(fovImages.mean, [height, width]),
+          'fov_max.npy': npy(fovImages.max, [height, width]),
+        }
+      : {}),
+    ...(gain ? { 'flat_field_gain.npy': npy(gain.gain, [height, width]) } : {}),
   };
   const zip = new ZipStreamWriter(sink, { forceZip64: options.forceZip64 });
-  await addTraces(zip, 'traces.npy', result.traces, null, options);
+  const matrices: [string, TraceFile][] = [['traces.npy', result.traces]];
+  if (result.signed) matrices.push(['traces_signed.npy', result.signed]);
+  // One progress over all trace matrices.
+  const each = n * T * 4;
+  for (const [k, [name, file]] of matrices.entries()) {
+    const onProgress = options.onProgress
+      ? (done: number) => options.onProgress?.(k * each + done, matrices.length * each)
+      : undefined;
+    await addTraces(zip, name, file, null, { ...options, onProgress }, range);
+  }
   for (const [name, bytes] of Object.entries(small)) await zip.addFile(name, bytes);
   await zip.finish();
 }
@@ -362,17 +536,24 @@ async function addTraces(
   file: TraceFile,
   cols: readonly number[] | null,
   options: ExportWriteOptions,
+  range: { start: number; end: number } = { start: 0, end: file.frames },
 ): Promise<void> {
   const width = cols ? cols.length : file.cells;
-  const header = writeNpyHeader('<f4', [width, file.frames], true);
-  const total = width * file.frames * 4;
+  const frames = range.end - range.start;
+  const header = writeNpyHeader('<f4', [width, frames], true);
+  const total = width * frames * 4;
   let done = 0;
   async function* chunks(): AsyncGenerator<Uint8Array> {
     yield header;
-    for await (const c of traceChunks(file, cols, (b) => {
-      done += b;
-      options.onProgress?.(done, total);
-    }))
+    for await (const c of traceChunks(
+      file,
+      cols,
+      (b) => {
+        done += b;
+        options.onProgress?.(done, total);
+      },
+      range,
+    ))
       yield c;
   }
   await zip.addStream(name, header.length + total, chunks());
@@ -399,7 +580,8 @@ export function cadeconIsClassic(
 
 /**
  * The traces in the layout CaDecon imports (`.npz`, one cells x timepoints
- * matrix named `traces`, plus the 1-D `cell_ids` and `sampling_rate_hz`).
+ * matrix named `traces`, plus the 1-D `cell_ids` and `sampling_rate_hz`):
+ * the signed traces when the result has them (Extract), else the clipped ones.
  * Classic C-order file for ordinary sizes; streamed Fortran-order (and ZIP64
  * when needed) above `CADECON_MEMORY_BYTES`, which CaDecon's importer cannot
  * open (see the file header).
@@ -412,6 +594,8 @@ export async function writeCaDeconExport(
 ): Promise<void> {
   const { result } = input;
   const T = result.frames;
+  // CaDecon wants a zero baseline with symmetric noise: the signed traces when there are any.
+  const source = result.signed ?? result.traces;
   const keep = cadeconCells(input, passOnly);
   const ids = new Uint32Array(keep.length);
   keep.forEach((c, k) => (ids[k] = result.ids[c]));
@@ -422,7 +606,7 @@ export async function writeCaDeconExport(
     const step = Math.max(1, Math.floor(CHUNK_BYTES / (4 * Math.max(result.cells, 1))));
     for (let f = 0; f < T; f += step) {
       const to = Math.min(T, f + step);
-      const block = await result.traces.readFrames(f, to);
+      const block = await source.readFrames(f, to);
       for (let k = 0; k < to - f; k++)
         for (let j = 0; j < keep.length; j++)
           traces[j * T + f + k] = block[k * result.cells + keep[j]];
@@ -430,7 +614,7 @@ export async function writeCaDeconExport(
     }
     await zip.addFile('traces.npy', npy(traces, [keep.length, T]));
   } else {
-    await addTraces(zip, 'traces.npy', result.traces, keep, options);
+    await addTraces(zip, 'traces.npy', source, keep, options);
   }
   await zip.addFile('cell_ids.npy', npy(ids, [keep.length]));
   await zip.addFile(

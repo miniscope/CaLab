@@ -54,6 +54,10 @@ calab.decon(
 ) -> CaDeconResult | None
 ```
 
+### Input traces
+
+CaDecon expects raw or signed traces. Traces that are non-negative with many exact zeros (at least a fifth of the samples) are clipped at zero or already denoised, and are not a supported input: the app warns on screen. In cala, run Extract and export for CaDecon (signed traces); from Minian or CaImAn, use `C + YrA`, not `C`.
+
 ### Parameters
 
 | Parameter           | Description                                                                                                                                        |
@@ -222,16 +226,17 @@ calab.solve_trace(
 | `warm_counts`     | Accepted for API compatibility; currently has no effect (round 0 ignores it).                                                                                                          |
 | `lambda_`         | L1 sparsity penalty (0 = auto).                                                                                                                                                        |
 
-Returns a `SolveTraceResult` namedtuple with fields: `s_counts`, `alpha`, `baseline`, `threshold`, `pve`, `iterations`, `converged`, `noise_var_processed`, `chain_noise_gain`, `cap_limited`, `no_size_fit`, `peak_outlier_ratio`, `dropped_spikes`.
+Returns a `SolveTraceResult` namedtuple with fields: `s_counts`, `alpha`, `baseline`, `threshold`, `pve`, `iterations`, `converged`, `noise_var_processed`, `chain_noise_gain`, `cap_limited`, `no_size_fit`, `peak_outlier_ratio`, `dropped_spikes`, `rectified_input`.
 
 `s_counts` is an integer spike **count per native frame** (values `0..=cap`, stored as float32) with the same length as `trace`. The solver never upsamples: a frame that holds several spikes carries a count above 1, and `max_firing_rate` sets the ceiling on that count.
 
-The last four fields are diagnostics; they never change the result:
+The last five fields are diagnostics; they never change the result:
 
 - `cap_limited`: the chosen spike size sits at the floor `frame_max / cap`, so the cap (not the data) set the spike size. Always `True` when the trace has no measurable noise floor.
 - `no_size_fit`: a noise floor was measurable but no spike size passed the one-standard-error test, so the spike size that fits the data best was used (usually the floor).
 - `peak_outlier_ratio`: largest event-peak frame mass divided by the second largest (1 with fewer than two events, 0 with none). A large value flags one dominant event.
 - `dropped_spikes`: spikes that no frame of their event had room for.
+- `rectified_input`: the trace is non-negative with at least a fifth of its samples exactly 0 (clipped at zero, or already denoised). CaDecon expects raw or signed traces, so this input is not supported and the result is unreliable; a `UserWarning` is raised. In cala, run Extract and export for CaDecon (signed traces); from Minian or CaImAn, use `C + YrA`, not `C`. The preprocessing is the same either way.
 
 Raises `ValueError` if `max_firing_rate` is not finite and in `(0, 10000]`.
 

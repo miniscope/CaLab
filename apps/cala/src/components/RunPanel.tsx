@@ -1,13 +1,31 @@
 import { createEffect, createSignal, For, on, Show, type JSX } from 'solid-js';
-import { MetricTile, ProgressBar, SegmentedControl } from '@calab/ui';
+import { MetricTile, ProgressBar, SegmentedControl, type ProgressState } from '@calab/ui';
 import { formatClock, formatElapsed, windowPresets } from '@calab/ui/chart';
 import type { ByteSink } from '@calab/io';
 import type { CellStore } from '../lib/cell-store.ts';
+import { compressReadout, type CompressStore } from '../lib/compress-store.ts';
+import { reviewReadout, type ReviewStore } from '../lib/review-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
+import { lookbackText } from '../lib/lookback-text.ts';
+export { lookbackText };
 import type { Pass2Result, Pass2Store } from '../lib/pass2-store.ts';
+import type { RefineStore } from '../lib/refine-store.ts';
+import {
+  EXTRACT_AFTER_DISCOVER_DEFAULT,
+  LIVE_NOTE,
+  NEXT_STEP_HINT,
+  refineComparison,
+  showNextStepHint,
+  STAGE_LABEL,
+  type StageLog,
+  type StageName,
+  type StageRun,
+} from '../lib/run-stages.ts';
 import type { ConvergenceState } from '../lib/qc.ts';
 import { groupKeys } from '../lib/run-history.ts';
+import { AspectPlot } from '../lib/plot-size.tsx';
 import { GroupPlot, RunStrip, type HistoryUi } from './HistoryPanel.tsx';
+import { RefineRunPlot, RefineRunsChart } from './RefinePlots.tsx';
 import { liveTraceResult } from '../lib/live-export.ts';
 import {
   cadeconCells,
@@ -20,10 +38,17 @@ import {
   type ExportInput,
 } from '../lib/export.ts';
 import { SidePanel } from './SidePanel.tsx';
+import { reportResultsExported } from '../lib/analytics-integration.ts';
 
 const SETUP_LABEL = {
   calibrate: 'Calibrating (FOV mask, hot pixels)',
   'motion-warmup': 'Building the motion template',
+} as const;
+
+/** The setup phases in the run strip (one word). */
+const SETUP_SHORT = {
+  calibrate: 'Calibrating',
+  'motion-warmup': 'Motion template',
 } as const;
 
 /** Badge text and tooltip for where motion correction runs. */
@@ -50,7 +75,7 @@ const STATE_LABEL: Record<ConvergenceState, string> = {
 
 type StepState = 'done' | 'active' | 'pending';
 
-/** Narrow windows: the passes as a horizontal stepper. */
+/** Narrow windows: the stages as a horizontal stepper. */
 function PassStepper(props: {
   steps: { label: string; sub: string; state: StepState }[];
 }): JSX.Element {
@@ -73,9 +98,17 @@ function PassStepper(props: {
 
 export interface RunPanelProps {
   pipeline: PipelineStore;
+  /** The Extract stage (its store keeps the older name). */
   pass2: Pass2Store;
+  refine: RefineStore;
+  /** The runs of the stages since Discover started. */
+  stages: StageLog;
+  /** Why each stage cannot start now (null: it can). */
+  availability: Record<StageName, string | null>;
+  /** Start a Refine run (discards an Extract result first). */
+  onRefine: () => void;
   cells: CellStore;
-  /** A live source: no file to re-read, so pass 2 cannot run; the stop button ends the stream and the export takes the live traces. */
+  /** A live source: Discover only (no file to replay); the stop button ends the stream and the export takes the live traces. */
   live?: boolean;
   /** Recording label (the folder name). */
   label: string;
@@ -83,24 +116,75 @@ export interface RunPanelProps {
   height: number;
   /** Frame rate, Hz (0 when unknown). */
   fps: number;
+  /** Bits per pixel of the recording (the exported images' display ranges). */
+  bitDepth?: number;
   /** Narrow window: a stepper and metric tiles instead of the timeline. */
   narrow?: boolean;
   /** The run's history views (shared time window and cursor). */
   ui: HistoryUi;
+  /** Present when the run compresses its frames (`?compress`). */
+  compress?: CompressStore;
+  /** Present when the run reviews its compressed history (`?compress&review`). */
+  review?: ReviewStore;
+  /** In a tab of its own: not collapsible (the convergence plot always shows). */
+  fixed?: boolean;
+  /** False while its tab is hidden: the plots stop drawing (the panel stays mounted for its state). Default true. */
+  visible?: boolean;
+  /** Stop a look-back run's settling: the footprints refined so far become the final library. */
+  onStopSettling?: () => void;
+}
+
+/** `0.0123` -> `1.2%`. */
+function percent(v: number | null | undefined): string {
+  return v === null || v === undefined ? 'n/a' : `${(100 * v).toFixed(1)}%`;
+}
+
+/** A run's name in the readouts: `Discover`, `Refine 2`. */
+function runName(r: StageRun): string {
+  return r.stage === 'discover' ? STAGE_LABEL.discover : `${STAGE_LABEL[r.stage]} ${r.index}`;
 }
 
 /**
- * The run: pass 1 (discover) and pass 2 (re-extract) progress and the
- * convergence metrics on one time axis (minutes of the recording) with a
- * "now" line, the run controls, and the export. Pass 2 follows pass 1 on
- * its own unless turned off.
+ * The run: the stages (docs/stages.md) Discover, Refine (recordings only,
+ * repeatable) and Extract (recordings only), with Discover's convergence
+ * metrics on one time axis (minutes of the recording) and a "now" line, the
+ * run controls, the Refine readout and the export. Extract follows Discover only if
+ * "Extract after Discover" is turned on (off by default; never after a Refine: run
+ * it when the footprints are settled).
  */
 export function RunPanel(props: RunPanelProps): JSX.Element {
   const s = () => props.pipeline;
   const c = () => props.cells;
   const p = () => props.pass2;
+  const r = () => props.refine;
+  const refineBusy = () => r().status() === 'running' || r().status() === 'finishing';
+  const refineRuns = () => props.stages.runs().filter((x) => x.stage === 'refine');
+  const comparison = () => refineComparison(props.stages.runs());
+  /** The newest Refine run's readout. */
+  const refineText = () => {
+    const last = refineRuns().at(-1);
+    if (!last) return null;
+    if (last.outcome === 'running') return null;
+    const cmp = comparison();
+    const rate =
+      last.refinesPerMin === null || last.refinesPerMin === undefined
+        ? `${last.refines ?? 0} refines`
+        : `${last.refinesPerMin.toFixed(1)} refines/min`;
+    // No rate ratio against a look-back Discover: its refines include the settle's.
+    const vs =
+      cmp && cmp.run === last && cmp.previous && cmp.ratio !== null && !cmp.previous.lookback
+        ? ` (${cmp.ratio.toFixed(2)}× ${runName(cmp.previous)})`
+        : '';
+    const end = last.outcome === 'done' ? '' : ` (${last.outcome})`;
+    const m = last.movedAboveNoise;
+    const moved =
+      m && m.cells > 0
+        ? `${percent(m.above1 / m.cells)} of ${m.cells} cells changed more than their split-half noise (${percent(m.above2 / m.cells)} more than twice)`
+        : `${last.cells} cells`;
+    return `${runName(last)}${end}: ${moved} · median change ${percent(last.medianFootprintChange)} · ${rate}${vs}`;
+  };
 
-  // ---- pass 1 ----
+  // ---- Discover ----
   const total = () => s().plan()?.frameCount ?? 0;
   const unbounded = () => !Number.isFinite(total());
   const fraction = () => (total() > 0 && !unbounded() ? s().processed() / total() : 0);
@@ -108,7 +192,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     const st = s().status();
     if (st === 'starting') return 'Starting';
     if (st === 'error') return 'Stopped by an error';
-    if (st === 'done') return 'Done';
+    if (st === 'done') return c().status()?.lookback?.settling ? 'Settling' : 'Done';
     const setup = s().setup();
     const prefix = st === 'paused' ? 'Paused: ' : '';
     if (s().processed() === 0 && setup) {
@@ -122,6 +206,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     return { key: b, text: MOTION_BACKEND[b][0], title: MOTION_BACKEND[b][1] };
   };
   const pass1Busy = () => s().status() === 'running' || s().status() === 'paused';
+  const replayBusy = () => refineBusy() || p().status() === 'running';
   const lagNow = () => {
     c().tick();
     const v = c().metrics().lag.at(-1);
@@ -135,8 +220,8 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     return st === 'running' ? ('running' as const) : ('idle' as const);
   };
 
-  // ---- pass 2 and export ----
-  const [auto, setAuto] = createSignal(true);
+  // ---- Extract and export ----
+  const [auto, setAuto] = createSignal(EXTRACT_AFTER_DISCOVER_DEFAULT);
   const [passOnly, setPassOnly] = createSignal(true);
   const [exporting, setExporting] = createSignal<string | null>(null);
   const [exportError, setExportError] = createSignal<string | null>(null);
@@ -172,6 +257,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           setExporting(`Exporting ${name}: ${all > 0 ? Math.floor((100 * done) / all) : 0}%`),
         ),
       );
+      reportResultsExported(1);
     } catch (err) {
       setExportError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -179,7 +265,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     }
   }
 
-  // A new pass 1 invalidates pass 2's result.
+  // A new Discover run invalidates Extract's result.
   createEffect(
     on(
       () => s().status(),
@@ -188,13 +274,15 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       },
     ),
   );
-  // Pass 2 follows pass 1 once the final library is out.
+  // Extract follows Discover once the final library is out (not a Refine run:
+  // Extract when the footprints are settled).
   createEffect(() => {
     if (
       auto() &&
       !props.live &&
       s().status() === 'done' &&
       p().status() === 'idle' &&
+      props.stages.runs().every((x) => x.stage === 'discover') &&
       p().blockedReason() === null
     )
       void p().run();
@@ -203,17 +291,17 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   const pass2Text = () => {
     switch (p().status()) {
       case 'running':
-        return 'Pass 2: re-extracting traces with the final library';
+        return 'Extract: solving the traces of every frame with the final footprints';
       case 'done': {
-        const r = p().result();
-        return r
-          ? `Pass 2 done: ${r.cells} cells x ${r.frames.toLocaleString()} frames in ${r.seconds.toFixed(1)} s (${(r.frames / r.seconds).toFixed(0)} frames/s)`
-          : 'Pass 2 done';
+        const res = p().result();
+        return res
+          ? `Extract done: ${res.cells} cells x ${res.frames.toLocaleString()} frames in ${res.seconds.toFixed(1)} s (${(res.frames / res.seconds).toFixed(0)} frames/s)`
+          : 'Extract done';
       }
       case 'error':
-        return `Pass 2 stopped: ${p().error() ?? 'error'}`;
+        return `Extract stopped: ${p().error() ?? 'error'}`;
       case 'cancelled':
-        return 'Pass 2 cancelled';
+        return 'Extract cancelled';
       default:
         if (props.live) {
           if (pass1Busy()) return 'Live: the traces are solved as the frames come in';
@@ -222,14 +310,17 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             ? `Live run ended: ${r.cells} cells x ${r.frames.toLocaleString()} frames of live traces to export`
             : 'Live run ended';
         }
+        if (refineBusy()) return 'Extract after Refine (or Refine again)';
         return pass1Busy()
-          ? 'Pass 2 starts when pass 1 finishes'
-          : (p().blockedReason() ?? 'Ready for pass 2');
+          ? auto()
+            ? 'Extract starts when Discover finishes'
+            : 'Extract runs after Discover finishes'
+          : (props.availability.extract ?? 'Ready to Extract');
     }
   };
   const pass2Shown = () => p().status() === 'running' || p().status() === 'done';
   const pass2Fraction = () => {
-    // On the recording's axis: pass 2 re-reads the frames pass 1 read.
+    // On the recording's axis: Extract re-reads the frames Discover read.
     const all = Number.isFinite(total()) && total() > 0 ? total() : p().total();
     return all > 0 ? p().processed() / all : 0;
   };
@@ -271,8 +362,15 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       result: r,
       run: s().record().snapshot(),
       flatField: s().record().flatFieldApplied,
+      flatFieldMap: s().flatFieldMap(),
+      ...(props.bitDepth ? { bitDepth: props.bitDepth } : {}),
+      stages: props.stages.runs(),
       qc: c().qc(),
       firstSeen: c().firstSeen,
+      history: {
+        bins: props.ui.run.history().toExport(),
+        eventsJson: props.ui.run.events().toJSON(),
+      },
       version: import.meta.env.VITE_APP_VERSION || 'dev',
     };
   };
@@ -355,15 +453,36 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         state: calibrating ? 'active' : s().processed() > 0 || st === 'done' ? 'done' : 'pending',
       },
       {
-        label: 'Pass 1',
-        sub: props.live ? 'discover (live)' : `discover ${Math.round(100 * fraction())}%`,
+        label: STAGE_LABEL.discover,
+        sub: props.live ? 'live' : `${Math.round(100 * fraction())}%`,
         state: st === 'done' ? 'done' : !calibrating && pass1Busy() ? 'active' : 'pending',
       },
-      {
-        label: 'Pass 2',
-        sub: props.live ? 'not for live' : `re-extract ${pass2Value()}`,
-        state: p2 === 'done' ? 'done' : p2 === 'running' ? 'active' : 'pending',
-      },
+      ...(props.live
+        ? []
+        : [
+            {
+              label: STAGE_LABEL.refine,
+              sub: refineBusy()
+                ? `${Math.round(100 * (r().total() > 0 ? r().processed() / r().total() : 0))}%`
+                : refineRuns().length > 0
+                  ? `x${refineRuns().length}`
+                  : 'optional',
+              state: (refineBusy()
+                ? 'active'
+                : refineRuns().length > 0
+                  ? 'done'
+                  : 'pending') as StepState,
+            },
+            {
+              label: STAGE_LABEL.extract,
+              sub: pass2Value(),
+              state: (p2 === 'done'
+                ? 'done'
+                : p2 === 'running'
+                  ? 'active'
+                  : 'pending') as StepState,
+            },
+          ]),
       {
         label: 'Export',
         sub: exportResult() ? 'ready' : '',
@@ -373,12 +492,14 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   };
 
   const [metricsOpen, setMetricsOpen] = createSignal(true);
+  const shown = () => props.visible !== false;
 
   return (
     <SidePanel
       id="run"
       title="Run"
       class="cala-run"
+      fixed={props.fixed}
       open={metricsOpen()}
       onToggle={setMetricsOpen}
       toggleLabel={(open) => (open ? 'Hide the convergence plot' : 'Show the convergence plot')}
@@ -406,7 +527,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             type="button"
             class="btn-secondary btn-small cala-icon-btn"
             aria-label="Restart"
-            title="Restart pass 1 from frame 0 (a new run)"
+            title="Start Discover again from frame 0 (a new run: Refine and Extract start over)"
             onClick={() => void s().start()}
           >
             ↻
@@ -416,11 +537,11 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               type="button"
               class="btn-secondary btn-small cala-icon-btn"
               data-testid="pass2-finish"
-              aria-label={props.live ? 'Stop the live run' : 'End pass 1'}
+              aria-label={props.live ? 'Stop the live run' : 'End Discover'}
               title={
                 props.live
                   ? 'Stop the live run: the cells found so far become the final library.'
-                  : 'End pass 1 here: the cells found so far become the final library, then pass 2 runs over the frames read.'
+                  : 'End Discover here: the cells found so far become the final library; Refine and Extract then run over the frames read.'
               }
               onClick={() => void s().finishEarly()}
             >
@@ -497,19 +618,27 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               <ProgressBar
                 fraction={fraction()}
                 state={pass1State()}
-                label="Pass 1: discover"
-                aria-label="Pass 1"
+                label="Discover"
+                aria-label="Discover"
+              />
+            </Show>
+            <Show when={refineBusy()}>
+              <ProgressBar
+                fraction={r().total() > 0 ? r().processed() / r().total() : 0}
+                state="running"
+                label={`Refine ${refineRuns().length}`}
+                aria-label="Refine"
               />
             </Show>
             <Show when={pass2Shown()}>
               <ProgressBar
                 fraction={p().total() > 0 ? p().processed() / p().total() : 0}
                 state={pass2State()}
-                label="Pass 2: re-extract"
-                aria-label="Pass 2"
+                label="Extract"
+                aria-label="Extract"
               />
             </Show>
-            <Show when={metricsOpen()}>
+            <Show when={metricsOpen() && shown()}>
               <div class="cala-run__tiles">
                 <For each={tiles()}>
                   {(m) => (
@@ -541,17 +670,29 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               testid="time-window"
             />
           </div>
-          <RunStrip ui={props.ui} />
+          <Show when={shown()}>
+            <RunStrip ui={props.ui} />
+          </Show>
           {/* Expanded, the large History view has the convergence plot; the FOV gets the room. */}
-          <Show when={metricsOpen() && !props.ui.expanded()}>
-            <GroupPlot ui={props.ui} group="convergence" height={130} compact />
+          <Show when={metricsOpen() && !props.ui.expanded() && shown()}>
+            <AspectPlot>
+              {(h) => <GroupPlot ui={props.ui} group="convergence" height={h()} compact />}
+            </AspectPlot>
+          </Show>
+          <Show when={!props.live && refineBusy()}>
+            <ProgressBar
+              fraction={r().total() > 0 ? r().processed() / r().total() : 0}
+              state="running"
+              label={`Refine ${refineRuns().length}`}
+              aria-label="Refine"
+            />
           </Show>
           <Show when={!props.live && pass2Shown()}>
             <ProgressBar
               fraction={pass2Fraction()}
               state={pass2State()}
-              label="Pass 2"
-              aria-label="Pass 2"
+              label="Extract"
+              aria-label="Extract"
             />
           </Show>
         </div>
@@ -562,25 +703,189 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           {c().library()?.ids.length ?? 0} cells &middot; library v{c().version()} &middot; lag{' '}
           {lagNow() ?? 'n/a'} frames
         </span>
+        <Show when={props.compress}>
+          {(compress) => (
+            <span class="cala-readout cala-wrap" data-testid="compress-readout">
+              {compress().error() ?? compressReadout(compress().status(), compress().backfill())}
+            </span>
+          )}
+        </Show>
+        <Show when={props.review}>
+          {(review) => (
+            <span
+              class="cala-readout cala-wrap"
+              data-testid="review-readout"
+              title="History review: cells the slow loop missed, looked for in the compressed history."
+            >
+              {review().error() ??
+                reviewReadout(
+                  review().status(),
+                  c().status()?.counters.reviewAdds ?? 0,
+                  review().every,
+                )}
+            </span>
+          )}
+        </Show>
         <label class="cala-check" title="Run cell discovery on the frames as they are read.">
           <input
             type="checkbox"
+            disabled={replayBusy()}
             checked={s().discover()}
             onChange={(e) => s().setDiscover(e.currentTarget.checked)}
           />
           Discover cells
         </label>
         <Show when={!props.live}>
-          <label class="cala-check" title="Start pass 2 as soon as pass 1 has its final library.">
+          <label
+            class="cala-check"
+            title={
+              s().lookbackBlocked() ??
+              'Experimental: Discover also re-reads earlier frames for each new cell and settles at the end, so footprints converge without a Refine run (Refine stays available to compare). Takes effect when Discover starts: tick it, then restart (↻), or open with ?lookback.'
+            }
+          >
+            <input
+              type="checkbox"
+              data-testid="lookback-toggle"
+              disabled={s().lookbackBlocked() !== null}
+              checked={s().lookback() && s().lookbackBlocked() === null}
+              onChange={(e) => s().setLookback(e.currentTarget.checked)}
+            />
+            Look-back refinement (experimental)
+          </label>
+        </Show>
+        <Show when={!props.live}>
+          <label
+            class="cala-check"
+            title="Start Extract as soon as Discover has its final library (not after a Refine run)."
+          >
             <input
               type="checkbox"
               checked={auto()}
               onChange={(e) => setAuto(e.currentTarget.checked)}
             />
-            Pass 2 after pass 1
+            Extract after Discover
           </label>
         </Show>
       </div>
+      <Show when={!props.live && (s().lookback() || s().lookbackRun())}>
+        <p class="cala-muted cala-run__line" data-testid="lookback-note">
+          <Show
+            when={s().lookbackBlocked()}
+            fallback={
+              s().lookbackRun()
+                ? 'Look-back refines footprints during Discover and settles them after its last frame; Refine should not be needed (it stays available to compare).'
+                : 'Look-back starts with the next Discover run (restart with ↻).'
+            }
+          >
+            {(why) => `Look-back off: ${why()}`}
+          </Show>
+        </p>
+      </Show>
+      <Show when={s().lookbackRun() ? c().status()?.lookback : undefined}>
+        {(lb) => (
+          <div class="cala-run__footer">
+            <span class="cala-readout cala-wrap" data-testid="lookback-readout">
+              {lookbackText(lb(), c().status()?.final ?? false)}
+            </span>
+            <Show when={lb().settling && props.onStopSettling}>
+              <button
+                type="button"
+                class="btn-secondary btn-small"
+                data-testid="lookback-stop-settling"
+                title="Stop settling now: the footprints refined so far become the final library."
+                onClick={() => props.onStopSettling?.()}
+              >
+                Stop settling
+              </button>
+            </Show>
+          </div>
+        )}
+      </Show>
+      <Show when={props.live}>
+        <p class="cala-muted cala-run__line" data-testid="live-stage-note">
+          {LIVE_NOTE}
+        </p>
+      </Show>
+      <Show when={!props.live}>
+        <div class="cala-run__footer">
+          <Show
+            when={!refineBusy()}
+            fallback={
+              <button
+                type="button"
+                class="btn-secondary btn-small"
+                data-testid="refine-cancel"
+                title="Stop this Refine run: the footprints refined so far are kept."
+                onClick={() => r().cancel()}
+              >
+                Cancel Refine
+              </button>
+            }
+          >
+            <button
+              type="button"
+              class="btn-secondary btn-small"
+              data-testid="refine-run"
+              disabled={props.availability.refine !== null}
+              title={
+                props.availability.refine ??
+                'Replay the recording from frame 0: footprints keep converging; no cells are added, merged, split or deleted. Repeatable.'
+              }
+              onClick={() => props.onRefine()}
+            >
+              {refineRuns().length > 0 ? 'Refine again' : 'Refine'}
+            </button>
+          </Show>
+          <span
+            class="cala-readout cala-wrap"
+            data-testid="refine-readout"
+            data-runs={refineRuns().length}
+          >
+            {refineBusy()
+              ? `Refine ${refineRuns().length}: frame ${r().processed().toLocaleString()} / ${r().total().toLocaleString()}${r().fps() > 0 ? ` · ${r().fps().toFixed(1)} frames/s` : ''}${r().status() === 'finishing' ? ' · publishing' : ''}`
+              : r().status() === 'error'
+                ? `Refine stopped: ${r().error() ?? 'error'}`
+                : (refineText() ?? '')}
+          </span>
+        </div>
+        <Show when={shown() && r().series()}>
+          {(sr) => (
+            <RefineRunPlot
+              series={sr()}
+              live={refineBusy()}
+              label={`Refine ${refineRuns().length} over the replay`}
+            />
+          )}
+        </Show>
+        <Show when={shown()}>
+          <RefineRunsChart runs={props.stages.runs()} />
+        </Show>
+        <Show
+          when={showNextStepHint({
+            live: props.live === true,
+            discover: s().status() === 'done' ? 'done' : 'running',
+            refine: r().status() === 'idle' ? 'idle' : 'running',
+            extract: p().status(),
+            refineRuns: refineRuns().length,
+          })}
+        >
+          <p class="cala-muted cala-run__line" data-testid="next-step-hint">
+            {NEXT_STEP_HINT}
+          </p>
+        </Show>
+        <Show when={!refineBusy() && comparison()?.settled}>
+          <p class="cala-muted cala-run__line" data-testid="refine-settled">
+            Looks settled: the refine rate has stopped falling. More Refine runs are unlikely to
+            change the footprints much; Extract when ready.
+          </p>
+        </Show>
+        <Show when={props.stages.extractInvalidated() && p().status() !== 'running'}>
+          <p class="cala-warning" role="status" data-testid="extract-invalidated">
+            Refine changed the footprints, so the earlier Extract result was discarded. Run Extract
+            again for traces with the refined footprints.
+          </p>
+        </Show>
+      </Show>
       <div class="cala-run__footer">
         <span
           class="cala-status cala-run__pass2"
@@ -606,7 +911,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           fallback={
             <Show when={!props.live}>
               <button type="button" class="btn-secondary btn-small" onClick={() => p().cancel()}>
-                Cancel pass 2
+                Cancel Extract
               </button>
             </Show>
           }
@@ -616,10 +921,13 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             class="btn-secondary btn-small"
             data-testid="pass2-run"
             disabled={p().blockedReason() !== null}
-            title={p().blockedReason() ?? 'Re-extract every frame with the final library.'}
+            title={
+              p().blockedReason() ??
+              'Extract: solve the traces of every frame with the final footprints, frozen.'
+            }
             onClick={() => void p().run()}
           >
-            Run pass 2
+            {p().status() === 'done' ? 'Extract again' : 'Extract'}
           </button>
         </Show>
         <details class="cala-menu" data-testid="export-menu">
@@ -635,7 +943,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               title={
                 props.live
                   ? 'Footprints, the live traces, motion, flicker and cell metadata (NumPy .npz).'
-                  : 'Footprints, pass-2 traces, motion, flicker and cell metadata (NumPy .npz).'
+                  : "Footprints, Extract's traces, motion, flicker, the stages run and cell metadata (NumPy .npz)."
               }
               onClick={() => {
                 const input = exportInput();
@@ -680,7 +988,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               <span class="cala-muted">
                 {props.live
                   ? 'Available when the live run has ended.'
-                  : 'Available when pass 2 is done.'}
+                  : 'Available when Extract is done.'}
               </span>
             </Show>
             <Show
@@ -732,5 +1040,181 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         )}
       </Show>
     </SidePanel>
+  );
+}
+
+/** What the run strip shows: the active stage, else the newest outcome. */
+interface StripView {
+  stage: string;
+  /** Null: no bar (a live stream has no end). */
+  fraction: number | null;
+  state: ProgressState;
+  detail: string;
+  /** The stop or cancel control of the active stage. */
+  stop?: { label: string; title: string; testid: string; onClick: () => void };
+  /** Discover: pause and resume. */
+  pause?: boolean;
+}
+
+const fpsText = (fps: number) => (fps > 0 ? ` · ${fps.toFixed(1)} fps` : '');
+
+/**
+ * The run on one line, above the column's tabs and always in view: the active
+ * stage (Discover, Refine or Extract), its progress, the frame rate, its
+ * stop or cancel control and, in a multi-session run, the session. Idle, the
+ * newest outcome and the cell count. The controls are the Run tab's.
+ */
+export function RunStatusStrip(props: {
+  pipeline: PipelineStore;
+  pass2: Pass2Store;
+  refine: RefineStore;
+  stages: StageLog;
+  cells: CellStore;
+  live?: boolean;
+  /** "Session 3/8" in a multi-session run (null: none). */
+  session?: string | null;
+}): JSX.Element {
+  const s = () => props.pipeline;
+  const p = () => props.pass2;
+  const r = () => props.refine;
+  const refineRuns = () => props.stages.runs().filter((x) => x.stage === 'refine').length;
+  const cellsText = () => `${props.cells.library()?.ids.length ?? 0} cells`;
+  const view = (): StripView => {
+    const rs = r().status();
+    if (rs === 'running' || rs === 'finishing') {
+      const total = r().total();
+      return {
+        stage: `${STAGE_LABEL.refine} ${refineRuns()}`,
+        fraction: total > 0 ? r().processed() / total : 0,
+        state: 'running',
+        detail: `${rs === 'finishing' ? 'publishing' : `frame ${r().processed().toLocaleString()}`}${fpsText(r().fps())}`,
+        stop: {
+          label: 'Cancel',
+          title: 'Stop this Refine run: the footprints refined so far are kept.',
+          testid: 'strip-refine-cancel',
+          onClick: () => r().cancel(),
+        },
+      };
+    }
+    if (p().status() === 'running') {
+      const total = p().total();
+      return {
+        stage: STAGE_LABEL.extract,
+        fraction: total > 0 ? p().processed() / total : 0,
+        state: 'running',
+        detail: `frame ${p().processed().toLocaleString()}${fpsText(p().fps())}`,
+        stop: {
+          label: 'Cancel',
+          title: 'Cancel Extract.',
+          testid: 'strip-extract-cancel',
+          onClick: () => p().cancel(),
+        },
+      };
+    }
+    const st = s().status();
+    if (st === 'starting' || st === 'running' || st === 'paused') {
+      const state: ProgressState = st === 'paused' ? 'paused' : 'running';
+      const setup = s().setup();
+      const end = {
+        label: '■',
+        title: props.live
+          ? 'Stop the live run: the cells found so far become the final library.'
+          : 'End Discover here: the cells found so far become the final library.',
+        testid: 'strip-discover-end',
+        onClick: () => void s().finishEarly(),
+      };
+      if (st === 'starting')
+        return { stage: 'Starting', fraction: 0, state, detail: '', stop: end };
+      if (s().processed() === 0 && setup)
+        return {
+          stage: SETUP_SHORT[setup.phase],
+          fraction: setup.total > 0 ? setup.done / setup.total : 0,
+          state,
+          detail: `${setup.done} / ${setup.total}${st === 'paused' ? ' · paused' : ''}`,
+          stop: end,
+          pause: true,
+        };
+      const total = s().plan()?.frameCount ?? 0;
+      const bounded = Number.isFinite(total) && total > 0;
+      return {
+        stage: STAGE_LABEL.discover,
+        fraction: bounded ? s().processed() / total : null,
+        state,
+        detail: `${props.live ? 'live · ' : ''}${cellsText()}${st === 'paused' ? ' · paused' : fpsText(s().fps())}`,
+        stop: end,
+        pause: true,
+      };
+    }
+    if (st === 'error')
+      return { stage: 'Stopped', fraction: null, state: 'error', detail: 'by an error' };
+    if (st === 'idle') return { stage: 'Ready', fraction: null, state: 'idle', detail: '' };
+    const last =
+      p().status() === 'done'
+        ? STAGE_LABEL.extract
+        : refineRuns() > 0
+          ? `${STAGE_LABEL.refine} ${refineRuns()}`
+          : STAGE_LABEL.discover;
+    return { stage: `${last} done`, fraction: 1, state: 'complete', detail: cellsText() };
+  };
+  return (
+    <div
+      class="cala-strip"
+      role="status"
+      aria-label="Run"
+      data-testid="run-strip"
+      data-state={view().state}
+    >
+      <strong class="cala-strip__stage" data-testid="run-strip-stage">
+        {view().stage}
+      </strong>
+      <Show when={view().fraction !== null}>
+        <ProgressBar
+          class="cala-strip__bar"
+          fraction={view().fraction ?? 0}
+          state={view().state}
+          aria-label={view().stage}
+        />
+        <span class="cala-readout cala-strip__pct">
+          {Math.floor(100 * Math.min(1, view().fraction ?? 0))}%
+        </span>
+      </Show>
+      <span class="cala-readout cala-strip__detail" data-testid="run-strip-detail">
+        {view().detail}
+      </span>
+      <Show when={props.session}>
+        {(label) => (
+          <span class="cala-strip__session" data-testid="run-strip-session">
+            {label()}
+          </span>
+        )}
+      </Show>
+      <Show when={view().pause}>
+        <button
+          type="button"
+          class="btn-secondary btn-small cala-icon-btn"
+          aria-label={s().status() === 'paused' ? 'Resume' : 'Pause'}
+          title={s().status() === 'paused' ? 'Resume' : 'Pause'}
+          data-testid="strip-pause"
+          onClick={() => s().togglePause()}
+        >
+          {s().status() === 'paused' ? '▶' : '⏸'}
+        </button>
+      </Show>
+      <Show when={view().stop}>
+        {(stop) => (
+          <button
+            type="button"
+            class="btn-secondary btn-small"
+            classList={{ 'cala-icon-btn': stop().label.length === 1 }}
+            aria-label={stop().title}
+            title={stop().title}
+            data-testid={stop().testid}
+            onClick={() => stop().onClick()}
+          >
+            {stop().label}
+          </button>
+        )}
+      </Show>
+    </div>
   );
 }

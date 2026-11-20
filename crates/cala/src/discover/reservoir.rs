@@ -299,16 +299,52 @@ impl Tile {
         cap_events: usize,
         ln_decay: f64,
     ) {
+        self.offer_at(z, width, frame, frame, score, test, cap_events, ln_decay);
+    }
+
+    /// [`Tile::offer`] for a frame that may be older than the stored ones
+    /// (a look-back frame re-read from the recording): `frame` is the
+    /// frame's own slow-loop index (its identity, kept in the slot) and
+    /// `clock` the slow loop's frame count now, which dates the slot's
+    /// priority (the score is the *current* fit's residual). A frame the
+    /// tile already holds as an event slot is passed over, so no frame is
+    /// stored twice. With `clock == frame` and rising frames this is
+    /// `offer`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn offer_at(
+        &mut self,
+        z: &[f32],
+        width: usize,
+        frame: u64,
+        clock: u64,
+        score: f32,
+        test: bool,
+        cap_events: usize,
+        ln_decay: f64,
+    ) {
         if cap_events == 0 {
             return;
         }
-        let key = |score: f32, frame: u64| f64::from(score).ln() - frame as f64 * ln_decay;
+        if clock != frame && self.events.iter().any(|s| s.frame == frame) {
+            return;
+        }
+        let key = |score: f32, _frame: u64| f64::from(score).ln() - clock as f64 * ln_decay;
         if self.ev_key.len() != self.events.len() {
-            self.ev_key = self.events.iter().map(|s| key(s.score, s.frame)).collect();
+            // (A look-back slot's clock is not stored: after a rebuild it is
+            // dated by its own frame index, i.e. replaced a little sooner.)
+            self.ev_key = self
+                .events
+                .iter()
+                .map(|s| f64::from(s.score).ln() - s.frame as f64 * ln_decay)
+                .collect();
             self.ev_min = usize::MAX;
         }
         // Neighbouring frames of one transient: keep the stronger.
-        if let Some(i) = self.events.iter().position(|s| frame - s.frame <= 2) {
+        if let Some(i) = self
+            .events
+            .iter()
+            .position(|s| frame.abs_diff(s.frame) <= 2)
+        {
             if score > self.events[i].score {
                 self.events[i] = self.copy(z, width, frame, score, test);
                 self.ev_key[i] = key(score, frame);

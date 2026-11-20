@@ -458,3 +458,95 @@ fn motion_r2_is_reported_with_shifts_and_does_not_change_pass() {
         assert_eq!(a.pass, b.pass);
     }
 }
+
+#[test]
+fn default_config_is_the_20_hz_durations() {
+    // Identity: the durations reproduce the frame counts the QC was
+    // validated with at 20 Hz.
+    let d = QcConfig::default();
+    assert_eq!(d, QcConfig::for_fps(20.0));
+    assert_eq!(d.fps, 20.0);
+    assert_eq!(d.window_frames, 1200);
+    assert_eq!(d.refresh_frames, 100);
+    assert_eq!(d.min_frames, 100);
+    assert_eq!(d.residual_tau_frames, 600.0);
+    assert_eq!(d.churn_window_frames, 1200);
+    assert_eq!(d.motion_burn_in_frames, 300);
+    assert_eq!(d.motion_block_frames, 500);
+    assert_eq!(d.motion_min_fold_frames, 100);
+    assert_eq!(d.residual_every, 8);
+    d.validate().unwrap();
+}
+
+#[test]
+fn config_durations_follow_the_frame_rate() {
+    for (fps, window) in [(10.0, 600), (30.0, 1800), (60.0, 3600)] {
+        let c = QcConfig::for_fps(fps);
+        c.validate().unwrap();
+        assert_eq!(c.window_frames, window);
+        assert_eq!(c.refresh_frames, window / 12);
+        assert_eq!(c.churn_window_frames, window as u64);
+        assert_eq!(c.motion_block_frames as f32, 25.0 * fps);
+        // Counts of samples do not scale.
+        assert_eq!(c.residual_every, 8);
+    }
+    assert!(QcConfig::for_fps(0.0).validate().is_err());
+    assert!(QcConfig::for_fps(f32::NAN).validate().is_err());
+}
+
+#[test]
+fn trace_stats_on_a_span_match_the_monitor() {
+    // Identity: QcConfig::trace_stats on a cell's recorded trace is exactly
+    // what the monitor reports when its window holds that whole trace (the
+    // whole-session statistic after Extract uses the same function).
+    let (fps, cs) = scene();
+    let lib = Arc::new(library(&fps, 1));
+    let mut eng = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+    let mut qc = monitor();
+    let mut rng = Lcg(5);
+    let n = 500; // within the 600-frame window
+    let mut rec: Vec<Vec<f32>> = vec![Vec::new(); 3];
+    for t in 0..n {
+        let y = frame(&fps, &cs, t, &mut rng);
+        let tr = eng.process(&y).unwrap();
+        qc.observe(&y, &lib, &tr).unwrap();
+        for (r, &v) in rec.iter_mut().zip(&tr.traces) {
+            r.push(v);
+        }
+    }
+    qc.refresh_all(&lib);
+    let cfg = qc.config().clone();
+    let mut sc = Vec::new();
+    for (s, c) in qc.cells().enumerate() {
+        let st = cfg.trace_stats(&rec[s], lib.trace_noise()[s], &mut sc);
+        assert_eq!(st.peak_snr.to_bits(), c.trace.peak_snr.to_bits(), "{c:?}");
+        assert_eq!(st.sigma.to_bits(), c.trace.sigma.to_bits());
+        assert_eq!(st.events, c.trace.events);
+        assert_eq!(cfg.pass.low_snr(&st), c.flags & FLAG_LOW_SNR != 0);
+    }
+}
+
+#[test]
+fn a_quiet_last_window_reads_low_while_the_session_does_not() {
+    // The QC window is the last minute: a clean cell that fired early and
+    // is quiet at the end of the recording fails on its window, and passes
+    // on its whole session.
+    let cfg = QcConfig::default();
+    let mut rng = Lcg(11);
+    let n = 6000;
+    let mut x: Vec<f32> = calcium(n, 150, 12.0, 12.0, 10)
+        .iter()
+        .map(|&c| c + 0.6 * rng.normal())
+        .collect();
+    // No events in the last 1500 frames (the transients decay away).
+    let quiet: Vec<f32> = (0..1500).map(|_| 0.6 * rng.normal()).collect();
+    x[n - 1500..].copy_from_slice(&quiet);
+    for v in &mut x {
+        *v = v.max(0.0);
+    }
+    let mut sc = Vec::new();
+    let win = cfg.trace_stats(&x[n - cfg.window_frames..], 0.6, &mut sc);
+    let all = cfg.trace_stats(&x, 0.6, &mut sc);
+    assert!(cfg.pass.low_snr(&win), "{win:?}");
+    assert!(!cfg.pass.low_snr(&all) && all.peak_snr > 10.0, "{all:?}");
+}

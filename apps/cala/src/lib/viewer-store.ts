@@ -6,7 +6,7 @@
  */
 import { createSignal, onCleanup } from 'solid-js';
 import type { FrameClient } from './frame-client.ts';
-import type { FolderEntry, FramePixels, FrameSourceInfo } from './frame-source.ts';
+import type { FolderEntry, FramePixels, FrameSourceInfo, SessionInput } from './frame-source.ts';
 
 /** Playback rate when the recording has neither timestamps nor metadata. */
 export const FALLBACK_PLAYBACK_FPS = 20;
@@ -90,19 +90,43 @@ export function createViewerStore(client: FrameClient) {
     raf = requestAnimationFrame(tick);
   }
 
+  /** What the open recording was opened from (look-back opens its own reader on it); null for a live source. */
+  // A signal: the look-back toggle's enabled state follows it (it is set after `info`).
+  const [openedFrom, setOpenedFrom] = createSignal<
+    { entries: FolderEntry[] } | { sessions: SessionInput[] } | null
+  >(null);
+
   async function openFiles(entries: FolderEntry[], name: string): Promise<void> {
+    setOpenedFrom(null);
+    if (await openWith(() => client.open(entries), name)) setOpenedFrom({ entries });
+  }
+
+  /** Several sessions as one recording (a Joint run). */
+  async function openSessions(sessions: SessionInput[], name: string): Promise<void> {
+    setOpenedFrom(null);
+    const ok = await openWith(() => {
+      if (!client.openSessions) throw new Error('This frame client cannot open sessions.');
+      return client.openSessions(sessions);
+    }, name);
+    if (ok) setOpenedFrom({ sessions });
+  }
+
+  /** Returns whether the recording opened. */
+  async function openWith(open: () => Promise<FrameSourceInfo>, name: string): Promise<boolean> {
     pause();
     generation++;
     setError(null);
     setLoading(true);
     try {
-      const opened = await client.open(entries);
+      const opened = await open();
       setInfo(opened);
       setLabel(name);
       setFrame(null);
       showFrame(0);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setLoading(false);
     }
@@ -110,6 +134,7 @@ export function createViewerStore(client: FrameClient) {
 
   /** Connect to a live source; the frames shown come from the pipeline's previews. */
   async function openLive(url: string): Promise<void> {
+    setOpenedFrom(null);
     pause();
     generation++;
     setError(null);
@@ -129,6 +154,7 @@ export function createViewerStore(client: FrameClient) {
   }
 
   function close(): void {
+    setOpenedFrom(null);
     pause();
     generation++;
     wanted = null;
@@ -154,7 +180,10 @@ export function createViewerStore(client: FrameClient) {
     autoContrast,
     setAutoContrast,
     openFiles,
+    openSessions,
     openLive,
+    /** The files the open recording came from (null: none, or a live source). */
+    source: openedFrom,
     showFrame,
     play,
     pause,

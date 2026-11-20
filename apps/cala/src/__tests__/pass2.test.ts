@@ -1,8 +1,6 @@
 // @vitest-environment node
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { initCalaWasm, TraceLibraryBuilder } from '../lib/cala-wasm.ts';
+import { TraceLibraryBuilder } from '../lib/cala-wasm.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
 import type { FramePixels } from '../lib/frame-source.ts';
 import type { FrameReader, PipelineStepResult } from '../lib/pipeline-engine.ts';
@@ -16,12 +14,9 @@ import {
 import { RunRecord } from '../lib/run-record.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import { traceBackend } from '../lib/trace-backend.ts';
+import { initTestWasm } from './wasm-test.ts';
 
-beforeAll(async () => {
-  await initCalaWasm(
-    readFileSync(resolve(import.meta.dirname, '../../../../crates/cala/pkg/calab_cala_bg.wasm')),
-  );
-});
+beforeAll(initTestWasm);
 
 const W = 64;
 const H = 48;
@@ -95,6 +90,10 @@ async function run(
     /** Replace the library by this one when batch `at` starts (a slow-loop publish). */
     swap?: { at: number; bytes: Uint8Array; version: number };
     replay?: ReplayInput;
+    /** Also return the signed traces (as Extract does). */
+    signed?: boolean;
+    fused?: boolean;
+    qc?: boolean;
   },
   onBatch?: (b: Batch) => void,
 ): Promise<Batch[]> {
@@ -114,11 +113,14 @@ async function run(
       ...a.fastSetup,
       session: 1,
       discover: false,
-      qc: false,
+      qc: options.qc ?? false,
+      noiseEvery: 16,
+      qcEveryS: 0.4,
       initialLibrary: options.library,
+      signed: options.signed ?? false,
     },
     null,
-    traceBackend,
+    options.fused === false ? { ...traceBackend, backAndTrace: undefined } : traceBackend,
   );
   const c = new BackStage(a.setup, fast);
   const batches: Batch[] = [];
@@ -167,6 +169,25 @@ describe('pass 2', () => {
       [24, 40],
       [34, 30],
     ]);
+  });
+
+  it.each([false, true])('fused Stage C matches separate calls (QC=%s)', async (qc) => {
+    const separate = await run({ library: libA.bytes, signed: true, qc, fused: false });
+    const fused = await run({ library: libA.bytes, signed: true, qc });
+    expect(fused.length).toBe(separate.length);
+    for (let i = 0; i < fused.length; i++) {
+      expect(fused[i].previews).toEqual(separate[i].previews);
+      expect(fused[i].cells?.traces).toEqual(separate[i].cells?.traces);
+      expect(fused[i].cells?.signed).toEqual(separate[i].cells?.signed);
+      const a = fused[i].cells?.qc;
+      const b = separate[i].cells?.qc;
+      expect(!!a).toBe(!!b);
+      if (a && b) {
+        const { buildMs: _a, ...qa } = a;
+        const { buildMs: _b, ...qb } = b;
+        expect(qa).toEqual(qb);
+      }
+    }
   });
 
   it('reproduces pass 1 bit for bit with the same library', async () => {
@@ -240,6 +261,35 @@ describe('pass 2', () => {
     );
   });
 
+  it('returns signed traces with Extract, leaving the traces bit for bit the same', async () => {
+    const plain = await run({ library: libA.bytes });
+    const withSigned = await run({ library: libA.bytes, signed: true });
+    expect(withSigned.length).toBe(plain.length);
+    let clipped = 0;
+    let negative = 0;
+    let worstActive = 0;
+    for (let i = 0; i < plain.length; i++) {
+      const a = plain[i].cells!;
+      const b = withSigned[i].cells!;
+      expect(a.signed).toBeUndefined();
+      expect(b.traces, `traces of batch ${i}`).toEqual(a.traces);
+      const s = b.signed!;
+      expect(s.length).toBe(b.traces.length);
+      for (let k = 0; k < s.length; k++) {
+        if (b.traces[k] === 0) {
+          clipped++;
+          if (s[k] < 0) negative++;
+        } else {
+          worstActive = Math.max(worstActive, Math.abs(s[k] - b.traces[k]) / b.traces[k]);
+        }
+      }
+    }
+    // The clipped samples come back as (mostly) negative values; active ones barely move.
+    expect(clipped).toBeGreaterThan(0);
+    expect(negative / clipped).toBeGreaterThan(0.7);
+    expect(worstActive).toBeLessThan(0.1);
+  });
+
   it('refuses a replay longer than the recording or a short record', () => {
     const rec = recordOf([]);
     const frontPool = new StagePool(1, 8);
@@ -252,7 +302,7 @@ describe('pass 2', () => {
           undefined,
           replayOf(rec, FRAMES + 1),
         ),
-    ).toThrow(/Pass 2 replays/);
+    ).toThrow(/The replay \(Refine, Extract\) covers/);
     expect(
       () =>
         new FrontStage(

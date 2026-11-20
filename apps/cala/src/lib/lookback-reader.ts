@@ -1,0 +1,298 @@
+/**
+ * Look-back's frame supply (experimental; the look-back worker's core):
+ * re-read the past frames the slow loop's scheduler asks for
+ * (`SlowLoop.lookbackTake`), preprocess them as the live pipeline did, and
+ * solve them with the newest published library. The slow loop then feeds
+ * them to the footprint statistics only (`observeLookback`); see
+ * `SlowRunner` and the engine's `discover/lookback.rs`. The model is
+ * qc_eval's `LookBack::frame`.
+ *
+ * Per frame, the replay path of Extract (`lib/pipeline-stages.ts`):
+ *
+ *   front   `frontReplay`: the recorded flicker, the newest flat-field map
+ *   motion  `MotionCorrector.applyF32` by the recorded rigid shift (`rigidRecords`)
+ *   back    `Preprocessor.backFramesRegistered` on a copy of the live back
+ *           half: one copy per look-back block (`block` in the request),
+ *           restored from the newest state stage C reported, then run
+ *           forward over the block's frames, as qc_eval clones the live
+ *           preprocessor per block
+ *   traces  `TraceEngine.processFrames` on the newest library
+ *
+ * Known differences from the live preprocessing of the same frame (the
+ * approximations qc_eval makes, plus the app's own):
+ *
+ *  - The back half starts from the live state at the time the block is
+ *    served (up to `LOOKBACK_SNAPSHOT_EVERY` frames old), not the state the
+ *    live pipeline had at that frame: background and noise are those of a
+ *    later time (qc_eval: the current state, exactly).
+ *  - The flat field is the newest map for every frame; Discover corrected
+ *    frames before its first map not at all, and later ones with the map of
+ *    their time (the same choice as Extract).
+ *  - The warp runs in WASM; Discover may have warped on the GPU (WebGPU),
+ *    which can differ in the last bits.
+ *  - One session only: no session re-registration or floor carry-over (the
+ *    toggle is off for Joint runs).
+ *
+ * Frames come from a `HistorySource` (a recording's own `FrameSource`, never
+ * the one Discover reads sequentially), so a raw-frame store for live
+ * streams can plug in later. The recorded motion and flicker arrive as
+ * Discover records them (`pushRows`); a request for a frame not recorded yet
+ * waits for its row.
+ */
+import {
+  MotionCorrector,
+  MotionOptions,
+  Preprocessor,
+  TraceEngine,
+  TraceLibrary,
+} from './cala-wasm.ts';
+import type { FlatFieldMap } from './flat-field.ts';
+import type { FramePixels } from './frame-source.ts';
+import { frontReplay, rigidRecords } from './pipeline-stages.ts';
+import { RunRecord } from './run-record.ts';
+
+/** Where look-back reads raw frames from: a recording's `FrameSource`, or later a history store. */
+export interface HistorySource {
+  readonly info: { width: number; height: number; bitDepth: number; frameCount: number };
+  /** `count` raw frames from `start` (into `out` when given). */
+  readFrames(start: number, count: number, out?: FramePixels): Promise<FramePixels>;
+}
+
+/** Raw frames read at once around a requested one (the scheduler serves 64-frame blocks forward). */
+export const LOOKBACK_READ_SPAN = 64;
+
+/** One frame to supply: stream index, block sequence number, the cells it goes to. */
+export interface LookbackFrame {
+  frame: number;
+  block: number;
+}
+
+/** `lookbackTake` output (`[frame, block, n, id_1..id_n, ...]`) as frames. */
+export function lookbackFrames(flat: ArrayLike<number>): LookbackFrame[] {
+  const out: LookbackFrame[] = [];
+  for (let k = 0; k + 2 < flat.length; k += 3 + flat[k + 2])
+    out.push({ frame: flat[k], block: flat[k + 1] });
+  return out;
+}
+
+/** What `LookbackReader.serve` produced (the frames are in the caller's buffer). */
+export interface LookbackSolved {
+  /** Library version solved with (0: none yet, nothing solved). */
+  version: number;
+  cells: number;
+  /** `count * cells` traces, and the background coefficients of the same solve (absent: no cells). */
+  traces: Float32Array;
+  background?: Float32Array;
+}
+
+export class LookbackReader {
+  private readonly px: number;
+  private readonly record = new RunRecord();
+  /** Waiting for rows: resolved when the record covers `frame`. */
+  private rowWaiters: { frame: number; resolve: () => void; reject: (e: Error) => void }[] = [];
+  private backState: Uint8Array | null = null;
+  private backWaiters: { resolve: () => void; reject: (e: Error) => void }[] = [];
+  private flat: FlatFieldMap | null = null;
+  private flatDirty = false;
+  /** Front half (calibration and flat field only; replayed, so stateless). */
+  private front: Preprocessor | null = null;
+  private motion: MotionCorrector | null = null;
+  /** The block in progress and its copy of the live back half. */
+  private block: { seq: number; pre: Preprocessor } | null = null;
+  private engine: TraceEngine | null = null;
+  private version = 0;
+  private cells = 0;
+  private pendingLibrary: { version: number; bytes: Uint8Array } | null = null;
+  private raw: FramePixels;
+  private rawStart = 0;
+  private rawCount = 0;
+  private readonly buf: Float32Array;
+  private disposed = false;
+
+  constructor(private readonly source: HistorySource) {
+    const { width, height, bitDepth } = source.info;
+    this.px = width * height;
+    this.raw = bitDepth === 16 ? new Uint16Array(0) : new Uint8Array(0);
+    this.buf = new Float32Array(this.px);
+  }
+
+  /** Discover recorded frames `start..` (in order from 0; a gap stops look-back). */
+  pushRows(
+    start: number,
+    dy: ArrayLike<number>,
+    dx: ArrayLike<number>,
+    flags: ArrayLike<number>,
+    offset: ArrayLike<number>,
+    gain: ArrayLike<number>,
+  ): void {
+    this.record.push(start, dy, dx, flags, offset, gain);
+    const have = this.record.frames;
+    const gap = !this.record.complete;
+    this.rowWaiters = this.rowWaiters.filter((w) => {
+      if (gap) w.reject(new Error('Discover has a gap in its motion record.'));
+      else if (w.frame < have) w.resolve();
+      else return true;
+      return false;
+    });
+  }
+
+  /** The live back half's state, newest first (blocks started from now on use it). */
+  setBackState(state: Uint8Array): void {
+    this.backState = state;
+    for (const w of this.backWaiters.splice(0)) w.resolve();
+  }
+
+  /** The newest flat-field map (null: none known; the calibration's own stays). */
+  setFlatField(map: FlatFieldMap | null): void {
+    this.flat = map;
+    this.flatDirty = true;
+  }
+
+  /** A library the slow loop published (applied before the next solve). */
+  setLibrary(version: number, bytes: Uint8Array): void {
+    if (version > this.version && version > (this.pendingLibrary?.version ?? 0))
+      this.pendingLibrary = { version, bytes };
+  }
+
+  /**
+   * Re-read, preprocess and solve the requested frames, in order, into
+   * `out` (at least `frames.length * width * height` values).
+   */
+  async serve(frames: LookbackFrame[], out: Float32Array): Promise<LookbackSolved> {
+    if (out.length < frames.length * this.px)
+      throw new RangeError(`look-back: a buffer of ${out.length} for ${frames.length} frames`);
+    this.applyLibrary();
+    const traces = new Float32Array(frames.length * this.cells);
+    let background: Float32Array | undefined;
+    for (let i = 0; i < frames.length; i++) {
+      const { frame, block } = frames[i];
+      const y = out.subarray(i * this.px, (i + 1) * this.px);
+      await this.preprocess(frame, block, y);
+      if (this.disposed) throw new Error('look-back stopped');
+      if (!this.engine || this.cells === 0) continue;
+      traces.set(this.engine.processFrames(y, 1), i * this.cells);
+      const bg = this.engine.lastBackground();
+      background ??= new Float32Array(frames.length * bg.length);
+      background.set(bg, i * bg.length);
+    }
+    return {
+      version: this.engine ? this.version : 0,
+      cells: this.cells,
+      traces,
+      ...(background ? { background } : {}),
+    };
+  }
+
+  /** Frame `frame` of block `block`, preprocessed as Discover did (see the module docs), into `y`. */
+  async preprocess(frame: number, block: number, y: Float32Array): Promise<void> {
+    await this.rows(frame);
+    const state = await this.state();
+    const pre = this.blockPre(block, state);
+    const front = this.frontPre(state);
+    const raw = await this.rawFrame(frame);
+    frontReplay(front, raw, 1, this.buf, this.record.span(frame, 1), 0);
+    const rec = this.record.span(frame, 1);
+    const motion = (this.motion ??= this.newMotion());
+    motion.applyF32(this.buf, rigidRecords(motion, rec.dy, rec.dx, rec.flags, 1), y);
+    pre.backFramesRegistered(y, 1, rec.dy, rec.dx);
+  }
+
+  private rows(frame: number): Promise<void> {
+    if (!this.record.complete)
+      return Promise.reject(new Error('Discover has a gap in its motion record.'));
+    if (frame < this.record.frames) return Promise.resolve();
+    return new Promise((resolve, reject) => this.rowWaiters.push({ frame, resolve, reject }));
+  }
+
+  private state(): Promise<Uint8Array> {
+    const s = this.backState;
+    if (s) return Promise.resolve(s);
+    return new Promise((resolve, reject) =>
+      this.backWaiters.push({ resolve: () => resolve(this.backState!), reject }),
+    );
+  }
+
+  private blockPre(seq: number, state: Uint8Array): Preprocessor {
+    if (this.block?.seq === seq) return this.block.pre;
+    this.block?.pre.free();
+    this.block = { seq, pre: Preprocessor.fromState(state) };
+    return this.block.pre;
+  }
+
+  private frontPre(state: Uint8Array): Preprocessor {
+    if (!this.front) {
+      this.front = Preprocessor.fromState(state);
+      this.flatDirty = true;
+    }
+    if (this.flatDirty) {
+      this.flatDirty = false;
+      const m = this.flat;
+      if (m) this.front.setFlatField(m.gain, m.offset.length > 0 ? m.offset : undefined, m.dark);
+    }
+    return this.front;
+  }
+
+  private newMotion(): MotionCorrector {
+    const opts = new MotionOptions();
+    try {
+      return new MotionCorrector(this.source.info.width, this.source.info.height, opts);
+    } finally {
+      opts.free();
+    }
+  }
+
+  /** One raw frame, from a span of `LOOKBACK_READ_SPAN` read at once. */
+  private async rawFrame(frame: number): Promise<FramePixels> {
+    if (frame < this.rawStart || frame >= this.rawStart + this.rawCount) {
+      const total = this.source.info.frameCount;
+      if (!(frame >= 0 && frame < total))
+        throw new RangeError(`look-back: frame ${frame} of ${total}`);
+      const lo = frame - (frame % LOOKBACK_READ_SPAN);
+      const n = Math.min(LOOKBACK_READ_SPAN, total - lo);
+      if (this.raw.length < n * this.px)
+        this.raw =
+          this.raw instanceof Uint16Array
+            ? new Uint16Array(LOOKBACK_READ_SPAN * this.px)
+            : new Uint8Array(LOOKBACK_READ_SPAN * this.px);
+      this.rawCount = 0;
+      const got = await this.source.readFrames(lo, n, this.raw.subarray(0, n * this.px));
+      if (got.buffer !== this.raw.buffer) this.raw = got;
+      this.rawStart = lo;
+      this.rawCount = n;
+    }
+    const o = (frame - this.rawStart) * this.px;
+    return this.raw.subarray(o, o + this.px);
+  }
+
+  private applyLibrary(): void {
+    const p = this.pendingLibrary;
+    if (!p) return;
+    this.pendingLibrary = null;
+    const lib = TraceLibrary.fromBytes(p.bytes);
+    try {
+      if (this.engine) this.engine.setLibrary(lib);
+      // 0, 0: the solver's default tolerance and sweep cap (as the fast loop's engine).
+      else this.engine = new TraceEngine(lib, 0, 0);
+      this.version = lib.version;
+      this.cells = lib.ids().length;
+    } finally {
+      lib.free();
+    }
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    for (const w of this.rowWaiters) w.reject(new Error('look-back stopped'));
+    this.rowWaiters = [];
+    for (const w of this.backWaiters.splice(0)) w.reject(new Error('look-back stopped'));
+    this.block?.pre.free();
+    this.block = null;
+    this.front?.free();
+    this.front = null;
+    this.motion?.free();
+    this.motion = null;
+    this.engine?.free();
+    this.engine = null;
+    this.pendingLibrary = null;
+  }
+}

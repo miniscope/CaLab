@@ -5,6 +5,525 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Added
+
+- Admin: a read-only **Schema status** panel on the Overview tab reporting which database migrations are applied (production migrations are applied by hand, and 008 and 015 were once skipped unnoticed). It uses the new optional `supabase/migrations/019_schema_fingerprint.sql` (`schema_fingerprint()`, admin-only, read-only, booleans only); **the project owner must apply 019 by hand** to enable it, and until then the panel shows "unknown" without affecting the dashboard. `supabase/README.md` lists the expected fingerprint per migration.
+
+- Cala (experimental, off by default): a joint footprint update for overlapping cells in the Refine stage (`SlowLoopConfig::joint_update`, `qc_eval --joint-update refine`). Cells whose footprints overlap (normalised whitened overlap ≥ 0.05, at most 6 per cluster) keep a compact history of their residual (K numbers per fitting frame over one statistics half-life). A refine visit re-solves the stored frames' traces with the current footprints, refits the footprints jointly (non-negative) and accepts the members' new footprints together or not at all. On the 14-sim demixing suite it lowers the close-pair trace correlation excess +0.150 → +0.106 and the share of bitten neighbours at 0.75-1 soma diameters 0.49 → 0.34 (14/14 and 13/14 sims), with matched and false cells unchanged; the Refine pass's slow-loop frame cost rises about 30 %. The cluster support rule and Discover use are not done yet. See `tools/cala-eval/results/2026-11-17-cluster-replay.md`.
+
+- Cala (experimental joint update): a cluster's history now follows its cells when their statistics disks move (re-expressed onto the new pixels, new pixels starting at the current model) instead of starting over, and stores cover only the cells' statistics disks. On the 14-sim suite against the first version: bitten neighbours at 0.75-1 soma diameters 0.34 → 0.20, close-pair trace correlation excess +0.106 → +0.084, footprint correlation with ground truth 0.9899 → 0.9920 (close pairs 0.9879 → 0.9917, 14/14 sims), isolated cells and matched/false cells unchanged; one Refine pass now beats three Refine passes without it. Open: footprints over-filled at a neighbour's centre 6.7 % → 7.5 % (main 5.9 %), and the Refine pass's slow-loop cost is +9 % (static) / +14 % (motion) over the flag-off pass. Off by default; `qc_eval --joint-admit`, `--joint-carry` are measured, unadopted switches. See `tools/cala-eval/results/2026-11-18-replay-stage2.md`.
+
+### Changed
+
+- Docs and Admin: a note that runs from local or dev builds send no analytics (no Supabase environment) and are not counted in Admin.
+
+## [2.20.0] - 2026-11-17
+
+Web apps `v2.20.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Cala no longer leaves "bites" in footprints where a close neighbour sits, which
+also cuts the crosstalk between close cells' traces. A new Correlation tab plots
+pairwise trace correlation against distance. Plans and run status show the Refine
+setting, and analytics count sessions per run (Admin splits them by Joint, Separate
+and single-session runs). Plus internal cleanup. No database migration needed.
+
+### Added
+
+- Cala: a **Correlation** tab (live run and saved result) with the pairwise trace correlation against centre distance diagnostic for incomplete demixing: median and IQR of Pearson r per distance bin (<0.5 to 3-6 soma diameters, traces high-passed with a 15 s moving average), a dotted far-pair (1.5-3 D) reference line and a fixed -0.1 to 0.5 y axis, drawn over a small semi-transparent scatter of the individual pairs (continuous distance axis 0-6 D, off-scale points counted). Computed once on demand in a worker from all pairs within 6 D (thinned uniformly only above 400,000), 0.2-1 s for 650 cells x 18,000 frames.
+
+### Changed
+
+- Cala: neighbouring footprints are no longer left "bitten". A cell found after its neighbour was born without the light under that neighbour's centre and kept the hole, which leaked its events into the neighbour's trace. The refine gate now accepts a refinement from the running statistics when it lowers the held-out error at all (`SlowLoopConfig::refine_z` 3 → 0; the split-half test still applies, reservoir refinements keep `absorb_z`). On the dense static sims the footprint value at a neighbour 0.75-1 soma diameter away goes from 0.00 to 0.51 of truth (pairs sims: 0.11 → 0.61), trace leak there falls by a fifth to two fifths and close-pair trace correlation excess by about a fifth, with matched cells 991 → 1016 and no more false cells; Refine passes accept about 5× more (small) refinements. Discover is affected as well as Refine. `qc_eval --refine-z` sets it for comparison. See `tools/cala-eval/results/2026-11-17-refine-gate-refill.md`.
+- Analytics (Cala): run events now describe what the run processed. `sessions` is the sessions in that stage run (Joint: all of the plan's, Separate and single: 1), and new `plan_sessions` and `refine_runs` fields carry the plan's size and its Refine setting (plans only; aggregate numbers, no migration). Admin: the Cala "Runs by stage and mode" table adds the sessions processed per stage, split Joint, Separate and single, and still reads older events (a Separate or single run counts as one session).
+- Cala: the plan summary (project view and session list) and the run status show the Refine setting ("Refine runs: N before Extract"), with a warning when it is 0 (Extract runs straight after Discover and footprints are not refined). A regression test pins that Joint and Separate plans run Refine once per Refine run before Extract.
+- Cala: removed unused internal discovery and motion fields, an uncalled discovery helper, and unused overlay/GPU binding code and worker types. Refine and Extract share their replay startup configuration; the native evaluation tools share their ground-truth reader. Consolidated local WASM initialization across 11 test suites while retaining all test cases.
+
+## [2.19.1] - 2026-11-16
+
+Web apps `v2.19.1`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Admin hotfix (the dashboard stuck on "Loading analytics..."), Cala visitor
+geography, and shorter usage-statistics notices. After deploying, paste
+`supabase/functions/geo-session/index.ts` into the `geo-session` function in the
+Supabase dashboard so the geography lookup takes effect.
+
+### Fixed
+
+- Admin: the dashboard stayed on "Loading analytics..." on the live site. Sessions were read by naming columns, and production lacks `analytics_sessions.is_anonymous` (migration 008), so the read failed; the error then escaped the loading state without a banner. Sessions and events are read with `select('*')` again, missing columns are reported in a banner and degrade (signed-in accounts shows n/a), and an `ErrorBoundary` with Retry guards the dashboard. Reads now use keyset pagination (offset paging was O(n) per page on `analytics_events`), load sessions and submissions first and events in the background with per-table progress, Stop and "Load 7 days instead" controls, a 30 s timeout with one retry per page, and per-table timing in the console. Optional migration `018_analytics_admin_read_performance.sql` adds matching indexes and a cheaper admin RLS expression.
+- Analytics: sessions recorded no country or region since the `geo-session` function started reading `cf-ipcountry`, which Supabase's gateway does not forward. The function now looks the visitor's IP up once over HTTPS (ipwho.is, geojs.io as a backup, 1.5 s timeout each, no geography on failure) and never stores or logs the IP. The privacy notices (landing page and Cala) now say so.
+
+## [2.19.0] - 2026-11-15
+
+Web apps `v2.19.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Cala gets usage analytics (with a privacy notice, an opt-out and an optional
+beta-tester tag), four speed and memory improvements, and the Admin dashboard
+is rebuilt. Run `supabase/migrations/017_analytics_event_name_shape.sql` on the
+Supabase project to store the new Cala events (the apps work without it).
+
+### Added
+
+- Admin: analytics dashboard overhaul. Global filters (app, UTC date range with previous-period comparison, version, dev builds hidden by default, kept in the URL hash); Overview with unique browsers, returning rate, signed-in accounts and median session; new Cala tab (funnel, runs, failures, unfinished-run rate, WebGPU and hardware mix, fps and failure rate by hardware, version-over-version comparison with regression flags, boundaries); new Users tab (new vs returning, retention cohorts, most active browsers with a per-browser drawer, testers); Geography, Usage (funnels, first-touch referrers), Submissions (search, sort, pagination) and Export (CSV and JSON of the filtered data with column docs) rebuilt. A dev-only synthetic fixture mode (`?fixture=1`) is excluded from production builds. See "Admin app" in `docs/analytics.md`.
+- Cala: run telemetry now reports `peak_wasm_mb` summed over the main thread and all workers (it was almost always absent: the solver WASM lives in workers) on `run_finished` and `run_failed`. Workers report their heap over a low-rate `BroadcastChannel`.
+- Cala: a once-per-session coarse hardware snapshot: new `device_info` event (OS family, CPU cores, memory class, browser major version, display scale) and GPU architecture/device/description and buffer limits on `webgpu_info`. The privacy notice says so; the existing opt-out covers it.
+- Cala: usage analytics events (`run_started`, `run_finished`, `run_failed`, `boundary_summary`, `results_exported`, `webgpu_info`, `file_imported`) with aggregate numbers and categories only; failures report only a category and error class, never message text. See `docs/analytics.md`.
+- Usage statistics opt-out (Cala start screen, landing page footer; Do Not Track is honoured) and an optional, off-by-default beta tester tag (32 characters, `[A-Za-z0-9 ._@-]`). The landing page notice now says what is collected.
+- Migration `017_analytics_event_name_shape.sql` validates `analytics_events.event_name` by shape instead of a fixed list; it must be run on the Supabase project (the client works in either order).
+
+### Changed
+
+- Cala: Extract combines its ring trace solver’s Gram and background coupling rows once per frozen library, reducing repeated sparse work. Discover and Refine retain their original arithmetic.
+- Cala: sensor flat-field shift bins store only field-of-view pixels, retaining float64 accumulation. Refinement computes its fixed weight maps once per solve instead of every iteration.
+- Cala: the pipelined back-half preprocessing and trace/QC solve share one WASM batch, removing a redundant full-frame copy without retaining JavaScript views into WASM memory. Timing labels distinguish the combined back+trace stage.
+
+### Fixed
+
+- Analytics: events fired while the session is still being created (cala's `webgpu_info` at startup) were silently dropped. They are now queued (at most 25) and sent once the session exists.
+- Admin: every analytics read is paged (it stopped silently at Supabase's 1000-row default), the last second of an end date is no longer dropped, weekly buckets use UTC weeks (they shifted by a day in non-UTC time zones), session duration is a median with a 4 h cap instead of a mean skewed by tabs left open, "Unique Users" counted only signed-in accounts, and a failed delete is reported instead of ignored.
+- Cala: adding newly found cells no longer copies every existing trace buffer
+  just to reduce the per-cell history share. Trace histories use 1024-frame
+  blocks; a resize releases whole old blocks and copies only partial boundary
+  blocks, while keeping the same frame alignment, retention window and byte
+  budget.
+
+## [2.18.1] - 2026-11-14
+
+Web apps `v2.18.1`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Fixes a v2.18.0 regression: in Chrome at GPU speed, Refine's tab memory grew by
+gigabytes within seconds until Refine stalled.
+
+### Fixed
+
+- Cala: Refine no longer stalls with the tab's memory growing to 6-12 GB in
+  Chrome on a machine with a real GPU. v2.18.0 "freed" consumed buffers in its
+  workers with `ArrayBuffer.transfer(0)` (tile visit jobs and results, raw
+  frames for the flat-field estimator). In Chrome that keeps the memory with
+  an empty buffer that V8 counts as zero bytes, so no garbage collection is
+  triggered for it. At the ~300 tile visits a second a GPU-speed Refine makes
+  (3.35 MB each) the tab grew by about 1 GB/s. The buffers are now simply
+  dropped and collected as usual; Refine stays at Discover's level (about
+  2 GB for a 10-minute session).
+
+## [2.18.0] - 2026-11-13
+
+Web apps `v2.18.0`; the Python package `calab` is unchanged (`py/v0.5.0`; the
+rectified-input warning in its `_compute` ships with the next `py/` release).
+Cala becomes multi-session: open an animal's folder, see every session with its
+metadata and cala status, and run Joint chains (one cell library carried
+across sessions, with re-registration and brightness/noise correction at each
+boundary, and a per-boundary health flag) or Separate runs, with results
+exported per session to a parallel `cala-results/` tree and viewable read-only
+later. Refine no longer pauses or slows over long runs, the tab uses about
+0.4-0.5 GB less memory, an intermittent "non-finite pixels" crash is fixed, and
+the right-hand column is reorganised into tabs under an always-visible run
+strip.
+
+### Added
+
+- Cala: session-boundary health flags in Joint runs. Discover judges each
+  boundary ok, warning or failed, with a plain-language reason: the
+  re-registration's match against the same correlation within the sessions
+  before (and against a chance level, the moving image mirrored) and a fit
+  pinned at the edge of its search; whether the floor and noise corrections
+  held over the next 30 s; and whether the library carried over (new cells,
+  cells going silent at once), each against its own within-recording null
+  (`src/lib/boundary-flags.ts`, `BOUNDARY_FLAG_RULES`). Shown as a badge on
+  the session's row in the project table (with **Re-plan as Separate** for a
+  failed one), in the run's session list, in History ("boundary check"), on
+  the cell trace's boundary line and in View results; stored in the export
+  (`meta_json.session.boundary`, export format 6), `cala-session.json`, the
+  run manifest and the project index. Observers only: processing is
+  unchanged. `qc_eval` writes the null samples to `boundary_null.tsv` and the
+  chance level and pinned edges to `session_boundaries.tsv`;
+  `tools/cala-eval/boundary_flags_eval.ts` runs the app's monitor on a
+  qc_eval run; `stitch_sessions.py --b-source` stitches two different fields
+  of view. Calibration:
+  `tools/cala-eval/results/2026-11-13-boundary-flags.md`.
+
+- Cala: session boundaries in Joint runs. Where a new session starts, cala
+  re-registers it to the previous session (a similarity transform: ±3°
+  rotation and a ±40 px translation search against the mean of the previous
+  session's last 100 registered frames, applied to the whole session before
+  the per-frame corrector), re-seats the flicker reference, maps the
+  background floor into the new session's brightness (a gain and offset
+  fitted on the session's first batch) and rescales the noise map. On
+  stitched two-session sims this removes most of the baseline bump after a
+  brightness step and recovers the cells of a rotated session (results in
+  `tools/cala-eval/results/2026-11-13-session-boundary-fix.md`). Batches are
+  cut at session boundaries; within a session nothing changes and one-session
+  runs are byte-identical. Refine and Extract replay the recorded transform.
+  `PipelineOptions.sessionFix` (default on) switches it off. `qc_eval`
+  gains `--sessions` / `--session-fix` (and `session_boundaries.tsv`).
+
+- CaDecon: warning for rectified input. A trace that is non-negative with at
+  least a fifth of its samples exactly 0 (the baseline quantile the chain uses)
+  is clipped at zero or already denoised: cala traces from a live run (no
+  Extract), or Minian/CaImAn `C`. That is not a supported input. The solver now
+  reports `rectified_input` per cell (JS result; Python `SolveTraceResult` and
+  the `py_indeca_solve_trace` diagnostics tuple gain a fifth element, and
+  `solve_trace` raises a `UserWarning`). The CaDecon app checks the same rule
+  when the data loads (shared import store, `rectifiedInputCells`), so the
+  banner with the number of affected cells and the fix, and the marker in the
+  cell selector, appear before any run; after a run the Trace Inspector also
+  notes each affected cell. Run Extract
+  and export for CaDecon in cala (signed traces, see below), or use `C + YrA`
+  from Minian/CaImAn. Detection and warning only: the preprocessing and every
+  solver output are bit-identical to before.
+
+- Cala: signed (unclipped) traces. The trace solve clips at 0, so a quiet
+  cell's trace sat at exactly 0 with half-rectified noise, which CaDecon's
+  bandpass and rolling baseline turn into fake humps and spurious spikes.
+  Extract now also returns each trace plus the residual's projection on the
+  cell (`c + g/m` at the converged solution, CNMF's `C + YrA`): a zero
+  baseline with symmetric noise, equal to the trace where the solve does not
+  clip. The solve and the non-negative traces are unchanged bit for bit
+  (`TraceEngine::set_signed`; JS `setSigned` / `lastSigned`). The export
+  (format version 4) adds `traces_signed` next to `traces`, also in each
+  session's file of a multi-session run, and **Export for CaDecon** writes
+  the signed traces. Live runs (no Extract) keep the clipped traces only.
+  `qc_eval --dump` writes `dump_signed.f32` and `traces_signed_gt.tsv`.
+- Cala: **View results**. Any session in a project's table with a result gets
+  **View results** (on its current result, and on every result under
+  **Results**): the saved export opens read-only in the normal viewer, with the
+  footprints and contours over the field of view, the QC table and colours, the
+  selected cell's footprint and Extract trace, the History plots and event log,
+  the stages that ran and the flat field. There are no stage controls; **Back
+  to project** returns to the table. Exports of every format version open;
+  parts an older one lacks say "not in this export". The file is read lazily
+  (`ZipArchive` in `@calab/io`, ZIP64-aware), so a large export opens without
+  being read whole. See `apps/cala/docs/projects.md`.
+- Cala: export format 5. `fov_mean` (mean of the registered, preprocessed
+  frames before background removal) and `fov_max` (max of the frames with the
+  background floor removed), float32 [H, W], kept by Extract over every frame
+  of the export's span (each session of a Joint run gets its own), and
+  `flat_field_gain`, the gain map Extract divided out. `meta_json.fov_images`
+  stores each image's fixed display range (from the bit depth, never from the
+  pixels; see `apps/cala/src/lib/fov-display.ts`).
+
+- Cala: Refine plots in the Run panel. The current or last Refine run is
+  plotted over its replay: refines per minute, the median and 90th
+  percentile of the footprint changes at each publish, and the share of
+  cells refined so far. A comparison across runs shows refines per minute
+  (Discover, Refine 1, 2, ...) and the median change per run, with the
+  "Looks settled" hint under it. Ranges are declared and anchored at 0, as
+  in the History plots. Each Refine run's `meta_json.stages` entry adds
+  `change_p90`, `refined_share` and the `series` columns.
+- Cala: animal projects. **Open animal project** opens an animal's folder of
+  sessions as a project: a session table with each session's date, length,
+  Discover / Refine / Extract status, shared cell ids and current result, and
+  a run plan built from selected rows (**Chain selected**: one Joint run;
+  **Run selected separately**), run group by group. Each run is written to
+  `cala-results/runs/<run id>/` and indexed in `cala-results/cala-project.json`
+  (schema version 1: sessions, append-only runs, results with a current flag
+  and the id space their cell ids belong to), updated as each session
+  finishes. The index is validated on read and rebuilt from the run folders
+  when missing or damaged, including results trees written by multi-session
+  runs before projects; renamed session folders are matched by start time
+  and frame count. **Set current** picks an older result. Chrome and Edge
+  list recent projects for one-click reopening. A folder of several animals
+  is offered as one project per animal. See `apps/cala/docs/projects.md`.
+
+- Cala: a split-half merge rule (`MergeRule::SplitHalf`,
+  `qc_eval --merge-rule legacy|split-half`). A pair of
+  cells whose footprints overlap less than half merges only when the
+  held-out test accepts it _and_ the two cells' running footprint estimates
+  have the same shape within their own split-half noise (the refine gate's
+  `Î ≤ 0`, applied both ways on the union support). On static sims
+  distinct-cell merges fall 64 % while 90 % of true-duplicate merges are
+  kept, with P8, R8 and r_fp flat. On real data merges fall about 70 %,
+  late merges about 80 %, and seed-to-seed Jaccard rises from .711 to .757
+  (`tools/cala-eval/results/2026-11-13-merge-rule.md`); it is now the
+  default (see Changed). Diagnostics: `qc_eval --merge-log` writes one JSON
+  line per merge test.
+- Cala: multi-session runs. Pick a parent folder and every recording folder in
+  it (any depth; Miniscope V4 `date/time/My_V4_Miniscope/` and `msCam` layouts)
+  becomes a session; **Multi-session run** and **Add session** build the list by
+  hand. The list shows each session's frames, frame rate, size and recording
+  start (from `metaData.json`), is ordered by start time (else by path), and can
+  be reordered and trimmed. Sessions must share size and bit depth; a different
+  frame rate is a warning. Two library modes: **Joint** (one library through
+  all sessions, the same cell ids in each) and **Separate** (a library per
+  session). The run is automatic (Discover, the chosen Refine runs, Extract) and
+  writes each session's results when they are final to a `cala-results` tree
+  next to the data that mirrors the session paths: `cala-export.npz`,
+  `cala-session.json` and a run manifest `cala-run.json`. Chrome and Edge write
+  into the folder (a new timestamped folder if `cala-results` exists); other
+  browsers download one zip. Session boundaries are recorded in the event log
+  and marked on the History plots and the cell trace; the engines call a
+  no-op `onSessionBoundary` hook there. Boundary handling itself is unchanged.
+  A single recording folder opens as before.
+- Cala: recordings named `msCam0.avi, msCam1.avi, ...` (older Miniscope DAQ
+  software), zero-padded (`msCam001.avi`) or with another prefix now open, not only
+  `0.avi, 1.avi, ...`. Videos are grouped into numbered series per folder; a
+  `behavCam` series beside `msCam` is skipped automatically, and when several
+  plausible series remain the open screen lists them to pick from. Numbering
+  warnings use the real file names. Files chosen individually open in natural order
+  even when not numbered. `metaData.json` and `timeStamps.csv` are still read from
+  the chosen series' folder.
+
+### Fixed
+
+- Cala: Refine no longer pauses at every library publish, and no longer slows
+  as the run goes on. Each publish (every 100 frames) rebuilt the library's
+  solve terms (the Gram and ring couplings of every cell pair) from scratch,
+  although a Refine publish changes 2 to 5 footprints out of hundreds. On a
+  4-session Samara Joint run (411 cells) that took about 200 ms of slow-worker
+  time per publish, growing with the footprints, and Refine, which never drops
+  a frame, waited for it: 704 pauses over 150 ms (161 s of a 479 s Refine). A
+  rebuild now copies the pair terms of unchanged cells from the previous
+  library and computes only those of changed cells, and the glow flattener's
+  vertical pass skips all-zero columns (most of a canvas when the build
+  filters a few footprints). Both are exact: library bytes, footprints and
+  traces are bit-identical (new tests; `qc_eval` with a Refine pass writes
+  byte-identical outputs). Same run: publish 197 ms to 36 ms
+  mean, pauses 704 to 2, Refine 149 to 161 frames/s, flat over the run. The
+  Refine plots now get the run's series at most 4 times a second (the tracker
+  still takes every batch and the logged series is unchanged), so the main
+  thread's cost per batch no longer grows with the replay.
+
+- Cala: "frame N has non-finite pixels under cell M" no longer stops Refine or
+  Extract. The cause was the trace solver diverging, not bad pixels: under the
+  ring background, a large footprint at the FOV edge whose own moat fills its
+  clipped ring kept a small positive curvature (`ã_iᵀã_i − s_i q_ii` at 1% of
+  `ã_iᵀã_i`, with `s_i` = −116), while the same `s_i` scaled its ring couplings
+  to its neighbours to ~10. Projected SOR then grew ~11x per sweep, the traces
+  reached inf within one frame (the Discover residual read 4e30), and the next
+  frame with missing pixels was filled with NaN, which the solve rejects. The
+  rule that already took the self term out of the ring level when the
+  curvature went negative now applies below half of `ã_iᵀã_i` (the cell's level
+  comes from its ring without its own term), and a library read from bytes is
+  repaired the same way, so libraries saved before the fix also solve. Seen in
+  Joint runs on stitched sims in the browser; intermittent because the cell
+  depends on the run's library. Other cells' terms are unchanged.
+
+- Cala: a multi-session run whose results go to a zip download (no folder
+  picked, or no File System Access API) no longer keeps every session's
+  export in memory after the download until the next run starts (about
+  65 MB per 10-minute session; 180 MB after a 3-session Joint run).
+
+- Cala: sessions and projects pick only Miniscope folders, read from the
+  Miniscope metadata. A behaviour camera writes the same numbered `.avi` files
+  as a Miniscope, and discovery used to tell them apart by name only (a `behav*`
+  folder or prefix): a camera folder named otherwise made the app ask which
+  series to use, and a dual-Miniscope rig or a Miniscope folder renamed between
+  days made the user pick one Miniscope kind and lost the others. Discovery now
+  reads the experiment `metaData.json` (`"miniscopes"` / `"cameras"`), else the
+  device's own `metaData.json` (`deviceType`, or an `ewl` field), and keeps only
+  Miniscope folders; each Miniscope of a session is its own row. Without
+  metadata it works by name as before, and the series chooser marks a folder
+  it takes for a behaviour camera.
+
+- Cala: Refine's QC. Refine runs no QC monitor, so after a Refine the Cell QC
+  table still showed Discover's last snapshot: peak SNR over each cell's last
+  60 s of Discover (the pre-#385 numbers), lower than the whole-session SNR
+  shown after Extract. Refine now keeps its replay's traces (a trace file, as
+  Extract does) and, before it reports done, recomputes the trace statistics
+  over the whole recording with the same function as after Extract
+  (`extract-qc.ts`), replacing the shown snapshot. While Refine runs the table
+  still shows the previous numbers. If there is no room for the traces, or the
+  replay solves other cells than it started with, Refine runs without the QC
+  and says so in the console.
+
+- Cala: exports now hold the run's History bins and event log
+  (`history_L{k}`, `run_events_json`). The writer supported them since format
+  2, but neither the Export button nor the multi-session and project runs
+  passed them in.
+- Cala: the app's slow loop now gets the fast loop's per-cell ring-background
+  levels with each frame's traces, in Discover and in Refine. Before, the slow
+  worker observed the traces only, so the ledger and the footprint statistics
+  kept each cell's local background, and the app did not run the slow loop that
+  `qc_eval` evaluates. `TraceEngine.lastBackground()` is new, and
+  `SlowLoop.observe` takes an optional `background`. The measured effect of the
+  mismatch is within run-to-run noise (`qc_eval --no-bg-levels`,
+  `tools/cala-eval/results/2026-11-13-app-background-levels.md`).
+- Cala: QC after Extract. Refine and Extract run no QC monitor, so the app
+  showed and exported the QC of Discover's last minute: a clean cell that was
+  quiet then failed on a low peak SNR, and in a Joint run every session's
+  export carried the same QC (the end of the last session). After Extract the
+  trace statistics (peak SNR, events, the low-SNR flag) are now recomputed on
+  the extracted traces over the **whole session** (each session's own span in
+  a multi-session export), with the monitor's own function; the pass rule
+  (peak SNR ≥ 5, no likely duplicate) is unchanged. Every QC duration is now
+  seconds × the recording's frame rate (`QcConfig::for_fps`; identical at
+  20 Hz). On real data the whole-session SNR passes 70 of 71 cells that failed
+  on Discover's last minute and ranks cells against Minian far better (AUC
+  .64 → .80); see `tools/cala-eval/results/2026-11-13-qc-snr.md`.
+
+### Changed
+
+- Cala: the right-hand column is one row of tabs under a run strip. The strip,
+  always in view, shows the stage running (Discover, Refine, Extract, or the
+  setup), its progress and frame rate, pause and stop or cancel, and the
+  session in a multi-session run ("Session 3/8"); idle, what ran last and the
+  cell count. Below it: **Run**, **Cell**, **QC**, **History**, **Flat field**,
+  **Timing**, **Raw file** and **Recording** (View results: **Result** in place
+  of Run, no Timing or Raw file), one panel at a time with the column's whole
+  height, so the cell viewer no longer competes with the other panels for
+  room. Selecting
+  a cell opens the Cell tab; the tab is remembered per viewer (localStorage);
+  arrow keys, Home and End move between tabs (the shared `TabStrip` now has
+  one tab stop and links each tab to its panel). Hidden panels stop drawing;
+  Run, Cell and Raw file stay mounted to keep their state, and the QC table's
+  sort and filter outlive its tab. The cell's Trace / Demixing tabs became a
+  switch, so there is one tab row. A visual polish pass on the column: the
+  tab labels share the panel's left edge, the trace overview draws a faint
+  track for the whole session, the captions around the trace lose the margins
+  that opened a band above the plot (it gains about 30 px), the cell's metrics
+  stay beside their labels on a wide column, its captions keep a readable
+  measure, and the cell header buttons and Run/QC checkboxes match the small
+  controls and readouts around them.
+  Line plots in the column (the cell's trace and Demixing, History, the Run
+  tab's convergence and Refine plots) are sized by their width, 3.5:1 within
+  140-260 px (`plotHeight`), instead of stretched to the panel: a tall axis
+  is harder to read, and the spare height stays empty. The expanded History
+  caps at 340 px.
+
+- Cala: the tab uses about 0.3-0.5 GB less memory, with identical results.
+  Measured on one 600 x 600, 17,878-frame Miniscope session (Discover,
+  Refine, Extract): the tab's footprint averaged 2.14 GB and peaked at
+  2.40 GB during Discover before; 1.66 GB and 1.95 GB now. On a 3-session
+  Joint run (53,632 frames) Discover averaged 2.36 GB before and 1.88 GB
+  now, Refine 2.52 GB and 2.13 GB. Three changes:
+  the motion warm-up keeps its 200 filtered frames in one exact-size
+  allocation each instead of one doubling `Vec`, whose reallocation left the
+  motion worker's WASM heap (which never shrinks) at 370 MB instead of
+  162 MB; a visit worker drops a tile's background basis after each visit
+  (a pure function of the tile, rebuilt on the next visit) instead of
+  ending up with every tile's, about 30 MB per visit worker; and workers
+  release consumed buffers (visit jobs and results, raw batches for the
+  flat field) at once with `ArrayBuffer.prototype.transfer(0)` instead of
+  leaving them to the next garbage collection, which in workers with tiny
+  JS heaps came rarely (dead buffers averaged about 200 MB across the
+  workers). Frame rates are unchanged. Every thread that loads the WASM
+  module now answers `globalThis.__calaWasmHeapBytes()` (its WASM heap
+  size), for memory measurements over DevTools.
+
+- Cala: Refine replays the recording pipelined. It used to keep at most one
+  batch ahead of the slow loop, so the three pipeline workers ran one batch at
+  a time (Refine at about half Extract's frame rate). It now keeps up to four
+  batches ahead (`REFINE_SLOW_LEAD`); the forward pool of a Refine run never
+  drops a batch (lossless `ForwardPool`), so the slow loop still observes
+  every frame in order. In a Refine run with visit workers, a batch also gives
+  way between frames while a visit is out, so visit results are applied and
+  new visits handed out without waiting for the batch. Refine on the 600 x 600
+  sim (2000 frames, M-series, Metal): 139–146 fps before, 152–165 after (with
+  the idle-visit change, 177–180). Visits per frame are compute-dependent in
+  the app; with this change a Refine run makes about 20–35 % more visits per
+  frame than before (and more refines per run). Refine's per-run work thus
+  depends on machine speed, as Discover's does (PI decision, 13 Nov 2026).
+  Discover is unchanged.
+- Cala: in a Refine run with visit workers, the tile visits that would not
+  refine (every other visit of a tile: Refine makes no adds, merges or keep
+  tests) are made by the slow worker when they are due instead of being
+  shipped to a visit worker with the tile's whole reservoir. About half the
+  jobs of a Refine run, and the slow worker's time to hand them out and apply
+  them, are gone. The footprints are the same, bit for bit
+  (`refine_makes_idle_visits_at_hand_out_without_changing_footprints`).
+- Cala: the split-half merge rule is the default (`MergeRule::SplitHalf`).
+  Two cells whose footprints overlap less than half now merge only when the
+  held-out test accepts the merge and their measured shapes agree within
+  their own split-half noise; a pair with a young cell (no split halves yet)
+  is decided by the held-out test alone, as before. Distinct-cell merges fall
+  64 % (static sims), 52 % (4× budget) and 67 % (motion), true duplicates are
+  kept, and real seed-to-seed footprint agreement rises (Jaccard .711 →
+  .757); false duplicate cells rise slightly (+1.3 to +2.4 per sim run, within
+  noise). `qc_eval --merge-rule legacy` keeps the old rule
+  (`tools/cala-eval/results/2026-11-13-merge-rule.md`).
+- Cala: for recordings, "Extract after Discover" is now off by default, so a Discover, Refine, Extract flow no longer wastes an Extract run that Refine discards. After Discover the panel shows the Refine and Extract buttons with the hint "Refine to let footprints settle, then Extract final traces." Turning the option on keeps the old behaviour. Live streams are unchanged.
+- Cala: opening a folder uses the File System Access picker (`showDirectoryPicker`, read-only) in Chrome and Edge, whose prompt says "view files" instead of the misleading "Upload N files to this site". Firefox and Safari keep the `webkitdirectory` input. The start page now says files are read locally and never leave the computer.
+
+### Developer tooling
+
+- Cala: `apps/cala/scripts/memory-measure.mjs` runs a recording through the
+  app headless and samples the tab's memory over time per thread (JS heap,
+  ArrayBuffers and WASM heap of the main thread and every worker over CDP,
+  plus the renderer's and GPU process's footprint), then forces a GC and
+  samples again. The results zip is a download into `--out`, never written
+  into the data folder.
+
+- cala-eval: `qc_eval` scores motion runs against ground truth in cala's
+  registered frame. cala registers to its warm-up template, which sits 1 to
+  3.3 px from the sim's tissue frame on the motion sims, and the GT was never
+  moved. The offset is measured from cala's rigid records against the sim's
+  true shifts (`<sim>/shifts.npy`, `export_gt_motion.py`; reported in
+  `motion_offset.tsv`), and the GT footprints are moved by it before scoring.
+  `size6_motion` P8/R8 go from .17/.18 to .89/.94; 10–14 px arms change by
+  under .02 in P8/R8 and gain about .024 in `r_fp`. Rescored, no earlier
+  paired conclusion changes (support rule, refine gate, merge veto). Also
+  `--gt-offset none`, `--rescore RUN` (rescore a `--churn-log` run offline) and
+  a `unit` column in `gt.tsv`
+  (`tools/cala-eval/results/2026-11-13-motion-offset.md`).
+
+## [2.17.0] - 2026-11-13
+
+Web apps `v2.17.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Cala's slow loop now publishes a footprint refinement only when the change
+exceeds the footprint estimate's own split-half noise, cutting late refines by
+about a third with no loss in final quality. Two opt-in features arrive for
+long sessions: windowed low-rank compression of the frame stream, and a
+history review that searches the compressed history for missed cells.
+
+### Changed
+
+- Cala: the split-half refine gate is the default (`RefineGate::SplitHalf`,
+  #365, #367). The slow loop's statistics path now proposes a refinement only
+  when the change from the current footprint exceeds the estimate's own
+  split-half noise (`Î > 0`), instead of the χ² disagreement test and
+  `refine_min_change`. Late real-data refines fall 37 %, every quality gate
+  holds and seed-to-seed footprint agreement rises (Jaccard .697 → .711). The
+  reservoir path, absorbs and merges are unchanged. `qc_eval --refine-gate
+legacy` keeps the old rule
+  (`tools/cala-eval/results/2026-11-12-refine-gate.md`).
+
+### Added
+
+- Cala (opt-in, `?compress`): windowed low-rank compression of the frame
+  stream (#307). Each 64 px tile is compressed per 600-frame window to its mean
+  plus a low-rank factorization (randomized SVD, rank cut by lag-1
+  autocorrelation) in a worker of its own. The factors are kept in browser
+  storage (OPFS) for the session, and at the end of a run traces are
+  back-filled from them. The run panel shows the compression readout. Off by
+  default.
+- Cala (opt-in, `?compress&review`): a history review that looks through the
+  session's compressed history for cells the slow loop missed (#354). Every N
+  compressed windows (`review=N`, default 8) a worker scans the factors, and
+  candidates are added to the slow loop on probation like any add. It needs
+  `?compress` and is off without it. The slow loop's visit wire format tag is
+  now `VIS7`.
+
+### Developer tooling
+
+- cala-eval: `qc_eval` scale flags (`--cell-diameter`, `--psf-sigma`,
+  `--flatten-sigma`, `--tile-px`, `--margin-px`, `--bin`), a
+  `SlowLoopConfig::psf_sigma_px` field (default unchanged), and offline scale
+  estimators (`fp_scales.py`, `probe_scale.py`) with the S2.4 M0 results
+  (`tools/cala-eval/results/2026-11-12-scales-m0.md`, #366).
+- cala-eval: the 5-pass real refine-only check of BasinSkirt
+  (`tools/cala-eval/results/2026-11-12-skirt-stability.md` §5, #364).
+- Dependencies: pyo3 0.30 for cala's Python bindings (#275), jsdom 31 (#362),
+  lint and build toolchain patches (#361), CI action patch (#363).
+
+## [2.16.0] - 2026-11-12
+
+Web apps `v2.16.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Cala measures each footprint's extent from where its own light is significant,
+which stops footprints from growing without bound and removes textured
+artifact cells.
+
+### Changed
+
+- Cala: a footprint's pixel support is now measured where its own light is
+  significant, in the single-peaked basin around its peak, with a skirt that
+  carries the measured light on the rest of the statistics disk
+  (`SupportRule::BasinSkirt`, #344). It replaces the ring rule as the default
+  in the app and in `qc_eval`/`discover_eval`. In repeated refine-only passes
+  footprints no longer run away (largest after 3 passes about 1.2k px instead
+  of up to 320k px), and real-data texture stays at 0. `--support-rule rings`
+  keeps the old rule for comparisons (`tools/cala-eval/results/2026-11-12-skirt-stability.md`).
+
+### Developer tooling
+
+- cala-eval: simulations use minisim 1.1.0, whose `detectable` flag is a
+  matched-filter SNR over the footprint and the session (threshold calibrated
+  where cala's cell size matches); sims' ground truth recomputed (#355).
+
 ## [2.15.0] - 2026-11-12
 
 Web apps `v2.15.0`; the Python package `calab` is unchanged (`py/v0.5.0`).

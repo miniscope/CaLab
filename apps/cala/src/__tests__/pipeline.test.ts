@@ -55,6 +55,28 @@ describe('pipeline plan', () => {
     expect(cursor.next()).toBeNull();
   });
 
+  it('cuts process batches at session boundaries, so each session starts a batch', () => {
+    const plan = makePlan(
+      30,
+      { batchSize: 8, calibrationFrames: 4, motionWarmupFrames: 4 },
+      [13, 13, 0, 40, 21],
+    );
+    expect(plan.boundaries).toEqual([13, 21]);
+    const c = new PipelineCursor(plan);
+    const process: [number, number][] = [];
+    for (let s = c.next(); s; s = c.next())
+      if (s.phase === 'process') process.push([s.start, s.count]);
+    expect(process).toEqual([
+      [0, 8],
+      [8, 5],
+      [13, 8],
+      [21, 8],
+      [29, 1],
+    ]);
+    // Warm-ups are not cut.
+    expect(makePlan(30, {}, [3]).boundaries).toEqual([3]);
+  });
+
   it('processes each frame exactly once, in order, never more than a batch at a time', () => {
     const plan = makePlan(1001, { batchSize: 7 });
     const process = walk(new PipelineCursor(plan)).filter((s) => s.phase === 'process');
@@ -192,6 +214,30 @@ describe('pipeline store backpressure', () => {
       store.stop();
       expect(store.processed()).toBe(0);
       expect(store.stageMs().motionMs).toBe(0);
+      dispose();
+    });
+  });
+
+  it('offers the look-back toggle when the feed says nothing blocks it', () => {
+    const { client } = manualClient();
+    createRoot((dispose) => {
+      let why: string | null = null;
+      const feed = {
+        blocked: () => why,
+        begin: () => true,
+        rows: () => {},
+        backState: () => {},
+        flatField: () => {},
+        reset: () => {},
+      };
+      const args = [undefined, undefined, undefined, undefined, {}, undefined, undefined] as const;
+      const store = createPipelineStore(client, {}, ...args, feed);
+      expect(store.lookbackBlocked()).toBeNull();
+      why = 'Open a recording first.';
+      expect(store.lookbackBlocked()).toBe('Open a recording first.');
+      expect(createPipelineStore(client).lookbackBlocked()).toBe(
+        'Look-back is not available here.',
+      );
       dispose();
     });
   });

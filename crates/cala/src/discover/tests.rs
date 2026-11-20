@@ -770,6 +770,23 @@ fn a_cell_on_diffuse_light_is_still_deleted() {
     assert_eq!(n, 1, "{stats:?}");
 }
 
+// ---- history review (compress/review.rs) -------------------------------------
+
+#[test]
+fn reviewed_candidates_are_added_as_new_cells_on_free_spots() {
+    let (mut slow, _eng) = start(v2_config(), &[blob(1, 30.0, 30.0)]);
+    // One candidate on empty tissue, one on the seeded cell.
+    let added = slow
+        .add_reviewed(&[blob(0, 60.0, 60.0), blob(0, 31.0, 30.0)])
+        .unwrap();
+    assert_eq!(added, 1);
+    assert_eq!(slow.stats().review_adds, 1);
+    let lib = slow.finalize().unwrap();
+    assert_eq!(lib.len(), 2);
+    assert!(lib.ids().contains(&1) && lib.ids().iter().all(|&id| id >= 1));
+    assert!(centres(&lib).iter().any(|&c| near(c, 60.0, 60.0)));
+}
+
 // ---- parallel visits (shard.rs) ---------------------------------------------
 
 /// A movie with something for every edit: cells to add, a duplicate pair
@@ -890,6 +907,8 @@ fn visits_run_as_jobs_match_step_exactly() {
     assert_eq!(a.work(), b.work());
     assert_eq!(a.cell_infos(), b.cell_infos());
     assert_eq!(a.churn_counts(), b.churn_counts());
+    // The runner rebuilds each tile's background basis per visit, so it holds none between jobs.
+    assert_eq!(runner.cached_bases(), 0);
     // (NaN fields: compare as text.)
     assert_eq!(
         format!("{:?}", a.take_add_log()),
@@ -1369,4 +1388,1865 @@ fn a_refine_only_scope_freezes_the_cell_set() {
         after.visits > before.visits && after.work_refine > before.work_refine,
         "{before:?} -> {after:?}"
     );
+}
+
+// ---- S2.1: the support rule ------------------------------------------------
+
+/// A library cell's filtered column at global pixel `g`: the support
+/// values, `−low` of the pixel's block off it, 0 beyond the moat.
+fn lib_column_at(lib: &Library, slot: usize, g: u32) -> f32 {
+    let (pix, val) = lib.filtered(slot);
+    if let Ok(k) = pix.binary_search(&g) {
+        return val[k];
+    }
+    let b = lib.block_px();
+    if b == 0 {
+        return 0.0;
+    }
+    let (y, x) = (g as usize / N, g as usize % N);
+    let bq = ((y / b) * N.div_ceil(b) + x / b) as u32;
+    let (blk, low) = lib.lowpass(slot);
+    blk.binary_search(&bq).map_or(0.0, |k| -low[k])
+}
+
+/// A cell of `blob` (σ 2.5 px) cut to `r` px, centre (40, 44), on a disk of
+/// 8 px with a ring of zero values, and a skirt on four blocks.
+fn skirt_cell(skirt: &[(u32, f32)]) -> Cell {
+    let fp = blob(9, 40.0, 44.0);
+    let rect = Rect {
+        y0: fp.y0,
+        x0: fp.x0,
+        h: fp.height,
+        w: fp.width,
+    };
+    let mut a = fp.values.clone();
+    for y in 0..rect.h {
+        for x in 0..rect.w {
+            let (dy, dx) = ((rect.y0 + y) as f32 - 40.0, (rect.x0 + x) as f32 - 44.0);
+            if dy * dy + dx * dx > 25.0 {
+                a[y * rect.w + x] = 0.0;
+            }
+        }
+    }
+    // A single far pixel keeps zeros inside the support disk.
+    a[0] = 1e-3;
+    let mut f = LocalFilter::new(flattener().sigma());
+    Cell::from_canvas(
+        9,
+        rect,
+        &a,
+        dims(),
+        &vec![1u8; N * N],
+        &LibraryConfig::default(),
+        Extent::Given,
+        &mut f,
+        skirt,
+    )
+    .unwrap()
+}
+
+/// The skirt is the same block-constant field on the complement of the
+/// support in the slow loop's cell and in the published library (and in
+/// its bytes): zero on `S`, `skirt_b` on zero-valued disk pixels and off
+/// the disk.
+#[test]
+fn library_skirt_matches_slow_loop_column() {
+    let b = LocalFilter::new(flattener().sigma()).moat().unwrap().0;
+    let gw = N.div_ceil(b) as u32;
+    let blk = |y: u32, x: u32| (y / b as u32) * gw + x / b as u32;
+    let mut skirt = vec![
+        (blk(40, 44), 0.03f32),
+        (blk(40, 56), 0.02),
+        (blk(30, 44), -0.01),
+        (blk(56, 60), 0.015),
+    ];
+    skirt.sort_by_key(|s| s.0);
+    let plain = skirt_cell(&[]);
+    let cell = skirt_cell(&skirt);
+    assert!(plain.raw.contains(&0.0), "the disk has zero-valued pixels");
+    assert_eq!(
+        cell.skirt_blk,
+        skirt.iter().map(|s| s.0).collect::<Vec<_>>()
+    );
+    let build = |c: &Cell, sk: bool| {
+        let mut bld = LibraryBuilder::new(dims());
+        if sk {
+            bld.push_disk_skirt(c.footprint(dims()), c.center, c.radius, skirt.clone());
+        } else {
+            bld.push_disk(c.footprint(dims()), c.center, c.radius);
+        }
+        bld.build(&mut flattener()).unwrap()
+    };
+    let (lp, ls) = (build(&plain, false), build(&cell, true));
+    assert_eq!(ls.skirt(0).0, cell.skirt_blk.as_slice());
+    // Bytes: CALALIB3 without a skirt, CALALIB4 with one; both round-trip.
+    assert_eq!(&lp.to_bytes()[..8], b"CALALIB3");
+    assert_eq!(&ls.to_bytes()[..8], b"CALALIB4");
+    let back = Library::from_bytes(&ls.to_bytes()).unwrap();
+    assert_eq!(back.skirt(0), ls.skirt(0));
+    let in_s: std::collections::HashSet<u32> = cell
+        .pix
+        .iter()
+        .zip(&cell.raw)
+        .filter(|(_, &v)| v > 0.0)
+        .map(|(&g, _)| g)
+        .collect();
+    // The skirt as unfiltered light `u` (block-constant outside `S`); the
+    // column of the footprint with a skirt is `H (a + u)`, so the skirt
+    // adds `u − L u`: on the disk exactly, off it at block resolution.
+    let field: Vec<f32> = (0..(N * N) as u32)
+        .map(|g| {
+            let (y, x) = (g / N as u32, g % N as u32);
+            if in_s.contains(&g) {
+                0.0
+            } else {
+                skirt.iter().find(|s| s.0 == blk(y, x)).map_or(0.0, |s| s.1)
+            }
+        })
+        .collect();
+    let mut lu = vec![0.0f32; N * N];
+    LocalFilter::new(flattener().sigma()).blur(N, N, &field, &mut lu);
+    // The library is built with the flattener, which matches the local
+    // filter in the FOV interior only; this 96 px frame (σ = 20 px) has no
+    // interior, so the plain column's own gap bounds the skirt's.
+    let gap = (0..(N * N) as u32)
+        .map(|g| (lib_column_at(&lp, 0, g) - plain.column_at(g, N, b)).abs())
+        .fold(0.0f32, f32::max);
+    let (mut on_zero, mut off_disk) = (0, 0);
+    for g in 0..(N * N) as u32 {
+        let (y, x) = (g / N as u32, g % N as u32);
+        let d_cell = cell.column_at(g, N, b) - plain.column_at(g, N, b);
+        let d_lib = lib_column_at(&ls, 0, g) - lib_column_at(&lp, 0, g);
+        let d_back = lib_column_at(&back, 0, g) - lib_column_at(&lp, 0, g);
+        assert_eq!(d_back.to_bits(), d_lib.to_bits(), "bytes at ({y}, {x})");
+        assert!(
+            (d_lib - d_cell).abs() <= gap,
+            "library at ({y}, {x}): {d_lib} vs cell {d_cell} (gap {gap})"
+        );
+        let on_disk = cell.pix.binary_search(&g).is_ok();
+        if on_disk {
+            let want = field[g as usize] - lu[g as usize];
+            assert!(
+                (d_cell - want).abs() < 1e-5,
+                "disk ({y}, {x}): {d_cell} vs {want}"
+            );
+        }
+        if field[g as usize] != 0.0 {
+            if on_disk {
+                on_zero += 1;
+            } else {
+                off_disk += 1;
+            }
+        }
+    }
+    assert!(on_zero > 0 && off_disk > 0, "{on_zero} {off_disk}");
+}
+
+/// Visit jobs carry the split halves (with per-pixel moments) and the
+/// cells' skirts.
+#[test]
+fn wire_round_trips_halves_and_skirt() {
+    let skirt = [(10u32, 0.02f32), (11, -0.01)];
+    let mut cell = skirt_cell(&[]);
+    cell.skirt_blk = skirt.iter().map(|s| s.0).collect();
+    cell.skirt = skirt.iter().map(|s| s.1).collect();
+    let mut w = wire::Writer::default();
+    w.cell(&cell);
+    let back = wire::Reader::new(&w.buf).cell().unwrap();
+    assert_eq!(back.skirt_blk, cell.skirt_blk);
+    assert_eq!(back.skirt, cell.skirt);
+    assert_eq!(back.low, cell.low);
+    for missing in [false, true] {
+        let mut st = fpstats::FpStats::new((8.0, 8.0), 6.0, 17, 17, &[1u8; 289], false, 5);
+        let m = st.pix.len();
+        let mut rng = Lcg(5);
+        for t in 0..1100usize {
+            let c = rng.next() + 0.5;
+            let r: Vec<f32> = (0..m)
+                .map(|i| {
+                    if missing && (i + t).is_multiple_of(9) {
+                        f32::NAN
+                    } else {
+                        0.1 * i as f32 * c + rng.normal()
+                    }
+                })
+                .collect();
+            st.push(&r, [c, c], c, 1.0);
+        }
+        let mut w = wire::Writer::default();
+        w.fpstats(&st);
+        let back = wire::Reader::new(&w.buf).fpstats().unwrap();
+        assert_eq!(back.half_pm.is_some(), missing);
+        assert_eq!(
+            format!("{:?}", st.halves()),
+            format!("{:?}", back.halves()),
+            "missing {missing}"
+        );
+        assert!(st.halves().is_some());
+    }
+}
+
+/// A loop on a `side`² frame (full FOV, unit noise) under `rule`.
+fn basin_loop(side: usize, rule: SupportRule) -> SlowLoop {
+    let d = Dims::new(side, side).unwrap();
+    let cfg = FlattenConfig {
+        cell_diameter_px: 10.0,
+        ..FlattenConfig::default()
+    };
+    let flat = GlowFlattener::new(&FovMask::full(d), &cfg).unwrap();
+    SlowLoop::new(
+        d,
+        vec![1; side * side],
+        vec![1.0; side * side],
+        flat,
+        SlowLoopConfig {
+            support_rule: rule,
+            ..config()
+        },
+    )
+    .unwrap()
+}
+
+/// Gaussian of σ `s` (and σ `s * e` along x) at `(cy, cx)`, peak `amp`, on
+/// a `side`² frame.
+fn gauss(side: usize, cy: f32, cx: f32, s: f32, e: f32, amp: f32) -> Vec<f32> {
+    (0..side * side)
+        .map(|i| {
+            let (dy, dx) = ((i / side) as f32 - cy, ((i % side) as f32 - cx) / e);
+            amp * (-(dy * dy + dx * dx) / (2.0 * s * s)).exp()
+        })
+        .collect()
+}
+
+/// Spatially correlated unit-variance noise: white noise blurred at 2 px.
+fn corr_noise(side: usize, rng: &mut Lcg) -> Vec<f32> {
+    let white: Vec<f32> = (0..side * side).map(|_| rng.normal()).collect();
+    let mut out = vec![0.0f32; side * side];
+    LocalFilter::new(2.0).blur(side, side, &white, &mut out);
+    let k = (4.0 * std::f32::consts::PI * 4.0).sqrt();
+    out.iter_mut().for_each(|v| *v *= k);
+    out
+}
+
+/// The disk of radius `r` around `(cy, cx)` on a `side`² frame (global
+/// pixels, the mask on the full-frame canvas).
+fn disk_mask(side: usize, cy: f32, cx: f32, r: f32) -> (Vec<u32>, Vec<bool>) {
+    let mask: Vec<bool> = (0..side * side)
+        .map(|i| {
+            let (dy, dx) = ((i / side) as f32 - cy, (i % side) as f32 - cx);
+            dy * dy + dx * dx <= r * r
+        })
+        .collect();
+    let pix = (0..side * side)
+        .filter(|&i| mask[i])
+        .map(|i| i as u32)
+        .collect();
+    (pix, mask)
+}
+
+fn full(side: usize) -> Rect {
+    Rect {
+        y0: 0,
+        x0: 0,
+        h: side,
+        w: side,
+    }
+}
+
+/// The filtered truth `H a` of an unfiltered footprint on the full frame.
+fn filtered(side: usize, a: &[f32]) -> Vec<f32> {
+    let mut out = vec![0.0f32; side * side];
+    LocalFilter::new(flattener().sigma()).apply(side, side, a, &mut out);
+    out
+}
+
+/// One noisy measurement of `truth` with per-pixel noise `se` (correlated
+/// at 2 px): `(h, (h_A, h_B, s_A, s_B))`, the halves independent with twice
+/// the variance and `h` their mean.
+fn measure(truth: &[f32], se: f32, rng: &mut Lcg) -> (Vec<f32>, (Vec<f32>, Vec<f32>, f64, f64)) {
+    measure_with(truth, se, rng, true)
+}
+
+/// [`measure`], with white noise when `!correlated`.
+fn measure_with(
+    truth: &[f32],
+    se: f32,
+    rng: &mut Lcg,
+    correlated: bool,
+) -> (Vec<f32>, (Vec<f32>, Vec<f32>, f64, f64)) {
+    let side = (truth.len() as f64).sqrt() as usize;
+    let s2 = se * std::f32::consts::SQRT_2;
+    let noise = |rng: &mut Lcg| -> Vec<f32> {
+        if correlated {
+            corr_noise(side, rng)
+        } else {
+            (0..side * side).map(|_| rng.normal()).collect()
+        }
+    };
+    let na = noise(rng);
+    let nb = noise(rng);
+    let ha: Vec<f32> = truth.iter().zip(&na).map(|(t, n)| t + s2 * n).collect();
+    let hb: Vec<f32> = truth.iter().zip(&nb).map(|(t, n)| t + s2 * n).collect();
+    let h = ha.iter().zip(&hb).map(|(a, b)| 0.5 * (a + b)).collect();
+    (h, (ha, hb, f64::from(s2), f64::from(s2)))
+}
+
+/// Pixels of `set` farther than 1 px (8-neighbourhood) from `lobe`.
+fn outside_lobe(side: usize, set: &[bool], lobe: &[bool]) -> usize {
+    (0..side * side)
+        .filter(|&p| {
+            set[p] && {
+                let (y, x) = ((p / side) as i64, (p % side) as i64);
+                !(-1i64..=1).any(|dy| {
+                    (-1i64..=1).any(|dx| {
+                        let (yy, xx) = (y + dy, x + dx);
+                        yy >= 0
+                            && xx >= 0
+                            && (yy as usize) < side
+                            && (xx as usize) < side
+                            && lobe[yy as usize * side + xx as usize]
+                    })
+                })
+            }
+        })
+        .count()
+}
+
+/// The declared error rate holds in spatially correlated noise because the
+/// inflation φ is measured from the halves: a planted cell's basin leaves
+/// its true positive lobe (by more than 1 px) in at most 3 α of 200
+/// constructions; with φ forced to 1 (identical halves) it leaves it in
+/// most of them.
+#[test]
+fn basin_support_holds_the_declared_error_rate() {
+    let side = 64;
+    let mut slow = basin_loop(side, SupportRule::Basin);
+    let alpha = f64::from(slow.cfg.support_alpha);
+    let truth = filtered(side, &gauss(side, 32.0, 32.0, 2.5, 1.0, 12.0));
+    let lobe: Vec<bool> = truth.iter().map(|&v| v > 0.0).collect();
+    let (_, mask) = disk_mask(side, 32.0, 32.0, 24.0);
+    let mut rng = Lcg(77);
+    let reps = 200;
+    let (mut bad, mut bad_phi1, mut phis) = (0, 0, Vec::new());
+    for _ in 0..reps {
+        let (h, halves) = measure(&truth, 1.0, &mut rng);
+        let ms = slow
+            .measured_support(full(side), &h, &mask, &halves, 1.0, None)
+            .expect("the cell is significant");
+        phis.push(ms.phi);
+        bad += usize::from(outside_lobe(side, &ms.s0, &lobe) > 0);
+        let same = (h.clone(), h.clone(), halves.2, halves.3);
+        let m1 = slow
+            .measured_support(full(side), &h, &mask, &same, 1.0, None)
+            .unwrap();
+        assert_eq!(m1.phi, 1.0);
+        bad_phi1 += usize::from(outside_lobe(side, &m1.s0, &lobe) > 0);
+    }
+    phis.sort_by(f64::total_cmp);
+    let limit = (3.0 * alpha * reps as f64).ceil() as usize;
+    assert!(
+        bad <= limit,
+        "{bad} of {reps} constructions left the lobe (limit {limit}); phi median {}",
+        phis[reps / 2]
+    );
+    assert!(
+        bad_phi1 > reps / 2,
+        "phi = 1: only {bad_phi1} of {reps} left the lobe"
+    );
+}
+
+/// A cell with a faint scatter halo (0.04 of its peak, decaying over
+/// 15 px): as frames accumulate (standard error ∝ 1 / sqrt(n)) the basin
+/// support grows toward its limit, the part of the positive lobe of `H a*`
+/// reached from the peak, and never leaves that fixed, finite set; the ring
+/// rule's support (`h + L a`, whose limit is `{a* > 0}`) leaves it.
+#[test]
+fn support_converges_as_frames_accumulate() {
+    let side = 128;
+    let c = 64.0;
+    let a: Vec<f32> = gauss(side, c, c, 2.5, 1.0, 20.0)
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| {
+            let (dy, dx) = ((i / side) as f32 - c, (i % side) as f32 - c);
+            let r = (dy * dy + dx * dx).sqrt();
+            v + 0.8 * (-r / 15.0).exp()
+        })
+        .collect();
+    let truth = filtered(side, &a);
+    let lobe: Vec<bool> = truth.iter().map(|&v| v > 0.0).collect();
+    let (mut sizes, mut outside) = (Vec::new(), Vec::new());
+    for rule in [SupportRule::Basin, SupportRule::Rings] {
+        let mut slow = basin_loop(side, rule);
+        let mut row = Vec::new();
+        for n in [2_000.0f32, 8_000.0, 32_000.0, 128_000.0] {
+            let se = 40.0 / n.sqrt();
+            let mut rng = Lcg(5);
+            let (h, halves) = measure(&truth, se, &mut rng);
+            let (pix, mask) = disk_mask(side, c, c, 48.0);
+            let hp: Vec<f32> = pix.iter().map(|&g| h[g as usize]).collect();
+            let ha: Vec<f32> = pix.iter().map(|&g| halves.0[g as usize]).collect();
+            let hb: Vec<f32> = pix.iter().map(|&g| halves.1[g as usize]).collect();
+            slow.support_tmp = Some((pix.clone(), ha, hb, halves.2, halves.3));
+            let cell = slow
+                .make_cell_global(1, &pix, &hp, None, Some(f64::from(se)))
+                .unwrap();
+            slow.support_tmp = None;
+            let mut s = vec![false; side * side];
+            for (&g, &v) in cell.pix.iter().zip(&cell.raw) {
+                s[g as usize] = v > 0.0;
+            }
+            let out = outside_lobe(side, &s, &lobe);
+            if rule == SupportRule::Basin {
+                assert_eq!(out, 0, "n {n}");
+            } else {
+                outside.push(out);
+            }
+            let _ = &mask;
+            row.push(s.iter().filter(|&&v| v).count());
+        }
+        sizes.push(row);
+    }
+    let (basin, rings) = (&sizes[0], &sizes[1]);
+    let n_lobe = lobe.iter().filter(|&&v| v).count();
+    assert!(
+        basin.windows(2).all(|w| w[0] <= w[1]) && basin[3] <= n_lobe,
+        "basin sizes {basin:?}, lobe {n_lobe}, rings {rings:?}"
+    );
+    assert!(
+        outside[3] > n_lobe,
+        "rings leave the lobe by only {} px (lobe {n_lobe}, rings {rings:?})",
+        outside[3]
+    );
+}
+
+/// Under the skirt rule the moat carries the faint light outside the
+/// support: on a halo cell, the block-mean leftover `h − column` over the
+/// disk outside the support is significant under `Basin` and within noise
+/// under `BasinSkirt`.
+#[test]
+fn skirt_blocks_carry_the_truncated_light() {
+    let side = 96;
+    let c = 48.0;
+    let a: Vec<f32> = gauss(side, c, c, 2.5, 1.0, 20.0)
+        .iter()
+        .zip(gauss(side, c, c, 9.0, 1.0, 1.0))
+        .map(|(&v, w)| v + w)
+        .collect();
+    let truth = filtered(side, &a);
+    let mut worst = Vec::new();
+    for rule in [SupportRule::Basin, SupportRule::BasinSkirt] {
+        let mut slow = basin_loop(side, rule);
+        let b = slow.filter.moat().unwrap().0;
+        let se = 0.2f32;
+        let mut rng = Lcg(11);
+        // White noise: a block sum then averages it down (8 px blocks).
+        let (h, halves) = measure_with(&truth, se, &mut rng, false);
+        let (pix, _) = disk_mask(side, c, c, 30.0);
+        let pick = |v: &[f32]| -> Vec<f32> { pix.iter().map(|&g| v[g as usize]).collect() };
+        slow.support_tmp = Some((
+            pix.clone(),
+            pick(&halves.0),
+            pick(&halves.1),
+            halves.2,
+            halves.3,
+        ));
+        let cell = slow
+            .make_cell_global(1, &pix, &pick(&h), None, Some(f64::from(se)))
+            .unwrap();
+        // The column's scale: least squares on the support.
+        let (mut hc, mut cc) = (0.0f64, 0.0f64);
+        for (&g, &v) in cell.pix.iter().zip(&cell.raw) {
+            if v > 0.0 {
+                let col = f64::from(cell.column_at(g, side, b));
+                hc += f64::from(h[g as usize]) * col;
+                cc += col * col;
+            }
+        }
+        let k = hc / cc;
+        // Leftover z of each moat block that lies wholly inside the disk
+        // and outside the support.
+        let mut z_max = 0.0f64;
+        for by in 0..side / b {
+            for bx in 0..side / b {
+                let (mut sum, mut n, mut ok) = (0.0f64, 0usize, true);
+                for y in by * b..(by + 1) * b {
+                    for x in bx * b..(bx + 1) * b {
+                        let g = (y * side + x) as u32;
+                        let in_s = cell.pix.binary_search(&g).is_ok_and(|k| cell.raw[k] > 0.0);
+                        ok &= pix.binary_search(&g).is_ok() && !in_s;
+                        sum += f64::from(h[g as usize]) - k * f64::from(cell.column_at(g, side, b));
+                        n += 1;
+                    }
+                }
+                if ok {
+                    let sd = f64::from(se) * (n as f64).sqrt();
+                    z_max = z_max.max((sum / sd).abs());
+                }
+            }
+        }
+        worst.push(z_max);
+    }
+    assert!(worst[0] > 3.0, "basin leftover max |z| {:.2}", worst[0]);
+    assert!(worst[1] < 2.0, "skirt leftover max |z| {:.2}", worst[1]);
+}
+
+/// A second soma inside the statistics disk is other significant light:
+/// it is neither in the support nor painted into the skirt, and it is
+/// counted as a second peak.
+#[test]
+fn neighbour_light_is_not_skirt() {
+    let side = 96;
+    let a: Vec<f32> = gauss(side, 48.0, 44.0, 2.5, 1.0, 20.0)
+        .iter()
+        .zip(gauss(side, 48.0, 58.0, 2.5, 1.0, 20.0))
+        .map(|(&v, w)| v + w)
+        .collect();
+    let truth = filtered(side, &a);
+    let mut slow = basin_loop(side, SupportRule::BasinSkirt);
+    let b = slow.filter.moat().unwrap().0;
+    let mut rng = Lcg(3);
+    let (h, halves) = measure(&truth, 0.5, &mut rng);
+    let (pix, _) = disk_mask(side, 48.0, 44.0, 22.0);
+    let pick = |v: &[f32]| -> Vec<f32> { pix.iter().map(|&g| v[g as usize]).collect() };
+    // The current cell (the start): the first soma only.
+    let start = skirt_cell(&[]);
+    let mut start = start;
+    start.pix = vec![(48 * side + 44) as u32];
+    start.raw = vec![1.0];
+    slow.support_tmp = Some((
+        pix.clone(),
+        pick(&halves.0),
+        pick(&halves.1),
+        halves.2,
+        halves.3,
+    ));
+    let seconds = slow.basin_diag.2;
+    let cell = slow
+        .make_cell_global(1, &pix, &pick(&h), Some(&start), Some(0.5))
+        .unwrap();
+    assert_eq!(slow.basin_diag.2, seconds + 1, "second peak counted");
+    let g2 = (48 * side + 58) as u32;
+    assert!(
+        cell.pix
+            .binary_search(&g2)
+            .map_or(true, |k| cell.raw[k] == 0.0),
+        "the neighbour is not in the support"
+    );
+    let near =
+        |g: u32| ((g as usize / side) as f32 - 48.0).hypot((g as usize % side) as f32 - 58.0);
+    assert!(
+        cell.pix
+            .iter()
+            .zip(&cell.raw)
+            .all(|(&g, &v)| v == 0.0 || near(g) > 4.0),
+        "no support pixel within 4 px of the neighbour"
+    );
+    // The neighbour's block carries (almost) none of its light.
+    let bq = ((48 / b) * side.div_ceil(b) + 58 / b) as u32;
+    let sk = cell
+        .skirt_blk
+        .binary_search(&bq)
+        .map_or(0.0, |k| cell.skirt[k]);
+    assert!(
+        sk.abs() < 0.1,
+        "skirt at the neighbour {sk} of the cell's peak"
+    );
+}
+
+/// An elongated (2:1) single cell is one single-peaked basin: the support
+/// keeps all but 2 % of its energy.
+#[test]
+fn elongated_single_cell_is_not_cut() {
+    let side = 96;
+    let a = gauss(side, 48.0, 48.0, 2.5, 2.0, 20.0);
+    let truth = filtered(side, &a);
+    let mut slow = basin_loop(side, SupportRule::Basin);
+    let mut rng = Lcg(19);
+    let (h, halves) = measure(&truth, 0.5, &mut rng);
+    let (pix, _) = disk_mask(side, 48.0, 48.0, 24.0);
+    let pick = |v: &[f32]| -> Vec<f32> { pix.iter().map(|&g| v[g as usize]).collect() };
+    slow.support_tmp = Some((
+        pix.clone(),
+        pick(&halves.0),
+        pick(&halves.1),
+        halves.2,
+        halves.3,
+    ));
+    let cell = slow
+        .make_cell_global(1, &pix, &pick(&h), None, Some(0.5))
+        .unwrap();
+    let tot: f64 = a.iter().map(|&v| f64::from(v * v)).sum();
+    let kept: f64 = cell
+        .pix
+        .iter()
+        .zip(&cell.raw)
+        .filter(|(_, &v)| v > 0.0)
+        .map(|(&g, _)| f64::from(a[g as usize] * a[g as usize]))
+        .sum();
+    assert!(kept / tot > 0.98, "kept {:.4} of the energy", kept / tot);
+}
+
+/// The largest published support (positive pixels) of the loop's cells.
+fn largest_support(slow: &SlowLoop) -> usize {
+    slow.cells
+        .iter()
+        .map(|c| c.raw.iter().filter(|&&v| v > 0.0).count())
+        .max()
+        .unwrap_or(0)
+}
+
+/// Under the skirt rule, refinement-only passes over the same movie keep
+/// the supports bounded: the refinements the later passes keep accepting
+/// move the largest support up to a plateau (at most 15 % over pass 1,
+/// and within 5 % over passes 5 to 7: no runaway, no oscillation), and
+/// every statistics disk follows its support. (Here: 165 px after pass 1,
+/// 178 to 185 px over passes 3 to 10. Under the old refine gate, z 3, it
+/// was 179 px from pass 1 on and almost no refinement was accepted after.)
+#[test]
+fn refine_only_passes_keep_supports_bounded() {
+    let t = 1500;
+    let (m, seed) = busy_movie(t);
+    let cfg = SlowLoopConfig {
+        support_rule: SupportRule::BasinSkirt,
+        ..shard_config()
+    };
+    let (mut slow, mut eng) = start(cfg, &seed);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let pass1 = largest_support(&slow);
+    let refines1 = slow.stats().refines;
+    slow.set_edit_scope(EditScope::Refine);
+    let mut later = Vec::new();
+    for _ in 2..=7 {
+        drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+        later.push(largest_support(&slow));
+    }
+    let s = slow.stats();
+    assert!(s.refines > refines1, "{s:?}");
+    let hi = *later.iter().max().unwrap();
+    assert!(
+        hi as f64 <= 1.15 * pass1 as f64,
+        "largest support {pass1} -> {later:?}"
+    );
+    let late = &later[3..];
+    let (lo, top) = (*late.iter().min().unwrap(), *late.iter().max().unwrap());
+    assert!(
+        (top - lo) as f64 <= 0.05 * lo as f64,
+        "no plateau: largest support {pass1} -> {later:?}"
+    );
+    let margin = slow.cfg.stats_margin_cells * slow.cfg.cell_diameter_px;
+    let lib = slow.finalize().unwrap();
+    for (slot, id) in lib.ids().iter().enumerate() {
+        if let Some(st) = slow.fpstats.get(id) {
+            let r = lib.support(slot).1;
+            assert!(
+                st.radius <= r + 2.0 * margin + 1e-3,
+                "disk {} for support {r}",
+                st.radius
+            );
+        }
+    }
+}
+
+/// When the outer light goes, the support follows: a cell seeded with a
+/// footprint much wider than its light ends with a compact support (no
+/// memory of the old extent) under the basin rule.
+#[test]
+fn support_shrinks_when_light_goes() {
+    let t = 3000;
+    let mut rng = Lcg(41);
+    let cells = vec![(blob(0, 48.0, 48.0), trace(&mut rng, t, 0.03, 6.0))];
+    let m = movie(&cells, t, 43);
+    let wide = blob_w(1, 48.0, 48.0, 6.0);
+    let cfg = SlowLoopConfig {
+        support_rule: SupportRule::BasinSkirt,
+        ..v2_config()
+    };
+    let (mut slow, mut eng) = start(cfg, std::slice::from_ref(&wide));
+    let before = largest_support(&slow);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let after = largest_support(&slow);
+    assert!(slow.stats().refines > 0, "{:?}", slow.stats());
+    assert!(
+        (after as f64) < 0.6 * before as f64,
+        "support {before} -> {after}"
+    );
+}
+
+/// Under the ring rule the basin settings change nothing: the same run
+/// with another `support_alpha` gives byte-identical libraries, written as
+/// CALALIB3 with no skirt, under either refine gate and either merge rule.
+/// (Identity with the code before S2.1 is `SupportRule::Rings` with
+/// `RefineGate::Legacy` and `MergeRule::Legacy`, checked end to end with
+/// `qc_eval`; see the results notes.)
+#[test]
+fn rule_off_is_byte_identical() {
+    let t = 1200;
+    let (m, seed) = busy_movie(t);
+    for gate in [RefineGate::Legacy, RefineGate::SplitHalf] {
+        for rule in [MergeRule::Legacy, MergeRule::SplitHalf] {
+            let run_with = |alpha: f32| {
+                let cfg = SlowLoopConfig {
+                    support_rule: SupportRule::Rings,
+                    support_alpha: alpha,
+                    refine_gate: gate,
+                    merge_rule: rule,
+                    ..shard_config()
+                };
+                let (mut slow, mut eng) = start(cfg, &seed);
+                let mut deleted = Vec::new();
+                drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+                (slow.finalize().unwrap(), slow.stats())
+            };
+            let (a, sa) = run_with(0.05);
+            let (b, sb) = run_with(0.5);
+            assert!(sa.refines > 0, "{gate:?} {rule:?} {sa:?}");
+            assert_eq!(sa, sb, "{gate:?} {rule:?}");
+            assert_eq!(sa.support_no_se, 0, "{gate:?} {rule:?}");
+            assert_eq!(&a.to_bytes()[..8], b"CALALIB3");
+            assert!(
+                a.to_bytes()[16..] == b.to_bytes()[16..],
+                "{gate:?} {rule:?}"
+            );
+            assert!(
+                (0..a.len()).all(|s| a.skirt(s).0.is_empty()),
+                "{gate:?} {rule:?}"
+            );
+        }
+    }
+}
+
+/// Visits run as jobs under the skirt rule give the same libraries as
+/// `step` (the halves and the skirts cross the wire).
+#[test]
+fn basin_skirt_visits_run_as_jobs_match_step_exactly() {
+    let t = 1200;
+    let (m, seed) = busy_movie(t);
+    let cfg = SlowLoopConfig {
+        support_rule: SupportRule::BasinSkirt,
+        ..shard_config()
+    };
+    let n_px = N * N;
+    let (mut a, mut ea) = start(cfg.clone(), &seed);
+    let (mut b, mut eb) = start(cfg.clone(), &seed);
+    let mut runner = VisitRunner::new(new_loop(&cfg));
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+        let (la, lb) = (ea.library().clone(), eb.library().clone());
+        a.observe(f, &la, &ta).unwrap();
+        b.observe(f, &lb, &tb).unwrap();
+        let pa = a.step(5_000_000).unwrap();
+        let pb = b.step_via(5_000_000, &mut runner).unwrap();
+        assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+        if let (Some(la), Some(lb)) = (pa, pb) {
+            assert!(la.to_bytes()[16..] == lb.to_bytes()[16..], "frame {k}");
+            ea.set_library(la).unwrap();
+            eb.set_library(lb).unwrap();
+        }
+    }
+    let s = a.stats();
+    assert!(s.refines > 0, "{s:?}");
+    assert_eq!(s, b.stats());
+    let lib = a.finalize().unwrap();
+    assert!(
+        (0..lib.len()).any(|s| !lib.skirt(s).0.is_empty()),
+        "some cell carries a skirt"
+    );
+    assert!(lib.to_bytes()[16..] == b.finalize().unwrap().to_bytes()[16..]);
+}
+
+/// The split-half refine gate still refines (cells move off their seed
+/// footprints) and runs identically as jobs and in `step`.
+#[test]
+fn split_half_refine_gate_refines_and_matches_jobs() {
+    let t = 1200;
+    let (m, seed) = busy_movie(t);
+    let cfg = SlowLoopConfig {
+        refine_gate: RefineGate::SplitHalf,
+        ..shard_config()
+    };
+    let n_px = N * N;
+    let (mut a, mut ea) = start(cfg.clone(), &seed);
+    let (mut b, mut eb) = start(cfg.clone(), &seed);
+    let mut runner = VisitRunner::new(new_loop(&cfg));
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+        let (la, lb) = (ea.library().clone(), eb.library().clone());
+        a.observe(f, &la, &ta).unwrap();
+        b.observe(f, &lb, &tb).unwrap();
+        let pa = a.step(5_000_000).unwrap();
+        let pb = b.step_via(5_000_000, &mut runner).unwrap();
+        assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+        if let (Some(la), Some(lb)) = (pa, pb) {
+            assert!(la.to_bytes()[16..] == lb.to_bytes()[16..], "frame {k}");
+            ea.set_library(la).unwrap();
+            eb.set_library(lb).unwrap();
+        }
+    }
+    let s = a.stats();
+    assert!(s.refines > 0, "{s:?}");
+    assert_eq!(s, b.stats());
+}
+
+/// The app's path (`TraceEngine.processFrames` + `lastBackground` in the
+/// fast worker, one frame's slice to `SlowLoop.observe` in the slow worker)
+/// leaves the slow loop in exactly the state the native `observe` with the
+/// engine's `FrameTraces` does; without the levels it does not.
+#[cfg(feature = "jsbindings")]
+#[test]
+fn js_observe_with_background_levels_matches_native() {
+    use crate::trace::js::{JsTraceEngine, JsTraceLibrary};
+    let t = 600;
+    let (m, seed) = busy_movie(t);
+    let cfg = shard_config();
+    assert!(matches!(cfg.background, BackgroundModel::Ring { .. }));
+    let n_px = N * N;
+    let (mut a, mut ea) = start(cfg.clone(), &seed);
+    // The JS surface, levels passed (b) and dropped as the app used to (c).
+    let js = |cfg: &SlowLoopConfig| {
+        let (s, e) = start(cfg.clone(), &seed);
+        let lib = e.library().clone();
+        let eng = JsTraceEngine::new(&JsTraceLibrary::from_arc(lib.clone()), 0.0, 0).unwrap();
+        (super::js::JsSlowLoop::from_parts(s, lib), eng)
+    };
+    let (mut b, mut eb) = js(&cfg);
+    let (mut c, mut ec) = js(&cfg);
+    let mut published = 0;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let ta = ea.process(f).unwrap();
+        let la = ea.library().clone();
+        assert_eq!(ta.background.len(), la.len(), "ring: one level per cell");
+        a.observe(f, &la, &ta).unwrap();
+        for (js, eng, levels) in [(&mut b, &mut eb, true), (&mut c, &mut ec, false)] {
+            let tr = eng.process_frames(f, 1).unwrap();
+            let bg = eng.last_background();
+            assert_eq!(bg.len(), eng.background_len() as usize);
+            let version = eng.inner.library().version() as f64;
+            assert!(js
+                .observe(f, version, &tr, levels.then_some(bg), None)
+                .unwrap());
+        }
+        assert_eq!(eb.out.traces, ta.traces, "frame {k}");
+        assert_eq!(eb.last_background(), ta.background, "frame {k}");
+        let pa = a.step(5_000_000).unwrap();
+        let pb = b.step(5_000_000.0).unwrap();
+        let pc = c.step(5_000_000.0).unwrap();
+        assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+        if let (Some(la), Some(lb)) = (pa, pb) {
+            // Past the header: versions come from a global counter.
+            assert!(
+                la.to_bytes()[16..] == lb.arc().to_bytes()[16..],
+                "frame {k}"
+            );
+            ea.set_library(la).unwrap();
+            eb.set_library(&lb).unwrap();
+            published += 1;
+        }
+        if let Some(lc) = pc {
+            ec.set_library(&lc).unwrap();
+        }
+    }
+    assert!(published > 0);
+    let bits = |s: &SlowLoop| -> Vec<(u64, u32, u32, u32)> {
+        s.debug_ledger()
+            .into_iter()
+            .map(|(id, x, y, z)| (id, x.to_bits(), y.to_bits(), z.to_bits()))
+            .collect()
+    };
+    assert_eq!(a.stats(), b.inner().stats());
+    assert_eq!(bits(&a), bits(b.inner()));
+    assert_ne!(bits(&a), bits(c.inner()), "the levels matter");
+}
+
+// ---- Run stages: the Refine replay (apps/cala/docs/stages.md) ---------------
+
+/// The structural counters a refine replay must leave alone.
+fn structural(s: &SlowStats) -> (u64, u64, u64, u64, u64, u64) {
+    (
+        s.adds,
+        s.absorbs,
+        s.merges,
+        s.splits,
+        s.deletes,
+        s.keep_tests,
+    )
+}
+
+#[test]
+fn edit_scope_names_round_trip() {
+    for s in EditScope::ALL {
+        assert_eq!(EditScope::from_name(s.name()), Some(s));
+        assert_eq!(EditScope::from_code(s.code()), Some(s));
+    }
+    assert_eq!(EditScope::from_name("refine"), Some(EditScope::Refine));
+    assert_eq!(EditScope::from_name("discover"), None);
+    assert_eq!(EditScope::from_code(4), None);
+}
+
+/// A Refine run as qc_eval's `--later-passes refine` makes it on a
+/// `SlowLoop` (the reference): Discover over the movie, the final library
+/// to the fast loop, the `refine` scope, then `refines` more passes from
+/// frame 0. Returns the bytes (past the version) of every published library
+/// of the Refine passes and of each pass's final library.
+///
+/// The traces go with the engine's ring-background levels, as the app's
+/// wire carries them (and as qc_eval passes the engine's `FrameTraces`).
+fn refine_reference(m: &[f32], t: usize, seed: &[Footprint], refines: usize) -> Vec<Vec<u8>> {
+    let n_px = N * N;
+    let (mut slow, mut eng) = start(shard_config(), seed);
+    let mut out = Vec::new();
+    let pass = |slow: &mut SlowLoop, eng: &mut TraceEngine, out: &mut Vec<Vec<u8>>, keep: bool| {
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            // The engine's ring levels go along, as the app sends them.
+            let mut tr = eng.process(f).unwrap();
+            tr.frame_index = slow.frames();
+            let lib = eng.library().clone();
+            slow.observe(f, &lib, &tr).unwrap();
+            if let Some(l) = slow.step(5_000_000).unwrap() {
+                if keep {
+                    out.push(l.to_bytes()[16..].to_vec());
+                }
+                eng.set_library(l).unwrap();
+            }
+        }
+        let lib = slow.finalize().unwrap();
+        out.push(lib.to_bytes()[16..].to_vec());
+        eng.set_library(lib).unwrap();
+    };
+    pass(&mut slow, &mut eng, &mut out, false);
+    slow.set_edit_scope(EditScope::Refine);
+    for _ in 0..refines {
+        pass(&mut slow, &mut eng, &mut out, true);
+    }
+    out
+}
+
+/// The same through the app's JS `SlowLoop` surface: `observe` by library
+/// version, `step`, `finalize`, `setEditScope("refine")`. Also returns the
+/// structural counters after Discover and after the last Refine.
+#[cfg(feature = "jsbindings")]
+#[allow(clippy::type_complexity)]
+fn refine_js(
+    m: &[f32],
+    t: usize,
+    seed: &[Footprint],
+    refines: usize,
+) -> (
+    Vec<Vec<u8>>,
+    (u64, u64, u64, u64, u64, u64),
+    (u64, u64, u64, u64, u64, u64),
+    Vec<u64>,
+    Vec<u64>,
+) {
+    use super::js::JsSlowLoop;
+    let n_px = N * N;
+    let (slow, mut eng) = start(shard_config(), seed);
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    let feed = |js: &mut JsSlowLoop, eng: &mut TraceEngine, out: &mut Vec<Vec<u8>>, keep: bool| {
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let tr = eng.process(f).unwrap();
+            let v = eng.library().version() as f64;
+            assert!(
+                js.observe(f, v, &tr.traces, Some(tr.background.clone()), None)
+                    .unwrap(),
+                "frame {k}: version {v}"
+            );
+            if let Some(l) = js.step(5_000_000.0).unwrap() {
+                if keep {
+                    out.push(l.arc().to_bytes()[16..].to_vec());
+                }
+                eng.set_library(l.arc().clone()).unwrap();
+            }
+        }
+    };
+    let mut out = Vec::new();
+    feed(&mut js, &mut eng, &mut out, false);
+    let lib = js.finalize().unwrap();
+    out.push(lib.arc().to_bytes()[16..].to_vec());
+    eng.set_library(lib.arc().clone()).unwrap();
+    let after_discover = structural(&js.inner().stats());
+    let ids_discover: Vec<u64> = js.inner().cell_infos().iter().map(|c| c.id).collect();
+    js.set_edit_scope("refine").unwrap();
+    assert_eq!(js.edit_scope(), "refine");
+    for _ in 0..refines {
+        feed(&mut js, &mut eng, &mut out, true);
+        let lib = js.finalize().unwrap();
+        out.push(lib.arc().to_bytes()[16..].to_vec());
+        eng.set_library(lib.arc().clone()).unwrap();
+    }
+    let after_refine = structural(&js.inner().stats());
+    let ids_refine: Vec<u64> = js.inner().cell_infos().iter().map(|c| c.id).collect();
+    (out, after_discover, after_refine, ids_discover, ids_refine)
+}
+
+/// Refine replays through the JS surface: no adds, absorbs, merges,
+/// splits, keep tests or deletions; footprints still change; the same
+/// libraries as the reference (qc_eval's later refine passes), bit for bit;
+/// and the same again on a second run (deterministic).
+#[cfg(feature = "jsbindings")]
+#[test]
+fn js_refine_replay_is_refine_only_deterministic_and_matches_qc_eval() {
+    // Long enough for a refine publish in the replays: with the ring levels
+    // taken off the statistics, 1500 frames give none.
+    let t = 2400;
+    let (m, seed) = busy_movie(t);
+    let (js, s_discover, s_refine, ids_discover, ids_refine) = refine_js(&m, t, &seed, 2);
+    assert_eq!(s_discover, s_refine, "structural edits in a Refine run");
+    assert_eq!(ids_discover, ids_refine, "the cell set changed");
+    // Discover's final library, then at least one refine publish.
+    assert!(js.len() > 3, "{} libraries", js.len());
+    assert!(
+        js[1..].iter().any(|b| *b != js[0]),
+        "Refine changed no footprint"
+    );
+    let reference = refine_reference(&m, t, &seed, 2);
+    assert_eq!(js.len(), reference.len());
+    for (k, (a, b)) in js.iter().zip(&reference).enumerate() {
+        assert!(a == b, "library {k} differs from the reference");
+    }
+    let (again, ..) = refine_js(&m, t, &seed, 2);
+    assert!(again == js, "a second run differs");
+}
+
+/// With visit workers the scope travels in the job: a refine replay whose
+/// visits run as jobs (`step_via`) matches the in-process one exactly, and
+/// makes no structural edit.
+#[test]
+fn refine_scope_travels_with_visit_jobs() {
+    let t = 1500;
+    let (m, seed) = busy_movie(t);
+    let cfg = shard_config();
+    let n_px = N * N;
+    let (mut a, mut ea) = start(cfg.clone(), &seed);
+    let (mut b, mut eb) = start(cfg.clone(), &seed);
+    let mut runner = VisitRunner::new(new_loop(&cfg));
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut a, &mut ea, &mut deleted);
+    drive(&m, 0..t, &mut b, &mut eb, &mut deleted);
+    let before = structural(&a.stats());
+    let ids: Vec<u64> = a.cell_infos().iter().map(|c| c.id).collect();
+    a.set_edit_scope(EditScope::Refine);
+    b.set_edit_scope(EditScope::Refine);
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+        let (la, lb) = (ea.library().clone(), eb.library().clone());
+        a.observe(f, &la, &ta).unwrap();
+        b.observe(f, &lb, &tb).unwrap();
+        let pa = a.step(5_000_000).unwrap();
+        let pb = b.step_via(5_000_000, &mut runner).unwrap();
+        assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+        if let (Some(la), Some(lb)) = (pa, pb) {
+            assert!(la.to_bytes()[16..] == lb.to_bytes()[16..], "frame {k}");
+            ea.set_library(la).unwrap();
+            eb.set_library(lb).unwrap();
+        }
+    }
+    assert_eq!(structural(&b.stats()), before);
+    assert_eq!(b.cell_infos().iter().map(|c| c.id).collect::<Vec<_>>(), ids);
+    assert!(b.stats().refines > 0);
+    assert!(a.finalize().unwrap().to_bytes()[16..] == b.finalize().unwrap().to_bytes()[16..]);
+}
+
+/// With visit workers, Refine makes the visits that would not refine at
+/// hand-out instead of as jobs (`SlowLoop::skip_unused`). The footprints
+/// are the same, bit for bit, with and without the skip (one worker whose
+/// results come back at once), and about half the visits go out as jobs.
+#[test]
+fn refine_makes_idle_visits_at_hand_out_without_changing_footprints() {
+    let t = 2400;
+    let (m, seed) = busy_movie(t);
+    let cfg = shard_config();
+    let n_px = N * N;
+    // Discover, then two Refine runs with every visit through `take_job_bytes`.
+    let run = |skip: bool| -> (Vec<Vec<u8>>, u64, u64) {
+        let (mut s, mut eng) = start(cfg.clone(), &seed);
+        drive(&m, 0..t, &mut s, &mut eng, &mut Vec::new());
+        let lib = s.finalize().unwrap();
+        let mut out = vec![lib.to_bytes()[16..].to_vec()];
+        eng.set_library(lib).unwrap();
+        s.skip_unused = skip;
+        s.set_edit_scope(EditScope::Refine);
+        let mut runner = VisitRunner::new(new_loop(&cfg));
+        let (visits0, mut jobs) = (s.stats().visits, 0);
+        for _ in 0..2 {
+            for k in 0..t {
+                let f = &m[k * n_px..(k + 1) * n_px];
+                let tr = eng.process(f).unwrap();
+                let lib = eng.library().clone();
+                s.observe(f, &lib, &tr).unwrap();
+                while let Some(b) = s.take_job_bytes() {
+                    let r = runner.run(VisitJob::from_bytes(&b).unwrap()).unwrap();
+                    s.apply_job(VisitResult::from_bytes(&r.to_bytes()).unwrap())
+                        .unwrap();
+                    jobs += 1;
+                }
+                if let Some(l) = s.housekeep().unwrap() {
+                    out.push(l.to_bytes()[16..].to_vec());
+                    eng.set_library(l).unwrap();
+                }
+            }
+            let l = s.finalize().unwrap();
+            out.push(l.to_bytes()[16..].to_vec());
+            eng.set_library(l).unwrap();
+        }
+        (out, jobs, s.stats().visits - visits0)
+    };
+    let (a, jobs_a, visits_a) = run(true);
+    let (b, jobs_b, visits_b) = run(false);
+    assert!(a.len() > 3, "{} libraries", a.len());
+    assert!(
+        a[1..].iter().any(|x| *x != a[0]),
+        "Refine changed no footprint"
+    );
+    assert_eq!(a.len(), b.len());
+    for (k, (x, y)) in a.iter().zip(&b).enumerate() {
+        assert!(x == y, "library {k} differs with the skip");
+    }
+    assert_eq!(visits_a, visits_b);
+    assert_eq!(jobs_b, visits_b);
+    assert!(
+        jobs_a * 3 < jobs_b * 2,
+        "{jobs_a} of {jobs_b} visits went out as jobs"
+    );
+}
+
+/// Under the split-half merge rule a duplicate of an established cell is
+/// still merged (its light and the cell's form one basin).
+#[test]
+fn split_half_merge_rule_still_merges_a_duplicate() {
+    let t = 1200;
+    let mut rng = Lcg(41);
+    let cells = vec![(blob(0, 47.0, 47.0), trace(&mut rng, t, 0.03, 6.0))];
+    let m = movie(&cells, t, 43);
+    let cfg = SlowLoopConfig {
+        merge_rule: MergeRule::SplitHalf,
+        ..v2_config()
+    };
+    let (mut slow, mut eng) = start(cfg, &[blob(1, 47.0, 47.0)]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..600, &mut slow, &mut eng, &mut deleted);
+    assert_eq!(slow.seed(&[blob(9, 49.0, 48.0)]).unwrap(), 1);
+    drive(&m, 600..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    assert_eq!(lib.ids(), &[1], "stats {:?}", slow.stats());
+    assert!(slow.stats().merges >= 1);
+}
+
+/// The split-half merge statistic: two independent neighbours (supports
+/// overlapping, 7 px apart) have measured shapes that differ far beyond
+/// their split-half noise (`Î > 0`, the rule keeps them apart), while a
+/// cell compared with itself is within its noise (`Î ≤ 0`).
+#[test]
+fn merge_shape_excess_tells_neighbours_from_one_cell() {
+    let t = 2000;
+    let mut rng = Lcg(71);
+    let cells = vec![
+        (blob(0, 45.0, 44.0), trace(&mut rng, t, 0.03, 6.0)),
+        (blob(1, 49.0, 50.0), trace(&mut rng, t, 0.03, 6.0)),
+    ];
+    let m = movie(&cells, t, 73);
+    let cfg = SlowLoopConfig {
+        merge_rule: MergeRule::SplitHalf,
+        ..v2_config()
+    };
+    let (mut slow, mut eng) = start(cfg, &[blob(1, 45.0, 44.0), blob(2, 49.0, 50.0)]);
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    assert_eq!(slow.stats().merges, 0, "stats {:?}", slow.stats());
+    let a = slow.cells.iter().find(|c| c.id == 1).unwrap().clone();
+    let b = slow.cells.iter().find(|c| c.id == 2).unwrap().clone();
+    let two = slow.merge_shape_excess(&a, &b).expect("split halves");
+    assert!(two > 0.0, "neighbours: {two}");
+    let one = slow.merge_shape_excess(&a, &a).expect("split halves");
+    assert!(one <= 0.0, "a cell against itself: {one}");
+}
+
+/// Either merge rule runs identically as jobs and in `step` (the default,
+/// `MergeRule::SplitHalf`, and `MergeRule::Legacy`).
+#[test]
+fn merge_rules_match_jobs() {
+    let t = 1200;
+    let (m, seed) = busy_movie(t);
+    for rule in [MergeRule::Legacy, MergeRule::SplitHalf] {
+        let cfg = SlowLoopConfig {
+            merge_rule: rule,
+            ..shard_config()
+        };
+        let n_px = N * N;
+        let (mut a, mut ea) = start(cfg.clone(), &seed);
+        let (mut b, mut eb) = start(cfg.clone(), &seed);
+        let mut runner = VisitRunner::new(new_loop(&cfg));
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+            let (la, lb) = (ea.library().clone(), eb.library().clone());
+            a.observe(f, &la, &ta).unwrap();
+            b.observe(f, &lb, &tb).unwrap();
+            let pa = a.step(5_000_000).unwrap();
+            let pb = b.step_via(5_000_000, &mut runner).unwrap();
+            assert_eq!(pa.is_some(), pb.is_some(), "{rule:?} frame {k}");
+            if let (Some(la), Some(lb)) = (pa, pb) {
+                assert!(
+                    la.to_bytes()[16..] == lb.to_bytes()[16..],
+                    "{rule:?} frame {k}"
+                );
+                ea.set_library(la).unwrap();
+                eb.set_library(lb).unwrap();
+            }
+        }
+        let s = a.stats();
+        assert!(s.merge_tests > 0, "{rule:?} {s:?}");
+        assert_eq!(s, b.stats(), "{rule:?}");
+    }
+}
+
+// ---- refine gate: a footprint born without its neighbour-side light ------
+
+/// Peak-normalised unfiltered footprint value of `id` at pixel (y, x).
+fn fp_at(lib: &Library, id: u64, y: usize, x: usize) -> f32 {
+    let (px, v) = lib.unfiltered(lib.slot(id).expect("cell kept"));
+    let peak = v.iter().cloned().fold(0.0f32, f32::max);
+    let k = (y * N + x) as u32;
+    px.iter().position(|&p| p == k).map_or(0.0, |i| v[i] / peak)
+}
+
+/// Two neighbours 3.5 px apart (about 0.6 soma diameters at half max),
+/// independent activity. The second cell is seeded with a hole at the
+/// first cell's centre, as Discover births a close newcomer (no light
+/// where the older cell already explains the data). Returns the second
+/// cell's footprint value there (truth exp(-3.5²/(2·2.5²)) ≈ 0.38) after
+/// 4000 frames with refine gate `z`, and the number of refinements.
+fn bitten_refill(z: f32) -> (f32, u64) {
+    let (v, refines, _) = bitten_refill_with(z, JointUpdate::Off);
+    (v, refines)
+}
+
+/// [`bitten_refill`] with the joint update `joint`, in the Refine scope
+/// (the cell set frozen, as the app's Refine stage), also returning the
+/// joint update's counters.
+fn bitten_refill_with(z: f32, joint: JointUpdate) -> (f32, u64, ReplayStats) {
+    let t = 4000;
+    let mut rng = Lcg(411);
+    let (a, b) = ((46.0, 44.0), (46.0, 47.5));
+    let cells = vec![
+        (blob_w(0, a.0, a.1, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        (blob_w(1, b.0, b.1, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+    ];
+    let m = movie(&cells, t, 423);
+    let mut bitten = blob_w(2, b.0, b.1, 2.5);
+    for y in 0..bitten.height {
+        for x in 0..bitten.width {
+            let (dy, dx) = ((bitten.y0 + y) as f32 - a.0, (bitten.x0 + x) as f32 - a.1);
+            if dy * dy + dx * dx <= 2.5 * 2.5 {
+                bitten.values[y * bitten.width + x] = 0.0;
+            }
+        }
+    }
+    let cfg = SlowLoopConfig {
+        refine_z: z,
+        joint_update: joint,
+        ..v2_config()
+    };
+    let (mut slow, mut eng) = start(cfg, &[blob_w(1, a.0, a.1, 2.5), bitten]);
+    if joint != JointUpdate::Off {
+        slow.set_edit_scope(EditScope::Refine);
+    }
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    assert_eq!(lib.ids(), &[1, 2], "stats {:?}", slow.stats());
+    (
+        fp_at(&lib, 2, a.0 as usize, a.1 as usize),
+        slow.stats().refines,
+        slow.replay_stats,
+    )
+}
+
+/// The cluster history replay ([`JointUpdate::Refine`]) refills the
+/// bitten footprint too, from the two cells' joint proposals.
+#[test]
+fn a_bitten_footprint_is_refilled_by_the_cluster_replay() {
+    let (v, refines, rs) = bitten_refill_with(0.0, JointUpdate::Refine);
+    assert!(rs.clusters >= 1 && rs.replays > 0, "{rs:?}");
+    assert!(rs.accepted > 0, "{rs:?}");
+    assert!(
+        v > 0.1,
+        "value at the neighbour centre {v} (truth 0.38), {refines} refines, {rs:?}"
+    );
+}
+
+/// The refine gate accepts a statistics-path refill with a positive
+/// held-out gain: the bitten footprint takes up light at its neighbour's
+/// centre. Under the old gate (paired z > 3 on the held-out frames) the
+/// same proposals are vetoed and the hole stays.
+#[test]
+fn a_bitten_footprint_is_refilled_from_its_statistics() {
+    let (now, refines) = bitten_refill(SlowLoopConfig::default().refine_z);
+    let (old, _) = bitten_refill(3.0);
+    assert!(
+        now > 0.1,
+        "value at the neighbour centre {now} (truth 0.38), {refines} refines"
+    );
+    assert!(old < 0.05 && now > old + 0.1, "new {now}, old gate {old}");
+}
+
+/// The cluster history replay runs when the refine visits run as jobs
+/// (`step_via`, through the byte encoding of job and result): the same
+/// libraries as in process, frame by frame, the same joint-update
+/// counters, and the replay really happens in the runner (the stores
+/// travel in the job; the visit no longer falls back to the per-cell path).
+#[test]
+fn the_cluster_replay_runs_in_visit_jobs_and_matches_step() {
+    for carry in [false, true] {
+        let t = 4000;
+        let mut rng = Lcg(411);
+        let (a, b) = ((46.0, 44.0), (46.0, 47.5));
+        let cells = vec![
+            (blob_w(0, a.0, a.1, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+            (blob_w(1, b.0, b.1, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        ];
+        let m = movie(&cells, t, 423);
+        let mut bitten = blob_w(2, b.0, b.1, 2.5);
+        for y in 0..bitten.height {
+            for x in 0..bitten.width {
+                let (dy, dx) = ((bitten.y0 + y) as f32 - a.0, (bitten.x0 + x) as f32 - a.1);
+                if dy * dy + dx * dx <= 2.5 * 2.5 {
+                    bitten.values[y * bitten.width + x] = 0.0;
+                }
+            }
+        }
+        let cfg = SlowLoopConfig {
+            refine_z: 0.0,
+            joint_update: JointUpdate::Refine,
+            joint_carry: carry,
+            ..v2_config()
+        };
+        let seed = [blob_w(1, a.0, a.1, 2.5), bitten];
+        let (mut sa, mut ea) = start(cfg.clone(), &seed);
+        let (mut sb, mut eb) = start(cfg.clone(), &seed);
+        let mut runner = VisitRunner::new(new_loop(&cfg));
+        sa.set_edit_scope(EditScope::Refine);
+        sb.set_edit_scope(EditScope::Refine);
+        let n_px = N * N;
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+            let (la, lb) = (ea.library().clone(), eb.library().clone());
+            sa.observe(f, &la, &ta).unwrap();
+            sb.observe(f, &lb, &tb).unwrap();
+            let pa = sa.step(5_000_000).unwrap();
+            let pb = sb.step_via(5_000_000, &mut runner).unwrap();
+            assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+            if let (Some(la), Some(lb)) = (pa, pb) {
+                assert!(la.to_bytes()[16..] == lb.to_bytes()[16..], "frame {k}");
+                ea.set_library(la).unwrap();
+                eb.set_library(lb).unwrap();
+            }
+        }
+        let (ra, rb) = (sa.replay_stats, sb.replay_stats);
+        assert!(ra.replays > 0 && ra.accepted > 0, "{ra:?}");
+        assert_eq!(ra.visit_fields(), rb.visit_fields(), "{ra:?} vs {rb:?}");
+        assert!(rb.job_stores > 0 && rb.job_store_bytes > 0, "{rb:?}");
+        assert!(sa.finalize().unwrap().to_bytes()[16..] == sb.finalize().unwrap().to_bytes()[16..]);
+    }
+}
+
+/// Look-back frames (concurrent Refine) reach only the named cells'
+/// running statistics, keep held-out frames out and leave the slow loop's
+/// frame clock alone.
+#[test]
+fn lookback_frames_feed_only_the_named_cells_statistics() {
+    let t = 200;
+    let mut rng = Lcg(5);
+    let cells = vec![
+        (blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0)),
+        (blob(1, 70.0, 70.0), trace(&mut rng, t, 0.05, 6.0)),
+    ];
+    let m = movie(&cells, t, 7);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let (mut slow, mut eng) = start(config(), &seed);
+    let lib = eng.library().clone();
+    let (a, b) = (lib.ids()[0], lib.ids()[1]);
+    let n_px = N * N;
+    let mut fitted = 0;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let fit = slow
+            .observe_lookback(f, &lib, &tr, k as u64, Some(&[a]))
+            .unwrap();
+        assert_eq!(fit, !slow.is_test(k as u64));
+        fitted += usize::from(fit);
+    }
+    assert!(fitted > 0 && fitted < t);
+    assert_eq!(slow.frames(), 0);
+    assert!(slow.fpstats.contains_key(&a));
+    assert!(!slow.fpstats.contains_key(&b));
+}
+
+/// With the reservoir frozen (evaluation switch), `observe` still feeds
+/// the statistics and advances the frame clock but stores no frame and
+/// makes no tile due; unfrozen, it stores frames again.
+#[test]
+fn frozen_reservoir_takes_no_frames_but_statistics_and_clock_run() {
+    let t = 60;
+    let mut rng = Lcg(5);
+    let cells = vec![(blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0))];
+    let m = movie(&cells, t, 7);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let (mut slow, mut eng) = start(config(), &seed);
+    let lib = eng.library().clone();
+    let n_px = N * N;
+    slow.set_reservoir_frozen(true);
+    for k in 0..t / 2 {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        slow.observe(f, &lib, &tr).unwrap();
+    }
+    assert_eq!(slow.frames(), (t / 2) as u64);
+    assert!(slow.fpstats.contains_key(&lib.ids()[0]));
+    assert_eq!(slow.reservoir_bytes(), 0);
+    assert!(slow.tiles.iter().all(|tile| tile.fresh == 0));
+    slow.set_reservoir_frozen(false);
+    for k in t / 2..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        slow.observe(f, &lib, &tr).unwrap();
+    }
+    assert_eq!(slow.frames(), t as u64);
+    assert!(slow.reservoir_bytes() > 0);
+}
+
+/// Look-back frames offered to the reservoir (experimental switch) keep
+/// the held-out side they had as live frames: a held-out frame becomes a
+/// test slot only and leaves the footprint statistics untouched, a fitting
+/// frame becomes a fitting slot only, no tile stores a frame twice, and
+/// `Test` mode adds no fitting slot. Off (the default) stores nothing.
+#[test]
+fn lookback_reservoir_keeps_the_held_out_side_and_stores_no_frame_twice() {
+    let t = 90;
+    let mut rng = Lcg(5);
+    let cells = vec![(blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0))];
+    let m = movie(&cells, t, 7);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let n_px = N * N;
+    // Live frames with the reservoir frozen (the clock runs, nothing is
+    // stored), then the same frames as look-back frames, twice.
+    let run = |mode: LookbackReservoir, skip_held: bool| {
+        let (mut slow, mut eng) = start(config(), &seed);
+        let lib = eng.library().clone();
+        slow.set_reservoir_frozen(true);
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let tr = eng.process(f).unwrap();
+            slow.observe(f, &lib, &tr).unwrap();
+        }
+        slow.set_reservoir_frozen(false);
+        slow.set_lookback_reservoir(mode, 1.0);
+        for _ in 0..2 {
+            for k in 0..t {
+                let held = slow.is_test(k as u64);
+                let f = &m[k * n_px..(k + 1) * n_px];
+                let tr = eng.process(f).unwrap();
+                if held && skip_held {
+                    continue;
+                }
+                let pushed = slow.observe_lookback(f, &lib, &tr, k as u64, None).unwrap();
+                assert_eq!(pushed, !held);
+            }
+        }
+        // A frame that was never live (index beyond the clock) is not stored.
+        let f = &m[..n_px];
+        let tr = eng.process(f).unwrap();
+        let before = slow.lookback_reservoir_counts();
+        slow.observe_lookback(f, &lib, &tr, t as u64 + 5, None)
+            .unwrap();
+        assert_eq!(slow.lookback_reservoir_counts(), before);
+        slow
+    };
+    let slots = |slow: &SlowLoop| -> Vec<Vec<(u64, bool)>> {
+        slow.tiles
+            .iter()
+            .map(|tile| {
+                tile.slots()
+                    .into_iter()
+                    .map(|w| (tile.slot(w).frame, tile.slot(w).test))
+                    .collect()
+            })
+            .collect()
+    };
+    let off = run(LookbackReservoir::Off, false);
+    assert_eq!(off.reservoir_bytes(), 0);
+    assert_eq!(off.lookback_reservoir_counts(), [0; 3]);
+
+    let all = run(LookbackReservoir::All, false);
+    let (mut n_test, mut n_fit) = (0, 0);
+    for tile in slots(&all) {
+        let mut seen = std::collections::HashSet::new();
+        for (frame, test) in tile {
+            assert!(frame < t as u64);
+            assert_eq!(test, all.is_test(frame), "frame {frame} changed side");
+            assert!(seen.insert(frame), "frame {frame} stored twice");
+            n_test += usize::from(test);
+            n_fit += usize::from(!test);
+        }
+    }
+    assert!(n_test > 0 && n_fit > 0, "{n_test} test, {n_fit} fit slots");
+    for tile in &all.tiles {
+        let mut ev: Vec<u64> = tile.events.iter().map(|s| s.frame).collect();
+        ev.sort_unstable();
+        assert!(ev.windows(2).all(|w| w[0] != w[1]));
+    }
+    // Held-out frames never reach the statistics: the same run without them
+    // (or with the switch off) has the same statistics.
+    let no_held = run(LookbackReservoir::All, true);
+    let id = all.fpstats.keys().next().copied().unwrap();
+    // (The library version is a process-wide counter: left out.)
+    let dbg = |s: &SlowLoop| {
+        let mut st = s.fpstats[&id].clone();
+        st.version = 0;
+        format!("{st:?}")
+    };
+    assert!(dbg(&all) == dbg(&no_held));
+    assert!(dbg(&all) == dbg(&off));
+
+    let test_only = run(LookbackReservoir::Test, false);
+    let mut n = 0;
+    for tile in slots(&test_only) {
+        for (frame, test) in tile {
+            assert!(test && test_only.is_test(frame));
+            n += 1;
+        }
+    }
+    assert!(n > 0);
+    assert!(dbg(&test_only) == dbg(&off));
+}
+
+// ---- look-back scheduler (`lookback.rs`) ----------------------------------
+
+fn lb_lib(version: u64, cells: &[Footprint]) -> Library {
+    let mut b = LibraryBuilder::new(dims()).version(version);
+    for c in cells {
+        b = b.footprint(c.clone());
+    }
+    b.build(&mut flattener()).unwrap()
+}
+
+/// Drain every request the scheduler makes with `credit` frames of budget:
+/// (frame, ids) per request, every one observed.
+fn lb_take(lb: &mut LookBack, sl: &SlowLoop, lib: &Library, credit: f64) -> Vec<(usize, Vec<u64>)> {
+    lb.add_credit(credit);
+    let mut out = Vec::new();
+    while let LookbackNext::Frame(r) = lb.next(sl, lib) {
+        out.push((r.frame, r.ids));
+        lb.frame_done(LookbackOutcome::Observed);
+    }
+    out
+}
+
+/// A birth asks for the `K` frames before it, for the newborn and the cells
+/// touching it only, block by block and within the budget; the scheduler
+/// idles (budget not banked) when no cell needs anything.
+#[test]
+fn lookback_serves_a_birth_and_its_neighbours_the_frames_before_it() {
+    let (slow, _) = start(config(), &[]);
+    let (a, far, c) = (
+        blob(1, 30.0, 30.0),
+        blob(2, 75.0, 75.0),
+        blob(3, 33.0, 31.0),
+    );
+    let mut lb = LookBack::new(LookbackConfig {
+        max_frames: 100,
+        ..LookbackConfig::default()
+    });
+    // The first library: its cells are births at frame 10 (window 0..10).
+    let lib1 = lb_lib(1, &[a.clone(), far.clone()]);
+    lb.note_frame(&lib1, 10);
+    assert_eq!(lb.births(), 2);
+    let got = lb_take(&mut lb, &slow, &lib1, 1000.0);
+    assert_eq!(got.len(), 10);
+    assert!(got.iter().enumerate().all(|(k, (f, _))| *f == k));
+    assert_eq!(lb.next(&slow, &lib1), LookbackNext::Idle);
+    // Idle budget is not banked: at most one frame's credit is kept.
+    assert_eq!(lb_take(&mut lb, &slow, &lib1, 500.0), vec![]);
+
+    // A cell born at frame 300 beside `a`: it and `a` need 200..300, `far`
+    // nothing.
+    let lib2 = lb_lib(2, &[a, far, c]);
+    lb.note_frame(&lib2, 300);
+    assert_eq!(lb.births(), 3);
+    let (ia, ic) = (lib2.ids()[0], lib2.ids()[2]);
+    let got = lb_take(&mut lb, &slow, &lib2, 30.0);
+    assert_eq!(got.len(), 31, "budget-limited (30 + the one kept)");
+    let mut got2 = got;
+    got2.extend(lb_take(&mut lb, &slow, &lib2, 1000.0));
+    let mut frames: Vec<usize> = got2.iter().map(|g| g.0).collect();
+    frames.sort_unstable();
+    assert_eq!(frames, (200..300).collect::<Vec<_>>());
+    for (_, ids) in &got2 {
+        let mut ids = ids.clone();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![ia.min(ic), ia.max(ic)]);
+    }
+    // Shared order: the most recent block (256..300) is served first.
+    assert_eq!(got2[0].0, 256);
+    assert_eq!(lb.in_need(), 0);
+    assert_eq!(lb.frames(), 110);
+}
+
+/// A cell dropped from the library stops taking frames; a block whose cells
+/// are all gone ends.
+#[test]
+fn lookback_drops_cells_no_longer_in_the_library() {
+    let (slow, _) = start(config(), &[]);
+    let mut lb = LookBack::new(LookbackConfig::default());
+    let lib1 = lb_lib(1, &[blob(1, 30.0, 30.0)]);
+    lb.note_frame(&lib1, 200);
+    let first = lb_take(&mut lb, &slow, &lib1, 3.0);
+    assert_eq!(first.len(), 3);
+    let empty = lb_lib(2, &[]);
+    lb.note_frame(&empty, 201);
+    assert_eq!(lb_take(&mut lb, &slow, &empty, 1000.0), vec![]);
+    assert_eq!(lb.in_need(), 0);
+}
+
+/// The held-out record returns the decision `observe` made for each stream
+/// frame the slow loop saw (whatever its slow-loop index), and the
+/// `u64::MAX - stream` decision for frames it never saw; the flagged
+/// look-back observe is the indexed one with that decision.
+#[test]
+fn held_out_record_keeps_observes_decisions_and_flagged_lookback_matches() {
+    let (slow, _) = start(config(), &[]);
+    let mut rec = HeldOutRecord::default();
+    // Stream frames 100..400 seen as slow frames 0..300 except a dropped
+    // batch 200..216.
+    let mut k = 0u64;
+    for s in 100..400u64 {
+        if (200..216).contains(&s) {
+            continue;
+        }
+        rec.note(s, k, &slow);
+        k += 1;
+    }
+    let mut k = 0u64;
+    for s in 0..500u64 {
+        let seen = (100..400).contains(&s) && !(200..216).contains(&s);
+        let want = if seen {
+            slow.is_test(k)
+        } else {
+            slow.is_test(u64::MAX - s)
+        };
+        assert_eq!(rec.held_out(s, &slow), want, "stream {s}");
+        k += u64::from(seen);
+    }
+    let held = (0..500).filter(|&s| rec.held_out(s, &slow)).count();
+    assert!(held > 100 && held < 250, "{held}");
+
+    // Flagged == indexed.
+    let t = 120;
+    let mut rng = Lcg(9);
+    let cells = vec![(blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0))];
+    let m = movie(&cells, t, 3);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let (mut sa, mut eng) = start(config(), &seed);
+    let (mut sb, _) = start(config(), &seed);
+    let lib = eng.library().clone();
+    let n_px = N * N;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let a = sa.observe_lookback(f, &lib, &tr, k as u64, None).unwrap();
+        let held = sb.is_test(k as u64);
+        let b = sb
+            .observe_lookback_flagged(f, &lib, &tr, held, None)
+            .unwrap();
+        assert_eq!(a, b);
+    }
+    sa.mark_all_due();
+    sb.mark_all_due();
+    for _ in 0..20 {
+        sa.step(5_000_000).unwrap();
+        sb.step(5_000_000).unwrap();
+    }
+    assert!(sa.finalize().unwrap().to_bytes()[16..] == sb.finalize().unwrap().to_bytes()[16..]);
+}
+
+/// Look-back through the app's JS `SlowLoop` surface (`observe` with the
+/// stream index, `lookbackNote`, `lookbackTake`, `observeLookback`) gives
+/// the libraries of the native driver (qc_eval's: the scheduler beside the
+/// slow loop, held-out by the slow-loop index), bit for bit; look-back
+/// frames reach the statistics without moving the slow loop's clock.
+#[cfg(feature = "jsbindings")]
+#[test]
+fn js_lookback_matches_the_native_driver() {
+    use super::js::JsSlowLoop;
+    let t = 1200;
+    let (m, seed) = busy_movie(t);
+    // Half the cells seeded: the rest are born during the run.
+    let seed = &seed[..seed.len() / 2];
+    let cfg = SlowLoopConfig {
+        joint_update: JointUpdate::All,
+        merge_guard_min_sep: 0.6,
+        ..shard_config()
+    };
+    let n_px = N * N;
+    let frame = |k: usize| &m[k * n_px..(k + 1) * n_px];
+
+    // Native.
+    let (mut sl, mut eng) = start(cfg.clone(), seed);
+    let mut lb = LookBack::new(LookbackConfig::default());
+    let mut lb_eng = eng.clone();
+    let mut native = Vec::new();
+    let mut pushed_native = 0;
+    for k in 0..t {
+        let tr = eng.process(frame(k)).unwrap();
+        let lib = eng.library().clone();
+        sl.observe(frame(k), &lib, &tr).unwrap();
+        if let Some(l) = sl.step(5_000_000).unwrap() {
+            native.push(l.to_bytes()[16..].to_vec());
+            eng.set_library(l).unwrap();
+        }
+        lb.note_frame(eng.library(), k + 1);
+        lb.add_credit(2.0);
+        while let LookbackNext::Frame(r) = lb.next(&sl, eng.library()) {
+            lb_eng.set_library(eng.library().clone()).unwrap();
+            let tr = lb_eng.process(frame(r.frame)).unwrap();
+            let lib = lb_eng.library().clone();
+            let fit = sl
+                .observe_lookback(frame(r.frame), &lib, &tr, r.frame as u64, Some(&r.ids))
+                .unwrap();
+            pushed_native += usize::from(fit);
+            lb.frame_done(LookbackOutcome::Observed);
+        }
+    }
+    native.push(sl.finalize().unwrap().to_bytes()[16..].to_vec());
+
+    // JS surface.
+    let (slow, mut eng) = start(cfg, seed);
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    js.enable_lookback(2.0, 3000).unwrap();
+    let mut lb_eng = eng.clone();
+    let mut via_js = Vec::new();
+    for k in 0..t {
+        let tr = eng.process(frame(k)).unwrap();
+        let v = eng.library().version() as f64;
+        let bg = Some(tr.background.clone());
+        assert!(js
+            .observe(frame(k), v, &tr.traces, bg, Some(k as f64))
+            .unwrap());
+        if let Some(l) = js.step(5_000_000.0).unwrap() {
+            via_js.push(l.arc().to_bytes()[16..].to_vec());
+            eng.set_library(l.arc().clone()).unwrap();
+        }
+        let frames_before = js.frames();
+        js.lookback_note((k + 1) as f64, 1.0);
+        let req = js.lookback_take(1000);
+        let mut i = 0;
+        while i < req.len() {
+            let (f, n) = (req[i] as usize, req[i + 2] as usize);
+            let ids = &req[i + 3..i + 3 + n];
+            i += 3 + n;
+            lb_eng.set_library(eng.library().clone()).unwrap();
+            let tr = lb_eng.process(frame(f)).unwrap();
+            let v = lb_eng.library().version() as f64;
+            js.observe_lookback(
+                frame(f),
+                v,
+                &tr.traces,
+                Some(tr.background.clone()),
+                f as f64,
+                ids,
+            )
+            .unwrap();
+        }
+        assert_eq!(js.frames(), frames_before, "look-back moved the clock");
+    }
+    via_js.push(js.finalize().unwrap().arc().to_bytes()[16..].to_vec());
+
+    // Split-half noise of every published cell, by id, as the native call.
+    let lib = js.finalize().unwrap();
+    let noise = js.footprint_noise();
+    let lib = lib.arc();
+    assert_eq!(noise.len(), 2 * lib.len());
+    let mut finite = 0;
+    for slot in 0..lib.len() {
+        let id = lib.ids()[slot];
+        assert_eq!(noise[2 * slot], id as f64);
+        let want = js
+            .inner()
+            .footprint_noise(id, lib.filtered(slot).0)
+            .unwrap_or(f64::NAN);
+        let got = noise[2 * slot + 1];
+        assert!(
+            got == want || (got.is_nan() && want.is_nan()),
+            "{id}: {got} {want}"
+        );
+        finite += usize::from(got.is_finite() && got > 0.0);
+    }
+    assert!(finite > 0, "no cell has a noise estimate");
+
+    let st = js.lookback_stats();
+    assert!(st[1] > 100.0, "pushed {st:?}");
+    assert_eq!(st[1] as usize, pushed_native, "{st:?}");
+    assert_eq!(st[3], 0.0, "dropped {st:?}");
+    assert!(st[4] > seed.len() as f64, "births {st:?}");
+    assert_eq!(native.len(), via_js.len());
+    assert!(native == via_js, "libraries differ");
+}
+
+/// Hardening: a visit runner built with other slow-loop options refuses the
+/// job; with look-back on, `observe` needs the stream index and
+/// `enableLookback` must come before the first frame.
+#[cfg(feature = "jsbindings")]
+#[test]
+fn lookback_misuse_is_refused() {
+    use super::js::JsSlowLoop;
+    let t = 400;
+    let (m, seed) = busy_movie(t);
+    let n_px = N * N;
+    let cfg = SlowLoopConfig {
+        joint_update: JointUpdate::All,
+        merge_guard_min_sep: 0.6,
+        ..shard_config()
+    };
+    let (mut sl, mut eng) = start(cfg.clone(), &seed);
+    let plain = SlowLoop::new(
+        dims(),
+        vec![1; n_px],
+        vec![1.0; n_px],
+        flattener(),
+        shard_config(),
+    )
+    .unwrap();
+    let mut runner = VisitRunner::new(plain);
+    let mut job = None;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let lib = eng.library().clone();
+        sl.observe(f, &lib, &tr).unwrap();
+        if let Some(b) = sl.take_job_bytes() {
+            job = Some(b);
+            break;
+        }
+    }
+    let job = VisitJob::from_bytes(&job.expect("a visit job")).unwrap();
+    let err = runner.run(job).unwrap_err();
+    assert!(err.to_string().contains("other options"), "{err}");
+
+    // (The JS error paths themselves need a wasm target; their guards:)
+    let (slow, _) = start(cfg, &seed);
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    assert!(js.stream_ok(None));
+    js.enable_lookback(2.0, 3000).unwrap();
+    assert!(!js.stream_ok(None));
+    assert!(js.stream_ok(Some(0.0)));
 }

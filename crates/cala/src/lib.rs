@@ -13,6 +13,8 @@
 //!   refine footprints) that publishes new library versions to the fast loop.
 //! * [`trace`]: the fast loop, per-frame cell traces from a (swappable)
 //!   footprint library, and re-extraction of past frames.
+//! * [`compress`]: windowed low-rank factors of the preprocessed frames
+//!   (prototype), so past frames can be revisited without the raw video.
 //! * [`qc`]: online quality control of traces, footprints and demixing,
 //!   computed alongside the fast loop from the data alone.
 //!
@@ -20,6 +22,7 @@
 //! panic is a trap that leaves the WASM module unusable in its worker.
 
 pub mod avi;
+pub mod compress;
 pub mod discover;
 pub mod motion;
 pub mod preprocess;

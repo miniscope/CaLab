@@ -1,7 +1,4 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { initCalaWasm } from '../lib/cala-wasm.ts';
 import {
   entriesFromFiles,
   FrameSource,
@@ -9,7 +6,10 @@ import {
   MAX_FRAMES_PER_READ,
   OPEN_CONCURRENCY,
   mapLimit,
+  sessionBoundaries,
+  sessionOfFrame,
 } from '../lib/frame-source.ts';
+import { boundariesInBatch } from '../lib/session-boundary.ts';
 import { naturalCompare } from '../lib/natural-sort.ts';
 import {
   fpsFromTimeStamps,
@@ -18,13 +18,9 @@ import {
   parseTimeStamps,
 } from '../lib/miniscope-meta.ts';
 import { buildAvi, expectedPixels, makeFile, type SynthOptions } from './synth-avi.ts';
+import { initTestWasm } from './wasm-test.ts';
 
-beforeAll(async () => {
-  const wasm = readFileSync(
-    resolve(import.meta.dirname, '../../../../crates/cala/pkg/calab_cala_bg.wasm'),
-  );
-  await initCalaWasm(wasm);
-});
+beforeAll(initTestWasm);
 
 const open = (files: File[]) => FrameSource.open(entriesFromFiles(files));
 
@@ -253,9 +249,6 @@ describe('FrameSource', () => {
 
   it('rejects folders with no N.avi', async () => {
     await expect(open([makeFile('notes.txt', 'x')])).rejects.toThrow(/No Miniscope video/);
-    await expect(open([makeFile('clip.avi', new Uint8Array(4))])).rejects.toThrow(
-      /No Miniscope video/,
-    );
   });
 
   it('rejects compressed codecs with the file name and codec', async () => {
@@ -515,5 +508,147 @@ describe('read-ahead and throttled open', () => {
     reads.length = 0;
     await src.readFrames(1, 2);
     expect(reads).toHaveLength(1);
+  });
+});
+
+describe('FrameSource: file naming', () => {
+  /** Files `<prefix>0..n-1.avi` of 2 frames each, in `dir`. */
+  function named(prefix: string, n: number, dir = 'rec', pad = 0, from = 0) {
+    return Array.from({ length: n }, (_, i) =>
+      makeFile(
+        `${prefix}${String(from + i).padStart(pad, '0')}.avi`,
+        buildAvi({ width: 6, height: 4, frames: 2, frameOffset: i * 2 }),
+        dir,
+      ),
+    );
+  }
+
+  it('opens msCam0..N with its sidecars', async () => {
+    const src = await open([
+      ...named('msCam', 3),
+      makeFile('timeStamps.csv', timeStamps(6, 50), 'rec'),
+    ]);
+    expect(src.frameCount).toBe(6);
+    expect(src.info.files.map((f) => f.name)).toEqual(['msCam0.avi', 'msCam1.avi', 'msCam2.avi']);
+    expect(src.info.fps).toBeCloseTo(20, 5);
+  });
+
+  it('opens msCam1..N with the numbering warning', async () => {
+    const src = await open(named('msCam', 3, 'rec', 0, 1));
+    expect(src.frameCount).toBe(6);
+    expect(src.info.warnings.join(' ')).toContain('starts at msCam1.avi, not msCam0.avi');
+  });
+
+  it('opens zero-padded names in numeric order', async () => {
+    const src = await open(named('msCam', 12, 'rec', 3).reverse());
+    expect(src.info.files[0].name).toBe('msCam000.avi');
+    expect(src.info.files[11].name).toBe('msCam011.avi');
+  });
+
+  it('auto-picks msCam next to a behavCam series and reads the sidecars beside it', async () => {
+    const src = await open([
+      ...named('behavCam', 5),
+      ...named('msCam', 2),
+      makeFile('metaData.json', '{"frameRate":"20FPS"}', 'rec'),
+    ]);
+    expect(src.frameCount).toBe(4);
+    expect(src.info.fps).toBe(20);
+    expect(src.info.ignoredFiles).toContain('rec/behavCam0.avi');
+  });
+
+  it('takes sidecars from the directory of the chosen series in nested folders', async () => {
+    const src = await open([
+      ...named('msCam', 2, 'a/miniscope'),
+      makeFile('metaData.json', '{"frameRate":"30FPS"}', 'a/miniscope'),
+      ...named('behavCam', 2, 'a/behav'),
+      makeFile('metaData.json', '{"frameRate":"10FPS"}', 'a/behav'),
+    ]);
+    expect(src.info.fps).toBe(30);
+  });
+
+  it('opens individually picked files that are not numbered, in natural order', async () => {
+    const mk = (name: string, offset: number) =>
+      makeFile(name, buildAvi({ width: 6, height: 4, frames: 2, frameOffset: offset }));
+    const src = await open([mk('clip 10.avi', 4), mk('clip 2.avi', 2), mk('clip 1.avi', 0)]);
+    expect(src.info.files.map((f) => f.name)).toEqual(['clip 1.avi', 'clip 2.avi', 'clip 10.avi']);
+  });
+
+  it('still rejects a folder whose videos are not numbered', async () => {
+    await expect(open([makeFile('clip.avi', new Uint8Array(4), 'rec')])).rejects.toThrow(
+      /numbered \.avi files such as 0\.avi, 1\.avi/,
+    );
+  });
+});
+
+describe('FrameSource.openSessions', () => {
+  const session = (name: string, files: File[]) => ({
+    name,
+    dir: `data/${name}`,
+    entries: entriesFromFiles(files),
+  });
+
+  it('concatenates sessions in order and records where each starts', async () => {
+    const a = recording([3, 2], {}, 'data/day1');
+    const b = recording([4], {}, 'data/day2');
+    const src = await FrameSource.openSessions([
+      session('day1', [...a.files, makeFile('timeStamps.csv', timeStamps(5, 50), 'data/day1')]),
+      session('day2', b.files),
+    ]);
+    expect(src.frameCount).toBe(9);
+    expect(src.info.sessions).toEqual([
+      { index: 0, name: 'day1', dir: 'data/day1', startFrame: 0, frameCount: 5, fps: 20, files: 2 },
+      {
+        index: 1,
+        name: 'day2',
+        dir: 'data/day2',
+        startFrame: 5,
+        frameCount: 4,
+        fps: null,
+        files: 1,
+      },
+    ]);
+    expect(sessionBoundaries(src.info)).toEqual([5]);
+    expect(sessionOfFrame(src.info, 4)).toBe(0);
+    expect(sessionOfFrame(src.info, 5)).toBe(1);
+    // Frame 5 is day2's first frame.
+    expect(Array.from(await src.readFrame(5))).toEqual(Array.from(expectedPixels(b.opts[0], 0)));
+    // A read across the boundary.
+    const two = await src.readFrames(4, 2);
+    expect(two.length).toBe(2 * 6 * 4);
+    // Warnings name their session.
+    expect(src.info.warnings.some((w) => w.startsWith('day2: No frame rate'))).toBe(true);
+    src.dispose();
+  });
+
+  it('refuses sessions whose resolution differs', async () => {
+    const a = recording([2], {}, 'data/day1');
+    const b = recording([2], { width: 8 }, 'data/day2');
+    await expect(
+      FrameSource.openSessions([session('day1', a.files), session('day2', b.files)]),
+    ).rejects.toThrow(/day2 is 8x4 8-bit but day1 is 6x4 8-bit/);
+  });
+
+  it('one session opens as a plain folder does, plus its span', async () => {
+    const a = recording([3], {}, 'data/day1');
+    const plain = await FrameSource.open(entriesFromFiles(a.files));
+    const one = await FrameSource.openSessions([session('day1', a.files)]);
+    const { sessions, ...rest } = one.info;
+    expect(rest).toEqual(plain.info);
+    expect(sessions).toHaveLength(1);
+    expect(sessionBoundaries(one.info)).toEqual([]);
+    plain.dispose();
+    one.dispose();
+  });
+});
+
+describe('boundariesInBatch', () => {
+  it('finds the boundaries inside a batch only', () => {
+    expect(boundariesInBatch([100, 250], 96, 8)).toEqual([{ index: 1, frame: 100 }]);
+    expect(boundariesInBatch([100, 250], 100, 8)).toEqual([{ index: 1, frame: 100 }]);
+    expect(boundariesInBatch([100, 250], 92, 8)).toEqual([]);
+    expect(boundariesInBatch([100, 104], 96, 16)).toEqual([
+      { index: 1, frame: 100 },
+      { index: 2, frame: 104 },
+    ]);
   });
 });

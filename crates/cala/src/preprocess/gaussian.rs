@@ -158,6 +158,10 @@ pub struct RecursiveGaussian {
     ws_v: Vec<f64>,
     /// `(PAD + width + PAD) x height`: the transposed frame.
     ws_t: Vec<f64>,
+    /// Scratch of the vertical pass: which columns hold any input, and
+    /// those columns as `[start, end)` runs.
+    live: Vec<bool>,
+    runs: Vec<(usize, usize)>,
 }
 
 impl RecursiveGaussian {
@@ -174,6 +178,8 @@ impl RecursiveGaussian {
             c: Coeffs::new(f64::from(sigma)),
             ws_v: vec![0.0; (dims.height + 2 * PAD) * dims.width],
             ws_t: vec![0.0; (dims.width + 2 * PAD) * dims.height],
+            live: vec![false; dims.width],
+            runs: Vec::new(),
         })
     }
 
@@ -224,9 +230,21 @@ impl RecursiveGaussian {
     }
 
     /// Both passes on the frame already loaded into `ws_v`'s data rows.
+    ///
+    /// The vertical pass runs only on the columns that hold any input: a
+    /// column of `+0.0` stays `+0.0` bit for bit (`b > 0` and the zero
+    /// state), so skipping it changes nothing, and sparse inputs (a library
+    /// build filters a few footprints per full-frame canvas) cost a fraction
+    /// of a dense frame there. The horizontal pass then runs everywhere.
     fn run(&mut self, out: &mut [f32]) {
         let Dims { width, height } = self.dims;
-        filter_rows(&mut self.ws_v, height, width, &self.c);
+        live_columns(
+            &self.ws_v[PAD * width..(PAD + height) * width],
+            width,
+            &mut self.live,
+            &mut self.runs,
+        );
+        filter_rows(&mut self.ws_v, height, width, &self.c, &self.runs);
         transpose(
             &self.ws_v[PAD * width..],
             height,
@@ -234,24 +252,62 @@ impl RecursiveGaussian {
             &mut self.ws_t[PAD * height..],
             |v| v,
         );
-        filter_rows(&mut self.ws_t, width, height, &self.c);
+        filter_rows(&mut self.ws_t, width, height, &self.c, &[(0, height)]);
         transpose(&self.ws_t[PAD * height..], width, height, out, |v| v as f32);
+    }
+}
+
+/// The columns of `data` (rows of length `len`) holding any value other
+/// than `+0.0`, as `[start, end)` runs in `runs`.
+fn live_columns(data: &[f64], len: usize, live: &mut [bool], runs: &mut Vec<(usize, usize)>) {
+    live.fill(false);
+    let mut left = len;
+    for row in data.chunks_exact(len) {
+        for (l, v) in live.iter_mut().zip(row) {
+            if !*l && v.to_bits() != 0 {
+                *l = true;
+                left -= 1;
+            }
+        }
+        if left == 0 {
+            break;
+        }
+    }
+    runs.clear();
+    let mut i = 0;
+    while i < len {
+        if live[i] {
+            let s = i;
+            while i < len && live[i] {
+                i += 1;
+            }
+            runs.push((s, i));
+        } else {
+            i += 1;
+        }
     }
 }
 
 /// Forward then backward recursion down the `n` data rows (length `len`) of a
 /// padded buffer: rows `0..PAD` are zero, `PAD..PAD+n` data, then `PAD` tail rows.
-fn filter_rows(ws: &mut [f64], n: usize, len: usize, c: &Coeffs) {
+/// Only the columns in `cols` (`[start, end)` runs) are filtered; the caller
+/// guarantees every other column is `+0.0`, which the recursion keeps
+/// (`b > 0`), so they are left as they are (their tail rows are not written).
+fn filter_rows(ws: &mut [f64], n: usize, len: usize, c: &Coeffs, cols: &[(usize, usize)]) {
     let [a0, a1, a2] = c.a;
     let b = c.b;
+    debug_assert!(b > 0.0);
     for r in PAD..PAD + n {
         let (head, rest) = ws.split_at_mut(r * len);
         let cur = &mut rest[..len];
         let p1 = &head[(r - 1) * len..r * len];
         let p2 = &head[(r - 2) * len..(r - 1) * len];
         let p3 = &head[(r - 3) * len..(r - 2) * len];
-        for i in 0..len {
-            cur[i] = b * cur[i] + a0 * p1[i] + a1 * p2[i] + a2 * p3[i];
+        for &(s, e) in cols {
+            let (p1, p2, p3) = (&p1[s..e], &p2[s..e], &p3[s..e]);
+            for (i, v) in cur[s..e].iter_mut().enumerate() {
+                *v = b * *v + a0 * p1[i] + a1 * p2[i] + a2 * p3[i];
+            }
         }
     }
     // Anti-causal start values past the end, from the last three causal rows.
@@ -263,8 +319,11 @@ fn filter_rows(ws: &mut [f64], n: usize, len: usize, c: &Coeffs) {
         let w3 = &head[(end - 3) * len..(end - 2) * len];
         for (j, t) in tail.chunks_exact_mut(len).take(PAD).enumerate() {
             let [m0, m1, m2] = c.tail[j];
-            for i in 0..len {
-                t[i] = m0 * w1[i] + m1 * w2[i] + m2 * w3[i];
+            for &(s, e) in cols {
+                let (w1, w2, w3) = (&w1[s..e], &w2[s..e], &w3[s..e]);
+                for (i, v) in t[s..e].iter_mut().enumerate() {
+                    *v = m0 * w1[i] + m1 * w2[i] + m2 * w3[i];
+                }
             }
         }
     }
@@ -274,8 +333,11 @@ fn filter_rows(ws: &mut [f64], n: usize, len: usize, c: &Coeffs) {
         let n1 = &rest[..len];
         let n2 = &rest[len..2 * len];
         let n3 = &rest[2 * len..3 * len];
-        for i in 0..len {
-            cur[i] = b * cur[i] + a0 * n1[i] + a1 * n2[i] + a2 * n3[i];
+        for &(s, e) in cols {
+            let (n1, n2, n3) = (&n1[s..e], &n2[s..e], &n3[s..e]);
+            for (i, v) in cur[s..e].iter_mut().enumerate() {
+                *v = b * *v + a0 * n1[i] + a1 * n2[i] + a2 * n3[i];
+            }
         }
     }
 }
@@ -450,5 +512,65 @@ mod tests {
         g.blur(&vec![5.0; dims.pixels()], &mut b).unwrap();
         g.blur(&src, &mut b).unwrap();
         assert_eq!(a, b);
+    }
+
+    /// The vertical pass skips columns of `+0.0`: bit for bit what running
+    /// it on every column gives, for sparse inputs (a few patches, the
+    /// library build's canvases), after a dense frame (stale tail rows), and
+    /// with `-0.0` in a column (which is not skipped).
+    #[test]
+    fn skipping_zero_columns_is_exact() {
+        let dims = Dims::new(97, 61).unwrap();
+        let full = |g: &mut RecursiveGaussian, src: &[f32]| {
+            let Dims { width, height } = dims;
+            for (d, &s) in g.ws_v[PAD * width..PAD * width + dims.pixels()]
+                .iter_mut()
+                .zip(src)
+            {
+                *d = f64::from(s);
+            }
+            filter_rows(&mut g.ws_v, height, width, &g.c, &[(0, width)]);
+            transpose(
+                &g.ws_v[PAD * width..],
+                height,
+                width,
+                &mut g.ws_t[PAD * height..],
+                |v| v,
+            );
+            filter_rows(&mut g.ws_t, width, height, &g.c, &[(0, height)]);
+            let mut out = vec![0.0f32; dims.pixels()];
+            transpose(&g.ws_t[PAD * height..], width, height, &mut out, |v| {
+                v as f32
+            });
+            out
+        };
+        let mut sparse = vec![0.0f32; dims.pixels()];
+        for (y0, x0) in [(3usize, 2usize), (40, 50), (20, 90), (55, 30)] {
+            for y in y0..(y0 + 5).min(dims.height) {
+                for x in x0..(x0 + 4).min(dims.width) {
+                    sparse[y * dims.width + x] = 1.0 + ((y * 31 + x * 17) % 13) as f32;
+                }
+            }
+        }
+        let mut negzero = sparse.clone();
+        negzero[10 * dims.width + 70] = -0.0;
+        let dense: Vec<f32> = (0..dims.pixels())
+            .map(|i| ((i * 7919) % 255) as f32)
+            .collect();
+        let mut g = RecursiveGaussian::new(dims, 7.0).unwrap();
+        let mut h = RecursiveGaussian::new(dims, 7.0).unwrap();
+        for src in [
+            &dense,
+            &sparse,
+            &negzero,
+            &vec![0.0; dims.pixels()],
+            &sparse,
+        ] {
+            let mut out = vec![0.0f32; dims.pixels()];
+            g.blur(src, &mut out).unwrap();
+            let want = full(&mut h, src);
+            let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&out), bits(&want));
+        }
     }
 }

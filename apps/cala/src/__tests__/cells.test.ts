@@ -1,8 +1,6 @@
 // @vitest-environment node
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { initCalaWasm, QcMonitor, SlowLoop, TraceEngine, TraceLibrary } from '../lib/cala-wasm.ts';
+import { QcMonitor, SlowLoop, TraceEngine, TraceLibrary } from '../lib/cala-wasm.ts';
 import {
   buildGeometry,
   FOOTPRINT_ALPHA,
@@ -26,13 +24,17 @@ import {
 } from '../lib/slow-runner.ts';
 import { TraceHistory } from '../lib/trace-history.ts';
 import { parseQc } from '../lib/qc.ts';
-import type { FastToSlow, LibraryView, SlowToFast, SlowToMain } from '../workers/slow-types.ts';
+import type {
+  FastToSlow,
+  LibraryView,
+  OwnerToVisit,
+  SlowToFast,
+  SlowToMain,
+  VisitToOwner,
+} from '../workers/slow-types.ts';
+import { initTestWasm } from './wasm-test.ts';
 
-beforeAll(async () => {
-  await initCalaWasm(
-    readFileSync(resolve(import.meta.dirname, '../../../../crates/cala/pkg/calab_cala_bg.wasm')),
-  );
-});
+beforeAll(initTestWasm);
 
 /** A port that records what was posted (and what was transferred). */
 function recorder<T>() {
@@ -66,6 +68,22 @@ describe('ForwardPool (the dropping policy)', () => {
     pool.release(a);
     // The returned buffer is reused, not reallocated.
     expect(pool.acquire(4)).toBe(a);
+  });
+
+  it('a lossless pool (Refine) never drops: it allocates past `size` and keeps only `size`', () => {
+    const pool = new ForwardPool(2, 10, true);
+    const bufs = [pool.acquire(4), pool.acquire(4), pool.acquire(4)];
+    expect(bufs.every((b) => b !== null)).toBe(true);
+    expect(pool.inFlight).toBe(3);
+    expect(pool.droppedFrames).toBe(0);
+    expect(pool.forwardedFrames).toBe(12);
+    expect(pool.extraBuffers).toBe(1);
+    for (const b of bufs) pool.release(b);
+    expect(pool.inFlight).toBe(0);
+    // Two kept for reuse, the extra one let go.
+    expect(pool.acquire(4)).toBe(bufs[1]);
+    expect(pool.acquire(4)).toBe(bufs[0]);
+    expect(pool.extraBuffers).toBe(1);
   });
 
   it('frees the slot for a foreign buffer without keeping it', () => {
@@ -239,6 +257,7 @@ function fakeBackend() {
     };
   };
   let ids: number[] = [];
+  let last = new Float32Array(0);
   const backend: TraceBackend = {
     libraryFromBytes: lib,
     newEngine(l): TraceEngineLike {
@@ -254,8 +273,11 @@ function fakeBackend() {
           const out = new Float32Array(count * ids.length);
           for (let i = 0; i < count; i++)
             for (let j = 0; j < ids.length; j++) out[i * ids.length + j] = i * 10 + j;
+          last = out.map((v) => v + 0.5);
           return out;
         },
+        // Ring levels of the last batch: traces + 0.5.
+        lastBackground: () => last.slice(),
         free() {},
       };
     },
@@ -413,6 +435,24 @@ describe('FastLoop (fast worker side of the hand-off)', () => {
     expect(port.sent[1].transfer).toContain(batch.frames.buffer);
   });
 
+  it('forwards the background levels of the same solve with the traces, transferred', () => {
+    const port = recorder<FastToSlow>();
+    const fake = fakeBackend();
+    fake.libs.set(3, [11, 12]);
+    const fl = fastLoop(port, fake.backend);
+    const frames = new Float32Array(12);
+    fl.process(frames, 3, 3, calibration);
+    // No cells yet: no levels.
+    expect(port.of('frames')[0].background).toBeUndefined();
+    fl.handleSlow({ type: 'library', session: 5, version: 3, bytes: Uint8Array.of(3) });
+    fl.process(frames, 6, 3, calibration);
+    const batch = port.of('frames').at(-1)!;
+    expect(batch).toMatchObject({ version: 3, cells: 2 });
+    expect(Array.from(batch.traces)).toEqual([0, 1, 10, 11, 20, 21]);
+    expect(Array.from(batch.background!)).toEqual([0.5, 1.5, 10.5, 11.5, 20.5, 21.5]);
+    expect(port.sent.at(-1)!.transfer).toContain(batch.background!.buffer);
+  });
+
   it('never waits for the slow worker: drops while both buffers are out, resumes on ack', () => {
     const port = recorder<FastToSlow>();
     const fl = fastLoop(port, fakeBackend().backend);
@@ -483,6 +523,40 @@ describe('FastLoop (fast worker side of the hand-off)', () => {
     expect(fl.process(frames, 9, 3, calibration).version).toBe(6);
   });
 
+  it('enables consolidated gradients only for a frozen-library replay', () => {
+    for (const mode of ['discover', 'refine', 'extract'] as const) {
+      const fake = fakeBackend();
+      fake.libs.set(3, [11]);
+      const enabled: boolean[] = [];
+      const newEngine = fake.backend.newEngine;
+      fake.backend.newEngine = (lib) => ({
+        ...newEngine(lib),
+        setConsolidatedRingGradient: (on) => enabled.push(on),
+      });
+      const fl = new FastLoop(
+        {
+          width: 2,
+          height: 2,
+          batchSize: 3,
+          cellDiameterPx: 1,
+          flattenSigmaPx: 1,
+          fps: 20,
+          session: 5,
+          qc: false,
+          ...(mode !== 'discover' ? { initialLibrary: Uint8Array.of(3) } : {}),
+          refine: mode === 'refine',
+        },
+        recorder<FastToSlow>(),
+        fake.backend,
+      );
+      if (mode === 'discover')
+        fl.handleSlow({ type: 'library', session: 5, version: 3, bytes: Uint8Array.of(3) });
+      fl.process(new Float32Array(12), 0, 3, calibration);
+      expect(enabled, mode).toEqual(mode === 'extract' ? [true] : []);
+      fl.dispose();
+    }
+  });
+
   it('returns the residual of the last frame only while asked, and only with cells', () => {
     const port = recorder<FastToSlow>();
     const fake = fakeBackend();
@@ -525,6 +599,72 @@ describe('FastLoop (fast worker side of the hand-off)', () => {
     fl.dispose();
     expect(port.of('reset')).toEqual([{ type: 'reset', session: 5 }]);
   });
+
+  it('Refine: the replayed frames carry the background levels of their solve', () => {
+    const port = recorder<FastToSlow>();
+    const fake = fakeBackend();
+    fake.libs.set(3, [11, 12]);
+    const fl = new FastLoop(
+      {
+        width: 2,
+        height: 2,
+        batchSize: 3,
+        session: 5,
+        cellDiameterPx: 10,
+        flattenSigmaPx: 0,
+        poolSize: 2,
+        refine: true,
+        initialLibrary: Uint8Array.of(3),
+      },
+      port,
+      fake.backend,
+    );
+    fl.process(new Float32Array(12), 0, 3, calibration);
+    expect(port.of('replay')).toHaveLength(1);
+    const [batch] = port.of('frames');
+    expect(batch).toMatchObject({ start: 0, version: 3, cells: 2 });
+    expect(Array.from(batch.background!)).toEqual([0.5, 1.5, 10.5, 11.5, 20.5, 21.5]);
+    fl.dispose(true);
+  });
+
+  it('Refine: replays into the existing slow loop from frame 0, without noise maps', () => {
+    const port = recorder<FastToSlow>();
+    const fl = new FastLoop(
+      {
+        width: 2,
+        height: 2,
+        batchSize: 3,
+        session: 5,
+        cellDiameterPx: 10,
+        flattenSigmaPx: 0,
+        startFrame: 6,
+        noiseEvery: 3,
+        poolSize: 2,
+        refine: true,
+      },
+      port,
+      fakeBackend().backend,
+    );
+    fl.process(new Float32Array(12), 0, 3, calibration);
+    expect(port.of('init')).toHaveLength(0);
+    expect(port.of('replay')).toEqual([{ type: 'replay', session: 5, scope: 'refine' }]);
+    expect(port.of('frames').map((m) => m.start)).toEqual([0]);
+    fl.handleSlow({
+      type: 'ack',
+      session: 5,
+      frames: port.of('frames')[0].frames,
+      start: 0,
+      count: 3,
+      observed: 3,
+    });
+    fl.process(new Float32Array(12), 3, 3, calibration);
+    fl.process(new Float32Array(12), 6, 3, calibration);
+    expect(port.of('frames').every((m) => m.noise === undefined)).toBe(true);
+    // Stopped mid-run: the slow loop stays and publishes what it has.
+    fl.dispose(true);
+    expect(port.of('reset')).toHaveLength(0);
+    expect(port.of('end')).toEqual([{ type: 'end', session: 5 }]);
+  });
 });
 
 function fakeLib(version: number, ids: number[]): PublishedLibrary & { freed: boolean } {
@@ -548,13 +688,19 @@ function fakeLib(version: number, ids: number[]): PublishedLibrary & { freed: bo
 function runner(publishAt: Set<number>) {
   const toFast = recorder<SlowToFast>();
   const toMain = recorder<SlowToMain>();
-  const observed: { version: number; first: number; traces: number[] }[] = [];
+  const observed: { version: number; first: number; traces: number[]; background?: number[] }[] =
+    [];
   let steps = 0;
   const libs: ReturnType<typeof fakeLib>[] = [];
   const loop: SlowLoopLike = {
-    observe(frame, version, traces) {
+    observe(frame, version, traces, background) {
       if (version === 99) return false;
-      observed.push({ version, first: frame[0], traces: Array.from(traces) });
+      observed.push({
+        version,
+        first: frame[0],
+        traces: Array.from(traces),
+        ...(background ? { background: Array.from(background) } : {}),
+      });
       return true;
     },
     step() {
@@ -637,6 +783,32 @@ describe('SlowRunner (slow worker side of the hand-off)', () => {
     expect(Array.from(status.status.cellStatus!.established)).toEqual([1, 0]);
   });
 
+  it("observes each frame with its own slice of the solve's background levels", () => {
+    const t = runner(new Set());
+    t.r.handle(INIT);
+    t.r.handle({
+      type: 'frames',
+      session: 2,
+      start: 0,
+      count: 2,
+      version: 0,
+      cells: 2,
+      frames: Float32Array.of(10, 11, 20, 21),
+      traces: Float32Array.of(1, 2, 3, 4),
+      background: Float32Array.of(0.1, 0.2, 0.3, 0.4),
+    });
+    expect(t.observed.map((o) => [o.traces, o.background!.map((v) => +v.toFixed(3))])).toEqual([
+      [
+        [1, 2],
+        [0.1, 0.2],
+      ],
+      [
+        [3, 4],
+        [0.3, 0.4],
+      ],
+    ]);
+  });
+
   it('skips frames of a version it no longer holds, and still acks', () => {
     const t = runner(new Set());
     t.r.handle(INIT);
@@ -686,6 +858,130 @@ describe('SlowRunner (slow worker side of the hand-off)', () => {
     t.r.handle({ ...INIT, session: 1 });
     expect(t.toFast.of('library')).toHaveLength(1);
     expect(t.create).toHaveBeenCalledOnce();
+  });
+});
+
+describe('SlowRunner run stages (Discover, then Refine replays)', () => {
+  function withScope() {
+    const t = runner(new Set());
+    const scopes: string[] = [];
+    t.loop.setEditScope = (s: string) => {
+      scopes.push(s);
+    };
+    return { ...t, scopes };
+  }
+  const frames = (start: number): Extract<FastToSlow, { type: 'frames' }> => ({
+    type: 'frames',
+    session: 2,
+    start,
+    count: 2,
+    version: 0,
+    cells: 0,
+    frames: new Float32Array(4),
+    traces: new Float32Array(0),
+  });
+
+  it('keeps the loop, sets the refine scope and runs again from frame 0', () => {
+    const t = withScope();
+    t.r.handle(INIT);
+    t.r.handle(frames(0));
+    t.r.handle(frames(2));
+    t.r.handle({ type: 'end', session: 2 });
+    const done = t.toMain.of('status').at(-1)!.status;
+    expect(done).toMatchObject({ final: true, run: 1, editScope: 'all', consumed: 4 });
+    t.r.handle({ type: 'replay', session: 2, scope: 'refine' });
+    expect(t.scopes).toEqual(['refine']);
+    expect(t.create).toHaveBeenCalledOnce();
+    const st = t.toMain.of('status').at(-1)!.status;
+    expect(st).toMatchObject({ final: false, run: 2, editScope: 'refine', frame: 0, consumed: 0 });
+    t.r.handle(frames(0));
+    expect(t.toMain.of('status').at(-1)!.status).toMatchObject({ frame: 2, consumed: 2, run: 2 });
+    t.r.handle({ type: 'end', session: 2 });
+    expect(t.toMain.of('status').at(-1)!.status).toMatchObject({ final: true, run: 2 });
+    // Repeatable.
+    t.r.handle({ type: 'replay', session: 2, scope: 'refine' });
+    expect(t.toMain.of('status').at(-1)!.status.run).toBe(3);
+  });
+
+  it('in Refine, a batch gives way between frames while a visit is out', async () => {
+    const toFast = recorder<SlowToFast>();
+    const toMain = recorder<SlowToMain>();
+    const visit = recorder<OwnerToVisit>();
+    const events: string[] = [];
+    let jobs = 0;
+    const loop: SlowLoopLike = {
+      ...runner(new Set()).loop,
+      observe: (frame: Float32Array) => {
+        events.push(`observe ${frame[0]}`);
+        return true;
+      },
+      setEditScope: () => {},
+      takeJob: () => Uint8Array.of(++jobs),
+      applyJob: (b: Uint8Array) => {
+        events.push(`apply ${b[0]}`);
+      },
+      housekeep: () => undefined,
+    };
+    const r = new SlowRunner({
+      create: () => loop,
+      toFast,
+      toMain,
+      visits: [visit],
+      now: () => 0,
+    });
+    // 1 x 1 frames: each frame is one value.
+    const batch = (start: number): Extract<FastToSlow, { type: 'frames' }> => ({
+      ...frames(start),
+      count: 3,
+      frames: Float32Array.of(start, start + 1, start + 2),
+    });
+    const result = (job: number): VisitToOwner => ({
+      type: 'result',
+      session: 2,
+      bytes: Uint8Array.of(job),
+      ms: 1,
+    });
+    r.handle({ ...INIT, width: 1, height: 1, fov: Uint8Array.of(1), noise: Float32Array.of(1) });
+    let pauses = 0;
+    const pause = async () => {
+      pauses++;
+      // The visit's result arrives while the batch gives way.
+      if (pauses === 1) r.handleVisit(0, result(jobs));
+    };
+    // Discover: the job handed out after batch 0 is out during batch 3, but
+    // Discover keeps its timing: no pause.
+    await r.handleAsync(batch(0), pause);
+    expect(visit.of('job')).toHaveLength(1);
+    await r.handleAsync(batch(3), pause);
+    expect(pauses).toBe(0);
+    // Discover ends once the visit out is back.
+    r.handle({ type: 'end', session: 2 });
+    r.handleVisit(0, result(jobs));
+    r.handle({ type: 'replay', session: 2, scope: 'refine' });
+    // Refine: a job goes out after the first batch; the next batch pauses
+    // after its first frame, applies the result and hands out the next job.
+    await r.handleAsync(batch(10), pause);
+    const out = visit.of('job').length;
+    events.length = 0;
+    await r.handleAsync(batch(20), pause);
+    expect(toMain.of('error')).toEqual([]);
+    expect(events).toEqual(['observe 20', `apply ${out}`, 'observe 21', 'observe 22']);
+    // The result handed out the next job, which is out for the next frame too.
+    expect(pauses).toBe(2);
+    expect(visit.of('job')).toHaveLength(out + 1);
+    // Each buffer still comes back once.
+    expect(toFast.of('ack').map((a) => a.start)).toEqual([0, 3, 10, 20]);
+  });
+
+  it('refuses a replay before the final library, and without a loop', () => {
+    const t = withScope();
+    t.r.handle(INIT);
+    t.r.handle({ type: 'replay', session: 2, scope: 'refine' });
+    expect(t.toMain.of('error')[0].message).toMatch(/final library/);
+    expect(t.scopes).toEqual([]);
+    const u = withScope();
+    u.r.handle({ type: 'replay', session: -1, scope: 'refine' });
+    expect(u.toMain.of('error')[0].message).toMatch(/Discover first/);
   });
 });
 
@@ -837,6 +1133,7 @@ describe('fast and slow loop over the real WASM bindings', () => {
     };
 
     const toSlow: { msg: FastToSlow }[] = [];
+    const sentFrames: Extract<FastToSlow, { type: 'frames' }>[] = [];
     const toFast: { msg: SlowToFast }[] = [];
     const toMain = recorder<SlowToMain>();
     const fast = new FastLoop(
@@ -853,7 +1150,12 @@ describe('fast and slow loop over the real WASM bindings', () => {
         // A QC snapshot after every batch.
         qcEveryS: 0,
       },
-      { postMessage: (msg) => toSlow.push({ msg }) },
+      {
+        postMessage: (msg) => {
+          toSlow.push({ msg });
+          if (msg.type === 'frames') sentFrames.push(msg);
+        },
+      },
       {
         libraryFromBytes: (b) => TraceLibrary.fromBytes(b),
         newEngine: (l) => new TraceEngine(l as TraceLibrary, 0, 0),
@@ -903,6 +1205,11 @@ describe('fast and slow loop over the real WASM bindings', () => {
     expect(last!.ids.length).toBeGreaterThanOrEqual(2);
     expect(last!.traces).toHaveLength(8 * last!.ids.length);
     expect(last!.droppedFrames).toBe(0);
+    // The ring levels of the same solve went with the traces, one per cell and frame.
+    const sent = sentFrames.at(-1)!;
+    expect(sent.version).toBe(last!.version);
+    expect(sent.background).toHaveLength(8 * sent.cells);
+    expect(sent.background!.some((v) => v !== 0)).toBe(true);
     const views = toMain.of('library');
     expect(views.length).toBeGreaterThan(0);
     const g = buildGeometry(views.at(-1)!.library);

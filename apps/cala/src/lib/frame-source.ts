@@ -1,6 +1,8 @@
 /**
- * Frame source for a Miniscope recording folder: `0.avi, 1.avi, ...` plus the
- * optional `metaData.json` and `timeStamps.csv`.
+ * Frame source for a Miniscope recording folder: a numbered series of `.avi`
+ * files (`0.avi, 1.avi, ...` or `msCam0.avi, msCam1.avi, ...`, optionally
+ * zero-padded; see `video-series.ts`) plus the optional `metaData.json` and
+ * `timeStamps.csv` in the same directory.
  *
  * Nothing here reads a whole video file. Per file it reads a byte prefix (the
  * AVI header) and the `idx1` region that follows the `movi` list, then parses
@@ -17,8 +19,9 @@
  */
 import { AviHeader, aviIdx1PayloadLen, aviIsAvixContinuation } from './cala-wasm.ts';
 import type { DeviceIdentity } from './flat-field.ts';
-import { naturalCompare } from './natural-sort.ts';
+import { chooseSeries, detectSeries, dirOf, looseAvis, numberingWarnings } from './video-series.ts';
 import {
+  ASSUMED_FPS,
   fpsFromTimeStamps,
   parseDeviceIdentity,
   parseMetadata,
@@ -114,13 +117,52 @@ export interface FrameSourceInfo {
   live?: { url: string; name?: string };
   /** What `metaData.json` (or a live hello) says about the sensor; see `flatFieldKey`. */
   device?: DeviceIdentity;
+  /** Sessions opened as one recording (`openSessions`), in order. Absent for a plain folder. */
+  sessions?: SessionSpan[];
 }
 
-/** A recording folder's files after picking the Miniscope directory. */
+/** One session of a multi-session run, as handed to `FrameSource.openSessions`. */
+export interface SessionInput {
+  /** Display name (the session folder relative to the picked one). */
+  name: string;
+  /** The session's folder, relative to the selection root. */
+  dir: string;
+  /** Its video series and the sidecars next to it. */
+  entries: FolderEntry[];
+}
+
+/** Where one session's frames are in a multi-session recording. */
+export interface SessionSpan {
+  /** 0-based position in the run. */
+  index: number;
+  name: string;
+  dir: string;
+  /** Global index of its first frame. */
+  startFrame: number;
+  frameCount: number;
+  /** Its own frame rate (the recording uses the first session's). */
+  fps: number | null;
+  files: number;
+}
+
+/** First frames of sessions 1..n-1 (where a new session starts); empty for one session. */
+export function sessionBoundaries(info: Pick<FrameSourceInfo, 'sessions'>): number[] {
+  return (info.sessions ?? []).slice(1).map((s) => s.startFrame);
+}
+
+/** The session holding global frame `frame` (0 when there are no sessions). */
+export function sessionOfFrame(info: Pick<FrameSourceInfo, 'sessions'>, frame: number): number {
+  const spans = info.sessions ?? [];
+  let k = 0;
+  for (let i = 1; i < spans.length; i++) if (spans[i].startFrame <= frame) k = i;
+  return k;
+}
+
+/** The files of the chosen video series, plus the sidecars next to it. */
 interface Group {
   dir: string;
   avis: { file: File; index: number }[];
-  /** Gaps or duplicate numbers among the N.avi names. */
+  /** Gaps or duplicate numbers among the numbered names. */
   numberingWarnings: string[];
   /** Files that might be metaData.json / timeStamps.csv (picked after the folder is chosen). */
   sidecars: File[];
@@ -133,10 +175,13 @@ interface OpenedAvi {
   start: number; // global index of this file's first frame
 }
 
-const AVI_NAME = /^(\d+)\.avi$/i;
 // Miniscope writes metaData.json and timeStamps.csv. Exported datasets often
 // prefix them (neural_metaData.json, neural_timestamp.csv), so a prefixed name
 // is accepted too; see pickSidecar.
+/** Shown when the selection holds no numbered `.avi` series. */
+export const NO_VIDEO_MESSAGE =
+  'No Miniscope video found: expected numbered .avi files such as 0.avi, 1.avi ... or msCam0.avi, msCam1.avi ... (select the folder that contains them, or use "Choose individual files").';
+
 const METADATA_NAME = /(?:^|[_-])metadata\.json$/i;
 const TIMESTAMPS_NAME = /(?:^|[_-])time_?stamps?\.csv$/i;
 const NEURAL_PREFIX = /^(?:neural|miniscope|ms)[_-]/i;
@@ -155,76 +200,42 @@ function pickSidecar(files: File[], pattern: RegExp, exactName: RegExp): File | 
   return prefixed.length === 1 ? prefixed[0] : undefined;
 }
 
-function dirOf(relPath: string): string {
-  const slash = relPath.lastIndexOf('/');
-  return slash < 0 ? '' : relPath.slice(0, slash);
-}
-
-/** Warnings for N.avi numbering that is not 0, 1, 2, ... without repeats. */
-function numberingWarnings(avis: { file: File; index: number }[]): string[] {
-  const out: string[] = [];
-  const seen = new Map<number, string>();
-  for (const { file, index } of avis) {
-    const prior = seen.get(index);
-    if (prior !== undefined) {
-      out.push(`${prior} and ${file.name} have the same number; both are used.`);
-    }
-    seen.set(index, file.name);
-  }
-  const unique = [...seen.keys()].sort((a, b) => a - b);
-  if (unique.length > 0 && unique[0] !== 0) {
-    out.push(`The numbering starts at ${unique[0]}.avi, not 0.avi.`);
-  }
-  const missing: number[] = [];
-  for (let i = 1; i < unique.length; i++) {
-    for (let k = unique[i - 1] + 1; k < unique[i] && missing.length < 20; k++) missing.push(k);
-  }
-  if (missing.length > 0) {
-    out.push(`Missing ${missing.map((k) => `${k}.avi`).join(', ')} in the numbering.`);
-  }
-  return out;
-}
-
 function groupFiles(entries: FolderEntry[]): {
   group: Group;
   metaData?: File;
   timeStamps?: File;
   ignored: string[];
 } {
-  const byDir = new Map<string, Group>();
-  const get = (dir: string): Group => {
-    let g = byDir.get(dir);
-    if (!g) {
-      g = { dir, avis: [], numberingWarnings: [], sidecars: [] };
-      byDir.set(dir, g);
-    }
-    return g;
-  };
-  for (const { file, relPath } of entries) {
-    const dir = dirOf(relPath);
-    const m = AVI_NAME.exec(file.name);
-    if (m) get(dir).avis.push({ file, index: Number(m[1]) });
-    else if (METADATA_NAME.test(file.name) || TIMESTAMPS_NAME.test(file.name)) {
-      get(dir).sidecars.push(file);
-    }
+  // The video series: the clear choice, else the best-ranked one (the app asks
+  // the user first when it is ambiguous, see `lib/video-series.ts`). Files
+  // picked one by one that are not numbered are used in natural order.
+  const { chosen, candidates } = chooseSeries(detectSeries(entries));
+  const series = chosen ?? candidates[0];
+  let dir: string;
+  let avis: { file: File; index: number }[];
+  let warnings: string[];
+  if (series) {
+    dir = series.dir;
+    avis = series.files.map((f) => ({ file: f.entry.file, index: f.index }));
+    warnings = numberingWarnings(series);
+  } else {
+    const loose = looseAvis(entries);
+    if (loose.length === 0) throw new Error(NO_VIDEO_MESSAGE);
+    dir = '';
+    avis = loose.map((e, index) => ({ file: e.file, index }));
+    warnings = [];
   }
-  const candidates = [...byDir.values()].filter((g) => g.avis.length > 0);
-  if (candidates.length === 0) {
-    throw new Error(
-      'No Miniscope video found: expected files named 0.avi, 1.avi, ... (select the folder that contains them).',
-    );
-  }
-  // A parent folder can hold several devices (Miniscope, behaviour camera).
-  // Prefer a directory that looks like the miniscope, then the one with the most files.
-  const score = (g: Group) =>
-    (/miniscope/i.test(g.dir) ? 1_000_000 : 0) + g.avis.length - (g.dir.split('/').length - 1);
-  candidates.sort((a, b) => score(b) - score(a));
-  const group = candidates[0];
-  const metaData = pickSidecar(group.sidecars, METADATA_NAME, /^metadata\.json$/i);
-  const timeStamps = pickSidecar(group.sidecars, TIMESTAMPS_NAME, /^timestamps\.csv$/i);
-  group.avis.sort((a, b) => a.index - b.index || naturalCompare(a.file.name, b.file.name));
-  const used = new Set<File>(group.avis.map((a) => a.file));
-  group.numberingWarnings = numberingWarnings(group.avis);
+  const sidecars = entries
+    .filter(
+      (e) =>
+        dirOf(e.relPath) === dir &&
+        (METADATA_NAME.test(e.file.name) || TIMESTAMPS_NAME.test(e.file.name)),
+    )
+    .map((e) => e.file);
+  const group: Group = { dir, avis, numberingWarnings: warnings, sidecars };
+  const metaData = pickSidecar(sidecars, METADATA_NAME, /^metadata\.json$/i);
+  const timeStamps = pickSidecar(sidecars, TIMESTAMPS_NAME, /^timestamps\.csv$/i);
+  const used = new Set<File>(avis.map((a) => a.file));
   const ignored = entries
     .filter((e) => !used.has(e.file) && e.file !== metaData && e.file !== timeStamps)
     .map((e) => e.relPath);
@@ -324,6 +335,127 @@ async function readText(file: File | undefined): Promise<string | null> {
   }
 }
 
+/** One recording's files opened: the headers of its non-empty videos, in order, and its info. */
+interface OpenedRecording {
+  opened: { file: File; header: AviHeader }[];
+  info: FrameSourceInfo;
+}
+
+/** Open the headers and sidecars of one recording (one video series). */
+async function openRecording(
+  entries: FolderEntry[],
+  onProgress?: (opened: number, total: number) => void,
+): Promise<OpenedRecording> {
+  const { group, metaData, timeStamps, ignored } = groupFiles(withNames(entries));
+  const warnings: string[] = [...group.numberingWarnings];
+
+  // Header reads are throttled: ~7.8k files for a three-day recording, and
+  // each is a few small reads that a network drive answers slowly.
+  let opening = 0;
+  const all = await mapLimit(group.avis, OPEN_CONCURRENCY, async ({ file }) => {
+    const header = await openAvi(file);
+    onProgress?.(++opening, group.avis.length);
+    return { file, header };
+  });
+  // A file with no complete frame (a crash right after it was created) is
+  // dropped with a warning instead of failing the whole recording.
+  const opened = all.filter((o) => o.header.frameCount > 0);
+  for (const o of all) {
+    if (o.header.frameCount === 0) {
+      warnings.push(`${o.file.name} has no complete frames and was skipped.`);
+      o.header.free();
+    }
+  }
+  if (opened.length === 0) throw new Error('The video files contain no frames.');
+  const first = opened[0].header;
+  const geometry = (h: AviHeader) => `${h.width}x${h.height} ${h.bitDepth}-bit`;
+  for (const { file, header } of opened) {
+    if (
+      header.width !== first.width ||
+      header.height !== first.height ||
+      header.bitDepth !== first.bitDepth
+    ) {
+      const message = `${file.name} is ${geometry(header)} but ${opened[0].file.name} is ${geometry(first)}; all files must match.`;
+      for (const o of opened) o.header.free();
+      throw new Error(message);
+    }
+  }
+
+  const avis = opened.map(({ file, header }) => ({ name: file.name, header }));
+  const start = avis.reduce((a, x) => a + x.header.frameCount, 0);
+
+  const metaText = await readText(metaData);
+  const meta: MiniscopeMetadata | null = parseMetadataText(metaText);
+  const device = metaText === null ? null : parseDeviceIdentity(metaText);
+  const stamps = parseTimeStampsText(await readText(timeStamps));
+  const fpsMeta = meta?.frameRate ?? null;
+  const fpsStamps = stamps ? fpsFromTimeStamps(stamps.ms) : null;
+
+  // Measured beats nominal: timestamps first, then metadata. Never the AVI header.
+  let fps: number | null = null;
+  let fpsSource: FpsSourceKind = 'none';
+  if (fpsStamps !== null) {
+    fps = fpsStamps;
+    fpsSource = 'timestamps';
+  } else if (fpsMeta !== null) {
+    fps = fpsMeta;
+    fpsSource = 'metadata';
+  }
+  if (
+    fpsStamps !== null &&
+    fpsMeta !== null &&
+    Math.abs(fpsStamps - fpsMeta) / fpsMeta > FPS_MISMATCH_TOLERANCE
+  ) {
+    warnings.push(
+      `Timestamps give ${fpsStamps.toFixed(2)} Hz but metaData.json says ${fpsMeta} Hz; using the timestamps.`,
+    );
+  }
+  if (stamps && stamps.ms.length !== start) {
+    warnings.push(
+      `timeStamps.csv has ${stamps.ms.length} rows but the videos have ${start} frames.`,
+    );
+  }
+  if (fps === null) {
+    warnings.push(
+      `No frame rate found (no usable timeStamps.csv or metaData.json); time-based settings (QC windows, background, flat field) assume ${ASSUMED_FPS} Hz.`,
+    );
+  }
+  for (const a of avis) {
+    if (a.header.skippedEmptyFrames > 0) {
+      warnings.push(
+        `${a.name}: ${a.header.skippedEmptyFrames} dropped-frame index entries were skipped, so later frames shift against the timestamps.`,
+      );
+    }
+  }
+  for (const a of avis) {
+    if (a.header.hasIdx1 === false) {
+      warnings.push(`${a.name} has no idx1 index; frame offsets assume a fixed stride.`);
+      break;
+    }
+  }
+
+  const declaredUsec = first.declaredUsecPerFrame;
+  const info: FrameSourceInfo = {
+    frameCount: start,
+    width: first.width,
+    height: first.height,
+    bitDepth: first.bitDepth,
+    fourcc: first.fourcc,
+    bottomUp: first.bottomUp,
+    fps,
+    fpsSource,
+    fpsFromMetadata: fpsMeta,
+    fpsFromTimestamps: fpsStamps,
+    aviDeclaredFps: declaredUsec > 0 ? 1e6 / declaredUsec : null,
+    timestampCount: stamps ? stamps.ms.length : null,
+    files: avis.map((a) => ({ name: a.name, frames: a.header.frameCount })),
+    ignoredFiles: ignored,
+    warnings,
+    ...(device ? { device } : {}),
+  };
+  return { opened, info };
+}
+
 /** One file read: `run` frames of `avi` at bytes [from, to). */
 interface Span {
   avi: OpenedAvi;
@@ -352,114 +484,86 @@ export class FrameSource {
     entries: FolderEntry[],
     options: { onProgress?: (opened: number, total: number) => void } = {},
   ): Promise<FrameSource> {
-    const { group, metaData, timeStamps, ignored } = groupFiles(withNames(entries));
-    const warnings: string[] = [...group.numberingWarnings];
-
-    // Header reads are throttled: ~7.8k files for a three-day recording, and
-    // each is a few small reads that a network drive answers slowly.
-    let opening = 0;
-    const all = await mapLimit(group.avis, OPEN_CONCURRENCY, async ({ file }) => {
-      const header = await openAvi(file);
-      options.onProgress?.(++opening, group.avis.length);
-      return { file, header };
-    });
-    // A file with no complete frame (a crash right after it was created) is
-    // dropped with a warning instead of failing the whole recording.
-    const opened = all.filter((o) => o.header.frameCount > 0);
-    for (const o of all) {
-      if (o.header.frameCount === 0) {
-        warnings.push(`${o.file.name} has no complete frames and was skipped.`);
-        o.header.free();
-      }
-    }
-    if (opened.length === 0) throw new Error('The video files contain no frames.');
-    const first = opened[0].header;
-    const geometry = (h: AviHeader) => `${h.width}x${h.height} ${h.bitDepth}-bit`;
-    for (const { file, header } of opened) {
-      if (
-        header.width !== first.width ||
-        header.height !== first.height ||
-        header.bitDepth !== first.bitDepth
-      ) {
-        const message = `${file.name} is ${geometry(header)} but ${opened[0].file.name} is ${geometry(first)}; all files must match.`;
-        for (const o of opened) o.header.free();
-        throw new Error(message);
-      }
-    }
-
+    const r = await openRecording(entries, options.onProgress);
     let start = 0;
-    const avis: OpenedAvi[] = opened.map(({ file, header }) => {
+    const avis: OpenedAvi[] = r.opened.map(({ file, header }) => {
       const a = { name: file.name, file, header, start };
       start += header.frameCount;
       return a;
     });
+    return new FrameSource(avis, r.info);
+  }
 
-    const metaText = await readText(metaData);
-    const meta: MiniscopeMetadata | null = parseMetadataText(metaText);
-    const device = metaText === null ? null : parseDeviceIdentity(metaText);
-    const stamps = parseTimeStampsText(await readText(timeStamps));
-    const fpsMeta = meta?.frameRate ?? null;
-    const fpsStamps = stamps ? fpsFromTimeStamps(stamps.ms) : null;
-
-    // Measured beats nominal: timestamps first, then metadata. Never the AVI header.
-    let fps: number | null = null;
-    let fpsSource: FpsSourceKind = 'none';
-    if (fpsStamps !== null) {
-      fps = fpsStamps;
-      fpsSource = 'timestamps';
-    } else if (fpsMeta !== null) {
-      fps = fpsMeta;
-      fpsSource = 'metadata';
+  /**
+   * Open several sessions as one recording, in the order given (a Joint run,
+   * see `docs/stages.md`): their frames follow one another and
+   * `info.sessions` says where each starts. Every session must have the
+   * first one's width, height and bit depth. The frame rate is the first
+   * session's (a differing rate is a warning when the sessions are listed,
+   * see `validateSessions`). One session opens exactly as `open` does, plus
+   * `info.sessions`.
+   */
+  static async openSessions(
+    sessions: readonly SessionInput[],
+    options: { onProgress?: (opened: number, total: number) => void } = {},
+  ): Promise<FrameSource> {
+    if (sessions.length === 0) throw new Error('No sessions to open.');
+    const opened: { session: SessionInput; r: OpenedRecording }[] = [];
+    const total = sessions.reduce((a, s) => a + s.entries.length, 0);
+    let done = 0;
+    try {
+      for (const session of sessions) {
+        const r = await openRecording(session.entries, () => options.onProgress?.(++done, total));
+        opened.push({ session, r });
+      }
+    } catch (err) {
+      for (const o of opened) for (const a of o.r.opened) a.header.free();
+      throw err instanceof Error && sessions.length > 1
+        ? new Error(`${sessions[opened.length]?.name ?? 'session'}: ${err.message}`)
+        : err;
     }
-    if (
-      fpsStamps !== null &&
-      fpsMeta !== null &&
-      Math.abs(fpsStamps - fpsMeta) / fpsMeta > FPS_MISMATCH_TOLERANCE
-    ) {
-      warnings.push(
-        `Timestamps give ${fpsStamps.toFixed(2)} Hz but metaData.json says ${fpsMeta} Hz; using the timestamps.`,
-      );
-    }
-    if (stamps && stamps.ms.length !== start) {
-      warnings.push(
-        `timeStamps.csv has ${stamps.ms.length} rows but the videos have ${start} frames.`,
-      );
-    }
-    if (fps === null) {
-      warnings.push('No frame rate found (no usable timeStamps.csv or metaData.json).');
-    }
-    for (const a of avis) {
-      if (a.header.skippedEmptyFrames > 0) {
-        warnings.push(
-          `${a.name}: ${a.header.skippedEmptyFrames} dropped-frame index entries were skipped, so later frames shift against the timestamps.`,
+    const first = opened[0].r.info;
+    const geometry = (i: FrameSourceInfo) => `${i.width}x${i.height} ${i.bitDepth}-bit`;
+    for (const { session, r } of opened) {
+      const i = r.info;
+      if (i.width !== first.width || i.height !== first.height || i.bitDepth !== first.bitDepth) {
+        for (const o of opened) for (const a of o.r.opened) a.header.free();
+        throw new Error(
+          `${session.name} is ${geometry(i)} but ${opened[0].session.name} is ${geometry(first)}; all sessions must match.`,
         );
       }
     }
-    for (const a of avis) {
-      if (a.header.hasIdx1 === false) {
-        warnings.push(`${a.name} has no idx1 index; frame offsets assume a fixed stride.`);
-        break;
+    const avis: OpenedAvi[] = [];
+    const spans: SessionSpan[] = [];
+    const warnings: string[] = [];
+    let start = 0;
+    opened.forEach(({ session, r }, index) => {
+      spans.push({
+        index,
+        name: session.name,
+        dir: session.dir,
+        startFrame: start,
+        frameCount: r.info.frameCount,
+        fps: r.info.fps,
+        files: r.info.files.length,
+      });
+      for (const w of r.info.warnings)
+        warnings.push(sessions.length > 1 ? `${session.name}: ${w}` : w);
+      for (const { file, header } of r.opened) {
+        avis.push({ name: file.name, file, header, start });
+        start += header.frameCount;
       }
-    }
-
-    const declaredUsec = first.declaredUsecPerFrame;
+    });
     const info: FrameSourceInfo = {
+      ...first,
       frameCount: start,
-      width: first.width,
-      height: first.height,
-      bitDepth: first.bitDepth,
-      fourcc: first.fourcc,
-      bottomUp: first.bottomUp,
-      fps,
-      fpsSource,
-      fpsFromMetadata: fpsMeta,
-      fpsFromTimestamps: fpsStamps,
-      aviDeclaredFps: declaredUsec > 0 ? 1e6 / declaredUsec : null,
-      timestampCount: stamps ? stamps.ms.length : null,
-      files: avis.map((a) => ({ name: a.name, frames: a.header.frameCount })),
-      ignoredFiles: ignored,
+      timestampCount: opened.every((o) => o.r.info.timestampCount !== null)
+        ? opened.reduce((a, o) => a + (o.r.info.timestampCount ?? 0), 0)
+        : null,
+      files: opened.flatMap((o) => o.r.info.files),
+      ignoredFiles: opened.flatMap((o) => o.r.info.ignoredFiles),
       warnings,
-      ...(device ? { device } : {}),
+      sessions: spans,
     };
     return new FrameSource(avis, info);
   }

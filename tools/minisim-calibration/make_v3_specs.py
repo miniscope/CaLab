@@ -33,7 +33,8 @@ V2_DENSITY = 33750.0
 #    scatter blur (sigma = 0.05 um/um x depth, ~9 um = 5.4 px at the 180 um cell layer) is what
 #    makes the footprints 3.3-3.8 px soft; the real workshop footprints have ~1.5 px edges.
 # 2. optics.field_curvature_radius_um 2500 -> None (flat field). With a sharp PSF, minisim's
-#    detectable flag (a point-source test, sigma_0^2 / sigma_tot^2) only passes cells within
+#    detectable flag (minisim <= 1.0.3: a point-source test, sigma_0^2 / sigma_tot^2; 1.1.0
+#    replaced it with a matched-filter SNR) only passes cells within
 #    a few um of the focal surface, which with field curvature is a bowl: in a trial all
 #    detectable cells sat in a ring (centre 13 of 888, edge 130). A flat field puts the
 #    in-focus layer at one depth, so detectable cells cover the frame (min/max over a 3 x 3

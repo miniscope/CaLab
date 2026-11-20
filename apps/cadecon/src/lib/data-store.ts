@@ -29,6 +29,7 @@ export const {
   // Derived
   effectiveShape,
   nonFiniteCounts,
+  rectifiedInputCells,
   numCells,
   numTimepoints,
   durationSeconds,

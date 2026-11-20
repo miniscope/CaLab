@@ -15,14 +15,30 @@ bottom. Developer notes are in [README.md](README.md).
   motion and divides it out.
 - Finds cells while the recording streams by, adds and prunes them as evidence
   accumulates, and extracts a trace for each.
-- Runs a second pass that re-solves every frame with the final cell set.
+- On a recording, lets the footprints keep converging over replays of the recording
+  (**Refine**) and solves every frame with the final cell set (**Extract**).
 - Shows quality-control indicators while it runs, and exports the result as NumPy
   `.npz` files.
 
 ## What you need
 
-A **Miniscope V4 recording folder**: `0.avi`, `1.avi`, ... (sorted by number), plus
-the sidecars `metaData.json` and `timeStamps.csv` if you have them.
+A **Miniscope recording folder**: a numbered series of `.avi` files, plus the sidecars
+`metaData.json` and `timeStamps.csv` if you have them.
+
+- Video names are `<prefix><number>.avi`: `0.avi, 1.avi, ...` (Miniscope V4 software),
+  `msCam0.avi, msCam1.avi, ...` (older DAQ software), or another prefix of your own
+  (letters, `_`, `-` or spaces). Zero-padded numbers (`msCam001.avi`) work, and files
+  are sorted by number, not alphabetically. Gaps, repeated numbers and a series that
+  does not start at 0 give a warning and still open.
+- If the folder (or its subfolders) holds several series, such as the Miniscope's
+  `img/` next to a behaviour camera's `behav/`, Cala picks the Miniscope from the
+  metadata the Miniscope software writes: the recording's `metaData.json` lists
+  `"miniscopes"` and `"cameras"`, and each device's own `metaData.json` gives its
+  `deviceType`. Without metadata it goes by name: it skips `behav*` folders and
+  prefixes and prefers `msCam` and unprefixed names. When it still cannot tell, it
+  lists the series (name, file count, folder, and "behaviour camera" where it
+  thinks so) and you pick one.
+- `metaData.json` and `timeStamps.csv` are read from the folder of the chosen series.
 
 - The frame rate comes from `timeStamps.csv`, else from `metaData.json`. The frame
   rate in the AVI header is ignored (real 20 fps files declare 60). The Recording tab
@@ -32,7 +48,11 @@ the sidecars `metaData.json` and `timeStamps.csv` if you have them.
   Keep the metadata with your recordings.
 - Files with a prefix (`neural_metaData.json`, `neural_timestamp.csv`) are recognised.
 - Open the folder with the picker, or drop it on the page. **Choose individual files**
-  is there for odd layouts.
+  is there for odd layouts: those files open in natural order (`clip 2` before `clip 10`)
+  even when their names are not numbered like a series. Files are read locally and never leave your computer. In
+  Chrome and Edge the picker asks permission to "view files" in the folder (read-only).
+  Firefox and Safari show their own upload-worded confirmation, which is misleading:
+  nothing is uploaded.
 - The start page also has an optional live-source field (a WebSocket address, see the
   README). Leave it empty to work from files.
 
@@ -42,11 +62,11 @@ the sidecars `metaData.json` and `timeStamps.csv` if you have them.
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Chrome, Edge (desktop) | Recommended. WebGPU motion correction when a GPU is available, and a save dialog that writes exports straight to a file you choose.                                             |
 | Firefox, Safari        | Run the full pipeline with motion correction on the CPU (Safari itself has not been tested). Exports are built in the browser's private file system and handed to the download. |
-| Any browser, no WebGPU | Motion correction falls back to the CPU. The badge in the Run panel says **Motion: CPU** or **Motion: WebGPU**. Throughput is lower; the method is the same.                    |
+| Any browser, no WebGPU | Motion correction falls back to the CPU. The badge in the Run tab says **Motion: CPU** or **Motion: WebGPU**. Throughput is lower; the method is the same.                      |
 
-Needed in any browser: WebAssembly, module Web Workers, and the folder picker
-(`<input webkitdirectory>`). Several CPU cores help: cell discovery uses the spare
-ones. If the browser has no origin private file system (OPFS), pass 2 holds its traces
+Needed in any browser: WebAssembly, module Web Workers, and a folder picker
+(`showDirectoryPicker` in Chrome and Edge, else `<input webkitdirectory>`). Several CPU cores help: cell discovery uses the spare
+ones. If the browser has no origin private file system (OPFS), Extract holds its traces
 in memory, up to 1.5 GB, and says so with an error when a recording does not fit.
 Use a desktop browser; a laptop with enough free RAM for the cell library and a
 few batches of frames is plenty.
@@ -54,9 +74,20 @@ few batches of frames is plenty.
 ## The screen
 
 The field of view fills the left of the window, as tall as the window allows. The
-right-hand column holds three panels: **Run**, **Cell** and **Details**. Each one
-collapses with the chevron by its title. Below about 1000 px of width, or in a
-portrait window, the column moves under the image and the page scrolls.
+right-hand column has the **run strip** at the top, always in view, and below it one
+row of tabs: **Run**, **Cell**, **QC**, **History**, **Correlation**, **Flat field**,
+**Timing**, **Raw file** and **Recording**. One tab shows at a time, with the column's whole
+height. Selecting a cell (in the field of view, the QC table or a neighbour link)
+opens the **Cell** tab. The arrow keys move between the tabs (Home and End to the
+first and last), and the app remembers the tab you were on. Below about 1000 px of
+width, or in a portrait window, the column moves under the image and the page scrolls.
+
+**Run strip.** One line: the stage running (**Discover**, **Refine 2**, **Extract**,
+or **Calibrating** and **Motion template** while a run sets up), its progress, the
+frames per second, and its controls: pause (⏸) and end Discover or stop the live run
+(■), or **Cancel** for Refine and Extract. In a multi-session run it shows which
+session is being read (**Session 3/8**). When nothing runs it says what ran last and
+how many cells there are.
 
 **Field of view.**
 
@@ -80,28 +111,48 @@ portrait window, the column moves under the image and the page scrolls.
   **1:1** (one recording pixel per screen pixel). Drag to pan. While zoomed, a minimap
   in the top right shows where you are; click it to jump. Click a cell to select it.
 
-**Run panel.** One status line (percent read, frame, frames per second) and the
-convergence status, with icon buttons to pause (⏸), restart (↻) and end pass 1 or
+**Run tab.** One status line (percent read, frame, frames per second) and the
+convergence status, with icon buttons to pause (⏸), restart (↻) and end Discover or
 stop the live run (■). Below it: the time-window control (**Run** and, when the run is
 long enough, **24 h**, **1 h**, **10 min**, **1 min**), the whole-run strip, and one
 overlaid plot of the convergence metrics (cells, new cells per minute, churn, stable,
-explained, residual). Collapsing the panel folds the plot away. Below the plot:
-pass 2 progress, **Discover cells**, **Pass 2 after pass 1**, **Run pass 2** and the
-**Export** menu. In a narrow window the passes show as a stepper (Calibrate, Pass 1,
-Pass 2, Export) and the metrics as small tiles on the same fixed ranges.
+explained, residual). Below the plot:
+**Discover cells**, **Extract after Discover**, the **Refine** button and its readout,
+Extract progress, **Extract** and the **Export** menu. In a narrow window the stages
+show as a stepper (Calibrate, Discover, Refine, Extract, Export) and the metrics as
+small tiles on the same fixed ranges. A live stream shows Discover only. In a
+multi-session run the session list (with each boundary's health badge in a Joint run)
+follows.
 
-**Cell panel.** The selected cell's footprint over its full extent (its own peak = 1,
+**Cell tab.** The selected cell's footprint over its full extent (its own peak = 1,
 no threshold), on a **linear** or **log** scale (the log scale spans the 2.4 decades
 the stored 8-bit footprint holds). The white line is its support and the grey lines
 are its neighbours' outlines. The slider steps through the footprint's versions. Next
-to it are the QC verdict and numbers. The **Trace** tab shows the whole session as an
-overview with a live detail window; **Demixing** shows the overlapping neighbours. The
-arrows step through the cells by id.
+to it are the QC verdict and numbers. The **Trace** / **Demixing** switch picks the
+view below: **Trace** shows the whole session as an overview with a live detail
+window that takes the rest of the tab's height; **Demixing** shows the overlapping
+neighbours. The arrows step through the cells by id.
 
-**Details panel.** Tabs: **Cell QC** (the cell table: click a row to select the cell),
-**History** (see below), **Flat field**, **Timing** (per-stage times and the slow
-loop's counters), **Raw file** (scrub the recording as read from disk) and
-**Recording**.
+**The other tabs.** **QC** (the cell table: click a row to select the cell; its sort
+and filter stay while you look at other tabs), **History** (see below), **Correlation** (the
+pairwise trace correlation against distance plot; see below), **Flat field**,
+**Timing** (per-stage times and the slow loop's counters), **Raw file** (scrub the
+recording as read from disk) and **Recording**.
+
+**Correlation tab.** A check for incomplete demixing of neighbouring cells. Press
+**Compute** (once, on demand; it never runs with the pipeline, and **Recompute**
+repeats it): for every pair of cells it takes the Pearson correlation of their traces
+(each minus a 15 s moving average) and plots the median per bin of centre distance,
+in soma diameters D (the median equivalent diameter of the footprints at half
+maximum), with the interquartile range as bars, over a faint scatter of the individual
+pairs (r against the exact distance, 0 to 6 D). Every pair within 6 D is used and drawn
+(thinned uniformly at random only on very large fields, and the note says so); points
+above or below the plot are not drawn and are counted under it. Cells that share no signal sit near 0;
+excess correlation at close range means light is shared between neighbours' traces.
+The dotted line is the median r of far pairs (1.5-3 D apart), the level expected with
+no leak. The y axis is fixed at -0.1 to 0.5 and widens (in 0.1 steps) only when a bar
+falls outside it. After Extract the traces cover the whole recording; before that they
+cover the frames each cell has been tracked.
 
 ## The History view: how the run evolves
 
@@ -109,20 +160,19 @@ Every quantity the run tracks is kept over the whole run, from a 5-minute file t
 5-day live stream, and drawn on one time axis (elapsed stream time: `m:ss`, then
 `h:mm`, then days `d0`…`d5`).
 
-- **Groups.** The Run panel shows **Convergence**. The **History** tab shows one group
+- **Groups.** The Run tab shows **Convergence**. The **History** tab shows one group
   at a time: **Scales** (cell diameter, PSF and flatten σ, once the scale estimator
   lands), **Imaging** (noise σ and background, both the median over the field of
   view; flicker gain and offset; flat-field updates as stems), **Motion** (dy, dx,
   share of frames flagged, registration quality) and **Throughput** (processing rate,
-  slow-loop lag, and for a live stream frames dropped per minute and live lag). The
-  Cell panel folds to one line while History is open.
+  slow-loop lag, and for a live stream frames dropped per minute and live lag).
 - **One plot per group.** Every series is drawn against its own fixed range, so they
   share one plot. The chips above it are the legend and the readout: click a chip (or
   a line, or use the arrow keys) to select a series. The selected one is drawn in
   full with its min/max envelope, and the y axis shows its units and range; the
   others are dimmed. Hover a chip for its full name, range and unit.
 - **Hover** shows every series' value at that time, with the clock time. **Click**
-  pins the time: the chips show the values then, in violet, and the Run panel shows
+  pins the time: the chips show the values then, in violet, and the Run tab shows
   a violet pill; **Esc** or the pill returns to now.
 - **Zoom.** Drag on the whole-run strip, or drag or scroll inside a plot, to choose a
   window; double-click returns to the whole run. The window and the pinned time are
@@ -134,7 +184,8 @@ Every quantity the run tracks is kept over the whole run, from a 5-minute file t
 - **Events.** The lane above each plot marks flat-field maps, pauses, gaps and
   warnings, and range steps; the **?** button explains the icons.
 - **Expand.** The ⤢ button swaps History into the large area, with every group at once;
-  the field of view moves into the History tab and stays live. ⤡ restores it.
+  the field of view moves into the History tab and stays live (selecting a cell there
+  keeps you on the History tab). ⤡ restores it.
 - **Old periods are coarser.** The newest hour is kept at 1 s resolution, older
   periods at 4 s, 16 s, 64 s and 256 s bins; each bin keeps its minimum and maximum,
   so a spike is never lost. About 9 MB covers 5 days. The per-frame motion and
@@ -142,28 +193,158 @@ Every quantity the run tracks is kept over the whole run, from a 5-minute file t
 
 ## How a run works
 
-1. **Opening starts pass 1.** The recording is walked in batches. Preprocessing and
+A run has three named stages: **Discover**, **Refine** and **Extract** (see
+[docs/stages.md](docs/stages.md)).
+
+1. **Opening starts Discover.** The recording is walked in batches. Preprocessing and
    motion correction run in workers, so the page stays responsive. The field of view
    shows the frame being processed at the stage you pick, with the cells over it.
-2. **Pass 1 discovers cells.** A slow loop looks for new cells and prunes bad ones
+2. **Discover finds cells.** A slow loop looks for new cells and prunes bad ones
    while the fast loop extracts traces with the library as it stands. The traces
-   emitted early were solved with the cells known at that moment.
-3. **Pass 2 extracts traces.** It replays the recording with the final library, using
-   the motion and flicker recorded in pass 1, so a cell found late has a trace from
-   frame 0. It starts by itself when pass 1 ends (**Pass 2 after pass 1**), or with
-   **Run pass 2**. **End pass 1** ends discovery at the frames read so far.
-4. **Export.** Once pass 2 has finished, the **Export** menu has **Export (.npz)**, which writes the main file: traces (cells x frames), cell
+   emitted early were solved with the cells known at that moment. **End Discover**
+   (■) ends it at the frames read so far.
+3. **Refine (optional, repeatable).** **Refine** replays the recording from frame 0,
+   and the footprints keep converging. No cell is added, merged, split or deleted.
+   Each run reports how many footprints it refined, the median footprint change and
+   the refines per minute against the run before. "Looks settled" appears when the
+   refine rate stops falling. A Refine after an Extract discards the Extract result,
+   because its traces no longer match the footprints.
+4. **Extract extracts traces.** It replays the recording with the final library, using
+   the motion and flicker recorded during Discover, so a cell found late has a trace from
+   frame 0. Run it with **Extract** once the footprints have settled. It starts by itself when Discover ends only if you turn on **Extract after Discover** (off by default, so a Refine does not discard an Extract; never after a Refine run).
+5. **Export.** Once Extract has finished, the **Export** menu has **Export (.npz)**, which writes the main file: traces (cells x frames), cell
    ids and centroids, sparse footprints, per-frame motion and flicker, per-cell QC,
-   and a JSON block with the run's provenance. **Export for CaDecon (N cells)** writes just
-   the traces of the cells that pass QC (untick **QC-passing cells only** to include
-   every cell), for CaDecon. Python:
-   `np.load("<folder>_cala.npz")["traces"]`. The `.npz` also holds the run's history
+   and a JSON block with the run's provenance and the stages that ran. It holds two
+   trace matrices: `traces`, which never goes below 0 (a quiet cell sits at exactly 0),
+   and `traces_signed`, the same traces without that clip, so a quiet cell's noise
+   is centred on 0 and can go negative. **Export for CaDecon (N cells)** writes just
+   the signed traces of the cells that pass QC (untick **QC-passing cells only** to include
+   every cell), for CaDecon, which needs the zero baseline. Python:
+   `np.load("<folder>_cala.npz")["traces"]` (or `["traces_signed"]`). A live run has no
+   Extract and no signed traces. The `.npz` also holds a mean and a max
+   image of the field of view (`fov_mean`, `fov_max`), the flat-field gain map
+   (`flat_field_gain`, when one was applied), the run's history
    (`history_L0` … `history_L4`) and event log (`run_events_json`); see
    [Reading the run history in Python](#reading-the-run-history-in-python).
 
+## An animal's sessions: projects
+
+Most experiments are many sessions from one animal. **Open animal project** on the
+start screen opens the animal's folder (for a Miniscope V4 tree, the folder that holds
+`date/time/My_V4_Miniscope/`) as a project: one table of all its sessions, what cala
+has done with each, and every result kept in `<animal>/cala-results/`.
+
+- **If the folder holds several animals** (an experiment folder with one subfolder per
+  animal, each with several sessions), the app offers to open one animal at a time.
+  Pick the animal, or open everything as one project.
+- **The session table** lists each session: its folder, date and time (from
+  `metaData.json`), length, then whether **Discover**, **Refine** (how many times) and
+  **Extract** ran, the **Cell IDs** column, and the **current result**. Rows marked with
+  the same letter in **Cell IDs** (and the same coloured edge) share cell ids: they come
+  from one Joint run, so cell 7 is the same neuron in each. `own` means a session's ids
+  are its own (a Separate run). **Results** on a row lists every result of that session
+  with its run, date, cell count and file path.
+- **Run plan.** Tick sessions, then **Chain selected** (one Joint run through them: one
+  library, shared cell ids) or **Run selected separately** (each its own run). Repeat to
+  build a plan, e.g. sessions 1 to 3 chained, 4 and 5 separately, 6 to 8 chained; set
+  how many **Refine runs** come before Extract, and **Start plan**. Chrome and Edge ask
+  once for permission to save into the animal folder. The groups run one after another;
+  each session's results are written, and its current result updated, as soon as it is
+  done. If a stage fails or is cancelled the plan stops, keeps what is written, and
+  leaves the unfinished groups in the plan. **Back to project** in the header returns to
+  the table.
+- **Current result.** A session's newest result is its current one. Older results are
+  kept; **Set current** in its results makes an older one current again.
+- **View results.** Opens a result in the viewer as it looked right after its run:
+  the cells over the field of view (**Mean** or **Max** image), the QC table, a
+  clicked cell's footprint and trace, the History plots and event log, the stages that
+  ran and the flat field, in the same tabs (the first, **Result**, says what was
+  saved; the strip shows the traces being read). It is read-only: to Discover or Refine again, start a new run
+  from the table. **Back to project** returns to the table. Results saved by older
+  versions open too; what they lack (the images, the History) says "not in this
+  export".
+- **Where results go.** Each run gets its own folder, `cala-results/runs/<date>_<time>/`,
+  laid out like a multi-session run's results, and `cala-results/cala-project.json`
+  indexes them. Raw data folders are only read. **Choose another folder...** saves the
+  results elsewhere. If the index is lost or damaged it is rebuilt from the run folders
+  (with a note), and results written by a multi-session run before projects existed are
+  picked up the same way. A renamed session folder is recognised by its start time and
+  frame count; a folder that is gone is marked missing.
+- **Reopening.** Chrome and Edge list **Recent projects** on the start screen: one click
+  (and a permission prompt) reopens one. Other browsers pick the folder again; there each
+  run downloads a zip of its run folder, to unpack into the animal folder.
+
+Saved libraries (applying one session's cells to another) and matching cells across
+Separate runs come in later versions. Details:
+[docs/projects.md](docs/projects.md).
+
+## Several sessions of one animal
+
+To track the same cells across days, run the sessions together instead of
+renumbering files into one folder. An animal project (above) does the same from its
+session table and keeps the results indexed; the steps below are the one-off route.
+
+1. **Pick the parent folder** (for a Miniscope V4 tree, the animal's folder that holds
+   `date/time/My_V4_Miniscope/`). Every recording folder in it, at any depth, becomes a
+   session; behaviour cameras are left out (see above). A rig with two Miniscopes
+   gives one session per Miniscope; run those as **Separate**. If the kind of
+   recording is unclear, the app asks which one is the Miniscope. Or click **Multi-session run** on the start
+   screen and **Add session** for each folder.
+2. **Review the session list.** Each session shows its path, frames, frame rate,
+   size and recording start (from `metaData.json`). The default order is the
+   recording start, else the path. **Up**, **Down** and **Remove** change the list;
+   **Add session** appends more folders. Sessions must have the same size and bit
+   depth (an error); a different frame rate is a warning.
+3. **Choose the library mode.** **Joint**: one library. Discover runs through all
+   sessions in order, Refine replays them all, and Extract solves each session with
+   the final library, so a cell has the same id in every session. **Separate**:
+   each session is its own run, one after another. Pick how many **Refine runs**
+   come before Extract (default 1).
+4. **Results location.** By default the results go next to the data, in
+   `<picked folder>/cala-results/`; **Choose...** picks another folder. Chrome and
+   Edge ask once for permission to save there when you press **Start**. Other browsers
+   download one `cala-results.zip` with the same layout when the run ends.
+5. **Start.** The run is automatic. The panel above the cell shows the mode, the
+   session being run and each session's state. Each session's results are written
+   as soon as they are final: after its Extract (Separate), or for all sessions after
+   the Extract (Joint).
+
+The results mirror each session's path, so nothing is ever written into a data folder:
+
+```
+cala-results/
+  cala-run.json                          the run: mode, settings, sessions, boundaries
+  2026_11_10/14_02_33/My_V4_Miniscope/
+    cala-export.npz                      the usual export, for this session's frames
+    cala-session.json                    the session: index, path, stages run, cell ids
+```
+
+If `cala-results` already exists, a new `cala-results_<date>_<time>` folder is made
+instead. In a Joint run the History plots and the cell trace mark where each session
+starts. At each boundary cala lines the new session up with the previous one (it
+finds a rotation of up to 3° and a shift of up to 40 px), and adjusts its background
+and noise estimates to the new session's brightness, so a change of LED level or a
+remounted scope does not show up as a baseline bump in the traces. The run's History
+lists what was done at each boundary ("session boundary"). The cells' brightness is
+not equalised between sessions: if the light changed, traces stay in camera units.
+
+cala also checks each boundary and flags it **ok**, **warning** or **failed**, with the
+reason (hover the badge). It looks at three things, each against what the same
+recording does within a session: whether the new session lines up with the previous
+one (a failed alignment usually means the sessions do not show the same field of
+view, or moved further than cala searches); whether the brightness and noise
+corrections held over the next 30 s; and whether the cell library carried over (a
+burst of new cells, or many cells going silent at once, after the boundary). The
+outcome checks need 30 s after the boundary, so the flag says "ok so far" until then.
+The flag shows on the session's row in the project table, in the run's session list,
+in History ("boundary check"), on the cell trace's boundary line (orange: warning,
+red with "!": failed) and in the saved results. For a failed boundary, run those
+sessions **Separate** instead: **Re-plan as Separate** on the badge puts them into the
+run plan that way (it never switches by itself).
+
 ## Reading the quality-control indicators
 
-**Convergence status** (Run panel header, with the convergence plot below it). Cell discovery does not stop on long
+**Convergence status** (Run tab header, with the convergence plot below it). Cell discovery does not stop on long
 recordings, so "converged" means the cells already found stopped changing, not that
 no new cells appear.
 
@@ -176,10 +357,15 @@ no new cells appear.
   library per minute, over the last two minutes. The rate of new cells is shown but
   never blocks this. It says nothing about cells Cala cannot see.
 
-**Cell QC tab.** One row per cell, failing cells first. A cell is **not measured
+**QC tab.** One row per cell, failing cells first. A cell is **not measured
 yet** until it has about a minute of trace history. The pass/fail rule is: peak SNR of
 at least 5, and not the weaker of two overlapping cells whose traces correlate above
-0.8.
+0.8. During Discover the peak SNR is read on each cell's last minute of trace (in
+seconds, at the recording's frame rate). After each Refine, and after Extract, it is
+recomputed on that replay's traces over the whole recording (or, for Extract, over
+each session in that session's export); while a Refine is running the table still
+shows the previous numbers. Before, the table kept the last minute of Discover. A clean cell that happens
+to be quiet in its last minute no longer fails on a low SNR.
 
 | Verdict or flag       | Meaning                                                                                                                                          |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -210,7 +396,7 @@ estimates the pattern from the recording's own motion:
   when it has one. Stock Miniscope metadata has none, so the key is then the folder
   name, and a renamed folder starts from scratch. A map is never reused for a
   different frame size.
-- Pass 2 uses pass 1's newest map from frame 0.
+- Refine and Extract use Discover's newest map from frame 0.
 
 ## Testing with a simulated stream
 
@@ -236,15 +422,15 @@ never changed. See the README for the protocol and the full option list.
 
 - **Beta.** Expect rough edges, and check the results against your own data.
 - **Footprints still changing.** At the end of a 20-minute pass about 1 footprint in 10
-  may still be changing; the convergence status in the Run panel says where a run stands.
+  may still be changing; the convergence status in the Run tab says where a run stands.
 - **Somatic footprints only.** Cala looks for compact, single-peaked cell bodies, not
   dendrites or neuropil.
 - **Gain stability over days is untested.** The cached flat field assumes the sensor's
   pixel gain does not change between sessions; this has not been checked across days.
 - **Offline throughput.** Throughput depends on the machine and on whether WebGPU is
   available. On an Apple-silicon laptop, Chrome with WebGPU ran roughly 175 to 215
-  frames/s on a 600 x 600 recording and CPU-only runs about 110 to 160. Pass 2 repeats
-  the walk, so a long recording takes a while.
+  frames/s on a 600 x 600 recording and CPU-only runs about 110 to 160. Refine and
+  Extract repeat the walk, so a long recording takes a while.
 - **Live acquisition is experimental.** The live-source field on the start page
   streams frames from a WebSocket (see the README). Apart from
   [testing with a simulated stream](#testing-with-a-simulated-stream), it is not
@@ -254,7 +440,7 @@ never changed. See the README for the protocol and the full option list.
 
 ## Reading the run history in Python
 
-The `.npz` export (format version 2) holds the History view's bins and the run's
+The `.npz` export (format version 2 and later) holds the History view's bins and the run's
 event log. `meta_json["history"]` describes the layout: for each level `k` its bin
 width `bin_s` and first bin time `t0_s` (stream seconds, frame / sampling rate), and
 for each series its `key`, `label`, `unit`, and initial and final display range.

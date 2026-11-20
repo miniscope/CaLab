@@ -58,8 +58,6 @@ pub(crate) struct FastInfo {
     /// and its white standard error per unit pixel noise.
     pub h: Vec<f32>,
     pub se_white: f64,
-    /// Rings of the measured-noise growth test (diagnostic only).
-    pub rings: usize,
 }
 
 impl SlowLoop {
@@ -209,7 +207,6 @@ impl SlowLoop {
             region: t.region,
             h,
             se_white,
-            rings: fr.len(),
         })
     }
 

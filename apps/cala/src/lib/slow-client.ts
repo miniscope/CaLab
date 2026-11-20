@@ -5,11 +5,24 @@
  * its status and libraries to a listener.
  */
 import type { FrameClient } from './frame-client.ts';
-import type { SlowConnect, SlowToMain, VisitConnect } from '../workers/slow-types.ts';
+import type {
+  SlowConnect,
+  SlowLookbackPort,
+  SlowReviewed,
+  SlowStopSettling,
+  SlowToMain,
+  VisitConnect,
+} from '../workers/slow-types.ts';
 
 export interface SlowClient {
   /** Visit workers running the slow loop's tile visits. */
   readonly visitWorkers: number;
+  /** Pass what a history review found to the slow loop (the array is transferred). */
+  addReviewed(session: number, candidates: Float32Array): void;
+  /** The port to the look-back worker (transferred; see `lookback-client.ts`). */
+  connectLookback(port: MessagePort): void;
+  /** Stop a look-back run's settling now: its final library is published with what was refined. */
+  stopSettling(session: number): void;
   dispose(): void;
 }
 
@@ -82,6 +95,18 @@ export function createSlowClient(
   );
   return {
     visitWorkers,
+    addReviewed(session, candidates) {
+      const msg: SlowReviewed = { type: 'reviewed', session, candidates };
+      worker.postMessage(msg, [candidates.buffer as ArrayBuffer]);
+    },
+    connectLookback(port) {
+      const msg: SlowLookbackPort = { type: 'lookback-port', port };
+      worker.postMessage(msg, [port]);
+    },
+    stopSettling(session) {
+      const msg: SlowStopSettling = { type: 'stop-settling', session };
+      worker.postMessage(msg);
+    },
     dispose() {
       worker.terminate();
       for (const v of helpers) v.terminate();

@@ -3,13 +3,18 @@
  * and the pipeline calls, over the message protocol in
  * `workers/frame-types.ts`.
  */
-import type { FolderEntry, FramePixels, FrameSourceInfo } from './frame-source.ts';
+import type { FolderEntry, FramePixels, FrameSourceInfo, SessionInput } from './frame-source.ts';
 import type { PipelineStepResult } from './pipeline-engine.ts';
 import type { PipelineOptions, PipelinePlan } from './pipeline-plan.ts';
 import type { FlatFieldEvent, FlatFieldMap } from './flat-field.ts';
 import type { ReplayInput } from './pipeline-stages.ts';
 import type { CellsSettings } from '../workers/frame-types.ts';
-import type { FrameRequest, FrameRequestBody, FrameResponse } from '../workers/frame-types.ts';
+import type {
+  FrameRequest,
+  FrameRequestBody,
+  FrameResponse,
+  SessionProbeResult,
+} from '../workers/frame-types.ts';
 
 /** The preprocess + motion pipeline, as the UI drives it. */
 export interface PipelineClient {
@@ -27,7 +32,8 @@ export interface PipelineClient {
   /** Run one step in the worker. Calls are answered in order. */
   stepPipeline(): Promise<PipelineStepResult>;
   /** Free the worker-side pipeline. */
-  stopPipeline(): Promise<void>;
+  /** `keepSlow`: keep the slow loop (a Refine or Extract run is stopped; see `pipeline-stop`). */
+  stopPipeline(opts?: { keepSlow?: boolean }): Promise<void>;
   /** Turn cell discovery on or off in the running pipeline. */
   setDiscovery?(on: boolean): Promise<void>;
   /** Return (or stop returning) the residual preview in the running pipeline. */
@@ -44,6 +50,10 @@ export interface PipelineClient {
 /** What the UI needs from a frame source; the tests substitute a fake. */
 export interface FrameClient extends PipelineClient {
   open(entries: FolderEntry[]): Promise<FrameSourceInfo>;
+  /** Open sessions as one recording, in order (a Joint run). */
+  openSessions?(sessions: SessionInput[]): Promise<FrameSourceInfo>;
+  /** Each session's info (or error) for the session list; nothing stays open. */
+  probe?(sessions: SessionInput[]): Promise<SessionProbeResult[]>;
   /** Connect to a live source at a WebSocket URL (the worker owns the socket). */
   openLive?(url: string): Promise<FrameSourceInfo>;
   readFrame(index: number): Promise<FramePixels>;
@@ -51,6 +61,8 @@ export interface FrameClient extends PipelineClient {
   readFrames(start: number, count: number): Promise<FramePixels>;
   /** Hand the frame worker its port to the slow worker (cell discovery). */
   connectSlow?(port: MessagePort): Promise<void>;
+  /** Hand the fast worker its port to the compress worker. */
+  connectCompress?(port: MessagePort): Promise<void>;
   dispose(): void;
 }
 
@@ -206,6 +218,12 @@ export function createFrameClient(
     async open(entries) {
       return expectType(await call({ type: 'open', entries }), 'opened').info;
     },
+    async openSessions(sessions) {
+      return expectType(await call({ type: 'open-sessions', sessions }), 'opened').info;
+    },
+    async probe(sessions) {
+      return expectType(await call({ type: 'probe', sessions }), 'probed').results;
+    },
     async openLive(url) {
       return expectType(await call({ type: 'open-live', url }), 'opened').info;
     },
@@ -239,11 +257,17 @@ export function createFrameClient(
     async connectSlow(port) {
       expectType(await call({ type: 'connect-slow', port }, [port], traceTarget), 'ok');
     },
+    async connectCompress(port) {
+      expectType(await call({ type: 'connect-compress', port }, [port], traceTarget), 'ok');
+    },
     async stepPipeline() {
       return expectType(await call({ type: 'pipeline-step' }), 'pipeline-step').step;
     },
-    async stopPipeline() {
-      expectType(await call({ type: 'pipeline-stop' }), 'pipeline-stopped');
+    async stopPipeline(opts) {
+      expectType(
+        await call({ type: 'pipeline-stop', ...(opts?.keepSlow ? { keepSlow: true } : {}) }),
+        'pipeline-stopped',
+      );
     },
     dispose() {
       // Terminating drops the worker's wasm memory along with its tables.

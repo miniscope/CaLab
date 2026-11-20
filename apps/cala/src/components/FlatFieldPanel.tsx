@@ -68,7 +68,7 @@ export function FlatFieldPanel(props: {
             />
             Divide out the sensor gain map
           </label>
-          <p class="cala-muted">Takes effect the next time pass 1 starts (Restart).</p>
+          <p class="cala-muted">Takes effect the next time Discover starts (Restart).</p>
           <dl class="cala-info">
             <dt>Status</dt>
             <dd data-testid="flatfield-status">{flatFieldStatusLine(state())}</dd>

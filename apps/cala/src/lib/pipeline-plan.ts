@@ -31,6 +31,12 @@ export interface PipelineOptions {
    * `PipelineEngine` ignores it (see the note there).
    */
   flatField?: boolean;
+  /**
+   * At a session boundary of a Joint run, re-register the new session and
+   * carry the preprocessing state into it (default on; see
+   * `session-boundary.ts`). Off: the run goes straight across.
+   */
+  sessionFix?: boolean;
 }
 
 export const PIPELINE_DEFAULTS: Required<PipelineOptions> = {
@@ -41,6 +47,7 @@ export const PIPELINE_DEFAULTS: Required<PipelineOptions> = {
   motionWarmupFrames: 200,
   previewMaxSide: 320,
   flatField: true,
+  sessionFix: true,
 };
 
 export type PipelinePhase = 'calibrate' | 'motion-warmup' | 'process';
@@ -51,6 +58,14 @@ export interface PipelinePlan {
   calibrationFrames: number;
   motionWarmupFrames: number;
   previewMaxSide: number;
+  /**
+   * First frames of sessions 1.. of a multi-session recording (empty for
+   * one). A process batch never spans one: the batch before a boundary is
+   * cut short, so each session starts a batch.
+   */
+  boundaries: number[];
+  /** `PipelineOptions.sessionFix`. */
+  sessionFix: boolean;
 }
 
 /** One unit of work: frames `[start, start + count)` of `phase`. */
@@ -75,10 +90,18 @@ export const UNBOUNDED = Infinity;
  * (`UNBOUNDED`: a stream whose length is learnt only when it ends; see
  * `limitPlan`).
  */
-export function makePlan(frameCount: number, options: PipelineOptions = {}): PipelinePlan {
+export function makePlan(
+  frameCount: number,
+  options: PipelineOptions = {},
+  boundaries: readonly number[] = [],
+): PipelinePlan {
   const o = { ...PIPELINE_DEFAULTS, ...options };
   const n = frameCount === UNBOUNDED ? UNBOUNDED : positiveInt('frameCount', frameCount);
   return {
+    boundaries: [...new Set(boundaries)]
+      .filter((b) => Number.isInteger(b) && b > 0 && b < n)
+      .sort((a, b) => a - b),
+    sessionFix: o.sessionFix,
     frameCount: n,
     batchSize: Math.min(positiveInt('batchSize', o.batchSize), MAX_FRAMES_PER_READ),
     calibrationFrames: Math.min(positiveInt('calibrationFrames', o.calibrationFrames), n),
@@ -136,7 +159,11 @@ export class PipelineCursor {
       const [total, chunk] = phaseSpan(this.plan, phase);
       if (this.at < total) {
         const start = this.at;
-        const count = Math.min(chunk, total - start);
+        let count = Math.min(chunk, total - start);
+        if (phase === 'process') {
+          const next = this.plan.boundaries.find((b) => b > start);
+          if (next !== undefined) count = Math.min(count, next - start);
+        }
         this.at += count;
         return { phase, start, count, last: this.at >= total };
       }

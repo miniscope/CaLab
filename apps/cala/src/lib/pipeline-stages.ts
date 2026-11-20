@@ -26,11 +26,22 @@ import {
   Preprocessor,
   PreprocessConfig,
   PreprocessWarmup,
+  SessionAligner,
 } from './cala-wasm.ts';
 import type { FastLoop } from './fast-loop.ts';
 import { type FlatFieldApplied, type FlatFieldMap, type FlatFieldSource } from './flat-field.ts';
 import type { FlatFieldSink } from './flat-field-runner.ts';
-import type { FramePixels } from './frame-source.ts';
+import { sessionBoundaries, type FramePixels } from './frame-source.ts';
+import {
+  boundariesInBatch,
+  NO_SESSION_HOOKS,
+  referenceSpan,
+  SESSION_REFERENCE_FRAMES,
+  sessionStart,
+  type SessionHooks,
+  type SessionStart,
+  type SessionTransform,
+} from './session-boundary.ts';
 import {
   nextStep,
   type BatchPreviews,
@@ -57,6 +68,7 @@ import {
 } from './preview.ts';
 import { ImagingSampler } from './imaging-stats.ts';
 import type { RunSpan } from './run-record.ts';
+import type { FovProjector } from './fov-projection.ts';
 
 const now = (): number => performance.now();
 
@@ -101,6 +113,16 @@ export interface StageJob {
   live?: LiveBatchInfo;
   /** A flat-field map that took effect at this batch (process steps; see `FrontStage`). */
   flatField?: FlatFieldApplied;
+  /** This batch starts session `index` (1-based) of a Joint run, with the session fix on. */
+  session?: { index: number; frame: number };
+  /** Replay: the session's recorded re-registration transform (set by A on the session's first batch). */
+  sessionReplay?: SessionTransform;
+  /** The session warp B applied to this batch's frames (absent: identity). */
+  sessionTransform?: SessionTransform;
+  /** B's estimate on the session's first batch: `SessionAligner.beginSession`'s values. */
+  sessionAlign?: number[];
+  /** B: a within-session sample of the boundary correlation's null (`boundary-flags.ts`). */
+  boundaryNull?: number;
 }
 
 /** Buffers a job carries, for `postMessage` (the pooled `front` / `corrected` included). */
@@ -166,6 +188,8 @@ export interface StageSetup {
   plan: PipelinePlan;
   /** Pass 2: motion shifts come with the jobs and are applied, not estimated. */
   replay?: boolean;
+  /** First frames of sessions 1.. of a multi-session recording (absent or empty for one). */
+  boundaries?: number[];
 }
 
 /** Stage A: read, calibrate, and run the preprocessing front half. */
@@ -174,6 +198,10 @@ export class FrontStage {
   /** What the fast loop in stage C is built from. */
   readonly fastSetup: FastLoopSetup;
   private readonly cursor: PipelineCursor;
+  /** First frames of sessions 1.. of a multi-session recording (empty for one). */
+  private readonly boundaries: number[];
+  /** Called at each session boundary (see `session-boundary.ts`); does nothing by default. */
+  sessionHooks: SessionHooks = NO_SESSION_HOOKS;
   private readonly width: number;
   private readonly height: number;
   private readonly px: number;
@@ -214,15 +242,16 @@ export class FrontStage {
     const frameCount = replay ? replay.frameCount : recorded;
     if (replay && (replay.frameCount < 1 || replay.frameCount > recorded))
       throw new RangeError(
-        `Pass 2 replays ${replay.frameCount} frames of a recording of ${recorded}.`,
+        `The replay (Refine, Extract) covers ${replay.frameCount} frames of a recording of ${recorded}.`,
       );
     for (const k of ['dy', 'dx', 'flags', 'flickerOffset', 'flickerGain'] as const)
       if (replay && replay[k].length < replay.frameCount)
-        throw new RangeError(`Pass 2: the recorded ${k} has fewer values than frames.`);
+        throw new RangeError(`Replay: the recorded ${k} has fewer values than frames.`);
     this.flatOn = options.flatField !== false;
     this.flatSink = this.flatOn && !replay ? flat?.sink : undefined;
     this.flatInitial = this.flatOn ? ((replay ? replay.flatField : flat?.initial) ?? null) : null;
-    this.plan = makePlan(frameCount, options);
+    this.boundaries = sessionBoundaries(reader.info);
+    this.plan = makePlan(frameCount, options, this.boundaries);
     this.cursor = new PipelineCursor(this.plan);
     this.width = width;
     this.height = height;
@@ -259,6 +288,7 @@ export class FrontStage {
       height: this.height,
       plan: this.plan,
       ...(this.replay ? { replay: true } : {}),
+      ...(this.boundaries.length > 0 ? { boundaries: this.boundaries } : {}),
     };
   }
 
@@ -314,9 +344,16 @@ export class FrontStage {
       };
     }
 
+    const bs = boundariesInBatch(this.plan.boundaries, s.start, s.count);
+    for (const b of bs) this.sessionHooks.onSessionBoundary(b.index, b.frame);
+    // The plan starts every session with a batch (see `PipelinePlan.boundaries`).
+    const session = this.plan.sessionFix ? bs.find((b) => b.frame === s.start) : undefined;
+    const rp = this.replay;
+    // A replay applies the recorded flicker; pass 1 re-seats the reference on the new session.
+    if (session && !rp) this.pre!.beginSessionFront();
+    const sessionReplay = session && rp ? rp.sessionTransforms?.[session.index] : undefined;
     // A new flat-field map takes effect here, between batches, never mid-batch.
     const flatField = this.takeFlatField(s.start);
-    const rp = this.replay;
     const frontRec = rp
       ? this.runFrontReplay(this.pre!, raw, s.count, frontView, s.start)
       : this.runFront(this.pre!, raw, s.count, frontView);
@@ -364,20 +401,30 @@ export class FrontStage {
       busyMs: [t3 - t0 - (t1b - t1), 0, 0],
       ...(live ? { live } : {}),
       ...(flatField ? { flatField } : {}),
+      ...(session ? { session } : {}),
+      ...(sessionReplay ? { sessionReplay: [...sessionReplay] as SessionTransform } : {}),
     };
   }
 
   /**
    * Stage B found the rigid shifts of the batch that starts at `start`: hand
    * the batch's raw frames and the shifts to the estimator. Dropped (never
-   * waited for) when the estimator's queue is full.
+   * waited for) when the estimator's queue is full. `session`: the session
+   * warp B applied first; its translation is part of each frame's shift
+   * (the estimator maps raw frames to tissue by shifts), and a session with
+   * a rotation is not fed to the estimator at all (the sensor map from the
+   * frames before stays in force).
    */
-  onShifts(start: number, dy: Float32Array, dx: Float32Array): void {
+  onShifts(start: number, dy: Float32Array, dx: Float32Array, session?: SessionTransform): void {
     const pending = this.pendingRaw.get(start);
     if (!pending) return;
     this.pendingRaw.delete(start);
     const sink = this.flatSink;
-    if (!sink || !sink.ready()) return;
+    if (!sink || !sink.ready() || (session && session[0] !== 0)) return;
+    if (session) {
+      dy = dy.map((v) => v + session[1]);
+      dx = dx.map((v) => v + session[2]);
+    }
     sink.push({
       session: this.flat?.session ?? 0,
       start,
@@ -468,11 +515,7 @@ export class FrontStage {
     out: Float32Array,
     start: number,
   ): Float64Array {
-    const rp = this.replay!;
-    const offset = rp.flickerOffset.subarray(start, start + count);
-    const gain = rp.flickerGain.subarray(start, start + count);
-    if (this.sixteen) return pre.frontFramesReplay16(raw as Uint16Array, count, offset, gain, out);
-    return pre.frontFramesReplay(raw as Uint8Array, count, offset, gain, out);
+    return frontReplay(pre, raw, count, out, this.replay!, start);
   }
 
   private async readRaw(start: number, count: number): Promise<FramePixels> {
@@ -480,6 +523,48 @@ export class FrontStage {
     if (this.raw.length < n) this.raw = this.sixteen ? new Uint16Array(n) : new Uint8Array(n);
     return this.reader.readFrames(start, count, this.raw.subarray(0, n));
   }
+}
+
+/**
+ * The preprocessing front half of `count` raw frames with the flicker
+ * recorded for frames `start..` in `rec` (`Preprocessor.frontFramesReplay`:
+ * no estimate, no state): a replay's stage A, and look-back's.
+ */
+export function frontReplay(
+  pre: Preprocessor,
+  raw: FramePixels,
+  count: number,
+  out: Float32Array,
+  rec: Pick<RunSpan, 'flickerOffset' | 'flickerGain'>,
+  start: number,
+): Float64Array {
+  const offset = rec.flickerOffset.subarray(start, start + count);
+  const gain = rec.flickerGain.subarray(start, start + count);
+  if (raw instanceof Uint16Array) return pre.frontFramesReplay16(raw, count, offset, gain, out);
+  return pre.frontFramesReplay(raw, count, offset, gain, out);
+}
+
+/**
+ * Motion records (`MotionCorrector.applyF32`) of `count` frames from their
+ * recorded rigid shifts and flags: what a replay's stage B, and look-back,
+ * warp by. Rigid only (a corrector with a residual field cannot replay).
+ */
+export function rigidRecords(
+  motion: Pick<MotionCorrector, 'recordLen'>,
+  dy: ArrayLike<number>,
+  dx: ArrayLike<number>,
+  flags: ArrayLike<number>,
+  count: number,
+): Float32Array {
+  const len = motion.recordLen;
+  if (len !== 4) throw new Error('The replay (Refine, Extract) uses rigid shifts only.');
+  const records = new Float32Array(count * len);
+  for (let i = 0; i < count; i++) {
+    records[i * len] = dy[i];
+    records[i * len + 1] = dx[i];
+    records[i * len + 3] = flags[i];
+  }
+  return records;
 }
 
 /** What `MotionStage.handleStaged` returns: the stage is free again, the job completes later. */
@@ -498,6 +583,9 @@ export class MotionStage {
   private gpuReady = false;
   private gpuFailed = false;
   private filtered: Float32Array | null = null;
+  /** Session re-registration (Joint runs with boundaries and the session fix on). */
+  private aligner: SessionAligner | null = null;
+  private fovMask: Uint8Array | null = null;
 
   /**
    * `acquireOut` hands out a buffer of `batchSize * width * height` floats (waits while C holds them all).
@@ -558,9 +646,39 @@ export class MotionStage {
       this.gpuReady = this.gpu.setup(motion.prefilterParams());
     }
     job.motionBackend = this.motionBackend;
+    this.sessionWarp(job, front);
     if (this.setup.replay) return this.replayShifts(job, motion, front);
     if (this.gpu && this.gpuReady) return this.processGpu(job, motion, front);
     return { finish: Promise.resolve(await this.processCpu(job, motion, front)) };
+  }
+
+  /**
+   * Session re-registration, before the per-frame corrector: on a session's
+   * first batch, estimate its transform (pass 1) or install the recorded one
+   * (a replay; none recorded: identity), then warp every frame of the
+   * session by it in place.
+   */
+  private sessionWarp(job: StageJob, front: Float32Array): void {
+    const a = this.aligner;
+    if (!a) return;
+    if (job.session) {
+      const t = job.sessionReplay;
+      if (t) a.setTransform(t[0], t[1], t[2]);
+      else if (this.setup.replay) a.setTransform(0, 0, 0);
+      else job.sessionAlign = Array.from(a.beginSession(front, this.fovMask!));
+    }
+    if (!a.isIdentity) {
+      a.warpF32(front);
+      const t = a.transform();
+      job.sessionTransform = [t[0], t[1], t[2]];
+    }
+    // The boundary flags' null (an observer): this batch against the
+    // session's last block of registered frames, as `beginSession` scores a
+    // session's first batch.
+    if (!this.setup.replay && !job.session && a.nullFrames >= SESSION_REFERENCE_FRAMES) {
+      const v = a.nullSample(front.subarray(0, job.step.count * this.px), this.fovMask!);
+      if (Number.isFinite(v)) job.boundaryNull = v;
+    }
   }
 
   /**
@@ -575,15 +693,9 @@ export class MotionStage {
   ): Promise<StagedJob> {
     const s = job.step;
     const n = s.count * this.px;
-    const len = motion.recordLen;
-    if (len !== 4 || !job.dy || !job.dx || !job.flags)
-      throw new Error('Pass 2 replays rigid shifts only.');
-    const records = new Float32Array(s.count * len);
-    for (let i = 0; i < s.count; i++) {
-      records[i * len] = job.dy[i];
-      records[i * len + 1] = job.dx[i];
-      records[i * len + 3] = job.flags[i];
-    }
+    if (!job.dy || !job.dx || !job.flags)
+      throw new Error('The replay (Refine, Extract) uses rigid shifts only.');
+    const records = rigidRecords(motion, job.dy, job.dx, job.flags, s.count);
     const corrected = await this.acquireOut();
     const t0 = now();
     const out = corrected.subarray(0, n);
@@ -710,6 +822,13 @@ export class MotionStage {
       quality[i] = records[i * len + 2];
       flags[i] = records[i * len + 3];
     }
+    // The reference of an upcoming session boundary: this session's last registered frames.
+    const ref =
+      this.aligner && !this.setup.replay
+        ? referenceSpan(this.setup.plan.boundaries, s.start, s.count)
+        : null;
+    if (ref) this.aligner!.pushReference(out.subarray(ref.from * this.px, ref.to * this.px));
+    if (this.aligner && !this.setup.replay) this.aligner.pushNull(out);
     const t2 = now();
     job.corrected = corrected;
     job.dy = dy;
@@ -725,6 +844,8 @@ export class MotionStage {
   dispose(): void {
     this.motion?.free();
     this.motion = null;
+    this.aligner?.free();
+    this.aligner = null;
     this.gpu?.destroy();
     this.gpu = null;
     this.gpuReady = false;
@@ -739,6 +860,14 @@ export class MotionStage {
       opts.free();
     }
     this.motion.setFovMask(fovMask);
+    this.aligner?.free();
+    const plan = this.setup.plan;
+    this.aligner =
+      plan.sessionFix && plan.boundaries.length > 0
+        ? new SessionAligner(this.setup.width, this.setup.height)
+        : null;
+    // A copy: the job's `calib.fovMask` is transferred on to stage C with the job.
+    this.fovMask = fovMask.slice();
     this.gpuReady = false;
     if (this.gpuMotion && !this.gpu) {
       this.gpu = await GpuMotion.create(
@@ -758,10 +887,22 @@ export class BackStage {
   private readonly px: number;
   private readonly factor: number;
 
-  /** `fast`: the trace solver and slow-loop feed (none: no traces). It is owned (disposed) here. */
+  /** Stream frame after the last state snapshot (-Infinity: none yet), and after the last batch. */
+  private snapshotAt = -Infinity;
+  private lastEnd = 0;
+
+  /**
+   * `fast`: the trace solver and slow-loop feed (none: no traces). It is owned (disposed) here.
+   * `projector`: mean and max projections of every frame (Extract; see `fov-projection.ts`).
+   * `snapshotEvery`: a look-back run (Discover with look-back): every this many
+   * frames (and after the first batch) the batch result carries the back
+   * half's state, which look-back blocks start from (0: never).
+   */
   constructor(
     private readonly setup: StageSetup,
     readonly fast: FastLoop | null,
+    readonly projector: FovProjector | null = null,
+    private readonly snapshotEvery = 0,
   ) {
     this.px = setup.width * setup.height;
     this.factor = previewFactor(setup.width, setup.height, setup.plan.previewMaxSide);
@@ -790,16 +931,24 @@ export class BackStage {
     const t0 = now();
     const n = s.count * this.px;
     const corrected = job.corrected!.subarray(0, n);
-    // Pixels the shift moved in from outside the FOV mask are missing data:
-    // they stay out of the noise map and background (see backFramesRegistered).
-    pre.backFramesRegistered(corrected, s.count, job.dy!, job.dx!);
+    const session = job.session ? this.beginSession(pre, job, corrected) : undefined;
+    this.projector?.addRegistered(corrected, s.start, s.count);
+    // With a library, the fast loop can back-process and solve in one WASM
+    // call. Without one, it still runs the back half exactly once.
+    let cells;
+    if (this.fast)
+      cells = this.fast.process(
+        corrected,
+        s.start,
+        s.count,
+        pre,
+        { dy: job.dy!, dx: job.dx! },
+        pre,
+      );
+    else pre.backFramesRegistered(corrected, s.count, job.dy!, job.dx!);
+    this.projector?.addOutput(corrected, s.start, s.count);
     const t1 = now();
-    const cells = this.fast?.process(corrected, s.start, s.count, pre, {
-      dy: job.dy!,
-      dx: job.dx!,
-    });
     const imaging = this.imaging.sample(pre, s.start, s.count);
-    const t2 = now();
     const output = downsampleFrame(
       corrected,
       s.count - 1,
@@ -807,10 +956,18 @@ export class BackStage {
       this.setup.height,
       this.factor,
     );
+    const end = s.start + s.count;
+    this.lastEnd = end;
+    const backState =
+      this.snapshotEvery > 0 && end - this.snapshotAt >= this.snapshotEvery
+        ? { frame: end, state: pre.state() }
+        : undefined;
+    if (backState) this.snapshotAt = end;
     const t3 = now();
-    t.preprocessMs += t1 - t0;
-    t.traceMs = t2 - t1;
-    t.otherMs += t3 - t2;
+    // The fused WASM call spans both operations, so attribute it to Stage C
+    // as a whole rather than presenting an artificial split.
+    t.traceMs = t1 - t0;
+    t.otherMs += t3 - t1;
     job.busyMs[2] = t3 - t0;
     const previews: BatchPreviews = {
       frame: s.start + s.count - 1,
@@ -839,7 +996,48 @@ export class BackStage {
       ...(job.live ? { live: job.live } : {}),
       ...(job.flatField ? { flatField: job.flatField } : {}),
       ...(imaging ? { imaging } : {}),
+      ...(session ? { session } : {}),
+      ...(job.boundaryNull !== undefined ? { boundaryNull: job.boundaryNull } : {}),
+      ...(backState ? { backState } : {}),
     };
+  }
+
+  /**
+   * The back half's state now (`Preprocessor.state()`; null before
+   * calibration), with the stream frame after the last batch: a look-back
+   * run's last snapshot.
+   */
+  backState(): Uint8Array | null {
+    return this.pre?.state() ?? null;
+  }
+
+  /** Look-back run: the final snapshot (after the last batch), if snapshots are on. */
+  finalBackState(): { frame: number; state: Uint8Array } | undefined {
+    if (this.snapshotEvery <= 0 || !this.pre || this.lastEnd <= this.snapshotAt) return undefined;
+    return { frame: this.lastEnd, state: this.pre.state() };
+  }
+
+  /**
+   * A session starts with this batch: validate its pixels against the FOV
+   * mask as B's session warp moved it, and carry the background floor and
+   * noise map into the new session (fitted on this batch).
+   */
+  private beginSession(pre: Preprocessor, job: StageJob, corrected: Float32Array): SessionStart {
+    const t = job.sessionTransform ?? [0, 0, 0];
+    if (job.sessionTransform) {
+      const a = new SessionAligner(this.setup.width, this.setup.height);
+      try {
+        a.setTransform(t[0], t[1], t[2]);
+        pre.setSourceMask(a.sourceMask(this.fovMask!));
+      } finally {
+        a.free();
+      }
+    } else pre.setSourceMask(new Uint8Array(0));
+    return sessionStart(
+      job,
+      t,
+      pre.beginSessionBack(corrected, job.step.count, job.dy!, job.dx!, true, true),
+    );
   }
 
   /** The recording ended: let the slow loop publish what it has. */
@@ -847,8 +1045,9 @@ export class BackStage {
     this.fast?.end();
   }
 
-  dispose(): void {
-    this.fast?.dispose();
+  /** `keepSlow`: see `FastLoop.dispose`. */
+  dispose(keepSlow = false): void {
+    this.fast?.dispose(keepSlow);
     this.pre?.free();
     this.pre = null;
   }

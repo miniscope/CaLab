@@ -8,11 +8,28 @@
  * the corrector one batch at a time and held, band-passed, inside WASM until
  * the template is built.
  */
-import { MotionCorrector, MotionOptions, PreprocessConfig, PreprocessWarmup } from './cala-wasm.ts';
+import {
+  MotionCorrector,
+  MotionOptions,
+  PreprocessConfig,
+  PreprocessWarmup,
+  SessionAligner,
+} from './cala-wasm.ts';
 import type { Preprocessor } from './cala-wasm.ts';
 import type { FlatFieldApplied } from './flat-field.ts';
+import type { FovProjections } from './fov-projection.ts';
 import { ImagingSampler, type ImagingStats } from './imaging-stats.ts';
-import type { FramePixels, FrameSourceInfo } from './frame-source.ts';
+import { sessionBoundaries, type FramePixels, type FrameSourceInfo } from './frame-source.ts';
+import {
+  boundariesInBatch,
+  NO_SESSION_HOOKS,
+  referenceSpan,
+  SESSION_REFERENCE_FRAMES,
+  sessionStart,
+  type SessionHooks,
+  type SessionStart,
+  type SessionTransform,
+} from './session-boundary.ts';
 import {
   isUnbounded,
   makePlan,
@@ -59,7 +76,10 @@ export interface LiveBatchInfo {
 
 /** What the engine needs from a `FrameSource`. */
 export interface FrameReader {
-  readonly info: Pick<FrameSourceInfo, 'width' | 'height' | 'bitDepth' | 'frameCount' | 'fps'>;
+  readonly info: Pick<
+    FrameSourceInfo,
+    'width' | 'height' | 'bitDepth' | 'frameCount' | 'fps' | 'sessions'
+  >;
   readFrames(start: number, count: number, out?: FramePixels): Promise<FramePixels>;
   /**
    * Live source: resolves once frames below `end` can be read, with
@@ -90,12 +110,12 @@ export async function nextStep(
 /** Wall time per stage for one step, ms. */
 export interface StageTimings {
   readMs: number;
-  /** Preprocessing: front half (hot pixels, flicker, flattening, lines) plus back half (background, noise). */
+  /** Preprocessing: both halves in the single-worker path; front half only when Stage C fuses back processing with the trace solve. */
   preprocessMs: number;
   motionMs: number;
   /** Preview downsampling and bookkeeping. */
   otherMs: number;
-  /** Fast loop: library swap, trace solve and the forward copy to the slow loop. */
+  /** Fast loop; in the pipelined path this also includes fused back preprocessing. */
   traceMs: number;
 }
 
@@ -159,11 +179,36 @@ export type PipelineStepResult =
       flatField?: FlatFieldApplied;
       /** FOV noise σ and background, about once a second of stream (History view). */
       imaging?: ImagingStats;
+      /** This batch started a session of a Joint run (session fix on): what was done. */
+      session?: SessionStart;
+      /**
+       * Discover of a Joint run: a within-session sample of the boundary
+       * correlation's null, completed with this batch (`boundary-flags.ts`).
+       */
+      boundaryNull?: number;
+      /** Look-back runs: the back half's state after this batch, now and then (`BackStage`). */
+      backState?: BackStateSnapshot;
     }
-  | { kind: 'done' };
+  | {
+      kind: 'done';
+      /** Mean and max projections of the run (Extract with `CellsSettings.projection`). */
+      projection?: FovProjections;
+      /** Look-back runs: the back half's state after the last batch. */
+      backState?: BackStateSnapshot;
+    };
+
+/** `Preprocessor.state()` of the live back half (stage C) after stream frame `frame`. */
+export interface BackStateSnapshot {
+  frame: number;
+  state: Uint8Array;
+}
 
 /** Transferable buffers of a step result (for `postMessage`). */
 export function transferablesOf(r: PipelineStepResult): ArrayBuffer[] {
+  if (r.kind === 'done')
+    return (r.projection?.spans ?? [])
+      .flatMap((s) => [s.mean.buffer as ArrayBuffer, s.max.buffer as ArrayBuffer])
+      .concat(r.backState ? [r.backState.state.buffer as ArrayBuffer] : []);
   if (r.kind !== 'batch') return [];
   const p = r.previews;
   return [
@@ -178,6 +223,8 @@ export function transferablesOf(r: PipelineStepResult): ArrayBuffer[] {
     p.corrected.data,
     p.output.data,
     ...(r.cells ? [r.cells.ids, r.cells.traces] : []),
+    ...(r.cells?.signed ? [r.cells.signed] : []),
+    ...(r.backState ? [r.backState.state] : []),
   ]
     .map((a) => a.buffer as ArrayBuffer)
     .concat(r.cells?.qc ? qcTransferables(r.cells.qc) : []);
@@ -201,6 +248,10 @@ const FRONT_RECORD_STRIDE = 6;
 export class PipelineEngine {
   readonly plan: PipelinePlan;
   private readonly cursor: PipelineCursor;
+  /** First frames of sessions 1.. of a multi-session recording (empty for one). */
+  private readonly boundaries: number[];
+  /** Called at each session boundary (see `session-boundary.ts`); does nothing by default. */
+  sessionHooks: SessionHooks = NO_SESSION_HOOKS;
   private readonly width: number;
   private readonly height: number;
   private readonly px: number;
@@ -216,6 +267,8 @@ export class PipelineEngine {
    */
   private warmupPre: Preprocessor | null = null;
   private motion: MotionCorrector | null = null;
+  /** Session re-registration (Joint runs with boundaries and the session fix on). */
+  private aligner: SessionAligner | null = null;
 
   private raw: FramePixels;
   private front: Float32Array;
@@ -241,7 +294,8 @@ export class PipelineEngine {
   ) {
     this.reader = reader;
     const { width, height, bitDepth, frameCount, fps } = reader.info;
-    this.plan = makePlan(frameCount, options);
+    this.boundaries = sessionBoundaries(reader.info);
+    this.plan = makePlan(frameCount, options, this.boundaries);
     this.cursor = new PipelineCursor(this.plan);
     this.width = width;
     this.height = height;
@@ -346,6 +400,11 @@ export class PipelineEngine {
     }
 
     // process
+    const bs = boundariesInBatch(this.plan.boundaries, s.start, s.count);
+    for (const b of bs) this.sessionHooks.onSessionBoundary(b.index, b.frame);
+    // The same steps as stages A, B and C of `pipeline-stages.ts`, in order.
+    const session = this.aligner ? bs.find((b) => b.frame === s.start) : undefined;
+    if (session) pre.beginSessionFront();
     const n = s.count * this.px;
     const front = this.grow('front', n);
     const corrected = this.grow('corrected', n);
@@ -357,7 +416,27 @@ export class PipelineEngine {
 
     const frontRec = this.runFront(pre, raw, s.count, front);
     const t2 = now();
+    let sessionAlign: number[] | undefined;
+    let sessionTransform: SessionTransform | undefined;
+    const aligner = this.aligner;
+    let boundaryNull: number | undefined;
+    if (aligner) {
+      if (session) sessionAlign = Array.from(aligner.beginSession(front, this.fovMask!));
+      if (!aligner.isIdentity) {
+        aligner.warpF32(front);
+        const t = aligner.transform();
+        sessionTransform = [t[0], t[1], t[2]];
+      }
+      // The boundary flags' null (an observer; see `FrontStage`'s session warp).
+      if (!session && aligner.nullFrames >= SESSION_REFERENCE_FRAMES) {
+        const v = aligner.nullSample(front.subarray(0, n), this.fovMask!);
+        if (Number.isFinite(v)) boundaryNull = v;
+      }
+    }
     motion.processF32(front, corrected, records);
+    const ref = aligner ? referenceSpan(this.plan.boundaries, s.start, s.count) : null;
+    if (ref) aligner!.pushReference(corrected.subarray(ref.from * this.px, ref.to * this.px));
+    aligner?.pushNull(corrected.subarray(0, n));
     const t3 = now();
     const last = s.count - 1;
     const before = downsampleFrame(corrected, last, this.width, this.height, this.factor);
@@ -368,6 +447,14 @@ export class PipelineEngine {
       dx[i] = records[i * len + 1];
     }
     const t4 = now();
+    let sessionStarted: SessionStart | undefined;
+    if (session) {
+      const t = sessionTransform ?? [0, 0, 0];
+      if (sessionTransform) pre.setSourceMask(aligner!.sourceMask(this.fovMask!));
+      else pre.setSourceMask(new Uint8Array(0));
+      const fit = pre.beginSessionBack(corrected, s.count, dy, dx, true, true);
+      sessionStarted = sessionStart({ session, ...(sessionAlign ? { sessionAlign } : {}) }, t, fit);
+    }
     // Pixels the shift moved in from outside the FOV mask are missing data.
     pre.backFramesRegistered(corrected, s.count, dy, dx);
     const t5 = now();
@@ -415,6 +502,8 @@ export class PipelineEngine {
       ...(cells ? { cells } : {}),
       ...(live ? { live } : {}),
       ...(imaging ? { imaging } : {}),
+      ...(sessionStarted ? { session: sessionStarted } : {}),
+      ...(boundaryNull !== undefined ? { boundaryNull } : {}),
     };
   }
 
@@ -427,7 +516,8 @@ export class PipelineEngine {
     this.pre?.free();
     this.warmupPre?.free();
     this.motion?.free();
-    this.warmup = this.pre = this.warmupPre = this.motion = null;
+    this.aligner?.free();
+    this.warmup = this.pre = this.warmupPre = this.motion = this.aligner = null;
   }
 
   private finishCalibration(): void {
@@ -444,6 +534,8 @@ export class PipelineEngine {
     }
     this.fovMask = pre.fovMask();
     this.motion.setFovMask(this.fovMask);
+    if (this.plan.sessionFix && this.plan.boundaries.length > 0)
+      this.aligner = new SessionAligner(this.width, this.height);
   }
 
   private runFront(

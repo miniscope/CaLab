@@ -374,6 +374,71 @@ fn ring_model_and_no_background_run() {
 }
 
 #[test]
+fn consolidated_ring_gradient_matches_two_walk_solver() {
+    let model = BackgroundModel::Ring {
+        inner_px: 7.0,
+        outer_px: 12.0,
+    };
+    let mut lib = Arc::new(library(&[0, 1, 2, 3, 4, 5], model.clone(), 1));
+    let mut fast = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+    let mut old = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+    fast.set_consolidated_ring_gradient(true);
+    fast.set_signed(true);
+    old.set_signed(true);
+    let frames = filtered_frames(&traces(6, 14, 42), 0.2, 43);
+    let close = |a: f32, b: f32, what: &str| {
+        assert!(
+            (a - b).abs() <= 0.002 + 0.0002 * a.abs().max(b.abs()),
+            "{what}: {a} vs {b}"
+        );
+    };
+    for (t, frame) in frames.iter().enumerate() {
+        if t == 6 {
+            let state = fast.state();
+            fast.restore(&state).unwrap();
+            old.restore(&state).unwrap();
+        }
+        if t == 9 {
+            lib = Arc::new(library(&[0, 1, 2, 3, 5], model.clone(), 2));
+            fast.set_library(lib.clone()).unwrap();
+            old.set_library(lib.clone()).unwrap();
+        }
+        let mut frame = frame.clone();
+        if t == 3 || t == 10 {
+            for y in 8..25 {
+                frame[y * W + 13] = f32::NAN;
+            }
+        }
+        let a = fast.process(&frame).unwrap();
+        let b = old.process(&frame).unwrap();
+        for (name, va, vb) in [
+            ("trace", &a.traces, &b.traces),
+            ("signed", &a.signed, &b.signed),
+            ("background", &a.background, &b.background),
+        ] {
+            for (&x, &y) in va.iter().zip(vb) {
+                close(x, y, name);
+            }
+        }
+        for i in 0..lib.len() {
+            let (x, y) = fast.ring_gradient_pair(i);
+            close(x, y, "gradient");
+        }
+        if t == 5 || t == 11 {
+            let slot = a.traces.iter().position(|&c| c > 0.0).unwrap();
+            let (mut fa, mut fb) = (Vec::new(), Vec::new());
+            fast.drop_one(slot, &mut fa).unwrap();
+            old.drop_one(slot, &mut fb).unwrap();
+            assert_eq!(fa.len(), fb.len());
+            for ((ia, xa), (ib, xb)) in fa.iter().zip(&fb) {
+                assert_eq!(ia, ib);
+                close(*xa, *xb, "drop one");
+            }
+        }
+    }
+}
+
+#[test]
 fn invalid_input_is_an_error_not_a_panic() {
     let mut fl = IdentityFilter(dims());
     let dup = LibraryBuilder::new(dims())
@@ -610,6 +675,60 @@ fn library_install_from_terms_matches_full_rebuild_at_the_same_frame() {
     }
 }
 
+/// A rebuild with `reuse` copies the pair terms of unchanged cells from the
+/// previous library (`PairReuse`): its terms must be bit for bit those
+/// computed from scratch from the same footprint columns, with cells
+/// changed, moved, added, removed and reordered, under every background
+/// model.
+#[test]
+fn rebuild_with_reuse_has_the_terms_of_a_full_assemble() {
+    for model in [
+        BackgroundModel::None,
+        BackgroundModel::Ring {
+            inner_px: 7.0,
+            outer_px: 12.0,
+        },
+        BackgroundModel::Basis(vec![global_map()]),
+    ] {
+        let prev = Arc::new(library(&[0, 1, 2, 3, 4], model.clone(), 60));
+        let scaled = |id: u64, c: (f32, f32), k: f32| {
+            let mut fp = footprint(id, c);
+            fp.values.iter_mut().for_each(|v| *v *= k);
+            fp
+        };
+        let orders: [Vec<Footprint>; 3] = [
+            // Nothing changed.
+            (0..5).map(|i| footprint(i as u64, CENTRES[i])).collect(),
+            // 1 rescaled, 3 moved, 4 removed, 5 added.
+            vec![
+                footprint(0, CENTRES[0]),
+                scaled(1, CENTRES[1], 1.1),
+                footprint(2, CENTRES[2]),
+                footprint(3, (CENTRES[3].0 + 1.0, CENTRES[3].1)),
+                footprint(5, CENTRES[5]),
+            ],
+            // Reordered (the Gram's orientation follows the slots).
+            [4usize, 2, 0, 3, 1]
+                .iter()
+                .map(|&i| footprint(i as u64, CENTRES[i]))
+                .collect(),
+        ];
+        for (k, fps) in orders.into_iter().enumerate() {
+            let mut b = LibraryBuilder::new(dims())
+                .background(model.clone())
+                .version(61 + k as u64)
+                .reuse(prev.clone());
+            for fp in fps {
+                b.push(fp);
+            }
+            let lib = b.build(&mut flattener()).unwrap();
+            let full = Library::from_bytes(&lib.core_bytes(CORE_MAGIC)).unwrap();
+            assert_eq!(lib.to_bytes(), full.to_bytes(), "{model:?}, case {k}");
+            assert_eq!(lib.groups, full.groups);
+        }
+    }
+}
+
 #[test]
 fn library_bytes_with_damaged_terms_are_refused() {
     let lib = library(
@@ -816,19 +935,112 @@ fn ring_self_term_that_dominates_the_curvature_does_not_diverge() {
     flat.apply(&mut fp).unwrap();
     fp.iter_mut().for_each(|v| *v += 5.0);
     let cfg = SolverConfig::default();
-    let mut e = TraceEngine::new(lib, cfg).unwrap();
-    let first = e.process(&fp).unwrap();
-    assert!(first.traces[0].is_finite(), "{first:?}");
-    assert!(first.sweeps < cfg.max_sweeps, "did not converge: {first:?}");
-    // The same frame again from the warm start: the same fixed point.
-    for _ in 0..3 {
-        let r = e.process(&fp).unwrap();
-        assert!(r.sweeps < cfg.max_sweeps, "did not converge: {r:?}");
-        let tol = cfg.tol * lib_noise(&e) * 2.0;
-        assert!(
-            (r.traces[0] - first.traces[0]).abs() <= tol,
-            "{r:?} vs {first:?}"
-        );
+    for consolidated in [false, true] {
+        let mut e = TraceEngine::new(lib.clone(), cfg).unwrap();
+        e.set_consolidated_ring_gradient(consolidated);
+        let first = e.process(&fp).unwrap();
+        assert!(first.traces[0].is_finite(), "{first:?}");
+        assert!(first.sweeps < cfg.max_sweeps, "did not converge: {first:?}");
+        // The same frame again from the warm start: the same fixed point.
+        for _ in 0..3 {
+            let r = e.process(&fp).unwrap();
+            assert!(r.sweeps < cfg.max_sweeps, "did not converge: {r:?}");
+            let tol = cfg.tol * lib_noise(&e) * 2.0;
+            assert!(
+                (r.traces[0] - first.traces[0]).abs() <= tol,
+                "{r:?} vs {first:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn ring_self_term_that_nearly_cancels_the_curvature_does_not_diverge() {
+    // A Joint run in the app (two stitched sessions of a minisim motion
+    // recording): a 26 px footprint at the FOV edge had `ã_iᵀã_i − s_i q_ii`
+    // = 0.012 `ã_iᵀã_i` (positive, so the m <= 0 rule above left it alone)
+    // with `s_i` = −116. Its row of the coordinate system was then the
+    // small curvature against ring couplings `−s_i q_ij` of ~10 to its
+    // neighbours: projected SOR grew by ~11x per sweep, the traces ran to
+    // inf within one frame's 200 sweeps, and the next frame with missing
+    // pixels filled them with NaN ("frame N has non-finite pixels under
+    // cell M", which stopped Refine or Extract). Reproduce the terms: the
+    // ring probe plus a neighbour in its ring, `s_0` scaled to that ratio.
+    let d = Dims::new(64, 64).unwrap();
+    let cfg = FlattenConfig {
+        cell_diameter_px: 6.0,
+        ..FlattenConfig::default()
+    };
+    let mut flat = GlowFlattener::new(&FovMask::full(d), &cfg).unwrap();
+    let mut b = LibraryBuilder::new(d)
+        .background(BackgroundModel::Ring {
+            inner_px: 12.0,
+            outer_px: 20.0,
+        })
+        .version(1);
+    let probe = ring_probe_footprint();
+    let mut nb = ring_probe_footprint();
+    nb.id = 1;
+    nb.x0 += 14;
+    b.push(probe.clone());
+    b.push(nb.clone());
+    let mut lib = b.build(&mut flat).unwrap();
+    let gd = lib.gram_diag[0];
+    {
+        let BgTerms::Ring { s, q, .. } = &mut lib.bg else {
+            panic!("ring model expected");
+        };
+        let (cols, vals) = q.row(0);
+        let k00 = cols.binary_search(&0).expect("self term in the ring");
+        let q01 = vals[cols
+            .binary_search(&1)
+            .expect("the neighbour is in the ring")];
+        assert!(q01 != 0.0 && s[0] != 0.0);
+        // `ã_0ᵀã_0 − s_0 q_00 = 0.012 ã_0ᵀã_0`, as in the app (its own moat
+        // filling a clipped ring: set `q_00`, the couplings stay as built).
+        q.val[q.start[0] + k00] = (1.0 - 0.012) * gd / s[0];
+    }
+    // As the old rule left it (that curvature kept): a library saved then
+    // must be repaired when it is read back.
+    let mut saved = lib.clone();
+    saved.trace_noise[0] *= lib.mdiag[0] / (0.012 * gd);
+    saved.mdiag[0] = 0.012 * gd;
+    let mut mdiag = lib.gram_diag.clone();
+    if let BgTerms::Ring { s, q, .. } = &mut lib.bg {
+        library::ring_self_curvature(&lib.gram_diag, s, q, &mut mdiag);
+    }
+    lib.mdiag = mdiag;
+    let read = Library::from_bytes(&saved.to_bytes()).unwrap();
+    assert_eq!(read.mdiag, lib.mdiag);
+    // The noise follows the curvature (`‖·‖ / mdiag`).
+    let want = saved.trace_noise[0] * 0.012;
+    assert!(
+        (read.trace_noise[0] - want).abs() <= 1e-6 * want,
+        "{read:?}"
+    );
+    assert_eq!(read.trace_noise[1], saved.trace_noise[1]);
+
+    let mut fp = vec![0.0f32; 64 * 64];
+    for (p, c) in [(&probe, 3.0f32), (&nb, 2.0)] {
+        for y in 0..p.height {
+            for x in 0..p.width {
+                fp[(p.y0 + y) * 64 + p.x0 + x] += c * p.values[y * p.width + x];
+            }
+        }
+    }
+    flat.apply(&mut fp).unwrap();
+    fp.iter_mut().for_each(|v| *v += 5.0);
+    let cfg = SolverConfig::default();
+    for consolidated in [false, true] {
+        for lib in [&lib, &read] {
+            let mut e = TraceEngine::new(Arc::new(lib.clone()), cfg).unwrap();
+            e.set_consolidated_ring_gradient(consolidated);
+            for _ in 0..4 {
+                let r = e.process(&fp).unwrap();
+                assert!(r.traces.iter().all(|v| v.is_finite() && *v < 1e3), "{r:?}");
+                assert!(r.sweeps < cfg.max_sweeps, "did not converge: {r:?}");
+            }
+        }
     }
 }
 
@@ -873,4 +1085,150 @@ fn residual_is_zero_when_the_model_is_exact_and_keeps_missing_pixels() {
     let mut stale = r.clone();
     stale.library_version += 1;
     assert!(lib.residual(&bright, &stale, &mut out).is_err());
+}
+
+/// Quiet cells: the non-negative trace is clipped at 0 (half-rectified
+/// noise); the signed trace `c + g/m` is centred on 0 with symmetric noise
+/// of the trace-noise scale, and active cells keep their trace.
+#[test]
+fn signed_traces_are_centred_and_symmetric_on_quiet_cells() {
+    let t = 1500;
+    let sigma = 0.5;
+    let mut c = traces(6, t, 21);
+    // Cell 5 is isolated, cell 1 overlaps an active neighbour (cell 0).
+    let quiet = [1usize, 5];
+    for &q in &quiet {
+        c[q].iter_mut().for_each(|v| *v = 0.0);
+    }
+    let frames = filtered_frames(&c, sigma, 22);
+    for model in [
+        BackgroundModel::None,
+        BackgroundModel::Basis(vec![global_map()]),
+        BackgroundModel::Ring {
+            inner_px: 7.0,
+            outer_px: 12.0,
+        },
+    ] {
+        // Without a background model the global term is unmodelled light.
+        let frames: Vec<Vec<f32>> = if matches!(model, BackgroundModel::None) {
+            filtered_frames(&c, sigma, 22)
+                .into_iter()
+                .zip(0..)
+                .map(|(mut f, s)| {
+                    let st = 3.0 * (s as f32 * 0.9).sin();
+                    for (o, &gv) in f.iter_mut().zip(&global_map()) {
+                        *o -= gv * st;
+                    }
+                    f
+                })
+                .collect()
+        } else {
+            frames.clone()
+        };
+        let mut b = LibraryBuilder::new(dims())
+            .noise(vec![sigma; W * H])
+            .background(model.clone());
+        for (i, &centre) in CENTRES.iter().enumerate() {
+            b.push(footprint(i as u64, centre));
+        }
+        let lib = Arc::new(b.build(&mut flattener()).unwrap());
+        let mut e = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+        e.set_signed(true);
+        let mut clipped = vec![Vec::new(); 6];
+        let mut signed = vec![Vec::new(); 6];
+        for f in &frames {
+            let r = e.process(f).unwrap();
+            assert_eq!(r.signed.len(), 6);
+            for i in 0..6 {
+                clipped[i].push(f64::from(r.traces[i]));
+                signed[i].push(f64::from(r.signed[i]));
+            }
+        }
+        let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+        for &q in &quiet {
+            let sd_noise = f64::from(lib.trace_noise()[q]);
+            let (cm, sm) = (mean(&clipped[q]), mean(&signed[q]));
+            let sd = (signed[q].iter().map(|v| (v - sm).powi(2)).sum::<f64>() / t as f64).sqrt();
+            let skew = signed[q]
+                .iter()
+                .map(|v| ((v - sm) / sd).powi(3))
+                .sum::<f64>()
+                / t as f64;
+            let neg = signed[q].iter().filter(|&&v| v < 0.0).count() as f64 / t as f64;
+            let zeros = clipped[q].iter().filter(|&&v| v == 0.0).count() as f64 / t as f64;
+            let msg = format!(
+                "{model:?} cell {q}: clipped mean {cm:.4} zeros {zeros:.2}; signed mean {sm:.4} \
+                 sd {sd:.4} (trace noise {sd_noise:.4}) skew {skew:.3} negative {neg:.2}"
+            );
+            // The clipped trace is half-rectified noise: biased up, often exactly 0.
+            assert!(clipped[q].iter().all(|&v| v >= 0.0), "{msg}");
+            assert!(zeros > 0.3 && cm > 0.2 * sd, "{msg}");
+            // The signed trace is centred on 0 with symmetric noise of the
+            // trace-noise scale.
+            assert!(sm.abs() < 0.1 * sd, "{msg}");
+            assert!((0.4..0.6).contains(&neg), "{msg}");
+            assert!(skew.abs() < 0.25, "{msg}");
+            assert!(sd > 0.7 * sd_noise && sd < 1.6 * sd_noise, "{msg}");
+        }
+        // Where the solve is not clipping, the signed trace is the trace to
+        // within the solver's tolerance (a fraction of the trace noise).
+        for i in 0..6 {
+            let sd_noise = f64::from(lib.trace_noise()[i]);
+            for (s, (&a, &b)) in clipped[i].iter().zip(&signed[i]).enumerate() {
+                if a > 0.0 {
+                    assert!(
+                        (a - b).abs() < 0.5 * sd_noise,
+                        "{model:?} cell {i} frame {s}: {a} vs {b} (noise {sd_noise})"
+                    );
+                } else {
+                    // Clipped: the unconstrained minimum is at or below 0.
+                    assert!(b <= 0.5 * sd_noise, "{model:?} cell {i} frame {s}: {b}");
+                }
+            }
+        }
+    }
+}
+
+/// The signed traces are read off the solution: turning them on changes
+/// neither the traces nor the background, bit for bit (missing pixels and
+/// their refill passes included); off, `signed` is empty.
+#[test]
+fn signed_traces_leave_the_solve_bit_identical() {
+    let t = 80;
+    let c = traces(6, t, 31);
+    let mut frames = filtered_frames(&c, 0.5, 32);
+    // A band of missing pixels on some frames (the EM refill path).
+    for (s, f) in frames.iter_mut().enumerate() {
+        if s % 3 == 0 {
+            for y in 0..H {
+                for x in 0..3 + s % 4 {
+                    f[y * W + x] = f32::NAN;
+                }
+            }
+        }
+    }
+    for model in [
+        BackgroundModel::None,
+        BackgroundModel::Basis(vec![global_map()]),
+        BackgroundModel::Ring {
+            inner_px: 7.0,
+            outer_px: 12.0,
+        },
+    ] {
+        let lib = Arc::new(library(&[0, 1, 2, 3, 4, 5], model.clone(), 4));
+        let mut off = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+        let mut on = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+        on.set_signed(true);
+        assert!(on.signed() && !off.signed());
+        for f in &frames {
+            let a = off.process(f).unwrap();
+            let b = on.process(f).unwrap();
+            assert!(a.signed.is_empty());
+            assert_eq!(b.signed.len(), 6);
+            let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&a.traces), bits(&b.traces), "{model:?}");
+            assert_eq!(bits(&a.background), bits(&b.background), "{model:?}");
+            assert_eq!(a.sweeps, b.sweeps);
+        }
+    }
 }

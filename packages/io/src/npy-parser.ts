@@ -120,33 +120,33 @@ function parseShape(shapeStr: string): { shape: number[]; count: number } {
   return { shape, count };
 }
 
+/** The header of a `.npy` file: what the data is and where it starts. */
+export interface NpyHeader {
+  /** numpy dtype descriptor, e.g. `<f4`. */
+  dtype: string;
+  shape: number[];
+  /** Elements (the product of `shape`). */
+  count: number;
+  fortranOrder: boolean;
+  /** Byte offset of the data from the start of the file. */
+  dataOffset: number;
+  /** Bytes per element on disk. */
+  itemBytes: number;
+  littleEndian: boolean;
+}
+
 /**
- * Parse a .npy binary buffer into a typed array with metadata.
- *
- * Supported dtypes: float16/32/64, int8/16/32/64, uint8/16/32/64 and bool,
- * little- or big-endian. Little-endian float32/64 and 8-32-bit integers are
- * returned as zero-copy views where alignment allows; everything else is
- * decoded into a new array (float16 -> Float32Array, 64-bit integers ->
- * Float64Array, bool -> Uint8Array of 0/1, big-endian -> native order).
- * `dtype` in the result is always the on-disk descriptor (e.g. `'>i8'`), so it
- * can be shown to the user as-is.
- *
- * Fortran-order arrays are returned as stored with `fortranOrder: true`;
- * `processNpyResult` transposes 2D ones to C order.
- *
- * @param buffer - The raw ArrayBuffer from reading a .npy file
- * @returns NpyResult with typed data array, shape, dtype string, and fortran_order flag
- * @throws Error for invalid magic bytes, unsupported dtypes, malformed or
- *         overflowing shapes, truncated files, or corrupted headers
+ * Parse only the header of a `.npy` file from its first bytes (at least the
+ * header; 64 KiB always suffices for the arrays numpy writes). Lets a reader
+ * locate the data of a large array and read parts of it.
  */
-export function parseNpy(buffer: ArrayBuffer): NpyResult {
+export function parseNpyHeader(bytes: Uint8Array): NpyHeader {
   // Guard: buffer must be at least large enough for magic + version
-  if (buffer.byteLength < 8) {
+  if (bytes.byteLength < 8) {
     throw new Error('Not a valid .npy file: file too small');
   }
 
-  const view = new DataView(buffer);
-  const bytes = new Uint8Array(buffer);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
   // 1. Verify magic bytes: \x93NUMPY
   for (let i = 0; i < NPY_MAGIC.length; i++) {
@@ -164,13 +164,13 @@ export function parseNpy(buffer: ArrayBuffer): NpyResult {
   let headerOffset: number;
 
   if (majorVersion === 1) {
-    if (buffer.byteLength < 10) {
+    if (bytes.byteLength < 10) {
       throw new Error('Not a valid .npy file: file too small for v1 header');
     }
     headerLen = view.getUint16(8, true); // little-endian
     headerOffset = 10;
   } else if (majorVersion >= 2) {
-    if (buffer.byteLength < 12) {
+    if (bytes.byteLength < 12) {
       throw new Error('Not a valid .npy file: file too small for v2 header');
     }
     headerLen = view.getUint32(8, true); // little-endian, 4 bytes
@@ -180,10 +180,10 @@ export function parseNpy(buffer: ArrayBuffer): NpyResult {
   }
 
   // 4. Parse header string (Python dict literal; ASCII for v1/v2, UTF-8 for v3)
-  if (buffer.byteLength < headerOffset + headerLen) {
+  if (bytes.byteLength < headerOffset + headerLen) {
     throw new Error('Not a valid .npy file: file truncated in header');
   }
-  const headerBytes = new Uint8Array(buffer, headerOffset, headerLen);
+  const headerBytes = bytes.subarray(headerOffset, headerOffset + headerLen);
   const headerStr = new TextDecoder(majorVersion >= 3 ? 'utf-8' : 'ascii')
     .decode(headerBytes)
     .trim();
@@ -204,9 +204,46 @@ export function parseNpy(buffer: ArrayBuffer): NpyResult {
 
   // 6. Look up dtype and byte order
   const { info, littleEndian } = parseDescr(descr);
+  return {
+    dtype: descr,
+    shape,
+    count,
+    fortranOrder,
+    dataOffset: headerOffset + headerLen,
+    itemBytes: info.bytes,
+    littleEndian,
+  };
+}
 
-  // 7. Compute data offset and validate size
-  const dataOffset = headerOffset + headerLen;
+/**
+ * Parse a .npy binary buffer into a typed array with metadata.
+ *
+ * Supported dtypes: float16/32/64, int8/16/32/64, uint8/16/32/64 and bool,
+ * little- or big-endian. Little-endian float32/64 and 8-32-bit integers are
+ * returned as zero-copy views where alignment allows; everything else is
+ * decoded into a new array (float16 -> Float32Array, 64-bit integers ->
+ * Float64Array, bool -> Uint8Array of 0/1, big-endian -> native order).
+ * `dtype` in the result is always the on-disk descriptor (e.g. `'>i8'`), so it
+ * can be shown to the user as-is.
+ *
+ * Fortran-order arrays are returned as stored with `fortranOrder: true`;
+ * `processNpyResult` transposes 2D ones to C order.
+ *
+ * @param buffer - The raw ArrayBuffer from reading a .npy file
+ * @returns NpyResult with typed data array, shape, dtype string, and fortran_order flag
+ * @throws Error for invalid magic bytes, unsupported dtypes, malformed or
+ *         overflowing shapes, truncated files, or corrupted headers
+ */
+export function parseNpy(buffer: ArrayBuffer): NpyResult {
+  const view = new DataView(buffer);
+  const header = parseNpyHeader(new Uint8Array(buffer));
+  const { count, fortranOrder, dataOffset, littleEndian } = header;
+  const descr = header.dtype;
+  const shape = header.shape;
+  const shapeMatch = shape.join(', ');
+  const { info } = parseDescr(descr);
+
+  // 7. Validate the data size
   const expectedBytes = count * info.bytes;
   const actualBytes = buffer.byteLength - dataOffset;
 

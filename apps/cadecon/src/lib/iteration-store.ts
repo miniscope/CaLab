@@ -1,4 +1,5 @@
 import { createSignal, createMemo } from 'solid-js';
+import { rectifiedCellIndices } from './rectified-input.ts';
 
 // --- Types ---
 
@@ -90,6 +91,8 @@ export interface TraceResultEntry {
   noSizeFit?: boolean;
   peakOutlierRatio?: number;
   droppedSpikes?: number;
+  /** Input trace looks rectified at zero (unsupported input; warning only). */
+  rectifiedInput?: boolean;
 }
 
 function cellSubsetKey(cellIndex: number, subsetIdx: number): string {
@@ -156,6 +159,9 @@ const cellResultLookup = createMemo(() => {
   }
   return lookup;
 });
+
+/** Cells the solver flagged as rectified (clipped or denoised) input. */
+const rectifiedCells = createMemo(() => rectifiedCellIndices(cellResultLookup().values()));
 
 // Distribution memos derived from deduplicated per-cell results
 const alphaValues = createMemo(() => [...cellResultLookup().values()].map((r) => r.alpha));
@@ -232,6 +238,7 @@ export {
   alphaValues,
   pveValues,
   cellResultLookup,
+  rectifiedCells,
   isRunLocked,
   progress,
   iterationHistory,

@@ -483,6 +483,48 @@ impl RunningMinBackground {
         lowered as f32 / n as f32
     }
 
+    /// Mean of the boxcar's filled slots per pixel (its finite samples; NaN
+    /// where there are none): the level of the last few frames, the
+    /// reference a session boundary fits the new session against
+    /// ([`super::session`]).
+    pub fn boxcar_mean(&self) -> Vec<f32> {
+        self.boxcar_mean_counts().0
+    }
+
+    /// [`Self::boxcar_mean`] and the number of samples behind each pixel.
+    pub fn boxcar_mean_counts(&self) -> (Vec<f32>, Vec<u32>) {
+        let n = self.st.dims.pixels();
+        let mut sum = vec![0.0f32; n];
+        let mut cnt = vec![0u32; n];
+        for s in 0..self.st.ring_filled {
+            for ((a, c), &v) in sum
+                .iter_mut()
+                .zip(&mut cnt)
+                .zip(&self.st.ring[s * n..(s + 1) * n])
+            {
+                if v.is_finite() {
+                    *a += v;
+                    *c += 1;
+                }
+            }
+        }
+        let mean = sum
+            .iter()
+            .zip(&cnt)
+            .map(|(&a, &c)| if c > 0 { a / c as f32 } else { f32::NAN })
+            .collect();
+        (mean, cnt)
+    }
+
+    /// Map the state into a new brightness, `v ← gain · v + offset`, for the
+    /// floor and every boxcar slot (a session boundary, see
+    /// [`super::session`]). Missing (NaN) samples stay missing.
+    pub fn rescale(&mut self, gain: f32, offset: f32) {
+        for v in self.st.floor.iter_mut().chain(self.st.ring.iter_mut()) {
+            *v = gain * *v + offset;
+        }
+    }
+
     /// Stop updating; [`Self::process`] then subtracts the current floor only.
     pub fn freeze(&mut self) {
         self.frozen = true;

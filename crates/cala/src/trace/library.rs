@@ -92,6 +92,129 @@ pub fn moat_blocks(center: (f32, f32), radius: f32, b: usize, reach: f32, dims: 
     out
 }
 
+/// Add the skirt's blocks to the ascending block list `blks` (a skirt
+/// block is normally a moat block already: the statistics disk lies well
+/// inside the moat's reach).
+pub(crate) fn merge_blocks(blks: &mut Vec<u32>, skirt: &[(u32, f32)]) {
+    if skirt.iter().all(|s| blks.binary_search(&s.0).is_ok()) {
+        return;
+    }
+    blks.extend(skirt.iter().map(|s| s.0));
+    blks.sort_unstable();
+    blks.dedup();
+}
+
+/// Radius of the disk around `center` that holds the support disk
+/// (`radius`) and every skirt block (side `block`) whole: the moat of a
+/// footprint with a skirt is [`moat_blocks`] of this radius, so it reaches
+/// as far beyond the skirt as beyond the support. Without a skirt it is
+/// `radius`.
+pub(crate) fn skirt_radius(
+    center: (f32, f32),
+    radius: f32,
+    skirt: &[(u32, f32)],
+    block: usize,
+    dims: Dims,
+) -> f32 {
+    if block == 0 {
+        return radius;
+    }
+    let gw = dims.width.div_ceil(block);
+    skirt.iter().fold(radius, |r, &(bq, _)| {
+        let (by, bx) = (bq as usize / gw, bq as usize % gw);
+        let y1 = ((by + 1) * block).min(dims.height);
+        let x1 = ((bx + 1) * block).min(dims.width);
+        let (cy, cx) = (
+            0.5 * ((by * block) as f32 + y1 as f32) - 0.5,
+            0.5 * ((bx * block) as f32 + x1 as f32) - 0.5,
+        );
+        let (dy, dx) = (cy - center.0, cx - center.1);
+        r.max((dy * dy + dx * dx).sqrt() + 0.7072 * block as f32)
+    })
+}
+
+/// The skirt as unfiltered light: `(pixel, skirt_b)` on every FOV pixel of
+/// a skirt block outside the support `S` (the support disk pixels `pix`
+/// with `raw ≠ 0`, as in [`apply_skirt`]). The column of a footprint with a
+/// skirt is the filter applied to the support values plus this field, so
+/// it carries the skirt's own low-pass (its negative lobe in the moat) and
+/// sums to about zero like any filtered footprint.
+pub(crate) fn skirt_field(
+    pix: &[u32],
+    raw: &[f32],
+    skirt: &[(u32, f32)],
+    block: usize,
+    dims: Dims,
+    fov: &[u8],
+) -> Vec<(u32, f32)> {
+    if skirt.is_empty() || block == 0 {
+        return Vec::new();
+    }
+    let on_s: std::collections::HashSet<u32> = pix
+        .iter()
+        .zip(raw)
+        .filter(|&(_, &v)| v != 0.0)
+        .map(|(&g, _)| g)
+        .collect();
+    let (w, h) = (dims.width, dims.height);
+    let gw = w.div_ceil(block);
+    let mut out = Vec::new();
+    for &(bq, s) in skirt {
+        let (by, bx) = (bq as usize / gw, bq as usize % gw);
+        for y in by * block..((by + 1) * block).min(h) {
+            for x in bx * block..((bx + 1) * block).min(w) {
+                let g = (y * w + x) as u32;
+                if fov[g as usize] != 0 && !on_s.contains(&g) {
+                    out.push((g, s));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Fold a skirt into a column whose low-pass (`filt = raw − L f`, `low_b`
+/// the block means of `L f`) was taken of the whole footprint `f`, support
+/// values plus [`skirt_field`]: the column `f − L f` takes the
+/// block-constant field `skirt_b` on the complement of the support
+/// `S = {raw > 0}`. Off the support disk the column is `−low_b`, so
+/// `low_b ← low_b − skirt_b`; on disk pixels outside `S` (`raw = 0`, FOV
+/// only) `filt ← filt + skirt_b`; on `S` nothing changes. `blks` must hold
+/// every skirt block.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_skirt(
+    pix: &[u32],
+    raw: &[f32],
+    filt: &mut [f32],
+    blks: &[u32],
+    low: &mut [f32],
+    skirt: &[(u32, f32)],
+    block: usize,
+    dims: Dims,
+    fov: &[u8],
+) {
+    if skirt.is_empty() || block == 0 {
+        return;
+    }
+    for &(bq, s) in skirt {
+        if let Ok(k) = blks.binary_search(&bq) {
+            low[k] -= s;
+        }
+    }
+    let w = dims.width;
+    let gw = w.div_ceil(block);
+    for (k, (&g, &v)) in pix.iter().zip(raw).enumerate() {
+        if v != 0.0 || fov[g as usize] == 0 {
+            continue;
+        }
+        let (y, x) = (g as usize / w, g as usize % w);
+        let bq = ((y / block) * gw + x / block) as u32;
+        if let Ok(j) = skirt.binary_search_by_key(&bq, |s| s.0) {
+            filt[k] += skirt[j].1;
+        }
+    }
+}
+
 impl LinearFilter for GlowFlattener {
     fn dims(&self) -> Dims {
         GlowFlattener::dims(self)
@@ -179,6 +302,8 @@ pub struct LibraryBuilder {
     footprints: Vec<Footprint>,
     /// Explicit support disks (`push_disk`), one per footprint.
     disks: Vec<Option<((f32, f32), f32)>>,
+    /// Skirts (`push_disk_skirt`), one per footprint (empty: none).
+    skirts: Vec<Vec<(u32, f32)>>,
     fov: Option<Vec<u8>>,
     noise: Option<Vec<f32>>,
     background: BackgroundModel,
@@ -192,6 +317,7 @@ impl LibraryBuilder {
             dims,
             footprints: Vec::new(),
             disks: Vec::new(),
+            skirts: Vec::new(),
             fov: None,
             noise: None,
             background: BackgroundModel::None,
@@ -237,6 +363,7 @@ impl LibraryBuilder {
     pub fn push(&mut self, fp: Footprint) {
         self.footprints.push(fp);
         self.disks.push(None);
+        self.skirts.push(Vec::new());
     }
 
     /// `fp` on an explicit support disk (centre `(y, x)`, radius): its
@@ -244,8 +371,22 @@ impl LibraryBuilder {
     /// publishes its cells' supports exactly, so a footprint whose outer
     /// ring is zero keeps the room to grow into it).
     pub fn push_disk(&mut self, fp: Footprint, center: (f32, f32), radius: f32) {
+        self.push_disk_skirt(fp, center, radius, Vec::new());
+    }
+
+    /// [`Self::push_disk`] with a skirt: block means (ascending global
+    /// blocks of the moat grid) of the measured light outside the support
+    /// that the column carries at block resolution (see [`apply_skirt`]).
+    pub fn push_disk_skirt(
+        &mut self,
+        fp: Footprint,
+        center: (f32, f32),
+        radius: f32,
+        skirt: Vec<(u32, f32)>,
+    ) {
         self.footprints.push(fp);
         self.disks.push(Some((center, radius)));
+        self.skirts.push(skirt);
     }
 
     pub fn footprint(mut self, fp: Footprint) -> LibraryBuilder {
@@ -293,6 +434,9 @@ impl LibraryBuilder {
         let geom = moat_geometry(filter.lowpass_sigma_px());
         let mut low_start = vec![0usize];
         let mut low_blk: Vec<u32> = Vec::new();
+        let mut skirt_start = vec![0usize];
+        let mut skirt_blk: Vec<u32> = Vec::new();
+        let mut skirt_val: Vec<f32> = Vec::new();
         for (fp, disk) in self.footprints.iter().zip(&self.disks) {
             if index_of.insert(fp.id, ids.len()).is_some() {
                 return Err(TraceError::InvalidFootprint(format!(
@@ -329,10 +473,17 @@ impl LibraryBuilder {
                 }
             }
             col_start.push(pix.len());
+            let skirt = &self.skirts[ids.len() - 1];
             if let Some((b, reach)) = geom {
-                low_blk.extend(moat_blocks((cy, cx), r, b, reach, dims));
+                let rm = skirt_radius((cy, cx), r, skirt, b, dims);
+                let mut blks = moat_blocks((cy, cx), rm, b, reach, dims);
+                merge_blocks(&mut blks, skirt);
+                low_blk.extend(blks);
+                skirt_blk.extend(skirt.iter().map(|s| s.0));
+                skirt_val.extend(skirt.iter().map(|s| s.1));
             }
             low_start.push(low_blk.len());
+            skirt_start.push(skirt_blk.len());
         }
         let n = ids.len();
         let mut val = vec![0.0f32; pix.len()];
@@ -349,10 +500,12 @@ impl LibraryBuilder {
                     let (pp, pr) = prev.unfiltered(slot);
                     let (lb, lv) = prev.lowpass(slot);
                     let (la, lz) = (low_start[i], low_start[i + 1]);
+                    let (sa, sz) = (skirt_start[i], skirt_start[i + 1]);
                     if pp == &pix[a..b]
                         && pr == &raw[a..b]
                         && prev.core.block == geom.map_or(0, |g| g.0)
                         && lb == &low_blk[la..lz]
+                        && prev.skirt(slot) == (&skirt_blk[sa..sz], &skirt_val[sa..sz])
                     {
                         val[a..b].copy_from_slice(prev.filtered(slot).1);
                         low_val[la..lz].copy_from_slice(lv);
@@ -364,12 +517,33 @@ impl LibraryBuilder {
         // Filter the support-limited footprints, many per pass when they are
         // further apart than the filter's reach.
         let reach = filter.reach_px();
+        // A footprint with a skirt is its support values plus the skirt
+        // field, which reaches past the support disk.
+        let fields: Vec<Vec<(u32, f32)>> = (0..n)
+            .map(|i| match geom {
+                Some((b, _)) if !done[i] => skirt_field(
+                    &pix[col_start[i]..col_start[i + 1]],
+                    &raw[col_start[i]..col_start[i + 1]],
+                    &self.skirts[i],
+                    b,
+                    dims,
+                    &fov,
+                ),
+                _ => Vec::new(),
+            })
+            .collect();
+        let extent: Vec<f32> = (0..n)
+            .map(|i| match geom {
+                Some((b, _)) => skirt_radius(centers[i], radii[i], &self.skirts[i], b, dims),
+                None => radii[i],
+            })
+            .collect();
         let mut canvases: Vec<Vec<usize>> = Vec::new();
         for i in (0..n).filter(|&i| !done[i]) {
             let fits = |members: &Vec<usize>| {
                 members.iter().all(|&j| {
                     let (dy, dx) = (centers[i].0 - centers[j].0, centers[i].1 - centers[j].1);
-                    let need = reach + radii[i] + radii[j] + 2.0;
+                    let need = reach + extent[i] + extent[j] + 2.0;
                     dy * dy + dx * dx >= need * need
                 })
             };
@@ -387,11 +561,23 @@ impl LibraryBuilder {
                     img[pix[k] as usize] = raw[k];
                     src[pix[k] as usize] = raw[k];
                 }
+                for &(g, u) in &fields[i] {
+                    img[g as usize] = u;
+                    src[g as usize] = u;
+                }
             }
             filter.apply(&mut img)?;
             for &i in members {
-                for k in col_start[i]..col_start[i + 1] {
-                    val[k] = img[pix[k] as usize];
+                if fields[i].is_empty() {
+                    for k in col_start[i]..col_start[i + 1] {
+                        val[k] = img[pix[k] as usize];
+                    }
+                } else {
+                    // `raw − L f` (the skirt itself is added below).
+                    for k in col_start[i]..col_start[i + 1] {
+                        let q = pix[k] as usize;
+                        val[k] = raw[k] - (src[q] - img[q]);
+                    }
                 }
                 // Moat: block means of the low-pass `a − H a` (FOV only).
                 if let Some((b, _)) = geom {
@@ -410,12 +596,36 @@ impl LibraryBuilder {
                         }
                         low_val[k] = if m > 0 { (s / m as f64) as f32 } else { 0.0 };
                     }
+                    let (sa, sz) = (skirt_start[i], skirt_start[i + 1]);
+                    if sz > sa {
+                        let skirt: Vec<(u32, f32)> = skirt_blk[sa..sz]
+                            .iter()
+                            .copied()
+                            .zip(skirt_val[sa..sz].iter().copied())
+                            .collect();
+                        let (ca, cz) = (col_start[i], col_start[i + 1]);
+                        let (la, lz) = (low_start[i], low_start[i + 1]);
+                        apply_skirt(
+                            &pix[ca..cz],
+                            &raw[ca..cz],
+                            &mut val[ca..cz],
+                            &low_blk[la..lz],
+                            &mut low_val[la..lz],
+                            &skirt,
+                            b,
+                            dims,
+                            &fov,
+                        );
+                    }
                 }
             }
             img.iter_mut().for_each(|v| *v = 0.0);
             for &i in members {
                 for k in col_start[i]..col_start[i + 1] {
                     src[pix[k] as usize] = 0.0;
+                }
+                for &(g, _) in &fields[i] {
+                    src[g as usize] = 0.0;
                 }
             }
         }
@@ -424,6 +634,9 @@ impl LibraryBuilder {
             low_start,
             low_blk,
             low_val,
+            skirt_start,
+            skirt_blk,
+            skirt_val,
             vc: Vec::new(),
             blk_fov: Vec::new(),
             blk_noise2: Vec::new(),
@@ -442,7 +655,8 @@ impl LibraryBuilder {
         let version = self
             .version
             .unwrap_or_else(|| NEXT_VERSION.fetch_add(1, Ordering::Relaxed));
-        Library::assemble(core.finish(), self.background, version)
+        let prev = self.reuse.as_deref();
+        Library::assemble(core.finish(), self.background, version, prev)
     }
 }
 
@@ -535,6 +749,14 @@ struct Core {
     low_start: Vec<usize>,
     low_blk: Vec<u32>,
     low_val: Vec<f32>,
+    /// Skirt of cell `i`: blocks
+    /// `skirt_blk[skirt_start[i]..skirt_start[i + 1]]` (ascending, a subset
+    /// of its moat blocks) with the measured block means `skirt_val` it
+    /// carries ([`apply_skirt`]; already folded into `val` and `low_val`).
+    /// Empty for every cell under the ring support rule.
+    skirt_start: Vec<usize>,
+    skirt_blk: Vec<u32>,
+    skirt_val: Vec<f32>,
     /// Derived ([`Core::finish`]): `val + low(B(p))` on the support, so the
     /// column is `vc · 1_S − P low` (P: block-constant expansion, FOV only).
     vc: Vec<f32>,
@@ -597,19 +819,34 @@ pub(crate) enum BgTerms {
     },
 }
 
+/// Smallest share of `ã_iᵀã_i` the ring self term may leave as a cell's
+/// coordinate curvature (see [`ring_self_curvature`]).
+pub(crate) const RING_SELF_MIN_CURVATURE: f32 = 0.5;
+
 /// Ring model: the local level depends on the cell's own trace through its
 /// column in the ring (its moat), which adds `−s_i q_ii` to the coordinate
 /// curvature, so `mdiag_i = ã_iᵀã_i − s_i q_ii`.
 ///
-/// When that is not positive, the cell's own column dominates its ring
-/// level (a large filtered footprint whose moat fills a ring clipped by the
-/// field-of-view edge): raising `c_i` lowers the level by more than the
-/// cell's own light, the coordinate equation has the wrong sign, and the
-/// projected SOR step runs away (halo_s5: traces of 1e37, then inf). The
-/// ring cannot separate such a cell from its local level, so its level is
+/// When the self term takes most of that curvature, the cell's own column
+/// dominates its ring level (a large filtered footprint whose moat fills a
+/// ring clipped by the field-of-view edge), and the ring cannot separate
+/// the cell from its local level:
+///
+/// * not positive: raising `c_i` lowers the level by more than the cell's
+///   own light, the coordinate equation has the wrong sign, and the
+///   projected SOR step runs away (halo_s5: traces of 1e37, then inf);
+/// * positive but small: the same `s_i` scales the cell's ring couplings
+///   `−s_i q_ij` to its neighbours, which then dwarf the curvature (a Joint
+///   run in the app: 0.012 `ã_iᵀã_i` with `s_i` = −116 and couplings of
+///   ~10). The coordinate system is far from diagonally dominant, projected
+///   SOR grows ~11x per sweep, the traces reach inf within one frame, and
+///   the next frame with missing pixels fills them with NaN.
+///
+/// Below [`RING_SELF_MIN_CURVATURE`] of `ã_iᵀã_i` the level is therefore
 /// taken from the ring without the cell's own term (`q_ii = 0`, curvature
-/// `ã_iᵀã_i`). Cells with a positive curvature are unchanged (floored at
-/// 1e-3 `ã_iᵀã_i`, which only shortens their step).
+/// `ã_iᵀã_i`). Other cells are unchanged. (On the app library above the
+/// next-smallest ratio was 0.69: the rule picks out the degenerate cell
+/// only.)
 pub(crate) fn ring_self_curvature(gram_diag: &[f32], s: &[f32], q: &mut Csr, mdiag: &mut [f32]) {
     for i in 0..gram_diag.len() {
         let (a, b) = (q.start[i], q.start[i + 1]);
@@ -617,12 +854,128 @@ pub(crate) fn ring_self_curvature(gram_diag: &[f32], s: &[f32], q: &mut Csr, mdi
             continue;
         };
         let m = gram_diag[i] - s[i] * q.val[a + k];
-        if m > 0.0 {
-            mdiag[i] = m.max(1e-3 * gram_diag[i]);
+        if m >= RING_SELF_MIN_CURVATURE * gram_diag[i] {
+            mdiag[i] = m;
         } else {
             q.val[a + k] = 0.0;
             mdiag[i] = gram_diag[i];
         }
+    }
+}
+
+/// [`ring_self_curvature`] on the terms of a [`Library::to_bytes`] buffer,
+/// which may predate its current threshold (a library saved before it, then
+/// Extracted): a cell it picks out loses its self term and takes the
+/// curvature `ã_iᵀã_i`, its trace noise rescaled to match (the noise is
+/// `‖·‖ / mdiag_i`). A no-op on terms built with the current rule (their
+/// picked cells already have `q_ii = 0`), so those still solve
+/// bit-identically.
+fn ring_self_curvature_on_read(
+    gram_diag: &[f32],
+    s: &[f32],
+    q: &mut Csr,
+    mdiag: &mut [f32],
+    trace_noise: &mut [f32],
+) {
+    for i in 0..gram_diag.len() {
+        let (a, b) = (q.start[i], q.start[i + 1]);
+        let Ok(k) = q.col[a..b].binary_search(&(i as u32)) else {
+            continue;
+        };
+        let qii = q.val[a + k];
+        if qii == 0.0 || gram_diag[i] - s[i] * qii >= RING_SELF_MIN_CURVATURE * gram_diag[i] {
+            continue;
+        }
+        q.val[a + k] = 0.0;
+        trace_noise[i] *= mdiag[i] / gram_diag[i];
+        mdiag[i] = gram_diag[i];
+    }
+}
+
+/// Bitwise equality of two `f32` slices (`==` would take `-0.0` for `0.0`).
+fn same_bits(a: &[f32], b: &[f32]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+}
+
+/// The pair terms [`Library::assemble`] may copy from the library it
+/// rebuilds (`prev`): those of two cells that are both unchanged, under the
+/// same frame, FOV, moat grid and background model. A cell is unchanged
+/// when its support, column values (`vc`), moat blocks and values, support
+/// centre and radius are bit for bit those of its slot in `prev`.
+///
+/// Why a copy is exact: an off-diagonal Gram term is computed from its two
+/// columns only (and the FOV block counts), with the lower slot's column as
+/// the image (`pair`), so it is copied only when the two cells keep their
+/// order; a ring coupling `q[i][j]` from column `j` and the ring of cell
+/// `i` (its centre and radius). An entry `prev` lacks is a term that was
+/// exactly 0: `prev`'s neighbour search reached every pair whose columns
+/// (or ring) can meet. The per-cell terms (diagonal, noise, ring self term,
+/// which `ring_self_curvature` may have zeroed in `prev`) are always
+/// computed.
+struct PairReuse<'a> {
+    prev: &'a Library,
+    /// `prev` slot of each cell, `None` for a new or changed one.
+    slot: Vec<Option<usize>>,
+}
+
+impl<'a> PairReuse<'a> {
+    fn new(prev: &'a Library, core: &Core, model: &BackgroundModel) -> Option<PairReuse<'a>> {
+        let pc = &prev.core;
+        if pc.dims != core.dims
+            || pc.block != core.block
+            || pc.fov != core.fov
+            || prev.model != *model
+        {
+            return None;
+        }
+        let slot: Vec<Option<usize>> = (0..core.ids.len())
+            .map(|i| {
+                let s = *pc.index_of.get(&core.ids[i])?;
+                let (pa, va) = core.core_col(i);
+                let (pb, vb) = pc.core_col(s);
+                let (la, wa) = core.low(i);
+                let (lb, wb) = pc.low(s);
+                let (ca, cb) = (core.centers[i], pc.centers[s]);
+                let same = pa == pb
+                    && same_bits(va, vb)
+                    && la == lb
+                    && same_bits(wa, wb)
+                    && same_bits(&[ca.0, ca.1, core.radii[i]], &[cb.0, cb.1, pc.radii[s]]);
+                same.then_some(s)
+            })
+            .collect();
+        slot.iter()
+            .any(Option::is_some)
+            .then_some(PairReuse { prev, slot })
+    }
+
+    /// `prev`'s slots of cells `i` and `j` when both are unchanged.
+    fn slots(&self, i: usize, j: usize) -> Option<(usize, usize)> {
+        Some((self.slot[i]?, self.slot[j]?))
+    }
+
+    /// The Gram term of cells `i < j`: `Some(term)` copied (`Some(None)`:
+    /// it is 0), `None` to compute it.
+    fn gram(&self, i: usize, j: usize) -> Option<Option<f32>> {
+        let (a, b) = self.slots(i, j)?;
+        if (a < b) != (i < j) {
+            return None;
+        }
+        let (cols, vals) = self.prev.gram.row(a);
+        Some(cols.binary_search(&(b as u32)).ok().map(|k| vals[k]))
+    }
+
+    /// The ring coupling `q[i][j]` (`i != j`), as [`PairReuse::gram`].
+    fn ring(&self, i: usize, j: usize) -> Option<Option<f32>> {
+        if i == j {
+            return None;
+        }
+        let (a, b) = self.slots(i, j)?;
+        let BgTerms::Ring { q, .. } = &self.prev.bg else {
+            return None;
+        };
+        let (cols, vals) = q.row(a);
+        Some(cols.binary_search(&(b as u32)).ok().map(|k| vals[k]))
     }
 }
 
@@ -648,7 +1001,17 @@ pub struct Library {
 }
 
 impl Library {
-    fn assemble(core: Core, model: BackgroundModel, version: u64) -> Result<Library, TraceError> {
+    /// The solver's terms of `core`. With `prev` (the library this one
+    /// rebuilds), the pair terms of unchanged cells are copied from it
+    /// instead of computed again ([`PairReuse`]): the same values, bit for
+    /// bit, at a fraction of the cost when a few cells changed (a slow-loop
+    /// publish refines a handful of footprints out of hundreds).
+    fn assemble(
+        core: Core,
+        model: BackgroundModel,
+        version: u64,
+        prev: Option<&Library>,
+    ) -> Result<Library, TraceError> {
         let n = core.ids.len();
         let dims = core.dims;
         let n_px = dims.pixels();
@@ -709,6 +1072,7 @@ impl Library {
             out
         };
 
+        let reuse = prev.and_then(|p| PairReuse::new(p, &core, &model));
         // Gram of the columns `vc_i 1_S − P low_i`:
         // `Σ_S∩S vc vc − Σ_S_j vc_j low_i(B) − Σ_B low_j ccore_i + Σ_B low_i low_j n_B`.
         let gl = core.grid_len();
@@ -768,11 +1132,19 @@ impl Library {
                 if j <= i {
                     continue;
                 }
-                let g = pair(j, &img, &lim, &ccore);
-                if g != 0.0 {
-                    rows[i].push((j as u32, g as f32));
-                    rows[j].push((i as u32, g as f32));
-                }
+                let g = match reuse.as_ref().and_then(|r| r.gram(i, j)) {
+                    Some(Some(g)) => g,
+                    Some(None) => continue,
+                    None => {
+                        let g = pair(j, &img, &lim, &ccore);
+                        if g == 0.0 {
+                            continue;
+                        }
+                        g as f32
+                    }
+                };
+                rows[i].push((j as u32, g));
+                rows[j].push((i as u32, g));
             }
             for &q in p {
                 img[q as usize] = 0.0;
@@ -948,6 +1320,12 @@ impl Library {
                     // Ring mean of every column that reaches the ring, the
                     // cell's own moat included.
                     for j in near(i, outer + rmax + 1.0) {
+                        if let Some(copied) = reuse.as_ref().and_then(|r| r.ring(i, j)) {
+                            if let Some(g) = copied {
+                                qrows[i].push((j as u32, g));
+                            }
+                            continue;
+                        }
                         let (pj, vj) = core.core_col(j);
                         let mut g = 0.0f32;
                         for (&q, &a) in pj.iter().zip(vj) {
@@ -1025,6 +1403,7 @@ impl Library {
             self.core.clone(),
             model,
             NEXT_VERSION.fetch_add(1, Ordering::Relaxed),
+            None,
         )
     }
 
@@ -1071,6 +1450,13 @@ impl Library {
     /// on its support and `−L a` (block means) off it, out to these blocks.
     pub fn lowpass(&self, slot: usize) -> (&[u32], &[f32]) {
         self.core.low(slot)
+    }
+
+    /// The skirt of the cell in `slot`: grid blocks (ascending) and the
+    /// measured block means its column carries outside the support (see
+    /// [`LibraryBuilder::push_disk_skirt`]); empty without one.
+    pub fn skirt(&self, slot: usize) -> (&[u32], &[f32]) {
+        self.core.skirt(slot)
     }
 
     /// Side of the moat grid's blocks, px (0: no moat, unfiltered data).
@@ -1280,6 +1666,9 @@ impl Library {
 /// Magic of [`Library::to_bytes`]: the footprints and the solver's
 /// precomputed terms.
 const LIBRARY_MAGIC: &[u8; 8] = b"CALALIB3";
+/// [`LIBRARY_MAGIC`] with the cells' skirts (written only when a cell has
+/// one, so a library without skirts keeps the old bytes).
+const LIBRARY_SKIRT_MAGIC: &[u8; 8] = b"CALALIB4";
 /// Magic of the footprints-only layout (no precomputed terms), which
 /// [`Library::from_bytes`] still reads (and assembles).
 pub(crate) const CORE_MAGIC: &[u8; 8] = b"CALALIB2";
@@ -1393,7 +1782,12 @@ impl Library {
     /// grows faster than the cell count), and the copy solves
     /// bit-identically.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = self.core_bytes(LIBRARY_MAGIC);
+        let magic = if self.core.skirt_blk.is_empty() {
+            LIBRARY_MAGIC
+        } else {
+            LIBRARY_SKIRT_MAGIC
+        };
+        let mut out = self.core_bytes(magic);
         put_csr(&mut out, &self.gram);
         put_f32s(&mut out, &self.gram_diag);
         put_f32s(&mut out, &self.mdiag);
@@ -1476,6 +1870,12 @@ impl Library {
         put_u32s(&mut out, c.low_start.iter().map(|&v| v as u32));
         put_u32s(&mut out, c.low_blk.iter().copied());
         put_f32s(&mut out, &c.low_val);
+        if magic == LIBRARY_SKIRT_MAGIC {
+            put_u32s(&mut out, [c.skirt_blk.len() as u32]);
+            put_u32s(&mut out, c.skirt_start.iter().map(|&v| v as u32));
+            put_u32s(&mut out, c.skirt_blk.iter().copied());
+            put_f32s(&mut out, &c.skirt_val);
+        }
         out
     }
 
@@ -1486,10 +1886,12 @@ impl Library {
         let bad = bytes_err;
         let mut r = ByteReader { buf: bytes, at: 0 };
         let magic = r.take(8)?;
-        let with_terms = if magic == LIBRARY_MAGIC {
-            true
+        let (with_terms, with_skirt) = if magic == LIBRARY_MAGIC {
+            (true, false)
+        } else if magic == LIBRARY_SKIRT_MAGIC {
+            (true, true)
         } else if magic == CORE_MAGIC {
-            false
+            (false, false)
         } else {
             return Err(bad("not a cala library"));
         };
@@ -1561,6 +1963,32 @@ impl Library {
                 return Err(bad("moat block outside the grid"));
             }
         }
+        let (skirt_start, skirt_blk, skirt_val) = if with_skirt {
+            let ns = r.u32()? as usize;
+            let start: Vec<usize> = r.u32s(n + 1)?.into_iter().map(|v| v as usize).collect();
+            if start[0] != 0 || start[n] != ns || start.windows(2).any(|w| w[0] > w[1]) {
+                return Err(bad("skirt offsets"));
+            }
+            let blk = r.u32s(ns)?;
+            let val = r.f32s(ns)?;
+            if val.iter().any(|v| !v.is_finite()) {
+                return Err(bad("non-finite values"));
+            }
+            for i in 0..n {
+                let (a, z) = (start[i], start[i + 1]);
+                let (la, lz) = (low_start[i], low_start[i + 1]);
+                if blk[a..z].windows(2).any(|w| w[0] >= w[1])
+                    || blk[a..z]
+                        .iter()
+                        .any(|b| low_blk[la..lz].binary_search(b).is_err())
+                {
+                    return Err(bad("skirt block outside the moat"));
+                }
+            }
+            (start, blk, val)
+        } else {
+            (vec![0; n + 1], Vec::new(), Vec::new())
+        };
         let terms = if with_terms {
             Some(Terms::read(&mut r, n, n_px, &model)?)
         } else {
@@ -1600,12 +2028,15 @@ impl Library {
             low_start,
             low_blk,
             low_val,
+            skirt_start,
+            skirt_blk,
+            skirt_val,
             vc: Vec::new(),
             blk_fov: Vec::new(),
             blk_noise2: Vec::new(),
         };
         let Some(t) = terms else {
-            return Library::assemble(core.finish(), model, version);
+            return Library::assemble(core.finish(), model, version, None);
         };
         // The overlap groups, numbered in order of their first cell, as
         // `assemble` numbers them.
@@ -1619,7 +2050,7 @@ impl Library {
             }
             groups[g].push(i as u32);
         }
-        let bg = match t.bg {
+        let mut bg = match t.bg {
             BgRead::None => BgTerms::None,
             BgRead::Basis { k, p, x, w } => BgTerms::Basis {
                 k,
@@ -1633,14 +2064,18 @@ impl Library {
             },
             BgRead::Ring(ring) => ring,
         };
+        let (mut mdiag, mut trace_noise) = (t.mdiag, t.trace_noise);
+        if let BgTerms::Ring { s, q, .. } = &mut bg {
+            ring_self_curvature_on_read(&t.gram_diag, s, q, &mut mdiag, &mut trace_noise);
+        }
         Ok(Library {
             version,
             core: core.finish(),
             model,
             gram: t.gram,
             gram_diag: t.gram_diag,
-            mdiag: t.mdiag,
-            trace_noise: t.trace_noise,
+            mdiag,
+            trace_noise,
             groups,
             group_of: t.group_of,
             bg,
@@ -1752,6 +2187,12 @@ impl Core {
     fn low(&self, i: usize) -> (&[u32], &[f32]) {
         let (a, b) = (self.low_start[i], self.low_start[i + 1]);
         (&self.low_blk[a..b], &self.low_val[a..b])
+    }
+
+    #[inline]
+    fn skirt(&self, i: usize) -> (&[u32], &[f32]) {
+        let (a, b) = (self.skirt_start[i], self.skirt_start[i + 1]);
+        (&self.skirt_blk[a..b], &self.skirt_val[a..b])
     }
 
     /// Moat grid width (blocks per row); 0 without a moat.

@@ -2,7 +2,8 @@
 
 python make_trace_sim.py OUT --f 0.45 --dur 60 --npx 600 [--motion] [--seed 0] [--spec SPEC.json]
 
-Writes OUT/daq/... (AVI files, streamed), and OUT/oracle.bin:
+Writes OUT/daq/... (AVI files, streamed), OUT/shifts.npy (motion only: the true rigid
+content motion, (frames, 2) float64 px, for qc_eval's GT alignment) and OUT/oracle.bin:
   header: magic b"CALAORC1", u32 H, W, n_units, n_frames
   per unit: u32 id, u8 detectable, u8 in_focus, 2 pad, f32 cy, cx (FOV px),
             then two footprints (full = with halo, core = core-only), each:
@@ -69,6 +70,9 @@ f = write_miniscope_daq(spec, daq, progress=False, overwrite=True, chunk_frames=
 print("rendered", f.device_dir, f.n_frames, flush=True)
 
 gt, _ = load_ground_truth(daq / "ground_truth/ground_truth.zarr")
+if gt.shifts is not None:
+    # True rigid content motion for qc_eval's GT alignment (tools/cala-eval/export_gt_motion.py).
+    np.save(out / "shifts.npy", np.asarray(gt.shifts, dtype=np.float64))
 top, left = gt.fov_offset
 H, W = gt.fov_shape
 sens = spec.acquisition.image_sensor

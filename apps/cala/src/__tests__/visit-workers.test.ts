@@ -1,15 +1,6 @@
 // @vitest-environment node
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import {
-  initCalaWasm,
-  QcMonitor,
-  SlowLoop,
-  TraceEngine,
-  TraceLibrary,
-  VisitWorker,
-} from '../lib/cala-wasm.ts';
+import { QcMonitor, SlowLoop, TraceEngine, TraceLibrary, VisitWorker } from '../lib/cala-wasm.ts';
 import { buildGeometry, pickCell } from '../lib/cell-overlay.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
 import { RESERVED_THREADS, visitWorkerCount } from '../lib/slow-client.ts';
@@ -21,12 +12,9 @@ import type {
   SlowToMain,
   VisitToOwner,
 } from '../workers/slow-types.ts';
+import { initTestWasm } from './wasm-test.ts';
 
-beforeAll(async () => {
-  await initCalaWasm(
-    readFileSync(resolve(import.meta.dirname, '../../../../crates/cala/pkg/calab_cala_bg.wasm')),
-  );
-});
+beforeAll(initTestWasm);
 
 describe('visitWorkerCount', () => {
   it('leaves the reserved threads free and caps the count', () => {
@@ -131,6 +119,9 @@ describe('SlowRunner with visit workers (fakes)', () => {
     const res: VisitToOwner = { type: 'result', session: 1, bytes: Uint8Array.of(42), ms: 5 };
     t.r.handleVisit(0, res);
     expect(t.applied).toEqual([42]);
+    // The result is left to the GC, never detached (transfer(0) kept the
+    // memory in Chrome while hiding it from V8: the v2.18.0 Refine blowup).
+    expect(res.bytes.byteLength).toBe(1);
     expect(t.toVisit[0].at(-1)!.msg.type).toBe('job');
     // Nothing more due: the next result leaves the worker idle.
     t.r.handleVisit(1, res);

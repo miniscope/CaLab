@@ -11,6 +11,7 @@
  * never waits for the slow worker: see `FastLoop` and `ForwardPool`.
  */
 import { initCalaWasm } from '../lib/cala-wasm.ts';
+import { CompressFeed } from '../lib/compress-feed.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
 import { FLAT_FIELD_MAX_QUEUE } from '../lib/flat-field.ts';
 import type { FlatFieldBatch, FlatFieldSink, FlatFieldStart } from '../lib/flat-field-runner.ts';
@@ -20,7 +21,8 @@ import { PipelineEngine, transferablesOf, type FrameReader } from '../lib/pipeli
 import { FrontStage, jobTransferables } from '../lib/pipeline-stages.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import { traceBackend as backend } from '../lib/trace-backend.ts';
-import type { FrameRequest, FrameResponse } from './frame-types.ts';
+import type { FastToCompress } from './compress-types.ts';
+import type { FrameRequest, FrameResponse, SessionProbeResult } from './frame-types.ts';
 import type { FlatFieldDown, FlatFieldUp } from './flat-field-types.ts';
 import type { StageFree, StageMsg, StageShifts } from './stage-types.ts';
 import type { FastToSlow, SlowToFast } from './slow-types.ts';
@@ -31,6 +33,7 @@ let live: LiveSource | null = null;
 let liveUrl: string | null = null;
 let pipeline: PipelineEngine | null = null;
 let slowPort: MessagePort | null = null;
+let compressPort: MessagePort | null = null;
 
 // Pipelined run (`link` received): this worker is stage A only (read +
 // preprocess front half); the motion and trace workers do the rest.
@@ -116,7 +119,8 @@ function openLive(url: string): Promise<LiveSource> {
   return LiveSource.open(new WebSocket(url) as unknown as SocketLike, url);
 }
 
-function stopPipeline(): void {
+/** `keepSlow`: a replay stage follows (or one is stopped): the slow loop stays. */
+function stopPipeline(keepSlow = false): void {
   pipeline?.dispose();
   pipeline = null;
   if (front) {
@@ -124,8 +128,8 @@ function stopPipeline(): void {
     front = null;
     frontPool = null;
     flatSink = null;
-    down?.postMessage({ type: 'stop', epoch } satisfies StageMsg);
   }
+  down?.postMessage({ type: 'stop', epoch, keepSlow } satisfies StageMsg);
 }
 
 async function handle(req: FrameRequest): Promise<void> {
@@ -138,6 +142,30 @@ async function handle(req: FrameRequest): Promise<void> {
         liveUrl = null;
         source = await FrameSource.open(req.entries);
         post({ type: 'opened', id: req.id, info: source.info });
+        break;
+      }
+      case 'open-sessions': {
+        await initCalaWasm();
+        stopPipeline();
+        closeSources();
+        liveUrl = null;
+        source = await FrameSource.openSessions(req.sessions);
+        post({ type: 'opened', id: req.id, info: source.info });
+        break;
+      }
+      case 'probe': {
+        await initCalaWasm();
+        const results: SessionProbeResult[] = [];
+        for (const s of req.sessions) {
+          try {
+            const probed = await FrameSource.open(s.entries);
+            results.push({ info: probed.info });
+            probed.dispose();
+          } catch (err) {
+            results.push({ error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+        post({ type: 'probed', id: req.id, results });
         break;
       }
       case 'open-live': {
@@ -161,7 +189,8 @@ async function handle(req: FrameRequest): Promise<void> {
         break;
       }
       case 'pipeline-start': {
-        stopPipeline();
+        // A replay stage (Refine, Extract) keeps the slow loop of the Discover run.
+        stopPipeline(req.cells?.library !== undefined);
         // A live stream cannot be rewound: a restart (or a run after the stream
         // ended) connects again, and the source streams from where it is now.
         if (live && liveUrl && (live.used || live.stats().ended)) {
@@ -170,7 +199,10 @@ async function handle(req: FrameRequest): Promise<void> {
           live = await openLive(liveUrl);
         }
         const src = reader();
-        if (live && req.replay) throw new Error('Pass 2 needs the recording on disk.');
+        if (live && req.replay)
+          throw new Error(
+            'Refine and Extract need the recording on disk (save the stream and open it as a recording).',
+          );
         if (down) {
           epoch++;
           // The stage asks for buffers only from its first `next()`, after the pool exists.
@@ -211,7 +243,7 @@ async function handle(req: FrameRequest): Promise<void> {
           post({ type: 'pipeline-ready', id: req.id, plan: stage.plan });
           break;
         }
-        if (req.replay) throw new Error('Pass 2 needs the pipelined workers.');
+        if (req.replay) throw new Error('Refine and Extract need the pipelined workers.');
         const cells = req.cells;
         const port = slowPort;
         pipeline = new PipelineEngine(src, req.options, undefined, (setup) => {
@@ -226,6 +258,12 @@ async function handle(req: FrameRequest): Promise<void> {
             },
             port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
             backend,
+            cells?.compress && compressPort
+              ? new CompressFeed(
+                  { width: setup.width, height: setup.height, session: cells.session },
+                  compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
+                )
+              : null,
           );
         });
         live?.setRetainFrames(
@@ -260,7 +298,7 @@ async function handle(req: FrameRequest): Promise<void> {
         break;
       }
       case 'pipeline-stop': {
-        stopPipeline();
+        stopPipeline(req.keepSlow === true);
         post({ type: 'pipeline-stopped', id: req.id });
         break;
       }
@@ -270,7 +308,7 @@ async function handle(req: FrameRequest): Promise<void> {
         down.onmessage = (e: MessageEvent<StageFree | StageShifts>) => {
           if (e.data.epoch !== epoch) return;
           if (e.data.type === 'free') frontPool?.release(e.data.buffer);
-          else front?.onShifts(e.data.start, e.data.dy, e.data.dx);
+          else front?.onShifts(e.data.start, e.data.dy, e.data.dx, e.data.session);
         };
         post({ type: 'ok', id: req.id });
         break;
@@ -293,6 +331,12 @@ async function handle(req: FrameRequest): Promise<void> {
         // Slow-worker answers only record state; they are applied between batches.
         slowPort.onmessage = (e: MessageEvent<SlowToFast>) =>
           pipeline?.fastLoop?.handleSlow(e.data);
+        post({ type: 'ok', id: req.id });
+        break;
+      }
+      case 'connect-compress': {
+        compressPort?.close();
+        compressPort = req.port;
         post({ type: 'ok', id: req.id });
         break;
       }

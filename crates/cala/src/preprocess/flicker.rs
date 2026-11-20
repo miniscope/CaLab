@@ -476,6 +476,15 @@ impl FlickerCorrector {
         out
     }
 
+    /// Start the reference again from the next frame, as at the start of a
+    /// recording (a session boundary, see [`super::session`]): the next frame
+    /// defines it and is not corrected, the following ones are fitted
+    /// against the cumulative mean of the new session's frames until
+    /// `tau_frames` of them have been seen.
+    pub fn reseat(&mut self) {
+        self.frames = 0;
+    }
+
     pub fn state(&self) -> FlickerState {
         FlickerState {
             reference: self.reference.clone(),

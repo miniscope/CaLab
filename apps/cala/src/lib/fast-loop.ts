@@ -12,7 +12,9 @@
  * hundreds of cells), not a rebuild.
  */
 import type { FastToSlow, PortLike, SlowToFast } from '../workers/slow-types.ts';
+import type { CompressFeedLike } from './compress-feed.ts';
 import { ForwardPool } from './forward-pool.ts';
+import { ASSUMED_FPS } from './miniscope-meta.ts';
 import type { QcWire } from './qc.ts';
 
 /** What the fast loop needs of a `TraceLibrary`. */
@@ -26,8 +28,19 @@ export interface TraceLibraryLike {
 export interface TraceEngineLike {
   setLibrary(lib: TraceLibraryLike): void;
   processFrames(frames: Float32Array, count: number): Float32Array;
+  /**
+   * Background coefficients of the last solved batch (also through a QC monitor), frame
+   * after frame; the slow loop needs them with the traces. Absent in older fakes.
+   */
+  lastBackground?(): Float32Array;
   /** Residual of the last solved frame (`frame` is that frame); empty when there is none. */
   residualOfLast?(frame: Float32Array): Float32Array;
+  /** Also compute the signed (unclipped) traces of each batch (`lastSigned`). */
+  setSigned?(on: boolean): void;
+  /** Reassociated ring gradients, only for a replay with frozen footprints. */
+  setConsolidatedRingGradient?(on: boolean): void;
+  /** Signed traces of the last solved batch, laid out as its traces; empty when off. */
+  lastSigned?(): Float32Array;
   free(): void;
 }
 
@@ -69,12 +82,32 @@ export interface TraceBackend {
   newQc?(setup: QcSetup): QcMonitorLike;
   /** `QcMonitor.cellFields()` / `globalFields()`, comma-separated. */
   qcFields?(): { cell: string; global: string };
+  /** Back-process and solve using one full-batch copy into WASM. */
+  backAndTrace?(
+    pre: RegisteredPreprocessor,
+    engine: TraceEngineLike,
+    qc: QcMonitorLike | null,
+    frames: Float32Array,
+    count: number,
+    dy: Float32Array,
+    dx: Float32Array,
+    refreshQcNoise: boolean,
+  ): Float32Array;
 }
 
 /** What the fast loop reads from the preprocessor when the slow loop starts. */
 export interface CalibrationSource {
   fovMask(): Uint8Array;
   noiseSigma(): Float32Array;
+}
+
+export interface RegisteredPreprocessor extends CalibrationSource {
+  backFramesRegistered(
+    frames: Float32Array,
+    count: number,
+    dy: Float32Array,
+    dx: Float32Array,
+  ): Float64Array;
 }
 
 export interface FastLoopOptions {
@@ -101,10 +134,26 @@ export interface FastLoopOptions {
   fps?: number;
   /** Stream time between QC snapshots sent to the main thread, s (paced by frames, not the wall clock). */
   qcEveryS?: number;
-  /** Solve with this library (`TraceLibrary.toBytes()`) from the first frame (pass 2: the final library). */
+  /** Solve with this library (`TraceLibrary.toBytes()`) from the first frame (Refine, Extract: the final library). */
   initialLibrary?: Uint8Array;
+  /**
+   * Refine run (docs/stages.md): the slow loop of `session` is already there
+   * (Discover built it). Instead of `init` it gets a `replay` message with the
+   * `refine` scope, frames are forwarded from frame 0, and no noise maps are
+   * sent (it keeps the newest map of the Discover run; the replay's map
+   * restarts from calibration). The forward pool never drops a batch then
+   * (`ForwardPool` lossless): the main thread paces the batches instead.
+   */
+  refine?: boolean;
+  /** Discover with look-back (experimental): the slow loop's `init` says so (`SlowInit.lookback`). */
+  lookback?: boolean;
   /** Return the model residual of each batch's last frame (the app's residual view). */
   residual?: boolean;
+  /**
+   * Also return each batch's signed (unclipped) traces (`CellsBatch.signed`):
+   * Extract turns it on, the live stages do not need them.
+   */
+  signed?: boolean;
 }
 
 export const FAST_LOOP_DEFAULTS = {
@@ -115,9 +164,12 @@ export const FAST_LOOP_DEFAULTS = {
   // One batch being observed, one queued.
   poolSize: 2,
   qc: true,
-  fps: 20,
+  fps: ASSUMED_FPS,
   qcEveryS: 1,
   residual: false,
+  refine: false,
+  lookback: false,
+  signed: false,
 } as const;
 
 /** The fast loop's output for one batch. */
@@ -128,6 +180,12 @@ export interface CellsBatch {
   ids: Uint32Array;
   /** `count * ids.length` traces, frame after frame. */
   traces: Float32Array;
+  /**
+   * The signed (unclipped) traces, laid out as `traces` (with `signed` on and
+   * cells in the library): each trace plus the residual's projection on the
+   * cell, so a quiet cell sits at 0 with symmetric noise instead of clipped.
+   */
+  signed?: Float32Array;
   /** Wall time of the library swap (0 without one), the solve and the forward copy, ms. */
   swapMs: number;
   solveMs: number;
@@ -143,6 +201,8 @@ export interface CellsBatch {
   qcOn: boolean;
   /** A QC snapshot, about once per `qcEveryS` of stream time. */
   qc?: QcWire;
+  /** Wall time of copying and sending the batch to the compress worker, ms (compression on). */
+  compressMs?: number;
   /**
    * Full-frame model residual of the batch's last frame (with `residual` on
    * and cells in the library). The worker turns it into a preview and drops
@@ -155,6 +215,7 @@ const now = (): number => performance.now();
 
 export class FastLoop {
   private readonly o: Required<Omit<FastLoopOptions, 'initialLibrary'>>;
+  private readonly frozenReplay: boolean;
   private readonly px: number;
   private readonly port: PortLike<FastToSlow> | null;
   private readonly backend: TraceBackend;
@@ -167,6 +228,7 @@ export class FastLoop {
   private qcNoise = 0;
   private qcLastFrame = -Infinity;
   private qcFrame = 0;
+  private qcRefreshDeferred = false;
   private pendingLibrary: Uint8Array | null = null;
   private initSent = false;
   private lastNoise = 0;
@@ -175,15 +237,29 @@ export class FastLoop {
   private resumed = false;
   private disposed = false;
 
-  constructor(options: FastLoopOptions, port: PortLike<FastToSlow> | null, backend: TraceBackend) {
+  constructor(
+    options: FastLoopOptions,
+    port: PortLike<FastToSlow> | null,
+    backend: TraceBackend,
+    /** The feed to the compress worker (`null`: no compression). */
+    private readonly feed: CompressFeedLike | null = null,
+  ) {
     const { initialLibrary, ...rest } = options;
     this.o = { ...FAST_LOOP_DEFAULTS, discover: true, ...rest };
     this.pendingLibrary = initialLibrary ?? null;
-    if (!(this.o.fps > 0)) this.o.fps = FAST_LOOP_DEFAULTS.fps;
+    this.frozenReplay = initialLibrary !== undefined && !this.o.refine;
+    if (!(this.o.fps > 0)) {
+      // The recording gave no rate (its warnings say so); QC durations assume this one.
+      console.warn(
+        `cala fast loop: no frame rate; QC durations assume ${FAST_LOOP_DEFAULTS.fps} Hz.`,
+      );
+      this.o.fps = FAST_LOOP_DEFAULTS.fps;
+    }
     this.px = options.width * options.height;
     this.port = port;
     this.backend = backend;
-    this.pool = new ForwardPool(this.o.poolSize, this.o.batchSize * this.px);
+    // Refine drops no frame for the slow loop (the main thread paces it).
+    this.pool = new ForwardPool(this.o.poolSize, this.o.batchSize * this.px, this.o.refine);
   }
 
   get session(): number {
@@ -218,6 +294,9 @@ export class FastLoop {
     } else if (msg.type === 'library') {
       // Only the newest matters: an older pending version is replaced.
       if (msg.version > this.version) this.pendingLibrary = msg.bytes;
+      // The compress worker back-fills with the newest library, also the
+      // final one, which arrives after the last batch and is never applied here.
+      this.feed?.library(msg.version, msg.bytes);
     }
   }
 
@@ -231,23 +310,48 @@ export class FastLoop {
     count: number,
     calibration: CalibrationSource,
     shifts?: { dy: Float32Array; dx: Float32Array },
+    registered?: RegisteredPreprocessor,
   ): CellsBatch {
     const t0 = now();
     this.applyPendingLibrary();
     const t1 = now();
     const n = count * this.px;
     const batch = frames.subarray(0, n);
+    const fused = !!(
+      registered &&
+      shifts &&
+      this.engine &&
+      this.ids.length &&
+      this.backend.backAndTrace
+    );
+    if (registered && shifts && !fused)
+      registered.backFramesRegistered(batch, count, shifts.dy, shifts.dx);
     let traces: Float32Array = new Float32Array(0);
+    let background: Float32Array | undefined;
+    let signed: Float32Array | undefined;
     let qcOn = false;
     if (this.engine && this.ids.length > 0) {
-      const qc = this.qcMonitor(start, calibration);
+      const qc = this.qcMonitor(start, calibration, fused);
       qcOn = qc !== null;
-      traces = qc
-        ? shifts && qc.processFramesShifted
-          ? qc.processFramesShifted(this.engine, batch, count, shifts.dy, shifts.dx)
-          : qc.processFrames(this.engine, batch, count)
-        : this.engine.processFrames(batch, count);
+      traces = fused
+        ? this.backend.backAndTrace!(
+            registered!,
+            this.engine,
+            qc,
+            batch,
+            count,
+            shifts!.dy,
+            shifts!.dx,
+            this.qcRefreshDeferred,
+          )
+        : qc
+          ? shifts && qc.processFramesShifted
+            ? qc.processFramesShifted(this.engine, batch, count, shifts.dy, shifts.dx)
+            : qc.processFrames(this.engine, batch, count)
+          : this.engine.processFrames(batch, count);
       if (qc) this.qcFrame = start + count;
+      background = this.engine.lastBackground?.();
+      if (this.o.signed) signed = this.engine.lastSigned?.();
     }
     // One frame per batch, only while the residual view is shown.
     const residual =
@@ -255,13 +359,16 @@ export class FastLoop {
         ? this.engine.residualOfLast(batch.subarray((count - 1) * this.px, count * this.px))
         : null;
     const t2 = now();
-    this.forward(batch, start, count, traces, calibration);
+    this.forward(batch, start, count, traces, background, calibration);
     const t3 = now();
+    this.feed?.push(batch, start, count);
+    const compressMs = this.feed ? now() - t3 : undefined;
     const qc = qcOn ? this.qcSnapshot() : undefined;
     return {
       version: this.version,
       ids: this.ids.slice(),
       traces,
+      ...(signed && signed.length === traces.length ? { signed } : {}),
       swapMs: t1 - t0,
       solveMs: t2 - t1,
       forwardMs: t3 - t2,
@@ -271,12 +378,18 @@ export class FastLoop {
       slowFrame: this.slowFrame,
       qcOn,
       ...(qc ? { qc } : {}),
+      ...(compressMs === undefined ? {} : { compressMs }),
       ...(residual && residual.length === this.px ? { residual } : {}),
     };
   }
 
   /** The QC monitor, created on first use; refreshes its noise map now and then. */
-  private qcMonitor(start: number, calibration: CalibrationSource): QcMonitorLike | null {
+  private qcMonitor(
+    start: number,
+    calibration: CalibrationSource,
+    deferNoise = false,
+  ): QcMonitorLike | null {
+    this.qcRefreshDeferred = false;
     const b = this.backend;
     if (!this.o.qc || !b.newQc || !b.qcFields) return null;
     if (!this.qc) {
@@ -290,8 +403,10 @@ export class FastLoop {
         fps: this.o.fps,
       });
       this.qcNoise = start;
+      this.qcRefreshDeferred = deferNoise;
     } else if (start - this.qcNoise >= this.o.noiseEvery) {
-      this.qc.setNoise(calibration.noiseSigma());
+      if (deferNoise) this.qcRefreshDeferred = true;
+      else this.qc.setNoise(calibration.noiseSigma());
       this.qcNoise = start;
     }
     return this.qc;
@@ -344,12 +459,20 @@ export class FastLoop {
   /** The recording ended: let the slow loop publish what it has. */
   end(): void {
     if (this.initSent) this.port?.postMessage({ type: 'end', session: this.o.session });
+    this.feed?.end();
   }
 
-  dispose(): void {
+  /**
+   * Free the loop. The slow loop is dropped, unless `keepSlow` (a replay stage
+   * follows, or this is a Refine run being stopped): then it is only told to
+   * publish what it has (a no-op when it already did).
+   */
+  dispose(keepSlow = false): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.port?.postMessage({ type: 'reset', session: this.o.session });
+    if (!keepSlow) this.port?.postMessage({ type: 'reset', session: this.o.session });
+    else if (this.initSent) this.port?.postMessage({ type: 'end', session: this.o.session });
+    this.feed?.reset();
     this.qc?.free();
     this.qc = null;
     this.engine?.free();
@@ -364,7 +487,11 @@ export class FastLoop {
     const lib = this.backend.libraryFromBytes(bytes);
     try {
       if (this.engine) this.engine.setLibrary(lib);
-      else this.engine = this.backend.newEngine(lib);
+      else {
+        this.engine = this.backend.newEngine(lib);
+        if (this.frozenReplay) this.engine.setConsolidatedRingGradient?.(true);
+        if (this.o.signed) this.engine.setSigned?.(true);
+      }
       this.version = lib.version;
       this.ids = lib.ids();
     } finally {
@@ -378,11 +505,17 @@ export class FastLoop {
     start: number,
     count: number,
     traces: Float32Array,
+    background: Float32Array | undefined,
     calibration: CalibrationSource,
   ): void {
     const port = this.port;
     if (!port || !this.o.discover) return;
     const session = this.o.session;
+    if (!this.initSent && this.o.refine) {
+      port.postMessage({ type: 'replay', session, scope: 'refine' });
+      this.initSent = true;
+      this.lastNoise = Infinity;
+    }
     if (!this.initSent) {
       if (start + count < this.o.startFrame) return;
       port.postMessage(
@@ -396,6 +529,7 @@ export class FastLoop {
           cellDiameterPx: this.o.cellDiameterPx,
           flattenSigmaPx: this.o.flattenSigmaPx,
           budget: this.o.budget,
+          ...(this.o.lookback ? { lookback: true } : {}),
         },
         [],
       );
@@ -411,6 +545,8 @@ export class FastLoop {
     buf.set(batch);
     const tr = traces.slice();
     const transfer: Transferable[] = [buf.buffer as ArrayBuffer, tr.buffer as ArrayBuffer];
+    // A fresh copy from WASM each batch, so it can be transferred as is.
+    if (background) transfer.push(background.buffer as ArrayBuffer);
     let noise: Float32Array | undefined;
     if (start - this.lastNoise >= this.o.noiseEvery) {
       noise = calibration.noiseSigma();
@@ -427,6 +563,7 @@ export class FastLoop {
         cells: this.ids.length,
         frames: buf,
         traces: tr,
+        ...(background ? { background } : {}),
         ...(noise ? { noise } : {}),
       },
       transfer,

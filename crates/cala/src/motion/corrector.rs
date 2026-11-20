@@ -730,8 +730,6 @@ struct Engine {
 
 /// Outcome of registering one frame's crop against the template.
 struct Registration {
-    /// Total registering shift.
-    shift: (f32, f32),
     /// Shift of the final crop relative to its offset.
     rel: (f32, f32),
     ncc: f32,
@@ -799,7 +797,6 @@ impl Engine {
         }
         let rel = (peak.dy, peak.dx);
         Ok(Registration {
-            shift: (self.offset.0 as f32 + rel.0, self.offset.1 as f32 + rel.1),
             rel,
             ncc: peak.ncc,
             energy,
@@ -924,8 +921,11 @@ enum Out {
 struct Warm {
     /// Built on the first pushed batch.
     eng: Option<Engine>,
-    /// Filtered extended region of every pushed frame, back to back.
-    stored: Vec<f32>,
+    /// Filtered extended region of every pushed frame, one exact-size
+    /// allocation per frame. Not one growing Vec: its doubling would
+    /// reallocate (old and new buffers live together) and leave the WASM
+    /// heap, which never shrinks, near twice the size of the frames.
+    stored: Vec<Vec<f32>>,
     /// Running sum of the zero-shift crops (pass 0).
     acc: Vec<f32>,
     brightness: Vec<f32>,
@@ -1241,7 +1241,7 @@ impl MotionCorrector {
             frames.frame(i, px).to_f32(&mut self.frame)?;
             let b = eng.pre.run(&self.frame, self.w, &mut eng.filtered);
             warm.brightness.push(b);
-            warm.stored.extend_from_slice(&eng.filtered);
+            warm.stored.push(eng.filtered.clone());
             eng.cut((0, 0));
             for (a, &v) in warm.acc.iter_mut().zip(&eng.crop) {
                 *a += v;
@@ -1270,10 +1270,8 @@ impl MotionCorrector {
         let Some(mut eng) = eng else {
             return Err(MotionError::SizeMismatch("no warm-up frames pushed".into()));
         };
-        let epx = eng.ext.height * eng.ext.width;
         refine_template(&self.cfg, &mut eng, n, acc, brightness, |eng, i| {
-            eng.filtered
-                .copy_from_slice(&stored[i * epx..(i + 1) * epx]);
+            eng.filtered.copy_from_slice(&stored[i]);
             Ok(())
         })?;
         self.install(eng);

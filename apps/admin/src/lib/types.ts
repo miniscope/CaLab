@@ -3,7 +3,8 @@ export interface SessionRow {
   created_at: string;
   anonymous_id: string;
   user_id: string | null;
-  is_anonymous: boolean;
+  /** Absent (undefined) when the database lacks migration 008's column; never assume a value. */
+  is_anonymous?: boolean | null;
   app_name: string;
   app_version: string | null;
   country_code: string | null;
@@ -13,6 +14,7 @@ export interface SessionRow {
   user_agent_family: string | null;
   referrer_domain: string | null;
   ended_at: string | null;
+  duration_seconds?: number | null;
 }
 
 export interface EventRow {
@@ -57,49 +59,15 @@ export interface CadeconSubmissionRow {
   converged: boolean;
 }
 
-export interface AdminMetrics {
-  totalSessions: number;
-  uniqueUsers: number;
-  anonymousSessions: number;
-  totalSubmissions: number;
-  avgDurationMinutes: string;
-  topReferrer: string;
-}
+export type AdminView =
+  'overview' | 'cala' | 'users' | 'geography' | 'usage' | 'submissions' | 'export';
 
-export interface GeoBreakdown {
-  country_code: string;
-  region: string | null;
-  count: number;
-}
-
-export interface EventBreakdown {
-  event_name: string;
-  count: number;
-}
-
-export interface WeeklySession {
-  week: string;
-  count: number;
-}
-
-export interface SourceBreakdown {
-  data_source: string;
-  count: number;
-}
-
-export interface AppBreakdown {
-  app_name: string;
-  count: number;
-}
-
-export interface ReferrerBreakdown {
-  referrer_domain: string;
-  count: number;
-}
-
-export type AdminView = 'overview' | 'usage' | 'geography' | 'submissions' | 'export';
-
-export interface DateRange {
-  start: string;
-  end: string;
-}
+export const ADMIN_VIEWS: readonly AdminView[] = [
+  'overview',
+  'cala',
+  'users',
+  'geography',
+  'usage',
+  'submissions',
+  'export',
+];

@@ -9,7 +9,7 @@
  * outside it, and each step is logged as a `range` event.
  */
 import { createSignal } from 'solid-js';
-import { StreamHistory, type SeriesSpec } from '@calab/compute';
+import { StreamHistory, type HistoryExport, type SeriesSpec } from '@calab/compute';
 import { RunEvents, type RunEvent } from './run-events.ts';
 
 /** Motion record flag bits (crates/cala/src/motion/corrector.rs) that count as a flagged frame. */
@@ -473,7 +473,35 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     setAttention(new Set<string>());
     const n = o.frameCount;
     setRunEnd(n !== undefined && Number.isFinite(n) && n > 0 ? n / fps : null);
-    events.push({ frame: 0, t: 0, kind: 'pass', to: 1, detail: 'Pass 1 started', wall: wall0 });
+    events.push({
+      frame: 0,
+      t: 0,
+      kind: 'stage',
+      to: 'discover',
+      detail: 'Discover started',
+      wall: wall0,
+    });
+    bump();
+  }
+
+  /**
+   * Show a saved run (read-only viewer): its history bins and event log as
+   * exported (`StreamHistory.toExport`, `RunEvents.toJSON`), or an empty
+   * history when the export has none.
+   */
+  function load(o: { bins: HistoryExport | null; events: readonly RunEvent[]; fps: number }): void {
+    fps = o.fps > 0 ? o.fps : 20;
+    live = false;
+    lastDropped = 0;
+    gapPending = 0;
+    lastGapT = -Infinity;
+    history = o.bins ? StreamHistory.fromExport(o.bins, allSeries()) : freshStore();
+    events = new RunEvents();
+    for (const e of o.events) events.push(e);
+    wall0 = o.events.find((e) => typeof e.wall === 'number')?.wall ?? clock();
+    processedS = history.end();
+    setAttention(new Set<string>());
+    setRunEnd(processedS > 0 ? processedS : null);
     bump();
   }
 
@@ -565,6 +593,7 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
 
   return {
     reset,
+    load,
     batch,
     liveCounters,
     convergence,

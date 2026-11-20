@@ -18,6 +18,7 @@
  */
 
 import type { FlatFieldApplied } from './flat-field.ts';
+import type { SessionTransform } from './session-boundary.ts';
 
 export const RUN_RECORD_BYTES_PER_FRAME = 17;
 
@@ -28,6 +29,11 @@ export interface RunSpan {
   flags: Uint8Array;
   flickerOffset: Float32Array;
   flickerGain: Float32Array;
+  /**
+   * Session re-registration transforms of a Joint run, by session index
+   * (1-based; absent: identity). Stage B applies them in a replay.
+   */
+  sessionTransforms?: (SessionTransform | undefined)[];
 }
 
 export class RunRecord {
@@ -40,6 +46,7 @@ export class RunRecord {
   private n = 0;
   private gap = false;
   private readonly flatApplied: FlatFieldApplied[] = [];
+  private readonly sessions: (SessionTransform | undefined)[] = [];
 
   constructor(capacity = 4096) {
     this.cap = Math.max(1, Math.floor(capacity));
@@ -58,6 +65,11 @@ export class RunRecord {
   /** Note that a flat-field map took effect (at `applied.frame`). */
   noteFlatField(applied: FlatFieldApplied): void {
     this.flatApplied.push(applied);
+  }
+
+  /** Session `index` was re-registered by `transform` (applied to all of its frames). */
+  noteSession(index: number, transform: SessionTransform): void {
+    this.sessions[index] = [transform[0], transform[1], transform[2]];
   }
 
   /** Frames recorded from frame 0 without a gap. */
@@ -141,6 +153,9 @@ export class RunRecord {
       flags: s.flags.slice(),
       flickerOffset: s.flickerOffset.slice(),
       flickerGain: s.flickerGain.slice(),
+      ...(this.sessions.length > 0
+        ? { sessionTransforms: this.sessions.map((t) => (t ? [...t] : undefined)) }
+        : {}),
     };
   }
 }

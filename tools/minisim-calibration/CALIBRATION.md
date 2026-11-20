@@ -237,7 +237,7 @@ comments give every change and why. Measurements are in
 | `place_neurons` cytosolic `depth_range_um`  | 140-160 | 172-188                           | a layer straddling the focal depth (180 um)                           |
 | `optics.field_curvature_radius_um`          | 2500    | none (flat)                       | see below                                                             |
 | `neuropil.amplitude`                        | 0.25    | 1.5 (size6 1.5, size16 1.65)      | holds the mean grey level (64)                                        |
-| `sensor.photons_per_unit`                   | 6500    | 1800                              | holds the per-cell peak SNR (and the detectable flag)                 |
+| `sensor.photons_per_unit`                   | 6500    | 1800                              | holds the per-cell peak SNR (and the 1.0.3 detectable flag)           |
 
 The pixel size (4.8 um / 2.9 = 1.655 um) is unchanged, so vessels, neuropil field,
 illumination, leakage, motion, activity and the frame stay as in v2 in pixels. Changing
@@ -246,7 +246,7 @@ field.
 
 Things learned while calibrating (all measured by short generations):
 
-- **Detectability is a point-source test.** `detectable` uses `sigma_0^2 / sigma_tot^2`
+- **Detectability was a point-source test (minisim <= 1.0.3; fixed in 1.1.0, see below).** `detectable` used `sigma_0^2 / sigma_tot^2`
   (`sigma_0` = diffraction + scatter), which collapses once defocus exceeds the scatter
   blur, and `photons_per_unit`; it does not depend on the cell's size. With v2's wide
   scatter blur nearly all cells pass; with a sharp PSF only cells within a few um of the
@@ -268,3 +268,15 @@ against v2's 116 (mean over the frame matches: 63 against 64); detectable cells 
 uniform over the frame (3 x 3 min/max 0.5 against 0.7, from the illumination falloff);
 the peak SNR proxy is 20 % higher; the edge blur is 1.37 px against about 1.5; the
 cell layer is thinner (16 um).
+
+# Detectability with minisim 1.1.0 (12 Nov 2026)
+
+minisim 1.1.0 (miniscope/minisim#36) replaces the point-source `detectable` test described in the v3 section. A cell is now detectable when its matched-filter SNR is at least 110. The SNR pools the realized footprint over its pixels and all the cell's transients, against per-pixel shot and read noise. The threshold is where cala recovers half the cells on `size6_static`, and it holds without retuning on `v3_static`. The ground truth of every sim was rewritten in place; v2's goes to `sims-gt110/` while `sims/` is in use. The videos are unchanged. Details, recovery curves and per-arm counts are in `tools/cala-eval/results/2026-11-12-matched-filter-detectable.md`.
+
+| `static_s5`                                 | v2 before   | v2 after    | v3 before   | v3 after    |
+| ------------------------------------------- | ----------- | ----------- | ----------- | ----------- |
+| detectable cells (all units)                | 635 of 666  | 646 of 666  | 632 of 829  | 806 of 829  |
+| P8 / R8 (same cala run)                     | 0.979/0.785 | 0.979/0.787 | 0.824/0.960 | 0.985/0.933 |
+| cala cells matched to a non-detectable unit | 0           | 0           | 116         | 0           |
+
+Over seeds 5-9, v3 static now has 805 detectable cells (801-809) where it had 649, and v2 static has 652 where it had 639. With the new flag the ring under field curvature disappears. The flat field and the layer at the focal depth chosen for v3 are therefore no longer needed for an even spread of detectable cells. They were kept so the v3 recordings stay as they are.

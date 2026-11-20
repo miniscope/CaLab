@@ -13,6 +13,8 @@
 // afterwards update only `ended_at` / `duration_seconds` on their own row.
 
 import { getSupabase, supabaseEnabled, supabaseUrl, supabaseAnonKey } from './supabase.ts';
+import { analyticsEnabled } from './analytics-consent.ts';
+import { getTesterTag, setTesterTag } from './tester-tag.ts';
 
 export type AnalyticsEventName =
   | 'file_imported'
@@ -25,9 +27,26 @@ export type AnalyticsEventName =
   | 'tutorial_started'
   | 'tutorial_completed'
   | 'auth_signed_in'
-  | 'auth_signed_out';
+  | 'auth_signed_out'
+  // Cala (usage analytics; fields are listed in docs/analytics.md). Names
+  // must match the shape check of migration 017: ^[a-z][a-z0-9_]{1,47}$.
+  | 'run_started'
+  | 'run_finished'
+  | 'run_failed'
+  | 'boundary_summary'
+  | 'results_exported'
+  | 'webgpu_info'
+  | 'device_info'
+  // Opt-in beta tester tag (the only user-typed field; see tester-tag.ts).
+  | 'tester_tag';
 
 let sessionId: string | null = null;
+// Events fired while the session is still being created (the app renders and
+// reports before the auth + geo-session round trips finish) wait here and are
+// sent once it exists; they are dropped if it never does. Bounded.
+let initInFlight = false;
+const pending: Array<{ name: AnalyticsEventName; data?: Record<string, unknown> }> = [];
+const PENDING_MAX = 25;
 let sessionEndRegistered = false;
 // Cached access token for the raw-fetch heartbeat / pagehide paths. Kept
 // in module state so the pagehide handler (which can't await) has a
@@ -102,7 +121,9 @@ async function ensureAuth(): Promise<string | null> {
  * validate it against the slug pattern, not a list of known apps.
  */
 export async function initSession(appName: string, appVersion?: string): Promise<void> {
-  if (!supabaseEnabled) return;
+  // Opted out (or Do Not Track): no network call, no anonymous sign-in.
+  if (!supabaseEnabled || !analyticsEnabled()) return;
+  initInFlight = true;
 
   try {
     const token = await ensureAuth();
@@ -129,20 +150,33 @@ export async function initSession(appName: string, appVersion?: string): Promise
     // Register end listeners only after session is established
     registerSessionEndListeners();
     startHeartbeat();
+    const tag = getTesterTag();
+    if (tag) void trackEvent('tester_tag', { tag });
+    initInFlight = false;
+    for (const e of pending.splice(0)) void trackEvent(e.name, e.data);
   } catch {
     // Analytics init failed — silently continue
+  } finally {
+    initInFlight = false;
+    pending.length = 0;
   }
 }
 
 /**
- * Track a high-level event within the current session.
- * No-ops if session was not initialized.
+ * Track a high-level event within the current session. Events fired while the
+ * session is still being created are queued and sent when it is ready.
+ * No-ops if analytics are off or the session could not be created.
  */
 export async function trackEvent(
   eventName: AnalyticsEventName,
   eventData?: Record<string, unknown>,
 ): Promise<void> {
-  if (!supabaseEnabled || !sessionId) return;
+  if (!supabaseEnabled || !analyticsEnabled()) return;
+  if (!sessionId) {
+    if (initInFlight && pending.length < PENDING_MAX)
+      pending.push({ name: eventName, data: eventData });
+    return;
+  }
 
   try {
     const supabase = await getSupabase();
@@ -169,7 +203,7 @@ function startHeartbeat(): void {
   if (!supabaseUrl || !supabaseAnonKey || !sessionId) return;
 
   const tick = () => {
-    if (!sessionId || document.visibilityState === 'hidden') return;
+    if (!sessionId || document.visibilityState === 'hidden' || !analyticsEnabled()) return;
     const token = cachedAccessToken;
     if (!token) return;
     try {
@@ -207,7 +241,7 @@ function registerSessionEndListeners(): void {
   let ended = false;
 
   const handleEnd = () => {
-    if (ended || !sessionId || !supabaseUrl || !supabaseAnonKey) return;
+    if (ended || !sessionId || !supabaseUrl || !supabaseAnonKey || !analyticsEnabled()) return;
     const token = cachedAccessToken;
     if (!token) return;
     ended = true;
@@ -233,4 +267,15 @@ function registerSessionEndListeners(): void {
     if (document.visibilityState === 'hidden') handleEnd();
   });
   document.addEventListener('pagehide', handleEnd);
+}
+
+/**
+ * Set (or clear, with '') the optional tester tag and, when a tag is set,
+ * report it for the current session. Returns the sanitised stored tag.
+ */
+export function updateTesterTag(raw: string): string {
+  const before = getTesterTag();
+  const tag = setTesterTag(raw);
+  if (tag && tag !== before && analyticsEnabled()) void trackEvent('tester_tag', { tag });
+  return tag;
 }

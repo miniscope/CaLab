@@ -364,7 +364,8 @@
 
 .cala-cellqc__grid {
   display: grid;
-  grid-template-columns: repeat(3, max-content minmax(3.5em, 1fr));
+  /* Values capped at 6em so each label keeps its value close on a wide column. */
+  grid-template-columns: repeat(3, max-content minmax(3.5em, 6em));
   gap: 0 var(--space-sm);
   margin: var(--space-xs) 0 0;
   font-size: 0.8rem;
@@ -381,8 +382,8 @@
 
 .cala-cellqc__note {
   margin: 2px 0 0;
-  font-size: 0.78rem;
-  line-height: 1.3;
+  font-size: 0.75rem;
+  line-height: 1.4;
 }
 
 .cala-demix__verdict {
@@ -459,6 +460,52 @@
   font-size: 0.85rem;
 }
 
+/* Video series chooser on the open screen. */
+.cala-series-chooser {
+  max-width: 34rem;
+  margin: var(--space-lg, 1rem) auto;
+  padding: var(--space-lg, 1rem);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  text-align: left;
+}
+.cala-series-chooser__title {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+}
+.cala-series-chooser__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  list-style: none;
+}
+.cala-series-chooser__option {
+  display: block;
+  width: 100%;
+  text-align: left;
+}
+.cala-series-chooser__dir {
+  display: block;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.cala-series-chooser__role {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.cala-series-chooser__role--camera {
+  font-weight: 600;
+  color: var(--warning, #b26a00);
+}
+
 /* Sensor flat field panel */
 
 .cala-flat {
@@ -505,4 +552,262 @@
   align-items: center;
   gap: var(--space-xs);
   font-size: 0.9rem;
+}
+
+/* ---- Multi-session run: the session list (SessionSetup) ---- */
+.cala-sessions__card {
+  max-width: 46rem;
+  margin: var(--space-lg, 1rem) auto;
+  padding: var(--space-lg, 1rem);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  text-align: left;
+}
+.cala-sessions__title {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+}
+.cala-sessions__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  list-style: none;
+}
+.cala-sessions__item {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  padding: 0.5rem;
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+}
+.cala-sessions__index {
+  min-width: 1.5rem;
+  font-weight: 600;
+  text-align: right;
+}
+.cala-sessions__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.cala-sessions__path,
+.cala-sessions__out {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.cala-sessions__facts {
+  font-size: 0.85rem;
+}
+.cala-sessions__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+.cala-sessions__row {
+  margin: 0.5rem 0;
+}
+.cala-sessions__modes {
+  margin: 0 0 0.5rem;
+  padding: 0.5rem;
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+}
+.cala-sessions__mode {
+  display: block;
+  margin: 0.25rem 0;
+}
+.cala-sessions__warning {
+  margin: 0.25rem 0;
+  color: var(--warning, #b26a00);
+}
+.cala-sessions__note {
+  font-size: 0.85rem;
+}
+@media (max-width: 600px) {
+  .cala-sessions__item {
+    flex-wrap: wrap;
+  }
+}
+.cala-session-run {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+.cala-session-run__list {
+  margin: 0.25rem 0 0;
+  padding-left: 1.25rem;
+}
+.cala-session-run__current {
+  font-weight: 600;
+}
+.cala-session-run p {
+  margin: 0.25rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+/* ---- Animal projects (ProjectView, start screen) ---- */
+.cala-projects-entry {
+  max-width: 46rem;
+  margin: var(--space-md, 0.75rem) auto;
+  text-align: center;
+}
+.cala-recent__title {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+}
+.cala-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.85rem;
+}
+.import-container.cala-project {
+  max-width: 80rem;
+}
+.cala-project .cala-project__card {
+  max-width: 76rem;
+}
+.cala-project__where code {
+  overflow-wrap: anywhere;
+}
+.cala-project__scroll {
+  overflow-x: auto;
+  margin: 0.5rem 0;
+}
+.cala-project__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.cala-project__table th,
+.cala-project__table td {
+  padding: 0.3rem 0.4rem;
+  border-bottom: 1px solid var(--border-default);
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.cala-project__table th {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.cala-project__table td.cala-project__session {
+  min-width: 12rem;
+  font-family: var(--font-mono, monospace);
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+.cala-project__row--missing td {
+  color: var(--text-secondary);
+}
+.cala-project__row--selected td {
+  background: color-mix(in srgb, var(--accent, #3b82f6) 8%, transparent);
+}
+.cala-project__table td.cala-project__wrap {
+  white-space: normal;
+  min-width: 8rem;
+}
+.cala-project__table .cala-project__details td {
+  white-space: normal;
+  background: var(--bg-secondary, transparent);
+}
+.cala-project__results {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+.cala-project__results li {
+  margin: 0.2rem 0;
+}
+.cala-project__results code {
+  word-break: break-all;
+}
+/* Sessions sharing cell ids (one Joint run): a letter badge and a matching row edge. */
+.cala-project__ids {
+  display: inline-block;
+  min-width: 1.4em;
+  padding: 0 0.35em;
+  border-radius: 3px;
+  font-weight: 700;
+  text-align: center;
+  color: #fff;
+}
+.cala-project__ids--0 {
+  background: #2563eb;
+}
+.cala-project__ids--1 {
+  background: #c2410c;
+}
+.cala-project__ids--2 {
+  background: #15803d;
+}
+.cala-project__ids--3 {
+  background: #7c3aed;
+}
+.cala-project__ids--4 {
+  background: #be185d;
+}
+.cala-project__ids--5 {
+  background: #0e7490;
+}
+.cala-project__row--ids0 td:first-child {
+  box-shadow: inset 4px 0 #2563eb;
+}
+.cala-project__row--ids1 td:first-child {
+  box-shadow: inset 4px 0 #c2410c;
+}
+.cala-project__row--ids2 td:first-child {
+  box-shadow: inset 4px 0 #15803d;
+}
+.cala-project__row--ids3 td:first-child {
+  box-shadow: inset 4px 0 #7c3aed;
+}
+.cala-project__row--ids4 td:first-child {
+  box-shadow: inset 4px 0 #be185d;
+}
+.cala-project__row--ids5 td:first-child {
+  box-shadow: inset 4px 0 #0e7490;
+}
+
+/* A saved result in the viewer (ResultView): the stages that ran. */
+.cala-result__stages {
+  margin: 0.25rem 0 0.5rem;
+  padding-left: 1.25rem;
+  font-size: 0.8125rem;
+}
+.cala-result__traces {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.cala-analytics {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  max-width: 48rem;
+  margin: var(--space-lg) auto 0;
+  font-size: var(--text-sm, 0.875rem);
+  color: var(--text-secondary);
+}
+.cala-analytics__text,
+.cala-analytics__hint {
+  margin: 0;
+}
+.cala-analytics__tag {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
 }

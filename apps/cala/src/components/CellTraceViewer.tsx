@@ -1,5 +1,7 @@
+import { plotHeight } from '../lib/plot-size.tsx';
 import { createEffect, createMemo, createSignal, on, onCleanup, Show, type JSX } from 'solid-js';
 import { OKABE_ITO, TraceOverview, ZoomWindow } from '@calab/ui/chart';
+import type { BoundarySeverity } from '../lib/boundary-flags.ts';
 import { downsampleMinMax } from '@calab/compute';
 import type uPlot from 'uplot';
 import type { CellStore } from '../lib/cell-store.ts';
@@ -13,7 +15,6 @@ const ZOOM_MIN = 160;
 const ZOOM_MAX = 420;
 /** Height of everything else on the screen (header, strips, footprint, QC), px. */
 const ZOOM_RESERVED = 700;
-
 function zoomHeight(): number {
   const h = typeof window === 'undefined' ? 900 : window.innerHeight;
   return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, h - ZOOM_RESERVED));
@@ -43,6 +44,55 @@ function markerPlugin(time: () => number | null): uPlot.Plugin {
   };
 }
 
+/** A session boundary on the trace (seconds) and its health flag's severity (`boundary-flags.ts`). */
+export interface BoundaryMark {
+  t: number;
+  severity?: BoundarySeverity;
+}
+
+/** Colour of a boundary line: mid grey (light and dark theme), or the flag's warning/failed colour. */
+function boundaryColour(s: BoundarySeverity | undefined): string {
+  if (s === 'failed') return OKABE_ITO.vermillion;
+  if (s === 'warning') return OKABE_ITO.orange;
+  return '#8a8a8a';
+}
+
+/**
+ * Thin solid lines at the session boundaries of a multi-session run; a
+ * boundary flagged warning or failed is drawn thicker in its colour with a
+ * "!" at the top.
+ */
+function boundaryPlugin(marks: () => readonly BoundaryMark[]): uPlot.Plugin {
+  return {
+    hooks: {
+      draw: (u) => {
+        const ms = marks();
+        if (ms.length === 0) return;
+        const ctx = u.ctx;
+        ctx.save();
+        for (const m of ms) {
+          const x = u.valToPos(m.t, 'x', true);
+          if (x < u.bbox.left || x > u.bbox.left + u.bbox.width) continue;
+          const flagged = m.severity === 'warning' || m.severity === 'failed';
+          ctx.strokeStyle = boundaryColour(m.severity);
+          ctx.lineWidth = (flagged ? 2 : 1) * devicePixelRatio;
+          ctx.beginPath();
+          ctx.moveTo(x, u.bbox.top);
+          ctx.lineTo(x, u.bbox.top + u.bbox.height);
+          ctx.stroke();
+          if (flagged) {
+            ctx.fillStyle = boundaryColour(m.severity);
+            ctx.font = `bold ${11 * devicePixelRatio}px sans-serif`;
+            ctx.textBaseline = 'top';
+            ctx.fillText('!', x + 3 * devicePixelRatio, u.bbox.top + 2 * devicePixelRatio);
+          }
+        }
+        ctx.restore();
+      },
+    },
+  };
+}
+
 const SERIES: uPlot.Series[] = [{}, { label: 'trace', stroke: OKABE_ITO.vermillion, width: 1.25 }];
 
 /**
@@ -57,17 +107,49 @@ export function CellTraceViewer(props: {
   fps: number;
   /** Frame of the footprint version picked on the slider (marked on the trace). */
   markerFrame?: number | null;
+  /** First frames of sessions 2.. of a multi-session run (marked on the trace). */
+  boundaries?: readonly number[];
+  /** Their health flags (Joint runs): a warning or failed boundary is marked in its colour. */
+  boundaryFlags?: readonly { frame: number; severity: BoundarySeverity }[];
+  /**
+   * The zoom plot is sized by its width (the shared aspect rule) instead of a
+   * share of the window's height.
+   */
+  fill?: boolean;
 }): JSX.Element {
   const fs = () => props.fps;
   const [height, setHeight] = createSignal(zoomHeight());
-  const onResize = () => setHeight(zoomHeight());
-  window.addEventListener('resize', onResize);
-  onCleanup(() => window.removeEventListener('resize', onResize));
+  /** `fill`: the zoom plot's height follows the box's width by the shared aspect rule. */
+  const fillBox = (box: HTMLDivElement) => {
+    if (typeof ResizeObserver === 'undefined') return;
+    setHeight(plotHeight(box.clientWidth));
+    const ro = new ResizeObserver(() => {
+      // Hidden (a tab not shown): keep the last height.
+      if (box.clientWidth > 0) setHeight(plotHeight(box.clientWidth));
+    });
+    ro.observe(box);
+    onCleanup(() => ro.disconnect());
+  };
+  // eslint-disable-next-line solid/reactivity -- the mode is fixed per mount
+  if (!props.fill) {
+    const onResize = () => setHeight(zoomHeight());
+    window.addEventListener('resize', onResize);
+    onCleanup(() => window.removeEventListener('resize', onResize));
+  }
   const markerTime = () =>
     props.markerFrame === null || props.markerFrame === undefined ? null : props.markerFrame / fs();
   // Read when the chart draws (a data change redraws it, see `data`).
-  // eslint-disable-next-line solid/reactivity
-  const plugins = [markerPlugin(markerTime)];
+  /* eslint-disable solid/reactivity */
+  const plugins = [
+    markerPlugin(markerTime),
+    boundaryPlugin(() =>
+      (props.boundaries ?? []).map((f) => ({
+        t: f / fs(),
+        severity: props.boundaryFlags?.find((b) => b.frame === f)?.severity,
+      })),
+    ),
+  ];
+  /* eslint-enable solid/reactivity */
   const frames = () => props.cells.frame();
   const duration = () => frames() / fs();
 
@@ -144,12 +226,16 @@ export function CellTraceViewer(props: {
   };
 
   return (
-    <div class="cala-trace-viewer" data-testid="cell-trace">
+    <div
+      class="cala-trace-viewer"
+      classList={{ 'cala-trace-viewer--fill': props.fill }}
+      data-testid="cell-trace"
+    >
       <div class="cala-trace-head">
         <h3 class="panel-label">Trace</h3>
         <span class="cala-muted" data-testid="cell-trace-range">
           {frameRange()}
-          <Show when={follow()}> &middot; live</Show>
+          <Show when={follow() && !props.cells.saved()}> &middot; live</Show>
           <Show when={markerTime() !== null}>
             {' '}
             &middot; <span style={{ color: OKABE_ITO.blue }}>|</span> footprint version
@@ -167,7 +253,7 @@ export function CellTraceViewer(props: {
           zoomEnd={view()[1]}
           onZoomChange={onZoom}
         />
-        <p class="cala-muted" data-testid="cell-trace-history-note">
+        <p class="cala-muted cala-hint" data-testid="cell-trace-history-note">
           Whole-session overview: min/max envelope.{' '}
           <Show when={span()} fallback="Full-resolution samples are unavailable for this cell.">
             {(s) => (
@@ -178,7 +264,11 @@ export function CellTraceViewer(props: {
             )}
           </Show>
         </p>
-        <div class="cala-trace-zoom" style={{ height: `${height()}px` }}>
+        <div
+          ref={(el) => props.fill && fillBox(el)}
+          class="cala-trace-zoom"
+          style={{ height: `${height()}px` }}
+        >
           <Show when={height()} keyed>
             {(h) => (
               <ZoomWindow

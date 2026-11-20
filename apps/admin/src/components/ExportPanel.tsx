@@ -1,145 +1,130 @@
-import { type JSX, createResource } from 'solid-js';
-import { toCSV, downloadCSV } from '../lib/csv-export.ts';
+import { type JSX, createMemo, createSignal, For } from 'solid-js';
 import {
-  fetchSessions,
-  fetchEvents,
-  fetchSubmissions,
-  fetchCadeconSubmissions,
-  computeGeoBreakdown,
-  computeEventBreakdown,
-  computeWeeklySessions,
-} from '../lib/analytics-queries.ts';
-import { dateRange } from '../lib/admin-store.ts';
+  type ExportTable,
+  cadeconSubmissionTable,
+  catuneSubmissionTable,
+  columnDocsCSV,
+  downloadText,
+  eventTable,
+  runTable,
+  sessionTable,
+  tableToCSV,
+  tableToJSON,
+} from '../lib/export.ts';
+import { buildCala } from '../lib/cala.ts';
+import { cadeconSubs, catuneSubs, cur, events, filters, win } from '../lib/admin-store.ts';
+import { utcDay, DAY_MS } from '../lib/filters.ts';
+import { fmtNum } from '../lib/stats.ts';
 
 export function ExportPanel(): JSX.Element {
-  const [sessions] = createResource(dateRange, fetchSessions);
-  const [events] = createResource(dateRange, fetchEvents);
-  const [submissions] = createResource(dateRange, fetchSubmissions);
-  const [cadeconSubmissions] = createResource(dateRange, fetchCadeconSubmissions);
-
-  const filenameSuffix = () => `${dateRange().start}_to_${dateRange().end}`;
-
-  const exportSessions = () => {
-    const weekly = computeWeeklySessions(sessions() ?? []);
-    const csv = toCSV(
-      ['Week Starting', 'Sessions'],
-      weekly.map((w) => [w.week, w.count]),
-    );
-    downloadCSV(csv, `calab-sessions-${filenameSuffix()}.csv`);
+  const [docsFor, setDocsFor] = createSignal<string>('sessions');
+  const stamp = () => {
+    const f = filters();
+    const w = win();
+    return `${f.app}_${w.curStart > 0 ? utcDay(w.curStart) : 'start'}_to_${utcDay(w.curEnd - DAY_MS)}`;
   };
-
-  const exportEvents = () => {
-    const breakdown = computeEventBreakdown(events() ?? []);
-    const csv = toCSV(
-      ['Event Name', 'Count'],
-      breakdown.map((e) => [e.event_name, e.count]),
-    );
-    downloadCSV(csv, `calab-events-${filenameSuffix()}.csv`);
+  const tables = createMemo(() => {
+    const cala = buildCala(cur(), events());
+    return [
+      { key: 'sessions', table: sessionTable(cur()) },
+      { key: 'events', table: eventTable(events(), cur()) },
+      { key: 'runs', table: runTable(cala.runs) },
+    ] as { key: string; table: ExportTable }[];
+  });
+  const subTables = createMemo(() => [
+    { key: 'catune', file: 'catune-submissions', table: catuneSubmissionTable(catuneSubs()) },
+    { key: 'cadecon', file: 'cadecon-submissions', table: cadeconSubmissionTable(cadeconSubs()) },
+  ]);
+  const save = (key: string, t: ExportTable, kind: 'csv' | 'json') => {
+    const name = `calab-${key}-${stamp()}`;
+    if (kind === 'csv') downloadText(tableToCSV(t), `${name}.csv`, 'text/csv');
+    else downloadText(tableToJSON(t), `${name}.json`, 'application/json');
   };
-
-  const exportGeography = () => {
-    const geo = computeGeoBreakdown(sessions() ?? []);
-    const csv = toCSV(
-      ['Country', 'Region', 'Sessions'],
-      geo.map((g) => [g.country_code, g.region ?? '', g.count]),
-    );
-    downloadCSV(csv, `calab-geography-${filenameSuffix()}.csv`);
-  };
-
-  const exportCatuneSubmissions = () => {
-    const subs = submissions() ?? [];
-    const csv = toCSV(
-      [
-        'Date',
-        'Indicator',
-        'Species',
-        'Brain Region',
-        'Source',
-        'Tau Rise',
-        'Tau Decay',
-        'Lambda',
-        'Samp. Rate',
-        'Version',
-      ],
-      subs.map((s) => [
-        s.created_at,
-        s.indicator,
-        s.species,
-        s.brain_region,
-        s.data_source,
-        s.tau_rise,
-        s.tau_decay,
-        s.lambda,
-        s.sampling_rate,
-        s.app_version ?? '',
-      ]),
-    );
-    downloadCSV(csv, `calab-catune-submissions-${filenameSuffix()}.csv`);
-  };
-
-  const exportCadeconSubmissions = () => {
-    const subs = cadeconSubmissions() ?? [];
-    const csv = toCSV(
-      [
-        'Date',
-        'Indicator',
-        'Species',
-        'Brain Region',
-        'Source',
-        'Tau Rise',
-        'Tau Decay',
-        'Samp. Rate',
-        'Med. Alpha',
-        'Med. PVE',
-        'Event Rate',
-        'Iterations',
-        'Converged',
-        'Version',
-      ],
-      subs.map((s) => [
-        s.created_at,
-        s.indicator,
-        s.species,
-        s.brain_region,
-        s.data_source,
-        s.tau_rise,
-        s.tau_decay,
-        s.sampling_rate,
-        s.median_alpha ?? '',
-        s.median_pve ?? '',
-        s.mean_event_rate ?? '',
-        s.num_iterations,
-        s.converged,
-        s.app_version ?? '',
-      ]),
-    );
-    downloadCSV(csv, `calab-cadecon-submissions-${filenameSuffix()}.csv`);
-  };
+  const docs = () => tables().find((t) => t.key === docsFor())?.table;
 
   return (
     <div class="view">
-      <h2 class="view__title">Export CSV</h2>
       <p class="view__desc">
-        Download data as CSV for the selected date range. Open in any spreadsheet application for
-        grant progress reports.
+        Exports use the filters above (app, UTC range, version, dev builds). Browser ids are
+        six-character hashes; no user_id, IP address or account identity is exported. Cells that
+        start with = + - @ (or a tab or line break) are prefixed with a quote so spreadsheets do not
+        run them.
       </p>
-      <div class="export-grid">
-        <button class="btn-secondary" onClick={exportSessions}>
-          Sessions Summary
-        </button>
-        <button class="btn-secondary" onClick={exportEvents}>
-          Event Breakdown
-        </button>
-        <button class="btn-secondary" onClick={exportGeography}>
-          Geographic Breakdown
-        </button>
-        <button class="btn-secondary" onClick={exportCatuneSubmissions}>
-          CaTune Submissions
-        </button>
-        <button class="btn-secondary" onClick={exportCadeconSubmissions}>
-          CaDecon Submissions
-        </button>
+      <div class="export-list">
+        <For each={tables()}>
+          {(t) => (
+            <div class="export-row">
+              <div>
+                <strong>{t.table.title}</strong>
+                <span class="export-row__n">{fmtNum(t.table.rows.length)} rows</span>
+              </div>
+              <div class="export-row__btns">
+                <button class="btn-secondary" onClick={() => save(t.key, t.table, 'csv')}>
+                  CSV
+                </button>
+                <button class="btn-secondary" onClick={() => save(t.key, t.table, 'json')}>
+                  JSON
+                </button>
+                <button
+                  class="btn-secondary"
+                  onClick={() =>
+                    downloadText(columnDocsCSV(t.table), `calab-${t.key}-columns.csv`, 'text/csv')
+                  }
+                >
+                  Column docs
+                </button>
+              </div>
+            </div>
+          )}
+        </For>
+        <For each={subTables()}>
+          {(t) => (
+            <div class="export-row">
+              <div>
+                <strong>{t.table.title}</strong>
+                <span class="export-row__n">
+                  {fmtNum(t.table.rows.length)} rows (date range only)
+                </span>
+              </div>
+              <div class="export-row__btns">
+                <button class="btn-secondary" onClick={() => save(t.file, t.table, 'csv')}>
+                  CSV
+                </button>
+                <button class="btn-secondary" onClick={() => save(t.file, t.table, 'json')}>
+                  JSON
+                </button>
+              </div>
+            </div>
+          )}
+        </For>
       </div>
+
+      <h2 class="view__title">Columns</h2>
+      <div class="app-toggle" role="group" aria-label="Export table">
+        <For each={tables()}>
+          {(t) => (
+            <button
+              class={`app-toggle__btn${docsFor() === t.key ? ' app-toggle__btn--active' : ''}`}
+              aria-pressed={docsFor() === t.key}
+              onClick={() => setDocsFor(t.key)}
+            >
+              {t.table.title}
+            </button>
+          )}
+        </For>
+      </div>
+      <dl class="coldocs">
+        <For each={docs()?.columns}>
+          {(c) => (
+            <>
+              <dt>
+                <code>{c.name}</code>
+              </dt>
+              <dd>{c.doc}</dd>
+            </>
+          )}
+        </For>
+      </dl>
     </div>
   );
 }

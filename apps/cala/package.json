@@ -7,12 +7,12 @@
     "id": "cala",
     "displayName": "Cala",
     "description": "Streaming cell finding and traces from raw 1-photon Miniscope video",
-    "longDescription": "A streaming, in-browser pipeline (Rust and WebAssembly, with WebGPU motion correction where available) that turns raw 1-photon Miniscope video into somatic cell footprints and calcium traces. It reads a Miniscope AVI folder in place, frame by frame, then preprocesses, motion-corrects and flat-fields the video, discovers and prunes cells while the recording streams by, extracts traces, and re-solves every frame with the final cell set in a second pass. Quality-control indicators show how settled each cell is, and the result exports as NumPy files.",
+    "longDescription": "A streaming, in-browser pipeline (Rust and WebAssembly, with WebGPU motion correction where available) that turns raw 1-photon Miniscope video into somatic cell footprints and calcium traces. It reads a Miniscope AVI folder in place, frame by frame, then preprocesses, motion-corrects and flat-fields the video, discovers and prunes cells while the recording streams by, extracts traces, refines the footprints over replays of the recording (Refine), and solves every frame with the final cell set (Extract). Quality-control indicators show how settled each cell is, and the result exports as NumPy files.",
     "features": [
       "Reads Miniscope AVI folders in place, frame by frame; nothing is uploaded",
       "Preprocessing and rigid motion correction, with a sensor flat field estimated from the recording's own motion and cached per device",
       "Streaming discovery and pruning of cells, with traces extracted as frames arrive",
-      "Pass 2 re-solves every frame with the final cell set, so late-found cells have traces from frame 0",
+      "Run stages: Discover, then (recordings) Refine to let footprints keep converging and Extract to solve every frame with the final cell set, so late-found cells have traces from frame 0",
       "Quality control: convergence strip, per-cell pass/fail and flags (including trace follows motion)",
       "Exports traces, footprints and run metadata as .npz, plus a CaDecon-ready file"
     ],

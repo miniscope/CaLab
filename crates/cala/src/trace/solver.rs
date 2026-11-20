@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::library::{BgTerms, Library};
+use super::library::{BgTerms, Csr, Library};
 use super::{check_len, TraceError};
 
 /// Solver settings.
@@ -58,6 +58,19 @@ pub struct FrameTraces {
     pub background: Vec<f32>,
     /// Coordinate sweeps used (the longest any group needed).
     pub sweeps: u32,
+    /// The signed (unclipped) traces, one per cell in slot order, when the
+    /// engine computes them ([`TraceEngine::set_signed`]); empty otherwise.
+    ///
+    /// `signed_i = c_i + g_i / m_i`: the trace plus the residual's
+    /// projection on the cell (the analogue of CNMF's `C + YrA`), where
+    /// `g_i` is the gradient of the solve's coordinate equation at the
+    /// final solution (the background terms included) and `m_i` its
+    /// curvature. That is the unconstrained minimiser of the cell's
+    /// coordinate with every other trace and the background held: a cell
+    /// the solve holds at 0 gets its negative noise back (`g_i < 0`), an
+    /// active one stays at its trace to within the solver's tolerance
+    /// (`g_i ≈ 0`). The non-negative `traces` are untouched.
+    pub signed: Vec<f32>,
 }
 
 /// The warm start: each cell's last trace value by id, so it survives a
@@ -82,6 +95,12 @@ pub struct TraceEngine {
     q_snap: Vec<f64>,
     /// Ring model: ring mean of the frame per cell.
     ring: Vec<f32>,
+    /// Ring model: `b_i - s_i * ring_i`, refreshed with each frame/refill.
+    ring_rhs: Vec<f32>,
+    /// Ring model: off-diagonal rows of `G - diag(s) Q`, built on install.
+    ring_grad: Csr,
+    /// Diagonal of `G - diag(s) Q` (the library's corrected curvature).
+    ring_grad_diag: Vec<f32>,
     /// The frame summed over each moat-grid block (FOV only).
     blocks: Vec<f32>,
     active: Vec<bool>,
@@ -110,6 +129,10 @@ pub struct TraceEngine {
     cell_box: Vec<[u32; 4]>,
     cell_dirty: Vec<bool>,
     block_flag: Vec<bool>,
+    /// Compute [`FrameTraces::signed`] after each frame's solve.
+    signed: bool,
+    /// Enable reassociated ring gradients for extraction with frozen footprints.
+    consolidated_ring_grad: bool,
 }
 
 /// Pixels per partial sum of the background-map projections.
@@ -132,6 +155,9 @@ impl TraceEngine {
             q: Vec::new(),
             q_snap: Vec::new(),
             ring: Vec::new(),
+            ring_rhs: Vec::new(),
+            ring_grad: Csr::default(),
+            ring_grad_diag: Vec::new(),
             blocks: Vec::new(),
             active: Vec::new(),
             next_frame: 0,
@@ -147,6 +173,8 @@ impl TraceEngine {
             cell_box: Vec::new(),
             cell_dirty: Vec::new(),
             block_flag: Vec::new(),
+            signed: false,
+            consolidated_ring_grad: false,
         };
         e.install(lib, None);
         Ok(e)
@@ -158,6 +186,62 @@ impl TraceEngine {
 
     pub fn config(&self) -> &SolverConfig {
         &self.cfg
+    }
+
+    /// Also compute the signed (unclipped) traces of every frame
+    /// ([`FrameTraces::signed`]); off by default. The solve itself, and so
+    /// [`FrameTraces::traces`], is the same either way: the signed values
+    /// are read off the converged solution in one extra pass over the cells
+    /// (about one coordinate sweep, without the steps).
+    pub fn set_signed(&mut self, on: bool) {
+        self.signed = on;
+    }
+
+    /// Whether [`Self::set_signed`] is on.
+    pub fn signed(&self) -> bool {
+        self.signed
+    }
+
+    /// Consolidate the ring gradient for a frozen-library extraction replay.
+    ///
+    /// Off by default: the reassociated floating-point sums can change later
+    /// discovery/refinement decisions. It preserves the equations and stopping
+    /// rule, but does not promise bit-identical traces.
+    pub fn set_consolidated_ring_gradient(&mut self, on: bool) {
+        self.consolidated_ring_grad = on;
+        if on {
+            (self.ring_grad, self.ring_grad_diag) = ring_gradient_rows(&self.lib);
+            self.ring_rhs = match &self.lib.bg {
+                BgTerms::Ring { s, .. } => self
+                    .b
+                    .iter()
+                    .zip(s)
+                    .zip(&self.ring)
+                    .map(|((&b, &scale), &ring)| b - scale * ring)
+                    .collect(),
+                _ => Vec::new(),
+            };
+        } else {
+            self.ring_grad = Csr::default();
+            self.ring_grad_diag.clear();
+            self.ring_rhs.clear();
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn ring_gradient_pair(&self, i: usize) -> (f32, f32) {
+        let lib = &self.lib;
+        (
+            self.ring_rhs[i] - {
+                let (cols, vals) = self.ring_grad.row(i);
+                let mut gc = self.ring_grad_diag[i] * self.c[i];
+                for (&j, &v) in cols.iter().zip(vals) {
+                    gc += v * self.c[j as usize];
+                }
+                gc
+            },
+            self.reference_ring_gradient(lib, i),
+        )
     }
 
     /// Frames processed so far (the index the next frame gets).
@@ -202,6 +286,14 @@ impl TraceEngine {
             BgTerms::Ring { .. } => vec![0.0; n],
             _ => Vec::new(),
         };
+        self.ring_rhs = if self.consolidated_ring_grad {
+            vec![0.0; self.ring.len()]
+        } else {
+            Vec::new()
+        };
+        if self.consolidated_ring_grad {
+            (self.ring_grad, self.ring_grad_diag) = ring_gradient_rows(&lib);
+        }
         self.active = vec![true; lib.groups.len()];
         self.last_bg = vec![0.0; k];
         self.cell_box.clear();
@@ -551,6 +643,7 @@ impl TraceEngine {
             BgTerms::Ring {
                 ring_start,
                 ring_pix,
+                s,
                 ..
             } => {
                 for i in 0..n {
@@ -558,15 +651,18 @@ impl TraceEngine {
                         continue;
                     }
                     let px = &ring_pix[ring_start[i]..ring_start[i + 1]];
-                    let mut s = 0.0f32;
+                    let mut sum = 0.0f32;
                     for &q in px {
-                        s += frame[q as usize];
+                        sum += frame[q as usize];
                     }
                     self.ring[i] = if px.is_empty() {
                         0.0
                     } else {
-                        s / px.len() as f32
+                        sum / px.len() as f32
                     };
+                    if self.consolidated_ring_grad {
+                        self.ring_rhs[i] = self.b[i] - s[i] * self.ring[i];
+                    }
                 }
             }
             BgTerms::None => {}
@@ -576,6 +672,14 @@ impl TraceEngine {
         out.library_version = lib.version();
         out.traces.clear();
         out.traces.extend_from_slice(&self.c);
+        out.signed.clear();
+        if self.signed {
+            // Jacobi-style: every gradient at the final solution, nothing moved.
+            for i in 0..n {
+                out.signed
+                    .push(self.c[i] + self.grad(lib, i) / lib.mdiag[i]);
+            }
+        }
         out.background.clear();
         match &lib.bg {
             BgTerms::Basis { k, p, .. } => {
@@ -751,9 +855,20 @@ impl TraceEngine {
         sweeps
     }
 
-    /// Exact minimisation over `c_i` (background re-solved); returns the step.
+    /// The gradient of the coordinate equation of cell `i` at the current
+    /// solution, `b_i − Σ_j G_ij c_j` minus its background term: the
+    /// exact (projection-free) step is `grad / mdiag_i` (the curvature,
+    /// background eliminated; see [`Library`]'s `mdiag`).
     #[inline]
-    fn update(&mut self, lib: &Library, i: usize) -> f32 {
+    fn grad(&self, lib: &Library, i: usize) -> f32 {
+        if self.consolidated_ring_grad && matches!(lib.bg, BgTerms::Ring { .. }) {
+            let (cols, vals) = self.ring_grad.row(i);
+            let mut gc = self.ring_grad_diag[i] * self.c[i];
+            for (&j, &g) in cols.iter().zip(vals) {
+                gc += g * self.c[j as usize];
+            }
+            return self.ring_rhs[i] - gc;
+        }
         let (cols, vals) = lib.gram.row(i);
         let mut gc = lib.gram_diag[i] * self.c[i];
         for (&j, &g) in cols.iter().zip(vals) {
@@ -761,19 +876,10 @@ impl TraceEngine {
         }
         let mut grad = self.b[i] - gc;
         match &lib.bg {
-            BgTerms::Basis { k, x, w, .. } => {
+            BgTerms::Basis { k, w, .. } => {
                 let k = *k;
                 let s: f64 = (0..k).map(|a| f64::from(w[i * k + a]) * self.q[a]).sum();
                 grad -= s as f32;
-                let new = (self.c[i] + self.cfg.relax * grad / lib.mdiag[i]).max(0.0);
-                let d = new - self.c[i];
-                if d != 0.0 {
-                    self.c[i] = new;
-                    for a in 0..k {
-                        self.q[a] -= f64::from(x[i * k + a]) * f64::from(d);
-                    }
-                }
-                d
             }
             BgTerms::Ring { s, q, .. } => {
                 let (qc, qv) = q.row(i);
@@ -782,17 +888,94 @@ impl TraceEngine {
                     local -= v * self.c[j as usize];
                 }
                 grad -= s[i] * local;
-                let new = (self.c[i] + self.cfg.relax * grad / lib.mdiag[i]).max(0.0);
-                let d = new - self.c[i];
-                self.c[i] = new;
-                d
             }
-            BgTerms::None => {
-                let new = (self.c[i] + self.cfg.relax * grad / lib.mdiag[i]).max(0.0);
-                let d = new - self.c[i];
+            BgTerms::None => {}
+        }
+        grad
+    }
+
+    /// The original two sparse walks, retained only for numerical tests.
+    #[cfg(test)]
+    fn reference_ring_gradient(&self, lib: &Library, i: usize) -> f32 {
+        let (cols, vals) = lib.gram.row(i);
+        let mut gc = lib.gram_diag[i] * self.c[i];
+        for (&j, &g) in cols.iter().zip(vals) {
+            gc += g * self.c[j as usize];
+        }
+        let BgTerms::Ring { s, q, .. } = &lib.bg else {
+            unreachable!();
+        };
+        let (qc, qv) = q.row(i);
+        let mut local = self.ring[i];
+        for (&j, &v) in qc.iter().zip(qv) {
+            local -= v * self.c[j as usize];
+        }
+        self.b[i] - gc - s[i] * local
+    }
+
+    /// Exact minimisation over `c_i` (background re-solved); returns the step.
+    #[inline]
+    fn update(&mut self, lib: &Library, i: usize) -> f32 {
+        let grad = self.grad(lib, i);
+        let new = (self.c[i] + self.cfg.relax * grad / lib.mdiag[i]).max(0.0);
+        let d = new - self.c[i];
+        if let BgTerms::Basis { k, x, .. } = &lib.bg {
+            if d != 0.0 {
+                let k = *k;
                 self.c[i] = new;
-                d
+                for a in 0..k {
+                    self.q[a] -= f64::from(x[i * k + a]) * f64::from(d);
+                }
+            }
+        } else {
+            self.c[i] = new;
+        }
+        d
+    }
+}
+
+/// Merge sorted sparse rows once per library. The Gram CSR excludes its
+/// diagonal; Q may include its own cell, including a moat contribution.
+fn ring_gradient_rows(lib: &Library) -> (Csr, Vec<f32>) {
+    let BgTerms::Ring { s, q, .. } = &lib.bg else {
+        return (Csr::default(), Vec::new());
+    };
+    let mut rows = Csr {
+        start: Vec::with_capacity(lib.len() + 1),
+        col: Vec::new(),
+        val: Vec::new(),
+    };
+    let mut diag = Vec::with_capacity(lib.len());
+    rows.start.push(0);
+    for (i, &scale) in s.iter().enumerate() {
+        let (gc, gv) = lib.gram.row(i);
+        let (qc, qv) = q.row(i);
+        let (mut a, mut b) = (0, 0);
+        let mut d = lib.gram_diag[i];
+        while a < gc.len() || b < qc.len() {
+            let j = if b == qc.len() || (a < gc.len() && gc[a] < qc[b]) {
+                gc[a]
+            } else {
+                qc[b]
+            };
+            let mut v = 0.0;
+            if a < gc.len() && gc[a] == j {
+                v += gv[a];
+                a += 1;
+            }
+            if b < qc.len() && qc[b] == j {
+                v -= scale * qv[b];
+                b += 1;
+            }
+            if j as usize == i {
+                d += v;
+            } else if v != 0.0 {
+                rows.col.push(j);
+                rows.val.push(v);
             }
         }
+        diag.push(d);
+        rows.start.push(rows.col.len());
     }
+    (rows, diag)
 }

@@ -213,7 +213,7 @@ export class OpfsBackend implements BlockBackend {
     } catch (err) {
       if (err instanceof Error && err.name === 'QuotaExceededError') {
         throw new TraceStorageError(
-          `The browser ran out of storage for the pass-2 traces after ${gb(this.written)}. Free some disk space and run pass 2 again.`,
+          `The browser ran out of storage for the extracted traces after ${gb(this.written)}. Free some disk space and run Extract again.`,
         );
       }
       throw err;
@@ -259,15 +259,17 @@ export async function storageShortfall(bytes: number): Promise<{ free: number } 
 export async function createTraceFile(
   frames: number,
   cells: number,
-  options: { forceMemory?: boolean } = {},
+  /** `extraBytes`: more that will be stored next to it (Extract's signed traces), checked with it. */
+  options: { forceMemory?: boolean; extraBytes?: number } = {},
 ): Promise<TraceFile> {
-  const bytes = frames * cells * 4;
+  const own = frames * cells * 4;
+  const bytes = own + (options.extraBytes ?? 0);
   if (!options.forceMemory && (await opfsUsable())) {
     await sweepOpfs();
     const short = await storageShortfall(bytes);
     if (short) {
       throw new TraceStorageError(
-        `Pass 2 needs ${gb(bytes)} of browser storage (${cells} cells x ${frames.toLocaleString()} frames) but only ${gb(short.free)} is available. Free some disk space, or finish pass 1 earlier.`,
+        `Extract needs ${gb(bytes)} of browser storage (${cells} cells x ${frames.toLocaleString()} frames) but only ${gb(short.free)} is available. Free some disk space, or end Discover earlier.`,
       );
     }
     const name = `cala-pass2-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.bin`;
@@ -278,7 +280,7 @@ export async function createTraceFile(
       `${cells} cells x ${frames.toLocaleString()} frames (${gb(bytes)}) is more traces than fit in memory, and this browser has no file storage for them (OPFS). Use a current Chrome, Edge, Firefox or Safari.`,
     );
   }
-  return new TraceFile(frames, cells, new MemoryBackend(bytes), 'memory');
+  return new TraceFile(frames, cells, new MemoryBackend(own), 'memory');
 }
 
 /** A memory-backed file holding frame-major `traces` (tests, small data). */

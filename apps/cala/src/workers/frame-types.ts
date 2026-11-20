@@ -1,4 +1,9 @@
-import type { FolderEntry, FrameSourceInfo, FramePixels } from '../lib/frame-source.ts';
+import type {
+  FolderEntry,
+  FrameSourceInfo,
+  FramePixels,
+  SessionInput,
+} from '../lib/frame-source.ts';
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelineOptions, PipelinePlan } from '../lib/pipeline-plan.ts';
 import type { FlatFieldMap } from '../lib/flat-field.ts';
@@ -12,18 +17,50 @@ export interface CellsSettings {
   discover: boolean;
   /** Run online quality control on the traces (default on). */
   qc?: boolean;
-  /** Pass 2: solve every frame with this library (`TraceLibrary.toBytes()`), no discovery. */
+  /**
+   * A replay stage (Refine or Extract, see docs/stages.md): solve every frame
+   * with this library (`TraceLibrary.toBytes()`). Without `refine` (Extract)
+   * nothing goes to the slow loop.
+   */
   library?: Uint8Array;
+  /**
+   * Refine (with `library`): feed the replayed frames to the slow loop of
+   * this `session`, which keeps its state and may only refine footprints.
+   */
+  refine?: boolean;
+  /**
+   * Look-back (experimental; Discover of a recording only): the slow loop
+   * runs with it (`SlowInit.lookback`) and stage C reports its back half's
+   * state now and then (`PipelineStepResult` `backState`) for the look-back
+   * worker. Pipelined workers only.
+   */
+  lookback?: boolean;
   /** Batches in flight to the slow worker (default `FAST_LOOP_DEFAULTS.poolSize`). */
   forwardBuffers?: number;
+  /** Feed the compress worker (default off; needs its port). */
+  compress?: boolean;
   /** Return a residual preview with each batch (the residual view is shown). */
   residual?: boolean;
+  /** Return the signed (unclipped) traces with each batch (Extract; `CellsBatch.signed`). */
+  signed?: boolean;
+  /**
+   * Keep the mean and max projections of every frame and return them with the
+   * `done` step (Extract, for the export; pipelined workers only).
+   */
+  projection?: boolean;
 }
+
+/** A probed session: its info, or the error opening it. */
+export type SessionProbeResult = { info: FrameSourceInfo } | { error: string };
 
 /** Main thread -> frame worker. `id` pairs a request with its response. */
 export type FrameRequest =
   /** Entries carry their folder path as data: a File property would not survive structured clone. */
   | { type: 'open'; id: number; entries: FolderEntry[] }
+  /** Open several sessions as one recording, in order (a Joint run; `FrameSource.openSessions`). */
+  | { type: 'open-sessions'; id: number; sessions: SessionInput[] }
+  /** Read each session's headers and sidecars for the session list, without keeping any open. */
+  | { type: 'probe'; id: number; sessions: SessionInput[] }
   /** Connect to a live source (`lib/live-source.ts`) at a WebSocket URL. */
   | { type: 'open-live'; id: number; url: string }
   /** `count` consecutive frames from global index `start` (one for a single frame). */
@@ -48,9 +85,15 @@ export type FrameRequest =
    */
   | { type: 'pipeline-step'; id: number }
   /** Free the pipeline's WASM state. */
-  | { type: 'pipeline-stop'; id: number }
+  /**
+   * `keepSlow`: keep the slow loop (Refine or Extract may follow; a Refine run
+   * that is stopped publishes what it has) instead of dropping it.
+   */
+  | { type: 'pipeline-stop'; id: number; keepSlow?: boolean }
   /** The port to the slow worker (transferred). */
   | { type: 'connect-slow'; id: number; port: MessagePort }
+  /** The port to the compress worker (transferred). */
+  | { type: 'connect-compress'; id: number; port: MessagePort }
   /** Turn cell discovery on or off in the running pipeline. */
   | { type: 'set-discovery'; id: number; on: boolean }
   /** Return (or stop returning) the model residual preview in the running pipeline. */
@@ -70,6 +113,8 @@ export type FrameRequestBody = FrameRequest extends infer R
 /** Frame worker -> main thread. */
 export type FrameResponse =
   | { type: 'opened'; id: number; info: FrameSourceInfo }
+  /** One entry per probed session: its info, or why it could not be opened. */
+  | { type: 'probed'; id: number; results: SessionProbeResult[] }
   | {
       type: 'frames';
       id: number;

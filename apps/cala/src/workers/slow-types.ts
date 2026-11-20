@@ -8,6 +8,16 @@
  * of the old session are dropped.
  */
 
+import type { LookbackStatus } from './lookback-types.ts';
+
+/**
+ * The structural edits the slow loop may make (`SlowLoop.setEditScope`, the
+ * engine's `EditScope` names). Discover runs with `all`, Refine with `refine`;
+ * the others exist in the engine (qc_eval's `--later-passes`) but no stage
+ * uses them yet (docs/stages.md).
+ */
+export type EditScopeName = 'all' | 'refine' | 'refine-prune' | 'refine-merge';
+
 /** Settings and calibration the slow loop starts from. */
 export interface SlowInit {
   width: number;
@@ -21,6 +31,13 @@ export interface SlowInit {
   flattenSigmaPx: number;
   /** Slow-loop work units per observed frame (about multiply-adds). */
   budget: number;
+  /**
+   * Look-back (experimental; absent = off): the slow loop is built with the
+   * options look-back runs with (`SlowLoop.withConfig(.., 'all', 'all', 0.6)`,
+   * visit workers alike), re-reads past frames through the look-back worker
+   * during Discover and settles after the last frame (see `SlowRunner`).
+   */
+  lookback?: boolean;
 }
 
 /** Fast worker -> slow worker. */
@@ -43,11 +60,25 @@ export type FastToSlow =
       frames: Float32Array;
       /** `count * cells` traces, library slot order. */
       traces: Float32Array;
+      /**
+       * The background coefficients of the same solve (`TraceEngine.lastBackground`),
+       * frame after frame (`background.length / count` per frame: one local level
+       * per cell under the ring model). The slow loop takes them off the ledger
+       * coordinate and the footprint statistics. Transferred. Absent: no cells yet.
+       */
+      background?: Float32Array;
       /** A newer noise map, sent every few hundred frames. */
       noise?: Float32Array;
     }
   /** The recording ended: publish what is pending. */
   | { type: 'end'; session: number }
+  /**
+   * Another run over the recording from frame 0 into the same slow loop (all
+   * its state kept), with `scope` from now on: the Refine stage (`refine`).
+   * The slow loop must have published its final library. A "Discover again"
+   * stage would send `all` (not offered: it counts the same frames twice).
+   */
+  | { type: 'replay'; session: number; scope: EditScopeName }
   /** Pipeline stopped or restarted: drop the slow loop. */
   | { type: 'reset'; session: number };
 
@@ -89,6 +120,8 @@ export interface SlowCounters {
   reAdds: number;
   churned: number;
   establishedRemovals: number;
+  /** Of the adds, cells that came from the history review. */
+  reviewAdds: number;
 }
 
 /** Evidence status of the working-set cells (`SlowLoop.cellStatus()`). */
@@ -101,6 +134,8 @@ export interface CellStatusView {
 export interface SlowStatus {
   /** Stream index after the last observed frame. */
   frame: number;
+  /** Stream index after the last batch received, observed or not (a Refine run's backpressure). */
+  consumed?: number;
   /** Frames observed so far, and frames received but not observed. */
   observed: number;
   skipped: number;
@@ -135,8 +170,20 @@ export interface SlowStatus {
   work: number;
   /** The recording ended and the final library is out. */
   final: boolean;
+  /** Runs over the recording into this slow loop: 1 = Discover, 2 = the first Refine, ... */
+  run: number;
+  /** The current run's edit scope. */
+  editScope: EditScopeName;
   /** Probation/established per cell, about once a second. */
   cellStatus?: CellStatusView;
+  /** Look-back counters (absent: look-back off). */
+  lookback?: LookbackStatus;
+  /**
+   * With the final library of a run: each cell's split-half footprint noise,
+   * `[id, noise, ...]` (`SlowLoop.footprintNoise`; absent in older builds).
+   * The Refine readout compares footprint changes with it.
+   */
+  footprintNoise?: Float64Array;
 }
 
 /** A published library, flattened for drawing (unfiltered footprints). */
@@ -177,6 +224,37 @@ export interface SlowConnect {
   port: MessagePort;
   visits?: MessagePort[];
 }
+
+/**
+ * Main thread -> slow worker: what a history review found
+ * (`HistoryReview.finish`), to add as new cells on probation. Transferred.
+ */
+export interface SlowReviewed {
+  type: 'reviewed';
+  session: number;
+  candidates: Float32Array;
+}
+
+/**
+ * Main thread -> slow worker: the port to the look-back worker (transferred),
+ * for runs with look-back (`SlowInit.lookback`).
+ */
+export interface SlowLookbackPort {
+  type: 'lookback-port';
+  port: MessagePort;
+}
+
+/**
+ * Main thread -> slow worker: stop settling (the drain after a look-back
+ * run's last frame) now; the footprints refined so far are published as the
+ * final library.
+ */
+export interface SlowStopSettling {
+  type: 'stop-settling';
+  session: number;
+}
+
+export type MainToSlow = SlowConnect | SlowReviewed | SlowLookbackPort | SlowStopSettling;
 
 /** Main thread -> visit worker: the port to the slow worker. */
 export interface VisitConnect {

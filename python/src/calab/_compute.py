@@ -6,6 +6,7 @@ build_kernel, etc.) but delegates to the native Rust solver via calab._solver.
 
 from __future__ import annotations
 
+import warnings
 from typing import NamedTuple
 
 import numpy as np
@@ -371,8 +372,13 @@ class SolveTraceResult(NamedTuple):
         than two events, 0 with none).
     dropped_spikes : int
         Spikes that no frame of their event had room for.
+    rectified_input : bool
+        The input trace is non-negative with at least a fifth of its samples
+        exactly 0: clipped at zero or already denoised. Not a supported
+        input (CaDecon expects raw or signed traces); the result is
+        unreliable and a warning is raised.
 
-    The four diagnostics never change the result.
+    The five diagnostics never change the result.
     """
 
     s_counts: np.ndarray
@@ -388,6 +394,7 @@ class SolveTraceResult(NamedTuple):
     no_size_fit: bool = False
     peak_outlier_ratio: float = 1.0
     dropped_spikes: int = 0
+    rectified_input: bool = False
 
 
 class BiexpFitResult(NamedTuple):
@@ -483,7 +490,20 @@ def solve_trace(
         max_firing_rate, max_iters, tol,
         hp_enabled, lp_enabled, warm, lambda_,
     )
-    cap_limited, no_size_fit, peak_outlier_ratio, dropped_spikes = diagnostics
+    (
+        cap_limited, no_size_fit, peak_outlier_ratio, dropped_spikes,
+        rectified_input,
+    ) = diagnostics
+    if rectified_input:
+        warnings.warn(
+            "1 of 1 traces looks clipped at zero or already denoised "
+            "(non-negative with many exact zeros). CaDecon expects raw or "
+            "signed traces, so the result is unreliable: in cala, run Extract "
+            "and export for CaDecon (signed traces); from Minian/CaImAn, use "
+            "C + YrA, not C.",
+            UserWarning,
+            stacklevel=2,
+        )
     return SolveTraceResult(
         s_counts=np.asarray(s_counts),
         alpha=float(alpha),
@@ -498,6 +518,7 @@ def solve_trace(
         no_size_fit=bool(no_size_fit),
         peak_outlier_ratio=float(peak_outlier_ratio),
         dropped_spikes=int(dropped_spikes),
+        rectified_input=bool(rectified_input),
     )
 
 

@@ -50,6 +50,7 @@ import {
   getGroundTruthForCell,
   nonFiniteCounts,
 } from '../../lib/data-store.ts';
+import { rectifiedCells } from '../../lib/rectified-cells.ts';
 import {
   inspectedCellIndex,
   setInspectedCellIndex,
@@ -553,6 +554,7 @@ export function TraceInspector(): JSX.Element {
           cellIndices={cellIndices}
           selectedIndex={effectiveCellIndex}
           onSelect={setInspectedCellIndex}
+          flaggedIndices={rectifiedCells}
           highlightedIndices={() => highlightedCells() ?? selectedSubsetCells()}
         />
         <TraceLegend items={legendItems()} />

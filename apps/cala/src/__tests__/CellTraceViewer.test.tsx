@@ -40,6 +40,7 @@ describe('selected cell long-recording viewer', () => {
     const range = vi.spyOn(h, 'range');
     const cells = {
       tick: () => 0,
+      saved: () => false,
       history: () => h,
       frame: () => 1_000_000,
     } as unknown as CellStore;

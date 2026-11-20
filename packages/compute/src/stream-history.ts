@@ -465,6 +465,119 @@ export class StreamHistory {
     return { levels, bands: bandSer.length ? bands : null, meta };
   }
 
+  /**
+   * A history read back from `toExport()` (a saved run). `specs` give the
+   * series their display settings by key (series the export has but `specs`
+   * lack get a plain grey line; specs the export lacks start empty). Bins come
+   * back as they were saved, each counting as one sample (the export has no
+   * counts), so a mean over several saved bins is unweighted. Ranges come back
+   * as they ended, with their steps. `end` is the stream time the run reached
+   * (default: the end of the newest saved level-0 bin).
+   */
+  static fromExport(
+    exp: HistoryExport,
+    specs: readonly SeriesSpec[] = [],
+    end?: number,
+  ): StreamHistory {
+    const m = exp.meta as {
+      base_bin_s?: number;
+      factor?: number;
+      bins_per_level?: number;
+      series?: {
+        key: string;
+        label?: string;
+        unit?: string;
+        kind?: SeriesKind;
+        group?: string;
+        range_initial?: [number, number];
+        range_final?: [number, number];
+        expansions?: RangeExpansion[];
+      }[];
+    };
+    const levels = [...exp.levels].sort((a, b) => a.k - b.k);
+    const h = new StreamHistory({
+      baseBinS: m.base_bin_s,
+      binsPerLevel: m.bins_per_level,
+      factor: m.factor,
+      maxLevels: Math.max(7, levels.length),
+    });
+    const byKey = new Map(specs.map((s) => [s.key, s]));
+    const saved = m.series ?? [];
+    for (const x of saved) {
+      const range: [number, number] = x.range_initial ?? [0, 1];
+      h.define(
+        byKey.get(x.key) ?? {
+          key: x.key,
+          label: x.label ?? x.key,
+          unit: x.unit ?? '',
+          group: x.group ?? 'other',
+          kind: x.kind ?? 'value',
+          range,
+          rangeRule: 'fixed',
+          color: '#888888',
+          digits: 2,
+        },
+      );
+    }
+    if (levels.length > 0) {
+      h.lv = levels.map((l) => ({
+        binS: l.binS,
+        open: Math.round(l.t0 / l.binS) + Math.max(1, l.n) - 1,
+      }));
+      const bandSer = h.ser.filter((s) => s.band);
+      for (const s of h.ser) {
+        s.lv = [];
+        levels.forEach((l, k) => {
+          const A = h.newArr();
+          s.lv.push(A);
+          const L = h.lv[k];
+          for (let a = h.first(L); a <= L.open; a++) h.initSlot(s, k, a % h.B);
+          const bi = s.band ? bandSer.indexOf(s) : -1;
+          const band = exp.bands?.find((b) => b.k === l.k)?.data;
+          const first = Math.round(l.t0 / l.binS);
+          for (let j = 0; j < l.n; j++) {
+            const i = (first + j) % h.B;
+            const o = (s.idx * l.n + j) * 4;
+            const mean = l.data[o + 2];
+            A.min[i] = l.data[o];
+            A.max[i] = l.data[o + 1];
+            A.mean[i] = mean;
+            A.last[i] = l.data[o + 3];
+            A.cnt[i] = Number.isNaN(mean) ? 0 : 1;
+            if (A.lo && band && bi >= 0) {
+              A.lo[i] = band[(bi * l.n + j) * 2];
+              A.hi![i] = band[(bi * l.n + j) * 2 + 1];
+            }
+          }
+        });
+        const L0 = h.lv[0];
+        const A0 = s.lv[0];
+        for (let a = L0.open; a >= h.first(L0); a--) {
+          const v = A0.last[a % h.B];
+          if (!Number.isNaN(v)) {
+            s.latest = v;
+            if (s.rate) s.lastRate = A0.mean[a % h.B];
+            break;
+          }
+        }
+      }
+    }
+    for (const x of saved) {
+      const s = h.byKey.get(x.key)!;
+      if (x.range_final) {
+        s.range.lo = x.range_final[0];
+        s.range.hi = x.range_final[1];
+      }
+      if (x.range_initial) s.range.initial = [x.range_initial[0], x.range_initial[1]];
+      s.range.expansions = (x.expansions ?? []).map((e) => ({ t: e.t, from: e.from, to: e.to }));
+    }
+    for (const spec of specs) if (!h.has(spec.key)) h.define(spec);
+    const L0 = h.lv[0];
+    h.endT = end ?? (levels.length > 0 ? (L0.open + 1) * L0.binS : 0);
+    h.ver++;
+    return h;
+  }
+
   // ---- internals ----
 
   /** Oldest absolute bin held at a level (rings drop the oldest; the top level only shrinks by coarsening). */

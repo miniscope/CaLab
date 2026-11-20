@@ -23,7 +23,8 @@ export type StageMsg =
   | { type: 'job'; epoch: number; id: number; job: StageJob }
   /** The recording is exhausted: C answers the request `id` with `done`. */
   | { type: 'end'; epoch: number; id: number }
-  | { type: 'stop'; epoch: number };
+  /** `keepSlow`: see `pipeline-stop`. */
+  | { type: 'stop'; epoch: number; keepSlow?: boolean };
 
 /** Upstream: a pooled buffer is free again. */
 export interface StageFree {
@@ -43,6 +44,8 @@ export interface StageShifts {
   start: number;
   dy: Float32Array;
   dx: Float32Array;
+  /** The session warp applied before these shifts (absent: identity). */
+  session?: [number, number, number];
 }
 
 /** Main thread -> motion / trace worker: their ports. */

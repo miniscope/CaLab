@@ -63,6 +63,7 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
       no_size_fit?: boolean;
       peak_outlier_ratio?: number;
       dropped_spikes?: number;
+      rectified_input?: boolean;
     };
 
     if (cancelled) {
@@ -96,6 +97,7 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
           noSizeFit: jsResult.no_size_fit,
           peakOutlierRatio: jsResult.peak_outlier_ratio,
           droppedSpikes: jsResult.dropped_spikes,
+          rectifiedInput: jsResult.rectified_input,
         },
       },
       transfers,

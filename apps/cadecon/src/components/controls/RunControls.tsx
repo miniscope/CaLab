@@ -1,6 +1,8 @@
 import { Show, type JSX } from 'solid-js';
 import { runState, runError, failedJobs } from '../../lib/iteration-store.ts';
+import { rectifiedCells } from '../../lib/rectified-cells.ts';
 import { startRun, pauseRun, resumeRun, stopRun, resetRun } from '../../lib/iteration-manager.ts';
+import { rectifiedBannerText } from '../../lib/rectified-input.ts';
 import { parsedData, samplingRate } from '../../lib/data-store.ts';
 
 function PlayIcon(): JSX.Element {
@@ -110,6 +112,12 @@ export function RunControls(): JSX.Element {
             <span>{message()}</span>
           </div>
         )}
+      </Show>
+      <Show when={rectifiedCells().length > 0}>
+        <div class="warning-card" role="status" data-testid="rectified-input-banner">
+          <span class="warning-card__icon">!</span>
+          <span>{rectifiedBannerText(rectifiedCells().length)}</span>
+        </div>
       </Show>
       <Show when={!runError() && failedJobs() > 0}>
         <div class="error-card" role="status">
