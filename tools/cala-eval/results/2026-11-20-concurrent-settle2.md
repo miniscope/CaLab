@@ -124,6 +124,19 @@ arm and `V30`, each with tails none and `S9600`, branched after Discover). Paire
 - reported: share of the gap (`V30+S9600` minus `V30`) closed on footprint r and on bitten footprints, late-born
   cells, slow-worker and visit-worker busy shares.
 
+## Arm added after the first results (not in the targets; same lines applied)
+
+Written when 14 of the 25 runs had finished and one recording (Samara `10_43_21`, `V30` and `CS2`, both seeds) had
+been read: there the settle jobs accepted 82 refinements out of 17,316 jobs, and `CS2` made 10 % fewer ordinary
+visits than `V30` (line R4: 5 %).
+
+| arm    | added to `D`                                | what it is                                                                  |
+| ------ | ------------------------------------------- | --------------------------------------------------------------------------- |
+| `CS2F` | `--csettle 0.667 --csettle-mode frames`     | the re-read frames of `CS2` with no settle jobs (the ordinary visits refine) |
+
+All seven recording-seeds. It is judged by R1-R4 like the others but is not eligible as the pre-registered "chosen
+arm"; if it is the only arm that meets every line, the verdict says so and says that it was added after seeing data.
+
 ## Results
 
 (to be filled)

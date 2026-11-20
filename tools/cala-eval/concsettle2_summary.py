@@ -28,8 +28,8 @@ from pathlib import Path
 
 import numpy as np
 
-ARMS = ["V30", "CS2", "CS2-Q", "CS1", "CS2-Q18"]
-KEYS = dict(zip("ABCDE", ARMS))
+ARMS = ["V30", "CS2", "CS2-Q", "CS1", "CS2-Q18", "CS2F"]
+KEYS = dict(zip("ABCDEF", ARMS))
 DOSE = {"settle0": 0, "settle1": 1800, "settle2": 3600, "settle3": 5400, "settle5": 9000, "settle7": 12600, "final": 18000}
 
 
@@ -37,7 +37,7 @@ def pairs_table(md: Path) -> dict[tuple[str, str, str], list[float]]:
     """(arm, tag, kind) -> median r of each pair; kind: `seed` (two seeds of the arm) or `ref` (against V30 settled)."""
     out: dict[tuple[str, str, str], list[float]] = {}
     for line in md.read_text().splitlines():
-        m = re.match(r"\| ([A-E])(\d):(\w+) \| ([A-E])(\d):(\w+) \|.*\| ([0-9.]+) \|\s*$", line)
+        m = re.match(r"\| ([A-F])(\d):(\w+) \| ([A-F])(\d):(\w+) \|.*\| ([0-9.]+) \|\s*$", line)
         if not m:
             continue
         ka, sa, ta, kb, sb, tb, r = m.groups()

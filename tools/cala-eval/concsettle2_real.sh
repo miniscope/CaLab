@@ -13,6 +13,7 @@ ROOT=$CALA_DATA/runs/concsettle2/real
 ME="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 ARMS="V30 CS2 CS2-Q"
 SENS="CS1 CS2-Q18"
+POST="CS2F" # added after the first results
 WS=${WS:-$HOME/Projects/workshop-processing-and-analysis/data/sessions/prerecorded/raw}
 SAMARA=${SAMARA:-"$HOME/Downloads/Samara Data"}
 
@@ -23,6 +24,7 @@ arm_flags() {
     CS2) echo "--csettle 0.667 --csettle-mode stats" ;;
     CS2-Q) echo "--csettle 0.667 --csettle-mode stats --csettle-quiet 600" ;;
     CS2-Q18) echo "--csettle 0.667 --csettle-mode stats --csettle-quiet 1800" ;;
+    CS2F) echo "--csettle 0.667 --csettle-mode frames" ;;
   esac
 }
 
@@ -70,12 +72,23 @@ all)
   wait
   echo ALLDONE > $ROOT/all.done
   ;;
+post)
+  for arm in $POST; do
+    F=$(arm_flags $arm)
+    for s in 1 2 3; do $ME run ws_${arm}_s$s "$WS" $s --frames 18000 $F & done
+    for ses in 10_43_21 14_57_02; do for s in 1 2; do
+      $ME run ${ses}_${arm}_s$s "$SAMARA/$ses/img" $s --fps 30 $F &
+    done; done
+  done
+  wait
+  echo ALLDONE > $ROOT/post.done
+  ;;
 report)
   P=$2; SEEDS=($3); M=$4
   cd "$(dirname "$ME")/../.."
   A=(); PR=(); k=0
-  for n in $ARMS $SENS; do
-    K=$(echo ABCDE | cut -c$((k + 1))); k=$((k + 1))
+  for n in $ARMS $SENS $POST; do
+    K=$(echo ABCDEF | cut -c$((k + 1))); k=$((k + 1))
     [ -f $ROOT/${P}_${n}_s${SEEDS[0]}.done ] || continue
     for s in "${SEEDS[@]}"; do [ -f $ROOT/${P}_${n}_s$s.done ] && A+=(--run $K$s=$ROOT/${P}_${n}_s$s); done
     for t in settle0 settle1 settle2 settle3 settle5 settle7 final; do
@@ -94,13 +107,13 @@ report)
     --md $ROOT/${P}_agreement.md > /dev/null 2> $ROOT/${P}_agreement.time
   grep "maximum resident" $ROOT/${P}_agreement.time
   R=()
-  for n in $ARMS $SENS; do
+  for n in $ARMS $SENS $POST; do
     L=""
     for s in "${SEEDS[@]}"; do [ -f $ROOT/${P}_${n}_s$s.done ] && L="$L,$ROOT/${P}_${n}_s$s"; done
     [ -n "$L" ] && R+=(--runs $n=${L#,})
   done
   $MINISIM_PY tools/cala-eval/concsettle_checkpoints.py "${R[@]}" --end-suffix _settle0 --md $ROOT/${P}_checkpoints.md > /dev/null
-  for n in $ARMS $SENS; do for s in "${SEEDS[@]}"; do
+  for n in $ARMS $SENS $POST; do for s in "${SEEDS[@]}"; do
     [ -f $ROOT/${P}_${n}_s$s.log ] || continue
     echo "$n s$s: $(grep -h '^timed' $ROOT/${P}_${n}_s$s.log | tr '\n' ' ') | $(cat $ROOT/${P}_${n}_s$s/csettle.txt) | $(grep -h 'pass 1 done' $ROOT/${P}_${n}_s$s.log | cut -c1-80)"
   done; done > $ROOT/${P}_runs.txt
