@@ -147,7 +147,22 @@ def run_one(job: dict, state: dict) -> dict:
 # qc_eval `--branch-after POINT --branch NAME:FLAGS` runs to POINT once and forks the process per branch.
 # Only these flags act after Discover's last frame (qc_eval `TAIL_FLAGS`); arms whose args differ only in them
 # can share the prefix. DRAIN_FLAGS act inside the look-back drain, so they must match for `drain`.
-TAIL_FLAGS = ("--passes", "--later-passes", "--lookback-drain", "--lookback-drain-rate", "--lookback-settle-all")
+SETTLE_FLAGS = (
+    "--settle-frames",
+    "--settle-round",
+    "--settle-observe",
+    "--settle-steps",
+    "--settle-batch",
+    "--settle-due",
+    "--settle-publish",
+    "--settle-check",
+    "--settle-stop-k",
+    "--settle-stop-share",
+    "--settle-stop-checks",
+    "--settle-min-frames",
+    "--settle-libs",
+)
+TAIL_FLAGS = ("--passes", "--later-passes", "--lookback-drain", "--lookback-drain-rate", "--lookback-settle-all", *SETTLE_FLAGS)
 DRAIN_FLAGS = ("--lookback-drain", "--lookback-drain-rate", "--lookback-settle-all")
 
 

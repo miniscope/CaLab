@@ -56,6 +56,11 @@
 //!                      new cells' and their neighbours' running statistics
 //!                      and cluster stores, at R look-back frames per
 //!                      Discover frame (see `LookBack`; `lookback.tsv`)
+//!   --lookback-reservoir M  experimental: look-back frames are also
+//!                      offered to the reservoir, on the held-out side they
+//!                      had as live frames: `test` (held-out frames only) or
+//!                      `all`; --lookback-reservoir-share S offers the share
+//!                      S of them (`LookbackReservoir`). Default off.
 //!   --lookback-frames K  at most K frames before its birth per cell
 //!                      (default 3000)
 //!   --lookback-order O `shared` (default): the 64-frame block most cells
@@ -361,8 +366,8 @@ use std::time::Instant;
 use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
     CoreTest, EditScope, JointAdmit, JointSign, JointUpdate, LookBack as LbSched, LookbackConfig,
-    LookbackNext, LookbackOrder, LookbackOutcome, MergeRule, RefineGate, SlowLoop, SlowLoopConfig,
-    SupportRule, VisitResult, VisitRunner, LB_BLOCK,
+    LookbackNext, LookbackOrder, LookbackOutcome, LookbackReservoir, MergeRule, RefineGate,
+    SlowLoop, SlowLoopConfig, SupportRule, VisitResult, VisitRunner, LB_BLOCK,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -3858,6 +3863,9 @@ struct Tail {
     drain: usize,
     drain_rate: f64,
     settle_all: usize,
+    /// `--settle-*`: the end-of-Discover settle, run after the drain (and
+    /// after the `drain` branch point).
+    settle: SettleCfg,
 }
 
 /// Flags [`Tail::parse`] reads. `drain` ones act inside the drain, so a
@@ -3868,6 +3876,19 @@ const TAIL_FLAGS: &[&str] = &[
     "--lookback-drain",
     "--lookback-drain-rate",
     "--lookback-settle-all",
+    "--settle-frames",
+    "--settle-round",
+    "--settle-observe",
+    "--settle-steps",
+    "--settle-batch",
+    "--settle-due",
+    "--settle-publish",
+    "--settle-check",
+    "--settle-stop-k",
+    "--settle-stop-share",
+    "--settle-stop-checks",
+    "--settle-min-frames",
+    "--settle-libs",
 ];
 const DRAIN_FLAGS: &[&str] = &[
     "--lookback-drain",
@@ -3894,6 +3915,7 @@ impl Tail {
             drain: arg_value(args, "--lookback-drain").map_or(0, |s| s.parse().unwrap()),
             drain_rate,
             settle_all: arg_value(args, "--lookback-settle-all").map_or(0, |s| s.parse().unwrap()),
+            settle: SettleCfg::parse(args),
         }
     }
 }
@@ -4053,6 +4075,11 @@ impl BranchChild {
         if let Some(l) = lookback {
             l.drain_rate = self.tail.drain_rate;
             l.settle_all = self.tail.settle_all;
+            l.settle = self.tail.settle.clone();
+            assert!(
+                l.settle.frames == 0 || self.tail.drain > 0,
+                "--settle-frames needs --lookback-drain"
+            );
         }
         *tail = self.tail;
         *out_dir = self.out_dir;
@@ -4563,6 +4590,24 @@ fn main() {
         Some("newest") => true,
         Some(m) => panic!("--lookback-order: unknown mode {m}"),
     };
+    // `--lookback-reservoir test|all` (experimental, default off): look-back
+    // frames are also offered to the reservoir (`LookbackReservoir`);
+    // `--lookback-reservoir-share S` offers that share of them.
+    let lb_res = match arg_value(&args, "--lookback-reservoir").as_deref() {
+        None | Some("off") => LookbackReservoir::Off,
+        Some("test") => LookbackReservoir::Test,
+        Some("all") => LookbackReservoir::All,
+        Some(m) => panic!("--lookback-reservoir: unknown mode {m} (off | test | all)"),
+    };
+    let lb_res_share: f32 =
+        arg_value(&args, "--lookback-reservoir-share").map_or(1.0, |s| s.parse().unwrap());
+    assert!(
+        lb_res_share > 0.0 && lb_res_share <= 1.0,
+        "--lookback-reservoir-share must be in (0, 1]"
+    );
+    if lb_res != LookbackReservoir::Off {
+        println!("lookback reservoir: {lb_res:?}, share {lb_res_share}");
+    }
     let mut lb_drain: usize = tail.drain;
     let lb_frames: usize =
         arg_value(&args, "--lookback-frames").map_or(3000, |s| s.parse().unwrap());
@@ -4581,11 +4626,10 @@ fn main() {
     if let Some(l) = lookback.as_mut() {
         l.drain_rate = tail.drain_rate;
         l.settle_all = tail.settle_all;
-        // The settle's flags are not tail flags: every branch of a
-        // `--branch-after` run gets the same settle.
-        l.settle = SettleCfg::parse(&args);
+        l.settle = tail.settle.clone();
+        // With `--branch-after` each branch checks its own flags.
         assert!(
-            l.settle.frames == 0 || lb_drain > 0,
+            l.settle.frames == 0 || lb_drain > 0 || branching.is_some(),
             "--settle-frames needs --lookback-drain"
         );
     }
@@ -4967,6 +5011,9 @@ fn main() {
                             .unwrap()
                         };
                         slow = Some(mk());
+                        if let Some(s) = slow.as_mut() {
+                            s.set_lookback_reservoir(lb_res, lb_res_share);
+                        }
                         if let Some(s) = &slow {
                             let p = s.reservoir_plan();
                             println!(
@@ -5215,32 +5262,6 @@ fn main() {
                             "lookback drain: {st} steps, {fr} frames, {:.1} s",
                             lbk.drain_wall_s
                         );
-                        if lbk.settle.frames > 0 {
-                            lbk.settle(
-                                t_len,
-                                budget,
-                                start,
-                                &mut rec,
-                                drift.as_ref(),
-                                &mut pipe,
-                                &mut engine,
-                                sl,
-                                n_px,
-                            );
-                            std::fs::write(out_dir.join("settle_checks.tsv"), &lbk.settle_out)
-                                .unwrap();
-                            for (k, l) in std::mem::take(&mut lbk.settle_libs) {
-                                write_library(
-                                    &out_dir,
-                                    &format!("_settle{k}"),
-                                    &l,
-                                    dims,
-                                    gt.as_ref(),
-                                    ho.as_ref(),
-                                    Some(&*sl),
-                                );
-                            }
-                        }
                     }
                 }
                 // Branch point `drain`: the drain (if any) is done too.
@@ -5254,6 +5275,38 @@ fn main() {
                                 &mut passes,
                                 &mut later_scope,
                                 &mut lb_drain,
+                            );
+                        }
+                    }
+                }
+                // The end-of-Discover settle (`--settle-frames`): after the
+                // drain and after the `drain` branch point, so a branch can
+                // set it.
+                if let (Some(lbk), Some(sl), 0, None) =
+                    (lookback.as_mut(), slow.as_mut(), pass, timed.as_ref())
+                {
+                    if last && lb_drain > 0 && lbk.settle.frames > 0 {
+                        lbk.settle(
+                            t_len,
+                            budget,
+                            start,
+                            &mut rec,
+                            drift.as_ref(),
+                            &mut pipe,
+                            &mut engine,
+                            sl,
+                            n_px,
+                        );
+                        std::fs::write(out_dir.join("settle_checks.tsv"), &lbk.settle_out).unwrap();
+                        for (k, l) in std::mem::take(&mut lbk.settle_libs) {
+                            write_library(
+                                &out_dir,
+                                &format!("_settle{k}"),
+                                &l,
+                                dims,
+                                gt.as_ref(),
+                                ho.as_ref(),
+                                Some(&*sl),
                             );
                         }
                     }
@@ -5510,6 +5563,13 @@ fn main() {
             l.sched.in_need(),
             l.wall_s
         );
+        if let (Some(sl), true) = (slow.as_ref(), lb_res != LookbackReservoir::Off) {
+            let c = sl.lookback_reservoir_counts();
+            println!(
+                "lookback reservoir: {} frames scored, {} event slots and {} random slots taken",
+                c[0], c[1], c[2]
+            );
+        }
         let mut t = format!(
             "rate\tmax_frames\tcatchup\tdouble\tframes\tpushed\tcell_frames\tbirths\tin_need\twall_s\tdrain_steps\tdrain_frames\n{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}\n\ntenth\tframes\tcell_frames\n",
             l.rate,
@@ -6092,6 +6152,25 @@ mod tests {
         // A branch that sets nothing keeps the base tail.
         let t0 = Tail::parse(&b.branch_args(&full, &[]));
         assert_eq!((t0.passes, t0.drain), (1, 100));
+    }
+
+    #[test]
+    fn settle_flags_are_tail_flags_at_both_branch_points() {
+        for point in ["discover", "drain"] {
+            let mut full = argv("sim in out --passes 1 --lookback-drain 100 --branch-after");
+            full.push(point.into());
+            full.extend(argv("--branch"));
+            full.push("s:--settle-frames 9600 --settle-batch 16 --settle-libs".into());
+            full.extend(argv("--branch plain:"));
+            let b = Branching::parse(&full).unwrap();
+            let t = Tail::parse(&b.branch_args(&full, &b.branches[0].1));
+            assert_eq!(
+                (t.settle.frames, t.settle.batch, t.settle.libs),
+                (9600, 16, true)
+            );
+            let t0 = Tail::parse(&b.branch_args(&full, &b.branches[1].1));
+            assert_eq!(t0.settle.frames, 0);
+        }
     }
 
     #[test]
