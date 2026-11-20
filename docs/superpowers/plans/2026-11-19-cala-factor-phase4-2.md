@@ -4079,6 +4079,7 @@ git commit -m "docs(cala): Refine on the factors behind a switch, and Extract on
 - **A cancel inside one iteration** (decision 2 and 7).
 - **Readers sharing the factor files** (read-only sync access handles; decision 1).
 - **FOV images for a live run's Extract** (a stream has no replay that projects frames).
+- **Real-time live compression with tiles shared across workers** (spec §3; decision 4 defers the cost to phase 5).
 
 ## Self-review notes
 
@@ -4096,3 +4097,19 @@ git commit -m "docs(cala): Refine on the factors behind a switch, and Extract on
 - That Solid runs the App's effect on `pipeline.status() === 'starting'` (which clears the Refine store and sends `stop-factors`) before `start()` reaches `beforeStart`; `release()` sends `stop-factors` itself, so the order does not matter for correctness.
 - How long one iteration takes in the browser at 600 px (decision 7 cites estimates only; phase 5 measures).
 - Whether the cell movie's live Discover and Refine finish within the e2e timeouts on CI (the file test of 4.1 does; the stream adds 15 s of streaming at 200 fps).
+
+## Execution notes, phase 4.2 (19 Nov 2026)
+
+- The binding (Task 1) also catches a reader whose `windows` throws or is not a number, and refuses a window that would end past frame `u32::MAX` or hold more than `MAX_WINDOW_FRAMES` (9600) frames: a hostile file with rank-0 tiles and a huge frame count ran for minutes and trapped.
+- The slow runner's `finally` (Task 3) clears the run state first, closes the files and posts the last status each in its own `try`, and posts `factor-end` last and unconditionally. As planned, an exception in `close` or `status` (an out-of-memory trap leaves the loop unusable) would have skipped `factor-end`, so `release()` never resolved and Discover could never start again. The plan's sentence "posts `factor-end` on every path" holds only in this form.
+- The run's guards check that the loop being refined is still the current loop, not only that a run exists. A reset and a new session during an iteration would otherwise have had their frames ignored and their final library never published. A second factor run is still refused until the first has posted `factor-end`.
+- The run clears `ending`, as `replay` does, instead of refusing on it: the brief's check refused every run after a final library. Before the first iteration it sets the loop's noise map and sends it to the visit workers, so a later raw Refine passes their noise check.
+- The session -1 row of the state table is corrected (Task 6). Only the slow worker's own crash (`worker.onerror`, tagged `worker: 'slow'`) frees the files. A visit-worker crash or a failed `connectSlow` also posts session -1, but the slow worker may still hold the files. A crash ends a factor Refine in any phase, not only while it iterates.
+- Refusals that are no failure ("already running", "not final yet", not connected) carry `refused: true` on `factor-end` and do not set `factorFailed`. A failed open of the files does.
+- The Refine store never replays a stream: a live run waits for its factors or fails when they are unusable. `run()` refuses while the files are still held.
+- A live Extract never reports a replay reason (motion-record gap, calibration frames), since it replays nothing (Tasks 5 and 7).
+- `liveFactorsBlocked` is computed once in App and passed to the Run panel. `refineBusyText` reads the store's settings. The Refine and Extract progress bars also show on a live run.
+- The whole-branch review found that a factor Refine posted `final: false` statuses and set `final` back only through a status that reads the WASM loop. After a trapped iteration or a slow crash, a live run's export stayed disabled (the stream is gone) and a file's Extract waited for a final library until the next Discover. Fixed in two ways: the runner keeps `final: true` through a factor run, and the main thread ignores `final` on factor-run statuses.
+- The e2e helper `exportNpz` opens the export menu only when it is closed (the menu stays open after an export). The stop-and-restart live test now runs on the offset grids and asserts that compression ended without an error.
+- Not verified in the app (left for phase 5): Refine and Extract on a live run's plain-tile factors under `?review` (the crate's tests cover plain tiles); iteration time and memory at 600 px in the browser; Chrome's limit on open sync access handles per worker (every window's handle is opened at once).
+- "Not in this phase" gained the spec's §3 real-time live compression with tiles shared across workers.
