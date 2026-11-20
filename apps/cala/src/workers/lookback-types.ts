@@ -94,11 +94,35 @@ export interface LookbackStatus {
   inNeed: number;
   /** Size of the held-out record, bytes. */
   recordBytes: number;
-  /** Settling (the drain after the last frame): running, and its steps so far. */
+  /**
+   * Settling (after the last frame, part of Discover): running; then the
+   * drain's steps (need-driven look-back, when it runs) and the settle pass
+   * (`settle`).
+   */
   settling: boolean;
   drainSteps: number;
-  /** Settling stopped at its step cap with cells still in need. */
+  /** The drain stopped at its step cap with cells still in need. */
   capped: boolean;
+  /** The settle pass (absent until it starts). */
+  settle?: SettleStatus;
   /** Look-back stopped by an error (Discover goes on without it). */
   error?: string;
+}
+
+/** The settle pass of a look-back run (`lib/settle.ts`). */
+export interface SettleStatus {
+  /** Frames fed through `observe`, of the frames planned (one pass, at most `SETTLE.maxFrames`). */
+  fed: number;
+  total: number;
+  /** Frames in the recording (the plan samples it when longer than `SETTLE.maxFrames`). */
+  recording: number;
+  /**
+   * At the last checkpoint: cells with a noise estimate, and of those the
+   * ones that moved by more than `SETTLE.movingK` times their split-half
+   * noise since the checkpoint before (null before the first).
+   */
+  moving: { cells: number; above: number } | null;
+  /** The user stopped it early. */
+  stopped: boolean;
+  done: boolean;
 }

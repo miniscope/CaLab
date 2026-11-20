@@ -27,13 +27,20 @@
  * (`lookbackTake`) to the look-back worker, which re-reads, preprocesses and
  * solves them; its answer goes into the footprint statistics only
  * (`observeLookback`). The fast loop never waits for any of it. After the
- * last frame the run settles instead of ending at once (`drainPump`, as
- * qc_eval's `LookBack::drain`): with the cell set frozen (`refine` scope),
- * look-back frames and tile visits alternate until no cell needs frames or
- * a step cap, then a last round of visits on every tile, and only then the
- * final library.
+ * last frame the run settles instead of ending at once, as part of Discover,
+ * with the cell set frozen (`refine` scope): the settle pass (`settle.ts`,
+ * qc_eval's `--settle-frames N --settle-batch 16`) has the look-back worker
+ * re-read the recording once (at most `SETTLE.maxFrames` frames) and feeds
+ * every frame to the ordinary `observe`, as a Refine pass does, with the
+ * visits those frames earn; then a last round of visits on every tile, and
+ * only then the final library.
  */
-import type { LookbackStatus, LookbackToSlow, SlowToLookback } from '../workers/lookback-types.ts';
+import type {
+  LookbackStatus,
+  LookbackToSlow,
+  SettleStatus,
+  SlowToLookback,
+} from '../workers/lookback-types.ts';
 import type {
   CellStatusView,
   EditScopeName,
@@ -50,6 +57,14 @@ import type {
   VisitToOwner,
 } from '../workers/slow-types.ts';
 import { libraryViewTransferables } from '../workers/slow-types.ts';
+import {
+  movedAgainstNoise,
+  noiseMap,
+  SETTLE,
+  SettleFeed,
+  settlePlan,
+  unitFootprints,
+} from './settle.ts';
 
 /** What the runner needs of a published `TraceLibrary`. */
 export interface PublishedLibrary {
@@ -117,6 +132,8 @@ export interface SlowLoopLike {
   markAllDue?(): void;
   /** `[requested, pushed, heldOut, dropped, births, inNeed, recordBytes]`. */
   lookbackStats?(): Float64Array;
+  /** `[id, noise, ...]`: split-half footprint noise of the newest library's cells (absent in older builds). */
+  footprintNoise?(): Float64Array;
   free(): void;
 }
 
@@ -132,15 +149,9 @@ export const LOOKBACK = {
   mergeGuardMinSep: 0.6,
   rate: 2,
   maxFrames: 3000,
-  /** Frames per request to the look-back worker. */
+  /** Frames per request to the look-back worker (Discover's look-back and the settle). */
   takeMax: 16,
-  /** Settling: at most this many steps (qc_eval's drain cap), ... */
-  drainSteps: 4800,
-  /** ... `markAllDue` and a published library every this many, ... */
-  drainEvery: 64,
-  /** ... then this many steps of visits on every tile. */
-  settleSteps: 256,
-  /** A request unanswered this long stops look-back for the run (the drain must end). */
+  /** A request unanswered this long stops look-back for the run (settling must end). */
   timeoutMs: 60_000,
 } as const;
 
@@ -207,7 +218,7 @@ export interface SlowRunnerDeps {
   timer?: (fn: () => void, ms: number) => () => void;
 }
 
-/** One frame of an outstanding look-back request. */
+/** One frame of an outstanding look-back request (no ids: a settle frame, for every cell). */
 interface LookbackItem {
   frame: number;
   ids: Float64Array;
@@ -224,17 +235,21 @@ function lookbackItems(flat: ArrayLike<number>): LookbackItem[] {
   return out;
 }
 
-/** Settling, between Discover's last frame and the final library (`SlowRunner.drainPump`). */
-interface Drain {
-  /** `feed`: look-back frames and visits; `settle`: the last visits on every tile. */
-  phase: 'feed' | 'settle';
-  /** Steps done in the phase. */
-  steps: number;
-  /** A step was started and closes once its look-back frames and visits are back. */
-  inStep: boolean;
-  /** The step's `lookbackTake` found no cell in need: settle after it. */
-  idle: boolean;
-  /** Stop now (the user's Stop, or a failure): publish the final library. */
+/** Settling, between Discover's last frame and the final library (`SlowRunner.settlePump`). */
+interface Settle {
+  /** `sweep`: the settle pass; `final`: the last visits on every tile. */
+  phase: 'sweep' | 'final';
+  feed: SettleFeed;
+  /** Frames observed (fed through `observe`). */
+  fed: number;
+  recording: number;
+  /** Next checkpoint at this many frames fed, and the footprints of the last one. */
+  nextCheck: number;
+  prev: ReturnType<typeof unitFootprints> | null;
+  moving: { cells: number; above: number } | null;
+  /** Steps of the final round so far (without visit workers: one). */
+  finalSteps: number;
+  /** Stop now (the user's Stop): publish the final library. */
   stop: boolean;
   statusAt: number;
 }
@@ -312,9 +327,9 @@ export class SlowRunner {
   private lbCancelTimer: (() => void) | null = null;
   /** Look-back stopped by an error or a timeout (Discover and settling go on without it). */
   private lbError: string | undefined;
-  private drain: Drain | null = null;
-  private drainSteps = 0;
-  private drainCapped = false;
+  private drain: Settle | null = null;
+  /** The settle's last status (kept for the final status after it ends). */
+  private settleStatus: SettleStatus | undefined;
   private readonly defer: (fn: () => void) => void;
   private readonly timer: (fn: () => void, ms: number) => () => void;
 
@@ -435,7 +450,9 @@ export class SlowRunner {
       this.visitMsN++;
       this.housekeep();
       if (this.drain) {
-        if (!this.busy.some((b) => b)) this.drainPump();
+        // The settle keeps its visit workers busy; the last round and a Stop wait for them.
+        if (this.drain.phase === 'sweep' && !this.drain.stop) this.dispatch();
+        else if (!this.busy.some((b) => b)) this.settlePump();
       } else if (this.ending) {
         if (!this.busy.some((b) => b)) this.finish();
       } else {
@@ -605,7 +622,7 @@ export class SlowRunner {
       this.lbCancelTimer = null;
       this.lbReq = null;
       this.lookbackFailed(`no answer within ${LOOKBACK.timeoutMs / 1000} s`);
-      if (this.drain) this.drainPump();
+      if (this.drain) this.settlePump();
     }, LOOKBACK.timeoutMs);
     return true;
   }
@@ -633,10 +650,16 @@ export class SlowRunner {
     this.lbReq = null;
     this.lbCancelTimer?.();
     this.lbCancelTimer = null;
+    const settle = this.drain;
     try {
       if (msg.type === 'error') this.lookbackFailed(msg.message);
       else {
-        this.observeLookback(loop, msg, req.items);
+        if (settle) {
+          // The next request goes out first: the look-back worker reads and
+          // solves it while these frames are observed here.
+          if (!settle.stop && !settle.feed.done) this.settleRequest();
+          this.observeSettle(loop, msg, req.items);
+        } else this.observeLookback(loop, msg, req.items);
         // The buffer goes back to the look-back worker's pool (never detached here).
         this.lbPort?.postMessage({ type: 'release', session: this.session, frames: msg.frames }, [
           msg.frames.buffer as ArrayBuffer,
@@ -646,7 +669,7 @@ export class SlowRunner {
       this.fail(err);
       return;
     }
-    if (this.drain) this.drainPump();
+    if (this.drain) this.settlePump();
     else if (this.lookbackLive) this.lookbackRequest();
   }
 
@@ -686,109 +709,186 @@ export class SlowRunner {
       this.lbCancelTimer?.();
       this.lbCancelTimer = null;
     }
-    this.drainPump();
+    this.settlePump();
   }
 
-  /** Discover's last frame with look-back on: settle (see `drainPump`). */
+  /** Discover's last frame with look-back on: settle (see `settlePump`). */
   private startDrain(): void {
     const loop = this.loop!;
     loop.setEditScope?.('refine');
     this.scope = 'refine';
     // Review candidates would wait for every visit out; Discover is over.
     this.reviewed = [];
+    // A request of Discover's look-back still out is dropped (its late answer is ignored).
+    if (this.lbReq) {
+      this.lbReq = null;
+      this.lbCancelTimer?.();
+      this.lbCancelTimer = null;
+    }
+    // The frames Discover forwarded: the recording (stream index = file frame).
+    const recording = this.consumed;
+    const feed = new SettleFeed(settlePlan(recording));
     this.drain = {
-      phase: 'feed',
-      steps: 0,
-      inStep: false,
-      idle: false,
+      phase: 'sweep',
+      feed,
+      fed: 0,
+      recording,
+      nextCheck: SETTLE.checkEvery,
+      prev: null,
+      moving: null,
+      finalSteps: 0,
       stop: false,
       statusAt: this.now(),
     };
+    // The look-back worker solves with the library Discover ended with
+    // (qc_eval publishes it before the settle); the first checkpoint's reference.
+    this.drain.prev = this.checkpointLibrary(loop);
     this.status(0, 0);
-    this.drainPump();
+    this.settlePump();
   }
 
   /**
-   * Settling, one step at a time (qc_eval's `LookBack::drain`): with the
-   * cell set frozen (`refine` scope), each step adds `LOOKBACK.rate` frames
-   * of look-back budget and hands what it buys to the look-back worker,
-   * marks every tile due every `drainEvery` steps, and runs one round of
-   * slow work (a `step`, or a visit to each idle visit worker); every
-   * `drainEvery` steps the library is published. It stops when no cell
-   * needs frames or at `drainSteps`, then visits every tile once more
-   * (`settleSteps`) and publishes the final library. A step closes when its
-   * look-back answer and its visits are back (they call this again), and
-   * the next one starts as a later task, so a Stop or a reset gets in.
+   * Publish the slow loop's current library (`finalize`) and return its
+   * unit-peak footprints (a settle checkpoint).
    */
-  private drainPump(): void {
+  private checkpointLibrary(loop: SlowLoopLike): ReturnType<typeof unitFootprints> {
+    const lib = loop.finalize();
+    const fps = unitFootprints({
+      ids: lib.ids(),
+      starts: lib.supportStarts(),
+      pixels: lib.supportPixels(),
+      values: lib.footprintValues(),
+    });
+    this.publish(lib);
+    return fps;
+  }
+
+  /** A checkpoint: publish, and count the cells that moved more than `SETTLE.movingK` x their noise since the last. */
+  private settleCheckpoint(loop: SlowLoopLike, d: Settle): void {
+    const now = this.checkpointLibrary(loop);
+    const noise = loop.footprintNoise ? noiseMap(loop.footprintNoise()) : null;
+    if (d.prev && noise) {
+      const m = movedAgainstNoise(d.prev, now, noise, SETTLE.movingK);
+      d.moving = { cells: m.cells, above: m.aboveK };
+    }
+    d.prev = now;
+  }
+
+  /**
+   * Settling, event-driven (qc_eval's `LookBack::settle` with `--settle-batch
+   * 16`): the next `SETTLE.batch` frames of the plan go to the look-back
+   * worker; an answer is observed through the ordinary `observe` (the next
+   * request is already out), and then earns its visits (`step` at the summed
+   * budget here; with visit workers, the due tiles are handed out). A
+   * checkpoint every `SETTLE.checkEvery` frames publishes the library. When
+   * the plan is fed (or look-back fails), a last round of visits on every
+   * tile, then the final library. A Stop publishes the final library once
+   * the visits out are back.
+   */
+  private settlePump(): void {
     const d = this.drain;
     const loop = this.loop;
     const init = this.init;
     if (!d || !loop || !init) return;
-    if (this.lbReq || this.busy.some((b) => b)) return;
-    if (d.inStep) {
-      d.inStep = false;
-      if (this.parallel) this.housekeep();
-      d.steps++;
-      if (d.phase === 'feed') {
-        this.drainSteps = d.steps;
-        if (d.steps % LOOKBACK.drainEvery === 0) this.publish(loop.finalize());
-      }
-      if (this.now() - d.statusAt >= 250) {
-        d.statusAt = this.now();
-        this.status(0, 0);
-      }
-      if (d.phase === 'feed' && d.idle) this.settle(loop);
-    }
     if (d.stop) {
-      this.finishDrain();
+      if (!this.busy.some((b) => b)) this.finishDrain();
       return;
     }
-    if (d.phase === 'feed' && d.steps >= LOOKBACK.drainSteps) {
-      this.drainCapped = (loop.lookbackStats?.()[5] ?? 0) > 0;
-      this.settle(loop);
+    if (d.phase === 'sweep') {
+      const failed = this.lbError !== undefined || !this.lbPort;
+      if (!this.lbReq && !d.feed.done && !failed) this.settleRequest();
+      if (!this.lbReq && (d.feed.done || failed)) {
+        d.phase = 'final';
+        loop.markAllDue?.();
+        this.status(0, 0);
+      } else return;
     }
-    d.inStep = true;
-    if (d.phase === 'feed') {
-      loop.lookbackAddCredit!(LOOKBACK.rate);
-      const sent = this.lookbackRequest();
-      d.idle = !sent && (this.lbError !== undefined || !this.lbPort || loop.lookbackIdle === true);
-      if (d.steps % LOOKBACK.drainEvery === 0) loop.markAllDue!();
-      this.drainWork(loop, init.budget);
-    } else {
-      if (d.steps >= LOOKBACK.settleSteps) {
-        this.finishDrain();
-        return;
-      }
-      // With visit workers: done once no tile is due.
-      if (this.drainWork(loop, init.budget) === 0 && this.parallel) {
-        this.finishDrain();
-        return;
-      }
+    // The last round of visits.
+    if (this.busy.some((b) => b)) return;
+    if (this.parallel) {
+      this.housekeep();
+      if (this.dispatch() > 0) return;
+    } else if (d.finalSteps === 0) {
+      d.finalSteps++;
+      const lib = loop.step(init.budget * SETTLE.finalSteps);
+      if (lib) this.publish(lib);
     }
-    if (!this.lbReq && !this.busy.some((b) => b))
-      this.defer(() => {
-        if (this.drain === d) this.drainPump();
-      });
+    this.finishDrain();
   }
 
-  /** One round of slow work: a step here, or a visit to each idle visit worker (returns how many). */
-  private drainWork(loop: SlowLoopLike, budget: number): number {
-    if (this.parallel) return this.dispatch();
-    const lib = loop.step(budget);
-    if (lib) this.publish(lib);
-    return 1;
-  }
-
-  /** The last visits on every tile (qc_eval: `mark_all_due` and 256 steps). */
-  private settle(loop: SlowLoopLike): void {
+  /** The next settle frames to the look-back worker. */
+  private settleRequest(): void {
     const d = this.drain!;
-    d.phase = 'settle';
-    d.steps = 0;
-    loop.markAllDue!();
+    const port = this.lbPort!;
+    const frames = d.feed.take(SETTLE.batch);
+    if (frames.length === 0) return;
+    const flat = new Float64Array(3 * frames.length);
+    frames.forEach((f, i) => {
+      flat[3 * i] = f.frame;
+      flat[3 * i + 1] = f.block;
+    });
+    const items = frames.map((f) => ({ frame: f.frame, ids: new Float64Array(0) }));
+    const id = this.lbNextId++;
+    this.lbReq = { id, items };
+    port.postMessage({ type: 'request', session: this.session, id, items: flat }, [flat.buffer]);
+    this.lbCancelTimer = this.timer(() => {
+      if (this.lbReq?.id !== id) return;
+      this.lbCancelTimer = null;
+      this.lbReq = null;
+      this.lookbackFailed(`no answer within ${LOOKBACK.timeoutMs / 1000} s`);
+      this.settlePump();
+    }, LOOKBACK.timeoutMs);
+  }
+
+  /** A settle answer: every frame through `observe`, then the visits they earn. */
+  private observeSettle(
+    loop: SlowLoopLike,
+    msg: Extract<LookbackToSlow, { type: 'frames' }>,
+    items: LookbackItem[],
+  ): void {
+    const d = this.drain!;
+    const init = this.init!;
+    if (msg.count !== items.length)
+      throw new Error(`settle: ${msg.count} frames for a request of ${items.length}`);
+    const px = init.width * init.height;
+    const bg = msg.background;
+    const nb = bg && msg.count > 0 ? bg.length / msg.count : 0;
+    let n = 0;
+    // Version 0: the worker had no library yet, nothing was solved.
+    if (msg.version !== 0)
+      for (let i = 0; i < msg.count; i++) {
+        // The stream index is required with look-back on; nothing reads it after Discover.
+        const ok = loop.observe(
+          msg.frames.subarray(i * px, (i + 1) * px),
+          msg.version,
+          msg.traces.subarray(i * msg.cells, (i + 1) * msg.cells),
+          bg?.subarray(i * nb, (i + 1) * nb),
+          items[i].frame,
+        );
+        if (ok) n++;
+        else this.skipped++;
+      }
+    d.fed += msg.count;
+    if (this.parallel) {
+      this.housekeep();
+      this.dispatch();
+    } else if (n > 0) {
+      const lib = loop.step(init.budget * n);
+      if (lib) this.publish(lib);
+    }
+    if (d.fed >= d.nextCheck) {
+      d.nextCheck += SETTLE.checkEvery;
+      this.settleCheckpoint(loop, d);
+    }
+    if (this.now() - d.statusAt >= 250) {
+      d.statusAt = this.now();
+      this.status(0, 0);
+    }
   }
 
   private finishDrain(): void {
+    const d = this.drain;
+    if (d) this.settleStatus = this.settleView(d, true);
     this.drain = null;
     this.finish();
   }
@@ -812,7 +912,7 @@ export class SlowRunner {
   private end(): void {
     const loop = this.loop;
     if (!loop || this.final || this.ending || this.drain) return;
-    // A look-back Discover settles first (`drainPump`).
+    // A look-back Discover settles first (`settlePump`).
     if (this.lbOn && this.run === 1) {
       this.startDrain();
       return;
@@ -873,6 +973,17 @@ export class SlowRunner {
     }
   }
 
+  private settleView(d: Settle, done: boolean): SettleStatus {
+    return {
+      fed: d.fed,
+      total: d.feed.total,
+      recording: d.recording,
+      moving: d.moving,
+      stopped: d.stop,
+      done,
+    };
+  }
+
   private lookbackStatus(loop: SlowLoopLike): LookbackStatus {
     const s = loop.lookbackStats?.() ?? new Float64Array(0);
     return {
@@ -884,8 +995,13 @@ export class SlowRunner {
       inNeed: s[5] ?? 0,
       recordBytes: s[6] ?? 0,
       settling: this.drain !== null,
-      drainSteps: this.drainSteps,
-      capped: this.drainCapped,
+      drainSteps: 0,
+      capped: false,
+      ...(this.drain
+        ? { settle: this.settleView(this.drain, false) }
+        : this.settleStatus
+          ? { settle: this.settleStatus }
+          : {}),
       ...(this.lbError !== undefined ? { error: this.lbError } : {}),
     };
   }
@@ -928,6 +1044,12 @@ export class SlowRunner {
       status.cellStatus = view;
       transfer.push(view.ids.buffer as ArrayBuffer, view.established.buffer as ArrayBuffer);
     }
+    // With a run's final library: the cells' split-half noise (the Refine readout).
+    if (this.final && loop.footprintNoise) {
+      const noise = loop.footprintNoise();
+      status.footprintNoise = noise;
+      transfer.push(noise.buffer as ArrayBuffer);
+    }
     this.deps.toMain.postMessage({ type: 'status', session: this.session, status }, transfer);
   }
 
@@ -958,7 +1080,6 @@ export class SlowRunner {
     this.lbReq = null;
     this.lbError = undefined;
     this.drain = null;
-    this.drainSteps = 0;
-    this.drainCapped = false;
+    this.settleStatus = undefined;
   }
 }

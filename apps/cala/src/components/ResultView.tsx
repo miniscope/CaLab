@@ -84,8 +84,9 @@ export function resultFovSource(r: LoadedResult): FovSource {
 export function stageLine(r: StageRun): string {
   const name = r.stage === 'discover' ? STAGE_LABEL.discover : `${STAGE_LABEL[r.stage]} ${r.index}`;
   const parts = [`${r.frames.toLocaleString()} frames`, `${r.cells} cells`];
-  if (r.stage === 'refine' && r.footprintsRefined !== undefined)
-    parts.push(`${r.footprintsRefined} footprints refined`);
+  const m = r.movedAboveNoise;
+  if (r.stage === 'refine' && m && m.cells > 0)
+    parts.push(`${Math.round((100 * m.above1) / m.cells)}% changed more than their noise`);
   if (r.stage === 'discover' && r.adds !== undefined) parts.push(`${r.adds} adds`);
   return `${name}: ${r.outcome}, ${parts.join(', ')}`;
 }

@@ -178,6 +178,12 @@ export interface SlowStatus {
   cellStatus?: CellStatusView;
   /** Look-back counters (absent: look-back off). */
   lookback?: LookbackStatus;
+  /**
+   * With the final library of a run: each cell's split-half footprint noise,
+   * `[id, noise, ...]` (`SlowLoop.footprintNoise`; absent in older builds).
+   * The Refine readout compares footprint changes with it.
+   */
+  footprintNoise?: Float64Array;
 }
 
 /** A published library, flattened for drawing (unfiltered footprints). */

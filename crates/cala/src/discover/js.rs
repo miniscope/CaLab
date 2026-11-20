@@ -405,6 +405,25 @@ impl JsSlowLoop {
         Ok(fit)
     }
 
+    /// Split-half noise of every cell's footprint in the newest published
+    /// library (`SlowLoop::footprint_noise` on its filtered support):
+    /// `[id, noise, id, noise, ...]`, NaN where there is no estimate. The
+    /// noise is relative to the footprint's size, so it compares with a
+    /// relative footprint change (the settle's checkpoints and the Refine
+    /// readout: the share of cells that moved more than their own noise).
+    #[wasm_bindgen(js_name = footprintNoise)]
+    pub fn footprint_noise(&self) -> Vec<f64> {
+        let lib = self.libs.last().expect("version 0").clone();
+        let mut out = Vec::with_capacity(2 * lib.len());
+        for slot in 0..lib.len() {
+            let id = lib.ids()[slot];
+            let (pix, _) = lib.filtered(slot);
+            out.push(id as f64);
+            out.push(self.inner.footprint_noise(id, pix).unwrap_or(f64::NAN));
+        }
+        out
+    }
+
     /// Mark every tile due for a visit (the drain: visits turn the
     /// look-back statistics into footprints without new frames).
     #[wasm_bindgen(js_name = markAllDue)]

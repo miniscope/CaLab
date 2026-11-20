@@ -276,6 +276,7 @@ const App: Component = () => {
       merges: c?.merges ?? 0,
       deletes: c?.deletes ?? 0,
       splits: c?.splits ?? 0,
+      ...(slow?.lookback ? { lookback: true } : {}),
     };
     stageLog.end('discover', 'done', data);
     logStage('discover', `Discover done: ${data.cells} cells`);
