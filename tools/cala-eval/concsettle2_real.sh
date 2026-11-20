@@ -94,12 +94,12 @@ report)
     --md $ROOT/${P}_agreement.md > /dev/null 2> $ROOT/${P}_agreement.time
   grep "maximum resident" $ROOT/${P}_agreement.time
   R=()
-  for n in $ARMS; do
+  for n in $ARMS $SENS; do
     L=""
-    for s in "${SEEDS[@]}"; do L="$L,$ROOT/${P}_${n}_s$s"; done
-    R+=(--runs $n=${L#,})
+    for s in "${SEEDS[@]}"; do [ -f $ROOT/${P}_${n}_s$s.done ] && L="$L,$ROOT/${P}_${n}_s$s"; done
+    [ -n "$L" ] && R+=(--runs $n=${L#,})
   done
-  $MINISIM_PY tools/cala-eval/concsettle_checkpoints.py "${R[@]}" --md $ROOT/${P}_checkpoints.md > /dev/null
+  $MINISIM_PY tools/cala-eval/concsettle_checkpoints.py "${R[@]}" --end-suffix _settle0 --md $ROOT/${P}_checkpoints.md > /dev/null
   for n in $ARMS $SENS; do for s in "${SEEDS[@]}"; do
     [ -f $ROOT/${P}_${n}_s$s.log ] || continue
     echo "$n s$s: $(grep -h '^timed' $ROOT/${P}_${n}_s$s.log | tr '\n' ' ') | $(cat $ROOT/${P}_${n}_s$s/csettle.txt) | $(grep -h 'pass 1 done' $ROOT/${P}_${n}_s$s.log | cut -c1-80)"
