@@ -213,6 +213,18 @@
 //!                      (the ordinary visits do all the refining).
 //!                      `--csettle-quiet F`: no settle visit on a tile
 //!                      whose cell set changed in the last F frames.
+//!                      With `--offered-fps` and `--visit-workers K` > 0
+//!                      (modes `stats` and `frames`): every live frame the
+//!                      slow worker observes earns S / (1 - S) re-read
+//!                      frames; they are requested from the look-back
+//!                      worker 16 at a time, one request out at a time
+//!                      (`--lb-ms` per frame on that worker, after the
+//!                      need-driven look-back frames), the answer costs the
+//!                      slow worker the statistics update of its fitting
+//!                      frames (held-out frames are not solved), and the
+//!                      settle visits they earn run as jobs on visit
+//!                      workers that have no ordinary visit to run
+//!                      (`SlowLoop::take_settle_job`).
 //!   --offered-fps R    model the app's workers on a virtual clock instead
 //!                      (`Timed`): the fast loop reads R frames per second,
 //!                      batches of `--batch` frames are dropped when the
@@ -937,6 +949,11 @@ struct LookBack {
     cs_now: Option<bool>,
     cs_frames: u64,
     cs_wall_s: f64,
+    /// The settle with visit workers: a unit is a whole chunk of frames,
+    /// held-out frames are passed over before the solve (counted in
+    /// `cs_skipped`), and the settle visits are jobs.
+    cs_jobs: bool,
+    cs_skipped: u64,
     /// `--offered-fps`: the slow-loop index of each recording frame after
     /// warm-up (`u32::MAX`: dropped or not forwarded yet). Empty: every
     /// frame is forwarded in order.
@@ -1044,6 +1061,8 @@ impl LookBack {
             cs_now: None,
             cs_frames: 0,
             cs_wall_s: 0.0,
+            cs_jobs: false,
+            cs_skipped: 0,
             slow_of: Vec::new(),
         }
     }
@@ -1069,6 +1088,47 @@ impl LookBack {
         let mode = self.cs.as_ref()?.mode;
         let t0 = Instant::now();
         let w0 = sl.work();
+        if self.cs_jobs {
+            // One answer of the look-back worker: a chunk of frames to the
+            // statistics; the visits they earn go out as jobs.
+            let chunk = self.cs.as_ref()?.chunk;
+            let mut n = 0u64;
+            for _ in 0..chunk {
+                let Some((f, new)) = self.cs_sched.next_frame(seen.saturating_sub(start)) else {
+                    break;
+                };
+                let mut pre = match self.cs_pre.take() {
+                    Some(p) if !new => p,
+                    _ => pipe.pre.clone(),
+                };
+                self.cs_now = Some(false);
+                self.frame(
+                    f + start,
+                    &mut pre,
+                    None,
+                    start,
+                    rec,
+                    drift,
+                    pipe,
+                    live,
+                    sl,
+                    n_px,
+                    10,
+                );
+                self.cs_now = None;
+                self.cs_pre = Some(pre);
+                self.cs_frames += 1;
+                n += 1;
+            }
+            self.cs_wall_s += t0.elapsed().as_secs_f64();
+            if n == 0 {
+                return None;
+            }
+            if mode != CsMode::Frames {
+                sl.settle_credit(budget * n, budget * 64);
+            }
+            return Some(sl.work() - w0);
+        }
         if mode != CsMode::Visits {
             let (f, new) = self.cs_sched.next_frame(seen.saturating_sub(start))?;
             let mut pre = match self.cs_pre.take() {
@@ -1526,7 +1586,9 @@ impl LookBack {
         };
         // Precision mode: a held-out frame is still preprocessed (the block's
         // preprocessor copy runs forward) but not solved.
-        let skip = self.target > 0.0 && sl.is_test(idx);
+        let cs_skip = self.cs_jobs && self.cs_now.is_some() && sl.is_test(idx);
+        self.cs_skipped += u64::from(cs_skip);
+        let skip = cs_skip || self.target > 0.0 && sl.is_test(idx);
         let o = (f - self.raw_start) * n_px;
         let raw = &self.raw[o..o + n_px];
         pre.front(raw, &mut self.buf).unwrap();
@@ -3154,6 +3216,9 @@ enum Msg {
     Result(Box<VisitResult>, usize),
     /// Owner time (ms) for look-back frames it was handed (`--csettle`).
     Charge(f64),
+    /// The look-back worker's answer to a settle request (`--csettle` with
+    /// visit workers): a chunk of re-read frames.
+    Settle,
 }
 
 /// The app's slow-loop workers on a virtual clock (`--offered-fps`).
@@ -3215,6 +3280,20 @@ struct Timed {
     pub cs_busy: f64,
     pub cs_units: u64,
     pub lb_busy: f64,
+    /// `--csettle` with visit workers: re-read frames earned per observed
+    /// live frame (0: off) and the frames per request; the frames owed; a
+    /// request is out; when the look-back worker is free, and its busy
+    /// time; settle requests and settle jobs; the longest wait of a batch
+    /// for the owner.
+    pub cs_rate: f64,
+    pub cs_chunk: usize,
+    cs_owed: f64,
+    lb_out: bool,
+    lb_free: f64,
+    pub lb_worker_busy: f64,
+    pub cs_reqs: u64,
+    pub cs_jobs: u64,
+    pub max_wait: f64,
 }
 
 impl Timed {
@@ -3259,6 +3338,15 @@ impl Timed {
             cs_busy: 0.0,
             cs_units: 0,
             lb_busy: 0.0,
+            cs_rate: 0.0,
+            cs_chunk: 16,
+            cs_owed: 0.0,
+            lb_out: false,
+            lb_free: 0.0,
+            lb_worker_busy: 0.0,
+            cs_reqs: 0,
+            cs_jobs: 0,
+            max_wait: 0.0,
         }
     }
 
@@ -3313,6 +3401,14 @@ impl Timed {
         self.push(now, Msg::Charge(units as f64 / self.units_per_ms));
     }
 
+    /// The look-back worker re-read `n` need-driven frames from `now`:
+    /// they come before the settle's requests on that worker.
+    fn lb_note(&mut self, now: f64, n: u64) {
+        let dur = n as f64 * self.lb_ms;
+        self.lb_free = self.lb_free.max(now) + dur;
+        self.lb_worker_busy += dur;
+    }
+
     /// Wall time (ms) at which frame `t` has been read.
     fn at(&self, t: usize) -> f64 {
         t as f64 * 1e3 / self.fps
@@ -3364,8 +3460,22 @@ impl Timed {
             let mut extra = 0.0;
             let mut lib = None;
             let is_batch = matches!(msg, Msg::Batch(_));
+            let is_settle = matches!(msg, Msg::Settle);
+            if is_batch {
+                self.max_wait = self.max_wait.max(start - arr);
+            }
             match msg {
+                Msg::Settle => {
+                    // One message, as `SlowRunner.handleLookback`: every
+                    // frame of the answer before anything else.
+                    self.lb_out = false;
+                    if unit(sl).is_some() {
+                        self.cs_units += self.cs_chunk as u64;
+                    }
+                }
                 Msg::Batch((frames, noise)) => {
+                    self.cs_owed = (self.cs_owed + frames.len() as f64 * self.cs_rate)
+                        .min(4.0 * self.cs_chunk as f64);
                     if let Some(n) = noise {
                         sl.set_noise(n.clone()).unwrap();
                         for (r, ..) in &mut self.runners {
@@ -3422,8 +3532,16 @@ impl Timed {
                     if self.ending || self.runners[i].2 >= self.depth {
                         continue;
                     }
-                    let Some(job) = sl.take_job() else {
-                        break 'hand;
+                    let job = match sl.take_job() {
+                        Some(j) => j,
+                        // No ordinary visit to run: a settle visit.
+                        None => match (self.cs_rate > 0.0).then(|| sl.take_settle_job()) {
+                            Some(Some(j)) => {
+                                self.cs_jobs += 1;
+                                j
+                            }
+                            _ => break 'hand,
+                        },
                     };
                     end += 0.5 * self.job_ms;
                     let res = self.runners[i].0.run(job).unwrap();
@@ -3435,6 +3553,25 @@ impl Timed {
                     self.runners[i].2 += 1;
                     self.push(done, Msg::Result(Box::new(res), i));
                 }
+            }
+            // The next settle request, with none out (the look-back
+            // worker reads and solves it while the owner goes on).
+            if self.cs_rate > 0.0
+                && !self.lb_out
+                && !self.ending
+                && self.cs_owed >= self.cs_chunk as f64
+            {
+                self.cs_owed -= self.cs_chunk as f64;
+                let dur = self.cs_chunk as f64 * self.lb_ms;
+                self.lb_free = self.lb_free.max(end) + dur;
+                self.lb_worker_busy += dur;
+                self.lb_out = true;
+                self.cs_reqs += 1;
+                let at = self.lb_free;
+                self.push(at, Msg::Settle);
+            }
+            if is_settle {
+                self.cs_busy += end - start;
             }
             self.owner_busy += end - start;
             self.owner_free = end;
@@ -4291,6 +4428,8 @@ impl Branching {
             "--branch-after needs --branch NAME:FLAGS"
         );
         // State the children would share on disk or in a global.
+        // (`--visit-workers`: only with `--csettle`, which has the slow
+        // worker finish every visit out before the branch point.)
         for f in [
             "--churn-log",
             "--merge-log",
@@ -4298,7 +4437,8 @@ impl Branching {
             "--visit-workers",
         ] {
             assert!(
-                !args.iter().any(|a| a == f),
+                !args.iter().any(|a| a == f)
+                    || f == "--visit-workers" && args.iter().any(|a| a == "--csettle"),
                 "{f} cannot be combined with --branch-after"
             );
         }
@@ -5346,8 +5486,21 @@ fn main() {
                                 depth,
                             ));
                             if let (Some(c), Some(tm)) = (&cs_cfg, timed.as_mut()) {
-                                assert!(visit_workers == 0, "--csettle needs --visit-workers 0");
-                                tm.cs_share = c.share;
+                                if visit_workers > 0 {
+                                    assert!(
+                                        c.share == 0.0
+                                            || matches!(c.mode, CsMode::Stats | CsMode::Frames),
+                                        "--csettle with --visit-workers needs --csettle-mode stats or frames"
+                                    );
+                                    assert!(c.share < 1.0, "--csettle with --visit-workers: S < 1");
+                                    tm.cs_rate = c.share / (1.0 - c.share);
+                                    tm.cs_chunk = c.chunk;
+                                    if let Some(l) = lookback.as_mut() {
+                                        l.cs_jobs = c.share > 0.0;
+                                    }
+                                } else {
+                                    tm.cs_share = c.share;
+                                }
                                 tm.lb_ms = lb_ms;
                                 tm.cs_guard = arg_value(&args, "--csettle-guard")
                                     .map_or(0.0, |s| s.parse().unwrap());
@@ -5553,6 +5706,7 @@ fn main() {
                     // combination ran no look-back at all), and the owner
                     // is charged the frames' slow-loop work.
                     let w0 = sl.work();
+                    let lb0 = lbk.frames;
                     if timed.is_none() || lbk.cs.is_some() {
                         lbk.after_frame(
                             t_rec,
@@ -5569,6 +5723,7 @@ fn main() {
                     match timed.as_mut() {
                         Some(tm) => {
                             let now = tm.at(t + 1);
+                            tm.lb_note(now, lbk.frames - lb0);
                             tm.charge(now, sl.work() - w0);
                         }
                         None => lbk.cs_after_frame(
@@ -6016,7 +6171,28 @@ fn main() {
             tm.last_ms / 1e3,
             sl.frames() as f64 / (wall / 1e3),
         );
-        let msg = if tm.cs_share > 0.0 {
+        let msg = if tm.cs_rate > 0.0
+            || (tm.cs_share == 0.0
+                && !tm.runners.is_empty()
+                && lookback.as_ref().is_some_and(|l| l.cs.is_some()))
+        {
+            let st = sl.settle_stats();
+            format!(
+                "{}timed settle jobs: {} frames re-read in {} requests ({:.2} per forwarded frame; {} fit, {} held out and not solved), {} settle jobs; owner busy {:.1}% on settle answers and {:.1}% on look-back frames, idle {:.1}%; look-back worker busy {:.1}%; longest batch wait {:.1} ms\n",
+                msg,
+                tm.cs_units,
+                tm.cs_reqs,
+                tm.cs_units as f64 / tm.forwarded.max(1) as f64,
+                st.frames_fit,
+                lookback.as_ref().map_or(0, |l| l.cs_skipped),
+                tm.cs_jobs,
+                100.0 * tm.cs_busy / wall,
+                100.0 * tm.lb_busy / wall,
+                100.0 * (1.0 - tm.owner_busy / wall),
+                100.0 * tm.lb_worker_busy / wall,
+                tm.max_wait,
+            )
+        } else if tm.cs_share > 0.0 {
             format!(
                 "{}timed settle: {} units, owner busy {:.1}% on the settle and {:.1}% on look-back frames, idle {:.1}%\n",
                 msg,

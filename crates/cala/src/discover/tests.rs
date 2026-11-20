@@ -3437,3 +3437,90 @@ fn settle_sched_spreads_chunks_over_the_history() {
     }
     assert!((99..=101).contains(&owed), "{owed}");
 }
+
+/// A settle visit run as a job on a visit worker (through the byte
+/// encoding both ways) does what the owner's own settle visit does: the
+/// same footprints, the same counters, and the tiles' ordinary visit
+/// state untouched. An ordinary job's bytes carry no settle flag.
+#[test]
+fn settle_jobs_equal_settle_visits() {
+    let t = 240;
+    let mut rng = Lcg(11);
+    let cells = vec![
+        (blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0)),
+        (blob(1, 34.0, 36.0), trace(&mut rng, t, 0.05, 6.0)),
+    ];
+    let m = movie(&cells, t, 3);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let n_px = N * N;
+    let make = || {
+        let (mut slow, mut eng) = start(config(), &seed);
+        slow.enable_settle(0);
+        let lib = eng.library().clone();
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let tr = eng.process(f).unwrap();
+            slow.observe(f, &lib, &tr).unwrap();
+        }
+        // No ordinary visit is due (they come first at hand-out).
+        for tile in &mut slow.tiles {
+            tile.fresh = 0;
+        }
+        slow
+    };
+    let (mut a, mut b) = (make(), make());
+    let mut runner = VisitRunner::new(
+        SlowLoop::new(
+            dims(),
+            vec![1; n_px],
+            vec![1.0; n_px],
+            flattener(),
+            config(),
+        )
+        .unwrap(),
+    );
+    a.step_settle(u64::MAX / 4).unwrap();
+    assert!(b.take_settle_job().is_none(), "a settle job without credit");
+    b.settle_credit(u64::MAX / 4, u64::MAX / 4);
+    let visits = b.tile_visits.clone();
+    let probes: Vec<usize> = b.tiles.iter().map(|t| t.probes.len()).collect();
+    let mut n = 0;
+    while let Some(job) = b.take_settle_job() {
+        assert_eq!(b.jobs_in_flight(), 1);
+        assert!(job.is_settle());
+        let job = VisitJob::from_bytes(&job.to_bytes()).unwrap();
+        assert!(job.is_settle());
+        let res = runner.run(job).unwrap();
+        let res = VisitResult::from_bytes(&res.to_bytes()).unwrap();
+        b.apply_job(res).unwrap();
+        n += 1;
+    }
+    assert!(n > 0, "no settle job was handed out");
+    let (sa, sb) = (a.settle_stats(), b.settle_stats());
+    assert_eq!((sa.visits, sa.refines), (sb.visits, sb.refines));
+    assert_eq!(sb.visits, n);
+    assert_eq!(a.stats().refines, b.stats().refines);
+    assert_eq!(a.stats().visits, b.stats().visits);
+    assert_eq!(b.tile_visits, visits);
+    assert_eq!(
+        b.tiles.iter().map(|t| t.probes.len()).collect::<Vec<_>>(),
+        probes
+    );
+    let (la, lb) = (a.finalize().unwrap(), b.finalize().unwrap());
+    assert!(la.to_bytes()[16..] == lb.to_bytes()[16..]);
+    // The quiet period holds a settle job back as it holds a settle visit.
+    let due = b.cfg.visit_after_slots;
+    b.enable_settle(1000);
+    for ti in 0..b.tiles.len() {
+        b.cs_fresh[ti] = due;
+        b.cs_struct[ti] = b.frames;
+    }
+    assert!(b.take_settle_job().is_none());
+    assert!(b.settle_stats().quiet_skips > 0);
+    // An ordinary job is not a settle job after the round trip.
+    b.enable_settle(0);
+    b.tiles[0].fresh = due;
+    let job = b.take_job().unwrap();
+    assert!(!job.is_settle());
+    assert!(!VisitJob::from_bytes(&job.to_bytes()).unwrap().is_settle());
+}

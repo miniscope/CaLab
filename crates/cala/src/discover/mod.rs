@@ -2106,6 +2106,16 @@ impl SlowLoop {
         self.cs_quiet = quiet_frames;
     }
 
+    /// Concurrent settle with visit workers: the settle visits handed out
+    /// by [`SlowLoop::take_settle_job`] may spend `units` more work (at
+    /// most `cap` saved up).
+    pub fn settle_credit(&mut self, units: u64, cap: u64) {
+        self.cs_credit = self
+            .cs_credit
+            .saturating_add(units as i64)
+            .min(cap.min(i64::MAX as u64) as i64);
+    }
+
     /// Counters of the concurrent settle.
     pub fn settle_stats(&self) -> SettleStats {
         self.cs_stats

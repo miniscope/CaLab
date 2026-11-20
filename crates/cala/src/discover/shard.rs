@@ -86,6 +86,9 @@ pub(crate) enum Op {
     ChurnSplit(u64),
 }
 
+/// The settle flag of a job on the wire (in the scope byte).
+const SETTLE_BIT: u8 = 0x80;
+
 /// A visit handed out and not yet applied.
 #[derive(Debug, Clone)]
 pub(crate) struct InFlight {
@@ -94,6 +97,8 @@ pub(crate) struct InFlight {
     pub zone: Rect,
     /// Cells copied into the job (not deleted while it is out).
     pub ids: Vec<u64>,
+    /// A settle visit ([`SlowLoop::take_settle_job`]).
+    pub settle: bool,
 }
 
 /// A tile visit to run elsewhere ([`VisitRunner::run`]).
@@ -111,6 +116,10 @@ pub struct VisitJob {
     cfg_fp: u64,
     /// The owner's edit scope when the job was made.
     scope: EditScope,
+    /// A settle visit ([`SlowLoop::take_settle_job`]): it refines whatever
+    /// its visit number. On the wire it is the top bit of the scope byte,
+    /// so the bytes of an ordinary job are unchanged.
+    settle: bool,
     tile: Tile,
     /// Rejected spots and tombstones of the other tiles the zone reaches.
     others: Vec<(usize, Vec<(f32, f32, u64, u32)>, Vec<(f32, f32, u64, u32)>)>,
@@ -159,6 +168,11 @@ impl VisitJob {
         self.encode(&self.tile, &SharedFrames::new(self.tile.rect))
     }
 
+    /// A settle visit ([`SlowLoop::take_settle_job`]).
+    pub fn is_settle(&self) -> bool {
+        self.settle
+    }
+
     /// The bytes, with the reservoir slots taken from `slots` (random
     /// slots without a patch of their own from `shared`).
     fn encode(&self, slots: &Tile, shared: &SharedFrames) -> Vec<u8> {
@@ -176,7 +190,7 @@ impl VisitJob {
         w.u64(self.id_base);
         w.u64(self.noise_gen);
         w.u64(self.cfg_fp);
-        w.u8(self.scope.code());
+        w.u8(self.scope.code() | if self.settle { SETTLE_BIT } else { 0 });
         w.tile(&self.tile, slots, shared);
         w.usize(self.others.len());
         for (ti, rej, tombs) in &self.others {
@@ -234,7 +248,9 @@ impl VisitJob {
         let id_base = r.u64()?;
         let noise_gen = r.u64()?;
         let cfg_fp = r.u64()?;
-        let scope = EditScope::from_code(r.u8()?)?;
+        let scope_byte = r.u8()?;
+        let settle = scope_byte & SETTLE_BIT != 0;
+        let scope = EditScope::from_code(scope_byte & !SETTLE_BIT)?;
         let tile = r.tile()?;
         let n = r.count(24)?;
         let others = (0..n)
@@ -273,6 +289,7 @@ impl VisitJob {
             noise_gen,
             cfg_fp,
             scope,
+            settle,
             tile,
             others,
             cells,
@@ -622,8 +639,69 @@ impl SlowLoop {
     /// only with `slots`.
     fn make_job(&mut self, ti: usize, slots: bool) -> VisitJob {
         self.visit_begin(ti);
+        self.build_job(ti, slots, false)
+    }
+
+    /// Concurrent settle: hand out a settle visit (refinement only, as
+    /// [`SlowLoop::step_settle`] runs it on the owner) for a visit worker,
+    /// or `None`. A tile qualifies when it has a visit's worth of new
+    /// reservoir slots since its last settle visit, its cell set has been
+    /// stable for the quiet period, the settle has credit
+    /// ([`SlowLoop::settle_credit`]), and its zone overlaps no job in
+    /// flight. Ordinary visits come first: a tile that is itself due for
+    /// one, or whose zone reaches a tile that is, is passed over (call
+    /// this only after [`SlowLoop::take_job`] returned `None`). The tile's
+    /// ordinary visit state (due counter, visit number, probes) stays as
+    /// it is. Apply the result with [`SlowLoop::apply_job`].
+    pub fn take_settle_job(&mut self) -> Option<VisitJob> {
+        if self.cs_fresh.is_empty() || self.cs_credit <= 0 {
+            return None;
+        }
+        let due = self.cfg.visit_after_slots;
+        let now = self.frames;
+        let mut quiet = false;
+        let mut order: Vec<(usize, u32)> = Vec::new();
+        for ti in 0..self.tiles.len() {
+            let f = self.cs_fresh[ti];
+            if f < due || self.tiles[ti].fresh >= due || self.inflight.iter().any(|j| j.ti == ti) {
+                continue;
+            }
+            if self.cs_quiet > 0
+                && self.cs_struct[ti] > 0
+                && self.cs_struct[ti] + self.cs_quiet > now
+            {
+                quiet = true;
+                continue;
+            }
+            order.push((ti, f));
+        }
+        order.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let pick = order.into_iter().map(|(ti, _)| ti).find(|&ti| {
+            let (_, z) = self.zone(ti);
+            !self.inflight.iter().any(|f| f.zone.intersects(&z))
+                && !self
+                    .tiles
+                    .iter()
+                    .any(|t| t.fresh >= due && t.rect.intersects(&z))
+        });
+        let Some(ti) = pick else {
+            self.cs_stats.quiet_skips += u64::from(quiet);
+            return None;
+        };
+        self.cs_fresh[ti] = 0;
+        Some(self.build_job(ti, true, true))
+    }
+
+    /// The job for tile `ti` (see [`SlowLoop::make_job`]); `settle`: a
+    /// settle visit, which leaves the tile's probes with the owner (only
+    /// keep tests read them) and always carries the cluster stores.
+    fn build_job(&mut self, ti: usize, slots: bool, settle: bool) -> VisitJob {
         let (idx, zone) = self.zone(ti);
-        let probes = std::mem::take(&mut self.tiles[ti].probes);
+        let probes = if settle {
+            Default::default()
+        } else {
+            std::mem::take(&mut self.tiles[ti].probes)
+        };
         let t = &self.tiles[ti];
         let mut tile = Tile::new(t.core, t.rect);
         if slots {
@@ -659,14 +737,20 @@ impl SlowLoop {
             .filter_map(|id| self.fpstats.get(id).map(|s| (*id, s.clone())))
             .collect();
         // (Only a refining visit reads the clusters.)
-        let clusters = if self.refines_on(self.tile_visits[ti]) {
+        let clusters = if settle || self.refines_on(self.tile_visits[ti]) {
             self.job_clusters_counted(ti, &ids)
         } else {
             Vec::new()
         };
         self.job_seq += 1;
         let seq = self.job_seq;
-        self.inflight.push(InFlight { seq, ti, zone, ids });
+        self.inflight.push(InFlight {
+            seq,
+            ti,
+            zone,
+            ids,
+            settle,
+        });
         VisitJob {
             seq,
             ti,
@@ -676,7 +760,12 @@ impl SlowLoop {
             id_base: self.next_id,
             noise_gen: self.noise_gen,
             cfg_fp: self.cfg.visit_fingerprint(),
-            scope: self.scope,
+            scope: if settle {
+                EditScope::Refine
+            } else {
+                self.scope
+            },
+            settle,
             tile,
             others,
             cells,
@@ -701,6 +790,20 @@ impl SlowLoop {
         let own = self.inflight.swap_remove(k);
         if own.ti != r.ti {
             return Err(TraceError::Incompatible("visit result tile".into()));
+        }
+        if own.settle {
+            // A settle visit: counted on the settle's side and paid from
+            // its credit.
+            self.cs_stats.visits += 1;
+            self.cs_stats.refines += r.stats.refines;
+            self.cs_stats.work += r.work;
+            self.cs_credit = self.cs_credit.saturating_sub(r.work.max(1) as i64);
+        } else if !self.cs_struct.is_empty() {
+            // The quiet period's clock, as `visit` keeps it on the owner.
+            let s = &r.stats;
+            if s.adds + s.merges + s.splits + s.absorbs + s.deletes > 0 {
+                self.cs_struct[r.ti] = self.frames.max(1);
+            }
         }
         let base = r.id_base;
         let next = self.next_id;
@@ -983,6 +1086,7 @@ impl VisitRunner {
         s.tile_visits[ti] = job.visits;
         s.frames = job.frames;
         s.scope = job.scope;
+        s.cs_visiting = job.settle;
         s.rho = job.rho;
         s.next_id = job.id_base;
         s.cells = job.cells;
@@ -1007,6 +1111,7 @@ impl VisitRunner {
             .filter(|&w| s.tiles[ti].slot(w).proj.is_none())
             .collect();
         let out = s.visit_body(ti);
+        s.cs_visiting = false;
         // The tile's background basis is a pure function of its rectangle
         // (rebuilt by the next visit that needs it). Kept, every runner would
         // end up holding the bases of all tiles (about 40 MB at 600 x 600)
