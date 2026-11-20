@@ -3444,14 +3444,15 @@ fn settle_sched_spreads_chunks_over_the_history() {
 /// state untouched. An ordinary job's bytes carry no settle flag.
 #[test]
 fn settle_jobs_equal_settle_visits() {
-    let t = 240;
+    let t = 600;
     let mut rng = Lcg(11);
     let cells = vec![
         (blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0)),
         (blob(1, 34.0, 36.0), trace(&mut rng, t, 0.05, 6.0)),
     ];
     let m = movie(&cells, t, 3);
-    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    // Seeded too narrow, so the settle visits have something to refine.
+    let seed = vec![blob_w(0, 30.0, 30.0, 1.6), blob_w(1, 34.0, 36.0, 1.6)];
     let n_px = N * N;
     let make = || {
         let (mut slow, mut eng) = start(config(), &seed);
@@ -3498,6 +3499,7 @@ fn settle_jobs_equal_settle_visits() {
     assert!(n > 0, "no settle job was handed out");
     let (sa, sb) = (a.settle_stats(), b.settle_stats());
     assert_eq!((sa.visits, sa.refines), (sb.visits, sb.refines));
+    assert!(sb.refines > 0, "no settle job refined a footprint");
     assert_eq!(sb.visits, n);
     assert_eq!(a.stats().refines, b.stats().refines);
     assert_eq!(a.stats().visits, b.stats().visits);
