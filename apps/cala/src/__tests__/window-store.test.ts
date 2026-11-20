@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { OpfsWriterClient } from '../lib/opfs-writer.ts';
-import { isPinned, opfsStore, pinned } from '../lib/window-store.ts';
+import { isPinned, openFactorReader, opfsStore, pinned } from '../lib/window-store.ts';
 
 /** A promise settled from outside. */
 function deferred<T>(): { promise: Promise<T>; resolve(v: T): void; reject(e: unknown): void } {
@@ -190,5 +190,103 @@ describe("the trace files' sweep", () => {
     await client.sweep(['cala-pass2-a.bin']);
     expect(sent[0].op).toBe('sweep');
     expect(sent[0].keep).toEqual(expect.arrayContaining(['cala-pass2-a.bin', 'cala-compress']));
+  });
+});
+
+describe('openFactorReader (a reader that does not own the folder)', () => {
+  /** An OPFS root with `cala-compress/run-a` holding `files`; every call is recorded. */
+  function fakeRoot(files: Record<string, Uint8Array>, calls: string[]) {
+    const closed: string[] = [];
+    const opening = new Set<object>();
+    const run = {
+      getFileHandle: async (name: string, o?: { create?: boolean }) => {
+        calls.push(`file ${name}${o?.create ? ' create' : ''}`);
+        const data = files[name];
+        if (!data) throw new Error(`${name} not found`);
+        const file = {
+          createSyncAccessHandle: async () => {
+            opening.add(file);
+            await tick();
+            return {
+              write: () => 0,
+              read: (into: Uint8Array, { at }: { at: number }) => {
+                const part = data.subarray(at, at + into.length);
+                into.set(part);
+                return part.length;
+              },
+              getSize: () => data.length,
+              flush: () => {},
+              close: () => closed.push(name),
+            };
+          },
+        };
+        return file;
+      },
+      removeEntry: async (name: string) => void calls.push(`remove ${name}`),
+      keys: async function* () {
+        calls.push('keys');
+        yield* Object.keys(files);
+      },
+    };
+    const root = {
+      getDirectoryHandle: async (name: string, o?: { create?: boolean }) => {
+        calls.push(`dir ${name}${o?.create ? ' create' : ''}`);
+        if (name !== 'run-a') throw new Error(`${name} not found`);
+        return run;
+      },
+      removeEntry: async (name: string) => void calls.push(`remove ${name}`),
+      keys: async function* () {
+        calls.push('keys');
+        yield 'run-a';
+      },
+    };
+    const top = {
+      getDirectoryHandle: async (name: string, o?: { create?: boolean }) => {
+        calls.push(`root ${name}${o?.create ? ' create' : ''}`);
+        return root;
+      },
+    };
+    return { top: async () => top, closed, opening };
+  }
+
+  it('reads whole factor files from the folder, never creating, listing or removing anything', async () => {
+    const calls: string[] = [];
+    const f = fakeRoot({ 'f0.bin': Uint8Array.of(1, 2, 3), 'f1.bin': Uint8Array.of(4, 5) }, calls);
+    const reader = await openFactorReader('run-a', ['f0.bin', 'f1.bin'], f.top);
+    expect(reader.windows).toBe(2);
+    expect([...reader.read(1)]).toEqual([4, 5]);
+    expect([...reader.read(0)]).toEqual([1, 2, 3]);
+    expect(() => reader.read(2)).toThrow('No factor window 2.');
+    reader.close();
+    reader.close();
+    expect(f.closed).toEqual(['f0.bin', 'f1.bin']);
+    expect(() => reader.read(0)).toThrow('No factor window 0.');
+    expect(calls).toEqual(['root cala-compress', 'dir run-a', 'file f0.bin', 'file f1.bin']);
+  });
+
+  it('keeps each file handle referenced while its access handle opens', async () => {
+    const calls: string[] = [];
+    const f = fakeRoot({ 'f0.bin': Uint8Array.of(1) }, calls);
+    const opened = openFactorReader('run-a', ['f0.bin'], f.top);
+    for (let i = 0; i < 10 && f.opening.size === 0; i++) await tick();
+    const [file] = [...f.opening];
+    expect(isPinned(file)).toBe(true);
+    (await opened).close();
+    expect(isPinned(file)).toBe(false);
+  });
+
+  it('closes what it opened when a file or the folder is missing, and says so', async () => {
+    const calls: string[] = [];
+    const f = fakeRoot({ 'f0.bin': Uint8Array.of(1) }, calls);
+    await expect(openFactorReader('run-a', ['f0.bin', 'f1.bin'], f.top)).rejects.toThrow(
+      /^The factor files of this run cannot be opened: f1.bin not found/,
+    );
+    expect(f.closed).toEqual(['f0.bin']);
+    await expect(openFactorReader('run-gone', ['f0.bin'], f.top)).rejects.toThrow(
+      /^The factor files of this run cannot be opened: run-gone not found/,
+    );
+    expect(calls.some((c) => c.includes('create') || c.startsWith('remove') || c === 'keys')).toBe(
+      false,
+    );
   });
 });

@@ -218,6 +218,75 @@ describe('pipeline store backpressure', () => {
     });
   });
 
+  it('waits for the hook before it starts the workers, and drops a start replaced meanwhile', async () => {
+    const { client } = manualClient();
+    await createRoot(async (dispose) => {
+      let release = () => {};
+      const hooks = {
+        beforeStart: vi.fn(() => new Promise<void>((r) => (release = r))),
+      };
+      const args = [
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {},
+        undefined,
+        undefined,
+        undefined,
+      ] as const;
+      const store = createPipelineStore(client, {}, ...args, hooks);
+      const first = store.start();
+      await flush();
+      expect(store.status()).toBe('starting');
+      expect(client.startPipeline).not.toHaveBeenCalled();
+      release();
+      await first;
+      expect(client.startPipeline).toHaveBeenCalledTimes(1);
+      // Stopped while it waits: that start never reaches the workers.
+      const second = store.start();
+      await flush();
+      store.stop();
+      release();
+      await second;
+      expect(client.startPipeline).toHaveBeenCalledTimes(1);
+      expect(hooks.beforeStart).toHaveBeenCalledTimes(2);
+      dispose();
+    });
+  });
+
+  it("compresses a live stream's Discover on the tiles it is given, a file's on plain tiles", async () => {
+    const { client } = manualClient();
+    await createRoot(async (dispose) => {
+      let live = true;
+      const flat = {
+        identity: () => ({ width: 4, height: 4, folder: 'x', ...(live ? { live: true } : {}) }),
+      };
+      const args = [
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        flat,
+        undefined,
+        { reset() {} },
+        undefined,
+      ] as const;
+      const store = createPipelineStore(client, {}, ...args, { liveTiling: 'offset' });
+      await store.start();
+      expect((client.startPipeline.mock.calls[0] as unknown[])[1]).toMatchObject({
+        compress: true,
+        compressTiling: 'offset',
+      });
+      live = false;
+      await store.start();
+      const file = (client.startPipeline.mock.calls[1] as unknown[])[1] as object;
+      expect(file).toMatchObject({ compress: true });
+      expect('compressTiling' in file).toBe(false);
+      dispose();
+    });
+  });
+
   it('offers the look-back toggle when the feed says nothing blocks it', () => {
     const { client } = manualClient();
     createRoot((dispose) => {

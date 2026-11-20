@@ -3,7 +3,12 @@ import { MetricTile, ProgressBar, SegmentedControl, type ProgressState } from '@
 import { formatClock, formatElapsed, windowPresets } from '@calab/ui/chart';
 import type { ByteSink } from '@calab/io';
 import type { CellStore } from '../lib/cell-store.ts';
-import { compressReadout, extractSourceText, type CompressStore } from '../lib/compress-store.ts';
+import {
+  compressReadout,
+  extractSourceText,
+  LIVE_EXTRACT_READY,
+  type CompressStore,
+} from '../lib/compress-store.ts';
 import { lowValidCells, lowValidText } from '../lib/factor-extract.ts';
 import { reviewReadout, type ReviewStore } from '../lib/review-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
@@ -12,6 +17,10 @@ import type { Pass2Result, Pass2Store } from '../lib/pass2-store.ts';
 import type { RefineStore } from '../lib/refine-store.ts';
 import {
   EXTRACT_AFTER_DISCOVER_DEFAULT,
+  factorRefineDoneText,
+  factorRefineRunningText,
+  LIVE_EXTRACT_NOTE,
+  LIVE_FACTORS_NOTE,
   LIVE_NOTE,
   NEXT_STEP_HINT,
   refineComparison,
@@ -110,6 +119,10 @@ export interface RunPanelProps {
   cells: CellStore;
   /** A live source: Discover only (no file to replay); the stop button ends the stream and the export takes the live traces. */
   live?: boolean;
+  /** `?refine=factors` with compression on: Refine reads the factors (a live run's Refine exists only then). */
+  refineFactors?: boolean;
+  /** A live run with compression on: why its factors cannot be read now (null: they can; App computes it). */
+  liveFactors?: string | null;
   /** Recording label (the folder name). */
   label: string;
   width: number;
@@ -173,6 +186,16 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   const p = () => props.pass2;
   const r = () => props.refine;
   const refineBusy = () => r().status() === 'running' || r().status() === 'finishing';
+  /** A live run with compression on: Extract reads Discover's factors once the stream has ended. */
+  const liveExtract = () => props.live === true && props.compress !== undefined;
+  /** ... and with `?refine=factors`, Refine on them. */
+  const liveRefine = () => liveExtract() && props.refineFactors === true;
+  /** The running Refine's readout: the replay's frames, or what Refine on the factors does. */
+  const refineBusyText = () => {
+    const ph = r().phase();
+    if (ph) return factorRefineRunningText(refineRuns().length, ph, r().factorSettings());
+    return `Refine ${refineRuns().length}: frame ${r().processed().toLocaleString()} / ${r().total().toLocaleString()}${r().fps() > 0 ? ` · ${r().fps().toFixed(1)} frames/s` : ''}${r().status() === 'finishing' ? ' · publishing' : ''}`;
+  };
   const refineRuns = () => props.stages.runs().filter((x) => x.stage === 'refine');
   const comparison = () => refineComparison(props.stages.runs());
   /** The newest Refine run's readout. */
@@ -180,6 +203,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     const last = refineRuns().at(-1);
     if (!last) return null;
     if (last.outcome === 'running') return null;
+    if (last.source === 'factors') return factorRefineDoneText(last);
     const cmp = comparison();
     const rate =
       last.refinesPerMin === null || last.refinesPerMin === undefined
@@ -234,12 +258,17 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   const [passOnly, setPassOnly] = createSignal(true);
   const [exporting, setExporting] = createSignal<string | null>(null);
   const [exportError, setExportError] = createSignal<string | null>(null);
-  /** Live run: the traces solved as the frames came in, once the run and the final library are in. */
+  /**
+   * Live run: the traces solved as the frames came in, once the run and the
+   * final library are in. A Refine on the factors keeps the library final
+   * (`finalLibrary`), so the export stays available while it runs.
+   */
   const [liveResult, setLiveResult] = createSignal<Pass2Result | null>(null);
   createEffect(() => {
     if (!props.live) return;
     const done = s().status() === 'done';
-    const final = c().status()?.final ?? true;
+    // No slow-loop status at all (no Discover ran): nothing to wait for.
+    const final = c().status() ? c().finalLibrary() : true;
     const frames = s().processed();
     c().library();
     if (!done || !final) {
@@ -695,7 +724,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               {(h) => <GroupPlot ui={props.ui} group="convergence" height={h()} compact />}
             </AspectPlot>
           </Show>
-          <Show when={!props.live && refineBusy()}>
+          <Show when={(!props.live || liveRefine()) && refineBusy()}>
             <ProgressBar
               fraction={r().total() > 0 ? r().processed() / r().total() : 0}
               state="running"
@@ -703,7 +732,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               aria-label="Refine"
             />
           </Show>
-          <Show when={!props.live && pass2Shown()}>
+          <Show when={(!props.live || liveExtract()) && pass2Shown()}>
             <ProgressBar
               fraction={pass2Fraction()}
               state={pass2State()}
@@ -819,10 +848,14 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       </Show>
       <Show when={props.live}>
         <p class="cala-muted cala-run__line" data-testid="live-stage-note">
-          {LIVE_NOTE}
+          {props.compress
+            ? props.refineFactors
+              ? LIVE_FACTORS_NOTE
+              : LIVE_EXTRACT_NOTE
+            : LIVE_NOTE}
         </p>
       </Show>
-      <Show when={!props.live}>
+      <Show when={!props.live || liveRefine()}>
         <div class="cala-run__footer">
           <Show
             when={!refineBusy()}
@@ -845,11 +878,17 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               disabled={props.availability.refine !== null}
               title={
                 props.availability.refine ??
-                'Replay the recording from frame 0: footprints keep converging; no cells are added, merged, split or deleted. Repeatable.'
+                (r().route() === 'factors'
+                  ? `Refine on the factors: iterations over the compressed recording until the footprints settle (at most ${r().factorSettings().maxIterations}); no cells are added, merged, split or deleted.`
+                  : 'Replay the recording from frame 0: footprints keep converging; no cells are added, merged, split or deleted. Repeatable.')
               }
               onClick={() => props.onRefine()}
             >
-              {refineRuns().length > 0 ? 'Refine again' : 'Refine'}
+              {r().route() === 'factors'
+                ? 'Refine until settled'
+                : refineRuns().length > 0
+                  ? 'Refine again'
+                  : 'Refine'}
             </button>
           </Show>
           <span
@@ -858,12 +897,19 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             data-runs={refineRuns().length}
           >
             {refineBusy()
-              ? `Refine ${refineRuns().length}: frame ${r().processed().toLocaleString()} / ${r().total().toLocaleString()}${r().fps() > 0 ? ` · ${r().fps().toFixed(1)} frames/s` : ''}${r().status() === 'finishing' ? ' · publishing' : ''}`
+              ? refineBusyText()
               : r().status() === 'error'
                 ? `Refine stopped: ${r().error() ?? 'error'}`
                 : (refineText() ?? '')}
           </span>
         </div>
+        <Show when={props.refineFactors && !refineBusy() ? r().routeNote() : null}>
+          {(note) => (
+            <p class="cala-muted cala-run__line" data-testid="refine-route">
+              {note()}
+            </p>
+          )}
+        </Show>
         <Show when={shown() && r().series()}>
           {(sr) => (
             <RefineRunPlot
@@ -935,11 +981,16 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           )}
         </p>
       </Show>
+      <Show when={liveExtract() && s().status() === 'done' && p().status() !== 'running'}>
+        <p class="cala-muted cala-run__line" data-testid="extract-source">
+          {props.liveFactors ?? LIVE_EXTRACT_READY}
+        </p>
+      </Show>
       <div class="cala-run__footer">
         <Show
-          when={p().status() !== 'running' && !props.live}
+          when={p().status() !== 'running' && (!props.live || liveExtract())}
           fallback={
-            <Show when={!props.live}>
+            <Show when={!props.live || liveExtract()}>
               <button type="button" class="btn-secondary btn-small" onClick={() => p().cancel()}>
                 Cancel Extract
               </button>
@@ -971,7 +1022,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               data-testid="export-npz"
               disabled={!exportResult() || exporting() !== null}
               title={
-                props.live
+                props.live && !p().result()
                   ? 'Footprints, the live traces, motion, flicker and cell metadata (NumPy .npz).'
                   : "Footprints, Extract's traces, motion, flicker, the stages run and cell metadata (NumPy .npz)."
               }
@@ -1117,7 +1168,10 @@ export function RunStatusStrip(props: {
         stage: `${STAGE_LABEL.refine} ${refineRuns()}`,
         fraction: total > 0 ? r().processed() / total : 0,
         state: 'running',
-        detail: `${rs === 'finishing' ? 'publishing' : `frame ${r().processed().toLocaleString()}`}${fpsText(r().fps())}`,
+        detail:
+          r().phase()?.kind === 'iterate'
+            ? `iteration ${r().processed()}${rs === 'finishing' ? ' · stopping' : ''}`
+            : `${rs === 'finishing' ? 'publishing' : `frame ${r().processed().toLocaleString()}`}${fpsText(r().fps())}`,
         stop: {
           label: 'Cancel',
           title: 'Stop this Refine run: the footprints refined so far are kept.',

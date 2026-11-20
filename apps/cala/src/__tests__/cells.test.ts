@@ -8,7 +8,7 @@ import {
   renderOverlay,
   type Rgb,
 } from '../lib/cell-overlay.ts';
-import { CellMetrics, pushRecent, summarize } from '../lib/cell-store.ts';
+import { CellMetrics, createCellStore, pushRecent, summarize } from '../lib/cell-store.ts';
 import {
   FastLoop,
   type TraceBackend,
@@ -16,7 +16,9 @@ import {
   type TraceLibraryLike,
 } from '../lib/fast-loop.ts';
 import { ForwardPool } from '../lib/forward-pool.ts';
+import { createSlowClient, type SlowWorkerLike } from '../lib/slow-client.ts';
 import {
+  factorIteration,
   SlowRunner,
   type PublishedLibrary,
   type SlowLoopLike,
@@ -28,6 +30,8 @@ import type {
   FastToSlow,
   LibraryView,
   OwnerToVisit,
+  SlowRefineFactors,
+  SlowStatus,
   SlowToFast,
   SlowToMain,
   VisitToOwner,
@@ -685,7 +689,7 @@ function fakeLib(version: number, ids: number[]): PublishedLibrary & { freed: bo
   return lib;
 }
 
-function runner(publishAt: Set<number>) {
+function runner(publishAt: Set<number>, extra: Partial<SlowRunnerDeps> = {}) {
   const toFast = recorder<SlowToFast>();
   const toMain = recorder<SlowToMain>();
   const observed: { version: number; first: number; traces: number[]; background?: number[] }[] =
@@ -725,7 +729,7 @@ function runner(publishAt: Set<number>) {
     free: vi.fn(),
   };
   const create = vi.fn<SlowRunnerDeps['create']>(() => loop);
-  const r = new SlowRunner({ create, toFast, toMain, now: () => 0 });
+  const r = new SlowRunner({ create, toFast, toMain, now: () => 0, ...extra });
   return { r, toFast, toMain, observed, libs, loop, create };
 }
 
@@ -982,6 +986,596 @@ describe('SlowRunner run stages (Discover, then Refine replays)', () => {
     const u = withScope();
     u.r.handle({ type: 'replay', session: -1, scope: 'refine' });
     expect(u.toMain.of('error')[0].message).toMatch(/Discover first/);
+  });
+});
+
+describe('SlowRunner: Refine on the factors', () => {
+  const settings = { settleCorr: 0.99, settleShare: 0.02, maxIterations: 4, testFrames: 0 };
+  const msg: SlowRefineFactors = {
+    type: 'refine-factors',
+    session: 2,
+    folder: 'run-x',
+    windows: 3,
+    ...settings,
+  };
+
+  /** A Discover that ended; a fake reader; a loop whose iterations give the settle codes `settles` in turn. */
+  function setup(settles: number[], open?: SlowRunnerDeps['openFactors']) {
+    const later: (() => void)[] = [];
+    const opened: string[] = [];
+    let closed = 0;
+    const reader = { windows: 3, read: () => new Uint8Array(0), close: () => void closed++ };
+    const t = runner(new Set(), {
+      defer: (fn) => void later.push(fn),
+      openFactors:
+        open ??
+        (async (folder, windows) => {
+          opened.push(`${folder} ${windows}`);
+          return reader;
+        }),
+    });
+    const scopes: string[] = [];
+    const calls: unknown[][] = [];
+    let it = 0;
+    let version = 600;
+    t.loop.setEditScope = (s: string) => void scopes.push(s);
+    t.loop.refineOnFactors = (r, ...args) => {
+      calls.push([r === reader, ...args]);
+      const settle = settles[it++] ?? 0;
+      version++;
+      return Float64Array.of(version, 3, 12, 8, 5, 0.1, 0.01, 0, 0, settle);
+    };
+    t.loop.finalize = () => {
+      const l = fakeLib(version, [1, 2, 3]);
+      t.libs.push(l);
+      return l;
+    };
+    t.r.handle(INIT);
+    t.r.handle({ type: 'end', session: 2 });
+    return { ...t, later, opened, scopes, calls, closed: () => closed };
+  }
+
+  /** Let the run take its turns (each deferred step runs once the test lets it). */
+  async function drive(p: Promise<void>, later: (() => void)[]): Promise<void> {
+    let settled = false;
+    void p.then(() => (settled = true));
+    for (let i = 0; i < 100 && !settled; i++) {
+      await new Promise((r) => setTimeout(r, 0));
+      later.shift()?.();
+    }
+    await p;
+  }
+
+  async function turns(cond: () => boolean): Promise<void> {
+    for (let i = 0; i < 100 && !cond(); i++) await new Promise((r) => setTimeout(r, 0));
+  }
+
+  it('iterates until the footprints settle, publishing the library after each, then closes the files', async () => {
+    const t = setup([0, 0, 1]);
+    await drive(t.r.refineOnFactors(msg), t.later);
+    expect(t.opened).toEqual(['run-x 3']);
+    expect(t.scopes).toEqual(['refine']);
+    expect(t.calls).toEqual([
+      [true, 0.99, 0.02, 0],
+      [true, 0.99, 0.02, 0],
+      [true, 0.99, 0.02, 0],
+    ]);
+    const its = t.toMain
+      .of('factor-iteration')
+      .map((m) => [m.report.iteration, m.report.libraryVersion]);
+    expect(its).toEqual([
+      [1, 601],
+      [2, 602],
+      [3, 603],
+    ]);
+    expect(t.toMain.of('factor-iteration')[0].report).toMatchObject({
+      cells: 3,
+      frames: 12,
+      fittingFrames: 8,
+      accepted: 5,
+      changedShare: 0.1,
+      medianChange: 0.01,
+    });
+    // Discover's final library, then one per iteration, to the fast worker and the UI.
+    expect(t.toFast.of('library').map((m) => m.version)).toEqual([600, 601, 602, 603]);
+    expect(t.toMain.of('factor-end')).toEqual([
+      { type: 'factor-end', session: 2, iterations: 3, stop: 'settled' },
+    ]);
+    expect(t.closed()).toBe(1);
+    expect(t.toMain.of('status').at(-1)!.status).toMatchObject({
+      final: true,
+      run: 2,
+      editScope: 'refine',
+    });
+  });
+
+  it('stops at the cap without settling, and says when the last iteration accepted nothing', async () => {
+    const t = setup([]);
+    await drive(t.r.refineOnFactors(msg), t.later);
+    expect(t.calls).toHaveLength(4);
+    expect(t.toMain.of('factor-end')).toEqual([
+      { type: 'factor-end', session: 2, iterations: 4, stop: 'cap' },
+    ]);
+    const u = setup([2]);
+    await drive(u.r.refineOnFactors(msg), u.later);
+    expect(u.toMain.of('factor-end')).toEqual([
+      { type: 'factor-end', session: 2, iterations: 1, stop: 'nothing-accepted' },
+    ]);
+  });
+
+  it('stops between iterations when told, never inside one, and ignores an end of the fast loop meanwhile', async () => {
+    const t = setup([]);
+    const p = t.r.refineOnFactors(msg);
+    await turns(() => t.later.length === 1);
+    expect(t.calls).toHaveLength(1);
+    const statuses = t.toMain.of('status').length;
+    t.r.handle({ type: 'end', session: 2 });
+    // The end finalizes nothing (the run's library is final already) and posts nothing.
+    expect(t.toMain.of('status')).toHaveLength(statuses);
+    expect(t.toMain.of('status').at(-1)!.status).toMatchObject({ final: true, factorRun: true });
+    t.r.stopFactors(3); // another session: not this run
+    t.r.stopFactors(2);
+    t.later.shift()!();
+    await p;
+    expect(t.calls).toHaveLength(1);
+    expect(t.toMain.of('factor-end')).toEqual([
+      { type: 'factor-end', session: 2, iterations: 1, stop: 'stopped' },
+    ]);
+    expect(t.closed()).toBe(1);
+  });
+
+  it('ends when a reset drops the loop between iterations, and closes the files', async () => {
+    const t = setup([]);
+    const p = t.r.refineOnFactors(msg);
+    await turns(() => t.later.length === 1);
+    t.r.handle({ type: 'reset', session: 3 });
+    expect(t.loop.free).toHaveBeenCalled();
+    t.later.shift()!();
+    await p;
+    expect(t.calls).toHaveLength(1);
+    expect(t.toMain.of('factor-end')).toEqual([
+      { type: 'factor-end', session: 2, iterations: 1, stop: 'stopped' },
+    ]);
+    expect(t.closed()).toBe(1);
+  });
+
+  it('never holds up a new session while an old run waits for its turn, and still ends the old one', async () => {
+    for (const during of ['open', 'iterations'] as const) {
+      let release = () => {};
+      const opening = new Promise<void>((r) => (release = r));
+      let closes = 0;
+      const t = setup(
+        [],
+        during === 'open'
+          ? async () => {
+              await opening;
+              return { windows: 3, read: () => new Uint8Array(0), close: () => void closes++ };
+            }
+          : undefined,
+      );
+      const p = t.r.refineOnFactors(msg);
+      if (during === 'open') await turns(() => false);
+      else await turns(() => t.later.length === 1);
+      // A new pipeline session gets a loop of its own.
+      t.create.mockImplementation(() => ({ ...t.loop, free: vi.fn() }));
+      t.r.handle({ ...INIT, session: 3 });
+      t.r.handle({
+        type: 'frames',
+        session: 3,
+        start: 0,
+        count: 1,
+        version: 0,
+        cells: 0,
+        frames: new Float32Array(2),
+        traces: new Float32Array(0),
+      });
+      t.r.handle({ type: 'end', session: 3 });
+      expect(t.toMain.of('error')).toEqual([]);
+      expect(t.observed).toHaveLength(1);
+      expect(t.toFast.of('ack').at(-1)).toMatchObject({ start: 0, count: 1, observed: 1 });
+      const mine = () => t.toMain.of('status').filter((m) => m.session === 3);
+      expect(mine().at(-1)!.status).toMatchObject({ final: true, run: 1, consumed: 1 });
+      expect(mine().some((m) => m.status.factorRun)).toBe(false);
+      // The old run ends on its next turn, without touching the new session.
+      const statuses = t.toMain.of('status').length;
+      if (during === 'open') release();
+      else t.later.shift()!();
+      await p;
+      expect(t.toMain.of('factor-end')).toEqual([
+        { type: 'factor-end', session: 2, iterations: during === 'open' ? 0 : 1, stop: 'stopped' },
+      ]);
+      expect(during === 'open' ? closes : t.closed()).toBe(1);
+      expect(t.toMain.of('status')).toHaveLength(statuses);
+      // The new session refines on its own factors.
+      await drive(t.r.refineOnFactors({ ...msg, session: 3 }), t.later);
+      expect(t.toMain.of('factor-end')[1]).toMatchObject({ session: 3, stop: 'cap' });
+    }
+  });
+
+  it('reports a failed iteration as the end of the run, keeps the loop and closes the files', async () => {
+    const t = setup([]);
+    t.loop.refineOnFactors = () => {
+      throw new Error(
+        'refineOnFactors: invalid trace config: factor window 1: truncated or corrupt factor file',
+      );
+    };
+    await drive(t.r.refineOnFactors(msg), t.later);
+    expect(t.toMain.of('factor-end')).toEqual([
+      {
+        type: 'factor-end',
+        session: 2,
+        iterations: 0,
+        stop: 'error',
+        message:
+          'refineOnFactors: invalid trace config: factor window 1: truncated or corrupt factor file',
+      },
+    ]);
+    expect(t.closed()).toBe(1);
+    expect(t.loop.free).not.toHaveBeenCalled();
+    expect(t.toMain.of('status').at(-1)!.status.final).toBe(true);
+    // A raw Refine can follow.
+    t.r.handle({ type: 'replay', session: 2, scope: 'refine' });
+    expect(t.toMain.of('status').at(-1)!.status).toMatchObject({ run: 3, final: false });
+  });
+
+  it('refuses before Discover published its final library, without opening the files', async () => {
+    const t = runner(new Set(), { openFactors: vi.fn() });
+    t.loop.setEditScope = () => {};
+    t.loop.refineOnFactors = vi.fn();
+    t.r.handle(INIT);
+    await t.r.refineOnFactors(msg);
+    expect(t.toMain.of('factor-end')).toEqual([
+      {
+        type: 'factor-end',
+        session: 2,
+        iterations: 0,
+        stop: 'error',
+        message: 'The slow loop has not published its final library yet.',
+        refused: true,
+      },
+    ]);
+    expect(t.loop.refineOnFactors).not.toHaveBeenCalled();
+    await t.r.refineOnFactors({ ...msg, session: 9 });
+    expect(t.toMain.of('factor-end')[1]).toMatchObject({
+      message: 'No slow loop to refine: run Discover first.',
+      refused: true,
+    });
+  });
+
+  it('refuses a cap that is not a whole number of iterations from 1', async () => {
+    for (const maxIterations of [0, -1, Number.NaN, Infinity, 2.5]) {
+      const t = setup([]);
+      await t.r.refineOnFactors({ ...msg, maxIterations });
+      expect(t.toMain.of('factor-end')).toEqual([
+        {
+          type: 'factor-end',
+          session: 2,
+          iterations: 0,
+          stop: 'error',
+          message: `maxIterations must be a whole number from 1, not ${maxIterations}.`,
+          refused: true,
+        },
+      ]);
+      expect(t.opened).toEqual([]);
+    }
+  });
+
+  it('refuses a second run while one holds the files', async () => {
+    const t = setup([]);
+    const p = t.r.refineOnFactors(msg);
+    await turns(() => t.later.length === 1);
+    await t.r.refineOnFactors(msg);
+    expect(t.toMain.of('factor-end')).toEqual([
+      {
+        type: 'factor-end',
+        session: 2,
+        iterations: 0,
+        stop: 'error',
+        message: 'Refine on the factors is already running.',
+        refused: true,
+      },
+    ]);
+    expect(t.opened).toEqual(['run-x 3']);
+    t.r.stopFactors(2);
+    t.later.shift()!();
+    await p;
+  });
+
+  it('a failed open ends the run with its message', async () => {
+    const t = setup([], async () => {
+      throw new Error('The factor files of this run cannot be opened: f2.bin not found');
+    });
+    await drive(t.r.refineOnFactors(msg), t.later);
+    expect(t.toMain.of('factor-end')).toEqual([
+      {
+        type: 'factor-end',
+        session: 2,
+        iterations: 0,
+        stop: 'error',
+        message: 'The factor files of this run cannot be opened: f2.bin not found',
+      },
+    ]);
+    expect(t.scopes).toEqual([]);
+  });
+
+  it('sets the noise and the refine scope and finalizes before the first iteration, and finalizes after each', async () => {
+    const t = setup([0, 1]);
+    const events: string[] = [];
+    const iterate = t.loop.refineOnFactors!;
+    const finalize = t.loop.finalize;
+    t.loop.setNoise = (n: Float32Array) => void events.push(`noise ${Array.from(n).join(',')}`);
+    t.loop.setEditScope = (s: string) => void events.push(`scope ${s}`);
+    t.loop.refineOnFactors = (...a) => {
+      events.push('iterate');
+      return iterate(...a);
+    };
+    t.loop.finalize = () => {
+      events.push('finalize');
+      return finalize();
+    };
+    await drive(t.r.refineOnFactors(msg), t.later);
+    expect(events).toEqual([
+      'noise 1,1',
+      'scope refine',
+      'finalize',
+      'iterate',
+      'finalize',
+      'iterate',
+      'finalize',
+    ]);
+  });
+
+  it('ignores a replay and observes no frames while it runs, but returns their buffers', async () => {
+    const t = setup([]);
+    const p = t.r.refineOnFactors(msg);
+    await turns(() => t.later.length === 1);
+    const statuses = t.toMain.of('status').length;
+    t.r.handle({ type: 'replay', session: 2, scope: 'refine' });
+    t.r.handle({
+      type: 'frames',
+      session: 2,
+      start: 0,
+      count: 1,
+      version: 601,
+      cells: 0,
+      frames: new Float32Array(2),
+      traces: new Float32Array(0),
+    });
+    expect(t.toMain.of('error')).toEqual([]);
+    expect(t.observed).toEqual([]);
+    expect(t.toFast.of('ack')).toHaveLength(1);
+    expect(t.toMain.of('status')).toHaveLength(statuses);
+    expect(t.toMain.of('status').at(-1)!.status).toMatchObject({
+      run: 2,
+      final: true,
+      factorRun: true,
+    });
+    t.r.stopFactors(2);
+    t.later.shift()!();
+    await p;
+    expect(t.toMain.of('factor-end')).toEqual([
+      { type: 'factor-end', session: 2, iterations: 1, stop: 'stopped' },
+    ]);
+  });
+
+  it('still says factor-end when closing the files and the last status throw after a trapped iteration', async () => {
+    let closes = 0;
+    const t = setup([], async () => ({
+      windows: 3,
+      read: () => new Uint8Array(0),
+      close: () => {
+        closes++;
+        throw new Error('the files are gone');
+      },
+    }));
+    let trapped = false;
+    t.loop.refineOnFactors = () => {
+      trapped = true;
+      throw new WebAssembly.RuntimeError('unreachable');
+    };
+    // After the trap the WASM instance throws on every call, the status's included.
+    t.loop.cellStatus = () => {
+      if (trapped)
+        throw new Error('recursive use of an object detected which would lead to unsafe aliasing');
+      return Float64Array.of(1, 1, 3, 2, 0, 0);
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await drive(t.r.refineOnFactors(msg), t.later);
+      expect(t.toMain.of('factor-end')).toEqual([
+        { type: 'factor-end', session: 2, iterations: 0, stop: 'error', message: 'unreachable' },
+      ]);
+      expect(closes).toBe(1);
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
+    // The run let go of the files: another one can start.
+    t.loop.cellStatus = () => new Float64Array(0);
+    t.loop.refineOnFactors = () => Float64Array.of(700, 3, 12, 8, 0, 0, 0, 0, 0, 2);
+    await drive(t.r.refineOnFactors(msg), t.later);
+    expect(t.toMain.of('factor-end')[1]).toEqual({
+      type: 'factor-end',
+      session: 2,
+      iterations: 1,
+      stop: 'nothing-accepted',
+    });
+  });
+
+  it('keeps every status of the run final, so the main thread still holds a final library after a trapped iteration', async () => {
+    const t = setup([0, 1]);
+    let trapped = false;
+    t.loop.refineOnFactors = () => {
+      trapped = true;
+      throw new WebAssembly.RuntimeError('unreachable');
+    };
+    // After the trap the WASM instance throws on every call, the status's included.
+    t.loop.cellStatus = () => {
+      if (trapped)
+        throw new Error('recursive use of an object detected which would lead to unsafe aliasing');
+      return Float64Array.of(1, 1, 3, 2, 0, 0);
+    };
+    const before = t.toMain.sent.length;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await drive(t.r.refineOnFactors(msg), t.later);
+    } finally {
+      warn.mockRestore();
+    }
+    const statuses = t.toMain.sent
+      .slice(before)
+      .map((s) => s.msg)
+      .filter((m): m is Extract<SlowToMain, { type: 'status' }> => m.type === 'status');
+    expect(statuses).not.toHaveLength(0);
+    for (const m of statuses) expect(m.status).toMatchObject({ final: true, factorRun: true });
+    const cells = createCellStore();
+    cells.reset(2);
+    for (const { msg: m } of t.toMain.sent) cells.onSlowMessage(m);
+    expect(cells.status()?.final).toBe(true);
+    expect(cells.finalLibrary()).toBe(true);
+  });
+
+  it('keeps every status of a settling run final too', async () => {
+    const t = setup([0, 1]);
+    const before = t.toMain.of('status').length;
+    await drive(t.r.refineOnFactors(msg), t.later);
+    // Before the first iteration, after each, and the last one once the run let go.
+    const statuses = t.toMain.of('status').slice(before);
+    expect(statuses.map((m) => [m.status.final, m.status.factorRun ?? false])).toEqual([
+      [true, true],
+      [true, true],
+      [true, true],
+      [true, false],
+    ]);
+  });
+
+  it('the cell store keeps the final library through a factor run and a slow crash, until the next Discover', () => {
+    const t = runner(new Set());
+    t.r.handle(INIT);
+    t.r.handle({ type: 'end', session: 2 });
+    const done: SlowStatus = { ...t.toMain.of('status').at(-1)!.status, final: true };
+    const cells = createCellStore();
+    cells.reset(2);
+    expect(cells.finalLibrary()).toBe(false);
+    cells.onSlowMessage({ type: 'status', session: 2, status: done });
+    expect(cells.finalLibrary()).toBe(true);
+    // A status of a factor run that does not say final, then the slow worker crashes.
+    cells.onSlowMessage({
+      type: 'status',
+      session: 2,
+      status: { ...done, final: false, run: 2, factorRun: true },
+    });
+    cells.onSlowMessage({ type: 'error', session: -1, message: 'the slow worker crashed' });
+    expect(cells.status()?.final).toBe(false);
+    expect(cells.finalLibrary()).toBe(true);
+    // A raw Refine's replay is not final until it publishes its own final library.
+    cells.onSlowMessage({ type: 'status', session: 2, status: { ...done, final: false, run: 3 } });
+    expect(cells.finalLibrary()).toBe(false);
+    cells.onSlowMessage({ type: 'status', session: 2, status: { ...done, run: 3 } });
+    expect(cells.finalLibrary()).toBe(true);
+    // A new Discover starts over.
+    cells.reset(3);
+    expect(cells.finalLibrary()).toBe(false);
+  });
+
+  it('turns the values of an iteration into its report, and refuses too few of them', () => {
+    expect(factorIteration(2, [9, 3, 12, 8, 5, 0.1, 0.01, 1, 2, 1], 40)).toEqual({
+      report: {
+        iteration: 2,
+        libraryVersion: 9,
+        cells: 3,
+        frames: 12,
+        fittingFrames: 8,
+        accepted: 5,
+        changedShare: 0.1,
+        medianChange: 0.01,
+        lowValid: 1,
+        tilesSkipped: 2,
+        ms: 40,
+      },
+      settle: 1,
+    });
+    expect(() => factorIteration(1, [1, 2], 0)).toThrow(/2 values, expected 10/);
+  });
+
+  it('the slow client sends both messages to the worker', () => {
+    const posted: unknown[] = [];
+    const worker = {
+      postMessage: (m: unknown) => void posted.push(m),
+      terminate() {},
+      onmessage: null,
+      onerror: null,
+    } as unknown as SlowWorkerLike;
+    const c = createSlowClient(
+      { connectSlow: async () => {} },
+      () => {},
+      () => worker,
+    );
+    c.refineOnFactors({ session: 4, folder: 'run-x', windows: 2, ...settings });
+    c.stopFactors(4);
+    expect(posted.slice(1)).toEqual([
+      { type: 'refine-factors', session: 4, folder: 'run-x', windows: 2, ...settings },
+      { type: 'stop-factors', session: 4 },
+    ]);
+    c.dispose();
+  });
+
+  it('the slow client tags only the slow worker crash as its own (it frees the factor files)', async () => {
+    const got: SlowToMain[] = [];
+    const make = () =>
+      ({
+        postMessage() {},
+        terminate() {},
+        onmessage: null,
+        onerror: null,
+      }) as unknown as SlowWorkerLike;
+    const worker = make();
+    const visit = make();
+    const c = createSlowClient(
+      { connectSlow: async () => Promise.reject(new Error('no port')) },
+      (m) => void got.push(m),
+      () => worker,
+      1,
+      () => visit,
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    (visit.onerror as (e: ErrorEvent) => void)({ message: '' } as ErrorEvent);
+    (worker.onerror as (e: ErrorEvent) => void)({ message: '' } as ErrorEvent);
+    expect(got).toEqual([
+      { type: 'error', session: -1, message: 'no port' },
+      { type: 'error', session: -1, message: 'A visit worker crashed.' },
+      { type: 'error', session: -1, message: 'The slow worker crashed.', worker: 'slow' },
+    ]);
+    c.dispose();
+  });
+
+  it('the cell store takes no factor message for an error', () => {
+    const cells = createCellStore();
+    cells.reset(2);
+    cells.onSlowMessage({ type: 'factor-end', session: 2, iterations: 1, stop: 'settled' });
+    expect(cells.error()).toBeNull();
+  });
+
+  it('the cell store takes no batch timing from the statuses of a factor run, but shows them', () => {
+    const t = runner(new Set());
+    t.r.handle(INIT);
+    t.r.handle({ type: 'end', session: 2 });
+    const base: SlowStatus = { ...t.toMain.of('status').at(-1)!.status, final: false };
+    const cells = createCellStore();
+    cells.reset(2);
+    cells.onSlowMessage({
+      type: 'status',
+      session: 2,
+      status: { ...base, batchMs: 5, maxStepMs: 7 },
+    });
+    cells.onSlowMessage({
+      type: 'status',
+      session: 2,
+      status: { ...base, batchMs: 0, maxStepMs: 0, frame: 12, factorRun: true },
+    });
+    expect(cells.slowTiming()).toEqual({ batchMs: [5], stepMs: [7] });
+    expect(cells.status()).toMatchObject({ frame: 12, factorRun: true });
+    expect(cells.error()).toBeNull();
   });
 });
 

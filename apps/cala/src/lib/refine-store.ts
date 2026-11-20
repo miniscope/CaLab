@@ -30,15 +30,31 @@ import type { CellStore } from './cell-store.ts';
 import type { PipelineClient } from './frame-client.ts';
 import type { PipelinePlan } from './pipeline-plan.ts';
 import { MAX_IN_FLIGHT, ThroughputMeter, type PipelineStore } from './pipeline-store.ts';
-import { footprintChange, perMinute, type StageLog, type StageRun } from './run-stages.ts';
+import {
+  footprintChange,
+  perMinute,
+  type FactorPhase,
+  type StageLog,
+  type StageRun,
+} from './run-stages.ts';
 import { RefineTracker, type RefineSample } from './refine-metrics.ts';
-import type { LibraryView } from '../workers/slow-types.ts';
+import type { RunRecord } from './run-record.ts';
+import type { SlowClient } from './slow-client.ts';
+import type {
+  FactorIteration,
+  FactorRefineSettings,
+  FactorStop,
+  LibraryView,
+  SlowStatus,
+  SlowToMain,
+} from '../workers/slow-types.ts';
 import type { QcSnapshot } from './qc.ts';
 import { createTraceFile, type TraceFile } from './trace-file.ts';
 import { startReplayPipeline } from './replay-pipeline.ts';
 import {
   endOnce,
   NO_COMPRESS,
+  type FactorFilesLike,
   type ReplayCompress,
   type ReplayCompressLike,
 } from './factor-extract.ts';
@@ -50,6 +66,8 @@ export interface RefineQcOptions {
   traceFile?: (frames: number, cells: number) => Promise<TraceFile>;
   /** Compression on: whether this replay compresses, and where its outcome goes (absent: off). */
   compress?: ReplayCompressLike;
+  /** `?refine=factors`: Refine reads the factors (absent: Refine replays the file). */
+  factorRefine?: RefineFactorsOptions;
 }
 
 export type RefineStatus = 'idle' | 'running' | 'finishing' | 'done' | 'error' | 'cancelled';
@@ -76,6 +94,31 @@ export const REFINE_SLOW_LEAD = MAX_IN_FLIGHT + 2;
 /** Forward buffers for Refine: the lead plus one for an ack the trace worker has not read yet. */
 export const REFINE_FORWARD_BUFFERS = REFINE_SLOW_LEAD + 1;
 
+/** Refine on the factors: the spec's settle stop and cap (§5), qc_eval's defaults. */
+export const FACTOR_REFINE: FactorRefineSettings = {
+  settleCorr: 0.99,
+  settleShare: 0.02,
+  maxIterations: 20,
+  testFrames: 0,
+};
+
+/** `?refine=factors`: Refine reads the factors (off by default: Refine replays the file). */
+export function refineOnFactorsOn(params: URLSearchParams): boolean {
+  return params.get('refine') === 'factors';
+}
+
+/** What Refine on the factors needs (compression on and `?refine=factors`). */
+export interface RefineFactorsOptions {
+  factors: FactorFilesLike;
+  slow: Pick<SlowClient, 'refineOnFactors' | 'stopFactors'>;
+  /** A live run: the factors are Discover's own and there is no file to replay. */
+  live(): boolean;
+  /** Discover ran with look-back: its slow loop runs the cluster replay, which Refine on the factors refuses until phase 3b. */
+  lookback(): boolean;
+  /** The settle stop and cap (default `FACTOR_REFINE`). */
+  settings?: FactorRefineSettings;
+}
+
 export function createRefineStore(
   client: PipelineClient,
   pipeline: PipelineStore,
@@ -96,6 +139,12 @@ export function createRefineStore(
     samples: readonly RefineSample[];
     end: number;
   } | null>(null);
+  /** What a running Refine on the factors does (null: none runs). */
+  const [phase, setPhase] = createSignal<FactorPhase | null>(null);
+  /** The last Refine on the factors failed: a file's next Refine replays the file, until `clear`. */
+  const [factorFailed, setFactorFailed] = createSignal(false);
+  /** The slow worker holds the factor files of this session until its `factor-end`. */
+  let out: { session: number; done: Promise<void>; release: () => void } | null = null;
 
   let generation = 0;
   let inFlight = 0;
@@ -122,6 +171,14 @@ export function createRefineStore(
     ended: (ok: boolean) => void;
     /** The pump has the replay: its end is reported there, by fail, cancel or clear; before, by `run`. */
     pumping: boolean;
+    /** `raw`: a replay into the slow loop; `factors`: Refine on the factors. */
+    route: 'raw' | 'factors';
+    /** What the run does now: a replay into the slow loop, a replay that only compresses, waiting for the factor files, the iterations. */
+    mode: 'refine' | 'compress' | 'wait' | 'iterate';
+    /** The iterations' reports (Refine on the factors). */
+    reports: FactorIteration[];
+    /** The session the iterations run under. */
+    slowSession: number;
   }
 
   /** Stop collecting traces for the QC (and free them). */
@@ -130,6 +187,36 @@ export function createRefineStore(
     const f = ctx.traces;
     ctx.traces = null;
     if (f) void f.dispose().catch(() => {});
+  }
+
+  /** The context of a run (both routes). */
+  function makeCtx(
+    rec: RunRecord,
+    plan1: PipelinePlan,
+    st: SlowStatus,
+    before: LibraryView,
+    route: Ctx['route'],
+  ): Ctx {
+    return {
+      frames: rec.frames,
+      batch: plan1.batchSize,
+      run: (st.run ?? 1) + 1,
+      before,
+      refines0: st.counters.refines,
+      meter: new ThroughputMeter(),
+      done: 0,
+      tracker: new RefineTracker(before, cells.fps()),
+      seriesAt: -Infinity,
+      traces: null,
+      ids: before.ids.slice(),
+      compressed: false,
+      ended: NO_COMPRESS.ended,
+      pumping: false,
+      route,
+      mode: route === 'raw' ? 'refine' : 'compress',
+      reports: [],
+      slowSession: -1,
+    };
   }
 
   /** Store one batch of the replay's traces (backpressure: waits for the disk). */
@@ -197,6 +284,15 @@ export function createRefineStore(
 
   /** Close the run in the log with what the slow loop published. */
   function record(ctx: Ctx, outcome: 'done' | 'cancelled' | 'error'): void {
+    if (ctx.route === 'factors') {
+      recordFactors(
+        ctx,
+        outcome,
+        outcome === 'cancelled' ? 'stopped' : 'error',
+        ctx.reports.length,
+      );
+      return;
+    }
     sample(ctx, true);
     const after = cells.library();
     const st = cells.status();
@@ -241,18 +337,26 @@ export function createRefineStore(
     generation++;
     setError(message);
     setStatus('error');
+    setPhase(null);
     if (ctx) {
       if (ctx.pumping) ctx.ended(false);
       record(ctx, 'error');
       dropTraces(ctx);
+      if (ctx.route === 'factors' && ctx.mode === 'iterate') setFactorFailed(true);
     }
-    void client.stopPipeline({ keepSlow: true }).catch(() => {});
+    // Waiting or iterating, no pipeline of this run is running.
+    if (!ctx || ctx.mode === 'refine' || ctx.mode === 'compress')
+      void client.stopPipeline({ keepSlow: true }).catch(() => {});
   }
 
   function pump(gen: number, ctx: Ctx): void {
     while (gen === generation && status() === 'running' && !exhausted && inFlight < MAX_IN_FLIGHT) {
       // At most REFINE_SLOW_LEAD batches ahead of the slow loop (nothing is dropped).
-      if (ctx.done + (inFlight + 1) * ctx.batch - slowTaken(ctx) > REFINE_SLOW_LEAD * ctx.batch) {
+      // A replay that only compresses feeds no slow loop, so it has no lead to keep.
+      if (
+        ctx.mode === 'refine' &&
+        ctx.done + (inFlight + 1) * ctx.batch - slowTaken(ctx) > REFINE_SLOW_LEAD * ctx.batch
+      ) {
         if (inFlight === 0) setTimeout(() => pump(gen, ctx), WAIT_MS);
         return;
       }
@@ -264,7 +368,8 @@ export function createRefineStore(
           if (step.kind === 'batch') {
             const stored = collect(ctx, step);
             ctx.done = step.start + step.count;
-            sample(ctx);
+            if (ctx.mode === 'refine') sample(ctx);
+            else setPhase({ kind: 'compress', done: ctx.done, total: ctx.frames });
             setProcessed(ctx.done);
             setFps(ctx.meter.record(clock(), step.count));
             // Backpressure: the next batch is asked for once the disk has caught up.
@@ -274,11 +379,13 @@ export function createRefineStore(
             if (ctx.done !== ctx.frames)
               throw new Error(`Refine ended after ${ctx.done} of ${ctx.frames} frames.`);
             // Every frame went to the compress worker: these are the factors' FOV images.
-            if (ctx.compressed && step.projection)
-              options.compress?.keepProjection(step.projection);
+            const keep = ctx.mode === 'compress' ? options.factorRefine?.factors : options.compress;
+            if (ctx.compressed && step.projection) keep?.keepProjection(step.projection);
             ctx.ended(true);
-            setStatus('finishing');
-            awaitFinal(gen, ctx);
+            if (ctx.mode === 'refine') {
+              setStatus('finishing');
+              awaitFinal(gen, ctx);
+            } else if (options.factorRefine) waitForFiles(gen, ctx, options.factorRefine);
           }
         })
         .catch((err: unknown) => fail(gen, ctx, err instanceof Error ? err.message : String(err)))
@@ -309,6 +416,15 @@ export function createRefineStore(
       setStatus('error');
       return;
     }
+    const rec = pipeline.record();
+    const route = routeOf(rec.frames).route;
+    if (route === 'factors' && out) {
+      // A second reader would open the files the slow worker still has open.
+      console.warn(
+        'Refine on the factors: the slow worker still holds the factor files of the last run; run Refine again once it has ended.',
+      );
+      return;
+    }
     const gen = ++generation;
     inFlight = 0;
     exhausted = false;
@@ -316,26 +432,22 @@ export function createRefineStore(
     setError(null);
     setProcessed(0);
     setFps(0);
-    const rec = pipeline.record();
     const flatMap = pipeline.flatFieldMap();
+    if (route === 'factors' && options.factorRefine) {
+      await runFactors(
+        gen,
+        makeCtx(rec, plan1, st, before, 'factors'),
+        plan1,
+        bytes,
+        options.factorRefine,
+      );
+      return;
+    }
     // The first replay after Discover compresses, when no factors exist yet.
     const comp: ReplayCompress = options.compress?.replayCompress(rec.frames) ?? NO_COMPRESS;
-    const ctx: Ctx = {
-      frames: rec.frames,
-      batch: plan1.batchSize,
-      run: (st.run ?? 1) + 1,
-      before,
-      refines0: st.counters.refines,
-      meter: new ThroughputMeter(),
-      done: 0,
-      tracker: new RefineTracker(before, cells.fps()),
-      seriesAt: -Infinity,
-      traces: null,
-      ids: before.ids.slice(),
-      compressed: comp.settings.compress === true,
-      ended: endOnce(comp.ended),
-      pumping: false,
-    };
+    const ctx = makeCtx(rec, plan1, st, before, 'raw');
+    ctx.compressed = comp.settings.compress === true;
+    ctx.ended = endOnce(comp.ended);
     current = ctx;
     setTotal(ctx.frames);
     setSeries({ samples: [], end: ctx.tracker.time(ctx.frames) });
@@ -379,28 +491,257 @@ export function createRefineStore(
     }
   }
 
+  /** Where the next Refine reads, and why a file run with the switch on replays the file. */
+  function routeOf(frames: number): { route: 'raw' | 'factors'; note: string | null } {
+    const o = options.factorRefine;
+    if (!o) return { route: 'raw', note: null };
+    if (o.live()) return { route: 'factors', note: null };
+    if (o.lookback())
+      return {
+        route: 'raw',
+        note: 'Refine replays the file: Refine on the factors does not run after a look-back Discover (its slow loop runs the cluster replay).',
+      };
+    if (factorFailed())
+      return {
+        route: 'raw',
+        note: 'Refine replays the file: the last Refine on the factors failed.',
+      };
+    if (o.factors.state(frames) === 'unusable')
+      return {
+        route: 'raw',
+        note: o.factors.compressionError()
+          ? 'Refine replays the file: the compression failed.'
+          : 'Refine replays the file: the factors do not cover the recording.',
+      };
+    return { route: 'factors', note: null };
+  }
+
+  /**
+   * Refine on the factors: a replay that only compresses when a file has no
+   * factors yet (a live stream is never replayed: it waits for Discover's),
+   * then the iterations in the slow worker once it may open the files
+   * (`waitForFiles`).
+   */
+  async function runFactors(
+    gen: number,
+    ctx: Ctx,
+    plan1: PipelinePlan,
+    bytes: Uint8Array,
+    o: RefineFactorsOptions,
+  ): Promise<void> {
+    current = ctx;
+    setTotal(ctx.frames);
+    setSeries(null);
+    log.begin('refine');
+    if (o.live() || o.factors.state(ctx.frames) !== 'none') {
+      waitForFiles(gen, ctx, o);
+      return;
+    }
+    const comp = o.factors.replayCompress(ctx.frames);
+    ctx.compressed = comp.settings.compress === true;
+    ctx.ended = endOnce(comp.ended);
+    if (!ctx.compressed) {
+      waitForFiles(gen, ctx, o);
+      return;
+    }
+    setPhase({ kind: 'compress', done: 0, total: ctx.frames });
+    try {
+      await startReplayPipeline(
+        client,
+        plan1,
+        { session: 0, discover: false, library: bytes, projection: true, ...comp.settings },
+        { frames: ctx.frames, record: pipeline.record(), flatField: pipeline.flatFieldMap() },
+      );
+      if (gen !== generation) return;
+      ctx.pumping = true;
+      pump(gen, ctx);
+    } catch (err) {
+      fail(gen, ctx, err instanceof Error ? err.message : String(err));
+    } finally {
+      if (!ctx.pumping) ctx.ended(false);
+    }
+  }
+
+  /** Wait until the slow worker may open the factor files (decision 1), then start the iterations. */
+  function waitForFiles(gen: number, ctx: Ctx, o: RefineFactorsOptions): void {
+    if (gen !== generation) return;
+    ctx.mode = 'wait';
+    const state = o.factors.state(ctx.frames);
+    if (state === 'unusable') {
+      const err = o.factors.compressionError();
+      fail(
+        gen,
+        ctx,
+        o.live()
+          ? 'Refine on the factors: the factors of this stream cannot be read.'
+          : err
+            ? `Refine on the factors: the compression failed (${err}). The next Refine replays the file.`
+            : 'Refine on the factors: the factors do not cover the recording. The next Refine replays the file.',
+      );
+      return;
+    }
+    const files = o.factors.files(ctx.frames);
+    if (files) {
+      iterate(ctx, o, files);
+      return;
+    }
+    setPhase(
+      state === 'ready'
+        ? { kind: 'wait', for: 'extract', pending: 0 }
+        : { kind: 'wait', for: 'compression', pending: o.factors.pending() },
+    );
+    setTimeout(() => waitForFiles(gen, ctx, o), WAIT_MS);
+  }
+
+  /** Hand the files to the slow worker; the run ends at its `factor-end` (`onSlowMessage`). */
+  function iterate(
+    ctx: Ctx,
+    o: RefineFactorsOptions,
+    files: { folder: string; windows: number },
+  ): void {
+    const settings = o.settings ?? FACTOR_REFINE;
+    const session = cells.session();
+    ctx.mode = 'iterate';
+    ctx.slowSession = session;
+    setTotal(settings.maxIterations);
+    setProcessed(0);
+    setPhase({ kind: 'iterate', last: null, stopping: false });
+    let release = () => {};
+    const done = new Promise<void>((resolve) => (release = resolve));
+    out = { session, done, release };
+    o.slow.refineOnFactors({ session, folder: files.folder, windows: files.windows, ...settings });
+  }
+
+  /** The messages of the slow worker about Refine on the factors (the app passes every slow message). */
+  function onSlowMessage(msg: SlowToMain): void {
+    if (msg.type === 'error') {
+      // Only a crash of the slow worker itself frees its files (a visit
+      // worker's crash or a failed connection leave it holding them): it
+      // answers nothing more, so the run is over (also one still making or
+      // waiting for the factors: it would hand them to a dead worker).
+      if (msg.session !== -1 || msg.worker !== 'slow') return;
+      if (out) {
+        out.release();
+        out = null;
+      }
+      const ctx = current;
+      const st = status();
+      if (ctx?.route === 'factors' && (st === 'running' || st === 'finishing')) {
+        fail(generation, ctx, `Cell discovery stopped: ${msg.message}`);
+        // A late `factor-end` of this run logs nothing more.
+        current = null;
+      }
+      return;
+    }
+    if (msg.type !== 'factor-iteration' && msg.type !== 'factor-end') return;
+    const ctx = current;
+    const mine = ctx !== null && ctx.mode === 'iterate' && ctx.slowSession === msg.session;
+    if (msg.type === 'factor-iteration') {
+      if (!mine) return;
+      ctx.reports.push(msg.report);
+      setProcessed(msg.report.iteration);
+      setPhase((p) => ({
+        kind: 'iterate',
+        last: msg.report,
+        stopping: p?.kind === 'iterate' && p.stopping,
+      }));
+      return;
+    }
+    if (out && out.session === msg.session) {
+      out.release();
+      out = null;
+    }
+    if (mine) finishFactors(ctx, msg.stop, msg.iterations, msg.message, msg.refused === true);
+  }
+
+  /** The slow worker ended the iterations (a refusal is no failure of the factors). */
+  function finishFactors(
+    ctx: Ctx,
+    stop: FactorStop,
+    iterations: number,
+    message: string | undefined,
+    refused: boolean,
+  ): void {
+    const outcome = stop === 'stopped' ? 'cancelled' : stop === 'error' ? 'error' : 'done';
+    recordFactors(ctx, outcome, stop, iterations);
+    current = null;
+    setPhase(null);
+    if (outcome === 'error') {
+      if (!refused) setFactorFailed(true);
+      setError(message ?? 'Refine on the factors failed.');
+    }
+    setStatus(outcome);
+  }
+
+  /** Close the run in the log: what it changed, whose factors it read, how it stopped. */
+  function recordFactors(
+    ctx: Ctx,
+    outcome: 'done' | 'cancelled' | 'error',
+    stop: FactorStop,
+    iterations: number,
+  ): void {
+    const o = options.factorRefine;
+    const after = cells.library();
+    const change = after ? footprintChange(ctx.before, after) : { refined: 0, median: null };
+    const last = ctx.reports.at(-1);
+    const info = o?.factors.info() ?? null;
+    log.end('refine', outcome, {
+      frames: ctx.frames,
+      cells: after?.ids.length ?? 0,
+      libraryVersion: after?.version ?? 0,
+      refines: ctx.reports.reduce((s, r) => s + r.accepted, 0),
+      // Iterations over the whole recording are not a rate over its minutes.
+      refinesPerMin: null,
+      footprintsRefined: change.refined,
+      medianFootprintChange: change.median,
+      source: 'factors',
+      ...(info ? { tiling: info.tiling, meanRank: info.meanRank } : {}),
+      ...(o ? { factors: o.factors.origin() } : {}),
+      iterations,
+      stop,
+      ...(last ? { changedShare: last.changedShare } : {}),
+    });
+  }
+
+  /** Resolves once the slow worker holds no factor file of this store (a running Refine on the factors is stopped first). */
+  function release(): Promise<void> {
+    if (!out) return Promise.resolve();
+    options.factorRefine?.slow.stopFactors(out.session);
+    return out.done;
+  }
+
   /** Stop a running Refine: the slow loop publishes what it has refined so far. */
   function cancel(): void {
     const st = status();
     if (st !== 'running' && st !== 'finishing') return;
+    const ctx = current;
+    // The iterations: the slow worker stops after the current one and holds the files until then.
+    if (ctx?.mode === 'iterate') {
+      if (out) options.factorRefine?.slow.stopFactors(out.session);
+      setStatus('finishing');
+      setPhase((p) => (p?.kind === 'iterate' ? { ...p, stopping: true } : p));
+      return;
+    }
     generation++;
     inFlight = 0;
     setStatus('cancelled');
-    if (current) {
-      if (current.pumping) current.ended(false);
-      record(current, 'cancelled');
-      dropTraces(current);
+    setPhase(null);
+    if (ctx) {
+      if (ctx.pumping) ctx.ended(false);
+      record(ctx, 'cancelled');
+      dropTraces(ctx);
     }
-    void client.stopPipeline({ keepSlow: true }).catch(() => {});
+    if (!ctx || ctx.mode !== 'wait') void client.stopPipeline({ keepSlow: true }).catch(() => {});
   }
 
-  /** Forget the state (a new Discover run, another recording). */
+  /** Forget the state (a new Discover run, another recording); iterations in the slow worker are stopped (`release` waits for them). */
   function clear(): void {
     if (status() === 'running' || status() === 'finishing') generation++;
     if (current) {
       if (current.pumping) current.ended(false);
       dropTraces(current);
     }
+    if (out) options.factorRefine?.slow.stopFactors(out.session);
     current = null;
     setStatus('idle');
     setError(null);
@@ -408,9 +749,30 @@ export function createRefineStore(
     setTotal(0);
     setFps(0);
     setSeries(null);
+    setPhase(null);
+    setFactorFailed(false);
   }
 
-  return { status, processed, total, fps, error, series, run, cancel, clear };
+  return {
+    status,
+    processed,
+    total,
+    fps,
+    error,
+    series,
+    /** What a running Refine on the factors does (null: none runs). */
+    phase,
+    /** Where the next Refine reads (`?refine=factors`: the factors, unless `routeNote` says why not). */
+    route: (): 'raw' | 'factors' => routeOf(pipeline.record().frames).route,
+    routeNote: (): string | null => routeOf(pipeline.record().frames).note,
+    /** The settle stop and cap Refine on the factors iterates with (the Run panel's readout). */
+    factorSettings: (): FactorRefineSettings => options.factorRefine?.settings ?? FACTOR_REFINE,
+    run,
+    cancel,
+    clear,
+    release,
+    onSlowMessage,
+  };
 }
 
 export type RefineStore = ReturnType<typeof createRefineStore>;

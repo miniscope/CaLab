@@ -39,6 +39,7 @@ import { BoundaryMonitor, severityLabel, type BoundaryFlag } from './boundary-fl
 import type { SessionStart } from './session-boundary.ts';
 import type { RunHistory } from './run-history.ts';
 import type { LookbackFeed } from './lookback-client.ts';
+import type { CompressTiling } from '../workers/compress-types.ts';
 
 /** Step requests kept outstanding: one running, one queued so the worker never idles. */
 export const MAX_IN_FLIGHT = 2;
@@ -120,6 +121,18 @@ export interface FlatFieldStoreOptions {
   now?: () => number;
 }
 
+/** What other stages ask of a Discover start. */
+export interface PipelineStartHooks {
+  /**
+   * Awaited after a start has reset the run and before its workers start:
+   * Refine on the factors closes the factor files first (`RefineStore.release`),
+   * so the new run's compression never meets a file the slow worker holds.
+   */
+  beforeStart?: () => Promise<void>;
+  /** The tiles a live stream's Discover compresses on (compression on; default plain, as a file's). */
+  liveTiling?: CompressTiling;
+}
+
 /** Cache writes at most this often while a run goes on. */
 const FLAT_FIELD_WRITE_INTERVAL_MS = 60_000;
 
@@ -143,6 +156,8 @@ export function createPipelineStore(
   compress?: Pick<CompressStore, 'reset'>,
   /** Look-back (experimental): the look-back worker's feed (absent: look-back is not offered). */
   lookbackFeed?: LookbackFeed,
+  /** What other stages ask of a start (absent: nothing). */
+  hooks: PipelineStartHooks = {},
 ) {
   const [status, setStatus] = createSignal<PipelineStatus>('idle');
   const [plan, setPlan] = createSignal<PipelinePlan | null>(null);
@@ -503,6 +518,10 @@ export function createPipelineStore(
     cells?.reset(session);
     compress?.reset(session);
     try {
+      if (hooks.beforeStart) {
+        await hooks.beforeStart();
+        if (gen !== generation) return;
+      }
       // Flat field: a stored map of this device (if any) is in force from the first processed frame.
       const useFlat = flatEnabled() && client.subscribeFlatField !== undefined;
       flatSessionId = session;
@@ -533,6 +552,7 @@ export function createPipelineStore(
         setLookbackRun(true);
         if (flatLatest) lookbackFeed!.flatField(session, flatLatest);
       }
+      const live = flat.identity?.()?.live === true;
       const p = await client.startPipeline(
         { ...options, flatField: useFlat },
         {
@@ -542,7 +562,12 @@ export function createPipelineStore(
           qc,
           residual: residual(),
           ...(forwardBuffers ? { forwardBuffers } : {}),
-          ...(compress ? { compress: true } : {}),
+          ...(compress
+            ? {
+                compress: true,
+                ...(live && hooks.liveTiling ? { compressTiling: hooks.liveTiling } : {}),
+              }
+            : {}),
         },
         undefined,
         seed ? { seed } : undefined,

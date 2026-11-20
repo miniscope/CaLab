@@ -99,10 +99,28 @@ export interface Pass2Factors extends ReplayCompressLike {
   info(): { tiling: CompressTiling; meanRank: number } | null;
 }
 
+/** What Refine on the factors needs of the run's factors (`?refine=factors`). */
+export interface FactorFilesLike extends ReplayCompressLike {
+  state(frames: number): FactorState;
+  /**
+   * The factor files the slow worker may open now: once the factors are
+   * ready (the compress worker has closed every file) and no Extract job
+   * reads them. Null: not now, or no run folder is known.
+   */
+  files(frames: number): { folder: string; windows: number } | null;
+  info(): { tiling: CompressTiling; meanRank: number } | null;
+  /** Whose factors these are: a file's compression replay, or a live run's Discover. */
+  origin(): 'replay' | 'discover';
+  /** Windows waiting to be compressed. */
+  pending(): number;
+  /** The compression's error (null: none). */
+  compressionError(): string | null;
+}
+
 export function createPass2Factors(
   store: CompressStore,
-  client: Pick<CompressClient, 'extract'>,
-): Pass2Factors {
+  client: Pick<CompressClient, 'extract'> & Partial<Pick<CompressClient, 'folder'>>,
+): Pass2Factors & FactorFilesLike {
   let nextJob = 1;
   return {
     state: (frames) => store.factors(frames),
@@ -119,8 +137,20 @@ export function createPass2Factors(
     projection: () => store.projection(),
     info() {
       const s = store.status();
-      return s && s.source === 'replay' ? { tiling: s.tiling, meanRank: s.meanRank } : null;
+      // A live run's factors are Discover's own windows.
+      return s && (s.source === 'replay' || store.live())
+        ? { tiling: s.tiling, meanRank: s.meanRank }
+        : null;
     },
+    files(frames) {
+      const s = store.status();
+      if (!client.folder || !s || store.factors(frames) !== 'ready' || store.jobsOut() > 0)
+        return null;
+      return { folder: client.folder, windows: s.windows };
+    },
+    origin: () => (store.live() ? 'discover' : 'replay'),
+    pending: () => store.status()?.pending ?? 0,
+    compressionError: () => store.error(),
     extract(library, onWindow) {
       const job = nextJob++;
       return new Promise((resolve, reject) => {
@@ -138,6 +168,7 @@ export function createPass2Factors(
             reject(new Error(m.message));
           }
         });
+        store.jobSent(job);
         client.extract(store.session(), job, library.slice());
       });
     },

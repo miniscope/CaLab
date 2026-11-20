@@ -5,6 +5,8 @@ import {
   createCompressStore,
   extractSourceText,
   factorState,
+  LIVE_EXTRACT_READY,
+  liveFactorsBlocked,
 } from '../lib/compress-store.ts';
 import { createPass2Factors, ExtractAborted } from '../lib/factor-extract.ts';
 import type { FovProjections } from '../lib/fov-projection.ts';
@@ -306,5 +308,111 @@ describe('the compression switch', () => {
     expect(compressionOn(new URLSearchParams('compress'))).toBe(true);
     expect(compressionOn(new URLSearchParams('debug&compress&review'))).toBe(true);
     expect(compressionOn(new URLSearchParams('compress=off'))).toBe(false);
+  });
+});
+
+describe('the factors of a live run', () => {
+  const d = (p: Partial<CompressStatus> = {}) => st({ source: 'discover', frames: 1200, ...p });
+
+  it("are Discover's own windows, ready once the stream ended and every frame is compressed", () => {
+    expect(factorState(null, null, false, 1200, true)).toBe('none');
+    expect(factorState(d({ final: false, windows: 1, frames: 600 }), null, false, 1200, true)).toBe(
+      'compressing',
+    );
+    expect(factorState(d({ pending: 1, frames: 600 }), null, false, 1200, true)).toBe(
+      'compressing',
+    );
+    expect(factorState(d(), null, false, 1200, true)).toBe('ready');
+    expect(factorState(d({ tiling: 'plain' }), null, false, 1200, true)).toBe('ready');
+    // 600 k + 1 frames: the last window of one frame is not compressed.
+    expect(factorState(d(), null, false, 1201, true)).toBe('unusable');
+    expect(factorState(d(), 'QuotaExceededError', false, 1200, true)).toBe('unusable');
+    // A file run never takes Discover's windows for its factors.
+    expect(factorState(d(), null, false, 1200)).toBe('none');
+  });
+
+  it('say why Extract cannot read them yet, or nothing when it can', () => {
+    expect(liveFactorsBlocked('ready', d())).toBeNull();
+    expect(liveFactorsBlocked('compressing', d({ final: false, pending: 2 }))).toBe(
+      "The stream's last windows are being compressed (2 waiting).",
+    );
+    expect(liveFactorsBlocked('compressing', null)).toBe(
+      "The stream's last windows are being compressed.",
+    );
+    expect(liveFactorsBlocked('unusable', d(), true)).toBe(
+      'The compression failed: this stream has no factors to read. The export keeps the live traces.',
+    );
+    expect(liveFactorsBlocked('unusable', d())).toBe(
+      'The factors do not cover the stream (a last window of one frame is not compressed). The export keeps the live traces.',
+    );
+    expect(liveFactorsBlocked('none', null)).toBe(
+      'This stream has no factors to read. The export keeps the live traces.',
+    );
+    expect(LIVE_EXTRACT_READY).toBe(
+      'Extract reads the factors Discover wrote during the stream (seconds).',
+    );
+  });
+
+  it("let a live run's store read Discover's windows, with their tiling", () => {
+    const store = createCompressStore(undefined, () => true);
+    store.reset(7);
+    const f = createPass2Factors(store, { extract() {}, folder: 'run-x' });
+    store.onMessage({ type: 'status', session: 7, status: d() });
+    expect(store.live()).toBe(true);
+    expect(f.state(1200)).toBe('ready');
+    expect(f.info()).toEqual({ tiling: 'offset', meanRank: 3 });
+    expect(f.origin()).toBe('discover');
+    expect(f.files(1200)).toEqual({ folder: 'run-x', windows: 2 });
+  });
+});
+
+describe('the factor files a reader may open', () => {
+  it('only once the factors are ready and no Extract job reads them', async () => {
+    const store = createCompressStore();
+    store.reset(7);
+    const f = createPass2Factors(store, { extract() {}, folder: 'run-x' });
+    expect(f.files(100)).toBeNull();
+    store.onMessage({
+      type: 'status',
+      session: 7,
+      status: st({ final: false, pending: 3, windows: 1 }),
+    });
+    expect(f.files(100)).toBeNull();
+    expect(f.pending()).toBe(3);
+    store.onMessage({ type: 'status', session: 7, status: st() });
+    expect(f.files(100)).toEqual({ folder: 'run-x', windows: 2 });
+    expect(f.origin()).toBe('replay');
+    const job = f.extract(Uint8Array.of(1), () => {});
+    expect(store.jobsOut()).toBe(1);
+    expect(f.files(100)).toBeNull();
+    store.onMessage({ type: 'extract-done', session: 7, job: 1, frames: 100, msPerFrame: 1 });
+    await job;
+    expect(store.jobsOut()).toBe(0);
+    expect(f.files(100)).toEqual({ folder: 'run-x', windows: 2 });
+  });
+
+  it('count a job until the worker answers it, and forget jobs at a reset or a crashed worker', () => {
+    const store = createCompressStore();
+    store.reset(7);
+    const f = createPass2Factors(store, { extract() {}, folder: 'run-x' });
+    void f.extract(Uint8Array.of(1), () => {}).catch(() => {});
+    store.onMessage({ type: 'error', session: 3, job: 1, message: 'an earlier run' });
+    expect(store.jobsOut()).toBe(1);
+    store.onMessage({ type: 'error', session: 7, job: 1, message: 'out of memory' });
+    expect(store.jobsOut()).toBe(0);
+    void f.extract(Uint8Array.of(1), () => {}).catch(() => {});
+    store.reset(8);
+    expect(store.jobsOut()).toBe(0);
+    void f.extract(Uint8Array.of(1), () => {}).catch(() => {});
+    store.onMessage({ type: 'error', session: -1, message: 'The compress worker crashed.' });
+    expect(store.jobsOut()).toBe(0);
+    expect(f.compressionError()).toBe('The compress worker crashed.');
+  });
+
+  it('has no folder without a compress client that names one', () => {
+    const store = createCompressStore();
+    store.reset(7);
+    store.onMessage({ type: 'status', session: 7, status: st() });
+    expect(createPass2Factors(store, { extract() {} }).files(100)).toBeNull();
   });
 });

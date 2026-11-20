@@ -175,6 +175,8 @@ export function createCellStore(
   const [library, setLibrary] = createSignal<LibraryView | null>(null);
   const [geometry, setGeometry] = createSignal<CellGeometry | null>(null);
   const [status, setStatus] = createSignal<SlowStatus | null>(null);
+  /** The slow loop's library is final (see `finalLibrary` below). */
+  const [finalLibrary, setFinalLibrary] = createSignal(false);
   const [selected, setSelected] = createSignal<number | null>(null);
   const [frame, setFrame] = createSignal(0);
   const [version, setVersion] = createSignal(0);
@@ -223,6 +225,7 @@ export function createCellStore(
     setLibrary(null);
     setGeometry(null);
     setStatus(null);
+    setFinalLibrary(false);
     setSelected(null);
     setFrame(0);
     setVersion(0);
@@ -262,30 +265,41 @@ export function createCellStore(
     if (msg.session !== session && !(msg.type === 'error' && msg.session === -1)) return;
     if (msg.type === 'library') onLibrary(msg.library, msg.bytes);
     else if (msg.type === 'status') {
-      if (!msg.status.final) {
-        pushRecent(slowBatchMs, msg.status.batchMs);
-        pushRecent(slowStepMs, msg.status.maxStepMs);
-      }
       const st = msg.status;
-      const c = st.counters;
-      editRates.push(st.frame / fps() / 60, {
-        adds: c.adds,
-        merges: c.merges,
-        splits: c.splits ?? 0,
-        deletes: c.deletes ?? 0,
-        newAdds: c.newAdds ?? 0,
-        reAdds: c.reAdds ?? 0,
-        churned: c.churned ?? 0,
-        establishedRemovals: c.establishedRemovals ?? 0,
-      });
+      // An iteration of Refine on the factors reads the whole recording at
+      // once: it has no batch timing, and its frame is no point in stream time.
+      if (!st.factorRun) {
+        if (!st.final) {
+          pushRecent(slowBatchMs, st.batchMs);
+          pushRecent(slowStepMs, st.maxStepMs);
+        }
+        const c = st.counters;
+        editRates.push(st.frame / fps() / 60, {
+          adds: c.adds,
+          merges: c.merges,
+          splits: c.splits ?? 0,
+          deletes: c.deletes ?? 0,
+          newAdds: c.newAdds ?? 0,
+          reAdds: c.reAdds ?? 0,
+          churned: c.churned ?? 0,
+          establishedRemovals: c.establishedRemovals ?? 0,
+        });
+      }
       if (st.cellStatus) {
         const m = new Map<number, boolean>();
         const { ids, established: est } = st.cellStatus;
         for (let i = 0; i < ids.length; i++) m.set(ids[i], est[i] === 1);
         setEstablished(m);
       }
+      // A status of Refine on the factors leaves it as it was: that run starts
+      // on a final library and ends each iteration with one, so neither a
+      // status of it nor a crash during it takes the final library back.
+      if (st.final) setFinalLibrary(true);
+      else if (!st.factorRun) setFinalLibrary(false);
       setStatus(st);
       for (const fn of statusListeners) fn(st);
+    } else if (msg.type === 'factor-iteration' || msg.type === 'factor-end') {
+      // Refine on the factors: the store that started it reads these (its errors come in `factor-end`).
     } else setError(msg.message);
   }
 
@@ -429,6 +443,13 @@ export function createCellStore(
     libraryBytes: () => latestBytes,
     geometry,
     status,
+    /**
+     * The slow loop published its final library (Discover's, or a raw Refine's
+     * after its replay) and no replay runs: `status().final`, except that a
+     * Refine on the factors and a slow-worker crash during it never clear it.
+     * False again at a new Discover (`reset`).
+     */
+    finalLibrary,
     /** Be told every slow-loop status of the current session (the boundary flags count its adds). */
     onStatus: (fn: (st: SlowStatus) => void) => statusListeners.push(fn),
     error,

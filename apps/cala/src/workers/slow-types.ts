@@ -178,6 +178,12 @@ export interface SlowStatus {
   cellStatus?: CellStatusView;
   /** Look-back counters (absent: look-back off). */
   lookback?: LookbackStatus;
+  /**
+   * Refine on the factors is running: the status of one of its iterations
+   * (`frame` is the whole recording at once), so no batch timing and no
+   * point of the edit rates' clock.
+   */
+  factorRun?: boolean;
 }
 
 /** A published library, flattened for drawing (unfiltered footprints). */
@@ -207,7 +213,29 @@ export type SlowToMain =
       /** The same library as `TraceLibrary.toBytes()` (a copy), so pass 2 can solve with the final one. */
       bytes: Uint8Array;
     }
-  | { type: 'error'; session: number; message: string };
+  | {
+      type: 'error';
+      session: number;
+      message: string;
+      /**
+       * `slow`: the slow worker itself crashed (its `onerror`, session -1), so
+       * it holds no file any more. Absent: anything else, a visit worker's
+       * crash or a failed `connectSlow` included.
+       */
+      worker?: 'slow';
+    }
+  /** One iteration of Refine on the factors is done (its library went out just before). */
+  | { type: 'factor-iteration'; session: number; report: FactorIteration }
+  /** Refine on the factors ended; its files are closed. Sent on every path, refusals included. */
+  | {
+      type: 'factor-end';
+      session: number;
+      iterations: number;
+      stop: FactorStop;
+      message?: string;
+      /** The run was refused before it opened the files (`stop` is `error`, `iterations` 0): no failure of the factors. */
+      refused?: true;
+    };
 
 /**
  * Main thread -> slow worker: the port to the fast worker, and one port to
@@ -248,7 +276,72 @@ export interface SlowStopSettling {
   session: number;
 }
 
-export type MainToSlow = SlowConnect | SlowReviewed | SlowLookbackPort | SlowStopSettling;
+/** What one iteration of Refine on the factors did (`SlowLoop.refineOnFactors`). */
+export interface FactorIteration {
+  /** Counted from 1. */
+  iteration: number;
+  libraryVersion: number;
+  cells: number;
+  /** Frames the iteration read (the whole recording), and the fitting frames among them. */
+  frames: number;
+  fittingFrames: number;
+  /** Refinements accepted. */
+  accepted: number;
+  /** Share of cells whose footprint correlates below `settleCorr` with the one before, and the median of `1 - r`. */
+  changedShare: number;
+  medianChange: number;
+  /** Cells with a pixel whose valid share in some window is below 1 (up to rounding). */
+  lowValid: number;
+  /** Tiles with cells that had too few held-out frames to refine. */
+  tilesSkipped: number;
+  /** Wall time of the iteration, ms. */
+  ms: number;
+}
+
+/** Why Refine on the factors ended. */
+export type FactorStop = 'settled' | 'nothing-accepted' | 'cap' | 'stopped' | 'error';
+export const FACTOR_STOPS: readonly FactorStop[] = [
+  'settled',
+  'nothing-accepted',
+  'cap',
+  'stopped',
+  'error',
+];
+
+/** The settle stop and the cap of Refine on the factors (spec §5). */
+export interface FactorRefineSettings {
+  settleCorr: number;
+  settleShare: number;
+  maxIterations: number;
+  /** Held-out frames per tile for the gate (0: what a tile's reservoir holds). */
+  testFrames: number;
+}
+
+/**
+ * Main thread -> slow worker: Refine on the factors of the run folder
+ * `folder` (`f0.bin` .. `f<windows - 1>.bin`), which the slow worker opens
+ * now and closes before its `factor-end`.
+ */
+export interface SlowRefineFactors extends FactorRefineSettings {
+  type: 'refine-factors';
+  session: number;
+  folder: string;
+  windows: number;
+}
+
+/** Main thread -> slow worker: stop Refine on the factors after its current iteration. */
+export interface SlowStopFactors {
+  type: 'stop-factors';
+  session: number;
+}
+
+export type MainToSlow =
+  | SlowConnect
+  | SlowReviewed
+  | SlowLookbackPort
+  | SlowStopSettling
+  | SlowRefineFactors
+  | SlowStopFactors;
 
 /** Main thread -> visit worker: the port to the slow worker. */
 export interface VisitConnect {

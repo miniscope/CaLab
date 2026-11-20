@@ -7,7 +7,9 @@
  * `SlowRunner`). Cells a history review found arrive from the main thread.
  */
 import { initCalaWasm, SlowLoop } from '../lib/cala-wasm.ts';
+import { factorName } from '../lib/compress-runner.ts';
 import { buildSlowLoop, SlowRunner, type SlowLoopLike } from '../lib/slow-runner.ts';
+import { openFactorReader } from '../lib/window-store.ts';
 import type { LookbackToSlow } from './lookback-types.ts';
 import type { FastToSlow, MainToSlow, SlowToMain, VisitToOwner } from './slow-types.ts';
 
@@ -64,6 +66,26 @@ workerScope.onmessage = (e) => {
     runner?.stopSettling(data.session);
     return;
   }
+  // Not queued: it gives way between iterations, so a reset from the fast worker gets in.
+  if (data.type === 'refine-factors') {
+    const r = runner;
+    if (r) void r.refineOnFactors(data).catch((err: unknown) => report(data.session, err));
+    else
+      workerScope.postMessage({
+        type: 'factor-end',
+        session: data.session,
+        iterations: 0,
+        stop: 'error',
+        message: 'The slow worker is not connected.',
+        // Refused before any file was opened: no failure of the factors.
+        refused: true,
+      });
+    return;
+  }
+  if (data.type === 'stop-factors') {
+    runner?.stopFactors(data.session);
+    return;
+  }
   if (data.type !== 'connect') return;
   port?.close();
   for (const v of visits) v.close();
@@ -76,6 +98,12 @@ workerScope.onmessage = (e) => {
     toFast,
     toMain: { postMessage: (m, t) => workerScope.postMessage(m, t) },
     visits,
+    // The run's factor files, opened without owning their folder.
+    openFactors: (folder, windows) =>
+      openFactorReader(
+        folder,
+        Array.from({ length: windows }, (_, i) => factorName(i)),
+      ),
   });
   const r = runner;
   connectLookback();

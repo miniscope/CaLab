@@ -37,12 +37,15 @@ import type { LookbackStatus, LookbackToSlow, SlowToLookback } from '../workers/
 import type {
   CellStatusView,
   EditScopeName,
+  FactorIteration,
+  FactorStop,
   FastToSlow,
   LibraryView,
   OwnerToVisit,
   PortLike,
   SlowCounters,
   SlowInit,
+  SlowRefineFactors,
   SlowReviewed,
   SlowStatus,
   SlowToFast,
@@ -50,6 +53,7 @@ import type {
   VisitToOwner,
 } from '../workers/slow-types.ts';
 import { libraryViewTransferables } from '../workers/slow-types.ts';
+import type { FactorReader } from './window-store.ts';
 
 /** What the runner needs of a published `TraceLibrary`. */
 export interface PublishedLibrary {
@@ -115,6 +119,13 @@ export interface SlowLoopLike {
     ids: Float64Array,
   ): boolean;
   markAllDue?(): void;
+  /** One Refine iteration on the factors (`SlowLoop.refineOnFactors`; absent in older fakes and builds). */
+  refineOnFactors?(
+    reader: Pick<FactorReader, 'windows' | 'read'>,
+    settleCorr: number,
+    settleShare: number,
+    testFrames: number,
+  ): Float64Array;
   /** `[requested, pushed, heldOut, dropped, births, inNeed, recordBytes]`. */
   lookbackStats?(): Float64Array;
   free(): void;
@@ -205,6 +216,8 @@ export interface SlowRunnerDeps {
   defer?: (fn: () => void) => void;
   /** Call `fn` after `ms` unless cancelled (default `setTimeout`). */
   timer?: (fn: () => void, ms: number) => () => void;
+  /** Open the run's factor files for Refine on the factors (absent: refused). */
+  openFactors?: (folder: string, windows: number) => Promise<FactorReader>;
 }
 
 /** One frame of an outstanding look-back request. */
@@ -274,6 +287,31 @@ function cellStatusView(flat: ArrayLike<number>): CellStatusView {
   return { ids, established };
 }
 
+/** `SlowLoop.refineOnFactors` output as a report, and its settle code (0: not settled, 1: settled, 2: nothing accepted). */
+export function factorIteration(
+  iteration: number,
+  r: ArrayLike<number>,
+  ms: number,
+): { report: FactorIteration; settle: number } {
+  if (r.length < 10) throw new Error(`refineOnFactors returned ${r.length} values, expected 10.`);
+  return {
+    report: {
+      iteration,
+      libraryVersion: r[0],
+      cells: r[1],
+      frames: r[2],
+      fittingFrames: r[3],
+      accepted: r[4],
+      changedShare: r[5],
+      medianChange: r[6],
+      lowValid: r[7],
+      tilesSkipped: r[8],
+      ms,
+    },
+    settle: r[9],
+  };
+}
+
 export class SlowRunner {
   private readonly deps: SlowRunnerDeps;
   private readonly now: () => number;
@@ -281,6 +319,8 @@ export class SlowRunner {
   private session = -1;
   private loop: SlowLoopLike | null = null;
   private init: SlowInit | null = null;
+  /** The noise map the loop has now (the init's, then each newer one a batch brought). */
+  private noise: Float32Array | null = null;
   private frame = 0;
   private consumed = 0;
   private observed = 0;
@@ -315,6 +355,12 @@ export class SlowRunner {
   private drain: Drain | null = null;
   private drainSteps = 0;
   private drainCapped = false;
+  /**
+   * Refine on the factors in progress (its files are open) and the loop it
+   * refines; cleared only by its own end, which may come a turn after a reset
+   * dropped that loop (see `factorOwnsLoop`).
+   */
+  private factorRun: { session: number; stop: boolean; loop: SlowLoopLike } | null = null;
   private readonly defer: (fn: () => void) => void;
   private readonly timer: (fn: () => void, ms: number) => () => void;
 
@@ -336,6 +382,15 @@ export class SlowRunner {
   /** The port to the look-back worker (runs with look-back started from now on use it). */
   connectLookback(port: PortLike<SlowToLookback>): void {
     this.lbPort = port;
+  }
+
+  /**
+   * Refine on the factors holds the current loop: frames, ends, replays and
+   * reviews of the run wait. A run whose loop a reset dropped holds nothing
+   * (a new session never waits for an old run's turn).
+   */
+  private get factorOwnsLoop(): boolean {
+    return this.factorRun !== null && this.factorRun.loop === this.loop;
   }
 
   /** Tile visits run on visit workers. */
@@ -383,6 +438,7 @@ export class SlowRunner {
           ...(lookback ? { lookback: true } : {}),
         };
         this.loop = this.deps.create(this.init);
+        this.noise = noise;
         this.run = 1;
         this.lbOn = lookback === true && typeof this.loop.lookbackTake === 'function';
         if (this.lbOn && !this.lbPort) this.lbError = 'The look-back worker is not connected.';
@@ -403,7 +459,14 @@ export class SlowRunner {
 
   /** What a history review found, from the main thread. */
   handleReviewed(msg: SlowReviewed): void {
-    if (msg.session !== this.session || !this.loop || this.ending || this.final || this.drain)
+    if (
+      msg.session !== this.session ||
+      !this.loop ||
+      this.ending ||
+      this.final ||
+      this.drain ||
+      this.factorOwnsLoop
+    )
       return;
     try {
       this.reviewed.push(msg.candidates);
@@ -476,9 +539,12 @@ export class SlowRunner {
     let maxStep = 0;
     const t0 = this.now();
     try {
+      // Refine on the factors owns the loop: the buffer goes back, nothing is observed.
+      if (this.factorOwnsLoop) return;
       if (loop && init) {
         if (msg.noise) {
           loop.setNoise(msg.noise);
+          this.noise = msg.noise;
           for (const v of this.visits)
             v.postMessage({ type: 'noise', session: this.session, noise: msg.noise });
         }
@@ -525,7 +591,7 @@ export class SlowRunner {
         }
       }
     } finally {
-      this.consumed = Math.max(this.consumed, msg.start + msg.count);
+      if (!this.factorOwnsLoop) this.consumed = Math.max(this.consumed, msg.start + msg.count);
       // The buffer always goes back, or the fast worker's pool would shrink.
       this.deps.toFast.postMessage(
         {
@@ -689,6 +755,150 @@ export class SlowRunner {
     this.drainPump();
   }
 
+  // ---- Refine on the factors ----
+
+  /** Stop a running Refine on the factors after its current iteration. */
+  stopFactors(session: number): void {
+    if (this.factorRun?.session === session) this.factorRun.stop = true;
+  }
+
+  /** Why Refine on the factors cannot start now (null: it can). */
+  private factorRefusal(msg: SlowRefineFactors): string | null {
+    const loop = this.loop;
+    if (msg.session !== this.session || !loop) return 'No slow loop to refine: run Discover first.';
+    // (Even one whose loop a reset dropped: its files are open until its end.)
+    if (this.factorRun) return 'Refine on the factors is already running.';
+    const cap = msg.maxIterations;
+    if (!Number.isInteger(cap) || cap < 1)
+      return `maxIterations must be a whole number from 1, not ${cap}.`;
+    // (`ending` stays set after a run's final library, until the next run starts.)
+    if (!this.final || this.drain || this.busy.some((b) => b))
+      return 'The slow loop has not published its final library yet.';
+    if (!loop.refineOnFactors || !loop.setEditScope)
+      return 'This build of the slow loop cannot refine on the factors.';
+    if (!this.deps.openFactors) return 'This worker cannot read the factor files.';
+    return null;
+  }
+
+  /**
+   * Refine on the factors (`refine-factors`): one `refineOnFactors` call per
+   * iteration on the run's factor files, a report and the published library
+   * after each, until the footprints settle, `maxIterations` ran, the main
+   * thread stops it (`stopFactors`) or a reset drops the loop; the last two
+   * take effect between iterations, where it gives way (`defer`). Not queued
+   * behind the port's messages, so a reset gets in. The files are open only
+   * while it runs, and it always ends with `factor-end`, after closing them:
+   * the main thread lets nothing else touch them before.
+   */
+  async refineOnFactors(msg: SlowRefineFactors): Promise<void> {
+    const refused = this.factorRefusal(msg);
+    if (refused !== null) {
+      this.deps.toMain.postMessage({
+        type: 'factor-end',
+        session: msg.session,
+        iterations: 0,
+        stop: 'error',
+        message: refused,
+        // Not a failure of the factors: the main thread may still read them.
+        refused: true,
+      });
+      return;
+    }
+    // `factorRefusal` refuses without a loop.
+    const loop = this.loop!;
+    const run = { session: msg.session, stop: false, loop };
+    this.factorRun = run;
+    let reader: FactorReader | null = null;
+    let iterations = 0;
+    let stop: FactorStop = 'error';
+    let message: string | undefined;
+    try {
+      reader = await this.deps.openFactors!(msg.folder, msg.windows);
+      if (this.loop !== loop || run.stop) {
+        stop = 'stopped';
+        return;
+      }
+      // `refineOnFactors` leaves these to its caller: the loop's noise map
+      // (the visit workers' too, or their noise generation falls behind), the
+      // frozen cell set, and nothing pending, so an iteration never publishes
+      // edits that `observe` does not know.
+      if (this.noise) {
+        loop.setNoise(this.noise);
+        for (const v of this.visits)
+          v.postMessage({ type: 'noise', session: this.session, noise: this.noise });
+      }
+      loop.setEditScope!('refine');
+      this.scope = 'refine';
+      this.publish(loop.finalize());
+      this.run++;
+      // `final` stays set: every iteration ends with a finalized library, and
+      // `factorOwnsLoop` keeps out what `final` would (an end, a replay, frames,
+      // reviews). A status of the run never says the library is not final, so
+      // one that traps or a crash leaves the main thread with a final library.
+      this.ending = false;
+      this.frame = 0;
+      this.consumed = 0;
+      this.status(0, 0);
+      for (let it = 1; ; it++) {
+        const t0 = this.now();
+        const r = loop.refineOnFactors!(reader, msg.settleCorr, msg.settleShare, msg.testFrames);
+        const { report, settle } = factorIteration(it, r, this.now() - t0);
+        iterations = it;
+        this.frame = report.frames;
+        this.consumed = report.frames;
+        // The iteration's library (version `r[0]`); `observe` takes it once `finalize` kept it.
+        this.publish(loop.finalize());
+        this.deps.toMain.postMessage({ type: 'factor-iteration', session: msg.session, report });
+        this.status(0, 0);
+        if (settle !== 0) {
+          stop = settle === 2 ? 'nothing-accepted' : 'settled';
+          return;
+        }
+        if (it >= msg.maxIterations) {
+          stop = 'cap';
+          return;
+        }
+        // A stop or a reset gets in here, never inside an iteration.
+        await new Promise<void>((resolve) => this.defer(resolve));
+        if (this.loop !== loop || run.stop) {
+          stop = 'stopped';
+          return;
+        }
+      }
+    } catch (err) {
+      stop = 'error';
+      message = err instanceof Error ? err.message : String(err);
+    } finally {
+      // The main thread waits for `factor-end` before anything else touches
+      // the files, so nothing here may keep it from going out: after an
+      // iteration that trapped (out of memory) the WASM instance throws on
+      // every call, the status's included, and closing the files may fail too.
+      if (this.factorRun === run) this.factorRun = null;
+      try {
+        reader?.close();
+      } catch (err) {
+        console.warn('cala: closing the factor files failed', err);
+      }
+      // The loop keeps the last published library (nothing was pending before
+      // an iteration, and a failed one installs nothing).
+      if (this.loop === loop && this.init) {
+        this.final = true;
+        try {
+          this.status(0, 0);
+        } catch (err) {
+          console.warn('cala: the status after Refine on the factors failed', err);
+        }
+      }
+      this.deps.toMain.postMessage({
+        type: 'factor-end',
+        session: msg.session,
+        iterations,
+        stop,
+        ...(message !== undefined ? { message } : {}),
+      });
+    }
+  }
+
   /** Discover's last frame with look-back on: settle (see `drainPump`). */
   private startDrain(): void {
     const loop = this.loop!;
@@ -796,6 +1006,8 @@ export class SlowRunner {
   /** Another run from frame 0 into this loop (see `FastToSlow` `replay`). */
   private replay(scope: EditScopeName): void {
     const loop = this.loop;
+    // A stray replay while Refine on the factors runs: that run keeps the loop.
+    if (this.factorOwnsLoop) return;
     if (!loop) throw new Error('No slow loop to refine: run Discover first.');
     if (!this.final) throw new Error('The slow loop has not published its final library yet.');
     if (!loop.setEditScope) throw new Error('This build of the slow loop cannot refine.');
@@ -811,7 +1023,7 @@ export class SlowRunner {
 
   private end(): void {
     const loop = this.loop;
-    if (!loop || this.final || this.ending || this.drain) return;
+    if (!loop || this.final || this.ending || this.drain || this.factorOwnsLoop) return;
     // A look-back Discover settles first (`drainPump`).
     if (this.lbOn && this.run === 1) {
       this.startDrain();
@@ -916,6 +1128,7 @@ export class SlowRunner {
       run: this.run,
       editScope: this.scope,
       ...(this.lbOn ? { lookback: this.lookbackStatus(loop) } : {}),
+      ...(this.factorOwnsLoop ? { factorRun: true } : {}),
     };
     this.visitMs = status.visitMs;
     this.visitMsSum = 0;
@@ -935,6 +1148,7 @@ export class SlowRunner {
     this.loop?.free();
     this.loop = null;
     this.init = null;
+    this.noise = null;
     this.frame = 0;
     this.consumed = 0;
     this.observed = 0;
