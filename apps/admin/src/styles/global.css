@@ -1150,3 +1150,67 @@ main {
   display: flex;
   gap: 8px;
 }
+
+/* Donations drawer */
+.donation-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.donation-section h4 {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.donation-files {
+  margin: 0;
+  padding-left: 1.2em;
+  font-size: 0.78rem;
+}
+
+.donation-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.donation-field textarea,
+.donation-field input {
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+}
+
+.donation-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.donation-preview {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.donation-preview__fig {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+}
+
+.donation-preview__canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+  background: #000;
+}

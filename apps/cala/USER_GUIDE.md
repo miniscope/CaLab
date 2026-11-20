@@ -49,7 +49,8 @@ A **Miniscope recording folder**: a numbered series of `.avi` files, plus the si
 - Files with a prefix (`neural_metaData.json`, `neural_timestamp.csv`) are recognised.
 - Open the folder with the picker, or drop it on the page. **Choose individual files**
   is there for odd layouts: those files open in natural order (`clip 2` before `clip 10`)
-  even when their names are not numbered like a series. Files are read locally and never leave your computer. In
+  even when their names are not numbered like a series. Files are read locally and never leave your computer
+  (unless you choose to donate a recording, see [Donating a recording](#donating-a-recording)). In
   Chrome and Edge the picker asks permission to "view files" in the folder (read-only).
   Firefox and Safari show their own upload-worded confirmation, which is misleading:
   nothing is uploaded.
@@ -401,6 +402,19 @@ Useful options: `--fps 30` (default: the rate in the recording's metadata),
 (begin at that frame), `--frames 1000` (stop after that many) and `--port`
 if 8765 is taken. Press Ctrl+C to stop the stream. The recording is only read,
 never changed. See the README for the protocol and the full option list.
+
+## Donating a recording
+
+The **Recording** tab of an opened recording (not a live source) has a **Donate data**
+button, shown when the app is connected to the CaLab community backend. Donated recordings
+go into the cala benchmark set, so cala gets better on your kind of data, and donors who
+agree to be contacted are offered co-authorship if a dataset is used in a benchmark or
+dataset paper. Nothing is uploaded until you sign in with your email, fill in the form
+(indicator, species, brain region, scope, license) and tick both consent boxes. The raw
+frames are then compressed without loss in the browser (about 1.65x smaller, up to 10 GB
+per donation) and uploaded with `timeStamps.csv` and the file names, never folder paths.
+**My donations** lists what you sent, whether it is in the benchmark, and lets you withdraw
+it until the lab has taken it in.
 
 ## Known limitations
 

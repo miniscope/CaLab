@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js';
-import { Switch, Match, ErrorBoundary } from 'solid-js';
+import { Switch, Match, ErrorBoundary, Show } from 'solid-js';
 import { DashboardShell, CompactHeader } from '@calab/ui';
 import { isAuthCallback, AuthCallback } from '@calab/community-ui';
 import { AdminGuard } from './components/AdminGuard.tsx';
@@ -11,6 +11,7 @@ import { UsersView } from './components/UsersView.tsx';
 import { UsageView } from './components/UsageView.tsx';
 import { GeographyView } from './components/GeographyView.tsx';
 import { SubmissionsView } from './components/SubmissionsView.tsx';
+import { DonationsView } from './components/DonationsView.tsx';
 import { ExportPanel } from './components/ExportPanel.tsx';
 import { TooltipLayer } from './components/charts/tooltip.tsx';
 import { DataGate } from './components/DataGate.tsx';
@@ -54,7 +55,10 @@ const App: Component = () => {
         <div class="admin-layout">
           <NavBar />
           <div class="admin-content">
-            <FilterBar />
+            {/* Donations load on their own and ignore the analytics filters. */}
+            <Show when={activeView() !== 'donations'}>
+              <FilterBar />
+            </Show>
             <main id="main">
               <ErrorBoundary
                 fallback={(err, reset) => (
@@ -75,41 +79,48 @@ const App: Component = () => {
                   </div>
                 )}
               >
-                <DataGate
-                  tables={tables}
-                  schemaMessages={() => schema().messages}
-                  orphanEvents={() => dataset.latest?.orphanEvents ?? 0}
-                  matching={() => cur().length}
-                  needsSessions={activeView() !== 'submissions' && activeView() !== 'export'}
-                  needsEvents={['cala', 'users', 'usage', 'export'].includes(activeView())}
-                  onStop={stopLoading}
-                  onSevenDays={() => setFilters((f) => ({ ...f, preset: '7d' }))}
-                  onReset={() => setFilters({ ...DEFAULT_FILTERS, preset: 'all' })}
+                <Show
+                  when={activeView() === 'donations'}
+                  fallback={
+                    <DataGate
+                      tables={tables}
+                      schemaMessages={() => schema().messages}
+                      orphanEvents={() => dataset.latest?.orphanEvents ?? 0}
+                      matching={() => cur().length}
+                      needsSessions={activeView() !== 'submissions' && activeView() !== 'export'}
+                      needsEvents={['cala', 'users', 'usage', 'export'].includes(activeView())}
+                      onStop={stopLoading}
+                      onSevenDays={() => setFilters((f) => ({ ...f, preset: '7d' }))}
+                      onReset={() => setFilters({ ...DEFAULT_FILTERS, preset: 'all' })}
+                    >
+                      <Switch>
+                        <Match when={activeView() === 'overview'}>
+                          <OverviewView />
+                        </Match>
+                        <Match when={activeView() === 'cala'}>
+                          <CalaView />
+                        </Match>
+                        <Match when={activeView() === 'users'}>
+                          <UsersView />
+                        </Match>
+                        <Match when={activeView() === 'geography'}>
+                          <GeographyView />
+                        </Match>
+                        <Match when={activeView() === 'usage'}>
+                          <UsageView />
+                        </Match>
+                        <Match when={activeView() === 'submissions'}>
+                          <SubmissionsView />
+                        </Match>
+                        <Match when={activeView() === 'export'}>
+                          <ExportPanel />
+                        </Match>
+                      </Switch>
+                    </DataGate>
+                  }
                 >
-                  <Switch>
-                    <Match when={activeView() === 'overview'}>
-                      <OverviewView />
-                    </Match>
-                    <Match when={activeView() === 'cala'}>
-                      <CalaView />
-                    </Match>
-                    <Match when={activeView() === 'users'}>
-                      <UsersView />
-                    </Match>
-                    <Match when={activeView() === 'geography'}>
-                      <GeographyView />
-                    </Match>
-                    <Match when={activeView() === 'usage'}>
-                      <UsageView />
-                    </Match>
-                    <Match when={activeView() === 'submissions'}>
-                      <SubmissionsView />
-                    </Match>
-                    <Match when={activeView() === 'export'}>
-                      <ExportPanel />
-                    </Match>
-                  </Switch>
-                </DataGate>
+                  <DonationsView />
+                </Show>
               </ErrorBoundary>
             </main>
           </div>

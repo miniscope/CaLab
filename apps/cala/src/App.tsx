@@ -2,7 +2,7 @@ import type { Component } from 'solid-js';
 import { createEffect, createSignal, For, on, Show } from 'solid-js';
 import { CompactHeader, DashboardShell } from '@calab/ui';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
-import { authLoading, user } from '@calab/community';
+import { authLoading, supabaseEnabled, user } from '@calab/community';
 import { createFrameClient } from './lib/frame-client.ts';
 import { createViewerStore, FALLBACK_PLAYBACK_FPS } from './lib/viewer-store.ts';
 import { createPipelineStore } from './lib/pipeline-store.ts';
@@ -68,6 +68,9 @@ import type { ExportInput } from './lib/export.ts';
 import type { ProjectResult } from './lib/project-index.ts';
 import { openResult, type LoadedResult } from './lib/result-file.ts';
 import { ResultView, type ResultOrigin } from './components/ResultView.tsx';
+import { DonatePanel } from './components/DonatePanel.tsx';
+import { createDonationStore } from './lib/donation-store.ts';
+import type { DonationSource } from './workers/donation-types.ts';
 
 const App: Component = () => {
   // Magic-link redirect: show the sign-in confirmation instead of the app.
@@ -348,10 +351,16 @@ const App: Component = () => {
     };
   }
 
+  // ---- Data donation (docs/data-donation.md): only with a community backend ----
+  const donation = supabaseEnabled ? createDonationStore() : null;
+  /** The open recording's files, for a donation (null: live, or nothing open). */
+  const [donationSource, setDonationSource] = createSignal<DonationSource | null>(null);
+
   // Opening a folder starts preprocessing and motion correction right away.
   async function open(files: Parameters<typeof store.openFiles>[0], label: string) {
     pipeline.stop();
     await store.openFiles(files, label);
+    setDonationSource(store.info() ? { entries: files } : null);
     if (store.info()) void pipeline.start();
   }
 
@@ -366,10 +375,12 @@ const App: Component = () => {
     async openJoint(sessions) {
       pipeline.stop();
       const n = sessions.length;
+      const inputs = sessions.map((s) => toSessionInput(s.candidate));
       await store.openSessions(
-        sessions.map((s) => toSessionInput(s.candidate)),
+        inputs,
         `${sessions[0].candidate.name} + ${n - 1} more (${n} sessions)`,
       );
+      setDonationSource(store.info() ? { sessions: inputs } : null);
       if (store.info()) void pipeline.start();
     },
     async openOne(session, index) {
@@ -379,6 +390,7 @@ const App: Component = () => {
         session.candidate.entries,
         `Session ${index + 1} of ${n}: ${session.candidate.name}`,
       );
+      setDonationSource(store.info() ? { entries: session.candidate.entries } : null);
       if (store.info()) void pipeline.start();
     },
     stages: () => ({
@@ -542,6 +554,7 @@ const App: Component = () => {
   // So does connecting to a live source (`?live=<url>` connects on load).
   async function openLive(url: string) {
     pipeline.stop();
+    setDonationSource(null);
     await store.openLive(url);
     if (store.info()) void pipeline.start();
   }
@@ -702,6 +715,19 @@ const App: Component = () => {
         info: lp.info,
         ui: historyUi,
         fov: () => (expanded() ? fov() : null),
+        // Donate data: a recording opened from files, with a community backend.
+        donate:
+          donation && !lp.info.live
+            ? () => (
+                <DonatePanel
+                  donation={donation}
+                  info={lp.info}
+                  source={donationSource()}
+                  label={store.label()}
+                  version={version}
+                />
+              )
+            : undefined,
       }),
     ];
     /* eslint-enable solid/reactivity */

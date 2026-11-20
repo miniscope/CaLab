@@ -235,6 +235,18 @@ path>/cala-export.npz` and `cala-session.json`, plus `cala-results/cala-run.json
 - Boundaries: `onSessionBoundary` in `lib/session-boundary.ts` is called by both
   engines and does nothing yet; `session` events go to the run's event log.
 
+## Data donation
+
+**Donate data** (bottom of the Recording tab; only with a Supabase backend
+configured, never for a live source) sends the open recording to the lab, as
+designed in `docs/data-donation.md`. Nothing is encoded or uploaded until the
+donor is signed in (a real account, not the anonymous analytics session), has
+filled the metadata form and ticked both consent boxes. `workers/donation-worker.ts`
+opens its own `FrameSource` and encodes CALARAW1 chunks (`lib/donation-encode.ts`);
+`lib/donation-runner.ts` stores them in OPFS, then creates the donation with
+every file's exact size, uploads each file with a presigned PUT (3 retries) and
+finishes; `lib/donation-store.ts` and `components/DonatePanel.tsx` are the UI.
+
 ## Live source (experimental)
 
 Cala's target is a recording in progress: frames arriving from the

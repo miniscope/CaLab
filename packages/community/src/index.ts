@@ -59,3 +59,30 @@ export {
   TESTER_TAG_KEY,
   TESTER_TAG_MAX,
 } from './tester-tag.ts';
+
+// Data donation (apps/cala/docs/data-donation.md)
+export {
+  DONATION_CHUNK_NAME,
+  DONATION_MAX_BYTES,
+  DONATION_MAX_CHUNK_BYTES,
+  DONATION_MAX_META_BYTES,
+  DONATION_MAX_TIMESTAMPS_BYTES,
+  DonationApiError,
+  createDonation,
+  donationPreviewUrl,
+  donationUploadUrl,
+  finishDonation,
+  listDonations,
+  putPresigned,
+  reviewDonation,
+  setDonationBenchmark,
+  withdrawDonation,
+} from './donation-service.ts';
+export type {
+  DonationFile,
+  DonationLicense,
+  DonationMeta,
+  DonationRow,
+  DonationStatus,
+  PresignedRequest,
+} from './donation-service.ts';

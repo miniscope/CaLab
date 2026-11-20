@@ -365,3 +365,7 @@ jobs:
         # (supabase-js pulls @types/node which requires nodeModulesDir).
         # The edge runtime doesn't type-check at deploy time either.
         run: deno test --no-check --allow-env --allow-net --lock=deno.lock index.test.ts
+
+      - name: Deno tests (donation edge function)
+        working-directory: supabase/functions/donation
+        run: deno test --no-check --allow-env --allow-net --lock=deno.lock index.test.ts

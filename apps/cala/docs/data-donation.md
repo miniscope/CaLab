@@ -4,8 +4,9 @@ A **Donate data** button in browser cala lets users send a raw recording to the
 lab, compressed without loss, with metadata. The goal is more varied datasets
 (regions, indicators, scopes, settings) to benchmark and improve cala on.
 
-Status: phases 0–1 done (codec chosen, file format with browser writer and
-Python reader). Backend, UI, moderation and ingest are not built.
+Status: code for phases 0–5 is written and tested locally (format, edge
+function, migration, cala panel, admin view, ingest script). Nothing is
+deployed; see "To go live" for what needs accounts and people.
 
 ## Why people donate
 
@@ -94,25 +95,44 @@ MB/s on one thread (Node), far above an upload link (50 Mbit/s ≈ 6 MB/s:
 browser cala                Supabase (free plan)            Cloudflare R2           lab server
 ────────────                ────────────────────            ─────────────           ──────────
 metadata form + consent
-        │ insert row ──────▶ cala_donations (pending)
-        │ request upload ──▶ edge fn donation-upload
-        │                    checks auth, quotas, caps
-        │ ◀── presigned PUT URL per chunk ───────────────────
-decode → CALARAW1 → gzip
+decode → CALARAW1 → gzip → OPFS (exact sizes known)
+        │ create ──────────▶ edge fn `donation`: auth, caps,
+        │                    row in cala_donations (uploading)
+        │ upload_url ──────▶ presigned PUT per file (1 h)
         │ PUT chunks ────────────────────────────────────────▶ pending/<id>/
         │ finish ──────────▶ edge fn: sizes + magic check
         │                    status=uploaded
                              admin app: preview, approve ──────▶ move to approved/<id>/
-                                                                        ◀── cron pull (outbound only)
+                             ingest_list / ingest_download_url ◀── cron pull (outbound only, ingest token)
                                                                             full parse in sandbox
                                                                             data/raw/donations/<id>/
-                             status=ingested ◀──────────────── delete objects ◀──┘
+                             ingest_done: delete objects, status=ingested ◀──┘
 ```
 
 Supabase holds only rows, auth and the edge function. Files never touch
 Supabase Storage (free plan: 1 GB, 50 MB per file, 5 GB/month egress, too
-small). The lab server only makes outbound requests; no credential that can
-write to it exists outside it.
+small). The lab server only makes outbound requests and holds only the ingest
+token (no R2 keys, no Supabase service key); it downloads through presigned
+URLs the edge function hands out.
+
+### Edge function API (`supabase/functions/donation`)
+
+POST `{action, ...}`. Client: `packages/community/src/donation-service.ts`.
+
+| Action                | Who                | Does                                                     |
+| --------------------- | ------------------ | -------------------------------------------------------- |
+| `create`              | signed-in donor    | checks meta, file names, caps; row `uploading`           |
+| `upload_url`          | owner, uploading   | presigned PUT for one declared file                      |
+| `finish`              | owner, uploading   | exact sizes + every chunk's CALARAW1 header → `uploaded` |
+| `withdraw`            | owner, not final   | delete files → `withdrawn`                               |
+| `preview_url`         | admin              | presigned GET of one file (first chunk by default)       |
+| `review`              | admin, uploaded    | approve (move to `approved/`) or reject (delete)         |
+| `ingest_list`         | lab (ingest token) | approved rows                                            |
+| `ingest_download_url` | lab                | presigned GET from `approved/`                           |
+| `ingest_done`         | lab                | delete files → `ingested`                                |
+
+Errors: 401/403 auth, 404 not found / not owner, 409 wrong status, 413 size
+cap, 422 failed check, 429 per-user limit, 507 global cap.
 
 ## What a donation contains
 
@@ -149,27 +169,28 @@ and declared sizes above a cap, and inflate no further than the declared size.
 
 ## Metadata (table `cala_donations`)
 
-New migration (next free number, `019_...`), following the base template.
+`supabase/migrations/019_cala_donations.sql`.
 
-- `id`, `user_id`, `created_at`, `status`
-  (`pending` → `uploaded` → `approved` | `rejected` → `ingested`)
+- `id`, `user_id`, `created_at`, `updated_at`, `status` (`uploading` →
+  `uploaded` → `approved` | `rejected` → `ingested`; `withdrawn` by the donor)
 - Biology: `indicator`, `species`, `brain_region`, `expression` (virus /
   transgenic), `preparation` (GRIN / window / ...), `behavior` (short)
 - Optics: `scope` (e.g. UCLA v4, Inscopix, own wireless), `fps`, `width`,
   `height`, `n_frames`, `bytes_per_pixel`, `depth_um`, `led_power` (optional)
 - Provenance: `cala_version`, `dataset_hash`
-- Files: `declared_bytes`, `n_chunks`
+- Files: `declared_bytes`, `n_chunks`, `files` (name + exact bytes)
 - Consent: `license` (`cc-by-4.0` | `lab-use-only`), `rights_attested`,
   `protocol_attested` (both must be true), `contact_ok` (may we contact them
   about co-authorship)
 - Credit: `credit_name`, `credit_lab` (shown in the benchmark list), set by the
   donor
 - Benchmark: `in_benchmark` (bool, admin), `benchmark_note` (admin)
-- `notes` (length-capped)
+- `review_note` (admin), `notes` (length-capped)
 
-RLS: insert only by non-anonymous users for their own `user_id` (as in 012);
-select by owner and admin; status and benchmark fields by admin and the edge
-function only. CHECKs on every column (as in 014).
+RLS: select by owner and admin. No client inserts or deletes; every write goes
+through the edge function (service role). Admins may update only
+`in_benchmark` / `benchmark_note` (column grant). CHECKs on every column (as
+in 014).
 
 ## Caps and cost
 
@@ -206,10 +227,10 @@ is equivalent to R2.
 | Arbitrary files                         | Only the chunk, timestamp and meta names; finish step checks sizes against `declared_bytes` and the gzip + `CALARAW1` magic.                                   |
 | Malicious bytes reaching the lab server | Pull only `approved/`; decompress and parse `CALARAW1` (bounds-checked, size must equal header) in a container without network. Nothing else is opened or run. |
 | Non-imaging content                     | Admin preview decodes the first chunk and shows the mean image and a few frames before approval.                                                               |
-| Lab server exposure                     | Outbound pull only; the ingest key can read and delete `approved/` and nothing else.                                                                           |
+| Lab server exposure                     | Outbound pull only; the lab holds only the ingest token, which can list, download and close approved donations and nothing else.                               |
 | Leaked personal info                    | No paths uploaded, only base file names (strippable); email stays in auth, never in public views.                                                              |
 | Spam / flooding                         | Per-user limit, global cap, admin can disable the edge function.                                                                                               |
-| Leaked R2 key                           | R2 keys live only in edge function secrets and on the lab server; the browser only ever sees presigned URLs.                                                   |
+| Leaked R2 key                           | R2 keys live only in edge function secrets; the browser and the lab server only ever see presigned URLs.                                                       |
 
 ## Consent and policy
 
@@ -231,18 +252,37 @@ is equivalent to R2.
 0. **Measure.** Done: up predictor + native gzip (see Codec).
 1. **Format.** Done: `CALARAW1` writer/decoder (TypeScript) and reader
    (Python), with round-trip and cross-language tests.
-2. **Backend.** R2 bucket, migration `019_cala_donations.sql`, edge function
-   `donation-upload` (caps, presign one PUT per chunk, finish check), RLS
-   tests in `supabase/tests/rls`. Needs a Cloudflare account; Supabase is
-   already set up.
-3. **UI.** Donate panel in cala: why-donate text, metadata form (field
-   options), consent, resumable upload with progress; "my donations" list with
-   status and `in_benchmark`.
-4. **Moderation.** Donations view in `apps/admin`: preview, approve/reject,
-   benchmark flag.
-5. **Ingest.** Lab-server cron: pull approved, verify in sandbox, write
-   `data/raw/donations/<id>/` read-only, mark `ingested`, delete objects.
-6. **Pilot** with 2–3 known labs before announcing it.
+2. **Backend.** Code done: migration `019_cala_donations.sql`, edge function
+   `supabase/functions/donation` (Deno tests), RLS tests. Not deployed.
+3. **UI.** Code done: Donate panel at the bottom of cala's Recording tab
+   (`DonatePanel.tsx`, `donation-runner.ts`, `donation-worker.ts`), encode to
+   OPFS then upload with retries and resume; "My donations" list.
+4. **Moderation.** Code done: Donations view in `apps/admin` with preview,
+   approve/reject and benchmark flag.
+5. **Ingest.** Code done: `python/scripts/ingest_donations.py` (cron; setup in
+   its docstring).
+6. **Deploy.** See "To go live".
+7. **Pilot** with 2–3 known labs before announcing it.
+
+## To go live (needs people, not code)
+
+1. **Cloudflare:** account, R2 bucket (e.g. `calab-donations`), an API token
+   with Object Read & Write on that bucket only, bucket CORS allowing PUT/GET
+   from `https://miniscope.github.io` (+ localhost for testing), lifecycle rule
+   deleting `pending/` objects after ~14 days.
+2. **Supabase (Daniel):** run migration 019; set function secrets `R2_*`,
+   `INGEST_TOKEN` (≥ 32 random chars); deploy with
+   `supabase functions deploy donation --no-verify-jwt` (details in
+   `supabase/README.md`); give the reviewers `app_metadata.role = admin`.
+3. **Lab server:** a folder for donations, the cron job from the ingest
+   script's docstring, the ingest token in its environment.
+4. **UCLA IT / data policy:** OK to hold other labs' data on the lab server.
+5. **End-to-end test** with one small recording (create → upload → finish →
+   approve → ingest). Not yet verified against real R2: that a PUT whose body
+   length differs from the signed `content-length` is refused, CopyObject,
+   Range GET, bucket CORS.
+6. Decide the open questions below (co-authorship criteria at least) before
+   announcing.
 
 ## Open questions
 
