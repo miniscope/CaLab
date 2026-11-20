@@ -23,6 +23,7 @@ import type {
   SeedTraceResult,
   WarmBiexp,
   FitMode,
+  BlindUnits,
 } from '../workers/cadecon-types.ts';
 import {
   runState,
@@ -302,6 +303,52 @@ function extractCellTrace(
     trace[t] = Number(data.data[idx]);
   }
   return trace;
+}
+
+// --- Spike size from the data ---
+
+/**
+ * The final pass counts with a spike size estimated from the traces themselves
+ * (WASM `blind_units`) instead of the one the max firing rate implies.
+ * Building with VITE_BLIND_UNIT=off keeps the rate-cap size, for comparison.
+ */
+const BLIND_UNIT = import.meta.env.VITE_BLIND_UNIT !== 'off';
+
+/**
+ * The single-spike unit of each of `cells`, from their full raw traces and the
+ * final kernel. One job: the noise reading and the level model are shared by
+ * the recording. Undefined when the job was cancelled.
+ */
+async function computeBlindUnits(
+  runPool: Pool,
+  data: TraceInput,
+  isSwapped: boolean,
+  cells: number[],
+  nTp: number,
+  tauR: number,
+  tauD: number,
+  fs: number,
+): Promise<BlindUnits | undefined> {
+  let units: BlindUnits | undefined;
+  const outcome = await runJobs(runPool, 1, (_i, settle) => {
+    const flat = new Float32Array(cells.length * nTp);
+    cells.forEach((c, j) => flat.set(extractCellTrace(c, 0, nTp, data, isSwapped), j * nTp));
+    return {
+      kind: 'blind',
+      tracesFlat: flat,
+      nCells: cells.length,
+      nTimepoints: nTp,
+      tauRise: tauR,
+      tauDecay: tauD,
+      fs,
+      onComplete(r: BlindUnits) {
+        units = r;
+        settle();
+      },
+    };
+  });
+  checkPhase('spike size', outcome);
+  return units;
 }
 
 // --- Dispatch helpers ---
@@ -1113,8 +1160,25 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
   // Finalization: re-run trace inference on ALL cells with converged kernel
   if (runState() !== 'stopping') {
     setRunPhase('finalization');
-    setTotalSubsetTraceJobs(finalizationCells(nCells, skip).length);
+    const finCells = finalizationCells(nCells, skip);
+    setTotalSubsetTraceJobs(finCells.length);
     setCompletedSubsetTraceJobs(0);
+
+    // The size of one spike per cell, from the data and the final kernel.
+    const blind =
+      BLIND_UNIT && finCells.length > 0
+        ? await computeBlindUnits(runPool, data, isSwap, finCells, nTp, tauR, tauD, fs)
+        : undefined;
+    assertCurrent(runId);
+    const blindFields = new Map<number, { unit: number; occ?: number[] }>();
+    finCells.forEach((c, j) => {
+      if (!blind) return;
+      const rho = blind.rho[j];
+      blindFields.set(c, {
+        unit: blind.u[j],
+        ...(Number.isFinite(rho) ? { occ: [blind.shared, rho] } : {}),
+      });
+    });
 
     const finOutcome = await runJobs(
       runPool,
@@ -1134,6 +1198,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
         // Warm-start finalization from subset iteration results where available.
         // prevTraceCounts has full-length s_counts for cells that appeared in subsets.
         warmCounts: prevTraceCounts?.get(c),
+        ...blindFields.get(c),
         onComplete(result: TraceResult) {
           batch(() => {
             updateTraceResult(cellSubsetKey(c, -1), {

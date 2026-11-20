@@ -17,10 +17,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { SnrReport } from '../metrics/snr-events.ts';
 import {
   Solver,
+  blind_units,
   get_simulation_presets,
   indeca_estimate_kernel,
   indeca_fit_biexponential,
   indeca_solve_trace,
+  indeca_solve_trace_unit,
   initWasm,
   seed_trace,
   simulate_traces,
@@ -270,6 +272,68 @@ describe.skipIf(!pkgPresent)('WASM exports reject degenerate input without trapp
       };
       expect(r.s_counts.length).toBe(n);
       expect(finite(r.s_counts) && Number.isFinite(r.alpha) && Number.isFinite(r.pve)).toBe(true);
+    });
+  });
+
+  describe('blind_units and indeca_solve_trace_unit', () => {
+    const units = (flat: Float32Array, nCells: number, nTp: number, tr = TAU_R, td = TAU_D) =>
+      blind_units(flat, nCells, nTp, tr, td, FS) as { shared: number; u: number[]; rho: number[] };
+    const solveAt = (trace: Float32Array, unit: number, occ: number[] = []) =>
+      indeca_solve_trace_unit(
+        trace,
+        TAU_R,
+        TAU_D,
+        FS,
+        FS,
+        50,
+        1e-4,
+        false,
+        false,
+        0,
+        unit,
+        Float64Array.from(occ),
+      ) as { s_counts: number[]; alpha: number; pve: number };
+
+    it('rejects bad shapes, kernels and bad units', () => {
+      expectRejected(() => units(spiky(), 2, 200), /^blind_units/);
+      expectRejected(() => units(new Float32Array(0), 0, 0), /^blind_units/);
+      expectRejected(() => units(spiky(), 1, 200, TAU_D, TAU_R), /^blind_units/);
+      for (const unit of [0, -1, NaN, Infinity]) {
+        expectRejected(() => solveAt(spiky(), unit), 'unit');
+      }
+      expectRejected(() => solveAt(Float32Array.of(1, NaN), 1), 'non-finite');
+    });
+
+    it('gives every cell a finite positive unit, flat and tiny cells included', () => {
+      const n = 200;
+      const flat = new Float32Array(3 * n); // a spiky cell, an all-zero cell, a constant cell
+      flat.set(spiky(n), 0);
+      flat.fill(3, 2 * n);
+      const r = units(flat, 3, n);
+      expect(r.u.length).toBe(3);
+      expect(r.rho.length).toBe(3);
+      expect(r.u.every((v) => Number.isFinite(v) && v > 0)).toBe(true);
+      expect(Number.isInteger(r.shared) && r.shared >= 0 && r.shared < 30).toBe(true);
+      for (const nTp of [1, 2]) {
+        const tiny = units(new Float32Array(nTp).fill(1), 1, nTp);
+        expect(tiny.u[0]).toBeGreaterThan(0);
+      }
+      // a cell with a non-finite sample does not take the recording's units down
+      flat[n + 50] = NaN;
+      flat[2 * n + 7] = Infinity;
+      const bad = units(flat, 3, n);
+      expect(bad.u.every((v) => Number.isFinite(v) && v > 0)).toBe(true);
+    });
+
+    it('counts at the given unit, with and without the level model', () => {
+      const trace = spiky();
+      for (const occ of [[], [0, 0.5], [99, 0.5]]) {
+        const r = solveAt(trace, 0.5, occ);
+        expect(r.s_counts.length).toBe(trace.length);
+        expect(finite(r.s_counts) && Number.isFinite(r.pve)).toBe(true);
+        expect(r.alpha).toBe(0.5); // the reported amplitude is the unit
+      }
+      expect(solveAt(new Float32Array(0), 1).s_counts.length).toBe(0);
     });
   });
 

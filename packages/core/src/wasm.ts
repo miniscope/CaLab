@@ -7,6 +7,8 @@ export {
   initWasm,
   Solver,
   indeca_solve_trace,
+  indeca_solve_trace_unit,
+  blind_units,
   indeca_estimate_kernel,
   indeca_fit_biexponential,
   seed_trace,

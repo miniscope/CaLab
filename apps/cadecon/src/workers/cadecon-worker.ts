@@ -13,16 +13,24 @@
 import {
   initWasm,
   indeca_solve_trace,
+  indeca_solve_trace_unit,
+  blind_units,
   indeca_estimate_kernel,
   indeca_fit_biexponential,
   seed_trace,
   overview_cell,
 } from '@calab/core/wasm';
 import { cellOverviewFromJson, type CellOverviewJson } from '@calab/core';
-import type { CaDeconWorkerInbound, CaDeconWorkerOutbound, FitMode } from './cadecon-types.ts';
+import type {
+  BlindUnits,
+  CaDeconWorkerInbound,
+  CaDeconWorkerOutbound,
+  FitMode,
+} from './cadecon-types.ts';
 
 let cancelled = false;
 const EMPTY_F32 = new Float32Array(0);
+const EMPTY_F64 = new Float64Array(0);
 
 const workerScope = globalThis as unknown as {
   postMessage(msg: unknown, transfer?: Transferable[]): void;
@@ -36,18 +44,36 @@ function handleTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'trace-job' }
   try {
     cancelled = false;
 
-    const jsResult = indeca_solve_trace(
-      req.trace,
-      req.tauRise,
-      req.tauDecay,
-      req.fs,
-      req.maxFiringRate,
-      req.maxIters,
-      req.tol,
-      req.hpEnabled,
-      req.lpEnabled,
-      req.warmCounts ?? EMPTY_F32,
-      req.lambda,
+    const jsResult = (
+      req.unit !== undefined
+        ? // The given spike size replaces the rate-cap size search.
+          indeca_solve_trace_unit(
+            req.trace,
+            req.tauRise,
+            req.tauDecay,
+            req.fs,
+            req.maxFiringRate,
+            req.maxIters,
+            req.tol,
+            req.hpEnabled,
+            req.lpEnabled,
+            req.lambda,
+            req.unit,
+            req.occ ? Float64Array.from(req.occ) : EMPTY_F64,
+          )
+        : indeca_solve_trace(
+            req.trace,
+            req.tauRise,
+            req.tauDecay,
+            req.fs,
+            req.maxFiringRate,
+            req.maxIters,
+            req.tol,
+            req.hpEnabled,
+            req.lpEnabled,
+            req.warmCounts ?? EMPTY_F32,
+            req.lambda,
+          )
     ) as {
       s_counts: number[];
       filtered_trace: number[] | null;
@@ -210,6 +236,23 @@ function handleSeedTraceJob(req: Extract<CaDeconWorkerInbound, { type: 'seed-tra
   }
 }
 
+/** The single-spike unit of every cell of the recording (one WASM call). */
+function handleBlindJob(req: Extract<CaDeconWorkerInbound, { type: 'blind-job' }>): void {
+  try {
+    const units = blind_units(
+      req.tracesFlat,
+      req.nCells,
+      req.nTimepoints,
+      req.tauRise,
+      req.tauDecay,
+      req.fs,
+    ) as BlindUnits;
+    post({ type: 'blind-complete', jobId: req.jobId, units });
+  } catch (err) {
+    post({ type: 'error', jobId: req.jobId, message: String(err) });
+  }
+}
+
 /** Overview pass: one model-free `overview_cell` call per cell of the chunk. */
 function handleOverviewJob(req: Extract<CaDeconWorkerInbound, { type: 'overview-job' }>): void {
   try {
@@ -251,6 +294,9 @@ onmessage = (e: MessageEvent<CaDeconWorkerInbound>) => {
         break;
       case 'overview-job':
         handleOverviewJob(msg);
+        break;
+      case 'blind-job':
+        handleBlindJob(msg);
         break;
     }
   } catch (err) {

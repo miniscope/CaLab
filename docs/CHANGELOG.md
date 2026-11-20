@@ -15,6 +15,8 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Changed
 
+- CaDecon (web app): the final pass reads the size of one spike from the data instead of from the max firing rate. Each cell's single-spike amplitude is estimated from the raw traces and the final kernel (`crates/solver/src/blind_unit.rs`, WASM `blind_units`): an onset filter on the kernel's real-valued equivalent width, a noise spectrum shape shared by the recording, and nested isolated extrema with windows cut short where events overlap. The final solve then counts at that size (WASM `indeca_solve_trace_unit`): each run of relaxed activity is classed as noise or event, and a burst-count rule sets the cell total where it is the smaller one. Every cell gets a unit. The kernel iterations are unchanged, so the estimated kernel is the same as before; the max firing rate still bounds the relaxed solve and the counts per frame. The unit step is one job on one worker for the whole recording. The white-noise table the estimator simulates uses a fixed seed, so the same data give the same result on every run. Not changed: the Python package (`calab.solve_trace`) and the in-app help text still describe the rate-cap rule. Building the app with `VITE_BLIND_UNIT=off` keeps the rate-cap rule for comparison.
+
 - Docs and Admin: a note that runs from local or dev builds send no analytics (no Supabase environment) and are not counted in Admin.
 
 ## [2.20.0] - 2026-11-17
