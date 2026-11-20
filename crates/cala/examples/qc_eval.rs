@@ -201,11 +201,16 @@
 //!                      flat|linear|late` (same total); with it the slow
 //!                      worker spends S of its idle time (S up to 1), a
 //!                      re-read frame being ready every `--lb-ms` (10) ms.
+//!                      `--csettle-guard G`: with --offered-fps no unit
+//!                      starts when G times the mean unit time would run
+//!                      past the next expected batch (0: off).
 //!                      S = 0: no settle (with --offered-fps the look-back
 //!                      then runs on the virtual clock, the baseline).
 //!                      `--csettle-mode visits|stats|full`: settle visits
 //!                      only (no frames), frames to the statistics, frames
-//!                      to the statistics and the reservoir (default).
+//!                      to the statistics and the reservoir (default);
+//!                      `frames`: as `stats` without the settle visits
+//!                      (the ordinary visits do all the refining).
 //!                      `--csettle-quiet F`: no settle visit on a tile
 //!                      whose cell set changed in the last F frames.
 //!   --offered-fps R    model the app's workers on a virtual clock instead
@@ -942,6 +947,7 @@ struct LookBack {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum CsMode {
     Visits,
+    Frames,
     Stats,
     Full,
 }
@@ -966,6 +972,7 @@ impl CsCfg {
             mode: match arg_value(args, "--csettle-mode").as_deref() {
                 None | Some("full") => CsMode::Full,
                 Some("stats") => CsMode::Stats,
+                Some("frames") => CsMode::Frames,
                 Some("visits") => CsMode::Visits,
                 Some(m) => panic!("--csettle-mode: unknown mode {m}"),
             },
@@ -1086,7 +1093,9 @@ impl LookBack {
             self.cs_pre = Some(pre);
             self.cs_frames += 1;
         }
-        sl.step_settle(budget).unwrap();
+        if mode != CsMode::Frames {
+            sl.step_settle(budget).unwrap();
+        }
         self.cs_wall_s += t0.elapsed().as_secs_f64();
         Some(sl.work() - w0)
     }
@@ -3195,6 +3204,14 @@ struct Timed {
     pub cs_share: f64,
     pub lb_ms: f64,
     cs_next: f64,
+    /// `--csettle-guard G` (0: off): no settle unit starts when it would
+    /// not be done, at G times the running mean unit time, before the
+    /// next batch is expected (batches arrive every `batch_ms`; the last
+    /// came at `last_arr`). `cs_mean`: the running mean unit time.
+    pub cs_guard: f64,
+    pub batch_ms: f64,
+    last_arr: f64,
+    cs_mean: f64,
     pub cs_busy: f64,
     pub cs_units: u64,
     pub lb_busy: f64,
@@ -3235,6 +3252,10 @@ impl Timed {
             cs_share: 0.0,
             lb_ms: 10.0,
             cs_next: 0.0,
+            cs_guard: 0.0,
+            batch_ms: 0.0,
+            last_arr: 0.0,
+            cs_mean: 0.0,
             cs_busy: 0.0,
             cs_units: 0,
             lb_busy: 0.0,
@@ -3259,8 +3280,18 @@ impl Timed {
             if t >= limit {
                 break;
             }
+            if self.cs_guard > 0.0 && t + self.cs_guard * self.cs_mean > self.last_arr + self.batch_ms {
+                // Too close to the next batch: wait for it.
+                self.cs_next = self.last_arr + self.batch_ms;
+                break;
+            }
             let Some(units) = unit(sl) else { break };
             let dur = units as f64 / self.units_per_ms;
+            self.cs_mean = if self.cs_units == 0 {
+                dur
+            } else {
+                0.9 * self.cs_mean + 0.1 * dur
+            };
             self.owner_free = t + dur;
             self.owner_busy += dur;
             self.cs_busy += dur;
@@ -3294,6 +3325,7 @@ impl Timed {
     /// Forward a full batch at `now` (after `has_buffer`).
     fn forward(&mut self, now: f64, batch: Batch) {
         self.bufs.push(f64::INFINITY);
+        self.last_arr = now;
         self.forwarded += batch.0.len() as u64;
         self.push(now, Msg::Batch(batch));
     }
@@ -5315,6 +5347,9 @@ fn main() {
                                 assert!(visit_workers == 0, "--csettle needs --visit-workers 0");
                                 tm.cs_share = c.share;
                                 tm.lb_ms = lb_ms;
+                                tm.cs_guard = arg_value(&args, "--csettle-guard")
+                                    .map_or(0.0, |s| s.parse().unwrap());
+                                tm.batch_ms = batch_n as f64 * 1e3 / fps;
                             }
                         }
                     }

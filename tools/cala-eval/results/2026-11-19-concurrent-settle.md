@@ -180,4 +180,127 @@ false <= +2, matched >= -2):
 - Half an end pass alone (`LIVE+S4800`) is already within 0.0005 of `SETTLE` overall and misses only on late-born
   cells. So at share 0.5 the concurrent settle is not cheaper in total than settling at the end.
 
-(more below as the runs finish)
+### Arms added after the screen (not in the targets; same lines applied)
+
+- `CS-frames` (`--csettle-mode frames`, binary `qc_eval-cs-c`): the re-read frames of `CS-stats` without the settle
+  visits, to see whether the visits are needed at all.
+- `T30-CSG` (`--csettle-guard 2`, binary `qc_eval-cs-d`): no settle unit starts when twice the mean unit time would
+  run past the next expected batch. Added after `T30-CS` dropped a batch on one sim.
+- `T30-CS75`: `--csettle 0.75` instead of 1 (a quarter of the idle time left as headroom), for the same reason.
+
+### T1/T2. Schedules, lock-step, quick tier (5 sims; `cs-q/ladder2-vs-SETTLE.md`)
+
+All in `stats` mode. Arm minus `SETTLE` [95 % CI].
+
+| arm               | settle units (concurrent + end) | r all                     | close pairs                | born second half         | bitten share           | matched / false           |
+| ----------------- | ------------------------------- | ------------------------- | -------------------------- | ------------------------ | ---------------------- | ------------------------- |
+| `CS-stats`        | 9535 + 0 (1.0 x)                | -0.0002 [-0.0007, 0.0004] | -0.0003 [-0.0012, 0.0004]  | -0.013 [-0.024, -0.003]  | +0.039 [-0.007, 0.086] | -1.6 / +3.8 [-2.2, 9.8]   |
+| `CS-frames`       | 9535 frames, no settle visits   | -0.0007 [-0.0013, -0.0001] | -0.0015 [-0.0023, -0.0006] | -0.028 [-0.052, -0.013]  | +0.088 [0.041, 0.134]  | -2.8 / +3.2 [0.5, 5.9]    |
+| `CS-frames+S4800` | + 4800                          | +0.0003 [-0.0002, 0.0008] | +0.0001 [-0.0007, 0.0009]  | -0.009 [-0.018, -0.001]  | +0.028 [-0.017, 0.073] | -1.8 / +2.2 [-0.0, 4.4]   |
+| `CS-late`         | 9550 + 0, all in the second half | +0.0002 [-0.0003, 0.0007] | -0.0000 [-0.0008, 0.0006]  | -0.009 [-0.024, 0.002]   | +0.043 [-0.002, 0.089] | -1.8 / -0.2 [-5.1, 4.7]   |
+| `CS-late+S2400`   | 9550 + 2400 (1.25 x)            | +0.0003 [-0.0002, 0.0008] | +0.0001 [-0.0007, 0.0008]  | -0.002 [-0.009, 0.005]   | +0.030 [-0.014, 0.075] | -1.2 / -0.8 [-3.9, 2.3]   |
+| `CS-late+S4800`   | 9550 + 4800 (1.5 x)             | +0.0004 [-0.0001, 0.0010] | +0.0003 [-0.0005, 0.0010]  | -0.001 [-0.008, 0.007]   | +0.013 [-0.032, 0.057] | -1.2 / -0.8               |
+| `CS-33`           | 4767 + 0 (0.5 x)                | -0.0009 [-0.0015, -0.0002] | -0.0012 [-0.0021, -0.0003] | -0.019 [-0.038, -0.006]  | +0.082 [0.034, 0.129]  | +0.0 / +5.4 [0.9, 9.9]    |
+| `CS-33+S4800`     | 4767 + 4800 (1.0 x)             | -0.0001 [-0.0006, 0.0005] | -0.0000 [-0.0009, 0.0006]  | -0.007 [-0.021, 0.001]   | +0.018 [-0.026, 0.062] | +1.6 / +3.8 [0.8, 6.8]    |
+| `CS-quiet`        | 9535 + 0 (1.0 x)                | +0.0003 [-0.0001, 0.0008] | +0.0003 [-0.0004, 0.0009]  | -0.019 [-0.040, -0.012]  | +0.022 [-0.022, 0.065] | -0.2 / +2.6 [-1.1, 6.3]   |
+| `CS-quiet+S4800`  | 9535 + 4800 (1.5 x)             | +0.0006 [0.0001, 0.0011]  | +0.0007 [-0.0001, 0.0014]  | -0.006 [-0.019, 0.006]   | +0.004 [-0.038, 0.046] | +1.0 / +1.4 [-2.6, 5.4]   |
+
+- **The settle visits are needed, on top of the frames.** `CS-frames` against `LIVE` closes 74 % of the gap on
+  footprint r (all cells) and 32 % on bitten share; with the visits (`CS-stats`) 96 % and 69 %. Visits alone: 7 %
+  and 17 %. The frames carry most of it; the visits turn the better statistics into footprints sooner.
+- **T2: no-go for "less total settle work".** No arm equals `SETTLE` at 0.8 x its units or less. The arms that
+  equal it on every line need 1.25 x (`CS-late+S2400`, bitten share exactly on its line) to 1.5 x
+  (`CS-late+S4800`, `CS-quiet+S4800`). The cheapest near-miss is plain half an end pass (`LIVE+S4800`, 0.5 x: -0.0005
+  overall, -0.010 on late-born cells). Settle work is worth most when the cell set is final: a unit spent early is
+  partly spent on footprints whose neighbours are not there yet. `CS-late` (same units, all after the half-way
+  point) is better than the flat schedule on every row.
+- **The quiet period helps the overall rows and costs late-born cells.** With no settle visit where the cell set
+  changed within 600 frames, `CS-quiet` has the best overall footprint r and bitten share of the dose-0 arms, and
+  with half an end pass it is the only arm above `SETTLE` on footprint r (all cells) with a CI that excludes 0
+  (+0.0006). Late-born cells sit in tiles that changed recently, so they wait (-0.019).
+- False cells: 2-5 above `SETTLE` in the flat-schedule arms (CIs exclude 0 for `CS-33` and `CS-frames`), not in
+  `CS-late` (-0.2). `SETTLE`'s own count is 3.2 below `LIVE`'s only because the settle lifts cells over the r 0.7
+  match line; against `LIVE` no arm adds false cells (`CS-stats` +0.6, `CS-frames` 0.0, `CS-quiet` -0.6,
+  `CS-late` -3.4, CIs include 0).
+
+### T3. Stream, quick tier (5 sims; `demix-suite/cs-t`)
+
+Virtual clock, one slow worker, `stats` mode. Units per sim and shares of the owner's time:
+
+| arm                    | dropped frames (5 sims)     | owner busy | on the settle | on look-back frames | idle  | settle units per sim |
+| ---------------------- | --------------------------- | ---------- | ------------- | ------------------- | ----- | -------------------- |
+| `T30` (baseline)       | 0                           | 53-60 %    | -             | (in busy)           | 40-47 % | -                  |
+| `T30-CS` (share 1)     | **8 on static_s5**, 0 on 4  | 87-88 %    | 26-35 %       | 1-3 %               | 12-13 % | 5,100-7,200        |
+| `T30-CSG` (guard)      | **8 on static_s5**, 0 on 4  | 87-88 %    | 26-35 %       | 1-3 %               | 12-13 % | 5,000-7,200        |
+| `T30-CS75` (share 0.75) | 0                          | 81-84 %    | 22-28 %       | 1-3 %               | 16-19 % | 4,300-5,800        |
+| `T20`                  | 0                           | 36-40 %    | -             |                     | 60-64 % | -                  |
+| `T20-CS` (share 1)     | 0                           | 82-85 %    | 41-50 %       | 1-2 %               | 15-18 % | 11,900-15,700      |
+
+- **Dropped frames: share 1 fails at 30 fps on one sim** (one batch of 8 frames of 9,550). The arrival guard does
+  not prevent it (the same batch is dropped), so the cause is not a unit started just before a batch but the owner
+  running near 90 % busy when a long ordinary step comes. With a quarter of the idle time left free there is no drop
+  on the five sims. At 20 fps share 1 has no drop. About 12 % of the time stays idle even at share 1, because a unit
+  only starts when the worker has nothing waiting.
+- At 60 fps one slow worker cannot keep up with Discover alone (smoke run: 262 of 2,350 frames dropped with no
+  settle), so there is no spare compute to share out in this configuration.
+
+Live library at the end of the stream, no end settle. Arm minus the baseline [95 % CI]; gap = baseline + `S9600`
+minus baseline:
+
+| measure                          | gap at 30 fps            | `T30-CS`                  | `T30-CSG`                 | `T30-CS75`                | gap at 20 fps           | `T20-CS`                 |
+| -------------------------------- | ------------------------ | ------------------------- | ------------------------- | ------------------------- | ----------------------- | ------------------------ |
+| footprint r, all cells           | +0.0029 [0.0022, 0.0038] | +0.0018 [0.0010, 0.0027]  | +0.0021 [0.0014, 0.0029]  | +0.0021 [0.0013, 0.0030]  | +0.0027 [0.0020, 0.0036] | +0.0026 [0.0018, 0.0034] |
+| footprint r, close pairs         | +0.0034 [0.0023, 0.0047] | +0.0022 [0.0009, 0.0035]  | +0.0027 [0.0016, 0.0040]  | +0.0027 [0.0016, 0.0040]  | +0.0030 [0.0020, 0.0043] | +0.0023 [0.0013, 0.0036] |
+| footprint r, born in second half | +0.034 [0.020, 0.049]    | +0.017 [-0.005, 0.031]    | +0.007 [-0.011, 0.027]    | +0.005 [-0.012, 0.025]    | +0.031 [0.020, 0.072]   | +0.019 [0.002, 0.057]    |
+| bitten footprints, 0.75-1 D      | -0.088 [-0.138, -0.037]  | -0.052 [-0.105, 0.002]    | -0.037 [-0.088, 0.016]    | -0.039 [-0.090, 0.012]    | -0.124 [-0.175, -0.071] | -0.101 [-0.152, -0.048]  |
+| matched / false cells per sim    | +1.8 / -1.8              | +1.2 / -2.0 [-8.4, 4.4]   | +0.8 / -3.2 [-7.8, 1.4]   | +1.0 / -2.2 [-8.0, 3.6]   | +2.6 / -2.6             | +5.6 / +1.0 [-8.0, 10.0] |
+
+- **Go on footprint r at both rates**: 62-72 % of the gap closed at 30 fps and 96 % at 20 fps, CIs exclude 0;
+  matched and false cells within noise.
+- **Bitten share: go at 20 fps (81 %), between the lines at 30 fps** (59 % at share 1, 42-44 % with headroom or the
+  guard; the line is half; CIs just include 0).
+- Late-born cells gain least, as in lock-step.
+
+End-of-stream settle still needed, against baseline + `S9600` (`cs-t/ladder-vs-T30+S9600.md`):
+
+| arm               | r all                      | close pairs               | born second half         | bitten share           |
+| ----------------- | -------------------------- | ------------------------- | ------------------------ | ---------------------- |
+| `T30+S4800`       | -0.0005 [-0.0011, 0.0000]  | -0.0004 [-0.0011, 0.0005] | -0.008 [-0.018, -0.000]  | +0.006 [-0.041, 0.053] |
+| `T30-CS`          | -0.0011 [-0.0017, -0.0005] | -0.0012 [-0.0023, -0.0003] | -0.017 [-0.034, -0.009] | +0.037 [-0.012, 0.086] |
+| `T30-CS+S2400`    | -0.0006 [-0.0012, -0.0000] | -0.0005 [-0.0014, 0.0004] | -0.009 [-0.019, -0.001]  | +0.017 [-0.030, 0.064] |
+| `T30-CS+S4800`    | -0.0004 [-0.0009, 0.0002]  | -0.0002 [-0.0010, 0.0006] | -0.006 [-0.010, 0.003]   | +0.004 [-0.043, 0.051] |
+| `T30-CSG+S4800`   | -0.0003 [-0.0008, 0.0003]  | -0.0000 [-0.0008, 0.0008] | -0.005 [-0.021, 0.003]   | +0.001 [-0.044, 0.046] |
+| `T20-CS`          | -0.0002 [-0.0008, 0.0004]  | -0.0007 [-0.0015, 0.0002] | -0.012 [-0.027, -0.007]  | +0.023 [-0.023, 0.072] |
+| `T20-CS+S4800`    | +0.0002 [-0.0005, 0.0007]  | -0.0002 [-0.0008, 0.0007] | -0.005 [-0.013, 0.001]   | -0.013 [-0.059, 0.032] |
+
+- **Half a pass at the end is enough after the concurrent settle** (go by the line of 4800): every row inside its
+  line at 20 fps and with the guard arm at 30 fps; `T30-CS+S4800` misses born-second-half by 0.001 with a CI that
+  includes 0.
+- **But half a pass is nearly enough without it too** (`T30+S4800`: -0.0005 overall, -0.008 on late-born cells). The
+  concurrent settle saves little end-of-stream work, because what the end settle mostly does is finish the cells
+  born late. Its value is the library during the session, not a shorter end.
+
+Live library through the session (`cs-t/checkpoints-T30.md`, `checkpoints-T20.md`; median r with ground truth of the
+matched cells from qc_eval's own match, which reads about 0.002 lower than the suite's footprint r; change =
+relative L2 change of each footprint's shape since the checkpoint 1200 frames before, median over cells):
+
+| frames seen | `T30` r | `T30-CS` minus `T30`       | `T20-CS` minus `T20`      | change per 1200 frames, `T30` | `T30-CS` |
+| ----------- | ------- | -------------------------- | ------------------------- | ----------------------------- | -------- |
+| 2400 (25 %) | 0.9737  | +0.0067 [0.0042, 0.0093]   | +0.0087 [0.0052, 0.0122]  | 25 %                          | 11 %     |
+| 3600        | 0.9819  | +0.0035 [0.0013, 0.0057]   | +0.0052 [0.0033, 0.0071]  | 3.8 %                         | 6.2 %    |
+| 4800 (50 %) | 0.9852  | +0.0030 [0.0017, 0.0043]   | +0.0036 [0.0024, 0.0048]  | 2.0 %                         | 4.6 %    |
+| 6000        | 0.9866  | +0.0024 [0.0016, 0.0031]   | +0.0030 [0.0020, 0.0041]  | 2.0 %                         | 3.6 %    |
+| 7200 (75 %) | 0.9874  | +0.0022 [0.0012, 0.0031]   | +0.0023 [0.0011, 0.0036]  | 0.8 %                         | 3.5 %    |
+| 8400        | 0.9883  | +0.0016 [0.0010, 0.0022]   | +0.0021 [0.0014, 0.0029]  | 1.0 %                         | 3.0 %    |
+| end         | 0.9887  | +0.0013 [0.0008, 0.0018]   | +0.0019 [0.0015, 0.0022]  | 0.5 %                         | 2.8 %    |
+
+- **The live library is better at every checkpoint, most in the first half** (CIs exclude 0 everywhere; the cells
+  at least 1200 frames old show the same differences from 2400 on). At the half-way point the concurrent library is
+  about where the baseline is at three quarters.
+- **Footprints keep moving about 3 % per minute of recording under the concurrent settle**, against 0.5-1 % without
+  it late in the session. The movement falls through the session (11, 6, 5, 4, 3.5, 3, 3 %) and the share of cells
+  that move more than 10 % is the same in both arms. This is the statistics being re-estimated on re-read frames;
+  for comparison a cell's split-half footprint noise is about 10 %. A closed-loop user who needs a frozen readout
+  can lower the share late in the session; that is a scheduler setting.
+
+(full tier and real data below as the runs finish)
