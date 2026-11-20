@@ -61,10 +61,14 @@ Real recordings, stream at 30 fps. Common flags (`D`): `--motion --batch 8 --bud
 | arm        | added to `D`                                                  | what it is                                              |
 | ---------- | ------------------------------------------------------------- | ------------------------------------------------------- |
 | `V30`      | `--csettle 0`                                                 | baseline: the app's Discover with 4 visit workers       |
-| `CS1`      | `--csettle 0.5 --csettle-mode stats`                          | 1 re-read frame per live frame, settle visits as jobs   |
-| `CS2`      | `--csettle 0.667 --csettle-mode stats`                        | 2 per live frame                                        |
+| `CS2`      | `--csettle 0.667 --csettle-mode stats`                        | 2 re-read frames per live frame, settle visits as jobs  |
 | `CS2-Q`    | `--csettle 0.667 --csettle-mode stats --csettle-quiet 600`    | the same, only on tiles stable for 600 frames (20 s)    |
-| `CS2-Q18`  | the same with `--csettle-quiet 1800`                          | slow seed 1 only (sensitivity; not eligible as "chosen") |
+| `CS1`      | `--csettle 0.5 --csettle-mode stats`                          | 1 per live frame; workshop seeds 1-2 only (sensitivity) |
+| `CS2-Q18`  | as `CS2-Q` with `--csettle-quiet 1800`                        | workshop seeds 1-2 only (sensitivity)                   |
+
+The two sensitivity arms were cut to the workshop recording after the smoke run showed the cost of a run with four
+visit workers (about an hour for the workshop recording); they are reported and cannot be the chosen arm. This
+change was made before any result run.
 
 "Live" = the library at the end of the stream (`settle0`). "Settled" = the same run after the end pass (`final`).
 
@@ -74,11 +78,11 @@ Real recordings, stream at 30 fps. Common flags (`D`): `--motion --batch 8 --bud
 Hungarian match at r >= 0.7, as round 1), mean over the seed pairs. An arm's share of the gap = (its live seed-to-seed
 r minus `V30`'s live) / gap.
 
-**T0. Flags off = main** (binary `qc_eval-main-f184a49d`), static_s5, every output file, wall-time fields masked:
+**T0. Flags off = main** (binary `qc_eval-main-f184a49d`), static_s5 (first 4800 frames), every output file, wall-time fields masked:
 `SETTLE` lock-step; `--offered-fps 30 --visit-workers 4` (no `--csettle`); round 1's `--offered-fps 30 --csettle
 0.75 --csettle-mode stats` (no visit workers). And on this branch: `CS2` branched after Discover equals unbranched.
 
-**R1. Dropped frames: 0 in every real run**, `V30` and `CS` (7 runs per arm). Any dropped frame in a `CS` run is a
+**R1. Dropped frames: 0 in every real run**, `V30` and `CS` (7 runs per full arm). Any dropped frame in a `CS` run is a
 no-go for that arm. If `V30` itself drops frames on a recording, the line is missed there for the app model as a
 whole and is reported as such (a `CS` arm is then judged on "no more than `V30`", and the verdict says so).
 
@@ -101,7 +105,7 @@ consecutive checkpoints (2250 frames, 75 s) in the second half of the session (t
 **R4. Discover is not held back.** Ordinary visits and added cells of a `CS` run within 5 % of `V30`'s mean on the
 same recording (settle jobs hold zones; a miss means the settle slowed Discover's own visits).
 
-**Chosen arm.** Among `CS1`, `CS2`, `CS2-Q` with R1 met: the highest mean share of the gap over the three
+**Chosen arm.** Among `CS2` and `CS2-Q` with R1 met: the highest mean share of the gap over the three
 recordings. The verdict for the app is go only if that one arm meets R1-R4 on all three recordings. All arms are
 reported. The quiet period is "chosen on real data" by this rule; with 2-3 seeds the choice between close arms is
 not reliable and is reported as such.
