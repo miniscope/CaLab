@@ -193,7 +193,12 @@ export function createRefineStore(
     const noise = st?.run === ctx.run && st.final ? st.footprintNoise : undefined;
     let moved: StageRun['movedAboveNoise'];
     if (after && noise) {
-      const m1 = movedAgainstNoise(unitFootprints(ctx.before), unitFootprints(after), noiseMap(noise), 2);
+      const m1 = movedAgainstNoise(
+        unitFootprints(ctx.before),
+        unitFootprints(after),
+        noiseMap(noise),
+        2,
+      );
       moved = { cells: m1.cells, above1: m1.above1, above2: m1.aboveK };
     }
     const data: Partial<StageRun> = {

@@ -2,7 +2,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildSlowLoop,
-  LOOKBACK,
   SlowRunner,
   type PublishedLibrary,
   type SlowLoopLike,
@@ -424,6 +423,29 @@ describe('SlowRunner look-back (fake loop)', () => {
     expect(t.loop.step).not.toHaveBeenCalled();
   });
 
+  it('with visit workers: the last round ends at its work cap even when tiles stay due', () => {
+    const t = setup(0, { visits: 1 });
+    let work = 0;
+    t.loop.takeJob = () => Uint8Array.of(1);
+    t.loop.applyJob = vi.fn(() => {
+      work += 123 * 16;
+    });
+    t.loop.housekeep = () => undefined;
+    Object.defineProperty(t.loop, 'work', { get: () => work });
+    t.r.handle({ ...INIT, lookback: true });
+    t.r.handle(frames(0, 16));
+    t.r.handle({ type: 'end', session: 1 });
+    t.run();
+    const res: VisitToOwner = { type: 'result', session: 1, bytes: Uint8Array.of(1), ms: 1 };
+    for (let k = 0; k < 100 && finals(t).length === 0; k++) {
+      t.r.handleVisit(0, res);
+      t.run();
+    }
+    expect(finals(t)).toHaveLength(1);
+    // About SETTLE.finalSteps budgets of visits after the frames, not more.
+    expect(work).toBeLessThanOrEqual(123 * (SETTLE.finalSteps + 3 * 16));
+  });
+
   it('a Refine run after it does no look-back', () => {
     const t = setup(1);
     t.r.handle({ ...INIT, lookback: true });
@@ -459,7 +481,12 @@ describe('SlowRunner look-back (fake loop)', () => {
     t.r.handle({ type: 'end', session: 1 });
     t.answer();
     const req = t.toLb.filter((m) => m.type === 'request').at(-1)!;
-    t.r.handleLookback({ type: 'error', session: 1, id: req.type === 'request' ? req.id : 0, message: 'disk' });
+    t.r.handleLookback({
+      type: 'error',
+      session: 1,
+      id: req.type === 'request' ? req.id : 0,
+      message: 'disk',
+    });
     t.run();
     expect(finals(t)).toHaveLength(1);
     const st = statuses(t).at(-1)!.lookback!;

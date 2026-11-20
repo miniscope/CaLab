@@ -249,6 +249,9 @@ interface Settle {
   moving: { cells: number; above: number } | null;
   /** Steps of the final round so far (without visit workers: one). */
   finalSteps: number;
+  /** With visit workers: work and visits at the start of the final round (its cap). */
+  finalWork0: number;
+  finalJobs0: number;
   /** Stop now (the user's Stop): publish the final library. */
   stop: boolean;
   statusAt: number;
@@ -737,6 +740,8 @@ export class SlowRunner {
       prev: null,
       moving: null,
       finalSteps: 0,
+      finalWork0: 0,
+      finalJobs0: 0,
       stop: false,
       statusAt: this.now(),
     };
@@ -799,6 +804,8 @@ export class SlowRunner {
       if (!this.lbReq && !d.feed.done && !failed) this.settleRequest();
       if (!this.lbReq && (d.feed.done || failed)) {
         d.phase = 'final';
+        d.finalWork0 = loop.work ?? 0;
+        d.finalJobs0 = this.jobs;
         loop.markAllDue?.();
         this.status(0, 0);
       } else return;
@@ -807,7 +814,12 @@ export class SlowRunner {
     if (this.busy.some((b) => b)) return;
     if (this.parallel) {
       this.housekeep();
-      if (this.dispatch() > 0) return;
+      // The same cap as without workers (`SETTLE.finalSteps` budgets of work):
+      // visits keep making tiles due again, so "until none is due" may not end.
+      const capped =
+        (loop.work ?? 0) - d.finalWork0 >= init.budget * SETTLE.finalSteps ||
+        this.jobs - d.finalJobs0 >= SETTLE.finalVisitsMax;
+      if (!capped && this.dispatch() > 0) return;
     } else if (d.finalSteps === 0) {
       d.finalSteps++;
       const lib = loop.step(init.budget * SETTLE.finalSteps);

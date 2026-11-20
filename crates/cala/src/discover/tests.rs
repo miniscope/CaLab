@@ -3185,7 +3185,10 @@ fn js_lookback_matches_the_native_driver() {
             .footprint_noise(id, lib.filtered(slot).0)
             .unwrap_or(f64::NAN);
         let got = noise[2 * slot + 1];
-        assert!(got == want || (got.is_nan() && want.is_nan()), "{id}: {got} {want}");
+        assert!(
+            got == want || (got.is_nan() && want.is_nan()),
+            "{id}: {got} {want}"
+        );
         finite += usize::from(got.is_finite() && got > 0.0);
     }
     assert!(finite > 0, "no cell has a noise estimate");

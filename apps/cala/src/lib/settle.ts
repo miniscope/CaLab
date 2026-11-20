@@ -34,6 +34,8 @@ export const SETTLE = {
   movingShare: 0.04,
   /** The last round of visits: every tile due, this many slow-loop budgets (without visit workers). */
   finalSteps: 64,
+  /** With visit workers: at most this many visits in the last round (besides the work cap). */
+  finalVisitsMax: 4096,
 } as const;
 
 /** A run of consecutive frames `[start, end)` the settle reads. */
@@ -47,7 +49,11 @@ export interface FrameRun {
  * them when `total <= cap`, else about `cap` frames in whole `block`-frame
  * blocks spread evenly over the recording (adjacent blocks merged).
  */
-export function settlePlan(total: number, cap: number = SETTLE.maxFrames, block: number = SETTLE.block): FrameRun[] {
+export function settlePlan(
+  total: number,
+  cap: number = SETTLE.maxFrames,
+  block: number = SETTLE.block,
+): FrameRun[] {
   if (!(total > 0)) return [];
   if (total <= cap) return [{ start: 0, end: total }];
   const blocks = Math.ceil(total / block);
@@ -95,7 +101,8 @@ export class SettleFeed {
   /** Frames handed out so far. */
   get taken(): number {
     let n = 0;
-    for (let i = 0; i < this.run && i < this.runs.length; i++) n += this.runs[i].end - this.runs[i].start;
+    for (let i = 0; i < this.run && i < this.runs.length; i++)
+      n += this.runs[i].end - this.runs[i].start;
     if (this.run < this.runs.length) n += this.next - this.runs[this.run].start;
     return n;
   }
