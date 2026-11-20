@@ -77,6 +77,8 @@ workerScope.onmessage = (e) => {
         iterations: 0,
         stop: 'error',
         message: 'The slow worker is not connected.',
+        // Refused before any file was opened: no failure of the factors.
+        refused: true,
       });
     return;
   }

@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'solid-js/web';
 import { LIVE_EXTRACT_READY, liveFactorsBlocked, type FactorState } from '../lib/compress-store.ts';
-import { createStageLog, LIVE_FACTORS_NOTE, LIVE_NOTE, type StageLog } from '../lib/run-stages.ts';
+import {
+  createStageLog,
+  LIVE_EXTRACT_NOTE,
+  LIVE_FACTORS_NOTE,
+  LIVE_NOTE,
+  type StageLog,
+} from '../lib/run-stages.ts';
 
 // uPlot needs a real browser (matchMedia); the panel's plots are not under test.
 vi.mock('uplot', () => ({ default: class {} }));
@@ -38,6 +44,10 @@ interface Setup {
   stages?: StageLog;
   /** No compress store (`?compress=off`). */
   noCompress?: boolean;
+  /** Extract has no result (the export falls back on a live run's traces). */
+  noResult?: boolean;
+  /** The cell store's members over the defaults. */
+  cells?: Record<string, unknown>;
 }
 
 let dispose: (() => void) | undefined;
@@ -56,14 +66,17 @@ function mount(o: Setup): HTMLElement {
     total: () => FRAMES,
     error: () => null,
     blockedReason: () => null,
-    result: () => ({
-      ids: Uint32Array.of(1, 2),
-      cells: 2,
-      frames: FRAMES,
-      seconds: 2,
-      source: o.source,
-      ...(o.minValid ? { minValid: o.minValid } : {}),
-    }),
+    result: () =>
+      o.noResult
+        ? null
+        : {
+            ids: Uint32Array.of(1, 2),
+            cells: 2,
+            frames: FRAMES,
+            seconds: 2,
+            source: o.source,
+            ...(o.minValid ? { minValid: o.minValid } : {}),
+          },
   });
   const pipeline = stub<RunPanelProps['pipeline']>({
     status: () => 'done',
@@ -79,6 +92,7 @@ function mount(o: Setup): HTMLElement {
     status: () => null,
     library: () => null,
     qc: () => null,
+    ...o.cells,
   });
   const compress = stub<NonNullable<RunPanelProps['compress']>>({
     factors: () => o.factors,
@@ -213,7 +227,8 @@ describe('the Run panel of a live run with compression on', () => {
     const root = mount(LIVE);
     expect(root.querySelector('[data-testid="pass2-run"]')).not.toBeNull();
     expect(text(root, 'extract-source')).toBe(LIVE_EXTRACT_READY);
-    expect(text(root, 'live-stage-note')).toBe(LIVE_FACTORS_NOTE);
+    // Without ?refine=factors no Refine is offered, and the note offers none.
+    expect(text(root, 'live-stage-note')).toBe(LIVE_EXTRACT_NOTE);
     expect(root.querySelector('[data-testid="refine-run"]')).toBeNull();
   });
 
@@ -250,6 +265,53 @@ describe('the Run panel of a live run with compression on', () => {
       },
     });
     expect(text(root, 'refine-run')).toBe('Refine until settled');
+    expect(text(root, 'live-stage-note')).toBe(LIVE_FACTORS_NOTE);
+  });
+
+  describe('the export of the live traces while Refine runs on the factors', () => {
+    const running = (finalLibrary: boolean) => {
+      const stages = createStageLog();
+      stages.begin('refine');
+      return mount({
+        ...LIVE,
+        refineFactors: true,
+        stages,
+        noResult: true,
+        refine: {
+          status: () => 'running',
+          route: () => 'factors',
+          routeNote: () => null,
+          factorSettings: SETTINGS,
+          processed: () => 1,
+          total: () => 20,
+          fps: () => 0,
+          phase: () => ({ kind: 'iterate', stopping: false, last: null }),
+        },
+        cells: {
+          // The worst case: the last status the main thread holds does not say final.
+          status: () => ({ final: false, factorRun: true }),
+          finalLibrary: () => finalLibrary,
+          library: () => ({ ids: Uint32Array.of(1, 2), version: 3 }),
+          history: () => ({
+            range: (_id: number, a: number, b: number) => new Float32Array(b - a),
+          }),
+        },
+      });
+    };
+    const button = (root: HTMLElement) =>
+      root.querySelector<HTMLButtonElement>('[data-testid="export-npz"]')!;
+
+    it('stays available while the library is final', async () => {
+      const root = running(true);
+      await vi.waitFor(() => expect(button(root).disabled).toBe(false));
+      expect(button(root).getAttribute('title')).toContain('the live traces');
+    });
+
+    it('waits for the final library otherwise', async () => {
+      const root = running(false);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(button(root).disabled).toBe(true);
+    });
   });
 
   it('shows the progress bars of Extract and Refine running on the factors of a live run', () => {

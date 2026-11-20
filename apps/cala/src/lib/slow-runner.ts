@@ -831,7 +831,10 @@ export class SlowRunner {
       this.scope = 'refine';
       this.publish(loop.finalize());
       this.run++;
-      this.final = false;
+      // `final` stays set: every iteration ends with a finalized library, and
+      // `factorOwnsLoop` keeps out what `final` would (an end, a replay, frames,
+      // reviews). A status of the run never says the library is not final, so
+      // one that traps or a crash leaves the main thread with a final library.
       this.ending = false;
       this.frame = 0;
       this.consumed = 0;

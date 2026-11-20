@@ -1108,8 +1108,11 @@ describe('SlowRunner: Refine on the factors', () => {
     const p = t.r.refineOnFactors(msg);
     await turns(() => t.later.length === 1);
     expect(t.calls).toHaveLength(1);
+    const statuses = t.toMain.of('status').length;
     t.r.handle({ type: 'end', session: 2 });
-    expect(t.toMain.of('status').at(-1)!.status.final).toBe(false);
+    // The end finalizes nothing (the run's library is final already) and posts nothing.
+    expect(t.toMain.of('status')).toHaveLength(statuses);
+    expect(t.toMain.of('status').at(-1)!.status).toMatchObject({ final: true, factorRun: true });
     t.r.stopFactors(3); // another session: not this run
     t.r.stopFactors(2);
     t.later.shift()!();
@@ -1342,7 +1345,11 @@ describe('SlowRunner: Refine on the factors', () => {
     expect(t.observed).toEqual([]);
     expect(t.toFast.of('ack')).toHaveLength(1);
     expect(t.toMain.of('status')).toHaveLength(statuses);
-    expect(t.toMain.of('status').at(-1)!.status).toMatchObject({ run: 2, final: false });
+    expect(t.toMain.of('status').at(-1)!.status).toMatchObject({
+      run: 2,
+      final: true,
+      factorRun: true,
+    });
     t.r.stopFactors(2);
     t.later.shift()!();
     await p;
@@ -1361,11 +1368,16 @@ describe('SlowRunner: Refine on the factors', () => {
         throw new Error('the files are gone');
       },
     }));
+    let trapped = false;
     t.loop.refineOnFactors = () => {
+      trapped = true;
       throw new WebAssembly.RuntimeError('unreachable');
     };
+    // After the trap the WASM instance throws on every call, the status's included.
     t.loop.cellStatus = () => {
-      throw new Error('recursive use of an object detected which would lead to unsafe aliasing');
+      if (trapped)
+        throw new Error('recursive use of an object detected which would lead to unsafe aliasing');
+      return Float64Array.of(1, 1, 3, 2, 0, 0);
     };
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -1388,6 +1400,82 @@ describe('SlowRunner: Refine on the factors', () => {
       iterations: 1,
       stop: 'nothing-accepted',
     });
+  });
+
+  it('keeps every status of the run final, so the main thread still holds a final library after a trapped iteration', async () => {
+    const t = setup([0, 1]);
+    let trapped = false;
+    t.loop.refineOnFactors = () => {
+      trapped = true;
+      throw new WebAssembly.RuntimeError('unreachable');
+    };
+    // After the trap the WASM instance throws on every call, the status's included.
+    t.loop.cellStatus = () => {
+      if (trapped)
+        throw new Error('recursive use of an object detected which would lead to unsafe aliasing');
+      return Float64Array.of(1, 1, 3, 2, 0, 0);
+    };
+    const before = t.toMain.sent.length;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await drive(t.r.refineOnFactors(msg), t.later);
+    } finally {
+      warn.mockRestore();
+    }
+    const statuses = t.toMain.sent
+      .slice(before)
+      .map((s) => s.msg)
+      .filter((m): m is Extract<SlowToMain, { type: 'status' }> => m.type === 'status');
+    expect(statuses).not.toHaveLength(0);
+    for (const m of statuses) expect(m.status).toMatchObject({ final: true, factorRun: true });
+    const cells = createCellStore();
+    cells.reset(2);
+    for (const { msg: m } of t.toMain.sent) cells.onSlowMessage(m);
+    expect(cells.status()?.final).toBe(true);
+    expect(cells.finalLibrary()).toBe(true);
+  });
+
+  it('keeps every status of a settling run final too', async () => {
+    const t = setup([0, 1]);
+    const before = t.toMain.of('status').length;
+    await drive(t.r.refineOnFactors(msg), t.later);
+    // Before the first iteration, after each, and the last one once the run let go.
+    const statuses = t.toMain.of('status').slice(before);
+    expect(statuses.map((m) => [m.status.final, m.status.factorRun ?? false])).toEqual([
+      [true, true],
+      [true, true],
+      [true, true],
+      [true, false],
+    ]);
+  });
+
+  it('the cell store keeps the final library through a factor run and a slow crash, until the next Discover', () => {
+    const t = runner(new Set());
+    t.r.handle(INIT);
+    t.r.handle({ type: 'end', session: 2 });
+    const done: SlowStatus = { ...t.toMain.of('status').at(-1)!.status, final: true };
+    const cells = createCellStore();
+    cells.reset(2);
+    expect(cells.finalLibrary()).toBe(false);
+    cells.onSlowMessage({ type: 'status', session: 2, status: done });
+    expect(cells.finalLibrary()).toBe(true);
+    // A status of a factor run that does not say final, then the slow worker crashes.
+    cells.onSlowMessage({
+      type: 'status',
+      session: 2,
+      status: { ...done, final: false, run: 2, factorRun: true },
+    });
+    cells.onSlowMessage({ type: 'error', session: -1, message: 'the slow worker crashed' });
+    expect(cells.status()?.final).toBe(false);
+    expect(cells.finalLibrary()).toBe(true);
+    // A raw Refine's replay is not final until it publishes its own final library.
+    cells.onSlowMessage({ type: 'status', session: 2, status: { ...done, final: false, run: 3 } });
+    expect(cells.finalLibrary()).toBe(false);
+    cells.onSlowMessage({ type: 'status', session: 2, status: { ...done, run: 3 } });
+    expect(cells.finalLibrary()).toBe(true);
+    // A new Discover starts over.
+    cells.reset(3);
+    expect(cells.finalLibrary()).toBe(false);
   });
 
   it('turns the values of an iteration into its report, and refuses too few of them', () => {

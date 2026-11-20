@@ -70,9 +70,13 @@ export interface StageInput {
 export const LIVE_NOTE =
   'A live stream runs Discover only: there is no file to replay. Save the stream and load it as a recording later to Refine or Extract.';
 
-/** A live run with compression on: what its Extract and Refine read. */
+/** A live run with compression on and `?refine=factors`: what its Extract and Refine read. */
 export const LIVE_FACTORS_NOTE =
   'Live run: Extract and Refine read the factors Discover wrote during the stream; they are not claimed to meet the closeness gate.';
+
+/** A live run with compression on, without `?refine=factors` (no Refine is offered): what its Extract reads. */
+export const LIVE_EXTRACT_NOTE =
+  'Live run: Extract reads the factors Discover wrote during the stream; they are not claimed to meet the closeness gate.';
 
 /** A live run's Refine without `?refine=factors`. */
 export const LIVE_REFINE_OFF =
@@ -363,7 +367,7 @@ export function factorRefineRunningText(
     default: {
       const l = phase.last;
       const head = l
-        ? `Refine ${index} on the factors: iteration ${l.iteration} of at most ${settings.maxIterations} done · ${l.accepted} refinements accepted · ${pct(l.changedShare)} of cells still changing (settled below ${pct(settings.settleShare)}) · median change ${pct(l.medianChange)}`
+        ? `Refine ${index} on the factors: iteration ${l.iteration} of at most ${settings.maxIterations} done · ${l.accepted} refinement${l.accepted === 1 ? '' : 's'} accepted · ${pct(l.changedShare)} of cells still changing (settled below ${pct(settings.settleShare)}) · median change ${pct(l.medianChange)}`
         : `Refine ${index} on the factors: iteration 1 of at most ${settings.maxIterations}`;
       return phase.stopping ? `${head} · stopping after this iteration` : head;
     }

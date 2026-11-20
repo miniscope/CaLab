@@ -19,6 +19,7 @@ import {
   EXTRACT_AFTER_DISCOVER_DEFAULT,
   factorRefineDoneText,
   factorRefineRunningText,
+  LIVE_EXTRACT_NOTE,
   LIVE_FACTORS_NOTE,
   LIVE_NOTE,
   NEXT_STEP_HINT,
@@ -257,12 +258,17 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   const [passOnly, setPassOnly] = createSignal(true);
   const [exporting, setExporting] = createSignal<string | null>(null);
   const [exportError, setExportError] = createSignal<string | null>(null);
-  /** Live run: the traces solved as the frames came in, once the run and the final library are in. */
+  /**
+   * Live run: the traces solved as the frames came in, once the run and the
+   * final library are in. A Refine on the factors keeps the library final
+   * (`finalLibrary`), so the export stays available while it runs.
+   */
   const [liveResult, setLiveResult] = createSignal<Pass2Result | null>(null);
   createEffect(() => {
     if (!props.live) return;
     const done = s().status() === 'done';
-    const final = c().status()?.final ?? true;
+    // No slow-loop status at all (no Discover ran): nothing to wait for.
+    const final = c().status() ? c().finalLibrary() : true;
     const frames = s().processed();
     c().library();
     if (!done || !final) {
@@ -842,7 +848,11 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       </Show>
       <Show when={props.live}>
         <p class="cala-muted cala-run__line" data-testid="live-stage-note">
-          {props.compress ? LIVE_FACTORS_NOTE : LIVE_NOTE}
+          {props.compress
+            ? props.refineFactors
+              ? LIVE_FACTORS_NOTE
+              : LIVE_EXTRACT_NOTE
+            : LIVE_NOTE}
         </p>
       </Show>
       <Show when={!props.live || liveRefine()}>

@@ -233,7 +233,7 @@ const App: Component = () => {
     discover: discoverActivity(),
     refine: ((st) => (st === 'finishing' ? 'running' : st))(refine.status()) as StageActivity,
     extract: pass2.status(),
-    finalLibrary: cells.status()?.final ?? false,
+    finalLibrary: cells.finalLibrary(),
     cells: cells.library()?.ids.length ?? 0,
     replayBlocked: replayBlocked(pipeline),
   });

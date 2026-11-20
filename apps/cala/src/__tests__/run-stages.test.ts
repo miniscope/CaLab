@@ -7,6 +7,7 @@ import {
   factorRefineDoneText,
   factorRefineRunningText,
   footprintChange,
+  LIVE_EXTRACT_NOTE,
   LIVE_FACTORS_NOTE,
   LIVE_NOTE,
   LIVE_REFINE_OFF,
@@ -338,6 +339,9 @@ describe('stage availability of a live run with compression on', () => {
     expect(LIVE_FACTORS_NOTE).toBe(
       'Live run: Extract and Refine read the factors Discover wrote during the stream; they are not claimed to meet the closeness gate.',
     );
+    expect(LIVE_EXTRACT_NOTE).toBe(
+      'Live run: Extract reads the factors Discover wrote during the stream; they are not claimed to meet the closeness gate.',
+    );
   });
 
   it('does not report a replay reason for a stream, which replays nothing', () => {
@@ -390,6 +394,10 @@ describe('the readouts of Refine on the factors', () => {
     );
     expect(factorRefineRunningText(2, { kind: 'iterate', last: it2, stopping: true }, S)).toBe(
       'Refine 2 on the factors: iteration 2 of at most 20 done · 5 refinements accepted · 4.0% of cells still changing (settled below 2.0%) · median change 0.3% · stopping after this iteration',
+    );
+    const one = { ...it2, accepted: 1 };
+    expect(factorRefineRunningText(2, { kind: 'iterate', last: one, stopping: false }, S)).toBe(
+      'Refine 2 on the factors: iteration 2 of at most 20 done · 1 refinement accepted · 4.0% of cells still changing (settled below 2.0%) · median change 0.3%',
     );
   });
 
