@@ -3250,3 +3250,190 @@ fn lookback_misuse_is_refused() {
     assert!(!js.stream_ok(None));
     assert!(js.stream_ok(Some(0.0)));
 }
+
+/// The concurrent settle's frames: a re-read frame keeps the side it had
+/// live (a held-out frame becomes a test slot only and never reaches the
+/// footprint statistics), no tile stores a frame twice, the slots count
+/// towards settle visits only, and the loop's frame clock does not move.
+/// Before `enable_settle` the calls are refused.
+#[test]
+fn settle_frames_keep_their_side_and_leave_discover_clocks_alone() {
+    let t = 90;
+    let mut rng = Lcg(5);
+    let cells = vec![(blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0))];
+    let m = movie(&cells, t, 7);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let n_px = N * N;
+    let run = |reservoir: bool, skip_held: bool| {
+        let (mut slow, mut eng) = start(config(), &seed);
+        let lib = eng.library().clone();
+        let f = &m[..n_px];
+        let tr = eng.process(f).unwrap();
+        assert!(slow.observe_settle(f, &lib, &tr, 0, false, true).is_err());
+        assert!(slow.step_settle(1).is_err());
+        slow.enable_settle(0);
+        // Live frames with the reservoir frozen: the clock runs, nothing
+        // is stored.
+        slow.set_reservoir_frozen(true);
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let tr = eng.process(f).unwrap();
+            slow.observe(f, &lib, &tr).unwrap();
+        }
+        slow.set_reservoir_frozen(false);
+        let frames = slow.frames();
+        let fresh: Vec<u32> = slow.tiles.iter().map(|t| t.fresh).collect();
+        for _ in 0..2 {
+            for k in 0..t {
+                let held = slow.is_test(k as u64);
+                let f = &m[k * n_px..(k + 1) * n_px];
+                let tr = eng.process(f).unwrap();
+                if held && skip_held {
+                    continue;
+                }
+                slow.observe_settle(f, &lib, &tr, k as u64, held, reservoir)
+                    .unwrap();
+            }
+        }
+        assert_eq!(slow.frames(), frames);
+        let after: Vec<u32> = slow.tiles.iter().map(|t| t.fresh).collect();
+        assert_eq!(after, fresh, "a settle frame made a tile due for Discover");
+        slow
+    };
+    let full = run(true, false);
+    let st = full.settle_stats();
+    assert!(st.frames_fit > 0 && st.frames_test > 0 && st.slots > 0);
+    assert_eq!(
+        full.cs_fresh.iter().map(|&c| u64::from(c)).sum::<u64>(),
+        st.slots
+    );
+    let (mut n_test, mut n_fit) = (0, 0);
+    for tile in &full.tiles {
+        let mut seen = std::collections::HashSet::new();
+        for w in tile.slots() {
+            let (frame, test) = (tile.slot(w).frame, tile.slot(w).test);
+            assert_eq!(test, full.is_test(frame), "frame {frame} changed side");
+            assert!(seen.insert(frame), "frame {frame} stored twice");
+            n_test += usize::from(test);
+            n_fit += usize::from(!test);
+        }
+    }
+    assert!(n_test > 0 && n_fit > 0, "{n_test} test, {n_fit} fit slots");
+    // Held-out frames never reach the statistics, with or without the
+    // reservoir.
+    let id = full.fpstats.keys().next().copied().unwrap();
+    let dbg = |s: &SlowLoop| {
+        let mut st = s.fpstats[&id].clone();
+        st.version = 0;
+        format!("{st:?}")
+    };
+    let no_held = run(true, true);
+    let stats_only = run(false, false);
+    assert!(dbg(&full) == dbg(&no_held));
+    assert!(dbg(&full) == dbg(&stats_only));
+    assert_eq!(stats_only.reservoir_bytes(), 0);
+}
+
+/// A settle visit refines and nothing else: the cell set, the tiles'
+/// ordinary due counters and visit numbers are as before it, and with the
+/// quiet period a tile whose cell set just changed is passed over.
+#[test]
+fn settle_visits_only_refine() {
+    let t = 240;
+    let mut rng = Lcg(11);
+    let cells = vec![
+        (blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0)),
+        (blob(1, 34.0, 36.0), trace(&mut rng, t, 0.05, 6.0)),
+    ];
+    let m = movie(&cells, t, 3);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let n_px = N * N;
+    let (mut slow, mut eng) = start(config(), &seed);
+    slow.enable_settle(0);
+    let lib = eng.library().clone();
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        slow.observe(f, &lib, &tr).unwrap();
+    }
+    let ids: Vec<u64> = slow.cells.iter().map(|c| c.id).collect();
+    let fresh: Vec<u32> = slow.tiles.iter().map(|t| t.fresh).collect();
+    let visits = slow.tile_visits.clone();
+    let s0 = slow.stats();
+    slow.step_settle(u64::MAX / 4).unwrap();
+    let s1 = slow.stats();
+    let st = slow.settle_stats();
+    assert!(st.visits > 0, "no settle visit ran");
+    assert_eq!(slow.cells.iter().map(|c| c.id).collect::<Vec<_>>(), ids);
+    assert_eq!(
+        (s1.adds, s1.merges, s1.splits, s1.deletes, s1.absorbs, s1.visits),
+        (s0.adds, s0.merges, s0.splits, s0.deletes, s0.absorbs, s0.visits)
+    );
+    assert_eq!(s1.refines - s0.refines, st.refines);
+    assert_eq!(slow.tile_visits, visits);
+    for (tile, f0) in slow.tiles.iter().zip(&fresh) {
+        assert!(
+            tile.fresh >= *f0,
+            "a settle visit cancelled an ordinary visit"
+        );
+    }
+    assert!(slow
+        .cs_fresh
+        .iter()
+        .all(|&c| c < slow.cfg.visit_after_slots));
+    assert_eq!(slow.scope, EditScope::All);
+
+    // The quiet period: every due tile whose cell set changed recently
+    // is passed over.
+    let due = slow.cfg.visit_after_slots;
+    slow.enable_settle(1000);
+    for ti in 0..slow.tiles.len() {
+        slow.cs_fresh[ti] = due;
+        slow.cs_struct[ti] = slow.frames;
+    }
+    let v = slow.settle_stats().visits;
+    slow.step_settle(u64::MAX / 4).unwrap();
+    assert_eq!(slow.settle_stats().visits, v);
+    assert!(slow.settle_stats().quiet_skips > 0);
+}
+
+/// The settle scheduler: the share sets the frames owed per live frame,
+/// and the chunks cover the saved history about evenly.
+#[test]
+fn settle_sched_spreads_chunks_over_the_history() {
+    let mut s = SettleSched::new(0.5, 16);
+    assert!(s.next_frame(15).is_none());
+    let seen = 1600;
+    let mut hits = [0usize; 10];
+    let mut last = usize::MAX;
+    for i in 0..1600 {
+        let (f, new) = s.next_frame(seen).unwrap();
+        assert!(f < seen);
+        assert_eq!(new, i % 16 == 0);
+        if !new {
+            assert_eq!(f, last + 1);
+        }
+        last = f;
+        hits[f * 10 / seen] += 1;
+    }
+    assert!(hits.iter().all(|&h| (112..=208).contains(&h)), "{hits:?}");
+    // One settle frame per live frame at a share of one half; a third of
+    // one at a quarter.
+    let mut owed = 0;
+    for _ in 0..100 {
+        s.earn(1.0);
+        while s.take() {
+            owed += 1;
+        }
+    }
+    assert_eq!(owed, 100);
+    s.set_share(0.25);
+    owed = 0;
+    for _ in 0..300 {
+        s.earn(1.0);
+        while s.take() {
+            owed += 1;
+        }
+    }
+    assert!((99..=101).contains(&owed), "{owed}");
+}

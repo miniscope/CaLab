@@ -188,6 +188,26 @@
 //!                      (default 6000).
 //!   --drop-step        keep stepping the slow loop on dropped batches (only
 //!                      the observation is lost, not the compute)
+//!   --csettle S        the concurrent settle (experimental; needs --lookback):
+//!                      while Discover runs, a share S of the slow loop's
+//!                      compute goes to settle work: saved frames spread
+//!                      over the history are re-read (16 in a row,
+//!                      `--csettle-chunk`), fed on the side they had live
+//!                      (`SlowLoop::observe_settle`), and each earns one
+//!                      frame's budget of refinement-only visits
+//!                      (`SlowLoop::step_settle`). Without --offered-fps
+//!                      every live frame earns S / (1 - S) settle frames,
+//!                      weighted over the recording by `--csettle-ramp
+//!                      flat|linear|late` (same total); with it the slow
+//!                      worker spends S of its idle time (S up to 1), a
+//!                      re-read frame being ready every `--lb-ms` (10) ms.
+//!                      S = 0: no settle (with --offered-fps the look-back
+//!                      then runs on the virtual clock, the baseline).
+//!                      `--csettle-mode visits|stats|full`: settle visits
+//!                      only (no frames), frames to the statistics, frames
+//!                      to the statistics and the reservoir (default).
+//!                      `--csettle-quiet F`: no settle visit on a tile
+//!                      whose cell set changed in the last F frames.
 //!   --offered-fps R    model the app's workers on a virtual clock instead
 //!                      (`Timed`): the fast loop reads R frames per second,
 //!                      batches of `--batch` frames are dropped when the
@@ -368,7 +388,7 @@ use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
     CoreTest, EditScope, JointAdmit, JointSign, JointUpdate, LookBack as LbSched, LookbackConfig,
     LookbackNext, LookbackOrder, LookbackOutcome, LookbackReservoir, MergeRule, RefineGate,
-    SlowLoop, SlowLoopConfig, SupportRule, VisitResult, VisitRunner, LB_BLOCK,
+    SettleSched, SlowLoop, SlowLoopConfig, SupportRule, VisitResult, VisitRunner, LB_BLOCK,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -902,6 +922,63 @@ struct LookBack {
     target: f64,
     /// Look-back frames per 1/20 of the recording (precision mode report).
     by_twentieth: [u64; 20],
+    /// `--csettle`: the concurrent settle (see `CsCfg`).
+    cs: Option<CsCfg>,
+    cs_sched: SettleSched,
+    /// The preprocessor copy of the settle chunk in progress.
+    cs_pre: Option<Preprocessor>,
+    /// A settle frame is being fed (`frame` hands it to `observe_settle`,
+    /// with or without the reservoir).
+    cs_now: Option<bool>,
+    cs_frames: u64,
+    cs_wall_s: f64,
+    /// `--offered-fps`: the slow-loop index of each recording frame after
+    /// warm-up (`u32::MAX`: dropped or not forwarded yet). Empty: every
+    /// frame is forwarded in order.
+    slow_of: Vec<u32>,
+}
+
+/// What a settle frame feeds (`--csettle-mode`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum CsMode {
+    Visits,
+    Stats,
+    Full,
+}
+
+/// The concurrent settle (`--csettle S` and its options).
+#[derive(Clone, Debug)]
+struct CsCfg {
+    share: f64,
+    mode: CsMode,
+    /// 0 flat, 1 linear, 2 late (weights of the lock-step schedule).
+    ramp: u8,
+    quiet: u64,
+    chunk: usize,
+}
+
+impl CsCfg {
+    fn parse(args: &[String]) -> Option<CsCfg> {
+        let share: f64 = arg_value(args, "--csettle")?.parse().unwrap();
+        assert!((0.0..=1.0).contains(&share), "--csettle must be in [0, 1]");
+        Some(CsCfg {
+            share,
+            mode: match arg_value(args, "--csettle-mode").as_deref() {
+                None | Some("full") => CsMode::Full,
+                Some("stats") => CsMode::Stats,
+                Some("visits") => CsMode::Visits,
+                Some(m) => panic!("--csettle-mode: unknown mode {m}"),
+            },
+            ramp: match arg_value(args, "--csettle-ramp").as_deref() {
+                None | Some("flat") => 0,
+                Some("linear") => 1,
+                Some("late") => 2,
+                Some(m) => panic!("--csettle-ramp: unknown schedule {m}"),
+            },
+            quiet: arg_value(args, "--csettle-quiet").map_or(0, |s| s.parse().unwrap()),
+            chunk: arg_value(args, "--csettle-chunk").map_or(16, |s| s.parse().unwrap()),
+        })
+    }
 }
 
 impl LookBack {
@@ -954,6 +1031,103 @@ impl LookBack {
             by_tenth: [(0, 0); 11],
             target,
             by_twentieth: [0; 20],
+            cs: None,
+            cs_sched: SettleSched::new(0.0, 16),
+            cs_pre: None,
+            cs_now: None,
+            cs_frames: 0,
+            cs_wall_s: 0.0,
+            slow_of: Vec::new(),
+        }
+    }
+
+    /// One unit of concurrent settle work: re-read the next scheduled frame
+    /// among recording frames `start..seen` and feed it, then the settle
+    /// visits it earns (`budget`). In `visits` mode only the visits.
+    /// Returns the slow-loop work spent; `None` when there is no saved
+    /// frame to read yet.
+    #[allow(clippy::too_many_arguments)]
+    fn cs_unit(
+        &mut self,
+        seen: usize,
+        budget: u64,
+        start: usize,
+        rec: &mut Recording,
+        drift: Option<&Drift>,
+        pipe: &mut Pipeline,
+        live: &TraceEngine,
+        sl: &mut SlowLoop,
+        n_px: usize,
+    ) -> Option<u64> {
+        let mode = self.cs.as_ref()?.mode;
+        let t0 = Instant::now();
+        let w0 = sl.work();
+        if mode != CsMode::Visits {
+            let (f, new) = self.cs_sched.next_frame(seen.saturating_sub(start))?;
+            let mut pre = match self.cs_pre.take() {
+                Some(p) if !new => p,
+                _ => pipe.pre.clone(),
+            };
+            self.cs_now = Some(mode == CsMode::Full);
+            self.frame(
+                f + start,
+                &mut pre,
+                None,
+                start,
+                rec,
+                drift,
+                pipe,
+                live,
+                sl,
+                n_px,
+                10,
+            );
+            self.cs_now = None;
+            self.cs_pre = Some(pre);
+            self.cs_frames += 1;
+        }
+        sl.step_settle(budget).unwrap();
+        self.cs_wall_s += t0.elapsed().as_secs_f64();
+        Some(sl.work() - w0)
+    }
+
+    /// The lock-step schedule (no `--offered-fps`): after Discover frame
+    /// `t_rec` the settle gets the frames that frame earned.
+    #[allow(clippy::too_many_arguments)]
+    fn cs_after_frame(
+        &mut self,
+        t_rec: usize,
+        t_len: usize,
+        budget: u64,
+        start: usize,
+        rec: &mut Recording,
+        drift: Option<&Drift>,
+        pipe: &mut Pipeline,
+        live: &TraceEngine,
+        sl: &mut SlowLoop,
+        n_px: usize,
+    ) {
+        let Some(cfg) = self.cs.as_ref() else { return };
+        let x = (t_rec.saturating_sub(start)) as f64 / (t_len.saturating_sub(start)).max(1) as f64;
+        let w = match cfg.ramp {
+            0 => 1.0,
+            1 => 2.0 * x,
+            _ => {
+                if x < 0.5 {
+                    0.0
+                } else {
+                    2.0
+                }
+            }
+        };
+        self.cs_sched.earn(w);
+        while self.cs_sched.take() {
+            if self
+                .cs_unit(t_rec + 1, budget, start, rec, drift, pipe, live, sl, n_px)
+                .is_none()
+            {
+                break;
+            }
         }
     }
 
@@ -1331,10 +1505,15 @@ impl LookBack {
         // The frame's slow-loop index in Discover (all batches forwarded):
         // a held-out frame stays held out. Warm-up frames, never in the
         // slow loop, get their own range.
-        let idx = if f >= start {
-            (f - start) as u64
-        } else {
-            u64::MAX - f as u64
+        let idx = match (f >= start, self.slow_of.is_empty()) {
+            (true, true) => (f - start) as u64,
+            (true, false) => match self.slow_of.get(f - start) {
+                Some(&i) if i != u32::MAX => u64::from(i),
+                // Never seen by the slow loop: a side of its own, as
+                // `HeldOutRecord` gives it.
+                _ => u64::MAX - f as u64,
+            },
+            _ => u64::MAX - f as u64,
         };
         // Precision mode: a held-out frame is still preprocessed (the block's
         // preprocessor copy runs forward) but not solved.
@@ -1370,6 +1549,12 @@ impl LookBack {
         let tr = eng.process(&self.y).unwrap();
         let lib = eng.library().clone();
         let n_cells = only.map_or(lib.len(), <[u64]>::len) as u64;
+        if let Some(reservoir) = self.cs_now {
+            let held = sl.is_test(idx);
+            sl.observe_settle(&self.y, &lib, &tr, idx, held, reservoir)
+                .unwrap();
+            return Some(!held);
+        }
         let pushed = if self.full_observe {
             sl.observe(&self.y, &lib, &tr).unwrap();
             true
@@ -2958,6 +3143,8 @@ enum Msg {
     Batch(Batch),
     /// A visit result and the worker it came from.
     Result(Box<VisitResult>, usize),
+    /// Owner time (ms) for look-back frames it was handed (`--csettle`).
+    Charge(f64),
 }
 
 /// The app's slow-loop workers on a virtual clock (`--offered-fps`).
@@ -3001,6 +3188,16 @@ struct Timed {
     pub last_ms: f64,
     /// The recording ended: no more hand-outs.
     pub ending: bool,
+    /// `--csettle`: the share of the owner's idle time the concurrent
+    /// settle uses (0: off), the time a re-read frame takes to arrive from
+    /// the look-back worker, the earliest start of the next settle unit,
+    /// and the owner's time spent on the settle and on look-back frames.
+    pub cs_share: f64,
+    pub lb_ms: f64,
+    cs_next: f64,
+    pub cs_busy: f64,
+    pub cs_units: u64,
+    pub lb_busy: f64,
 }
 
 impl Timed {
@@ -3035,7 +3232,52 @@ impl Timed {
             runner_busy: 0.0,
             last_ms: 0.0,
             ending: false,
+            cs_share: 0.0,
+            lb_ms: 10.0,
+            cs_next: 0.0,
+            cs_busy: 0.0,
+            cs_units: 0,
+            lb_busy: 0.0,
         }
+    }
+
+    /// The owner is idle until `limit` (the next message, or now): it
+    /// spends `cs_share` of that time on settle units (`unit` runs one and
+    /// returns its work). A unit is not interrupted, so one started just
+    /// before a batch arrives makes the batch wait, as in the app.
+    fn settle_idle(
+        &mut self,
+        limit: f64,
+        sl: &mut SlowLoop,
+        unit: &mut dyn FnMut(&mut SlowLoop) -> Option<u64>,
+    ) {
+        if self.cs_share <= 0.0 || self.ending {
+            return;
+        }
+        loop {
+            let t = self.owner_free.max(self.cs_next);
+            if t >= limit {
+                break;
+            }
+            let Some(units) = unit(sl) else { break };
+            let dur = units as f64 / self.units_per_ms;
+            self.owner_free = t + dur;
+            self.owner_busy += dur;
+            self.cs_busy += dur;
+            self.cs_units += 1;
+            self.last_ms = self.last_ms.max(t + dur);
+            self.cs_next = (t + dur / self.cs_share).max(t + self.lb_ms);
+        }
+    }
+
+    /// The owner took look-back frames worth `units` of work at `now`.
+    fn charge(&mut self, now: f64, units: u64) {
+        if units == 0 {
+            return;
+        }
+        // A message of its own, so the owner's idle time before `now`
+        // stays available to the settle.
+        self.push(now, Msg::Charge(units as f64 / self.units_per_ms));
     }
 
     /// Wall time (ms) at which frame `t` has been read.
@@ -3064,8 +3306,21 @@ impl Timed {
     /// Handle every message the owner starts by `until` (all of them with
     /// `f64::INFINITY`). `log` gets each handled batch's frames (recording
     /// frame of each slow-loop frame).
-    fn advance(&mut self, until: f64, sl: &mut SlowLoop, slow_rec: &mut Vec<u32>) {
-        while let Some(&(arr, _)) = self.inbox.front() {
+    fn advance(
+        &mut self,
+        until: f64,
+        sl: &mut SlowLoop,
+        slow_rec: &mut Vec<u32>,
+        unit: &mut dyn FnMut(&mut SlowLoop) -> Option<u64>,
+    ) {
+        loop {
+            let Some(&(arr, _)) = self.inbox.front() else {
+                if until.is_finite() {
+                    self.settle_idle(until, sl, unit);
+                }
+                break;
+            };
+            self.settle_idle(arr.min(until), sl, unit);
             let start = arr.max(self.owner_free);
             if start > until {
                 break;
@@ -3096,6 +3351,10 @@ impl Timed {
                             }
                         }
                     }
+                }
+                Msg::Charge(ms) => {
+                    extra += ms;
+                    self.lb_busy += ms;
                 }
                 Msg::Result(r, i) => {
                     // The visit's work was done by its worker; `apply_job`
@@ -4002,7 +4261,7 @@ impl Branching {
             "--churn-log",
             "--merge-log",
             "--factors-out",
-            "--offered-fps",
+            "--visit-workers",
         ] {
             assert!(
                 !args.iter().any(|a| a == f),
@@ -4605,6 +4864,8 @@ fn main() {
     if lb_res != LookbackReservoir::Off {
         println!("lookback reservoir: {lb_res:?}, share {lb_res_share}");
     }
+    let cs_cfg = CsCfg::parse(&args);
+    let lb_ms: f64 = arg_value(&args, "--lb-ms").map_or(10.0, |s| s.parse().unwrap());
     let mut lb_drain: usize = tail.drain;
     let lb_frames: usize =
         arg_value(&args, "--lookback-frames").map_or(3000, |s| s.parse().unwrap());
@@ -4620,7 +4881,15 @@ fn main() {
             lb_rate, lb_frames, lb_newest, lb_catchup, lb_double, lb_target, n_px,
         )
     });
+    assert!(
+        cs_cfg.is_none() || lookback.is_some(),
+        "--csettle needs --lookback"
+    );
     if let Some(l) = lookback.as_mut() {
+        if let Some(c) = &cs_cfg {
+            l.cs_sched = SettleSched::new(c.share, c.chunk);
+            l.cs = cs_cfg.clone();
+        }
         l.drain_rate = tail.drain_rate;
         l.settle_all = tail.settle_all;
         l.settle = tail.settle.clone();
@@ -4668,6 +4937,8 @@ fn main() {
     let mut tokens = 1.0f64;
     // Recording frame of each slow-loop frame.
     let mut slow_rec: Vec<u32> = Vec::new();
+    // `--offered-fps`: recording frames forwarded to the slow loop so far.
+    let mut slow_seen: usize = 0;
     let mut add_log = String::from("frame\trecording_frame\tid\tclass\tcy\tcx\tcos\tdist\tsince\n");
     let mut rem_log = String::from(
         "frame\trecording_frame\tid\tkind\tcy\tcx\tborn\tborn_recording\tclass\tchurned\n",
@@ -5005,6 +5276,9 @@ fn main() {
                         slow = Some(mk());
                         if let Some(s) = slow.as_mut() {
                             s.set_lookback_reservoir(lb_res, lb_res_share);
+                            if let Some(c) = &cs_cfg {
+                                s.enable_settle(c.quiet);
+                            }
                         }
                         if let Some(s) = &slow {
                             let p = s.reservoir_plan();
@@ -5037,6 +5311,11 @@ fn main() {
                                 runners,
                                 depth,
                             ));
+                            if let (Some(c), Some(tm)) = (&cs_cfg, timed.as_mut()) {
+                                assert!(visit_workers == 0, "--csettle needs --visit-workers 0");
+                                tm.cs_share = c.share;
+                                tm.lb_ms = lb_ms;
+                            }
                         }
                     }
                     qc = Some(
@@ -5045,7 +5324,21 @@ fn main() {
                 }
                 if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
                     let now = tm.at(t);
-                    tm.advance(now, sl, &mut slow_rec);
+                    let mut unit = |sl: &mut SlowLoop| match (lookback.as_mut(), pass) {
+                        (Some(l), 0) => l.cs_unit(
+                            slow_seen,
+                            budget,
+                            start,
+                            &mut rec,
+                            drift.as_ref(),
+                            &mut pipe,
+                            &engine,
+                            sl,
+                            n_px,
+                        ),
+                        _ => None,
+                    };
+                    tm.advance(now, sl, &mut slow_rec, &mut unit);
                     if let Some(l) = tm.library(now) {
                         engine.set_library(l).unwrap();
                     }
@@ -5101,6 +5394,19 @@ fn main() {
                         let now = tm.at(t + 1);
                         let n = pending.len() as u64;
                         if tm.has_buffer(now) {
+                            if let Some(l) = lookback.as_mut() {
+                                // The slow-loop index each frame will get.
+                                if pass == 0 {
+                                    for (j, p) in pending.iter().enumerate() {
+                                        let i = p.3 - start;
+                                        if l.slow_of.len() <= i {
+                                            l.slow_of.resize(i + 1, u32::MAX);
+                                        }
+                                        l.slow_of[i] = (fwd_frames as usize + j) as u32;
+                                    }
+                                    slow_seen = t + 1;
+                                }
+                            }
                             let batch = (std::mem::take(&mut pending), timed_noise.take());
                             tm.forward(now, batch);
                             n_fwd += 1;
@@ -5109,7 +5415,7 @@ fn main() {
                             pending.clear();
                             tm.dropped += n;
                         }
-                        tm.advance(now, sl, &mut slow_rec);
+                        tm.advance(now, sl, &mut slow_rec, &mut |_| None);
                         let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
                         write_logs(sl, &rf, &mut add_log, &mut rem_log);
                         if churn_log {
@@ -5204,20 +5510,54 @@ fn main() {
                         }
                     }
                 }
-                if let (Some(lbk), Some(sl), 0, None) =
-                    (lookback.as_mut(), slow.as_mut(), pass, timed.as_ref())
+                if let (Some(lbk), Some(sl), 0) = (lookback.as_mut(), slow.as_mut(), pass) {
+                    // On the virtual clock (`--offered-fps`) the look-back
+                    // runs only with the concurrent settle (before it the
+                    // combination ran no look-back at all), and the owner
+                    // is charged the frames' slow-loop work.
+                    let w0 = sl.work();
+                    if timed.is_none() || lbk.cs.is_some() {
+                        lbk.after_frame(
+                            t_rec,
+                            t_len,
+                            start,
+                            &mut rec,
+                            drift.as_ref(),
+                            &mut pipe,
+                            &engine,
+                            sl,
+                            n_px,
+                        );
+                    }
+                    match timed.as_mut() {
+                        Some(tm) => {
+                            let now = tm.at(t + 1);
+                            tm.charge(now, sl.work() - w0);
+                        }
+                        None => lbk.cs_after_frame(
+                            t_rec,
+                            t_len,
+                            budget,
+                            start,
+                            &mut rec,
+                            drift.as_ref(),
+                            &mut pipe,
+                            &engine,
+                            sl,
+                            n_px,
+                        ),
+                    }
+                }
+                // The stream ended: the slow worker finishes what it has
+                // before any end-of-stream settle.
+                if let (true, 0, Some(tm), Some(sl), Some(lbk)) =
+                    (last, pass, timed.as_mut(), slow.as_mut(), lookback.as_ref())
                 {
-                    lbk.after_frame(
-                        t_rec,
-                        t_len,
-                        start,
-                        &mut rec,
-                        drift.as_ref(),
-                        &mut pipe,
-                        &engine,
-                        sl,
-                        n_px,
-                    );
+                    if lbk.cs.is_some() {
+                        tm.ending = true;
+                        tm.advance(f64::INFINITY, sl, &mut slow_rec, &mut |_| None);
+                        engine.set_library(sl.finalize().unwrap()).unwrap();
+                    }
                 }
                 // Branch point `discover`: Discover's last frame is done, the
                 // look-back drain has not started.
@@ -5235,9 +5575,12 @@ fn main() {
                         }
                     }
                 }
-                if let (Some(lbk), Some(sl), 0, None) =
-                    (lookback.as_mut(), slow.as_mut(), pass, timed.as_ref())
-                {
+                if let (Some(lbk), Some(sl), 0, true) = (
+                    lookback.as_mut(),
+                    slow.as_mut(),
+                    pass,
+                    timed.is_none() || cs_cfg.is_some(),
+                ) {
                     if last && lb_drain > 0 {
                         let (st, fr) = lbk.drain(
                             lb_drain,
@@ -5274,9 +5617,12 @@ fn main() {
                 // The end-of-Discover settle (`--settle-frames`): after the
                 // drain and after the `drain` branch point, so a branch can
                 // set it.
-                if let (Some(lbk), Some(sl), 0, None) =
-                    (lookback.as_mut(), slow.as_mut(), pass, timed.as_ref())
-                {
+                if let (Some(lbk), Some(sl), 0, true) = (
+                    lookback.as_mut(),
+                    slow.as_mut(),
+                    pass,
+                    timed.is_none() || cs_cfg.is_some(),
+                ) {
                     if last && lbk.settle.frames > 0 {
                         lbk.settle(
                             t_len,
@@ -5545,6 +5891,19 @@ fn main() {
         }
     }
     std::fs::write(out_dir.join("passes.tsv"), &passes_out).unwrap();
+    if let (Some(l), Some(sl)) = (&lookback, slow.as_ref()) {
+        if let Some(c) = &l.cs {
+            let st = sl.settle_stats();
+            let msg = format!(
+                "csettle: share {} mode {:?} ramp {} quiet {}: {} frames re-read ({} fit, {} held out), {} slots, {} visits, {} refines, {} quiet skips, work {:.4e} of {:.4e}, {:.1} s wall\n",
+                c.share, c.mode, c.ramp, c.quiet, l.cs_frames, st.frames_fit, st.frames_test,
+                st.slots, st.visits, st.refines, st.quiet_skips, st.work as f64, sl.work() as f64,
+                l.cs_wall_s
+            );
+            print!("{msg}");
+            std::fs::write(out_dir.join("csettle.txt"), &msg).unwrap();
+        }
+    }
     if let Some(l) = &lookback {
         println!(
             "lookback: {} frames ({} pushed, {} cell-frames, {} births, {} cells still in need), {:.1} s wall",
@@ -5603,7 +5962,7 @@ fn main() {
     }
     if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
         tm.ending = true;
-        tm.advance(f64::INFINITY, sl, &mut slow_rec);
+        tm.advance(f64::INFINITY, sl, &mut slow_rec, &mut |_| None);
         let wall = t_len as f64 * 1e3 / tm.fps;
         let msg = format!(
             "timed: {} visit workers, offered {} fps over {:.1} s: forwarded {} frames, dropped {}, observed {}; visits {} ({} jobs); owner busy {:.0}% , visit workers busy {:.0}%, slow loop done at {:.1} s, {:.0} observed frames/s\n",
@@ -5620,6 +5979,18 @@ fn main() {
             tm.last_ms / 1e3,
             sl.frames() as f64 / (wall / 1e3),
         );
+        let msg = if tm.cs_share > 0.0 {
+            format!(
+                "{}timed settle: {} units, owner busy {:.1}% on the settle and {:.1}% on look-back frames, idle {:.1}%\n",
+                msg,
+                tm.cs_units,
+                100.0 * tm.cs_busy / wall,
+                100.0 * tm.lb_busy / wall,
+                100.0 * (1.0 - tm.owner_busy / wall),
+            )
+        } else {
+            msg
+        };
         print!("{msg}");
         std::fs::write(out_dir.join("timed.txt"), &msg).unwrap();
     }

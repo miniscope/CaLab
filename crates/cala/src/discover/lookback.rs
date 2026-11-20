@@ -505,6 +505,93 @@ impl LookBack {
     }
 }
 
+/// The scheduler of the concurrent settle (experimental): how much settle
+/// work is due and which saved frames it re-reads.
+///
+/// The settle gets a share of the slow loop's compute. Where the credit
+/// comes from is the only thing that differs between the two modes: on a
+/// recording read at full speed every live frame earns `share / (1 -
+/// share)` settle frames ([`SettleSched::earn`]); on a live stream the
+/// driver spends `share` of the slow worker's idle time and asks for
+/// frames directly. The share can be changed at any time
+/// ([`SettleSched::set_share`]): an adaptive schedule only has to set it.
+///
+/// Frames are re-read in chunks of `chunk` frames in a row; the chunks are
+/// spread evenly over everything saved so far (a golden-ratio sequence, so
+/// any stretch of the schedule covers the history about uniformly).
+#[derive(Debug, Clone)]
+pub struct SettleSched {
+    share: f64,
+    chunk: usize,
+    k: u64,
+    cur: usize,
+    left: usize,
+    credit: f64,
+}
+
+impl SettleSched {
+    /// `share` in [0, 1); chunks of `chunk` frames (at least 1).
+    pub fn new(share: f64, chunk: usize) -> SettleSched {
+        SettleSched {
+            share: share.clamp(0.0, 0.99),
+            chunk: chunk.max(1),
+            k: 0,
+            cur: 0,
+            left: 0,
+            credit: 0.0,
+        }
+    }
+
+    /// The share of the slow loop's compute the settle gets.
+    pub fn share(&self) -> f64 {
+        self.share
+    }
+
+    /// Change the share (an adaptive schedule).
+    pub fn set_share(&mut self, share: f64) {
+        self.share = share.clamp(0.0, 0.99);
+    }
+
+    /// `live` frames of Discover work were done (a weight may stand in
+    /// for a schedule over the recording): the settle is owed its share.
+    /// At most 64 frames are banked.
+    pub fn earn(&mut self, live: f64) {
+        self.credit = (self.credit + live * self.share / (1.0 - self.share)).min(64.0);
+    }
+
+    /// Take one settle frame of credit, if owed.
+    pub fn take(&mut self) -> bool {
+        if self.credit >= 1.0 {
+            self.credit -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The next frame to re-read among the first `seen` saved frames, and
+    /// whether it starts a new chunk (the frame before it was not the one
+    /// re-read last). `None` while less than one chunk is saved.
+    pub fn next_frame(&mut self, seen: usize) -> Option<(usize, bool)> {
+        let mut new = false;
+        if self.left == 0 || self.cur >= seen {
+            let n = seen / self.chunk;
+            if n == 0 {
+                return None;
+            }
+            self.k += 1;
+            let u = (self.k as f64 * 0.618_033_988_749_894_9).fract();
+            self.cur = ((u * n as f64) as usize).min(n - 1) * self.chunk;
+            self.left = self.chunk;
+            new = true;
+        }
+        let f = self.cur;
+        self.cur += 1;
+        self.left -= 1;
+        Some((f, new))
+    }
+}
+
 /// The held-out decision of every stream frame, for look-back in a driver
 /// whose slow loop does not see every frame (the app's Discover drops
 /// batches when the slow loop is busy, so a stream frame's slow-loop index
