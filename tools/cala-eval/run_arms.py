@@ -212,7 +212,8 @@ def run_branched(group: list[dict], state: dict, point: str) -> list[dict]:
         _, tail = branch_split(j["args"], point)
         args += ["--branch", f"{j['label']}:{' '.join(tail)}"]
     args += ["--branch-after", point]
-    tmp = first["out"].parent.parent / "_branched" / first["out"].name
+    # One directory per group: several groups of one sim (different prefixes) may run at once in one tree.
+    tmp = first["out"].parent.parent / "_branched" / f"{first['label']}__{first['out'].name}"
     shutil.rmtree(tmp, ignore_errors=True)
     info = run_one({**first, "out": tmp, "args": args, "label": "+".join(j["label"] for j in group)}, state)
     for j in group:
