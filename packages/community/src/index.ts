@@ -62,6 +62,7 @@ export {
 
 // Data donation (apps/cala/docs/data-donation.md)
 export {
+  donationAuthError,
   donationAuthLoading,
   donationEnabled,
   donationReturnUrl,
@@ -69,6 +70,7 @@ export {
   getDonationSupabase,
   initDonationAuth,
   isDonationAuthReturn,
+  linkError,
   separateDonationProject,
   signInForDonation,
   signOutDonation,

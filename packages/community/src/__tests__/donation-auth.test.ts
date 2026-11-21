@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { donationReturnUrl, tokensFromHash, urlWithoutDonationReturn } from '../donation-auth.ts';
+import {
+  donationReturnUrl,
+  linkError,
+  tokensFromHash,
+  urlWithoutDonationReturn,
+} from '../donation-auth.ts';
 
 describe('donation sign-in link helpers', () => {
   it('flags the return URL and drops any fragment, keeping other query params', () => {
@@ -25,5 +30,21 @@ describe('donation sign-in link helpers', () => {
         'http://localhost:5173/?donation_auth=1&compress#access_token=a&refresh_token=b',
       ),
     ).toBe('http://localhost:5173/?compress=');
+  });
+
+  it("reports Supabase's reason for a failed link", () => {
+    expect(
+      linkError(
+        'http://localhost:5173/?donation_auth=1#error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired',
+      ),
+    ).toBe('Email link is invalid or has expired');
+    expect(linkError('http://localhost:5173/?donation_auth=1&code=abc')).toContain('PKCE');
+    expect(linkError('http://localhost:5173/?donation_auth=1')).toBeNull();
+  });
+
+  it("keeps an app's own route fragment when cleaning up", () => {
+    expect(urlWithoutDonationReturn('http://localhost:5173/?donation_auth=1#/donations')).toBe(
+      'http://localhost:5173/#/donations',
+    );
   });
 });

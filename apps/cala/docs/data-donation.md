@@ -285,10 +285,10 @@ Range GET and copy work.
 
 Still open:
 
-1. **Sign-in email for any donor:** Supabase's built-in sender only mails
-   members of the Supabase organization (2/h). Set Authentication → SMTP to
-   Resend with a verified domain (own domain via Cloudflare, or a lab domain),
-   then raise the email rate limit. Until then only Marcel can sign in.
+1. **Sign-in email for any donor:** done for now: Supabase sends through
+   Gmail SMTP (`marcelbrosch.mb@gmail.com`, app password; ~500 mails/day),
+   email rate limit raised. Later: a verified lab domain (Resend) for a more
+   official sender; only the SMTP settings change.
 2. **Live build:** add repo secrets `DONATION_SUPABASE_URL` and
    `DONATION_SUPABASE_ANON_KEY` (repo admin, i.e. Daniel); `deploy.yml`
    passes them as `VITE_DONATION_SUPABASE_*`. Donations then use Marcel's

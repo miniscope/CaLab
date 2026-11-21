@@ -4,6 +4,7 @@ import { CompactHeader, DashboardShell } from '@calab/ui';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
 import {
   authLoading,
+  donationAuthError,
   donationAuthLoading,
   donationEnabled,
   donationUser,
@@ -88,7 +89,9 @@ const App: Component = () => {
   // A donation sign-in link (its own Supabase project) is confirmed against that project.
   // eslint-disable-next-line solid/components-return-once
   if (isDonationAuthReturn()) {
-    return <AuthCallback user={donationUser} loading={donationAuthLoading} />;
+    return (
+      <AuthCallback user={donationUser} loading={donationAuthLoading} error={donationAuthError} />
+    );
   }
   // eslint-disable-next-line solid/components-return-once
   if (isAuthCallback()) return <AuthCallback user={user} loading={authLoading} />;

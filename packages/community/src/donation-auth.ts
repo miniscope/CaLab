@@ -28,6 +28,13 @@ export const donationEnabled: boolean = separateDonationProject || supabaseEnabl
 
 const STORAGE_KEY = 'calab-donation-auth';
 
+/**
+ * The address the page was opened with, read when this module loads: an app
+ * that routes by the URL fragment (the admin app's `#/donations`) rewrites it
+ * right after, which would drop a sign-in link's `#access_token=...`.
+ */
+const landingHref = typeof window === 'undefined' ? '' : window.location.href;
+
 let clientPromise: Promise<SupabaseClient | null> | null = null;
 
 /** The Supabase client donations use (the community client unless a separate project is set). */
@@ -57,21 +64,48 @@ export function tokensFromHash(
   return access && refresh ? { access_token: access, refresh_token: refresh } : null;
 }
 
-/** The current URL without the donation sign-in flag and fragment. */
+/** `href` without the donation sign-in flag, and without the fragment if it holds sign-in data. */
 export function urlWithoutDonationReturn(href: string): string {
   const u = new URL(href);
   u.searchParams.delete(DONATION_AUTH_PARAM);
-  u.hash = '';
+  if (/(^#|&)(access_token|refresh_token|error)=/.test(u.hash)) u.hash = '';
   return u.toString();
+}
+
+/** Why a sign-in link did not sign in: Supabase's own message from the link, if any. */
+export function linkError(href: string): string | null {
+  const u = new URL(href);
+  const fromHash = new URLSearchParams(u.hash.replace(/^#/, ''));
+  const msg =
+    fromHash.get('error_description') ??
+    u.searchParams.get('error_description') ??
+    fromHash.get('error') ??
+    u.searchParams.get('error');
+  if (msg) return msg.replace(/\+/g, ' ');
+  if (u.searchParams.has('code'))
+    return 'the link uses the PKCE code flow, which this page does not handle';
+  return null;
+}
+
+const [returnError, setReturnError] = createSignal<string | null>(null);
+
+/** Why the last donation sign-in link failed (null: it did not, or none was used). */
+export function donationAuthError(): string | null {
+  return returnError();
 }
 
 async function consumeReturn(client: SupabaseClient): Promise<void> {
   if (!isDonationAuthReturn()) return;
-  const tokens = tokensFromHash(window.location.hash);
+  const href = landingHref || window.location.href;
+  const tokens = tokensFromHash(new URL(href).hash);
   if (tokens) {
     const { error } = await client.auth.setSession(tokens);
-    if (error) console.error('Donation sign-in failed:', error.message);
+    if (error) setReturnError(error.message);
+  } else {
+    setReturnError(linkError(href) ?? 'the link carried no sign-in tokens');
   }
+  if (returnError()) console.error('Donation sign-in failed:', returnError());
+  // Clean the live URL (which may carry the app's own route fragment by now).
   window.history.replaceState(null, '', urlWithoutDonationReturn(window.location.href));
 }
 
