@@ -119,7 +119,7 @@ qc_eval sim SIM OUT <common flags> --branch-after discover \
   a branch panics. At `drain` the three drain flags belong to the common flags; the settle runs after the `drain`
   point, so `--settle-*` may differ between branches at both points. A new post-Discover option: add it to `Tail` and `TAIL_FLAGS` in
   `qc_eval.rs` and to `run_arms.TAIL_FLAGS`.
-- Not combinable with `--churn-log`, `--merge-log`, `--factors-out`, `--visit-workers` (shared files/globals; `--offered-fps` without visit workers branches fine).
+- Not combinable with `--churn-log`, `--merge-log`, `--factors-out` (shared files/globals), nor with `--visit-workers` unless `--csettle` is given (then the slow worker finishes every visit out before the branch point; `--offered-fps` without visit workers branches fine).
 - Files the prefix already wrote into `<out>/` (e.g. `--lib-at`) are copied into each branch directory. Wall-time
   columns (`passes.tsv`, `cost.txt`, ...) of a branch include the shared prefix.
 - Memory: the parent stays resident while a child runs (COW), so peak is about one run plus the child's dirty pages.

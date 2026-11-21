@@ -65,8 +65,8 @@ def change(a, b) -> float:
     return float(np.sqrt(d2))
 
 
-def run_metrics(run: Path, old: int) -> dict[tuple[int, str], float]:
-    """{(checkpoint frame, metric): value}; the final library is checkpoint `END` = the run's last frame."""
+def run_metrics(run: Path, old: int, end_suffix: str = "") -> dict[tuple[int, str], float]:
+    """{(checkpoint frame, metric): value}; the final library (`footprints{end_suffix}.bin`) is checkpoint `END` = the run's last frame."""
     cps = sorted(int(m.group(1)) for p in run.glob("footprints_t*.bin") if (m := re.fullmatch(r"footprints_t(\d+)\.bin", p.name)))
     born = births(run)
     last = max(born.values(), default=0)
@@ -74,7 +74,7 @@ def run_metrics(run: Path, old: int) -> dict[tuple[int, str], float]:
     prev = None
     for k, f in enumerate([*cps, None]):
         tag = f if f is not None else -1
-        suffix = f"_t{f}" if f is not None else ""
+        suffix = f"_t{f}" if f is not None else end_suffix
         t_now = f if f is not None else max(last, cps[-1] if cps else 0) + 1
         tsv = run / f"final{suffix}.tsv"
         if tsv.exists():
@@ -109,6 +109,7 @@ def main(argv=None) -> int:
     ap.add_argument("--arms", help="comma list under --root; the first is the reference")
     ap.add_argument("--runs", action="append", default=[], help="LABEL=dir,dir,.. (instead of --root/--arms)")
     ap.add_argument("--old", type=int, default=1200)
+    ap.add_argument("--end-suffix", default="", help="the end library is footprints{SUFFIX}.bin (e.g. _settle0: the live library of a run that settles after the stream)")
     ap.add_argument("--md", type=Path)
     a = ap.parse_args(argv)
     arms: list[tuple[str, dict[str, Path]]] = []
@@ -118,7 +119,7 @@ def main(argv=None) -> int:
     for spec in a.runs:
         label, _, dirs = spec.partition("=")
         arms.append((label, {f"run{k}": Path(d) for k, d in enumerate(dirs.split(","))}))
-    data = {label: {name: run_metrics(d, a.old) for name, d in runs.items()} for label, runs in arms}
+    data = {label: {name: run_metrics(d, a.old, a.end_suffix) for name, d in runs.items()} for label, runs in arms}
     ref = arms[0][0]
     tags = sorted({t for runs in data.values() for m in runs.values() for t, _ in m}, key=lambda t: (t == -1, t))
     lines = [f"| checkpoint | measure | {' | '.join(l for l, _ in arms)} | {' | '.join(f'{l} minus {ref} [95 % CI]' for l, _ in arms[1:])} |",
