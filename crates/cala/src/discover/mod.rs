@@ -985,6 +985,23 @@ impl ReservoirPlan {
     }
 }
 
+/// How tiles came due for an ordinary visit (diagnostics; counted on the
+/// loop that owns the tiles, read by `qc_eval --visit-diag`; nothing reads
+/// them back, so they change no result). Each counts a tile going from
+/// "not due" to "due".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DueDiag {
+    /// A live frame took reservoir slots of the tile.
+    pub slots: u64,
+    /// A look-back frame took reservoir slots of the tile.
+    pub lookback: u64,
+    /// An edit to a cell that overlaps the tile, made by a visit of
+    /// another tile (or by the loop itself).
+    pub touch: u64,
+    /// The tile's own visit left it due again.
+    pub own: u64,
+}
+
 /// Counters for diagnostics.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SlowStats {
@@ -1232,6 +1249,8 @@ pub struct SlowLoop {
     cs_quiet: u64,
     cs_visiting: bool,
     cs_stats: SettleStats,
+    /// How tiles came due ([`DueDiag`]; diagnostics only).
+    due_diag: DueDiag,
 }
 
 /// Record an edit for the slow loop a visit was run for (`shard.rs`).
@@ -1543,6 +1562,7 @@ impl SlowLoop {
             cs_quiet: 0,
             cs_visiting: false,
             cs_stats: SettleStats::default(),
+            due_diag: DueDiag::default(),
             merge_rejected: Vec::new(),
             forced: Vec::new(),
             scope: EditScope::All,
@@ -1609,6 +1629,24 @@ impl SlowLoop {
 
     pub fn config(&self) -> &SlowLoopConfig {
         &self.cfg
+    }
+
+    /// How tiles came due so far ([`DueDiag`]).
+    pub fn due_diag(&self) -> DueDiag {
+        self.due_diag
+    }
+
+    /// Diagnostics: every tile's count of new reservoir slots since its
+    /// last visit (a tile is due for a visit from [`SlowLoop::due_slots`]
+    /// on), into `out`.
+    pub fn tile_fresh(&self, out: &mut Vec<u32>) {
+        out.clear();
+        out.extend(self.tiles.iter().map(|t| t.fresh));
+    }
+
+    /// The count of new reservoir slots that makes a tile due for a visit.
+    pub fn due_slots(&self) -> u32 {
+        self.cfg.visit_after_slots
     }
 
     pub fn stats(&self) -> SlowStats {
@@ -2083,6 +2121,8 @@ impl SlowLoop {
             if let Some(j) = took {
                 tile.set_random(j, frame_idx, test);
             }
+            let due = self.cfg.visit_after_slots;
+            self.due_diag.slots += u64::from(before < due && tile.fresh >= due);
             if let Some(c) = self.cs_fresh.get_mut(ti) {
                 *c += tile.fresh.saturating_sub(before);
             }
@@ -2375,6 +2415,8 @@ impl SlowLoop {
             if let Some(j) = took {
                 tile.set_random(j, slow_index, test);
             }
+            let due = self.cfg.visit_after_slots;
+            self.due_diag.lookback += u64::from(before < due && tile.fresh >= due);
         }
         Ok(())
     }
@@ -3295,6 +3337,7 @@ impl SlowLoop {
         let due = self.cfg.visit_after_slots;
         for t in self.tiles.iter_mut() {
             if t.rect.intersects(&bbox) {
+                self.due_diag.touch += u64::from(t.fresh < due);
                 t.fresh = t.fresh.max(due);
             }
         }
