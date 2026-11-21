@@ -8,7 +8,18 @@ const api = vi.hoisted(() => ({
   setDonationBenchmark: vi.fn(),
   donationPreviewUrl: vi.fn(),
 }));
-vi.mock('@calab/community', () => ({ ...api, DONATION_MAX_CHUNK_BYTES: 100 * 1024 * 1024 }));
+vi.mock('@calab/community', () => ({
+  ...api,
+  DONATION_MAX_CHUNK_BYTES: 100 * 1024 * 1024,
+  // One Supabase project for everything: no separate donation sign-in.
+  separateDonationProject: false,
+  donationUser: () => null,
+  donationAuthLoading: () => false,
+  signInForDonation: async () => ({ error: null }),
+  signOutDonation: async () => {},
+}));
+// The sign-in UI is only shown for a separate donation project.
+vi.mock('@calab/community-ui', () => ({ AuthGate: () => null }));
 
 import { DonationsView } from '../components/DonationsView.tsx';
 

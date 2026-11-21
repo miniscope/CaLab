@@ -98,6 +98,7 @@ export default tseslint.config(
       'apps/cala/src/lib/cala-wasm.ts',
       'packages/community/src/supabase.ts',
       'packages/community/src/auth.ts',
+      'packages/community/src/donation-auth.ts',
       'packages/community/src/submission-service.ts',
     ],
     rules: {

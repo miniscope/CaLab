@@ -354,3 +354,33 @@ def test_only_approved_rows_are_considered(backend: FakeBackend, dest: Path) -> 
 
     assert backend.downloads == []
     assert not (dest / ID_A).exists()
+
+
+def test_plain_timestamps_and_meta_are_accepted(backend: FakeBackend, dest: Path) -> None:
+    files = fixture_files()
+    files["timestamps.csv"] = b"Frame Number,Time Stamp (ms),Buffer Index\r\n0,0,0\r\n1,49.5,1\r\n"
+    files["meta.json"] = b'{"cala_version": "dev", "files": ["0.avi"]}'
+    backend.add(ID_A, files)
+    assert run_main(backend, dest) == 0
+    assert (dest / ID_A / "timestamps.csv").exists()
+
+
+@pytest.mark.parametrize(
+    ("name", "data", "why"),
+    [
+        ("timestamps.csv", b"0,0,0\n=cmd|' /C calc'!A0,1,1\n", "not numeric"),
+        ("timestamps.csv", b"0,0,0\n\x7fELF\x02\x01\n", "not numeric"),
+        ("timestamps.csv", "0,0,0\nü\n".encode(), "ASCII"),
+        ("meta.json", b"MZ\x90\x00 not json", "not valid JSON"),
+        ("meta.json", b"[1, 2]", "not a JSON object"),
+    ],
+)
+def test_non_data_sidecars_are_rejected(
+    backend: FakeBackend, dest: Path, name: str, data: bytes, why: str
+) -> None:
+    files = fixture_files()
+    files[name] = data
+    backend.add(ID_A, files)
+    assert run_main(backend, dest) == 1
+    assert_rejected(backend, dest, ID_A)
+    assert why in reason(dest, ID_A)

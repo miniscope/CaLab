@@ -14,6 +14,7 @@ import {
   assertMatch,
   assertRejects,
   assertStringIncludes,
+  assertThrows,
 } from 'https://deno.land/std@0.224.0/assert/mod.ts';
 import {
   CALARAW_HEADER_BYTES,
@@ -29,8 +30,12 @@ import {
   type ObjectStore,
   OPEN_STATUSES,
   parseCalarawHeader,
+  r2AccountId,
+  notificationText,
   r2Store,
   readEnv,
+  readNotifyConfig,
+  resendNotifier,
   timingSafeEqual,
 } from './index.ts';
 
@@ -149,7 +154,11 @@ const USERS: Record<string, DonationUser> = { alice: ALICE, bob: BOB, admin: ADM
 const INGEST_TOKEN = 'i'.repeat(40);
 const ALLOWED_ORIGIN = 'http://localhost:5173';
 
-function setup(envOverrides: Partial<DonationEnv> = {}) {
+function setup(
+  envOverrides: Partial<DonationEnv> = {},
+  now?: () => number,
+  notify?: (row: DonationRow) => Promise<void>,
+) {
   const db = new FakeDb();
   const store = new FakeStore();
   const env: DonationEnv = {
@@ -163,6 +172,9 @@ function setup(envOverrides: Partial<DonationEnv> = {}) {
     // "Bearer <name>" stands in for a verified Supabase session.
     resolveUser: (auth) =>
       Promise.resolve(auth ? (USERS[auth.replace('Bearer ', '')] ?? null) : null),
+    // Just after FakeDb's row stamps, so no row is stale unless a test moves the clock.
+    now: now ?? (() => Date.UTC(2026, 0, 1, 1)),
+    notify,
   });
   return { db, store, handler };
 }
@@ -405,6 +417,8 @@ Deno.test('create rejects bad metadata', async () => {
     [{ ...META, contact_ok: undefined }, 'contact_ok'],
     [{ ...META, notes: 'x'.repeat(1001) }, 'notes'],
     [{ ...META, credit_name: 'x'.repeat(101) }, 'credit_name'],
+    [{ ...META, credit_name: null }, 'credit_name'],
+    [{ ...META, credit_lab: '  ' }, 'credit_lab'],
   ];
   for (const [meta, needle] of cases) {
     const r = await call(handler, { action: 'create', meta, files }, { as: 'alice' });
@@ -1051,4 +1065,130 @@ Deno.test('r2Store.copy surfaces an <Error> body on 200', async () => {
       new Response('<Error><Code>NoSuchKey</Code></Error>', { status: 200 }),
     )) as typeof fetch);
   await assertRejects(() => store.copy('a', 'b'), Error, 'NoSuchKey');
+});
+
+Deno.test('r2AccountId takes the bare ID or the pasted S3 API URL', () => {
+  const id = '0123456789abcdef0123456789abcdef';
+  assertEquals(r2AccountId(id), id);
+  assertEquals(r2AccountId(` ${id.toUpperCase()} `), id);
+  assertEquals(r2AccountId(`https://${id}.r2.cloudflarestorage.com/calab-donations`), id);
+  assertThrows(() => r2AccountId('not-an-id'));
+  assertThrows(() => r2AccountId(`${id}0`));
+});
+
+Deno.test('uploads unfinished after 48 h are withdrawn and free the slot', async () => {
+  // FakeDb stamps rows at 2026-01-01T00:00:0n.
+  let clock = Date.UTC(2026, 0, 1, 1);
+  const { db, store, handler } = setup({ maxOpenPerUser: 1 }, () => clock);
+  const files = [{ name: 'frames-0000.calaraw.gz', bytes: 100 }];
+  const first = await call(handler, { action: 'create', meta: META, files }, { as: 'alice' });
+  assertEquals(first.status, 200);
+  const id = first.json.donation_id as string;
+  store.objects.set(`pending/${id}/frames-0000.calaraw.gz`, new Uint8Array(100));
+
+  // One hour later the first upload still holds alice's only slot.
+  const blocked = await call(handler, { action: 'create', meta: META, files }, { as: 'alice' });
+  assertEquals(blocked.status, 429);
+
+  // After 48 h it is withdrawn, its files deleted, and the new donation is accepted.
+  clock = Date.UTC(2026, 0, 3, 1);
+  const again = await call(handler, { action: 'create', meta: META, files }, { as: 'alice' });
+  assertEquals(again.status, 200);
+  const old = db.rows.get(id)!;
+  assertEquals(old.status, 'withdrawn');
+  assertStringIncludes(old.review_note ?? '', '48 h');
+  assertEquals(store.objects.has(`pending/${id}/frames-0000.calaraw.gz`), false);
+});
+
+Deno.test('ingest_list also withdraws stale uploads, but not finished ones', async () => {
+  let clock = Date.UTC(2026, 0, 1, 1);
+  const { db, handler } = setup({}, () => clock);
+  const files = [{ name: 'frames-0000.calaraw.gz', bytes: 100 }];
+  const a = await call(handler, { action: 'create', meta: META, files }, { as: 'alice' });
+  const b = await call(handler, { action: 'create', meta: META, files }, { as: 'bob' });
+  await db.transition(b.json.donation_id as string, ['uploading'], { status: 'uploaded' });
+  clock = Date.UTC(2026, 0, 5);
+  const r = await call(
+    handler,
+    { action: 'ingest_list' },
+    { headers: { 'x-ingest-token': INGEST_TOKEN } },
+  );
+  assertEquals(r.status, 200);
+  assertEquals(db.rows.get(a.json.donation_id as string)!.status, 'withdrawn');
+  assertEquals(db.rows.get(b.json.donation_id as string)!.status, 'uploaded');
+});
+
+Deno.test('finish notifies once; a failing notification does not fail the donation', async () => {
+  const sent: DonationRow[] = [];
+  const env = setup({}, undefined, (row) => {
+    sent.push(row);
+    return Promise.reject(new Error('mail down'));
+  });
+  const { id } = await createAndUpload(env);
+  const r = await call(env.handler, { action: 'finish', donation_id: id }, { as: 'alice' });
+  assertEquals(r.status, 200);
+  assertEquals(env.db.rows.get(id)!.status, 'uploaded');
+  assertEquals(sent.length, 1);
+  assertEquals(sent[0].status, 'uploaded');
+  // The idempotent retry does not send a second email.
+  await call(env.handler, { action: 'finish', donation_id: id }, { as: 'alice' });
+  assertEquals(sent.length, 1);
+});
+
+Deno.test('a failed finish check sends no notification', async () => {
+  const sent: DonationRow[] = [];
+  const env = setup({}, undefined, (row) => {
+    sent.push(row);
+    return Promise.resolve();
+  });
+  const { id } = await createAndUpload(env);
+  env.store.objects.delete(`pending/${id}/timestamps.csv`);
+  assertEquals(
+    (await call(env.handler, { action: 'finish', donation_id: id }, { as: 'alice' })).status,
+    422,
+  );
+  assertEquals(sent.length, 0);
+});
+
+Deno.test('notification config, text and Resend request', async () => {
+  assertEquals(
+    readNotifyConfig(() => undefined),
+    null,
+  );
+  assertEquals(
+    readNotifyConfig((k) => (k === 'RESEND_API_KEY' ? 're_x' : undefined)),
+    null,
+  );
+  const cfg = readNotifyConfig(
+    (k) =>
+      ({
+        RESEND_API_KEY: 're_x',
+        DONATION_NOTIFY_EMAILS: 'a@lab.edu, b@lab.edu, nope',
+      })[k],
+  )!;
+  assertEquals(cfg.to, ['a@lab.edu', 'b@lab.edu']);
+  assertStringIncludes(cfg.from, 'onboarding@resend.dev');
+
+  const env = setup();
+  const { id } = await createAndUpload(env);
+  const row = env.db.rows.get(id)!;
+  const { subject, text } = notificationText(row, 'https://admin.test/donations');
+  assertStringIncludes(subject, 'New cala donation');
+  assertStringIncludes(text, row.credit_lab!);
+  assertStringIncludes(text, 'https://admin.test/donations');
+
+  let seen: { url: string; init: RequestInit } | null = null;
+  const notify = resendNotifier(cfg, ((url: string, init: RequestInit) => {
+    seen = { url, init };
+    return Promise.resolve(new Response('{"id":"x"}', { status: 200 }));
+  }) as typeof fetch);
+  await notify(row);
+  assertEquals(seen!.url, 'https://api.resend.com/emails');
+  const body = JSON.parse(seen!.init.body as string);
+  assertEquals(body.to, ['a@lab.edu', 'b@lab.edu']);
+  assertEquals((seen!.init.headers as Record<string, string>).authorization, 'Bearer re_x');
+
+  const failing = resendNotifier(cfg, (() =>
+    Promise.resolve(new Response('bad', { status: 422 }))) as typeof fetch);
+  await assertRejects(() => failing(row), Error, 'Resend 422');
 });

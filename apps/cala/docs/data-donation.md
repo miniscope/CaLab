@@ -15,10 +15,18 @@ deployed; see "To go live" for what needs accounts and people.
    lab with an unusual region, indicator or scope makes sure cala works for that
    setup.
 2. **Co-authorship.** If a dataset is used in a benchmark / dataset paper, its
-   donors are offered co-authorship.
+   donors are offered co-authorship. Every use of a donation is verified and
+   logged against it (admin `in_benchmark` / `benchmark_note` for now).
+3. **Credit and control.** Data stays within the lab under CC BY 4.0 (any use
+   credits the donor and their lab); deletion on request at any time.
 
-The donate panel states both, and donors can see in the app whether their
-donation is in the benchmark set.
+The panel (bottom of the Run tab, visible without clicking) states all three,
+that a single raw recording is enough (no processing), and the 10 GB cap
+(after compression, ~40 min of 600x600 V4). Donors see in the app whether their
+donation is in the benchmark set ("My donations" in the panel, and on cala's start
+page without opening a recording; withdrawn ones are hidden behind a toggle).
+Uploads left unfinished for 48 h are withdrawn automatically
+(`DONATION_STALE_HOURS`), so they stop holding the donor's slot.
 
 ## Goals and non-goals
 
@@ -234,16 +242,16 @@ is equivalent to R2.
 
 ## Consent and policy
 
-- Checkbox text: the uploader has the right to share the data, the recordings
-  were made under an approved animal protocol, and they accept the chosen
-  license.
-- Panel text states what happens: the data goes into the cala benchmark set;
-  if it is used in a benchmark / dataset paper, donors who ticked `contact_ok`
-  are offered co-authorship.
-- Default license CC-BY 4.0; `lab-use-only` for people who will not share
-  publicly (usable for development, not for a public benchmark release).
-- Withdrawal: delete in the app until ingested; after that by email, and the
-  lab deletes `data/raw/donations/<id>/`.
+- Checkbox text: the uploader has the right to share the data and agrees to
+  CC BY 4.0, and the recordings were made under an approved animal protocol.
+- License: always CC BY 4.0 (the UI offers no other choice; the table still
+  accepts `lab-use-only`). The data is kept within the lab; attribution is
+  the donor's name and lab, both required (form and edge function).
+- Co-authorship: offered whenever a donation is used in a benchmark / dataset
+  paper; uses are logged per donation.
+- Deletion at any time: withdraw in the app until ingested; after that on
+  request to the CaLab team, and the lab deletes `data/raw/donations/<id>/`.
+  Requests go to the address(es) in `DELETION_CONTACTS` (`DonatePanel.tsx`).
 - Before launch: check with UCLA IT / research data policy about holding other
   labs' data on the lab server.
 
@@ -266,23 +274,28 @@ is equivalent to R2.
 
 ## To go live (needs people, not code)
 
-1. **Cloudflare:** account, R2 bucket (e.g. `calab-donations`), an API token
-   with Object Read & Write on that bucket only, bucket CORS allowing PUT/GET
-   from `https://miniscope.github.io` (+ localhost for testing), lifecycle rule
-   deleting `pending/` objects after ~14 days.
-2. **Supabase (Daniel):** run migration 019; set function secrets `R2_*`,
-   `INGEST_TOKEN` (≥ 32 random chars); deploy with
-   `supabase functions deploy donation --no-verify-jwt` (details in
-   `supabase/README.md`); give the reviewers `app_metadata.role = admin`.
-3. **Lab server:** a folder for donations, the cron job from the ingest
-   script's docstring, the ingest token in its environment.
-4. **UCLA IT / data policy:** OK to hold other labs' data on the lab server.
-5. **End-to-end test** with one small recording (create → upload → finish →
-   approve → ingest). Not yet verified against real R2: that a PUT whose body
-   length differs from the signed `content-length` is refused, CopyObject,
-   Range GET, bucket CORS.
-6. Decide the open questions below (co-authorship criteria at least) before
-   announcing.
+Done on the test setup (2026-11-20, Marcel's own Supabase project `Cala` and
+R2 bucket `calab-donations`): migration (cala-only), edge function with
+secrets, bucket CORS and lifecycle rules, Resend notification email, solaris
+ingest (`~/calab-ingest`, hourly systemd user timer with linger, into
+`/mnt/data_1/mbrosch/calab_donations`). One donation ran end to end: upload,
+preview, approve, ingest; the stored frames are bit-identical to the AVI. R2
+verified: a PUT with a different length than signed is refused (403), CORS,
+Range GET and copy work.
+
+Still open:
+
+1. **Sign-in email for any donor:** Supabase's built-in sender only mails
+   members of the Supabase organization (2/h). Set Authentication → SMTP to
+   Resend with a verified domain (own domain via Cloudflare, or a lab domain),
+   then raise the email rate limit. Until then only Marcel can sign in.
+2. **Live build:** add repo secrets `DONATION_SUPABASE_URL` and
+   `DONATION_SUPABASE_ANON_KEY` (repo admin, i.e. Daniel); `deploy.yml`
+   passes them as `VITE_DONATION_SUPABASE_*`. Donations then use Marcel's
+   project, everything else stays on Daniel's.
+3. **UCLA IT / data policy:** OK to hold other labs' data on the lab server.
+4. Decide the open questions below (co-authorship criteria at least).
+5. Merge, then tag the release (`v2.21.0`).
 
 ## Open questions
 

@@ -107,6 +107,9 @@ export const DONATION_MAX_META_BYTES = 1024 * 1024;
 export const DONATION_MAX_BYTES = 10 * 1024 ** 3;
 export const DONATION_GLOBAL_CAP_BYTES = 200 * 1024 ** 3;
 export const DONATION_MAX_OPEN_PER_USER = 2;
+export const DONATION_STALE_HOURS = 48;
+/** Stale uploads withdrawn per call (bounds the work of one request). */
+const STALE_PER_CALL = 20;
 export const DONATION_MAX_CHUNKS = 10000;
 
 export const CHUNK_NAME = /^frames-(\d{4})\.calaraw\.gz$/;
@@ -173,6 +176,8 @@ export interface DonationEnv {
   maxBytes: number;
   globalCapBytes: number;
   maxOpenPerUser: number;
+  /** An upload still `uploading` after this many hours is withdrawn (its files deleted). */
+  staleUploadHours: number;
 }
 
 export interface DonationDeps {
@@ -180,6 +185,10 @@ export interface DonationDeps {
   store: ObjectStore;
   env: DonationEnv;
   resolveUser(authHeader: string | null): Promise<DonationUser | null>;
+  /** Current time, ms since the epoch (tests pin it). Default `Date.now`. */
+  now?: () => number;
+  /** Tell the lab a donation is ready for review (absent: no notification). */
+  notify?: (row: DonationRow) => Promise<void>;
 }
 
 function positiveIntEnv(v: string | undefined, fallback: number): number {
@@ -201,6 +210,7 @@ export function readEnv(get: (k: string) => string | undefined): DonationEnv {
     maxBytes: positiveIntEnv(get('DONATION_MAX_BYTES'), DONATION_MAX_BYTES),
     globalCapBytes: positiveIntEnv(get('DONATION_GLOBAL_CAP_BYTES'), DONATION_GLOBAL_CAP_BYTES),
     maxOpenPerUser: positiveIntEnv(get('DONATION_MAX_OPEN_PER_USER'), DONATION_MAX_OPEN_PER_USER),
+    staleUploadHours: positiveIntEnv(get('DONATION_STALE_HOURS'), DONATION_STALE_HOURS),
   };
 }
 
@@ -356,8 +366,8 @@ export function validateMeta(raw: unknown): DonationMeta {
     rights_attested: true,
     protocol_attested: true,
     contact_ok: m.contact_ok as boolean,
-    credit_name: optionalText(m, 'credit_name', 100),
-    credit_lab: optionalText(m, 'credit_lab', 100),
+    credit_name: requiredText(m, 'credit_name', 100),
+    credit_lab: requiredText(m, 'credit_lab', 100),
     notes: optionalText(m, 'notes', 1000),
   };
 }
@@ -660,6 +670,7 @@ const INGEST_ACTIONS = new Set(['ingest_list', 'ingest_download_url', 'ingest_do
 
 export function createHandler(deps: DonationDeps): (req: Request) => Promise<Response> {
   const { db, store, env } = deps;
+  const now = deps.now ?? Date.now;
 
   const deleteObjects = (keys: string[]) =>
     mapLimit(keys, STORE_CONCURRENCY, (k) => store.delete(k));
@@ -695,11 +706,30 @@ export function createHandler(deps: DonationDeps): (req: Request) => Promise<Res
     }
   }
 
+  /**
+   * Withdraw uploads that never finished (tab closed, upload abandoned), so
+   * they stop holding the donor's open slot and the global cap. Runs on each
+   * `create` and `ingest_list` (the lab's hourly cron); a few rows per call.
+   */
+  async function expireStaleUploads(): Promise<void> {
+    const before = new Date(now() - env.staleUploadHours * 3_600_000).toISOString();
+    const stale = (await db.listByStatus('uploading'))
+      .filter((r) => r.created_at < before)
+      .slice(0, STALE_PER_CALL);
+    for (const row of stale) {
+      const note = `upload not finished within ${env.staleUploadHours} h`;
+      if (await db.transition(row.id, ['uploading'], { status: 'withdrawn', review_note: note })) {
+        await deleteObjects(keysOf(row, pendingKey));
+      }
+    }
+  }
+
   // ── donor ────────────────────────────────────────────────────────────────
 
   async function create(body: Body, user: DonationUser): Promise<Body> {
     const meta = validateMeta(body.meta);
     const { files, nChunks, total } = validateFiles(body.files, env.maxBytes);
+    await expireStaleUploads();
 
     // Caps. Concurrent creates can overshoot by a request or two: these are
     // abuse and cost bounds, not exact quotas.
@@ -743,6 +773,12 @@ export function createHandler(deps: DonationDeps): (req: Request) => Promise<Res
     requireStatus(row, ['uploading']);
     await verifyUpload(row, store);
     await transitionOrConflict(row, ['uploading'], { status: 'uploaded' });
+    // Best effort: a failed notification never fails the donation.
+    if (deps.notify) {
+      await deps
+        .notify({ ...row, status: 'uploaded' })
+        .catch((e) => console.error('donation notify failed:', e instanceof Error ? e.message : e));
+    }
     return { status: 'uploaded' };
   }
 
@@ -811,7 +847,10 @@ export function createHandler(deps: DonationDeps): (req: Request) => Promise<Res
   // ── lab ingest ───────────────────────────────────────────────────────────
 
   async function ingest(action: string, body: Body): Promise<Body> {
-    if (action === 'ingest_list') return { donations: await db.listByStatus('approved') };
+    if (action === 'ingest_list') {
+      await expireStaleUploads();
+      return { donations: await db.listByStatus('approved') };
+    }
     const row = await load(body);
     requireStatus(row, ['approved']);
     if (action === 'ingest_download_url') {
@@ -945,6 +984,16 @@ export interface R2Config {
   bucket: string;
 }
 
+/**
+ * The 32-hex Cloudflare account ID out of whatever was pasted: the bare ID,
+ * or the bucket's S3 API URL (`https://<id>.r2.cloudflarestorage.com/...`).
+ */
+export function r2AccountId(raw: string): string {
+  const m = raw.trim().match(/(?:^|\/\/)([0-9a-f]{32})(?:$|\.r2\.cloudflarestorage\.com)/i);
+  if (!m) throw new Error('R2_ACCOUNT_ID must be the 32-character Cloudflare account ID');
+  return m[1].toLowerCase();
+}
+
 /** Cloudflare R2 through its S3 API, signed with aws4fetch (SigV4). */
 export function r2Store(cfg: R2Config, fetchFn: typeof fetch = fetch): ObjectStore {
   const aws = new AwsClient({
@@ -1044,6 +1093,75 @@ function requireEnv(name: string): string {
   return v;
 }
 
+// ---------------------------------------------------------------------------
+// Notification email (Resend)
+// ---------------------------------------------------------------------------
+
+export interface NotifyConfig {
+  apiKey: string;
+  to: string[];
+  from: string;
+  /** Link to the admin app's Donations view (optional). */
+  adminUrl: string | null;
+}
+
+/** Read the notification config; null (no emails) unless a key and recipients are set. */
+export function readNotifyConfig(get: (k: string) => string | undefined): NotifyConfig | null {
+  const apiKey = get('RESEND_API_KEY')?.trim() ?? '';
+  const to = (get('DONATION_NOTIFY_EMAILS') ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.includes('@'));
+  if (!apiKey || to.length === 0) return null;
+  return {
+    apiKey,
+    to,
+    from: get('DONATION_NOTIFY_FROM')?.trim() || 'CaLab donations <onboarding@resend.dev>',
+    adminUrl: get('DONATION_ADMIN_URL')?.trim() || null,
+  };
+}
+
+/** The email's subject and text for a donation ready for review. No donor email address. */
+export function notificationText(row: DonationRow, adminUrl: string | null) {
+  const mb = (row.declared_bytes / 1e6).toFixed(0);
+  const minutes = (row.n_frames / row.fps / 60).toFixed(1);
+  const subject = `New cala donation: ${row.indicator}, ${row.brain_region} (${mb} MB)`;
+  const lines = [
+    'A new recording was donated and is waiting for review.',
+    '',
+    `Credit:     ${row.credit_name ?? '-'}, ${row.credit_lab ?? '-'}`,
+    `Indicator:  ${row.indicator}`,
+    `Species:    ${row.species}`,
+    `Region:     ${row.brain_region}`,
+    `Scope:      ${row.scope}`,
+    `Recording:  ${row.width} x ${row.height}, ${row.n_frames} frames at ${row.fps} Hz (${minutes} min)`,
+    `Size:       ${mb} MB in ${row.n_chunks} chunks`,
+    `Contact OK: ${row.contact_ok ? 'yes' : 'no'}`,
+    `Donation:   ${row.id}`,
+  ];
+  if (row.notes) lines.push('', `Notes: ${row.notes}`);
+  if (adminUrl) lines.push('', `Review: ${adminUrl}`);
+  return { subject, text: lines.join('\n') };
+}
+
+/** Send the notification through the Resend API. */
+export function resendNotifier(
+  cfg: NotifyConfig,
+  fetchFn: typeof fetch = fetch,
+): (row: DonationRow) => Promise<void> {
+  return async (row) => {
+    const { subject, text } = notificationText(row, cfg.adminUrl);
+    const res = await fetchFn('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${cfg.apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ from: cfg.from, to: cfg.to, subject, text }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`Resend ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    await res.body?.cancel().catch(() => {});
+  };
+}
+
 if (import.meta.main) {
   const supabase = createClient(
     requireEnv('SUPABASE_URL'),
@@ -1055,13 +1173,17 @@ if (import.meta.main) {
   const handler = createHandler({
     db: supabaseDb(supabase),
     store: r2Store({
-      accountId: requireEnv('R2_ACCOUNT_ID'),
+      accountId: r2AccountId(requireEnv('R2_ACCOUNT_ID')),
       accessKeyId: requireEnv('R2_ACCESS_KEY_ID'),
       secretAccessKey: requireEnv('R2_SECRET_ACCESS_KEY'),
       bucket: requireEnv('R2_BUCKET'),
     }),
     env: readEnv((k) => Deno.env.get(k)),
     resolveUser: supabaseResolveUser(supabase),
+    notify: (() => {
+      const cfg = readNotifyConfig((k) => Deno.env.get(k));
+      return cfg ? resendNotifier(cfg) : undefined;
+    })(),
   });
   Deno.serve(handler);
 }

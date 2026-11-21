@@ -18,8 +18,7 @@ import { QcTable, type QcTableState } from './QcTable.tsx';
  *
  * Panels mount only while shown, except those whose state would be lost
  * (`keepMounted` on the tab): Run (the run's controls and export), Cell (the
- * trace window, the footprint version), Raw file (its held display range) and,
- * with the Donate data panel, Recording (a half-filled form).
+ * trace window, the footprint version) and Raw file (its held display range).
  */
 export function SideColumn(props: {
   strip: JSX.Element;
@@ -69,8 +68,6 @@ export function detailTabs(props: {
   ui: HistoryUi;
   /** The field of view, shown in the History tab while History is expanded. */
   fov: () => JSX.Element;
-  /** Under the Recording facts: the Donate data panel (absent: not offered). */
-  donate?: () => JSX.Element;
 }): TabItem[] {
   const attention = () => props.ui.run.attention().size > 0;
   // The tabs are built once per mount: the live pipeline or one saved result.
@@ -148,17 +145,7 @@ export function detailTabs(props: {
       id: 'recording',
       label: 'Recording',
       testid: 'tab-recording',
-      // With the donate panel: kept mounted so a half-filled form survives a tab switch.
-      keepMounted: props.donate !== undefined,
-      content: () =>
-        props.info ? (
-          <>
-            <InfoPanel info={props.info} />
-            {props.donate?.()}
-          </>
-        ) : (
-          props.recording?.()
-        ),
+      content: () => (props.info ? <InfoPanel info={props.info} /> : props.recording?.()),
     },
   ];
   /* eslint-enable solid/reactivity */

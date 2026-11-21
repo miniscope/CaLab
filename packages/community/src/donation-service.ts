@@ -6,7 +6,7 @@
 // Reads of `cala_donations` go straight to the table; RLS returns the donor's
 // own rows, or every row for an admin (migration 019).
 
-import { getSupabase } from './supabase.ts';
+import { getDonationSupabase } from './donation-auth.ts';
 
 export type DonationStatus =
   | 'uploading'
@@ -91,8 +91,8 @@ export class DonationApiError extends Error {
 }
 
 async function requireClient() {
-  const client = await getSupabase();
-  if (!client) throw new DonationApiError('Community features are not configured');
+  const client = await getDonationSupabase();
+  if (!client) throw new DonationApiError('Donation is not configured');
   return client;
 }
 

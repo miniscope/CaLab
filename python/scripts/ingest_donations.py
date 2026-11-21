@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import importlib.util
 import json
 import logging
 import math
@@ -62,7 +63,34 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from calab._calaraw import CalarawError, iter_calaraw
+
+def _load_calaraw() -> Any:
+    """The CALARAW1 reader: from an installed calab, else `_calaraw.py` beside this script.
+
+    On a lab server copy this script and `python/src/calab/_calaraw.py` into one
+    folder; then only Python 3.11+ and numpy are needed (no calab build, no Rust).
+    """
+    try:
+        from calab import _calaraw
+
+        return _calaraw
+    except ImportError:
+        pass
+    here = Path(__file__).resolve().parent
+    for path in (here / "_calaraw.py", here.parent / "src" / "calab" / "_calaraw.py"):
+        if path.is_file():
+            spec = importlib.util.spec_from_file_location("calaraw_reader", path)
+            assert spec and spec.loader
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module  # dataclasses need the module registered
+            spec.loader.exec_module(module)
+            return module
+    raise ImportError("CALARAW1 reader not found: put _calaraw.py next to this script")
+
+
+_reader = _load_calaraw()
+CalarawError = _reader.CalarawError
+iter_calaraw = _reader.iter_calaraw
 
 log = logging.getLogger("ingest_donations")
 
@@ -253,6 +281,35 @@ def verify_recording(directory: Path, row: dict[str, Any]) -> int:
     return frames
 
 
+# timestamps.csv: an optional header line of words, then rows of numbers only.
+# No "=", "+" or "@" anywhere, so nothing can act as a spreadsheet formula.
+TIMESTAMP_HEADER = re.compile(r"^[A-Za-z][A-Za-z0-9 \t()._/,-]*$")
+TIMESTAMP_ROW = re.compile(r"^[0-9eE.,\t -]*$")
+
+
+def verify_sidecars(directory: Path) -> None:
+    """The non-video files must be plain data: meta.json a JSON object, timestamps.csv numbers."""
+    meta = directory / "meta.json"
+    if meta.exists():
+        try:
+            parsed = json.loads(meta.read_bytes().decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise VerificationError(f"meta.json is not valid JSON: {e}") from e
+        if not isinstance(parsed, dict):
+            raise VerificationError("meta.json is not a JSON object")
+    stamps = directory / "timestamps.csv"
+    if stamps.exists():
+        try:
+            text = stamps.read_bytes().decode("ascii")
+        except UnicodeDecodeError as e:
+            raise VerificationError("timestamps.csv is not plain ASCII text") from e
+        lines = text.replace("\r\n", "\n").rstrip("\n").split("\n")
+        start = 1 if lines and TIMESTAMP_HEADER.match(lines[0]) else 0
+        for n, line in enumerate(lines[start:], start + 1):
+            if not TIMESTAMP_ROW.match(line):
+                raise VerificationError(f"timestamps.csv line {n} is not numeric")
+
+
 def check_meta_matches(meta: dict[str, Any], row: dict[str, Any]) -> None:
     """The chunk header's recording metadata must equal what the donor declared."""
     pairs = [
@@ -425,6 +482,7 @@ def ingest_one(api: IngestApi, row: dict[str, Any], layout: Layout, dry_run: boo
         for name, size in files:
             download(api.opener, api.download_request(donation_id, name), incoming / name, size)
         frames = verify_recording(incoming, row)
+        verify_sidecars(incoming)
         write_row(incoming, row)
     except VerificationError as e:
         reject(incoming, rejected, row, str(e))

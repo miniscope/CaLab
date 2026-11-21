@@ -88,14 +88,17 @@ supabase secrets set --project-ref <your-project-ref> \
   INGEST_TOKEN="$(openssl rand -hex 32)"
 ```
 
-| Secret                                                                   | Purpose                                                                                             |
-| ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | Cloudflare R2 bucket via the S3 API (key needs object read/write on that bucket).                   |
-| `INGEST_TOKEN`                                                           | Shared secret of the lab-server ingest job (at least 32 characters; ingest is disabled without it). |
-| `DONATION_MAX_BYTES`                                                     | Optional. Per-donation cap in bytes (default 10 GiB).                                               |
-| `DONATION_GLOBAL_CAP_BYTES`                                              | Optional. Cap on bytes declared by donations still in the bucket (default 200 GiB).                 |
-| `DONATION_MAX_OPEN_PER_USER`                                             | Optional. Donations per user not yet ingested/rejected/withdrawn (default 2).                       |
-| `DONATION_EXTRA_ORIGINS`                                                 | Optional. Comma-separated extra CORS origins (e.g. preview deploys).                                |
+| Secret                                                                   | Purpose                                                                                                                                            |
+| ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | Cloudflare R2 bucket via the S3 API (key needs object read/write on that bucket).                                                                  |
+| `INGEST_TOKEN`                                                           | Shared secret of the lab-server ingest job (at least 32 characters; ingest is disabled without it).                                                |
+| `DONATION_MAX_BYTES`                                                     | Optional. Per-donation cap in bytes (default 10 GiB).                                                                                              |
+| `DONATION_GLOBAL_CAP_BYTES`                                              | Optional. Cap on bytes declared by donations still in the bucket (default 200 GiB).                                                                |
+| `DONATION_MAX_OPEN_PER_USER`                                             | Optional. Donations per user not yet ingested/rejected/withdrawn (default 2).                                                                      |
+| `DONATION_STALE_HOURS`                                                   | Optional. An upload unfinished after this many hours is withdrawn and its files deleted (default 48).                                              |
+| `RESEND_API_KEY`, `DONATION_NOTIFY_EMAILS`                               | Optional. Email (via Resend) to these comma-separated addresses when a donation finishes uploading. Both needed; failures never fail the donation. |
+| `DONATION_NOTIFY_FROM`, `DONATION_ADMIN_URL`                             | Optional. Sender (default `onboarding@resend.dev`, which only delivers to the Resend account's own address) and a review link in the email.        |
+| `DONATION_EXTRA_ORIGINS`                                                 | Optional. Comma-separated extra CORS origins (e.g. preview deploys).                                                                               |
 
 Bucket setup: a CORS rule allowing `PUT` and `GET` from the app origins (the
 browser uploads straight to R2), and a lifecycle rule that expires objects

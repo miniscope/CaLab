@@ -13,12 +13,12 @@ import { createStore } from 'solid-js/store';
 import { ProgressBar } from '@calab/ui';
 import { AuthGate } from '@calab/community-ui';
 import {
-  authLoading,
+  donationAuthLoading,
+  donationUser,
   fieldOptions,
   loadFieldOptions,
-  signInWithEmail,
-  signOut,
-  user,
+  signInForDonation,
+  signOutDonation,
   type DonationLicense,
   type DonationMeta,
   type DonationRow,
@@ -69,6 +69,26 @@ const STATUS_LABEL: Record<DonationRow['status'], string> = {
 
 const optional = (s: string): string | null => (s.trim() === '' ? null : s.trim());
 
+const CC_BY_URL = 'https://creativecommons.org/licenses/by/4.0/';
+
+/** Who receives deletion requests (add addresses here; all are shown). */
+const DELETION_CONTACTS = ['marcel91@g.ucla.edu'];
+
+function DeletionContacts(): JSX.Element {
+  return (
+    <For each={DELETION_CONTACTS}>
+      {(addr, i) => (
+        <>
+          {i() > 0 ? ', ' : ''}
+          <a href={`mailto:${addr}?subject=${encodeURIComponent('CaLab data donation: delete')}`}>
+            {addr}
+          </a>
+        </>
+      )}
+    </For>
+  );
+}
+
 export interface DonatePanelProps {
   donation: DonationUiStore;
   info: FrameSourceInfo;
@@ -81,7 +101,7 @@ export interface DonatePanelProps {
 export function DonatePanel(props: DonatePanelProps): JSX.Element {
   const [open, setOpen] = createSignal(false);
   const signedIn = () => {
-    const u = user();
+    const u = donationUser();
     return u && !u.is_anonymous ? u : null;
   };
 
@@ -94,55 +114,73 @@ export function DonatePanel(props: DonatePanelProps): JSX.Element {
     }),
   );
 
+  const expanded = () => open() || props.donation.phase().kind !== 'idle';
+
   return (
     <section class="cala-donate" aria-labelledby="cala-donate-title" data-testid="donate">
-      <Show
-        when={open() || props.donation.phase().kind !== 'idle'}
-        fallback={
-          <div class="cala-donate__closed">
-            <button
-              type="button"
-              class="btn-secondary btn-small"
-              data-testid="donate-open"
-              onClick={() => setOpen(true)}
-            >
-              Donate data
-            </button>
-            <span class="cala-muted">
-              {' '}
-              Send this recording to the cala benchmark set (only after you fill in a form).
-            </span>
-          </div>
-        }
-      >
-        <h2 id="cala-donate-title" class="panel-label">
-          Donate data
+      <div class="cala-donate__cta">
+        <h2 id="cala-donate-title" class="cala-donate__title">
+          Donate this recording
         </h2>
+        <p class="cala-donate__lead">
+          Send this recording to the cala benchmark set (only after you fill in a form). A single
+          recording is enough: the raw video as recorded, no processing needed. Up to{' '}
+          {Math.round(MAX_DONATION_BYTES / 1024 ** 3)} GB after compression, about 40 minutes of 600
+          x 600 Miniscope V4 video.
+        </p>
         <ul class="cala-donate__why">
           <li>
             <strong>cala gets better on your kind of data.</strong> Donated recordings go into the
-            cala benchmark set, which the pipeline is developed and tuned against.
+            benchmark set that cala is developed and tuned against.
           </li>
           <li>
-            <strong>Co-authorship.</strong> If a dataset is used in a benchmark or dataset paper,
-            donors who agree to be contacted are offered co-authorship.
+            <strong>Co-authorship.</strong> If your dataset is used in a benchmark or dataset paper,
+            you are offered co-authorship. Every use of a donation is verified and logged against
+            it, so no use goes uncredited.
+          </li>
+          <li>
+            <strong>Credit and control stay with you.</strong> The data is kept within the lab and
+            licensed{' '}
+            <a href={CC_BY_URL} target="_blank" rel="noopener noreferrer">
+              CC BY 4.0
+            </a>
+            : any use must credit you and your lab. You can ask for it to be deleted at any time (
+            <DeletionContacts />
+            ).
           </li>
         </ul>
+        <Show when={!expanded()}>
+          <button
+            type="button"
+            class="cala-donate__button"
+            data-testid="donate-open"
+            onClick={() => setOpen(true)}
+          >
+            Donate data
+          </button>
+        </Show>
+      </div>
+      <Show when={expanded()}>
         <p class="cala-muted">
           The raw frames are compressed without loss in this browser and uploaded with the metadata
           below. File paths are never sent, only file names. The lab reviews each donation before it
-          is used; you can withdraw it until the lab has taken it in.
+          is used. Withdraw it under "My donations" below; once the lab has taken it in, email{' '}
+          <DeletionContacts /> and it is deleted.
         </p>
         <Show
           when={signedIn()}
           fallback={
             <div class="cala-donate__auth">
-              <p class="cala-muted">Donating needs a sign-in with your email address.</p>
+              <p class="cala-muted">
+                Donating needs a sign-in with your email address (separate from other CaLab
+                sign-ins).
+              </p>
               <AuthGate
-                user={user}
-                authLoading={authLoading}
-                signInWithEmail={signInWithEmail}
-                signOut={signOut}
+                user={donationUser}
+                authLoading={donationAuthLoading}
+                signInWithEmail={signInForDonation}
+                signOut={signOutDonation}
+                prompt="Sign in to donate or to see your donations"
               />
             </div>
           }
@@ -160,6 +198,49 @@ export function DonatePanel(props: DonatePanelProps): JSX.Element {
               onClose={() => setOpen(false)}
             />
           </Show>
+          <MyDonations donation={props.donation} />
+        </Show>
+      </Show>
+    </section>
+  );
+}
+
+/**
+ * "My donations" on the start page: a donor can check their donations
+ * (status, "in benchmark", withdraw) without opening a recording.
+ */
+export function MyDonationsEntry(props: { donation: DonationUiStore }): JSX.Element {
+  const [open, setOpen] = createSignal(false);
+  const signedIn = () => {
+    const u = donationUser();
+    return u && !u.is_anonymous ? u : null;
+  };
+  createEffect(
+    on([open, signedIn], ([o, u]) => {
+      if (o && u) void props.donation.refresh();
+    }),
+  );
+  return (
+    <section class="cala-donate-entry" data-testid="my-donations-entry">
+      <button type="button" class="cala-donate__link" onClick={() => setOpen((v) => !v)}>
+        {open() ? 'Hide my donations' : 'My donations'}
+      </button>
+      <Show when={open()}>
+        <Show
+          when={signedIn()}
+          fallback={
+            <div class="cala-donate__auth">
+              <p class="cala-muted">Sign in with the email you donated with.</p>
+              <AuthGate
+                user={donationUser}
+                authLoading={donationAuthLoading}
+                signInWithEmail={signInForDonation}
+                signOut={signOutDonation}
+                prompt="Sign in to donate or to see your donations"
+              />
+            </div>
+          }
+        >
           <MyDonations donation={props.donation} />
         </Show>
       </Show>
@@ -220,6 +301,8 @@ function DonationFormView(props: DonatePanelProps & { onClose: () => void }): JS
     if (!form.scope.trim()) m.push('scope');
     if (!fpsOk()) m.push('frame rate');
     if (!depthOk()) m.push('a depth of 0 to 10000 um');
+    if (!form.credit_name.trim()) m.push('your name (for credit)');
+    if (!form.credit_lab.trim()) m.push('your lab (for credit)');
     if (!form.rights_attested || !form.protocol_attested) m.push('both confirmations');
     return m;
   };
@@ -417,24 +500,13 @@ function DonationFormView(props: DonatePanelProps & { onClose: () => void }): JS
 
       <fieldset class="cala-donate__group">
         <legend>License</legend>
-        <label class="cala-donate__check">
-          <input
-            type="radio"
-            name="cala-donate-license"
-            checked={form.license === 'cc-by-4.0'}
-            onChange={() => setForm('license', 'cc-by-4.0')}
-          />{' '}
-          CC-BY 4.0 <span class="cala-muted">(can be part of a public benchmark release)</span>
-        </label>
-        <label class="cala-donate__check">
-          <input
-            type="radio"
-            name="cala-donate-license"
-            checked={form.license === 'lab-use-only'}
-            onChange={() => setForm('license', 'lab-use-only')}
-          />{' '}
-          Lab use only <span class="cala-muted">(used to develop cala, never published)</span>
-        </label>
+        <p class="cala-donate__note">
+          <a href={CC_BY_URL} target="_blank" rel="noopener noreferrer">
+            CC BY 4.0
+          </a>
+          : the data is kept within the lab, and any use must credit you and your lab as entered
+          under Credit below.
+        </p>
       </fieldset>
 
       <fieldset class="cala-donate__group">
@@ -446,7 +518,7 @@ function DonationFormView(props: DonatePanelProps & { onClose: () => void }): JS
             data-testid="donate-rights"
             onChange={(e) => setForm('rights_attested', e.currentTarget.checked)}
           />{' '}
-          I have the right to share this data and accept the license chosen above. *
+          I have the right to share this data and agree to share it under CC BY 4.0. *
         </label>
         <label class="cala-donate__check">
           <input
@@ -468,9 +540,13 @@ function DonationFormView(props: DonatePanelProps & { onClose: () => void }): JS
       </fieldset>
 
       <fieldset class="cala-donate__group">
-        <legend>Credit (shown in the benchmark list)</legend>
-        {text('credit_name', 'Name', { max: 100 })}
-        {text('credit_lab', 'Lab', { max: 100 })}
+        <legend>Credit (how you and your lab are attributed)</legend>
+        {text('credit_name', 'Name', { required: true, max: 100 })}
+        {text('credit_lab', 'Lab', {
+          required: true,
+          max: 100,
+          placeholder: 'lab name, institution',
+        })}
         <label class="cala-donate__field">
           <span>Notes</span>
           <textarea
@@ -630,8 +706,26 @@ function DonationProgress(props: { donation: DonationUiStore }): JSX.Element {
 // My donations
 // ---------------------------------------------------------------------------
 
-function MyDonations(props: { donation: DonationUiStore }): JSX.Element {
+export function MyDonations(props: { donation: DonationUiStore }): JSX.Element {
   const d = () => props.donation;
+  const [showWithdrawn, setShowWithdrawn] = createSignal(false);
+  const withdrawnCount = () =>
+    d()
+      .donations()
+      .filter((r) => r.status === 'withdrawn').length;
+  const shown = () =>
+    d()
+      .donations()
+      .filter((r) => showWithdrawn() || r.status !== 'withdrawn');
+  /** The donation this tab is uploading right now (its row says "uploading"). */
+  const liveId = () => {
+    const p = d().phase();
+    return p.kind === 'uploading' || p.kind === 'finishing' ? p.donationId : null;
+  };
+  const statusLabel = (row: DonationRow): string =>
+    row.status === 'uploading' && row.id !== liveId()
+      ? 'upload not finished (withdraw to remove it)'
+      : (STATUS_LABEL[row.status] ?? row.status);
   function withdraw(row: DonationRow): void {
     const ok = window.confirm(
       `Withdraw the donation of ${row.created_at.slice(0, 10)}? Its uploaded files are deleted.`,
@@ -659,13 +753,13 @@ function MyDonations(props: { donation: DonationUiStore }): JSX.Element {
         )}
       </Show>
       <Show
-        when={d().donations().length > 0}
+        when={shown().length > 0}
         fallback={
           <p class="cala-muted">{d().listState().loading ? 'Loading...' : 'No donations yet.'}</p>
         }
       >
         <ul class="cala-donate__list">
-          <For each={d().donations()}>
+          <For each={shown()}>
             {(row) => (
               <li class="cala-donate__item" data-testid="my-donation">
                 <span>
@@ -675,7 +769,7 @@ function MyDonations(props: { donation: DonationUiStore }): JSX.Element {
                   </span>
                 </span>
                 <span class="cala-donate__status">
-                  {STATUS_LABEL[row.status] ?? row.status}
+                  {statusLabel(row)}
                   <Show when={row.in_benchmark}>
                     {' '}
                     <span class="cala-donate__badge" title={row.benchmark_note ?? undefined}>
@@ -697,6 +791,11 @@ function MyDonations(props: { donation: DonationUiStore }): JSX.Element {
             )}
           </For>
         </ul>
+      </Show>
+      <Show when={withdrawnCount() > 0}>
+        <button type="button" class="cala-donate__link" onClick={() => setShowWithdrawn((v) => !v)}>
+          {showWithdrawn() ? 'Hide' : 'Show'} withdrawn ({withdrawnCount()})
+        </button>
       </Show>
     </section>
   );

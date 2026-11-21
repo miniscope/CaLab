@@ -812,12 +812,43 @@
   gap: var(--space-xs);
 }
 
-/* Donate data (Recording tab, components/DonatePanel.tsx) */
+/* Donate data (bottom of the Run tab, components/DonatePanel.tsx) */
 .cala-donate {
   margin: var(--space-md) 0 0;
-  padding: var(--space-sm) 0 0;
-  border-top: 1px solid var(--border-default);
   font-size: 0.9rem;
+}
+.cala-donate__cta {
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--success);
+  border-left-width: 4px;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--success) 7%, transparent);
+}
+.cala-donate__title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--success);
+}
+.cala-donate__lead {
+  margin: var(--space-xs) 0 0;
+}
+.cala-donate__button {
+  margin-top: var(--space-xs);
+  padding: 6px 16px;
+  border: 1px solid var(--success);
+  border-radius: var(--radius-md);
+  background: var(--success);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cala-donate__button:hover {
+  filter: brightness(1.1);
+}
+.cala-donate__button:focus-visible {
+  outline: 2px solid var(--success);
+  outline-offset: 2px;
 }
 .cala-donate__why {
   margin: var(--space-xs) 0;
@@ -825,6 +856,32 @@
 }
 .cala-donate__why li {
   margin: var(--space-xs) 0;
+}
+.cala-donate__note {
+  margin: 0;
+}
+.cala-donate__link {
+  margin-top: var(--space-xs);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.cala-donate__link:hover {
+  text-decoration: underline;
+}
+.cala-donate-entry {
+  max-width: 720px;
+  margin: var(--space-md) auto 0;
+  font-size: 0.9rem;
+  text-align: center;
+}
+.cala-donate-entry .cala-donate__mine,
+.cala-donate-entry .cala-donate__auth {
+  text-align: left;
 }
 .cala-donate__form {
   display: flex;

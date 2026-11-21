@@ -62,6 +62,20 @@ export {
 
 // Data donation (apps/cala/docs/data-donation.md)
 export {
+  donationAuthLoading,
+  donationEnabled,
+  donationReturnUrl,
+  donationUser,
+  getDonationSupabase,
+  initDonationAuth,
+  isDonationAuthReturn,
+  separateDonationProject,
+  signInForDonation,
+  signOutDonation,
+  tokensFromHash,
+  urlWithoutDonationReturn,
+} from './donation-auth.ts';
+export {
   DONATION_CHUNK_NAME,
   DONATION_MAX_BYTES,
   DONATION_MAX_CHUNK_BYTES,

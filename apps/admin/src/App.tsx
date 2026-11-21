@@ -2,6 +2,7 @@ import type { Component } from 'solid-js';
 import { Switch, Match, ErrorBoundary, Show } from 'solid-js';
 import { DashboardShell, CompactHeader } from '@calab/ui';
 import { isAuthCallback, AuthCallback } from '@calab/community-ui';
+import { donationAuthLoading, donationUser, isDonationAuthReturn } from '@calab/community';
 import { AdminGuard } from './components/AdminGuard.tsx';
 import { NavBar } from './components/NavBar.tsx';
 import { FilterBar } from './components/FilterBar.tsx';
@@ -36,6 +37,10 @@ const App: Component = () => {
   // doesn't change within a single component lifetime, so the early
   // return is safe.
   // eslint-disable-next-line solid/components-return-once
+  // A donation sign-in link (separate donation project) is confirmed against that project.
+  if (isDonationAuthReturn()) {
+    return <AuthCallback user={donationUser} loading={donationAuthLoading} />;
+  }
   if (isAuthCallback()) return <AuthCallback user={user} loading={authLoading} />;
 
   return (

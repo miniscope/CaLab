@@ -3,7 +3,16 @@
 // review and benchmark actions go through donation-service.
 
 import { type JSX, For, Show, createMemo, createResource, createSignal } from 'solid-js';
-import { listDonations, type DonationRow } from '@calab/community';
+import {
+  donationAuthLoading,
+  donationUser,
+  listDonations,
+  separateDonationProject,
+  signInForDonation,
+  signOutDonation,
+  type DonationRow,
+} from '@calab/community';
+import { AuthGate } from '@calab/community-ui';
 import { DataTable, type Column, type Row } from './DataTable.tsx';
 import { DonationDrawer } from './DonationDrawer.tsx';
 import {
@@ -53,7 +62,37 @@ async function load(): Promise<DonationRow[]> {
   return listDonations();
 }
 
+/**
+ * With a separate donation project (VITE_DONATION_SUPABASE_*), donations need
+ * their own sign-in: an admin account of that project.
+ */
 export function DonationsView(): JSX.Element {
+  const signedIn = () => !separateDonationProject || donationUser() !== null;
+  return (
+    <Show
+      when={signedIn()}
+      fallback={
+        <div class="view">
+          <p class="note">
+            Donations live in their own Supabase project. Sign in with your admin account of that
+            project.
+          </p>
+          <AuthGate
+            user={donationUser}
+            authLoading={donationAuthLoading}
+            signInWithEmail={signInForDonation}
+            signOut={signOutDonation}
+            prompt="Sign in to review donations"
+          />
+        </div>
+      }
+    >
+      <DonationsTable />
+    </Show>
+  );
+}
+
+function DonationsTable(): JSX.Element {
   const [rows, { refetch }] = createResource(load);
   const [status, setStatus] = createSignal<StatusFilter>('uploaded');
   const [openId, setOpenId] = createSignal<string | null>(null);
