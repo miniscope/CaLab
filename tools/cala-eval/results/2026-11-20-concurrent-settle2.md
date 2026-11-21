@@ -140,7 +140,7 @@ arm"; if it is the only arm that meets every line, the verdict says so and says 
 ## Results
 
 Binary `qc_eval-cs2-b` (this branch at the commit that adds the prototype; later commits change tests and tools
-only). Run trees under `$CALA_DATA`: `runs/concsettle2/t0` (byte checks), `runs/concsettle2/real` (32 real runs;
+only: a build at the branch head is byte-identical to it). Run trees under `$CALA_DATA`: `runs/concsettle2/t0` (byte checks), `runs/concsettle2/real` (32 real runs;
 `*_agreement.md`, `*_checkpoints.md`, `*_runs.txt`, `*_summary.json`), `demix-suite/cs2-q` (sims). Tools:
 `concsettle2_real.sh`, `concsettle2_summary.py`, `concsettle2_sims.sh`, `cmp_runs.py`. The laptop slept for about an
 hour during the runs (wall times of that batch are not comparable; results are on the virtual clock).
@@ -189,13 +189,23 @@ arm, `V30` included.
   algorithm here (see below), and on `10_43_21` they read 78, 34 and 70 %: the spread of one seed pair is of that
   size. Their mean is 61 % on `10_43_21` and 76 % on `14_57_02`; on the workshop recording (three pairs) the three
   arms read 76-81 %.
+- **A second measure agrees on two recordings and not on the third.** Median r of a live library against the same
+  seed's settled baseline (round 1 used it as evidence for its no-go), `V30` to `CS2`: workshop 0.9547 to 0.9657,
+  `10_43_21` 0.9806 to 0.9838, `14_57_02` 0.9780 to 0.9785. On `14_57_02` it shows no gain where seed agreement
+  shows 75 %. The baseline's value is against its own run's end pass (same cell set), the arm's against another run,
+  which favours the baseline.
+- **Fewer cells could flatter the workshop number, not the Samara ones.** The measure is the median r of matched
+  cells, and an arm that keeps fewer doubtful cells can gain by that alone. Seed pair 1-2, live: workshop `V30`
+  matches 786 of 952 / 956 cells, `CS2` 774 of 904 / 923; `10_43_21` 322 of 385 / 382 against 336 of 380 / 389;
+  `14_57_02` 287 of 318 / 335 against 284 of 320 / 326. On Samara the cell counts are equal and the shares are the
+  same size as on the workshop recording.
 - **R3, footprint movement: not met as written.** Line: at most 12 % per 2250 frames in the second half (no-go
   above 18 %). `CS2`: 10.6 % on `10_43_21` (met), 13.6 % on `14_57_02` and 16.1 % on the workshop recording (both
   between the lines). The baseline itself reads 11.3 %, 11.1 % and 18.9 %: on the workshop recording Discover with
   four visit workers moves footprints more than the line with no settle at all, and `CS2` moves them less than that
   (16.1 % against 18.9 %); on `14_57_02` it moves them more (13.6 % against 11.1 %). The split-half noise of the live
   library falls from 14-16 % to about 10 % with the settle.
-- **R4, Discover not held back: missed as written.** `CS2` makes 10-14 % fewer ordinary visits than `V30` (line:
+- **R4, Discover not held back (a line added in this study, not one of the PI's three): missed as written.** `CS2` makes 10-14 % fewer ordinary visits than `V30` (line:
   5 %) and 1-9 % fewer adds (over the line on the workshop recording and `10_43_21`). It ends with 4.5 % fewer cells
   on the workshop recording (outside the +/- 3 % line), within the seed range on Samara. The frames-only arm `CS2F`
   has no settle jobs and shows the same shortfall (8-14 % fewer visits), and the visit workers are not busier in any
@@ -274,7 +284,7 @@ Dropped frames: 0 in all 15 Discover runs. Slow worker 26-29 % busy without the 
 | chosen arm                                                     | `CS2`; the quiet period adds nothing; the frames-only arm added afterwards does as well                                                  |
 | R5 total work                                                  | about the same slow-loop work, 2-3 times the re-read frames; the end pass shrinks to a half or a fifth                                   |
 | S1 sims                                                        | pass                                                                                                                                     |
-| by the pre-set rule (R1-R4 by one arm on all three recordings) | **not a go yet**: R3 between the lines on two recordings, R4 missed                                                                      |
+| by the pre-set rule (R1-R4 by one arm on all three recordings) | **no-go as it stands**: of the PI's three lines, drops and gap are met and movement is met on one recording of three; R4 missed          |
 
 ### Not done
 
