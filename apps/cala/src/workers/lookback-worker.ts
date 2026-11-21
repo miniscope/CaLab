@@ -166,7 +166,7 @@ async function serve(
     const out = await pool.acquire();
     let solved;
     try {
-      solved = await reader.serve(frames, out);
+      solved = await reader.serve(frames, out, msg.skip);
     } catch (err) {
       pool.release(out);
       throw err;

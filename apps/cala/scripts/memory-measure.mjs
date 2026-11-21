@@ -6,7 +6,7 @@
  *   node apps/cala/scripts/memory-measure.mjs --url http://localhost:5195/ --data <folder>
  *        --out <dir> [--keep name1,name2] [--tag x] [--mode joint|separate]
  *        [--refine-runs 1] [--every 10] [--max-min 90] [--cdp 9335] [--headed] [--single]
- *        [--lookback [--toggle] [--refine]] [--extract]
+ *        [--lookback [--toggle] [--refine] [--csettle [--csettle-yield N] [--csrate R]]] [--extract]
  *   `--single`: one recording folder (Discover, then one Refine, no export).
  *   `--lookback` (with `--single`): opens with `&lookback` (experimental
  *   look-back refinement), never presses Refine, and stops once Discover has
@@ -16,6 +16,14 @@
  *   checkbox once Discover runs and restart it (the path a user takes).
  *   `--refine`: after settling, one Refine run too (to compare). `--extract`:
  *   then press Extract once and wait for it.
+ *   `--csettle` (with `--lookback`): opens with `&csettle` too (settle during
+ *   Discover, experimental; `--csettle-yield N`: answers fed N frames at a
+ *   time; `--csrate R`: the ceiling). Every look-back run also logs exact
+ *   times (an in-page probe every 100 ms: last frame, settled, the longest
+ *   stretch without a new frame, every settle checkpoint), the frames
+ *   dropped for the slow loop, and how far the end settle moved the library
+ *   Discover ended with; both libraries are written as `<tag>-live.json` and
+ *   `<tag>-final.json`.
  *   `--headed` runs system Chrome with a real GPU (headless SwiftShader hides memory behaviour).
  *
  * Opens `<folder>` (a session folder or a parent of several) through the
@@ -56,6 +64,12 @@ const lookback = args.includes('--lookback');
 const extract = args.includes('--extract');
 const toggle = args.includes('--toggle');
 const refineAfter = args.includes('--refine');
+const csettle = args.includes('--csettle');
+const csYield = opt('--csettle-yield', '');
+const csRate = opt('--csrate', '');
+const csQuery = csettle
+  ? `&csettle${csYield ? `=yield${csYield}` : ''}${csRate ? `&csrate=${csRate}` : ''}`
+  : '';
 mkdirSync(out, { recursive: true });
 const udd = join(out, `udd-${tag}`);
 rmSync(udd, { recursive: true, force: true });
@@ -240,6 +254,24 @@ async function sample(gc = false) {
         cells: c.cells.library?.()?.ids.length ?? 0,
         final: c.cells.status?.()?.final ?? false,
         lb: c.lookback?.() ?? null,
+        batch: (() => {
+          const b = c.cells.batch?.();
+          return b ? { fwd: b.forwardedFrames, drop: b.droppedFrames } : null;
+        })(),
+        slow: (() => {
+          const s = c.cells.status?.();
+          return s
+            ? {
+                observed: s.observed,
+                skipped: s.skipped,
+                jobs: s.jobs,
+                visitMs: s.visitMs,
+                refines: s.counters?.refines ?? 0,
+                visits: s.counters?.visits ?? 0,
+                adds: s.counters?.adds ?? 0,
+              }
+            : null;
+        })(),
         run: document.querySelector('[data-testid=session-run-status]')?.textContent ?? '',
       };
     })
@@ -263,8 +295,13 @@ const fmt = (r) => {
   const lb = st.lb
     ? ` lb pushed ${st.lb.pushed} need ${st.lb.inNeed} births ${st.lb.births}${st.lb.settling ? ' settling' : ''}${st.lb.settle ? ` settle ${st.lb.settle.fed}/${st.lb.settle.total}${st.lb.settle.moving ? ` moving ${st.lb.settle.moving.above}/${st.lb.settle.moving.cells}` : ''}` : ''}${st.lb.error ? ` ERR ${st.lb.error}` : ''}${st.final ? ' final' : ''}`
     : '';
+  const cs = st.lb?.csettle
+    ? ` cs ${st.lb.csettle.fit}+${st.lb.csettle.heldOut}+${st.lb.csettle.dropped}/${st.lb.csettle.requested} live ${st.lb.csettle.live} ans ${st.lb.csettle.answers} ${(st.lb.csettle.answerMs / Math.max(1, st.lb.csettle.answers)).toFixed(1)}ms max ${st.lb.csettle.maxBlockMs.toFixed(0)}ms`
+    : '';
+  const drop = st.batch ? ` drop ${st.batch.drop}/${st.batch.drop + st.batch.fwd}` : '';
+  const slow = st.slow ? ` jobs ${st.slow.jobs} refines ${st.slow.refines}` : '';
   return (
-    `${r.t.toFixed(0)}s ${st.pst}${lb} ${st.pp} fps${(st.fps ?? 0).toFixed(0)} ref ${st.refine} ${st.rp} ext ${st.extract} cells ${st.cells} | ` +
+    `${r.t.toFixed(0)}s ${st.pst}${lb}${cs}${drop}${slow} ${st.pp} fps${(st.fps ?? 0).toFixed(0)} ref ${st.refine} ${st.rp} ext ${st.extract} cells ${st.cells} | ` +
     `rend rss ${r.rendererRss.toFixed(0)} foot ${r.rendererFoot.toFixed(0)} gpu ${r.gpuFoot.toFixed(0)} | ` +
     `main js ${r.main.jsUsed?.toFixed(0)} buf ${r.main.backing?.toFixed(0)} wasm ${r.main.wasm.toFixed(0)} | ` +
     `workers(${w.length}) js ${sum('jsUsed').toFixed(0)} buf ${sum('backing').toFixed(0)} wasm ${sum('wasm').toFixed(0)} :: ` +
@@ -278,8 +315,83 @@ const fmt = (r) => {
 };
 
 let t0 = Date.now();
-await page.goto(`${url}?debug${lookback && !toggle ? '&lookback' : ''}`);
+await page.goto(`${url}?debug${lookback && !toggle ? '&lookback' : ''}${csQuery}`);
 await attachPage();
+// Exact times and every settle checkpoint (the 5 s samples miss them): an in-page probe.
+await page.evaluate(() => {
+  const p = (window.__calaProbe = {
+    t0: null,
+    framesDone: null,
+    final: null,
+    frames: 0,
+    lastFrameAt: null,
+    maxGapMs: 0,
+    gaps250: 0,
+    atFramesDone: null,
+    checkpoints: [],
+  });
+  let lastKey = '';
+  setInterval(() => {
+    const c = window.__cala;
+    if (!c) return;
+    const now = performance.now();
+    const pst = c.pipeline.status();
+    const n = c.pipeline.processed();
+    if (pst === 'running') {
+      if (p.t0 === null || n < p.frames) {
+        // (A restart begins again.)
+        p.t0 = now;
+        p.lastFrameAt = now;
+        p.maxGapMs = 0;
+        p.gaps250 = 0;
+        p.framesDone = null;
+        p.final = null;
+        p.checkpoints = [];
+      } else if (n > p.frames) {
+        const gap = now - p.lastFrameAt;
+        if (gap > p.maxGapMs) p.maxGapMs = gap;
+        if (gap > 250) p.gaps250++;
+        p.lastFrameAt = now;
+      }
+      p.frames = n;
+    }
+    const st = c.cells.status?.();
+    const lb = st?.lookback;
+    if (pst === 'done' && p.framesDone === null && p.t0 !== null) {
+      p.framesDone = now;
+      p.frames = n;
+      const b = c.cells.batch?.();
+      p.atFramesDone = {
+        cells: c.cells.library?.()?.ids.length ?? 0,
+        fwd: b?.forwardedFrames ?? 0,
+        drop: b?.droppedFrames ?? 0,
+        lb: lb ? JSON.parse(JSON.stringify(lb)) : null,
+        slow: st
+          ? {
+              observed: st.observed,
+              skipped: st.skipped,
+              jobs: st.jobs,
+              refines: st.counters.refines,
+              visits: st.counters.visits,
+              adds: st.counters.adds,
+            }
+          : null,
+      };
+    }
+    const m = lb?.settle?.moving;
+    if (m && lb.settle) {
+      const key = `${lb.settle.fed}|${m.above}|${m.cells}`;
+      // (The count changes only at a checkpoint; log it once.)
+      const prev = p.checkpoints.at(-1);
+      if (key !== lastKey && !(prev && prev.above === m.above && prev.cells === m.cells)) {
+        p.checkpoints.push({ t: now, fed: lb.settle.fed, above: m.above, cells: m.cells });
+      }
+      lastKey = key;
+    }
+    if (pst === 'done' && st?.final && !lb?.settling && p.final === null && p.framesDone !== null)
+      p.final = now;
+  }, 100);
+});
 const single = args.includes('--single');
 await page.setInputFiles('[data-testid=folder-input]', data);
 if (single) {
@@ -339,6 +451,47 @@ if (single) {
   await page.click('[data-testid=sessions-start]');
   t0 = Date.now();
 }
+/** The in-page probe's times, the end settle's change and the two libraries (look-back runs). */
+async function probeReport() {
+  const p = await page.evaluate(() => window.__calaProbe).catch(() => null);
+  if (!p || p.t0 === null) return;
+  const s = (a, b) => (a !== null && b !== null ? ((a - b) / 1000).toFixed(1) : '?');
+  const frames = p.frames;
+  const dSec = p.framesDone !== null ? (p.framesDone - p.t0) / 1000 : NaN;
+  L(
+    `PROBE discover ${s(p.framesDone, p.t0)}s ${frames} frames ${(frames / dSec).toFixed(0)} fps · end settle ${s(p.final, p.framesDone)}s · total ${s(p.final, p.t0)}s · longest stretch without a new frame ${p.maxGapMs.toFixed(0)} ms (${p.gaps250} over 250 ms)`,
+  );
+  L(`PROBE at-frames-done ${JSON.stringify(p.atFramesDone)}`);
+  L(
+    `PROBE checkpoints ${p.checkpoints.map((c) => `${c.fed}:${c.above}/${c.cells}@${((c.t - p.framesDone) / 1000).toFixed(0)}s`).join(' ')}`,
+  );
+  const ch = await page.evaluate(() => window.__cala.endSettleChange?.() ?? null).catch(() => null);
+  L(`PROBE end-settle-change ${JSON.stringify(ch)}`);
+  const plain = (l) =>
+    l && {
+      version: l.version,
+      frame: l.frame,
+      width: l.width,
+      height: l.height,
+      ids: Array.from(l.ids),
+      starts: Array.from(l.starts),
+      pixels: Array.from(l.pixels),
+      values: Array.from(l.values, (v) => Math.round(v * 1e5) / 1e5),
+    };
+  const libs = await page
+    .evaluate(
+      `(() => { const plain = ${plain.toString()}; const c = window.__cala; return { live: plain(c.discoverEnd?.()?.library), final: plain(c.cells.library()), noise: Array.from(c.cells.status()?.footprintNoise ?? []) }; })()`,
+    )
+    .catch((e) => (L(`PROBE libraries failed: ${e.message}`), null));
+  if (libs?.live) writeFileSync(join(out, `${tag}-live.json`), JSON.stringify(libs.live));
+  if (libs?.final)
+    writeFileSync(
+      join(out, `${tag}-final.json`),
+      JSON.stringify({ ...libs.final, noise: libs.noise }),
+    );
+  writeFileSync(join(out, `${tag}-probe.json`), JSON.stringify({ probe: p, endSettleChange: ch }));
+}
+
 let refineClicked = false;
 let extractClicked = false;
 let discoverDoneAt = null;
@@ -365,6 +518,7 @@ while (!stop) {
     if (settled && discoverDoneAt === null) {
       discoverDoneAt = r.t;
       L(`DISCOVER_SETTLED ${r.t.toFixed(1)}s ${JSON.stringify(r.st.lb)}`);
+      await probeReport();
       if (refineAfter) {
         refineClicked = true;
         await page.click('[data-testid=refine-run]');

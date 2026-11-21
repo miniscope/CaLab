@@ -76,6 +76,8 @@ workerScope.onmessage = (e) => {
     toFast,
     toMain: { postMessage: (m, t) => workerScope.postMessage(m, t) },
     visits,
+    // Giving way inside an answer of the settle during Discover: a macrotask, unclamped.
+    defer: (fn) => void pause().then(fn),
   });
   const r = runner;
   connectLookback();

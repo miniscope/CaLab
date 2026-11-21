@@ -35,6 +35,9 @@ export interface CellsSettings {
    * worker. Pipelined workers only.
    */
   lookback?: boolean;
+  /** With `lookback`: settle during Discover (`SlowInit.csettle`, `SlowInit.csettleYield`). */
+  csettle?: number;
+  csettleYield?: number;
   /** Batches in flight to the slow worker (default `FAST_LOOP_DEFAULTS.poolSize`). */
   forwardBuffers?: number;
   /** Feed the compress worker (default off; needs its port). */

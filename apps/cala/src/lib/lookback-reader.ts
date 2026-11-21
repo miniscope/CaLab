@@ -156,9 +156,15 @@ export class LookbackReader {
 
   /**
    * Re-read, preprocess and solve the requested frames, in order, into
-   * `out` (at least `frames.length * width * height` values).
+   * `out` (at least `frames.length * width * height` values). A frame with
+   * `skip[i]` set is preprocessed (its block's preprocessor runs on) but not
+   * solved: its traces stay 0 and must not be used.
    */
-  async serve(frames: LookbackFrame[], out: Float32Array): Promise<LookbackSolved> {
+  async serve(
+    frames: LookbackFrame[],
+    out: Float32Array,
+    skip?: ArrayLike<number>,
+  ): Promise<LookbackSolved> {
     if (out.length < frames.length * this.px)
       throw new RangeError(`look-back: a buffer of ${out.length} for ${frames.length} frames`);
     this.applyLibrary();
@@ -169,7 +175,7 @@ export class LookbackReader {
       const y = out.subarray(i * this.px, (i + 1) * this.px);
       await this.preprocess(frame, block, y);
       if (this.disposed) throw new Error('look-back stopped');
-      if (!this.engine || this.cells === 0) continue;
+      if (!this.engine || this.cells === 0 || skip?.[i]) continue;
       traces.set(this.engine.processFrames(y, 1), i * this.cells);
       const bg = this.engine.lastBackground();
       background ??= new Float32Array(frames.length * bg.length);

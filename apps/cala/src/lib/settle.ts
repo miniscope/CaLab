@@ -189,6 +189,29 @@ export function movedAgainstNoise(
   let cells = 0;
   let above1 = 0;
   let aboveK = 0;
+  for (const c of footprintChanges(before, after, noise)) {
+    const r = c.change / c.noise;
+    cells++;
+    if (r > 1) above1++;
+    if (r > k) aboveK++;
+  }
+  return { cells, above1, aboveK, shareK: cells > 0 ? aboveK / cells : null };
+}
+
+/** One cell's relative footprint change between two libraries, and its split-half noise. */
+export interface FootprintChange {
+  id: number;
+  change: number;
+  noise: number;
+}
+
+/** The cells `movedAgainstNoise` counts, one by one (present in both, with a noise estimate). */
+export function footprintChanges(
+  before: Map<number, UnitFootprint>,
+  after: Map<number, UnitFootprint>,
+  noise: Map<number, number>,
+): FootprintChange[] {
+  const out: FootprintChange[] = [];
   for (const [id, b] of after) {
     const a = before.get(id);
     const n = noise.get(id);
@@ -206,10 +229,110 @@ export function movedAgainstNoise(
       if (!b.has(p)) d2 += u * u;
     }
     if (!(a2 > 0 && b2 > 0)) continue;
-    const r = Math.sqrt(d2 / a2) / n;
-    cells++;
-    if (r > 1) above1++;
-    if (r > k) aboveK++;
+    out.push({ id, change: Math.sqrt(d2 / a2), noise: n });
   }
-  return { cells, above1, aboveK, shareK: cells > 0 ? aboveK / cells : null };
+  return out;
+}
+
+/** How far a library moved between two points (the end settle of a look-back run, as a whole). */
+export interface SettleChange extends MovedAgainstNoise {
+  /** Cells in the earlier and in the later library. */
+  cellsBefore: number;
+  cellsAfter: number;
+  /** Median relative footprint change, and median change over the cell's own noise (null with no cells). */
+  medianChange: number | null;
+  medianRatio: number | null;
+}
+
+/** `movedAgainstNoise` with the medians (measurement scripts: the `?debug` hook). */
+export function settleChange(
+  before: Map<number, UnitFootprint>,
+  after: Map<number, UnitFootprint>,
+  noise: Map<number, number>,
+  k: number = SETTLE.movingK,
+): SettleChange {
+  const ch = footprintChanges(before, after, noise);
+  const median = (v: number[]) => {
+    if (v.length === 0) return null;
+    const s = [...v].sort((x, y) => x - y);
+    const m = s.length >> 1;
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  };
+  return {
+    ...movedAgainstNoise(before, after, noise, k),
+    cellsBefore: before.size,
+    cellsAfter: after.size,
+    medianChange: median(ch.map((c) => c.change)),
+    medianRatio: median(ch.map((c) => c.change / c.noise)),
+  };
+}
+
+// ---- settle during Discover (experimental, frames only) ----
+
+/**
+ * Settle during Discover (experimental, default off; qc_eval's arm `CS2F`,
+ * `--csettle 0.667 --csettle-mode frames`; tools/cala-eval/results/
+ * 2026-11-20-concurrent-settle2.md and 2026-11-21-concurrent-settle3.md):
+ * while a look-back Discover runs, the look-back worker also re-reads saved
+ * frames spread over the history seen so far; each is solved with the
+ * current library and updates the footprint statistics, and Discover's
+ * ordinary visits do the refining. No settle visits, no quiet rule; held-out
+ * frames never reach fitting. The end settle still runs after the last frame.
+ */
+export const CSETTLE = {
+  /** The default ceiling: re-read frames per live frame the slow loop observes. */
+  rate: 2,
+  /** The ceilings a user can pick (lower = less work beside the live frames). */
+  rates: [2, 1, 0.5],
+  /** Frames per request, read in a row (one chunk of the engine's `SettleSched`). */
+  chunk: 16,
+  /** At most this many chunks owed: what the look-back worker cannot deliver is not saved up. */
+  bankChunks: 4,
+} as const;
+
+/** A valid ceiling from a setting or URL value: one of `CSETTLE.rates`, else the default. */
+export function csettleRate(v: unknown): number {
+  const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v;
+  return (CSETTLE.rates as readonly unknown[]).includes(n) ? (n as number) : CSETTLE.rate;
+}
+
+/**
+ * The dose of the settle during Discover (qc_eval's `Timed::cs_owed`): every
+ * live frame the slow loop observes earns `rate` re-read frames; a request
+ * of one chunk goes out when a whole chunk is owed (and no other is out);
+ * at most `CSETTLE.bankChunks` chunks are saved up. So `rate` is a ceiling:
+ * a look-back worker that cannot keep up delivers less and the rest lapses.
+ */
+export class SettleDose {
+  private owedFrames = 0;
+  readonly cap: number;
+
+  constructor(
+    readonly rate: number,
+    readonly chunk: number = CSETTLE.chunk,
+    bankChunks: number = CSETTLE.bankChunks,
+  ) {
+    this.cap = chunk * bankChunks;
+  }
+
+  /** Re-read frames owed now. */
+  get owed(): number {
+    return this.owedFrames;
+  }
+
+  /** `live` frames were observed. */
+  earn(live: number): void {
+    if (!(this.rate > 0) || !(live > 0)) return;
+    this.owedFrames = Math.min(this.cap, this.owedFrames + live * this.rate);
+  }
+
+  /** A whole chunk is owed. */
+  get ready(): boolean {
+    return this.owedFrames >= this.chunk;
+  }
+
+  /** `frames` were asked for. */
+  spend(frames: number): void {
+    this.owedFrames = Math.max(0, this.owedFrames - frames);
+  }
 }

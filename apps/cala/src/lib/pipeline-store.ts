@@ -39,6 +39,7 @@ import { BoundaryMonitor, severityLabel, type BoundaryFlag } from './boundary-fl
 import type { SessionStart } from './session-boundary.ts';
 import type { RunHistory } from './run-history.ts';
 import type { LookbackFeed } from './lookback-client.ts';
+import { CSETTLE, csettleRate } from './settle.ts';
 
 /** Step requests kept outstanding: one running, one queued so the worker never idles. */
 export const MAX_IN_FLIGHT = 2;
@@ -163,6 +164,15 @@ export function createPipelineStore(
   /** Look-back on for the next Discover start (the setting), and on in the current run. */
   const [lookback, setLookback] = createSignal(false);
   const [lookbackRun, setLookbackRun] = createSignal(false);
+  /**
+   * Settle during Discover (experimental, under look-back; the setting for
+   * the next Discover start): on or off, its ceiling in re-read frames per
+   * live frame, and the frames per piece of an answer (0: whole answers; a
+   * URL-only knob).
+   */
+  const [csettle, setCsettle] = createSignal(false);
+  const [csettleCeiling, setCsettleCeiling] = createSignal<number>(CSETTLE.rate);
+  const [csettleYield, setCsettleYield] = createSignal(0);
   /** Session of the current run with look-back (0: none). */
   let lookbackSession = 0;
   /** The live source's counters after the newest batch (null on a file source). */
@@ -538,6 +548,12 @@ export function createPipelineStore(
         {
           session,
           ...(lb ? { lookback: true } : {}),
+          ...(lb && csettle()
+            ? {
+                csettle: csettleRate(csettleCeiling()),
+                ...(csettleYield() > 0 ? { csettleYield: csettleYield() } : {}),
+              }
+            : {}),
           discover: discover(),
           qc,
           residual: residual(),
@@ -659,6 +675,14 @@ export function createPipelineStore(
     lookbackBlocked: () =>
       lookbackFeed ? lookbackFeed.blocked() : 'Look-back is not available here.',
     lookbackRun,
+    /** Settle during Discover (experimental; only with look-back): the settings for the next Discover start. */
+    csettle,
+    setCsettle,
+    csettleCeiling,
+    setCsettleCeiling: (rate: number) => setCsettleCeiling(csettleRate(rate)),
+    csettleYield,
+    setCsettleYield: (frames: number) =>
+      setCsettleYield(Number.isFinite(frames) && frames > 0 ? Math.floor(frames) : 0),
     setResidual,
     plan,
     setup,

@@ -21,7 +21,18 @@ export type SlowToLookback =
    * id_1..id_n, ...]` (transferred). Answered by one `frames` (or `error`)
    * with the same `id`. At most one is outstanding.
    */
-  | { type: 'request'; session: number; id: number; items: Float64Array }
+  | {
+      type: 'request';
+      session: number;
+      id: number;
+      items: Float64Array;
+      /**
+       * Per frame, 1: preprocess it (the block's preprocessor runs on) but do
+       * not solve it (a held-out frame of the settle during Discover, which
+       * never reaches fitting). Absent: solve every frame.
+       */
+      skip?: Uint8Array;
+    }
   /** A library the slow loop published (`TraceLibrary.toBytes()`, a copy; transferred). */
   | { type: 'library'; session: number; version: number; bytes: Uint8Array }
   /** The `frames` buffer of a reply, back for reuse (transferred). */
@@ -105,8 +116,35 @@ export interface LookbackStatus {
   capped: boolean;
   /** The settle pass (absent until it starts). */
   settle?: SettleStatus;
+  /** Settle during Discover (absent: off for this run). */
+  csettle?: CsettleStatus;
   /** Look-back stopped by an error (Discover goes on without it). */
   error?: string;
+}
+
+/**
+ * Settle during Discover (experimental, frames only; `SlowRunner`): saved
+ * frames re-read while Discover runs, spread over the history seen so far.
+ */
+export interface CsettleStatus {
+  /** The ceiling: re-read frames per live frame the slow loop observes. */
+  rate: number;
+  /** Frames asked of the look-back worker. */
+  requested: number;
+  /** Frames that came back and went into the footprint statistics. */
+  fit: number;
+  /** Held-out frames (re-read, never solved or fitted). */
+  heldOut: number;
+  /** Frames dropped (their library version was gone, or none was published yet). */
+  dropped: number;
+  /** Live frames the slow loop observed in Discover (what the ceiling is counted against). */
+  live: number;
+  /** Answers handled, and the slow worker's time on them, ms (in all, and the longest stretch without giving way). */
+  answers: number;
+  answerMs: number;
+  maxBlockMs: number;
+  /** Frames per piece when the slow worker gives way inside an answer (0: whole answers). */
+  yieldFrames: number;
 }
 
 /** The settle pass of a look-back run (`lib/settle.ts`). */

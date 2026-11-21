@@ -101,6 +101,28 @@ describe('LookbackReader', () => {
     src.dispose();
   });
 
+  it('a frame marked to skip is still preprocessed, so its block runs on', async () => {
+    const live = await liveRun();
+    const batches = live.steps.filter((s) => s.kind === 'batch');
+    const src = await openAvi();
+    const reader = new LookbackReader(src);
+    for (const s of batches)
+      reader.pushRows(s.start, s.dy, s.dx, s.flags, s.flickerOffset, s.flickerGain);
+    reader.setBackState(live.before.get(24)!);
+    const px = W * H;
+    const y = new Float32Array(3 * px);
+    // (The settle during Discover marks held-out frames: not solved, never fitted.)
+    const solved = await reader.serve(
+      [24, 25, 26].map((frame) => ({ frame, block: -1_000_001 })),
+      y,
+      Uint8Array.of(0, 1, 0),
+    );
+    expect(solved.version).toBe(0);
+    expect(Array.from(y)).toEqual(Array.from(live.out.subarray(24 * px, 27 * px)));
+    reader.dispose();
+    src.dispose();
+  });
+
   it('waits for the rows of a frame Discover has not recorded yet', async () => {
     const live = await liveRun();
     const batches = live.steps.filter((s) => s.kind === 'batch');
