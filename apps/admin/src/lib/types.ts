@@ -60,7 +60,7 @@ export interface CadeconSubmissionRow {
 }
 
 export type AdminView =
-  'overview' | 'cala' | 'users' | 'geography' | 'usage' | 'submissions' | 'export';
+  'overview' | 'cala' | 'users' | 'geography' | 'usage' | 'submissions' | 'donations' | 'export';
 
 export const ADMIN_VIEWS: readonly AdminView[] = [
   'overview',
@@ -69,5 +69,6 @@ export const ADMIN_VIEWS: readonly AdminView[] = [
   'geography',
   'usage',
   'submissions',
+  'donations',
   'export',
 ];

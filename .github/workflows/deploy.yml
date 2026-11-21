@@ -325,6 +325,10 @@ jobs:
         env:
           VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          # Data donation's own Supabase project. Both values are public (they ship
+          # in the site's JavaScript); repo secrets of the same name override them.
+          VITE_DONATION_SUPABASE_URL: ${{ secrets.DONATION_SUPABASE_URL || 'https://wdvqmppmevzqphcwobix.supabase.co' }}
+          VITE_DONATION_SUPABASE_ANON_KEY: ${{ secrets.DONATION_SUPABASE_ANON_KEY || 'sb_publishable_Szs0UPItDRWn1XD_g1HSpA_17rCZUx-' }}
           VITE_APP_VERSION: ${{ github.ref_name }}
 
       - uses: actions/configure-pages@v6

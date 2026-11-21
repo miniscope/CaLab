@@ -5,6 +5,8 @@ import './styles/auth-menu.css';
 export interface AuthCallbackProps {
   user: Accessor<{ email?: string } | null>;
   loading: Accessor<boolean>;
+  /** Supabase's reason when the link did not sign in (shown under the message). */
+  error?: Accessor<string | null>;
 }
 
 /**
@@ -29,6 +31,9 @@ export function AuthCallback(props: AuthCallbackProps) {
                 <p class="auth-callback__text">
                   The link may have expired. Please return to CaLab and request a new sign-in link.
                 </p>
+                <Show when={props.error?.()}>
+                  {(e) => <p class="auth-callback__text">Reason: {e()}</p>}
+                </Show>
               </>
             }
           >

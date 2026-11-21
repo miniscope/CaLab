@@ -39,3 +39,24 @@ export {
 export type { BridgeMetadata, BridgeConfig, BridgeProgress } from './bridge.ts';
 export { ZipArchive } from './zip-reader.ts';
 export type { ZipEntry, ZipSource } from './zip-reader.ts';
+export {
+  CALARAW_CHUNK_BYTES,
+  CALARAW_HEADER_BYTES,
+  CALARAW_MAGIC,
+  CALARAW_MAX_EDGE,
+  CalarawError,
+  calarawChunkName,
+  calarawFramesPerChunk,
+  decodeCalarawChunk,
+  encodeCalaraw,
+  encodeCalarawChunk,
+  parseCalarawHeader,
+  writeCalarawHeader,
+} from './calaraw.ts';
+export type {
+  CalarawChunk,
+  CalarawFrame,
+  CalarawHeader,
+  CalarawMeta,
+  CalarawPredictor,
+} from './calaraw.ts';

@@ -8,6 +8,7 @@
 --     cadecon_submissions_public               (SELECT only; writes denied)
 --   - analytics_sessions, analytics_events     (INSERT, UPDATE, SELECT)
 --   - field_options                            (INSERT as anon — denied)
+--   - cala_donations                           (SELECT, INSERT, UPDATE, DELETE)
 --
 -- Failures RAISE EXCEPTION; a clean run ends with the final NOTICE. The
 -- scripts/test-rls.sh runner grep's stderr for EXCEPTION to set exit code.
@@ -965,5 +966,159 @@ BEGIN
   END IF;
 END
 $$;
+
+-- ── cala_donations (020) ─────────────────────────────────────────────────
+-- Rows are written only by the `donation` edge function (service_role). API
+-- roles may read their own rows (admin: all), never INSERT/DELETE, and only an
+-- admin may UPDATE in_benchmark / benchmark_note.
+
+BEGIN;
+SET LOCAL ROLE service_role;
+INSERT INTO cala_donations (
+  id, user_id, status, indicator, species, brain_region, scope, fps, width, height,
+  n_frames, bytes_per_pixel, cala_version, license, rights_attested,
+  protocol_attested, contact_ok, declared_bytes, n_chunks, files
+) VALUES
+  ('d0000000-0000-0000-0000-00000000000a', '11111111-1111-1111-1111-111111111111',
+   'uploaded', 'GCaMP6f', 'mouse', 'CA1', 'UCLA v4', 30, 600, 600, 1000, 1, 'test',
+   'cc-by-4.0', true, true, true, 1000, 1,
+   '[{"name":"frames-0000.calaraw.gz","bytes":1000}]'),
+  ('d0000000-0000-0000-0000-00000000000b', '22222222-2222-2222-2222-222222222222',
+   'uploading', 'GCaMP6f', 'mouse', 'CA1', 'UCLA v4', 30, 600, 600, 1000, 1, 'test',
+   'cc-by-4.0', true, true, false, 1000, 1,
+   '[{"name":"frames-0000.calaraw.gz","bytes":1000}]');
+COMMIT;
+
+-- SELECT: owner sees only their own row.
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM cala_donations$sql$, 1,
+  'cala_donations alice sees exactly one row');
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM cala_donations WHERE id = 'd0000000-0000-0000-0000-00000000000a'$sql$, 1,
+  'cala_donations alice sees her own donation');
+ROLLBACK;
+
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}';
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM cala_donations WHERE id = 'd0000000-0000-0000-0000-00000000000a'$sql$, 0,
+  'cala_donations bob cannot see alice''s donation');
+ROLLBACK;
+
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"33333333-3333-3333-3333-333333333333","role":"authenticated","app_metadata":{"role":"admin"}}';
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM cala_donations$sql$, 2,
+  'cala_donations admin sees every donation');
+ROLLBACK;
+
+BEGIN;
+SET LOCAL ROLE anon;
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM cala_donations$sql$, 0,
+  'cala_donations anon sees nothing');
+SELECT assert_denied(
+  $sql$INSERT INTO cala_donations (
+    user_id, indicator, species, brain_region, scope, fps, width, height, n_frames,
+    bytes_per_pixel, cala_version, license, rights_attested, protocol_attested,
+    contact_ok, declared_bytes, n_chunks, files
+  ) VALUES ('11111111-1111-1111-1111-111111111111', 'x', 'x', 'x', 'x', 30, 10, 10, 1,
+    1, 'test', 'cc-by-4.0', true, true, true, 1, 1, '[]')$sql$,
+  'cala_donations anon INSERT denied');
+ROLLBACK;
+
+-- INSERT / DELETE: denied even for the owner; status not client-writable.
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+SELECT assert_denied(
+  $sql$INSERT INTO cala_donations (
+    user_id, indicator, species, brain_region, scope, fps, width, height, n_frames,
+    bytes_per_pixel, cala_version, license, rights_attested, protocol_attested,
+    contact_ok, declared_bytes, n_chunks, files
+  ) VALUES ('11111111-1111-1111-1111-111111111111', 'x', 'x', 'x', 'x', 30, 10, 10, 1,
+    1, 'test', 'cc-by-4.0', true, true, true, 1, 1,
+    '[{"name":"frames-0000.calaraw.gz","bytes":1}]')$sql$,
+  'cala_donations owner INSERT denied');
+SELECT assert_denied(
+  $sql$DELETE FROM cala_donations WHERE id = 'd0000000-0000-0000-0000-00000000000a'$sql$,
+  'cala_donations owner DELETE denied');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET status = 'approved' WHERE id = 'd0000000-0000-0000-0000-00000000000a'$sql$,
+  'cala_donations owner UPDATE of status denied');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET declared_bytes = 1 WHERE id = 'd0000000-0000-0000-0000-00000000000a'$sql$,
+  'cala_donations owner UPDATE of declared_bytes denied');
+SELECT assert_denied(
+  $sql$SELECT public.cala_donations_open_bytes()$sql$,
+  'cala_donations_open_bytes() not callable by authenticated');
+ROLLBACK;
+
+-- Non-admin UPDATE of the benchmark flag: column grant exists, but the row
+-- policy filters every row, so nothing lands (not even on the owner's row).
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+UPDATE cala_donations SET in_benchmark = true WHERE id = 'd0000000-0000-0000-0000-00000000000a';
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM cala_donations
+      WHERE id = 'd0000000-0000-0000-0000-00000000000a' AND in_benchmark$sql$, 0,
+  'cala_donations owner (non-admin) UPDATE of in_benchmark must not land');
+ROLLBACK;
+
+-- Admin: may set in_benchmark / benchmark_note, still not status.
+BEGIN;
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub":"33333333-3333-3333-3333-333333333333","role":"authenticated","app_metadata":{"role":"admin"}}';
+SELECT assert_allowed(
+  $sql$UPDATE cala_donations SET in_benchmark = true, benchmark_note = 'pilot set'
+      WHERE id = 'd0000000-0000-0000-0000-00000000000a'$sql$,
+  'cala_donations admin UPDATE of in_benchmark');
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM cala_donations
+      WHERE id = 'd0000000-0000-0000-0000-00000000000a' AND in_benchmark
+        AND benchmark_note = 'pilot set'$sql$, 1,
+  'cala_donations admin UPDATE of in_benchmark lands');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET status = 'ingested' WHERE id = 'd0000000-0000-0000-0000-00000000000a'$sql$,
+  'cala_donations admin UPDATE of status denied');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET benchmark_note = repeat('x', 501) WHERE id = 'd0000000-0000-0000-0000-00000000000a'$sql$,
+  'cala_donations benchmark_note > 500 chars denied', '23514');
+ROLLBACK;
+
+-- CHECKs (as the service role, the only writer).
+BEGIN;
+SET LOCAL ROLE service_role;
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET fps = 'NaN' WHERE id = 'd0000000-0000-0000-0000-00000000000a'$sql$,
+  'cala_donations fps NaN denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET depth_um = 'Infinity' WHERE id = 'd0000000-0000-0000-0000-00000000000a'$sql$,
+  'cala_donations depth_um Infinity denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET status = 'pending' WHERE id = 'd0000000-0000-0000-0000-00000000000a'$sql$,
+  'cala_donations unknown status denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET rights_attested = false WHERE id = 'd0000000-0000-0000-0000-00000000000a'$sql$,
+  'cala_donations rights_attested false denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET bytes_per_pixel = 3 WHERE id = 'd0000000-0000-0000-0000-00000000000a'$sql$,
+  'cala_donations bytes_per_pixel 3 denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET files = '{}' WHERE id = 'd0000000-0000-0000-0000-00000000000a'$sql$,
+  'cala_donations files non-array denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET notes = repeat('x', 1001) WHERE id = 'd0000000-0000-0000-0000-00000000000a'$sql$,
+  'cala_donations notes > 1000 chars denied', '23514');
+SELECT assert_row_count(
+  $sql$SELECT public.cala_donations_open_bytes()::int$sql$, 2000,
+  'cala_donations_open_bytes sums uploading + uploaded');
+ROLLBACK;
 
 DO $$ BEGIN RAISE NOTICE 'ALL RLS ASSERTIONS PASSED'; END $$;
