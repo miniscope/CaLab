@@ -182,7 +182,7 @@ What it says:
 3. **The slow worker's time on the settle answers (the smaller share).** One answer is 16 frames in one message,
    61 ms on the workshop recording, and a finished visit waits for it: 6.5 % of the workers' time on the workshop
    recording, 2.7 % on `10_43_21`. `CS2F` against `CS2F-free`: 6.5 points of the 15.5.
-4. **Split on the workshop recording: about 58 % dearer visits, 42 % slow-worker time.** Neither is two thirds, so
+4. **Split on the workshop recording, seed 1: about 58 % dearer visits, 42 % slow-worker time** (three seeds in phase B: about 70 / 30). Neither is two thirds, so
    by the rule above it is a split. On `10_43_21` there is no knob arm; the slow worker is less loaded there (8.5 % of its time on settle answers against 23 %, 2.7 % of the workers' time lost behind them against 6.5 %), so its share is smaller.
 5. **Not the cause:**
    - tiles coming due less often: due events equal jobs one for one and fall because a tile that waits longer
@@ -268,4 +268,92 @@ Lines F1-F4 as written above, F1 on visit jobs in the stream against round 2's `
 
 ## Results, phase B
 
-(below, after the runs)
+12 runs (`real/phaseB_summary.md`, `real/ws_diag_B.md`; `concsettle3_summary.py`), every one finished, peak memory
+2.0 GB. `V30` and `CS2F` are round 2's runs. Visit jobs and cells are against `V30` of the same seed; the gap is round
+2's (live seed-to-seed footprint r of `V30`, and of `V30` after its end pass).
+
+| recording  | arm (seeds)     | visit jobs in the stream           | cells at the end of the stream | dropped frames | re-read frames per live frame | longest wait of a batch | live seed-to-seed r (per pair)    | share of the gap |
+| ---------- | --------------- | ---------------------------------- | ------------------------------ | -------------- | ----------------------------- | ----------------------- | --------------------------------- | ---------------- |
+| workshop   | `V30` (3)       | 39,567 / 38,360 / 39,913           | 952 / 956 / 954                | 0              | 0                             | 1.9 ms                  | 0.9474; settled 0.9733            | 0                |
+|            | `CS2F` (3)      | -14.7 % (-15.5 / -14.0 / -14.7)    | -3.4 % (923 / 916 / 925)       | 0              | 2.00                          | 53.0 ms                 | 0.9685 (0.9682 / 0.9705 / 0.9668) | 82 %             |
+|            | `CS2F-Y1` (3)   | **-10.5 %** (-12.4 / -8.2 / -11.1) | **-3.6 %** (918 / 928 / 912)   | 0              | 1.91                          | 2.0 ms                  | 0.9652 (0.9663 / 0.9636 / 0.9658) | **69 %**         |
+|            | `CS2F-free` (3) | -10.2 % (-9.0 / -10.4 / -11.2)     | -5.1 % (911 / 898 / 906)       | 0              | 2.00                          | 2.7 ms                  | 0.9652 (0.9649 / 0.9661 / 0.9648) | 69 %             |
+|            | `V30-W3` (3)    | -20.0 % (-18.8 / -18.8 / -22.3)    | +0.1 % (937 / 971 / 956)       | 0              | 0                             | 1.7 ms                  | 0.9454 (0.9434 / 0.9448 / 0.9481) | -8 %             |
+| `10_43_21` | `V30` (2)       | 72,999 / 71,215                    | 385 / 382                      | 0              | 0                             | 1.9 ms                  | 0.9791; settled 0.9891            | 0                |
+|            | `CS2F` (2)      | -11.9 % (-15.3 / -8.4)             | +3.0 % (391 / 399)             | 0              | 2.00                          | 1.9 ms                  | 0.9861                            | 69 %             |
+|            | `CS2F-Y1` (2)   | **-9.6 %** (-9.0 / -10.2)          | +3.4 % (401 / 392)             | 0              | 2.00                          | 2.1 ms                  | 0.9852                            | **61 %**         |
+| `14_57_02` | `V30` (2)       | 74,189 / 73,578                    | 318 / 335                      | 0              | 0                             | 2.0 ms                  | 0.9699; settled 0.9863            | 0                |
+|            | `CS2F` (2)      | -6.4 % (-5.8 / -7.0)               | -1.8 % (315 / 326)             | 0              | 2.00                          | 4.7 ms                  | 0.9827                            | 78 %             |
+|            | `CS2F-Y1` (2)   | **-6.1 %** (-6.5 / -5.8)           | -0.5 % (326 / 323)             | 0              | 2.00                          | 4.9 ms                  | 0.9794                            | **57 %**         |
+
+Paired with `V30` of the same seed over the recording-seeds an arm has (mean [95 % CI], paired t; the seeds of one
+recording are not independent of each other, so the pooled CIs are too narrow):
+
+- `CS2F` (n = 7): visit jobs -11.5 % [-15.5, -7.6]; cells -1.1 % [-4.0, +1.7]
+- `CS2F-Y1` (n = 7): visit jobs -9.0 % [-11.2, -6.8]; cells -0.7 % [-4.1, +2.6]
+- `CS2F-free` (workshop, n = 3): visit jobs -10.2 % [-12.9, -7.5]; cells -5.1 % [-7.3, -2.9]
+- `V30-W3` (workshop, n = 3): visit jobs -20.0 % [-24.9, -15.0]; cells +0.1 % [-3.9, +4.0]
+
+(The share of `CS2F` on the workshop recording reads 82 % here and 81 % in round 2: rounding of the same libraries.)
+
+### The lines, for `CS2F-Y1`
+
+| line                                               | result                                                                       | verdict                  |
+| -------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------ |
+| F1 visit jobs within 5 % of `V30`                  | -10.5 % (workshop), -9.6 % (`10_43_21`), -6.1 % (`14_57_02`)                 | **missed** on all three  |
+| F2 workshop cells within 2 %                       | -3.6 % (918 / 928 / 912 against 952 / 956 / 954)                             | **missed**               |
+| F3 at least 60 % of the gap                        | 69 % (workshop), 61 % (`10_43_21`), 57 % (`14_57_02`)                        | **missed** on `14_57_02` |
+| F4 no dropped frame                                | 0 in 7 runs; the longest wait of a batch falls from 53 ms to 2 ms (workshop) | met                      |
+| T0 flags off = main; `--csettle-yield 16` = `CS2F` | identical apart from wall-time fields                                        | pass                     |
+
+**No simple fix was found.** The yield arm misses three of the four lines. F1 and F2 were predicted misses. F3
+was not: taking the answers in pieces closes less of the gap than taking them whole, on every recording.
+
+### What phase B adds
+
+1. **The ceiling holds on three seeds: with the settle answers at no cost to the slow worker the workshop recording
+   is still 10.2 % short of visits** [-12.9, -7.5]. So of `CS2F`'s 14.7 %, about 70 % is that each visit does more
+   and about 30 % is the slow worker's time (per seed 58, 74 and 76 %). On three seeds the first share is just
+   over the two thirds of rule A1: **the cause is that each visit does more; the slow worker's time is the smaller
+   part.** `CS2F-Y1` recovers the slow worker's part as predicted (-10.5 % against the ceiling's -10.2 %; worker time
+   lost behind a settle answer 6.5 % to 1.0 %).
+2. **The workshop cell count does not follow the visit count.** The baseline with three visit workers makes 20 %
+   fewer visits and ends with as many cells (937 / 971 / 956 against 952 / 956 / 954, +0.1 % [-3.9, +4.0]), the
+   same footprint sizes (median area 405-418 px against 395-418) and nearly the same seed agreement (0.9454 against
+   0.9474 live, 0.9739 against 0.9733 settled). `CS2F-free` has more visits than `CS2F` and fewer cells (-5.1 %
+   against -3.4 %). So the 3-5 % fewer cells of the settle arms come with the re-read frames in the statistics
+   (phase A2: fewer marginal adds, larger footprints), not with the missing visits. **The two effects of round 2
+   are separate, and the visits line (5 %) did not measure harm**: a fifth fewer visits by itself changed neither
+   the cells nor the agreement.
+3. **Waiting itself makes a visit dearer.** `V30-W3` has no re-read frames, and its jobs still cost 13 % more
+   (19.2 slots at hand-out against 15.9; merge tests +21 %, adds +14 %, refinement +12 %). Part of the "+15 % per
+   visit" of `CS2F` is this second-order effect of its own delay; refinement (+43 %, with 56 % more refinements
+   accepted) is the part that belongs to the re-read frames.
+4. **Taking the answers in pieces costs agreement, and it is not explained.** Live seed-to-seed r of `CS2F-Y1`
+   against `CS2F`: lower in all five seed pairs (-0.0019, -0.0069, -0.0010 on the workshop recording, -0.0009 and
+   -0.0033 on Samara; mean -0.0028). `CS2F-free` shows the same on the workshop recording (0.9652) with the full
+   2.00 frames per live frame, so it is not the dose (which did fall to 1.91 for `CS2F-Y1` on the workshop
+   recording: the next request goes out only after the last piece). Both arms differ from `CS2F` in that visits are
+   handed out without waiting for a whole answer. After a full end pass the three arms agree (0.9783, 0.9780,
+   0.9775). With one seed pair per Samara recording and workshop pairs that share seeds this is weak evidence
+   (round 2 saw 34-78 % on one pair for near-identical arms); it is still five of five.
+
+### Verdicts
+
+| question                        | answer                                                                                                                                                                          |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| why do the ordinary visits fall | the visit workers are full in the baseline; with re-read frames each visit refines more (about 70 %), and finished visits wait behind 16-frame settle answers (about 30 %)      |
+| is it an artefact               | no; round 2's count also held the end-pass visits, and on stream jobs the shortfall is 6-15 %                                                                                   |
+| which workshop cells go missing | no fixed set: the marginal pool is smaller (170 one-sided against 137); a repeatable net of about 9 per run, late, weak on held-out frames, 18 % matched by Minian against 65 % |
+| why                             | fewer marginal adds where footprints are larger (likely, not tested by an arm); not the visit count (`V30-W3`)                                                                  |
+| a fix                           | none: `CS2F-Y1` misses F1, F2 and F3 (on `14_57_02`), meets F4; no slow-worker scheduling can pass F1 (ceiling -10.2 %)                                                         |
+| the lines as written            | F1 and F2 are missed by every settle arm; phase B says they do not measure harm (point 2)                                                                                       |
+
+### Not done
+
+- Why answers in pieces close less of the gap (point 4). A third Samara seed would also say whether it is real.
+- An arm that tests "larger footprints leave fewer marginal adds" directly.
+- Minian agreement and footprint movement for the phase-B arms (round 2's `CS2F` values stand for the design).
+- 20 and 60 fps, fewer than four visit workers with the settle on, the sims (no engine change: the new code is
+  counters, the instrument and three harness flags).
+- Nothing was measured in the browser; `--job-ms`, `--units-per-ms` and `--lb-ms` are round 2's.
