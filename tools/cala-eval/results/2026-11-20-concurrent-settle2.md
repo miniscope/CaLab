@@ -34,18 +34,18 @@ re-read frame earns one frame's budget of settle visits, as in round 1 and in `S
 `qc_eval --offered-fps 30 --visit-workers 4 --pool 4` (`Timed`), against `apps/cala/src/lib/slow-runner.ts`,
 `slow-client.ts` and the workers:
 
-| app                                                                                                                      | model                                                                                                                                                                                  |
-| ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Visit workers: cores minus 5 reserved threads, at most 4 (`visitWorkerCount`): 4 on a machine with 9 or more cores       | `--visit-workers 4`. A machine with fewer cores has fewer; with 5 or fewer the slow worker visits itself (round 1's model).                                                            |
-| The slow worker observes each batch and hands a visit to every idle worker after each batch and each result (`dispatch`) | the same order: one message at a time, hand-out after each; one visit out per worker (`--visit-depth 1`, the app's `busy` flag)                                                        |
+| app                                                                                                                      | model                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Visit workers: cores minus 5 reserved threads, at most 4 (`visitWorkerCount`): 4 on a machine with 9 or more cores       | `--visit-workers 4`. A machine with fewer cores has fewer; with 5 or fewer the slow worker visits itself (round 1's model).                                                           |
+| The slow worker observes each batch and hands a visit to every idle worker after each batch and each result (`dispatch`) | the same order: one message at a time, hand-out after each; one visit out per worker (`--visit-depth 1`, the app's `busy` flag)                                                       |
 | A visit costs the worker its compute; the slow worker pays encode, copy and decode per job                               | work units at `--units-per-ms 2e6` (the harness's WASM calibration) on the worker, plus `--job-ms 1` on each side (the harness default; not re-measured with cluster stores in a job) |
-| Forward buffers: 4 with visit workers (`PARALLEL_FORWARD_BUFFERS`); a batch with no free buffer is dropped               | `--pool 4`; `--batch 8`                                                                                                                                                                |
-| `housekeep` (trimming, publishing) on the slow worker after each message                                                 | the same call, charged its work units                                                                                                                                                  |
-| Look-back worker: one request out at a time, at most 16 frames, re-reads, preprocesses and solves                        | settle requests: one out at a time, 16 frames, answered `--lb-ms` per frame after the worker's earlier work; the answer is one slow-worker message that costs all its fitting frames   |
-| Look-back worker speed: about 200 frames per second during Discover on the workshop recording (look-back review)         | `--lb-ms 5` (round 1 used 10)                                                                                                                                                          |
-| Need-driven look-back (2 frames per live frame at most) shares the look-back worker                                      | applied at the live frame as in round 1 (not delayed), slow worker charged its statistics work; the look-back worker's time is booked for it, ahead of settle requests                 |
-| A look-back answer was solved with the library the look-back worker had when it started                                  | solved with the library at the moment the answer is handled (up to 80 ms newer)                                                                                                        |
-| Settle visits: not in the app                                                                                            | after `take_job` returns nothing for a worker, `take_settle_job`                                                                                                                       |
+| Forward buffers: 4 with visit workers (`PARALLEL_FORWARD_BUFFERS`); a batch with no free buffer is dropped               | `--pool 4`; `--batch 8`                                                                                                                                                               |
+| `housekeep` (trimming, publishing) on the slow worker after each message                                                 | the same call, charged its work units                                                                                                                                                 |
+| Look-back worker: one request out at a time, at most 16 frames, re-reads, preprocesses and solves                        | settle requests: one out at a time, 16 frames, answered `--lb-ms` per frame after the worker's earlier work; the answer is one slow-worker message that costs all its fitting frames  |
+| Look-back worker speed: about 200 frames per second during Discover on the workshop recording (look-back review)         | `--lb-ms 5` (round 1 used 10)                                                                                                                                                         |
+| Need-driven look-back (2 frames per live frame at most) shares the look-back worker                                      | applied at the live frame as in round 1 (not delayed), slow worker charged its statistics work; the look-back worker's time is booked for it, ahead of settle requests                |
+| A look-back answer was solved with the library the look-back worker had when it started                                  | solved with the library at the moment the answer is handled (up to 80 ms newer)                                                                                                       |
+| Settle visits: not in the app                                                                                            | after `take_job` returns nothing for a worker, `take_settle_job`                                                                                                                      |
 
 Not in the model: contention with the fast pipeline's workers and the main thread, garbage collection, message
 latency, memory. The end settle after the stream is not timed (it runs after the last frame in both arms).
@@ -58,13 +58,13 @@ Real recordings, stream at 30 fps. Common flags (`D`): `--motion --batch 8 --bud
 --settle-libs --settle-check 1800`). Workshop: `--frames 18000`, slow seeds 1-3. Samara `10_43_21` and `14_57_02`:
 `--fps 30`, slow seeds 1-2.
 
-| arm        | added to `D`                                                  | what it is                                              |
-| ---------- | ------------------------------------------------------------- | ------------------------------------------------------- |
-| `V30`      | `--csettle 0`                                                 | baseline: the app's Discover with 4 visit workers       |
-| `CS2`      | `--csettle 0.667 --csettle-mode stats`                        | 2 re-read frames per live frame, settle visits as jobs  |
-| `CS2-Q`    | `--csettle 0.667 --csettle-mode stats --csettle-quiet 600`    | the same, only on tiles stable for 600 frames (20 s)    |
-| `CS1`      | `--csettle 0.5 --csettle-mode stats`                          | 1 per live frame; workshop seeds 1-2 only (sensitivity) |
-| `CS2-Q18`  | as `CS2-Q` with `--csettle-quiet 1800`                        | workshop seeds 1-2 only (sensitivity)                   |
+| arm       | added to `D`                                               | what it is                                              |
+| --------- | ---------------------------------------------------------- | ------------------------------------------------------- |
+| `V30`     | `--csettle 0`                                              | baseline: the app's Discover with 4 visit workers       |
+| `CS2`     | `--csettle 0.667 --csettle-mode stats`                     | 2 re-read frames per live frame, settle visits as jobs  |
+| `CS2-Q`   | `--csettle 0.667 --csettle-mode stats --csettle-quiet 600` | the same, only on tiles stable for 600 frames (20 s)    |
+| `CS1`     | `--csettle 0.5 --csettle-mode stats`                       | 1 per live frame; workshop seeds 1-2 only (sensitivity) |
+| `CS2-Q18` | as `CS2-Q` with `--csettle-quiet 1800`                     | workshop seeds 1-2 only (sensitivity)                   |
 
 The two sensitivity arms were cut to the workshop recording after the smoke run showed the cost of a run with four
 visit workers (about an hour for the workshop recording); they are reported and cannot be the chosen arm. This
@@ -130,9 +130,9 @@ Written when 14 of the 25 runs had finished and one recording (Samara `10_43_21`
 been read: there the settle jobs accepted 82 refinements out of 17,316 jobs, and `CS2` made 10 % fewer ordinary
 visits than `V30` (line R4: 5 %).
 
-| arm    | added to `D`                                | what it is                                                                  |
-| ------ | ------------------------------------------- | --------------------------------------------------------------------------- |
-| `CS2F` | `--csettle 0.667 --csettle-mode frames`     | the re-read frames of `CS2` with no settle jobs (the ordinary visits refine) |
+| arm    | added to `D`                            | what it is                                                                   |
+| ------ | --------------------------------------- | ---------------------------------------------------------------------------- |
+| `CS2F` | `--csettle 0.667 --csettle-mode frames` | the re-read frames of `CS2` with no settle jobs (the ordinary visits refine) |
 
 All seven recording-seeds. It is judged by R1-R4 like the others but is not eligible as the pre-registered "chosen
 arm"; if it is the only arm that meets every line, the verdict says so and says that it was added after seeing data.
@@ -158,22 +158,22 @@ after Discover, equals the unbranched run (21 files). Branching is now allowed w
 Seed-to-seed r of the baseline: workshop live 0.9474, settled 0.9733 (gap 0.0259); `10_43_21` 0.9791 and 0.9891
 (gap 0.0100); `14_57_02` 0.9699 and 0.9863 (gap 0.0164).
 
-| recording | arm (runs) | dropped frames | slow worker busy; longest wait of a batch | live seed-to-seed r (per seed pair) | share of gap | footprint change per 2250 frames, second half | split-half noise, live | cells per seed | ordinary visits; adds, against `V30` |
-| --------- | ---------- | -------------- | ----------------------------------------- | ----------------------------------- | ------------ | --------------------------------------------- | ---------------------- | -------------- | ------------------------------------ |
-| workshop  | `V30` (3)  | 0 / 0 / 0      | 33 %; 1.9 ms                              | 0.9458 / 0.9512 / 0.9453            | 0            | 18.9 %                                        | 16.3 %                 | 952 / 956 / 954 | 44,485; 1,163                       |
-|           | `CS2` (3)  | 0 / 0 / 0      | 60 %; 44.8 ms                             | 0.9679 / 0.9651 / 0.9687            | **77 %**     | 16.1 %                                        | 10.2 %                 | 904 / 923 / 906 | -13.7 %; -8.5 %                     |
-|           | `CS2-Q` (3) | 0 / 0 / 0     | 59 %; 48.2 ms                             | 0.9682 / 0.9669 / 0.9664            | 76 %         | 16.8 %                                        | 10.1 %                 | 909 / 917 / 916 | -14.5 %; -9.1 %                     |
-|           | `CS2F` (3) | 0 / 0 / 0      | 59 %; 53.0 ms                             | 0.9682 / 0.9705 / 0.9668            | 81 %         | 15.6 %                                        | 10.3 %                 | 923 / 916 / 925 | -14.3 %; -9.3 %                     |
-|           | `CS1` (2)  | 0 / 0          | 46 %; 34.7 ms                             | 0.9640                              | 64 %         | 19.1 %                                        | 11.8 %                 | 926 / 921       | -7.7 %; -6.2 %                      |
-|           | `CS2-Q18` (2) | 0 / 0       | 60 %; 48.2 ms                             | 0.9685                              | 81 %         | 16.5 %                                        | 10.1 %                 | 905 / 917       | -14.1 %; -8.6 %                     |
-| `10_43_21` | `V30` (2) | 0 / 0          | 25 %; 1.9 ms                              | 0.9791                              | 0            | 11.3 %                                        | 14.3 %                 | 385 / 382       | 89,646; 444                         |
-|           | `CS2` (2)  | 0 / 0          | 36 %; 2.7 ms                              | 0.9869                              | **78 %**     | 10.6 %                                        | 9.6 %                  | 380 / 389       | -9.7 %; -5.7 %                      |
-|           | `CS2-Q` (2) | 0 / 0         | 36 %; 2.3 ms                              | 0.9825                              | 34 %         | 11.6 %                                        | 9.7 %                  | 386 / 394       | -10.3 %; -2.7 %                     |
-|           | `CS2F` (2) | 0 / 0          | 34 %; 1.9 ms                              | 0.9861                              | 70 %         | 11.2 %                                        | 10.0 %                 | 391 / 399       | -13.3 %; -3.3 %                     |
-| `14_57_02` | `V30` (2) | 0 / 0          | 25 %; 2.0 ms                              | 0.9699                              | 0            | 11.1 %                                        | 15.4 %                 | 318 / 335       | 93,101; 348                         |
-|           | `CS2` (2)  | 0 / 0          | 36 %; 5.2 ms                              | 0.9822                              | **75 %**     | 13.6 %                                        | 10.3 %                 | 320 / 326       | -9.8 %; -1.0 %                      |
-|           | `CS2-Q` (2) | 0 / 0         | 36 %; 4.7 ms                              | 0.9820                              | 74 %         | 13.5 %                                        | 10.6 %                 | 327 / 326       | -10.9 %; -1.6 %                     |
-|           | `CS2F` (2) | 0 / 0          | 32 %; 4.7 ms                              | 0.9827                              | 78 %         | 13.7 %                                        | 10.7 %                 | 315 / 326       | -8.3 %; -2.6 %                      |
+| recording  | arm (runs)    | dropped frames | slow worker busy; longest wait of a batch | live seed-to-seed r (per seed pair) | share of gap | footprint change per 2250 frames, second half | split-half noise, live | cells per seed  | ordinary visits; adds, against `V30` |
+| ---------- | ------------- | -------------- | ----------------------------------------- | ----------------------------------- | ------------ | --------------------------------------------- | ---------------------- | --------------- | ------------------------------------ |
+| workshop   | `V30` (3)     | 0 / 0 / 0      | 33 %; 1.9 ms                              | 0.9458 / 0.9512 / 0.9453            | 0            | 18.9 %                                        | 16.3 %                 | 952 / 956 / 954 | 44,485; 1,163                        |
+|            | `CS2` (3)     | 0 / 0 / 0      | 60 %; 44.8 ms                             | 0.9679 / 0.9651 / 0.9687            | **77 %**     | 16.1 %                                        | 10.2 %                 | 904 / 923 / 906 | -13.7 %; -8.5 %                      |
+|            | `CS2-Q` (3)   | 0 / 0 / 0      | 59 %; 48.2 ms                             | 0.9682 / 0.9669 / 0.9664            | 76 %         | 16.8 %                                        | 10.1 %                 | 909 / 917 / 916 | -14.5 %; -9.1 %                      |
+|            | `CS2F` (3)    | 0 / 0 / 0      | 59 %; 53.0 ms                             | 0.9682 / 0.9705 / 0.9668            | 81 %         | 15.6 %                                        | 10.3 %                 | 923 / 916 / 925 | -14.3 %; -9.3 %                      |
+|            | `CS1` (2)     | 0 / 0          | 46 %; 34.7 ms                             | 0.9640                              | 64 %         | 19.1 %                                        | 11.8 %                 | 926 / 921       | -7.7 %; -6.2 %                       |
+|            | `CS2-Q18` (2) | 0 / 0          | 60 %; 48.2 ms                             | 0.9685                              | 81 %         | 16.5 %                                        | 10.1 %                 | 905 / 917       | -14.1 %; -8.6 %                      |
+| `10_43_21` | `V30` (2)     | 0 / 0          | 25 %; 1.9 ms                              | 0.9791                              | 0            | 11.3 %                                        | 14.3 %                 | 385 / 382       | 89,646; 444                          |
+|            | `CS2` (2)     | 0 / 0          | 36 %; 2.7 ms                              | 0.9869                              | **78 %**     | 10.6 %                                        | 9.6 %                  | 380 / 389       | -9.7 %; -5.7 %                       |
+|            | `CS2-Q` (2)   | 0 / 0          | 36 %; 2.3 ms                              | 0.9825                              | 34 %         | 11.6 %                                        | 9.7 %                  | 386 / 394       | -10.3 %; -2.7 %                      |
+|            | `CS2F` (2)    | 0 / 0          | 34 %; 1.9 ms                              | 0.9861                              | 70 %         | 11.2 %                                        | 10.0 %                 | 391 / 399       | -13.3 %; -3.3 %                      |
+| `14_57_02` | `V30` (2)     | 0 / 0          | 25 %; 2.0 ms                              | 0.9699                              | 0            | 11.1 %                                        | 15.4 %                 | 318 / 335       | 93,101; 348                          |
+|            | `CS2` (2)     | 0 / 0          | 36 %; 5.2 ms                              | 0.9822                              | **75 %**     | 13.6 %                                        | 10.3 %                 | 320 / 326       | -9.8 %; -1.0 %                       |
+|            | `CS2-Q` (2)   | 0 / 0          | 36 %; 4.7 ms                              | 0.9820                              | 74 %         | 13.5 %                                        | 10.6 %                 | 327 / 326       | -10.9 %; -1.6 %                      |
+|            | `CS2F` (2)    | 0 / 0          | 32 %; 4.7 ms                              | 0.9827                              | 78 %         | 13.7 %                                        | 10.7 %                 | 315 / 326       | -8.3 %; -2.6 %                       |
 
 In every `CS2*` run the look-back worker delivered the 2.00 re-read frames per live frame asked for (about 35,900
 per run, a third of them held out and not solved) at 60 % of its time; the visit workers were 64-74 % busy in every
@@ -219,17 +219,17 @@ Seed-to-seed r along the end pass, and the dose at which an arm reaches the base
 Work = slow-loop work units of Discover (slow worker and visit workers) plus the end pass up to that dose, against
 `V30` with its full pass. Re-read frames are solved outside that count.
 
-| recording | arm | after 1800 / 5400 / 9000 / 18000 end frames | end dose needed | Discover work | Discover + dose | re-read frames in all |
-| --------- | --- | ------------------------------------------- | --------------- | ------------- | --------------- | --------------------- |
-| workshop  | `V30` | 0.9362 / 0.9539 / 0.9614 / 0.9733         | 18,000          | 1.00 x        | 1.00 x          | 18,000                |
-|           | `CS2` | 0.9614 / 0.9677 / 0.9717 / 0.9794         | 9,000           | 1.07 x        | 0.87 x          | 44,900                |
-|           | `CS2F` | 0.9630 / 0.9676 / 0.9718 / 0.9784        | 9,000           | 1.06 x        | 0.85 x          | 44,900                |
-| `10_43_21` | `V30` | 0.9734 / 0.9828 / 0.9849 / 0.9891        | 18,000          | 1.00 x        | 1.00 x          | 18,000                |
-|           | `CS2` | 0.9839 / 0.9898 / 0.9905 / 0.9917         | 3,600           | 1.07 x        | 0.92 x          | 39,200                |
-|           | `CS2F` | 0.9844 / 0.9872 / 0.9897 / 0.9913        | 5,400           | 1.00 x        | 0.83 x          | 41,000                |
-| `14_57_02` | `V30` | 0.9663 / 0.9787 / 0.9817 / 0.9863        | 12,600          | 1.00 x        | 0.82 x          | 12,600                |
-|           | `CS2` | 0.9791 / 0.9861 / 0.9885 / 0.9895         | 3,600           | 1.10 x        | 0.94 x          | 39,200                |
-|           | `CS2F` | 0.9785 / 0.9831 / 0.9873 / 0.9911        | 9,000           | 1.03 x        | 0.84 x          | 44,600                |
+| recording  | arm    | after 1800 / 5400 / 9000 / 18000 end frames | end dose needed | Discover work | Discover + dose | re-read frames in all |
+| ---------- | ------ | ------------------------------------------- | --------------- | ------------- | --------------- | --------------------- |
+| workshop   | `V30`  | 0.9362 / 0.9539 / 0.9614 / 0.9733           | 18,000          | 1.00 x        | 1.00 x          | 18,000                |
+|            | `CS2`  | 0.9614 / 0.9677 / 0.9717 / 0.9794           | 9,000           | 1.07 x        | 0.87 x          | 44,900                |
+|            | `CS2F` | 0.9630 / 0.9676 / 0.9718 / 0.9784           | 9,000           | 1.06 x        | 0.85 x          | 44,900                |
+| `10_43_21` | `V30`  | 0.9734 / 0.9828 / 0.9849 / 0.9891           | 18,000          | 1.00 x        | 1.00 x          | 18,000                |
+|            | `CS2`  | 0.9839 / 0.9898 / 0.9905 / 0.9917           | 3,600           | 1.07 x        | 0.92 x          | 39,200                |
+|            | `CS2F` | 0.9844 / 0.9872 / 0.9897 / 0.9913           | 5,400           | 1.00 x        | 0.83 x          | 41,000                |
+| `14_57_02` | `V30`  | 0.9663 / 0.9787 / 0.9817 / 0.9863           | 12,600          | 1.00 x        | 0.82 x          | 12,600                |
+|            | `CS2`  | 0.9791 / 0.9861 / 0.9885 / 0.9895           | 3,600           | 1.10 x        | 0.94 x          | 39,200                |
+|            | `CS2F` | 0.9785 / 0.9831 / 0.9873 / 0.9911           | 9,000           | 1.03 x        | 0.84 x          | 44,600                |
 
 - **About the same slow-loop work, two to three times the re-read frames.** To the same agreement, `CS2` costs
   0.87, 0.92 and 1.15 times the baseline's slow-loop work (the last against the baseline's 12,600-frame dose) and
@@ -246,13 +246,13 @@ Work = slow-loop work units of Discover (slow worker and visit workers) plus the
 Dropped frames: 0 in all 15 Discover runs. Slow worker 26-29 % busy without the settle, 36-42 % with it. Arm minus
 `V30` (live, no end settle) [95 % CI]; the gap is `V30+S9600` minus `V30`:
 
-| measure                          | `V30`  | gap                      | `CS2`                    | `CS2F`                   | `CS2` minus `V30+S9600`  |
-| -------------------------------- | ------ | ------------------------ | ------------------------ | ------------------------ | ------------------------ |
-| footprint r, all cells           | 0.9905 | +0.0025 [0.0018, 0.0031] | +0.0031 [0.0024, 0.0038] | +0.0029 [0.0022, 0.0035] | +0.0006 [0.0001, 0.0012] |
-| footprint r, close pairs         | 0.9909 | +0.0024 [0.0016, 0.0034] | +0.0026 [0.0018, 0.0036] | +0.0022 [0.0013, 0.0032] | +0.0002 [-0.0004, 0.0009] |
-| footprint r, born in second half | 0.9338 | +0.034 [0.005, 0.051]    | +0.025 [-0.007, 0.038]   | +0.034 [0.003, 0.048]    | -0.009 [-0.031, 0.005]   |
-| bitten footprints, 0.75-1 D      | 0.292  | -0.114 [-0.164, -0.064]  | -0.082 [-0.132, -0.032]  | -0.084 [-0.137, -0.033]  | +0.032 [-0.014, 0.079]   |
-| matched / false cells per sim    | 358.0 / 34.4 | +2.4 / -2.4        | +0.8 / -1.4 [-8.2, 5.4]  | -0.8 / -2.6 [-6.6, 1.4]  | -1.6 / +1.0              |
+| measure                          | `V30`        | gap                      | `CS2`                    | `CS2F`                   | `CS2` minus `V30+S9600`   |
+| -------------------------------- | ------------ | ------------------------ | ------------------------ | ------------------------ | ------------------------- |
+| footprint r, all cells           | 0.9905       | +0.0025 [0.0018, 0.0031] | +0.0031 [0.0024, 0.0038] | +0.0029 [0.0022, 0.0035] | +0.0006 [0.0001, 0.0012]  |
+| footprint r, close pairs         | 0.9909       | +0.0024 [0.0016, 0.0034] | +0.0026 [0.0018, 0.0036] | +0.0022 [0.0013, 0.0032] | +0.0002 [-0.0004, 0.0009] |
+| footprint r, born in second half | 0.9338       | +0.034 [0.005, 0.051]    | +0.025 [-0.007, 0.038]   | +0.034 [0.003, 0.048]    | -0.009 [-0.031, 0.005]    |
+| bitten footprints, 0.75-1 D      | 0.292        | -0.114 [-0.164, -0.064]  | -0.082 [-0.132, -0.032]  | -0.084 [-0.137, -0.033]  | +0.032 [-0.014, 0.079]    |
+| matched / false cells per sim    | 358.0 / 34.4 | +2.4 / -2.4              | +0.8 / -1.4 [-8.2, 5.4]  | -0.8 / -2.6 [-6.6, 1.4]  | -1.6 / +1.0               |
 
 - Footprint r not lower (it is higher, CI excludes 0), false cells not higher, matched cells within 1 %: all lines
   met. The live `CS2` library is above the baseline's settled library on footprint r for all cells, and closes 72 %
@@ -264,17 +264,17 @@ Dropped frames: 0 in all 15 Discover runs. Slow worker 26-29 % busy without the 
 
 ### Verdicts
 
-| target                             | verdict                                                                                                                              |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| T0 flags off = main                | pass                                                                                                                                 |
-| R1 dropped frames                  | met: 0 in 32 real runs and 15 sim runs                                                                                               |
-| R2 half of the gap, live library   | met by `CS2`: 77 %, 78 %, 75 %                                                                                                       |
-| R3 footprint movement              | not met as written: 10.6 % (met), 13.6 % and 16.1 % (between the lines); the baseline alone is at 18.9 % on the workshop recording    |
-| R4 Discover not held back          | missed as written: 10-14 % fewer ordinary visits, 4.5 % fewer cells on the workshop recording; not caused by the settle jobs; cause open |
-| chosen arm                         | `CS2`; the quiet period adds nothing; the frames-only arm added afterwards does as well                                              |
-| R5 total work                      | about the same slow-loop work, 2-3 times the re-read frames; the end pass shrinks to a half or a fifth                               |
-| S1 sims                            | pass                                                                                                                                 |
-| by the pre-set rule (R1-R4 by one arm on all three recordings) | **not a go yet**: R3 between the lines on two recordings, R4 missed                                      |
+| target                                                         | verdict                                                                                                                                  |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| T0 flags off = main                                            | pass                                                                                                                                     |
+| R1 dropped frames                                              | met: 0 in 32 real runs and 15 sim runs                                                                                                   |
+| R2 half of the gap, live library                               | met by `CS2`: 77 %, 78 %, 75 %                                                                                                           |
+| R3 footprint movement                                          | not met as written: 10.6 % (met), 13.6 % and 16.1 % (between the lines); the baseline alone is at 18.9 % on the workshop recording       |
+| R4 Discover not held back                                      | missed as written: 10-14 % fewer ordinary visits, 4.5 % fewer cells on the workshop recording; not caused by the settle jobs; cause open |
+| chosen arm                                                     | `CS2`; the quiet period adds nothing; the frames-only arm added afterwards does as well                                                  |
+| R5 total work                                                  | about the same slow-loop work, 2-3 times the re-read frames; the end pass shrinks to a half or a fifth                                   |
+| S1 sims                                                        | pass                                                                                                                                     |
+| by the pre-set rule (R1-R4 by one arm on all three recordings) | **not a go yet**: R3 between the lines on two recordings, R4 missed                                                                      |
 
 ### Not done
 
