@@ -173,6 +173,16 @@ impl VisitJob {
         self.settle
     }
 
+    /// The tile this job visits.
+    pub fn tile_index(&self) -> usize {
+        self.ti
+    }
+
+    /// Cells copied into the job (those its zone holds).
+    pub fn zone_cells(&self) -> usize {
+        self.cells.len()
+    }
+
     /// The bytes, with the reservoir slots taken from `slots` (random
     /// slots without a patch of their own from `shared`).
     fn encode(&self, slots: &Tile, shared: &SharedFrames) -> Vec<u8> {
@@ -316,6 +326,12 @@ impl VisitResult {
     /// Work spent on the visit (multiply-adds, as `SlowLoop::work`).
     pub fn work(&self) -> u64 {
         self.work
+    }
+
+    /// The visit's counters (what [`SlowLoop::apply_job`] adds to the
+    /// owner's [`SlowLoop::stats`]).
+    pub fn stats(&self) -> &SlowStats {
+        &self.stats
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -574,6 +590,12 @@ impl SlowLoop {
     /// Visits handed out and not yet applied.
     pub fn jobs_in_flight(&self) -> usize {
         self.inflight.len()
+    }
+
+    /// Diagnostics: the tiles of the visits handed out and not yet applied.
+    pub fn tiles_in_flight(&self, out: &mut Vec<usize>) {
+        out.clear();
+        out.extend(self.inflight.iter().map(|f| f.ti));
     }
 
     /// The tile `step` would visit next among those whose zone overlaps no
@@ -837,6 +859,7 @@ impl SlowLoop {
                     let due = self.cfg.visit_after_slots;
                     for (i, t) in self.tiles.iter_mut().enumerate() {
                         if i != ti && t.rect.intersects(&bbox) {
+                            self.due_diag.touch += u64::from(t.fresh < due);
                             t.fresh = t.fresh.max(due);
                         }
                     }
@@ -938,6 +961,8 @@ impl SlowLoop {
         e.absorbs += r.edits.absorbs;
         self.pending |= r.pending;
         let tile = &mut self.tiles[ti];
+        let due = self.cfg.visit_after_slots;
+        self.due_diag.own += u64::from(tile.fresh < due && tile.fresh + r.fresh >= due);
         tile.fresh += r.fresh;
         for (ev, i, frame, p) in r.proj {
             let slots = if ev {
