@@ -1,6 +1,7 @@
 # Concurrent settle, round 3: why Discover visits less, and which workshop cells go missing (21 Nov 2026)
 
-Follow-up to [2026-11-20-concurrent-settle2.md](2026-11-20-concurrent-settle2.md) (round 2, PR #451). Round 2 left
+Follow-up to [2026-11-20-concurrent-settle2.md](2026-11-20-concurrent-settle2.md) (round 2, PR #451). This round:
+PR #453 (https://github.com/miniscope/CaLab/pull/453). Round 2 left
 two effects unexplained, on the `--offered-fps 30` clock with four visit workers:
 
 1. Discover makes 10-14 % fewer of its own tile visits with the settle on, the frames-only arm `CS2F` included,
@@ -122,6 +123,10 @@ the same picture and are not counted as results.
 - Against `qc_eval-main-9ed6e4bb`, static_s5, 4800 frames: lock-step with an end settle (19 files), `V30`, `CS2` and
   `CS2F` (20 files each) are identical apart from wall-time fields.
 - `--visit-diag` on against off (`V30`, `CS2F`): identical apart from wall-time fields; the two new files are extra.
+- Not checked this round: round 1's single-worker mode (`--offered-fps 30 --csettle 0.75 --csettle-mode stats`, no
+  visit workers), which round 2 did check. `Timed::advance` was edited, so this is a gap. One attempt was made and
+  is void: its flags were passed as one argument and ignored (`t0/main_cs75`, `t0/new_cs75` and the last line of
+  `t0/report.txt` are that void run and say nothing about the mode).
 - Workshop seed 1 and `10_43_21` seed 1, `V30` and `CS2F`, rerun with the instrument: `footprints_settle0.bin` is
   byte-identical to round 2's run in all four (and the settled `footprints.bin` on `10_43_21`). So round 2's runs are
   the baseline of this round.
@@ -307,7 +312,7 @@ recording are not independent of each other, so the pooled CIs are too narrow):
 | T0 flags off = main; `--csettle-yield 16` = `CS2F` | identical apart from wall-time fields                                        | pass                     |
 
 **No simple fix was found.** The yield arm misses three of the four lines. F1 and F2 were predicted misses. F3
-was not: taking the answers in pieces closes less of the gap than taking them whole, on every recording.
+was not; see point 4 below for how much weight the 57 % and 61 % can carry.
 
 ### What phase B adds
 
@@ -329,14 +334,16 @@ was not: taking the answers in pieces closes less of the gap than taking them wh
    (19.2 slots at hand-out against 15.9; merge tests +21 %, adds +14 %, refinement +12 %). Part of the "+15 % per
    visit" of `CS2F` is this second-order effect of its own delay; refinement (+43 %, with 56 % more refinements
    accepted) is the part that belongs to the re-read frames.
-4. **Taking the answers in pieces costs agreement, and it is not explained.** Live seed-to-seed r of `CS2F-Y1`
-   against `CS2F`: lower in all five seed pairs (-0.0019, -0.0069, -0.0010 on the workshop recording, -0.0009 and
-   -0.0033 on Samara; mean -0.0028). `CS2F-free` shows the same on the workshop recording (0.9652) with the full
-   2.00 frames per live frame, so it is not the dose (which did fall to 1.91 for `CS2F-Y1` on the workshop
-   recording: the next request goes out only after the last piece). Both arms differ from `CS2F` in that visits are
-   handed out without waiting for a whole answer. After a full end pass the three arms agree (0.9783, 0.9780,
-   0.9775). With one seed pair per Samara recording and workshop pairs that share seeds this is weak evidence
-   (round 2 saw 34-78 % on one pair for near-identical arms); it is still five of five.
+4. **The piecewise arm closes less of the gap, by an amount a change of timing alone also produces.** Live
+   seed-to-seed r of `CS2F-Y1` against `CS2F` is lower in all five seed pairs (-0.0019, -0.0069, -0.0010 on the
+   workshop recording, -0.0009 and -0.0033 on Samara; mean -0.0028), and `CS2F-free` reads the same on the workshop
+   recording (0.9652) with the full 2.00 frames per live frame, so it is not the dose (which fell to 1.91 for
+   `CS2F-Y1` on the workshop recording: the next request goes out only after the last piece). But `V30-W3`, which
+   changes nothing except when visits happen, moves the same three workshop pairs by -0.0024, -0.0064 and +0.0028
+   against `V30`: the same pair (seeds 1 and 3, the highest pair in both round-2 arms) carries the large drop both
+   times. So the loss is not distinguishable from what any change of timing does to these seed pairs, and F3's 61 %
+   and 57 % on the Samara recordings (one pair each) sit within that noise of the line: `V30-W3` alone reads -8
+   points on the workshop recording. After a full end pass the three settle arms agree (0.9783, 0.9780, 0.9775).
 
 ### Verdicts
 
@@ -346,12 +353,16 @@ was not: taking the answers in pieces closes less of the gap than taking them wh
 | is it an artefact               | no; round 2's count also held the end-pass visits, and on stream jobs the shortfall is 6-15 %                                                                                   |
 | which workshop cells go missing | no fixed set: the marginal pool is smaller (170 one-sided against 137); a repeatable net of about 9 per run, late, weak on held-out frames, 18 % matched by Minian against 65 % |
 | why                             | fewer marginal adds where footprints are larger (likely, not tested by an arm); not the visit count (`V30-W3`)                                                                  |
-| a fix                           | none: `CS2F-Y1` misses F1, F2 and F3 (on `14_57_02`), meets F4; no slow-worker scheduling can pass F1 (ceiling -10.2 %)                                                         |
+| a fix                           | none: `CS2F-Y1` misses F1, F2 and F3 (on `14_57_02`), meets F4; no change to how the slow worker spends its settle time can pass F1 (ceiling -10.2 %)                           |
 | the lines as written            | F1 and F2 are missed by every settle arm; phase B says they do not measure harm (point 2)                                                                                       |
 
 ### Not done
 
-- Why answers in pieces close less of the gap (point 4). A third Samara seed would also say whether it is real.
+- Whether answers in pieces really close less of the gap (point 4): a third Samara seed for `CS2F` and `CS2F-Y1`.
+- The order of hand-outs and the zones: a worker is idle about 22 % of the time because every due tile's zone is
+  held. The ceiling above covers the slow worker's settle time only; these were not tried. `V30-W3` says the visit
+  count is not what to protect, so they were not pursued.
+- Round 2's footprint-movement line (met on one recording of three) was not revisited.
 - An arm that tests "larger footprints leave fewer marginal adds" directly.
 - Minian agreement and footprint movement for the phase-B arms (round 2's `CS2F` values stand for the design).
 - 20 and 60 fps, fewer than four visit workers with the settle on, the sims (no engine change: the new code is
