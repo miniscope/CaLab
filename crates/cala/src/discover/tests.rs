@@ -1997,8 +1997,12 @@ fn largest_support(slow: &SlowLoop) -> usize {
 }
 
 /// Under the skirt rule, refinement-only passes over the same movie keep
-/// the supports bounded: the largest support does not grow from pass 1 to
-/// pass 3, and every statistics disk follows its support.
+/// the supports bounded: the refinements the later passes keep accepting
+/// move the largest support up to a plateau (at most 15 % over pass 1,
+/// and within 5 % over passes 5 to 7: no runaway, no oscillation), and
+/// every statistics disk follows its support. (Here: 165 px after pass 1,
+/// 178 to 185 px over passes 3 to 10. Under the old refine gate, z 3, it
+/// was 179 px from pass 1 on and almost no refinement was accepted after.)
 #[test]
 fn refine_only_passes_keep_supports_bounded() {
     let t = 1500;
@@ -2011,13 +2015,26 @@ fn refine_only_passes_keep_supports_bounded() {
     let mut deleted = Vec::new();
     drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
     let pass1 = largest_support(&slow);
+    let refines1 = slow.stats().refines;
     slow.set_edit_scope(EditScope::Refine);
-    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
-    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
-    let pass3 = largest_support(&slow);
+    let mut later = Vec::new();
+    for _ in 2..=7 {
+        drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+        later.push(largest_support(&slow));
+    }
     let s = slow.stats();
-    assert!(s.refines > 0, "{s:?}");
-    assert!(pass3 <= pass1, "largest support {pass1} -> {pass3}");
+    assert!(s.refines > refines1, "{s:?}");
+    let hi = *later.iter().max().unwrap();
+    assert!(
+        hi as f64 <= 1.15 * pass1 as f64,
+        "largest support {pass1} -> {later:?}"
+    );
+    let late = &later[3..];
+    let (lo, top) = (*late.iter().min().unwrap(), *late.iter().max().unwrap());
+    assert!(
+        (top - lo) as f64 <= 0.05 * lo as f64,
+        "no plateau: largest support {pass1} -> {later:?}"
+    );
     let margin = slow.cfg.stats_margin_cells * slow.cfg.cell_diameter_px;
     let lib = slow.finalize().unwrap();
     for (slot, id) in lib.ids().iter().enumerate() {
@@ -2210,7 +2227,9 @@ fn js_observe_with_background_levels_matches_native() {
             let bg = eng.last_background();
             assert_eq!(bg.len(), eng.background_len() as usize);
             let version = eng.inner.library().version() as f64;
-            assert!(js.observe(f, version, &tr, levels.then_some(bg)).unwrap());
+            assert!(js
+                .observe(f, version, &tr, levels.then_some(bg), None)
+                .unwrap());
         }
         assert_eq!(eb.out.traces, ta.traces, "frame {k}");
         assert_eq!(eb.last_background(), ta.background, "frame {k}");
@@ -2335,7 +2354,7 @@ fn refine_js(
             let tr = eng.process(f).unwrap();
             let v = eng.library().version() as f64;
             assert!(
-                js.observe(f, v, &tr.traces, Some(tr.background.clone()))
+                js.observe(f, v, &tr.traces, Some(tr.background.clone()), None)
                     .unwrap(),
                 "frame {k}: version {v}"
             );
@@ -2587,4 +2606,834 @@ fn merge_rules_match_jobs() {
         assert!(s.merge_tests > 0, "{rule:?} {s:?}");
         assert_eq!(s, b.stats(), "{rule:?}");
     }
+}
+
+// ---- refine gate: a footprint born without its neighbour-side light ------
+
+/// Peak-normalised unfiltered footprint value of `id` at pixel (y, x).
+fn fp_at(lib: &Library, id: u64, y: usize, x: usize) -> f32 {
+    let (px, v) = lib.unfiltered(lib.slot(id).expect("cell kept"));
+    let peak = v.iter().cloned().fold(0.0f32, f32::max);
+    let k = (y * N + x) as u32;
+    px.iter().position(|&p| p == k).map_or(0.0, |i| v[i] / peak)
+}
+
+/// Two neighbours 3.5 px apart (about 0.6 soma diameters at half max),
+/// independent activity. The second cell is seeded with a hole at the
+/// first cell's centre, as Discover births a close newcomer (no light
+/// where the older cell already explains the data). Returns the second
+/// cell's footprint value there (truth exp(-3.5²/(2·2.5²)) ≈ 0.38) after
+/// 4000 frames with refine gate `z`, and the number of refinements.
+fn bitten_refill(z: f32) -> (f32, u64) {
+    let (v, refines, _) = bitten_refill_with(z, JointUpdate::Off);
+    (v, refines)
+}
+
+/// [`bitten_refill`] with the joint update `joint`, in the Refine scope
+/// (the cell set frozen, as the app's Refine stage), also returning the
+/// joint update's counters.
+fn bitten_refill_with(z: f32, joint: JointUpdate) -> (f32, u64, ReplayStats) {
+    let t = 4000;
+    let mut rng = Lcg(411);
+    let (a, b) = ((46.0, 44.0), (46.0, 47.5));
+    let cells = vec![
+        (blob_w(0, a.0, a.1, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        (blob_w(1, b.0, b.1, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+    ];
+    let m = movie(&cells, t, 423);
+    let mut bitten = blob_w(2, b.0, b.1, 2.5);
+    for y in 0..bitten.height {
+        for x in 0..bitten.width {
+            let (dy, dx) = ((bitten.y0 + y) as f32 - a.0, (bitten.x0 + x) as f32 - a.1);
+            if dy * dy + dx * dx <= 2.5 * 2.5 {
+                bitten.values[y * bitten.width + x] = 0.0;
+            }
+        }
+    }
+    let cfg = SlowLoopConfig {
+        refine_z: z,
+        joint_update: joint,
+        ..v2_config()
+    };
+    let (mut slow, mut eng) = start(cfg, &[blob_w(1, a.0, a.1, 2.5), bitten]);
+    if joint != JointUpdate::Off {
+        slow.set_edit_scope(EditScope::Refine);
+    }
+    let mut deleted = Vec::new();
+    drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+    let lib = slow.finalize().unwrap();
+    assert_eq!(lib.ids(), &[1, 2], "stats {:?}", slow.stats());
+    (
+        fp_at(&lib, 2, a.0 as usize, a.1 as usize),
+        slow.stats().refines,
+        slow.replay_stats,
+    )
+}
+
+/// The cluster history replay ([`JointUpdate::Refine`]) refills the
+/// bitten footprint too, from the two cells' joint proposals.
+#[test]
+fn a_bitten_footprint_is_refilled_by_the_cluster_replay() {
+    let (v, refines, rs) = bitten_refill_with(0.0, JointUpdate::Refine);
+    assert!(rs.clusters >= 1 && rs.replays > 0, "{rs:?}");
+    assert!(rs.accepted > 0, "{rs:?}");
+    assert!(
+        v > 0.1,
+        "value at the neighbour centre {v} (truth 0.38), {refines} refines, {rs:?}"
+    );
+}
+
+/// The refine gate accepts a statistics-path refill with a positive
+/// held-out gain: the bitten footprint takes up light at its neighbour's
+/// centre. Under the old gate (paired z > 3 on the held-out frames) the
+/// same proposals are vetoed and the hole stays.
+#[test]
+fn a_bitten_footprint_is_refilled_from_its_statistics() {
+    let (now, refines) = bitten_refill(SlowLoopConfig::default().refine_z);
+    let (old, _) = bitten_refill(3.0);
+    assert!(
+        now > 0.1,
+        "value at the neighbour centre {now} (truth 0.38), {refines} refines"
+    );
+    assert!(old < 0.05 && now > old + 0.1, "new {now}, old gate {old}");
+}
+
+/// The cluster history replay runs when the refine visits run as jobs
+/// (`step_via`, through the byte encoding of job and result): the same
+/// libraries as in process, frame by frame, the same joint-update
+/// counters, and the replay really happens in the runner (the stores
+/// travel in the job; the visit no longer falls back to the per-cell path).
+#[test]
+fn the_cluster_replay_runs_in_visit_jobs_and_matches_step() {
+    for carry in [false, true] {
+        let t = 4000;
+        let mut rng = Lcg(411);
+        let (a, b) = ((46.0, 44.0), (46.0, 47.5));
+        let cells = vec![
+            (blob_w(0, a.0, a.1, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+            (blob_w(1, b.0, b.1, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        ];
+        let m = movie(&cells, t, 423);
+        let mut bitten = blob_w(2, b.0, b.1, 2.5);
+        for y in 0..bitten.height {
+            for x in 0..bitten.width {
+                let (dy, dx) = ((bitten.y0 + y) as f32 - a.0, (bitten.x0 + x) as f32 - a.1);
+                if dy * dy + dx * dx <= 2.5 * 2.5 {
+                    bitten.values[y * bitten.width + x] = 0.0;
+                }
+            }
+        }
+        let cfg = SlowLoopConfig {
+            refine_z: 0.0,
+            joint_update: JointUpdate::Refine,
+            joint_carry: carry,
+            ..v2_config()
+        };
+        let seed = [blob_w(1, a.0, a.1, 2.5), bitten];
+        let (mut sa, mut ea) = start(cfg.clone(), &seed);
+        let (mut sb, mut eb) = start(cfg.clone(), &seed);
+        let mut runner = VisitRunner::new(new_loop(&cfg));
+        sa.set_edit_scope(EditScope::Refine);
+        sb.set_edit_scope(EditScope::Refine);
+        let n_px = N * N;
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+            let (la, lb) = (ea.library().clone(), eb.library().clone());
+            sa.observe(f, &la, &ta).unwrap();
+            sb.observe(f, &lb, &tb).unwrap();
+            let pa = sa.step(5_000_000).unwrap();
+            let pb = sb.step_via(5_000_000, &mut runner).unwrap();
+            assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+            if let (Some(la), Some(lb)) = (pa, pb) {
+                assert!(la.to_bytes()[16..] == lb.to_bytes()[16..], "frame {k}");
+                ea.set_library(la).unwrap();
+                eb.set_library(lb).unwrap();
+            }
+        }
+        let (ra, rb) = (sa.replay_stats, sb.replay_stats);
+        assert!(ra.replays > 0 && ra.accepted > 0, "{ra:?}");
+        assert_eq!(ra.visit_fields(), rb.visit_fields(), "{ra:?} vs {rb:?}");
+        assert!(rb.job_stores > 0 && rb.job_store_bytes > 0, "{rb:?}");
+        assert!(sa.finalize().unwrap().to_bytes()[16..] == sb.finalize().unwrap().to_bytes()[16..]);
+    }
+}
+
+/// Look-back frames (concurrent Refine) reach only the named cells'
+/// running statistics, keep held-out frames out and leave the slow loop's
+/// frame clock alone.
+#[test]
+fn lookback_frames_feed_only_the_named_cells_statistics() {
+    let t = 200;
+    let mut rng = Lcg(5);
+    let cells = vec![
+        (blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0)),
+        (blob(1, 70.0, 70.0), trace(&mut rng, t, 0.05, 6.0)),
+    ];
+    let m = movie(&cells, t, 7);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let (mut slow, mut eng) = start(config(), &seed);
+    let lib = eng.library().clone();
+    let (a, b) = (lib.ids()[0], lib.ids()[1]);
+    let n_px = N * N;
+    let mut fitted = 0;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let fit = slow
+            .observe_lookback(f, &lib, &tr, k as u64, Some(&[a]))
+            .unwrap();
+        assert_eq!(fit, !slow.is_test(k as u64));
+        fitted += usize::from(fit);
+    }
+    assert!(fitted > 0 && fitted < t);
+    assert_eq!(slow.frames(), 0);
+    assert!(slow.fpstats.contains_key(&a));
+    assert!(!slow.fpstats.contains_key(&b));
+}
+
+/// With the reservoir frozen (evaluation switch), `observe` still feeds
+/// the statistics and advances the frame clock but stores no frame and
+/// makes no tile due; unfrozen, it stores frames again.
+#[test]
+fn frozen_reservoir_takes_no_frames_but_statistics_and_clock_run() {
+    let t = 60;
+    let mut rng = Lcg(5);
+    let cells = vec![(blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0))];
+    let m = movie(&cells, t, 7);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let (mut slow, mut eng) = start(config(), &seed);
+    let lib = eng.library().clone();
+    let n_px = N * N;
+    slow.set_reservoir_frozen(true);
+    for k in 0..t / 2 {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        slow.observe(f, &lib, &tr).unwrap();
+    }
+    assert_eq!(slow.frames(), (t / 2) as u64);
+    assert!(slow.fpstats.contains_key(&lib.ids()[0]));
+    assert_eq!(slow.reservoir_bytes(), 0);
+    assert!(slow.tiles.iter().all(|tile| tile.fresh == 0));
+    slow.set_reservoir_frozen(false);
+    for k in t / 2..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        slow.observe(f, &lib, &tr).unwrap();
+    }
+    assert_eq!(slow.frames(), t as u64);
+    assert!(slow.reservoir_bytes() > 0);
+}
+
+/// Look-back frames offered to the reservoir (experimental switch) keep
+/// the held-out side they had as live frames: a held-out frame becomes a
+/// test slot only and leaves the footprint statistics untouched, a fitting
+/// frame becomes a fitting slot only, no tile stores a frame twice, and
+/// `Test` mode adds no fitting slot. Off (the default) stores nothing.
+#[test]
+fn lookback_reservoir_keeps_the_held_out_side_and_stores_no_frame_twice() {
+    let t = 90;
+    let mut rng = Lcg(5);
+    let cells = vec![(blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0))];
+    let m = movie(&cells, t, 7);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let n_px = N * N;
+    // Live frames with the reservoir frozen (the clock runs, nothing is
+    // stored), then the same frames as look-back frames, twice.
+    let run = |mode: LookbackReservoir, skip_held: bool| {
+        let (mut slow, mut eng) = start(config(), &seed);
+        let lib = eng.library().clone();
+        slow.set_reservoir_frozen(true);
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let tr = eng.process(f).unwrap();
+            slow.observe(f, &lib, &tr).unwrap();
+        }
+        slow.set_reservoir_frozen(false);
+        slow.set_lookback_reservoir(mode, 1.0);
+        for _ in 0..2 {
+            for k in 0..t {
+                let held = slow.is_test(k as u64);
+                let f = &m[k * n_px..(k + 1) * n_px];
+                let tr = eng.process(f).unwrap();
+                if held && skip_held {
+                    continue;
+                }
+                let pushed = slow.observe_lookback(f, &lib, &tr, k as u64, None).unwrap();
+                assert_eq!(pushed, !held);
+            }
+        }
+        // A frame that was never live (index beyond the clock) is not stored.
+        let f = &m[..n_px];
+        let tr = eng.process(f).unwrap();
+        let before = slow.lookback_reservoir_counts();
+        slow.observe_lookback(f, &lib, &tr, t as u64 + 5, None)
+            .unwrap();
+        assert_eq!(slow.lookback_reservoir_counts(), before);
+        slow
+    };
+    let slots = |slow: &SlowLoop| -> Vec<Vec<(u64, bool)>> {
+        slow.tiles
+            .iter()
+            .map(|tile| {
+                tile.slots()
+                    .into_iter()
+                    .map(|w| (tile.slot(w).frame, tile.slot(w).test))
+                    .collect()
+            })
+            .collect()
+    };
+    let off = run(LookbackReservoir::Off, false);
+    assert_eq!(off.reservoir_bytes(), 0);
+    assert_eq!(off.lookback_reservoir_counts(), [0; 3]);
+
+    let all = run(LookbackReservoir::All, false);
+    let (mut n_test, mut n_fit) = (0, 0);
+    for tile in slots(&all) {
+        let mut seen = std::collections::HashSet::new();
+        for (frame, test) in tile {
+            assert!(frame < t as u64);
+            assert_eq!(test, all.is_test(frame), "frame {frame} changed side");
+            assert!(seen.insert(frame), "frame {frame} stored twice");
+            n_test += usize::from(test);
+            n_fit += usize::from(!test);
+        }
+    }
+    assert!(n_test > 0 && n_fit > 0, "{n_test} test, {n_fit} fit slots");
+    for tile in &all.tiles {
+        let mut ev: Vec<u64> = tile.events.iter().map(|s| s.frame).collect();
+        ev.sort_unstable();
+        assert!(ev.windows(2).all(|w| w[0] != w[1]));
+    }
+    // Held-out frames never reach the statistics: the same run without them
+    // (or with the switch off) has the same statistics.
+    let no_held = run(LookbackReservoir::All, true);
+    let id = all.fpstats.keys().next().copied().unwrap();
+    // (The library version is a process-wide counter: left out.)
+    let dbg = |s: &SlowLoop| {
+        let mut st = s.fpstats[&id].clone();
+        st.version = 0;
+        format!("{st:?}")
+    };
+    assert!(dbg(&all) == dbg(&no_held));
+    assert!(dbg(&all) == dbg(&off));
+
+    let test_only = run(LookbackReservoir::Test, false);
+    let mut n = 0;
+    for tile in slots(&test_only) {
+        for (frame, test) in tile {
+            assert!(test && test_only.is_test(frame));
+            n += 1;
+        }
+    }
+    assert!(n > 0);
+    assert!(dbg(&test_only) == dbg(&off));
+}
+
+// ---- look-back scheduler (`lookback.rs`) ----------------------------------
+
+fn lb_lib(version: u64, cells: &[Footprint]) -> Library {
+    let mut b = LibraryBuilder::new(dims()).version(version);
+    for c in cells {
+        b = b.footprint(c.clone());
+    }
+    b.build(&mut flattener()).unwrap()
+}
+
+/// Drain every request the scheduler makes with `credit` frames of budget:
+/// (frame, ids) per request, every one observed.
+fn lb_take(lb: &mut LookBack, sl: &SlowLoop, lib: &Library, credit: f64) -> Vec<(usize, Vec<u64>)> {
+    lb.add_credit(credit);
+    let mut out = Vec::new();
+    while let LookbackNext::Frame(r) = lb.next(sl, lib) {
+        out.push((r.frame, r.ids));
+        lb.frame_done(LookbackOutcome::Observed);
+    }
+    out
+}
+
+/// A birth asks for the `K` frames before it, for the newborn and the cells
+/// touching it only, block by block and within the budget; the scheduler
+/// idles (budget not banked) when no cell needs anything.
+#[test]
+fn lookback_serves_a_birth_and_its_neighbours_the_frames_before_it() {
+    let (slow, _) = start(config(), &[]);
+    let (a, far, c) = (
+        blob(1, 30.0, 30.0),
+        blob(2, 75.0, 75.0),
+        blob(3, 33.0, 31.0),
+    );
+    let mut lb = LookBack::new(LookbackConfig {
+        max_frames: 100,
+        ..LookbackConfig::default()
+    });
+    // The first library: its cells are births at frame 10 (window 0..10).
+    let lib1 = lb_lib(1, &[a.clone(), far.clone()]);
+    lb.note_frame(&lib1, 10);
+    assert_eq!(lb.births(), 2);
+    let got = lb_take(&mut lb, &slow, &lib1, 1000.0);
+    assert_eq!(got.len(), 10);
+    assert!(got.iter().enumerate().all(|(k, (f, _))| *f == k));
+    assert_eq!(lb.next(&slow, &lib1), LookbackNext::Idle);
+    // Idle budget is not banked: at most one frame's credit is kept.
+    assert_eq!(lb_take(&mut lb, &slow, &lib1, 500.0), vec![]);
+
+    // A cell born at frame 300 beside `a`: it and `a` need 200..300, `far`
+    // nothing.
+    let lib2 = lb_lib(2, &[a, far, c]);
+    lb.note_frame(&lib2, 300);
+    assert_eq!(lb.births(), 3);
+    let (ia, ic) = (lib2.ids()[0], lib2.ids()[2]);
+    let got = lb_take(&mut lb, &slow, &lib2, 30.0);
+    assert_eq!(got.len(), 31, "budget-limited (30 + the one kept)");
+    let mut got2 = got;
+    got2.extend(lb_take(&mut lb, &slow, &lib2, 1000.0));
+    let mut frames: Vec<usize> = got2.iter().map(|g| g.0).collect();
+    frames.sort_unstable();
+    assert_eq!(frames, (200..300).collect::<Vec<_>>());
+    for (_, ids) in &got2 {
+        let mut ids = ids.clone();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![ia.min(ic), ia.max(ic)]);
+    }
+    // Shared order: the most recent block (256..300) is served first.
+    assert_eq!(got2[0].0, 256);
+    assert_eq!(lb.in_need(), 0);
+    assert_eq!(lb.frames(), 110);
+}
+
+/// A cell dropped from the library stops taking frames; a block whose cells
+/// are all gone ends.
+#[test]
+fn lookback_drops_cells_no_longer_in_the_library() {
+    let (slow, _) = start(config(), &[]);
+    let mut lb = LookBack::new(LookbackConfig::default());
+    let lib1 = lb_lib(1, &[blob(1, 30.0, 30.0)]);
+    lb.note_frame(&lib1, 200);
+    let first = lb_take(&mut lb, &slow, &lib1, 3.0);
+    assert_eq!(first.len(), 3);
+    let empty = lb_lib(2, &[]);
+    lb.note_frame(&empty, 201);
+    assert_eq!(lb_take(&mut lb, &slow, &empty, 1000.0), vec![]);
+    assert_eq!(lb.in_need(), 0);
+}
+
+/// The held-out record returns the decision `observe` made for each stream
+/// frame the slow loop saw (whatever its slow-loop index), and the
+/// `u64::MAX - stream` decision for frames it never saw; the flagged
+/// look-back observe is the indexed one with that decision.
+#[test]
+fn held_out_record_keeps_observes_decisions_and_flagged_lookback_matches() {
+    let (slow, _) = start(config(), &[]);
+    let mut rec = HeldOutRecord::default();
+    // Stream frames 100..400 seen as slow frames 0..300 except a dropped
+    // batch 200..216.
+    let mut k = 0u64;
+    for s in 100..400u64 {
+        if (200..216).contains(&s) {
+            continue;
+        }
+        rec.note(s, k, &slow);
+        k += 1;
+    }
+    let mut k = 0u64;
+    for s in 0..500u64 {
+        let seen = (100..400).contains(&s) && !(200..216).contains(&s);
+        let want = if seen {
+            slow.is_test(k)
+        } else {
+            slow.is_test(u64::MAX - s)
+        };
+        assert_eq!(rec.held_out(s, &slow), want, "stream {s}");
+        k += u64::from(seen);
+    }
+    let held = (0..500).filter(|&s| rec.held_out(s, &slow)).count();
+    assert!(held > 100 && held < 250, "{held}");
+
+    // Flagged == indexed.
+    let t = 120;
+    let mut rng = Lcg(9);
+    let cells = vec![(blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0))];
+    let m = movie(&cells, t, 3);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let (mut sa, mut eng) = start(config(), &seed);
+    let (mut sb, _) = start(config(), &seed);
+    let lib = eng.library().clone();
+    let n_px = N * N;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let a = sa.observe_lookback(f, &lib, &tr, k as u64, None).unwrap();
+        let held = sb.is_test(k as u64);
+        let b = sb
+            .observe_lookback_flagged(f, &lib, &tr, held, None)
+            .unwrap();
+        assert_eq!(a, b);
+    }
+    sa.mark_all_due();
+    sb.mark_all_due();
+    for _ in 0..20 {
+        sa.step(5_000_000).unwrap();
+        sb.step(5_000_000).unwrap();
+    }
+    assert!(sa.finalize().unwrap().to_bytes()[16..] == sb.finalize().unwrap().to_bytes()[16..]);
+}
+
+/// Look-back through the app's JS `SlowLoop` surface (`observe` with the
+/// stream index, `lookbackNote`, `lookbackTake`, `observeLookback`) gives
+/// the libraries of the native driver (qc_eval's: the scheduler beside the
+/// slow loop, held-out by the slow-loop index), bit for bit; look-back
+/// frames reach the statistics without moving the slow loop's clock.
+#[cfg(feature = "jsbindings")]
+#[test]
+fn js_lookback_matches_the_native_driver() {
+    use super::js::JsSlowLoop;
+    let t = 1200;
+    let (m, seed) = busy_movie(t);
+    // Half the cells seeded: the rest are born during the run.
+    let seed = &seed[..seed.len() / 2];
+    let cfg = SlowLoopConfig {
+        joint_update: JointUpdate::All,
+        merge_guard_min_sep: 0.6,
+        ..shard_config()
+    };
+    let n_px = N * N;
+    let frame = |k: usize| &m[k * n_px..(k + 1) * n_px];
+
+    // Native.
+    let (mut sl, mut eng) = start(cfg.clone(), seed);
+    let mut lb = LookBack::new(LookbackConfig::default());
+    let mut lb_eng = eng.clone();
+    let mut native = Vec::new();
+    let mut pushed_native = 0;
+    for k in 0..t {
+        let tr = eng.process(frame(k)).unwrap();
+        let lib = eng.library().clone();
+        sl.observe(frame(k), &lib, &tr).unwrap();
+        if let Some(l) = sl.step(5_000_000).unwrap() {
+            native.push(l.to_bytes()[16..].to_vec());
+            eng.set_library(l).unwrap();
+        }
+        lb.note_frame(eng.library(), k + 1);
+        lb.add_credit(2.0);
+        while let LookbackNext::Frame(r) = lb.next(&sl, eng.library()) {
+            lb_eng.set_library(eng.library().clone()).unwrap();
+            let tr = lb_eng.process(frame(r.frame)).unwrap();
+            let lib = lb_eng.library().clone();
+            let fit = sl
+                .observe_lookback(frame(r.frame), &lib, &tr, r.frame as u64, Some(&r.ids))
+                .unwrap();
+            pushed_native += usize::from(fit);
+            lb.frame_done(LookbackOutcome::Observed);
+        }
+    }
+    native.push(sl.finalize().unwrap().to_bytes()[16..].to_vec());
+
+    // JS surface.
+    let (slow, mut eng) = start(cfg, seed);
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    js.enable_lookback(2.0, 3000).unwrap();
+    let mut lb_eng = eng.clone();
+    let mut via_js = Vec::new();
+    for k in 0..t {
+        let tr = eng.process(frame(k)).unwrap();
+        let v = eng.library().version() as f64;
+        let bg = Some(tr.background.clone());
+        assert!(js
+            .observe(frame(k), v, &tr.traces, bg, Some(k as f64))
+            .unwrap());
+        if let Some(l) = js.step(5_000_000.0).unwrap() {
+            via_js.push(l.arc().to_bytes()[16..].to_vec());
+            eng.set_library(l.arc().clone()).unwrap();
+        }
+        let frames_before = js.frames();
+        js.lookback_note((k + 1) as f64, 1.0);
+        let req = js.lookback_take(1000);
+        let mut i = 0;
+        while i < req.len() {
+            let (f, n) = (req[i] as usize, req[i + 2] as usize);
+            let ids = &req[i + 3..i + 3 + n];
+            i += 3 + n;
+            lb_eng.set_library(eng.library().clone()).unwrap();
+            let tr = lb_eng.process(frame(f)).unwrap();
+            let v = lb_eng.library().version() as f64;
+            js.observe_lookback(
+                frame(f),
+                v,
+                &tr.traces,
+                Some(tr.background.clone()),
+                f as f64,
+                ids,
+            )
+            .unwrap();
+        }
+        assert_eq!(js.frames(), frames_before, "look-back moved the clock");
+    }
+    via_js.push(js.finalize().unwrap().arc().to_bytes()[16..].to_vec());
+
+    // Split-half noise of every published cell, by id, as the native call.
+    let lib = js.finalize().unwrap();
+    let noise = js.footprint_noise();
+    let lib = lib.arc();
+    assert_eq!(noise.len(), 2 * lib.len());
+    let mut finite = 0;
+    for slot in 0..lib.len() {
+        let id = lib.ids()[slot];
+        assert_eq!(noise[2 * slot], id as f64);
+        let want = js
+            .inner()
+            .footprint_noise(id, lib.filtered(slot).0)
+            .unwrap_or(f64::NAN);
+        let got = noise[2 * slot + 1];
+        assert!(
+            got == want || (got.is_nan() && want.is_nan()),
+            "{id}: {got} {want}"
+        );
+        finite += usize::from(got.is_finite() && got > 0.0);
+    }
+    assert!(finite > 0, "no cell has a noise estimate");
+
+    let st = js.lookback_stats();
+    assert!(st[1] > 100.0, "pushed {st:?}");
+    assert_eq!(st[1] as usize, pushed_native, "{st:?}");
+    assert_eq!(st[3], 0.0, "dropped {st:?}");
+    assert!(st[4] > seed.len() as f64, "births {st:?}");
+    assert_eq!(native.len(), via_js.len());
+    assert!(native == via_js, "libraries differ");
+}
+
+/// Hardening: a visit runner built with other slow-loop options refuses the
+/// job; with look-back on, `observe` needs the stream index and
+/// `enableLookback` must come before the first frame.
+#[cfg(feature = "jsbindings")]
+#[test]
+fn lookback_misuse_is_refused() {
+    use super::js::JsSlowLoop;
+    let t = 400;
+    let (m, seed) = busy_movie(t);
+    let n_px = N * N;
+    let cfg = SlowLoopConfig {
+        joint_update: JointUpdate::All,
+        merge_guard_min_sep: 0.6,
+        ..shard_config()
+    };
+    let (mut sl, mut eng) = start(cfg.clone(), &seed);
+    let plain = SlowLoop::new(
+        dims(),
+        vec![1; n_px],
+        vec![1.0; n_px],
+        flattener(),
+        shard_config(),
+    )
+    .unwrap();
+    let mut runner = VisitRunner::new(plain);
+    let mut job = None;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let lib = eng.library().clone();
+        sl.observe(f, &lib, &tr).unwrap();
+        if let Some(b) = sl.take_job_bytes() {
+            job = Some(b);
+            break;
+        }
+    }
+    let job = VisitJob::from_bytes(&job.expect("a visit job")).unwrap();
+    let err = runner.run(job).unwrap_err();
+    assert!(err.to_string().contains("other options"), "{err}");
+
+    // (The JS error paths themselves need a wasm target; their guards:)
+    let (slow, _) = start(cfg, &seed);
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    assert!(js.stream_ok(None));
+    js.enable_lookback(2.0, 3000).unwrap();
+    assert!(!js.stream_ok(None));
+    assert!(js.stream_ok(Some(0.0)));
+}
+
+/// The concurrent settle's frames: a re-read frame keeps the side it had
+/// live (a held-out frame becomes a test slot only and never reaches the
+/// footprint statistics), no tile stores a frame twice, the slots count
+/// towards settle visits only, and the loop's frame clock does not move.
+/// Before `enable_settle` the calls are refused.
+#[test]
+fn settle_frames_keep_their_side_and_leave_discover_clocks_alone() {
+    let t = 90;
+    let mut rng = Lcg(5);
+    let cells = vec![(blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0))];
+    let m = movie(&cells, t, 7);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let n_px = N * N;
+    let run = |reservoir: bool, skip_held: bool| {
+        let (mut slow, mut eng) = start(config(), &seed);
+        let lib = eng.library().clone();
+        let f = &m[..n_px];
+        let tr = eng.process(f).unwrap();
+        assert!(slow.observe_settle(f, &lib, &tr, 0, false, true).is_err());
+        assert!(slow.step_settle(1).is_err());
+        slow.enable_settle(0);
+        // Live frames with the reservoir frozen: the clock runs, nothing
+        // is stored.
+        slow.set_reservoir_frozen(true);
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let tr = eng.process(f).unwrap();
+            slow.observe(f, &lib, &tr).unwrap();
+        }
+        slow.set_reservoir_frozen(false);
+        let frames = slow.frames();
+        let fresh: Vec<u32> = slow.tiles.iter().map(|t| t.fresh).collect();
+        for _ in 0..2 {
+            for k in 0..t {
+                let held = slow.is_test(k as u64);
+                let f = &m[k * n_px..(k + 1) * n_px];
+                let tr = eng.process(f).unwrap();
+                if held && skip_held {
+                    continue;
+                }
+                slow.observe_settle(f, &lib, &tr, k as u64, held, reservoir)
+                    .unwrap();
+            }
+        }
+        assert_eq!(slow.frames(), frames);
+        let after: Vec<u32> = slow.tiles.iter().map(|t| t.fresh).collect();
+        assert_eq!(after, fresh, "a settle frame made a tile due for Discover");
+        slow
+    };
+    let full = run(true, false);
+    let st = full.settle_stats();
+    assert!(st.frames_fit > 0 && st.frames_test > 0 && st.slots > 0);
+    assert_eq!(
+        full.cs_fresh.iter().map(|&c| u64::from(c)).sum::<u64>(),
+        st.slots
+    );
+    let (mut n_test, mut n_fit) = (0, 0);
+    for tile in &full.tiles {
+        let mut seen = std::collections::HashSet::new();
+        for w in tile.slots() {
+            let (frame, test) = (tile.slot(w).frame, tile.slot(w).test);
+            assert_eq!(test, full.is_test(frame), "frame {frame} changed side");
+            assert!(seen.insert(frame), "frame {frame} stored twice");
+            n_test += usize::from(test);
+            n_fit += usize::from(!test);
+        }
+    }
+    assert!(n_test > 0 && n_fit > 0, "{n_test} test, {n_fit} fit slots");
+    // Held-out frames never reach the statistics, with or without the
+    // reservoir.
+    let id = full.fpstats.keys().next().copied().unwrap();
+    let dbg = |s: &SlowLoop| {
+        let mut st = s.fpstats[&id].clone();
+        st.version = 0;
+        format!("{st:?}")
+    };
+    let no_held = run(true, true);
+    let stats_only = run(false, false);
+    assert!(dbg(&full) == dbg(&no_held));
+    assert!(dbg(&full) == dbg(&stats_only));
+    assert_eq!(stats_only.reservoir_bytes(), 0);
+}
+
+/// A settle visit refines and nothing else: the cell set, the tiles'
+/// ordinary due counters and visit numbers are as before it, and with the
+/// quiet period a tile whose cell set just changed is passed over.
+#[test]
+fn settle_visits_only_refine() {
+    let t = 240;
+    let mut rng = Lcg(11);
+    let cells = vec![
+        (blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0)),
+        (blob(1, 34.0, 36.0), trace(&mut rng, t, 0.05, 6.0)),
+    ];
+    let m = movie(&cells, t, 3);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let n_px = N * N;
+    let (mut slow, mut eng) = start(config(), &seed);
+    slow.enable_settle(0);
+    let lib = eng.library().clone();
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        slow.observe(f, &lib, &tr).unwrap();
+    }
+    let ids: Vec<u64> = slow.cells.iter().map(|c| c.id).collect();
+    let fresh: Vec<u32> = slow.tiles.iter().map(|t| t.fresh).collect();
+    let visits = slow.tile_visits.clone();
+    let s0 = slow.stats();
+    slow.step_settle(u64::MAX / 4).unwrap();
+    let s1 = slow.stats();
+    let st = slow.settle_stats();
+    assert!(st.visits > 0, "no settle visit ran");
+    assert_eq!(slow.cells.iter().map(|c| c.id).collect::<Vec<_>>(), ids);
+    assert_eq!(
+        (s1.adds, s1.merges, s1.splits, s1.deletes, s1.absorbs, s1.visits),
+        (s0.adds, s0.merges, s0.splits, s0.deletes, s0.absorbs, s0.visits)
+    );
+    assert_eq!(s1.refines - s0.refines, st.refines);
+    assert_eq!(slow.tile_visits, visits);
+    for (tile, f0) in slow.tiles.iter().zip(&fresh) {
+        assert!(
+            tile.fresh >= *f0,
+            "a settle visit cancelled an ordinary visit"
+        );
+    }
+    assert!(slow
+        .cs_fresh
+        .iter()
+        .all(|&c| c < slow.cfg.visit_after_slots));
+    assert_eq!(slow.scope, EditScope::All);
+
+    // The quiet period: every due tile whose cell set changed recently
+    // is passed over.
+    let due = slow.cfg.visit_after_slots;
+    slow.enable_settle(1000);
+    for ti in 0..slow.tiles.len() {
+        slow.cs_fresh[ti] = due;
+        slow.cs_struct[ti] = slow.frames;
+    }
+    let v = slow.settle_stats().visits;
+    slow.step_settle(u64::MAX / 4).unwrap();
+    assert_eq!(slow.settle_stats().visits, v);
+    assert!(slow.settle_stats().quiet_skips > 0);
+}
+
+/// The settle scheduler: the share sets the frames owed per live frame,
+/// and the chunks cover the saved history about evenly.
+#[test]
+fn settle_sched_spreads_chunks_over_the_history() {
+    let mut s = SettleSched::new(0.5, 16);
+    assert!(s.next_frame(15).is_none());
+    let seen = 1600;
+    let mut hits = [0usize; 10];
+    let mut last = usize::MAX;
+    for i in 0..1600 {
+        let (f, new) = s.next_frame(seen).unwrap();
+        assert!(f < seen);
+        assert_eq!(new, i % 16 == 0);
+        if !new {
+            assert_eq!(f, last + 1);
+        }
+        last = f;
+        hits[f * 10 / seen] += 1;
+    }
+    assert!(hits.iter().all(|&h| (112..=208).contains(&h)), "{hits:?}");
+    // One settle frame per live frame at a share of one half; a third of
+    // one at a quarter.
+    let mut owed = 0;
+    for _ in 0..100 {
+        s.earn(1.0);
+        while s.take() {
+            owed += 1;
+        }
+    }
+    assert_eq!(owed, 100);
+    s.set_share(0.25);
+    owed = 0;
+    for _ in 0..300 {
+        s.earn(1.0);
+        while s.take() {
+            owed += 1;
+        }
+    }
+    assert!((99..=101).contains(&owed), "{owed}");
 }

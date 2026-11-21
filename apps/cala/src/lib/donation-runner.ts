@@ -534,7 +534,9 @@ export class DonationRunner {
       } catch (err) {
         if (err instanceof Cancelled || err instanceof DonationRefused) throw err;
         if (attempt > retries) {
-          throw new Error(`Uploading ${file.name} failed ${attempt} times: ${messageOf(err)}`);
+          throw new Error(`Uploading ${file.name} failed ${attempt} times: ${messageOf(err)}`, {
+            cause: err,
+          });
         }
         await sleep(1000 * 2 ** (attempt - 1));
       }

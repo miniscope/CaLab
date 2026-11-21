@@ -177,7 +177,7 @@ and declared sizes above a cap, and inflate no further than the declared size.
 
 ## Metadata (table `cala_donations`)
 
-`supabase/migrations/019_cala_donations.sql`.
+`supabase/migrations/020_cala_donations.sql`.
 
 - `id`, `user_id`, `created_at`, `updated_at`, `status` (`uploading` →
   `uploaded` → `approved` | `rejected` → `ingested`; `withdrawn` by the donor)
@@ -260,7 +260,7 @@ is equivalent to R2.
 0. **Measure.** Done: up predictor + native gzip (see Codec).
 1. **Format.** Done: `CALARAW1` writer/decoder (TypeScript) and reader
    (Python), with round-trip and cross-language tests.
-2. **Backend.** Code done: migration `019_cala_donations.sql`, edge function
+2. **Backend.** Code done: migration `020_cala_donations.sql`, edge function
    `supabase/functions/donation` (Deno tests), RLS tests. Not deployed.
 3. **UI.** Code done: Donate panel at the bottom of cala's Recording tab
    (`DonatePanel.tsx`, `donation-runner.ts`, `donation-worker.ts`), encode to

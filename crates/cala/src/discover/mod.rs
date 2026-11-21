@@ -160,7 +160,8 @@
 //!   covariances; its standard error falls as frames come in. A cell is
 //!   refined from it when the estimate disagrees with the current footprint
 //!   beyond its own noise (a χ² test) *and* the change lowers held-out χ²
-//!   (paired z ≥ `refine_z`). Converged footprints stop being proposed. The
+//!   (paired held-out gain above `refine_z`, 0 by default: the χ² test
+//!   already used all frames). Converged footprints stop being proposed. The
 //!   reservoir's noisier estimate is used only for young cells.
 //! * **Add vs absorb vs merge-in.** A residual candidate competes with the
 //!   overlapping cells re-estimated to take it up: from their statistics,
@@ -215,12 +216,14 @@
 )]
 
 mod churn;
+mod cluster;
 #[cfg(feature = "diagnostics")]
 mod diagnostics;
 mod fastcore;
 mod fpstats;
 mod ledger;
 mod local;
+mod lookback;
 #[cfg(feature = "diagnostics")]
 mod mergelog;
 mod noisecorr;
@@ -231,6 +234,10 @@ mod wire;
 pub use churn::{AddClass, AddRecord, ChurnConfig, ChurnCounts, RemovalKind, RemovalRecord};
 pub use ledger::{
     CellInfo, CellStatus, DeleteReason, DeletedCell, EditCounts, EditEvent, EditKind, TestEvent,
+};
+pub use lookback::{
+    HeldOutRecord, LookBack, LookbackConfig, LookbackNext, LookbackOrder, LookbackOutcome,
+    LookbackRequest, SettleSched, LB_BLOCK,
 };
 #[cfg(feature = "diagnostics")]
 pub use mergelog::{flush as merge_log_flush, set_gt as merge_log_set_gt};
@@ -243,6 +250,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use churn::Churn;
+use cluster::ClusterStore;
 use fpstats::{parity_block, FpStats, FAST_BLOCK};
 use ledger::Evidence;
 use local::{
@@ -321,6 +329,95 @@ pub enum RefineGate {
 }
 
 /// Which merge tests may merge (S2.1c merge redesign).
+/// Experimental (off by default): which look-back frames
+/// ([`SlowLoop::observe_lookback`]) are also offered to the frame reservoir
+/// while Discover runs, so the held-out frames a footprint change is tested
+/// on keep turning over without an end-of-recording pass (a live stream has
+/// none). A look-back frame keeps the held-out decision it had as a live
+/// frame: a held-out frame can only become a test slot and never reaches
+/// the footprint statistics; a fitting frame can only become a fitting slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LookbackReservoir {
+    /// Look-back frames feed the statistics and cluster stores only.
+    #[default]
+    Off,
+    /// Held-out look-back frames are offered (as test frames).
+    Test,
+    /// Every look-back frame is offered, on the side it had.
+    All,
+}
+
+/// Where footprints of overlapping cells are updated jointly from a
+/// replay of their stored history (`cluster.rs`, the Stage 1 design in
+/// `demix-bench/design_joint_update.md`): a cluster of cells whose
+/// normalised whitened overlap is at least `cluster_rho_min` keeps, per
+/// fitting frame, the K numbers of its residual in a K-dim basis; a refine
+/// visit re-solves the stored frames' traces with the current footprints
+/// and refits the footprints jointly, and the cluster's members are
+/// proposed and gated together. Cells outside clusters keep the per-cell
+/// running statistics. Off by default (experimental).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JointUpdate {
+    /// Per-cell statistics only.
+    #[default]
+    Off,
+    /// Joint replay in [`EditScope::Refine`] visits (the app's Refine
+    /// stage); the store accumulates only there.
+    Refine,
+    /// Joint replay in every visit (Discover too): the clusters follow the
+    /// library's cell set, and a store restarts when its members change (a
+    /// member's disk moving keeps the store, re-expressed on the new pixels).
+    All,
+}
+
+/// Sign rule of the joint replay's footprint step (filtered space, where a
+/// true footprint is slightly negative in its high-pass moat). The
+/// rotation between a bitten newcomer and its over-filled neighbour is a
+/// free direction of a linear footprint fit (`A R`, `R⁻¹ C`); what pins it
+/// is the newcomer's light clipped at zero on the older cell's far side.
+/// On the quick demixing tier (17 Nov 2026) `All` lowered the 0.75-1 D bite
+/// share 0.50 -> 0.36 and the < 1 D trace correlation excess +0.14 ->
+/// +0.10; `Off` gave 0.50 -> 0.42 and no correlation gain; `Own` was no
+/// different from `Off` (`tools/cala-eval/results/2026-11-17-cluster-replay.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JointSign {
+    /// A plain per-pixel joint least-squares fit; the sign rule enters only
+    /// through the finish path's inversion (`a ≥ 0`).
+    Off,
+    /// Each member's coefficient ≥ 0 where its current filtered column is
+    /// positive (the moat stays free).
+    Own,
+    /// Each member's coefficient ≥ 0 on its whole disk (the design toys'
+    /// non-negative footprint step; the moat is clipped there and comes
+    /// back through the finish path's inversion).
+    #[default]
+    All,
+}
+
+/// Which members of a replayed cluster are proposed. The replay's split
+/// halves are fitted in the store's one basis, which is estimated from all
+/// stored frames; their difference therefore misses the basis's own noise
+/// and understates the estimate's noise (toy: `a_member_at_the_truth_is_not_proposed`).
+/// Even so `Cluster` is the default: on static s5 + pairs s5 (18 Nov 2026)
+/// `Member` proposed about half as often, and the bites healed less
+/// (0.75-1 D bite share 0.34 -> 0.46): a bitten member heals by small
+/// accepted steps, each below its own split-half noise. The held-out gate
+/// decides either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JointAdmit {
+    /// Stage 1: every significant member, when the members' summed
+    /// split-half excess (from the replay's halves) is positive.
+    #[default]
+    Cluster,
+    /// Each member on its own evidence, the per-cell path's rule: proposed
+    /// when its estimate differs from its current column by more than its
+    /// split-half noise, taken from the joint fit's standard errors
+    /// (`½ n (s_A² + s_B²)` whitened, the expectation of `½‖h_A − h_B‖²`
+    /// for a per-pixel fit). The others keep their columns; the proposed
+    /// members are still gated together.
+    Member,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MergeRule {
     /// The held-out test alone: a single column (merged footprint, or
@@ -358,6 +455,11 @@ pub(crate) struct MeasuredSupport {
     pub phi: f64,
     pub z_fw: f64,
     pub n: usize,
+    /// DIAG: the smoothed light and its threshold per canvas pixel.
+    #[cfg(feature = "diagnostics")]
+    pub q: Vec<f32>,
+    #[cfg(feature = "diagnostics")]
+    pub tol: Vec<f32>,
 }
 
 /// Which structural edits the slow loop may make (S2.3b: refinement-only
@@ -542,8 +644,16 @@ pub struct SlowLoopConfig {
     /// light (Bonferroni over the tested pixels). Edits of the cell set
     /// keep their own rates.
     pub support_alpha: f32,
-    /// A refinement is accepted when its per-frame held-out χ² gains are
-    /// positive with a paired z (mean over standard error) above this...
+    /// A refinement from the running statistics is accepted when its
+    /// per-frame held-out χ² gains are positive with a paired z (mean over
+    /// standard error) above this. The default 0 accepts any held-out
+    /// gain: the proposal has already passed the statistics' own test over
+    /// all fitting frames ([`RefineGate::SplitHalf`]), and a second z ≥ 3
+    /// on a tile's few dozen held-out frames vetoed most real changes, in
+    /// particular the refill of a footprint born without the light under an
+    /// older neighbour (3 was the value before the refine-gate fix). Under
+    /// [`RefineGate::Legacy`] a stricter value may be wanted. Refinements
+    /// from the reservoir use `absorb_z`...
     pub refine_z: f32,
     /// ...and an absorption (the best of several alternatives) above this.
     pub absorb_z: f32,
@@ -578,6 +688,25 @@ pub struct SlowLoopConfig {
     /// carries at least this share of the stronger one's fitted energy
     /// (and the two supports overlap by less than half).
     pub merge_refit_min_share: f32,
+    /// The neighbour guards of a merge test (the refitted-pair baseline and
+    /// the split-half shape gate) apply to pairs whose footprints overlap by
+    /// less than this (cosine). At 0.5 (the historic value) a pair whose
+    /// footprints largely coincide skips both guards; real neighbours closer
+    /// than ~0.4 cell diameters overlap that much once their footprints are
+    /// accurate. Above 1, the guards apply at every overlap.
+    pub merge_guard_max_ovl: f32,
+    /// The same bound for the refitted-pair baseline alone (the split-half
+    /// gate keeps `merge_guard_max_ovl`).
+    pub merge_refit_max_ovl: f32,
+    /// Pairs whose centres are at least this many cell diameters apart
+    /// get the split-half shape gate whatever their overlap. Overlap
+    /// grows as two neighbours' footprints become accurate (a real pair
+    /// ~0.35 D apart passes 0.5 once neither is bitten), while two
+    /// estimates of one soma (a duplicate or a fragment) sit on the same
+    /// blob; the centre separation of somatic blobs does not depend on
+    /// how complete the footprints are. Infinite (the default) keeps the
+    /// overlap rule alone.
+    pub merge_guard_min_sep: f32,
     /// Measure the spatial correlation of the noise and widen every noise
     /// null by the variance it adds at cell scale (see `noisecorr.rs`):
     /// sub-pixel motion correction resamples the noise, and a test that
@@ -607,6 +736,43 @@ pub struct SlowLoopConfig {
     /// basin of its light (`basin_trim_from`, seeded at the footprint's
     /// peak). Off by default.
     pub basin_trim: bool,
+    /// Joint footprint update of overlapping cells (see [`JointUpdate`]).
+    pub joint_update: JointUpdate,
+    /// Cells join a cluster along overlaps `G_ij / sqrt(G_ii G_jj)` (the
+    /// whitened filtered columns' Gram) of at least this, strongest first.
+    pub cluster_rho_min: f32,
+    /// At most this many cells per cluster (2..=8); a union that would
+    /// exceed it is refused and that overlap is left to the per-cell
+    /// statistics' coupling.
+    pub cluster_max: usize,
+    /// Experimental: the sign rule of the replay's footprint step (see
+    /// [`JointSign`]).
+    pub joint_sign_rule: JointSign,
+    /// Experimental: alternations per replay inside the store (the design:
+    /// 1; more converge the stored window's factorisation further, but the
+    /// published footprints then move by more than the gate tests well).
+    pub joint_iters: usize,
+    /// Which members of a replayed cluster are proposed (see
+    /// [`JointAdmit`]).
+    pub joint_admit: JointAdmit,
+    /// Experimental: the store keeps its own last joint estimate and
+    /// re-solves the next replay's traces with it (one more alternation per
+    /// visit, carried across visits) instead of with the published columns.
+    /// The estimate is never published except through the cluster gate.
+    /// Off: on static s5 + pairs s5 (18 Nov 2026) it healed more bites
+    /// (0.75-1 D share 0.23 -> 0.17) but raised over-fill (est/true > 1.3,
+    /// pairs < 1 D) 0.075 -> 0.112, as more alternations did in Stage 1.
+    pub joint_carry: bool,
+    /// Experimental: L1 weight `μ` of the replay's trace step. Each stored
+    /// frame's traces solve `argmin_{c ≥ 0} ‖U v − A c‖² + 2 μ Σ_k ‖a_k‖ c_k`
+    /// (whitened), a soft threshold of `μ` trace-noise SDs per member,
+    /// invariant to the footprints' scale. The bitten split (wide − λ·small,
+    /// small + λ·wide) reconstructs the frames as well as the true one but
+    /// gives the small cell extra events; with unit-norm footprints its L1
+    /// is higher by `Σ c_wide ‖a_wide‖ (√(1−ρ²) + ρ − 1) > 0`, so the
+    /// penalty breaks the tie towards the sparse, independent split.
+    /// 0 (default) is the plain non-negative trace step.
+    pub joint_l1: f32,
     /// Classification of adds (new / re-add / churned) for the QC; does not
     /// change any decision.
     pub churn: ChurnConfig,
@@ -654,7 +820,7 @@ impl Default for SlowLoopConfig {
             support_z: 2.0,
             support_rule: SupportRule::BasinSkirt,
             support_alpha: 0.05,
-            refine_z: 3.0,
+            refine_z: 0.0,
             absorb_z: 3.0,
             absorb_share: 0.8,
             refine_min_change: 0.03,
@@ -664,12 +830,23 @@ impl Default for SlowLoopConfig {
             split_every_visits: 4,
             merge_refit_pair: true,
             merge_refit_min_share: 0.1,
+            merge_guard_max_ovl: 0.5,
+            merge_refit_max_ovl: 0.5,
+            merge_guard_min_sep: f32::INFINITY,
             merge_z: 2.0,
             noise_corr: true,
             shift_nuisance: true,
             joint_neighbours: false,
             core_test: CoreTest::Off,
             basin_trim: false,
+            joint_update: JointUpdate::Off,
+            cluster_rho_min: 0.05,
+            cluster_max: 6,
+            joint_sign_rule: JointSign::All,
+            joint_iters: 1,
+            joint_admit: JointAdmit::Cluster,
+            joint_carry: false,
+            joint_l1: 0.0,
             churn: ChurnConfig::default(),
             library: LibraryConfig::default(),
             background: BackgroundModel::Ring {
@@ -682,6 +859,24 @@ impl Default for SlowLoopConfig {
 }
 
 impl SlowLoopConfig {
+    /// The options a visit job must be run with that the job does not
+    /// carry (`withConfig` in the app): the cluster replay mode, its sign
+    /// rule and the merge guard. A [`VisitRunner`] refuses jobs from a loop
+    /// whose fingerprint differs from its own.
+    pub fn visit_fingerprint(&self) -> u64 {
+        let ju = match self.joint_update {
+            JointUpdate::Off => 0u64,
+            JointUpdate::Refine => 1,
+            JointUpdate::All => 2,
+        };
+        let js = match self.joint_sign_rule {
+            JointSign::Off => 0u64,
+            JointSign::Own => 1,
+            JointSign::All => 2,
+        };
+        ju | js << 4 | u64::from(self.merge_guard_min_sep.to_bits()) << 8
+    }
+
     /// The held-out split: slow-loop frame `frame` (0 = the first frame
     /// the loop observes) is a test frame. A hash of the frame index and
     /// `seed`, one frame in `holdout_every`. Public so evaluation code can
@@ -725,6 +920,12 @@ impl SlowLoopConfig {
             && self.absorb_share.is_finite()
             && self.refine_min_change.is_finite()
             && self.merge_z.is_finite()
+            && self.cluster_rho_min > 0.0
+            && self.cluster_rho_min < 1.0
+            && (2..=8).contains(&self.cluster_max)
+            && self.joint_iters >= 1
+            && self.joint_l1 >= 0.0
+            && self.joint_l1.is_finite()
             && self.churn.is_valid();
         if ok {
             Ok(())
@@ -827,6 +1028,68 @@ pub struct SlowStats {
     pub support_no_se: u64,
 }
 
+/// Counters of the concurrent settle ([`SlowLoop::observe_settle`],
+/// [`SlowLoop::step_settle`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SettleStats {
+    /// Re-read frames taken (fitting side, held-out side).
+    pub frames_fit: u64,
+    pub frames_test: u64,
+    /// Reservoir slots those frames took.
+    pub slots: u64,
+    /// Settle visits, the ones passed over because the tile's cell set
+    /// changed within the quiet period, and the refinements they accepted.
+    pub visits: u64,
+    pub quiet_skips: u64,
+    pub refines: u64,
+    /// Work units of the settle (frames and visits).
+    pub work: u64,
+}
+
+/// Counters of the joint update ([`JointUpdate`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReplayStats {
+    /// Cluster sets built (the library's cell set changed), clusters built
+    /// in them, and their members.
+    pub builds: u64,
+    pub clusters: u64,
+    pub members: u64,
+    /// Stores started over because a member's statistics disk left the
+    /// cluster's pixels.
+    pub restarts: u64,
+    /// Stores moved to a member's new statistics disk by re-expression
+    /// (history kept; new pixels start at the current model).
+    pub moves: u64,
+    /// Frames a cluster skipped (a missing pixel).
+    pub skipped_frames: u64,
+    /// Replays run, replays without a result (too few frames, singular),
+    /// replays where no member's estimate was significant, replays whose
+    /// estimate did not differ from the current footprints beyond its
+    /// split-half noise.
+    pub replays: u64,
+    pub replay_none: u64,
+    pub low_snr: u64,
+    pub converged: u64,
+    /// Cluster proposals gated, accepted, and members replaced.
+    pub proposals: u64,
+    pub accepted: u64,
+    pub members_replaced: u64,
+    /// Peak bytes held by the stores.
+    pub peak_bytes: u64,
+    /// DIAG (`diagnostics` builds only): wall time of the running
+    /// footprint statistics, per-cell part and cluster part, ns.
+    pub per_cell_ns: u64,
+    pub cluster_ns: u64,
+    /// Visit jobs (owner side): cluster stores sent, their bytes in the job
+    /// encoding, the largest one, and the wall time (ns; not measured in
+    /// wasm) of copying them into jobs and of applying the results back.
+    pub job_stores: u64,
+    pub job_store_bytes: u64,
+    pub job_store_max: u64,
+    pub job_copy_ns: u64,
+    pub job_apply_ns: u64,
+}
+
 /// The slow loop. See the module docs.
 pub struct SlowLoop {
     dims: Dims,
@@ -890,13 +1153,32 @@ pub struct SlowLoop {
     /// Held-out edit tests since the last `take_test_log` (bounded).
     #[cfg(feature = "diagnostics")]
     test_log: Vec<TestEvent>,
+    /// DIAG: pixels to sample in `finish_basin` and the samples (h, the
+    /// smoothed target, q, tol, in S0, in X, the inverted light before
+    /// normalisation, on the mask).
+    #[cfg(feature = "diagnostics")]
+    pub(crate) probe: Option<(Vec<u32>, Vec<[f32; 8]>)>,
     /// Running footprint statistics per published cell, by id, and the
     /// current weight of a new frame (grows by the inverse forgetting
     /// factor; renormalised).
     fpstats: HashMap<u64, FpStats>,
+    /// Joint update (`cluster.rs`): the cluster stores, each member's
+    /// cluster, the library cell set they were built for, whether each
+    /// cluster's last replay was usable (its members then skip the per-cell
+    /// refinement), and a residual buffer.
+    clusters: Vec<ClusterStore>,
+    cluster_of: HashMap<u64, usize>,
+    cluster_ids: Vec<u64>,
+    cluster_ok: Vec<bool>,
+    cbuf: Vec<f32>,
+    /// Counters of the joint update.
+    pub replay_stats: ReplayStats,
     stats_w: f32,
     stats_gamma: f32,
     rbuf: Vec<f32>,
+    /// During [`SlowLoop::observe_lookback`] with a cell set: only these
+    /// cells' statistics (and clusters with one of them) take the frame.
+    lb_only: Option<std::collections::HashSet<u64>>,
     /// Pairs whose merge was rejected: `(id, id, until_frame)`.
     merge_rejected: Vec<(u64, u64, u64)>,
     /// Pairs the keep tests found redundant, to be merge-tested regardless
@@ -932,6 +1214,24 @@ pub struct SlowLoop {
     job_seq: u64,
     /// Bumped by every `set_noise` (a visit must run on the same map).
     noise_gen: u64,
+    /// [`SlowLoop::set_reservoir_frozen`].
+    res_frozen: bool,
+    /// [`SlowLoop::set_lookback_reservoir`] and its counters (look-back
+    /// frames scored, event slots and random slots they took).
+    lb_res: LookbackReservoir,
+    lb_res_share: f32,
+    lb_res_counts: [u64; 3],
+    /// The concurrent settle ([`SlowLoop::observe_settle`],
+    /// [`SlowLoop::step_settle`]): per tile, the reservoir slots taken
+    /// since its last settle visit and the frame of the last visit that
+    /// changed the cell set there; the work credit of the settle visits;
+    /// the quiet period; a settle visit is running; the counters.
+    cs_fresh: Vec<u32>,
+    cs_struct: Vec<u64>,
+    cs_credit: i64,
+    cs_quiet: u64,
+    cs_visiting: bool,
+    cs_stats: SettleStats,
 }
 
 /// Record an edit for the slow loop a visit was run for (`shard.rs`).
@@ -1220,10 +1520,29 @@ impl SlowLoop {
             edit_log: Vec::new(),
             #[cfg(feature = "diagnostics")]
             test_log: Vec::new(),
+            #[cfg(feature = "diagnostics")]
+            probe: None,
             fpstats: HashMap::new(),
+            clusters: Vec::new(),
+            cluster_of: HashMap::new(),
+            cluster_ids: Vec::new(),
+            cluster_ok: Vec::new(),
+            cbuf: Vec::new(),
+            replay_stats: ReplayStats::default(),
             stats_w: 1.0,
             stats_gamma: 0.5f32.powf(1.0 / cfg.stats_half_life_frames),
             rbuf: Vec::new(),
+            lb_only: None,
+            res_frozen: false,
+            lb_res: LookbackReservoir::Off,
+            lb_res_share: 1.0,
+            lb_res_counts: [0; 3],
+            cs_fresh: Vec::new(),
+            cs_struct: Vec::new(),
+            cs_credit: 0,
+            cs_quiet: 0,
+            cs_visiting: false,
+            cs_stats: SettleStats::default(),
             merge_rejected: Vec::new(),
             forced: Vec::new(),
             scope: EditScope::All,
@@ -1258,6 +1577,9 @@ impl SlowLoop {
     /// [`EditScope::Refine`] and feeds the recording again from frame 0.
     pub fn set_edit_scope(&mut self, scope: EditScope) {
         self.scope = scope;
+        if !self.joint_active() {
+            self.clear_clusters();
+        }
     }
 
     /// The structural edits allowed now ([`SlowLoop::set_edit_scope`]).
@@ -1735,6 +2057,10 @@ impl SlowLoop {
         let frame_idx = self.frames;
         let test = self.is_test(frame_idx);
         self.update_fpstats(frame, lib, traces, !test);
+        if self.res_frozen {
+            self.frames += 1;
+            return Ok(());
+        }
         // Random slots: one uniform sample for every tile.
         self.rng = mix(self.rng);
         let w = self.dims.width;
@@ -1744,6 +2070,7 @@ impl SlowLoop {
         for ti in 0..self.tiles.len() {
             let score = self.tile_score(ti, scale);
             let tile = &mut self.tiles[ti];
+            let before = tile.fresh;
             tile.offer(
                 &self.z,
                 w,
@@ -1756,12 +2083,345 @@ impl SlowLoop {
             if let Some(j) = took {
                 tile.set_random(j, frame_idx, test);
             }
+            if let Some(c) = self.cs_fresh.get_mut(ti) {
+                *c += tile.fresh.saturating_sub(before);
+            }
         }
         if test {
             self.take_probes(lib, frame_idx);
         }
         self.frames += 1;
         Ok(())
+    }
+
+    /// Experimental (off by default): turn the concurrent settle on. A
+    /// settle visit passes over a tile whose cell set changed (an add,
+    /// merge, split, absorb or deletion on one of its ordinary visits)
+    /// within the last `quiet_frames` frames (0: no quiet period). Until
+    /// this is called [`SlowLoop::observe_settle`] and
+    /// [`SlowLoop::step_settle`] refuse to run and nothing else changes.
+    pub fn enable_settle(&mut self, quiet_frames: u64) {
+        self.cs_fresh = vec![0; self.tiles.len()];
+        self.cs_struct = vec![0; self.tiles.len()];
+        self.cs_quiet = quiet_frames;
+    }
+
+    /// Counters of the concurrent settle.
+    pub fn settle_stats(&self) -> SettleStats {
+        self.cs_stats
+    }
+
+    /// Concurrent settle: feed one *past* frame while Discover goes on.
+    /// The frame keeps the side it had as a live frame (`held_out`; `key`
+    /// is the slow-loop index it had, under which the reservoir stores
+    /// it): a fitting frame updates the footprint statistics and the
+    /// cluster stores of every cell, solved with the current library, as
+    /// [`SlowLoop::observe_lookback`] does; a held-out frame never does.
+    /// With `reservoir` the frame is also offered to the reservoir on its
+    /// own side (a frame a tile already holds is passed over), so the
+    /// test frames of the settle visits turn over. The slots it takes
+    /// count towards the settle visits only: ordinary visits (adds,
+    /// merges, keep tests) stay on the live frames' cadence. No frame
+    /// counter, ledger, probes or noise correlation: Discover's clocks and
+    /// its evidence for new cells are those of the live frames alone.
+    pub fn observe_settle(
+        &mut self,
+        frame: &[f32],
+        lib: &Library,
+        traces: &FrameTraces,
+        key: u64,
+        held_out: bool,
+        reservoir: bool,
+    ) -> Result<(), TraceError> {
+        if self.cs_fresh.is_empty() {
+            return Err(TraceError::Incompatible(
+                "the concurrent settle is not enabled".into(),
+            ));
+        }
+        let n_px = self.dims.pixels();
+        crate::trace::check_len("frame", n_px, frame.len())?;
+        if lib.dims() != self.dims || traces.library_version != lib.version() {
+            return Err(TraceError::Incompatible(
+                "traces do not come from this library / frame size".into(),
+            ));
+        }
+        let w0 = self.work;
+        // Only a frame the loop has seen live has an index to be stored
+        // under.
+        if reservoir && key < self.frames {
+            let fresh: Vec<u32> = self.tiles.iter().map(|t| t.fresh).collect();
+            let slots0 = self.lb_res_counts;
+            let share = std::mem::replace(&mut self.lb_res_share, 1.0);
+            let r = self.offer_lookback(frame, lib, traces, key, held_out);
+            self.lb_res_share = share;
+            // The slots count towards the settle's visits, not Discover's.
+            for (ti, f0) in fresh.into_iter().enumerate() {
+                let t = &mut self.tiles[ti];
+                self.cs_fresh[ti] += t.fresh.saturating_sub(f0);
+                t.fresh = f0;
+            }
+            self.cs_stats.slots += self.lb_res_counts[1] - slots0[1];
+            self.lb_res_counts = slots0;
+            r?;
+        }
+        if held_out {
+            self.cs_stats.frames_test += 1;
+        } else {
+            self.observe_lookback_fit(frame, lib, traces, None)?;
+            self.cs_stats.frames_fit += 1;
+        }
+        self.cs_stats.work += self.work - w0;
+        Ok(())
+    }
+
+    /// Concurrent settle: spend about `budget` work units on settle
+    /// visits (refinements only, tested on the tile's held-out frames as
+    /// any refinement is), carrying any overrun into the next call. The
+    /// tile with the most new reservoir slots since its last settle visit
+    /// goes first. The cell set is not frozen: ordinary visits go on in
+    /// [`SlowLoop::step`], which also publishes what the settle changed.
+    /// Not for a loop whose visits run as jobs on other workers.
+    pub fn step_settle(&mut self, budget: u64) -> Result<(), TraceError> {
+        if self.cs_fresh.is_empty() {
+            return Err(TraceError::Incompatible(
+                "the concurrent settle is not enabled".into(),
+            ));
+        }
+        if !self.inflight.is_empty() {
+            return Err(TraceError::Incompatible(
+                "settle visits cannot run while visit jobs are out".into(),
+            ));
+        }
+        self.cs_credit = self.cs_credit.saturating_add(budget as i64);
+        let w_start = self.work;
+        while self.cs_credit > 0 {
+            let due = self.cfg.visit_after_slots;
+            let now = self.frames;
+            let mut best: Option<(usize, u32)> = None;
+            for ti in 0..self.tiles.len() {
+                let f = self.cs_fresh[ti];
+                if f < due {
+                    continue;
+                }
+                if self.cs_quiet > 0
+                    && self.cs_struct[ti] > 0
+                    && self.cs_struct[ti] + self.cs_quiet > now
+                {
+                    continue;
+                }
+                if best.is_none_or(|(_, b)| f > b) {
+                    best = Some((ti, f));
+                }
+            }
+            let Some((ti, _)) = best else {
+                self.cs_stats.quiet_skips +=
+                    self.cs_fresh.iter().filter(|&&f| f >= due).count() as u64;
+                self.cs_credit = 0;
+                break;
+            };
+            let w0 = self.work;
+            self.settle_visit(ti)?;
+            self.cs_credit -= (self.work - w0).max(1) as i64;
+        }
+        self.cs_stats.work += self.work - w_start;
+        Ok(())
+    }
+
+    /// One settle visit of tile `ti`: the refinement part of a visit, on
+    /// the tile's current reservoir, leaving the tile's ordinary visit
+    /// state (its due counter, visit number, cooldowns) as it is.
+    fn settle_visit(&mut self, ti: usize) -> Result<(), TraceError> {
+        self.cs_fresh[ti] = 0;
+        self.cs_stats.visits += 1;
+        let scope = std::mem::replace(&mut self.scope, EditScope::Refine);
+        let fresh = self.tiles[ti].fresh;
+        let refines = self.stats.refines;
+        self.cs_visiting = true;
+        let r = self.visit_body(ti);
+        self.cs_visiting = false;
+        self.scope = scope;
+        self.cs_stats.refines += self.stats.refines - refines;
+        let t = &mut self.tiles[ti];
+        t.fresh = t.fresh.max(fresh);
+        r
+    }
+
+    /// Experimental (evaluation only, off by default): while frozen,
+    /// [`SlowLoop::observe`] leaves the reservoir and the probes as they
+    /// are (no slot is replaced, no tile becomes due through new slots);
+    /// everything else (statistics, ledger, clocks) runs as usual. It
+    /// separates what a replayed pass gains from fresh reservoir frames
+    /// from what it gains from the statistics.
+    #[doc(hidden)]
+    pub fn set_reservoir_frozen(&mut self, frozen: bool) {
+        self.res_frozen = frozen;
+    }
+
+    /// Feed one *past* frame re-read from the saved recording (the
+    /// look-back cursor of concurrent Refine): only the running footprint
+    /// statistics and the cluster stores take it, solved with the current
+    /// library (`traces` from a separate trace engine on `lib`). Nothing
+    /// else sees it: no frame counter, ledger, probes, reservoir or noise
+    /// correlation, so the slow loop's clocks and held-out tests are those
+    /// of Discover alone (the reservoir only with the experimental
+    /// [`SlowLoop::set_lookback_reservoir`]). `slow_index` is the index the frame had (or would
+    /// have had) in the slow loop: a held-out frame stays held out.
+    pub fn observe_lookback(
+        &mut self,
+        frame: &[f32],
+        lib: &Library,
+        traces: &FrameTraces,
+        slow_index: u64,
+        only: Option<&[u64]>,
+    ) -> Result<bool, TraceError> {
+        let n_px = self.dims.pixels();
+        crate::trace::check_len("frame", n_px, frame.len())?;
+        if lib.dims() != self.dims || traces.library_version != lib.version() {
+            return Err(TraceError::Incompatible(
+                "traces do not come from this library / frame size".into(),
+            ));
+        }
+        let test = self.is_test(slow_index);
+        // Only a frame the loop has already seen live has an index of its
+        // own to be stored under (warm-up frames do not).
+        if slow_index < self.frames
+            && match self.lb_res {
+                LookbackReservoir::Off => false,
+                LookbackReservoir::Test => test,
+                LookbackReservoir::All => true,
+            }
+        {
+            self.offer_lookback(frame, lib, traces, slow_index, test)?;
+        }
+        if test {
+            return Ok(false);
+        }
+        self.observe_lookback_fit(frame, lib, traces, only)
+    }
+
+    /// Experimental (off by default): offer look-back frames to the
+    /// reservoir as well (see [`LookbackReservoir`]); `share` in (0, 1] is
+    /// the share of the eligible frames offered (chosen by a hash of the
+    /// frame index). Only [`SlowLoop::observe_lookback`] does it: the
+    /// flagged variant has no slow-loop index to store a frame under.
+    pub fn set_lookback_reservoir(&mut self, mode: LookbackReservoir, share: f32) {
+        self.lb_res = mode;
+        self.lb_res_share = share.clamp(0.0, 1.0);
+    }
+
+    /// Look-back frames scored for the reservoir, and the event slots and
+    /// random slots they took ([`SlowLoop::set_lookback_reservoir`]).
+    pub fn lookback_reservoir_counts(&self) -> [u64; 3] {
+        self.lb_res_counts
+    }
+
+    /// Offer past frame `slow_index` (its side: `test`) to the reservoir,
+    /// scored by the current library's residual and dated now. A frame a
+    /// tile already holds is not stored again. No probes, ledger or frame
+    /// counter.
+    fn offer_lookback(
+        &mut self,
+        frame: &[f32],
+        lib: &Library,
+        traces: &FrameTraces,
+        slow_index: u64,
+        test: bool,
+    ) -> Result<(), TraceError> {
+        if self.lb_res_share < 1.0 {
+            let u = (mix(slow_index ^ 0x6c62_7265_7331) >> 40) as f32 / (1u64 << 24) as f32;
+            if u >= self.lb_res_share {
+                return Ok(());
+            }
+        }
+        let n_px = self.dims.pixels();
+        let scale = self.score_residual(frame, lib, traces)?;
+        self.work += (n_px * 4 + self.coarse.len() * 30) as u64;
+        self.lb_res_counts[0] += 1;
+        let clock = self.frames;
+        let w = self.dims.width;
+        let took = if self.shared.frames.iter().any(|f| f.frame == slow_index) {
+            None
+        } else {
+            self.rng = mix(self.rng);
+            self.shared
+                .offer(&self.z, w, slow_index, test, self.cap_random, self.rng)
+        };
+        self.lb_res_counts[2] += u64::from(took.is_some());
+        for ti in 0..self.tiles.len() {
+            let score = self.tile_score(ti, scale);
+            let tile = &mut self.tiles[ti];
+            let before = tile.fresh;
+            tile.offer_at(
+                &self.z,
+                w,
+                slow_index,
+                clock,
+                score,
+                test,
+                self.cap_events,
+                self.ln_decay,
+            );
+            self.lb_res_counts[1] += u64::from(tile.fresh - before);
+            if let Some(j) = took {
+                tile.set_random(j, slow_index, test);
+            }
+        }
+        Ok(())
+    }
+
+    /// [`SlowLoop::observe_lookback`] with the held-out decision given
+    /// instead of the slow-loop index: a driver whose slow loop did not see
+    /// every frame (the app drops batches) records the decision `observe`
+    /// made per stream frame ([`HeldOutRecord`]) and passes it here.
+    pub fn observe_lookback_flagged(
+        &mut self,
+        frame: &[f32],
+        lib: &Library,
+        traces: &FrameTraces,
+        held_out: bool,
+        only: Option<&[u64]>,
+    ) -> Result<bool, TraceError> {
+        let n_px = self.dims.pixels();
+        crate::trace::check_len("frame", n_px, frame.len())?;
+        if lib.dims() != self.dims || traces.library_version != lib.version() {
+            return Err(TraceError::Incompatible(
+                "traces do not come from this library / frame size".into(),
+            ));
+        }
+        if held_out {
+            return Ok(false);
+        }
+        self.observe_lookback_fit(frame, lib, traces, only)
+    }
+
+    fn observe_lookback_fit(
+        &mut self,
+        frame: &[f32],
+        lib: &Library,
+        traces: &FrameTraces,
+        only: Option<&[u64]>,
+    ) -> Result<bool, TraceError> {
+        let n_px = self.dims.pixels();
+        let bg = match lib.background_model() {
+            BackgroundModel::Basis(_) => Some(traces.background.as_slice()),
+            _ => None,
+        };
+        lib.render(&traces.traces, bg, &mut self.model)?;
+        self.work += n_px as u64;
+        self.lb_only = only.map(|ids| ids.iter().copied().collect());
+        self.update_fpstats(frame, lib, traces, true);
+        self.lb_only = None;
+        Ok(true)
+    }
+
+    /// Mark every tile due for a visit (no new frames needed): a driver
+    /// that fed look-back frames after the last live frame uses it so the
+    /// visits turn the new statistics into footprints.
+    pub fn mark_all_due(&mut self) {
+        let rects: Vec<Rect> = self.tiles.iter().map(|t| t.rect).collect();
+        for r in rects {
+            self.touch(r);
+        }
     }
 
     /// Whitened frame (`z`) and the residual blurred to cell scale
@@ -1912,16 +2572,24 @@ impl SlowLoop {
         if !fitting {
             return;
         }
+        #[cfg(feature = "diagnostics")]
+        let t0 = std::time::Instant::now();
         if self.fpstats.len() > lib.len() {
             let ids: std::collections::HashSet<u64> = lib.ids().iter().copied().collect();
             self.fpstats.retain(|id, _| ids.contains(id));
             self.fast_checked.retain(|id, _| ids.contains(id));
             self.fast_strikes.retain(|id, _| ids.contains(id));
         }
-        self.stats_w /= self.stats_gamma;
+        // A look-back frame for a few cells leaves the forgetting clock
+        // alone (it would age every other cell's statistics): it enters at
+        // the weight of the current frame.
+        if self.lb_only.is_none() {
+            self.stats_w /= self.stats_gamma;
+        }
         if self.stats_w > 1024.0 {
             let f = 1.0 / self.stats_w;
             self.fpstats.values_mut().for_each(|s| s.scale(f));
+            self.clusters.iter_mut().for_each(|c| c.scale(f64::from(f)));
             self.stats_w = 1.0;
         }
         let w = self.stats_w;
@@ -1932,6 +2600,9 @@ impl SlowLoop {
         let version = lib.version();
         let mut work = 0u64;
         for (slot, &id) in lib.ids().iter().enumerate() {
+            if self.lb_only.as_ref().is_some_and(|o| !o.contains(&id)) {
+                continue;
+            }
             let (center, radius) = lib.support(slot);
             let want = radius + margin;
             let st = self.fpstats.entry(id).or_insert_with(|| {
@@ -1984,6 +2655,14 @@ impl SlowLoop {
             }
             st.push(&self.rbuf, [c, c], c, w);
             work += st.pix.len() as u64 * 3;
+        }
+        #[cfg(feature = "diagnostics")]
+        let t1 = std::time::Instant::now();
+        work += self.update_clusters(frame, lib, traces, w, ring);
+        #[cfg(feature = "diagnostics")]
+        {
+            self.replay_stats.per_cell_ns += (t1 - t0).as_nanos() as u64;
+            self.replay_stats.cluster_ns += t1.elapsed().as_nanos() as u64;
         }
         self.work += work;
         self.stats.work_stats += work;
@@ -2504,7 +3183,17 @@ impl SlowLoop {
 
     fn visit(&mut self, ti: usize) -> Result<(), TraceError> {
         self.visit_begin(ti);
-        self.visit_body(ti)
+        if self.cs_struct.is_empty() {
+            return self.visit_body(ti);
+        }
+        let s = self.stats;
+        let cells = (s.adds, s.merges, s.splits, s.absorbs, s.deletes);
+        let r = self.visit_body(ti);
+        let s = self.stats;
+        if cells != (s.adds, s.merges, s.splits, s.absorbs, s.deletes) {
+            self.cs_struct[ti] = self.frames.max(1);
+        }
+        r
     }
 
     /// The bookkeeping of a visit (on the slow loop that owns the tile).
@@ -2550,7 +3239,7 @@ impl SlowLoop {
         if fit_fr.len() < self.cfg.min_fit_frames || test_fr.len() < self.cfg.min_test_frames {
             return Ok(());
         }
-        let refine = self.refines_on(self.tile_visits[ti]);
+        let refine = self.cs_visiting || self.refines_on(self.tile_visits[ti]);
         if !refine && !scope.merges() && !scope.grows() {
             // Nothing this visit would use the tile's solve for.
             return Ok(());
@@ -3244,7 +3933,6 @@ impl SlowLoop {
                 canvas,
                 h,
                 mask,
-                a: &a,
                 low: &low,
                 col: &col,
                 se,
@@ -3388,6 +4076,10 @@ impl SlowLoop {
             phi,
             z_fw,
             n: n_test,
+            #[cfg(feature = "diagnostics")]
+            q,
+            #[cfg(feature = "diagnostics")]
+            tol,
         })
     }
 
@@ -3414,6 +4106,29 @@ impl SlowLoop {
         self.filter
             .invert(canvas.h, canvas.w, &ms.s0, target, &mut a, 40);
         self.work += (canvas.len() * 40 * 60) as u64;
+        #[cfg(feature = "diagnostics")]
+        if let Some((px, out)) = self.probe.as_mut() {
+            let w = self.dims.width;
+            out.clear();
+            for &g in px.iter() {
+                out.push(
+                    canvas
+                        .local(g as usize / w, g as usize % w)
+                        .map_or([f32::NAN; 8], |l| {
+                            [
+                                h[l],
+                                target[l],
+                                ms.q[l],
+                                ms.tol[l],
+                                f32::from(u8::from(ms.s0[l])),
+                                f32::from(u8::from(ms.x[l])),
+                                a[l],
+                                f32::from(u8::from(mask[l])),
+                            ]
+                        }),
+                );
+            }
+        }
         let peak = a.iter().copied().fold(0.0f32, f32::max);
         if !(peak > 0.0) {
             return None;
@@ -4377,31 +5092,41 @@ impl SlowLoop {
     fn split_half_excess(&self, cell: &Cell, pix: &[u32], h: &[f32]) -> Option<f64> {
         let st = self.fpstats.get(&cell.id)?;
         let (ha, hb, _, _) = st.halves()?;
+        Some(self.half_excess(cell, pix, h, &ha, &hb))
+    }
+
+    /// [`Self::split_half_excess`] of an estimate `h` with split halves
+    /// `ha`, `hb` (all on `pix`).
+    fn half_excess(&self, cell: &Cell, pix: &[u32], h: &[f32], ha: &[f32], hb: &[f32]) -> f64 {
+        self.excess_over(cell, pix, h, Some((ha, hb)), 0.0)
+    }
+
+    /// [`Self::half_excess`] with the split-half term replaced by its
+    /// expectation for a per-pixel fit whose halves have standard errors
+    /// (per unit pixel noise) with `var_ab = s_A² + s_B²`: `½ n var_ab / a²`.
+    pub(super) fn noise_excess(&self, cell: &Cell, pix: &[u32], h: &[f32], var_ab: f64) -> f64 {
+        self.excess_over(cell, pix, h, None, var_ab)
+    }
+
+    fn excess_over(
+        &self,
+        cell: &Cell,
+        pix: &[u32],
+        h: &[f32],
+        halves: Option<(&[f32], &[f32])>,
+        var_ab: f64,
+    ) -> f64 {
         let block = self.filter.moat().map_or(0, |m| m.0);
         let w = self.dims.width;
         let cur: Vec<f64> = pix
             .iter()
             .map(|&g| f64::from(cell.column_at(g, w, block)))
             .collect();
-        let (mut hc, mut cc) = (0.0f64, 0.0f64);
-        for (k, &p) in pix.iter().enumerate() {
-            let is = f64::from(self.inv_sigma[p as usize]);
-            hc += f64::from(h[k]) * cur[k] * is * is;
-            cc += cur[k] * cur[k] * is * is;
-        }
-        if !(cc > 0.0) || !(hc > 0.0) {
-            return Some(f64::INFINITY);
-        }
-        let a = hc / cc;
-        let (mut d2, mut half) = (0.0f64, 0.0f64);
-        for (k, &p) in pix.iter().enumerate() {
-            let is = f64::from(self.inv_sigma[p as usize]);
-            let d = (f64::from(h[k]) / a - cur[k]) * is;
-            d2 += d * d;
-            let e = f64::from(ha[k] - hb[k]) / a * is;
-            half += 0.5 * e * e;
-        }
-        Some(d2 - half)
+        let is: Vec<f64> = pix
+            .iter()
+            .map(|&p| f64::from(self.inv_sigma[p as usize]))
+            .collect();
+        split_excess(h, &cur, &is, halves, var_ab)
     }
 
     /// The split-half merge statistic of a pair (see [`MergeRule::SplitHalf`]):
@@ -4523,6 +5248,87 @@ impl SlowLoop {
                     .count()
             })
             .sum()
+    }
+
+    /// The pair `(i, j)` of `base` refitted on the union `dom` of their
+    /// supports: alternating rank-1 fits of each cell to `data` (the
+    /// residual plus both cells' fitted signal on the fit frames), the
+    /// other's signal removed, then both solved on `test_fr`. `fits` is
+    /// `None` unless the refit stays two cells: the weaker part carries
+    /// `merge_refit_min_share` of the stronger one's energy and both
+    /// make a cell.
+    #[allow(clippy::too_many_arguments)]
+    fn refit_pair(
+        &mut self,
+        ti: usize,
+        rect: Rect,
+        base: &Problem,
+        fits: &[Fit],
+        data: &[Vec<f32>],
+        dom: &[u32],
+        (i, j): (usize, usize),
+        test_fr: &Frames,
+        want_ovl: bool,
+    ) -> RefitPair {
+        let mut ca: Vec<f32> = fits.iter().map(|f| f.c[i]).collect();
+        let mut cb: Vec<f32> = fits.iter().map(|f| f.c[j]).collect();
+        let mut other: Vec<Vec<f32>> = data
+            .iter()
+            .zip(fits)
+            .map(|(d, f)| {
+                let mut d = d.clone();
+                base.cols[j].add_to(&mut d, -f.c[j]);
+                d
+            })
+            .collect();
+        let refs: Vec<&[f32]> = other.iter().map(|r| r.as_slice()).collect();
+        let ha = rank1(&refs, dom, &mut ca, 5, false);
+        for ((o, d), &ct) in other.iter_mut().zip(data).zip(&ca) {
+            o.copy_from_slice(d);
+            for (&p, &v) in dom.iter().zip(&ha) {
+                o[p as usize] -= v * ct;
+            }
+        }
+        let refs: Vec<&[f32]> = other.iter().map(|r| r.as_slice()).collect();
+        let hb = rank1(&refs, dom, &mut cb, 5, false);
+        self.work += (2 * dom.len() * data.len() * 30) as u64;
+        let energy = |h: &[f32], c: &[f32]| {
+            h.iter().map(|v| v * v).sum::<f32>() * c.iter().map(|v| v * v).sum::<f32>()
+        };
+        let (ea, eb) = (energy(&ha, &ca), energy(&hb, &cb));
+        let share = ea.min(eb) / ea.max(eb);
+        let two = ea.min(eb) >= self.cfg.merge_refit_min_share * ea.max(eb);
+        let (idi, idj) = (base.cols[i].id, base.cols[j].id);
+        let mut out = RefitPair {
+            share,
+            two,
+            ha,
+            hb,
+            cells: None,
+            fits: None,
+            ovl: f32::NAN,
+        };
+        if let (Some(na), Some(nb)) = (
+            self.make_cell(idi, rect, dom, &out.ha, None),
+            self.make_cell(idj, rect, dom, &out.hb, None),
+        ) {
+            if two || want_ovl {
+                let cols = self.columns(rect, &[idi, idj], &[&na, &nb]);
+                let rp = self.problem(ti, cols);
+                let (ka, kb) = (
+                    rp.cols.iter().position(|c| c.id == idi),
+                    rp.cols.iter().position(|c| c.id == idj),
+                );
+                if let (Some(ka), Some(kb)) = (ka, kb) {
+                    out.ovl = overlap(&rp.cols[ka], &rp.cols[kb], rect.len());
+                }
+                if two {
+                    out.fits = Some(self.solve_all(&rp, test_fr));
+                }
+            }
+            out.cells = Some((na, nb));
+        }
+        out
     }
 
     fn merge(&mut self, ti: usize, fit_fr: &Frames, test_fr: &Frames) {
@@ -4649,49 +5455,26 @@ impl SlowLoop {
             // footprint mismatch (on the minisim recording with motion,
             // letting that leftover count kept 4 in 5 pairs on one GT unit
             // apart); then the current pair is the baseline.
-            if self.cfg.merge_refit_pair && ovl < 0.5 {
-                let mut ca: Vec<f32> = fits.iter().map(|f| f.c[i]).collect();
-                let mut cb: Vec<f32> = fits.iter().map(|f| f.c[j]).collect();
-                let mut other: Vec<Vec<f32>> = data
-                    .iter()
-                    .zip(&fits)
-                    .map(|(d, f)| {
-                        let mut d = d.clone();
-                        base.cols[j].add_to(&mut d, -f.c[j]);
-                        d
-                    })
-                    .collect();
-                let refs: Vec<&[f32]> = other.iter().map(|r| r.as_slice()).collect();
-                let ha = rank1(&refs, &dom, &mut ca, 5, false);
-                for ((o, d), &ct) in other.iter_mut().zip(&data).zip(&ca) {
-                    o.copy_from_slice(d);
-                    for (&p, &v) in dom.iter().zip(&ha) {
-                        o[p as usize] -= v * ct;
-                    }
-                }
-                let refs: Vec<&[f32]> = other.iter().map(|r| r.as_slice()).collect();
-                let hb = rank1(&refs, &dom, &mut cb, 5, false);
-                self.work += (2 * dom.len() * data.len() * 30) as u64;
-                let energy = |h: &[f32], c: &[f32]| {
-                    h.iter().map(|v| v * v).sum::<f32>() * c.iter().map(|v| v * v).sum::<f32>()
-                };
-                let (ea, eb) = (energy(&ha, &ca), energy(&hb, &cb));
-                let two = ea.min(eb) >= self.cfg.merge_refit_min_share * ea.max(eb);
-                let (idi, idj) = (ids[i], ids[j]);
-                if let (true, Some(na), Some(nb)) = (
-                    two,
-                    self.make_cell(idi, rect, &dom, &ha, None),
-                    self.make_cell(idj, rect, &dom, &hb, None),
-                ) {
-                    let cols = self.columns(rect, &[idi, idj], &[&na, &nb]);
-                    let rp = self.problem(ti, cols);
-                    let rf = self.solve_all(&rp, test_fr);
-                    chi_sep = chi_sep.min(Self::total_chi2(&rf));
+            if self.cfg.merge_refit_pair && ovl < self.cfg.merge_refit_max_ovl {
+                let rp =
+                    self.refit_pair(ti, rect, &base, &fits, &data, &dom, (i, j), test_fr, false);
+                if let Some(rf) = &rp.fits {
+                    chi_sep = chi_sep.min(Self::total_chi2(rf));
                     #[cfg(feature = "diagnostics")]
                     {
                         frames_log.refit = Some(rf.iter().map(|f| f.chi2).collect());
                     }
                 }
+            }
+            // DIAG: the refitted pair also where the rule skips it (the work
+            // counter is restored, so the trajectory does not depend on it).
+            #[cfg(feature = "diagnostics")]
+            if mergelog::on() {
+                let w0 = self.work;
+                let rp =
+                    self.refit_pair(ti, rect, &base, &fits, &data, &dom, (i, j), test_fr, true);
+                self.work = w0;
+                frames_log.refit_diag = Some(rp.diag());
             }
             let mut best_arm: Option<(f64, Option<Cell>, usize, usize)> = None;
             if let Some(m) = self.make_cell(keep, rect, &dom, &h, None) {
@@ -4746,7 +5529,14 @@ impl SlowLoop {
             // than half) whose measured shapes differ beyond their own
             // split-half noise stay two cells, whatever the held-out test
             // says. Without split halves the held-out test decides alone.
-            let gated = accept && self.cfg.merge_rule == MergeRule::SplitHalf && ovl < 0.5;
+            let apart = {
+                let (a, b) = (self.cells[ci].center, self.cells[cj].center);
+                ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
+                    >= self.cfg.merge_guard_min_sep * self.cfg.cell_diameter_px
+            };
+            let gated = accept
+                && self.cfg.merge_rule == MergeRule::SplitHalf
+                && (ovl < self.cfg.merge_guard_max_ovl || apart);
             #[cfg(feature = "diagnostics")]
             let want_shape = gated || mergelog::on();
             #[cfg(not(feature = "diagnostics"))]
@@ -5096,10 +5886,16 @@ impl SlowLoop {
     /// Refinement of the tile's cells. A cell whose running statistics are
     /// precise enough is re-estimated from them (all fitting frames so
     /// far); otherwise from the reservoir's fitting frames where it is
-    /// active. The new footprint is kept when it lowers held-out χ² by
-    /// `refine_z` sd of the noise-column null. Converged footprints (the
+    /// active. The new footprint is kept when it lowers held-out χ² with a
+    /// paired z above `refine_z` (statistics path, 0 by default) or
+    /// `absorb_z` (reservoir path). Converged footprints (the
     /// statistics' estimate within `refine_min_change` of the current one)
-    /// are not proposed, so refinements die out as the estimates settle.
+    /// are not proposed. (Under the split-half gate with `refine_z` 0,
+    /// refinements do not die out in count: later passes keep accepting
+    /// thousands of small ones on a dense recording. They move footprints
+    /// less and less: on the dense sims the share of cells whose footprint
+    /// correlates < 0.99 with the previous pass falls to about 2 % by pass
+    /// 5, below the old gate's 4 %.)
     fn refine(&mut self, ti: usize, solved: &Solved, test_fr: &Frames) {
         let core = self.tiles[ti].core;
         let rect = self.tiles[ti].rect;
@@ -5115,8 +5911,12 @@ impl SlowLoop {
             .max(1.0);
         let s2 = (chi_base / dof).max(1.0);
         let mut updates = Vec::new();
+        let joint = self.refine_clusters(ti, base, test_fr, &base_test, chi_base, s2, &mut updates);
         for i in 0..base.len() {
             let id = base.cols[i].id;
+            if joint.contains(&id) {
+                continue;
+            }
             let Some(ci) = self.cells.iter().position(|c| c.id == id) else {
                 continue;
             };
@@ -5218,6 +6018,42 @@ impl SlowLoop {
     }
 }
 
+/// `Î = D² − ½‖h_A − h_B‖²` of an estimate `h` against the current column
+/// `cur` (whitening `is` per pixel; see [`SlowLoop::half_excess`]), with
+/// the split-half term from `halves` or, without them, its expectation
+/// `½ n var_ab / a²` for halves of per-pixel standard error
+/// `var_ab = s_A² + s_B²`.
+pub(crate) fn split_excess(
+    h: &[f32],
+    cur: &[f64],
+    is: &[f64],
+    halves: Option<(&[f32], &[f32])>,
+    var_ab: f64,
+) -> f64 {
+    let (mut hc, mut cc) = (0.0f64, 0.0f64);
+    for k in 0..h.len() {
+        hc += f64::from(h[k]) * cur[k] * is[k] * is[k];
+        cc += cur[k] * cur[k] * is[k] * is[k];
+    }
+    if !(cc > 0.0) || !(hc > 0.0) {
+        return f64::INFINITY;
+    }
+    let a = hc / cc;
+    let (mut d2, mut half) = (0.0f64, 0.0f64);
+    for k in 0..h.len() {
+        let d = (f64::from(h[k]) / a - cur[k]) * is[k];
+        d2 += d * d;
+        half += match halves {
+            Some((ha, hb)) => {
+                let e = f64::from(ha[k] - hb[k]) / a * is[k];
+                0.5 * e * e
+            }
+            None => 0.5 * var_ab / (a * a),
+        };
+    }
+    d2 - half
+}
+
 /// The filtered column of the cell in `slot` on the sorted pixels `pix`, as
 /// the fast loop models it: exact on the support, the moat's block means
 /// off it, 0 beyond.
@@ -5234,19 +6070,6 @@ fn column_on(lib: &Library, slot: usize, pix: &[u32]) -> Vec<f32> {
             Err(_) => 0.0,
         })
         .collect()
-}
-
-/// Set `out[i]` for every `pix[i]` in `sub` (both sorted).
-fn mark(pix: &[u32], sub: &[u32], out: &mut [bool]) {
-    let mut j = 0;
-    for (i, &p) in pix.iter().enumerate() {
-        while j < sub.len() && sub[j] < p {
-            j += 1;
-        }
-        if j < sub.len() && sub[j] == p {
-            out[i] = true;
-        }
-    }
 }
 
 /// The single-peaked basin of the light `q` from `seed` (S1.6): a pixel
@@ -5398,6 +6221,53 @@ fn paired_z(base: &[Fit], alt: &[Fit]) -> f64 {
 }
 
 /// Cosine similarity of two patch columns.
+/// A merge test's refitted pair (see `SlowLoop::refit_pair`).
+struct RefitPair {
+    /// Weaker over stronger part's energy.
+    share: f32,
+    /// `share >= merge_refit_min_share`.
+    two: bool,
+    /// The two refitted footprints on the union support.
+    ha: Vec<f32>,
+    hb: Vec<f32>,
+    /// The cells made from them (both, or none).
+    cells: Option<(Cell, Cell)>,
+    /// Their solve on the test frames, when `two` and both cells exist.
+    fits: Option<Vec<Fit>>,
+    /// Overlap of the two refitted columns (NaN without cells).
+    ovl: f32,
+}
+
+#[cfg(feature = "diagnostics")]
+impl RefitPair {
+    fn diag(&self) -> mergelog::RefitDiag {
+        let argmax = |h: &[f32]| {
+            h.iter()
+                .enumerate()
+                .fold((0, f32::MIN), |b, (k, &v)| if v > b.1 { (k, v) } else { b })
+        };
+        let ((pa, ma), (pb, mb)) = (argmax(&self.ha), argmax(&self.hb));
+        let cross = |h: &[f32], m: f32, p: usize| if m > 0.0 { h[p] / m } else { f32::NAN };
+        mergelog::RefitDiag {
+            share: self.share,
+            two: self.two,
+            made: self.cells.is_some(),
+            ovl: self.ovl,
+            // Each refitted footprint at the other's peak, over its own peak.
+            cross_a: cross(&self.ha, ma, pb),
+            cross_b: cross(&self.hb, mb, pa),
+            centers: self
+                .cells
+                .as_ref()
+                .map(|(a, b)| (a.center, b.center, a.radius, b.radius)),
+            chi: self
+                .fits
+                .as_ref()
+                .map(|f| f.iter().map(|x| x.chi2).collect()),
+        }
+    }
+}
+
 fn overlap(a: &Column, b: &Column, n: usize) -> f32 {
     let ab = b.dot(&a.dense(n));
     let (aa, bb) = (a.norm2(), b.norm2());

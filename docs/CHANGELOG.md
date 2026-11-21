@@ -5,6 +5,40 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Added
+
+- Cala: **Donate data**. A green box at the bottom of the Run tab lets a signed-in user send the open recording to the lab's cala benchmark set: raw frames, losslessly compressed in the browser (CALARAW1: an "up" predictor plus the browser's gzip, ~1.65x on V4), with a metadata form, CC BY 4.0 credit to the donor's name and lab, and deletion on request. Donations use their own Supabase project (`VITE_DONATION_SUPABASE_URL` / `_ANON_KEY`, defaulted in `deploy.yml`) with a separate sign-in, so analytics and submissions stay where they are. Backend: migration `020_cala_donations.sql` and the `donation` Edge Function (caps, presigned R2 uploads, header checks, 48 h expiry of unfinished uploads, optional email per donation). Admin: a Donations tab with preview, approve / reject and a benchmark flag. Lab: `python/scripts/ingest_donations.py` pulls approved donations, verifies them byte-exact and stores them read-only. "My donations" is on cala's start page. See `apps/cala/docs/data-donation.md`.
+
+- Admin: a read-only **Schema status** panel on the Overview tab reporting which database migrations are applied (production migrations are applied by hand, and 008 and 015 were once skipped unnoticed). It uses the new optional `supabase/migrations/019_schema_fingerprint.sql` (`schema_fingerprint()`, admin-only, read-only, booleans only); **the project owner must apply 019 by hand** to enable it, and until then the panel shows "unknown" without affecting the dashboard. `supabase/README.md` lists the expected fingerprint per migration.
+
+- Cala (experimental, off by default): a joint footprint update for overlapping cells in the Refine stage (`SlowLoopConfig::joint_update`, `qc_eval --joint-update refine`). Cells whose footprints overlap (normalised whitened overlap ≥ 0.05, at most 6 per cluster) keep a compact history of their residual (K numbers per fitting frame over one statistics half-life). A refine visit re-solves the stored frames' traces with the current footprints, refits the footprints jointly (non-negative) and accepts the members' new footprints together or not at all. On the 14-sim demixing suite it lowers the close-pair trace correlation excess +0.150 → +0.106 and the share of bitten neighbours at 0.75-1 soma diameters 0.49 → 0.34 (14/14 and 13/14 sims), with matched and false cells unchanged; the Refine pass's slow-loop frame cost rises about 30 %. The cluster support rule and Discover use are not done yet. See `tools/cala-eval/results/2026-11-17-cluster-replay.md`.
+
+- Cala (experimental joint update): a cluster's history now follows its cells when their statistics disks move (re-expressed onto the new pixels, new pixels starting at the current model) instead of starting over, and stores cover only the cells' statistics disks. On the 14-sim suite against the first version: bitten neighbours at 0.75-1 soma diameters 0.34 → 0.20, close-pair trace correlation excess +0.106 → +0.084, footprint correlation with ground truth 0.9899 → 0.9920 (close pairs 0.9879 → 0.9917, 14/14 sims), isolated cells and matched/false cells unchanged; one Refine pass now beats three Refine passes without it. Open: footprints over-filled at a neighbour's centre 6.7 % → 7.5 % (main 5.9 %), and the Refine pass's slow-loop cost is +9 % (static) / +14 % (motion) over the flag-off pass. Off by default; `qc_eval --joint-admit`, `--joint-carry` are measured, unadopted switches. See `tools/cala-eval/results/2026-11-18-replay-stage2.md`.
+
+### Changed
+
+- Docs and Admin: a note that runs from local or dev builds send no analytics (no Supabase environment) and are not counted in Admin.
+
+## [2.20.0] - 2026-11-17
+
+Web apps `v2.20.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
+Cala no longer leaves "bites" in footprints where a close neighbour sits, which
+also cuts the crosstalk between close cells' traces. A new Correlation tab plots
+pairwise trace correlation against distance. Plans and run status show the Refine
+setting, and analytics count sessions per run (Admin splits them by Joint, Separate
+and single-session runs). Plus internal cleanup. No database migration needed.
+
+### Added
+
+- Cala: a **Correlation** tab (live run and saved result) with the pairwise trace correlation against centre distance diagnostic for incomplete demixing: median and IQR of Pearson r per distance bin (<0.5 to 3-6 soma diameters, traces high-passed with a 15 s moving average), a dotted far-pair (1.5-3 D) reference line and a fixed -0.1 to 0.5 y axis, drawn over a small semi-transparent scatter of the individual pairs (continuous distance axis 0-6 D, off-scale points counted). Computed once on demand in a worker from all pairs within 6 D (thinned uniformly only above 400,000), 0.2-1 s for 650 cells x 18,000 frames.
+
+### Changed
+
+- Cala: neighbouring footprints are no longer left "bitten". A cell found after its neighbour was born without the light under that neighbour's centre and kept the hole, which leaked its events into the neighbour's trace. The refine gate now accepts a refinement from the running statistics when it lowers the held-out error at all (`SlowLoopConfig::refine_z` 3 → 0; the split-half test still applies, reservoir refinements keep `absorb_z`). On the dense static sims the footprint value at a neighbour 0.75-1 soma diameter away goes from 0.00 to 0.51 of truth (pairs sims: 0.11 → 0.61), trace leak there falls by a fifth to two fifths and close-pair trace correlation excess by about a fifth, with matched cells 991 → 1016 and no more false cells; Refine passes accept about 5× more (small) refinements. Discover is affected as well as Refine. `qc_eval --refine-z` sets it for comparison. See `tools/cala-eval/results/2026-11-17-refine-gate-refill.md`.
+- Analytics (Cala): run events now describe what the run processed. `sessions` is the sessions in that stage run (Joint: all of the plan's, Separate and single: 1), and new `plan_sessions` and `refine_runs` fields carry the plan's size and its Refine setting (plans only; aggregate numbers, no migration). Admin: the Cala "Runs by stage and mode" table adds the sessions processed per stage, split Joint, Separate and single, and still reads older events (a Separate or single run counts as one session).
+- Cala: the plan summary (project view and session list) and the run status show the Refine setting ("Refine runs: N before Extract"), with a warning when it is 0 (Extract runs straight after Discover and footprints are not refined). A regression test pins that Joint and Separate plans run Refine once per Refine run before Extract.
+- Cala: removed unused internal discovery and motion fields, an uncalled discovery helper, and unused overlay/GPU binding code and worker types. Refine and Extract share their replay startup configuration; the native evaluation tools share their ground-truth reader. Consolidated local WASM initialization across 11 test suites while retaining all test cases.
+
 ## [2.19.1] - 2026-11-16
 
 Web apps `v2.19.1`; the Python package `calab` is unchanged (`py/v0.5.0`).

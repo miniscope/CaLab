@@ -52,9 +52,18 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
   `qc_eval real --churn-log` run (`RUN_DIR [LABEL_BUNDLE_DIR] > note.md`); reads
   `edits.tsv`, `fp_history.bin`, `adds.tsv`, `removals.tsv` and, with a binary
   built with `--features diagnostics`, `tests.tsv`. Needs numpy.
+- `merge_labels.py OUT.tsv RUN...`: labelled merge tests from `qc_eval --merge-log` runs (diagnostics build):
+  every test at footprint overlap >= 0.5 with its features (held-out z, `one`, traces, drop-one losses, the refitted
+  pair, centre and peak distances), labelled duplicate / real pair from the GT matches and linked to the removal it
+  caused (`harm` = the gone cell's unit is unmatched at the end). `merge_rules_eval.py LABELS.tsv [name=expr ...]`
+  replays candidate rules over the accepted merges; `merge_saddle.py` adds a single-peaked-union feature.
+  `multi_gt_split.py ROOT ARM...` splits "final cells matching 2+ GT units" into resolved close pairs and blends and
+  counts duplicates of matched units (`results/2026-11-19-merge-close-pairs.md`).
 - `support_sizes.py`: footprint support sizes per pass of `--passes N` runs
   (`LABEL=RUN_TREE ... [--count pos|disk]`): median, p99, largest, runs above
   50k px and the pass-k / pass-1 ratios (S2.1). Needs numpy.
+- `demix_suite.py`, `demix_metrics.py`, `demix_report.py`, `make_pair_spec.py`: the demixing suite
+  (next section). `test_demix.py` tests the metric and report code (numpy and scipy; skipped without).
 - `test_summarize.py`: `python -m unittest discover tools/cala-eval`.
 
 ## Run
@@ -83,12 +92,184 @@ python tools/cala-eval/summarize.py --base <runs>/base --new <runs>/new \
 
 Arguments after `--` go to every run; `--extra LABEL="..."` replaces or adds
 flags for one binary. `--budget-mult 4` scales `--budget` (the 4x runs).
-Check `ps` before generating sims or running `qc_eval real`: no more than 2
+`qc_eval real` counts as a light run (PI, 19 Nov 2026): it shares the 6-run machine-wide cap with sim runs
+(keep the >=5 GB free guard, under ~2.5 GB peak each). Check `ps` before generating sims: no more than 2
 heavy processes machine-wide. `run_arms.py` only counts binaries whose path
 contains `qc_eval` or `/cala-eval/bin/` towards the cap, so keep them there.
 
 `qc_eval` ignores flags it does not know, without a warning; check the spelling
 of every flag (`--every`, not `--checkpoints`; there is no `--no-pass2`).
+
+### Branched runs: Discover once, several end stages
+
+Experiments that differ only AFTER Discover (settling / look-back drain, Refine passes, settle rules) can share one
+Discover. `qc_eval` runs to a branch point once, then forks the process (copy-on-write, so the state is exactly the
+unbranched run's, with no `Clone` of the pipeline) once per branch, one after another; each child applies its tail
+flags, runs on and writes its normal outputs to `<out>/<name>/`.
+
+```bash
+qc_eval sim SIM OUT <common flags> --branch-after discover \
+    --branch 'refine:--passes 2 --later-passes refine' \
+    --branch 'plain:--passes 1 --lookback-drain 4800'
+```
+
+- Points: `discover` (end of pass 1, before the look-back drain) and `drain` (after the drain, before later passes).
+- Branch flags are the post-Discover ones only (`qc_eval` `TAIL_FLAGS`: `--passes`, `--later-passes`,
+  `--lookback-drain`, `--lookback-drain-rate`, `--lookback-settle-all` and the settle's `--settle-*`); any other flag in
+  a branch panics. At `drain` the three drain flags belong to the common flags; the settle runs after the `drain`
+  point, so `--settle-*` may differ between branches at both points. A new post-Discover option: add it to `Tail` and `TAIL_FLAGS` in
+  `qc_eval.rs` and to `run_arms.TAIL_FLAGS`.
+- Not combinable with `--churn-log`, `--merge-log`, `--factors-out`, `--visit-workers` (shared files/globals; `--offered-fps` without visit workers branches fine).
+- Files the prefix already wrote into `<out>/` (e.g. `--lib-at`) are copied into each branch directory. Wall-time
+  columns (`passes.tsv`, `cost.txt`, ...) of a branch include the shared prefix.
+- Memory: the parent stays resident while a child runs (COW), so peak is about one run plus the child's dirty pages.
+- Saving (static_s5, 4 arms with `--passes 1`, `2 refine`, `3 refine`, `2 all`, 19 Nov 2026, machine shared): separate runs
+  220 + 389 + 407 + 555 = 1571 s of run wall (about 1580 CPU-s), one branched run 1039 s (-34 %); peak RSS 0.85 GB
+  (largest single process; the parent's pages are shared copy-on-write). The saving grows with the Discover share:
+  real-recording arms (Discover is about half the wall) gain more.
+- Gate: `footprints.bin`, `dump_trace.f32` and the metrics of a branch are byte-identical to the separate run (below).
+
+`run_arms.py --branch-after discover|drain` and `demix_suite.py --branch-after discover|drain` do it for you: arms of
+one sim whose args differ only in tail flags run as one branched `qc_eval`, and every arm's directory, `run.json`
+(plus `"branched": [labels]`), `stdout.log`, `time.txt`, suite-cache entry and metrics look exactly as for separate runs
+(so reports and the cache are unchanged; the arm's `wall_s`/`rss_gb` in `run.json` are the whole group's). Default `off`;
+the binary must be built from a tree with `--branch-after` (checked). `test_branch.py` tests the grouping.
+
+## Demixing suite: judge a change with error bars
+
+One command runs a baseline and a candidate over a tier of sims and prints a Markdown diff table with a
+flag per metric (`better`, `worse`, `within noise`, `changed`). It exists because single-seed bite numbers
+misled twice in the refine-gate work (`results/2026-11-17-refine-gate-refill.md`): about half the close
+pairs sit at a bite ratio of exactly 0, so the _median_ ratio at 0.75-1 D flips between 0 and 0.5 on tiny
+changes. The robust bite metric is the **share of close pairs with ratio < 0.5**; the median is shown as a
+secondary row. Run it with the minisim venv python (numpy, scipy):
+
+```
+source ~/Projects/cala-data/sims.env     # CALA_SIMS, CALA_PAIRS, MINISIM_PY, QC_EVAL_BIN
+# one binary, two flag sets (here the refine gate z 3 vs 0): quick tier, 10 runs, ~20 min at 6-wide cold
+$MINISIM_PY tools/cala-eval/demix_suite.py --tier quick --bin $QC_EVAL_BIN \
+    --base-label z3 --new-label z0 --base-flags "--refine-z 3" --new-flags "--refine-z 0" \
+    --md tools/cala-eval/results/<date>-<task>.md
+# two binaries (main vs branch build): full tier, ~1.7 h
+$MINISIM_PY tools/cala-eval/demix_suite.py --tier full --base-bin <main qc_eval> --new-bin <branch qc_eval> \
+    --base-label main --new-label branch --md ...
+```
+
+- Tiers (`demix_suite.TIERS`): `smoke` = static s5 + pairs s5 (2 sims): a crash/sanity check that the pipeline
+  runs and the metrics look sane, **not a significance test**; `quick` = static s5-s7 + pairs s5-s6 (5 sims); `full` = static s5-s9, motion
+  s5-s9, pairs s5-s8 (14 sims). `--only static_s5,pairs_s6` runs a subset (smoke test). Static and motion
+  sims come from `$CALA_SIMS` (`sims-gt110`), the designed isolated-pairs sims (54 pairs at 4-24 px, soma
+  diameter 14.5 px; `make_pair_spec.py`) from `$CALA_PAIRS` (`demix-bench/measure/pairsim_v2191`).
+- Each run is `qc_eval sim SIM RUN --passes 2 --later-passes refine --batch 8 --budget 30000000
+--slow-seed 1 --dump --no-heldout --no-signed` (the last two skip the held-out score and signed traces the
+  metrics never read; footprints.bin, footprints_pass1.bin and dump_trace.f32 were byte-identical with and without them on
+  static_s5 and pairs_s5 with a build of main a26f48d, and on static_s5 with `qc_eval-st2-c --joint-update refine
+--joint-sign all`; final.tsv differs only in its `ho_*` columns, which become nan/0 without the held-out score and
+  which `demix_metrics.py` does not read. Do NOT use `--no-heldout` for runs that need the held-out score) (Discover + one Refine pass; `--motion` on the motion sims), so footprints are the
+  app's Refine library and traces its Extract. `--base-flags`/`--new-flags` add or replace flags per arm
+  (same rule as `run_arms.py --extra`); `qc_eval` ignores misspelt flags, check them.
+- `qc_eval --via-jobs` runs every visit as a worker job through the byte encoding; with
+  `--joint-update` the cluster replay runs in the runner and the run is byte-identical to the in-process one
+  (`results/2026-11-18-replay-worker-jobs.md`; the log's `ReplayStats` line gives `job_stores`, `job_store_bytes` and the
+  owner-side copy/apply time).
+- Output goes to `$CALA_DATA/demix-suite/<name>/<arm>/<sim>/` (`--name` to resume: finished runs and
+  metrics are skipped; a rebuilt binary needs a new name), with `report.md` beside them.
+  `--report-only` re-renders an existing tree. `--parallel` (default and cap 6 = `run_arms.MAX_LIGHT`, the
+  PI's machine-wide limit on light runs, raised from 4 on 18 Nov 2026; change that one constant if the PI moves it) counts only this
+  suite's `qc_eval sim` runs, and the machine-wide count of light runs still never exceeds the cap, so a suite
+  next to another agent's runs waits for a slot (no run starts below 5 GB free). Jobs are queued
+  longest-first (motion, static, pairs). Each run is 0.7-1.8 GB; the metrics step peaks near 2.5 GB.
+  Scaling (static sims, 6 runs, 18 Nov 2026): per-run wall about 255 s at 4 concurrent, about 315 s at 6
+  concurrent (+24 %), so 6-wide still gives about 20 % more runs per hour.
+- **Run cache** (`suite_cache.py`): `qc_eval` is deterministic (byte-identical across reruns), so each finished
+  run is stored under `$CALA_DATA/suite-cache/v1/<key>/` (override `--cache-dir` / `$CALA_SUITE_CACHE`),
+  copy-on-write on APFS. Key = sha256 of the binary + the full ordered `qc_eval` argument list (passes,
+  later-passes, batch, budget, slow-seed, every flag) + the sim (`oracle.bin`, `spec.json`, `gen.json`, `daq/`
+  names and sizes) + a cache-format version, so any change to any of them is a miss. The `demix_*` metric
+  files are cached per run under a hash of `demix_metrics.py` + `demix_clusters.py`, so editing the metric
+  code recomputes only the metrics. The baseline arm of a comparison therefore costs nothing the second time.
+  `--no-cache` neither reads nor writes it; `--force` skips reads. A rebuilt binary is a new hash, so cached
+  runs of the old build are simply not hit. Cached run dirs are complete copies (all dumps included).
+- **How many sims?** The quick tier (5 sims) only detects large effects: about 97 % power for an effect the
+  size of Stage 1's headline (-0.047), but only about 37 % with 3 sims. A "within noise" verdict on a
+  small expected effect is not evidence of no effect; use the full tier, or more seeds, for that.
+- `demix_metrics.py SIM RUN` (per run, also usable alone): Hungarian match on footprint correlation
+  (r >= 0.7); the motion-frame offset is estimated from matched centroids and the GT moved into cala's
+  frame (motion sims; the same offset `qc_eval` reports in `motion_offset.tsv`); bite ratio at each GT
+  neighbour within 3 D (estimated A_i at c_j over true, peak-normalised), control ring on the side facing
+  away; `leak_sd` from the OLS of the estimated trace on the two true traces; trace correlation of all
+  matched pairs within 3 D after a 15 s high-pass. Writes `demix_pairs.tsv`, `demix_corr.tsv`,
+  `demix_det.json`.
+- `demix_report.py --base RUNS/a --new RUNS/b`: the table.
+- Birth frames (look-back metrics): cala logs every add in `adds.tsv` (`recording_frame`, `id`); the id is the `cid` of
+  `footprints.bin`, so no extra qc_eval output was needed for births. `demix_metrics.py --ledger DIR` takes `adds.tsv`
+  from another run (the stage libraries below are scored in runs without a ledger). Missing births put a cell in no
+  birth group (no crash, the n column shows it).
+
+| metric (per arm)                                                                                  | what                                                                                                                                                                                                                                 | better                                       |
+| ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- |
+| **trace corr excess < 1 D** (headline)                                                            | median r of matched pairs < 1 D minus median r at 1.5-3 D, 15 s high-pass                                                                                                                                                            | lower                                        |
+| bite share ratio < 0.5 at 0-0.5, 0.5-0.75, 0.75-1 D                                               | share of close GT-neighbour pairs whose estimate lost more than half the true light at the neighbour's centre                                                                                                                        | lower                                        |
+| bite ratio median per bin (secondary)                                                             | unstable when half the pairs are 0; read with the share                                                                                                                                                                              | higher                                       |
+| control ring ratio median (< 1 D)                                                                 | same ratio on the far side, truncation not bite                                                                                                                                                                                      | none                                         |
+| leak_sd median and share > 0.1 (< 1 D)                                                            | neighbour's trace in the estimate, in units of the cell's own                                                                                                                                                                        | lower                                        |
+| matched, false, net, splits, median support / half-max area, QC ms/frame                          | `final.tsv`, `passes.tsv`, `footprints.bin`, `QC cost per frame`                                                                                                                                                                     | matched, net up; false, ms down; others none |
+| **final cells matching 2+ GT units**                                                              | estimates with footprint r >= 0.5 to two or more GT footprints (the harmful merges; mlog.py's `diff`)                                                                                                                                | lower                                        |
+| **close-pair resolution**                                                                         | GT neuron pairs binned 0-0.25, 0.25-0.5, 0.5-0.75, 0.75-1 D: counts with both / one / neither neuron matched in the final library (`final.tsv`, `gt.tsv`); a table of pooled counts plus a both-matched row per bin                  | both up                                      |
+| merge edits                                                                                       | rows of `passes.tsv` merges; about 2/3 fold a duplicate back into its own cell, so read them with the two rows above                                                                                                                 | none                                         |
+| **bite share, later-born vs earlier-born cell** (0-0.5, 0.5-0.75, 0.75-1 D)                       | within a matched close pair, the rows whose cell i was born later (or earlier) by more than 3 % of the recording; the bite hypothesis says the later-born one is bitten, the older one is not                                        | lower                                        |
+| leak_sd share > 0.1, later- / earlier-born, < 1 D                                                 | same split for the neighbour's trace in the estimate                                                                                                                                                                                 | lower                                        |
+| **late-born cells**: bite share per bin, leak share, corr excess of pairs with a late-born member | cell i born in the last 20 % of the recording (`demix_report.LATE_FRAC`); the corr excess uses the same 1.5-3 D reference as the headline                                                                                            | lower                                        |
+| late-born cells in the library / matched                                                          | counts of final cells born in the last 20 % and how many match a GT unit                                                                                                                                                             | matched up                                   |
+| **over-fill at an undetected neighbour**                                                          | matched cell with a detectable GT neighbour within 1 D that no estimate matches: share of est/true > 1.3 at the neighbour's centre (per bin and < 1 D) and the median ratio; > 1.3 = the cell absorbed the missing neighbour's light | lower                                        |
+| cells in a cluster of 2+, largest component                                                       | overlap clusters of the final library (`demix_clusters.py`, rho >= 0.05, K_max 6), plus a pooled cluster-size table under the main table                                                                                             | none                                         |
+
+**Error bars.** Pair metrics are pooled over the sims of the tier; the `[..]` is a 95 % bootstrap CI over
+pairs (5000 resamples, each arm on its own pairs) and `sd` is the spread of the per-sim values across seeds.
+The diff CI is the percentile CI of the paired bootstrap draws. Run metrics (counts, area, cost) are
+per-sim values with a paired t CI over sims (needs >= 3). A metric is `better`/`worse` only if the diff CI
+excludes 0 **and** at least 2/3 of the sims moved the same way (the pairs of one sim are not independent,
+so the pooled bootstrap alone is optimistic); a CI that excludes 0 with disagreeing seeds is
+`within noise (seeds disagree)`. Metrics with no good direction report `changed`. Treat one `better` among
+many rows as a lead; the headline, the 0.75-1 D bite share and `matched`/`net` moving together is a result.
+A rerun of the same binary and flags reproduces the numbers (fixed `--slow-seed`), so the error bars are
+sim-to-sim and pair-to-pair spread, not run noise.
+
+Tests: `python -m unittest discover tools/cala-eval` (`test_demix.py`: the suite; `test_demix_lookback.py`: birth
+order, late-born, undetected neighbours, clusters, stage logic, all on synthetic fixtures with planted effects).
+Validation run (refine gate z 3 vs 0, quick tier): `results/2026-11-17-demix-suite-validation.md`.
+
+### Quality by stage and over time (`demix_stages.py`)
+
+For judging "Discover with look-back" against "Discover + N Refines" (`design_discover_lookback.md` sections 6-7).
+One qc_eval main run per sim and arm (`--passes 4 --later-passes refine --dump --wrap-libs --lib-at ...`), then
+fast-loop-only extract runs (`--passes 1 --library F --dump`) for each library scored, then the same
+`demix_metrics.py`. About 12 min main + 7 x ~1 min per sim, one run at a time.
+
+```
+$MINISIM_PY tools/cala-eval/demix_stages.py run --label z3 --flags "--refine-z 3" --bin <qc_eval of this branch> \
+    --only static_s5,pairs_s5 --name lookback-z3-vs-z0        # then again with --label z0 --flags "--refine-z 0"
+$MINISIM_PY tools/cala-eval/demix_stages.py report --name lookback-z3-vs-z0 --md results/<date>-<task>.md [--ref z3:1]
+```
+
+- **Stages**: S0 Discover only, S1 Discover + 1 Refine, S2, S3, each the library the app ends that step with
+  (`footprints_wrap{k}.bin`, the library the wrap publishes; the last stage is the main run's final `footprints.bin`). Every stage is scored through the same extract-only run, never from the main run's own `--dump` (the two differ slightly: pairs_s5 headline +0.122 vs +0.138, trace r median 0.99995). The
+  header of each column carries the cumulative wall seconds (sum of `passes.tsv` `wall_s`: the qc_eval pass loop,
+  GT scoring included, identical across arms; excludes the finalize at a wrap and the metric extraction).
+- **Checkpoints inside Discover**: the live library at 25 / 50 / 75 % of the frames (`footprints_t{frame}.bin`) and at
+  100 % (`footprints_pass1.bin`, before the finalize). Cells not yet born are absent, so the undetected-neighbour row
+  at early checkpoints measures the cost of cells found later.
+- **Time to good footprints**: against a reference stage R (default the arm's last stage; `--ref LABEL:K` takes
+  another arm's stage K), a stage is _good_ when both the headline correlation excess and the 0.75-1 D bite share are at
+  or below the upper bound of R's 95 % bootstrap CI (lower is better, so better than R is good). The time is the
+  cumulative wall of the arm's first good stage (stage granularity only), also as a ratio to R's own wall time (the
+  design's Stage 4 asks for <= 0.7 against Discover + 1 Refine). A single-stage arm that is never good reads
+  "not reached".
+- **Cluster churn**: libraries at 12.5 % steps of pass 1 (footprints only, no traces); per interval the share of
+  surviving cells whose overlap cluster changed, split into birth (a new cell joined), loss, regroup, and the implied
+  frames between changes for cells in a cluster of 2+.
+- qc_eval additions (examples only, no library behaviour change): `--lib-at F,F,..` writes the live library when pass 1
+  reaches those shares; `--wrap-libs` writes the library each wrap publishes. Births needed no change.
 
 ## Statistics
 
@@ -191,6 +372,12 @@ since 13 Nov 2026). `legacy` is the χ² disagreement test plus
 current column exceeds the estimate's own split-half noise. The reservoir path,
 absorbs and merges are the same under both.
 
+`qc_eval --refine-z Z` sets the paired held-out z a statistics-path
+refinement must exceed (`SlowLoopConfig::refine_z`, default 0 since 17 Nov
+2026: any held-out gain; 3 before). Reservoir-path refinements keep
+`absorb_z`. The 3σ veto on a tile's few held-out frames kept later-born
+neighbours bitten (`results/2026-11-17-refine-gate-refill.md`).
+
 ## Merge rule (S2.1c)
 
 `qc_eval --merge-rule legacy|split-half` picks which merge tests may merge
@@ -260,3 +447,52 @@ sim recordings they name are kept in `~/Projects/cala-data/sims` (see Run).
 | `2026-11-12-refine-gate.md`           | S2.1c minimal option: split-half refine gate cuts late real refines 37 %; the default                    |
 | `2026-11-13-merge-rule.md`            | S2.1c merge redesign: split-half merge rule cuts distinct-cell merges 52–67 %; the default               |
 | `2026-11-13-app-background-levels.md` | the app's slow loop without the ring-background levels: within noise; fixed so the app matches `qc_eval` |
+| `2026-11-17-refine-gate-refill.md`    | refine gate z 3 → 0: bitten neighbours refilled, leak and close-pair corr down, detection unchanged      |
+
+### What a Refine does to a library (`lookback_settled.py`)
+
+For the question "is a library settled, or does one more Refine still move it?"
+(`results/2026-11-19-lookback-review.md`). It reads the libraries one run writes with `qc_eval --wrap-libs
+--noise-dump` (wrap k = the library after pass k) and compares the same cell (by id) before and after a pass: the
+app's Refine readout (relative L2 of the footprint weights), a shape-only change (1 - cosine), the split-half footprint
+noise before the pass, and on sims the change in r with ground truth, by the suite's groups (isolated, close-pair,
+born in the last 20 %). Always compare against a null step: a second Refine after Discover + 1 Refine.
+
+```
+# sims: per-sim medians, mean and paired t CI over the tier
+$MINISIM_PY tools/cala-eval/lookback_settled.py sims --root $CALA_DATA/demix-suite/<name> \
+    --step "COMBO->COMBO+R=COMBO+R:wrap1:final" --step "D->D+R=DRR:wrap1:wrap2" \
+    --step "D+R->D+2R=DRR:wrap2:final" --null "D+R->D+2R" --md out.md
+# real data: change by id per run, and agreement between libraries (Hungarian on footprint r >= 0.7), Minian optional
+$MINISIM_PY tools/cala-eval/lookback_settled.py real --run A=DIR --run B=DIR --pair A:wrap1,B:final \
+    --pair A:final,Minian --minian <minian_out> --md out.md
+```
+
+qc_eval flags that go with it (example only): `--lookback-drain N` now also works with `--passes N` > 1 (the drain
+runs at the end of pass 1, then the later passes: a Refine after a settled look-back Discover);
+`--lookback-drain-rate F` sets the look-back frames per drain step; `--noise-dump` with `--wrap-libs` writes
+`fp_noise_wrap{k}.tsv` at every wrap. RAM: about 3.5 GB peak on a motion sim (one sim and step at a time). In zsh, quote
+`NAME:wrapK` arguments (`:w` is a modifier).
+
+`real --tags a,b,c` names the libraries of each run in order (default `wrap1,wrap2,final`), for example the settle's
+checkpoint libraries `settle0,settle5,settle10`.
+
+### The end-of-Discover settle (`qc_eval --settle-frames`, `settle_ladder.py`, `settle_checks.py`)
+
+For the question "what does a Refine pass add to a settled look-back Discover, and can settling include it?"
+(`results/2026-11-19-lookback-settle.md`). `qc_eval --settle-frames N` (with `--lookback-drain`) adds a tail after the
+drain: re-read frames go to every cell with the cell set frozen, by default through the ordinary `observe` (as a
+Refine pass feeds them); `--settle-observe frozen|stats` are the ablations (reservoir frozen; look-back path). Options
+are in the header of `qc_eval.rs` (`--settle-batch`, `--settle-round`, `--settle-check`, the stop rule, `--settle-libs`).
+It writes `settle_checks.tsv` (per checkpoint: footprint change since the last checkpoint against split-half noise)
+and with `--settle-libs` the checkpoint libraries `footprints_settle{k}.bin` / `final_settle{k}.tsv`.
+
+```
+# several arms of a suite run tree against one reference, the rungs between them, and what each tail did
+$MINISIM_PY tools/cala-eval/settle_ladder.py --root $CALA_DATA/demix-suite/<name> --ref COMBO+R \
+    --arms COMBO,ST-stats,ST-frozen,ST-full --steps --md ladder.md
+# the checkpoints of settle runs: change against noise, and on sims footprint r of the checkpoint libraries
+$MINISIM_PY tools/cala-eval/settle_checks.py $CALA_DATA/demix-suite/<name>/<arm>/* --md checks.md
+```
+
+`run_arms.py`'s machine-wide guard counts `qc_eval real` runs as light runs too (same cap of 6, since 19 Nov 2026).

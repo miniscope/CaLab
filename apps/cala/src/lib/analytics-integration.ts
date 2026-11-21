@@ -26,11 +26,23 @@ export type ErrorCategory = 'out_of_memory' | 'webgpu' | 'decode' | 'worker' | '
 /** Fields each event may carry. Anything else is dropped before sending. */
 export const ALLOWED_FIELDS = {
   file_imported: ['extension'],
-  run_started: ['stage', 'mode', 'sessions', 'frames', 'fps', 'width', 'height'],
+  run_started: [
+    'stage',
+    'mode',
+    'sessions',
+    'plan_sessions',
+    'refine_runs',
+    'frames',
+    'fps',
+    'width',
+    'height',
+  ],
   run_finished: [
     'stage',
     'mode',
     'sessions',
+    'plan_sessions',
+    'refine_runs',
     'frames',
     'fps',
     'width',
@@ -230,7 +242,7 @@ export interface AnalyticsDeps {
   info(): FrameSourceInfo | null;
   /** The multi-session plan (null: a single folder, run by hand). */
   plan(): {
-    settings: { mode: 'joint' | 'separate' | 'apply' };
+    settings: { mode: 'joint' | 'separate' | 'apply'; refineRuns?: number };
     sessions: readonly unknown[];
   } | null;
   /** Current throughput of a stage, frames per second (0: idle). */
@@ -331,9 +343,19 @@ export function setupAnalyticsEffects(deps: AnalyticsDeps): void {
   function context(): Record<string, unknown> {
     const info = deps.info();
     const plan = deps.plan();
+    const mode = (plan?.settings.mode ?? 'single') satisfies RunMode;
     return {
-      mode: (plan?.settings.mode ?? 'single') satisfies RunMode,
-      sessions: plan?.sessions.length ?? 1,
+      mode,
+      // Sessions this stage run processed: a Joint run is one run over every
+      // session; a Separate plan runs each session on its own (and a single
+      // folder is one). `plan_sessions` is the size of the plan they came from.
+      sessions: mode === 'joint' ? (plan?.sessions.length ?? 1) : 1,
+      ...(plan ? { plan_sessions: plan.sessions.length } : {}),
+      // Refine runs the plan asked for before Extract (0: none), so a plan
+      // without a Refine run can be told from one whose Refine did not run.
+      ...(plan && typeof plan.settings.refineRuns === 'number'
+        ? { refine_runs: plan.settings.refineRuns }
+        : {}),
       ...(info && !info.live ? { frames: info.frameCount } : {}),
       ...(info?.fps ? { fps: round(info.fps) } : {}),
       ...(info ? { width: info.width, height: info.height } : {}),

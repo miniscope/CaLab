@@ -16,6 +16,18 @@ import {
 
 export type AdapterClass = 'hardware' | 'fallback' | 'none' | 'unknown';
 
+/**
+ * Sessions a run event processed. Events since the run/plan split carry
+ * `sessions` for the run itself; older events carried the plan's size there,
+ * which counts a Separate plan's session once per run, so Separate and single
+ * runs are always one session (a Joint run is one run over all of them).
+ */
+export function runSessions(e: EventRow): number | null {
+  const mode = evStr(e, 'mode');
+  if (mode === 'separate' || mode === 'single') return 1;
+  return evNum(e, 'sessions');
+}
+
 export interface CalaRun {
   sessionId: string;
   at: number;
@@ -23,7 +35,12 @@ export interface CalaRun {
   browser: string;
   stage: string;
   mode: string;
+  /** Sessions this run processed (Joint: all of the plan's; Separate and single: 1). */
   sessions: number | null;
+  /** Size of the plan the run belonged to; null for a single folder and for older events. */
+  planSessions: number | null;
+  /** Refine runs the plan asked for before Extract; null when not reported (older events). */
+  refineRuns: number | null;
   frames: number | null;
   fps: number | null;
   width: number | null;
@@ -78,7 +95,9 @@ export function extractRuns(sessions: SessionRow[], idx: EventIndex): CalaRun[] 
         browser: s.user_id ? shortHash(s.user_id) : '-',
         stage: evStr(e, 'stage') ?? 'unknown',
         mode: evStr(e, 'mode') ?? 'unknown',
-        sessions: evNum(e, 'sessions'),
+        sessions: runSessions(e),
+        planSessions: evNum(e, 'plan_sessions'),
+        refineRuns: evNum(e, 'refine_runs'),
         frames: evNum(e, 'frames'),
         fps: evNum(e, 'fps'),
         width: w,
@@ -199,7 +218,7 @@ export function pairRuns(sessions: SessionRow[], idx: EventIndex): RunLedger {
           version,
           stage,
           mode: evStr(e, 'mode') ?? 'unknown',
-          recordings: evNum(e, 'sessions'),
+          recordings: runSessions(e),
           frames,
           megapixels: mp,
           workMpx: frames !== null && mp !== null ? frames * mp : null,
@@ -292,11 +311,18 @@ export interface StageRow {
   stage: string;
   mode: string;
   runs: number;
+  /** Sessions those runs processed (sum of each run's own sessions). */
+  sessions: number;
   medianFps: number | null;
   medianDuration: number | null;
 }
 
 const STAGE_ORDER = ['discover', 'refine', 'extract'];
+const MODE_ORDER = ['joint', 'separate', 'single'];
+const modeRank = (m: string) => {
+  const i = MODE_ORDER.indexOf(m);
+  return i < 0 ? MODE_ORDER.length : i;
+};
 const stageRank = (s: string) => {
   const i = STAGE_ORDER.indexOf(s);
   return i < 0 ? STAGE_ORDER.length : i;
@@ -316,10 +342,16 @@ export function stageModeTable(runs: CalaRun[]): StageRow[] {
       stage,
       mode,
       runs: list.length,
+      sessions: list.reduce((a, r) => a + (r.sessions ?? 1), 0),
       medianFps: median(list.map((r) => r.medianFps)),
       medianDuration: median(list.map((r) => r.durationS)),
     };
-  }).sort((a, b) => stageRank(a.stage) - stageRank(b.stage) || b.runs - a.runs);
+  }).sort(
+    (a, b) =>
+      stageRank(a.stage) - stageRank(b.stage) ||
+      modeRank(a.mode) - modeRank(b.mode) ||
+      a.mode.localeCompare(b.mode),
+  );
 }
 
 export function runsOverTime(runs: CalaRun[], bucket: Bucket, startMs: number, endMs: number) {

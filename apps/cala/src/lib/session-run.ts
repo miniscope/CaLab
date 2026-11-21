@@ -42,6 +42,13 @@ export const DEFAULT_MODE: LibraryMode = 'joint';
 export const DEFAULT_REFINE_RUNS = 1;
 export const MAX_REFINE_RUNS = 5;
 
+/** What a plan does about Refine, for the plan summary and the run's status. */
+export function refinePlanText(refineRuns: number): string {
+  return refineRuns === 0
+    ? 'Refine runs: 0 (Extract runs straight after Discover; footprints are not refined)'
+    : `Refine runs: ${refineRuns} before Extract`;
+}
+
 export interface RunSettings {
   mode: LibraryMode;
   /** Refine runs after Discover, before Extract (0: Extract straight away). */

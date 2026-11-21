@@ -28,17 +28,25 @@ Every payload is filtered through an allowlist (`ALLOWED_FIELDS` in Cala's integ
 covered by a test. Volume is one event per stage run, export or session; the database caps a
 session at 500 events (migration 013).
 
-| Event              | Fields                                                                                                                                                                                                                               |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `file_imported`    | `extension` (e.g. `avi`; once per folder or multi-session plan, not live sources)                                                                                                                                                    |
-| `run_started`      | `stage` (discover/refine/extract), `mode` (joint/separate/apply/single), `sessions`, `frames`, `fps`, `width`, `height`                                                                                                              |
-| `run_finished`     | the same, plus `duration_s`, `median_fps`, `cells`, `peak_wasm_mb`                                                                                                                                                                   |
-| `run_failed`       | `stage`, `error_category` (out_of_memory/webgpu/decode/worker/unknown), `error_type` (a closed list of error class names, e.g. RangeError), `peak_wasm_mb` (when known)                                                              |
-| `boundary_summary` | `boundaries`, `ok`, `warning`, `failed` (once per finished or stopped Joint run)                                                                                                                                                     |
-| `results_exported` | `sessions`, `format_version`                                                                                                                                                                                                         |
-| `webgpu_info`      | `adapter` (hardware/fallback/none), `vendor`, `architecture`, `device`, `description` (each lowercase `[a-z0-9 ._-]`, at most 24/48/48/48 characters, omitted when empty), `max_buffer_mb`, `max_storage_mb` (WebGPU adapter limits) |
-| `device_info`      | `os` (macos/windows/linux/chromeos/android/ios/other, family only), `cores`, `memory_gb` (`navigator.deviceMemory`, coarse, Chrome only), `browser_major`, `dpr` (rounded to 0.25); once per session                                 |
-| `tester_tag`       | `tag` (opt-in, see below)                                                                                                                                                                                                            |
+| Event              | Fields                                                                                                                                                                                                                                                                                                                                  |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `file_imported`    | `extension` (e.g. `avi`; once per folder or multi-session plan, not live sources)                                                                                                                                                                                                                                                       |
+| `run_started`      | `stage` (discover/refine/extract), `mode` (joint/separate/apply/single), `sessions` (sessions this run processes: Joint all of the plan's, Separate and single 1), `plan_sessions` (size of the plan, plans only), `refine_runs` (Refine runs the plan asks for before Extract, 0 to 5, plans only), `frames`, `fps`, `width`, `height` |
+| `run_finished`     | the same, plus `duration_s`, `median_fps`, `cells`, `peak_wasm_mb`                                                                                                                                                                                                                                                                      |
+| `run_failed`       | `stage`, `error_category` (out_of_memory/webgpu/decode/worker/unknown), `error_type` (a closed list of error class names, e.g. RangeError), `peak_wasm_mb` (when known)                                                                                                                                                                 |
+| `boundary_summary` | `boundaries`, `ok`, `warning`, `failed` (once per finished or stopped Joint run)                                                                                                                                                                                                                                                        |
+| `results_exported` | `sessions`, `format_version`                                                                                                                                                                                                                                                                                                            |
+| `webgpu_info`      | `adapter` (hardware/fallback/none), `vendor`, `architecture`, `device`, `description` (each lowercase `[a-z0-9 ._-]`, at most 24/48/48/48 characters, omitted when empty), `max_buffer_mb`, `max_storage_mb` (WebGPU adapter limits)                                                                                                    |
+| `device_info`      | `os` (macos/windows/linux/chromeos/android/ios/other, family only), `cores`, `memory_gb` (`navigator.deviceMemory`, coarse, Chrome only), `browser_major`, `dpr` (rounded to 0.25); once per session                                                                                                                                    |
+| `tester_tag`       | `tag` (opt-in, see below)                                                                                                                                                                                                                                                                                                               |
+
+Chaining is tracked apart from plan size: a Joint plan is one run per stage over all its sessions
+(`sessions` = the plan size), a Separate plan is one run per stage per session (`sessions` = 1,
+`plan_sessions` = how many sessions the plan has). Summing `sessions` over finished runs gives the
+sessions processed per stage. Events sent before this change carry the plan's size in `sessions` in every
+mode and no `plan_sessions` or `refine_runs`; the Admin app reads a Separate or single run as one
+session whichever version sent it. `refine_runs` is a setting the user chose (a small number), so a
+plan whose runs show no Refine can be told from one whose Refine failed to start.
 
 ### Memory fields
 
@@ -76,6 +84,15 @@ File or folder names, paths, animal or session names, trace or footprint data, e
 recording timestamps, anything else the user typed (except the optional tag). Error message
 text is never sent, only a category and, when it matches a closed list, the error class name.
 
+## Local builds send nothing
+
+Analytics is only enabled in builds that have the Supabase environment (`VITE_SUPABASE_URL` and
+`VITE_SUPABASE_ANON_KEY`, set by the deploy workflow). A local build (`npm run dev`, `npm run build`
+without those variables) has no Supabase client, so it creates no session and sends no events.
+Runs from local or dev builds therefore never appear in Admin; if a lab member's local runs are
+missing from the counts, this is why. Only the deployed site is counted (plus any build that was
+given the credentials, which Admin hides under "Include dev builds" when its version is `dev`).
+
 ## Database migration
 
 `supabase/migrations/017_analytics_event_name_shape.sql` replaces the fixed `event_name` list
@@ -87,7 +104,7 @@ The 4096-byte `event_data` limit (008) fits every payload above and is unchanged
 
 `apps/admin` (hidden from the app list, admin role only: RLS limits `analytics_*` reads to
 `app_metadata.role = 'admin'`). Reads use keyset pagination (1000 rows per page, newest first, 30 s timeout and one retry per page). Sessions and submissions load first and events stream in afterwards (current period only), so views render immediately and show an "events still loading" note. Row caps: 100k sessions, 150k events; a banner appears when a table hits one. Sessions and events are read with `select('*')`: columns the database lacks (for example `is_anonymous`, migration 008) are listed in a banner and the related metric shows n/a. No database migration
-is required: aggregation is client-side (the optional `018_analytics_admin_read_performance.sql` adds indexes for the keyset reads and a cheaper admin RLS expression). Filters live in the URL hash
+is required: aggregation is client-side (the optional `018_analytics_admin_read_performance.sql` adds indexes for the keyset reads and a cheaper admin RLS expression). The Overview tab ends with a read-only **Schema status** panel that reports which migrations the live database has applied (via the optional `019_schema_fingerprint.sql`; "unknown" when it is not installed; see `supabase/README.md`). Filters live in the URL hash
 (`#/cala?app=cala&range=90d&ver=2.18.1&dev=1`).
 
 ### Definitions

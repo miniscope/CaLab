@@ -38,6 +38,7 @@ import { RunRecord } from './run-record.ts';
 import { BoundaryMonitor, severityLabel, type BoundaryFlag } from './boundary-flags.ts';
 import type { SessionStart } from './session-boundary.ts';
 import type { RunHistory } from './run-history.ts';
+import type { LookbackFeed } from './lookback-client.ts';
 
 /** Step requests kept outstanding: one running, one queued so the worker never idles. */
 export const MAX_IN_FLIGHT = 2;
@@ -140,6 +141,8 @@ export function createPipelineStore(
   runHistory?: RunHistory,
   /** Feed the compress worker; its store is reset with each run. */
   compress?: Pick<CompressStore, 'reset'>,
+  /** Look-back (experimental): the look-back worker's feed (absent: look-back is not offered). */
+  lookbackFeed?: LookbackFeed,
 ) {
   const [status, setStatus] = createSignal<PipelineStatus>('idle');
   const [plan, setPlan] = createSignal<PipelinePlan | null>(null);
@@ -157,6 +160,11 @@ export function createPipelineStore(
   /** Cell discovery (the slow loop) on or off. */
   const [discover, setDiscoverSignal] = createSignal(true);
   const [residual, setResidualSignal] = createSignal(false);
+  /** Look-back on for the next Discover start (the setting), and on in the current run. */
+  const [lookback, setLookback] = createSignal(false);
+  const [lookbackRun, setLookbackRun] = createSignal(false);
+  /** Session of the current run with look-back (0: none). */
+  let lookbackSession = 0;
   /** The live source's counters after the newest batch (null on a file source). */
   const [live, setLive] = createSignal<LivePoint | null>(null);
   let livePoints: LivePoint[] = [];
@@ -215,6 +223,7 @@ export function createPipelineStore(
         return;
       case 'map':
         flatLatest = e.map;
+        if (lookbackSession) lookbackFeed?.flatField(lookbackSession, e.map);
         if (e.change) runHistory?.flatMap(e.change.median);
         setFlatField((s) => ({
           ...s,
@@ -336,6 +345,18 @@ export function createPipelineStore(
         }
         const wasComplete = record.complete;
         record.push(step.start, step.dy, step.dx, step.flags, step.flickerOffset, step.flickerGain);
+        if (lookbackSession) {
+          lookbackFeed?.rows(
+            lookbackSession,
+            step.start,
+            step.dy,
+            step.dx,
+            step.flags,
+            step.flickerOffset,
+            step.flickerGain,
+          );
+          if (step.backState) lookbackFeed?.backState(lookbackSession, step.backState);
+        }
         if (wasComplete && !record.complete)
           runHistory?.log({
             frame: step.start,
@@ -394,6 +415,8 @@ export function createPipelineStore(
         return;
       }
       case 'done':
+        if (lookbackSession && step.backState)
+          lookbackFeed?.backState(lookbackSession, step.backState);
         if (!exhausted) {
           exhausted = true;
           boundaryMonitor?.end();
@@ -447,6 +470,9 @@ export function createPipelineStore(
     inFlight = 0;
     exhausted = false;
     framesDone = 0;
+    if (lookbackSession) lookbackFeed?.reset(lookbackSession);
+    lookbackSession = 0;
+    setLookbackRun(false);
     record = new RunRecord();
     meter = new ThroughputMeter();
     totals = { ...ZERO_TIMINGS };
@@ -500,10 +526,18 @@ export function createPipelineStore(
         reused: seed !== undefined,
         map: seed ?? null,
       });
+      // Look-back (experimental): from this start on, if the recording allows it.
+      const lb = lookback() && discover() && lookbackFeed?.begin(session) === true;
+      if (lb) {
+        lookbackSession = session;
+        setLookbackRun(true);
+        if (flatLatest) lookbackFeed!.flatField(session, flatLatest);
+      }
       const p = await client.startPipeline(
         { ...options, flatField: useFlat },
         {
           session,
+          ...(lb ? { lookback: true } : {}),
           discover: discover(),
           qc,
           residual: residual(),
@@ -614,6 +648,17 @@ export function createPipelineStore(
     setDiscover,
     /** The residual preview is being produced (the residual view is shown). */
     residual,
+    /**
+     * Look-back (experimental): the setting for the next Discover start, why
+     * the open recording cannot have it (null: it can), and whether the
+     * current run has it.
+     */
+    lookback,
+    setLookback,
+    // (Not `??`: `blocked()` returns null when look-back can run.)
+    lookbackBlocked: () =>
+      lookbackFeed ? lookbackFeed.blocked() : 'Look-back is not available here.',
+    lookbackRun,
     setResidual,
     plan,
     setup,

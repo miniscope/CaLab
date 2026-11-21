@@ -8,22 +8,25 @@ usage analytics, and admin moderation.
 Each CaLab app has its own submissions table (e.g., `catune_submissions`).
 All tables share a common set of base columns defined in `000_base_template.sql`.
 
-| Migration                              | Purpose                                                                                                                    |
-| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `000_base_template.sql`                | **Template only** (not executed). Copy and extend for new apps.                                                            |
-| `001_catune_submissions.sql`           | CaTune submissions table with deconvolution-specific columns.                                                              |
-| `002_field_options.sql`                | Shared canonical field options lookup table.                                                                               |
-| `003_analytics.sql`                    | Analytics tables (`analytics_sessions`, `analytics_events`) for usage tracking.                                            |
-| `004_admin_role.sql`                   | `is_admin()` helper function and admin moderation policies.                                                                |
-| `005`–`009`                            | CaDecon table, bridge data source, analytics hardening, and tighter constraints.                                           |
-| `010_restrict_submission_pii.sql`      | Locks submission reads to owner+admin; adds PII-free `*_public` browsing views.                                            |
-| `011_revoke_public_view_writes.sql`    | Makes the `*_public` views SELECT-only for `anon`/`authenticated` (no writes through the views).                           |
-| `012_block_anonymous_submissions.sql`  | Submission INSERT requires a real (non-anonymous) sign-in.                                                                 |
-| `013_lock_analytics_writes.sql`        | Sessions created only by the edge function; clients may update only `ended_at`/`duration_seconds`; per-session event cap.  |
-| `014_validate_submission_payloads.sql` | Length/range/finite CHECKs on every submission column (added `NOT VALID`; validate after cleanup).                         |
-| `015_app_name_slug_check.sql`          | Validates `analytics_sessions.app_name` by slug shape instead of a fixed app list.                                         |
-| `016_cadecon_max_firing_rate.sql`      | CaDecon `max_firing_rate` NOT NULL (0 < x <= 10000, finite) replaces the dropped `upsample_factor`; public view recreated. |
-| `019_cala_donations.sql`               | `cala_donations` for raw data donations: owner/admin read, writes only via the `donation` Edge Function.                   |
+| Migration                                  | Purpose                                                                                                                    |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `000_base_template.sql`                    | **Template only** (not executed). Copy and extend for new apps.                                                            |
+| `001_catune_submissions.sql`               | CaTune submissions table with deconvolution-specific columns.                                                              |
+| `002_field_options.sql`                    | Shared canonical field options lookup table.                                                                               |
+| `003_analytics.sql`                        | Analytics tables (`analytics_sessions`, `analytics_events`) for usage tracking.                                            |
+| `004_admin_role.sql`                       | `is_admin()` helper function and admin moderation policies.                                                                |
+| `005`–`009`                                | CaDecon table, bridge data source, analytics hardening, and tighter constraints.                                           |
+| `010_restrict_submission_pii.sql`          | Locks submission reads to owner+admin; adds PII-free `*_public` browsing views.                                            |
+| `011_revoke_public_view_writes.sql`        | Makes the `*_public` views SELECT-only for `anon`/`authenticated` (no writes through the views).                           |
+| `012_block_anonymous_submissions.sql`      | Submission INSERT requires a real (non-anonymous) sign-in.                                                                 |
+| `013_lock_analytics_writes.sql`            | Sessions created only by the edge function; clients may update only `ended_at`/`duration_seconds`; per-session event cap.  |
+| `014_validate_submission_payloads.sql`     | Length/range/finite CHECKs on every submission column (added `NOT VALID`; validate after cleanup).                         |
+| `015_app_name_slug_check.sql`              | Validates `analytics_sessions.app_name` by slug shape instead of a fixed app list.                                         |
+| `016_cadecon_max_firing_rate.sql`          | CaDecon `max_firing_rate` NOT NULL (0 < x <= 10000, finite) replaces the dropped `upsample_factor`; public view recreated. |
+| `017_analytics_event_name_shape.sql`       | Validates `analytics_events.event_name` by shape (`^[a-z][a-z0-9_]{1,47}$`) instead of a fixed list.                       |
+| `018_analytics_admin_read_performance.sql` | **Optional.** Indexes and a cheaper admin RLS expression for the Admin app's keyset reads.                                 |
+| `019_schema_fingerprint.sql`               | **Optional.** `schema_fingerprint()`: read-only, admin-only jsonb of booleans for the Admin "Schema status" panel.         |
+| `020_cala_donations.sql`                   | `cala_donations` for raw data donations: owner/admin read, writes only via the `donation` Edge Function.                   |
 
 ## Applying migrations
 
@@ -36,6 +39,57 @@ All tables share a common set of base columns defined in `000_base_template.sql`
 > **Note:** migration `010` must be applied **before** deploying the app build
 > that reads the `*_public` views, or community browsing will fail until the
 > views exist.
+
+## Checking what production has applied
+
+Production migrations are applied **by hand** in the SQL editor and there is no
+`supabase_migrations` table, so a skipped file is invisible until something breaks
+(008 and 015 were once skipped, which broke Admin and rejected `cala` sessions).
+
+The Admin app's Overview tab has a read-only **Schema status** panel. It calls
+`public.schema_fingerprint()` (migration `019`, **the project owner must apply it by hand**, once;
+until then the panel shows "unknown" and the rest of the dashboard is unaffected). The function is
+admin-only (`app_metadata.role = 'admin'`), `SECURITY DEFINER`, modifies nothing and returns only
+booleans. Expected result on a fully migrated database: **every key below is `true`**. The same
+keys are listed in `apps/admin/src/lib/fingerprint.ts`; keep the migration, that file and this
+table in sync when a migration adds objects.
+
+| Migration | Key                                 | True when present                                                   |
+| --------- | ----------------------------------- | ------------------------------------------------------------------- |
+| 003       | `003_analytics_tables`              | `analytics_sessions` and `analytics_events` exist                   |
+| 004       | `004_is_admin_function`             | `is_admin()` exists                                                 |
+| 006       | `006_cadecon_table`                 | `cadecon_submissions` exists                                        |
+| 008       | `008_is_anonymous_column`           | `analytics_sessions.is_anonymous`                                   |
+| 008       | `008_event_data_size_check`         | constraint `analytics_events_event_data_size_check`                 |
+| 008       | `008_session_time_checks`           | `..._ended_at_order_check` and `..._duration_bounds_check`          |
+| 008       | `008_permissive_policies_removed`   | the three "Anyone can ..." policies are gone                        |
+| 008       | `008_events_insert_policy`          | policy "Users insert events for own sessions"                       |
+| 009       | `009_catune_tau_bounds`             | `valid_tau_decay` carries the 0.01 lower bound                      |
+| 010       | `010_public_views`                  | `catune_submissions_public`, `cadecon_submissions_public`           |
+| 010       | `010_owner_read_policy`             | policy "Owner and admin read access" on `catune_submissions`        |
+| 011       | `011_views_select_only`             | `anon` has no INSERT/UPDATE/DELETE on the `*_public` views          |
+| 012       | `012_no_anonymous_submissions`      | submit policy checks `is_anonymous`                                 |
+| 013       | `013_session_cap_trigger`           | trigger `analytics_events_session_cap`                              |
+| 013       | `013_client_session_insert_removed` | policy "Users insert own sessions" is gone                          |
+| 014       | `014_payload_checks`                | constraint `valid_indicator_len` on `catune_submissions`            |
+| 015       | `015_app_name_slug_check`           | constraint `analytics_sessions_app_name_slug_check`                 |
+| 016       | `016_cadecon_max_firing_rate`       | `max_firing_rate` present, `upsample_factor` gone                   |
+| 017       | `017_event_name_shape_check`        | constraint `analytics_events_event_name_shape_check`                |
+| 018       | `018_admin_read_indexes`            | `idx_sessions_created_at_id`, `idx_events_created_at_id` (optional) |
+
+Without 019, run the same checks by hand in the SQL editor (read-only), for example for the
+two that were skipped:
+
+```sql
+select
+  exists(select 1 from information_schema.columns where table_schema='public'
+         and table_name='analytics_sessions' and column_name='is_anonymous') as m008_is_anonymous,
+  exists(select 1 from pg_constraint
+         where conname='analytics_sessions_app_name_slug_check') as m015_app_name_slug;
+```
+
+The Admin app itself reads analytics tables with `select('*')` and never names a column an older
+schema may lack, so a missing column degrades a metric to "n/a" instead of failing the page.
 
 ## Edge Functions
 
@@ -75,7 +129,7 @@ The Edge Function uses `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` which Supa
 ### `donation` Edge Function
 
 Backend for raw data donations (`apps/cala/docs/data-donation.md`). It is the
-only writer of `cala_donations` (migration `019` must be applied first) and the
+only writer of `cala_donations` (migration `020` must be applied first) and the
 only holder of the R2 keys: browsers and the lab server get presigned URLs.
 Donor and admin actions verify the caller's Supabase session themselves; lab
 ingest uses the `x-ingest-token` header instead of a JWT, so deploy without

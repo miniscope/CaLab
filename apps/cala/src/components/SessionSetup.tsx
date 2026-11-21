@@ -7,6 +7,7 @@ import {
   LIBRARY_MODE_LABEL,
   MAX_REFINE_RUNS,
   OFFERED_MODES,
+  refinePlanText,
   type LibraryMode,
   type RunSettings,
 } from '../lib/session-run.ts';
@@ -232,6 +233,12 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
             </For>
           </select>
         </label>
+        <p
+          class={refineRuns() === 0 ? 'cala-sessions__warning' : 'cala-muted cala-sessions__note'}
+          data-testid="refine-note"
+        >
+          {refinePlanText(refineRuns())}
+        </p>
         <p class="cala-sessions__row" data-testid="results-location">
           Results:{' '}
           <Show

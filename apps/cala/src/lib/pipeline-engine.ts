@@ -186,20 +186,29 @@ export type PipelineStepResult =
        * correlation's null, completed with this batch (`boundary-flags.ts`).
        */
       boundaryNull?: number;
+      /** Look-back runs: the back half's state after this batch, now and then (`BackStage`). */
+      backState?: BackStateSnapshot;
     }
   | {
       kind: 'done';
       /** Mean and max projections of the run (Extract with `CellsSettings.projection`). */
       projection?: FovProjections;
+      /** Look-back runs: the back half's state after the last batch. */
+      backState?: BackStateSnapshot;
     };
+
+/** `Preprocessor.state()` of the live back half (stage C) after stream frame `frame`. */
+export interface BackStateSnapshot {
+  frame: number;
+  state: Uint8Array;
+}
 
 /** Transferable buffers of a step result (for `postMessage`). */
 export function transferablesOf(r: PipelineStepResult): ArrayBuffer[] {
   if (r.kind === 'done')
-    return (r.projection?.spans ?? []).flatMap((s) => [
-      s.mean.buffer as ArrayBuffer,
-      s.max.buffer as ArrayBuffer,
-    ]);
+    return (r.projection?.spans ?? [])
+      .flatMap((s) => [s.mean.buffer as ArrayBuffer, s.max.buffer as ArrayBuffer])
+      .concat(r.backState ? [r.backState.state.buffer as ArrayBuffer] : []);
   if (r.kind !== 'batch') return [];
   const p = r.previews;
   return [
@@ -215,6 +224,7 @@ export function transferablesOf(r: PipelineStepResult): ArrayBuffer[] {
     p.output.data,
     ...(r.cells ? [r.cells.ids, r.cells.traces] : []),
     ...(r.cells?.signed ? [r.cells.signed] : []),
+    ...(r.backState ? [r.backState.state] : []),
   ]
     .map((a) => a.buffer as ArrayBuffer)
     .concat(r.cells?.qc ? qcTransferables(r.cells.qc) : []);

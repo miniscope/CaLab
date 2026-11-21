@@ -131,7 +131,15 @@ export interface StageRun {
   merges?: number;
   deletes?: number;
   splits?: number;
-  /** Refine: cells whose footprint changed, and their median relative change. */
+  /** Discover: it ran with look-back (and its settle). */
+  lookback?: boolean;
+  /**
+   * Refine: cells whose footprint changed by more than their own split-half
+   * noise, and by more than twice it, of the cells with a noise estimate
+   * (`settle.ts` `movedAgainstNoise`; absent without the estimates).
+   */
+  movedAboveNoise?: { cells: number; above1: number; above2: number };
+  /** Refine: cells whose footprint changed at all (any Refine changes nearly every cell), and their median relative change. */
   footprintsRefined?: number;
   medianFootprintChange?: number | null;
   /** Refine: the 90th percentile of the changes the run published, and the share of cells it refined. */

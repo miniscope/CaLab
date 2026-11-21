@@ -226,6 +226,23 @@ pub(super) struct Frames {
     /// Drop-one arms: `(kept id, χ²_t, kept cell's c_t, Q_kk)`.
     pub solo: Vec<(u64, Vec<f64>, Vec<f32>, f64)>,
     pub rho: f64,
+    /// The refitted pair, computed for the log at every overlap.
+    pub refit_diag: Option<RefitDiag>,
+}
+
+/// The refitted pair of a merge test (logged at every overlap).
+#[derive(Debug, Default)]
+pub(super) struct RefitDiag {
+    pub share: f32,
+    pub two: bool,
+    pub made: bool,
+    pub ovl: f32,
+    pub cross_a: f32,
+    pub cross_b: f32,
+    /// `(center a, center b, radius a, radius b)` of the refitted cells.
+    pub centers: Option<((f32, f32), (f32, f32), f32, f32)>,
+    /// Test-frame χ² of the refitted pair (when it stays two cells).
+    pub chi: Option<Vec<f64>>,
 }
 
 /// The current rule's view of one merge test.
@@ -290,6 +307,31 @@ pub(super) fn merge(sl: &SlowLoop, row: &MergeRow, a: &Cell, b: &Cell) {
         }
         if let Some(v) = &fr.merged {
             arr(&mut s, "chi_merged", v.iter().map(|&x| num(x)));
+        }
+        if let Some(d) = &fr.refit_diag {
+            let _ = write!(
+                s,
+                ",\"rf_share\":{},\"rf_two\":{},\"rf_made\":{},\"rf_ovl\":{},\"rf_cross_a\":{},\"rf_cross_b\":{}",
+                num(f64::from(d.share)),
+                d.two,
+                d.made,
+                num(f64::from(d.ovl)),
+                num(f64::from(d.cross_a)),
+                num(f64::from(d.cross_b))
+            );
+            if let Some((ca, cb, ra, rb)) = d.centers {
+                let dist = f64::from(((ca.0 - cb.0).powi(2) + (ca.1 - cb.1).powi(2)).sqrt());
+                let _ = write!(
+                    s,
+                    ",\"rf_dist\":{},\"rf_ra\":{},\"rf_rb\":{}",
+                    num(dist),
+                    num(f64::from(ra)),
+                    num(f64::from(rb))
+                );
+            }
+            if let Some(v) = &d.chi {
+                arr(&mut s, "rf_chi", v.iter().map(|&x| num(x)));
+            }
         }
         for (k, (id, c, q)) in fr.pair_c.iter().enumerate() {
             let _ = write!(s, ",\"pair_id{k}\":{id},\"pair_q{k}\":{}", num(*q));

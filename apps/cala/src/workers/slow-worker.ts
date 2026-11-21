@@ -7,7 +7,8 @@
  * `SlowRunner`). Cells a history review found arrive from the main thread.
  */
 import { initCalaWasm, SlowLoop } from '../lib/cala-wasm.ts';
-import { SlowRunner, type SlowLoopLike } from '../lib/slow-runner.ts';
+import { buildSlowLoop, SlowRunner, type SlowLoopLike } from '../lib/slow-runner.ts';
+import type { LookbackToSlow } from './lookback-types.ts';
 import type { FastToSlow, MainToSlow, SlowToMain, VisitToOwner } from './slow-types.ts';
 
 const workerScope = globalThis as unknown as {
@@ -17,6 +18,8 @@ const workerScope = globalThis as unknown as {
 
 let port: MessagePort | null = null;
 let visits: MessagePort[] = [];
+/** The port to the look-back worker (runs with look-back only; see `SlowRunner`). */
+let lookbackPort: MessagePort | null = null;
 let runner: SlowRunner | null = null;
 // Port messages (frames and visit results alike) are handled one at a time,
 // in arrival order, after the WASM module is ready.
@@ -50,6 +53,17 @@ workerScope.onmessage = (e) => {
       .catch((err: unknown) => report(data.session, err));
     return;
   }
+  if (data.type === 'lookback-port') {
+    lookbackPort?.close();
+    lookbackPort = data.port;
+    connectLookback();
+    return;
+  }
+  // Not queued: settling runs between the queued messages (see `SlowRunner.drainPump`).
+  if (data.type === 'stop-settling') {
+    runner?.stopSettling(data.session);
+    return;
+  }
   if (data.type !== 'connect') return;
   port?.close();
   for (const v of visits) v.close();
@@ -57,20 +71,14 @@ workerScope.onmessage = (e) => {
   visits = data.visits ?? [];
   const toFast = port;
   runner = new SlowRunner({
-    create: (init) =>
-      new SlowLoop(
-        init.width,
-        init.height,
-        init.fov,
-        init.noise,
-        init.cellDiameterPx,
-        init.flattenSigmaPx,
-      ) as unknown as SlowLoopLike,
+    // `new SlowLoop(..)` unless the run has look-back (`buildSlowLoop`).
+    create: (init) => buildSlowLoop(SlowLoop, init) as unknown as SlowLoopLike,
     toFast,
     toMain: { postMessage: (m, t) => workerScope.postMessage(m, t) },
     visits,
   });
   const r = runner;
+  connectLookback();
   toFast.onmessage = (ev: MessageEvent<FastToSlow>) => {
     queue = queue
       .then(() => initCalaWasm())
@@ -90,3 +98,21 @@ workerScope.onmessage = (e) => {
     };
   });
 };
+
+/**
+ * Look-back answers go straight to the runner, like visit results (a
+ * request is only sent once the module is ready, so no wait is needed).
+ */
+function connectLookback(): void {
+  const r = runner;
+  const p = lookbackPort;
+  if (!r || !p) return;
+  r.connectLookback(p);
+  p.onmessage = (ev: MessageEvent<LookbackToSlow>) => {
+    try {
+      r.handleLookback(ev.data);
+    } catch (err) {
+      report(ev.data.session, err);
+    }
+  };
+}

@@ -35,8 +35,12 @@
 //! footprints are in the units of `C`, so 0 is unbiased). Then the
 //! per-frame solve time. One summary line per arm goes to `<out>/summary.tsv`.
 
+#[path = "common/oracle.rs"]
+mod oracle;
+use oracle::{read_oracle, Oracle};
+
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -49,8 +53,7 @@ use calab_cala::preprocess::flatten::GlowFlattener;
 use calab_cala::preprocess::warmup::WarmupAccumulator;
 use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor};
 use calab_cala::trace::{
-    BackgroundLearner, BackgroundModel, Footprint, Library, LibraryBuilder, SolverConfig,
-    TraceEngine,
+    BackgroundLearner, BackgroundModel, Library, LibraryBuilder, SolverConfig, TraceEngine,
 };
 
 struct Avi {
@@ -183,92 +186,6 @@ impl Recording {
             }
         }
         out
-    }
-}
-
-struct Unit {
-    detectable: bool,
-    in_focus: bool,
-    center: (f32, f32),
-    full: Footprint,
-    core: Footprint,
-}
-
-struct Oracle {
-    dims: Dims,
-    units: Vec<Unit>,
-    n_frames: usize,
-    /// `C[unit * n_frames + t]`.
-    c: Vec<f32>,
-}
-
-fn read_u32(r: &mut impl Read) -> u32 {
-    let mut b = [0u8; 4];
-    r.read_exact(&mut b).unwrap();
-    u32::from_le_bytes(b)
-}
-
-fn read_f32s(r: &mut impl Read, n: usize) -> Vec<f32> {
-    let mut b = vec![0u8; 4 * n];
-    r.read_exact(&mut b).unwrap();
-    b.as_chunks::<4>()
-        .0
-        .iter()
-        .map(|c| f32::from_le_bytes(*c))
-        .collect()
-}
-
-fn read_oracle(path: &Path) -> Oracle {
-    let mut r = BufReader::new(File::open(path).unwrap_or_else(|e| panic!("{path:?}: {e}")));
-    let mut magic = [0u8; 8];
-    r.read_exact(&mut magic).unwrap();
-    assert_eq!(&magic, b"CALAORC1");
-    let h = read_u32(&mut r) as usize;
-    let w = read_u32(&mut r) as usize;
-    let n = read_u32(&mut r) as usize;
-    let t = read_u32(&mut r) as usize;
-    let mut units = Vec::with_capacity(n);
-    for _ in 0..n {
-        let id = read_u32(&mut r);
-        let mut flags = [0u8; 4];
-        r.read_exact(&mut flags).unwrap();
-        let cy = read_f32s(&mut r, 1)[0];
-        let cx = read_f32s(&mut r, 1)[0];
-        let mut fps = Vec::new();
-        for _ in 0..2 {
-            let y0 = read_u32(&mut r) as i32;
-            let x0 = read_u32(&mut r) as i32;
-            let ph = read_u32(&mut r) as usize;
-            let pw = read_u32(&mut r) as usize;
-            let values: Vec<f32> = read_f32s(&mut r, ph * pw)
-                .into_iter()
-                .map(|v| v.max(0.0))
-                .collect();
-            fps.push(Footprint {
-                id: u64::from(id),
-                y0: y0.max(0) as usize,
-                x0: x0.max(0) as usize,
-                height: ph,
-                width: pw,
-                values,
-            });
-        }
-        let core = fps.pop().unwrap();
-        let full = fps.pop().unwrap();
-        units.push(Unit {
-            detectable: flags[0] != 0,
-            in_focus: flags[1] != 0,
-            center: (cy, cx),
-            full,
-            core,
-        });
-    }
-    let c = read_f32s(&mut r, n * t);
-    Oracle {
-        dims: Dims::new(w, h).unwrap(),
-        units,
-        n_frames: t,
-        c,
     }
 }
 

@@ -33,6 +33,11 @@
 //! **Ids.** A job numbers new cells from the owner's next id at hand-out;
 //! the owner renumbers them on apply, so concurrent jobs never collide.
 //!
+//! **Cluster stores.** With the joint update on (`SlowLoop::joint_active`) a
+//! job also carries the history stores of the clusters its tile owns
+//! (`cluster.rs`), so the cluster replay runs in the runner like the per-cell
+//! refinement; the result brings back what the replay changed in them.
+//!
 //! **One worker = the old loop.** [`SlowLoop::step_via`] runs each visit
 //! through a job, a byte round trip and an apply, in the order `step` would
 //! visit; the tests check that the result is identical to `step`.
@@ -40,6 +45,7 @@
 use std::collections::HashMap;
 
 use super::churn::Churn;
+use super::cluster::{ClusterOut, JobCluster};
 use super::fpstats::FpStats;
 #[cfg(feature = "diagnostics")]
 use super::ledger::TestEvent;
@@ -47,7 +53,7 @@ use super::ledger::{EditCounts, EditEvent, EditKind, Evidence};
 use super::local::{Cell, Rect};
 use super::reservoir::{SharedFrames, Tile};
 use super::wire::{Reader, Writer, MAGIC};
-use super::{EditScope, SlowLoop, SlowStats};
+use super::{EditScope, ReplayStats, SlowLoop, SlowStats};
 use crate::trace::{Library, TraceError};
 
 /// One edit a visit made, replayed by the owner in order.
@@ -100,6 +106,9 @@ pub struct VisitJob {
     visits: u32,
     id_base: u64,
     noise_gen: u64,
+    /// The owner's visit-relevant options ([`SlowLoopConfig::visit_fingerprint`]):
+    /// a runner built with other options refuses the job.
+    cfg_fp: u64,
     /// The owner's edit scope when the job was made.
     scope: EditScope,
     tile: Tile,
@@ -112,6 +121,9 @@ pub struct VisitJob {
     fpstats: Vec<(u64, FpStats)>,
     merge_rejected: Vec<(u64, u64, u64)>,
     forced: Vec<(u64, u64)>,
+    /// The cluster stores of the joint update this visit may replay, and
+    /// the `ok` flags of the other clusters of its cells (`cluster.rs`).
+    clusters: Vec<JobCluster>,
 }
 
 /// What a visit did, for [`SlowLoop::apply_job`].
@@ -135,6 +147,10 @@ pub struct VisitResult {
     /// `(is_event, index, frame, projection)`.
     proj: Vec<(bool, u32, u64, (Vec<f64>, f64))>,
     work: u64,
+    /// What the visit's replays did to the cluster stores it owned, and the
+    /// joint-update counters it moved.
+    clusters: Vec<ClusterOut>,
+    replay: ReplayStats,
 }
 
 impl VisitJob {
@@ -159,6 +175,7 @@ impl VisitJob {
         w.u32(self.visits);
         w.u64(self.id_base);
         w.u64(self.noise_gen);
+        w.u64(self.cfg_fp);
         w.u8(self.scope.code());
         w.tile(&self.tile, slots, shared);
         w.usize(self.others.len());
@@ -193,6 +210,10 @@ impl VisitJob {
             w.u64(a);
             w.u64(b);
         }
+        w.usize(self.clusters.len());
+        for c in &self.clusters {
+            c.encode(&mut w);
+        }
         w.buf
     }
 
@@ -212,6 +233,7 @@ impl VisitJob {
         let visits = r.u32()?;
         let id_base = r.u64()?;
         let noise_gen = r.u64()?;
+        let cfg_fp = r.u64()?;
         let scope = EditScope::from_code(r.u8()?)?;
         let tile = r.tile()?;
         let n = r.count(24)?;
@@ -237,6 +259,10 @@ impl VisitJob {
         let forced = (0..n)
             .map(|_| Some((r.u64()?, r.u64()?)))
             .collect::<Option<_>>()?;
+        let n = r.count(10)?;
+        let clusters = (0..n)
+            .map(|_| JobCluster::decode(&mut r))
+            .collect::<Option<_>>()?;
         r.done().then_some(VisitJob {
             seq,
             ti,
@@ -245,6 +271,7 @@ impl VisitJob {
             visits,
             id_base,
             noise_gen,
+            cfg_fp,
             scope,
             tile,
             others,
@@ -254,7 +281,17 @@ impl VisitJob {
             fpstats,
             merge_rejected,
             forced,
+            clusters,
         })
+    }
+
+    /// Bytes of the joint update's cluster stores in this job's encoding.
+    pub fn cluster_bytes(&self) -> usize {
+        let mut w = Writer::default();
+        for c in &self.clusters {
+            c.encode(&mut w);
+        }
+        w.buf.len()
     }
 }
 
@@ -291,6 +328,11 @@ impl VisitResult {
             w.proj(Some(p));
         }
         w.u64(self.work);
+        w.usize(self.clusters.len());
+        for c in &self.clusters {
+            c.encode(&mut w);
+        }
+        self.replay.visit_fields().iter().for_each(|&v| w.u64(v));
         w.buf
     }
 
@@ -320,6 +362,14 @@ impl VisitResult {
             .map(|_| Some((r.bool()?, r.u32()?, r.u64()?, r.proj()??)))
             .collect::<Option<_>>()?;
         let work = r.u64()?;
+        let n = r.count(11)?;
+        let clusters = (0..n)
+            .map(|_| ClusterOut::decode(&mut r))
+            .collect::<Option<_>>()?;
+        let mut rs = [0u64; 7];
+        for v in rs.iter_mut() {
+            *v = r.u64()?;
+        }
         r.done().then_some(VisitResult {
             seq,
             ti,
@@ -335,6 +385,8 @@ impl VisitResult {
             fresh,
             proj,
             work,
+            clusters,
+            replay: ReplayStats::from_visit_fields(rs),
         })
     }
 }
@@ -465,7 +517,7 @@ fn add_stats(a: &mut SlowStats, b: &SlowStats) {
     *a = super::wire::stats_from(s);
 }
 
-fn grow(r: Rect, by: usize, dims: crate::preprocess::Dims) -> Rect {
+pub(super) fn grow(r: Rect, by: usize, dims: crate::preprocess::Dims) -> Rect {
     let y0 = r.y0.saturating_sub(by);
     let x0 = r.x0.saturating_sub(by);
     let y1 = (r.y0 + r.h + by).min(dims.height);
@@ -606,6 +658,12 @@ impl SlowLoop {
             .iter()
             .filter_map(|id| self.fpstats.get(id).map(|s| (*id, s.clone())))
             .collect();
+        // (Only a refining visit reads the clusters.)
+        let clusters = if self.refines_on(self.tile_visits[ti]) {
+            self.job_clusters_counted(ti, &ids)
+        } else {
+            Vec::new()
+        };
         self.job_seq += 1;
         let seq = self.job_seq;
         self.inflight.push(InFlight { seq, ti, zone, ids });
@@ -617,6 +675,7 @@ impl SlowLoop {
             visits: self.tile_visits[ti],
             id_base: self.next_id,
             noise_gen: self.noise_gen,
+            cfg_fp: self.cfg.visit_fingerprint(),
             scope: self.scope,
             tile,
             others,
@@ -626,6 +685,7 @@ impl SlowLoop {
             fpstats,
             merge_rejected: self.merge_rejected.clone(),
             forced: self.forced.clone(),
+            clusters,
         }
     }
 
@@ -789,6 +849,14 @@ impl SlowLoop {
             }
         }
         self.work += r.work;
+        self.replay_stats.add_visit(&r.replay);
+        #[cfg(not(target_arch = "wasm32"))]
+        let t0 = std::time::Instant::now();
+        self.apply_cluster_outs(r.clusters);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.replay_stats.job_apply_ns += t0.elapsed().as_nanos() as u64;
+        }
         Ok(())
     }
 
@@ -881,6 +949,13 @@ impl VisitRunner {
                 "visit job from a slow loop with another tile layout".into(),
             ));
         }
+        if job.cfg_fp != s.cfg.visit_fingerprint() {
+            return Err(TraceError::Incompatible(
+                "visit job from a slow loop with other options (joint update, sign rule or merge \
+                 guard): build the visit workers with the slow loop's options"
+                    .into(),
+            ));
+        }
         if job.noise_gen != s.noise_gen {
             return Err(TraceError::Incompatible(format!(
                 "visit job made with noise map {} but this runner has {}",
@@ -916,6 +991,7 @@ impl VisitRunner {
         s.fpstats = job.fpstats.into_iter().collect::<HashMap<_, _>>();
         s.merge_rejected = job.merge_rejected;
         s.forced = job.forced;
+        s.install_clusters(job.clusters);
         s.stats = SlowStats::default();
         s.edits = EditCounts::default();
         s.edit_log.clear();
@@ -937,6 +1013,7 @@ impl VisitRunner {
         // on top of the owning loop's copy.
         s.bgs[ti] = None;
         let ops = s.journal.take().unwrap_or_default();
+        let (clusters, replay) = s.take_cluster_outs();
         out?;
         let tile = std::mem::replace(&mut s.tiles[ti], Tile::new(core, rect));
         let proj = unprojected
@@ -961,6 +1038,8 @@ impl VisitRunner {
             fresh: tile.fresh,
             proj,
             work: s.work,
+            clusters,
+            replay,
         };
         // Drop the copies (the next job brings its own).
         s.cells.clear();

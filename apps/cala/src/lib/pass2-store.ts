@@ -33,6 +33,7 @@ import { MAX_IN_FLIGHT, ThroughputMeter, type PipelineStore } from './pipeline-s
 import { createTraceFile, type TraceFile } from './trace-file.ts';
 import type { LibraryView } from '../workers/slow-types.ts';
 import type { FovProjections } from './fov-projection.ts';
+import { startReplayPipeline } from './replay-pipeline.ts';
 
 export type Pass2Status = 'idle' | 'running' | 'done' | 'error' | 'cancelled';
 
@@ -298,28 +299,17 @@ export function createPass2Store(
       t0: clock(),
     };
     try {
-      // The same plan as pass 1, so calibration and the motion template are the same.
-      await client.startPipeline(
-        {
-          batchSize: plan1.batchSize,
-          calibrationFrames: plan1.calibrationFrames,
-          motionWarmupFrames: plan1.motionWarmupFrames,
-          previewMaxSide: plan1.previewMaxSide,
-        },
+      await startReplayPipeline(
+        client,
+        plan1,
         {
           session: 0,
           discover: false,
-          qc: false,
           library: bytes,
           signed: true,
           projection: true,
         },
-        {
-          frameCount: frames,
-          ...rec.snapshot(),
-          // The whole recording is corrected with pass 1's newest map, from frame 0.
-          ...(flatMap ? { flatField: flatMap } : {}),
-        },
+        { frames, record: rec, flatField: flatMap },
       );
       if (gen !== generation) return;
       ctx.t0 = clock();

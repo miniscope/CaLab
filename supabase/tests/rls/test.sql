@@ -967,7 +967,7 @@ BEGIN
 END
 $$;
 
--- ── cala_donations (019) ─────────────────────────────────────────────────
+-- ── cala_donations (020) ─────────────────────────────────────────────────
 -- Rows are written only by the `donation` edge function (service_role). API
 -- roles may read their own rows (admin: all), never INSERT/DELETE, and only an
 -- admin may UPDATE in_benchmark / benchmark_note.

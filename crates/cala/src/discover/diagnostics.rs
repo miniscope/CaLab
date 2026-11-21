@@ -496,8 +496,8 @@ fn support_row(line: &str) {
 }
 
 /// Inputs of one `C` row, on the construction's canvas: the measured
-/// (unsmoothed) light `h`, the disk `mask`, the published footprint `a` in
-/// data units and its low-pass `low`, the published column `col` in data
+/// (unsmoothed) light `h`, the disk `mask`, the published footprint's
+/// low-pass `low` in data units, the published column `col` in data
 /// units, the white standard error `se` per unit pixel noise, the split
 /// halves on the canvas, and the measured support (basin rules; also
 /// computed for the audit under the ring rule).
@@ -506,7 +506,6 @@ pub(super) struct SupportInput<'a> {
     pub canvas: Rect,
     pub h: &'a [f32],
     pub mask: &'a [bool],
-    pub a: &'a [f32],
     pub low: &'a [f32],
     pub col: &'a [f32],
     pub se: f64,

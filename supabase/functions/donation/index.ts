@@ -2,7 +2,7 @@
 //
 // Backend for raw data donations from browser cala
 // (apps/cala/docs/data-donation.md). The only writer of `cala_donations`
-// (migration 019, via the service role) and the only holder of the R2 keys:
+// (migration 020, via the service role) and the only holder of the R2 keys:
 // browsers and the lab server only ever see presigned URLs.
 //
 // POST JSON {action, ...}. Actions (client: packages/community/src/donation-service.ts):
@@ -34,12 +34,7 @@ import { AwsClient } from 'npm:aws4fetch@1.0.20';
 // ---------------------------------------------------------------------------
 
 export type DonationStatus =
-  | 'uploading'
-  | 'uploaded'
-  | 'approved'
-  | 'rejected'
-  | 'ingested'
-  | 'withdrawn';
+  'uploading' | 'uploaded' | 'approved' | 'rejected' | 'ingested' | 'withdrawn';
 
 export interface DonationFile {
   name: string;
@@ -312,7 +307,7 @@ const META_KEYS = new Set([
   'notes',
 ]);
 
-/** Validate the donor's metadata against the 019 column constraints. */
+/** Validate the donor's metadata against the 020 column constraints. */
 export function validateMeta(raw: unknown): DonationMeta {
   if (!isObject(raw)) fail(400, 'meta must be an object');
   const m = raw as Body;

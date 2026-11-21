@@ -1,10 +1,7 @@
 // @vitest-environment node
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   HistoryReview,
-  initCalaWasm,
   quantizeTiles,
   SlowLoop,
   TileCompressor,
@@ -32,12 +29,9 @@ import { memoryStore } from '../lib/window-store.ts';
 import type { CompressToMain, FastToCompress } from '../workers/compress-types.ts';
 import type { CompressToReview, ReviewStatus, ReviewToMain } from '../workers/review-types.ts';
 import type { FastToSlow, OwnerToVisit, SlowToMain, VisitToOwner } from '../workers/slow-types.ts';
+import { initTestWasm } from './wasm-test.ts';
 
-beforeAll(async () => {
-  await initCalaWasm(
-    readFileSync(resolve(import.meta.dirname, '../../../../crates/cala/pkg/calab_cala_bg.wasm')),
-  );
-});
+beforeAll(initTestWasm);
 
 /** One candidate in the layout of `HistoryReview.finish`: a 2 x 2 footprint at `(y0, x0)`. */
 function candidate(y0: number, x0: number): number[] {

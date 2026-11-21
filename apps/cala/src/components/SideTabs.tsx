@@ -5,6 +5,7 @@ import type { FrameSourceInfo } from '../lib/frame-source.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { ViewerStore } from '../lib/viewer-store.ts';
 import { TimingText } from './CellsPanel.tsx';
+import { CorrDistancePanel } from './CorrDistancePanel.tsx';
 import { FlatFieldPanel } from './FlatFieldPanel.tsx';
 import { FrameViewer } from './FrameViewer.tsx';
 import { HistoryTab, type HistoryUi } from './HistoryPanel.tsx';
@@ -100,6 +101,13 @@ export function detailTabs(props: {
           <HistoryTab ui={props.ui} />
         </Show>
       ),
+    },
+    {
+      id: 'corr',
+      label: 'Correlation',
+      title: 'Pairwise trace correlation against distance: a check for incomplete demixing',
+      testid: 'tab-corr',
+      content: () => <CorrDistancePanel cells={props.cells} />,
     },
     {
       id: 'flatfield',

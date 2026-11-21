@@ -4,17 +4,12 @@
 // (supabase/functions/donation), which holds the R2 keys and the service role:
 // the browser never writes `cala_donations` and only ever sees presigned URLs.
 // Reads of `cala_donations` go straight to the table; RLS returns the donor's
-// own rows, or every row for an admin (migration 019).
+// own rows, or every row for an admin (migration 020).
 
 import { getDonationSupabase } from './donation-auth.ts';
 
 export type DonationStatus =
-  | 'uploading'
-  | 'uploaded'
-  | 'approved'
-  | 'rejected'
-  | 'ingested'
-  | 'withdrawn';
+  'uploading' | 'uploaded' | 'approved' | 'rejected' | 'ingested' | 'withdrawn';
 
 export type DonationLicense = 'cc-by-4.0' | 'lab-use-only';
 
@@ -196,7 +191,7 @@ export async function reviewDonation(
   await call('review', { donation_id: donationId, decision, note: note ?? null });
 }
 
-/** Mark whether a donation is in the benchmark set (admin column grant, migration 019). */
+/** Mark whether a donation is in the benchmark set (admin column grant, migration 020). */
 export async function setDonationBenchmark(
   donationId: string,
   inBenchmark: boolean,
