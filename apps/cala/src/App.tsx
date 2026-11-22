@@ -66,6 +66,9 @@ import {
 import { LIBRARY_MODE_LABEL, refinePlanText } from './lib/session-run.ts';
 import { createLookbackClient } from './lib/lookback-client.ts';
 import { loadSpeedSettings } from './lib/speed-track.ts';
+import { PACE_BATCH, PACE_SLACK } from './lib/frame-pacer.ts';
+import { FLOOR, TRACKER } from './lib/speed-floor.ts';
+import { LOOKBACK } from './lib/slow-runner.ts';
 import {
   CSETTLE,
   GOVERNOR,
@@ -504,6 +507,7 @@ const App: Component = () => {
   pipeline.onPaceChange((fps, frame, source) => runTrace.noteTargetSpeed(fps, frame, source));
   pipeline.onCapChange((cap, frame, source) => runTrace.noteCap(cap, frame, source));
   pipeline.onPoolStart((workers, frame) => runTrace.notePoolStart(workers, frame));
+  pipeline.onWorkSample((sample) => runTrace.noteSample(sample));
   // A Discover start begins a new run: the target speed in force is its first entry.
   createEffect(
     on(
@@ -569,7 +573,14 @@ const App: Component = () => {
     },
     lookbackPoolSize: () => lbPool,
     visitWorkers: () => slow.visitWorkers,
-    tunables: { settle: SETTLE, csettle: CSETTLE, governor: GOVERNOR },
+    tunables: {
+      settle: SETTLE,
+      csettle: CSETTLE,
+      governor: GOVERNOR,
+      lookback: LOOKBACK,
+      pacer: { PACE_BATCH, PACE_SLACK },
+      floor: { FLOOR, TRACKER },
+    },
   };
   const runRecord = (extras?: RunRecordExtras) => gatherRunRecord(runRecordSources, extras);
   const multiRun = createMultiRun({
@@ -764,12 +775,17 @@ const App: Component = () => {
         if (a.paceFps !== undefined) pipeline.setPaceFps(a.paceFps, 'run record');
         if (a.smoothPlayback !== undefined) pipeline.setSmoothPlayback(a.smoothPlayback);
         // The pool size is fixed at page load: say so rather than run differently in silence.
-        if (a.lookbackPoolPlanned !== undefined && a.lookbackPoolPlanned !== lbPool) {
-          const warning = `The record planned ${a.lookbackPoolPlanned} settle pool worker(s); this page has ${lbPool} (open it with ?debug&lbpool=${a.lookbackPoolPlanned} to match).`;
-          console.warn(warning);
-          return { ...a, warnings: [warning] };
-        }
-        return a;
+        const warnings: string[] = [];
+        if (a.capChangedDuringRun)
+          warnings.push(
+            'The record changed the settle cap during the run; cap changes are not replayed (the starting cap is applied).',
+          );
+        if (a.lookbackPoolPlanned !== undefined && a.lookbackPoolPlanned !== lbPool)
+          warnings.push(
+            `The record planned ${a.lookbackPoolPlanned} settle pool worker(s); this page has ${lbPool} (open it with ?debug&lbpool=${a.lookbackPoolPlanned} to match).`,
+          );
+        for (const w of warnings) console.warn(w);
+        return warnings.length > 0 ? { ...a, warnings } : a;
       },
     });
   }

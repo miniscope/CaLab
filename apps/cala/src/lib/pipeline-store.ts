@@ -48,6 +48,7 @@ import { RunRecord } from './run-record.ts';
 import { BoundaryMonitor, severityLabel, type BoundaryFlag } from './boundary-flags.ts';
 import type { SessionStart } from './session-boundary.ts';
 import type { RunHistory } from './run-history.ts';
+import type { WorkSample } from './run-provenance.ts';
 import type { LookbackFeed } from './lookback-client.ts';
 import {
   CSETTLE,
@@ -436,6 +437,7 @@ export function createPipelineStore(
             (t.readMs + t.preprocessMs + t.motionMs + t.otherMs + t.traceMs) / step.count;
           runHistory.batch(step, rate, perFrame, lag);
         }
+        if (step.cells) forwardDrops = step.cells.droppedFrames;
         if (step.cells && cells) cells.onBatch(step.start, step.count, step.cells, t);
         totals = {
           readMs: totals.readMs + t.readMs,
@@ -507,6 +509,10 @@ export function createPipelineStore(
   const [paceFromUrl, setPaceFromUrl] = createSignal(false);
   const paceListeners: ((fps: number, frame: number, source: string) => void)[] = [];
   const capListeners: ((cap: number, frame: number, source: string) => void)[] = [];
+  /** Told about the work and the floor about once a second (the run record's log). */
+  const workSampleListeners: ((s: WorkSample) => void)[] = [];
+  /** Frames the fast loop did not forward to the slow loop, as of the last batch (this run). */
+  let forwardDrops: number | null = null;
   /** Told when a run's settle pool starts (its workers, the frame reached); the run record's log. */
   const poolListeners: ((workers: number, frame: number) => void)[] = [];
   /** The look-back session whose pool start was told (once per run). */
@@ -550,7 +556,7 @@ export function createPipelineStore(
     if (floorMeter.due(st.accounting.wallMs)) {
       const lb = st.lookback;
       const gov = lb?.csettle?.governor;
-      floorMeter.push({
+      const floorChanged = floorMeter.push({
         work: st.accounting,
         inNeed: lb?.inNeed ?? 0,
         cap: gov?.cap ?? lb?.csettle?.rate ?? 0,
@@ -563,7 +569,47 @@ export function createPipelineStore(
         run: st.run,
       });
       setFloorLine(floorText(floorMeter));
-      setFloor(floorMeter.display());
+      const shown = floorMeter.display();
+      setFloor(shown);
+      // The run record's log: once a second at most, and only for Discover's own run (a Refine
+      // replay restarts the slow loop's counts).
+      if (workSampleListeners.length > 0 && (st.run ?? 1) === 1) {
+        const e = shown.estimate;
+        const ps = untrack(paceStats);
+        const sample: WorkSample = {
+          frame: untrack(processed),
+          limit: gov?.limit ?? null,
+          maxFps: maxFpsEstimator.estimate() || null,
+          floor: {
+            fps: shown.fps,
+            published: shown.published,
+            seeAllFps: e.seeAllFps,
+            limiting: e.limiting,
+            confidence: e.confidence,
+            terms: { ...e.terms },
+          },
+          floorInputs: floorMeter.last,
+          floorChanged,
+          running: untrack(status) !== 'done',
+          counters: {
+            processed: untrack(processed),
+            observed: st.accounting.observedFrames ?? null,
+            settledFrames: st.accounting.lookback.csettle.frames,
+            forwardDrops,
+            paceLateMs: ps?.lateMs ?? null,
+            paceReanchors: ps?.reanchors ?? null,
+            halvings: gov?.halvings ?? null,
+            slowHalvings: gov?.slowHalvings ?? null,
+          },
+        };
+        for (const cb of workSampleListeners) {
+          try {
+            cb(sample);
+          } catch {
+            // Observers only.
+          }
+        }
+      }
     }
     const rates = workRater.push(st.accounting);
     if (!rates) return;
@@ -754,6 +800,7 @@ export function createPipelineStore(
     inFlight = 0;
     exhausted = false;
     framesDone = 0;
+    forwardDrops = null;
     if (lookbackSession) lookbackFeed?.reset(lookbackSession);
     lookbackSession = 0;
     setLookbackRun(false);
@@ -1070,6 +1117,10 @@ export function createPipelineStore(
     /** Called with the new target speed, the frame reached and what set it, whenever `setPaceFps` runs (the run record's log). */
     onPaceChange: (cb: (fps: number, frame: number, source: string) => void) => {
       paceListeners.push(cb);
+    },
+    /** Called about once a second while the slow loop reports: the governor's limit, the Max estimate and the floor (the run record's log). */
+    onWorkSample: (cb: (s: WorkSample) => void) => {
+      workSampleListeners.push(cb);
     },
     /** Called once per run when its settle pool starts: the pool workers and the frame reached. */
     onPoolStart: (cb: (workers: number, frame: number) => void) => {

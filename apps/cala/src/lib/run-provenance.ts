@@ -25,6 +25,8 @@
 import { FINAL_SETTLE_LEVELS, type FinalSettleLevel, type GovernorStatus } from './settle.ts';
 import type { StageRun } from './run-stages.ts';
 import { stageMeta } from './export.ts';
+import { FLOOR_LADDER, type FloorInputs } from './speed-floor.ts';
+import { SPEED_SCALE } from './speed-track.ts';
 
 export const RUN_RECORD_FILE = 'cala-run-record.json';
 export const RUN_RECORD_FORMAT = 'cala-run-record';
@@ -36,11 +38,11 @@ export const RUN_RECORD_VERSION = 2;
  * reader can tell "not run" from "not recorded".
  */
 export const WORK_SLIDER_SLOTS = [
-  /** The work slider's position over the run, time-stamped. */
+  /** The Speed track the run was made with (scale and the floor's ladder); the position over the run is `target_speed.changes`. */
   'slider_schedule',
   /** A speed curve (target speed over stream time) and how it was chosen. */
   'curve_schedule',
-  /** The estimate of the machine's floor (the fastest sustained rate). */
+  /** The smart floor over the run: its first value, each published change, and the last inputs. */
   'floor_estimate',
   /** Decisions an automatic mode made (what, when, why). */
   'auto_decisions',
@@ -249,6 +251,80 @@ export interface CapChange {
   source: string;
 }
 
+/** One published change of the smart floor (`FloorTracker.published`), with what the raw estimate rested on. */
+export interface FloorChange {
+  /** ISO time of the change. */
+  at: string;
+  /** Frame the run had processed when it changed. */
+  frame: number;
+  /** The published (ladder) floor, fps. */
+  fps: number;
+  /** The rate below which the slow loop sees every live frame, fps. */
+  seeAllFps: number;
+  /** Which user of spare compute sets the floor. */
+  limiting: string;
+  confidence: string;
+  /** Each term's saturation rate, fps (null: not known or dropped). */
+  terms: Record<string, number | null>;
+}
+
+/** What `RunTrace.noteSample` takes, once a second or so from the pipeline store while the slow loop reports. */
+export interface WorkSample {
+  /** Frame the run had processed. */
+  frame: number;
+  /** The settle governor's limit now (null: no governor, e.g. a run at Max). */
+  limit: string | null;
+  /** The fast loop's live estimate of its top speed, fps (null: not known yet). */
+  maxFps: number | null;
+  /** The floor as the Speed control shows it. */
+  floor: {
+    fps: number;
+    published: number | null;
+    seeAllFps: number;
+    limiting: string;
+    confidence: string;
+    terms: Record<string, number | null>;
+  };
+  /** The inputs the floor's raw estimate was last made from (null: none yet). */
+  floorInputs: FloorInputs | null;
+  /** The published floor changed with this reading. */
+  floorChanged: boolean;
+  /** Discover is still going (false once it ended, in the Final settle): the limit and Max counts stop. */
+  running: boolean;
+  /**
+   * Cumulative counts of this Discover run, so the record keeps them after Refine and Extract
+   * (the slow worker's accounting and the pacer's readouts belong to the run that is current).
+   */
+  counters: RunCounters;
+}
+
+/** What `work.realised` is made from: the run's cumulative counts as of the latest reading. */
+export interface RunCounters {
+  /** Frames Discover has processed. */
+  processed: number;
+  /** Live frames the slow loop has observed (null: not reported). */
+  observed: number | null;
+  /** Re-read frames Background settle has delivered. */
+  settledFrames: number | null;
+  /** Frames the fast loop did not forward to the slow loop. */
+  forwardDrops: number | null;
+  /** Pacer: lateness dropped at re-anchors (ms) and the re-anchors (null: it never paced). */
+  paceLateMs: number | null;
+  paceReanchors: number | null;
+  halvings: number | null;
+  slowHalvings: number | null;
+}
+
+/** Floor rows and Max samples kept; past this the oldest half is thinned (every second one kept). */
+export const RECORD_LIST_CAP = 2000;
+
+/** Thin the oldest half of `rows` (keep every second one) once it is over `cap`; the newest stay whole. */
+export function thinOldest<T>(rows: T[], cap = RECORD_LIST_CAP): T[] {
+  if (rows.length <= cap) return rows;
+  const half = rows.length >> 1;
+  return [...rows.slice(0, half).filter((_, i) => i % 2 === 1), ...rows.slice(half)];
+}
+
 export interface SettleTimes {
   /** ISO time the final settle started and ended (null: not yet / not run). */
   started_at: string | null;
@@ -264,6 +340,12 @@ export class RunTrace {
   private settle: SettleTimes = { started_at: null, ended_at: null };
   private pool: { workers: number; frame: number } | null = null;
   private caps: CapChange[] = [];
+  private floorStart: { fps: number; confidence: string } | null = null;
+  private floorRows: FloorChange[] = [];
+  private floorLast: FloorInputs | null = null;
+  private limitCounts: Record<string, number> = {};
+  private maxSamples: number[] = [];
+  private counts: RunCounters | null = null;
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
@@ -272,6 +354,76 @@ export class RunTrace {
     this.settle = { started_at: null, ended_at: null };
     this.pool = null;
     this.caps = [];
+    this.floorStart = null;
+    this.floorRows = [];
+    this.floorLast = null;
+    this.limitCounts = {};
+    this.maxSamples = [];
+    this.counts = null;
+  }
+
+  /** The run's counts as of the last reading of Discover's run (null: none read). */
+  counters(): RunCounters | null {
+    return this.counts ? { ...this.counts } : null;
+  }
+
+  /**
+   * One reading of the work and the floor. The first sets the floor's start value (usually the
+   * prior); a published change adds a row; the governor's limit and the Max estimate are counted
+   * for the run's realised summary.
+   */
+  noteSample(s: WorkSample): void {
+    this.floorStart ??= { fps: s.floor.fps, confidence: s.floor.confidence };
+    if (s.floorInputs) this.floorLast = { ...s.floorInputs };
+    if (s.floorChanged && s.floor.published !== null) {
+      this.floorRows.push({
+        at: this.now().toISOString(),
+        frame: s.frame,
+        fps: s.floor.published,
+        seeAllFps: s.floor.seeAllFps,
+        limiting: s.floor.limiting,
+        confidence: s.floor.confidence,
+        terms: { ...s.floor.terms },
+      });
+      this.floorRows = thinOldest(this.floorRows);
+    }
+    this.counts = { ...s.counters };
+    if (!s.running) return;
+    if (s.limit !== null) this.limitCounts[s.limit] = (this.limitCounts[s.limit] ?? 0) + 1;
+    if (s.maxFps !== null && s.maxFps > 0) {
+      this.maxSamples.push(s.maxFps);
+      this.maxSamples = thinOldest(this.maxSamples);
+    }
+  }
+
+  /** The floor over the run, or null when nothing was read. */
+  floorEstimate(): {
+    start: { fps: number; confidence: string };
+    changes: FloorChange[];
+    last_inputs: FloorInputs | null;
+  } | null {
+    if (!this.floorStart) return null;
+    return {
+      start: { ...this.floorStart },
+      changes: this.floorRows.map((c) => ({ ...c, terms: { ...c.terms } })),
+      last_inputs: this.floorLast ? { ...this.floorLast } : null,
+    };
+  }
+
+  /** Share of the readings each governor limit held (sums to 1; empty without a governor). */
+  limitShares(): Record<string, number> {
+    const total = Object.values(this.limitCounts).reduce((a, b) => a + b, 0);
+    const out: Record<string, number> = {};
+    if (total > 0) for (const [k, n] of Object.entries(this.limitCounts)) out[k] = n / total;
+    return out;
+  }
+
+  /** The median of the Max estimates read, fps (null: none). */
+  maxFpsMedian(): number | null {
+    const a = [...this.maxSamples].sort((x, y) => x - y);
+    if (a.length === 0) return null;
+    const m = a.length >> 1;
+    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
   }
 
   /** The settle cap is `cap` now (0: Off). Repeats of the same value are not recorded again. */
@@ -333,6 +485,47 @@ export interface SettleSummary {
   /** The user stopped it early. */
   stopped_by_user: boolean;
   done: boolean;
+}
+
+/** What a run realised, as against what was set (section 5 of the speed control design). Null where not known. */
+export interface RealisedWork {
+  /** Discover's frames over its wall time, fps. */
+  achieved_fps_mean: number | null;
+  /** Re-read frames the Background settle delivered per live frame of Discover. */
+  dose_per_live_frame: number | null;
+  /** Live frames the slow loop never observed (the fast loop ran ahead of it). */
+  frames_missed_by_slow_loop: number | null;
+  /** Frames the fast loop did not forward to the slow loop. */
+  forward_drops: number | null;
+  halvings: number | null;
+  slow_halvings: number | null;
+  /** Share of the readings each governor limit held. */
+  limit_shares: Record<string, number>;
+  /** Lateness the pacer dropped at re-anchors, ms, and how often it re-anchored. */
+  pace_late_ms: number | null;
+  pace_reanchors: number | null;
+  /** Median of the live Max estimate, fps. */
+  max_fps_median: number | null;
+}
+
+/** The Speed block's mode for a run: `stream` for a live source, else what was set. */
+export function speedModeOf(o: {
+  live: boolean;
+  targetSpeed: readonly TargetSpeedChange[];
+  /** A speed curve was set (`slots.curve_schedule`). */
+  curve: boolean;
+  /** An automatic mode took part (a change with source `auto`). */
+  auto?: boolean;
+}): 'max' | 'fixed' | 'curve' | 'auto' | 'stream' {
+  if (o.live) return 'stream';
+  if (o.auto || o.targetSpeed.some((c) => c.source === 'auto')) return 'auto';
+  if (o.curve) return 'curve';
+  return (o.targetSpeed[0]?.fps ?? 0) > 0 ? 'fixed' : 'max';
+}
+
+/** The Speed track as the run had it (the record's `slider_schedule` slot). */
+export function sliderSchedule(): { scale: [number, number]; ladder: number[] } {
+  return { scale: [SPEED_SCALE.lo, SPEED_SCALE.hi], ladder: [...FLOOR_LADDER] };
 }
 
 /** Everything `buildRunRecord` needs, as plain data. */
@@ -397,6 +590,8 @@ export interface RunRecordInput {
     visit_workers: number | null;
   };
   governor: GovernorStatus | null;
+  /** What the run realised (null: not known); `work.realised`. */
+  realised?: RealisedWork | null;
   /** Discover's mean processing rate over the run, frames per second (null: not known). */
   achievedFps: number | null;
   machine: MachineContext;
@@ -447,6 +642,7 @@ export function buildRunRecord(i: RunRecordInput): Record<string, unknown> {
     },
     work: {
       ...i.work,
+      realised: i.realised ?? null,
       /** Time-stamped; cap 0 is Off. The first entry is the cap at the run's start. */
       cap_changes: i.capChanges.map((c) => ({ ...c })),
       achieved_fps: i.achievedFps,
@@ -573,6 +769,19 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
   const sizes = src.fileSizes();
   const perSession = src.sessionFiles();
   const pool = src.trace.poolStart();
+  const gov = st?.lookback?.csettle?.governor ?? null;
+  const achieved = achievedFps(src.stageRuns());
+  const n = src.trace.counters();
+  const floor = src.trace.floorEstimate();
+  // The settings hold what the run STARTED with; what changed after is `target_speed.changes`
+  // and `work.cap_changes` (the first entry of each is the start value).
+  const startFps = src.trace.targetSpeedChanges()[0]?.fps ?? p.paceFps();
+  const startCap = src.trace.capChanges()[0]?.cap;
+  const speedMode = speedModeOf({
+    live: info?.live !== undefined,
+    targetSpeed: src.trace.targetSpeedChanges(),
+    curve: extras.slots?.curve_schedule != null,
+  });
   const record = buildRunRecord({
     createdAt: (src.now ?? (() => new Date()))().toISOString(),
     appVersion: src.appVersion,
@@ -588,7 +797,14 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       // Background settle (v2): runs whenever the target is below Max, at most `settle_cap`
       // re-read frames per live frame; 'off' (the checkbox unticked, `csettle=0`) never.
       background_settle: p.csettle() ? 'auto-below-max' : 'off',
-      settle_cap: p.csettle() ? p.csettleCeiling() : 'off',
+      settle_cap:
+        startCap !== undefined
+          ? startCap > 0
+            ? startCap
+            : 'off'
+          : p.csettle()
+            ? p.csettleCeiling()
+            : 'off',
       settle_yield_frames: p.csettleYield(),
       need_first: p.csettleNeedFirst(),
       // The pool actually started (a run that stayed at Max: started_S 0, started_at_frame null).
@@ -598,7 +814,8 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
         started_at_frame: pool?.frame ?? null,
       },
       final_settle_level: p.finalSettleLevel(),
-      target_speed_fps: p.paceFps(),
+      speed_mode: speedMode,
+      target_speed_fps: startFps,
       smooth_playback: p.smoothPlayback(),
       ...(extras.mode !== undefined ? { library_mode: extras.mode } : {}),
       ...(extras.refineRuns !== undefined ? { refine_runs: extras.refineRuns } : {}),
@@ -663,10 +880,28 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       pool: 1 + (pool?.workers ?? 0),
       visit_workers: src.visitWorkers(),
     },
-    governor: st?.lookback?.csettle?.governor ?? null,
-    achievedFps: achievedFps(src.stageRuns()),
+    governor: gov,
+    realised: {
+      achieved_fps_mean: achieved,
+      dose_per_live_frame:
+        n && n.settledFrames !== null && n.processed > 0 ? n.settledFrames / n.processed : null,
+      frames_missed_by_slow_loop:
+        n && n.observed !== null ? Math.max(0, n.processed - n.observed) : null,
+      forward_drops: n?.forwardDrops ?? null,
+      halvings: n?.halvings ?? null,
+      slow_halvings: n?.slowHalvings ?? null,
+      limit_shares: src.trace.limitShares(),
+      pace_late_ms: n?.paceLateMs ?? null,
+      pace_reanchors: n?.paceReanchors ?? null,
+      max_fps_median: src.trace.maxFpsMedian(),
+    },
+    achievedFps: achieved,
     machine: machineContext(),
-    ...(extras.slots ? { slots: extras.slots } : {}),
+    slots: {
+      slider_schedule: sliderSchedule(),
+      ...(floor ? { floor_estimate: floor } : {}),
+      ...extras.slots,
+    },
   });
   return record;
 }
@@ -696,6 +931,47 @@ export interface AppliedSettings {
    * reports a mismatch.
    */
   lookbackPoolPlanned?: number;
+  /** The Speed block's mode the run had (information: the app picks its own mode from `paceFps` and `curve`). */
+  speedMode?: 'max' | 'fixed' | 'curve' | 'auto' | 'stream';
+  /**
+   * A curve and an Auto run replays as a curve: the target changes the run realised, with
+   * positions as a share of the recording (`at`, 0 to 1; the first at 0) so a rerun follows
+   * the same schedule whatever the machine decides. Absent for Max, Fixed and stream runs.
+   */
+  curve?: ReplayCurve;
+  /** The run changed its settle cap part-way (`work.cap_changes` has more than one distinct value); not replayed. */
+  capChangedDuringRun?: boolean;
+}
+
+/** A schedule of target speeds over the recording (`speed-schedule.ts` reads the same shape). */
+export interface ReplayCurve {
+  points: { at: number; fps: number | 'max' | 'floor' }[];
+}
+
+const SPEED_MODES = ['max', 'fixed', 'curve', 'auto', 'stream'] as const;
+
+/**
+ * The curve a record's target changes make: one point per change, `at` the frame's share of
+ * `frames` (the recording's), consecutive repeats of the same target merged. Null when there is
+ * nothing to replay (no frames, or no changes).
+ */
+export function curveFromChanges(
+  changes: readonly { frame: number; fps: number }[],
+  frames: number,
+): ReplayCurve | null {
+  if (!(frames > 0) || changes.length === 0) return null;
+  const points: ReplayCurve['points'] = [];
+  for (const c of changes) {
+    if (!Number.isFinite(c.frame) || !Number.isFinite(c.fps) || c.fps < 0) continue;
+    const fps = c.fps > 0 ? c.fps : 'max';
+    const at = points.length === 0 ? 0 : Math.min(1, Math.max(0, c.frame / frames));
+    const last = points[points.length - 1];
+    if (last && last.fps === fps) continue;
+    // Two changes at the same place: the later one wins.
+    if (last && last.at >= at) last.fps = fps;
+    else points.push({ at, fps });
+  }
+  return points.length > 0 ? { points } : null;
 }
 
 export function settingsFromRecord(rec: unknown): AppliedSettings | null {
@@ -744,5 +1020,35 @@ export function settingsFromRecord(rec: unknown): AppliedSettings | null {
     out.finalSettleLevel = o.final_settle_level as FinalSettleLevel;
   num('target_speed_fps', 'paceFps');
   bool('smooth_playback', 'smoothPlayback');
+  if ((SPEED_MODES as readonly unknown[]).includes(o.speed_mode))
+    out.speedMode = o.speed_mode as AppliedSettings['speedMode'];
+  {
+    const ts = r.target_speed as { changes?: unknown } | undefined;
+    const inp = r.input as { frames?: unknown } | undefined;
+    const changes = Array.isArray(ts?.changes)
+      ? (ts.changes as unknown[]).filter(
+          (c): c is { frame: number; fps: number } =>
+            !!c &&
+            typeof c === 'object' &&
+            finite((c as Record<string, unknown>).frame) &&
+            finite((c as Record<string, unknown>).fps),
+        )
+      : [];
+    const curve = curveFromChanges(changes, finite(inp?.frames) ? inp.frames : 0);
+    // Any run with more than one distinct target replays as a curve, whatever its mode.
+    if (curve && curve.points.length > 1) out.curve = curve;
+    else if (out.speedMode === 'curve' || out.speedMode === 'auto') {
+      if (curve) out.curve = curve;
+    }
+  }
+  const work = r.work as { cap_changes?: unknown } | undefined;
+  if (Array.isArray(work?.cap_changes)) {
+    const caps = new Set(
+      (work.cap_changes as unknown[])
+        .map((c) => (c as Record<string, unknown> | null)?.cap)
+        .filter(finite),
+    );
+    if (caps.size > 1) out.capChangedDuringRun = true;
+  }
   return out;
 }
