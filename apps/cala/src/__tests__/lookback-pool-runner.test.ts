@@ -351,4 +351,18 @@ describe('settle governor in the runner', () => {
     expect(g.halvings).toBe(1);
     expect(g.rate).toBeLessThan(before);
   });
+
+  it('taking turns, worker 0 need-driven time counts towards the settle busy share', () => {
+    const busy = (need: number) => {
+      const t = setup({ need, pool: 0, csettle: 2, governor: true });
+      t.r.setPace(30, false);
+      for (let k = 0; k < 40; k++) {
+        t.live(1, 267);
+        while (t.pending(0)) t.answer(0);
+      }
+      expect(t.kinds(0)).toContain('csettle');
+      return t.status().lookback!.csettle!.governor!.busy;
+    };
+    expect(busy(100_000)).toBeGreaterThan(busy(0));
+  });
 });

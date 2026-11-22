@@ -1023,8 +1023,11 @@ export class SlowRunner {
     this.lbTimers[port] = null;
     if (msg.type === 'frames') {
       addLookbackAnswer(this.lbWork[req.kind], msg.count, msg.timing);
-      if (req.kind === 'csettle')
-        this.cs?.gov?.delivered(msg.count, msg.timing ? timingBusyMs(msg.timing) : 0);
+      const busy = msg.timing ? timingBusyMs(msg.timing) : 0;
+      if (req.kind === 'csettle') this.cs?.gov?.delivered(msg.count, busy);
+      // Taking turns (no settle pool): worker 0 is the settle's worker, so its need-driven
+      // time counts towards its busy share too (else a full worker reads as "slow worker").
+      else if (port === 0 && this.settlePorts().length === 0) this.cs?.gov?.delivered(0, busy);
     }
     // The slow worker's time on this answer goes to the kind's duty.
     this.clock.begin(req.kind === 'end' ? 'end' : req.kind);
