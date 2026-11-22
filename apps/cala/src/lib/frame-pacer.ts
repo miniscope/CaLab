@@ -24,15 +24,23 @@ export class FramePacer {
   private anchor = 0;
   private count = 0;
   private held = false;
+  private lastRelease = Number.NEGATIVE_INFINITY;
   private lateTotal = 0;
   private reanchorCount = 0;
 
   constructor(readonly batch: number = PACE_BATCH) {}
 
-  /** 0 or `Infinity` = unpaced. Re-anchors. */
+  /**
+   * 0 or `Infinity` = unpaced. Re-anchors, but never earlier than one new period after the last
+   * release, so a slider drag cannot make two releases close together. Does not touch `paused`.
+   */
   setTarget(fps: number, now: number): void {
     this.fps = Number.isFinite(fps) && fps > 0 ? fps : 0;
-    this.anchor = now;
+    this.reanchor(now);
+  }
+
+  private reanchor(now: number): void {
+    this.anchor = Math.max(now, this.lastRelease + this.periodMs);
     this.count = 0;
   }
 
@@ -86,18 +94,18 @@ export class FramePacer {
       this.count = 0;
     }
     this.count += frames;
+    this.lastRelease = now;
   }
 
   pause(): void {
     this.held = true;
   }
 
-  /** Resume re-anchors: the time paused is not owed. */
+  /** Resume re-anchors (the time paused is not owed), one period after the last release at the earliest. */
   resume(now: number): void {
     if (!this.held) return;
     this.held = false;
-    this.anchor = now;
-    this.count = 0;
+    this.reanchor(now);
   }
 
   /** A new run: unpaced, not paused, readouts cleared. */
@@ -106,9 +114,22 @@ export class FramePacer {
     this.held = false;
     this.count = 0;
     this.anchor = 0;
+    this.lastRelease = Number.NEGATIVE_INFINITY;
     this.lateTotal = 0;
     this.reanchorCount = 0;
   }
+}
+
+/** Pacing readouts a worker reports: the gate's wait, the lateness dropped, the re-anchors. */
+export interface PaceStats {
+  target: number;
+  /** Time spent at the gate (not busy time). */
+  waitMs: number;
+  /** Lateness dropped at re-anchors: how far behind the target the run fell. */
+  lateMs: number;
+  reanchors: number;
+  /** Frames released since the last anchor. */
+  released: number;
 }
 
 /** Timer functions the gate uses (the tests pass fakes; the default is the worker's own). */
@@ -143,6 +164,17 @@ export class PaceGate {
     batch: number = PACE_BATCH,
   ) {
     this.pacer = new FramePacer(batch);
+  }
+
+  /** What the worker reports to the main thread (see `PaceStats`). */
+  stats(): PaceStats {
+    return {
+      target: this.pacer.target,
+      waitMs: this.waited,
+      lateMs: this.pacer.lateMs,
+      reanchors: this.pacer.reanchors,
+      released: this.pacer.released,
+    };
   }
 
   /** Time spent waiting at the gate (ms), reported apart from the stages' busy time. */
@@ -228,5 +260,51 @@ export class PaceGate {
     } finally {
       this.waited += this.timers.now() - t0;
     }
+  }
+}
+
+/**
+ * The frame worker's request queue with the pace gate in front of its steps. A step waits at the
+ * gate BEFORE it enters the serial queue, so a held step never blocks a `read`, a switch, a stop or
+ * a restart behind it. A step waiting across a stop or a restart is cancelled (never run against
+ * the next pipeline): `cancelWaiting` ends the run's epoch.
+ */
+export class PacedQueue<R> {
+  private queue: Promise<void> = Promise.resolve();
+  private chain: Promise<void> = Promise.resolve();
+  private epoch = 0;
+
+  constructor(
+    private readonly o: {
+      gate: PaceGate;
+      isStep(req: R): boolean;
+      run(req: R): Promise<void>;
+      /** A step that waited at the gate was cancelled (answer it as stopped). */
+      cancelled(req: R): void;
+      /** A step passed the gate. */
+      released?(): void;
+    },
+  ) {}
+
+  push(req: R): void {
+    if (this.o.isStep(req) && this.o.gate.active) {
+      const epoch = this.epoch;
+      this.chain = this.chain.then(async () => {
+        const ok = await this.o.gate.enter();
+        if (!ok || epoch !== this.epoch) return this.o.cancelled(req);
+        this.o.released?.();
+        this.enqueue(req);
+      });
+    } else this.enqueue(req);
+  }
+
+  private enqueue(req: R): void {
+    this.queue = this.queue.then(() => this.o.run(req));
+  }
+
+  /** Stop, restart or reopen: every step now waiting at the gate is cancelled. */
+  cancelWaiting(): void {
+    this.epoch++;
+    this.o.gate.stop();
   }
 }

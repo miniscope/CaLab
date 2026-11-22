@@ -215,8 +215,30 @@ describe('pipeline store backpressure', () => {
       store.resume();
       expect(setPace).toHaveBeenLastCalledWith({ paused: false });
       store.setPaceFps(0);
-      expect(setPace).toHaveBeenLastCalledWith({ fps: 0 });
+      expect(setPace).toHaveBeenLastCalledWith({ fps: 0, paused: false });
       void steps;
+      dispose();
+    });
+  });
+
+  it('never leaves the gate held: pause, pace off, resume, pace on', async () => {
+    const { client } = manualClient();
+    const setPace = vi.fn(async () => {});
+    await createRoot(async (dispose) => {
+      const store = createPipelineStore({ ...client, setPace });
+      store.setPaceFps(30);
+      await store.start();
+      store.pause();
+      store.setPaceFps(0);
+      store.resume();
+      expect(setPace).toHaveBeenLastCalledWith({ paused: false });
+      store.setPaceFps(20);
+      expect(setPace).toHaveBeenLastCalledWith({ fps: 20, paused: false });
+      // Paused with no pace, then a pace: the gate starts held.
+      store.setPaceFps(0);
+      store.pause();
+      store.setPaceFps(15);
+      expect(setPace).toHaveBeenLastCalledWith({ fps: 15, paused: true });
       dispose();
     });
   });

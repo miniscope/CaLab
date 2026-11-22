@@ -321,7 +321,7 @@ let t0 = Date.now();
 await page.goto(`${url}?debug${lookback && !toggle ? '&lookback' : ''}${csQuery}`);
 await attachPage();
 // Exact times and every settle checkpoint (the 5 s samples miss them): an in-page probe.
-await page.evaluate(() => {
+await page.evaluate((withRelease) => {
   const p = (window.__calaProbe = {
     t0: null,
     framesDone: null,
@@ -336,22 +336,23 @@ await page.evaluate(() => {
   // Release probe (smooth pacing): when each batch's frames arrive on the main thread, polled
   // every 5 ms. The gate releases a batch one pipeline latency earlier, so this adds the
   // pipeline's own jitter to the true spread: a ceiling for the release evenness.
-  const rel = (window.__calaRelease = { t: [], n: [] });
+  const rel = withRelease ? (window.__calaRelease = { t: [], n: [] }) : null;
   let relLast = 0;
-  setInterval(() => {
-    const c = window.__cala;
-    if (!c || c.pipeline.status() !== 'running') return;
-    const n = c.pipeline.processed();
-    if (n < relLast) {
-      rel.t = [];
-      rel.n = [];
-    }
-    if (n !== relLast) {
-      rel.t.push(performance.now());
-      rel.n.push(n);
-    }
-    relLast = n;
-  }, 5);
+  if (withRelease)
+    setInterval(() => {
+      const c = window.__cala;
+      if (!c || c.pipeline.status() !== 'running') return;
+      const n = c.pipeline.processed();
+      if (n < relLast) {
+        rel.t = [];
+        rel.n = [];
+      }
+      if (n !== relLast) {
+        rel.t.push(performance.now());
+        rel.n.push(n);
+      }
+      relLast = n;
+    }, 5);
   let lastKey = '';
   setInterval(() => {
     const c = window.__cala;
@@ -413,7 +414,7 @@ await page.evaluate(() => {
     if (pst === 'done' && st?.final && !lb?.settling && p.final === null && p.framesDone !== null)
       p.final = now;
   }, 100);
-});
+}, Boolean(paceFps));
 const single = args.includes('--single');
 await page.setInputFiles('[data-testid=folder-input]', data);
 if (single) {

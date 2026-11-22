@@ -15,7 +15,7 @@ import { CompressFeed } from '../lib/compress-feed.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
 import { FLAT_FIELD_MAX_QUEUE } from '../lib/flat-field.ts';
 import type { FlatFieldBatch, FlatFieldSink, FlatFieldStart } from '../lib/flat-field-runner.ts';
-import { PaceGate } from '../lib/frame-pacer.ts';
+import { PaceGate, PacedQueue } from '../lib/frame-pacer.ts';
 import { FrameSource } from '../lib/frame-source.ts';
 import { LiveSource, type SocketLike } from '../lib/live-source.ts';
 import { PipelineEngine, transferablesOf, type FrameReader } from '../lib/pipeline-engine.ts';
@@ -277,8 +277,8 @@ async function handle(req: FrameRequest): Promise<void> {
         break;
       }
       case 'pipeline-step': {
-        // Both paths enter here: the wait is before any stage's timing starts, so it is not busy time.
-        if (gate.active && !(await gate.enter())) throw new Error('The run was stopped.');
+        // Both paths enter here. A paced step has already waited at the gate (`PacedQueue`), outside
+        // the serial queue and before any stage's timing starts, so the wait is not busy time.
         if (down) {
           // The answer comes from the trace worker, with this request's id.
           if (!front) throw new Error('The pipeline is not running.');
@@ -389,8 +389,15 @@ function actNow(req: FrameRequest): boolean {
       truncateNow();
       return false;
     case 'pipeline-stop':
-      gate.stop();
+      pacedQueue.cancelWaiting();
       truncateNow();
+      return false;
+    // A restart or a new source: steps still waiting at the gate belong to the old run.
+    case 'pipeline-start':
+    case 'open':
+    case 'open-sessions':
+    case 'open-live':
+      pacedQueue.cancelWaiting();
       return false;
     default:
       return false;
@@ -400,9 +407,22 @@ function actNow(req: FrameRequest): boolean {
 // One message at a time, in arrival order: an `open` must never dispose the
 // headers while a `read` is awaiting its slice, nor a `pipeline-stop` free the
 // pipeline while a step is running.
-let queue: Promise<void> = Promise.resolve();
+let lastPaceStats = Number.NEGATIVE_INFINITY;
+const pacedQueue = new PacedQueue<FrameRequest>({
+  gate,
+  isStep: (req) => req.type === 'pipeline-step',
+  run: handle,
+  cancelled: (req) => post({ type: 'error', id: req.id, message: 'The run was stopped.' }),
+  released: () => {
+    // Pacing readouts for the main thread, about once a second.
+    const t = performance.now();
+    if (t - lastPaceStats < 1000) return;
+    lastPaceStats = t;
+    post({ type: 'pace-stats', id: -1, stats: gate.stats() });
+  },
+});
 workerScope.onmessage = (e) => {
   const req = e.data;
   if (actNow(req)) return;
-  queue = queue.then(() => handle(req));
+  pacedQueue.push(req);
 };

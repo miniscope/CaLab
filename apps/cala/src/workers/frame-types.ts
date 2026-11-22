@@ -7,6 +7,7 @@ import type {
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelineOptions, PipelinePlan } from '../lib/pipeline-plan.ts';
 import type { FlatFieldMap } from '../lib/flat-field.ts';
+import type { PaceStats } from '../lib/frame-pacer.ts';
 import type { ReplayInput } from '../lib/pipeline-stages.ts';
 
 /** Fast-loop settings of a pipeline run. */
@@ -137,4 +138,6 @@ export type FrameResponse =
   | { type: 'pipeline-step'; id: number; step: PipelineStepResult }
   | { type: 'pipeline-stopped'; id: number }
   | { type: 'ok'; id: number }
+  /** Unsolicited (`id` -1): the pace gate's readouts, about once a second while paced. */
+  | { type: 'pace-stats'; id: number; stats: PaceStats }
   | { type: 'error'; id: number; message: string };

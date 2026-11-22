@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { FramePacer, PaceGate, PACE_BATCH } from '../lib/frame-pacer.ts';
+import { FramePacer, PaceGate, PacedQueue, PACE_BATCH } from '../lib/frame-pacer.ts';
 
 /**
  * A simulated frame worker: step requests are served one after another (the worker's queue is
@@ -146,12 +146,43 @@ describe('PaceGate', () => {
     );
     const iv = intervals(t);
     expect(iv[10]).toBeCloseTo(p30, -1);
-    // The first release after a change is immediate (re-anchor), then one new period each.
-    for (const v of iv.slice(20, 39)) expect(Math.abs(v - p60)).toBeLessThan(0.05 * p60 + 10);
-    for (const v of iv.slice(41)) expect(Math.abs(v - p15)).toBeLessThan(0.05 * p15 + 10);
+    // The first release after a change comes a new period after the last (never a burst), then one each.
+    for (const v of iv.slice(19, 39)) expect(Math.abs(v - p60)).toBeLessThan(0.05 * p60 + 10);
+    for (const v of iv.slice(39)) expect(Math.abs(v - p15)).toBeLessThan(0.05 * p15 + 10);
     expect(Math.max(...iv)).toBeLessThanOrEqual(p15 + p60 + 20);
     // Never two within 0.9 of the shorter of the two periods involved, except the re-anchor release.
-    for (const v of iv.slice(20, 39)) expect(v).toBeGreaterThanOrEqual(0.9 * p60);
+    for (const v of iv.slice(19, 39)) expect(v).toBeGreaterThanOrEqual(0.9 * p60);
+  });
+
+  it('a short pause and rapid target changes (a slider drag) never release two batches close together', async () => {
+    const gate = new PaceGate();
+    gate.begin();
+    gate.setTarget(30);
+    const p = (PACE_BATCH / 120) * 1000; // the shortest period used below
+    const t = await sim(() =>
+      simulate(gate, {
+        batches: 60,
+        work: () => 5,
+        onRelease: (k) => {
+          if (k === 9) {
+            gate.pause();
+            setTimeout(() => gate.resume(), 20); // shorter than a period
+          }
+          if (k >= 30 && k < 50) gate.setTarget(30 + ((k * 37) % 90)); // 30..119 fps, every batch
+        },
+      }),
+    );
+    for (const v of intervals(t)) expect(v).toBeGreaterThanOrEqual(0.9 * p);
+    // Several changes inside one period: the next release is still a period after the last.
+    const g2 = new PaceGate();
+    g2.begin();
+    g2.setTarget(30);
+    expect(await g2.enter()).toBe(true);
+    const t0 = performance.now();
+    g2.setTarget(60);
+    g2.setTarget(45);
+    g2.setTarget(30);
+    expect(g2.pacer.dueAt()).toBeGreaterThanOrEqual(t0 + (PACE_BATCH / 30) * 1000 - 1);
   });
 
   it('4. overload then recovery: follows the processing, lateMs grows, no burst afterwards', async () => {
@@ -252,5 +283,126 @@ describe('PaceGate', () => {
     // The wait is reported on its own: about (period - 30) per batch after the first.
     expect(gate.waitMs).toBeGreaterThan(19 * (period - 30) - 40);
     expect(gate.waitMs + busy).toBeGreaterThan(19 * period);
+  });
+});
+
+/** The worker's queue with the gate in front of its steps (`PacedQueue`), with fake request handlers. */
+describe('PacedQueue', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  type Req = { type: 'step' | 'read' | 'start' | 'stop'; id: number };
+  function rig() {
+    const gate = new PaceGate();
+    const log: string[] = [];
+    const cancelled: number[] = [];
+    let pipeline = 0; // the "pipeline" generation a step runs against
+    const q = new PacedQueue<Req>({
+      gate,
+      isStep: (r) => r.type === 'step',
+      run: async (r) => {
+        await new Promise<void>((res) => setTimeout(res, 5));
+        if (r.type === 'start') {
+          gate.begin();
+          pipeline++;
+        }
+        log.push(`${r.type}${r.id}@p${pipeline}@${Math.round(performance.now())}`);
+      },
+      cancelled: (r) => cancelled.push(r.id),
+    });
+    // As the worker's onmessage: starts and stops act at once on the gate, then queue.
+    const send = (r: Req) => {
+      if (r.type === 'start' || r.type === 'stop') q.cancelWaiting();
+      q.push(r);
+    };
+    return { gate, q, log, cancelled, send };
+  }
+
+  it('a read answers promptly while a step is held at the gate', async () => {
+    const { gate, log, send } = rig();
+    send({ type: 'start', id: 1 });
+    await vi.advanceTimersByTimeAsync(10);
+    gate.setTarget(2); // a period of 4 s
+    send({ type: 'step', id: 2 });
+    await vi.advanceTimersByTimeAsync(10); // released at once (first)
+    send({ type: 'step', id: 3 });
+    gate.pause();
+    send({ type: 'read', id: 4 });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(log.some((l) => l.startsWith('read4'))).toBe(true);
+    expect(log.some((l) => l.startsWith('step3'))).toBe(false);
+  });
+
+  it('restart while paused starts at once and old waiting steps never run against the new pipeline', async () => {
+    const { gate, log, cancelled, send } = rig();
+    send({ type: 'start', id: 1 });
+    await vi.advanceTimersByTimeAsync(10);
+    gate.setTarget(10);
+    for (const id of [2, 3, 4, 5]) send({ type: 'step', id });
+    gate.pause();
+    await vi.advanceTimersByTimeAsync(100);
+    const ran = log.filter((l) => l.startsWith('step')).length;
+    send({ type: 'start', id: 6 });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(log.some((l) => l.startsWith('start6@p2'))).toBe(true);
+    expect(cancelled.length).toBeGreaterThanOrEqual(3);
+    expect(log.filter((l) => l.startsWith('step')).length).toBe(ran);
+    expect(log.some((l) => /^step\d@p2/.test(l))).toBe(false);
+  });
+
+  it("restart while running does not wait out the queued steps' periods", async () => {
+    const { gate, log, send } = rig();
+    send({ type: 'start', id: 1 });
+    await vi.advanceTimersByTimeAsync(10);
+    gate.setTarget(2);
+    for (const id of [2, 3, 4, 5]) send({ type: 'step', id });
+    await vi.advanceTimersByTimeAsync(100);
+    const t = performance.now();
+    send({ type: 'start', id: 6 });
+    await vi.advanceTimersByTimeAsync(50);
+    const s = log.find((l) => l.startsWith('start6'))!;
+    expect(Number(s.split('@')[2]) - t).toBeLessThan(20);
+  });
+
+  it('stop with steps waiting cancels every one and runs none', async () => {
+    const { gate, log, cancelled, send } = rig();
+    send({ type: 'start', id: 1 });
+    await vi.advanceTimersByTimeAsync(10);
+    gate.setTarget(2);
+    for (const id of [2, 3, 4, 5]) send({ type: 'step', id });
+    await vi.advanceTimersByTimeAsync(10);
+    const ran = log.filter((l) => l.startsWith('step')).length;
+    send({ type: 'stop', id: 6 });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(cancelled).toEqual([3, 4, 5]);
+    expect(log.filter((l) => l.startsWith('step')).length).toBe(ran);
+  });
+
+  it('stuck-held sequence: paused, pace off, resume, pace on releases again', async () => {
+    const gate = new PaceGate();
+    gate.begin();
+    gate.setTarget(30);
+    await gate.enter();
+    gate.pause();
+    gate.setTarget(0);
+    gate.resume(); // the store always sends resume once a pace was set
+    gate.setTarget(30);
+    const next = gate.enter();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(await next).toBe(true);
+    // Paused unpaced, then a pace: the gate starts held.
+    gate.setTarget(0);
+    gate.pause();
+    gate.setTarget(30);
+    let got = false;
+    void gate.enter().then(() => (got = true));
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(got).toBe(false);
+    gate.resume();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(got).toBe(true);
   });
 });

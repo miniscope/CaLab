@@ -7,6 +7,7 @@
  * drops frames instead of queueing them). Pausing simply stops requesting.
  */
 import { createSignal } from 'solid-js';
+import type { PaceStats } from './frame-pacer.ts';
 import type { CellStore } from './cell-store.ts';
 import type { CompressStore } from './compress-store.ts';
 import {
@@ -445,10 +446,14 @@ export function createPipelineStore(
    * worker (`lib/frame-pacer.ts`); this only tells it the target and when we pause.
    */
   let paceFps = 0;
+  /** A pace was set at some point: from then on Pause and Resume always tell the gate (so its held state never sticks). */
+  let paceEver = false;
   /** Whether this run's gate is paced (a recording's Discover run; never a live stream). */
   function paceRun(): boolean {
     return paceFps > 0 && flat.identity?.()?.live !== true;
   }
+  const [paceStats, setPaceStats] = createSignal<PaceStats | null>(null);
+  client.subscribePaceStats?.((s) => setPaceStats(s));
   function sendPace(pace: { fps?: number; paused?: boolean }): void {
     void client.setPace?.(pace).catch(() => {});
   }
@@ -501,6 +506,7 @@ export function createPipelineStore(
     record = new RunRecord();
     meter = new ThroughputMeter();
     totals = { ...ZERO_TIMINGS };
+    setPaceStats(null);
     setPlan(null);
     setSetup(null);
     setProcessed(0);
@@ -606,7 +612,7 @@ export function createPipelineStore(
     if (status() !== 'running') return;
     setStatus('paused');
     // Requests already in the worker must not be released while paused.
-    if (paceRun()) sendPace({ paused: true });
+    if (paceEver) sendPace({ paused: true });
     runHistory?.log({ frame: processed(), kind: 'pause', detail: 'Paused' });
   }
 
@@ -614,7 +620,7 @@ export function createPipelineStore(
     if (status() !== 'paused') return;
     // Answers to steps sent before the pause still arrive and count.
     setStatus('running');
-    if (paceRun()) sendPace({ paused: false });
+    if (paceEver) sendPace({ paused: false });
     runHistory?.log({ frame: processed(), kind: 'resume', detail: 'Resumed' });
     pump();
   }
@@ -700,10 +706,14 @@ export function createPipelineStore(
     csettleCeiling,
     setCsettleCeiling: (rate: number) => setCsettleCeiling(csettleRate(rate)),
     /** Read no faster than this many frames a second (0: off); applies to a running recording at once. */
+    /** The frame worker's pacing readouts (gate wait, lateness dropped, re-anchors); null when unpaced. */
+    paceStats,
     setPaceFps: (fps: number) => {
       paceFps = Number.isFinite(fps) && fps > 0 ? fps : 0;
+      if (paceFps > 0) paceEver = true;
       const st = status();
-      if (st === 'running' || st === 'paused') sendPace({ fps: paceFps });
+      // A run paused before a pace existed must start held.
+      if (st === 'running' || st === 'paused') sendPace({ fps: paceFps, paused: st === 'paused' });
     },
     csettleYield,
     setCsettleYield: (frames: number) =>
