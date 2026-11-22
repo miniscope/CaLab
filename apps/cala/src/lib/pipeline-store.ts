@@ -478,6 +478,7 @@ export function createPipelineStore(
    * worker (`lib/frame-pacer.ts`); this only tells it the target and when we pause.
    */
   let paceFps = 0;
+  const paceListeners: ((fps: number, frame: number, source: string) => void)[] = [];
   /** A pace was set at some point: from then on Pause and Resume always tell the gate (so its held state never sticks). */
   let paceEver = false;
   /** Whether this run's gate is paced (a recording's Discover run; never a live stream). */
@@ -865,14 +866,29 @@ export function createPipelineStore(
     /** `maxFps` as of the last `work` reading, for the readout. */
     workMaxFps,
     /** Read no faster than this many frames a second (0: off); applies to a running recording at once. */
-    setPaceFps: (fps: number) => {
+    setPaceFps: (fps: number, source = 'setting') => {
       paceFps = Number.isFinite(fps) && fps > 0 ? fps : 0;
       if (paceFps > 0) paceEver = true;
       const st = status();
       // A run paused before a pace existed must start held.
       if (st === 'running' || st === 'paused') sendPace({ fps: paceFps, paused: st === 'paused' });
       tellSettlePace();
+      // Last, and guarded: a listener (the run record's log) must never disturb pacing.
+      for (const cb of paceListeners) {
+        try {
+          cb(paceFps, untrack(processed), source);
+        } catch {
+          // Observers only.
+        }
+      }
     },
+    /** The target speed now, frames per second (0: Max). */
+    paceFps: () => paceFps,
+    /** Called with the new target speed, the frame reached and what set it, whenever `setPaceFps` runs (the run record's log). */
+    onPaceChange: (cb: (fps: number, frame: number, source: string) => void) => {
+      paceListeners.push(cb);
+    },
+    smoothPlayback: () => smoothOn,
     csettleYield,
     csettleGovernor,
     setCsettleGovernor,

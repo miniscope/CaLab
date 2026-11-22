@@ -116,6 +116,26 @@ describe('run record', () => {
 });
 
 describe('export', () => {
+  it('embeds the run record in meta_json', async () => {
+    const runRecord = {
+      format: 'cala-run-record',
+      record_version: 1,
+      settings: { lookback: true },
+    };
+    const z = parseNpz(await buildCalaExport({ ...(await input()), runRecord }));
+    const meta = JSON.parse(new TextDecoder().decode(z.arrays.meta_json.data as Uint8Array));
+    expect(meta.run_record).toEqual(runRecord);
+    // The CaDecon file carries it as a vector and keeps the traces matrix its one candidate.
+    const cd = parseNpz(await buildCaDeconExport({ ...(await input()), runRecord }, true));
+    expect(
+      JSON.parse(new TextDecoder().decode(cd.arrays.run_record_json.data as Uint8Array)),
+    ).toEqual(runRecord);
+    expect(traceCandidates(cd)).toEqual(['traces']);
+    const bare = parseNpz(await buildCalaExport(await input()));
+    const bareMeta = JSON.parse(new TextDecoder().decode(bare.arrays.meta_json.data as Uint8Array));
+    expect(bareMeta.run_record).toBeUndefined();
+  });
+
   it('reads cells and frames back from the trace file', async () => {
     const { traces } = await result();
     expect([...(await traces.readCell(0))]).toEqual([0, 1, 2, 3, 4, 5, 6]);
