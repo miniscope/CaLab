@@ -11,7 +11,7 @@
 import { createSignal } from 'solid-js';
 import { StreamHistory, type HistoryExport, type SeriesSpec } from '@calab/compute';
 import { RunEvents, type RunEvent } from './run-events.ts';
-import type { WorkRates } from './work-meter.ts';
+import { WORK_KINDS, workByKind, type WorkKind, type WorkRates } from './work-meter.ts';
 
 /** Motion record flag bits (crates/cala/src/motion/corrector.rs) that count as a flagged frame. */
 const MOTION_FLAG_ANOMALOUS = 2;
@@ -332,6 +332,65 @@ const WORK_SERIES: SeriesSpec[] = [
   },
 ];
 
+/** The work-by-kind series (`workByKind` totals, worker-seconds per second), in the display's colours. */
+const KIND_SERIES: [WorkKind, string, string][] = [
+  ['live', 'Live', '#0072b2'],
+  ['discovery', 'Discovery', '#009e73'],
+  ['lookback', 'Look-back', '#e69f00'],
+  ['bgSettle', 'Background settle', '#e3b1cb'],
+  ['finalSettle', 'Final settle', '#a8497d'],
+];
+
+/** The history key of a kind's series. */
+export const kindSeriesKey = (k: WorkKind): string =>
+  `kind_${k === 'bgSettle' ? 'bg_settle' : k === 'finalSettle' ? 'final_settle' : k}`;
+
+/**
+ * The series of work by kind (fixed range 0 to the number of workers the app started), the speed
+ * target (the slider's scale, Max stored as 0) and births per 1,000 frames.
+ */
+function displaySeries(workers: number): SeriesSpec[] {
+  return [
+    ...KIND_SERIES.map(([kind, name, color]): SeriesSpec => ({
+      key: kindSeriesKey(kind),
+      label: `Work: ${name}`,
+      unit: 'workers',
+      group: 'extra',
+      kind: 'value',
+      range: [0, Math.max(1, workers)],
+      rangeRule: 'fixed',
+      color,
+      digits: 2,
+      hint: 'Worker-seconds of work per second of wall time.',
+    })),
+    {
+      key: 'target_fps',
+      label: 'Speed target',
+      unit: 'fps',
+      group: 'extra',
+      kind: 'value',
+      range: [10, 500],
+      rangeRule: 'fixed',
+      color: C.blue,
+      dash: [4, 3],
+      digits: 0,
+      hint: 'The speed the run is paced to; 0 is Max (no pacing).',
+    },
+    {
+      key: 'births_per_kframe',
+      label: 'Cells born per 1,000 frames',
+      unit: '/1000 frames',
+      group: 'extra',
+      kind: 'value',
+      range: [0, 50],
+      rangeRule: 'ladder125',
+      color: C.bluishGreen,
+      digits: 1,
+      hint: 'Cells added by the slow loop per 1,000 frames of stream (last 2,000 frames).',
+    },
+  ];
+}
+
 /** Series kept for the export and readouts but not drawn as chips. */
 const EXTRA: SeriesSpec[] = [
   {
@@ -423,11 +482,15 @@ export function groupKeys(group: HistoryGroup, live: boolean): string[] {
     .filter((k) => live || (k !== 'live_dropped' && k !== 'live_lag'));
 }
 
+/** Workers counted in the work-by-kind range when the caller does not say (`reset({ workers })`). */
+const DEFAULT_WORKERS = 16;
+
 /** Every series spec (all groups, then the extras), as registered. */
-export function allSeries(): SeriesSpec[] {
+export function allSeries(workers = DEFAULT_WORKERS): SeriesSpec[] {
   return [
     ...HISTORY_GROUPS.flatMap((g) => SERIES[g.id].map((s) => ({ ...s, group: g.id }))),
     ...EXTRA,
+    ...displaySeries(workers),
   ];
 }
 
@@ -456,10 +519,23 @@ export interface HistoryBatch {
   imaging?: { frame: number; noiseSigma: number; background: number };
 }
 
+/** The `setting` events of the speed control. */
+export type SpeedSettingKey = 'target_speed' | 'speed_floor' | 'speed_auto';
+
+const SPEED_SETTING_LABEL: Record<SpeedSettingKey, string> = {
+  target_speed: 'Speed target',
+  speed_floor: 'Speed floor',
+  speed_auto: 'Auto speed',
+};
+
+/** A speed as the log words it: a number is fps, 0 is Max; a word is left as it is. */
+const speedText = (v: number | string): string =>
+  typeof v === 'number' ? (v > 0 ? `${v} fps` : 'Max') : v;
+
 /** An empty store with every series registered. */
-function freshStore(): StreamHistory {
+function freshStore(workers = DEFAULT_WORKERS): StreamHistory {
   const h = new StreamHistory();
-  for (const s of allSeries()) h.define(s);
+  for (const s of allSeries(workers)) h.define(s);
   return h;
 }
 
@@ -485,7 +561,7 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
   }
 
   /** A new pass-1 run: empty store and log at this frame rate. */
-  function reset(o: { fps: number; live: boolean; frameCount?: number }): void {
+  function reset(o: { fps: number; live: boolean; frameCount?: number; workers?: number }): void {
     fps = o.fps > 0 ? o.fps : 20;
     live = o.live;
     wall0 = clock();
@@ -493,7 +569,7 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     lastDropped = 0;
     gapPending = 0;
     lastGapT = -Infinity;
-    history = freshStore();
+    history = freshStore(o.workers);
     events = new RunEvents();
     history.onRangeStep = (key, e) => {
       const spec = history.spec(key);
@@ -653,6 +729,40 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
       r.lookback.busy / Math.max(1, r.lookback.capacity ?? r.lookback.workers.length),
     );
     if (maxFps > 0) history.push('fast_max_fps', t, maxFps);
+    const byKind = workByKind(r).totals;
+    for (const k of WORK_KINDS) history.push(kindSeriesKey(k), t, byKind[k]);
+  }
+
+  /** The speed target now, fps (0 = Max), at the stream time Discover has reached. */
+  function target(fpsTarget: number): void {
+    history.push('target_fps', processedS, fpsTarget > 0 ? fpsTarget : 0);
+  }
+
+  /** Cells born per 1,000 frames at stream frame `frame` (from `BirthRate`). */
+  function births(frame: number, perKFrames: number): void {
+    if (Number.isFinite(perKFrames)) history.push('births_per_kframe', frame / fps, perKFrames);
+  }
+
+  /**
+   * A change of the speed control at stream frame `frame`, as a `setting` event
+   * (`target_speed`, `speed_floor`, `speed_auto`); 0 as a speed is Max.
+   */
+  function speedSetting(
+    key: SpeedSettingKey,
+    frame: number,
+    from: number | string,
+    to: number | string,
+    detail?: string,
+  ): void {
+    log({
+      frame,
+      kind: 'setting',
+      key,
+      from,
+      to,
+      detail: detail ?? `${SPEED_SETTING_LABEL[key]} ${speedText(from)} → ${speedText(to)}`,
+      replay: false,
+    });
   }
 
   /** A new flat-field map came out of the estimator (`change`: median change, σ). */
@@ -667,6 +777,9 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     liveCounters,
     convergence,
     work,
+    target,
+    births,
+    speedSetting,
     flatMap,
     log,
     /** Changes whenever the store or the log changed. */

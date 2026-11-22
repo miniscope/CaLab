@@ -8,7 +8,13 @@
  */
 import { createSignal, untrack } from 'solid-js';
 import type { PaceStats } from './frame-pacer.ts';
-import { MaxFpsEstimator, WorkRater, type WorkRates } from './work-meter.ts';
+import {
+  BirthRate,
+  MaxFpsEstimator,
+  StageBusyMeter,
+  WorkRater,
+  type WorkRates,
+} from './work-meter.ts';
 import type { CellStore } from './cell-store.ts';
 import type { CompressStore } from './compress-store.ts';
 import {
@@ -431,6 +437,7 @@ export function createPipelineStore(
             step.stageBusyMs ?? [t.readMs + t.preprocessMs + t.motionMs + t.otherMs + t.traceMs],
           ),
         );
+        if (step.stageBusyMs) stageBusyMeter.record(step.stageBusyMs);
         if (step.stageBusyMs) {
           busyTotals = step.stageBusyMs.map((v, i) => (busyTotals[i] ?? 0) + v);
           setStageBusy(busyTotals.map((v) => v / n));
@@ -496,6 +503,8 @@ export function createPipelineStore(
   // loop's live estimate of its top speed. Instrumentation only: nothing here steers the run.
   const workRater = new WorkRater();
   const maxFpsEstimator = new MaxFpsEstimator();
+  const stageBusyMeter = new StageBusyMeter();
+  const birthRate = new BirthRate();
   const [work, setWork] = createSignal<WorkRates | null>(null);
   const [maxFps, setMaxFps] = createSignal(0);
   /** The max estimate as of the last `work` reading (the readout rebuilds once a second, not per batch). */
@@ -525,11 +534,20 @@ export function createPipelineStore(
     }
     const rates = workRater.push(st.accounting);
     if (!rates) return;
+    const stages = stageBusyMeter.take(clock());
+    if (stages) rates.fast = { stages };
     const max = maxFpsEstimator.estimate();
     setWork(rates);
     setWorkMaxFps(max);
     // Not after Discover's last frame (stream time stands still; see `RunHistory.work`).
-    if (untrack(status) !== 'done') runHistory?.work(rates, max);
+    if (untrack(status) !== 'done') {
+      runHistory?.work(rates, max);
+      runHistory?.target(paceRun() ? paceFps : 0);
+    }
+  });
+  cells?.onStatus((st) => {
+    const births = birthRate.push(st.frame, st.counters.adds);
+    if (births !== null && untrack(status) !== 'done') runHistory?.births(st.frame, births);
   });
   function sendPace(pace: { fps?: number; paused?: boolean }): void {
     void client.setPace?.(pace).catch(() => {});
@@ -665,6 +683,8 @@ export function createPipelineStore(
     paceSession = -1;
     workRater.reset();
     floorMeter.reset();
+    stageBusyMeter.reset();
+    birthRate.reset();
     maxFpsEstimator.reset();
     setWork(null);
     setMaxFps(0);
@@ -892,9 +912,13 @@ export function createPipelineStore(
     workMaxFps,
     /** Read no faster than this many frames a second (0: off); applies to a running recording at once. */
     setPaceFps: (fps: number, source = 'setting') => {
+      const before = paceRun() ? paceFps : 0;
       paceFps = Number.isFinite(fps) && fps > 0 ? fps : 0;
       if (paceFps > 0) paceEver = true;
       const st = status();
+      const after = paceRun() ? paceFps : 0;
+      if (after !== before && (st === 'running' || st === 'paused'))
+        runHistory?.speedSetting('target_speed', processed(), before, after);
       // A run paused before a pace existed must start held.
       if (st === 'running' || st === 'paused') sendPace({ fps: paceFps, paused: st === 'paused' });
       tellSettlePace();

@@ -2,10 +2,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   addLookbackAnswer,
+  BirthRate,
   DutyClock,
   emptyLookbackWork,
   emptyWork,
   MaxFpsEstimator,
+  StageBusyMeter,
+  WORK_KINDS,
+  workByKind,
   WindowMax,
   WorkRater,
   workRates,
@@ -14,7 +18,7 @@ import {
 } from '../lib/work-meter.ts';
 import { SettleGovernor } from '../lib/settle.ts';
 import { SlowRunner, type PublishedLibrary, type SlowLoopLike } from '../lib/slow-runner.ts';
-import { createRunHistory } from '../lib/run-history.ts';
+import { createRunHistory, kindSeriesKey } from '../lib/run-history.ts';
 import type { LookbackToSlow, SlowToLookback } from '../workers/lookback-types.ts';
 import type {
   FastToSlow,
@@ -538,5 +542,203 @@ describe('SlowRunner accounting', () => {
     const w = x.last().accounting!;
     expect(w.busyMs.live).toBe(10);
     expect(w.wallMs).toBe(10);
+  });
+});
+
+describe('workByKind', () => {
+  const rates = (patch: (w: WorkStatus) => void, fast?: number[]) => {
+    const r = workRates(
+      snap(0, () => {}),
+      snap(1000, patch),
+    )!;
+    if (fast) r.fast = { stages: fast };
+    return r;
+  };
+
+  it('maps duties to the PI kinds: the slow worker live duty is Discovery, not Live', () => {
+    const r = rates(
+      (w) => {
+        w.busyMs.live = 300;
+        w.busyMs.visit = 50;
+        w.busyMs.housekeep = 20;
+        w.busyMs.publish = 10;
+        w.busyMs.setup = 20;
+        w.busyMs.need = 100;
+        w.busyMs.csettle = 150;
+        w.busyMs.end = 200;
+        w.visitBusyMs = [500, 250];
+      },
+      [0.9, 0.6, 0.3],
+    );
+    const k = workByKind(r);
+    const slow = k.workers.find((w) => w.group === 'slow')!;
+    expect(slow.shares.live).toBe(0);
+    expect(slow.shares.discovery).toBeCloseTo(0.4);
+    expect(slow.shares.lookback).toBeCloseTo(0.1);
+    expect(slow.shares.bgSettle).toBeCloseTo(0.15);
+    expect(slow.shares.finalSettle).toBeCloseTo(0.2);
+    const fast = k.workers.filter((w) => w.group === 'fast');
+    expect(fast.map((w) => w.shares.live)).toEqual([0.9, 0.6, 0.3]);
+    const visits = k.workers.filter((w) => w.group === 'visit');
+    expect(visits.map((w) => w.shares.discovery)).toEqual([0.5, 0.25]);
+    expect(k.totals.live).toBeCloseTo(1.8);
+    expect(k.totals.discovery).toBeCloseTo(0.4 + 0.75);
+  });
+
+  it('splits the look-back workers: worker 0 need and end, the pool Background settle', () => {
+    const r = rates((w) => {
+      w.lookbackWorkerBusyMs = [600, 400, 300];
+      w.lookback.need.readMs = 300;
+      w.lookback.end.solveMs = 300;
+      w.lookback.csettle.solveMs = 700;
+    });
+    r.lookback.capacity = 3;
+    const lb = workByKind(r).workers.filter((w) => w.group === 'lookback');
+    expect(lb).toHaveLength(3);
+    expect(lb[0].shares.lookback).toBeCloseTo(0.3);
+    expect(lb[0].shares.finalSettle).toBeCloseTo(0.3);
+    expect(lb[0].shares.bgSettle).toBe(0);
+    expect(lb[1].shares.bgSettle).toBeCloseTo(0.4);
+    expect(lb[2].shares.bgSettle).toBeCloseTo(0.3);
+  });
+
+  it('with no pool the one look-back worker also does Background settle, within its busy share', () => {
+    const r = rates((w) => {
+      w.lookbackWorkerBusyMs = [800];
+      w.lookback.need.readMs = 200;
+      w.lookback.csettle.solveMs = 600;
+    });
+    const [w] = workByKind(r).workers.filter((x) => x.group === 'lookback');
+    expect(w.shares.lookback).toBeCloseTo(0.2);
+    expect(w.shares.bgSettle).toBeCloseTo(0.6);
+  });
+
+  it('has no look-back rows without look-back, and no fast rows without stage shares', () => {
+    const k = workByKind(rates(() => {}));
+    expect(k.workers.map((w) => w.group)).toEqual(['slow', 'visit', 'visit']);
+    expect(k.totals.spare).toBeCloseTo(3);
+  });
+
+  it('keeps every worker at most 1 and the totals plus spare equal the worker count', () => {
+    const r = rates(
+      (w) => {
+        w.busyMs.live = 700;
+        w.busyMs.need = 600; // over-claims: scaled to 1
+        w.busyMs.csettle = 100;
+        w.visitBusyMs = [1200, 100];
+        w.lookbackWorkerBusyMs = [1000, 200];
+        w.lookback.need.readMs = 900;
+        w.lookback.end.readMs = 400;
+        w.lookback.csettle.readMs = 200;
+      },
+      [1, 0.5, 0.25],
+    );
+    r.lookback.capacity = 2;
+    const k = workByKind(r);
+    for (const w of k.workers) {
+      const sum = WORK_KINDS.reduce((a, kind) => a + w.shares[kind], 0);
+      expect(sum).toBeLessThanOrEqual(1 + 1e-9);
+      for (const kind of WORK_KINDS) expect(w.shares[kind]).toBeGreaterThanOrEqual(0);
+    }
+    const total = WORK_KINDS.reduce((a, kind) => a + k.totals[kind], 0) + k.totals.spare;
+    expect(total).toBeCloseTo(k.count);
+    expect(k.count).toBe(3 + 1 + 2 + 2);
+  });
+});
+
+describe('StageBusyMeter', () => {
+  it('gives each stage its busy share of the window', () => {
+    const m = new StageBusyMeter();
+    m.start(0);
+    m.record([400, 200, 100]);
+    m.record([100, 0, 100]);
+    expect(m.take(1000)).toEqual([0.5, 0.2, 0.2]);
+    m.record([250, 0, 0]);
+    expect(m.take(2000)).toEqual([0.25, 0, 0]);
+  });
+
+  it('carries credit above 100 % into the next window', () => {
+    const m = new StageBusyMeter();
+    m.start(0);
+    m.record([1500]);
+    expect(m.take(1000)).toEqual([1]);
+    expect(m.take(2000)).toEqual([0.5]);
+  });
+
+  it('has no window before a start, and after a reset', () => {
+    const m = new StageBusyMeter();
+    expect(m.take(1000)).toBeNull();
+    m.start(1000);
+    m.record([100]);
+    m.reset();
+    expect(m.take(2000)).toBeNull();
+  });
+});
+
+describe('BirthRate', () => {
+  it('is births per 1,000 frames over the window, null while it is too short', () => {
+    const b = new BirthRate(1000, 100);
+    expect(b.push(0, 0)).toBeNull();
+    expect(b.push(50, 5)).toBeNull();
+    expect(b.push(500, 10)).toBeCloseTo(20);
+    expect(b.push(1000, 10)).toBeCloseTo(10);
+    // The window has moved on: only frames 500..1500 count.
+    expect(b.push(1500, 10)).toBeCloseTo(0);
+  });
+
+  it('starts again when the counter goes backwards (a new run)', () => {
+    const b = new BirthRate(1000, 100);
+    b.push(0, 0);
+    b.push(500, 50);
+    expect(b.push(10, 0)).toBeNull();
+    expect(b.push(210, 2)).toBeCloseTo(10);
+  });
+});
+
+describe('run history display series', () => {
+  it('keeps work by kind, the target (Max as 0) and births in fixed-range series', () => {
+    const h = createRunHistory();
+    h.reset({ fps: 30, live: false, frameCount: 300, workers: 12 });
+    const r = workRates(
+      snap(0, () => {}),
+      snap(1000, (w) => {
+        w.busyMs.live = 500;
+        w.busyMs.need = 200;
+        w.visitBusyMs = [800, 600];
+      }),
+    )!;
+    r.fast = { stages: [0.5, 0.25, 0.25] };
+    h.work(r, 120);
+    h.target(0);
+    h.births(30, 4);
+    const hist = h.history();
+    for (const k of WORK_KINDS) {
+      const spec = hist.spec(kindSeriesKey(k))!;
+      expect(spec.range).toEqual([0, 12]);
+      expect(spec.rangeRule).toBe('fixed');
+    }
+    expect(hist.spec('target_fps')!.range).toEqual([10, 500]);
+    expect(hist.spec('births_per_kframe')).toBeDefined();
+    const [live, disc, lb] = ['live', 'discovery', 'lookback'].map(
+      (k) => hist.at(kindSeriesKey(k as 'live'), 0)!.last,
+    );
+    expect(live).toBeCloseTo(1);
+    expect(disc).toBeCloseTo(0.5 + 1.4);
+    expect(lb).toBeCloseTo(0.2);
+    expect(hist.at('target_fps', 0)!.last).toBe(0);
+    expect(hist.at('births_per_kframe', 1)!.last).toBe(4);
+  });
+
+  it('logs speed changes as setting events', () => {
+    const h = createRunHistory();
+    h.reset({ fps: 30, live: false, frameCount: 300 });
+    h.speedSetting('target_speed', 90, 0, 80);
+    h.speedSetting('speed_floor', 120, 30, 25, 'Floor 30 → 25');
+    const ev = h.events().ofKind('setting');
+    expect(ev).toHaveLength(2);
+    expect(ev[0]).toMatchObject({ key: 'target_speed', from: 0, to: 80, frame: 90, t: 3 });
+    expect(ev[0].detail).toBe('Speed target Max → 80 fps');
+    expect(ev[0].replay).toBe(false);
+    expect(ev[1].detail).toBe('Floor 30 → 25');
   });
 });
