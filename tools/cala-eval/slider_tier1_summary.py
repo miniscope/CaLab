@@ -317,6 +317,18 @@ def real(root: Path) -> None:
             print(f"| {arm} | " + " | ".join(f"{fmt(mean[b][0])} / {fmt(mean[b][1], 1)}" for b in BRANCHES)
                   + f" | {bstar} | {' '.join(per_seed)} | {int(round((1 - FRAC[bstar]) * T))} ({100 * (1 - FRAC[bstar]):.0f} %) |")  # fmt: skip
         print()
+        # Diagnostic added after the runs: each budget against the other seeds' REF at the same budget (like for like:
+        # only B100 is read in order, as its reference is).
+        print("Diagnostic (added after the runs): agreement with the other seeds' REF at the same budget:\n")
+        print("| arm | " + " | ".join(BRANCHES[1:]) + " |")
+        print("| --- | " + " | ".join("---" for _ in BRANCHES[1:]) + " |")
+        for arm in ARMS:
+            ss = [s for s in seeds if (arm, s) in rows]
+            if not ss:
+                continue
+            vals = [np.mean([agree(lib(rec, arm, s, b), lib(rec, "REF", o, b)) for s in ss for o in seeds if o != s]) for b in BRANCHES[1:]]
+            print(f"| {arm} | " + " | ".join(fmt(v) for v in vals) + " |")
+        print()
         # Live library: gap closed at the last frame (L3), per seed.
         print("Live library at the last frame (B0): agreement with REF B100 of the same seed, and the share of REF's "
               "live-to-settled gap closed:\n")  # fmt: skip

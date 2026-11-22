@@ -24,28 +24,42 @@ single look-back worker takes turns between need-driven look-back and Background
      (L2b passes).
    - On top of that they add about 50-75 cells per run that no Max seed has.
    - Those extra cells look like the cells only one Max seed finds: low held-out z (median 0.2-1.3) and lower peak z.
-   - On the sims, paced runs match about 43 more true cells and add about 23 more false cells per sim than Max.
+   - On the sims, paced runs match about 43 more true cells and add about 23 more false cells per sim than Max. Both
+     95 % intervals include zero (n = 5).
 3. **60 fps: model not usable; Chrome (one run per arm) looks like 30 fps.**
    - The model failed its calibration at 60 fps on visit jobs (-18 % and -20 %, line 15 %), so 60 fps rests on Chrome
      alone, n = 1 per arm and recording.
    - In Chrome, every 30 and 60 fps arm agrees with Max to within 0.0035 of Max's own run-to-run agreement, on both
      recordings.
-4. **How much Final settle can be skipped: no rule is safe yet.**
-   - On `10_43_21`, half the pass could be skipped at Max and at P-30, and three quarters at S-30.
-   - On `14_57_02`, none could be skipped at any position.
-   - The design's stop test (drift ratio R at most 0.8) never fired: R stayed at 0.87-1.00 for the whole pass in every
-     run, so footprints keep drifting the same way until the end of the pass.
+4. **How much Final settle can be skipped: about a quarter to a half on Samara, but no rule is safe yet.**
+   - The pre-registered reading compares each budget with Max's in-order full pass. It says half (Max, P-30) or three
+     quarters (S-30) on `10_43_21`, and nothing on `14_57_02`.
+   - That reading favours the full pass: it is read in order, like the reference, and the partial budgets are not.
+     Compared like for like (each budget against Max at the same budget; after the runs), three quarters of a pass
+     ends within 0.002 of a full pass at every position on both recordings. On `10_43_21` it is level with the full
+     pass.
+   - On the sims, S-30 needs almost no Final settle (3 of 5 sims at `B0`).
+   - The design's stop test (median drift ratio R at most 0.8) never fired. R stayed at 0.87-1.00, the design's
+     random-walk value: footprints keep wandering by about their noise to the end of the pass.
+   - The threshold was meant to be fitted on second-pass Max checkpoints, which this PR did not run, so it cannot be
+     refit here.
    - The "at most 4 % moving" floor alone is reached by about frame 3,600, far too early.
    - Keep the full Final settle (as decided).
-5. **Cap 4 (L9): worth testing, for the live library only.**
+5. **Cap 4 (L9): worth testing by the pre-registered rule, for the live library only. Expect about 3, not 4.**
    - The Background settle makes the live library better than pacing alone (+19 points of the gap closed, 95 % CI
-     5-29).
-   - S-30 closes only 17 % / -5 % of the gap.
-   - The look-back worker is half busy, so it has room for more.
-   - After the full Final settle, dose 2 and dose 0 end the same, so more dose cannot improve the final result.
-6. **Second look-back worker (L8): not needed for final quality.**
+     5-29, n = 6).
+   - The "gap closed" measure has a ceiling well below 100 % (section 3), so S-30's 17 % / -5 % says less than it
+     seems.
+   - One look-back worker re-reads about 157 frames a second in Chrome (60 fps, settle on). At 30 fps, after the
+     need-driven look-back, that leaves room for about 3.3 per live frame, not 4.
+   - After the full Final settle, dose 2 does not beat dose 0, so more dose cannot improve the final result.
+6. **Second look-back worker (L8): not needed for final quality; it would serve need-driven look-back.**
    - At 60 fps one worker delivers 1.33-1.39 re-reads per live frame, not the cap of 2.
-   - After the Final settle, S-60 and P-60 end the same in Chrome.
+   - Taking turns costs the need-driven look-back: with the settle on it drops from 35,415 to 23,720 frames
+     (`10_43_21`, Chrome 60 fps).
+   - After the Final settle, S-60 and P-60 end about level in Chrome (n = 1). On `14_57_02` the settle-on arm ends
+     slightly lower than settle-off in all three comparisons (model 30 fps, Chrome 30 and 60 fps). The direction is
+     consistent; the n is too small to call.
    - The Background settle still improves the live library at 60 fps (Chrome). Whether a second worker would add to
      that is not modelled and is left open.
 
@@ -203,21 +217,39 @@ What this says:
 
 - **The Background settle does most of the Final settle's work on the sims.** S-30 before any Final settle (0.9853)
   is already at Max's full-pass level (0.9858). On the sims, the saving at S-30 is real.
-- **On Samara the savings do not carry from one recording to the other.**
-  - On `14_57_02`, the step from three quarters of a pass (spread) to the full pass (in order) is large for every
-    arm (+0.003 to +0.004).
-  - Nothing can be skipped there.
-  - A budget rule tuned on `10_43_21` would cut `14_57_02` short.
+- **On Samara the pre-registered reading is biased toward the full pass.**
+  - Every arm's agreement is nearly flat from `B25` to `B75` and then jumps at `B100`. The sims, scored against the
+    truth, show no such jump.
+  - The reference is Max's in-order full pass, and only `B100` is read in the same order. **(After the runs)** Scored
+    like for like (each budget against the other seeds' Max at the same budget), the jump mostly goes away:
+
+    | recording  | arm  | `B25`  | `B50`  | `B75`  | `B100` |
+    | ---------- | ---- | ------ | ------ | ------ | ------ |
+    | `10_43_21` | Max  | 0.9902 | 0.9916 | 0.9930 | 0.9926 |
+    |            | P-30 | 0.9845 | 0.9882 | 0.9902 | 0.9892 |
+    |            | S-30 | 0.9844 | 0.9868 | 0.9881 | 0.9881 |
+    | `14_57_02` | Max  | 0.9858 | 0.9882 | 0.9897 | 0.9915 |
+    |            | P-30 | 0.9773 | 0.9805 | 0.9848 | 0.9865 |
+    |            | S-30 | 0.9756 | 0.9792 | 0.9827 | 0.9845 |
+
+  - Read this way, three quarters of a pass is level with the full pass on `10_43_21`. On `14_57_02` it is 0.0017-0.0020
+    short at every position, inside the 0.003 tolerance but still rising.
+  - It measures how alike two runs end at the same budget, not closeness to one fixed reference, so neither reading
+    alone settles the question.
+  - Paced positions save no more than Max on Samara. The extra cells, which only the paced runs have, are not in
+    these numbers.
 - **The stop test does not work as designed.**
   - On every full pass (18 runs), at least 96 % of cells were below 2x their noise from about frame 3,600 on (the
     floor holds).
-  - But the median drift ratio R over the last three steps stayed at 0.87-1.00 and never reached 0.8: R about 1 is a
-    random walk or steady drift, not noise around a settled value.
+  - But the median drift ratio R over the last three steps stayed at 0.87-1.00 and never reached 0.8. In the
+    design's terms that is a random walk (R about 1), not noise around a settled value (about 0.58), and not steady
+    drift (up to 1.73).
   - A rule on the floor alone would stop at about a fifth of the pass, where agreement is still well below the full
     pass (Max on `14_57_02`: 0.9848 at a quarter against 0.9915).
-  - The R threshold would need to be about 0.95 to fire, which would no longer tell "settled" from "drifting".
-- **Recommendation:** keep the full Final settle at every position. For an adaptive end, look at what keeps
-  improving between three quarters and a full pass on `14_57_02`, before fitting `k` or the R threshold.
+  - The R threshold would need to be about 0.95 to fire. The design fits it on second-pass Max checkpoints, which
+    this PR did not run (no 2-pass branch), so it cannot be refit here.
+- **Recommendation:** keep the full Final settle at every position. Before an adaptive end: run second-pass
+  branches to fit R, and compare budgets read in the same order as their reference.
 
 ## Question 3: sizing
 
@@ -229,9 +261,19 @@ seed):
 | `10_43_21` | 3, 0, -11 % (mean -3 %)      | 17, 16, 18 % (mean 17 %)  |
 | `14_57_02` | -23, -20, -25 % (mean -23 %) | -34, 10, 10 % (mean -5 %) |
 
-- Pacing alone makes the live library less like Max's settled one: it holds more cells.
-- The Background settle pulls it back: S-30 minus P-30 = **+18.8 points** [5.1, 29.4], n = 6.
-- L3 (S-30 closes at least 50 %) **fails** on both recordings.
+- **The measure has a ceiling.** Its zero is Max's live library against Max's own settled one, from the same run and
+  the same cells. A different run never gets that close: S-30's own full pass would score only about 30-40 %. So L3's
+  50 % line is close to unreachable, and the plan's "below 75 %" in L9 is always true. This was found after the runs.
+- Scored across seeds instead (the `B0` and `B100` columns of the question 2 table), the share closed is:
+
+  | recording  | P-30  | S-30  | S-30's own full pass (the ceiling) |
+  | ---------- | ----- | ----- | ---------------------------------- |
+  | `10_43_21` | +11 % | +34 % | 63 %                               |
+  | `14_57_02` | -24 % | +19 % | 53 %                               |
+
+- The Background settle helps the live library, in both versions: S-30 minus P-30 = **+18.8 points** [5.1, 29.4]
+  (pre-registered measure, n = 6).
+- L3 (S-30 closes at least 50 %) **fails** as written, but against an unreachable line.
 - In Chrome the live library at Discover's end agrees with Max's final library as follows:
 
   | arm                  | `10_43_21` | `14_57_02` |
@@ -245,25 +287,36 @@ seed):
 **L9, cap 4: worth testing (pre-registered rule met), for the live library.**
 
 - S-30 beats P-30 in gap closed (lower CI bound 5.1 > 0).
-- S-30 closes less than 75 % of the gap.
-- The modelled look-back worker is 45-51 % busy at 30 fps (below 70 %).
-- The final result will not improve: after the full Final settle, S-30 and P-30 end the same (or S-30 slightly lower
-  on `14_57_02`), and the sims put S-30 ahead only before the Final settle.
+- S-30 closes less than 75 % of the gap; with the ceiling, this part of the rule says little.
+- The modelled look-back worker is 45-51 % busy at 30 fps (below 70 %). That is not the binding limit. In Chrome one
+  worker re-reads about 157 frames a second (60 fps, settle on: 23,720 need-driven + 23,760 settle frames over a
+  303 s Discover). At 30 fps, after 60 need-driven frames a second, that leaves room for about 3.2-3.3 per live
+  frame, not 4.
+- The final result will not improve. After the full Final settle, S-30 ends level with P-30 on `10_43_21` and slightly
+  lower on `14_57_02`. The sims put S-30 ahead only before the Final settle.
 - Test it only if a better live library during the run matters (live view, closed loop).
 
 **L8, second look-back worker: not needed for final quality; open for the live library.**
 
 - In Chrome at 60 fps, one worker delivers 1.33 (`10_43_21`) and 1.39 (`14_57_02`) re-reads per live frame, not
   the cap of 2. The design's "one worker covers 60 fps" rule (at least 1.8) is not met.
-- After the Final settle, S-60 and P-60 end equal in Chrome (agreement 0.9903 / 0.9902 against 0.9893 / 0.9901, and
-  0.9875 / 0.9886 against 0.9896 / 0.9910): the dose does not matter for the final library.
+- One worker taking turns starves the need-driven look-back. With the settle on, the need-driven frames asked drop
+  from 35,415 to 23,720 (`10_43_21`, Chrome, 60 fps). The model shows the same drop: 35,400 to 26,638. A second,
+  dedicated worker would mainly give that back.
+- After the Final settle, S-60 and P-60 end about level in Chrome (n = 1):
+  - `10_43_21`: agreement 0.9903 / 0.9902 against 0.9893 / 0.9901;
+  - `14_57_02`: 0.9875 / 0.9886 against 0.9896 / 0.9910, settle-on lower.
+- So the dose does not help the final library. On `14_57_02` the settle-on arm ends a little lower in all three
+  comparisons we have (model 30 fps, Chrome 30 fps, Chrome 60 fps); the direction is consistent but n is too small.
 - The live library gains from dose 1.3 at 60 fps (Chrome above). Whether dose 2 would add to that needs the
   two-worker build or a `--lb-workers` model flag, which this PR did not add.
 
 ## Checks and limits
 
-- Pre-registration: plan commit `e1cece09` (05:13, before the rebase `f897b273`) came before the 60 fps Chrome pair and every tier-1 run. The C1-at-60
-  verdict (`32009f62`, was `bb2f39e7`) came before the tier-1 batch. Changes after runs are marked above.
+- Pre-registration: plan commit `e1cece09` (05:15, before the rebase `f897b273`) came before the 60 fps Chrome pair and every tier-1 run. The C1-at-60
+  verdict (`32009f62`, was `bb2f39e7`) came before the tier-1 batch. The force-push after the rebase replaced the
+  original SHAs; the `head=` field of each Chrome run in `chrome/load.txt` (`f897b273` for the 10_43_21 runs from
+  05:15, `bb2f39e7` for the 14_57_02 runs) is independent proof of the order. Changes after runs are marked above.
 - Every run exited 0.
   - The first launch of the two pairs sims used a wrong path and failed at start. They were rerun unchanged with
     the correct path.
