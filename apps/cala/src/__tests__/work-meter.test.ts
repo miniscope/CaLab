@@ -307,7 +307,7 @@ describe('MaxFpsEstimator', () => {
 describe('run history work series', () => {
   it('keeps the shares in bounded series', () => {
     const h = createRunHistory();
-    h.reset({ fps: 30, live: false, frameCount: 300 });
+    h.reset({ fps: 30, live: false, frameCount: 300, workers: 8 });
     const r = workRates(
       snap(0, () => {}),
       snap(1000, (w) => {
@@ -613,6 +613,19 @@ describe('workByKind', () => {
     expect(w.shares.bgSettle).toBeCloseTo(0.6);
   });
 
+  it('does not show Background settle left by a failed pool worker as Spare', () => {
+    const r = rates((w) => {
+      w.lookbackWorkerBusyMs = [100, 300];
+      w.lookback.need.readMs = 100;
+      w.lookback.csettle.solveMs = 600; // the pool worker did 300; the rest ran on worker 0
+    });
+    r.lookback.capacity = 2;
+    const [w0, w1] = workByKind(r).workers.filter((x) => x.group === 'lookback');
+    expect(w1.shares.bgSettle).toBeCloseTo(0.3);
+    expect(w0.shares.bgSettle).toBeGreaterThan(0);
+    expect(WORK_KINDS.reduce((a, k) => a + w0.shares[k], 0)).toBeLessThanOrEqual(1 + 1e-9);
+  });
+
   it('has no look-back rows without look-back, and no fast rows without stage shares', () => {
     const k = workByKind(rates(() => {}));
     expect(k.workers.map((w) => w.group)).toEqual(['slow', 'visit', 'visit']);
@@ -686,6 +699,14 @@ describe('BirthRate', () => {
     expect(b.push(1500, 10)).toBeCloseTo(0);
   });
 
+  it('replaces the sample when the frame has not moved', () => {
+    const b = new BirthRate(1000, 100);
+    b.push(0, 0);
+    b.push(500, 5);
+    b.push(500, 10);
+    expect(b.push(600, 10)).toBeCloseTo((10 * 1000) / 600);
+  });
+
   it('starts again when the counter goes backwards (a new run)', () => {
     const b = new BirthRate(1000, 100);
     b.push(0, 0);
@@ -696,7 +717,7 @@ describe('BirthRate', () => {
 });
 
 describe('run history display series', () => {
-  it('keeps work by kind, the target (Max as 0) and births in fixed-range series', () => {
+  it('keeps work by kind, the target (Max as 0) and births, all on fixed ranges', () => {
     const h = createRunHistory();
     h.reset({ fps: 30, live: false, frameCount: 300, workers: 12 });
     const r = workRates(
@@ -718,7 +739,10 @@ describe('run history display series', () => {
       expect(spec.rangeRule).toBe('fixed');
     }
     expect(hist.spec('target_fps')!.range).toEqual([10, 500]);
-    expect(hist.spec('births_per_kframe')).toBeDefined();
+    expect(hist.spec('births_per_kframe')!.rangeRule).toBe('fixed');
+    h.births(60, 400); // the opening burst clips; it does not step the range
+    h.history().advance(10);
+    expect(h.history().displayRange('births_per_kframe')).toMatchObject({ lo: 0, hi: 50 });
     const [live, disc, lb] = ['live', 'discovery', 'lookback'].map(
       (k) => hist.at(kindSeriesKey(k as 'live'), 0)!.last,
     );
@@ -729,9 +753,28 @@ describe('run history display series', () => {
     expect(hist.at('births_per_kframe', 1)!.last).toBe(4);
   });
 
+  it('widens the kind ranges when the worker count grows, never narrows them', () => {
+    const h = createRunHistory();
+    h.reset({ fps: 30, live: false, frameCount: 300, workers: 5 });
+    const r = workRates(
+      snap(0, () => {}),
+      snap(1000, (w) => {
+        w.busyMs.live = 500;
+      }),
+    )!;
+    r.fast = { stages: [0.5, 0.5, 0.5] };
+    r.lookback.workers = [0.1, 0.2, 0.3];
+    r.lookback.capacity = 3;
+    h.work(r, 100); // 3 fast + slow + 2 visit + 3 look-back = 9
+    const key = kindSeriesKey('live');
+    expect(h.history().displayRange(key)).toMatchObject({ lo: 0, hi: 9 });
+    h.work({ ...r, fast: undefined, lookback: { ...r.lookback, workers: [], capacity: 0 } }, 100);
+    expect(h.history().displayRange(key)).toMatchObject({ lo: 0, hi: 9 });
+  });
+
   it('logs speed changes as setting events', () => {
     const h = createRunHistory();
-    h.reset({ fps: 30, live: false, frameCount: 300 });
+    h.reset({ fps: 30, live: false, frameCount: 300, workers: 8 });
     h.speedSetting('target_speed', 90, 0, 80);
     h.speedSetting('speed_floor', 120, 30, 25, 'Floor 30 → 25');
     const ev = h.events().ofKind('setting');

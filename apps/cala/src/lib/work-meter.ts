@@ -566,7 +566,10 @@ export function workByKind(r: WorkRates): WorkByKind {
     if (i === 0) {
       shares.lookback = k.need.busy;
       shares.finalSettle = k.end.busy;
-      if (n === 1) shares.bgSettle = k.csettle.busy;
+      // Background settle on worker 0 is what the pool workers did not do (the whole of it
+      // with no pool, and the time after a pool worker failed).
+      const pool = lb.workers.slice(1).reduce((a, b) => a + b, 0);
+      shares.bgSettle = Math.max(0, k.csettle.busy - pool);
       // Never claim more than the worker itself reported busy.
       if (own !== undefined) {
         const sum = shares.lookback + shares.finalSettle + shares.bgSettle;
@@ -609,6 +612,8 @@ export class BirthRate {
   push(frame: number, adds: number): number | null {
     const last = this.samples[this.samples.length - 1];
     if (last && (frame < last.frame || adds < last.adds)) this.samples = [];
+    // A status that did not advance the frame replaces its sample (the newest counter wins).
+    if (last && frame === last.frame && this.samples.length > 0) this.samples.pop();
     this.samples.push({ frame, adds });
     // Keep the newest sample at or before the window's start as the reference.
     let k = 0;

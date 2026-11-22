@@ -785,7 +785,11 @@ export function createPipelineStore(
         fps: cells?.fps() ?? 0,
         live: flat.identity?.()?.live === true,
         frameCount: p.frameCount,
+        // What is started now: 3 fast stages, the slow worker, the look-back worker; the visit
+        // workers and a settle pool are added when the first work reading counts them.
+        workers: 4 + (lookbackRun() ? 1 : 0),
       });
+      stageBusyMeter.start(clock());
       setStatus('running');
       syncFramePreview(0);
       if (paceRun()) sendPace({ fps: paceFps });

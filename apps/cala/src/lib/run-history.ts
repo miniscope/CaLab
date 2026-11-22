@@ -383,7 +383,8 @@ function displaySeries(workers: number): SeriesSpec[] {
       group: 'extra',
       kind: 'value',
       range: [0, 50],
-      rangeRule: 'ladder125',
+      // Fixed: the opening burst of a run clips instead of stepping the range and flagging History.
+      rangeRule: 'fixed',
       color: C.bluishGreen,
       digits: 1,
       hint: 'Cells added by the slow loop per 1,000 frames of stream (last 2,000 frames).',
@@ -482,11 +483,8 @@ export function groupKeys(group: HistoryGroup, live: boolean): string[] {
     .filter((k) => live || (k !== 'live_dropped' && k !== 'live_lag'));
 }
 
-/** Workers counted in the work-by-kind range when the caller does not say (`reset({ workers })`). */
-const DEFAULT_WORKERS = 16;
-
 /** Every series spec (all groups, then the extras), as registered. */
-export function allSeries(workers = DEFAULT_WORKERS): SeriesSpec[] {
+export function allSeries(workers: number): SeriesSpec[] {
   return [
     ...HISTORY_GROUPS.flatMap((g) => SERIES[g.id].map((s) => ({ ...s, group: g.id }))),
     ...EXTRA,
@@ -533,14 +531,14 @@ const speedText = (v: number | string): string =>
   typeof v === 'number' ? (v > 0 ? `${v} fps` : 'Max') : v;
 
 /** An empty store with every series registered. */
-function freshStore(workers = DEFAULT_WORKERS): StreamHistory {
+function freshStore(workers: number): StreamHistory {
   const h = new StreamHistory();
   for (const s of allSeries(workers)) h.define(s);
   return h;
 }
 
 export function createRunHistory(clock: () => number = () => Date.now()) {
-  let history = freshStore();
+  let history = freshStore(1);
   let events = new RunEvents();
   let fps = 20;
   let live = false;
@@ -561,7 +559,7 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
   }
 
   /** A new pass-1 run: empty store and log at this frame rate. */
-  function reset(o: { fps: number; live: boolean; frameCount?: number; workers?: number }): void {
+  function reset(o: { fps: number; live: boolean; frameCount?: number; workers: number }): void {
     fps = o.fps > 0 ? o.fps : 20;
     live = o.live;
     wall0 = clock();
@@ -613,7 +611,8 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     lastDropped = 0;
     gapPending = 0;
     lastGapT = -Infinity;
-    history = o.bins ? StreamHistory.fromExport(o.bins, allSeries()) : freshStore();
+    history = o.bins ? StreamHistory.fromExport(o.bins, allSeries(1)) : freshStore(1);
+    // (A saved run keeps the ranges it was exported with; the 1 only fills series an old export lacks.)
     events = new RunEvents();
     for (const e of o.events) events.push(e);
     wall0 = o.events.find((e) => typeof e.wall === 'number')?.wall ?? clock();
@@ -729,7 +728,9 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
       r.lookback.busy / Math.max(1, r.lookback.capacity ?? r.lookback.workers.length),
     );
     if (maxFps > 0) history.push('fast_max_fps', t, maxFps);
-    const byKind = workByKind(r).totals;
+    const { totals: byKind, count } = workByKind(r);
+    // The pool can grow mid-run: widen the (fixed) range before a value needs it.
+    for (const k of WORK_KINDS) history.widenFixedRange(kindSeriesKey(k), count);
     for (const k of WORK_KINDS) history.push(kindSeriesKey(k), t, byKind[k]);
   }
 

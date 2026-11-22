@@ -238,6 +238,16 @@ export class StreamHistory {
   spec(key: string): SeriesSpec | undefined {
     return this.byKey.get(key)?.spec;
   }
+  /**
+   * Widen a 'fixed' series' range before any value outside the old one is pushed (a known capacity
+   * that grew, e.g. a worker count). Never narrows; other rules and unknown keys are ignored.
+   */
+  widenFixedRange(key: string, hi: number): void {
+    const s = this.byKey.get(key);
+    if (!s || s.spec.rangeRule !== 'fixed' || !(hi > s.range.hi)) return;
+    s.range.hi = hi;
+    s.range.initial = [s.range.initial[0], hi];
+  }
   specs(): readonly SeriesSpec[] {
     return this.ser.map((s) => s.spec);
   }
