@@ -213,8 +213,12 @@ export function createPipelineStore(
   /** Cell discovery (the slow loop) on or off. */
   const [discover, setDiscoverSignal] = createSignal(true);
   const [residual, setResidualSignal] = createSignal(false);
-  /** Look-back on for the next Discover start (the setting), and on in the current run. */
-  const [lookback, setLookback] = createSignal(false);
+  /**
+   * Look-back (and its Final settle) on for the next Discover start (the setting), and on in the
+   * current run. On by default for recordings: it is how footprints converge now that there is no
+   * Refine stage. A live stream or a source that cannot be re-read has none (`lookbackBlocked`).
+   */
+  const [lookback, setLookback] = createSignal(true);
   const [lookbackRun, setLookbackRun] = createSignal(false);
   /**
    * Settle during Discover ("Background settle", under look-back; runs only
@@ -713,8 +717,7 @@ export function createPipelineStore(
       setFloorLine(floorText(floorMeter));
       const shown = floorMeter.display();
       setFloor(shown);
-      // The run record's log: once a second at most, and only for Discover's own run (a Refine
-      // replay restarts the slow loop's counts).
+      // The run record's log: once a second at most, and only for Discover's own run.
       if (workSampleListeners.length > 0 && (st.run ?? 1) === 1) {
         const e = shown.estimate;
         const ps = untrack(paceStats);

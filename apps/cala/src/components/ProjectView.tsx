@@ -7,12 +7,7 @@ import {
   type StageState,
 } from '../lib/project-index.ts';
 import { planSummary } from '../lib/run-plan.ts';
-import {
-  DEFAULT_REFINE_RUNS,
-  LIBRARY_MODE_LABEL,
-  MAX_REFINE_RUNS,
-  refinePlanText,
-} from '../lib/session-run.ts';
+import { LIBRARY_MODE_LABEL } from '../lib/session-run.ts';
 import { isPickerAbort, showPicker, supportsDirectoryPicker } from '../lib/directory-picker.ts';
 import type { ReadDirLike } from '../lib/project-io.ts';
 import type { ProjectResult } from '../lib/project-index.ts';
@@ -62,11 +57,7 @@ const STATE_TEXT: Record<StageState, string> = {
 };
 
 /** The words in a stage cell. */
-export function stageText(st: SessionStatus, stage: 'discover' | 'refine' | 'extract'): string {
-  if (stage === 'refine') {
-    if (st.refine === 'none') return '—';
-    return st.refine === 'done' ? `${st.refines}x` : `${st.refines}x, ${STATE_TEXT[st.refine]}`;
-  }
+export function stageText(st: SessionStatus, stage: 'discover' | 'extract'): string {
   return STATE_TEXT[st[stage]];
 }
 
@@ -74,7 +65,6 @@ export function stageText(st: SessionStatus, stage: 'discover' | 'refine' | 'ext
 export function ProjectView(props: ProjectViewProps): JSX.Element {
   const p = () => props.project;
   const [details, setDetails] = createSignal<string | null>(null);
-  const [refineRuns, setRefineRuns] = createSignal(DEFAULT_REFINE_RUNS);
   const [startError, setStartError] = createSignal<string | null>(null);
   const rows = () => p().tableRows();
   const idGroups = () => {
@@ -99,7 +89,7 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
   async function start(): Promise<void> {
     setStartError(null);
     try {
-      if (!(await p().startPlan(refineRuns())))
+      if (!(await p().startPlan()))
         setStartError('The browser did not allow writing to the results folder.');
     } catch (err) {
       setStartError(err instanceof Error ? err.message : String(err));
@@ -172,7 +162,6 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
                 <th>Date</th>
                 <th>Length</th>
                 <th>Discover</th>
-                <th>Refine</th>
                 <th>Extract</th>
                 <th title="Sessions with the same letter share cell ids (one Joint run): cell 7 is the same neuron in each">
                   Cell IDs
@@ -231,7 +220,6 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
                       <td>{fmtDate(r.session.start, true)}</td>
                       <td>{fmtLength(r.session.frames, r.session.fps)}</td>
                       <td data-testid="cell-discover">{stageText(r.status, 'discover')}</td>
-                      <td data-testid="cell-refine">{stageText(r.status, 'refine')}</td>
                       <td data-testid="cell-extract">{stageText(r.status, 'extract')}</td>
                       <td data-testid="cell-ids">
                         <Show when={idGroup(r.session.id)} fallback={'\u2014'}>
@@ -376,7 +364,7 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
             class="btn-secondary btn-small"
             data-testid="plan-separate"
             disabled={p().selected().size === 0}
-            title="Each selected session gets its own Discover, Refine and Extract"
+            title="Each selected session gets its own Discover and Extract"
             onClick={() => p().addToPlan('separate')}
           >
             Run selected separately
@@ -453,24 +441,6 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
             already written are kept; the groups not finished are left in the plan.
           </p>
         </Show>
-        <label class="cala-sessions__row">
-          Refine runs before Extract{' '}
-          <select
-            data-testid="plan-refine-runs"
-            value={String(refineRuns())}
-            onChange={(e) => setRefineRuns(Number(e.currentTarget.value))}
-          >
-            <For each={Array.from({ length: MAX_REFINE_RUNS + 1 }, (_, k) => k)}>
-              {(k) => <option value={String(k)}>{k}</option>}
-            </For>
-          </select>
-        </label>
-        <p
-          class={refineRuns() === 0 ? 'cala-sessions__warning' : 'cala-muted cala-sessions__note'}
-          data-testid="plan-refine-note"
-        >
-          {refinePlanText(refineRuns())}
-        </p>
         <p class="cala-muted cala-sessions__note">
           Each group is one run, written to <code>{p().location().label}/runs/&lt;run&gt;/</code> as
           each session finishes; that session's newest result becomes its current one. Data folders

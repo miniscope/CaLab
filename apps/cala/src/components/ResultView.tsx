@@ -4,7 +4,7 @@
  * right after a run: the field of view with the cells over the mean or max
  * image, the selected cell with its Extract trace, the QC table, the History
  * plots and event log, the flat field and the stages that ran. Nothing runs:
- * there are no Discover, Refine or Extract controls; a new run starts from the
+ * there are no Discover or Extract controls; a new run starts from the
  * project. Parts an older export lacks say "not in this export".
  */
 import { createEffect, createSignal, For, on, onCleanup, Show, type JSX } from 'solid-js';
@@ -82,11 +82,9 @@ export function resultFovSource(r: LoadedResult): FovSource {
 
 /** A stage run as one line: `Refine 2: done, 2,000 frames, 41 cells`. */
 export function stageLine(r: StageRun): string {
+  // A `refine` run only exists in a result saved before Refine was removed.
   const name = r.stage === 'discover' ? STAGE_LABEL.discover : `${STAGE_LABEL[r.stage]} ${r.index}`;
   const parts = [`${r.frames.toLocaleString()} frames`, `${r.cells} cells`];
-  const m = r.movedAboveNoise;
-  if (r.stage === 'refine' && m && m.cells > 0)
-    parts.push(`${Math.round((100 * m.above1) / m.cells)}% changed more than their noise`);
   if (r.stage === 'discover' && r.adds !== undefined) parts.push(`${r.adds} adds`);
   return `${name}: ${r.outcome}, ${parts.join(', ')}`;
 }
@@ -291,7 +289,7 @@ export function ResultView(props: { result: LoadedResult; origin: ResultOrigin }
     <SidePanel id="run" title="Saved result" class="cala-run" fixed>
       <p class="cala-muted" data-testid="result-readonly">
         Read-only: this is the result as it was saved. Start a new run from the project to Discover,
-        Refine or Extract again.
+        Extract again.
       </p>
       <Show when={result.boundary}>
         {(f) => (

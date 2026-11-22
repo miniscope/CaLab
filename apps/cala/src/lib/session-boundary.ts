@@ -19,7 +19,7 @@
  *   rescales the noise map (`Preprocessor.beginSessionBack`), and validates
  *   pixels against the FOV mask as the session warp moved it.
  *
- * Replays (Refine, Extract) re-run A's and C's steps from the replayed
+ * Replays (Extract) re-run A's and C's steps from the replayed
  * frames and apply B's recorded transform (`RunRecord.noteSession`).
  */
 

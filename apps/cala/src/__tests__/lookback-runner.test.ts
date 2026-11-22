@@ -484,20 +484,6 @@ describe('SlowRunner look-back (fake loop)', () => {
     expect(work).toBeLessThanOrEqual(123 * (SETTLE.finalSteps + 3 * 16));
   });
 
-  it('a Refine run after it does no look-back', () => {
-    const t = setup(1);
-    t.r.handle({ ...INIT, lookback: true });
-    t.r.handle(frames(0, 1));
-    t.answer();
-    t.r.handle({ type: 'end', session: 1 });
-    t.run();
-    expect(finals(t)).toHaveLength(1);
-    const notes = (t.loop.lookbackNote as ReturnType<typeof vi.fn>).mock.calls.length;
-    t.r.handle({ type: 'replay', session: 1, scope: 'refine' });
-    t.r.handle(frames(0, 2));
-    expect((t.loop.lookbackNote as ReturnType<typeof vi.fn>).mock.calls.length).toBe(notes);
-  });
-
   it('a reset drops the settling run', () => {
     const t = setup(1000);
     t.r.handle({ ...INIT, lookback: true });

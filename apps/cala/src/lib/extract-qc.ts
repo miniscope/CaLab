@@ -2,7 +2,7 @@
  * Trace QC of the extracted traces, per session.
  *
  * The live QC (`QcMonitor`, Discover) reads each cell's last
- * `window_frames` (60 s) of Discover's traces. Refine and Extract run no
+ * `window_frames` (60 s) of Discover's traces. Extract runs no
  * monitor, so before this module the app kept showing, and exported, the
  * QC of the last minute of Discover: for a cell that happened to be quiet
  * then a low SNR, and in a Joint run the same numbers (the end of the last
@@ -108,7 +108,7 @@ export async function spanStatsOf(
 /**
  * `base` (Discover's last QC snapshot, or null) with the trace statistics of
  * the extracted cells `ids` replaced by `stats` (same order). Rows of cells
- * Extract did not solve (removed by Refine) are dropped; cells without a
+ * Extract did not solve (removed before Extract) are dropped; cells without a
  * Discover row get one with only the trace statistics.
  */
 export function withSpanStats(

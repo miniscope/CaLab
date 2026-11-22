@@ -110,13 +110,6 @@ export type FastToSlow =
     }
   /** The recording ended: publish what is pending. */
   | { type: 'end'; session: number }
-  /**
-   * Another run over the recording from frame 0 into the same slow loop (all
-   * its state kept), with `scope` from now on: the Refine stage (`refine`).
-   * The slow loop must have published its final library. A "Discover again"
-   * stage would send `all` (not offered: it counts the same frames twice).
-   */
-  | { type: 'replay'; session: number; scope: EditScopeName }
   /** Pipeline stopped or restarted: drop the slow loop. */
   | { type: 'reset'; session: number };
 
@@ -208,7 +201,7 @@ export interface SlowStatus {
   work: number;
   /** The recording ended and the final library is out. */
   final: boolean;
-  /** Runs over the recording into this slow loop: 1 = Discover, 2 = the first Refine, ... */
+  /** Runs over the recording into this slow loop: 1 = Discover (always 1 now: Refine, which made it 2 and up, is gone) */
   run: number;
   /** The current run's edit scope. */
   editScope: EditScopeName;

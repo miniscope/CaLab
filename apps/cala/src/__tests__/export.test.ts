@@ -291,8 +291,6 @@ describe('export', () => {
         libraryVersion: 34,
         refines: 9,
         refinesPerMin: 18,
-        footprintsRefined: 7,
-        medianFootprintChange: 0.04,
       },
     ];
     const z = parseNpz(await buildCalaExport({ ...(await input()), stages }));
@@ -305,7 +303,6 @@ describe('export', () => {
       adds: 14,
       refines: 40,
     });
-    expect(meta.stages[1]).toMatchObject({ footprints_refined: 7, median_footprint_change: 0.04 });
     expect('adds' in meta.stages[1]).toBe(false);
     expect(meta.extract_seconds).toBeTypeOf('number');
     expect('pass2_seconds' in meta).toBe(false);

@@ -87,16 +87,16 @@ const DEBUG_ONLY: ReadonlySet<string> = new Set(['lbpool', 'needfirst', 'pacefps
 
 /**
  * Whether a flag changes anything given the others (`App.tsx` reads them the
- * same way): `lookback=0` is off; `csettle` changes something only as
+ * same way): look-back is on by default, so only `lookback=0` changes anything (off); `csettle` changes something only as
  * `csettle=0` (Background settle off) or `csettle=yieldN`, and needs look-back;
  * `review` needs `compress`; debug-only flags need `?debug`.
  */
 function inEffect(name: string, value: string, p: URLSearchParams): boolean {
   if (DEBUG_ONLY.has(name) && !p.has('debug')) return false;
-  const lookbackOn = p.has('lookback') && p.get('lookback') !== '0';
+  const lookbackOn = p.get('lookback') !== '0';
   switch (name) {
     case 'lookback':
-      return value !== '0';
+      return value === '0';
     case 'csettle':
       return lookbackOn && (value === '0' || /^yield\d*$/.test(value));
     case 'csrate':
@@ -308,7 +308,7 @@ export interface WorkSample {
   /** Discover is still going (false once it ended, in the Final settle): the limit and Max counts stop. */
   running: boolean;
   /**
-   * Cumulative counts of this Discover run, so the record keeps them after Refine and Extract
+   * Cumulative counts of this Discover run, so the record keeps them after Extract
    * (the slow worker's accounting and the pacer's readouts belong to the run that is current).
    */
   counters: RunCounters;
@@ -783,7 +783,6 @@ export interface RunRecordExtras {
   mode?: string;
   /** Separate: the 0-based session this record is for. */
   sessionIndex?: number;
-  refineRuns?: number;
   /** "Extract after Discover". */
   extractAfterDiscover?: boolean;
   /** Export only cells that pass QC (the Run tab's single export only; automatic runs export every session's QC-flagged cells). */
@@ -865,7 +864,6 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       target_speed_fps: startFps,
       smooth_playback: p.smoothPlayback(),
       ...(extras.mode !== undefined ? { library_mode: extras.mode } : {}),
-      ...(extras.refineRuns !== undefined ? { refine_runs: extras.refineRuns } : {}),
       ...(extras.extractAfterDiscover !== undefined
         ? { extract_after_discover: extras.extractAfterDiscover }
         : {}),
@@ -990,6 +988,11 @@ export interface AppliedSettings {
    * the same schedule whatever the machine decides. Absent for Max, Fixed and stream runs.
    */
   curve?: ReplayCurve;
+  /**
+   * The record says Refine ran (`settings.refine_runs` above 0, or a `refine` stage run). That stage
+   * was removed: look-back and the Final settle replace it, so the replay has no Refine run.
+   */
+  refineUsed?: boolean;
   /** The run changed its settle cap part-way (`work.cap_changes` has more than one distinct value); not replayed. */
   capChangedDuringRun?: boolean;
 }
@@ -1090,6 +1093,12 @@ export function settingsFromRecord(rec: unknown): AppliedSettings | null {
       if (curve) out.curve = curve;
     }
   }
+  const stages = Array.isArray(r.stages) ? (r.stages as unknown[]) : [];
+  if (
+    (finite(o.refine_runs) && o.refine_runs > 0) ||
+    stages.some((x) => (x as Record<string, unknown> | null)?.stage === 'refine')
+  )
+    out.refineUsed = true;
   const work = r.work as { cap_changes?: unknown } | undefined;
   if (Array.isArray(work?.cap_changes)) {
     const caps = new Set(

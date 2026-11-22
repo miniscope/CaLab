@@ -34,9 +34,8 @@ const LOOKBACK_SNAPSHOT_EVERY = 256;
 let slowSession = -1;
 
 /**
- * Stop the running stage. `keepSlow`: a replay stage follows or is stopped,
- * so the slow loop stays (a stopped Refine run is told to publish what it
- * has); otherwise it is dropped, also when the stage was an Extract run,
+ * Stop the running stage. `keepSlow`: a replay stage (Extract) follows or is
+ * stopped, so the slow loop stays; otherwise it is dropped, also when the stage was an Extract run,
  * which never talks to it.
  */
 function stopStage(keepSlow = false): void {
@@ -52,9 +51,9 @@ function handle(msg: StageMsg): void {
   switch (msg.type) {
     case 'start': {
       const cells = msg.cells;
-      // A replay stage keeps the slow loop; Extract (a library, no refine) is not connected to it.
+      // A replay stage (Extract) keeps the slow loop and is not connected to it.
       stopStage(cells?.library !== undefined);
-      const port = cells?.library && !cells.refine ? null : slowPort;
+      const port = cells?.library ? null : slowPort;
       if (port && !cells?.library && (cells?.discover ?? true)) slowSession = cells?.session ?? 0;
       const fast = new FastLoop(
         {
@@ -65,7 +64,6 @@ function handle(msg: StageMsg): void {
           residual: cells?.residual ?? false,
           signed: cells?.signed ?? false,
           ...(cells?.library ? { initialLibrary: cells.library } : {}),
-          ...(cells?.refine ? { refine: true } : {}),
           ...(cells?.lookback && !cells.library ? { lookback: true } : {}),
           ...(cells?.lookback && !cells.library && cells.csettle
             ? {

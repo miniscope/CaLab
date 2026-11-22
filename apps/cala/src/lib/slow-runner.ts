@@ -710,7 +710,6 @@ export class SlowRunner {
     try {
       if (msg.type === 'frames') this.frames(msg);
       else if (msg.type === 'end') this.end();
-      else if (msg.type === 'replay') this.replay(msg.scope);
     } catch (err) {
       this.fail(err);
     }
@@ -1522,26 +1521,6 @@ export class SlowRunner {
     if (d) this.settleStatus = this.settleView(d, true);
     this.drain = null;
     this.finish();
-  }
-
-  /** Another run from frame 0 into this loop (see `FastToSlow` `replay`). */
-  private replay(scope: EditScopeName): void {
-    this.clock.span('setup', () => this.replayInner(scope));
-  }
-
-  private replayInner(scope: EditScopeName): void {
-    const loop = this.loop;
-    if (!loop) throw new Error('No slow loop to refine: run Discover first.');
-    if (!this.final) throw new Error('The slow loop has not published its final library yet.');
-    if (!loop.setEditScope) throw new Error('This build of the slow loop cannot refine.');
-    loop.setEditScope(scope);
-    this.scope = scope;
-    this.run++;
-    this.final = false;
-    this.ending = false;
-    this.frame = 0;
-    this.consumed = 0;
-    this.status(0, 0);
   }
 
   private end(): void {

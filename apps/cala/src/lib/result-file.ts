@@ -26,7 +26,7 @@ import { fovDisplayRanges, storedRange } from './fov-display.ts';
 import type { DisplayRange } from './frame-display.ts';
 import { FLAG_UNMEASURED, type CellQcRow, type QcSnapshot } from './qc.ts';
 import type { RunEvent } from './run-events.ts';
-import type { StageName, StageRun } from './run-stages.ts';
+import type { RecordedStageName, StageRun } from './run-stages.ts';
 
 /** One field-of-view image of the export with the fixed range it is drawn with. */
 export interface ResultImage {
@@ -92,7 +92,7 @@ export function stagesFromMeta(v: unknown): StageRun[] {
   if (!Array.isArray(v)) return [];
   return v.map((x: Record<string, unknown>) => {
     const r: StageRun = {
-      stage: String(x.stage) as StageName,
+      stage: String(x.stage) as RecordedStageName,
       index: num(x.index, 1),
       startedAt: String(x.started_at ?? ''),
       endedAt: typeof x.ended_at === 'string' ? x.ended_at : null,
@@ -108,8 +108,6 @@ export function stagesFromMeta(v: unknown): StageRun[] {
       ['merges', 'merges'],
       ['deletes', 'deletes'],
       ['splits', 'splits'],
-      ['footprintsRefined', 'footprints_refined'],
-      ['medianFootprintChange', 'median_footprint_change'],
     ];
     for (const [k, key] of opt)
       if (key in x) (r as unknown as Record<string, unknown>)[k] = x[key] as number | null;

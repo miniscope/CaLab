@@ -318,7 +318,7 @@ describe('persistence', () => {
     expect((exportSessionBlock(rec, 'joint', 2).boundary as { severity: string }).severity).toBe(
       'failed',
     );
-    const settings = { mode: 'joint' as const, refineRuns: 1 };
+    const settings = { mode: 'joint' as const };
     const meta = sessionMetadata({
       version: 'dev',
       settings,

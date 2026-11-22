@@ -196,7 +196,7 @@ async function handle(req: FrameRequest): Promise<void> {
       }
       case 'pipeline-start': {
         gate.begin(req.cells?.session ?? 0);
-        // A replay stage (Refine, Extract) keeps the slow loop of the Discover run.
+        // A replay stage (Extract) keeps the slow loop of the Discover run.
         stopPipeline(req.cells?.library !== undefined);
         // A live stream cannot be rewound: a restart (or a run after the stream
         // ended) connects again, and the source streams from where it is now.
@@ -211,7 +211,7 @@ async function handle(req: FrameRequest): Promise<void> {
         const src = reader();
         if (live && req.replay)
           throw new Error(
-            'Refine and Extract need the recording on disk (save the stream and open it as a recording).',
+            'Extract needs the recording on disk (save the stream and open it as a recording).',
           );
         if (down) {
           epoch++;
@@ -254,7 +254,7 @@ async function handle(req: FrameRequest): Promise<void> {
           post({ type: 'pipeline-ready', id: req.id, plan: stage.plan });
           break;
         }
-        if (req.replay) throw new Error('Refine and Extract need the pipelined workers.');
+        if (req.replay) throw new Error('Extract needs the pipelined workers.');
         const cells = req.cells;
         const port = slowPort;
         pipeline = new PipelineEngine(src, req.options, undefined, (setup) => {
