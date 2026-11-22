@@ -28,6 +28,7 @@ import { stageMeta } from './export.ts';
 import { FLOOR_LADDER, type FloorInputs } from './speed-floor.ts';
 import { SPEED_SCALE } from './speed-track.ts';
 import type { SpeedCurve } from './speed-schedule.ts';
+import type { AutoDecision } from './speed-auto.ts';
 
 export const RUN_RECORD_FILE = 'cala-run-record.json';
 export const RUN_RECORD_FORMAT = 'cala-run-record';
@@ -47,6 +48,8 @@ export const WORK_SLIDER_SLOTS = [
   'floor_estimate',
   /** Decisions an automatic mode made (what, when, why). */
   'auto_decisions',
+  /** Auto's time budget: the extra time over a Max run, as a share (1 is +100 %). */
+  'auto_extra_time_share',
 ] as const;
 export type WorkSliderSlot = (typeof WORK_SLIDER_SLOTS)[number];
 
@@ -360,6 +363,7 @@ export class RunTrace {
   private maxSamples: number[] = [];
   private counts: RunCounters | null = null;
   private curveRec: CurveRecord | null = null;
+  private autoRec: { extraTimeShare: number; decisions: AutoDecision[] } | null = null;
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
@@ -375,6 +379,23 @@ export class RunTrace {
     this.maxSamples = [];
     this.counts = null;
     this.curveRec = null;
+    this.autoRec = null;
+  }
+
+  /** Auto armed or decided (the run's own copy: a later change of Speed must not lose it). */
+  noteAuto(a: { extraTimeShare: number; decisions: readonly AutoDecision[] } | null): void {
+    this.autoRec = a
+      ? { extraTimeShare: a.extraTimeShare, decisions: a.decisions.map((d) => ({ ...d })) }
+      : null;
+  }
+
+  auto(): { extraTimeShare: number; decisions: AutoDecision[] } | null {
+    return this.autoRec
+      ? {
+          extraTimeShare: this.autoRec.extraTimeShare,
+          decisions: this.autoRec.decisions.map((d) => ({ ...d })),
+        }
+      : null;
   }
 
   /** A speed curve took over the target (at the start or mid-run); the latest one is the record's. */
@@ -801,10 +822,12 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
   // and `work.cap_changes` (the first entry of each is the start value).
   const startFps = src.trace.targetSpeedChanges()[0]?.fps ?? p.paceFps();
   const startCap = src.trace.capChanges()[0]?.cap;
+  const auto = src.trace.auto();
   const speedMode = speedModeOf({
     live: info?.live !== undefined,
     targetSpeed: src.trace.targetSpeedChanges(),
     curve: src.trace.curve() !== null,
+    auto: auto !== null,
   });
   const record = buildRunRecord({
     createdAt: (src.now ?? (() => new Date()))().toISOString(),
@@ -925,6 +948,9 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       slider_schedule: sliderSchedule(),
       ...(floor ? { floor_estimate: floor } : {}),
       ...(src.trace.curve() ? { curve_schedule: src.trace.curve() } : {}),
+      ...(auto
+        ? { auto_decisions: auto.decisions, auto_extra_time_share: auto.extraTimeShare }
+        : {}),
       ...extras.slots,
     },
   });
