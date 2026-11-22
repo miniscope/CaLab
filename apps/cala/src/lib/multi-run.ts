@@ -12,6 +12,7 @@ import type { ExportInput } from './export.ts';
 import { writeCalaExport } from './export.ts';
 import type { FrameSourceInfo } from './frame-source.ts';
 import type { QcSnapshot } from './qc.ts';
+import { RUN_RECORD_FILE } from './run-provenance.ts';
 import { sessionBoundaries } from './frame-source.ts';
 import type { StageActivity, StageName, StageRun } from './run-stages.ts';
 import {
@@ -110,6 +111,8 @@ export interface MultiRunDeps {
   info(): FrameSourceInfo | null;
   /** Joint: Discover's session-boundary flags (`boundary-flags.ts`), written with each session's results. */
   boundaryFlags?(): readonly BoundaryFlag[];
+  /** The run record (`run-provenance.ts`) of the run so far; written beside the manifest and into each export. */
+  runRecord?(settings: RunSettings): Record<string, unknown>;
   version: string;
   now?: () => Date;
 }
@@ -198,6 +201,8 @@ export function createMultiRun(deps: MultiRunDeps) {
       2,
     );
     await sink.writeText(RUN_MANIFEST_FILE, text);
+    if (deps.runRecord)
+      await sink.writeText(RUN_RECORD_FILE, JSON.stringify(deps.runRecord(p.settings), null, 2));
   }
 
   /** Write the results that are final now: one session (Separate) or all (Joint). */
@@ -223,6 +228,7 @@ export function createMultiRun(deps: MultiRunDeps) {
     if (joint) for (const f of deps.boundaryFlags?.() ?? []) patchRecord(f.index, { boundary: f });
     const which = joint ? records() : records().filter((r) => r.index === current());
     const runs = deps.stages().runs;
+    const runRecord = deps.runRecord?.(p.settings);
     for (const r of which) {
       const fps = r.fps ?? base.fps;
       const range = joint
@@ -236,6 +242,7 @@ export function createMultiRun(deps: MultiRunDeps) {
         qc,
         ...(joint ? { frameRange: { start: r.startFrame, end: r.startFrame + r.frames } } : {}),
         session: exportSessionBlock(r, p.settings.mode, p.sessions.length),
+        ...(runRecord ? { runRecord } : {}),
       };
       await sink.writeFile(`${r.resultsPath}/${SESSION_EXPORT_FILE}`, (s) =>
         writeCalaExport(input, s),

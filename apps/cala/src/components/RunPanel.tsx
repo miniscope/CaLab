@@ -1,3 +1,4 @@
+import type { RunRecordExtras } from '../lib/run-provenance.ts';
 import { createEffect, createSignal, For, on, Show, type JSX } from 'solid-js';
 import { MetricTile, ProgressBar, SegmentedControl, type ProgressState } from '@calab/ui';
 import { formatClock, formatElapsed, windowPresets } from '@calab/ui/chart';
@@ -110,6 +111,8 @@ function PassStepper(props: {
 }
 
 export interface RunPanelProps {
+  /** The run record (`run-provenance.ts`) with this panel's own settings added; written into each export. */
+  runRecord?: (extras: RunRecordExtras) => Record<string, unknown>;
   pipeline: PipelineStore;
   /** The Extract stage (its store keeps the older name). */
   pass2: Pass2Store;
@@ -384,6 +387,14 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         bins: props.ui.run.history().toExport(),
         eventsJson: props.ui.run.events().toJSON(),
       },
+      ...(props.runRecord
+        ? {
+            runRecord: props.runRecord({
+              extractAfterDiscover: auto(),
+              passQcOnly: passOnly(),
+            }),
+          }
+        : {}),
       version: import.meta.env.VITE_APP_VERSION || 'dev',
     };
   };

@@ -314,6 +314,7 @@ The results mirror each session's path, so nothing is ever written into a data f
 ```
 cala-results/
   cala-run.json                          the run: mode, settings, sessions, boundaries
+  cala-run-record.json                   how the run was made (settings, flags, versions, stages, machine)
   2026_11_10/14_02_33/My_V4_Miniscope/
     cala-export.npz                      the usual export, for this session's frames
     cala-session.json                    the session: index, path, stages run, cell ids
