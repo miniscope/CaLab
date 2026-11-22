@@ -254,6 +254,22 @@ describe('WorkRater with a look-back pool', () => {
     expect(b.lookback.kinds.csettle.busy).toBe(0);
   });
 
+  it('after a pool worker fails the caps use the live count (one settle worker left of two)', () => {
+    const rater = new WorkRater(1000);
+    rater.push(snap(0, (w) => ((w.lookbackWorkerBusyMs = [0, 0, 0]), (w.settleWorkers = 1))));
+    const a = rater.push(
+      snap(1000, (w) => {
+        w.lookback.csettle = { ...emptyLookbackWork(), answers: 4, frames: 64, solveMs: 1800 };
+        w.lookback.need = { ...emptyLookbackWork(), answers: 1, frames: 16, solveMs: 900 };
+        w.lookbackWorkerBusyMs = [900, 900, 0];
+        w.settleWorkers = 1;
+      }),
+    )!;
+    expect(a.lookback.capacity).toBe(2);
+    expect(a.lookback.kinds.csettle.busy).toBe(1);
+    expect(a.lookback.busy).toBeCloseTo(2);
+  });
+
   it('the readout shows each worker and the governor line', () => {
     const r = workRates(
       snap(0, (w) => (w.lookbackWorkerBusyMs = [0, 0])),

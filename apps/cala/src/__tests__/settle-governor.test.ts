@@ -179,6 +179,88 @@ describe('SettleGovernor', () => {
     expect(g.rate).toBeCloseTo(before, 0);
   });
 
+  it('a deeper forward pool tolerates waits of waitShare x (pool - 1) batch periods', () => {
+    // 120 fps, batches of 8: a period of 66.7 ms; four buffers allow 1.5 periods (100 ms).
+    const run = (pool: number, waitMs: number) => {
+      const g = new SettleGovernor(2, 1, pool);
+      g.setTarget(120, false);
+      drive(g, { fps: 120, seconds: 20, waitMs: () => waitMs });
+      return g;
+    };
+    // 90 ms: over half a period (33 ms), under 1.5 periods.
+    const four = run(4, 90);
+    expect(four.status().halvings).toBe(0);
+    expect(four.rate).toBeGreaterThan(100);
+    // With two buffers the rule is today's: half a period.
+    expect(run(2, 90).rate).toBeLessThan(GOVERNOR.stepFps * 2);
+    // Past 1.5 periods the four-buffer pool halves too.
+    expect(run(4, 110).rate).toBeLessThan(GOVERNOR.stepFps * 2);
+  });
+
+  it('a short batch with a short wait is not trouble (the wait is read against the nominal batch)', () => {
+    const g = new SettleGovernor(2, 1, 2);
+    g.setTarget(60, false);
+    const r = drive(g, { fps: 60, seconds: 10 });
+    const before = g.rate;
+    // One frame is 17 ms of a nominal 133 ms batch; 10 ms is well within half of the latter.
+    g.liveBatch(r.t + 17, r.end + 1, 1, 10, false);
+    drive(g, { fps: 60, seconds: 3, t0: r.t + 17, end0: r.end + 1 });
+    expect(g.status().halvings).toBe(0);
+    expect(g.rate).toBeGreaterThanOrEqual(before);
+  });
+
+  it('a pause does not collapse the rate, even when update is not called meanwhile', () => {
+    const g = new SettleGovernor(2);
+    g.setTarget(60, false);
+    const r = drive(g, { fps: 60, seconds: 20 });
+    const before = g.rate;
+    expect(before).toBeGreaterThan(50);
+    // Trouble flags pending when the pause starts.
+    g.liveBatch(r.t + 1, r.end + 8, 8, 500, true);
+    g.delivered(16, 100);
+    g.setTarget(60, true);
+    // No update for 20 s.
+    g.setTarget(60, false);
+    drive(g, { fps: 60, seconds: 4, t0: r.t + 20_000, end0: r.end + 8 });
+    expect(g.rate).toBeGreaterThanOrEqual(before - 1e-6);
+    expect(g.status().halvings).toBe(0);
+  });
+
+  it('at 0 with Discover the limit, a probe of one chunk goes out every 5 s and a failed one is no halving', () => {
+    const g = new SettleGovernor(2);
+    g.setTarget(60, false);
+    let r = drive(g, { fps: 60, seconds: 20 });
+    r = drive(g, { fps: 60, achieved: 50, seconds: 12, t0: r.t, end0: r.end });
+    expect(g.rate).toBe(0);
+    expect(g.limit).toBe('discover');
+    const halvings = g.status().halvings;
+    const probes: number[] = [];
+    let t = r.t;
+    let end = r.end;
+    const period = (8 * 1000) / 50;
+    for (; t < r.t + 30_000;) {
+      t += period;
+      end += 8;
+      g.liveBatch(t, end, 8, 0, false);
+      g.update(t, true);
+      while (g.ready) {
+        g.spend(CSETTLE.chunk);
+        probes.push(t);
+      }
+      // Never a standing rate: a probe is gone by the next check.
+      expect(g.limit).toBe('discover');
+    }
+    // Every 5 s (a second's check granularity), each a whole chunk.
+    expect(probes.length).toBeGreaterThanOrEqual(5);
+    expect(probes.length).toBeLessThanOrEqual(6);
+    for (let i = 1; i < probes.length; i++) {
+      expect(probes[i] - probes[i - 1]).toBeGreaterThanOrEqual(GOVERNOR.probeMs - 1);
+      expect(probes[i] - probes[i - 1]).toBeLessThan(GOVERNOR.probeMs + 2 * GOVERNOR.checkMs);
+    }
+    expect(g.status().halvings).toBe(halvings);
+    expect(g.rate).toBeLessThanOrEqual(GOVERNOR.stepFps);
+  });
+
   it('the bank full with busy settle workers: look-back is the limit, at what they deliver', () => {
     const g = new SettleGovernor(2);
     g.setTarget(120, false);
