@@ -3946,3 +3946,91 @@ fn settle_delta_drops_what_changed_and_refuses_held_out_frames() {
     assert_eq!(sl.fpstats.values().map(|s| s.k).collect::<Vec<_>>(), before);
     assert_eq!(sl.settle_delta_stats().rejected, 1);
 }
+
+/// The app's settle delta (`SlowLoop.settleContext`, `SettleDeltaBuilder`,
+/// `SlowLoop.applySettleDelta`): a chunk's fitting frames summed on the
+/// builder give the statistics `observeSettle` gives (up to rounding), and
+/// a delta with a held-out stream frame in it is refused whole.
+#[cfg(feature = "jsbindings")]
+#[test]
+fn js_settle_delta_matches_observe_settle_and_refuses_held_out_frames() {
+    use super::js::{JsSettleDeltaBuilder, JsSlowLoop};
+    use crate::trace::js::JsTraceLibrary;
+    let t = 96;
+    let mut rng = Lcg(5);
+    let cells = vec![(blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0))];
+    let m = movie(&cells, t, 7);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let n_px = N * N;
+    let off = 100usize;
+    let setup = || {
+        let (slow, mut eng) = start(config(), &seed);
+        let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+        let v = eng.library().version() as f64;
+        js.enable_lookback(2.0, 3000).unwrap();
+        js.enable_settle(16).unwrap();
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let tr = eng.process(f).unwrap();
+            js.observe(
+                f,
+                v,
+                &tr.traces,
+                Some(tr.background.clone()),
+                Some((off + k) as f64),
+            )
+            .unwrap();
+        }
+        (js, eng, v)
+    };
+    let (mut a, mut eng, v) = setup();
+    let (mut b, _, _) = setup();
+    let lib = JsTraceLibrary::from_arc(eng.library().clone());
+    let mut bld = JsSettleDeltaBuilder::new(N as u32, N as u32, vec![1; n_px]).unwrap();
+    bld.begin(&b.settle_context().unwrap()).unwrap();
+    let chunk: Vec<usize> = (off + 20..off + 36).collect();
+    for &f in &chunk {
+        if b.inner().is_test((f - off) as u64) {
+            continue;
+        }
+        let y = &m[(f - off) * n_px..(f - off + 1) * n_px];
+        let tr = eng.process(y).unwrap();
+        assert!(a
+            .observe_settle(y, v, &tr.traces, Some(tr.background.clone()), f as f64)
+            .unwrap());
+        bld.push(y, &lib, &tr.traces, Some(tr.background.clone()), f as f64)
+            .unwrap();
+    }
+    let n = bld.frames();
+    assert!(n > 0);
+    assert!(b.apply_settle_delta(&bld.finish().unwrap()).unwrap());
+    assert_eq!(a.settle_stats()[1], b.settle_stats()[1]);
+    assert_same_statistics(a.inner(), b.inner(), 1e-5, true);
+    let st = b.settle_delta_stats();
+    assert_eq!((st[0], st[1], st[3]), (1.0, 0.0, f64::from(n)));
+
+    // A held-out frame slipped into a delta: refused, nothing changes.
+    let held = chunk
+        .iter()
+        .copied()
+        .find(|&f| b.inner().is_test((f - off) as u64))
+        .expect("a held-out frame in the chunk");
+    bld.begin(&b.settle_context().unwrap()).unwrap();
+    let y = &m[(held - off) * n_px..(held - off + 1) * n_px];
+    let tr = eng.process(y).unwrap();
+    bld.push(
+        y,
+        &lib,
+        &tr.traces,
+        Some(tr.background.clone()),
+        held as f64,
+    )
+    .unwrap();
+    let ks: Vec<u64> = b.inner().fpstats.values().map(|s| s.k).collect();
+    assert!(!b.apply_settle_delta(&bld.finish().unwrap()).unwrap());
+    assert_eq!(
+        b.inner().fpstats.values().map(|s| s.k).collect::<Vec<_>>(),
+        ks
+    );
+    assert_eq!(b.settle_delta_stats()[1], 1.0);
+}

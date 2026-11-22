@@ -25,7 +25,8 @@ use wasm_bindgen::prelude::*;
 
 use super::{
     EditScope, HeldOutRecord, JointSign, JointUpdate, LookBack, LookbackConfig, LookbackNext,
-    LookbackOutcome, SettleSched, SlowLoop, SlowLoopConfig, VisitJob, VisitResult, VisitRunner,
+    LookbackOutcome, SettleContext, SettleDelta, SettleDeltaBuilder, SettleSched, SlowLoop,
+    SlowLoopConfig, VisitJob, VisitResult, VisitRunner,
 };
 use crate::compress::review::footprints_from_wire;
 use crate::preprocess::flatten::{FlattenConfig, GlowFlattener};
@@ -544,6 +545,82 @@ impl JsSlowLoop {
         Ok(true)
     }
 
+    // ---- settle delta (experimental; `settle_delta.rs`) -----------------
+    //
+    // The settle chunk's statistics are summed by the look-back worker that
+    // solved it (`SettleDeltaBuilder`) on the context sent with the request
+    // (`settleContext`); this loop only adds them (`applySettleDelta`).
+
+    /// What a settle request carries for the look-back worker that sums
+    /// the chunk (`SettleDeltaBuilder.begin`): every cell's statistics disk
+    /// and every cluster store's pixels and basis.
+    #[wasm_bindgen(js_name = settleContext)]
+    pub fn settle_context(&self) -> Result<Vec<u8>, JsError> {
+        Ok(self
+            .inner
+            .settle_context()
+            .map_err(|e| js_err("settleContext", e))?
+            .to_bytes())
+    }
+
+    /// Add a settle chunk's delta (`SettleDeltaBuilder.finish`). Each cell
+    /// and cluster store is matched by id and by the statistics disk /
+    /// basis it was summed for (what changed since the request gets
+    /// nothing). A delta with a held-out frame (stream index) in it is
+    /// refused whole: `false`.
+    #[wasm_bindgen(js_name = applySettleDelta)]
+    pub fn apply_settle_delta(&mut self, bytes: &[u8]) -> Result<bool, JsError> {
+        if self.settle.is_none() {
+            return Err(js_err("applySettleDelta", "the concurrent settle is off"));
+        }
+        let d = SettleDelta::from_bytes(bytes).map_err(|e| js_err("applySettleDelta", e))?;
+        let held: std::collections::HashSet<u64> = d
+            .frames()
+            .iter()
+            .copied()
+            .filter(|&f| self.held.held_out(f, &self.inner))
+            .collect();
+        let ok = self
+            .inner
+            .apply_settle_delta(&d, &|f| held.contains(&f))
+            .map_err(|e| js_err("applySettleDelta", e))?;
+        if ok {
+            self.cs.fit += d.frames().len() as u64;
+        } else {
+            self.cs.held_out += held.len() as u64;
+        }
+        Ok(ok)
+    }
+
+    /// `[applied, rejected, staleVersion, frames, cells, cellsGone,
+    /// cellsMoved, cellsAbsent, clusters, clustersGone, clustersStale,
+    /// clustersOff, clustersAbsent, clusterSkips, work, workEquiv]`
+    /// (`SettleDeltaStats`).
+    #[wasm_bindgen(js_name = settleDeltaStats)]
+    pub fn settle_delta_stats(&self) -> Vec<f64> {
+        let d = self.inner.settle_delta_stats();
+        [
+            d.applied,
+            d.rejected,
+            d.stale_version,
+            d.frames,
+            d.cells,
+            d.cells_gone,
+            d.cells_moved,
+            d.cells_absent,
+            d.clusters,
+            d.clusters_gone,
+            d.clusters_stale,
+            d.clusters_off,
+            d.clusters_absent,
+            d.cluster_skips,
+            d.work,
+            d.work_equiv,
+        ]
+        .map(|v| v as f64)
+        .to_vec()
+    }
+
     /// A held-out frame of `settleTake` was passed over by the driver
     /// (not solved, not handed back): count it.
     #[wasm_bindgen(js_name = settleSkipped)]
@@ -947,5 +1024,98 @@ impl JsSlowLoop {
             }
         }
         JsTraceLibrary::from_arc(lib)
+    }
+}
+
+/// The settle delta's summing side (experimental), for the look-back
+/// worker: begin on the context of a settle request (`SlowLoop.settleContext`),
+/// push the chunk's solved fitting frames, finish into bytes for
+/// `SlowLoop.applySettleDelta`.
+#[wasm_bindgen(js_name = SettleDeltaBuilder)]
+pub struct JsSettleDeltaBuilder {
+    width: usize,
+    height: usize,
+    fov: Vec<u8>,
+    inner: Option<SettleDeltaBuilder>,
+    traces: FrameTraces,
+}
+
+#[wasm_bindgen(js_class = SettleDeltaBuilder)]
+impl JsSettleDeltaBuilder {
+    /// `fov`: the slow loop's FOV mask (`SlowInit.fov`).
+    #[wasm_bindgen(constructor)]
+    pub fn new(width: u32, height: u32, fov: Vec<u8>) -> Result<JsSettleDeltaBuilder, JsError> {
+        console_error_panic_hook::set_once();
+        let (width, height) = (width as usize, height as usize);
+        crate::trace::check_len("fov", width * height, fov.len())
+            .map_err(|e| js_err("SettleDeltaBuilder", e))?;
+        Ok(JsSettleDeltaBuilder {
+            width,
+            height,
+            fov,
+            inner: None,
+            traces: FrameTraces {
+                frame_index: 0,
+                library_version: 0,
+                traces: Vec::new(),
+                background: Vec::new(),
+                sweeps: 0,
+                signed: Vec::new(),
+            },
+        })
+    }
+
+    /// Start a chunk on a settle request's context.
+    pub fn begin(&mut self, context: &[u8]) -> Result<(), JsError> {
+        let ctx = SettleContext::from_bytes(context).map_err(|e| js_err("begin", e))?;
+        match self.inner.as_mut() {
+            Some(b) => b.reset(ctx).map_err(|e| js_err("begin", e))?,
+            None => {
+                self.inner = Some(
+                    SettleDeltaBuilder::new(self.width, self.height, self.fov.clone(), ctx)
+                        .map_err(|e| js_err("begin", e))?,
+                )
+            }
+        }
+        Ok(())
+    }
+
+    /// One solved fitting frame of the chunk: the preprocessed frame, its
+    /// traces (and background) from `library`, and its stream index (the
+    /// slow loop's held-out check).
+    pub fn push(
+        &mut self,
+        frame: &[f32],
+        library: &JsTraceLibrary,
+        traces: &[f32],
+        background: Option<Vec<f32>>,
+        stream: f64,
+    ) -> Result<(), JsError> {
+        let b = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| js_err("push", "call begin first"))?;
+        let lib = library.arc();
+        self.traces.library_version = lib.version();
+        self.traces.traces.clear();
+        self.traces.traces.extend_from_slice(traces);
+        self.traces.background = background.unwrap_or_default();
+        b.push(frame, lib, &self.traces, stream.max(0.0) as u64)
+            .map_err(|e| js_err("push", e))
+    }
+
+    /// Frames pushed since `begin`.
+    #[wasm_bindgen(getter)]
+    pub fn frames(&self) -> u32 {
+        self.inner.as_ref().map_or(0, |b| b.len() as u32)
+    }
+
+    /// The chunk's delta, as bytes for `SlowLoop.applySettleDelta`.
+    pub fn finish(&mut self) -> Result<Vec<u8>, JsError> {
+        let b = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| js_err("finish", "call begin first"))?;
+        Ok(b.finish().to_bytes())
     }
 }
