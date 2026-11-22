@@ -147,10 +147,10 @@ export interface FastLoopOptions {
   refine?: boolean;
   /** Discover with look-back (experimental): the slow loop's `init` says so (`SlowInit.lookback`). */
   lookback?: boolean;
-  /** With `lookback`: settle during Discover (`SlowInit.csettle`, `SlowInit.csettleYield`, `SlowInit.csettleGovernor`; 0 = off). */
-  csettle?: number;
+  /** With `lookback`: settle during Discover may run (`SlowInit.csettle`, `SlowInit.csettleYield`, `SlowInit.csettleNeedFirst`). */
+  csettle?: boolean;
   csettleYield?: number;
-  csettleGovernor?: boolean;
+  csettleNeedFirst?: boolean;
   /** Return the model residual of each batch's last frame (the app's residual view). */
   residual?: boolean;
   /**
@@ -173,9 +173,9 @@ export const FAST_LOOP_DEFAULTS = {
   residual: false,
   refine: false,
   lookback: false,
-  csettle: 0,
+  csettle: false,
   csettleYield: 0,
-  csettleGovernor: false,
+  csettleNeedFirst: false,
   signed: false,
 } as const;
 
@@ -537,13 +537,12 @@ export class FastLoop {
           flattenSigmaPx: this.o.flattenSigmaPx,
           budget: this.o.budget,
           ...(this.o.lookback ? { lookback: true } : {}),
-          ...(this.o.lookback && this.o.csettle > 0
+          ...(this.o.lookback && this.o.csettle
             ? {
-                csettle: this.o.csettle,
+                csettle: true,
+                csettlePool: this.o.poolSize,
                 ...(this.o.csettleYield > 0 ? { csettleYield: this.o.csettleYield } : {}),
-                ...(this.o.csettleGovernor
-                  ? { csettleGovernor: true, csettlePool: this.o.poolSize }
-                  : {}),
+                ...(this.o.csettleNeedFirst ? { csettleNeedFirst: true } : {}),
               }
             : {}),
         },

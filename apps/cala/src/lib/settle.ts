@@ -267,10 +267,11 @@ export function settleChange(
   };
 }
 
-// ---- settle during Discover (experimental, frames only) ----
+// ---- settle during Discover ("Background settle", frames only) ----
 
 /**
- * Settle during Discover (experimental, default off; qc_eval's arm `CS2F`,
+ * Settle during Discover ("Background settle"; on whenever a look-back
+ * Discover's target is below Max, up to the cap; qc_eval's arm `CS2F`,
  * `--csettle 0.667 --csettle-mode frames`; tools/cala-eval/results/
  * 2026-11-20-concurrent-settle2.md and 2026-11-21-concurrent-settle3.md):
  * while a look-back Discover runs, the look-back worker also re-reads saved
@@ -280,7 +281,7 @@ export function settleChange(
  * frames never reach fitting. The end settle still runs after the last frame.
  */
 export const CSETTLE = {
-  /** The default ceiling: re-read frames per live frame the slow loop observes. */
+  /** The default cap: re-read frames per live frame the slow loop observes (0 = Off). */
   rate: 2,
   /** The ceilings a user can pick (lower = less work beside the live frames). */
   rates: [2, 1, 0.5],
@@ -297,47 +298,30 @@ export function csettleRate(v: unknown): number {
 }
 
 /**
- * The dose of the settle during Discover (qc_eval's `Timed::cs_owed`): every
- * live frame the slow loop observes earns `rate` re-read frames; a request
- * of one chunk goes out when a whole chunk is owed (and no other is out);
- * at most `CSETTLE.bankChunks` chunks are saved up. So `rate` is a ceiling:
- * a look-back worker that cannot keep up delivers less and the rest lapses.
+ * Settle look-back workers besides worker 0 (the settle pool's S; beta speed
+ * control, section 1 "Pool size"; PI decision of 22 Nov 2026: one more worker
+ * on machines with at least `minCores` logical cores, else none, and one
+ * worker takes turns). Started only once a run's target goes below Max.
  */
-export class SettleDose {
-  private owedFrames = 0;
-  readonly cap: number;
+export const SETTLE_POOL = {
+  /** Logical cores (`navigator.hardwareConcurrency`) from which the pool has `workers` workers. */
+  minCores: 12,
+  workers: 1,
+  /** The most a `?debug&lbpool=S` override may ask for. */
+  maxWorkers: 4,
+} as const;
 
-  constructor(
-    readonly rate: number,
-    readonly chunk: number = CSETTLE.chunk,
-    bankChunks: number = CSETTLE.bankChunks,
-  ) {
-    this.cap = chunk * bankChunks;
-  }
-
-  /** Re-read frames owed now. */
-  get owed(): number {
-    return this.owedFrames;
-  }
-
-  /** `live` frames were observed. */
-  earn(live: number): void {
-    if (!(this.rate > 0) || !(live > 0)) return;
-    this.owedFrames = Math.min(this.cap, this.owedFrames + live * this.rate);
-  }
-
-  /** A whole chunk is owed. */
-  get ready(): boolean {
-    return this.owedFrames >= this.chunk;
-  }
-
-  /** `frames` were asked for. */
-  spend(frames: number): void {
-    this.owedFrames = Math.max(0, this.owedFrames - frames);
-  }
+/**
+ * The settle pool's size S for a machine with `cores` logical cores
+ * (unknown: none), or the `override` (`?debug&lbpool=S`) when one is given.
+ */
+export function settlePoolSize(cores: number | undefined, override?: number | null): number {
+  if (override !== undefined && override !== null && Number.isFinite(override))
+    return Math.max(0, Math.min(SETTLE_POOL.maxWorkers, Math.floor(override)));
+  return cores !== undefined && cores >= SETTLE_POOL.minCores ? SETTLE_POOL.workers : 0;
 }
 
-// ---- the settle governor (work-slider PR 5; experimental, `?debug&governor`) ----
+// ---- the settle governor (work-slider PR 5; the settle's only dose rule below Max) ----
 
 /**
  * The governor's settings (`work_slider_design.md`, section 2, "The
@@ -380,13 +364,22 @@ export const GOVERNOR = {
  * What limits the settle now (`SettleGovernor.limit`): the six of the design,
  * and two passing states (`waiting`: no library yet, no settle read goes
  * out; `ramping`: climbing by the guard's step with no limit reached and no
- * recent trouble).
+ * recent trouble). `off`: the target is Max; `cap-off`: below Max with the cap Off.
  */
 export type GovernorLimit =
-  'off' | 'waiting' | 'ramping' | 'cap' | 'look-back' | 'slow-worker' | 'backing-off' | 'discover';
+  | 'off'
+  | 'cap-off'
+  | 'waiting'
+  | 'ramping'
+  | 'cap'
+  | 'look-back'
+  | 'slow-worker'
+  | 'backing-off'
+  | 'discover';
 
 export const GOVERNOR_LIMIT_TEXT: Record<GovernorLimit, string> = {
   off: 'off (Max)',
+  'cap-off': 'cap off',
   waiting: 'no library yet',
   ramping: 'ramping up',
   cap: 'cap',
@@ -430,12 +423,13 @@ interface LiveSample {
 
 /**
  * The settle governor (pure; clocks are passed in): decides how many saved
- * frames per second are re-read for the settle during Discover. It replaces
- * `SettleDose`'s per-live-frame earning with a rate in frames per second, so
- * a low target no longer leaves the look-back workers idle, and it backs off
- * when the slow worker falls behind.
+ * frames per second are re-read for the settle during Discover: a rate in
+ * frames per second (it replaced the per-live-frame dose, so a low target no
+ * longer leaves the look-back workers idle), backing off when the slow worker
+ * falls behind. It is the settle's only dose rule; at Max it is off.
  *
  * Inputs: the pacer's target (`setTarget`; 0 = Max, where the settle is off),
+ * the cap (`setCap`, during a run too; 0 = Off),
  * every live batch (`liveBatch`: its send time, end, size, the wait at the
  * slow worker, and whether batches were dropped before it), and every settle
  * answer (`delivered`: frames and the worker's busy ms). `update` runs the
@@ -476,8 +470,8 @@ export class SettleGovernor {
   private slowHalvings = 0;
 
   constructor(
-    /** The cap, re-read frames per live frame (`CSETTLE.rates`). */
-    readonly cap: number,
+    /** The cap, re-read frames per live frame (`CSETTLE.rates`; 0 = Off). Changes with `setCap`. */
+    private capNow: number,
     /** Settle look-back workers (1 when the settle takes turns with need-driven look-back). */
     private workers = 1,
     /** Batches the forward pool holds in flight to the slow worker (`PARALLEL_FORWARD_BUFFERS`). */
@@ -491,6 +485,50 @@ export class SettleGovernor {
   /** The settle look-back workers serving now (a failed pool worker leaves fewer). */
   setWorkers(n: number): void {
     this.workers = Math.max(1, n);
+  }
+
+  /** The cap, re-read frames per live frame (0 = Off). */
+  get cap(): number {
+    return this.capNow;
+  }
+
+  /**
+   * A new cap during a run (0 = Off: as at Max, no credit and rate 0). A lower
+   * cap holds the rate and the banked credit down at once; a higher one is
+   * reached by the guard's climb.
+   */
+  setCap(cap: number): void {
+    const c = Number.isFinite(cap) && cap > 0 ? cap : 0;
+    if (c === this.capNow) return;
+    this.capNow = c;
+    if (!this.on) {
+      this.rateFps = 0;
+      this.owedFrames = 0;
+      this.probing = false;
+      this.limitNow = this.offLimit;
+      return;
+    }
+    if (this.isOff) this.limitNow = 'waiting';
+    const capFps = c * (this.achievedFps ?? this.target);
+    if (this.rateFps > capFps) {
+      this.rateFps = capFps;
+      this.limitNow = 'cap';
+    }
+    this.owedFrames = Math.min(this.owedFrames, this.chunk);
+  }
+
+  /** The settle may run: a target below Max and a cap above 0. */
+  private get on(): boolean {
+    return this.target > 0 && this.capNow > 0;
+  }
+
+  /** Why the settle is off now: the target at Max, else the cap Off. */
+  private get offLimit(): GovernorLimit {
+    return this.target > 0 ? 'cap-off' : 'off';
+  }
+
+  private get isOff(): boolean {
+    return this.limitNow === 'off' || this.limitNow === 'cap-off';
   }
 
   /** The pacer's target live fps (0: Max) and whether the run is paused. A change restarts the fps window. */
@@ -510,11 +548,11 @@ export class SettleGovernor {
     }
     this.target = t;
     this.paused = paused;
-    if (t === 0) {
+    if (!this.on) {
       this.rateFps = 0;
       this.owedFrames = 0;
-      this.limitNow = 'off';
-    } else if (this.limitNow === 'off') this.limitNow = 'waiting';
+      this.limitNow = this.offLimit;
+    } else if (this.isOff) this.limitNow = 'waiting';
   }
 
   /**
@@ -575,7 +613,7 @@ export class SettleGovernor {
   private earn(now: number, hasLibrary: boolean): void {
     const last = this.lastEarn;
     this.lastEarn = now;
-    if (last === null || this.target <= 0 || this.paused || !hasLibrary) return;
+    if (last === null || !this.on || this.paused || !hasLibrary) return;
     const dt = Math.max(0, now - last);
     this.owedFrames = Math.min(this.bank, this.owedFrames + (this.rateFps * dt) / 1000);
     if (this.owedFrames >= this.bank) this.saturated = true;
@@ -592,10 +630,10 @@ export class SettleGovernor {
     this.saturated = false;
     this.deliveredFrames = 0;
     this.busyMs = 0;
-    if (this.target <= 0) {
+    if (!this.on) {
       this.rateFps = 0;
       this.owedFrames = 0;
-      this.limitNow = 'off';
+      this.limitNow = this.offLimit;
       return;
     }
     // Paused: hold everything (a pause must not read as trouble).
@@ -648,7 +686,7 @@ export class SettleGovernor {
       }
       return;
     }
-    const capFps = this.cap * (achieved ?? this.target);
+    const capFps = this.capNow * (achieved ?? this.target);
     let lim = capFps;
     let label: GovernorLimit = 'cap';
     if (saturated) {
@@ -707,8 +745,8 @@ export class SettleGovernor {
       target: this.target,
       paused: this.paused,
       achieved: this.achievedFps,
-      capFps: this.cap * (this.achievedFps ?? this.target),
-      cap: this.cap,
+      capFps: this.capNow * (this.achievedFps ?? this.target),
+      cap: this.capNow,
       deliveredFps: this.lastDelivered,
       busy: this.lastBusy,
       credit: this.owedFrames,

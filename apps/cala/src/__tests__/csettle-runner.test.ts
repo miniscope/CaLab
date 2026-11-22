@@ -1,8 +1,8 @@
 // @vitest-environment node
 /**
- * Settle during Discover (experimental, frames only; `SlowInit.csettle`):
- * the runner's dose, its requests to the look-back worker, and what reaches
- * the slow loop.
+ * Settle during Discover ("Background settle", frames only; `SlowInit.csettle`):
+ * armed below Max only, the governor's dose, the runner's requests to the
+ * look-back worker, and what reaches the slow loop.
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -138,7 +138,11 @@ function fakeLoop(need: number, settle = true, gate = { open: true }) {
 function setup(
   o: {
     need?: number;
+    /** The cap (re-read frames per live frame; 0 = Off); absent: the run may not settle. */
     csettle?: number;
+    /** The pacer's target, live fps (0 = Max); default 100. Each live batch advances the clock by its period. */
+    pace?: number;
+    needFirst?: boolean;
     yieldFrames?: number;
     settle?: boolean;
     lb?: boolean;
@@ -154,6 +158,8 @@ function setup(
   const toLb: SlowToLookback[] = [];
   const deferred: (() => void)[] = [];
   const created: SlowInit[] = [];
+  const pace = o.pace ?? 100;
+  const clock = { ms: 1_000_000 };
   const r = new SlowRunner({
     create: (init) => {
       created.push(init);
@@ -163,16 +169,21 @@ function setup(
     toMain: { postMessage: (m) => toMain.push(m) },
     lookback: { postMessage: (m) => toLb.push(m) },
     now: () => 0,
+    epochNow: () => clock.ms,
     defer: (fn) => deferred.push(fn),
     timer: (fn) => {
       timers.push(fn);
       return () => {};
     },
   });
+  // The target and the cap come before the run's init, as from the main thread.
+  r.setPace(pace, false);
+  if (o.csettle !== undefined) r.setCap(o.csettle);
   r.handle({
     ...INIT,
     ...(o.lb === false ? { lookback: undefined } : {}),
-    ...(o.csettle !== undefined ? { csettle: o.csettle } : {}),
+    ...(o.csettle !== undefined ? { csettle: true } : {}),
+    ...(o.needFirst ? { csettleNeedFirst: true } : {}),
     ...(o.yieldFrames ? { csettleYield: o.yieldFrames } : {}),
   });
   type Req = Extract<SlowToLookback, { type: 'request' }>;
@@ -200,12 +211,28 @@ function setup(
   /** Feed `n` live batches of 8 frames. */
   let at = 0;
   const live = (n: number) => {
-    for (let k = 0; k < n; k++, at += 8) r.handle(frames(at));
+    for (let k = 0; k < n; k++, at += 8) {
+      // On time at the target (at Max, a batch every 10 ms).
+      clock.ms += (8 * 1000) / (pace > 0 ? pace : 800);
+      r.handle(frames(at));
+    }
   };
   const status = () =>
     toMain.flatMap((m) => (m.type === 'status' ? [m.status] : [])).at(-1)!.lookback!;
   const settleRequests = () => requests().filter((q) => q.skip !== undefined);
   const releases = () => toLb.filter((m) => m.type === 'release').length;
+  /** Live batches (need-driven requests answered) until one more settle request is out; the batches fed. */
+  const untilSettle = (max = 5000) => {
+    const n0 = settleRequests().length;
+    let k = 0;
+    while (settleRequests().length === n0 && k < max) {
+      live(1);
+      k++;
+      while (pending() && !pending()!.skip) answer();
+    }
+    if (settleRequests().length === n0) throw new Error('no settle request');
+    return k;
+  };
   return {
     r,
     ...f,
@@ -220,8 +247,11 @@ function setup(
     live,
     status,
     releases,
+    untilSettle,
     timers,
     gate,
+    clock,
+    frameAt: () => at,
   };
 }
 
@@ -251,7 +281,7 @@ describe('settle during Discover: off by default', () => {
     expect(b.status()).not.toHaveProperty('csettle');
   });
 
-  it('buildSlowLoop turns the engine side on only when asked', () => {
+  it('buildSlowLoop never turns the engine side on: the runner does, when it arms the settle', () => {
     class Fake {
       settle: unknown[] | null = null;
       static withConfig() {
@@ -273,25 +303,108 @@ describe('settle during Discover: off by default', () => {
       lookback: true,
     };
     expect(buildSlowLoop(Fake, init).settle).toBeNull();
-    expect(buildSlowLoop(Fake, { ...init, csettle: 0 }).settle).toBeNull();
-    expect(buildSlowLoop(Fake, { ...init, csettle: 2 }).settle).toEqual([CSETTLE.chunk]);
+    expect(buildSlowLoop(Fake, { ...init, csettle: true }).settle).toBeNull();
+  });
+});
+
+describe('settle during Discover: at Max', () => {
+  it('a run at Max never arms it: the same requests as a run that may not settle', () => {
+    const off = setup({ need: 400, pace: 0 });
+    const max = setup({ need: 400, pace: 0, csettle: 2 });
+    for (const t of [off, max]) {
+      for (let k = 0; k < 300; k++) {
+        t.live(1);
+        while (t.pending()) t.answer();
+      }
+    }
+    expect(max.loop.enableSettle).not.toHaveBeenCalled();
+    expect(max.loop.settleTake).not.toHaveBeenCalled();
+    expect(max.settleRequests()).toEqual([]);
+    const items = (t: typeof off) => t.requests().map((q) => Array.from(q.items));
+    expect(items(max)).toEqual(items(off));
+    expect(items(max).length).toBeGreaterThan(10);
+    expect(max.status()).not.toHaveProperty('csettle');
+  });
+
+  it('a run that goes below Max arms it then (the engine side too), and back at Max asks for nothing', () => {
+    const t = setup({ pace: 0, csettle: 2 });
+    t.live(50);
+    expect(t.loop.enableSettle).not.toHaveBeenCalled();
+    t.r.setPace(100, false);
+    expect(t.loop.enableSettle).toHaveBeenCalledWith(CSETTLE.chunk);
+    t.untilSettle();
+    expect(t.status().csettle!.governor).toMatchObject({ target: 100, cap: 2 });
+    while (t.pending()) t.answer();
+    t.r.setPace(0, false);
+    const n = t.settleRequests().length;
+    for (let k = 0; k < 200; k++) {
+      t.live(1);
+      while (t.pending()) t.answer();
+    }
+    expect(t.settleRequests().length).toBe(n);
+    expect(t.status().csettle!.governor).toMatchObject({ limit: 'off', rate: 0 });
+    expect(t.loop.enableSettle).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('settle during Discover: the cap during a run', () => {
+  it('cap Off stops the settle at once; a cap again resumes it', () => {
+    const t = setup({ csettle: 2 });
+    t.untilSettle();
+    while (t.pending()) t.answer();
+    t.r.setCap(0);
+    expect(t.status().csettle!.governor).toMatchObject({
+      limit: 'cap-off',
+      rate: 0,
+      cap: 0,
+      credit: 0,
+    });
+    const n = t.settleRequests().length;
+    for (let k = 0; k < 200; k++) {
+      t.live(1);
+      while (t.pending()) t.answer();
+    }
+    expect(t.settleRequests().length).toBe(n);
+    t.r.setCap(1);
+    t.untilSettle();
+    expect(t.status().csettle!.governor!.cap).toBe(1);
+    expect(t.status().csettle!.rate).toBe(1);
+  });
+
+  it('a run started with the cap Off arms when a cap is set', () => {
+    const t = setup({ csettle: 0 });
+    t.live(50);
+    expect(t.loop.enableSettle).not.toHaveBeenCalled();
+    t.r.setCap(2);
+    expect(t.loop.enableSettle).toHaveBeenCalledTimes(1);
+    t.untilSettle();
+  });
+
+  it('a lower cap holds the rate down at once', () => {
+    const t = setup({ csettle: 2, pace: 100 });
+    for (let k = 0; k < 400; k++) {
+      t.live(1);
+      while (t.pending()) t.answer();
+    }
+    const before = t.status().csettle!.governor!;
+    expect(before.rate).toBeGreaterThan(50);
+    t.r.setCap(0.5);
+    const after = t.status().csettle!.governor!;
+    expect(after.rate).toBeLessThanOrEqual(0.5 * 100 + 1e-9);
+    expect(after.limit).toBe('cap');
+    expect(after.credit).toBeLessThanOrEqual(CSETTLE.chunk);
   });
 });
 
 describe('settle during Discover: dose and requests', () => {
   it('asks for one chunk of saved frames once a whole chunk is owed, one request at a time', () => {
     const t = setup({ csettle: 2 });
-    // 2 per live frame: the first batch of 8 owes 16, but nothing is saved yet.
-    t.live(1);
-    expect(t.seens).toEqual([0]);
-    expect(t.requests()).toEqual([]);
-    t.live(2);
-    // Now 16 frames are saved: one request, of frames in a row among those seen.
+    t.untilSettle();
     expect(t.requests().length).toBe(1);
     const q = t.requests()[0];
     const fr = lookbackFrames(q.items);
     expect(fr.length).toBe(CSETTLE.chunk);
-    expect(fr.every((f, i) => f.frame === fr[0].frame + i && f.frame < 16)).toBe(true);
+    expect(fr.every((f, i) => f.frame === fr[0].frame + i && f.frame < t.frameAt())).toBe(true);
     // A block of its own: never the look-back scheduler's (>= 0) or the end settle's (-1 - run).
     expect(fr.every((f) => f.block < -1_000_000)).toBe(true);
     expect(Array.from(q.skip!)).toEqual(fr.map((f) => (held(f.frame) ? 1 : 0)));
@@ -300,9 +413,9 @@ describe('settle during Discover: dose and requests', () => {
     expect(t.requests().length).toBe(1);
   });
 
-  it('the ceiling: what the look-back worker cannot deliver is not saved up', () => {
+  it('the bank: what the look-back worker cannot deliver is not saved up', () => {
     const t = setup({ csettle: 2 });
-    // 1,000 live batches owe 16,000 frames; the worker answers nothing meanwhile.
+    // 1,000 live batches (80 s at 100 fps); the worker answers nothing meanwhile.
     t.live(1000);
     expect(t.requests().length).toBe(1);
     // With no new live frames, only the bank (4 chunks) is asked for after the one out.
@@ -314,28 +427,29 @@ describe('settle during Discover: dose and requests', () => {
     expect(t.requests().length).toBe(1 + CSETTLE.bankChunks);
   });
 
-  it('a worker that keeps up delivers the ceiling: 2, 1 or 0.5 per live frame', () => {
+  it('a worker that keeps up is held at the cap: 2, 1 or 0.5 per live frame', () => {
     for (const rate of CSETTLE.rates) {
-      const t = setup({ csettle: rate });
-      for (let k = 0; k < 400; k++) {
+      const t = setup({ csettle: rate, pace: 50 });
+      for (let k = 0; k < 600; k++) {
         t.live(1);
         while (t.pending()) t.answer();
       }
       t.live(1);
       const cs = t.status().csettle!;
-      const reread = cs.fit + cs.heldOut + cs.dropped;
       expect(cs.rate).toBe(rate);
-      expect(cs.live).toBe(401 * 8);
+      expect(cs.live).toBe(601 * 8);
+      expect(cs.governor).toMatchObject({ limit: 'cap', cap: rate });
+      expect(cs.governor!.rate).toBeCloseTo(rate * 50, 0);
+      const reread = cs.fit + cs.heldOut + cs.dropped;
       // (One request may still be out.)
       expect(cs.requested - reread).toBe(t.pending() ? CSETTLE.chunk : 0);
-      expect(reread / cs.live).toBeGreaterThan(rate * 0.97);
       expect(reread / cs.live).toBeLessThanOrEqual(rate);
     }
   });
 
   it('held-out frames never reach the slow loop; the rest go to the footprint statistics', () => {
     const t = setup({ csettle: 2 });
-    t.live(3);
+    t.untilSettle();
     const q = t.requests()[0];
     const fr = lookbackFrames(q.items).map((f) => f.frame);
     t.answer();
@@ -352,7 +466,7 @@ describe('settle during Discover: dose and requests', () => {
 
   it('an answer solved before the first library is dropped', () => {
     const t = setup({ csettle: 2 });
-    t.live(3);
+    t.untilSettle();
     t.answer(0);
     expect(t.settled).toEqual([]);
     t.live(1);
@@ -361,27 +475,48 @@ describe('settle during Discover: dose and requests', () => {
   });
 
   it('takes turns with need-driven look-back when both have frames to ask for', () => {
-    const t = setup({ need: 10_000, csettle: 2 });
-    for (let k = 0; k < 40; k++) {
+    const t = setup({ need: 100_000, csettle: 2 });
+    for (let k = 0; k < 400; k++) {
       t.live(1);
       if (t.pending()) t.answer();
     }
     const kinds = t.requests().map((q) => (q.skip ? 'settle' : 'need'));
-    // (Before a whole chunk is saved only need-driven look-back has frames to ask for.)
+    // (Before a whole chunk is owed only need-driven look-back has frames to ask for.)
     expect(kinds[0]).toBe('need');
     const first = kinds.indexOf('settle');
     expect(first).toBeGreaterThan(0);
-    expect(kinds.length - first).toBeGreaterThan(20);
-    for (let i = first + 1; i < kinds.length; i++) expect(kinds[i]).not.toBe(kinds[i - 1]);
+    expect(kinds.filter((k) => k === 'settle').length).toBeGreaterThan(20);
+    // A settle request is always followed by a need-driven one.
+    for (let i = first + 1; i < kinds.length; i++)
+      if (kinds[i - 1] === 'settle') expect(kinds[i]).toBe('need');
     expect(t.lookedBack.length).toBeGreaterThan(0);
     expect(t.settled.length).toBeGreaterThan(0);
+  });
+
+  it('need-first: the settle asks only when need-driven look-back has nothing to ask', () => {
+    const run = (needFirst: boolean) => {
+      const t = setup({ need: 100_000, csettle: 2, needFirst });
+      for (let k = 0; k < 400; k++) {
+        t.live(1);
+        if (t.pending()) t.answer();
+      }
+      // Every settle request went out when need-driven look-back had nothing to ask for.
+      const take = t.loop.lookbackTake as ReturnType<typeof vi.fn>;
+      return { t, needEmpty: take.mock.results.filter((r) => r.value.length === 0).length };
+    };
+    const turns = run(false);
+    const first = run(true);
+    expect(first.t.settleRequests().length).toBeGreaterThan(0);
+    expect(first.t.settleRequests().length).toBeLessThanOrEqual(first.needEmpty);
+    expect(first.t.lookedBack.length).toBeGreaterThanOrEqual(turns.t.lookedBack.length);
+    expect(first.t.settleRequests().length).toBeLessThan(turns.t.settleRequests().length);
   });
 });
 
 describe('settle during Discover: answers in pieces', () => {
   it('feeds an answer a few frames at a time, giving way in between', () => {
     const t = setup({ csettle: 2, yieldFrames: 4 });
-    t.live(3);
+    t.untilSettle();
     const fr = lookbackFrames(t.requests()[0].items).map((f) => f.frame);
     const fit = (n: number) => fr.slice(0, n).filter((f) => !held(f));
     t.answer();
@@ -389,7 +524,7 @@ describe('settle during Discover: answers in pieces', () => {
     expect(t.deferred.length).toBe(1);
     expect(t.releases()).toBe(0);
     // Live batches come in between pieces; no second settle request while one is being fed.
-    t.live(4);
+    t.live(40);
     expect(t.settleRequests().length).toBe(1);
     t.deferred.shift()!();
     expect(t.settled).toEqual(fit(8));
@@ -397,7 +532,7 @@ describe('settle during Discover: answers in pieces', () => {
     t.deferred.shift()!();
     expect(t.settled).toEqual(fit(16));
     expect(t.deferred.length).toBe(0);
-    // Done: the buffer goes back, and the next request goes out.
+    // Done: the buffer goes back, and the next request goes out (a chunk was owed meanwhile).
     expect(t.releases()).toBe(1);
     expect(t.settleRequests().length).toBe(2);
     t.live(1);
@@ -408,11 +543,11 @@ describe('settle during Discover: answers in pieces', () => {
 describe('settle during Discover: the end of Discover', () => {
   it('stops at the last frame; the end settle runs as without it and the count stays', () => {
     const t = setup({ csettle: 2, yieldFrames: 4 });
-    t.live(3);
+    t.untilSettle();
     t.answer();
     const fedBefore = t.settled.length;
     // The last frame arrives while an answer is half fed and a request is out.
-    t.live(4);
+    t.live(40);
     t.r.handle({ type: 'end', session: 1 });
     // The piece left over does nothing; its buffer went back.
     while (t.deferred.length) t.deferred.shift()!();
@@ -430,12 +565,13 @@ describe('settle during Discover: the end of Discover', () => {
     expect(t.settled.length).toBe(fedBefore);
     const last = t.toMain.flatMap((m) => (m.type === 'status' ? [m.status] : [])).at(-1)!;
     expect(last.final).toBe(true);
-    expect(last.lookback!.settle).toMatchObject({ done: true, fed: 56, total: 56 });
+    const frames = t.frameAt();
+    expect(last.lookback!.settle).toMatchObject({ done: true, fed: frames, total: frames });
     const cs = last.lookback!.csettle!;
     expect(cs.fit).toBe(fedBefore);
-    // 12 frames of the answer cut short are counted as dropped.
-    expect(cs.dropped).toBe(12);
-    expect(cs.live).toBe(56);
+    // 12 frames of the answer cut short are counted as dropped (and a request out, if any).
+    expect(cs.requested).toBe(cs.fit + cs.heldOut + cs.dropped);
+    expect(cs.live).toBe(frames);
   });
 });
 
@@ -444,21 +580,21 @@ describe('settle during Discover: failures and edges', () => {
 
   it('sends no settle read before the first library', () => {
     const t = setup({ csettle: 2, library: false });
-    // Three live batches have been seen, and a whole chunk is owed and saved, but no library yet.
-    t.live(3);
-    expect(t.status().csettle!.live).toBe(24);
+    // Live batches for 40 s, but no library yet: nothing is owed.
+    t.live(500);
+    expect(t.status().csettle!.live).toBe(4000);
+    expect(t.status().csettle!.governor).toMatchObject({ limit: 'waiting', credit: 0 });
     expect(t.settleRequests()).toEqual([]);
     expect(t.loop.settleTake).not.toHaveBeenCalled();
     t.gate.open = true;
-    t.live(1);
-    expect(t.settleRequests().length).toBe(1);
+    t.untilSettle();
   });
 
   it('a settle request that times out turns off the settle only', () => {
     const spy = warn();
-    const t = setup({ need: 10_000, csettle: 2 });
+    const t = setup({ need: 100_000, csettle: 2 });
     // Run until a settle request is the one out.
-    for (let k = 0; k < 40 && !(t.pending() && t.pending()!.skip); k++) {
+    for (let k = 0; k < 2000 && !(t.pending() && t.pending()!.skip); k++) {
       t.live(1);
       if (t.pending() && !t.pending()!.skip) t.answer();
     }
@@ -494,8 +630,8 @@ describe('settle during Discover: failures and edges', () => {
 
   it('a settle request answered with an error turns off the settle only', () => {
     const spy = warn();
-    const t = setup({ need: 10_000, csettle: 2 });
-    for (let k = 0; k < 40 && !(t.pending() && t.pending()!.skip); k++) {
+    const t = setup({ need: 100_000, csettle: 2 });
+    for (let k = 0; k < 2000 && !(t.pending() && t.pending()!.skip); k++) {
       t.live(1);
       if (t.pending() && !t.pending()!.skip) t.answer();
     }
@@ -521,7 +657,7 @@ describe('settle during Discover: failures and edges', () => {
 
   it('a late settle answer after the end of Discover is released and ignored; its frames count as dropped', () => {
     const t = setup({ csettle: 2 });
-    t.live(3);
+    t.untilSettle();
     const old = t.pending()!;
     expect(old.skip).toBeDefined();
     t.r.handle({ type: 'end', session: 1 });
@@ -547,7 +683,7 @@ describe('settle during Discover: failures and edges', () => {
 
   it('a reset while an answer is part-fed releases it and sends nothing more', () => {
     const t = setup({ csettle: 2, yieldFrames: 4 });
-    t.live(3);
+    t.untilSettle();
     t.answer();
     expect(t.deferred.length).toBe(1);
     expect(t.releases()).toBe(0);
@@ -562,7 +698,7 @@ describe('settle during Discover: failures and edges', () => {
 
   it('the end of Discover with an answer part-fed: released, counted, nothing more sent', () => {
     const t = setup({ csettle: 2, yieldFrames: 4 });
-    t.live(3);
+    t.untilSettle();
     t.answer();
     const requests = t.settleRequests().length;
     t.r.handle({ type: 'end', session: 1 });

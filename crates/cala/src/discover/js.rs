@@ -605,6 +605,15 @@ impl JsSlowLoop {
         Ok(out.map(|lib| self.keep(lib)))
     }
 
+    /// The last published library (none before the first publish), without
+    /// publishing: for a look-back worker that joins a run mid-way.
+    #[wasm_bindgen(js_name = publishedLibrary)]
+    pub fn published_library(&self) -> Option<JsTraceLibrary> {
+        self.inner
+            .library()
+            .map(|l| JsTraceLibrary::from_arc(l.clone()))
+    }
+
     /// Publish any accepted edits now (end of the recording).
     pub fn finalize(&mut self) -> Result<JsTraceLibrary, JsError> {
         let lib = self.inner.finalize().map_err(|e| js_err("finalize", e))?;

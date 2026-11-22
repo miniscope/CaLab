@@ -80,7 +80,25 @@ describe('FramePacer', () => {
     expect(s.released).toBe(16);
     expect(s.reanchors).toBe(1);
     gate.begin(8);
-    expect(gate.stats()).toMatchObject({ session: 8, released: 0 });
+    expect(gate.stats()).toMatchObject({ session: 8, released: 0, epoch: s.epoch + 1 });
+  });
+
+  it('the gate reports only for a run that has had a target, a return to Max included', () => {
+    const gate = new PaceGate({ now: () => 0, setTimeout: () => 0, clearTimeout: () => {} });
+    gate.begin(3);
+    expect(gate.reports).toBe(false);
+    gate.setTarget(0);
+    expect(gate.reports).toBe(false);
+    gate.setTarget(60);
+    expect(gate.reports).toBe(true);
+    gate.setTarget(0);
+    expect(gate.reports).toBe(true);
+    expect(gate.stats().target).toBe(0);
+    // A new run (a replay of the same session too) starts silent, with a new epoch.
+    const e = gate.stats().epoch;
+    gate.begin(3);
+    expect(gate.reports).toBe(false);
+    expect(gate.stats().epoch).toBe(e + 1);
   });
 
   it('keeps absolute deadlines and counts lateness only when it drops debt', () => {
