@@ -6,11 +6,15 @@
  * the back half's state from stage C, the newest flat-field map). The
  * pipeline store calls it (`createPipelineStore`'s `lookback`).
  *
- * Look-back pool (work-slider PR 5, `?debug&lbpool=S`): `workers` = S + 1
+ * Look-back pool (`pool` = S, from the core count, `settlePoolSize`): S more
  * look-back workers, each with its own channel to the slow worker (index 0
- * need-driven look-back and the end settle, 1..S the settle's chunks), and
- * each fed its own copy of everything above. They live as long as the page,
- * like the single worker; a run's `reset` closes each one's recording.
+ * need-driven look-back and the end settle, 1..S the settle's chunks). They
+ * start only when a run first goes below Max (`startPool`, possibly mid-run;
+ * a run at Max never starts them) and then get their own copy of everything
+ * above: what the run recorded so far (`begin`, every row, the newest flat
+ * field) at once, the back half's state from its next snapshot, the library
+ * from the slow worker's next one. They live as long as the page, like
+ * worker 0; a run's `reset` closes each one's recording.
  */
 import type { FlatFieldMap } from './flat-field.ts';
 import type { BackStateSnapshot } from './pipeline-engine.ts';
@@ -40,6 +44,13 @@ export interface LookbackFeed {
   reset(session: number): void;
   /** The pacer's target live fps (0: Max) and pause, for the settle governor (`SlowRunner.setPace`). */
   pace?(fps: number, paused: boolean): void;
+  /** The settle's cap, re-read frames per live frame (0 = Off; `SlowRunner.setCap`), during a run too. */
+  cap?(cap: number): void;
+  /**
+   * `session`'s run went below Max: start the settle pool for it (once per
+   * run; nothing when the pool size is 0). Returns the pool workers in the run.
+   */
+  startPool?(session: number): number;
 }
 
 export type LookbackWorkerLike = Pick<
@@ -48,9 +59,10 @@ export type LookbackWorkerLike = Pick<
 >;
 
 export interface LookbackClientOptions {
-  slow: Pick<SlowClient, 'connectLookback'> & Partial<Pick<SlowClient, 'settlePace'>>;
-  /** Look-back workers (1 + the settle pool's S; default 1). */
-  workers?: number;
+  slow: Pick<SlowClient, 'connectLookback'> &
+    Partial<Pick<SlowClient, 'settlePace' | 'settleCap' | 'settlePool'>>;
+  /** The settle pool's size S: look-back workers besides worker 0 (default 0; `settlePoolSize`). */
+  pool?: number;
   /** The open recording's files (null: none, or a live source). */
   source: () => LookbackSource | null;
   /** Why look-back cannot run besides the source (a live stream, a Joint run, no pipelined workers). */
@@ -61,22 +73,78 @@ export interface LookbackClientOptions {
   makeChannel?: () => { port1: MessagePort; port2: MessagePort };
 }
 
+/** One `rows` call, kept for a pool worker that joins mid-run. */
+interface RowsChunk {
+  start: number;
+  dy: Float32Array;
+  dx: Float32Array;
+  flags: Uint8Array;
+  flickerOffset: Float32Array;
+  flickerGain: Float32Array;
+}
+
+/** Contiguous chunks joined into one (`rows` sends them in order from frame 0). */
+function joinRows(chunks: RowsChunk[]): RowsChunk[] {
+  const out: RowsChunk[] = [];
+  let i = 0;
+  while (i < chunks.length) {
+    let j = i + 1;
+    let end = chunks[i].start + chunks[i].dy.length;
+    while (j < chunks.length && chunks[j].start === end) end += chunks[j++].dy.length;
+    const part = chunks.slice(i, j);
+    const join = <A extends Float32Array | Uint8Array>(
+      make: new (n: number) => A,
+      key: Exclude<keyof RowsChunk, 'start'>,
+    ): A => {
+      const a = new make(end - chunks[i].start);
+      let at = 0;
+      for (const c of part) {
+        a.set(c[key] as unknown as ArrayLike<number>, at);
+        at += c.dy.length;
+      }
+      return a;
+    };
+    out.push({
+      start: chunks[i].start,
+      dy: join(Float32Array, 'dy'),
+      dx: join(Float32Array, 'dx'),
+      flags: join(Uint8Array, 'flags'),
+      flickerOffset: join(Float32Array, 'flickerOffset'),
+      flickerGain: join(Float32Array, 'flickerGain'),
+    });
+    i = j;
+  }
+  return out;
+}
+
 export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
   dispose(): void;
 } {
-  const count = Math.max(1, Math.floor(o.workers ?? 1));
+  const poolSize = Math.max(0, Math.floor(o.pool ?? 0));
   let workers: LookbackWorkerLike[] = [];
-  /** The same message to every worker; `copy(i)` gives worker `i` its own payload and transfer list. */
+  /**
+   * The run look-back serves now: the workers in it (worker 0, then the pool
+   * once started), and what it recorded so far, for a pool worker that joins late.
+   */
+  let run: {
+    session: number;
+    active: number;
+    source: LookbackSource;
+    rows: RowsChunk[];
+    flat: FlatFieldMap | null | undefined;
+  } | null = null;
+  /** The same message to every worker in the run; `copy(i)` gives worker `i` its own payload and transfer list. */
   function postAll(copy: (i: number) => [MainToLookback, Transferable[]]): void {
-    workers.forEach((w, i) => {
+    const n = run ? Math.min(run.active, workers.length) : workers.length;
+    for (let i = 0; i < n; i++) {
       const [msg, transfer] = copy(i);
-      w.postMessage(msg, transfer);
-    });
+      workers[i].postMessage(msg, transfer);
+    }
   }
 
-  function ensureWorkers(): void {
-    if (workers.length > 0) return;
-    for (let i = 0; i < count; i++) {
+  /** At least `count` workers, each wired to the slow worker by its index. */
+  function ensureWorkers(count: number): void {
+    for (let i = workers.length; i < count; i++) {
       const w =
         o.makeWorker?.() ??
         new Worker(new URL('../workers/lookback-worker.ts', import.meta.url), { type: 'module' });
@@ -97,11 +165,22 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
     begin(session) {
       const source = o.source();
       if (!source || o.blocked() !== null) return false;
-      ensureWorkers();
+      ensureWorkers(1);
+      run = { session, active: 1, source, rows: [], flat: undefined };
       postAll(() => [{ type: 'begin', session, source }, []]);
       return true;
     },
     rows(session, start, dy, dx, flags, flickerOffset, flickerGain) {
+      // Kept for a pool worker that joins later (a few bytes a frame), while the pool may still start.
+      if (run?.session === session && run.active === 1 && poolSize > 0)
+        run.rows.push({
+          start,
+          dy: Float32Array.from(dy),
+          dx: Float32Array.from(dx),
+          flags: Uint8Array.from(flags),
+          flickerOffset: Float32Array.from(flickerOffset),
+          flickerGain: Float32Array.from(flickerGain),
+        });
       // Copies per worker (each is transferred).
       postAll(() => {
         const arrays = {
@@ -120,7 +199,8 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
     backState(session, snap) {
       // The snapshot's own buffer goes to the last worker; the others get copies.
       postAll((i) => {
-        const state = i === workers.length - 1 ? snap.state : snap.state.slice();
+        const last = (run ? Math.min(run.active, workers.length) : workers.length) - 1;
+        const state = i === last ? snap.state : snap.state.slice();
         return [
           { type: 'back-state', session, frame: snap.frame, state },
           [state.buffer as ArrayBuffer],
@@ -128,14 +208,47 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       });
     },
     flatField(session, map) {
+      if (run?.session === session) run.flat = map;
       // Copied (the pipeline store keeps its map).
       postAll(() => [{ type: 'flat', session, map }, []]);
     },
     reset(session) {
-      postAll(() => [{ type: 'reset', session }, []]);
+      if (run?.session === session) run = null;
+      for (const w of workers) w.postMessage({ type: 'reset', session } satisfies MainToLookback);
     },
     pace(fps, paused) {
       o.slow.settlePace?.(fps, paused);
+    },
+    cap(cap) {
+      o.slow.settleCap?.(cap);
+    },
+    startPool(session) {
+      const r = run;
+      if (!r || r.session !== session) return 0;
+      if (r.active > 1 || poolSize === 0) return r.active - 1;
+      ensureWorkers(1 + poolSize);
+      const rows = joinRows(r.rows);
+      r.rows = [];
+      for (let i = 1; i <= poolSize; i++) {
+        const w = workers[i];
+        w.postMessage({ type: 'begin', session, source: r.source } satisfies MainToLookback);
+        for (const c of rows) {
+          // The last worker takes the joined arrays; the others get copies.
+          const a = i === poolSize ? c : joinRows([c])[0];
+          w.postMessage({ type: 'rows', session, ...a } satisfies MainToLookback, [
+            a.dy.buffer,
+            a.dx.buffer,
+            a.flags.buffer,
+            a.flickerOffset.buffer,
+            a.flickerGain.buffer,
+          ]);
+        }
+        if (r.flat !== undefined)
+          w.postMessage({ type: 'flat', session, map: r.flat } satisfies MainToLookback);
+      }
+      r.active = 1 + poolSize;
+      o.slow.settlePool?.(session, poolSize);
+      return poolSize;
     },
     dispose() {
       for (const w of workers) w.terminate();

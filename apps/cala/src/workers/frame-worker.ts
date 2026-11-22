@@ -390,7 +390,10 @@ function actNow(req: FrameRequest): boolean {
   switch (req.type) {
     case 'pace':
       // A live stream is never paced.
-      if (req.fps !== undefined && !live) gate.setTarget(req.fps);
+      if (req.fps !== undefined && !live) {
+        gate.setTarget(req.fps);
+        flushPaceStats();
+      }
       if (req.paused === true) gate.pause();
       else if (req.paused === false) gate.resume();
       post({ type: 'ok', id: req.id });
@@ -425,9 +428,12 @@ function actNow(req: FrameRequest): boolean {
 // headers while a `read` is awaiting its slice, nor a `pipeline-stop` free the
 // pipeline while a step is running.
 let lastPaceStats = Number.NEGATIVE_INFINITY;
-/** The gate's readouts to the main thread now (a run ended or stopped), whatever the once-a-second rhythm says. */
+/**
+ * The gate's readouts to the main thread now (a run ended or stopped, or its target changed, back to
+ * Max included), whatever the once-a-second rhythm says. Only for a run that has had a target.
+ */
 function flushPaceStats(): void {
-  if (!gate.pacer.paced) return;
+  if (!gate.reports) return;
   lastPaceStats = performance.now();
   post({ type: 'pace-stats', id: -1, stats: gate.stats() });
 }

@@ -69,9 +69,9 @@ function handle(msg: StageMsg): void {
           ...(cells?.lookback && !cells.library ? { lookback: true } : {}),
           ...(cells?.lookback && !cells.library && cells.csettle
             ? {
-                csettle: cells.csettle,
+                csettle: true,
                 csettleYield: cells.csettleYield ?? 0,
-                csettleGovernor: cells.csettleGovernor ?? false,
+                csettleNeedFirst: cells.csettleNeedFirst ?? false,
               }
             : {}),
           ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),

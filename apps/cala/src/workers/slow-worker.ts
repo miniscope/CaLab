@@ -23,6 +23,9 @@ const lookbackPorts: (MessagePort | null)[] = [];
 let runner: SlowRunner | null = null;
 /** The last pacer target from the main thread (a runner made later starts from it). */
 let pace: { fps: number; paused: boolean } | null = null;
+/** The settle's cap and the settle pool, as last sent (a runner made later starts with them). */
+let cap: number | null = null;
+let pool: { session: number; workers: number } | null = null;
 // Port messages (frames and visit results alike) are handled one at a time,
 // in arrival order, after the WASM module is ready.
 let queue: Promise<void> = Promise.resolve();
@@ -68,6 +71,16 @@ workerScope.onmessage = (e) => {
     pace = { fps: data.fps, paused: data.paused };
     return;
   }
+  if (data.type === 'settle-cap') {
+    runner?.setCap(data.cap);
+    cap = data.cap;
+    return;
+  }
+  if (data.type === 'settle-pool') {
+    runner?.setSettlePool(data.session, data.workers);
+    pool = { session: data.session, workers: data.workers };
+    return;
+  }
   // Not queued: settling runs between the queued messages (see `SlowRunner.drainPump`).
   if (data.type === 'stop-settling') {
     runner?.stopSettling(data.session);
@@ -90,6 +103,8 @@ workerScope.onmessage = (e) => {
   });
   const r = runner;
   if (pace) r.setPace(pace.fps, pace.paused);
+  if (cap !== null) r.setCap(cap);
+  if (pool) r.setSettlePool(pool.session, pool.workers);
   lookbackPorts.forEach((_, i) => connectLookback(i));
   toFast.onmessage = (ev: MessageEvent<FastToSlow>) => {
     queue = queue

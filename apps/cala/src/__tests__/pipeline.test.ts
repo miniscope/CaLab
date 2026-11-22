@@ -257,11 +257,12 @@ describe('pipeline store backpressure', () => {
     });
   });
 
-  it('drops pacing readouts of another session (a stopped run), keeps the current one', async () => {
+  it("drops pacing readouts of another session or an older gate run, keeps a stopped run's last one", async () => {
     const { client } = manualClient();
     let listener: ((s: PaceStats) => void) | null = null;
-    const stats = (session: number, released: number): PaceStats => ({
+    const stats = (session: number, released: number, epoch = 5): PaceStats => ({
       session,
+      epoch,
       target: 30,
       waitMs: 0,
       lateMs: 0,
@@ -285,9 +286,18 @@ describe('pipeline store backpressure', () => {
       expect(store.paceStats()).toBeNull();
       listener!(stats(session, 16));
       expect(store.paceStats()?.released).toBe(16);
+      // An older gate run of the same session (a late readout before a replay began).
+      listener!(stats(session, 99, 4));
+      expect(store.paceStats()?.released).toBe(16);
       store.stop();
-      // A late readout of the stopped run.
+      expect(store.paceStats()?.released).toBe(16);
+      // The stopped run's final readout (the worker flushes it on stop) lands.
       listener!(stats(session, 24));
+      expect(store.paceStats()?.released).toBe(24);
+      // A new start clears it; the old session's readouts no longer count.
+      await store.start();
+      expect(store.paceStats()).toBeNull();
+      listener!(stats(session, 30));
       expect(store.paceStats()).toBeNull();
       dispose();
     });

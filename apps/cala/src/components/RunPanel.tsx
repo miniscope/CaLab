@@ -49,10 +49,10 @@ const DEBUG =
 
 /** What "Background settle" does (the toggle's tooltip). */
 const CSETTLE_HELP =
-  'Experimental: while Discover runs, saved frames spread over everything read so far are re-read and added to the footprint statistics, so footprints settle earlier. The final settle after the last frame still runs. Takes effect when Discover starts: tick it, then restart (↻), or open with ?lookback&csettle.';
+  'While Discover runs below full speed (a paced run), saved frames spread over everything read so far are re-read with the spare time and added to the footprint statistics, so footprints settle earlier. At full speed (Max) nothing is re-read. The final settle after the last frame still runs. On by default; takes effect at once, during a run too.';
 /** What the ceiling means (its tooltip). */
 const CSETTLE_CEILING_HELP =
-  'A ceiling, not a target: at most this many saved frames are re-read for each live frame. Lower it to leave more of the machine to the live frames (closed-loop use). A recording read at full speed usually gets far fewer, as fast as the look-back worker can re-read. Takes effect when Discover starts.';
+  'A cap, not a target: at most this many saved frames are re-read for each live frame, and fewer when the machine has less time to spare. Lower it to leave more of the machine to the live frames (closed-loop use). Takes effect at once, during a run too.';
 
 const SETUP_LABEL = {
   calibrate: 'Calibrating (FOV mask, hot pixels)',
@@ -803,7 +803,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               checked={s().csettle() && s().lookback() && s().lookbackBlocked() === null}
               onChange={(e) => s().setCsettle(e.currentTarget.checked)}
             />
-            Background settle (experimental)
+            Background settle
           </label>
           <Show when={s().csettle() && s().lookback() && s().lookbackBlocked() === null}>
             <label class="cala-check" title={CSETTLE_CEILING_HELP}>

@@ -35,26 +35,27 @@
  * visits those frames earn; then a last round of visits on every tile, and
  * only then the final library.
  *
- * Settle during Discover (experimental, `SlowInit.csettle`, frames only;
- * `CSETTLE` in `settle.ts`): while a look-back Discover runs, the look-back
- * worker also re-reads saved frames spread over the history seen so far
- * (`settleTake`), at most `csettle` per live frame observed here
- * (`SettleDose`). Their answers go into the footprint statistics
+ * Settle during Discover ("Background settle", `SlowInit.csettle`, frames
+ * only; `CSETTLE` in `settle.ts`): while a look-back Discover runs below Max,
+ * the look-back worker also re-reads saved frames spread over the history
+ * seen so far (`settleTake`), at the settle governor's rate (`SettleGovernor`:
+ * re-read frames per second, at most the cap per live frame; `setCap`, `setPace`).
+ * It is armed the first time the target goes below Max with a cap above 0,
+ * so a run at Max never starts it. Their answers go into the footprint statistics
  * (`observeSettle`); held-out frames are not even solved. There are no
  * settle visits: Discover's own visits refine with the better statistics.
  * Need-driven look-back and these requests share the one look-back worker
- * and take turns when both have frames to ask for. The end settle runs
- * after the last frame as without it.
+ * and take turns when both have frames to ask for (or need-driven first,
+ * `SlowInit.csettleNeedFirst`). The end settle runs after the last frame as
+ * without it.
  *
- * Look-back pool (work-slider PR 5, `?debug&lbpool=S`): with S more
- * look-back workers connected (ports 1..S), worker 0 does need-driven
- * look-back and the end settle only, and workers 1..S take the settle's
- * chunks, one request out per worker. A pool worker that fails is left out
- * for the rest of the run; with none left the settle takes turns on worker
- * 0 again. The settle governor (`SlowInit.csettleGovernor`,
- * `SettleGovernor`) replaces the per-live-frame dose with a rate in re-read
- * frames per second, from the pacer's target (`setPace`), the live
- * batches' waits and drops, and what the settle workers deliver.
+ * Look-back pool (`setSettlePool`; S from the core count, `settlePoolSize`):
+ * with S more look-back workers in the run (ports 1..S), worker 0 does
+ * need-driven look-back and the end settle only, and workers 1..S take the
+ * settle's chunks, one request out per worker. A pool worker joins a run
+ * when the main thread says so (it may be mid-run) and serves from the next
+ * library sent to it. A pool worker that fails is left out for the rest of
+ * the run; with none left the settle takes turns on worker 0 again.
  */
 import type {
   CsettleStatus,
@@ -84,7 +85,6 @@ import {
   movedAgainstNoise,
   noiseMap,
   SETTLE,
-  SettleDose,
   SettleFeed,
   SettleGovernor,
   settlePlan,
@@ -254,11 +254,9 @@ export function buildSlowLoop<T>(ctor: SlowLoopCtor<T>, init: SlowInit): T {
   );
   const lb = loop as T & {
     enableLookback?(rate: number, maxFrames: number): void;
-    enableSettle?(chunk: number): void;
   };
   lb.enableLookback?.(LOOKBACK.rate, LOOKBACK.maxFrames);
-  // Settle during Discover: only when asked for (a visit worker has no such method).
-  if ((init.csettle ?? 0) > 0) lb.enableSettle?.(CSETTLE.chunk);
+  // (The settle during Discover is enabled by `SlowRunner` when it is armed, below Max.)
   return loop;
 }
 
@@ -307,20 +305,14 @@ interface CsettleWork {
   next: number;
 }
 
-/** Re-read frames owed by the settle during Discover: per live frame (`SettleDose`) or per second (`SettleGovernor`). */
-type SettleCredit = Pick<SettleDose, 'ready' | 'spend' | 'owed'>;
-
-/** Settle during Discover (`SlowInit.csettle`), for the current run. */
+/** Settle during Discover (`SlowInit.csettle`), for the current run, once armed. */
 interface Csettle {
-  /** The cap (re-read frames per live frame). */
-  rate: number;
-  credit: SettleCredit;
-  /** Governor off: the per-live-frame dose (today's), which `credit` is. */
-  dose: SettleDose | null;
-  /** Governor on (`SlowInit.csettleGovernor`): the rate per second, which `credit` is. */
-  gov: SettleGovernor | null;
+  /** The rate per second, the re-read frames owed, and the cap. */
+  gov: SettleGovernor;
   /** Frames per piece of an answer (0: whole answers). */
   yieldFrames: number;
+  /** Worker 0 without a pool: need-driven look-back first, the settle only when it asks nothing (`SlowInit.csettleNeedFirst`). */
+  needFirst: boolean;
   /** The next request is the settle's when both it and need-driven look-back have frames to ask for. */
   turn: boolean;
   /** The settle's own request on worker 0 failed or timed out: no more settle requests there this run (need-driven look-back goes on). */
@@ -474,8 +466,17 @@ export class SlowRunner {
   /** Look-back stopped by an error or a timeout (Discover and settling go on without it). */
   private lbError: string | undefined;
   private drain: Settle | null = null;
-  /** Settle during Discover (null: off for this run). */
+  /** Settle during Discover (null: not armed in this run). */
   private cs: Csettle | null = null;
+  /** This run may arm the settle during Discover (`SlowInit.csettle` and a loop that has it), and how. */
+  private csArm: { yieldFrames: number; needFirst: boolean; forwardPool: number } | null = null;
+  /** The settle's cap, re-read frames per live frame (0 = Off; `setCap`; kept across runs like `pace`). */
+  private cap: number = CSETTLE.rate;
+  /** The settle pool the main thread started for a session (`setSettlePool`; applied when that run is here). */
+  private pool: { session: number; workers: number } | null = null;
+  /** Per look-back worker 1..S: in this run's settle pool, and sent a library this run (it serves from then on). */
+  private lbRun: boolean[] = [];
+  private lbLib: boolean[] = [];
   /** The settle's last status (kept for the final status after it ends). */
   private settleStatus: SettleStatus | undefined;
   private readonly defer: (fn: () => void) => void;
@@ -514,11 +515,11 @@ export class SlowRunner {
     return this.lbPorts[0] ?? null;
   }
 
-  /** The pool workers (1..S) serving the settle now: connected and not failed. */
+  /** The pool workers (1..S) serving the settle now: connected, in this run, sent a library, not failed. */
   private settlePorts(): number[] {
     const out: number[] = [];
     for (let i = 1; i < this.lbPorts.length; i++)
-      if (this.lbPorts[i] && !this.lbPortOff[i]) out.push(i);
+      if (this.lbPorts[i] && this.lbRun[i] && this.lbLib[i] && !this.lbPortOff[i]) out.push(i);
     return out;
   }
 
@@ -529,7 +530,66 @@ export class SlowRunner {
    */
   setPace(fps: number, paused: boolean): void {
     this.pace = { fps: Number.isFinite(fps) && fps > 0 ? fps : 0, paused };
-    this.cs?.gov?.setTarget(this.pace.fps, this.pace.paused);
+    if (this.cs) this.cs.gov.setTarget(this.pace.fps, this.pace.paused);
+    else this.armSettle();
+  }
+
+  /**
+   * The settle's cap, re-read frames per live frame (0 = Off), from the main
+   * thread, during a run too (kept across runs; only the settle reads it).
+   */
+  setCap(cap: number): void {
+    this.cap = Number.isFinite(cap) && cap > 0 ? cap : 0;
+    if (this.cs) {
+      this.cs.gov.setCap(this.cap);
+      this.status(0, 0);
+    } else this.armSettle();
+  }
+
+  /**
+   * The main thread started look-back workers 1..`workers` for `session`'s
+   * run (the settle pool; it may be mid-run): they take the settle's chunks
+   * from the next library sent to them.
+   */
+  setSettlePool(session: number, workers: number): void {
+    this.pool = { session, workers: Math.max(0, Math.floor(workers)) };
+    if (session === this.session && this.loop) this.joinPool(this.pool.workers);
+  }
+
+  private joinPool(workers: number): void {
+    for (let i = 1; i <= workers; i++) this.lbRun[i] = true;
+  }
+
+  /**
+   * Arm the settle during Discover the first time this run's target is below
+   * Max with a cap above 0 (a run at Max never arms it: nothing changes there).
+   */
+  private armSettle(): void {
+    const arm = this.csArm;
+    const loop = this.loop;
+    if (this.cs || !arm || !loop || !this.lookbackLive || !(this.pace.fps > 0) || !(this.cap > 0))
+      return;
+    loop.enableSettle?.(CSETTLE.chunk);
+    const gov = new SettleGovernor(
+      this.cap,
+      Math.max(1, this.settlePorts().length),
+      arm.forwardPool,
+    );
+    gov.setTarget(this.pace.fps, this.pace.paused);
+    this.cs = {
+      gov,
+      yieldFrames: arm.yieldFrames,
+      needFirst: arm.needFirst,
+      turn: false,
+      off: false,
+      works: [],
+      requested: 0,
+      dropped: 0,
+      live: 0,
+      answers: 0,
+      answerMs: 0,
+      maxBlockMs: 0,
+    };
   }
 
   /** Tile visits run on visit workers. */
@@ -567,7 +627,7 @@ export class SlowRunner {
       if (msg.type === 'init') {
         const { width, height, fov, noise, cellDiameterPx, flattenSigmaPx, budget, lookback } = msg;
         // Settle during Discover: only with look-back, and only when asked for.
-        const csettle = lookback === true && (msg.csettle ?? 0) > 0 ? msg.csettle! : 0;
+        const csettle = lookback === true && msg.csettle === true;
         this.init = {
           width,
           height,
@@ -577,8 +637,7 @@ export class SlowRunner {
           flattenSigmaPx,
           budget,
           ...(lookback ? { lookback: true } : {}),
-          ...(csettle > 0 ? { csettle } : {}),
-          ...(csettle > 0 && msg.csettleGovernor ? { csettleGovernor: true } : {}),
+          ...(csettle ? { csettle } : {}),
         };
         this.loop = this.clock.span('setup', () => this.deps.create(this.init!));
         this.run = 1;
@@ -586,36 +645,18 @@ export class SlowRunner {
         if (this.lbOn && !this.lbPort) this.lbError = 'The look-back worker is not connected.';
         if (
           this.lbOn &&
-          csettle > 0 &&
+          csettle &&
           typeof this.loop.settleTake === 'function' &&
           typeof this.loop.observeSettle === 'function'
         ) {
-          const gov = msg.csettleGovernor
-            ? new SettleGovernor(
-                csettle,
-                Math.max(1, this.settlePorts().length),
-                Math.max(2, Math.floor(msg.csettlePool ?? 2)),
-              )
-            : null;
-          gov?.setTarget(this.pace.fps, this.pace.paused);
-          const dose = gov ? null : new SettleDose(csettle);
-          this.cs = {
-            rate: csettle,
-            credit: (gov ?? dose)!,
-            dose,
-            gov,
+          this.csArm = {
             yieldFrames: Math.max(0, Math.floor(msg.csettleYield ?? 0)),
-            turn: false,
-            off: false,
-            works: [],
-            requested: 0,
-            dropped: 0,
-            live: 0,
-            answers: 0,
-            answerMs: 0,
-            maxBlockMs: 0,
+            needFirst: msg.csettleNeedFirst === true,
+            forwardPool: Math.max(2, Math.floor(msg.csettlePool ?? 2)),
           };
+          this.armSettle();
         }
+        if (this.pool?.session === msg.session) this.joinPool(this.pool.workers);
         for (const v of this.visits)
           v.postMessage({ type: 'init', session: msg.session, ...this.init });
       }
@@ -780,10 +821,9 @@ export class SlowRunner {
           loop.lookbackNote!(msg.start + msg.count, observed);
           if (this.cs) {
             this.cs.live += observed;
-            this.cs.dose?.earn(observed);
             // A batch that does not follow the last one: the forward pool dropped the ones between.
             const gap = this.liveEnd >= 0 && msg.start > this.liveEnd;
-            this.cs.gov?.liveBatch(
+            this.cs.gov.liveBatch(
               msg.sentAt ?? this.epochNow(),
               msg.start + msg.count,
               msg.count,
@@ -872,7 +912,7 @@ export class SlowRunner {
     if (!loop || !this.lbOn || this.lbError !== undefined) return false;
     const cs = this.cs;
     // The governor checks (once a second) and earns up to now before any request.
-    cs?.gov?.update(this.epochNow(), this.version > 0);
+    cs?.gov.update(this.epochNow(), this.version > 0);
     const pool = this.settlePorts();
     let sent = false;
     if (this.lbPort && !this.lbReqs[0]) {
@@ -889,8 +929,12 @@ export class SlowRunner {
     return sent;
   }
 
-  /** Worker 0 without a settle pool: need-driven look-back and the settle take turns (today's rule). */
+  /**
+   * Worker 0 without a settle pool: need-driven look-back and the settle take
+   * turns, or with `needFirst` the settle asks only when look-back asks nothing.
+   */
   private turnRequest(loop: SlowLoopLike, cs: Csettle): boolean {
+    if (cs.needFirst) return this.needRequest(loop) || this.csettleRequest(loop, cs, 0);
     if (cs.turn && this.csettleRequest(loop, cs, 0)) return true;
     if (this.needRequest(loop)) {
       cs.turn = true;
@@ -946,7 +990,7 @@ export class SlowRunner {
 
   /**
    * Settle during Discover: one chunk of saved frames to look-back worker
-   * `port`, when a whole chunk is owed (`SettleDose`, or `SettleGovernor`)
+   * `port`, when a whole chunk is owed (`SettleGovernor`)
    * and no answer of that worker is still being fed in pieces.
    */
   private csettleRequest(loop: SlowLoopLike, cs: Csettle, port: number): boolean {
@@ -954,7 +998,7 @@ export class SlowRunner {
     if (
       (port === 0 && cs.off) ||
       cs.works.some((w) => w.req.port === port) ||
-      !cs.credit.ready ||
+      !cs.gov.ready ||
       !this.lookbackLive ||
       this.version <= 0
     )
@@ -972,7 +1016,7 @@ export class SlowRunner {
       skip[i] = take[3 * i + 2] > 0 ? 1 : 0;
       items.push({ frame: take[3 * i], ids: new Float64Array(0) });
     }
-    cs.credit.spend(n);
+    cs.gov.spend(n);
     cs.requested += n;
     if (port === 0) cs.turn = false;
     this.sendRequest(port, 'csettle', flat, items, skip);
@@ -991,7 +1035,7 @@ export class SlowRunner {
     cs.dropped += req.items.length;
     if (req.port > 0) {
       this.lbPortOff[req.port] = true;
-      cs.gov?.setWorkers(this.settlePorts().length);
+      cs.gov.setWorkers(this.settlePorts().length);
       console.warn(`cala settle look-back worker ${req.port} stopped: ${message}`);
     } else {
       cs.off = true;
@@ -1028,10 +1072,10 @@ export class SlowRunner {
     if (msg.type === 'frames') {
       addLookbackAnswer(this.lbWork[req.kind], msg.count, msg.timing);
       const busy = msg.timing ? timingBusyMs(msg.timing) : 0;
-      if (req.kind === 'csettle') this.cs?.gov?.delivered(msg.count, busy);
+      if (req.kind === 'csettle') this.cs?.gov.delivered(msg.count, busy);
       // Taking turns (no settle pool): worker 0 is the settle's worker, so its need-driven
       // time counts towards its busy share too (else a full worker reads as "slow worker").
-      else if (port === 0 && this.settlePorts().length === 0) this.cs?.gov?.delivered(0, busy);
+      else if (port === 0 && this.settlePorts().length === 0) this.cs?.gov.delivered(0, busy);
     }
     // The slow worker's time on this answer goes to the kind's duty.
     this.clock.begin(req.kind === 'end' ? 'end' : req.kind);
@@ -1470,14 +1514,20 @@ export class SlowRunner {
         const mainBytes = bytes.slice();
         // Each look-back worker solves with the newest library (same port as its requests,
         // so it always has the version a request was taken with); a copy each.
-        if (this.lbOn && !this.lbError)
+        // (Pool workers only once in this run's pool: a worker this run never started has no use for it.)
+        if (this.lbOn && !this.lbError) {
+          const before = this.settlePorts().length;
           this.lbPorts.forEach((port, i) => {
-            if (!port || this.lbPortOff[i]) return;
+            if (!port || this.lbPortOff[i] || (i > 0 && !this.lbRun[i])) return;
             const lbBytes = bytes.slice();
             port.postMessage({ type: 'library', session: this.session, version, bytes: lbBytes }, [
               lbBytes.buffer as ArrayBuffer,
             ]);
+            if (i > 0) this.lbLib[i] = true;
           });
+          const after = this.settlePorts().length;
+          if (after !== before) this.cs?.gov.setWorkers(after);
+        }
         this.deps.toFast.postMessage({ type: 'library', session: this.session, version, bytes }, [
           bytes.buffer as ArrayBuffer,
         ]);
@@ -1542,7 +1592,7 @@ export class SlowRunner {
   private csettleStatus(loop: SlowLoopLike, cs: Csettle): CsettleStatus {
     const s = loop.settleStats?.() ?? new Float64Array(0);
     return {
-      rate: cs.rate,
+      rate: cs.gov.cap,
       requested: cs.requested,
       fit: s[1] ?? 0,
       heldOut: s[2] ?? 0,
@@ -1553,7 +1603,7 @@ export class SlowRunner {
       maxBlockMs: cs.maxBlockMs,
       yieldFrames: cs.yieldFrames,
       settleWorkers: this.settlePorts().length,
-      ...(cs.gov ? { governor: cs.gov.status() } : {}),
+      governor: cs.gov.status(),
     };
   }
 
@@ -1675,6 +1725,9 @@ export class SlowRunner {
     this.lbReqs = [];
     this.lbPortOff = [];
     this.lbPortBusy = [];
+    this.lbRun = [];
+    this.lbLib = [];
+    this.csArm = null;
     this.liveEnd = -1;
     this.lbError = undefined;
     this.drain = null;

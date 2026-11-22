@@ -40,11 +40,14 @@ export interface SlowInit {
    */
   lookback?: boolean;
   /**
-   * Settle during Discover (experimental, frames only; needs `lookback`;
-   * absent or 0 = off): the ceiling, in re-read frames per live frame the
-   * slow loop observes (`CSETTLE` in `lib/settle.ts`; see `SlowRunner`).
+   * Settle during Discover ("Background settle", frames only; needs
+   * `lookback`; absent = off for the run): the run may settle while Discover
+   * runs. It starts the first time the target is below Max with a cap above
+   * 0; the settle governor (`SettleGovernor` in `lib/settle.ts`) sets its
+   * rate. The cap comes from `SlowSettleCap`, the target from
+   * `SlowSettlePace` (see `SlowRunner`).
    */
-  csettle?: number;
+  csettle?: boolean;
   /**
    * With `csettle`: the slow worker handles an answer of re-read frames this
    * many frames at a time and gives way in between (absent or 0: the whole
@@ -52,15 +55,14 @@ export interface SlowInit {
    */
   csettleYield?: number;
   /**
-   * With `csettle`: the settle governor (experimental, `?debug&governor`;
-   * `SettleGovernor` in `lib/settle.ts`) sets the settle's rate in re-read
-   * frames per second instead of the per-live-frame dose; `csettle` is then
-   * its cap. Off at Max (no pacer target).
+   * With `csettle`, one look-back worker (no settle pool): need-driven
+   * look-back first, the settle only when it asks for nothing (measurement
+   * option, `?debug&needfirst`; absent: the two take turns).
    */
-  csettleGovernor?: boolean;
+  csettleNeedFirst?: boolean;
   /**
-   * With `csettleGovernor`: batches the forward pool holds in flight to this
-   * worker (the governor's batch-wait guard scales with it; absent: 2).
+   * With `csettle`: batches the forward pool holds in flight to this worker
+   * (the governor's batch-wait guard scales with it; absent: 2).
    */
   csettlePool?: number;
 }
@@ -291,6 +293,26 @@ export interface SlowSettlePace {
 }
 
 /**
+ * Main thread -> slow worker: the settle's cap, re-read frames per live
+ * frame (0 = Off). Kept across runs; takes effect during a run too.
+ */
+export interface SlowSettleCap {
+  type: 'settle-cap';
+  cap: number;
+}
+
+/**
+ * Main thread -> slow worker: look-back workers 1..`workers` were started
+ * for `session`'s run (the settle pool; possibly mid-run). They take the
+ * settle's chunks from the next library sent to them.
+ */
+export interface SlowSettlePool {
+  type: 'settle-pool';
+  session: number;
+  workers: number;
+}
+
+/**
  * Main thread -> slow worker: stop settling (the drain after a look-back
  * run's last frame) now; the footprints refined so far are published as the
  * final library.
@@ -301,7 +323,13 @@ export interface SlowStopSettling {
 }
 
 export type MainToSlow =
-  SlowConnect | SlowReviewed | SlowLookbackPort | SlowStopSettling | SlowSettlePace;
+  | SlowConnect
+  | SlowReviewed
+  | SlowLookbackPort
+  | SlowStopSettling
+  | SlowSettlePace
+  | SlowSettleCap
+  | SlowSettlePool;
 
 /** Main thread -> visit worker: the port to the slow worker. */
 export interface VisitConnect {

@@ -30,9 +30,11 @@
  *   settle then covers the frames read so far). Every run also records the work readout
  *   (`__cala.pipeline.work()`, once a second) as `<tag>-work.json` and logs the `?debug` text
  *   readout at each sample.
- *   `--lbpool S` (with `--csettle`): S more look-back workers that take only the settle's chunks;
- *   `--governor`: the settle governor (off at Max: give `--pacefps`). Both `?debug` flags of
- *   work-slider PR 5; the governor's state is kept with each work reading and logged.
+ *   Background settle (the settle governor) runs by default in a look-back run below Max
+ *   (`--pacefps`), with the settle pool from the core count; the governor's state is kept with
+ *   each work reading and logged. `--lbpool S` overrides the pool size (`?debug&lbpool=S`, 0
+ *   included); `--needfirst`: one worker, need-driven look-back first (`?debug&needfirst`);
+ *   `--csettle-off`: no Background settle (`&csettle=0`).
  *   `--headed` runs system Chrome with a real GPU (headless SwiftShader hides memory behaviour).
  *
  * Opens `<folder>` (a session folder or a parent of several) through the
@@ -85,13 +87,13 @@ const csQuery0 = csettle
 // `--smooth 0`: smooth playback off (the comparison run).
 const smoothOpt = opt('--smooth', '');
 const lbPool = opt('--lbpool', '');
-const governor = args.includes('--governor');
 const csQuery =
   csQuery0 +
   (paceFps ? `&pacefps=${paceFps}` : '') +
   (smoothOpt ? `&smooth=${smoothOpt}` : '') +
-  (lbPool ? `&lbpool=${lbPool}` : '') +
-  (governor ? '&governor' : '');
+  (lbPool !== '' ? `&lbpool=${lbPool}` : '') +
+  (args.includes('--needfirst') ? '&needfirst' : '') +
+  (args.includes('--csettle-off') ? '&csettle=0' : '');
 mkdirSync(out, { recursive: true });
 const udd = join(out, `udd-${tag}`);
 rmSync(udd, { recursive: true, force: true });
