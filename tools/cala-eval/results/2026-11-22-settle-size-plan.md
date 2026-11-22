@@ -58,15 +58,15 @@ app's beta-gate libraries and on the qc_eval real-data libraries, to see whether
 Paired by sim (same GT unit matched in both arms), mean paired difference with a 95 % CI over sims (bootstrap over
 sims, as the suite does). The existing trees are scored first; they cost no compute.
 
-| step | arms | isolates |
-| --- | --- | --- |
-| A | `DR-main` vs `SETTLE` (14 sims) | the headline: which is closer to truth |
-| B | `COMBO+R` vs `SETTLE` | settle mechanics against an ordinary Refine, same library (candidates 1, 2) |
-| C | `OFF+S` vs `SETTLE`; `REF+S` vs `SETTLE` (quick tier) | replay everywhere / replay in Discover only (3, 6) |
-| D | `DR-main` vs `OFF+S` | look-back + settle without replay (7) |
-| E | `ST-frozen`, `ST-stats` vs `ST-full` (quick tier) | fresh held-out frames: how much the gate lets through (4) |
-| F | workshop + Samara qc_eval libraries: `DRR`, `OFFS`, `REFS`, `SETTLE` | the same attribution on real data, sizes only |
-| G | app beta-gate libraries | does qc_eval reproduce the app's sizes |
+| step | arms                                                                 | isolates                                                                    |
+| ---- | -------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| A    | `DR-main` vs `SETTLE` (14 sims)                                      | the headline: which is closer to truth                                      |
+| B    | `COMBO+R` vs `SETTLE`                                                | settle mechanics against an ordinary Refine, same library (candidates 1, 2) |
+| C    | `OFF+S` vs `SETTLE`; `REF+S` vs `SETTLE` (quick tier)                | replay everywhere / replay in Discover only (3, 6)                          |
+| D    | `DR-main` vs `OFF+S`                                                 | look-back + settle without replay (7)                                       |
+| E    | `ST-frozen`, `ST-stats` vs `ST-full` (quick tier)                    | fresh held-out frames: how much the gate lets through (4)                   |
+| F    | workshop + Samara qc_eval libraries: `DRR`, `OFFS`, `REFS`, `SETTLE` | the same attribution on real data, sizes only                               |
+| G    | app beta-gate libraries                                              | does qc_eval reproduce the app's sizes                                      |
 
 New runs only where a comparison is missing after A–G:
 
