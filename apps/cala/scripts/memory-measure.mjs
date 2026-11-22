@@ -321,7 +321,7 @@ let t0 = Date.now();
 await page.goto(`${url}?debug${lookback && !toggle ? '&lookback' : ''}${csQuery}`);
 await attachPage();
 // Exact times and every settle checkpoint (the 5 s samples miss them): an in-page probe.
-await page.evaluate(() => {
+await page.evaluate((withRelease) => {
   const p = (window.__calaProbe = {
     t0: null,
     framesDone: null,
@@ -333,6 +333,26 @@ await page.evaluate(() => {
     atFramesDone: null,
     checkpoints: [],
   });
+  // Release probe (smooth pacing): when each batch's frames arrive on the main thread, polled
+  // every 5 ms. The gate releases a batch one pipeline latency earlier, so this adds the
+  // pipeline's own jitter to the true spread: a ceiling for the release evenness.
+  const rel = withRelease ? (window.__calaRelease = { t: [], n: [] }) : null;
+  let relLast = 0;
+  if (withRelease)
+    setInterval(() => {
+      const c = window.__cala;
+      if (!c || c.pipeline.status() !== 'running') return;
+      const n = c.pipeline.processed();
+      if (n < relLast) {
+        rel.t = [];
+        rel.n = [];
+      }
+      if (n !== relLast) {
+        rel.t.push(performance.now());
+        rel.n.push(n);
+      }
+      relLast = n;
+    }, 5);
   let lastKey = '';
   setInterval(() => {
     const c = window.__cala;
@@ -394,7 +414,7 @@ await page.evaluate(() => {
     if (pst === 'done' && st?.final && !lb?.settling && p.final === null && p.framesDone !== null)
       p.final = now;
   }, 100);
-});
+}, Boolean(paceFps));
 const single = args.includes('--single');
 await page.setInputFiles('[data-testid=folder-input]', data);
 if (single) {
@@ -464,6 +484,33 @@ async function probeReport() {
   L(
     `PROBE discover ${s(p.framesDone, p.t0)}s ${frames} frames ${(frames / dSec).toFixed(0)} fps · end settle ${s(p.final, p.framesDone)}s · total ${s(p.final, p.t0)}s · longest stretch without a new frame ${p.maxGapMs.toFixed(0)} ms (${p.gaps250} over 250 ms)`,
   );
+  const rel = await page.evaluate(() => window.__calaRelease).catch(() => null);
+  if (rel && rel.t.length > 3) {
+    // Arrival intervals per batch (a poll that saw several batches at once is split evenly).
+    const iv = [];
+    for (let i = 1; i < rel.t.length; i++) {
+      const batches = Math.max(1, Math.round((rel.n[i] - rel.n[i - 1]) / 8));
+      for (let k = 0; k < batches; k++) iv.push((rel.t[i] - rel.t[i - 1]) / batches);
+    }
+    const mean = iv.reduce((a, b) => a + b, 0) / iv.length;
+    const sd = Math.sqrt(iv.reduce((a, b) => a + (b - mean) ** 2, 0) / iv.length);
+    const sorted = [...iv].sort((a, b) => a - b);
+    const q = (f) => sorted[Math.min(sorted.length - 1, Math.floor(f * sorted.length))];
+    L(
+      `PROBE release intervals n=${iv.length} mean ${mean.toFixed(1)} ms (${(8000 / mean).toFixed(1)} fps) CV ${((100 * sd) / mean).toFixed(1)}% p5 ${q(0.05).toFixed(0)} p50 ${q(0.5).toFixed(0)} p95 ${q(0.95).toFixed(0)} max ${sorted[sorted.length - 1].toFixed(0)} ms`,
+    );
+    // The first 3 s (warm-up) are excluded from the steady-state spread.
+    const t0r = rel.t[0] + 3000;
+    const steady = [];
+    for (let i = 1; i < rel.t.length; i++) if (rel.t[i] > t0r) steady.push(rel.t[i] - rel.t[i - 1]);
+    if (steady.length > 3) {
+      const m2 = steady.reduce((a, b) => a + b, 0) / steady.length;
+      const sd2 = Math.sqrt(steady.reduce((a, b) => a + (b - m2) ** 2, 0) / steady.length);
+      L(
+        `PROBE release steady (after 3 s) n=${steady.length} mean ${m2.toFixed(1)} ms CV ${((100 * sd2) / m2).toFixed(1)}% max ${Math.max(...steady).toFixed(0)} ms`,
+      );
+    }
+  }
   L(`PROBE at-frames-done ${JSON.stringify(p.atFramesDone)}`);
   L(
     `PROBE checkpoints ${p.checkpoints.map((c) => `${c.fed}:${c.above}/${c.cells}@${((c.t - p.framesDone) / 1000).toFixed(0)}s`).join(' ')}`,

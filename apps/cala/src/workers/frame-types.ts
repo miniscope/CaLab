@@ -7,6 +7,7 @@ import type {
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelineOptions, PipelinePlan } from '../lib/pipeline-plan.ts';
 import type { FlatFieldMap } from '../lib/flat-field.ts';
+import type { PaceStats } from '../lib/frame-pacer.ts';
 import type { ReplayInput } from '../lib/pipeline-stages.ts';
 
 /** Fast-loop settings of a pipeline run. */
@@ -103,6 +104,12 @@ export type FrameRequest =
   | { type: 'set-residual'; id: number; on: boolean }
   /** Pipelined run: the port to the motion worker (transferred). The frame worker then runs stage A only. */
   | { type: 'link'; id: number; down: MessagePort }
+  /**
+   * Smooth pacing (`lib/frame-pacer.ts`), answered at once, not in the queue: `fps` sets the
+   * target (0: unpaced; a recording's Discover run only), `paused` holds or resumes the gate
+   * at the first stage so batches already requested are not released while paused.
+   */
+  | { type: 'pace'; id: number; fps?: number; paused?: boolean }
   /** The port to the flat-field worker (transferred; see `workers/flat-field-worker.ts`). */
   | { type: 'link-flat'; id: number; port: MessagePort };
 
@@ -131,4 +138,6 @@ export type FrameResponse =
   | { type: 'pipeline-step'; id: number; step: PipelineStepResult }
   | { type: 'pipeline-stopped'; id: number }
   | { type: 'ok'; id: number }
+  /** Unsolicited (`id` -1): the pace gate's readouts, about once a second while paced. */
+  | { type: 'pace-stats'; id: number; stats: PaceStats }
   | { type: 'error'; id: number; message: string };

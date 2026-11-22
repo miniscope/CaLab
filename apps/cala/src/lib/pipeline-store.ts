@@ -7,6 +7,7 @@
  * drops frames instead of queueing them). Pausing simply stops requesting.
  */
 import { createSignal } from 'solid-js';
+import type { PaceStats } from './frame-pacer.ts';
 import type { CellStore } from './cell-store.ts';
 import type { CompressStore } from './compress-store.ts';
 import {
@@ -439,31 +440,29 @@ export function createPipelineStore(
   }
 
   /**
-   * Measurement only (`?debug&pacefps=N`): read a recording no faster than
-   * `N` frames a second, as a stream would arrive (0: as fast as it goes).
+   * Smooth pacing (`?debug&pacefps=N` until a slider exists): read a recording
+   * no faster than `N` frames a second, one batch per period, as a stream
+   * would arrive (0: as fast as it goes). The gate itself runs in the frame
+   * worker (`lib/frame-pacer.ts`); this only tells it the target and when we pause.
    */
   let paceFps = 0;
-  let paceT0 = 0;
-  let paceTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Whether the next batch must wait for the pace (then `pump` is called again shortly). */
-  function paceHolds(): boolean {
-    if (!(paceFps > 0)) return false;
-    const now = performance.now();
-    if (processed() === 0 && inFlight === 0) paceT0 = now;
-    if (processed() <= ((now - paceT0) / 1000) * paceFps) return false;
-    paceTimer ??= setTimeout(() => {
-      paceTimer = null;
-      pump();
-    }, 5);
-    return true;
+  /** A pace was set at some point: from then on Pause and Resume always tell the gate (so its held state never sticks). */
+  let paceEver = false;
+  /** Whether this run's gate is paced (a recording's Discover run; never a live stream). */
+  function paceRun(): boolean {
+    return paceFps > 0 && flat.identity?.()?.live !== true;
+  }
+  const [paceStats, setPaceStats] = createSignal<PaceStats | null>(null);
+  client.subscribePaceStats?.((s) => setPaceStats(s));
+  function sendPace(pace: { fps?: number; paused?: boolean }): void {
+    void client.setPace?.(pace).catch(() => {});
   }
 
   function pump(): void {
     while (
       status() === 'running' &&
       !exhausted &&
-      inFlight < (client.maxInFlight ?? MAX_IN_FLIGHT) &&
-      !paceHolds()
+      inFlight < (client.maxInFlight ?? MAX_IN_FLIGHT)
     ) {
       const gen = generation;
       inFlight++;
@@ -507,6 +506,7 @@ export function createPipelineStore(
     record = new RunRecord();
     meter = new ThroughputMeter();
     totals = { ...ZERO_TIMINGS };
+    setPaceStats(null);
     setPlan(null);
     setSetup(null);
     setProcessed(0);
@@ -599,6 +599,7 @@ export function createPipelineStore(
         frameCount: p.frameCount,
       });
       setStatus('running');
+      if (paceRun()) sendPace({ fps: paceFps });
       pump();
     } catch (err) {
       if (gen !== generation) return;
@@ -610,6 +611,8 @@ export function createPipelineStore(
   function pause(): void {
     if (status() !== 'running') return;
     setStatus('paused');
+    // Requests already in the worker must not be released while paused.
+    if (paceEver) sendPace({ paused: true });
     runHistory?.log({ frame: processed(), kind: 'pause', detail: 'Paused' });
   }
 
@@ -617,6 +620,7 @@ export function createPipelineStore(
     if (status() !== 'paused') return;
     // Answers to steps sent before the pause still arrive and count.
     setStatus('running');
+    if (paceEver) sendPace({ paused: false });
     runHistory?.log({ frame: processed(), kind: 'resume', detail: 'Resumed' });
     pump();
   }
@@ -701,9 +705,15 @@ export function createPipelineStore(
     setCsettle,
     csettleCeiling,
     setCsettleCeiling: (rate: number) => setCsettleCeiling(csettleRate(rate)),
-    /** Measurement only: read no faster than this many frames a second (0: off). */
+    /** Read no faster than this many frames a second (0: off); applies to a running recording at once. */
+    /** The frame worker's pacing readouts (gate wait, lateness dropped, re-anchors); null when unpaced. */
+    paceStats,
     setPaceFps: (fps: number) => {
       paceFps = Number.isFinite(fps) && fps > 0 ? fps : 0;
+      if (paceFps > 0) paceEver = true;
+      const st = status();
+      // A run paused before a pace existed must start held.
+      if (st === 'running' || st === 'paused') sendPace({ fps: paceFps, paused: st === 'paused' });
     },
     csettleYield,
     setCsettleYield: (frames: number) =>
