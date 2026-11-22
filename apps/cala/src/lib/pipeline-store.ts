@@ -503,7 +503,10 @@ export function createPipelineStore(
   let paceFps = 0;
   /** `paceFps` as a signal (the Speed control reads it; 0: Max). */
   const [paceTarget, setPaceTarget] = createSignal(0);
+  /** The current target came from the URL (`?debug&pacefps`, source `url`): the Speed control must not override it. */
+  const [paceFromUrl, setPaceFromUrl] = createSignal(false);
   const paceListeners: ((fps: number, frame: number, source: string) => void)[] = [];
+  const capListeners: ((cap: number, frame: number, source: string) => void)[] = [];
   /** Told when a run's settle pool starts (its workers, the frame reached); the run record's log. */
   const poolListeners: ((workers: number, frame: number) => void)[] = [];
   /** The look-back session whose pool start was told (once per run). */
@@ -586,6 +589,28 @@ export function createPipelineStore(
   function tellSettlePace(): void {
     lookbackFeed?.pace?.(paceRun() ? paceFps : 0, untrack(status) === 'paused');
     startSettlePool();
+  }
+  /** The cap went from `before` to its value now: a run event while running or paused, and the listeners (the run record). */
+  function noteCap(before: number, source: string): void {
+    const after = settleCap();
+    if (after === before) return;
+    const st = untrack(status);
+    const text = (c: number) => (c > 0 ? `${c} per live frame` : 'Off');
+    if (st === 'running' || st === 'paused')
+      runHistory?.speedSetting(
+        'settle_cap',
+        untrack(processed),
+        before,
+        after,
+        `Settle cap ${text(before)} → ${text(after)}`,
+      );
+    for (const cb of capListeners) {
+      try {
+        cb(after, untrack(processed), source);
+      } catch {
+        // Observers only.
+      }
+    }
   }
   /** The settle's cap to the slow worker (during a run too), and the pool if it may now be used. */
   function tellSettleCap(): void {
@@ -976,14 +1001,18 @@ export function createPipelineStore(
     /** Settle during Discover (experimental; only with look-back): the settings for the next Discover start. */
     csettle,
     /** Background settle on or off (off = cap 0); during a run too. */
-    setCsettle: (on: boolean) => {
+    setCsettle: (on: boolean, source = 'setting') => {
+      const before = settleCap();
       setCsettleSignal(on);
+      noteCap(before, source);
       tellSettleCap();
     },
     csettleCeiling,
     /** The cap, re-read frames per live frame (`CSETTLE.rates`); during a run too. */
-    setCsettleCeiling: (rate: number) => {
+    setCsettleCeiling: (rate: number, source = 'setting') => {
+      const before = settleCap();
       setCsettleCeilingSignal(csettleRate(rate));
+      noteCap(before, source);
       tellSettleCap();
     },
     /**
@@ -1007,6 +1036,7 @@ export function createPipelineStore(
       const before = paceRun() ? paceFps : 0;
       paceFps = Number.isFinite(fps) && fps > 0 ? fps : 0;
       setPaceTarget(paceFps);
+      setPaceFromUrl(source === 'url');
       if (paceFps > 0) paceEver = true;
       const st = status();
       const after = paceRun() ? paceFps : 0;
@@ -1028,6 +1058,15 @@ export function createPipelineStore(
     paceFps: () => paceFps,
     /** The target speed as a signal (0: Max). */
     paceTarget,
+    paceFromUrl,
+    /** The target speed this run is paced at (0: Max, and always 0 for a live stream, which a target does not pace). */
+    targetNow: () => (paceRun() ? paceFps : 0),
+    /** The settle cap in force for this run (0: Off, and 0 for a live stream, where look-back cannot run). */
+    capNow: () => (flat.identity?.()?.live === true ? 0 : settleCap()),
+    /** Called with the new settle cap, the frame reached and what set it, whenever it changes (the run record's log). */
+    onCapChange: (cb: (cap: number, frame: number, source: string) => void) => {
+      capListeners.push(cb);
+    },
     /** Called with the new target speed, the frame reached and what set it, whenever `setPaceFps` runs (the run record's log). */
     onPaceChange: (cb: (fps: number, frame: number, source: string) => void) => {
       paceListeners.push(cb);

@@ -237,6 +237,85 @@ describe('pipeline store backpressure', () => {
     });
   });
 
+  it('logs a settle cap change mid-run (Fixed 30, cap 2, then Off) and tells the listeners', async () => {
+    const { client, steps } = manualClient();
+    await createRoot(async (dispose) => {
+      const history = createRunHistory();
+      const store = createPipelineStore(
+        { ...client, setPace: vi.fn(async () => {}) },
+        {},
+        undefined,
+        undefined,
+        true,
+        undefined,
+        {},
+        history,
+      );
+      const seen: [number, string][] = [];
+      store.onCapChange((cap, _frame, source) => seen.push([cap, source]));
+      store.setPaceFps(30);
+      await store.start();
+      steps[0].resolve(batch(0, 8));
+      await flush();
+      // Before any change: the cap in force is 2, no cap event yet.
+      expect(store.capNow()).toBe(2);
+      expect(
+        history
+          .events()
+          .ofKind('setting')
+          .filter((e) => e.key === 'settle_cap'),
+      ).toHaveLength(0);
+      store.setCsettle(false);
+      expect(store.capNow()).toBe(0);
+      const ev = history
+        .events()
+        .ofKind('setting')
+        .filter((e) => e.key === 'settle_cap');
+      expect(ev).toHaveLength(1);
+      expect(ev[0]).toMatchObject({ from: 2, to: 0, frame: 8 });
+      expect(ev[0].detail).toBe('Settle cap 2 per live frame → Off');
+      // Off to a lower cap in two calls is one change (the ceiling alone changes nothing while Off).
+      store.setCsettleCeiling(1);
+      store.setCsettle(true);
+      expect(seen).toEqual([
+        [0, 'setting'],
+        [1, 'setting'],
+      ]);
+      // A repeat of the same value logs nothing.
+      store.setCsettle(true);
+      expect(seen).toHaveLength(2);
+      dispose();
+    });
+  });
+
+  it('keeps URL-set targets apart, and a live run has no applied target or cap', () => {
+    const { client } = manualClient();
+    createRoot((dispose) => {
+      const store = createPipelineStore({ ...client, setPace: vi.fn(async () => {}) });
+      store.setPaceFps(30, 'url');
+      expect(store.paceFromUrl()).toBe(true);
+      store.setPaceFps(60, 'setting');
+      expect(store.paceFromUrl()).toBe(false);
+      expect(store.targetNow()).toBe(60);
+      dispose();
+    });
+    createRoot((dispose) => {
+      const store = createPipelineStore(
+        { ...client, setPace: vi.fn(async () => {}) },
+        {},
+        undefined,
+        undefined,
+        true,
+        undefined,
+        { identity: () => ({ live: true }) as never },
+      );
+      store.setPaceFps(30);
+      expect(store.targetNow()).toBe(0);
+      expect(store.capNow()).toBe(0);
+      dispose();
+    });
+  });
+
   it('never leaves the gate held: pause, pace off, resume, pace on', async () => {
     const { client } = manualClient();
     const setPace = vi.fn(async () => {});

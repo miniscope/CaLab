@@ -11,6 +11,7 @@ import {
   fpsToPos,
   fpsToStep,
   loadSpeedSettings,
+  nudgeFps,
   saveSpeedSettings,
   snapFps,
   SPEED_SCALE,
@@ -37,15 +38,6 @@ const MODE_TITLES: Record<SpeedMode, string> = {
   fixed: 'Read the recording at a target speed; the spare time goes to Background settle.',
 };
 
-/** The settings as the store holds them now (what gets saved). */
-function currentSettings(s: PipelineStore, fixedFps: number): SpeedSettings {
-  return {
-    mode: s.paceTarget() > 0 ? 'fixed' : 'max',
-    fixedFps,
-    cap: s.csettle() ? s.csettleCeiling() : 0,
-  };
-}
-
 /**
  * The Speed block of the Run panel (Max and Fixed): a fixed log track from 10
  * to 500 fps with a separate Max stop, the floor and "max now" marks, the
@@ -62,28 +54,35 @@ export function SpeedControl(props: {
   fps: number;
 }): JSX.Element {
   const s = () => props.pipeline;
-  const [fixedFps, setFixedFps] = createSignal(loadSpeedSettings().fixedFps);
+  // What the user set in this block, as saved. Not read back from the store: a URL override
+  // (`?debug&pacefps`, `?csrate`) must never leak into the saved settings.
+  let saved: SpeedSettings = loadSpeedSettings();
+  const save = (patch: Partial<SpeedSettings>) => {
+    saved = { ...saved, ...patch };
+    saveSpeedSettings(saved);
+  };
+  const [fixedFps, setFixedFps] = createSignal(saved.fixedFps);
   /** The thumb while a change is in progress (not yet committed). */
   const [draft, setDraft] = createSignal<number | null>(null);
   let dragging = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   onCleanup(() => clearTimeout(timer));
 
-  const persist = () => saveSpeedSettings(currentSettings(s(), untrack(fixedFps)));
-
   /** Why a target cannot be chosen (a Joint run, no look-back workers); null when it can. Streams have their own state. */
   const pinned = () => (props.live ? null : s().lookbackBlocked());
 
   // A pinned control stays at Max whatever was saved; when the pin lifts the saved speed returns.
+  // Neither is a user change (their own sources), and neither is saved. A target that came from
+  // the URL (`?debug&pacefps`, a measurement override) is left alone.
   let pinnedFrom: number | null = null;
   createEffect(() => {
     const why = pinned();
     untrack(() => {
-      if (why !== null && s().paceTarget() > 0) {
+      if (why !== null && s().paceTarget() > 0 && !s().paceFromUrl()) {
         pinnedFrom = s().paceTarget();
-        s().setPaceFps(0, 'setting');
+        s().setPaceFps(0, 'pinned');
       } else if (why === null && pinnedFrom !== null) {
-        if (s().paceTarget() === 0) s().setPaceFps(pinnedFrom, 'setting');
+        if (s().paceTarget() === 0) s().setPaceFps(pinnedFrom, 'pin lifted');
         pinnedFrom = null;
       }
     });
@@ -120,27 +119,45 @@ export function SpeedControl(props: {
     const f = snapFps(fps, marks());
     setFixedFps(f);
     s().setPaceFps(f, 'setting');
-    persist();
+    save({ mode: 'fixed', fixedFps: f });
   }
   function setMode(m: SpeedMode): void {
     if (m === 'max') s().setPaceFps(0, 'setting');
     else s().setPaceFps(fixedFps(), 'setting');
-    persist();
+    save({ mode: m, fixedFps: fixedFps() });
   }
   function commitDraft(): void {
     clearTimeout(timer);
+    dragging = false;
     const d = draft();
     setDraft(null);
     if (d !== null && d !== target()) commit(d);
   }
+  /** A key press waits for the next one (400 ms) before it counts as one change. */
+  function holdDraft(fps: number): void {
+    setDraft(fps);
+    clearTimeout(timer);
+    timer = setTimeout(commitDraft, KEY_DEBOUNCE_MS);
+  }
   function onSlide(e: InputEvent & { currentTarget: HTMLInputElement }): void {
     if (pinned() !== null) return;
-    setDraft(stepToFps(Number(e.currentTarget.value), marks()));
-    if (!dragging) {
-      // A key press: wait for the next one.
-      clearTimeout(timer);
-      timer = setTimeout(commitDraft, KEY_DEBOUNCE_MS);
-    }
+    const fps = stepToFps(Number(e.currentTarget.value), marks());
+    if (dragging) setDraft(fps);
+    else holdDraft(fps);
+  }
+  function onKey(e: KeyboardEvent): void {
+    if (pinned() !== null || e.altKey || e.ctrlKey || e.metaKey) return;
+    const cur = shown() ?? fixedFps();
+    let next: number | null = null;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowUp') next = nudgeFps(cur, 1, e.shiftKey);
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') next = nudgeFps(cur, -1, e.shiftKey);
+    else if (e.key === 'PageUp') next = nudgeFps(cur, 1, true);
+    else if (e.key === 'PageDown') next = nudgeFps(cur, -1, true);
+    else if (e.key === 'Home') next = SPEED_SCALE.lo;
+    else if (e.key === 'End') next = SPEED_SCALE.hi;
+    if (next === null) return;
+    e.preventDefault();
+    holdDraft(next);
   }
   function setCap(v: number): void {
     if (v === 0) s().setCsettle(false);
@@ -148,7 +165,7 @@ export function SpeedControl(props: {
       s().setCsettleCeiling(v);
       s().setCsettle(true);
     }
-    persist();
+    save({ cap: v });
   }
 
   // The floor's mark label moves left of its mark where it would meet "max now".
@@ -157,7 +174,6 @@ export function SpeedControl(props: {
     return m !== null && Math.abs(fpsToPos(m) - fpsToPos(floorFps())) < LABEL_CLASH;
   };
   const pct = (fps: number) => `${(100 * fpsToPos(fps)).toFixed(2)}%`;
-  const hatchWide = () => fpsToPos(floorFps()) > 0.3;
 
   const cappedReason = (): string | null =>
     props.live
@@ -310,9 +326,13 @@ export function SpeedControl(props: {
                   </>
                 )}
               </Show>
-              <Show when={hatchWide()}>
-                <span class="cala-speed__nogain-label">no gain here</span>
-              </Show>
+              <span
+                class="cala-speed__nogain-label"
+                data-testid="speed-nogain-label"
+                style={{ 'max-width': `calc(${pct(floorFps())} - 34px)` }}
+              >
+                no gain here
+              </span>
             </Show>
             <Show when={props.live && props.fps >= SPEED_SCALE.lo}>
               <i
@@ -346,17 +366,20 @@ export function SpeedControl(props: {
                   : `${shown()} frames per second${(shown() as number) < floorFps() ? ', no gain here' : ''}`
               }
               onInput={onSlide}
-              onPointerDown={() => {
+              onKeyDown={onKey}
+              onChange={commitDraft}
+              onPointerDown={(e) => {
                 dragging = true;
+                // Keeps the release coming here even when it happens outside the element.
+                try {
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                } catch {
+                  // No capture (a synthetic event): the change and blur commits still run.
+                }
               }}
-              onPointerUp={() => {
-                dragging = false;
-                commitDraft();
-              }}
-              onPointerCancel={() => {
-                dragging = false;
-                commitDraft();
-              }}
+              onPointerUp={commitDraft}
+              onPointerCancel={commitDraft}
+              onLostPointerCapture={commitDraft}
               onBlur={commitDraft}
             />
           </Show>

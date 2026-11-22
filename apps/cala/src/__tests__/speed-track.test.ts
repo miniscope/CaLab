@@ -4,6 +4,7 @@ import {
   fpsToPos,
   fpsToStep,
   floorWords,
+  nudgeFps,
   parseSpeedSettings,
   posToFps,
   roundFps,
@@ -179,5 +180,29 @@ describe('floor words', () => {
     expect(w.mark).toBe('about 30');
     expect(w.line).toContain('slow worker');
     expect(w.line).toContain('measured at Max');
+  });
+});
+
+describe('keyboard steps', () => {
+  it('moves one display unit', () => {
+    expect(nudgeFps(47, 1)).toBe(48);
+    expect(nudgeFps(47, -1)).toBe(46);
+    expect(nudgeFps(99, 1)).toBe(100);
+    expect(nudgeFps(100, 1)).toBe(105);
+    expect(nudgeFps(250, 1)).toBe(260);
+    expect(nudgeFps(100, -1)).toBe(99);
+    expect(nudgeFps(103, -1)).toBe(100);
+    expect(nudgeFps(250, -1)).toBe(245);
+  });
+  it('stops at the ends of the scale', () => {
+    expect(nudgeFps(10, -1)).toBe(10);
+    expect(nudgeFps(500, 1)).toBe(500);
+  });
+  it('jumps to the next mark with big', () => {
+    expect(nudgeFps(47, 1, true)).toBe(60);
+    expect(nudgeFps(47, -1, true)).toBe(30);
+    expect(nudgeFps(60, 1, true, [20, 30, 60, 75])).toBe(75);
+    expect(nudgeFps(300, 1, true)).toBe(500);
+    expect(nudgeFps(12, -1, true)).toBe(10);
   });
 });

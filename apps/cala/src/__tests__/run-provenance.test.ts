@@ -66,6 +66,7 @@ function input(over: Partial<RunRecordInput> = {}): RunRecordInput {
     settle: { fed: 900, planned: 1800, recording: 6000, stopped_by_user: true, done: true },
     settleTimes: { started_at: 'a', ended_at: 'b' },
     targetSpeed: [{ at: 't0', frame: 0, fps: 30, source: 'run start' }],
+    capChanges: [{ at: 't0', frame: 0, cap: 2, source: 'run start' }],
     work: { cap: 1, pool: 3, visit_workers: 4 },
     governor: null,
     achievedFps: 29.5,
@@ -126,6 +127,7 @@ describe('buildRunRecord', () => {
     });
     expect(r.target_speed.changes).toEqual([{ at: 't0', frame: 0, fps: 30, source: 'run start' }]);
     expect(r.work).toMatchObject({ cap: 1, pool: 3, achieved_fps: 29.5, governor: null });
+    expect(r.work.cap_changes).toEqual([{ at: 't0', frame: 0, cap: 2, source: 'run start' }]);
     expect(r.machine).toHaveProperty('hardware_concurrency');
   });
 
@@ -185,6 +187,21 @@ describe('RunTrace', () => {
     expect(t.targetSpeedChanges()[0].at).toBe('2026-11-22T10:00:00.000Z');
     t.reset();
     expect(t.targetSpeedChanges()).toEqual([]);
+  });
+
+  it('time-stamps settle cap changes, skipping repeats, and clears them on reset', () => {
+    let n = 0;
+    const t = new RunTrace(() => new Date(Date.UTC(2026, 10, 22, 10, 0, n++)));
+    t.noteCap(2, 0, 'run start');
+    t.noteCap(2, 5, 'setting');
+    t.noteCap(0, 900, 'setting');
+    expect(t.capChanges().map((c) => [c.cap, c.frame, c.source])).toEqual([
+      [2, 0, 'run start'],
+      [0, 900, 'setting'],
+    ]);
+    expect(t.capChanges()[1].at).toBe('2026-11-22T10:00:01.000Z');
+    t.reset();
+    expect(t.capChanges()).toEqual([]);
   });
 
   it('stamps the settle start once and its end once', () => {

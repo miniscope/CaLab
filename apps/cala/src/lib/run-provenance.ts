@@ -238,6 +238,17 @@ export interface TargetSpeedChange {
   source: string;
 }
 
+export interface CapChange {
+  /** ISO time of the change. */
+  at: string;
+  /** Frame the run had processed when it changed. */
+  frame: number;
+  /** The settle cap, re-read frames per live frame (0: Off). */
+  cap: number;
+  /** What set it (`run start`, `setting`, `url`, ...). */
+  source: string;
+}
+
 export interface SettleTimes {
   /** ISO time the final settle started and ended (null: not yet / not run). */
   started_at: string | null;
@@ -252,6 +263,7 @@ export class RunTrace {
   private speed: TargetSpeedChange[] = [];
   private settle: SettleTimes = { started_at: null, ended_at: null };
   private pool: { workers: number; frame: number } | null = null;
+  private caps: CapChange[] = [];
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
@@ -259,6 +271,18 @@ export class RunTrace {
     this.speed = [];
     this.settle = { started_at: null, ended_at: null };
     this.pool = null;
+    this.caps = [];
+  }
+
+  /** The settle cap is `cap` now (0: Off). Repeats of the same value are not recorded again. */
+  noteCap(cap: number, frame: number, source: string): void {
+    const last = this.caps[this.caps.length - 1];
+    if (last && last.cap === cap) return;
+    this.caps.push({ at: this.now().toISOString(), frame, cap, source });
+  }
+
+  capChanges(): readonly CapChange[] {
+    return this.caps;
   }
 
   /** The run's settle pool started with `workers` workers at `frame` (the first start counts). */
@@ -365,6 +389,7 @@ export interface RunRecordInput {
   settle: SettleSummary | null;
   settleTimes: SettleTimes;
   targetSpeed: readonly TargetSpeedChange[];
+  capChanges: readonly CapChange[];
   /** Work shape: the settle cap (0: Off), look-back workers in the run (1 + the pool started), visit workers. */
   work: {
     cap: number | null;
@@ -422,6 +447,8 @@ export function buildRunRecord(i: RunRecordInput): Record<string, unknown> {
     },
     work: {
       ...i.work,
+      /** Time-stamped; cap 0 is Off. The first entry is the cap at the run's start. */
+      cap_changes: i.capChanges.map((c) => ({ ...c })),
       achieved_fps: i.achievedFps,
       governor: gov
         ? {
@@ -630,6 +657,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       : null,
     settleTimes: src.trace.settleTimes(),
     targetSpeed: src.trace.targetSpeedChanges(),
+    capChanges: src.trace.capChanges(),
     work: {
       cap: p.csettle() ? p.csettleCeiling() : 0,
       pool: 1 + (pool?.workers ?? 0),

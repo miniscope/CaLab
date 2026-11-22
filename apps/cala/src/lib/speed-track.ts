@@ -55,6 +55,32 @@ export function snapFps(fps: number, marks: readonly number[] = SPEED_TICKS, tol
   return best ?? roundFps(fps);
 }
 
+/**
+ * One keyboard step from `fps`: a display unit (1 below 100, 5 below 250, 10
+ * above), or with `big` the next mark (stream rates and `marks`) in that direction.
+ */
+export function nudgeFps(
+  fps: number,
+  dir: 1 | -1,
+  big = false,
+  marks: readonly number[] = SPEED_TICKS,
+): number {
+  const clamp = (x: number) => Math.min(SPEED_SCALE.hi, Math.max(SPEED_SCALE.lo, x));
+  if (big) {
+    const sorted = [...marks, SPEED_SCALE.lo, SPEED_SCALE.hi].sort((a, b) => a - b);
+    const next =
+      dir > 0
+        ? sorted.find((m) => m > fps + 0.5)
+        : [...sorted].reverse().find((m) => m < fps - 0.5);
+    return clamp(next ?? (dir > 0 ? SPEED_SCALE.hi : SPEED_SCALE.lo));
+  }
+  // The step is the one of the place the move starts from; going down across 100 or 250 uses the finer one.
+  const probe = dir > 0 ? fps : fps - 0.001;
+  const step = probe < 100 ? 1 : probe < 250 ? 5 : 10;
+  const k = dir > 0 ? Math.floor(fps / step + 1e-9) + 1 : Math.ceil(fps / step - 1e-9) - 1;
+  return clamp(k * step);
+}
+
 /** What a value of the range input means as a speed (snapped), and back. */
 export const stepToFps = (step: number, marks?: readonly number[]): number =>
   snapFps(posToFps(step / TRACK_STEPS), marks);
