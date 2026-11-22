@@ -241,6 +241,11 @@ impl LookBack {
         }
     }
 
+    /// Look-back budget not yet spent (frames).
+    pub fn credit(&self) -> f64 {
+        self.credit
+    }
+
     /// Add look-back budget (frames).
     pub fn add_credit(&mut self, add: f64) {
         self.credit += add;

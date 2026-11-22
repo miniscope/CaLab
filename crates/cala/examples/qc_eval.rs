@@ -1257,7 +1257,18 @@ impl LookBack {
         } else {
             self.sched.note_frame(live.library(), seen);
             let rate = self.rate;
-            self.spend(rate, tenth, start, rec, drift, pipe, live, sl, n_px);
+            self.spend(
+                rate,
+                usize::MAX,
+                tenth,
+                start,
+                rec,
+                drift,
+                pipe,
+                live,
+                sl,
+                n_px,
+            );
         }
         self.wall_s += t0.elapsed().as_secs_f64();
     }
@@ -1268,6 +1279,7 @@ impl LookBack {
     fn spend(
         &mut self,
         add: f64,
+        max: usize,
         tenth: usize,
         start: usize,
         rec: &mut Recording,
@@ -1278,7 +1290,7 @@ impl LookBack {
         n_px: usize,
     ) -> bool {
         self.sched.add_credit(add);
-        loop {
+        for _ in 0..max {
             let req = match self.sched.next(sl, live.library()) {
                 LookbackNext::Frame(r) => r,
                 LookbackNext::NoCredit => return true,
@@ -1313,6 +1325,44 @@ impl LookBack {
                 LookbackOutcome::Observed
             });
         }
+        true
+    }
+
+    /// `--lb-gate` (virtual clock): the need-driven look-back as the app
+    /// runs it (`SlowRunner.needRequest`): every forwarded frame earns
+    /// `add` frames of budget, and frames go out only in requests of at
+    /// most `max` when the look-back worker is free (`max` 0: it is busy,
+    /// the budget is banked). Returns the frames taken.
+    #[allow(clippy::too_many_arguments)]
+    fn after_frame_gated(
+        &mut self,
+        t_rec: usize,
+        t_len: usize,
+        add: f64,
+        max: usize,
+        start: usize,
+        rec: &mut Recording,
+        drift: Option<&Drift>,
+        pipe: &mut Pipeline,
+        live: &TraceEngine,
+        sl: &mut SlowLoop,
+        n_px: usize,
+    ) -> u64 {
+        let t0 = Instant::now();
+        let tenth = (10 * t_rec / t_len.max(1)).min(9);
+        self.sched.note_frame(live.library(), t_rec + 1);
+        self.sched.add_credit(add);
+        let f0 = self.frames;
+        if max > 0 {
+            self.spend(0.0, max, tenth, start, rec, drift, pipe, live, sl, n_px);
+        }
+        self.wall_s += t0.elapsed().as_secs_f64();
+        self.frames - f0
+    }
+
+    /// `--lb-gate`: the scheduler has budget and cells in need.
+    fn need_pending(&self) -> bool {
+        self.sched.credit() >= 1.0 && self.sched.in_need() > 0
     }
 
     /// `--lookback-drain N` (recorded data): after Discover's last frame,
@@ -1342,7 +1392,18 @@ impl LookBack {
         };
         let mut steps = 0;
         while steps < max_steps {
-            let more = self.spend(rate, 10, start, rec, drift, pipe, engine, sl, n_px);
+            let more = self.spend(
+                rate,
+                usize::MAX,
+                10,
+                start,
+                rec,
+                drift,
+                pipe,
+                engine,
+                sl,
+                n_px,
+            );
             if steps % 64 == 0 {
                 sl.mark_all_due();
             }
@@ -3246,6 +3307,11 @@ enum Msg {
     SettleRest(usize),
     /// Owner time (ms) with nothing done in it (`--owner-load`).
     Load(f64),
+    /// `--lb-gate`: the look-back worker's answer to a need-driven
+    /// request, with the owner's time (ms) for its frames. The frames went
+    /// into the statistics when they were taken; this message holds the
+    /// worker until the owner has handled the answer, as in the app.
+    NeedAnswer(f64),
 }
 
 /// `--visit-diag`: where the ordinary visits go on the virtual clock. Per
@@ -3438,6 +3504,24 @@ struct Timed {
     /// `load_next`.
     pub load: Option<(f64, f64)>,
     load_next: f64,
+    /// `--visit-units-per-ms` (calibration): work per ms on a visit
+    /// worker (default: `units_per_ms`, the owner's).
+    pub visit_units_per_ms: f64,
+    /// `--lb-gate` (calibration): need-driven look-back goes through the
+    /// look-back worker as in the app (one request out at a time, taking
+    /// turns with the settle's); `cs_turn`: the settle asks next when both
+    /// want the worker; `need_pending`: need-driven look-back wants frames.
+    pub lb_gate: bool,
+    pub cs_turn: bool,
+    pub need_pending: bool,
+    /// `--lb-gate`: need-driven frames re-read, and requests.
+    pub need_frames: u64,
+    pub need_reqs: u64,
+    /// `--lb-ms-per-cell` (calibration): the look-back worker's time per
+    /// re-read frame grows by this much per cell of the newest library
+    /// (`lib_cells`): `lb_ms + lb_ms_cell x cells`.
+    pub lb_ms_cell: f64,
+    lib_cells: usize,
 }
 
 impl Timed {
@@ -3496,7 +3580,23 @@ impl Timed {
             cs_yield: 0,
             load: None,
             load_next: 0.0,
+            visit_units_per_ms: units_per_ms,
+            lb_gate: false,
+            cs_turn: false,
+            need_pending: false,
+            need_frames: 0,
+            need_reqs: 0,
+            lb_ms_cell: 0.0,
+            lib_cells: 0,
         }
+    }
+
+    /// `--lb-gate`: the look-back worker is free at `now` for a need-driven
+    /// request (no request out, and not the settle's turn while it is owed
+    /// a chunk).
+    fn need_may_ask(&self, now: f64) -> bool {
+        let settle_waits = self.cs_rate > 0.0 && self.cs_owed >= self.cs_chunk as f64;
+        !self.lb_out && self.lb_free <= now && !(self.cs_turn && settle_waits)
     }
 
     /// The owner is idle until `limit` (the next message, or now): it
@@ -3553,9 +3653,27 @@ impl Timed {
     /// The look-back worker re-read `n` need-driven frames from `now`:
     /// they come before the settle's requests on that worker.
     fn lb_note(&mut self, now: f64, n: u64) {
-        let dur = n as f64 * self.lb_ms;
+        let dur = n as f64 * self.lb_frame_ms();
         self.lb_free = self.lb_free.max(now) + dur;
         self.lb_worker_busy += dur;
+    }
+
+    /// `--lb-gate`: a need-driven request of `n` frames went to the
+    /// look-back worker at `now`; its answer (owner work `units`) reaches the
+    /// owner when the worker is done, and no other request goes out before
+    /// the owner has handled it.
+    fn need_answer(&mut self, now: f64, n: u64, units: u64) {
+        let dur = n as f64 * self.lb_frame_ms();
+        self.lb_free = self.lb_free.max(now) + dur;
+        self.lb_worker_busy += dur;
+        self.lb_out = true;
+        let at = self.lb_free;
+        self.push(at, Msg::NeedAnswer(units as f64 / self.units_per_ms));
+    }
+
+    /// The look-back worker's time per re-read frame now.
+    fn lb_frame_ms(&self) -> f64 {
+        self.lb_ms + self.lb_ms_cell * self.lib_cells as f64
     }
 
     /// Wall time (ms) at which frame `t` has been read.
@@ -3620,7 +3738,7 @@ impl Timed {
             let kind = match msg {
                 Msg::Batch(_) => 0,
                 Msg::Result(..) => 1,
-                Msg::Charge(_) => 2,
+                Msg::Charge(_) | Msg::NeedAnswer(_) => 2,
                 Msg::Settle | Msg::SettleRest(_) => 3,
                 Msg::Load(_) => 4,
             };
@@ -3688,6 +3806,11 @@ impl Timed {
                     extra += ms;
                     self.lb_busy += ms;
                 }
+                Msg::NeedAnswer(ms) => {
+                    extra += ms;
+                    self.lb_busy += ms;
+                    self.lb_out = false;
+                }
                 Msg::Result(r, i) => {
                     // The visit's work was done by its worker; `apply_job`
                     // adds it to the loop's total.
@@ -3741,6 +3864,7 @@ impl Timed {
             }
             let end0 = end;
             if let Some(l) = lib {
+                self.lib_cells = l.len();
                 self.libs.push_back((end, l));
             }
             // Hand out visits to workers with fewer than `depth` out (as
@@ -3764,7 +3888,7 @@ impl Timed {
                     end += 0.5 * self.job_ms;
                     let (jt, jc, js) = (job.tile_index(), job.zone_cells(), job.is_settle());
                     let res = self.runners[i].0.run(job).unwrap();
-                    let dur = res.work() as f64 / self.units_per_ms + self.job_ms;
+                    let dur = res.work() as f64 / self.visit_units_per_ms + self.job_ms;
                     self.runner_busy += dur;
                     self.jobs += 1;
                     let done = end.max(self.runners[i].1) + dur;
@@ -3828,9 +3952,11 @@ impl Timed {
                 && !self.lb_out
                 && !self.ending
                 && self.cs_owed >= self.cs_chunk as f64
+                && (!self.lb_gate || (self.lb_free <= end && (self.cs_turn || !self.need_pending)))
             {
+                self.cs_turn = false;
                 self.cs_owed -= self.cs_chunk as f64;
-                let dur = self.cs_chunk as f64 * self.lb_ms;
+                let dur = self.cs_chunk as f64 * self.lb_frame_ms();
                 self.lb_free = self.lb_free.max(end) + dur;
                 self.lb_worker_busy += dur;
                 self.lb_out = true;
@@ -5308,6 +5434,12 @@ fn main() {
     }
     let cs_cfg = CsCfg::parse(&args);
     let lb_ms: f64 = arg_value(&args, "--lb-ms").map_or(10.0, |s| s.parse().unwrap());
+    // `--lb-gate` (with `--offered-fps` and `--csettle`): need-driven
+    // look-back through the modelled look-back worker, in requests of at
+    // most `--lb-take` frames (the app's `LOOKBACK.takeMax`).
+    let lb_gate = args.iter().any(|a| a == "--lb-gate");
+    let lb_take: usize = arg_value(&args, "--lb-take").map_or(16, |s| s.parse().unwrap());
+    let mut lb_fwd_seen: u64 = 0;
     let mut lb_drain: usize = tail.drain;
     let lb_frames: usize =
         arg_value(&args, "--lookback-frames").map_or(3000, |s| s.parse().unwrap());
@@ -5784,6 +5916,13 @@ fn main() {
                                 tm.batch_ms = batch_n as f64 * 1e3 / fps;
                             }
                             if let Some(tm) = timed.as_mut() {
+                                if let Some(v) = arg_value(&args, "--visit-units-per-ms") {
+                                    tm.visit_units_per_ms = v.parse().unwrap();
+                                }
+                                tm.lb_gate = lb_gate;
+                                if let Some(v) = arg_value(&args, "--lb-ms-per-cell") {
+                                    tm.lb_ms_cell = v.parse().unwrap();
+                                }
                                 if let Some(v) = arg_value(&args, "--owner-load") {
                                     let (ms, period) =
                                         v.split_once(':').expect("--owner-load MS:PERIOD");
@@ -5998,7 +6137,33 @@ fn main() {
                     // is charged the frames' slow-loop work.
                     let w0 = sl.work();
                     let lb0 = lbk.frames;
-                    if timed.is_none() || lbk.cs.is_some() {
+                    if let (true, Some(tm), true) = (lb_gate, timed.as_mut(), lbk.cs.is_some()) {
+                        // Budget per frame forwarded to the slow loop, as
+                        // `lookbackNote(seen, observed)`.
+                        let now = tm.at(t + 1);
+                        let add = lbk.rate * (fwd_frames - lb_fwd_seen) as f64;
+                        lb_fwd_seen = fwd_frames;
+                        let max = if tm.need_may_ask(now) { lb_take } else { 0 };
+                        let n = lbk.after_frame_gated(
+                            t_rec,
+                            t_len,
+                            add,
+                            max,
+                            start,
+                            &mut rec,
+                            drift.as_ref(),
+                            &mut pipe,
+                            &engine,
+                            sl,
+                            n_px,
+                        );
+                        if n > 0 {
+                            tm.cs_turn = true;
+                            tm.need_frames += n;
+                            tm.need_reqs += 1;
+                        }
+                        tm.need_pending = lbk.need_pending();
+                    } else if timed.is_none() || lbk.cs.is_some() {
                         lbk.after_frame(
                             t_rec,
                             t_len,
@@ -6012,6 +6177,12 @@ fn main() {
                         );
                     }
                     match timed.as_mut() {
+                        Some(tm) if lb_gate && lbk.cs.is_some() => {
+                            let n = lbk.frames - lb0;
+                            if n > 0 {
+                                tm.need_answer(tm.at(t + 1), n, sl.work() - w0);
+                            }
+                        }
                         Some(tm) => {
                             let now = tm.at(t + 1);
                             tm.lb_note(now, lbk.frames - lb0);
@@ -6491,6 +6662,22 @@ fn main() {
                 100.0 * tm.cs_busy / wall,
                 100.0 * tm.lb_busy / wall,
                 100.0 * (1.0 - tm.owner_busy / wall),
+            )
+        } else {
+            msg
+        };
+        let msg = if tm.lb_gate {
+            format!(
+                "{}timed look-back gate: {} need-driven frames in {} requests; visit units per ms {:.3e}; look-back worker {:.2} ms per frame + {:.4} ms per cell; owner {:.1}% on settle answers in {} answers ({:.1} ms per answer)\n",
+                msg,
+                tm.need_frames,
+                tm.need_reqs,
+                tm.visit_units_per_ms,
+                tm.lb_ms,
+                tm.lb_ms_cell,
+                100.0 * tm.cs_busy / wall,
+                tm.cs_reqs,
+                tm.cs_busy / tm.cs_reqs.max(1) as f64
             )
         } else {
             msg
