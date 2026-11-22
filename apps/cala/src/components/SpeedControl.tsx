@@ -209,31 +209,52 @@ export function SpeedControl(props: {
     if (props.live) return props.fps > 0 ? props.fps.toFixed(1) : '-';
     const a = achieved();
     if (a !== null) return a.toFixed(1);
-    if (mode() === 'curve') return target() > 0 ? String(target()) : running() ? 'Max' : 'Curve';
+    if (mode() === 'curve') return !running() ? 'Curve' : target() > 0 ? String(target()) : 'Max';
     return mode() === 'max' ? 'Max' : String(shown());
   };
   const unitText = () => {
     if (props.live) return 'fps from the stream · sets the pace';
-    const t = target() > 0 ? String(target()) : 'Max';
+    const curve = mode() === 'curve';
+    const t = curve
+      ? target() > 0
+        ? String(target())
+        : 'Max'
+      : mode() === 'max'
+        ? 'Max'
+        : String(shown());
     const x = mode() === 'fixed' ? timesReal(shown() as number) : null;
     const xt = x !== null ? ` · ${x.toFixed(1)}× real time` : '';
-    return achieved() !== null ? `fps achieved · target ${t}${xt}` : `fps target${xt}`;
+    if (achieved() !== null) return `fps achieved · target ${t}${xt}`;
+    return curve ? (running() ? 'fps · following the curve' : '') : `fps target${xt}`;
   };
 
+  // What the run follows: the curve after the minimum-step rule, and a note when steps merged.
   const curveLine = () => {
-    const c = s().speedCurve();
-    return c ? curveWords(c.curve, liveNow()) : '';
+    const armed = running() ? s().armedCurve() : null;
+    const c = armed?.curve ?? s().speedCurve()?.curve;
+    if (!c) return '';
+    const words = curveWords(c, liveNow());
+    const n = armed?.merged ?? 0;
+    return n > 0 ? `${words} (${n} short step${n === 1 ? '' : 's'} merged)` : words;
   };
   const status = () =>
     mode() === 'curve' && !running()
       ? `Discover will follow the curve: ${curveLine()}.`
-      : speedStatusText({
-          running: running(),
-          target: target(),
-          floor: floorFps(),
-          governor: gov(),
-          settleOn: lookbackOn() && cap() > 0,
-        });
+      : mode() === 'curve' && s().armedCurve()?.merged
+        ? `Following the curve: ${curveLine()}. ${speedStatusText({
+            running: running(),
+            target: target(),
+            floor: floorFps(),
+            governor: gov(),
+            settleOn: lookbackOn() && cap() > 0,
+          })}`
+        : speedStatusText({
+            running: running(),
+            target: target(),
+            floor: floorFps(),
+            governor: gov(),
+            settleOn: lookbackOn() && cap() > 0,
+          });
   const belowNote = () => (mode() === 'fixed' ? belowFloorNote(shown() ?? 0, floorFps()) : null);
 
   const capSelect = (cls: string): JSX.Element => (

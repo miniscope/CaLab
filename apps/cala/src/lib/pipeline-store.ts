@@ -54,6 +54,7 @@ import {
   normalizeCurve,
   sanitizeCurve,
   SpeedDriver,
+  type TargetPolicy,
   SpeedSchedule,
   type PolicyInput,
   type SpeedCurve,
@@ -560,38 +561,54 @@ export function createPipelineStore(
       wallS: clock() / 1000,
     };
   }
+  /** The curve the run follows as merged by the minimum-step rule, and how many steps that merged. */
+  const [armedCurve, setArmedCurve] = createSignal<{ curve: SpeedCurve; merged: number } | null>(
+    null,
+  );
+  /**
+   * Take over the target with a policy from `frame` on. Any `TargetPolicy` fits (a curve now, Auto
+   * later); `record` is what the run record keeps of it (null: nothing to record).
+   */
+  function armPolicy(policy: TargetPolicy, frame: number, record: CurveRecord | null): void {
+    curveDriver = new SpeedDriver(policy);
+    runCurve = record;
+    if (record) {
+      for (const cb of curveListeners) {
+        try {
+          cb(record);
+        } catch {
+          // Observers only.
+        }
+      }
+    }
+    driveCurve(frame);
+  }
   /** Take over the target with the curve from `frame` on (at the run's start, or when chosen mid-run). */
   function armCurve(frame: number): void {
     curveDriver = null;
     runCurve = null;
+    setArmedCurve(null);
     const a = untrack(activeCurve);
     const total = curveFrames();
     if (!a || total <= 0 || (lookbackFeed && lookbackFeed.blocked() !== null)) return;
     const live = policyInput(frame);
-    const eff = a.normalize
+    const norm = a.normalize
       ? normalizeCurve(a.curve, {
           totalFrames: total,
           cap: settleCap(),
           floorFps: live.floorFps,
           seeAllFps: live.seeAllFps,
           maxFps: live.maxFps,
-        }).curve
-      : a.curve;
-    curveDriver = new SpeedDriver(new SpeedSchedule(eff));
-    runCurve = {
+        })
+      : { curve: a.curve, merged: 0 };
+    const eff = norm.curve;
+    setArmedCurve({ curve: eff, merged: norm.merged });
+    armPolicy(new SpeedSchedule(eff), frame, {
       preset: a.preset,
       points: a.curve.points.map((p) => ({ ...p })),
       effective_points: eff.points.map((p) => ({ ...p })),
       armed_at_frame: frame,
-    };
-    for (const cb of curveListeners) {
-      try {
-        cb(runCurve);
-      } catch {
-        // Observers only.
-      }
-    }
-    driveCurve(frame);
+    });
   }
   /** One look at the curve: a step boundary, or a floor that moved, may change the target. */
   function driveCurve(frame: number): void {
@@ -952,10 +969,10 @@ export function createPipelineStore(
   /** Start (or restart) the pipeline from frame 0. */
   async function start(): Promise<void> {
     reset();
-    // A curve's first step is the run's first target (the run record's "run start" row).
-    armCurve(0);
     const gen = generation;
     setStatus('starting');
+    // A curve's first step is the run's first target (the run record's "run start" row).
+    armCurve(0);
     const session = nextSession++;
     paceSession = session;
     cells?.reset(session);
@@ -1216,6 +1233,7 @@ export function createPipelineStore(
         setActiveCurve(null);
         curveDriver = null;
         runCurve = null;
+        setArmedCurve(null);
         return;
       }
       const normalize = o.normalize !== false;
@@ -1227,6 +1245,10 @@ export function createPipelineStore(
       const st = untrack(status);
       if (st === 'running' || st === 'paused') armCurve(untrack(processed));
     },
+    /** The curve the run follows after the minimum-step rule (null: none armed), with the steps merged; a signal. */
+    armedCurve,
+    /** Install another policy (Auto, PR I) in place of the curve; `record` is kept in the run record. */
+    armPolicy,
     /** The curve this run is following (null: none), as the run record keeps it. */
     curveNow: (): CurveRecord | null => (runCurve ? { ...runCurve } : null),
     /** Called when a curve takes over the target (at the run's start, or mid-run). */

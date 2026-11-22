@@ -448,6 +448,23 @@ describe('pipeline store backpressure', () => {
       });
     });
 
+    it('installs another policy through armPolicy, and keeps the merged count of a curve', async () => {
+      await createRoot(async (dispose) => {
+        const { store } = curveStore(dispose);
+        store.setSpeedCurve({
+          points: [
+            { at: 0, fps: 20 },
+            { at: 0.5, fps: 40 },
+          ],
+        });
+        await store.start();
+        expect(store.armedCurve()?.merged).toBeGreaterThanOrEqual(0);
+        store.armPolicy({ source: 'auto', target: () => ({ fps: 33, phase: 'p' }) }, 0, null);
+        expect(store.targetNow()).toBe(33);
+        dispose();
+      });
+    });
+
     it('does nothing for a stream (no frame count), and a curve of nothing clears it', () => {
       createRoot((dispose) => {
         const { client } = manualClient();
