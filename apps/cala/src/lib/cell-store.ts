@@ -288,7 +288,7 @@ export function createCellStore(
         for (let i = 0; i < ids.length; i++) m.set(ids[i], est[i] === 1);
         setEstablished(m);
       }
-      // The hint is the Final settle's: a Refine or later run (run > 1) clears it.
+      // The hint is the Final settle's: a later run (run > 1) clears it.
       if (st.run > 1) {
         if (stillMoving().size > 0) setStillMoving(new Map());
       } else if (st.stillMoving) setStillMoving(stillMovingMap(st.stillMoving));
@@ -464,8 +464,7 @@ export function createCellStore(
     /** Newest QC snapshot (null until the fast loop has cells and a snapshot). */
     qc,
     /**
-     * Replace the QC snapshot with the QC of the traces of a Refine replay
-     * or of Extract (`extract-qc.ts`, whole recording): Refine and Extract run
+     * Replace the QC snapshot with the QC of the traces of Extract (`extract-qc.ts`, whole recording): Extract runs
      * no monitor, so without it the last minute of Discover would stay on show.
      */
     replaceQc: (snap: QcSnapshot) => setQc(snap),

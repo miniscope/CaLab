@@ -2,12 +2,9 @@ import { createSignal, For, Index, Show, type JSX } from 'solid-js';
 import type { SessionList } from '../lib/session-list.ts';
 import {
   DEFAULT_MODE,
-  DEFAULT_REFINE_RUNS,
   LIBRARY_MODE_HINT,
   LIBRARY_MODE_LABEL,
-  MAX_REFINE_RUNS,
   OFFERED_MODES,
-  refinePlanText,
   type LibraryMode,
   type RunSettings,
 } from '../lib/session-run.ts';
@@ -38,7 +35,6 @@ function fmtStart(ms: number | null): string {
 /** The session list: review, reorder, remove and add sessions, pick the mode, start. */
 export function SessionSetup(props: SessionSetupProps): JSX.Element {
   const [mode, setMode] = createSignal<LibraryMode>(DEFAULT_MODE);
-  const [refineRuns, setRefineRuns] = createSignal(DEFAULT_REFINE_RUNS);
   const [startError, setStartError] = createSignal<string | null>(null);
   const l = () => props.list;
   const check = () => l().check();
@@ -67,7 +63,7 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
         );
         return;
       }
-      props.onStart({ mode: mode(), refineRuns: refineRuns() });
+      props.onStart({ mode: mode() });
     } catch (err) {
       setStartError(err instanceof Error ? err.message : String(err));
     }
@@ -221,24 +217,6 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
             )}
           </For>
         </fieldset>
-        <label class="cala-sessions__row">
-          Refine runs before Extract{' '}
-          <select
-            data-testid="refine-runs"
-            value={String(refineRuns())}
-            onChange={(e) => setRefineRuns(Number(e.currentTarget.value))}
-          >
-            <For each={Array.from({ length: MAX_REFINE_RUNS + 1 }, (_, k) => k)}>
-              {(k) => <option value={String(k)}>{k}</option>}
-            </For>
-          </select>
-        </label>
-        <p
-          class={refineRuns() === 0 ? 'cala-sessions__warning' : 'cala-muted cala-sessions__note'}
-          data-testid="refine-note"
-        >
-          {refinePlanText(refineRuns())}
-        </p>
         <p class="cala-sessions__row" data-testid="results-location">
           Results:{' '}
           <Show

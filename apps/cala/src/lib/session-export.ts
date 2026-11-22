@@ -76,7 +76,6 @@ export function sessionMetadata(i: SessionMetaInput): Record<string, unknown> {
     app_version: i.version,
     created: i.createdAt,
     mode: i.settings.mode,
-    refine_runs: i.settings.refineRuns,
     stages_run: i.stages.map(stageMeta),
     session_index: s.index,
     session_count: i.sessions,
@@ -147,7 +146,7 @@ export function runManifest(i: RunManifestInput): Record<string, unknown> {
     ...(i.plan ? { plan: i.plan } : {}),
     results_folder: i.root,
     mode: i.settings.mode,
-    settings: { refine_runs: i.settings.refineRuns, ...(i.pipeline ?? {}) },
+    settings: { ...(i.pipeline ?? {}) },
     boundary_frames: [...i.boundaries],
     sessions: i.sessions.map((s) => ({
       index: s.index,

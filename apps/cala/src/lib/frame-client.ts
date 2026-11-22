@@ -34,7 +34,7 @@ export interface PipelineClient {
   /** Run one step in the worker. Calls are answered in order. */
   stepPipeline(): Promise<PipelineStepResult>;
   /** Free the worker-side pipeline. */
-  /** `keepSlow`: keep the slow loop (a Refine or Extract run is stopped; see `pipeline-stop`). */
+  /** `keepSlow`: keep the slow loop (an Extract run is stopped; see `pipeline-stop`). */
   stopPipeline(opts?: { keepSlow?: boolean }): Promise<void>;
   /** Pace the running pipeline (`fps`, 0 = unpaced) or hold and resume its gate (`paused`). */
   setPace?(pace: { fps?: number; paused?: boolean }): Promise<void>;

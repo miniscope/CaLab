@@ -109,7 +109,7 @@ tree at its root), `mode` (`joint` | `separate`), `sessions[]` (`id`, `status`
 the export's `stages_run` records them, with times and outcomes, and for the
 later sessions of a Joint run `boundary`: the health flag of the boundary the
 session starts with), `settings`
-(`refine_runs`), `app_version`, `created`, `updated`, `finished`, `stopped` (why
+(empty; older runs hold `refine_runs`), `app_version`, `created`, `updated`, `finished`, `stopped` (why
 it stopped), `plan` (`{id, group, groups}` for a run plan's group), and
 `library_in` / `library_out` (`null`; saved libraries come in PR 2).
 
@@ -180,7 +180,7 @@ edges; `own` marks a session with ids of its own.
           ]
         }
       ],
-      "settings": { "refine_runs": 1 },
+      "settings": {},
       "app_version": "v2.14.0",
       "created": "2026-11-13T14:02:33.000Z",
       "updated": "2026-11-13T14:20:12.000Z",
@@ -244,8 +244,7 @@ edges; `own` marks a session with ids of its own.
 ## The session table
 
 Columns: the session, its date (`recordingStartTime`), its length (frames and
-duration), then **Discover**, **Refine** (the count of finished Refine runs)
-and **Extract**, from the current result's run (else the latest run with that
+duration), then **Discover** and **Extract**, from the current result's run (else the latest run with that
 session, with a note when it was skipped or failed), **Cell IDs**, **Library**
 (a placeholder until saved libraries), and the **current result** (run and
 cell count). **Results** opens a row's results: each run, when it was made, its
@@ -258,7 +257,7 @@ result has **View results** in its cell too.
 normal viewer, read-only, looking as the app did right after a run on that
 session: the field of view with the footprints and contours, the QC table and
 colours, the selected cell's footprint and trace, the History plots and event
-log, the stages that ran, and the flat field. There are no Discover, Refine or
+log, the stages that ran, and the flat field. There are no Discover or
 Extract controls (a new run starts from the table); **Back to project** returns
 to it.
 

@@ -38,7 +38,7 @@ const stage: StageRun = {
   adds: 7,
 };
 
-const settings = { mode: 'joint', refineRuns: 2 } as const;
+const settings = { mode: 'joint' } as const;
 
 describe('sessionMetadata', () => {
   const base = {
@@ -63,7 +63,6 @@ describe('sessionMetadata', () => {
       app_version: '2.14.0',
       created: base.createdAt,
       mode: 'joint',
-      refine_runs: 2,
       session_index: 1,
       session_count: 3,
       session_name: 'My_V4_Miniscope',
@@ -144,7 +143,7 @@ describe('runManifest', () => {
       finished: false,
       results_folder: 'cala-results',
       mode: 'joint',
-      settings: { refine_runs: 2, flat_field: true },
+      settings: { flat_field: true },
       boundary_frames: [50],
     });
     const [a, b] = m.sessions as Record<string, unknown>[];
@@ -161,8 +160,8 @@ describe('runManifest', () => {
     expect(b.note).toBe('no cells were found');
   });
 
-  it('settings without pipeline holds only refine_runs', () => {
-    expect(runManifest(base).settings).toEqual({ refine_runs: 2 });
+  it('settings without pipeline is empty', () => {
+    expect(runManifest(base).settings).toEqual({});
   });
 });
 

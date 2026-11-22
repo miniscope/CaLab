@@ -121,7 +121,6 @@ export function createProjectStore(deps: ProjectDeps) {
   const [resultsHandle, setResultsHandle] = createSignal<ReadDirLike | null>(null);
   let corrupt: { text: string; stamp: string } | null = null;
   let planId = '';
-  let refineRuns = 1;
 
   const location = (): ResultsLocation => {
     const custom = resultsHandle();
@@ -472,7 +471,7 @@ export function createProjectStore(deps: ProjectDeps) {
           folder,
           mode,
           sessions: runSessions,
-          settings: { refine_runs: p.settings.refineRuns },
+          settings: {},
           app_version: deps.version,
           created: p.createdAt,
           updated: p.updatedAt,
@@ -510,7 +509,7 @@ export function createProjectStore(deps: ProjectDeps) {
     setPlanState({ kind: 'running', group: g });
     await deps.multiRun.start({
       sessions: plannedFor(group.sessions),
-      settings: { mode: group.kind, refineRuns },
+      settings: { mode: group.kind },
       // The sink's root is the full path (`<animal>/cala-results/runs/<id>`).
       locationLabel: writable ? '' : 'a zip download: ',
       planInfo: { id: planId, group: g + 1, groups: groups.length },
@@ -529,11 +528,10 @@ export function createProjectStore(deps: ProjectDeps) {
    * Start the plan (inside the Start click: `readwrite` is asked for first).
    * Resolves false when writing was refused.
    */
-  async function startPlan(refines: number): Promise<boolean> {
+  async function startPlan(): Promise<boolean> {
     const groups = plan();
     if (groups.length === 0 || planErrors().length > 0) return false;
     if (!(await grant())) return false;
-    refineRuns = refines;
     planId = runIdFor(now(), new Set());
     setRunning(groups);
     await startGroup(groups, 0);

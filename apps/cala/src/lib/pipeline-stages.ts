@@ -250,7 +250,7 @@ export class FrontStage {
     const frameCount = replay ? replay.frameCount : recorded;
     if (replay && (replay.frameCount < 1 || replay.frameCount > recorded))
       throw new RangeError(
-        `The replay (Refine, Extract) covers ${replay.frameCount} frames of a recording of ${recorded}.`,
+        `The replay (Extract) covers ${replay.frameCount} frames of a recording of ${recorded}.`,
       );
     for (const k of ['dy', 'dx', 'flags', 'flickerOffset', 'flickerGain'] as const)
       if (replay && replay[k].length < replay.frameCount)
@@ -586,7 +586,7 @@ export function rigidRecords(
   count: number,
 ): Float32Array {
   const len = motion.recordLen;
-  if (len !== 4) throw new Error('The replay (Refine, Extract) uses rigid shifts only.');
+  if (len !== 4) throw new Error('The replay (Extract) uses rigid shifts only.');
   const records = new Float32Array(count * len);
   for (let i = 0; i < count; i++) {
     records[i * len] = dy[i];
@@ -723,7 +723,7 @@ export class MotionStage {
     const s = job.step;
     const n = s.count * this.px;
     if (!job.dy || !job.dx || !job.flags)
-      throw new Error('The replay (Refine, Extract) uses rigid shifts only.');
+      throw new Error('The replay (Extract) uses rigid shifts only.');
     const records = rigidRecords(motion, job.dy, job.dx, job.flags, s.count);
     const corrected = await this.acquireOut();
     const t0 = now();

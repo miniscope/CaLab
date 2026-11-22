@@ -1,6 +1,6 @@
 /**
  * Drives a multi-session run (`session-run.ts`): opens the sessions, starts
- * Refine and Extract when they are due, writes each session's results
+ * Extract when it is due, writes each session's results
  * (`session-export.ts`) and, in Separate mode, moves on to the next session.
  *
  * The stores that run the stages stay as they are; this store only watches
@@ -92,12 +92,10 @@ export interface MultiRunDeps {
   openOne(session: PlannedSession, index: number): Promise<void>;
   stages(): {
     discover: StageActivity;
-    refine: StageActivity;
     extract: StageActivity;
     availability: Record<StageName, string | null>;
     runs: readonly StageRun[];
   };
-  runRefine(): void;
   runExtract(): void;
   /** The export of the current result, all frames (null: no result). */
   exportInput(): ExportInput | null;
@@ -376,9 +374,7 @@ export function createMultiRun(deps: MultiRunDeps) {
     const input = {
       settings: p.settings,
       discover: st.discover,
-      refine: st.refine,
       extract: st.extract,
-      refinesDone: st.runs.filter((r) => r.stage === 'refine' && r.outcome === 'done').length,
       availability: st.availability,
       exported: exported(),
       exporting: exporting(),
@@ -387,12 +383,9 @@ export function createMultiRun(deps: MultiRunDeps) {
     };
     const a = nextAutoAction(input);
     setAction(a);
-    const key = `${current()}:${a.kind}:${input.refinesDone}:${st.runs.length}`;
+    const key = `${current()}:${a.kind}:${st.runs.length}`;
     untrack(() => {
       switch (a.kind) {
-        case 'refine':
-          dispatch(key, deps.runRefine);
-          break;
         case 'extract':
           dispatch(key, deps.runExtract);
           break;

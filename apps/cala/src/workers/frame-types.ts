@@ -20,16 +20,10 @@ export interface CellsSettings {
   /** Run online quality control on the traces (default on). */
   qc?: boolean;
   /**
-   * A replay stage (Refine or Extract, see docs/stages.md): solve every frame
-   * with this library (`TraceLibrary.toBytes()`). Without `refine` (Extract)
-   * nothing goes to the slow loop.
+   * The replay stage (Extract, see docs/stages.md): solve every frame
+   * with this library (`TraceLibrary.toBytes()`). Nothing goes to the slow loop.
    */
   library?: Uint8Array;
-  /**
-   * Refine (with `library`): feed the replayed frames to the slow loop of
-   * this `session`, which keeps its state and may only refine footprints.
-   */
-  refine?: boolean;
   /**
    * Look-back (experimental; Discover of a recording only): the slow loop
    * runs with it (`SlowInit.lookback`) and stage C reports its back half's
@@ -97,8 +91,7 @@ export type FrameRequest =
   | { type: 'pipeline-step'; id: number }
   /** Free the pipeline's WASM state. */
   /**
-   * `keepSlow`: keep the slow loop (Refine or Extract may follow; a Refine run
-   * that is stopped publishes what it has) instead of dropping it.
+   * `keepSlow`: keep the slow loop (Extract may follow) instead of dropping it.
    */
   | { type: 'pipeline-stop'; id: number; keepSlow?: boolean }
   /** The port to the slow worker (transferred). */

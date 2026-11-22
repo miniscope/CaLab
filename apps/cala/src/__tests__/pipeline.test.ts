@@ -9,6 +9,7 @@ import { createPipelineStore, MAX_IN_FLIGHT, ThroughputMeter } from '../lib/pipe
 import { downsampleFrame, previewFactor } from '../lib/preview.ts';
 import { createRunHistory } from '../lib/run-history.ts';
 import type { LookbackFeed } from '../lib/lookback-client.ts';
+import { FINAL_SETTLE_LEVEL_DEFAULT } from '../lib/settle.ts';
 import type { FrameRequest, FrameResponse } from '../workers/frame-types.ts';
 
 function walk(cursor: PipelineCursor): PipelineStep[] {
@@ -862,6 +863,81 @@ describe('pipeline store: Background settle and the settle pool', () => {
       await store.start();
       expect(calls.pool).toHaveLength(1);
       expect(order.indexOf('start')).toBeGreaterThan(order.indexOf('pace'));
+      dispose();
+    });
+  });
+});
+
+describe('pipeline store: look-back and Final settle are the default (no Refine stage)', () => {
+  const feed = (blocked: string | null = null): LookbackFeed => ({
+    blocked: () => blocked,
+    begin: () => blocked === null,
+    rows: () => {},
+    backState: () => {},
+    flatField: () => {},
+    reset: () => {},
+  });
+  const make = (f: LookbackFeed, client: ReturnType<typeof manualClient>['client']) =>
+    createPipelineStore(
+      client,
+      {},
+      undefined,
+      undefined,
+      true,
+      undefined,
+      {},
+      undefined,
+      undefined,
+      f,
+    );
+  const cellsOf = (client: ReturnType<typeof manualClient>['client']) =>
+    (
+      client.startPipeline.mock.calls[0] as unknown as [
+        unknown,
+        { lookback?: boolean; csettle?: boolean },
+      ]
+    )[1];
+
+  it('a fresh store has look-back and the Thorough Final settle on', () => {
+    const { client } = manualClient();
+    createRoot((dispose) => {
+      const store = make(feed(), client);
+      expect(store.lookback()).toBe(true);
+      expect(store.finalSettleLevel()).toBe('thorough');
+      expect(FINAL_SETTLE_LEVEL_DEFAULT).toBe('thorough');
+      dispose();
+    });
+  });
+
+  it('a recording Discover starts with look-back, Background settle and Thorough without any setting', async () => {
+    const { client } = manualClient();
+    await createRoot(async (dispose) => {
+      const store = make(feed(), client);
+      await store.start();
+      const cells = cellsOf(client);
+      expect(cells.lookback).toBe(true);
+      expect(cells.csettle).toBe(true);
+      expect(store.lookbackRun()).toBe(true);
+      expect(store.runFinalSettleLevel()).toBe('thorough');
+      dispose();
+    });
+  });
+
+  it('a recording that cannot be re-read runs without look-back; turning it off does too', async () => {
+    const blocked = manualClient();
+    await createRoot(async (dispose) => {
+      const store = make(feed('Look-back needs a recording on disk.'), blocked.client);
+      await store.start();
+      expect(cellsOf(blocked.client).lookback).toBeUndefined();
+      expect(store.lookbackRun()).toBe(false);
+      dispose();
+    });
+    const off = manualClient();
+    await createRoot(async (dispose) => {
+      const store = make(feed(), off.client);
+      store.setLookback(false);
+      await store.start();
+      expect(cellsOf(off.client).lookback).toBeUndefined();
       dispose();
     });
   });

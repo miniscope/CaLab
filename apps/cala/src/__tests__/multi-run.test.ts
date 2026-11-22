@@ -9,8 +9,7 @@ import type { ExportInput } from '../lib/export.ts';
 /**
  * The automatic multi-session run, driven by fake stage stores that finish
  * every stage a tick after it starts: which stages it asks for, for each mode
- * and Refine setting. (A lab report had plans going Discover to Extract with no
- * Refine; with the setting at 1 or more the plan must always Refine first.)
+ * (Refine has been removed: every plan is Discover, then Extract.)
  */
 const INFO = { frameCount: 100, fps: 20, sessions: undefined } as unknown as FrameSourceInfo;
 
@@ -33,18 +32,13 @@ const sink: ResultsSink = {
 
 function harness(
   mode: 'joint' | 'separate',
-  refineRuns: number,
   n = 3,
   opts: {
     sink?: ResultsSink;
-    runRecord?: (
-      s: { mode: string; refineRuns: number },
-      sessionIndex?: number,
-    ) => Record<string, unknown>;
+    runRecord?: (s: { mode: string }, sessionIndex?: number) => Record<string, unknown>;
   } = {},
 ) {
   const [discover, setDiscover] = createSignal<StageActivity>('idle');
-  const [refine, setRefine] = createSignal<StageActivity>('idle');
   const [extract, setExtract] = createSignal<StageActivity>('idle');
   const [runs, setRuns] = createSignal<readonly StageRun[]>([]);
   const order: StageName[] = [];
@@ -72,14 +66,13 @@ function harness(
   const startDiscover = () => {
     // A new Discover starts the stage log over, as the app does.
     setRuns([]);
-    setRefine('idle');
     setExtract('idle');
     begin('discover', setDiscover);
   };
   const availability = (): Record<StageName, string | null> => {
-    const busy = [discover(), refine(), extract()].includes('running');
+    const busy = [discover(), extract()].includes('running');
     const why = busy ? 'busy' : discover() !== 'done' ? 'after Discover' : null;
-    return { discover: null, refine: why, extract: why };
+    return { discover: null, extract: why };
   };
   let multi!: ReturnType<typeof createMultiRun>;
   const dispose = createRoot((d) => {
@@ -88,12 +81,10 @@ function harness(
       openOne: async () => startDiscover(),
       stages: () => ({
         discover: discover(),
-        refine: refine(),
         extract: extract(),
         availability: availability(),
         runs: runs(),
       }),
-      runRefine: () => begin('refine', setRefine),
       runExtract: () => begin('extract', setExtract),
       exportInput: () =>
         ({
@@ -116,7 +107,7 @@ function harness(
   const start = () =>
     multi.start({
       sessions: Array.from({ length: n }, (_, i) => session(i)),
-      settings: { mode, refineRuns },
+      settings: { mode },
       openSink: async () => opts.sink ?? sink,
       locationLabel: '',
     });
@@ -125,36 +116,10 @@ function harness(
 
 describe('multi-session run stages', () => {
   it.each([
-    ['joint', 1, ['discover', 'refine', 'extract']],
-    ['joint', 2, ['discover', 'refine', 'refine', 'extract']],
-    ['joint', 0, ['discover', 'extract']],
-    [
-      'separate',
-      1,
-      [
-        'discover',
-        'refine',
-        'extract',
-        'discover',
-        'refine',
-        'extract',
-        'discover',
-        'refine',
-        'extract',
-      ],
-    ],
-    [
-      'separate',
-      2,
-      [
-        ...['discover', 'refine', 'refine', 'extract'],
-        ...['discover', 'refine', 'refine', 'extract'],
-        ...['discover', 'refine', 'refine', 'extract'],
-      ],
-    ],
-    ['separate', 0, ['discover', 'extract', 'discover', 'extract', 'discover', 'extract']],
-  ] as const)('%s with Refine runs = %i', async (mode, refineRuns, expected) => {
-    const h = harness(mode, refineRuns);
+    ['joint', ['discover', 'extract']],
+    ['separate', ['discover', 'extract', 'discover', 'extract', 'discover', 'extract']],
+  ] as const)('%s runs Discover then Extract, never a Refine', async (mode, expected) => {
+    const h = harness(mode);
     await h.start();
     expect(await h.done()).toEqual(expected);
     expect(h.multi.stopped()).toBeNull();
@@ -181,7 +146,7 @@ describe('run record in the results', () => {
       finish: async () => {},
     } as unknown as ResultsSink;
     const calls: unknown[] = [];
-    const h = harness('joint', 0, 2, {
+    const h = harness('joint', 2, {
       sink: writing,
       runRecord: (st) => {
         calls.push(st);
@@ -213,7 +178,7 @@ describe('run record in a Separate run', () => {
       },
       finish: async () => {},
     } as unknown as ResultsSink;
-    const h = harness('separate', 0, 2, {
+    const h = harness('separate', 2, {
       sink: writing,
       runRecord: (st, index) => ({ format: 'cala-run-record', session_index: index ?? null }),
     });

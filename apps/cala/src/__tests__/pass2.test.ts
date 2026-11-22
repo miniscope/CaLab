@@ -302,7 +302,7 @@ describe('pass 2', () => {
           undefined,
           replayOf(rec, FRAMES + 1),
         ),
-    ).toThrow(/The replay \(Refine, Extract\) covers/);
+    ).toThrow(/The replay \(Extract\) covers/);
     expect(
       () =>
         new FrontStage(

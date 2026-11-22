@@ -460,7 +460,7 @@ export interface FloorFeed {
   governorLimit?: string;
   /** A library has been published. */
   haveLibrary: boolean;
-  /** The slow loop's run number (`SlowStatus.run`): 1 = Discover, above 1 = a Refine run (the floor freezes). */
+  /** The slow loop's run number (`SlowStatus.run`): 1 = Discover, above 1 = a later run (the floor freezes). */
   run?: number;
 }
 

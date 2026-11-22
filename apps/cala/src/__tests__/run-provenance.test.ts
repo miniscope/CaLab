@@ -95,10 +95,12 @@ describe('urlFlags', () => {
   });
 
   it('marks debug-only flags as not in effect without ?debug', () => {
-    const f = urlFlags('?pacefps=30&lookback');
+    const f = urlFlags('?pacefps=30&lookback=0');
     expect(f.debug).toBe(false);
     expect(f.flags.pacefps.in_effect).toBe(false);
+    // Look-back is on by default: only `lookback=0` (off) changes anything.
     expect(f.flags.lookback.in_effect).toBe(true);
+    expect(urlFlags('?lookback').flags.lookback.in_effect).toBe(false);
   });
 });
 
@@ -273,10 +275,23 @@ describe('gatherRunRecord', () => {
   beforeEach(() => resetRunRecordContext());
   const sources = gatherSources;
 
+  it('records whether look-back actually ran, not only the setting', () => {
+    const blocked = {
+      ...gatherSources(),
+      pipeline: { ...gatherSources().pipeline, lookback: () => true, lookbackRun: () => false },
+    };
+    const r = gatherRunRecord(blocked as never) as Rec;
+    expect(r.settings).toMatchObject({ lookback: true, lookback_ran: false });
+    const ran = gatherRunRecord({
+      ...gatherSources(),
+      pipeline: { ...gatherSources().pipeline, lookbackRun: () => true },
+    } as never) as Rec;
+    expect(ran.settings).toMatchObject({ lookback: true, lookback_ran: true });
+  });
+
   it('records every setting (defaults too), the input and the work shape', () => {
     const r = gatherRunRecord(sources(), {
       mode: 'joint',
-      refineRuns: 2,
       passQcOnly: true,
     }) as Rec;
     expect(r.settings).toMatchObject({
@@ -289,7 +304,6 @@ describe('gatherRunRecord', () => {
       final_settle_level: 'standard',
       target_speed_fps: 0,
       library_mode: 'joint',
-      refine_runs: 2,
       export_pass_qc_only: true,
     });
     expect(r.input.files).toEqual([]);
@@ -423,8 +437,12 @@ describe('url flags against the app', () => {
   });
 
   it('marks inert combinations', () => {
+    // Look-back is on by default, so the settle flags apply without `?lookback`.
     expect(urlFlags('?csettle&csrate=1').flags.csettle.in_effect).toBe(false);
-    expect(urlFlags('?csettle&csrate=1').flags.csrate.in_effect).toBe(false);
+    expect(urlFlags('?csettle&csrate=1').flags.csrate.in_effect).toBe(true);
+    // ... and are inert once it is turned off.
+    expect(urlFlags('?lookback=0&csettle=0&csrate=1').flags.csettle.in_effect).toBe(false);
+    expect(urlFlags('?lookback=0&csrate=1').flags.csrate.in_effect).toBe(false);
     // Background settle is on by default under look-back: a bare `csettle` changes nothing,
     // `csettle=0` (off) and `csettle=yieldN` do.
     expect(urlFlags('?lookback&csettle&csrate=1').flags.csettle.in_effect).toBe(false);
@@ -432,7 +450,7 @@ describe('url flags against the app', () => {
     expect(urlFlags('?lookback&csettle=yield2').flags.csettle.in_effect).toBe(true);
     expect(urlFlags('?needfirst').flags.needfirst.in_effect).toBe(false);
     expect(urlFlags('?debug&needfirst').flags.needfirst.in_effect).toBe(true);
-    expect(urlFlags('?lookback=0&csettle').flags.lookback.in_effect).toBe(false);
+    expect(urlFlags('?lookback=0&csettle').flags.lookback.in_effect).toBe(true);
     expect(urlFlags('?review=4').flags.review.in_effect).toBe(false);
     expect(urlFlags('?compress&review=4').flags.review.in_effect).toBe(true);
   });
@@ -472,6 +490,29 @@ describe('settingsFromRecord', () => {
     expect(settingsFromRecord(null)).toBeNull();
     expect(settingsFromRecord({ format: 'other' })).toBeNull();
     expect(settingsFromRecord({ ...rec, record_version: 99 })).toBeNull();
+  });
+
+  it('flags a record that ran Refine (a removed stage) without failing', () => {
+    const base = buildRunRecord(input({ settings: { lookback: false, refine_runs: 2 } }));
+    const rec = JSON.parse(JSON.stringify(base));
+    const a = settingsFromRecord(rec)!;
+    expect(a.refineUsed).toBe(true);
+    // Look-back was off in that run, but is kept on: it replaces Refine.
+    expect(a.lookback).toBe(true);
+    // Also when only the stage list says so (a record with `refine_runs: 0` and a Refine run).
+    const viaStages = settingsFromRecord({
+      ...rec,
+      settings: { ...rec.settings, refine_runs: 0 },
+      stages: [{ stage: 'discover' }, { stage: 'refine' }],
+    })!;
+    expect(viaStages.refineUsed).toBe(true);
+    // A record of a run without Refine says nothing.
+    const clean = settingsFromRecord({
+      ...rec,
+      settings: { ...rec.settings, refine_runs: 0 },
+      stages: [{ stage: 'discover' }, { stage: 'extract' }],
+    })!;
+    expect(clean.refineUsed).toBeUndefined();
   });
 
   it('maps the cap Off of a v2 record', () => {

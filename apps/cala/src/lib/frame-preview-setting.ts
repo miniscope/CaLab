@@ -3,7 +3,7 @@ import type { FrameView } from './preview.ts';
 /**
  * The view previewed for every frame (smooth playback), as the frame worker
  * holds it. It belongs to one Discover run: every run start clears it (the
- * store asks again once the run is up), and a replay (Refine, Extract) never
+ * store asks again once the run is up), and a replay (Extract) never
  * has it, whatever is asked while it runs.
  */
 export class FramePreviewSetting {
