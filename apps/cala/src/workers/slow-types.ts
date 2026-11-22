@@ -58,6 +58,11 @@ export interface SlowInit {
    * its cap. Off at Max (no pacer target).
    */
   csettleGovernor?: boolean;
+  /**
+   * With `csettleGovernor`: batches the forward pool holds in flight to this
+   * worker (the governor's batch-wait guard scales with it; absent: 2).
+   */
+  csettlePool?: number;
 }
 
 /** Fast worker -> slow worker. */
