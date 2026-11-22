@@ -3,7 +3,8 @@
 #
 #   floor_eval.sh <rec>-<arm>-<rep> ...
 #
-# rec: sa = Samara 10_43_21, sb = Samara 14_57_02, ws = workshop prerecorded.
+# rec: sa = Samara 10_43_21, sb = Samara 14_57_02, ws = workshop prerecorded;
+#      sims (truth anchors): m5 = sims-v3 v3_motion_s5, t6 = sims-v3 v3_static_s6.
 # arm: max (no pacing) or one of see, f14, f10, f07, whose fps comes from $OUT/targets.txt
 #      (lines "<rec> <arm> <fps>", written from the Max runs by floor_eval_summary.py targets).
 # Every run: `memory-measure.mjs --single --headed --every 5 --lookback [--pacefps F]`, from this worktree's HEAD.
@@ -15,6 +16,8 @@ DRV=$WT/apps/cala/scripts/memory-measure.mjs
 WS=$HOME/Projects/workshop-processing-and-analysis/data/sessions/prerecorded/raw
 SA="/Users/daharoni/Downloads/Samara Data/10_43_21"
 SB="/Users/daharoni/Downloads/Samara Data/14_57_02"
+M5=$HOME/Projects/cala-data/sims-v3/v3_motion_s5/daq
+T6=$HOME/Projects/cala-data/sims-v3/v3_static_s6/daq
 vpid=""
 stop_server() { [ -n "$vpid" ] && kill $vpid 2>/dev/null; wait $vpid 2>/dev/null; vpid=""; sleep 2; }
 start_server() {
@@ -27,7 +30,7 @@ trap stop_server EXIT
 mkdir -p $OUT
 for tag in "$@"; do
   rec=${tag%%-*}; rest=${tag#*-}; arm=${rest%%-*}
-  case $rec in sa) data=$SA;; sb) data=$SB;; ws) data=$WS;; *) echo "bad rec $rec"; exit 2;; esac
+  case $rec in sa) data=$SA;; sb) data=$SB;; ws) data=$WS;; m5) data=$M5;; t6) data=$T6;; *) echo "bad rec $rec"; exit 2;; esac
   [ -f $OUT/$tag-final.json ] && continue
   flags="--single --headed --every 5 --lookback"
   if [ $arm != max ]; then

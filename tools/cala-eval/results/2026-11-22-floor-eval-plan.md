@@ -41,6 +41,12 @@ Anything decided after a run is marked **(post hoc)** in the results.
 | `sa` | Samara `10_43_21` | 17,879 | 30 |
 | `sb` | Samara `14_57_02` | 17,875 | 30 |
 | `ws` | workshop `prerecorded/raw` | 23,711 | 20 |
+| `m5` | sim `sims-v3/v3_motion_s5` (truth anchor) | 9,600 | 20 |
+| `t6` | sim `sims-v3/v3_static_s6` (truth anchor) | 9,600 | 20 |
+
+The sims (added at the parent's request, before any run) are the v3 recalibrated minisim recordings: 10 px cells at
+the real recordings' edge blur, calibrated on the workshop recording (`2026-11-12-sim-v3-scales.md`). One with
+motion, one static, different seeds. On the sims only `max` and `f10` run, 2 runs each.
 
 | arm | target | runs per recording |
 | --- | --- | ---: |
@@ -58,19 +64,25 @@ Anything decided after a run is marked **(post hoc)** in the results.
 - **seeAllFps** = the median over the three runs of `sees every frame below N` at the same reading, as an integer.
 - If `seeAllFps` is at or above 0.9 x the Max runs' median achieved fps, the `see` arm is dropped (it would behave as
   Max) and that is reported. If two arms land within 5 % of each other, both still run.
+- Sims: F = the lower of the two Max runs' published floors (two runs have no median; low is the conservative side).
 - The resulting numbers (`targets.txt`) are committed before the first paced run.
 
-**Run order.** Phase A: the nine Max runs, interleaved `ws, sa, sb` x 3. Then R1. Phase B, in this order:
+**Run order.** Phase A: the nine Max runs, interleaved `ws, sa, sb` x 3, then `m5-max-1, t6-max-1, m5-max-2,
+t6-max-2`. Then R1. Phase B, in this order:
 
 1. `ws-f10-1`; `sa` f10, f07, see, f14 (rep 1); `sb` f10, f07, see, f14 (rep 1);
 2. `ws-f10-2`; `sa` f14, see, f07, f10 (rep 2); `sb` f14, see, f07, f10 (rep 2);
+S. `m5-f10-1, t6-f10-1, m5-f10-2, t6-f10-2`;
 3. `ws` f07, see, f14 (rep 1); `ws` f14, see, f07 (rep 2).
 
-**Trim rule.** If the parent asks to trim for time, the batch stops after block 2: both Samara recordings with every
-arm, and the workshop with Max and floor only. The results say so.
+**Trim rule.** The parent asked for the full batch. If time forces a trim, the batch stops after block S: both
+Samara recordings with every arm, the workshop with Max and floor only, and the sims. The results say so.
+If the app cannot open a sim folder (no Chrome run on a minisim recording has been made before), the sim runs are
+dropped and the results say so.
 
 Expected Chrome time (design section 2's Discover times plus 90 s / 188 s Final settle, plus about 1 min per run of
-start-up): phase A about 40 min, blocks 1-2 about 2 h 10 min, block 3 about 1 h 20 min. **About 4 h 10 min in all.**
+start-up): phase A about 40 min plus 15 min of sim Max runs, blocks 1-2 about 2 h 10 min, block S about 30 min,
+block 3 about 1 h 20 min. **About 5 h in all.** Fixed-library scoring follows the Chrome batch, 2 at a time.
 
 ## Readings and pass lines
 
@@ -152,6 +164,23 @@ the fixed library's traces are solved for every frame, and the held-out score, Q
   pairs). An arm difference counts only beyond that margin.
 - **Trend.** Per recording and proxy, Spearman rho between the proxy and the run's Discover time, over all runs.
 
+### Truth on the sims (`m5`, `t6`)
+
+Each sim library is scored with `qc_eval sim <sim> --library footprints.bin --motion` (`t6`: `--gt-offset none`, the
+static sim has no shift record and the app's registration of it is near identity), the same fixed-library scoring as
+the real data, plus the ground-truth matching qc_eval does (footprint r >= 0.7, Hungarian, against detectable units).
+
+| | truth reading | better |
+| --- | --- | --- |
+| T1 | precision (matched cells / cells) | higher |
+| T2 | recall (matched detectable units / detectable units) | higher |
+| T3 | median footprint r of the matched cells | higher |
+| T4 | median trace r of the matched cells with their GT trace | higher |
+| T5 | false cells (count) | lower |
+
+- Noise margin: per sim and reading, the larger of the two within-arm run-to-run differences.
+- Q1-Q5 are also computed on the sims, which shows whether the proxies move with the truth there.
+
 ### The recommendation (rule fixed now)
 
 Total wall time per arm = Discover plus Final settle (in-page probe), from the first frame to the settled library.
@@ -159,7 +188,8 @@ Total wall time per arm = Discover plus Final settle (in-page probe), from the f
 - **D1, slower pays.** If `f10` is better than `max` beyond the margin on at least 2 of Q1-Q4 on at least 2 of the 3
   recordings, and worse beyond the margin on none of Q1-Q4 on any recording: recommend a paced default. Then, if
   `see`'s gain over `max` is at least two thirds of `f10`'s on those proxies (mean over recordings), recommend
-  `seeAllFps` (cheaper); otherwise the floor.
+  `seeAllFps` (cheaper); otherwise the floor. D1 also needs the sims: `f10` worse than `max` beyond the margin on
+  none of T1-T4 on either sim. If a sim says worse, the reading is D3.
 - **D2, slower does not pay in the final library.** If no proxy has `f10` better than `max` beyond the margin on at
   least 2 recordings: Max stays the default, and the floor is offered as a position.
 - **D3, mixed.** Otherwise the results report the trade-off per proxy with its time cost, and recommend the fastest arm
@@ -170,9 +200,8 @@ Total wall time per arm = Discover plus Final settle (in-page probe), from the f
 
 ## Not in this plan
 
-- **Sims against truth.** The arms are on the three real recordings. Running the app on minisim recordings in Chrome is
-  not part of this plan; whether to add it is a question for the parent (the model, qc_eval, fails its calibration at
-  Max and at 60 fps, so it cannot stand in).
+- Sims at `see`, `f14` and `f07` (only `max` and `f10` run there). The model (qc_eval's virtual clock) does not stand
+  in for Chrome: it fails its calibration at Max and at 60 fps.
 - Curves and Auto (PR J).
 
 ## Files

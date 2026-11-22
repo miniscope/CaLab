@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-RECS = ["sa", "sb", "ws"]
+RECS = ["sa", "sb", "ws", "m5", "t6"]  # m5, t6: sims-v3 truth anchors
 ARMS = ["max", "see", "f14", "f10", "f07"]  # fastest to slowest
 ARM_NAME = {"max": "Max", "see": "seeAllFps", "f14": "1.4x floor", "f10": "floor", "f07": "0.7x floor"}
 LADDER = [10, 12, 15, 20, 25, 30, 40, 50, 60, 80, 100, 120, 150, 200, 250, 300]
