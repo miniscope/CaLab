@@ -133,3 +133,14 @@ Per chunk (about 10.6 fitting frames):
 - Risk: 16 MB of messages per chunk. Check the cost of structured clone and transfer in Chrome. The context is
   cloned, apart from its transferred buffer; the delta is transferred. If that cost bites, cache cluster snapshots by
   epoch in the builder.
+
+## sim seed 1 (static_s5, full length, 30 fps offered; timed model)
+
+| arm | final cells | owner share on settle answers | visits | longest batch wait |
+| --- | ----------- | ----------------------------- | ------ | ------------------ |
+| off | 555 | 14.3 % | 32,908 | 18 ms |
+| eqv | 551 | 13.8 % | 32,513 | 16 ms |
+| on | 544 | **0.5 %** | 36,716 | 2.5 ms |
+
+- No drops: `cells_gone`, `cells_moved` and `clusters_stale` were all 0.
+- Footprint agreement against the seed-to-seed noise still needs the `csdelta_eq.py` run.
