@@ -501,8 +501,6 @@ def score(root: Path) -> None:
     # ---- rules
     results = {}
     P("## Stop rules\n")
-    P("| rule | kind | frames saved % | never stops | " + " | ".join(k for k, *_ in REAL_KEYS) + " / " +
-      " | ".join(k for k, *_ in SIM_KEYS) + " |")  # fmt: skip
     for meas, tau, q in RULES:
         res = {}
         for nm, D, keys in (("real", real, REAL_KEYS), ("sims", sims, SIM_KEYS)):

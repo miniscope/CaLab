@@ -7,7 +7,6 @@ Runs: real 18 (2 recordings x 3 arms x 3 seeds), sims 15 (5 sims x 3 arms). Loss
 
 ## Stop rules
 
-| rule | kind | frames saved % | never stops | med | p10 | rep / r | edge | bit | core | edge90 |
 ### Real (vs the other seeds' Max B100; n = 18 runs)
 
 | rule | frames saved % (mean, range) | never stops (of n) | median cosine vs Max | 10th pct cosine vs Max | Max repeatable cells present (points) |
