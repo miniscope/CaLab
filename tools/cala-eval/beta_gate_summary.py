@@ -200,11 +200,67 @@ def rec_report(d: Path, rec: str) -> dict | None:
     }
 
 
+def _core(lib, frac=0.1):
+    """Each footprint cut to its pixels at >= `frac` of its peak (renormalised)."""
+    out = []
+    for cy, cx, fp, _ in lib:
+        mx = max(fp.values())
+        k = {px: v for px, v in fp.items() if v >= frac * mx}
+        out.append((cy, cx, k, float(np.sqrt(sum(v * v for v in k.values())))))
+    return out
+
+
+def _skirt(fp):
+    v = np.array(list(fp.values()))
+    return float((v[v < 0.1 * v.max()] ** 2).sum() / (v**2).sum())
+
+
+def diagnostics(d: Path, rec: str) -> None:
+    """POST HOC (added after the runs): self-agreement, footprint size, cores, and the main ?lookback-off control."""
+    old, new = tags(d, rec, "old"), tags(d, rec, "new")
+    ctl = tags(d, rec, "mainoff")
+    L = {t: load_lib(d / f"{t}-final.json") for t in old + new + ctl}
+
+    def pooled(xs, ys, lib=L):
+        c = [v for a in xs for b in ys if a != b for _, v in match(lib[a], lib[b]).values()]
+        miss = [1 - len(match(lib[a], lib[b])) / len(lib[a]) for a in xs for b in ys if a != b]
+        return np.median(c), q(c, 0.1), np.mean(miss)
+
+    print(f"\n## {rec}: diagnostics (post hoc)\n")
+    print("| comparison | median cosine | 10th percentile | anchor cells missed |")
+    print("| --- | ---: | ---: | ---: |")
+    for name, xs, ys in [("old vs old", old, old), ("new vs new", new, new), ("old vs new", old, new)] + (
+        [("old vs main ?lookback off", old, ctl)] if ctl else []
+    ):
+        m_, p_, mi = pooled(xs, ys)
+        print(f"| {name} | {m_:.4f} | {p_:.4f} | {mi:.1%} |")
+    C = {t: _core(v) for t, v in L.items()}
+    for name, xs, ys in [("cores: old vs old", old, old), ("cores: old vs new", old, new)]:
+        m_, p_, _ = pooled(xs, ys, C)
+        print(f"| {name} | {m_:.4f} | {p_:.4f} | - |")
+    print("\n| run | stage | cells | median pixels per footprint | median energy below 10 % of peak |")
+    print("| --- | --- | ---: | ---: | ---: |")
+    for t in old + new + ctl:
+        for k in ("live", "final"):
+            f = d / f"{t}-{k}.json"
+            if f.exists():
+                lib = L[t] if k == "final" else load_lib(f)
+                print(
+                    f"| {t} | {k} | {len(lib)} | {int(np.median([len(c[2]) for c in lib]))} | "
+                    f"{np.median([_skirt(c[2]) for c in lib]):.3f} |"
+                )
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("dir", type=Path)
     ap.add_argument("--recs", default="sa,sb,ws")
+    ap.add_argument("--diag", action="store_true", help="post-hoc diagnostics (added after the runs)")
     a = ap.parse_args(argv)
+    if a.diag:
+        for rec in a.recs.split(","):
+            diagnostics(a.dir, rec)
+        return 0
     res = {}
     for rec in a.recs.split(","):
         r = rec_report(a.dir, rec)
