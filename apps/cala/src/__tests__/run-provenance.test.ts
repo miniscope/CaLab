@@ -735,15 +735,21 @@ describe('Auto in the record', () => {
       { frame: 0, fps: 100, reason: 'budget', max_fps: 200, left_s: 120 },
     ];
     const src = gatherSources();
-    const r = gatherRunRecord({
-      ...src,
-      trace,
-      pipeline: { ...src.pipeline, autoNow: () => ({ extraTimeShare: 1, decisions }) },
-    }) as Rec;
+    trace.noteAuto({ extraTimeShare: 1, decisions });
+    const r = gatherRunRecord({ ...src, trace }) as Rec;
     expect(r.settings.speed_mode).toBe('auto');
     expect(r.slots.auto_decisions).toEqual(decisions);
     expect(r.slots.auto_extra_time_share).toBe(1);
-    const none = gatherRunRecord({ ...src, trace }) as Rec;
+    // Auto that held Max all run still names the mode (no change with source auto).
+    const quiet = new RunTrace();
+    quiet.noteTargetSpeed(0, 0, 'run start');
+    quiet.noteAuto({ extraTimeShare: 2, decisions: [] });
+    const q = gatherRunRecord({ ...src, trace: quiet }) as Rec;
+    expect(q.settings.speed_mode).toBe('auto');
+    expect(q.slots.auto_extra_time_share).toBe(2);
+    quiet.reset();
+    expect(quiet.auto()).toBeNull();
+    const none = gatherRunRecord({ ...src, trace: new RunTrace() }) as Rec;
     expect(none.slots.auto_decisions).toBeNull();
     expect(none.slots.auto_extra_time_share).toBeNull();
   });

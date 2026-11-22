@@ -488,6 +488,30 @@ describe('pipeline store backpressure', () => {
       });
     });
 
+    it('without a frame count, Auto and a curve hold Max rather than a stale Fixed target', async () => {
+      for (const kind of ['auto', 'curve']) {
+        await createRoot(async (dispose) => {
+          const { client } = manualClient();
+          const store = createPipelineStore(
+            { ...client, setPace: vi.fn(async () => {}) },
+            {},
+            undefined,
+            undefined,
+            true,
+            undefined,
+            { identity: () => ({ width: 1, height: 1, folder: 'x' }) as never },
+          );
+          store.setPaceFps(40, 'setting');
+          if (kind === 'auto') store.setAutoBudget(1);
+          else store.setSpeedCurve({ points: [{ at: 0, fps: 20 }] });
+          expect(store.targetNow()).toBe(40);
+          await store.start();
+          expect(store.targetNow()).toBe(0);
+          dispose();
+        });
+      }
+    });
+
     it('does nothing for a stream (no frame count), and a curve of nothing clears it', () => {
       createRoot((dispose) => {
         const { client } = manualClient();

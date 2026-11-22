@@ -227,6 +227,7 @@ const App: Component = () => {
   if (speed.mode === 'fixed') pipeline.setPaceFps(speed.fixedFps, 'setting');
   if (speed.mode === 'curve')
     pipeline.setSpeedCurve(presetCurve(speed.preset), { preset: speed.preset });
+  if (speed.mode === 'auto') pipeline.setAutoBudget(speed.autoBudget);
   if (speed.cap === 0) pipeline.setCsettle(false);
   else pipeline.setCsettleCeiling(speed.cap);
   // `?lookback`: look-back on from the first Discover start.
@@ -514,6 +515,8 @@ const App: Component = () => {
   pipeline.onWorkSample((sample) => runTrace.noteSample(sample));
   // A curve that takes over mid-run replaces the one noted at the start.
   pipeline.onCurveArmed((curve) => runTrace.noteCurve(curve));
+  // Auto's budget and decisions are kept in the trace, so changing Speed after the run does not lose them.
+  pipeline.onAutoChange((a) => runTrace.noteAuto(a));
   // A Discover start begins a new run: the target speed in force is its first entry.
   createEffect(
     on(
@@ -526,6 +529,7 @@ const App: Component = () => {
         runTrace.noteCap(pipeline.capNow(), 0, 'run start');
         // The curve armed at the start (before this reset) is the run's.
         runTrace.noteCurve(pipeline.curveNow());
+        runTrace.noteAuto(pipeline.autoNow());
       },
     ),
   );

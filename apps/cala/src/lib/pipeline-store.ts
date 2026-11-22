@@ -59,7 +59,7 @@ import {
   type PolicyInput,
   type SpeedCurve,
 } from './speed-schedule.ts';
-import { AutoPolicy, type AutoDecision } from './speed-auto.ts';
+import { AutoPolicy, PauseClock, type AutoDecision } from './speed-auto.ts';
 import type { LookbackFeed } from './lookback-client.ts';
 import {
   CSETTLE,
@@ -543,6 +543,25 @@ export function createPipelineStore(
   const [activeAuto, setActiveAuto] = createSignal<number | null>(null);
   /** The Auto policy of this run (kept after the run for the record; null: not an Auto run). */
   let autoPolicy: AutoPolicy | null = null;
+  /** The run's time without its pauses (the budget's clock). */
+  const pauseClock = new PauseClock();
+  /** Told when Auto arms and after each decision (the run record keeps its own copy). */
+  const autoListeners: ((a: { extraTimeShare: number; decisions: AutoDecision[] }) => void)[] = [];
+  const autoSnapshot = () =>
+    autoPolicy
+      ? { extraTimeShare: autoPolicy.share, decisions: autoPolicy.decisions.map((d) => ({ ...d })) }
+      : null;
+  function tellAuto(): void {
+    const a = autoSnapshot();
+    if (!a) return;
+    for (const cb of autoListeners) {
+      try {
+        cb(a);
+      } catch {
+        // Observers only.
+      }
+    }
+  }
   /** What follows a curve over this run (null: none); stopped when Discover ends. */
   let curveDriver: SpeedDriver | null = null;
   /** The curve this run was armed with, for the run record. */
@@ -563,7 +582,7 @@ export function createPipelineStore(
       floorFps: f.fps,
       seeAllFps: f.estimate.seeAllFps,
       maxFps: maxFpsEstimator.estimate() || null,
-      wallS: clock() / 1000,
+      wallS: pauseClock.now(clock()) / 1000,
     };
   }
   /** The curve the run follows as merged by the minimum-step rule, and how many steps that merged. */
@@ -598,12 +617,19 @@ export function createPipelineStore(
     const total = curveFrames();
     const share = untrack(activeAuto);
     if (share !== null) {
-      if (total <= 0 || (lookbackFeed && lookbackFeed.blocked() !== null)) return;
+      if (lookbackFeed && lookbackFeed.blocked() !== null) return;
+      // Without a frame count the policy holds Max (never a stale Fixed target).
       autoPolicy = new AutoPolicy(share);
+      tellAuto();
       armPolicy(autoPolicy, frame, null);
       return;
     }
-    if (!a || total <= 0 || (lookbackFeed && lookbackFeed.blocked() !== null)) return;
+    if (!a || (lookbackFeed && lookbackFeed.blocked() !== null)) return;
+    if (total <= 0) {
+      // No frame count: a curve cannot be a share of it. Max, not a stale Fixed target.
+      if (paceFps > 0 && !untrack(paceFromUrl)) setPace(0, 'curve');
+      return;
+    }
     const live = policyInput(frame);
     const norm = a.normalize
       ? normalizeCurve(a.curve, {
@@ -626,8 +652,10 @@ export function createPipelineStore(
   /** One look at the curve: a step boundary, or a floor that moved, may change the target. */
   function driveCurve(frame: number): void {
     if (!curveDriver) return;
+    const before = autoPolicy?.decisions.length ?? 0;
     const change = curveDriver.tick(policyInput(frame));
     if (change) setPace(change.fps, change.source);
+    if (autoPolicy && autoPolicy.decisions.length !== before) tellAuto();
   }
   /** The look-back session whose pool start was told (once per run). */
   let poolNoted = 0;
@@ -944,6 +972,7 @@ export function createPipelineStore(
     lookbackSession = 0;
     setLookbackRun(false);
     record = new RunRecord();
+    pauseClock.reset();
     meter = new ThroughputMeter();
     totals = { ...ZERO_TIMINGS };
     setPaceStats(null);
@@ -1081,6 +1110,7 @@ export function createPipelineStore(
   function pause(): void {
     if (status() !== 'running') return;
     setStatus('paused');
+    pauseClock.pause(clock());
     // The newest frame at once; the rest of the queue is dropped.
     const newest = playback.flush();
     if (newest) showPlayed(newest);
@@ -1095,6 +1125,7 @@ export function createPipelineStore(
     if (status() !== 'paused') return;
     // Answers to steps sent before the pause still arrive and count.
     setStatus('running');
+    pauseClock.resume(clock());
     if (paceEver) sendPace({ paused: false });
     tellSettlePace();
     runHistory?.log({ frame: processed(), kind: 'resume', detail: 'Resumed' });
@@ -1280,13 +1311,11 @@ export function createPipelineStore(
         armCurve(untrack(processed));
     },
     /** What this run's Auto decided so far (null: not an Auto run), for the run record. */
-    autoNow: (): { extraTimeShare: number; decisions: AutoDecision[] } | null =>
-      autoPolicy
-        ? {
-            extraTimeShare: autoPolicy.share,
-            decisions: autoPolicy.decisions.map((d) => ({ ...d })),
-          }
-        : null,
+    autoNow: (): { extraTimeShare: number; decisions: AutoDecision[] } | null => autoSnapshot(),
+    /** Called when Auto arms and after each decision it makes (the run record's copy). */
+    onAutoChange: (cb: (a: { extraTimeShare: number; decisions: AutoDecision[] }) => void) => {
+      autoListeners.push(cb);
+    },
     /** The curve the run follows after the minimum-step rule (null: none armed), with the steps merged; a signal. */
     armedCurve,
     /** Install another policy (Auto, PR I) in place of the curve; `record` is kept in the run record. */

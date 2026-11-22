@@ -46,7 +46,7 @@ const MODE_TITLES: Record<SpeedMode, string> = {
   max: 'No pacing: Discover as fast as the machine goes; all settling comes after the last frame.',
   fixed: 'Read the recording at a target speed; the spare time goes to Background settle.',
   curve: 'The target steps down over the recording: fast while cells are found, slower after.',
-  auto: 'Pick how much longer than a Max run you will wait; Auto sets the speed to finish about then, never below the floor.',
+  auto: 'Pick how much longer than a Max run you will wait; Auto sets the speed so Discover finishes about then, never below the floor. The Final settle comes after.',
 };
 
 /**
@@ -280,7 +280,7 @@ export function SpeedControl(props: {
     });
   const autoLine = () =>
     !running()
-      ? `Auto: Discover will aim to finish within ${budgetLabel(budget())} of a Max run's time, and never go slower than the floor (${floorFps()}).`
+      ? `Auto: Discover will aim to finish within ${budgetLabel(budget())} of a Max run's time, never slower than the floor (${floorFps()}). The Final settle comes after.`
       : `Auto, ${budgetLabel(budget())} time budget: target now ${target() > 0 ? `${target()} fps` : 'Max'}. ${speedLine()}`;
   const status = () =>
     mode() === 'auto'

@@ -363,6 +363,7 @@ export class RunTrace {
   private maxSamples: number[] = [];
   private counts: RunCounters | null = null;
   private curveRec: CurveRecord | null = null;
+  private autoRec: { extraTimeShare: number; decisions: AutoDecision[] } | null = null;
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
@@ -378,6 +379,23 @@ export class RunTrace {
     this.maxSamples = [];
     this.counts = null;
     this.curveRec = null;
+    this.autoRec = null;
+  }
+
+  /** Auto armed or decided (the run's own copy: a later change of Speed must not lose it). */
+  noteAuto(a: { extraTimeShare: number; decisions: readonly AutoDecision[] } | null): void {
+    this.autoRec = a
+      ? { extraTimeShare: a.extraTimeShare, decisions: a.decisions.map((d) => ({ ...d })) }
+      : null;
+  }
+
+  auto(): { extraTimeShare: number; decisions: AutoDecision[] } | null {
+    return this.autoRec
+      ? {
+          extraTimeShare: this.autoRec.extraTimeShare,
+          decisions: this.autoRec.decisions.map((d) => ({ ...d })),
+        }
+      : null;
   }
 
   /** A speed curve took over the target (at the start or mid-run); the latest one is the record's. */
@@ -706,8 +724,6 @@ export interface RunRecordSources {
   now?: () => Date;
   trace: RunTrace;
   pipeline: {
-    /** What this run's Auto decided (null or absent: not an Auto run). */
-    autoNow?(): { extraTimeShare: number; decisions: AutoDecision[] } | null;
     flatEnabled(): boolean;
     discover(): boolean;
     residual(): boolean;
@@ -806,7 +822,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
   // and `work.cap_changes` (the first entry of each is the start value).
   const startFps = src.trace.targetSpeedChanges()[0]?.fps ?? p.paceFps();
   const startCap = src.trace.capChanges()[0]?.cap;
-  const auto = p.autoNow?.() ?? null;
+  const auto = src.trace.auto();
   const speedMode = speedModeOf({
     live: info?.live !== undefined,
     targetSpeed: src.trace.targetSpeedChanges(),

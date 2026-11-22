@@ -5,8 +5,13 @@
  * paces the run so it ends near that budget. A `TargetPolicy`: it plugs into the same
  * `SpeedDriver` and `armPolicy` seam as a curve. Pure: no store, no DOM, the clock is passed in.
  *
+ * The budget is for Discover (reading the recording); the Final settle comes on top of it, unless
+ * a Final settle estimate is passed in, which then counts against the budget.
+ *
  * Rules, in order:
- *  - Until the Max rate is known the run goes at Max (a paced run is measured the same way).
+ *  - Until the Max rate is measured over `MIN_BATCHES` unpaced batches the run goes at Max. That
+ *    measure is kept while paced below Max and only ever rises (settling work competing for the
+ *    machine would otherwise push it down and the target with it, toward the floor).
  *  - Every `evalFrames` frames or `evalS` seconds the target is worked out again:
  *    `budget = (1 + share) x (frames to read / Max rate)`, `left = budget - elapsed - final settle`,
  *    `target = frames still to read / left`.
@@ -31,6 +36,8 @@ export const AUTO = {
   evalS: 30,
   /** A new target closer than this (a ratio) to the one in force is not taken. */
   holdRatio: 0.15,
+  /** Batches read at Max before the Max rate is trusted (the first is warm-up and may read slow). */
+  minBatches: 5,
   /** The record keeps at most this many decisions (the first, then the newest). */
   maxDecisions: 40,
 } as const;
@@ -54,6 +61,34 @@ function steady(fps: number): number {
   return fps > 300 ? Math.round(fps / 50) * 50 : snapToLadder(fps);
 }
 
+/**
+ * A wall clock that leaves paused time out: `now(rawMs)` is the raw clock less the time spent
+ * paused, so a pause does not eat the budget.
+ */
+export class PauseClock {
+  private pausedMs = 0;
+  private since: number | null = null;
+
+  pause(rawMs: number): void {
+    this.since ??= rawMs;
+  }
+
+  resume(rawMs: number): void {
+    if (this.since !== null) this.pausedMs += Math.max(0, rawMs - this.since);
+    this.since = null;
+  }
+
+  reset(): void {
+    this.pausedMs = 0;
+    this.since = null;
+  }
+
+  now(rawMs: number): number {
+    const open = this.since !== null ? Math.max(0, rawMs - this.since) : 0;
+    return rawMs - this.pausedMs - open;
+  }
+}
+
 export class AutoPolicy implements TargetPolicy {
   readonly source = 'auto' as const;
   readonly decisions: AutoDecision[] = [];
@@ -61,6 +96,10 @@ export class AutoPolicy implements TargetPolicy {
   private last: { frame: number; wallS: number } | null = null;
   /** The target in force (null: none worked out yet; 0: Max). */
   private cur: number | null = null;
+  /** Batches seen with a Max estimate while unpaced. */
+  private unpaced = 0;
+  /** The Max rate the budget is worked from (null: not measured yet). */
+  private maxLock: number | null = null;
 
   /**
    * @param share the extra time over a Max run, 0.5 to 2.
@@ -77,8 +116,18 @@ export class AutoPolicy implements TargetPolicy {
   }
 
   target(i: PolicyInput): PolicyTarget {
-    const maxFps = i.maxFps;
-    if (!(i.totalFrames > 0) || maxFps === null || !(maxFps > 0)) {
+    const raw = i.maxFps;
+    if (raw !== null && raw > 0) {
+      if (this.cur === null || this.cur === 0) {
+        // Unpaced: the estimate is a clean reading of Max.
+        this.unpaced++;
+        if (this.unpaced >= AUTO.minBatches) this.maxLock = raw;
+      } else if (this.maxLock !== null && raw > this.maxLock) {
+        this.maxLock = raw;
+      }
+    }
+    const maxFps = this.maxLock;
+    if (!(i.totalFrames > 0) || maxFps === null) {
       return { fps: this.cur ?? 0, phase: this.cur === null ? 'auto-measure' : 'auto' };
     }
     this.start ??= { frame: i.frame, wallS: i.wallS };
