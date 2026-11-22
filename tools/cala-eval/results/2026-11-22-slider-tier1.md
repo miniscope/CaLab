@@ -51,13 +51,13 @@ single look-back worker takes turns between need-driven look-back and Background
 
 ## What was run
 
-| what | data | n |
-| --- | --- | --- |
-| Chrome, 60 fps pairs and second Max runs (this PR) | Samara `10_43_21`, `14_57_02`; headed, Metal GPU, port 5198, one at a time | 1 per arm and recording |
-| Chrome, Max and 30 fps pairs | the same recordings, #461's runs | 1 per arm and recording |
-| Model, C1 at 60 fps | `10_43_21`, offered at Chrome's 59.1 fps | 1 per row |
-| Model, tier 1: REF, P-30, S-30 | both Samara recordings, slow seeds 1-3, each branched into `B0`-`B100` | 3 seeds x 2 recordings = 6 per arm |
-| Model, tier 1 sims | quick tier (static 5, 6, 7; pairs 5, 6), slow seed 1 | 5 sims per arm |
+| what                                               | data                                                                       | n                                  |
+| -------------------------------------------------- | -------------------------------------------------------------------------- | ---------------------------------- |
+| Chrome, 60 fps pairs and second Max runs (this PR) | Samara `10_43_21`, `14_57_02`; headed, Metal GPU, port 5198, one at a time | 1 per arm and recording            |
+| Chrome, Max and 30 fps pairs                       | the same recordings, #461's runs                                           | 1 per arm and recording            |
+| Model, C1 at 60 fps                                | `10_43_21`, offered at Chrome's 59.1 fps                                   | 1 per row                          |
+| Model, tier 1: REF, P-30, S-30                     | both Samara recordings, slow seeds 1-3, each branched into `B0`-`B100`     | 3 seeds x 2 recordings = 6 per arm |
+| Model, tier 1 sims                                 | quick tier (static 5, 6, 7; pairs 5, 6), slow seed 1                       | 5 sims per arm                     |
 
 Model flags: #456 round 2 with `--visit-units-per-ms 2.3e6 --pool 4` (`slider_tier1.sh`). The workshop recording is
 excluded (plan). The 30 fps model runs took about 50 min each, Max about 21 min; at most 1.3 GB per process.
@@ -81,30 +81,30 @@ a Chrome 60 fps pair and a Chrome Max-to-Max null.
 
 ### Model, 30 fps (n = 3 seeds per recording; full pass `B100`)
 
-| recording | arm | agreement with Max, mean (range) | Max-Max null | L2 (>= null - 0.003) | Max's repeatable cells present | leave-one-out null | L2b | missed | L5 moving at end |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `10_43_21` | P-30 | 0.9892 (0.9876-0.9903) | 0.9926 | **fail** (-0.0034) | 96.3 % | 93.3 % | pass | 0 % | <= 0.3 % |
-| `10_43_21` | S-30 | 0.9892 (0.9887-0.9896) | 0.9926 | **fail** (-0.0034) | 96.5 % | 93.3 % | pass | 0 % | <= 0.5 % |
-| `14_57_02` | P-30 | 0.9872 (0.9863-0.9883) | 0.9915 | **fail** (-0.0043) | 96.8 % | 93.0 % | pass | 0 % | <= 0.3 % |
-| `14_57_02` | S-30 | 0.9851 (0.9826-0.9873) | 0.9915 | **fail** (-0.0064) | 97.4 % | 93.0 % | pass | 0 % | <= 0.3 % |
+| recording  | arm  | agreement with Max, mean (range) | Max-Max null | L2 (>= null - 0.003) | Max's repeatable cells present | leave-one-out null | L2b  | missed | L5 moving at end |
+| ---------- | ---- | -------------------------------- | ------------ | -------------------- | ------------------------------ | ------------------ | ---- | ------ | ---------------- |
+| `10_43_21` | P-30 | 0.9892 (0.9876-0.9903)           | 0.9926       | **fail** (-0.0034)   | 96.3 %                         | 93.3 %             | pass | 0 %    | <= 0.3 %         |
+| `10_43_21` | S-30 | 0.9892 (0.9887-0.9896)           | 0.9926       | **fail** (-0.0034)   | 96.5 %                         | 93.3 %             | pass | 0 %    | <= 0.5 %         |
+| `14_57_02` | P-30 | 0.9872 (0.9863-0.9883)           | 0.9915       | **fail** (-0.0043)   | 96.8 %                         | 93.0 %             | pass | 0 %    | <= 0.3 %         |
+| `14_57_02` | S-30 | 0.9851 (0.9826-0.9873)           | 0.9915       | **fail** (-0.0064)   | 97.4 %                         | 93.0 %             | pass | 0 %    | <= 0.3 %         |
 
 Pooled over the 6 recording-seeds (paired bootstrap; seeds of one recording are not independent, so the interval is
 too narrow):
 
-| arm | agreement minus null | repeatable cells minus null |
-| --- | --- | --- |
-| P-30 | -0.0038 [-0.0047, -0.0030] | +3.4 points [2.4, 4.4] |
-| S-30 | -0.0049 [-0.0066, -0.0035] | +3.8 points [2.9, 4.6] |
+| arm  | agreement minus null       | repeatable cells minus null |
+| ---- | -------------------------- | --------------------------- |
+| P-30 | -0.0038 [-0.0047, -0.0030] | +3.4 points [2.4, 4.4]      |
+| S-30 | -0.0049 [-0.0066, -0.0035] | +3.8 points [2.9, 4.6]      |
 
 **(After the runs) Same cells only.** The median cosine on the cells that all three Max seeds and the arm have
 (200-245 cells per seed):
 
-| recording | arm | Max vs Max | arm vs Max | difference |
-| --- | --- | --- | --- | --- |
-| `10_43_21` | P-30 | 0.9918 | 0.9915 | -0.0003 |
-| `10_43_21` | S-30 | 0.9917 | 0.9916 | -0.0001 |
-| `14_57_02` | P-30 | 0.9914 | 0.9903 | -0.0010 |
-| `14_57_02` | S-30 | 0.9914 | 0.9882 | **-0.0032** |
+| recording  | arm  | Max vs Max | arm vs Max | difference  |
+| ---------- | ---- | ---------- | ---------- | ----------- |
+| `10_43_21` | P-30 | 0.9918     | 0.9915     | -0.0003     |
+| `10_43_21` | S-30 | 0.9917     | 0.9916     | -0.0001     |
+| `14_57_02` | P-30 | 0.9914     | 0.9903     | -0.0010     |
+| `14_57_02` | S-30 | 0.9914     | 0.9882     | **-0.0032** |
 
 So most of the L2 failure is in the cell set, not in the footprints. The paced arms match about 3 points more of Max's
 cells. The cells they add to the match are the weaker ones, with lower cosine, and they pull the median down. S-30 on
@@ -113,16 +113,16 @@ L2 as written fails.
 
 ### Chrome anchor (n = 1 per arm; the app's own Final settle)
 
-| recording | Max-Max null | arm (Background-settle dose) | cells (Max: 320/326; 283/274) | agreement with the two Max runs | within null - 0.003? | cells both Max runs found, present |
-| --- | --- | --- | --- | --- | --- | --- |
-| `10_43_21` | 0.9908 | P-30 (0) | 387 | 0.9900 / 0.9907 | yes | 97.9 % |
-| | | S-30 (1.99) | 377 | 0.9898 / 0.9893 | yes | 98.6 % |
-| | | P-60 (0) | 379 | 0.9893 / 0.9901 | yes | 97.2 % |
-| | | S-60 (1.33) | 377 | 0.9903 / 0.9902 | yes | 97.2 % |
-| `14_57_02` | 0.9913 | P-30 (0) | 325 | 0.9873 / 0.9896 | yes (by 0.0002) | 96.8 % |
-| | | S-30 (1.99) | 324 | 0.9867 / 0.9891 | no, by 0.0004 | 97.6 % |
-| | | P-60 (0) | 319 | 0.9896 / 0.9910 | yes | 97.6 % |
-| | | S-60 (1.39) | 320 | 0.9875 / 0.9886 | no, by 0.0003 | 96.8 % |
+| recording  | Max-Max null | arm (Background-settle dose) | cells (Max: 320/326; 283/274) | agreement with the two Max runs | within null - 0.003? | cells both Max runs found, present |
+| ---------- | ------------ | ---------------------------- | ----------------------------- | ------------------------------- | -------------------- | ---------------------------------- |
+| `10_43_21` | 0.9908       | P-30 (0)                     | 387                           | 0.9900 / 0.9907                 | yes                  | 97.9 %                             |
+|            |              | S-30 (1.99)                  | 377                           | 0.9898 / 0.9893                 | yes                  | 98.6 %                             |
+|            |              | P-60 (0)                     | 379                           | 0.9893 / 0.9901                 | yes                  | 97.2 %                             |
+|            |              | S-60 (1.33)                  | 377                           | 0.9903 / 0.9902                 | yes                  | 97.2 %                             |
+| `14_57_02` | 0.9913       | P-30 (0)                     | 325                           | 0.9873 / 0.9896                 | yes (by 0.0002)      | 96.8 %                             |
+|            |              | S-30 (1.99)                  | 324                           | 0.9867 / 0.9891                 | no, by 0.0004        | 97.6 %                             |
+|            |              | P-60 (0)                     | 319                           | 0.9896 / 0.9910                 | yes                  | 97.6 %                             |
+|            |              | S-60 (1.39)                  | 320                           | 0.9875 / 0.9886                 | no, by 0.0003        | 96.8 %                             |
 
 The two Max runs share 284 of 320 and 247 of 283 cells (89 % and 87 %). In Chrome, Max itself misses more of its own
 cells than any paced arm does. No frame was missed by the slow loop at 30 or 60 fps.
@@ -131,16 +131,16 @@ cells than any paced arm does. No frame was missed by the slow loop at 30 or 60 
 
 Model, all three seeds pooled. "Extra" = in no Max seed's library.
 
-| recording | group | cells | median held-out z | held-out z > 2 | median peak z | median birth (share of recording) | born in 2nd half |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `10_43_21` | Max, found by one seed only | 48 | 0.3 | 25 % | 10.9 | 0.56 | 60 % |
-| | P-30 extra | 223 (74 per run) | 0.4 | 20 % | 11.4 | 0.27 | 32 % |
-| | S-30 extra | 218 (73 per run) | 0.2 | 20 % | 11.4 | 0.29 | 33 % |
-| | S-30, cells Max also has | 946 | 4.4 | 67 % | 24.7 | 0.09 | 13 % |
-| `14_57_02` | Max, found by one seed only | 41 | 0.6 | 24 % | 13.3 | 0.48 | 44 % |
-| | P-30 extra | 157 (52 per run) | 1.3 | 34 % | 11.5 | 0.32 | 29 % |
-| | S-30 extra | 148 (49 per run) | 1.2 | 32 % | 11.4 | 0.30 | 32 % |
-| | S-30, cells Max also has | 831 | 3.1 | 60 % | 23.1 | 0.12 | 14 % |
+| recording  | group                       | cells            | median held-out z | held-out z > 2 | median peak z | median birth (share of recording) | born in 2nd half |
+| ---------- | --------------------------- | ---------------- | ----------------- | -------------- | ------------- | --------------------------------- | ---------------- |
+| `10_43_21` | Max, found by one seed only | 48               | 0.3               | 25 %           | 10.9          | 0.56                              | 60 %             |
+|            | P-30 extra                  | 223 (74 per run) | 0.4               | 20 %           | 11.4          | 0.27                              | 32 %             |
+|            | S-30 extra                  | 218 (73 per run) | 0.2               | 20 %           | 11.4          | 0.29                              | 33 %             |
+|            | S-30, cells Max also has    | 946              | 4.4               | 67 %           | 24.7          | 0.09                              | 13 %             |
+| `14_57_02` | Max, found by one seed only | 41               | 0.6               | 24 %           | 13.3          | 0.48                              | 44 %             |
+|            | P-30 extra                  | 157 (52 per run) | 1.3               | 34 %           | 11.5          | 0.32                              | 29 %             |
+|            | S-30 extra                  | 148 (49 per run) | 1.2               | 32 %           | 11.4          | 0.30                              | 32 %             |
+|            | S-30, cells Max also has    | 831              | 3.1               | 60 %           | 23.1          | 0.12                              | 14 %             |
 
 - The extra cells are weak: about a fifth to a third pass held-out z > 2, against two thirds of the shared cells.
   Their peak z is half that of the shared cells.
@@ -152,10 +152,10 @@ Model, all three seeds pooled. "Extra" = in no Max seed's library.
 
 ### Sims (quick tier, n = 5; a screen, not a verdict)
 
-| arm minus Max (paired t 95 % CI) | footprint r, all | screen L1 (mean >= -0.001) | r, born in 2nd half (L1b) | bitten share (L1c) | false cells (L1d) | matched true cells |
-| --- | --- | --- | --- | --- | --- | --- |
-| P-30 | -0.0011 [-0.0025, 0.0003] | **stop** (by 0.0001) | -0.018 [-0.043, 0.006] | +0.006 [-0.039, 0.052] | +25 [0, 50] | +41 [-6, 88] |
-| S-30 | +0.0002 [-0.0009, 0.0012] | pass | -0.014 [-0.038, 0.011] | -0.018 [-0.041, 0.004] | +22 [-5, 48] | +45 [-6, 96] |
+| arm minus Max (paired t 95 % CI) | footprint r, all          | screen L1 (mean >= -0.001) | r, born in 2nd half (L1b) | bitten share (L1c)     | false cells (L1d) | matched true cells |
+| -------------------------------- | ------------------------- | -------------------------- | ------------------------- | ---------------------- | ----------------- | ------------------ |
+| P-30                             | -0.0011 [-0.0025, 0.0003] | **stop** (by 0.0001)       | -0.018 [-0.043, 0.006]    | +0.006 [-0.039, 0.052] | +25 [0, 50]       | +41 [-6, 88]       |
+| S-30                             | +0.0002 [-0.0009, 0.0012] | pass                       | -0.014 [-0.038, 0.011]    | -0.018 [-0.041, 0.004] | +22 [-5, 48]      | +45 [-6, 96]       |
 
 - At 5 sims, L1b and L1d cannot pass: the intervals are wider than the lines.
 - The late-born and false-cell differences point the same way as the extra cells on real data: more cells, some of
@@ -179,25 +179,25 @@ full pass (pre-registered). **(After the first Max runs, before any paced run fi
 from "Max of the same seed" to "the other seeds' Max". The same-seed rule made Max's own full pass agree with itself
 at 1.0, so Max could never skip anything.
 
-| recording | arm | `B0` | `B25` | `B50` | `B75` | `B100` | `B*` (per seed) | Final settle that could be skipped |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `10_43_21` | Max | 0.9801 | 0.9888 | 0.9904 | 0.9910 | 0.9926 | `B50` (50, 50, 50) | half |
-| | P-30 | 0.9815 | 0.9850 | 0.9873 | 0.9874 | 0.9892 | `B50` (50, 25, 50) | half |
-| | S-30 | 0.9844 | 0.9856 | 0.9867 | 0.9863 | 0.9880 | `B25` (25, 0, 25) | three quarters |
-| `14_57_02` | Max | 0.9766 | 0.9848 | 0.9872 | 0.9877 | 0.9915 | `B100` (all) | none |
-| | P-30 | 0.9730 | 0.9785 | 0.9807 | 0.9823 | 0.9865 | `B100` (all) | none |
-| | S-30 | 0.9795 | 0.9789 | 0.9799 | 0.9814 | 0.9845 | `B100` (75, 100, 100) | none |
+| recording  | arm  | `B0`   | `B25`  | `B50`  | `B75`  | `B100` | `B*` (per seed)       | Final settle that could be skipped |
+| ---------- | ---- | ------ | ------ | ------ | ------ | ------ | --------------------- | ---------------------------------- |
+| `10_43_21` | Max  | 0.9801 | 0.9888 | 0.9904 | 0.9910 | 0.9926 | `B50` (50, 50, 50)    | half                               |
+|            | P-30 | 0.9815 | 0.9850 | 0.9873 | 0.9874 | 0.9892 | `B50` (50, 25, 50)    | half                               |
+|            | S-30 | 0.9844 | 0.9856 | 0.9867 | 0.9863 | 0.9880 | `B25` (25, 0, 25)     | three quarters                     |
+| `14_57_02` | Max  | 0.9766 | 0.9848 | 0.9872 | 0.9877 | 0.9915 | `B100` (all)          | none                               |
+|            | P-30 | 0.9730 | 0.9785 | 0.9807 | 0.9823 | 0.9865 | `B100` (all)          | none                               |
+|            | S-30 | 0.9795 | 0.9789 | 0.9799 | 0.9814 | 0.9845 | `B100` (75, 100, 100) | none                               |
 
 (Agreement with the other seeds' Max full pass; the repeatable-cell share moved by at most 1.5 points between `B25`
 and `B100` and never decided.)
 
 Sims, footprint r with the truth (mean over 5 sims):
 
-| arm | `B0` | `B25` | `B50` | `B75` | `B100` | `B*` per sim |
-| --- | --- | --- | --- | --- | --- | --- |
-| Max | 0.9603 | 0.9825 | 0.9850 | 0.9857 | 0.9858 | 75, 100, 50, 50, 50 |
+| arm  | `B0`   | `B25`  | `B50`  | `B75`  | `B100` | `B*` per sim         |
+| ---- | ------ | ------ | ------ | ------ | ------ | -------------------- |
+| Max  | 0.9603 | 0.9825 | 0.9850 | 0.9857 | 0.9858 | 75, 100, 50, 50, 50  |
 | P-30 | 0.9807 | 0.9826 | 0.9836 | 0.9840 | 0.9847 | 25, 100, 50, 100, 75 |
-| S-30 | 0.9853 | 0.9859 | 0.9859 | 0.9859 | 0.9860 | 0, 0, 0, 100, 25 |
+| S-30 | 0.9853 | 0.9859 | 0.9859 | 0.9859 | 0.9860 | 0, 0, 0, 100, 25     |
 
 What this says:
 
@@ -224,9 +224,9 @@ What this says:
 **Live library at the last frame** (before any Final settle; share of Max's live-to-settled gap closed; model, per
 seed):
 
-| recording | P-30 | S-30 |
-| --- | --- | --- |
-| `10_43_21` | 3, 0, -11 % (mean -3 %) | 17, 16, 18 % (mean 17 %) |
+| recording  | P-30                         | S-30                      |
+| ---------- | ---------------------------- | ------------------------- |
+| `10_43_21` | 3, 0, -11 % (mean -3 %)      | 17, 16, 18 % (mean 17 %)  |
 | `14_57_02` | -23, -20, -25 % (mean -23 %) | -34, 10, 10 % (mean -5 %) |
 
 - Pacing alone makes the live library less like Max's settled one: it holds more cells.
@@ -234,13 +234,13 @@ seed):
 - L3 (S-30 closes at least 50 %) **fails** on both recordings.
 - In Chrome the live library at Discover's end agrees with Max's final library as follows:
 
-  | arm | `10_43_21` | `14_57_02` |
-  | --- | --- | --- |
-  | Max live (reference) | 0.9805 | 0.9763 |
-  | P-30 | 0.9821 | 0.9727 |
-  | S-30 | 0.9841 | 0.9807 |
-  | P-60 | 0.9771 | 0.9749 |
-  | S-60 | 0.9875 | 0.9815 |
+  | arm                  | `10_43_21` | `14_57_02` |
+  | -------------------- | ---------- | ---------- |
+  | Max live (reference) | 0.9805     | 0.9763     |
+  | P-30                 | 0.9821     | 0.9727     |
+  | S-30                 | 0.9841     | 0.9807     |
+  | P-60                 | 0.9771     | 0.9749     |
+  | S-60                 | 0.9875     | 0.9815     |
 
 **L9, cap 4: worth testing (pre-registered rule met), for the live library.**
 

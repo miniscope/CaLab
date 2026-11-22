@@ -48,23 +48,23 @@ pool did not act). The C1 pair at 60 fps is its first check.
 
 ## Arms
 
-| arm    | offered rate                                              | Background settle                                                            |
-| ------ | --------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `REF`  | Max: Chrome's achieved rate (`10_43_21` 343, `14_57_02` 348; sims 340) | off (`--csettle 0`)                                             |
-| `P-30` | 30                                                        | off                                                                          |
-| `P-60` | 60                                                        | off                                                                          |
-| `S-30` | 30                                                        | cap 2 (`--csettle 0.667 --csettle-mode frames`), one look-back worker taking turns |
-| `S-60` | 60                                                        | the same                                                                     |
+| arm    | offered rate                                                           | Background settle                                                                  |
+| ------ | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `REF`  | Max: Chrome's achieved rate (`10_43_21` 343, `14_57_02` 348; sims 340) | off (`--csettle 0`)                                                                |
+| `P-30` | 30                                                                     | off                                                                                |
+| `P-60` | 60                                                                     | off                                                                                |
+| `S-30` | 30                                                                     | cap 2 (`--csettle 0.667 --csettle-mode frames`), one look-back worker taking turns |
+| `S-60` | 60                                                                     | the same                                                                           |
 
 Every run is one Discover, branched after it (`--branch-after discover`) into Final-settle budgets:
 
-| branch | frames (T = recording length)    | how they are spread                                                                         |
-| ------ | -------------------------------- | ------------------------------------------------------------------------------------------- |
-| `B0`   | 0                                | the live library at Discover's last frame                                                   |
-| `B25`  | T/4                              | every 4th 64-frame block (`--settle-round T/4`), as the app's `settlePlan` spreads a short budget |
-| `B50`  | T/2                              | every 2nd block                                                                             |
-| `B75`  | 3T/4                             | three of every four blocks (three rounds of T/4)                                            |
-| `B100` | T (Samara 17,879 / 17,875; sims 9,600) | in order, as the app's Final settle today; checkpoint libraries every 1,200 frames    |
+| branch | frames (T = recording length)          | how they are spread                                                                               |
+| ------ | -------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `B0`   | 0                                      | the live library at Discover's last frame                                                         |
+| `B25`  | T/4                                    | every 4th 64-frame block (`--settle-round T/4`), as the app's `settlePlan` spreads a short budget |
+| `B50`  | T/2                                    | every 2nd block                                                                                   |
+| `B75`  | 3T/4                                   | three of every four blocks (three rounds of T/4)                                                  |
+| `B100` | T (Samara 17,879 / 17,875; sims 9,600) | in order, as the app's Final settle today; checkpoint libraries every 1,200 frames                |
 
 All with `--settle-batch 16 --settle-check 1200`. `B100` is the arm's result for parity (today's full pass).
 
@@ -125,17 +125,17 @@ Agreement = the median cosine of the matched pairs.
 
 Parity, per position (`P-30`, `S-30`, `P-60`, `S-60`), as in the plan:
 
-| line | measure                                       | passes when                                                                                       |
-| ---- | --------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| L1   | final footprint r, sims, all cells (screen)   | mean (arm - `REF`) >= -0.001 over the 5 sims; a mean below stops the arm. No pass is claimed from 5 sims |
-| L1b  | footprint r, cells born in the second half    | lower 95 % CI bound >= -0.005 (quick tier: reported as a screen)                                  |
-| L1c  | bitten footprints, sims                       | upper CI bound <= +0.02                                                                           |
-| L1d  | false cells per sim                           | upper CI bound <= +3                                                                              |
-| L2   | agreement with `REF`                          | >= the `REF`-`REF` null minus 0.003, on each recording (mean over the 3 seeds)                     |
-| L2b  | `REF`'s repeatable cells present              | >= the leave-one-out null minus 3 points, on each recording                                       |
-| L2c  | extra cells (reported, not a gate)            | their median held-out z >= that of cells only one `REF` seed has                                   |
-| L4b  | frames the slow loop misses                   | <= 0.1 % (30 and 60 fps)                                                                          |
-| L5   | moving share at the last `B100` checkpoint    | <= 4 %                                                                                            |
+| line | measure                                     | passes when                                                                                              |
+| ---- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| L1   | final footprint r, sims, all cells (screen) | mean (arm - `REF`) >= -0.001 over the 5 sims; a mean below stops the arm. No pass is claimed from 5 sims |
+| L1b  | footprint r, cells born in the second half  | lower 95 % CI bound >= -0.005 (quick tier: reported as a screen)                                         |
+| L1c  | bitten footprints, sims                     | upper CI bound <= +0.02                                                                                  |
+| L1d  | false cells per sim                         | upper CI bound <= +3                                                                                     |
+| L2   | agreement with `REF`                        | >= the `REF`-`REF` null minus 0.003, on each recording (mean over the 3 seeds)                           |
+| L2b  | `REF`'s repeatable cells present            | >= the leave-one-out null minus 3 points, on each recording                                              |
+| L2c  | extra cells (reported, not a gate)          | their median held-out z >= that of cells only one `REF` seed has                                         |
+| L4b  | frames the slow loop misses                 | <= 0.1 % (30 and 60 fps)                                                                                 |
+| L5   | moving share at the last `B100` checkpoint  | <= 4 %                                                                                                   |
 
 **A position has parity** when L2, L2b, L4b and L5 pass on both recordings and the sim screen (L1, L1b-d) does not
 stop it. Real differences are also given as arm minus `REF`, paired by recording-seed, with a pooled paired
@@ -179,15 +179,15 @@ do not override the model rows, except where the C1-at-60 reading above sends a 
 Chrome (this branch, smooth pacer, n = 1 each) against the model with the tier-1 flags at Chrome's achieved 59.1 fps
 (slow seed 1):
 
-| row                | measure          | Chrome | model  | difference | verdict  |
-| ------------------ | ---------------- | ------ | ------ | ---------- | -------- |
+| row                 | measure          | Chrome | model  | difference | verdict  |
+| ------------------- | ---------------- | ------ | ------ | ---------- | -------- |
 | `10_43_21`, 60, off | missed           | 0 %    | 0 %    | 0 points   | pass     |
-|                    | visit jobs       | 57,588 | 47,490 | -17.5 %    | **fail** |
-|                    | need-driven      | 35,415 | 35,400 | -0.0 %     | pass     |
+|                     | visit jobs       | 57,588 | 47,490 | -17.5 %    | **fail** |
+|                     | need-driven      | 35,415 | 35,400 | -0.0 %     | pass     |
 | `10_43_21`, 60, on  | missed           | 0 %    | 0 %    | 0 points   | pass     |
-|                    | visit jobs       | 50,476 | 40,506 | -19.8 %    | **fail** |
-|                    | need-driven      | 23,720 | 26,638 | +12.3 %    | pass     |
-|                    | settle per frame | 1.33   | 1.14   | -14.3 %    | pass     |
+|                     | visit jobs       | 50,476 | 40,506 | -19.8 %    | **fail** |
+|                     | need-driven      | 23,720 | 26,638 | +12.3 %    | pass     |
+|                     | settle per frame | 1.33   | 1.14   | -14.3 %    | pass     |
 
 **Both rows fail, on visit jobs only.** By the rule above, the model runs at 30 fps only (`REF`, `P-30`, `S-30`), and
 60 fps is read from Chrome (n = 1 per arm). Added for that (amendment): a Chrome `sb-p60-off` / `sb-p60-on` pair and
