@@ -38,8 +38,11 @@ Method:
 - Runs: the baseline (`--offered-fps F --visit-workers 4 --pool 4`, look-back on, `--csettle 0`) and `CS2F`
   (`--csettle 0.667 --csettle-mode frames`) at F = 30 and at the Chrome full-speed rates (workshop 218, Samara
   `10_43_21` 338, `14_57_02` 345), slow seed 1, the three recordings, full length.
-- **Adjust on the workshop recording only** (full speed; it has no 30 fps Chrome run before step 0b). Parameters set
-  there are not changed again for the check on Samara.
+- **Adjust on the workshop recording only**: its full-speed Chrome runs and its two step-0b paced runs (60 and 120
+  fps; the only workshop data where the slow loop is not saturated). Parameters set there are not changed again for
+  the check on Samara; the Samara step-0b runs (60, 120 fps) are comparison points only. Iteration may use a prefix of
+  the recording against the Chrome counters at the same frame (the logs sample them every 5 s); the verdict runs are
+  full length.
 - The model is documented against `apps/cala/src/lib/slow-runner.ts` (what each modelled cost stands for in the app).
 
 **Calibration line C1:** on the two Samara recordings (not used for the adjustment), model against Chrome **within 15 %
