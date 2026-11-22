@@ -3688,3 +3688,261 @@ fn settle_jobs_equal_settle_visits() {
     assert!(!job.is_settle());
     assert!(!VisitJob::from_bytes(&job.to_bytes()).unwrap().is_settle());
 }
+
+// ---- settle delta (`settle_delta.rs`) ---------------------------------------
+
+/// Within `tol` of the larger magnitude of `a` (the vectors' own scale).
+fn close_to(a: &[f64], b: &[f64], tol: f64) -> Result<(), String> {
+    if a.len() != b.len() {
+        return Err(format!("lengths {} and {}", a.len(), b.len()));
+    }
+    let s = a.iter().fold(0.0f64, |m, v| m.max(v.abs())).max(1e-30);
+    for (i, (x, y)) in a.iter().zip(b).enumerate() {
+        if !((x - y).abs() <= tol * s) && !(x.is_nan() && y.is_nan()) {
+            return Err(format!("element {i}: {x} against {y} (scale {s})"));
+        }
+    }
+    Ok(())
+}
+
+/// A cell's statistics as vectors: the full sums (rc, r, class moments,
+/// per-pixel moments, frames) and the split-half sums.
+fn fp_flat(st: &fpstats::FpStats) -> (Vec<f64>, Vec<f64>) {
+    let mut full: Vec<f64> = st.rc.iter().chain(&st.r).map(|&v| f64::from(v)).collect();
+    full.extend(st.m.iter().flatten());
+    if let Some(pm) = &st.pm {
+        for v in [&pm.n, &pm.n2, &pm.s1, &pm.s2] {
+            full.extend(v);
+        }
+    }
+    full.push(st.k as f64);
+    let mut half: Vec<f64> = st
+        .half
+        .0
+        .iter()
+        .chain(&st.half.1)
+        .map(|&v| f64::from(v))
+        .collect();
+    half.extend(st.half.2.iter().flatten());
+    if let Some(pm) = &st.half_pm {
+        for v in [&pm.n, &pm.n2, &pm.s1, &pm.s2] {
+            half.extend(v);
+        }
+    }
+    (full, half)
+}
+
+/// Live frames of the busy movie through a joint-update slow loop with
+/// the concurrent settle on, then `chunks` settle chunks of 16 stream
+/// frames each, fed through `observe_settle` (`delta` false) or summed by
+/// a `SettleDeltaBuilder` and applied (`delta` true). Held-out frames are
+/// passed over before the solve, as the app does. `nan`: some pixels of
+/// two frames of each chunk are missing. `before_apply` runs between the
+/// request (context) and the apply.
+fn settle_delta_run(
+    delta: bool,
+    nan: bool,
+    half_life: f32,
+    chunks: &[usize],
+    before_apply: &dyn Fn(&mut SlowLoop),
+) -> SlowLoop {
+    let t = 360;
+    // Two overlapping cells, one seed bitten (as `bitten_refill_with`), in
+    // the Refine scope so the cell set stays put.
+    let mut rng = Lcg(411);
+    let (pa, pb) = ((46.0, 44.0), (46.0, 47.5));
+    let cells = vec![
+        (blob_w(0, pa.0, pa.1, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        (blob_w(1, pb.0, pb.1, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+    ];
+    let m = movie(&cells, t, 423);
+    let mut bitten = blob_w(2, pb.0, pb.1, 2.5);
+    for y in 0..bitten.height {
+        for x in 0..bitten.width {
+            let (dy, dx) = ((bitten.y0 + y) as f32 - pa.0, (bitten.x0 + x) as f32 - pa.1);
+            if dy * dy + dx * dx <= 2.5 * 2.5 {
+                bitten.values[y * bitten.width + x] = 0.0;
+            }
+        }
+    }
+    let seed = [blob_w(1, pa.0, pa.1, 2.5), bitten];
+    let n_px = N * N;
+    let cfg = SlowLoopConfig {
+        joint_update: JointUpdate::All,
+        stats_half_life_frames: half_life,
+        ..v2_config()
+    };
+    let (mut sl, mut eng) = start(cfg, &seed);
+    sl.set_edit_scope(EditScope::Refine);
+    sl.enable_settle(0);
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let lib = eng.library().clone();
+        sl.observe(f, &lib, &tr).unwrap();
+        if let Some(l) = sl.step(200_000).unwrap() {
+            eng.set_library(l).unwrap();
+        }
+    }
+    assert!(!sl.clusters.is_empty(), "the test needs cluster stores");
+    let lib = eng.library().clone();
+    for &c0 in chunks {
+        let ctx = delta.then(|| sl.settle_context().unwrap());
+        let mut b = ctx.map(|c| SettleDeltaBuilder::new(N, N, vec![1; n_px], c).unwrap());
+        let mut fit = 0;
+        for k in c0..c0 + 16 {
+            if sl.is_test(k as u64) {
+                continue;
+            }
+            fit += 1;
+            let clean = &m[k * n_px..(k + 1) * n_px];
+            let tr = eng.process(clean).unwrap();
+            let mut f = clean.to_vec();
+            if nan && (fit == 2 || fit == 4) {
+                for y in 40..47 {
+                    for x in 38..50 {
+                        f[y * N + x] = f32::NAN;
+                    }
+                }
+            }
+            match b.as_mut() {
+                Some(b) => b.push(&f, &lib, &tr, k as u64).unwrap(),
+                None => sl
+                    .observe_settle(&f, &lib, &tr, k as u64, false, false)
+                    .unwrap(),
+            }
+        }
+        if let Some(mut b) = b {
+            let d = b.finish();
+            let d = SettleDelta::from_bytes(&d.to_bytes()).unwrap();
+            before_apply(&mut sl);
+            let cfg = sl.config().clone();
+            assert!(sl.apply_settle_delta(&d, &|k| cfg.is_test(k)).unwrap());
+        } else {
+            before_apply(&mut sl);
+        }
+    }
+    sl
+}
+
+fn assert_same_statistics(a: &SlowLoop, b: &SlowLoop, tol: f64, halves: bool) {
+    assert!(
+        (a.stats_w - b.stats_w).abs() <= 1e-4 * a.stats_w,
+        "{} {}",
+        a.stats_w,
+        b.stats_w
+    );
+    let mut ids: Vec<u64> = a.fpstats.keys().copied().collect();
+    ids.sort_unstable();
+    let mut idb: Vec<u64> = b.fpstats.keys().copied().collect();
+    idb.sort_unstable();
+    assert_eq!(ids, idb);
+    for id in ids {
+        let (sa, sb) = (&a.fpstats[&id], &b.fpstats[&id]);
+        assert_eq!(
+            sa.pm.is_some(),
+            sb.pm.is_some(),
+            "cell {id}: per-pixel moments"
+        );
+        let (fa, ha) = fp_flat(sa);
+        let (fb, hb) = fp_flat(sb);
+        close_to(&fa, &fb, tol).unwrap_or_else(|e| panic!("cell {id}: {e}"));
+        if halves {
+            close_to(&ha, &hb, tol).unwrap_or_else(|e| panic!("cell {id} halves: {e}"));
+        }
+    }
+    assert_eq!(a.clusters.len(), b.clusters.len());
+    for (ca, cb) in a.clusters.iter().zip(&b.clusters) {
+        assert_eq!(ca.ids, cb.ids);
+        close_to(&ca.flat_state(), &cb.flat_state(), tol)
+            .unwrap_or_else(|e| panic!("cluster {:?}: {e}", ca.ids));
+    }
+}
+
+/// A settle chunk summed away from the slow loop and added gives the
+/// statistics feeding its frames one by one gives (cells and cluster
+/// stores, missing pixels included), up to rounding; held-out frames are
+/// never summed.
+#[test]
+fn settle_delta_equals_observe_settle() {
+    for nan in [false, true] {
+        let a = settle_delta_run(false, nan, 6000.0, &[32], &|_| {});
+        let b = settle_delta_run(true, nan, 6000.0, &[32], &|_| {});
+        // The chunk sits inside one 256-frame block for every cell here
+        // (checked: the halves agree too).
+        assert_same_statistics(&a, &b, 1e-5, true);
+        let st = b.settle_delta_stats();
+        assert_eq!(st.applied, 1);
+        assert_eq!(st.cells as usize, b.fpstats.len());
+        assert_eq!(st.clusters as usize, b.clusters.len());
+        assert_eq!(st.cells_gone + st.cells_moved + st.clusters_stale, 0);
+        assert_eq!(a.settle_stats().frames_fit, b.settle_stats().frames_fit);
+        if nan {
+            assert!(b.fpstats.values().any(|s| s.pm.is_some()));
+            assert!(st.cluster_skips > 0);
+        }
+    }
+}
+
+/// Several chunks with a short half-life: the forgetting clock moves and
+/// renormalises inside chunks as it does frame by frame.
+#[test]
+fn settle_delta_follows_the_forgetting_clock() {
+    let chunks = [0, 48, 96, 160, 240];
+    let a = settle_delta_run(false, false, 3.0, &chunks, &|_| {});
+    let b = settle_delta_run(true, false, 3.0, &chunks, &|_| {});
+    assert_same_statistics(&a, &b, 1e-4, false);
+}
+
+/// Between request and answer: a cell that went is skipped (no statistics
+/// are made for it), a cell whose disk moved is skipped, a store whose
+/// basis changed is skipped; everything else is added. A delta with a
+/// held-out frame in it is refused whole.
+#[test]
+fn settle_delta_drops_what_changed_and_refuses_held_out_frames() {
+    let gone = std::cell::Cell::new(0u64);
+    let b = settle_delta_run(true, false, 6000.0, &[32], &|sl| {
+        let mut ids: Vec<u64> = sl.fpstats.keys().copied().collect();
+        ids.sort_unstable();
+        sl.fpstats.remove(&ids[0]);
+        gone.set(ids[0]);
+        let st = sl.fpstats.get_mut(&ids[1]).unwrap();
+        st.radius += 1.0;
+        let c = &mut sl.clusters[0];
+        c.epoch += 1_000_000;
+    });
+    let st = b.settle_delta_stats();
+    assert_eq!(
+        (st.cells_gone, st.cells_moved, st.clusters_stale),
+        (1, 1, 1)
+    );
+    assert!(!b.fpstats.contains_key(&gone.get()));
+    assert_eq!(st.cells as usize, b.fpstats.len() - 1);
+
+    // A held-out frame in the delta: nothing changes.
+    let t = 64;
+    let (m, seed) = busy_movie(t);
+    let n_px = N * N;
+    let (mut sl, mut eng) = start(shard_config(), &seed);
+    sl.enable_settle(0);
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        sl.observe(f, &eng.library().clone(), &tr).unwrap();
+    }
+    let lib = eng.library().clone();
+    let held = (0..t as u64).find(|&k| sl.is_test(k)).unwrap();
+    let mut bld =
+        SettleDeltaBuilder::new(N, N, vec![1; n_px], sl.settle_context().unwrap()).unwrap();
+    for k in [held.saturating_sub(1), held] {
+        let f = &m[k as usize * n_px..(k as usize + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        bld.push(f, &lib, &tr, k).unwrap();
+    }
+    let d = bld.finish();
+    let before: Vec<u64> = sl.fpstats.values().map(|s| s.k).collect();
+    let cfg = sl.config().clone();
+    assert!(!sl.apply_settle_delta(&d, &|k| cfg.is_test(k)).unwrap());
+    assert_eq!(sl.fpstats.values().map(|s| s.k).collect::<Vec<_>>(), before);
+    assert_eq!(sl.settle_delta_stats().rejected, 1);
+}

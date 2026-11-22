@@ -266,7 +266,14 @@ pub(crate) struct ClusterStore {
     /// On a runner: the visited tile owns this cluster (a visit may change
     /// its flag and store), so the result reports it.
     touched: bool,
+    /// Changes whenever the basis (and with it the pixels, whitening or
+    /// owners) is set: a settle delta made against another epoch is
+    /// dropped. Not part of the store's encoding.
+    pub epoch: u64,
 }
+
+/// Source of [`ClusterStore::epoch`] (unique within the process).
+static NEXT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Per pixel of `pix`: the member whose ring level is subtracted there (the
 /// largest positive column; else the nearest disk centre) and the bit mask
@@ -357,6 +364,7 @@ impl ClusterStore {
             visited: false,
             est_dirty: false,
             touched: true,
+            epoch: 0,
         };
         // The first basis is the members' current whitened columns (the
         // statistics have not accumulated yet).
@@ -367,6 +375,7 @@ impl ClusterStore {
     }
 
     fn set_basis(&mut self, u: Vec<f64>, rank: usize) {
+        self.epoch = NEXT_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let n = self.pix.len();
         self.ut = (0..rank * n)
             .map(|x| u[(x % n) * rank + x / n] as f32)
@@ -1900,6 +1909,7 @@ impl ClusterStore {
             visited: false,
             est_dirty: false,
             touched: owned,
+            epoch: 0,
         }
     }
 
@@ -2064,6 +2074,7 @@ impl ClusterStore {
             est,
             visited: false,
             est_dirty: false,
+            epoch: 0,
             touched: true,
         };
         s.set_basis(u, rank);
@@ -2253,6 +2264,257 @@ impl SlowLoop {
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Settle delta (`settle_delta.rs`): the frames of a settle chunk summed for a
+// store away from the slow loop. The forgetting sums add; the history needs
+// each frame's coordinates in the store's basis, so the request carries the
+// basis ([`ClusterSnap`]) and a delta made against another basis (another
+// `epoch`) is dropped.
+// ---------------------------------------------------------------------------
+
+/// What summing frames for a store needs of it: its members, pixels,
+/// whitening, owners and basis, and the basis epoch.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ClusterSnap {
+    pub ids: Vec<u64>,
+    pub epoch: u64,
+    pub pix: Vec<u32>,
+    pub owner: Vec<u8>,
+    pub is: Vec<f32>,
+    /// Member-major `rank x pix.len()`.
+    pub ut: Vec<f32>,
+    pub rank: usize,
+}
+
+impl ClusterSnap {
+    pub fn encode(&self, w: &mut Writer) {
+        w.u64s(&self.ids);
+        w.u64(self.epoch);
+        w.u32s(&self.pix);
+        w.usize(self.owner.len());
+        self.owner.iter().for_each(|&b| w.u8(b));
+        w.f32s(&self.is);
+        w.usize(self.rank);
+        w.f32s(&self.ut);
+    }
+
+    pub fn decode(r: &mut Reader) -> Option<ClusterSnap> {
+        let ids = r.u64s()?;
+        let epoch = r.u64()?;
+        let pix = r.u32s()?;
+        let m = r.count(1)?;
+        let owner = (0..m).map(|_| r.u8()).collect::<Option<Vec<u8>>>()?;
+        let is = r.f32s()?;
+        let rank = r.usize()?;
+        let ut = r.f32s()?;
+        let n = pix.len();
+        let ok = !ids.is_empty()
+            && ids.len() <= 8
+            && owner.len() == n
+            && owner.iter().all(|&o| (o as usize) < ids.len())
+            && is.len() == n
+            && rank <= ids.len()
+            && ut.len() == rank * n;
+        ok.then_some(ClusterSnap {
+            ids,
+            epoch,
+            pix,
+            owner,
+            is,
+            ut,
+            rank,
+        })
+    }
+}
+
+/// A run of fitting frames summed for one store: what
+/// [`ClusterStore::push`] adds for each, at weights relative to the
+/// forgetting weight before the run, and each frame's coordinates.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ClusterDelta {
+    pub ids: Vec<u64>,
+    pub epoch: u64,
+    pub rank: usize,
+    cy: Vec<f32>,
+    sr: Vec<f32>,
+    sc: Vec<f64>,
+    scc: Vec<f64>,
+    sw: f64,
+    /// Frame-major `frames x rank`.
+    v: Vec<f32>,
+    pub frames: usize,
+}
+
+impl ClusterDelta {
+    pub fn new(s: &ClusterSnap) -> ClusterDelta {
+        let (n, kk) = (s.pix.len(), s.ids.len());
+        ClusterDelta {
+            ids: s.ids.clone(),
+            epoch: s.epoch,
+            rank: s.rank,
+            cy: vec![0.0; n * kk],
+            sr: vec![0.0; n],
+            sc: vec![0.0; kk],
+            scc: vec![0.0; kk * kk],
+            sw: 0.0,
+            v: Vec::new(),
+            frames: 0,
+        }
+    }
+
+    /// One frame, as [`ClusterStore::push`]: `r` the whitened residual on
+    /// the store's pixels (finite), `c` the members' traces, `w` the
+    /// relative weight, `ut` the snapshot's basis.
+    pub fn push(&mut self, ut: &[f32], r: &[f32], c: &[f32], w: f64) {
+        let (n, kk) = (self.sr.len(), self.ids.len());
+        debug_assert_eq!(r.len(), n);
+        self.sw += w;
+        for k in 0..kk {
+            let ck = f64::from(c[k]);
+            self.sc[k] += w * ck;
+            for l in 0..kk {
+                self.scc[k * kk + l] += w * ck * f64::from(c[l]);
+            }
+        }
+        let wf = w as f32;
+        for (s, &x) in self.sr.iter_mut().zip(r) {
+            *s += wf * x;
+        }
+        for k in 0..kk {
+            let a = wf * c[k];
+            if a != 0.0 {
+                for (s, &x) in self.cy[k * n..(k + 1) * n].iter_mut().zip(r) {
+                    *s += a * x;
+                }
+            }
+        }
+        for j in 0..self.rank {
+            self.v.push(
+                ut[j * n..(j + 1) * n]
+                    .iter()
+                    .zip(r)
+                    .map(|(u, x)| u * x)
+                    .sum(),
+            );
+        }
+        self.frames += 1;
+    }
+
+    /// Elements carried (for the work count).
+    pub fn size(&self) -> usize {
+        self.cy.len() + self.sr.len() + self.v.len()
+    }
+
+    pub fn encode(&self, w: &mut Writer) {
+        w.u64s(&self.ids);
+        w.u64(self.epoch);
+        w.usize(self.rank);
+        w.f32s(&self.cy);
+        w.f32s(&self.sr);
+        w.f64s(&self.sc);
+        w.f64s(&self.scc);
+        w.f64(self.sw);
+        w.f32s(&self.v);
+        w.usize(self.frames);
+    }
+
+    pub fn decode(r: &mut Reader) -> Option<ClusterDelta> {
+        let d = ClusterDelta {
+            ids: r.u64s()?,
+            epoch: r.u64()?,
+            rank: r.usize()?,
+            cy: r.f32s()?,
+            sr: r.f32s()?,
+            sc: r.f64s()?,
+            scc: r.f64s()?,
+            sw: r.f64()?,
+            v: r.f32s()?,
+            frames: r.usize()?,
+        };
+        let (n, kk) = (d.sr.len(), d.ids.len());
+        let ok = kk > 0
+            && d.cy.len() == n * kk
+            && d.sc.len() == kk
+            && d.scc.len() == kk * kk
+            && d.rank <= kk
+            && d.frames.checked_mul(d.rank) == Some(d.v.len());
+        ok.then_some(d)
+    }
+}
+
+impl ClusterStore {
+    /// What a settle delta needs of this store.
+    pub fn snap(&self) -> ClusterSnap {
+        ClusterSnap {
+            ids: self.ids.clone(),
+            epoch: self.epoch,
+            pix: self.pix.clone(),
+            owner: self.owner.clone(),
+            is: self.is.clone(),
+            ut: self.ut.clone(),
+            rank: self.rank,
+        }
+    }
+
+    /// Add a run's sums at forgetting weight `w0` (the weight before the
+    /// run) and append its frames to the history, as pushing them one by
+    /// one does. `false` (nothing changed) when the delta was made against
+    /// another basis or member set.
+    pub fn add_delta(&mut self, d: &ClusterDelta, w0: f64) -> bool {
+        if d.epoch != self.epoch
+            || d.ids != self.ids
+            || d.rank != self.rank
+            || d.sr.len() != self.pix.len()
+        {
+            return false;
+        }
+        if d.frames == 0 {
+            return true;
+        }
+        self.sw += w0 * d.sw;
+        for (s, &x) in self.sc.iter_mut().zip(&d.sc) {
+            *s += w0 * x;
+        }
+        for (s, &x) in self.scc.iter_mut().zip(&d.scc) {
+            *s += w0 * x;
+        }
+        let wf = w0 as f32;
+        for (s, &x) in self.sr.iter_mut().zip(&d.sr) {
+            *s += wf * x;
+        }
+        for (s, &x) in self.cy.iter_mut().zip(&d.cy) {
+            *s += wf * x;
+        }
+        let r = self.rank;
+        for t in 0..d.frames {
+            self.hist.append(
+                &d.v[t * r..(t + 1) * r],
+                self.k,
+                (self.k / 256).is_multiple_of(2),
+            );
+            self.k += 1;
+        }
+        true
+    }
+
+    /// Tests: the forgetting sums and the stored frames (coordinates, push
+    /// index, block) as one vector.
+    #[cfg(test)]
+    pub fn flat_state(&self) -> Vec<f64> {
+        let mut out = vec![self.sw, self.k as f64];
+        out.extend(&self.sc);
+        out.extend(&self.scc);
+        out.extend(self.sr.iter().map(|&v| f64::from(v)));
+        out.extend(self.cy.iter().map(|&v| f64::from(v)));
+        self.hist.for_each(self.rank, &mut |v, at, half| {
+            out.extend(v.iter().map(|&x| f64::from(x)));
+            out.push(at as f64);
+            out.push(f64::from(u8::from(half)));
+        });
+        out
     }
 }
 

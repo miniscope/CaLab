@@ -228,6 +228,7 @@ mod lookback;
 mod mergelog;
 mod noisecorr;
 mod reservoir;
+mod settle_delta;
 mod shard;
 mod wire;
 
@@ -241,6 +242,7 @@ pub use lookback::{
 };
 #[cfg(feature = "diagnostics")]
 pub use mergelog::{flush as merge_log_flush, set_gt as merge_log_set_gt};
+pub use settle_delta::{SettleContext, SettleDelta, SettleDeltaBuilder, SettleDeltaStats};
 pub use shard::{VisitJob, VisitResult, VisitRunner};
 
 #[cfg(feature = "jsbindings")]
@@ -1249,6 +1251,11 @@ pub struct SlowLoop {
     cs_quiet: u64,
     cs_visiting: bool,
     cs_stats: SettleStats,
+    /// The settle delta ([`SlowLoop::apply_settle_delta`]): its counters,
+    /// and the evaluation knob that charges an apply what
+    /// `observe_settle` would have cost.
+    cs_delta: SettleDeltaStats,
+    cs_delta_charge_equiv: bool,
     /// How tiles came due ([`DueDiag`]; diagnostics only).
     due_diag: DueDiag,
 }
@@ -1562,6 +1569,8 @@ impl SlowLoop {
             cs_quiet: 0,
             cs_visiting: false,
             cs_stats: SettleStats::default(),
+            cs_delta: SettleDeltaStats::default(),
+            cs_delta_charge_equiv: false,
             due_diag: DueDiag::default(),
             merge_rejected: Vec::new(),
             forced: Vec::new(),

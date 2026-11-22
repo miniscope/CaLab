@@ -114,7 +114,7 @@ fn lambda(m: &Mom) -> Option<f64> {
 /// Per-pixel `Σ w`, `Σ w²`, `Σ w z`, `Σ w z²` over the frames in which the
 /// pixel was valid (a missing sample has zero weight, not a value). Same
 /// roles as the first four class moments, one set per pixel of the disk.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct PixMoments {
     pub n: Vec<f64>,
     pub n2: Vec<f64>,
@@ -880,6 +880,188 @@ fn scale_mom(m: &mut Mom, f: f64) {
     m[1] *= f * f;
     for v in &mut m[2..] {
         *v *= f;
+    }
+}
+
+/// The sums a run of fitting frames adds to one cell's [`FpStats`], made
+/// away from the slow loop (the settle delta, `settle_delta.rs`): what
+/// [`FpStats::push`] would add for each frame with the slow loop's `z = [c,
+/// c]`, `x = c`, at weights relative to the forgetting weight before the
+/// run. Neither the split-half sums (the whole run goes to the block the
+/// cell is in when it is added) nor the transient band (`CoreTest` must be
+/// off): both depend on the cell's own state.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FpDelta {
+    pub rc: Vec<f32>,
+    pub r: Vec<f32>,
+    pub m: [Mom; 2],
+    /// Per-pixel moments, from the first frame with a missing pixel on
+    /// (filled from `m` up to then, as [`FpStats::push`] starts them).
+    pub pm: Option<PixMoments>,
+    /// Frames added.
+    pub k: u64,
+}
+
+impl FpDelta {
+    pub fn new(n: usize) -> FpDelta {
+        FpDelta {
+            rc: vec![0.0; n],
+            r: vec![0.0; n],
+            m: [[0.0; 6]; 2],
+            pm: None,
+            k: 0,
+        }
+    }
+
+    /// One frame: the own-signal residual `r` on the disk (NaN: missing),
+    /// the trace `c`, relative weight `w`, pixel classes `cls`.
+    pub fn push(&mut self, cls: &[u8], r: &[f32], c: f32, w: f32) {
+        if c.is_nan() {
+            return;
+        }
+        if self.pm.is_none() && r.iter().any(|v| v.is_nan()) {
+            self.pm = Some(PixMoments::filled(cls, &self.m));
+        }
+        let wz = w * c;
+        let (wf, zf) = (f64::from(w), f64::from(c));
+        match &mut self.pm {
+            None => {
+                for (i, &v) in r.iter().enumerate() {
+                    self.rc[i] += wz * v;
+                    self.r[i] += w * v;
+                }
+            }
+            Some(pm) => {
+                for (i, &v) in r.iter().enumerate() {
+                    if v.is_nan() {
+                        continue;
+                    }
+                    self.rc[i] += wz * v;
+                    self.r[i] += w * v;
+                    pm.add(i, wf, zf);
+                }
+            }
+        }
+        for m in &mut self.m {
+            add_mom(m, wf, zf, zf);
+        }
+        self.k += 1;
+    }
+
+    pub fn encode(&self, w: &mut super::wire::Writer) {
+        w.f32s(&self.rc);
+        w.f32s(&self.r);
+        for m in &self.m {
+            w.f64s(m);
+        }
+        w.bool(self.pm.is_some());
+        if let Some(pm) = &self.pm {
+            for v in [&pm.n, &pm.n2, &pm.s1, &pm.s2] {
+                w.f64s(v);
+            }
+        }
+        w.u64(self.k);
+    }
+
+    pub fn decode(r: &mut super::wire::Reader) -> Option<FpDelta> {
+        let rc = r.f32s()?;
+        let rr = r.f32s()?;
+        let mut m = [[0.0; 6]; 2];
+        for mm in &mut m {
+            *mm = r.f64s()?.try_into().ok()?;
+        }
+        let n = rc.len();
+        let pm = if r.bool()? {
+            let pm = PixMoments {
+                n: r.f64s()?,
+                n2: r.f64s()?,
+                s1: r.f64s()?,
+                s2: r.f64s()?,
+            };
+            let ok = [&pm.n, &pm.n2, &pm.s1, &pm.s2].iter().all(|v| v.len() == n);
+            Some(ok.then_some(pm)?)
+        } else {
+            None
+        };
+        (rr.len() == n).then_some(())?;
+        Some(FpDelta {
+            rc,
+            r: rr,
+            m,
+            pm,
+            k: r.u64()?,
+        })
+    }
+}
+
+impl FpStats {
+    /// Add a run's sums ([`FpDelta`], made on this disk) at forgetting
+    /// weight `w0` (the weight before the run): what pushing its frames one
+    /// by one gives, except that the whole run goes to the split-half block
+    /// of the cell's first frame of it. The caller advances the forgetting
+    /// clock.
+    pub fn add_delta(&mut self, d: &FpDelta, w0: f32) {
+        debug_assert!(self.fast.is_none());
+        debug_assert_eq!(d.rc.len(), self.pix.len());
+        if d.k == 0 {
+            return;
+        }
+        let in_half = (self.k / 256).is_multiple_of(2);
+        let ff = f64::from(w0);
+        // Per-pixel moments start (from the class moments before the run)
+        // as `push` starts them at its first missing pixel.
+        if d.pm.is_some() && self.pm.is_none() {
+            self.pm = Some(PixMoments::filled(&self.cls, &self.m));
+            self.half_pm = Some(PixMoments::filled(&self.cls, &self.half.2));
+        }
+        let mut dm = d.m;
+        for m in &mut dm {
+            scale_mom(m, ff);
+        }
+        if let (Some(pm), Some(hpm)) = (self.pm.as_mut(), self.half_pm.as_mut()) {
+            for i in 0..self.pix.len() {
+                let add = match &d.pm {
+                    Some(dp) => [
+                        dp.n[i] * ff,
+                        dp.n2[i] * ff * ff,
+                        dp.s1[i] * ff,
+                        dp.s2[i] * ff,
+                    ],
+                    None => {
+                        let m = &dm[self.cls[i] as usize];
+                        [m[0], m[1], m[2], m[3]]
+                    }
+                };
+                pm.n[i] += add[0];
+                pm.n2[i] += add[1];
+                pm.s1[i] += add[2];
+                pm.s2[i] += add[3];
+                if in_half {
+                    hpm.n[i] += add[0];
+                    hpm.n2[i] += add[1];
+                    hpm.s1[i] += add[2];
+                    hpm.s2[i] += add[3];
+                }
+            }
+        }
+        for i in 0..self.pix.len() {
+            let (rc, r) = (w0 * d.rc[i], w0 * d.r[i]);
+            self.rc[i] += rc;
+            self.r[i] += r;
+            if in_half {
+                self.half.0[i] += rc;
+                self.half.1[i] += r;
+            }
+        }
+        for c in 0..2 {
+            for j in 0..6 {
+                self.m[c][j] += dm[c][j];
+                if in_half {
+                    self.half.2[c][j] += dm[c][j];
+                }
+            }
+        }
+        self.k += d.k;
     }
 }
 
