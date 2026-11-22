@@ -36,6 +36,8 @@ import type {
   StageTimings,
 } from './pipeline-engine.ts';
 import type { PipelineOptions, PipelinePhase, PipelinePlan } from './pipeline-plan.ts';
+import { PlaybackScheduler, playbackWanted } from './playback.ts';
+import { framePreviewImage, type FrameView } from './preview.ts';
 import { RunRecord } from './run-record.ts';
 import { BoundaryMonitor, severityLabel, type BoundaryFlag } from './boundary-flags.ts';
 import type { SessionStart } from './session-boundary.ts';
@@ -153,6 +155,25 @@ export function createPipelineStore(
   const [processed, setProcessed] = createSignal(0);
   const [previews, setPreviews] = createSignal<BatchPreviews | null>(null);
   const [fps, setFps] = createSignal(0);
+  // ---- Smooth playback (`lib/playback.ts`) ----
+  // With a preview of every frame of a batch (asked from the worker only for the view being shown,
+  // and only at modest processing rates), the displayed frame advances evenly instead of in batch
+  // jumps. `previews()`, and so the FOV's frame readout, follow the DISPLAYED frame; the cell
+  // overlay and the trace cursor follow the processed one (`cells.frame()`), about a batch ahead.
+  interface PlayedFrame {
+    batch: BatchPreviews;
+    index: number;
+  }
+  const playback = new PlaybackScheduler<PlayedFrame>();
+  let smoothOn = true;
+  /** The view the FOV shows, if it can be played (raw, preprocessed, corrected or output). */
+  let playView: FrameView | null = null;
+  /** The view the worker was last asked to preview for every frame. */
+  let framesAsked: FrameView | null = null;
+  let rafId: number | null = null;
+  let displayLogOn = false;
+  let displayLog: { t: number; frame: number }[] = [];
+  const hasRaf = typeof requestAnimationFrame === 'function';
   /** Mean wall time per processed frame and stage, ms. */
   const [stageMs, setStageMs] = createSignal<StageTimings>(ZERO_TIMINGS);
   /** Mean busy time per processed frame of each pipeline stage (A, B, C), ms; empty unless pipelined. */
@@ -375,9 +396,9 @@ export function createPipelineStore(
             kind: 'gap',
             detail: 'A batch arrived out of order: the run record is incomplete',
           });
-        setPreviews(step.previews);
         setProcessed(step.start + step.count);
         const rate = meter.record(clock(), step.count);
+        offerPreviews(step.previews, rate);
         setFps(rate);
         const t = step.timings;
         framesDone += step.count;
@@ -487,6 +508,70 @@ export function createPipelineStore(
     void client.setPace?.(pace).catch(() => {});
   }
 
+  /** Show one played frame: its view's image, the batch's last-frame images for the other views. */
+  function showPlayed(f: PlayedFrame): void {
+    const fp = f.batch.frames!;
+    setPreviews({
+      ...f.batch,
+      [fp.view]: framePreviewImage(fp, f.index),
+      frame: fp.first + f.index,
+    });
+    if (displayLogOn) {
+      displayLog.push({ t: clock(), frame: fp.first + f.index });
+      if (displayLog.length > 20000) displayLog = displayLog.slice(-10000);
+    }
+  }
+
+  function playbackLoop(t: number): void {
+    rafId = null;
+    const f = playback.tick(t);
+    if (f) showPlayed(f);
+    if (playback.queued > 0) rafId = requestAnimationFrame(playbackLoop);
+  }
+
+  function endPlayback(): void {
+    if (rafId !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
+    rafId = null;
+    playback.clear();
+  }
+
+  /** Ask the worker for per-frame previews of the shown view, or stop asking, by the processing rate. */
+  function syncFramePreview(rate: number): void {
+    const want =
+      smoothOn &&
+      hasRaf &&
+      client.setFramePreview &&
+      playView &&
+      playbackWanted(rate, framesAsked !== null)
+        ? playView
+        : null;
+    if (want === framesAsked) return;
+    framesAsked = want;
+    void client.setFramePreview?.(want).catch(() => {});
+  }
+
+  /** A batch's previews arrived: queue its frames for playback, or show its last frame at once. */
+  function offerPreviews(p: BatchPreviews, rate: number): void {
+    const fp = p.frames;
+    if (fp && hasRaf && smoothOn && fp.view === playView) {
+      const items = Array.from({ length: fp.count }, (_, index) => ({ batch: p, index }));
+      if (status() === 'paused') {
+        // Answers to steps sent before the pause: the newest frame, shown at once.
+        playback.clear();
+        showPlayed(items[items.length - 1]);
+      } else {
+        playback.setRate(paceRun() ? paceFps : rate > 0 ? rate * 1.05 : 30);
+        playback.push(items);
+        if (rafId === null) rafId = requestAnimationFrame(playbackLoop);
+      }
+    } else {
+      endPlayback();
+      setPreviews(p);
+      if (displayLogOn) displayLog.push({ t: clock(), frame: p.frame });
+    }
+    syncFramePreview(rate);
+  }
+
   function pump(): void {
     while (
       status() === 'running' &&
@@ -545,6 +630,9 @@ export function createPipelineStore(
     setPlan(null);
     setSetup(null);
     setProcessed(0);
+    endPlayback();
+    framesAsked = null;
+    displayLog = [];
     setPreviews(null);
     setFps(0);
     setStageMs(ZERO_TIMINGS);
@@ -635,6 +723,7 @@ export function createPipelineStore(
         frameCount: p.frameCount,
       });
       setStatus('running');
+      syncFramePreview(0);
       if (paceRun()) sendPace({ fps: paceFps });
       pump();
     } catch (err) {
@@ -647,6 +736,9 @@ export function createPipelineStore(
   function pause(): void {
     if (status() !== 'running') return;
     setStatus('paused');
+    // The newest frame at once; the rest of the queue is dropped.
+    const newest = playback.flush();
+    if (newest) showPlayed(newest);
     // Requests already in the worker must not be released while paused.
     if (paceEver) sendPace({ paused: true });
     runHistory?.log({ frame: processed(), kind: 'pause', detail: 'Paused' });
@@ -761,6 +853,33 @@ export function createPipelineStore(
     setCsettleYield: (frames: number) =>
       setCsettleYield(Number.isFinite(frames) && frames > 0 ? Math.floor(frames) : 0),
     setResidual,
+    /**
+     * The view the FOV shows (null: none, or one that is not a frame of the batch, like the residual):
+     * per-frame previews are asked for this one.
+     */
+    setPlayView: (view: FrameView | null) => {
+      playView = view;
+      if (view === null || view !== framesAsked) endPlayback();
+      syncFramePreview(meter.rate());
+    },
+    /** Smooth playback on or off (default on; `?debug&smooth=0` turns it off for comparison). */
+    setSmoothPlayback: (on: boolean) => {
+      smoothOn = on;
+      if (!on) endPlayback();
+      syncFramePreview(meter.rate());
+    },
+    /** Frames waiting for display, dropped by skipping ahead, and shown; the view being previewed (measurement). */
+    playbackStats: () => ({
+      queued: playback.queued,
+      dropped: playback.dropped,
+      shown: playback.shown,
+      view: framesAsked,
+    }),
+    /** Record when each displayed frame changed (measurement; `?debug`). */
+    setDisplayLog: (on: boolean) => {
+      displayLogOn = on;
+    },
+    displayLog: () => displayLog,
     plan,
     setup,
     processed,

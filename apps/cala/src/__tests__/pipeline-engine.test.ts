@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { FramePixels } from '../lib/frame-source.ts';
+import { framePreviewImage } from '../lib/preview.ts';
 import {
   PipelineEngine,
   transferablesOf,
@@ -125,6 +126,30 @@ describe('PipelineEngine (wasm)', () => {
     expect(last.flickerOffset).toHaveLength(last.count);
     expect(transferablesOf(last)).toHaveLength(10);
     expect(results[results.length - 1]).toEqual({ kind: 'done' });
+  });
+
+  it('previews every frame of a batch when asked, the last one equal to the batch preview', async () => {
+    for (const view of ['raw', 'preprocessed', 'corrected', 'output'] as const) {
+      const engine = new PipelineEngine(
+        makeMovie(Array.from({ length: 60 }, () => [0, 0] as [number, number])),
+        { calibrationFrames: 20, motionWarmupFrames: 20, batchSize: 8, previewMaxSide: 48 },
+      );
+      engine.framePreview = view;
+      const batches = (await runAll(engine)).filter((r) => r.kind === 'batch');
+      engine.dispose();
+      for (const b of batches) {
+        const fp = b.previews.frames!;
+        expect(fp.view).toBe(view);
+        expect(fp.first).toBe(b.start);
+        expect(fp.count).toBe(b.count);
+        expect(fp.data).toHaveLength(b.count * fp.width * fp.height);
+        // The last frame of the run is the batch's own preview of that view.
+        expect(Array.from(framePreviewImage(fp, fp.count - 1).data)).toEqual(
+          Array.from(b.previews[view].data),
+        );
+        expect(transferablesOf(b)).toHaveLength(11);
+      }
+    }
   });
 
   it('reports the global flicker it removes', async () => {

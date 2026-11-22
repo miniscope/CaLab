@@ -8,6 +8,7 @@ import type { PipelineStepResult } from './pipeline-engine.ts';
 import type { PipelineOptions, PipelinePlan } from './pipeline-plan.ts';
 import type { FlatFieldEvent, FlatFieldMap } from './flat-field.ts';
 import type { ReplayInput } from './pipeline-stages.ts';
+import type { FrameView } from './preview.ts';
 import type { PaceStats } from './frame-pacer.ts';
 import type { CellsSettings } from '../workers/frame-types.ts';
 import type {
@@ -43,6 +44,8 @@ export interface PipelineClient {
   setDiscovery?(on: boolean): Promise<void>;
   /** Return (or stop returning) the residual preview in the running pipeline. */
   setResidual?(on: boolean): Promise<void>;
+  /** Preview this view of every frame of the next batches (null: the last frame only); smooth playback. */
+  setFramePreview?(view: FrameView | null): Promise<void>;
   /**
    * The flat-field estimator's status events (pipelined clients with the
    * estimator worker only; absent: no online flat field). Returns an unsubscribe.
@@ -270,6 +273,9 @@ export function createFrameClient(
     },
     async setResidual(on) {
       expectType(await call({ type: 'set-residual', on }, [], traceTarget), 'ok');
+    },
+    async setFramePreview(view) {
+      expectType(await call({ type: 'set-frame-preview', view }), 'ok');
     },
     async connectSlow(port) {
       expectType(await call({ type: 'connect-slow', port }, [port], traceTarget), 'ok');

@@ -203,6 +203,11 @@ const App: Component = () => {
   // `?debug&pacefps=30` (measurement only): read the recording at a stream's rate.
   if (params.has('debug') && params.has('pacefps'))
     pipeline.setPaceFps(Number(params.get('pacefps')));
+  // `?debug`: log the time of each displayed frame change; `smooth=0` turns smooth playback off.
+  if (params.has('debug')) {
+    pipeline.setDisplayLog(true);
+    if (params.get('smooth') === '0') pipeline.setSmoothPlayback(false);
+  }
   // ---- Run stages (docs/stages.md): Discover, Refine (repeatable), Extract ----
   const stageLog = createStageLog();
   const discoverActivity = (): StageActivity => {

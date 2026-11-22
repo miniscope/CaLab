@@ -7,7 +7,9 @@
  *        --out <dir> [--keep name1,name2] [--tag x] [--mode joint|separate]
  *        [--refine-runs 1] [--every 10] [--max-min 90] [--cdp 9335] [--headed] [--single]
  *        [--lookback [--toggle] [--refine] [--csettle [--csettle-yield N] [--csrate R]]] [--extract]
- *   `--single`: one recording folder (Discover, then one Refine, no export).
+ *   `--single`: one recording folder (Discover, then one Refine, no export; `--discover-only`: stop after Discover).
+ *   `--smooth 0`: smooth playback off (the comparison run). Every run saves the displayed-frame times
+ *   and a once-a-second processing readout as `<tag>-display.json`.
  *   `--lookback` (with `--single`): opens with `&lookback` (experimental
  *   look-back refinement), never presses Refine, and stops once Discover has
  *   settled (the final library); it samples the look-back counters
@@ -77,7 +79,10 @@ const csQuery0 = csettle
   ? `&csettle${csYield ? `=yield${csYield}` : ''}${csRate ? `&csrate=${csRate}` : ''}`
   : '';
 // `--pacefps N`: read the recording no faster than N frames a second (a stream's rate).
-const csQuery = csQuery0 + (paceFps ? `&pacefps=${paceFps}` : '');
+// `--smooth 0`: smooth playback off (the comparison run).
+const smoothOpt = opt('--smooth', '');
+const csQuery =
+  csQuery0 + (paceFps ? `&pacefps=${paceFps}` : '') + (smoothOpt ? `&smooth=${smoothOpt}` : '');
 mkdirSync(out, { recursive: true });
 const udd = join(out, `udd-${tag}`);
 rmSync(udd, { recursive: true, force: true });
@@ -374,6 +379,20 @@ await page.evaluate((withRelease) => {
       pace: c.pipeline.paceStats?.() ?? null,
     });
   }, 500);
+  // Display and processing (`--smooth`): once a second, frames processed, rate, dropped for the slow loop.
+  const proc = (window.__calaProc = []);
+  setInterval(() => {
+    const c = window.__cala;
+    if (!c) return;
+    proc.push({
+      t: performance.now(),
+      status: c.pipeline.status(),
+      processed: c.pipeline.processed(),
+      fps: c.pipeline.fps(),
+      dropped: c.cells.batch?.()?.droppedFrames ?? 0,
+      playback: c.pipeline.playbackStats?.() ?? null,
+    });
+  }, 1000);
   let lastKey = '';
   setInterval(() => {
     const c = window.__cala;
@@ -567,6 +586,14 @@ async function probeReport() {
 async function saveWork() {
   const w = await page.evaluate(() => window.__calaWork).catch(() => null);
   if (w?.length) writeFileSync(join(out, `${tag}-work.json`), JSON.stringify(w));
+  const d = await page
+    .evaluate(() => ({
+      display: window.__cala.pipeline.displayLog?.() ?? [],
+      proc: window.__calaProc ?? [],
+    }))
+    .catch(() => null);
+  if (d?.display.length || d?.proc.length)
+    writeFileSync(join(out, `${tag}-display.json`), JSON.stringify(d));
 }
 
 let finishedEarly = false;
@@ -627,6 +654,13 @@ while (!stop) {
       stop = 'done';
     }
     if (r.st?.pst === 'error' || r.st?.extract === 'error') stop = 'error';
+  } else if (single && args.includes('--discover-only')) {
+    // Discover only (with `--finish-after S` a short one): stop once it is done.
+    if (r.st?.pst === 'done') {
+      L(`DISCOVER_DONE ${r.t.toFixed(1)}s`);
+      stop = 'done';
+    }
+    if (r.st?.pst === 'error') stop = 'error';
   } else if (single) {
     if (r.st?.pst === 'done' && r.st?.refine === 'idle' && !refineClicked) {
       refineClicked = true;

@@ -25,6 +25,7 @@ import {
   type FovView,
 } from '../lib/fov-view.ts';
 import type { BatchPreviews } from '../lib/pipeline-engine.ts';
+import type { FrameView } from '../lib/preview.ts';
 import type { PreviewImage } from '../lib/preview.ts';
 import type { DisplayRange } from '../lib/frame-display.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
@@ -44,6 +45,8 @@ import {
   type ColorMode,
 } from '../lib/qc-colors.ts';
 import { createHeldRange, RangeControl, type HeldRange } from './RangeControl.tsx';
+
+const PLAYABLE: ReadonlySet<string> = new Set(['raw', 'preprocessed', 'corrected', 'output']);
 
 export type FovViewName = keyof Omit<BatchPreviews, 'frame'>;
 
@@ -90,6 +93,8 @@ export interface FovSource {
   fixedRange?(view: string): DisplayRange | null;
   /** Ask for the residual frame while that view is shown (the live pipeline). */
   setResidual?(on: boolean): void;
+  /** The view shown, for smooth playback of the live pipeline (null: one that cannot be played). */
+  setPlayView?(view: FrameView | null): void;
   /** Text over a view without an image. */
   emptyText?(view: string): string | null;
 }
@@ -102,6 +107,7 @@ export function pipelineFovSource(store: PipelineStore): FovSource {
     image: (v) => store.previews()?.[v as FovViewName] ?? null,
     frame: () => store.previews()?.frame ?? null,
     setResidual: (on) => store.setResidual(on),
+    setPlayView: (v) => store.setPlayView(v),
     emptyText: (v) =>
       v === 'residual'
         ? 'The residual comes with the frames processed while the model has cells: it shows from the next batch of a running pass.'
@@ -242,6 +248,11 @@ export function FovPanel(props: {
   // The residual frame is computed in the worker only while it is shown.
   createEffect(() => src.setResidual?.(view() === 'residual'));
   onCleanup(() => src.setResidual?.(false));
+  createEffect(() => {
+    const v = view();
+    src.setPlayView?.(PLAYABLE.has(v) ? (v as FrameView) : null);
+  });
+  onCleanup(() => src.setPlayView?.(null));
 
   let stage!: HTMLDivElement;
   let video!: HTMLCanvasElement;
