@@ -66,6 +66,7 @@ import {
 import { LIBRARY_MODE_LABEL, refinePlanText } from './lib/session-run.ts';
 import { createLookbackClient } from './lib/lookback-client.ts';
 import { loadSpeedSettings } from './lib/speed-track.ts';
+import { presetCurve } from './lib/speed-schedule.ts';
 import { PACE_BATCH, PACE_SLACK } from './lib/frame-pacer.ts';
 import { FLOOR, TRACKER } from './lib/speed-floor.ts';
 import { LOOKBACK } from './lib/slow-runner.ts';
@@ -203,6 +204,7 @@ const App: Component = () => {
           height: i.height,
           ...(i.device ? { device: i.device } : {}),
           ...(i.live ? { live: true } : {}),
+          ...(!i.live && Number.isFinite(i.frameCount) ? { frames: i.frameCount } : {}),
           ...(i.live?.name ? { liveName: i.live.name } : {}),
           folder: store.label(),
         };
@@ -223,6 +225,8 @@ const App: Component = () => {
   // parameters below win for this page.
   const speed = loadSpeedSettings();
   if (speed.mode === 'fixed') pipeline.setPaceFps(speed.fixedFps, 'setting');
+  if (speed.mode === 'curve')
+    pipeline.setSpeedCurve(presetCurve(speed.preset), { preset: speed.preset });
   if (speed.cap === 0) pipeline.setCsettle(false);
   else pipeline.setCsettleCeiling(speed.cap);
   // `?lookback`: look-back on from the first Discover start.
@@ -508,6 +512,8 @@ const App: Component = () => {
   pipeline.onCapChange((cap, frame, source) => runTrace.noteCap(cap, frame, source));
   pipeline.onPoolStart((workers, frame) => runTrace.notePoolStart(workers, frame));
   pipeline.onWorkSample((sample) => runTrace.noteSample(sample));
+  // A curve that takes over mid-run replaces the one noted at the start.
+  pipeline.onCurveArmed((curve) => runTrace.noteCurve(curve));
   // A Discover start begins a new run: the target speed in force is its first entry.
   createEffect(
     on(
@@ -518,6 +524,8 @@ const App: Component = () => {
         // What is applied: a live stream is not paced by a target, and has no settle.
         runTrace.noteTargetSpeed(pipeline.targetNow(), 0, 'run start');
         runTrace.noteCap(pipeline.capNow(), 0, 'run start');
+        // The curve armed at the start (before this reset) is the run's.
+        runTrace.noteCurve(pipeline.curveNow());
       },
     ),
   );
@@ -773,6 +781,9 @@ const App: Component = () => {
         if (a.csettleNeedFirst !== undefined) pipeline.setCsettleNeedFirst(a.csettleNeedFirst);
         if (a.finalSettleLevel !== undefined) pipeline.setFinalSettleLevel(a.finalSettleLevel);
         if (a.paceFps !== undefined) pipeline.setPaceFps(a.paceFps, 'run record');
+        // A Curve or Auto run replays as a curve: exactly its realised steps (the pace above is
+        // only where it began).
+        if (a.curve) pipeline.setSpeedCurve(a.curve, { preset: 'replay', normalize: false });
         if (a.smoothPlayback !== undefined) pipeline.setSmoothPlayback(a.smoothPlayback);
         // The pool size is fixed at page load: say so rather than run differently in silence.
         const warnings: string[] = [];

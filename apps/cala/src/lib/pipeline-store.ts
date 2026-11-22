@@ -48,7 +48,16 @@ import { RunRecord } from './run-record.ts';
 import { BoundaryMonitor, severityLabel, type BoundaryFlag } from './boundary-flags.ts';
 import type { SessionStart } from './session-boundary.ts';
 import type { RunHistory } from './run-history.ts';
-import type { WorkSample } from './run-provenance.ts';
+import type { CurveRecord, WorkSample } from './run-provenance.ts';
+import {
+  limitPoints,
+  normalizeCurve,
+  sanitizeCurve,
+  SpeedDriver,
+  SpeedSchedule,
+  type PolicyInput,
+  type SpeedCurve,
+} from './speed-schedule.ts';
 import type { LookbackFeed } from './lookback-client.ts';
 import {
   CSETTLE,
@@ -131,6 +140,8 @@ export interface FlatFieldStoreOptions {
     liveName?: string;
     /** A live stream (its maps are neither read from nor written to the cache). */
     live?: boolean;
+    /** Frames in the recording (a speed curve is a share of them); absent for a stream. */
+    frames?: number;
     folder: string;
   } | null;
   /** Minimum time between cache writes, ms (default one minute; the run end always writes). */
@@ -424,6 +435,7 @@ export function createPipelineStore(
             detail: 'A batch arrived out of order: the run record is incomplete',
           });
         setProcessed(step.start + step.count);
+        driveCurve(step.start + step.count);
         const rate = meter.record(clock(), step.count);
         offerPreviews(step.previews, rate);
         setFps(rate);
@@ -485,6 +497,7 @@ export function createPipelineStore(
       case 'done':
         if (lookbackSession && step.backState)
           lookbackFeed?.backState(lookbackSession, step.backState);
+        curveDriver = null;
         if (!exhausted) {
           exhausted = true;
           boundaryMonitor?.end();
@@ -515,6 +528,77 @@ export function createPipelineStore(
   let forwardDrops: number | null = null;
   /** Told when a run's settle pool starts (its workers, the frame reached); the run record's log. */
   const poolListeners: ((workers: number, frame: number) => void)[] = [];
+  /**
+   * The speed curve chosen in the Speed control (Curve mode), as set; `normalize` is false for a
+   * replayed record's curve, which must run exactly as recorded.
+   */
+  const [activeCurve, setActiveCurve] = createSignal<{
+    curve: SpeedCurve;
+    preset: string;
+    normalize: boolean;
+  } | null>(null);
+  /** What follows a curve over this run (null: none); stopped when Discover ends. */
+  let curveDriver: SpeedDriver | null = null;
+  /** The curve this run was armed with, for the run record. */
+  let runCurve: CurveRecord | null = null;
+  const curveListeners: ((c: CurveRecord) => void)[] = [];
+  /** Frames in the recording a curve is a share of (0: none, e.g. a stream). */
+  function curveFrames(): number {
+    const id = flat.identity?.();
+    return id && id.live !== true && id.frames !== undefined && Number.isFinite(id.frames)
+      ? id.frames
+      : 0;
+  }
+  function policyInput(frame: number): PolicyInput {
+    const f = untrack(floor);
+    return {
+      frame,
+      totalFrames: curveFrames(),
+      floorFps: f.fps,
+      seeAllFps: f.estimate.seeAllFps,
+      maxFps: maxFpsEstimator.estimate() || null,
+      wallS: clock() / 1000,
+    };
+  }
+  /** Take over the target with the curve from `frame` on (at the run's start, or when chosen mid-run). */
+  function armCurve(frame: number): void {
+    curveDriver = null;
+    runCurve = null;
+    const a = untrack(activeCurve);
+    const total = curveFrames();
+    if (!a || total <= 0 || (lookbackFeed && lookbackFeed.blocked() !== null)) return;
+    const live = policyInput(frame);
+    const eff = a.normalize
+      ? normalizeCurve(a.curve, {
+          totalFrames: total,
+          cap: settleCap(),
+          floorFps: live.floorFps,
+          seeAllFps: live.seeAllFps,
+          maxFps: live.maxFps,
+        }).curve
+      : a.curve;
+    curveDriver = new SpeedDriver(new SpeedSchedule(eff));
+    runCurve = {
+      preset: a.preset,
+      points: a.curve.points.map((p) => ({ ...p })),
+      effective_points: eff.points.map((p) => ({ ...p })),
+      armed_at_frame: frame,
+    };
+    for (const cb of curveListeners) {
+      try {
+        cb(runCurve);
+      } catch {
+        // Observers only.
+      }
+    }
+    driveCurve(frame);
+  }
+  /** One look at the curve: a step boundary, or a floor that moved, may change the target. */
+  function driveCurve(frame: number): void {
+    if (!curveDriver) return;
+    const change = curveDriver.tick(policyInput(frame));
+    if (change) setPace(change.fps, change.source);
+  }
   /** The look-back session whose pool start was told (once per run). */
   let poolNoted = 0;
   /** A pace was set at some point: from then on Pause and Resume always tell the gate (so its held state never sticks). */
@@ -628,6 +712,29 @@ export function createPipelineStore(
     const births = birthRate.push(st.frame, st.counters.adds);
     if (births !== null && untrack(status) !== 'done') runHistory?.births(st.frame, births);
   });
+  function setPace(fps: number, source: string): void {
+    const before = paceRun() ? paceFps : 0;
+    paceFps = Number.isFinite(fps) && fps > 0 ? fps : 0;
+    setPaceTarget(paceFps);
+    setPaceFromUrl(source === 'url');
+    if (paceFps > 0) paceEver = true;
+    const st = status();
+    const after = paceRun() ? paceFps : 0;
+    if (after !== before && (st === 'running' || st === 'paused'))
+      runHistory?.speedSetting('target_speed', processed(), before, after, undefined, source);
+    // A run paused before a pace existed must start held.
+    if (st === 'running' || st === 'paused') sendPace({ fps: paceFps, paused: st === 'paused' });
+    tellSettlePace();
+    // Last, and guarded: a listener (the run record's log) must never disturb pacing.
+    for (const cb of paceListeners) {
+      try {
+        cb(paceFps, untrack(processed), source);
+      } catch {
+        // Observers only.
+      }
+    }
+  }
+
   function sendPace(pace: { fps?: number; paused?: boolean }): void {
     void client.setPace?.(pace).catch(() => {});
   }
@@ -801,6 +908,8 @@ export function createPipelineStore(
     exhausted = false;
     framesDone = 0;
     forwardDrops = null;
+    curveDriver = null;
+    runCurve = null;
     if (lookbackSession) lookbackFeed?.reset(lookbackSession);
     lookbackSession = 0;
     setLookbackRun(false);
@@ -843,6 +952,8 @@ export function createPipelineStore(
   /** Start (or restart) the pipeline from frame 0. */
   async function start(): Promise<void> {
     reset();
+    // A curve's first step is the run's first target (the run record's "run start" row).
+    armCurve(0);
     const gen = generation;
     setStatus('starting');
     const session = nextSession++;
@@ -1080,26 +1191,47 @@ export function createPipelineStore(
     workMaxFps,
     /** Read no faster than this many frames a second (0: off); applies to a running recording at once. */
     setPaceFps: (fps: number, source = 'setting') => {
-      const before = paceRun() ? paceFps : 0;
-      paceFps = Number.isFinite(fps) && fps > 0 ? fps : 0;
-      setPaceTarget(paceFps);
-      setPaceFromUrl(source === 'url');
-      if (paceFps > 0) paceEver = true;
-      const st = status();
-      const after = paceRun() ? paceFps : 0;
-      if (after !== before && (st === 'running' || st === 'paused'))
-        runHistory?.speedSetting('target_speed', processed(), before, after);
-      // A run paused before a pace existed must start held.
-      if (st === 'running' || st === 'paused') sendPace({ fps: paceFps, paused: st === 'paused' });
-      tellSettlePace();
-      // Last, and guarded: a listener (the run record's log) must never disturb pacing.
-      for (const cb of paceListeners) {
-        try {
-          cb(paceFps, untrack(processed), source);
-        } catch {
-          // Observers only.
-        }
+      // Anyone but a curve (or Auto) setting the target takes the pacer back: a curve does not
+      // fight a user, the URL, a replay or the pin.
+      if (source !== 'curve' && source !== 'auto') {
+        curveDriver = null;
+        runCurve = null;
+        setActiveCurve(null);
       }
+      setPace(fps, source);
+    },
+    /** The speed curve of Curve mode, as set (null: none); a signal. */
+    speedCurve: () => {
+      const a = activeCurve();
+      return a ? { curve: a.curve, preset: a.preset, normalize: a.normalize } : null;
+    },
+    /**
+     * Choose a speed curve (null: none). The run follows it from its start, or from the frame it is
+     * chosen at mid-run; steps too short for the governor's ramp are merged at that point (not for
+     * `normalize: false`, a replayed curve, which runs exactly as recorded).
+     */
+    setSpeedCurve: (curve: SpeedCurve | null, o: { preset?: string; normalize?: boolean } = {}) => {
+      const c = curve ? sanitizeCurve(curve) : null;
+      if (!c) {
+        setActiveCurve(null);
+        curveDriver = null;
+        runCurve = null;
+        return;
+      }
+      const normalize = o.normalize !== false;
+      setActiveCurve({
+        curve: normalize ? limitPoints(c) : c,
+        preset: o.preset ?? 'custom',
+        normalize,
+      });
+      const st = untrack(status);
+      if (st === 'running' || st === 'paused') armCurve(untrack(processed));
+    },
+    /** The curve this run is following (null: none), as the run record keeps it. */
+    curveNow: (): CurveRecord | null => (runCurve ? { ...runCurve } : null),
+    /** Called when a curve takes over the target (at the run's start, or mid-run). */
+    onCurveArmed: (cb: (c: CurveRecord) => void) => {
+      curveListeners.push(cb);
     },
     /** The target speed now, frames per second (0: Max). */
     paceFps: () => paceFps,

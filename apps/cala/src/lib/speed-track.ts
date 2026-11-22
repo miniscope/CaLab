@@ -99,7 +99,11 @@ export function capLabel(cap: number, live = false): string {
 
 // ---- settings that persist ----
 
-export type SpeedMode = 'max' | 'fixed';
+export type SpeedMode = 'max' | 'fixed' | 'curve';
+
+/** The curve presets of the Curve mode (`speed-schedule.ts` has their points). */
+export const CURVE_PRESET_IDS = ['find-fast', 'step-down'] as const;
+export type CurvePresetId = (typeof CURVE_PRESET_IDS)[number];
 
 export interface SpeedSettings {
   mode: SpeedMode;
@@ -107,9 +111,16 @@ export interface SpeedSettings {
   fixedFps: number;
   /** Background settle cap, re-read frames per live frame (0 = Off). */
   cap: number;
+  /** The curve preset Curve mode uses. */
+  preset: CurvePresetId;
 }
 
-export const SPEED_DEFAULTS: SpeedSettings = { mode: 'max', fixedFps: 30, cap: 2 };
+export const SPEED_DEFAULTS: SpeedSettings = {
+  mode: 'max',
+  fixedFps: 30,
+  cap: 2,
+  preset: 'find-fast',
+};
 
 export const SPEED_STORAGE_KEY = 'cala.speed.v1';
 
@@ -121,7 +132,9 @@ export function parseSpeedSettings(raw: string | null | undefined): SpeedSetting
     const o: unknown = JSON.parse(raw);
     if (typeof o !== 'object' || o === null) return out;
     const r = o as Record<string, unknown>;
-    if (r.mode === 'max' || r.mode === 'fixed') out.mode = r.mode;
+    if (r.mode === 'max' || r.mode === 'fixed' || r.mode === 'curve') out.mode = r.mode;
+    if ((CURVE_PRESET_IDS as readonly unknown[]).includes(r.preset))
+      out.preset = r.preset as CurvePresetId;
     if (
       typeof r.fixedFps === 'number' &&
       r.fixedFps >= SPEED_SCALE.lo &&

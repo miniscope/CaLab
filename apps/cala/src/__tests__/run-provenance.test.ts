@@ -690,6 +690,41 @@ describe('speed record fields', () => {
   });
 });
 
+describe('the curve in the record', () => {
+  it('goes in curve_schedule and makes the mode curve, as set and as run', () => {
+    const trace = new RunTrace();
+    trace.noteTargetSpeed(0, 0, 'run start');
+    trace.noteTargetSpeed(60, 6000, 'curve');
+    trace.noteCurve({
+      preset: 'find-fast',
+      points: [
+        { at: 0, fps: 'max' },
+        { at: 0.5, fps: 'floor' },
+      ],
+      effective_points: [{ at: 0, fps: 'max' }],
+      armed_at_frame: 0,
+    });
+    const r = gatherRunRecord(
+      { ...gatherSources(), trace },
+      { slots: { auto_decisions: null } },
+    ) as Rec;
+    expect(r.settings.speed_mode).toBe('curve');
+    expect(r.slots.curve_schedule).toEqual({
+      preset: 'find-fast',
+      points: [
+        { at: 0, fps: 'max' },
+        { at: 0.5, fps: 'floor' },
+      ],
+      effective_points: [{ at: 0, fps: 'max' }],
+      armed_at_frame: 0,
+    });
+    expect(r.target_speed.changes[1].source).toBe('curve');
+    trace.reset();
+    expect(trace.curve()).toBeNull();
+    expect((gatherRunRecord({ ...gatherSources(), trace }) as Rec).slots.curve_schedule).toBeNull();
+  });
+});
+
 describe('replaying a curve', () => {
   it('turns realised changes into a curve over the recording, merging repeats', () => {
     expect(

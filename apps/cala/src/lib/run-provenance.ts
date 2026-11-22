@@ -27,6 +27,7 @@ import type { StageRun } from './run-stages.ts';
 import { stageMeta } from './export.ts';
 import { FLOOR_LADDER, type FloorInputs } from './speed-floor.ts';
 import { SPEED_SCALE } from './speed-track.ts';
+import type { SpeedCurve } from './speed-schedule.ts';
 
 export const RUN_RECORD_FILE = 'cala-run-record.json';
 export const RUN_RECORD_FORMAT = 'cala-run-record';
@@ -268,6 +269,18 @@ export interface FloorChange {
   terms: Record<string, number | null>;
 }
 
+/** The curve a run followed (the record's `curve_schedule` slot). */
+export interface CurveRecord {
+  /** The preset it started from (`custom` or `replay` otherwise). */
+  preset: string;
+  /** As set. */
+  points: SpeedCurve['points'];
+  /** As run: steps too short for the governor's ramp merged (equal to `points` for a replay). */
+  effective_points: SpeedCurve['points'];
+  /** The frame the curve took over at (0: from the start). */
+  armed_at_frame: number;
+}
+
 /** What `RunTrace.noteSample` takes, once a second or so from the pipeline store while the slow loop reports. */
 export interface WorkSample {
   /** Frame the run had processed. */
@@ -346,6 +359,7 @@ export class RunTrace {
   private limitCounts: Record<string, number> = {};
   private maxSamples: number[] = [];
   private counts: RunCounters | null = null;
+  private curveRec: CurveRecord | null = null;
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
@@ -360,6 +374,16 @@ export class RunTrace {
     this.limitCounts = {};
     this.maxSamples = [];
     this.counts = null;
+    this.curveRec = null;
+  }
+
+  /** A speed curve took over the target (at the start or mid-run); the latest one is the record's. */
+  noteCurve(c: CurveRecord | null): void {
+    this.curveRec = c ? { ...c } : null;
+  }
+
+  curve(): CurveRecord | null {
+    return this.curveRec ? { ...this.curveRec } : null;
   }
 
   /** The run's counts as of the last reading of Discover's run (null: none read). */
@@ -780,7 +804,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
   const speedMode = speedModeOf({
     live: info?.live !== undefined,
     targetSpeed: src.trace.targetSpeedChanges(),
-    curve: extras.slots?.curve_schedule != null,
+    curve: src.trace.curve() !== null,
   });
   const record = buildRunRecord({
     createdAt: (src.now ?? (() => new Date()))().toISOString(),
@@ -900,6 +924,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
     slots: {
       slider_schedule: sliderSchedule(),
       ...(floor ? { floor_estimate: floor } : {}),
+      ...(src.trace.curve() ? { curve_schedule: src.trace.curve() } : {}),
       ...extras.slots,
     },
   });
@@ -943,10 +968,8 @@ export interface AppliedSettings {
   capChangedDuringRun?: boolean;
 }
 
-/** A schedule of target speeds over the recording (`speed-schedule.ts` reads the same shape). */
-export interface ReplayCurve {
-  points: { at: number; fps: number | 'max' | 'floor' }[];
-}
+/** A schedule of target speeds over the recording (`speed-schedule.ts`). */
+export type ReplayCurve = SpeedCurve;
 
 const SPEED_MODES = ['max', 'fixed', 'curve', 'auto', 'stream'] as const;
 

@@ -316,6 +316,161 @@ describe('pipeline store backpressure', () => {
     });
   });
 
+  describe('speed curve', () => {
+    /** A store over a 100-frame recording (batches of 8) with the curve applied the way the app does. */
+    function curveStore(dispose: () => void) {
+      const { client, steps } = manualClient();
+      const history = createRunHistory();
+      const store = createPipelineStore(
+        { ...client, setPace: vi.fn(async () => {}) },
+        {},
+        undefined,
+        undefined,
+        true,
+        undefined,
+        { identity: () => ({ frames: 100, width: 1, height: 1, folder: 'x' }) as never },
+        history,
+      );
+      const seen: [number, number, string][] = [];
+      store.onPaceChange((fps, frame, source) => seen.push([fps, frame, source]));
+      const armed: string[] = [];
+      store.onCurveArmed((c) => armed.push(`${c.preset}@${c.armed_at_frame}`));
+      return { store, steps, history, seen, armed, dispose };
+    }
+
+    it('takes the first step as the run start target, changes it at the boundary, and logs source curve', async () => {
+      await createRoot(async (dispose) => {
+        const { store, steps, history, seen, armed } = curveStore(dispose);
+        store.setPaceFps(60, 'setting');
+        // Not normalised (a replay): a 30 fps step that begins at 8 % of 100 frames.
+        store.setSpeedCurve(
+          {
+            points: [
+              { at: 0, fps: 'max' },
+              { at: 0.08, fps: 30 },
+            ],
+          },
+          { preset: 'replay', normalize: false },
+        );
+        seen.length = 0;
+        await store.start();
+        // The curve's Max was applied before the run began (so 'run start' is Max, not the old 60).
+        expect(store.targetNow()).toBe(0);
+        expect(seen[0]).toEqual([0, 0, 'curve']);
+        expect(armed).toEqual(['replay@0']);
+        expect(store.curveNow()?.effective_points).toHaveLength(2);
+        steps[0].resolve(batch(0, 8));
+        await flush();
+        expect(store.targetNow()).toBe(30);
+        expect(seen[seen.length - 1]).toEqual([30, 8, 'curve']);
+        // One change, logged once with its source; further batches change nothing.
+        steps[1].resolve(batch(8, 8));
+        await flush();
+        const ev = history
+          .events()
+          .ofKind('setting')
+          .filter((e) => e.key === 'target_speed');
+        expect(ev).toHaveLength(1);
+        expect(ev[0]).toMatchObject({ from: 0, to: 30, frame: 8, data: { source: 'curve' } });
+        expect(ev[0].detail).toContain('(curve)');
+        dispose();
+      });
+    });
+
+    it('merges a step too short for the governor ramp when it normalises, and records both versions', async () => {
+      await createRoot(async (dispose) => {
+        const { store, steps, seen, dispose: d } = curveStore(dispose);
+        store.setSpeedCurve(
+          {
+            points: [
+              { at: 0, fps: 'max' },
+              { at: 0.08, fps: 30 },
+            ],
+          },
+          { preset: 'custom' },
+        );
+        await store.start();
+        // 92 frames at 30 fps is 3 s, far under 20 s plus the climb: the 30 fps step is merged away.
+        const rec = store.curveNow()!;
+        expect(rec.points).toHaveLength(2);
+        expect(rec.effective_points).toEqual([{ at: 0, fps: 'max' }]);
+        steps[0].resolve(batch(0, 8));
+        await flush();
+        expect(store.targetNow()).toBe(0);
+        expect(seen.filter(([, , src]) => src === 'curve')).toHaveLength(1);
+        d();
+      });
+    });
+
+    it('is taken back by anyone else setting the target, and ends with Discover', async () => {
+      await createRoot(async (dispose) => {
+        const { store, steps } = curveStore(dispose);
+        store.setSpeedCurve(
+          {
+            points: [
+              { at: 0, fps: 'max' },
+              { at: 0.5, fps: 30 },
+            ],
+          },
+          { normalize: false },
+        );
+        expect(store.speedCurve()?.curve.points).toHaveLength(2);
+        await store.start();
+        store.setPaceFps(45, 'setting');
+        expect(store.speedCurve()).toBeNull();
+        expect(store.curveNow()).toBeNull();
+        steps[0].resolve(batch(0, 64));
+        await flush();
+        // The curve would be at 30 by now; the user's 45 stays.
+        expect(store.targetNow()).toBe(45);
+        dispose();
+      });
+    });
+
+    it('can be chosen mid-run and follows from that frame', async () => {
+      await createRoot(async (dispose) => {
+        const { store, steps, armed } = curveStore(dispose);
+        await store.start();
+        steps[0].resolve(batch(0, 8));
+        await flush();
+        store.setSpeedCurve(
+          {
+            points: [
+              { at: 0, fps: 20 },
+              { at: 0.5, fps: 40 },
+            ],
+          },
+          { normalize: false },
+        );
+        expect(armed).toEqual(['custom@8']);
+        expect(store.targetNow()).toBe(20);
+        dispose();
+      });
+    });
+
+    it('does nothing for a stream (no frame count), and a curve of nothing clears it', () => {
+      createRoot((dispose) => {
+        const { client } = manualClient();
+        const store = createPipelineStore(
+          { ...client, setPace: vi.fn(async () => {}) },
+          {},
+          undefined,
+          undefined,
+          true,
+          undefined,
+          { identity: () => ({ live: true }) as never },
+        );
+        store.setSpeedCurve({ points: [{ at: 0, fps: 20 }] });
+        expect(store.speedCurve()).not.toBeNull();
+        void store.start();
+        expect(store.curveNow()).toBeNull();
+        store.setSpeedCurve({ points: [] });
+        expect(store.speedCurve()).toBeNull();
+        dispose();
+      });
+    });
+  });
+
   it('never leaves the gate held: pause, pace off, resume, pace on', async () => {
     const { client } = manualClient();
     const setPace = vi.fn(async () => {});

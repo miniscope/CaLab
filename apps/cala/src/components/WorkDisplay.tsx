@@ -23,6 +23,7 @@ import type { CellStore } from '../lib/cell-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { SETTLE } from '../lib/settle.ts';
 import { kindSeriesKey } from '../lib/run-history.ts';
+import { normalizeCurve, planLine } from '../lib/speed-schedule.ts';
 import { WORK_KIND_LABELS, WORK_KINDS, workByKind, type WorkKind } from '../lib/work-meter.ts';
 import {
   bandPath,
@@ -38,6 +39,7 @@ import {
   KIND_COLOR,
   legendKinds,
   linePath,
+  planPath,
   plannedSettleFrames,
   rowAriaLabel,
   rowBusy,
@@ -307,6 +309,30 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
     return lastStrip;
   });
 
+  /**
+   * The curve's plan over the whole recording (Curve mode, recordings only): what the run follows
+   * once it starts (steps too short for the governor's ramp already merged), with the symbols
+   * (the floor, every frame seen) read at their latest values.
+   */
+  const plan = createMemo(() => {
+    beat();
+    if (props.live) return '';
+    const c = s().speedCurve();
+    if (!c) return '';
+    const f = s().floor();
+    const live = { floorFps: f.fps, seeAllFps: f.estimate.seeAllFps };
+    const armed = s().curveNow();
+    let points = armed ? armed.effective_points : c.curve.points;
+    if (!armed && c.normalize && total() > 0 && !unbounded())
+      points = normalizeCurve(c.curve, {
+        totalFrames: total(),
+        cap: s().csettle() ? s().csettleCeiling() : 0,
+        ...live,
+        maxFps: s().workMaxFps() > 0 ? s().workMaxFps() : null,
+      }).curve.points;
+    return planPath(planLine({ points }, live), layout().discover, GEO.sTop, GEO.sBot);
+  });
+
   const marks = createMemo(() => {
     const run = props.ui.run;
     beat();
@@ -532,7 +558,9 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
             <text x={GEO.left} y="9">
               {compact()
                 ? 'fps (10 to 500)'
-                : 'fps, fixed 10 to 500: target dashed, achieved solid'}
+                : plan()
+                  ? 'fps, fixed 10 to 500: plan violet, target dashed, achieved solid'
+                  : 'fps, fixed 10 to 500: target dashed, achieved solid'}
             </text>
             <For each={speedTicks}>
               {(t) => (
@@ -597,6 +625,13 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
                   </text>
                 </>
               )}
+            </Show>
+            <Show when={plan()}>
+              <path
+                class="cala-work__line cala-work__line--plan"
+                d={plan()}
+                data-testid="work-plan"
+              />
             </Show>
             <path class="cala-work__line cala-work__line--target" d={strip().speed.target} />
             <path class="cala-work__line cala-work__line--achieved" d={strip().speed.achieved} />
