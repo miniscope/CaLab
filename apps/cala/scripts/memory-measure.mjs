@@ -351,6 +351,9 @@ await page.evaluate((withRelease) => {
     gaps250: 0,
     atFramesDone: null,
     checkpoints: [],
+    // Plain runs (Discover, then Refine): when Refine started and ended, on the same clock.
+    refineStart: null,
+    refineDone: null,
   });
   // Release probe (smooth pacing): when each batch's frames arrive on the main thread, polled
   // every 5 ms. The gate releases a batch one pipeline latency earlier, so this adds the
@@ -464,6 +467,9 @@ await page.evaluate((withRelease) => {
     }
     if (pst === 'done' && st?.final && !lb?.settling && p.final === null && p.framesDone !== null)
       p.final = now;
+    const rst = c.refine?.status?.();
+    if (rst === 'running' && p.refineStart === null) p.refineStart = now;
+    if (rst === 'done' && p.refineStart !== null && p.refineDone === null) p.refineDone = now;
   }, 100);
 }, Boolean(paceFps));
 const single = args.includes('--single');
@@ -593,6 +599,44 @@ async function probeReport() {
   writeFileSync(join(out, `${tag}-probe.json`), JSON.stringify({ probe: p, endSettleChange: ch }));
 }
 
+/**
+ * Plain runs (Discover, then Refine): the library as it stands now, written as `<tag>-<kind>.json`
+ * (`live` at the end of Discover, `final` after Refine), and at the end the probe's times.
+ */
+async function saveLibrary(kind) {
+  const plain = (l) =>
+    l && {
+      version: l.version,
+      frame: l.frame,
+      width: l.width,
+      height: l.height,
+      ids: Array.from(l.ids),
+      starts: Array.from(l.starts),
+      pixels: Array.from(l.pixels),
+      values: Array.from(l.values, (v) => Math.round(v * 1e5) / 1e5),
+    };
+  const lib = await page
+    .evaluate(
+      `(() => { const plain = ${plain.toString()}; const c = window.__cala; return { lib: plain(c.cells.library()), noise: Array.from(c.cells.status()?.footprintNoise ?? []) }; })()`,
+    )
+    .catch((e) => (L(`PROBE library ${kind} failed: ${e.message}`), null));
+  if (lib?.lib)
+    writeFileSync(
+      join(out, `${tag}-${kind}.json`),
+      JSON.stringify(kind === 'final' ? { ...lib.lib, noise: lib.noise } : lib.lib),
+    );
+  if (kind === 'final') {
+    const p = await page.evaluate(() => window.__calaProbe).catch(() => null);
+    if (p) {
+      const s = (a, b) => (a !== null && b !== null ? ((a - b) / 1000).toFixed(1) : '?');
+      L(
+        `PROBE plain discover ${s(p.framesDone, p.t0)}s refine ${s(p.refineDone, p.refineStart)}s (click wait ${s(p.refineStart, p.framesDone)}s) frames ${p.frames} at-frames-done ${JSON.stringify(p.atFramesDone)}`,
+      );
+      writeFileSync(join(out, `${tag}-probe.json`), JSON.stringify({ probe: p }));
+    }
+  }
+}
+
 /** The work readings of the page, saved (also when a run stops without settling). */
 async function saveWork() {
   const w = await page.evaluate(() => window.__calaWork).catch(() => null);
@@ -676,10 +720,12 @@ while (!stop) {
     if (r.st?.pst === 'done' && r.st?.refine === 'idle' && !refineClicked) {
       refineClicked = true;
       L(`DISCOVER_DONE ${r.t.toFixed(1)}s`);
+      await saveLibrary('live');
       await page.click('[data-testid=refine-run]');
     }
     if (refineClicked && r.st?.refine === 'done') {
       L(`REFINE_DONE ${r.t.toFixed(1)}s`);
+      await saveLibrary('final');
       stop = 'done';
     }
     if (r.st?.pst === 'error' || r.st?.refine === 'error') stop = 'error';
