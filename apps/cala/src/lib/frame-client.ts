@@ -34,6 +34,8 @@ export interface PipelineClient {
   /** Free the worker-side pipeline. */
   /** `keepSlow`: keep the slow loop (a Refine or Extract run is stopped; see `pipeline-stop`). */
   stopPipeline(opts?: { keepSlow?: boolean }): Promise<void>;
+  /** Pace the running pipeline (`fps`, 0 = unpaced) or hold and resume its gate (`paused`). */
+  setPace?(pace: { fps?: number; paused?: boolean }): Promise<void>;
   /** Turn cell discovery on or off in the running pipeline. */
   setDiscovery?(on: boolean): Promise<void>;
   /** Return (or stop returning) the residual preview in the running pipeline. */
@@ -247,6 +249,9 @@ export function createFrameClient(
     },
     async truncatePipeline() {
       expectType(await call({ type: 'pipeline-truncate' }), 'ok');
+    },
+    async setPace(pace) {
+      expectType(await call({ type: 'pace', ...pace }), 'ok');
     },
     async setDiscovery(on) {
       expectType(await call({ type: 'set-discovery', on }, [], traceTarget), 'ok');

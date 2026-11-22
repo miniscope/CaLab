@@ -103,6 +103,12 @@ export type FrameRequest =
   | { type: 'set-residual'; id: number; on: boolean }
   /** Pipelined run: the port to the motion worker (transferred). The frame worker then runs stage A only. */
   | { type: 'link'; id: number; down: MessagePort }
+  /**
+   * Smooth pacing (`lib/frame-pacer.ts`), answered at once, not in the queue: `fps` sets the
+   * target (0: unpaced; a recording's Discover run only), `paused` holds or resumes the gate
+   * at the first stage so batches already requested are not released while paused.
+   */
+  | { type: 'pace'; id: number; fps?: number; paused?: boolean }
   /** The port to the flat-field worker (transferred; see `workers/flat-field-worker.ts`). */
   | { type: 'link-flat'; id: number; port: MessagePort };
 
