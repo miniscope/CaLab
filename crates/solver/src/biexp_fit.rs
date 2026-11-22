@@ -166,6 +166,62 @@ impl BiexpResult {
     }
 }
 
+thread_local! {
+    /// Onset delay (seconds) of the model while a fit runs ([`fit_biexponential`] scans it).
+    static DELAY: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+}
+
+/// The fit with a free onset delay. The free kernel is aligned to where the spikes were PLACED. When the current
+/// kernel's shape is off, the relaxed solve puts its events early, and the free kernel then starts with a flat
+/// stretch before it rises: a delayed copy of the true kernel. A biexponential that must rise from lag 0 can only
+/// mimic that delay with a slower rise and a faster decay, which is the wrong shape the loop then keeps. So the
+/// model is also tried at onset delays from 0 up to a third of the kernel, in half-frame steps (numerical
+/// resolution), and the delay with the smallest residual is kept. The delay shifts the WHOLE model (both
+/// components): delaying only the slow one lets the fast one stand in for a sharp real onset and leaves a wrong, slow rise. The delay belongs to the spike timing, not the
+/// kernel: only the time constants are returned.
+pub fn fit_biexponential(
+    h_free: &[f32],
+    fs: f64,
+    refine: bool,
+    skip: usize,
+    warm_start: Option<&BiexpResult>,
+) -> BiexpResult {
+    let steps = 2 * h_free.len() / 3;
+    // Coarse pass: every delay scored by the slow-only cold grid (400 evaluations each). The full fit, which is
+    // about forty times that, then runs only at the best coarse delay and its two neighbours.
+    let dt = 1.0 / fs;
+    let sk = skip.min(h_free.len().saturating_sub(1));
+    let (tr_lo, td_lo) = ((1.0 / fs).max(0.005_f64).ln(), 0.05_f64.ln());
+    let (tr_hi, td_hi) = (TAU_R_HI.ln(), TAU_D_HI.ln());
+    let mut coarse = (f64::INFINITY, 0usize);
+    for i in 0..=steps {
+        DELAY.with(|d| d.set(0.5 * i as f64 / fs));
+        let mut res = f64::INFINITY;
+        for a in 0..20 {
+            let tau_r = (tr_lo + (tr_hi - tr_lo) * a as f64 / 19.0).exp();
+            for b in 0..20 {
+                let tau_d = (td_lo + (td_hi - td_lo) * b as f64 / 19.0).exp();
+                if tau_d > tau_r {
+                    res = res.min(eval_two_component(h_free, tau_r, tau_d, 0.0, 0.0, dt, sk).2);
+                }
+            }
+        }
+        if res < coarse.0 {
+            coarse = (res, i);
+        }
+    }
+    let mut best: Option<BiexpResult> = None;
+    for i in coarse.1.saturating_sub(1)..=(coarse.1 + 1).min(steps) {
+        DELAY.with(|d| d.set(0.5 * i as f64 / fs));
+        let r = fit_at_delay(h_free, fs, refine, skip, warm_start);
+        if best.as_ref().is_none_or(|b| r.residual < b.residual) {
+            best = Some(r);
+        }
+    }
+    DELAY.with(|d| d.set(0.0));
+    best.unwrap_or_else(BiexpResult::sentinel)
+}
+
 /// Fit a two-component bi-exponential model to a free-form kernel.
 ///
 /// Uses a 20×20×(5×8+1) grid search over (tau_r, tau_d, tau_r_fast, tau_d_fast)
@@ -179,7 +235,7 @@ impl BiexpResult {
 /// - `refine`: whether to apply golden-section refinement after grid search
 /// - `skip`: number of early kernel samples to exclude from the least-squares fit
 /// - `warm_start`: optional previous BiexpResult to warm-start refinement from
-pub fn fit_biexponential(
+fn fit_at_delay(
     h_free: &[f32],
     fs: f64,
     refine: bool,
@@ -533,11 +589,17 @@ fn eval_two_component(
 
     let fast_active = tau_r_fast > 1e-10 && tau_d_fast > tau_r_fast;
 
+    let delay = DELAY.with(|d| d.get());
     for i in skip..n {
         let t = i as f64 * dt;
-        let ts = (-t / tau_d).exp() - (-t / tau_r).exp();
-        let tf = if fast_active {
-            (-t / tau_d_fast).exp() - (-t / tau_r_fast).exp()
+        let u = t - delay;
+        let ts = if u > 0.0 {
+            (-u / tau_d).exp() - (-u / tau_r).exp()
+        } else {
+            0.0
+        };
+        let tf = if fast_active && u > 0.0 {
+            (-u / tau_d_fast).exp() - (-u / tau_r_fast).exp()
         } else {
             0.0
         };
@@ -1534,8 +1596,9 @@ mod tests {
     #[test]
     fn refinement_stays_within_its_evaluation_budget() {
         let h = make_two_component(0.05, 1.68, 1.0, 0.0125, 0.0873, 0.95, 20.0, 156);
-        let (_, with_refine) = counting_evals(|| fit_biexponential(&h, 20.0, true, 0, None));
-        let (_, grid_only) = counting_evals(|| fit_biexponential(&h, 20.0, false, 0, None));
+        // One fit at one onset delay: the public entry runs a few of these around the best delay.
+        let (_, with_refine) = counting_evals(|| fit_at_delay(&h, 20.0, true, 0, None));
+        let (_, grid_only) = counting_evals(|| fit_at_delay(&h, 20.0, false, 0, None));
         let refine_evals = with_refine - grid_only;
 
         assert!(
@@ -1543,6 +1606,42 @@ mod tests {
             "refinement spent {refine_evals} model evaluations (grid alone \
              spends {grid_only}); before interior-point reuse and the \
              fixed-point sweep exit it spent ~4084"
+        );
+    }
+
+    /// A kernel that starts late (the spikes it was estimated from were placed early) must give the same time
+    /// constants as the undelayed kernel, not a slower rise and faster decay; an undelayed kernel must not change.
+    #[test]
+    fn onset_delay_does_not_change_the_time_constants() {
+        let (fs, tr, td) = (30.0, 0.10, 0.60);
+        let kern = |delay: f64| -> Vec<f32> {
+            (0..120)
+                .map(|i| {
+                    let u = i as f64 / fs - delay;
+                    if u > 0.0 {
+                        ((-u / td).exp() - (-u / tr).exp()) as f32
+                    } else {
+                        0.0
+                    }
+                })
+                .collect()
+        };
+        let plain = fit_biexponential(&kern(0.0), fs, true, 0, None);
+        let late = fit_biexponential(&kern(2.5 / fs), fs, true, 0, None);
+        for r in [&plain, &late] {
+            assert!((r.tau_rise / tr - 1.0).abs() < 0.1, "rise {}", r.tau_rise);
+            assert!(
+                (r.tau_decay / td - 1.0).abs() < 0.1,
+                "decay {}",
+                r.tau_decay
+            );
+        }
+        DELAY.with(|d| d.set(0.0));
+        let old = fit_at_delay(&kern(2.5 / fs), fs, true, 0, None);
+        assert!(
+            old.tau_rise > 1.5 * tr,
+            "without the delay the rise is forced slow: {}",
+            old.tau_rise
         );
     }
 }
