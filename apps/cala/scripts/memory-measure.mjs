@@ -26,6 +26,7 @@
  *   dropped for the slow loop, and how far the end settle moved the library
  *   Discover ended with; both libraries are written as `<tag>-live.json` and
  *   `<tag>-final.json`.
+ *   `--pace-after S:N`: set the target to N fps (0 = Max) once Discover has run S seconds.
  *   `--finish-after S`: press "End Discover" once Discover has run S seconds (a short run: the end
  *   settle then covers the frames read so far). Every run also records the work readout
  *   (`__cala.pipeline.work()`, once a second) as `<tag>-work.json` and logs the `?debug` text
@@ -80,6 +81,8 @@ const csYield = opt('--csettle-yield', '');
 const csRate = opt('--csrate', '');
 const paceFps = opt('--pacefps', '');
 const finishAfter = Number(opt('--finish-after', '0'));
+// `--pace-after S:N`: once Discover has run S seconds, set the target to N fps mid-run (0 = Max).
+const paceAfter = (opt('--pace-after', '') || '').split(':').map(Number);
 const csQuery0 = csettle
   ? `&csettle${csYield ? `=yield${csYield}` : ''}${csRate ? `&csrate=${csRate}` : ''}`
   : '';
@@ -610,6 +613,7 @@ async function saveWork() {
 }
 
 let finishedEarly = false;
+let pacedLater = false;
 let refineClicked = false;
 let extractClicked = false;
 let discoverDoneAt = null;
@@ -626,6 +630,11 @@ while (!stop) {
     .evaluate(() => document.querySelector('[data-testid=work-debug]')?.textContent ?? '')
     .catch(() => '');
   if (wtxt) L(`WORK ${r.t.toFixed(0)}s\n${wtxt}`);
+  if (paceAfter.length === 2 && r.st?.pst === 'running' && r.t > paceAfter[0] && !pacedLater) {
+    pacedLater = true;
+    L(`PACE_AFTER ${r.t.toFixed(1)}s -> ${paceAfter[1]} fps`);
+    await page.evaluate((fps) => window.__cala.pipeline.setPaceFps(fps), paceAfter[1]);
+  }
   if (finishAfter > 0 && r.st?.pst === 'running' && r.t > finishAfter && !finishedEarly) {
     finishedEarly = true;
     L(`FINISH_EARLY ${r.t.toFixed(1)}s`);
