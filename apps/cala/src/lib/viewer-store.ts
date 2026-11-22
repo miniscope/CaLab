@@ -143,7 +143,8 @@ export function createViewerStore(client: FrameClient) {
       if (!client.openLive) throw new Error('This frame client cannot open a live source.');
       const opened = await client.openLive(url);
       setInfo(opened);
-      setLabel(opened.live?.name ?? url);
+      // Never the URL: the label goes into exports and the run record.
+      setLabel(opened.live?.name ?? '(live stream)');
       setFrame(null);
       setFrameIndex(0);
     } catch (err) {

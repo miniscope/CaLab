@@ -8,7 +8,13 @@
  */
 import { createSignal, untrack } from 'solid-js';
 import type { PaceStats } from './frame-pacer.ts';
-import { MaxFpsEstimator, WorkRater, type WorkRates } from './work-meter.ts';
+import {
+  BirthRate,
+  MaxFpsEstimator,
+  StageBusyMeter,
+  WorkRater,
+  type WorkRates,
+} from './work-meter.ts';
 import type { CellStore } from './cell-store.ts';
 import type { CompressStore } from './compress-store.ts';
 import {
@@ -44,6 +50,7 @@ import type { SessionStart } from './session-boundary.ts';
 import type { RunHistory } from './run-history.ts';
 import type { LookbackFeed } from './lookback-client.ts';
 import { CSETTLE, csettleRate } from './settle.ts';
+import { FloorMeter, NEED_RATE, floorText } from './speed-floor.ts';
 
 /** Step requests kept outstanding: one running, one queued so the worker never idles. */
 export const MAX_IN_FLIGHT = 2;
@@ -430,6 +437,7 @@ export function createPipelineStore(
             step.stageBusyMs ?? [t.readMs + t.preprocessMs + t.motionMs + t.otherMs + t.traceMs],
           ),
         );
+        if (step.stageBusyMs) stageBusyMeter.record(step.stageBusyMs);
         if (step.stageBusyMs) {
           busyTotals = step.stageBusyMs.map((v, i) => (busyTotals[i] ?? 0) + v);
           setStageBusy(busyTotals.map((v) => v / n));
@@ -478,6 +486,7 @@ export function createPipelineStore(
    * worker (`lib/frame-pacer.ts`); this only tells it the target and when we pause.
    */
   let paceFps = 0;
+  const paceListeners: ((fps: number, frame: number, source: string) => void)[] = [];
   /** A pace was set at some point: from then on Pause and Resume always tell the gate (so its held state never sticks). */
   let paceEver = false;
   /** Whether this run's gate is paced (a recording's Discover run; never a live stream). */
@@ -494,19 +503,51 @@ export function createPipelineStore(
   // loop's live estimate of its top speed. Instrumentation only: nothing here steers the run.
   const workRater = new WorkRater();
   const maxFpsEstimator = new MaxFpsEstimator();
+  const stageBusyMeter = new StageBusyMeter();
+  const birthRate = new BirthRate();
   const [work, setWork] = createSignal<WorkRates | null>(null);
   const [maxFps, setMaxFps] = createSignal(0);
   /** The max estimate as of the last `work` reading (the readout rebuilds once a second, not per batch). */
   const [workMaxFps, setWorkMaxFps] = createSignal(0);
+  // The smart floor estimate (`lib/speed-floor.ts`): shown in the `?debug` readout only, steers nothing.
+  const floorMeter = new FloorMeter();
+  const [floorLine, setFloorLine] = createSignal('');
   cells?.onStatus((st) => {
     if (!st.accounting) return;
+    // Throttled to about 1 Hz inside the meter: no per-batch work for a debug readout.
+    if (floorMeter.due(st.accounting.wallMs)) {
+      const lb = st.lookback;
+      const gov = lb?.csettle?.governor;
+      floorMeter.push({
+        work: st.accounting,
+        inNeed: lb?.inNeed ?? 0,
+        cap: gov?.cap ?? lb?.csettle?.rate ?? 0,
+        needRate: NEED_RATE,
+        target: paceRun() ? paceFps : 0,
+        maxFps: maxFpsEstimator.estimate() || null,
+        paused: untrack(status) === 'paused',
+        governorLimit: gov?.limit,
+        haveLibrary: st.version > 0,
+        run: st.run,
+      });
+      setFloorLine(floorText(floorMeter));
+    }
     const rates = workRater.push(st.accounting);
     if (!rates) return;
+    const stages = stageBusyMeter.take(clock());
+    if (stages) rates.fast = { stages };
     const max = maxFpsEstimator.estimate();
     setWork(rates);
     setWorkMaxFps(max);
     // Not after Discover's last frame (stream time stands still; see `RunHistory.work`).
-    if (untrack(status) !== 'done') runHistory?.work(rates, max);
+    if (untrack(status) !== 'done') {
+      runHistory?.work(rates, max);
+      runHistory?.target(paceRun() ? paceFps : 0);
+    }
+  });
+  cells?.onStatus((st) => {
+    const births = birthRate.push(st.frame, st.counters.adds);
+    if (births !== null && untrack(status) !== 'done') runHistory?.births(st.frame, births);
   });
   function sendPace(pace: { fps?: number; paused?: boolean }): void {
     void client.setPace?.(pace).catch(() => {});
@@ -641,6 +682,9 @@ export function createPipelineStore(
     setPaceStats(null);
     paceSession = -1;
     workRater.reset();
+    floorMeter.reset();
+    stageBusyMeter.reset();
+    birthRate.reset();
     maxFpsEstimator.reset();
     setWork(null);
     setMaxFps(0);
@@ -741,7 +785,11 @@ export function createPipelineStore(
         fps: cells?.fps() ?? 0,
         live: flat.identity?.()?.live === true,
         frameCount: p.frameCount,
+        // What is started now: 3 fast stages, the slow worker, the look-back worker; the visit
+        // workers and a settle pool are added when the first work reading counts them.
+        workers: 4 + (lookbackRun() ? 1 : 0),
       });
+      stageBusyMeter.start(clock());
       setStatus('running');
       syncFramePreview(0);
       if (paceRun()) sendPace({ fps: paceFps });
@@ -860,19 +908,40 @@ export function createPipelineStore(
     paceStats,
     /** Who is doing what, over the last second or so (the slow, visit and look-back workers); null until a second of data. */
     work,
+    /** The smart floor's `?debug` lines (value, which consumer sets it, confidence); empty before the first status. */
+    floorLine,
     /** The fast loop's live estimate of its top speed, frames per second (0 until a batch has busy time). */
     maxFps,
     /** `maxFps` as of the last `work` reading, for the readout. */
     workMaxFps,
     /** Read no faster than this many frames a second (0: off); applies to a running recording at once. */
-    setPaceFps: (fps: number) => {
+    setPaceFps: (fps: number, source = 'setting') => {
+      const before = paceRun() ? paceFps : 0;
       paceFps = Number.isFinite(fps) && fps > 0 ? fps : 0;
       if (paceFps > 0) paceEver = true;
       const st = status();
+      const after = paceRun() ? paceFps : 0;
+      if (after !== before && (st === 'running' || st === 'paused'))
+        runHistory?.speedSetting('target_speed', processed(), before, after);
       // A run paused before a pace existed must start held.
       if (st === 'running' || st === 'paused') sendPace({ fps: paceFps, paused: st === 'paused' });
       tellSettlePace();
+      // Last, and guarded: a listener (the run record's log) must never disturb pacing.
+      for (const cb of paceListeners) {
+        try {
+          cb(paceFps, untrack(processed), source);
+        } catch {
+          // Observers only.
+        }
+      }
     },
+    /** The target speed now, frames per second (0: Max). */
+    paceFps: () => paceFps,
+    /** Called with the new target speed, the frame reached and what set it, whenever `setPaceFps` runs (the run record's log). */
+    onPaceChange: (cb: (fps: number, frame: number, source: string) => void) => {
+      paceListeners.push(cb);
+    },
+    smoothPlayback: () => smoothOn,
     csettleYield,
     csettleGovernor,
     setCsettleGovernor,

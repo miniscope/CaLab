@@ -192,6 +192,8 @@ export interface WorkStatus {
   lookbackWorkerBusyMs?: number[];
   /** Settle pool workers still serving (a failed one is left out); absent from older builds. */
   settleWorkers?: number;
+  /** Live frames the slow loop has observed since the run began (the speed floor's per-frame divisor); absent from older builds. */
+  observedFrames?: number;
 }
 
 export function emptyWork(workers = 0): WorkStatus {
@@ -242,6 +244,12 @@ export interface WorkRates {
     >;
   };
   batchWait: { meanMs: number; lastMs: number; max1sMs: number };
+  /**
+   * The fast loop's pipeline stages (A read and prepare, B motion, C traces): each one's busy share
+   * of wall time over the same window. Set by the caller from a `StageBusyMeter`; absent until the
+   * meter has a window, and on a run without a pipelined fast loop.
+   */
+  fast?: { stages: number[] };
 }
 
 const lbBusy = (w: LookbackWork) => w.readMs + w.preprocessMs + w.solveMs + w.otherMs;
@@ -396,6 +404,229 @@ export class MaxFpsEstimator {
 
   reset(): void {
     this.batches = [];
+  }
+}
+
+/** The fast loop's stage names, in the order of `stageBusyMs` (the pipelined run's stages A, B, C). */
+export const FAST_STAGE_NAMES = ['read and prepare', 'motion', 'traces'] as const;
+
+/**
+ * Per-stage busy shares of the fast loop. Each batch reports every stage's busy ms
+ * (`stageBusyMs`), credited when the batch arrives, so one window can read above 100 %: like
+ * `WorkRater`, each share is clamped at 1 and the excess carried into the next window.
+ */
+export class StageBusyMeter {
+  private busy: number[] = [];
+  private carry: number[] = [];
+  private t0: number | null = null;
+
+  /** A batch's busy ms per stage. */
+  record(busyMs: readonly number[]): void {
+    busyMs.forEach((v, i) => {
+      this.busy[i] = (this.busy[i] ?? 0) + (Number.isFinite(v) && v > 0 ? v : 0);
+    });
+  }
+
+  /** Start a window at `nowMs` (drops what was recorded before it). */
+  start(nowMs: number): void {
+    this.busy = this.busy.map(() => 0);
+    this.carry = this.carry.map(() => 0);
+    this.t0 = nowMs;
+  }
+
+  /**
+   * The busy share of each stage since the last `take` or `start` (null if there is no window, or
+   * it is empty), and a new window from `nowMs`.
+   */
+  take(nowMs: number): number[] | null {
+    const t0 = this.t0;
+    this.t0 = nowMs;
+    const span = t0 === null ? 0 : nowMs - t0;
+    const busy = this.busy;
+    this.busy = busy.map(() => 0);
+    if (!(span > 0)) {
+      this.carry = busy.map((v, i) => v + (this.carry[i] ?? 0));
+      return null;
+    }
+    return busy.map((v, i) => {
+      const total = v + (this.carry[i] ?? 0);
+      const share = Math.min(1, total / span);
+      this.carry[i] = total - share * span;
+      return share;
+    });
+  }
+
+  reset(): void {
+    this.busy = [];
+    this.carry = [];
+    this.t0 = null;
+  }
+}
+
+/** The PI's kinds of work. `live` is the fast loop only; the slow worker's duty `live` is `discovery`. */
+export const WORK_KINDS = ['live', 'discovery', 'lookback', 'bgSettle', 'finalSettle'] as const;
+export type WorkKind = (typeof WORK_KINDS)[number];
+
+/** The kinds' names as the display uses them. */
+export const WORK_KIND_LABELS: Record<WorkKind | 'spare', string> = {
+  live: 'Live',
+  discovery: 'Discovery',
+  lookback: 'Look-back',
+  bgSettle: 'Background settle',
+  finalSettle: 'Final settle',
+  spare: 'Spare',
+};
+
+/** Which worker a row is. */
+export type WorkerGroup = 'fast' | 'slow' | 'visit' | 'lookback';
+
+export interface WorkerKindShares {
+  name: string;
+  group: WorkerGroup;
+  /** Share of this worker's wall time by kind; the sum is at most 1 (the rest is spare). */
+  shares: Record<WorkKind, number>;
+}
+
+export interface WorkByKind {
+  workers: WorkerKindShares[];
+  /** Worker-seconds per second by kind, and what no duty claims; `spare` plus the kinds is `count`. */
+  totals: Record<WorkKind | 'spare', number>;
+  /** The workers counted (rows). */
+  count: number;
+}
+
+const noShares = (): Record<WorkKind, number> => ({
+  live: 0,
+  discovery: 0,
+  lookback: 0,
+  bgSettle: 0,
+  finalSettle: 0,
+});
+
+/** Scale `shares` down so they sum to at most 1 (rounding and carried credit can overshoot a hair). */
+function fitShares(shares: Record<WorkKind, number>): Record<WorkKind, number> {
+  let sum = 0;
+  for (const k of WORK_KINDS) {
+    shares[k] = Math.max(0, Number.isFinite(shares[k]) ? shares[k] : 0);
+    sum += shares[k];
+  }
+  if (sum > 1) for (const k of WORK_KINDS) shares[k] /= sum;
+  return shares;
+}
+
+/**
+ * Who spent the machine on what, in the PI's kinds (`beta_speed_control_design.md`, section 3):
+ *
+ * - fast loop stages: Live;
+ * - slow worker duties `live`, `visit`, `housekeep`, `publish`, `setup`, and every visit worker:
+ *   Discovery (the slow worker's `live` duty is Discovery, not Live);
+ * - `need` answers: Look-back; `csettle`: Background settle; `end`: Final settle (on the slow
+ *   worker and on the look-back workers);
+ * - wall time no duty claims: Spare.
+ *
+ * Look-back worker 0 serves need and end answers (and Background settle too when there is no
+ * pool); pool workers 1..S serve Background settle only.
+ */
+export function workByKind(r: WorkRates): WorkByKind {
+  const workers: WorkerKindShares[] = [];
+  (r.fast?.stages ?? []).forEach((v, i) =>
+    workers.push({
+      name: `Fast loop: ${FAST_STAGE_NAMES[i] ?? `stage ${i + 1}`}`,
+      group: 'fast',
+      shares: fitShares({ ...noShares(), live: v }),
+    }),
+  );
+  const s = r.slow;
+  workers.push({
+    name: 'Slow worker',
+    group: 'slow',
+    shares: fitShares({
+      ...noShares(),
+      discovery: s.live + s.visit + s.housekeep + s.publish + s.setup,
+      lookback: s.need,
+      bgSettle: s.csettle,
+      finalSettle: s.end,
+    }),
+  });
+  r.visit.forEach((v, i) =>
+    workers.push({
+      name: `Visit worker ${i + 1}`,
+      group: 'visit',
+      shares: fitShares({ ...noShares(), discovery: v }),
+    }),
+  );
+  const lb = r.lookback;
+  const k = lb.kinds;
+  const rows = Math.max(lb.workers.length, lb.capacity ?? 0);
+  const anyBusy = k.need.busy + k.csettle.busy + k.end.busy > 0;
+  const n = rows === 0 && anyBusy ? 1 : rows;
+  for (let i = 0; i < n; i++) {
+    const own = lb.workers[i];
+    const shares = noShares();
+    if (i === 0) {
+      shares.lookback = k.need.busy;
+      shares.finalSettle = k.end.busy;
+      // Background settle on worker 0 is what the pool workers did not do (the whole of it
+      // with no pool, and the time after a pool worker failed).
+      const pool = lb.workers.slice(1).reduce((a, b) => a + b, 0);
+      shares.bgSettle = Math.max(0, k.csettle.busy - pool);
+      // Never claim more than the worker itself reported busy.
+      if (own !== undefined) {
+        const sum = shares.lookback + shares.finalSettle + shares.bgSettle;
+        if (sum > own && sum > 0) for (const kind of WORK_KINDS) shares[kind] *= own / sum;
+      }
+    } else {
+      shares.bgSettle = own ?? 0;
+    }
+    workers.push({
+      name: n === 1 ? 'Look-back worker' : i === 0 ? 'Look-back worker 0' : `Settle worker ${i}`,
+      group: 'lookback',
+      shares: fitShares(shares),
+    });
+  }
+  const totals = { ...noShares(), spare: 0 };
+  for (const w of workers) {
+    let used = 0;
+    for (const kind of WORK_KINDS) {
+      totals[kind] += w.shares[kind];
+      used += w.shares[kind];
+    }
+    totals.spare += 1 - used;
+  }
+  return { workers, totals, count: workers.length };
+}
+
+/**
+ * Cells born per 1,000 frames of stream over the last `windowFrames` frames, from the slow
+ * loop's cumulative `adds` counter. Null until `minFrames` frames are in the window, and again
+ * after a counter that went backwards (a new run).
+ */
+export class BirthRate {
+  private samples: { frame: number; adds: number }[] = [];
+
+  constructor(
+    private readonly windowFrames = 2000,
+    private readonly minFrames = 100,
+  ) {}
+
+  push(frame: number, adds: number): number | null {
+    const last = this.samples[this.samples.length - 1];
+    if (last && (frame < last.frame || adds < last.adds)) this.samples = [];
+    // A status that did not advance the frame replaces its sample (the newest counter wins).
+    if (last && frame === last.frame && this.samples.length > 0) this.samples.pop();
+    this.samples.push({ frame, adds });
+    // Keep the newest sample at or before the window's start as the reference.
+    let k = 0;
+    while (k + 1 < this.samples.length && this.samples[k + 1].frame <= frame - this.windowFrames)
+      k++;
+    if (k > 0) this.samples.splice(0, k);
+    const ref = this.samples[0];
+    const span = frame - ref.frame;
+    return span >= this.minFrames ? ((adds - ref.adds) * 1000) / span : null;
+  }
+
+  reset(): void {
+    this.samples = [];
   }
 }
 

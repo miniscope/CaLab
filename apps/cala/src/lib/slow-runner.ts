@@ -1577,6 +1577,7 @@ export class SlowRunner {
       discarded: { ...this.lbDiscarded },
       lookbackWorkerBusyMs: this.lbPorts.map((p, i) => (p ? (this.lbPortBusy[i] ?? 0) : 0)),
       settleWorkers: this.settlePorts().length,
+      observedFrames: this.observed,
     };
   }
 

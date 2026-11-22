@@ -205,6 +205,8 @@ export interface ExportInput {
   frameRange?: { start: number; end: number };
   /** Extra `meta_json.session` block (a multi-session run; see `session-export.ts`). */
   session?: Record<string, unknown>;
+  /** The run record (`run-provenance.ts`), written as `meta_json.run_record`. */
+  runRecord?: Record<string, unknown>;
 }
 
 /** Options of the writers. */
@@ -440,6 +442,7 @@ export async function writeCalaExport(
     footprints: 'sparse CSR over flat pixel index row * width + column, unfiltered weights',
     extract_seconds: result.seconds,
     stages: (input.stages ?? []).map(stageMeta),
+    ...(input.runRecord ? { run_record: input.runRecord } : {}),
     ...(input.flatField && input.flatField.length > 0
       ? {
           flat_field: {
@@ -621,6 +624,11 @@ export async function writeCaDeconExport(
     'sampling_rate_hz.npy',
     npy(Float32Array.of(input.fps > 0 ? input.fps : 0), [1]),
   );
+  // The run record as a vector beside the traces (a matrix among vectors stays the one candidate).
+  if (input.runRecord) {
+    const rec = new TextEncoder().encode(JSON.stringify(input.runRecord));
+    await zip.addFile('run_record_json.npy', npy(rec, [rec.length]));
+  }
   await zip.finish();
 }
 
