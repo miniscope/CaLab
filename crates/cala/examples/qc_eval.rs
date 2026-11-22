@@ -232,6 +232,15 @@
 //!                      place of the whole answer in one go.
 //!                      `--cs-answer-scale X` (diagnosis): the slow worker's
 //!                      time for an answer is X times its work (0: free).
+//!                      `--csdelta` (with visit workers, not with
+//!                      `--csettle-yield`): the settle delta. The chunk's
+//!                      statistics are summed off the slow loop
+//!                      (`SettleDeltaBuilder`, on the context the slow loop
+//!                      gives at the answer) and the slow worker only adds
+//!                      them (`SlowLoop::apply_settle_delta`), charged its
+//!                      own work; `--csdelta-charge-equiv`: charged what
+//!                      `observe_settle` would have cost (same schedule,
+//!                      only the numbers differ).
 //!   --owner-load MS:PERIOD  diagnosis, with --offered-fps: the slow worker
 //!                      loses MS ms every PERIOD ms, doing nothing.
 //!   --visit-diag       with --offered-fps and --visit-workers: write
@@ -433,7 +442,8 @@ use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
     CoreTest, EditScope, JointAdmit, JointSign, JointUpdate, LookBack as LbSched, LookbackConfig,
     LookbackNext, LookbackOrder, LookbackOutcome, LookbackReservoir, MergeRule, RefineGate,
-    SettleSched, SlowLoop, SlowLoopConfig, SupportRule, VisitResult, VisitRunner, LB_BLOCK,
+    SettleDeltaBuilder, SettleSched, SlowLoop, SlowLoopConfig, SupportRule, VisitResult,
+    VisitRunner, LB_BLOCK,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -984,6 +994,10 @@ struct LookBack {
     /// `--csettle-yield N`: frames per call of `cs_unit` (0: a whole chunk).
     cs_step: usize,
     cs_skipped: u64,
+    /// `--csdelta`: the settle chunk's statistics summed by a builder and
+    /// added by the slow loop (`cs_builder` is the chunk in progress).
+    cs_delta: bool,
+    cs_builder: Option<SettleDeltaBuilder>,
     /// `--offered-fps`: the slow-loop index of each recording frame after
     /// warm-up (`u32::MAX`: dropped or not forwarded yet). Empty: every
     /// frame is forwarded in order.
@@ -1094,6 +1108,8 @@ impl LookBack {
             cs_jobs: false,
             cs_step: 0,
             cs_skipped: 0,
+            cs_delta: false,
+            cs_builder: None,
             slow_of: Vec::new(),
         }
     }
@@ -1127,6 +1143,18 @@ impl LookBack {
                 n => n,
             };
             let mut n = 0u64;
+            if self.cs_delta {
+                let ctx = sl.settle_context().unwrap();
+                let (w, h) = (sl.dims().width, sl.dims().height);
+                let b = match self.cs_builder.take() {
+                    Some(mut b) => {
+                        b.reset(ctx).unwrap();
+                        b
+                    }
+                    None => SettleDeltaBuilder::new(w, h, sl.fov().to_vec(), ctx).unwrap(),
+                };
+                self.cs_builder = Some(b);
+            }
             for _ in 0..chunk {
                 let Some((f, new)) = self.cs_sched.next_frame(seen.saturating_sub(start)) else {
                     break;
@@ -1153,6 +1181,11 @@ impl LookBack {
                 self.cs_pre = Some(pre);
                 self.cs_frames += 1;
                 n += 1;
+            }
+            if let Some(b) = self.cs_builder.as_mut().filter(|_| self.cs_delta) {
+                let d = b.finish();
+                let cfg = sl.config().clone();
+                sl.apply_settle_delta(&d, &|k| cfg.is_test(k)).unwrap();
             }
             self.cs_wall_s += t0.elapsed().as_secs_f64();
             if n == 0 {
@@ -1715,6 +1748,12 @@ impl LookBack {
         let tr = eng.process(&self.y).unwrap();
         let lib = eng.library().clone();
         let n_cells = only.map_or(lib.len(), <[u64]>::len) as u64;
+        if let (Some(_), Some(b)) = (self.cs_now, self.cs_builder.as_mut()) {
+            // `--csdelta`: summed for the slow loop (held-out frames were
+            // passed over above).
+            b.push(&self.y, &lib, &tr, idx).unwrap();
+            return Some(true);
+        }
         if let Some(reservoir) = self.cs_now {
             let held = sl.is_test(idx);
             sl.observe_settle(&self.y, &lib, &tr, idx, held, reservoir)
@@ -5951,6 +5990,14 @@ fn main() {
                                     if let Some(l) = lookback.as_mut() {
                                         l.cs_jobs = c.share > 0.0;
                                         l.cs_step = tm.cs_yield;
+                                        l.cs_delta = args.iter().any(|a| a == "--csdelta");
+                                        assert!(
+                                            !l.cs_delta || tm.cs_yield == 0,
+                                            "--csdelta sums whole chunks: no --csettle-yield"
+                                        );
+                                    }
+                                    if args.iter().any(|a| a == "--csdelta-charge-equiv") {
+                                        slow.as_mut().unwrap().set_settle_delta_charge_equiv(true);
                                     }
                                 } else {
                                     tm.cs_share = c.share;
@@ -5960,6 +6007,11 @@ fn main() {
                                     .map_or(0.0, |s| s.parse().unwrap());
                                 tm.batch_ms = batch_n as f64 * 1e3 / fps;
                             }
+                            assert!(
+                                !args.iter().any(|a| a.starts_with("--csdelta"))
+                                    || lookback.as_ref().is_some_and(|l| l.cs_delta),
+                                "--csdelta needs --offered-fps, --visit-workers and --csettle S > 0"
+                            );
                             if let Some(tm) = timed.as_mut() {
                                 if let Some(v) = arg_value(&args, "--visit-units-per-ms") {
                                     tm.visit_units_per_ms = v.parse().unwrap();
@@ -6608,6 +6660,12 @@ fn main() {
             );
             print!("{msg}");
             std::fs::write(out_dir.join("csettle.txt"), &msg).unwrap();
+            if l.cs_delta {
+                let d = sl.settle_delta_stats();
+                let msg = format!("csdelta: {d:?}\n");
+                print!("{msg}");
+                std::fs::write(out_dir.join("csdelta.txt"), &msg).unwrap();
+            }
         }
     }
     if let Some(l) = &lookback {

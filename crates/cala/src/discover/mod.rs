@@ -1640,6 +1640,15 @@ impl SlowLoop {
         &self.cfg
     }
 
+    /// Frame size and FOV mask the loop was built with.
+    pub fn dims(&self) -> Dims {
+        self.dims
+    }
+
+    pub fn fov(&self) -> &[u8] {
+        &self.fov
+    }
+
     /// How tiles came due so far ([`DueDiag`]).
     pub fn due_diag(&self) -> DueDiag {
         self.due_diag
