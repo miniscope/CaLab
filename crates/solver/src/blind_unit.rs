@@ -842,28 +842,120 @@ pub struct Stage1 {
     pub wscale: f64,
 }
 
+/// Smallest rms of the finite values of `a` over any stretch of `b` consecutive ones (NaN when there is no full
+/// stretch).
+fn slide_min(a: &[f64], b: usize) -> f64 {
+    let v: Vec<f64> = a.iter().copied().filter(|x| x.is_finite()).collect();
+    if v.len() <= b {
+        return f64::NAN;
+    }
+    let mut c = Vec::with_capacity(v.len() + 1);
+    c.push(0.0);
+    let mut s = 0.0;
+    for x in &v {
+        s += x * x;
+        c.push(s);
+    }
+    let mut best = f64::INFINITY;
+    for i in 0..=(v.len() - b) {
+        best = best.min(c[i + b] - c[i]);
+    }
+    (best.max(0.0) / b as f64).sqrt()
+}
+
+/// Calibration of the quietest-stretch reading for the noise's colour. Noise family: white + random walk of
+/// relative step lam. For each lam the same procedure is simulated (white level from the frame differences, the
+/// filter, the minimum of the sliding 2n-frame rms) and gives, in white units, the median minimum `m` and the true
+/// sd of the filter output `r`. lam = 0 is plain white noise. The grid of lam is numerical resolution.
+fn quiet_curves(w: &[f64], m: usize, n: usize, t: usize) -> (Vec<f64>, Vec<f64>) {
+    const REPS: usize = 100;
+    let mut lam = vec![0.0];
+    lam.extend((0..15).map(|i| 10f64.powf(-3.0 + 3.5 * i as f64 / 14.0)));
+    let wn = dot(w, w).sqrt();
+    let (mut mc, mut rc) = (Vec::new(), Vec::new());
+    for (i, &l) in lam.iter().enumerate() {
+        let (mut tm, mut rr) = (Vec::with_capacity(REPS), Vec::with_capacity(REPS));
+        for j in 0..REPS {
+            let z = normals(2 * t, NULL_SEED + 1 + (i * REPS + j) as u64);
+            let mut walk = 0.0;
+            let e: Vec<f64> = (0..t)
+                .map(|q| {
+                    walk += z[t + q];
+                    z[q] + l * walk
+                })
+                .collect();
+            let a = apply(w, m, &e);
+            let sc = white_sd(&e) * wn;
+            let f: Vec<f64> = a.iter().copied().filter(|x| x.is_finite()).collect();
+            let mu = f.iter().sum::<f64>() / f.len().max(1) as f64;
+            let sd =
+                (f.iter().map(|x| (x - mu) * (x - mu)).sum::<f64>() / f.len().max(1) as f64).sqrt();
+            tm.push(slide_min(&a, 2 * n) / sc);
+            rr.push(sd / sc);
+        }
+        let prev = mc.last().copied().unwrap_or(f64::NEG_INFINITY);
+        mc.push(median(&tm).max(prev));
+        rc.push(median(&rr));
+    }
+    (mc, rc)
+}
+
+thread_local! {
+    static QUIET: RefCell<Option<((usize, u64, usize, usize), Rc<(Vec<f64>, Vec<f64>)>)>> = const { RefCell::new(None) };
+}
+
+fn quiet_curves_for(st: &Setup, t: usize) -> Rc<(Vec<f64>, Vec<f64>)> {
+    let key = (st.w.len(), dot(&st.w, &st.w).to_bits(), st.r2, t);
+    QUIET.with(|c| {
+        if let Some((k, v)) = c.borrow().as_ref() {
+            if *k == key {
+                return v.clone();
+            }
+        }
+        let v = Rc::new(quiet_curves(&st.w, st.m, st.r2, t));
+        *c.borrow_mut() = Some((key, v.clone()));
+        v
+    })
+}
+
+/// Observed minimum (white units) -> noise sd of the filter output (white units): `r` at the lam where `m` equals
+/// it, log-interpolated; outside the curves the nearest ratio is kept.
+fn quiet_shape(t: f64, mc: &[f64], rc: &[f64]) -> f64 {
+    let last = mc.len() - 1;
+    if !t.is_finite() || t <= 0.0 {
+        return f64::NAN;
+    }
+    if t <= mc[0] {
+        return t * rc[0] / mc[0];
+    }
+    if t >= mc[last] {
+        return t * rc[last] / mc[last];
+    }
+    let i = (1..=last).find(|&i| t <= mc[i]).unwrap_or(last);
+    if mc[i] <= mc[i - 1] {
+        return rc[i];
+    }
+    let f = (t.ln() - mc[i - 1].ln()) / (mc[i].ln() - mc[i - 1].ln());
+    (rc[i - 1].ln() + f * (rc[i].ln() - rc[i - 1].ln())).exp()
+}
+
+/// The cell's own noise reading: the quietest stretch of the filter output. Noise is in every stretch at one level
+/// and signal only adds to it, so the stretch of the window's length (2n frames) with the least energy is the least
+/// contaminated one; its rms is calibrated for the noise's colour ([`quiet_curves`]).
 pub fn stage1_cell(trace: &[f64], st: &Setup) -> Stage1 {
     let a = apply(&st.w, st.m, trace);
-    let x = peaks(&a, st.r1);
-    let sig = if x.len() < 8 {
-        f64::NAN
-    } else {
-        let mut s = x.clone();
-        s.sort_by(|a, b| a.total_cmp(b));
-        if s[s.len() - 1] - s[0] <= 0.0 {
-            f64::NAN
-        } else {
-            let sig0 = (quantile_sorted(&s, 0.75) - quantile_sorted(&s, 0.25))
-                / (st.tab.q0[2] - st.tab.q0[0]);
-            sigma_scan(&x, &st.tab, sig0)
-        }
-    };
     let (npos, nn, nfin) = sign_counts(&a, st.r2);
     let kap = ((npos - nn) * (2 * st.r2 + 1) as f64 / (nfin.max(1)) as f64)
         .max(0.0)
         .min(1.0 - 1.0 / (npos + 1.0));
     let wn = dot(&st.w, &st.w).sqrt();
     let white = white_sd(trace) * wn;
+    let sig = if white.is_finite() && white > 0.0 {
+        let cv = quiet_curves_for(st, trace.len());
+        white * quiet_shape(slide_min(&a, 2 * st.r2) / white, &cv.0, &cv.1)
+    } else {
+        f64::NAN
+    };
     let wscale = dot(&st.wu, &st.wu).sqrt() / wn;
     Stage1 {
         sig: sig * wscale,
