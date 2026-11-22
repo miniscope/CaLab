@@ -1,3 +1,4 @@
+import type { AutoDecision } from '../lib/speed-auto.ts';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -722,6 +723,57 @@ describe('the curve in the record', () => {
     trace.reset();
     expect(trace.curve()).toBeNull();
     expect((gatherRunRecord({ ...gatherSources(), trace }) as Rec).slots.curve_schedule).toBeNull();
+  });
+});
+
+describe('Auto in the record', () => {
+  it('fills auto_decisions and auto_extra_time_share, and the mode is auto', () => {
+    const trace = new RunTrace();
+    trace.noteTargetSpeed(0, 0, 'run start');
+    trace.noteTargetSpeed(100, 0, 'auto');
+    const decisions: AutoDecision[] = [
+      { frame: 0, fps: 100, reason: 'budget', max_fps: 200, left_s: 120 },
+    ];
+    const src = gatherSources();
+    const r = gatherRunRecord({
+      ...src,
+      trace,
+      pipeline: { ...src.pipeline, autoNow: () => ({ extraTimeShare: 1, decisions }) },
+    }) as Rec;
+    expect(r.settings.speed_mode).toBe('auto');
+    expect(r.slots.auto_decisions).toEqual(decisions);
+    expect(r.slots.auto_extra_time_share).toBe(1);
+    const none = gatherRunRecord({ ...src, trace }) as Rec;
+    expect(none.slots.auto_decisions).toBeNull();
+    expect(none.slots.auto_extra_time_share).toBeNull();
+  });
+
+  it('replays the targets Auto realised as a curve', () => {
+    const rec = JSON.parse(
+      JSON.stringify(
+        buildRunRecord(
+          input({
+            settings: { speed_mode: 'auto', target_speed_fps: 0 },
+            targetSpeed: [
+              { at: 't0', frame: 0, fps: 0, source: 'run start' },
+              { at: 't1', frame: 0, fps: 100, source: 'auto' },
+              { at: 't2', frame: 3000, fps: 120, source: 'auto' },
+              { at: 't3', frame: 9000, fps: 0, source: 'auto' },
+            ],
+          }),
+        ),
+      ),
+    );
+    rec.input.frames = 12000;
+    const a = settingsFromRecord(rec);
+    expect(a?.speedMode).toBe('auto');
+    expect(a?.curve).toEqual({
+      points: [
+        { at: 0, fps: 100 },
+        { at: 0.25, fps: 120 },
+        { at: 0.75, fps: 'max' },
+      ],
+    });
   });
 });
 

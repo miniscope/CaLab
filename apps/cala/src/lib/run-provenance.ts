@@ -28,6 +28,7 @@ import { stageMeta } from './export.ts';
 import { FLOOR_LADDER, type FloorInputs } from './speed-floor.ts';
 import { SPEED_SCALE } from './speed-track.ts';
 import type { SpeedCurve } from './speed-schedule.ts';
+import type { AutoDecision } from './speed-auto.ts';
 
 export const RUN_RECORD_FILE = 'cala-run-record.json';
 export const RUN_RECORD_FORMAT = 'cala-run-record';
@@ -47,6 +48,8 @@ export const WORK_SLIDER_SLOTS = [
   'floor_estimate',
   /** Decisions an automatic mode made (what, when, why). */
   'auto_decisions',
+  /** Auto's time budget: the extra time over a Max run, as a share (1 is +100 %). */
+  'auto_extra_time_share',
 ] as const;
 export type WorkSliderSlot = (typeof WORK_SLIDER_SLOTS)[number];
 
@@ -703,6 +706,8 @@ export interface RunRecordSources {
   now?: () => Date;
   trace: RunTrace;
   pipeline: {
+    /** What this run's Auto decided (null or absent: not an Auto run). */
+    autoNow?(): { extraTimeShare: number; decisions: AutoDecision[] } | null;
     flatEnabled(): boolean;
     discover(): boolean;
     residual(): boolean;
@@ -801,10 +806,12 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
   // and `work.cap_changes` (the first entry of each is the start value).
   const startFps = src.trace.targetSpeedChanges()[0]?.fps ?? p.paceFps();
   const startCap = src.trace.capChanges()[0]?.cap;
+  const auto = p.autoNow?.() ?? null;
   const speedMode = speedModeOf({
     live: info?.live !== undefined,
     targetSpeed: src.trace.targetSpeedChanges(),
     curve: src.trace.curve() !== null,
+    auto: auto !== null,
   });
   const record = buildRunRecord({
     createdAt: (src.now ?? (() => new Date()))().toISOString(),
@@ -925,6 +932,9 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       slider_schedule: sliderSchedule(),
       ...(floor ? { floor_estimate: floor } : {}),
       ...(src.trace.curve() ? { curve_schedule: src.trace.curve() } : {}),
+      ...(auto
+        ? { auto_decisions: auto.decisions, auto_extra_time_share: auto.extraTimeShare }
+        : {}),
       ...extras.slots,
     },
   });

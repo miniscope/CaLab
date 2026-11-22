@@ -465,6 +465,29 @@ describe('pipeline store backpressure', () => {
       });
     });
 
+    it('Auto arms its policy at the run start (source auto) and any other setter takes it back', async () => {
+      await createRoot(async (dispose) => {
+        const { store, seen } = curveStore(dispose);
+        store.setSpeedCurve({ points: [{ at: 0, fps: 20 }] });
+        store.setAutoBudget(1);
+        expect(store.autoBudget()).toBe(1);
+        expect(store.speedCurve()).toBeNull();
+        seen.length = 0;
+        await store.start();
+        // Max is not measured yet: Auto goes at Max, as an Auto change.
+        expect(seen[0]).toEqual([0, 0, 'auto']);
+        expect(store.autoNow()).toEqual({ extraTimeShare: 1, decisions: [] });
+        expect(store.curveNow()).toBeNull();
+        store.setPaceFps(40, 'setting');
+        expect(store.autoBudget()).toBeNull();
+        expect(store.autoNow()).toBeNull();
+        store.setAutoBudget(2);
+        store.setSpeedCurve({ points: [{ at: 0, fps: 20 }] });
+        expect(store.autoBudget()).toBeNull();
+        dispose();
+      });
+    });
+
     it('does nothing for a stream (no frame count), and a curve of nothing clears it', () => {
       createRoot((dispose) => {
         const { client } = manualClient();

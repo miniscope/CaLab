@@ -97,9 +97,23 @@ export function capLabel(cap: number, live = false): string {
   return `up to ${cap}${cap === 2 ? ' re-read frames per live frame' : ''}`;
 }
 
+// ---- Auto's time budget ----
+
+/** The budget choices: extra time over a Max run, as a share (0.5 is +50 %). */
+export const AUTO_BUDGETS = [0.5, 1, 2] as const;
+export type AutoBudget = (typeof AUTO_BUDGETS)[number];
+export const AUTO_DEFAULT_BUDGET: AutoBudget = 1;
+
+export function isAutoBudget(x: unknown): x is AutoBudget {
+  return (AUTO_BUDGETS as readonly unknown[]).includes(x);
+}
+
+/** "+100 %". */
+export const budgetLabel = (share: number): string => `+${Math.round(share * 100)} %`;
+
 // ---- settings that persist ----
 
-export type SpeedMode = 'max' | 'fixed' | 'curve';
+export type SpeedMode = 'max' | 'fixed' | 'curve' | 'auto';
 
 /** The curve presets of the Curve mode (`speed-schedule.ts` has their points). */
 export const CURVE_PRESET_IDS = ['find-fast', 'step-down'] as const;
@@ -113,6 +127,8 @@ export interface SpeedSettings {
   cap: number;
   /** The curve preset Curve mode uses. */
   preset: CurvePresetId;
+  /** Auto's time budget: extra time over a Max run, as a share (1: +100 %). */
+  autoBudget: number;
 }
 
 export const SPEED_DEFAULTS: SpeedSettings = {
@@ -120,6 +136,7 @@ export const SPEED_DEFAULTS: SpeedSettings = {
   fixedFps: 30,
   cap: 2,
   preset: 'find-fast',
+  autoBudget: AUTO_DEFAULT_BUDGET,
 };
 
 export const SPEED_STORAGE_KEY = 'cala.speed.v1';
@@ -132,7 +149,8 @@ export function parseSpeedSettings(raw: string | null | undefined): SpeedSetting
     const o: unknown = JSON.parse(raw);
     if (typeof o !== 'object' || o === null) return out;
     const r = o as Record<string, unknown>;
-    if (r.mode === 'max' || r.mode === 'fixed' || r.mode === 'curve') out.mode = r.mode;
+    if (r.mode === 'max' || r.mode === 'fixed' || r.mode === 'curve' || r.mode === 'auto')
+      out.mode = r.mode;
     if ((CURVE_PRESET_IDS as readonly unknown[]).includes(r.preset))
       out.preset = r.preset as CurvePresetId;
     if (
@@ -141,6 +159,7 @@ export function parseSpeedSettings(raw: string | null | undefined): SpeedSetting
       r.fixedFps <= SPEED_SCALE.hi
     )
       out.fixedFps = r.fixedFps;
+    if (isAutoBudget(r.autoBudget)) out.autoBudget = r.autoBudget;
     if (typeof r.cap === 'number' && (CAP_CHOICES as readonly number[]).includes(r.cap))
       out.cap = r.cap;
   } catch {

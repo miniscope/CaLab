@@ -4,6 +4,7 @@ import { SegmentedControl } from '@calab/ui';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { CellStore } from '../lib/cell-store.ts';
 import { curveWords, CURVE_PRESETS, presetCurve } from '../lib/speed-schedule.ts';
+import { AUTO_BUDGETS, budgetLabel } from '../lib/speed-auto.ts';
 import {
   belowFloorNote,
   CAP_CHOICES,
@@ -35,11 +36,17 @@ const LABEL_CLASH = 0.22;
 const NO_BUFFER_REASON =
   "Background settle on a live stream needs the stream's raw frames on disk, which is not built yet.";
 
-const MODE_LABELS: Record<SpeedMode, string> = { max: 'Max', fixed: 'Fixed', curve: 'Curve' };
+const MODE_LABELS: Record<SpeedMode, string> = {
+  max: 'Max',
+  fixed: 'Fixed',
+  curve: 'Curve',
+  auto: 'Auto',
+};
 const MODE_TITLES: Record<SpeedMode, string> = {
   max: 'No pacing: Discover as fast as the machine goes; all settling comes after the last frame.',
   fixed: 'Read the recording at a target speed; the spare time goes to Background settle.',
   curve: 'The target steps down over the recording: fast while cells are found, slower after.',
+  auto: 'Pick how much longer than a Max run you will wait; Auto sets the speed to finish about then, never below the floor.',
 };
 
 /**
@@ -47,7 +54,8 @@ const MODE_TITLES: Record<SpeedMode, string> = {
  * to 500 fps with a separate Max stop, the floor and "max now" marks, the
  * status line, and the Background settle cap. Curve mode swaps the thumb for a preset (a step
  * schedule of the target over the recording, `lib/speed-schedule.ts`). Every change goes through the
- * store (`setPaceFps` logs the run-record event; the cap goes to the worker). Auto joins later.
+ * store (`setPaceFps` logs the run-record event; the cap goes to the worker). Auto mode is a time
+ * budget (`lib/speed-auto.ts`): the track gives way to a choice of extra time over a Max run.
  */
 export function SpeedControl(props: {
   pipeline: PipelineStore;
@@ -67,6 +75,7 @@ export function SpeedControl(props: {
   };
   const [fixedFps, setFixedFps] = createSignal(saved.fixedFps);
   const [preset, setPreset] = createSignal<CurvePresetId>(saved.preset);
+  const [budget, setBudget] = createSignal<number>(saved.autoBudget);
   /** The thumb while a change is in progress (not yet committed). */
   const [draft, setDraft] = createSignal<number | null>(null);
   let dragging = false;
@@ -81,28 +90,43 @@ export function SpeedControl(props: {
   // the URL (`?debug&pacefps`, a measurement override) is left alone.
   let pinnedFrom: number | null = null;
   let pinnedCurve: CurvePresetId | null = null;
+  let pinnedAuto: number | null = null;
   createEffect(() => {
     const why = pinned();
     untrack(() => {
       const curve = s().speedCurve();
-      if (why !== null && (s().paceTarget() > 0 || curve) && !s().paceFromUrl()) {
-        pinnedFrom = curve ? null : s().paceTarget();
+      const auto = s().autoBudget();
+      if (why !== null && (s().paceTarget() > 0 || curve || auto !== null) && !s().paceFromUrl()) {
+        pinnedAuto = auto;
+        pinnedFrom = curve || auto !== null ? null : s().paceTarget();
         pinnedCurve = curve ? preset() : null;
         s().setPaceFps(0, 'pinned');
-      } else if (why === null && (pinnedFrom !== null || pinnedCurve !== null)) {
-        if (s().paceTarget() === 0 && pinnedCurve !== null)
+      } else if (
+        why === null &&
+        (pinnedFrom !== null || pinnedCurve !== null || pinnedAuto !== null)
+      ) {
+        if (s().paceTarget() === 0 && pinnedAuto !== null) s().setAutoBudget(pinnedAuto);
+        else if (s().paceTarget() === 0 && pinnedCurve !== null)
           s().setSpeedCurve(presetCurve(pinnedCurve), { preset: pinnedCurve });
         else if (s().paceTarget() === 0 && pinnedFrom !== null)
           s().setPaceFps(pinnedFrom, 'pin lifted');
         pinnedFrom = null;
         pinnedCurve = null;
+        pinnedAuto = null;
       }
     });
   });
 
   const target = () => s().paceTarget();
   const shown = () => draft() ?? (target() > 0 ? target() : null);
-  const mode = (): SpeedMode => (s().speedCurve() ? 'curve' : shown() !== null ? 'fixed' : 'max');
+  const mode = (): SpeedMode =>
+    s().autoBudget() !== null
+      ? 'auto'
+      : s().speedCurve()
+        ? 'curve'
+        : shown() !== null
+          ? 'fixed'
+          : 'max';
   const liveNow = () => ({ floorFps: floorFps(), seeAllFps: s().floor().estimate.seeAllFps });
 
   const floor = () => s().floor();
@@ -138,14 +162,20 @@ export function SpeedControl(props: {
     if (m === 'curve') {
       s().setSpeedCurve(presetCurve(preset()), { preset: preset() });
       // Before the run the target stays where it was; the curve sets it when Discover starts.
-    } else if (m === 'max') s().setPaceFps(0, 'setting');
+    } else if (m === 'auto') s().setAutoBudget(budget());
+    else if (m === 'max') s().setPaceFps(0, 'setting');
     else s().setPaceFps(fixedFps(), 'setting');
-    save({ mode: m, fixedFps: fixedFps(), preset: preset() });
+    save({ mode: m, fixedFps: fixedFps(), preset: preset(), autoBudget: budget() });
   }
   function choosePreset(id: CurvePresetId): void {
     setPreset(id);
     if (mode() === 'curve') s().setSpeedCurve(presetCurve(id), { preset: id });
     save({ preset: id });
+  }
+  function chooseBudget(share: number): void {
+    setBudget(share);
+    if (mode() === 'auto') s().setAutoBudget(share);
+    save({ autoBudget: share });
   }
   function commitDraft(): void {
     clearTimeout(timer);
@@ -210,11 +240,12 @@ export function SpeedControl(props: {
     const a = achieved();
     if (a !== null) return a.toFixed(1);
     if (mode() === 'curve') return !running() ? 'Curve' : target() > 0 ? String(target()) : 'Max';
+    if (mode() === 'auto') return !running() ? 'Auto' : target() > 0 ? String(target()) : 'Max';
     return mode() === 'max' ? 'Max' : String(shown());
   };
   const unitText = () => {
     if (props.live) return 'fps from the stream · sets the pace';
-    const curve = mode() === 'curve';
+    const curve = mode() === 'curve' || mode() === 'auto';
     const t = curve
       ? target() > 0
         ? String(target())
@@ -225,6 +256,8 @@ export function SpeedControl(props: {
     const x = mode() === 'fixed' ? timesReal(shown() as number) : null;
     const xt = x !== null ? ` · ${x.toFixed(1)}× real time` : '';
     if (achieved() !== null) return `fps achieved · target ${t}${xt}`;
+    if (mode() === 'auto')
+      return running() ? `fps · Auto, ${budgetLabel(budget())} time budget` : '';
     return curve ? (running() ? 'fps · following the curve' : '') : `fps target${xt}`;
   };
 
@@ -237,24 +270,26 @@ export function SpeedControl(props: {
     const n = armed?.merged ?? 0;
     return n > 0 ? `${words} (${n} short step${n === 1 ? '' : 's'} merged)` : words;
   };
+  const speedLine = () =>
+    speedStatusText({
+      running: running(),
+      target: target(),
+      floor: floorFps(),
+      governor: gov(),
+      settleOn: lookbackOn() && cap() > 0,
+    });
+  const autoLine = () =>
+    !running()
+      ? `Auto: Discover will aim to finish within ${budgetLabel(budget())} of a Max run's time, and never go slower than the floor (${floorFps()}).`
+      : `Auto, ${budgetLabel(budget())} time budget: target now ${target() > 0 ? `${target()} fps` : 'Max'}. ${speedLine()}`;
   const status = () =>
-    mode() === 'curve' && !running()
-      ? `Discover will follow the curve: ${curveLine()}.`
-      : mode() === 'curve' && s().armedCurve()?.merged
-        ? `Following the curve: ${curveLine()}. ${speedStatusText({
-            running: running(),
-            target: target(),
-            floor: floorFps(),
-            governor: gov(),
-            settleOn: lookbackOn() && cap() > 0,
-          })}`
-        : speedStatusText({
-            running: running(),
-            target: target(),
-            floor: floorFps(),
-            governor: gov(),
-            settleOn: lookbackOn() && cap() > 0,
-          });
+    mode() === 'auto'
+      ? autoLine()
+      : mode() === 'curve' && !running()
+        ? `Discover will follow the curve: ${curveLine()}.`
+        : mode() === 'curve' && s().armedCurve()?.merged
+          ? `Following the curve: ${curveLine()}. ${speedLine()}`
+          : speedLine();
   const belowNote = () => (mode() === 'fixed' ? belowFloorNote(shown() ?? 0, floorFps()) : null);
 
   const capSelect = (cls: string): JSX.Element => (
@@ -296,7 +331,7 @@ export function SpeedControl(props: {
             testid="speed-mode"
             value={mode()}
             onChange={setMode}
-            options={(['max', 'fixed', 'curve'] as const).map((m) => ({
+            options={(['max', 'fixed', 'curve', 'auto'] as const).map((m) => ({
               value: m,
               label: MODE_LABELS[m],
               title: m === 'fixed' && pinned() !== null ? (pinned() as string) : MODE_TITLES[m],
@@ -324,6 +359,23 @@ export function SpeedControl(props: {
           </select>
         </label>
       </Show>
+      <Show when={mode() === 'auto' && !props.live}>
+        <label class="cala-speed__preset">
+          <span>Extra time</span>
+          <select
+            class="cala-view-select"
+            data-testid="speed-budget"
+            aria-label="Auto time budget"
+            title="How much longer than a Max run you will wait."
+            value={String(budget())}
+            onChange={(e) => chooseBudget(Number(e.currentTarget.value))}
+          >
+            <For each={AUTO_BUDGETS}>
+              {(b) => <option value={String(b)}>{budgetLabel(b)}</option>}
+            </For>
+          </select>
+        </label>
+      </Show>
       <div class="cala-speed__answer" data-testid="speed-headline">
         <span class="cala-speed__figure">{headline()}</span>
         <span class="cala-speed__unit">{unitText()}</span>
@@ -338,7 +390,7 @@ export function SpeedControl(props: {
         class="cala-speed__trackrow"
         classList={{
           'cala-speed__trackrow--off': props.live,
-          'cala-speed__trackrow--curve': mode() === 'curve',
+          'cala-speed__trackrow--curve': mode() === 'curve' || mode() === 'auto',
         }}
       >
         <div class="cala-speed__trackwrap" aria-hidden={props.live ? 'true' : undefined}>
@@ -420,7 +472,7 @@ export function SpeedControl(props: {
               </span>
             </Show>
           </div>
-          <Show when={!props.live && mode() !== 'curve'}>
+          <Show when={!props.live && (mode() === 'max' || mode() === 'fixed')}>
             <input
               type="range"
               class="cala-speed__range"
@@ -462,7 +514,7 @@ export function SpeedControl(props: {
           classList={{ 'cala-speed__maxstop--on': mode() === 'max' && !props.live }}
           data-testid="speed-max"
           aria-pressed={mode() === 'max'}
-          disabled={props.live === true || mode() === 'curve'}
+          disabled={props.live === true || mode() === 'curve' || mode() === 'auto'}
           title={MODE_TITLES.max}
           onClick={() => setMode('max')}
         >

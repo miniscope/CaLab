@@ -59,6 +59,7 @@ import {
   type PolicyInput,
   type SpeedCurve,
 } from './speed-schedule.ts';
+import { AutoPolicy, type AutoDecision } from './speed-auto.ts';
 import type { LookbackFeed } from './lookback-client.ts';
 import {
   CSETTLE,
@@ -538,6 +539,10 @@ export function createPipelineStore(
     preset: string;
     normalize: boolean;
   } | null>(null);
+  /** The Auto budget chosen in the Speed control (null: Auto is not the mode): extra time over a Max run, as a share. */
+  const [activeAuto, setActiveAuto] = createSignal<number | null>(null);
+  /** The Auto policy of this run (kept after the run for the record; null: not an Auto run). */
+  let autoPolicy: AutoPolicy | null = null;
   /** What follows a curve over this run (null: none); stopped when Discover ends. */
   let curveDriver: SpeedDriver | null = null;
   /** The curve this run was armed with, for the run record. */
@@ -587,9 +592,17 @@ export function createPipelineStore(
   function armCurve(frame: number): void {
     curveDriver = null;
     runCurve = null;
+    autoPolicy = null;
     setArmedCurve(null);
     const a = untrack(activeCurve);
     const total = curveFrames();
+    const share = untrack(activeAuto);
+    if (share !== null) {
+      if (total <= 0 || (lookbackFeed && lookbackFeed.blocked() !== null)) return;
+      autoPolicy = new AutoPolicy(share);
+      armPolicy(autoPolicy, frame, null);
+      return;
+    }
     if (!a || total <= 0 || (lookbackFeed && lookbackFeed.blocked() !== null)) return;
     const live = policyInput(frame);
     const norm = a.normalize
@@ -1213,7 +1226,9 @@ export function createPipelineStore(
       if (source !== 'curve' && source !== 'auto') {
         curveDriver = null;
         runCurve = null;
+        autoPolicy = null;
         setActiveCurve(null);
+        setActiveAuto(null);
       }
       setPace(fps, source);
     },
@@ -1229,6 +1244,8 @@ export function createPipelineStore(
      */
     setSpeedCurve: (curve: SpeedCurve | null, o: { preset?: string; normalize?: boolean } = {}) => {
       const c = curve ? sanitizeCurve(curve) : null;
+      setActiveAuto(null);
+      autoPolicy = null;
       if (!c) {
         setActiveCurve(null);
         curveDriver = null;
@@ -1245,6 +1262,31 @@ export function createPipelineStore(
       const st = untrack(status);
       if (st === 'running' || st === 'paused') armCurve(untrack(processed));
     },
+    /** The Auto budget of Auto mode (extra time over a Max run, as a share; null: not Auto); a signal. */
+    autoBudget: activeAuto,
+    /**
+     * Choose Auto with a time budget (null: leave Auto). A run follows it from its start, or from
+     * the frame it is chosen at mid-run. Replaces a curve.
+     */
+    setAutoBudget: (share: number | null) => {
+      setActiveCurve(null);
+      curveDriver = null;
+      runCurve = null;
+      setArmedCurve(null);
+      autoPolicy = null;
+      setActiveAuto(share !== null && Number.isFinite(share) && share > 0 ? share : null);
+      const st = untrack(status);
+      if (untrack(activeAuto) !== null && (st === 'running' || st === 'paused'))
+        armCurve(untrack(processed));
+    },
+    /** What this run's Auto decided so far (null: not an Auto run), for the run record. */
+    autoNow: (): { extraTimeShare: number; decisions: AutoDecision[] } | null =>
+      autoPolicy
+        ? {
+            extraTimeShare: autoPolicy.share,
+            decisions: autoPolicy.decisions.map((d) => ({ ...d })),
+          }
+        : null,
     /** The curve the run follows after the minimum-step rule (null: none armed), with the steps merged; a signal. */
     armedCurve,
     /** Install another policy (Auto, PR I) in place of the curve; `record` is kept in the run record. */
