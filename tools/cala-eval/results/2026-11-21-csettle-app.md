@@ -1,5 +1,9 @@
 # Settle during Discover in the app (frames only, default off): headed Chrome
 
+> **All toggle-on numbers below the title are from before the preprocessor fix and are affected by the bug** (settle
+> chunks freed the need-driven block's preprocessor, so need-driven re-reads restarted from the live state). Toggle-off
+> numbers are unaffected. The re-measurement is in the last section, "After the preprocessor fix".
+
 21 Nov 2026. Branch `feat/cala-csettle-app`. The app prototype of qc_eval's arm `CS2F`
 (`2026-11-20-concurrent-settle2.md`, `2026-11-21-concurrent-settle3.md`), measured in headed Chrome (Metal GPU, 18
 cores) on the workshop recording and Samara `10_43_21` and `14_57_02`. Look-back is on in every run; "off" and "on" are
@@ -180,3 +184,54 @@ run.
    Samara session, workshop, two runs per arm) before relying on the halving.
 3. Let the end settle stop early when a checkpoint moves less than the null; today a settled-during-Discover library
    still pays the full pass.
+
+## After the preprocessor fix (commit 6486878)
+
+The fix: settle chunks (block seq <= -1,000,000) get their own preprocessor slot in the look-back reader, so need-driven
+blocks continue across settle chunks as in qc_eval (`cs_pre`). Also: a settle request that times out or errors turns
+off only the settle (not need-driven look-back or the end settle); no settle reads go out before the first library;
+settle frames whose answer is discarded (end of Discover, timeout, error, answer when look-back is not live) all count
+as dropped, so re-read = fitted + held out + dropped exactly. Toggle off is unchanged. Same method, headed Chrome, new
+logs in `~/Projects/cala-data/runs/csettle-app/browser-fix` (old ones untouched). Toggle-off rows are the old runs.
+
+### Workshop at full speed, toggle on (two runs)
+
+| measure | off (old) | on, before fix | on, after fix |
+| --- | --- | --- | --- |
+| Discover s (fps) | 109 / 108 (218, 220) | 113 / 109 (210, 217) | 109 / 110 (217, 216) |
+| end settle s | 188 / 188 | 194 / 190 | 186 / 192 |
+| cells at the end | 754 / 754 | 776 / 749 | 752 / 756 |
+| peak tab GB | 3.7 / 3.7 | 3.3 / 3.2 | 3.45 / 3.37 |
+| frames dropped for the slow loop | 33.6 / 33.1 % | 37.9 / 38.4 % | 38.8 / 37.5 % |
+| settle re-read per live frame | - | 0.34 / 0.32 | 0.34 / 0.33 |
+| need-driven frames asked | 10,272 / 10,368 | 4,912 / 4,704 | 4,880 / 4,944 |
+| end settle: moved > 2x noise | 77 / 76 % | 72 / 73 % | 72 / 72 % |
+| end settle: median change | 31.6 / 31.4 % | 27.5 / 27.3 % | 26.5 / 27.6 % |
+
+Full speed is unchanged by the fix: the look-back worker is the limit, so the picture is the same.
+
+### Samara at 30 fps pace
+
+| measure | 10_43_21 off (old, 1 run) | 10_43_21 on, before fix (1 run) | 10_43_21 on, after fix (2 runs) | 14_57_02 off (1 run) | 14_57_02 on (1 run) |
+| --- | --- | --- | --- | --- | --- |
+| Discover s (fps) | 596 (30) | 595 (30) | 596 / 596 (30) | 596 (30) | 596 (30) |
+| end settle s | 104 | 103 | 104 / 106 | 100 | 101 |
+| cells at the end | 389 | 379 | 392 / 397 | 319 | 327 |
+| peak tab GB | 3.2 | 2.9 | 2.86 / 3.01 | 2.63 | 2.97 |
+| frames dropped for the slow loop | 0 of 17,831 | 8 of 17,831 | 0 / 0 of 17,831 | 0 of 17,827 | 0 of 17,827 |
+| settle re-read per live frame | - | 2.00 | 1.99 / 1.99 | - | 1.99 |
+| need-driven frames asked | 35,415 | 35,353 | 35,415 / 35,415 | 35,407 | 35,407 |
+| end settle: moved > 2x noise | 49 % | 25 % | 33 % / 30 % | 53 % | 30 % |
+| end settle: moved > 1x noise | 84 % | 65 % | 69 % / 68 % | 87 % | 70 % |
+| end settle: median change | 20.2 % | 12.6 % | 14.1 / 14.0 % | 23.9 % | 14.8 % |
+| median change / noise | 1.99 | 1.30 | 1.53 / 1.42 | 2.10 | 1.45 |
+| visit jobs / refines | 54,849 / 11,819 | 51,377 / 15,332 | 51,321 / 14,961; 51,193 / 14,765 | 51,340 / 10,218 | 49,810 / 12,652 |
+| slow worker per answer, mean (longest) ms | - | 25 (63) | 27 (59) / 27 (60) | - | 21 (47) |
+
+Libraries of the two 10_43_21 runs agree at 0.989 (last frame) and 0.991 (settled); 14_57_02 on vs off 0.969 and 0.987.
+
+What changed against the first round: the end settle still moves fewer cells, but not as few. Cells moved by more than
+twice their noise: 30-33 % on against 49-53 % off (about 0.6x, not 0.5x); median change 14 % against 20-24 % (about 0.65x).
+The dropped frames fall from 8 to 0, because the 8 were reads before the first library (now gated). The fast loop is
+unaffected (30 fps held in every run). Both Samara recordings agree; the spread of two 10_43_21 runs is 3 points.
+Peak memory is within 0.4 GB either way, in both directions (2.86-3.01 on, 2.63-3.2 off); no claim.
