@@ -1,7 +1,7 @@
 # Work slider, tier 1: does a slower position end as good as Max? (22 Nov 2026)
 
 Work-slider PR 4. The arms, branches and pass lines were committed before the runs they judge
-([2026-11-22-slider-tier1-plan.md](2026-11-22-slider-tier1-plan.md), commits `f897b273` and `bb2f39e7`). Anything
+([2026-11-22-slider-tier1-plan.md](2026-11-22-slider-tier1-plan.md), commits `e1cece09` and `32009f62` after the rebase onto `main`; `f897b273` and `bb2f39e7` before it). Anything
 added after a run is marked **(after the runs)**.
 
 Names: **Max** (`REF`) = no pacing, no Background settle, full Final settle (today's recording path). **P-30 / P-60**
@@ -262,8 +262,8 @@ seed):
 
 ## Checks and limits
 
-- Pre-registration: plan commit `f897b273` came before the 60 fps Chrome pair and every tier-1 run. The C1-at-60
-  verdict (`bb2f39e7`) came before the tier-1 batch. Changes after runs are marked above.
+- Pre-registration: plan commit `e1cece09` (05:13, before the rebase `f897b273`) came before the 60 fps Chrome pair and every tier-1 run. The C1-at-60
+  verdict (`32009f62`, was `bb2f39e7`) came before the tier-1 batch. Changes after runs are marked above.
 - Every run exited 0.
   - The first launch of the two pairs sims used a wrong path and failed at start. They were rerun unchanged with
     the correct path.
