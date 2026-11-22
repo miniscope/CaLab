@@ -125,6 +125,12 @@ describe('export', () => {
     const z = parseNpz(await buildCalaExport({ ...(await input()), runRecord }));
     const meta = JSON.parse(new TextDecoder().decode(z.arrays.meta_json.data as Uint8Array));
     expect(meta.run_record).toEqual(runRecord);
+    // The CaDecon file carries it as a vector and keeps the traces matrix its one candidate.
+    const cd = parseNpz(await buildCaDeconExport({ ...(await input()), runRecord }, true));
+    expect(
+      JSON.parse(new TextDecoder().decode(cd.arrays.run_record_json.data as Uint8Array)),
+    ).toEqual(runRecord);
+    expect(traceCandidates(cd)).toEqual(['traces']);
     const bare = parseNpz(await buildCalaExport(await input()));
     const bareMeta = JSON.parse(new TextDecoder().decode(bare.arrays.meta_json.data as Uint8Array));
     expect(bareMeta.run_record).toBeUndefined();

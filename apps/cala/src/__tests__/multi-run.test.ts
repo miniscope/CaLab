@@ -37,7 +37,10 @@ function harness(
   n = 3,
   opts: {
     sink?: ResultsSink;
-    runRecord?: (s: { mode: string; refineRuns: number }) => Record<string, unknown>;
+    runRecord?: (
+      s: { mode: string; refineRuns: number },
+      sessionIndex?: number,
+    ) => Record<string, unknown>;
   } = {},
 ) {
   const [discover, setDiscover] = createSignal<StageActivity>('idle');
@@ -195,6 +198,30 @@ describe('run record in the results', () => {
     });
     expect(calls.length).toBeGreaterThan(0);
     expect(exported.length).toBe(2);
+    h.dispose();
+  });
+});
+
+describe('run record in a Separate run', () => {
+  it('writes one record beside the results of each session and none at the root', async () => {
+    const texts = new Map<string, string>();
+    const writing: ResultsSink = {
+      root: 'r',
+      writeFile: async () => {},
+      writeText: async (path: string, text: string) => {
+        texts.set(path, text);
+      },
+      finish: async () => {},
+    } as unknown as ResultsSink;
+    const h = harness('separate', 0, 2, {
+      sink: writing,
+      runRecord: (st, index) => ({ format: 'cala-run-record', session_index: index ?? null }),
+    });
+    await h.start();
+    await h.done();
+    expect(texts.has('cala-run-record.json')).toBe(false);
+    expect(JSON.parse(texts.get('s0/cala-run-record.json')!).session_index).toBe(0);
+    expect(JSON.parse(texts.get('s1/cala-run-record.json')!).session_index).toBe(1);
     h.dispose();
   });
 });

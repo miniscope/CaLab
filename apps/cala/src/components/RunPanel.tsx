@@ -367,7 +367,8 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     }
   };
 
-  const exportInput = (): ExportInput | null => {
+  /** `withRecord`: gather the run record (at write time only; the cell count in the button reads this reactively without it). */
+  const exportInput = (withRecord = false): ExportInput | null => {
     const r = exportResult();
     if (!r) return null;
     return {
@@ -387,7 +388,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         bins: props.ui.run.history().toExport(),
         eventsJson: props.ui.run.events().toJSON(),
       },
-      ...(props.runRecord
+      ...(withRecord && props.runRecord
         ? {
             runRecord: props.runRecord({
               extractAfterDiscover: auto(),
@@ -1009,7 +1010,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
                   : "Footprints, Extract's traces, motion, flicker, the stages run and cell metadata (NumPy .npz)."
               }
               onClick={() => {
-                const input = exportInput();
+                const input = exportInput(true);
                 if (input)
                   void runExport(
                     `${fileStem(props.label)}_cala.npz`,
@@ -1027,7 +1028,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               disabled={!exportResult() || exporting() !== null}
               title={`Traces for CaDecon (open the file there, sampling rate ${props.fps > 0 ? `${props.fps} Hz` : 'of your recording'}).`}
               onClick={() => {
-                const input = exportInput();
+                const input = exportInput(true);
                 if (input)
                   void runExport(
                     `${fileStem(props.label)}_cala_cadecon.npz`,

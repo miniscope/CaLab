@@ -496,14 +496,16 @@ const App: Component = () => {
     const lb = cells.status()?.lookback;
     if (lb) runTrace.noteSettle({ running: lb.settling, done: lb.settle?.done === true });
   });
-  void primeRunRecordContext(async () => {
-    const wasm = await import('./lib/cala-wasm.ts');
-    await wasm.initCalaWasm();
-    return wasm.cala_version();
-  });
+  void primeRunRecordContext();
   const runRecordSources: RunRecordSources = {
     appVersion: version,
+    // Build-time defines (`vite.config.ts`); undefined under tools that do not set them.
     commit: typeof __CALA_COMMIT__ === 'string' && __CALA_COMMIT__ ? __CALA_COMMIT__ : null,
+    gitDirty: typeof __CALA_GIT_DIRTY__ === 'boolean' ? __CALA_GIT_DIRTY__ : null,
+    engineVersion:
+      typeof __CALA_ENGINE_VERSION__ === 'string' && __CALA_ENGINE_VERSION__
+        ? __CALA_ENGINE_VERSION__
+        : null,
     search: window.location.search,
     trace: runTrace,
     pipeline: {
@@ -517,7 +519,11 @@ const App: Component = () => {
       csettleGovernor: pipeline.csettleGovernor,
       paceFps: pipeline.paceFps,
       smoothPlayback: pipeline.smoothPlayback,
-      fps: pipeline.fps,
+      motionBackend: pipeline.motionBackend,
+      flatField: () => {
+        const f = pipeline.flatField();
+        return { reused: f.reused, keySource: f.key?.source ?? null };
+      },
     },
     slowStatus: () => cells.status(),
     stageRuns: () => stageLog.runs(),
@@ -525,13 +531,14 @@ const App: Component = () => {
     label: () => store.label(),
     fileSizes: () => {
       const from = store.source();
-      const entries =
-        from === null
-          ? []
-          : 'entries' in from
-            ? from.entries
-            : from.sessions.flatMap((s) => s.entries);
+      const entries = from !== null && 'entries' in from ? from.entries : [];
       return new Map(entries.map((e) => [e.file.name, e.file.size] as const));
+    },
+    sessionFiles: () => {
+      const from = store.source();
+      return from !== null && 'sessions' in from
+        ? from.sessions.map((s) => s.entries.map((e) => ({ name: e.file.name, size: e.file.size })))
+        : [];
     },
     lookbackWorkers: () => 1 + lbPool,
     visitWorkers: () => slow.visitWorkers,
@@ -590,7 +597,6 @@ const App: Component = () => {
           bins: runHistory.history().toExport(),
           eventsJson: runHistory.events().toJSON(),
         },
-        runRecord: runRecord(),
         version,
       };
     },

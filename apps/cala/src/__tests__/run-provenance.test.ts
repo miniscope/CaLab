@@ -1,9 +1,13 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   buildRunRecord,
+  achievedFps,
+  browserInfo,
   gatherRunRecord,
+  KNOWN_FLAGS,
   machineContext,
-  primeRunRecordContext,
   resetRunRecordContext,
   RunTrace,
   settingsFromRecord,
@@ -35,6 +39,7 @@ function input(over: Partial<RunRecordInput> = {}): RunRecordInput {
     createdAt: '2026-11-22T10:10:00.000Z',
     appVersion: '2.20.0',
     commit: 'abc123',
+    gitDirty: false,
     engineVersion: '0.1.0',
     search:
       '?debug&lookback&csettle=yield4&csrate=1&pacefps=30&lbpool=2&governor&smooth=0&live=ws://10.0.0.5:9000&x=1',
@@ -47,9 +52,15 @@ function input(over: Partial<RunRecordInput> = {}): RunRecordInput {
       width: 10,
       height: 8,
       bitDepth: 8,
-      files: [{ name: '0.avi', frames: 6000, size: 1234 }],
+      files: [{ position: 0, name: '0.avi', frames: 6000, size: 1234 }],
       sessions: [],
       mode: null,
+      session_index: null,
+      fps_source: 'metadata',
+    },
+    runtime: {
+      motion_backend: 'webgpu',
+      flat_field: { enabled: true, reused_from_cache: false, key_source: 'folder' },
     },
     stages: [stage],
     settle: { fed: 900, planned: 1800, recording: 6000, stopped_by_user: true, done: true },
@@ -96,7 +107,9 @@ describe('buildRunRecord', () => {
       engine_version: '0.1.0',
     });
     expect(r.settings).toEqual({ lookback: true, flat_field: true });
-    expect(r.input.files).toEqual([{ name: '0.avi', frames: 6000, size: 1234 }]);
+    expect(r.input.files).toEqual([{ position: 0, name: '0.avi', frames: 6000, size: 1234 }]);
+    expect(r.software.git_dirty).toBe(false);
+    expect(r.runtime.motion_backend).toBe('webgpu');
     expect(r.stages[0]).toMatchObject({
       stage: 'discover',
       started_at: stage.startedAt,
@@ -194,6 +207,8 @@ describe('gatherRunRecord', () => {
   const sources = (): RunRecordSources => ({
     appVersion: 'dev',
     commit: null,
+    gitDirty: true,
+    engineVersion: '0.1.0',
     search: '?lookback',
     trace: new RunTrace(),
     pipeline: {
@@ -207,7 +222,8 @@ describe('gatherRunRecord', () => {
       csettleGovernor: () => false,
       paceFps: () => 0,
       smoothPlayback: () => true,
-      fps: () => 0,
+      motionBackend: () => 'wasm-off',
+      flatField: () => ({ reused: true, keySource: 'device' }),
     },
     slowStatus: () => ({
       lookback: {
@@ -227,6 +243,7 @@ describe('gatherRunRecord', () => {
     }),
     label: () => 'rec',
     fileSizes: () => new Map([['a.avi', 99]]),
+    sessionFiles: () => [],
     lookbackWorkers: () => 1,
     visitWorkers: () => 3,
   });
@@ -246,21 +263,116 @@ describe('gatherRunRecord', () => {
       refine_runs: 2,
       export_pass_qc_only: true,
     });
-    expect(r.input.files).toEqual([{ name: 'a.avi', frames: 100, size: 99 }]);
-    expect(r.input.sessions[0]).toMatchObject({ name: 's0', frames: 100 });
+    expect(r.input.files).toEqual([]);
+    expect(r.input.sessions[0]).toMatchObject({ name: 's0', frames: 100, files: [] });
     expect(r.final_settle).toMatchObject({ frames_fed: 10, stopped_early_by_user: false });
-    expect(r.work).toMatchObject({ pool: 1, visit_workers: 3, achieved_fps: null });
+    expect(r.work).toMatchObject({ pool: 1, visit_workers: 3, achieved_fps: 6000 / 300 });
     expect(r.software.git_commit).toBeNull();
   });
 
-  it('keeps the engine version once primed, and survives a failing loader', async () => {
-    await primeRunRecordContext(async () => '9.9.9');
-    expect((gatherRunRecord(sources()) as Rec).software.engine_version).toBe('9.9.9');
-    resetRunRecordContext();
-    await primeRunRecordContext(async () => {
-      throw new Error('no wasm');
+  it('records the backend that ran, the flat-field source, fps source and git state', () => {
+    const r = gatherRunRecord(sources()) as Rec;
+    expect(r.runtime).toEqual({
+      motion_backend: 'wasm-off',
+      flat_field: { enabled: true, reused_from_cache: true, key_source: 'device' },
     });
-    expect((gatherRunRecord(sources()) as Rec).software.engine_version).toBeNull();
+    expect(r.software).toMatchObject({ git_dirty: true, engine_version: '0.1.0' });
+  });
+
+  it('keeps the files of each session apart when every session names them 0.avi', () => {
+    const src = sources();
+    src.info = () => ({
+      frameCount: 200,
+      fps: 20,
+      width: 4,
+      height: 4,
+      bitDepth: 8,
+      files: [
+        { name: '0.avi', frames: 100 },
+        { name: '0.avi', frames: 100 },
+      ],
+      sessions: [
+        { index: 0, name: 's0', startFrame: 0, frameCount: 100, fps: 20 },
+        { index: 1, name: 's1', startFrame: 100, frameCount: 100, fps: 20 },
+      ],
+    });
+    src.sessionFiles = () => [
+      [{ name: '0.avi', size: 111 }],
+      [
+        { name: '0.avi', size: 222 },
+        { name: '1.avi', size: 333 },
+      ],
+    ];
+    const r = gatherRunRecord(src, { mode: 'joint' }) as Rec;
+    expect(r.input.sessions[0].files).toEqual([{ position: 0, name: '0.avi', size: 111 }]);
+    expect(r.input.sessions[1].files).toEqual([
+      { position: 0, name: '0.avi', size: 222 },
+      { position: 1, name: '1.avi', size: 333 },
+    ]);
+  });
+
+  it('never carries a live stream address, even unnamed', () => {
+    const src = sources();
+    src.search = '?live=ws://10.0.0.5:5555';
+    src.label = () => '(live stream)';
+    src.info = () => ({
+      frameCount: Infinity,
+      fps: 30,
+      width: 4,
+      height: 4,
+      bitDepth: 8,
+      live: { url: 'ws://10.0.0.5:5555' },
+      files: [],
+    });
+    const text = JSON.stringify(gatherRunRecord(src));
+    expect(text).not.toContain('10.0.0.5');
+    expect(JSON.parse(text).input).toMatchObject({ live: true, label: '(live stream)' });
+  });
+
+  it('computes achieved fps from the Discover run wall time', () => {
+    expect(achievedFps([stage])).toBeCloseTo(6000 / 300);
+    expect(achievedFps([{ ...stage, endedAt: null }])).toBeNull();
+    expect(achievedFps([])).toBeNull();
+  });
+});
+
+describe('browserInfo', () => {
+  it('uses brands and platform, else a coarse name and major version only', () => {
+    expect(
+      browserInfo({
+        userAgent: 'x',
+        userAgentData: { platform: 'macOS', brands: [{ brand: 'Chromium', version: '142' }] },
+      }),
+    ).toEqual({ brands: [{ brand: 'Chromium', version: '142' }], platform: 'macOS' });
+    const fallback = browserInfo({
+      userAgent:
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.7444.59 Safari/537.36',
+      platform: 'MacIntel',
+    });
+    expect(fallback).toEqual({
+      brands: [{ brand: 'Chrome', version: '142' }],
+      platform: 'MacIntel',
+    });
+    expect(JSON.stringify(fallback)).not.toContain('7444');
+  });
+});
+
+describe('url flags against the app', () => {
+  it('every flag App.tsx reads is a known flag', () => {
+    const src = readFileSync(resolve(import.meta.dirname, '../App.tsx'), 'utf8');
+    const names = new Set([...src.matchAll(/params\.(?:get|has)\('(\w+)'\)/g)].map((m) => m[1]));
+    expect(names.size).toBeGreaterThan(10);
+    const known = new Set<string>(KNOWN_FLAGS);
+    expect([...names].filter((n) => !known.has(n))).toEqual([]);
+  });
+
+  it('marks inert combinations', () => {
+    expect(urlFlags('?csettle&csrate=1').flags.csettle.in_effect).toBe(false);
+    expect(urlFlags('?csettle&csrate=1').flags.csrate.in_effect).toBe(false);
+    expect(urlFlags('?lookback&csettle&csrate=1').flags.csettle.in_effect).toBe(true);
+    expect(urlFlags('?lookback=0&csettle').flags.lookback.in_effect).toBe(false);
+    expect(urlFlags('?review=4').flags.review.in_effect).toBe(false);
+    expect(urlFlags('?compress&review=4').flags.review.in_effect).toBe(true);
   });
 });
 

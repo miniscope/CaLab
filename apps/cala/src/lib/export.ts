@@ -624,6 +624,11 @@ export async function writeCaDeconExport(
     'sampling_rate_hz.npy',
     npy(Float32Array.of(input.fps > 0 ? input.fps : 0), [1]),
   );
+  // The run record as a vector beside the traces (a matrix among vectors stays the one candidate).
+  if (input.runRecord) {
+    const rec = new TextEncoder().encode(JSON.stringify(input.runRecord));
+    await zip.addFile('run_record_json.npy', npy(rec, [rec.length]));
+  }
   await zip.finish();
 }
 

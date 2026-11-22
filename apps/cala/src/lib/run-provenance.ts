@@ -79,6 +79,30 @@ const REDACTED_FLAGS: ReadonlySet<string> = new Set(['live']);
 /** What `?debug` gates: these flags only take effect with it. */
 const DEBUG_ONLY: ReadonlySet<string> = new Set(['lbpool', 'governor', 'pacefps', 'smooth']);
 
+/**
+ * Whether a flag changes anything given the others (`App.tsx` reads them the
+ * same way): `lookback=0` and `csettle=0` are off; settle needs look-back;
+ * `review` needs `compress`; debug-only flags need `?debug`.
+ */
+function inEffect(name: string, value: string, p: URLSearchParams): boolean {
+  if (DEBUG_ONLY.has(name) && !p.has('debug')) return false;
+  const lookbackOn = p.has('lookback') && p.get('lookback') !== '0';
+  switch (name) {
+    case 'lookback':
+      return value !== '0';
+    case 'csettle':
+      return value !== '0' && lookbackOn;
+    case 'csrate':
+      return lookbackOn;
+    case 'governor':
+      return value !== '0';
+    case 'review':
+      return p.has('compress');
+    default:
+      return true;
+  }
+}
+
 export interface UrlFlags {
   /** `?debug` is present. */
   debug: boolean;
@@ -99,7 +123,7 @@ export function urlFlags(search: string): UrlFlags {
     if (known.has(k)) {
       flags[k] = {
         value: REDACTED_FLAGS.has(k) ? '(redacted)' : v,
-        in_effect: DEBUG_ONLY.has(k) ? debug : true,
+        in_effect: inEffect(k, v, p),
       };
     } else if (!other.includes(k)) other.push(k);
   }
@@ -108,95 +132,94 @@ export function urlFlags(search: string): UrlFlags {
 
 // ---- Machine ----
 
+/** The GPU adapter class only (no device or driver strings). */
 export interface GpuInfo {
   vendor: string;
   architecture: string;
-  device: string;
-  description: string;
+}
+
+export interface BrowserInfo {
+  /** Brand and major version, e.g. `Chromium 142`. */
+  brands: { brand: string; version: string }[];
+  platform: string | null;
 }
 
 export interface MachineContext {
   hardware_concurrency: number | null;
   device_memory_gb: number | null;
-  /** From the browser's user agent data when it has any (platform and brand only). */
-  platform: string | null;
-  user_agent: string | null;
-  gpu: GpuInfo | null;
+  browser: BrowserInfo;
+  /** The adapter WebGPU offers (high-performance). Which backend actually ran is `runtime.motion_backend`. */
+  gpu_adapter: GpuInfo | null;
   webgpu: boolean;
 }
 
 let gpuCache: GpuInfo | null = null;
-let engineVersionCache: string | null = null;
 
 /**
- * Ask once, early, for what the record needs but cannot get synchronously: the
- * GPU adapter's description and the WASM engine's version. Best effort: a
- * missing WebGPU or WASM module leaves them null. Call at app start.
+ * Ask once, early, for the GPU adapter's class (the record is built
+ * synchronously). Best effort: no WebGPU leaves it null. Call at app start.
  */
-export async function primeRunRecordContext(
-  loadEngineVersion?: () => Promise<string>,
-): Promise<void> {
-  await Promise.all([
-    (async () => {
-      try {
-        const gpu = (
-          navigator as unknown as {
-            gpu?: {
-              requestAdapter(): Promise<{
-                info?: Partial<GpuInfo>;
-              } | null>;
-            };
-          }
-        ).gpu;
-        const adapter = gpu ? await gpu.requestAdapter() : null;
-        const i = adapter?.info;
-        if (i)
-          gpuCache = {
-            vendor: i.vendor ?? '',
-            architecture: i.architecture ?? '',
-            device: i.device ?? '',
-            description: i.description ?? '',
-          };
-      } catch {
-        // No adapter information: recorded as null.
+export async function primeRunRecordContext(): Promise<void> {
+  try {
+    const gpu = (
+      navigator as unknown as {
+        gpu?: {
+          requestAdapter(o?: {
+            powerPreference?: string;
+          }): Promise<{ info?: Partial<GpuInfo> } | null>;
+        };
       }
-    })(),
-    (async () => {
-      try {
-        if (loadEngineVersion) engineVersionCache = await loadEngineVersion();
-      } catch {
-        // The engine's version stays unknown (null).
-      }
-    })(),
-  ]);
-}
-
-/** The engine version primed by `primeRunRecordContext` (null: not known). */
-export function engineVersion(): string | null {
-  return engineVersionCache;
+    ).gpu;
+    const adapter = gpu ? await gpu.requestAdapter({ powerPreference: 'high-performance' }) : null;
+    const i = adapter?.info;
+    if (i) gpuCache = { vendor: i.vendor ?? '', architecture: i.architecture ?? '' };
+  } catch {
+    // No adapter information: recorded as null.
+  }
 }
 
 /** Test hook. */
 export function resetRunRecordContext(): void {
   gpuCache = null;
-  engineVersionCache = null;
+}
+
+/** Browser brands from `userAgentData`, else a coarse name and major version from the user agent. */
+export function browserInfo(nav: {
+  userAgent?: string;
+  platform?: string;
+  userAgentData?: { platform?: string; brands?: { brand: string; version: string }[] };
+}): BrowserInfo {
+  const uad = nav.userAgentData;
+  if (uad?.brands && uad.brands.length > 0)
+    return {
+      brands: uad.brands.map((b) => ({ brand: b.brand, version: b.version })),
+      platform: uad.platform ?? null,
+    };
+  const ua = nav.userAgent ?? '';
+  // Order matters: Edge and Chrome both say Chrome, Chrome and Safari both say Safari.
+  const m =
+    /(Edg)\/(\d+)/.exec(ua) ??
+    /(Firefox)\/(\d+)/.exec(ua) ??
+    /(Chrome)\/(\d+)/.exec(ua) ??
+    /Version\/(\d+).*(Safari)/.exec(ua);
+  const brands = !m
+    ? []
+    : m[1] === 'Edg'
+      ? [{ brand: 'Edge', version: m[2] }]
+      : m[2] === 'Safari'
+        ? [{ brand: 'Safari', version: m[1] }]
+        : [{ brand: m[1], version: m[2] }];
+  return { brands, platform: nav.platform ?? null };
 }
 
 export function machineContext(): MachineContext {
   const nav = typeof navigator === 'undefined' ? undefined : navigator;
-  const ext = nav as unknown as
-    | {
-        deviceMemory?: number;
-        gpu?: unknown;
-        userAgentData?: { platform?: string };
-      }
-    | undefined;
+  const ext = nav as unknown as { deviceMemory?: number; gpu?: unknown } | undefined;
   return {
     hardware_concurrency: nav?.hardwareConcurrency ?? null,
     device_memory_gb: ext?.deviceMemory ?? null,
-    platform: ext?.userAgentData?.platform ?? nav?.platform ?? null,
-    user_agent: nav?.userAgent ?? null,
-    gpu: gpuCache,
+    browser: browserInfo(nav ?? {}),
+    gpu_adapter: gpuCache,
     webgpu: ext?.gpu !== undefined,
   };
 }
@@ -276,11 +299,20 @@ export interface SettleSummary {
 }
 
 /** Everything `buildRunRecord` needs, as plain data. */
+/** A source file: position in its folder (video order), name and size in bytes. */
+export interface RecordFile {
+  position: number;
+  name: string;
+  frames?: number;
+  size?: number;
+}
+
 export interface RunRecordInput {
   createdAt: string;
   appVersion: string;
-  /** Git commit of the build (null: not in the build). */
+  /** Git commit of the build (null: not in the build) and whether the tree had uncommitted changes. */
   commit: string | null;
+  gitDirty: boolean | null;
   engineVersion: string | null;
   /** `location.search`. */
   search: string;
@@ -296,15 +328,25 @@ export interface RunRecordInput {
     width: number;
     height: number;
     bitDepth: number;
-    files: { name: string; frames?: number; size?: number }[];
+    /** A plain folder's files (a multi-session recording lists them per session). */
+    files: RecordFile[];
     sessions: {
       index: number;
       name: string;
       start_frame: number;
       frames: number;
       fps: number | null;
+      files: RecordFile[];
     }[];
     mode: string | null;
+    /** Separate: the 0-based session this record belongs to. */
+    session_index: number | null;
+    fps_source: string | null;
+  };
+  /** What actually ran. */
+  runtime: {
+    motion_backend: string | null;
+    flat_field: { enabled: boolean; reused_from_cache: boolean; key_source: string | null };
   };
   stages: readonly StageRun[];
   settle: SettleSummary | null;
@@ -339,6 +381,7 @@ export function buildRunRecord(i: RunRecordInput): Record<string, unknown> {
       app: 'cala',
       app_version: i.appVersion,
       git_commit: i.commit,
+      git_dirty: i.gitDirty,
       engine: 'calab_cala (WASM)',
       engine_version: i.engineVersion,
     },
@@ -346,6 +389,7 @@ export function buildRunRecord(i: RunRecordInput): Record<string, unknown> {
     ...(i.tunables ? { tunables: i.tunables } : {}),
     url_flags: flags,
     input: i.input,
+    runtime: i.runtime,
     stages: i.stages.map(stageMeta),
     final_settle: {
       ...(i.settle
@@ -393,6 +437,9 @@ export function buildRunRecord(i: RunRecordInput): Record<string, unknown> {
 export interface RunRecordSources {
   appVersion: string;
   commit: string | null;
+  gitDirty: boolean | null;
+  /** The WASM engine's version, defined at build time (null: unknown). */
+  engineVersion: string | null;
   search: string;
   now?: () => Date;
   trace: RunTrace;
@@ -407,7 +454,8 @@ export interface RunRecordSources {
     csettleGovernor(): boolean;
     paceFps(): number;
     smoothPlayback(): boolean;
-    fps(): number;
+    motionBackend(): string | null;
+    flatField(): { reused: boolean; keySource: string | null };
   };
   slowStatus(): {
     lookback?: {
@@ -424,6 +472,7 @@ export interface RunRecordSources {
     height: number;
     bitDepth: number;
     live?: unknown;
+    fpsSource?: string;
     files: { name: string; frames: number }[];
     sessions?: {
       index: number;
@@ -434,8 +483,13 @@ export interface RunRecordSources {
     }[];
   } | null;
   label(): string;
-  /** Sizes (bytes) of the source files by name (empty when not known). */
+  /**
+   * Sizes (bytes) of the source files: for a plain folder by name (unique in
+   * a folder), for a multi-session recording per session by position (every
+   * session names its files `0.avi`, `1.avi`, ...).
+   */
   fileSizes(): ReadonlyMap<string, number>;
+  sessionFiles(): { name: string; size: number }[][];
   /** Workers: look-back pool size and visit workers. */
   lookbackWorkers(): number;
   visitWorkers(): number;
@@ -446,12 +500,29 @@ export interface RunRecordSources {
 export interface RunRecordExtras {
   /** Joint or Separate (a recording of several sessions). */
   mode?: string;
+  /** Separate: the 0-based session this record is for. */
+  sessionIndex?: number;
   refineRuns?: number;
   /** "Extract after Discover". */
   extractAfterDiscover?: boolean;
-  /** Export only cells that pass QC. */
+  /** Export only cells that pass QC (the Run tab's single export only; automatic runs export every session's QC-flagged cells). */
   passQcOnly?: boolean;
   slots?: Partial<Record<WorkSliderSlot, unknown>>;
+}
+
+/**
+ * Discover's frames over its wall time (the last finished Discover run), frames
+ * per second; null when none finished. Includes pauses and the final settle,
+ * as the run took.
+ */
+export function achievedFps(runs: readonly StageRun[]): number | null {
+  for (let k = runs.length - 1; k >= 0; k--) {
+    const r = runs[k];
+    if (r.stage !== 'discover' || !r.endedAt) continue;
+    const s = (Date.parse(r.endedAt) - Date.parse(r.startedAt)) / 1000;
+    return s > 0 && r.frames > 0 ? r.frames / s : null;
+  }
+  return null;
 }
 
 export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras = {}) {
@@ -460,11 +531,13 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
   const st = src.slowStatus();
   const settle = st?.lookback?.settle;
   const sizes = src.fileSizes();
+  const perSession = src.sessionFiles();
   const record = buildRunRecord({
     createdAt: (src.now ?? (() => new Date()))().toISOString(),
     appVersion: src.appVersion,
     commit: src.commit,
-    engineVersion: engineVersion(),
+    engineVersion: src.engineVersion,
+    gitDirty: src.gitDirty,
     search: src.search,
     settings: {
       flat_field: p.flatEnabled(),
@@ -493,9 +566,14 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       width: info?.width ?? 0,
       height: info?.height ?? 0,
       bitDepth: info?.bitDepth ?? 0,
-      files: (info?.files ?? []).map((f) => {
+      files: (info?.sessions ? [] : (info?.files ?? [])).map((f, position) => {
         const size = sizes.get(f.name);
-        return { name: f.name, frames: f.frames, ...(size !== undefined ? { size } : {}) };
+        return {
+          position,
+          name: f.name,
+          frames: f.frames,
+          ...(size !== undefined ? { size } : {}),
+        };
       }),
       sessions: (info?.sessions ?? []).map((s) => ({
         index: s.index,
@@ -503,8 +581,19 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
         start_frame: s.startFrame,
         frames: s.frameCount,
         fps: s.fps,
+        files: (perSession[s.index] ?? []).map((f, position) => ({ position, ...f })),
       })),
       mode: extras.mode ?? null,
+      session_index: extras.sessionIndex ?? null,
+      fps_source: info?.fpsSource ?? null,
+    },
+    runtime: {
+      motion_backend: p.motionBackend(),
+      flat_field: {
+        enabled: p.flatEnabled(),
+        reused_from_cache: p.flatField().reused,
+        key_source: p.flatField().keySource,
+      },
     },
     stages: src.stageRuns(),
     settle: settle
@@ -525,7 +614,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       governor_on: p.csettleGovernor(),
     },
     governor: st?.lookback?.csettle?.governor ?? null,
-    achievedFps: p.fps() > 0 ? p.fps() : null,
+    achievedFps: achievedFps(src.stageRuns()),
     machine: machineContext(),
     ...(extras.slots ? { slots: extras.slots } : {}),
   });
@@ -536,7 +625,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
 
 /**
  * The URL-flag and setting changes that re-apply a record's settings (what
- * `?debug&record=` does). Pure: returns what to set; the app applies it.
+ * `__cala.applyRunRecord` does, under `?debug`). Pure: returns what to set; the app applies it.
  * Unknown or malformed records give `null`.
  */
 export interface AppliedSettings {

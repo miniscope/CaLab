@@ -869,11 +869,18 @@ export function createPipelineStore(
     setPaceFps: (fps: number, source = 'setting') => {
       paceFps = Number.isFinite(fps) && fps > 0 ? fps : 0;
       if (paceFps > 0) paceEver = true;
-      for (const cb of paceListeners) cb(paceFps, untrack(processed), source);
       const st = status();
       // A run paused before a pace existed must start held.
       if (st === 'running' || st === 'paused') sendPace({ fps: paceFps, paused: st === 'paused' });
       tellSettlePace();
+      // Last, and guarded: a listener (the run record's log) must never disturb pacing.
+      for (const cb of paceListeners) {
+        try {
+          cb(paceFps, untrack(processed), source);
+        } catch {
+          // Observers only.
+        }
+      }
     },
     /** The target speed now, frames per second (0: Max). */
     paceFps: () => paceFps,
