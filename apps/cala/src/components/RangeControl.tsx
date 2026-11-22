@@ -14,8 +14,8 @@ export interface HeldRange {
   refit: () => void;
 }
 
-export function createHeldRange(): HeldRange {
-  const hold = new RangeHold();
+export function createHeldRange(headroom = 1): HeldRange {
+  const hold = new RangeHold(undefined, headroom);
   const [range, setRange] = createSignal<DisplayRange | null>(null);
   const [revision, setRevision] = createSignal(0);
   const changed = () => {

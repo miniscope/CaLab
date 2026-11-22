@@ -59,6 +59,15 @@ describe('frame display', () => {
       expect(percentileRange([])).toBeNull();
     });
 
+    it('widens the white level by the headroom, on the fit and on a re-fit', () => {
+      const hold = new RangeHold(1, 3.5);
+      expect(hold.observe(frame(0, 6))).toEqual({ lo: 0, hi: 21 });
+      hold.refit();
+      expect(hold.range).toEqual({ lo: 0, hi: 21 });
+      hold.setManual({ lo: 0, hi: 8 });
+      expect(hold.range).toEqual({ lo: 0, hi: 8 });
+    });
+
     it('is computed once from the first frames, then held', () => {
       const hold = new RangeHold();
       for (let i = 0; i < FIT_FRAMES; i++) hold.observe(frame(100, 20));
