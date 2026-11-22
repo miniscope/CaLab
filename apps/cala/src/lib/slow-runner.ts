@@ -418,6 +418,8 @@ export class SlowRunner {
   private workT0: number;
   private visitBusy: number[];
   private lbWork = emptyWorkByKind();
+  /** Answers that arrived for a request no longer waited for (cancelled, timed out, stale). */
+  private lbDiscarded = emptyLookbackWork();
   private waitN = 0;
   private waitSum = 0;
   private waitLast = 0;
@@ -513,7 +515,7 @@ export class SlowRunner {
           ...(lookback ? { lookback: true } : {}),
           ...(csettle > 0 ? { csettle } : {}),
         };
-        this.loop = this.deps.create(this.init);
+        this.loop = this.clock.span('setup', () => this.deps.create(this.init!));
         this.run = 1;
         this.lbOn = lookback === true && typeof this.loop.lookbackTake === 'function';
         if (this.lbOn && !this.lbPort) this.lbError = 'The look-back worker is not connected.';
@@ -724,7 +726,7 @@ export class SlowRunner {
 
   /** Trimming decisions and, when due, a new library (parallel mode). */
   private housekeep(): void {
-    this.clock.span('visit', () => {
+    this.clock.span('housekeep', () => {
       const lib = this.loop?.housekeep!();
       if (lib) this.publish(lib);
     });
@@ -798,15 +800,17 @@ export class SlowRunner {
     const id = this.lbNextId++;
     this.lbReq = { id, kind, items, ...(skip ? { skip } : {}) };
     // `flat` is a fresh array (from WASM or built here): transferred as is; `skip` is copied.
-    this.lbPort!.postMessage(
-      {
-        type: 'request',
-        session: this.session,
-        id,
-        items: flat,
-        ...(skip ? { skip: skip.slice() } : {}),
-      },
-      [flat.buffer as ArrayBuffer],
+    this.clock.span(kind, () =>
+      this.lbPort!.postMessage(
+        {
+          type: 'request',
+          session: this.session,
+          id,
+          items: flat,
+          ...(skip ? { skip: skip.slice() } : {}),
+        },
+        [flat.buffer as ArrayBuffer],
+      ),
     );
     this.lbCancelTimer = this.timer(() => {
       if (this.lbReq?.id !== id) return;
@@ -881,6 +885,9 @@ export class SlowRunner {
     const loop = this.loop;
     const req = this.lbReq;
     if (msg.session !== this.session || !loop || !req || msg.id !== req.id) {
+      // Its time was spent all the same: counted apart (only this session's).
+      if (msg.type === 'frames' && msg.session === this.session)
+        addLookbackAnswer(this.lbDiscarded, msg.count, msg.timing);
       // An ignored answer still returns its buffer to the worker's pool (which drops a stale session's).
       if (msg.type === 'frames')
         this.lbPort?.postMessage({ type: 'release', session: msg.session, frames: msg.frames }, [
@@ -1129,7 +1136,7 @@ export class SlowRunner {
    * unit-peak footprints (a settle checkpoint).
    */
   private checkpointLibrary(loop: SlowLoopLike): ReturnType<typeof unitFootprints> {
-    const lib = loop.finalize();
+    const lib = this.clock.span('end', () => loop.finalize());
     const fps = unitFootprints({
       ids: lib.ids(),
       starts: lib.supportStarts(),
@@ -1273,6 +1280,10 @@ export class SlowRunner {
 
   /** Another run from frame 0 into this loop (see `FastToSlow` `replay`). */
   private replay(scope: EditScopeName): void {
+    this.clock.span('setup', () => this.replayInner(scope));
+  }
+
+  private replayInner(scope: EditScopeName): void {
     const loop = this.loop;
     if (!loop) throw new Error('No slow loop to refine: run Discover first.');
     if (!this.final) throw new Error('The slow loop has not published its final library yet.');
@@ -1304,7 +1315,7 @@ export class SlowRunner {
     const loop = this.loop;
     if (!loop || this.final) return;
     this.final = true;
-    this.publish(loop.finalize());
+    this.clock.span('publish', () => this.publish(loop.finalize()));
     this.status(0, 0);
   }
 
@@ -1420,6 +1431,7 @@ export class SlowRunner {
         LookbackKind,
         LookbackWork
       >,
+      discarded: { ...this.lbDiscarded },
     };
   }
 
@@ -1505,6 +1517,7 @@ export class SlowRunner {
     this.workT0 = this.now();
     this.visitBusy = this.visits.map(() => 0);
     this.lbWork = emptyWorkByKind();
+    this.lbDiscarded = emptyLookbackWork();
     this.waitN = 0;
     this.waitSum = 0;
     this.waitLast = 0;

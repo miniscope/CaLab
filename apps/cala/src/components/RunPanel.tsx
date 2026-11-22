@@ -608,7 +608,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       {/* `?debug`: who is doing what, once a second (plain text; the real display comes later). */}
       <Show when={DEBUG}>
         <pre class="cala-readout cala-run__line" data-testid="work-debug">
-          {workText(s().work(), s().maxFps())}
+          {workText(s().work(), s().workMaxFps())}
         </pre>
       </Show>
       <Show when={s().live()}>

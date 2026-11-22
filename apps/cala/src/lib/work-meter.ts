@@ -2,8 +2,9 @@
  * Who is doing what: busy and idle accounting for the cala workers (the
  * slow worker, the visit workers, the look-back worker, the fast loop), with
  * no effect on any decision. The workers report cumulative milliseconds
- * about once a second, piggybacking on the status messages that already
- * flow (`SlowStatus.accounting`); the main thread turns two snapshots into shares
+ * with every slow status (about once per batch; the messages already flow,
+ * `SlowStatus.accounting`); the main thread turns two snapshots about a second
+ * apart into shares
  * (`workRates`), shows them in the `?debug` readout and keeps them in the run
  * history. See `work_slider_design.md`, section 6.
  *
@@ -11,7 +12,16 @@
  */
 
 /** What the slow worker spends its time on (`SlowRunner`); whatever is left of the wall time is idle. */
-export const SLOW_DUTIES = ['live', 'visit', 'need', 'csettle', 'end', 'publish'] as const;
+export const SLOW_DUTIES = [
+  'live',
+  'visit',
+  'housekeep',
+  'need',
+  'csettle',
+  'end',
+  'publish',
+  'setup',
+] as const;
 export type SlowDuty = (typeof SLOW_DUTIES)[number];
 
 /** The kinds of look-back request (`SlowRunner`): need-driven, settle during Discover, the end settle. */
@@ -170,12 +180,14 @@ export interface WorkStatus {
   visitBusyMs: number[];
   /** Look-back answers by kind, as the look-back worker timed them (all zero without look-back). */
   lookback: Record<LookbackKind, LookbackWork>;
+  /** Look-back answers that arrived for a request no longer waited for (their worker time still counts as busy). */
+  discarded: LookbackWork;
 }
 
 export function emptyWork(workers = 0): WorkStatus {
   return {
     wallMs: 0,
-    busyMs: { live: 0, visit: 0, need: 0, csettle: 0, end: 0, publish: 0 },
+    busyMs: { live: 0, visit: 0, housekeep: 0, need: 0, csettle: 0, end: 0, publish: 0, setup: 0 },
     batchWait: { batches: 0, sumMs: 0, lastMs: 0, max1sMs: 0 },
     visitBusyMs: new Array<number>(workers).fill(0),
     lookback: {
@@ -183,6 +195,7 @@ export function emptyWork(workers = 0): WorkStatus {
       csettle: emptyLookbackWork(),
       end: emptyLookbackWork(),
     },
+    discarded: emptyLookbackWork(),
   };
 }
 
@@ -248,6 +261,7 @@ export function workRates(prev: WorkStatus, cur: WorkStatus): WorkRates | null {
     };
     busy += kinds[k].busy;
   }
+  busy += share(lbBusy(prev.discarded), lbBusy(cur.discarded));
   const nb = cur.batchWait.batches - prev.batchWait.batches;
   return {
     spanMs: span,
@@ -269,6 +283,8 @@ export function workRates(prev: WorkStatus, cur: WorkStatus): WorkRates | null {
  */
 export class WorkRater {
   private ref: WorkStatus | null = null;
+  /** Busy time credited at an answer's arrival that a window could not hold (share > 1), carried on. */
+  private carry = new Map<string, number>();
 
   constructor(private readonly everyMs = 1000) {}
 
@@ -276,16 +292,36 @@ export class WorkRater {
   push(w: WorkStatus): WorkRates | null {
     const ref = this.ref;
     if (!ref || w.wallMs < ref.wallMs) {
+      this.carry.clear();
       this.ref = w;
       return null;
     }
     if (w.wallMs - ref.wallMs < this.everyMs) return null;
     this.ref = w;
-    return workRates(ref, w);
+    const r = workRates(ref, w);
+    if (r) this.settle(r);
+    return r;
+  }
+
+  /**
+   * A visit's or an answer's ms is credited when it arrives, so one window can read above 100 %:
+   * clamp each busy share at 1 and carry the excess into the next window.
+   */
+  private settle(r: WorkRates): void {
+    const fit = (key: string, v: number): number => {
+      const total = v + (this.carry.get(key) ?? 0);
+      const shown = Math.min(1, total);
+      this.carry.set(key, total - shown);
+      return shown;
+    };
+    r.visit = r.visit.map((v, i) => fit(`v${i}`, v));
+    for (const k of LOOKBACK_KINDS) r.lookback.kinds[k].busy = fit(k, r.lookback.kinds[k].busy);
+    r.lookback.busy = fit('lb', r.lookback.busy);
   }
 
   reset(): void {
     this.ref = null;
+    this.carry.clear();
   }
 }
 
@@ -332,7 +368,7 @@ export function workText(r: WorkRates | null, maxFps: number): string {
   const s = r.slow;
   const lines = [
     `work over ${(r.spanMs / 1000).toFixed(1)} s   fast loop max ~${maxFps.toFixed(0)} fps`,
-    `slow    live ${pct(s.live)} visits ${pct(s.visit)} need ${pct(s.need)} csettle ${pct(s.csettle)} end ${pct(s.end)} publish ${pct(s.publish)} idle ${pct(s.idle)}`,
+    `slow    live ${pct(s.live)} visits ${pct(s.visit)} housekeep ${pct(s.housekeep)} need ${pct(s.need)} csettle ${pct(s.csettle)} end ${pct(s.end)} publish ${pct(s.publish)} setup ${pct(s.setup)} idle ${pct(s.idle)}`,
     `        batch wait mean ${r.batchWait.meanMs.toFixed(1)} ms, last ${r.batchWait.lastMs.toFixed(1)}, longest in 1 s ${r.batchWait.max1sMs.toFixed(1)}`,
     `visits  ${r.visit.length > 0 ? r.visit.map(pct).join(' ') : 'none (the slow worker visits itself)'}`,
     `look-back busy ${pct(r.lookback.busy)}`,

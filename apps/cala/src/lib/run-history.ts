@@ -303,6 +303,7 @@ const WORK_SERIES: SeriesSpec[] = [
       ['work_need', 'Slow worker: need-driven look-back answers', C.orange],
       ['work_settle', 'Slow worker: settle answers and end settle', C.reddishPurple],
       ['work_publish', 'Slow worker: publishing', C.skyBlue],
+      ['work_other', 'Slow worker: housekeeping, set-up and replay', C.vermillion],
       ['work_idle', 'Slow worker: idle', C.black],
       ['work_visit_busy', 'Visit workers: mean busy share', C.bluishGreen],
       ['work_lookback_busy', 'Look-back worker: busy share', C.orange],
@@ -627,7 +628,12 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     if (working !== null) history.push('working_set', t, working);
   }
 
-  /** The work shares of the last second or so (`WorkRates`) and the fast loop's top-speed estimate. */
+  /**
+   * The work shares of the last second or so (`WorkRates`) and the fast loop's top-speed estimate.
+   * Pushed at the stream time Discover has reached, so the caller stops after its last frame (the
+   * final settle's accounting lives in the `?debug` readout and the `-work.json` log only: stream
+   * time stands still then and every sample would land in one bin).
+   */
   function work(r: WorkRates, maxFps: number): void {
     const t = processedS;
     const s = r.slow;
@@ -636,6 +642,7 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     history.push('work_need', t, s.need);
     history.push('work_settle', t, s.csettle + s.end);
     history.push('work_publish', t, s.publish);
+    history.push('work_other', t, s.housekeep + s.setup);
     history.push('work_idle', t, s.idle);
     if (r.visit.length > 0)
       history.push('work_visit_busy', t, r.visit.reduce((a, b) => a + b, 0) / r.visit.length);

@@ -6,7 +6,7 @@
  * ahead of the UI, and only the latest previews are kept (a slow renderer
  * drops frames instead of queueing them). Pausing simply stops requesting.
  */
-import { createSignal } from 'solid-js';
+import { createSignal, untrack } from 'solid-js';
 import type { PaceStats } from './frame-pacer.ts';
 import { MaxFpsEstimator, WorkRater, type WorkRates } from './work-meter.ts';
 import type { CellStore } from './cell-store.ts';
@@ -471,12 +471,17 @@ export function createPipelineStore(
   const maxFpsEstimator = new MaxFpsEstimator();
   const [work, setWork] = createSignal<WorkRates | null>(null);
   const [maxFps, setMaxFps] = createSignal(0);
+  /** The max estimate as of the last `work` reading (the readout rebuilds once a second, not per batch). */
+  const [workMaxFps, setWorkMaxFps] = createSignal(0);
   cells?.onStatus((st) => {
     if (!st.accounting) return;
     const rates = workRater.push(st.accounting);
     if (!rates) return;
+    const max = maxFpsEstimator.estimate();
     setWork(rates);
-    runHistory?.work(rates, maxFpsEstimator.estimate());
+    setWorkMaxFps(max);
+    // Not after Discover's last frame (stream time stands still; see `RunHistory.work`).
+    if (untrack(status) !== 'done') runHistory?.work(rates, max);
   });
   function sendPace(pace: { fps?: number; paused?: boolean }): void {
     void client.setPace?.(pace).catch(() => {});
@@ -536,6 +541,7 @@ export function createPipelineStore(
     maxFpsEstimator.reset();
     setWork(null);
     setMaxFps(0);
+    setWorkMaxFps(0);
     setPlan(null);
     setSetup(null);
     setProcessed(0);
@@ -741,6 +747,8 @@ export function createPipelineStore(
     work,
     /** The fast loop's live estimate of its top speed, frames per second (0 until a batch has busy time). */
     maxFps,
+    /** `maxFps` as of the last `work` reading, for the readout. */
+    workMaxFps,
     /** Read no faster than this many frames a second (0: off); applies to a running recording at once. */
     setPaceFps: (fps: number) => {
       paceFps = Number.isFinite(fps) && fps > 0 ? fps : 0;

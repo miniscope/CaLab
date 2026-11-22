@@ -182,6 +182,51 @@ describe('workRates', () => {
   });
 });
 
+describe('WorkRater carry', () => {
+  it('clamps a busy share at 1 and carries the excess into the next window', () => {
+    const rater = new WorkRater(1000);
+    rater.push(snap(0, () => {}));
+    // 1.6 s of visit time credited in a 1 s window (the visit ended in it, but spanned two).
+    const a = rater.push(
+      snap(1000, (w) => {
+        w.visitBusyMs = [1600, 0];
+        w.lookback.need = { ...emptyLookbackWork(), answers: 1, frames: 8, readMs: 1500 };
+        w.discarded = { ...emptyLookbackWork(), solveMs: 200 };
+      }),
+    )!;
+    expect(a.visit[0]).toBe(1);
+    expect(a.lookback.kinds.need.busy).toBe(1);
+    expect(a.lookback.busy).toBe(1);
+    // Nothing new: the carried 0.6 shows up next.
+    const b = rater.push(
+      snap(2000, (w) => {
+        w.visitBusyMs = [1600, 0];
+        w.lookback.need = { ...emptyLookbackWork(), answers: 1, frames: 8, readMs: 1500 };
+        w.discarded = { ...emptyLookbackWork(), solveMs: 200 };
+      }),
+    )!;
+    expect(b.visit[0]).toBeCloseTo(0.6);
+    expect(b.lookback.kinds.need.busy).toBeCloseTo(0.5);
+    expect(b.lookback.busy).toBeCloseTo(0.7);
+    const c = rater.push(
+      snap(3000, (w) => {
+        w.visitBusyMs = [1600, 0];
+      }),
+    )!;
+    expect(c.visit[0]).toBe(0);
+  });
+
+  it('counts discarded answers in the look-back busy share', () => {
+    const r = workRates(
+      snap(0, () => {}),
+      snap(1000, (w) => {
+        w.discarded = { ...emptyLookbackWork(), solveMs: 300 };
+      }),
+    )!;
+    expect(r.lookback.busy).toBeCloseTo(0.3);
+  });
+});
+
 describe('MaxFpsEstimator', () => {
   it('is frames over the busiest stage, over the last batches', () => {
     const e = new MaxFpsEstimator(2);
@@ -402,6 +447,28 @@ describe('SlowRunner accounting', () => {
     });
     expect(w.lookback.csettle.answers).toBe(0);
     expect(w.busyMs.need).toBe(4); // two observeLookback calls of 2 ms
+  });
+
+  it('a stale answer is counted as discarded, housekeeping and set-up have their own duties', () => {
+    const x = rig({ lookback: true });
+    x.r.handle({ ...INIT, lookback: true });
+    x.r.handleLookback({
+      type: 'frames',
+      session: 1,
+      id: 999,
+      version: 1,
+      count: 3,
+      cells: 1,
+      frames: new Float32Array(6),
+      traces: new Float32Array(3),
+      timing: { readMs: 1, preprocessMs: 2, solveMs: 3, otherMs: 0, waitMs: 0 },
+    });
+    x.r.handle(batch(0));
+    const w = x.last().accounting!;
+    expect(w.discarded).toMatchObject({ answers: 1, frames: 3, solveMs: 3 });
+    expect(w.lookback.need.answers).toBe(0);
+    expect(w.busyMs.housekeep).toBe(0);
+    expect(w.busyMs.setup).toBe(0);
   });
 
   it('a new session starts the accounting from zero', () => {
