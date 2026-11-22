@@ -8,6 +8,7 @@
  * of the old session are dropped.
  */
 
+import type { WorkStatus } from '../lib/work-meter.ts';
 import type { LookbackStatus } from './lookback-types.ts';
 
 /**
@@ -81,6 +82,12 @@ export type FastToSlow =
       background?: Float32Array;
       /** A newer noise map, sent every few hundred frames. */
       noise?: Float32Array;
+      /**
+       * When the batch was sent, ms on the epoch clock (`performance.timeOrigin + performance.now()`,
+       * comparable across workers): the slow worker's batch wait is the time from here to the start
+       * of its processing. Absent from older senders.
+       */
+      sentAt?: number;
     }
   /** The recording ended: publish what is pending. */
   | { type: 'end'; session: number }
@@ -190,6 +197,8 @@ export interface SlowStatus {
   cellStatus?: CellStatusView;
   /** Look-back counters (absent: look-back off). */
   lookback?: LookbackStatus;
+  /** Busy and idle accounting by worker (cumulative; `lib/work-meter.ts`). Instrumentation only. */
+  accounting?: WorkStatus;
   /**
    * With the final library of a run: each cell's split-half footprint noise,
    * `[id, noise, ...]` (`SlowLoop.footprintNoise`; absent in older builds).

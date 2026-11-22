@@ -49,6 +49,40 @@ describe('FramePacer', () => {
     expect(p.released).toBe(0);
   });
 
+  it('counts released frames cumulatively: a re-anchor restarts the count since the anchor, not the total', () => {
+    const p = new FramePacer();
+    p.setTarget(30, 0);
+    p.release(8, 0);
+    p.release(8, p.dueAt());
+    expect(p.releasedTotal).toBe(16);
+    // Far behind: dropped debt, re-anchor.
+    p.release(8, p.dueAt() + 5000);
+    expect(p.reanchors).toBe(1);
+    expect(p.released).toBe(8);
+    expect(p.releasedTotal).toBe(24);
+    p.reset();
+    expect(p.releasedTotal).toBe(0);
+  });
+
+  it('the gate reports the cumulative release count and the session it runs for', () => {
+    let now = 0;
+    const gate = new PaceGate({
+      now: () => now,
+      setTimeout: () => 0,
+      clearTimeout: () => {},
+    });
+    gate.begin(7);
+    gate.setTarget(30);
+    gate.pacer.release(8, now);
+    gate.pacer.release(8, (now = gate.pacer.dueAt() + 5000));
+    const s = gate.stats();
+    expect(s.session).toBe(7);
+    expect(s.released).toBe(16);
+    expect(s.reanchors).toBe(1);
+    gate.begin(8);
+    expect(gate.stats()).toMatchObject({ session: 8, released: 0 });
+  });
+
   it('keeps absolute deadlines and counts lateness only when it drops debt', () => {
     const p = new FramePacer();
     p.setTarget(30, 1000);

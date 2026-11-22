@@ -192,7 +192,7 @@ async function handle(req: FrameRequest): Promise<void> {
         break;
       }
       case 'pipeline-start': {
-        gate.begin();
+        gate.begin(req.cells?.session ?? 0);
         // A replay stage (Refine, Extract) keeps the slow loop of the Discover run.
         stopPipeline(req.cells?.library !== undefined);
         // A live stream cannot be rewound: a restart (or a run after the stream
@@ -284,6 +284,7 @@ async function handle(req: FrameRequest): Promise<void> {
           if (!front) throw new Error('The pipeline is not running.');
           const job = await front.next();
           if (!job) {
+            flushPaceStats();
             down.postMessage({ type: 'end', epoch, id: req.id } satisfies StageMsg);
           } else {
             down.postMessage(
@@ -295,6 +296,7 @@ async function handle(req: FrameRequest): Promise<void> {
         }
         if (!pipeline) throw new Error('The pipeline is not running.');
         const step = await pipeline.step();
+        if (step.kind === 'done') flushPaceStats();
         post({ type: 'pipeline-step', id: req.id, step }, transferablesOf(step));
         break;
       }
@@ -304,6 +306,7 @@ async function handle(req: FrameRequest): Promise<void> {
         break;
       }
       case 'pipeline-stop': {
+        flushPaceStats();
         stopPipeline(req.keepSlow === true);
         post({ type: 'pipeline-stopped', id: req.id });
         break;
@@ -408,6 +411,12 @@ function actNow(req: FrameRequest): boolean {
 // headers while a `read` is awaiting its slice, nor a `pipeline-stop` free the
 // pipeline while a step is running.
 let lastPaceStats = Number.NEGATIVE_INFINITY;
+/** The gate's readouts to the main thread now (a run ended or stopped), whatever the once-a-second rhythm says. */
+function flushPaceStats(): void {
+  if (!gate.pacer.paced) return;
+  lastPaceStats = performance.now();
+  post({ type: 'pace-stats', id: -1, stats: gate.stats() });
+}
 const pacedQueue = new PacedQueue<FrameRequest>({
   gate,
   isStep: (req) => req.type === 'pipeline-step',
@@ -415,10 +424,8 @@ const pacedQueue = new PacedQueue<FrameRequest>({
   cancelled: (req) => post({ type: 'error', id: req.id, message: 'The run was stopped.' }),
   released: () => {
     // Pacing readouts for the main thread, about once a second.
-    const t = performance.now();
-    if (t - lastPaceStats < 1000) return;
-    lastPaceStats = t;
-    post({ type: 'pace-stats', id: -1, stats: gate.stats() });
+    if (performance.now() - lastPaceStats < 1000) return;
+    flushPaceStats();
   },
 });
 workerScope.onmessage = (e) => {

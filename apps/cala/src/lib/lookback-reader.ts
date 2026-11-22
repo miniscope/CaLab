@@ -50,6 +50,7 @@ import type { FlatFieldMap } from './flat-field.ts';
 import type { FramePixels } from './frame-source.ts';
 import { frontReplay, rigidRecords } from './pipeline-stages.ts';
 import { RunRecord } from './run-record.ts';
+import type { LookbackTiming } from './work-meter.ts';
 
 /** Where look-back reads raw frames from: a recording's `FrameSource`, or later a history store. */
 export interface HistorySource {
@@ -86,9 +87,13 @@ export interface LookbackSolved {
   /** `count * cells` traces, and the background coefficients of the same solve (absent: no cells). */
   traces: Float32Array;
   background?: Float32Array;
+  /** Where this answer's time went (instrumentation only). */
+  timing: LookbackTiming;
 }
 
 export class LookbackReader {
+  /** Time spent since the last `serve` began (read in `serve`'s result). */
+  private timing: LookbackTiming = { readMs: 0, preprocessMs: 0, solveMs: 0, waitMs: 0 };
   private readonly px: number;
   private readonly record = new RunRecord();
   /** Waiting for rows: resolved when the record covers `frame`. */
@@ -175,6 +180,7 @@ export class LookbackReader {
   ): Promise<LookbackSolved> {
     if (out.length < frames.length * this.px)
       throw new RangeError(`look-back: a buffer of ${out.length} for ${frames.length} frames`);
+    this.timing = { readMs: 0, preprocessMs: 0, solveMs: 0, waitMs: 0 };
     this.applyLibrary();
     const traces = new Float32Array(frames.length * this.cells);
     let background: Float32Array | undefined;
@@ -184,31 +190,42 @@ export class LookbackReader {
       await this.preprocess(frame, block, y);
       if (this.disposed) throw new Error('look-back stopped');
       if (!this.engine || this.cells === 0 || skip?.[i]) continue;
+      const t0 = performance.now();
       traces.set(this.engine.processFrames(y, 1), i * this.cells);
       const bg = this.engine.lastBackground();
       background ??= new Float32Array(frames.length * bg.length);
       background.set(bg, i * bg.length);
+      this.timing.solveMs += performance.now() - t0;
     }
     return {
       version: this.engine ? this.version : 0,
       cells: this.cells,
       traces,
       ...(background ? { background } : {}),
+      timing: this.timing,
     };
   }
 
   /** Frame `frame` of block `block`, preprocessed as Discover did (see the module docs), into `y`. */
   async preprocess(frame: number, block: number, y: Float32Array): Promise<void> {
+    // Waiting for Discover's rows or state is not work; reading and preprocessing are.
+    const t0 = performance.now();
     await this.rows(frame);
     const state = await this.state();
+    const t1 = performance.now();
     const pre = this.blockPre(block, state);
     const front = this.frontPre(state);
+    const t2 = performance.now();
     const raw = await this.rawFrame(frame);
+    const t3 = performance.now();
     frontReplay(front, raw, 1, this.buf, this.record.span(frame, 1), 0);
     const rec = this.record.span(frame, 1);
     const motion = (this.motion ??= this.newMotion());
     motion.applyF32(this.buf, rigidRecords(motion, rec.dy, rec.dx, rec.flags, 1), y);
     pre.backFramesRegistered(y, 1, rec.dy, rec.dx);
+    this.timing.waitMs += t1 - t0;
+    this.timing.readMs += t3 - t2;
+    this.timing.preprocessMs += t2 - t1 + (performance.now() - t3);
   }
 
   private rows(frame: number): Promise<void> {

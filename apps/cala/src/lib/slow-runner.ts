@@ -79,6 +79,18 @@ import {
   settlePlan,
   unitFootprints,
 } from './settle.ts';
+import {
+  addLookbackAnswer,
+  DutyClock,
+  emptyLookbackWork,
+  LOOKBACK_KINDS,
+  SLOW_DUTIES,
+  WindowMax,
+  type LookbackKind,
+  type LookbackWork,
+  type SlowDuty,
+  type WorkStatus,
+} from './work-meter.ts';
 
 /** What the runner needs of a published `TraceLibrary`. */
 export interface PublishedLibrary {
@@ -247,6 +259,8 @@ export interface SlowRunnerDeps {
   /** Port to the look-back worker (also `connectLookback`). */
   lookback?: PortLike<SlowToLookback>;
   now?: () => number;
+  /** Epoch clock for the batch wait (`FastToSlow` `sentAt`); default `performance.timeOrigin + performance.now()`. */
+  epochNow?: () => number;
   /** Run `fn` as a later task (settling gives way between steps; default `setTimeout(fn, 0)`). */
   defer?: (fn: () => void) => void;
   /** Call `fn` after `ms` unless cancelled (default `setTimeout`). */
@@ -298,6 +312,10 @@ interface Csettle {
   answers: number;
   answerMs: number;
   maxBlockMs: number;
+}
+
+function emptyWorkByKind(): Record<LookbackKind, LookbackWork> {
+  return { need: emptyLookbackWork(), csettle: emptyLookbackWork(), end: emptyLookbackWork() };
 }
 
 /** `lookbackTake` output, split per frame. */
@@ -394,6 +412,16 @@ export class SlowRunner {
   private visitMs = 0;
   /** Wall time this worker spent handing out and applying visits, ms. */
   private jobOwnerMs = 0;
+  // Work accounting (`lib/work-meter.ts`; reported in `SlowStatus.accounting`, never read back here).
+  private readonly epochNow: () => number;
+  private readonly clock: DutyClock<SlowDuty>;
+  private workT0: number;
+  private visitBusy: number[];
+  private lbWork = emptyWorkByKind();
+  private waitN = 0;
+  private waitSum = 0;
+  private waitLast = 0;
+  private readonly waitMax = new WindowMax(1000);
   /** History-review candidates waiting for the visits out to come back. */
   private reviewed: Float32Array[] = [];
   // ---- look-back ----
@@ -417,8 +445,12 @@ export class SlowRunner {
   constructor(deps: SlowRunnerDeps) {
     this.deps = deps;
     this.now = deps.now ?? (() => performance.now());
+    this.epochNow = deps.epochNow ?? (() => performance.timeOrigin + performance.now());
+    this.clock = new DutyClock(SLOW_DUTIES, this.now);
+    this.workT0 = this.now();
     this.visits = deps.visits ?? [];
     this.busy = this.visits.map(() => false);
+    this.visitBusy = this.visits.map(() => 0);
     this.lbPort = deps.lookback ?? null;
     this.defer = deps.defer ?? ((fn) => void setTimeout(fn, 0));
     this.timer =
@@ -546,11 +578,12 @@ export class SlowRunner {
       if (msg.type === 'error') throw new Error(`visit worker ${i}: ${msg.message}`);
       this.busy[i] = false;
       const t0 = this.now();
-      this.loop.applyJob!(msg.bytes);
+      this.clock.span('visit', () => this.loop!.applyJob!(msg.bytes));
       this.jobOwnerMs += this.now() - t0;
       this.jobs++;
       this.visitMsSum += msg.ms;
       this.visitMsN++;
+      this.visitBusy[i] = (this.visitBusy[i] ?? 0) + msg.ms;
       this.housekeep();
       if (this.drain) {
         // The settle keeps its visit workers busy; the last round and a Stop wait for them.
@@ -595,6 +628,25 @@ export class SlowRunner {
     let observed = 0;
     let maxStep = 0;
     const t0 = this.now();
+    // The wait in the inbox: sent by the fast worker (epoch clock) until processing starts here.
+    if (msg.sentAt !== undefined) {
+      const wait = Math.max(0, this.epochNow() - msg.sentAt);
+      this.waitN++;
+      this.waitSum += wait;
+      this.waitLast = wait;
+      this.waitMax.push(t0, wait);
+    }
+    // A live span, closed at each give-way (`yield`) and in `finally`.
+    let live = false;
+    const beginLive = (): void => {
+      if (!live) this.clock.begin('live');
+      live = true;
+    };
+    const endLive = (): void => {
+      if (live) this.clock.end();
+      live = false;
+    };
+    beginLive();
     try {
       if (loop && init) {
         if (msg.noise) {
@@ -622,9 +674,11 @@ export class SlowRunner {
           if (this.parallel) {
             // Refine only: Discover keeps its timing (it drops batches instead).
             if (this.scope !== 'all' && i + 1 < msg.count && this.busy.some((b) => b)) {
+              endLive();
               yield;
-              // A visit result failed meanwhile and dropped the loop.
+              // A visit result failed meanwhile and dropped the loop (its clock was reset).
               if (this.loop !== loop) break;
+              beginLive();
             }
             continue;
           }
@@ -649,6 +703,7 @@ export class SlowRunner {
         }
       }
     } finally {
+      endLive();
       this.consumed = Math.max(this.consumed, msg.start + msg.count);
       // The buffer always goes back, or the fast worker's pool would shrink.
       this.deps.toFast.postMessage(
@@ -668,8 +723,10 @@ export class SlowRunner {
 
   /** Trimming decisions and, when due, a new library (parallel mode). */
   private housekeep(): void {
-    const lib = this.loop?.housekeep!();
-    if (lib) this.publish(lib);
+    this.clock.span('visit', () => {
+      const lib = this.loop?.housekeep!();
+      if (lib) this.publish(lib);
+    });
   }
 
   /** A tile visit to every idle visit worker, while any is due; returns how many were handed out. */
@@ -677,20 +734,22 @@ export class SlowRunner {
     const loop = this.loop;
     // Reviewed cells wait for the visits out: hand out no new one meanwhile.
     if (!loop || this.ending || this.reviewed.length > 0) return 0;
-    let handed = 0;
-    for (let i = 0; i < this.visits.length; i++) {
-      if (this.busy[i]) continue;
-      const t0 = this.now();
-      const bytes = loop.takeJob!();
-      if (!bytes) break;
-      this.busy[i] = true;
-      handed++;
-      this.visits[i].postMessage({ type: 'job', session: this.session, bytes }, [
-        bytes.buffer as ArrayBuffer,
-      ]);
-      this.jobOwnerMs += this.now() - t0;
-    }
-    return handed;
+    return this.clock.span('visit', () => {
+      let handed = 0;
+      for (let i = 0; i < this.visits.length; i++) {
+        if (this.busy[i]) continue;
+        const t0 = this.now();
+        const bytes = loop.takeJob!();
+        if (!bytes) break;
+        this.busy[i] = true;
+        handed++;
+        this.visits[i].postMessage({ type: 'job', session: this.session, bytes }, [
+          bytes.buffer as ArrayBuffer,
+        ]);
+        this.jobOwnerMs += this.now() - t0;
+      }
+      return handed;
+    });
   }
 
   // ---- look-back ----
@@ -764,7 +823,7 @@ export class SlowRunner {
 
   /** Need-driven look-back: the frames the scheduler wants now. */
   private needRequest(loop: SlowLoopLike): boolean {
-    const flat = loop.lookbackTake!(LOOKBACK.takeMax);
+    const flat = this.clock.span('need', () => loop.lookbackTake!(LOOKBACK.takeMax));
     if (flat.length === 0) return false;
     this.sendRequest('need', flat, lookbackItems(flat));
     return true;
@@ -779,7 +838,7 @@ export class SlowRunner {
     if (cs.off || cs.work || !cs.dose.ready || !this.lookbackLive || this.version <= 0)
       return false;
     // The frames forwarded so far are the saved history (stream index = file frame).
-    const take = loop.settleTake!(this.consumed, CSETTLE.chunk);
+    const take = this.clock.span('csettle', () => loop.settleTake!(this.consumed, CSETTLE.chunk));
     const n = Math.floor(take.length / 3);
     if (n === 0) return false;
     const flat = new Float64Array(3 * n);
@@ -831,6 +890,18 @@ export class SlowRunner {
     this.lbReq = null;
     this.lbCancelTimer?.();
     this.lbCancelTimer = null;
+    if (msg.type === 'frames') addLookbackAnswer(this.lbWork[req.kind], msg.count, msg.timing);
+    // The slow worker's time on this answer goes to the kind's duty.
+    this.clock.begin(req.kind === 'end' ? 'end' : req.kind);
+    try {
+      this.answered(msg, loop, req);
+    } finally {
+      this.clock.end();
+    }
+  }
+
+  /** The rest of `handleLookback`: what the answer feeds, then the next request. */
+  private answered(msg: LookbackToSlow, loop: SlowLoopLike, req: LookbackReq): void {
     const settle = req.kind === 'end' ? this.drain : null;
     try {
       if (msg.type === 'error') {
@@ -928,7 +999,7 @@ export class SlowRunner {
     const loop = this.loop;
     // Dropped meanwhile (a reset, an error, the end of Discover): nothing left to do.
     if (!cs || !loop || cs.work !== work) return;
-    this.csettleFeed(loop, cs, work, cs.yieldFrames);
+    this.clock.span('csettle', () => this.csettleFeed(loop, cs, work, cs.yieldFrames));
     if (work.next < work.msg.count) {
       this.defer(() => {
         try {
@@ -1091,6 +1162,10 @@ export class SlowRunner {
    * the visits out are back.
    */
   private settlePump(): void {
+    this.clock.span('end', () => this.settlePumpInner());
+  }
+
+  private settlePumpInner(): void {
     const d = this.drain;
     const loop = this.loop;
     const init = this.init;
@@ -1216,7 +1291,7 @@ export class SlowRunner {
     if (!loop || this.final || this.ending || this.drain) return;
     // A look-back Discover settles first (`settlePump`).
     if (this.lbOn && this.run === 1) {
-      this.startDrain();
+      this.clock.span('end', () => this.startDrain());
       return;
     }
     // Visits out still come back and are applied before the final library.
@@ -1233,6 +1308,7 @@ export class SlowRunner {
   }
 
   private publish(lib: PublishedLibrary): void {
+    this.clock.begin('publish');
     try {
       const version = lib.version;
       if (version !== this.version) {
@@ -1272,6 +1348,7 @@ export class SlowRunner {
       }
     } finally {
       lib.free();
+      this.clock.end();
     }
   }
 
@@ -1325,7 +1402,36 @@ export class SlowRunner {
     };
   }
 
+  /** The work accounting so far (`SlowStatus.accounting`): the clock's buckets, the visit workers' sums, the look-back answers. */
+  private workStatus(): WorkStatus {
+    const t = this.now();
+    return {
+      wallMs: t - this.workT0,
+      busyMs: this.clock.snapshot(),
+      batchWait: {
+        batches: this.waitN,
+        sumMs: this.waitSum,
+        lastMs: this.waitLast,
+        max1sMs: this.waitMax.max(t),
+      },
+      visitBusyMs: this.visitBusy.slice(),
+      lookback: Object.fromEntries(LOOKBACK_KINDS.map((k) => [k, { ...this.lbWork[k] }])) as Record<
+        LookbackKind,
+        LookbackWork
+      >,
+    };
+  }
+
   private status(batchMs: number, maxStepMs: number): void {
+    this.clock.begin('publish');
+    try {
+      this.statusInner(batchMs, maxStepMs);
+    } finally {
+      this.clock.end();
+    }
+  }
+
+  private statusInner(batchMs: number, maxStepMs: number): void {
     const loop = this.loop;
     if (!loop) return;
     const status: SlowStatus = {
@@ -1352,6 +1458,8 @@ export class SlowRunner {
       editScope: this.scope,
       ...(this.lbOn ? { lookback: this.lookbackStatus(loop) } : {}),
     };
+    // Last, so the snapshot includes the time spent building this status.
+    status.accounting = this.workStatus();
     this.visitMs = status.visitMs;
     this.visitMsSum = 0;
     this.visitMsN = 0;
@@ -1392,6 +1500,14 @@ export class SlowRunner {
     this.visitMsN = 0;
     this.visitMs = 0;
     this.jobOwnerMs = 0;
+    this.clock.reset();
+    this.workT0 = this.now();
+    this.visitBusy = this.visits.map(() => 0);
+    this.lbWork = emptyWorkByKind();
+    this.waitN = 0;
+    this.waitSum = 0;
+    this.waitLast = 0;
+    this.waitMax.clear();
     this.reviewed = [];
     this.lbCancelTimer?.();
     this.lbCancelTimer = null;

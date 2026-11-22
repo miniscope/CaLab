@@ -12,6 +12,7 @@
  * carries the pipeline `session`; stale ones are dropped.
  */
 import type { FlatFieldMap } from '../lib/flat-field.ts';
+import type { LookbackTiming } from '../lib/work-meter.ts';
 import type { FolderEntry, SessionInput } from '../lib/frame-source.ts';
 
 /** Slow worker -> look-back worker. */
@@ -57,6 +58,8 @@ export type LookbackToSlow =
       traces: Float32Array;
       /** The background coefficients of the same solve, frame after frame (absent: no cells). */
       background?: Float32Array;
+      /** What the worker spent on this answer (instrumentation only; absent from older builds). */
+      timing?: LookbackTiming;
     }
   | { type: 'error'; session: number; id: number; message: string };
 

@@ -8,6 +8,7 @@ import { reviewReadout, type ReviewStore } from '../lib/review-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { lookbackText } from '../lib/lookback-text.ts';
 import { CSETTLE } from '../lib/settle.ts';
+import { workText } from '../lib/work-meter.ts';
 export { lookbackText };
 import type { Pass2Result, Pass2Store } from '../lib/pass2-store.ts';
 import type { RefineStore } from '../lib/refine-store.ts';
@@ -40,6 +41,10 @@ import {
 } from '../lib/export.ts';
 import { SidePanel } from './SidePanel.tsx';
 import { reportResultsExported } from '../lib/analytics-integration.ts';
+
+/** `?debug` is in the URL (read once). */
+const DEBUG =
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debug');
 
 /** What "Background settle" does (the toggle's tooltip). */
 const CSETTLE_HELP =
@@ -600,6 +605,12 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           )}
         </Show>
       </div>
+      {/* `?debug`: who is doing what, once a second (plain text; the real display comes later). */}
+      <Show when={DEBUG}>
+        <pre class="cala-readout cala-run__line" data-testid="work-debug">
+          {workText(s().work(), s().maxFps())}
+        </pre>
+      </Show>
       <Show when={s().live()}>
         {(live) => (
           <p class="cala-readout cala-run__line" data-testid="live-readout">

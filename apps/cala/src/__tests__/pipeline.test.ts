@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createRoot } from 'solid-js';
 import { createFrameClient, type WorkerLike } from '../lib/frame-client.ts';
 import { MAX_FRAMES_PER_READ } from '../lib/frame-source.ts';
+import type { PaceStats } from '../lib/frame-pacer.ts';
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import { makePlan, PipelineCursor, type PipelineStep } from '../lib/pipeline-plan.ts';
 import { createPipelineStore, MAX_IN_FLIGHT, ThroughputMeter } from '../lib/pipeline-store.ts';
@@ -252,6 +253,58 @@ describe('pipeline store backpressure', () => {
       store.pause();
       store.resume();
       expect(setPace).not.toHaveBeenCalled();
+      dispose();
+    });
+  });
+
+  it('drops pacing readouts of another session (a stopped run), keeps the current one', async () => {
+    const { client } = manualClient();
+    let listener: ((s: PaceStats) => void) | null = null;
+    const stats = (session: number, released: number): PaceStats => ({
+      session,
+      target: 30,
+      waitMs: 0,
+      lateMs: 0,
+      reanchors: 0,
+      released,
+    });
+    await createRoot(async (dispose) => {
+      const store = createPipelineStore({
+        ...client,
+        subscribePaceStats: (l: (s: PaceStats) => void) => {
+          listener = l;
+          return () => {};
+        },
+      });
+      await store.start();
+      // The session the frame worker was started with: the one `startPipeline` was given.
+      const session = (
+        client.startPipeline.mock.calls[0] as unknown as [unknown, { session: number }]
+      )[1].session;
+      listener!(stats(session - 1, 99));
+      expect(store.paceStats()).toBeNull();
+      listener!(stats(session, 16));
+      expect(store.paceStats()?.released).toBe(16);
+      store.stop();
+      // A late readout of the stopped run.
+      listener!(stats(session, 24));
+      expect(store.paceStats()).toBeNull();
+      dispose();
+    });
+  });
+
+  it('estimates the fast loop top speed from the busy time of its stages', async () => {
+    const { client, steps } = manualClient();
+    await createRoot(async (dispose) => {
+      const store = createPipelineStore(client);
+      await store.start();
+      expect(store.maxFps()).toBe(0);
+      // batch(): 1 + 2 + 3 ms a frame in series: 6 ms a frame.
+      steps[0].resolve(batch(0, 8));
+      await flush();
+      expect(store.maxFps()).toBeCloseTo(1000 / 6);
+      store.stop();
+      expect(store.maxFps()).toBe(0);
       dispose();
     });
   });

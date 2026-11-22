@@ -229,7 +229,9 @@ describe('pipeline stages', () => {
       // The slow loop sees the same init, noise maps and frames, byte for byte.
       expect(sentOld.some((m) => m.type === 'frames')).toBe(true);
       expect(sentOld.some((m) => m.type === 'frames' && m.noise)).toBe(true);
-      expect(sentNew).toEqual(sentOld);
+      // (`sentAt` is a send timestamp, different by definition.)
+      const unstamped = (m: FastToSlow) => (m.type === 'frames' ? { ...m, sentAt: 0 } : m);
+      expect(sentNew.map(unstamped)).toEqual(sentOld.map(unstamped));
     },
   );
 

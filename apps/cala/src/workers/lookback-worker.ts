@@ -185,6 +185,7 @@ async function serve(
         frames: out,
         traces: solved.traces,
         ...(solved.background ? { background: solved.background } : {}),
+        timing: solved.timing,
       },
       transfer,
     );
