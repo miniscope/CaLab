@@ -1,6 +1,6 @@
 #!/bin/bash
 # One headed-Chrome run of the settle delta (results/2026-11-22-settle-delta.md): Discover with the background settle
-# (governor, one settle pool worker), then the final settle.
+# (the governor, now the default below Max; one settle pool worker), then the final settle.
 #
 #   csdelta_chrome.sh TAG ws|10_43_21 FPS off|on
 #
@@ -17,7 +17,7 @@ mkdir -p "$OUT"
 [ -f "$OUT/$TAG-probe.json" ] && { echo "$TAG done already"; exit 0; }
 if pgrep -f "^node .*memory-measure.mjs" > /dev/null; then echo "another memory-measure run is going" >&2; exit 2; fi
 if [ "$REC" = ws ]; then data=$WS; else data="$SAMARA/$REC"; fi
-flags="--single --lookback --csettle --headed --every 5 --governor --lbpool 1 --pacefps $FPS"
+flags="--single --lookback --csettle --headed --every 5 --lbpool 1 --pacefps $FPS"
 [ "$DELTA" = on ] && flags="$flags --csdelta"
 echo "$(date +%T) $TAG start load=$(sysctl -n vm.loadavg) head=$(git rev-parse --short HEAD)" >> "$OUT/load.txt"
 node apps/cala/scripts/memory-measure.mjs --url http://localhost:5197/ --data "$data" --out "$OUT" --tag "$TAG" \

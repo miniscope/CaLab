@@ -113,9 +113,16 @@ function setup(
     csettle?: number;
     /** The pacer's target (default 30 fps; 0 = Max). */
     pace?: number;
+    /** The settle delta (`csettleDelta`): the fake loop has it too. */
+    delta?: boolean;
   } = {},
 ) {
   const f = fakeLoop(o.need ?? 0);
+  if (o.delta) {
+    const loop = f.loop as SlowLoopLike & Record<string, unknown>;
+    loop.settleContext = () => Uint8Array.of(7);
+    loop.applySettleDelta = () => true;
+  }
   const ports = 1 + (o.pool ?? 0);
   const pace = o.pace ?? 30;
   const toLb: SlowToLookback[][] = Array.from({ length: ports }, () => []);
@@ -153,7 +160,11 @@ function setup(
   r.setPace(pace, false);
   if (o.csettle !== undefined) r.setCap(o.csettle);
   if (ports > 1 && o.join !== false) r.setSettlePool(1, ports - 1);
-  r.handle({ ...INIT, ...(o.csettle !== undefined ? { csettle: true } : {}) });
+  r.handle({
+    ...INIT,
+    ...(o.csettle !== undefined ? { csettle: true } : {}),
+    ...(o.delta ? { csettleDelta: true } : {}),
+  });
   const requests = (i: number) => toLb[i].filter((m): m is Req => m.type === 'request');
   const answered = new Set<number>();
   const pending = (i: number) => requests(i).find((m) => !answered.has(m.id));
@@ -279,6 +290,18 @@ describe('look-back pool', () => {
     }
     expect(new Set(t.kinds(0).slice(n0))).toEqual(new Set(['need']));
     expect(t.kinds(1).length).toBeGreaterThan(5);
+  });
+
+  it('settle delta: a pool joining mid-run gets the FOV with its first request (as worker 0 did)', () => {
+    const t = setup({ need: 100_000, pool: 1, join: false, csettle: 2, delta: true });
+    t.runUntil(() => t.kinds(0).includes('csettle'));
+    const first0 = t.requests(0).find((q) => q.skip)!;
+    expect(first0.delta!.fov).toEqual(INIT.fov);
+    t.r.setSettlePool(1, 1);
+    t.runUntil(() => t.pending(1) !== undefined, [1]);
+    const [q1] = t.requests(1);
+    expect(q1.delta!.context).toEqual(Uint8Array.of(7));
+    expect(q1.delta!.fov).toEqual(INIT.fov);
   });
 
   it('a pool joining before the first library gets it with the first publish', () => {

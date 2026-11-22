@@ -541,6 +541,7 @@ const App: Component = () => {
       csettleYield: pipeline.csettleYield,
       csettleNeedFirst: pipeline.csettleNeedFirst,
       finalSettleLevel: pipeline.runFinalSettleLevel,
+      csettleDelta: pipeline.csettleDelta,
       paceFps: pipeline.paceFps,
       smoothPlayback: pipeline.smoothPlayback,
       motionBackend: pipeline.motionBackend,
@@ -764,6 +765,7 @@ const App: Component = () => {
         if (a.csettleYield !== undefined) pipeline.setCsettleYield(a.csettleYield);
         if (a.csettleNeedFirst !== undefined) pipeline.setCsettleNeedFirst(a.csettleNeedFirst);
         if (a.finalSettleLevel !== undefined) pipeline.setFinalSettleLevel(a.finalSettleLevel);
+        if (a.csettleDelta !== undefined) pipeline.setCsettleDelta(a.csettleDelta);
         if (a.paceFps !== undefined) pipeline.setPaceFps(a.paceFps, 'run record');
         // A Curve or Auto run replays as a curve: exactly its realised steps (the pace above is
         // only where it began).

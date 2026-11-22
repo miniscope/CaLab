@@ -67,6 +67,7 @@ export const KNOWN_FLAGS = [
   'pacefps',
   'lbpool',
   'needfirst',
+  'csdelta',
   'smooth',
   'pipeline',
   'gpu',
@@ -83,7 +84,13 @@ export const KNOWN_FLAGS = [
 const REDACTED_FLAGS: ReadonlySet<string> = new Set(['live']);
 
 /** What `?debug` gates: these flags only take effect with it. */
-const DEBUG_ONLY: ReadonlySet<string> = new Set(['lbpool', 'needfirst', 'pacefps', 'smooth']);
+const DEBUG_ONLY: ReadonlySet<string> = new Set([
+  'lbpool',
+  'needfirst',
+  'csdelta',
+  'pacefps',
+  'smooth',
+]);
 
 /**
  * Whether a flag changes anything given the others (`App.tsx` reads them the
@@ -103,6 +110,8 @@ function inEffect(name: string, value: string, p: URLSearchParams): boolean {
       return lookbackOn;
     case 'needfirst':
       return value !== '0';
+    case 'csdelta':
+      return lookbackOn && value !== '0';
     case 'review':
       return p.has('compress');
     default:
@@ -735,6 +744,7 @@ export interface RunRecordSources {
     csettleYield(): number;
     csettleNeedFirst(): boolean;
     finalSettleLevel(): string;
+    csettleDelta(): boolean;
     paceFps(): number;
     smoothPlayback(): boolean;
     motionBackend(): string | null;
@@ -858,6 +868,8 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
             : 'off',
       settle_yield_frames: p.csettleYield(),
       need_first: p.csettleNeedFirst(),
+      // The settle delta (`?debug&csdelta`): the settle pool sums each chunk's statistics.
+      settle_delta: p.csettleDelta(),
       // The pool actually started (a run that stayed at Max: started_S 0, started_at_frame null).
       lookback_pool: {
         planned_S: src.lookbackPoolSize(),
@@ -977,6 +989,7 @@ export interface AppliedSettings {
   csettleYield?: number;
   csettleNeedFirst?: boolean;
   finalSettleLevel?: FinalSettleLevel;
+  csettleDelta?: boolean;
   paceFps?: number;
   smoothPlayback?: boolean;
   /**
@@ -1065,6 +1078,7 @@ export function settingsFromRecord(rec: unknown): AppliedSettings | null {
       out.csettleCeiling = o.settle_cap;
     }
     bool('need_first', 'csettleNeedFirst');
+    bool('settle_delta', 'csettleDelta');
     const pool = o.lookback_pool as Record<string, unknown> | null | undefined;
     if (pool && typeof pool === 'object' && finite(pool.planned_S))
       out.lookbackPoolPlanned = pool.planned_S;

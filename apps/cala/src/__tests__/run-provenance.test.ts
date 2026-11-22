@@ -242,6 +242,7 @@ const gatherSources = (): RunRecordSources => ({
     csettleCeiling: () => 2,
     csettleYield: () => 0,
     csettleNeedFirst: () => false,
+    csettleDelta: () => false,
     finalSettleLevel: () => 'standard',
     paceFps: () => 0,
     smoothPlayback: () => true,
@@ -320,12 +321,14 @@ describe('gatherRunRecord', () => {
     src.pipeline.csettle = () => true;
     src.pipeline.csettleCeiling = () => 0.5;
     src.pipeline.csettleNeedFirst = () => true;
+    src.pipeline.csettleDelta = () => true;
     // At Max all run: the pool never started.
     let r = gatherRunRecord(src) as Rec;
     expect(r.settings).toMatchObject({
       background_settle: 'auto-below-max',
       settle_cap: 0.5,
       need_first: true,
+      settle_delta: true,
       lookback_pool: { planned_S: 1, started_S: 0, started_at_frame: null },
     });
     expect(r.work).toMatchObject({ cap: 0.5, pool: 1 });
@@ -451,6 +454,9 @@ describe('url flags against the app', () => {
     expect(urlFlags('?needfirst').flags.needfirst.in_effect).toBe(false);
     expect(urlFlags('?debug&needfirst').flags.needfirst.in_effect).toBe(true);
     expect(urlFlags('?lookback=0&csettle').flags.lookback.in_effect).toBe(true);
+    expect(urlFlags('?lookback&csdelta').flags.csdelta.in_effect).toBe(false);
+    expect(urlFlags('?debug&csdelta').flags.csdelta.in_effect).toBe(true);
+    expect(urlFlags('?debug&lookback=0&csdelta').flags.csdelta.in_effect).toBe(false);
     expect(urlFlags('?review=4').flags.review.in_effect).toBe(false);
     expect(urlFlags('?compress&review=4').flags.review.in_effect).toBe(true);
   });
@@ -466,6 +472,7 @@ describe('settingsFromRecord', () => {
           background_settle: 'auto-below-max',
           settle_cap: 0.5,
           need_first: true,
+          settle_delta: true,
           lookback_pool: { planned_S: 1, started_S: 1, started_at_frame: 300 },
           final_settle_level: 'quick',
           target_speed_fps: 30,
@@ -480,6 +487,7 @@ describe('settingsFromRecord', () => {
       csettle: true,
       csettleCeiling: 0.5,
       csettleNeedFirst: true,
+      csettleDelta: true,
       lookbackPoolPlanned: 1,
       paceFps: 30,
       smoothPlayback: false,
