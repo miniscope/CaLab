@@ -11,7 +11,7 @@ cell) and ends with the **Final settle** (Thorough by default), which lets the
 footprints converge with the cell set frozen. Evaluation showed that gives
 better footprints (fewer bites and less crosstalk, fewer false cells, the same
 true cells) than Discover + Refine: `tools/cala-eval/results/2026-11-22-beta-gate.md`
-and the settle-size evaluation (PR #477, `2026-11-22-settle-size.md`). Results and run records saved
+and `tools/cala-eval/results/2026-11-22-settle-size.md`. Results and run records saved
 before the removal may still list `refine` stage runs; they load, and the
 Refine runs show as "Refine (removed stage)".
 
