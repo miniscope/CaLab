@@ -12,6 +12,7 @@ import type { ExportInput } from './export.ts';
 import { writeCalaExport } from './export.ts';
 import type { FrameSourceInfo } from './frame-source.ts';
 import type { QcSnapshot } from './qc.ts';
+import { RUN_RECORD_FILE } from './run-provenance.ts';
 import { sessionBoundaries } from './frame-source.ts';
 import type { StageActivity, StageName, StageRun } from './run-stages.ts';
 import {
@@ -110,6 +111,8 @@ export interface MultiRunDeps {
   info(): FrameSourceInfo | null;
   /** Joint: Discover's session-boundary flags (`boundary-flags.ts`), written with each session's results. */
   boundaryFlags?(): readonly BoundaryFlag[];
+  /** The run record (`run-provenance.ts`) of the run so far; written beside the manifest and into each export. */
+  runRecord?(settings: RunSettings, sessionIndex?: number): Record<string, unknown>;
   version: string;
   now?: () => Date;
 }
@@ -128,6 +131,8 @@ export function createMultiRun(deps: MultiRunDeps) {
   const [stopped, setStopped] = createSignal<string | null>(null);
   const [progressError, setProgressError] = createSignal<string | null>(null);
   let sink: ResultsSink | null = null;
+  /** The Joint run's record as gathered for the last export (reused by the manifest write). */
+  let jointRecord: Record<string, unknown> | null = null;
   let createdAt = '';
   /** The last action started, so an effect re-run does not start it twice. */
   let dispatched = '';
@@ -198,6 +203,12 @@ export function createMultiRun(deps: MultiRunDeps) {
       2,
     );
     await sink.writeText(RUN_MANIFEST_FILE, text);
+    // Joint: one chain, one record at the root. Separate: each session's record sits beside its
+    // results (`exportResults`), since every session is a run of its own.
+    if (deps.runRecord && p.settings.mode === 'joint') {
+      const rec = jointRecord ?? deps.runRecord(p.settings);
+      await sink.writeText(RUN_RECORD_FILE, JSON.stringify(rec, null, 2));
+    }
   }
 
   /** Write the results that are final now: one session (Separate) or all (Joint). */
@@ -223,7 +234,11 @@ export function createMultiRun(deps: MultiRunDeps) {
     if (joint) for (const f of deps.boundaryFlags?.() ?? []) patchRecord(f.index, { boundary: f });
     const which = joint ? records() : records().filter((r) => r.index === current());
     const runs = deps.stages().runs;
+    // Gathered here, at write time, once for the files written now.
+    const jointRec = joint ? deps.runRecord?.(p.settings) : undefined;
+    if (jointRec) jointRecord = jointRec;
     for (const r of which) {
+      const runRecord = joint ? jointRec : deps.runRecord?.(p.settings, r.index);
       const fps = r.fps ?? base.fps;
       const range = joint
         ? { start: r.startFrame, end: r.startFrame + r.frames }
@@ -236,6 +251,7 @@ export function createMultiRun(deps: MultiRunDeps) {
         qc,
         ...(joint ? { frameRange: { start: r.startFrame, end: r.startFrame + r.frames } } : {}),
         session: exportSessionBlock(r, p.settings.mode, p.sessions.length),
+        ...(runRecord ? { runRecord } : {}),
       };
       await sink.writeFile(`${r.resultsPath}/${SESSION_EXPORT_FILE}`, (s) =>
         writeCalaExport(input, s),
@@ -254,6 +270,11 @@ export function createMultiRun(deps: MultiRunDeps) {
         createdAt: now().toISOString(),
       });
       await sink.writeText(`${r.resultsPath}/${SESSION_META_FILE}`, JSON.stringify(meta, null, 2));
+      if (runRecord && !joint)
+        await sink.writeText(
+          `${r.resultsPath}/${RUN_RECORD_FILE}`,
+          JSON.stringify(runRecord, null, 2),
+        );
       patchRecord(r.index, { status: 'written' });
     }
     await writeManifest(false);

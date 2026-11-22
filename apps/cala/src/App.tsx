@@ -65,7 +65,15 @@ import {
 } from './lib/recent-projects.ts';
 import { LIBRARY_MODE_LABEL, refinePlanText } from './lib/session-run.ts';
 import { createLookbackClient } from './lib/lookback-client.ts';
-import { noiseMap, settleChange, unitFootprints } from './lib/settle.ts';
+import { CSETTLE, GOVERNOR, noiseMap, SETTLE, settleChange, unitFootprints } from './lib/settle.ts';
+import {
+  gatherRunRecord,
+  primeRunRecordContext,
+  RunTrace,
+  settingsFromRecord,
+  type RunRecordExtras,
+  type RunRecordSources,
+} from './lib/run-provenance.ts';
 import type { LibraryView } from './workers/slow-types.ts';
 import type { ExportInput } from './lib/export.ts';
 import type { ProjectResult } from './lib/project-index.ts';
@@ -472,7 +480,76 @@ const App: Component = () => {
     client.probe ? client.probe(s) : Promise.reject(new Error('Sessions cannot be read here.')),
   );
   const version = import.meta.env.VITE_APP_VERSION || 'dev';
+  // ---- Run record (docs/run-record.md): how this run was made, saved with every result ----
+  const runTrace = new RunTrace();
+  pipeline.onPaceChange((fps, frame, source) => runTrace.noteTargetSpeed(fps, frame, source));
+  // A Discover start begins a new run: the target speed in force is its first entry.
+  createEffect(
+    on(
+      () => pipeline.status() === 'starting',
+      (starting) => {
+        if (!starting) return;
+        runTrace.reset();
+        runTrace.noteTargetSpeed(pipeline.paceFps(), 0, 'run start');
+      },
+    ),
+  );
+  // The final settle's wall times (the counts come from the slow status at export).
+  createEffect(() => {
+    const lb = cells.status()?.lookback;
+    if (lb) runTrace.noteSettle({ running: lb.settling, done: lb.settle?.done === true });
+  });
+  void primeRunRecordContext();
+  const runRecordSources: RunRecordSources = {
+    appVersion: version,
+    // Build-time defines (`vite.config.ts`); undefined under tools that do not set them.
+    commit: typeof __CALA_COMMIT__ === 'string' && __CALA_COMMIT__ ? __CALA_COMMIT__ : null,
+    gitDirty: typeof __CALA_GIT_DIRTY__ === 'boolean' ? __CALA_GIT_DIRTY__ : null,
+    engineVersion:
+      typeof __CALA_ENGINE_VERSION__ === 'string' && __CALA_ENGINE_VERSION__
+        ? __CALA_ENGINE_VERSION__
+        : null,
+    search: window.location.search,
+    trace: runTrace,
+    pipeline: {
+      flatEnabled: pipeline.flatEnabled,
+      discover: pipeline.discover,
+      residual: pipeline.residual,
+      lookback: pipeline.lookback,
+      csettle: pipeline.csettle,
+      csettleCeiling: pipeline.csettleCeiling,
+      csettleYield: pipeline.csettleYield,
+      csettleGovernor: pipeline.csettleGovernor,
+      paceFps: pipeline.paceFps,
+      smoothPlayback: pipeline.smoothPlayback,
+      motionBackend: pipeline.motionBackend,
+      flatField: () => {
+        const f = pipeline.flatField();
+        return { reused: f.reused, keySource: f.key?.source ?? null };
+      },
+    },
+    slowStatus: () => cells.status(),
+    stageRuns: () => stageLog.runs(),
+    info: () => store.info(),
+    label: () => store.label(),
+    fileSizes: () => {
+      const from = store.source();
+      const entries = from !== null && 'entries' in from ? from.entries : [];
+      return new Map(entries.map((e) => [e.file.name, e.file.size] as const));
+    },
+    sessionFiles: () => {
+      const from = store.source();
+      return from !== null && 'sessions' in from
+        ? from.sessions.map((s) => s.entries.map((e) => ({ name: e.file.name, size: e.file.size })))
+        : [];
+    },
+    lookbackWorkers: () => 1 + lbPool,
+    visitWorkers: () => slow.visitWorkers,
+    tunables: { settle: SETTLE, csettle: CSETTLE, governor: GOVERNOR },
+  };
+  const runRecord = (extras?: RunRecordExtras) => gatherRunRecord(runRecordSources, extras);
   const multiRun = createMultiRun({
+    runRecord: (settings) => runRecord({ mode: settings.mode, refineRuns: settings.refineRuns }),
     async openJoint(sessions) {
       pipeline.stop();
       const n = sessions.length;
@@ -643,6 +720,26 @@ const App: Component = () => {
       multiRun,
       sessionList,
       project,
+      /** The run record of the run so far (a JSON object). */
+      runRecord: () => runRecord(),
+      /**
+       * Re-apply the settings of a saved run record (an object, or its JSON text) before the next
+       * Discover start; returns what was applied (null: not a run record).
+       */
+      applyRunRecord: (rec: unknown) => {
+        const a = settingsFromRecord(typeof rec === 'string' ? JSON.parse(rec) : rec);
+        if (!a) return null;
+        if (a.flatField !== undefined) pipeline.setFlatEnabled(a.flatField);
+        if (a.discover !== undefined) pipeline.setDiscover(a.discover);
+        if (a.lookback !== undefined) pipeline.setLookback(a.lookback);
+        if (a.csettle !== undefined) pipeline.setCsettle(a.csettle);
+        if (a.csettleCeiling !== undefined) pipeline.setCsettleCeiling(a.csettleCeiling);
+        if (a.csettleYield !== undefined) pipeline.setCsettleYield(a.csettleYield);
+        if (a.csettleGovernor !== undefined) pipeline.setCsettleGovernor(a.csettleGovernor);
+        if (a.paceFps !== undefined) pipeline.setPaceFps(a.paceFps, 'run record');
+        if (a.smoothPlayback !== undefined) pipeline.setSmoothPlayback(a.smoothPlayback);
+        return a;
+      },
     });
   }
   const boundaries = () => {
@@ -788,6 +885,7 @@ const App: Component = () => {
               compress={compress}
               review={review}
               onStopSettling={() => slow.stopSettling(cells.session())}
+              runRecord={runRecord}
               fixed
               visible={tab.active() === 'run'}
             />
