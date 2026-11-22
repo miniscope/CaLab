@@ -238,7 +238,7 @@ describe('SettleGovernor', () => {
     let t = r.t;
     let end = r.end;
     const period = (8 * 1000) / 50;
-    for (; t < r.t + 30_000; ) {
+    for (; t < r.t + 30_000;) {
       t += period;
       end += 8;
       g.liveBatch(t, end, 8, 0, false);
