@@ -755,15 +755,19 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     from: number | string,
     to: number | string,
     detail?: string,
+    /** Who set it, when not the user (`curve`, `auto`): named in the text and kept as `data.source`. */
+    source?: string,
   ): void {
+    const by = source === 'curve' || source === 'auto' ? ` (${source})` : '';
     log({
       frame,
       kind: 'setting',
       key,
       from,
       to,
-      detail: detail ?? `${SPEED_SETTING_LABEL[key]} ${speedText(from)} → ${speedText(to)}`,
+      detail: detail ?? `${SPEED_SETTING_LABEL[key]} ${speedText(from)} → ${speedText(to)}${by}`,
       replay: false,
+      ...(by ? { data: { source: source as string } } : {}),
     });
   }
 

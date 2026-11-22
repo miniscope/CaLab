@@ -92,13 +92,23 @@ describe('persisted settings', () => {
 
   it('keeps valid fields and replaces invalid ones one by one', () => {
     expect(parseSpeedSettings(JSON.stringify({ mode: 'fixed', fixedFps: 80, cap: 0.5 }))).toEqual({
+      ...SPEED_DEFAULTS,
       mode: 'fixed',
       fixedFps: 80,
       cap: 0.5,
     });
-    expect(parseSpeedSettings(JSON.stringify({ mode: 'curve', fixedFps: 9999, cap: 3 }))).toEqual(
+    expect(parseSpeedSettings(JSON.stringify({ mode: 'turbo', fixedFps: 9999, cap: 3 }))).toEqual(
       SPEED_DEFAULTS,
     );
+    expect(parseSpeedSettings(JSON.stringify({ mode: 'curve', preset: 'step-down' }))).toEqual({
+      ...SPEED_DEFAULTS,
+      mode: 'curve',
+      preset: 'step-down',
+    });
+    expect(parseSpeedSettings(JSON.stringify({ mode: 'curve', preset: 'nope' }))).toEqual({
+      ...SPEED_DEFAULTS,
+      mode: 'curve',
+    });
     expect(parseSpeedSettings(JSON.stringify({ mode: 'fixed', cap: 3 }))).toEqual({
       ...SPEED_DEFAULTS,
       mode: 'fixed',

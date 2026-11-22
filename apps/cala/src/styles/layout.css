@@ -1111,6 +1111,19 @@
   opacity: 0.5;
 }
 
+/* Curve mode: the marks stay, the thumb and the Max stop are gone (the curve sets the target). */
+.cala-speed__trackrow--curve .cala-speed__maxstop {
+  visibility: hidden;
+}
+
+.cala-speed__preset {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin: var(--space-xs) 0;
+  font-size: 0.78rem;
+}
+
 .cala-speed__trackwrap {
   position: relative;
   flex: 1;
@@ -1539,6 +1552,13 @@
   stroke: var(--text-primary);
   stroke-width: 1;
   stroke-dasharray: 3 3;
+}
+
+/* The planned target of a curve, over the whole recording: violet, long dashes (UI state). */
+.cala-work__line--plan {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 7 3;
 }
 
 .cala-work__line--achieved {
