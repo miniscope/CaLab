@@ -5,19 +5,19 @@
  *
  *   node apps/cala/scripts/memory-measure.mjs --url http://localhost:5195/ --data <folder>
  *        --out <dir> [--keep name1,name2] [--tag x] [--mode joint|separate]
- *        [--refine-runs 1] [--every 10] [--max-min 90] [--cdp 9335] [--headed] [--single]
- *        [--lookback [--toggle] [--refine] [--csettle-yield N] [--csrate R] [--csettle-off]
+ *        [--every 10] [--max-min 90] [--cdp 9335] [--headed] [--single]
+ *        [--lookback [--toggle] [--csettle-yield N] [--csrate R] [--csettle-off]
  *        [--pacefps F] [--pace-after S:N] [--lbpool S] [--needfirst]] [--extract]
- *   `--single`: one recording folder (Discover, then one Refine, no export; `--discover-only`: stop after Discover).
+ *   `--single`: one recording folder (Discover only, no export; `--discover-only`: stop after Discover).
  *   `--smooth 0`: smooth playback off (the comparison run). Every run saves the displayed-frame times
  *   and a once-a-second processing readout as `<tag>-display.json`.
- *   `--lookback` (with `--single`): opens with `&lookback` (experimental
- *   look-back refinement), never presses Refine, and stops once Discover has
+ *   Look-back (with its Final settle) is the app's default now and there is no Refine stage, so a run
+ *   opens with `?lookback=0` unless `--lookback` is given: plain `--single` measures plain Discover.
+ *   `--lookback` (with `--single`): leaves look-back on, and stops once Discover has
  *   settled (the final library); it samples the look-back counters
  *   (`__cala.lookback()`) and fails unless frames were re-read and the
- *   settle pass fed its whole plan (or was stopped). `--toggle`: instead of `&lookback`, tick the look-back
- *   checkbox once Discover runs and restart it (the path a user takes).
- *   `--refine`: after settling, one Refine run too (to compare). `--extract`:
+ *   settle pass fed its whole plan (or was stopped). `--toggle`: instead of leaving it on from the start, open with
+ *   `?lookback=0`, tick the look-back checkbox once Discover runs and restart it. `--extract`:
  *   then press Extract once and wait for it.
  *   Background settle (settle during Discover) is on by default under look-back and runs only
  *   below Max; `--csettle` adds a bare `&csettle`, which changes nothing now (kept so old
@@ -44,7 +44,7 @@
  *
  * Opens `<folder>` (a session folder or a parent of several) through the
  * folder input with `?debug`, keeps the sessions whose names contain one of
- * `--keep`, starts the run (Discover, Refine, Extract, export) and samples
+ * `--keep`, starts the run (Discover, Extract, export) and samples
  * every `--every` seconds: the renderer's RSS and macOS physical footprint
  * (`footprint`), the GPU process, and per thread (main and every worker,
  * attached over raw CDP) the JS heap, the ArrayBuffer backing stores and the
@@ -71,7 +71,6 @@ if (!data || !opt('--out')) throw new Error('--data and --out are required');
 const keep = (opt('--keep', '') || '').split(',').filter(Boolean);
 const out = opt('--out');
 const tag = opt('--tag', 'run');
-const refineRuns = opt('--refine-runs', '1');
 const mode = opt('--mode', 'joint');
 const every = Number(opt('--every', '10')) * 1000;
 const maxMin = Number(opt('--max-min', '90'));
@@ -79,7 +78,6 @@ const cdpPort = Number(opt('--cdp', '9335'));
 const lookback = args.includes('--lookback');
 const extract = args.includes('--extract');
 const toggle = args.includes('--toggle');
-const refineAfter = args.includes('--refine');
 const csettle = args.includes('--csettle');
 const csYield = opt('--csettle-yield', '');
 const csRate = opt('--csrate', '');
@@ -285,9 +283,6 @@ async function sample(gc = false) {
         pst: c.pipeline.status(),
         pp: c.pipeline.processed(),
         fps: c.pipeline.fps?.() ?? 0,
-        refine: c.refine.status(),
-        rp: c.refine.processed?.() ?? 0,
-        rfps: c.refine.fps?.() ?? 0,
         extract: c.pass2.status(),
         cells: c.cells.library?.()?.ids.length ?? 0,
         final: c.cells.status?.()?.final ?? false,
@@ -339,7 +334,7 @@ const fmt = (r) => {
   const drop = st.batch ? ` drop ${st.batch.drop}/${st.batch.drop + st.batch.fwd}` : '';
   const slow = st.slow ? ` jobs ${st.slow.jobs} refines ${st.slow.refines}` : '';
   return (
-    `${r.t.toFixed(0)}s ${st.pst}${lb}${cs}${drop}${slow} ${st.pp} fps${(st.fps ?? 0).toFixed(0)} ref ${st.refine} ${st.rp} ext ${st.extract} cells ${st.cells} | ` +
+    `${r.t.toFixed(0)}s ${st.pst}${lb}${cs}${drop}${slow} ${st.pp} fps${(st.fps ?? 0).toFixed(0)} ext ${st.extract} cells ${st.cells} | ` +
     `rend rss ${r.rendererRss.toFixed(0)} foot ${r.rendererFoot.toFixed(0)} gpu ${r.gpuFoot.toFixed(0)} | ` +
     `main js ${r.main.jsUsed?.toFixed(0)} buf ${r.main.backing?.toFixed(0)} wasm ${r.main.wasm.toFixed(0)} | ` +
     `workers(${w.length}) js ${sum('jsUsed').toFixed(0)} buf ${sum('backing').toFixed(0)} wasm ${sum('wasm').toFixed(0)} :: ` +
@@ -353,7 +348,7 @@ const fmt = (r) => {
 };
 
 let t0 = Date.now();
-await page.goto(`${url}?debug${lookback && !toggle ? '&lookback' : ''}${csQuery}`);
+await page.goto(`${url}?debug${lookback && !toggle ? '' : '&lookback=0'}${csQuery}`);
 await attachPage();
 // Exact times and every settle checkpoint (the 5 s samples miss them): an in-page probe.
 await page.evaluate((withRelease) => {
@@ -367,9 +362,6 @@ await page.evaluate((withRelease) => {
     gaps250: 0,
     atFramesDone: null,
     checkpoints: [],
-    // Plain runs (Discover, then Refine): when Refine started and ended, on the same clock.
-    refineStart: null,
-    refineDone: null,
   });
   // Release probe (smooth pacing): when each batch's frames arrive on the main thread, polled
   // every 5 ms. The gate releases a batch one pipeline latency earlier, so this adds the
@@ -497,15 +489,12 @@ await page.evaluate((withRelease) => {
     }
     if (pst === 'done' && st?.final && !lb?.settling && p.final === null && p.framesDone !== null)
       p.final = now;
-    const rst = c.refine?.status?.();
-    if (rst === 'running' && p.refineStart === null) p.refineStart = now;
-    if (rst === 'done' && p.refineStart !== null && p.refineDone === null) p.refineDone = now;
   }, 100);
 }, Boolean(paceFps));
 const single = args.includes('--single');
 await page.setInputFiles('[data-testid=folder-input]', data);
 if (single) {
-  // One recording folder: Discover starts by itself; then press Refine once.
+  // One recording folder: Discover starts by itself.
   await page.waitForFunction(() => window.__cala?.pipeline.status() === 'running', null, {
     timeout: 120000,
   });
@@ -550,8 +539,6 @@ if (single) {
   );
   if (await page.locator(`[data-testid=mode-${mode}]`).count())
     await page.check(`[data-testid=mode-${mode}]`);
-  if (await page.locator('[data-testid=refine-runs]').count())
-    await page.selectOption('[data-testid=refine-runs]', refineRuns);
   await page.waitForFunction(
     () => !document.querySelector('[data-testid=sessions-start]').disabled,
     null,
@@ -630,8 +617,8 @@ async function probeReport() {
 }
 
 /**
- * Plain runs (Discover, then Refine): the library as it stands now, written as `<tag>-<kind>.json`
- * (`live` at the end of Discover, `final` after Refine), and at the end the probe's times.
+ * Plain runs (Discover only): the library as it stands now, written as `<tag>-<kind>.json`
+ * (`live` and `final`, both at the end of Discover), and at the end the probe's times.
  */
 async function saveLibrary(kind) {
   const plain = (l) =>
@@ -660,7 +647,7 @@ async function saveLibrary(kind) {
     if (p) {
       const s = (a, b) => (a !== null && b !== null ? ((a - b) / 1000).toFixed(1) : '?');
       L(
-        `PROBE plain discover ${s(p.framesDone, p.t0)}s refine ${s(p.refineDone, p.refineStart)}s (click wait ${s(p.refineStart, p.framesDone)}s) frames ${p.frames} at-frames-done ${JSON.stringify(p.atFramesDone)}`,
+        `PROBE plain discover ${s(p.framesDone, p.t0)}s frames ${p.frames} at-frames-done ${JSON.stringify(p.atFramesDone)}`,
       );
       writeFileSync(join(out, `${tag}-probe.json`), JSON.stringify({ probe: p }));
     }
@@ -684,7 +671,6 @@ async function saveWork() {
 let finishedEarly = false;
 let pacedLater = false;
 let poolJoinLogged = false;
-let refineClicked = false;
 let extractClicked = false;
 let discoverDoneAt = null;
 let framesDoneAt = null;
@@ -724,11 +710,11 @@ while (!stop) {
     await page.evaluate(() => window.__cala.pipeline.finishEarly());
   }
   if (r.rendererFoot > 6000 || r.rendererRss > 6000) stop = 'cap';
-  const key = `${r.st?.pst}|${r.st?.refine}|${r.st?.extract}`;
+  const key = `${r.st?.pst}|${r.st?.extract}`;
   if (key !== lastKey) lastKey = key;
   const run = r.st?.run ?? '';
   if (single && lookback) {
-    // Discover runs look-back alongside and settles after its last frame: no Refine.
+    // Discover runs look-back alongside and settles after its last frame.
     if (r.st?.pst === 'done' && framesDoneAt === null) {
       framesDoneAt = r.t;
       L(`DISCOVER_FRAMES_DONE ${r.t.toFixed(1)}s`);
@@ -738,22 +724,11 @@ while (!stop) {
       discoverDoneAt = r.t;
       L(`DISCOVER_SETTLED ${r.t.toFixed(1)}s ${JSON.stringify(r.st.lb)}`);
       await probeReport();
-      if (refineAfter) {
-        refineClicked = true;
-        await page.click('[data-testid=refine-run]');
-      } else if (extract) {
-        extractClicked = true;
-        await page.click('[data-testid=pass2-run]');
-      } else stop = 'done';
-    }
-    if (refineClicked && r.st?.refine === 'done' && !extractClicked) {
-      L(`REFINE_DONE ${r.t.toFixed(1)}s`);
       if (extract) {
         extractClicked = true;
         await page.click('[data-testid=pass2-run]');
       } else stop = 'done';
     }
-    if (r.st?.refine === 'error') stop = 'error';
     if (extractClicked && r.st?.extract === 'done') {
       L(`EXTRACT_DONE ${r.t.toFixed(1)}s`);
       stop = 'done';
@@ -767,18 +742,14 @@ while (!stop) {
     }
     if (r.st?.pst === 'error') stop = 'error';
   } else if (single) {
-    if (r.st?.pst === 'done' && r.st?.refine === 'idle' && !refineClicked) {
-      refineClicked = true;
+    // Plain Discover (look-back off): stop once it is done.
+    if (r.st?.pst === 'done') {
       L(`DISCOVER_DONE ${r.t.toFixed(1)}s`);
       await saveLibrary('live');
-      await page.click('[data-testid=refine-run]');
-    }
-    if (refineClicked && r.st?.refine === 'done') {
-      L(`REFINE_DONE ${r.t.toFixed(1)}s`);
       await saveLibrary('final');
       stop = 'done';
     }
-    if (r.st?.pst === 'error' || r.st?.refine === 'error') stop = 'error';
+    if (r.st?.pst === 'error') stop = 'error';
   }
   if (!single && downloads > 0 && /done|finished|complete|saved/i.test(run)) stop = 'done';
   if (!single && /error|failed/i.test(run)) stop = 'error: ' + run;

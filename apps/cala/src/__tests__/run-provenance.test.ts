@@ -275,6 +275,20 @@ describe('gatherRunRecord', () => {
   beforeEach(() => resetRunRecordContext());
   const sources = gatherSources;
 
+  it('records whether look-back actually ran, not only the setting', () => {
+    const blocked = {
+      ...gatherSources(),
+      pipeline: { ...gatherSources().pipeline, lookback: () => true, lookbackRun: () => false },
+    };
+    const r = gatherRunRecord(blocked as never) as Rec;
+    expect(r.settings).toMatchObject({ lookback: true, lookback_ran: false });
+    const ran = gatherRunRecord({
+      ...gatherSources(),
+      pipeline: { ...gatherSources().pipeline, lookbackRun: () => true },
+    } as never) as Rec;
+    expect(ran.settings).toMatchObject({ lookback: true, lookback_ran: true });
+  });
+
   it('records every setting (defaults too), the input and the work shape', () => {
     const r = gatherRunRecord(sources(), {
       mode: 'joint',
@@ -483,8 +497,8 @@ describe('settingsFromRecord', () => {
     const rec = JSON.parse(JSON.stringify(base));
     const a = settingsFromRecord(rec)!;
     expect(a.refineUsed).toBe(true);
-    // The other settings still apply as recorded (look-back was off in that run).
-    expect(a.lookback).toBe(false);
+    // Look-back was off in that run, but is kept on: it replaces Refine.
+    expect(a.lookback).toBe(true);
     // Also when only the stage list says so (a record with `refine_runs: 0` and a Refine run).
     const viaStages = settingsFromRecord({
       ...rec,

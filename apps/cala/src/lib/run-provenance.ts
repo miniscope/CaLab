@@ -728,6 +728,8 @@ export interface RunRecordSources {
     discover(): boolean;
     residual(): boolean;
     lookback(): boolean;
+    /** Look-back actually ran in the current run (the setting can be on while it is blocked). */
+    lookbackRun?(): boolean;
     csettle(): boolean;
     csettleCeiling(): number;
     csettleYield(): number;
@@ -840,6 +842,9 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       discovery: p.discover(),
       residual_preview: p.residual(),
       lookback: p.lookback(),
+      // The setting above is on by default; this says whether the run really had look-back
+      // (not for a live stream, a Joint run or ?pipeline=0).
+      lookback_ran: p.lookbackRun ? p.lookbackRun() : p.lookback(),
       // Background settle (v2): runs whenever the target is below Max, at most `settle_cap`
       // re-read frames per live frame; 'off' (the checkbox unticked, `csettle=0`) never.
       background_settle: p.csettle() ? 'auto-below-max' : 'off',
@@ -990,7 +995,8 @@ export interface AppliedSettings {
   curve?: ReplayCurve;
   /**
    * The record says Refine ran (`settings.refine_runs` above 0, or a `refine` stage run). That stage
-   * was removed: look-back and the Final settle replace it, so the replay has no Refine run.
+   * was removed: look-back and the Final settle replace it, so the replay has no Refine run and
+   * `lookback` is forced on.
    */
   refineUsed?: boolean;
   /** The run changed its settle cap part-way (`work.cap_changes` has more than one distinct value); not replayed. */
@@ -1099,6 +1105,8 @@ export function settingsFromRecord(rec: unknown): AppliedSettings | null {
     stages.some((x) => (x as Record<string, unknown> | null)?.stage === 'refine')
   )
     out.refineUsed = true;
+  // Look-back with its Final settle is the modern equivalent of a Refine run: keep it on for such a record.
+  if (out.refineUsed) out.lookback = true;
   const work = r.work as { cap_changes?: unknown } | undefined;
   if (Array.isArray(work?.cap_changes)) {
     const caps = new Set(

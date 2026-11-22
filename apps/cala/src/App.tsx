@@ -270,7 +270,6 @@ const App: Component = () => {
   });
   const availability = () => stageAvailability(stageInput());
   const pass2 = createPass2Store(client, pipeline, cells);
-  /** Log a stage event  );
   /** Log a stage event on the run's timeline (at the end of what Discover read). */
   const logStage = (stage: StageName, detail: string) =>
     runHistory.log({
@@ -503,6 +502,7 @@ const App: Component = () => {
       discover: pipeline.discover,
       residual: pipeline.residual,
       lookback: pipeline.lookback,
+      lookbackRun: pipeline.lookbackRun,
       csettle: pipeline.csettle,
       csettleCeiling: pipeline.csettleCeiling,
       csettleYield: pipeline.csettleYield,
@@ -737,7 +737,7 @@ const App: Component = () => {
         const warnings: string[] = [];
         if (a.refineUsed)
           warnings.push(
-            'The record ran a Refine stage, which has been removed: Discover now refines footprints with look-back and a Final settle, and no Refine run is replayed.',
+            'The record ran a Refine stage, which has been removed: look-back and the Final settle replace it, so look-back is kept on for this replay and no Refine run happens.',
           );
         if (a.capChangedDuringRun)
           warnings.push(
