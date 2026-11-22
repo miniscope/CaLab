@@ -51,7 +51,7 @@ CHECK = 1200  # frames between checkpoints
 RULES = [("step", t, q) for t in (0.08, 0.12) for q in (0.80, 0.90)] + \
     [("drift", t, q) for t in (0.01, 0.02, 0.03) for q in (0.90, 0.95)] + \
     [("ucb", t, q) for t in (0.05, 0.08) for q in (0.80, 0.90)]
-COL = {"step": 0, "ucb": 1, "drift": 4}  # columns of cell_measures
+COL = {"step": 0, "ucb": 1, "drift": 4, "step_edge": 5, "step_core": 6}  # columns of cell_measures
 
 
 # ------------------------------------------------------------------------------------------- libraries
@@ -103,6 +103,7 @@ def cell_measures(fps, w):
     step = float(np.sqrt((D[-1] ** 2).sum()))
     core = f >= CORE * f.max()
     edge = binary_dilation((A != 0).any(0), iterations=RING) & ~core
+    reg_step = [float(np.sqrt((D[-1][m] ** 2).sum())) / max(float(np.sqrt((f[m] ** 2).sum())), NORM_FLOOR) for m in (edge, core)]
     res = []
     for reg in (core, edge):
         d = D[:, reg]
@@ -112,7 +113,7 @@ def cell_measures(fps, w):
         nr = max(float(np.sqrt((f[reg] ** 2).sum())), NORM_FLOOR)
         res.append((math.sqrt(max(0.0, S + 2 * Q) / len(iu[0])) / nr, math.sqrt(max(0.0, S) / len(iu[0])) / nr))
     (uc, pc), (ue, pe) = res
-    return step, max(uc, ue), uc, ue, max(pc, pe)
+    return step, max(uc, ue), uc, ue, max(pc, pe), reg_step[0], reg_step[1]  # (after the runs) edge / core step
 
 
 def run_measures(d: Path):
@@ -469,6 +470,21 @@ def fixed_stop(e, frac):
     return next(c for c, f in e["cps"] if f >= (1 - frac) * tot - 1)
 
 
+def fixed_interp(e, read, key):
+    """Loss (key) of a fixed in-order stop after `read` of the pass, interpolated between checkpoints."""
+    tot = e["cps"][-1][1]
+    xs = [f / tot for c, f in e["cps"] if c >= 0]
+    ys = [losses(e, c)[key] for c, _f in e["cps"]]
+    return float(np.interp(read, xs, ys))
+
+
+def fixed_before(e, read):
+    """The last checkpoint at or before `read` of the pass (not before K)."""
+    tot = e["cps"][-1][1]
+    ok = [c for c, f in e["cps"] if f <= read * tot + 1 and c >= K]
+    return ok[-1] if ok else K
+
+
 def late_loss(e, c):
     last = e["cps"][-1][0]
     d, de = e["q"][c]["cells"], e["q"][last]["cells"]
@@ -525,21 +541,32 @@ def score(root: Path) -> None:
         x = res["sims"]
         P(f"| {r[0]} {r[1]} q{r[2]} | {100 * np.mean(x['saved']):.0f} ({100 * min(x['saved']):.0f}-{100 * max(x['saved']):.0f}) | "
           f"{x['never']} / 15 | " + " | ".join(mci(x["L"][k]) for k, *_ in SIM_KEYS) + " |")  # fmt: skip
-    # ---- fixed truncation baseline at the same mean frames
+    # ---- fixed truncation baseline at the same mean frames (interpolated per run between checkpoints)
     P("\n## Against fixed in-order truncation at the same mean frames saved\n")
-    P("Fixed = every run stops at the first checkpoint at or after (1 - mean saved) of its pass. Difference = rule "
-      "loss minus fixed loss (negative = the rule is better), paired per run.\n")  # fmt: skip
-    P("| rule | real: saved rule / fixed % | real median cos | real p10 cos | real rep | sims: saved rule / fixed % | sims r | sims edge err | sims bitten |")
-    P("|" + " --- |" * 9)
+    P("Fixed = each run's loss interpolated linearly between its checkpoints at the rule's mean share read (frame-"
+      "matched); [at-or-before] = the fixed stop at the last checkpoint at or before that share (reads no more than the "
+      "rule). Difference = rule loss minus fixed loss (negative = the rule is better), paired per run. Earliest = runs "
+      "stopped at the earliest allowed checkpoint (c = 3).\n")  # fmt: skip
+    P("| rule | real: saved % / earliest | real median cos | real p10 cos | real rep | real median cos [at-or-before] | sims: saved % / earliest | sims r | sims edge err | sims bitten | sims edge err [at-or-before] | beats fixed? |")
+    P("|" + " --- |" * 12)
+    beats = {}
     for r, res in results.items():
         row = [f"{r[0]} {r[1]} q{r[2]}"]
+        diffs = {}
         for nm, D, keys in (("real", real, ["med", "p10", "rep"]), ("sims", sims, ["r", "edge", "bit"])):
             x = res[nm]
             frac = float(np.mean(x["saved"]))
-            fx = {k: fixed_stop(e, frac) for k, e in D.items()}
-            row.append(f"{100 * frac:.0f} / {100 * np.mean([saved(D[k], c) for k, c in fx.items()]):.0f}")
+            early = sum(1 for k, c in x["stop"].items() if c == K)
+            row.append(f"{100 * frac:.0f} / {early} of {len(D)}")
             for key in keys:
-                row.append(mci([losses(D[k], x["stop"][k])[key] - losses(D[k], fx[k])[key] for k in D], 4 if key != "rep" else 1))
+                diffs[key] = [losses(D[k], x["stop"][k])[key] - fixed_interp(D[k], 1 - frac, key) for k in D]
+                row.append(mci(diffs[key], 4 if key != "rep" else 1))
+            kb = keys[0] if nm == "real" else "edge"
+            row.append(mci([losses(D[k], x["stop"][k])[kb] - losses(D[k], fixed_before(D[k], 1 - frac))[kb] for k in D]))
+        worse = any(t_ci(v)[0] > 0 for v in diffs.values())
+        better = any(t_ci(v)[1] < 0 for v in diffs.values())
+        beats[r] = better and not worse
+        row.append("yes" if beats[r] else ("worse" if worse and not better else ("mixed" if worse else "no difference")))
         P("| " + " | ".join(row) + " |")
     # ---- fixed truncation curve (every real checkpoint; sims round up to their next checkpoint)
     P("\n## Fixed in-order truncation at every checkpoint (the baseline curve)\n")
@@ -573,7 +600,7 @@ def score(root: Path) -> None:
                      if passes({**res["real"]["L"], **res["sims"]["L"]}, j)), reverse=True)  # fmt: skip
         fx = [(0.5 * (sv[0] + sv[1]), cc, sv) for cc, (L, sv, _a, _b) in fixed.items() if passes(L, j)]
         best_f = max(fx) if fx else None
-        P(f"- {lvl}: passing rules (mean saved, real+sims): " + (", ".join(f"{r[0]} {r[1]} q{r[2]} ({100 * s:.0f} %)" for s, r in ok) or "none"))
+        P(f"- {lvl}: passing rules (mean saved, real+sims): " + (", ".join(f"{r[0]} {r[1]} q{r[2]} ({100 * s:.0f} %{', beats fixed' if beats[r] else ''})" for s, r in ok) or "none"))
         P(f"  - passing fixed stops: " + (", ".join(f"c{cc} ({100 * sv[0]:.0f} / {100 * sv[1]:.0f} % saved)" for _s, cc, sv in sorted(fx, reverse=True)) or "none"))
     # ---- per arm at the fixed stops the levels use
     P("\n## Per arm (n = 6 real runs: 2 recordings x 3 seeds; n = 5 sims), fixed stops\n")
@@ -587,10 +614,10 @@ def score(root: Path) -> None:
             P(f"| c{cc} | {arm} | " + " | ".join(mci([losses(real[k], cr[k])[key] for k in kr], 4 if key != "rep" else 1) for key in ("med", "p10", "rep"))
               + " | " + " | ".join(mci([losses(sims[k], cs[k])[key] for k in ks]) for key in ("r", "edge", "bit")) + " |")  # fmt: skip
     # ---- top-10 % capture
-    P("\n## Share of the remaining gain carried by the 10 % of cells each measure flags most (mean over checkpoints c >= 3, then runs)\n")
-    P("At each checkpoint the cells are ranked by the measure (ties broken at random); the top 10 % carry this share of "
-      "the summed remaining improvement of all cells (positive parts; 10 % = no information). Coverage = share of the cell's life re-read (after the runs).\n")  # fmt: skip
-    P("| measure | real: cosine gain vs Max partner | sims: edge-error drop | sims: total (1 - r) drop |")
+    P("\n## Remaining gain of the 10 % of cells each measure flags most, minus the other cells' (mean over checkpoints c >= 3, then runs)\n")
+    P("At each checkpoint the cells are ranked by the measure (ties broken at random); the table gives the mean signed "
+      "remaining gain of the top 10 % minus that of the rest (0 = no information; real in cosine, sims in relative error). Coverage = share of the cell's life re-read (after the runs).\n")  # fmt: skip
+    P("| measure | real: cosine gain vs Max partner | sims: edge-error drop | sims: r gain |")
     P("| --- | --- | --- | --- |")
     rng = np.random.default_rng(0)
     births = {name: DM.read_births(root / e["kind"] / name / "B100") for name, e in data.items()}
@@ -602,13 +629,14 @@ def score(root: Path) -> None:
         return r["m"][i][COL[meas]]
 
     def capture(x, g):
+        """Mean signed remaining gain of the top 10 % minus that of the other cells."""
         x = np.asarray(x) + 1e-12 * rng.random(len(x))
-        g = np.maximum(np.asarray(g), 0)  # improvements only
-        top = np.argsort(-x)[: max(1, len(x) // 10)]
-        tot = g.sum()
-        return float(g[top].sum() / tot) if tot > 0 else math.nan
+        g = np.asarray(g)
+        o = np.argsort(-x)
+        n = max(1, len(x) // 10)
+        return float(g[o[:n]].mean() - g[o[n:]].mean())
 
-    for meas in ("step", "drift", "ucb", "coverage"):
+    for meas in ("step", "step_edge", "step_core", "drift", "ucb", "coverage"):
         cr_, ce, ct = [], [], []
         for name, e in data.items():
             last = e["cps"][-1][0]
@@ -665,7 +693,7 @@ def score(root: Path) -> None:
     P("\n## Does the measure predict a cell's remaining gain? (Spearman per checkpoint, mean over checkpoints, then over runs)\n")
     P("| measure | real: gain in cosine vs Max partner | sims: drop in total error (1 - r) | sims: drop in edge error | sims: drop in core error |")
     P("| --- | --- | --- | --- | --- |")
-    for meas in ("step", "drift", "ucb"):
+    for meas in ("step", "step_edge", "step_core", "drift", "ucb"):
         j = COL[meas]
         rr, s1, s2, s3 = [], [], [], []
         for e in real.values():
@@ -700,7 +728,7 @@ def score(root: Path) -> None:
         P(f"| {meas} | {mci(rr, 3)} | {mci(s1, 3)} | {mci(s2, 3)} | {mci(s3, 3)} |")
     # ---- tails at the stop (sims)
     P("\n## Sims: where the loss sits at the stop (mean over runs; loss = error at stop minus at end, edge error)\n")
-    P("| rule | cells unsettled at stop % | edge-err loss, unsettled cells | edge-err loss, settled cells | r loss, late-born cells | bitten pairs healed after the stop |")
+    P("| rule | cells unsettled at stop % | edge-err loss, unsettled cells | edge-err loss, settled cells | r loss, late-born cells | bites open at the stop that the full pass heals (sum over runs) |")
     P("| --- | --- | --- | --- | --- | --- |")
     for r, res in results.items():
         meas, tau, q = r
@@ -718,7 +746,7 @@ def score(root: Path) -> None:
             ll.append(np.mean([de[i][0] - d[i][0] for i in e["late"] if i in d and i in de]) if e["late"] else math.nan)
             bs, be = e["q"][c]["bites"], e["q"][last]["bites"]
             hb.append(sum(1 for p in bs if bs[p] < 0.5 and be.get(p, 0) >= 0.5))
-        P(f"| {meas} {tau} q{q} | {np.mean(un):.0f} | {mci(lu)} | {mci(ls)} | {mci(ll)} | {np.sum(hb)} (of {sum(1 for e in sims.values() for p, v in e['q'][e['cps'][-1][0]]['bites'].items() if v >= 0.5 and any(e['q'][c]['bites'].get(p, 1) < 0.5 for c, _ in e['cps']))}) |")
+        P(f"| {meas} {tau} q{q} | {np.mean(un):.0f} | {mci(lu)} | {mci(ls)} | {mci(ll)} | {np.sum(hb)} |")
     # ---- bite check
     P("\n## Sims: bites that heal during the pass, seen the checkpoint before they heal (c >= 3)\n")
     P("Healing cell = the bitten cell i of a pair whose bite ratio (estimate / truth at the neighbour's centre) goes from "
@@ -726,16 +754,18 @@ def score(root: Path) -> None:
     P("| measure | pairs | median percentile among all cells | healing cells above tau | all cells above tau (base rate) |")
     P("| --- | --- | --- | --- | --- |")
     heal = []  # (run, c_before, cell id, ratio trajectory up to the heal)
+    n_all = 0
     for name, e in sims.items():
         cs = [c for c, _ in e["cps"]]
         for p in e["q"][cs[-1]]["bites"]:
             seq = [e["q"][c]["bites"].get(p, math.nan) for c in cs]
             for a_ in range(1, len(cs)):
                 if seq[a_ - 1] < 0.5 and seq[a_] >= 0.5 and all(x >= 0.5 for x in seq[a_:] if np.isfinite(x)):
+                    n_all += 1
                     if cs[a_ - 1] >= K:
                         heal.append((name, cs[a_ - 1], p[0], seq[max(0, a_ - 3) : a_ + 1]))
                     break
-    for meas in ("step", "drift", "ucb"):
+    for meas in ("step", "step_edge", "step_core", "drift", "ucb"):
         j = COL[meas]
         pct, vals, base = [], [], []
         for name, c, cid, _sq in heal:
@@ -750,13 +780,15 @@ def score(root: Path) -> None:
         P(f"| {meas} | {len(vals)} | {np.median(pct) if pct else math.nan:.0f} | "
           + ", ".join(f"{t}: {100 * np.mean([v >= t for v in vals]):.0f} %" for t in taus) + " | "
           + ", ".join(f"{t}: {100 * np.mean([np.mean(b >= t) for b in base]):.0f} %" for t in taus) + " |")  # fmt: skip
+    P(f"\n- heals during the pass (last bitten-to-healed step, sum over runs): {n_all}; {len(heal)} of them after checkpoint {K} (above)")
+    P(f"- bites open at the start of the pass that heal by its end: {sum(heals_after(e, e['cps'][0][0]) for e in sims.values())}")
     zero = []
     for name, c, cid, _sq in heal:
         row = next((x for x in sims[name]["rows"] if x["c"] == c), None)
         if row and cid in row["m"]:
             zero.append(row["m"][cid][0] == 0 and row["m"][cid][4] == 0)
     allzero = np.mean([np.mean([(v[0] == 0 and v[4] == 0) for v in r["m"].values()]) for e in sims.values() for r in e["rows"] if r["m"] and r["c"] >= K])
-    P(f"\n- healing cells with no committed change in their window before the heal: {100 * np.mean(zero):.0f} % (all cells: {100 * allzero:.0f} %)")
+    P(f"- healing cells with no committed change in their window before the heal: {100 * np.mean(zero):.0f} % (all cells: {100 * allzero:.0f} %)")
     tr = np.array([sq for *_x, sq in heal if len(sq) == 4])
     if len(tr):
         P(f"- bite ratio over the three checkpoints before the heal and at the heal (median, n = {len(tr)}): "
