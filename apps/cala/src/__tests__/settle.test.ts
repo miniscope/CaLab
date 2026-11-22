@@ -7,10 +7,11 @@ import {
   noiseMap,
   planFrames,
   SETTLE,
-  SettleDose,
+  SETTLE_POOL,
   settleChange,
   SettleFeed,
   settlePlan,
+  settlePoolSize,
   unitFootprints,
 } from '../lib/settle.ts';
 
@@ -119,44 +120,16 @@ describe('movedAgainstNoise', () => {
   });
 });
 
-describe('SettleDose (settle during Discover)', () => {
-  it('every live frame earns `rate` re-read frames; a chunk is ready when a whole one is owed', () => {
-    const d = new SettleDose(2);
-    expect(d.ready).toBe(false);
-    d.earn(7);
-    expect(d.owed).toBe(14);
-    expect(d.ready).toBe(false);
-    d.earn(1);
-    expect(d.ready).toBe(true);
-    d.spend(16);
-    expect(d.owed).toBe(0);
-    expect(d.ready).toBe(false);
-  });
-
-  it('the lower ceilings earn less: 1 and 0.5 per live frame', () => {
-    for (const rate of CSETTLE.rates) {
-      const d = new SettleDose(rate);
-      let asked = 0;
-      for (let live = 0; live < 3200; live++) {
-        d.earn(1);
-        if (d.ready) {
-          d.spend(CSETTLE.chunk);
-          asked += CSETTLE.chunk;
-        }
-      }
-      expect(asked).toBe(3200 * rate);
-    }
-  });
-
-  it('banks at most four chunks, and nothing at rate 0', () => {
-    const d = new SettleDose(2);
-    d.earn(10_000);
-    expect(d.owed).toBe(CSETTLE.chunk * CSETTLE.bankChunks);
-    d.spend(1000);
-    expect(d.owed).toBe(0);
-    const off = new SettleDose(0);
-    off.earn(10_000);
-    expect(off.ready).toBe(false);
+describe('settle during Discover settings', () => {
+  it('the pool: one more look-back worker from 12 cores, none below; an override wins', () => {
+    expect(settlePoolSize(18)).toBe(1);
+    expect(settlePoolSize(12)).toBe(1);
+    expect(settlePoolSize(11)).toBe(0);
+    expect(settlePoolSize(undefined)).toBe(0);
+    expect(settlePoolSize(18, 0)).toBe(0);
+    expect(settlePoolSize(4, 2)).toBe(2);
+    expect(settlePoolSize(4, 99)).toBe(SETTLE_POOL.maxWorkers);
+    expect(settlePoolSize(18, null)).toBe(1);
   });
 
   it('a ceiling is one of the offered values, else the default', () => {

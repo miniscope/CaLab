@@ -197,16 +197,21 @@ export function createPipelineStore(
   const [lookback, setLookback] = createSignal(false);
   const [lookbackRun, setLookbackRun] = createSignal(false);
   /**
-   * Settle during Discover (experimental, under look-back; the setting for
-   * the next Discover start): on or off, its ceiling in re-read frames per
-   * live frame, and the frames per piece of an answer (0: whole answers; a
-   * URL-only knob).
+   * Settle during Discover ("Background settle", under look-back; runs only
+   * while the target is below Max, at the settle governor's rate): on (the
+   * default) or off, its cap in re-read frames per live frame (both take
+   * effect during a run too: the cap is 0 when off), and the frames per piece
+   * of an answer (0: whole answers; a URL-only knob, for the next start).
    */
-  const [csettle, setCsettle] = createSignal(false);
-  const [csettleCeiling, setCsettleCeiling] = createSignal<number>(CSETTLE.rate);
+  const [csettle, setCsettleSignal] = createSignal(true);
+  const [csettleCeiling, setCsettleCeilingSignal] = createSignal<number>(CSETTLE.rate);
   const [csettleYield, setCsettleYield] = createSignal(0);
-  /** The settle governor instead of the per-live-frame dose (`?debug&governor`; experimental, measurement only). */
-  const [csettleGovernor, setCsettleGovernor] = createSignal(false);
+  /** One look-back worker: need-driven look-back first (`?debug&needfirst`; measurement only, next start). */
+  const [csettleNeedFirst, setCsettleNeedFirst] = createSignal(false);
+  /** The settle's cap now (0 = Off). */
+  function settleCap(): number {
+    return untrack(csettle) ? csettleRate(untrack(csettleCeiling)) : 0;
+  }
   /** Session of the current run with look-back (0: none). */
   let lookbackSession = 0;
   /** The live source's counters after the newest batch (null on a file source). */
@@ -487,6 +492,10 @@ export function createPipelineStore(
    */
   let paceFps = 0;
   const paceListeners: ((fps: number, frame: number, source: string) => void)[] = [];
+  /** Told when a run's settle pool starts (its workers, the frame reached); the run record's log. */
+  const poolListeners: ((workers: number, frame: number) => void)[] = [];
+  /** The look-back session whose pool start was told (once per run). */
+  let poolNoted = 0;
   /** A pace was set at some point: from then on Pause and Resume always tell the gate (so its held state never sticks). */
   let paceEver = false;
   /** Whether this run's gate is paced (a recording's Discover run; never a live stream). */
@@ -494,10 +503,16 @@ export function createPipelineStore(
     return paceFps > 0 && flat.identity?.()?.live !== true;
   }
   const [paceStats, setPaceStats] = createSignal<PaceStats | null>(null);
-  /** The pipeline session whose pacing readouts count (-1: none); a stopped run's late ones are dropped. */
+  /**
+   * The pipeline session whose pacing readouts count (-1: none), and the newest gate run seen for
+   * it: a stopped run keeps its last readout (the worker's flush on stop) until the next start.
+   */
   let paceSession = -1;
+  let paceEpoch = -1;
   client.subscribePaceStats?.((s) => {
-    if (s.session === paceSession) setPaceStats(s);
+    if (s.session !== paceSession || s.epoch < paceEpoch) return;
+    paceEpoch = s.epoch;
+    setPaceStats(s);
   });
   // Work shares (`lib/work-meter.ts`): the slow worker's accounting once a second, and the fast
   // loop's live estimate of its top speed. Instrumentation only: nothing here steers the run.
@@ -555,6 +570,32 @@ export function createPipelineStore(
   /** The pacer as the settle governor sees it (the slow worker; 0 = Max): sent whenever it may have changed. */
   function tellSettlePace(): void {
     lookbackFeed?.pace?.(paceRun() ? paceFps : 0, untrack(status) === 'paused');
+    startSettlePool();
+  }
+  /** The settle's cap to the slow worker (during a run too), and the pool if it may now be used. */
+  function tellSettleCap(): void {
+    lookbackFeed?.cap?.(settleCap());
+    startSettlePool();
+  }
+  /**
+   * The settle pool starts the first time a look-back run is below Max with
+   * the settle on (mid-run too); a run at Max never starts it.
+   */
+  function startSettlePool(): void {
+    const st = untrack(status);
+    if (st !== 'starting' && st !== 'running' && st !== 'paused') return;
+    if (!lookbackSession || !paceRun() || !(settleCap() > 0)) return;
+    const n = lookbackFeed?.startPool?.(lookbackSession) ?? 0;
+    // The run record notes the first start only (this runs on every pace or cap change).
+    if (n <= 0 || poolNoted === lookbackSession) return;
+    poolNoted = lookbackSession;
+    for (const cb of poolListeners) {
+      try {
+        cb(n, untrack(processed));
+      } catch {
+        // Observers only.
+      }
+    }
   }
 
   /** Show one played frame: its view's image, the batch's last-frame images for the other views. */
@@ -681,6 +722,7 @@ export function createPipelineStore(
     totals = { ...ZERO_TIMINGS };
     setPaceStats(null);
     paceSession = -1;
+    paceEpoch = -1;
     workRater.reset();
     floorMeter.reset();
     stageBusyMeter.reset();
@@ -745,22 +787,24 @@ export function createPipelineStore(
       });
       // Look-back (experimental): from this start on, if the recording allows it.
       const lb = lookback() && discover() && lookbackFeed?.begin(session) === true;
-      if (lb) tellSettlePace();
       if (lb) {
         lookbackSession = session;
         setLookbackRun(true);
         if (flatLatest) lookbackFeed!.flatField(session, flatLatest);
+        // The cap and the target before the run's init (the slow worker keeps them across runs).
+        lookbackFeed!.cap?.(settleCap());
+        tellSettlePace();
       }
       const p = await client.startPipeline(
         { ...options, flatField: useFlat },
         {
           session,
           ...(lb ? { lookback: true } : {}),
-          ...(lb && csettle()
+          ...(lb
             ? {
-                csettle: csettleRate(csettleCeiling()),
+                csettle: true,
                 ...(csettleYield() > 0 ? { csettleYield: csettleYield() } : {}),
-                ...(csettleGovernor() ? { csettleGovernor: true } : {}),
+                ...(csettleNeedFirst() ? { csettleNeedFirst: true } : {}),
               }
             : {}),
           discover: discover(),
@@ -827,7 +871,12 @@ export function createPipelineStore(
   /** Stop and free the worker-side pipeline (e.g. before opening another folder). */
   function stop(): void {
     const wasActive = status() !== 'idle';
+    // The stopped run's pacing readouts stay, and its final one (flushed on stop) still lands.
+    const keep = { session: paceSession, epoch: paceEpoch, stats: paceStats() };
     reset();
+    paceSession = keep.session;
+    paceEpoch = keep.epoch;
+    setPaceStats(keep.stats);
     setStatus('idle');
     if (wasActive) void client.stopPipeline().catch(() => {});
   }
@@ -901,10 +950,22 @@ export function createPipelineStore(
     lookbackRun,
     /** Settle during Discover (experimental; only with look-back): the settings for the next Discover start. */
     csettle,
-    setCsettle,
+    /** Background settle on or off (off = cap 0); during a run too. */
+    setCsettle: (on: boolean) => {
+      setCsettleSignal(on);
+      tellSettleCap();
+    },
     csettleCeiling,
-    setCsettleCeiling: (rate: number) => setCsettleCeiling(csettleRate(rate)),
-    /** The frame worker's pacing readouts (gate wait, lateness dropped, re-anchors); null when unpaced. */
+    /** The cap, re-read frames per live frame (`CSETTLE.rates`); during a run too. */
+    setCsettleCeiling: (rate: number) => {
+      setCsettleCeilingSignal(csettleRate(rate));
+      tellSettleCap();
+    },
+    /**
+     * The frame worker's pacing readouts (gate wait, lateness dropped, re-anchors) of the newest
+     * gate run; null before the first readout of a run (a run that never had a target has none).
+     * The stopped run's final readout stays until the next start.
+     */
     paceStats,
     /** Who is doing what, over the last second or so (the slow, visit and look-back workers); null until a second of data. */
     work,
@@ -941,10 +1002,14 @@ export function createPipelineStore(
     onPaceChange: (cb: (fps: number, frame: number, source: string) => void) => {
       paceListeners.push(cb);
     },
+    /** Called once per run when its settle pool starts: the pool workers and the frame reached. */
+    onPoolStart: (cb: (workers: number, frame: number) => void) => {
+      poolListeners.push(cb);
+    },
     smoothPlayback: () => smoothOn,
     csettleYield,
-    csettleGovernor,
-    setCsettleGovernor,
+    csettleNeedFirst,
+    setCsettleNeedFirst,
     setCsettleYield: (frames: number) =>
       setCsettleYield(Number.isFinite(frames) && frames > 0 ? Math.floor(frames) : 0),
     setResidual,

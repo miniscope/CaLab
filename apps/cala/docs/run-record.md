@@ -1,7 +1,7 @@
 # Run record
 
 Every saved result says how it was made. The run record is a versioned JSON
-document (`format: "cala-run-record"`, `record_version: 1`) with the settings,
+document (`format: "cala-run-record"`, `record_version: 2`) with the settings,
 flags, versions, input, stages and machine of the run, enough to know exactly
 what happened and to repeat it. Code: `src/lib/run-provenance.ts`.
 
@@ -22,19 +22,19 @@ Nothing here is sent anywhere; no analytics field was added.
 
 ## Blocks
 
-| Block                  | Contents                                                                                                                                                                                                             |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `software`             | `app_version`, `git_commit` (the build's commit; null when unknown), `engine_version` (the WASM `cala_version()`; null if the module was not loaded)                                                                 |
-| `settings`             | every user-facing setting and its value, defaults included (see mapping below)                                                                                                                                       |
-| `tunables`             | the fixed engine constants that shape the settle (`settle`, `csettle`, `governor`)                                                                                                                                   |
-| `url_flags`            | `debug`, each known flag present with its raw value and `in_effect` (debug-only flags are not in effect without `?debug`), and `other_flags` (names only). `?live=` is recorded as `(redacted)`.                     |
-| `input`                | label, live or file, frames, fps, size, bit depth, files (name, frames, size in bytes), sessions, mode                                                                                                               |
-| `stages`               | the stage log: Discover, Refine, Extract runs with `started_at`, `ended_at`, outcome, frames, cells                                                                                                                  |
-| `final_settle`         | `frames_fed`, `frames_planned`, `recording_frames`, `stopped_early_by_user`, `done`, `started_at`, `ended_at`                                                                                                        |
-| `target_speed.changes` | time-stamped list (`at`, `frame`, `fps`, `source`); `fps: 0` is Max (unpaced); the first entry is the speed at run start                                                                                             |
-| `work`                 | `cap` (settle ceiling), `pool` (look-back workers), `visit_workers`, `governor_on`, `achieved_fps` (Discover frames over its wall time), and a `governor` summary (rate, limit, halvings, cap, achieved) when it ran |
-| `machine`              | `hardware_concurrency`, `device_memory_gb`, `platform`, `user_agent`, `gpu` (adapter vendor, architecture, device, description when WebGPU gives them), `webgpu`                                                     |
-| `slots`                | named places for later work, all `null` today: `slider_schedule`, `curve_schedule`, `floor_estimate`, `auto_decisions`                                                                                               |
+| Block                  | Contents                                                                                                                                                                                                                                                  |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `software`             | `app_version`, `git_commit` (the build's commit; null when unknown), `engine_version` (the WASM `cala_version()`; null if the module was not loaded)                                                                                                      |
+| `settings`             | every user-facing setting and its value, defaults included (see mapping below)                                                                                                                                                                            |
+| `tunables`             | the fixed engine constants that shape the settle (`settle`, `csettle`, `governor`)                                                                                                                                                                        |
+| `url_flags`            | `debug`, each known flag present with its raw value and `in_effect` (debug-only flags are not in effect without `?debug`), and `other_flags` (names only). `?live=` is recorded as `(redacted)`.                                                          |
+| `input`                | label, live or file, frames, fps, size, bit depth, files (name, frames, size in bytes), sessions, mode                                                                                                                                                    |
+| `stages`               | the stage log: Discover, Refine, Extract runs with `started_at`, `ended_at`, outcome, frames, cells                                                                                                                                                       |
+| `final_settle`         | `frames_fed`, `frames_planned`, `recording_frames`, `stopped_early_by_user`, `done`, `started_at`, `ended_at`                                                                                                                                             |
+| `target_speed.changes` | time-stamped list (`at`, `frame`, `fps`, `source`); `fps: 0` is Max (unpaced); the first entry is the speed at run start                                                                                                                                  |
+| `work`                 | `cap` (the settle cap; 0 when Off), `pool` (look-back workers in the run: 1 + the settle pool started), `visit_workers`, `achieved_fps` (Discover frames over its wall time), and a `governor` summary (rate, limit, halvings, cap, achieved) when it ran |
+| `machine`              | `hardware_concurrency`, `device_memory_gb`, `platform`, `user_agent`, `gpu` (adapter vendor, architecture, device, description when WebGPU gives them), `webgpu`                                                                                          |
+| `slots`                | named places for later work, all `null` today: `slider_schedule`, `curve_schedule`, `floor_estimate`, `auto_decisions`                                                                                                                                    |
 
 No IP address, user identity or path outside the recording's own file names is
 written.
@@ -51,25 +51,33 @@ changes meaning. Tell `RunTrace` about new time-stamped events the same way
 
 A record maps to settings like this (`settingsFromRecord`):
 
-| Record `settings` key           | Setting                                             | URL flag                    |
-| ------------------------------- | --------------------------------------------------- | --------------------------- |
-| `flat_field`                    | Sensor flat field                                   | `?flatfield=0` turns it off |
-| `discovery`                     | Discover on or off                                  |                             |
-| `lookback`                      | Look-back                                           | `?lookback`                 |
-| `settle_during_discover`        | Settle during Discover                              | `?lookback&csettle`         |
-| `settle_ceiling_per_live_frame` | the cap (2, 1 or 0.5 re-read frames per live frame) | `?csrate=`                  |
-| `settle_yield_frames`           | frames per piece of an answer                       | `?csettle=yieldN`           |
-| `settle_governor`               | settle governor                                     | `?debug&governor`           |
-| `target_speed_fps`              | target speed (0: Max)                               | `?debug&pacefps=`           |
-| `smooth_playback`               | smooth playback                                     | `?debug&smooth=0`           |
-| `library_mode`, `refine_runs`   | Joint or Separate, Refine runs (the session setup)  |                             |
-| `extract_after_discover`        | "Extract after Discover" (Run tab)                  |                             |
-| `export_pass_qc_only`           | export only cells that pass QC (Run tab)            |                             |
+| Record `settings` key         | Setting                                                                                                                                                           | URL flag                    |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| `flat_field`                  | Sensor flat field                                                                                                                                                 | `?flatfield=0` turns it off |
+| `discovery`                   | Discover on or off                                                                                                                                                |                             |
+| `lookback`                    | Look-back                                                                                                                                                         | `?lookback`                 |
+| `background_settle`           | Background settle: `auto-below-max` (the default under look-back: it runs whenever the target is below Max) or `off`                                              | `?csettle=0` turns it off   |
+| `settle_cap`                  | the cap: 2, 1 or 0.5 re-read frames per live frame, or `off`                                                                                                      | `?csrate=`                  |
+| `settle_yield_frames`         | frames per piece of an answer                                                                                                                                     | `?csettle=yieldN`           |
+| `need_first`                  | one worker: need-driven look-back first                                                                                                                           | `?debug&needfirst`          |
+| `lookback_pool`               | `planned_S` (the settle pool size of the page), `started_S` (the pool actually started: 0 for a run that stayed at Max), `started_at_frame` (null: never started) | `?debug&lbpool=` (S)        |
+| `target_speed_fps`            | target speed (0: Max)                                                                                                                                             | `?debug&pacefps=`           |
+| `smooth_playback`             | smooth playback                                                                                                                                                   | `?debug&smooth=0`           |
+| `library_mode`, `refine_runs` | Joint or Separate, Refine runs (the session setup)                                                                                                                |                             |
+| `extract_after_discover`      | "Extract after Discover" (Run tab)                                                                                                                                |                             |
+| `export_pass_qc_only`         | export only cells that pass QC (Run tab)                                                                                                                          |                             |
 
 With `?debug`, `__cala.applyRunRecord(recordOrJsonText)` re-applies the store
 settings (everything with a URL flag above, plus flat field and Discover) before
 the next Discover start and returns what it applied (null if it is not a run
 record). Pool size (`?debug&lbpool=`) and the visit-worker count (`?visits=`) are
-fixed when the page loads, so reload with the record's `url_flags` for those. The
+fixed when the page loads, so reload with the record's `url_flags` for those; when
+the record's `lookback_pool.planned_S` differs from the page's, `applyRunRecord`
+warns and returns the mismatch in `warnings`.
+
+Version 1 records are still read: `settle_during_discover: false` is the cap Off,
+`true` Background settle as now (the default) at the recorded
+`settle_ceiling_per_live_frame`; `settle_governor` is ignored (the governor is the
+only dose rule since version 2). The
 session setup settings (`library_mode`, `refine_runs`) are chosen in the setup
 screen. `__cala.runRecord()` returns the record of the run so far.

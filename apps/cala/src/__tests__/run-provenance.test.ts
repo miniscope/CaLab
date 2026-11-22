@@ -42,7 +42,7 @@ function input(over: Partial<RunRecordInput> = {}): RunRecordInput {
     gitDirty: false,
     engineVersion: '0.1.0',
     search:
-      '?debug&lookback&csettle=yield4&csrate=1&pacefps=30&lbpool=2&governor&smooth=0&live=ws://10.0.0.5:9000&x=1',
+      '?debug&lookback&csettle=yield4&csrate=1&pacefps=30&lbpool=2&needfirst&smooth=0&live=ws://10.0.0.5:9000&x=1',
     settings: { lookback: true, flat_field: true },
     input: {
       label: 'rec',
@@ -66,7 +66,7 @@ function input(over: Partial<RunRecordInput> = {}): RunRecordInput {
     settle: { fed: 900, planned: 1800, recording: 6000, stopped_by_user: true, done: true },
     settleTimes: { started_at: 'a', ended_at: 'b' },
     targetSpeed: [{ at: 't0', frame: 0, fps: 30, source: 'run start' }],
-    work: { cap: 1, pool: 3, visit_workers: 4, governor_on: true },
+    work: { cap: 1, pool: 3, visit_workers: 4 },
     governor: null,
     achievedFps: 29.5,
     machine: machineContext(),
@@ -81,7 +81,7 @@ describe('urlFlags', () => {
     expect(f.flags.csettle).toEqual({ value: 'yield4', in_effect: true });
     expect(f.flags.pacefps).toEqual({ value: '30', in_effect: true });
     expect(f.flags.lbpool.value).toBe('2');
-    expect(f.flags.governor.value).toBe('');
+    expect(f.flags.needfirst).toEqual({ value: '', in_effect: true });
     expect(f.flags.live).toEqual({ value: '(redacted)', in_effect: true });
     expect(f.other_flags).toEqual(['x']);
     expect(JSON.stringify(f)).not.toContain('10.0.0.5');
@@ -99,7 +99,7 @@ describe('buildRunRecord', () => {
   it('has the versioned layout with every block', () => {
     const r = buildRunRecord(input()) as Rec;
     expect(r.format).toBe('cala-run-record');
-    expect(r.record_version).toBe(1);
+    expect(r.record_version).toBe(2);
     expect(r.software).toMatchObject({
       app: 'cala',
       app_version: '2.20.0',
@@ -219,7 +219,7 @@ describe('gatherRunRecord', () => {
       csettle: () => false,
       csettleCeiling: () => 2,
       csettleYield: () => 0,
-      csettleGovernor: () => false,
+      csettleNeedFirst: () => false,
       paceFps: () => 0,
       smoothPlayback: () => true,
       motionBackend: () => 'wasm-off',
@@ -244,7 +244,7 @@ describe('gatherRunRecord', () => {
     label: () => 'rec',
     fileSizes: () => new Map([['a.avi', 99]]),
     sessionFiles: () => [],
-    lookbackWorkers: () => 1,
+    lookbackPoolSize: () => 1,
     visitWorkers: () => 3,
   });
 
@@ -257,7 +257,10 @@ describe('gatherRunRecord', () => {
     expect(r.settings).toMatchObject({
       flat_field: true,
       residual_preview: false,
-      settle_ceiling_per_live_frame: 2,
+      background_settle: 'off',
+      settle_cap: 'off',
+      need_first: false,
+      lookback_pool: { planned_S: 1, started_S: 0, started_at_frame: null },
       target_speed_fps: 0,
       library_mode: 'joint',
       refine_runs: 2,
@@ -266,8 +269,35 @@ describe('gatherRunRecord', () => {
     expect(r.input.files).toEqual([]);
     expect(r.input.sessions[0]).toMatchObject({ name: 's0', frames: 100, files: [] });
     expect(r.final_settle).toMatchObject({ frames_fed: 10, stopped_early_by_user: false });
-    expect(r.work).toMatchObject({ pool: 1, visit_workers: 3, achieved_fps: 6000 / 300 });
+    expect(r.work).toMatchObject({ cap: 0, pool: 1, visit_workers: 3, achieved_fps: 6000 / 300 });
+    expect(r.work).not.toHaveProperty('governor_on');
+    expect(r.settings).not.toHaveProperty('settle_during_discover');
     expect(r.software.git_commit).toBeNull();
+  });
+
+  it('records Background settle, its cap and the pool actually started', () => {
+    const src = sources();
+    src.pipeline.csettle = () => true;
+    src.pipeline.csettleCeiling = () => 0.5;
+    src.pipeline.csettleNeedFirst = () => true;
+    // At Max all run: the pool never started.
+    let r = gatherRunRecord(src) as Rec;
+    expect(r.settings).toMatchObject({
+      background_settle: 'auto-below-max',
+      settle_cap: 0.5,
+      need_first: true,
+      lookback_pool: { planned_S: 1, started_S: 0, started_at_frame: null },
+    });
+    expect(r.work).toMatchObject({ cap: 0.5, pool: 1 });
+    // Paced from frame 640: the first start counts.
+    src.trace.notePoolStart(1, 640);
+    src.trace.notePoolStart(1, 900);
+    r = gatherRunRecord(src) as Rec;
+    expect(r.settings.lookback_pool).toEqual({ planned_S: 1, started_S: 1, started_at_frame: 640 });
+    expect(r.work).toMatchObject({ pool: 2 });
+    // A new run starts with no pool.
+    src.trace.reset();
+    expect((gatherRunRecord(src) as Rec).settings.lookback_pool.started_S).toBe(0);
   });
 
   it('records the backend that ran, the flat-field source, fps source and git state', () => {
@@ -369,7 +399,13 @@ describe('url flags against the app', () => {
   it('marks inert combinations', () => {
     expect(urlFlags('?csettle&csrate=1').flags.csettle.in_effect).toBe(false);
     expect(urlFlags('?csettle&csrate=1').flags.csrate.in_effect).toBe(false);
-    expect(urlFlags('?lookback&csettle&csrate=1').flags.csettle.in_effect).toBe(true);
+    // Background settle is on by default under look-back: a bare `csettle` changes nothing,
+    // `csettle=0` (off) and `csettle=yieldN` do.
+    expect(urlFlags('?lookback&csettle&csrate=1').flags.csettle.in_effect).toBe(false);
+    expect(urlFlags('?lookback&csettle=0').flags.csettle.in_effect).toBe(true);
+    expect(urlFlags('?lookback&csettle=yield2').flags.csettle.in_effect).toBe(true);
+    expect(urlFlags('?needfirst').flags.needfirst.in_effect).toBe(false);
+    expect(urlFlags('?debug&needfirst').flags.needfirst.in_effect).toBe(true);
     expect(urlFlags('?lookback=0&csettle').flags.lookback.in_effect).toBe(false);
     expect(urlFlags('?review=4').flags.review.in_effect).toBe(false);
     expect(urlFlags('?compress&review=4').flags.review.in_effect).toBe(true);
@@ -383,8 +419,10 @@ describe('settingsFromRecord', () => {
         settings: {
           flat_field: false,
           lookback: true,
-          settle_during_discover: true,
-          settle_ceiling_per_live_frame: 0.5,
+          background_settle: 'auto-below-max',
+          settle_cap: 0.5,
+          need_first: true,
+          lookback_pool: { planned_S: 1, started_S: 1, started_at_frame: 300 },
           target_speed_fps: 30,
           smooth_playback: false,
         },
@@ -395,11 +433,47 @@ describe('settingsFromRecord', () => {
       lookback: true,
       csettle: true,
       csettleCeiling: 0.5,
+      csettleNeedFirst: true,
+      lookbackPoolPlanned: 1,
       paceFps: 30,
       smoothPlayback: false,
     });
     expect(settingsFromRecord(null)).toBeNull();
     expect(settingsFromRecord({ format: 'other' })).toBeNull();
     expect(settingsFromRecord({ ...rec, record_version: 99 })).toBeNull();
+  });
+
+  it('maps the cap Off of a v2 record', () => {
+    const rec = buildRunRecord(
+      input({ settings: { lookback: true, background_settle: 'off', settle_cap: 'off' } }),
+    );
+    expect(settingsFromRecord(rec)).toEqual({ lookback: true, csettle: false });
+  });
+
+  it('still reads v1 records: settle during Discover false is the cap Off, true the default', () => {
+    const v1 = (settings: Record<string, unknown>) => ({
+      format: 'cala-run-record',
+      record_version: 1,
+      settings: { lookback: true, settle_yield_frames: 0, target_speed_fps: 60, ...settings },
+    });
+    expect(
+      settingsFromRecord(
+        v1({
+          settle_during_discover: false,
+          settle_ceiling_per_live_frame: 2,
+          settle_governor: true,
+        }),
+      ),
+    ).toEqual({ lookback: true, csettle: false, csettleCeiling: 2, csettleYield: 0, paceFps: 60 });
+    expect(
+      settingsFromRecord(
+        v1({
+          settle_during_discover: true,
+          settle_ceiling_per_live_frame: 1,
+          settle_governor: false,
+        }),
+      ),
+    ).toEqual({ lookback: true, csettle: true, csettleCeiling: 1, csettleYield: 0, paceFps: 60 });
+    expect(settingsFromRecord({ ...v1({}), record_version: 0 })).toBeNull();
   });
 });

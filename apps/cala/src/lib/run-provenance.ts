@@ -29,7 +29,7 @@ import { stageMeta } from './export.ts';
 export const RUN_RECORD_FILE = 'cala-run-record.json';
 export const RUN_RECORD_FORMAT = 'cala-run-record';
 /** Bump when an existing field changes meaning (adding fields does not). */
-export const RUN_RECORD_VERSION = 1;
+export const RUN_RECORD_VERSION = 2;
 
 /**
  * Places the later PRs fill. All `null` today; the record always has them so a
@@ -60,7 +60,7 @@ export const KNOWN_FLAGS = [
   'csrate',
   'pacefps',
   'lbpool',
-  'governor',
+  'needfirst',
   'smooth',
   'pipeline',
   'gpu',
@@ -77,11 +77,12 @@ export const KNOWN_FLAGS = [
 const REDACTED_FLAGS: ReadonlySet<string> = new Set(['live']);
 
 /** What `?debug` gates: these flags only take effect with it. */
-const DEBUG_ONLY: ReadonlySet<string> = new Set(['lbpool', 'governor', 'pacefps', 'smooth']);
+const DEBUG_ONLY: ReadonlySet<string> = new Set(['lbpool', 'needfirst', 'pacefps', 'smooth']);
 
 /**
  * Whether a flag changes anything given the others (`App.tsx` reads them the
- * same way): `lookback=0` and `csettle=0` are off; settle needs look-back;
+ * same way): `lookback=0` is off; `csettle` changes something only as
+ * `csettle=0` (Background settle off) or `csettle=yieldN`, and needs look-back;
  * `review` needs `compress`; debug-only flags need `?debug`.
  */
 function inEffect(name: string, value: string, p: URLSearchParams): boolean {
@@ -91,10 +92,10 @@ function inEffect(name: string, value: string, p: URLSearchParams): boolean {
     case 'lookback':
       return value !== '0';
     case 'csettle':
-      return value !== '0' && lookbackOn;
+      return lookbackOn && (value === '0' || /^yield\d*$/.test(value));
     case 'csrate':
       return lookbackOn;
-    case 'governor':
+    case 'needfirst':
       return value !== '0';
     case 'review':
       return p.has('compress');
@@ -250,12 +251,24 @@ export interface SettleTimes {
 export class RunTrace {
   private speed: TargetSpeedChange[] = [];
   private settle: SettleTimes = { started_at: null, ended_at: null };
+  private pool: { workers: number; frame: number } | null = null;
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
   reset(): void {
     this.speed = [];
     this.settle = { started_at: null, ended_at: null };
+    this.pool = null;
+  }
+
+  /** The run's settle pool started with `workers` workers at `frame` (the first start counts). */
+  notePoolStart(workers: number, frame: number): void {
+    this.pool ??= { workers, frame };
+  }
+
+  /** The settle pool this run started (null: none). */
+  poolStart(): { workers: number; frame: number } | null {
+    return this.pool ? { ...this.pool } : null;
   }
 
   /** The target speed is `fps` now (0: Max). Repeats of the same value are not recorded again. */
@@ -352,12 +365,11 @@ export interface RunRecordInput {
   settle: SettleSummary | null;
   settleTimes: SettleTimes;
   targetSpeed: readonly TargetSpeedChange[];
-  /** Work shape: the settle ceiling (cap), look-back workers (pool), visit workers. */
+  /** Work shape: the settle cap (0: Off), look-back workers in the run (1 + the pool started), visit workers. */
   work: {
     cap: number | null;
     pool: number | null;
     visit_workers: number | null;
-    governor_on: boolean;
   };
   governor: GovernorStatus | null;
   /** Discover's mean processing rate over the run, frames per second (null: not known). */
@@ -451,7 +463,7 @@ export interface RunRecordSources {
     csettle(): boolean;
     csettleCeiling(): number;
     csettleYield(): number;
-    csettleGovernor(): boolean;
+    csettleNeedFirst(): boolean;
     paceFps(): number;
     smoothPlayback(): boolean;
     motionBackend(): string | null;
@@ -490,8 +502,8 @@ export interface RunRecordSources {
    */
   fileSizes(): ReadonlyMap<string, number>;
   sessionFiles(): { name: string; size: number }[][];
-  /** Workers: look-back pool size and visit workers. */
-  lookbackWorkers(): number;
+  /** The settle pool's size S on this machine (`settlePoolSize`; started or not), and visit workers. */
+  lookbackPoolSize(): number;
   visitWorkers(): number;
   tunables?: Record<string, unknown>;
 }
@@ -532,6 +544,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
   const settle = st?.lookback?.settle;
   const sizes = src.fileSizes();
   const perSession = src.sessionFiles();
+  const pool = src.trace.poolStart();
   const record = buildRunRecord({
     createdAt: (src.now ?? (() => new Date()))().toISOString(),
     appVersion: src.appVersion,
@@ -544,10 +557,18 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       discovery: p.discover(),
       residual_preview: p.residual(),
       lookback: p.lookback(),
-      settle_during_discover: p.csettle(),
-      settle_ceiling_per_live_frame: p.csettleCeiling(),
+      // Background settle (v2): runs whenever the target is below Max, at most `settle_cap`
+      // re-read frames per live frame; 'off' (the checkbox unticked, `csettle=0`) never.
+      background_settle: p.csettle() ? 'auto-below-max' : 'off',
+      settle_cap: p.csettle() ? p.csettleCeiling() : 'off',
       settle_yield_frames: p.csettleYield(),
-      settle_governor: p.csettleGovernor(),
+      need_first: p.csettleNeedFirst(),
+      // The pool actually started (a run that stayed at Max: started_S 0, started_at_frame null).
+      lookback_pool: {
+        planned_S: src.lookbackPoolSize(),
+        started_S: pool?.workers ?? 0,
+        started_at_frame: pool?.frame ?? null,
+      },
       target_speed_fps: p.paceFps(),
       smooth_playback: p.smoothPlayback(),
       ...(extras.mode !== undefined ? { library_mode: extras.mode } : {}),
@@ -608,10 +629,9 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
     settleTimes: src.trace.settleTimes(),
     targetSpeed: src.trace.targetSpeedChanges(),
     work: {
-      cap: p.csettleCeiling(),
-      pool: src.lookbackWorkers(),
+      cap: p.csettle() ? p.csettleCeiling() : 0,
+      pool: 1 + (pool?.workers ?? 0),
       visit_workers: src.visitWorkers(),
-      governor_on: p.csettleGovernor(),
     },
     governor: st?.lookback?.csettle?.governor ?? null,
     achievedFps: achievedFps(src.stageRuns()),
@@ -632,37 +652,59 @@ export interface AppliedSettings {
   flatField?: boolean;
   discover?: boolean;
   lookback?: boolean;
+  /** Background settle on (false: cap Off). */
   csettle?: boolean;
   csettleCeiling?: number;
   csettleYield?: number;
-  csettleGovernor?: boolean;
+  csettleNeedFirst?: boolean;
   paceFps?: number;
   smoothPlayback?: boolean;
+  /**
+   * The settle pool size S the run had planned (v2). It cannot be applied (it
+   * is fixed at page load from the core count, or `?debug&lbpool=S`); the app
+   * reports a mismatch.
+   */
+  lookbackPoolPlanned?: number;
 }
 
 export function settingsFromRecord(rec: unknown): AppliedSettings | null {
   if (!rec || typeof rec !== 'object') return null;
   const r = rec as Record<string, unknown>;
   if (r.format !== RUN_RECORD_FORMAT) return null;
-  if (typeof r.record_version !== 'number' || r.record_version > RUN_RECORD_VERSION) return null;
+  const v = r.record_version;
+  if (typeof v !== 'number' || v < 1 || v > RUN_RECORD_VERSION) return null;
   const s = r.settings;
   if (!s || typeof s !== 'object') return null;
   const o = s as Record<string, unknown>;
   const out: AppliedSettings = {};
+  const finite = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x);
   const bool = (k: string, to: keyof AppliedSettings) => {
     if (typeof o[k] === 'boolean') (out as Record<string, unknown>)[to] = o[k];
   };
   const num = (k: string, to: keyof AppliedSettings) => {
-    if (typeof o[k] === 'number' && Number.isFinite(o[k]))
-      (out as Record<string, unknown>)[to] = o[k];
+    if (finite(o[k])) (out as Record<string, unknown>)[to] = o[k];
   };
   bool('flat_field', 'flatField');
   bool('discovery', 'discover');
   bool('lookback', 'lookback');
-  bool('settle_during_discover', 'csettle');
-  num('settle_ceiling_per_live_frame', 'csettleCeiling');
+  if (v === 1) {
+    // v1: `settle_during_discover` false was the cap Off; true is Background settle as now
+    // (the default), at the recorded ceiling. `settle_governor` has no meaning any more.
+    bool('settle_during_discover', 'csettle');
+    num('settle_ceiling_per_live_frame', 'csettleCeiling');
+  } else {
+    if (o.background_settle === 'off' || o.settle_cap === 'off') out.csettle = false;
+    else if (o.background_settle === 'auto-below-max') out.csettle = true;
+    if (finite(o.settle_cap) && o.settle_cap > 0) {
+      out.csettle ??= true;
+      out.csettleCeiling = o.settle_cap;
+    }
+    bool('need_first', 'csettleNeedFirst');
+    const pool = o.lookback_pool as Record<string, unknown> | null | undefined;
+    if (pool && typeof pool === 'object' && finite(pool.planned_S))
+      out.lookbackPoolPlanned = pool.planned_S;
+  }
   num('settle_yield_frames', 'csettleYield');
-  bool('settle_governor', 'csettleGovernor');
   num('target_speed_fps', 'paceFps');
   bool('smooth_playback', 'smoothPlayback');
   return out;
