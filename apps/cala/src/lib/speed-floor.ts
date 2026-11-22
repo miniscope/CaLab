@@ -45,7 +45,7 @@ export interface FloorEstimate {
   /** The rate below which the slow loop sees every live frame (the slow-worker term with the cap at 0), same clamps. */
   seeAllFps: number;
   /** Which user set it. */
-  limiting: 'look-back' | 'slow-worker' | 'visits' | 'minimum' | 'max';
+  limiting: 'look-back' | 'slow-worker' | 'visits' | 'minimum' | 'max' | 'prior';
   /** Each term's saturation rate, fps (null = not known or dropped), for the tooltip, the record and the tests. */
   terms: {
     lookbackNeed: number | null;
@@ -54,6 +54,8 @@ export interface FloorEstimate {
     visits: number | null;
   };
   confidence: 'prior' | 'unpaced' | 'paced';
+  /** The floor (after the hard minimum) is above the live Max estimate: no position between them exists. */
+  aboveMax: boolean;
 }
 
 export const FLOOR = {
@@ -130,9 +132,10 @@ export function speedFloor(i: FloorInputs, k: FloorConstants = FLOOR): FloorEsti
   let raw: number;
   let limiting: FloorEstimate['limiting'];
   let confidence: FloorEstimate['confidence'];
-  if (binding.length === 0) {
+  // Capacities that were not measured (`none`) are not trusted: the prior stands.
+  if (binding.length === 0 || i.measuredAt === 'none') {
     raw = S > 0 ? k.priorFps.pool : k.priorFps.turnTaking;
-    limiting = 'look-back';
+    limiting = 'prior';
     confidence = 'prior';
   } else {
     [raw, limiting] = binding.reduce((a, b) => (b[0] < a[0] ? b : a));
@@ -148,7 +151,7 @@ export function speedFloor(i: FloorInputs, k: FloorConstants = FLOOR): FloorEsti
     }
     if (out < k.hardMinFps) {
       out = k.hardMinFps;
-      why = 'minimum';
+      why = confidence === 'prior' ? from : 'minimum';
     }
     return { out, why };
   };
@@ -156,6 +159,7 @@ export function speedFloor(i: FloorInputs, k: FloorConstants = FLOOR): FloorEsti
   // Not known (a cost missing): no better than the floor itself.
   const seeAll = clamp(seeAllRaw ?? raw, limiting).out;
   return {
+    aboveMax: pos(i.maxFps) && main.out > i.maxFps,
     fps: main.out,
     seeAllFps: Math.max(seeAll, main.out),
     limiting: main.why,
@@ -187,8 +191,8 @@ export type WorkCapacities = Pick<
 export const CAPACITY = {
   /** The snapshots must be at least this far apart, ms. */
   minSpanMs: 5000,
-  /** Worker 0 must have been busy on need answers at least this share of the span. */
-  needMinBusyShare: 0.2,
+  /** Worker 0 must have been busy on need answers at least this long to give a rate, ms. */
+  needMinBusyMs: 250,
   /** The settle pool must have been busy at least this long to give a rate, ms. */
   settleMinBusyMs: 250,
   /** Mean visit busy share above this counts as saturated: the cost is not known. */
@@ -229,14 +233,25 @@ export function workCapacities(
   const csettle = lb('csettle');
   const end = lb('end');
 
-  const needFps =
-    need.frames > 0 && need.busyMs >= CAPACITY.needMinBusyShare * spanMs
+  const settleWorkers =
+    cur.settleWorkers ?? Math.max(0, (cur.lookbackWorkerBusyMs?.length ?? 1) - 1);
+  const needMeasured =
+    need.frames > 0 && need.busyMs >= CAPACITY.needMinBusyMs
       ? (need.frames * 1000) / need.busyMs
       : null;
   const settleMeasured =
     csettle.frames > 0 && csettle.busyMs >= CAPACITY.settleMinBusyMs
       ? (csettle.frames * 1000) / csettle.busyMs
       : null;
+  // With no pool, worker 0 does both kinds: when it gave too little need time (paced runs, few
+  // cells in need), its settle rate, or its combined frames over combined busy time, stands in.
+  // Leaving the term out instead would let the slow-worker term set a floor about twice too high.
+  const bothBusy = need.busyMs + csettle.busyMs;
+  const combined =
+    need.frames + csettle.frames > 0 && bothBusy >= CAPACITY.needMinBusyMs
+      ? ((need.frames + csettle.frames) * 1000) / bothBusy
+      : null;
+  const needFps = needMeasured ?? (settleWorkers <= 0 ? (settleMeasured ?? combined) : null);
   const settleFps = settleMeasured ?? opts.priorSettleFps ?? needFps;
 
   const slowLiveMs = (busy('live') + busy('housekeep') + busy('publish')) / obs;
@@ -266,7 +281,7 @@ export function workCapacities(
     slowSettleMs,
     visitWorkers,
     visitMs,
-    settleWorkers: cur.settleWorkers ?? Math.max(0, (cur.lookbackWorkerBusyMs?.length ?? 1) - 1),
+    settleWorkers,
     spanMs,
     observedFrames: obs,
   };
@@ -359,10 +374,12 @@ export class FloorTracker {
     this.lastEval = t;
     const est = speedFloor(this.average(), this.k);
     this.estimate_ = est;
-    return this.publish(est.fps);
+    return this.publish(est.fps, est.confidence === 'prior');
   }
 
-  private publish(raw: number): boolean {
+  private publish(raw: number, prior: boolean): boolean {
+    // An unmeasured prior is shown but never published as the floor.
+    if (prior) return false;
     const p = this.published_;
     if (p === null) {
       this.published_ = snapToLadder(raw);
@@ -370,8 +387,10 @@ export class FloorTracker {
     }
     const idx = FLOOR_LADDER.indexOf(p as (typeof FLOOR_LADDER)[number]);
     const next = FLOOR_LADDER[Math.min(FLOOR_LADDER.length - 1, idx + 1)];
-    const below = FLOOR_LADDER[Math.max(0, idx - 1)];
-    const dir: -1 | 0 | 1 = raw >= next && next > p ? 1 : raw < below && below < p ? -1 : 0;
+    // Conservative means low: any raw below the published step counts as a step down; a step up
+    // needs the raw floor at the next step.
+    const down = snapToLadder(raw) < p;
+    const dir: -1 | 0 | 1 = down ? -1 : raw >= next && next > p ? 1 : 0;
     if (dir === 0 || dir !== this.dir) this.streak = 0;
     this.dir = dir;
     if (dir === 0) return false;
@@ -381,6 +400,14 @@ export class FloorTracker {
     this.dir = 0;
     this.published_ = snapToLadder(raw);
     return true;
+  }
+
+  /** Forget the samples (a new regime: the target changed) but keep the published floor. */
+  clearSamples(): void {
+    this.samples = [];
+    this.lastEval = Number.NEGATIVE_INFINITY;
+    this.streak = 0;
+    this.dir = 0;
   }
 
   private average(): FloorInputs {
@@ -433,53 +460,101 @@ export interface FloorFeed {
   governorLimit?: string;
   /** A library has been published. */
   haveLibrary: boolean;
+  /** The slow loop's run number (`SlowStatus.run`): 1 = Discover, above 1 = a Refine run (the floor freezes). */
+  run?: number;
+}
+
+/** What the UI shows: always a number, with what it rests on. */
+export interface FloorDisplay {
+  /** The published (ladder) floor when there is one, else the raw estimate or the prior. */
+  fps: number;
+  /** The published ladder floor; null until measured. */
+  published: number | null;
+  estimate: FloorEstimate;
+  /** Nothing measured yet: show "about N (not measured yet)". */
+  prior: boolean;
+  /** The floor is above the live Max estimate (the published one, when there is one). */
+  aboveMax: boolean;
 }
 
 /**
  * Keeps the snapshot history and the "cells in need" history, builds the
  * inputs and feeds the tracker. Pure: the clock is the slow worker's wall time.
+ * Throttled to one reading a second (`everyMs`, like `WorkRater`): a status
+ * that comes sooner costs only a comparison (`due`), so production does no
+ * per-batch work for it.
  */
 export class FloorMeter {
   readonly tracker: FloorTracker;
   private snaps: WorkStatus[] = [];
   private needSeen: { t: number; inNeed: boolean }[] = [];
+  private needCount = 0;
+  private lastT = Number.NEGATIVE_INFINITY;
+  private lastTarget = -1;
   /** When the target went below Max (null: at Max); the span is `paced` only if it began after this. */
   private pacedSince: number | null = null;
+  private lastSettleWorkers = 0;
+  private lastMax: number | null = null;
   /** Latest inputs (for the readout). */
   last: FloorInputs | null = null;
+  /** Counts the readings taken (a reader refreshes its text when this moves). */
+  version = 0;
 
   constructor(
-    k: FloorConstants = FLOOR,
-    private readonly opts: { needWindowMs: number; priorSettleFps?: number | null } = {
+    private readonly k: FloorConstants = FLOOR,
+    private readonly opts: {
+      needWindowMs: number;
+      everyMs: number;
+      priorSettleFps?: number | null;
+    } = {
       needWindowMs: 60_000,
+      everyMs: 1000,
     },
   ) {
     this.tracker = new FloorTracker(k);
+  }
+
+  /** Whether a status at slow-worker wall time `wallMs` would be read (cheap: call before building a feed). */
+  due(wallMs: number): boolean {
+    return wallMs < this.lastT || wallMs - this.lastT >= this.opts.everyMs;
   }
 
   /** Feed one slow status. Returns true when the published floor changed. */
   push(f: FloorFeed): boolean {
     const w = f.work;
     const t = w.wallMs;
-    const prevSnap = this.snaps[this.snaps.length - 1];
-    if (prevSnap && t < prevSnap.wallMs) this.restart();
+    if (!this.due(t)) return false;
+    if (t < this.lastT) this.restart();
+    this.lastT = t;
+    this.version++;
+    this.lastSettleWorkers = w.settleWorkers ?? 0;
+    this.lastMax = f.maxFps !== null && f.maxFps > 0 ? f.maxFps : null;
+
+    // A change of target (including between two paced values) is a new regime: capacities and
+    // samples from before it would mix paced and unpaced readings.
+    if (f.target !== this.lastTarget) {
+      this.lastTarget = f.target;
+      this.snaps = [];
+      this.tracker.clearSamples();
+      this.pacedSince = f.target > 0 ? t : null;
+    }
     this.snaps.push(w);
-    // Keep about 10 s of snapshots: the reference is the newest one at least the minimum span old.
-    while (this.snaps.length > 2 && t - this.snaps[1].wallMs >= 2 * CAPACITY.minSpanMs)
+    // About 10 s of snapshots: the reference is the newest one at least the minimum span old.
+    while (this.snaps.length > 2 && t - this.snaps[1].wallMs >= CAPACITY.minSpanMs)
       this.snaps.shift();
 
-    if (f.target > 0) {
-      this.pacedSince ??= t;
-    } else {
-      this.pacedSince = null;
-    }
+    // Running count of the samples in need; the window is pruned from the front.
     this.needSeen.push({ t, inNeed: f.inNeed > 0 });
-    while (this.needSeen.length > 0 && t - this.needSeen[0].t > this.opts.needWindowMs)
+    if (f.inNeed > 0) this.needCount++;
+    while (this.needSeen.length > 0 && t - this.needSeen[0].t > this.opts.needWindowMs) {
+      if (this.needSeen[0].inNeed) this.needCount--;
       this.needSeen.shift();
+    }
 
     const frozen =
       f.paused ||
       !f.haveLibrary ||
+      (f.run ?? 1) > 1 ||
       f.governorLimit === 'discover' ||
       f.governorLimit === 'backing-off';
 
@@ -488,15 +563,11 @@ export class FloorMeter {
     const cap = ref ? workCapacities(ref, w, { priorSettleFps: this.opts.priorSettleFps }) : null;
     if (!cap) return false;
     const spanStart = t - cap.spanMs;
-    const wholeSpan = f.target > 0 ? (this.pacedSince ?? t) <= spanStart : false;
-    const needActive =
-      this.needSeen.length > 0
-        ? this.needSeen.filter((s) => s.inNeed).length / this.needSeen.length
-        : 0;
+    const wholeSpan = f.target > 0 && this.pacedSince !== null && this.pacedSince <= spanStart;
     const inputs: FloorInputs = {
       cap: f.cap,
       needRate: f.needRate,
-      needActive,
+      needActive: this.needSeen.length > 0 ? this.needCount / this.needSeen.length : 0,
       settleWorkers: cap.settleWorkers,
       needFpsPerWorker: cap.needFpsPerWorker,
       settleFpsPerWorker: cap.settleFpsPerWorker,
@@ -506,22 +577,60 @@ export class FloorMeter {
       slowSettleMs: cap.slowSettleMs,
       visitWorkers: cap.visitWorkers,
       visitMs: cap.visitMs,
-      maxFps: f.maxFps !== null && f.maxFps > 0 ? f.maxFps : null,
+      maxFps: this.lastMax,
       measuredAt: wholeSpan ? 'paced' : 'unpaced',
     };
     this.last = inputs;
     return this.tracker.update(t, inputs, frozen);
   }
 
+  /** What to show now; before any measurement, the prior for the current pool size. */
+  display(): FloorDisplay {
+    const estimate =
+      this.tracker.estimate ??
+      speedFloor(
+        {
+          cap: 0,
+          needRate: 0,
+          needActive: 0,
+          settleWorkers: this.lastSettleWorkers,
+          needFpsPerWorker: null,
+          settleFpsPerWorker: null,
+          slowLiveMs: null,
+          slowVisitMs: null,
+          slowNeedMs: null,
+          slowSettleMs: null,
+          visitWorkers: 0,
+          visitMs: null,
+          maxFps: this.lastMax,
+          measuredAt: 'none',
+        },
+        this.k,
+      );
+    const published = this.tracker.published;
+    const fps = published ?? estimate.fps;
+    return {
+      fps,
+      published,
+      estimate,
+      prior: estimate.confidence === 'prior',
+      aboveMax: this.lastMax !== null && fps > this.lastMax,
+    };
+  }
+
   private restart(): void {
     this.snaps = [];
     this.needSeen = [];
+    this.needCount = 0;
+    this.lastTarget = -1;
     this.pacedSince = null;
     this.last = null;
+    this.tracker.clearSamples();
   }
 
   reset(): void {
     this.restart();
+    this.lastT = Number.NEGATIVE_INFINITY;
     this.tracker.reset();
   }
 }
@@ -530,18 +639,15 @@ const rate = (x: number | null) => (x === null ? '-' : x.toFixed(0));
 
 /** The floor's lines of the `?debug` readout: value, who sets it, how sure, and each term. */
 export function floorText(m: FloorMeter | null): string {
-  const e = m?.tracker.estimate;
-  if (!m || !e) return 'floor: not measured yet (needs 5 s of data and a library)';
-  const p = m.tracker.published;
-  const conf =
-    e.confidence === 'prior'
-      ? 'prior, not measured'
-      : e.confidence === 'unpaced'
-        ? 'measured at Max'
-        : 'measured paced';
+  if (!m) return 'floor: not measured yet';
+  const d = m.display();
+  const e = d.estimate;
+  if (d.prior) return `floor about ${e.fps.toFixed(0)} fps (not measured yet)`;
+  const conf = e.confidence === 'unpaced' ? 'measured at Max' : 'measured paced';
   const t = e.terms;
+  const above = d.aboveMax ? ' · ABOVE MAX' : '';
   return (
-    `floor ${p ?? '-'} fps (raw ${e.fps.toFixed(1)}) · set by ${e.limiting} · ${conf} · sees every frame below ${e.seeAllFps.toFixed(0)}\n` +
+    `floor ${d.published ?? '-'} fps (raw ${e.fps.toFixed(1)}) · set by ${e.limiting} · ${conf}${above} · sees every frame below ${e.seeAllFps.toFixed(0)}\n` +
     `        terms: look-back need ${rate(t.lookbackNeed)} settle ${rate(t.lookbackSettle)} · slow worker ${rate(t.slowWorker)} · visits ${rate(t.visits)} (reported only)`
   );
 }

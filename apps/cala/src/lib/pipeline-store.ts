@@ -504,20 +504,24 @@ export function createPipelineStore(
   const [floorLine, setFloorLine] = createSignal('');
   cells?.onStatus((st) => {
     if (!st.accounting) return;
-    const lb = st.lookback;
-    const gov = lb?.csettle?.governor;
-    floorMeter.push({
-      work: st.accounting,
-      inNeed: lb?.inNeed ?? 0,
-      cap: gov?.cap ?? lb?.csettle?.rate ?? 0,
-      needRate: NEED_RATE,
-      target: paceRun() ? paceFps : 0,
-      maxFps: maxFpsEstimator.estimate() || null,
-      paused: untrack(status) === 'paused',
-      governorLimit: gov?.limit,
-      haveLibrary: st.version > 0,
-    });
-    setFloorLine(floorText(floorMeter));
+    // Throttled to about 1 Hz inside the meter: no per-batch work for a debug readout.
+    if (floorMeter.due(st.accounting.wallMs)) {
+      const lb = st.lookback;
+      const gov = lb?.csettle?.governor;
+      floorMeter.push({
+        work: st.accounting,
+        inNeed: lb?.inNeed ?? 0,
+        cap: gov?.cap ?? lb?.csettle?.rate ?? 0,
+        needRate: NEED_RATE,
+        target: paceRun() ? paceFps : 0,
+        maxFps: maxFpsEstimator.estimate() || null,
+        paused: untrack(status) === 'paused',
+        governorLimit: gov?.limit,
+        haveLibrary: st.version > 0,
+        run: st.run,
+      });
+      setFloorLine(floorText(floorMeter));
+    }
     const rates = workRater.push(st.accounting);
     if (!rates) return;
     const max = maxFpsEstimator.estimate();

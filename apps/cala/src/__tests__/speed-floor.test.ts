@@ -182,14 +182,11 @@ function pair(): [WorkStatus, WorkStatus] {
   b.busyMs.housekeep = 1000;
   b.busyMs.publish = 800;
   b.busyMs.visit = 900;
-  b.busyMs.need = 600 * 1.45 * 0 + 870; // 600 need frames at 1.45 ms
-  b.busyMs.csettle = 600 * 4.6;
-  b.visitBusyMs = [4000, 4000, 4000, 4000].map((v) => v);
-  // Need-driven: 3000 busy ms at 150 frames/s = 450 frames. Settle: 6000 ms at 150 = 900 frames
-  // (600 need frames are what the slow worker took in, 1.45 ms each).
-  b.lookback.need = { ...emptyLookbackWork(), answers: 30, frames: 600, solveMs: 3000 };
-  b.lookback.need.frames = 450;
+  b.visitBusyMs = [4000, 4000, 4000, 4000];
+  // Need-driven: 3000 busy ms at 150 frames/s = 450 frames, 1.45 ms each on the slow worker.
+  b.lookback.need = { ...emptyLookbackWork(), answers: 30, frames: 450, solveMs: 3000 };
   b.busyMs.need = 450 * 1.45;
+  // Settle: 6000 ms at 150 frames/s = 900 frames, 4.6 ms each on the slow worker.
   b.lookback.csettle = { ...emptyLookbackWork(), answers: 60, frames: 900, solveMs: 6000 };
   b.busyMs.csettle = 900 * 4.6;
   b.settleWorkers = 1;
@@ -224,9 +221,9 @@ describe('workCapacities', () => {
     expect(workCapacities(a, { ...b, observedFrames: a.observedFrames })).toBeNull();
   });
 
-  it('skips the need rate when worker 0 was busy on need under 20% of the span', () => {
+  it('skips the need rate when worker 0 was busy on need under 250 ms', () => {
     const [a, b] = pair();
-    b.lookback.need.solveMs = 1000;
+    b.lookback.need.solveMs = 200;
     expect(workCapacities(a, b)!.needFpsPerWorker).toBeNull();
   });
 
@@ -369,7 +366,8 @@ describe('FloorMeter and floorText', () => {
     feed(a, true);
     expect(feed(b, false)).toBe(false);
     expect(m.tracker.published).toBeNull();
-    expect(feed(b, true)).toBe(true);
+    expect(feed(b, true)).toBe(false); // throttled: the same second
+    expect(feed({ ...b, wallMs: b.wallMs + 1000 }, true)).toBe(true);
     expect(m.tracker.published).not.toBeNull();
     const text = floorText(m);
     expect(text).toMatch(/^floor \d+ fps/);
@@ -378,5 +376,202 @@ describe('FloorMeter and floorText', () => {
     // A run that restarts (wall time goes back) starts over.
     feed(a, true);
     expect(m.last).toBeNull();
+  });
+});
+
+/** One look-back worker (S = 0) doing both kinds: a ten-second pair with chosen busy times. */
+function turnTaking(o: {
+  obs: number;
+  needBusy: number;
+  needFrames: number;
+  settleBusy: number;
+  settleFrames: number;
+}): [WorkStatus, WorkStatus] {
+  const a = emptyWork(0);
+  a.wallMs = 0;
+  a.observedFrames = 0;
+  const b = emptyWork(0);
+  b.wallMs = 10_000;
+  b.observedFrames = o.obs;
+  b.settleWorkers = 0;
+  b.busyMs.live = 2 * o.obs;
+  b.busyMs.visit = 1 * o.obs;
+  b.lookback.need = {
+    ...emptyLookbackWork(),
+    answers: 1,
+    frames: o.needFrames,
+    solveMs: o.needBusy,
+  };
+  b.lookback.csettle = {
+    ...emptyLookbackWork(),
+    answers: 1,
+    frames: o.settleFrames,
+    solveMs: o.settleBusy,
+  };
+  b.busyMs.need = 1.45 * o.needFrames;
+  b.busyMs.csettle = 4.6 * o.settleFrames;
+  return [a, b];
+}
+
+describe('S = 0 look-back rate when worker 0 gave little need time', () => {
+  const floorOf = (pairs: [WorkStatus, WorkStatus], needActive: number) => {
+    const c = workCapacities(...pairs)!;
+    return speedFloor({
+      ...base,
+      ...c,
+      needActive,
+      settleWorkers: 0,
+      slowLiveMs: 2,
+      slowVisitMs: 1,
+    });
+  };
+  it('paced at 10 fps with cells in need: look-back sets about 21, not the slow worker', () => {
+    // 100 live frames, 300 ms of need work (under 20 % of the span), the rest settle: 95 frames/s.
+    const e = floorOf(
+      turnTaking({
+        obs: 100,
+        needBusy: 300,
+        needFrames: 28.5,
+        settleBusy: 2000,
+        settleFrames: 190,
+      }),
+      1,
+    );
+    expect(e.terms.lookbackNeed).toBeCloseTo(21.4, 0);
+    expect(e.limiting).toBe('look-back');
+    expect(e.fps).toBeLessThan(25);
+  });
+  it('needActive 0.3 at 30 fps: the settle rate stands in below 250 ms of need time', () => {
+    const e = floorOf(
+      turnTaking({ obs: 300, needBusy: 100, needFrames: 9.5, settleBusy: 4000, settleFrames: 380 }),
+      0.3,
+    );
+    expect(e.terms.lookbackNeed).toBeCloseTo((0.9 * 95) / 2.6, 0);
+    expect(e.limiting).toBe('look-back');
+  });
+  it('no cells in need: the settle rate still gives the look-back term', () => {
+    const e = floorOf(
+      turnTaking({ obs: 300, needBusy: 0, needFrames: 0, settleBusy: 4000, settleFrames: 380 }),
+      0,
+    );
+    expect(e.terms.lookbackNeed).toBeCloseTo((0.9 * 95) / 2, 0);
+    expect(e.limiting).toBe('look-back');
+  });
+  it('combined frames over combined busy time when neither kind alone is long enough', () => {
+    const [a, b] = turnTaking({
+      obs: 100,
+      needBusy: 150,
+      needFrames: 14,
+      settleBusy: 150,
+      settleFrames: 14,
+    });
+    expect(workCapacities(a, b)!.needFpsPerWorker).toBeCloseTo((28 * 1000) / 300, 6);
+  });
+});
+
+describe('floor details', () => {
+  it('reports the prior as limiting "prior"; measuredAt none is not trusted', () => {
+    const e = speedFloor({ ...base, ...nulls, settleWorkers: 0, measuredAt: 'none' });
+    expect(e.limiting).toBe('prior');
+    const m = speedFloor({ ...base, settleWorkers: 1, measuredAt: 'none' });
+    expect(m.confidence).toBe('prior');
+    expect(m.limiting).toBe('prior');
+    expect(m.fps).toBe(FLOOR.priorFps.pool);
+  });
+
+  it('flags a floor above Max (the hard minimum above a slow Max)', () => {
+    expect(speedFloor({ ...base, maxFps: 8 }).aboveMax).toBe(true);
+    expect(speedFloor({ ...base, maxFps: 300 }).aboveMax).toBe(false);
+    expect(speedFloor({ ...base, maxFps: null }).aboveMax).toBe(false);
+  });
+
+  it('steps down for any raw below the published step, snapped to the ladder', () => {
+    const tr = new FloorTracker({ ...FLOOR }, { averageMs: 1, evalEveryMs: 5000, confirm: 3 });
+    const at = (fps: number): FloorInputs => ({
+      ...base,
+      slowLiveMs: 1,
+      slowVisitMs: 0,
+      needFpsPerWorker: (fps * 4) / 0.9,
+    });
+    tr.update(0, at(30));
+    expect(tr.published).toBe(30);
+    const ch = [5000, 10_000, 15_000].map((t) => tr.update(t, at(29)));
+    expect(ch).toEqual([false, false, true]);
+    expect(tr.published).toBe(25);
+  });
+
+  it('does not publish the prior', () => {
+    const tr = new FloorTracker();
+    tr.update(0, { ...base, ...nulls, settleWorkers: 0, measuredAt: 'none' });
+    expect(tr.published).toBeNull();
+    expect(tr.estimate!.confidence).toBe('prior');
+  });
+});
+
+describe('FloorMeter regimes, throttle, display', () => {
+  const feedOf = (w: WorkStatus, over: Partial<Parameters<FloorMeter['push']>[0]> = {}) => ({
+    work: w,
+    inNeed: 5,
+    cap: 2,
+    needRate: 2,
+    target: 60,
+    maxFps: 300,
+    paused: false,
+    haveLibrary: true,
+    ...over,
+  });
+  const at = (w: WorkStatus, wall: number, obs: number): WorkStatus => ({
+    ...w,
+    wallMs: wall,
+    observedFrames: obs,
+  });
+
+  it('shows the prior before any measurement and flags above Max', () => {
+    const m = new FloorMeter();
+    const d = m.display();
+    expect(d.prior).toBe(true);
+    expect(d.fps).toBe(FLOOR.priorFps.turnTaking);
+    expect(floorText(m)).toMatch(/about 20 fps \(not measured yet\)/);
+    const [a, b] = pair();
+    m.push(feedOf(a, { maxFps: 8 }));
+    expect(m.display().aboveMax).toBe(true);
+    void b;
+  });
+
+  it('throttles to one reading a second', () => {
+    const m = new FloorMeter();
+    const [a, b] = pair();
+    m.push(feedOf(a));
+    const v = m.version;
+    expect(m.due(a.wallMs + 500)).toBe(false);
+    m.push(feedOf(at(b, a.wallMs + 500, 1300)));
+    expect(m.version).toBe(v);
+    expect(m.due(a.wallMs + 1000)).toBe(true);
+  });
+
+  it('a target change, even between two paced values, starts a new regime', () => {
+    const m = new FloorMeter();
+    const [a, b] = pair();
+    m.push(feedOf(a, { target: 60 }));
+    m.push(feedOf(b, { target: 60 }));
+    expect(m.last?.measuredAt).toBe('paced');
+    m.push(feedOf(at(b, b.wallMs + 1000, 1860), { target: 30 }));
+    // The old snapshots are gone: nothing to measure from yet.
+    const before = m.version;
+    m.push(feedOf(at(b, b.wallMs + 7000, 2200), { target: 30 }));
+    expect(m.version).toBe(before + 1);
+    // Paced for the whole new span, measured only inside it.
+    expect(m.last?.measuredAt).toBe('paced');
+    m.push(feedOf(at(b, b.wallMs + 8000, 2300), { target: 0 }));
+    m.push(feedOf(at(b, b.wallMs + 14_000, 2700), { target: 0 }));
+    expect(m.last?.measuredAt).toBe('unpaced');
+  });
+
+  it('freezes during a Refine run', () => {
+    const m = new FloorMeter();
+    const [a, b] = pair();
+    m.push(feedOf(a, { run: 2 }));
+    m.push(feedOf(b, { run: 2 }));
+    expect(m.tracker.published).toBeNull();
   });
 });
