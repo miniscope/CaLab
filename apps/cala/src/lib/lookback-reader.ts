@@ -58,6 +58,9 @@ export interface HistorySource {
   readFrames(start: number, count: number, out?: FramePixels): Promise<FramePixels>;
 }
 
+/** Block seqs at or below this belong to the settle during Discover (`-(1e6 + k)`); the end settle's are above. */
+const SETTLE_BLOCK_MAX = -1_000_000;
+
 /** Raw frames read at once around a requested one (the scheduler serves 64-frame blocks forward). */
 export const LOOKBACK_READ_SPAN = 64;
 
@@ -99,6 +102,11 @@ export class LookbackReader {
   private motion: MotionCorrector | null = null;
   /** The block in progress and its copy of the live back half. */
   private block: { seq: number; pre: Preprocessor } | null = null;
+  /**
+   * The settle during Discover's chunk in progress (block seq <= `SETTLE_BLOCK_MAX`), a slot of its
+   * own: its chunks never free the need-driven block's preprocessor, which goes on across requests.
+   */
+  private settleBlock: { seq: number; pre: Preprocessor } | null = null;
   private engine: TraceEngine | null = null;
   private version = 0;
   private cells = 0;
@@ -156,9 +164,15 @@ export class LookbackReader {
 
   /**
    * Re-read, preprocess and solve the requested frames, in order, into
-   * `out` (at least `frames.length * width * height` values).
+   * `out` (at least `frames.length * width * height` values). A frame with
+   * `skip[i]` set is preprocessed (its block's preprocessor runs on) but not
+   * solved: its traces stay 0 and must not be used.
    */
-  async serve(frames: LookbackFrame[], out: Float32Array): Promise<LookbackSolved> {
+  async serve(
+    frames: LookbackFrame[],
+    out: Float32Array,
+    skip?: ArrayLike<number>,
+  ): Promise<LookbackSolved> {
     if (out.length < frames.length * this.px)
       throw new RangeError(`look-back: a buffer of ${out.length} for ${frames.length} frames`);
     this.applyLibrary();
@@ -169,7 +183,7 @@ export class LookbackReader {
       const y = out.subarray(i * this.px, (i + 1) * this.px);
       await this.preprocess(frame, block, y);
       if (this.disposed) throw new Error('look-back stopped');
-      if (!this.engine || this.cells === 0) continue;
+      if (!this.engine || this.cells === 0 || skip?.[i]) continue;
       traces.set(this.engine.processFrames(y, 1), i * this.cells);
       const bg = this.engine.lastBackground();
       background ??= new Float32Array(frames.length * bg.length);
@@ -213,10 +227,13 @@ export class LookbackReader {
   }
 
   private blockPre(seq: number, state: Uint8Array): Preprocessor {
-    if (this.block?.seq === seq) return this.block.pre;
-    this.block?.pre.free();
-    this.block = { seq, pre: Preprocessor.fromState(state) };
-    return this.block.pre;
+    const slot = seq <= SETTLE_BLOCK_MAX ? 'settleBlock' : 'block';
+    const cur = this[slot];
+    if (cur?.seq === seq) return cur.pre;
+    cur?.pre.free();
+    const next = { seq, pre: Preprocessor.fromState(state) };
+    this[slot] = next;
+    return next.pre;
   }
 
   private frontPre(state: Uint8Array): Preprocessor {
@@ -287,6 +304,8 @@ export class LookbackReader {
     for (const w of this.backWaiters.splice(0)) w.reject(new Error('look-back stopped'));
     this.block?.pre.free();
     this.block = null;
+    this.settleBlock?.pre.free();
+    this.settleBlock = null;
     this.front?.free();
     this.front = null;
     this.motion?.free();

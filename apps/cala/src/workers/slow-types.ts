@@ -38,6 +38,18 @@ export interface SlowInit {
    * during Discover and settles after the last frame (see `SlowRunner`).
    */
   lookback?: boolean;
+  /**
+   * Settle during Discover (experimental, frames only; needs `lookback`;
+   * absent or 0 = off): the ceiling, in re-read frames per live frame the
+   * slow loop observes (`CSETTLE` in `lib/settle.ts`; see `SlowRunner`).
+   */
+  csettle?: number;
+  /**
+   * With `csettle`: the slow worker handles an answer of re-read frames this
+   * many frames at a time and gives way in between (absent or 0: the whole
+   * answer in one go, as measured in qc_eval's arm `CS2F`).
+   */
+  csettleYield?: number;
 }
 
 /** Fast worker -> slow worker. */

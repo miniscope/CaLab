@@ -25,7 +25,7 @@ use wasm_bindgen::prelude::*;
 
 use super::{
     EditScope, HeldOutRecord, JointSign, JointUpdate, LookBack, LookbackConfig, LookbackNext,
-    LookbackOutcome, SlowLoop, SlowLoopConfig, VisitJob, VisitResult, VisitRunner,
+    LookbackOutcome, SettleSched, SlowLoop, SlowLoopConfig, VisitJob, VisitResult, VisitRunner,
 };
 use crate::compress::review::footprints_from_wire;
 use crate::preprocess::flatten::{FlattenConfig, GlowFlattener};
@@ -37,6 +37,9 @@ use crate::trace::{FrameTraces, Library, LibraryBuilder};
 /// Published versions kept for `observe` (frames in flight from the fast
 /// worker may still carry traces of a recent older version).
 const KEEP_VERSIONS: usize = 6;
+/// Block numbers of the concurrent settle's chunks start below minus this
+/// (`SlowLoop.settleTake`).
+const SETTLE_BLOCK_BASE: f64 = 1_000_000.0;
 
 fn js_err(func: &str, e: impl std::fmt::Display) -> JsError {
     JsError::new(&format!("{func}: {e}"))
@@ -54,6 +57,20 @@ pub struct JsSlowLoop {
     /// Look-back (concurrent Refine; off unless `enableLookback`).
     lookback: Option<LookBack>,
     lb: LbCounts,
+    /// The concurrent settle, frames only (off unless `enableSettle`): its
+    /// frame picker, the chunks started, and its counters.
+    settle: Option<SettleSched>,
+    cs: CsCounts,
+}
+
+/// Counters of the concurrent settle's JS surface (`settleStats`).
+#[derive(Clone, Copy, Debug, Default)]
+struct CsCounts {
+    chunks: u64,
+    taken: u64,
+    fit: u64,
+    held_out: u64,
+    dropped: u64,
 }
 
 /// Look-back counters of the JS surface (`lookbackStats`).
@@ -405,6 +422,130 @@ impl JsSlowLoop {
         Ok(fit)
     }
 
+    // ---- concurrent settle, frames only (settling while Discover runs) ---
+    //
+    // qc_eval's `--csettle S --csettle-mode frames` with visit workers
+    // (arm `CS2F`): while Discover runs, a driver re-reads saved frames
+    // spread over everything seen so far (`settleTake`), solves the ones
+    // on the fitting side with a published library and hands them back
+    // (`observeSettle`); they update the footprint statistics and cluster
+    // stores of every cell, and the ordinary visits do all the refining.
+    // No settle visits, no quiet rule, nothing offered to the reservoir.
+    // How many frames are due is the driver's business.
+
+    /// Turn the concurrent settle on (frames only): saved frames are
+    /// re-read `chunk` in a row, the chunks spread evenly over the history
+    /// (`SettleSched`). Needs look-back (`enableLookback`), whose record
+    /// holds every stream frame's held-out decision.
+    #[wasm_bindgen(js_name = enableSettle)]
+    pub fn enable_settle(&mut self, chunk: u32) -> Result<(), JsError> {
+        if self.lookback.is_none() {
+            return Err(js_err("enableSettle", "call enableLookback first"));
+        }
+        if chunk == 0 {
+            return Err(js_err("enableSettle", "chunk must be > 0"));
+        }
+        self.inner.enable_settle(0);
+        // The share is unused here: the driver keeps the dose.
+        self.settle = Some(SettleSched::new(0.0, chunk as usize));
+        Ok(())
+    }
+
+    /// Whether the concurrent settle is on.
+    #[wasm_bindgen(getter, js_name = settleEnabled)]
+    pub fn settle_enabled(&self) -> bool {
+        self.settle.is_some()
+    }
+
+    /// Take up to `max` saved frames to re-read among stream frames
+    /// `0..seen`, flattened as `[frame, block, held, frame, block, held,
+    /// ...]`: the stream frame index; the chunk it belongs to (start a
+    /// fresh copy of the live preprocessor state when it changes; values
+    /// below -1,000,000, so never a look-back block's or the end settle's);
+    /// and 1 when the frame is held out (preprocess it, so the chunk's
+    /// preprocessor runs on, but do not solve it or hand it back). Empty
+    /// while less than one chunk is saved, or with the settle off.
+    #[wasm_bindgen(js_name = settleTake)]
+    pub fn settle_take(&mut self, seen: f64, max: u32) -> Vec<f64> {
+        let mut out = Vec::new();
+        let Some(sched) = self.settle.as_mut() else {
+            return out;
+        };
+        let seen = seen.max(0.0) as usize;
+        for _ in 0..max {
+            let Some((f, new)) = sched.next_frame(seen) else {
+                break;
+            };
+            self.cs.chunks += u64::from(new);
+            self.cs.taken += 1;
+            out.push(f as f64);
+            out.push(-(SETTLE_BLOCK_BASE + self.cs.chunks as f64));
+            out.push(f64::from(u8::from(
+                self.held.held_out(f as u64, &self.inner),
+            )));
+        }
+        out
+    }
+
+    /// Feed a re-read frame of the concurrent settle (`settleTake`): the
+    /// preprocessed stream frame `stream`, its traces from library
+    /// `version` (and background, as `observe`). A fitting frame updates
+    /// the footprint statistics and cluster stores of every cell; nothing
+    /// else moves (no frame counter, reservoir, ledger or probes). A
+    /// held-out frame is refused here whatever the driver did: it never
+    /// reaches fitting. `false` when the frame is held out or the version
+    /// is no longer held (dropped).
+    #[wasm_bindgen(js_name = observeSettle)]
+    pub fn observe_settle(
+        &mut self,
+        frame: &[f32],
+        version: f64,
+        traces: &[f32],
+        background: Option<Vec<f32>>,
+        stream: f64,
+    ) -> Result<bool, JsError> {
+        if self.settle.is_none() {
+            return Err(js_err("observeSettle", "the concurrent settle is off"));
+        }
+        if self.held.held_out(stream.max(0.0) as u64, &self.inner) {
+            self.cs.held_out += 1;
+            return Ok(false);
+        }
+        let Some(lib) = self.lib(version) else {
+            self.cs.dropped += 1;
+            return Ok(false);
+        };
+        self.fill_traces(&lib, traces, background, "observeSettle")?;
+        // Not offered to the reservoir, so the key is unused.
+        self.inner
+            .observe_settle(frame, &lib, &self.traces, 0, false, false)
+            .map_err(|e| js_err("observeSettle", e))?;
+        self.cs.fit += 1;
+        Ok(true)
+    }
+
+    /// A held-out frame of `settleTake` was passed over by the driver
+    /// (not solved, not handed back): count it.
+    #[wasm_bindgen(js_name = settleSkipped)]
+    pub fn settle_skipped(&mut self, frames: f64) {
+        self.cs.held_out += frames.max(0.0) as u64;
+    }
+
+    /// `[taken, fit, heldOut, dropped]`: frames of the concurrent settle
+    /// handed out, taken into the footprint statistics, held out (never
+    /// fitted) and dropped (library version gone).
+    #[wasm_bindgen(js_name = settleStats)]
+    pub fn settle_stats(&self) -> Vec<f64> {
+        [
+            self.cs.taken,
+            self.cs.fit,
+            self.cs.held_out,
+            self.cs.dropped,
+        ]
+        .map(|v| v as f64)
+        .to_vec()
+    }
+
     /// Split-half noise of every cell's footprint in the newest published
     /// library (`SlowLoop::footprint_noise` on its filtered support):
     /// `[id, noise, id, noise, ...]`, NaN where there is no estimate. The
@@ -697,6 +838,8 @@ impl JsSlowLoop {
             held: HeldOutRecord::default(),
             lookback: None,
             lb: LbCounts::default(),
+            settle: None,
+            cs: CsCounts::default(),
         }
     }
 

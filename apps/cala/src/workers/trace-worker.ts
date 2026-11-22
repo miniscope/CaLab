@@ -67,6 +67,9 @@ function handle(msg: StageMsg): void {
           ...(cells?.library ? { initialLibrary: cells.library } : {}),
           ...(cells?.refine ? { refine: true } : {}),
           ...(cells?.lookback && !cells.library ? { lookback: true } : {}),
+          ...(cells?.lookback && !cells.library && cells.csettle
+            ? { csettle: cells.csettle, csettleYield: cells.csettleYield ?? 0 }
+            : {}),
           ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
         },
         port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,

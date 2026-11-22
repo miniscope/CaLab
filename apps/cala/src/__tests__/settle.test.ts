@@ -1,10 +1,14 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import {
+  CSETTLE,
+  csettleRate,
   movedAgainstNoise,
   noiseMap,
   planFrames,
   SETTLE,
+  SettleDose,
+  settleChange,
   SettleFeed,
   settlePlan,
   unitFootprints,
@@ -112,5 +116,84 @@ describe('movedAgainstNoise', () => {
     // |[0, -1]| / |[1, 1]| = 0.707.
     expect(movedAgainstNoise(before, after, noiseMap([1, 0.5])).above1).toBe(1);
     expect(movedAgainstNoise(before, after, noiseMap([1, 0.8])).above1).toBe(0);
+  });
+});
+
+describe('SettleDose (settle during Discover)', () => {
+  it('every live frame earns `rate` re-read frames; a chunk is ready when a whole one is owed', () => {
+    const d = new SettleDose(2);
+    expect(d.ready).toBe(false);
+    d.earn(7);
+    expect(d.owed).toBe(14);
+    expect(d.ready).toBe(false);
+    d.earn(1);
+    expect(d.ready).toBe(true);
+    d.spend(16);
+    expect(d.owed).toBe(0);
+    expect(d.ready).toBe(false);
+  });
+
+  it('the lower ceilings earn less: 1 and 0.5 per live frame', () => {
+    for (const rate of CSETTLE.rates) {
+      const d = new SettleDose(rate);
+      let asked = 0;
+      for (let live = 0; live < 3200; live++) {
+        d.earn(1);
+        if (d.ready) {
+          d.spend(CSETTLE.chunk);
+          asked += CSETTLE.chunk;
+        }
+      }
+      expect(asked).toBe(3200 * rate);
+    }
+  });
+
+  it('banks at most four chunks, and nothing at rate 0', () => {
+    const d = new SettleDose(2);
+    d.earn(10_000);
+    expect(d.owed).toBe(CSETTLE.chunk * CSETTLE.bankChunks);
+    d.spend(1000);
+    expect(d.owed).toBe(0);
+    const off = new SettleDose(0);
+    off.earn(10_000);
+    expect(off.ready).toBe(false);
+  });
+
+  it('a ceiling is one of the offered values, else the default', () => {
+    expect(CSETTLE.rate).toBe(2);
+    expect(csettleRate(1)).toBe(1);
+    expect(csettleRate('0.5')).toBe(0.5);
+    expect(csettleRate(3)).toBe(2);
+    expect(csettleRate('')).toBe(2);
+    expect(csettleRate(NaN)).toBe(2);
+    expect(csettleRate(undefined)).toBe(2);
+  });
+});
+
+describe('settleChange', () => {
+  it('adds the medians to the counts of movedAgainstNoise', () => {
+    const fp = (v: number[]) => new Map(v.map((x, i) => [i, x]));
+    const before = new Map([
+      [1, fp([1, 0.5])],
+      [2, fp([1, 0.5])],
+      [3, fp([1, 0.5])],
+      [9, fp([1])],
+    ]);
+    const after = new Map([
+      [1, fp([1, 0.5])],
+      [2, fp([1, 0.6])],
+      [3, fp([1, 1])],
+    ]);
+    const noise = new Map([
+      [1, 0.1],
+      [2, 0.1],
+      [3, 0.1],
+    ]);
+    const c = settleChange(before, after, noise);
+    expect(c).toMatchObject({ cells: 3, cellsBefore: 4, cellsAfter: 3, above1: 1, aboveK: 1 });
+    // Cell 2: |0.1| / |(1, 0.5)|.
+    expect(c.medianChange).toBeCloseTo(0.1 / Math.hypot(1, 0.5), 6);
+    expect(c.medianRatio).toBeCloseTo(1 / Math.hypot(1, 0.5), 6);
+    expect(settleChange(new Map(), new Map(), noise).medianChange).toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js';
-import { createEffect, createSignal, For, on, Show } from 'solid-js';
+import { createEffect, createSignal, For, on, Show, untrack } from 'solid-js';
 import { CompactHeader, DashboardShell } from '@calab/ui';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
 import { authLoading, user } from '@calab/community';
@@ -65,6 +65,8 @@ import {
 } from './lib/recent-projects.ts';
 import { LIBRARY_MODE_LABEL, refinePlanText } from './lib/session-run.ts';
 import { createLookbackClient } from './lib/lookback-client.ts';
+import { noiseMap, settleChange, unitFootprints } from './lib/settle.ts';
+import type { LibraryView } from './workers/slow-types.ts';
 import type { ExportInput } from './lib/export.ts';
 import type { ProjectResult } from './lib/project-index.ts';
 import { openResult, type LoadedResult } from './lib/result-file.ts';
@@ -188,6 +190,19 @@ const App: Component = () => {
   );
   // `?lookback`: look-back on from the first Discover start.
   if (params.has('lookback') && params.get('lookback') !== '0') pipeline.setLookback(true);
+  // `?lookback&csettle`: settle during Discover too (experimental; `csettle=yield` or
+  // `csettle=yieldN` feeds each answer N frames at a time, 1 by default; `csrate=1|0.5`
+  // lowers the ceiling from 2 re-read frames per live frame).
+  const cs = params.get('csettle');
+  if (cs !== null && cs !== '0') {
+    pipeline.setCsettle(true);
+    const y = /^yield(\d*)$/.exec(cs);
+    if (y) pipeline.setCsettleYield(y[1] ? Number(y[1]) : 1);
+  }
+  if (params.has('csrate')) pipeline.setCsettleCeiling(Number(params.get('csrate')));
+  // `?debug&pacefps=30` (measurement only): read the recording at a stream's rate.
+  if (params.has('debug') && params.has('pacefps'))
+    pipeline.setPaceFps(Number(params.get('pacefps')));
   // ---- Run stages (docs/stages.md): Discover, Refine (repeatable), Extract ----
   const stageLog = createStageLog();
   const discoverActivity = (): StageActivity => {
@@ -363,6 +378,13 @@ const App: Component = () => {
     }
   });
   // `?debug`: expose the stores for measurement scripts (timing, lag, library events).
+  let discoverEnd: {
+    session: number;
+    library: Pick<
+      LibraryView,
+      'version' | 'frame' | 'width' | 'height' | 'ids' | 'starts' | 'pixels' | 'values'
+    >;
+  } | null = null;
   if (params.has('debug')) {
     (globalThis as { __cala?: unknown }).__cala = {
       cells,
@@ -377,7 +399,45 @@ const App: Component = () => {
       /** Look-back counters of the current run (null: off), and the setting. */
       lookback: () => cells.status()?.lookback ?? null,
       lookbackOn: () => pipeline.lookbackRun(),
+      /**
+       * A look-back run's library at the end of Discover's frames, before the
+       * end settle (null: not there yet), and how far the end settle moved it
+       * against the final library's split-half noise (null until final).
+       */
+      discoverEnd: () => discoverEnd,
+      endSettleChange: () => {
+        const st = cells.status();
+        const lib = cells.library();
+        if (!discoverEnd || !st?.final || !lib || !st.footprintNoise) return null;
+        return settleChange(
+          unitFootprints(discoverEnd.library),
+          unitFootprints(lib),
+          noiseMap(st.footprintNoise),
+        );
+      },
     };
+    // The library Discover ended with: the one in hand when settling starts
+    // (the slow worker publishes it just before that status).
+    createEffect(() => {
+      if (cells.status()?.lookback?.settling !== true) return;
+      const session = cells.session();
+      if (discoverEnd?.session === session) return;
+      const lib = untrack(() => cells.library());
+      if (!lib) return;
+      discoverEnd = {
+        session,
+        library: {
+          version: lib.version,
+          frame: lib.frame,
+          width: lib.width,
+          height: lib.height,
+          ids: lib.ids.slice(),
+          starts: lib.starts.slice(),
+          pixels: lib.pixels.slice(),
+          values: lib.values.slice(),
+        },
+      };
+    });
   }
 
   // Opening a folder starts preprocessing and motion correction right away.

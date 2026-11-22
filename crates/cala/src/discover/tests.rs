@@ -3334,6 +3334,117 @@ fn settle_frames_keep_their_side_and_leave_discover_clocks_alone() {
     assert_eq!(stats_only.reservoir_bytes(), 0);
 }
 
+/// The app's concurrent settle (frames only; `SlowLoop.enableSettle`,
+/// `settleTake`, `observeSettle`): the frames taken are spread in chunks
+/// over the saved history and carry the held-out decision `observe`
+/// recorded; a fitting frame moves the footprint statistics and nothing
+/// else (no frame counter, no reservoir slot, no tile made due); a held-out
+/// frame is refused, so it never reaches fitting.
+#[cfg(feature = "jsbindings")]
+#[test]
+fn js_settle_frames_only_feeds_fitting_frames_to_the_statistics() {
+    use super::js::JsSlowLoop;
+    let t = 96;
+    let mut rng = Lcg(5);
+    let cells = vec![(blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0))];
+    let m = movie(&cells, t, 7);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let n_px = N * N;
+    let (slow, mut eng) = start(config(), &seed);
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    let v = eng.library().version() as f64;
+    // Off: nothing to take, and (look-back off) it cannot be turned on.
+    assert!(js.settle_take(96.0, 16).is_empty());
+    assert!(!js.settle_enabled());
+    js.enable_lookback(2.0, 3000).unwrap();
+    js.enable_settle(16).unwrap();
+    assert!(js.settle_enabled());
+    // Live frames at stream indices 100.. (frames before the slow loop
+    // started get the hashed decision).
+    let off = 100usize;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let ok = js
+            .observe(
+                f,
+                v,
+                &tr.traces,
+                Some(tr.background.clone()),
+                Some((off + k) as f64),
+            )
+            .unwrap();
+        assert!(ok);
+    }
+    // Less than one chunk saved: nothing.
+    assert!(js.settle_take(15.0, 16).is_empty());
+    let seen = off + t;
+    let frames = js.inner().frames();
+    let fresh: Vec<u32> = js.inner().tiles.iter().map(|t| t.fresh).collect();
+    let bytes = js.inner().reservoir_bytes();
+    let id = js.inner().fpstats.keys().next().copied().unwrap();
+    let dbg = |s: &SlowLoop| {
+        let mut st = s.fpstats[&id].clone();
+        st.version = 0;
+        format!("{st:?}")
+    };
+    let (mut fit, mut held, mut blocks) = (0u64, 0u64, std::collections::BTreeSet::new());
+    for _ in 0..8 {
+        let take = js.settle_take(seen as f64, 16);
+        assert_eq!(take.len(), 48);
+        for i in 0..take.len() / 3 {
+            let (f, block, h) = (
+                take[3 * i] as usize,
+                take[3 * i + 1],
+                take[3 * i + 2] == 1.0,
+            );
+            assert!(f < seen);
+            assert!(block < -1_000_000.0);
+            assert_eq!(block, take[1], "one request, one chunk");
+            assert_eq!(f, take[0] as usize + i, "a chunk is frames in a row");
+            blocks.insert(block as i64);
+            // The decision `observe` recorded for an observed frame.
+            if f >= off {
+                assert_eq!(h, js.inner().is_test((f - off) as u64), "frame {f}");
+            }
+            if f < off {
+                // Never seen live by the slow loop: not in this test's movie.
+                continue;
+            }
+            let y = &m[(f - off) * n_px..(f - off + 1) * n_px];
+            let tr = eng.process(y).unwrap();
+            let before = dbg(js.inner());
+            let took = js
+                .observe_settle(y, v, &tr.traces, Some(tr.background.clone()), f as f64)
+                .unwrap();
+            assert_eq!(took, !h, "frame {f}");
+            assert_eq!(dbg(js.inner()) != before, took, "frame {f}");
+            fit += u64::from(took);
+            held += u64::from(!took);
+        }
+    }
+    assert_eq!(blocks.len(), 8);
+    assert!(fit > 0 && held > 0, "{fit} fit, {held} held out");
+    assert_eq!(js.inner().frames(), frames);
+    assert_eq!(js.inner().reservoir_bytes(), bytes);
+    let after: Vec<u32> = js.inner().tiles.iter().map(|t| t.fresh).collect();
+    assert_eq!(after, fresh, "a settle frame made a tile due for Discover");
+    js.settle_skipped(3.0);
+    assert_eq!(
+        js.settle_stats(),
+        vec![128.0, fit as f64, (held + 3) as f64, 0.0]
+    );
+    // A version no longer held is dropped, not an error.
+    let y = &m[..n_px];
+    let f = (off..seen)
+        .find(|&f| !js.inner().is_test((f - off) as u64))
+        .unwrap();
+    assert!(!js
+        .observe_settle(y, 9999.0, &[0.0], None, f as f64)
+        .unwrap());
+    assert_eq!(js.settle_stats()[3], 1.0);
+}
+
 /// A settle visit refines and nothing else: the cell set, the tiles'
 /// ordinary due counters and visit numbers are as before it, and with the
 /// quiet period a tile whose cell set just changed is passed over.
