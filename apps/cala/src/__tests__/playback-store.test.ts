@@ -121,6 +121,22 @@ describe('smooth playback in the pipeline store', () => {
     vi.restoreAllMocks();
   });
 
+  it('gives a displayed frame only while playback lags', async () => {
+    const clock = { t: 0 };
+    const { store, refresh } = setup([batch(0, 8, true)], clock);
+    expect(store.displayedFrame()).toBeNull();
+    await store.start();
+    await flush();
+    refresh(0);
+    expect(store.displayedFrame()).toBe(0);
+    store.pause();
+    expect(store.displayedFrame()).toBeNull();
+    const direct = setup([batch(0, 8, false)], clock);
+    await direct.store.start();
+    await flush();
+    expect(direct.store.displayedFrame()).toBeNull();
+  });
+
   it('clears the queue on stop', async () => {
     const clock = { t: 0 };
     const { store } = setup([batch(0, 8, true), batch(8, 8, true)], clock);

@@ -128,8 +128,9 @@ describe('PipelineEngine (wasm)', () => {
     expect(results[results.length - 1]).toEqual({ kind: 'done' });
   });
 
-  it('previews every frame of a batch when asked, the last one equal to the batch preview', async () => {
-    for (const view of ['raw', 'preprocessed', 'corrected', 'output'] as const) {
+  it.each(['raw', 'preprocessed', 'corrected', 'output'] as const)(
+    'previews every frame of the %s view when asked, the last one equal to the batch preview',
+    async (view) => {
       const engine = new PipelineEngine(
         makeMovie(Array.from({ length: 60 }, () => [0, 0] as [number, number])),
         { calibrationFrames: 20, motionWarmupFrames: 20, batchSize: 8, previewMaxSide: 48 },
@@ -149,8 +150,8 @@ describe('PipelineEngine (wasm)', () => {
         );
         expect(transferablesOf(b)).toHaveLength(11);
       }
-    }
-  });
+    },
+  );
 
   it('reports the global flicker it removes', async () => {
     // A 4 % LED gain flicker at 4 Hz (5 frames per period at 20 fps).

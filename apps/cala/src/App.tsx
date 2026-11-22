@@ -792,7 +792,7 @@ const App: Component = () => {
             cells={cells}
             boundaries={boundaries()}
             boundaryFlags={pipeline.boundaryFlags()}
-            displayedFrame={() => pipeline.previews()?.frame ?? null}
+            displayedFrame={pipeline.displayedFrame}
             fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS}
           />
         ),

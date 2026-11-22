@@ -171,6 +171,8 @@ export function createPipelineStore(
   /** The view the worker was last asked to preview for every frame. */
   let framesAsked: FrameView | null = null;
   let rafId: number | null = null;
+  /** Frames are queued for playback: the displayed frame lags the processed one. */
+  const [playing, setPlaying] = createSignal(false);
   let displayLogOn = false;
   let displayLog: { t: number; frame: number }[] = [];
   const hasRaf = typeof requestAnimationFrame === 'function';
@@ -529,12 +531,14 @@ export function createPipelineStore(
     const f = playback.tick(t);
     if (f) showPlayed(f);
     if (playback.queued > 0) rafId = requestAnimationFrame(playbackLoop);
+    else setPlaying(false);
   }
 
   function endPlayback(): void {
     if (rafId !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
     rafId = null;
     playback.clear();
+    setPlaying(false);
   }
 
   /** Ask the worker for per-frame previews of the shown view, or stop asking, by the processing rate. */
@@ -569,6 +573,7 @@ export function createPipelineStore(
           paceRun() ? Math.min(paceFps, measured) : Number.isFinite(measured) ? measured : 30,
         );
         playback.push(items);
+        setPlaying(true);
         if (rafId === null) rafId = requestAnimationFrame(playbackLoop);
       }
     } else {
@@ -746,6 +751,7 @@ export function createPipelineStore(
     // The newest frame at once; the rest of the queue is dropped.
     const newest = playback.flush();
     if (newest) showPlayed(newest);
+    setPlaying(false);
     // Requests already in the worker must not be released while paused.
     if (paceEver) sendPace({ paused: true });
     runHistory?.log({ frame: processed(), kind: 'pause', detail: 'Paused' });
@@ -882,6 +888,11 @@ export function createPipelineStore(
       shown: playback.shown,
       view: framesAsked,
     }),
+    /**
+     * The frame on screen while playback lags the processed one (null otherwise: a run without
+     * per-frame previews, a finished or paused queue), for views that should end where the video is.
+     */
+    displayedFrame: () => (playing() ? (previews()?.frame ?? null) : null),
     /** Record when each displayed frame changed (measurement; `?debug`). */
     setDisplayLog: (on: boolean) => {
       displayLogOn = on;
