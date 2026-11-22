@@ -286,6 +286,8 @@ interface Csettle {
   yieldFrames: number;
   /** The next request is the settle's when both it and need-driven look-back have frames to ask for. */
   turn: boolean;
+  /** The settle's own request failed or timed out: no more settle requests this run (need-driven look-back goes on). */
+  off: boolean;
   /** The answer in hand, when it is handled in pieces. */
   work: CsettleWork | null;
   requested: number;
@@ -493,6 +495,7 @@ export class SlowRunner {
             dose: new SettleDose(csettle),
             yieldFrames: Math.max(0, Math.floor(msg.csettleYield ?? 0)),
             turn: false,
+            off: false,
             work: null,
             requested: 0,
             dropped: 0,
@@ -748,9 +751,14 @@ export class SlowRunner {
     this.lbCancelTimer = this.timer(() => {
       if (this.lbReq?.id !== id) return;
       this.lbCancelTimer = null;
+      const failed = this.lbReq;
       this.lbReq = null;
-      this.lookbackFailed(`no answer within ${LOOKBACK.timeoutMs / 1000} s`);
+      const why = `no answer within ${LOOKBACK.timeoutMs / 1000} s`;
+      // The settle's own request only turns the settle off; look-back and the end settle go on.
+      if (failed.kind === 'csettle') this.csettleFailed(failed, why);
+      else this.lookbackFailed(why);
       if (this.drain) this.settlePump();
+      else if (this.lookbackLive) this.lookbackRequest();
     }, LOOKBACK.timeoutMs);
   }
 
@@ -767,7 +775,9 @@ export class SlowRunner {
    * owed (`SettleDose`) and no answer is still being fed in pieces.
    */
   private csettleRequest(loop: SlowLoopLike, cs: Csettle): boolean {
-    if (cs.work || !cs.dose.ready || !this.lookbackLive) return false;
+    // No settle reads before the first library: the look-back worker would solve nothing.
+    if (cs.off || cs.work || !cs.dose.ready || !this.lookbackLive || this.version <= 0)
+      return false;
     // The frames forwarded so far are the saved history (stream index = file frame).
     const take = loop.settleTake!(this.consumed, CSETTLE.chunk);
     const n = Math.floor(take.length / 3);
@@ -786,6 +796,16 @@ export class SlowRunner {
     cs.turn = false;
     this.sendRequest('csettle', flat, items, skip);
     return true;
+  }
+
+  /** The settle during Discover is off for the rest of this run (its frames count as dropped). */
+  private csettleFailed(req: LookbackReq, message: string): void {
+    const cs = this.cs;
+    if (!cs) return;
+    cs.off = true;
+    cs.dropped += req.items.length;
+    console.warn(`cala settle during Discover stopped: ${message}`);
+    this.status(0, 0);
   }
 
   /** Look-back is off for the rest of this run; Discover and settling go on. */
@@ -813,8 +833,10 @@ export class SlowRunner {
     this.lbCancelTimer = null;
     const settle = req.kind === 'end' ? this.drain : null;
     try {
-      if (msg.type === 'error') this.lookbackFailed(msg.message);
-      else if (req.kind === 'csettle' && this.cs && this.lookbackLive) {
+      if (msg.type === 'error') {
+        if (req.kind === 'csettle') this.csettleFailed(req, msg.message);
+        else this.lookbackFailed(msg.message);
+      } else if (req.kind === 'csettle' && this.cs && this.lookbackLive) {
         // (It gives the buffer back itself, at once or after its last piece.)
         this.csettleAnswer(loop, this.cs, msg, req);
         return;
@@ -825,6 +847,8 @@ export class SlowRunner {
           if (!settle.stop && !settle.feed.done) this.settleRequest();
           this.observeSettle(loop, msg, req.items);
         } else if (req.kind === 'need') this.observeLookback(loop, msg, req.items);
+        // A settle answer that came when Discover could no longer use it: counted as dropped.
+        if (req.kind === 'csettle' && this.cs) this.cs.dropped += req.items.length;
         // The buffer goes back to the look-back worker's pool (never detached here).
         this.releaseFrames(msg);
       }
@@ -998,6 +1022,8 @@ export class SlowRunner {
     this.csettleStop();
     // A request of Discover's look-back still out is dropped (its late answer is ignored).
     if (this.lbReq) {
+      // (A settle request's frames count as dropped, so re-read = fitted + held out + dropped.)
+      if (this.lbReq.kind === 'csettle' && this.cs) this.cs.dropped += this.lbReq.items.length;
       this.lbReq = null;
       this.lbCancelTimer?.();
       this.lbCancelTimer = null;

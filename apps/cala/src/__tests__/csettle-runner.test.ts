@@ -60,8 +60,9 @@ function frames(start: number, count = 8): Extract<FastToSlow, { type: 'frames' 
 const held = (f: number) => f % 3 === 0;
 
 /** A fake loop: `need` need-driven look-back frames wanted, and the settle's frame picker. */
-function fakeLoop(need: number, settle = true) {
+function fakeLoop(need: number, settle = true, gate = { open: true }) {
   let credit = 0;
+  let published = false;
   let left = need;
   let chunk = 0;
   let taken = 0;
@@ -72,7 +73,12 @@ function fakeLoop(need: number, settle = true) {
   let version = 10;
   const loop: SlowLoopLike = {
     observe: () => true,
-    step: vi.fn(() => undefined),
+    // The first library (version 10) comes with the first step once the gate is open.
+    step: vi.fn(() => {
+      if (!gate.open || published) return undefined;
+      published = true;
+      return fakeLib(10);
+    }),
     finalize: vi.fn(() => fakeLib(++version)),
     setNoise: vi.fn(),
     setEditScope: vi.fn(),
@@ -130,9 +136,19 @@ function fakeLoop(need: number, settle = true) {
 }
 
 function setup(
-  o: { need?: number; csettle?: number; yieldFrames?: number; settle?: boolean; lb?: boolean } = {},
+  o: {
+    need?: number;
+    csettle?: number;
+    yieldFrames?: number;
+    settle?: boolean;
+    lb?: boolean;
+    /** false: the slow loop publishes no library until `gate.open` is set. */
+    library?: boolean;
+  } = {},
 ) {
-  const f = fakeLoop(o.need ?? 0, o.settle ?? true);
+  const gate = { open: o.library !== false };
+  const f = fakeLoop(o.need ?? 0, o.settle ?? true, gate);
+  const timers: (() => void)[] = [];
   const toMain: SlowToMain[] = [];
   const toFast: SlowToFast[] = [];
   const toLb: SlowToLookback[] = [];
@@ -148,7 +164,10 @@ function setup(
     lookback: { postMessage: (m) => toLb.push(m) },
     now: () => 0,
     defer: (fn) => deferred.push(fn),
-    timer: () => () => {},
+    timer: (fn) => {
+      timers.push(fn);
+      return () => {};
+    },
   });
   r.handle({
     ...INIT,
@@ -201,6 +220,8 @@ function setup(
     live,
     status,
     releases,
+    timers,
+    gate,
   };
 }
 
@@ -415,5 +436,142 @@ describe('settle during Discover: the end of Discover', () => {
     // 12 frames of the answer cut short are counted as dropped.
     expect(cs.dropped).toBe(12);
     expect(cs.live).toBe(56);
+  });
+});
+
+describe('settle during Discover: failures and edges', () => {
+  const warn = () => vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  it('sends no settle read before the first library', () => {
+    const t = setup({ csettle: 2, library: false });
+    // Three live batches have been seen, and a whole chunk is owed and saved, but no library yet.
+    t.live(3);
+    expect(t.status().csettle!.live).toBe(24);
+    expect(t.settleRequests()).toEqual([]);
+    expect(t.loop.settleTake).not.toHaveBeenCalled();
+    t.gate.open = true;
+    t.live(1);
+    expect(t.settleRequests().length).toBe(1);
+  });
+
+  it('a settle request that times out turns off the settle only', () => {
+    const spy = warn();
+    const t = setup({ need: 10_000, csettle: 2 });
+    // Run until a settle request is the one out.
+    for (let k = 0; k < 40 && !(t.pending() && t.pending()!.skip); k++) {
+      t.live(1);
+      if (t.pending() && !t.pending()!.skip) t.answer();
+    }
+    expect(t.pending()!.skip).toBeDefined();
+    const before = t.status().csettle!;
+    t.timers.at(-1)!();
+    const st = t.status();
+    expect(st).not.toHaveProperty('error');
+    expect(st.csettle!.dropped).toBe(before.dropped + CSETTLE.chunk);
+    // Need-driven look-back goes on, and no further settle request goes out.
+    const nSettle = t.settleRequests().length;
+    const nAll = t.requests().length;
+    for (let k = 0; k < 10; k++) {
+      t.live(1);
+      if (t.pending()) t.answer();
+    }
+    expect(t.requests().length).toBeGreaterThan(nAll);
+    expect(t.settleRequests().length).toBe(nSettle);
+    // The end settle still runs.
+    t.r.handle({ type: 'end', session: 1 });
+    let n = 0;
+    while (t.pending() && n < 1000) {
+      t.answer();
+      while (t.deferred.length) t.deferred.shift()!();
+      n++;
+    }
+    const last = t.toMain.flatMap((m) => (m.type === 'status' ? [m.status] : [])).at(-1)!;
+    expect(last.final).toBe(true);
+    expect(last.lookback!.settle).toMatchObject({ done: true });
+    expect(last.lookback).not.toHaveProperty('error');
+    spy.mockRestore();
+  });
+
+  it('a settle request answered with an error turns off the settle only', () => {
+    const spy = warn();
+    const t = setup({ need: 10_000, csettle: 2 });
+    for (let k = 0; k < 40 && !(t.pending() && t.pending()!.skip); k++) {
+      t.live(1);
+      if (t.pending() && !t.pending()!.skip) t.answer();
+    }
+    const req = t.pending()!;
+    expect(req.skip).toBeDefined();
+    t.r.handleLookback({ type: 'error', session: 1, id: req.id, message: 'boom' });
+    expect(t.status()).not.toHaveProperty('error');
+    const nSettle = t.settleRequests().length;
+    for (let k = 0; k < 10; k++) {
+      t.live(1);
+      if (t.pending()) t.answer();
+    }
+    expect(t.settleRequests().length).toBe(nSettle);
+    expect(t.lookedBack.length).toBeGreaterThan(0);
+    // A need-driven error still stops look-back.
+    const need = t.pending();
+    if (need) {
+      t.r.handleLookback({ type: 'error', session: 1, id: need.id, message: 'boom' });
+      expect(t.status().error).toBe('boom');
+    }
+    spy.mockRestore();
+  });
+
+  it('a late settle answer after the end of Discover is released and ignored; its frames count as dropped', () => {
+    const t = setup({ csettle: 2 });
+    t.live(3);
+    const old = t.pending()!;
+    expect(old.skip).toBeDefined();
+    t.r.handle({ type: 'end', session: 1 });
+    const rel = t.releases();
+    const n = lookbackFrames(old.items).length;
+    t.r.handleLookback({
+      type: 'frames',
+      session: 1,
+      id: old.id,
+      version: 10,
+      count: n,
+      cells: 1,
+      frames: new Float32Array(2 * n),
+      traces: new Float32Array(n),
+    });
+    expect(t.releases()).toBe(rel + 1);
+    expect(t.settled).toEqual([]);
+    const last = t.toMain.flatMap((m) => (m.type === 'status' ? [m.status] : [])).at(-1)!;
+    const cs = last.lookback!.csettle!;
+    expect(cs.dropped).toBe(CSETTLE.chunk);
+    expect(cs.requested).toBe(cs.fit + cs.heldOut + cs.dropped);
+  });
+
+  it('a reset while an answer is part-fed releases it and sends nothing more', () => {
+    const t = setup({ csettle: 2, yieldFrames: 4 });
+    t.live(3);
+    t.answer();
+    expect(t.deferred.length).toBe(1);
+    expect(t.releases()).toBe(0);
+    const sent = t.requests().length;
+    const fed = t.settled.length;
+    t.r.handle({ type: 'reset', session: 1 });
+    // (The runner is back to nothing: the next piece does nothing.)
+    while (t.deferred.length) t.deferred.shift()!();
+    expect(t.settled.length).toBe(fed);
+    expect(t.requests().length).toBe(sent);
+  });
+
+  it('the end of Discover with an answer part-fed: released, counted, nothing more sent', () => {
+    const t = setup({ csettle: 2, yieldFrames: 4 });
+    t.live(3);
+    t.answer();
+    const requests = t.settleRequests().length;
+    t.r.handle({ type: 'end', session: 1 });
+    expect(t.releases()).toBe(1);
+    while (t.deferred.length) t.deferred.shift()!();
+    expect(t.releases()).toBe(1);
+    expect(t.settleRequests().length).toBe(requests);
+    const last = t.toMain.flatMap((m) => (m.type === 'status' ? [m.status] : [])).at(-1)!;
+    const cs = last.lookback!.csettle!;
+    expect(cs.requested).toBe(cs.fit + cs.heldOut + cs.dropped);
   });
 });

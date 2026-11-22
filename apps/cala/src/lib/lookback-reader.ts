@@ -58,6 +58,9 @@ export interface HistorySource {
   readFrames(start: number, count: number, out?: FramePixels): Promise<FramePixels>;
 }
 
+/** Block seqs at or below this belong to the settle during Discover (`-(1e6 + k)`); the end settle's are above. */
+const SETTLE_BLOCK_MAX = -1_000_000;
+
 /** Raw frames read at once around a requested one (the scheduler serves 64-frame blocks forward). */
 export const LOOKBACK_READ_SPAN = 64;
 
@@ -99,6 +102,11 @@ export class LookbackReader {
   private motion: MotionCorrector | null = null;
   /** The block in progress and its copy of the live back half. */
   private block: { seq: number; pre: Preprocessor } | null = null;
+  /**
+   * The settle during Discover's chunk in progress (block seq <= `SETTLE_BLOCK_MAX`), a slot of its
+   * own: its chunks never free the need-driven block's preprocessor, which goes on across requests.
+   */
+  private settleBlock: { seq: number; pre: Preprocessor } | null = null;
   private engine: TraceEngine | null = null;
   private version = 0;
   private cells = 0;
@@ -219,10 +227,13 @@ export class LookbackReader {
   }
 
   private blockPre(seq: number, state: Uint8Array): Preprocessor {
-    if (this.block?.seq === seq) return this.block.pre;
-    this.block?.pre.free();
-    this.block = { seq, pre: Preprocessor.fromState(state) };
-    return this.block.pre;
+    const slot = seq <= SETTLE_BLOCK_MAX ? 'settleBlock' : 'block';
+    const cur = this[slot];
+    if (cur?.seq === seq) return cur.pre;
+    cur?.pre.free();
+    const next = { seq, pre: Preprocessor.fromState(state) };
+    this[slot] = next;
+    return next.pre;
   }
 
   private frontPre(state: Uint8Array): Preprocessor {
@@ -293,6 +304,8 @@ export class LookbackReader {
     for (const w of this.backWaiters.splice(0)) w.reject(new Error('look-back stopped'));
     this.block?.pre.free();
     this.block = null;
+    this.settleBlock?.pre.free();
+    this.settleBlock = null;
     this.front?.free();
     this.front = null;
     this.motion?.free();
