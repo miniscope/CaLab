@@ -47,8 +47,9 @@ Readings (one run each, so differences of a few percent are noise):
    - Half a batch period at 120 fps is 33 ms (8-frame batches). The longest wait in a 1 s window is 21-26 ms at the
      median, with peaks of 62-75 ms.
    - Yet no batch was dropped, and achieved fps held at 118-120.
-   - The waits rise with settle activity, but stay under 1.3 batch periods (at 120 fps the 62-75 ms peaks are 0.9-1.1
-     periods of 67 ms; at 60 fps the 73-85 ms peaks are 0.5-0.6 periods of 133 ms).
+   - The waits rise with settle activity, but stay under 1.3 batch periods in these four runs (at 120 fps the 62-75 ms
+     peaks are 0.9-1.1 periods of 67 ms; at 60 fps the 73-85 ms peaks are 0.5-0.6 periods of 133 ms). With the guard
+     fixed (see the last section) the settle runs near its cap, and the Samara peak wait reaches 1.96 periods.
    - So at 120 fps the guard reacts to waits that cost nothing yet. The extra pool worker sat 89 % idle.
    - Per the brief, this is reported, not tuned. The candidates are a threshold tied to the forward-pool depth (four
      buffers), acting only on a drop, or `csettle=yield` (the design's remedy for waiting batches).
@@ -56,3 +57,29 @@ Readings (one run each, so differences of a few percent are noise):
    estimate of 0.15-0.3 GB. Each look-back worker holds 280-410 MB of wasm and buffers. Peaks stayed at 2.7-3.1 GB,
    inside the 6 GB budget.
 4. The final settle ended with 2-3 cells moving in every run. These runs were not designed to compare quality.
+
+## After the guard fix (PR #463): 120 fps, S = 1, one run each
+
+The guard now halves on a wait over `waitShare x (poolSize - 1)` = 1.5 batch periods (100 ms at 120 fps, four
+buffers). Same setup as above (`--governor --pacefps 120 --lbpool 1`, headed Chrome, port 5197, one at a time).
+Raw output: `~/Projects/cala-data/runs/governor/{sa,ws}-p120-pool1-gov-fix*`.
+
+|                                            | Samara `10_43_21`, before (#462)   | Samara `10_43_21`, after                       | workshop, after                    |
+| ------------------------------------------ | ---------------------------------- | ---------------------------------------------- | ---------------------------------- |
+| settle dose (per live frame)               | 0.33                               | **1.00**                                       | 0.11                               |
+| achieved fps (median, min)                 | 119.7, 118.0                       | 120.1, 119.1                                   | 119.7, 118.2                       |
+| forward-pool drops                         | 0                                  | 0                                              | 240 / 23,663                       |
+| batch wait: mean / longest in 1 s (median) | 1.9 / 11.8 ms                      | 5.7 / 24.8 ms                                  | 7.4 / 38.9 ms                      |
+| longest wait (max)                         | 74.5 ms (1.1 periods)              | 130.8 ms (2.0 periods)                         | 258.5 ms (3.9)                     |
+| halvings                                   | 51                                 | 5                                              | 67                                 |
+| limit                                      | backing off 59 %, slow worker 31 % | ramping 48 %, look-back 28 %, slow worker 22 % | slow worker 76 %, backing off 18 % |
+| look-back busy per worker (median)         | 0.84 / 0.09                        | 0.82 / 0.58                                    | 0.71 / 0                           |
+| slow worker idle (median)                  | 0.29                               | 0.12                                           | 0.04                               |
+| renderer peak footprint (MB)               | 2,930                              | 2,981 (log) / 2,442 end                        | 3,786 (log) / 3,147 end            |
+| final settle: cells moving > 2x noise      | 2 / 361                            | 2 / 353                                        | 10 / 752                           |
+
+- **Samara:** the dose rises from 0.33 to 1.00 with no drop and no fps shortfall, and halvings fall from 51 to 5.
+- **Workshop (752 cells):** the slow worker is nearly full from the live frames alone (idle 0.04, live share 0.34), so
+  the governor sits at 0 for 69 % of the run and the dose is 0.11. 240 batches (1 %) were dropped. This is the
+  guard doing its job on a load the slow worker cannot carry at 120 fps; it is not a regression to compare against
+  the old guard (there is no earlier workshop run at 120 fps with the governor).
