@@ -998,6 +998,10 @@ struct LookBack {
     /// added by the slow loop (`cs_builder` is the chunk in progress).
     cs_delta: bool,
     cs_builder: Option<SettleDeltaBuilder>,
+    /// `--csdelta`: bytes of the contexts and deltas (as the app would send
+    /// them), and wall seconds of making contexts, summing and applying.
+    cs_delta_bytes: [u64; 2],
+    cs_delta_s: [f64; 3],
     /// `--offered-fps`: the slow-loop index of each recording frame after
     /// warm-up (`u32::MAX`: dropped or not forwarded yet). Empty: every
     /// frame is forwarded in order.
@@ -1110,6 +1114,8 @@ impl LookBack {
             cs_skipped: 0,
             cs_delta: false,
             cs_builder: None,
+            cs_delta_bytes: [0; 2],
+            cs_delta_s: [0.0; 3],
             slow_of: Vec::new(),
         }
     }
@@ -1144,7 +1150,10 @@ impl LookBack {
             };
             let mut n = 0u64;
             if self.cs_delta {
+                let tc = Instant::now();
                 let ctx = sl.settle_context().unwrap();
+                self.cs_delta_bytes[0] += ctx.to_bytes().len() as u64;
+                self.cs_delta_s[0] += tc.elapsed().as_secs_f64();
                 let (w, h) = (sl.dims().width, sl.dims().height);
                 let b = match self.cs_builder.take() {
                     Some(mut b) => {
@@ -1184,8 +1193,11 @@ impl LookBack {
             }
             if let Some(b) = self.cs_builder.as_mut().filter(|_| self.cs_delta) {
                 let d = b.finish();
+                self.cs_delta_bytes[1] += d.to_bytes().len() as u64;
                 let cfg = sl.config().clone();
+                let ta = Instant::now();
                 sl.apply_settle_delta(&d, &|k| cfg.is_test(k)).unwrap();
+                self.cs_delta_s[2] += ta.elapsed().as_secs_f64();
             }
             self.cs_wall_s += t0.elapsed().as_secs_f64();
             if n == 0 {
@@ -1751,7 +1763,9 @@ impl LookBack {
         if let (Some(_), Some(b)) = (self.cs_now, self.cs_builder.as_mut()) {
             // `--csdelta`: summed for the slow loop (held-out frames were
             // passed over above).
+            let tb = Instant::now();
             b.push(&self.y, &lib, &tr, idx).unwrap();
+            self.cs_delta_s[1] += tb.elapsed().as_secs_f64();
             return Some(true);
         }
         if let Some(reservoir) = self.cs_now {
@@ -6662,7 +6676,15 @@ fn main() {
             std::fs::write(out_dir.join("csettle.txt"), &msg).unwrap();
             if l.cs_delta {
                 let d = sl.settle_delta_stats();
-                let msg = format!("csdelta: {d:?}\n");
+                let n = d.applied.max(1) as f64;
+                let msg = format!(
+                    "csdelta: {d:?}\nper chunk: context {:.3} MB, delta {:.3} MB; wall ms: context {:.2}, sum {:.2}, apply {:.2}\n",
+                    l.cs_delta_bytes[0] as f64 / n / 1e6,
+                    l.cs_delta_bytes[1] as f64 / n / 1e6,
+                    l.cs_delta_s[0] * 1e3 / n,
+                    l.cs_delta_s[1] * 1e3 / n,
+                    l.cs_delta_s[2] * 1e3 / n
+                );
                 print!("{msg}");
                 std::fs::write(out_dir.join("csdelta.txt"), &msg).unwrap();
             }
