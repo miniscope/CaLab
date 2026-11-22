@@ -1,5 +1,13 @@
 # HANDOFF: settle delta (`feat/cala-settle-delta`)
 
+**Update 22 Nov 2026, afternoon. Supersedes the "Paused qc_eval driver" and "Chrome" sections below.**
+- Rebased onto main cf25d566 (#469).
+- qc_eval equivalence is complete: sim and Samara, seeds 1–3, and it passes. The tables are in the PR body.
+- T0 re-run with fresh binaries (`bin/qc_eval-csdelta-r` against `bin/qc_eval-main-cf25d566`): identical. The old T0 is in `t0-old-3cb66a82/`.
+- Chrome runs are DEFERRED by the coordinator for budget, and `csdelta` stays default-off for the beta.
+- To resume: run `tools/cala-eval/csdelta_chrome.sh` (no `--governor` any more), 8 runs, after asking for a quiet-machine slot. Make the first run a short on-run, and check that `csettle.delta.applied` is above 0. Then use `csdelta_summary.py`.
+
+
 Worktree `~/Projects/CaLab-wt-csdelta`, branch `feat/cala-settle-delta` (off main 3cb66a82). Not merged; PR open.
 
 ## Done
