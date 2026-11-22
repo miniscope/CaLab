@@ -1176,7 +1176,7 @@ async function executeRun(runId: number, runPool: Pool, data: RunData, fs: numbe
       const rho = blind.rho[j];
       blindFields.set(c, {
         unit: blind.u[j],
-        ...(Number.isFinite(rho) ? { occ: [blind.shared, rho] } : {}),
+        ...(Number.isFinite(rho) ? { occ: [blind.shared, rho, blind.s0[j]] } : {}),
       });
     });
 

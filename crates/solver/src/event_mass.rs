@@ -447,7 +447,7 @@ pub(crate) fn event_mass_at(
     pad: usize,
     cap: usize,
     a: f64,
-    occupancy: Option<(f64, f64, f64, f64)>,
+    occupancy: Option<(f64, f64, f64, f64, f64)>,
 ) -> EventMassResult {
     let n = scorer.target().len();
     let cap = cap.max(1);
@@ -500,12 +500,16 @@ pub(crate) fn event_mass_at(
 /// Per-event counts at the unit `a`. Without `occupancy`: `round(m_e / a)`. With it (the unit estimator's level
 /// model `(q, g, s_, rho)`): each run is classed as noise or event ([`occupancy_fit`]); noise runs count 0, event
 /// runs `max(round(z), 1)`, and where the burst rule's `n^2 / n1` total is the smaller, its counts ([`burst_counts`]).
-fn unit_counts(events: &[Event], a: f64, occupancy: Option<(f64, f64, f64, f64)>) -> Vec<usize> {
+fn unit_counts(
+    events: &[Event],
+    a: f64,
+    occupancy: Option<(f64, f64, f64, f64, f64)>,
+) -> Vec<usize> {
     let mut per_event = vec![0usize; events.len()];
     counts_at(events, a, &mut per_event);
-    if let Some((q, g, s_, rho)) = occupancy {
+    if let Some((q, g, s_, rho, s0)) = occupancy {
         let z: Vec<f64> = events.iter().map(|e| e.mass / a).collect();
-        if let Some((keep, p0, w1)) = occupancy_fit(&z, q, g, s_, rho) {
+        if let Some((keep, p0, w1)) = occupancy_fit(&z, q, g, s_, rho, s0) {
             for ((c, k), zz) in per_event.iter_mut().zip(&keep).zip(&z) {
                 *c = if *k {
                     (zz.round().max(1.0)) as usize
@@ -591,7 +595,16 @@ fn allot(zk: &[f64], total: usize, rho_hat: f64) -> Vec<usize> {
 /// more probably events than noise, the fitted `pi0`, and the mean posterior probability of the
 /// single-spike class (the burst rule's `w1`); `None` when the fit has no event class (the
 /// `round(m / a)` counts then stand) or there are no runs.
-fn occupancy_fit(z: &[f64], q: f64, g: f64, s_: f64, rho: f64) -> Option<(Vec<bool>, f64, f64)> {
+/// `s0` (the measured noise sd of a kernel height over the unit) is where the noise scale starts; when it is not
+/// finite and positive the start is the half-normal median of the run masses, which assumes most runs are noise.
+fn occupancy_fit(
+    z: &[f64],
+    q: f64,
+    g: f64,
+    s_: f64,
+    rho: f64,
+    s0: f64,
+) -> Option<(Vec<bool>, f64, f64)> {
     if z.is_empty() {
         return None;
     }
@@ -624,7 +637,11 @@ fn occupancy_fit(z: &[f64], q: f64, g: f64, s_: f64, rho: f64) -> Option<(Vec<bo
     } else {
         0.5 * (sorted[m / 2 - 1] + sorted[m / 2])
     };
-    let (mut s, mut p) = ((med / 0.6745).max(1e-6), 0.5_f64);
+    // With a measured noise scale the scale is HELD there and only the noise share is fitted: the noise used to
+    // class a run then comes from the noise measurement alone, never from the run masses.
+    let held = s0.is_finite() && s0 > 0.0;
+    let start = if held { s0 } else { med / 0.6745 };
+    let (mut s, mut p) = (start.max(1e-6), 0.5_f64);
     for _ in 0..200 {
         let (mut rs, mut rz) = (0.0_f64, 0.0_f64);
         for &zz in z {
@@ -635,6 +652,7 @@ fn occupancy_fit(z: &[f64], q: f64, g: f64, s_: f64, rho: f64) -> Option<(Vec<bo
         }
         let p_new = rs / m as f64;
         let s_new = (rz / rs.max(1e-300)).sqrt();
+        let s_new = if held { s } else { s_new };
         let done = (p_new - p).abs() < 1e-10 && (s_new - s).abs() < 1e-10 * s;
         p = p_new;
         s = s_new.max(1e-9);

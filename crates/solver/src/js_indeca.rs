@@ -284,7 +284,7 @@ pub fn indeca_solve_trace_unit(
         occupancy: match occ {
             [i, rho, ..] => crate::blind_unit::combos()
                 .get(*i as usize)
-                .map(|&(q, g, s_)| (q, g, s_, *rho)),
+                .map(|&(q, g, s_)| (q, g, s_, *rho, occ.get(2).copied().unwrap_or(f64::NAN))),
             _ => None,
         },
         ..Default::default()
@@ -344,6 +344,7 @@ pub fn blind_units(
         shared: usize,
         u: Vec<f64>,
         rho: Vec<f64>,
+        s0: Vec<f64>,
     }
     let fitted: Vec<f64> = r.rho.iter().cloned().filter(|v| v.is_finite()).collect();
     let med = crate::blind_unit::median(&fitted);
@@ -358,6 +359,7 @@ pub fn blind_units(
             shared: r.shared,
             u: r.u,
             rho,
+            s0: r.s0,
         },
     )
 }

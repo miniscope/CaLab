@@ -41,6 +41,8 @@ export interface BlindUnits {
   u: number[];
   /** Count-law parameter per cell (the recording's median for a cell that could not be fitted; NaN if none could). */
   rho: number[];
+  /** Measured noise sd over the unit per cell (NaN without a noise reading): start of the counting step's noise scale. */
+  s0: number[];
 }
 
 /** Results from peak-seeded spike detection on a single trace. */

@@ -1112,6 +1112,9 @@ pub struct Units {
     pub u: Vec<f64>,
     /// Count-law parameter per cell (NaN for a cell that did not vote).
     pub rho: Vec<f64>,
+    /// Noise sd of the unit filter's output over the unit, per cell (NaN without a noise reading): where the
+    /// counting step's noise scale starts.
+    pub s0: Vec<f64>,
 }
 
 /// The whole estimator on one recording: every cell's noise reading, pooled, then the unit from the nested isolated
@@ -1120,7 +1123,9 @@ pub fn recording(traces: &[Vec<f64>], st: &Setup) -> Units {
     let mut s1: Vec<Stage1> = traces.iter().map(|y| stage1_cell(y, st)).collect();
     pool_noise(&mut s1);
     let sig: Vec<f64> = s1.iter().map(|s| s.sig).collect();
-    ov_recording(traces, st, &sig)
+    let mut r = ov_recording(traces, st, &sig);
+    r.s0 = sig.iter().zip(&r.u).map(|(s, u)| s / u).collect();
+    r
 }
 
 // ---------- the unit from nested isolated extrema ----------
@@ -1647,7 +1652,12 @@ pub fn ov_recording(traces: &[Vec<f64>], st: &Setup, sig: &[f64]) -> Units {
             }
         })
         .collect();
-    Units { shared, u, rho }
+    Units {
+        shared,
+        u,
+        rho,
+        s0: Vec::new(),
+    }
 }
 
 #[cfg(test)]

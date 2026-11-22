@@ -531,7 +531,7 @@ pub(crate) struct SolveConfig {
     /// With `unit`: the unit estimator's level model `(q, g, s_, rho)`, which
     /// turns on the noise / event classing of each relaxed run and the
     /// burst-count rule (`event_mass::unit_counts`). `None` = `round(m / a)`.
-    pub occupancy: Option<(f64, f64, f64, f64)>,
+    pub occupancy: Option<(f64, f64, f64, f64, f64)>,
     /// Test-only counterfactual applied to the frame masses before the
     /// binarization (exp/exact-vs-fista diagnostics).
     #[cfg(test)]
