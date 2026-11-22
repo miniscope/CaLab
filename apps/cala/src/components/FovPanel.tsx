@@ -13,7 +13,7 @@ import { DashboardPanel, SegmentedControl } from '@calab/ui';
 import { OKABE_ITO, viridisRGB } from '@calab/ui/chart';
 import { pickCell, renderOverlay, type OverlayMode, type Rgb } from '../lib/cell-overlay.ts';
 import { NEW_CELL_FRAMES, type CellStore } from '../lib/cell-store.ts';
-import { grayToImageData, toGray8 } from '../lib/frame-display.ts';
+import { BG_REMOVED_HEADROOM, grayToImageData, toGray8 } from '../lib/frame-display.ts';
 import {
   FIT_VIEW,
   MAX_ZOOM,
@@ -241,10 +241,12 @@ export function FovPanel(props: {
   const [fov, setFov] = createSignal<FovView>(FIT_VIEW);
   // One fixed display range per view: switching views never re-fits. A source
   // with a fixed range per view (a saved result) is drawn with it, never fitted.
-  const held = Object.fromEntries(src.views.map((v) => [v.value, createHeldRange()])) as Record<
-    string,
-    HeldRange
-  >;
+  const held = Object.fromEntries(
+    src.views.map((v) => [
+      v.value,
+      createHeldRange(v.value === 'output' ? BG_REMOVED_HEADROOM : 1),
+    ]),
+  ) as Record<string, HeldRange>;
   const applyFixed = () => {
     for (const v of src.views) {
       const r = src.fixedRange?.(v.value);

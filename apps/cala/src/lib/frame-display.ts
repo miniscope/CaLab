@@ -79,6 +79,12 @@ export function displayRange(bytes: DisplayPixels, bitDepth: number, auto: boole
 
 /** Images pooled for the one-time range fit (one preview image per batch). */
 export const FIT_FRAMES = 8;
+/**
+ * White-level headroom for background-removed views: the fitted white level
+ * is about 6 on real 1p recordings, where about 20 shows the cells without
+ * saturating them (PI, 22 Nov 2026).
+ */
+export const BG_REMOVED_HEADROOM = 3.5;
 /** Pixels sampled per image for the range fit. */
 const FIT_SAMPLES = 4096;
 
@@ -122,7 +128,21 @@ export class RangeHold {
   private held = false;
   private current: DisplayRange | null = null;
 
-  constructor(private readonly fitFrames = FIT_FRAMES) {}
+  /**
+   * @param headroom Multiplies the fitted span above `lo` (1: the plain
+   *   0.5%-99.5% fit). Views with the background removed use
+   *   `BG_REMOVED_HEADROOM`: active cells cover far fewer than 0.5 % of the
+   *   pixels, so the 99.5th percentile lands near the noise and saturates them.
+   */
+  constructor(
+    private readonly fitFrames = FIT_FRAMES,
+    private readonly headroom = 1,
+  ) {}
+
+  private widen(r: DisplayRange | null): DisplayRange | null {
+    if (!r || this.headroom === 1) return r;
+    return { lo: r.lo, hi: r.lo + (r.hi - r.lo) * this.headroom };
+  }
 
   /** Current range; null before the first image. */
   get range(): DisplayRange | null {
@@ -141,7 +161,7 @@ export class RangeHold {
     if (this.recent.length > this.fitFrames) this.recent.shift();
     if (this.held) return this.current;
     this.pooled.push(sample);
-    this.current = percentileRange(this.pooled);
+    this.current = this.widen(percentileRange(this.pooled));
     if (this.pooled.length >= this.fitFrames) this.held = true;
     return this.current;
   }
@@ -155,7 +175,7 @@ export class RangeHold {
 
   /** Recompute once from the most recent images, then hold again. */
   refit(): void {
-    const r = percentileRange(this.recent);
+    const r = this.widen(percentileRange(this.recent));
     if (!r) return;
     this.current = r;
     this.held = true;
