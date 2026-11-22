@@ -24,7 +24,7 @@ The parent schedules the runs. **Do not start Chrome until the parent says "go".
   ```
 
   It runs these steps in order:
-  1. Phase A: the Max runs.
+  1. Phase A: the Max runs (sa x3, m5 x2, t6 x2).
   2. `floor_eval_summary.py targets`, i.e. rule R1. It copies the result to `results/2026-11-22-floor-eval-targets.txt`, then commits and pushes it.
   3. Phase B: blocks 1, 2, S and 3.
   4. Conversion of the libraries to `footprints.bin`.

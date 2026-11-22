@@ -96,7 +96,8 @@ def cmd_targets(d: Path) -> None:
         if not fl:
             print(f"{rec}: no Max run with a published floor")
             continue
-        F = st.median([x["published"] for x in fl])
+        pubs = [x["published"] for x in fl]
+        F = min(pubs) if rec in ("m5", "t6") else st.median(pubs)  # sims: the lower of two (plan R1)
         S = st.median([x["see_all"] for x in fl])
         lines += [
             f"{rec} f10 {F:g}",

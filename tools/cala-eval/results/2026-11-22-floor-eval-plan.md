@@ -1,5 +1,13 @@
 # PR H plan: the smart floor and the default speed (22 Nov 2026)
 
+**Amendment 2 (before any run; parent, for budget): trimmed.** Only Samara `10_43_21` (`sa`: Max x3, then f10, see,
+f14, f07 x2 each) and the two sims (`m5`, `t6`: Max x2, f10 x2). The workshop recording and `14_57_02` are dropped.
+Order: `sa-max-1, m5-max-1, t6-max-1, sa-max-2, m5-max-2, t6-max-2, sa-max-3`; R1; then `sa` f10, f07, see, f14 (rep
+1), `m5-f10-1, t6-f10-1`, `sa` f14, see, f07, f10 (rep 2), `m5-f10-2, t6-f10-2`. V1 runs on `sa`, `m5`, `t6`; V2 on
+`sa`. Rules read "on at least 2 of the 3 recordings" now read on `sa` alone, with the sims (T1-T4) as the truth
+anchor; with one real recording the recommendation is stated as provisional. Expected: about 2 h of Chrome, then
+scoring. Everything below is otherwise unchanged.
+
 Design: `~/Projects/cala-data/demix-bench/beta_speed_control_design.md`, section 2 (the floor), section 6 row H, and
 the PI decisions (Q1: Max stays the default until this eval; this eval informs the recommended position).
 This plan, its pass lines, the run script and the arm rule are committed and pushed **before any run**. The arm
