@@ -9,12 +9,19 @@ after the first scores is marked **(post hoc)**.
 
 **The larger footprints are the better ones. Nothing in the settle needs fixing for size.**
 
-1. **On the sims the look-back + settle footprints are closer to the truth on every measure.**
+How firm this is, by the rule written in the plan (larger is right when the light it recovers exceeds the light it
+misplaces): a clear pass on the 14 larger-cell sims (3.8 points recovered, 0.6 misplaced); a narrow pass on 2 sims at
+the real cell size (2.1 against 1.8; about even, 3.8 against 3.5, for cells with a close neighbour). The real
+recordings grow about twice as much as those sims, so on real data the direction is supported and the amount is not
+confirmed.
+
+1. **On the sims the look-back + settle footprints are closer to the truth on nearly every measure.**
    - They are 17 % larger than Discover + Refine's (711 against 608 pixels), and the true footprints are larger still.
      Both paths cut footprints short; the new path cuts less.
    - Light of the true footprint that the estimate leaves out: 14.8 % (Discover + Refine) against 11.0 % (new).
-   - Light put where it does not belong rises by 0.6 % of the footprint's light, of which 0.2 % sits on a neighbour's
-     soma. The gain is about seven times the cost.
+   - The exceptions: light put where it does not belong rises by 0.6 % of the footprint's light, of which 0.2 % sits
+     on a neighbour's soma, and error beyond the true footprint's edge rises slightly. The gain is about seven times
+     the cost.
    - On two sims with the real recordings' cell size the result is the same with a narrower margin: light left out
      9.3 % → 7.2 %, light in excess +1.8 points (0.8 on a neighbour's soma), core error −25 %, crosstalk and bites
      down as before.
@@ -33,8 +40,9 @@ after the first scores is marked **(post hoc)**.
      workshop 379 → 624 (+65 %), Samara 403 → 536 and 363 → 545.
    - The growth is faint light around the cell: pixels at half the peak or more +3 %, at a tenth of the peak or more
      +23 %. The footprints stay one piece.
-   - As on the sims, cells with no neighbour within 2 diameters barely change, and most of the added light lies where
-     another cell's footprint is.
+   - Most of the added light lies where another cell's footprint is. With the same cells and only the replay in the
+     settle switched, cells with no neighbour within 2 diameters do not change, as on the sims. Between the two full
+     paths the few such cells (about 20) do grow somewhat; the cause of that part is not identified.
    - On 5,700 workshop frames that no run had seen, with the same 813 cells and only the replay in the settle switched
      on or off: the larger footprints leave 9 % less unexplained structure in the residual, and the traces of close
      pairs are half as correlated in excess of far pairs (0.10 → 0.04). The held-out score is the same (within 1 %).
@@ -195,9 +203,9 @@ The gate's candidate causes:
 2. **Read order, 64-frame blocks: no.** Same comparison.
 3. **Cluster replay in the settle: yes, most of it.** About two thirds of the growth on the sims (+65 px of
    +103), and nearly all of it on real data (section 3).
-4. **Held-out gate: it lets the growth through, it does not cause it.** With the settle's held-out frames frozen a
-   third of the settle's growth is missing, and the footprints are further from the truth. What the gate passes is
-   correct growth.
+4. **Held-out gate: it lets the growth through, it does not cause it.** With the settle's held-out frames frozen,
+   34 of the 53 pixels the settle adds (658 → 711) are missing, and the footprints are further from the truth. What
+   the gate passes is correct growth.
 5. **Dropped frames: not for size.** qc_eval drops none and shows the same sizes as the app (section 3).
 6. **Replay in Discover (post hoc candidate): the rest.** It is why look-back Discover's live library is already
    larger (+50 px), and it adds 18 px to the settled result.
@@ -252,6 +260,9 @@ light the second has above the first, over the first's light.
 |                                              | 1–1.5 D           |   182 | 450 → 673     |      18.6 % | 42 % / 42 %                                     |
 |                                              | 1.5–2 D           |    36 | 617 → 611     |       2.2 % |                                                 |
 |                                              | ≥ 2 D             |    16 | 534 → 558     |       0.6 % |                                                 |
+| workshop qc_eval, `DR` → `SETTLE` (seed 3)   | < 1 D             |   440 | 357 → 640     |      32.5 % | 65 % / 32 %                                     |
+|                                              | 1.5–2 D           |    24 | 494 → 698     |      21.8 % |                                                 |
+|                                              | ≥ 2 D             |    19 | 505 → 611     |      10.2 % |                                                 |
 | workshop app, old → new                      | < 1 D             |   444 | 358 → 610     |      27.9 % | 64 % / 32 %                                     |
 |                                              | ≥ 2 D             |    18 | 629 → 642     |      10.2 % |                                                 |
 | workshop app, old → old (run to run)         | < 1 D             |   484 | 360 → 371     |       9.8 % |                                                 |
@@ -262,8 +273,13 @@ light the second has above the first, over the first's light.
 
 All pairs are in `runs/settle-size/pairs.md` (three workshop seeds, three recordings, three sims).
 
-- Real and sims agree in kind: the light is added on cells that have a neighbour, where the neighbour's footprint is,
-  and cells on their own do not grow beyond run-to-run change.
+- Real and sims agree in kind: the light is added on cells that have a neighbour, where the neighbour's footprint
+  is.
+- Isolated cells: with the same cells and only the replay in the settle switched (`OFF+S` → `REF+S`), cells with no
+  neighbour within 1.5 D do not change (0.6–3.6 % light added, 8 px), as on the sims. Between the two full paths they
+  do: `DR` → `SETTLE` adds 10 % of light at ≥ 2 D and 22 % at 1.5–2 D, and the app's old → new adds 10 % at ≥ 2 D
+  against 6 % run to run. These are about 20 cells per row, and the cause is not identified (the replay or look-back
+  during Discover, or a neighbour only one library has).
 - They differ in amount: about 25 % of a footprint's light on the workshop recording, 11–12 % on the sims (both cell
   sizes); and on real data cells with a neighbour at 1–1.5 D grow too, which on the sims they barely do. See
   "Limits".
@@ -328,8 +344,9 @@ forwarded to the slow loop; new runs, Discover only, look-back + replay as in th
 | sim `v3_static_s5`, look-back + replay      |                  0.66 |   730 |              717 |
 
 - Workshop: a third of the batches dropped costs 8 cells of 751 (1 %). The replay costs about 65 (8 %).
-- Sims: dropped frames cost no true cells (806 detectable units in the sim). The replay costs 4–5 of 714 here, and
-  nothing on the 14 larger-cell sims (400.1 → 401.9), with fewer false cells in both sets.
+- Sims: dropped frames cost no true cells (806 detectable units in the sim). The replay's 4–5 of 714 here is inside
+  the noise (dropping frames alone moved the count from 714 to 721), and it costs nothing on the 14 larger-cell sims
+  (400.1 → 401.9), with fewer false cells in both sets.
 - Limit: `--slow-keep` drops evenly. The app drops when the slow worker is busy, which may bunch the drops. One run
   per row.
 
@@ -385,7 +402,8 @@ points, 5 sims). Its live library before the settle is the bitten one.
   with a small overshoot at the real cell size) and cannot confirm the amount. The real-data evidence for the amount
   is indirect: less residual structure and less crosstalk on unseen frames, an unchanged held-out score, and a faint
   share equal to the sims' truth.
-- The held-out score does not reward the larger footprints. It also does not penalise them.
+- The held-out score does not reward the larger footprints, although the explained share rises. It also does not
+  penalise them. Why the two differ is open.
 - Lower close-pair correlation is read as less crosstalk. Truly correlated neighbours would also lose a little
   correlation if a footprint took a neighbour's light with the wrong sign; the sims, where this is checked against
   truth, show the opposite (leak into the neighbour's trace halves).
