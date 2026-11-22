@@ -38,7 +38,7 @@ Nothing here is sent anywhere; no analytics field was added.
 
 ### Speed fields
 
-- `settings.speed_mode`: `max`, `fixed`, `curve`, `auto` or `stream` (a live source). `settings.target_speed_fps` is the target at the end of setup (0: Max); what the run actually did is `target_speed.changes`, whose `source` says who changed it (`run start`, `setting`, `url`, `curve`, `auto`, ...).
+- `settings.speed_mode`: `max`, `fixed`, `curve`, `auto` or `stream` (a live source). `settings.target_speed_fps` is the target at the start of the run (0: Max; `settings.settle_cap` is likewise the cap at the start); what the run actually did is `target_speed.changes`, whose `source` says who changed it (`run start`, `setting`, `url`, `curve`, `auto`, ...).
 - `work.realised` (null where a number is not known). The counts are read from the slow worker about once a second during Discover's own run and kept, so a Refine or Extract that follows does not change them (the last second of Discover may be missing). `achieved_fps_mean` is the whole Discover stage's frames over its wall time, pauses and the Final settle included:
 
   | Field                            | Meaning                                                                                           |
@@ -76,12 +76,12 @@ A record maps to settings like this (`settingsFromRecord`):
 | `discovery`                   | Discover on or off                                                                                                                                                |                             |
 | `lookback`                    | Look-back                                                                                                                                                         | `?lookback`                 |
 | `background_settle`           | Background settle: `auto-below-max` (the default under look-back: it runs whenever the target is below Max) or `off`                                              | `?csettle=0` turns it off   |
-| `settle_cap`                  | the cap: 2, 1 or 0.5 re-read frames per live frame, or `off`                                                                                                      | `?csrate=`                  |
+| `settle_cap`                  | the cap at the start: 2, 1 or 0.5 re-read frames per live frame, or `off` (changes: `work.cap_changes`)                                                           | `?csrate=`                  |
 | `settle_yield_frames`         | frames per piece of an answer                                                                                                                                     | `?csettle=yieldN`           |
 | `need_first`                  | one worker: need-driven look-back first                                                                                                                           | `?debug&needfirst`          |
 | `lookback_pool`               | `planned_S` (the settle pool size of the page), `started_S` (the pool actually started: 0 for a run that stayed at Max), `started_at_frame` (null: never started) | `?debug&lbpool=` (S)        |
 | `final_settle_level`          | Final settle: `thorough` (full pass), `standard` (87 %), `quick` (60 %)                                                                                           | the Final settle select     |
-| `target_speed_fps`            | target speed (0: Max)                                                                                                                                             | `?debug&pacefps=`           |
+| `target_speed_fps`            | target speed at the start of the run (0: Max)                                                                                                                     | `?debug&pacefps=`           |
 | `smooth_playback`             | smooth playback                                                                                                                                                   | `?debug&smooth=0`           |
 | `library_mode`, `refine_runs` | Joint or Separate, Refine runs (the session setup)                                                                                                                |                             |
 | `extract_after_discover`      | "Extract after Discover" (Run tab)                                                                                                                                |                             |

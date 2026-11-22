@@ -775,12 +775,17 @@ const App: Component = () => {
         if (a.paceFps !== undefined) pipeline.setPaceFps(a.paceFps, 'run record');
         if (a.smoothPlayback !== undefined) pipeline.setSmoothPlayback(a.smoothPlayback);
         // The pool size is fixed at page load: say so rather than run differently in silence.
-        if (a.lookbackPoolPlanned !== undefined && a.lookbackPoolPlanned !== lbPool) {
-          const warning = `The record planned ${a.lookbackPoolPlanned} settle pool worker(s); this page has ${lbPool} (open it with ?debug&lbpool=${a.lookbackPoolPlanned} to match).`;
-          console.warn(warning);
-          return { ...a, warnings: [warning] };
-        }
-        return a;
+        const warnings: string[] = [];
+        if (a.capChangedDuringRun)
+          warnings.push(
+            'The record changed the settle cap during the run; cap changes are not replayed (the starting cap is applied).',
+          );
+        if (a.lookbackPoolPlanned !== undefined && a.lookbackPoolPlanned !== lbPool)
+          warnings.push(
+            `The record planned ${a.lookbackPoolPlanned} settle pool worker(s); this page has ${lbPool} (open it with ?debug&lbpool=${a.lookbackPoolPlanned} to match).`,
+          );
+        for (const w of warnings) console.warn(w);
+        return warnings.length > 0 ? { ...a, warnings } : a;
       },
     });
   }

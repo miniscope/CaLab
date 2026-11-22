@@ -740,8 +740,56 @@ describe('replaying a curve', () => {
       },
     });
     expect(settingsFromRecord(rec('curve'))!.curve!.points).toHaveLength(2);
-    expect(settingsFromRecord(rec('fixed'))!.curve).toBeUndefined();
     expect(settingsFromRecord(rec('fixed'))!.speedMode).toBe('fixed');
     expect(settingsFromRecord(rec('bogus'))!.speedMode).toBeUndefined();
+  });
+
+  it('replays any run with more than one distinct target as a curve, whatever its mode', () => {
+    const rec = (mode: string, fps: number[]) =>
+      JSON.parse(
+        JSON.stringify(
+          buildRunRecord(
+            input({
+              settings: { speed_mode: mode, target_speed_fps: fps[0] },
+              targetSpeed: fps.map((f, k) => ({
+                at: `t${k}`,
+                frame: k * 3000,
+                fps: f,
+                source: k ? 'setting' : 'run start',
+              })),
+            }),
+          ),
+        ),
+      );
+    expect(settingsFromRecord(rec('fixed', [0, 60]))!.curve!.points).toEqual([
+      { at: 0, fps: 'max' },
+      { at: 0.5, fps: 60 },
+    ]);
+    expect(settingsFromRecord(rec('fixed', [60, 120]))!.curve!.points).toEqual([
+      { at: 0, fps: 60 },
+      { at: 0.5, fps: 120 },
+    ]);
+    // One target all through: no curve.
+    expect(settingsFromRecord(rec('fixed', [60]))!.curve).toBeUndefined();
+  });
+
+  it('records the settings the run started with, not the end-of-run values', () => {
+    const trace = new RunTrace();
+    trace.noteTargetSpeed(0, 0, 'run start');
+    trace.noteTargetSpeed(60, 500, 'setting');
+    trace.noteCap(1, 0, 'run start');
+    trace.noteCap(0, 500, 'setting');
+    const r = gatherRunRecord({
+      ...gatherSources(),
+      trace,
+      pipeline: { ...gatherSources().pipeline, paceFps: () => 60, csettle: () => false },
+    }) as Rec;
+    expect(r.settings.target_speed_fps).toBe(0);
+    expect(r.settings.settle_cap).toBe(1);
+    expect(settingsFromRecord(JSON.parse(JSON.stringify(r)))).toMatchObject({
+      paceFps: 0,
+      csettleCeiling: 1,
+      capChangedDuringRun: true,
+    });
   });
 });

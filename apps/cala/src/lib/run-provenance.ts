@@ -773,6 +773,10 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
   const achieved = achievedFps(src.stageRuns());
   const n = src.trace.counters();
   const floor = src.trace.floorEstimate();
+  // The settings hold what the run STARTED with; what changed after is `target_speed.changes`
+  // and `work.cap_changes` (the first entry of each is the start value).
+  const startFps = src.trace.targetSpeedChanges()[0]?.fps ?? p.paceFps();
+  const startCap = src.trace.capChanges()[0]?.cap;
   const speedMode = speedModeOf({
     live: info?.live !== undefined,
     targetSpeed: src.trace.targetSpeedChanges(),
@@ -793,7 +797,14 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       // Background settle (v2): runs whenever the target is below Max, at most `settle_cap`
       // re-read frames per live frame; 'off' (the checkbox unticked, `csettle=0`) never.
       background_settle: p.csettle() ? 'auto-below-max' : 'off',
-      settle_cap: p.csettle() ? p.csettleCeiling() : 'off',
+      settle_cap:
+        startCap !== undefined
+          ? startCap > 0
+            ? startCap
+            : 'off'
+          : p.csettle()
+            ? p.csettleCeiling()
+            : 'off',
       settle_yield_frames: p.csettleYield(),
       need_first: p.csettleNeedFirst(),
       // The pool actually started (a run that stayed at Max: started_S 0, started_at_frame null).
@@ -804,7 +815,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       },
       final_settle_level: p.finalSettleLevel(),
       speed_mode: speedMode,
-      target_speed_fps: p.paceFps(),
+      target_speed_fps: startFps,
       smooth_playback: p.smoothPlayback(),
       ...(extras.mode !== undefined ? { library_mode: extras.mode } : {}),
       ...(extras.refineRuns !== undefined ? { refine_runs: extras.refineRuns } : {}),
@@ -928,6 +939,8 @@ export interface AppliedSettings {
    * the same schedule whatever the machine decides. Absent for Max, Fixed and stream runs.
    */
   curve?: ReplayCurve;
+  /** The run changed its settle cap part-way (`work.cap_changes` has more than one distinct value); not replayed. */
+  capChangedDuringRun?: boolean;
 }
 
 /** A schedule of target speeds over the recording (`speed-schedule.ts` reads the same shape). */
@@ -1009,7 +1022,7 @@ export function settingsFromRecord(rec: unknown): AppliedSettings | null {
   bool('smooth_playback', 'smoothPlayback');
   if ((SPEED_MODES as readonly unknown[]).includes(o.speed_mode))
     out.speedMode = o.speed_mode as AppliedSettings['speedMode'];
-  if (out.speedMode === 'curve' || out.speedMode === 'auto') {
+  {
     const ts = r.target_speed as { changes?: unknown } | undefined;
     const inp = r.input as { frames?: unknown } | undefined;
     const changes = Array.isArray(ts?.changes)
@@ -1022,7 +1035,20 @@ export function settingsFromRecord(rec: unknown): AppliedSettings | null {
         )
       : [];
     const curve = curveFromChanges(changes, finite(inp?.frames) ? inp.frames : 0);
-    if (curve) out.curve = curve;
+    // Any run with more than one distinct target replays as a curve, whatever its mode.
+    if (curve && curve.points.length > 1) out.curve = curve;
+    else if (out.speedMode === 'curve' || out.speedMode === 'auto') {
+      if (curve) out.curve = curve;
+    }
+  }
+  const work = r.work as { cap_changes?: unknown } | undefined;
+  if (Array.isArray(work?.cap_changes)) {
+    const caps = new Set(
+      (work.cap_changes as unknown[])
+        .map((c) => (c as Record<string, unknown> | null)?.cap)
+        .filter(finite),
+    );
+    if (caps.size > 1) out.capChangedDuringRun = true;
   }
   return out;
 }
