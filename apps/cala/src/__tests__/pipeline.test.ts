@@ -8,6 +8,7 @@ import { makePlan, PipelineCursor, type PipelineStep } from '../lib/pipeline-pla
 import { createPipelineStore, MAX_IN_FLIGHT, ThroughputMeter } from '../lib/pipeline-store.ts';
 import { downsampleFrame, previewFactor } from '../lib/preview.ts';
 import { createRunHistory } from '../lib/run-history.ts';
+import type { LookbackFeed } from '../lib/lookback-client.ts';
 import type { FrameRequest, FrameResponse } from '../workers/frame-types.ts';
 
 function walk(cursor: PipelineCursor): PipelineStep[] {
@@ -432,6 +433,120 @@ function fakeWorker(reply: (req: FrameRequest) => FrameResponse) {
   };
   return { worker, sent };
 }
+
+describe('pipeline store: Background settle and the settle pool', () => {
+  function feedSpy(order: string[]) {
+    const calls: { cap: number[]; pace: [number, boolean][]; pool: number[] } = {
+      cap: [],
+      pace: [],
+      pool: [],
+    };
+    const feed: LookbackFeed = {
+      blocked: () => null,
+      begin: () => true,
+      rows: () => {},
+      backState: () => {},
+      flatField: () => {},
+      reset: () => {},
+      pace: (fps, paused) => {
+        order.push('pace');
+        calls.pace.push([fps, paused]);
+      },
+      cap: (c) => {
+        order.push('cap');
+        calls.cap.push(c);
+      },
+      startPool: (session) => {
+        calls.pool.push(session);
+        return 1;
+      },
+    };
+    return { feed, calls };
+  }
+  const make = (feed: LookbackFeed, client: ReturnType<typeof manualClient>['client']) =>
+    createPipelineStore(
+      client,
+      {},
+      undefined,
+      undefined,
+      true,
+      undefined,
+      {},
+      undefined,
+      undefined,
+      feed,
+    );
+
+  it('a run at Max sends the cap and target before its start and never starts the pool', async () => {
+    const order: string[] = [];
+    const { feed, calls } = feedSpy(order);
+    const { client } = manualClient();
+    client.startPipeline.mockImplementation(async () => {
+      order.push('start');
+      return makePlan(100);
+    });
+    await createRoot(async (dispose) => {
+      const store = make(feed, client);
+      store.setLookback(true);
+      await store.start();
+      expect(order.slice(0, 3)).toEqual(['cap', 'pace', 'start']);
+      expect(calls.cap).toEqual([2]);
+      expect(calls.pace.at(-1)).toEqual([0, false]);
+      const cells = (
+        client.startPipeline.mock.calls[0] as unknown as [unknown, { csettle?: boolean }]
+      )[1];
+      expect(cells.csettle).toBe(true);
+      store.setCsettleCeiling(1);
+      store.setCsettle(false);
+      expect(calls.cap.slice(-2)).toEqual([1, 0]);
+      expect(calls.pool).toEqual([]);
+      dispose();
+    });
+  });
+
+  it('going below Max mid-run starts the pool for that run (with the settle on), never after the run', async () => {
+    const order: string[] = [];
+    const { feed, calls } = feedSpy(order);
+    const { client } = manualClient();
+    await createRoot(async (dispose) => {
+      const store = make(feed, client);
+      store.setLookback(true);
+      store.setCsettle(false);
+      await store.start();
+      const session = (
+        client.startPipeline.mock.calls[0] as unknown as [unknown, { session: number }]
+      )[1].session;
+      store.setPaceFps(60);
+      // Cap Off: no pool yet.
+      expect(calls.pool).toEqual([]);
+      store.setCsettle(true);
+      expect(calls.pool).toEqual([session]);
+      store.stop();
+      store.setPaceFps(30);
+      expect(calls.pool).toEqual([session]);
+      dispose();
+    });
+  });
+
+  it('a run started below Max starts the pool before its start', async () => {
+    const order: string[] = [];
+    const { feed, calls } = feedSpy(order);
+    const { client } = manualClient();
+    client.startPipeline.mockImplementation(async () => {
+      order.push('start');
+      return makePlan(100);
+    });
+    await createRoot(async (dispose) => {
+      const store = make(feed, client);
+      store.setLookback(true);
+      store.setPaceFps(60);
+      await store.start();
+      expect(calls.pool).toHaveLength(1);
+      expect(order.indexOf('start')).toBeGreaterThan(order.indexOf('pace'));
+      dispose();
+    });
+  });
+});
 
 describe('pipeline message protocol', () => {
   it('pairs start/step/stop requests with their responses by id', async () => {
