@@ -92,7 +92,7 @@ async function open(
     throw new Error('look-back stopped');
   }
   r.source = src;
-  r.reader = new LookbackReader(src);
+  r.reader = new LookbackReader(src, msg.prune ? { keepSessions: 2 } : {});
   const pool = new StagePool(2, LOOKBACK.takeMax * src.info.width * src.info.height);
   return { reader: r.reader, pool };
 }
@@ -125,7 +125,10 @@ function handleMain(msg: MainToLookback): void {
       );
       return;
     case 'back-state':
-      withReader(msg.session, (reader) => reader.setBackState(msg.state));
+      withReader(msg.session, (reader) => reader.setBackState(msg.state, msg.frame));
+      return;
+    case 'session':
+      withReader(msg.session, (reader) => reader.setSession(msg.index, msg.transform));
       return;
     case 'flat':
       withReader(msg.session, (reader) => reader.setFlatField(msg.map));

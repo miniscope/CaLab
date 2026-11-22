@@ -150,7 +150,7 @@ const App: Component = () => {
     : undefined;
   // Look-back: Discover refines footprints as it goes by re-reading past frames in a
   // worker of its own, and settles at the end (the Final settle).
-  // A recording on disk with one session, pipelined workers only.
+  // A recording on disk (one session or a Joint run of several), pipelined workers only.
   const pipelined = params.get('pipeline') !== '0';
   // The settle pool: S more look-back workers that take only the settle's chunks (worker 0
   // keeps need-driven look-back and the end settle), started when a run first goes below
@@ -168,7 +168,6 @@ const App: Component = () => {
       if (!pipelined) return 'Look-back needs the pipelined workers (not ?pipeline=0).';
       if (!i) return 'Open a recording first.';
       if (i.live) return 'Look-back needs a recording on disk (not a live stream).';
-      if ((i.sessions?.length ?? 1) > 1) return 'Look-back runs on one session (not a Joint run).';
       return null;
     },
     onError: (session, message, worker) => {

@@ -750,7 +750,9 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             when={s().lookbackBlocked()}
             fallback={
               s().lookbackRun()
-                ? 'Look-back refines footprints during Discover and runs a Final settle after its last frame.'
+                ? (s().plan()?.boundaries.length ?? 0) > 0
+                  ? 'Look-back refines footprints during Discover, within the session it is reading, and runs a Final settle over every session after its last frame.'
+                  : 'Look-back refines footprints during Discover and runs a Final settle after its last frame.'
                 : 'Look-back starts with the next Discover run (restart with ↻).'
             }
           >

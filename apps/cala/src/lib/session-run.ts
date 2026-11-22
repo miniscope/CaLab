@@ -6,8 +6,9 @@
  *   session after another. Cell ids are per session.
  * - **Joint:** one library. Discover runs through all sessions in order and
  *   Extract solves every session with the final library, so a cell has the
- *   same id in every session. (Look-back and its Final settle run on one
- *   session only, so a Joint run has no footprint refinement after Discover.)
+ *   same id in every session. Look-back runs too: during Discover it re-reads
+ *   frames of the session being read only, and the Final settle covers every
+ *   session (each frame preprocessed as its own session's).
  * - **Apply:** a fixed library goes straight to Extract on each session. Not
  *   built yet (it needs a library from a file, `LibrarySource` in
  *   `run-stages.ts`); the setting has the slot so the flow can be added.
@@ -31,7 +32,7 @@ export const LIBRARY_MODE_HINT: Record<LibraryMode, string> = {
   separate:
     'Each session gets its own Discover (with look-back and Final settle) and Extract. Cell ids are per session.',
   joint:
-    'One library: Discover runs through all sessions in order (without look-back: it needs one session), Extract solves each session with the final library. Cell ids match across sessions.',
+    'One library: Discover runs through all sessions in order (look-back within each session, then a Final settle over all of them), Extract solves each session with the final library. Cell ids match across sessions.',
   apply: 'A fixed library goes straight to Extract on each session (not available yet).',
 };
 

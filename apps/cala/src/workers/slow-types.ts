@@ -66,6 +66,13 @@ export interface SlowInit {
    */
   settleFraction?: number;
   /**
+   * With `lookback`, a Joint run: the first stream frame of sessions 1..
+   * (the plan's boundaries). While Discover runs, look-back and the settle
+   * during Discover re-read frames of the current session only
+   * (`SlowLoop.setLookbackFloor`); the end settle covers every session.
+   */
+  sessionStarts?: number[];
+  /**
    * With `csettle`: batches the forward pool holds in flight to this worker
    * (the governor's batch-wait guard scales with it; absent: 2).
    */

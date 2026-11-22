@@ -377,9 +377,11 @@ export function createPipelineStore(
     }
   }
 
-  /** A session of a Joint run started: record its re-registration (Refine and Extract replay it) and log it. */
+  /** A session of a Joint run started: record its re-registration (look-back and Extract replay it) and log it. */
   function noteSessionStart(st: SessionStart): void {
     record.noteSession(st.index, st.transform);
+    // Look-back warps the session's frames by it too (before this batch's rows reach it).
+    if (lookbackSession) lookbackFeed?.session?.(lookbackSession, st.index, st.transform);
     const [rot, dy, dx] = st.transform;
     const moved =
       rot === 0 && dy === 0 && dx === 0

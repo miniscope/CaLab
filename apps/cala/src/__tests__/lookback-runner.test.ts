@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildSlowLoop,
+  framesFrom,
   SlowRunner,
   type PublishedLibrary,
   type SlowLoopLike,
@@ -212,6 +213,44 @@ describe('buildSlowLoop', () => {
     const l = buildSlowLoop(Fake, { ...init, lookback: true });
     expect(l.args).toEqual(['withConfig', 4, 3, init.fov, init.noise, 9, 0, 'all', 'all', 0.6]);
     expect(l.lookback).toEqual([2, 3000]);
+  });
+});
+
+describe('SlowRunner look-back in a Joint run (fake loop)', () => {
+  it('drops look-back frames before a floor, request by request', () => {
+    const flat = Float64Array.of(3, 0, 1, 7, 5, 0, 2, 7, 8, 9, 0, 0);
+    expect(Array.from(framesFrom(flat, 0))).toEqual(Array.from(flat));
+    expect(Array.from(framesFrom(flat, 4))).toEqual([5, 0, 2, 7, 8, 9, 0, 0]);
+    expect(Array.from(framesFrom(flat, 6))).toEqual([9, 0, 0]);
+    expect(framesFrom(flat, 10).length).toBe(0);
+  });
+
+  it('moves the floor to the session being read (also past a dropped first batch) and asks only for its frames', () => {
+    const t = setup(1000);
+    const floor = vi.fn();
+    t.loop.setLookbackFloor = floor;
+    t.r.handle({ ...INIT, lookback: true, sessionStarts: [4, 10] });
+    expect(t.created[0].sessionStarts).toEqual([4, 10]);
+    t.r.handle(frames(0));
+    t.r.handle(frames(2));
+    expect(floor).not.toHaveBeenCalled();
+    t.run();
+    // The forward pool dropped the batch at 4: the batch at 6 is session 1 all the same.
+    t.r.handle(frames(6));
+    expect(floor.mock.calls).toEqual([[4]]);
+    t.run();
+    // A scheduler that still hands out earlier frames (a build without the floor): they never go out.
+    t.loop.lookbackTake = vi.fn(() => Float64Array.of(2, 0, 1, 7, 5, 0, 1, 7));
+    const requests = () =>
+      t.toLb.filter((m): m is Extract<SlowToLookback, { type: 'request' }> => m.type === 'request');
+    t.r.handle(frames(8));
+    expect(lookbackFrames(requests().at(-1)!.items).map((f) => f.frame)).toEqual([5]);
+    t.r.handle(frames(10));
+    expect(floor.mock.calls).toEqual([[4], [10]]);
+    // Only earlier frames on offer: the answer is not followed by another request.
+    const n = requests().length;
+    t.answer();
+    expect(requests().length).toBe(n);
   });
 });
 

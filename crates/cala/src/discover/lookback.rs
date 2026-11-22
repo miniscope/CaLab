@@ -160,6 +160,8 @@ pub struct LookBack {
     births: u64,
     /// Discover frames seen (recording frames `0..seen`).
     seen: usize,
+    /// No frame before this one is ever handed out ([`LookBack::set_floor`]).
+    floor: usize,
 }
 
 impl LookBack {
@@ -178,6 +180,7 @@ impl LookBack {
             skipped: 0,
             births: 0,
             seen: 0,
+            floor: 0,
         }
     }
 
@@ -228,6 +231,37 @@ impl LookBack {
     /// Discover frames seen so far.
     pub fn seen(&self) -> usize {
         self.seen
+    }
+
+    /// The first frame look-back may hand out.
+    pub fn floor(&self) -> usize {
+        self.floor
+    }
+
+    /// Never hand out a frame before `floor` from now on (it only rises):
+    /// a multi-session recording read as one stream (the app's Joint run)
+    /// looks back within the current session only, so its frames need no
+    /// cross-session preprocessing. Windows are clipped to `floor..`; a
+    /// cell born at or before it has nothing left to need.
+    pub fn set_floor(&mut self, floor: usize) {
+        if floor <= self.floor {
+            return;
+        }
+        self.floor = floor;
+        self.need.retain(|_, (born, blocks)| {
+            blocks.retain(|&b| (b + 1) * LB_BLOCK > floor);
+            *born > floor && !blocks.is_empty()
+        });
+        if let Some(b) = self.block.as_mut() {
+            b.cells.retain(|c| c.2 > floor);
+            for c in b.cells.iter_mut() {
+                c.1 = c.1.max(floor);
+            }
+            b.cur = b.cur.max(floor);
+            if b.cells.is_empty() {
+                b.end = b.cur;
+            }
+        }
     }
 
     /// Discover has observed recording frames `0..seen` and the live library
@@ -407,15 +441,16 @@ impl LookBack {
     /// cell in need that has not had it takes it.
     fn next_block_target(&mut self) -> bool {
         let nb = self.seen / LB_BLOCK;
-        if nb == 0 {
+        let first = self.floor / LB_BLOCK;
+        if nb <= first {
             return false;
         }
         let mut count = vec![(0u32, 0u32); nb];
         let mut any = false;
         for c in self.cells.values().filter(|c| c.need) {
             let pre = c.born.div_ceil(LB_BLOCK).min(nb);
-            let pre_left = (0..pre).any(|b| !c.served.contains(&b));
-            let range = if pre_left { 0..pre } else { 0..nb };
+            let pre_left = (first..pre).any(|b| !c.served.contains(&b));
+            let range = if pre_left { first..pre } else { first..nb };
             for b in range {
                 if !c.served.contains(&b) {
                     count[b].0 += u32::from(c.prio);
@@ -427,11 +462,11 @@ impl LookBack {
         if !any {
             return false;
         }
-        let blk = (0..nb)
+        let blk = (first..nb)
             .filter(|&b| count[b].1 > 0)
             .max_by_key(|&b| (count[b].0, count[b].1, std::cmp::Reverse(b)))
             .expect("block");
-        let (lo, hi) = (blk * LB_BLOCK, (blk + 1) * LB_BLOCK);
+        let (lo, hi) = ((blk * LB_BLOCK).max(self.floor), (blk + 1) * LB_BLOCK);
         let mut cells = Vec::new();
         for (&id, c) in self.cells.iter_mut() {
             if c.need && c.served.insert(blk) {
@@ -462,9 +497,9 @@ impl LookBack {
                 let ((fy, fx), fr) = lib.support(f);
                 (fy - y).hypot(fx - x) < fr + r
             });
-            if touch {
+            if touch && seen > self.floor {
                 // A neighbour already in need keeps its window.
-                let lo = seen.saturating_sub(self.cfg.max_frames) / LB_BLOCK;
+                let lo = seen.saturating_sub(self.cfg.max_frames).max(self.floor) / LB_BLOCK;
                 let blocks = (lo..seen.div_ceil(LB_BLOCK)).collect();
                 self.need.entry(id).or_insert((seen, blocks));
             }
@@ -498,7 +533,7 @@ impl LookBack {
         for (&id, (born, blocks)) in self.need.iter_mut() {
             if let Some(i) = blocks.iter().position(|&b| b == blk) {
                 blocks.swap_remove(i);
-                let from = (blk * LB_BLOCK).max(born.saturating_sub(k));
+                let from = (blk * LB_BLOCK).max(born.saturating_sub(k)).max(self.floor);
                 let to = ((blk + 1) * LB_BLOCK).min(*born);
                 cells.push((id, from, to));
             }
@@ -532,6 +567,8 @@ pub struct SettleSched {
     cur: usize,
     left: usize,
     credit: f64,
+    /// Frames before this one are never re-read ([`SettleSched::set_floor`]).
+    floor: usize,
 }
 
 impl SettleSched {
@@ -544,6 +581,7 @@ impl SettleSched {
             cur: 0,
             left: 0,
             credit: 0.0,
+            floor: 0,
         }
     }
 
@@ -574,19 +612,26 @@ impl SettleSched {
         }
     }
 
-    /// The next frame to re-read among the first `seen` saved frames, and
+    /// Re-read frames from `floor` on only (the current session of a
+    /// multi-session recording; see [`LookBack::set_floor`]).
+    pub fn set_floor(&mut self, floor: usize) {
+        self.floor = self.floor.max(floor);
+    }
+
+    /// The next frame to re-read among saved frames `floor..seen`, and
     /// whether it starts a new chunk (the frame before it was not the one
     /// re-read last). `None` while less than one chunk is saved.
     pub fn next_frame(&mut self, seen: usize) -> Option<(usize, bool)> {
         let mut new = false;
-        if self.left == 0 || self.cur >= seen {
-            let n = seen / self.chunk;
+        let lo = self.floor.min(seen);
+        if self.left == 0 || self.cur >= seen || self.cur < lo {
+            let n = (seen - lo) / self.chunk;
             if n == 0 {
                 return None;
             }
             self.k += 1;
             let u = (self.k as f64 * 0.618_033_988_749_894_9).fract();
-            self.cur = ((u * n as f64) as usize).min(n - 1) * self.chunk;
+            self.cur = lo + ((u * n as f64) as usize).min(n - 1) * self.chunk;
             self.left = self.chunk;
             new = true;
         }

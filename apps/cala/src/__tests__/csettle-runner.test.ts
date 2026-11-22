@@ -148,6 +148,8 @@ function setup(
     lb?: boolean;
     /** false: the slow loop publishes no library until `gate.open` is set. */
     library?: boolean;
+    /** A Joint run: the first frame of sessions 1.. (`SlowInit.sessionStarts`). */
+    sessionStarts?: number[];
   } = {},
 ) {
   const gate = { open: o.library !== false };
@@ -185,6 +187,7 @@ function setup(
     ...(o.csettle !== undefined ? { csettle: true } : {}),
     ...(o.needFirst ? { csettleNeedFirst: true } : {}),
     ...(o.yieldFrames ? { csettleYield: o.yieldFrames } : {}),
+    ...(o.sessionStarts ? { sessionStarts: o.sessionStarts } : {}),
   });
   type Req = Extract<SlowToLookback, { type: 'request' }>;
   const requests = () => toLb.filter((m): m is Req => m.type === 'request');
@@ -254,6 +257,42 @@ function setup(
     frameAt: () => at,
   };
 }
+
+describe('settle during Discover in a Joint run', () => {
+  it('re-reads frames of the current session only, from its first frame on', () => {
+    const t = setup({ csettle: 2, sessionStarts: [400] });
+    const floor = vi.fn();
+    t.loop.setLookbackFloor = floor;
+    expect(t.created[0].sessionStarts).toEqual([400]);
+    // In session 0 the whole history is open.
+    t.untilSettle();
+    while (t.pending()) t.answer();
+    expect(floor).not.toHaveBeenCalled();
+    while (t.frameAt() <= 400) {
+      t.live(1);
+      while (t.pending()) t.answer();
+    }
+    expect(floor.mock.calls).toEqual([[400]]);
+    // From now on every settle frame is in session 1, even from a picker that offers earlier ones.
+    const before = t.settleRequests().length;
+    for (let k = 0; k < 3; k++) {
+      t.untilSettle();
+      while (t.pending()) t.answer();
+    }
+    const asked = t.settleRequests().slice(before);
+    expect(asked.length).toBeGreaterThanOrEqual(3);
+    for (const q of asked) {
+      const fr = lookbackFrames(q.items);
+      expect(fr.length).toBeGreaterThan(0);
+      expect(fr.every((f) => f.frame >= 400 && f.frame < t.frameAt())).toBe(true);
+      expect(q.skip!.length).toBe(fr.length);
+      expect(Array.from(q.skip!)).toEqual(fr.map((f) => (held(f.frame) ? 1 : 0)));
+    }
+    // The floor never goes back.
+    t.live(5);
+    expect(floor).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('settle during Discover: off by default', () => {
   it('a look-back run without the flag asks for nothing more and reports nothing more', () => {
