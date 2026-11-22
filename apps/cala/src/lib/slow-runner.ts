@@ -630,7 +630,8 @@ export class SlowRunner {
     const t0 = this.now();
     // The wait in the inbox: sent by the fast worker (epoch clock) until processing starts here.
     if (msg.sentAt !== undefined) {
-      const wait = Math.max(0, this.epochNow() - msg.sentAt);
+      // Not clamped: a negative reading would mean the two workers' clocks disagree.
+      const wait = this.epochNow() - msg.sentAt;
       this.waitN++;
       this.waitSum += wait;
       this.waitLast = wait;

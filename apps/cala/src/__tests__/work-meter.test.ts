@@ -86,6 +86,9 @@ describe('WindowMax', () => {
     expect(w.max(600)).toBe(50);
     expect(w.max(1001)).toBe(8);
     expect(w.max(1600)).toBe(0);
+    // A negative value (clocks that disagree) is shown, not hidden as 0.
+    w.push(2000, -3);
+    expect(w.max(2100)).toBe(-3);
   });
 });
 
@@ -165,7 +168,7 @@ describe('workRates', () => {
 
   it('addLookbackAnswer sums an answer and tolerates a missing timing', () => {
     const w = emptyLookbackWork();
-    addLookbackAnswer(w, 8, { readMs: 1, preprocessMs: 2, solveMs: 3, waitMs: 4 });
+    addLookbackAnswer(w, 8, { readMs: 1, preprocessMs: 2, solveMs: 3, otherMs: 5, waitMs: 4 });
     addLookbackAnswer(w, 4);
     expect(w).toEqual({
       answers: 2,
@@ -173,6 +176,7 @@ describe('workRates', () => {
       readMs: 1,
       preprocessMs: 2,
       solveMs: 3,
+      otherMs: 5,
       waitMs: 4,
     });
   });
@@ -382,7 +386,7 @@ describe('SlowRunner accounting', () => {
       cells: 1,
       frames: new Float32Array(4),
       traces: new Float32Array(2),
-      timing: { readMs: 6, preprocessMs: 30, solveMs: 9, waitMs: 1 },
+      timing: { readMs: 6, preprocessMs: 30, solveMs: 9, otherMs: 2, waitMs: 1 },
     };
     x.r.handleLookback(reply);
     x.r.handle(batch(2));
@@ -393,6 +397,7 @@ describe('SlowRunner accounting', () => {
       readMs: 6,
       preprocessMs: 30,
       solveMs: 9,
+      otherMs: 2,
       waitMs: 1,
     });
     expect(w.lookback.csettle.answers).toBe(0);

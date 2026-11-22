@@ -90,10 +90,11 @@ export class WindowMax {
     this.prune(t);
   }
 
-  /** The window's largest value at time `t` (0 when empty). */
+  /** The window's largest value at time `t` (0 when empty; negative values are kept, not clamped). */
   max(t: number): number {
     this.prune(t);
-    let m = 0;
+    if (this.samples.length === 0) return 0;
+    let m = Number.NEGATIVE_INFINITY;
     for (const s of this.samples) if (s.v > m) m = s.v;
     return m;
   }
@@ -117,12 +118,14 @@ export interface LookbackWork {
   readMs: number;
   preprocessMs: number;
   solveMs: number;
+  /** Time in `serve` that is none of those (a new library's decode, buffers), ms. */
+  otherMs: number;
   /** Time the worker waited for the main thread's rows or the back half's state (not busy), ms. */
   waitMs: number;
 }
 
 export function emptyLookbackWork(): LookbackWork {
-  return { answers: 0, frames: 0, readMs: 0, preprocessMs: 0, solveMs: 0, waitMs: 0 };
+  return { answers: 0, frames: 0, readMs: 0, preprocessMs: 0, solveMs: 0, otherMs: 0, waitMs: 0 };
 }
 
 /** What a look-back worker timed for one answer (`LookbackToSlow` `frames`). */
@@ -130,6 +133,8 @@ export interface LookbackTiming {
   readMs: number;
   preprocessMs: number;
   solveMs: number;
+  /** The rest of the worker's `serve` call: its total, less the waits and the three above. */
+  otherMs: number;
   waitMs: number;
 }
 
@@ -141,6 +146,7 @@ export function addLookbackAnswer(into: LookbackWork, frames: number, t?: Lookba
   into.readMs += t.readMs;
   into.preprocessMs += t.preprocessMs;
   into.solveMs += t.solveMs;
+  into.otherMs += t.otherMs;
   into.waitMs += t.waitMs;
 }
 
@@ -189,7 +195,7 @@ export interface WorkRates {
   /** Each visit worker's busy share. */
   visit: number[];
   lookback: {
-    /** Busy share of the look-back worker (read + preprocess + solve), all kinds. */
+    /** Busy share of the look-back worker (its `serve` time less waits for Discover's rows), all kinds. */
     busy: number;
     /** By kind: busy share, frames per second of wall time, and ms per answer split. */
     kinds: Record<
@@ -205,7 +211,7 @@ export interface WorkRates {
   batchWait: { meanMs: number; lastMs: number; max1sMs: number };
 }
 
-const lbBusy = (w: LookbackWork) => w.readMs + w.preprocessMs + w.solveMs;
+const lbBusy = (w: LookbackWork) => w.readMs + w.preprocessMs + w.solveMs + w.otherMs;
 
 /**
  * Shares between two snapshots of the same run (`prev` before `cur`). A

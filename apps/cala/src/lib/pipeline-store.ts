@@ -476,7 +476,7 @@ export function createPipelineStore(
     const rates = workRater.push(st.accounting);
     if (!rates) return;
     setWork(rates);
-    runHistory?.work(rates, maxFps());
+    runHistory?.work(rates, maxFpsEstimator.estimate());
   });
   function sendPace(pace: { fps?: number; paused?: boolean }): void {
     void client.setPace?.(pace).catch(() => {});

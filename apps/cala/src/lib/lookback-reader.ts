@@ -59,6 +59,10 @@ export interface HistorySource {
   readFrames(start: number, count: number, out?: FramePixels): Promise<FramePixels>;
 }
 
+function emptyTiming(): LookbackTiming {
+  return { readMs: 0, preprocessMs: 0, solveMs: 0, otherMs: 0, waitMs: 0 };
+}
+
 /** Block seqs at or below this belong to the settle during Discover (`-(1e6 + k)`); the end settle's are above. */
 const SETTLE_BLOCK_MAX = -1_000_000;
 
@@ -93,7 +97,7 @@ export interface LookbackSolved {
 
 export class LookbackReader {
   /** Time spent since the last `serve` began (read in `serve`'s result). */
-  private timing: LookbackTiming = { readMs: 0, preprocessMs: 0, solveMs: 0, waitMs: 0 };
+  private timing: LookbackTiming = emptyTiming();
   private readonly px: number;
   private readonly record = new RunRecord();
   /** Waiting for rows: resolved when the record covers `frame`. */
@@ -180,7 +184,8 @@ export class LookbackReader {
   ): Promise<LookbackSolved> {
     if (out.length < frames.length * this.px)
       throw new RangeError(`look-back: a buffer of ${out.length} for ${frames.length} frames`);
-    this.timing = { readMs: 0, preprocessMs: 0, solveMs: 0, waitMs: 0 };
+    const serveT0 = performance.now();
+    this.timing = emptyTiming();
     this.applyLibrary();
     const traces = new Float32Array(frames.length * this.cells);
     let background: Float32Array | undefined;
@@ -197,12 +202,17 @@ export class LookbackReader {
       background.set(bg, i * bg.length);
       this.timing.solveMs += performance.now() - t0;
     }
+    const t = this.timing;
+    t.otherMs = Math.max(
+      0,
+      performance.now() - serveT0 - t.waitMs - t.readMs - t.preprocessMs - t.solveMs,
+    );
     return {
       version: this.engine ? this.version : 0,
       cells: this.cells,
       traces,
       ...(background ? { background } : {}),
-      timing: this.timing,
+      timing: t,
     };
   }
 
