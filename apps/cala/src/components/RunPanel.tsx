@@ -42,6 +42,7 @@ import {
 } from '../lib/export.ts';
 import { SidePanel } from './SidePanel.tsx';
 import { SpeedControl } from './SpeedControl.tsx';
+import { WorkDisplay } from './WorkDisplay.tsx';
 import { reportResultsExported } from '../lib/analytics-integration.ts';
 
 /** `?debug` is in the URL (read once). */
@@ -730,6 +731,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       </Show>
 
       <SpeedControl pipeline={s()} cells={c()} live={props.live} fps={props.fps} />
+      <WorkDisplay pipeline={s()} cells={c()} ui={props.ui} live={props.live} visible={shown()} />
 
       <div class="cala-run__footer">
         <span class="cala-readout" data-testid="cells-readout">
