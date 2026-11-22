@@ -141,3 +141,55 @@ four batches at once, which can fill the four forward buffers whatever the slow 
 `--units-per-ms 1.6e6` (the slow worker's time x 1.25 = 181 / 145) and `--lb-ms 1.6 --lb-ms-per-cell 0.0082` (the
 look-back worker's time x 0.8), `--lb-gate`, `--job-ms 1`, visit workers at `--visit-units-per-ms 2e6` (unchanged: the
 Chrome samples show the visit workers are not the limit). The Samara runs for C1 use exactly these flags.
+
+## Where the background settle is limited, by rate (for the PI)
+
+From the Chrome runs (one run each). "Supply" = the one look-back worker's re-reads, shared with need-driven
+look-back; "slow worker" = its time per re-read frame (the statistics update) and the live frames it misses.
+
+| target | Samara `10_43_21` (300-400 cells) | workshop (750-870 cells) |
+| --- | --- | --- |
+| 30 fps | **the cap** (1.99 of 2). The worker re-read 119 a second and had room (it managed 147-154 at 60-120 fps); the slow worker spent 10 % of its time on the answers and missed nothing | not run in Chrome. The worker re-reads about 95 a second at this cell count against 120 asked (60 need-driven + 60 settle), so **supply**, about 1.6 per live frame for each kind (estimate; model below) |
+| 60 fps | **supply**: 154 re-reads a second, dose 1.29. Slow worker fine (0 missed, 12 % of its time on settle answers) | **supply and the slow worker**: 97 a second, dose 0.84; the slow loop misses 1.66 % with the settle off and 3.35 % with it on; 19 % of the slow worker's time goes to settle answers |
+| 120 fps | **supply** (147 a second, dose 0.63), and the slow worker starts to miss (2.15 %) | **the slow worker** (22 % missed), then supply (91 a second, dose 0.49) |
+
+The statistics update costs the slow worker 1.4-1.6 ms per re-read frame on Samara and 3.5-3.9 ms on the workshop
+recording, about the same as a live frame's share of its time at full speed (3.5 and 6.9 ms in all). Each re-read
+frame for the settle therefore displaces roughly half a live frame on the workshop recording once the slow worker is
+full.
+
+## Other uses of spare compute (ranked; not for this PR)
+
+At 30 fps the fast loop uses about a tenth of the machine; in Chrome the visit workers were about half busy at 30 fps
+on Samara (mean visit 20-29 ms at 86-92 jobs a second over four workers), and the look-back worker had room. Ranked by
+expected gain in the final result per unit of work, with rough size and risk:
+
+1. **Statistics updates off the slow worker** (re-read frames first, live frames later). The update is
+   `SlowLoop::update_fpstats` (per cell, moments over a disk of the support plus a margin; then the cluster statistics):
+   additive, at the current forgetting weight. The look-back worker already renders the model for each frame it
+   re-reads; it could sum one 16-frame delta per cell and send it with the answer, and the slow worker would only add
+   it. Gain: frees 12-19 % of the slow worker at 60 fps (more on dense recordings), which is the limit on the
+   workshop recording from 60 fps up and lets the slow loop miss fewer live frames. Size: about 300-500 lines (engine
+   delta type, worker, apply path, a test that the summed delta equals 16 calls of `observe_settle`). Risk: medium-high
+   (weight and order of forgetting, library version between request and answer (stale answers are already dropped),
+   cluster statistics, message size: cells x disk pixels x moments, several MB per chunk on the workshop recording).
+2. **The slow loop sees every live frame at higher rates.** At full speed it misses 15-34 % of the frames, at 30 fps
+   none, and a 30 fps run ends with about 20 % more cells (Q1 of the design). The slow worker is the limit; item 1
+   applied to live frames is the way to give it room, or more forward buffers where the misses are bursts. Gain:
+   unknown on quality (the cells that appear with the pace are not yet shown to be real); size: as item 1 plus the
+   live path; risk: medium. Measure first: the `P-f` arms against `REF` in qc_eval (lines L2-L2c).
+3. **More re-read workers** (a look-back pool: one for need-driven look-back, one or more for the background settle).
+   Gain: doubles supply where supply is the limit (Samara at 60-120 fps, the workshop recording at 30-60 fps), stops
+   the settle halving need-driven look-back (1.69 to 0.84 per observed frame on the workshop recording at 60 fps), and
+   shortens Samara's final settle (re-read-limited at about 200 a second). On dense recordings it moves the load onto
+   the slow worker, so it pays fully only with item 1. Size: about 300 lines (the design's PR 5). Risk: low-medium;
+   memory about 0.15-0.3 GB a worker (design estimate). Line L8 decides whether the dose it buys is worth it.
+4. **Doses above 2 at 30 fps and below** (cap 4 and 8; line L9). Costs only re-read supply, which has room on Samara
+   at 30 fps. Gain unknown (round 3 ties the larger footprints to lost marginal cells). Size: a constant. Risk: low to
+   try, quality risk measured by L9.
+5. **Idle visit workers.** Settle visits on them did nothing measurable in round 2 (2-82 refinements in 5,800-22,500
+   jobs), because the ordinary visits already refine. A lower due threshold (`visit_after_slots`) would make visits
+   more frequent; it changes Discover itself and needs its own benchmark. Gain: likely small. Risk: medium (cell
+   counts moved with visit frequency in round 3).
+6. **The final settle sooner or shorter**: with items 1 and 3 the final settle (88-228 s) runs faster; the adaptive
+   final settle (design section 3) saves time, not quality.
