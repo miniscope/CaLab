@@ -41,9 +41,9 @@ import {
 import { SidePanel } from './SidePanel.tsx';
 import { reportResultsExported } from '../lib/analytics-integration.ts';
 
-/** What "Settle during Discover" does (the toggle's tooltip). */
+/** What "Background settle" does (the toggle's tooltip). */
 const CSETTLE_HELP =
-  'Experimental: while Discover runs, saved frames spread over everything read so far are re-read and added to the footprint statistics, so footprints settle earlier. The settle after the last frame still runs. Takes effect when Discover starts: tick it, then restart (↻), or open with ?lookback&csettle.';
+  'Experimental: while Discover runs, saved frames spread over everything read so far are re-read and added to the footprint statistics, so footprints settle earlier. The final settle after the last frame still runs. Takes effect when Discover starts: tick it, then restart (↻), or open with ?lookback&csettle.';
 /** What the ceiling means (its tooltip). */
 const CSETTLE_CEILING_HELP =
   'A ceiling, not a target: at most this many saved frames are re-read for each live frame. Lower it to leave more of the machine to the live frames (closed-loop use). A recording read at full speed usually gets far fewer, as fast as the look-back worker can re-read. Takes effect when Discover starts.';
@@ -200,7 +200,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     const st = s().status();
     if (st === 'starting') return 'Starting';
     if (st === 'error') return 'Stopped by an error';
-    if (st === 'done') return c().status()?.lookback?.settling ? 'Settling' : 'Done';
+    if (st === 'done') return c().status()?.lookback?.settling ? 'Final settle' : 'Done';
     const setup = s().setup();
     const prefix = st === 'paused' ? 'Paused: ' : '';
     if (s().processed() === 0 && setup) {
@@ -748,7 +748,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             class="cala-check"
             title={
               s().lookbackBlocked() ??
-              'Experimental: Discover also re-reads earlier frames for each new cell and settles at the end, so footprints converge without a Refine run (Refine stays available to compare). Takes effect when Discover starts: tick it, then restart (↻), or open with ?lookback.'
+              'Experimental: Discover also re-reads earlier frames for each new cell and runs a final settle at the end, so footprints converge without a Refine run (Refine stays available to compare). Takes effect when Discover starts: tick it, then restart (↻), or open with ?lookback.'
             }
           >
             <input
@@ -778,7 +778,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               checked={s().csettle() && s().lookback() && s().lookbackBlocked() === null}
               onChange={(e) => s().setCsettle(e.currentTarget.checked)}
             />
-            Settle during Discover (experimental)
+            Background settle (experimental)
           </label>
           <Show when={s().csettle() && s().lookback() && s().lookbackBlocked() === null}>
             <label class="cala-check" title={CSETTLE_CEILING_HELP}>
@@ -814,7 +814,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             when={s().lookbackBlocked()}
             fallback={
               s().lookbackRun()
-                ? 'Look-back refines footprints during Discover and settles them after its last frame; Refine should not be needed (it stays available to compare).'
+                ? 'Look-back refines footprints during Discover and runs a final settle after its last frame; Refine should not be needed (it stays available to compare).'
                 : 'Look-back starts with the next Discover run (restart with ↻).'
             }
           >
@@ -833,10 +833,10 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
                 type="button"
                 class="btn-secondary btn-small"
                 data-testid="lookback-stop-settling"
-                title="Stop settling now: the footprints refined so far become the final library."
+                title="Stop the final settle now: the footprints refined so far become the final library."
                 onClick={() => props.onStopSettling?.()}
               >
-                Stop settling
+                Stop final settle
               </button>
             </Show>
           </div>

@@ -39,8 +39,8 @@ export function csettleText(cs: CsettleStatus | undefined, running: boolean): st
   const n = csettleReread(cs).toLocaleString();
   const rate = perLive(cs);
   if (running)
-    return ` · settling during Discover: ${n} saved frames re-read (${rate ? `${rate}, ` : ''}ceiling ${cs.rate})`;
-  return ` · ${n} frames re-read during Discover${rate ? ` (${rate})` : ''}`;
+    return ` · background settle: ${n} saved frames re-read (${rate ? `${rate}, ` : ''}ceiling ${cs.rate})`;
+  return ` · ${n} frames re-read by the background settle${rate ? ` (${rate})` : ''}`;
 }
 
 /** One line on a look-back run (experimental): what it re-read, and the settle after the last frame. */
@@ -48,13 +48,13 @@ export function lookbackText(lb: LookbackStatus, final: boolean): string {
   const err = lb.error ? ` · look-back stopped: ${lb.error}` : '';
   const st = lb.settle;
   if (lb.settling && st)
-    return `Settling: ${settleFrames(st)}${movingText(st)}${csettleText(lb.csettle, false)}${err}`;
-  if (lb.settling) return `Settling${csettleText(lb.csettle, false)}${err}`;
+    return `Final settle: ${settleFrames(st)}${movingText(st)}${csettleText(lb.csettle, false)}${err}`;
+  if (lb.settling) return `Final settle${csettleText(lb.csettle, false)}${err}`;
   const read = `${lb.pushed.toLocaleString()} frames re-read for ${lb.births} new cells`;
   if (final && st) {
     const end = st.stopped
-      ? `settling stopped by you after ${settleFrames(st)}`
-      : `settled over ${settleFrames(st)}`;
+      ? `final settle stopped by you after ${settleFrames(st)}`
+      : `final settle over ${settleFrames(st)}`;
     return `Look-back: ${read}${csettleText(lb.csettle, false)} · ${end}${movingText(st)}${err}`;
   }
   return `Look-back: ${read} · ${lb.inNeed} cells still need data${csettleText(lb.csettle, true)}${err}`;

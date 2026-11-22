@@ -30,7 +30,7 @@ describe('lookbackText', () => {
       },
     };
     expect(lookbackText(lb, false)).toBe(
-      'Settling: 1,200 of 18,000 frames (spread over 23,700) · 70 of 700 cells still moving (not settled yet)',
+      'Final settle: 1,200 of 18,000 frames (spread over 23,700) · 70 of 700 cells still moving (not settled yet)',
     );
   });
 
@@ -44,15 +44,15 @@ describe('lookbackText', () => {
       done: true,
     };
     expect(lookbackText({ ...base, settle }, true)).toBe(
-      'Look-back: 9,000 frames re-read for 700 new cells · settled over 9,600 of 9,600 frames · 10 of 500 cells still moving',
+      'Look-back: 9,000 frames re-read for 700 new cells · final settle over 9,600 of 9,600 frames · 10 of 500 cells still moving',
     );
     expect(
       lookbackText({ ...base, settle: { ...settle, fed: 2400, stopped: true } }, true),
-    ).toContain('settling stopped by you after 2,400 of 9,600 frames');
+    ).toContain('final settle stopped by you after 2,400 of 9,600 frames');
   });
 });
 
-describe('settle during Discover in the status line', () => {
+describe('background settle in the status line', () => {
   const cs: CsettleStatus = {
     rate: 2,
     requested: 4816,
@@ -83,25 +83,25 @@ describe('settle during Discover in the status line', () => {
 
   it('while Discover runs: frames re-read so far, per live frame, against the ceiling', () => {
     expect(lookbackText({ ...base, csettle: cs }, false)).toBe(
-      'Look-back: 9,000 frames re-read for 700 new cells · 40 cells still need data · settling during Discover: 4,800 saved frames re-read (0.40 per live frame, ceiling 2)',
+      'Look-back: 9,000 frames re-read for 700 new cells · 40 cells still need data · background settle: 4,800 saved frames re-read (0.40 per live frame, ceiling 2)',
     );
     expect(csettleText({ ...cs, live: 0, fit: 0, heldOut: 0, dropped: 0 }, true)).toBe(
-      ' · settling during Discover: 0 saved frames re-read (ceiling 2)',
+      ' · background settle: 0 saved frames re-read (ceiling 2)',
     );
     expect(csettleText({ ...cs, live: 2400 }, true)).toContain('(2.0 per live frame, ceiling 2)');
   });
 
-  it('during and after the end settle: how many frames were re-read during Discover', () => {
+  it('during and after the final settle: how many frames the background settle re-read', () => {
     expect(
       lookbackText(
         { ...base, settling: true, settle: { ...settle, done: false }, csettle: cs },
         false,
       ),
     ).toBe(
-      'Settling: 9,600 of 9,600 frames · 10 of 500 cells still moving · 4,800 frames re-read during Discover (0.40 per live frame)',
+      'Final settle: 9,600 of 9,600 frames · 10 of 500 cells still moving · 4,800 frames re-read by the background settle (0.40 per live frame)',
     );
     expect(lookbackText({ ...base, settle, csettle: cs }, true)).toBe(
-      'Look-back: 9,000 frames re-read for 700 new cells · 4,800 frames re-read during Discover (0.40 per live frame) · settled over 9,600 of 9,600 frames · 10 of 500 cells still moving',
+      'Look-back: 9,000 frames re-read for 700 new cells · 4,800 frames re-read by the background settle (0.40 per live frame) · final settle over 9,600 of 9,600 frames · 10 of 500 cells still moving',
     );
   });
 });
