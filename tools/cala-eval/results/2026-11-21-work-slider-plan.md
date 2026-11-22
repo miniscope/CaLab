@@ -31,12 +31,12 @@ this file, before any run.)
 
 The model was built for a 30 fps stream. Known gaps before this PR:
 
-| quantity | model | Chrome |
-| --- | --- | --- |
-| visit jobs in Discover, Samara `10_43_21`, 30 fps, no settle | 71,000-73,000 | 51,000-55,000 |
-| time per re-read frame on the look-back worker | 5 ms (`--lb-ms 5`, round 2-3; flag default 10) | 8-11 ms (90-125 re-read frames a second while Discover runs) |
-| need-driven look-back | applied at the live frame, never limited by the look-back worker | one 16-frame request out at a time; at full speed the worker is the limit (workshop 10,300 asked, about a third of 2 per observed frame) |
-| look-back worker timing | `--lb-ms` per frame | not reported by the app; inferred from throughput |
+| quantity                                                     | model                                                            | Chrome                                                                                                                                   |
+| ------------------------------------------------------------ | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| visit jobs in Discover, Samara `10_43_21`, 30 fps, no settle | 71,000-73,000                                                    | 51,000-55,000                                                                                                                            |
+| time per re-read frame on the look-back worker               | 5 ms (`--lb-ms 5`, round 2-3; flag default 10)                   | 8-11 ms (90-125 re-read frames a second while Discover runs)                                                                             |
+| need-driven look-back                                        | applied at the live frame, never limited by the look-back worker | one 16-frame request out at a time; at full speed the worker is the limit (workshop 10,300 asked, about a third of 2 per observed frame) |
+| look-back worker timing                                      | `--lb-ms` per frame                                              | not reported by the app; inferred from throughput                                                                                        |
 
 Method:
 
@@ -64,18 +64,18 @@ on each of**:
 Chrome reference values (mean of the runs in `2026-11-21-csettle-app.md`; toggle-on rows from after the preprocessor
 fix where they exist):
 
-| recording, rate | arm | missed by slow loop | visit jobs | need-driven asked | background settle per live frame |
-| --- | --- | --- | --- | --- | --- |
-| `10_43_21`, 30 fps | off | 0 % | 54,849 | 35,415 | - |
-| `10_43_21`, 30 fps | on | 0 % | 51,257 | 35,415 | 1.99 |
-| `14_57_02`, 30 fps | off | 0 % | 51,340 | 35,407 | - |
-| `14_57_02`, 30 fps | on | 0 % | 49,810 | 35,407 | 1.99 |
-| `10_43_21`, full (338) | off | 19.5 % | 3,669 | 6,656 | - |
-| `10_43_21`, full (337) | on | 22.2 % | 3,459 | 2,920 | 0.215 |
-| `14_57_02`, full (345) | off | 14.9 % | 3,903 | 6,464 | - |
-| `14_57_02`, full (343) | on | 15.9 % | 3,699 | 2,832 | 0.19 |
-| workshop, full (219) | off | 33.4 % | 4,628 | 10,320 | - (adjustment only) |
-| workshop, full (216) | on | 38.2 % | ~3,800 | 4,912 | 0.335 (adjustment only) |
+| recording, rate        | arm | missed by slow loop | visit jobs | need-driven asked | background settle per live frame |
+| ---------------------- | --- | ------------------- | ---------- | ----------------- | -------------------------------- |
+| `10_43_21`, 30 fps     | off | 0 %                 | 54,849     | 35,415            | -                                |
+| `10_43_21`, 30 fps     | on  | 0 %                 | 51,257     | 35,415            | 1.99                             |
+| `14_57_02`, 30 fps     | off | 0 %                 | 51,340     | 35,407            | -                                |
+| `14_57_02`, 30 fps     | on  | 0 %                 | 49,810     | 35,407            | 1.99                             |
+| `10_43_21`, full (338) | off | 19.5 %              | 3,669      | 6,656             | -                                |
+| `10_43_21`, full (337) | on  | 22.2 %              | 3,459      | 2,920             | 0.215                            |
+| `14_57_02`, full (345) | off | 14.9 %              | 3,903      | 6,464             | -                                |
+| `14_57_02`, full (343) | on  | 15.9 %              | 3,699      | 2,832             | 0.19                             |
+| workshop, full (219)   | off | 33.4 %              | 4,628      | 10,320            | - (adjustment only)              |
+| workshop, full (216)   | on  | 38.2 %              | ~3,800     | 4,912             | 0.335 (adjustment only)          |
 
 The full-speed toggle-on rows of Samara predate the preprocessor fix (no later full-speed Samara run exists); the fix
 did not change the workshop full-speed numbers, where the look-back worker is the limit.
@@ -120,18 +120,18 @@ the runs:**
 
 ## What qc_eval can model, and what needs Chrome
 
-| question | qc_eval (virtual clock) | headed Chrome |
-| --- | --- | --- |
-| Final quality at a fixed rate, with seeds and CIs | yes | 2-3 repeat runs, no seeds |
-| Ground truth (sims) | yes | no |
-| Live-library quality at checkpoints | yes | only via the saved library at the last frame |
-| Final-settle dose-response (branches) | yes | no (one budget per run) |
-| Frames the slow loop misses, batch waits | yes, after C1 | yes |
-| Several look-back workers | needs a small flag (`--lb-workers`, each on its own clock) | yes, after the pool is built |
-| Discover's max rate, its fall as cells accumulate, the max estimate | no (the fast loop is not modelled) | yes |
-| Whether the fast loop holds the target beside the other workers | no | yes |
-| Evenness of the pacing, hidden tab | no | yes |
-| Memory, time on the wall | no | yes |
+| question                                                            | qc_eval (virtual clock)                                    | headed Chrome                                |
+| ------------------------------------------------------------------- | ---------------------------------------------------------- | -------------------------------------------- |
+| Final quality at a fixed rate, with seeds and CIs                   | yes                                                        | 2-3 repeat runs, no seeds                    |
+| Ground truth (sims)                                                 | yes                                                        | no                                           |
+| Live-library quality at checkpoints                                 | yes                                                        | only via the saved library at the last frame |
+| Final-settle dose-response (branches)                               | yes                                                        | no (one budget per run)                      |
+| Frames the slow loop misses, batch waits                            | yes, after C1                                              | yes                                          |
+| Several look-back workers                                           | needs a small flag (`--lb-workers`, each on its own clock) | yes, after the pool is built                 |
+| Discover's max rate, its fall as cells accumulate, the max estimate | no (the fast loop is not modelled)                         | yes                                          |
+| Whether the fast loop holds the target beside the other workers     | no                                                         | yes                                          |
+| Evenness of the pacing, hidden tab                                  | no                                                         | yes                                          |
+| Memory, time on the wall                                            | no                                                         | yes                                          |
 
 ## Arms
 
@@ -139,14 +139,14 @@ Rates: **Max, 120, 60, 30, 20 fps.** In qc_eval, "Max" is the offered rate Chrom
 model's `S-f` arms use a fixed dose (the cap, as delivered by the modelled look-back workers); the governor's guard is
 not in the model and is tested in Chrome only.
 
-| arm | rate | background settle | final settle | purpose |
-| --- | --- | --- | --- | --- |
-| `REF` | Max | off | full pass | reference (today's path) |
-| `P-f` | 120, 60, 30, 20 | off | full pass | what the pace alone does |
-| `S-f` | 120, 60, 30, 20 | governor, cap 2, 1 need-driven + 1 background-settle look-back worker | full pass | the slider |
-| `S-f-1w` | 120, 60, 30 | cap 2, one worker taking turns (today's #454) | full pass | is the second worker worth it |
-| `S30-c4`, `S30-c8`, `S20-c8` | 30, 20 | cap 4 and 8 | full pass | doses above 2; the floor |
-| branches of every `REF`, `P-30`, `S-30`, `S-60`, `S-120` | - | - | 0, 1/4, 1/2, 3/4, 1, 2 passes | dose-response for the final-settle rule |
+| arm                                                      | rate            | background settle                                                     | final settle                  | purpose                                 |
+| -------------------------------------------------------- | --------------- | --------------------------------------------------------------------- | ----------------------------- | --------------------------------------- |
+| `REF`                                                    | Max             | off                                                                   | full pass                     | reference (today's path)                |
+| `P-f`                                                    | 120, 60, 30, 20 | off                                                                   | full pass                     | what the pace alone does                |
+| `S-f`                                                    | 120, 60, 30, 20 | governor, cap 2, 1 need-driven + 1 background-settle look-back worker | full pass                     | the slider                              |
+| `S-f-1w`                                                 | 120, 60, 30     | cap 2, one worker taking turns (today's #454)                         | full pass                     | is the second worker worth it           |
+| `S30-c4`, `S30-c8`, `S20-c8`                             | 30, 20          | cap 4 and 8                                                           | full pass                     | doses above 2; the floor                |
+| branches of every `REF`, `P-30`, `S-30`, `S-60`, `S-120` | -               | -                                                                     | 0, 1/4, 1/2, 3/4, 1, 2 passes | dose-response for the final-settle rule |
 
 Data and repeats:
 
@@ -186,27 +186,27 @@ Differences are arm minus `REF`, paired by sim or by recording-seed, with 95 % C
 recording the mean and range over 3 seeds, and a pooled paired bootstrap over the 9 recording-seeds (seeds of one
 recording are not independent, so that interval is too narrow; the per-recording rows decide a borderline case).
 
-| line | measure | passes when | applies to |
-| --- | --- | --- | --- |
-| L1 | final footprint r, sims, all cells | lower CI bound >= -0.0005, judged on the 14-sim tier (the quick tier only screens: a mean below -0.001 stops the arm) | every `S-f`, `P-f` |
-| L1b | final footprint r, cells born in the second half | lower CI bound >= -0.005 | every `S-f`, `P-f` |
-| L1c | bitten footprints, sims | upper CI bound <= +0.02 | every `S-f`, `P-f` |
-| L1d | false cells per sim | upper CI bound <= +3 | every `S-f`, `P-f` |
-| L2 | final agreement with `REF`, real (on `REF`'s matched cells) | >= the `REF`-`REF` null minus 0.003, on each recording | every `S-f`, `P-f` |
-| L2b | `REF`'s repeatable cells present | >= the null minus 3 points on each recording. Null: the share of the cells two `REF` seeds agree on that the third `REF` seed has (leave one seed out) | every `S-f`, `P-f` |
-| L2c | extra cells (reported; PI: not a gate) | their median held-out z >= that of cells only one `REF` seed has | every `S-f`, `P-f` |
-| L3 | live library at the last frame, share of the live-to-settled gap closed | >= 50 % on each recording at 30 fps | `S-30` |
-| L3b | the slider is monotone: live agreement at each checkpoint from 1/4 on | `S-30` >= `S-60` >= `S-120` >= `REF`, each step allowed to miss by the seed spread (0.003) | `S-f` |
-| L3c | the background settle, not the pace, carries it | `S-30` minus `P-30` in gap closed: lower CI bound > 0 | `S-30`, `P-30` |
-| L4 | frames dropped by the fast loop | 0 | every arm |
-| L4b | frames the slow loop misses | <= 0.1 % at 60 fps and below; at 120, <= `P-120` + 1 point | `S-f` |
-| L5 | moving share at the last final-settle checkpoint | <= 4 % (<= 6 % on motion sims) | every arm |
-| L5b | footprint movement per 75 s during Discover | reported, no line | `S-f` |
-| L6 | achieved fps (Chrome) | within 2 % of the target when the target <= 0.9 x the measured max | `S-f`, `P-f` |
-| L6b | total time (Chrome) | at Max within 3 % of today's path; below Max <= frames / target + `REF`'s final settle + 5 % | every arm |
-| L7 | max estimate while paced at 30 fps (Chrome) | within 15 % of the unpaced rate at the same point of the recording | `P-30`, `REF` |
-| L8 | second look-back worker | `S-60` minus `S-60-1w` in gap closed: lower CI bound > 0; if not, ship one worker | `S-60` |
-| L9 | doses above 2 | cap 4 or 8 minus cap 2 in gap closed: lower CI bound > 0, and L1-L2b still pass | `S30-c4`, `S30-c8` |
+| line | measure                                                                 | passes when                                                                                                                                            | applies to         |
+| ---- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------ |
+| L1   | final footprint r, sims, all cells                                      | lower CI bound >= -0.0005, judged on the 14-sim tier (the quick tier only screens: a mean below -0.001 stops the arm)                                  | every `S-f`, `P-f` |
+| L1b  | final footprint r, cells born in the second half                        | lower CI bound >= -0.005                                                                                                                               | every `S-f`, `P-f` |
+| L1c  | bitten footprints, sims                                                 | upper CI bound <= +0.02                                                                                                                                | every `S-f`, `P-f` |
+| L1d  | false cells per sim                                                     | upper CI bound <= +3                                                                                                                                   | every `S-f`, `P-f` |
+| L2   | final agreement with `REF`, real (on `REF`'s matched cells)             | >= the `REF`-`REF` null minus 0.003, on each recording                                                                                                 | every `S-f`, `P-f` |
+| L2b  | `REF`'s repeatable cells present                                        | >= the null minus 3 points on each recording. Null: the share of the cells two `REF` seeds agree on that the third `REF` seed has (leave one seed out) | every `S-f`, `P-f` |
+| L2c  | extra cells (reported; PI: not a gate)                                  | their median held-out z >= that of cells only one `REF` seed has                                                                                       | every `S-f`, `P-f` |
+| L3   | live library at the last frame, share of the live-to-settled gap closed | >= 50 % on each recording at 30 fps                                                                                                                    | `S-30`             |
+| L3b  | the slider is monotone: live agreement at each checkpoint from 1/4 on   | `S-30` >= `S-60` >= `S-120` >= `REF`, each step allowed to miss by the seed spread (0.003)                                                             | `S-f`              |
+| L3c  | the background settle, not the pace, carries it                         | `S-30` minus `P-30` in gap closed: lower CI bound > 0                                                                                                  | `S-30`, `P-30`     |
+| L4   | frames dropped by the fast loop                                         | 0                                                                                                                                                      | every arm          |
+| L4b  | frames the slow loop misses                                             | <= 0.1 % at 60 fps and below; at 120, <= `P-120` + 1 point                                                                                             | `S-f`              |
+| L5   | moving share at the last final-settle checkpoint                        | <= 4 % (<= 6 % on motion sims)                                                                                                                         | every arm          |
+| L5b  | footprint movement per 75 s during Discover                             | reported, no line                                                                                                                                      | `S-f`              |
+| L6   | achieved fps (Chrome)                                                   | within 2 % of the target when the target <= 0.9 x the measured max                                                                                     | `S-f`, `P-f`       |
+| L6b  | total time (Chrome)                                                     | at Max within 3 % of today's path; below Max <= frames / target + `REF`'s final settle + 5 %                                                           | every arm          |
+| L7   | max estimate while paced at 30 fps (Chrome)                             | within 15 % of the unpaced rate at the same point of the recording                                                                                     | `P-30`, `REF`      |
+| L8   | second look-back worker                                                 | `S-60` minus `S-60-1w` in gap closed: lower CI bound > 0; if not, ship one worker                                                                      | `S-60`             |
+| L9   | doses above 2                                                           | cap 4 or 8 minus cap 2 in gap closed: lower CI bound > 0, and L1-L2b still pass                                                                        | `S30-c4`, `S30-c8` |
 
 What decides what:
 

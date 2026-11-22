@@ -25,26 +25,32 @@ and a frozen tree), then the long qc_eval runs. Another agent's Chrome run (port
 3. **The clean finding: at 60 and 120 fps the re-read supply is below the cap of 2 on both recordings** (1.29 and 0.63
    on Samara, 0.84 and 0.49 on the workshop recording), and need-driven look-back gets as many frames as the
    background settle, so it is halved too.
-4. **Second look-back worker, by the rule committed before the runs: undecided; line L8 decides.** Samara meets the
-   "warranted" conditions at 60 fps (dose 1.29 < 1.5, 154 re-reads a second, no missed frames). The workshop recording
-   meets neither clause cleanly: the slow loop misses 3.35 % (> 1 %), but 1.66 % of that is there with the settle off,
-   the bursty pacer may cause part of it, and the look-back worker is full too (97 a second). So the workshop reading is
-   "both workers are limits", not "the slow worker and not the look-back worker". The rule needs both recordings;
-   `S-60` against `S-60-1w` in qc_eval with seeds (L8) decides. Observed but not an argument either way (each dose was
-   run at a different rate, so dose and rate are confounded): on Samara the final settle moved 31 % of cells above
-   twice their noise at dose 0.63 (120 fps), 32 % at 1.29 (60 fps) and 30-33 % at 1.99 (30 fps).
+4. **Second look-back worker.** By the rule committed before the runs the reading is mixed: Samara meets the
+   "warranted" conditions at 60 fps (dose 1.29 < 1.5, 154 re-reads a second, no missed frames); on the workshop
+   recording the slow loop misses 3.35 % (1.66 % of it with the settle off, and the bursty pacer may cause part) and the
+   look-back worker is full too. What the runs support: **on supply grounds, yes for Samara-like recordings at 60-120
+   fps** (dose under the cap, slow worker with room); **on dense recordings, extra supply lands on a slow worker that
+   already misses frames, and pays only once the statistics update moves off it** (spare-compute item 1 below).
+   **Whether more dose improves the final result is unmeasured**: line L8 needs qc_eval quality arms, which C1 now bars
+   (item 6), or Chrome arms once the pool exists. Observed but not evidence (dose and rate are confounded, one run
+   each): on Samara the final settle moved 31 % of cells above twice their noise at dose 0.63 (120 fps), 32 % at 1.29
+   (60 fps) and 30-33 % at 1.99 (30 fps).
 5. **On the workshop recording the pace alone makes the final settle move more,** and the background settle at 0.84
    takes some of it back: 83 % of cells above twice their noise at 60 fps with the settle off, 67 % with it on, 76-77
    % at full speed (with 15 % more cells at 60 fps: 853-867 against 749-756).
 
 6. **Calibration line C1 fails at 30 fps, on visit jobs only** (model +26 to +45 %; at full speed -56 to -59 %).
-   Need-driven look-back and the background-settle dose are within 15 % at all Samara points, so the look-back side of
-   qc_eval is calibrated; Discovery's visit rate is not. By the plan, no slider arm was run in qc_eval. Next: the
-   design's PR 3 instrumentation (busy and idle time per worker in the app), then refit the visit side.
+   The background-settle dose is within 15 % at every Samara point (also 60 and 120 fps, never fitted); total re-read
+   supply is within 15 % up to 60 fps (+18 % at 120); the turn-taking split is not (the app splits the worker 50:50 in
+   every run, the model gives need-driven about 57 %, so need-driven is +15 % at 60 fps and +30 % at 120). The 30 fps
+   passes on need-driven and dose are cap-bound (rounds 2-3 delivered 2.00 without the gate); the evidence for the gate
+   is the full-speed and 60/120 fps rows. Discovery's visit rate is not calibrated. By the plan, no slider arm was run
+   in qc_eval. Next: the design's PR 3 instrumentation (busy and idle time per worker in the app), then refit the visit
+   side.
 7. **Where the background settle is limited** (PI question): 30 fps, the cap on Samara and the re-read supply on the
    workshop recording; 60 fps, supply on both, plus the slow worker on the workshop recording; 120 fps, the slow worker
    on the workshop recording and supply on Samara. A ranked list of other uses of spare compute is at the end; first is
-   moving the statistics update (1.4-3.9 ms per re-read frame) off the slow worker.
+   moving the statistics update (1.4-3.9 ms per re-read frame, 2.1-5.9 ms per fitted frame) off the slow worker.
 
 ## Step 0b: paced Chrome runs (`main` + this branch's eval-only changes)
 
@@ -56,13 +62,13 @@ chrome` (`run.sh`, `load.txt`: load average 3.3-5.7 at the starts). Table: `work
 The app build of this branch differs from `main` only by a read-only accessor (`LbSched::credit`, not exported to
 JS), so the WASM was rebuilt but the app's behaviour is `main`'s.
 
-| run | target fps | achieved | Discover s | final settle s | slow loop missed | need-driven asked (per observed frame) | background settle per live frame | re-reads per s (both kinds) | slow worker per 16-frame answer, mean (longest) | visit jobs | cells | final settle: moved > 2x / > 1x noise, median change | peak tab GB |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Samara `10_43_21`, on | 60 | 60.1 | 298 | 100 | 0.00 % | 22,904 (1.28) | **1.29** | 154 | 25 ms (54) | 36,585 | 373 | 32 % / 70 %, 14.6 % | 2.6 |
-| Samara `10_43_21`, on | 120 | 120.1 | 149 | 95 | 2.15 % | 10,960 (0.63) | **0.63** | 147 | 22 ms (55) | 21,082 | 356 | 31 % / 73 %, 15.3 % | 2.9 |
-| workshop, on | 60 | 60.1 | 395 | 222 | 3.35 % | 19,192 (0.84) | **0.84** | 97 | 62 ms (144) | 21,190 | 853 | 67 % / 95 %, 25.0 % | 3.4 |
-| workshop, on | 120 | 120.1 | 198 | 214 | 22.0 % | 8,992 (0.49) | **0.49** | 91 | 56 ms (128) | 8,994 | 807 | 73 % / 96 %, 28.0 % | 3.4 |
-| workshop, off | 60 | 60.1 | 395 | 228 | 1.66 % | 39,241 (1.69) | - | 99 | - | 25,306 | 867 | 83 % / 97 %, 36.1 % | 4.0 |
+| run                   | target fps | achieved | Discover s | final settle s | slow loop missed | need-driven asked (per observed frame) | background settle per live frame | re-reads per s (both kinds) | slow worker per 16-frame answer, mean (longest) | visit jobs | cells | final settle: moved > 2x / > 1x noise, median change | peak tab GB |
+| --------------------- | ---------- | -------- | ---------- | -------------- | ---------------- | -------------------------------------- | -------------------------------- | --------------------------- | ----------------------------------------------- | ---------- | ----- | ---------------------------------------------------- | ----------- |
+| Samara `10_43_21`, on | 60         | 60.1     | 298        | 100            | 0.00 %           | 22,904 (1.28)                          | **1.29**                         | 154                         | 25 ms (54)                                      | 36,585     | 373   | 32 % / 70 %, 14.6 %                                  | 2.6         |
+| Samara `10_43_21`, on | 120        | 120.1    | 149        | 95             | 2.15 %           | 10,960 (0.63)                          | **0.63**                         | 147                         | 22 ms (55)                                      | 21,082     | 356   | 31 % / 73 %, 15.3 %                                  | 2.9         |
+| workshop, on          | 60         | 60.1     | 395        | 222            | 3.35 %           | 19,192 (0.84)                          | **0.84**                         | 97                          | 62 ms (144)                                     | 21,190     | 853   | 67 % / 95 %, 25.0 %                                  | 3.4         |
+| workshop, on          | 120        | 120.1    | 198        | 214            | 22.0 %           | 8,992 (0.49)                           | **0.49**                         | 91                          | 56 ms (128)                                     | 8,994      | 807   | 73 % / 96 %, 28.0 %                                  | 3.4         |
+| workshop, off         | 60         | 60.1     | 395        | 228            | 1.66 %           | 39,241 (1.69)                          | -                                | 99                          | -                                               | 25,306     | 867   | 83 % / 97 %, 36.1 %                                  | 4.0         |
 
 Earlier runs for comparison (`2026-11-21-csettle-app.md`): Samara `10_43_21` on at 30 fps dose 1.99, 119 re-reads a
 second, 0 missed, 30-33 % above 2x; at full speed (338 fps) dose 0.21-0.22, 19-22 % missed, 42-45 % above 2x.
@@ -75,8 +81,9 @@ Workshop on at full speed (216 fps): dose 0.33-0.34, 86-90 re-reads a second, 37
 - **Need-driven look-back gets half the worker.** With turn-taking the need-driven frames equal the background-settle
   frames in every run (both kinds are asked in 16-frame requests, one out at a time). On the workshop recording at 60
   fps the background settle therefore halves need-driven look-back (1.69 to 0.84 per observed frame).
-- **The slow worker's cost per re-read frame:** 1.4-1.6 ms on Samara and 3.5-3.9 ms on the workshop recording (mean
-  answer time / 16). The background settle took 12 % of the slow worker's wall time on Samara at 60 fps (36 s of 298)
+- **The slow worker's cost per re-read frame:** 1.4-1.6 ms on Samara and 3.5-3.9 ms on the workshop recording per
+  frame re-read (mean answer time / 16); a third of the frames are held out and not fed, so per fitted frame it is
+  about 1.5x that: 2.1-2.4 ms and 5.3-5.9 ms. The background settle took 12 % of the slow worker's wall time on Samara at 60 fps (36 s of 298)
   and 19 % on the workshop recording (74 s of 395).
 - **Why the workshop recording is slower on both workers** (not measured, likely): 2-2.3x the cells (750-870 against
   350-390), and both the look-back worker's solve and the slow worker's statistics update grow with the cells per
@@ -85,10 +92,10 @@ Workshop on at full speed (216 fps): dose 0.33-0.34, 86-90 re-reads a second, 37
 ### Against the design's table
 
 | target | design: 1 worker taking turns | measured Samara | measured workshop | design: slow-worker ceiling, workshop / Samara |
-| --- | --- | --- | --- | --- |
-| 30 | 2 (cap) | 1.99 | not run | 7.8 / high |
-| 60 | 0.9 | 1.29 | 0.84 | 2.9 / 9 |
-| 120 | 0.46 | 0.63 | 0.49 | 0.4 / 3.5 |
+| ------ | ----------------------------- | --------------- | ----------------- | ---------------------------------------------- |
+| 30     | 2 (cap)                       | 1.99            | not run           | 7.8 / high                                     |
+| 60     | 0.9                           | 1.29            | 0.84              | 2.9 / 9                                        |
+| 120    | 0.46                          | 0.63            | 0.49              | 0.4 / 3.5                                      |
 
 The design's re-read rate (110 a second) is right for the workshop recording and 35-40 % low for Samara when Discover
 is paced. Its slow-worker ceiling on the workshop recording is optimistic at 60 fps: the slow loop already misses
@@ -100,13 +107,13 @@ frames there at dose 0.84.
 `apps/cala/src/lib/slow-runner.ts` and the workers on `main`. New in this PR (all default off; with every one off the
 output is byte-identical to `main`, see T0 below):
 
-| app (`slow-runner.ts`, workers) | model before this PR | model with the calibration flags |
-| --- | --- | --- |
+| app (`slow-runner.ts`, workers)                                                                                                                                                                                                     | model before this PR                                                                                                                                         | model with the calibration flags                                                                                                                                                                                                                                                                                                                                                    |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Need-driven look-back: after each observed batch `lookbackNote(seen, observed)` adds 2 frames of budget per observed frame; with no request out, `lookbackTake(16)` sends at most 16 frames to the look-back worker (`needRequest`) | the budget was earned per recording frame and spent at once at the live frame; the look-back worker's time was booked (`lb_note`) but never limited anything | `--lb-gate`: budget per forwarded frame; a request of at most `--lb-take` (16) frames goes out only when no request is out and the worker is free; its answer is a message the slow worker handles at the worker's finish time, and no request goes out until it has been handled (`NeedAnswer`). The frames still enter the statistics at the live frame (up to one request early) |
-| Background settle (`?csettle`): `SettleDose` earns 2 per observed frame, at most 64 owed; one 16-frame request; need-driven and settle take turns when both want the worker (`lookbackRequest`, `cs.turn`) | the settle's requests queued behind need-driven time on the worker; no turn-taking | `--lb-gate`: the same turn-taking (`cs_turn`; a settle request waits while need-driven wants frames and it is not the settle's turn) |
-| The look-back worker re-reads, preprocesses and solves each frame; it reports no timing | `--lb-ms` per frame (5 in rounds 2-3, flag default 10) | `--lb-ms A --lb-ms-per-cell B`: A + B x cells of the newest library per frame (the re-read rate falls as cells accumulate) |
-| Visit workers: a visit costs its compute; the slow worker pays encode, copy and decode per job | work at `--units-per-ms` on both the slow worker and the visit workers, `--job-ms` on each side | `--visit-units-per-ms` sets the visit workers' rate apart from the slow worker's (not needed in the end; see below) |
-| Slow worker: live batches (`observe`, `housekeep`, `dispatch`), visit results, look-back and settle answers, one message at a time | the same | unchanged |
+| Background settle (`?csettle`): `SettleDose` earns 2 per observed frame, at most 64 owed; one 16-frame request; need-driven and settle take turns when both want the worker (`lookbackRequest`, `cs.turn`)                          | the settle's requests queued behind need-driven time on the worker; no turn-taking                                                                           | `--lb-gate`: the same turn-taking (`cs_turn`; a settle request waits while need-driven wants frames and it is not the settle's turn)                                                                                                                                                                                                                                                |
+| The look-back worker re-reads, preprocesses and solves each frame; it reports no timing                                                                                                                                             | `--lb-ms` per frame (5 in rounds 2-3, flag default 10)                                                                                                       | `--lb-ms A --lb-ms-per-cell B`: A + B x cells of the newest library per frame (the re-read rate falls as cells accumulate)                                                                                                                                                                                                                                                          |
+| Visit workers: a visit costs its compute; the slow worker pays encode, copy and decode per job                                                                                                                                      | work at `--units-per-ms` on both the slow worker and the visit workers, `--job-ms` on each side                                                              | `--visit-units-per-ms` sets the visit workers' rate apart from the slow worker's (not needed in the end; see below)                                                                                                                                                                                                                                                                 |
+| Slow worker: live batches (`observe`, `housekeep`, `dispatch`), visit results, look-back and settle answers, one message at a time                                                                                                  | the same                                                                                                                                                     | unchanged                                                                                                                                                                                                                                                                                                                                                                           |
 
 Not modelled: the fast loop (the offered rate is fixed at what Chrome achieved, so the fall of Discover's rate as
 cells accumulate is not in the model), the pacer's bursts, contention for cores, garbage collection, message latency.
@@ -133,13 +140,13 @@ files), `V30`, `CS2`, `CS2F` with four visit workers, and round 1's single-worke
 Round 1 (`--lb-gate --lb-ms 2.0 --lb-ms-per-cell 0.0103`, `--units-per-ms 2e6`, `--job-ms 1`; slow seed 1, full
 length, binary `qc_eval-cal-c`):
 
-| workshop | Chrome: missed, visit jobs, need-driven, background settle per live frame | model round 1 |
-| --- | --- | --- |
-| full speed (218), off | 33.4 %, 4,628, 10,320, - | 16.9 %, 3,092, 8,594, - |
-| full speed (216), on | 38.2 %, ~3,800, 4,900, 0.335 | 18.1 %, 3,025, 4,176, 0.19 |
-| 60 fps, off | 1.66 %, 25,306, 39,241, - | 0 %, 30,356, 33,598, - |
-| 60 fps, on | 3.35 %, 21,190, 19,192, 0.84 | 0 %, 26,401, 17,293, 0.58 |
-| 120 fps, on | 22.0 %, 8,994, 8,992, 0.49 | 0.1 %, 8,394, 8,560, 0.32 |
+| workshop              | Chrome: missed, visit jobs, need-driven, background settle per live frame | model round 1              |
+| --------------------- | ------------------------------------------------------------------------- | -------------------------- |
+| full speed (218), off | 33.4 %, 4,628, 10,320, -                                                  | 16.9 %, 3,092, 8,594, -    |
+| full speed (216), on  | 38.2 %, ~3,800, 4,900, 0.335                                              | 18.1 %, 3,025, 4,176, 0.19 |
+| 60 fps, off           | 1.66 %, 25,306, 39,241, -                                                 | 0 %, 30,356, 33,598, -     |
+| 60 fps, on            | 3.35 %, 21,190, 19,192, 0.84                                              | 0 %, 26,401, 17,293, 0.58  |
+| 120 fps, on           | 22.0 %, 8,994, 8,992, 0.49                                                | 0.1 %, 8,394, 8,560, 0.32  |
 
 Reading: the modelled slow worker is too fast (at full speed it observes about 181 frames a second, Chrome 145), and
 the look-back supply is about 20 % low. The paced runs' misses are not used for the fit: today's pacer releases up to
@@ -156,16 +163,17 @@ Chrome samples show the visit workers are not the limit). The Samara runs for C1
 From the Chrome runs (one run each). "Supply" = the one look-back worker's re-reads, shared with need-driven
 look-back; "slow worker" = its time per re-read frame (the statistics update) and the live frames it misses.
 
-| target | Samara `10_43_21` (300-400 cells) | workshop (750-870 cells) |
-| --- | --- | --- |
-| 30 fps | **the cap** (1.99 of 2). The worker re-read 119 a second and had room (it managed 147-154 at 60-120 fps); the slow worker spent 10 % of its time on the answers and missed nothing | not run in Chrome. The worker re-reads about 95 a second at this cell count against 120 asked (60 need-driven + 60 settle), so **supply**, about 1.6 per live frame for each kind (estimate; model below) |
-| 60 fps | **supply**: 154 re-reads a second, dose 1.29. Slow worker fine (0 missed, 12 % of its time on settle answers) | **supply and the slow worker**: 97 a second, dose 0.84; the slow loop misses 1.66 % with the settle off and 3.35 % with it on; 19 % of the slow worker's time goes to settle answers |
-| 120 fps | **supply** (147 a second, dose 0.63), and the slow worker starts to miss (2.15 %) | **the slow worker** (22 % missed), then supply (91 a second, dose 0.49) |
+| target  | Samara `10_43_21` (300-400 cells)                                                                                                                                                  | workshop (750-870 cells)                                                                                                                                                                                  |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 30 fps  | **the cap** (1.99 of 2). The worker re-read 119 a second and had room (it managed 147-154 at 60-120 fps); the slow worker spent 10 % of its time on the answers and missed nothing | not run in Chrome. The worker re-reads about 95 a second at this cell count against 120 asked (60 need-driven + 60 settle), so **supply**, about 1.6 per live frame for each kind (estimate; model below) |
+| 60 fps  | **supply**: 154 re-reads a second, dose 1.29. Slow worker fine (0 missed, 12 % of its time on settle answers)                                                                      | **supply and the slow worker**: 97 a second, dose 0.84; the slow loop misses 1.66 % with the settle off and 3.35 % with it on; 19 % of the slow worker's time goes to settle answers                      |
+| 120 fps | **supply** (147 a second, dose 0.63), and the slow worker starts to miss (2.15 %)                                                                                                  | **the slow worker** (22 % missed), then supply (91 a second, dose 0.49)                                                                                                                                   |
 
 The statistics update costs the slow worker 1.4-1.6 ms per re-read frame on Samara and 3.5-3.9 ms on the workshop
-recording, about the same as a live frame's share of its time at full speed (3.5 and 6.9 ms in all). Each re-read
-frame for the settle therefore displaces roughly half a live frame on the workshop recording once the slow worker is
-full.
+recording (2.1-2.4 and 5.3-5.9 ms per fitted frame; a third are held out and not fed). A live frame costs it about 3.5
+and 6.9 ms of its time in all at full speed. So each re-read frame for the settle displaces roughly half a live frame
+on the workshop recording once the slow worker is full. All numbers in this file are n = 1: one Chrome run per cell
+and one model seed.
 
 ## Other uses of spare compute (ranked; not for this PR)
 
@@ -208,16 +216,16 @@ expected gain in the final result per unit of work, with rough size and risk:
 Round-2 flags (frozen above), slow seed 1, full length, binary `qc_eval-cal-c` (T0 passes for this binary too).
 Model / Chrome, and the C1 reading (within 15 %; misses within 3 points):
 
-| recording, rate, arm | slow loop missed | visit jobs | need-driven asked | background settle per live frame |
-| --- | --- | --- | --- | --- |
-| `10_43_21`, 30, off | 0 / 0 % pass | 71,466 / 54,849 (+30 %) **fail** | 35,399 / 35,415 pass | - |
-| `10_43_21`, 30, on | 0 / 0 % pass | 64,716 / 51,257 (+26 %) **fail** | 35,405 / 35,415 pass | 2.00 / 1.99 pass |
-| `14_57_02`, 30, off | 0 / 0 % pass | 74,289 / 51,340 (+45 %) **fail** | 35,389 / 35,407 pass | - |
-| `14_57_02`, 30, on | 0 / 0 % pass | 67,538 / 49,810 (+36 %) **fail** | 35,389 / 35,407 pass | 2.00 / 1.99 pass |
-| `10_43_21`, full (338), off | 22.7 / 19.5 % **fail** (3.2 points) | 1,558 / 3,669 (-58 %) **fail** | 5,665 / 6,656 (-15 %) pass | - |
-| `10_43_21`, full (337), on | 23.9 / 22.2 % pass | 1,530 / 3,459 (-56 %) **fail** | 2,800 / 2,920 pass | 0.19 / 0.215 (-12 %) pass |
-| `14_57_02`, full (345), off | 22.5 / 14.9 % **fail** | 1,596 / 3,903 (-59 %) **fail** | 5,761 / 6,464 (-11 %) pass | - |
-| `14_57_02`, full (343), on | 22.7 / 15.9 % **fail** | 1,587 / 3,699 (-57 %) **fail** | 2,880 / 2,832 pass | 0.19 / 0.19 pass |
+| recording, rate, arm        | slow loop missed                    | visit jobs                       | need-driven asked          | background settle per live frame |
+| --------------------------- | ----------------------------------- | -------------------------------- | -------------------------- | -------------------------------- |
+| `10_43_21`, 30, off         | 0 / 0 % pass                        | 71,466 / 54,849 (+30 %) **fail** | 35,399 / 35,415 pass       | -                                |
+| `10_43_21`, 30, on          | 0 / 0 % pass                        | 64,716 / 51,257 (+26 %) **fail** | 35,405 / 35,415 pass       | 2.00 / 1.99 pass                 |
+| `14_57_02`, 30, off         | 0 / 0 % pass                        | 74,289 / 51,340 (+45 %) **fail** | 35,389 / 35,407 pass       | -                                |
+| `14_57_02`, 30, on          | 0 / 0 % pass                        | 67,538 / 49,810 (+36 %) **fail** | 35,389 / 35,407 pass       | 2.00 / 1.99 pass                 |
+| `10_43_21`, full (338), off | 22.7 / 19.5 % **fail** (3.2 points) | 1,558 / 3,669 (-58 %) **fail**   | 5,665 / 6,656 (-15 %) pass | -                                |
+| `10_43_21`, full (337), on  | 23.9 / 22.2 % pass                  | 1,530 / 3,459 (-56 %) **fail**   | 2,800 / 2,920 pass         | 0.19 / 0.215 (-12 %) pass        |
+| `14_57_02`, full (345), off | 22.5 / 14.9 % **fail**              | 1,596 / 3,903 (-59 %) **fail**   | 5,761 / 6,464 (-11 %) pass | -                                |
+| `14_57_02`, full (343), on  | 22.7 / 15.9 % **fail**              | 1,587 / 3,699 (-57 %) **fail**   | 2,880 / 2,832 pass         | 0.19 / 0.19 pass                 |
 
 Comparison points (step-0b runs, not part of C1): `10_43_21` at 60 fps on: missed 0 / 0 %, jobs 35,897 / 36,585, need
 1.48 / 1.28 per observed frame, background settle 1.11 / 1.29; at 120 fps on: missed 0 / 2.15 %, jobs 11,957 / 21,082,
@@ -229,8 +237,9 @@ jobs 2,437 / 4,628, need 8,435 / 10,320; full on background settle 0.23 / 0.335;
 
 What the failure says:
 
-- **The look-back side is calibrated.** Need-driven frames and the background-settle dose are within 15 % at every
-  Samara point but one need-driven count at 120 fps (+30 %), including the 60 and 120 fps runs the fit never saw. The
+- **The look-back dose is calibrated; the split is not.** The background-settle dose is within 15 % at every Samara
+  point, including the 60 and 120 fps runs the fit never saw; need-driven frames miss at 60 fps (+15 %) and 120 fps
+  (+30 %) because the model gives need-driven about 57 % of the worker where the app splits 50:50. The
   gate (one request out, turn-taking, the answer holding the worker until the slow worker handles it) and the
   per-cell look-back cost carry it. qc_eval can be used for the look-back pool's sizing (line L8's supply side).
 - **Discovery's visits are not.** The model makes 26-45 % too many visit jobs at 30 fps and 56-59 % too few at full
