@@ -20,6 +20,7 @@ import { FrameSource } from '../lib/frame-source.ts';
 import { LiveSource, type SocketLike } from '../lib/live-source.ts';
 import { PipelineEngine, transferablesOf, type FrameReader } from '../lib/pipeline-engine.ts';
 import { FrontStage, jobTransferables } from '../lib/pipeline-stages.ts';
+import { FramePreviewSetting } from '../lib/frame-preview-setting.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import { traceBackend as backend } from '../lib/trace-backend.ts';
 import type { FastToCompress } from './compress-types.ts';
@@ -42,6 +43,8 @@ const gate = new PaceGate();
 // preprocess front half); the motion and trace workers do the rest.
 let down: MessagePort | null = null;
 let front: FrontStage | null = null;
+/** The view previewed for every frame (smooth playback); cleared at every run start. */
+const framePreview = new FramePreviewSetting();
 let frontPool: StagePool | null = null;
 let epoch = 0;
 /** Preprocessed-frame buffers between this stage and the motion stage. */
@@ -202,6 +205,9 @@ async function handle(req: FrameRequest): Promise<void> {
           live = null;
           live = await openLive(liveUrl);
         }
+        // Per-frame previews belong to Discover's display: not for replays, and a restart waits for
+        // the store's `set-frame-preview` after its start.
+        framePreview.startRun(Boolean(req.replay));
         const src = reader();
         if (live && req.replay)
           throw new Error(
@@ -235,6 +241,7 @@ async function handle(req: FrameRequest): Promise<void> {
             FRONT_BUFFERS,
             stage.plan.batchSize * src.info.width * src.info.height,
           );
+          stage.framePreview = framePreview.current;
           front = stage;
           down.postMessage({
             type: 'start',
@@ -270,6 +277,7 @@ async function handle(req: FrameRequest): Promise<void> {
               : null,
           );
         });
+        pipeline.framePreview = framePreview.current;
         live?.setRetainFrames(
           Math.max(pipeline.plan.calibrationFrames, pipeline.plan.motionWarmupFrames),
         );
@@ -385,6 +393,12 @@ function actNow(req: FrameRequest): boolean {
       if (req.fps !== undefined && !live) gate.setTarget(req.fps);
       if (req.paused === true) gate.pause();
       else if (req.paused === false) gate.resume();
+      post({ type: 'ok', id: req.id });
+      return true;
+    case 'set-frame-preview':
+      framePreview.set(req.view);
+      if (front) front.framePreview = framePreview.current;
+      if (pipeline) pipeline.framePreview = framePreview.current;
       post({ type: 'ok', id: req.id });
       return true;
     case 'pipeline-truncate':
