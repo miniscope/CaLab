@@ -3307,6 +3307,11 @@ enum Msg {
     SettleRest(usize),
     /// Owner time (ms) with nothing done in it (`--owner-load`).
     Load(f64),
+    /// `--lb-gate`: the look-back worker's answer to a need-driven
+    /// request, with the owner's time (ms) for its frames. The frames went
+    /// into the statistics when they were taken; this message holds the
+    /// worker until the owner has handled the answer, as in the app.
+    NeedAnswer(f64),
 }
 
 /// `--visit-diag`: where the ordinary visits go on the virtual clock. Per
@@ -3512,6 +3517,11 @@ struct Timed {
     /// `--lb-gate`: need-driven frames re-read, and requests.
     pub need_frames: u64,
     pub need_reqs: u64,
+    /// `--lb-ms-per-cell` (calibration): the look-back worker's time per
+    /// re-read frame grows by this much per cell of the newest library
+    /// (`lib_cells`): `lb_ms + lb_ms_cell x cells`.
+    pub lb_ms_cell: f64,
+    lib_cells: usize,
 }
 
 impl Timed {
@@ -3576,6 +3586,8 @@ impl Timed {
             need_pending: false,
             need_frames: 0,
             need_reqs: 0,
+            lb_ms_cell: 0.0,
+            lib_cells: 0,
         }
     }
 
@@ -3641,9 +3653,27 @@ impl Timed {
     /// The look-back worker re-read `n` need-driven frames from `now`:
     /// they come before the settle's requests on that worker.
     fn lb_note(&mut self, now: f64, n: u64) {
-        let dur = n as f64 * self.lb_ms;
+        let dur = n as f64 * self.lb_frame_ms();
         self.lb_free = self.lb_free.max(now) + dur;
         self.lb_worker_busy += dur;
+    }
+
+    /// `--lb-gate`: a need-driven request of `n` frames went to the
+    /// look-back worker at `now`; its answer (owner work `units`) reaches the
+    /// owner when the worker is done, and no other request goes out before
+    /// the owner has handled it.
+    fn need_answer(&mut self, now: f64, n: u64, units: u64) {
+        let dur = n as f64 * self.lb_frame_ms();
+        self.lb_free = self.lb_free.max(now) + dur;
+        self.lb_worker_busy += dur;
+        self.lb_out = true;
+        let at = self.lb_free;
+        self.push(at, Msg::NeedAnswer(units as f64 / self.units_per_ms));
+    }
+
+    /// The look-back worker's time per re-read frame now.
+    fn lb_frame_ms(&self) -> f64 {
+        self.lb_ms + self.lb_ms_cell * self.lib_cells as f64
     }
 
     /// Wall time (ms) at which frame `t` has been read.
@@ -3708,7 +3738,7 @@ impl Timed {
             let kind = match msg {
                 Msg::Batch(_) => 0,
                 Msg::Result(..) => 1,
-                Msg::Charge(_) => 2,
+                Msg::Charge(_) | Msg::NeedAnswer(_) => 2,
                 Msg::Settle | Msg::SettleRest(_) => 3,
                 Msg::Load(_) => 4,
             };
@@ -3776,6 +3806,11 @@ impl Timed {
                     extra += ms;
                     self.lb_busy += ms;
                 }
+                Msg::NeedAnswer(ms) => {
+                    extra += ms;
+                    self.lb_busy += ms;
+                    self.lb_out = false;
+                }
                 Msg::Result(r, i) => {
                     // The visit's work was done by its worker; `apply_job`
                     // adds it to the loop's total.
@@ -3829,6 +3864,7 @@ impl Timed {
             }
             let end0 = end;
             if let Some(l) = lib {
+                self.lib_cells = l.len();
                 self.libs.push_back((end, l));
             }
             // Hand out visits to workers with fewer than `depth` out (as
@@ -3920,7 +3956,7 @@ impl Timed {
             {
                 self.cs_turn = false;
                 self.cs_owed -= self.cs_chunk as f64;
-                let dur = self.cs_chunk as f64 * self.lb_ms;
+                let dur = self.cs_chunk as f64 * self.lb_frame_ms();
                 self.lb_free = self.lb_free.max(end) + dur;
                 self.lb_worker_busy += dur;
                 self.lb_out = true;
@@ -5884,6 +5920,9 @@ fn main() {
                                     tm.visit_units_per_ms = v.parse().unwrap();
                                 }
                                 tm.lb_gate = lb_gate;
+                                if let Some(v) = arg_value(&args, "--lb-ms-per-cell") {
+                                    tm.lb_ms_cell = v.parse().unwrap();
+                                }
                                 if let Some(v) = arg_value(&args, "--owner-load") {
                                     let (ms, period) =
                                         v.split_once(':').expect("--owner-load MS:PERIOD");
@@ -6138,6 +6177,12 @@ fn main() {
                         );
                     }
                     match timed.as_mut() {
+                        Some(tm) if lb_gate && lbk.cs.is_some() => {
+                            let n = lbk.frames - lb0;
+                            if n > 0 {
+                                tm.need_answer(tm.at(t + 1), n, sl.work() - w0);
+                            }
+                        }
                         Some(tm) => {
                             let now = tm.at(t + 1);
                             tm.lb_note(now, lbk.frames - lb0);
@@ -6623,8 +6668,16 @@ fn main() {
         };
         let msg = if tm.lb_gate {
             format!(
-                "{}timed look-back gate: {} need-driven frames in {} requests; visit units per ms {:.3e}; look-back worker {:.1} ms per frame\n",
-                msg, tm.need_frames, tm.need_reqs, tm.visit_units_per_ms, tm.lb_ms
+                "{}timed look-back gate: {} need-driven frames in {} requests; visit units per ms {:.3e}; look-back worker {:.2} ms per frame + {:.4} ms per cell; owner {:.1}% on settle answers in {} answers ({:.1} ms per answer)\n",
+                msg,
+                tm.need_frames,
+                tm.need_reqs,
+                tm.visit_units_per_ms,
+                tm.lb_ms,
+                tm.lb_ms_cell,
+                100.0 * tm.cs_busy / wall,
+                tm.cs_reqs,
+                tm.cs_busy / tm.cs_reqs.max(1) as f64
             )
         } else {
             msg

@@ -5,6 +5,10 @@
 #   work_slider.sh run NAME ws|10_43_21|14_57_02 SEED flags...
 #                                                      one real run, full length, Discover only (no final settle);
 #                                                      waits for a free light slot
+#   work_slider.sh arm NAME ws|10_43_21|14_57_02 SEED FPS off|on [flags...]
+#                                                      one calibration run: offered FPS, look-back on, background
+#                                                      settle off (--csettle 0) or on (CS2F); the model's cost flags
+#                                                      come from $CAL (split here, by bash)
 #
 # Outputs only under $CALA_DATA/runs/work-slider; the recordings are read-only. Light-job rule: fewer than $MAXN
 # (default 6) qc_eval sim/real processes machine-wide and at least 5 GB free before a run starts.
@@ -74,5 +78,14 @@ run)
     slot_run $ROOT/real/$NAME $BIN real "$SAMARA/$REC/img" $ROOT/real/$NAME --motion --fps 30 $D --slow-seed $SEED \
       $V "$@"
   fi
+  ;;
+arm)
+  NAME=$2; REC=$3; SEED=$4; FPS=$5; ARM=$6; shift 6
+  case $ARM in
+    off) F="--csettle 0" ;;
+    on) F="--csettle 0.667 --csettle-mode frames" ;;
+    *) echo "unknown arm $ARM" >&2; exit 1 ;;
+  esac
+  $ME run $NAME $REC $SEED --offered-fps $FPS $F $CAL "$@"
   ;;
 esac
