@@ -9,19 +9,24 @@ the new toggle.
 
 1. **A recording read at full speed gets about a tenth of the dose.** The ceiling is 2 re-read frames per live frame;
    the app delivered 0.19-0.34. Discover reads 210-340 frames a second and the one look-back worker re-reads about
-   90-125 a second while Discover runs, so it is the limit. It was already full with need-driven look-back, which
-   now gets half as many frames.
-2. **At that dose the toggle changes little.** Time, fps and memory are the same. The end settle moves the library
+   90-125 a second while Discover runs, so it is the limit. It was already full with need-driven look-back.
+   **The two now take turns, so at full speed need-driven look-back gets half as many frames. That is a change from
+   the approved design ("need-driven first"), which would have left the settle nothing here. On against off at full
+   speed is therefore the toggle plus half the need-driven look-back, not the toggle alone.**
+2. **At that dose the toggle changes little.** Time is the same and Discover fps within about 4 %. Peak tab memory
+   reads 0.3-0.5 GB lower with the toggle on in most pairs; the cause was not looked into. The end settle moves the library
    slightly less on the workshop recording (median footprint change 27 % against 31 %) and the same on both Samara
    recordings. Cell counts are within the spread of two runs.
 3. **At a stream's rate the full dose arrives and the end settle moves about half as many cells.** One Samara
    recording read at 30 fps (a measurement-only pace knob), one run per arm: 2.00 re-read frames per live frame, 8 of
    17,831 frames dropped for the slow loop (off: 0), cells moved more than twice their noise by the end settle 25 %
-   against 49 %, median change 12.6 % against 20.2 %. This is the condition qc_eval modelled.
-4. **The fast loop was never held up.** Discover fps is equal with the toggle on and off in every pair. The cost
+   against 49 %, median change 12.6 % against 20.2 %. This is the condition qc_eval modelled. It is one recording and one run per arm.
+4. **The fast loop was never held up.** Discover fps with the toggle on is within about 4 % of off in every pair
+   (workshop 210 and 217 against 218 and 220; Samara equal). The cost
    falls on the slow loop: 1-5 points more frames dropped for it at full speed, and 5-18 % fewer visit jobs.
-5. **Whole answers stay the default.** Feeding an answer one frame at a time (`csettle=yield`) did not lower the
-   dropped frames on the workshop recording and re-read fewer frames (0.13 per live frame).
+5. **Whole answers stay the default.** At full speed, feeding an answer one frame at a time (`csettle=yield`) did
+   not lower the dropped frames on the workshop recording and re-read fewer frames (0.13 per live frame). It was not
+   tried at 30 fps, where the model says it matters; there whole answers cost 8 frames in 17,831.
 
 ## What was built
 
@@ -58,8 +63,8 @@ running throughout.
 |                    | on     | 53 / 52 (340, 346)   | 88 / 88      | 141 / 139 | 266 / 266        | 2.7 / 2.7   | 15.7 % / 16.1 %                  | 3,606 / 3,792          |
 
 - Peak tab memory is the larger of the renderer's footprint and RSS over 5 s samples; the GPU process stayed at
-  0.86-0.92 GB. The lower peaks with the toggle on are within what 5 s samples of a garbage-collected process give;
-  I do not read them as a saving.
+  0.86-0.92 GB. The peaks with the toggle on are 0.3-0.5 GB lower on the workshop recording, on 14_57_02 and in the paced pair,
+  and mixed on 10_43_21. The cause was not investigated (the look-back worker and the samples' timing are candidates).
 - The longest stretch without a new frame is 1.6-1.8 s in every run, on and off: the start of the run, before the
   first batch. After it no run has a stretch over 250 ms.
 - Two runs of one arm differ by up to 27 cells (workshop, on), so these pairs cannot resolve a difference in cells.
@@ -76,7 +81,8 @@ running throughout.
 |           | on     | 2,800 / 2,864            | 2,832 (1,848 + 936 + 48) / 2,896                    | 0.19 / 0.19    | 16 ms (31) / 16 ms (33)                         |
 
 The 54 ms per answer on the workshop recording is close to the model's 61 ms. "Dropped" frames are answers solved
-before the first library was published.
+before the first library was published or with a library version the slow loop no longer held; the count does not
+separate the two.
 
 ### What the end settle still moves
 
@@ -122,7 +128,8 @@ agree equally with the toggle on and off.
 
 Piecewise shortens the longest block (43 ms against about 130) but the dropped frames do not fall, and each answer
 takes longer from first to last frame, so fewer are asked for. At full speed the slow worker is busy with live
-batches whatever the answers do. Whole answers stay the default; `csettle=yield` remains for experiments.
+batches whatever the answers do. This was measured at full speed only. Whole answers
+stay the default; `csettle=yield` remains for experiments, and a paced run with it is the open test.
 
 ## At a stream's rate: Samara 10_43_21 at 30 fps (one run per arm)
 
@@ -159,7 +166,9 @@ run.
 - The paced run reads a file at 30 fps; a live stream cannot use the toggle yet (no disk buffer of raw frames).
 - One machine (18 cores, 4 visit workers). Fewer cores leave the look-back worker less time.
 - The Samara and workshop recordings have no ground truth; "moves less" is not "more correct".
-- Taking turns halves need-driven look-back at full speed. Its own effect on late-born cells was not separated.
+- Taking turns halves need-driven look-back at full speed (see the summary). Its own effect, for example on
+  late-born cells, was not separated from the settle's. At 30 fps both got all they asked for.
+- `?debug&pacefps=N` is measurement-only code in the product (the reader waits); the brief did not ask for it.
 - Peak memory comes from 5 s samples.
 - Exports and analytics do not record that the toggle was on.
 
