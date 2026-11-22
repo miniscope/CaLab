@@ -229,7 +229,7 @@ def real_quality(root: Path, rec, arm, s, cps):
         for u in refs:
             if u != t:
                 rep[t] |= {b for _a, b, _c in match_libs(refs[u], refs[t], w)}
-    others = [t for t in refs if not (arm == "REF" and t == s)]
+    others = [t for t in refs if t != s]  # the other seeds' Max, for every arm (plan)
     end = read_lib(cps[-1][2])[2]
     partner = {t: {a: b for a, b, _c in match_libs(end, refs[t], w)} for t in others}
     out = {}
@@ -541,28 +541,126 @@ def score(root: Path) -> None:
             for key in keys:
                 row.append(mci([losses(D[k], x["stop"][k])[key] - losses(D[k], fx[k])[key] for k in D], 4 if key != "rep" else 1))
         P("| " + " | ".join(row) + " |")
-    # ---- fixed truncation curve
-    P("\n## Fixed in-order truncation (the baseline curve)\n")
-    P("| share of pass read | real: median cos loss | p10 loss | rep loss | sims: r loss | edge err loss | bitten loss | late-born r loss | heals after the stop |")
-    P("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
-    for frac in (0.25, 0.4, 0.5, 0.6, 0.75, 0.9):
+    # ---- fixed truncation curve (every real checkpoint; sims round up to their next checkpoint)
+    P("\n## Fixed in-order truncation at every checkpoint (the baseline curve)\n")
+    P("Target = real checkpoint c of 15. Read % = frames actually read (real mean / sims mean; sims checkpoints every "
+      "12.5 %, rounded up).\n")  # fmt: skip
+    P("| target | read % real / sims | real: median cos loss | p10 loss | rep loss | sims: r loss | edge err loss | bitten loss | late-born r loss | heals after the stop (of all) |")
+    P("|" + " --- |" * 10)
+    fixed = {}
+    n_heal = sum(heals_after(e, e["cps"][0][0]) for e in sims.values())
+    for cc in range(3, 16):
+        frac = cc / 15
         cr = {k: fixed_stop(e, 1 - frac) for k, e in real.items()}
         cs = {k: fixed_stop(e, 1 - frac) for k, e in sims.items()}
-        P(f"| {100 * frac:.0f} % | " + " | ".join(mci([losses(real[k], c)[key] for k, c in cr.items()], 4 if key != "rep" else 1) for key in ("med", "p10", "rep"))
-          + " | " + " | ".join(mci([losses(sims[k], c)[key] for k, c in cs.items()]) for key in ("r", "edge", "bit"))
-          + f" | {mci([late_loss(sims[k], c) for k, c in cs.items()])} | {sum(heals_after(sims[k], c) for k, c in cs.items())} |")  # fmt: skip
+        L = {key: [losses(real[k], c)[key] for k, c in cr.items()] for key, *_ in REAL_KEYS}
+        L.update({key: [losses(sims[k], c)[key] for k, c in cs.items()] for key, *_ in SIM_KEYS})
+        sv = (np.mean([saved(real[k], c) for k, c in cr.items()]), np.mean([saved(sims[k], c) for k, c in cs.items()]))
+        fixed[cc] = (L, sv, cr, cs)
+        P(f"| c{cc} | {100 * (1 - sv[0]):.0f} / {100 * (1 - sv[1]):.0f} | "
+          + " | ".join(mci(L[key], 4 if key != "rep" else 1) for key in ("med", "p10", "rep"))
+          + " | " + " | ".join(mci(L[key]) for key in ("r", "edge", "bit"))
+          + f" | {mci([late_loss(sims[k], c) for k, c in cs.items()])} | {sum(heals_after(sims[k], c) for k, c in cs.items())} ({n_heal}) |")  # fmt: skip
     # ---- level selection
-    P("\n## Level selection (plan rule)\n")
+    P("\n## Level selection (plan rule, in code)\n")
+
+    def passes(L, j):
+        return all(np.mean(L[k]) <= (a if j == 2 else b) for k, _l, a, b in REAL_KEYS) and \
+            all(np.mean(L[k]) <= (a if j == 2 else b) for k, _l, a, b in SIM_KEYS if a is not None)  # fmt: skip
+
     for lvl, j in (("Standard", 2), ("Quick", 3)):
-        ok = []
-        for r, res in results.items():
-            pass_ = all(np.mean(res["real"]["L"][k]) <= (a if j == 2 else b)
-                        for k, _l, a, b in REAL_KEYS) and \
-                all(np.mean(res["sims"]["L"][k]) <= (a if j == 2 else b) for k, _l, a, b in SIM_KEYS if a is not None)  # fmt: skip
-            if pass_:
-                ok.append((0.5 * (np.mean(res["real"]["saved"]) + np.mean(res["sims"]["saved"])), r))
-        ok.sort(reverse=True)
+        ok = sorted(((0.5 * (np.mean(res["real"]["saved"]) + np.mean(res["sims"]["saved"])), r) for r, res in results.items()
+                     if passes({**res["real"]["L"], **res["sims"]["L"]}, j)), reverse=True)  # fmt: skip
+        fx = [(0.5 * (sv[0] + sv[1]), cc, sv) for cc, (L, sv, _a, _b) in fixed.items() if passes(L, j)]
+        best_f = max(fx) if fx else None
         P(f"- {lvl}: passing rules (mean saved, real+sims): " + (", ".join(f"{r[0]} {r[1]} q{r[2]} ({100 * s:.0f} %)" for s, r in ok) or "none"))
+        P(f"  - passing fixed stops: " + (", ".join(f"c{cc} ({100 * sv[0]:.0f} / {100 * sv[1]:.0f} % saved)" for _s, cc, sv in sorted(fx, reverse=True)) or "none"))
+    # ---- per arm at the fixed stops the levels use
+    P("\n## Per arm (n = 6 real runs: 2 recordings x 3 seeds; n = 5 sims), fixed stops\n")
+    P("| stop | arm | real median cos loss | real p10 loss | real rep loss | sims r loss | sims edge err loss | sims bitten loss |")
+    P("|" + " --- |" * 8)
+    for cc in (9, 11, 12, 14):
+        L, sv, cr, cs = fixed[cc]
+        for arm in ARMS:
+            kr = [k for k in real if real[k]["arm"] == arm]
+            ks = [k for k in sims if sims[k]["arm"] == arm]
+            P(f"| c{cc} | {arm} | " + " | ".join(mci([losses(real[k], cr[k])[key] for k in kr], 4 if key != "rep" else 1) for key in ("med", "p10", "rep"))
+              + " | " + " | ".join(mci([losses(sims[k], cs[k])[key] for k in ks]) for key in ("r", "edge", "bit")) + " |")  # fmt: skip
+    # ---- top-10 % capture
+    P("\n## Share of the remaining gain carried by the 10 % of cells each measure flags most (mean over checkpoints c >= 3, then runs)\n")
+    P("At each checkpoint the cells are ranked by the measure (ties broken at random); the top 10 % carry this share of "
+      "the summed remaining improvement of all cells (positive parts; 10 % = no information). Coverage = share of the cell's life re-read (after the runs).\n")  # fmt: skip
+    P("| measure | real: cosine gain vs Max partner | sims: edge-error drop | sims: total (1 - r) drop |")
+    P("| --- | --- | --- | --- |")
+    rng = np.random.default_rng(0)
+    births = {name: DM.read_births(root / e["kind"] / name / "B100") for name, e in data.items()}
+
+    def score_of(meas, e, r, name, i):
+        if meas == "coverage":
+            F, tot, b = dict(e["cps"])[r["c"]], e["cps"][-1][1], births[name].get(i, 0)
+            return 1 - min(1.0, max(0.0, (F - b) / max(tot - b, 1)))
+        return r["m"][i][COL[meas]]
+
+    def capture(x, g):
+        x = np.asarray(x) + 1e-12 * rng.random(len(x))
+        g = np.maximum(np.asarray(g), 0)  # improvements only
+        top = np.argsort(-x)[: max(1, len(x) // 10)]
+        tot = g.sum()
+        return float(g[top].sum() / tot) if tot > 0 else math.nan
+
+    for meas in ("step", "drift", "ucb", "coverage"):
+        cr_, ce, ct = [], [], []
+        for name, e in data.items():
+            last = e["cps"][-1][0]
+            pa, pb = [], []
+            for r in e["rows"]:
+                if r["c"] == last:
+                    continue
+                if e["kind"] == "real":
+                    for t, dd in e["q"][r["c"]]["per"].items():
+                        de = e["q"][last]["per"][t]
+                        ids = [i for i in r["m"] if i in dd and i in de]
+                        if len(ids) > 10:
+                            pa.append(capture([score_of(meas, e, r, name, i) for i in ids], [de[i] - dd[i] for i in ids]))
+                else:
+                    dd, de = e["q"][r["c"]]["cells"], e["q"][last]["cells"]
+                    ids = [i for i in r["m"] if i in dd and i in de]
+                    if len(ids) > 10:
+                        x = [score_of(meas, e, r, name, i) for i in ids]
+                        pa.append(capture(x, [dd[i][2] - de[i][2] for i in ids]))
+                        pb.append(capture(x, [de[i][0] - dd[i][0] for i in ids]))
+            if e["kind"] == "real":
+                cr_.append(np.nanmean(pa))
+            else:
+                ce.append(np.nanmean(pa))
+                ct.append(np.nanmean(pb))
+        P(f"| {meas} | {mci(cr_, 3)} | {mci(ce, 3)} | {mci(ct, 3)} |")
+    # ---- zero steps and activity (real)
+    P("\n## Zero steps: no change, or no activity? (real, in-order pass: step c covers recording frames (c-1)*1200..c*1200)\n")
+    z_all, z_act, z_quiet, n_quiet = [], [], [], []
+    for name, e in real.items():
+        rows = DM.read_tsv(root / "real" / name / "B100" / "cells.tsv")
+        ev: dict = {}
+        for rw in rows:
+            f, cid, n = int(float(rw["frame"])), int(float(rw["id"])), float(rw["events"])
+            if math.isfinite(n):
+                ev.setdefault(cid, []).append((f, n))
+        for r in e["rows"]:
+            c = r["c"]
+            lo, hi = (c - 1) * CHECK, c * CHECK
+            act = {i: sum(n for f, n in ev.get(i, []) if lo < f <= hi) for i in r["m"]}
+            zs = {i: r["m"][i][0] == 0 for i in r["m"]}
+            z_all.append(np.mean(list(zs.values())))
+            a = [zs[i] for i in r["m"] if act[i] > 0]
+            q = [zs[i] for i in r["m"] if act[i] == 0]
+            z_act.append(np.mean(a) if a else math.nan)
+            z_quiet.append(np.mean(q) if q else math.nan)
+            n_quiet.append(len(q) / max(len(zs), 1))
+    P(f"- zero last step, all real runs and checkpoints: {100 * np.mean(z_all):.0f} %")
+    P(f"- among cells with events in that span: {100 * np.nanmean(z_act):.0f} %; among cells with no events there: "
+      f"{100 * np.nanmean(z_quiet):.0f} % (cells with no events: {100 * np.mean(n_quiet):.0f} % of cells)")  # fmt: skip
+    zs_s = [np.mean([v[0] == 0 for v in r["m"].values()]) for e in sims.values() for r in e["rows"] if r["m"]]
+    P(f"- sims, zero last step: {100 * np.mean(zs_s):.0f} %")
     # ---- prediction of the remaining gain
     P("\n## Does the measure predict a cell's remaining gain? (Spearman per checkpoint, mean over checkpoints, then over runs)\n")
     P("| measure | real: gain in cosine vs Max partner | sims: drop in total error (1 - r) | sims: drop in edge error | sims: drop in core error |")
@@ -623,28 +721,46 @@ def score(root: Path) -> None:
         P(f"| {meas} {tau} q{q} | {np.mean(un):.0f} | {mci(lu)} | {mci(ls)} | {mci(ll)} | {np.sum(hb)} (of {sum(1 for e in sims.values() for p, v in e['q'][e['cps'][-1][0]]['bites'].items() if v >= 0.5 and any(e['q'][c]['bites'].get(p, 1) < 0.5 for c, _ in e['cps']))}) |")
     # ---- bite check
     P("\n## Sims: bites that heal during the pass, seen the checkpoint before they heal (c >= 3)\n")
-    P("| measure | pairs | median percentile of the cell among all cells | share above tau (each tau) |")
-    P("| --- | --- | --- | --- |")
+    P("Healing cell = the bitten cell i of a pair whose bite ratio (estimate / truth at the neighbour's centre) goes from "
+      "< 0.5 to >= 0.5 and stays healed. Base rate = all cells at the same checkpoints.\n")  # fmt: skip
+    P("| measure | pairs | median percentile among all cells | healing cells above tau | all cells above tau (base rate) |")
+    P("| --- | --- | --- | --- | --- |")
+    heal = []  # (run, c_before, cell id, ratio trajectory up to the heal)
+    for name, e in sims.items():
+        cs = [c for c, _ in e["cps"]]
+        for p in e["q"][cs[-1]]["bites"]:
+            seq = [e["q"][c]["bites"].get(p, math.nan) for c in cs]
+            for a_ in range(1, len(cs)):
+                if seq[a_ - 1] < 0.5 and seq[a_] >= 0.5 and all(x >= 0.5 for x in seq[a_:] if np.isfinite(x)):
+                    if cs[a_ - 1] >= K:
+                        heal.append((name, cs[a_ - 1], p[0], seq[max(0, a_ - 3) : a_ + 1]))
+                    break
     for meas in ("step", "drift", "ucb"):
         j = COL[meas]
-        pct, vals = [], []
-        for e in sims.values():
-            cs = [c for c, _ in e["cps"]]
-            for p in e["q"][cs[-1]]["bites"]:
-                seq = [e["q"][c]["bites"].get(p, math.nan) for c in cs]
-                for a in range(1, len(cs)):
-                    if seq[a - 1] < 0.5 and seq[a] >= 0.5 and all(x >= 0.5 for x in seq[a:] if np.isfinite(x)):
-                        row = next((x for x in e["rows"] if x["c"] == cs[a - 1]), None)
-                        if row and p[0] in row["m"]:
-                            allv = np.array([v[j] for v in row["m"].values()])
-                            v = row["m"][p[0]][j]
-                            pct.append(100 * (allv < v).mean())
-                            vals.append(v)
-                        break
+        pct, vals, base = [], [], []
+        for name, c, cid, _sq in heal:
+            row = next((x for x in sims[name]["rows"] if x["c"] == c), None)
+            if row and cid in row["m"]:
+                allv = np.array([v[j] for v in row["m"].values()])
+                v = row["m"][cid][j]
+                pct.append(100 * (allv < v).mean())
+                vals.append(v)
+                base.append(allv)
         taus = sorted({t for m, t, _q in RULES if m == meas})
-        P(f"| {meas} | {len(vals)} | {np.median(pct) if pct else math.nan:.0f} | " +
-          ", ".join(f"{t}: {100 * np.mean([v >= t for v in vals]) if vals else math.nan:.0f} %" for t in taus) + " |")  # fmt: skip
-
+        P(f"| {meas} | {len(vals)} | {np.median(pct) if pct else math.nan:.0f} | "
+          + ", ".join(f"{t}: {100 * np.mean([v >= t for v in vals]):.0f} %" for t in taus) + " | "
+          + ", ".join(f"{t}: {100 * np.mean([np.mean(b >= t) for b in base]):.0f} %" for t in taus) + " |")  # fmt: skip
+    zero = []
+    for name, c, cid, _sq in heal:
+        row = next((x for x in sims[name]["rows"] if x["c"] == c), None)
+        if row and cid in row["m"]:
+            zero.append(row["m"][cid][0] == 0 and row["m"][cid][4] == 0)
+    allzero = np.mean([np.mean([(v[0] == 0 and v[4] == 0) for v in r["m"].values()]) for e in sims.values() for r in e["rows"] if r["m"] and r["c"] >= K])
+    P(f"\n- healing cells with no committed change in their window before the heal: {100 * np.mean(zero):.0f} % (all cells: {100 * allzero:.0f} %)")
+    tr = np.array([sq for *_x, sq in heal if len(sq) == 4])
+    if len(tr):
+        P(f"- bite ratio over the three checkpoints before the heal and at the heal (median, n = {len(tr)}): "
+          + " -> ".join(f"{v:.2f}" for v in np.nanmedian(tr, 0)))  # fmt: skip
     # ---- (after the runs) coverage: how much of the cell's life the in-order pass has re-read
     P("\n## (After the runs) A structural predictor: re-read coverage of the cell's life\n")
     P("coverage = (frames re-read so far - Discover birth frame) / (recording length - birth frame), clipped to [0, 1]. "
@@ -685,13 +801,63 @@ def score(root: Path) -> None:
     P(f"| 1 - coverage | {mci(rr, 3)} | {mci(s1, 3)} | {mci(s2, 3)} |")
 
 
+def strided(root: Path) -> None:
+    """(After the runs) #464's strided budgets (B25-B75 end libraries) against in-order truncation at about the same
+    frames, each library matched on its own (sims: truth; real: the other seeds' Max B100)."""
+    P = print
+    P("# (After the runs) Strided budgets against in-order truncation at the same frames\n")
+    P("Each library is matched on its own. In-order = the B100 checkpoint nearest the budget's frames "
+      "(real: c4 = 27 %, c7 = 47 %, c11 = 74 %; sims: c2 = 25 %, c4 = 50 %, c6 = 75 %). Mean [95 % t CI] of strided "
+      "minus in-order (positive = strided better).\n")  # fmt: skip
+    near = {"real": {"B25": 4, "B50": 7, "B75": 11}, "sims": {"B25": 2, "B50": 4, "B75": 6}}
+    P("| budget | real median cos | real p10 cos | real rep (points) | sims mean r | sims median edge err (drop) | sims bitten share (drop) | sims late-born mean r |")
+    P("|" + " --- |" * 8)
+    out = {b: {k: [] for k in ("med", "p10", "rep", "r", "edge", "bit", "late")} for b in near["real"]}
+    truths = {}
+    for kind, name, d in runs(root):
+        run = d.parent
+        if kind == "real":
+            rec, arm, s_ = name.split("_")
+            for b, c in near["real"].items():
+                qa = real_quality(root, rec, arm, int(s_[1:]), [(0, 0, run / b / "footprints.bin")])[0]
+                qb = real_quality(root, rec, arm, int(s_[1:]), [(0, 0, d / f"footprints_settle{c}.bin")])[0]
+                for k in ("med", "p10", "rep"):
+                    out[b][k].append(qa[k] - qb[k])
+        else:
+            sd, sim = sim_dir(name)
+            if sim not in truths:
+                truths.clear()
+                truths[sim] = Truth(sd)
+            T = truths[sim]
+            births = DM.read_births(d)
+            for b, c in near["sims"].items():
+                vals = []
+                for p in (run / b / "footprints.bin", d / f"footprints_settle{c}.bin"):
+                    q, late = sim_quality(T, [(0, 0, p)], births)
+                    v = np.array(list(q[0]["cells"].values()))
+                    bt = [x < 0.5 for x in q[0]["bites"].values()]
+                    lr = [q[0]["cells"][i][0] for i in late if i in q[0]["cells"]]
+                    vals.append((v[:, 0].mean(), np.median(v[:, 2]), np.mean(bt) if bt else 0.0, np.mean(lr) if lr else math.nan))
+                (ra, ea, ba, la), (rb, eb, bb, lb) = vals
+                out[b]["r"].append(ra - rb)
+                out[b]["edge"].append(eb - ea)
+                out[b]["bit"].append(bb - ba)
+                out[b]["late"].append(la - lb)
+        print(f"strided {name}", file=sys.stderr, flush=True)
+    for b in near["real"]:
+        o = out[b]
+        P(f"| {b} | {mci(o['med'])} | {mci(o['p10'])} | {mci(o['rep'], 1)} | {mci(o['r'])} | {mci(o['edge'])} | {mci(o['bit'])} | {mci(o['late'])} |")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("what", choices=["dist", "score"])
+    ap.add_argument("what", choices=["dist", "score", "strided"])
     ap.add_argument("--root", type=Path, default=ROOT)
     a = ap.parse_args(argv)
     if a.what == "dist":
         dist(a.root)
+    elif a.what == "strided":
+        strided(a.root)
     else:
         score(a.root)
     return 0
