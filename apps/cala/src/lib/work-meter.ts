@@ -11,6 +11,8 @@
  * Everything here is pure (clocks are passed in), so it is unit-tested.
  */
 
+import { GOVERNOR_LIMIT_TEXT, type GovernorStatus } from './settle.ts';
+
 /** What the slow worker spends its time on (`SlowRunner`); whatever is left of the wall time is idle. */
 export const SLOW_DUTIES = [
   'live',
@@ -182,6 +184,12 @@ export interface WorkStatus {
   lookback: Record<LookbackKind, LookbackWork>;
   /** Look-back answers that arrived for a request no longer waited for (their worker time still counts as busy). */
   discarded: LookbackWork;
+  /**
+   * Per look-back worker (0: need-driven and the end settle; 1..S: the
+   * settle pool): busy ms of its answers, discarded ones included. Absent
+   * from older builds.
+   */
+  lookbackWorkerBusyMs?: number[];
 }
 
 export function emptyWork(workers = 0): WorkStatus {
@@ -208,8 +216,13 @@ export interface WorkRates {
   /** Each visit worker's busy share. */
   visit: number[];
   lookback: {
-    /** Busy share of the look-back worker (its `serve` time less waits for Discover's rows), all kinds. */
+    /**
+     * Busy share of the look-back workers (their `serve` time less waits for
+     * Discover's rows), all kinds, summed over the workers (up to their count).
+     */
     busy: number;
+    /** Per look-back worker (0: need-driven and the end settle; 1..S: the settle pool), its busy share. */
+    workers: number[];
     /** By kind: busy share, frames per second of wall time, and ms per answer split. */
     kinds: Record<
       LookbackKind,
@@ -262,12 +275,15 @@ export function workRates(prev: WorkStatus, cur: WorkStatus): WorkRates | null {
     busy += kinds[k].busy;
   }
   busy += share(lbBusy(prev.discarded), lbBusy(cur.discarded));
+  const workers = (cur.lookbackWorkerBusyMs ?? []).map((v, i) =>
+    share(prev.lookbackWorkerBusyMs?.[i] ?? 0, v),
+  );
   const nb = cur.batchWait.batches - prev.batchWait.batches;
   return {
     spanMs: span,
     slow,
     visit,
-    lookback: { busy, kinds },
+    lookback: { busy, workers, kinds },
     batchWait: {
       meanMs: nb > 0 ? (cur.batchWait.sumMs - prev.batchWait.sumMs) / nb : 0,
       lastMs: cur.batchWait.lastMs,
@@ -305,18 +321,27 @@ export class WorkRater {
 
   /**
    * A visit's or an answer's ms is credited when it arrives, so one window can read above 100 %:
-   * clamp each busy share at 1 and carry the excess into the next window.
+   * clamp each busy share at what the workers behind it can hold (1 per worker) and carry the
+   * excess into the next window. With a settle pool the settle's share is held by S workers,
+   * the total by S + 1.
    */
   private settle(r: WorkRates): void {
-    const fit = (key: string, v: number): number => {
+    const fit = (key: string, v: number, cap = 1): number => {
       const total = v + (this.carry.get(key) ?? 0);
-      const shown = Math.min(1, total);
+      const shown = Math.min(cap, total);
       this.carry.set(key, total - shown);
       return shown;
     };
+    const n = Math.max(1, r.lookback.workers.length);
     r.visit = r.visit.map((v, i) => fit(`v${i}`, v));
-    for (const k of LOOKBACK_KINDS) r.lookback.kinds[k].busy = fit(k, r.lookback.kinds[k].busy);
-    r.lookback.busy = fit('lb', r.lookback.busy);
+    for (const k of LOOKBACK_KINDS)
+      r.lookback.kinds[k].busy = fit(
+        k,
+        r.lookback.kinds[k].busy,
+        k === 'csettle' ? Math.max(1, n - 1) : 1,
+      );
+    r.lookback.busy = fit('lb', r.lookback.busy, n);
+    r.lookback.workers = r.lookback.workers.map((v, i) => fit(`lb${i}`, v));
   }
 
   reset(): void {
@@ -363,15 +388,16 @@ export class MaxFpsEstimator {
 const pct = (x: number) => `${Math.round(100 * x)}%`.padStart(4);
 
 /** The `?debug` readout: plain text lines of the per-worker numbers. Ugly on purpose; the display comes later. */
-export function workText(r: WorkRates | null, maxFps: number): string {
-  if (!r) return `work: waiting for a second of data   fast loop max ${maxFps.toFixed(0)} fps`;
+export function workText(r: WorkRates | null, maxFps: number, gov?: GovernorStatus | null): string {
+  const g = gov ? `\n${governorText(gov)}` : '';
+  if (!r) return `work: waiting for a second of data   fast loop max ${maxFps.toFixed(0)} fps${g}`;
   const s = r.slow;
   const lines = [
     `work over ${(r.spanMs / 1000).toFixed(1)} s   fast loop max ~${maxFps.toFixed(0)} fps`,
     `slow    live ${pct(s.live)} visits ${pct(s.visit)} housekeep ${pct(s.housekeep)} need ${pct(s.need)} csettle ${pct(s.csettle)} end ${pct(s.end)} publish ${pct(s.publish)} setup ${pct(s.setup)} idle ${pct(s.idle)}`,
     `        batch wait mean ${r.batchWait.meanMs.toFixed(1)} ms, last ${r.batchWait.lastMs.toFixed(1)}, longest in 1 s ${r.batchWait.max1sMs.toFixed(1)}`,
     `visits  ${r.visit.length > 0 ? r.visit.map(pct).join(' ') : 'none (the slow worker visits itself)'}`,
-    `look-back busy ${pct(r.lookback.busy)}`,
+    `look-back busy ${pct(r.lookback.busy)}${r.lookback.workers.length > 1 ? `   per worker ${r.lookback.workers.map(pct).join(' ')} (0 = need-driven)` : ''}`,
   ];
   for (const k of LOOKBACK_KINDS) {
     const x = r.lookback.kinds[k];
@@ -380,5 +406,15 @@ export function workText(r: WorkRates | null, maxFps: number): string {
       `        ${k.padEnd(7)} busy ${pct(x.busy)} ${x.framesPerS.toFixed(0)} frames/s, ${x.answers} answers, ms per answer: read ${x.msPerAnswer.read.toFixed(0)} preprocess ${x.msPerAnswer.preprocess.toFixed(0)} solve ${x.msPerAnswer.solve.toFixed(0)}`,
     );
   }
-  return lines.join('\n');
+  return lines.join('\n') + g;
+}
+
+/** The settle governor's line of the readout: its rate, its limits, and what limits it now. */
+export function governorText(s: GovernorStatus): string {
+  const fps = s.achieved === null ? '?' : s.achieved.toFixed(1);
+  const target = s.target > 0 ? `${s.target}` : 'Max';
+  return (
+    `governor ${s.rate.toFixed(0)} frames/s · limit: ${GOVERNOR_LIMIT_TEXT[s.limit]}${s.paused ? ' (paused)' : ''}\n` +
+    `        cap ${s.capFps.toFixed(0)} (${s.cap} x ${fps} of ${target} fps), delivered ${s.deliveredFps.toFixed(0)}/s, settle workers busy ${pct(s.busy)}, owed ${s.credit.toFixed(0)}, halvings ${s.halvings} (${s.slowHalvings} wait or drop)`
+  );
 }

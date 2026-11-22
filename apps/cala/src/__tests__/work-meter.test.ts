@@ -12,6 +12,7 @@ import {
   workText,
   type WorkStatus,
 } from '../lib/work-meter.ts';
+import { SettleGovernor } from '../lib/settle.ts';
 import { SlowRunner, type PublishedLibrary, type SlowLoopLike } from '../lib/slow-runner.ts';
 import { createRunHistory } from '../lib/run-history.ts';
 import type { LookbackToSlow, SlowToLookback } from '../workers/lookback-types.ts';
@@ -224,6 +225,47 @@ describe('WorkRater carry', () => {
       }),
     )!;
     expect(r.lookback.busy).toBeCloseTo(0.3);
+  });
+});
+
+describe('WorkRater with a look-back pool', () => {
+  it('holds up to one share per worker: the settle by S, the total by S + 1, each worker by 1', () => {
+    const rater = new WorkRater(1000);
+    rater.push(snap(0, (w) => (w.lookbackWorkerBusyMs = [0, 0, 0])));
+    const a = rater.push(
+      snap(1000, (w) => {
+        w.lookback.csettle = { ...emptyLookbackWork(), answers: 4, frames: 64, solveMs: 1800 };
+        w.lookback.need = { ...emptyLookbackWork(), answers: 1, frames: 16, solveMs: 900 };
+        w.lookbackWorkerBusyMs = [900, 900, 900];
+      }),
+    )!;
+    expect(a.lookback.kinds.csettle.busy).toBeCloseTo(1.8);
+    expect(a.lookback.busy).toBeCloseTo(2.7);
+    expect(a.lookback.workers.map((x) => +x.toFixed(2))).toEqual([0.9, 0.9, 0.9]);
+    // Nothing carried, so nothing shows up next.
+    const b = rater.push(
+      snap(2000, (w) => {
+        w.lookback.csettle = { ...emptyLookbackWork(), answers: 4, frames: 64, solveMs: 1800 };
+        w.lookback.need = { ...emptyLookbackWork(), answers: 1, frames: 16, solveMs: 900 };
+        w.lookbackWorkerBusyMs = [900, 900, 900];
+      }),
+    )!;
+    expect(b.lookback.busy).toBe(0);
+    expect(b.lookback.kinds.csettle.busy).toBe(0);
+  });
+
+  it('the readout shows each worker and the governor line', () => {
+    const r = workRates(
+      snap(0, (w) => (w.lookbackWorkerBusyMs = [0, 0])),
+      snap(1000, (w) => (w.lookbackWorkerBusyMs = [500, 800])),
+    )!;
+    const g = new SettleGovernor(2);
+    g.setTarget(0, false);
+    const text = workText(r, 200, g.status());
+    expect(text).toMatch(/per worker\s+50%\s+80%/);
+    expect(text).toMatch(/governor 0 frames\/s · limit: off \(Max\)/);
+    expect(workText(null, 0, g.status())).toMatch(/governor/);
+    expect(workText(r, 200)).not.toMatch(/governor/);
   });
 });
 

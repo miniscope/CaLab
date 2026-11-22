@@ -51,6 +51,13 @@ export interface SlowInit {
    * answer in one go, as measured in qc_eval's arm `CS2F`).
    */
   csettleYield?: number;
+  /**
+   * With `csettle`: the settle governor (experimental, `?debug&governor`;
+   * `SettleGovernor` in `lib/settle.ts`) sets the settle's rate in re-read
+   * frames per second instead of the per-live-frame dose; `csettle` is then
+   * its cap. Off at Max (no pacer target).
+   */
+  csettleGovernor?: boolean;
 }
 
 /** Fast worker -> slow worker. */
@@ -263,6 +270,19 @@ export interface SlowReviewed {
 export interface SlowLookbackPort {
   type: 'lookback-port';
   port: MessagePort;
+  /** Which look-back worker (0: need-driven and the end settle; 1..S: the settle pool). Absent: 0. */
+  index?: number;
+}
+
+/**
+ * Main thread -> slow worker: the pacer's target live fps (0: unpaced, Max)
+ * and whether the run is paused. Kept across runs; only the settle governor
+ * reads it.
+ */
+export interface SlowSettlePace {
+  type: 'settle-pace';
+  fps: number;
+  paused: boolean;
 }
 
 /**
@@ -275,7 +295,8 @@ export interface SlowStopSettling {
   session: number;
 }
 
-export type MainToSlow = SlowConnect | SlowReviewed | SlowLookbackPort | SlowStopSettling;
+export type MainToSlow =
+  SlowConnect | SlowReviewed | SlowLookbackPort | SlowStopSettling | SlowSettlePace;
 
 /** Main thread -> visit worker: the port to the slow worker. */
 export interface VisitConnect {

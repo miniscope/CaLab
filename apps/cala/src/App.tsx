@@ -133,8 +133,14 @@ const App: Component = () => {
   // past frames in a worker of its own, and settles at the end (no Refine needed).
   // A recording on disk with one session, pipelined workers only.
   const pipelined = params.get('pipeline') !== '0';
+  // `?debug&lbpool=S` (measurement only, work-slider PR 5): S more look-back workers that
+  // take only the settle's chunks (worker 0 keeps need-driven look-back and the end settle).
+  const lbPool = params.has('debug')
+    ? Math.max(0, Math.min(4, Math.floor(Number(params.get('lbpool')) || 0)))
+    : 0;
   const lookbackClient = createLookbackClient({
     slow,
+    workers: 1 + lbPool,
     source: () => store.source(),
     blocked: () => {
       const i = store.info();
@@ -144,8 +150,8 @@ const App: Component = () => {
       if ((i.sessions?.length ?? 1) > 1) return 'Look-back runs on one session (not a Joint run).';
       return null;
     },
-    onError: (session, message) => {
-      console.warn(`cala look-back worker (session ${session}): ${message}`);
+    onError: (session, message, worker) => {
+      console.warn(`cala look-back worker ${worker} (session ${session}): ${message}`);
       runHistory.log({
         frame: pipeline.processed(),
         kind: 'warning',
@@ -200,6 +206,10 @@ const App: Component = () => {
     if (y) pipeline.setCsettleYield(y[1] ? Number(y[1]) : 1);
   }
   if (params.has('csrate')) pipeline.setCsettleCeiling(Number(params.get('csrate')));
+  // `?debug&governor` (measurement only, work-slider PR 5): the settle governor sets the
+  // settle's rate per second (the ceiling becomes its cap); off at Max (no `pacefps`).
+  if (params.has('debug') && params.has('governor') && params.get('governor') !== '0')
+    pipeline.setCsettleGovernor(true);
   // `?debug&pacefps=30` (measurement only): read the recording at a stream's rate.
   if (params.has('debug') && params.has('pacefps'))
     pipeline.setPaceFps(Number(params.get('pacefps')));
