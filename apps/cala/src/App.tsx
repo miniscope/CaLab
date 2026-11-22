@@ -163,7 +163,10 @@ const App: Component = () => {
       runHistory.log({
         frame: pipeline.processed(),
         kind: 'warning',
-        detail: `Look-back: ${message}`,
+        detail:
+          worker > 0
+            ? `Look-back worker ${worker} stopped: ${message} Need-driven look-back continues.`
+            : `Look-back: ${message}`,
       });
     },
   });

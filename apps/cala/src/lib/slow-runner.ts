@@ -591,7 +591,11 @@ export class SlowRunner {
           typeof this.loop.observeSettle === 'function'
         ) {
           const gov = msg.csettleGovernor
-            ? new SettleGovernor(csettle, Math.max(1, this.settlePorts().length))
+            ? new SettleGovernor(
+                csettle,
+                Math.max(1, this.settlePorts().length),
+                Math.max(2, Math.floor(msg.csettlePool ?? 2)),
+              )
             : null;
           gov?.setTarget(this.pace.fps, this.pace.paused);
           const dose = gov ? null : new SettleDose(csettle);
@@ -1572,6 +1576,7 @@ export class SlowRunner {
       >,
       discarded: { ...this.lbDiscarded },
       lookbackWorkerBusyMs: this.lbPorts.map((p, i) => (p ? (this.lbPortBusy[i] ?? 0) : 0)),
+      settleWorkers: this.settlePorts().length,
     };
   }
 
