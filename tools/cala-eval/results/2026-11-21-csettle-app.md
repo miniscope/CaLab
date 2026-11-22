@@ -185,7 +185,7 @@ run.
 3. Let the end settle stop early when a checkpoint moves less than the null; today a settled-during-Discover library
    still pays the full pass.
 
-## After the preprocessor fix (commit 6486878)
+## After the preprocessor fix (commit 64868789)
 
 The fix: settle chunks (block seq <= -1,000,000) get their own preprocessor slot in the look-back reader, so need-driven
 blocks continue across settle chunks as in qc_eval (`cs_pre`). Also: a settle request that times out or errors turns
