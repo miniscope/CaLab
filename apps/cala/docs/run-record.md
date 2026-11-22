@@ -39,7 +39,7 @@ Nothing here is sent anywhere; no analytics field was added.
 ### Speed fields
 
 - `settings.speed_mode`: `max`, `fixed`, `curve`, `auto` or `stream` (a live source). `settings.target_speed_fps` is the target at the end of setup (0: Max); what the run actually did is `target_speed.changes`, whose `source` says who changed it (`run start`, `setting`, `url`, `curve`, `auto`, ...).
-- `work.realised` (null where a number is not known):
+- `work.realised` (null where a number is not known). The counts are read from the slow worker about once a second during Discover's own run and kept, so a Refine or Extract that follows does not change them (the last second of Discover may be missing). `achieved_fps_mean` is the whole Discover stage's frames over its wall time, pauses and the Final settle included:
 
   | Field                            | Meaning                                                                                           |
   | -------------------------------- | ------------------------------------------------------------------------------------------------- |

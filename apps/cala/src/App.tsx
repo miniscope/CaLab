@@ -549,12 +549,6 @@ const App: Component = () => {
       csettleNeedFirst: pipeline.csettleNeedFirst,
       finalSettleLevel: pipeline.runFinalSettleLevel,
       paceFps: pipeline.paceFps,
-      paceStats: () => {
-        const ps = pipeline.paceStats();
-        return ps ? { lateMs: ps.lateMs, reanchors: ps.reanchors } : null;
-      },
-      forwardDrops: pipeline.forwardDrops,
-      framesProcessed: pipeline.processed,
       smoothPlayback: pipeline.smoothPlayback,
       motionBackend: pipeline.motionBackend,
       flatField: () => {

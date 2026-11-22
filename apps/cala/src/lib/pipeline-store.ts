@@ -571,9 +571,11 @@ export function createPipelineStore(
       setFloorLine(floorText(floorMeter));
       const shown = floorMeter.display();
       setFloor(shown);
-      // The run record's log: once a second at most, and only while the run is going.
-      if (workSampleListeners.length > 0 && untrack(status) !== 'done') {
+      // The run record's log: once a second at most, and only for Discover's own run (a Refine
+      // replay restarts the slow loop's counts).
+      if (workSampleListeners.length > 0 && (st.run ?? 1) === 1) {
         const e = shown.estimate;
+        const ps = untrack(paceStats);
         const sample: WorkSample = {
           frame: untrack(processed),
           limit: gov?.limit ?? null,
@@ -588,6 +590,17 @@ export function createPipelineStore(
           },
           floorInputs: floorMeter.last,
           floorChanged,
+          running: untrack(status) !== 'done',
+          counters: {
+            processed: untrack(processed),
+            observed: st.accounting.observedFrames ?? null,
+            settledFrames: st.accounting.lookback.csettle.frames,
+            forwardDrops,
+            paceLateMs: ps?.lateMs ?? null,
+            paceReanchors: ps?.reanchors ?? null,
+            halvings: gov?.halvings ?? null,
+            slowHalvings: gov?.slowHalvings ?? null,
+          },
         };
         for (const cb of workSampleListeners) {
           try {
@@ -1109,8 +1122,6 @@ export function createPipelineStore(
     onWorkSample: (cb: (s: WorkSample) => void) => {
       workSampleListeners.push(cb);
     },
-    /** Frames the fast loop did not forward to the slow loop, as of the last batch (null: none seen). */
-    forwardDrops: () => forwardDrops,
     /** Called once per run when its settle pool starts: the pool workers and the frame reached. */
     onPoolStart: (cb: (workers: number, frame: number) => void) => {
       poolListeners.push(cb);

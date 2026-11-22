@@ -289,6 +289,30 @@ export interface WorkSample {
   floorInputs: FloorInputs | null;
   /** The published floor changed with this reading. */
   floorChanged: boolean;
+  /** Discover is still going (false once it ended, in the Final settle): the limit and Max counts stop. */
+  running: boolean;
+  /**
+   * Cumulative counts of this Discover run, so the record keeps them after Refine and Extract
+   * (the slow worker's accounting and the pacer's readouts belong to the run that is current).
+   */
+  counters: RunCounters;
+}
+
+/** What `work.realised` is made from: the run's cumulative counts as of the latest reading. */
+export interface RunCounters {
+  /** Frames Discover has processed. */
+  processed: number;
+  /** Live frames the slow loop has observed (null: not reported). */
+  observed: number | null;
+  /** Re-read frames Background settle has delivered. */
+  settledFrames: number | null;
+  /** Frames the fast loop did not forward to the slow loop. */
+  forwardDrops: number | null;
+  /** Pacer: lateness dropped at re-anchors (ms) and the re-anchors (null: it never paced). */
+  paceLateMs: number | null;
+  paceReanchors: number | null;
+  halvings: number | null;
+  slowHalvings: number | null;
 }
 
 /** Floor rows and Max samples kept; past this the oldest half is thinned (every second one kept). */
@@ -321,6 +345,7 @@ export class RunTrace {
   private floorLast: FloorInputs | null = null;
   private limitCounts: Record<string, number> = {};
   private maxSamples: number[] = [];
+  private counts: RunCounters | null = null;
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
@@ -334,6 +359,12 @@ export class RunTrace {
     this.floorLast = null;
     this.limitCounts = {};
     this.maxSamples = [];
+    this.counts = null;
+  }
+
+  /** The run's counts as of the last reading of Discover's run (null: none read). */
+  counters(): RunCounters | null {
+    return this.counts ? { ...this.counts } : null;
   }
 
   /**
@@ -356,6 +387,8 @@ export class RunTrace {
       });
       this.floorRows = thinOldest(this.floorRows);
     }
+    this.counts = { ...s.counters };
+    if (!s.running) return;
     if (s.limit !== null) this.limitCounts[s.limit] = (this.limitCounts[s.limit] ?? 0) + 1;
     if (s.maxFps !== null && s.maxFps > 0) {
       this.maxSamples.push(s.maxFps);
@@ -659,19 +692,8 @@ export interface RunRecordSources {
     smoothPlayback(): boolean;
     motionBackend(): string | null;
     flatField(): { reused: boolean; keySource: string | null };
-    /** The pacer's readout of the run (lateness dropped, re-anchors); null when it never paced. */
-    paceStats?(): { lateMs: number; reanchors: number } | null;
-    /** Frames the fast loop did not forward to the slow loop, this run. */
-    forwardDrops?(): number | null;
-    /** Frames Discover has processed this run. */
-    framesProcessed?(): number;
   };
   slowStatus(): {
-    /** The slow worker's work accounting (cumulative). */
-    accounting?: {
-      observedFrames?: number;
-      lookback?: { csettle?: { frames: number } };
-    };
     lookback?: {
       settle?: { fed: number; total: number; recording: number; stopped: boolean; done: boolean };
       settling?: boolean;
@@ -749,10 +771,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
   const pool = src.trace.poolStart();
   const gov = st?.lookback?.csettle?.governor ?? null;
   const achieved = achievedFps(src.stageRuns());
-  const processed = p.framesProcessed?.() ?? null;
-  const observed = st?.accounting?.observedFrames ?? null;
-  const settled = st?.accounting?.lookback?.csettle?.frames ?? null;
-  const pace = p.paceStats?.() ?? null;
+  const n = src.trace.counters();
   const floor = src.trace.floorEstimate();
   const speedMode = speedModeOf({
     live: info?.live !== undefined,
@@ -854,15 +873,15 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
     realised: {
       achieved_fps_mean: achieved,
       dose_per_live_frame:
-        settled !== null && processed !== null && processed > 0 ? settled / processed : null,
+        n && n.settledFrames !== null && n.processed > 0 ? n.settledFrames / n.processed : null,
       frames_missed_by_slow_loop:
-        observed !== null && processed !== null ? Math.max(0, processed - observed) : null,
-      forward_drops: p.forwardDrops?.() ?? null,
-      halvings: gov?.halvings ?? null,
-      slow_halvings: gov?.slowHalvings ?? null,
+        n && n.observed !== null ? Math.max(0, n.processed - n.observed) : null,
+      forward_drops: n?.forwardDrops ?? null,
+      halvings: n?.halvings ?? null,
+      slow_halvings: n?.slowHalvings ?? null,
       limit_shares: src.trace.limitShares(),
-      pace_late_ms: pace?.lateMs ?? null,
-      pace_reanchors: pace?.reanchors ?? null,
+      pace_late_ms: n?.paceLateMs ?? null,
+      pace_reanchors: n?.paceReanchors ?? null,
       max_fps_median: src.trace.maxFpsMedian(),
     },
     achievedFps: achieved,

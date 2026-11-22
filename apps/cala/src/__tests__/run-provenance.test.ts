@@ -522,6 +522,17 @@ const sample = (over: Partial<WorkSample> = {}): WorkSample => ({
   },
   floorInputs: null,
   floorChanged: false,
+  running: true,
+  counters: {
+    processed: 1000,
+    observed: 950,
+    settledFrames: 1500,
+    forwardDrops: 7,
+    paceLateMs: 120,
+    paceReanchors: 4,
+    halvings: 3,
+    slowHalvings: 1,
+  },
   ...over,
 });
 
@@ -576,6 +587,27 @@ describe('speed record fields', () => {
     expect(new RunTrace().maxFpsMedian()).toBeNull();
   });
 
+  it('keeps the counts of Discover for later: the last reading wins, and the limit counts stop at its end', () => {
+    const t = new RunTrace();
+    expect(t.counters()).toBeNull();
+    t.noteSample(sample());
+    t.noteSample(sample({ counters: { ...sample().counters, processed: 2000 } }));
+    // Discover over, the Final settle going: counts still move, limit and Max shares do not.
+    t.noteSample(
+      sample({
+        running: false,
+        limit: 'idle',
+        maxFps: 999,
+        counters: { ...sample().counters, processed: 2400 },
+      }),
+    );
+    expect(t.counters()?.processed).toBe(2400);
+    expect(t.limitShares()).toEqual({ cap: 1 });
+    expect(t.maxFpsMedian()).toBe(200);
+    t.reset();
+    expect(t.counters()).toBeNull();
+  });
+
   it('bounds its lists: past the cap the oldest half is thinned, the newest kept whole', () => {
     const rows = Array.from({ length: 11 }, (_, i) => i);
     // 11 rows over a cap of 10: the oldest 5 are halved (1 and 3 kept), the newest 6 stay.
@@ -625,12 +657,8 @@ describe('speed record fields', () => {
       pipeline: {
         ...gatherSources().pipeline,
         paceFps: () => 60,
-        paceStats: () => ({ lateMs: 120, reanchors: 4 }),
-        forwardDrops: () => 7,
-        framesProcessed: () => 1000,
       },
       slowStatus: () => ({
-        accounting: { observedFrames: 950, lookback: { csettle: { frames: 1500 } } },
         lookback: { csettle: { governor: gov as never } },
       }),
     };
@@ -656,6 +684,7 @@ describe('speed record fields', () => {
     // A source with none of the new readouts still gathers; the fields are null.
     const old = gatherRunRecord(gatherSources()) as Rec;
     expect(old.work.realised.forward_drops).toBeNull();
+    expect(old.work.realised.halvings).toBeNull();
     expect(old.work.realised.dose_per_live_frame).toBeNull();
     expect(old.slots.floor_estimate).toBeNull();
   });
