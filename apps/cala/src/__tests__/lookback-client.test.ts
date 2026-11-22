@@ -176,6 +176,30 @@ describe('look-back client', () => {
     ]);
   });
 
+  it('a pool started between two snapshots gets the newest back state before it is announced', () => {
+    const t = setup(null, 1);
+    t.client.begin(1);
+    const dy = Float32Array.of(0, 0);
+    t.client.rows(1, 0, dy, dy, [0, 0], dy, dy);
+    // Session 0's last snapshot (at the join, frame 48), then the pool starts before session 1's first.
+    const state = Uint8Array.of(1, 2, 3);
+    t.client.backState(1, { frame: 48, state });
+    expect(t.client.startPool!(1)).toBe(1);
+    const pool = t.sent.filter((s) => s.worker === 1).map((s) => s.msg);
+    expect(pool.map((m) => m.type)).toEqual(['connect', 'begin', 'rows', 'back-state']);
+    expect(pool[1]).toMatchObject({ type: 'begin', prune: true });
+    expect(pool[3]).toMatchObject({ type: 'back-state', frame: 48 });
+    expect(Array.from((pool[3] as { state: Uint8Array }).state)).toEqual([1, 2, 3]);
+    // Worker 0's begin keeps every session's state.
+    expect(t.sent.find((s) => s.worker === 0 && s.msg.type === 'begin')!.msg).not.toHaveProperty(
+      'prune',
+    );
+    // Announced at the next snapshot (session 1's first), as before.
+    expect(t.pools).toEqual([]);
+    t.client.backState(1, { frame: 56, state: Uint8Array.of(4) });
+    expect(t.pools).toEqual([[1, 1]]);
+  });
+
   it('the cap goes to the slow worker', () => {
     const t = setup();
     t.client.cap?.(0.5);

@@ -144,6 +144,12 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
     flat: FlatFieldMap | null | undefined;
     /** Session re-registrations so far (a Joint run), in order. */
     sessions: { index: number; transform: SessionTransform }[];
+    /**
+     * The newest back state (a copy), while the pool may still start: a pool
+     * started between one session's last snapshot and the next session's first
+     * gets it, so it can serve the session the slow worker may still ask for.
+     */
+    newest: { frame: number; state: Uint8Array } | null;
     /** Pool workers started but not yet announced to the slow worker (they wait for a back state). */
     joining: number;
   } | null = null;
@@ -180,7 +186,16 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       const source = o.source();
       if (!source || o.blocked() !== null) return false;
       ensureWorkers(1);
-      run = { session, active: 1, source, rows: [], flat: undefined, sessions: [], joining: 0 };
+      run = {
+        session,
+        active: 1,
+        source,
+        rows: [],
+        flat: undefined,
+        sessions: [],
+        newest: null,
+        joining: 0,
+      };
       postAll(() => [{ type: 'begin', session, source }, []]);
       return true;
     },
@@ -211,6 +226,9 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       });
     },
     backState(session, snap) {
+      // Kept for a pool that starts later (one copy, the newest only).
+      if (run?.session === session && run.active === 1 && poolSize > 0)
+        run.newest = { frame: snap.frame, state: snap.state.slice() };
       // The snapshot's own buffer goes to the last worker; the others get copies.
       postAll((i) => {
         const last = (run ? Math.min(run.active, workers.length) : workers.length) - 1;
@@ -260,7 +278,13 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       r.rows = [];
       for (let i = 1; i <= poolSize; i++) {
         const w = workers[i];
-        w.postMessage({ type: 'begin', session, source: r.source } satisfies MainToLookback);
+        // A pool worker serves the settle during Discover only: it keeps the newest sessions' states.
+        w.postMessage({
+          type: 'begin',
+          session,
+          source: r.source,
+          prune: true,
+        } satisfies MainToLookback);
         // The session warps before the rows (a frame is never served without its own).
         for (const st of r.sessions)
           w.postMessage({ type: 'session', session, ...st } satisfies MainToLookback);
@@ -277,7 +301,17 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
         }
         if (r.flat !== undefined)
           w.postMessage({ type: 'flat', session, map: r.flat } satisfies MainToLookback);
+        // The newest back state so far (its session may still be asked for after the next one starts).
+        const st = r.newest;
+        if (st) {
+          const state = i === poolSize ? st.state : st.state.slice();
+          w.postMessage(
+            { type: 'back-state', session, frame: st.frame, state } satisfies MainToLookback,
+            [state.buffer as ArrayBuffer],
+          );
+        }
       }
+      r.newest = null;
       r.active = 1 + poolSize;
       // Announced at the next back state (`backState`), when they can serve.
       r.joining = poolSize;

@@ -306,6 +306,39 @@ describe('LookbackReader', () => {
       plain.dispose();
     });
 
+    it("a pool reader keeps the newest two sessions' states; worker 0 keeps every one", async () => {
+      const src = await openJoint();
+      // A third session's worth of frame indices: boundaries at 48 only, so fake a source.
+      const three = {
+        info: {
+          ...src.info,
+          sessions: [0, 48, 64].map((startFrame, index) => ({
+            ...src.info.sessions![0],
+            index,
+            startFrame,
+          })),
+        },
+        readFrames: src.readFrames.bind(src),
+      };
+      const pool = new LookbackReader(three, { keepSessions: 2 });
+      const all = new LookbackReader(three);
+      const held = (r: LookbackReader) =>
+        [...(r as unknown as { backStates: Map<number, Uint8Array> }).backStates.keys()].sort();
+      for (const [frame, v] of [
+        [40, 1],
+        [56, 2],
+        [72, 3],
+      ] as const) {
+        pool.setBackState(Uint8Array.of(v), frame);
+        all.setBackState(Uint8Array.of(v), frame);
+      }
+      expect(held(pool)).toEqual([1, 2]);
+      expect(held(all)).toEqual([0, 1, 2]);
+      pool.dispose();
+      all.dispose();
+      src.dispose();
+    });
+
     it('stage C snapshots the first and last batch of every session', async () => {
       const src = await openJoint();
       const live = await run(src);

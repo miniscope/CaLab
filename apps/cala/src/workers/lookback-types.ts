@@ -72,8 +72,13 @@ export type LookbackSource = { entries: FolderEntry[] } | { sessions: SessionInp
 export type MainToLookback =
   /** The port to the slow worker (transferred). */
   | { type: 'connect'; port: MessagePort }
-  /** A Discover run with look-back starts: open the recording. */
-  | { type: 'begin'; session: number; source: LookbackSource }
+  /**
+   * A Discover run with look-back starts: open the recording. `prune`: a
+   * settle-pool worker, which serves the current session only, keeps the
+   * back states of the newest two sessions only (worker 0 keeps every
+   * session's, for the Final settle).
+   */
+  | { type: 'begin'; session: number; source: LookbackSource; prune?: boolean }
   /** What the live pipeline recorded for frames `start..start + dy.length` (copies; transferred). */
   | {
       type: 'rows';

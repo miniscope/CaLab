@@ -165,7 +165,16 @@ export class LookbackReader {
   private readonly buf: Float32Array;
   private disposed = false;
 
-  constructor(private readonly source: HistorySource) {
+  /**
+   * `keepSessions`: keep the back states of only this many newest sessions
+   * (a settle-pool worker, which serves the current session: 2, as the slow
+   * loop's floor may still be on the session before for a moment). Absent:
+   * every session's (worker 0, for the Final settle: one state per session).
+   */
+  constructor(
+    private readonly source: HistorySource,
+    private readonly opts: { keepSessions?: number } = {},
+  ) {
     const { width, height, bitDepth } = source.info;
     this.px = width * height;
     this.raw = bitDepth === 16 ? new Uint16Array(0) : new Uint8Array(0);
@@ -200,6 +209,12 @@ export class LookbackReader {
   setBackState(state: Uint8Array, frame?: number): void {
     const session = frame === undefined ? 0 : this.sessionOf(Math.max(0, frame - 1));
     this.backStates.set(session, state);
+    const keep = this.opts.keepSessions;
+    if (keep !== undefined) {
+      const newest = Math.max(...this.backStates.keys());
+      for (const k of [...this.backStates.keys()])
+        if (k <= newest - keep) this.backStates.delete(k);
+    }
     this.backWaiters = this.backWaiters.filter((w) => {
       if (w.session !== session) return true;
       w.resolve();
