@@ -53,8 +53,9 @@
  * with S more look-back workers in the run (ports 1..S), worker 0 does
  * need-driven look-back and the end settle only, and workers 1..S take the
  * settle's chunks, one request out per worker. A pool worker joins a run
- * when the main thread says so (it may be mid-run) and serves from the next
- * library sent to it. A pool worker that fails is left out for the rest of
+ * when the main thread says so (it may be mid-run; the main thread waits
+ * until the worker has the run's back state) and serves from the library sent
+ * to it at once (the current one) or later. A pool worker that fails is left out for the rest of
  * the run; with none left the settle takes turns on worker 0 again.
  */
 import type {
@@ -139,6 +140,8 @@ export interface SlowLoopLike {
   takeJob?(): Uint8Array | undefined;
   applyJob?(bytes: Uint8Array): void;
   housekeep?(): PublishedLibrary | undefined;
+  /** The last published library without publishing (none before the first; absent in older fakes). */
+  publishedLibrary?(): PublishedLibrary | undefined;
   /** Adds the candidates of a history review; returns how many (absent in older fakes). */
   addReviewed?(candidates: Float32Array): number;
   readonly cellCount: number;
@@ -504,7 +507,7 @@ export class SlowRunner {
   /**
    * The port to look-back worker `index` (0: need-driven look-back and the
    * end settle; 1..S: the settle pool). Runs with look-back started from now
-   * on use it; a pool port connected mid-run serves from the next library.
+   * on use it; a pool port serves once `setSettlePool` joins it to a run.
    */
   connectLookback(port: PortLike<SlowToLookback>, index = 0): void {
     this.lbPorts[index] = port;
@@ -548,16 +551,48 @@ export class SlowRunner {
 
   /**
    * The main thread started look-back workers 1..`workers` for `session`'s
-   * run (the settle pool; it may be mid-run): they take the settle's chunks
-   * from the next library sent to them.
+   * run (the settle pool; it may be mid-run) and have its back state: they
+   * take the settle's chunks from the library sent to them (the current one at once).
    */
   setSettlePool(session: number, workers: number): void {
     this.pool = { session, workers: Math.max(0, Math.floor(workers)) };
     if (session === this.session && this.loop) this.joinPool(this.pool.workers);
   }
 
+  /**
+   * Pool workers 1..`workers` join this run. They get the current library at
+   * once (a stable library publishes nothing new, so waiting for the next
+   * publish could leave a late pool idle for the rest of the run).
+   */
   private joinPool(workers: number): void {
+    const before = this.settlePorts().length;
     for (let i = 1; i <= workers; i++) this.lbRun[i] = true;
+    const loop = this.loop;
+    if (!loop || !this.lbOn || this.lbError || this.version <= 0) return;
+    const lib = loop.publishedLibrary?.();
+    if (!lib) return;
+    try {
+      // Only the version the other workers have (an older one would solve against a stale library).
+      if (lib.version !== this.version) return;
+      const bytes = lib.toBytes();
+      for (let i = 1; i <= workers; i++) {
+        const port = this.lbPorts[i];
+        if (!port || this.lbPortOff[i] || this.lbLib[i]) continue;
+        const copy = bytes.slice();
+        port.postMessage(
+          { type: 'library', session: this.session, version: this.version, bytes: copy },
+          [copy.buffer as ArrayBuffer],
+        );
+        this.lbLib[i] = true;
+      }
+    } finally {
+      lib.free();
+    }
+    const after = this.settlePorts().length;
+    if (after !== before && this.cs) {
+      this.cs.gov.setWorkers(after);
+      this.status(0, 0);
+    }
   }
 
   /**

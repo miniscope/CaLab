@@ -5,7 +5,7 @@
  * guard) and the limiting factor it reports.
  */
 import { describe, expect, it } from 'vitest';
-import { CSETTLE, GOVERNOR, SettleGovernor } from '../lib/settle.ts';
+import { CSETTLE, GOVERNOR, GOVERNOR_LIMIT_TEXT, SettleGovernor } from '../lib/settle.ts';
 
 /**
  * A paced run: live batches of 8 frames at `fps` (sent on time, no wait),
@@ -70,8 +70,12 @@ describe('SettleGovernor', () => {
     g.setTarget(60, false);
     const r = drive(g, { fps: 60, achieved: 40, seconds: 20 });
     expect(r.asked).toBe(0);
-    expect(g.limit).toBe('off');
+    expect(g.limit).toBe('cap-off');
+    expect(GOVERNOR_LIMIT_TEXT[g.limit]).toBe('cap off');
     expect(g.rate).toBe(0);
+    // Back to Max: off for that reason.
+    g.setTarget(0, false);
+    expect(g.limit).toBe('off');
   });
 
   it('the cap during a run: Off stops it at once, a lower cap holds the rate and credit down, a higher one climbs', () => {
@@ -88,7 +92,7 @@ describe('SettleGovernor', () => {
     g.setCap(0);
     expect(g.rate).toBe(0);
     expect(g.owed).toBe(0);
-    expect(g.limit).toBe('off');
+    expect(g.limit).toBe('cap-off');
     r = drive(g, { fps: 60, seconds: 10, t0: r.t, end0: r.end });
     expect(r.asked).toBe(0);
     g.setCap(1);

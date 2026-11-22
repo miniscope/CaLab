@@ -364,13 +364,22 @@ export const GOVERNOR = {
  * What limits the settle now (`SettleGovernor.limit`): the six of the design,
  * and two passing states (`waiting`: no library yet, no settle read goes
  * out; `ramping`: climbing by the guard's step with no limit reached and no
- * recent trouble). `off` also covers the cap Off (the readout shows the cap).
+ * recent trouble). `off`: the target is Max; `cap-off`: below Max with the cap Off.
  */
 export type GovernorLimit =
-  'off' | 'waiting' | 'ramping' | 'cap' | 'look-back' | 'slow-worker' | 'backing-off' | 'discover';
+  | 'off'
+  | 'cap-off'
+  | 'waiting'
+  | 'ramping'
+  | 'cap'
+  | 'look-back'
+  | 'slow-worker'
+  | 'backing-off'
+  | 'discover';
 
 export const GOVERNOR_LIMIT_TEXT: Record<GovernorLimit, string> = {
   off: 'off (Max)',
+  'cap-off': 'cap off',
   waiting: 'no library yet',
   ramping: 'ramping up',
   cap: 'cap',
@@ -496,10 +505,10 @@ export class SettleGovernor {
       this.rateFps = 0;
       this.owedFrames = 0;
       this.probing = false;
-      this.limitNow = 'off';
+      this.limitNow = this.offLimit;
       return;
     }
-    if (this.limitNow === 'off') this.limitNow = 'waiting';
+    if (this.isOff) this.limitNow = 'waiting';
     const capFps = c * (this.achievedFps ?? this.target);
     if (this.rateFps > capFps) {
       this.rateFps = capFps;
@@ -511,6 +520,15 @@ export class SettleGovernor {
   /** The settle may run: a target below Max and a cap above 0. */
   private get on(): boolean {
     return this.target > 0 && this.capNow > 0;
+  }
+
+  /** Why the settle is off now: the target at Max, else the cap Off. */
+  private get offLimit(): GovernorLimit {
+    return this.target > 0 ? 'cap-off' : 'off';
+  }
+
+  private get isOff(): boolean {
+    return this.limitNow === 'off' || this.limitNow === 'cap-off';
   }
 
   /** The pacer's target live fps (0: Max) and whether the run is paused. A change restarts the fps window. */
@@ -533,8 +551,8 @@ export class SettleGovernor {
     if (!this.on) {
       this.rateFps = 0;
       this.owedFrames = 0;
-      this.limitNow = 'off';
-    } else if (this.limitNow === 'off') this.limitNow = 'waiting';
+      this.limitNow = this.offLimit;
+    } else if (this.isOff) this.limitNow = 'waiting';
   }
 
   /**
@@ -615,7 +633,7 @@ export class SettleGovernor {
     if (!this.on) {
       this.rateFps = 0;
       this.owedFrames = 0;
-      this.limitNow = 'off';
+      this.limitNow = this.offLimit;
       return;
     }
     // Paused: hold everything (a pause must not read as trouble).

@@ -107,7 +107,8 @@ describe('look-back client', () => {
     expect(t.client.startPool?.(1)).toBe(2);
     expect(t.workers()).toBe(3);
     expect(t.indices).toEqual([0, 1, 2]);
-    expect(t.pools).toEqual([[1, 2]]);
+    // The slow worker hears of them only once they have a back state (they could not serve before).
+    expect(t.pools).toEqual([]);
     for (const w of [1, 2]) {
       const mine = t.sent.filter((x) => x.worker === w).map((x) => x.msg);
       expect(mine.map((m) => m.type)).toEqual(['connect', 'begin', 'rows', 'flat']);
@@ -121,6 +122,9 @@ describe('look-back client', () => {
     expect(new Set(bufs).size).toBe(bufs.length);
     // Once only; from now on the pool gets every message too.
     expect(t.client.startPool?.(1)).toBe(2);
+    t.client.backState(1, { frame: 16, state: Uint8Array.of(1) } as never);
+    expect(t.pools).toEqual([[1, 2]]);
+    t.client.backState(1, { frame: 32, state: Uint8Array.of(1) } as never);
     expect(t.pools).toHaveLength(1);
     rows(16, 8);
     expect(
@@ -128,8 +132,9 @@ describe('look-back client', () => {
         .filter((x) => x.msg.type === 'rows' && (x.msg as { start: number }).start === 16)
         .map((x) => x.worker),
     ).toEqual([0, 1, 2]);
-    // A new run: only worker 0 until it goes below Max.
+    // A new run: only worker 0 until it goes below Max (the pool ended with the last run).
     t.client.reset(1);
+    expect(t.terminated).toEqual([1, 2]);
     t.client.begin(2);
     rows(0, 8);
     expect(
@@ -165,12 +170,59 @@ describe('look-back client', () => {
     const states = bs.map((x) => (x.msg as Extract<MainToLookback, { type: 'back-state' }>).state);
     expect(new Set(states.map((x) => x.buffer)).size).toBe(3);
     expect(states.every((x) => Array.from(x).join() === '1,2,3')).toBe(true);
+    expect(t.pools).toEqual([[1, 2]]);
     t.client.flatField(1, null);
+    // The run ends: worker 0 is reset and kept, the pool is ended.
     t.client.reset(1);
-    expect(t.sent.filter((x) => x.msg.type === 'reset').map((x) => x.worker)).toEqual([0, 1, 2]);
+    expect(t.sent.filter((x) => x.msg.type === 'reset').map((x) => x.worker)).toEqual([0]);
+    expect(t.terminated).toEqual([1, 2]);
     t.client.pace?.(60, false);
     expect(t.paces).toEqual([[60, false]]);
     t.client.dispose();
-    expect(t.terminated).toEqual([0, 1, 2]);
+    expect(t.terminated).toEqual([1, 2, 0]);
+  });
+
+  it('a Max run after a paced one holds no pool; a later paced run starts fresh ones', () => {
+    const t = setup(null, 1);
+    t.client.begin(1);
+    t.client.startPool?.(1);
+    t.client.reset(1);
+    // At Max: one worker only, nothing for the pool.
+    t.client.begin(2);
+    const dy = Float32Array.of(1);
+    t.client.rows(2, 0, dy, dy, [0], dy, dy);
+    t.client.backState(2, { frame: 1, state: Uint8Array.of(1) } as never);
+    t.client.reset(2);
+    expect(t.workers()).toBe(2);
+    expect(t.terminated).toEqual([1]);
+    expect(t.sent.filter((x) => x.worker === 1).map((x) => x.msg.type)).toEqual([
+      'connect',
+      'begin',
+    ]);
+    // Paced again: a new worker, wired by index 1 again, given the run so far.
+    t.client.begin(3);
+    t.client.rows(3, 0, dy, dy, [0], dy, dy);
+    expect(t.client.startPool?.(3)).toBe(1);
+    expect(t.workers()).toBe(3);
+    expect(t.indices).toEqual([0, 1, 1]);
+    expect(t.sent.filter((x) => x.worker === 2).map((x) => x.msg.type)).toEqual([
+      'connect',
+      'begin',
+      'rows',
+    ]);
+  });
+
+  it('a pool started after the last snapshot never joins: the slow worker sends it nothing', () => {
+    const t = setup(null, 1);
+    t.client.begin(1);
+    t.client.backState(1, { frame: 256, state: Uint8Array.of(1) } as never);
+    t.client.startPool?.(1);
+    // No back state follows before the run ends.
+    t.client.reset(1);
+    expect(t.pools).toEqual([]);
+    // A back state of another run does not announce it either.
+    t.client.begin(2);
+    t.client.backState(2, { frame: 256, state: Uint8Array.of(1) } as never);
+    expect(t.pools).toEqual([]);
   });
 });

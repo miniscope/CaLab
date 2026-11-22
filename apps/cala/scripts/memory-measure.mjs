@@ -6,7 +6,8 @@
  *   node apps/cala/scripts/memory-measure.mjs --url http://localhost:5195/ --data <folder>
  *        --out <dir> [--keep name1,name2] [--tag x] [--mode joint|separate]
  *        [--refine-runs 1] [--every 10] [--max-min 90] [--cdp 9335] [--headed] [--single]
- *        [--lookback [--toggle] [--refine] [--csettle [--csettle-yield N] [--csrate R]]] [--extract]
+ *        [--lookback [--toggle] [--refine] [--csettle-yield N] [--csrate R] [--csettle-off]
+ *        [--pacefps F] [--pace-after S:N] [--lbpool S] [--needfirst]] [--extract]
  *   `--single`: one recording folder (Discover, then one Refine, no export; `--discover-only`: stop after Discover).
  *   `--smooth 0`: smooth playback off (the comparison run). Every run saves the displayed-frame times
  *   and a once-a-second processing readout as `<tag>-display.json`.
@@ -18,15 +19,18 @@
  *   checkbox once Discover runs and restart it (the path a user takes).
  *   `--refine`: after settling, one Refine run too (to compare). `--extract`:
  *   then press Extract once and wait for it.
- *   `--csettle` (with `--lookback`): opens with `&csettle` too (settle during
- *   Discover, experimental; `--csettle-yield N`: answers fed N frames at a
- *   time; `--csrate R`: the ceiling). Every look-back run also logs exact
+ *   Background settle (settle during Discover) is on by default under look-back and runs only
+ *   below Max; `--csettle` adds a bare `&csettle`, which changes nothing now (kept so old
+ *   command lines run). `--csettle-yield N` (`&csettle=yieldN`): answers fed N frames at a
+ *   time; `--csrate R`: the cap. Every look-back run also logs exact
  *   times (an in-page probe every 100 ms: last frame, settled, the longest
  *   stretch without a new frame, every settle checkpoint), the frames
  *   dropped for the slow loop, and how far the end settle moved the library
  *   Discover ended with; both libraries are written as `<tag>-live.json` and
  *   `<tag>-final.json`.
- *   `--pace-after S:N`: set the target to N fps (0 = Max) once Discover has run S seconds.
+ *   `--pace-after S:N`: set the target to N fps (0 = Max) once Discover has run S seconds; logs
+ *   `POOL_JOINED` with the seconds from that change to the first `settleWorkers` >= 1 and the
+ *   frames dropped for the slow loop by then (total, and since the change).
  *   `--finish-after S`: press "End Discover" once Discover has run S seconds (a short run: the end
  *   settle then covers the frames read so far). Every run also records the work readout
  *   (`__cala.pipeline.work()`, once a second) as `<tag>-work.json` and logs the `?debug` text
@@ -395,6 +399,20 @@ await page.evaluate((withRelease) => {
       settleWorkers: c.lookback?.()?.csettle?.settleWorkers ?? null,
     });
   }, 500);
+  // `--pace-after`: the first time the settle pool serves after the target change.
+  setInterval(() => {
+    const c = window.__cala;
+    const pa = window.__calaPaceAt;
+    if (pa && !window.__calaPoolJoin && (c.lookback?.()?.csettle?.settleWorkers ?? 0) >= 1) {
+      const dropped = c.cells.batch?.()?.droppedFrames ?? 0;
+      window.__calaPoolJoin = {
+        afterS: (performance.now() - pa.t) / 1000,
+        dropped,
+        droppedSince: dropped - pa.dropped,
+        settleDropped: c.lookback?.()?.csettle?.dropped ?? null,
+      };
+    }
+  }, 100);
   // Display and processing (`--smooth`): once a second, frames processed, rate, dropped for the slow loop.
   const proc = (window.__calaProc = []);
   setInterval(() => {
@@ -614,6 +632,7 @@ async function saveWork() {
 
 let finishedEarly = false;
 let pacedLater = false;
+let poolJoinLogged = false;
 let refineClicked = false;
 let extractClicked = false;
 let discoverDoneAt = null;
@@ -633,7 +652,20 @@ while (!stop) {
   if (paceAfter.length === 2 && r.st?.pst === 'running' && r.t > paceAfter[0] && !pacedLater) {
     pacedLater = true;
     L(`PACE_AFTER ${r.t.toFixed(1)}s -> ${paceAfter[1]} fps`);
-    await page.evaluate((fps) => window.__cala.pipeline.setPaceFps(fps), paceAfter[1]);
+    await page.evaluate((fps) => {
+      window.__calaPaceAt = {
+        t: performance.now(),
+        dropped: window.__cala.cells.batch?.()?.droppedFrames ?? 0,
+      };
+      window.__cala.pipeline.setPaceFps(fps);
+    }, paceAfter[1]);
+  }
+  if (pacedLater && !poolJoinLogged) {
+    const j = await page.evaluate(() => window.__calaPoolJoin ?? null).catch(() => null);
+    if (j) {
+      poolJoinLogged = true;
+      L(`POOL_JOINED ${JSON.stringify(j)}`);
+    }
   }
   if (finishAfter > 0 && r.st?.pst === 'running' && r.t > finishAfter && !finishedEarly) {
     finishedEarly = true;

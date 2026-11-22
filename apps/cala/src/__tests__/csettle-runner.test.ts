@@ -354,7 +354,7 @@ describe('settle during Discover: the cap during a run', () => {
     while (t.pending()) t.answer();
     t.r.setCap(0);
     expect(t.status().csettle!.governor).toMatchObject({
-      limit: 'off',
+      limit: 'cap-off',
       rate: 0,
       cap: 0,
       credit: 0,

@@ -510,6 +510,8 @@ describe('pipeline store: Background settle and the settle pool', () => {
     const { client } = manualClient();
     await createRoot(async (dispose) => {
       const store = make(feed, client);
+      const started: [number, number][] = [];
+      store.onPoolStart((workers, frame) => started.push([workers, frame]));
       store.setLookback(true);
       store.setCsettle(false);
       await store.start();
@@ -519,11 +521,16 @@ describe('pipeline store: Background settle and the settle pool', () => {
       store.setPaceFps(60);
       // Cap Off: no pool yet.
       expect(calls.pool).toEqual([]);
+      expect(started).toEqual([]);
       store.setCsettle(true);
       expect(calls.pool).toEqual([session]);
+      // The run record hears of the first start only.
+      store.setPaceFps(45);
+      expect(started).toEqual([[1, 0]]);
       store.stop();
       store.setPaceFps(30);
-      expect(calls.pool).toEqual([session]);
+      expect(calls.pool).toEqual([session, session]);
+      expect(started).toHaveLength(1);
       dispose();
     });
   });

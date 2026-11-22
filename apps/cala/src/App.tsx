@@ -494,6 +494,7 @@ const App: Component = () => {
   // ---- Run record (docs/run-record.md): how this run was made, saved with every result ----
   const runTrace = new RunTrace();
   pipeline.onPaceChange((fps, frame, source) => runTrace.noteTargetSpeed(fps, frame, source));
+  pipeline.onPoolStart((workers, frame) => runTrace.notePoolStart(workers, frame));
   // A Discover start begins a new run: the target speed in force is its first entry.
   createEffect(
     on(
@@ -530,7 +531,7 @@ const App: Component = () => {
       csettle: pipeline.csettle,
       csettleCeiling: pipeline.csettleCeiling,
       csettleYield: pipeline.csettleYield,
-      csettleGovernor: pipeline.csettleGovernor,
+      csettleNeedFirst: pipeline.csettleNeedFirst,
       paceFps: pipeline.paceFps,
       smoothPlayback: pipeline.smoothPlayback,
       motionBackend: pipeline.motionBackend,
@@ -554,7 +555,7 @@ const App: Component = () => {
         ? from.sessions.map((s) => s.entries.map((e) => ({ name: e.file.name, size: e.file.size })))
         : [];
     },
-    lookbackWorkers: () => 1 + lbPool,
+    lookbackPoolSize: () => lbPool,
     visitWorkers: () => slow.visitWorkers,
     tunables: { settle: SETTLE, csettle: CSETTLE, governor: GOVERNOR },
   };
@@ -746,9 +747,15 @@ const App: Component = () => {
         if (a.csettle !== undefined) pipeline.setCsettle(a.csettle);
         if (a.csettleCeiling !== undefined) pipeline.setCsettleCeiling(a.csettleCeiling);
         if (a.csettleYield !== undefined) pipeline.setCsettleYield(a.csettleYield);
-        if (a.csettleGovernor !== undefined) pipeline.setCsettleGovernor(a.csettleGovernor);
+        if (a.csettleNeedFirst !== undefined) pipeline.setCsettleNeedFirst(a.csettleNeedFirst);
         if (a.paceFps !== undefined) pipeline.setPaceFps(a.paceFps, 'run record');
         if (a.smoothPlayback !== undefined) pipeline.setSmoothPlayback(a.smoothPlayback);
+        // The pool size is fixed at page load: say so rather than run differently in silence.
+        if (a.lookbackPoolPlanned !== undefined && a.lookbackPoolPlanned !== lbPool) {
+          const warning = `The record planned ${a.lookbackPoolPlanned} settle pool worker(s); this page has ${lbPool} (open it with ?debug&lbpool=${a.lookbackPoolPlanned} to match).`;
+          console.warn(warning);
+          return { ...a, warnings: [warning] };
+        }
         return a;
       },
     });

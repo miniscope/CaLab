@@ -303,8 +303,9 @@ export interface SlowSettleCap {
 
 /**
  * Main thread -> slow worker: look-back workers 1..`workers` were started
- * for `session`'s run (the settle pool; possibly mid-run). They take the
- * settle's chunks from the next library sent to them.
+ * for `session`'s run (the settle pool; possibly mid-run) and have its back
+ * state. The slow worker sends them the current library at once; they take
+ * the settle's chunks from then on.
  */
 export interface SlowSettlePool {
   type: 'settle-pool';

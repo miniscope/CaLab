@@ -12,9 +12,11 @@
  * start only when a run first goes below Max (`startPool`, possibly mid-run;
  * a run at Max never starts them) and then get their own copy of everything
  * above: what the run recorded so far (`begin`, every row, the newest flat
- * field) at once, the back half's state from its next snapshot, the library
- * from the slow worker's next one. They live as long as the page, like
- * worker 0; a run's `reset` closes each one's recording.
+ * field) at once, the back half's state from its next snapshot. Only after
+ * that snapshot does the slow worker hear of them (`settlePool`), so no
+ * request reaches a worker that cannot serve it; it sends them its current
+ * library then. A run's `reset` ends them (worker 0 stays for the page), so a
+ * run at Max after a paced one holds no pool workers.
  */
 import type { FlatFieldMap } from './flat-field.ts';
 import type { BackStateSnapshot } from './pipeline-engine.ts';
@@ -51,6 +53,8 @@ export interface LookbackFeed {
    * run; nothing when the pool size is 0). Returns the pool workers in the run.
    */
   startPool?(session: number): number;
+  /** The settle pool's size S on this machine (started or not). */
+  readonly poolSize?: number;
 }
 
 export type LookbackWorkerLike = Pick<
@@ -132,6 +136,8 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
     source: LookbackSource;
     rows: RowsChunk[];
     flat: FlatFieldMap | null | undefined;
+    /** Pool workers started but not yet announced to the slow worker (they wait for a back state). */
+    joining: number;
   } | null = null;
   /** The same message to every worker in the run; `copy(i)` gives worker `i` its own payload and transfer list. */
   function postAll(copy: (i: number) => [MainToLookback, Transferable[]]): void {
@@ -166,7 +172,7 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       const source = o.source();
       if (!source || o.blocked() !== null) return false;
       ensureWorkers(1);
-      run = { session, active: 1, source, rows: [], flat: undefined };
+      run = { session, active: 1, source, rows: [], flat: undefined, joining: 0 };
       postAll(() => [{ type: 'begin', session, source }, []]);
       return true;
     },
@@ -206,6 +212,11 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
           [state.buffer as ArrayBuffer],
         ];
       });
+      // A pool started since the last snapshot has the back state now: it can serve.
+      if (run?.session === session && run.joining > 0) {
+        o.slow.settlePool?.(session, run.joining);
+        run.joining = 0;
+      }
     },
     flatField(session, map) {
       if (run?.session === session) run.flat = map;
@@ -213,8 +224,13 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       postAll(() => [{ type: 'flat', session, map }, []]);
     },
     reset(session) {
-      if (run?.session === session) run = null;
-      for (const w of workers) w.postMessage({ type: 'reset', session } satisfies MainToLookback);
+      // The rows kept for a late pool go with the run.
+      run = null;
+      workers[0]?.postMessage({ type: 'reset', session } satisfies MainToLookback);
+      // The pool ends with the run (its workers hold a reader, a frame pool and a library each):
+      // a later run at Max holds none, and a later paced run starts fresh ones.
+      for (const w of workers.slice(1)) w.terminate();
+      workers = workers.slice(0, 1);
     },
     pace(fps, paused) {
       o.slow.settlePace?.(fps, paused);
@@ -247,9 +263,11 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
           w.postMessage({ type: 'flat', session, map: r.flat } satisfies MainToLookback);
       }
       r.active = 1 + poolSize;
-      o.slow.settlePool?.(session, poolSize);
+      // Announced at the next back state (`backState`), when they can serve.
+      r.joining = poolSize;
       return poolSize;
     },
+    poolSize,
     dispose() {
       for (const w of workers) w.terminate();
       workers = [];

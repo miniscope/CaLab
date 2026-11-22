@@ -61,6 +61,7 @@ function fakeLoop(need: number) {
       return fakeLib(10);
     }),
     finalize: vi.fn(() => fakeLib(++version)),
+    publishedLibrary: vi.fn(() => (published ? fakeLib(version) : undefined)),
     setNoise: vi.fn(),
     setEditScope: vi.fn(),
     cellCount: 1,
@@ -255,18 +256,22 @@ describe('look-back pool', () => {
     expect(t.status().lookback!.csettle!.settleWorkers).toBe(0);
   });
 
-  it('a pool joining mid-run serves from the next library; worker 0 then stops taking settle turns', () => {
+  it('a pool joining mid-run gets the current library at once (a stable library too); worker 0 then stops taking settle turns', () => {
     const t = setup({ need: 100_000, pool: 1, join: false, csettle: 2 });
     t.runUntil(() => t.kinds(0).includes('csettle'));
-    t.r.setSettlePool(1, 1);
-    // No library yet for worker 1: nothing goes to it, worker 0 still takes turns.
     t.live(20);
     expect(t.toLb[1]).toEqual([]);
-    expect(t.status().lookback!.csettle!.settleWorkers).toBe(0);
-    t.f.again.on = true;
-    t.runUntil(() => t.pending(1) !== undefined, [1]);
-    expect(t.toLb[1].filter((m) => m.type === 'library')).toHaveLength(1);
+    // The library is stable (no new publish follows): the join itself sends it.
+    t.r.setSettlePool(1, 1);
+    const libs = t.toLb[1].filter((m) => m.type === 'library');
+    expect(libs).toHaveLength(1);
+    expect(libs[0]).toMatchObject({ session: 1, version: 10 });
     expect(t.status().lookback!.csettle!.settleWorkers).toBe(1);
+    t.runUntil(() => t.pending(1) !== undefined, [1]);
+    // The next publish goes to it as to every worker in the run (no second copy of this one).
+    t.f.again.on = true;
+    t.live(1);
+    expect(t.toLb[1].filter((m) => m.type === 'library').map((m) => m.version)).toEqual([10, 11]);
     const n0 = t.kinds(0).length;
     for (let k = 0; k < 100; k++) {
       t.live(1);
@@ -274,6 +279,14 @@ describe('look-back pool', () => {
     }
     expect(new Set(t.kinds(0).slice(n0))).toEqual(new Set(['need']));
     expect(t.kinds(1).length).toBeGreaterThan(5);
+  });
+
+  it('a pool joining before the first library gets it with the first publish', () => {
+    const t = setup({ pool: 1, join: false, csettle: 2 });
+    t.r.setSettlePool(1, 1);
+    expect(t.toLb[1]).toEqual([]);
+    t.live(1);
+    expect(t.toLb[1].filter((m) => m.type === 'library')).toHaveLength(1);
   });
 
   it('a pool held for another session does not join this run', () => {

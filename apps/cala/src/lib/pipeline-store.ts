@@ -492,6 +492,10 @@ export function createPipelineStore(
    */
   let paceFps = 0;
   const paceListeners: ((fps: number, frame: number, source: string) => void)[] = [];
+  /** Told when a run's settle pool starts (its workers, the frame reached); the run record's log. */
+  const poolListeners: ((workers: number, frame: number) => void)[] = [];
+  /** The look-back session whose pool start was told (once per run). */
+  let poolNoted = 0;
   /** A pace was set at some point: from then on Pause and Resume always tell the gate (so its held state never sticks). */
   let paceEver = false;
   /** Whether this run's gate is paced (a recording's Discover run; never a live stream). */
@@ -580,7 +584,18 @@ export function createPipelineStore(
   function startSettlePool(): void {
     const st = untrack(status);
     if (st !== 'starting' && st !== 'running' && st !== 'paused') return;
-    if (lookbackSession && paceRun() && settleCap() > 0) lookbackFeed?.startPool?.(lookbackSession);
+    if (!lookbackSession || !paceRun() || !(settleCap() > 0)) return;
+    const n = lookbackFeed?.startPool?.(lookbackSession) ?? 0;
+    // The run record notes the first start only (this runs on every pace or cap change).
+    if (n <= 0 || poolNoted === lookbackSession) return;
+    poolNoted = lookbackSession;
+    for (const cb of poolListeners) {
+      try {
+        cb(n, untrack(processed));
+      } catch {
+        // Observers only.
+      }
+    }
   }
 
   /** Show one played frame: its view's image, the batch's last-frame images for the other views. */
@@ -946,7 +961,11 @@ export function createPipelineStore(
       setCsettleCeilingSignal(csettleRate(rate));
       tellSettleCap();
     },
-    /** The frame worker's pacing readouts (gate wait, lateness dropped, re-anchors); null when unpaced. */
+    /**
+     * The frame worker's pacing readouts (gate wait, lateness dropped, re-anchors) of the newest
+     * gate run; null before the first readout of a run (a run that never had a target has none).
+     * The stopped run's final readout stays until the next start.
+     */
     paceStats,
     /** Who is doing what, over the last second or so (the slow, visit and look-back workers); null until a second of data. */
     work,
@@ -982,6 +1001,10 @@ export function createPipelineStore(
     /** Called with the new target speed, the frame reached and what set it, whenever `setPaceFps` runs (the run record's log). */
     onPaceChange: (cb: (fps: number, frame: number, source: string) => void) => {
       paceListeners.push(cb);
+    },
+    /** Called once per run when its settle pool starts: the pool workers and the frame reached. */
+    onPoolStart: (cb: (workers: number, frame: number) => void) => {
+      poolListeners.push(cb);
     },
     smoothPlayback: () => smoothOn,
     csettleYield,
