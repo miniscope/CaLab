@@ -18,9 +18,11 @@ const workerScope = globalThis as unknown as {
 
 let port: MessagePort | null = null;
 let visits: MessagePort[] = [];
-/** The port to the look-back worker (runs with look-back only; see `SlowRunner`). */
-let lookbackPort: MessagePort | null = null;
+/** The ports to the look-back workers, by index (runs with look-back only; see `SlowRunner`). */
+const lookbackPorts: (MessagePort | null)[] = [];
 let runner: SlowRunner | null = null;
+/** The last pacer target from the main thread (a runner made later starts from it). */
+let pace: { fps: number; paused: boolean } | null = null;
 // Port messages (frames and visit results alike) are handled one at a time,
 // in arrival order, after the WASM module is ready.
 let queue: Promise<void> = Promise.resolve();
@@ -54,9 +56,16 @@ workerScope.onmessage = (e) => {
     return;
   }
   if (data.type === 'lookback-port') {
-    lookbackPort?.close();
-    lookbackPort = data.port;
-    connectLookback();
+    const i = data.index ?? 0;
+    lookbackPorts[i]?.close();
+    lookbackPorts[i] = data.port;
+    connectLookback(i);
+    return;
+  }
+  // Not queued: a setting the next request reads.
+  if (data.type === 'settle-pace') {
+    runner?.setPace(data.fps, data.paused);
+    pace = { fps: data.fps, paused: data.paused };
     return;
   }
   // Not queued: settling runs between the queued messages (see `SlowRunner.drainPump`).
@@ -80,7 +89,8 @@ workerScope.onmessage = (e) => {
     defer: (fn) => void pause().then(fn),
   });
   const r = runner;
-  connectLookback();
+  if (pace) r.setPace(pace.fps, pace.paused);
+  lookbackPorts.forEach((_, i) => connectLookback(i));
   toFast.onmessage = (ev: MessageEvent<FastToSlow>) => {
     queue = queue
       .then(() => initCalaWasm())
@@ -105,14 +115,14 @@ workerScope.onmessage = (e) => {
  * Look-back answers go straight to the runner, like visit results (a
  * request is only sent once the module is ready, so no wait is needed).
  */
-function connectLookback(): void {
+function connectLookback(i: number): void {
   const r = runner;
-  const p = lookbackPort;
+  const p = lookbackPorts[i];
   if (!r || !p) return;
-  r.connectLookback(p);
+  r.connectLookback(p, i);
   p.onmessage = (ev: MessageEvent<LookbackToSlow>) => {
     try {
-      r.handleLookback(ev.data);
+      r.handleLookback(ev.data, i);
     } catch (err) {
       report(ev.data.session, err);
     }

@@ -147,9 +147,10 @@ export interface FastLoopOptions {
   refine?: boolean;
   /** Discover with look-back (experimental): the slow loop's `init` says so (`SlowInit.lookback`). */
   lookback?: boolean;
-  /** With `lookback`: settle during Discover (`SlowInit.csettle`, `SlowInit.csettleYield`; 0 = off). */
+  /** With `lookback`: settle during Discover (`SlowInit.csettle`, `SlowInit.csettleYield`, `SlowInit.csettleGovernor`; 0 = off). */
   csettle?: number;
   csettleYield?: number;
+  csettleGovernor?: boolean;
   /** Return the model residual of each batch's last frame (the app's residual view). */
   residual?: boolean;
   /**
@@ -174,6 +175,7 @@ export const FAST_LOOP_DEFAULTS = {
   lookback: false,
   csettle: 0,
   csettleYield: 0,
+  csettleGovernor: false,
   signed: false,
 } as const;
 
@@ -539,6 +541,7 @@ export class FastLoop {
             ? {
                 csettle: this.o.csettle,
                 ...(this.o.csettleYield > 0 ? { csettleYield: this.o.csettleYield } : {}),
+                ...(this.o.csettleGovernor ? { csettleGovernor: true } : {}),
               }
             : {}),
         },

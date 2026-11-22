@@ -68,7 +68,11 @@ function handle(msg: StageMsg): void {
           ...(cells?.refine ? { refine: true } : {}),
           ...(cells?.lookback && !cells.library ? { lookback: true } : {}),
           ...(cells?.lookback && !cells.library && cells.csettle
-            ? { csettle: cells.csettle, csettleYield: cells.csettleYield ?? 0 }
+            ? {
+                csettle: cells.csettle,
+                csettleYield: cells.csettleYield ?? 0,
+                csettleGovernor: cells.csettleGovernor ?? false,
+              }
             : {}),
           ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
         },

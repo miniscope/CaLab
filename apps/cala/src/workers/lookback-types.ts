@@ -12,6 +12,7 @@
  * carries the pipeline `session`; stale ones are dropped.
  */
 import type { FlatFieldMap } from '../lib/flat-field.ts';
+import type { GovernorStatus } from '../lib/settle.ts';
 import type { LookbackTiming } from '../lib/work-meter.ts';
 import type { FolderEntry, SessionInput } from '../lib/frame-source.ts';
 
@@ -148,6 +149,10 @@ export interface CsettleStatus {
   maxBlockMs: number;
   /** Frames per piece when the slow worker gives way inside an answer (0: whole answers). */
   yieldFrames: number;
+  /** Pool look-back workers serving the settle now (0: it takes turns on worker 0). Absent from older builds. */
+  settleWorkers?: number;
+  /** The settle governor's state (absent: governor off, the per-live-frame dose). */
+  governor?: GovernorStatus;
 }
 
 /** The settle pass of a look-back run (`lib/settle.ts`). */

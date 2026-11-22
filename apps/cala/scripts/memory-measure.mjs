@@ -30,6 +30,9 @@
  *   settle then covers the frames read so far). Every run also records the work readout
  *   (`__cala.pipeline.work()`, once a second) as `<tag>-work.json` and logs the `?debug` text
  *   readout at each sample.
+ *   `--lbpool S` (with `--csettle`): S more look-back workers that take only the settle's chunks;
+ *   `--governor`: the settle governor (off at Max: give `--pacefps`). Both `?debug` flags of
+ *   work-slider PR 5; the governor's state is kept with each work reading and logged.
  *   `--headed` runs system Chrome with a real GPU (headless SwiftShader hides memory behaviour).
  *
  * Opens `<folder>` (a session folder or a parent of several) through the
@@ -81,8 +84,14 @@ const csQuery0 = csettle
 // `--pacefps N`: read the recording no faster than N frames a second (a stream's rate).
 // `--smooth 0`: smooth playback off (the comparison run).
 const smoothOpt = opt('--smooth', '');
+const lbPool = opt('--lbpool', '');
+const governor = args.includes('--governor');
 const csQuery =
-  csQuery0 + (paceFps ? `&pacefps=${paceFps}` : '') + (smoothOpt ? `&smooth=${smoothOpt}` : '');
+  csQuery0 +
+  (paceFps ? `&pacefps=${paceFps}` : '') +
+  (smoothOpt ? `&smooth=${smoothOpt}` : '') +
+  (lbPool ? `&lbpool=${lbPool}` : '') +
+  (governor ? '&governor' : '');
 mkdirSync(out, { recursive: true });
 const udd = join(out, `udd-${tag}`);
 rmSync(udd, { recursive: true, force: true });
@@ -309,7 +318,7 @@ const fmt = (r) => {
     ? ` lb pushed ${st.lb.pushed} need ${st.lb.inNeed} births ${st.lb.births}${st.lb.settling ? ' settling' : ''}${st.lb.settle ? ` settle ${st.lb.settle.fed}/${st.lb.settle.total}${st.lb.settle.moving ? ` moving ${st.lb.settle.moving.above}/${st.lb.settle.moving.cells}` : ''}` : ''}${st.lb.error ? ` ERR ${st.lb.error}` : ''}${st.final ? ' final' : ''}`
     : '';
   const cs = st.lb?.csettle
-    ? ` cs ${st.lb.csettle.fit}+${st.lb.csettle.heldOut}+${st.lb.csettle.dropped}/${st.lb.csettle.requested} live ${st.lb.csettle.live} ans ${st.lb.csettle.answers} ${(st.lb.csettle.answerMs / Math.max(1, st.lb.csettle.answers)).toFixed(1)}ms max ${st.lb.csettle.maxBlockMs.toFixed(0)}ms`
+    ? ` cs ${st.lb.csettle.fit}+${st.lb.csettle.heldOut}+${st.lb.csettle.dropped}/${st.lb.csettle.requested} live ${st.lb.csettle.live} ans ${st.lb.csettle.answers} ${(st.lb.csettle.answerMs / Math.max(1, st.lb.csettle.answers)).toFixed(1)}ms max ${st.lb.csettle.maxBlockMs.toFixed(0)}ms${st.lb.csettle.governor ? ` gov ${st.lb.csettle.governor.rate.toFixed(0)}/s ${st.lb.csettle.governor.limit} halv ${st.lb.csettle.governor.halvings}(${st.lb.csettle.governor.slowHalvings})` : ''}`
     : '';
   const drop = st.batch ? ` drop ${st.batch.drop}/${st.batch.drop + st.batch.fwd}` : '';
   const slow = st.slow ? ` jobs ${st.slow.jobs} refines ${st.slow.refines}` : '';
@@ -377,6 +386,8 @@ await page.evaluate((withRelease) => {
       work: w,
       maxFps: c.pipeline.maxFps(),
       pace: c.pipeline.paceStats?.() ?? null,
+      governor: c.lookback?.()?.csettle?.governor ?? null,
+      settleWorkers: c.lookback?.()?.csettle?.settleWorkers ?? null,
     });
   }, 500);
   // Display and processing (`--smooth`): once a second, frames processed, rate, dropped for the slow loop.

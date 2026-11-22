@@ -198,6 +198,8 @@ export function createPipelineStore(
   const [csettle, setCsettle] = createSignal(false);
   const [csettleCeiling, setCsettleCeiling] = createSignal<number>(CSETTLE.rate);
   const [csettleYield, setCsettleYield] = createSignal(0);
+  /** The settle governor instead of the per-live-frame dose (`?debug&governor`; experimental, measurement only). */
+  const [csettleGovernor, setCsettleGovernor] = createSignal(false);
   /** Session of the current run with look-back (0: none). */
   let lookbackSession = 0;
   /** The live source's counters after the newest batch (null on a file source). */
@@ -509,6 +511,10 @@ export function createPipelineStore(
   function sendPace(pace: { fps?: number; paused?: boolean }): void {
     void client.setPace?.(pace).catch(() => {});
   }
+  /** The pacer as the settle governor sees it (the slow worker; 0 = Max): sent whenever it may have changed. */
+  function tellSettlePace(): void {
+    lookbackFeed?.pace?.(paceRun() ? paceFps : 0, untrack(status) === 'paused');
+  }
 
   /** Show one played frame: its view's image, the batch's last-frame images for the other views. */
   function showPlayed(f: PlayedFrame): void {
@@ -695,6 +701,7 @@ export function createPipelineStore(
       });
       // Look-back (experimental): from this start on, if the recording allows it.
       const lb = lookback() && discover() && lookbackFeed?.begin(session) === true;
+      if (lb) tellSettlePace();
       if (lb) {
         lookbackSession = session;
         setLookbackRun(true);
@@ -709,6 +716,7 @@ export function createPipelineStore(
             ? {
                 csettle: csettleRate(csettleCeiling()),
                 ...(csettleYield() > 0 ? { csettleYield: csettleYield() } : {}),
+                ...(csettleGovernor() ? { csettleGovernor: true } : {}),
               }
             : {}),
           discover: discover(),
@@ -754,6 +762,7 @@ export function createPipelineStore(
     setPlaying(false);
     // Requests already in the worker must not be released while paused.
     if (paceEver) sendPace({ paused: true });
+    tellSettlePace();
     runHistory?.log({ frame: processed(), kind: 'pause', detail: 'Paused' });
   }
 
@@ -762,6 +771,7 @@ export function createPipelineStore(
     // Answers to steps sent before the pause still arrive and count.
     setStatus('running');
     if (paceEver) sendPace({ paused: false });
+    tellSettlePace();
     runHistory?.log({ frame: processed(), kind: 'resume', detail: 'Resumed' });
     pump();
   }
@@ -861,8 +871,11 @@ export function createPipelineStore(
       const st = status();
       // A run paused before a pace existed must start held.
       if (st === 'running' || st === 'paused') sendPace({ fps: paceFps, paused: st === 'paused' });
+      tellSettlePace();
     },
     csettleYield,
+    csettleGovernor,
+    setCsettleGovernor,
     setCsettleYield: (frames: number) =>
       setCsettleYield(Number.isFinite(frames) && frames > 0 ? Math.floor(frames) : 0),
     setResidual,
