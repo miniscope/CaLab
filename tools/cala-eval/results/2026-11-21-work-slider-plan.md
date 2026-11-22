@@ -80,6 +80,9 @@ fix where they exist):
 The full-speed toggle-on rows of Samara predate the preprocessor fix (no later full-speed Samara run exists); the fix
 did not change the workshop full-speed numbers, where the look-back worker is the limit.
 
+(Changed after a run, 22 Nov 2026: the references above were recorded with the pacer before #455, which released 32
+frames at once; they are replaced by smooth-pacer runs in [2026-11-22-visit-refit.md](2026-11-22-visit-refit.md).)
+
 How C1 is read:
 
 - **C1 at 30 fps** = the four 30 fps rows; **C1 at full speed** = the four full-speed rows. Each row and measure is

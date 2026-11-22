@@ -64,8 +64,9 @@ What the duties say against the round-2 model (`--units-per-ms 1.6e6 --job-ms 1`
   result: 0.7 ms per observed frame at full speed, 1.5-2.0 at 30 fps, where there are 20 times as many results. At 30
   fps the model's owner is busy 39 % / 53 % (round 2, workshop off / on) against Chrome's 36 % / 61 %. The pre-fix
   readings in #459 that suggested 2.4 ms per job had housekeep inside the visit duty.
-- **The visit workers' cost per job is right within 10-20 %**: model 66-68 ms at full speed against Chrome 61-70; at
-  30 fps the model is 20 % (workshop) to 44 % (Samara) slower per job.
+- **The visit workers' cost per job is right within 10-20 % at full speed** (model 66-68 ms against Chrome 61-70); at
+  30 fps the model is 20 % (workshop) to 44 % (Samara) slower per job (refit: 25-31 % on Samara, 20.6 / 23.4 ms
+  against 16.5 / 17.9).
 - **The visit results wait too long for the owner.** The model's visit workers spend most of their idle time with a
   result waiting behind batches (`--visit-diag`: 238 of 430 worker-seconds on the workshop recording, full, off). The
   model's batches wait 125 ms on average in the owner's inbox; Chrome's 36-68 ms. With four forward buffers and an
@@ -183,7 +184,12 @@ roughly halves the visit-job error (-56 to -62 % becomes -23 to -31 %) but makes
 frames than Chrome and inflates the look-back rows by 26-64 %. At 30 fps no frame is dropped and the pool does not
 matter; there the refit's gain over r2 (-11..-7 % to -5..0 %) is `--visit-units-per-ms 2.3e6`.
 
-**Recommendation for slider arms in qc_eval (30-60 fps):** the refit flags, or r2's; both pass. For anything faster:
+**Recommendation for slider arms in qc_eval:** round 2's flags with `--visit-units-per-ms 2.3e6` and the default
+four buffers (`--pool 4`), not `--pool 2`, which failed on held-out data once frames drop. At 30 fps this set should
+give the refit's numbers: the refit runs dropped no batch (`dropped 0` in all four logs) and the owner was idle most of
+the time, so the buffer count did not act (not run separately). **60 fps is unverified:** the workshop recording already
+drops 1.7-3.4 % at 60 fps in Chrome, and the only 60 / 120 fps Chrome runs predate the smooth pacer. A smooth-pacer
+60 fps Chrome pair plus the matching model runs should come before PR 4 relies on 60 fps arms. For anything faster:
 Chrome.
 
 ## 5. What the model is missing at full speed
@@ -228,7 +234,10 @@ With those two numbers the model's queue can be fitted instead of stood in for b
   (static_s5, first 4800 frames; lock-step with a final settle, `V30`, `CS2`, `CS2F`, round 1's single-worker settle):
   every output file identical after masking wall-time fields (`.../work-slider-refit/t0/report.txt`).
 - The C1 Chrome runs ran one at a time with no qc_eval run of mine going (load average 2.1-3.8 at the starts,
-  `chrome/load.txt`); another agent's short Chrome runs on port 5197 were waited for.
+  `chrome/load.txt`); another agent's short Chrome runs on port 5197 were waited for at each start. Its file times
+  show one overlap: a run of it ending at 02:10:51 overlapped the last part of `ws-p30-off` (exit 02:09:47), during
+  that run's final settle, after Discover had ended; no Discover number is affected. My model runs (from 02:1x) did
+  overlap that agent's later Chrome runs (02:10-02:29).
 - Recordings read only: `--single` runs make no export and the app's directory picker is removed.
 
 Files: Chrome runs `~/Projects/cala-data/runs/work-slider-refit/chrome` (`visit_refit_chrome.sh`,

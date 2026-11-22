@@ -235,6 +235,9 @@ jobs 2,437 / 4,628, need 8,435 / 10,320; full on background settle 0.23 / 0.335;
 
 **Verdict, by the plan's rule: C1 fails at 30 fps, so no slider arm is run in qc_eval** (step 4 not run).
 
+(Changed after a run, 22 Nov 2026: the 30 fps references here predate the smooth pacer (#455); against smooth-pacer
+references C1 passes at 30 fps and still fails at full speed. See [2026-11-22-visit-refit.md](2026-11-22-visit-refit.md).)
+
 What the failure says:
 
 - **The look-back dose is calibrated; the split is not.** The background-settle dose is within 15 % at every Samara
