@@ -65,6 +65,7 @@ import {
 } from './lib/recent-projects.ts';
 import { LIBRARY_MODE_LABEL, refinePlanText } from './lib/session-run.ts';
 import { createLookbackClient } from './lib/lookback-client.ts';
+import { loadSpeedSettings } from './lib/speed-track.ts';
 import {
   CSETTLE,
   GOVERNOR,
@@ -215,6 +216,12 @@ const App: Component = () => {
       : compress,
     lookbackClient,
   );
+  // The Speed block's saved settings (mode, last Fixed speed, Background settle cap); the URL
+  // parameters below win for this page.
+  const speed = loadSpeedSettings();
+  if (speed.mode === 'fixed') pipeline.setPaceFps(speed.fixedFps, 'setting');
+  if (speed.cap === 0) pipeline.setCsettle(false);
+  else pipeline.setCsettleCeiling(speed.cap);
   // `?lookback`: look-back on from the first Discover start.
   if (params.has('lookback') && params.get('lookback') !== '0') pipeline.setLookback(true);
   // Background settle (settle during Discover) is on under look-back whenever the target is

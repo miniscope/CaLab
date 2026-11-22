@@ -56,7 +56,7 @@ import {
   FINAL_SETTLE_LEVELS,
   finalSettleLevel,
 } from './settle.ts';
-import { FloorMeter, NEED_RATE, floorText } from './speed-floor.ts';
+import { FloorMeter, NEED_RATE, floorText, type FloorDisplay } from './speed-floor.ts';
 
 /** Step requests kept outstanding: one running, one queued so the worker never idles. */
 export const MAX_IN_FLIGHT = 2;
@@ -501,6 +501,8 @@ export function createPipelineStore(
    * worker (`lib/frame-pacer.ts`); this only tells it the target and when we pause.
    */
   let paceFps = 0;
+  /** `paceFps` as a signal (the Speed control reads it; 0: Max). */
+  const [paceTarget, setPaceTarget] = createSignal(0);
   const paceListeners: ((fps: number, frame: number, source: string) => void)[] = [];
   /** Told when a run's settle pool starts (its workers, the frame reached); the run record's log. */
   const poolListeners: ((workers: number, frame: number) => void)[] = [];
@@ -537,6 +539,8 @@ export function createPipelineStore(
   // The smart floor estimate (`lib/speed-floor.ts`): shown in the `?debug` readout only, steers nothing.
   const floorMeter = new FloorMeter();
   const [floorLine, setFloorLine] = createSignal('');
+  /** The floor as the Speed control's mark shows it (the prior until a measurement). */
+  const [floor, setFloor] = createSignal<FloorDisplay>(floorMeter.display());
   cells?.onStatus((st) => {
     if (!st.accounting) return;
     // Throttled to about 1 Hz inside the meter: no per-batch work for a debug readout.
@@ -556,6 +560,7 @@ export function createPipelineStore(
         run: st.run,
       });
       setFloorLine(floorText(floorMeter));
+      setFloor(floorMeter.display());
     }
     const rates = workRater.push(st.accounting);
     if (!rates) return;
@@ -735,6 +740,7 @@ export function createPipelineStore(
     paceEpoch = -1;
     workRater.reset();
     floorMeter.reset();
+    setFloor(floorMeter.display());
     stageBusyMeter.reset();
     birthRate.reset();
     maxFpsEstimator.reset();
@@ -990,6 +996,8 @@ export function createPipelineStore(
     work,
     /** The smart floor's `?debug` lines (value, which consumer sets it, confidence); empty before the first status. */
     floorLine,
+    /** The floor for the Speed control's mark: `published` once measured, else the prior; refreshed about once a second. */
+    floor,
     /** The fast loop's live estimate of its top speed, frames per second (0 until a batch has busy time). */
     maxFps,
     /** `maxFps` as of the last `work` reading, for the readout. */
@@ -998,6 +1006,7 @@ export function createPipelineStore(
     setPaceFps: (fps: number, source = 'setting') => {
       const before = paceRun() ? paceFps : 0;
       paceFps = Number.isFinite(fps) && fps > 0 ? fps : 0;
+      setPaceTarget(paceFps);
       if (paceFps > 0) paceEver = true;
       const st = status();
       const after = paceRun() ? paceFps : 0;
@@ -1017,6 +1026,8 @@ export function createPipelineStore(
     },
     /** The target speed now, frames per second (0: Max). */
     paceFps: () => paceFps,
+    /** The target speed as a signal (0: Max). */
+    paceTarget,
     /** Called with the new target speed, the frame reached and what set it, whenever `setPaceFps` runs (the run record's log). */
     onPaceChange: (cb: (fps: number, frame: number, source: string) => void) => {
       paceListeners.push(cb);

@@ -223,6 +223,20 @@ describe('pipeline store backpressure', () => {
     });
   });
 
+  it('exposes the target speed as a signal (0: Max) and the floor prior for the Speed control', () => {
+    const { client } = manualClient();
+    createRoot((dispose) => {
+      const store = createPipelineStore({ ...client, setPace: vi.fn(async () => {}) });
+      expect(store.paceTarget()).toBe(0);
+      expect(store.floor().prior).toBe(true);
+      store.setPaceFps(80);
+      expect(store.paceTarget()).toBe(80);
+      store.setPaceFps(0);
+      expect(store.paceTarget()).toBe(0);
+      dispose();
+    });
+  });
+
   it('never leaves the gate held: pause, pace off, resume, pace on', async () => {
     const { client } = manualClient();
     const setPace = vi.fn(async () => {});

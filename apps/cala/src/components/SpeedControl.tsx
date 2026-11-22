@@ -1,0 +1,417 @@
+import { createEffect, createMemo, createSignal, For, onCleanup, Show, untrack } from 'solid-js';
+import type { JSX } from 'solid-js';
+import { SegmentedControl } from '@calab/ui';
+import type { PipelineStore } from '../lib/pipeline-store.ts';
+import type { CellStore } from '../lib/cell-store.ts';
+import {
+  belowFloorNote,
+  CAP_CHOICES,
+  capLabel,
+  floorWords,
+  fpsToPos,
+  fpsToStep,
+  loadSpeedSettings,
+  saveSpeedSettings,
+  snapFps,
+  SPEED_SCALE,
+  SPEED_TICKS,
+  speedStatusText,
+  stepToFps,
+  TRACK_STEPS,
+  type SpeedMode,
+  type SpeedSettings,
+} from '../lib/speed-track.ts';
+
+/** Keyboard steps wait this long for the next one before they count as one change (a drag commits on release). */
+const KEY_DEBOUNCE_MS = 400;
+
+/** Two labels closer than this share of the track would overlap: the floor's goes to the left of its mark. */
+const LABEL_CLASH = 0.22;
+
+const NO_BUFFER_REASON =
+  "Background settle on a live stream needs the stream's raw frames on disk, which is not built yet.";
+
+const MODE_LABELS: Record<SpeedMode, string> = { max: 'Max', fixed: 'Fixed' };
+const MODE_TITLES: Record<SpeedMode, string> = {
+  max: 'No pacing: Discover as fast as the machine goes; all settling comes after the last frame.',
+  fixed: 'Read the recording at a target speed; the spare time goes to Background settle.',
+};
+
+/** The settings as the store holds them now (what gets saved). */
+function currentSettings(s: PipelineStore, fixedFps: number): SpeedSettings {
+  return {
+    mode: s.paceTarget() > 0 ? 'fixed' : 'max',
+    fixedFps,
+    cap: s.csettle() ? s.csettleCeiling() : 0,
+  };
+}
+
+/**
+ * The Speed block of the Run panel (Max and Fixed): a fixed log track from 10
+ * to 500 fps with a separate Max stop, the floor and "max now" marks, the
+ * status line, and the Background settle cap. Every change goes through the
+ * store (`setPaceFps` logs the run-record event; the cap goes to the worker).
+ * Curve and Auto join `MODES` later.
+ */
+export function SpeedControl(props: {
+  pipeline: PipelineStore;
+  cells: CellStore;
+  /** A live stream: the input rate sets the pace; the track is greyed. */
+  live?: boolean;
+  /** Frame rate of the recording or stream, Hz (0 when unknown). */
+  fps: number;
+}): JSX.Element {
+  const s = () => props.pipeline;
+  const [fixedFps, setFixedFps] = createSignal(loadSpeedSettings().fixedFps);
+  /** The thumb while a change is in progress (not yet committed). */
+  const [draft, setDraft] = createSignal<number | null>(null);
+  let dragging = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(timer));
+
+  const persist = () => saveSpeedSettings(currentSettings(s(), untrack(fixedFps)));
+
+  /** Why a target cannot be chosen (a Joint run, no look-back workers); null when it can. Streams have their own state. */
+  const pinned = () => (props.live ? null : s().lookbackBlocked());
+
+  // A pinned control stays at Max whatever was saved; when the pin lifts the saved speed returns.
+  let pinnedFrom: number | null = null;
+  createEffect(() => {
+    const why = pinned();
+    untrack(() => {
+      if (why !== null && s().paceTarget() > 0) {
+        pinnedFrom = s().paceTarget();
+        s().setPaceFps(0, 'setting');
+      } else if (why === null && pinnedFrom !== null) {
+        if (s().paceTarget() === 0) s().setPaceFps(pinnedFrom, 'setting');
+        pinnedFrom = null;
+      }
+    });
+  });
+
+  const target = () => s().paceTarget();
+  const shown = () => draft() ?? (target() > 0 ? target() : null);
+  const mode = (): SpeedMode => (shown() !== null ? 'fixed' : 'max');
+
+  const floor = () => s().floor();
+  const floorFps = () => {
+    const f = floor();
+    return Math.round(f.fps);
+  };
+  const words = createMemo(() => floorWords(floor()));
+  const maxNow = () => (s().workMaxFps() > 0 ? Math.round(s().workMaxFps()) : null);
+  const marks = () => [...SPEED_TICKS, floorFps()];
+  const gov = () => props.cells.status()?.lookback?.csettle?.governor ?? null;
+  const running = () => s().status() === 'running' || s().status() === 'paused';
+  const lookbackOn = () => s().lookback() && s().lookbackBlocked() === null;
+  const cap = () => (s().csettle() ? s().csettleCeiling() : 0);
+
+  const achieved = (): number | null => {
+    if (!running()) return null;
+    const g = gov()?.achieved;
+    if (g != null) return g;
+    return target() === 0 && s().workMaxFps() > 0 ? s().workMaxFps() : null;
+  };
+  const timesReal = (fps: number) => (props.fps > 0 ? fps / props.fps : null);
+
+  // ---- changes ----
+
+  function commit(fps: number): void {
+    const f = snapFps(fps, marks());
+    setFixedFps(f);
+    s().setPaceFps(f, 'setting');
+    persist();
+  }
+  function setMode(m: SpeedMode): void {
+    if (m === 'max') s().setPaceFps(0, 'setting');
+    else s().setPaceFps(fixedFps(), 'setting');
+    persist();
+  }
+  function commitDraft(): void {
+    clearTimeout(timer);
+    const d = draft();
+    setDraft(null);
+    if (d !== null && d !== target()) commit(d);
+  }
+  function onSlide(e: InputEvent & { currentTarget: HTMLInputElement }): void {
+    if (pinned() !== null) return;
+    setDraft(stepToFps(Number(e.currentTarget.value), marks()));
+    if (!dragging) {
+      // A key press: wait for the next one.
+      clearTimeout(timer);
+      timer = setTimeout(commitDraft, KEY_DEBOUNCE_MS);
+    }
+  }
+  function setCap(v: number): void {
+    if (v === 0) s().setCsettle(false);
+    else {
+      s().setCsettleCeiling(v);
+      s().setCsettle(true);
+    }
+    persist();
+  }
+
+  // The floor's mark label moves left of its mark where it would meet "max now".
+  const clash = () => {
+    const m = maxNow();
+    return m !== null && Math.abs(fpsToPos(m) - fpsToPos(floorFps())) < LABEL_CLASH;
+  };
+  const pct = (fps: number) => `${(100 * fpsToPos(fps)).toFixed(2)}%`;
+  const hatchWide = () => fpsToPos(floorFps()) > 0.3;
+
+  const cappedReason = (): string | null =>
+    props.live
+      ? NO_BUFFER_REASON
+      : pinned() !== null
+        ? `Needs look-back: ${pinned()}`
+        : !s().lookback()
+          ? 'Needs look-back refinement: tick it below.'
+          : null;
+
+  const headline = () => {
+    if (props.live) return props.fps > 0 ? props.fps.toFixed(1) : '-';
+    const a = achieved();
+    if (a !== null) return a.toFixed(1);
+    return mode() === 'max' ? 'Max' : String(shown());
+  };
+  const unitText = () => {
+    if (props.live) return 'fps from the stream · sets the pace';
+    const t = mode() === 'max' ? 'Max' : String(shown());
+    const x = mode() === 'fixed' ? timesReal(shown() as number) : null;
+    const xt = x !== null ? ` · ${x.toFixed(1)}× real time` : '';
+    return achieved() !== null ? `fps achieved · target ${t}${xt}` : `fps target${xt}`;
+  };
+
+  const status = () =>
+    speedStatusText({
+      running: running(),
+      target: target(),
+      floor: floorFps(),
+      governor: gov(),
+      settleOn: lookbackOn() && cap() > 0,
+    });
+  const belowNote = () => belowFloorNote(shown() ?? 0, floorFps());
+
+  const capSelect = (cls: string): JSX.Element => (
+    <label class={cls}>
+      <span class={props.live ? 'cala-speed__cap-name--main' : undefined}>Background settle</span>
+      <select
+        class="cala-view-select"
+        data-testid="speed-cap"
+        aria-label="Background settle cap"
+        disabled={cappedReason() !== null}
+        title={cappedReason() ?? 'At most this many saved frames are re-read per live frame.'}
+        value={String(cap())}
+        onChange={(e) => setCap(Number(e.currentTarget.value))}
+      >
+        <For each={CAP_CHOICES}>
+          {(v) => <option value={String(v)}>{capLabel(v, props.live)}</option>}
+        </For>
+      </select>
+    </label>
+  );
+
+  return (
+    <section
+      class="cala-speed"
+      classList={{ 'cala-speed--live': props.live === true }}
+      data-testid="speed-control"
+      data-mode={mode()}
+      aria-label="Speed"
+    >
+      <div class="cala-speed__head">
+        <h3 class="cala-speed__title">Speed</h3>
+        <Show
+          when={!props.live}
+          fallback={<span class="cala-muted cala-speed__tag">Live stream</span>}
+        >
+          <SegmentedControl<SpeedMode>
+            aria-label="Speed mode"
+            size="sm"
+            testid="speed-mode"
+            value={mode()}
+            onChange={setMode}
+            options={(['max', 'fixed'] as const).map((m) => ({
+              value: m,
+              label: MODE_LABELS[m],
+              title: m === 'fixed' && pinned() !== null ? (pinned() as string) : MODE_TITLES[m],
+              disabled: pinned() !== null && m !== 'max',
+              testid: `speed-mode-${m}`,
+            }))}
+          />
+        </Show>
+      </div>
+
+      <div class="cala-speed__answer" data-testid="speed-headline">
+        <span class="cala-speed__figure">{headline()}</span>
+        <span class="cala-speed__unit">{unitText()}</span>
+      </div>
+      <Show when={!props.live}>
+        <p class="cala-speed__line" data-testid="speed-status">
+          {pinned() !== null ? `Pinned at Max: ${pinned()}` : status()}
+        </p>
+      </Show>
+
+      <div class="cala-speed__trackrow" classList={{ 'cala-speed__trackrow--off': props.live }}>
+        <div class="cala-speed__trackwrap" aria-hidden={props.live ? 'true' : undefined}>
+          <div class="cala-speed__track">
+            <Show when={!props.live}>
+              <div
+                class="cala-speed__nogain"
+                data-testid="speed-nogain"
+                style={{ width: pct(floorFps()) }}
+                title="No gain here: every kind of work is already fully served, so going slower only adds idle time."
+              />
+              <Show when={maxNow()}>
+                {(m) => (
+                  <div
+                    class="cala-speed__above"
+                    style={{ left: pct(m()) }}
+                    title="Above what this machine reaches now: a target here behaves as Max."
+                  />
+                )}
+              </Show>
+              <Show when={achieved()}>
+                {(a) => <div class="cala-speed__achieved" style={{ width: pct(a()) }} />}
+              </Show>
+            </Show>
+            <For each={SPEED_TICKS}>
+              {(t) => (
+                <>
+                  <i class="cala-speed__tick" style={{ left: pct(t) }} />
+                  <span class="cala-speed__ticklabel" style={{ left: pct(t) }}>
+                    {t}
+                  </span>
+                </>
+              )}
+            </For>
+            <Show when={!props.live}>
+              <i class="cala-speed__mark" style={{ left: pct(floorFps()) }} />
+              <span
+                class="cala-speed__marklabel"
+                classList={{ 'cala-speed__marklabel--left': clash() }}
+                style={{ left: pct(floorFps()) }}
+                data-testid="speed-floor-label"
+                title={words().line}
+              >
+                {words().mark}
+              </span>
+              <Show when={maxNow()}>
+                {(m) => (
+                  <>
+                    <i class="cala-speed__mark" style={{ left: pct(m()) }} />
+                    <span
+                      class="cala-speed__marklabel"
+                      style={{ left: pct(m()) }}
+                      data-testid="speed-max-label"
+                    >
+                      max now {m()}
+                    </span>
+                  </>
+                )}
+              </Show>
+              <Show when={hatchWide()}>
+                <span class="cala-speed__nogain-label">no gain here</span>
+              </Show>
+            </Show>
+            <Show when={props.live && props.fps >= SPEED_SCALE.lo}>
+              <i
+                class="cala-speed__mark cala-speed__mark--stream"
+                style={{ left: pct(props.fps) }}
+              />
+              <span
+                class="cala-speed__marklabel cala-speed__marklabel--stream"
+                style={{ left: pct(props.fps) }}
+                data-testid="speed-stream-label"
+              >
+                stream {Math.round(props.fps)}
+              </span>
+            </Show>
+          </div>
+          <Show when={!props.live}>
+            <input
+              type="range"
+              class="cala-speed__range"
+              classList={{ 'cala-speed__range--max': mode() === 'max' }}
+              data-testid="speed-slider"
+              min={fpsToStep(SPEED_SCALE.lo)}
+              max={TRACK_STEPS}
+              step={1}
+              value={fpsToStep(shown() ?? fixedFps())}
+              disabled={pinned() !== null}
+              aria-label="Target speed, frames per second"
+              aria-valuetext={
+                mode() === 'max'
+                  ? 'Max'
+                  : `${shown()} frames per second${(shown() as number) < floorFps() ? ', no gain here' : ''}`
+              }
+              onInput={onSlide}
+              onPointerDown={() => {
+                dragging = true;
+              }}
+              onPointerUp={() => {
+                dragging = false;
+                commitDraft();
+              }}
+              onPointerCancel={() => {
+                dragging = false;
+                commitDraft();
+              }}
+              onBlur={commitDraft}
+            />
+          </Show>
+        </div>
+        <button
+          type="button"
+          class="cala-speed__maxstop"
+          classList={{ 'cala-speed__maxstop--on': mode() === 'max' && !props.live }}
+          data-testid="speed-max"
+          aria-pressed={mode() === 'max'}
+          disabled={props.live === true}
+          title={MODE_TITLES.max}
+          onClick={() => setMode('max')}
+        >
+          Max
+        </button>
+      </div>
+
+      <Show when={!props.live}>
+        <Show when={belowNote()}>
+          {(note) => (
+            <p class="cala-speed__line cala-muted" data-testid="speed-below-floor">
+              {note()}{' '}
+              <button type="button" class="cala-speed__link" onClick={() => commit(floorFps())}>
+                Move to {floorFps()}
+              </button>
+            </p>
+          )}
+        </Show>
+        <Show when={floor().aboveMax}>
+          <p class="cala-speed__line cala-muted">
+            Max is close to the floor here: Fixed offers one position.
+          </p>
+        </Show>
+        <div class="cala-speed__foot">
+          <span class="cala-muted" data-testid="speed-floor-line" title={words().line}>
+            {words().line}
+          </span>
+        </div>
+        <details class="cala-speed__advanced" data-testid="speed-advanced">
+          <summary>Advanced</summary>
+          {capSelect('cala-speed__cap')}
+        </details>
+      </Show>
+      <Show when={props.live}>
+        <div class="cala-speed__cap cala-speed__cap--main">
+          {capSelect('cala-speed__cap')}
+          <span class="cala-muted cala-speed__hint">
+            Lower it for closed-loop work: settling keeps footprints moving.
+          </span>
+        </div>
+        <p class="cala-speed__line cala-muted" data-testid="speed-live-reason">
+          {NO_BUFFER_REASON}
+        </p>
+      </Show>
+    </section>
+  );
+}

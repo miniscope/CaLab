@@ -167,7 +167,7 @@ describe('App', () => {
     expect(root.querySelector('.compact-header__file')?.textContent).toBe('rec');
     expect(root.querySelector('.compact-header__info')?.textContent).toContain('50 frames');
 
-    const slider = root.querySelector<HTMLInputElement>('input[type="range"]')!;
+    const slider = root.querySelector<HTMLInputElement>('input[type="range"][aria-label="Frame"]')!;
     expect(slider.max).toBe('49');
     expect(root.querySelector('[data-testid="frame-canvas"]')).not.toBeNull();
     await vi.waitFor(() => expect(fake.readFrame).toHaveBeenCalledWith(0));
