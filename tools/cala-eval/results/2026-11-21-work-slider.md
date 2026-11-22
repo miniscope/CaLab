@@ -118,3 +118,26 @@ files), `V30`, `CS2`, `CS2F` with four visit workers, and round 1's single-worke
   cells down to 92 at 863 (8.6 to 10.9 ms); Samara 145-163 a second at 260-375 cells. A straight line through the two
   workshop points gives 2.0 ms + 0.0103 ms per cell; it predicts 5.6 ms on Samara at 350 cells against about 6.5 ms
   measured (that check uses Samara data and is reported, not fitted). The first fitting round uses these two numbers.
+
+### Fitting on the workshop recording
+
+Round 1 (`--lb-gate --lb-ms 2.0 --lb-ms-per-cell 0.0103`, `--units-per-ms 2e6`, `--job-ms 1`; slow seed 1, full
+length, binary `qc_eval-cal-c`):
+
+| workshop | Chrome: missed, visit jobs, need-driven, background settle per live frame | model round 1 |
+| --- | --- | --- |
+| full speed (218), off | 33.4 %, 4,628, 10,320, - | 16.9 %, 3,092, 8,594, - |
+| full speed (216), on | 38.2 %, ~3,800, 4,900, 0.335 | 18.1 %, 3,025, 4,176, 0.19 |
+| 60 fps, off | 1.66 %, 25,306, 39,241, - | 0 %, 30,356, 33,598, - |
+| 60 fps, on | 3.35 %, 21,190, 19,192, 0.84 | 0 %, 26,401, 17,293, 0.58 |
+| 120 fps, on | 22.0 %, 8,994, 8,992, 0.49 | 0.1 %, 8,394, 8,560, 0.32 |
+
+Reading: the modelled slow worker is too fast (at full speed it observes about 181 frames a second, Chrome 145), and
+the look-back supply is about 20 % low. The paced runs' misses are not used for the fit: today's pacer releases up to
+four batches at once, which can fill the four forward buffers whatever the slow worker's mean load. Its time per
+16-frame settle answer: model 33-38 ms, Chrome 56-62 ms.
+
+**Round 2, the last (fixed here, before any Samara model run, whatever round 2 shows on the workshop):**
+`--units-per-ms 1.6e6` (the slow worker's time x 1.25 = 181 / 145) and `--lb-ms 1.6 --lb-ms-per-cell 0.0082` (the
+look-back worker's time x 0.8), `--lb-gate`, `--job-ms 1`, visit workers at `--visit-units-per-ms 2e6` (unchanged: the
+Chrome samples show the visit workers are not the limit). The Samara runs for C1 use exactly these flags.
