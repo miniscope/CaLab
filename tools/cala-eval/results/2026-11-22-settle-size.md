@@ -276,7 +276,7 @@ All pairs are in `runs/settle-size/pairs.md` (three workshop seeds, three record
 - Real and sims agree in kind: the light is added on cells that have a neighbour, where the neighbour's footprint
   is.
 - Isolated cells: with the same cells and only the replay in the settle switched (`OFF+S` → `REF+S`), cells with no
-  neighbour within 1.5 D do not change (0.6–3.6 % light added, 8 px), as on the sims. Between the two full paths they
+  neighbour within 1.5 D do not change (0.6–3.6 % light added over three seeds), as on the sims. Between the two full paths they
   do: `DR` → `SETTLE` adds 10 % of light at ≥ 2 D and 22 % at 1.5–2 D, and the app's old → new adds 10 % at ≥ 2 D
   against 6 % run to run. These are about 20 cells per row, and the cause is not identified (the replay or look-back
   during Discover, or a neighbour only one library has).
