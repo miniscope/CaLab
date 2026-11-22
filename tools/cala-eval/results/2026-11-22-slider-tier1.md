@@ -353,6 +353,7 @@ and in the short answers (marked "corrected"). Where this section and the text a
 
    This is a hint, not a verdict, since z scales differ between sims and real data. The "two in three added cells
    match a true cell" sim figure must not be carried over to the real data.
+
 6. **Final settle.** Max's seed-to-seed agreement is still rising through the whole pass (`10_43_21`, in order:
    0.9801, 0.9875, 0.9889, 0.9901, 0.9916, 0.9922, 0.9926), so a plateau is not shown. The drift-ratio stop test should
    be replaced, not refit. L5 does not discriminate.
