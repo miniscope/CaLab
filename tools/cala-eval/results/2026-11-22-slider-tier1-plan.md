@@ -173,3 +173,24 @@ Sizing:
 What decides what: parity (L2, L2b, L4b, L5, with the sim screen) per position answers question 1; `B*` and the
 stop test answer question 2; L8 and L9 answer question 3. Chrome rows (n = 1) are an anchor for the `REF` caveat and
 do not override the model rows, except where the C1-at-60 reading above sends a 60 fps arm to Chrome.
+
+## C1 at 60 fps: result (added after the 60 fps pair, before any tier-1 run)
+
+Chrome (this branch, smooth pacer, n = 1 each) against the model with the tier-1 flags at Chrome's achieved 59.1 fps
+(slow seed 1):
+
+| row                | measure          | Chrome | model  | difference | verdict  |
+| ------------------ | ---------------- | ------ | ------ | ---------- | -------- |
+| `10_43_21`, 60, off | missed           | 0 %    | 0 %    | 0 points   | pass     |
+|                    | visit jobs       | 57,588 | 47,490 | -17.5 %    | **fail** |
+|                    | need-driven      | 35,415 | 35,400 | -0.0 %     | pass     |
+| `10_43_21`, 60, on  | missed           | 0 %    | 0 %    | 0 points   | pass     |
+|                    | visit jobs       | 50,476 | 40,506 | -19.8 %    | **fail** |
+|                    | need-driven      | 23,720 | 26,638 | +12.3 %    | pass     |
+|                    | settle per frame | 1.33   | 1.14   | -14.3 %    | pass     |
+
+**Both rows fail, on visit jobs only.** By the rule above, the model runs at 30 fps only (`REF`, `P-30`, `S-30`), and
+60 fps is read from Chrome (n = 1 per arm). Added for that (amendment): a Chrome `sb-p60-off` / `sb-p60-on` pair and
+a second `sb-max-off` (`sb-max-off-r2`), so both recordings have a Chrome REF-REF null and a 60 fps pair. The model's
+60 fps runs above are kept as a report, not a decision. Delivered dose at 60 fps with one look-back worker: 1.33 per
+live frame in Chrome (cap 2).
