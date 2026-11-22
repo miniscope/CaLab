@@ -123,3 +123,115 @@ new references, the refit against the new references.
 +3.2 / +2.0 points, need-driven +7 % / +10 %, settle 0.333 / 0.33 per forwarded frame). The off run fails on jobs and
 by 0.2 points on misses on the fit set itself, so **C1 at full speed is expected to fail on visit jobs** unless Samara
 differs; section 2 names the mechanism. The 30 fps workshop runs of the refit are running at this commit.
+
+## 4. Results (after the pre-registration commit `19adc4d3`)
+
+### Fit set, workshop, the refit at 30 fps
+
+| workshop, 30 fps (29.7) | Chrome: jobs / need-driven / settle per forwarded frame | refit                                             |
+| ----------------------- | ------------------------------------------------------- | ------------------------------------------------- |
+| off                     | 54,251 / 47,079 / -                                     | 52,735 (-3 %) / 47,063 / -                        |
+| on                      | 44,894 / 38,297 / 1.62                                  | 46,287 (+3 %) / 33,821 (-12 %) / **0.99 (-39 %)** |
+
+Visit jobs fit at 30 fps; cells at the end agree too (model 985 / 975, Chrome 970 / 916). The background-settle dose on
+the workshop recording at 30 fps is 39 % low in the model: the look-back supply, not a visit quantity, and not part of
+C1 (on Samara the dose sits at the cap of 2).
+
+### C1 on Samara (held out)
+
+Chrome references: `main` `e8201322` app code (the full-speed and `14_57_02` runs were made from this branch, whose app
+code is identical), smooth pacer, one run each; achieved 29.6 fps paced and 339-348 fps unpaced. "r2" = #456's round-2
+flags (pool 4, `--visit-units-per-ms 2e6`); at 30 fps these are #456's own runs (offered 30.0 fps), at full speed
+re-run at the new runs' rates (`r2new_*`). "refit" = section 3. Cells: model / Chrome within 15 % in every row
+(not a C1 measure).
+
+| row                   | measure          | old Chrome ref | r2 vs old      | new Chrome ref   | r2 vs new      | refit vs new   |
+| --------------------- | ---------------- | -------------- | -------------- | ---------------- | -------------- | -------------- |
+| `10_43_21`, 30, off   | missed           | 0 %            | 0 pass         | 0 %              | 0 pass         | 0 pass         |
+|                       | visit jobs       | 54,849         | +30 % **fail** | 79,984           | -11 % pass     | -4 % pass      |
+|                       | need-driven      | 35,415         | pass           | 35,415           | pass           | pass           |
+| `10_43_21`, 30, on    | missed           | 0 %            | 0 pass         | 0 %              | 0 pass         | 0 pass         |
+|                       | visit jobs       | 51,257         | +26 % **fail** | 71,697           | -10 % pass     | -5 % pass      |
+|                       | need-driven      | 35,415         | pass           | 35,415           | pass           | pass           |
+|                       | settle per frame | 1.99           | pass           | 1.99             | 2.00 pass      | 2.00 pass      |
+| `14_57_02`, 30, off   | missed           | 0 %            | 0 pass         | 0 %              | 0 pass         | 0 pass         |
+|                       | visit jobs       | 51,340         | +45 % **fail** | 79,773           | -7 % pass      | -0.0 % pass    |
+|                       | need-driven      | 35,407         | pass           | 35,407           | pass           | pass           |
+| `14_57_02`, 30, on    | missed           | 0 %            | 0 pass         | 0 %              | 0 pass         | 0 pass         |
+|                       | visit jobs       | 49,810         | +36 % **fail** | 73,016           | -8 % pass      | -1 % pass      |
+|                       | need-driven      | 35,407         | pass           | 35,407           | pass           | pass           |
+|                       | settle per frame | 1.99           | pass           | 1.99             | 2.00 pass      | 2.00 pass      |
+| `10_43_21`, full, off | missed           | 19.5 %         | +3.2 **fail**  | 21.0 % (343 fps) | +2.2 pass      | +9.6 **fail**  |
+|                       | visit jobs       | 3,669          | -58 % **fail** | 3,788            | -60 % **fail** | -27 % **fail** |
+|                       | need-driven      | 6,656          | -15 % pass     | 6,800            | -18 % **fail** | +26 % **fail** |
+| `10_43_21`, full, on  | missed           | 22.2 %         | +1.7 pass      | 22.2 % (339)     | +0.6 pass      | +10.0 **fail** |
+|                       | visit jobs       | 3,459          | -56 % **fail** | 3,521            | -56 % **fail** | -26 % **fail** |
+|                       | need-driven      | 2,920          | pass           | 3,008            | -6 % pass      | +42 % **fail** |
+|                       | settle per frame | 0.215          | -12 % pass     | 0.216            | -13 % pass     | +49 % **fail** |
+| `14_57_02`, full, off | missed           | 14.9 %         | +7.6 **fail**  | 16.7 % (348)     | +6.9 **fail**  | +13.6 **fail** |
+|                       | visit jobs       | 3,903          | -59 % **fail** | 4,119            | -62 % **fail** | -31 % **fail** |
+|                       | need-driven      | 6,464          | -11 % pass     | 6,656            | -15 % pass     | +32 % **fail** |
+| `14_57_02`, full, on  | missed           | 15.9 %         | +6.8 **fail**  | 16.1 % (346)     | +7.8 **fail**  | +16.1 **fail** |
+|                       | visit jobs       | 3,699          | -57 % **fail** | 3,624            | -57 % **fail** | -23 % **fail** |
+|                       | need-driven      | 2,832          | pass           | 2,928            | -3 % pass      | +49 % **fail** |
+|                       | settle per frame | 0.19           | pass           | 0.196            | -3 % pass      | +64 % **fail** |
+
+**Verdict: C1 passes at 30 fps (all four rows, every measure, both r2 and the refit) and fails at full speed (both).**
+By the plan's rule ("passes at 30 fps only"), qc_eval may be used for slider arms up to 60 fps; faster targets are
+Chrome-only. The refit's two changes do not carry from the workshop recording to Samara at full speed: `--pool 2`
+roughly halves the visit-job error (-56 to -62 % becomes -23 to -31 %) but makes the slow loop miss 10-16 points more
+frames than Chrome and inflates the look-back rows by 26-64 %. At 30 fps no frame is dropped and the pool does not
+matter; there the refit's gain over r2 (-11..-7 % to -5..0 %) is `--visit-units-per-ms 2.3e6`.
+
+**Recommendation for slider arms in qc_eval (30-60 fps):** the refit flags, or r2's; both pass. For anything faster:
+Chrome.
+
+## 5. What the model is missing at full speed
+
+Measured on Samara at full speed (Chrome, settle off, `10_43_21` / `14_57_02`):
+
+| quantity                                       | Chrome        | refit (pool 2)           | r2 (pool 4)   |
+| ---------------------------------------------- | ------------- | ------------------------ | ------------- |
+| owner ms per observed frame (live + housekeep) | 3.25 / 3.02   | 3.68 / 3.60              | same scale    |
+| owner ms per visit job (hand-out + apply)      | 1.12 / 1.05   | 1.0                      | 1.0           |
+| visit worker ms per job                        | 37.6 / 31.5   | 32.4 / 29.6              | -             |
+| batch inbox wait, mean                         | 28 / 29 ms    | 26 / 26 ms               | not measured  |
+| a visit's turnaround beyond its own time       | 28 / 27 ms    | 42 / 42 ms (result wait) | -             |
+| frames missed                                  | 21.0 / 16.7 % | 30.6 / 30.3 %            | 23.2 / 23.6 % |
+
+(Turnaround beyond the visit = 4 x Discover wall / jobs - visit ms per job; it includes the owner's apply and message
+transit.)
+
+1. **The app's slow-worker inbox is shallow, and it still loses few frames.** Chrome's batches wait about one batch
+   (28-38 ms on Samara, 36-68 ms on the workshop recording) although the app has four forward buffers. A four-buffer
+   first-in-first-out model keeps three batches queued (batch wait 125 ms on the workshop recording); a two-buffer
+   model matches the wait but drops 10-14 points more frames than Chrome. So the app's buffers are not "busy until the
+   owner is done with them" as the model has it, nor simply fewer. One code-level reason was modelled
+   (`--ack-lag-ms`: the trace worker sees a returned buffer only after the batch it is processing); one batch of lag
+   explains a small part (workshop, off: batch wait 125 to 99 ms, jobs +10 %).
+2. **Visit results reach the owner sooner than first-in-first-out allows.** In Chrome a visit's turnaround beyond its
+   own time is 27-28 ms on Samara and 42 / 60 ms on the workshop recording; with the same batch wait the model's
+   results wait 41-44 ms and 60-65 ms. A model that takes waiting results before waiting batches (`--result-first`)
+   gives 26-28 ms on the workshop recording and overshoots the jobs (+13 % / +35 % on the workshop recording) and the batch wait (2-4x). The
+   browser's order between the visit workers' ports and the frames port is neither.
+3. **The owner's live cost on Samara is 13 % high in the model** (3.68 against 3.25 ms per frame). The round-2 scale
+   came from the workshop recording, where it fits (5.5 against 5.6).
+
+What would settle 1 and 2 in the app (small, measurement only): stamp each visit result with its send time, as the
+frames message already is (`sentAt`), and report the result inbox wait next to the batch wait; and report the forward
+pool's buffers in flight (`ForwardPool.inFlight`) and the age of returned buffers when the fast loop next forwards.
+With those two numbers the model's queue can be fitted instead of stood in for by an effective depth.
+
+## 6. Checks
+
+- **T0 (flags off = `main`): pass.** `work_slider.sh t0` with `qc_eval-refit-c` against `qc_eval-main-e8201322`
+  (static_s5, first 4800 frames; lock-step with a final settle, `V30`, `CS2`, `CS2F`, round 1's single-worker settle):
+  every output file identical after masking wall-time fields (`.../work-slider-refit/t0/report.txt`).
+- The C1 Chrome runs ran one at a time with no qc_eval run of mine going (load average 2.1-3.8 at the starts,
+  `chrome/load.txt`); another agent's short Chrome runs on port 5197 were waited for.
+- Recordings read only: `--single` runs make no export and the app's directory picker is removed.
+
+Files: Chrome runs `~/Projects/cala-data/runs/work-slider-refit/chrome` (`visit_refit_chrome.sh`,
+`visit_refit_chrome_summary.py`); model runs `.../work-slider-refit/real` (`work_slider.sh arm` with `ROOT`, `POOL`,
+`BIN`, `CAL`; `visit_refit_model_summary.py`); binaries `.../work-slider-refit/bin` (`qc_eval-refit-c` = this branch,
+`qc_eval-main-e8201322`).
