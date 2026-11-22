@@ -170,6 +170,18 @@ def real(root: Path) -> None:
                 matched_any |= {j for _, j, _ in match_pairs(lib(rec, "REF", o), L)}
             return ag, reps, [j for j in range(len(L)) if j not in matched_any], len(L)
 
+        def score_x(arm, s, b):
+            """Against the REF B100 of the other seeds (mean): agreement, % of that seed's repeatable cells present."""
+            L = lib(rec, arm, s, b)
+            ag, rp = [], []
+            for o in seeds:
+                if o == s:
+                    continue
+                m = match_pairs(lib(rec, "REF", o), L)
+                ag.append(float(np.median([c for *_, c in m])) if m else math.nan)
+                rp.append(100 * len(rep[o] & {i for i, _, _ in m}) / max(len(rep[o]), 1))
+            return float(np.mean(ag)), float(np.mean(rp))
+
         rows = {}
         print("| arm | seed | cells (Discover end / B100) | agreement with REF | REF repeatable present % | extra cells | "
               "missed % | visit jobs | need-driven | bg settle per frame | look-back busy % | moving share at last check |")
@@ -182,14 +194,15 @@ def real(root: Path) -> None:
                 ag, reps, extra, n = score(arm, s, "B100")
                 chk = DM.read_tsv(run(rec, arm, s) / "B100" / "settle_checks.tsv")
                 mv = 100 * float(chk[-1]["share_gt2"]) if chk else math.nan
-                rows[(arm, s)] = {"ag": ag, "rep": reps, "extra": extra, "n": n, "mv": mv, **sc}
+                xa, xr = score_x(arm, s, "B100")
+                rows[(arm, s)] = {"ag": ag, "rep": reps, "xag": xa, "xrep": xr, "extra": extra, "n": n, "mv": mv, **sc}
                 print(f"| {arm} | {s} | {sc['cells']} / {n} | {fmt(ag)} | {fmt(reps, 1)} | {len(extra)} | {fmt(sc['missed'], 2)} | "
                       f"{sc['jobs']} | {sc['need']} | {fmt(sc['dose'], 2)} | {fmt(sc['lb_busy'], 0)} | {fmt(mv, 1)} |")  # fmt: skip
         print()
         # Parity lines per arm.
         print("| arm | n seeds | agreement with REF, mean (range) | L2: >= null - 0.003 | repeatable present % mean | L2b: >= LOO null - 3 | "
-              "L4b missed <= 0.1 % | L5 moving <= 4 % | extra cells, median ho z (REF single-seed cells) |")
-        print("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+              "L4b missed <= 0.1 % | L5 moving <= 4 % | extra cells, median ho z (REF single-seed cells) | cross-seed: agreement / repeatable % |")
+        print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
         # Held-out z of REF cells found by one REF seed only (L2c comparison).
         single_z = []
         for s in seeds:
@@ -213,14 +226,80 @@ def real(root: Path) -> None:
             print(f"| {arm} {same} | {len(ss)} | {fmt(np.mean(ag))} ({fmt(min(ag))}-{fmt(max(ag))}) | {'pass' if l2 else 'FAIL'} | "
                   f"{fmt(np.mean(rp), 1)} | {'pass' if l2b else 'FAIL'} | {'pass' if l4b else ('n/a' if arm == 'REF' else 'FAIL')} | "
                   f"{'pass' if l5 else 'FAIL'} | {sum(len(rows[(arm, s)]['extra']) for s in ss) / len(ss):.0f} per run, z {fmt(np.median(ez) if ez else math.nan, 1)} "
-                  f"({fmt(np.median(single_z) if single_z else math.nan, 1)}) |")  # fmt: skip
+                  f"({fmt(np.median(single_z) if single_z else math.nan, 1)}) | "
+                  f"{fmt(np.mean([rows[(arm, s)]['xag'] for s in ss]))} / {fmt(np.mean([rows[(arm, s)]['xrep'] for s in ss]), 1)} |")  # fmt: skip
             for s in ss:
                 if arm != "REF":
-                    pooled.setdefault(arm, []).append((rows[(arm, s)]["ag"] - null, rows[(arm, s)]["rep"] - loo_null))
+                    pooled.setdefault(arm, []).append((rows[(arm, s)]["ag"] - null, rows[(arm, s)]["rep"] - loo_null,
+                                                       rows[(arm, s)]["xag"] - rows[("REF", s)]["xag"], rows[(arm, s)]["xrep"] - rows[("REF", s)]["xrep"]))
+        print()
+        # Diagnostic added after the runs (not a pre-registered line): footprint agreement on the same cells only,
+        # those that every REF seed and the arm all have, so the arms' extra matches of weaker REF cells drop out.
+        print("Diagnostic (added after the runs): median cosine on cells that all three REF seeds and the arm have "
+              "(REF cell of seed s against the other REF seeds, and against the arm of seed s):\n")  # fmt: skip
+        print("| arm | cells per seed | REF vs REF | arm vs REF | difference |")
+        print("| --- | --- | --- | --- | --- |")
+        for arm in ARMS[1:]:
+            ss = [s for s in seeds if (arm, s) in rows]
+            if len(ss) < len(seeds):
+                continue
+            dref, darm, nc = [], [], []
+            for s in seeds:
+                mo = [{i: c for i, _, c in match_pairs(lib(rec, "REF", s), lib(rec, "REF", o))} for o in seeds if o != s]
+                ma = {i: c for i, _, c in match_pairs(lib(rec, "REF", s), lib(rec, arm, s))}
+                common = set(ma).intersection(*[set(m) for m in mo])
+                nc.append(len(common))
+                dref.append(float(np.median([np.mean([m[i] for m in mo]) for i in common])))
+                darm.append(float(np.median([ma[i] for i in common])))
+            print(f"| {arm} | {' '.join(map(str, nc))} | {fmt(np.mean(dref))} | {fmt(np.mean(darm))} | {fmt(np.mean(darm) - np.mean(dref))} |")
+        print()
+        # Extra cells, scored apart from parity (PI): held-out z, peak z, birth (share of the recording).
+        def cell_stats(arm, s, idx):
+            d = run(rec, arm, s) / "B100"
+            fin = DM.read_tsv(d / "final.tsv")
+            born = {}
+            for r in DM.read_tsv(d / "adds.tsv"):
+                born.setdefault(r["id"], float(r["recording_frame"]))
+            T = 17879 if rec == "sa" else 17875
+            out = []
+            for j in idx:
+                if j < len(fin):
+                    f = fin[j]
+                    out.append((float(f["ho_marginal_z"]), float(f["peak_z"]), born.get(f["id"], math.nan) / T))
+            return out
+
+        def stat_row(label, xs):
+            z = np.array([x[0] for x in xs])
+            pz = np.array([x[1] for x in xs])
+            b = np.array([x[2] for x in xs])
+            fz = z[np.isfinite(z)]
+            return (f"| {label} | {len(xs)} | {fmt(np.median(fz) if fz.size else math.nan, 1)} | "
+                    f"{fmt(100 * np.mean(fz > 2) if fz.size else math.nan, 0)} | {fmt(np.nanmedian(pz), 1)} | "
+                    f"{fmt(np.nanmedian(b), 2)} | {fmt(100 * np.nanmean(b >= 0.5), 0)} |")  # fmt: skip
+
+        print("Extra cells (in no REF seed's library), scored apart from parity; references: REF cells found by one REF "
+              "seed only, and the arm's own cells that match REF:\n")  # fmt: skip
+        print("| group | cells (all seeds) | median held-out z | held-out z > 2 % | median peak z | median birth (share of recording) | born in 2nd half % |")
+        print("| --- | --- | --- | --- | --- | --- | --- |")
+        single = []
+        for s in seeds:
+            single += cell_stats("REF", s, [i for i in range(len(lib(rec, "REF", s))) if i not in rep[s]])
+        print(stat_row("REF, one seed only", single))
+        for arm in ARMS[1:]:
+            ss = [s for s in seeds if (arm, s) in rows]
+            if not ss:
+                continue
+            ex, mt = [], []
+            for s in ss:
+                e = set(rows[(arm, s)]["extra"])
+                ex += cell_stats(arm, s, sorted(e))
+                mt += cell_stats(arm, s, [j for j in range(rows[(arm, s)]["n"]) if j not in e])
+            print(stat_row(f"{arm} extra", ex))
+            print(stat_row(f"{arm} matching REF", mt))
         print()
         # Final-settle dose-response and B*.
-        print("Final-settle budget (agreement with REF B100 / repeatable present %), mean over seeds; B* = smallest budget "
-              "within 0.003 and 3 points of the arm's own B100:\n")  # fmt: skip
+        print("Final-settle budget (agreement with the other seeds' REF B100 / their repeatable cells present %), mean over "
+              "seeds; B* = smallest budget within 0.003 and 3 points of the arm's own B100:\n")  # fmt: skip
         print("| arm | " + " | ".join(BRANCHES) + " | B* (mean) | B* per seed | frames saved |")
         print("| --- | " + " | ".join("---" for _ in BRANCHES) + " | --- | --- | --- |")
         bstar_all = {}
@@ -228,7 +307,7 @@ def real(root: Path) -> None:
             ss = [s for s in seeds if (arm, s) in rows]
             if not ss:
                 continue
-            per = {b: [score(arm, s, b)[:2] for s in ss] for b in BRANCHES}
+            per = {b: [score_x(arm, s, b) for s in ss] for b in BRANCHES}
             mean = {b: (np.mean([x[0] for x in per[b]]), np.mean([x[1] for x in per[b]])) for b in BRANCHES}
             ok = lambda v, full: v[0] >= full[0] - TOL_AGREE and v[1] >= full[1] - TOL_REP  # noqa: E731
             bstar = next(b for b in BRANCHES if ok(mean[b], mean["B100"]))
@@ -259,15 +338,14 @@ def real(root: Path) -> None:
         print()
         stop_test(rec, seeds, run, lib)
     print("## Pooled over recording-seeds (arm minus null; paired bootstrap 95 % CI; seeds of one recording are not independent)\n")
-    print("| arm | n | agreement - REF null | repeatable present - LOO null (points) |")
-    print("| --- | --- | --- | --- |")
+    print("| arm | n | agreement - REF null | repeatable present - LOO null (points) | cross-seed agreement - REF's | cross-seed repeatable - REF's (points) |")
+    print("| --- | --- | --- | --- | --- | --- |")
     for arm, v in pooled.items():
         if arm.startswith("gap"):
             continue
-        a = [x for x, _ in v]
-        r = [y for _, y in v]
-        print(f"| {arm} | {len(v)} | {fmt(np.mean(a))} [{', '.join(fmt(c) for c in boot_ci(a))}] | "
-              f"{fmt(np.mean(r), 1)} [{', '.join(fmt(c, 1) for c in boot_ci(r))}] |")
+        cols = list(zip(*v))
+        txt = [f"{fmt(np.mean(c), p)} [{', '.join(fmt(x, p) for x in boot_ci(c))}]" for c, p in zip(cols, (4, 1, 4, 1))]
+        print(f"| {arm} | {len(v)} | " + " | ".join(txt) + " |")
     for k, v in pooled.items():
         if k.startswith("gap"):
             print(f"\n{k} in gap closed (points): mean {fmt(np.mean(v), 1)}, n {len(v)}, 95 % CI "
@@ -299,6 +377,7 @@ def stop_test(rec, seeds, run, lib) -> None:
                     _, _, ids, cells, _ = DM.read_library(p)
                     libs[k] = dict(zip(ids, (unit_peak(c) for c in cells)))
             fire = None
+            traj = []
             for k in range(2, len(chk) + 1):
                 if not (float(chk[k - 1]["share_gt2"]) <= 0.04 and float(chk[k - 2]["share_gt2"]) <= 0.04):
                     continue
@@ -315,11 +394,12 @@ def stop_test(rec, seeds, run, lib) -> None:
                     if den > 0:
                         Rs.append(float(np.linalg.norm(sum(vec))) / den)
                 medR = float(np.median(Rs)) if Rs else math.nan
+                traj.append(medR)
                 if medR <= 0.8:
                     fire = (k, medR)
                     break
             if fire is None:
-                print(f"| {arm} | {s} | does not fire | - | - | - |")
+                print(f"| {arm} | {s} | does not fire | - | median R at floor-passing checkpoints {fmt(min(traj), 2) if traj else '-'}-{fmt(max(traj), 2) if traj else '-'} | - |")
                 continue
             k, medR = fire
             fr = int(chk[k - 1]["frames"])
@@ -335,6 +415,7 @@ def stop_test(rec, seeds, run, lib) -> None:
 def sims(root: Path) -> None:
     S = root / "sims"
     simdir = Path.home() / "Projects/cala-data/sims-gt110"
+    pairdir = Path.home() / "Projects/cala-data/demix-bench/measure/pairsim_v2191"
     names = sorted({p.name.split("_REF_")[0] for p in S.glob("*_REF_s1")})
     print("# Work slider tier 1, sims (model, quick tier; screen only)\n")
     vals: dict = {}
@@ -345,7 +426,8 @@ def sims(root: Path) -> None:
                 continue
             for b in BRANCHES:
                 d = r / b
-                det = DM.compute_run(simdir / sim, d)
+                sp = (pairdir if sim.startswith("pairs") else simdir) / sim
+                det = DM.compute_run(sp, d)
                 cells = DM.read_tsv(d / "demix_cells.tsv")
                 T = det["frames"]
                 fr = [float(c["fp_r"]) for c in cells]
@@ -406,7 +488,7 @@ def chrome(root: Path) -> None:
     print("# Chrome anchor (n = 1 per arm; app's Final settle)\n")
     for rec, refs, arms in (
         ("sa", [(old, "sa-max-off"), (new, "sa-max-off-r2")], [(old, "sa-p30-off", "P-30"), (old, "sa-p30-on", "S-30"), (new, "sa-p60-off", "P-60"), (new, "sa-p60-on", "S-60")]),
-        ("sb", [(old, "sb-max-off")], [(old, "sb-p30-off", "P-30"), (old, "sb-p30-on", "S-30")]),
+        ("sb", [(old, "sb-max-off"), (new, "sb-max-off-r2")], [(old, "sb-p30-off", "P-30"), (old, "sb-p30-on", "S-30"), (new, "sb-p60-off", "P-60"), (new, "sb-p60-on", "S-60")]),
     ):  # fmt: skip
         print(f"## {RECS[rec]}\n")
         R = [L(d, t) for d, t in refs]
@@ -431,6 +513,9 @@ def chrome(root: Path) -> None:
                 got = {i for i, _, _ in match_pairs(R[0], A)}
                 bp = fmt(100 * len(both & got) / max(len(both), 1), 1)
             live = agree(Lv(d, t), R[0])
+            pa = json.loads((d / f"{t}-probe.json").read_text())["probe"]["atFramesDone"]
+            cs = pa["lb"].get("csettle") or {}
+            name = f"{name} (dose {cs.get('requested', 0) / max(pa['fwd'], 1):.2f}, missed {100 * pa['drop'] / max(pa['fwd'] + pa['drop'], 1):.1f} %)"
             print(f"| {name} | {len(A)} | {' / '.join(fmt(x) for x in ags)} | {' / '.join(fmt(x, 1) for x in pres)} | {bp} | {fmt(live)} |")
         live_ref = agree(Lv(*refs[0]), R[0])
         print(f"\nREF live vs REF final (same run): {fmt(live_ref)}\n")
