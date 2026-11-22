@@ -1368,6 +1368,7 @@
 
 .cala-speed--live .cala-speed__trackrow {
   padding-top: 24px;
+}
 
 /* ---- Work display (components/WorkDisplay.tsx). Kind colours are set on the root (`--k-*`). ---- */
 .cala-work {
@@ -1628,4 +1629,10 @@
 .cala-work--dim .cala-work__rows,
 .cala-work--dim .cala-work__strip {
   opacity: 0.55;
+}
+
+.cala-work__floor {
+  stroke: var(--text-tertiary);
+  stroke-width: 1;
+  stroke-dasharray: 1 3;
 }

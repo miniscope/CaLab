@@ -7,6 +7,7 @@
  * number of workers, the speed plot runs over the slider's 10 to 500 fps log scale, the rows
  * 0 to 100 %.
  */
+import { SPEED_SCALE } from './speed-track.ts';
 import {
   FAST_STAGE_NAMES,
   WORK_KIND_LABELS,
@@ -27,9 +28,6 @@ export const KIND_COLOR: Record<WorkKind, string> = {
 
 /** Background settle's HTML fill: a hatch of the settle hue over its pale tint (not lightness alone). */
 export const BG_SETTLE_HATCH = `repeating-linear-gradient(135deg, ${KIND_COLOR.bgSettle} 0 3px, ${KIND_COLOR.finalSettle} 3px 4px)`;
-
-/** The slider's scale: the speed plot's fixed range, fps, logarithmic. */
-export const SPEED_SCALE = { lo: 10, hi: 500 } as const;
 
 /** Where the Final settle segment sits: a fixed quarter of the strip's width (PI decision Q8). */
 export const FINAL_SEGMENT_SHARE = 0.25;
@@ -371,4 +369,27 @@ export function stoppedLookbackRows(
   const lost = Math.min(poolRows.length, Math.max(0, lb.length - capacity));
   for (const i of poolRows.slice(poolRows.length - lost)) flags[i] = true;
   return flags;
+}
+
+/**
+ * Per-footprint settledness from the "still moving" hints (`cells.stillMoving()`: cell id to the
+ * larger of its last core and edge step over its split-half noise). A cell with a hint above `k`
+ * is still settling, one at or below it is settled, one with no hint yet (born after the last
+ * checkpoint) is too new to tell. Null before any checkpoint produced hints. The confidence is
+ * left null: the hint is a ratio, not a probability.
+ */
+export function settlednessFromHints(
+  ids: readonly number[],
+  hints: ReadonlyMap<number, number>,
+  k: number,
+): FootprintSettledness[] | null {
+  if (hints.size === 0 || ids.length === 0) return null;
+  return ids.map((id): FootprintSettledness => {
+    const r = hints.get(id);
+    return {
+      id,
+      state: r === undefined ? 'new' : r > k ? 'settling' : 'settled',
+      confidence: null,
+    };
+  });
 }

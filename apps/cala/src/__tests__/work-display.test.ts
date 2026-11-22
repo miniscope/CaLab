@@ -18,6 +18,7 @@ import {
   segX,
   settledSummary,
   speedPos,
+  settlednessFromHints,
   stackBands,
   stackSegments,
   stoppedLookbackRows,
@@ -326,5 +327,23 @@ describe('accessible names and stopped rows', () => {
   it('Background settle differs from Final settle by more than lightness', () => {
     expect(BG_SETTLE_HATCH).toContain('repeating-linear-gradient');
     expect(BG_SETTLE_HATCH).toContain(KIND_COLOR.finalSettle);
+  });
+});
+
+describe('settlednessFromHints', () => {
+  it('is null before any hint, then settled / settling / new by the ratio and k', () => {
+    expect(settlednessFromHints([1, 2], new Map(), 2)).toBeNull();
+    const hints = new Map([
+      [1, 0.5],
+      [2, 2],
+      [3, 3.5],
+    ]);
+    expect(settlednessFromHints([1, 2, 3, 4], hints, 2)?.map((f) => f.state)).toEqual([
+      'settled',
+      'settled',
+      'settling',
+      'new',
+    ]);
+    expect(settlednessFromHints([], hints, 2)).toBeNull();
   });
 });

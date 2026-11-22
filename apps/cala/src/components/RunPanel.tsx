@@ -624,8 +624,6 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           {s().floorLine() || 'floor: waiting for a status'}
         </pre>
       </Show>
-      {/* The work display: below the Speed block (PR D) when it lands. */}
-      <WorkDisplay pipeline={s()} cells={c()} ui={props.ui} live={props.live} visible={shown()} />
       <Show when={s().live()}>
         {(live) => (
           <p class="cala-readout cala-run__line" data-testid="live-readout">
@@ -733,6 +731,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       </Show>
 
       <SpeedControl pipeline={s()} cells={c()} live={props.live} fps={props.fps} />
+      <WorkDisplay pipeline={s()} cells={c()} ui={props.ui} live={props.live} visible={shown()} />
 
       <div class="cala-run__footer">
         <span class="cala-readout" data-testid="cells-readout">

@@ -43,6 +43,7 @@ import {
   rowBusy,
   segX,
   settledSummary,
+  settlednessFromHints,
   speedPos,
   stackBands,
   stackSegments,
@@ -50,7 +51,6 @@ import {
   totalAriaLabel,
   stripLayout,
   thinIndices,
-  type FootprintSettledness,
   type StackPoint,
 } from '../lib/work-display.ts';
 import type { HistoryUi } from './HistoryPanel.tsx';
@@ -61,11 +61,6 @@ export interface WorkDisplayProps {
   ui: HistoryUi;
   /** A live stream: no total, the shared time window on the strip, no Final settle. */
   live?: boolean;
-  /**
-   * Per-footprint settledness (measure defined by the settledness study). Null or absent: the
-   * slot says it is not measured in this build.
-   */
-  settledness?: () => readonly FootprintSettledness[] | null;
   /** False while the Run tab is hidden: the strip stops redrawing (default true). */
   visible?: boolean;
 }
@@ -120,10 +115,7 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
   const total = () => s().plan()?.frameCount ?? 0;
   const unbounded = () => !Number.isFinite(total());
   /** The target speed now (0: Max); re-read with each work reading, which comes about once a second. */
-  const target = () => {
-    beat();
-    return s().paceFps();
-  };
+  const target = () => s().paceTarget();
   // Paused: the bars keep their last values (the workers go quiet, which is not a reading).
   let lastBy: ReturnType<typeof workByKind> | null = null;
   const by = createMemo(() => {
@@ -351,6 +343,12 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
     }));
   };
   const speedTicks = [30, 100, 300];
+  /** The floor as a dotted reference (the Speed control's floor; the prior until a measurement). */
+  const floorY = () => {
+    if (idle() || props.live) return null;
+    const f = s().floor().fps;
+    return f > 0 ? GEO.sBot - (GEO.sBot - GEO.sTop) * speedPos(f) : null;
+  };
   const yS = (v: number) => GEO.sBot - (GEO.sBot - GEO.sTop) * speedPos(v);
   const N = () => Math.max(1, workerCount());
   const stripEnd = () =>
@@ -404,7 +402,10 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
       .filter(Boolean)
       .join(' · ');
   };
-  const settled = () => settledSummary(props.settledness?.());
+  const settled = () =>
+    settledSummary(
+      settlednessFromHints(Array.from(c().library()?.ids ?? []), c().stillMoving(), SETTLE.movingK),
+    );
 
   return (
     <div
@@ -580,6 +581,23 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
                 </>
               )}
             </Show>
+            <Show when={floorY()}>
+              {(y) => (
+                <>
+                  <line
+                    class="cala-work__floor"
+                    x1={GEO.left}
+                    x2={width() - GEO.right}
+                    y1={y()}
+                    y2={y()}
+                    data-testid="work-floor"
+                  />
+                  <text x={width() - GEO.right} y={y() - 3} text-anchor="end">
+                    {`floor ${n0(s().floor().fps)}`}
+                  </text>
+                </>
+              )}
+            </Show>
             <path class="cala-work__line cala-work__line--target" d={strip().speed.target} />
             <path class="cala-work__line cala-work__line--achieved" d={strip().speed.achieved} />
             <For each={strip().bands}>
@@ -700,7 +718,7 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
             when={settled()}
             fallback={
               <div class="cala-work__small">
-                Footprints settled: <span class="cala-muted">not measured in this build</span>
+                Footprints settled: <span class="cala-muted">not measured yet</span>
               </div>
             }
           >
