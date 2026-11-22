@@ -258,6 +258,18 @@
 //!                      and result together (encode, copy, decode), ms; a
 //!                      worker also spends it on top of the visit's work
 //!   --visit-depth D    visits a worker may hold at once (1)
+//!   --offered-burst B  calibration, with --offered-fps: the frames arrive B
+//!                      at a time at the offered mean rate (the app's
+//!                      pacer before #455 released 32 at once); default
+//!                      evenly
+//!   --ack-lag-ms P     calibration, with --offered-fps: a forward buffer the
+//!                      slow worker gave back less than P ms ago is still
+//!                      busy (the fast loop sees the ack only after the
+//!                      batch it is processing); default 0
+//!   --result-first     calibration, with --offered-fps and --visit-workers:
+//!                      the slow worker takes a visit result that is waiting
+//!                      before the batches and answers waiting with it
+//!                      (default: arrival order)
 //!   --flat-field M     sensor flat field ([`calab_cala::preprocess::flatfield`]),
 //!                      default `online` with --motion, `off` without:
 //!                      `online` runs what the app runs (uncorrected until the
@@ -3522,6 +3534,14 @@ struct Timed {
     /// (`lib_cells`): `lb_ms + lb_ms_cell x cells`.
     pub lb_ms_cell: f64,
     lib_cells: usize,
+    /// `--offered-burst B` (calibration): frames arrive B at a time (0, 1:
+    /// evenly), see [`Timed::at`].
+    pub burst: usize,
+    /// `--ack-lag-ms P` (calibration): see [`Timed::has_buffer`] (0: off).
+    pub ack_lag: f64,
+    /// `--result-first` (calibration): the owner takes a waiting visit
+    /// result before the other messages waiting (0: arrival order).
+    pub result_first: bool,
 }
 
 impl Timed {
@@ -3588,6 +3608,9 @@ impl Timed {
             need_reqs: 0,
             lb_ms_cell: 0.0,
             lib_cells: 0,
+            burst: 0,
+            ack_lag: 0.0,
+            result_first: false,
         }
     }
 
@@ -3676,14 +3699,24 @@ impl Timed {
         self.lb_ms + self.lb_ms_cell * self.lib_cells as f64
     }
 
-    /// Wall time (ms) at which frame `t` has been read.
+    /// Wall time (ms) at which frame `t` has been read. With
+    /// `--offered-burst B` the frames come B at a time: frames `kB..(k+1)B`
+    /// are all read at `kB / fps` (the app's pacer before #455).
     fn at(&self, t: usize) -> f64 {
+        if self.burst > 1 && t > 0 {
+            return ((t - 1) / self.burst * self.burst) as f64 * 1e3 / self.fps;
+        }
         t as f64 * 1e3 / self.fps
     }
 
-    /// A forward buffer is free at `now`.
+    /// A forward buffer is free at `now`. With `--ack-lag-ms P` a buffer
+    /// the owner gave back less than P ms ago is not free yet: the fast
+    /// loop (the app's trace worker) handles the slow worker's `ack` only
+    /// after the batch it is processing, and decides on forwarding at the
+    /// end of that batch, before the ack.
     fn has_buffer(&mut self, now: f64) -> bool {
-        self.bufs.retain(|&r| r > now);
+        let seen = now - self.ack_lag;
+        self.bufs.retain(|&r| r > seen);
         self.bufs.len() < self.pool
     }
 
@@ -3729,7 +3762,19 @@ impl Timed {
             if start > until {
                 break;
             }
-            let (_, msg) = self.inbox.pop_front().unwrap();
+            // `--result-first`: a visit result already waiting goes before
+            // the batches and answers waiting with it.
+            let pick = if self.result_first {
+                self.inbox
+                    .iter()
+                    .take_while(|(a, _)| *a <= start)
+                    .position(|(_, m)| matches!(m, Msg::Result(..)))
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let (arr, msg) = self.inbox.remove(pick).unwrap();
+            let start = arr.max(self.owner_free);
             let w0 = sl.work();
             let mut extra = 0.0;
             let mut lib = None;
@@ -5923,6 +5968,13 @@ fn main() {
                                 if let Some(v) = arg_value(&args, "--lb-ms-per-cell") {
                                     tm.lb_ms_cell = v.parse().unwrap();
                                 }
+                                if let Some(v) = arg_value(&args, "--offered-burst") {
+                                    tm.burst = v.parse().unwrap();
+                                }
+                                if let Some(v) = arg_value(&args, "--ack-lag-ms") {
+                                    tm.ack_lag = v.parse().unwrap();
+                                }
+                                tm.result_first = args.iter().any(|a| a == "--result-first");
                                 if let Some(v) = arg_value(&args, "--owner-load") {
                                     let (ms, period) =
                                         v.split_once(':').expect("--owner-load MS:PERIOD");

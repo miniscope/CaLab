@@ -10,17 +10,18 @@
 #                                                      settle off (--csettle 0) or on (CS2F); the model's cost flags
 #                                                      come from $CAL (split here, by bash)
 #
-# Outputs only under $CALA_DATA/runs/work-slider; the recordings are read-only. Light-job rule: fewer than $MAXN
+# Outputs only under $ROOT (default $CALA_DATA/runs/work-slider; the visit refit sets runs/work-slider-refit); POOL
+# sets --pool (default 4). The recordings are read-only. Light-job rule: fewer than $MAXN
 # (default 6) qc_eval sim/real processes machine-wide and at least 5 GB free before a run starts.
 source ~/Projects/cala-data/sims.env
 BIN=${BIN:-$CALA_DATA/runs/work-slider/bin/qc_eval-cal-a}
 MAIN=${MAIN:-$CALA_DATA/runs/work-slider/bin/qc_eval-main-d37da856}
-ROOT=$CALA_DATA/runs/work-slider
+ROOT=${ROOT:-$CALA_DATA/runs/work-slider}
 ME="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 WS=${WS:-$HOME/Projects/workshop-processing-and-analysis/data/sessions/prerecorded/raw}
 SAMARA=${SAMARA:-"$HOME/Downloads/Samara Data"}
 D="--batch 8 --budget 30000000 --passes 1 --joint-update all --joint-sign all --lookback 2 --merge-guard-sep 0.6"
-V="--visit-workers ${VW:-4} --pool 4"
+V="--visit-workers ${VW:-4} --pool ${POOL:-4}"
 
 # Wait for a light slot, then run "$@" (a qc_eval command line) with its log, time and done files at $OUT.
 slot_run() {
