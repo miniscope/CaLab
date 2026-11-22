@@ -65,6 +65,7 @@ import {
 } from './lib/recent-projects.ts';
 import { LIBRARY_MODE_LABEL, refinePlanText } from './lib/session-run.ts';
 import { createLookbackClient } from './lib/lookback-client.ts';
+import { loadSpeedSettings } from './lib/speed-track.ts';
 import {
   CSETTLE,
   GOVERNOR,
@@ -215,6 +216,12 @@ const App: Component = () => {
       : compress,
     lookbackClient,
   );
+  // The Speed block's saved settings (mode, last Fixed speed, Background settle cap); the URL
+  // parameters below win for this page.
+  const speed = loadSpeedSettings();
+  if (speed.mode === 'fixed') pipeline.setPaceFps(speed.fixedFps, 'setting');
+  if (speed.cap === 0) pipeline.setCsettle(false);
+  else pipeline.setCsettleCeiling(speed.cap);
   // `?lookback`: look-back on from the first Discover start.
   if (params.has('lookback') && params.get('lookback') !== '0') pipeline.setLookback(true);
   // Background settle (settle during Discover) is on under look-back whenever the target is
@@ -222,19 +229,20 @@ const App: Component = () => {
   // N frames at a time (1 by default), `csrate=1|0.5` lowers the cap from 2 re-read frames
   // per live frame.
   const cs = params.get('csettle');
-  if (cs === '0') pipeline.setCsettle(false);
-  else if (cs !== null) {
+  // The URL decides the settle when it says anything about it, over the Speed block's saved cap.
+  if (cs !== null || params.has('csrate')) pipeline.setCsettle(cs !== '0', 'url');
+  if (cs !== null && cs !== '0') {
     const y = /^yield(\d*)$/.exec(cs);
     if (y) pipeline.setCsettleYield(y[1] ? Number(y[1]) : 1);
   }
-  if (params.has('csrate')) pipeline.setCsettleCeiling(Number(params.get('csrate')));
+  if (params.has('csrate')) pipeline.setCsettleCeiling(Number(params.get('csrate')), 'url');
   // `?debug&needfirst` (measurement only): with one look-back worker, need-driven look-back
   // goes first and Background settle asks only when it has nothing to ask.
   if (params.has('debug') && params.has('needfirst') && params.get('needfirst') !== '0')
     pipeline.setCsettleNeedFirst(true);
   // `?debug&pacefps=30` (measurement only): read the recording at a stream's rate.
   if (params.has('debug') && params.has('pacefps'))
-    pipeline.setPaceFps(Number(params.get('pacefps')));
+    pipeline.setPaceFps(Number(params.get('pacefps')), 'url');
   // `?debug`: log the time of each displayed frame change; `smooth=0` turns smooth playback off.
   if (params.has('debug')) {
     pipeline.setDisplayLog(true);
@@ -494,6 +502,7 @@ const App: Component = () => {
   // ---- Run record (docs/run-record.md): how this run was made, saved with every result ----
   const runTrace = new RunTrace();
   pipeline.onPaceChange((fps, frame, source) => runTrace.noteTargetSpeed(fps, frame, source));
+  pipeline.onCapChange((cap, frame, source) => runTrace.noteCap(cap, frame, source));
   pipeline.onPoolStart((workers, frame) => runTrace.notePoolStart(workers, frame));
   // A Discover start begins a new run: the target speed in force is its first entry.
   createEffect(
@@ -502,7 +511,9 @@ const App: Component = () => {
       (starting) => {
         if (!starting) return;
         runTrace.reset();
-        runTrace.noteTargetSpeed(pipeline.paceFps(), 0, 'run start');
+        // What is applied: a live stream is not paced by a target, and has no settle.
+        runTrace.noteTargetSpeed(pipeline.targetNow(), 0, 'run start');
+        runTrace.noteCap(pipeline.capNow(), 0, 'run start');
       },
     ),
   );

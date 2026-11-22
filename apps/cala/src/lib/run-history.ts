@@ -518,12 +518,13 @@ export interface HistoryBatch {
 }
 
 /** The `setting` events of the speed control. */
-export type SpeedSettingKey = 'target_speed' | 'speed_floor' | 'speed_auto';
+export type SpeedSettingKey = 'target_speed' | 'speed_floor' | 'speed_auto' | 'settle_cap';
 
 const SPEED_SETTING_LABEL: Record<SpeedSettingKey, string> = {
   target_speed: 'Speed target',
   speed_floor: 'Speed floor',
   speed_auto: 'Auto speed',
+  settle_cap: 'Settle cap',
 };
 
 /** A speed as the log words it: a number is fps, 0 is Max; a word is left as it is. */

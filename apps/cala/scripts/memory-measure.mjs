@@ -141,6 +141,13 @@ page.on('download', async (d) => {
   L(`download ${p}`);
 });
 await page.addInitScript(() => {
+  // The Speed block saves its target and cap in the browser and applies them at page load: a
+  // measurement run takes its speed from the URL (`--pacefps`, `--csrate`) only.
+  try {
+    localStorage.removeItem('cala.speed.v1');
+  } catch {
+    // No storage: nothing to clear.
+  }
   delete window.showDirectoryPicker;
   delete window.showSaveFilePicker;
 });
