@@ -750,3 +750,80 @@ describe('settle during Discover: failures and edges', () => {
     expect(cs.requested).toBe(cs.fit + cs.heldOut + cs.dropped);
   });
 });
+
+describe('settle during Discover: the settle delta (`csettleDelta`)', () => {
+  /** A runner whose fake loop also has the settle delta. */
+  function deltaSetup(o: { yieldFrames?: number } = {}) {
+    const t = setup({ csettle: 2, ...o });
+    const applied: Uint8Array[] = [];
+    let contexts = 0;
+    const loop = t.loop as SlowLoopLike & Record<string, unknown>;
+    loop.settleContext = vi.fn(() => Uint8Array.of(7, ++contexts));
+    loop.applySettleDelta = vi.fn((b: Uint8Array) => {
+      applied.push(b);
+      return b[0] !== 0xff;
+    });
+    loop.settleDeltaStats = () => Float64Array.of(applied.length);
+    // Again, now with the flag (the fake's methods are in place).
+    t.r.handle({
+      ...INIT,
+      session: 2,
+      csettle: 2,
+      csettleDelta: true,
+      ...(o.yieldFrames ? { csettleYield: o.yieldFrames } : {}),
+    });
+    return { ...t, applied };
+  }
+
+  it('sends the context (and the FOV once), takes the delta instead of the frames', () => {
+    const t = deltaSetup();
+    for (let k = 0; k < 3; k++) t.r.handle({ ...frames(8 * k), session: 2 });
+    type Req = Extract<SlowToLookback, { type: 'request' }>;
+    const reqs = () => t.toLb.filter((m): m is Req => m.type === 'request' && m.session === 2);
+    const q = reqs().find((m) => m.skip)!;
+    expect(q.delta!.context).toEqual(Uint8Array.of(7, 1));
+    expect(q.delta!.fov).toEqual(INIT.fov);
+    const fr = lookbackFrames(q.items);
+    const reply: LookbackToSlow = {
+      type: 'delta',
+      session: 2,
+      id: q.id,
+      version: 10,
+      count: fr.length,
+      summed: fr.filter((f) => !held(f.frame)).length,
+      bytes: Uint8Array.of(1, 2, 3),
+      deltaMs: 2,
+    };
+    t.r.handleLookback(reply);
+    expect(t.applied).toEqual([Uint8Array.of(1, 2, 3)]);
+    expect(t.loop.observeSettle).not.toHaveBeenCalled();
+    // No frame buffer to give back.
+    expect(t.toLb.filter((m) => m.type === 'release' && m.session === 2)).toEqual([]);
+    t.r.handle({ ...frames(24), session: 2 });
+    const q2 = reqs().filter((m) => m.skip)[1];
+    expect(q2.delta!.context).toEqual(Uint8Array.of(7, 2));
+    expect(q2.delta).not.toHaveProperty('fov');
+    const cs = t.toMain.flatMap((m) => (m.type === 'status' ? [m.status] : [])).at(-1)!.lookback!
+      .csettle!;
+    expect(cs.delta).toMatchObject({
+      applied: 1,
+      rejected: 0,
+      deltaBytes: 3,
+      contextBytes: 4,
+      buildMs: 2,
+    });
+    expect(cs.answers).toBe(1);
+    // Held-out frames were passed over before the solve, as without the delta.
+    expect(cs.heldOut).toBe(fr.filter((f) => held(f.frame)).length);
+  });
+
+  it('is off with answers in pieces', () => {
+    const t = deltaSetup({ yieldFrames: 4 });
+    for (let k = 0; k < 3; k++) t.r.handle({ ...frames(8 * k), session: 2 });
+    const q = t.toLb.find(
+      (m): m is Extract<SlowToLookback, { type: 'request' }> =>
+        m.type === 'request' && m.session === 2 && m.skip !== undefined,
+    )!;
+    expect(q).not.toHaveProperty('delta');
+  });
+});

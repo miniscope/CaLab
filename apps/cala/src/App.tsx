@@ -266,6 +266,10 @@ const App: Component = () => {
   // goes first and Background settle asks only when it has nothing to ask.
   if (params.has('debug') && params.has('needfirst') && params.get('needfirst') !== '0')
     pipeline.setCsettleNeedFirst(true);
+  // `?debug&csdelta` (measurement only): the settle look-back workers sum each chunk's footprint
+  // statistics (the settle delta) and the slow worker only adds them.
+  if (params.has('debug') && params.has('csdelta') && params.get('csdelta') !== '0')
+    pipeline.setCsettleDelta(true);
   // `?debug&pacefps=30` (measurement only): read the recording at a stream's rate.
   if (params.has('debug') && params.has('pacefps'))
     pipeline.setPaceFps(Number(params.get('pacefps')), 'url');

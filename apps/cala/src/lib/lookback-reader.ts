@@ -61,6 +61,7 @@ import {
   MotionOptions,
   Preprocessor,
   SessionAligner,
+  SettleDeltaBuilder,
   TraceEngine,
   TraceLibrary,
 } from './cala-wasm.ts';
@@ -156,6 +157,10 @@ export class LookbackReader {
    */
   private settleBlock: { seq: number; session: number; pre: Preprocessor } | null = null;
   private engine: TraceEngine | null = null;
+  /** The library `engine` solves with (kept for the settle delta). */
+  private lib: TraceLibrary | null = null;
+  /** The settle delta's builder (made when a request brings the FOV). */
+  private delta: SettleDeltaBuilder | null = null;
   private version = 0;
   private cells = 0;
   private pendingLibrary: { version: number; bytes: Uint8Array } | null = null;
@@ -433,11 +438,59 @@ export class LookbackReader {
       if (this.engine) this.engine.setLibrary(lib);
       // 0, 0: the solver's default tolerance and sweep cap (as the fast loop's engine).
       else this.engine = new TraceEngine(lib, 0, 0);
-      this.version = lib.version;
-      this.cells = lib.ids().length;
-    } finally {
+    } catch (err) {
       lib.free();
+      throw err;
     }
+    this.lib?.free();
+    this.lib = lib;
+    this.version = lib.version;
+    this.cells = lib.ids().length;
+  }
+
+  /**
+   * The settle delta of a chunk `serve` just answered (`frames`, `out`,
+   * `solved`, `skip` as there): its solved fitting frames' footprint
+   * statistics summed on `context` (`SlowLoop.settleContext()`), as bytes
+   * for `SlowLoop.applySettleDelta`. `fov` (the slow loop's FOV mask)
+   * comes with the first request of a run; the builder is made from it.
+   */
+  settleDelta(
+    frames: LookbackFrame[],
+    out: Float32Array,
+    solved: LookbackSolved,
+    skip: ArrayLike<number> | undefined,
+    context: Uint8Array,
+    fov?: Uint8Array,
+  ): { bytes: Uint8Array; summed: number; ms: number } {
+    const t0 = performance.now();
+    if (fov) {
+      this.delta?.free();
+      this.delta = new SettleDeltaBuilder(this.source.info.width, this.source.info.height, fov);
+    }
+    const b = this.delta;
+    if (!b) throw new Error('settle delta: no FOV from the slow worker yet');
+    b.begin(context);
+    let summed = 0;
+    const lib = this.lib;
+    if (solved.version > 0 && solved.cells > 0 && lib && lib.version === solved.version) {
+      const n = frames.length;
+      const bg = solved.background;
+      const nb = bg && n > 0 ? bg.length / n : 0;
+      for (let i = 0; i < n; i++) {
+        if (skip?.[i]) continue;
+        b.push(
+          out.subarray(i * this.px, (i + 1) * this.px),
+          lib,
+          solved.traces.subarray(i * solved.cells, (i + 1) * solved.cells),
+          bg ? bg.subarray(i * nb, (i + 1) * nb) : undefined,
+          frames[i].frame,
+        );
+        summed++;
+      }
+    }
+    const bytes = b.finish();
+    return { bytes, summed, ms: performance.now() - t0 };
   }
 
   dispose(): void {
@@ -457,6 +510,10 @@ export class LookbackReader {
     this.motion = null;
     this.engine?.free();
     this.engine = null;
+    this.lib?.free();
+    this.lib = null;
+    this.delta?.free();
+    this.delta = null;
     this.pendingLibrary = null;
   }
 }

@@ -240,6 +240,8 @@ export function createPipelineStore(
   const [finalSettleLevelSig, setFinalSettleLevelSig] = createSignal(FINAL_SETTLE_LEVEL_DEFAULT);
   /** The Final settle level the current run started with (null: no run yet), so the run record names what ran. */
   let runLevel: ReturnType<typeof finalSettleLevel> | null = null;
+  /** The settle delta instead of feeding re-read frames to the slow loop (`?debug&csdelta`; measurement only). */
+  const [csettleDelta, setCsettleDelta] = createSignal(false);
   /** Session of the current run with look-back (0: none). */
   let lookbackSession = 0;
   /** The live source's counters after the newest batch (null on a file source). */
@@ -1077,6 +1079,7 @@ export function createPipelineStore(
                 csettle: true,
                 ...(csettleYield() > 0 ? { csettleYield: csettleYield() } : {}),
                 ...(csettleNeedFirst() ? { csettleNeedFirst: true } : {}),
+                ...(csettleDelta() ? { csettleDelta: true } : {}),
               }
             : {}),
           discover: discover(),
@@ -1365,6 +1368,8 @@ export function createPipelineStore(
     csettleYield,
     csettleNeedFirst,
     setCsettleNeedFirst,
+    csettleDelta,
+    setCsettleDelta,
     setCsettleYield: (frames: number) =>
       setCsettleYield(Number.isFinite(frames) && frames > 0 ? Math.floor(frames) : 0),
     setResidual,

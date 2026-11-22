@@ -77,6 +77,14 @@ export interface SlowInit {
    * (the governor's batch-wait guard scales with it; absent: 2).
    */
   csettlePool?: number;
+  /**
+   * With `csettle`: the settle delta (experimental, `?debug&csdelta`): each
+   * settle request carries `SlowLoop.settleContext()`, the look-back worker
+   * sums the chunk's footprint statistics (`SettleDeltaBuilder`) and answers
+   * with the delta instead of the frames, and this worker only adds it
+   * (`SlowLoop.applySettleDelta`). Not with `csettleYield`.
+   */
+  csettleDelta?: boolean;
 }
 
 /** Fast worker -> slow worker. */

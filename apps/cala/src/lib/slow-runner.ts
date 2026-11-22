@@ -197,6 +197,11 @@ export interface SlowLoopLike {
   settleSkipped?(frames: number): void;
   /** `[taken, fit, heldOut, dropped]`. */
   settleStats?(): Float64Array;
+  // The settle delta (see `SlowLoop.settleContext`; absent in older fakes and builds).
+  settleContext?(): Uint8Array;
+  /** `false`: refused (a held-out frame in it). */
+  applySettleDelta?(bytes: Uint8Array): boolean;
+  settleDeltaStats?(): Float64Array;
   free(): void;
 }
 
@@ -318,6 +323,8 @@ interface CsettleWork {
 interface Csettle {
   /** The rate per second, the re-read frames owed, and the cap. */
   gov: SettleGovernor;
+  /** The settle delta (`SlowInit.csettleDelta`; null: off, the frames come here). */
+  delta: CsettleDelta | null;
   /** Frames per piece of an answer (0: whole answers). */
   yieldFrames: number;
   /** Worker 0 without a pool: need-driven look-back first, the settle only when it asks nothing (`SlowInit.csettleNeedFirst`). */
@@ -336,6 +343,18 @@ interface Csettle {
   answers: number;
   answerMs: number;
   maxBlockMs: number;
+}
+
+/** The settle delta of the current run (`SlowInit.csettleDelta`). */
+interface CsettleDelta {
+  /** Per look-back worker: the FOV went with a request this run (the worker makes its builder from it). */
+  fovSent: boolean[];
+  applied: number;
+  rejected: number;
+  contextBytes: number;
+  deltaBytes: number;
+  contextMs: number;
+  buildMs: number;
 }
 
 /** A look-back answer's busy ms (its `serve` time less the waits for Discover's rows). */
@@ -491,7 +510,13 @@ export class SlowRunner {
   /** Settle during Discover (null: not armed in this run). */
   private cs: Csettle | null = null;
   /** This run may arm the settle during Discover (`SlowInit.csettle` and a loop that has it), and how. */
-  private csArm: { yieldFrames: number; needFirst: boolean; forwardPool: number } | null = null;
+  private csArm: {
+    yieldFrames: number;
+    needFirst: boolean;
+    forwardPool: number;
+    /** The settle delta (`SlowInit.csettleDelta`, whole answers and a loop that has it). */
+    delta: boolean;
+  } | null = null;
   /** The settle's cap, re-read frames per live frame (0 = Off; `setCap`; kept across runs like `pace`). */
   private cap: number = CSETTLE.rate;
   /** The settle pool the main thread started for a session (`setSettlePool`; applied when that run is here). */
@@ -532,6 +557,8 @@ export class SlowRunner {
    */
   connectLookback(port: PortLike<SlowToLookback>, index = 0): void {
     this.lbPorts[index] = port;
+    // A new worker on this port has no settle-delta builder yet: its first request brings the FOV.
+    if (this.cs?.delta) this.cs.delta.fovSent[index] = false;
   }
 
   /** The port to the need-driven look-back worker (null: not connected). */
@@ -634,6 +661,17 @@ export class SlowRunner {
     gov.setTarget(this.pace.fps, this.pace.paused);
     this.cs = {
       gov,
+      delta: arm.delta
+        ? {
+            fovSent: [],
+            applied: 0,
+            rejected: 0,
+            contextBytes: 0,
+            deltaBytes: 0,
+            contextMs: 0,
+            buildMs: 0,
+          }
+        : null,
       yieldFrames: arm.yieldFrames,
       needFirst: arm.needFirst,
       turn: false,
@@ -700,6 +738,7 @@ export class SlowRunner {
           ...(lookback && msg.sessionStarts?.length
             ? { sessionStarts: [...msg.sessionStarts] }
             : {}),
+          ...(csettle && msg.csettleDelta ? { csettleDelta: true } : {}),
         };
         this.loop = this.clock.span('setup', () => this.deps.create(this.init!));
         this.run = 1;
@@ -711,10 +750,17 @@ export class SlowRunner {
           typeof this.loop.settleTake === 'function' &&
           typeof this.loop.observeSettle === 'function'
         ) {
+          // The delta sums whole answers on the look-back worker: not with answers in pieces.
+          const yieldFrames = Math.max(0, Math.floor(msg.csettleYield ?? 0));
           this.csArm = {
-            yieldFrames: Math.max(0, Math.floor(msg.csettleYield ?? 0)),
+            yieldFrames,
             needFirst: msg.csettleNeedFirst === true,
             forwardPool: Math.max(2, Math.floor(msg.csettlePool ?? 2)),
+            delta:
+              msg.csettleDelta === true &&
+              yieldFrames === 0 &&
+              typeof this.loop.settleContext === 'function' &&
+              typeof this.loop.applySettleDelta === 'function',
           };
           this.armSettle();
         }
@@ -1012,6 +1058,7 @@ export class SlowRunner {
     flat: Float64Array,
     items: LookbackItem[],
     skip?: Uint8Array,
+    delta?: { context: Uint8Array; fov?: Uint8Array },
   ): void {
     const id = this.lbNextId++;
     this.lbReqs[port] = { id, port, kind, items, ...(skip ? { skip } : {}) };
@@ -1024,8 +1071,11 @@ export class SlowRunner {
           id,
           items: flat,
           ...(skip ? { skip: skip.slice() } : {}),
+          ...(delta ? { delta } : {}),
         },
-        [flat.buffer as ArrayBuffer],
+        delta
+          ? [flat.buffer as ArrayBuffer, delta.context.buffer as ArrayBuffer]
+          : [flat.buffer as ArrayBuffer],
       ),
     );
     this.lbTimers[port] = this.timer(() => {
@@ -1101,7 +1151,21 @@ export class SlowRunner {
     cs.gov.spend(n);
     cs.requested += n;
     if (port === 0) cs.turn = false;
-    this.sendRequest(port, 'csettle', flat, items, skip);
+    const d = cs.delta;
+    let delta: { context: Uint8Array; fov?: Uint8Array } | undefined;
+    if (d) {
+      // The context is made now: the cells and stores as they are when the chunk is asked for.
+      const t0 = this.now();
+      const context = this.clock.span('csettle', () => loop.settleContext!());
+      d.contextMs += this.now() - t0;
+      d.contextBytes += context.byteLength;
+      delta = { context };
+      if (!d.fovSent[port]) {
+        delta.fov = this.init!.fov.slice();
+        d.fovSent[port] = true;
+      }
+    }
+    this.sendRequest(port, 'csettle', flat, items, skip, delta);
     return true;
   }
 
@@ -1138,11 +1202,12 @@ export class SlowRunner {
   handleLookback(msg: LookbackToSlow, port = 0): void {
     const loop = this.loop;
     const req = this.lbReqs[port] ?? null;
-    if (msg.type === 'frames' && msg.session === this.session && msg.timing)
+    const answer = msg.type === 'frames' || msg.type === 'delta';
+    if (answer && msg.session === this.session && msg.timing)
       this.lbPortBusy[port] = (this.lbPortBusy[port] ?? 0) + timingBusyMs(msg.timing);
     if (msg.session !== this.session || !loop || !req || msg.id !== req.id) {
       // Its time was spent all the same: counted apart (only this session's).
-      if (msg.type === 'frames' && msg.session === this.session)
+      if (answer && msg.session === this.session)
         addLookbackAnswer(this.lbDiscarded, msg.count, msg.timing);
       // An ignored answer still returns its buffer to its worker's pool (which drops a stale session's).
       if (msg.type === 'frames') this.releaseFrames(msg, port);
@@ -1151,7 +1216,7 @@ export class SlowRunner {
     this.lbReqs[port] = null;
     this.lbTimers[port]?.();
     this.lbTimers[port] = null;
-    if (msg.type === 'frames') {
+    if (answer) {
       addLookbackAnswer(this.lbWork[req.kind], msg.count, msg.timing);
       const busy = msg.timing ? timingBusyMs(msg.timing) : 0;
       if (req.kind === 'csettle') this.cs?.gov.delivered(msg.count, busy);
@@ -1175,6 +1240,14 @@ export class SlowRunner {
       if (msg.type === 'error') {
         if (req.kind === 'csettle') this.csettleFailed(req, msg.message);
         else this.lookbackFailed(msg.message);
+      } else if (msg.type === 'delta') {
+        // Only the settle during Discover asks for deltas; one that came when Discover could no
+        // longer use it is counted as dropped.
+        if (req.kind === 'csettle' && this.cs?.delta && this.lookbackLive) {
+          this.csettleDeltaAnswer(loop, this.cs, this.cs.delta, msg, req);
+          return;
+        }
+        if (this.cs) this.cs.dropped += req.items.length;
       } else if (req.kind === 'csettle' && this.cs && this.lookbackLive) {
         // (It gives the buffer back itself, at once or after its last piece.)
         this.csettleAnswer(loop, this.cs, msg, req);
@@ -1259,6 +1332,44 @@ export class SlowRunner {
     this.lookbackRequest();
     this.csettleFeed(loop, cs, work, msg.count);
     this.releaseFrames(msg, req.port);
+  }
+
+  /**
+   * A settle delta (`SlowInit.csettleDelta`): the next request goes out
+   * first, then the chunk's statistics are added here in one go
+   * (`applySettleDelta`), in place of feeding its frames.
+   */
+  private csettleDeltaAnswer(
+    loop: SlowLoopLike,
+    cs: Csettle,
+    d: CsettleDelta,
+    msg: Extract<LookbackToSlow, { type: 'delta' }>,
+    req: LookbackReq,
+  ): void {
+    if (msg.count !== req.items.length)
+      throw new Error(`settle: ${msg.count} frames for a request of ${req.items.length}`);
+    cs.answers++;
+    this.lookbackRequest();
+    const t0 = this.now();
+    d.deltaBytes += msg.bytes.byteLength;
+    d.buildMs += msg.deltaMs ?? 0;
+    if (msg.version === 0) {
+      // The worker had no library yet: nothing was solved or summed.
+      cs.dropped += msg.count;
+    } else {
+      let skipped = 0;
+      for (let i = 0; i < msg.count; i++) if (req.skip?.[i]) skipped++;
+      if (loop.applySettleDelta!(msg.bytes)) d.applied++;
+      else d.rejected++;
+      if (skipped > 0) loop.settleSkipped?.(skipped);
+    }
+    if (this.parallel) {
+      this.housekeep();
+      this.dispatch();
+    }
+    const ms = this.now() - t0;
+    cs.answerMs += ms;
+    cs.maxBlockMs = Math.max(cs.maxBlockMs, ms);
   }
 
   /** The next piece of an answer handled in pieces; then give way, or finish. */
@@ -1684,6 +1795,19 @@ export class SlowRunner {
       yieldFrames: cs.yieldFrames,
       settleWorkers: this.settlePorts().length,
       governor: cs.gov.status(),
+      ...(cs.delta
+        ? {
+            delta: {
+              applied: cs.delta.applied,
+              rejected: cs.delta.rejected,
+              contextBytes: cs.delta.contextBytes,
+              deltaBytes: cs.delta.deltaBytes,
+              contextMs: cs.delta.contextMs,
+              buildMs: cs.delta.buildMs,
+              engine: Array.from(loop.settleDeltaStats?.() ?? []),
+            },
+          }
+        : {}),
     };
   }
 

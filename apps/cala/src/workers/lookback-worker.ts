@@ -182,6 +182,31 @@ async function serve(r: Run, msg: Extract<SlowToLookback, { type: 'request' }>):
       throw err;
     }
     if (run !== r) return;
+    if (msg.delta) {
+      // The settle delta: the chunk's statistics are summed here; the frames stay in this worker.
+      let d;
+      try {
+        d = reader.settleDelta(frames, out, solved, msg.skip, msg.delta.context, msg.delta.fov);
+      } finally {
+        pool.release(out);
+      }
+      solved.timing.otherMs += d.ms;
+      postSlow(
+        {
+          type: 'delta',
+          session,
+          id,
+          version: solved.version,
+          count: frames.length,
+          summed: d.summed,
+          bytes: d.bytes,
+          timing: solved.timing,
+          deltaMs: d.ms,
+        },
+        [d.bytes.buffer as ArrayBuffer],
+      );
+      return;
+    }
     const transfer: Transferable[] = [out.buffer, solved.traces.buffer];
     if (solved.background) transfer.push(solved.background.buffer);
     postSlow(

@@ -35,6 +35,14 @@ export type SlowToLookback =
        * never reaches fitting). Absent: solve every frame.
        */
       skip?: Uint8Array;
+      /**
+       * The settle delta (`SlowInit.csettleDelta`): sum the solved fitting
+       * frames' footprint statistics on this context
+       * (`SlowLoop.settleContext()`, a copy; transferred) and answer with
+       * `delta` instead of `frames`. `fov` (the slow loop's FOV mask) comes
+       * with a worker's first such request.
+       */
+      delta?: { context: Uint8Array; fov?: Uint8Array };
     }
   /** A library the slow loop published (`TraceLibrary.toBytes()`, a copy; transferred). */
   | { type: 'library'; session: number; version: number; bytes: Uint8Array }
@@ -62,6 +70,21 @@ export type LookbackToSlow =
       background?: Float32Array;
       /** What the worker spent on this answer (instrumentation only; absent from older builds). */
       timing?: LookbackTiming;
+    }
+  /** The answer to a request with `delta`: the chunk's settle delta (`SettleDeltaBuilder.finish()`; transferred). */
+  | {
+      type: 'delta';
+      session: number;
+      id: number;
+      /** Library version the frames were solved with (0: none yet, nothing solved or summed). */
+      version: number;
+      /** Frames re-read (as asked), and the fitting frames summed. */
+      count: number;
+      summed: number;
+      bytes: Uint8Array;
+      timing?: LookbackTiming;
+      /** Of `timing.otherMs`: the time spent summing the delta. */
+      deltaMs?: number;
     }
   | { type: 'error'; session: number; id: number; message: string };
 
@@ -165,6 +188,23 @@ export interface CsettleStatus {
   settleWorkers?: number;
   /** The settle governor's state (absent: governor off, the per-live-frame dose). */
   governor?: GovernorStatus;
+  /** The settle delta (absent: off): what the requests and answers carried, and `SlowLoop.settleDeltaStats()`. */
+  delta?: CsettleDeltaStatus;
+}
+
+/** The settle delta's counters (`SlowInit.csettleDelta`). */
+export interface CsettleDeltaStatus {
+  /** Deltas applied, and refused (a held-out frame in one). */
+  applied: number;
+  rejected: number;
+  /** Bytes of the contexts sent and of the deltas received, in all. */
+  contextBytes: number;
+  deltaBytes: number;
+  /** Time the slow worker spent making contexts, ms, and the look-back workers' time summing (`deltaMs`). */
+  contextMs: number;
+  buildMs: number;
+  /** `SlowLoop.settleDeltaStats()` (see the WASM docs for the fields). */
+  engine: number[];
 }
 
 /** The settle pass of a look-back run (`lib/settle.ts`). */

@@ -40,6 +40,8 @@
  *   each work reading and logged. `--lbpool S` overrides the pool size (`?debug&lbpool=S`, 0
  *   included); `--needfirst`: one worker, need-driven look-back first (`?debug&needfirst`);
  *   `--csettle-off`: no Background settle (`&csettle=0`).
+ *   `--csdelta`: the settle delta (`?debug&csdelta`): the settle look-back workers sum each
+ *   chunk's footprint statistics and the slow worker only adds them.
  *   `--headed` runs system Chrome with a real GPU (headless SwiftShader hides memory behaviour).
  *
  * Opens `<folder>` (a session folder or a parent of several) through the
@@ -92,13 +94,15 @@ const csQuery0 = csettle
 // `--smooth 0`: smooth playback off (the comparison run).
 const smoothOpt = opt('--smooth', '');
 const lbPool = opt('--lbpool', '');
+const csdelta = args.includes('--csdelta');
 const csQuery =
   csQuery0 +
   (paceFps ? `&pacefps=${paceFps}` : '') +
   (smoothOpt ? `&smooth=${smoothOpt}` : '') +
   (lbPool !== '' ? `&lbpool=${lbPool}` : '') +
   (args.includes('--needfirst') ? '&needfirst' : '') +
-  (args.includes('--csettle-off') ? '&csettle=0' : '');
+  (args.includes('--csettle-off') ? '&csettle=0' : '') +
+  (csdelta ? '&csdelta' : '');
 mkdirSync(out, { recursive: true });
 const udd = join(out, `udd-${tag}`);
 rmSync(udd, { recursive: true, force: true });
@@ -329,7 +333,7 @@ const fmt = (r) => {
     ? ` lb pushed ${st.lb.pushed} need ${st.lb.inNeed} births ${st.lb.births}${st.lb.settling ? ' settling' : ''}${st.lb.settle ? ` settle ${st.lb.settle.fed}/${st.lb.settle.total}${st.lb.settle.moving ? ` moving ${st.lb.settle.moving.above}/${st.lb.settle.moving.cells}` : ''}` : ''}${st.lb.error ? ` ERR ${st.lb.error}` : ''}${st.final ? ' final' : ''}`
     : '';
   const cs = st.lb?.csettle
-    ? ` cs ${st.lb.csettle.fit}+${st.lb.csettle.heldOut}+${st.lb.csettle.dropped}/${st.lb.csettle.requested} live ${st.lb.csettle.live} ans ${st.lb.csettle.answers} ${(st.lb.csettle.answerMs / Math.max(1, st.lb.csettle.answers)).toFixed(1)}ms max ${st.lb.csettle.maxBlockMs.toFixed(0)}ms${st.lb.csettle.governor ? ` gov ${st.lb.csettle.governor.rate.toFixed(0)}/s ${st.lb.csettle.governor.limit} halv ${st.lb.csettle.governor.halvings}(${st.lb.csettle.governor.slowHalvings})` : ''}`
+    ? ` cs ${st.lb.csettle.fit}+${st.lb.csettle.heldOut}+${st.lb.csettle.dropped}/${st.lb.csettle.requested} live ${st.lb.csettle.live} ans ${st.lb.csettle.answers} ${(st.lb.csettle.answerMs / Math.max(1, st.lb.csettle.answers)).toFixed(1)}ms max ${st.lb.csettle.maxBlockMs.toFixed(0)}ms${st.lb.csettle.governor ? ` gov ${st.lb.csettle.governor.rate.toFixed(0)}/s ${st.lb.csettle.governor.limit} halv ${st.lb.csettle.governor.halvings}(${st.lb.csettle.governor.slowHalvings})` : ''}${st.lb.csettle.delta ? ` dlt ${st.lb.csettle.delta.applied}/${st.lb.csettle.delta.rejected} ctx ${(st.lb.csettle.delta.contextBytes / 1e6).toFixed(0)}MB ${st.lb.csettle.delta.contextMs.toFixed(0)}ms build ${st.lb.csettle.delta.buildMs.toFixed(0)}ms` : ''}`
     : '';
   const drop = st.batch ? ` drop ${st.batch.drop}/${st.batch.drop + st.batch.fwd}` : '';
   const slow = st.slow ? ` jobs ${st.slow.jobs} refines ${st.slow.refines}` : '';
