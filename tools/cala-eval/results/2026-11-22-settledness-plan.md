@@ -60,11 +60,11 @@ on sims.
 Stop at the first checkpoint c >= 3 where the share of the library's cells settled at tau is at least q. If none
 qualifies, run the full pass.
 
-| measure     | tau                | q          |
-| ----------- | ------------------ | ---------- |
-| M1 step     | 0.08, 0.12         | 0.80, 0.90 |
-| M2 drift    | 0.01, 0.02, 0.03   | 0.90, 0.95 |
-| M2b ucb     | 0.05, 0.08         | 0.80, 0.90 |
+| measure  | tau              | q          |
+| -------- | ---------------- | ---------- |
+| M1 step  | 0.08, 0.12       | 0.80, 0.90 |
+| M2 drift | 0.01, 0.02, 0.03 | 0.90, 0.95 |
+| M2b ucb  | 0.05, 0.08       | 0.80, 0.90 |
 
 That makes 14 rules. **Baseline:** fixed in-order truncation at every checkpoint (free from the saved checkpoints).
 Each rule is compared with the fixed truncation at the same mean frames. A rule that does not beat it is not
@@ -93,7 +93,7 @@ Loss = stopped minus full pass, signed so that positive means worse.
 
 **Real (vs Max, which is read in order and still rising, so it is biased towards the full pass).**
 
-- Reference: the *other* seeds' REF `B100` libraries, never the run's own end.
+- Reference: the _other_ seeds' REF `B100` libraries, never the run's own end.
 - Single-pair cosines, matched greedily within 12 px at cosine >= 0.7, pooled over the two reference seeds. Report
   the median and the 10th percentile.
 - Also the share of Max's repeatable cells present: REF cells found in at least one other REF seed.

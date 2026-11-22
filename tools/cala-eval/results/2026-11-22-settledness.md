@@ -11,10 +11,10 @@ This is an offline study of PR #464's saved runs. Nothing new was run.
 
 **Data**
 
-| set  | what                                                                    | runs |
-| ---- | ----------------------------------------------------------------------- | ---- |
-| real | Samara `10_43_21` and `14_57_02`; arms Max, P-30, S-30; seeds 1-3        | 18   |
-| sims | pairs 5, 6 and static 5, 6, 7; three arms each; with ground truth        | 15   |
+| set  | what                                                              | runs |
+| ---- | ----------------------------------------------------------------- | ---- |
+| real | Samara `10_43_21` and `14_57_02`; arms Max, P-30, S-30; seeds 1-3 | 18   |
+| sims | pairs 5, 6 and static 5, 6, 7; three arms each; with ground truth | 15   |
 
 - Real runs that share a recording are not independent, so their intervals are too narrow.
 - Every run saved its in-order full Final settle as a library every 1,200 frames.
@@ -45,17 +45,17 @@ This is an offline study of PR #464's saved runs. Nothing new was run.
    - **On the runs, the question is how much more the 10 % of cells a measure flags most still gain than the other
      cells.** Gains are signed, mean over checkpoints, then over runs:
 
-     | measure                                                        | real: cosine gain vs Max | sims: edge-error drop      | sims: r gain              |
-     | -------------------------------------------------------------- | ------------------------ | -------------------------- | ------------------------- |
-     | M1, whole-footprint step                                       | +0.015 [0.013, 0.018]    | +0.013 [0.006, 0.019]      | +0.004 [0.002, 0.007]     |
-     | **edge-ring step** (after the runs; edge-ring norm)            | +0.014 [0.012, 0.017]    | +0.013 [0.007, 0.020]      | +0.004 [0.002, 0.007]     |
-     | M2 drift                                                       | +0.012 [0.009, 0.014]    | +0.002 [-0.003, 0.007]     | +0.001 [-0.000, 0.002]    |
-     | share of the cell's life re-read (after the runs)              | +0.009 [0.007, 0.010]    | +0.019 [0.012, 0.027]      | +0.005 [0.003, 0.007]     |
-
+     | measure                                             | real: cosine gain vs Max | sims: edge-error drop  | sims: r gain           |
+     | --------------------------------------------------- | ------------------------ | ---------------------- | ---------------------- |
+     | M1, whole-footprint step                            | +0.015 [0.013, 0.018]    | +0.013 [0.006, 0.019]  | +0.004 [0.002, 0.007]  |
+     | **edge-ring step** (after the runs; edge-ring norm) | +0.014 [0.012, 0.017]    | +0.013 [0.007, 0.020]  | +0.004 [0.002, 0.007]  |
+     | M2 drift                                            | +0.012 [0.009, 0.014]    | +0.002 [-0.003, 0.007] | +0.001 [-0.000, 0.002] |
+     | share of the cell's life re-read (after the runs)   | +0.009 [0.007, 0.010]    | +0.019 [0.012, 0.027]  | +0.005 [0.003, 0.007]  |
      - For scale, the remaining library-wide gain is about 0.003 in median cosine (real) and 0.005-0.01 in median
        edge error (sims). So the flagged cells are the ones still improving.
      - Ranked over all cells, every measure is weak: Spearman 0.10-0.18 on real, at most 0.05 on sims.
      - On sims, the direction measure is no better than chance at edges.
+
    - **Edge repairs are not a slow, steady drift.**
      - Sims have 708 bites that heal during the pass. 204 of them heal after checkpoint 3, where the measures exist.
      - For those 204, the median bite ratio is 0.00 at each of the three checkpoints before the heal, and 0.68 at the
@@ -85,6 +85,7 @@ This is an offline study of PR #464's saved runs. Nothing new was run.
 
      At three quarters neither difference is significant. Bites and late-born cells are not significantly different
      at any budget. On real, against Max (which is read in order), strided is level or slightly worse.
+
    - So read order explains part of it, not all.
 5. **Levels.** By the pre-registered rule, fixed budgets win, because no adaptive rule beats them:
 
@@ -93,7 +94,6 @@ This is an offline study of PR #464's saved runs. Nothing new was run.
    | **Thorough** | full pass                            | 0 / 0 %                    | 0 / 0                                      | 0 / 0 / 0                                         | 0                     | 0 of 643                 |
    | **Standard** | stop after 87 % of the pass in order | 13 / 12 %                  | 0.0004 / -0.0005                           | 0.0003 / 0.0005 / 0.005                           | 0.004                 | 42 of 643                |
    | **Quick**    | stop after 60 % of the pass in order | 40 / 38 %                  | 0.0028 / 0.0079                            | 0.0009 / 0.0055 / 0.012                           | 0.007                 | 92 of 643                |
-
    - "Bites left unhealed" = bites open at the stop that the full pass heals. For scale, 643 bites open at the start
      of the pass heal by its end.
    - By the plan rule:
@@ -114,6 +114,7 @@ This is an offline study of PR #464's saved runs. Nothing new was run.
      - If the PI wants options, Quick is honest as "about 40 % faster; slightly rougher edges, late-born cells and a
        few unfilled bites."
      - Standard saves about an eighth of the pass. It is only worth offering if the PI wants a middle step.
+
 6. **The per-cell settledness number for the UI.**
    - The data support a **"still moving" indicator** built from recent step size. In the app, divide it by
      split-half noise, as `settle.ts` does.
@@ -152,11 +153,11 @@ This is an offline study of PR #464's saved runs. Nothing new was run.
 - Cells that are new to the window count as **not settled**.
 - The first possible stop is checkpoint 3: 20 % of the pass on real, 37.5 % on sims.
 
-| measure    | what it is |
-| ---------- | ---------- |
-| M1 `step`  | Size of the last step, relative to the footprint. |
+| measure    | what it is                                                                                                                                                                                                                           |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| M1 `step`  | Size of the last step, relative to the footprint.                                                                                                                                                                                    |
 | M2 `drift` | Per region: sqrt(max(0, sum over pairs i<j of d_i·d_j) / 3), divided by the region's norm. The cell takes the larger of core and edge. Wobble scores about 0 at any size. Steady growth or shrinkage scores its rate per checkpoint. |
-| M2b `ucb`  | M2 with a 2-sd bound under random step-sign flips. It correlates 0.74 with M1. |
+| M2b `ucb`  | M2 with a 2-sd bound under random step-sign flips. It correlates 0.74 with M1.                                                                                                                                                       |
 
 ### Selected stop rules
 
