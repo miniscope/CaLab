@@ -41,6 +41,9 @@ import {
 } from './pipeline-plan.ts';
 import {
   downsampleFrame,
+  downsampleFrames,
+  type FramePreviews,
+  type FrameView,
   previewFactor,
   takeResidualPreview,
   type PreviewImage,
@@ -132,6 +135,16 @@ export interface BatchPreviews {
   output: PreviewImage;
   /** What the cell model leaves unexplained in `output` (only while asked for; see `FastLoop.setResidual`). */
   residual?: PreviewImage;
+  /**
+   * One view of every frame of the batch, when smooth playback asked for it
+   * (display only; the four images above stay the last frame's).
+   */
+  frames?: FramePreviews;
+  /**
+   * Set by the store while it plays `frames`: the batch's own last-frame image of the played view
+   * (the view's image above is then the frame being shown). The display range is fitted from this.
+   */
+  fit?: Partial<Record<FrameView, PreviewImage>>;
 }
 
 /**
@@ -222,6 +235,7 @@ export function transferablesOf(r: PipelineStepResult): ArrayBuffer[] {
     p.preprocessed.data,
     p.corrected.data,
     p.output.data,
+    ...(p.frames ? [p.frames.data] : []),
     ...(r.cells ? [r.cells.ids, r.cells.traces] : []),
     ...(r.cells?.signed ? [r.cells.signed] : []),
     ...(r.backState ? [r.backState.state] : []),
@@ -252,6 +266,8 @@ export class PipelineEngine {
   private readonly boundaries: number[];
   /** Called at each session boundary (see `session-boundary.ts`); does nothing by default. */
   sessionHooks: SessionHooks = NO_SESSION_HOOKS;
+  /** Preview this view of every frame of the batches from now on (null: the last frame only). */
+  framePreview: FrameView | null = null;
   private readonly width: number;
   private readonly height: number;
   private readonly px: number;
@@ -440,6 +456,19 @@ export class PipelineEngine {
     const t3 = now();
     const last = s.count - 1;
     const before = downsampleFrame(corrected, last, this.width, this.height, this.factor);
+    // Before the back half works in place on `corrected`.
+    const correctedFrames =
+      this.framePreview === 'corrected'
+        ? downsampleFrames(
+            corrected,
+            s.count,
+            this.width,
+            this.height,
+            this.factor,
+            'corrected',
+            s.start,
+          )
+        : undefined;
     const dy = new Float32Array(s.count);
     const dx = new Float32Array(s.count);
     for (let i = 0; i < s.count; i++) {
@@ -479,6 +508,20 @@ export class PipelineEngine {
       corrected: before,
       output: downsampleFrame(corrected, last, this.width, this.height, this.factor),
     };
+    const view = this.framePreview;
+    if (correctedFrames) previews.frames = correctedFrames;
+    else if (view) {
+      const src = view === 'raw' ? raw : view === 'preprocessed' ? front : corrected;
+      previews.frames = downsampleFrames(
+        src,
+        s.count,
+        this.width,
+        this.height,
+        this.factor,
+        view,
+        s.start,
+      );
+    }
     const residual = takeResidualPreview(cells, this.width, this.height, this.factor);
     if (residual) previews.residual = residual;
     const t6 = now();

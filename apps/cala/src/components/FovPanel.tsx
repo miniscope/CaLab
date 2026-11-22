@@ -6,6 +6,7 @@ import {
   onCleanup,
   onMount,
   Show,
+  untrack,
   type JSX,
 } from 'solid-js';
 import { DashboardPanel, SegmentedControl } from '@calab/ui';
@@ -25,6 +26,7 @@ import {
   type FovView,
 } from '../lib/fov-view.ts';
 import type { BatchPreviews } from '../lib/pipeline-engine.ts';
+import type { FrameView } from '../lib/preview.ts';
 import type { PreviewImage } from '../lib/preview.ts';
 import type { DisplayRange } from '../lib/frame-display.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
@@ -45,7 +47,9 @@ import {
 } from '../lib/qc-colors.ts';
 import { createHeldRange, RangeControl, type HeldRange } from './RangeControl.tsx';
 
-export type FovViewName = keyof Omit<BatchPreviews, 'frame'>;
+const PLAYABLE: ReadonlySet<string> = new Set(['raw', 'preprocessed', 'corrected', 'output']);
+
+export type FovViewName = keyof Omit<BatchPreviews, 'frame' | 'frames' | 'fit'>;
 
 const VIEWS: FovViewOption[] = [
   { value: 'raw', label: 'Raw', title: 'The frame as recorded.' },
@@ -84,12 +88,19 @@ export interface FovSource {
   initial: string;
   /** The image of a view (reactive; null: none yet). */
   image(view: string): PreviewImage | null;
+  /**
+   * The image the display range is fitted from (and Refit's recent window): one per batch, so smooth
+   * playback's extra frames are drawn but never change the held contrast. Absent: the image shown.
+   */
+  fitImage?(view: string): PreviewImage | null;
   /** Frame the images show, for the readout (null: none, or not one frame). */
   frame(): number | null;
   /** A fixed display range per view; absent or null: fit to the first images, then held. */
   fixedRange?(view: string): DisplayRange | null;
   /** Ask for the residual frame while that view is shown (the live pipeline). */
   setResidual?(on: boolean): void;
+  /** The view shown, for smooth playback of the live pipeline (null: one that cannot be played). */
+  setPlayView?(view: FrameView | null): void;
   /** Text over a view without an image. */
   emptyText?(view: string): string | null;
 }
@@ -100,8 +111,11 @@ export function pipelineFovSource(store: PipelineStore): FovSource {
     views: VIEWS,
     initial: 'output',
     image: (v) => store.previews()?.[v as FovViewName] ?? null,
+    fitImage: (v) =>
+      store.previews()?.fit?.[v as FrameView] ?? store.previews()?.[v as FovViewName] ?? null,
     frame: () => store.previews()?.frame ?? null,
     setResidual: (on) => store.setResidual(on),
+    setPlayView: (v) => store.setPlayView(v),
     emptyText: (v) =>
       v === 'residual'
         ? 'The residual comes with the frames processed while the model has cells: it shows from the next batch of a running pass.'
@@ -242,6 +256,11 @@ export function FovPanel(props: {
   // The residual frame is computed in the worker only while it is shown.
   createEffect(() => src.setResidual?.(view() === 'residual'));
   onCleanup(() => src.setResidual?.(false));
+  createEffect(() => {
+    const v = view();
+    src.setPlayView?.(PLAYABLE.has(v) ? (v as FrameView) : null);
+  });
+  onCleanup(() => src.setPlayView?.(null));
 
   let stage!: HTMLDivElement;
   let video!: HTMLCanvasElement;
@@ -253,6 +272,7 @@ export function FovPanel(props: {
   const zoomed = () => fov().zoom > 1.0001;
 
   // Video layer: the picked view, with its own held range.
+  let fitted: PreviewImage | null = null;
   createEffect(() => {
     const frame = src.frame();
     const v = view();
@@ -262,6 +282,7 @@ export function FovPanel(props: {
     if (frame === null && !img) {
       // A new run: every view fits afresh.
       for (const r of Object.values(held)) r.reset();
+      fitted = null;
       applyFixed();
     }
     const ctx = video.getContext('2d');
@@ -270,7 +291,15 @@ export function FovPanel(props: {
       ctx.clearRect(0, 0, video.width, video.height);
       return;
     }
-    const range = h.observe(img.data);
+    // One observation per batch: the batch's own last-frame image (the images shown between come from
+    // the same batch and are only drawn).
+    const fit = src.fitImage?.(v) ?? img;
+    let range: DisplayRange | null;
+    const current = untrack(h.range);
+    if (fit !== fitted || current === null) {
+      fitted = fit;
+      range = h.observe(fit.data);
+    } else range = current;
     if (!range) return;
     if (video.width !== img.width) video.width = img.width;
     if (video.height !== img.height) video.height = img.height;

@@ -7,6 +7,7 @@ import type {
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelineOptions, PipelinePlan } from '../lib/pipeline-plan.ts';
 import type { FlatFieldMap } from '../lib/flat-field.ts';
+import type { FrameView } from '../lib/preview.ts';
 import type { PaceStats } from '../lib/frame-pacer.ts';
 import type { ReplayInput } from '../lib/pipeline-stages.ts';
 
@@ -102,6 +103,11 @@ export type FrameRequest =
   | { type: 'set-discovery'; id: number; on: boolean }
   /** Return (or stop returning) the model residual preview in the running pipeline. */
   | { type: 'set-residual'; id: number; on: boolean }
+  /**
+   * Smooth playback (`lib/playback.ts`), answered at once: preview this view of every frame of the
+   * batches from now on (null: the last frame only). Held across pipeline starts.
+   */
+  | { type: 'set-frame-preview'; id: number; view: FrameView | null }
   /** Pipelined run: the port to the motion worker (transferred). The frame worker then runs stage A only. */
   | { type: 'link'; id: number; down: MessagePort }
   /**

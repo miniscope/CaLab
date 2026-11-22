@@ -62,6 +62,9 @@ import {
 import { GpuMotion } from './gpu-motion.ts';
 import {
   downsampleFrame,
+  downsampleFrames,
+  type FramePreviews,
+  type FrameView,
   previewFactor,
   takeResidualPreview,
   type PreviewImage,
@@ -95,6 +98,10 @@ export interface StageJob {
   flickerGain?: Float32Array;
   raw?: PreviewImage;
   preprocessed?: PreviewImage;
+  /** The view to preview for every frame (set by A from its setting; absent: last frame only). */
+  framePreview?: FrameView;
+  /** Every frame's preview of `framePreview`, made by the stage that owns that view. */
+  frames?: FramePreviews;
   /** Pooled buffer from B (process steps): registered frames. */
   corrected?: Float32Array;
   dy?: Float32Array;
@@ -139,6 +146,7 @@ export function jobTransferables(job: StageJob): ArrayBuffer[] {
     job.quality,
     job.flags,
     job.before?.data,
+    job.frames?.data,
     job.calib?.fovMask,
     job.calib?.preState,
   ];
@@ -277,6 +285,12 @@ export class FrontStage {
     this.raw = this.sixteen ? new Uint16Array(0) : new Uint8Array(0);
   }
 
+  /**
+   * Preview this view of every frame of the batches from now on (null: the
+   * last frame only). Display only: nothing else depends on it.
+   */
+  framePreview: FrameView | null = null;
+
   /** End the recording here: `next()` returns `null` from now on (pass 1 finished early). */
   truncate(): void {
     this.cursor.truncate();
@@ -384,6 +398,19 @@ export class FrontStage {
     }
     const rawPreview = downsampleFrame(raw, last, this.width, this.height, this.factor);
     const preprocessed = downsampleFrame(frontView, last, this.width, this.height, this.factor);
+    const view = this.framePreview;
+    const frames =
+      view === 'raw' || view === 'preprocessed'
+        ? downsampleFrames(
+            view === 'raw' ? raw : frontView,
+            s.count,
+            this.width,
+            this.height,
+            this.factor,
+            view,
+            s.start,
+          )
+        : undefined;
     const t3 = now();
     timings.preprocessMs = t2 - t1b;
     timings.otherMs = t3 - t2;
@@ -397,6 +424,8 @@ export class FrontStage {
       ...shifts,
       raw: rawPreview,
       preprocessed,
+      ...(view ? { framePreview: view } : {}),
+      ...(frames ? { frames } : {}),
       timings,
       busyMs: [t3 - t0 - (t1b - t1), 0, 0],
       ...(live ? { live } : {}),
@@ -812,6 +841,16 @@ export class MotionStage {
       this.setup.height,
       this.factor,
     );
+    if (job.framePreview === 'corrected')
+      job.frames = downsampleFrames(
+        out,
+        s.count,
+        this.setup.width,
+        this.setup.height,
+        this.factor,
+        'corrected',
+        s.start,
+      );
     const dy = new Float32Array(s.count);
     const dx = new Float32Array(s.count);
     const quality = new Float32Array(s.count);
@@ -956,6 +995,18 @@ export class BackStage {
       this.setup.height,
       this.factor,
     );
+    const frames =
+      job.framePreview === 'output'
+        ? downsampleFrames(
+            corrected,
+            s.count,
+            this.setup.width,
+            this.setup.height,
+            this.factor,
+            'output',
+            s.start,
+          )
+        : job.frames;
     const end = s.start + s.count;
     this.lastEnd = end;
     const backState =
@@ -975,6 +1026,7 @@ export class BackStage {
       preprocessed: job.preprocessed!,
       corrected: job.before!,
       output,
+      ...(frames ? { frames } : {}),
     };
     const residual = takeResidualPreview(cells, this.setup.width, this.setup.height, this.factor);
     if (residual) previews.residual = residual;
