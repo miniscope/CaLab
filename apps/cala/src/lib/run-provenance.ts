@@ -22,7 +22,7 @@
  * `null` until its feature fills it; add fields under the slot, and bump
  * `RUN_RECORD_VERSION` only when an existing field changes meaning.
  */
-import type { GovernorStatus } from './settle.ts';
+import { FINAL_SETTLE_LEVELS, type FinalSettleLevel, type GovernorStatus } from './settle.ts';
 import type { StageRun } from './run-stages.ts';
 import { stageMeta } from './export.ts';
 
@@ -464,6 +464,7 @@ export interface RunRecordSources {
     csettleCeiling(): number;
     csettleYield(): number;
     csettleNeedFirst(): boolean;
+    finalSettleLevel(): string;
     paceFps(): number;
     smoothPlayback(): boolean;
     motionBackend(): string | null;
@@ -569,6 +570,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
         started_S: pool?.workers ?? 0,
         started_at_frame: pool?.frame ?? null,
       },
+      final_settle_level: p.finalSettleLevel(),
       target_speed_fps: p.paceFps(),
       smooth_playback: p.smoothPlayback(),
       ...(extras.mode !== undefined ? { library_mode: extras.mode } : {}),
@@ -657,6 +659,7 @@ export interface AppliedSettings {
   csettleCeiling?: number;
   csettleYield?: number;
   csettleNeedFirst?: boolean;
+  finalSettleLevel?: FinalSettleLevel;
   paceFps?: number;
   smoothPlayback?: boolean;
   /**
@@ -705,6 +708,12 @@ export function settingsFromRecord(rec: unknown): AppliedSettings | null {
       out.lookbackPoolPlanned = pool.planned_S;
   }
   num('settle_yield_frames', 'csettleYield');
+  // Only a known level is restored (a record from a newer build with another name is left alone).
+  if (
+    typeof o.final_settle_level === 'string' &&
+    Object.prototype.hasOwnProperty.call(FINAL_SETTLE_LEVELS, o.final_settle_level)
+  )
+    out.finalSettleLevel = o.final_settle_level as FinalSettleLevel;
   num('target_speed_fps', 'paceFps');
   bool('smooth_playback', 'smoothPlayback');
   return out;

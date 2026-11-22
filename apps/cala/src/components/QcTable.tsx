@@ -12,9 +12,10 @@ import {
   type CellQcRow,
   type SortKey,
 } from '../lib/qc.ts';
+import { STILL_MOVING_HELP, STILL_MOVING_SCALE } from '../lib/settle.ts';
 
 interface Column {
-  key: SortKey;
+  key: SortKey | 'moving';
   label: string;
   title: string;
   /** First click sorts descending (largest first). */
@@ -61,9 +62,16 @@ const COLUMNS: Column[] = [
   },
   { key: 'eventRate', label: 'ev/min', title: 'Events per minute (descriptive)', desc: true },
   { key: 'ageFrames', label: 'age', title: 'Minutes since the cell entered the library' },
+  { key: 'moving', label: 'moving', title: STILL_MOVING_HELP, desc: true },
 ];
 
 const num = (v: number, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : '');
+
+/** The "still moving" hint, clipped at the top of its fixed scale (blank: none yet). */
+export function movingText(v: number | undefined): string {
+  if (v === undefined || Number.isNaN(v)) return '';
+  return v > STILL_MOVING_SCALE.hi ? `>${STILL_MOVING_SCALE.hi}` : v.toFixed(1);
+}
 
 function badge(r: CellQcRow): { cls: string; text: string } {
   if (r.flags & FLAG_UNMEASURED) return { cls: 'pending', text: '...' };
@@ -75,7 +83,7 @@ function badge(r: CellQcRow): { cls: string; text: string } {
 
 /** The QC table's sort and filter, kept by its owner so they outlive the table (a hidden tab). */
 export function createQcTableState() {
-  const [key, setKey] = createSignal<SortKey>('flagged');
+  const [key, setKey] = createSignal<SortKey | 'moving'>('flagged');
   const [dir, setDir] = createSignal<1 | -1>(1);
   const [flaggedOnly, setFlaggedOnly] = createSignal(false);
   return { key, setKey, dir, setDir, flaggedOnly, setFlaggedOnly };
@@ -102,7 +110,18 @@ export function QcTable(props: { cells: CellStore; state?: QcTableState }): JSX.
     const all = flaggedOnly()
       ? snap.rows.filter((r) => !r.pass && !(r.flags & FLAG_UNMEASURED))
       : snap.rows;
-    return sortRows(all, key(), dir());
+    const k = key();
+    if (k !== 'moving') return sortRows(all, k, dir());
+    // The hint is the slow loop's, not a QC metric: cells without one sort last.
+    const mov = props.cells.stillMoving();
+    const v = (id: number) => mov.get(id) ?? Number.NaN;
+    return sortRows(all, 'id').sort((a, b) => {
+      const x = v(a.id);
+      const y = v(b.id);
+      if (Number.isNaN(x) || Number.isNaN(y))
+        return Number.isNaN(x) === Number.isNaN(y) ? 0 : Number.isNaN(x) ? 1 : -1;
+      return dir() * (x - y);
+    });
   });
 
   const counts = createMemo(() => {
@@ -216,6 +235,9 @@ export function QcTable(props: { cells: CellStore; state?: QcTableState }): JSX.
                   </td>
                   <td>{num(r().eventRate, 1)}</td>
                   <td>{num(r().ageFrames / fps() / 60, 1)}</td>
+                  <td data-testid="qc-moving">
+                    {movingText(props.cells.stillMovingRatio(r().id))}
+                  </td>
                   <td class="cala-muted">
                     {est().has(r().id) ? (est().get(r().id) ? 'established' : 'probation') : ''}
                   </td>

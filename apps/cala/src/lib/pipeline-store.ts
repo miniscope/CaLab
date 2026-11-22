@@ -49,7 +49,13 @@ import { BoundaryMonitor, severityLabel, type BoundaryFlag } from './boundary-fl
 import type { SessionStart } from './session-boundary.ts';
 import type { RunHistory } from './run-history.ts';
 import type { LookbackFeed } from './lookback-client.ts';
-import { CSETTLE, csettleRate } from './settle.ts';
+import {
+  CSETTLE,
+  csettleRate,
+  FINAL_SETTLE_LEVEL_DEFAULT,
+  FINAL_SETTLE_LEVELS,
+  finalSettleLevel,
+} from './settle.ts';
 import { FloorMeter, NEED_RATE, floorText } from './speed-floor.ts';
 
 /** Step requests kept outstanding: one running, one queued so the worker never idles. */
@@ -212,6 +218,10 @@ export function createPipelineStore(
   function settleCap(): number {
     return untrack(csettle) ? csettleRate(untrack(csettleCeiling)) : 0;
   }
+  /** Final settle level (under look-back; the setting for the next Discover start). */
+  const [finalSettleLevelSig, setFinalSettleLevelSig] = createSignal(FINAL_SETTLE_LEVEL_DEFAULT);
+  /** The Final settle level the current run started with (null: no run yet), so the run record names what ran. */
+  let runLevel: ReturnType<typeof finalSettleLevel> | null = null;
   /** Session of the current run with look-back (0: none). */
   let lookbackSession = 0;
   /** The live source's counters after the newest batch (null on a file source). */
@@ -787,6 +797,7 @@ export function createPipelineStore(
       });
       // Look-back (experimental): from this start on, if the recording allows it.
       const lb = lookback() && discover() && lookbackFeed?.begin(session) === true;
+      runLevel = lb ? finalSettleLevelSig() : FINAL_SETTLE_LEVEL_DEFAULT;
       if (lb) {
         lookbackSession = session;
         setLookbackRun(true);
@@ -800,6 +811,9 @@ export function createPipelineStore(
         {
           session,
           ...(lb ? { lookback: true } : {}),
+          ...(lb && FINAL_SETTLE_LEVELS[finalSettleLevelSig()].fraction < 1
+            ? { settleFraction: FINAL_SETTLE_LEVELS[finalSettleLevelSig()].fraction }
+            : {}),
           ...(lb
             ? {
                 csettle: true,
@@ -948,6 +962,11 @@ export function createPipelineStore(
     lookbackBlocked: () =>
       lookbackFeed ? lookbackFeed.blocked() : 'Look-back is not available here.',
     lookbackRun,
+    /** How much of the final settle pass is read (Thorough, Standard, Quick); the setting for the next Discover start. */
+    finalSettleLevel: finalSettleLevelSig,
+    /** The level the current run started with (the selection before any run); what the run record names. */
+    runFinalSettleLevel: () => runLevel ?? finalSettleLevelSig(),
+    setFinalSettleLevel: (level: unknown) => setFinalSettleLevelSig(finalSettleLevel(level)),
     /** Settle during Discover (experimental; only with look-back): the settings for the next Discover start. */
     csettle,
     /** Background settle on or off (off = cap 0); during a run too. */

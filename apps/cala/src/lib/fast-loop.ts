@@ -151,6 +151,8 @@ export interface FastLoopOptions {
   csettle?: boolean;
   csettleYield?: number;
   csettleNeedFirst?: boolean;
+  /** With `lookback`: the share of the final settle pass to read (`SlowInit.settleFraction`; 1 = all). */
+  settleFraction?: number;
   /** Return the model residual of each batch's last frame (the app's residual view). */
   residual?: boolean;
   /**
@@ -176,6 +178,7 @@ export const FAST_LOOP_DEFAULTS = {
   csettle: false,
   csettleYield: 0,
   csettleNeedFirst: false,
+  settleFraction: 1,
   signed: false,
 } as const;
 
@@ -537,6 +540,9 @@ export class FastLoop {
           flattenSigmaPx: this.o.flattenSigmaPx,
           budget: this.o.budget,
           ...(this.o.lookback ? { lookback: true } : {}),
+          ...(this.o.lookback && this.o.settleFraction < 1
+            ? { settleFraction: this.o.settleFraction }
+            : {}),
           ...(this.o.lookback && this.o.csettle
             ? {
                 csettle: true,

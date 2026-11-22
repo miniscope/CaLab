@@ -84,6 +84,8 @@ import { libraryViewTransferables } from '../workers/slow-types.ts';
 import {
   CSETTLE,
   movedAgainstNoise,
+  stillMovingRatios,
+  truncatePlan,
   noiseMap,
   SETTLE,
   SettleFeed,
@@ -175,6 +177,8 @@ export interface SlowLoopLike {
   lookbackStats?(): Float64Array;
   /** `[id, noise, ...]`: split-half footprint noise of the newest library's cells (absent in older builds). */
   footprintNoise?(): Float64Array;
+  /** Split-half noise of one cell on the given pixels (`footprintNoiseOn`; absent in older builds). */
+  footprintNoiseOn?(id: number, support: Uint32Array): number;
   // Settle during Discover, frames only (see `SlowLoop.enableSettle`; absent in older fakes and builds).
   enableSettle?(chunk: number): void;
   /** `[frame, block, held, ...]`: saved frames to re-read among stream frames `0..seen`. */
@@ -482,6 +486,8 @@ export class SlowRunner {
   private lbLib: boolean[] = [];
   /** The settle's last status (kept for the final status after it ends). */
   private settleStatus: SettleStatus | undefined;
+  /** The "still moving" hint of the newest checkpoint, sent with the next status (information only). */
+  private stillMoving: Float64Array | null = null;
   private readonly defer: (fn: () => void) => void;
   private readonly timer: (fn: () => void, ms: number) => () => void;
 
@@ -673,6 +679,9 @@ export class SlowRunner {
           budget,
           ...(lookback ? { lookback: true } : {}),
           ...(csettle ? { csettle } : {}),
+          ...(lookback && (msg.settleFraction ?? 1) < 1
+            ? { settleFraction: msg.settleFraction }
+            : {}),
         };
         this.loop = this.clock.span('setup', () => this.deps.create(this.init!));
         this.run = 1;
@@ -1328,7 +1337,9 @@ export class SlowRunner {
     this.cancelRequests();
     // The frames Discover forwarded: the recording (stream index = file frame).
     const recording = this.consumed;
-    const feed = new SettleFeed(settlePlan(recording));
+    const feed = new SettleFeed(
+      truncatePlan(settlePlan(recording), this.init?.settleFraction ?? 1),
+    );
     this.drain = {
       phase: 'sweep',
       feed,
@@ -1374,7 +1385,23 @@ export class SlowRunner {
       const m = movedAgainstNoise(d.prev, now, noise, SETTLE.movingK);
       d.moving = { cells: m.cells, above: m.aboveK };
     }
+    this.noteStillMoving(loop, d.prev, now);
     d.prev = now;
+  }
+
+  /**
+   * The per-cell "still moving" hint of the step between two checkpoints
+   * (see `stillMovingRatios`); every checkpoint spans the same number of
+   * frames, so values mean the same at every Final-settle level.
+   */
+  private noteStillMoving(
+    loop: SlowLoopLike,
+    before: ReturnType<typeof unitFootprints> | null,
+    after: ReturnType<typeof unitFootprints>,
+  ): void {
+    const on = loop.footprintNoiseOn;
+    if (!before || !on) return;
+    this.stillMoving = stillMovingRatios(before, after, (id, px) => on.call(loop, id, px));
   }
 
   /**
@@ -1721,6 +1748,12 @@ export class SlowRunner {
       status.footprintNoise = noise;
       transfer.push(noise.buffer as ArrayBuffer);
     }
+    // A checkpoint's "still moving" hint goes out once, with the next status.
+    if (this.stillMoving) {
+      status.stillMoving = this.stillMoving;
+      transfer.push(this.stillMoving.buffer as ArrayBuffer);
+      this.stillMoving = null;
+    }
     this.deps.toMain.postMessage({ type: 'status', session: this.session, status }, transfer);
   }
 
@@ -1769,5 +1802,6 @@ export class SlowRunner {
     // (An answer in pieces: its buffer belongs to a session the look-back worker drops too.)
     this.cs = null;
     this.settleStatus = undefined;
+    this.stillMoving = null;
   }
 }
