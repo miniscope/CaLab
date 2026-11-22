@@ -42,6 +42,7 @@ import {
 } from '../lib/export.ts';
 import { SidePanel } from './SidePanel.tsx';
 import { SpeedControl } from './SpeedControl.tsx';
+import { WorkDisplay } from './WorkDisplay.tsx';
 import { reportResultsExported } from '../lib/analytics-integration.ts';
 
 /** `?debug` is in the URL (read once). */
@@ -623,6 +624,8 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           {s().floorLine() || 'floor: waiting for a status'}
         </pre>
       </Show>
+      {/* The work display: below the Speed block (PR D) when it lands. */}
+      <WorkDisplay pipeline={s()} cells={c()} ui={props.ui} live={props.live} visible={shown()} />
       <Show when={s().live()}>
         {(live) => (
           <p class="cala-readout cala-run__line" data-testid="live-readout">

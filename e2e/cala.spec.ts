@@ -59,6 +59,11 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   // Opening also runs preprocessing and motion correction in the worker.
   await expect(page.getByTestId('pipeline-status')).toHaveText('Done', { timeout: 20_000 });
   await expect(page.getByTestId('pipeline-readout')).toContainText('frame 6 / 6');
+  // The work display is in the Run panel, with its fixed ranges and honest empty values.
+  await page.getByRole('tab', { name: 'Run' }).click();
+  await expect(page.getByTestId('work-display')).toBeVisible();
+  await expect(page.getByTestId('work-legend')).toContainText('Final settle');
+  await expect(page.getByTestId('work-progress')).toContainText('Discover');
   await page.getByRole('tab', { name: 'History' }).click();
   await page.getByTestId('history-group').getByRole('radio', { name: 'Motion' }).click();
   await expect(page.getByTestId('history-motion')).toBeVisible();
