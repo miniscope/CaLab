@@ -200,6 +200,62 @@ describe('pipeline store backpressure', () => {
     });
   });
 
+  it('tells the frame worker the pace, and pause and resume, without holding requests itself', async () => {
+    const { client, steps } = manualClient();
+    const setPace = vi.fn(async () => {});
+    await createRoot(async (dispose) => {
+      const store = createPipelineStore({ ...client, setPace });
+      store.setPaceFps(30);
+      await store.start();
+      expect(setPace).toHaveBeenLastCalledWith({ fps: 30 });
+      // The main thread keeps its requests outstanding as without a pace: the worker's gate waits.
+      expect(client.stepPipeline).toHaveBeenCalledTimes(MAX_IN_FLIGHT);
+      store.pause();
+      expect(setPace).toHaveBeenLastCalledWith({ paused: true });
+      store.resume();
+      expect(setPace).toHaveBeenLastCalledWith({ paused: false });
+      store.setPaceFps(0);
+      expect(setPace).toHaveBeenLastCalledWith({ fps: 0, paused: false });
+      void steps;
+      dispose();
+    });
+  });
+
+  it('never leaves the gate held: pause, pace off, resume, pace on', async () => {
+    const { client } = manualClient();
+    const setPace = vi.fn(async () => {});
+    await createRoot(async (dispose) => {
+      const store = createPipelineStore({ ...client, setPace });
+      store.setPaceFps(30);
+      await store.start();
+      store.pause();
+      store.setPaceFps(0);
+      store.resume();
+      expect(setPace).toHaveBeenLastCalledWith({ paused: false });
+      store.setPaceFps(20);
+      expect(setPace).toHaveBeenLastCalledWith({ fps: 20, paused: false });
+      // Paused with no pace, then a pace: the gate starts held.
+      store.setPaceFps(0);
+      store.pause();
+      store.setPaceFps(15);
+      expect(setPace).toHaveBeenLastCalledWith({ fps: 15, paused: true });
+      dispose();
+    });
+  });
+
+  it('sends no pace message when no pace is set', async () => {
+    const { client } = manualClient();
+    const setPace = vi.fn(async () => {});
+    await createRoot(async (dispose) => {
+      const store = createPipelineStore({ ...client, setPace });
+      await store.start();
+      store.pause();
+      store.resume();
+      expect(setPace).not.toHaveBeenCalled();
+      dispose();
+    });
+  });
+
   it('keeps whole-run timing averages over a long batch and resets them on stop', async () => {
     const { client, steps } = manualClient();
     await createRoot(async (dispose) => {
