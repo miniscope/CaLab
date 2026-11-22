@@ -397,6 +397,14 @@ impl SettleDeltaBuilder {
                 "traces do not come from this library / frame size".into(),
             ));
         }
+        if !traces.background.is_empty() && traces.background.len() != lib.background_len() {
+            return Err(TraceError::Incompatible(format!(
+                "background has {} values, library {} expects {}",
+                traces.background.len(),
+                lib.version(),
+                lib.background_len()
+            )));
+        }
         match self.version {
             None => {
                 self.version = Some(lib.version());
