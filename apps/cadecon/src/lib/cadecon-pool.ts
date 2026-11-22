@@ -10,6 +10,7 @@ import type {
   KernelResult,
   SeedTraceResult,
   WarmBiexp,
+  BlindUnits,
 } from '../workers/cadecon-types.ts';
 import type { OverviewJob } from '@calab/ui/dataset';
 
@@ -28,7 +29,20 @@ interface TraceJobFields {
   lpEnabled: boolean;
   lambda: number;
   warmCounts?: Float32Array;
+  unit?: number;
+  occ?: number[];
   onComplete(result: TraceResult): void;
+}
+
+interface BlindJobFields {
+  kind: 'blind';
+  tracesFlat: Float32Array;
+  nCells: number;
+  nTimepoints: number;
+  tauRise: number;
+  tauDecay: number;
+  fs: number;
+  onComplete(units: BlindUnits): void;
 }
 
 interface KernelJobFields {
@@ -60,7 +74,7 @@ interface SeedTraceJobFields {
 type OverviewJobFields = Omit<OverviewJob, keyof BaseJob> & { kind: 'overview' };
 
 export type CaDeconPoolJob = BaseJob &
-  (TraceJobFields | KernelJobFields | SeedTraceJobFields | OverviewJobFields);
+  (TraceJobFields | KernelJobFields | SeedTraceJobFields | OverviewJobFields | BlindJobFields);
 
 // --- Message Router ---
 
@@ -92,6 +106,10 @@ const caDeconRouter: MessageRouter<CaDeconPoolJob, CaDeconWorkerOutbound> = {
         finish();
         if (job.kind === 'overview') job.onComplete(msg.cells);
         break;
+      case 'blind-complete':
+        finish();
+        if (job.kind === 'blind') job.onComplete(msg.units);
+        break;
       case 'cancelled':
         finish();
         job.onCancelled();
@@ -120,6 +138,21 @@ const caDeconRouter: MessageRouter<CaDeconPoolJob, CaDeconWorkerOutbound> = {
         [job.tracesFlat.buffer],
       ];
     }
+    if (job.kind === 'blind') {
+      return [
+        {
+          type: 'blind-job',
+          jobId: job.jobId,
+          tracesFlat: job.tracesFlat,
+          nCells: job.nCells,
+          nTimepoints: job.nTimepoints,
+          tauRise: job.tauRise,
+          tauDecay: job.tauDecay,
+          fs: job.fs,
+        },
+        [job.tracesFlat.buffer as ArrayBuffer],
+      ];
+    }
     if (job.kind === 'seed-trace') {
       return [
         { type: 'seed-trace-job', jobId: job.jobId, trace: job.trace, fs: job.fs },
@@ -145,6 +178,8 @@ const caDeconRouter: MessageRouter<CaDeconPoolJob, CaDeconWorkerOutbound> = {
           lpEnabled: job.lpEnabled,
           lambda: job.lambda,
           warmCounts: warmCopy,
+          unit: job.unit,
+          occ: job.occ,
         },
         transfers,
       ];

@@ -33,6 +33,18 @@ export interface TraceResult {
   rectifiedInput?: boolean;
 }
 
+/** The single-spike unit of every cell of a recording (WASM `blind_units`), in the order the cells were sent. */
+export interface BlindUnits {
+  /** Index of the recording's shared level-model combination. */
+  shared: number;
+  /** Size of one spike per cell, raw-trace units; always finite and positive. */
+  u: number[];
+  /** Count-law parameter per cell (the recording's median for a cell that could not be fitted; NaN if none could). */
+  rho: number[];
+  /** Measured noise sd over the unit per cell (NaN without a noise reading): start of the counting step's noise scale. */
+  s0: number[];
+}
+
 /** Results from peak-seeded spike detection on a single trace. */
 export interface SeedTraceResult {
   sCounts: Float32Array;
@@ -81,6 +93,22 @@ export type CaDeconWorkerInbound =
       lambda: number;
       /** Previous iteration s_counts (per native frame) for warm-start. */
       warmCounts?: Float32Array;
+      /** Given size of one spike (raw-trace units); absent = the rate-cap size search. */
+      unit?: number;
+      /** With `unit`: [shared, rho] from `BlindUnits`, for the noise / event classing and the burst-count rule. */
+      occ?: number[];
+    }
+  | {
+      /** The single-spike unit of every cell, from the raw traces and the kernel. */
+      type: 'blind-job';
+      jobId: number;
+      /** nCells traces of nTimepoints samples each, cell-major. */
+      tracesFlat: Float32Array;
+      nCells: number;
+      nTimepoints: number;
+      tauRise: number;
+      tauDecay: number;
+      fs: number;
     }
   | {
       type: 'kernel-job';
@@ -131,6 +159,7 @@ export type CaDeconWorkerOutbound =
   | { type: 'trace-complete'; jobId: number; result: TraceResult }
   | { type: 'kernel-complete'; jobId: number; result: KernelResult }
   | { type: 'seed-trace-complete'; jobId: number; result: SeedTraceResult }
+  | { type: 'blind-complete'; jobId: number; units: BlindUnits }
   | { type: 'overview-complete'; jobId: number; cells: import('@calab/core').CellOverview[] }
   | { type: 'cancelled'; jobId: number }
   | { type: 'error'; jobId: number; message: string };

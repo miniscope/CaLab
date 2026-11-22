@@ -436,6 +436,250 @@ pub(crate) fn event_mass_search(
     }
 }
 
+/// The binarization at a GIVEN spike size `a` (units of the solve's
+/// prescale): counts from [`unit_counts`], placed exactly as in
+/// [`event_mass_search`] (per-frame ceiling `cap` unchanged), amplitude and
+/// offset fit by the scorer for the pve. No size search, no floor.
+pub(crate) fn event_mass_at(
+    x: &[f32],
+    scorer: &mut Scorer,
+    banded: &BandedAR2,
+    pad: usize,
+    cap: usize,
+    a: f64,
+    occupancy: Option<(f64, f64, f64, f64, f64)>,
+) -> EventMassResult {
+    let n = scorer.target().len();
+    let cap = cap.max(1);
+    let (lo, hi) = (pad.min(n), n.saturating_sub(pad));
+    let events = if lo < hi { segment(x, lo, hi) } else { vec![] };
+    let a_max = events.iter().map(|e| e.mass).fold(0.0_f64, f64::max);
+    let mut s = vec![0.0_f32; n];
+    let mut conv = vec![0.0_f32; n];
+    if a_max <= 0.0 || n == 0 || a.is_nan() || a <= 0.0 {
+        let baseline = if n == 0 {
+            0.0
+        } else {
+            scorer.target().iter().map(|&v| v as f64).sum::<f64>() / n as f64
+        };
+        return EventMassResult {
+            counts: s,
+            alpha: 0.0,
+            baseline,
+            pve: 0.0,
+            error: f64::INFINITY,
+            diag: EventMassDiag::default(),
+        };
+    }
+    let frame_max = x[lo..hi].iter().fold(0.0_f64, |m, &v| m.max(v as f64));
+    let per_event = unit_counts(&events, a, occupancy);
+    let requested: usize = per_event.iter().sum();
+    let placed = place_all(&events, x, &per_event, cap, &mut s);
+    let (error, alpha, baseline) = scorer.score(&s, banded, pad, f64::INFINITY, &mut conv);
+    let pve = interior_pve(scorer.target(), &conv, alpha, baseline, pad);
+    let diag = EventMassDiag {
+        a_pick: a,
+        a_floor: frame_max / cap as f64,
+        a_max,
+        e_pick: error,
+        count_pick: placed as f64,
+        dropped_spikes: (requested - placed) as u32,
+        peak_outlier_ratio: peak_outlier_ratio(&events),
+        ..Default::default()
+    };
+    EventMassResult {
+        counts: s,
+        alpha,
+        baseline,
+        pve,
+        error,
+        diag,
+    }
+}
+
+/// Per-event counts at the unit `a`. Without `occupancy`: `round(m_e / a)`. With it (the unit estimator's level
+/// model `(q, g, s_, rho)`): each run is classed as noise or event ([`occupancy_fit`]); noise runs count 0, event
+/// runs `max(round(z), 1)`, and where the burst rule's `n^2 / n1` total is the smaller, its counts ([`burst_counts`]).
+fn unit_counts(
+    events: &[Event],
+    a: f64,
+    occupancy: Option<(f64, f64, f64, f64, f64)>,
+) -> Vec<usize> {
+    let mut per_event = vec![0usize; events.len()];
+    counts_at(events, a, &mut per_event);
+    if let Some((q, g, s_, rho, s0)) = occupancy {
+        let z: Vec<f64> = events.iter().map(|e| e.mass / a).collect();
+        if let Some((keep, p0, w1)) = occupancy_fit(&z, q, g, s_, rho, s0) {
+            for ((c, k), zz) in per_event.iter_mut().zip(&keep).zip(&z) {
+                *c = if *k {
+                    (zz.round().max(1.0)) as usize
+                } else {
+                    0
+                };
+            }
+            if let Some(cb) = burst_counts(&z, &keep, p0, w1) {
+                per_event = cb;
+            }
+        }
+    }
+    per_event
+}
+
+/// The burst-count rule. From the occupancy fit: `n = n_runs (1 - pi0)` events, `n1 = n_runs w1` singles (`w1` =
+/// mean posterior of the N = 1 class). When `T = n^2 / n1` is below the summed masses of the event runs, the cell
+/// total is `max(round(T), K)` (K event runs), shared by rank ([`allot`]); otherwise `None` (the per-run counts
+/// stand).
+fn burst_counts(z: &[f64], keep: &[bool], p0: f64, w1: f64) -> Option<Vec<usize>> {
+    let nr = z.len() as f64;
+    let (n, n1) = (nr * (1.0 - p0), nr * w1);
+    let zk: Vec<f64> = z
+        .iter()
+        .zip(keep)
+        .filter(|(_, k)| **k)
+        .map(|(v, _)| *v)
+        .collect();
+    let sum: f64 = zk.iter().sum();
+    let t1 = if n1 > 0.0 { n * n / n1 } else { f64::INFINITY };
+    if t1.partial_cmp(&sum) != Some(std::cmp::Ordering::Less) {
+        return None;
+    }
+    let mut ck = allot(&zk, (t1 + 0.5).floor() as usize, 1.0 - n1 / n).into_iter();
+    Some(
+        keep.iter()
+            .map(|&k| if k { ck.next().unwrap() } else { 0 })
+            .collect(),
+    )
+}
+
+/// Integer counts for events of masses `zk`, each at least 1, summing to `max(total, K)`: the counts beyond one per
+/// event go in proportion to `N_i - 1`, `N_i = 1 + floor(ln(r_i / K) / ln(rho_hat))`, `r_i` the rank by mass from the
+/// top (in proportion to the mass if every `N_i` is 1); largest remainders, ties to the larger mass.
+fn allot(zk: &[f64], total: usize, rho_hat: f64) -> Vec<usize> {
+    let k = zk.len();
+    let mut order: Vec<usize> = (0..k).collect();
+    order.sort_by(|&i, &j| zk[j].total_cmp(&zk[i])); // stable: ties keep the earlier run first
+    let mut r = vec![0.0_f64; k];
+    order
+        .iter()
+        .enumerate()
+        .for_each(|(pos, &i)| r[i] = (pos + 1) as f64);
+    let mut w: Vec<f64> = if rho_hat > 0.0 && rho_hat < 1.0 {
+        r.iter()
+            .map(|ri| ((ri / k as f64).ln() / rho_hat.ln()).floor())
+            .collect()
+    } else {
+        vec![0.0; k]
+    };
+    if w.iter().sum::<f64>() <= 0.0 {
+        w = zk.to_vec();
+    }
+    let sw: f64 = w.iter().sum();
+    let e = total.saturating_sub(k) as f64;
+    let share: Vec<f64> = w.iter().map(|wi| e * wi / sw).collect();
+    let mut c: Vec<usize> = share.iter().map(|v| v.floor() as usize).collect();
+    let left = (e as usize).saturating_sub(c.iter().sum::<usize>());
+    let mut top: Vec<usize> = (0..k).collect();
+    top.sort_by(|&i, &j| {
+        (share[j] - c[j] as f64)
+            .total_cmp(&(share[i] - c[i] as f64))
+            .then(r[i].total_cmp(&r[j]))
+    });
+    top.iter().take(left).for_each(|&i| c[i] += 1);
+    c.iter().map(|v| v + 1).collect()
+}
+
+/// Posterior occupancy of the relaxed runs. The run masses
+/// in units `z` follow `pi0 * halfnormal(s) + (1 - pi0) * sum_N (1 - rho) rho^(N-1)
+/// Normal(N^q, s^2 + (cv_N N^q)^2)`, `cv_N = sqrt(g^2 / N + s_^2 [N > 1])` (the unit
+/// estimator's own level model, unit fixed). `pi0` and `s` by EM. Returns which runs are
+/// more probably events than noise, the fitted `pi0`, and the mean posterior probability of the
+/// single-spike class (the burst rule's `w1`); `None` when the fit has no event class (the
+/// `round(m / a)` counts then stand) or there are no runs.
+/// `s0` (the measured noise sd of a kernel height over the unit) is where the noise scale starts; when it is not
+/// finite and positive the start is the half-normal median of the run masses, which assumes most runs are noise.
+fn occupancy_fit(
+    z: &[f64],
+    q: f64,
+    g: f64,
+    s_: f64,
+    rho: f64,
+    s0: f64,
+) -> Option<(Vec<bool>, f64, f64)> {
+    if z.is_empty() {
+        return None;
+    }
+    let sq2pi = (2.0 * std::f64::consts::PI).sqrt();
+    let zmax = z.iter().cloned().fold(f64::MIN, f64::max);
+    let nmax = (((zmax + 1.0).powf(1.0 / q)).ceil() + 2.0).max(3.0) as usize;
+    let lev: Vec<f64> = (1..=nmax).map(|n| (n as f64).powf(q)).collect();
+    let cv: Vec<f64> = (1..=nmax)
+        .map(|n| (g * g / n as f64 + if n > 1 { s_ * s_ } else { 0.0 }).sqrt())
+        .collect();
+    let mut w: Vec<f64> = (1..=nmax)
+        .map(|n| (1.0 - rho) * rho.powi(n as i32 - 1))
+        .collect();
+    let ws: f64 = w.iter().sum();
+    w.iter_mut().for_each(|v| *v /= ws);
+    let f1 = |zz: f64, s: f64| -> f64 {
+        (0..nmax)
+            .map(|k| {
+                let sd = (s * s + (cv[k] * lev[k]).powi(2)).sqrt();
+                w[k] * (-0.5 * ((zz - lev[k]) / sd).powi(2)).exp() / (sd * sq2pi)
+            })
+            .sum()
+    };
+    let f0 = |zz: f64, s: f64| 2.0 * (-0.5 * (zz / s).powi(2)).exp() / (s * sq2pi);
+    let mut sorted = z.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let m = sorted.len();
+    let med = if m % 2 == 1 {
+        sorted[m / 2]
+    } else {
+        0.5 * (sorted[m / 2 - 1] + sorted[m / 2])
+    };
+    // With a measured noise scale the scale is HELD there and only the noise share is fitted: the noise used to
+    // class a run then comes from the noise measurement alone, never from the run masses.
+    let held = s0.is_finite() && s0 > 0.0;
+    let start = if held { s0 } else { med / 0.6745 };
+    let (mut s, mut p) = (start.max(1e-6), 0.5_f64);
+    for _ in 0..200 {
+        let (mut rs, mut rz) = (0.0_f64, 0.0_f64);
+        for &zz in z {
+            let a0 = p * f0(zz, s);
+            let r = a0 / (a0 + (1.0 - p) * f1(zz, s) + 1e-300);
+            rs += r;
+            rz += r * zz * zz;
+        }
+        let p_new = rs / m as f64;
+        let s_new = (rz / rs.max(1e-300)).sqrt();
+        let s_new = if held { s } else { s_new };
+        let done = (p_new - p).abs() < 1e-10 && (s_new - s).abs() < 1e-10 * s;
+        p = p_new;
+        s = s_new.max(1e-9);
+        if done {
+            break;
+        }
+    }
+    let keep: Vec<bool> = z
+        .iter()
+        .map(|&zz| {
+            let a0 = p * f0(zz, s);
+            a0 / (a0 + (1.0 - p) * f1(zz, s) + 1e-300) < 0.5
+        })
+        .collect();
+    let sd1 = (s * s + g * g).sqrt();
+    let w1 = z
+        .iter()
+        .map(|&zz| {
+            (1.0 - p) * w[0] * (-0.5 * ((zz - 1.0) / sd1).powi(2)).exp()
+                / (sd1 * sq2pi)
+                / (p * f0(zz, s) + (1.0 - p) * f1(zz, s) + 1e-300)
+        })
+        .sum::<f64>()
+        / m as f64;
+    keep.iter().any(|&k| k).then_some((keep, p, w1))
+}
+
 /// Largest event peak over the second largest (see
 /// [`EventMassDiag::peak_outlier_ratio`]).
 fn peak_outlier_ratio(events: &[Event]) -> f64 {
@@ -461,6 +705,34 @@ mod tests {
     use super::*;
     use crate::chain::Chain;
     use crate::filter::BandpassFilter;
+
+    #[test]
+    fn burst_rule_allots_by_rank_and_takes_the_smaller_total() {
+        let c = allot(&[5., 1., 3., 2., 1.5, 9.], 11, 0.5);
+        assert_eq!(c.iter().sum::<usize>(), 11);
+        assert!(
+            c.iter().all(|&v| v >= 1) && c[5] == *c.iter().max().unwrap() && c[1] == 1,
+            "{c:?}"
+        );
+        assert_eq!(allot(&[2., 1.], 1, 0.5), vec![1, 1]); // never under one per event
+        assert_eq!(allot(&[3.], 4, 0.5), vec![4]); // every N_i = 1: in proportion to the mass
+                                                   // 10 runs, 4 events, pi0 = 0.6, w1 = 0.2: n = 4, n1 = 2, T = 8 < summed masses 14 -> total 8 over the 4 events, noise runs 0
+        let z = [0.1, 6.0, 0.2, 4.0, 0.1, 3.0, 0.2, 1.0, 0.1, 0.1];
+        let keep: Vec<bool> = z.iter().map(|&v| v >= 1.0).collect();
+        let cb = burst_counts(&z, &keep, 0.6, 0.2).unwrap();
+        assert_eq!(cb.iter().sum::<usize>(), 8);
+        assert!(
+            cb.iter()
+                .zip(&keep)
+                .all(|(&c, &k)| if k { c >= 1 } else { c == 0 })
+                && cb[1] >= cb[3]
+                && cb[3] >= cb[5]
+                && cb[5] >= cb[7],
+            "{cb:?}"
+        );
+        // T = n^2 / n1 = 16 / 0.5 = 32 above the summed masses: the per-run counts stand
+        assert!(burst_counts(&z, &keep, 0.6, 0.05).is_none());
+    }
 
     /// Counts per frame of a placed event set.
     fn place(

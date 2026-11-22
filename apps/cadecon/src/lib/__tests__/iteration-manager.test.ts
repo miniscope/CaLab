@@ -169,6 +169,13 @@ function completeJob(job: DispatchedJob): void {
     const sCounts = new Float32Array(n);
     sCounts[1] = 1;
     job.onComplete({ sCounts, alpha: 1, baseline: 0 });
+  } else if (job.kind === 'blind') {
+    job.onComplete({
+      shared: 3,
+      u: Array.from({ length: job.nCells }, (_, j) => 2 + j),
+      rho: Array.from({ length: job.nCells }, () => 0.5),
+      s0: Array.from({ length: job.nCells }, () => 0.25),
+    });
   }
 }
 
@@ -309,6 +316,17 @@ describe('iteration-manager: startRun dispatch sequence', () => {
     expect(kinds).toContain('seed-trace');
     expect(kinds).toContain('kernel');
     expect(kinds).toContain('trace');
+    // The final pass asks for the spike sizes once, then solves every cell at its own.
+    const blindAt = kinds.indexOf('blind');
+    expect(kinds.filter((k) => k === 'blind')).toHaveLength(1);
+    const finalJobs = fakePool!.jobs.slice(blindAt + 1);
+    expect(finalJobs.map((j) => j.kind === 'trace' && [j.unit, j.occ])).toEqual([
+      [2, [3, 0.5, 0.25]],
+      [3, [3, 0.5, 0.25]],
+    ]);
+    // Trace solves inside the loop keep the rate-cap size search.
+    const loopJobs = fakePool!.jobs.slice(0, blindAt);
+    expect(loopJobs.every((j) => j.kind !== 'trace' || j.unit === undefined)).toBe(true);
     // Convergence history records iteration 0 + at least one iteration
     expect(convergenceHistory().length).toBeGreaterThanOrEqual(2);
 
