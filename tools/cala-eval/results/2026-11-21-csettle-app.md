@@ -196,37 +196,37 @@ logs in `~/Projects/cala-data/runs/csettle-app/browser-fix` (old ones untouched)
 
 ### Workshop at full speed, toggle on (two runs)
 
-| measure | off (old) | on, before fix | on, after fix |
-| --- | --- | --- | --- |
-| Discover s (fps) | 109 / 108 (218, 220) | 113 / 109 (210, 217) | 109 / 110 (217, 216) |
-| end settle s | 188 / 188 | 194 / 190 | 186 / 192 |
-| cells at the end | 754 / 754 | 776 / 749 | 752 / 756 |
-| peak tab GB | 3.7 / 3.7 | 3.3 / 3.2 | 3.45 / 3.37 |
-| frames dropped for the slow loop | 33.6 / 33.1 % | 37.9 / 38.4 % | 38.8 / 37.5 % |
-| settle re-read per live frame | - | 0.34 / 0.32 | 0.34 / 0.33 |
-| need-driven frames asked | 10,272 / 10,368 | 4,912 / 4,704 | 4,880 / 4,944 |
-| end settle: moved > 2x noise | 77 / 76 % | 72 / 73 % | 72 / 72 % |
-| end settle: median change | 31.6 / 31.4 % | 27.5 / 27.3 % | 26.5 / 27.6 % |
+| measure                          | off (old)            | on, before fix       | on, after fix        |
+| -------------------------------- | -------------------- | -------------------- | -------------------- |
+| Discover s (fps)                 | 109 / 108 (218, 220) | 113 / 109 (210, 217) | 109 / 110 (217, 216) |
+| end settle s                     | 188 / 188            | 194 / 190            | 186 / 192            |
+| cells at the end                 | 754 / 754            | 776 / 749            | 752 / 756            |
+| peak tab GB                      | 3.7 / 3.7            | 3.3 / 3.2            | 3.45 / 3.37          |
+| frames dropped for the slow loop | 33.6 / 33.1 %        | 37.9 / 38.4 %        | 38.8 / 37.5 %        |
+| settle re-read per live frame    | -                    | 0.34 / 0.32          | 0.34 / 0.33          |
+| need-driven frames asked         | 10,272 / 10,368      | 4,912 / 4,704        | 4,880 / 4,944        |
+| end settle: moved > 2x noise     | 77 / 76 %            | 72 / 73 %            | 72 / 72 %            |
+| end settle: median change        | 31.6 / 31.4 %        | 27.5 / 27.3 %        | 26.5 / 27.6 %        |
 
 Full speed is unchanged by the fix: the look-back worker is the limit, so the picture is the same.
 
 ### Samara at 30 fps pace
 
-| measure | 10_43_21 off (old, 1 run) | 10_43_21 on, before fix (1 run) | 10_43_21 on, after fix (2 runs) | 14_57_02 off (1 run) | 14_57_02 on (1 run) |
-| --- | --- | --- | --- | --- | --- |
-| Discover s (fps) | 596 (30) | 595 (30) | 596 / 596 (30) | 596 (30) | 596 (30) |
-| end settle s | 104 | 103 | 104 / 106 | 100 | 101 |
-| cells at the end | 389 | 379 | 392 / 397 | 319 | 327 |
-| peak tab GB | 3.2 | 2.9 | 2.86 / 3.01 | 2.63 | 2.97 |
-| frames dropped for the slow loop | 0 of 17,831 | 8 of 17,831 | 0 / 0 of 17,831 | 0 of 17,827 | 0 of 17,827 |
-| settle re-read per live frame | - | 2.00 | 1.99 / 1.99 | - | 1.99 |
-| need-driven frames asked | 35,415 | 35,353 | 35,415 / 35,415 | 35,407 | 35,407 |
-| end settle: moved > 2x noise | 49 % | 25 % | 33 % / 30 % | 53 % | 30 % |
-| end settle: moved > 1x noise | 84 % | 65 % | 69 % / 68 % | 87 % | 70 % |
-| end settle: median change | 20.2 % | 12.6 % | 14.1 / 14.0 % | 23.9 % | 14.8 % |
-| median change / noise | 1.99 | 1.30 | 1.53 / 1.42 | 2.10 | 1.45 |
-| visit jobs / refines | 54,849 / 11,819 | 51,377 / 15,332 | 51,321 / 14,961; 51,193 / 14,765 | 51,340 / 10,218 | 49,810 / 12,652 |
-| slow worker per answer, mean (longest) ms | - | 25 (63) | 27 (59) / 27 (60) | - | 21 (47) |
+| measure                                   | 10_43_21 off (old, 1 run) | 10_43_21 on, before fix (1 run) | 10_43_21 on, after fix (2 runs)  | 14_57_02 off (1 run) | 14_57_02 on (1 run) |
+| ----------------------------------------- | ------------------------- | ------------------------------- | -------------------------------- | -------------------- | ------------------- |
+| Discover s (fps)                          | 596 (30)                  | 595 (30)                        | 596 / 596 (30)                   | 596 (30)             | 596 (30)            |
+| end settle s                              | 104                       | 103                             | 104 / 106                        | 100                  | 101                 |
+| cells at the end                          | 389                       | 379                             | 392 / 397                        | 319                  | 327                 |
+| peak tab GB                               | 3.2                       | 2.9                             | 2.86 / 3.01                      | 2.63                 | 2.97                |
+| frames dropped for the slow loop          | 0 of 17,831               | 8 of 17,831                     | 0 / 0 of 17,831                  | 0 of 17,827          | 0 of 17,827         |
+| settle re-read per live frame             | -                         | 2.00                            | 1.99 / 1.99                      | -                    | 1.99                |
+| need-driven frames asked                  | 35,415                    | 35,353                          | 35,415 / 35,415                  | 35,407               | 35,407              |
+| end settle: moved > 2x noise              | 49 %                      | 25 %                            | 33 % / 30 %                      | 53 %                 | 30 %                |
+| end settle: moved > 1x noise              | 84 %                      | 65 %                            | 69 % / 68 %                      | 87 %                 | 70 %                |
+| end settle: median change                 | 20.2 %                    | 12.6 %                          | 14.1 / 14.0 %                    | 23.9 %               | 14.8 %              |
+| median change / noise                     | 1.99                      | 1.30                            | 1.53 / 1.42                      | 2.10                 | 1.45                |
+| visit jobs / refines                      | 54,849 / 11,819           | 51,377 / 15,332                 | 51,321 / 14,961; 51,193 / 14,765 | 51,340 / 10,218      | 49,810 / 12,652     |
+| slow worker per answer, mean (longest) ms | -                         | 25 (63)                         | 27 (59) / 27 (60)                | -                    | 21 (47)             |
 
 Libraries of the two 10_43_21 runs agree at 0.989 (last frame) and 0.991 (settled); 14_57_02 on vs off 0.969 and 0.987.
 
