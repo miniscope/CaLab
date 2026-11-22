@@ -13,6 +13,11 @@ import json
 import sys
 from pathlib import Path
 
+# `SlowLoop.settleDeltaStats()` (crates/cala/src/discover/js.rs), in order.
+ENGINE = ["applied", "rejected", "stale_version", "frames", "cells", "cells_gone", "cells_moved", "cells_absent",
+          "clusters", "clusters_gone", "clusters_stale", "clusters_off", "clusters_absent", "cluster_skips", "work",
+          "work_equiv"]
+
 
 def summary(out: Path, tag: str) -> dict:
     work = json.loads((out / f"{tag}-work.json").read_text())
@@ -49,10 +54,20 @@ def summary(out: Path, tag: str) -> dict:
                         "delta_MB_per_ans": d["deltaBytes"] / 1e6 / max(1, d["applied"] + d["rejected"]),
                         "context_ms_per_req": d["contextMs"] / max(1, d["applied"] + d["rejected"]),
                         "build_ms_per_ans": d["buildMs"] / max(1, d["applied"] + d["rejected"]),
-                        "engine": d["engine"]})
+                        "engine": dict(zip(ENGINE, d["engine"]))})
         b = last["st"].get("batch")
+        row["maxBlockMs"] = cs.get("maxBlockMs")
         if b:
             row["drop"] = f'{b["drop"]}/{b["drop"] + b["fwd"]}'
+    # Peak memory over the run: renderer footprint, and per worker kind the largest ArrayBuffer backing + WASM heap.
+    smp = samples if isinstance(samples, list) else samples.get("samples", [])
+    row["peak_renderer_foot_MB"] = round(max((x.get("rendererFoot") or 0) for x in smp), 1) if smp else None
+    peak: dict = {}
+    for x in smp:
+        for w in x.get("workers") or []:
+            k = w.get("url", "?").split("/")[-1].split("?")[0]
+            peak[k] = max(peak.get(k, 0), (w.get("backing") or 0) + (w.get("wasm") or 0))
+    row["peak_worker_backing_plus_wasm_MB"] = {k: round(v, 1) for k, v in sorted(peak.items())}
     return row
 
 
