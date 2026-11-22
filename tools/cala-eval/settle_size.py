@@ -4,7 +4,9 @@
     settle_size.py score  SIM_DIR RUN_DIR OUT.tsv [--lib NAME] [--all-det]   one sim run -> per-cell rows
     settle_size.py tree   LABEL=RUN_TREE ... --out DIR [--names a,b] [--lib NAME]   every run of the trees
     settle_size.py report DIR BASE NEW [--names a,b]        paired table NEW minus BASE (95 % CI over sims)
-    settle_size.py real   LABEL=LIBRARY ... [--pair A,B]    libraries without truth (`.bin` CALAFP01 or app `.json`)
+    settle_size.py real   LABEL=LIBRARY ... [--profile]     libraries without truth (`.bin` CALAFP01 or app `.json`)
+    settle_size.py proxies LABEL=RUN ... [--cut F] [--paired A,B]   truth-free scores of fixed-library runs
+    settle_size.py pair   A=LIBRARY B=LIBRARY [--diam D]    matched cells of two libraries: the light B adds to A
 
 Needs numpy and scipy (the minisim venv). GT loading, matching and the motion offset are `demix_metrics`'.
 
@@ -326,6 +328,149 @@ def cmd_real(a) -> int:
     return 0
 
 
+def cmd_pair(a) -> int:
+    """Two libraries without truth: where the light lies that B has and A lacks."""
+    from scipy.optimize import linear_sum_assignment
+    from scipy.sparse import csr_matrix
+
+    (la, pa), (lb, pb) = (t.partition("=")[::2] for t in a.libs)
+    h, w, A, _ = load_any(Path(pa))
+    _, _, B, _ = load_any(Path(pb))
+
+    def mat(cells):
+        r = np.concatenate([np.full(len(i), k) for k, (i, _) in enumerate(cells)])
+        c = np.concatenate([i for i, _ in cells])
+        v = np.concatenate([v / np.sqrt((v * v).sum()) for _, v in cells])
+        return csr_matrix((v, (r, c)), shape=(len(cells), h * w))
+
+    C = (mat(A) @ mat(B).T).toarray()
+    ri, ci = linear_sum_assignment(-C)
+    pairs = [(i, j) for i, j in zip(ri, ci) if C[i, j] >= 0.7]
+    # library A: how many cells have each pixel in their core (>= 0.5) / body (>= 0.1); core centroids
+    core = np.zeros(h * w, np.int32)
+    body = np.zeros(h * w, np.int32)
+    cen = []
+    for idx, v in A:
+        m = v >= 0.5 * v.max()
+        core[idx[m]] += 1
+        body[idx[v >= 0.1 * v.max()]] += 1
+        cen.append(((idx[m] // w * v[m]).sum() / v[m].sum(), (idx[m] % w * v[m]).sum() / v[m].sum()))
+    cen = np.array(cen)
+    rows = []
+    for i, j in pairs:
+        ia, va = A[i]
+        ib, vb = B[j]
+        px = np.union1d(ia, ib)
+        x = np.zeros(len(px))
+        y = np.zeros(len(px))
+        x[np.searchsorted(px, ia)] = va / va.max()
+        y[np.searchsorted(px, ib)] = vb
+        m = x >= 0.5
+        if (y[m] ** 2).sum() <= 0:
+            continue
+        y *= (x[m] * y[m]).sum() / (y[m] ** 2).sum()
+        add, rem, L = np.maximum(y - x, 0), np.maximum(x - y, 0), x.sum()
+        oc = (core[px] - m) > 0
+        ob = (body[px] - (x >= 0.1)) > 0
+        d = np.hypot(cen[:, 0] - cen[i, 0], cen[:, 1] - cen[i, 1])
+        d[i] = np.inf
+        n = int(np.argmin(d))
+        toward = ((px // w - cen[i, 0]) * (cen[n, 0] - cen[i, 0]) + (px % w - cen[i, 1]) * (cen[n, 1] - cen[i, 1])) > 0
+        rows.append((d[n] / a.diam, (x > 0).sum(), (y > 0).sum(), (x >= 0.1).sum(), (y >= 0.1).sum(), add.sum() / L,
+                     rem.sum() / L, add[x <= 0].sum() / L, add[oc].sum() / max(add.sum(), 1e-12),
+                     add[ob & ~oc].sum() / max(add.sum(), 1e-12), add[toward].sum() / max(add.sum(), 1e-12),
+                     ((y - x)[m] ** 2).sum() / (x[m] ** 2).sum(), C[i, j]))  # fmt: skip
+    R = np.array(rows)
+    print(f"## {lb} against {la}: {len(A)} / {len(B)} cells, {len(R)} matched (cosine >= 0.7); D = {a.diam} px\n")
+    print("| nearest neighbour | cells | px > 0, A | px > 0, B | px >= 10 %, A | px >= 10 %, B | light added | light removed | "
+          "added on new pixels | of the added: on another cell's core | on another cell's body | on the neighbour's side | "
+          "core change | cosine |")  # fmt: skip
+    print("| --- |" + " ---: |" * 13)
+    for lab, lo, hi in (("all", 0, np.inf), ("< 1 D", 0, 1), ("1-1.5 D", 1, 1.5), ("1.5-2 D", 1.5, 2), (">= 2 D", 2, np.inf)):
+        k = (R[:, 0] >= lo) & (R[:, 0] < hi)
+        if k.sum() < 3:
+            continue
+        q = np.median(R[k], 0)
+        print(f"| {lab} | {k.sum()} | {q[1]:.0f} | {q[2]:.0f} | {q[3]:.0f} | {q[4]:.0f} | {q[5]:.3f} | {q[6]:.3f} | {q[7]:.3f} | "
+              f"{q[8]:.2f} | {q[9]:.2f} | {q[10]:.2f} | {q[11]:.4f} | {q[12]:.4f} |")  # fmt: skip
+    print()
+    return 0
+
+
+def _tsv(path: Path) -> list[dict]:
+    with path.open() as f:
+        return list(csv.DictReader(f, delimiter="\t"))
+
+
+def proxies(run: Path, cut: int, diam: float, hp: int = 300) -> dict:
+    """Truth-free measures of a `qc_eval real --library L --dump` run (fixed library, no slow loop), on the frames
+    from `cut` on (frames no run that built the library has seen, when `cut` is past those runs' last frame)."""
+    from scipy.ndimage import uniform_filter1d
+
+    g = [r for r in _tsv(run / "global.tsv") if float(r["ho_frames"]) > 0]
+
+    def ho(rows):
+        n = np.array([float(r["ho_frames"]) for r in rows])
+        tot = lambda k: float((n * np.array([float(r[k]) for r in rows])).sum() / n.sum())  # noqa: E731
+        return {"ho_frames": float(n.sum()), "gain": tot("ho_gain_per_frame"), "penalty": tot("ho_penalty"),
+                "score": tot("ho_score"), "signal": tot("ho_signal"),
+                "frac": tot("ho_score") / tot("ho_signal")}  # fmt: skip
+
+    out = {"new": ho([r for r in g if float(r["frames"]) > cut]), "seen": ho([r for r in g if float(r["frames"]) <= cut])}
+    late = [r for r in _tsv(run / "global.tsv") if float(r["frames"]) > cut]
+    for k in ("explained", "residual_excess"):
+        v = np.array([float(r[k]) for r in late])
+        out[k] = float(np.nanmean(v))
+    fin = _tsv(run / "final.tsv")
+    n = len(fin)
+    cen = np.array([[float(r["cy"]), float(r["cx"])] for r in fin])
+    tr = np.fromfile(run / "dump_trace.f32", "<f4").reshape(-1, n).astype(np.float64)[cut:]
+    tr = tr - uniform_filter1d(tr, hp, axis=0, mode="nearest")
+    sd = tr.std(0)
+    ok = sd > 0
+    z = (tr[:, ok] - tr[:, ok].mean(0)) / sd[ok]
+    Cm = z.T @ z / len(z)
+    d = np.hypot(cen[ok, None, 0] - cen[None, ok, 0], cen[ok, None, 1] - cen[None, ok, 1]) / diam
+    iu = np.triu_indices(len(d), 1)
+    d, c = d[iu], Cm[iu]
+    out["ids"] = [int(float(r["id"])) for r, k in zip(fin, ok) if k]
+    out["pairs"] = (iu[0], iu[1], d, c)
+    out["corr_close"] = float(np.median(c[d < 1]))
+    out["corr_mid"] = float(np.median(c[(d >= 1) & (d < 1.5)]))
+    out["corr_far"] = float(np.median(c[(d >= 1.5) & (d < 3)]))
+    out["n_close"] = int((d < 1).sum())
+    return out
+
+
+def cmd_proxies(a) -> int:
+    res = {}
+    for t in a.runs:
+        lab, _, p = t.partition("=")
+        res[lab] = proxies(Path(p), a.cut, a.diam)
+    print(f"Frames after {a.cut}; D = {a.diam} px. Held-out score: light explained on held-out frames minus the placebo "
+          "penalty, per frame; share = score over the held-out light above noise.\n")  # fmt: skip
+    print("| library | held-out frames | gain | placebo penalty | score | share of signal | share, frames before the cut | "
+          "explained | residual excess | close pairs | trace r < 1 D | 1-1.5 D | 1.5-3 D | excess |")  # fmt: skip
+    print("| --- |" + " ---: |" * 13)
+    for lab, r in res.items():
+        h = r["new"]
+        print(f"| {lab} | {h['ho_frames']:.0f} | {h['gain']:.0f} | {h['penalty']:.0f} | {h['score']:.0f} | {h['frac']:.4f} | "
+              f"{r['seen']['frac']:.4f} | {r['explained']:.4f} | {r['residual_excess']:.4f} | {r['n_close']} | "
+              f"{r['corr_close']:+.3f} | {r['corr_mid']:+.3f} | {r['corr_far']:+.3f} | {r['corr_close'] - r['corr_far']:+.3f} |")  # fmt: skip
+    for pr in a.paired or []:
+        la, lb = pr.split(",")
+        A, B = res[la], res[lb]
+        if A["ids"] != B["ids"]:
+            print(f"\n{la} / {lb}: cell ids differ, no paired row")
+            continue
+        d, ca, cb = A["pairs"][2], A["pairs"][3], B["pairs"][3]
+        print(f"\nSame cells, {lb} minus {la}, trace r of the same pair (median, share of pairs lower):")
+        for lab, lo, hi in (("< 1 D", 0, 1), ("1-1.5 D", 1, 1.5), ("1.5-3 D", 1.5, 3)):
+            k = (d >= lo) & (d < hi)
+            print(f"- {lab}: {np.median(cb[k] - ca[k]):+.4f}, {100 * np.mean(cb[k] < ca[k]):.0f} % lower ({k.sum()} pairs)")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -348,11 +493,19 @@ def main(argv=None) -> int:
     p = sub.add_parser("real")
     p.add_argument("libs", nargs="+")
     p.add_argument("--profile", action="store_true")
+    p = sub.add_parser("pair")
+    p.add_argument("libs", nargs=2)
+    p.add_argument("--diam", type=float, default=10.0)
+    p = sub.add_parser("proxies")
+    p.add_argument("runs", nargs="+")
+    p.add_argument("--cut", type=int, default=18000)
+    p.add_argument("--diam", type=float, default=10.0)
+    p.add_argument("--paired", action="append")
     a = ap.parse_args(argv)
     if a.cmd == "score":
         write_rows(Path(a.out), score_run(Path(a.sim), Path(a.run), a.lib, a.all_det))
         return 0
-    return {"tree": cmd_tree, "report": cmd_report, "real": cmd_real}[a.cmd](a)
+    return {"tree": cmd_tree, "report": cmd_report, "real": cmd_real, "pair": cmd_pair, "proxies": cmd_proxies}[a.cmd](a)
 
 
 if __name__ == "__main__":
