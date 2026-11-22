@@ -354,9 +354,7 @@ describe('LookbackReader', () => {
       bare.setBackState(replay.before.get(56)!, 56);
       await bare.serve([{ frame: 56, block: 1 }], z);
       expect(Array.from(z)).not.toEqual(Array.from(replay.out.subarray(56 * px, 57 * px)));
-      // Nor with session 0's state (a block that started before the join).
-      bare.setSession(1, T1);
-      bare.setBackState(replay.before.get(32)!, 32);
+      // Nor with session 0's state: a session-1 frame never borrows it.
       const other = new LookbackReader(src);
       for (const s of replay.batches)
         if (s.kind === 'batch')
