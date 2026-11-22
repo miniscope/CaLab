@@ -190,6 +190,8 @@ export interface WorkStatus {
    * from older builds.
    */
   lookbackWorkerBusyMs?: number[];
+  /** Settle pool workers still serving (a failed one is left out); absent from older builds. */
+  settleWorkers?: number;
 }
 
 export function emptyWork(workers = 0): WorkStatus {
@@ -223,6 +225,11 @@ export interface WorkRates {
     busy: number;
     /** Per look-back worker (0: need-driven and the end settle; 1..S: the settle pool), its busy share. */
     workers: number[];
+    /**
+     * Look-back workers able to be busy now (need-driven one plus the live
+     * settle pool; a failed pool worker no longer counts). Set by `WorkRater`.
+     */
+    capacity?: number;
     /** By kind: busy share, frames per second of wall time, and ms per answer split. */
     kinds: Record<
       LookbackKind,
@@ -301,6 +308,8 @@ export class WorkRater {
   private ref: WorkStatus | null = null;
   /** Busy time credited at an answer's arrival that a window could not hold (share > 1), carried on. */
   private carry = new Map<string, number>();
+  /** Settle pool workers still serving at the latest snapshot (undefined: not reported). */
+  private settleWorkers: number | undefined;
 
   constructor(private readonly everyMs = 1000) {}
 
@@ -314,6 +323,7 @@ export class WorkRater {
     }
     if (w.wallMs - ref.wallMs < this.everyMs) return null;
     this.ref = w;
+    this.settleWorkers = w.settleWorkers;
     const r = workRates(ref, w);
     if (r) this.settle(r);
     return r;
@@ -332,13 +342,17 @@ export class WorkRater {
       this.carry.set(key, total - shown);
       return shown;
     };
-    const n = Math.max(1, r.lookback.workers.length);
+    // Failed pool workers hold nothing: count the live ones when the worker reports them.
+    const live = this.settleWorkers;
+    const pool = live !== undefined ? live : Math.max(0, r.lookback.workers.length - 1);
+    const n = 1 + pool;
+    r.lookback.capacity = n;
     r.visit = r.visit.map((v, i) => fit(`v${i}`, v));
     for (const k of LOOKBACK_KINDS)
       r.lookback.kinds[k].busy = fit(
         k,
         r.lookback.kinds[k].busy,
-        k === 'csettle' ? Math.max(1, n - 1) : 1,
+        k === 'csettle' ? Math.max(1, pool) : 1,
       );
     r.lookback.busy = fit('lb', r.lookback.busy, n);
     r.lookback.workers = r.lookback.workers.map((v, i) => fit(`lb${i}`, v));

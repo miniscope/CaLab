@@ -646,7 +646,12 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     history.push('work_idle', t, s.idle);
     if (r.visit.length > 0)
       history.push('work_visit_busy', t, r.visit.reduce((a, b) => a + b, 0) / r.visit.length);
-    history.push('work_lookback_busy', t, r.lookback.busy);
+    // The share of one worker's time: the sum over a pool can exceed 1, so divide by the workers.
+    history.push(
+      'work_lookback_busy',
+      t,
+      r.lookback.busy / Math.max(1, r.lookback.capacity ?? r.lookback.workers.length),
+    );
     if (maxFps > 0) history.push('fast_max_fps', t, maxFps);
   }
 

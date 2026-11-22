@@ -47,6 +47,8 @@ Readings (one run each, so differences of a few percent are noise):
    - Half a batch period at 120 fps is 33 ms (8-frame batches). The longest wait in a 1 s window is 21-26 ms at the
      median, with peaks of 62-75 ms.
    - Yet no batch was dropped, and achieved fps held at 118-120.
+   - The waits rise with settle activity, but stay under 1.3 batch periods (at 120 fps the 62-75 ms peaks are 0.9-1.1
+     periods of 67 ms; at 60 fps the 73-85 ms peaks are 0.5-0.6 periods of 133 ms).
    - So at 120 fps the guard reacts to waits that cost nothing yet. The extra pool worker sat 89 % idle.
    - Per the brief, this is reported, not tuned. The candidates are a threshold tied to the forward-pool depth (four
      buffers), acting only on a drop, or `csettle=yield` (the design's remedy for waiting batches).

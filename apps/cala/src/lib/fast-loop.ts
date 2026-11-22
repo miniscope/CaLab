@@ -541,7 +541,9 @@ export class FastLoop {
             ? {
                 csettle: this.o.csettle,
                 ...(this.o.csettleYield > 0 ? { csettleYield: this.o.csettleYield } : {}),
-                ...(this.o.csettleGovernor ? { csettleGovernor: true } : {}),
+                ...(this.o.csettleGovernor
+                  ? { csettleGovernor: true, csettlePool: this.o.poolSize }
+                  : {}),
               }
             : {}),
         },

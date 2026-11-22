@@ -354,7 +354,13 @@ export const GOVERNOR = {
   /** Trouble: the achieved live fps over the last `belowMs` below this share of the target. */
   belowShare: 0.97,
   belowMs: 2000,
-  /** Trouble: a live batch waited at the slow worker longer than this share of a batch period. */
+  /**
+   * Trouble: a live batch waited at the slow worker longer than this share of
+   * the batch periods the forward pool can hold ahead of the one being
+   * observed (`waitShare x (poolSize - 1)` periods; with two buffers, half a
+   * period). A deeper pool queues batches by design, so its waits rise with
+   * settle activity without any drop.
+   */
   waitShare: 0.5,
   /** At rate 0 with Discover below its target, probe with one step this often, ms. */
   probeMs: 5000,
@@ -447,8 +453,10 @@ export class SettleGovernor {
   private lastCheck: number | null = null;
   private lastEarn: number | null = null;
   private samples: LiveSample[] = [];
-  /** Frames in the last live batch (its period is the stall test's unit). */
-  private lastCount = 8;
+  /** Frames in a full live batch (the largest seen; its period is the wait and stall tests' unit). */
+  private lastCount = 0;
+  /** A probe of one chunk is out (rate at one step, a chunk owed): trouble at the next check ends it. */
+  private probing = false;
   /** Since the last check: a long batch wait, a forward-pool drop, the bank full, deliveries. */
   private waitedLong = false;
   private dropped = false;
@@ -472,6 +480,8 @@ export class SettleGovernor {
     readonly cap: number,
     /** Settle look-back workers (1 when the settle takes turns with need-driven look-back). */
     private workers = 1,
+    /** Batches the forward pool holds in flight to the slow worker (`PARALLEL_FORWARD_BUFFERS`). */
+    private readonly poolSize = 2,
     readonly chunk: number = CSETTLE.chunk,
     bankChunks: number = CSETTLE.bankChunks,
   ) {
@@ -488,8 +498,15 @@ export class SettleGovernor {
     const t = Number.isFinite(fps) && fps > 0 ? fps : 0;
     if (t !== this.target || paused !== this.paused) {
       this.samples = [];
-      // Paused: nothing is owed for the time it lasts.
+      // Paused: nothing is owed for the time it lasts, and nothing seen before it is trouble after it.
       this.lastEarn = null;
+      this.lastCheck = null;
+      this.waitedLong = false;
+      this.dropped = false;
+      this.saturated = false;
+      this.deliveredFrames = 0;
+      this.busyMs = 0;
+      this.probing = false;
     }
     this.target = t;
     this.paused = paused;
@@ -509,10 +526,12 @@ export class SettleGovernor {
   liveBatch(t: number, end: number, count: number, waitMs: number, gap: boolean): void {
     if (this.target <= 0 || this.paused) return;
     this.samples.push({ t, end });
-    if (count > 0) this.lastCount = count;
+    // A short batch (the end of a run) is not the unit: the largest seen is the nominal size.
+    this.lastCount = Math.max(this.lastCount, count);
     const keep = t - 2 * GOVERNOR.belowMs;
     while (this.samples.length > 2 && this.samples[0].t < keep) this.samples.shift();
-    if (waitMs > (GOVERNOR.waitShare * count * 1000) / this.target) this.waitedLong = true;
+    const allowed = GOVERNOR.waitShare * Math.max(1, this.poolSize - 1);
+    if (waitMs > (allowed * this.lastCount * 1000) / this.target) this.waitedLong = true;
     if (gap) this.dropped = true;
   }
 
@@ -590,7 +609,17 @@ export class SettleGovernor {
     const achieved = this.achieved(now);
     this.achievedFps = achieved;
     const below = achieved !== null && achieved < GOVERNOR.belowShare * this.target;
-    if (waitedLong || dropped || below) {
+    const trouble = waitedLong || dropped || below;
+    if (this.probing) {
+      this.probing = false;
+      if (trouble) {
+        // The probe failed: straight back to 0, the label as it was, no halving counted.
+        this.rateFps = 0;
+        this.owedFrames = 0;
+        return;
+      }
+    }
+    if (trouble) {
       if (this.rateFps > 0) {
         this.rateFps /= 2;
         if (this.rateFps < GOVERNOR.floorFps) this.rateFps = 0;
@@ -611,8 +640,11 @@ export class SettleGovernor {
       // At 0 and still below the target: Discover is the limit; probe now and then.
       this.limitNow = 'discover';
       if (now - this.lastProbe >= GOVERNOR.probeMs) {
+        // One whole chunk, so the probe sends a request (and so loads Discover).
         this.lastProbe = now;
         this.rateFps = GOVERNOR.stepFps;
+        this.owedFrames = this.chunk;
+        this.probing = true;
       }
       return;
     }
