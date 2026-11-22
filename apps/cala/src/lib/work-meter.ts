@@ -192,6 +192,8 @@ export interface WorkStatus {
   lookbackWorkerBusyMs?: number[];
   /** Settle pool workers still serving (a failed one is left out); absent from older builds. */
   settleWorkers?: number;
+  /** Live frames the slow loop has observed since the run began (the speed floor's per-frame divisor); absent from older builds. */
+  observedFrames?: number;
 }
 
 export function emptyWork(workers = 0): WorkStatus {

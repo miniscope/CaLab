@@ -621,6 +621,8 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       <Show when={DEBUG}>
         <pre class="cala-readout cala-run__line" data-testid="work-debug">
           {workText(s().work(), s().workMaxFps(), c().status()?.lookback?.csettle?.governor)}
+          {'\n'}
+          {s().floorLine() || 'floor: waiting for a status'}
         </pre>
       </Show>
       <Show when={s().live()}>
