@@ -37,6 +37,15 @@ and a frozen tree), then the long qc_eval runs. Another agent's Chrome run (port
    takes some of it back: 83 % of cells above twice their noise at 60 fps with the settle off, 67 % with it on, 76-77
    % at full speed (with 15 % more cells at 60 fps: 853-867 against 749-756).
 
+6. **Calibration line C1 fails at 30 fps, on visit jobs only** (model +26 to +45 %; at full speed -56 to -59 %).
+   Need-driven look-back and the background-settle dose are within 15 % at all Samara points, so the look-back side of
+   qc_eval is calibrated; Discovery's visit rate is not. By the plan, no slider arm was run in qc_eval. Next: the
+   design's PR 3 instrumentation (busy and idle time per worker in the app), then refit the visit side.
+7. **Where the background settle is limited** (PI question): 30 fps, the cap on Samara and the re-read supply on the
+   workshop recording; 60 fps, supply on both, plus the slow worker on the workshop recording; 120 fps, the slow worker
+   on the workshop recording and supply on Samara. A ranked list of other uses of spare compute is at the end; first is
+   moving the statistics update (1.4-3.9 ms per re-read frame) off the slow worker.
+
 ## Step 0b: paced Chrome runs (`main` + this branch's eval-only changes)
 
 `apps/cala/scripts/memory-measure.mjs --single --lookback [--csettle] --headed --every 5 --pacefps N`, dev server on
@@ -193,3 +202,48 @@ expected gain in the final result per unit of work, with rough size and risk:
    counts moved with visit frequency in round 3).
 6. **The final settle sooner or shorter**: with items 1 and 3 the final settle (88-228 s) runs faster; the adaptive
    final settle (design section 3) saves time, not quality.
+
+## C1: the calibrated model against Chrome on Samara (holdout): **fails at 30 fps, on visit jobs only**
+
+Round-2 flags (frozen above), slow seed 1, full length, binary `qc_eval-cal-c` (T0 passes for this binary too).
+Model / Chrome, and the C1 reading (within 15 %; misses within 3 points):
+
+| recording, rate, arm | slow loop missed | visit jobs | need-driven asked | background settle per live frame |
+| --- | --- | --- | --- | --- |
+| `10_43_21`, 30, off | 0 / 0 % pass | 71,466 / 54,849 (+30 %) **fail** | 35,399 / 35,415 pass | - |
+| `10_43_21`, 30, on | 0 / 0 % pass | 64,716 / 51,257 (+26 %) **fail** | 35,405 / 35,415 pass | 2.00 / 1.99 pass |
+| `14_57_02`, 30, off | 0 / 0 % pass | 74,289 / 51,340 (+45 %) **fail** | 35,389 / 35,407 pass | - |
+| `14_57_02`, 30, on | 0 / 0 % pass | 67,538 / 49,810 (+36 %) **fail** | 35,389 / 35,407 pass | 2.00 / 1.99 pass |
+| `10_43_21`, full (338), off | 22.7 / 19.5 % **fail** (3.2 points) | 1,558 / 3,669 (-58 %) **fail** | 5,665 / 6,656 (-15 %) pass | - |
+| `10_43_21`, full (337), on | 23.9 / 22.2 % pass | 1,530 / 3,459 (-56 %) **fail** | 2,800 / 2,920 pass | 0.19 / 0.215 (-12 %) pass |
+| `14_57_02`, full (345), off | 22.5 / 14.9 % **fail** | 1,596 / 3,903 (-59 %) **fail** | 5,761 / 6,464 (-11 %) pass | - |
+| `14_57_02`, full (343), on | 22.7 / 15.9 % **fail** | 1,587 / 3,699 (-57 %) **fail** | 2,880 / 2,832 pass | 0.19 / 0.19 pass |
+
+Comparison points (step-0b runs, not part of C1): `10_43_21` at 60 fps on: missed 0 / 0 %, jobs 35,897 / 36,585, need
+1.48 / 1.28 per observed frame, background settle 1.11 / 1.29; at 120 fps on: missed 0 / 2.15 %, jobs 11,957 / 21,082,
+need 0.82 / 0.63, background settle 0.63 / 0.63. Workshop after round 2 (fit set): full off missed 27.0 / 33.4 %,
+jobs 2,437 / 4,628, need 8,435 / 10,320; full on background settle 0.23 / 0.335; 60 fps on 0.67 / 0.84, need 0.82 /
+0.84, jobs 19,647 / 21,190; 60 fps off need 42,526 / 39,241, jobs 25,620 / 25,306; 120 fps on 0.30 / 0.49.
+
+**Verdict, by the plan's rule: C1 fails at 30 fps, so no slider arm is run in qc_eval** (step 4 not run).
+
+What the failure says:
+
+- **The look-back side is calibrated.** Need-driven frames and the background-settle dose are within 15 % at every
+  Samara point but one need-driven count at 120 fps (+30 %), including the 60 and 120 fps runs the fit never saw. The
+  gate (one request out, turn-taking, the answer holding the worker until the slow worker handles it) and the
+  per-cell look-back cost carry it. qc_eval can be used for the look-back pool's sizing (line L8's supply side).
+- **Discovery's visits are not.** The model makes 26-45 % too many visit jobs at 30 fps and 56-59 % too few at full
+  speed, in opposite directions, so no single cost scale fixes both: a slower slow worker lowers both. In Chrome the
+  slow worker still hands out about 69 visits a second at full speed while it misses 15-22 % of the frames, which a
+  saturated modelled slow worker (100 % busy) cannot do; and at 30 fps Chrome makes fewer visits than the model with
+  its visit workers about half busy. Two candidates, not tested: (a) at full speed the frames are lost in the forward
+  buffers' round trip (transfer and latency), not because the slow worker is full, so the app's slow worker keeps
+  time for visits; (b) the app's hand-out differs from the model's (for example `dispatch` hands nothing out while
+  reviewed cells wait for the visits out, and only after batches and results). The design's PR 3 (busy and idle
+  accounting in the slow, visit and look-back workers, batch waits) gives the numbers to fit this; until then the
+  slow loop's misses and visit counts above 30 fps are Chrome-only, and quality arms in qc_eval carry a visit-rate
+  error of about a third.
+- Workshop at 30 fps, from the model (no Chrome run): the settle is supply-limited there, 1.04 per live frame with
+  need-driven look-back at 1.46 per observed frame (the model's workshop supply ran about 20 % below Chrome's at 60
+  fps, so the app likely delivers about 1.2-1.3).
