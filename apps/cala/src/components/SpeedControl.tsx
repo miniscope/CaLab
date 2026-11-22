@@ -82,7 +82,7 @@ export function SpeedControl(props: {
   let timer: ReturnType<typeof setTimeout> | undefined;
   onCleanup(() => clearTimeout(timer));
 
-  /** Why a target cannot be chosen (a Joint run, no look-back workers); null when it can. Streams have their own state. */
+  /** Why a target cannot be chosen (no look-back workers); null when it can. Streams have their own state. */
   const pinned = () => (props.live ? null : s().lookbackBlocked());
 
   // A pinned control stays at Max whatever was saved; when the pin lifts the saved speed returns.

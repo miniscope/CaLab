@@ -29,9 +29,9 @@ Refine runs show as "Refine (removed stage)".
 - **Look-back and the Final settle** are on by default for recordings (the
   "Look-back refinement" checkbox and the "Final settle" level, Thorough, in
   the Run panel; `?lookback=0` turns look-back off). They need a recording on
-  disk with one session and the pipelined workers. Where they cannot run (a
-  live stream, a Joint run of several sessions, `?pipeline=0`) the panel says
-  why, and the footprints get no refinement after Discover.
+  disk (one session, or a Joint run of several) and the pipelined workers.
+  Where they cannot run (a live stream, `?pipeline=0`) the panel says why, and
+  the footprints get no refinement after Discover.
 - **Extract after Discover** (on by default for recordings) starts Extract
   when Discover finishes (its Final settle included). Turn it off to inspect
   the footprints first; the panel then shows the Extract button with the hint
@@ -85,11 +85,11 @@ A run can hold several recording sessions of one animal (`src/lib/sessions.ts`,
 `src/lib/session-run.ts`). The **library-flow mode** says how the stages above
 compose with the sessions. It is a run setting, chosen on the session list.
 
-| Mode         | Discover                                           | Extract                          | Cell ids              |
-| ------------ | -------------------------------------------------- | -------------------------------- | --------------------- |
-| **Separate** | per session, one after another (look-back on)      | per session                      | per session           |
-| **Joint**    | once, through all sessions in order (no look-back) | every session, the final library | same in every session |
-| **Apply**    | none: a fixed library                              | per session                      | the library's         |
+| Mode         | Discover                                        | Extract                          | Cell ids              |
+| ------------ | ----------------------------------------------- | -------------------------------- | --------------------- |
+| **Separate** | per session, one after another (look-back on)   | per session                      | per session           |
+| **Joint**    | once, through all sessions in order (look-back) | every session, the final library | same in every session |
+| **Apply**    | none: a fixed library                           | per session                      | the library's         |
 
 - **Joint** opens the sessions as one recording (`FrameSource.openSessions`):
   frames follow one another and `info.sessions` says where each session
@@ -97,6 +97,17 @@ compose with the sessions. It is a run setting, chosen on the session list.
   export is cut per session, so each session gets its own file with the same
   cell ids. The engine runs straight across a boundary, as it did when sessions
   were concatenated by hand.
+- **Look-back in a Joint run.** While Discover runs, look-back (need-driven
+  and the Background settle) re-reads frames of the current session only:
+  from a session's first frame on, the slow loop never hands out an earlier
+  frame (`SlowLoop.setLookbackFloor`), so a frame is never preprocessed across
+  a boundary. The Final settle after the last frame samples the whole run (the
+  same plan and cap as one recording of that length; the footprints are shared
+  by every session) and preprocesses each frame as its own session's, as
+  Extract's replay does: the recorded flicker, the session's recorded
+  re-registration before the rigid shift, and the back half from that
+  session's own state (stage C snapshots each session's first and last batch;
+  the source mask follows the session warp). See `lib/lookback-reader.ts`.
 - **Separate** opens one session at a time and runs Discover (with look-back
   and the Final settle) and Extract on it before the next.
 - **Apply** is not built. It needs a starting library from a file (the

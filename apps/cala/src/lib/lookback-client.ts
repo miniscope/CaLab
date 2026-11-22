@@ -20,6 +20,7 @@
  */
 import type { FlatFieldMap } from './flat-field.ts';
 import type { BackStateSnapshot } from './pipeline-engine.ts';
+import type { SessionTransform } from './session-boundary.ts';
 import type { SlowClient } from './slow-client.ts';
 import type { LookbackSource, LookbackToMain, MainToLookback } from '../workers/lookback-types.ts';
 
@@ -42,6 +43,11 @@ export interface LookbackFeed {
   /** Stage C's back-half state (transferred on). */
   backState(session: number, snap: BackStateSnapshot): void;
   flatField(session: number, map: FlatFieldMap | null): void;
+  /**
+   * A Joint run: Discover re-registered session `index` by `transform`
+   * (`RunRecord.noteSession`). Call it before that batch's `rows`.
+   */
+  session?(session: number, index: number, transform: SessionTransform): void;
   /** The run stopped. */
   reset(session: number): void;
   /** The pacer's target live fps (0: Max) and pause, for the settle governor (`SlowRunner.setPace`). */
@@ -69,7 +75,7 @@ export interface LookbackClientOptions {
   pool?: number;
   /** The open recording's files (null: none, or a live source). */
   source: () => LookbackSource | null;
-  /** Why look-back cannot run besides the source (a live stream, a Joint run, no pipelined workers). */
+  /** Why look-back cannot run besides the source (a live stream, no pipelined workers). */
   blocked: () => string | null;
   /** A look-back worker error (worker 0: it stops look-back for the run; a pool worker: that worker only; Discover goes on). */
   onError?: (session: number, message: string, worker: number) => void;
@@ -136,6 +142,8 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
     source: LookbackSource;
     rows: RowsChunk[];
     flat: FlatFieldMap | null | undefined;
+    /** Session re-registrations so far (a Joint run), in order. */
+    sessions: { index: number; transform: SessionTransform }[];
     /** Pool workers started but not yet announced to the slow worker (they wait for a back state). */
     joining: number;
   } | null = null;
@@ -172,7 +180,7 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       const source = o.source();
       if (!source || o.blocked() !== null) return false;
       ensureWorkers(1);
-      run = { session, active: 1, source, rows: [], flat: undefined, joining: 0 };
+      run = { session, active: 1, source, rows: [], flat: undefined, sessions: [], joining: 0 };
       postAll(() => [{ type: 'begin', session, source }, []]);
       return true;
     },
@@ -223,6 +231,11 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       // Copied (the pipeline store keeps its map).
       postAll(() => [{ type: 'flat', session, map }, []]);
     },
+    session(session, index, transform) {
+      const t: SessionTransform = [transform[0], transform[1], transform[2]];
+      if (run?.session === session) run.sessions.push({ index, transform: t });
+      postAll(() => [{ type: 'session', session, index, transform: t }, []]);
+    },
     reset(session) {
       // The rows kept for a late pool go with the run.
       run = null;
@@ -248,6 +261,9 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       for (let i = 1; i <= poolSize; i++) {
         const w = workers[i];
         w.postMessage({ type: 'begin', session, source: r.source } satisfies MainToLookback);
+        // The session warps before the rows (a frame is never served without its own).
+        for (const st of r.sessions)
+          w.postMessage({ type: 'session', session, ...st } satisfies MainToLookback);
         for (const c of rows) {
           // The last worker takes the joined arrays; the others get copies.
           const a = i === poolSize ? c : joinRows([c])[0];

@@ -934,8 +934,9 @@ export class BackStage {
    * `fast`: the trace solver and slow-loop feed (none: no traces). It is owned (disposed) here.
    * `projector`: mean and max projections of every frame (Extract; see `fov-projection.ts`).
    * `snapshotEvery`: a look-back run (Discover with look-back): every this many
-   * frames (and after the first batch) the batch result carries the back
-   * half's state, which look-back blocks start from (0: never).
+   * frames (and after the first batch, and after the first and last batch of
+   * every session of a Joint run) the batch result carries the back half's
+   * state, which look-back blocks start from (0: never).
    */
   constructor(
     private readonly setup: StageSetup,
@@ -1009,8 +1010,12 @@ export class BackStage {
         : job.frames;
     const end = s.start + s.count;
     this.lastEnd = end;
+    // A Joint run also snapshots the first batch of every session (look-back serves the new
+    // session from its own state at once) and the last (the Final settle's state for it).
+    const bounds = this.setup.plan.boundaries;
+    const joins = this.snapshotEvery > 0 && (bounds.includes(s.start) || bounds.includes(end));
     const backState =
-      this.snapshotEvery > 0 && end - this.snapshotAt >= this.snapshotEvery
+      this.snapshotEvery > 0 && (joins || end - this.snapshotAt >= this.snapshotEvery)
         ? { frame: end, state: pre.state() }
         : undefined;
     if (backState) this.snapshotAt = end;

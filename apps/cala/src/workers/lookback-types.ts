@@ -15,6 +15,7 @@ import type { FlatFieldMap } from '../lib/flat-field.ts';
 import type { GovernorStatus } from '../lib/settle.ts';
 import type { LookbackTiming } from '../lib/work-meter.ts';
 import type { FolderEntry, SessionInput } from '../lib/frame-source.ts';
+import type { SessionTransform } from '../lib/session-boundary.ts';
 
 /** Slow worker -> look-back worker. */
 export type SlowToLookback =
@@ -91,6 +92,12 @@ export type MainToLookback =
   | { type: 'back-state'; session: number; frame: number; state: Uint8Array }
   /** The newest flat-field map (null: none). */
   | { type: 'flat'; session: number; map: FlatFieldMap | null }
+  /**
+   * A Joint run: Discover re-registered session `index` (1-based) by
+   * `transform` (`RunRecord.noteSession`); sent before the rows of the
+   * session's first frame.
+   */
+  | { type: 'session'; session: number; index: number; transform: SessionTransform }
   /** The run stopped: close the recording, drop everything. */
   | { type: 'reset'; session: number };
 

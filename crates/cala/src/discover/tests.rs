@@ -3549,6 +3549,57 @@ fn settle_sched_spreads_chunks_over_the_history() {
     assert!((99..=101).contains(&owed), "{owed}");
 }
 
+/// A floor (a new session of a Joint run starts there) keeps look-back
+/// within `floor..`: a cell born before it needs nothing more, a block in
+/// progress is cut to it, and a later birth's window is clipped to it.
+#[test]
+fn lookback_floor_keeps_look_back_in_the_current_session() {
+    let (slow, _) = start(config(), &[]);
+    let mut lb = LookBack::new(LookbackConfig::default());
+    let lib1 = lb_lib(1, &[blob(1, 30.0, 30.0)]);
+    lb.note_frame(&lib1, 1000);
+    // Part of its window is served, then the session changes at 1100.
+    assert_eq!(lb_take(&mut lb, &slow, &lib1, 10.0).len(), 10);
+    lb.set_floor(1100);
+    assert_eq!(lb.floor(), 1100);
+    assert_eq!(lb_take(&mut lb, &slow, &lib1, 10_000.0), vec![]);
+    assert_eq!(lb.in_need(), 0);
+    // A floor never goes down.
+    lb.set_floor(10);
+    assert_eq!(lb.floor(), 1100);
+    // A cell born at 1300 (K = 3000) looks back to 1100 at most.
+    let lib2 = lb_lib(2, &[blob(1, 30.0, 30.0), blob(2, 75.0, 75.0)]);
+    lb.note_frame(&lib2, 1300);
+    let got = lb_take(&mut lb, &slow, &lib2, 10_000.0);
+    let mut frames: Vec<usize> = got.iter().map(|g| g.0).collect();
+    frames.sort_unstable();
+    frames.dedup();
+    assert_eq!(frames, (1100..1300).collect::<Vec<_>>());
+    assert!(got.iter().all(|g| g.1 == vec![2]));
+}
+
+/// The settle scheduler with a floor re-reads frames `floor..seen` only,
+/// in whole chunks from the floor, and still covers that span.
+#[test]
+fn settle_sched_floor_keeps_chunks_in_the_current_session() {
+    let mut s = SettleSched::new(0.5, 16);
+    // A chunk in progress below the floor is dropped at once.
+    assert!(s.next_frame(1600).is_some());
+    s.set_floor(1000);
+    assert!(s.next_frame(1010).is_none());
+    let seen = 1640;
+    let mut hits = [0usize; 4];
+    for _ in 0..1600 {
+        let (f, _) = s.next_frame(seen).unwrap();
+        assert!((1000..seen).contains(&f), "{f}");
+        assert!((f - 1000) / 16 * 16 + 1000 + 16 <= seen);
+        hits[(f - 1000) * 4 / 640] += 1;
+    }
+    assert!(hits.iter().all(|&h| h > 250), "{hits:?}");
+    s.set_floor(5);
+    assert!(s.next_frame(seen).unwrap().0 >= 1000);
+}
+
 /// A settle visit run as a job on a visit worker (through the byte
 /// encoding both ways) does what the owner's own settle visit does: the
 /// same footprints, the same counters, and the tiles' ordinary visit

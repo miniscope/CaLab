@@ -144,6 +144,38 @@ describe('look-back client', () => {
     ).toEqual([0]);
   });
 
+  it('a Joint run: session warps go to every worker, and a pool started later gets them before its rows', () => {
+    const t = setup(null, 1);
+    t.client.begin(1);
+    const dy = Float32Array.of(0, 0);
+    t.client.rows(1, 0, dy, dy, [0, 0], dy, dy);
+    t.client.session!(1, 1, [1.5, 2, -1]);
+    t.client.rows(1, 2, dy, dy, [0, 0], dy, dy);
+    expect(t.sent.filter((s) => s.worker === 0).map((s) => s.msg.type)).toEqual([
+      'connect',
+      'begin',
+      'rows',
+      'session',
+      'rows',
+    ]);
+    expect(t.sent.at(-2)!.msg).toEqual({
+      type: 'session',
+      session: 1,
+      index: 1,
+      transform: [1.5, 2, -1],
+    });
+    expect(t.client.startPool!(1)).toBe(1);
+    const pool = t.sent.filter((s) => s.worker === 1).map((s) => s.msg);
+    expect(pool.map((m) => m.type)).toEqual(['connect', 'begin', 'session', 'rows']);
+    expect(pool[2]).toMatchObject({ type: 'session', index: 1, transform: [1.5, 2, -1] });
+    // From now on both workers hear of the next session.
+    t.client.session!(1, 2, [0, 1, 1]);
+    expect(t.sent.slice(-2).map((s) => [s.worker, s.msg.type])).toEqual([
+      [0, 'session'],
+      [1, 'session'],
+    ]);
+  });
+
   it('the cap goes to the slow worker', () => {
     const t = setup();
     t.client.cap?.(0.5);

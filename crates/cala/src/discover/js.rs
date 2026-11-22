@@ -80,6 +80,8 @@ struct LbCounts {
     held_out: u64,
     dropped: u64,
     idle: bool,
+    /// The look-back floor (`setLookbackFloor`), for a settle enabled later.
+    floor: usize,
 }
 
 /// Slow-loop options the app can set (see `SlowLoop.withConfig`).
@@ -337,6 +339,22 @@ impl JsSlowLoop {
         }
     }
 
+    /// Look back from stream frame `frame` on only (it only rises): the
+    /// first frame of the current session of a multi-session recording
+    /// (the app's Joint run), for need-driven look-back and the concurrent
+    /// settle alike. Frames before it are never handed out again.
+    #[wasm_bindgen(js_name = setLookbackFloor)]
+    pub fn set_lookback_floor(&mut self, frame: f64) {
+        let f = frame.max(0.0) as usize;
+        if let Some(lb) = self.lookback.as_mut() {
+            lb.set_floor(f);
+        }
+        self.lb.floor = self.lb.floor.max(f);
+        if let Some(s) = self.settle.as_mut() {
+            s.set_floor(f);
+        }
+    }
+
     /// Add look-back budget directly (frames; the drain after the last
     /// frame).
     #[wasm_bindgen(js_name = lookbackAddCredit)]
@@ -447,7 +465,9 @@ impl JsSlowLoop {
         }
         self.inner.enable_settle(0);
         // The share is unused here: the driver keeps the dose.
-        self.settle = Some(SettleSched::new(0.0, chunk as usize));
+        let mut sched = SettleSched::new(0.0, chunk as usize);
+        sched.set_floor(self.lb.floor);
+        self.settle = Some(sched);
         Ok(())
     }
 

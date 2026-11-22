@@ -30,8 +30,25 @@
  *    their time (the same choice as Extract).
  *  - The warp runs in WASM; Discover may have warped on the GPU (WebGPU),
  *    which can differ in the last bits.
- *  - One session only: no session re-registration or floor carry-over (the
- *    toggle is off for Joint runs).
+ *
+ * A Joint run (several sessions read as one stream, `info.sessions`): every
+ * frame is preprocessed as its own session's, never with another session's
+ * state (`session-boundary.ts`):
+ *
+ *  - front: the recorded flicker (stage A's reference re-seat is in it), as
+ *    in a replay;
+ *  - motion: the session's recorded re-registration (`setSession`, from
+ *    `RunRecord.noteSession`) warps the frame before the rigid shift, as B
+ *    does in a replay;
+ *  - back: a block starts from the newest back state of the frame's own
+ *    session (stage C snapshots the first and last batch of every session),
+ *    so the background floor and noise map are that session's, and its
+ *    validity follows the FOV mask as the session warp moved it (the source
+ *    mask, which a state does not carry, is set again from the transform).
+ *
+ * While Discover runs, look-back stays in the current session (the slow
+ * loop's floor, `SlowLoop.setLookbackFloor`); the Final settle after the last
+ * frame covers every session this way.
  *
  * Frames come from a `HistorySource` (a recording's own `FrameSource`, never
  * the one Discover reads sequentially), so a raw-frame store for live
@@ -43,20 +60,36 @@ import {
   MotionCorrector,
   MotionOptions,
   Preprocessor,
+  SessionAligner,
   TraceEngine,
   TraceLibrary,
 } from './cala-wasm.ts';
 import type { FlatFieldMap } from './flat-field.ts';
-import type { FramePixels } from './frame-source.ts';
+import { sessionOfFrame, type FrameSourceInfo, type FramePixels } from './frame-source.ts';
 import { frontReplay, rigidRecords } from './pipeline-stages.ts';
 import { RunRecord } from './run-record.ts';
+import type { SessionTransform } from './session-boundary.ts';
 import type { LookbackTiming } from './work-meter.ts';
 
-/** Where look-back reads raw frames from: a recording's `FrameSource`, or later a history store. */
+/**
+ * Where look-back reads raw frames from: a recording's `FrameSource`, or
+ * later a history store. Frames are global stream indices; a Joint run's
+ * source maps one to its session's file and the frame in it
+ * (`FrameSource.openSessions`), and `info.sessions` says where each
+ * session starts (`sessionOfFrame`).
+ */
 export interface HistorySource {
-  readonly info: { width: number; height: number; bitDepth: number; frameCount: number };
-  /** `count` raw frames from `start` (into `out` when given). */
+  readonly info: { width: number; height: number; bitDepth: number; frameCount: number } & Pick<
+    FrameSourceInfo,
+    'sessions'
+  >;
+  /** `count` raw frames from global frame `start` (into `out` when given). */
   readFrames(start: number, count: number, out?: FramePixels): Promise<FramePixels>;
+}
+
+/** A transform that moves nothing (absent, or all zeros). */
+function isIdentity(t: SessionTransform | undefined): boolean {
+  return !t || (t[0] === 0 && t[1] === 0 && t[2] === 0);
 }
 
 function emptyTiming(): LookbackTiming {
@@ -102,20 +135,26 @@ export class LookbackReader {
   private readonly record = new RunRecord();
   /** Waiting for rows: resolved when the record covers `frame`. */
   private rowWaiters: { frame: number; resolve: () => void; reject: (e: Error) => void }[] = [];
-  private backState: Uint8Array | null = null;
-  private backWaiters: { resolve: () => void; reject: (e: Error) => void }[] = [];
+  /** The newest back state of each session (one session: index 0), and requests waiting for one. */
+  private backStates = new Map<number, Uint8Array>();
+  private backWaiters: { session: number; resolve: () => void; reject: (e: Error) => void }[] = [];
+  /** Session re-registrations Discover applied (by session index; absent: identity). */
+  private readonly transforms: (SessionTransform | undefined)[] = [];
+  /** The session warp (made on the first session with a transform), and the session it is set for. */
+  private aligner: SessionAligner | null = null;
+  private alignerSession = -1;
   private flat: FlatFieldMap | null = null;
   private flatDirty = false;
   /** Front half (calibration and flat field only; replayed, so stateless). */
   private front: Preprocessor | null = null;
   private motion: MotionCorrector | null = null;
-  /** The block in progress and its copy of the live back half. */
-  private block: { seq: number; pre: Preprocessor } | null = null;
+  /** The block in progress and its copy of the live back half (of the session of its frames). */
+  private block: { seq: number; session: number; pre: Preprocessor } | null = null;
   /**
    * The settle during Discover's chunk in progress (block seq <= `SETTLE_BLOCK_MAX`), a slot of its
    * own: its chunks never free the need-driven block's preprocessor, which goes on across requests.
    */
-  private settleBlock: { seq: number; pre: Preprocessor } | null = null;
+  private settleBlock: { seq: number; session: number; pre: Preprocessor } | null = null;
   private engine: TraceEngine | null = null;
   private version = 0;
   private cells = 0;
@@ -153,10 +192,35 @@ export class LookbackReader {
     });
   }
 
-  /** The live back half's state, newest first (blocks started from now on use it). */
-  setBackState(state: Uint8Array): void {
-    this.backState = state;
-    for (const w of this.backWaiters.splice(0)) w.resolve();
+  /**
+   * The live back half's state after stream frame `frame` (a batch end):
+   * the newest of the session that batch belongs to (blocks of that
+   * session started from now on use it). Without `frame`: the first session's.
+   */
+  setBackState(state: Uint8Array, frame?: number): void {
+    const session = frame === undefined ? 0 : this.sessionOf(Math.max(0, frame - 1));
+    this.backStates.set(session, state);
+    this.backWaiters = this.backWaiters.filter((w) => {
+      if (w.session !== session) return true;
+      w.resolve();
+      return false;
+    });
+  }
+
+  /**
+   * Discover re-registered session `index` (1-based within the run) by
+   * `transform` (`RunRecord.noteSession`): its frames are warped by it.
+   * Arrives before the rows of the session's first frame.
+   */
+  setSession(index: number, transform: SessionTransform): void {
+    this.record.noteSession(index, transform);
+    this.transforms[index] = [transform[0], transform[1], transform[2]];
+    if (this.alignerSession === index) this.alignerSession = -1;
+  }
+
+  /** The session of global frame `frame` (0 for a one-session recording). */
+  sessionOf(frame: number): number {
+    return sessionOfFrame(this.source.info, frame);
   }
 
   /** The newest flat-field map (null: none known; the calibration's own stays). */
@@ -221,14 +285,17 @@ export class LookbackReader {
     // Waiting for Discover's rows or state is not work; reading and preprocessing are.
     const t0 = performance.now();
     await this.rows(frame);
-    const state = await this.state();
+    const session = this.sessionOf(frame);
+    const state = await this.state(session);
     const t1 = performance.now();
-    const pre = this.blockPre(block, state);
+    const pre = this.blockPre(block, session, state);
     const front = this.frontPre(state);
     const t2 = performance.now();
     const raw = await this.rawFrame(frame);
     const t3 = performance.now();
     frontReplay(front, raw, 1, this.buf, this.record.span(frame, 1), 0);
+    // Stage B of a replay: the session's re-registration first, then the rigid shift.
+    this.sessionAligner(session)?.warpF32(this.buf);
     const rec = this.record.span(frame, 1);
     const motion = (this.motion ??= this.newMotion());
     motion.applyF32(this.buf, rigidRecords(motion, rec.dy, rec.dx, rec.flags, 1), y);
@@ -245,22 +312,56 @@ export class LookbackReader {
     return new Promise((resolve, reject) => this.rowWaiters.push({ frame, resolve, reject }));
   }
 
-  private state(): Promise<Uint8Array> {
-    const s = this.backState;
+  /** The newest back state of `session` (waits for its first). */
+  private state(session: number): Promise<Uint8Array> {
+    const s = this.backStates.get(session);
     if (s) return Promise.resolve(s);
     return new Promise((resolve, reject) =>
-      this.backWaiters.push({ resolve: () => resolve(this.backState!), reject }),
+      this.backWaiters.push({
+        session,
+        resolve: () => resolve(this.backStates.get(session)!),
+        reject,
+      }),
     );
   }
 
-  private blockPre(seq: number, state: Uint8Array): Preprocessor {
+  /**
+   * The preprocessor of block `seq` for a frame of `session`: the one in
+   * progress, or a fresh copy of the session's state (a block that crosses
+   * into another session, only in the Final settle, starts again there).
+   */
+  private blockPre(seq: number, session: number, state: Uint8Array): Preprocessor {
     const slot = seq <= SETTLE_BLOCK_MAX ? 'settleBlock' : 'block';
     const cur = this[slot];
-    if (cur?.seq === seq) return cur.pre;
+    if (cur?.seq === seq && cur.session === session) return cur.pre;
     cur?.pre.free();
-    const next = { seq, pre: Preprocessor.fromState(state) };
-    this[slot] = next;
-    return next.pre;
+    const pre = Preprocessor.fromState(state);
+    // A state does not carry the source mask: the FOV as this session's warp moved it (stage C).
+    const t = this.transforms[session];
+    if (!isIdentity(t)) {
+      const a = new SessionAligner(this.source.info.width, this.source.info.height);
+      try {
+        a.setTransform(t![0], t![1], t![2]);
+        pre.setSourceMask(a.sourceMask(pre.fovMask()));
+      } finally {
+        a.free();
+      }
+    }
+    this[slot] = { seq, session, pre };
+    return pre;
+  }
+
+  /** The session warp of `session` (null: identity, nothing to warp). */
+  private sessionAligner(session: number): SessionAligner | null {
+    const t = this.transforms[session];
+    if (isIdentity(t)) return null;
+    const { width, height } = this.source.info;
+    const a = (this.aligner ??= new SessionAligner(width, height));
+    if (this.alignerSession !== session) {
+      a.setTransform(t![0], t![1], t![2]);
+      this.alignerSession = session;
+    }
+    return a;
   }
 
   private frontPre(state: Uint8Array): Preprocessor {
@@ -335,6 +436,8 @@ export class LookbackReader {
     this.settleBlock = null;
     this.front?.free();
     this.front = null;
+    this.aligner?.free();
+    this.aligner = null;
     this.motion?.free();
     this.motion = null;
     this.engine?.free();

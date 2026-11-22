@@ -125,7 +125,10 @@ function handleMain(msg: MainToLookback): void {
       );
       return;
     case 'back-state':
-      withReader(msg.session, (reader) => reader.setBackState(msg.state));
+      withReader(msg.session, (reader) => reader.setBackState(msg.state, msg.frame));
+      return;
+    case 'session':
+      withReader(msg.session, (reader) => reader.setSession(msg.index, msg.transform));
       return;
     case 'flat':
       withReader(msg.session, (reader) => reader.setFlatField(msg.map));

@@ -144,6 +144,8 @@ export interface FastLoopOptions {
   csettleNeedFirst?: boolean;
   /** With `lookback`: the share of the final settle pass to read (`SlowInit.settleFraction`; 1 = all). */
   settleFraction?: number;
+  /** With `lookback`, a Joint run: the first frame of sessions 1.. (`SlowInit.sessionStarts`). */
+  sessionStarts?: readonly number[];
   /** Return the model residual of each batch's last frame (the app's residual view). */
   residual?: boolean;
   /**
@@ -169,6 +171,7 @@ export const FAST_LOOP_DEFAULTS = {
   csettleYield: 0,
   csettleNeedFirst: false,
   settleFraction: 1,
+  sessionStarts: [] as readonly number[],
   signed: false,
 } as const;
 
@@ -525,6 +528,9 @@ export class FastLoop {
           ...(this.o.lookback ? { lookback: true } : {}),
           ...(this.o.lookback && this.o.settleFraction < 1
             ? { settleFraction: this.o.settleFraction }
+            : {}),
+          ...(this.o.lookback && this.o.sessionStarts?.length
+            ? { sessionStarts: [...this.o.sessionStarts] }
             : {}),
           ...(this.o.lookback && this.o.csettle
             ? {

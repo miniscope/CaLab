@@ -301,7 +301,8 @@ session table and keeps the results indexed; the steps below are the one-off rou
    **Add session** appends more folders. Sessions must have the same size and bit
    depth (an error); a different frame rate is a warning.
 3. **Choose the library mode.** **Joint**: one library. Discover runs through all
-   sessions in order (without look-back, which needs one session), and Extract solves
+   sessions in order (look-back re-reads frames of the session it is in, and the Final
+   settle at the end covers every session), and Extract solves
    each session with the final library, so a cell has the same id in every session. **Separate**:
    each session is its own run, one after another.
 4. **Results location.** By default the results go next to the data, in

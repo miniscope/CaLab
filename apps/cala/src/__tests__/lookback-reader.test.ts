@@ -3,9 +3,11 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { entriesFromFiles, FrameSource } from '../lib/frame-source.ts';
 import { LookbackReader, lookbackFrames } from '../lib/lookback-reader.ts';
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
-import { BackStage, FrontStage, MotionStage } from '../lib/pipeline-stages.ts';
+import { BackStage, FrontStage, MotionStage, type ReplayInput } from '../lib/pipeline-stages.ts';
+import { RunRecord } from '../lib/run-record.ts';
+import type { SessionTransform } from '../lib/session-boundary.ts';
 import { StagePool } from '../lib/stage-pool.ts';
-import { buildAvi, makeFile } from './synth-avi.ts';
+import { buildAvi, expectedPixels, makeFile } from './synth-avi.ts';
 import { initTestWasm } from './wasm-test.ts';
 
 beforeAll(initTestWasm);
@@ -215,5 +217,163 @@ describe('LookbackReader', () => {
     // The serial chain (the worker's `requests`) moves on after the rejection.
     await expect(chain).resolves.toBeDefined();
     src.dispose();
+  });
+
+  describe('a Joint run (two sessions)', () => {
+    /** Session 0: frames 0..47, session 1: 48..79 (a boundary at 48, a batch edge). */
+    const S0 = 48;
+    const S1 = 32;
+    /** The re-registration of session 1, forced (a replay installs the recorded one). */
+    const T1: SessionTransform = [1.5, 2, -1];
+    const openJoint = () =>
+      FrameSource.openSessions(
+        (
+          [
+            ['day1', S0],
+            ['day2', S1],
+          ] as const
+        ).map(([name, frames]) => ({
+          name,
+          dir: `data/${name}`,
+          entries: entriesFromFiles([
+            makeFile('0.avi', buildAvi({ width: W, height: H, frames }), `data/${name}`),
+          ]),
+        })),
+      );
+
+    /** Stages A -> B -> C in-process; `replay`: Extract's replay of the recorded run. */
+    async function run(src: FrameSource, replay?: ReplayInput) {
+      const len = OPTIONS.batchSize * W * H;
+      const frontPool = new StagePool(3, len);
+      const outPool = new StagePool(3, len);
+      const a = new FrontStage(src, OPTIONS, () => frontPool.acquire(), undefined, replay);
+      const b = new MotionStage(a.setup, () => outPool.acquire());
+      const c = new BackStage(a.setup, null, null, 16);
+      const total = src.info.frameCount;
+      const out = new Float32Array(total * W * H);
+      const before = new Map<number, Uint8Array>();
+      const steps: PipelineStepResult[] = [];
+      for (;;) {
+        const job = await a.next();
+        if (!job) break;
+        const done = await b.handle(job);
+        if (done.front) frontPool.release(done.front);
+        if (done.step.phase === 'process') before.set(done.step.start, c.backState()!);
+        const r = c.handle(done);
+        steps.push(r);
+        if (r.kind === 'batch')
+          out.set(done.corrected!.subarray(0, r.count * W * H), r.start * W * H);
+        if (done.corrected) outPool.release(done.corrected);
+      }
+      a.dispose();
+      b.dispose();
+      c.dispose();
+      return { out, before, batches: steps.filter((x) => x.kind === 'batch') };
+    }
+
+    /** Discover's run, then Extract's replay of it with session 1 re-registered by `T1`. */
+    async function jointRuns() {
+      const src = await openJoint();
+      const live = await run(src);
+      const record = new RunRecord();
+      for (const s of live.batches)
+        if (s.kind === 'batch')
+          record.push(s.start, s.dy, s.dx, s.flags, s.flickerOffset, s.flickerGain);
+      record.noteSession(1, T1);
+      const replay = await run(src, { frameCount: S0 + S1, ...record.snapshot() });
+      return { src, live, replay };
+    }
+
+    it("maps a global frame to its session and reads it from that session's file", async () => {
+      const src = await openJoint();
+      const reader = new LookbackReader(src);
+      expect(reader.sessionOf(0)).toBe(0);
+      expect(reader.sessionOf(S0 - 1)).toBe(0);
+      expect(reader.sessionOf(S0)).toBe(1);
+      expect(reader.sessionOf(S0 + S1 - 1)).toBe(1);
+      // Global frame S0 + 3 is day2's frame 3 (each file starts its own frame count).
+      const opts = { width: W, height: H, frames: S1 };
+      expect(Array.from(await src.readFrames(S0 + 3, 1))).toEqual(
+        Array.from(expectedPixels(opts, 3)),
+      );
+      reader.dispose();
+      src.dispose();
+      // A recording without sessions is one session.
+      const plain = await openAvi();
+      const one = new LookbackReader(plain);
+      expect([0, FRAMES - 1].map((f) => one.sessionOf(f))).toEqual([0, 0]);
+      one.dispose();
+      plain.dispose();
+    });
+
+    it('stage C snapshots the first and last batch of every session', async () => {
+      const src = await openJoint();
+      const live = await run(src);
+      const frames = live.batches.map((s) => (s.kind === 'batch' ? s.backState?.frame : null));
+      // After the first batch, every 16 frames, and at the join: the last batch of
+      // session 0 (ends at 48) and the first of session 1 (ends at 56).
+      expect(frames.filter((f) => f != null)).toEqual([8, 24, 40, 48, 56, 72]);
+      src.dispose();
+    });
+
+    it("serves a session's frames with its re-registration and its own back state, as Extract replays them", async () => {
+      const { src, replay } = await jointRuns();
+      // The replay installed the recorded transform (no estimate) at the join.
+      const join = replay.batches.find((s) => s.kind === 'batch' && s.session);
+      expect(join?.kind === 'batch' && join.session).toMatchObject({ frame: S0, transform: T1 });
+      expect(join?.kind === 'batch' && join.session?.fitted).toBeUndefined();
+      const reader = new LookbackReader(src);
+      for (const s of replay.batches)
+        if (s.kind === 'batch')
+          reader.pushRows(s.start, s.dy, s.dx, s.flags, s.flickerOffset, s.flickerGain);
+      reader.setSession(1, T1);
+      const px = W * H;
+      // Session 1's state before its second batch (frame 56 starts it), and session 0's
+      // before its frame 32: each block starts from the state of its own session.
+      reader.setBackState(replay.before.get(56)!, 56);
+      reader.setBackState(replay.before.get(32)!, 32);
+      const y = new Float32Array(3 * px);
+      await reader.serve(
+        [56, 57, 58].map((frame) => ({ frame, block: 1 })),
+        y,
+      );
+      // Extract's replay of the same frames: the warp, the rigid shift, the session's floor
+      // and noise, and validity against the FOV as the warp moved it.
+      expect(Array.from(y)).toEqual(Array.from(replay.out.subarray(56 * px, 59 * px)));
+      // A Final-settle block that starts in session 0 goes on with session 0's state.
+      const z = new Float32Array(px);
+      await reader.serve([{ frame: 32, block: 2 }], z);
+      expect(Array.from(z)).toEqual(Array.from(replay.out.subarray(32 * px, 33 * px)));
+      reader.dispose();
+
+      // The check has teeth: without the session's warp the frame is not what Extract saw.
+      const bare = new LookbackReader(src);
+      for (const s of replay.batches)
+        if (s.kind === 'batch')
+          bare.pushRows(s.start, s.dy, s.dx, s.flags, s.flickerOffset, s.flickerGain);
+      bare.setBackState(replay.before.get(56)!, 56);
+      await bare.serve([{ frame: 56, block: 1 }], z);
+      expect(Array.from(z)).not.toEqual(Array.from(replay.out.subarray(56 * px, 57 * px)));
+      // Nor with session 0's state (a block that started before the join).
+      bare.setSession(1, T1);
+      bare.setBackState(replay.before.get(32)!, 32);
+      const other = new LookbackReader(src);
+      for (const s of replay.batches)
+        if (s.kind === 'batch')
+          other.pushRows(s.start, s.dy, s.dx, s.flags, s.flickerOffset, s.flickerGain);
+      other.setSession(1, T1);
+      other.setBackState(replay.before.get(40)!, 40);
+      let served = false;
+      const waiting = other.serve([{ frame: 56, block: 1 }], z).then(() => (served = true));
+      await new Promise((r) => setTimeout(r, 10));
+      // A session-1 frame waits for a session-1 state; it never borrows session 0's.
+      expect(served).toBe(false);
+      other.setBackState(replay.before.get(56)!, 56);
+      await waiting;
+      expect(Array.from(z)).toEqual(Array.from(replay.out.subarray(56 * px, 57 * px)));
+      bare.dispose();
+      other.dispose();
+      src.dispose();
+    });
   });
 });

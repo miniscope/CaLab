@@ -160,6 +160,8 @@ export interface SlowLoopLike {
   enableLookback?(rate: number, maxFrames: number): void;
   lookbackNote?(seen: number, frames: number): void;
   lookbackAddCredit?(frames: number): void;
+  /** Never re-read a frame before `frame` again (a Joint run's current session; absent in older builds). */
+  setLookbackFloor?(frame: number): void;
   /** `[frame, block, n, id_1..id_n, ...]`; empty when the budget is spent or nothing is needed. */
   lookbackTake?(max: number): Float64Array;
   /** The last `lookbackTake` stopped because no cell needs anything. */
@@ -345,6 +347,14 @@ function emptyWorkByKind(): Record<LookbackKind, LookbackWork> {
   return { need: emptyLookbackWork(), csettle: emptyLookbackWork(), end: emptyLookbackWork() };
 }
 
+/** `lookbackTake` output (`[frame, block, n, id_1..id_n, ...]`) without the frames before `floor`. */
+export function framesFrom(flat: Float64Array, floor: number): Float64Array {
+  const out: number[] = [];
+  for (let k = 0; k + 2 < flat.length; k += 3 + flat[k + 2])
+    if (flat[k] >= floor) for (let j = k; j < k + 3 + flat[k + 2]; j++) out.push(flat[j]);
+  return out.length === flat.length ? flat : Float64Array.from(out);
+}
+
 /** `lookbackTake` output, split per frame. */
 function lookbackItems(flat: ArrayLike<number>): LookbackItem[] {
   const out: LookbackItem[] = [];
@@ -470,6 +480,11 @@ export class SlowRunner {
   private pace = { fps: 0, paused: false };
   /** Stream index after the last live batch of this run (-1: none yet): a gap is a forward-pool drop. */
   private liveEnd = -1;
+  /**
+   * A Joint run: the first frame of the current session (`SlowInit.sessionStarts`).
+   * Look-back and the settle during Discover never re-read a frame before it.
+   */
+  private lbFloor = 0;
   /** Look-back stopped by an error or a timeout (Discover and settling go on without it). */
   private lbError: string | undefined;
   private drain: Settle | null = null;
@@ -682,6 +697,9 @@ export class SlowRunner {
           ...(lookback && (msg.settleFraction ?? 1) < 1
             ? { settleFraction: msg.settleFraction }
             : {}),
+          ...(lookback && msg.sessionStarts?.length
+            ? { sessionStarts: [...msg.sessionStarts] }
+            : {}),
         };
         this.loop = this.clock.span('setup', () => this.deps.create(this.init!));
         this.run = 1;
@@ -861,6 +879,7 @@ export class SlowRunner {
           this.dispatch();
         }
         if (this.lookbackLive) {
+          this.sessionFloor(loop, msg.start);
           loop.lookbackNote!(msg.start + msg.count, observed);
           if (this.cs) {
             this.cs.live += observed;
@@ -1023,9 +1042,26 @@ export class SlowRunner {
     }, LOOKBACK.timeoutMs);
   }
 
+  /**
+   * A Joint run: the batch from stream frame `start` is in the session that
+   * starts at the last session start at or before it (not only at it: the
+   * forward pool may have dropped the session's first batches). Look-back
+   * moves its floor there (`setLookbackFloor`): from now on it re-reads the
+   * current session only.
+   */
+  private sessionFloor(loop: SlowLoopLike, start: number): void {
+    let floor = this.lbFloor;
+    for (const b of this.init?.sessionStarts ?? []) if (b <= start && b > floor) floor = b;
+    if (floor === this.lbFloor) return;
+    this.lbFloor = floor;
+    loop.setLookbackFloor?.(floor);
+  }
+
   /** Need-driven look-back: the frames the scheduler wants now. */
   private needRequest(loop: SlowLoopLike): boolean {
-    const flat = this.clock.span('need', () => loop.lookbackTake!(LOOKBACK.takeMax));
+    const took = this.clock.span('need', () => loop.lookbackTake!(LOOKBACK.takeMax));
+    // (A build without `setLookbackFloor` may still hand out an earlier session's frames.)
+    const flat = this.lbFloor > 0 ? framesFrom(took, this.lbFloor) : took;
     if (flat.length === 0) return false;
     this.sendRequest(0, 'need', flat, lookbackItems(flat));
     return true;
@@ -1048,17 +1084,20 @@ export class SlowRunner {
       return false;
     // The frames forwarded so far are the saved history (stream index = file frame).
     const take = this.clock.span('csettle', () => loop.settleTake!(this.consumed, CSETTLE.chunk));
-    const n = Math.floor(take.length / 3);
+    // The current session only (as `needRequest`: a build without the floor may go earlier).
+    const keep: number[] = [];
+    for (let i = 0; 3 * i + 2 < take.length; i++) if (take[3 * i] >= this.lbFloor) keep.push(i);
+    const n = keep.length;
     if (n === 0) return false;
     const flat = new Float64Array(3 * n);
     const skip = new Uint8Array(n);
     const items: LookbackItem[] = [];
-    for (let i = 0; i < n; i++) {
-      flat[3 * i] = take[3 * i];
-      flat[3 * i + 1] = take[3 * i + 1];
-      skip[i] = take[3 * i + 2] > 0 ? 1 : 0;
-      items.push({ frame: take[3 * i], ids: new Float64Array(0) });
-    }
+    keep.forEach((k, i) => {
+      flat[3 * i] = take[3 * k];
+      flat[3 * i + 1] = take[3 * k + 1];
+      skip[i] = take[3 * k + 2] > 0 ? 1 : 0;
+      items.push({ frame: take[3 * k], ids: new Float64Array(0) });
+    });
     cs.gov.spend(n);
     cs.requested += n;
     if (port === 0) cs.turn = false;
@@ -1776,6 +1815,7 @@ export class SlowRunner {
     this.lbLib = [];
     this.csArm = null;
     this.liveEnd = -1;
+    this.lbFloor = 0;
     this.lbError = undefined;
     this.drain = null;
     // (An answer in pieces: its buffer belongs to a session the look-back worker drops too.)
