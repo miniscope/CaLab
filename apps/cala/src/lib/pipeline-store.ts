@@ -515,9 +515,11 @@ export function createPipelineStore(
       ...f.batch,
       [fp.view]: framePreviewImage(fp, f.index),
       frame: fp.first + f.index,
+      fit: { [fp.view]: f.batch[fp.view] },
     });
     if (displayLogOn) {
       displayLog.push({ t: clock(), frame: fp.first + f.index });
+      // Bounded: past 20000 entries the oldest half is cut (a short measurement run never gets there).
       if (displayLog.length > 20000) displayLog = displayLog.slice(-10000);
     }
   }
@@ -560,7 +562,12 @@ export function createPipelineStore(
         playback.clear();
         showPlayed(items[items.length - 1]);
       } else {
-        playback.setRate(paceRun() ? paceFps : rate > 0 ? rate * 1.05 : 30);
+        // Paced: the pace, unless processing cannot keep up with it (then the measured rate, so the
+        // queue does not just fill and skip). Unpaced: a little above the measured rate.
+        const measured = rate > 0 ? rate * 1.05 : Infinity;
+        playback.setRate(
+          paceRun() ? Math.min(paceFps, measured) : Number.isFinite(measured) ? measured : 30,
+        );
         playback.push(items);
         if (rafId === null) rafId = requestAnimationFrame(playbackLoop);
       }

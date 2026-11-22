@@ -44,6 +44,11 @@ export class PlaybackScheduler<T> {
   /** Queue one batch's frames, oldest first. Skips ahead when too many are waiting. */
   push(frames: readonly T[]): void {
     if (frames.length === 0) return;
+    // The loop may have stopped while the queue was empty: no credit for the gap.
+    if (this.queued === 0) {
+      this.credit = 0;
+      this.last = null;
+    }
     this.batchLen = Math.max(this.batchLen, frames.length);
     for (const f of frames) this.queue.push(f);
     const limit = Math.ceil(this.maxBatches * this.batchLen);
@@ -65,7 +70,8 @@ export class PlaybackScheduler<T> {
       // No credit builds up while the queue is empty: playback resumes evenly, not in a burst.
       this.credit = 0;
       this.last = nowMs;
-      this.compact();
+      this.queue = [];
+      this.head = 0;
       return null;
     }
     if (this.last === null) this.credit = 1;
@@ -77,7 +83,11 @@ export class PlaybackScheduler<T> {
     this.head += n;
     this.shown += n;
     const frame = this.queue[this.head - 1];
-    if (this.queued === 0) this.credit = 0;
+    if (this.queued === 0) {
+      this.credit = 0;
+      this.queue = [];
+      this.head = 0;
+    }
     this.compact();
     return frame;
   }

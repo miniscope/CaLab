@@ -140,6 +140,11 @@ export interface BatchPreviews {
    * (display only; the four images above stay the last frame's).
    */
   frames?: FramePreviews;
+  /**
+   * Set by the store while it plays `frames`: the batch's own last-frame image of the played view
+   * (the view's image above is then the frame being shown). The display range is fitted from this.
+   */
+  fit?: Partial<Record<FrameView, PreviewImage>>;
 }
 
 /**

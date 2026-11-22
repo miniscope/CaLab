@@ -111,6 +111,8 @@ export function CellTraceViewer(props: {
   boundaries?: readonly number[];
   /** Their health flags (Joint runs): a warning or failed boundary is marked in its colour. */
   boundaryFlags?: readonly { frame: number; severity: BoundarySeverity }[];
+  /** The frame the video shows: the trace stops there, not at the newest processed frame (smooth playback). */
+  displayedFrame?: () => number | null;
   /**
    * The zoom plot is sized by its width (the shared aspect rule) instead of a
    * share of the window's height.
@@ -150,7 +152,11 @@ export function CellTraceViewer(props: {
     ),
   ];
   /* eslint-enable solid/reactivity */
-  const frames = () => props.cells.frame();
+  const frames = () => {
+    const shown = props.displayedFrame?.();
+    const processed = props.cells.frame();
+    return shown === null || shown === undefined ? processed : Math.min(processed, shown + 1);
+  };
   const duration = () => frames() / fs();
 
   const span = createMemo(() => {

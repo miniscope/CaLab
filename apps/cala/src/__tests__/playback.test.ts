@@ -98,6 +98,45 @@ describe('PlaybackScheduler', () => {
   });
 });
 
+describe('PlaybackScheduler with a loop that stops on an empty queue', () => {
+  it('does not credit the gap before a late batch', () => {
+    const s = new PlaybackScheduler<number>();
+    s.setRate(30);
+    s.push(batch(0));
+    // The store's loop: rAF at 60 Hz while frames are queued, none once the queue is empty.
+    let t = 0;
+    const shown: number[] = [];
+    for (; s.queued > 0; t += 1000 / 60) {
+      const f = s.tick(t);
+      if (f !== null) shown.push(f);
+    }
+    expect(shown).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    // The next batch arrives 300 ms late; no tick ran in between.
+    t += 300;
+    s.push(batch(8));
+    const next: number[] = [];
+    for (let k = 0; k < 4; k++, t += 1000 / 60) {
+      const f = s.tick(t);
+      if (f !== null) next.push(f);
+    }
+    // Frame 8 at once, then 9 a frame interval later: not 15 with 8-14 skipped.
+    expect(next).toEqual([8, 9]);
+    expect(s.dropped).toBe(0);
+  });
+
+  it('releases the consumed queue when it empties', () => {
+    const s = new PlaybackScheduler<number>();
+    s.setRate(1000);
+    s.push(batch(0));
+    expect(s.tick(0)).toBe(0);
+    expect(s.tick(100)).toBe(7);
+    expect(s.queued).toBe(0);
+    // Internal arrays reset (memory): the next batch plays from its first frame.
+    s.push(batch(8));
+    expect(s.tick(200)).toBe(8);
+  });
+});
+
 describe('playbackWanted', () => {
   it('has hysteresis', () => {
     expect(playbackWanted(30, false)).toBe(true);
