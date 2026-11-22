@@ -32,10 +32,10 @@ Refine runs show as "Refine (removed stage)".
   disk with one session and the pipelined workers. Where they cannot run (a
   live stream, a Joint run of several sessions, `?pipeline=0`) the panel says
   why, and the footprints get no refinement after Discover.
-- **Extract after Discover** (off by default for recordings) starts Extract
-  when Discover finishes (its Final settle included). After Discover the panel
-  shows the Extract button with the hint "Extract to solve the final traces
-  with the settled footprints." Turn the option on to extract straight away.
+- **Extract after Discover** (on by default for recordings) starts Extract
+  when Discover finishes (its Final settle included). Turn it off to inspect
+  the footprints first; the panel then shows the Extract button with the hint
+  "Extract to solve the final traces with the settled footprints."
   The option is not saved between sessions.
 - A new Discover run (Restart) starts the stage log over.
 - **Streaming runs Discover only.** A live source has no file to replay, and

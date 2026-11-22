@@ -216,7 +216,7 @@ A run has two named stages: **Discover** and **Extract** (see
    settle replaced it.
 4. **Extract extracts traces.** It replays the recording with the final library, using
    the motion and flicker recorded during Discover, so a cell found late has a trace from
-   frame 0. Run it with **Extract** once the footprints have settled. It starts by itself when Discover ends only if you turn on **Extract after Discover** (off by default).
+   frame 0. Run it with **Extract** once the footprints have settled. It starts by itself when Discover (and its Final settle) ends while **Extract after Discover** is on (the default); turn it off to inspect the footprints first.
 5. **Export.** Once Extract has finished, the **Export** menu has **Export (.npz)**, which writes the main file: traces (cells x frames), cell
    ids and centroids, sparse footprints, per-frame motion and flicker, per-cell QC,
    and a JSON block with the run's provenance and the stages that ran. It holds two

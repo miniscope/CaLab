@@ -88,8 +88,8 @@ describe('rates', () => {
 describe('Extract after Discover default and the next-step hint', () => {
   const HINT_IN = { live: false, discover: 'done', extract: 'idle' } as const;
 
-  it('is off by default for recordings', () => {
-    expect(EXTRACT_AFTER_DISCOVER_DEFAULT).toBe(false);
+  it('is on by default for recordings', () => {
+    expect(EXTRACT_AFTER_DISCOVER_DEFAULT).toBe(true);
   });
 
   it('shows the hint after Discover, before any Extract', () => {

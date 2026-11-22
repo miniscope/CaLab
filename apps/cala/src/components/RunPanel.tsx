@@ -147,7 +147,7 @@ export interface RunPanelProps {
  * recordings) and Extract (recordings only), with Discover's convergence
  * metrics on one time axis (minutes of the recording) and a "now" line, the
  * run controls and the export. Extract follows Discover only if
- * "Extract after Discover" is turned on (off by default).
+ * "Extract after Discover" is turned on (on by default).
  */
 export function RunPanel(props: RunPanelProps): JSX.Element {
   const s = () => props.pipeline;

@@ -58,11 +58,12 @@ export const LIVE_NOTE =
   'A live stream runs Discover only: there is no file to replay. Save the stream and load it as a recording later to Extract.';
 
 /**
- * "Extract after Discover" default for recordings: off (an Extract run is a
- * deliberate step once the footprints have settled). Nothing persists the
- * option, so there is no saved value to respect.
+ * "Extract after Discover" default for recordings: on. With Refine gone,
+ * Discover (with look-back and its Final settle) hands over settled
+ * footprints, so Extract follows it directly. Nothing persists the option,
+ * so there is no saved value to respect.
  */
-export const EXTRACT_AFTER_DISCOVER_DEFAULT = false;
+export const EXTRACT_AFTER_DISCOVER_DEFAULT = true;
 
 export const NEXT_STEP_HINT = 'Extract to solve the final traces with the settled footprints.';
 
