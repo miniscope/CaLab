@@ -24,6 +24,10 @@
  *   dropped for the slow loop, and how far the end settle moved the library
  *   Discover ended with; both libraries are written as `<tag>-live.json` and
  *   `<tag>-final.json`.
+ *   `--finish-after S`: press "End Discover" once Discover has run S seconds (a short run: the end
+ *   settle then covers the frames read so far). Every run also records the work readout
+ *   (`__cala.pipeline.work()`, once a second) as `<tag>-work.json` and logs the `?debug` text
+ *   readout at each sample.
  *   `--headed` runs system Chrome with a real GPU (headless SwiftShader hides memory behaviour).
  *
  * Opens `<folder>` (a session folder or a parent of several) through the
@@ -68,6 +72,7 @@ const csettle = args.includes('--csettle');
 const csYield = opt('--csettle-yield', '');
 const csRate = opt('--csrate', '');
 const paceFps = opt('--pacefps', '');
+const finishAfter = Number(opt('--finish-after', '0'));
 const csQuery0 = csettle
   ? `&csettle${csYield ? `=yield${csYield}` : ''}${csRate ? `&csrate=${csRate}` : ''}`
   : '';
@@ -353,6 +358,22 @@ await page.evaluate((withRelease) => {
       }
       relLast = n;
     }, 5);
+  // Who is doing what (`__cala.pipeline.work()`): one reading a second, plain data.
+  const work = (window.__calaWork = []);
+  setInterval(() => {
+    const c = window.__cala;
+    const w = c?.pipeline.work?.();
+    if (!w) return;
+    const prev = work.at(-1);
+    if (prev && prev.work === w) return;
+    work.push({
+      t: performance.now(),
+      status: c.pipeline.status(),
+      work: w,
+      maxFps: c.pipeline.maxFps(),
+      pace: c.pipeline.paceStats?.() ?? null,
+    });
+  }, 500);
   let lastKey = '';
   setInterval(() => {
     const c = window.__cala;
@@ -542,6 +563,13 @@ async function probeReport() {
   writeFileSync(join(out, `${tag}-probe.json`), JSON.stringify({ probe: p, endSettleChange: ch }));
 }
 
+/** The work readings of the page, saved (also when a run stops without settling). */
+async function saveWork() {
+  const w = await page.evaluate(() => window.__calaWork).catch(() => null);
+  if (w?.length) writeFileSync(join(out, `${tag}-work.json`), JSON.stringify(w));
+}
+
+let finishedEarly = false;
 let refineClicked = false;
 let extractClicked = false;
 let discoverDoneAt = null;
@@ -554,6 +582,15 @@ while (!stop) {
   const r = await sample(false);
   samples.push(r);
   L(fmt(r));
+  const wtxt = await page
+    .evaluate(() => document.querySelector('[data-testid=work-debug]')?.textContent ?? '')
+    .catch(() => '');
+  if (wtxt) L(`WORK ${r.t.toFixed(0)}s\n${wtxt}`);
+  if (finishAfter > 0 && r.st?.pst === 'running' && r.t > finishAfter && !finishedEarly) {
+    finishedEarly = true;
+    L(`FINISH_EARLY ${r.t.toFixed(1)}s`);
+    await page.evaluate(() => window.__cala.pipeline.finishEarly());
+  }
   if (r.rendererFoot > 6000 || r.rendererRss > 6000) stop = 'cap';
   const key = `${r.st?.pst}|${r.st?.refine}|${r.st?.extract}`;
   if (key !== lastKey) lastKey = key;
@@ -607,6 +644,7 @@ while (!stop) {
   if (r.t > maxMin * 60) stop = 'time';
 }
 L('STOP ' + stop);
+await saveWork();
 const readouts = await page
   .$$eval('.cala-readout', (els) => els.map((e) => e.textContent?.trim()).filter(Boolean))
   .catch(() => []);

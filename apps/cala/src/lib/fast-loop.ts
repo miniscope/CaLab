@@ -576,6 +576,7 @@ export class FastLoop {
         traces: tr,
         ...(background ? { background } : {}),
         ...(noise ? { noise } : {}),
+        sentAt: performance.timeOrigin + performance.now(),
       },
       transfer,
     );

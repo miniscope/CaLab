@@ -11,6 +11,7 @@
 import { createSignal } from 'solid-js';
 import { StreamHistory, type HistoryExport, type SeriesSpec } from '@calab/compute';
 import { RunEvents, type RunEvent } from './run-events.ts';
+import type { WorkRates } from './work-meter.ts';
 
 /** Motion record flag bits (crates/cala/src/motion/corrector.rs) that count as a flagged frame. */
 const MOTION_FLAG_ANOMALOUS = 2;
@@ -293,6 +294,44 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
   ],
 };
 
+/** The work-share series: fixed 0-1 ranges (a share is a share), the fast loop's top speed on a ladder. */
+const WORK_SERIES: SeriesSpec[] = [
+  ...(
+    [
+      ['work_live', 'Slow worker: live batches', C.blue],
+      ['work_visit', 'Slow worker: visit hand-out and apply', C.bluishGreen],
+      ['work_need', 'Slow worker: need-driven look-back answers', C.orange],
+      ['work_settle', 'Slow worker: settle answers and end settle', C.reddishPurple],
+      ['work_publish', 'Slow worker: publishing', C.skyBlue],
+      ['work_other', 'Slow worker: housekeeping, set-up and replay', C.vermillion],
+      ['work_idle', 'Slow worker: idle', C.black],
+      ['work_visit_busy', 'Visit workers: mean busy share', C.bluishGreen],
+      ['work_lookback_busy', 'Look-back worker: busy share', C.orange],
+    ] as const
+  ).map(([key, label, color]): SeriesSpec => ({
+    key,
+    label,
+    unit: '',
+    group: 'extra',
+    kind: 'value',
+    range: [0, 1],
+    rangeRule: 'fixed',
+    color,
+    digits: 2,
+  })),
+  {
+    key: 'fast_max_fps',
+    label: 'Fast loop top speed (estimate)',
+    unit: 'fps',
+    group: 'extra',
+    kind: 'value',
+    range: [0, 120],
+    rangeRule: 'ladder125',
+    color: C.blue,
+    digits: 0,
+  },
+];
+
 /** Series kept for the export and readouts but not drawn as chips. */
 const EXTRA: SeriesSpec[] = [
   {
@@ -361,6 +400,9 @@ const EXTRA: SeriesSpec[] = [
     color: C.blue,
     digits: 1,
   },
+  // Who is doing what (`lib/work-meter.ts`): the slow worker's shares of wall time by duty, the
+  // busy shares of the visit workers (mean) and the look-back worker, and the fast loop's top speed.
+  ...WORK_SERIES,
   {
     key: 'wall_s',
     label: 'Wall clock since the run started',
@@ -586,6 +628,28 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     if (working !== null) history.push('working_set', t, working);
   }
 
+  /**
+   * The work shares of the last second or so (`WorkRates`) and the fast loop's top-speed estimate.
+   * Pushed at the stream time Discover has reached, so the caller stops after its last frame (the
+   * final settle's accounting lives in the `?debug` readout and the `-work.json` log only: stream
+   * time stands still then and every sample would land in one bin).
+   */
+  function work(r: WorkRates, maxFps: number): void {
+    const t = processedS;
+    const s = r.slow;
+    history.push('work_live', t, s.live);
+    history.push('work_visit', t, s.visit);
+    history.push('work_need', t, s.need);
+    history.push('work_settle', t, s.csettle + s.end);
+    history.push('work_publish', t, s.publish);
+    history.push('work_other', t, s.housekeep + s.setup);
+    history.push('work_idle', t, s.idle);
+    if (r.visit.length > 0)
+      history.push('work_visit_busy', t, r.visit.reduce((a, b) => a + b, 0) / r.visit.length);
+    history.push('work_lookback_busy', t, r.lookback.busy);
+    if (maxFps > 0) history.push('fast_max_fps', t, maxFps);
+  }
+
   /** A new flat-field map came out of the estimator (`change`: median change, σ). */
   function flatMap(change: number): void {
     if (Number.isFinite(change)) history.push('flat_change', processedS, change);
@@ -597,6 +661,7 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     batch,
     liveCounters,
     convergence,
+    work,
     flatMap,
     log,
     /** Changes whenever the store or the log changed. */

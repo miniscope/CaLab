@@ -23,6 +23,8 @@ export class FramePacer {
   private fps = 0;
   private anchor = 0;
   private count = 0;
+  /** Frames released since `reset` (never cleared by a re-anchor). */
+  private total = 0;
   private held = false;
   private lastRelease = Number.NEGATIVE_INFINITY;
   private lateTotal = 0;
@@ -61,6 +63,11 @@ export class FramePacer {
     return this.count;
   }
 
+  /** Frames released since the run began: what the readout reports (a re-anchor does not reset it). */
+  get releasedTotal(): number {
+    return this.total;
+  }
+
   /** Total lateness (ms) dropped at re-anchors: how far behind the target the run fell. */
   get lateMs(): number {
     return this.lateTotal;
@@ -94,6 +101,7 @@ export class FramePacer {
       this.count = 0;
     }
     this.count += frames;
+    this.total += frames;
     this.lastRelease = now;
   }
 
@@ -113,6 +121,7 @@ export class FramePacer {
     this.fps = 0;
     this.held = false;
     this.count = 0;
+    this.total = 0;
     this.anchor = 0;
     this.lastRelease = Number.NEGATIVE_INFINITY;
     this.lateTotal = 0;
@@ -122,13 +131,15 @@ export class FramePacer {
 
 /** Pacing readouts a worker reports: the gate's wait, the lateness dropped, the re-anchors. */
 export interface PaceStats {
+  /** The pipeline session the gate runs for (`PaceGate.begin`): the main thread drops other sessions' readouts. */
+  session: number;
   target: number;
   /** Time spent at the gate (not busy time). */
   waitMs: number;
   /** Lateness dropped at re-anchors: how far behind the target the run fell. */
   lateMs: number;
   reanchors: number;
-  /** Frames released since the last anchor. */
+  /** Frames released since the run began (cumulative; a re-anchor does not reset it). */
   released: number;
 }
 
@@ -158,6 +169,7 @@ export class PaceGate {
   private open = false;
   private waiting: { wake: () => void } | null = null;
   private waited = 0;
+  private session = 0;
 
   constructor(
     private readonly timers: PaceTimers = REAL_TIMERS,
@@ -169,11 +181,12 @@ export class PaceGate {
   /** What the worker reports to the main thread (see `PaceStats`). */
   stats(): PaceStats {
     return {
+      session: this.session,
       target: this.pacer.target,
       waitMs: this.waited,
       lateMs: this.pacer.lateMs,
       reanchors: this.pacer.reanchors,
-      released: this.pacer.released,
+      released: this.pacer.releasedTotal,
     };
   }
 
@@ -187,8 +200,9 @@ export class PaceGate {
     return this.pacer.paced && !this.open && !this.stopped;
   }
 
-  /** A new run: unpaced until `setTarget`, not stopped, not paused. */
-  begin(): void {
+  /** A new run of pipeline `session`: unpaced until `setTarget`, not stopped, not paused. */
+  begin(session = 0): void {
+    this.session = session;
     this.pacer.reset();
     this.stopped = false;
     this.open = false;

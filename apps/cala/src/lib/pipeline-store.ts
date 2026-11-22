@@ -6,8 +6,9 @@
  * ahead of the UI, and only the latest previews are kept (a slow renderer
  * drops frames instead of queueing them). Pausing simply stops requesting.
  */
-import { createSignal } from 'solid-js';
+import { createSignal, untrack } from 'solid-js';
 import type { PaceStats } from './frame-pacer.ts';
+import { MaxFpsEstimator, WorkRater, type WorkRates } from './work-meter.ts';
 import type { CellStore } from './cell-store.ts';
 import type { CompressStore } from './compress-store.ts';
 import {
@@ -398,6 +399,12 @@ export function createPipelineStore(
         };
         const n = framesDone;
         setMotionBackend(step.motionBackend ?? null);
+        setMaxFps(
+          maxFpsEstimator.record(
+            step.count,
+            step.stageBusyMs ?? [t.readMs + t.preprocessMs + t.motionMs + t.otherMs + t.traceMs],
+          ),
+        );
         if (step.stageBusyMs) {
           busyTotals = step.stageBusyMs.map((v, i) => (busyTotals[i] ?? 0) + v);
           setStageBusy(busyTotals.map((v) => v / n));
@@ -453,7 +460,29 @@ export function createPipelineStore(
     return paceFps > 0 && flat.identity?.()?.live !== true;
   }
   const [paceStats, setPaceStats] = createSignal<PaceStats | null>(null);
-  client.subscribePaceStats?.((s) => setPaceStats(s));
+  /** The pipeline session whose pacing readouts count (-1: none); a stopped run's late ones are dropped. */
+  let paceSession = -1;
+  client.subscribePaceStats?.((s) => {
+    if (s.session === paceSession) setPaceStats(s);
+  });
+  // Work shares (`lib/work-meter.ts`): the slow worker's accounting once a second, and the fast
+  // loop's live estimate of its top speed. Instrumentation only: nothing here steers the run.
+  const workRater = new WorkRater();
+  const maxFpsEstimator = new MaxFpsEstimator();
+  const [work, setWork] = createSignal<WorkRates | null>(null);
+  const [maxFps, setMaxFps] = createSignal(0);
+  /** The max estimate as of the last `work` reading (the readout rebuilds once a second, not per batch). */
+  const [workMaxFps, setWorkMaxFps] = createSignal(0);
+  cells?.onStatus((st) => {
+    if (!st.accounting) return;
+    const rates = workRater.push(st.accounting);
+    if (!rates) return;
+    const max = maxFpsEstimator.estimate();
+    setWork(rates);
+    setWorkMaxFps(max);
+    // Not after Discover's last frame (stream time stands still; see `RunHistory.work`).
+    if (untrack(status) !== 'done') runHistory?.work(rates, max);
+  });
   function sendPace(pace: { fps?: number; paused?: boolean }): void {
     void client.setPace?.(pace).catch(() => {});
   }
@@ -507,6 +536,12 @@ export function createPipelineStore(
     meter = new ThroughputMeter();
     totals = { ...ZERO_TIMINGS };
     setPaceStats(null);
+    paceSession = -1;
+    workRater.reset();
+    maxFpsEstimator.reset();
+    setWork(null);
+    setMaxFps(0);
+    setWorkMaxFps(0);
     setPlan(null);
     setSetup(null);
     setProcessed(0);
@@ -531,6 +566,7 @@ export function createPipelineStore(
     const gen = generation;
     setStatus('starting');
     const session = nextSession++;
+    paceSession = session;
     cells?.reset(session);
     compress?.reset(session);
     try {
@@ -705,9 +741,15 @@ export function createPipelineStore(
     setCsettle,
     csettleCeiling,
     setCsettleCeiling: (rate: number) => setCsettleCeiling(csettleRate(rate)),
-    /** Read no faster than this many frames a second (0: off); applies to a running recording at once. */
     /** The frame worker's pacing readouts (gate wait, lateness dropped, re-anchors); null when unpaced. */
     paceStats,
+    /** Who is doing what, over the last second or so (the slow, visit and look-back workers); null until a second of data. */
+    work,
+    /** The fast loop's live estimate of its top speed, frames per second (0 until a batch has busy time). */
+    maxFps,
+    /** `maxFps` as of the last `work` reading, for the readout. */
+    workMaxFps,
+    /** Read no faster than this many frames a second (0: off); applies to a running recording at once. */
     setPaceFps: (fps: number) => {
       paceFps = Number.isFinite(fps) && fps > 0 ? fps : 0;
       if (paceFps > 0) paceEver = true;
