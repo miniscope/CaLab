@@ -74,6 +74,9 @@ function handle(msg: StageMsg): void {
                 csettleNeedFirst: cells.csettleNeedFirst ?? false,
               }
             : {}),
+          ...(cells?.lookback && !cells.library && cells.settleFraction !== undefined
+            ? { settleFraction: cells.settleFraction }
+            : {}),
           ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
         },
         port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,

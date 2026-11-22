@@ -364,12 +364,14 @@ export function FovPanel(props: {
     const m = mode();
     const qc = m === 'found' ? null : props.cells.qc();
     const est = m === 'status' ? props.cells.established() : null;
-    const scale = qc ? modeScale(m, qc.rows) : { lo: 0, hi: 1 };
+    const mov = m === 'stillMoving' ? props.cells.stillMoving() : null;
+    const scale = m === 'found' ? { lo: 0, hi: 1 } : modeScale(m, qc?.rows ?? []);
     const rgba = renderOverlay(g, {
       selected,
       mode: show,
       color: (id) => {
-        if (m !== 'found') return qcColor(m, qc?.byId.get(id), est?.get(id), scale, viridisRGB);
+        if (m !== 'found')
+          return qcColor(m, qc?.byId.get(id), est?.get(id), scale, viridisRGB, mov?.get(id));
         return props.cells.age(id) < NEW_CELL_FRAMES
           ? NEW_COLOR
           : foundColor(props.cells.firstSeen(id), frame);

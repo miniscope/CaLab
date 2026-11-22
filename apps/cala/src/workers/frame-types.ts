@@ -44,6 +44,8 @@ export interface CellsSettings {
   csettle?: boolean;
   csettleYield?: number;
   csettleNeedFirst?: boolean;
+  /** The share of the final settle pass to read (`SlowInit.settleFraction`; absent = all). */
+  settleFraction?: number;
   /** Batches in flight to the slow worker (default `FAST_LOOP_DEFAULTS.poolSize`). */
   forwardBuffers?: number;
   /** Feed the compress worker (default off; needs its port). */

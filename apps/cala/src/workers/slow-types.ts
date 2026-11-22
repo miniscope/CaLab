@@ -61,6 +61,11 @@ export interface SlowInit {
    */
   csettleNeedFirst?: boolean;
   /**
+   * The share of the final settle pass to read, in plan order (a Final-settle
+   * level, `FINAL_SETTLE_LEVELS`); absent or 1 = the whole pass.
+   */
+  settleFraction?: number;
+  /**
    * With `csettle`: batches the forward pool holds in flight to this worker
    * (the governor's batch-wait guard scales with it; absent: 2).
    */
@@ -219,6 +224,12 @@ export interface SlowStatus {
    * The Refine readout compares footprint changes with it.
    */
   footprintNoise?: Float64Array;
+  /**
+   * After a Final-settle checkpoint (and the final library): per cell, how
+   * much its footprint changed at the last step against its split-half noise,
+   * `[id, ratio, ...]` (`stillMovingRatios`). Information only.
+   */
+  stillMoving?: Float64Array;
 }
 
 /** A published library, flattened for drawing (unfiltered footprints). */

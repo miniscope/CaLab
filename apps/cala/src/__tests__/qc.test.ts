@@ -29,6 +29,8 @@ import {
   PASS_RGB,
   PROBATION_RGB,
   qcColor,
+  METRIC_SCALE,
+  modeScale,
   residualMax,
   residualRgba,
   UNKNOWN_RGB,
@@ -330,6 +332,14 @@ describe('qc colours', () => {
     );
     expect(qcColor('status', undefined, false, U, ramp)).toEqual(PROBATION_RGB);
     expect(qcColor('status', undefined, undefined, U, ramp)).toEqual(UNKNOWN_RGB);
+    // Still moving: a fixed 0-3 scale (clipped), grey while there is no hint.
+    const S = METRIC_SCALE.stillMoving;
+    expect(S).toEqual({ lo: 0, hi: 3 });
+    expect(modeScale('stillMoving', [])).toEqual(S);
+    expect(qcColor('stillMoving', undefined, undefined, S, ramp, undefined)).toEqual(UNKNOWN_RGB);
+    expect(qcColor('stillMoving', undefined, undefined, S, ramp, 1.5)).toEqual(ramp(0.5));
+    expect(qcColor('stillMoving', undefined, undefined, S, ramp, 40)).toEqual(ramp(1));
+    expect(qcColor('stillMoving', undefined, undefined, S, ramp, 0)).toEqual(ramp(0));
     expect(qcColor('projR', row({ projR: NaN }), undefined, U, ramp)).toEqual(UNKNOWN_RGB);
     expect(qcColor('projR', row({ projR: 0 }), undefined, U, ramp)).not.toEqual(
       qcColor('projR', row({ projR: 1 }), undefined, U, ramp),

@@ -220,6 +220,7 @@ describe('gatherRunRecord', () => {
       csettleCeiling: () => 2,
       csettleYield: () => 0,
       csettleNeedFirst: () => false,
+      finalSettleLevel: () => 'standard',
       paceFps: () => 0,
       smoothPlayback: () => true,
       motionBackend: () => 'wasm-off',
@@ -261,6 +262,7 @@ describe('gatherRunRecord', () => {
       settle_cap: 'off',
       need_first: false,
       lookback_pool: { planned_S: 1, started_S: 0, started_at_frame: null },
+      final_settle_level: 'standard',
       target_speed_fps: 0,
       library_mode: 'joint',
       refine_runs: 2,
@@ -423,12 +425,14 @@ describe('settingsFromRecord', () => {
           settle_cap: 0.5,
           need_first: true,
           lookback_pool: { planned_S: 1, started_S: 1, started_at_frame: 300 },
+          final_settle_level: 'quick',
           target_speed_fps: 30,
           smooth_playback: false,
         },
       }),
     );
     expect(settingsFromRecord(JSON.parse(JSON.stringify(rec)))).toEqual({
+      finalSettleLevel: 'quick',
       flatField: false,
       lookback: true,
       csettle: true,
@@ -438,6 +442,9 @@ describe('settingsFromRecord', () => {
       paceFps: 30,
       smoothPlayback: false,
     });
+    // A record from a build with another level name restores nothing for it.
+    const odd = buildRunRecord(input({ settings: { final_settle_level: 'turbo' } }));
+    expect(settingsFromRecord(JSON.parse(JSON.stringify(odd)))).toEqual({});
     expect(settingsFromRecord(null)).toBeNull();
     expect(settingsFromRecord({ format: 'other' })).toBeNull();
     expect(settingsFromRecord({ ...rec, record_version: 99 })).toBeNull();

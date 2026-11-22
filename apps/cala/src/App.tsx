@@ -532,6 +532,7 @@ const App: Component = () => {
       csettleCeiling: pipeline.csettleCeiling,
       csettleYield: pipeline.csettleYield,
       csettleNeedFirst: pipeline.csettleNeedFirst,
+      finalSettleLevel: pipeline.runFinalSettleLevel,
       paceFps: pipeline.paceFps,
       smoothPlayback: pipeline.smoothPlayback,
       motionBackend: pipeline.motionBackend,
@@ -748,6 +749,7 @@ const App: Component = () => {
         if (a.csettleCeiling !== undefined) pipeline.setCsettleCeiling(a.csettleCeiling);
         if (a.csettleYield !== undefined) pipeline.setCsettleYield(a.csettleYield);
         if (a.csettleNeedFirst !== undefined) pipeline.setCsettleNeedFirst(a.csettleNeedFirst);
+        if (a.finalSettleLevel !== undefined) pipeline.setFinalSettleLevel(a.finalSettleLevel);
         if (a.paceFps !== undefined) pipeline.setPaceFps(a.paceFps, 'run record');
         if (a.smoothPlayback !== undefined) pipeline.setSmoothPlayback(a.smoothPlayback);
         // The pool size is fixed at page load: say so rather than run differently in silence.

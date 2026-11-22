@@ -755,3 +755,134 @@ export class SettleGovernor {
     };
   }
 }
+
+// ---- Final-settle levels (a stop point of the settle pass) ----
+
+/**
+ * How much of the final settle pass is read (tools/cala-eval/results/
+ * 2026-11-22-settledness.md, answer 5): fixed in-order stop points, because no
+ * adaptive rule beat them. Thorough is the whole pass and the default.
+ */
+export const FINAL_SETTLE_LEVELS = {
+  thorough: { label: 'Thorough', fraction: 1, help: 'The full pass (default).' },
+  standard: {
+    label: 'Standard',
+    fraction: 0.87,
+    help: 'Stops after 87 % of the pass: about an eighth of the final settle saved, nearly the same footprints.',
+  },
+  quick: {
+    label: 'Quick',
+    fraction: 0.6,
+    help: 'Stops after 60 % of the pass: about 40 % faster Final settle; slightly rougher edges, late-born cells and a few unfilled bites.',
+  },
+} as const;
+
+export type FinalSettleLevel = keyof typeof FINAL_SETTLE_LEVELS;
+
+export const FINAL_SETTLE_LEVEL_DEFAULT: FinalSettleLevel = 'thorough';
+
+/** A valid level from a setting or a run record; anything else is the default. */
+export function finalSettleLevel(v: unknown): FinalSettleLevel {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(FINAL_SETTLE_LEVELS, v)
+    ? (v as FinalSettleLevel)
+    : FINAL_SETTLE_LEVEL_DEFAULT;
+}
+
+/**
+ * The first `fraction` of a plan's frames, in plan order (the last run cut
+ * short). A fraction of 1 or more (or not a number) returns the plan itself.
+ */
+export function truncatePlan(runs: readonly FrameRun[], fraction: number): readonly FrameRun[] {
+  if (!(fraction < 1)) return runs;
+  const want = Math.round(planFrames(runs) * Math.max(0, fraction));
+  const out: FrameRun[] = [];
+  let left = want;
+  for (const r of runs) {
+    if (left <= 0) break;
+    const n = Math.min(left, r.end - r.start);
+    out.push({ start: r.start, end: r.start + n });
+    left -= n;
+  }
+  return out;
+}
+
+// ---- Per-footprint "still moving" hint (information only) ----
+
+/** The hint's fixed display scale, in multiples of the cell's split-half noise (clipped; never auto-scaled). */
+export const STILL_MOVING_SCALE = { lo: 0, hi: 3 } as const;
+
+/** Tooltip of the column and the colour-by option. */
+export const STILL_MOVING_HELP =
+  'How much this footprint changed over the last 1,200 settle frames, relative to its noise (centre and edge, whichever is larger). About 1 or below: changes are at noise level. Higher: still settling. Edges count.';
+
+/**
+ * Split-half noise of cell `id`'s footprint estimate on `pixels`, relative to
+ * the norm of the estimate there (`SlowLoop.footprintNoiseOn`); NaN or
+ * non-positive when there is no estimate.
+ */
+export type RegionNoise = (id: number, pixels: Uint32Array) => number;
+
+/**
+ * Per cell present in both libraries: how much its footprint changed over
+ * one step against its own split-half noise, as the larger of the core's and
+ * the edge's change over that region's noise (so a busy core cannot drown the
+ * edge; the study's "edge-ring step", settledness.md answer 6). Each region
+ * is measured in the same units as its noise: the L2 change of the unit-peak
+ * footprints over the larger of their norms in the region, against
+ * `regionNoise` (half the split-half difference over the norm of the mean,
+ * on the same pixels). Core = pixels at or above half the peak in either
+ * footprint; edge = the union support minus the core. A region with no
+ * noise estimate is left out; a cell with neither region, or with no earlier
+ * footprint, is left out. Returns `[id, ratio, ...]`.
+ */
+export function stillMovingRatios(
+  before: Map<number, UnitFootprint>,
+  after: Map<number, UnitFootprint>,
+  regionNoise: RegionNoise,
+): Float64Array {
+  const out: number[] = [];
+  for (const [id, b] of after) {
+    const a = before.get(id);
+    if (!a) continue;
+    const core: number[] = [];
+    const edge: number[] = [];
+    const seen = new Set<number>();
+    for (const m of [a, b])
+      for (const p of m.keys()) {
+        if (seen.has(p)) continue;
+        seen.add(p);
+        ((a.get(p) ?? 0) >= 0.5 || (b.get(p) ?? 0) >= 0.5 ? core : edge).push(p);
+      }
+    let best = Number.NaN;
+    for (const region of [core, edge]) {
+      if (region.length === 0) continue;
+      const pixels = Uint32Array.from(region);
+      const n = regionNoise(id, pixels);
+      if (!(n > 0 && Number.isFinite(n))) continue;
+      let d2 = 0;
+      let a2 = 0;
+      let b2 = 0;
+      for (const p of pixels) {
+        const u = a.get(p) ?? 0;
+        const v = b.get(p) ?? 0;
+        d2 += (v - u) * (v - u);
+        a2 += u * u;
+        b2 += v * v;
+      }
+      const norm = Math.sqrt(Math.max(a2, b2));
+      const r = norm > 0 ? Math.sqrt(d2) / norm / n : 0;
+      if (!(r <= best)) best = r;
+    }
+    if (!Number.isNaN(best)) out.push(id, best);
+  }
+  return Float64Array.from(out);
+}
+
+/** `[id, ratio, ...]` as a map (non-finite ratios kept as `Infinity` only if positive; NaN left out). */
+export function stillMovingMap(flat: ArrayLike<number> | undefined): Map<number, number> {
+  const m = new Map<number, number>();
+  if (!flat) return m;
+  for (let i = 0; i + 1 < flat.length; i += 2)
+    if (!Number.isNaN(flat[i + 1])) m.set(flat[i], flat[i + 1]);
+  return m;
+}

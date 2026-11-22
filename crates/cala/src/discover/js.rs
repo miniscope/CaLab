@@ -565,6 +565,18 @@ impl JsSlowLoop {
         out
     }
 
+    /// Split-half noise of one cell's footprint estimate on the given pixels
+    /// (`SlowLoop::footprint_noise` on `support`), relative to the norm of the
+    /// mean estimate on those pixels; NaN without an estimate. The "still
+    /// moving" hint divides each region's change (core, edge) by the noise on
+    /// that region.
+    #[wasm_bindgen(js_name = footprintNoiseOn)]
+    pub fn footprint_noise_on(&self, id: f64, support: &[u32]) -> f64 {
+        self.inner
+            .footprint_noise(id as u64, support)
+            .unwrap_or(f64::NAN)
+    }
+
     /// Mark every tile due for a visit (the drain: visits turn the
     /// look-back statistics into footprints without new frames).
     #[wasm_bindgen(js_name = markAllDue)]
