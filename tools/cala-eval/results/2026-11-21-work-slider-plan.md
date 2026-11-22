@@ -9,15 +9,23 @@ Numbers in this file come from earlier measurements: **(Chrome)** = headed Chrom
 visit workers), `2026-11-21-csettle-app.md`; **(model)** = qc_eval's virtual clock, `2026-11-20-concurrent-settle2.md`
 and `2026-11-21-concurrent-settle3.md`.
 
+## Names (PI, 21 Nov 2026)
+
+Stages: Discover -> Final settle -> Extract. Kinds of frame work: **Live** (fast loop, per frame), **Discovery** (slow
+loop + visit workers), **Look-back** (need-driven re-reads for new cells), **Background settle** (settle during
+Discover on spare compute; qc_eval `--csettle`, app `?csettle`), **Final settle** (after Discover; qc_eval
+`--settle-frames`), **Spare**. Flags and identifiers keep their names. (Terminology edit after the first commit of
+this file, before any run.)
+
 ## PI decisions this plan follows (21 Nov 2026, "go with your defaults")
 
 - Parity with "Max" is judged on Max's repeatable cells and their footprints (lines L2, L2b); extra cells are reported
   separately (L2c, no gate).
 - The slider unit is fps, with x real time beside it; the floor is 10 fps.
 - The default settle cap is 2 re-read frames per live frame. Arms at 4 and 8 are tested before raising it (L9).
-- The full end settle is kept at every slider position until a shrink rule is validated.
+- The full final settle is kept at every slider position until a shrink rule is validated.
 - Whether to add a second look-back worker is decided after the paced Chrome runs of step 0b (and line L8 later).
-- "Max" = no pacing, no settle during Discover, full end settle (today's recording path).
+- "Max" = no pacing, no background settle, full final settle (today's recording path).
 
 ## Step 0: calibrate qc_eval against Chrome
 
@@ -51,12 +59,12 @@ on each of**:
 1. frames the slow loop misses (in points: within 3);
 2. visit jobs in Discover;
 3. need-driven look-back frames asked;
-4. settle frames per live frame (arm `CS2F` against the app's toggle on).
+4. background-settle frames per live frame (arm `CS2F` against the app's toggle on).
 
 Chrome reference values (mean of the runs in `2026-11-21-csettle-app.md`; toggle-on rows from after the preprocessor
 fix where they exist):
 
-| recording, rate | arm | missed by slow loop | visit jobs | need-driven asked | settle per live frame |
+| recording, rate | arm | missed by slow loop | visit jobs | need-driven asked | background settle per live frame |
 | --- | --- | --- | --- | --- | --- |
 | `10_43_21`, 30 fps | off | 0 % | 54,849 | 35,415 | - |
 | `10_43_21`, 30 fps | on | 0 % | 51,257 | 35,415 | 1.99 |
@@ -88,19 +96,19 @@ workshop recording, one run each (repeats if time allows). Headed Chrome, real G
 `apps/cala/scripts/memory-measure.mjs --single --lookback --csettle --pacefps N --headed`. Today's pacer is bursty;
 the dose over a whole run does not depend on that.
 
-Read per run: settle frames per live frame (delivered dose), need-driven frames asked, look-back frames per second
-(need-driven + settle, over Discover), frames missed by the slow loop, achieved fps, the slow worker's mean and
-longest time per settle answer, visit jobs, the end settle's moved share (cells above 2x and 1x their noise, median
+Read per run: background-settle frames per live frame (delivered dose), need-driven frames asked, look-back frames per second
+(need-driven + background settle, over Discover), frames missed by the slow loop, achieved fps, the slow worker's mean and
+longest time per background-settle answer, visit jobs, the final settle's moved share (cells above 2x and 1x their noise, median
 change).
 
 Compared with the design's estimate (one worker taking turns: dose about 55 / target per live frame, so 0.9 at 60
 fps and 0.46 at 120; the slow-worker ceiling on the workshop recording 2.9 at 60 and 0.4 at 120).
 
-No pass line (a sizing measurement). **Decision rule for a second, dedicated settle look-back worker, written before
+No pass line (a sizing measurement). **Decision rule for a second, dedicated background-settle look-back worker, written before
 the runs:**
 
 - **Warranted** if at 60 fps, on both recordings, the delivered dose is below 1.5 (75 % of the cap of 2) and the
-  look-back worker is the limit there (need-driven + settle re-reads at or above 90 frames a second, the rate it
+  look-back worker is the limit there (need-driven + background-settle re-reads at or above 90 frames a second, the rate it
   managed beside a full-speed Discover) while the slow loop misses at most 1 % of the frames (it has room for more
   answers).
 - **Not warranted** if the delivered dose at 60 fps is at least 1.8 on both recordings (one worker covers the range up
@@ -117,7 +125,7 @@ the runs:**
 | Final quality at a fixed rate, with seeds and CIs | yes | 2-3 repeat runs, no seeds |
 | Ground truth (sims) | yes | no |
 | Live-library quality at checkpoints | yes | only via the saved library at the last frame |
-| End-settle dose-response (branches) | yes | no (one budget per run) |
+| Final-settle dose-response (branches) | yes | no (one budget per run) |
 | Frames the slow loop misses, batch waits | yes, after C1 | yes |
 | Several look-back workers | needs a small flag (`--lb-workers`, each on its own clock) | yes, after the pool is built |
 | Discover's max rate, its fall as cells accumulate, the max estimate | no (the fast loop is not modelled) | yes |
@@ -131,14 +139,14 @@ Rates: **Max, 120, 60, 30, 20 fps.** In qc_eval, "Max" is the offered rate Chrom
 model's `S-f` arms use a fixed dose (the cap, as delivered by the modelled look-back workers); the governor's guard is
 not in the model and is tested in Chrome only.
 
-| arm | rate | settle during Discover | end settle | purpose |
+| arm | rate | background settle | final settle | purpose |
 | --- | --- | --- | --- | --- |
 | `REF` | Max | off | full pass | reference (today's path) |
 | `P-f` | 120, 60, 30, 20 | off | full pass | what the pace alone does |
-| `S-f` | 120, 60, 30, 20 | governor, cap 2, 1 need-driven + 1 settle look-back worker | full pass | the slider |
+| `S-f` | 120, 60, 30, 20 | governor, cap 2, 1 need-driven + 1 background-settle look-back worker | full pass | the slider |
 | `S-f-1w` | 120, 60, 30 | cap 2, one worker taking turns (today's #454) | full pass | is the second worker worth it |
 | `S30-c4`, `S30-c8`, `S20-c8` | 30, 20 | cap 4 and 8 | full pass | doses above 2; the floor |
-| branches of every `REF`, `P-30`, `S-30`, `S-60`, `S-120` | - | - | 0, 1/4, 1/2, 3/4, 1, 2 passes | dose-response for the end-settle rule |
+| branches of every `REF`, `P-30`, `S-30`, `S-60`, `S-120` | - | - | 0, 1/4, 1/2, 3/4, 1, 2 passes | dose-response for the final-settle rule |
 
 Data and repeats:
 
@@ -153,7 +161,7 @@ Data and repeats:
 
 ## Measures
 
-1. **Final quality against `REF`** (after the end settle):
+1. **Final quality against `REF`** (after the final settle):
    - sims: footprint r with ground truth (all cells, close pairs, cells born in the second half), bitten footprints,
      matched and false cells;
    - real: median footprint agreement of matched cells between the arm and `REF` of the same seed, and between two
@@ -161,16 +169,16 @@ Data and repeats:
    - cells: how many of `REF`'s repeatable cells (in at least 2 of 3 `REF` seeds) the arm has; the arm's extra cells
      with their held-out z, peak SNR, birth frame and, on the workshop recording, whether a Minian unit matches
      (agreement, not recall).
-2. **Total time:** Discover + end settle. In qc_eval as virtual time; in Chrome on the wall.
+2. **Total time:** Discover + final settle. In qc_eval as virtual time; in Chrome on the wall.
 3. **Live-library quality during the run**, at 1/8, 1/4, 1/2, 3/4 of the recording and at the last frame (by position
    in the recording):
    - sims: median footprint r with ground truth, recall;
    - real: agreement with the settled `REF` library of the same seed; share of the gap between `REF`'s live and settled
-     library that is closed; what the end settle still moves (cells above 1x and 2x their noise).
+     library that is closed; what the final settle still moves (cells above 1x and 2x their noise).
 4. **Dropped frames:** by the fast loop (must be none); missed by the slow loop; the longest wait of a batch.
 5. **Footprint movement:** median change per 75 s of stream in the second half; the moving share at the last
-   end-settle checkpoint.
-6. **Scheduler:** achieved against target fps; settle frames per live frame; the limiting factor over time.
+   final-settle checkpoint.
+6. **Scheduler:** achieved against target fps; background-settle frames per live frame; the limiting factor over time.
 
 ## Pass lines
 
@@ -189,13 +197,13 @@ recording are not independent, so that interval is too narrow; the per-recording
 | L2c | extra cells (reported; PI: not a gate) | their median held-out z >= that of cells only one `REF` seed has | every `S-f`, `P-f` |
 | L3 | live library at the last frame, share of the live-to-settled gap closed | >= 50 % on each recording at 30 fps | `S-30` |
 | L3b | the slider is monotone: live agreement at each checkpoint from 1/4 on | `S-30` >= `S-60` >= `S-120` >= `REF`, each step allowed to miss by the seed spread (0.003) | `S-f` |
-| L3c | the settle, not the pace, carries it | `S-30` minus `P-30` in gap closed: lower CI bound > 0 | `S-30`, `P-30` |
+| L3c | the background settle, not the pace, carries it | `S-30` minus `P-30` in gap closed: lower CI bound > 0 | `S-30`, `P-30` |
 | L4 | frames dropped by the fast loop | 0 | every arm |
 | L4b | frames the slow loop misses | <= 0.1 % at 60 fps and below; at 120, <= `P-120` + 1 point | `S-f` |
-| L5 | moving share at the last end-settle checkpoint | <= 4 % (<= 6 % on motion sims) | every arm |
+| L5 | moving share at the last final-settle checkpoint | <= 4 % (<= 6 % on motion sims) | every arm |
 | L5b | footprint movement per 75 s during Discover | reported, no line | `S-f` |
 | L6 | achieved fps (Chrome) | within 2 % of the target when the target <= 0.9 x the measured max | `S-f`, `P-f` |
-| L6b | total time (Chrome) | at Max within 3 % of today's path; below Max <= frames / target + `REF`'s end settle + 5 % | every arm |
+| L6b | total time (Chrome) | at Max within 3 % of today's path; below Max <= frames / target + `REF`'s final settle + 5 % | every arm |
 | L7 | max estimate while paced at 30 fps (Chrome) | within 15 % of the unpaced rate at the same point of the recording | `P-30`, `REF` |
 | L8 | second look-back worker | `S-60` minus `S-60-1w` in gap closed: lower CI bound > 0; if not, ship one worker | `S-60` |
 | L9 | doses above 2 | cap 4 or 8 minus cap 2 in gap closed: lower CI bound > 0, and L1-L2b still pass | `S30-c4`, `S30-c8` |
@@ -205,7 +213,7 @@ What decides what:
 - L1, L2, L2b, L4, L5 pass at a rate: that rate is safe to offer.
 - L3, L3b, L3c pass: the slider does what it promises (a better live library for more time).
 - L8 and L9 size the build (workers, cap values, the floor).
-- The end-settle shrink lines (design section 3) decide whether the end settle may shrink; until then the full pass is
+- The final-settle shrink lines (design section 3) decide whether the final settle may shrink; until then the full pass is
   kept everywhere (PI decision).
 
 ## Scope of this PR
