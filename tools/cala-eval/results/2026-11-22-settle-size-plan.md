@@ -88,3 +88,24 @@ New runs only where a comparison is missing after A–G:
 ## Limits
 
 RAM ≤ 6 GB per job; at most 2 qc_eval processes at once; no Chrome; Samara data read-only.
+
+## Addendum: the PI's reframing (22 Nov 2026, before any score was read)
+
+Added after the metric script was written and its first smoke run was started, before any of its output was read.
+
+The PI: Discover + Refine (v2.20.0) is not the reference ("could be those are less good too"); cala has no real users
+yet, so matching the old release does not matter. The study therefore ranks the two paths, it does not test the new
+one against the old.
+
+- **Sims:** both paths are scored against the truth on the same footing. Besides the size metrics above: bitten
+  footprints, crosstalk and trace r (the suite's rows, already on disk), and true cells found (matched detectable
+  units, false cells), not cells against the old path.
+- **Real data, proxies that assume neither path is right:**
+  - held-out reconstruction: `qc_eval`'s held-out score where the runs have it (`ho_score`, `ho_score_frac`), and the
+    residual left around cells;
+  - neighbour trace crosstalk: the correlation of close pairs' traces against far pairs' (the suite's excess, on the
+    libraries' own traces);
+  - repeatability: seed-to-seed agreement at equal footing (already measured in #439, #443 and the gate; reused).
+- **Recommendation:** whichever path is better by these, said plainly.
+- **Cell loss:** diagnosed on its own terms: true cells found on sims with frames dropped at the app's shares
+  (`--slow-keep`), with and without the replay.
