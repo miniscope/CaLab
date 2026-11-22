@@ -65,7 +65,19 @@ import {
 } from './lib/recent-projects.ts';
 import { LIBRARY_MODE_LABEL, refinePlanText } from './lib/session-run.ts';
 import { createLookbackClient } from './lib/lookback-client.ts';
-import { CSETTLE, GOVERNOR, noiseMap, SETTLE, settleChange, unitFootprints } from './lib/settle.ts';
+import { loadSpeedSettings } from './lib/speed-track.ts';
+import { PACE_BATCH, PACE_SLACK } from './lib/frame-pacer.ts';
+import { FLOOR, TRACKER } from './lib/speed-floor.ts';
+import { LOOKBACK } from './lib/slow-runner.ts';
+import {
+  CSETTLE,
+  GOVERNOR,
+  noiseMap,
+  SETTLE,
+  settleChange,
+  settlePoolSize,
+  unitFootprints,
+} from './lib/settle.ts';
 import {
   gatherRunRecord,
   primeRunRecordContext,
@@ -141,14 +153,16 @@ const App: Component = () => {
   // past frames in a worker of its own, and settles at the end (no Refine needed).
   // A recording on disk with one session, pipelined workers only.
   const pipelined = params.get('pipeline') !== '0';
-  // `?debug&lbpool=S` (measurement only, work-slider PR 5): S more look-back workers that
-  // take only the settle's chunks (worker 0 keeps need-driven look-back and the end settle).
-  const lbPool = params.has('debug')
-    ? Math.max(0, Math.min(4, Math.floor(Number(params.get('lbpool')) || 0)))
-    : 0;
+  // The settle pool: S more look-back workers that take only the settle's chunks (worker 0
+  // keeps need-driven look-back and the end settle), started when a run first goes below
+  // Max. S from the core count (`settlePoolSize`); `?debug&lbpool=S` overrides it (measurement).
+  const lbPool = settlePoolSize(
+    typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined,
+    params.has('debug') && params.has('lbpool') ? Number(params.get('lbpool')) || 0 : null,
+  );
   const lookbackClient = createLookbackClient({
     slow,
-    workers: 1 + lbPool,
+    pool: lbPool,
     source: () => store.source(),
     blocked: () => {
       const i = store.info();
@@ -205,25 +219,33 @@ const App: Component = () => {
       : compress,
     lookbackClient,
   );
+  // The Speed block's saved settings (mode, last Fixed speed, Background settle cap); the URL
+  // parameters below win for this page.
+  const speed = loadSpeedSettings();
+  if (speed.mode === 'fixed') pipeline.setPaceFps(speed.fixedFps, 'setting');
+  if (speed.cap === 0) pipeline.setCsettle(false);
+  else pipeline.setCsettleCeiling(speed.cap);
   // `?lookback`: look-back on from the first Discover start.
   if (params.has('lookback') && params.get('lookback') !== '0') pipeline.setLookback(true);
-  // `?lookback&csettle`: settle during Discover too (experimental; `csettle=yield` or
-  // `csettle=yieldN` feeds each answer N frames at a time, 1 by default; `csrate=1|0.5`
-  // lowers the ceiling from 2 re-read frames per live frame).
+  // Background settle (settle during Discover) is on under look-back whenever the target is
+  // below Max; `csettle=0` turns it off, `csettle=yield` or `csettle=yieldN` feeds each answer
+  // N frames at a time (1 by default), `csrate=1|0.5` lowers the cap from 2 re-read frames
+  // per live frame.
   const cs = params.get('csettle');
+  // The URL decides the settle when it says anything about it, over the Speed block's saved cap.
+  if (cs !== null || params.has('csrate')) pipeline.setCsettle(cs !== '0', 'url');
   if (cs !== null && cs !== '0') {
-    pipeline.setCsettle(true);
     const y = /^yield(\d*)$/.exec(cs);
     if (y) pipeline.setCsettleYield(y[1] ? Number(y[1]) : 1);
   }
-  if (params.has('csrate')) pipeline.setCsettleCeiling(Number(params.get('csrate')));
-  // `?debug&governor` (measurement only, work-slider PR 5): the settle governor sets the
-  // settle's rate per second (the ceiling becomes its cap); off at Max (no `pacefps`).
-  if (params.has('debug') && params.has('governor') && params.get('governor') !== '0')
-    pipeline.setCsettleGovernor(true);
+  if (params.has('csrate')) pipeline.setCsettleCeiling(Number(params.get('csrate')), 'url');
+  // `?debug&needfirst` (measurement only): with one look-back worker, need-driven look-back
+  // goes first and Background settle asks only when it has nothing to ask.
+  if (params.has('debug') && params.has('needfirst') && params.get('needfirst') !== '0')
+    pipeline.setCsettleNeedFirst(true);
   // `?debug&pacefps=30` (measurement only): read the recording at a stream's rate.
   if (params.has('debug') && params.has('pacefps'))
-    pipeline.setPaceFps(Number(params.get('pacefps')));
+    pipeline.setPaceFps(Number(params.get('pacefps')), 'url');
   // `?debug`: log the time of each displayed frame change; `smooth=0` turns smooth playback off.
   if (params.has('debug')) {
     pipeline.setDisplayLog(true);
@@ -483,6 +505,9 @@ const App: Component = () => {
   // ---- Run record (docs/run-record.md): how this run was made, saved with every result ----
   const runTrace = new RunTrace();
   pipeline.onPaceChange((fps, frame, source) => runTrace.noteTargetSpeed(fps, frame, source));
+  pipeline.onCapChange((cap, frame, source) => runTrace.noteCap(cap, frame, source));
+  pipeline.onPoolStart((workers, frame) => runTrace.notePoolStart(workers, frame));
+  pipeline.onWorkSample((sample) => runTrace.noteSample(sample));
   // A Discover start begins a new run: the target speed in force is its first entry.
   createEffect(
     on(
@@ -490,7 +515,9 @@ const App: Component = () => {
       (starting) => {
         if (!starting) return;
         runTrace.reset();
-        runTrace.noteTargetSpeed(pipeline.paceFps(), 0, 'run start');
+        // What is applied: a live stream is not paced by a target, and has no settle.
+        runTrace.noteTargetSpeed(pipeline.targetNow(), 0, 'run start');
+        runTrace.noteCap(pipeline.capNow(), 0, 'run start');
       },
     ),
   );
@@ -519,7 +546,8 @@ const App: Component = () => {
       csettle: pipeline.csettle,
       csettleCeiling: pipeline.csettleCeiling,
       csettleYield: pipeline.csettleYield,
-      csettleGovernor: pipeline.csettleGovernor,
+      csettleNeedFirst: pipeline.csettleNeedFirst,
+      finalSettleLevel: pipeline.runFinalSettleLevel,
       paceFps: pipeline.paceFps,
       smoothPlayback: pipeline.smoothPlayback,
       motionBackend: pipeline.motionBackend,
@@ -543,9 +571,16 @@ const App: Component = () => {
         ? from.sessions.map((s) => s.entries.map((e) => ({ name: e.file.name, size: e.file.size })))
         : [];
     },
-    lookbackWorkers: () => 1 + lbPool,
+    lookbackPoolSize: () => lbPool,
     visitWorkers: () => slow.visitWorkers,
-    tunables: { settle: SETTLE, csettle: CSETTLE, governor: GOVERNOR },
+    tunables: {
+      settle: SETTLE,
+      csettle: CSETTLE,
+      governor: GOVERNOR,
+      lookback: LOOKBACK,
+      pacer: { PACE_BATCH, PACE_SLACK },
+      floor: { FLOOR, TRACKER },
+    },
   };
   const runRecord = (extras?: RunRecordExtras) => gatherRunRecord(runRecordSources, extras);
   const multiRun = createMultiRun({
@@ -735,10 +770,22 @@ const App: Component = () => {
         if (a.csettle !== undefined) pipeline.setCsettle(a.csettle);
         if (a.csettleCeiling !== undefined) pipeline.setCsettleCeiling(a.csettleCeiling);
         if (a.csettleYield !== undefined) pipeline.setCsettleYield(a.csettleYield);
-        if (a.csettleGovernor !== undefined) pipeline.setCsettleGovernor(a.csettleGovernor);
+        if (a.csettleNeedFirst !== undefined) pipeline.setCsettleNeedFirst(a.csettleNeedFirst);
+        if (a.finalSettleLevel !== undefined) pipeline.setFinalSettleLevel(a.finalSettleLevel);
         if (a.paceFps !== undefined) pipeline.setPaceFps(a.paceFps, 'run record');
         if (a.smoothPlayback !== undefined) pipeline.setSmoothPlayback(a.smoothPlayback);
-        return a;
+        // The pool size is fixed at page load: say so rather than run differently in silence.
+        const warnings: string[] = [];
+        if (a.capChangedDuringRun)
+          warnings.push(
+            'The record changed the settle cap during the run; cap changes are not replayed (the starting cap is applied).',
+          );
+        if (a.lookbackPoolPlanned !== undefined && a.lookbackPoolPlanned !== lbPool)
+          warnings.push(
+            `The record planned ${a.lookbackPoolPlanned} settle pool worker(s); this page has ${lbPool} (open it with ?debug&lbpool=${a.lookbackPoolPlanned} to match).`,
+          );
+        for (const w of warnings) console.warn(w);
+        return warnings.length > 0 ? { ...a, warnings } : a;
       },
     });
   }

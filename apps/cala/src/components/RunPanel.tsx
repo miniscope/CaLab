@@ -8,7 +8,7 @@ import { compressReadout, type CompressStore } from '../lib/compress-store.ts';
 import { reviewReadout, type ReviewStore } from '../lib/review-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { lookbackText } from '../lib/lookback-text.ts';
-import { CSETTLE } from '../lib/settle.ts';
+import { FINAL_SETTLE_LEVELS, type FinalSettleLevel } from '../lib/settle.ts';
 import { workText } from '../lib/work-meter.ts';
 export { lookbackText };
 import type { Pass2Result, Pass2Store } from '../lib/pass2-store.ts';
@@ -41,18 +41,17 @@ import {
   type ExportInput,
 } from '../lib/export.ts';
 import { SidePanel } from './SidePanel.tsx';
+import { SpeedControl } from './SpeedControl.tsx';
+import { WorkDisplay } from './WorkDisplay.tsx';
 import { reportResultsExported } from '../lib/analytics-integration.ts';
 
 /** `?debug` is in the URL (read once). */
 const DEBUG =
   typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debug');
 
-/** What "Background settle" does (the toggle's tooltip). */
-const CSETTLE_HELP =
-  'Experimental: while Discover runs, saved frames spread over everything read so far are re-read and added to the footprint statistics, so footprints settle earlier. The final settle after the last frame still runs. Takes effect when Discover starts: tick it, then restart (↻), or open with ?lookback&csettle.';
-/** What the ceiling means (its tooltip). */
-const CSETTLE_CEILING_HELP =
-  'A ceiling, not a target: at most this many saved frames are re-read for each live frame. Lower it to leave more of the machine to the live frames (closed-loop use). A recording read at full speed usually gets far fewer, as fast as the look-back worker can re-read. Takes effect when Discover starts.';
+/** What the Final settle level does (its tooltip). */
+const FINAL_SETTLE_HELP =
+  'How much of the final settle pass after Discover is read. Thorough: the whole pass (default). Standard: stop after 87 % of it. Quick: stop after 60 %, about 40 % faster Final settle, with slightly rougher edges and late-born cells. Takes effect when Discover starts, so it cannot change during a run.';
 
 const SETUP_LABEL = {
   calibrate: 'Calibrating (FOV mask, hot pixels)',
@@ -731,6 +730,9 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         </div>
       </Show>
 
+      <SpeedControl pipeline={s()} cells={c()} live={props.live} fps={props.fps} />
+      <WorkDisplay pipeline={s()} cells={c()} ui={props.ui} live={props.live} visible={shown()} />
+
       <div class="cala-run__footer">
         <span class="cala-readout" data-testid="cells-readout">
           {c().library()?.ids.length ?? 0} cells &middot; library v{c().version()} &middot; lag{' '}
@@ -786,38 +788,24 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             Look-back refinement (experimental)
           </label>
         </Show>
-        <Show when={!props.live}>
-          <label
-            class="cala-check"
-            title={
-              s().lookbackBlocked() ??
-              (s().lookback()
-                ? CSETTLE_HELP
-                : 'Needs look-back refinement: tick that first. ' + CSETTLE_HELP)
-            }
-          >
-            <input
-              type="checkbox"
-              data-testid="csettle-toggle"
-              disabled={s().lookbackBlocked() !== null || !s().lookback()}
-              checked={s().csettle() && s().lookback() && s().lookbackBlocked() === null}
-              onChange={(e) => s().setCsettle(e.currentTarget.checked)}
-            />
-            Background settle (experimental)
+        <Show when={!props.live && s().lookback() && s().lookbackBlocked() === null}>
+          <label class="cala-check" title={FINAL_SETTLE_HELP}>
+            Final settle
+            <select
+              data-testid="final-settle-level"
+              disabled={pass1Busy()}
+              value={s().finalSettleLevel()}
+              onChange={(e) => s().setFinalSettleLevel(e.currentTarget.value)}
+            >
+              <For each={Object.keys(FINAL_SETTLE_LEVELS) as FinalSettleLevel[]}>
+                {(l) => (
+                  <option value={l} title={FINAL_SETTLE_LEVELS[l].help}>
+                    {FINAL_SETTLE_LEVELS[l].label}
+                  </option>
+                )}
+              </For>
+            </select>
           </label>
-          <Show when={s().csettle() && s().lookback() && s().lookbackBlocked() === null}>
-            <label class="cala-check" title={CSETTLE_CEILING_HELP}>
-              at most
-              <select
-                data-testid="csettle-ceiling"
-                value={String(s().csettleCeiling())}
-                onChange={(e) => s().setCsettleCeiling(Number(e.currentTarget.value))}
-              >
-                <For each={CSETTLE.rates}>{(r) => <option value={String(r)}>{r}</option>}</For>
-              </select>
-              re-read frames per live frame
-            </label>
-          </Show>
         </Show>
         <Show when={!props.live}>
           <label

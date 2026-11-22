@@ -1,9 +1,10 @@
 // @vitest-environment node
 /**
- * The look-back pool and the settle governor in `SlowRunner` (work-slider
- * PR 5): worker 0 need-driven only, workers 1..S the settle's chunks, one
- * request out per worker, failures confined to one worker, and the governor
- * driving the settle from the pacer's target.
+ * The look-back pool and the settle governor in `SlowRunner`: worker 0
+ * need-driven only, workers 1..S (once in the run's pool) the settle's
+ * chunks, one request out per worker, failures confined to one worker, a
+ * pool joining mid-run, and the governor driving the settle from the
+ * pacer's target.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { SlowRunner, type PublishedLibrary, type SlowLoopLike } from '../lib/slow-runner.ts';
@@ -43,17 +44,24 @@ function fakeLoop(need: number) {
   let credit = 0;
   let left = need;
   let published = false;
+  /** The next `step` publishes a new library. */
+  const again = { on: false };
   let chunk = 0;
   let version = 10;
   const settled: number[] = [];
   const loop: SlowLoopLike = {
     observe: () => true,
     step: vi.fn(() => {
+      if (again.on) {
+        again.on = false;
+        return fakeLib(++version);
+      }
       if (published) return undefined;
       published = true;
       return fakeLib(10);
     }),
     finalize: vi.fn(() => fakeLib(++version)),
+    publishedLibrary: vi.fn(() => (published ? fakeLib(version) : undefined)),
     setNoise: vi.fn(),
     setEditScope: vi.fn(),
     cellCount: 1,
@@ -91,17 +99,30 @@ function fakeLoop(need: number) {
     settleSkipped: vi.fn(),
     settleStats: () => Float64Array.of(0, settled.length, 0, 0),
   };
-  return { loop, settled };
+  return { loop, settled, again };
 }
 
 type Req = Extract<SlowToLookback, { type: 'request' }>;
 
-function setup(o: { need?: number; pool?: number; csettle?: number; governor?: boolean } = {}) {
+function setup(
+  o: {
+    need?: number;
+    /** Pool workers connected, and in the run's pool from its start (unless `join` is false). */
+    pool?: number;
+    join?: boolean;
+    csettle?: number;
+    /** The pacer's target (default 30 fps; 0 = Max). */
+    pace?: number;
+  } = {},
+) {
   const f = fakeLoop(o.need ?? 0);
   const ports = 1 + (o.pool ?? 0);
+  const pace = o.pace ?? 30;
   const toLb: SlowToLookback[][] = Array.from({ length: ports }, () => []);
   const toMain: SlowToMain[] = [];
-  const timers: { fn: () => void; cancelled: boolean }[] = [];
+  /** Each request's timeout, with the port the request went to (the last one posted to). */
+  const timers: { fn: () => void; cancelled: boolean; port: number }[] = [];
+  let lastPort = -1;
   let clock = 0;
   const r = new SlowRunner({
     create: () => f.loop,
@@ -111,19 +132,28 @@ function setup(o: { need?: number; pool?: number; csettle?: number; governor?: b
     epochNow: () => clock,
     defer: (fn) => fn(),
     timer: (fn) => {
-      const t = { fn, cancelled: false };
+      const t = { fn, cancelled: false, port: lastPort };
       timers.push(t);
       return () => {
         t.cancelled = true;
       };
     },
   });
-  for (let i = 0; i < ports; i++) r.connectLookback({ postMessage: (m) => toLb[i].push(m) }, i);
-  r.handle({
-    ...INIT,
-    ...(o.csettle !== undefined ? { csettle: o.csettle } : {}),
-    ...(o.governor ? { csettleGovernor: true } : {}),
-  });
+  for (let i = 0; i < ports; i++)
+    r.connectLookback(
+      {
+        postMessage: (m) => {
+          if (m.type === 'request') lastPort = i;
+          toLb[i].push(m);
+        },
+      },
+      i,
+    );
+  // From the main thread before the run's init: the target, the cap, the pool.
+  r.setPace(pace, false);
+  if (o.csettle !== undefined) r.setCap(o.csettle);
+  if (ports > 1 && o.join !== false) r.setSettlePool(1, ports - 1);
+  r.handle({ ...INIT, ...(o.csettle !== undefined ? { csettle: true } : {}) });
   const requests = (i: number) => toLb[i].filter((m): m is Req => m.type === 'request');
   const answered = new Set<number>();
   const pending = (i: number) => requests(i).find((m) => !answered.has(m.id));
@@ -149,8 +179,8 @@ function setup(o: { need?: number; pool?: number; csettle?: number; governor?: b
     return req;
   };
   let at = 0;
-  /** `n` live batches of 8 frames, `ms` apart (sent on time). */
-  const live = (n: number, ms = 0) => {
+  /** `n` live batches of 8 frames, `ms` apart (default: on time at the target). */
+  const live = (n: number, ms = (8 * 1000) / (pace > 0 ? pace : 800)) => {
     for (let k = 0; k < n; k++, at += 8) {
       clock += ms;
       r.handle({
@@ -168,6 +198,14 @@ function setup(o: { need?: number; pool?: number; csettle?: number; governor?: b
   };
   const status = () => toMain.flatMap((m) => (m.type === 'status' ? [m.status] : [])).at(-1)!;
   const kinds = (i: number) => requests(i).map((q) => (q.skip ? 'csettle' : 'need'));
+  /** Live batches, every port's requests answered except `hold`'s, until `until()` (at most 2,000). */
+  const runUntil = (until: () => boolean, hold: number[] = []) => {
+    for (let k = 0; k < 2000 && !until(); k++) {
+      live(1);
+      for (let i = 0; i < ports; i++) if (!hold.includes(i)) while (pending(i)) answer(i);
+    }
+    if (!until()) throw new Error('not reached');
+  };
   return {
     r,
     f,
@@ -179,31 +217,28 @@ function setup(o: { need?: number; pool?: number; csettle?: number; governor?: b
     status,
     kinds,
     timers,
+    runUntil,
     skip: (n: number) => (at += n),
   };
 }
 
 describe('look-back pool', () => {
   it('worker 0 does need-driven look-back only; the pool takes the settle chunks', () => {
-    const t = setup({ need: 200, pool: 2, csettle: 2 });
-    t.live(4);
-    // Both pool workers have a chunk out at once; worker 0 has need-driven frames.
-    expect(t.kinds(0)).toEqual(['need']);
+    const t = setup({ need: 100_000, pool: 2, csettle: 2 });
+    // Hold the pool's answers until both pool workers have a chunk out at once.
+    t.runUntil(() => t.pending(1) !== undefined && t.pending(2) !== undefined, [1, 2]);
     expect(t.kinds(1)).toEqual(['csettle']);
     expect(t.kinds(2)).toEqual(['csettle']);
-    // Answers keep each worker on its own kind, one request out per worker.
-    for (let k = 0; k < 6; k++) {
-      t.answer(0);
-      t.answer(1);
-      t.answer(2);
-      t.live(2);
+    for (let k = 0; k < 100; k++) {
+      t.live(1);
+      for (const i of [0, 1, 2]) while (t.pending(i)) t.answer(i);
     }
     expect(new Set(t.kinds(0))).toEqual(new Set(['need']));
     expect(new Set([...t.kinds(1), ...t.kinds(2)])).toEqual(new Set(['csettle']));
     expect(t.status().lookback!.csettle!.settleWorkers).toBe(2);
   });
 
-  it('sends every library to every worker, a copy each', () => {
+  it("sends every library to every worker in the run's pool, a copy each", () => {
     const t = setup({ pool: 1, csettle: 2 });
     t.live(1);
     const libs = t.toLb.map((m) => m.filter((x) => x.type === 'library'));
@@ -214,13 +249,61 @@ describe('look-back pool', () => {
     expect(a.bytes).not.toBe(b.bytes);
   });
 
+  it('a pool worker connected but not in this run gets no library and no request', () => {
+    const t = setup({ need: 100_000, pool: 1, join: false, csettle: 2 });
+    t.runUntil(() => t.kinds(0).includes('csettle'));
+    expect(t.toLb[1]).toEqual([]);
+    expect(t.status().lookback!.csettle!.settleWorkers).toBe(0);
+  });
+
+  it('a pool joining mid-run gets the current library at once (a stable library too); worker 0 then stops taking settle turns', () => {
+    const t = setup({ need: 100_000, pool: 1, join: false, csettle: 2 });
+    t.runUntil(() => t.kinds(0).includes('csettle'));
+    t.live(20);
+    expect(t.toLb[1]).toEqual([]);
+    // The library is stable (no new publish follows): the join itself sends it.
+    t.r.setSettlePool(1, 1);
+    const libs = t.toLb[1].filter((m) => m.type === 'library');
+    expect(libs).toHaveLength(1);
+    expect(libs[0]).toMatchObject({ session: 1, version: 10 });
+    expect(t.status().lookback!.csettle!.settleWorkers).toBe(1);
+    t.runUntil(() => t.pending(1) !== undefined, [1]);
+    // The next publish goes to it as to every worker in the run (no second copy of this one).
+    t.f.again.on = true;
+    t.live(1);
+    expect(t.toLb[1].filter((m) => m.type === 'library').map((m) => m.version)).toEqual([10, 11]);
+    const n0 = t.kinds(0).length;
+    for (let k = 0; k < 100; k++) {
+      t.live(1);
+      for (const i of [0, 1]) while (t.pending(i)) t.answer(i);
+    }
+    expect(new Set(t.kinds(0).slice(n0))).toEqual(new Set(['need']));
+    expect(t.kinds(1).length).toBeGreaterThan(5);
+  });
+
+  it('a pool joining before the first library gets it with the first publish', () => {
+    const t = setup({ pool: 1, join: false, csettle: 2 });
+    t.r.setSettlePool(1, 1);
+    expect(t.toLb[1]).toEqual([]);
+    t.live(1);
+    expect(t.toLb[1].filter((m) => m.type === 'library')).toHaveLength(1);
+  });
+
+  it('a pool held for another session does not join this run', () => {
+    const t = setup({ pool: 1, join: false, csettle: 2 });
+    t.r.setSettlePool(7, 1);
+    t.f.again.on = true;
+    t.live(5);
+    expect(t.toLb[1]).toEqual([]);
+  });
+
   it('a buffer goes back to the worker it came from, a stale answer too', () => {
     const t = setup({ need: 200, pool: 1, csettle: 2 });
-    t.live(4);
+    t.runUntil(() => t.pending(1) !== undefined, [1]);
     const req = t.pending(1)!;
     t.answer(1);
     expect(t.toLb[1].filter((m) => m.type === 'release')).toHaveLength(1);
-    expect(t.toLb[0].filter((m) => m.type === 'release')).toHaveLength(0);
+    const r0 = t.toLb[0].filter((m) => m.type === 'release').length;
     // The same id again (stale): still released to worker 1.
     t.r.handleLookback(
       {
@@ -236,37 +319,40 @@ describe('look-back pool', () => {
       1,
     );
     expect(t.toLb[1].filter((m) => m.type === 'release')).toHaveLength(2);
-    expect(t.toLb[0].filter((m) => m.type === 'release')).toHaveLength(0);
+    expect(t.toLb[0].filter((m) => m.type === 'release')).toHaveLength(r0);
   });
 
   it('a pool worker that fails is left out alone; with none left the settle takes turns on worker 0', () => {
-    const t = setup({ need: 400, pool: 1, csettle: 2 });
-    t.live(4);
+    const t = setup({ need: 100_000, pool: 1, csettle: 2 });
+    t.runUntil(() => t.pending(1) !== undefined, [1]);
     t.answer(1, { error: 'boom' });
     expect(t.status().lookback!.error).toBeUndefined();
     expect(t.status().lookback!.csettle!.settleWorkers).toBe(0);
     const before = t.requests(1).length;
-    for (let k = 0; k < 6; k++) {
-      t.answer(0);
-      t.live(2);
+    const n0 = t.kinds(0).length;
+    for (let k = 0; k < 200; k++) {
+      t.live(1);
+      while (t.pending(0)) t.answer(0);
     }
     // Nothing more to worker 1; worker 0 now alternates need and settle.
     expect(t.requests(1).length).toBe(before);
-    expect(new Set(t.kinds(0))).toEqual(new Set(['need', 'csettle']));
+    expect(new Set(t.kinds(0).slice(n0))).toEqual(new Set(['need', 'csettle']));
   });
 
   it('a pool worker that times out is left out alone; need-driven look-back goes on', () => {
-    const t = setup({ need: 400, pool: 2, csettle: 2 });
-    t.live(4);
-    // Requests went out in port order (0, 1, 2): the last timer is worker 2's.
+    const t = setup({ need: 100_000, pool: 2, csettle: 2 });
+    t.runUntil(() => t.pending(1) !== undefined && t.pending(2) !== undefined, [1, 2]);
     const out2 = t.pending(2)!;
-    const timer = t.timers.at(-1)!;
-    expect(timer.cancelled).toBe(false);
+    const timer = t.timers.find((x) => x.port === 2 && !x.cancelled)!;
     timer.fn();
     expect(t.status().lookback!.csettle!.settleWorkers).toBe(1);
     expect(t.status().lookback!.error).toBeUndefined();
-    t.answer(0);
-    t.live(2);
+    const n0 = t.kinds(0).length;
+    for (let k = 0; k < 50; k++) {
+      t.live(1);
+      for (const i of [0, 1]) while (t.pending(i)) t.answer(i);
+    }
+    expect(t.kinds(0).length).toBeGreaterThan(n0);
     expect(t.kinds(0).every((k) => k === 'need')).toBe(true);
     // Its late answer is released to it and ignored.
     t.r.handleLookback(
@@ -288,7 +374,7 @@ describe('look-back pool', () => {
 
   it('the end of Discover drops every request out; the end settle goes to worker 0 only', () => {
     const t = setup({ need: 400, pool: 2, csettle: 2 });
-    t.live(4);
+    t.runUntil(() => t.pending(1) !== undefined && t.pending(2) !== undefined, [1, 2]);
     const n1 = t.requests(1).length;
     const n2 = t.requests(2).length;
     t.r.handle({ type: 'end', session: 1 });
@@ -301,27 +387,22 @@ describe('look-back pool', () => {
   });
 
   it('without a pool the settle takes turns on worker 0, as before', () => {
-    const t = setup({ need: 400, pool: 0, csettle: 2 });
-    t.live(4);
-    for (let k = 0; k < 6; k++) {
-      t.answer(0);
-      t.live(2);
-    }
+    const t = setup({ need: 100_000, pool: 0, csettle: 2 });
+    t.runUntil(() => t.kinds(0).includes('csettle'));
     expect(new Set(t.kinds(0))).toEqual(new Set(['need', 'csettle']));
   });
 });
 
 describe('settle governor in the runner', () => {
-  it('asks for nothing at Max (no pacer target), whatever the cap', () => {
-    const t = setup({ pool: 1, csettle: 2, governor: true });
+  it('asks for nothing at Max (no pacer target), whatever the cap: the settle is not even armed', () => {
+    const t = setup({ pool: 1, csettle: 2, pace: 0 });
     t.live(200, 33);
     expect(t.requests(1)).toEqual([]);
-    expect(t.status().lookback!.csettle!.governor!.limit).toBe('off');
+    expect(t.status().lookback!.csettle).toBeUndefined();
   });
 
   it('with a target, ramps the settle up to the cap and reports it', () => {
-    const t = setup({ pool: 1, csettle: 2, governor: true });
-    t.r.setPace(30, false);
+    const t = setup({ pool: 1, csettle: 2 });
     // 30 fps: a batch of 8 every 267 ms; answers come straight back.
     for (let k = 0; k < 160; k++) {
       t.live(1, 267);
@@ -335,8 +416,7 @@ describe('settle governor in the runner', () => {
   });
 
   it('halves on a forward-pool drop (a gap in the stream)', () => {
-    const t = setup({ pool: 1, csettle: 2, governor: true });
-    t.r.setPace(30, false);
+    const t = setup({ pool: 1, csettle: 2 });
     for (let k = 0; k < 120; k++) {
       t.live(1, 267);
       while (t.pending(1)) t.answer(1);
@@ -354,8 +434,7 @@ describe('settle governor in the runner', () => {
 
   it('taking turns, worker 0 need-driven time counts towards the settle busy share', () => {
     const busy = (need: number) => {
-      const t = setup({ need, pool: 0, csettle: 2, governor: true });
-      t.r.setPace(30, false);
+      const t = setup({ need, pool: 0, csettle: 2 });
       for (let k = 0; k < 40; k++) {
         t.live(1, 267);
         while (t.pending(0)) t.answer(0);

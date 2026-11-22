@@ -6,7 +6,8 @@
  *   node apps/cala/scripts/memory-measure.mjs --url http://localhost:5195/ --data <folder>
  *        --out <dir> [--keep name1,name2] [--tag x] [--mode joint|separate]
  *        [--refine-runs 1] [--every 10] [--max-min 90] [--cdp 9335] [--headed] [--single]
- *        [--lookback [--toggle] [--refine] [--csettle [--csettle-yield N] [--csrate R]]] [--extract]
+ *        [--lookback [--toggle] [--refine] [--csettle-yield N] [--csrate R] [--csettle-off]
+ *        [--pacefps F] [--pace-after S:N] [--lbpool S] [--needfirst]] [--extract]
  *   `--single`: one recording folder (Discover, then one Refine, no export; `--discover-only`: stop after Discover).
  *   `--smooth 0`: smooth playback off (the comparison run). Every run saves the displayed-frame times
  *   and a once-a-second processing readout as `<tag>-display.json`.
@@ -18,21 +19,27 @@
  *   checkbox once Discover runs and restart it (the path a user takes).
  *   `--refine`: after settling, one Refine run too (to compare). `--extract`:
  *   then press Extract once and wait for it.
- *   `--csettle` (with `--lookback`): opens with `&csettle` too (settle during
- *   Discover, experimental; `--csettle-yield N`: answers fed N frames at a
- *   time; `--csrate R`: the ceiling). Every look-back run also logs exact
+ *   Background settle (settle during Discover) is on by default under look-back and runs only
+ *   below Max; `--csettle` adds a bare `&csettle`, which changes nothing now (kept so old
+ *   command lines run). `--csettle-yield N` (`&csettle=yieldN`): answers fed N frames at a
+ *   time; `--csrate R`: the cap. Every look-back run also logs exact
  *   times (an in-page probe every 100 ms: last frame, settled, the longest
  *   stretch without a new frame, every settle checkpoint), the frames
  *   dropped for the slow loop, and how far the end settle moved the library
  *   Discover ended with; both libraries are written as `<tag>-live.json` and
  *   `<tag>-final.json`.
+ *   `--pace-after S:N`: set the target to N fps (0 = Max) once Discover has run S seconds; logs
+ *   `POOL_JOINED` with the seconds from that change to the first `settleWorkers` >= 1 and the
+ *   frames dropped for the slow loop by then (total, and since the change).
  *   `--finish-after S`: press "End Discover" once Discover has run S seconds (a short run: the end
  *   settle then covers the frames read so far). Every run also records the work readout
  *   (`__cala.pipeline.work()`, once a second) as `<tag>-work.json` and logs the `?debug` text
  *   readout at each sample.
- *   `--lbpool S` (with `--csettle`): S more look-back workers that take only the settle's chunks;
- *   `--governor`: the settle governor (off at Max: give `--pacefps`). Both `?debug` flags of
- *   work-slider PR 5; the governor's state is kept with each work reading and logged.
+ *   Background settle (the settle governor) runs by default in a look-back run below Max
+ *   (`--pacefps`), with the settle pool from the core count; the governor's state is kept with
+ *   each work reading and logged. `--lbpool S` overrides the pool size (`?debug&lbpool=S`, 0
+ *   included); `--needfirst`: one worker, need-driven look-back first (`?debug&needfirst`);
+ *   `--csettle-off`: no Background settle (`&csettle=0`).
  *   `--headed` runs system Chrome with a real GPU (headless SwiftShader hides memory behaviour).
  *
  * Opens `<folder>` (a session folder or a parent of several) through the
@@ -78,6 +85,8 @@ const csYield = opt('--csettle-yield', '');
 const csRate = opt('--csrate', '');
 const paceFps = opt('--pacefps', '');
 const finishAfter = Number(opt('--finish-after', '0'));
+// `--pace-after S:N`: once Discover has run S seconds, set the target to N fps mid-run (0 = Max).
+const paceAfter = (opt('--pace-after', '') || '').split(':').map(Number);
 const csQuery0 = csettle
   ? `&csettle${csYield ? `=yield${csYield}` : ''}${csRate ? `&csrate=${csRate}` : ''}`
   : '';
@@ -85,13 +94,13 @@ const csQuery0 = csettle
 // `--smooth 0`: smooth playback off (the comparison run).
 const smoothOpt = opt('--smooth', '');
 const lbPool = opt('--lbpool', '');
-const governor = args.includes('--governor');
 const csQuery =
   csQuery0 +
   (paceFps ? `&pacefps=${paceFps}` : '') +
   (smoothOpt ? `&smooth=${smoothOpt}` : '') +
-  (lbPool ? `&lbpool=${lbPool}` : '') +
-  (governor ? '&governor' : '');
+  (lbPool !== '' ? `&lbpool=${lbPool}` : '') +
+  (args.includes('--needfirst') ? '&needfirst' : '') +
+  (args.includes('--csettle-off') ? '&csettle=0' : '');
 mkdirSync(out, { recursive: true });
 const udd = join(out, `udd-${tag}`);
 rmSync(udd, { recursive: true, force: true });
@@ -132,6 +141,13 @@ page.on('download', async (d) => {
   L(`download ${p}`);
 });
 await page.addInitScript(() => {
+  // The Speed block saves its target and cap in the browser and applies them at page load: a
+  // measurement run takes its speed from the URL (`--pacefps`, `--csrate`) only.
+  try {
+    localStorage.removeItem('cala.speed.v1');
+  } catch {
+    // No storage: nothing to clear.
+  }
   delete window.showDirectoryPicker;
   delete window.showSaveFilePicker;
 });
@@ -351,6 +367,9 @@ await page.evaluate((withRelease) => {
     gaps250: 0,
     atFramesDone: null,
     checkpoints: [],
+    // Plain runs (Discover, then Refine): when Refine started and ended, on the same clock.
+    refineStart: null,
+    refineDone: null,
   });
   // Release probe (smooth pacing): when each batch's frames arrive on the main thread, polled
   // every 5 ms. The gate releases a batch one pipeline latency earlier, so this adds the
@@ -390,6 +409,20 @@ await page.evaluate((withRelease) => {
       settleWorkers: c.lookback?.()?.csettle?.settleWorkers ?? null,
     });
   }, 500);
+  // `--pace-after`: the first time the settle pool serves after the target change.
+  setInterval(() => {
+    const c = window.__cala;
+    const pa = window.__calaPaceAt;
+    if (pa && !window.__calaPoolJoin && (c.lookback?.()?.csettle?.settleWorkers ?? 0) >= 1) {
+      const dropped = c.cells.batch?.()?.droppedFrames ?? 0;
+      window.__calaPoolJoin = {
+        afterS: (performance.now() - pa.t) / 1000,
+        dropped,
+        droppedSince: dropped - pa.dropped,
+        settleDropped: c.lookback?.()?.csettle?.dropped ?? null,
+      };
+    }
+  }, 100);
   // Display and processing (`--smooth`): once a second, frames processed, rate, dropped for the slow loop.
   const proc = (window.__calaProc = []);
   setInterval(() => {
@@ -464,6 +497,9 @@ await page.evaluate((withRelease) => {
     }
     if (pst === 'done' && st?.final && !lb?.settling && p.final === null && p.framesDone !== null)
       p.final = now;
+    const rst = c.refine?.status?.();
+    if (rst === 'running' && p.refineStart === null) p.refineStart = now;
+    if (rst === 'done' && p.refineStart !== null && p.refineDone === null) p.refineDone = now;
   }, 100);
 }, Boolean(paceFps));
 const single = args.includes('--single');
@@ -593,6 +629,44 @@ async function probeReport() {
   writeFileSync(join(out, `${tag}-probe.json`), JSON.stringify({ probe: p, endSettleChange: ch }));
 }
 
+/**
+ * Plain runs (Discover, then Refine): the library as it stands now, written as `<tag>-<kind>.json`
+ * (`live` at the end of Discover, `final` after Refine), and at the end the probe's times.
+ */
+async function saveLibrary(kind) {
+  const plain = (l) =>
+    l && {
+      version: l.version,
+      frame: l.frame,
+      width: l.width,
+      height: l.height,
+      ids: Array.from(l.ids),
+      starts: Array.from(l.starts),
+      pixels: Array.from(l.pixels),
+      values: Array.from(l.values, (v) => Math.round(v * 1e5) / 1e5),
+    };
+  const lib = await page
+    .evaluate(
+      `(() => { const plain = ${plain.toString()}; const c = window.__cala; return { lib: plain(c.cells.library()), noise: Array.from(c.cells.status()?.footprintNoise ?? []) }; })()`,
+    )
+    .catch((e) => (L(`PROBE library ${kind} failed: ${e.message}`), null));
+  if (lib?.lib)
+    writeFileSync(
+      join(out, `${tag}-${kind}.json`),
+      JSON.stringify(kind === 'final' ? { ...lib.lib, noise: lib.noise } : lib.lib),
+    );
+  if (kind === 'final') {
+    const p = await page.evaluate(() => window.__calaProbe).catch(() => null);
+    if (p) {
+      const s = (a, b) => (a !== null && b !== null ? ((a - b) / 1000).toFixed(1) : '?');
+      L(
+        `PROBE plain discover ${s(p.framesDone, p.t0)}s refine ${s(p.refineDone, p.refineStart)}s (click wait ${s(p.refineStart, p.framesDone)}s) frames ${p.frames} at-frames-done ${JSON.stringify(p.atFramesDone)}`,
+      );
+      writeFileSync(join(out, `${tag}-probe.json`), JSON.stringify({ probe: p }));
+    }
+  }
+}
+
 /** The work readings of the page, saved (also when a run stops without settling). */
 async function saveWork() {
   const w = await page.evaluate(() => window.__calaWork).catch(() => null);
@@ -608,6 +682,8 @@ async function saveWork() {
 }
 
 let finishedEarly = false;
+let pacedLater = false;
+let poolJoinLogged = false;
 let refineClicked = false;
 let extractClicked = false;
 let discoverDoneAt = null;
@@ -624,6 +700,24 @@ while (!stop) {
     .evaluate(() => document.querySelector('[data-testid=work-debug]')?.textContent ?? '')
     .catch(() => '');
   if (wtxt) L(`WORK ${r.t.toFixed(0)}s\n${wtxt}`);
+  if (paceAfter.length === 2 && r.st?.pst === 'running' && r.t > paceAfter[0] && !pacedLater) {
+    pacedLater = true;
+    L(`PACE_AFTER ${r.t.toFixed(1)}s -> ${paceAfter[1]} fps`);
+    await page.evaluate((fps) => {
+      window.__calaPaceAt = {
+        t: performance.now(),
+        dropped: window.__cala.cells.batch?.()?.droppedFrames ?? 0,
+      };
+      window.__cala.pipeline.setPaceFps(fps);
+    }, paceAfter[1]);
+  }
+  if (pacedLater && !poolJoinLogged) {
+    const j = await page.evaluate(() => window.__calaPoolJoin ?? null).catch(() => null);
+    if (j) {
+      poolJoinLogged = true;
+      L(`POOL_JOINED ${JSON.stringify(j)}`);
+    }
+  }
   if (finishAfter > 0 && r.st?.pst === 'running' && r.t > finishAfter && !finishedEarly) {
     finishedEarly = true;
     L(`FINISH_EARLY ${r.t.toFixed(1)}s`);
@@ -676,10 +770,12 @@ while (!stop) {
     if (r.st?.pst === 'done' && r.st?.refine === 'idle' && !refineClicked) {
       refineClicked = true;
       L(`DISCOVER_DONE ${r.t.toFixed(1)}s`);
+      await saveLibrary('live');
       await page.click('[data-testid=refine-run]');
     }
     if (refineClicked && r.st?.refine === 'done') {
       L(`REFINE_DONE ${r.t.toFixed(1)}s`);
+      await saveLibrary('final');
       stop = 'done';
     }
     if (r.st?.pst === 'error' || r.st?.refine === 'error') stop = 'error';

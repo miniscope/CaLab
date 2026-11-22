@@ -8,6 +8,7 @@ import { makePlan, PipelineCursor, type PipelineStep } from '../lib/pipeline-pla
 import { createPipelineStore, MAX_IN_FLIGHT, ThroughputMeter } from '../lib/pipeline-store.ts';
 import { downsampleFrame, previewFactor } from '../lib/preview.ts';
 import { createRunHistory } from '../lib/run-history.ts';
+import type { LookbackFeed } from '../lib/lookback-client.ts';
 import type { FrameRequest, FrameResponse } from '../workers/frame-types.ts';
 
 function walk(cursor: PipelineCursor): PipelineStep[] {
@@ -222,6 +223,99 @@ describe('pipeline store backpressure', () => {
     });
   });
 
+  it('exposes the target speed as a signal (0: Max) and the floor prior for the Speed control', () => {
+    const { client } = manualClient();
+    createRoot((dispose) => {
+      const store = createPipelineStore({ ...client, setPace: vi.fn(async () => {}) });
+      expect(store.paceTarget()).toBe(0);
+      expect(store.floor().prior).toBe(true);
+      store.setPaceFps(80);
+      expect(store.paceTarget()).toBe(80);
+      store.setPaceFps(0);
+      expect(store.paceTarget()).toBe(0);
+      dispose();
+    });
+  });
+
+  it('logs a settle cap change mid-run (Fixed 30, cap 2, then Off) and tells the listeners', async () => {
+    const { client, steps } = manualClient();
+    await createRoot(async (dispose) => {
+      const history = createRunHistory();
+      const store = createPipelineStore(
+        { ...client, setPace: vi.fn(async () => {}) },
+        {},
+        undefined,
+        undefined,
+        true,
+        undefined,
+        {},
+        history,
+      );
+      const seen: [number, string][] = [];
+      store.onCapChange((cap, _frame, source) => seen.push([cap, source]));
+      store.setPaceFps(30);
+      await store.start();
+      steps[0].resolve(batch(0, 8));
+      await flush();
+      // Before any change: the cap in force is 2, no cap event yet.
+      expect(store.capNow()).toBe(2);
+      expect(
+        history
+          .events()
+          .ofKind('setting')
+          .filter((e) => e.key === 'settle_cap'),
+      ).toHaveLength(0);
+      store.setCsettle(false);
+      expect(store.capNow()).toBe(0);
+      const ev = history
+        .events()
+        .ofKind('setting')
+        .filter((e) => e.key === 'settle_cap');
+      expect(ev).toHaveLength(1);
+      expect(ev[0]).toMatchObject({ from: 2, to: 0, frame: 8 });
+      expect(ev[0].detail).toBe('Settle cap 2 per live frame → Off');
+      // Off to a lower cap in two calls is one change (the ceiling alone changes nothing while Off).
+      store.setCsettleCeiling(1);
+      store.setCsettle(true);
+      expect(seen).toEqual([
+        [0, 'setting'],
+        [1, 'setting'],
+      ]);
+      // A repeat of the same value logs nothing.
+      store.setCsettle(true);
+      expect(seen).toHaveLength(2);
+      dispose();
+    });
+  });
+
+  it('keeps URL-set targets apart, and a live run has no applied target or cap', () => {
+    const { client } = manualClient();
+    createRoot((dispose) => {
+      const store = createPipelineStore({ ...client, setPace: vi.fn(async () => {}) });
+      store.setPaceFps(30, 'url');
+      expect(store.paceFromUrl()).toBe(true);
+      store.setPaceFps(60, 'setting');
+      expect(store.paceFromUrl()).toBe(false);
+      expect(store.targetNow()).toBe(60);
+      dispose();
+    });
+    createRoot((dispose) => {
+      const store = createPipelineStore(
+        { ...client, setPace: vi.fn(async () => {}) },
+        {},
+        undefined,
+        undefined,
+        true,
+        undefined,
+        { identity: () => ({ live: true }) as never },
+      );
+      store.setPaceFps(30);
+      expect(store.targetNow()).toBe(0);
+      expect(store.capNow()).toBe(0);
+      dispose();
+    });
+  });
+
   it('never leaves the gate held: pause, pace off, resume, pace on', async () => {
     const { client } = manualClient();
     const setPace = vi.fn(async () => {});
@@ -257,11 +351,12 @@ describe('pipeline store backpressure', () => {
     });
   });
 
-  it('drops pacing readouts of another session (a stopped run), keeps the current one', async () => {
+  it("drops pacing readouts of another session or an older gate run, keeps a stopped run's last one", async () => {
     const { client } = manualClient();
     let listener: ((s: PaceStats) => void) | null = null;
-    const stats = (session: number, released: number): PaceStats => ({
+    const stats = (session: number, released: number, epoch = 5): PaceStats => ({
       session,
+      epoch,
       target: 30,
       waitMs: 0,
       lateMs: 0,
@@ -285,9 +380,18 @@ describe('pipeline store backpressure', () => {
       expect(store.paceStats()).toBeNull();
       listener!(stats(session, 16));
       expect(store.paceStats()?.released).toBe(16);
+      // An older gate run of the same session (a late readout before a replay began).
+      listener!(stats(session, 99, 4));
+      expect(store.paceStats()?.released).toBe(16);
       store.stop();
-      // A late readout of the stopped run.
+      expect(store.paceStats()?.released).toBe(16);
+      // The stopped run's final readout (the worker flushes it on stop) lands.
       listener!(stats(session, 24));
+      expect(store.paceStats()?.released).toBe(24);
+      // A new start clears it; the old session's readouts no longer count.
+      await store.start();
+      expect(store.paceStats()).toBeNull();
+      listener!(stats(session, 30));
       expect(store.paceStats()).toBeNull();
       dispose();
     });
@@ -422,6 +526,127 @@ function fakeWorker(reply: (req: FrameRequest) => FrameResponse) {
   };
   return { worker, sent };
 }
+
+describe('pipeline store: Background settle and the settle pool', () => {
+  function feedSpy(order: string[]) {
+    const calls: { cap: number[]; pace: [number, boolean][]; pool: number[] } = {
+      cap: [],
+      pace: [],
+      pool: [],
+    };
+    const feed: LookbackFeed = {
+      blocked: () => null,
+      begin: () => true,
+      rows: () => {},
+      backState: () => {},
+      flatField: () => {},
+      reset: () => {},
+      pace: (fps, paused) => {
+        order.push('pace');
+        calls.pace.push([fps, paused]);
+      },
+      cap: (c) => {
+        order.push('cap');
+        calls.cap.push(c);
+      },
+      startPool: (session) => {
+        calls.pool.push(session);
+        return 1;
+      },
+    };
+    return { feed, calls };
+  }
+  const make = (feed: LookbackFeed, client: ReturnType<typeof manualClient>['client']) =>
+    createPipelineStore(
+      client,
+      {},
+      undefined,
+      undefined,
+      true,
+      undefined,
+      {},
+      undefined,
+      undefined,
+      feed,
+    );
+
+  it('a run at Max sends the cap and target before its start and never starts the pool', async () => {
+    const order: string[] = [];
+    const { feed, calls } = feedSpy(order);
+    const { client } = manualClient();
+    client.startPipeline.mockImplementation(async () => {
+      order.push('start');
+      return makePlan(100);
+    });
+    await createRoot(async (dispose) => {
+      const store = make(feed, client);
+      store.setLookback(true);
+      await store.start();
+      expect(order.slice(0, 3)).toEqual(['cap', 'pace', 'start']);
+      expect(calls.cap).toEqual([2]);
+      expect(calls.pace.at(-1)).toEqual([0, false]);
+      const cells = (
+        client.startPipeline.mock.calls[0] as unknown as [unknown, { csettle?: boolean }]
+      )[1];
+      expect(cells.csettle).toBe(true);
+      store.setCsettleCeiling(1);
+      store.setCsettle(false);
+      expect(calls.cap.slice(-2)).toEqual([1, 0]);
+      expect(calls.pool).toEqual([]);
+      dispose();
+    });
+  });
+
+  it('going below Max mid-run starts the pool for that run (with the settle on), never after the run', async () => {
+    const order: string[] = [];
+    const { feed, calls } = feedSpy(order);
+    const { client } = manualClient();
+    await createRoot(async (dispose) => {
+      const store = make(feed, client);
+      const started: [number, number][] = [];
+      store.onPoolStart((workers, frame) => started.push([workers, frame]));
+      store.setLookback(true);
+      store.setCsettle(false);
+      await store.start();
+      const session = (
+        client.startPipeline.mock.calls[0] as unknown as [unknown, { session: number }]
+      )[1].session;
+      store.setPaceFps(60);
+      // Cap Off: no pool yet.
+      expect(calls.pool).toEqual([]);
+      expect(started).toEqual([]);
+      store.setCsettle(true);
+      expect(calls.pool).toEqual([session]);
+      // The run record hears of the first start only.
+      store.setPaceFps(45);
+      expect(started).toEqual([[1, 0]]);
+      store.stop();
+      store.setPaceFps(30);
+      expect(calls.pool).toEqual([session, session]);
+      expect(started).toHaveLength(1);
+      dispose();
+    });
+  });
+
+  it('a run started below Max starts the pool before its start', async () => {
+    const order: string[] = [];
+    const { feed, calls } = feedSpy(order);
+    const { client } = manualClient();
+    client.startPipeline.mockImplementation(async () => {
+      order.push('start');
+      return makePlan(100);
+    });
+    await createRoot(async (dispose) => {
+      const store = make(feed, client);
+      store.setLookback(true);
+      store.setPaceFps(60);
+      await store.start();
+      expect(calls.pool).toHaveLength(1);
+      expect(order.indexOf('start')).toBeGreaterThan(order.indexOf('pace'));
+      dispose();
+    });
+  });
+});
 
 describe('pipeline message protocol', () => {
   it('pairs start/step/stop requests with their responses by id', async () => {

@@ -5,7 +5,7 @@
  * guard) and the limiting factor it reports.
  */
 import { describe, expect, it } from 'vitest';
-import { CSETTLE, GOVERNOR, SettleGovernor } from '../lib/settle.ts';
+import { CSETTLE, GOVERNOR, GOVERNOR_LIMIT_TEXT, SettleGovernor } from '../lib/settle.ts';
 
 /**
  * A paced run: live batches of 8 frames at `fps` (sent on time, no wait),
@@ -63,6 +63,45 @@ describe('SettleGovernor', () => {
     expect(r.asked).toBe(0);
     expect(g.limit).toBe('off');
     expect(g.rate).toBe(0);
+  });
+
+  it('cap Off: no credit and no probe, even with Discover below its target', () => {
+    const g = new SettleGovernor(0);
+    g.setTarget(60, false);
+    const r = drive(g, { fps: 60, achieved: 40, seconds: 20 });
+    expect(r.asked).toBe(0);
+    expect(g.limit).toBe('cap-off');
+    expect(GOVERNOR_LIMIT_TEXT[g.limit]).toBe('cap off');
+    expect(g.rate).toBe(0);
+    // Back to Max: off for that reason.
+    g.setTarget(0, false);
+    expect(g.limit).toBe('off');
+  });
+
+  it('the cap during a run: Off stops it at once, a lower cap holds the rate and credit down, a higher one climbs', () => {
+    const g = new SettleGovernor(2);
+    g.setTarget(60, false);
+    let r = drive(g, { fps: 60, seconds: 30 });
+    expect(g.limit).toBe('cap');
+    expect(g.rate).toBeCloseTo(120, 0);
+    g.setCap(0.5);
+    expect(g.cap).toBe(0.5);
+    expect(g.rate).toBeCloseTo(30, 0);
+    expect(g.limit).toBe('cap');
+    expect(g.owed).toBeLessThanOrEqual(CSETTLE.chunk);
+    g.setCap(0);
+    expect(g.rate).toBe(0);
+    expect(g.owed).toBe(0);
+    expect(g.limit).toBe('cap-off');
+    r = drive(g, { fps: 60, seconds: 10, t0: r.t, end0: r.end });
+    expect(r.asked).toBe(0);
+    g.setCap(1);
+    r = drive(g, { fps: 60, seconds: 15, t0: r.t, end0: r.end });
+    expect(r.asked).toBeGreaterThan(0);
+    expect(g.limit).toBe('cap');
+    expect(g.rate).toBeCloseTo(60, 0);
+    expect(g.status().cap).toBe(1);
+    expect(g.status().capFps).toBeCloseTo(60, 0);
   });
 
   it('sends no settle read before the first library', () => {

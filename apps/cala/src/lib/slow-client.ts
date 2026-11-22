@@ -9,7 +9,9 @@ import type {
   SlowConnect,
   SlowLookbackPort,
   SlowReviewed,
+  SlowSettleCap,
   SlowSettlePace,
+  SlowSettlePool,
   SlowStopSettling,
   SlowToMain,
   VisitConnect,
@@ -24,6 +26,10 @@ export interface SlowClient {
   connectLookback(port: MessagePort, index?: number): void;
   /** The pacer's target live fps (0: Max) and pause, for the settle governor. */
   settlePace(fps: number, paused: boolean): void;
+  /** The settle's cap, re-read frames per live frame (0 = Off); during a run too. */
+  settleCap(cap: number): void;
+  /** Look-back workers 1..`workers` were started for `session`'s run (the settle pool). */
+  settlePool(session: number, workers: number): void;
   /** Stop a look-back run's settling now: its final library is published with what was refined. */
   stopSettling(session: number): void;
   dispose(): void;
@@ -108,6 +114,14 @@ export function createSlowClient(
     },
     settlePace(fps, paused) {
       const msg: SlowSettlePace = { type: 'settle-pace', fps, paused };
+      worker.postMessage(msg);
+    },
+    settleCap(cap) {
+      const msg: SlowSettleCap = { type: 'settle-cap', cap };
+      worker.postMessage(msg);
+    },
+    settlePool(session, workers) {
+      const msg: SlowSettlePool = { type: 'settle-pool', session, workers };
       worker.postMessage(msg);
     },
     stopSettling(session) {

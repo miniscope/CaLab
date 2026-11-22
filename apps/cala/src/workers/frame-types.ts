@@ -37,10 +37,15 @@ export interface CellsSettings {
    * worker. Pipelined workers only.
    */
   lookback?: boolean;
-  /** With `lookback`: settle during Discover (`SlowInit.csettle`, `SlowInit.csettleYield`, `SlowInit.csettleGovernor`). */
-  csettle?: number;
+  /**
+   * With `lookback`: settle during Discover may run below Max (`SlowInit.csettle`,
+   * `SlowInit.csettleYield`, `SlowInit.csettleNeedFirst`; the cap goes to the slow worker apart).
+   */
+  csettle?: boolean;
   csettleYield?: number;
-  csettleGovernor?: boolean;
+  csettleNeedFirst?: boolean;
+  /** The share of the final settle pass to read (`SlowInit.settleFraction`; absent = all). */
+  settleFraction?: number;
   /** Batches in flight to the slow worker (default `FAST_LOOP_DEFAULTS.poolSize`). */
   forwardBuffers?: number;
   /** Feed the compress worker (default off; needs its port). */

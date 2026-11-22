@@ -133,6 +133,11 @@ export class FramePacer {
 export interface PaceStats {
   /** The pipeline session the gate runs for (`PaceGate.begin`): the main thread drops other sessions' readouts. */
   session: number;
+  /**
+   * The gate's run (`PaceGate.begin` counts them): a session's runs (Discover, then a replay of
+   * it) share its number, so the main thread keeps the newest run's readouts only.
+   */
+  epoch: number;
   target: number;
   /** Time spent at the gate (not busy time). */
   waitMs: number;
@@ -170,6 +175,8 @@ export class PaceGate {
   private waiting: { wake: () => void } | null = null;
   private waited = 0;
   private session = 0;
+  private epoch = 0;
+  private everPaced = false;
 
   constructor(
     private readonly timers: PaceTimers = REAL_TIMERS,
@@ -182,6 +189,7 @@ export class PaceGate {
   stats(): PaceStats {
     return {
       session: this.session,
+      epoch: this.epoch,
       target: this.pacer.target,
       waitMs: this.waited,
       lateMs: this.pacer.lateMs,
@@ -195,6 +203,11 @@ export class PaceGate {
     return this.waited;
   }
 
+  /** This run has had a target (its readouts are worth sending, a return to Max included). */
+  get reports(): boolean {
+    return this.everPaced;
+  }
+
   /** Whether `enter` may wait. */
   get active(): boolean {
     return this.pacer.paced && !this.open && !this.stopped;
@@ -203,6 +216,8 @@ export class PaceGate {
   /** A new run of pipeline `session`: unpaced until `setTarget`, not stopped, not paused. */
   begin(session = 0): void {
     this.session = session;
+    this.epoch++;
+    this.everPaced = false;
     this.pacer.reset();
     this.stopped = false;
     this.open = false;
@@ -212,6 +227,7 @@ export class PaceGate {
 
   setTarget(fps: number): void {
     this.pacer.setTarget(fps, this.timers.now());
+    if (this.pacer.paced) this.everPaced = true;
     this.wake();
   }
 

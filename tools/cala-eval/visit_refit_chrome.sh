@@ -19,7 +19,8 @@ if pgrep -f "^node .*memory-measure.mjs" > /dev/null; then echo "another memory-
 if [ "$REC" = ws ]; then data=$WS; else data="$SAMARA/$REC"; fi
 flags="--single --lookback --headed --every 5"
 [ "$FPS" != max ] && flags="$flags --pacefps $FPS"
-[ "$CS" = on ] && flags="$flags --csettle"
+# Background settle is on by default below Max now; `off` must switch it off (`&csettle=0`).
+[ "$CS" = off ] && flags="$flags --csettle-off"
 echo "$(date +%T) $TAG start load=$(sysctl -n vm.loadavg) head=$(git rev-parse --short HEAD)" >> "$OUT/load.txt"
 node apps/cala/scripts/memory-measure.mjs --url http://localhost:5198/ --data "$data" --out "$OUT" --tag "$TAG" \
   $flags > "$OUT/$TAG.out" 2>&1

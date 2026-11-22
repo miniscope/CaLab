@@ -112,6 +112,7 @@ function fakeLoop(need: number) {
     markAllDue: vi.fn(() => void calls.push('markAllDue')),
     lookbackStats: () => Float64Array.of(need - left, observed.length, 0, 0, 1, left, 8),
     footprintNoise: vi.fn(() => Float64Array.of(1, 0.1)),
+    footprintNoiseOn: vi.fn(() => 0.1),
   };
   return { loop, calls, observed, streams };
 }
@@ -336,6 +337,43 @@ describe('SlowRunner look-back (fake loop)', () => {
     expect(finalize.mock.calls.length - atStart).toBe(3);
     // The fake's footprint never changes: no cell moves.
     expect(statuses(t).at(-1)!.lookback?.settle?.moving).toEqual({ cells: 1, above: 0 });
+  });
+
+  it('a Final-settle level stops the pass early: the plan keeps its first share, Thorough is untouched', () => {
+    const t = setup(0);
+    t.r.handle({ ...INIT, lookback: true, settleFraction: 0.5 });
+    expect(t.created.at(-1)).toMatchObject({ settleFraction: 0.5 });
+    t.r.handle(frames(0, 80));
+    t.r.handle({ type: 'end', session: 1 });
+    const discoverObserves = t.streams.length;
+    t.run();
+    const st = statuses(t).at(-1)!.lookback!.settle!;
+    expect(st).toMatchObject({ fed: 40, total: 40, recording: 80, done: true, stopped: false });
+    expect(t.streams.slice(discoverObserves)).toEqual([...Array(40).keys()]);
+    expect(finals(t)).toHaveLength(1);
+    // No fraction (Thorough): the whole recording, and the init carries no field.
+    const u = setup(0);
+    u.r.handle({ ...INIT, lookback: true });
+    expect(u.created.at(-1)).not.toHaveProperty('settleFraction');
+    u.r.handle(frames(0, 80));
+    u.r.handle({ type: 'end', session: 1 });
+    u.run();
+    expect(statuses(u).at(-1)!.lookback!.settle).toMatchObject({ fed: 80, total: 80 });
+  });
+
+  it('sends the still-moving hint with the status after a checkpoint, once', () => {
+    const t = setup(0);
+    t.r.handle({ ...INIT, lookback: true });
+    t.r.handle(frames(0, 2 * SETTLE.checkEvery));
+    t.r.handle({ type: 'end', session: 1 });
+    t.run();
+    const hints = statuses(t).filter((s) => s.stillMoving);
+    // At most one per checkpoint (statuses are throttled), never with the final library alone.
+    expect(hints.length).toBeGreaterThanOrEqual(1);
+    expect(hints.length).toBeLessThanOrEqual(2);
+    for (const h of hints) expect([...h.stillMoving!]).toEqual([1, 0]);
+    // Region noise was asked for the core and the edge of the cell.
+    expect(t.loop.footprintNoiseOn).toHaveBeenCalled();
   });
 
   it('a long recording is sampled up to the cap', () => {

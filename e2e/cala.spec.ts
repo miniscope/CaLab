@@ -59,6 +59,11 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   // Opening also runs preprocessing and motion correction in the worker.
   await expect(page.getByTestId('pipeline-status')).toHaveText('Done', { timeout: 20_000 });
   await expect(page.getByTestId('pipeline-readout')).toContainText('frame 6 / 6');
+  // The work display is in the Run panel, with its fixed ranges and honest empty values.
+  await page.getByRole('tab', { name: 'Run' }).click();
+  await expect(page.getByTestId('work-display')).toBeVisible();
+  await expect(page.getByTestId('work-legend')).toContainText('Final settle');
+  await expect(page.getByTestId('work-progress')).toContainText('Discover');
   await page.getByRole('tab', { name: 'History' }).click();
   await page.getByTestId('history-group').getByRole('radio', { name: 'Motion' }).click();
   await expect(page.getByTestId('history-motion')).toBeVisible();
@@ -70,6 +75,19 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   // The cells panel is up; six frames are too few for the slow loop to start.
   await expect(page.getByTestId('cells-view')).toBeVisible();
   await expect(page.getByTestId('cells-readout')).toContainText('0 cells');
+  // The Speed block: Max by default; Fixed shows the target and persists; the old toggle is gone.
+  await page.getByTestId('tab-run').click();
+  const speed = page.getByTestId('speed-control');
+  await expect(speed).toHaveAttribute('data-mode', 'max');
+  await expect(page.getByTestId('csettle-toggle')).toHaveCount(0);
+  await page.getByTestId('speed-mode-fixed').click();
+  await expect(speed).toHaveAttribute('data-mode', 'fixed');
+  await expect(page.getByTestId('speed-headline')).toContainText('fps');
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem('cala.speed.v1')))
+    .toContain('"mode":"fixed"');
+  await page.getByTestId('speed-max').click();
+  await expect(speed).toHaveAttribute('data-mode', 'max');
   // Quality control: the convergence strip, the cell table and the overlay modes.
   await expect(page.getByTestId('convergence-status')).toContainText('Waiting for cells');
   await page.getByRole('tab', { name: 'QC', exact: true }).click();
