@@ -44,6 +44,7 @@ import type { SessionStart } from './session-boundary.ts';
 import type { RunHistory } from './run-history.ts';
 import type { LookbackFeed } from './lookback-client.ts';
 import { CSETTLE, csettleRate } from './settle.ts';
+import { FloorMeter, NEED_RATE, floorText } from './speed-floor.ts';
 
 /** Step requests kept outstanding: one running, one queued so the worker never idles. */
 export const MAX_IN_FLIGHT = 2;
@@ -498,8 +499,25 @@ export function createPipelineStore(
   const [maxFps, setMaxFps] = createSignal(0);
   /** The max estimate as of the last `work` reading (the readout rebuilds once a second, not per batch). */
   const [workMaxFps, setWorkMaxFps] = createSignal(0);
+  // The smart floor estimate (`lib/speed-floor.ts`): shown in the `?debug` readout only, steers nothing.
+  const floorMeter = new FloorMeter();
+  const [floorLine, setFloorLine] = createSignal('');
   cells?.onStatus((st) => {
     if (!st.accounting) return;
+    const lb = st.lookback;
+    const gov = lb?.csettle?.governor;
+    floorMeter.push({
+      work: st.accounting,
+      inNeed: lb?.inNeed ?? 0,
+      cap: gov?.cap ?? lb?.csettle?.rate ?? 0,
+      needRate: NEED_RATE,
+      target: paceRun() ? paceFps : 0,
+      maxFps: maxFpsEstimator.estimate() || null,
+      paused: untrack(status) === 'paused',
+      governorLimit: gov?.limit,
+      haveLibrary: st.version > 0,
+    });
+    setFloorLine(floorText(floorMeter));
     const rates = workRater.push(st.accounting);
     if (!rates) return;
     const max = maxFpsEstimator.estimate();
@@ -641,6 +659,7 @@ export function createPipelineStore(
     setPaceStats(null);
     paceSession = -1;
     workRater.reset();
+    floorMeter.reset();
     maxFpsEstimator.reset();
     setWork(null);
     setMaxFps(0);
@@ -860,6 +879,8 @@ export function createPipelineStore(
     paceStats,
     /** Who is doing what, over the last second or so (the slow, visit and look-back workers); null until a second of data. */
     work,
+    /** The smart floor's `?debug` lines (value, which consumer sets it, confidence); empty before the first status. */
+    floorLine,
     /** The fast loop's live estimate of its top speed, frames per second (0 until a batch has busy time). */
     maxFps,
     /** `maxFps` as of the last `work` reading, for the readout. */
