@@ -39,6 +39,26 @@ export function speedPos(fps: number, scale: { lo: number; hi: number } = SPEED_
   return Math.log(fps / scale.lo) / Math.log(scale.hi / scale.lo);
 }
 
+/**
+ * A speed curve's plan as one step line over a strip segment: `plan` is `planLine`'s `{ x, fps }`
+ * (x a share 0..1 of the segment, fps 0 for Max, which sits at the top), `yTop` and `yBot` the
+ * speed plot's rows. Steps draw flat with a vertical jump between them.
+ */
+export function planPath(
+  plan: readonly { x: number; fps: number }[],
+  seg: { x0: number; x1: number },
+  yTop: number,
+  yBot: number,
+): string {
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const p of plan) {
+    xs.push(seg.x0 + (seg.x1 - seg.x0) * p.x);
+    ys.push(yBot - (yBot - yTop) * speedPos(p.fps > 0 ? p.fps : Infinity));
+  }
+  return linePath(xs, ys);
+}
+
 /** One slice of the stacked bar. */
 export interface Segment {
   kind: WorkKind;

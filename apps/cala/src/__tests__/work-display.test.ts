@@ -11,6 +11,7 @@ import {
   groupedRows,
   legendKinds,
   linePath,
+  planPath,
   plannedSettleFrames,
   rowAriaLabel,
   rowBusy,
@@ -345,5 +346,28 @@ describe('settlednessFromHints', () => {
       'new',
     ]);
     expect(settlednessFromHints([], hints, 2)).toBeNull();
+  });
+});
+
+describe('the plan line', () => {
+  it('draws steps flat over the segment, Max at the top and fps on the log scale', () => {
+    const seg = { x0: 100, x1: 300 };
+    const d = planPath(
+      [
+        { x: 0, fps: 0 },
+        { x: 0.5, fps: 0 },
+        { x: 0.5, fps: 70.71067811865476 },
+        { x: 1, fps: 70.71067811865476 },
+      ],
+      seg,
+      14,
+      70,
+    );
+    // 10 to 500 fps: 70.7 fps is halfway up the log scale.
+    expect(d).toBe('M100.0,14.0L200.0,14.0L200.0,42.0L300.0,42.0');
+  });
+
+  it('is empty for an empty plan', () => {
+    expect(planPath([], { x0: 0, x1: 10 }, 0, 10)).toBe('');
   });
 });

@@ -3,6 +3,7 @@ import type { JSX } from 'solid-js';
 import { SegmentedControl } from '@calab/ui';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { CellStore } from '../lib/cell-store.ts';
+import { curveWords, CURVE_PRESETS, presetCurve } from '../lib/speed-schedule.ts';
 import {
   belowFloorNote,
   CAP_CHOICES,
@@ -19,6 +20,8 @@ import {
   speedStatusText,
   stepToFps,
   TRACK_STEPS,
+  CURVE_PRESET_IDS,
+  type CurvePresetId,
   type SpeedMode,
   type SpeedSettings,
 } from '../lib/speed-track.ts';
@@ -32,18 +35,19 @@ const LABEL_CLASH = 0.22;
 const NO_BUFFER_REASON =
   "Background settle on a live stream needs the stream's raw frames on disk, which is not built yet.";
 
-const MODE_LABELS: Record<SpeedMode, string> = { max: 'Max', fixed: 'Fixed' };
+const MODE_LABELS: Record<SpeedMode, string> = { max: 'Max', fixed: 'Fixed', curve: 'Curve' };
 const MODE_TITLES: Record<SpeedMode, string> = {
   max: 'No pacing: Discover as fast as the machine goes; all settling comes after the last frame.',
   fixed: 'Read the recording at a target speed; the spare time goes to Background settle.',
+  curve: 'The target steps down over the recording: fast while cells are found, slower after.',
 };
 
 /**
  * The Speed block of the Run panel (Max and Fixed): a fixed log track from 10
  * to 500 fps with a separate Max stop, the floor and "max now" marks, the
- * status line, and the Background settle cap. Every change goes through the
- * store (`setPaceFps` logs the run-record event; the cap goes to the worker).
- * Curve and Auto join `MODES` later.
+ * status line, and the Background settle cap. Curve mode swaps the thumb for a preset (a step
+ * schedule of the target over the recording, `lib/speed-schedule.ts`). Every change goes through the
+ * store (`setPaceFps` logs the run-record event; the cap goes to the worker). Auto joins later.
  */
 export function SpeedControl(props: {
   pipeline: PipelineStore;
@@ -62,6 +66,7 @@ export function SpeedControl(props: {
     saveSpeedSettings(saved);
   };
   const [fixedFps, setFixedFps] = createSignal(saved.fixedFps);
+  const [preset, setPreset] = createSignal<CurvePresetId>(saved.preset);
   /** The thumb while a change is in progress (not yet committed). */
   const [draft, setDraft] = createSignal<number | null>(null);
   let dragging = false;
@@ -75,22 +80,30 @@ export function SpeedControl(props: {
   // Neither is a user change (their own sources), and neither is saved. A target that came from
   // the URL (`?debug&pacefps`, a measurement override) is left alone.
   let pinnedFrom: number | null = null;
+  let pinnedCurve: CurvePresetId | null = null;
   createEffect(() => {
     const why = pinned();
     untrack(() => {
-      if (why !== null && s().paceTarget() > 0 && !s().paceFromUrl()) {
-        pinnedFrom = s().paceTarget();
+      const curve = s().speedCurve();
+      if (why !== null && (s().paceTarget() > 0 || curve) && !s().paceFromUrl()) {
+        pinnedFrom = curve ? null : s().paceTarget();
+        pinnedCurve = curve ? preset() : null;
         s().setPaceFps(0, 'pinned');
-      } else if (why === null && pinnedFrom !== null) {
-        if (s().paceTarget() === 0) s().setPaceFps(pinnedFrom, 'pin lifted');
+      } else if (why === null && (pinnedFrom !== null || pinnedCurve !== null)) {
+        if (s().paceTarget() === 0 && pinnedCurve !== null)
+          s().setSpeedCurve(presetCurve(pinnedCurve), { preset: pinnedCurve });
+        else if (s().paceTarget() === 0 && pinnedFrom !== null)
+          s().setPaceFps(pinnedFrom, 'pin lifted');
         pinnedFrom = null;
+        pinnedCurve = null;
       }
     });
   });
 
   const target = () => s().paceTarget();
   const shown = () => draft() ?? (target() > 0 ? target() : null);
-  const mode = (): SpeedMode => (shown() !== null ? 'fixed' : 'max');
+  const mode = (): SpeedMode => (s().speedCurve() ? 'curve' : shown() !== null ? 'fixed' : 'max');
+  const liveNow = () => ({ floorFps: floorFps(), seeAllFps: s().floor().estimate.seeAllFps });
 
   const floor = () => s().floor();
   const floorFps = () => {
@@ -122,9 +135,17 @@ export function SpeedControl(props: {
     save({ mode: 'fixed', fixedFps: f });
   }
   function setMode(m: SpeedMode): void {
-    if (m === 'max') s().setPaceFps(0, 'setting');
+    if (m === 'curve') {
+      s().setSpeedCurve(presetCurve(preset()), { preset: preset() });
+      // Before the run the target stays where it was; the curve sets it when Discover starts.
+    } else if (m === 'max') s().setPaceFps(0, 'setting');
     else s().setPaceFps(fixedFps(), 'setting');
-    save({ mode: m, fixedFps: fixedFps() });
+    save({ mode: m, fixedFps: fixedFps(), preset: preset() });
+  }
+  function choosePreset(id: CurvePresetId): void {
+    setPreset(id);
+    if (mode() === 'curve') s().setSpeedCurve(presetCurve(id), { preset: id });
+    save({ preset: id });
   }
   function commitDraft(): void {
     clearTimeout(timer);
@@ -188,25 +209,53 @@ export function SpeedControl(props: {
     if (props.live) return props.fps > 0 ? props.fps.toFixed(1) : '-';
     const a = achieved();
     if (a !== null) return a.toFixed(1);
+    if (mode() === 'curve') return !running() ? 'Curve' : target() > 0 ? String(target()) : 'Max';
     return mode() === 'max' ? 'Max' : String(shown());
   };
   const unitText = () => {
     if (props.live) return 'fps from the stream · sets the pace';
-    const t = mode() === 'max' ? 'Max' : String(shown());
+    const curve = mode() === 'curve';
+    const t = curve
+      ? target() > 0
+        ? String(target())
+        : 'Max'
+      : mode() === 'max'
+        ? 'Max'
+        : String(shown());
     const x = mode() === 'fixed' ? timesReal(shown() as number) : null;
     const xt = x !== null ? ` · ${x.toFixed(1)}× real time` : '';
-    return achieved() !== null ? `fps achieved · target ${t}${xt}` : `fps target${xt}`;
+    if (achieved() !== null) return `fps achieved · target ${t}${xt}`;
+    return curve ? (running() ? 'fps · following the curve' : '') : `fps target${xt}`;
   };
 
+  // What the run follows: the curve after the minimum-step rule, and a note when steps merged.
+  const curveLine = () => {
+    const armed = running() ? s().armedCurve() : null;
+    const c = armed?.curve ?? s().speedCurve()?.curve;
+    if (!c) return '';
+    const words = curveWords(c, liveNow());
+    const n = armed?.merged ?? 0;
+    return n > 0 ? `${words} (${n} short step${n === 1 ? '' : 's'} merged)` : words;
+  };
   const status = () =>
-    speedStatusText({
-      running: running(),
-      target: target(),
-      floor: floorFps(),
-      governor: gov(),
-      settleOn: lookbackOn() && cap() > 0,
-    });
-  const belowNote = () => belowFloorNote(shown() ?? 0, floorFps());
+    mode() === 'curve' && !running()
+      ? `Discover will follow the curve: ${curveLine()}.`
+      : mode() === 'curve' && s().armedCurve()?.merged
+        ? `Following the curve: ${curveLine()}. ${speedStatusText({
+            running: running(),
+            target: target(),
+            floor: floorFps(),
+            governor: gov(),
+            settleOn: lookbackOn() && cap() > 0,
+          })}`
+        : speedStatusText({
+            running: running(),
+            target: target(),
+            floor: floorFps(),
+            governor: gov(),
+            settleOn: lookbackOn() && cap() > 0,
+          });
+  const belowNote = () => (mode() === 'fixed' ? belowFloorNote(shown() ?? 0, floorFps()) : null);
 
   const capSelect = (cls: string): JSX.Element => (
     <label class={cls}>
@@ -247,7 +296,7 @@ export function SpeedControl(props: {
             testid="speed-mode"
             value={mode()}
             onChange={setMode}
-            options={(['max', 'fixed'] as const).map((m) => ({
+            options={(['max', 'fixed', 'curve'] as const).map((m) => ({
               value: m,
               label: MODE_LABELS[m],
               title: m === 'fixed' && pinned() !== null ? (pinned() as string) : MODE_TITLES[m],
@@ -258,6 +307,23 @@ export function SpeedControl(props: {
         </Show>
       </div>
 
+      <Show when={mode() === 'curve' && !props.live}>
+        <label class="cala-speed__preset">
+          <span>Curve</span>
+          <select
+            class="cala-view-select"
+            data-testid="speed-preset"
+            aria-label="Speed curve"
+            title={CURVE_PRESETS[preset()].title}
+            value={preset()}
+            onChange={(e) => choosePreset(e.currentTarget.value as CurvePresetId)}
+          >
+            <For each={CURVE_PRESET_IDS}>
+              {(id) => <option value={id}>{CURVE_PRESETS[id].label}</option>}
+            </For>
+          </select>
+        </label>
+      </Show>
       <div class="cala-speed__answer" data-testid="speed-headline">
         <span class="cala-speed__figure">{headline()}</span>
         <span class="cala-speed__unit">{unitText()}</span>
@@ -268,7 +334,13 @@ export function SpeedControl(props: {
         </p>
       </Show>
 
-      <div class="cala-speed__trackrow" classList={{ 'cala-speed__trackrow--off': props.live }}>
+      <div
+        class="cala-speed__trackrow"
+        classList={{
+          'cala-speed__trackrow--off': props.live,
+          'cala-speed__trackrow--curve': mode() === 'curve',
+        }}
+      >
         <div class="cala-speed__trackwrap" aria-hidden={props.live ? 'true' : undefined}>
           <div class="cala-speed__track">
             <Show when={!props.live}>
@@ -348,7 +420,7 @@ export function SpeedControl(props: {
               </span>
             </Show>
           </div>
-          <Show when={!props.live}>
+          <Show when={!props.live && mode() !== 'curve'}>
             <input
               type="range"
               class="cala-speed__range"
@@ -390,7 +462,7 @@ export function SpeedControl(props: {
           classList={{ 'cala-speed__maxstop--on': mode() === 'max' && !props.live }}
           data-testid="speed-max"
           aria-pressed={mode() === 'max'}
-          disabled={props.live === true}
+          disabled={props.live === true || mode() === 'curve'}
           title={MODE_TITLES.max}
           onClick={() => setMode('max')}
         >

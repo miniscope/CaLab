@@ -53,6 +53,7 @@ Nothing here is sent anywhere; no analytics field was added.
   | `max_fps_median`                 | median of the live Max estimate over the run                                                      |
 
 - `slots.slider_schedule`: `{ scale: [10, 500], ladder: [...] }`, the Speed track and the floor's ladder the run was made with. The slider's position over the run is `target_speed.changes`.
+- `slots.curve_schedule`: set when the run followed a speed curve (Curve mode), else `null`: `{ preset, points, effective_points, armed_at_frame }`. `points` is the curve as set (`at` the share of the recording, 0 to 1; `fps` a number, `"max"`, `"floor"` for the live smart floor or `"seeAll"` for the rate below which the slow loop sees every frame); `effective_points` is what ran, with steps shorter than 20 s plus twice the Background settle's climb (cap x fps / 8 s) merged into their neighbour (a Max step is never merged); `preset` is `find-fast`, `step-down`, `custom` or `replay`. The steps the driver took are in `target_speed.changes` with `source: "curve"`.
 - `slots.floor_estimate`: `{ start: { fps, confidence }, changes: [{ at, frame, fps, seeAllFps, limiting, confidence, terms }], last_inputs }`. `start` is the first value read (usually the prior, `confidence: "prior"`); each row of `changes` is a published (ladder) floor, which moves at most once per 15 s; `last_inputs` is what the raw estimate was last made from. `null` when the slow loop never reported. Lists past 2,000 rows are thinned (the oldest half keeps every second row).
 
 No IP address, user identity or path outside the recording's own file names is
@@ -97,9 +98,11 @@ warns and returns the mismatch in `warnings`.
 
 A record of a `curve` or `auto` run also gives `curve` (`settingsFromRecord`): its
 realised `target_speed.changes` as `{ points: [{ at, fps }] }`, `at` the share of the
-recording (0 to 1) and `fps` a number or `'max'`, repeats merged. A rerun that follows
-this curve gets the same schedule whatever the machine decides. `speedMode` is returned
-too, for information.
+recording (0 to 1) and `fps` a number or `'max'`, repeats merged. With `?debug`,
+`__cala.applyRunRecord` starts the Speed block's Curve mode with exactly those steps (not
+merged or cut: a replayed curve runs as recorded) after the record's target, so a rerun
+follows the same schedule whatever the machine decides. `speedMode` is returned too, for
+information.
 
 Version 1 records are still read: `settle_during_discover: false` is the cap Off,
 `true` Background settle as now (the default) at the recorded

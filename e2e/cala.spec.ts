@@ -86,8 +86,21 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await expect
     .poll(() => page.evaluate(() => localStorage.getItem('cala.speed.v1')))
     .toContain('"mode":"fixed"');
-  await page.getByTestId('speed-max').click();
+  // Curve mode: a preset in place of the thumb, the plan drawn over the whole strip, and it persists.
+  await page.getByTestId('speed-mode-curve').click();
+  await expect(speed).toHaveAttribute('data-mode', 'curve');
+  await expect(page.getByTestId('speed-preset')).toHaveValue('find-fast');
+  await expect(page.getByTestId('speed-slider')).toHaveCount(0);
+  await expect(page.getByTestId('speed-status')).toContainText('Max to 50 %');
+  await expect(page.getByTestId('work-plan')).toHaveCount(1);
+  await page.getByTestId('speed-preset').selectOption('step-down');
+  await expect(page.getByTestId('speed-status')).toContainText('every frame seen');
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem('cala.speed.v1')))
+    .toContain('"preset":"step-down"');
+  await page.getByTestId('speed-mode-max').click();
   await expect(speed).toHaveAttribute('data-mode', 'max');
+  await expect(page.getByTestId('work-plan')).toHaveCount(0);
   // Quality control: the convergence strip, the cell table and the overlay modes.
   await expect(page.getByTestId('convergence-status')).toContainText('Waiting for cells');
   await page.getByRole('tab', { name: 'QC', exact: true }).click();
