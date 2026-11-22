@@ -438,11 +438,32 @@ export function createPipelineStore(
     }
   }
 
+  /**
+   * Measurement only (`?debug&pacefps=N`): read a recording no faster than
+   * `N` frames a second, as a stream would arrive (0: as fast as it goes).
+   */
+  let paceFps = 0;
+  let paceT0 = 0;
+  let paceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Whether the next batch must wait for the pace (then `pump` is called again shortly). */
+  function paceHolds(): boolean {
+    if (!(paceFps > 0)) return false;
+    const now = performance.now();
+    if (processed() === 0 && inFlight === 0) paceT0 = now;
+    if (processed() <= ((now - paceT0) / 1000) * paceFps) return false;
+    paceTimer ??= setTimeout(() => {
+      paceTimer = null;
+      pump();
+    }, 5);
+    return true;
+  }
+
   function pump(): void {
     while (
       status() === 'running' &&
       !exhausted &&
-      inFlight < (client.maxInFlight ?? MAX_IN_FLIGHT)
+      inFlight < (client.maxInFlight ?? MAX_IN_FLIGHT) &&
+      !paceHolds()
     ) {
       const gen = generation;
       inFlight++;
@@ -680,6 +701,10 @@ export function createPipelineStore(
     setCsettle,
     csettleCeiling,
     setCsettleCeiling: (rate: number) => setCsettleCeiling(csettleRate(rate)),
+    /** Measurement only: read no faster than this many frames a second (0: off). */
+    setPaceFps: (fps: number) => {
+      paceFps = Number.isFinite(fps) && fps > 0 ? fps : 0;
+    },
     csettleYield,
     setCsettleYield: (frames: number) =>
       setCsettleYield(Number.isFinite(frames) && frames > 0 ? Math.floor(frames) : 0),

@@ -67,9 +67,12 @@ const refineAfter = args.includes('--refine');
 const csettle = args.includes('--csettle');
 const csYield = opt('--csettle-yield', '');
 const csRate = opt('--csrate', '');
-const csQuery = csettle
+const paceFps = opt('--pacefps', '');
+const csQuery0 = csettle
   ? `&csettle${csYield ? `=yield${csYield}` : ''}${csRate ? `&csrate=${csRate}` : ''}`
   : '';
+// `--pacefps N`: read the recording no faster than N frames a second (a stream's rate).
+const csQuery = csQuery0 + (paceFps ? `&pacefps=${paceFps}` : '');
 mkdirSync(out, { recursive: true });
 const udd = join(out, `udd-${tag}`);
 rmSync(udd, { recursive: true, force: true });

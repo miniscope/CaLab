@@ -200,6 +200,9 @@ const App: Component = () => {
     if (y) pipeline.setCsettleYield(y[1] ? Number(y[1]) : 1);
   }
   if (params.has('csrate')) pipeline.setCsettleCeiling(Number(params.get('csrate')));
+  // `?debug&pacefps=30` (measurement only): read the recording at a stream's rate.
+  if (params.has('debug') && params.has('pacefps'))
+    pipeline.setPaceFps(Number(params.get('pacefps')));
   // ---- Run stages (docs/stages.md): Discover, Refine (repeatable), Extract ----
   const stageLog = createStageLog();
   const discoverActivity = (): StageActivity => {
