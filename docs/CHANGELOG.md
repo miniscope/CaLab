@@ -5,6 +5,8 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.22.0] - 2026-11-23
+
 ### Added
 
 - **Donate data (cala):** send a recording to the CaLab team from the Run tab, either public on DANDI (CC BY 4.0, citable, listed under 'Browse donated recordings') or CaLab only.

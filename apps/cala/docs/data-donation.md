@@ -246,7 +246,8 @@ Runs on solaris, by hand at first (`run.sh nwb <donation_id>`), in the
 4. Right before uploading, ask the edge function (`ingest_published` with
    `dry_run`) to re-check the live row, so a donation switched to CaLab only
    after ingest is never uploaded. Then `dandi upload` into the collection's
-   draft (`DANDI_API_KEY` in `ingest.env`) and call `ingest_published` with the path.
+   draft (the API key in `ingest.env`: `DANDI_API_KEY` for the archive,
+   `DANDI_SANDBOX_API_KEY` for the sandbox) and call `ingest_published` with the path.
 
 Known limit: `dandi validate` may reject recordings with fewer frames than the
 frame width (nwbinspector's data-orientation heuristic; the script ignores that

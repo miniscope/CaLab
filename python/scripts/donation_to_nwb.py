@@ -13,7 +13,8 @@ Runs on the lab server after ``ingest_donations.py`` stored the donation:
 5. calls the edge function's ``ingest_published`` with the path.
 
 Environment: SUPABASE_URL, SUPABASE_ANON_KEY, INGEST_TOKEN (as for ingest),
-and DANDI_API_KEY for ``dandi upload``. Example::
+and the DANDI API key for ``dandi upload``: DANDI_API_KEY for ``--instance dandi``,
+DANDI_SANDBOX_API_KEY for ``--instance dandi-sandbox``. Example::
 
     set -a; . ~/calab-ingest/ingest.env; set +a
     ~/calab-ingest/.venv/bin/python ~/calab-ingest/donation_to_nwb.py <donation id> \\
