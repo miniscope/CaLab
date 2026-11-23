@@ -24,6 +24,11 @@ Spec: `docs/superpowers/specs/2026-11-23-cala-factors-on-settle-design.md`, deci
 
 - The settle flags are the app's: 18,000 frames, 16-frame requests, a checkpoint every 1,200 frames (`SETTLE` in
   `apps/cala/src/lib/settle.ts`).
+- Amended before any scored run, after the first attempt at the checks: the app reads each frame once, so a shorter
+  recording gets a settle as long as the recording. `qc_eval --settle-frames N` sweeps the recording again until N
+  frames are fed (the first check run fed 18,000 frames of a 3,000-frame recording). The script now passes
+  `--settle-frames` = the frames of the run, at most 18,000: 9,600 on the sims, 12,000 on the real recording. The
+  same attempt showed that a run folder path with a space split `--factors-out`; the script now quotes it.
 - The recording path is `COMBO` without the drain, as `concsettle2_real.sh` and `2026-11-19-lookback-settle-app.md`
   model the app.
 - The factors: Discover's own windows, 600 frames, 64 px tiles on the two offset grids, two SVD power iterations.
