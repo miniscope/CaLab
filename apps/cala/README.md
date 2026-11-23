@@ -239,8 +239,9 @@ path>/cala-export.npz` and `cala-session.json`, plus `cala-results/cala-run.json
 ## Data donation
 
 **Donate data** (bottom of the Recording tab; only with a Supabase backend
-configured, never for a live source) sends the open recording to the lab, as
-designed in `docs/data-donation.md`. Nothing is encoded or uploaded until the
+configured, never for a live source) sends the open recording to the lab, either
+public on DANDI (CC BY 4.0, citable, listed on the start page under "Browse donated
+recordings") or CaLab only, as designed in `docs/data-donation.md`. Nothing is encoded or uploaded until the
 donor is signed in (a real account, not the anonymous analytics session), has
 filled the metadata form and ticked both consent boxes. `workers/donation-worker.ts`
 opens its own `FrameSource` and encodes CALARAW1 chunks (`lib/donation-encode.ts`);

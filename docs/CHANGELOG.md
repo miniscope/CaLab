@@ -7,7 +7,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Added
 
-- Cala: **Donate data**. A green box at the bottom of the Run tab lets a signed-in user send the open recording to the lab's cala benchmark set: raw frames, losslessly compressed in the browser (CALARAW1: an "up" predictor plus the browser's gzip, ~1.65x on V4), with a metadata form, CC BY 4.0 credit to the donor's name and lab, and deletion on request. Donations use their own Supabase project (`VITE_DONATION_SUPABASE_URL` / `_ANON_KEY`, defaulted in `deploy.yml`) with a separate sign-in, so analytics and submissions stay where they are. Backend: migration `020_cala_donations.sql` and the `donation` Edge Function (caps, presigned R2 uploads, header checks, 48 h expiry of unfinished uploads, optional email per donation). Admin: a Donations tab with preview, approve / reject and a benchmark flag. Lab: `python/scripts/ingest_donations.py` pulls approved donations, verifies them byte-exact and stores them read-only. "My donations" is on cala's start page. See `apps/cala/docs/data-donation.md`.
+- **Donate data (cala):** send a recording to the CaLab team from the Run tab, either public on DANDI (CC BY 4.0, citable, listed under 'Browse donated recordings') or CaLab only.
 
 ## [2.21.1] - 2026-11-23
 

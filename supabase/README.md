@@ -130,7 +130,7 @@ The Edge Function uses `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` which Supa
 ### `donation` Edge Function
 
 Backend for raw data donations (`apps/cala/docs/data-donation.md`). It is the
-only writer of `cala_donations` (migration `020` must be applied first) and the
+only writer of `cala_donations` (migrations `020` and `021` must be applied first; `021` adds the `ingest_published` action the lab uses to mark a donation as published on DANDI) and the
 only holder of the R2 keys: browsers and the lab server get presigned URLs.
 Donor and admin actions verify the caller's Supabase session themselves; lab
 ingest uses the `x-ingest-token` header instead of a JWT, so deploy without

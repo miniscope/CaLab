@@ -15,12 +15,10 @@ The collection is named for CaLab, not cala, so CaDecon, CaTune and CaBaNA can
 add their own collections (traces rather than raw videos) later. Only cala
 donations are in scope now.
 
-Status (2026-11-23): upload, review and lab ingest are built and tested end
-to end (lab-only design, branch `feature/data-donation`, PR #452). This
-document is the spec for the public-sharing redesign ("Part A" below). The
-panel text on that branch still promises lab-only use, so **Part A must land
-before the release is tagged**. Opening a DANDI recording directly in cala is
-the separate "Part B": [open-from-dandi.md](open-from-dandi.md).
+Status (2026-11-23): Part A built (2026-11-23); not yet run against DANDI. Part A is the
+public-sharing redesign described below (branch `feature/data-donation`, PR #452).
+Opening a DANDI recording directly in cala is the separate "Part B":
+[open-from-dandi.md](open-from-dandi.md).
 
 ## Why people donate
 
@@ -206,6 +204,9 @@ WHERE sharing = 'public' AND status = 'published'
 No `user_id`, email, notes, review fields or file list. The donor's name and
 lab are public for public donations; the form says so next to the choice.
 
+Migrations 020/021 are not in `schema_fingerprint()` (019): that panel checks
+the main project, which has no donation tables.
+
 ## Edge function changes (`supabase/functions/donation`)
 
 | Action             | Change                                                                                                                      |
@@ -238,12 +239,17 @@ Runs on solaris, by hand at first (`run.sh nwb <donation_id>`), in the
    - `OnePhotonSeries` in `acquisition`: frames streamed with a
      `DataChunkIterator` (a 10 GB donation never sits in memory), native
      `uint8` / `uint16`, HDF5 chunks of 16 whole frames (~6 MB for 600x600
-     8-bit), gzip level 4, `rate` = fps, or `timestamps` when the donation has
-     them. This chunk shape is what Part B streams.
+     8-bit), gzip level 4, `rate` = fps (cala derives it from the timestamps when present);
+     `timestamps.csv` stays with the donation on solaris. This chunk shape is what Part B streams.
 3. Check: read every frame back and compare with the CALARAW source (bit
    identical), then `nwbinspector` (no critical issues) and `dandi validate`.
 4. `dandi upload` into the collection's draft (`DANDI_API_KEY` in
    `ingest.env`), then call `ingest_published` with the path.
+
+Known limit: `dandi validate` may reject recordings with fewer frames than the
+frame width (nwbinspector's data-orientation heuristic; the script ignores that
+one check because frames are always written time-first), so very short
+recordings (under ~30 s at 20 fps for 600 px frames) may need a manual look.
 
 Size: plain gzip in HDF5 compresses ~1.44x on V4 (no up predictor; see
 "Codec"), so a NWB file is ~15% larger than its CALARAW chunks. DANDI has no

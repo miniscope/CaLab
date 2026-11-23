@@ -452,13 +452,14 @@ never changed. See the README for the protocol and the full option list.
 ## Donating a recording
 
 The **Recording** tab of an opened recording (not a live source) has a **Donate data**
-button, shown when the app is connected to the CaLab community backend. Donated recordings
-go into the cala benchmark set, so cala gets better on your kind of data, and donors who
-agree to be contacted are offered co-authorship if a dataset is used in a benchmark or
-dataset paper. Nothing is uploaded until you sign in with your email, fill in the form
-(indicator, species, brain region, scope, license) and tick both consent boxes. The raw
-frames are then compressed without loss in the browser (about 1.65x smaller, up to 10 GB
-per donation) and uploaded with `timeStamps.csv` and the file names, never folder paths.
+button, shown when the app is connected to the CaLab community backend. You choose how it is
+shared: **public on DANDI** (CC BY 4.0, citable; after review it appears in the CaLab donated
+recordings collection and under **Browse donated recordings** on the start page, where anyone can
+download it) or **CaLab only** (only the team uses it to develop and benchmark cala). Nothing is
+uploaded until you sign in with your email, fill in the form (indicator, species, brain region,
+scope, and for public donations subject details) and tick both consent boxes. The raw frames are
+then compressed without loss in the browser (about 1.65x smaller, up to 10 GB per donation) and
+uploaded with the file names, never folder paths.
 **My donations** lists what you sent, whether it is in the benchmark, and lets you withdraw
 it until the lab has taken it in.
 
