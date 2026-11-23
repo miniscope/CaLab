@@ -482,7 +482,9 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       head={
         <div class="cala-run__conv" data-testid="convergence-status" title={conv().reason}>
           <span class={`cala-conv-chip cala-conv-chip--${conv().state}`}>
-            {s().status() === 'done' ? stageNow() : STATE_LABEL[conv().state]}
+            {s().status() === 'done' && conv().state !== 'waiting'
+              ? stageNow()
+              : STATE_LABEL[conv().state]}
           </span>
           <span class="cala-visually-hidden">{conv().reason}</span>
         </div>
