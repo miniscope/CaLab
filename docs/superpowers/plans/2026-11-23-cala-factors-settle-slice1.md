@@ -700,7 +700,6 @@ No test: these are documents and a driver. The runs themselves are PR 1e, after 
     - `SET-F`: `--factors-out $OUT/f --factors-tiling offset --settle-source factors`;
     - `STR-0`: `--lookback 0 --joint-update refine` with no `--settle-frames`;
     - `STR-F`: `--lookback 0 --joint-update refine` + `SET-F`'s flags;
-    - `STR-FA`: `STR-F` with `--joint-update all`;
     - optional `STR-R`: `--lookback 0 --joint-update refine` with a raw settle, only if `STR-F` and `STR-0` are
       ambiguous.
   - **Recordings:** the two v3 sims at the real cell size used by settle-size; 3 of its 14 larger-cell sims (the
@@ -747,9 +746,9 @@ Start after #491 has landed or been declined: both touch `slow-runner.ts` and `l
    window is compressed and the windows cover every recorded frame (from #440 and #442, without the replay source).
 4. Look-back worker: a factor history source that opens compressed windows read-only, rebuilds frames (NaN where
    never valid) and solves them. It answers the same `request` messages and never creates, lists or removes files.
-5. Live slow loop with `?factors`: Discover keeps its slow loop on the live frames (owner, 23 Nov), built with the
-   replay setting the owner picks (open question 1: `refine` or `all`) and the held-out record. With `refine`: test
-   that Discover publishes the same libraries as without it.
+5. Live slow loop with `?factors`: Discover keeps its slow loop on the live frames (owner, 23 Nov), built with
+   `jointUpdate 'refine'` (owner, 23 Nov: the replay in the settle only) and the held-out record. Test that Discover
+   publishes the same libraries as without `?factors`.
 6. `SlowRunner`: the Final settle after a stream ends, on the factor port, without look-back.
    - Its states (waiting for factors, sweep, final, done) each say what releases them on Stop, failure, a new
      Discover and a worker crash.
@@ -800,12 +799,11 @@ Answered:
 - PRs #437, #440, #442 are not needed: closed once PR 1 is open, with the owner's yes at that time.
 - Speed is tested: Task 6's measures, slice 2's task 11.
 - An export keeps both the live traces and Extract's traces on the factors (slice 2, task 8).
+- A stream's slow loop runs the cluster replay in the settle only (`refine`), not during the live Discover (slice 2,
+  task 5; arms `STR-0` and `STR-F`).
+- Both app versions are in scope: streaming directly into the app (slice 2) and loading recorded videos (slice 3).
 
-Still open. Slice 1 does not depend on either; slice 2 does:
-
-1. Does a stream's Discover run the cluster replay too (`all`, as a file's Discover does), or only the settle
-   (`refine`)? Slice 1's evaluation measures both (`STR-FA`, `STR-F`).
-2. Streams before files in the app (recommended, not objected to)?
+Still open (slice 1 does not depend on it): streams before files in the app (recommended, not objected to).
 
 ## Self-review notes
 

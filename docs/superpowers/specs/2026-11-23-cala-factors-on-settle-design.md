@@ -249,8 +249,8 @@ What it needs that a stream lacks today:
   - `jointUpdate: 'all'`, as a file's look-back run has it: the live library gets the replay too (fewer bitten
     footprints while streaming), at the cost of weak cells on dense data (settle-size, item 4). The PI's 19 Nov
     decision kept the replay in Discover because the live library matters for streaming.
-  - Slice 2 takes `refine` (the smaller change: the live Discover is unchanged). Which one a stream should run is the
-    owner's call. The evaluation runs both (`STR-F` and `STR-FA`).
+  - Decided by the owner (23 Nov): `refine`, the replay in the settle only. A stream's live Discover stays as it is
+    today.
 - The held-out side of each stream frame, so a settle frame keeps its side as on a file. That is the look-back's
   `HeldOutRecord`, which needs `enableLookback` (inferred: with rate 0 it records sides and asks for nothing; to be
   verified).
@@ -276,8 +276,7 @@ The lines are set in the evaluation plan before any run.
   - `SET-R`: look-back + replay, settle on re-read frames (main today);
   - `SET-F`: as `SET-R`, settle on Discover's factors (offset grids);
   - `STR-0`: Discover without look-back, `--joint-update refine`, no settle (a stream on main today);
-  - `STR-F`: as `STR-0`, settle on its factors;
-  - `STR-FA`: as `STR-F` with `--joint-update all` (the replay in Discover too).
+  - `STR-F`: as `STR-0`, settle on its factors.
 - **Recordings:**
   - the two v3 sims at the real cell size (settle-size's) and 3 of the 14 larger-cell sims;
   - real: `wl24_01` (the owner's wireless setup) and Samara `10_43_21`, first 6,000-12,000 frames;
@@ -304,7 +303,7 @@ The lines are set in the evaluation plan before any run.
     - after the stream ends, the settle and Extract on factors finish in a time the owner accepts (reported per
       minute of stream; the owner sets the line after the first run).
 - **Cheap before the beta:**
-  - 2 v3 sims + `wl24_01`, 5 arms, 2 seeds: 30 bounded `qc_eval` runs. Run time was not estimated by reading;
+  - 2 v3 sims + `wl24_01`, 4 arms, 2 seeds: 24 bounded `qc_eval` runs. Run time was not estimated by reading;
     settle-size ran comparable batches.
   - One headed-Chrome smoke run per slice, and in slice 2 the Chrome speed check above (3 runs with `?factors`,
     3 without, interleaved).
@@ -363,11 +362,13 @@ The lines are set in the evaluation plan before any run.
 2. PRs #437, #440, #442 are not needed any more: closed once PR 1 is open (section 7).
 3. Speed is tested (decision 6, speed lines).
 4. An export keeps both the live traces and the traces of Extract on factors (decision 5).
+5. A stream's slow loop runs the cluster replay in the settle only (`jointUpdate: 'refine'`), not during the live
+   Discover (decision 5).
+6. The app has two versions, both in scope: people stream directly into the app (slice 2), or load videos they
+   recorded (slice 3).
 
 ## Still open
 
-1. Does a stream's Discover run the cluster replay too (`all`, as a file does), or only the settle (`refine`)?
-   Slice 2 depends on it; slice 1's evaluation measures both (`STR-F`, `STR-FA`).
-2. Which app slice comes first? Recommendation, not objected to: streams.
-3. The acceptance lines and the evaluation budget of decision 6: not commented on; slice 1's Task 6 writes them
+1. Which app slice comes first? Recommendation, not objected to: streams.
+2. The acceptance lines and the evaluation budget of decision 6: not commented on; slice 1's Task 6 writes them
    down before any run.
