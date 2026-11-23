@@ -1,7 +1,7 @@
 /**
  * "Donate data" (docs/data-donation.md): send the open recording, lossless,
  * with its metadata, to the CaLab team, public on DANDI or CaLab only. Collapsed to one button
- * at the bottom of the Recording tab; nothing is encoded or uploaded until the
+ * at the bottom of the Run tab; nothing is encoded or uploaded until the
  * donor is signed in, has filled the form and ticked both consent boxes.
  *
  * The donation itself runs in the app-level `DonationUiStore` (so it keeps

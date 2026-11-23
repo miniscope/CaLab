@@ -451,7 +451,7 @@ never changed. See the README for the protocol and the full option list.
 
 ## Donating a recording
 
-The **Recording** tab of an opened recording (not a live source) has a **Donate data**
+The **Run** tab of an opened recording (not a live source) has a **Donate data**
 button, shown when the app is connected to the CaLab community backend. You choose how it is
 shared: **public on DANDI** (CC BY 4.0, citable; after review it appears in the CaLab donated
 recordings collection and under **Browse donated recordings** on the start page, where anyone can
