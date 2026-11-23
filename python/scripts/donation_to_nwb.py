@@ -40,7 +40,7 @@ from typing import Any, Protocol
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ingest_donations import ApiError, IngestApi, _load_calaraw, default_opener  # noqa: E402
+from ingest_donations import DONATION_ID, ApiError, IngestApi, _load_calaraw, default_opener  # noqa: E402
 
 __all__ = ["ApiError", "ConversionError", "convert"]
 
@@ -221,12 +221,14 @@ def write_nwb(donation_dir: Path, row: dict[str, Any], out: Path) -> None:
     tmp.replace(out)
 
 
-def verify_nwb(donation_dir: Path, out: Path) -> None:
+def verify_nwb(donation_dir: Path, out: Path, n_frames: int | None = None) -> None:
     """Every frame in the NWB file equals the CALARAW source, and the counts agree."""
     from pynwb import NWBHDF5IO
 
     with NWBHDF5IO(str(out), "r") as io:
         data = io.read().acquisition["OnePhotonSeries"].data
+        if n_frames is not None and data.shape[0] != n_frames:
+            raise ConversionError(f"NWB has {data.shape[0]} frames, donation.json says {n_frames}")
         i = 0
         # Compare a CALARAW chunk at a time: reading frame by frame would
         # inflate each 16-frame HDF5 chunk 16 times.
@@ -284,12 +286,16 @@ def convert(
     upload: bool = True,
 ) -> str:
     """Convert, check, upload and mark one donation published. Returns its DANDI path."""
+    if not DONATION_ID.fullmatch(donation_id):
+        raise ConversionError(f"not a donation id: {donation_id!r}")
     donation_dir = store / donation_id
     row, meta = load_stored(donation_dir)
     if row.get("id") != donation_id:
         raise ConversionError("donation.json belongs to another donation")
     check_public(row, meta)
     path = nwb_relpath(row)
+    if not DANDI_PATH.fullmatch(path):
+        raise ConversionError(f"not a valid DANDI path: {path!r}")
     dandiset_dir = work / dandiset
     if not (dandiset_dir / "dandiset.yaml").exists():
         dandiset_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -299,10 +305,10 @@ def convert(
         )
     out = dandiset_dir / path
     if out.exists():
-        verify_nwb(donation_dir, out)  # reuse a file from an earlier run
+        verify_nwb(donation_dir, out, int(row["n_frames"]))  # reuse a file from an earlier run
     else:
         write_nwb(donation_dir, row, out)
-        verify_nwb(donation_dir, out)
+        verify_nwb(donation_dir, out, int(row["n_frames"]))
     problems = inspect_nwb(out)
     if problems:
         raise ConversionError("nwbinspector: " + "; ".join(problems))

@@ -277,3 +277,42 @@ def test_convert_with_no_upload_stops_after_writing(tmp_path: Path) -> None:
     )
     assert api.calls == []
     assert all(cmd[1] != "upload" for cmd in ran)
+
+
+# ---------------------------------------------------------------------------
+# Untrusted values never leave the work folder
+# ---------------------------------------------------------------------------
+
+
+def _convert(tmp_path: Path, donation_id: str = DONATION_ID) -> str:
+    return nwb.convert(
+        donation_id,
+        store=tmp_path / "store",
+        work=tmp_path / "work",
+        dandiset="000999",
+        instance="dandi-sandbox",
+        api=FakeApi(),
+        run=lambda cmd, cwd: None,
+    )
+
+
+def test_bad_donation_id_is_refused(tmp_path: Path) -> None:
+    stored(tmp_path, frames_u8(5))
+    with pytest.raises(nwb.ConversionError, match="not a donation id"):
+        _convert(tmp_path, "../x")
+    assert not (tmp_path / "work").exists()
+
+
+@pytest.mark.parametrize("subject_id", ["x/../../y", "m_7"])
+def test_bad_subject_id_is_refused(tmp_path: Path, subject_id: str) -> None:
+    stored(tmp_path, frames_u8(5), subject_id=subject_id)
+    with pytest.raises(nwb.ConversionError, match="DANDI path"):
+        _convert(tmp_path)
+    assert not (tmp_path / "work").exists()
+
+
+def test_frame_count_must_match_donation_json(tmp_path: Path) -> None:
+    d, r = stored(tmp_path, frames_u8(5))
+    (d / "donation.json").write_text(json.dumps({**r, "n_frames": 6}))
+    with pytest.raises(nwb.ConversionError):
+        _convert(tmp_path)
