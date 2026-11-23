@@ -4577,6 +4577,112 @@ impl FactorDump {
     }
 }
 
+/// Pixels with no valid sample in any frame of `wf` (valid share 0 in
+/// every tile that covers them).
+fn never_valid(wf: &WindowFactors) -> Vec<bool> {
+    let width = wf.dims.width;
+    let mut never = vec![true; wf.dims.pixels()];
+    for tf in &wf.tiles {
+        for y in 0..tf.h {
+            let row = (tf.y0 + y) * width + tf.x0;
+            for x in 0..tf.w {
+                if tf.valid[y * tf.w + x] > 0.0 {
+                    never[row + x] = false;
+                }
+            }
+        }
+    }
+    never
+}
+
+/// Windows `FactorFrames` keeps decoded: the settle reads in plan order, so
+/// the current and the next window are enough.
+const FACTOR_CACHE: usize = 2;
+
+/// A decoded factor window: its factors, its blend layout (none for a plain
+/// tiling) and its never-valid pixels.
+type FactorWindow = (WindowFactors, Option<BlendLayout>, Vec<bool>);
+
+/// `--settle-source factors`: the frames Discover compressed, read back from
+/// the factor windows of a `FactorDump`. A frame is the live frame as
+/// compressed: pixels never valid in its window are missing (NaN), as in the
+/// live frame; nothing is preprocessed, warped or masked again. A pixel that
+/// became valid partway through its window reads its window mean before that
+/// point (a small difference from the live frame).
+struct FactorFrames {
+    dir: PathBuf,
+    window: usize,
+    cache: std::collections::VecDeque<FactorWindow>,
+    reads: u64,
+}
+
+impl FactorFrames {
+    fn new(dir: &Path, window: usize) -> FactorFrames {
+        FactorFrames {
+            dir: dir.to_path_buf(),
+            window,
+            cache: Default::default(),
+            reads: 0,
+        }
+    }
+
+    /// Window files read (each cache miss).
+    fn reads(&self) -> u64 {
+        self.reads
+    }
+
+    /// Write stream frame `f`, rebuilt from its window, to `y`.
+    fn frame(&mut self, f: usize, y: &mut [f32]) -> Result<(), String> {
+        let start = (f / self.window) * self.window;
+        let at = match self
+            .cache
+            .iter()
+            .position(|(wf, _, _)| wf.start as usize == start)
+        {
+            Some(i) => i,
+            None => {
+                let path = self.dir.join(format!("w{start:07}.fac"));
+                let bytes = std::fs::read(&path)
+                    .map_err(|e| format!("frame {f}: {} cannot be read ({e})", path.display()))?;
+                let wf = WindowFactors::from_bytes(&bytes)
+                    .ok_or_else(|| format!("{}: not a factor file", path.display()))?;
+                let layout = (wf.tiling != Tiling::Plain).then(|| wf.layout());
+                let never = never_valid(&wf);
+                if self.cache.len() == FACTOR_CACHE {
+                    self.cache.pop_front();
+                }
+                self.cache.push_back((wf, layout, never));
+                self.reads += 1;
+                self.cache.len() - 1
+            }
+        };
+        let (wf, layout, never) = &self.cache[at];
+        if f - start >= wf.frames {
+            return Err(format!(
+                "frame {f} is past the {} frames of window {start}",
+                wf.frames
+            ));
+        }
+        if y.len() != wf.dims.pixels() {
+            return Err(format!(
+                "frame {f}: {} pixels, the window has {}",
+                y.len(),
+                wf.dims.pixels()
+            ));
+        }
+        match layout {
+            Some(l) => l.reconstruct(wf, f - start, y),
+            None => wf.reconstruct(f - start, y),
+        }
+        for (v, &nv) in y.iter_mut().zip(never) {
+            if nv {
+                *v = f32::NAN;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// DIAG (`CALA_DIVERGE_DIR`): per-frame solver log (sweeps, largest
 /// |trace|) and, at the first frames that hit the sweep cap or go
 /// non-finite, the library bytes, the frame and the warm start.
@@ -7180,6 +7286,39 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+
+    #[test]
+    fn factor_frames_rebuild_the_dumped_window_and_mark_never_valid_pixels() {
+        let dims = Dims::new(96, 80).unwrap();
+        let dir = scratch_dir("frames");
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Offset);
+        for mut fr in pattern_frames(dims, 650) {
+            fr[5] = f32::NAN; // never valid
+            fd.push(&fr);
+        }
+        fd.finish();
+        let wf =
+            WindowFactors::from_bytes(&std::fs::read(dir.join("w0000600.fac")).unwrap()).unwrap();
+        let mut want = vec![0.0f32; dims.pixels()];
+        wf.layout().reconstruct(&wf, 10, &mut want);
+        let mut ff = FactorFrames::new(&dir, FACTOR_WINDOW);
+        let mut got = vec![0.0f32; dims.pixels()];
+        ff.frame(610, &mut got).unwrap();
+        assert!(got[5].is_nan());
+        for p in (0..dims.pixels()).filter(|&p| p != 5) {
+            assert_eq!(got[p].to_bits(), want[p].to_bits(), "pixel {p}");
+        }
+        // Read once, served from the cache after.
+        ff.frame(611, &mut got).unwrap();
+        assert_eq!(ff.reads(), 1);
+        // Past the last frame of its window, and a window not on disk.
+        assert!(ff.frame(650, &mut got).unwrap_err().contains("past"));
+        assert!(ff
+            .frame(1300, &mut got)
+            .unwrap_err()
+            .contains("w0001200.fac"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
