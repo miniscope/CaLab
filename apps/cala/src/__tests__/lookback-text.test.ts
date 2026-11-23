@@ -117,6 +117,7 @@ describe('stage chip', () => {
     expect(stageLabel({ ...o, extract: 'running' })).toBe('Extract');
     expect(stageLabel({ ...o, extract: 'done' })).toBe('Done');
     expect(stageLabel(o)).toBe('Discover done');
+    expect(stageLabel({ ...o, live: true })).toBe('Done');
   });
   it('warns before dropping an unexported result only', () => {
     const o = { extractDone: true, exported: false, multiSession: false };

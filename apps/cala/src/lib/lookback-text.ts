@@ -61,9 +61,16 @@ export function lookbackText(lb: LookbackStatus, final: boolean): string {
 }
 
 /** The stage after Discover ended, for the status chip: Final settle, Extract, Done ("Discover done" before Extract). */
-export function stageLabel(s: { discover: string; settling: boolean; extract: string }): string {
+export function stageLabel(s: {
+  discover: string;
+  settling: boolean;
+  extract: string;
+  /** A live stream: nothing follows Discover, so its end is Done. */
+  live?: boolean;
+}): string {
   if (s.discover !== 'done') return 'Discover';
   if (s.settling) return 'Final settle';
+  if (s.live) return 'Done';
   if (s.extract === 'running') return 'Extract';
   if (s.extract === 'done') return 'Done';
   return 'Discover done';

@@ -164,6 +164,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       discover: s().status(),
       settling: c().status()?.lookback?.settling === true,
       extract: p().status(),
+      live: props.live,
     });
   const statusText = () => {
     const st = s().status();
