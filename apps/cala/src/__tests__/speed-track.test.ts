@@ -210,7 +210,7 @@ describe('floor words', () => {
     });
     expect(w.mark).toBe('about 30');
     expect(w.detail).toContain('slow worker');
-    expect(w.line).toContain('measured at Max');
+    expect(w.detail).toContain('measured at Max');
   });
 });
 
