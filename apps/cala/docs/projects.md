@@ -300,7 +300,7 @@ folder's handle, or among the files of a folder picked through a file input).
 
 Selected rows go into a **run plan** as groups:
 
-- **Chain selected**: one Joint run through those sessions in start-time order
+- **Run selected jointly**: one Joint run through those sessions in start-time order
   (one library, cell ids shared).
 - **Run selected separately**: a Separate run of each (a library per session).
 

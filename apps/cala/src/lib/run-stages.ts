@@ -65,6 +65,14 @@ export const LIVE_NOTE =
  */
 export const EXTRACT_AFTER_DISCOVER_DEFAULT = true;
 
+/**
+ * The "Extract after Discover" setting, shared by the Run tab (which sets it and acts on it) and
+ * the step stepper above the tabs (which shows Extract as off when it is unticked).
+ */
+export const [extractAfterDiscover, setExtractAfterDiscover] = createSignal(
+  EXTRACT_AFTER_DISCOVER_DEFAULT,
+);
+
 export const NEXT_STEP_HINT = 'Extract to solve the final traces with the settled footprints.';
 
 /** Show the next-step hint: a recording whose Discover is done, before any Extract. */

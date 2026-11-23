@@ -9,10 +9,14 @@ import {
   type RunSettings,
 } from '../lib/session-run.ts';
 import { RESULTS_DIR } from '../lib/sessions.ts';
+import type { PipelineStore } from '../lib/pipeline-store.ts';
+import { DiscoverSettings } from './DiscoverSettings.tsx';
 import { isPickerAbort, showPicker, supportsDirectoryPicker } from '../lib/directory-picker.ts';
 
 interface SessionSetupProps {
   list: SessionList;
+  /** The pipeline whose start-time settings (Look-back, Final settle) the sessions use. */
+  pipeline: PipelineStore;
   /** Open the folder screen to add sessions. */
   onAdd: () => void;
   /** Back to the start screen (the list is dropped). */
@@ -226,6 +230,13 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
               </label>
             )}
           </For>
+        </fieldset>
+        <fieldset class="cala-sessions__modes" data-testid="setup-discover-settings">
+          <legend>Discover settings (every session)</legend>
+          <DiscoverSettings pipeline={props.pipeline} context="setup" />
+          <p class="cala-muted cala-sessions__note">
+            Speed and the other Run-tab controls can be changed while the sessions run.
+          </p>
         </fieldset>
         <p class="cala-sessions__row" data-testid="results-location">
           Results:{' '}

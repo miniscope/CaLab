@@ -620,7 +620,7 @@ describe('App: animal project', () => {
       expect(el).toHaveLength(2);
       return el;
     });
-    expect(groups[0].textContent).toContain('Joint chain of 2');
+    expect(groups[0].textContent).toContain('Joint: 2 sessions');
     expect(groups[1].textContent).toContain('Separate: 1 session');
     expect(root.querySelector<HTMLButtonElement>('[data-testid="plan-start"]')!.disabled).toBe(
       false,

@@ -66,7 +66,8 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await page.getByRole('tab', { name: 'Run' }).click();
   await expect(page.getByTestId('work-display')).toBeVisible();
   await expect(page.getByTestId('work-legend')).toContainText('Final settle');
-  await expect(page.getByTestId('work-progress')).toContainText('Discover');
+  await expect(page.getByTestId('step-panel-discover')).toContainText('Discover');
+  await expect(page.getByTestId('run-step-discover')).toHaveAttribute('data-state', 'done');
   await page.getByRole('tab', { name: 'History' }).click();
   await page.getByTestId('history-group').getByRole('radio', { name: 'Motion' }).click();
   await expect(page.getByTestId('history-motion')).toBeVisible();

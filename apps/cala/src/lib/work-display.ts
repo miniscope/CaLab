@@ -112,7 +112,7 @@ export function rowLabel(w: WorkerKindShares): string {
     return stage === FAST_STAGE_NAMES[0] ? 'read + prepare' : stage;
   }
   if (w.group === 'slow') return 'cell model';
-  if (w.group === 'visit') return n.replace(/^Visit worker /, 'footprint updates ');
+  if (w.group === 'visit') return n.replace(/^Visit worker /, 'footprint helper ');
   if (n.startsWith('Settle worker ')) return n.replace('Settle worker ', 'settle helper ');
   return n.replace('Look-back worker', 'look-back').trim();
 }
@@ -374,7 +374,7 @@ export function totalAriaLabel(
   const parts = WORK_KINDS.filter((k) => totals[k] > 0).map(
     (k) => `${WORK_KIND_LABELS[k]} ${totals[k].toFixed(2)}`,
   );
-  return `Workers busy by kind of work, of ${count} workers: ${parts.join(', ')}${parts.length > 0 ? ', ' : ''}Spare ${totals.spare.toFixed(2)}`;
+  return `Workers busy by kind of work, of ${count} workers: ${parts.join(', ')}${parts.length > 0 ? ', ' : ''}Idle ${totals.spare.toFixed(2)}`;
 }
 
 /**
@@ -425,4 +425,54 @@ export function settlednessFromHints(
       confidence: null,
     };
   });
+}
+
+/** The worker grid's groups, in display order: a short heading over the squares of each. */
+export const GRID_GROUP_LABEL: Record<WorkerKindShares['group'], string> = {
+  fast: 'Frame loop',
+  slow: 'Cell model',
+  visit: 'Footprint helpers',
+  lookback: 'Look-back and settle',
+};
+
+/**
+ * A square's fill, bottom up: one segment per job in the fixed kind order, each as tall as that
+ * job's share of the worker's last second (percent of the square). The segments add up to the
+ * busy share; a hair over 100 % is scaled down so the fill never overflows.
+ */
+export function squareStack(w: WorkerKindShares): { kind: WorkKind; pct: number }[] {
+  let sum = 0;
+  for (const k of WORK_KINDS) sum += Math.max(0, w.shares[k] || 0);
+  const scale = sum > 1 ? 1 / sum : 1;
+  return WORK_KINDS.map((kind) => ({ kind, pct: 100 * Math.max(0, w.shares[kind] || 0) * scale }));
+}
+
+/** A square's hover text: which worker, what it does, and its last second split by job. */
+export function squareTitle(label: string, w: WorkerKindShares): string {
+  const busy = Math.round(100 * rowBusy(w));
+  const parts = WORK_KINDS.filter((k) => w.shares[k] > 0.005).map(
+    (k) => `${WORK_KIND_LABELS[k]} ${Math.round(100 * w.shares[k])} %`,
+  );
+  return `${label}: ${rowTitle(w)}\nBusy ${busy} % of the last second${parts.length > 0 ? ` (${parts.join(', ')})` : ''}.`;
+}
+
+export interface GridSquare {
+  row: WorkerKindShares;
+  label: string;
+  /** Position in the reading (stable across readings: the workers come in a fixed order). */
+  index: number;
+}
+
+/** The squares grouped by worker group, in the reading's order. */
+export function gridGroups(
+  by: WorkByKind | null,
+): { group: WorkerKindShares['group']; label: string; squares: GridSquare[] }[] {
+  const out: { group: WorkerKindShares['group']; label: string; squares: GridSquare[] }[] = [];
+  groupedRows(by).forEach((r, index) => {
+    const last = out.at(-1);
+    const sq = { row: r.row, label: r.label, index };
+    if (last && last.group === r.row.group) last.squares.push(sq);
+    else out.push({ group: r.row.group, label: GRID_GROUP_LABEL[r.row.group], squares: [sq] });
+  });
+  return out;
 }

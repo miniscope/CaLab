@@ -10,6 +10,7 @@
  */
 import {
   createEffect,
+  Index,
   createMemo,
   createSignal,
   For,
@@ -28,30 +29,22 @@ import { WORK_KIND_LABELS, WORK_KINDS, workByKind, type WorkKind } from '../lib/
 import {
   bandPath,
   busyWorkers,
-  discoverRate,
-  discoverSecondsLeft,
   displayState,
-  finalSettleText,
-  formatDuration,
   frameTicks,
-  groupedRows,
-  rowTitle,
+  gridGroups,
+  squareStack,
+  squareTitle,
   BG_SETTLE_HATCH,
   KIND_COLOR,
-  legendKinds,
   linePath,
   planPath,
   plannedSettleFrames,
   rowAriaLabel,
   rowBusy,
   segX,
-  settledSummary,
-  settlednessFromHints,
   speedPos,
   stackBands,
-  stackSegments,
   stoppedLookbackRows,
-  totalAriaLabel,
   stripLayout,
   thinIndices,
   type StackPoint,
@@ -85,9 +78,14 @@ const kindVar = (k: WorkKind): string =>
 /** The same in SVG: a pattern for Background settle (defined in the strip's defs). */
 const svgFill = (k: WorkKind): string => (k === 'bgSettle' ? 'url(#cala-work-hatch)' : kindVar(k));
 
-/** The settledness bar's own colours (neutral: the settle kinds' colours mean work, not state). */
-const SETTLED_INK = 'var(--text-primary)';
-const SETTLING_GREY = 'var(--text-tertiary)';
+/** What each job is, for the legend's tooltips (the same names as the stages). */
+const KIND_HELP: Record<WorkKind, string> = {
+  live: 'Discover, per frame: read and prepare each new frame, correct motion, solve the traces.',
+  discovery: 'Discover: find new cells and keep the footprints and background up to date.',
+  lookback: 'Look-back: re-read earlier frames for each new cell, during Discover.',
+  bgSettle: 'Background settle: re-read saved frames to refine footprints, during Discover.',
+  finalSettle: 'Final settle: the pass after the last frame that lets the footprints converge.',
+};
 
 const n0 = (x: number): string => Math.round(x).toLocaleString('en-US');
 const num = (x: number | undefined | null, digits = 2): string =>
@@ -139,15 +137,11 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
   // ---- Work now ----
   const workerCount = () => by()?.count ?? 0;
   const totals = () => by()?.totals;
-  const segments = () => {
-    const t = totals();
-    return t ? stackSegments(t, workerCount()) : [];
-  };
   const busy = () => {
     const t = totals();
     return t ? busyWorkers(t, workerCount()) : null;
   };
-  const rows = () => groupedRows(by());
+  const groups = () => gridGroups(by());
   const wholeStopped = () => lb()?.error !== undefined;
   const stoppedFlags = createMemo(() =>
     stoppedLookbackRows(by()?.workers ?? [], s().work()?.lookback.capacity, wholeStopped()),
@@ -378,63 +372,10 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
   };
   const yS = (v: number) => GEO.sBot - (GEO.sBot - GEO.sTop) * speedPos(v);
   const N = () => Math.max(1, workerCount());
+  /** The Final settle's planned frames (the strip's settle segment axis). */
+  const settleTotal = () => lb()?.settle?.total ?? plannedSettleFrames(total(), SETTLE.maxFrames);
   const stripEnd = () =>
     props.live ? 'live window' : `frame ${n0(s().processed())} of ${n0(total())}`;
-
-  // ---- Progress ----
-  const fraction = () => (total() > 0 && !unbounded() ? Math.min(1, s().processed() / total()) : 0);
-  const discoverText = (): string => {
-    if (idle()) return '–';
-    const left = discoverSecondsLeft({
-      framesLeft: total() - s().processed(),
-      targetFps: target(),
-      achievedFps: s().fps(),
-    });
-    const frames = `${n0(s().processed())} of ${n0(total())} frames`;
-    if (state() === 'done' || state() === 'final-settle') return `${frames} · done`;
-    if (left === null) return frames;
-    const rate = discoverRate(target(), s().fps());
-    const at = target() > 0 && rate === target() ? `${n0(rate)} fps` : `about ${n0(rate)} fps`;
-    return `${frames} · ${formatDuration(left)} left at ${at}`;
-  };
-  const settlePlan = () => plannedSettleFrames(total(), SETTLE.maxFrames);
-  const settleFed = () => lb()?.settle?.fed ?? 0;
-  const settleTotal = () => lb()?.settle?.total ?? settlePlan();
-  const settleFraction = () => (settleTotal() > 0 ? Math.min(1, settleFed() / settleTotal()) : 0);
-  const settleText = (): string => {
-    if (idle()) return '–';
-    const rate = s().work()?.lookback.kinds.end.framesPerS;
-    return finalSettleText({
-      fed: settleFed(),
-      total: settleTotal(),
-      fps: rate && rate > 0 ? rate : null,
-      settling: state() === 'final-settle',
-    });
-  };
-  const births = () => {
-    beat();
-    const v = props.ui.run.history().latest('births_per_kframe');
-    return Number.isFinite(v) ? v : null;
-  };
-  const cellCount = () => c().library()?.ids.length ?? 0;
-  const cellsText = (): string => {
-    if (idle()) return '–';
-    const need = lb()?.inNeed;
-    const b = births();
-    return [
-      `${n0(cellCount())}`,
-      need !== undefined && s().lookbackRun() ? `${n0(need)} still need look-back` : null,
-      b !== null && state() !== 'done'
-        ? `${b.toFixed(b < 10 ? 1 : 0)} born per 1,000 frames`
-        : null,
-    ]
-      .filter(Boolean)
-      .join(' · ');
-  };
-  const settled = () =>
-    settledSummary(
-      settlednessFromHints(Array.from(c().library()?.ids ?? []), c().stillMoving(), SETTLE.movingK),
-    );
 
   return (
     <div
@@ -444,11 +385,15 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
       data-testid="work-display"
       data-state={state()}
     >
-      {/* ---- Work now ---- */}
-      <section class="cala-work__block" aria-label="Work now">
+      {/* ---- Workers: one square per worker, like a CPU monitor ---- */}
+      <section class="cala-work__block" aria-label="Workers">
         <div class="cala-work__head">
-          <h3 class="cala-work__title">Work now</h3>
-          <span class="cala-work__aside" data-testid="work-busy">
+          <h3 class="cala-work__title">Workers</h3>
+          <span
+            class="cala-work__aside"
+            data-testid="work-busy"
+            title="The workers' busy shares over the last second, added up: 2.5 means two and a half workers' worth of time was in use."
+          >
             <span class="cala-num">{num(busy(), 1)}</span> of{' '}
             <span class="cala-num">{workerCount() > 0 ? workerCount() : '–'}</span> workers busy
           </span>
@@ -456,81 +401,84 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
         <p class="cala-work__status" data-testid="work-status">
           {statusLine()}
         </p>
-        <ul class="cala-work__legend" data-testid="work-legend">
-          <For each={legendKinds(state() === 'running' && target() === 0)}>
+        <p class="cala-work__caption" data-testid="work-caption">
+          Each square is one worker (a browser thread). It fills from the bottom with one colour per
+          job, each as tall as that job's share of the last second; the number is how busy the
+          worker was over that second (100 %: the whole second). Hover a square for details. Extract
+          is not shown: it runs after Discover, on its own.
+        </p>
+        <div class="cala-work__cores" data-testid="work-grid">
+          <Index each={groups()}>
+            {(g) => (
+              <div class="cala-work__group">
+                <span class="cala-work__group-label">{g().label}</span>
+                <div class="cala-work__squares">
+                  <Index each={g().squares}>
+                    {(sq) => {
+                      const stopped = () => stoppedFlags()[sq().index] === true;
+                      const busyPct = () => Math.round(100 * rowBusy(sq().row));
+                      return (
+                        <div
+                          class="cala-work__sq"
+                          classList={{ 'cala-work__sq--stopped': stopped() }}
+                          role="img"
+                          aria-label={
+                            stopped()
+                              ? `${sq().label}: stopped`
+                              : rowAriaLabel(sq().label, sq().row)
+                          }
+                          title={
+                            stopped()
+                              ? `${sq().label}: stopped (see the console).`
+                              : squareTitle(sq().label, sq().row)
+                          }
+                          data-testid="work-square"
+                          data-state={stopped() ? 'stopped' : busyPct() > 0 ? 'busy' : 'idle'}
+                        >
+                          <Show when={!stopped()}>
+                            <span class="cala-work__fill">
+                              <Index each={squareStack(sq().row)}>
+                                {(seg) => (
+                                  <i
+                                    data-kind={seg().kind}
+                                    style={{
+                                      height: `${seg().pct}%`,
+                                      background: kindVar(seg().kind),
+                                    }}
+                                  />
+                                )}
+                              </Index>
+                            </span>
+                          </Show>
+                          <span class="cala-work__pct cala-num" data-testid="work-square-pct">
+                            {stopped() ? '✕' : busyPct()}
+                          </span>
+                        </div>
+                      );
+                    }}
+                  </Index>
+                </div>
+              </div>
+            )}
+          </Index>
+          <Show when={groups().length === 0}>
+            <p class="cala-work__empty">The workers show once a run starts.</p>
+          </Show>
+        </div>
+        <ul class="cala-work__legend" data-testid="work-legend" aria-label="Jobs">
+          <For each={WORK_KINDS}>
             {(k) => (
-              <li>
+              <li title={KIND_HELP[k]}>
                 <i class="cala-work__sw" style={{ background: kindVar(k) }} />
-                {WORK_KIND_LABELS[k]} <span class="cala-num">{num(totals()?.[k])}</span>
+                {WORK_KIND_LABELS[k]}
               </li>
             )}
           </For>
-          <li>
+          <li title="Not busy with any job.">
             <i class="cala-work__sw cala-work__sw--spare" />
-            Spare <span class="cala-num">{num(totals()?.spare)}</span>
+            {WORK_KIND_LABELS.spare}
           </li>
         </ul>
-        <div
-          class="cala-work__total"
-          role="img"
-          aria-label={totalAriaLabel(totals(), workerCount())}
-          title="Worker-seconds per second, 0 to the number of workers (fixed)"
-          data-testid="work-total"
-        >
-          <For each={segments()}>
-            {(g) => (
-              <i
-                style={{ width: `${100 * g.frac}%`, background: kindVar(g.kind) }}
-                title={`${WORK_KIND_LABELS[g.kind]}: ${g.value.toFixed(2)} of ${workerCount()} workers`}
-                data-kind={g.kind}
-              />
-            )}
-          </For>
-        </div>
-        <div class="cala-work__rows" data-testid="work-rows">
-          <For each={rows()}>
-            {(r, i) => (
-              <>
-                <Show when={r.groupStart}>
-                  <div class="cala-work__gap" />
-                </Show>
-                <div class="cala-work__name" title={rowTitle(r.row)}>
-                  {r.label}
-                </div>
-                <Show
-                  when={!stoppedFlags()[i()]}
-                  fallback={
-                    <div class="cala-work__stopped" role="img" aria-label={`${r.label}: stopped`}>
-                      stopped
-                    </div>
-                  }
-                >
-                  <div
-                    class="cala-work__bar"
-                    role="img"
-                    aria-label={rowAriaLabel(r.label, r.row)}
-                    data-testid="work-row-bar"
-                  >
-                    <For each={WORK_KINDS.filter((k) => r.row.shares[k] > 0)}>
-                      {(k) => (
-                        <i
-                          style={{ width: `${100 * r.row.shares[k]}%`, background: kindVar(k) }}
-                          title={`${WORK_KIND_LABELS[k]} ${Math.round(100 * r.row.shares[k])}%`}
-                        />
-                      )}
-                    </For>
-                  </div>
-                </Show>
-                <div class="cala-work__busy cala-num">
-                  {stoppedFlags()[i()] ? '–' : `${Math.round(100 * rowBusy(r.row))}%`}
-                </div>
-              </>
-            )}
-          </For>
-          <Show when={rows().length === 0}>
-            <p class="cala-work__empty">–</p>
-          </Show>
-        </div>
       </section>
 
       {/* ---- History strip ---- */}
@@ -695,105 +643,6 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
               )}
             </For>
           </svg>
-        </div>
-      </section>
-
-      {/* ---- Progress ---- */}
-      <section class="cala-work__block" aria-label="Progress">
-        <div class="cala-work__head">
-          <h3 class="cala-work__title">Progress</h3>
-        </div>
-        <dl class="cala-work__kv" data-testid="work-progress">
-          <Show
-            when={!unbounded()}
-            fallback={
-              <>
-                <dt>Stream</dt>
-                <dd class="cala-num">{idle() ? '–' : `${n0(s().processed())} frames received`}</dd>
-              </>
-            }
-          >
-            <dt>Discover</dt>
-            <dd>
-              <div
-                class="cala-work__prog"
-                role="progressbar"
-                aria-label="Discover"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={Math.round(100 * fraction())}
-              >
-                <i style={{ width: `${100 * fraction()}%` }} />
-              </div>
-              <span class="cala-num" data-testid="work-discover">
-                {discoverText()}
-              </span>
-            </dd>
-          </Show>
-          <Show when={hasFinal()}>
-            <dt>Final settle</dt>
-            <dd>
-              <div
-                class="cala-work__prog"
-                role="progressbar"
-                aria-label="Final settle"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={Math.round(100 * settleFraction())}
-              >
-                <i class="cala-work__prog-settle" style={{ width: `${100 * settleFraction()}%` }} />
-              </div>
-              <span class="cala-num" data-testid="work-settle">
-                {settleText()}
-              </span>
-            </dd>
-          </Show>
-          <dt>Cells</dt>
-          <dd class="cala-num" data-testid="work-cells">
-            {cellsText()}
-          </dd>
-        </dl>
-        <div class="cala-work__slot" data-testid="work-settled">
-          <Show
-            when={settled()}
-            fallback={
-              <div class="cala-work__small">
-                Footprints settled: <span class="cala-muted">not measured yet</span>
-              </div>
-            }
-          >
-            {(st) => (
-              <>
-                <div class="cala-work__head cala-work__small">
-                  <span>Footprints settled</span>
-                  <span class="cala-num">
-                    {n0(st().settled)} of {n0(st().total)}
-                  </span>
-                </div>
-                <div
-                  class="cala-work__tri"
-                  role="img"
-                  aria-label={`${st().settled} settled, ${st().settling} still settling, ${st().fresh} too new to tell`}
-                >
-                  <i
-                    style={{
-                      width: `${(100 * st().settled) / Math.max(1, st().total)}%`,
-                      background: SETTLED_INK,
-                    }}
-                  />
-                  <i
-                    style={{
-                      width: `${(100 * st().settling) / Math.max(1, st().total)}%`,
-                      background: SETTLING_GREY,
-                    }}
-                  />
-                </div>
-                <div class="cala-work__small cala-muted">
-                  settled · still settling · too new to tell
-                </div>
-              </>
-            )}
-          </Show>
         </div>
       </section>
     </div>

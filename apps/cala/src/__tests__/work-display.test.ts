@@ -8,7 +8,10 @@ import {
   finalSettleText,
   formatDuration,
   frameTicks,
+  squareStack,
+  gridGroups,
   groupedRows,
+  squareTitle,
   legendKinds,
   linePath,
   planPath,
@@ -131,14 +134,14 @@ describe('rows', () => {
       'motion',
       'traces',
       'cell model',
-      'footprint updates 1',
-      'footprint updates 2',
+      'footprint helper 1',
+      'footprint helper 2',
       'look-back 0',
       'settle helper 1',
     ]);
     expect(rows.filter((r) => r.groupStart).map((r) => r.label)).toEqual([
       'cell model',
-      'footprint updates 1',
+      'footprint helper 1',
       'look-back 0',
     ]);
     expect(groupedRows(null)).toEqual([]);
@@ -146,6 +149,38 @@ describe('rows', () => {
   it('a row is busy by the sum of its kinds, at most 1', () => {
     for (const w of by.workers) expect(rowBusy(w)).toBeLessThanOrEqual(1);
     expect(rowBusy(by.workers[0])).toBeCloseTo(0.16, 10);
+  });
+  it('the grid groups the squares by worker group, each worker once, in order', () => {
+    const groups = gridGroups(by);
+    expect(groups.map((g) => [g.label, g.squares.length])).toEqual([
+      ['Frame loop', 3],
+      ['Cell model', 1],
+      ['Footprint helpers', 2],
+      ['Look-back and settle', 2],
+    ]);
+    expect(groups.flatMap((g) => g.squares.map((q) => q.index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(gridGroups(null)).toEqual([]);
+  });
+  it('a square fills bottom up with every job, each as tall as its share, never over 100 %', () => {
+    const w = (shares: Partial<Record<WorkKind, number>>) => ({
+      name: 'Slow worker',
+      group: 'slow' as const,
+      shares: vals(shares),
+    });
+    const st = squareStack(w({ discovery: 0.3, bgSettle: 0.36 }));
+    // Every kind, in the fixed order (stable segments), zero where the worker did not do it.
+    expect(st.map((x) => x.kind)).toEqual([...WORK_KINDS]);
+    expect(st.find((x) => x.kind === 'discovery')!.pct).toBeCloseTo(30, 10);
+    expect(st.find((x) => x.kind === 'bgSettle')!.pct).toBeCloseTo(36, 10);
+    expect(st.find((x) => x.kind === 'live')!.pct).toBe(0);
+    const over = squareStack(w({ discovery: 0.7, lookback: 0.6 }));
+    expect(over.reduce((a, x) => a + x.pct, 0)).toBeCloseTo(100, 10);
+  });
+  it("a square's hover text says what the worker does and what its percentages are of", () => {
+    const t = squareTitle('cell model', by.workers[3]);
+    expect(t).toContain('cell model: The cell model');
+    expect(t).toContain('% of the last second');
+    expect(t).toContain('Find cells');
   });
   it('totals plus Spare equal the worker count, so the bar closes', () => {
     const sum = WORK_KINDS.reduce((a, k) => a + by.totals[k], 0) + by.totals.spare;
@@ -297,14 +332,14 @@ describe('accessible names and stopped rows', () => {
   ) => ({ name, group, shares: vals(shares) });
   it('a row names its split as values', () => {
     expect(rowAriaLabel('slow', w('Slow worker', 'slow', { discovery: 0.3, bgSettle: 0.36 }))).toBe(
-      'slow: 66% busy, Discover 30%, Background settle 36%',
+      'slow: 66% busy, Find cells 30%, Background settle 36%',
     );
     expect(rowAriaLabel('traces', w('t', 'fast'))).toBe('traces: 0% busy');
   });
   it('the work bar names its values and its fixed range', () => {
     const label = totalAriaLabel({ ...vals({ live: 0.5, lookback: 1 }), spare: 8.5 }, 10);
     expect(label).toBe(
-      'Workers busy by kind of work, of 10 workers: Live 0.50, Look-back 1.00, Spare 8.50',
+      'Workers busy by kind of work, of 10 workers: Read frames 0.50, Look-back 1.00, Idle 8.50',
     );
     expect(totalAriaLabel(undefined, 0)).toContain('no reading');
   });
