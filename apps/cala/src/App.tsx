@@ -101,6 +101,7 @@ import type { ProjectResult } from './lib/project-index.ts';
 import { openResult, type LoadedResult } from './lib/result-file.ts';
 import { ResultView, type ResultOrigin } from './components/ResultView.tsx';
 import { DonatePanel, MyDonationsEntry } from './components/DonatePanel.tsx';
+import { BrowseDonationsEntry } from './components/BrowseDonations.tsx';
 import { createDonationStore } from './lib/donation-store.ts';
 import type { DonationSource } from './workers/donation-types.ts';
 
@@ -1103,7 +1104,10 @@ const App: Component = () => {
                   }}
                 />
                 <Show when={donation && screen() === 'open'}>
-                  <MyDonationsEntry donation={donation!} />
+                  <>
+                    <MyDonationsEntry donation={donation!} />
+                    <BrowseDonationsEntry />
+                  </>
                 </Show>
               </>
             }
