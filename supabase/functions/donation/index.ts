@@ -34,7 +34,10 @@ import { AwsClient } from 'npm:aws4fetch@1.0.20';
 // ---------------------------------------------------------------------------
 
 export type DonationStatus =
-  'uploading' | 'uploaded' | 'approved' | 'rejected' | 'ingested' | 'withdrawn';
+  'uploading' | 'uploaded' | 'approved' | 'rejected' | 'ingested' | 'withdrawn' | 'published';
+
+export type DonationSharing = 'public' | 'lab';
+export type SubjectSex = 'M' | 'F' | 'U' | 'O';
 
 export interface DonationFile {
   name: string;
@@ -66,6 +69,12 @@ export interface DonationMeta {
   credit_name: string | null;
   credit_lab: string | null;
   notes: string | null;
+  sharing: DonationSharing;
+  subject_id: string;
+  subject_sex: SubjectSex;
+  subject_age: string;
+  session_date: string;
+  genotype: string | null;
 }
 
 export interface NewDonation extends DonationMeta {
@@ -84,6 +93,15 @@ export interface DonationRow extends NewDonation {
   in_benchmark: boolean;
   benchmark_note: string | null;
   review_note: string | null;
+  dandi_path: string | null;
+  published_at: string | null;
+}
+
+export interface DonationPatch {
+  status: DonationStatus;
+  review_note?: string | null;
+  dandi_path?: string;
+  published_at?: string;
 }
 
 export interface PresignedRequest {
@@ -139,11 +157,7 @@ export interface DonationDb {
    * Update a row only while its status is one of `from`. Returns false when
    * no row matched (status changed concurrently, or no such row).
    */
-  transition(
-    id: string,
-    from: DonationStatus[],
-    patch: { status: DonationStatus; review_note?: string | null },
-  ): Promise<boolean>;
+  transition(id: string, from: DonationStatus[], patch: DonationPatch): Promise<boolean>;
   countOpenByUser(userId: string): Promise<number>;
   /** Sum of declared_bytes over OPEN_STATUSES. */
   openDeclaredBytes(): Promise<number>;
@@ -281,6 +295,29 @@ function intInRange(m: Body, key: string, min: number, max: number): number {
   return v as number;
 }
 
+export const SUBJECT_ID = /^[A-Za-z0-9-]{1,64}$/;
+export const SUBJECT_AGE = /^P(?=\d)(\d+Y)?(\d+M)?(\d+W)?(\d+D)?$/;
+const SUBJECT_SEXES = new Set(['M', 'F', 'U', 'O']);
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+export const MIN_SESSION_DATE = '1990-01-01';
+/** Slack for donors in time zones ahead of UTC. */
+const SESSION_DATE_SLACK_MS = 86_400_000;
+export const DANDI_PATH = /^sub-[A-Za-z0-9-]+\/[A-Za-z0-9_.+-]+\.nwb$/;
+
+function sessionDate(m: Body, nowMs: number): string {
+  const v = m.session_date;
+  if (typeof v !== 'string' || !ISO_DATE.test(v)) {
+    return fail(400, 'meta.session_date must be a date YYYY-MM-DD');
+  }
+  const t = Date.parse(`${v}T00:00:00Z`);
+  if (!Number.isFinite(t) || new Date(t).toISOString().slice(0, 10) !== v) {
+    return fail(400, 'meta.session_date is not a real date');
+  }
+  if (v < MIN_SESSION_DATE) fail(400, `meta.session_date is before ${MIN_SESSION_DATE}`);
+  if (t > nowMs + SESSION_DATE_SLACK_MS) fail(400, 'meta.session_date is in the future');
+  return v;
+}
+
 const META_KEYS = new Set([
   'indicator',
   'species',
@@ -298,17 +335,22 @@ const META_KEYS = new Set([
   'bytes_per_pixel',
   'cala_version',
   'dataset_hash',
-  'license',
   'rights_attested',
   'protocol_attested',
   'contact_ok',
   'credit_name',
   'credit_lab',
   'notes',
+  'sharing',
+  'subject_id',
+  'subject_sex',
+  'subject_age',
+  'session_date',
+  'genotype',
 ]);
 
 /** Validate the donor's metadata against the 020 column constraints. */
-export function validateMeta(raw: unknown): DonationMeta {
+export function validateMeta(raw: unknown, nowMs: number = Date.now()): DonationMeta {
   if (!isObject(raw)) fail(400, 'meta must be an object');
   const m = raw as Body;
   for (const key of Object.keys(m)) {
@@ -333,9 +375,23 @@ export function validateMeta(raw: unknown): DonationMeta {
   if (m.bytes_per_pixel !== 1 && m.bytes_per_pixel !== 2) {
     fail(400, 'meta.bytes_per_pixel must be 1 or 2');
   }
-  if (m.license !== 'cc-by-4.0' && m.license !== 'lab-use-only') {
-    fail(400, "meta.license must be 'cc-by-4.0' or 'lab-use-only'");
+  if (m.sharing !== 'public' && m.sharing !== 'lab') {
+    fail(400, "meta.sharing must be 'public' or 'lab'");
   }
+  if (typeof m.subject_id !== 'string' || !SUBJECT_ID.test(m.subject_id)) {
+    fail(400, 'meta.subject_id must be 1-64 letters, digits or dashes');
+  }
+  if (typeof m.subject_sex !== 'string' || !SUBJECT_SEXES.has(m.subject_sex)) {
+    fail(400, "meta.subject_sex must be 'M', 'F', 'U' or 'O'");
+  }
+  if (
+    typeof m.subject_age !== 'string' ||
+    m.subject_age.length > 16 ||
+    !SUBJECT_AGE.test(m.subject_age)
+  ) {
+    fail(400, 'meta.subject_age must be an ISO 8601 duration such as P90D or P12W');
+  }
+  const sharing = m.sharing as DonationSharing;
   if (m.rights_attested !== true) fail(400, 'meta.rights_attested must be true');
   if (m.protocol_attested !== true) fail(400, 'meta.protocol_attested must be true');
   if (typeof m.contact_ok !== 'boolean') fail(400, 'meta.contact_ok must be true or false');
@@ -357,13 +413,19 @@ export function validateMeta(raw: unknown): DonationMeta {
     bytes_per_pixel: m.bytes_per_pixel as 1 | 2,
     cala_version: requiredText(m, 'cala_version', 64),
     dataset_hash: optionalText(m, 'dataset_hash', 128),
-    license: m.license as DonationMeta['license'],
+    license: sharing === 'public' ? 'cc-by-4.0' : 'lab-use-only',
     rights_attested: true,
     protocol_attested: true,
     contact_ok: m.contact_ok as boolean,
     credit_name: requiredText(m, 'credit_name', 100),
     credit_lab: requiredText(m, 'credit_lab', 100),
     notes: optionalText(m, 'notes', 1000),
+    sharing,
+    subject_id: m.subject_id as string,
+    subject_sex: m.subject_sex as SubjectSex,
+    subject_age: m.subject_age as string,
+    session_date: sessionDate(m, nowMs),
+    genotype: optionalText(m, 'genotype', 128),
   };
 }
 
@@ -661,7 +723,12 @@ export async function verifyUpload(row: DonationRow, store: ObjectStore): Promis
 
 const DONOR_ACTIONS = new Set(['create', 'upload_url', 'finish', 'withdraw']);
 const ADMIN_ACTIONS = new Set(['preview_url', 'review']);
-const INGEST_ACTIONS = new Set(['ingest_list', 'ingest_download_url', 'ingest_done']);
+const INGEST_ACTIONS = new Set([
+  'ingest_list',
+  'ingest_download_url',
+  'ingest_done',
+  'ingest_published',
+]);
 
 export function createHandler(deps: DonationDeps): (req: Request) => Promise<Response> {
   const { db, store, env } = deps;
@@ -694,7 +761,7 @@ export function createHandler(deps: DonationDeps): (req: Request) => Promise<Res
   async function transitionOrConflict(
     row: DonationRow,
     from: DonationStatus[],
-    patch: { status: DonationStatus; review_note?: string | null },
+    patch: DonationPatch,
   ): Promise<void> {
     if (!(await db.transition(row.id, from, patch))) {
       fail(409, 'donation status changed meanwhile; reload and try again');
@@ -722,7 +789,7 @@ export function createHandler(deps: DonationDeps): (req: Request) => Promise<Res
   // ── donor ────────────────────────────────────────────────────────────────
 
   async function create(body: Body, user: DonationUser): Promise<Body> {
-    const meta = validateMeta(body.meta);
+    const meta = validateMeta(body.meta, now());
     const { files, nChunks, total } = validateFiles(body.files, env.maxBytes);
     await expireStaleUploads();
 
@@ -845,6 +912,25 @@ export function createHandler(deps: DonationDeps): (req: Request) => Promise<Res
     if (action === 'ingest_list') {
       await expireStaleUploads();
       return { donations: await db.listByStatus('approved') };
+    }
+    if (action === 'ingest_published') {
+      const row = await load(body);
+      if (row.sharing !== 'public') fail(409, 'donation is CaLab only; it is never published');
+      if (row.status === 'published') fail(409, 'donation is already published');
+      requireStatus(row, ['ingested']);
+      if (!row.subject_id || !row.subject_sex || !row.subject_age || !row.session_date) {
+        fail(409, 'donation lacks the subject fields DANDI needs');
+      }
+      const path = body.dandi_path;
+      if (typeof path !== 'string' || path.length > 256 || !DANDI_PATH.test(path)) {
+        fail(400, 'dandi_path must look like sub-<subject>/<file>.nwb');
+      }
+      await transitionOrConflict(row, ['ingested'], {
+        status: 'published',
+        dandi_path: path as string,
+        published_at: new Date(now()).toISOString(),
+      });
+      return { status: 'published' };
     }
     const row = await load(body);
     requireStatus(row, ['approved']);
@@ -1125,6 +1211,8 @@ export function notificationText(row: DonationRow, adminUrl: string | null) {
     'A new recording was donated and is waiting for review.',
     '',
     `Credit:     ${row.credit_name ?? '-'}, ${row.credit_lab ?? '-'}`,
+    `Sharing:    ${row.sharing === 'public' ? 'public on DANDI' : 'CaLab only'}`,
+    `Subject:    ${row.subject_id ?? '-'}, ${row.subject_sex ?? '-'}, ${row.subject_age ?? '-'}, session ${row.session_date ?? '-'}`,
     `Indicator:  ${row.indicator}`,
     `Species:    ${row.species}`,
     `Region:     ${row.brain_region}`,

@@ -23,6 +23,7 @@ import {
   type DonationEnv,
   type DonationFile,
   type DonationRow,
+  type DonationPatch,
   type DonationStatus,
   type DonationUser,
   gunzipPrefix,
@@ -56,6 +57,8 @@ class FakeDb implements DonationDb {
       in_benchmark: false,
       benchmark_note: null,
       review_note: null,
+      dandi_path: null,
+      published_at: null,
     });
     return Promise.resolve(id);
   }
@@ -63,11 +66,7 @@ class FakeDb implements DonationDb {
     const r = this.rows.get(id);
     return Promise.resolve(r ? structuredClone(r) : null);
   }
-  transition(
-    id: string,
-    from: DonationStatus[],
-    patch: { status: DonationStatus; review_note?: string | null },
-  ): Promise<boolean> {
+  transition(id: string, from: DonationStatus[], patch: DonationPatch): Promise<boolean> {
     const r = this.rows.get(id);
     if (!r || !from.includes(r.status)) return Promise.resolve(false);
     Object.assign(r, patch);
@@ -277,13 +276,18 @@ const META = {
   bytes_per_pixel: 1,
   cala_version: '2.19.1',
   dataset_hash: 'abc123',
-  license: 'cc-by-4.0',
   rights_attested: true,
   protocol_attested: true,
   contact_ok: true,
   credit_name: 'A. Donor',
   credit_lab: 'Some Lab',
   notes: null,
+  sharing: 'public',
+  subject_id: 'm7',
+  subject_sex: 'F',
+  subject_age: 'P90D',
+  session_date: '2025-12-30',
+  genotype: null,
 };
 
 /** Two chunks (20 + 10 frames) matching META, plus a timestamps file. */
@@ -411,7 +415,21 @@ Deno.test('create rejects bad metadata', async () => {
     [{ ...META, n_frames: 0 }, 'n_frames'],
     [{ ...META, bytes_per_pixel: 3 }, 'bytes_per_pixel'],
     [{ ...META, depth_um: -1 }, 'depth_um'],
-    [{ ...META, license: 'mit' }, 'license'],
+    [{ ...META, license: 'cc-by-4.0' }, 'not a known field'],
+    [{ ...META, sharing: undefined }, 'sharing'],
+    [{ ...META, sharing: 'friends' }, 'sharing'],
+    [{ ...META, subject_id: '' }, 'subject_id'],
+    [{ ...META, subject_id: 'mouse 7' }, 'subject_id'],
+    [{ ...META, subject_id: 'x'.repeat(65) }, 'subject_id'],
+    [{ ...META, subject_sex: 'X' }, 'subject_sex'],
+    [{ ...META, subject_age: 'P' }, 'subject_age'],
+    [{ ...META, subject_age: '90 days' }, 'subject_age'],
+    [{ ...META, subject_age: 'P1D'.padEnd(17, '1') }, 'subject_age'],
+    [{ ...META, session_date: '2025-13-01' }, 'session_date'],
+    [{ ...META, session_date: '2025-02-30' }, 'session_date'],
+    [{ ...META, session_date: '1989-12-31' }, 'session_date'],
+    [{ ...META, session_date: '2026-01-03' }, 'session_date'],
+    [{ ...META, genotype: 'x'.repeat(129) }, 'genotype'],
     [{ ...META, rights_attested: false }, 'rights_attested'],
     [{ ...META, protocol_attested: 'yes' }, 'protocol_attested'],
     [{ ...META, contact_ok: undefined }, 'contact_ok'],
@@ -429,6 +447,39 @@ Deno.test('create rejects bad metadata', async () => {
     (await call(handler, { action: 'create', meta: null, files }, { as: 'alice' })).status,
     400,
   );
+});
+
+Deno.test('create derives the license from sharing and stores the subject fields', async () => {
+  const env = setup();
+  const files = [{ name: 'frames-0000.calaraw.gz', bytes: 100 }];
+  const pub = await call(env.handler, { action: 'create', meta: META, files }, { as: 'alice' });
+  assertEquals(pub.status, 200);
+  const row = env.db.rows.get(pub.json.donation_id as string)!;
+  assertEquals(row.license, 'cc-by-4.0');
+  assertEquals(row.sharing, 'public');
+  assertEquals(
+    [row.subject_id, row.subject_sex, row.subject_age, row.session_date],
+    ['m7', 'F', 'P90D', '2025-12-30'],
+  );
+  const lab = await call(
+    env.handler,
+    { action: 'create', meta: { ...META, sharing: 'lab' }, files },
+    { as: 'bob' },
+  );
+  assertEquals(env.db.rows.get(lab.json.donation_id as string)!.license, 'lab-use-only');
+});
+
+Deno.test('a session date of today east of UTC is accepted (one day of slack)', async () => {
+  const env = setup();
+  const files = [{ name: 'frames-0000.calaraw.gz', bytes: 100 }];
+  // Clock: 2026-01-01 01:00 UTC; in UTC+14 it is already 2026-01-01 15:00, and
+  // someone at UTC+14 just after midnight on Jan 2 would pick 2026-01-02.
+  const r = await call(
+    env.handler,
+    { action: 'create', meta: { ...META, session_date: '2026-01-02' }, files },
+    { as: 'alice' },
+  );
+  assertEquals(r.status, 200, JSON.stringify(r.json));
 });
 
 Deno.test('create rejects bad file lists', async () => {
@@ -957,6 +1008,101 @@ Deno.test('ingest_list, ingest_download_url, ingest_done', async () => {
   );
 });
 
+async function ingested(env: ReturnType<typeof setup>, sharing: 'public' | 'lab' = 'public') {
+  const { id } = await approved(env);
+  if (sharing === 'lab') {
+    const row = env.db.rows.get(id)!;
+    row.sharing = 'lab';
+    row.license = 'lab-use-only';
+  }
+  const done = await call(
+    env.handler,
+    { action: 'ingest_done', donation_id: id },
+    ingestAs(INGEST_TOKEN),
+  );
+  assertEquals(done.status, 200);
+  return id;
+}
+
+const PATH = 'sub-some-lab-m7/sub-some-lab-m7_ses-20251230-00000000_ophys.nwb';
+
+Deno.test('ingest_list returns sharing and the subject fields', async () => {
+  const env = setup();
+  await approved(env);
+  const list = await call(env.handler, { action: 'ingest_list' }, ingestAs(INGEST_TOKEN));
+  const row = (list.json.donations as DonationRow[])[0];
+  assertEquals(row.sharing, 'public');
+  assertEquals(row.subject_id, 'm7');
+});
+
+Deno.test('ingest_published marks an ingested public donation published', async () => {
+  const env = setup();
+  const id = await ingested(env);
+  const r = await call(
+    env.handler,
+    { action: 'ingest_published', donation_id: id, dandi_path: PATH },
+    ingestAs(INGEST_TOKEN),
+  );
+  assertEquals(r.status, 200, JSON.stringify(r.json));
+  const row = env.db.rows.get(id)!;
+  assertEquals(row.status, 'published');
+  assertEquals(row.dandi_path, PATH);
+  assertEquals(row.published_at, new Date(Date.UTC(2026, 0, 1, 1)).toISOString());
+  // Second call: already published.
+  const again = await call(
+    env.handler,
+    { action: 'ingest_published', donation_id: id, dandi_path: PATH },
+    ingestAs(INGEST_TOKEN),
+  );
+  assertEquals(again.status, 409);
+  assertStringIncludes(again.json.error as string, 'published');
+});
+
+Deno.test('ingest_published refuses lab donations, wrong status, bad paths, no token', async () => {
+  const env = setup();
+  const labId = await ingested(env, 'lab');
+  const lab = await call(
+    env.handler,
+    { action: 'ingest_published', donation_id: labId, dandi_path: PATH },
+    ingestAs(INGEST_TOKEN),
+  );
+  assertEquals(lab.status, 409);
+  assertStringIncludes(lab.json.error as string, 'CaLab only');
+  assertEquals(env.db.rows.get(labId)!.status, 'ingested');
+
+  const { id: approvedId } = await approved(env);
+  assertEquals(
+    (
+      await call(
+        env.handler,
+        { action: 'ingest_published', donation_id: approvedId, dandi_path: PATH },
+        ingestAs(INGEST_TOKEN),
+      )
+    ).status,
+    409,
+  );
+
+  const pubId = await ingested(env);
+  for (const bad of ['../x.nwb', 'sub-a/x.txt', 'x.nwb', `sub-a/${'x'.repeat(300)}.nwb`, 42]) {
+    const r = await call(
+      env.handler,
+      { action: 'ingest_published', donation_id: pubId, dandi_path: bad },
+      ingestAs(INGEST_TOKEN),
+    );
+    assertEquals(r.status, 400, String(bad));
+  }
+  assertEquals(
+    (
+      await call(
+        env.handler,
+        { action: 'ingest_published', donation_id: pubId, dandi_path: PATH },
+        { as: 'admin' },
+      )
+    ).status,
+    401, // an admin session is not the ingest token
+  );
+});
+
 // ── helpers ────────────────────────────────────────────────────────────────
 
 Deno.test('timingSafeEqual', async () => {
@@ -1176,6 +1322,7 @@ Deno.test('notification config, text and Resend request', async () => {
   assertStringIncludes(subject, 'New cala donation');
   assertStringIncludes(text, row.credit_lab!);
   assertStringIncludes(text, 'https://admin.test/donations');
+  assertStringIncludes(text, 'Sharing:    public on DANDI');
 
   let seen: { url: string; init: RequestInit } | null = null;
   const notify = resendNotifier(cfg, ((url: string, init: RequestInit) => {
