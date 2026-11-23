@@ -19,6 +19,7 @@ Needs numpy and scipy.
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import sys
 from pathlib import Path
@@ -26,7 +27,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import settle_size as S  # noqa: E402
+import settle_size as S
 
 SIMS = ("motion_s5", "motion_s6")
 REAL = "wl24_20251201"
@@ -81,17 +82,19 @@ def speed(run: Path) -> dict[str, float]:
         "settle_s": float("nan"),
         "compress_ms": float("nan"),
     }
-    m = re.search(r"^settle: (\d+) frames in ([\d.]+) s \((\d+) frames/s\)", log, re.M)
+    m = re.search(
+        r"^settle: (\d+) frames in ([\d.]+) s \((\d+) frames/s\)", log, re.MULTILINE
+    )
     if m:
         out["settle_s"], out["settle_fps"] = float(m.group(2)), float(m.group(3))
-    m = re.search(r"^factors: \d+ frames, ([\d.]+) ms per frame", log, re.M)
+    m = re.search(r"^factors: \d+ frames, ([\d.]+) ms per frame", log, re.MULTILINE)
     if m:
         out["compress_ms"] = float(m.group(1))
     return out
 
 
 def fmt(v: float, d: int = 4) -> str:
-    return "-" if v != v else f"{v:.{d}f}"
+    return "-" if math.isnan(v) else f"{v:.{d}f}"
 
 
 def main(argv: list[str] | None = None) -> int:
