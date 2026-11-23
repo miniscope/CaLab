@@ -1485,7 +1485,7 @@
   flex-wrap: wrap;
   align-content: flex-start;
   gap: 4px 14px;
-  min-height: 44px;
+  min-height: 52px;
   margin: 0 0 6px;
 }
 
@@ -1508,20 +1508,42 @@
 
 .cala-work__sq {
   position: relative;
-  width: 22px;
-  height: 22px;
+  width: 30px;
+  height: 30px;
   border: 1px solid var(--border-default);
   border-radius: 3px;
   background: var(--k-spare);
   overflow: hidden;
 }
 
-.cala-work__sq > i {
+/* The jobs stacked bottom up, each as tall as its share of the last second. */
+.cala-work__fill {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
+  display: flex;
+  flex-direction: column-reverse;
+}
+
+.cala-work__fill > i {
   display: block;
+  flex: none;
+}
+
+/* The busy percent, legible over both the fill and the empty part. */
+.cala-work__pct {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.66rem;
+  font-weight: 600;
+  color: #fff;
+  text-shadow:
+    0 0 2px #000,
+    0 0 2px #000,
+    0 0 1px #000;
+  pointer-events: none;
 }
 
 .cala-work__sq--stopped {

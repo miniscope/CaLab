@@ -35,9 +35,8 @@ import {
   finalSettleText,
   formatDuration,
   frameTicks,
-  dominantKind,
   gridGroups,
-  groupedRows,
+  squareStack,
   squareTitle,
   BG_SETTLE_HATCH,
   KIND_COLOR,
@@ -152,15 +151,7 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
     const t = totals();
     return t ? busyWorkers(t, workerCount()) : null;
   };
-  const rows = () => groupedRows(by());
   const groups = () => gridGroups(by());
-  /** Each square's job colour, with the colour it had kept while a close second kind is near. */
-  let prevKinds: (WorkKind | null)[] = [];
-  const squareKinds = createMemo(() => {
-    const next = rows().map((r, i) => dominantKind(r.row, prevKinds[i] ?? null));
-    prevKinds = next;
-    return next;
-  });
   const wholeStopped = () => lb()?.error !== undefined;
   const stoppedFlags = createMemo(() =>
     stoppedLookbackRows(by()?.workers ?? [], s().work()?.lookback.capacity, wholeStopped()),
@@ -474,9 +465,10 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
           {statusLine()}
         </p>
         <p class="cala-work__caption" data-testid="work-caption">
-          Each square is one worker (a browser thread). Its colour is the job it spent most of the
-          last second on; the fill is how busy it was over that second (full: the whole second).
-          Hover a square for details. Extract is not shown: it runs after Discover, on its own.
+          Each square is one worker (a browser thread). It fills from the bottom with one colour per
+          job, each as tall as that job's share of the last second; the number is how busy the
+          worker was over that second (100 %: the whole second). Hover a square for details. Extract
+          is not shown: it runs after Discover, on its own.
         </p>
         <div class="cala-work__cores" data-testid="work-grid">
           <Index each={groups()}>
@@ -487,7 +479,7 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
                   <Index each={g().squares}>
                     {(sq) => {
                       const stopped = () => stoppedFlags()[sq().index] === true;
-                      const kind = () => squareKinds()[sq().index] ?? null;
+                      const busyPct = () => Math.round(100 * rowBusy(sq().row));
                       return (
                         <div
                           class="cala-work__sq"
@@ -504,18 +496,26 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
                               : squareTitle(sq().label, sq().row)
                           }
                           data-testid="work-square"
-                          data-kind={stopped() ? 'stopped' : (kind() ?? 'idle')}
+                          data-state={stopped() ? 'stopped' : busyPct() > 0 ? 'busy' : 'idle'}
                         >
-                          <Show when={!stopped() && kind()}>
-                            {(k) => (
-                              <i
-                                style={{
-                                  height: `${Math.round(100 * rowBusy(sq().row))}%`,
-                                  background: kindVar(k()),
-                                }}
-                              />
-                            )}
+                          <Show when={!stopped()}>
+                            <span class="cala-work__fill">
+                              <Index each={squareStack(sq().row)}>
+                                {(seg) => (
+                                  <i
+                                    data-kind={seg().kind}
+                                    style={{
+                                      height: `${seg().pct}%`,
+                                      background: kindVar(seg().kind),
+                                    }}
+                                  />
+                                )}
+                              </Index>
+                            </span>
                           </Show>
+                          <span class="cala-work__pct cala-num" data-testid="work-square-pct">
+                            {stopped() ? '✕' : busyPct()}
+                          </span>
                         </div>
                       );
                     }}

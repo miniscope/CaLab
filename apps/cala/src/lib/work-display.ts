@@ -435,20 +435,16 @@ export const GRID_GROUP_LABEL: Record<WorkerKindShares['group'], string> = {
   lookback: 'Look-back and settle',
 };
 
-/** Below this busy share a square reads as idle (no job colour). */
-export const IDLE_BELOW = 0.05;
-
 /**
- * The job a square is coloured by: the kind with the largest share of the worker's last reading,
- * or null when it was (nearly) idle. `prev` (the square's colour before) is kept while its share is
- * within 20 % of the largest, so two close kinds do not make the square flicker once a second.
+ * A square's fill, bottom up: one segment per job in the fixed kind order, each as tall as that
+ * job's share of the worker's last second (percent of the square). The segments add up to the
+ * busy share; a hair over 100 % is scaled down so the fill never overflows.
  */
-export function dominantKind(w: WorkerKindShares, prev: WorkKind | null = null): WorkKind | null {
-  if (rowBusy(w) < IDLE_BELOW) return null;
-  let best: WorkKind = WORK_KINDS[0];
-  for (const k of WORK_KINDS) if (w.shares[k] > w.shares[best]) best = k;
-  if (prev && prev !== best && w.shares[prev] >= 0.8 * w.shares[best]) return prev;
-  return best;
+export function squareStack(w: WorkerKindShares): { kind: WorkKind; pct: number }[] {
+  let sum = 0;
+  for (const k of WORK_KINDS) sum += Math.max(0, w.shares[k] || 0);
+  const scale = sum > 1 ? 1 / sum : 1;
+  return WORK_KINDS.map((kind) => ({ kind, pct: 100 * Math.max(0, w.shares[kind] || 0) * scale }));
 }
 
 /** A square's hover text: which worker, what it does, and its last second split by job. */

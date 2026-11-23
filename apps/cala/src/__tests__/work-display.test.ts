@@ -8,7 +8,7 @@ import {
   finalSettleText,
   formatDuration,
   frameTicks,
-  dominantKind,
+  squareStack,
   gridGroups,
   groupedRows,
   squareTitle,
@@ -161,17 +161,20 @@ describe('rows', () => {
     expect(groups.flatMap((g) => g.squares.map((q) => q.index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
     expect(gridGroups(null)).toEqual([]);
   });
-  it('a square is coloured by its main job, idle under 5 %, and keeps a close colour', () => {
+  it('a square fills bottom up with every job, each as tall as its share, never over 100 %', () => {
     const w = (shares: Partial<Record<WorkKind, number>>) => ({
       name: 'Slow worker',
       group: 'slow' as const,
       shares: vals(shares),
     });
-    expect(dominantKind(w({ discovery: 0.3, bgSettle: 0.36 }))).toBe('bgSettle');
-    expect(dominantKind(w({ discovery: 0.02 }))).toBeNull();
-    // Within 20 % of the largest: the colour it had stays (no flicker between close kinds).
-    expect(dominantKind(w({ discovery: 0.3, bgSettle: 0.36 }), 'discovery')).toBe('discovery');
-    expect(dominantKind(w({ discovery: 0.1, bgSettle: 0.36 }), 'discovery')).toBe('bgSettle');
+    const st = squareStack(w({ discovery: 0.3, bgSettle: 0.36 }));
+    // Every kind, in the fixed order (stable segments), zero where the worker did not do it.
+    expect(st.map((x) => x.kind)).toEqual([...WORK_KINDS]);
+    expect(st.find((x) => x.kind === 'discovery')!.pct).toBeCloseTo(30, 10);
+    expect(st.find((x) => x.kind === 'bgSettle')!.pct).toBeCloseTo(36, 10);
+    expect(st.find((x) => x.kind === 'live')!.pct).toBe(0);
+    const over = squareStack(w({ discovery: 0.7, lookback: 0.6 }));
+    expect(over.reduce((a, x) => a + x.pct, 0)).toBeCloseTo(100, 10);
   });
   it("a square's hover text says what the worker does and what its percentages are of", () => {
     const t = squareTitle('cell model', by.workers[3]);
