@@ -413,7 +413,15 @@ export class LookbackReader {
     const raw = await this.rawFrame(frame);
     const t1 = performance.now();
     const motion = (this.motion ??= this.newMotion());
-    prepareFrame(front, this.sessionAligner(session), motion, raw, this.record.span(frame, 1), this.buf, y);
+    prepareFrame(
+      front,
+      this.sessionAligner(session),
+      motion,
+      raw,
+      this.record.span(frame, 1),
+      this.buf,
+      y,
+    );
     this.timing.readMs += t1 - t0;
     this.timing.preprocessMs += performance.now() - t1;
   }

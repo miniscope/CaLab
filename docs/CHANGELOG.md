@@ -5,6 +5,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Changed
+
+- Cala: **the Final settle reads its frames ahead on helper workers.** It was held back by look-back worker 0, which read, preprocessed and solved every settle frame alone while the frame-loop workers sat idle. Now up to two **settle readers** (started when the settle begins, ended when it ends; 2 from 6 logical cores, 1 from 4) read the settle's frames and do their stateless preprocessing (recorded flicker, flat field, session warp, rigid shift) ahead; worker 0 keeps the back half and the solve, in the same order and with the same library, so its answers are the same bits (checked in Chrome: 0 of 6,832 reader frames differed, single recordings, a Joint run and a production build). With visit workers the slow worker now feeds each answer 4 frames at a time and gives way between pieces, so visits keep up while it is busy. Final settle time in headed Chrome, main → branch (median of 3): 1,000-frame sim 4.7 → 3.7 s, 3,000-frame sim 16.2 → 15.4 s, Joint 2 × 1,000 frames 9.3 → 8.1 s. The settle is now limited by the slow worker (observing frames, handing out and applying visits); visits per settle frame follow the settle's speed, as before, and footprint quality against ground truth stayed within main's run-to-run range. The worker grid shows the readers as "Settle reader N". `?debug&settlereaders=N` sets their number (0: none) and `?debug&settlecheck` counts differing bits. See `apps/cala/docs/stages.md`.
+
 ## [2.21.1] - 2026-11-23
 
 ### Changed

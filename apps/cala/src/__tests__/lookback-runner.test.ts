@@ -500,6 +500,68 @@ describe('SlowRunner look-back (fake loop)', () => {
     expect(t.loop.step).not.toHaveBeenCalled();
   });
 
+  it('sends worker 0 the whole plan at the start and the end when it is over', () => {
+    const t = setup(0);
+    t.r.handle({ ...INIT, lookback: true });
+    t.r.handle(frames(0, 40));
+    t.r.handle({ type: 'end', session: 1 });
+    const plan = t.toLb.find((m) => m.type === 'settle-plan');
+    expect(plan?.type === 'settle-plan' && plan.chunk).toBe(SETTLE.batch);
+    // `[frame, block]` per frame, in request order.
+    expect(plan?.type === 'settle-plan' && Array.from(plan.frames.subarray(0, 4))).toEqual([
+      0, -1, 1, -1,
+    ]);
+    expect(plan?.type === 'settle-plan' && plan.frames.length).toBe(80);
+    expect(t.toLb.some((m) => m.type === 'settle-end')).toBe(false);
+    t.run();
+    expect(finals(t)).toHaveLength(1);
+    expect(t.toLb.filter((m) => m.type === 'settle-end')).toHaveLength(1);
+  });
+
+  it('with visit workers: an answer is fed in pieces, visits go out between them, and the last piece comes before the last round', () => {
+    const t = setup(0, { visits: 1 });
+    t.loop.takeJob = vi.fn(() => undefined);
+    t.loop.applyJob = vi.fn();
+    t.loop.housekeep = () => undefined;
+    t.r.handle({ ...INIT, lookback: true });
+    t.r.handle(frames(0, SETTLE.batch));
+    t.r.handle({ type: 'end', session: 1 });
+    const observed = () => t.calls.filter((c) => c === 'observe').length;
+    const before = observed();
+    const takes = () => (t.loop.takeJob as ReturnType<typeof vi.fn>).mock.calls.length;
+    const takes0 = takes();
+    t.answer();
+    // One piece, then it gives way; the visits due were asked for after it.
+    expect(observed() - before).toBe(SETTLE.piece);
+    expect(takes()).toBe(takes0 + 1);
+    // The whole plan is one answer: no last round, no final library while pieces are left.
+    expect(t.loop.markAllDue).not.toHaveBeenCalled();
+    expect(finals(t)).toHaveLength(0);
+    t.run();
+    expect(observed() - before).toBe(SETTLE.batch);
+    expect(statuses(t).at(-1)!.lookback?.settle?.fed).toBe(SETTLE.batch);
+    expect(finals(t)).toHaveLength(1);
+  });
+
+  it('with visit workers: a Stop mid-answer drops the rest and gives the buffer back', () => {
+    const t = setup(0, { visits: 1 });
+    t.loop.takeJob = () => undefined;
+    t.loop.applyJob = vi.fn();
+    t.loop.housekeep = () => undefined;
+    t.r.handle({ ...INIT, lookback: true });
+    t.r.handle(frames(0, 3 * SETTLE.batch));
+    t.r.handle({ type: 'end', session: 1 });
+    t.answer();
+    const observed = t.calls.filter((c) => c === 'observe').length;
+    t.r.stopSettling(1);
+    t.run();
+    expect(t.calls.filter((c) => c === 'observe').length).toBe(observed);
+    expect(finals(t)).toHaveLength(1);
+    expect(statuses(t).at(-1)!.lookback?.settle).toMatchObject({ stopped: true, fed: 0 });
+    // The answer cut short and the late answer to the request it had sent: both buffers go back.
+    expect(t.toLb.filter((m) => m.type === 'release')).toHaveLength(2);
+  });
+
   it('with visit workers: the last round ends at its work cap even when tiles stay due', () => {
     const t = setup(0, { visits: 1 });
     let work = 0;

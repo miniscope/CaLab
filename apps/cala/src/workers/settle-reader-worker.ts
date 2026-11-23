@@ -88,8 +88,7 @@ async function job(msg: Extract<ToSettleReader, { type: 'job' }>): Promise<void>
     while (k < n && j.frames[k] === j.frames[k - 1] + 1) k++;
     const count = k - i;
     if (s.raw.length < count * s.px)
-      s.raw =
-        s.raw instanceof Uint16Array ? new Uint16Array(n * s.px) : new Uint8Array(n * s.px);
+      s.raw = s.raw instanceof Uint16Array ? new Uint16Array(n * s.px) : new Uint8Array(n * s.px);
     const got = await s.src.readFrames(j.frames[i], count, s.raw.subarray(0, count * s.px));
     for (let f = 0; f < count; f++) {
       const at = i + f;

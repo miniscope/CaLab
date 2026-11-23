@@ -220,7 +220,11 @@ export class SettleReaders {
 
   /** Hand out chunks to idle readers, up to `depth` ahead of the request being served. */
   private pump(): void {
-    while (!this.stopped && this.next < this.chunks.length && this.next - this.head < this.opts.depth) {
+    while (
+      !this.stopped &&
+      this.next < this.chunks.length &&
+      this.next - this.head < this.opts.depth
+    ) {
       const r = this.readers.find((x) => x.ready && !x.dead && x.out < 0);
       if (!r) return;
       const i = this.next++;
@@ -274,7 +278,11 @@ export class SettleReaders {
       frames.every((f, k) => f.frame === c.frames[k] && f.block === c.blocks[k]);
     // Requests served before the readers were set up are passed over (none handed out then).
     let at = this.head;
-    while (at < this.chunks.length && this.chunks[at].state === 'waiting' && !matches(this.chunks[at]))
+    while (
+      at < this.chunks.length &&
+      this.chunks[at].state === 'waiting' &&
+      !matches(this.chunks[at])
+    )
       at++;
     const c = this.chunks[at];
     if (!matches(c)) {

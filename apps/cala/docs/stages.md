@@ -32,6 +32,26 @@ Refine runs show as "Refine (removed stage)".
   disk (one session, or a Joint run of several) and the pipelined workers.
   Where they cannot run (a live stream, `?pipeline=0`) the panel says why, and
   the footprints get no refinement after Discover.
+- **How the Final settle runs.** The slow worker feeds the settle's plan
+  (every frame up to 18,000, else evenly spread 64-frame blocks; Standard and
+  Quick keep its first 87 % or 60 %) in requests of 16 frames to look-back
+  worker 0, which preprocesses and solves them with the newest library. The
+  stateless half of that preprocessing (read, recorded flicker, flat field,
+  session warp, rigid shift) is done ahead by **settle readers**, workers that
+  worker 0 starts when the settle begins and ends when it ends (2 from 6
+  logical cores, 1 from 4, else none; `?debug&settlereaders=N` overrides,
+  `?debug&settlecheck` redoes every reader frame on worker 0 and counts bits
+  that differ). Worker 0 keeps the back half and the solve, in plan order and
+  with the library in hand when the request came, so each answer is the same
+  bits as without readers (`lib/settle-readers.ts`). A request the readers
+  do not have ready is served by worker 0 alone, as before. With visit
+  workers the slow worker feeds each answer 4 frames at a time and gives way
+  between pieces, so visit results are applied and due tiles handed out while
+  the settle goes on. The settle's speed is then set by the slow worker
+  (observing frames and handing out and applying visits); visits per settle
+  frame depend on how fast the frames come, as they always have, so a faster
+  settle is not bit-identical to a slower one. Measured in
+  `tools/cala-eval/settle_readers_summary.py` runs (PR description).
 - **Extract after Discover** (on by default for recordings) starts Extract
   when Discover finishes (its Final settle included). Turn it off to inspect
   the footprints first; the panel then shows the Extract button with the hint

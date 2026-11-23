@@ -264,9 +264,7 @@ async function serveReady(
   reader: LookbackReader,
   frames: { frame: number; block: number }[],
 ): Promise<
-  | { out: Float32Array; solved: LookbackSolved }
-  | { out: null; readers: number[] }
-  | null
+  { out: Float32Array; solved: LookbackSolved } | { out: null; readers: number[] } | null
 > {
   const settle = r.settle;
   if (!settle) return null;
