@@ -1,6 +1,6 @@
 /**
  * "Donate data" (docs/data-donation.md): send the open recording, lossless,
- * with its metadata, to the lab's cala benchmark set. Collapsed to one button
+ * with its metadata, to the CaLab team, public on DANDI or CaLab only. Collapsed to one button
  * at the bottom of the Recording tab; nothing is encoded or uploaded until the
  * donor is signed in, has filled the form and ticked both consent boxes.
  *
@@ -19,9 +19,12 @@ import {
   loadFieldOptions,
   signInForDonation,
   signOutDonation,
-  type DonationLicense,
+  donationDandi,
+  dandiFolderUrl,
   type DonationMeta,
   type DonationRow,
+  type DonationSharing,
+  type SubjectSex,
 } from '@calab/community';
 import type { FrameSourceInfo } from '../lib/frame-source.ts';
 import { recordingSidecars } from '../lib/frame-source.ts';
@@ -34,29 +37,16 @@ import {
   type DonationJob,
   type DonationPhase,
 } from '../lib/donation-runner.ts';
+import {
+  ageToIso,
+  emptyForm,
+  missingFields,
+  SHARING_TEXT,
+  type AgeUnit,
+  type DonationForm,
+} from '../lib/donation-form.ts';
 import { WITHDRAWABLE, type DonationUiStore } from '../lib/donation-store.ts';
 import type { DonationSource } from '../workers/donation-types.ts';
-
-/** Form fields (strings as typed; converted on submit). */
-interface DonationForm {
-  indicator: string;
-  species: string;
-  brain_region: string;
-  scope: string;
-  expression: string;
-  preparation: string;
-  behavior: string;
-  depth_um: string;
-  led_power: string;
-  fps: string;
-  license: DonationLicense;
-  rights_attested: boolean;
-  protocol_attested: boolean;
-  contact_ok: boolean;
-  credit_name: string;
-  credit_lab: string;
-  notes: string;
-}
 
 const STATUS_LABEL: Record<DonationRow['status'], string> = {
   uploading: 'uploading',
@@ -65,6 +55,7 @@ const STATUS_LABEL: Record<DonationRow['status'], string> = {
   rejected: 'rejected',
   ingested: 'received by the lab',
   withdrawn: 'withdrawn',
+  published: 'published on DANDI',
 };
 
 const optional = (s: string): string | null => (s.trim() === '' ? null : s.trim());
@@ -134,19 +125,23 @@ export function DonatePanel(props: DonatePanelProps): JSX.Element {
             benchmark set that cala is developed and tuned against.
           </li>
           <li>
-            <strong>Co-authorship.</strong> If your dataset is used in a benchmark or dataset paper,
-            you are offered co-authorship. Every use of a donation is verified and logged against
-            it, so no use goes uncredited.
-          </li>
-          <li>
-            <strong>Credit and control stay with you.</strong> The data is kept within the lab and
-            licensed{' '}
+            <strong>Share it with everyone, or only with us.</strong> Public recordings are
+            published on{' '}
+            <a href="https://dandiarchive.org" target="_blank" rel="noopener noreferrer">
+              DANDI
+            </a>{' '}
+            under{' '}
             <a href={CC_BY_URL} target="_blank" rel="noopener noreferrer">
               CC BY 4.0
             </a>
-            : any use must credit you and your lab. You can ask for it to be deleted at any time (
-            <DeletionContacts />
-            ).
+            , where anyone can use them to test and improve their pipelines. Or keep it CaLab only:
+            then only the CaLab team uses it, to improve cala.
+          </li>
+          <li>
+            <strong>Credit.</strong> Public donors and their labs are listed as contributors on the
+            collection's citable DOI, and everyone using the data is asked to cite it and
+            acknowledge your lab. Our own papers acknowledge every lab whose data they use. Deletion
+            requests: <DeletionContacts />.
           </li>
         </ul>
         <Show when={!expanded()}>
@@ -163,9 +158,10 @@ export function DonatePanel(props: DonatePanelProps): JSX.Element {
       <Show when={expanded()}>
         <p class="cala-muted">
           The raw frames are compressed without loss in this browser and uploaded with the metadata
-          below. File paths are never sent, only file names. The lab reviews each donation before it
-          is used. Withdraw it under "My donations" below; once the lab has taken it in, email{' '}
-          <DeletionContacts /> and it is deleted.
+          below. File paths are never sent, only file names. The lab reviews each donation first.
+          Withdraw it under "My donations" below until the lab has taken it in; after that, email{' '}
+          <DeletionContacts />. A public recording can be removed until the next version of the
+          DANDI collection is published; published versions are permanent.
         </p>
         <Show
           when={signedIn()}
@@ -252,28 +248,10 @@ export function MyDonationsEntry(props: { donation: DonationUiStore }): JSX.Elem
 // Form
 // ---------------------------------------------------------------------------
 
-function DonationFormView(props: DonatePanelProps & { onClose: () => void }): JSX.Element {
+export function DonationFormView(props: DonatePanelProps & { onClose: () => void }): JSX.Element {
   // eslint-disable-next-line solid/reactivity -- initial value only
   const fpsKnown = props.info.fps;
-  const [form, setForm] = createStore<DonationForm>({
-    indicator: '',
-    species: '',
-    brain_region: '',
-    scope: '',
-    expression: '',
-    preparation: '',
-    behavior: '',
-    depth_um: '',
-    led_power: '',
-    fps: fpsKnown === null ? '' : String(fpsKnown),
-    license: 'cc-by-4.0',
-    rights_attested: false,
-    protocol_attested: false,
-    contact_ok: false,
-    credit_name: '',
-    credit_lab: '',
-    notes: '',
-  });
+  const [form, setForm] = createStore<DonationForm>(emptyForm(fpsKnown));
   const [submitError, setSubmitError] = createSignal<string | null>(null);
 
   const bpp = (): 1 | 2 | null => {
@@ -287,25 +265,7 @@ function DonationFormView(props: DonatePanelProps & { onClose: () => void }): JS
     estimateDonationBytes(props.info.frameCount, props.info.width, props.info.height, bpp() ?? 1);
   const tooBig = () => estimate() > MAX_DONATION_BYTES;
   const fps = () => Number(form.fps);
-  const fpsOk = () => Number.isFinite(fps()) && fps() > 0 && fps() <= 1000;
-  const depthOk = () =>
-    form.depth_um.trim() === '' ||
-    (Number.isFinite(Number(form.depth_um)) &&
-      Number(form.depth_um) >= 0 &&
-      Number(form.depth_um) <= 10000);
-  const missing = (): string[] => {
-    const m: string[] = [];
-    if (!form.indicator.trim()) m.push('indicator');
-    if (!form.species.trim()) m.push('species');
-    if (!form.brain_region.trim()) m.push('brain region');
-    if (!form.scope.trim()) m.push('scope');
-    if (!fpsOk()) m.push('frame rate');
-    if (!depthOk()) m.push('a depth of 0 to 10000 um');
-    if (!form.credit_name.trim()) m.push('your name (for credit)');
-    if (!form.credit_lab.trim()) m.push('your lab (for credit)');
-    if (!form.rights_attested || !form.protocol_attested) m.push('both confirmations');
-    return m;
-  };
+  const missing = (): string[] => missingFields(form, new Date());
   const blocked = (): string | null => {
     if (!props.source) return 'This recording cannot be donated (no files to read).';
     if (bpp() === null) return `${props.info.bitDepth}-bit video cannot be donated.`;
@@ -353,7 +313,12 @@ function DonationFormView(props: DonatePanelProps & { onClose: () => void }): JS
       bytes_per_pixel: b,
       cala_version: props.version,
       dataset_hash: null,
-      license: form.license,
+      sharing: form.sharing!,
+      subject_id: form.subject_id.trim(),
+      subject_sex: form.subject_sex as SubjectSex,
+      subject_age: ageToIso(form.age_value, form.age_unit)!,
+      session_date: form.session_date,
+      genotype: optional(form.genotype),
       rights_attested: form.rights_attested,
       protocol_attested: form.protocol_attested,
       contact_ok: form.contact_ok,
@@ -375,7 +340,7 @@ function DonationFormView(props: DonatePanelProps & { onClose: () => void }): JS
           },
         },
         timestamps: await timestampsOf(source),
-        metaJson: buildMetaJson(i, props.version, fps()),
+        metaJson: buildMetaJson(i, props.version, fps(), form.sharing!),
       };
       await props.donation.start(job, props.label);
     } catch (err) {
@@ -386,7 +351,12 @@ function DonationFormView(props: DonatePanelProps & { onClose: () => void }): JS
   const text = (
     key: Exclude<
       keyof DonationForm,
-      'license' | 'rights_attested' | 'protocol_attested' | 'contact_ok'
+      | 'sharing'
+      | 'subject_sex'
+      | 'age_unit'
+      | 'rights_attested'
+      | 'protocol_attested'
+      | 'contact_ok'
     >,
     label: string,
     opts: { required?: boolean; list?: string; max?: number; placeholder?: string } = {},
@@ -478,6 +448,63 @@ function DonationFormView(props: DonatePanelProps & { onClose: () => void }): JS
       </fieldset>
 
       <fieldset class="cala-donate__group">
+        <legend>Animal and session (DANDI needs these)</legend>
+        {text('subject_id', 'Animal ID', {
+          required: true,
+          max: 64,
+          placeholder: 'your label, e.g. m7 (letters, digits, dashes)',
+        })}
+        <label class="cala-donate__field">
+          <span>Sex *</span>
+          <select
+            value={form.subject_sex}
+            onChange={(e) =>
+              setForm('subject_sex', e.currentTarget.value as DonationForm['subject_sex'])
+            }
+          >
+            <option value="">choose</option>
+            <option value="F">female</option>
+            <option value="M">male</option>
+            <option value="U">unknown</option>
+            <option value="O">other</option>
+          </select>
+        </label>
+        <label class="cala-donate__field">
+          <span>Age at recording *</span>
+          <span class="cala-donate__age">
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={form.age_value}
+              aria-label="Age"
+              onInput={(e) => setForm('age_value', e.currentTarget.value)}
+            />
+            <select
+              value={form.age_unit}
+              aria-label="Age unit"
+              onChange={(e) => setForm('age_unit', e.currentTarget.value as AgeUnit)}
+            >
+              <option value="D">days</option>
+              <option value="W">weeks</option>
+              <option value="M">months</option>
+              <option value="Y">years</option>
+            </select>
+          </span>
+        </label>
+        <label class="cala-donate__field">
+          <span>Recording date *</span>
+          <input
+            type="date"
+            min="1990-01-01"
+            value={form.session_date}
+            onInput={(e) => setForm('session_date', e.currentTarget.value)}
+          />
+        </label>
+        {text('genotype', 'Strain / genotype', { placeholder: 'C57BL/6J, Thy1-GCaMP6s, ...' })}
+      </fieldset>
+
+      <fieldset class="cala-donate__group">
         <legend>Optics</legend>
         {text('scope', 'Scope', {
           required: true,
@@ -498,15 +525,29 @@ function DonationFormView(props: DonatePanelProps & { onClose: () => void }): JS
         {text('led_power', 'LED power', { max: 64 })}
       </fieldset>
 
-      <fieldset class="cala-donate__group">
-        <legend>License</legend>
-        <p class="cala-donate__note">
-          <a href={CC_BY_URL} target="_blank" rel="noopener noreferrer">
-            CC BY 4.0
-          </a>
-          : the data is kept within the lab, and any use must credit you and your lab as entered
-          under Credit below.
-        </p>
+      <fieldset class="cala-donate__group" data-testid="donate-sharing">
+        <legend>Who may use it? *</legend>
+        <For each={['public', 'lab'] as DonationSharing[]}>
+          {(choice) => (
+            <label class="cala-donate__choice">
+              <input
+                type="radio"
+                name="donate-sharing"
+                value={choice}
+                checked={form.sharing === choice}
+                onChange={() => setForm('sharing', choice)}
+              />{' '}
+              <strong>{SHARING_TEXT[choice].label}</strong>
+            </label>
+          )}
+        </For>
+        <Show when={form.sharing}>
+          {(c) => (
+            <p class="cala-donate__note" data-testid="donate-sharing-text">
+              {SHARING_TEXT[c()].text}
+            </p>
+          )}
+        </Show>
       </fieldset>
 
       <fieldset class="cala-donate__group">
@@ -518,7 +559,7 @@ function DonationFormView(props: DonatePanelProps & { onClose: () => void }): JS
             data-testid="donate-rights"
             onChange={(e) => setForm('rights_attested', e.currentTarget.checked)}
           />{' '}
-          I have the right to share this data and agree to share it under CC BY 4.0. *
+          I have the right to share this data under the option chosen above. *
         </label>
         <label class="cala-donate__check">
           <input
@@ -535,12 +576,12 @@ function DonationFormView(props: DonatePanelProps & { onClose: () => void }): JS
             checked={form.contact_ok}
             onChange={(e) => setForm('contact_ok', e.currentTarget.checked)}
           />{' '}
-          You may contact me about co-authorship if the data is used in a paper.
+          The CaLab team may contact me about this recording.
         </label>
       </fieldset>
 
       <fieldset class="cala-donate__group">
-        <legend>Credit (how you and your lab are attributed)</legend>
+        <legend>Credit (public for public recordings)</legend>
         {text('credit_name', 'Name', { required: true, max: 100 })}
         {text('credit_lab', 'Lab', {
           required: true,
@@ -650,7 +691,7 @@ function DonationProgress(props: { donation: DonationUiStore }): JSX.Element {
         {(done) => (
           <p class="cala-donate__done" role="status">
             Thank you! Your donation ({formatBytes(done().bytes)}) arrived. The lab reviews it
-            before it goes into the benchmark set.{' '}
+            before it is used or published.{' '}
             <button type="button" class="btn-secondary btn-small" onClick={() => d().reset()}>
               Done
             </button>
@@ -770,6 +811,30 @@ export function MyDonations(props: { donation: DonationUiStore }): JSX.Element {
                 </span>
                 <span class="cala-donate__status">
                   {statusLabel(row)}
+                  <Show when={row.sharing === 'lab'}>
+                    {' '}
+                    <span class="cala-donate__badge">CaLab only</span>
+                  </Show>
+                  <Show
+                    when={
+                      row.status === 'published' && row.dandi_path && donationDandi
+                        ? row.dandi_path
+                        : null
+                    }
+                  >
+                    {(path) => (
+                      <>
+                        {' '}
+                        <a
+                          href={dandiFolderUrl(donationDandi!, path())}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          on DANDI
+                        </a>
+                      </>
+                    )}
+                  </Show>
                   <Show when={row.in_benchmark}>
                     {' '}
                     <span class="cala-donate__badge" title={row.benchmark_note ?? undefined}>

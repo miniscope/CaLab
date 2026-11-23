@@ -145,8 +145,9 @@ describe('donation encoding', () => {
       ...source.info,
       files: source.info.files.map((f) => ({ ...f, name: `/Users/someone/data/${f.name}` })),
     };
-    const doc = JSON.parse(new TextDecoder().decode(buildMetaJson(info, '1.2.3', 20)));
+    const doc = JSON.parse(new TextDecoder().decode(buildMetaJson(info, '1.2.3', 20, 'public')));
     expect(doc.cala_version).toBe('1.2.3');
+    expect(doc.sharing).toBe('public');
     expect(doc.source_files).toEqual([
       { name: '0.avi', frames: 2 },
       { name: '1.avi', frames: 2 },

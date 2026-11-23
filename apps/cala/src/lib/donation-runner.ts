@@ -24,6 +24,7 @@ import {
   DONATION_MAX_TIMESTAMPS_BYTES,
   type DonationFile,
   type DonationMeta,
+  type DonationSharing,
   type PresignedRequest,
 } from '@calab/community';
 import { calarawChunkName } from '@calab/io';
@@ -202,11 +203,17 @@ export function baseName(path: string): string {
 }
 
 /** `meta.json`: cala version, the source files' base names and the frame source's facts. */
-export function buildMetaJson(info: FrameSourceInfo, calaVersion: string, fps: number): Uint8Array {
+export function buildMetaJson(
+  info: FrameSourceInfo,
+  calaVersion: string,
+  fps: number,
+  sharing: DonationSharing,
+): Uint8Array {
   const doc = {
     format: 'cala-donation-meta',
     version: 1,
     cala_version: calaVersion,
+    sharing,
     source_files: info.files.map((f) => ({ name: baseName(f.name), frames: f.frames })),
     frame_source: {
       width: info.width,

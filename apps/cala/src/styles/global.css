@@ -833,6 +833,17 @@
 .cala-donate__lead {
   margin: var(--space-xs) 0 0;
 }
+.cala-donate__choice {
+  display: block;
+  margin: 0.25rem 0;
+}
+.cala-donate__age {
+  display: flex;
+  gap: 0.5rem;
+}
+.cala-donate__age input {
+  width: 6rem;
+}
 .cala-donate__button {
   margin-top: var(--space-xs);
   padding: 6px 16px;
