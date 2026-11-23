@@ -20,6 +20,7 @@ import {
   formatBytes,
   formatCredit,
   formatDuration,
+  formatSharing,
 } from '../lib/donations.ts';
 
 interface Props {
@@ -60,6 +61,15 @@ function fields(d: DonationRow): [string, string][] {
     ['cala version', d.cala_version],
     ['Dataset hash', orDash(d.dataset_hash)],
     ['License', d.license],
+    ['Sharing', formatSharing(d)],
+    [
+      'Animal',
+      `${orDash(d.subject_id)}, sex ${orDash(d.subject_sex)}, age ${orDash(d.subject_age)}`,
+    ],
+    ['Recording date', orDash(d.session_date)],
+    ['Genotype', orDash(d.genotype)],
+    ['DANDI path', orDash(d.dandi_path)],
+    ['Published', d.published_at ? d.published_at.slice(0, 19).replace('T', ' ') : '-'],
     ['Rights attested', d.rights_attested ? 'yes' : 'no'],
     ['Protocol attested', d.protocol_attested ? 'yes' : 'no'],
     ['Contact OK', d.contact_ok ? 'yes' : 'no'],

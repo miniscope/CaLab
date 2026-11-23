@@ -22,6 +22,7 @@ import {
   filterDonations,
   formatBytes,
   formatCredit,
+  formatSharing,
 } from '../lib/donations.ts';
 import { FIXTURE_MODE } from '../lib/fixture/flag.ts';
 
@@ -50,7 +51,11 @@ const COLUMNS: Column[] = [
     align: 'right',
     format: (r) => Number(r.n_frames).toLocaleString('en-US'),
   },
-  { key: 'license', label: 'License' },
+  {
+    key: 'sharing',
+    label: 'Sharing',
+    format: (r) => formatSharing(r as DonationRow),
+  },
   { key: 'contact_ok', label: 'Contact', format: (r) => yesNo(r.contact_ok) },
   { key: 'credit_name', label: 'Credit', format: (r) => formatCredit(r as DonationRow) },
   { key: 'in_benchmark', label: 'Benchmark', format: (r) => yesNo(r.in_benchmark) },

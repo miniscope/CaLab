@@ -13,6 +13,7 @@ import {
   formatBytes,
   formatCredit,
   formatDuration,
+  formatSharing,
   headerMismatches,
   meanImage,
 } from '../lib/donations.ts';
@@ -35,6 +36,14 @@ function donation(over: Partial<DonationRow> = {}): DonationRow {
     bytes_per_pixel: 2,
     cala_version: '2.19.1',
     license: 'cc-by-4.0',
+    sharing: 'public',
+    subject_id: 'm7',
+    subject_sex: 'F',
+    subject_age: 'P90D',
+    session_date: '2026-11-20',
+    genotype: null,
+    dandi_path: null,
+    published_at: null,
     rights_attested: true,
     protocol_attested: true,
     contact_ok: true,
@@ -96,6 +105,18 @@ describe('table helpers', () => {
     expect(canBenchmark({ status: 'approved' })).toBe(true);
     expect(canBenchmark({ status: 'ingested' })).toBe(true);
     expect(canBenchmark({ status: 'rejected' })).toBe(false);
+  });
+});
+
+describe('sharing', () => {
+  it('labels the choice', () => {
+    expect(formatSharing(donation({ sharing: 'public' }))).toBe('public (DANDI)');
+    expect(formatSharing(donation({ sharing: 'lab' }))).toBe('CaLab only');
+  });
+
+  it('counts published donations', () => {
+    const counts = countByStatus([donation({ status: 'published' })]);
+    expect(counts.published).toBe(1);
   });
 });
 

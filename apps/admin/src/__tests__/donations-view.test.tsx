@@ -41,6 +41,14 @@ function row(over: Partial<DonationRow>): DonationRow {
     bytes_per_pixel: 2,
     cala_version: '2.19.1',
     license: 'cc-by-4.0',
+    sharing: 'public',
+    subject_id: 'm7',
+    subject_sex: 'F',
+    subject_age: 'P90D',
+    session_date: '2026-11-20',
+    genotype: null,
+    dandi_path: null,
+    published_at: null,
     rights_attested: true,
     protocol_attested: true,
     contact_ok: true,
@@ -78,6 +86,11 @@ describe('DonationsView', () => {
   afterEach(() => {
     dispose();
     el.remove();
+  });
+
+  it('shows the sharing column', () => {
+    const headers = Array.from(el.querySelectorAll('thead th')).map((th) => th.textContent ?? '');
+    expect(headers.some((h) => h.includes('Sharing'))).toBe(true);
   });
 
   it('lists uploaded donations by default and filters by status', async () => {

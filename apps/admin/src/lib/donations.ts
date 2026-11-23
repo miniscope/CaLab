@@ -18,6 +18,7 @@ export const DONATION_STATUSES: readonly DonationStatus[] = [
   'rejected',
   'ingested',
   'withdrawn',
+  'published',
 ];
 
 export function filterDonations(rows: readonly DonationRow[], status: StatusFilter): DonationRow[] {
@@ -53,6 +54,10 @@ export function formatDuration(nFrames: number, fps: number): string {
   if (s < 60) return `${s} s`;
   const m = Math.floor(s / 60);
   return s % 60 === 0 ? `${m} min` : `${m} min ${s % 60} s`;
+}
+
+export function formatSharing(r: Pick<DonationRow, 'sharing'>): string {
+  return r.sharing === 'public' ? 'public (DANDI)' : 'CaLab only';
 }
 
 export function formatCredit(r: Pick<DonationRow, 'credit_name' | 'credit_lab'>): string {
