@@ -262,6 +262,8 @@ What the export says:
 - The Discover stage record gains `settle_source: 'factors'`, and the Extract record gains `source: 'factors'`, with
   the tiling, windows and mean rank.
 - A note: "Settle and Extract read the factors Discover wrote during the stream; there was no file to re-read."
+- Both sets of traces (owner, 23 Nov): the live traces Discover solved as the frames came in, and the traces Extract
+  solved on the factors. Extract adds its traces; it never replaces the live ones.
 
 Not claimed: that a stream's settle or Extract equals a recording's; any closeness gate.
 
@@ -285,17 +287,27 @@ The lines are set in the evaluation plan before any run.
     (and on a neighbour's soma), core shape error, bitten share, close-pair trace crosstalk, true cells found, false
     cells;
   - real: held-out score on frames no run saw, residual structure, close-pair crosstalk excess;
-  - both: repeatability (median single-pair cosine, same arm, two seeds).
+  - both: repeatability (median single-pair cosine, same arm, two seeds);
+  - speed (owner, 23 Nov: "test if this is all fast enough"): the settle's frames per second and wall time per arm
+    (`qc_eval` stdout), and the compressor's ms per frame on the offset grids.
 - **Pass lines** (proposed):
   - `SET-F` against `SET-R`: on each measure, the paired difference is within `SET-R`'s run-to-run spread or better;
     true cells found are equal; repeatability is at least `SET-R`'s.
   - `STR-F` against `STR-0`: light left out and bitten share are lower, false cells are no more than the spread
     allows, and the held-out score is no lower than the spread allows.
   - `STR-F` against `SET-R` (the ceiling for a stream): reported, not a line.
+  - Speed, native (`qc_eval`): `SET-F`'s settle takes no longer than `SET-R`'s, beyond their run-to-run spread.
+  - Speed, in Chrome (slice 2, a simulated 600 px stream at 20 fps with the usual workers running):
+    - the compress worker keeps up: no window waits longer than one window (30 s) to be compressed, and nothing is
+      queued at the end beyond the last window;
+    - the frames dropped for the slow loop do not rise against the same stream without `?factors`;
+    - after the stream ends, the settle and Extract on factors finish in a time the owner accepts (reported per
+      minute of stream; the owner sets the line after the first run).
 - **Cheap before the beta:**
   - 2 v3 sims + `wl24_01`, 5 arms, 2 seeds: 30 bounded `qc_eval` runs. Run time was not estimated by reading;
     settle-size ran comparable batches.
-  - One headed-Chrome smoke run per slice (no timing claims).
+  - One headed-Chrome smoke run per slice, and in slice 2 the Chrome speed check above (3 runs with `?factors`,
+    3 without, interleaved).
 - **What would change the plan:**
   - `SET-F` fails while `STR-F` passes: files keep the raw settle; streams go ahead.
   - `STR-F` fails: a stream's settle on factors stays off. Only Extract on factors ships for streams, and decision 2's
@@ -314,9 +326,9 @@ The lines are set in the evaluation plan before any run.
 - Each PR is reviewable alone by the maintainer: PR 1 is crate and harness; PR 2 and 3 are app.
 - PR 2 and 3 touch `slow-runner.ts` and `lookback-worker.ts`, as #491 and #470 do. Start PR 2 after #491 has landed or
   been declined, and ask the maintainer to review it.
-- PRs #437, #440, #442: recommended closed as superseded once PR 1 is open, with a comment linking this spec; the
-  branches stay for their reports and code. Merging the stack is not recommended: 21 conflicting files, and its app
-  half is built on the removed Refine stage. The owner decides.
+- PRs #437, #440, #442: closed as superseded once PR 1 is open (owner, 23 Nov: "we don't need PRs anymore that are
+  not relevant"), with a comment linking this spec; the branches stay for their reports and code. Closing them is
+  done with the owner's yes at that time.
 
 ## Risks
 
@@ -343,12 +355,19 @@ The lines are set in the evaluation plan before any run.
 - The history review on offset grids (it keeps plain tiles).
 - Changing any default before the measurements.
 
-## Open for the owner
+## Decided by the owner (23 Nov)
 
-1. Does "not frame-to-frame, but what works on history" mean the closed-form `refine_on_factors`, or main's settle
-   fed from the factors? Recommendation: main's settle fed from the factors (decision 2).
-2. Which app slice comes first? Recommendation: streams.
-3. Where does a stream's slow loop run the replay? Recommendation: in the settle only (`refine`).
-4. What happens to PRs #437, #440, #442? Recommendation: close as superseded once PR 1 is open.
-5. Are the acceptance lines and the evaluation budget of decision 6 right?
-6. After Extract on factors, does a stream's export replace the live traces or keep both?
+1. "Not frame-to-frame" means Discover does not work on factors. Discover keeps running its slow loop on the live
+   frames, on a file and on a stream; one worker is set aside to compress what Discover forwards. The Final settle
+   and Extract work on the stored factors. That is decisions 1, 2 and 4 as written.
+2. PRs #437, #440, #442 are not needed any more: closed once PR 1 is open (section 7).
+3. Speed is tested (decision 6, speed lines).
+4. An export keeps both the live traces and the traces of Extract on factors (decision 5).
+
+## Still open
+
+1. Does a stream's Discover run the cluster replay too (`all`, as a file does), or only the settle (`refine`)?
+   Slice 2 depends on it; slice 1's evaluation measures both (`STR-F`, `STR-FA`).
+2. Which app slice comes first? Recommendation, not objected to: streams.
+3. The acceptance lines and the evaluation budget of decision 6: not commented on; slice 1's Task 6 writes them
+   down before any run.

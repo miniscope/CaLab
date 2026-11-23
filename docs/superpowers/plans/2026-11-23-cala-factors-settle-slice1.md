@@ -240,6 +240,11 @@ const FACTOR_WINDOW: usize = 600;
 struct FactorDump {
     dir: PathBuf,
     wc: calab_cala::compress::WindowCompressor,
+    /// Frames pushed, and the seconds spent in the compressor (speed report).
+    frames: u64,
+    secs: f64,
+    /// The speed line was printed (once, at the first `finish`).
+    reported: bool,
 }
 
 impl FactorDump {
@@ -253,6 +258,9 @@ impl FactorDump {
         FactorDump {
             dir: dir.to_path_buf(),
             wc: calab_cala::compress::WindowCompressor::new(dims, cfg),
+            frames: 0,
+            secs: 0.0,
+            reported: false,
         }
     }
 
@@ -262,16 +270,32 @@ impl FactorDump {
     }
 
     fn push(&mut self, frame: &[f32]) {
-        if let Some(wf) = self.wc.push(frame) {
+        let t0 = Instant::now();
+        let done = self.wc.push(frame);
+        self.secs += t0.elapsed().as_secs_f64();
+        self.frames += 1;
+        if let Some(wf) = done {
             self.write(wf);
         }
     }
 
-    /// Write the last, shorter window; nothing when no frame is buffered
-    /// (a second call, or a recording of whole windows).
+    /// Write the last, shorter window (none when no frame is buffered: a
+    /// second call, or a recording of whole windows) and, the first time,
+    /// print the compressor's time.
     fn finish(&mut self) {
-        if let Some(wf) = self.wc.flush() {
+        let t0 = Instant::now();
+        let done = self.wc.flush();
+        self.secs += t0.elapsed().as_secs_f64();
+        if let Some(wf) = done {
             self.write(wf);
+        }
+        if !self.reported {
+            self.reported = true;
+            println!(
+                "factors: {} frames, {:.2} ms per frame in the compressor (one thread)",
+                self.frames,
+                1e3 * self.secs / self.frames.max(1) as f64
+            );
         }
     }
 }
@@ -683,7 +707,8 @@ No test: these are documents and a driver. The runs themselves are PR 1e, after 
     first three by name); `wl24_01`, first 12,000 frames. Samara `10_43_21`, first 12,000 frames, if the budget
     allows. Two seeds per arm.
   - **Measures:** spec decision 6, computed with `tools/cala-eval/settle_size.py` (`report` for sims, `real` and
-    `pair` for real data). Plus the frames per second of each settle from stdout.
+    `pair` for real data). Plus speed from stdout: each settle's frames per second and wall seconds, and the
+    compressor's ms per frame (Task 2's `factors:` line).
   - **Pre-set lines:** spec decision 6, word for word, with the spread defined as the absolute difference between
     the two seeds of the reference arm, per measure.
   - **Budget:** at most 2 `qc_eval` processes at once; raw data read-only; outputs in a run folder outside the
@@ -722,8 +747,9 @@ Start after #491 has landed or been declined: both touch `slow-runner.ts` and `l
    window is compressed and the windows cover every recorded frame (from #440 and #442, without the replay source).
 4. Look-back worker: a factor history source that opens compressed windows read-only, rebuilds frames (NaN where
    never valid) and solves them. It answers the same `request` messages and never creates, lists or removes files.
-5. Live slow loop with `?factors`: built with `jointUpdate 'refine'` (or the owner's choice) and the held-out record.
-   Test that Discover publishes the same libraries as without it.
+5. Live slow loop with `?factors`: Discover keeps its slow loop on the live frames (owner, 23 Nov), built with the
+   replay setting the owner picks (open question 1: `refine` or `all`) and the held-out record. With `refine`: test
+   that Discover publishes the same libraries as without it.
 6. `SlowRunner`: the Final settle after a stream ends, on the factor port, without look-back.
    - Its states (waiting for factors, sweep, final, done) each say what releases them on Stop, failure, a new
      Discover and a worker crash.
@@ -734,12 +760,17 @@ Start after #491 has landed or been declined: both touch `slow-runner.ts` and `l
 8. Export:
    - the stage records carry `settle_source` and `source: 'factors'` with tiling, windows and mean rank;
    - the note that a stream's settle and Extract read its own factors;
+   - both trace sets (owner, 23 Nov): the live traces stay, and Extract's traces on the factors are added beside
+     them, never in their place;
    - the format version bump, said in the changelog.
 9. Run panel and Steps: the settle and Extract on a stream show as on a file. The text says they read the stream's
    factors.
 10. e2e: a simulated stream with `?factors` settles and extracts after it ends; the export says so. A stream without
     `?factors` is unchanged.
-11. Docs: `stages.md`, README, USER_GUIDE, changelog.
+11. Speed check in headed Chrome (spec decision 6, speed lines): a simulated 600 px stream at 20 fps, 3 runs with
+    `?factors` and 3 without, interleaved. Record the compressor's ms per frame and its queue, the frames dropped for
+    the slow loop, and the settle's and Extract's wall time per minute of stream. A report, no code.
+12. Docs: `stages.md`, README, USER_GUIDE, changelog.
 
 ### Slice 3: a file's settle and Extract on factors (`?factors=file`), PR 3 `feat/cala-factors-file`
 
@@ -760,20 +791,21 @@ Only after the evaluation (PR 1e) and the owner's decision:
    a separate slice).
 3. Docs and changelog.
 
-## Questions only the owner can answer
+## Owner's answers (23 Nov) and what is still open
 
-These are not in any task above; slices 2-4 depend on them.
+Answered:
 
-1. Does "not frame-to-frame, but what works on history" mean the closed-form `refine_on_factors`, or main's settle
-   fed from the factors? Recommendation: main's settle fed from the factors (spec decision 2), because
-   `refine_on_factors` cannot run the cluster replay.
-2. Which app slice first: streams (recommended: the main use case, and a stream has nothing today) or files?
-3. A stream's slow loop: replay in the settle only (`refine`, recommended for slice 2: the live Discover stays as
-   today) or in Discover too (`all`, as a file)?
-4. PRs #437, #440, #442: close as superseded once PR 1 is open (recommended), or keep them open?
-5. The acceptance lines of spec decision 6 and the evaluation budget (recordings, seeds).
-6. A stream's export after Extract on factors: replace the live traces (as a file's Extract does), or keep both?
-   The factor traces are denoised.
+- Discover never works on factors. It keeps its slow loop on the live frames; one worker compresses what Discover
+  forwards. The Final settle and Extract read the factors (spec decisions 1, 2, 4).
+- PRs #437, #440, #442 are not needed: closed once PR 1 is open, with the owner's yes at that time.
+- Speed is tested: Task 6's measures, slice 2's task 11.
+- An export keeps both the live traces and Extract's traces on the factors (slice 2, task 8).
+
+Still open. Slice 1 does not depend on either; slice 2 does:
+
+1. Does a stream's Discover run the cluster replay too (`all`, as a file's Discover does), or only the settle
+   (`refine`)? Slice 1's evaluation measures both (`STR-FA`, `STR-F`).
+2. Streams before files in the app (recommended, not objected to)?
 
 ## Self-review notes
 
