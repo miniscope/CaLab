@@ -62,6 +62,9 @@ import {
 import { GpuMotion } from './gpu-motion.ts';
 import {
   downsampleFrame,
+  downsampleFrames,
+  type FramePreviews,
+  type FrameView,
   previewFactor,
   takeResidualPreview,
   type PreviewImage,
@@ -95,6 +98,10 @@ export interface StageJob {
   flickerGain?: Float32Array;
   raw?: PreviewImage;
   preprocessed?: PreviewImage;
+  /** The view to preview for every frame (set by A from its setting; absent: last frame only). */
+  framePreview?: FrameView;
+  /** Every frame's preview of `framePreview`, made by the stage that owns that view. */
+  frames?: FramePreviews;
   /** Pooled buffer from B (process steps): registered frames. */
   corrected?: Float32Array;
   dy?: Float32Array;
@@ -139,6 +146,7 @@ export function jobTransferables(job: StageJob): ArrayBuffer[] {
     job.quality,
     job.flags,
     job.before?.data,
+    job.frames?.data,
     job.calib?.fovMask,
     job.calib?.preState,
   ];
@@ -242,7 +250,7 @@ export class FrontStage {
     const frameCount = replay ? replay.frameCount : recorded;
     if (replay && (replay.frameCount < 1 || replay.frameCount > recorded))
       throw new RangeError(
-        `The replay (Refine, Extract) covers ${replay.frameCount} frames of a recording of ${recorded}.`,
+        `The replay (Extract) covers ${replay.frameCount} frames of a recording of ${recorded}.`,
       );
     for (const k of ['dy', 'dx', 'flags', 'flickerOffset', 'flickerGain'] as const)
       if (replay && replay[k].length < replay.frameCount)
@@ -276,6 +284,12 @@ export class FrontStage {
     }
     this.raw = this.sixteen ? new Uint16Array(0) : new Uint8Array(0);
   }
+
+  /**
+   * Preview this view of every frame of the batches from now on (null: the
+   * last frame only). Display only: nothing else depends on it.
+   */
+  framePreview: FrameView | null = null;
 
   /** End the recording here: `next()` returns `null` from now on (pass 1 finished early). */
   truncate(): void {
@@ -384,6 +398,19 @@ export class FrontStage {
     }
     const rawPreview = downsampleFrame(raw, last, this.width, this.height, this.factor);
     const preprocessed = downsampleFrame(frontView, last, this.width, this.height, this.factor);
+    const view = this.framePreview;
+    const frames =
+      view === 'raw' || view === 'preprocessed'
+        ? downsampleFrames(
+            view === 'raw' ? raw : frontView,
+            s.count,
+            this.width,
+            this.height,
+            this.factor,
+            view,
+            s.start,
+          )
+        : undefined;
     const t3 = now();
     timings.preprocessMs = t2 - t1b;
     timings.otherMs = t3 - t2;
@@ -397,6 +424,8 @@ export class FrontStage {
       ...shifts,
       raw: rawPreview,
       preprocessed,
+      ...(view ? { framePreview: view } : {}),
+      ...(frames ? { frames } : {}),
       timings,
       busyMs: [t3 - t0 - (t1b - t1), 0, 0],
       ...(live ? { live } : {}),
@@ -557,7 +586,7 @@ export function rigidRecords(
   count: number,
 ): Float32Array {
   const len = motion.recordLen;
-  if (len !== 4) throw new Error('The replay (Refine, Extract) uses rigid shifts only.');
+  if (len !== 4) throw new Error('The replay (Extract) uses rigid shifts only.');
   const records = new Float32Array(count * len);
   for (let i = 0; i < count; i++) {
     records[i * len] = dy[i];
@@ -694,7 +723,7 @@ export class MotionStage {
     const s = job.step;
     const n = s.count * this.px;
     if (!job.dy || !job.dx || !job.flags)
-      throw new Error('The replay (Refine, Extract) uses rigid shifts only.');
+      throw new Error('The replay (Extract) uses rigid shifts only.');
     const records = rigidRecords(motion, job.dy, job.dx, job.flags, s.count);
     const corrected = await this.acquireOut();
     const t0 = now();
@@ -812,6 +841,16 @@ export class MotionStage {
       this.setup.height,
       this.factor,
     );
+    if (job.framePreview === 'corrected')
+      job.frames = downsampleFrames(
+        out,
+        s.count,
+        this.setup.width,
+        this.setup.height,
+        this.factor,
+        'corrected',
+        s.start,
+      );
     const dy = new Float32Array(s.count);
     const dx = new Float32Array(s.count);
     const quality = new Float32Array(s.count);
@@ -895,8 +934,9 @@ export class BackStage {
    * `fast`: the trace solver and slow-loop feed (none: no traces). It is owned (disposed) here.
    * `projector`: mean and max projections of every frame (Extract; see `fov-projection.ts`).
    * `snapshotEvery`: a look-back run (Discover with look-back): every this many
-   * frames (and after the first batch) the batch result carries the back
-   * half's state, which look-back blocks start from (0: never).
+   * frames (and after the first batch, and after the first and last batch of
+   * every session of a Joint run) the batch result carries the back half's
+   * state, which look-back blocks start from (0: never).
    */
   constructor(
     private readonly setup: StageSetup,
@@ -956,10 +996,26 @@ export class BackStage {
       this.setup.height,
       this.factor,
     );
+    const frames =
+      job.framePreview === 'output'
+        ? downsampleFrames(
+            corrected,
+            s.count,
+            this.setup.width,
+            this.setup.height,
+            this.factor,
+            'output',
+            s.start,
+          )
+        : job.frames;
     const end = s.start + s.count;
     this.lastEnd = end;
+    // A Joint run also snapshots the first batch of every session (look-back serves the new
+    // session from its own state at once) and the last (the Final settle's state for it).
+    const bounds = this.setup.plan.boundaries;
+    const joins = this.snapshotEvery > 0 && (bounds.includes(s.start) || bounds.includes(end));
     const backState =
-      this.snapshotEvery > 0 && end - this.snapshotAt >= this.snapshotEvery
+      this.snapshotEvery > 0 && (joins || end - this.snapshotAt >= this.snapshotEvery)
         ? { frame: end, state: pre.state() }
         : undefined;
     if (backState) this.snapshotAt = end;
@@ -975,6 +1031,7 @@ export class BackStage {
       preprocessed: job.preprocessed!,
       corrected: job.before!,
       output,
+      ...(frames ? { frames } : {}),
     };
     const residual = takeResidualPreview(cells, this.setup.width, this.setup.height, this.factor);
     if (residual) previews.residual = residual;

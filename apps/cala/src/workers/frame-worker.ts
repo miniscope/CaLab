@@ -15,10 +15,12 @@ import { CompressFeed } from '../lib/compress-feed.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
 import { FLAT_FIELD_MAX_QUEUE } from '../lib/flat-field.ts';
 import type { FlatFieldBatch, FlatFieldSink, FlatFieldStart } from '../lib/flat-field-runner.ts';
+import { PaceGate, PacedQueue } from '../lib/frame-pacer.ts';
 import { FrameSource } from '../lib/frame-source.ts';
 import { LiveSource, type SocketLike } from '../lib/live-source.ts';
 import { PipelineEngine, transferablesOf, type FrameReader } from '../lib/pipeline-engine.ts';
 import { FrontStage, jobTransferables } from '../lib/pipeline-stages.ts';
+import { FramePreviewSetting } from '../lib/frame-preview-setting.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import { traceBackend as backend } from '../lib/trace-backend.ts';
 import type { FastToCompress } from './compress-types.ts';
@@ -34,11 +36,15 @@ let liveUrl: string | null = null;
 let pipeline: PipelineEngine | null = null;
 let slowPort: MessagePort | null = null;
 let compressPort: MessagePort | null = null;
+/** Smooth pacing of a recording's Discover run, at the entry of the first stage (unpaced by default). */
+const gate = new PaceGate();
 
 // Pipelined run (`link` received): this worker is stage A only (read +
 // preprocess front half); the motion and trace workers do the rest.
 let down: MessagePort | null = null;
 let front: FrontStage | null = null;
+/** The view previewed for every frame (smooth playback); cleared at every run start. */
+const framePreview = new FramePreviewSetting();
 let frontPool: StagePool | null = null;
 let epoch = 0;
 /** Preprocessed-frame buffers between this stage and the motion stage. */
@@ -189,7 +195,8 @@ async function handle(req: FrameRequest): Promise<void> {
         break;
       }
       case 'pipeline-start': {
-        // A replay stage (Refine, Extract) keeps the slow loop of the Discover run.
+        gate.begin(req.cells?.session ?? 0);
+        // A replay stage (Extract) keeps the slow loop of the Discover run.
         stopPipeline(req.cells?.library !== undefined);
         // A live stream cannot be rewound: a restart (or a run after the stream
         // ended) connects again, and the source streams from where it is now.
@@ -198,10 +205,13 @@ async function handle(req: FrameRequest): Promise<void> {
           live = null;
           live = await openLive(liveUrl);
         }
+        // Per-frame previews belong to Discover's display: not for replays, and a restart waits for
+        // the store's `set-frame-preview` after its start.
+        framePreview.startRun(Boolean(req.replay));
         const src = reader();
         if (live && req.replay)
           throw new Error(
-            'Refine and Extract need the recording on disk (save the stream and open it as a recording).',
+            'Extract needs the recording on disk (save the stream and open it as a recording).',
           );
         if (down) {
           epoch++;
@@ -231,6 +241,7 @@ async function handle(req: FrameRequest): Promise<void> {
             FRONT_BUFFERS,
             stage.plan.batchSize * src.info.width * src.info.height,
           );
+          stage.framePreview = framePreview.current;
           front = stage;
           down.postMessage({
             type: 'start',
@@ -243,7 +254,7 @@ async function handle(req: FrameRequest): Promise<void> {
           post({ type: 'pipeline-ready', id: req.id, plan: stage.plan });
           break;
         }
-        if (req.replay) throw new Error('Refine and Extract need the pipelined workers.');
+        if (req.replay) throw new Error('Extract needs the pipelined workers.');
         const cells = req.cells;
         const port = slowPort;
         pipeline = new PipelineEngine(src, req.options, undefined, (setup) => {
@@ -266,6 +277,7 @@ async function handle(req: FrameRequest): Promise<void> {
               : null,
           );
         });
+        pipeline.framePreview = framePreview.current;
         live?.setRetainFrames(
           Math.max(pipeline.plan.calibrationFrames, pipeline.plan.motionWarmupFrames),
         );
@@ -273,11 +285,14 @@ async function handle(req: FrameRequest): Promise<void> {
         break;
       }
       case 'pipeline-step': {
+        // Both paths enter here. A paced step has already waited at the gate (`PacedQueue`), outside
+        // the serial queue and before any stage's timing starts, so the wait is not busy time.
         if (down) {
           // The answer comes from the trace worker, with this request's id.
           if (!front) throw new Error('The pipeline is not running.');
           const job = await front.next();
           if (!job) {
+            flushPaceStats();
             down.postMessage({ type: 'end', epoch, id: req.id } satisfies StageMsg);
           } else {
             down.postMessage(
@@ -289,6 +304,7 @@ async function handle(req: FrameRequest): Promise<void> {
         }
         if (!pipeline) throw new Error('The pipeline is not running.');
         const step = await pipeline.step();
+        if (step.kind === 'done') flushPaceStats();
         post({ type: 'pipeline-step', id: req.id, step }, transferablesOf(step));
         break;
       }
@@ -298,6 +314,7 @@ async function handle(req: FrameRequest): Promise<void> {
         break;
       }
       case 'pipeline-stop': {
+        flushPaceStats();
         stopPipeline(req.keepSlow === true);
         post({ type: 'pipeline-stopped', id: req.id });
         break;
@@ -368,12 +385,71 @@ function truncateNow(): void {
   live?.stop();
 }
 
+/** Messages that act at once, ahead of the queue (a step may be waiting at the gate). */
+function actNow(req: FrameRequest): boolean {
+  switch (req.type) {
+    case 'pace':
+      // A live stream is never paced.
+      if (req.fps !== undefined && !live) {
+        gate.setTarget(req.fps);
+        flushPaceStats();
+      }
+      if (req.paused === true) gate.pause();
+      else if (req.paused === false) gate.resume();
+      post({ type: 'ok', id: req.id });
+      return true;
+    case 'set-frame-preview':
+      framePreview.set(req.view);
+      if (front) front.framePreview = framePreview.current;
+      if (pipeline) pipeline.framePreview = framePreview.current;
+      post({ type: 'ok', id: req.id });
+      return true;
+    case 'pipeline-truncate':
+      gate.openUp();
+      truncateNow();
+      return false;
+    case 'pipeline-stop':
+      pacedQueue.cancelWaiting();
+      truncateNow();
+      return false;
+    // A restart or a new source: steps still waiting at the gate belong to the old run.
+    case 'pipeline-start':
+    case 'open':
+    case 'open-sessions':
+    case 'open-live':
+      pacedQueue.cancelWaiting();
+      return false;
+    default:
+      return false;
+  }
+}
+
 // One message at a time, in arrival order: an `open` must never dispose the
 // headers while a `read` is awaiting its slice, nor a `pipeline-stop` free the
 // pipeline while a step is running.
-let queue: Promise<void> = Promise.resolve();
+let lastPaceStats = Number.NEGATIVE_INFINITY;
+/**
+ * The gate's readouts to the main thread now (a run ended or stopped, or its target changed, back to
+ * Max included), whatever the once-a-second rhythm says. Only for a run that has had a target.
+ */
+function flushPaceStats(): void {
+  if (!gate.reports) return;
+  lastPaceStats = performance.now();
+  post({ type: 'pace-stats', id: -1, stats: gate.stats() });
+}
+const pacedQueue = new PacedQueue<FrameRequest>({
+  gate,
+  isStep: (req) => req.type === 'pipeline-step',
+  run: handle,
+  cancelled: (req) => post({ type: 'error', id: req.id, message: 'The run was stopped.' }),
+  released: () => {
+    // Pacing readouts for the main thread, about once a second.
+    if (performance.now() - lastPaceStats < 1000) return;
+    flushPaceStats();
+  },
+});
 workerScope.onmessage = (e) => {
   const req = e.data;
-  if (req.type === 'pipeline-truncate' || req.type === 'pipeline-stop') truncateNow();
-  queue = queue.then(() => handle(req));
+  if (actNow(req)) return;
+  pacedQueue.push(req);
 };

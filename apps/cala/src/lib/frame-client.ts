@@ -8,6 +8,8 @@ import type { PipelineStepResult } from './pipeline-engine.ts';
 import type { PipelineOptions, PipelinePlan } from './pipeline-plan.ts';
 import type { FlatFieldEvent, FlatFieldMap } from './flat-field.ts';
 import type { ReplayInput } from './pipeline-stages.ts';
+import type { FrameView } from './preview.ts';
+import type { PaceStats } from './frame-pacer.ts';
 import type { CellsSettings } from '../workers/frame-types.ts';
 import type {
   FrameRequest,
@@ -32,12 +34,18 @@ export interface PipelineClient {
   /** Run one step in the worker. Calls are answered in order. */
   stepPipeline(): Promise<PipelineStepResult>;
   /** Free the worker-side pipeline. */
-  /** `keepSlow`: keep the slow loop (a Refine or Extract run is stopped; see `pipeline-stop`). */
+  /** `keepSlow`: keep the slow loop (an Extract run is stopped; see `pipeline-stop`). */
   stopPipeline(opts?: { keepSlow?: boolean }): Promise<void>;
+  /** Pace the running pipeline (`fps`, 0 = unpaced) or hold and resume its gate (`paused`). */
+  setPace?(pace: { fps?: number; paused?: boolean }): Promise<void>;
+  /** The pace gate's readouts (wait, lateness, re-anchors), pushed by the frame worker. Returns an unsubscribe. */
+  readonly subscribePaceStats?: (listener: (s: PaceStats) => void) => () => void;
   /** Turn cell discovery on or off in the running pipeline. */
   setDiscovery?(on: boolean): Promise<void>;
   /** Return (or stop returning) the residual preview in the running pipeline. */
   setResidual?(on: boolean): Promise<void>;
+  /** Preview this view of every frame of the next batches (null: the last frame only); smooth playback. */
+  setFramePreview?(view: FrameView | null): Promise<void>;
   /**
    * The flat-field estimator's status events (pipelined clients with the
    * estimator worker only; absent: no online flat field). Returns an unsubscribe.
@@ -143,7 +151,12 @@ export function createFrameClient(
     pending.clear();
   }
 
+  const paceListeners = new Set<(s: PaceStats) => void>();
   const onmessage = (e: MessageEvent<FrameResponse>) => {
+    if (e.data.type === 'pace-stats') {
+      for (const l of paceListeners) l(e.data.stats);
+      return;
+    }
     const p = pending.get(e.data.id);
     if (!p) return;
     pending.delete(e.data.id);
@@ -207,6 +220,10 @@ export function createFrameClient(
 
   return {
     ...(pipelined ? { maxInFlight: PIPELINED_IN_FLIGHT } : {}),
+    subscribePaceStats(listener: (s: PaceStats) => void) {
+      paceListeners.add(listener);
+      return () => void paceListeners.delete(listener);
+    },
     ...(flatWorker
       ? {
           subscribeFlatField(listener: (e: FlatFieldEvent) => void) {
@@ -248,11 +265,17 @@ export function createFrameClient(
     async truncatePipeline() {
       expectType(await call({ type: 'pipeline-truncate' }), 'ok');
     },
+    async setPace(pace) {
+      expectType(await call({ type: 'pace', ...pace }), 'ok');
+    },
     async setDiscovery(on) {
       expectType(await call({ type: 'set-discovery', on }, [], traceTarget), 'ok');
     },
     async setResidual(on) {
       expectType(await call({ type: 'set-residual', on }, [], traceTarget), 'ok');
+    },
+    async setFramePreview(view) {
+      expectType(await call({ type: 'set-frame-preview', view }), 'ok');
     },
     async connectSlow(port) {
       expectType(await call({ type: 'connect-slow', port }, [port], traceTarget), 'ok');

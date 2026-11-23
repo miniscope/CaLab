@@ -54,6 +54,20 @@ vi.mock('../lib/slow-client.ts', () => ({
   visitWorkerCount: () => 0,
 }));
 
+// Look-back is on by default for recordings but needs worker threads, which jsdom has not.
+vi.mock('../lib/lookback-client.ts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/lookback-client.ts')>()),
+  createLookbackClient: () => ({
+    blocked: () => 'No look-back worker in jsdom.',
+    begin: () => false,
+    rows() {},
+    flatField() {},
+    backState() {},
+    reset() {},
+    poolSize: 0,
+  }),
+}));
+
 import App from '../App.tsx';
 
 HTMLCanvasElement.prototype.getContext = (() =>
@@ -167,7 +181,7 @@ describe('App', () => {
     expect(root.querySelector('.compact-header__file')?.textContent).toBe('rec');
     expect(root.querySelector('.compact-header__info')?.textContent).toContain('50 frames');
 
-    const slider = root.querySelector<HTMLInputElement>('input[type="range"]')!;
+    const slider = root.querySelector<HTMLInputElement>('input[type="range"][aria-label="Frame"]')!;
     expect(slider.max).toBe('49');
     expect(root.querySelector('[data-testid="frame-canvas"]')).not.toBeNull();
     await vi.waitFor(() => expect(fake.readFrame).toHaveBeenCalledWith(0));
@@ -195,7 +209,7 @@ describe('App', () => {
     await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
     await vi.waitFor(() => expect(fake.startPipeline).toHaveBeenCalledTimes(1));
     const status = () => root.querySelector('[data-testid="pipeline-status"]')?.textContent;
-    await vi.waitFor(() => expect(status()).toBe('Done'));
+    await vi.waitFor(() => expect(status()).toMatch(/^(Discover done|Done)$/));
     expect(root.querySelector('[data-testid="pipeline-readout"]')?.textContent).toContain(
       'frame 50 / 50',
     );
@@ -554,7 +568,7 @@ describe('App: animal project', () => {
     expect(first.textContent).toContain(sid(days[0]));
     expect(first.textContent).toContain('800 frames, 0:40');
     expect(first.querySelector('[data-testid="cell-discover"]')!.textContent).toBe('done');
-    expect(first.querySelector('[data-testid="cell-refine"]')!.textContent).toBe('1x');
+    expect(first.querySelector('[data-testid="cell-refine"]')).toBeNull();
     expect(first.querySelector('[data-testid="cell-current"]')!.textContent).toContain('run r2');
     expect(first.querySelector('[data-testid="cell-ids"]')!.textContent).toBe('own');
     expect(second.querySelector('[data-testid="cell-current"]')!.textContent).toBe('—');
@@ -606,7 +620,7 @@ describe('App: animal project', () => {
       expect(el).toHaveLength(2);
       return el;
     });
-    expect(groups[0].textContent).toContain('Joint chain of 2');
+    expect(groups[0].textContent).toContain('Joint: 2 sessions');
     expect(groups[1].textContent).toContain('Separate: 1 session');
     expect(root.querySelector<HTMLButtonElement>('[data-testid="plan-start"]')!.disabled).toBe(
       false,

@@ -1,0 +1,408 @@
+# Work slider, tier 1: does a slower position end as good as Max? (22 Nov 2026)
+
+Work-slider PR 4. The arms, branches and pass lines were committed before the runs they judge
+([2026-11-22-slider-tier1-plan.md](2026-11-22-slider-tier1-plan.md), commits `e1cece09` and `32009f62` after the rebase onto `main`; `f897b273` and `bb2f39e7` before it). Anything
+added after a run is marked **(after the runs)**.
+
+Names: **Max** (`REF`) = no pacing, no Background settle, full Final settle (today's recording path). **P-30 / P-60**
+= paced at 30 / 60 fps, Background settle off. **S-30 / S-60** = paced, Background settle on with cap 2. The app's
+single look-back worker takes turns between need-driven look-back and Background settle. **Final settle budgets:**
+`B0` (none), `B25`, `B50`, `B75` (a quarter, half or three quarters of a pass, spread evenly over the recording), and
+`B100` (today's full pass, in order). "Agreement" = the median footprint cosine of the cells two libraries share
+(matched one-to-one within 12 px at cosine 0.7 or more).
+
+## Short answers for the PI
+
+1. **Footprints: close to Max, but not shown to be at parity (corrected 22 Nov; see "Corrections after review").**
+   - The earlier claim "within 0.001 of Max's own seed-to-seed agreement" is withdrawn. It compared a two-cosine
+     average for Max with a single cosine for the arm. Like for like (single pair, same cells), the arm's median is
+     0.0016-0.0037 below Max-vs-Max, and 60-67 % of cells are lower in the arm.
+   - The pre-registered agreement line (L2) **fails** at 30 fps, by 0.0004, 0.0004, 0.0013 and 0.0034 beyond its
+     margin. Both the cell set and the footprints contribute to the miss.
+   - In Chrome (n = 1), parity holds on `10_43_21` and is borderline on `14_57_02`.
+   - "Further from Max" is not "worse": Max is not ground truth, and on the sims footprint accuracy against truth is
+     level.
+2. **Cells: paced runs keep Max's cells and add more.**
+   - At the 0.7 match threshold, P-30 and S-30 have 96-97 % of the cells Max finds repeatably. Max's own
+     leave-one-seed-out figure is 93 % (L2b passes). The gap shrinks at stricter thresholds (see corrections).
+   - On top of that they add about 50-75 cells per run that no Max seed has.
+   - Those extra cells have low held-out z (median 0.2-1.3) and lower peak z. By held-out z they resemble the sims'
+     false cells, not the sims' added true cells (corrections, item 5). A hint, not a verdict.
+   - On the sims, paced runs find about 43 more true cells and add about 23 more false cells per sim than Max
+     (means over n = 5; per static sim the extra false cells are 10 to 29-57). See corrections: the "intervals include
+     zero" reading was misleading.
+3. **60 fps: model not usable; Chrome (one run per arm) looks like 30 fps.**
+   - The model failed its calibration at 60 fps on visit jobs (-18 % and -20 %, line 15 %), so 60 fps rests on Chrome
+     alone, n = 1 per arm and recording.
+   - In Chrome, every 30 and 60 fps arm agrees with Max to within 0.0035 of Max's own run-to-run agreement, on both
+     recordings.
+4. **How much Final settle can be skipped: about a quarter to a half on Samara, but no rule is safe yet.**
+   - The pre-registered reading compares each budget with Max's in-order full pass. It says half (Max, P-30) or three
+     quarters (S-30) on `10_43_21`, and nothing on `14_57_02`.
+   - That reading favours the full pass: it is read in order, like the reference, and the partial budgets are not.
+     Compared like for like (each budget against Max at the same budget; after the runs), three quarters of a pass
+     ends within 0.002 of a full pass at every position on both recordings. On `10_43_21` it is level with the full
+     pass.
+   - On the sims, S-30 needs almost no Final settle (3 of 5 sims at `B0`).
+   - The design's stop test (median drift ratio R at most 0.8) never fired. R stayed at 0.87-1.00, the design's
+     random-walk value. Max's seed-to-seed agreement is still rising through the whole pass, so a plateau is not
+     shown. The test should be replaced, not refit. L5 does not discriminate.
+   - The "at most 4 % moving" floor alone is reached by about frame 3,600, far too early.
+   - Keep the full Final settle (as decided).
+5. **Cap 4 (L9): meets the pre-registered rule, but the rule rests on six non-independent differences (t-interval about [1, 36]). Expect about 3, not 4. Any cap-4 test needs a final-quality guard.**
+   - The Background settle makes the live library better than pacing alone (+19 points of the gap closed, 95 % CI
+     5-29, n = 6).
+   - The "gap closed" measure has a ceiling well below 100 % (section 3), so S-30's 17 % / -5 % says less than it
+     seems.
+   - One look-back worker re-reads about 157 frames a second in Chrome (60 fps, settle on). At 30 fps, after the
+     need-driven look-back, that leaves room for about 3.3 per live frame, not 4.
+   - After the full Final settle, dose 2 does not beat dose 0, so more dose cannot improve the final result.
+6. **Second look-back worker (L8): no evidence a second worker matters for final quality; open for the live library and need-driven look-back.** A cheaper alternative is need-driven priority over Background settle on one worker.
+   - At 60 fps one worker delivers 1.33-1.39 re-reads per live frame, not the cap of 2.
+   - Taking turns costs the need-driven look-back: with the settle on it drops from 35,415 to 23,720 frames
+     (`10_43_21`, Chrome 60 fps).
+   - After the Final settle, S-60 and P-60 end about level in Chrome (n = 1). On `14_57_02` the settle-on arm ends
+     slightly lower than settle-off in all three comparisons (model 30 fps, Chrome 30 and 60 fps). The direction is
+     consistent; the n is too small to call.
+   - The Background settle still improves the live library at 60 fps (Chrome). Whether a second worker would add to
+     that is not modelled and is left open.
+
+## What was run
+
+| what                                               | data                                                                       | n                                  |
+| -------------------------------------------------- | -------------------------------------------------------------------------- | ---------------------------------- |
+| Chrome, 60 fps pairs and second Max runs (this PR) | Samara `10_43_21`, `14_57_02`; headed, Metal GPU, port 5198, one at a time | 1 per arm and recording            |
+| Chrome, Max and 30 fps pairs                       | the same recordings, #461's runs                                           | 1 per arm and recording            |
+| Model, C1 at 60 fps                                | `10_43_21`, offered at Chrome's 59.1 fps                                   | 1 per row                          |
+| Model, tier 1: REF, P-30, S-30                     | both Samara recordings, slow seeds 1-3, each branched into `B0`-`B100`     | 3 seeds x 2 recordings = 6 per arm |
+| Model, tier 1 sims                                 | quick tier (static 5, 6, 7; pairs 5, 6), slow seed 1                       | 5 sims per arm                     |
+
+Model flags: #456 round 2 with `--visit-units-per-ms 2.3e6 --pool 4` (`slider_tier1.sh`). The workshop recording is
+excluded (plan). The 30 fps model runs took about 50 min each, Max about 21 min; at most 1.3 GB per process.
+
+**Caveat on Max in the model.** C1 failed at full speed. The model's Max makes about 1,600 visit jobs in Discover
+where Chrome makes about 3,900. It ends with 290 / 253 cells where Chrome ends with 320 / 280. Every model parity
+number is relative to this Max. The Chrome rows below are the check on it.
+
+## Step 1: C1 at 60 fps
+
+The full table is in the plan file. Both rows fail on visit jobs only:
+
+- off row: -17.5 %;
+- on row: -19.8 %;
+- the missed share, need-driven frames and settle dose pass (dose -14 %).
+
+By the rule written before the runs, model arms ran at 30 fps only. The approved `14_57_02` trio gave both recordings
+a Chrome 60 fps pair and a Chrome Max-to-Max null.
+
+## Question 1: parity after the Final settle
+
+### Model, 30 fps (n = 3 seeds per recording; full pass `B100`)
+
+| recording  | arm  | agreement with Max, mean (range) | Max-Max null | L2 (>= null - 0.003) | Max's repeatable cells present | leave-one-out null | L2b  | missed | L5 moving at end |
+| ---------- | ---- | -------------------------------- | ------------ | -------------------- | ------------------------------ | ------------------ | ---- | ------ | ---------------- |
+| `10_43_21` | P-30 | 0.9892 (0.9876-0.9903)           | 0.9926       | **fail** (-0.0034)   | 96.3 %                         | 93.3 %             | pass | 0 %    | <= 0.3 %         |
+| `10_43_21` | S-30 | 0.9892 (0.9887-0.9896)           | 0.9926       | **fail** (-0.0034)   | 96.5 %                         | 93.3 %             | pass | 0 %    | <= 0.5 %         |
+| `14_57_02` | P-30 | 0.9872 (0.9863-0.9883)           | 0.9915       | **fail** (-0.0043)   | 96.8 %                         | 93.0 %             | pass | 0 %    | <= 0.3 %         |
+| `14_57_02` | S-30 | 0.9851 (0.9826-0.9873)           | 0.9915       | **fail** (-0.0064)   | 97.4 %                         | 93.0 %             | pass | 0 %    | <= 0.3 %         |
+
+Pooled over the 6 recording-seeds (paired bootstrap; seeds of one recording are not independent, so the interval is
+too narrow):
+
+| arm  | agreement minus null       | repeatable cells minus null |
+| ---- | -------------------------- | --------------------------- |
+| P-30 | -0.0038 [-0.0047, -0.0030] | +3.4 points [2.4, 4.4]      |
+| S-30 | -0.0049 [-0.0066, -0.0035] | +3.8 points [2.9, 4.6]      |
+
+**(After the runs) Same cells only.** The median cosine on the cells that all three Max seeds and the arm have
+(200-245 cells per seed):
+
+| recording  | arm  | Max vs Max | arm vs Max | difference  |
+| ---------- | ---- | ---------- | ---------- | ----------- |
+| `10_43_21` | P-30 | 0.9918     | 0.9915     | -0.0003     |
+| `10_43_21` | S-30 | 0.9917     | 0.9916     | -0.0001     |
+| `14_57_02` | P-30 | 0.9914     | 0.9903     | -0.0010     |
+| `14_57_02` | S-30 | 0.9914     | 0.9882     | **-0.0032** |
+
+Both the cell set and the footprints contribute to the L2 miss (**corrected 22 Nov**; the first reading, "most of the
+failure is in the cell set", is withdrawn, and this table's Max-vs-Max column is biased low, see corrections item 1).
+The paced arms match about 3 points more of Max's cells, and the weaker ones pull the median down. This diagnostic was
+not pre-registered; L2 as written fails.
+
+### Chrome anchor (n = 1 per arm; the app's own Final settle)
+
+| recording  | Max-Max null | arm (Background-settle dose) | cells (Max: 320/326; 283/274) | agreement with the two Max runs | within null - 0.003? | cells both Max runs found, present |
+| ---------- | ------------ | ---------------------------- | ----------------------------- | ------------------------------- | -------------------- | ---------------------------------- |
+| `10_43_21` | 0.9908       | P-30 (0)                     | 387                           | 0.9900 / 0.9907                 | yes                  | 97.9 %                             |
+|            |              | S-30 (1.99)                  | 377                           | 0.9898 / 0.9893                 | yes                  | 98.6 %                             |
+|            |              | P-60 (0)                     | 379                           | 0.9893 / 0.9901                 | yes                  | 97.2 %                             |
+|            |              | S-60 (1.33)                  | 377                           | 0.9903 / 0.9902                 | yes                  | 97.2 %                             |
+| `14_57_02` | 0.9913       | P-30 (0)                     | 325                           | 0.9873 / 0.9896                 | yes (by 0.0002)      | 96.8 %                             |
+|            |              | S-30 (1.99)                  | 324                           | 0.9867 / 0.9891                 | no, by 0.0004        | 97.6 %                             |
+|            |              | P-60 (0)                     | 319                           | 0.9896 / 0.9910                 | yes                  | 97.6 %                             |
+|            |              | S-60 (1.39)                  | 320                           | 0.9875 / 0.9886                 | no, by 0.0003        | 96.8 %                             |
+
+The two Max runs share 284 of 320 and 247 of 283 cells (89 % and 87 %). In Chrome, Max itself misses more of its own
+cells than any paced arm does. No frame was missed by the slow loop at 30 or 60 fps.
+
+### Extra cells (reported apart, as the PI asked)
+
+Model, all three seeds pooled. "Extra" = in no Max seed's library.
+
+| recording  | group                       | cells            | median held-out z | held-out z > 2 | median peak z | median birth (share of recording) | born in 2nd half |
+| ---------- | --------------------------- | ---------------- | ----------------- | -------------- | ------------- | --------------------------------- | ---------------- |
+| `10_43_21` | Max, found by one seed only | 48               | 0.3               | 25 %           | 10.9          | 0.56                              | 60 %             |
+|            | P-30 extra                  | 223 (74 per run) | 0.4               | 20 %           | 11.4          | 0.27                              | 32 %             |
+|            | S-30 extra                  | 218 (73 per run) | 0.2               | 20 %           | 11.4          | 0.29                              | 33 %             |
+|            | S-30, cells Max also has    | 946              | 4.4               | 67 %           | 24.7          | 0.09                              | 13 %             |
+| `14_57_02` | Max, found by one seed only | 41               | 0.6               | 24 %           | 13.3          | 0.48                              | 44 %             |
+|            | P-30 extra                  | 157 (52 per run) | 1.3               | 34 %           | 11.5          | 0.32                              | 29 %             |
+|            | S-30 extra                  | 148 (49 per run) | 1.2               | 32 %           | 11.4          | 0.30                              | 32 %             |
+|            | S-30, cells Max also has    | 831              | 3.1               | 60 %           | 23.1          | 0.12                              | 14 %             |
+
+- The extra cells are weak: about a fifth to a third pass held-out z > 2, against two thirds of the shared cells.
+  Their peak z is half that of the shared cells.
+- Their held-out z is equal to or above that of Max's own single-seed cells. So L2c "passes", except S-30 on
+  `10_43_21` (0.2 against 0.3).
+- They are born early (median a quarter to a third into the recording). These are cells that full-speed Discover
+  never gets to, because it misses 22-24 % of the frames.
+- On the sims (below), about two of every three added cells match a true cell.
+
+### Sims (quick tier, n = 5; a screen, not a verdict)
+
+| arm minus Max (paired t 95 % CI) | footprint r, all          | screen L1 (mean >= -0.001) | r, born in 2nd half (L1b) | bitten share (L1c)     | false cells (L1d) | matched true cells |
+| -------------------------------- | ------------------------- | -------------------------- | ------------------------- | ---------------------- | ----------------- | ------------------ |
+| P-30                             | -0.0011 [-0.0025, 0.0003] | **stop** (by 0.0001)       | -0.018 [-0.043, 0.006]    | +0.006 [-0.039, 0.052] | +25 [0, 50]       | +41 [-6, 88]       |
+| S-30                             | +0.0002 [-0.0009, 0.0012] | pass                       | -0.014 [-0.038, 0.011]    | -0.018 [-0.041, 0.004] | +22 [-5, 48]      | +45 [-6, 96]       |
+
+- At 5 sims, L1b and L1d cannot pass: the intervals are wider than the lines.
+- The late-born and false-cell differences point the same way as the extra cells on real data: more cells, some of
+  them weak.
+- Model Max misses 27.5 % of the frames on the sims (at an assumed 340 fps).
+
+**Verdict, question 1.**
+
+- No 30 fps position passes the pre-registered parity lines in the model. L2 fails, L2b passes, and the sim screen
+  stops P-30 by a hair.
+- **(Corrected 22 Nov)** On shared cells, like for like, the arms are 0.0016-0.0037 below Max-vs-Max in the model.
+  Chrome (n = 1) puts all four positions within or 0.0004 short of the line; parity holds on `10_43_21` and is
+  borderline on `14_57_02`.
+- The differences from Max are the extra cells and a small footprint shift. That is the open Q1 for the PI: about
+  50-75 extra cells per Samara recording, mostly weak.
+
+## Question 2: how much Final settle can be skipped
+
+`B*` = the smallest budget whose library is within 0.003 agreement and 3 points of repeatable cells of the arm's own
+full pass (pre-registered). **(After the first Max runs, before any paced run finished)** The comparison changed
+from "Max of the same seed" to "the other seeds' Max". The same-seed rule made Max's own full pass agree with itself
+at 1.0, so Max could never skip anything.
+
+| recording  | arm  | `B0`   | `B25`  | `B50`  | `B75`  | `B100` | `B*` (per seed)       | Final settle that could be skipped |
+| ---------- | ---- | ------ | ------ | ------ | ------ | ------ | --------------------- | ---------------------------------- |
+| `10_43_21` | Max  | 0.9801 | 0.9888 | 0.9904 | 0.9910 | 0.9926 | `B50` (50, 50, 50)    | half                               |
+|            | P-30 | 0.9815 | 0.9850 | 0.9873 | 0.9874 | 0.9892 | `B50` (50, 25, 50)    | half                               |
+|            | S-30 | 0.9844 | 0.9856 | 0.9867 | 0.9863 | 0.9880 | `B25` (25, 0, 25)     | three quarters                     |
+| `14_57_02` | Max  | 0.9766 | 0.9848 | 0.9872 | 0.9877 | 0.9915 | `B100` (all)          | none                               |
+|            | P-30 | 0.9730 | 0.9785 | 0.9807 | 0.9823 | 0.9865 | `B100` (all)          | none                               |
+|            | S-30 | 0.9795 | 0.9789 | 0.9799 | 0.9814 | 0.9845 | `B100` (75, 100, 100) | none                               |
+
+(Agreement with the other seeds' Max full pass; the repeatable-cell share moved by at most 1.5 points between `B25`
+and `B100` and never decided.)
+
+Sims, footprint r with the truth (mean over 5 sims):
+
+| arm  | `B0`   | `B25`  | `B50`  | `B75`  | `B100` | `B*` per sim         |
+| ---- | ------ | ------ | ------ | ------ | ------ | -------------------- |
+| Max  | 0.9603 | 0.9825 | 0.9850 | 0.9857 | 0.9858 | 75, 100, 50, 50, 50  |
+| P-30 | 0.9807 | 0.9826 | 0.9836 | 0.9840 | 0.9847 | 25, 100, 50, 100, 75 |
+| S-30 | 0.9853 | 0.9859 | 0.9859 | 0.9859 | 0.9860 | 0, 0, 0, 100, 25     |
+
+What this says:
+
+- **The Background settle does most of the Final settle's work on the sims.** S-30 before any Final settle (0.9853)
+  is already at Max's full-pass level (0.9858). On the sims, the saving at S-30 is real.
+- **On Samara the pre-registered reading is biased toward the full pass.**
+  - Every arm's agreement is nearly flat from `B25` to `B75` and then jumps at `B100`. The sims, scored against the
+    truth, show no such jump.
+  - The reference is Max's in-order full pass, and only `B100` is read in the same order. **(After the runs)** Scored
+    like for like (each budget against the other seeds' Max at the same budget), the jump mostly goes away:
+
+    | recording  | arm  | `B25`  | `B50`  | `B75`  | `B100` |
+    | ---------- | ---- | ------ | ------ | ------ | ------ |
+    | `10_43_21` | Max  | 0.9902 | 0.9916 | 0.9930 | 0.9926 |
+    |            | P-30 | 0.9845 | 0.9882 | 0.9902 | 0.9892 |
+    |            | S-30 | 0.9844 | 0.9868 | 0.9881 | 0.9881 |
+    | `14_57_02` | Max  | 0.9858 | 0.9882 | 0.9897 | 0.9915 |
+    |            | P-30 | 0.9773 | 0.9805 | 0.9848 | 0.9865 |
+    |            | S-30 | 0.9756 | 0.9792 | 0.9827 | 0.9845 |
+
+  - Read this way, three quarters of a pass is level with the full pass on `10_43_21`. On `14_57_02` it is 0.0017-0.0020
+    short at every position, inside the 0.003 tolerance but still rising.
+  - It measures how alike two runs end at the same budget, not closeness to one fixed reference, so neither reading
+    alone settles the question.
+  - Paced positions save no more than Max on Samara. The extra cells, which only the paced runs have, are not in
+    these numbers.
+- **The stop test does not work as designed.**
+  - On every full pass (18 runs), at least 96 % of cells were below 2x their noise from about frame 3,600 on (the
+    floor holds).
+  - But the median drift ratio R over the last three steps stayed at 0.87-1.00 and never reached 0.8. In the
+    design's terms that is a random walk (R about 1), not noise around a settled value (about 0.58), and not steady
+    drift (up to 1.73).
+  - A rule on the floor alone would stop at about a fifth of the pass, where agreement is still well below the full
+    pass (Max on `14_57_02`: 0.9848 at a quarter against 0.9915).
+  - The R threshold would need to be about 0.95 to fire. The design fits it on second-pass Max checkpoints, which
+    this PR did not run (no 2-pass branch), so it cannot be refit here.
+- **Recommendation:** keep the full Final settle at every position. Before an adaptive end: run second-pass
+  branches to fit R, and compare budgets read in the same order as their reference.
+
+## Question 3: sizing
+
+**Live library at the last frame** (before any Final settle; share of Max's live-to-settled gap closed; model, per
+seed):
+
+| recording  | P-30                         | S-30                      |
+| ---------- | ---------------------------- | ------------------------- |
+| `10_43_21` | 3, 0, -11 % (mean -3 %)      | 17, 16, 18 % (mean 17 %)  |
+| `14_57_02` | -23, -20, -25 % (mean -23 %) | -34, 10, 10 % (mean -5 %) |
+
+- **The measure has a ceiling.** Its zero is Max's live library against Max's own settled one, from the same run and
+  the same cells. A different run never gets that close: S-30's own full pass would score only about 30-40 %. So L3's
+  50 % line is close to unreachable, and the plan's "below 75 %" in L9 is always true. This was found after the runs.
+- Scored across seeds instead (the `B0` and `B100` columns of the question 2 table), the share closed is:
+
+  | recording  | P-30  | S-30  | S-30's own full pass (the ceiling) |
+  | ---------- | ----- | ----- | ---------------------------------- |
+  | `10_43_21` | +11 % | +34 % | 63 %                               |
+  | `14_57_02` | -24 % | +19 % | 53 %                               |
+
+- The Background settle helps the live library, in both versions: S-30 minus P-30 = **+18.8 points** [5.1, 29.4]
+  (pre-registered measure, n = 6).
+- L3 (S-30 closes at least 50 %) **fails** as written, but against an unreachable line.
+- In Chrome the live library at Discover's end agrees with Max's final library as follows:
+
+  | arm                  | `10_43_21` | `14_57_02` |
+  | -------------------- | ---------- | ---------- |
+  | Max live (reference) | 0.9805     | 0.9763     |
+  | P-30                 | 0.9821     | 0.9727     |
+  | S-30                 | 0.9841     | 0.9807     |
+  | P-60                 | 0.9771     | 0.9749     |
+  | S-60                 | 0.9875     | 0.9815     |
+
+**L9, cap 4: pre-registered rule met, on weak evidence (see corrections item 7).**
+
+- S-30 beats P-30 in gap closed (lower CI bound 5.1 > 0).
+- S-30 closes less than 75 % of the gap; with the ceiling, this part of the rule says little.
+- The modelled look-back worker is 45-51 % busy at 30 fps (below 70 %). That is not the binding limit. In Chrome one
+  worker re-reads about 157 frames a second (60 fps, settle on: 23,720 need-driven + 23,760 settle frames over a
+  303 s Discover). At 30 fps, after 60 need-driven frames a second, that leaves room for about 3.2-3.3 per live
+  frame, not 4.
+- The final result will not improve. After the full Final settle, S-30 ends level with P-30 on `10_43_21` and slightly
+  lower on `14_57_02`. The sims put S-30 ahead only before the Final settle.
+- Test it only if a better live library during the run matters (live view, closed loop).
+
+**L8, second look-back worker: no evidence a second worker matters for final quality; open for the live library and need-driven look-back.**
+
+- In Chrome at 60 fps, one worker delivers 1.33 (`10_43_21`) and 1.39 (`14_57_02`) re-reads per live frame, not
+  the cap of 2. The design's "one worker covers 60 fps" rule (at least 1.8) is not met.
+- One worker taking turns starves the need-driven look-back. With the settle on, the need-driven frames asked drop
+  from 35,415 to 23,720 (`10_43_21`, Chrome, 60 fps). The model shows the same drop: 35,400 to 26,638. A second,
+  dedicated worker would mainly give that back.
+- After the Final settle, S-60 and P-60 end about level in Chrome (n = 1):
+  - `10_43_21`: agreement 0.9903 / 0.9902 against 0.9893 / 0.9901;
+  - `14_57_02`: 0.9875 / 0.9886 against 0.9896 / 0.9910, settle-on lower.
+- So the dose does not help the final library. On `14_57_02` the settle-on arm ends a little lower in all three
+  comparisons we have (model 30 fps, Chrome 30 fps, Chrome 60 fps); the direction is consistent but n is too small.
+- The live library gains from dose 1.3 at 60 fps (Chrome above). Whether dose 2 would add to that needs the
+  two-worker build or a `--lb-workers` model flag, which this PR did not add.
+
+## Corrections after review (22 Nov 2026)
+
+A Fable review found overclaims in the text above. The data and tables are unchanged; the wording is corrected here
+and in the short answers (marked "corrected"). Where this section and the text above disagree, this section wins.
+
+1. **Footprint parity (short answer 1, "same cells only" table).**
+   - The diagnostic averaged two cross-seed cosines per cell for Max but used a single cosine for the arm. Cosines are
+     skewed toward 1, so averaging two pulled Max's median down. That is why Max-vs-Max on all-three-seed cells
+     (0.9918) sits below the full null (0.9926). "Within 0.001" is not supported.
+   - Like for like (single pair, same cell sets), arm minus Max-vs-Max median:
+
+     | recording  | arm  | Max-vs-Max | arm (same seed) | 10th percentile (Max to arm) |
+     | ---------- | ---- | ---------- | --------------- | ---------------------------- |
+     | `10_43_21` | P-30 | 0.9934     | -0.0019         | 0.958 to 0.938               |
+     | `10_43_21` | S-30 | 0.9934     | -0.0018         | 0.957 to 0.940               |
+     | `14_57_02` | P-30 | 0.9919     | -0.0016         | 0.936 to 0.923               |
+     | `14_57_02` | S-30 | 0.9919     | -0.0037         | 0.937 to 0.916               |
+
+   - 60-67 % of cells are lower in the arm.
+   - Chrome, same statistic: `10_43_21` -0.0008 to +0.0009 at all positions; `14_57_02` -0.0000 to -0.0038.
+   - Both the cell set and the footprints contribute to the L2 miss. In Chrome, parity holds on `10_43_21` and is
+     borderline on `14_57_02`.
+   - "Further from Max" is not "worse": Max is not ground truth, and on the sims footprint accuracy against truth is
+     level.
+2. **"Most of the L2 failure is in the cell set"** was overclaimed. Both contribute (item 1).
+3. **Cell retention (short answer 2).** "96-97 % against 93 %" holds at the 0.7 match threshold only:
+   - at 0.9: 90.5 / 89.4 against 90.2 (`10_43_21`) and 89.3 / 87.7 against 87.3 (`14_57_02`);
+   - at 0.95: paced is 3-4 points lower on `10_43_21` (81.0 / 81.2 against 84.6).
+4. **Sims "both intervals include zero" was misleading.** Per static sim, paced runs find +63 to +80 true cells, but
+   false cells rise from about 10 to 29-57 per sim. The pairs sims show little change. L1b and L1d fail on point
+   estimates, not for lack of power.
+5. **The real extra cells resemble the sims' false cells by held-out z**, not their added true cells:
+   - real extras: median 0.2-1.3, 20-34 % above 2;
+   - sim false cells: about 0, 26-31 %;
+   - sim added true cells: 3-4, 59-66 %.
+
+   This is a hint, not a verdict, since z scales differ between sims and real data. The "two in three added cells
+   match a true cell" sim figure must not be carried over to the real data.
+
+6. **Final settle.** Max's seed-to-seed agreement is still rising through the whole pass (`10_43_21`, in order:
+   0.9801, 0.9875, 0.9889, 0.9901, 0.9916, 0.9922, 0.9926), so a plateau is not shown. The drift-ratio stop test should
+   be replaced, not refit. L5 does not discriminate.
+7. **L8 and L9.**
+   - L8: no evidence a second worker matters for final quality; open for the live library and need-driven look-back.
+     A cheaper alternative is need-driven priority over Background settle on one worker.
+   - L9: it rests on six non-independent differences (t-interval about [1, 36]). Chrome look-back busy at 30 fps with
+     settle on is 66-67 %, not the model's 45-51 %. Any cap-4 test needs a final-quality guard.
+8. **Small fixes.**
+   - The L2 shortfall beyond the margin is 0.0004, 0.0004, 0.0013 and 0.0034 (not "0.001-0.003").
+   - S-30 `B100` on `10_43_21` is 0.9881 (the question 2 table shows 0.9880; the like-for-like table shows 0.9881).
+   - Smoke runs not listed under "Checks and limits": `smoke/static_s5_REF` and `static_s5_S30` (2,400 frames,
+     finished 05:10-05:15, before the plan commit). They were not used for any verdict.
+
+**Proposed amendment for the next round (POST HOC).** Written after seeing these results, so it is a proposal, not a
+pre-registration:
+
+- judge on Max cells found by all Max seeds and matched by the arm;
+- use single-pair cross-seed cosines on both sides, as a per-cell paired difference;
+- report the median and the 10th percentile, one-sided;
+- set the margin from the spread of the Max-Max statistic across seed pairs;
+- keep the old L2 as reported, not deciding;
+- add a sims-vs-truth anchor.
+
+## Checks and limits
+
+- Pre-registration: plan commit `e1cece09` (05:15, before the rebase `f897b273`) came before the 60 fps Chrome pair and every tier-1 run. The C1-at-60
+  verdict (`32009f62`, was `bb2f39e7`) came before the tier-1 batch. The force-push after the rebase replaced the
+  original SHAs; the `head=` field of each Chrome run in `chrome/load.txt` (`f897b273` for the 10_43_21 runs from
+  05:15, `bb2f39e7` for the 14_57_02 runs) is independent proof of the order. Changes after runs are marked above.
+- Every run exited 0.
+  - The first launch of the two pairs sims used a wrong path and failed at start. They were rerun unchanged with
+    the correct path.
+  - All Chrome runs were one at a time, with no qc_eval run of mine going. Load at start: 3-4 (other agents).
+  - The governor agent's Chrome window was waited for.
+- Samara data read-only: model runs read `img/`; Chrome `--single` runs make no export.
+- n is small:
+  - 3 seeds per recording, with 2 recordings;
+  - 5 sims;
+  - 1 Chrome run per arm.
+  - The pooled real intervals treat seeds as independent, which they are not.
+- The model's Max is outside the calibrated range (C1 failed at full speed). The Chrome rows agree with the model's
+  direction (more cells when paced, footprints of shared cells close).
+- Workshop recording not run (plan).
+
+Files:
+
+- run data `~/Projects/cala-data/runs/work-slider-tier1/` (`real/`, `sims/`, `chrome/`, `c1/`), with the summaries
+  `real.md`, `sims.md`, `chrome.md`;
+- scripts `tools/cala-eval/slider_tier1.sh` (runs) and `tools/cala-eval/slider_tier1_summary.py`
+  (`real` / `sims` / `chrome`);
+- binary `bin/qc_eval-tier1-940db2b6`.

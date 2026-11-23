@@ -199,6 +199,8 @@ function SelectedCell(props: {
   scale: FootprintScale;
   boundaries?: readonly number[];
   boundaryFlags?: readonly { frame: number; severity: BoundarySeverity }[];
+  /** The frame the video shows (live runs with smooth playback): the trace's followed window ends there. */
+  displayedFrame?: () => number | null;
 }): JSX.Element {
   const c = () => props.cells;
   const [markerFrame, setMarkerFrame] = createSignal<number | null>(null);
@@ -267,6 +269,7 @@ function SelectedCell(props: {
               markerFrame={markerFrame()}
               boundaries={props.boundaries}
               boundaryFlags={props.boundaryFlags}
+              displayedFrame={props.displayedFrame}
               fill
             />
           }
@@ -286,6 +289,8 @@ export function SelectedCellPanel(props: {
   boundaries?: readonly number[];
   /** Their health flags (Joint runs; `boundary-flags.ts`). */
   boundaryFlags?: readonly { frame: number; severity: BoundarySeverity }[];
+  /** The frame the video shows (live runs with smooth playback): the trace's followed window ends there. */
+  displayedFrame?: () => number | null;
 }): JSX.Element {
   const [scale, setScale] = createSignal<FootprintScale>('linear');
   /** The cell before or after the selected one, by id. */
@@ -370,6 +375,7 @@ export function SelectedCellPanel(props: {
             scale={scale()}
             boundaries={props.boundaries}
             boundaryFlags={props.boundaryFlags}
+            displayedFrame={props.displayedFrame}
           />
         )}
       </Show>

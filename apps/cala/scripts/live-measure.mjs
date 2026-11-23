@@ -13,7 +13,8 @@
  * writes `live_metrics.json` (frames received / processed / dropped per
  * stage, the fast and slow loops' lag behind the stream, batch by batch) and
  * the export `live_cala.npz` (the live traces). `file`: opens the folder
- * through the directory input, lets pass 1 and pass 2 run, and writes
+ * (pass 1 now includes look-back and its Final settle: look-back is on by default; add ?lookback=0
+ * for plain Discover timing) through the directory input, lets pass 1 and pass 2 run, and writes
  * `file_metrics.json` and `file_cala.npz`.
  */
 import { spawn } from 'node:child_process';

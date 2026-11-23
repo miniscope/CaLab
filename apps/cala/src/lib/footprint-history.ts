@@ -5,10 +5,11 @@
  * snapshot only when its footprint differs from its previous one. A snapshot
  * is the footprint cropped to its support (plus a small pad) and quantized to
  * 8 bits of its own peak, so a typical 25 x 25 px cell costs well under 1 KB.
- * Bounds: `maxPerCell` snapshots per cell (the oldest after the first go:
- * the first shows the cell as found) and `maxBytes` in total (the cell with
- * the most snapshots is thinned the same way). Cells that leave the library
- * are dropped by `retain`. Pure, unit-tested.
+ * Bounds: `maxPerCell` snapshots per cell and `maxBytes` in total (the cell
+ * with the most snapshots is thinned the same way). Over a bound, the first
+ * and the newest snapshot stay and the rest are thinned evenly across time
+ * (see `thin`), so a long recording keeps its middle too. Cells that leave the
+ * library are dropped by `retain`. Pure, unit-tested.
  */
 import type { LibraryView } from '../workers/slow-types.ts';
 
@@ -135,10 +136,24 @@ export class FootprintHistory {
     }
   }
 
-  /** Drop the oldest snapshot after the first (the cell as found). */
+  /**
+   * Drop one interior snapshot: the one whose two neighbours are closest in
+   * frame number, so the kept ones stay spread evenly over the recording. The
+   * first (the cell as found) and the newest are never dropped.
+   */
   private thin(cell: CellFootprints): boolean {
-    if (cell.snaps.length < 3) return false;
-    const [gone] = cell.snaps.splice(1, 1);
+    const s = cell.snaps;
+    if (s.length < 3) return false;
+    let at = 1;
+    let closest = Infinity;
+    for (let i = 1; i < s.length - 1; i++) {
+      const span = s[i + 1].frame - s[i - 1].frame;
+      if (span < closest) {
+        closest = span;
+        at = i;
+      }
+    }
+    const [gone] = s.splice(at, 1);
     this.held -= sizeOf(gone);
     this.snaps--;
     return true;

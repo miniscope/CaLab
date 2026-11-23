@@ -6,7 +6,15 @@
  * ahead of the UI, and only the latest previews are kept (a slow renderer
  * drops frames instead of queueing them). Pausing simply stops requesting.
  */
-import { createSignal } from 'solid-js';
+import { createSignal, untrack } from 'solid-js';
+import type { PaceStats } from './frame-pacer.ts';
+import {
+  BirthRate,
+  MaxFpsEstimator,
+  StageBusyMeter,
+  WorkRater,
+  type WorkRates,
+} from './work-meter.ts';
 import type { CellStore } from './cell-store.ts';
 import type { CompressStore } from './compress-store.ts';
 import {
@@ -34,11 +42,33 @@ import type {
   StageTimings,
 } from './pipeline-engine.ts';
 import type { PipelineOptions, PipelinePhase, PipelinePlan } from './pipeline-plan.ts';
+import { PlaybackScheduler, playbackWanted } from './playback.ts';
+import { framePreviewImage, type FrameView } from './preview.ts';
 import { RunRecord } from './run-record.ts';
 import { BoundaryMonitor, severityLabel, type BoundaryFlag } from './boundary-flags.ts';
 import type { SessionStart } from './session-boundary.ts';
 import type { RunHistory } from './run-history.ts';
+import type { CurveRecord, WorkSample } from './run-provenance.ts';
+import {
+  limitPoints,
+  normalizeCurve,
+  sanitizeCurve,
+  SpeedDriver,
+  type TargetPolicy,
+  SpeedSchedule,
+  type PolicyInput,
+  type SpeedCurve,
+} from './speed-schedule.ts';
+import { AutoPolicy, PauseClock, type AutoDecision } from './speed-auto.ts';
 import type { LookbackFeed } from './lookback-client.ts';
+import {
+  CSETTLE,
+  csettleRate,
+  FINAL_SETTLE_LEVEL_DEFAULT,
+  FINAL_SETTLE_LEVELS,
+  finalSettleLevel,
+} from './settle.ts';
+import { FloorMeter, NEED_RATE, floorText, type FloorDisplay } from './speed-floor.ts';
 
 /** Step requests kept outstanding: one running, one queued so the worker never idles. */
 export const MAX_IN_FLIGHT = 2;
@@ -112,6 +142,8 @@ export interface FlatFieldStoreOptions {
     liveName?: string;
     /** A live stream (its maps are neither read from nor written to the cache). */
     live?: boolean;
+    /** Frames in the recording (a speed curve is a share of them); absent for a stream. */
+    frames?: number;
     folder: string;
   } | null;
   /** Minimum time between cache writes, ms (default one minute; the run end always writes). */
@@ -150,6 +182,27 @@ export function createPipelineStore(
   const [processed, setProcessed] = createSignal(0);
   const [previews, setPreviews] = createSignal<BatchPreviews | null>(null);
   const [fps, setFps] = createSignal(0);
+  // ---- Smooth playback (`lib/playback.ts`) ----
+  // With a preview of every frame of a batch (asked from the worker only for the view being shown,
+  // and only at modest processing rates), the displayed frame advances evenly instead of in batch
+  // jumps. `previews()`, and so the FOV's frame readout, follow the DISPLAYED frame; the cell
+  // overlay and the trace cursor follow the processed one (`cells.frame()`), about a batch ahead.
+  interface PlayedFrame {
+    batch: BatchPreviews;
+    index: number;
+  }
+  const playback = new PlaybackScheduler<PlayedFrame>();
+  let smoothOn = true;
+  /** The view the FOV shows, if it can be played (raw, preprocessed, corrected or output). */
+  let playView: FrameView | null = null;
+  /** The view the worker was last asked to preview for every frame. */
+  let framesAsked: FrameView | null = null;
+  let rafId: number | null = null;
+  /** Frames are queued for playback: the displayed frame lags the processed one. */
+  const [playing, setPlaying] = createSignal(false);
+  let displayLogOn = false;
+  let displayLog: { t: number; frame: number }[] = [];
+  const hasRaf = typeof requestAnimationFrame === 'function';
   /** Mean wall time per processed frame and stage, ms. */
   const [stageMs, setStageMs] = createSignal<StageTimings>(ZERO_TIMINGS);
   /** Mean busy time per processed frame of each pipeline stage (A, B, C), ms; empty unless pipelined. */
@@ -160,9 +213,33 @@ export function createPipelineStore(
   /** Cell discovery (the slow loop) on or off. */
   const [discover, setDiscoverSignal] = createSignal(true);
   const [residual, setResidualSignal] = createSignal(false);
-  /** Look-back on for the next Discover start (the setting), and on in the current run. */
-  const [lookback, setLookback] = createSignal(false);
+  /**
+   * Look-back (and its Final settle) on for the next Discover start (the setting), and on in the
+   * current run. On by default for recordings: it is how footprints converge now that there is no
+   * Refine stage. A live stream or a source that cannot be re-read has none (`lookbackBlocked`).
+   */
+  const [lookback, setLookback] = createSignal(true);
   const [lookbackRun, setLookbackRun] = createSignal(false);
+  /**
+   * Settle during Discover ("Background settle", under look-back; runs only
+   * while the target is below Max, at the settle governor's rate): on (the
+   * default) or off, its cap in re-read frames per live frame (both take
+   * effect during a run too: the cap is 0 when off), and the frames per piece
+   * of an answer (0: whole answers; a URL-only knob, for the next start).
+   */
+  const [csettle, setCsettleSignal] = createSignal(true);
+  const [csettleCeiling, setCsettleCeilingSignal] = createSignal<number>(CSETTLE.rate);
+  const [csettleYield, setCsettleYield] = createSignal(0);
+  /** One look-back worker: need-driven look-back first (`?debug&needfirst`; measurement only, next start). */
+  const [csettleNeedFirst, setCsettleNeedFirst] = createSignal(false);
+  /** The settle's cap now (0 = Off). */
+  function settleCap(): number {
+    return untrack(csettle) ? csettleRate(untrack(csettleCeiling)) : 0;
+  }
+  /** Final settle level (under look-back; the setting for the next Discover start). */
+  const [finalSettleLevelSig, setFinalSettleLevelSig] = createSignal(FINAL_SETTLE_LEVEL_DEFAULT);
+  /** The Final settle level the current run started with (null: no run yet), so the run record names what ran. */
+  let runLevel: ReturnType<typeof finalSettleLevel> | null = null;
   /** Session of the current run with look-back (0: none). */
   let lookbackSession = 0;
   /** The live source's counters after the newest batch (null on a file source). */
@@ -300,9 +377,11 @@ export function createPipelineStore(
     }
   }
 
-  /** A session of a Joint run started: record its re-registration (Refine and Extract replay it) and log it. */
+  /** A session of a Joint run started: record its re-registration (look-back and Extract replay it) and log it. */
   function noteSessionStart(st: SessionStart): void {
     record.noteSession(st.index, st.transform);
+    // Look-back warps the session's frames by it too (before this batch's rows reach it).
+    if (lookbackSession) lookbackFeed?.session?.(lookbackSession, st.index, st.transform);
     const [rot, dy, dx] = st.transform;
     const moved =
       rot === 0 && dy === 0 && dx === 0
@@ -363,9 +442,10 @@ export function createPipelineStore(
             kind: 'gap',
             detail: 'A batch arrived out of order: the run record is incomplete',
           });
-        setPreviews(step.previews);
         setProcessed(step.start + step.count);
+        driveCurve(step.start + step.count);
         const rate = meter.record(clock(), step.count);
+        offerPreviews(step.previews, rate);
         setFps(rate);
         const t = step.timings;
         framesDone += step.count;
@@ -377,6 +457,7 @@ export function createPipelineStore(
             (t.readMs + t.preprocessMs + t.motionMs + t.otherMs + t.traceMs) / step.count;
           runHistory.batch(step, rate, perFrame, lag);
         }
+        if (step.cells) forwardDrops = step.cells.droppedFrames;
         if (step.cells && cells) cells.onBatch(step.start, step.count, step.cells, t);
         totals = {
           readMs: totals.readMs + t.readMs,
@@ -387,6 +468,13 @@ export function createPipelineStore(
         };
         const n = framesDone;
         setMotionBackend(step.motionBackend ?? null);
+        setMaxFps(
+          maxFpsEstimator.record(
+            step.count,
+            step.stageBusyMs ?? [t.readMs + t.preprocessMs + t.motionMs + t.otherMs + t.traceMs],
+          ),
+        );
+        if (step.stageBusyMs) stageBusyMeter.record(step.stageBusyMs);
         if (step.stageBusyMs) {
           busyTotals = step.stageBusyMs.map((v, i) => (busyTotals[i] ?? 0) + v);
           setStageBusy(busyTotals.map((v) => v / n));
@@ -417,6 +505,7 @@ export function createPipelineStore(
       case 'done':
         if (lookbackSession && step.backState)
           lookbackFeed?.backState(lookbackSession, step.backState);
+        curveDriver = null;
         if (!exhausted) {
           exhausted = true;
           boundaryMonitor?.end();
@@ -426,6 +515,422 @@ export function createPipelineStore(
         }
         return;
     }
+  }
+
+  /**
+   * Smooth pacing (`?debug&pacefps=N` until a slider exists): read a recording
+   * no faster than `N` frames a second, one batch per period, as a stream
+   * would arrive (0: as fast as it goes). The gate itself runs in the frame
+   * worker (`lib/frame-pacer.ts`); this only tells it the target and when we pause.
+   */
+  let paceFps = 0;
+  /** `paceFps` as a signal (the Speed control reads it; 0: Max). */
+  const [paceTarget, setPaceTarget] = createSignal(0);
+  /** The current target came from the URL (`?debug&pacefps`, source `url`): the Speed control must not override it. */
+  const [paceFromUrl, setPaceFromUrl] = createSignal(false);
+  const paceListeners: ((fps: number, frame: number, source: string) => void)[] = [];
+  const capListeners: ((cap: number, frame: number, source: string) => void)[] = [];
+  /** Told about the work and the floor about once a second (the run record's log). */
+  const workSampleListeners: ((s: WorkSample) => void)[] = [];
+  /** Frames the fast loop did not forward to the slow loop, as of the last batch (this run). */
+  let forwardDrops: number | null = null;
+  /** Told when a run's settle pool starts (its workers, the frame reached); the run record's log. */
+  const poolListeners: ((workers: number, frame: number) => void)[] = [];
+  /**
+   * The speed curve chosen in the Speed control (Curve mode), as set; `normalize` is false for a
+   * replayed record's curve, which must run exactly as recorded.
+   */
+  const [activeCurve, setActiveCurve] = createSignal<{
+    curve: SpeedCurve;
+    preset: string;
+    normalize: boolean;
+  } | null>(null);
+  /** The Auto budget chosen in the Speed control (null: Auto is not the mode): extra time over a Max run, as a share. */
+  const [activeAuto, setActiveAuto] = createSignal<number | null>(null);
+  /** The Auto policy of this run (kept after the run for the record; null: not an Auto run). */
+  let autoPolicy: AutoPolicy | null = null;
+  /** The run's time without its pauses (the budget's clock). */
+  const pauseClock = new PauseClock();
+  /** Told when Auto arms and after each decision (the run record keeps its own copy). */
+  const autoListeners: ((a: { extraTimeShare: number; decisions: AutoDecision[] }) => void)[] = [];
+  const autoSnapshot = () =>
+    autoPolicy
+      ? { extraTimeShare: autoPolicy.share, decisions: autoPolicy.decisions.map((d) => ({ ...d })) }
+      : null;
+  function tellAuto(): void {
+    const a = autoSnapshot();
+    if (!a) return;
+    for (const cb of autoListeners) {
+      try {
+        cb(a);
+      } catch {
+        // Observers only.
+      }
+    }
+  }
+  /** What follows a curve over this run (null: none); stopped when Discover ends. */
+  let curveDriver: SpeedDriver | null = null;
+  /** The curve this run was armed with, for the run record. */
+  let runCurve: CurveRecord | null = null;
+  const curveListeners: ((c: CurveRecord) => void)[] = [];
+  /** Frames in the recording a curve is a share of (0: none, e.g. a stream). */
+  function curveFrames(): number {
+    const id = flat.identity?.();
+    return id && id.live !== true && id.frames !== undefined && Number.isFinite(id.frames)
+      ? id.frames
+      : 0;
+  }
+  function policyInput(frame: number): PolicyInput {
+    const f = untrack(floor);
+    return {
+      frame,
+      totalFrames: curveFrames(),
+      floorFps: f.fps,
+      seeAllFps: f.estimate.seeAllFps,
+      maxFps: maxFpsEstimator.estimate() || null,
+      wallS: pauseClock.now(clock()) / 1000,
+    };
+  }
+  /** The curve the run follows as merged by the minimum-step rule, and how many steps that merged. */
+  const [armedCurve, setArmedCurve] = createSignal<{ curve: SpeedCurve; merged: number } | null>(
+    null,
+  );
+  /**
+   * Take over the target with a policy from `frame` on. Any `TargetPolicy` fits (a curve now, Auto
+   * later); `record` is what the run record keeps of it (null: nothing to record).
+   */
+  function armPolicy(policy: TargetPolicy, frame: number, record: CurveRecord | null): void {
+    curveDriver = new SpeedDriver(policy);
+    runCurve = record;
+    if (record) {
+      for (const cb of curveListeners) {
+        try {
+          cb(record);
+        } catch {
+          // Observers only.
+        }
+      }
+    }
+    driveCurve(frame);
+  }
+  /** Take over the target with the curve from `frame` on (at the run's start, or when chosen mid-run). */
+  function armCurve(frame: number): void {
+    curveDriver = null;
+    runCurve = null;
+    autoPolicy = null;
+    setArmedCurve(null);
+    const a = untrack(activeCurve);
+    const total = curveFrames();
+    const share = untrack(activeAuto);
+    if (share !== null) {
+      if (lookbackFeed && lookbackFeed.blocked() !== null) return;
+      // Without a frame count the policy holds Max (never a stale Fixed target).
+      autoPolicy = new AutoPolicy(share);
+      tellAuto();
+      armPolicy(autoPolicy, frame, null);
+      return;
+    }
+    if (!a || (lookbackFeed && lookbackFeed.blocked() !== null)) return;
+    if (total <= 0) {
+      // No frame count: a curve cannot be a share of it. Max, not a stale Fixed target.
+      if (paceFps > 0 && !untrack(paceFromUrl)) setPace(0, 'curve');
+      return;
+    }
+    const live = policyInput(frame);
+    const norm = a.normalize
+      ? normalizeCurve(a.curve, {
+          totalFrames: total,
+          cap: settleCap(),
+          floorFps: live.floorFps,
+          seeAllFps: live.seeAllFps,
+          maxFps: live.maxFps,
+        })
+      : { curve: a.curve, merged: 0 };
+    const eff = norm.curve;
+    setArmedCurve({ curve: eff, merged: norm.merged });
+    armPolicy(new SpeedSchedule(eff), frame, {
+      preset: a.preset,
+      points: a.curve.points.map((p) => ({ ...p })),
+      effective_points: eff.points.map((p) => ({ ...p })),
+      armed_at_frame: frame,
+    });
+  }
+  /** One look at the curve: a step boundary, or a floor that moved, may change the target. */
+  function driveCurve(frame: number): void {
+    if (!curveDriver) return;
+    const before = autoPolicy?.decisions.length ?? 0;
+    const change = curveDriver.tick(policyInput(frame));
+    if (change) setPace(change.fps, change.source);
+    if (autoPolicy && autoPolicy.decisions.length !== before) tellAuto();
+  }
+  /** The look-back session whose pool start was told (once per run). */
+  let poolNoted = 0;
+  /** A pace was set at some point: from then on Pause and Resume always tell the gate (so its held state never sticks). */
+  let paceEver = false;
+  /** Whether this run's gate is paced (a recording's Discover run; never a live stream). */
+  function paceRun(): boolean {
+    return paceFps > 0 && flat.identity?.()?.live !== true;
+  }
+  const [paceStats, setPaceStats] = createSignal<PaceStats | null>(null);
+  /**
+   * The pipeline session whose pacing readouts count (-1: none), and the newest gate run seen for
+   * it: a stopped run keeps its last readout (the worker's flush on stop) until the next start.
+   */
+  let paceSession = -1;
+  let paceEpoch = -1;
+  client.subscribePaceStats?.((s) => {
+    if (s.session !== paceSession || s.epoch < paceEpoch) return;
+    paceEpoch = s.epoch;
+    setPaceStats(s);
+  });
+  // Work shares (`lib/work-meter.ts`): the slow worker's accounting once a second, and the fast
+  // loop's live estimate of its top speed. Instrumentation only: nothing here steers the run.
+  const workRater = new WorkRater();
+  const maxFpsEstimator = new MaxFpsEstimator();
+  const stageBusyMeter = new StageBusyMeter();
+  const birthRate = new BirthRate();
+  const [work, setWork] = createSignal<WorkRates | null>(null);
+  const [maxFps, setMaxFps] = createSignal(0);
+  /** The max estimate as of the last `work` reading (the readout rebuilds once a second, not per batch). */
+  const [workMaxFps, setWorkMaxFps] = createSignal(0);
+  // The smart floor estimate (`lib/speed-floor.ts`): shown in the `?debug` readout only, steers nothing.
+  const floorMeter = new FloorMeter();
+  const [floorLine, setFloorLine] = createSignal('');
+  /** The floor as the Speed control's mark shows it (the prior until a measurement). */
+  const [floor, setFloor] = createSignal<FloorDisplay>(floorMeter.display());
+  cells?.onStatus((st) => {
+    if (!st.accounting) return;
+    // Throttled to about 1 Hz inside the meter: no per-batch work for a debug readout.
+    if (floorMeter.due(st.accounting.wallMs)) {
+      const lb = st.lookback;
+      const gov = lb?.csettle?.governor;
+      const floorChanged = floorMeter.push({
+        work: st.accounting,
+        inNeed: lb?.inNeed ?? 0,
+        cap: gov?.cap ?? lb?.csettle?.rate ?? 0,
+        needRate: NEED_RATE,
+        target: paceRun() ? paceFps : 0,
+        maxFps: maxFpsEstimator.estimate() || null,
+        paused: untrack(status) === 'paused',
+        governorLimit: gov?.limit,
+        haveLibrary: st.version > 0,
+        run: st.run,
+      });
+      const shown = floorMeter.display();
+      // Once Discover has read its last frame there is no live rate left to set a floor for: the
+      // mark and line keep what Discover ended with (the Final settle's load would move them).
+      if (untrack(status) !== 'done') {
+        setFloorLine(floorText(floorMeter));
+        setFloor(shown);
+      }
+      // The run record's log: once a second at most, and only for Discover's own run.
+      if (workSampleListeners.length > 0 && (st.run ?? 1) === 1) {
+        const e = shown.estimate;
+        const ps = untrack(paceStats);
+        const sample: WorkSample = {
+          frame: untrack(processed),
+          limit: gov?.limit ?? null,
+          maxFps: maxFpsEstimator.estimate() || null,
+          floor: {
+            fps: shown.fps,
+            published: shown.published,
+            seeAllFps: e.seeAllFps,
+            limiting: e.limiting,
+            confidence: e.confidence,
+            terms: { ...e.terms },
+          },
+          floorInputs: floorMeter.last,
+          floorChanged,
+          running: untrack(status) !== 'done',
+          counters: {
+            processed: untrack(processed),
+            observed: st.accounting.observedFrames ?? null,
+            settledFrames: st.accounting.lookback.csettle.frames,
+            forwardDrops,
+            paceLateMs: ps?.lateMs ?? null,
+            paceReanchors: ps?.reanchors ?? null,
+            halvings: gov?.halvings ?? null,
+            slowHalvings: gov?.slowHalvings ?? null,
+          },
+        };
+        for (const cb of workSampleListeners) {
+          try {
+            cb(sample);
+          } catch {
+            // Observers only.
+          }
+        }
+      }
+    }
+    const rates = workRater.push(st.accounting);
+    if (!rates) return;
+    const stages = stageBusyMeter.take(clock());
+    if (stages) rates.fast = { stages };
+    const max = maxFpsEstimator.estimate();
+    setWork(rates);
+    // Likewise "max now": the fast loop is idle after the last frame, so the estimate only decays.
+    if (untrack(status) !== 'done') setWorkMaxFps(max);
+    // Not after Discover's last frame (stream time stands still; see `RunHistory.work`).
+    if (untrack(status) !== 'done') {
+      runHistory?.work(rates, max);
+      runHistory?.target(paceRun() ? paceFps : 0);
+    }
+  });
+  cells?.onStatus((st) => {
+    const births = birthRate.push(st.frame, st.counters.adds);
+    if (births !== null && untrack(status) !== 'done') runHistory?.births(st.frame, births);
+  });
+  function setPace(fps: number, source: string): void {
+    const before = paceRun() ? paceFps : 0;
+    paceFps = Number.isFinite(fps) && fps > 0 ? fps : 0;
+    setPaceTarget(paceFps);
+    setPaceFromUrl(source === 'url');
+    if (paceFps > 0) paceEver = true;
+    const st = status();
+    const after = paceRun() ? paceFps : 0;
+    if (after !== before && (st === 'running' || st === 'paused'))
+      runHistory?.speedSetting('target_speed', processed(), before, after, undefined, source);
+    // A run paused before a pace existed must start held.
+    if (st === 'running' || st === 'paused') sendPace({ fps: paceFps, paused: st === 'paused' });
+    tellSettlePace();
+    // Last, and guarded: a listener (the run record's log) must never disturb pacing.
+    for (const cb of paceListeners) {
+      try {
+        cb(paceFps, untrack(processed), source);
+      } catch {
+        // Observers only.
+      }
+    }
+  }
+
+  function sendPace(pace: { fps?: number; paused?: boolean }): void {
+    void client.setPace?.(pace).catch(() => {});
+  }
+  /** The pacer as the settle governor sees it (the slow worker; 0 = Max): sent whenever it may have changed. */
+  function tellSettlePace(): void {
+    lookbackFeed?.pace?.(paceRun() ? paceFps : 0, untrack(status) === 'paused');
+    startSettlePool();
+  }
+  /** The cap went from `before` to its value now: a run event while running or paused, and the listeners (the run record). */
+  function noteCap(before: number, source: string): void {
+    const after = settleCap();
+    if (after === before) return;
+    const st = untrack(status);
+    const text = (c: number) => (c > 0 ? `${c} per live frame` : 'Off');
+    if (st === 'running' || st === 'paused')
+      runHistory?.speedSetting(
+        'settle_cap',
+        untrack(processed),
+        before,
+        after,
+        `Settle cap ${text(before)} → ${text(after)}`,
+      );
+    for (const cb of capListeners) {
+      try {
+        cb(after, untrack(processed), source);
+      } catch {
+        // Observers only.
+      }
+    }
+  }
+  /** The settle's cap to the slow worker (during a run too), and the pool if it may now be used. */
+  function tellSettleCap(): void {
+    lookbackFeed?.cap?.(settleCap());
+    startSettlePool();
+  }
+  /**
+   * The settle pool starts the first time a look-back run is below Max with
+   * the settle on (mid-run too); a run at Max never starts it.
+   */
+  function startSettlePool(): void {
+    const st = untrack(status);
+    if (st !== 'starting' && st !== 'running' && st !== 'paused') return;
+    if (!lookbackSession || !paceRun() || !(settleCap() > 0)) return;
+    const n = lookbackFeed?.startPool?.(lookbackSession) ?? 0;
+    // The run record notes the first start only (this runs on every pace or cap change).
+    if (n <= 0 || poolNoted === lookbackSession) return;
+    poolNoted = lookbackSession;
+    for (const cb of poolListeners) {
+      try {
+        cb(n, untrack(processed));
+      } catch {
+        // Observers only.
+      }
+    }
+  }
+
+  /** Show one played frame: its view's image, the batch's last-frame images for the other views. */
+  function showPlayed(f: PlayedFrame): void {
+    const fp = f.batch.frames!;
+    setPreviews({
+      ...f.batch,
+      [fp.view]: framePreviewImage(fp, f.index),
+      frame: fp.first + f.index,
+      fit: { [fp.view]: f.batch[fp.view] },
+    });
+    if (displayLogOn) {
+      displayLog.push({ t: clock(), frame: fp.first + f.index });
+      // Bounded: past 20000 entries the oldest half is cut (a short measurement run never gets there).
+      if (displayLog.length > 20000) displayLog = displayLog.slice(-10000);
+    }
+  }
+
+  function playbackLoop(t: number): void {
+    rafId = null;
+    const f = playback.tick(t);
+    if (f) showPlayed(f);
+    if (playback.queued > 0) rafId = requestAnimationFrame(playbackLoop);
+    else setPlaying(false);
+  }
+
+  function endPlayback(): void {
+    if (rafId !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
+    rafId = null;
+    playback.clear();
+    setPlaying(false);
+  }
+
+  /** Ask the worker for per-frame previews of the shown view, or stop asking, by the processing rate. */
+  function syncFramePreview(rate: number): void {
+    const want =
+      smoothOn &&
+      hasRaf &&
+      client.setFramePreview &&
+      playView &&
+      playbackWanted(rate, framesAsked !== null)
+        ? playView
+        : null;
+    if (want === framesAsked) return;
+    framesAsked = want;
+    void client.setFramePreview?.(want).catch(() => {});
+  }
+
+  /** A batch's previews arrived: queue its frames for playback, or show its last frame at once. */
+  function offerPreviews(p: BatchPreviews, rate: number): void {
+    const fp = p.frames;
+    if (fp && hasRaf && smoothOn && fp.view === playView) {
+      const items = Array.from({ length: fp.count }, (_, index) => ({ batch: p, index }));
+      if (status() === 'paused') {
+        // Answers to steps sent before the pause: the newest frame, shown at once.
+        playback.clear();
+        showPlayed(items[items.length - 1]);
+      } else {
+        // Paced: the pace, unless processing cannot keep up with it (then the measured rate, so the
+        // queue does not just fill and skip). Unpaced: a little above the measured rate.
+        const measured = rate > 0 ? rate * 1.05 : Infinity;
+        playback.setRate(
+          paceRun() ? Math.min(paceFps, measured) : Number.isFinite(measured) ? measured : 30,
+        );
+        playback.push(items);
+        setPlaying(true);
+        if (rafId === null) rafId = requestAnimationFrame(playbackLoop);
+      }
+    } else {
+      endPlayback();
+      setPreviews(p);
+      if (displayLogOn) displayLog.push({ t: clock(), frame: p.frame });
+    }
+    syncFramePreview(rate);
   }
 
   function pump(): void {
@@ -470,15 +975,34 @@ export function createPipelineStore(
     inFlight = 0;
     exhausted = false;
     framesDone = 0;
+    forwardDrops = null;
+    curveDriver = null;
+    runCurve = null;
     if (lookbackSession) lookbackFeed?.reset(lookbackSession);
     lookbackSession = 0;
     setLookbackRun(false);
     record = new RunRecord();
+    pauseClock.reset();
     meter = new ThroughputMeter();
     totals = { ...ZERO_TIMINGS };
+    setPaceStats(null);
+    paceSession = -1;
+    paceEpoch = -1;
+    workRater.reset();
+    floorMeter.reset();
+    setFloor(floorMeter.display());
+    stageBusyMeter.reset();
+    birthRate.reset();
+    maxFpsEstimator.reset();
+    setWork(null);
+    setMaxFps(0);
+    setWorkMaxFps(0);
     setPlan(null);
     setSetup(null);
     setProcessed(0);
+    endPlayback();
+    framesAsked = null;
+    displayLog = [];
     setPreviews(null);
     setFps(0);
     setStageMs(ZERO_TIMINGS);
@@ -499,7 +1023,10 @@ export function createPipelineStore(
     reset();
     const gen = generation;
     setStatus('starting');
+    // A curve's first step is the run's first target (the run record's "run start" row).
+    armCurve(0);
     const session = nextSession++;
+    paceSession = session;
     cells?.reset(session);
     compress?.reset(session);
     try {
@@ -528,16 +1055,30 @@ export function createPipelineStore(
       });
       // Look-back (experimental): from this start on, if the recording allows it.
       const lb = lookback() && discover() && lookbackFeed?.begin(session) === true;
+      runLevel = lb ? finalSettleLevelSig() : FINAL_SETTLE_LEVEL_DEFAULT;
       if (lb) {
         lookbackSession = session;
         setLookbackRun(true);
         if (flatLatest) lookbackFeed!.flatField(session, flatLatest);
+        // The cap and the target before the run's init (the slow worker keeps them across runs).
+        lookbackFeed!.cap?.(settleCap());
+        tellSettlePace();
       }
       const p = await client.startPipeline(
         { ...options, flatField: useFlat },
         {
           session,
           ...(lb ? { lookback: true } : {}),
+          ...(lb && FINAL_SETTLE_LEVELS[finalSettleLevelSig()].fraction < 1
+            ? { settleFraction: FINAL_SETTLE_LEVELS[finalSettleLevelSig()].fraction }
+            : {}),
+          ...(lb
+            ? {
+                csettle: true,
+                ...(csettleYield() > 0 ? { csettleYield: csettleYield() } : {}),
+                ...(csettleNeedFirst() ? { csettleNeedFirst: true } : {}),
+              }
+            : {}),
           discover: discover(),
           qc,
           residual: residual(),
@@ -560,8 +1101,14 @@ export function createPipelineStore(
         fps: cells?.fps() ?? 0,
         live: flat.identity?.()?.live === true,
         frameCount: p.frameCount,
+        // What is started now: 3 fast stages, the slow worker, the look-back worker; the visit
+        // workers and a settle pool are added when the first work reading counts them.
+        workers: 4 + (lookbackRun() ? 1 : 0),
       });
+      stageBusyMeter.start(clock());
       setStatus('running');
+      syncFramePreview(0);
+      if (paceRun()) sendPace({ fps: paceFps });
       pump();
     } catch (err) {
       if (gen !== generation) return;
@@ -573,6 +1120,14 @@ export function createPipelineStore(
   function pause(): void {
     if (status() !== 'running') return;
     setStatus('paused');
+    pauseClock.pause(clock());
+    // The newest frame at once; the rest of the queue is dropped.
+    const newest = playback.flush();
+    if (newest) showPlayed(newest);
+    setPlaying(false);
+    // Requests already in the worker must not be released while paused.
+    if (paceEver) sendPace({ paused: true });
+    tellSettlePace();
     runHistory?.log({ frame: processed(), kind: 'pause', detail: 'Paused' });
   }
 
@@ -580,6 +1135,9 @@ export function createPipelineStore(
     if (status() !== 'paused') return;
     // Answers to steps sent before the pause still arrive and count.
     setStatus('running');
+    pauseClock.resume(clock());
+    if (paceEver) sendPace({ paused: false });
+    tellSettlePace();
     runHistory?.log({ frame: processed(), kind: 'resume', detail: 'Resumed' });
     pump();
   }
@@ -587,7 +1145,12 @@ export function createPipelineStore(
   /** Stop and free the worker-side pipeline (e.g. before opening another folder). */
   function stop(): void {
     const wasActive = status() !== 'idle';
+    // The stopped run's pacing readouts stay, and its final one (flushed on stop) still lands.
+    const keep = { session: paceSession, epoch: paceEpoch, stats: paceStats() };
     reset();
+    paceSession = keep.session;
+    paceEpoch = keep.epoch;
+    setPaceStats(keep.stats);
     setStatus('idle');
     if (wasActive) void client.stopPipeline().catch(() => {});
   }
@@ -659,7 +1222,184 @@ export function createPipelineStore(
     lookbackBlocked: () =>
       lookbackFeed ? lookbackFeed.blocked() : 'Look-back is not available here.',
     lookbackRun,
+    /** How much of the final settle pass is read (Thorough, Standard, Quick); the setting for the next Discover start. */
+    finalSettleLevel: finalSettleLevelSig,
+    /** The level the current run started with (the selection before any run); what the run record names. */
+    runFinalSettleLevel: () => runLevel ?? finalSettleLevelSig(),
+    setFinalSettleLevel: (level: unknown) => setFinalSettleLevelSig(finalSettleLevel(level)),
+    /** Settle during Discover (experimental; only with look-back): the settings for the next Discover start. */
+    csettle,
+    /** Background settle on or off (off = cap 0); during a run too. */
+    setCsettle: (on: boolean, source = 'setting') => {
+      const before = settleCap();
+      setCsettleSignal(on);
+      noteCap(before, source);
+      tellSettleCap();
+    },
+    csettleCeiling,
+    /** The cap, re-read frames per live frame (`CSETTLE.rates`); during a run too. */
+    setCsettleCeiling: (rate: number, source = 'setting') => {
+      const before = settleCap();
+      setCsettleCeilingSignal(csettleRate(rate));
+      noteCap(before, source);
+      tellSettleCap();
+    },
+    /**
+     * The frame worker's pacing readouts (gate wait, lateness dropped, re-anchors) of the newest
+     * gate run; null before the first readout of a run (a run that never had a target has none).
+     * The stopped run's final readout stays until the next start.
+     */
+    paceStats,
+    /** Who is doing what, over the last second or so (the slow, visit and look-back workers); null until a second of data. */
+    work,
+    /** The smart floor's `?debug` lines (value, which consumer sets it, confidence); empty before the first status. */
+    floorLine,
+    /** The floor for the Speed control's mark: `published` once measured, else the prior; refreshed about once a second. */
+    floor,
+    /** The fast loop's live estimate of its top speed, frames per second (0 until a batch has busy time). */
+    maxFps,
+    /** `maxFps` as of the last `work` reading, for the readout. */
+    workMaxFps,
+    /** Read no faster than this many frames a second (0: off); applies to a running recording at once. */
+    setPaceFps: (fps: number, source = 'setting') => {
+      // Anyone but a curve (or Auto) setting the target takes the pacer back: a curve does not
+      // fight a user, the URL, a replay or the pin.
+      if (source !== 'curve' && source !== 'auto') {
+        curveDriver = null;
+        runCurve = null;
+        autoPolicy = null;
+        setActiveCurve(null);
+        setActiveAuto(null);
+      }
+      setPace(fps, source);
+    },
+    /** The speed curve of Curve mode, as set (null: none); a signal. */
+    speedCurve: () => {
+      const a = activeCurve();
+      return a ? { curve: a.curve, preset: a.preset, normalize: a.normalize } : null;
+    },
+    /**
+     * Choose a speed curve (null: none). The run follows it from its start, or from the frame it is
+     * chosen at mid-run; steps too short for the governor's ramp are merged at that point (not for
+     * `normalize: false`, a replayed curve, which runs exactly as recorded).
+     */
+    setSpeedCurve: (curve: SpeedCurve | null, o: { preset?: string; normalize?: boolean } = {}) => {
+      const c = curve ? sanitizeCurve(curve) : null;
+      setActiveAuto(null);
+      autoPolicy = null;
+      if (!c) {
+        setActiveCurve(null);
+        curveDriver = null;
+        runCurve = null;
+        setArmedCurve(null);
+        return;
+      }
+      const normalize = o.normalize !== false;
+      setActiveCurve({
+        curve: normalize ? limitPoints(c) : c,
+        preset: o.preset ?? 'custom',
+        normalize,
+      });
+      const st = untrack(status);
+      if (st === 'running' || st === 'paused') armCurve(untrack(processed));
+    },
+    /** The Auto budget of Auto mode (extra time over a Max run, as a share; null: not Auto); a signal. */
+    autoBudget: activeAuto,
+    /**
+     * Choose Auto with a time budget (null: leave Auto). A run follows it from its start, or from
+     * the frame it is chosen at mid-run. Replaces a curve.
+     */
+    setAutoBudget: (share: number | null) => {
+      setActiveCurve(null);
+      curveDriver = null;
+      runCurve = null;
+      setArmedCurve(null);
+      autoPolicy = null;
+      setActiveAuto(share !== null && Number.isFinite(share) && share > 0 ? share : null);
+      const st = untrack(status);
+      if (untrack(activeAuto) !== null && (st === 'running' || st === 'paused'))
+        armCurve(untrack(processed));
+    },
+    /** What this run's Auto decided so far (null: not an Auto run), for the run record. */
+    autoNow: (): { extraTimeShare: number; decisions: AutoDecision[] } | null => autoSnapshot(),
+    /** Called when Auto arms and after each decision it makes (the run record's copy). */
+    onAutoChange: (cb: (a: { extraTimeShare: number; decisions: AutoDecision[] }) => void) => {
+      autoListeners.push(cb);
+    },
+    /** The curve the run follows after the minimum-step rule (null: none armed), with the steps merged; a signal. */
+    armedCurve,
+    /** Install another policy (Auto, PR I) in place of the curve; `record` is kept in the run record. */
+    armPolicy,
+    /** The curve this run is following (null: none), as the run record keeps it. */
+    curveNow: (): CurveRecord | null => (runCurve ? { ...runCurve } : null),
+    /** Called when a curve takes over the target (at the run's start, or mid-run). */
+    onCurveArmed: (cb: (c: CurveRecord) => void) => {
+      curveListeners.push(cb);
+    },
+    /** The target speed now, frames per second (0: Max). */
+    paceFps: () => paceFps,
+    /** The target speed as a signal (0: Max). */
+    paceTarget,
+    paceFromUrl,
+    /** The target speed this run is paced at (0: Max, and always 0 for a live stream, which a target does not pace). */
+    targetNow: () => (paceRun() ? paceFps : 0),
+    /** The settle cap in force for this run (0: Off, and 0 for a live stream, where look-back cannot run). */
+    capNow: () => (flat.identity?.()?.live === true ? 0 : settleCap()),
+    /** Called with the new settle cap, the frame reached and what set it, whenever it changes (the run record's log). */
+    onCapChange: (cb: (cap: number, frame: number, source: string) => void) => {
+      capListeners.push(cb);
+    },
+    /** Called with the new target speed, the frame reached and what set it, whenever `setPaceFps` runs (the run record's log). */
+    onPaceChange: (cb: (fps: number, frame: number, source: string) => void) => {
+      paceListeners.push(cb);
+    },
+    /** Called about once a second while the slow loop reports: the governor's limit, the Max estimate and the floor (the run record's log). */
+    onWorkSample: (cb: (s: WorkSample) => void) => {
+      workSampleListeners.push(cb);
+    },
+    /** Called once per run when its settle pool starts: the pool workers and the frame reached. */
+    onPoolStart: (cb: (workers: number, frame: number) => void) => {
+      poolListeners.push(cb);
+    },
+    smoothPlayback: () => smoothOn,
+    csettleYield,
+    csettleNeedFirst,
+    setCsettleNeedFirst,
+    setCsettleYield: (frames: number) =>
+      setCsettleYield(Number.isFinite(frames) && frames > 0 ? Math.floor(frames) : 0),
     setResidual,
+    /**
+     * The view the FOV shows (null: none, or one that is not a frame of the batch, like the residual):
+     * per-frame previews are asked for this one.
+     */
+    setPlayView: (view: FrameView | null) => {
+      playView = view;
+      if (view === null || view !== framesAsked) endPlayback();
+      syncFramePreview(meter.rate());
+    },
+    /** Smooth playback on or off (default on; `?debug&smooth=0` turns it off for comparison). */
+    setSmoothPlayback: (on: boolean) => {
+      smoothOn = on;
+      if (!on) endPlayback();
+      syncFramePreview(meter.rate());
+    },
+    /** Frames waiting for display, dropped by skipping ahead, and shown; the view being previewed (measurement). */
+    playbackStats: () => ({
+      queued: playback.queued,
+      dropped: playback.dropped,
+      shown: playback.shown,
+      view: framesAsked,
+    }),
+    /**
+     * The frame on screen while playback lags the processed one (null otherwise: a run without
+     * per-frame previews, a finished or paused queue), for views that should end where the video is.
+     */
+    displayedFrame: () => (playing() ? (previews()?.frame ?? null) : null),
+    /** Record when each displayed frame changed (measurement; `?debug`). */
+    setDisplayLog: (on: boolean) => {
+      displayLogOn = on;
+    },
+    displayLog: () => displayLog,
     plan,
     setup,
     processed,

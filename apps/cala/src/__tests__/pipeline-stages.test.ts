@@ -229,7 +229,9 @@ describe('pipeline stages', () => {
       // The slow loop sees the same init, noise maps and frames, byte for byte.
       expect(sentOld.some((m) => m.type === 'frames')).toBe(true);
       expect(sentOld.some((m) => m.type === 'frames' && m.noise)).toBe(true);
-      expect(sentNew).toEqual(sentOld);
+      // (`sentAt` is a send timestamp, different by definition.)
+      const unstamped = (m: FastToSlow) => (m.type === 'frames' ? { ...m, sentAt: 0 } : m);
+      expect(sentNew.map(unstamped)).toEqual(sentOld.map(unstamped));
     },
   );
 
@@ -249,4 +251,57 @@ describe('pipeline stages', () => {
     expect(await pending).toBe(first);
     expect(pool.inFlight).toBe(2);
   });
+
+  it.each(['raw', 'preprocessed', 'corrected', 'output'] as const)(
+    'previews every frame of the %s view the same through the stages as in the engine',
+    async (view) => {
+      const engine = new PipelineEngine(makeMovie(FRAMES), OPTIONS, undefined, (setup) =>
+        recordingFastLoop(setup, []),
+      );
+      engine.framePreview = view;
+      const old: PipelineStepResult[] = [];
+      for (;;) {
+        const r = await engine.step();
+        old.push(r);
+        if (r.kind === 'done') break;
+      }
+      engine.dispose();
+
+      const len = OPTIONS.batchSize * W * H;
+      const frontPool = new StagePool(3, len);
+      const outPool = new StagePool(3, len);
+      const a = new FrontStage(makeMovie(FRAMES), OPTIONS, () => frontPool.acquire());
+      a.framePreview = view;
+      const b = new MotionStage(a.setup, () => outPool.acquire());
+      const c = new BackStage(a.setup, recordingFastLoop(a.fastSetup, []));
+      const staged: PipelineStepResult[] = [];
+      for (;;) {
+        const job = await a.next();
+        if (!job) break;
+        const done = await b.handle(job);
+        if (done.calib) {
+          const m = done.calib.fovMask;
+          done.calib = { ...done.calib, fovMask: structuredClone(m, { transfer: [m.buffer] }) };
+        }
+        if (done.front) frontPool.release(done.front);
+        staged.push(c.handle(done));
+        if (done.corrected) outPool.release(done.corrected);
+      }
+      a.dispose();
+      b.dispose();
+      c.dispose();
+
+      const o = old.filter((r) => r.kind === 'batch');
+      const n = staged.filter((r) => r.kind === 'batch');
+      expect(n).toHaveLength(o.length);
+      for (let i = 0; i < o.length; i++) {
+        const fo = o[i].previews.frames!;
+        const fn = n[i].previews.frames!;
+        expect(fn.view).toBe(view);
+        expect([fn.first, fn.count]).toEqual([fo.first, fo.count]);
+        expect(fn.data).toHaveLength(fo.data.length);
+        for (let k = 0; k < fo.data.length; k++) expect(fn.data[k]).toBeCloseTo(fo.data[k], 3);
+      }
+    },
+  );
 });

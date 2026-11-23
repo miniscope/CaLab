@@ -677,9 +677,6 @@ export type StageState = 'done' | 'error' | 'cancelled' | 'running' | 'none';
 
 export interface SessionStatus {
   discover: StageState;
-  refine: StageState;
-  /** Refine runs that finished. */
-  refines: number;
   extract: StageState;
   /** The run the status comes from: the current result's, else the latest run with the session. */
   run: string | null;
@@ -728,8 +725,6 @@ export function sessionStatus(index: ProjectIndex, sessionId: string): SessionSt
   }
   return {
     discover: lastOf(stages, 'discover'),
-    refine: lastOf(stages, 'refine'),
-    refines: stages.filter((x) => x.stage === 'refine' && x.outcome === 'done').length,
     extract: lastOf(stages, 'extract'),
     run: from?.id ?? null,
     current,

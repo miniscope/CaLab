@@ -8,6 +8,7 @@
  * of the old session are dropped.
  */
 
+import type { WorkStatus } from '../lib/work-meter.ts';
 import type { LookbackStatus } from './lookback-types.ts';
 
 /**
@@ -38,6 +39,44 @@ export interface SlowInit {
    * during Discover and settles after the last frame (see `SlowRunner`).
    */
   lookback?: boolean;
+  /**
+   * Settle during Discover ("Background settle", frames only; needs
+   * `lookback`; absent = off for the run): the run may settle while Discover
+   * runs. It starts the first time the target is below Max with a cap above
+   * 0; the settle governor (`SettleGovernor` in `lib/settle.ts`) sets its
+   * rate. The cap comes from `SlowSettleCap`, the target from
+   * `SlowSettlePace` (see `SlowRunner`).
+   */
+  csettle?: boolean;
+  /**
+   * With `csettle`: the slow worker handles an answer of re-read frames this
+   * many frames at a time and gives way in between (absent or 0: the whole
+   * answer in one go, as measured in qc_eval's arm `CS2F`).
+   */
+  csettleYield?: number;
+  /**
+   * With `csettle`, one look-back worker (no settle pool): need-driven
+   * look-back first, the settle only when it asks for nothing (measurement
+   * option, `?debug&needfirst`; absent: the two take turns).
+   */
+  csettleNeedFirst?: boolean;
+  /**
+   * The share of the final settle pass to read, in plan order (a Final-settle
+   * level, `FINAL_SETTLE_LEVELS`); absent or 1 = the whole pass.
+   */
+  settleFraction?: number;
+  /**
+   * With `lookback`, a Joint run: the first stream frame of sessions 1..
+   * (the plan's boundaries). While Discover runs, look-back and the settle
+   * during Discover re-read frames of the current session only
+   * (`SlowLoop.setLookbackFloor`); the end settle covers every session.
+   */
+  sessionStarts?: number[];
+  /**
+   * With `csettle`: batches the forward pool holds in flight to this worker
+   * (the governor's batch-wait guard scales with it; absent: 2).
+   */
+  csettlePool?: number;
 }
 
 /** Fast worker -> slow worker. */
@@ -69,16 +108,15 @@ export type FastToSlow =
       background?: Float32Array;
       /** A newer noise map, sent every few hundred frames. */
       noise?: Float32Array;
+      /**
+       * When the batch was sent, ms on the epoch clock (`performance.timeOrigin + performance.now()`,
+       * comparable across workers): the slow worker's batch wait is the time from here to the start
+       * of its processing. Absent from older senders.
+       */
+      sentAt?: number;
     }
   /** The recording ended: publish what is pending. */
   | { type: 'end'; session: number }
-  /**
-   * Another run over the recording from frame 0 into the same slow loop (all
-   * its state kept), with `scope` from now on: the Refine stage (`refine`).
-   * The slow loop must have published its final library. A "Discover again"
-   * stage would send `all` (not offered: it counts the same frames twice).
-   */
-  | { type: 'replay'; session: number; scope: EditScopeName }
   /** Pipeline stopped or restarted: drop the slow loop. */
   | { type: 'reset'; session: number };
 
@@ -170,7 +208,7 @@ export interface SlowStatus {
   work: number;
   /** The recording ended and the final library is out. */
   final: boolean;
-  /** Runs over the recording into this slow loop: 1 = Discover, 2 = the first Refine, ... */
+  /** Runs over the recording into this slow loop: 1 = Discover (always 1 now: Refine, which made it 2 and up, is gone) */
   run: number;
   /** The current run's edit scope. */
   editScope: EditScopeName;
@@ -178,12 +216,20 @@ export interface SlowStatus {
   cellStatus?: CellStatusView;
   /** Look-back counters (absent: look-back off). */
   lookback?: LookbackStatus;
+  /** Busy and idle accounting by worker (cumulative; `lib/work-meter.ts`). Instrumentation only. */
+  accounting?: WorkStatus;
   /**
    * With the final library of a run: each cell's split-half footprint noise,
    * `[id, noise, ...]` (`SlowLoop.footprintNoise`; absent in older builds).
    * The Refine readout compares footprint changes with it.
    */
   footprintNoise?: Float64Array;
+  /**
+   * After a Final-settle checkpoint (and the final library): per cell, how
+   * much its footprint changed at the last step against its split-half noise,
+   * `[id, ratio, ...]` (`stillMovingRatios`). Information only.
+   */
+  stillMoving?: Float64Array;
 }
 
 /** A published library, flattened for drawing (unfiltered footprints). */
@@ -242,6 +288,40 @@ export interface SlowReviewed {
 export interface SlowLookbackPort {
   type: 'lookback-port';
   port: MessagePort;
+  /** Which look-back worker (0: need-driven and the end settle; 1..S: the settle pool). Absent: 0. */
+  index?: number;
+}
+
+/**
+ * Main thread -> slow worker: the pacer's target live fps (0: unpaced, Max)
+ * and whether the run is paused. Kept across runs; only the settle governor
+ * reads it.
+ */
+export interface SlowSettlePace {
+  type: 'settle-pace';
+  fps: number;
+  paused: boolean;
+}
+
+/**
+ * Main thread -> slow worker: the settle's cap, re-read frames per live
+ * frame (0 = Off). Kept across runs; takes effect during a run too.
+ */
+export interface SlowSettleCap {
+  type: 'settle-cap';
+  cap: number;
+}
+
+/**
+ * Main thread -> slow worker: look-back workers 1..`workers` were started
+ * for `session`'s run (the settle pool; possibly mid-run) and have its back
+ * state. The slow worker sends them the current library at once; they take
+ * the settle's chunks from then on.
+ */
+export interface SlowSettlePool {
+  type: 'settle-pool';
+  session: number;
+  workers: number;
 }
 
 /**
@@ -254,7 +334,14 @@ export interface SlowStopSettling {
   session: number;
 }
 
-export type MainToSlow = SlowConnect | SlowReviewed | SlowLookbackPort | SlowStopSettling;
+export type MainToSlow =
+  | SlowConnect
+  | SlowReviewed
+  | SlowLookbackPort
+  | SlowStopSettling
+  | SlowSettlePace
+  | SlowSettleCap
+  | SlowSettlePool;
 
 /** Main thread -> visit worker: the port to the slow worker. */
 export interface VisitConnect {

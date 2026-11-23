@@ -15,8 +15,8 @@ bottom. Developer notes are in [README.md](README.md).
   motion and divides it out.
 - Finds cells while the recording streams by, adds and prunes them as evidence
   accumulates, and extracts a trace for each.
-- On a recording, lets the footprints keep converging over replays of the recording
-  (**Refine**) and solves every frame with the final cell set (**Extract**).
+- On a recording, lets the footprints converge with look-back and a Final settle during
+  Discover, then solves every frame with the final cell set (**Extract**).
 - Shows quality-control indicators while it runs, and exports the result as NumPy
   `.npz` files.
 
@@ -83,12 +83,16 @@ opens the **Cell** tab. The arrow keys move between the tabs (Home and End to th
 first and last), and the app remembers the tab you were on. Below about 1000 px of
 width, or in a portrait window, the column moves under the image and the page scrolls.
 
-**Run strip.** One line: the stage running (**Discover**, **Refine 2**, **Extract**,
-or **Calibrating** and **Motion template** while a run sets up), its progress, the
-frames per second, and its controls: pause (⏸) and end Discover or stop the live run
-(■), or **Cancel** for Refine and Extract. In a multi-session run it shows which
-session is being read (**Session 3/8**). When nothing runs it says what ran last and
-how many cells there are.
+**Run strip.** Above the tabs, three boxes with arrows show the run's main steps:
+**Discover** → **Final settle** → **Extract**. Each fills with its own progress and shows
+its percent and, while it runs, its frames per second; the running step has a coloured
+edge and moving stripes, a finished one a ✓, and a step that will not run (look-back
+off, Extract unticked, a live stream) is dimmed. Look-back and Background settle run
+inside Discover. The cell count, the session (in a multi-session run) and the pause and
+stop controls sit beside the boxes.
+
+While a run sets up (**Calibrating**, **Motion template**) the setup progress shows
+beside the boxes, and Extract has a **Cancel** button there.
 
 **Field of view.**
 
@@ -112,15 +116,35 @@ how many cells there are.
   **1:1** (one recording pixel per screen pixel). Drag to pan. While zoomed, a minimap
   in the top right shows where you are; click it to jump. Click a cell to select it.
 
-**Run tab.** One status line (percent read, frame, frames per second) and the
-convergence status, with icon buttons to pause (⏸), restart (↻) and end Discover or
-stop the live run (■). Below it: the time-window control (**Run** and, when the run is
-long enough, **24 h**, **1 h**, **10 min**, **1 min**), the whole-run strip, and one
-overlaid plot of the convergence metrics (cells, new cells per minute, churn, stable,
-explained, residual). Below the plot:
-**Discover cells**, **Extract after Discover**, the **Refine** button and its readout,
-Extract progress, **Extract** and the **Export** menu. In a narrow window the stages
-show as a stepper (Calibrate, Discover, Refine, Extract, Export) and the metrics as
+**Run tab.** The header has the convergence status and icon buttons to pause (⏸),
+restart (↻) and end Discover or stop the live run (■). Below it, three sections in the
+order you use them:
+
+- **Settings**: **Look-back**, **Final settle** (Thorough, Standard, Quick) and
+  **Extract after Discover**. Look-back and the Final settle level are read when
+  Discover starts: change them, then restart (↻); in a Separate multi-session run a
+  change applies from the next session. **More settings** holds **Find new cells**
+  (on by default; off, Discover keeps tracking the cells it has but finds no new ones).
+- **Progress**: one panel per step, **Discover**, **Final settle** and **Extract**, each
+  with the same header (name, state, percent, frames per second, time left) and bar.
+  Discover's panel has the status line (percent read, frame, frames per second), the
+  time-window control (**Run** and, when the run is long enough, **24 h**, **1 h**,
+  **10 min**, **1 min**), the whole-run strip and one overlaid plot of the convergence
+  metrics (cells, new cells per minute, churn, stable, explained, residual). The Final
+  settle and Extract panels each have a frames-per-second trace over the step (fixed
+  10 to 500 fps, log) and their facts: cells still moving and footprints settled, or
+  the traces solved so far. Then **Speed** and **Workers**. Workers is a grid of small
+  squares, one per worker (a browser thread), grouped as Frame loop, Cell model,
+  Footprint helpers and Look-back and settle. Each square fills from the bottom with
+  one colour per job (**Read frames**, **Find cells**, **Look-back**, **Background
+  settle**, **Final settle**; grey is **Idle**), each as tall as that job's share of
+  the last second, and shows how busy the worker was as a percent; hover a square for
+  the split. Read frames, Find cells, Look-back and Background settle are the jobs of
+  Discover; Extract runs after it and is not in the grid.
+- **Results**: **Extract** and the **Export** menu.
+
+In a narrow window the stages
+show as a stepper (Calibrate, Discover, Extract, Export) and the metrics as
 small tiles on the same fixed ranges. A live stream shows Discover only. In a
 multi-session run the session list (with each boundary's health badge in a Joint run)
 follows.
@@ -194,7 +218,7 @@ Every quantity the run tracks is kept over the whole run, from a 5-minute file t
 
 ## How a run works
 
-A run has three named stages: **Discover**, **Refine** and **Extract** (see
+A run has two named stages: **Discover** and **Extract** (see
 [docs/stages.md](docs/stages.md)).
 
 1. **Opening starts Discover.** The recording is walked in batches. Preprocessing and
@@ -204,15 +228,20 @@ A run has three named stages: **Discover**, **Refine** and **Extract** (see
    while the fast loop extracts traces with the library as it stands. The traces
    emitted early were solved with the cells known at that moment. **End Discover**
    (■) ends it at the frames read so far.
-3. **Refine (optional, repeatable).** **Refine** replays the recording from frame 0,
-   and the footprints keep converging. No cell is added, merged, split or deleted.
-   Each run reports how many footprints it refined, the median footprint change and
-   the refines per minute against the run before. "Looks settled" appears when the
-   refine rate stops falling. A Refine after an Extract discards the Extract result,
-   because its traces no longer match the footprints.
+3. **The Final settle ends Discover (recordings).** For a recording, Discover runs with
+   **look-back**: it also re-reads earlier frames for each new cell, so footprints
+   converge as it goes, and after the last frame it runs a **Final settle** (Thorough by
+   default; pick Quick, Standard or Thorough under **Final settle**) before it publishes
+   the final library. The status reads **Final settle** while that runs, and **Stop final
+   settle** keeps what was refined so far. Look-back needs a recording on disk with
+   one session; on a live stream, a Joint run of several sessions or with `?pipeline=0`
+   it is off and the Run tab says why (the footprints then get no refinement after
+   Discover). Untick **Look-back refinement** or open the page with `?lookback=0` to
+   turn it off. There is no separate Refine stage any more: look-back and the Final
+   settle replaced it.
 4. **Extract extracts traces.** It replays the recording with the final library, using
    the motion and flicker recorded during Discover, so a cell found late has a trace from
-   frame 0. Run it with **Extract** once the footprints have settled. It starts by itself when Discover ends only if you turn on **Extract after Discover** (off by default, so a Refine does not discard an Extract; never after a Refine run).
+   frame 0. Run it with **Extract** once the footprints have settled. It starts by itself when Discover (and its Final settle) ends while **Extract after Discover** is on (the default); turn it off to inspect the footprints first.
 5. **Export.** Once Extract has finished, the **Export** menu has **Export (.npz)**, which writes the main file: traces (cells x frames), cell
    ids and centroids, sparse footprints, per-frame motion and flicker, per-cell QC,
    and a JSON block with the run's provenance and the stages that ran. It holds two
@@ -239,16 +268,17 @@ has done with each, and every result kept in `<animal>/cala-results/`.
   animal, each with several sessions), the app offers to open one animal at a time.
   Pick the animal, or open everything as one project.
 - **The session table** lists each session: its folder, date and time (from
-  `metaData.json`), length, then whether **Discover**, **Refine** (how many times) and
+  `metaData.json`), length, then whether **Discover** and
   **Extract** ran, the **Cell IDs** column, and the **current result**. Rows marked with
   the same letter in **Cell IDs** (and the same coloured edge) share cell ids: they come
   from one Joint run, so cell 7 is the same neuron in each. `own` means a session's ids
   are its own (a Separate run). **Results** on a row lists every result of that session
   with its run, date, cell count and file path.
-- **Run plan.** Tick sessions, then **Chain selected** (one Joint run through them: one
+- **Run plan.** Tick sessions, then **Run selected jointly** (one Joint run through them: one
   library, shared cell ids) or **Run selected separately** (each its own run). Repeat to
-  build a plan, e.g. sessions 1 to 3 chained, 4 and 5 separately, 6 to 8 chained; set
-  how many **Refine runs** come before Extract, and **Start plan**. Chrome and Edge ask
+  build a plan, e.g. sessions 1 to 3 chained, 4 and 5 separately, 6 to 8 chained; and
+  **Start plan**. **Discover settings** (Look-back, Final settle) under the plan are used
+  by every run in it; choose them before **Start plan**. Chrome and Edge ask
   once for permission to save into the animal folder. The groups run one after another;
   each session's results are written, and its current result updated, as soon as it is
   done. If a stage fails or is cancelled the plan stops, keeps what is written, and
@@ -260,7 +290,7 @@ has done with each, and every result kept in `<animal>/cala-results/`.
   the cells over the field of view (**Mean** or **Max** image), the QC table, a
   clicked cell's footprint and trace, the History plots and event log, the stages that
   ran and the flat field, in the same tabs (the first, **Result**, says what was
-  saved; the strip shows the traces being read). It is read-only: to Discover or Refine again, start a new run
+  saved; the strip shows the traces being read). It is read-only: to Discover or Extract again, start a new run
   from the table. **Back to project** returns to the table. Results saved by older
   versions open too; what they lack (the images, the History) says "not in this
   export".
@@ -297,10 +327,10 @@ session table and keeps the results indexed; the steps below are the one-off rou
    **Add session** appends more folders. Sessions must have the same size and bit
    depth (an error); a different frame rate is a warning.
 3. **Choose the library mode.** **Joint**: one library. Discover runs through all
-   sessions in order, Refine replays them all, and Extract solves each session with
-   the final library, so a cell has the same id in every session. **Separate**:
-   each session is its own run, one after another. Pick how many **Refine runs**
-   come before Extract (default 1).
+   sessions in order (look-back re-reads frames of the session it is in, and the Final
+   settle at the end covers every session), and Extract solves
+   each session with the final library, so a cell has the same id in every session. **Separate**:
+   each session is its own run, one after another.
 4. **Results location.** By default the results go next to the data, in
    `<picked folder>/cala-results/`; **Choose...** picks another folder. Chrome and
    Edge ask once for permission to save there when you press **Start**. Other browsers
@@ -315,6 +345,7 @@ The results mirror each session's path, so nothing is ever written into a data f
 ```
 cala-results/
   cala-run.json                          the run: mode, settings, sessions, boundaries
+  cala-run-record.json                   how the run was made (settings, flags, versions, stages, machine)
   2026_11_10/14_02_33/My_V4_Miniscope/
     cala-export.npz                      the usual export, for this session's frames
     cala-session.json                    the session: index, path, stages run, cell ids
@@ -352,7 +383,7 @@ no new cells appear.
 - **Waiting for cells**: nothing to judge yet.
 - **Discovering cells**: less than two minutes of history, or most cells are under a
   minute old.
-- **Settling**: some cells' footprints or traces are still changing against 1 to 2
+- **Cells still changing**: some cells' footprints or traces are still changing against 1 to 2
   minutes ago, or churn is high. The line says how many.
 - **Converged**: at least 85% of cells are stable and churn is under 3.5% of the
   library per minute, over the last two minutes. The rate of new cells is shown but
@@ -362,10 +393,9 @@ no new cells appear.
 yet** until it has about a minute of trace history. The pass/fail rule is: peak SNR of
 at least 5, and not the weaker of two overlapping cells whose traces correlate above
 0.8. During Discover the peak SNR is read on each cell's last minute of trace (in
-seconds, at the recording's frame rate). After each Refine, and after Extract, it is
-recomputed on that replay's traces over the whole recording (or, for Extract, over
-each session in that session's export); while a Refine is running the table still
-shows the previous numbers. Before, the table kept the last minute of Discover. A clean cell that happens
+seconds, at the recording's frame rate). After Extract, it is
+recomputed on the extracted traces over the whole recording (over
+each session in that session's export). Before, the table kept the last minute of Discover. A clean cell that happens
 to be quiet in its last minute no longer fails on a low SNR.
 
 | Verdict or flag       | Meaning                                                                                                                                          |
@@ -397,7 +427,7 @@ estimates the pattern from the recording's own motion:
   when it has one. Stock Miniscope metadata has none, so the key is then the folder
   name, and a renamed folder starts from scratch. A map is never reused for a
   different frame size.
-- Refine and Extract use Discover's newest map from frame 0.
+- Extract uses Discover's newest map from frame 0.
 
 ## Testing with a simulated stream
 
@@ -443,8 +473,8 @@ it until the lab has taken it in.
   pixel gain does not change between sessions; this has not been checked across days.
 - **Offline throughput.** Throughput depends on the machine and on whether WebGPU is
   available. On an Apple-silicon laptop, Chrome with WebGPU ran roughly 175 to 215
-  frames/s on a 600 x 600 recording and CPU-only runs about 110 to 160. Refine and
-  Extract repeat the walk, so a long recording takes a while.
+  frames/s on a 600 x 600 recording and CPU-only runs about 110 to 160. Extract
+  repeats the walk, so a long recording takes a while.
 - **Live acquisition is experimental.** The live-source field on the start page
   streams frames from a WebSocket (see the README). Apart from
   [testing with a simulated stream](#testing-with-a-simulated-stream), it is not

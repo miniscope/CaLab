@@ -11,6 +11,7 @@
 import { createSignal } from 'solid-js';
 import { StreamHistory, type HistoryExport, type SeriesSpec } from '@calab/compute';
 import { RunEvents, type RunEvent } from './run-events.ts';
+import { WORK_KINDS, workByKind, type WorkKind, type WorkRates } from './work-meter.ts';
 
 /** Motion record flag bits (crates/cala/src/motion/corrector.rs) that count as a flagged frame. */
 const MOTION_FLAG_ANOMALOUS = 2;
@@ -293,6 +294,104 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
   ],
 };
 
+/** The work-share series: fixed 0-1 ranges (a share is a share), the fast loop's top speed on a ladder. */
+const WORK_SERIES: SeriesSpec[] = [
+  ...(
+    [
+      ['work_live', 'Slow worker: live batches', C.blue],
+      ['work_visit', 'Slow worker: visit hand-out and apply', C.bluishGreen],
+      ['work_need', 'Slow worker: need-driven look-back answers', C.orange],
+      ['work_settle', 'Slow worker: settle answers and end settle', C.reddishPurple],
+      ['work_publish', 'Slow worker: publishing', C.skyBlue],
+      ['work_other', 'Slow worker: housekeeping, set-up and replay', C.vermillion],
+      ['work_idle', 'Slow worker: idle', C.black],
+      ['work_visit_busy', 'Visit workers: mean busy share', C.bluishGreen],
+      ['work_lookback_busy', 'Look-back worker: busy share', C.orange],
+    ] as const
+  ).map(([key, label, color]): SeriesSpec => ({
+    key,
+    label,
+    unit: '',
+    group: 'extra',
+    kind: 'value',
+    range: [0, 1],
+    rangeRule: 'fixed',
+    color,
+    digits: 2,
+  })),
+  {
+    key: 'fast_max_fps',
+    label: 'Fast loop top speed (estimate)',
+    unit: 'fps',
+    group: 'extra',
+    kind: 'value',
+    range: [0, 120],
+    rangeRule: 'ladder125',
+    color: C.blue,
+    digits: 0,
+  },
+];
+
+/** The work-by-kind series (`workByKind` totals, worker-seconds per second), in the display's colours. */
+const KIND_SERIES: [WorkKind, string, string][] = [
+  ['live', 'Read frames', '#0072b2'],
+  ['discovery', 'Find cells', '#009e73'],
+  ['lookback', 'Look-back', '#e69f00'],
+  ['bgSettle', 'Background settle', '#e3b1cb'],
+  ['finalSettle', 'Final settle', '#a8497d'],
+];
+
+/** The history key of a kind's series. */
+export const kindSeriesKey = (k: WorkKind): string =>
+  `kind_${k === 'bgSettle' ? 'bg_settle' : k === 'finalSettle' ? 'final_settle' : k}`;
+
+/**
+ * The series of work by kind (fixed range 0 to the number of workers the app started), the speed
+ * target (the slider's scale, Max stored as 0) and births per 1,000 frames.
+ */
+function displaySeries(workers: number): SeriesSpec[] {
+  return [
+    ...KIND_SERIES.map(([kind, name, color]): SeriesSpec => ({
+      key: kindSeriesKey(kind),
+      label: `Work: ${name}`,
+      unit: 'workers',
+      group: 'extra',
+      kind: 'value',
+      range: [0, Math.max(1, workers)],
+      rangeRule: 'fixed',
+      color,
+      digits: 2,
+      hint: 'Worker-seconds of work per second of wall time.',
+    })),
+    {
+      key: 'target_fps',
+      label: 'Speed target',
+      unit: 'fps',
+      group: 'extra',
+      kind: 'value',
+      range: [10, 500],
+      rangeRule: 'fixed',
+      color: C.blue,
+      dash: [4, 3],
+      digits: 0,
+      hint: 'The speed the run is paced to; 0 is Max (no pacing).',
+    },
+    {
+      key: 'births_per_kframe',
+      label: 'Cells born per 1,000 frames',
+      unit: '/1000 frames',
+      group: 'extra',
+      kind: 'value',
+      range: [0, 50],
+      // Fixed: the opening burst of a run clips instead of stepping the range and flagging History.
+      rangeRule: 'fixed',
+      color: C.bluishGreen,
+      digits: 1,
+      hint: 'Cells added by the slow loop per 1,000 frames of stream (last 2,000 frames).',
+    },
+  ];
+}
+
 /** Series kept for the export and readouts but not drawn as chips. */
 const EXTRA: SeriesSpec[] = [
   {
@@ -361,6 +460,9 @@ const EXTRA: SeriesSpec[] = [
     color: C.blue,
     digits: 1,
   },
+  // Who is doing what (`lib/work-meter.ts`): the slow worker's shares of wall time by duty, the
+  // busy shares of the visit workers (mean) and the look-back worker, and the fast loop's top speed.
+  ...WORK_SERIES,
   {
     key: 'wall_s',
     label: 'Wall clock since the run started',
@@ -382,10 +484,11 @@ export function groupKeys(group: HistoryGroup, live: boolean): string[] {
 }
 
 /** Every series spec (all groups, then the extras), as registered. */
-export function allSeries(): SeriesSpec[] {
+export function allSeries(workers: number): SeriesSpec[] {
   return [
     ...HISTORY_GROUPS.flatMap((g) => SERIES[g.id].map((s) => ({ ...s, group: g.id }))),
     ...EXTRA,
+    ...displaySeries(workers),
   ];
 }
 
@@ -414,15 +517,29 @@ export interface HistoryBatch {
   imaging?: { frame: number; noiseSigma: number; background: number };
 }
 
+/** The `setting` events of the speed control. */
+export type SpeedSettingKey = 'target_speed' | 'speed_floor' | 'speed_auto' | 'settle_cap';
+
+const SPEED_SETTING_LABEL: Record<SpeedSettingKey, string> = {
+  target_speed: 'Speed target',
+  speed_floor: 'Speed floor',
+  speed_auto: 'Auto speed',
+  settle_cap: 'Settle cap',
+};
+
+/** A speed as the log words it: a number is fps, 0 is Max; a word is left as it is. */
+const speedText = (v: number | string): string =>
+  typeof v === 'number' ? (v > 0 ? `${v} fps` : 'Max') : v;
+
 /** An empty store with every series registered. */
-function freshStore(): StreamHistory {
+function freshStore(workers: number): StreamHistory {
   const h = new StreamHistory();
-  for (const s of allSeries()) h.define(s);
+  for (const s of allSeries(workers)) h.define(s);
   return h;
 }
 
 export function createRunHistory(clock: () => number = () => Date.now()) {
-  let history = freshStore();
+  let history = freshStore(1);
   let events = new RunEvents();
   let fps = 20;
   let live = false;
@@ -443,7 +560,7 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
   }
 
   /** A new pass-1 run: empty store and log at this frame rate. */
-  function reset(o: { fps: number; live: boolean; frameCount?: number }): void {
+  function reset(o: { fps: number; live: boolean; frameCount?: number; workers: number }): void {
     fps = o.fps > 0 ? o.fps : 20;
     live = o.live;
     wall0 = clock();
@@ -451,7 +568,7 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     lastDropped = 0;
     gapPending = 0;
     lastGapT = -Infinity;
-    history = freshStore();
+    history = freshStore(o.workers);
     events = new RunEvents();
     history.onRangeStep = (key, e) => {
       const spec = history.spec(key);
@@ -495,7 +612,8 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     lastDropped = 0;
     gapPending = 0;
     lastGapT = -Infinity;
-    history = o.bins ? StreamHistory.fromExport(o.bins, allSeries()) : freshStore();
+    history = o.bins ? StreamHistory.fromExport(o.bins, allSeries(1)) : freshStore(1);
+    // (A saved run keeps the ranges it was exported with; the 1 only fills series an old export lacks.)
     events = new RunEvents();
     for (const e of o.events) events.push(e);
     wall0 = o.events.find((e) => typeof e.wall === 'number')?.wall ?? clock();
@@ -586,6 +704,73 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     if (working !== null) history.push('working_set', t, working);
   }
 
+  /**
+   * The work shares of the last second or so (`WorkRates`) and the fast loop's top-speed estimate.
+   * Pushed at the stream time Discover has reached, so the caller stops after its last frame (the
+   * final settle's accounting lives in the `?debug` readout and the `-work.json` log only: stream
+   * time stands still then and every sample would land in one bin).
+   */
+  function work(r: WorkRates, maxFps: number): void {
+    const t = processedS;
+    const s = r.slow;
+    history.push('work_live', t, s.live);
+    history.push('work_visit', t, s.visit);
+    history.push('work_need', t, s.need);
+    history.push('work_settle', t, s.csettle + s.end);
+    history.push('work_publish', t, s.publish);
+    history.push('work_other', t, s.housekeep + s.setup);
+    history.push('work_idle', t, s.idle);
+    if (r.visit.length > 0)
+      history.push('work_visit_busy', t, r.visit.reduce((a, b) => a + b, 0) / r.visit.length);
+    // The share of one worker's time: the sum over a pool can exceed 1, so divide by the workers.
+    history.push(
+      'work_lookback_busy',
+      t,
+      r.lookback.busy / Math.max(1, r.lookback.capacity ?? r.lookback.workers.length),
+    );
+    if (maxFps > 0) history.push('fast_max_fps', t, maxFps);
+    const { totals: byKind, count } = workByKind(r);
+    // The pool can grow mid-run: widen the (fixed) range before a value needs it.
+    for (const k of WORK_KINDS) history.widenFixedRange(kindSeriesKey(k), count);
+    for (const k of WORK_KINDS) history.push(kindSeriesKey(k), t, byKind[k]);
+  }
+
+  /** The speed target now, fps (0 = Max), at the stream time Discover has reached. */
+  function target(fpsTarget: number): void {
+    history.push('target_fps', processedS, fpsTarget > 0 ? fpsTarget : 0);
+  }
+
+  /** Cells born per 1,000 frames at stream frame `frame` (from `BirthRate`). */
+  function births(frame: number, perKFrames: number): void {
+    if (Number.isFinite(perKFrames)) history.push('births_per_kframe', frame / fps, perKFrames);
+  }
+
+  /**
+   * A change of the speed control at stream frame `frame`, as a `setting` event
+   * (`target_speed`, `speed_floor`, `speed_auto`); 0 as a speed is Max.
+   */
+  function speedSetting(
+    key: SpeedSettingKey,
+    frame: number,
+    from: number | string,
+    to: number | string,
+    detail?: string,
+    /** Who set it, when not the user (`curve`, `auto`): named in the text and kept as `data.source`. */
+    source?: string,
+  ): void {
+    const by = source === 'curve' || source === 'auto' ? ` (${source})` : '';
+    log({
+      frame,
+      kind: 'setting',
+      key,
+      from,
+      to,
+      detail: detail ?? `${SPEED_SETTING_LABEL[key]} ${speedText(from)} → ${speedText(to)}${by}`,
+      replay: false,
+      ...(by ? { data: { source: source as string } } : {}),
+    });
+  }
+
   /** A new flat-field map came out of the estimator (`change`: median change, σ). */
   function flatMap(change: number): void {
     if (Number.isFinite(change)) history.push('flat_change', processedS, change);
@@ -597,6 +782,10 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
     batch,
     liveCounters,
     convergence,
+    work,
+    target,
+    births,
+    speedSetting,
     flatMap,
     log,
     /** Changes whenever the store or the log changed. */

@@ -16,7 +16,7 @@ import { createEffect, on, onCleanup } from 'solid-js';
 import { trackEvent, type AnalyticsEventName } from '@calab/community';
 import type { BoundaryFlag } from './boundary-flags.ts';
 import type { FrameSourceInfo } from './frame-source.ts';
-import type { StageName, StageRun } from './run-stages.ts';
+import type { RecordedStageName, StageRun } from './run-stages.ts';
 import { EXPORT_FORMAT_VERSION } from './export.ts';
 import { startMemoryCollector, totalWasmHeapBytes } from './memory-telemetry.ts';
 
@@ -26,23 +26,12 @@ export type ErrorCategory = 'out_of_memory' | 'webgpu' | 'decode' | 'worker' | '
 /** Fields each event may carry. Anything else is dropped before sending. */
 export const ALLOWED_FIELDS = {
   file_imported: ['extension'],
-  run_started: [
-    'stage',
-    'mode',
-    'sessions',
-    'plan_sessions',
-    'refine_runs',
-    'frames',
-    'fps',
-    'width',
-    'height',
-  ],
+  run_started: ['stage', 'mode', 'sessions', 'plan_sessions', 'frames', 'fps', 'width', 'height'],
   run_finished: [
     'stage',
     'mode',
     'sessions',
     'plan_sessions',
-    'refine_runs',
     'frames',
     'fps',
     'width',
@@ -242,13 +231,13 @@ export interface AnalyticsDeps {
   info(): FrameSourceInfo | null;
   /** The multi-session plan (null: a single folder, run by hand). */
   plan(): {
-    settings: { mode: 'joint' | 'separate' | 'apply'; refineRuns?: number };
+    settings: { mode: 'joint' | 'separate' | 'apply' };
     sessions: readonly unknown[];
   } | null;
   /** Current throughput of a stage, frames per second (0: idle). */
-  throughput(stage: StageName): number;
+  throughput(stage: RecordedStageName): number;
   /** Why a stage stopped (raw; only its category and error class are ever sent). */
-  stageError(stage: StageName): string | null;
+  stageError(stage: RecordedStageName): string | null;
   /** Bytes of WASM heap summed over all threads (main thread and workers); 0 when unknown. */
   heapBytes?(): number;
   /** The coarse hardware snapshot inputs (defaults to the browser's). */
@@ -351,11 +340,6 @@ export function setupAnalyticsEffects(deps: AnalyticsDeps): void {
       // folder is one). `plan_sessions` is the size of the plan they came from.
       sessions: mode === 'joint' ? (plan?.sessions.length ?? 1) : 1,
       ...(plan ? { plan_sessions: plan.sessions.length } : {}),
-      // Refine runs the plan asked for before Extract (0: none), so a plan
-      // without a Refine run can be told from one whose Refine did not run.
-      ...(plan && typeof plan.settings.refineRuns === 'number'
-        ? { refine_runs: plan.settings.refineRuns }
-        : {}),
       ...(info && !info.live ? { frames: info.frameCount } : {}),
       ...(info?.fps ? { fps: round(info.fps) } : {}),
       ...(info ? { width: info.width, height: info.height } : {}),
@@ -367,7 +351,7 @@ export function setupAnalyticsEffects(deps: AnalyticsDeps): void {
     return l && l.peak > 0 ? { peak_wasm_mb: Math.round(l.peak / 1048576) } : {};
   }
 
-  function sample(stage: StageName, l: Live): void {
+  function sample(stage: RecordedStageName, l: Live): void {
     const f = deps.throughput(stage);
     if (f > 0) l.samples.push(f);
     l.peak = Math.max(l.peak, heap());

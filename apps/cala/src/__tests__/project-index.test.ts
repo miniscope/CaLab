@@ -80,7 +80,7 @@ function tree377(
     recordingStartMs: s.start,
     status: s.status ?? 'written',
   }));
-  const settings = { mode, refineRuns: 2 };
+  const settings = { mode };
   const prefix = folder ? `${folder}/` : '';
   const files: ResultsFile[] = [
     {
@@ -189,8 +189,6 @@ describe('rebuild from run folders', () => {
     expect(index.results[0].library_version).toBe(3);
     expect(sessionStatus(index, S1)).toMatchObject({
       discover: 'done',
-      refine: 'done',
-      refines: 2,
       extract: 'done',
       run: run.id,
     });
@@ -380,8 +378,6 @@ describe('session table status', () => {
     const idx = reconcileSessions(emptyIndex('mouse1', LOC, NOW), SCANNED).index;
     expect(sessionStatus(idx, S1)).toMatchObject({
       discover: 'none',
-      refine: 'none',
-      refines: 0,
       extract: 'none',
       run: null,
       current: null,
@@ -425,7 +421,6 @@ describe('session table status', () => {
     const st = sessionStatus(idx, S1);
     expect(st.run).toBe('good');
     expect(st.extract).toBe('done');
-    expect(st.refines).toBe(2);
     // With no result, the failed run is what shows.
     idx = upsertRun(
       idx,

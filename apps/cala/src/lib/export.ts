@@ -64,14 +64,13 @@
  *
  * Run stages (format version 3): `meta_json.stages` lists the runs of the
  * stages (docs/stages.md) since Discover started, in order: `stage`
- * (discover, refine, extract), `index` (1-based per stage), `started_at`,
- * `ended_at` (ISO), `outcome`, `frames`, `cells`, `library_version`, and the
- * stage's counts (Discover: refines, adds, merges, deletes, splits; Refine:
- * refines, refines_per_min, footprints_refined, median_footprint_change,
- * change_p90, refined_share, and `series`: the run's samples over the replay
- * as columns `t` (stream s), `refines`, `refines_per_min`, `changed`,
- * `change_median`, `change_p90` (at library publishes, else null) and
- * `refined_share`; see `refine-metrics.ts`).
+ * (discover, extract; `refine` in an export from before Refine was removed),
+ * `index` (1-based per stage), `started_at`,
+ * `ended_at` (ISO), `outcome`, `frames`, `cells`, `library_version`, and
+ * Discover's counts (refines, refines_per_min, adds, merges, deletes, splits).
+ * Exports from before Refine was removed may also carry Refine's footprint-change
+ * fields (footprints_refined, median_footprint_change, change_p90, refined_share,
+ * series); readers ignore them.
  * Version 3 also renamed `pass2_seconds` to `extract_seconds` and the flat
  * field's `pass2` / `pass1_maps` to `extract` / `discover_maps`.
  *
@@ -154,7 +153,6 @@ import { projectionFor } from './fov-projection.ts';
 import { fovDisplayRanges } from './fov-display.ts';
 import type { RunSpan } from './run-record.ts';
 import type { StageRun } from './run-stages.ts';
-import { seriesMeta } from './refine-metrics.ts';
 import type { HistoryExport } from '@calab/compute';
 
 export const EXPORT_FORMAT_VERSION = 6;
@@ -205,6 +203,8 @@ export interface ExportInput {
   frameRange?: { start: number; end: number };
   /** Extra `meta_json.session` block (a multi-session run; see `session-export.ts`). */
   session?: Record<string, unknown>;
+  /** The run record (`run-provenance.ts`), written as `meta_json.run_record`. */
+  runRecord?: Record<string, unknown>;
 }
 
 /** Options of the writers. */
@@ -236,13 +236,8 @@ export function stageMeta(r: StageRun): Record<string, unknown> {
     ['merges', r.merges],
     ['deletes', r.deletes],
     ['splits', r.splits],
-    ['footprints_refined', r.footprintsRefined],
-    ['median_footprint_change', r.medianFootprintChange],
-    ['change_p90', r.changeP90],
-    ['refined_share', r.refinedShare],
   ];
   for (const [k, v] of counts) if (v !== undefined) out[k] = v;
-  if (r.series) out.series = seriesMeta(r.series);
   return out;
 }
 
@@ -440,6 +435,7 @@ export async function writeCalaExport(
     footprints: 'sparse CSR over flat pixel index row * width + column, unfiltered weights',
     extract_seconds: result.seconds,
     stages: (input.stages ?? []).map(stageMeta),
+    ...(input.runRecord ? { run_record: input.runRecord } : {}),
     ...(input.flatField && input.flatField.length > 0
       ? {
           flat_field: {
@@ -621,6 +617,11 @@ export async function writeCaDeconExport(
     'sampling_rate_hz.npy',
     npy(Float32Array.of(input.fps > 0 ? input.fps : 0), [1]),
   );
+  // The run record as a vector beside the traces (a matrix among vectors stays the one candidate).
+  if (input.runRecord) {
+    const rec = new TextEncoder().encode(JSON.stringify(input.runRecord));
+    await zip.addFile('run_record_json.npy', npy(rec, [rec.length]));
+  }
   await zip.finish();
 }
 

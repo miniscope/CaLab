@@ -3334,6 +3334,117 @@ fn settle_frames_keep_their_side_and_leave_discover_clocks_alone() {
     assert_eq!(stats_only.reservoir_bytes(), 0);
 }
 
+/// The app's concurrent settle (frames only; `SlowLoop.enableSettle`,
+/// `settleTake`, `observeSettle`): the frames taken are spread in chunks
+/// over the saved history and carry the held-out decision `observe`
+/// recorded; a fitting frame moves the footprint statistics and nothing
+/// else (no frame counter, no reservoir slot, no tile made due); a held-out
+/// frame is refused, so it never reaches fitting.
+#[cfg(feature = "jsbindings")]
+#[test]
+fn js_settle_frames_only_feeds_fitting_frames_to_the_statistics() {
+    use super::js::JsSlowLoop;
+    let t = 96;
+    let mut rng = Lcg(5);
+    let cells = vec![(blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0))];
+    let m = movie(&cells, t, 7);
+    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
+    let n_px = N * N;
+    let (slow, mut eng) = start(config(), &seed);
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    let v = eng.library().version() as f64;
+    // Off: nothing to take, and (look-back off) it cannot be turned on.
+    assert!(js.settle_take(96.0, 16).is_empty());
+    assert!(!js.settle_enabled());
+    js.enable_lookback(2.0, 3000).unwrap();
+    js.enable_settle(16).unwrap();
+    assert!(js.settle_enabled());
+    // Live frames at stream indices 100.. (frames before the slow loop
+    // started get the hashed decision).
+    let off = 100usize;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let ok = js
+            .observe(
+                f,
+                v,
+                &tr.traces,
+                Some(tr.background.clone()),
+                Some((off + k) as f64),
+            )
+            .unwrap();
+        assert!(ok);
+    }
+    // Less than one chunk saved: nothing.
+    assert!(js.settle_take(15.0, 16).is_empty());
+    let seen = off + t;
+    let frames = js.inner().frames();
+    let fresh: Vec<u32> = js.inner().tiles.iter().map(|t| t.fresh).collect();
+    let bytes = js.inner().reservoir_bytes();
+    let id = js.inner().fpstats.keys().next().copied().unwrap();
+    let dbg = |s: &SlowLoop| {
+        let mut st = s.fpstats[&id].clone();
+        st.version = 0;
+        format!("{st:?}")
+    };
+    let (mut fit, mut held, mut blocks) = (0u64, 0u64, std::collections::BTreeSet::new());
+    for _ in 0..8 {
+        let take = js.settle_take(seen as f64, 16);
+        assert_eq!(take.len(), 48);
+        for i in 0..take.len() / 3 {
+            let (f, block, h) = (
+                take[3 * i] as usize,
+                take[3 * i + 1],
+                take[3 * i + 2] == 1.0,
+            );
+            assert!(f < seen);
+            assert!(block < -1_000_000.0);
+            assert_eq!(block, take[1], "one request, one chunk");
+            assert_eq!(f, take[0] as usize + i, "a chunk is frames in a row");
+            blocks.insert(block as i64);
+            // The decision `observe` recorded for an observed frame.
+            if f >= off {
+                assert_eq!(h, js.inner().is_test((f - off) as u64), "frame {f}");
+            }
+            if f < off {
+                // Never seen live by the slow loop: not in this test's movie.
+                continue;
+            }
+            let y = &m[(f - off) * n_px..(f - off + 1) * n_px];
+            let tr = eng.process(y).unwrap();
+            let before = dbg(js.inner());
+            let took = js
+                .observe_settle(y, v, &tr.traces, Some(tr.background.clone()), f as f64)
+                .unwrap();
+            assert_eq!(took, !h, "frame {f}");
+            assert_eq!(dbg(js.inner()) != before, took, "frame {f}");
+            fit += u64::from(took);
+            held += u64::from(!took);
+        }
+    }
+    assert_eq!(blocks.len(), 8);
+    assert!(fit > 0 && held > 0, "{fit} fit, {held} held out");
+    assert_eq!(js.inner().frames(), frames);
+    assert_eq!(js.inner().reservoir_bytes(), bytes);
+    let after: Vec<u32> = js.inner().tiles.iter().map(|t| t.fresh).collect();
+    assert_eq!(after, fresh, "a settle frame made a tile due for Discover");
+    js.settle_skipped(3.0);
+    assert_eq!(
+        js.settle_stats(),
+        vec![128.0, fit as f64, (held + 3) as f64, 0.0]
+    );
+    // A version no longer held is dropped, not an error.
+    let y = &m[..n_px];
+    let f = (off..seen)
+        .find(|&f| !js.inner().is_test((f - off) as u64))
+        .unwrap();
+    assert!(!js
+        .observe_settle(y, 9999.0, &[0.0], None, f as f64)
+        .unwrap());
+    assert_eq!(js.settle_stats()[3], 1.0);
+}
+
 /// A settle visit refines and nothing else: the cell set, the tiles'
 /// ordinary due counters and visit numbers are as before it, and with the
 /// quiet period a tile whose cell set just changed is passed over.
@@ -3436,4 +3547,144 @@ fn settle_sched_spreads_chunks_over_the_history() {
         }
     }
     assert!((99..=101).contains(&owed), "{owed}");
+}
+
+/// A floor (a new session of a Joint run starts there) keeps look-back
+/// within `floor..`: a cell born before it needs nothing more, a block in
+/// progress is cut to it, and a later birth's window is clipped to it.
+#[test]
+fn lookback_floor_keeps_look_back_in_the_current_session() {
+    let (slow, _) = start(config(), &[]);
+    let mut lb = LookBack::new(LookbackConfig::default());
+    let lib1 = lb_lib(1, &[blob(1, 30.0, 30.0)]);
+    lb.note_frame(&lib1, 1000);
+    // Part of its window is served, then the session changes at 1100.
+    assert_eq!(lb_take(&mut lb, &slow, &lib1, 10.0).len(), 10);
+    lb.set_floor(1100);
+    assert_eq!(lb.floor(), 1100);
+    assert_eq!(lb_take(&mut lb, &slow, &lib1, 10_000.0), vec![]);
+    assert_eq!(lb.in_need(), 0);
+    // A floor never goes down.
+    lb.set_floor(10);
+    assert_eq!(lb.floor(), 1100);
+    // A cell born at 1300 (K = 3000) looks back to 1100 at most.
+    let lib2 = lb_lib(2, &[blob(1, 30.0, 30.0), blob(2, 75.0, 75.0)]);
+    lb.note_frame(&lib2, 1300);
+    let got = lb_take(&mut lb, &slow, &lib2, 10_000.0);
+    let mut frames: Vec<usize> = got.iter().map(|g| g.0).collect();
+    frames.sort_unstable();
+    frames.dedup();
+    assert_eq!(frames, (1100..1300).collect::<Vec<_>>());
+    assert!(got.iter().all(|g| g.1 == vec![2]));
+}
+
+/// The settle scheduler with a floor re-reads frames `floor..seen` only,
+/// in whole chunks from the floor, and still covers that span.
+#[test]
+fn settle_sched_floor_keeps_chunks_in_the_current_session() {
+    let mut s = SettleSched::new(0.5, 16);
+    // A chunk in progress below the floor is dropped at once.
+    assert!(s.next_frame(1600).is_some());
+    s.set_floor(1000);
+    assert!(s.next_frame(1010).is_none());
+    let seen = 1640;
+    let mut hits = [0usize; 4];
+    for _ in 0..1600 {
+        let (f, _) = s.next_frame(seen).unwrap();
+        assert!((1000..seen).contains(&f), "{f}");
+        assert!((f - 1000) / 16 * 16 + 1000 + 16 <= seen);
+        hits[(f - 1000) * 4 / 640] += 1;
+    }
+    assert!(hits.iter().all(|&h| h > 250), "{hits:?}");
+    s.set_floor(5);
+    assert!(s.next_frame(seen).unwrap().0 >= 1000);
+}
+
+/// A settle visit run as a job on a visit worker (through the byte
+/// encoding both ways) does what the owner's own settle visit does: the
+/// same footprints, the same counters, and the tiles' ordinary visit
+/// state untouched. An ordinary job's bytes carry no settle flag.
+#[test]
+fn settle_jobs_equal_settle_visits() {
+    let t = 600;
+    let mut rng = Lcg(11);
+    let cells = vec![
+        (blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0)),
+        (blob(1, 34.0, 36.0), trace(&mut rng, t, 0.05, 6.0)),
+    ];
+    let m = movie(&cells, t, 3);
+    // Seeded too narrow, so the settle visits have something to refine.
+    let seed = vec![blob_w(0, 30.0, 30.0, 1.6), blob_w(1, 34.0, 36.0, 1.6)];
+    let n_px = N * N;
+    let make = || {
+        let (mut slow, mut eng) = start(config(), &seed);
+        slow.enable_settle(0);
+        let lib = eng.library().clone();
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let tr = eng.process(f).unwrap();
+            slow.observe(f, &lib, &tr).unwrap();
+        }
+        // No ordinary visit is due (they come first at hand-out).
+        for tile in &mut slow.tiles {
+            tile.fresh = 0;
+        }
+        slow
+    };
+    let (mut a, mut b) = (make(), make());
+    let mut runner = VisitRunner::new(
+        SlowLoop::new(
+            dims(),
+            vec![1; n_px],
+            vec![1.0; n_px],
+            flattener(),
+            config(),
+        )
+        .unwrap(),
+    );
+    a.step_settle(u64::MAX / 4).unwrap();
+    assert!(b.take_settle_job().is_none(), "a settle job without credit");
+    b.settle_credit(u64::MAX / 4, u64::MAX / 4);
+    let visits = b.tile_visits.clone();
+    let probes: Vec<usize> = b.tiles.iter().map(|t| t.probes.len()).collect();
+    let mut n = 0;
+    while let Some(job) = b.take_settle_job() {
+        assert_eq!(b.jobs_in_flight(), 1);
+        assert!(job.is_settle());
+        let job = VisitJob::from_bytes(&job.to_bytes()).unwrap();
+        assert!(job.is_settle());
+        let res = runner.run(job).unwrap();
+        let res = VisitResult::from_bytes(&res.to_bytes()).unwrap();
+        b.apply_job(res).unwrap();
+        n += 1;
+    }
+    assert!(n > 0, "no settle job was handed out");
+    let (sa, sb) = (a.settle_stats(), b.settle_stats());
+    assert_eq!((sa.visits, sa.refines), (sb.visits, sb.refines));
+    assert!(sb.refines > 0, "no settle job refined a footprint");
+    assert_eq!(sb.visits, n);
+    assert_eq!(a.stats().refines, b.stats().refines);
+    assert_eq!(a.stats().visits, b.stats().visits);
+    assert_eq!(b.tile_visits, visits);
+    assert_eq!(
+        b.tiles.iter().map(|t| t.probes.len()).collect::<Vec<_>>(),
+        probes
+    );
+    let (la, lb) = (a.finalize().unwrap(), b.finalize().unwrap());
+    assert!(la.to_bytes()[16..] == lb.to_bytes()[16..]);
+    // The quiet period holds a settle job back as it holds a settle visit.
+    let due = b.cfg.visit_after_slots;
+    b.enable_settle(1000);
+    for ti in 0..b.tiles.len() {
+        b.cs_fresh[ti] = due;
+        b.cs_struct[ti] = b.frames;
+    }
+    assert!(b.take_settle_job().is_none());
+    assert!(b.settle_stats().quiet_skips > 0);
+    // An ordinary job is not a settle job after the round trip.
+    b.enable_settle(0);
+    b.tiles[0].fresh = due;
+    let job = b.take_job().unwrap();
+    assert!(!job.is_settle());
+    assert!(!VisitJob::from_bytes(&job.to_bytes()).unwrap().is_settle());
 }

@@ -95,6 +95,9 @@ function boundaryPlugin(marks: () => readonly BoundaryMark[]): uPlot.Plugin {
 
 const SERIES: uPlot.Series[] = [{}, { label: 'trace', stroke: OKABE_ITO.vermillion, width: 1.25 }];
 
+/** Frames the video may lag the processed frame under smooth playback (about three batches). */
+const MAX_DISPLAY_LAG = 64;
+
 /**
  * The selected cell's whole trace in the CaTune/CaDecon viewer: an overview
  * of everything processed so far (click or drag to move, drag the edges to
@@ -111,6 +114,8 @@ export function CellTraceViewer(props: {
   boundaries?: readonly number[];
   /** Their health flags (Joint runs): a warning or failed boundary is marked in its colour. */
   boundaryFlags?: readonly { frame: number; severity: BoundarySeverity }[];
+  /** The frame the video shows: the trace stops there, not at the newest processed frame (smooth playback). */
+  displayedFrame?: () => number | null;
   /**
    * The zoom plot is sized by its width (the shared aspect rule) instead of a
    * share of the window's height.
@@ -150,7 +155,15 @@ export function CellTraceViewer(props: {
     ),
   ];
   /* eslint-enable solid/reactivity */
-  const frames = () => props.cells.frame();
+  const frames = () => {
+    const shown = props.displayedFrame?.();
+    const processed = props.cells.frame();
+    // Only a displayed frame that is plausibly this run's, a few batches behind: playback lags at most
+    // about three batches, so a larger gap means the displayed frame is stale (or the data was seeded).
+    if (shown === null || shown === undefined || processed - (shown + 1) > MAX_DISPLAY_LAG)
+      return processed;
+    return Math.min(processed, shown + 1);
+  };
   const duration = () => frames() / fs();
 
   const span = createMemo(() => {

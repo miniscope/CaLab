@@ -116,6 +116,26 @@ describe('run record', () => {
 });
 
 describe('export', () => {
+  it('embeds the run record in meta_json', async () => {
+    const runRecord = {
+      format: 'cala-run-record',
+      record_version: 1,
+      settings: { lookback: true },
+    };
+    const z = parseNpz(await buildCalaExport({ ...(await input()), runRecord }));
+    const meta = JSON.parse(new TextDecoder().decode(z.arrays.meta_json.data as Uint8Array));
+    expect(meta.run_record).toEqual(runRecord);
+    // The CaDecon file carries it as a vector and keeps the traces matrix its one candidate.
+    const cd = parseNpz(await buildCaDeconExport({ ...(await input()), runRecord }, true));
+    expect(
+      JSON.parse(new TextDecoder().decode(cd.arrays.run_record_json.data as Uint8Array)),
+    ).toEqual(runRecord);
+    expect(traceCandidates(cd)).toEqual(['traces']);
+    const bare = parseNpz(await buildCalaExport(await input()));
+    const bareMeta = JSON.parse(new TextDecoder().decode(bare.arrays.meta_json.data as Uint8Array));
+    expect(bareMeta.run_record).toBeUndefined();
+  });
+
   it('reads cells and frames back from the trace file', async () => {
     const { traces } = await result();
     expect([...(await traces.readCell(0))]).toEqual([0, 1, 2, 3, 4, 5, 6]);
@@ -271,8 +291,6 @@ describe('export', () => {
         libraryVersion: 34,
         refines: 9,
         refinesPerMin: 18,
-        footprintsRefined: 7,
-        medianFootprintChange: 0.04,
       },
     ];
     const z = parseNpz(await buildCalaExport({ ...(await input()), stages }));
@@ -285,7 +303,6 @@ describe('export', () => {
       adds: 14,
       refines: 40,
     });
-    expect(meta.stages[1]).toMatchObject({ footprints_refined: 7, median_footprint_change: 0.04 });
     expect('adds' in meta.stages[1]).toBe(false);
     expect(meta.extract_seconds).toBeTypeOf('number');
     expect('pass2_seconds' in meta).toBe(false);

@@ -15,6 +15,7 @@ import { buildGeometry, type CellGeometry } from './cell-overlay.ts';
 import type { CellsBatch } from './fast-loop.ts';
 import type { StageTimings } from './pipeline-engine.ts';
 import { FootprintHistory } from './footprint-history.ts';
+import { stillMovingMap } from './settle.ts';
 import { TraceHistory } from './trace-history.ts';
 import type { RunHistory } from './run-history.ts';
 import {
@@ -184,6 +185,8 @@ export function createCellStore(
   const [qc, setQc] = createSignal<QcSnapshot | null>(null);
   /** Established (true) or on probation (false), by cell id. */
   const [established, setEstablished] = createSignal<Map<number, boolean>>(new Map());
+  /** "Still moving" hint by cell id, in multiples of the cell's split-half noise (information only). */
+  const [stillMoving, setStillMoving] = createSignal<ReadonlyMap<number, number>>(new Map());
   const [convergence, setConvergence] = createSignal<ConvergenceStatus>(convergenceStatus([]));
   const [fps, setFps] = createSignal(20);
   /** Showing a saved result (`loadResult`), not a run. */
@@ -217,6 +220,7 @@ export function createCellStore(
     editRates = new EditRates();
     setQc(null);
     setEstablished(new Map());
+    setStillMoving(new Map());
     setConvergence(convergenceStatus([]));
     slowBatchMs = [];
     slowStepMs = [];
@@ -284,6 +288,10 @@ export function createCellStore(
         for (let i = 0; i < ids.length; i++) m.set(ids[i], est[i] === 1);
         setEstablished(m);
       }
+      // The hint is the Final settle's: a later run (run > 1) clears it.
+      if (st.run > 1) {
+        if (stillMoving().size > 0) setStillMoving(new Map());
+      } else if (st.stillMoving) setStillMoving(stillMovingMap(st.stillMoving));
       setStatus(st);
       for (const fn of statusListeners) fn(st);
     } else setError(msg.message);
@@ -456,13 +464,21 @@ export function createCellStore(
     /** Newest QC snapshot (null until the fast loop has cells and a snapshot). */
     qc,
     /**
-     * Replace the QC snapshot with the QC of the traces of a Refine replay
-     * or of Extract (`extract-qc.ts`, whole recording): Refine and Extract run
+     * Replace the QC snapshot with the QC of the traces of Extract (`extract-qc.ts`, whole recording): Extract runs
      * no monitor, so without it the last minute of Discover would stay on show.
      */
     replaceQc: (snap: QcSnapshot) => setQc(snap),
     /** Probation/established by cell id (from the slow loop). */
     established,
+    /**
+     * Per-footprint "still moving" hint by cell id: the larger of the last core step and the last
+     * edge-ring step, over the cell's split-half noise (`stillMovingRatios`). Updated at each
+     * Final-settle checkpoint and with the final library; information only, never stops a settle.
+     * Display on the fixed scale `STILL_MOVING_SCALE`.
+     */
+    stillMoving,
+    /** One cell's hint (undefined: none yet, e.g. a cell born after the last checkpoint). */
+    stillMovingRatio: (id: number): number | undefined => stillMoving().get(id),
     /** Convergence history, one point per QC snapshot (tracks `qc()`). */
     convergenceHistory: () => {
       qc();

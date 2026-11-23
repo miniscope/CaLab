@@ -38,7 +38,7 @@ import { startReplayPipeline } from './replay-pipeline.ts';
 export type Pass2Status = 'idle' | 'running' | 'done' | 'error' | 'cancelled';
 
 /**
- * Why Discover's record cannot be replayed by Refine or Extract (null: it can):
+ * Why Discover's record cannot be replayed by Extract (null: it can):
  * no frames, a gap in the motion record, or too short for the calibration.
  */
 export function replayBlocked(pipeline: Pick<PipelineStore, 'record' | 'plan'>): string | null {

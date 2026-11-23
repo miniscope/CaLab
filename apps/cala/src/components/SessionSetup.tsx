@@ -2,20 +2,21 @@ import { createSignal, For, Index, Show, type JSX } from 'solid-js';
 import type { SessionList } from '../lib/session-list.ts';
 import {
   DEFAULT_MODE,
-  DEFAULT_REFINE_RUNS,
   LIBRARY_MODE_HINT,
   LIBRARY_MODE_LABEL,
-  MAX_REFINE_RUNS,
   OFFERED_MODES,
-  refinePlanText,
   type LibraryMode,
   type RunSettings,
 } from '../lib/session-run.ts';
 import { RESULTS_DIR } from '../lib/sessions.ts';
+import type { PipelineStore } from '../lib/pipeline-store.ts';
+import { DiscoverSettings } from './DiscoverSettings.tsx';
 import { isPickerAbort, showPicker, supportsDirectoryPicker } from '../lib/directory-picker.ts';
 
 interface SessionSetupProps {
   list: SessionList;
+  /** The pipeline whose start-time settings (Look-back, Final settle) the sessions use. */
+  pipeline: PipelineStore;
   /** Open the folder screen to add sessions. */
   onAdd: () => void;
   /** Back to the start screen (the list is dropped). */
@@ -38,7 +39,6 @@ function fmtStart(ms: number | null): string {
 /** The session list: review, reorder, remove and add sessions, pick the mode, start. */
 export function SessionSetup(props: SessionSetupProps): JSX.Element {
   const [mode, setMode] = createSignal<LibraryMode>(DEFAULT_MODE);
-  const [refineRuns, setRefineRuns] = createSignal(DEFAULT_REFINE_RUNS);
   const [startError, setStartError] = createSignal<string | null>(null);
   const l = () => props.list;
   const check = () => l().check();
@@ -47,6 +47,16 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
     !l().probing() &&
     check().errors.length === 0 &&
     (!supportsDirectoryPicker() || l().location() !== null);
+
+  /** Why Start is disabled ('' when it is not). */
+  const startBlock = (): string => {
+    if (l().items().length === 0) return 'Add a session to start';
+    if (l().probing()) return 'Checking the sessions...';
+    if (check().errors.length > 0) return 'Fix the problems above to start';
+    if (supportsDirectoryPicker() && l().location() === null)
+      return 'Choose a results folder to start';
+    return '';
+  };
 
   async function chooseLocation(): Promise<void> {
     setStartError(null);
@@ -67,7 +77,7 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
         );
         return;
       }
-      props.onStart({ mode: mode(), refineRuns: refineRuns() });
+      props.onStart({ mode: mode() });
     } catch (err) {
       setStartError(err instanceof Error ? err.message : String(err));
     }
@@ -203,7 +213,7 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
           Run
         </h2>
         <fieldset class="cala-sessions__modes">
-          <legend>Library</legend>
+          <legend>Footprints: one set for all sessions (Joint) / one per session (Separate)</legend>
           <For each={OFFERED_MODES}>
             {(m) => (
               <label class="cala-sessions__mode">
@@ -221,24 +231,13 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
             )}
           </For>
         </fieldset>
-        <label class="cala-sessions__row">
-          Refine runs before Extract{' '}
-          <select
-            data-testid="refine-runs"
-            value={String(refineRuns())}
-            onChange={(e) => setRefineRuns(Number(e.currentTarget.value))}
-          >
-            <For each={Array.from({ length: MAX_REFINE_RUNS + 1 }, (_, k) => k)}>
-              {(k) => <option value={String(k)}>{k}</option>}
-            </For>
-          </select>
-        </label>
-        <p
-          class={refineRuns() === 0 ? 'cala-sessions__warning' : 'cala-muted cala-sessions__note'}
-          data-testid="refine-note"
-        >
-          {refinePlanText(refineRuns())}
-        </p>
+        <fieldset class="cala-sessions__modes" data-testid="setup-discover-settings">
+          <legend>Discover settings (every session)</legend>
+          <DiscoverSettings pipeline={props.pipeline} context="setup" />
+          <p class="cala-muted cala-sessions__note">
+            Speed and the other Run-tab controls can be changed while the sessions run.
+          </p>
+        </fieldset>
         <p class="cala-sessions__row" data-testid="results-location">
           Results:{' '}
           <Show
@@ -286,6 +285,7 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
             class="btn-primary"
             data-testid="sessions-start"
             disabled={!canStart()}
+            title={canStart() ? undefined : startBlock()}
             onClick={() => void start()}
           >
             Start {l().items().length} {l().items().length === 1 ? 'session' : 'sessions'}
@@ -293,6 +293,12 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
           <button type="button" class="btn-secondary" onClick={() => props.onCancel()}>
             Cancel
           </button>
+          <Show when={!canStart() && startBlock()}>
+            {' '}
+            <span class="cala-muted" data-testid="sessions-start-reason">
+              {startBlock()}
+            </span>
+          </Show>
         </p>
       </section>
     </div>

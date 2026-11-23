@@ -145,15 +145,15 @@ describe('event sequence', () => {
 
   it('reports a failed run with a category and error class but never the message text, never twice', async () => {
     const h = harness();
-    h.setRuns([run({ stage: 'refine', index: 2 })]);
+    h.setRuns([run({ stage: 'extract', index: 2 })]);
     h.setRuns([
-      run({ stage: 'refine', index: 2, outcome: 'error', endedAt: '2026-01-01T00:00:05.000Z' }),
+      run({ stage: 'extract', index: 2, outcome: 'error', endedAt: '2026-01-01T00:00:05.000Z' }),
     ]);
     await vi.advanceTimersByTimeAsync(0);
     const failed = h.calls.filter((c) => c[0] === 'run_failed');
     expect(failed).toHaveLength(1);
     expect(failed[0][1]).toEqual({
-      stage: 'refine',
+      stage: 'extract',
       error_category: 'out_of_memory',
     });
     expect(JSON.stringify(h.calls)).not.toContain('ana');
@@ -171,7 +171,7 @@ describe('event sequence', () => {
 
   it('multi-session joint run: one import, boundary summary and export at the end', async () => {
     const h = harness();
-    const plan = { settings: { mode: 'joint' as const, refineRuns: 2 }, sessions: [1, 2, 3] };
+    const plan = { settings: { mode: 'joint' as const }, sessions: [1, 2, 3] };
     h.setPlan(plan);
     h.setInfo(INFO);
     h.setInfo({ ...INFO });
@@ -182,7 +182,6 @@ describe('event sequence', () => {
       mode: 'joint',
       sessions: 3,
       plan_sessions: 3,
-      refine_runs: 2,
     });
     h.setEnded(true);
     await vi.advanceTimersByTimeAsync(0);
@@ -199,9 +198,9 @@ describe('event sequence', () => {
     h.dispose();
   });
 
-  it('a Separate plan reports one session per run, with the plan size and Refine setting apart', async () => {
+  it('a Separate plan reports one session per run, with the plan size apart', async () => {
     const h = harness();
-    h.setPlan({ settings: { mode: 'separate' as const, refineRuns: 0 }, sessions: [1, 2, 3, 4] });
+    h.setPlan({ settings: { mode: 'separate' as const }, sessions: [1, 2, 3, 4] });
     h.setInfo(INFO);
     h.setRuns([run({})]);
     await vi.advanceTimersByTimeAsync(0);
@@ -209,7 +208,6 @@ describe('event sequence', () => {
       mode: 'separate',
       sessions: 1,
       plan_sessions: 4,
-      refine_runs: 0,
     });
     h.dispose();
   });

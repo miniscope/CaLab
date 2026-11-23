@@ -57,8 +57,17 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await expect(info).toContainText('60.0 Hz (declared by the writer, ignored)');
 
   // Opening also runs preprocessing and motion correction in the worker.
-  await expect(page.getByTestId('pipeline-status')).toHaveText('Done', { timeout: 20_000 });
+  // Discover finished; Extract may not follow on a recording with no cells.
+  await expect(page.getByTestId('pipeline-status')).toHaveText(/^(Discover done|Done)$/, {
+    timeout: 20_000,
+  });
   await expect(page.getByTestId('pipeline-readout')).toContainText('frame 6 / 6');
+  // The work display is in the Run panel, with its fixed ranges and honest empty values.
+  await page.getByRole('tab', { name: 'Run' }).click();
+  await expect(page.getByTestId('work-display')).toBeVisible();
+  await expect(page.getByTestId('work-legend')).toContainText('Final settle');
+  await expect(page.getByTestId('step-panel-discover')).toContainText('Discover');
+  await expect(page.getByTestId('run-step-discover')).toHaveAttribute('data-state', 'done');
   await page.getByRole('tab', { name: 'History' }).click();
   await page.getByTestId('history-group').getByRole('radio', { name: 'Motion' }).click();
   await expect(page.getByTestId('history-motion')).toBeVisible();
@@ -70,6 +79,32 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   // The cells panel is up; six frames are too few for the slow loop to start.
   await expect(page.getByTestId('cells-view')).toBeVisible();
   await expect(page.getByTestId('cells-readout')).toContainText('0 cells');
+  // The Speed block: Max by default; Fixed shows the target and persists; the old toggle is gone.
+  await page.getByTestId('tab-run').click();
+  const speed = page.getByTestId('speed-control');
+  await expect(speed).toHaveAttribute('data-mode', 'max');
+  await expect(page.getByTestId('csettle-toggle')).toHaveCount(0);
+  await page.getByTestId('speed-mode-fixed').click();
+  await expect(speed).toHaveAttribute('data-mode', 'fixed');
+  await expect(page.getByTestId('speed-headline')).toContainText('fps');
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem('cala.speed.v1')))
+    .toContain('"mode":"fixed"');
+  // Curve mode: a preset in place of the thumb, the plan drawn over the whole strip, and it persists.
+  await page.getByTestId('speed-mode-curve').click();
+  await expect(speed).toHaveAttribute('data-mode', 'curve');
+  await expect(page.getByTestId('speed-preset')).toHaveValue('find-fast');
+  await expect(page.getByTestId('speed-slider')).toHaveCount(0);
+  await expect(page.getByTestId('speed-status')).toContainText('Max to 50 %');
+  await expect(page.getByTestId('work-plan')).toHaveCount(1);
+  await page.getByTestId('speed-preset').selectOption('step-down');
+  await expect(page.getByTestId('speed-status')).toContainText('every frame seen');
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem('cala.speed.v1')))
+    .toContain('"preset":"step-down"');
+  await page.getByTestId('speed-mode-max').click();
+  await expect(speed).toHaveAttribute('data-mode', 'max');
+  await expect(page.getByTestId('work-plan')).toHaveCount(0);
   // Quality control: the convergence strip, the cell table and the overlay modes.
   await expect(page.getByTestId('convergence-status')).toContainText('Waiting for cells');
   await page.getByRole('tab', { name: 'QC', exact: true }).click();
@@ -141,7 +176,7 @@ test('Cala: long-session cell overview stays compact and navigates beyond retain
   writeFileSync(join(folder, '0.avi'), buildAvi({ width: 24, height: 16, frames: 6 }));
   writeFileSync(join(folder, 'metaData.json'), '{"frameRate":"20FPS"}');
   await page.getByTestId('folder-input').setInputFiles(folder);
-  await expect(page.getByTestId('pipeline-status')).toHaveText('Done');
+  await expect(page.getByTestId('pipeline-status')).toHaveText(/^(Discover done|Done)$/);
   // Seed the display stores, not the solver: this exercises chart rendering and
   // navigation late in a recording without processing a million video frames.
   await page.evaluate(() => {

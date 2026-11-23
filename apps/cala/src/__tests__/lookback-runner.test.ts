@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildSlowLoop,
+  framesFrom,
   SlowRunner,
   type PublishedLibrary,
   type SlowLoopLike,
@@ -112,6 +113,7 @@ function fakeLoop(need: number) {
     markAllDue: vi.fn(() => void calls.push('markAllDue')),
     lookbackStats: () => Float64Array.of(need - left, observed.length, 0, 0, 1, left, 8),
     footprintNoise: vi.fn(() => Float64Array.of(1, 0.1)),
+    footprintNoiseOn: vi.fn(() => 0.1),
   };
   return { loop, calls, observed, streams };
 }
@@ -211,6 +213,44 @@ describe('buildSlowLoop', () => {
     const l = buildSlowLoop(Fake, { ...init, lookback: true });
     expect(l.args).toEqual(['withConfig', 4, 3, init.fov, init.noise, 9, 0, 'all', 'all', 0.6]);
     expect(l.lookback).toEqual([2, 3000]);
+  });
+});
+
+describe('SlowRunner look-back in a Joint run (fake loop)', () => {
+  it('drops look-back frames before a floor, request by request', () => {
+    const flat = Float64Array.of(3, 0, 1, 7, 5, 0, 2, 7, 8, 9, 0, 0);
+    expect(Array.from(framesFrom(flat, 0))).toEqual(Array.from(flat));
+    expect(Array.from(framesFrom(flat, 4))).toEqual([5, 0, 2, 7, 8, 9, 0, 0]);
+    expect(Array.from(framesFrom(flat, 6))).toEqual([9, 0, 0]);
+    expect(framesFrom(flat, 10).length).toBe(0);
+  });
+
+  it('moves the floor to the session being read (also past a dropped first batch) and asks only for its frames', () => {
+    const t = setup(1000);
+    const floor = vi.fn();
+    t.loop.setLookbackFloor = floor;
+    t.r.handle({ ...INIT, lookback: true, sessionStarts: [4, 10] });
+    expect(t.created[0].sessionStarts).toEqual([4, 10]);
+    t.r.handle(frames(0));
+    t.r.handle(frames(2));
+    expect(floor).not.toHaveBeenCalled();
+    t.run();
+    // The forward pool dropped the batch at 4: the batch at 6 is session 1 all the same.
+    t.r.handle(frames(6));
+    expect(floor.mock.calls).toEqual([[4]]);
+    t.run();
+    // A scheduler that still hands out earlier frames (a build without the floor): they never go out.
+    t.loop.lookbackTake = vi.fn(() => Float64Array.of(2, 0, 1, 7, 5, 0, 1, 7));
+    const requests = () =>
+      t.toLb.filter((m): m is Extract<SlowToLookback, { type: 'request' }> => m.type === 'request');
+    t.r.handle(frames(8));
+    expect(lookbackFrames(requests().at(-1)!.items).map((f) => f.frame)).toEqual([5]);
+    t.r.handle(frames(10));
+    expect(floor.mock.calls).toEqual([[4], [10]]);
+    // Only earlier frames on offer: the answer is not followed by another request.
+    const n = requests().length;
+    t.answer();
+    expect(requests().length).toBe(n);
   });
 });
 
@@ -338,6 +378,43 @@ describe('SlowRunner look-back (fake loop)', () => {
     expect(statuses(t).at(-1)!.lookback?.settle?.moving).toEqual({ cells: 1, above: 0 });
   });
 
+  it('a Final-settle level stops the pass early: the plan keeps its first share, Thorough is untouched', () => {
+    const t = setup(0);
+    t.r.handle({ ...INIT, lookback: true, settleFraction: 0.5 });
+    expect(t.created.at(-1)).toMatchObject({ settleFraction: 0.5 });
+    t.r.handle(frames(0, 80));
+    t.r.handle({ type: 'end', session: 1 });
+    const discoverObserves = t.streams.length;
+    t.run();
+    const st = statuses(t).at(-1)!.lookback!.settle!;
+    expect(st).toMatchObject({ fed: 40, total: 40, recording: 80, done: true, stopped: false });
+    expect(t.streams.slice(discoverObserves)).toEqual([...Array(40).keys()]);
+    expect(finals(t)).toHaveLength(1);
+    // No fraction (Thorough): the whole recording, and the init carries no field.
+    const u = setup(0);
+    u.r.handle({ ...INIT, lookback: true });
+    expect(u.created.at(-1)).not.toHaveProperty('settleFraction');
+    u.r.handle(frames(0, 80));
+    u.r.handle({ type: 'end', session: 1 });
+    u.run();
+    expect(statuses(u).at(-1)!.lookback!.settle).toMatchObject({ fed: 80, total: 80 });
+  });
+
+  it('sends the still-moving hint with the status after a checkpoint, once', () => {
+    const t = setup(0);
+    t.r.handle({ ...INIT, lookback: true });
+    t.r.handle(frames(0, 2 * SETTLE.checkEvery));
+    t.r.handle({ type: 'end', session: 1 });
+    t.run();
+    const hints = statuses(t).filter((s) => s.stillMoving);
+    // At most one per checkpoint (statuses are throttled), never with the final library alone.
+    expect(hints.length).toBeGreaterThanOrEqual(1);
+    expect(hints.length).toBeLessThanOrEqual(2);
+    for (const h of hints) expect([...h.stillMoving!]).toEqual([1, 0]);
+    // Region noise was asked for the core and the edge of the cell.
+    expect(t.loop.footprintNoiseOn).toHaveBeenCalled();
+  });
+
   it('a long recording is sampled up to the cap', () => {
     const t = setup(0);
     t.r.handle({ ...INIT, lookback: true });
@@ -444,20 +521,6 @@ describe('SlowRunner look-back (fake loop)', () => {
     expect(finals(t)).toHaveLength(1);
     // About SETTLE.finalSteps budgets of visits after the frames, not more.
     expect(work).toBeLessThanOrEqual(123 * (SETTLE.finalSteps + 3 * 16));
-  });
-
-  it('a Refine run after it does no look-back', () => {
-    const t = setup(1);
-    t.r.handle({ ...INIT, lookback: true });
-    t.r.handle(frames(0, 1));
-    t.answer();
-    t.r.handle({ type: 'end', session: 1 });
-    t.run();
-    expect(finals(t)).toHaveLength(1);
-    const notes = (t.loop.lookbackNote as ReturnType<typeof vi.fn>).mock.calls.length;
-    t.r.handle({ type: 'replay', session: 1, scope: 'refine' });
-    t.r.handle(frames(0, 2));
-    expect((t.loop.lookbackNote as ReturnType<typeof vi.fn>).mock.calls.length).toBe(notes);
   });
 
   it('a reset drops the settling run', () => {

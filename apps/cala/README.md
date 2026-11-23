@@ -97,7 +97,7 @@ estimated from the recording's own motion dither (`FlatFieldEstimator`, crates/c
   ...), else the live source name, else the recording folder name. Miniscope
   `metaData.json` has no serial (`deviceID` is a camera index), so folders are
   keyed by name. See `flatFieldKey` in `src/lib/flat-field.ts`.
-- **Refine and Extract** apply Discover's newest map from frame 0 and estimate nothing.
+- **Extract** applies Discover's newest map from frame 0 and estimate nothing.
 - **Single-worker `PipelineEngine`** (`?pipeline=0`) has no flat field: estimating
   there would put the solve on the frame path.
 - The Flat field tab shows the gain map at a fixed 0.9 to 1.1 range (no
@@ -107,9 +107,10 @@ estimated from the recording's own motion dither (`FlatFieldEstimator`, crates/c
 ## Run stages and export
 
 A run has named stages (design note: [docs/stages.md](docs/stages.md)):
-**Discover** builds the footprint library while the recording streams by;
-**Refine** (recordings only, repeatable; `src/lib/refine-store.ts`) replays
-the recording into the same slow loop with the refine-only edit scope; and
+**Discover** builds the footprint library while the recording streams by (for a
+recording with look-back, which re-reads earlier frames for each new cell, and
+a Final settle at the end that lets the footprints converge; there is no
+separate Refine stage any more); and
 **Extract** (recordings only; `src/lib/pass2-store.ts`, the older name) solves
 the final traces. Discover's traces were solved with whatever library was
 current at the time. Extract walks the recording again through the same three
@@ -129,8 +130,8 @@ late have traces from frame 0.
   replaying from frame 0 rebuilds the state Discover had at every frame. No
   checkpoints are needed while the whole recording is replayed.
 - **End Discover** ends the stream at the frames read so far (the slow
-  loop publishes its final library and Refine and Extract cover those frames).
-  Extract runs automatically after Discover (checkbox; not after a Refine run)
+  loop publishes its final library and Extract covers those frames).
+  Extract runs automatically after Discover (checkbox, off by default)
   or with **Extract**, shows progress and frames/s, and the UI stays live (the
   work is in workers).
 - Extract streams its traces (frames x cells float32, frame-major) into a file in
@@ -224,7 +225,7 @@ the frame worker (`probe`), orders them by `recordingStartTime` (else path) and
 validates size and bit depth (error) and frame rate (warning).
 
 - **Joint:** `FrameSource.openSessions` concatenates the sessions;
-  `info.sessions` holds each session's span. One Discover, Refine and Extract;
+  `info.sessions` holds each session's span. One Discover and Extract;
   the export is cut per session (`ExportInput.frameRange`).
 - **Separate:** each session is opened alone and run in turn.
 - `lib/multi-run.ts` drives the run (`nextAutoAction` in `lib/session-run.ts`)
@@ -301,7 +302,7 @@ What changes in a live run:
 - No progress bar, no total, no raw-file tab. "Stop the live run" ends the
   stream at the frames received (the slow loop publishes its final library);
   "Restart" connects again, and the source streams from wherever it is then.
-- A live stream runs Discover only: Refine and Extract cannot run (nothing to
+- A live stream runs Discover only: Extract cannot run (nothing to
   re-read; save the stream and load it as a recording later), so a live run has no record of the
   past beyond the traces the fast loop solved as the frames came in. The
   export (`src/lib/live-export.ts`) takes those: the cells of the final

@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js';
-import { createEffect, createSignal, For, on, Show } from 'solid-js';
+import { leaveWarning, resultExported } from './lib/export-state.ts';
+import { createEffect, createSignal, For, on, Show, untrack } from 'solid-js';
 import { CompactHeader, DashboardShell } from '@calab/ui';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
 import {
@@ -23,11 +24,9 @@ import type { QcSnapshot } from './lib/qc.ts';
 import { createCompressClient } from './lib/compress-client.ts';
 import { createCompressStore } from './lib/compress-store.ts';
 import { createPass2Store, replayBlocked } from './lib/pass2-store.ts';
-import { createRefineStore } from './lib/refine-store.ts';
 import {
   createStageLog,
   perMinute,
-  STAGE_LABEL,
   stageAvailability,
   type StageActivity,
   type StageName,
@@ -72,8 +71,31 @@ import {
   rememberProject,
   type RecentProject,
 } from './lib/recent-projects.ts';
-import { LIBRARY_MODE_LABEL, refinePlanText } from './lib/session-run.ts';
+import { LIBRARY_MODE_LABEL } from './lib/session-run.ts';
 import { createLookbackClient } from './lib/lookback-client.ts';
+import { loadSpeedSettings } from './lib/speed-track.ts';
+import { presetCurve } from './lib/speed-schedule.ts';
+import { PACE_BATCH, PACE_SLACK } from './lib/frame-pacer.ts';
+import { FLOOR, TRACKER } from './lib/speed-floor.ts';
+import { LOOKBACK } from './lib/slow-runner.ts';
+import {
+  CSETTLE,
+  GOVERNOR,
+  noiseMap,
+  SETTLE,
+  settleChange,
+  settlePoolSize,
+  unitFootprints,
+} from './lib/settle.ts';
+import {
+  gatherRunRecord,
+  primeRunRecordContext,
+  RunTrace,
+  settingsFromRecord,
+  type RunRecordExtras,
+  type RunRecordSources,
+} from './lib/run-provenance.ts';
+import type { LibraryView } from './workers/slow-types.ts';
 import type { ExportInput } from './lib/export.ts';
 import type { ProjectResult } from './lib/project-index.ts';
 import { openResult, type LoadedResult } from './lib/result-file.ts';
@@ -146,27 +168,37 @@ const App: Component = () => {
         review && reviewClient ? { port: reviewClient.port, every: review.every } : undefined,
       )
     : undefined;
-  // Look-back (experimental): Discover refines footprints as it goes by re-reading
-  // past frames in a worker of its own, and settles at the end (no Refine needed).
-  // A recording on disk with one session, pipelined workers only.
+  // Look-back: Discover refines footprints as it goes by re-reading past frames in a
+  // worker of its own, and settles at the end (the Final settle).
+  // A recording on disk (one session or a Joint run of several), pipelined workers only.
   const pipelined = params.get('pipeline') !== '0';
+  // The settle pool: S more look-back workers that take only the settle's chunks (worker 0
+  // keeps need-driven look-back and the end settle), started when a run first goes below
+  // Max. S from the core count (`settlePoolSize`); `?debug&lbpool=S` overrides it (measurement).
+  const lbPool = settlePoolSize(
+    typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined,
+    params.has('debug') && params.has('lbpool') ? Number(params.get('lbpool')) || 0 : null,
+  );
   const lookbackClient = createLookbackClient({
     slow,
+    pool: lbPool,
     source: () => store.source(),
     blocked: () => {
       const i = store.info();
       if (!pipelined) return 'Look-back needs the pipelined workers (not ?pipeline=0).';
       if (!i) return 'Open a recording first.';
       if (i.live) return 'Look-back needs a recording on disk (not a live stream).';
-      if ((i.sessions?.length ?? 1) > 1) return 'Look-back runs on one session (not a Joint run).';
       return null;
     },
-    onError: (session, message) => {
-      console.warn(`cala look-back worker (session ${session}): ${message}`);
+    onError: (session, message, worker) => {
+      console.warn(`cala look-back worker ${worker} (session ${session}): ${message}`);
       runHistory.log({
         frame: pipeline.processed(),
         kind: 'warning',
-        detail: `Look-back: ${message}`,
+        detail:
+          worker > 0
+            ? `Look-back worker ${worker} stopped: ${message} Need-driven look-back continues.`
+            : `Look-back: ${message}`,
       });
     },
   });
@@ -189,6 +221,7 @@ const App: Component = () => {
           height: i.height,
           ...(i.device ? { device: i.device } : {}),
           ...(i.live ? { live: true } : {}),
+          ...(!i.live && Number.isFinite(i.frameCount) ? { frames: i.frameCount } : {}),
           ...(i.live?.name ? { liveName: i.live.name } : {}),
           folder: store.label(),
         };
@@ -205,9 +238,42 @@ const App: Component = () => {
       : compress,
     lookbackClient,
   );
-  // `?lookback`: look-back on from the first Discover start.
-  if (params.has('lookback') && params.get('lookback') !== '0') pipeline.setLookback(true);
-  // ---- Run stages (docs/stages.md): Discover, Refine (repeatable), Extract ----
+  // The Speed block's saved settings (mode, last Fixed speed, Background settle cap); the URL
+  // parameters below win for this page.
+  const speed = loadSpeedSettings();
+  if (speed.mode === 'fixed') pipeline.setPaceFps(speed.fixedFps, 'setting');
+  if (speed.mode === 'curve')
+    pipeline.setSpeedCurve(presetCurve(speed.preset), { preset: speed.preset });
+  if (speed.mode === 'auto') pipeline.setAutoBudget(speed.autoBudget);
+  if (speed.cap === 0) pipeline.setCsettle(false);
+  else pipeline.setCsettleCeiling(speed.cap);
+  // Look-back (with its Final settle) is on by default for recordings; `?lookback=0` turns it off.
+  if (params.get('lookback') === '0') pipeline.setLookback(false);
+  // Background settle (settle during Discover) is on under look-back whenever the target is
+  // below Max; `csettle=0` turns it off, `csettle=yield` or `csettle=yieldN` feeds each answer
+  // N frames at a time (1 by default), `csrate=1|0.5` lowers the cap from 2 re-read frames
+  // per live frame.
+  const cs = params.get('csettle');
+  // The URL decides the settle when it says anything about it, over the Speed block's saved cap.
+  if (cs !== null || params.has('csrate')) pipeline.setCsettle(cs !== '0', 'url');
+  if (cs !== null && cs !== '0') {
+    const y = /^yield(\d*)$/.exec(cs);
+    if (y) pipeline.setCsettleYield(y[1] ? Number(y[1]) : 1);
+  }
+  if (params.has('csrate')) pipeline.setCsettleCeiling(Number(params.get('csrate')), 'url');
+  // `?debug&needfirst` (measurement only): with one look-back worker, need-driven look-back
+  // goes first and Background settle asks only when it has nothing to ask.
+  if (params.has('debug') && params.has('needfirst') && params.get('needfirst') !== '0')
+    pipeline.setCsettleNeedFirst(true);
+  // `?debug&pacefps=30` (measurement only): read the recording at a stream's rate.
+  if (params.has('debug') && params.has('pacefps'))
+    pipeline.setPaceFps(Number(params.get('pacefps')), 'url');
+  // `?debug`: log the time of each displayed frame change; `smooth=0` turns smooth playback off.
+  if (params.has('debug')) {
+    pipeline.setDisplayLog(true);
+    if (params.get('smooth') === '0') pipeline.setSmoothPlayback(false);
+  }
+  // ---- Run stages (docs/stages.md): Discover (look-back and Final settle), Extract ----
   const stageLog = createStageLog();
   const discoverActivity = (): StageActivity => {
     const st = pipeline.status();
@@ -216,35 +282,13 @@ const App: Component = () => {
   const stageInput = () => ({
     live: store.info()?.live !== undefined,
     discover: discoverActivity(),
-    refine: ((st) => (st === 'finishing' ? 'running' : st))(refine.status()) as StageActivity,
     extract: pass2.status(),
     finalLibrary: cells.status()?.final ?? false,
     cells: cells.library()?.ids.length ?? 0,
     replayBlocked: replayBlocked(pipeline),
   });
   const availability = () => stageAvailability(stageInput());
-  const pass2 = createPass2Store(client, pipeline, cells, undefined, () =>
-    refine.status() === 'running' || refine.status() === 'finishing' ? 'Refine is running.' : null,
-  );
-  // Refine's QC: the trace statistics of the replay's traces over the whole
-  // recording, as after Extract (the replay runs no QC monitor).
-  const refine = createRefineStore(
-    client,
-    pipeline,
-    cells,
-    stageLog,
-    () => availability().refine,
-    undefined,
-    {
-      qc: async (traces, ids) => {
-        const backend = await loadSpanStats();
-        const fps = store.info()?.fps ?? 0;
-        const rate = fps > 0 ? fps : ASSUMED_FPS;
-        const range = { start: 0, end: traces.frames };
-        return extractQc(traces, ids, range, rate, QC_SCOPE_DEFAULT, cells.qc(), backend);
-      },
-    },
-  );
+  const pass2 = createPass2Store(client, pipeline, cells);
   /** Log a stage event on the run's timeline (at the end of what Discover read). */
   const logStage = (stage: StageName, detail: string) =>
     runHistory.log({
@@ -254,15 +298,6 @@ const App: Component = () => {
       detail,
       replay: false,
     });
-  /** Refine: a result of an earlier Extract no longer matches the footprints, so it goes. */
-  function runRefine(): void {
-    if (availability().refine !== null) return;
-    if (pass2.result()) {
-      pass2.clear();
-      stageLog.invalidateExtract();
-    }
-    void refine.run();
-  }
   // Discover: a new run starts the stage log over; it ends with the final library.
   createEffect(
     on(
@@ -270,7 +305,6 @@ const App: Component = () => {
       (st) => {
         if (st === 'starting') {
           stageLog.reset();
-          refine.clear();
           stageLog.begin('discover');
         } else if (st === 'error') {
           stageLog.end('discover', 'error', { frames: pipeline.processed() });
@@ -344,24 +378,6 @@ const App: Component = () => {
       },
     ),
   );
-  // Refine: the store logs its runs; the timeline gets the start and the end.
-  createEffect(
-    on(
-      () => refine.status(),
-      (st) => {
-        if (st === 'running') logStage('refine', `${STAGE_LABEL.refine} started`);
-        else if (st === 'done' || st === 'cancelled' || st === 'error') {
-          const r = stageLog.last('refine');
-          logStage(
-            'refine',
-            `${STAGE_LABEL.refine} ${r?.index ?? ''} ${st === 'done' ? 'done' : st}${
-              r?.refines !== undefined ? `: ${r.refines} refines` : ''
-            }`,
-          );
-        }
-      },
-    ),
-  );
   // Slow-loop warnings (the reservoir filling up) go into the run's event log.
   createEffect(
     on(
@@ -382,12 +398,18 @@ const App: Component = () => {
     }
   });
   // `?debug`: expose the stores for measurement scripts (timing, lag, library events).
+  let discoverEnd: {
+    session: number;
+    library: Pick<
+      LibraryView,
+      'version' | 'frame' | 'width' | 'height' | 'ids' | 'starts' | 'pixels' | 'values'
+    >;
+  } | null = null;
   if (params.has('debug')) {
     (globalThis as { __cala?: unknown }).__cala = {
       cells,
       pipeline,
       pass2,
-      refine,
       stageLog,
       runHistory,
       historyUi,
@@ -396,7 +418,45 @@ const App: Component = () => {
       /** Look-back counters of the current run (null: off), and the setting. */
       lookback: () => cells.status()?.lookback ?? null,
       lookbackOn: () => pipeline.lookbackRun(),
+      /**
+       * A look-back run's library at the end of Discover's frames, before the
+       * end settle (null: not there yet), and how far the end settle moved it
+       * against the final library's split-half noise (null until final).
+       */
+      discoverEnd: () => discoverEnd,
+      endSettleChange: () => {
+        const st = cells.status();
+        const lib = cells.library();
+        if (!discoverEnd || !st?.final || !lib || !st.footprintNoise) return null;
+        return settleChange(
+          unitFootprints(discoverEnd.library),
+          unitFootprints(lib),
+          noiseMap(st.footprintNoise),
+        );
+      },
     };
+    // The library Discover ended with: the one in hand when settling starts
+    // (the slow worker publishes it just before that status).
+    createEffect(() => {
+      if (cells.status()?.lookback?.settling !== true) return;
+      const session = cells.session();
+      if (discoverEnd?.session === session) return;
+      const lib = untrack(() => cells.library());
+      if (!lib) return;
+      discoverEnd = {
+        session,
+        library: {
+          version: lib.version,
+          frame: lib.frame,
+          width: lib.width,
+          height: lib.height,
+          ids: lib.ids.slice(),
+          starts: lib.starts.slice(),
+          pixels: lib.pixels.slice(),
+          values: lib.values.slice(),
+        },
+      };
+    });
   }
 
   // ---- Data donation (docs/data-donation.md): only with a donation backend ----
@@ -422,7 +482,97 @@ const App: Component = () => {
     client.probe ? client.probe(s) : Promise.reject(new Error('Sessions cannot be read here.')),
   );
   const version = import.meta.env.VITE_APP_VERSION || 'dev';
+  // ---- Run record (docs/run-record.md): how this run was made, saved with every result ----
+  const runTrace = new RunTrace();
+  pipeline.onPaceChange((fps, frame, source) => runTrace.noteTargetSpeed(fps, frame, source));
+  pipeline.onCapChange((cap, frame, source) => runTrace.noteCap(cap, frame, source));
+  pipeline.onPoolStart((workers, frame) => runTrace.notePoolStart(workers, frame));
+  pipeline.onWorkSample((sample) => runTrace.noteSample(sample));
+  // A curve that takes over mid-run replaces the one noted at the start.
+  pipeline.onCurveArmed((curve) => runTrace.noteCurve(curve));
+  // Auto's budget and decisions are kept in the trace, so changing Speed after the run does not lose them.
+  pipeline.onAutoChange((a) => runTrace.noteAuto(a));
+  // A Discover start begins a new run: the target speed in force is its first entry.
+  createEffect(
+    on(
+      () => pipeline.status() === 'starting',
+      (starting) => {
+        if (!starting) return;
+        runTrace.reset();
+        // What is applied: a live stream is not paced by a target, and has no settle.
+        runTrace.noteTargetSpeed(pipeline.targetNow(), 0, 'run start');
+        runTrace.noteCap(pipeline.capNow(), 0, 'run start');
+        // The curve armed at the start (before this reset) is the run's.
+        runTrace.noteCurve(pipeline.curveNow());
+        runTrace.noteAuto(pipeline.autoNow());
+      },
+    ),
+  );
+  // The final settle's wall times (the counts come from the slow status at export).
+  createEffect(() => {
+    const lb = cells.status()?.lookback;
+    if (lb) runTrace.noteSettle({ running: lb.settling, done: lb.settle?.done === true });
+  });
+  void primeRunRecordContext();
+  const runRecordSources: RunRecordSources = {
+    appVersion: version,
+    // Build-time defines (`vite.config.ts`); undefined under tools that do not set them.
+    commit: typeof __CALA_COMMIT__ === 'string' && __CALA_COMMIT__ ? __CALA_COMMIT__ : null,
+    gitDirty: typeof __CALA_GIT_DIRTY__ === 'boolean' ? __CALA_GIT_DIRTY__ : null,
+    engineVersion:
+      typeof __CALA_ENGINE_VERSION__ === 'string' && __CALA_ENGINE_VERSION__
+        ? __CALA_ENGINE_VERSION__
+        : null,
+    search: window.location.search,
+    trace: runTrace,
+    pipeline: {
+      flatEnabled: pipeline.flatEnabled,
+      discover: pipeline.discover,
+      residual: pipeline.residual,
+      lookback: pipeline.lookback,
+      lookbackRun: pipeline.lookbackRun,
+      csettle: pipeline.csettle,
+      csettleCeiling: pipeline.csettleCeiling,
+      csettleYield: pipeline.csettleYield,
+      csettleNeedFirst: pipeline.csettleNeedFirst,
+      finalSettleLevel: pipeline.runFinalSettleLevel,
+      paceFps: pipeline.paceFps,
+      smoothPlayback: pipeline.smoothPlayback,
+      motionBackend: pipeline.motionBackend,
+      flatField: () => {
+        const f = pipeline.flatField();
+        return { reused: f.reused, keySource: f.key?.source ?? null };
+      },
+    },
+    slowStatus: () => cells.status(),
+    stageRuns: () => stageLog.runs(),
+    info: () => store.info(),
+    label: () => store.label(),
+    fileSizes: () => {
+      const from = store.source();
+      const entries = from !== null && 'entries' in from ? from.entries : [];
+      return new Map(entries.map((e) => [e.file.name, e.file.size] as const));
+    },
+    sessionFiles: () => {
+      const from = store.source();
+      return from !== null && 'sessions' in from
+        ? from.sessions.map((s) => s.entries.map((e) => ({ name: e.file.name, size: e.file.size })))
+        : [];
+    },
+    lookbackPoolSize: () => lbPool,
+    visitWorkers: () => slow.visitWorkers,
+    tunables: {
+      settle: SETTLE,
+      csettle: CSETTLE,
+      governor: GOVERNOR,
+      lookback: LOOKBACK,
+      pacer: { PACE_BATCH, PACE_SLACK },
+      floor: { FLOOR, TRACKER },
+    },
+  };
+  const runRecord = (extras?: RunRecordExtras) => gatherRunRecord(runRecordSources, extras);
   const multiRun = createMultiRun({
+    runRecord: (settings) => runRecord({ mode: settings.mode }),
     async openJoint(sessions) {
       pipeline.stop();
       const n = sessions.length;
@@ -446,12 +596,10 @@ const App: Component = () => {
     },
     stages: () => ({
       discover: discoverActivity(),
-      refine: stageInput().refine,
       extract: pass2.status(),
       availability: availability(),
       runs: stageLog.runs(),
     }),
-    runRefine,
     runExtract: () => void pass2.run(),
     sessionQc: (range, fps) => extractQcFor(range, fps),
     boundaryFlags: () => pipeline.boundaryFlags(),
@@ -487,10 +635,8 @@ const App: Component = () => {
     stageRuns: () => stageLog.runs(),
     info: () => store.info(),
     plan: () => multiRun.plan(),
-    throughput: (stage) =>
-      stage === 'discover' ? pipeline.fps() : stage === 'refine' ? refine.fps() : pass2.fps(),
-    stageError: (stage) =>
-      stage === 'discover' ? pipeline.error() : stage === 'refine' ? refine.error() : pass2.error(),
+    throughput: (stage) => (stage === 'discover' ? pipeline.fps() : pass2.fps()),
+    stageError: (stage) => (stage === 'discover' ? pipeline.error() : pass2.error()),
     boundaryFlags: () => pipeline.boundaryFlags(),
     runEnded: () => multiRun.finished() || multiRun.stopped() !== null,
     sessionsWritten: () => multiRun.records().filter((r) => r.status === 'written').length,
@@ -596,6 +742,45 @@ const App: Component = () => {
       multiRun,
       sessionList,
       project,
+      /** The run record of the run so far (a JSON object). */
+      runRecord: () => runRecord(),
+      /**
+       * Re-apply the settings of a saved run record (an object, or its JSON text) before the next
+       * Discover start; returns what was applied (null: not a run record).
+       */
+      applyRunRecord: (rec: unknown) => {
+        const a = settingsFromRecord(typeof rec === 'string' ? JSON.parse(rec) : rec);
+        if (!a) return null;
+        if (a.flatField !== undefined) pipeline.setFlatEnabled(a.flatField);
+        if (a.discover !== undefined) pipeline.setDiscover(a.discover);
+        if (a.lookback !== undefined) pipeline.setLookback(a.lookback);
+        if (a.csettle !== undefined) pipeline.setCsettle(a.csettle);
+        if (a.csettleCeiling !== undefined) pipeline.setCsettleCeiling(a.csettleCeiling);
+        if (a.csettleYield !== undefined) pipeline.setCsettleYield(a.csettleYield);
+        if (a.csettleNeedFirst !== undefined) pipeline.setCsettleNeedFirst(a.csettleNeedFirst);
+        if (a.finalSettleLevel !== undefined) pipeline.setFinalSettleLevel(a.finalSettleLevel);
+        if (a.paceFps !== undefined) pipeline.setPaceFps(a.paceFps, 'run record');
+        // A Curve or Auto run replays as a curve: exactly its realised steps (the pace above is
+        // only where it began).
+        if (a.curve) pipeline.setSpeedCurve(a.curve, { preset: 'replay', normalize: false });
+        if (a.smoothPlayback !== undefined) pipeline.setSmoothPlayback(a.smoothPlayback);
+        // The pool size is fixed at page load: say so rather than run differently in silence.
+        const warnings: string[] = [];
+        if (a.refineUsed)
+          warnings.push(
+            'The record ran a Refine stage, which has been removed: look-back and the Final settle replace it, so look-back is kept on for this replay and no Refine run happens.',
+          );
+        if (a.capChangedDuringRun)
+          warnings.push(
+            'The record changed the settle cap during the run; cap changes are not replayed (the starting cap is applied).',
+          );
+        if (a.lookbackPoolPlanned !== undefined && a.lookbackPoolPlanned !== lbPool)
+          warnings.push(
+            `The record planned ${a.lookbackPoolPlanned} settle pool worker(s); this page has ${lbPool} (open it with ?debug&lbpool=${a.lookbackPoolPlanned} to match).`,
+          );
+        for (const w of warnings) console.warn(w);
+        return warnings.length > 0 ? { ...a, warnings } : a;
+      },
     });
   }
   const boundaries = () => {
@@ -633,10 +818,6 @@ const App: Component = () => {
               </strong>{' '}
               <span class="cala-muted" data-testid="session-run-status">
                 {multiRun.statusText()}
-              </span>
-              <span class="cala-muted" data-testid="session-run-refine">
-                {' '}
-                &middot; {refinePlanText(p().settings.refineRuns)}
               </span>
             </div>
             <Show when={project.running() && project.planState().kind === 'running'}>
@@ -726,10 +907,8 @@ const App: Component = () => {
             <RunPanel
               pipeline={pipeline}
               pass2={pass2}
-              refine={refine}
               stages={stageLog}
               availability={availability()}
-              onRefine={runRefine}
               cells={cells}
               live={lp.info.live !== undefined}
               label={store.label()}
@@ -742,6 +921,8 @@ const App: Component = () => {
               compress={compress}
               review={review}
               onStopSettling={() => slow.stopSettling(cells.session())}
+              runRecord={runRecord}
+              sessionMode={multiRun.plan()?.settings.mode ?? null}
               fixed
               visible={tab.active() === 'run'}
             />
@@ -769,6 +950,7 @@ const App: Component = () => {
             cells={cells}
             boundaries={boundaries()}
             boundaryFlags={pipeline.boundaryFlags()}
+            displayedFrame={pipeline.displayedFrame}
             fps={lp.info.fps ?? FALLBACK_PLAYBACK_FPS}
           />
         ),
@@ -819,7 +1001,6 @@ const App: Component = () => {
               <RunStatusStrip
                 pipeline={pipeline}
                 pass2={pass2}
-                refine={refine}
                 stages={stageLog}
                 cells={cells}
                 live={lp.info.live !== undefined}
@@ -932,6 +1113,7 @@ const App: Component = () => {
               fallback={
                 <SessionSetup
                   list={sessionList}
+                  pipeline={pipeline}
                   onAdd={() => setScreen('add')}
                   onCancel={() => {
                     sessionList.clear();
@@ -953,6 +1135,7 @@ const App: Component = () => {
               </Show>
               <ProjectView
                 project={project}
+                pipeline={pipeline}
                 onView={(r) => void viewResult(r)}
                 onClose={() => {
                   setViewState({ busy: false, error: null });
@@ -999,6 +1182,12 @@ const App: Component = () => {
                     <button
                       class="btn-secondary btn-small"
                       onClick={() => {
+                        const warn = leaveWarning({
+                          extractDone: pass2.status() === 'done',
+                          exported: resultExported(),
+                          multiSession: sessionList.items().length > 1,
+                        });
+                        if (warn && !window.confirm(warn)) return;
                         pipeline.stop();
                         multiRun.stop();
                         sessionList.clear();

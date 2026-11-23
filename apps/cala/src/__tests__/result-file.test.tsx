@@ -359,11 +359,15 @@ describe('QC and stages from the export', () => {
     expect(q.global.passFrac).toBe(1);
   });
 
-  it('reads snake_case stage runs', () => {
+  it('reads snake_case stage runs, including a Refine run of an older export', () => {
     const s = stagesFromMeta([
       { stage: 'refine', index: 2, started_at: 'a', ended_at: null, footprints_refined: 4 },
+      { stage: 'discover', index: 1, started_at: 'b', ended_at: 'c', refines: 7 },
     ]);
-    expect(s[0]).toMatchObject({ stage: 'refine', index: 2, endedAt: null, footprintsRefined: 4 });
+    // The Refine stage was removed; its run still loads (its footprint-change fields are dropped).
+    expect(s[0]).toMatchObject({ stage: 'refine', index: 2, endedAt: null });
+    expect(s[0]).not.toHaveProperty('footprintsRefined');
+    expect(s[1]).toMatchObject({ stage: 'discover', refines: 7 });
     expect(stagesFromMeta(undefined)).toEqual([]);
   });
 });

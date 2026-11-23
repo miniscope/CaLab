@@ -134,19 +134,18 @@ export interface FastLoopOptions {
   fps?: number;
   /** Stream time between QC snapshots sent to the main thread, s (paced by frames, not the wall clock). */
   qcEveryS?: number;
-  /** Solve with this library (`TraceLibrary.toBytes()`) from the first frame (Refine, Extract: the final library). */
+  /** Solve with this library (`TraceLibrary.toBytes()`) from the first frame (Extract: the final library). */
   initialLibrary?: Uint8Array;
-  /**
-   * Refine run (docs/stages.md): the slow loop of `session` is already there
-   * (Discover built it). Instead of `init` it gets a `replay` message with the
-   * `refine` scope, frames are forwarded from frame 0, and no noise maps are
-   * sent (it keeps the newest map of the Discover run; the replay's map
-   * restarts from calibration). The forward pool never drops a batch then
-   * (`ForwardPool` lossless): the main thread paces the batches instead.
-   */
-  refine?: boolean;
   /** Discover with look-back (experimental): the slow loop's `init` says so (`SlowInit.lookback`). */
   lookback?: boolean;
+  /** With `lookback`: settle during Discover may run (`SlowInit.csettle`, `SlowInit.csettleYield`, `SlowInit.csettleNeedFirst`). */
+  csettle?: boolean;
+  csettleYield?: number;
+  csettleNeedFirst?: boolean;
+  /** With `lookback`: the share of the final settle pass to read (`SlowInit.settleFraction`; 1 = all). */
+  settleFraction?: number;
+  /** With `lookback`, a Joint run: the first frame of sessions 1.. (`SlowInit.sessionStarts`). */
+  sessionStarts?: readonly number[];
   /** Return the model residual of each batch's last frame (the app's residual view). */
   residual?: boolean;
   /**
@@ -167,8 +166,12 @@ export const FAST_LOOP_DEFAULTS = {
   fps: ASSUMED_FPS,
   qcEveryS: 1,
   residual: false,
-  refine: false,
   lookback: false,
+  csettle: false,
+  csettleYield: 0,
+  csettleNeedFirst: false,
+  settleFraction: 1,
+  sessionStarts: [] as readonly number[],
   signed: false,
 } as const;
 
@@ -247,7 +250,7 @@ export class FastLoop {
     const { initialLibrary, ...rest } = options;
     this.o = { ...FAST_LOOP_DEFAULTS, discover: true, ...rest };
     this.pendingLibrary = initialLibrary ?? null;
-    this.frozenReplay = initialLibrary !== undefined && !this.o.refine;
+    this.frozenReplay = initialLibrary !== undefined;
     if (!(this.o.fps > 0)) {
       // The recording gave no rate (its warnings say so); QC durations assume this one.
       console.warn(
@@ -258,8 +261,7 @@ export class FastLoop {
     this.px = options.width * options.height;
     this.port = port;
     this.backend = backend;
-    // Refine drops no frame for the slow loop (the main thread paces it).
-    this.pool = new ForwardPool(this.o.poolSize, this.o.batchSize * this.px, this.o.refine);
+    this.pool = new ForwardPool(this.o.poolSize, this.o.batchSize * this.px);
   }
 
   get session(): number {
@@ -463,8 +465,7 @@ export class FastLoop {
   }
 
   /**
-   * Free the loop. The slow loop is dropped, unless `keepSlow` (a replay stage
-   * follows, or this is a Refine run being stopped): then it is only told to
+   * Free the loop. The slow loop is dropped, unless `keepSlow` (Extract follows): then it is only told to
    * publish what it has (a no-op when it already did).
    */
   dispose(keepSlow = false): void {
@@ -511,11 +512,6 @@ export class FastLoop {
     const port = this.port;
     if (!port || !this.o.discover) return;
     const session = this.o.session;
-    if (!this.initSent && this.o.refine) {
-      port.postMessage({ type: 'replay', session, scope: 'refine' });
-      this.initSent = true;
-      this.lastNoise = Infinity;
-    }
     if (!this.initSent) {
       if (start + count < this.o.startFrame) return;
       port.postMessage(
@@ -530,6 +526,20 @@ export class FastLoop {
           flattenSigmaPx: this.o.flattenSigmaPx,
           budget: this.o.budget,
           ...(this.o.lookback ? { lookback: true } : {}),
+          ...(this.o.lookback && this.o.settleFraction < 1
+            ? { settleFraction: this.o.settleFraction }
+            : {}),
+          ...(this.o.lookback && this.o.sessionStarts?.length
+            ? { sessionStarts: [...this.o.sessionStarts] }
+            : {}),
+          ...(this.o.lookback && this.o.csettle
+            ? {
+                csettle: true,
+                csettlePool: this.o.poolSize,
+                ...(this.o.csettleYield > 0 ? { csettleYield: this.o.csettleYield } : {}),
+                ...(this.o.csettleNeedFirst ? { csettleNeedFirst: true } : {}),
+              }
+            : {}),
         },
         [],
       );
@@ -565,6 +575,7 @@ export class FastLoop {
         traces: tr,
         ...(background ? { background } : {}),
         ...(noise ? { noise } : {}),
+        sentAt: performance.timeOrigin + performance.now(),
       },
       transfer,
     );

@@ -34,7 +34,7 @@ function noise(i: number, k: number): number {
 }
 
 const t0 = performance.now();
-run.reset({ fps: FPS, live: true });
+run.reset({ fps: FPS, live: true, workers: 8 });
 const dy = new Float32Array(FPS);
 const dx = new Float32Array(FPS);
 const quality = new Float32Array(FPS);

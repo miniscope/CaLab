@@ -7,6 +7,8 @@ import type {
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelineOptions, PipelinePlan } from '../lib/pipeline-plan.ts';
 import type { FlatFieldMap } from '../lib/flat-field.ts';
+import type { FrameView } from '../lib/preview.ts';
+import type { PaceStats } from '../lib/frame-pacer.ts';
 import type { ReplayInput } from '../lib/pipeline-stages.ts';
 
 /** Fast-loop settings of a pipeline run. */
@@ -18,16 +20,10 @@ export interface CellsSettings {
   /** Run online quality control on the traces (default on). */
   qc?: boolean;
   /**
-   * A replay stage (Refine or Extract, see docs/stages.md): solve every frame
-   * with this library (`TraceLibrary.toBytes()`). Without `refine` (Extract)
-   * nothing goes to the slow loop.
+   * The replay stage (Extract, see docs/stages.md): solve every frame
+   * with this library (`TraceLibrary.toBytes()`). Nothing goes to the slow loop.
    */
   library?: Uint8Array;
-  /**
-   * Refine (with `library`): feed the replayed frames to the slow loop of
-   * this `session`, which keeps its state and may only refine footprints.
-   */
-  refine?: boolean;
   /**
    * Look-back (experimental; Discover of a recording only): the slow loop
    * runs with it (`SlowInit.lookback`) and stage C reports its back half's
@@ -35,6 +31,15 @@ export interface CellsSettings {
    * worker. Pipelined workers only.
    */
   lookback?: boolean;
+  /**
+   * With `lookback`: settle during Discover may run below Max (`SlowInit.csettle`,
+   * `SlowInit.csettleYield`, `SlowInit.csettleNeedFirst`; the cap goes to the slow worker apart).
+   */
+  csettle?: boolean;
+  csettleYield?: number;
+  csettleNeedFirst?: boolean;
+  /** The share of the final settle pass to read (`SlowInit.settleFraction`; absent = all). */
+  settleFraction?: number;
   /** Batches in flight to the slow worker (default `FAST_LOOP_DEFAULTS.poolSize`). */
   forwardBuffers?: number;
   /** Feed the compress worker (default off; needs its port). */
@@ -86,8 +91,7 @@ export type FrameRequest =
   | { type: 'pipeline-step'; id: number }
   /** Free the pipeline's WASM state. */
   /**
-   * `keepSlow`: keep the slow loop (Refine or Extract may follow; a Refine run
-   * that is stopped publishes what it has) instead of dropping it.
+   * `keepSlow`: keep the slow loop (Extract may follow) instead of dropping it.
    */
   | { type: 'pipeline-stop'; id: number; keepSlow?: boolean }
   /** The port to the slow worker (transferred). */
@@ -98,8 +102,19 @@ export type FrameRequest =
   | { type: 'set-discovery'; id: number; on: boolean }
   /** Return (or stop returning) the model residual preview in the running pipeline. */
   | { type: 'set-residual'; id: number; on: boolean }
+  /**
+   * Smooth playback (`lib/playback.ts`), answered at once: preview this view of every frame of the
+   * batches from now on (null: the last frame only). Held across pipeline starts.
+   */
+  | { type: 'set-frame-preview'; id: number; view: FrameView | null }
   /** Pipelined run: the port to the motion worker (transferred). The frame worker then runs stage A only. */
   | { type: 'link'; id: number; down: MessagePort }
+  /**
+   * Smooth pacing (`lib/frame-pacer.ts`), answered at once, not in the queue: `fps` sets the
+   * target (0: unpaced; a recording's Discover run only), `paused` holds or resumes the gate
+   * at the first stage so batches already requested are not released while paused.
+   */
+  | { type: 'pace'; id: number; fps?: number; paused?: boolean }
   /** The port to the flat-field worker (transferred; see `workers/flat-field-worker.ts`). */
   | { type: 'link-flat'; id: number; port: MessagePort };
 
@@ -128,4 +143,6 @@ export type FrameResponse =
   | { type: 'pipeline-step'; id: number; step: PipelineStepResult }
   | { type: 'pipeline-stopped'; id: number }
   | { type: 'ok'; id: number }
+  /** Unsolicited (`id` -1): the pace gate's readouts, about once a second while paced. */
+  | { type: 'pace-stats'; id: number; stats: PaceStats }
   | { type: 'error'; id: number; message: string };

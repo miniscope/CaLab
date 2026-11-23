@@ -4,9 +4,11 @@
  * passed in, viridis in the app).
  */
 import type { Rgb } from './cell-overlay.ts';
+import { STILL_MOVING_SCALE } from './settle.ts';
 import { FLAG_UNMEASURED, type CellQcRow, type ResidualMap } from './qc.ts';
 
-export type ColorMode = 'found' | 'status' | 'pass' | 'peakSnr' | 'projR' | 'vif' | 'fpError';
+export type ColorMode =
+  'found' | 'status' | 'stillMoving' | 'pass' | 'peakSnr' | 'projR' | 'vif' | 'fpError';
 
 export interface ColorModeInfo {
   label: string;
@@ -17,6 +19,10 @@ export interface ColorModeInfo {
 export const COLOR_MODES: Record<ColorMode, ColorModeInfo> = {
   found: { label: 'When found', note: '' },
   status: { label: 'Slow-loop status', note: 'probation until enough transients' },
+  stillMoving: {
+    label: 'Still moving',
+    note: 'times its noise over the last 1,200 settle frames; about 1 or below = at noise level, higher = still settling',
+  },
   pass: { label: 'QC pass / fail', note: 'SNR >= 5, not a likely duplicate' },
   peakSnr: { label: 'Peak SNR', note: 'drives pass/fail' },
   projR: { label: 'Trace fidelity (proj r)', note: 'validated score, no threshold' },
@@ -25,7 +31,11 @@ export const COLOR_MODES: Record<ColorMode, ColorModeInfo> = {
 };
 
 /** Fixed scales of the continuous modes: value at the low and high end of viridis. */
-export const METRIC_SCALE: Record<'peakSnr' | 'projR' | 'vif', { lo: number; hi: number }> = {
+export const METRIC_SCALE: Record<
+  'peakSnr' | 'projR' | 'vif' | 'stillMoving',
+  { lo: number; hi: number }
+> = {
+  stillMoving: STILL_MOVING_SCALE,
   peakSnr: { lo: 0, hi: 20 },
   projR: { lo: 0, hi: 1 },
   vif: { lo: 1, hi: 3 },
@@ -63,7 +73,13 @@ export function qcColor(
   established: boolean | undefined,
   scale: { lo: number; hi: number },
   ramp: (t: number) => Rgb,
+  /** The "still moving" hint of the cell (`stillMoving` mode; undefined = none yet). */
+  moving?: number,
 ): Rgb {
+  if (mode === 'stillMoving') {
+    if (moving === undefined || Number.isNaN(moving)) return UNKNOWN_RGB;
+    return ramp(clamp01((moving - scale.lo) / (scale.hi - scale.lo)));
+  }
   if (mode === 'status') {
     if (established === undefined) return UNKNOWN_RGB;
     return established ? ESTABLISHED_RGB : PROBATION_RGB;
@@ -78,7 +94,8 @@ export function qcColor(
 /** Range of a metric mode (fixed, or from the data for fpError). */
 export function modeScale(mode: ColorMode, rows: readonly CellQcRow[]): { lo: number; hi: number } {
   if (mode === 'fpError') return fpErrorScale(rows);
-  if (mode === 'peakSnr' || mode === 'projR' || mode === 'vif') return METRIC_SCALE[mode];
+  if (mode === 'peakSnr' || mode === 'projR' || mode === 'vif' || mode === 'stillMoving')
+    return METRIC_SCALE[mode];
   return { lo: 0, hi: 1 };
 }
 

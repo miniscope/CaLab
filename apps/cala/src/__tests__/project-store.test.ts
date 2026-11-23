@@ -123,10 +123,10 @@ describe('project store', () => {
       ['joint', 2],
       ['separate', 1],
     ]);
-    expect(await store.startPlan(1)).toBe(true);
+    expect(await store.startPlan()).toBe(true);
     expect(fake.plans).toHaveLength(1);
     const g1 = fake.plans[0];
-    expect(g1.settings).toEqual({ mode: 'joint', refineRuns: 1 });
+    expect(g1.settings).toEqual({ mode: 'joint' });
     expect(g1.planInfo).toMatchObject({ group: 1, groups: 2 });
     const sink = await g1.openSink();
     expect(sink.root).toMatch(/^mouse1\/cala-results\/runs\//);
