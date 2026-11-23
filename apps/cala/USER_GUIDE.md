@@ -111,14 +111,30 @@ how many cells there are.
   **1:1** (one recording pixel per screen pixel). Drag to pan. While zoomed, a minimap
   in the top right shows where you are; click it to jump. Click a cell to select it.
 
-**Run tab.** One status line (percent read, frame, frames per second) and the
-convergence status, with icon buttons to pause (⏸), restart (↻) and end Discover or
-stop the live run (■). Below it: the time-window control (**Run** and, when the run is
-long enough, **24 h**, **1 h**, **10 min**, **1 min**), the whole-run strip, and one
-overlaid plot of the convergence metrics (cells, new cells per minute, churn, stable,
-explained, residual). Below the plot:
-**Discover cells**, **Look-back refinement**, **Final settle**, **Extract after Discover**,
-Extract progress, **Extract** and the **Export** menu. In a narrow window the stages
+**Run tab.** The header has the convergence status and icon buttons to pause (⏸),
+restart (↻) and end Discover or stop the live run (■). Below it, three sections in the
+order you use them:
+
+- **Settings**: **Look-back**, **Final settle** (Thorough, Standard, Quick) and
+  **Extract after Discover**. Look-back and the Final settle level are read when
+  Discover starts: change them, then restart (↻); in a Separate multi-session run a
+  change applies from the next session. **More settings** holds **Find new cells**
+  (on by default; off, Discover keeps tracking the cells it has but finds no new ones).
+- **Progress**: one status line (percent read, frame, frames per second), the
+  time-window control (**Run** and, when the run is long enough, **24 h**, **1 h**,
+  **10 min**, **1 min**), the whole-run strip, one overlaid plot of the convergence
+  metrics (cells, new cells per minute, churn, stable, explained, residual), the
+  look-back and Extract lines, **Speed**, and **Workers**. Workers is a grid of small
+  squares, one per worker (a browser thread), grouped as Frame loop, Cell model,
+  Footprint helpers and Look-back and settle. A square's colour is the job it spent
+  most of the last second on (**Read frames**, **Find cells**, **Look-back**,
+  **Background settle**, **Final settle**; grey is **Idle**) and its fill is how busy it
+  was over that second; hover a square for the split. Read frames, Find cells,
+  Look-back and Background settle are the jobs of Discover; Extract runs after it and
+  is not in the grid.
+- **Results**: **Extract** and the **Export** menu.
+
+In a narrow window the stages
 show as a stepper (Calibrate, Discover, Extract, Export) and the metrics as
 small tiles on the same fixed ranges. A live stream shows Discover only. In a
 multi-session run the session list (with each boundary's health badge in a Joint run)
@@ -249,10 +265,11 @@ has done with each, and every result kept in `<animal>/cala-results/`.
   from one Joint run, so cell 7 is the same neuron in each. `own` means a session's ids
   are its own (a Separate run). **Results** on a row lists every result of that session
   with its run, date, cell count and file path.
-- **Run plan.** Tick sessions, then **Chain selected** (one Joint run through them: one
+- **Run plan.** Tick sessions, then **Run selected jointly** (one Joint run through them: one
   library, shared cell ids) or **Run selected separately** (each its own run). Repeat to
   build a plan, e.g. sessions 1 to 3 chained, 4 and 5 separately, 6 to 8 chained; and
-  **Start plan**. Chrome and Edge ask
+  **Start plan**. **Discover settings** (Look-back, Final settle) under the plan are used
+  by every run in it; choose them before **Start plan**. Chrome and Edge ask
   once for permission to save into the animal folder. The groups run one after another;
   each session's results are written, and its current result updated, as soon as it is
   done. If a stage fails or is cancelled the plan stops, keeps what is written, and
@@ -357,7 +374,7 @@ no new cells appear.
 - **Waiting for cells**: nothing to judge yet.
 - **Discovering cells**: less than two minutes of history, or most cells are under a
   minute old.
-- **Settling**: some cells' footprints or traces are still changing against 1 to 2
+- **Cells still changing**: some cells' footprints or traces are still changing against 1 to 2
   minutes ago, or churn is high. The line says how many.
 - **Converged**: at least 85% of cells are stable and churn is under 3.5% of the
   library per minute, over the last two minutes. The rate of new cells is shown but

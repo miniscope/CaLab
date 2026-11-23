@@ -890,6 +890,7 @@ const App: Component = () => {
               review={review}
               onStopSettling={() => slow.stopSettling(cells.session())}
               runRecord={runRecord}
+              sessionMode={multiRun.plan()?.settings.mode ?? null}
               fixed
               visible={tab.active() === 'run'}
             />
@@ -1065,6 +1066,7 @@ const App: Component = () => {
               fallback={
                 <SessionSetup
                   list={sessionList}
+                  pipeline={pipeline}
                   onAdd={() => setScreen('add')}
                   onCancel={() => {
                     sessionList.clear();
@@ -1086,6 +1088,7 @@ const App: Component = () => {
               </Show>
               <ProjectView
                 project={project}
+                pipeline={pipeline}
                 onView={(r) => void viewResult(r)}
                 onClose={() => {
                   setViewState({ busy: false, error: null });

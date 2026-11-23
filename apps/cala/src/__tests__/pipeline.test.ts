@@ -923,6 +923,23 @@ describe('pipeline store: look-back and Final settle are the default (no Refine 
     });
   });
 
+  it('a Final settle level chosen before the first start, or during a run, applies from the next start', async () => {
+    // A multi-session run picks the level on its setup screen (before any start); a Separate
+    // run starts Discover again per session, so a change mid-session applies to the next one.
+    const { client } = manualClient();
+    await createRoot(async (dispose) => {
+      const store = make(feed(), client);
+      store.setFinalSettleLevel('quick');
+      await store.start();
+      expect(store.runFinalSettleLevel()).toBe('quick');
+      store.setFinalSettleLevel('standard');
+      expect(store.runFinalSettleLevel()).toBe('quick');
+      await store.start();
+      expect(store.runFinalSettleLevel()).toBe('standard');
+      dispose();
+    });
+  });
+
   it('a recording that cannot be re-read runs without look-back; turning it off does too', async () => {
     const blocked = manualClient();
     await createRoot(async (dispose) => {

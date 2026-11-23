@@ -467,14 +467,17 @@ export class StageBusyMeter {
 export const WORK_KINDS = ['live', 'discovery', 'lookback', 'bgSettle', 'finalSettle'] as const;
 export type WorkKind = (typeof WORK_KINDS)[number];
 
-/** The kinds' names as the display uses them. */
+/**
+ * The kinds' names as the display uses them (the keys stay: they are history and export keys).
+ * Discover is Read frames + Find cells + Look-back + Background settle; Final settle follows it.
+ */
 export const WORK_KIND_LABELS: Record<WorkKind | 'spare', string> = {
-  live: 'Live',
-  discovery: 'Discover',
+  live: 'Read frames',
+  discovery: 'Find cells',
   lookback: 'Look-back',
   bgSettle: 'Background settle',
   finalSettle: 'Final settle',
-  spare: 'Spare',
+  spare: 'Idle',
 };
 
 /** Which worker a row is. */

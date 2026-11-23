@@ -334,8 +334,8 @@ const WORK_SERIES: SeriesSpec[] = [
 
 /** The work-by-kind series (`workByKind` totals, worker-seconds per second), in the display's colours. */
 const KIND_SERIES: [WorkKind, string, string][] = [
-  ['live', 'Live', '#0072b2'],
-  ['discovery', 'Discovery', '#009e73'],
+  ['live', 'Read frames', '#0072b2'],
+  ['discovery', 'Find cells', '#009e73'],
   ['lookback', 'Look-back', '#e69f00'],
   ['bgSettle', 'Background settle', '#e3b1cb'],
   ['finalSettle', 'Final settle', '#a8497d'],

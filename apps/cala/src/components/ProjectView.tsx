@@ -11,10 +11,14 @@ import { LIBRARY_MODE_LABEL } from '../lib/session-run.ts';
 import { isPickerAbort, showPicker, supportsDirectoryPicker } from '../lib/directory-picker.ts';
 import type { ReadDirLike } from '../lib/project-io.ts';
 import type { ProjectResult } from '../lib/project-index.ts';
+import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { BoundaryBadge } from './BoundaryBadge.tsx';
+import { DiscoverSettings } from './DiscoverSettings.tsx';
 
 interface ProjectViewProps {
   project: ProjectStore;
+  /** The pipeline whose start-time settings (Look-back, Final settle) the plan's runs use. */
+  pipeline?: PipelineStore;
   /** Back to the start screen. */
   onClose: () => void;
   /** Open a saved result in the read-only viewer (View results). */
@@ -354,10 +358,10 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
             class="btn-secondary btn-small"
             data-testid="plan-chain"
             disabled={p().selected().size < 2}
-            title="One Joint run through the selected sessions in order: cell ids match across them"
+            title="One Joint run through the selected sessions in order: one set of cells, so cell ids match across them"
             onClick={() => p().addToPlan('joint')}
           >
-            Chain selected
+            Run selected jointly
           </button>{' '}
           <button
             type="button"
@@ -384,7 +388,7 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
           when={p().plan().length > 0}
           fallback={
             <p class="cala-muted">
-              Select sessions above, then <strong>Chain selected</strong> (one Joint run, one
+              Select sessions above, then <strong>Run selected jointly</strong> (one Joint run, one
               library across them) or <strong>Run selected separately</strong>. Groups run one after
               another.
             </p>
@@ -398,7 +402,7 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
                   <div class="cala-sessions__body">
                     <strong>
                       {g.kind === 'joint'
-                        ? `Joint chain of ${g.sessions.length}`
+                        ? `${LIBRARY_MODE_LABEL.joint}: ${g.sessions.length} sessions`
                         : `${LIBRARY_MODE_LABEL.separate}: ${g.sessions.length} ${g.sessions.length === 1 ? 'session' : 'sessions'}`}
                     </strong>
                     <span class="cala-sessions__path">{g.sessions.join(', ')}</span>
@@ -435,6 +439,14 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
             </div>
           )}
         </For>
+        <Show when={props.pipeline}>
+          {(pl) => (
+            <fieldset class="cala-sessions__modes" data-testid="setup-discover-settings">
+              <legend>Discover settings (every run in the plan)</legend>
+              <DiscoverSettings pipeline={pl()} context="setup" />
+            </fieldset>
+          )}
+        </Show>
         <Show when={p().planState().kind === 'stopped'}>
           <p class="cala-sessions__warning" data-testid="plan-stopped">
             The last plan stopped: {(p().planState() as { reason?: string }).reason ?? ''}. Results

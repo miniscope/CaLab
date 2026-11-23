@@ -10,6 +10,7 @@
  */
 import {
   createEffect,
+  Index,
   createMemo,
   createSignal,
   For,
@@ -34,11 +35,12 @@ import {
   finalSettleText,
   formatDuration,
   frameTicks,
+  dominantKind,
+  gridGroups,
   groupedRows,
-  rowTitle,
+  squareTitle,
   BG_SETTLE_HATCH,
   KIND_COLOR,
-  legendKinds,
   linePath,
   planPath,
   plannedSettleFrames,
@@ -49,9 +51,7 @@ import {
   settlednessFromHints,
   speedPos,
   stackBands,
-  stackSegments,
   stoppedLookbackRows,
-  totalAriaLabel,
   stripLayout,
   thinIndices,
   type StackPoint,
@@ -84,6 +84,15 @@ const kindVar = (k: WorkKind): string =>
     : `var(--k-${k === 'finalSettle' ? 'final-settle' : k})`;
 /** The same in SVG: a pattern for Background settle (defined in the strip's defs). */
 const svgFill = (k: WorkKind): string => (k === 'bgSettle' ? 'url(#cala-work-hatch)' : kindVar(k));
+
+/** What each job is, for the legend's tooltips (the same names as the stages). */
+const KIND_HELP: Record<WorkKind, string> = {
+  live: 'Discover, per frame: read and prepare each new frame, correct motion, solve the traces.',
+  discovery: 'Discover: find new cells and keep the footprints and background up to date.',
+  lookback: 'Look-back: re-read earlier frames for each new cell, during Discover.',
+  bgSettle: 'Background settle: re-read saved frames to refine footprints, during Discover.',
+  finalSettle: 'Final settle: the pass after the last frame that lets the footprints converge.',
+};
 
 /** The settledness bar's own colours (neutral: the settle kinds' colours mean work, not state). */
 const SETTLED_INK = 'var(--text-primary)';
@@ -139,15 +148,19 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
   // ---- Work now ----
   const workerCount = () => by()?.count ?? 0;
   const totals = () => by()?.totals;
-  const segments = () => {
-    const t = totals();
-    return t ? stackSegments(t, workerCount()) : [];
-  };
   const busy = () => {
     const t = totals();
     return t ? busyWorkers(t, workerCount()) : null;
   };
   const rows = () => groupedRows(by());
+  const groups = () => gridGroups(by());
+  /** Each square's job colour, with the colour it had kept while a close second kind is near. */
+  let prevKinds: (WorkKind | null)[] = [];
+  const squareKinds = createMemo(() => {
+    const next = rows().map((r, i) => dominantKind(r.row, prevKinds[i] ?? null));
+    prevKinds = next;
+    return next;
+  });
   const wholeStopped = () => lb()?.error !== undefined;
   const stoppedFlags = createMemo(() =>
     stoppedLookbackRows(by()?.workers ?? [], s().work()?.lookback.capacity, wholeStopped()),
@@ -444,11 +457,15 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
       data-testid="work-display"
       data-state={state()}
     >
-      {/* ---- Work now ---- */}
-      <section class="cala-work__block" aria-label="Work now">
+      {/* ---- Workers: one square per worker, like a CPU monitor ---- */}
+      <section class="cala-work__block" aria-label="Workers">
         <div class="cala-work__head">
-          <h3 class="cala-work__title">Work now</h3>
-          <span class="cala-work__aside" data-testid="work-busy">
+          <h3 class="cala-work__title">Workers</h3>
+          <span
+            class="cala-work__aside"
+            data-testid="work-busy"
+            title="The workers' busy shares over the last second, added up: 2.5 means two and a half workers' worth of time was in use."
+          >
             <span class="cala-num">{num(busy(), 1)}</span> of{' '}
             <span class="cala-num">{workerCount() > 0 ? workerCount() : '–'}</span> workers busy
           </span>
@@ -456,81 +473,75 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
         <p class="cala-work__status" data-testid="work-status">
           {statusLine()}
         </p>
-        <ul class="cala-work__legend" data-testid="work-legend">
-          <For each={legendKinds(state() === 'running' && target() === 0)}>
+        <p class="cala-work__caption" data-testid="work-caption">
+          Each square is one worker (a browser thread). Its colour is the job it spent most of the
+          last second on; the fill is how busy it was over that second (full: the whole second).
+          Hover a square for details. Extract is not shown: it runs after Discover, on its own.
+        </p>
+        <div class="cala-work__cores" data-testid="work-grid">
+          <Index each={groups()}>
+            {(g) => (
+              <div class="cala-work__group">
+                <span class="cala-work__group-label">{g().label}</span>
+                <div class="cala-work__squares">
+                  <Index each={g().squares}>
+                    {(sq) => {
+                      const stopped = () => stoppedFlags()[sq().index] === true;
+                      const kind = () => squareKinds()[sq().index] ?? null;
+                      return (
+                        <div
+                          class="cala-work__sq"
+                          classList={{ 'cala-work__sq--stopped': stopped() }}
+                          role="img"
+                          aria-label={
+                            stopped()
+                              ? `${sq().label}: stopped`
+                              : rowAriaLabel(sq().label, sq().row)
+                          }
+                          title={
+                            stopped()
+                              ? `${sq().label}: stopped (see the console).`
+                              : squareTitle(sq().label, sq().row)
+                          }
+                          data-testid="work-square"
+                          data-kind={stopped() ? 'stopped' : (kind() ?? 'idle')}
+                        >
+                          <Show when={!stopped() && kind()}>
+                            {(k) => (
+                              <i
+                                style={{
+                                  height: `${Math.round(100 * rowBusy(sq().row))}%`,
+                                  background: kindVar(k()),
+                                }}
+                              />
+                            )}
+                          </Show>
+                        </div>
+                      );
+                    }}
+                  </Index>
+                </div>
+              </div>
+            )}
+          </Index>
+          <Show when={groups().length === 0}>
+            <p class="cala-work__empty">The workers show once a run starts.</p>
+          </Show>
+        </div>
+        <ul class="cala-work__legend" data-testid="work-legend" aria-label="Jobs">
+          <For each={WORK_KINDS}>
             {(k) => (
-              <li>
+              <li title={KIND_HELP[k]}>
                 <i class="cala-work__sw" style={{ background: kindVar(k) }} />
-                {WORK_KIND_LABELS[k]} <span class="cala-num">{num(totals()?.[k])}</span>
+                {WORK_KIND_LABELS[k]}
               </li>
             )}
           </For>
-          <li>
+          <li title="Not busy with any job.">
             <i class="cala-work__sw cala-work__sw--spare" />
-            Spare <span class="cala-num">{num(totals()?.spare)}</span>
+            {WORK_KIND_LABELS.spare}
           </li>
         </ul>
-        <div
-          class="cala-work__total"
-          role="img"
-          aria-label={totalAriaLabel(totals(), workerCount())}
-          title="Worker-seconds per second, 0 to the number of workers (fixed)"
-          data-testid="work-total"
-        >
-          <For each={segments()}>
-            {(g) => (
-              <i
-                style={{ width: `${100 * g.frac}%`, background: kindVar(g.kind) }}
-                title={`${WORK_KIND_LABELS[g.kind]}: ${g.value.toFixed(2)} of ${workerCount()} workers`}
-                data-kind={g.kind}
-              />
-            )}
-          </For>
-        </div>
-        <div class="cala-work__rows" data-testid="work-rows">
-          <For each={rows()}>
-            {(r, i) => (
-              <>
-                <Show when={r.groupStart}>
-                  <div class="cala-work__gap" />
-                </Show>
-                <div class="cala-work__name" title={rowTitle(r.row)}>
-                  {r.label}
-                </div>
-                <Show
-                  when={!stoppedFlags()[i()]}
-                  fallback={
-                    <div class="cala-work__stopped" role="img" aria-label={`${r.label}: stopped`}>
-                      stopped
-                    </div>
-                  }
-                >
-                  <div
-                    class="cala-work__bar"
-                    role="img"
-                    aria-label={rowAriaLabel(r.label, r.row)}
-                    data-testid="work-row-bar"
-                  >
-                    <For each={WORK_KINDS.filter((k) => r.row.shares[k] > 0)}>
-                      {(k) => (
-                        <i
-                          style={{ width: `${100 * r.row.shares[k]}%`, background: kindVar(k) }}
-                          title={`${WORK_KIND_LABELS[k]} ${Math.round(100 * r.row.shares[k])}%`}
-                        />
-                      )}
-                    </For>
-                  </div>
-                </Show>
-                <div class="cala-work__busy cala-num">
-                  {stoppedFlags()[i()] ? '–' : `${Math.round(100 * rowBusy(r.row))}%`}
-                </div>
-              </>
-            )}
-          </For>
-          <Show when={rows().length === 0}>
-            <p class="cala-work__empty">–</p>
-          </Show>
-        </div>
       </section>
 
       {/* ---- History strip ---- */}
@@ -699,9 +710,9 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
       </section>
 
       {/* ---- Progress ---- */}
-      <section class="cala-work__block" aria-label="Progress">
+      <section class="cala-work__block" aria-label="Stages">
         <div class="cala-work__head">
-          <h3 class="cala-work__title">Progress</h3>
+          <h3 class="cala-work__title">Stages</h3>
         </div>
         <dl class="cala-work__kv" data-testid="work-progress">
           <Show

@@ -660,6 +660,48 @@
   margin: 0;
 }
 
+/* The Run tab in the order of use: Settings, Progress, Results. */
+.cala-run__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs, 4px);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--border-default);
+}
+
+.cala-run__heading {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.cala-run__settings {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--space-sm);
+}
+
+.cala-check--off {
+  color: var(--text-tertiary);
+}
+
+.cala-run__more {
+  font-size: 0.8125rem;
+}
+
+.cala-run__more > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+.cala-run__more[open] > summary {
+  margin-bottom: 2px;
+}
+
 .cala-run__pass2 {
   font-weight: var(--font-weight-normal);
   color: var(--text-secondary);
@@ -1429,64 +1471,67 @@
   border: 1px solid var(--border-default);
 }
 
-.cala-work__total {
+/* The worker grid: one square per worker, like a multi-core CPU monitor. Fixed height, so the
+   panel does not jump when the first reading adds the squares. */
+.cala-work__caption {
+  margin: 0 0 6px;
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+  line-height: 1.35;
+}
+
+.cala-work__cores {
   display: flex;
-  height: 14px;
-  border-radius: 2px;
-  overflow: hidden;
-  background: var(--k-spare);
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 4px 14px;
+  min-height: 44px;
+  margin: 0 0 6px;
 }
 
-.cala-work__total > i,
-.cala-work__bar > i {
-  display: block;
-  height: 100%;
-  border-right: 1px solid #fff;
+.cala-work__group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.cala-work__rows {
-  display: grid;
-  grid-template-columns: minmax(64px, 96px) 1fr 40px;
-  gap: 3px 8px;
-  align-items: center;
-  margin-top: 8px;
-}
-
-.cala-work__name {
-  font-size: 0.75rem;
+.cala-work__group-label {
+  font-size: 0.68rem;
   color: var(--text-secondary);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-.cala-work__busy {
-  font-size: 0.75rem;
-  text-align: right;
-}
-
-.cala-work__bar {
+.cala-work__squares {
   display: flex;
-  height: 8px;
-  border-radius: 2px;
-  overflow: hidden;
-  background: var(--k-spare);
+  gap: 3px;
 }
 
-.cala-work__stopped,
+.cala-work__sq {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border-default);
+  border-radius: 3px;
+  background: var(--k-spare);
+  overflow: hidden;
+}
+
+.cala-work__sq > i {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: block;
+}
+
+.cala-work__sq--stopped {
+  background: repeating-linear-gradient(45deg, var(--k-spare) 0 3px, var(--text-tertiary) 3px 4px);
+}
+
 .cala-work__empty {
+  margin: 0;
   font-size: 0.75rem;
   color: var(--text-tertiary);
-}
-
-.cala-work__empty {
-  grid-column: 1 / -1;
-  margin: 0;
-}
-
-.cala-work__gap {
-  grid-column: 1 / -1;
-  height: 3px;
 }
 
 .cala-work__strip {
@@ -1619,8 +1664,7 @@
 }
 
 /* Paused or done: the bars keep their last values, dimmed. */
-.cala-work--dim .cala-work__total,
-.cala-work--dim .cala-work__rows,
+.cala-work--dim .cala-work__cores,
 .cala-work--dim .cala-work__strip {
   opacity: 0.55;
 }
