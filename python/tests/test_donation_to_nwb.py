@@ -154,7 +154,7 @@ def test_missing_subject_fields_are_refused() -> None:
 @pytest.mark.parametrize("n", [5, 16, 37])
 def test_write_and_verify_round_trip(tmp_path: Path, n: int) -> None:
     frames = frames_u8(n)
-    d, r = stored(tmp_path, frames)
+    d, r = stored(tmp_path, frames, notes="private donor note")
     out = tmp_path / "out.nwb"
     nwb.write_nwb(d, r, out)
     nwb.verify_nwb(d, out)
@@ -170,6 +170,9 @@ def test_write_and_verify_round_trip(tmp_path: Path, n: int) -> None:
         assert f.subject.sex == "F"
         assert f.subject.age == "P90D"
         assert f.identifier == DONATION_ID
+        assert f.session_id == "20261120-abcdef12"
+        assert f.notes is None  # donor notes stay private
+        assert f.session_description == "open field"
         assert f.session_start_time.isoformat() == "2026-11-20T00:00:00+00:00"
         assert f.imaging_planes["ImagingPlane"].location == "M1"
 
@@ -209,14 +212,19 @@ def test_inspector_finds_no_critical_issue(tmp_path: Path) -> None:
 
 
 class FakeApi:
-    def __init__(self, answer: Exception | None = None) -> None:
+    def __init__(
+        self, answer: Exception | None = None, dry_answer: Exception | None = None
+    ) -> None:
         self.calls: list[dict[str, Any]] = []
         self.answer = answer
+        self.dry_answer = dry_answer
 
     def call(self, action: str, **body: Any) -> dict[str, Any]:
         self.calls.append({"action": action, **body})
-        if self.answer:
+        if self.answer and not body.get("dry_run"):
             raise self.answer
+        if self.dry_answer and body.get("dry_run"):
+            raise self.dry_answer
         return {"status": "published"}
 
 
@@ -240,7 +248,13 @@ def test_convert_uploads_and_marks_published(tmp_path: Path) -> None:
     assert ran[1] == (["dandi", "validate", path], dandiset_dir)
     assert ran[2] == (["dandi", "upload", "-i", "dandi-sandbox", path], dandiset_dir)
     assert api.calls == [
-        {"action": "ingest_published", "donation_id": DONATION_ID, "dandi_path": path}
+        {
+            "action": "ingest_published",
+            "donation_id": DONATION_ID,
+            "dandi_path": path,
+            "dry_run": True,
+        },
+        {"action": "ingest_published", "donation_id": DONATION_ID, "dandi_path": path},
     ]
 
 
@@ -259,6 +273,46 @@ def test_convert_again_reuses_the_file_and_accepts_already_published(tmp_path: P
     already = nwb.ApiError("ingest_published: HTTP 409 donation is already published")
     nwb.convert(DONATION_ID, api=FakeApi(already), **kwargs)
     assert out.stat().st_mtime_ns == mtime
+
+
+def test_live_check_refusal_blocks_the_upload(tmp_path: Path) -> None:
+    stored(tmp_path, frames_u8(5))
+    refused = nwb.ApiError(
+        "ingest_published: HTTP 409 donation is CaLab only; it is never published"
+    )
+    api = FakeApi(dry_answer=refused)
+    ran: list[list[str]] = []
+    with pytest.raises(nwb.ConversionError, match="live check refused.*CaLab only"):
+        nwb.convert(
+            DONATION_ID,
+            store=tmp_path / "store",
+            work=tmp_path / "work",
+            dandiset="000999",
+            instance="dandi-sandbox",
+            api=api,
+            run=lambda cmd, cwd: ran.append(cmd),
+        )
+    assert all(cmd[1] != "upload" for cmd in ran)
+    assert [c.get("dry_run") for c in api.calls] == [True]
+
+
+def test_live_check_already_published_skips_upload_and_final_call(tmp_path: Path) -> None:
+    stored(tmp_path, frames_u8(5))
+    already = nwb.ApiError("ingest_published: HTTP 409 donation is already published")
+    api = FakeApi(dry_answer=already)
+    ran: list[list[str]] = []
+    path = nwb.convert(
+        DONATION_ID,
+        store=tmp_path / "store",
+        work=tmp_path / "work",
+        dandiset="000999",
+        instance="dandi-sandbox",
+        api=api,
+        run=lambda cmd, cwd: ran.append(cmd),
+    )
+    assert path.endswith(".nwb")
+    assert all(cmd[1] != "upload" for cmd in ran)
+    assert [c.get("dry_run") for c in api.calls] == [True]
 
 
 def test_convert_with_no_upload_stops_after_writing(tmp_path: Path) -> None:
@@ -314,7 +368,7 @@ def test_bad_subject_id_is_refused(tmp_path: Path, subject_id: str) -> None:
 def test_frame_count_must_match_donation_json(tmp_path: Path) -> None:
     d, r = stored(tmp_path, frames_u8(5))
     (d / "donation.json").write_text(json.dumps({**r, "n_frames": 6}))
-    with pytest.raises(nwb.ConversionError, match="NWB has 6 frames"):
+    with pytest.raises(nwb.ConversionError, match="NWB has 6 frames, the donation 5"):
         _convert(tmp_path)
     # A failed check leaves no file behind, so a corrected rerun is not blocked.
     assert not list((tmp_path / "work").rglob("*.nwb"))

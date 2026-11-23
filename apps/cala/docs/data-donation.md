@@ -232,7 +232,7 @@ Runs on solaris, by hand at first (`run.sh nwb <donation_id>`), in the
    - `NWBFile`: `identifier` = donation id, `session_start_time` =
      `session_date` at 00:00 UTC (the form asks for no time), `lab` =
      `credit_lab`, `experimenter` = `credit_name`, `session_description` from
-     behavior and notes.
+     behavior (donor notes stay private).
    - `Subject`: id, scientific species, sex, age, genotype.
    - `Device` (scope), `OpticalChannel`, `ImagingPlane` (indicator, location
      = brain region, imaging rate = fps; excitation/emission unknown → NaN).
@@ -243,8 +243,10 @@ Runs on solaris, by hand at first (`run.sh nwb <donation_id>`), in the
      `timestamps.csv` stays with the donation on solaris. This chunk shape is what Part B streams.
 3. Check: read every frame back and compare with the CALARAW source (bit
    identical), then `nwbinspector` (no critical issues) and `dandi validate`.
-4. `dandi upload` into the collection's draft (`DANDI_API_KEY` in
-   `ingest.env`), then call `ingest_published` with the path.
+4. Right before uploading, ask the edge function (`ingest_published` with
+   `dry_run`) to re-check the live row, so a donation switched to CaLab only
+   after ingest is never uploaded. Then `dandi upload` into the collection's
+   draft (`DANDI_API_KEY` in `ingest.env`) and call `ingest_published` with the path.
 
 Known limit: `dandi validate` may reject recordings with fewer frames than the
 frame width (nwbinspector's data-orientation heuristic; the script ignores that
@@ -351,17 +353,17 @@ zstd, no WASM codec. ~260 MB per recorded minute of V4. Re-run with
 
 ## Security
 
-| Risk                                 | Mitigation                                                                                                     |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| Anyone uploads anything              | Real sign-in required; anonymous sessions rejected.                                                            |
-| Huge uploads / cost                  | Caps checked before presigning; signed content length per PUT; global bucket cap.                              |
-| Arbitrary files                      | Only chunk, timestamp and meta names; finish checks sizes and the gzip + `CALARAW1` magic.                     |
-| Malicious bytes on the lab server    | Pull only `approved/`; strict CALARAW and sidecar parsing; read-only storage; `.rejected/` quarantine.         |
-| Non-imaging content                  | Admin preview (mean image, frames) before approval.                                                            |
-| CaLab-only data published by mistake | `sharing` checked by the edge function, the conversion script and the public view (three independent checks).  |
-| Personal data in public metadata     | Public view lists only recording metadata and the donor-chosen credit; no email, user id, notes or file names. |
-| Lab server exposure                  | Outbound only; holds the ingest token and the DANDI key, nothing else.                                         |
-| Leaked keys                          | R2 keys only in edge function secrets; DANDI key only in `ingest.env` (chmod 600) on solaris.                  |
+| Risk                                 | Mitigation                                                                                                                                                  |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Anyone uploads anything              | Real sign-in required; anonymous sessions rejected.                                                                                                         |
+| Huge uploads / cost                  | Caps checked before presigning; signed content length per PUT; global bucket cap.                                                                           |
+| Arbitrary files                      | Only chunk, timestamp and meta names; finish checks sizes and the gzip + `CALARAW1` magic.                                                                  |
+| Malicious bytes on the lab server    | Pull only `approved/`; strict CALARAW and sidecar parsing; read-only storage; `.rejected/` quarantine.                                                      |
+| Non-imaging content                  | Admin preview (mean image, frames) before approval.                                                                                                         |
+| CaLab-only data published by mistake | `sharing` checked by the edge function, the conversion script and the public view; the script also asks the edge function (dry run) right before uploading. |
+| Personal data in public metadata     | Public view lists only recording metadata and the donor-chosen credit; no email, user id, notes or file names.                                              |
+| Lab server exposure                  | Outbound only; holds the ingest token and the DANDI key, nothing else.                                                                                      |
+| Leaked keys                          | R2 keys only in edge function secrets; DANDI key only in `ingest.env` (chmod 600) on solaris.                                                               |
 
 ## Testing
 

@@ -160,7 +160,9 @@ def write_nwb(donation_dir: Path, row: dict[str, Any], out: Path) -> None:
     subject = f"{lab_slug(row.get('credit_lab') or '')}-{row['subject_id']}"
     start = datetime.combine(date.fromisoformat(str(row["session_date"])), time(0, tzinfo=UTC))
 
+    session = nwb_relpath(row).split("_ses-")[1].removesuffix("_ophys.nwb")
     nwbfile = NWBFile(
+        session_id=session,
         session_description=row.get("behavior") or "calcium imaging recording",
         identifier=row["id"],
         session_start_time=start,
@@ -171,7 +173,6 @@ def write_nwb(donation_dir: Path, row: dict[str, Any], out: Path) -> None:
             "Raw frames as recorded, lossless."
         ),
         keywords=["calcium imaging", "one-photon", "CaLab donation"],
-        notes=row.get("notes"),
     )
     nwbfile.subject = Subject(
         subject_id=subject,
@@ -331,6 +332,13 @@ def convert(
     run(["dandi", "validate", path], dandiset_dir)
     if not upload:
         return path
+    # Ask the live database right before uploading: sharing may have changed since ingest.
+    try:
+        api.call("ingest_published", donation_id=donation_id, dandi_path=path, dry_run=True)
+    except ApiError as e:
+        if "already published" in str(e):
+            return path
+        raise ConversionError(f"live check refused the upload: {e}") from e
     run(["dandi", "upload", "-i", instance, path], dandiset_dir)
     try:
         api.call("ingest_published", donation_id=donation_id, dandi_path=path)

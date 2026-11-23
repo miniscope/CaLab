@@ -1055,7 +1055,7 @@ Deno.test('ingest_published marks an ingested public donation published', async 
     ingestAs(INGEST_TOKEN),
   );
   assertEquals(again.status, 409);
-  assertStringIncludes(again.json.error as string, 'published');
+  assertStringIncludes(again.json.error as string, 'already published');
 });
 
 Deno.test('ingest_published refuses lab donations, wrong status, bad paths, no token', async () => {
@@ -1101,6 +1101,39 @@ Deno.test('ingest_published refuses lab donations, wrong status, bad paths, no t
     ).status,
     401, // an admin session is not the ingest token
   );
+});
+
+Deno.test('ingest_published dry_run checks without transitioning', async () => {
+  const env = setup();
+  const dry = (id: string, extra: Record<string, unknown> = {}) =>
+    call(
+      env.handler,
+      { action: 'ingest_published', donation_id: id, dandi_path: PATH, dry_run: true, ...extra },
+      ingestAs(INGEST_TOKEN),
+    );
+
+  const labId = await ingested(env, 'lab');
+  const lab = await dry(labId);
+  assertEquals(lab.status, 409);
+  assertStringIncludes(lab.json.error as string, 'CaLab only');
+  assertEquals(env.db.rows.get(labId)!.status, 'ingested');
+
+  const id = await ingested(env);
+  const ok = await dry(id);
+  assertEquals(ok.status, 200, JSON.stringify(ok.json));
+  assertEquals(ok.json, { status: 'ingested', dry_run: true });
+  assertEquals(env.db.rows.get(id)!.status, 'ingested');
+  assertEquals((await dry(id, { dry_run: 'yes' })).status, 400);
+
+  const real = await call(
+    env.handler,
+    { action: 'ingest_published', donation_id: id, dandi_path: PATH },
+    ingestAs(INGEST_TOKEN),
+  );
+  assertEquals(real.status, 200);
+  const again = await dry(id);
+  assertEquals(again.status, 409);
+  assertStringIncludes(again.json.error as string, 'already published');
 });
 
 // ── helpers ────────────────────────────────────────────────────────────────

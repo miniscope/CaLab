@@ -19,6 +19,8 @@
 //     ingest_list                           -> {donations: approved rows}
 //     ingest_download_url {donation_id, name} -> presigned GET in approved/
 //     ingest_done  {donation_id}            -> objects deleted, status ingested
+//     ingest_published {donation_id, dandi_path, dry_run?} -> status published;
+//                                             dry_run runs every check, changes nothing
 //
 // Objects: pending/<id>/<name> until approved, then approved/<id>/<name>.
 //
@@ -914,6 +916,9 @@ export function createHandler(deps: DonationDeps): (req: Request) => Promise<Res
       return { donations: await db.listByStatus('approved') };
     }
     if (action === 'ingest_published') {
+      if (body.dry_run !== undefined && typeof body.dry_run !== 'boolean') {
+        fail(400, 'dry_run must be a boolean');
+      }
       const row = await load(body);
       if (row.sharing !== 'public') fail(409, 'donation is CaLab only; it is never published');
       if (row.status === 'published') fail(409, 'donation is already published');
@@ -925,6 +930,7 @@ export function createHandler(deps: DonationDeps): (req: Request) => Promise<Res
       if (typeof path !== 'string' || path.length > 256 || !DANDI_PATH.test(path)) {
         fail(400, 'dandi_path must look like sub-<subject>/<file>.nwb');
       }
+      if (body.dry_run === true) return { status: 'ingested', dry_run: true };
       await transitionOrConflict(row, ['ingested'], {
         status: 'published',
         dandi_path: path as string,
