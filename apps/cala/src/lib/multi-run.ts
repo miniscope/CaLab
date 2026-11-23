@@ -460,7 +460,11 @@ export function createMultiRun(deps: MultiRunDeps) {
       if (error()) return `Stopped: ${error()}`;
       if (stopped()) return `Stopped: ${stopped()}`;
       if (finished()) return 'All sessions done; results written.';
-      return autoStatusText(action(), { session: current(), sessions: p.sessions.length });
+      return autoStatusText(action(), {
+        session: current(),
+        sessions: p.sessions.length,
+        joint: p.settings.mode === 'joint',
+      });
     },
     error,
     /** Why the automatic run stopped (a stage failed or was cancelled), or a write failed. */

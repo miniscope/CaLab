@@ -195,13 +195,36 @@ export interface SpeedStatusInput {
   governor: GovernorStatus | null;
   /** Background settle is on (a cap above 0) and look-back is on in this run. */
   settleOn: boolean;
+  /** Discover has read its last frame (the Final settle and Extract may still run). */
+  done?: boolean;
 }
 
 const TOL = 0.97;
 
+/** The status line once Discover has read its last frame: the setting now only applies to the next run. */
+export const DONE_TEXT = 'Discover has read every frame; a change here applies to the next run.';
+
+/**
+ * The speed the headline shows as achieved (null: none). Paced, the settle governor's live-fps
+ * reading; at Max, the live top-speed estimate. The governor keeps its last reading when it
+ * turns off (a curve or Auto going to Max), so at Max that reading is stale and never shown.
+ * Before Discover starts and once it has read its last frame, nothing is being achieved.
+ */
+export function achievedSpeed(i: {
+  running: boolean;
+  target: number;
+  governor: GovernorStatus | null;
+  maxFps: number;
+}): number | null {
+  if (!i.running) return null;
+  if (i.target > 0) return i.governor?.achieved ?? null;
+  return i.maxFps > 0 ? i.maxFps : null;
+}
+
 /** One or two plain sentences: on target or not, Background settle's rate, and what limits it. */
 export function speedStatusText(i: SpeedStatusInput): string {
   if (!i.running) {
+    if (i.done) return DONE_TEXT;
     return i.target > 0
       ? 'Discover will read at this speed once it starts.'
       : 'Discover will run as fast as the machine goes.';
@@ -212,6 +235,9 @@ export function speedStatusText(i: SpeedStatusInput): string {
   if (g?.achieved != null) {
     if (g.achieved >= i.target * TOL) parts.push('On target.');
     else parts.push(`Achieved ${g.achieved.toFixed(0)} · ${GOVERNOR_LIMIT_TEXT.discover}.`);
+  } else if (g) {
+    // The governor needs a library and about 2 s of paced frames before its first reading.
+    parts.push('Measuring the speed.');
   }
   if (i.settleOn && g && g.achieved != null && g.achieved > 0) {
     const perLive = g.deliveredFps / g.achieved;

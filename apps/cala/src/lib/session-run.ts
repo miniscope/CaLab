@@ -103,8 +103,14 @@ export function nextAutoAction(i: AutoInput): AutoAction {
 }
 
 /** Where a multi-session run is, for the panel. */
-export function autoStatusText(a: AutoAction, i: Pick<AutoInput, 'session' | 'sessions'>): string {
-  const of = `session ${i.session + 1} of ${i.sessions}`;
+export function autoStatusText(
+  a: AutoAction,
+  i: Pick<AutoInput, 'session' | 'sessions'> & { joint?: boolean },
+): string {
+  // A Joint run is one Discover over every session: no "session 1 of N" while it reads session N.
+  const of = i.joint
+    ? `all ${i.sessions} sessions (Joint)`
+    : `session ${i.session + 1} of ${i.sessions}`;
   switch (a.kind) {
     case 'wait':
       return `Running ${of}`;

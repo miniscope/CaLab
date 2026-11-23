@@ -144,6 +144,13 @@ describe('autoStatusText', () => {
     expect(autoStatusText({ kind: 'next-session' }, pos)).toBe('Opening the next session');
     expect(autoStatusText({ kind: 'finished' }, pos)).toBe('All sessions done');
   });
+  it('names the whole Joint run, not the first session, while a Joint run reads any session', () => {
+    const joint = { session: 0, sessions: 2, joint: true };
+    expect(autoStatusText({ kind: 'wait' }, joint)).toBe('Running all 2 sessions (Joint)');
+    expect(autoStatusText({ kind: 'extract' }, joint)).toBe(
+      'Starting Extract on all 2 sessions (Joint)',
+    );
+  });
   it('mentions skips and stops', () => {
     expect(autoStatusText({ kind: 'next-session', skipped: 'no cells were found' }, pos)).toBe(
       'Skipping session 2 of 4: no cells were found',
