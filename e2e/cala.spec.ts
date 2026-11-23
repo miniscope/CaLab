@@ -57,7 +57,10 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await expect(info).toContainText('60.0 Hz (declared by the writer, ignored)');
 
   // Opening also runs preprocessing and motion correction in the worker.
-  await expect(page.getByTestId('pipeline-status')).toHaveText('Done', { timeout: 20_000 });
+  // Discover finished; Extract may not follow on a recording with no cells.
+  await expect(page.getByTestId('pipeline-status')).toHaveText(/^(Discover done|Done)$/, {
+    timeout: 20_000,
+  });
   await expect(page.getByTestId('pipeline-readout')).toContainText('frame 6 / 6');
   // The work display is in the Run panel, with its fixed ranges and honest empty values.
   await page.getByRole('tab', { name: 'Run' }).click();
@@ -172,7 +175,7 @@ test('Cala: long-session cell overview stays compact and navigates beyond retain
   writeFileSync(join(folder, '0.avi'), buildAvi({ width: 24, height: 16, frames: 6 }));
   writeFileSync(join(folder, 'metaData.json'), '{"frameRate":"20FPS"}');
   await page.getByTestId('folder-input').setInputFiles(folder);
-  await expect(page.getByTestId('pipeline-status')).toHaveText('Done');
+  await expect(page.getByTestId('pipeline-status')).toHaveText(/^(Discover done|Done)$/);
   // Seed the display stores, not the solver: this exercises chart rendering and
   // navigation late in a recording without processing a million video frames.
   await page.evaluate(() => {
