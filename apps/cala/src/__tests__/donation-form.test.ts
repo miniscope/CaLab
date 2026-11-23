@@ -44,6 +44,8 @@ describe('donation form', () => {
     expect(ageToIso(' 12 ', 'W')).toBe('P12W');
     expect(ageToIso('3', 'M')).toBe('P3M');
     expect(ageToIso('1', 'Y')).toBe('P1Y');
+    expect(ageToIso('36500', 'D')).toBe('P36500D');
+    expect(ageToIso('36501', 'D')).toBeNull();
     for (const bad of ['', '0', '-3', '2.5', 'abc', '100000']) {
       expect(ageToIso(bad, 'D')).toBeNull();
     }
@@ -70,6 +72,12 @@ describe('donation form', () => {
     expect(missingFields(filled({ age_value: '' }), TODAY)).toContain('age');
     expect(missingFields(filled({ session_date: '' }), TODAY)).toContain('recording date');
     expect(missingFields(filled({ session_date: '2026-11-25' }), TODAY)).toContain(
+      'recording date',
+    );
+    expect(missingFields(filled({ session_date: '2020-02-30' }), TODAY)).toContain(
+      'recording date',
+    );
+    expect(missingFields(filled({ session_date: '2020-13-01' }), TODAY)).toContain(
       'recording date',
     );
     expect(missingFields(filled({ session_date: '1989-01-01' }), TODAY)).toContain(

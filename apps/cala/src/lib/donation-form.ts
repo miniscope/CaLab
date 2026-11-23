@@ -92,8 +92,14 @@ export function todayIso(d: Date): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+/** True for a real calendar date (rejects 2020-02-30, 2020-13-01 and the like). */
+function isCalendarDate(v: string): boolean {
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+}
+
 function sessionDateOk(v: string, today: Date): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || !isCalendarDate(v)) return false;
   return v >= MIN_SESSION_DATE && v <= todayIso(today);
 }
 
