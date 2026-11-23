@@ -36,3 +36,6 @@ __pycache__/
 
 # Per-user Claude Code settings.
 .claude/settings.local.json
+
+# Supabase CLI working files
+supabase/.temp/

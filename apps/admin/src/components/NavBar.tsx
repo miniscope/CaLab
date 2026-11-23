@@ -10,6 +10,7 @@ const TABS: { id: AdminView; label: string }[] = [
   { id: 'geography', label: 'Geography' },
   { id: 'usage', label: 'Usage' },
   { id: 'submissions', label: 'Submissions' },
+  { id: 'donations', label: 'Donations' },
   { id: 'export', label: 'Export' },
 ];
 

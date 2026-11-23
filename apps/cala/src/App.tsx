@@ -3,7 +3,16 @@ import { leaveWarning, resultExported } from './lib/export-state.ts';
 import { createEffect, createSignal, For, on, Show, untrack } from 'solid-js';
 import { CompactHeader, DashboardShell } from '@calab/ui';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
-import { authLoading, user } from '@calab/community';
+import {
+  authLoading,
+  donationAuthError,
+  donationAuthLoading,
+  donationEnabled,
+  donationUser,
+  initDonationAuth,
+  isDonationAuthReturn,
+  user,
+} from '@calab/community';
 import { createFrameClient } from './lib/frame-client.ts';
 import { createViewerStore, FALLBACK_PLAYBACK_FPS } from './lib/viewer-store.ts';
 import { createPipelineStore } from './lib/pipeline-store.ts';
@@ -91,12 +100,23 @@ import type { ExportInput } from './lib/export.ts';
 import type { ProjectResult } from './lib/project-index.ts';
 import { openResult, type LoadedResult } from './lib/result-file.ts';
 import { ResultView, type ResultOrigin } from './components/ResultView.tsx';
+import { DonatePanel, MyDonationsEntry } from './components/DonatePanel.tsx';
+import { BrowseDonationsEntry } from './components/BrowseDonations.tsx';
+import { createDonationStore } from './lib/donation-store.ts';
+import type { DonationSource } from './workers/donation-types.ts';
 
 const App: Component = () => {
   // Magic-link redirect: show the sign-in confirmation instead of the app.
   // `isAuthCallback()` inspects window.location at mount time; the URL
   // doesn't change within a single component lifetime, so the early
   // return is safe.
+  // A donation sign-in link (its own Supabase project) is confirmed against that project.
+  // eslint-disable-next-line solid/components-return-once
+  if (isDonationAuthReturn()) {
+    return (
+      <AuthCallback user={donationUser} loading={donationAuthLoading} error={donationAuthError} />
+    );
+  }
   // eslint-disable-next-line solid/components-return-once
   if (isAuthCallback()) return <AuthCallback user={user} loading={authLoading} />;
 
@@ -440,10 +460,19 @@ const App: Component = () => {
     });
   }
 
+  // ---- Data donation (docs/data-donation.md): only with a donation backend ----
+  const donation = donationEnabled ? createDonationStore() : null;
+  // Follow the donation sign-in from the start (its own project, if configured),
+  // so a sign-in completed in another tab shows up here.
+  if (donation) initDonationAuth();
+  /** The open recording's files, for a donation (null: live, or nothing open). */
+  const [donationSource, setDonationSource] = createSignal<DonationSource | null>(null);
+
   // Opening a folder starts preprocessing and motion correction right away.
   async function open(files: Parameters<typeof store.openFiles>[0], label: string) {
     pipeline.stop();
     await store.openFiles(files, label);
+    setDonationSource(store.info() ? { entries: files } : null);
     if (store.info()) void pipeline.start();
   }
 
@@ -548,10 +577,12 @@ const App: Component = () => {
     async openJoint(sessions) {
       pipeline.stop();
       const n = sessions.length;
+      const inputs = sessions.map((s) => toSessionInput(s.candidate));
       await store.openSessions(
-        sessions.map((s) => toSessionInput(s.candidate)),
+        inputs,
         `${sessions[0].candidate.name} + ${n - 1} more (${n} sessions)`,
       );
+      setDonationSource(store.info() ? { sessions: inputs } : null);
       if (store.info()) void pipeline.start();
     },
     async openOne(session, index) {
@@ -561,6 +592,7 @@ const App: Component = () => {
         session.candidate.entries,
         `Session ${index + 1} of ${n}: ${session.candidate.name}`,
       );
+      setDonationSource(store.info() ? { entries: session.candidate.entries } : null);
       if (store.info()) void pipeline.start();
     },
     stages: () => ({
@@ -759,6 +791,7 @@ const App: Component = () => {
   // So does connecting to a live source (`?live=<url>` connects on load).
   async function openLive(url: string) {
     pipeline.stop();
+    setDonationSource(null);
     await store.openLive(url);
     if (store.info()) void pipeline.start();
   }
@@ -895,6 +928,16 @@ const App: Component = () => {
               visible={tab.active() === 'run'}
             />
             <SessionRunStatus />
+            {/* Donate data: a recording opened from files, with a community backend. */}
+            <Show when={donation && !lp.info.live}>
+              <DonatePanel
+                donation={donation!}
+                info={lp.info}
+                source={donationSource()}
+                label={store.label()}
+                version={version}
+              />
+            </Show>
           </>
         ),
       },
@@ -1033,32 +1076,40 @@ const App: Component = () => {
           <Show
             when={screen() === 'sessions' || screen() === 'project'}
             fallback={
-              <OpenFolder
-                onProject={(o) => {
-                  setScreen('project');
-                  void project.open(o).then(loadRecent);
-                }}
-                onAnimals={(handles) =>
-                  void (async () => {
-                    for (const h of handles)
-                      await rememberProject(recentStore, h, null, new Date());
-                    loadRecent();
-                  })()
-                }
-                recent={supportsDirectoryPicker() ? recent() : []}
-                onForget={(r) => void recentStore.remove(r.id).then(loadRecent)}
-                loading={store.loading()}
-                error={store.error()}
-                onOpen={(files, label) => void open(files, label)}
-                onOpenLive={screen() === 'add' ? undefined : (url) => void openLive(url)}
-                liveUrl={liveParam ?? undefined}
-                addMode={screen() === 'add'}
-                onCancel={() => setScreen('sessions')}
-                onSessions={(found, handle) => {
-                  setScreen('sessions');
-                  void sessionList.add(found, handle);
-                }}
-              />
+              <>
+                <OpenFolder
+                  onProject={(o) => {
+                    setScreen('project');
+                    void project.open(o).then(loadRecent);
+                  }}
+                  onAnimals={(handles) =>
+                    void (async () => {
+                      for (const h of handles)
+                        await rememberProject(recentStore, h, null, new Date());
+                      loadRecent();
+                    })()
+                  }
+                  recent={supportsDirectoryPicker() ? recent() : []}
+                  onForget={(r) => void recentStore.remove(r.id).then(loadRecent)}
+                  loading={store.loading()}
+                  error={store.error()}
+                  onOpen={(files, label) => void open(files, label)}
+                  onOpenLive={screen() === 'add' ? undefined : (url) => void openLive(url)}
+                  liveUrl={liveParam ?? undefined}
+                  addMode={screen() === 'add'}
+                  onCancel={() => setScreen('sessions')}
+                  onSessions={(found, handle) => {
+                    setScreen('sessions');
+                    void sessionList.add(found, handle);
+                  }}
+                />
+                <Show when={donation && screen() === 'open'}>
+                  <>
+                    <MyDonationsEntry donation={donation!} />
+                    <BrowseDonationsEntry />
+                  </>
+                </Show>
+              </>
             }
           >
             <Show

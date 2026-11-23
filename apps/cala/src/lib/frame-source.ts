@@ -243,6 +243,16 @@ function groupFiles(entries: FolderEntry[]): {
 }
 
 /**
+ * The `metaData.json` and `timeStamps.csv` that `FrameSource.open` would use
+ * for these entries (the same choice of folder and file). Throws
+ * `NO_VIDEO_MESSAGE` when there is no video.
+ */
+export function recordingSidecars(entries: FolderEntry[]): { metaData?: File; timeStamps?: File } {
+  const { metaData, timeStamps } = groupFiles(withNames(entries));
+  return { metaData, timeStamps };
+}
+
+/**
  * `fn` over `items` with at most `limit` running at once, results in order.
  * Stops starting new work after the first failure and rethrows it.
  */

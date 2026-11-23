@@ -8,24 +8,26 @@ usage analytics, and admin moderation.
 Each CaLab app has its own submissions table (e.g., `catune_submissions`).
 All tables share a common set of base columns defined in `000_base_template.sql`.
 
-| Migration                                  | Purpose                                                                                                                    |
-| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `000_base_template.sql`                    | **Template only** (not executed). Copy and extend for new apps.                                                            |
-| `001_catune_submissions.sql`               | CaTune submissions table with deconvolution-specific columns.                                                              |
-| `002_field_options.sql`                    | Shared canonical field options lookup table.                                                                               |
-| `003_analytics.sql`                        | Analytics tables (`analytics_sessions`, `analytics_events`) for usage tracking.                                            |
-| `004_admin_role.sql`                       | `is_admin()` helper function and admin moderation policies.                                                                |
-| `005`–`009`                                | CaDecon table, bridge data source, analytics hardening, and tighter constraints.                                           |
-| `010_restrict_submission_pii.sql`          | Locks submission reads to owner+admin; adds PII-free `*_public` browsing views.                                            |
-| `011_revoke_public_view_writes.sql`        | Makes the `*_public` views SELECT-only for `anon`/`authenticated` (no writes through the views).                           |
-| `012_block_anonymous_submissions.sql`      | Submission INSERT requires a real (non-anonymous) sign-in.                                                                 |
-| `013_lock_analytics_writes.sql`            | Sessions created only by the edge function; clients may update only `ended_at`/`duration_seconds`; per-session event cap.  |
-| `014_validate_submission_payloads.sql`     | Length/range/finite CHECKs on every submission column (added `NOT VALID`; validate after cleanup).                         |
-| `015_app_name_slug_check.sql`              | Validates `analytics_sessions.app_name` by slug shape instead of a fixed app list.                                         |
-| `016_cadecon_max_firing_rate.sql`          | CaDecon `max_firing_rate` NOT NULL (0 < x <= 10000, finite) replaces the dropped `upsample_factor`; public view recreated. |
-| `017_analytics_event_name_shape.sql`       | Validates `analytics_events.event_name` by shape (`^[a-z][a-z0-9_]{1,47}$`) instead of a fixed list.                       |
-| `018_analytics_admin_read_performance.sql` | **Optional.** Indexes and a cheaper admin RLS expression for the Admin app's keyset reads.                                 |
-| `019_schema_fingerprint.sql`               | **Optional.** `schema_fingerprint()`: read-only, admin-only jsonb of booleans for the Admin "Schema status" panel.         |
+| Migration                                  | Purpose                                                                                                                                            |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `000_base_template.sql`                    | **Template only** (not executed). Copy and extend for new apps.                                                                                    |
+| `001_catune_submissions.sql`               | CaTune submissions table with deconvolution-specific columns.                                                                                      |
+| `002_field_options.sql`                    | Shared canonical field options lookup table.                                                                                                       |
+| `003_analytics.sql`                        | Analytics tables (`analytics_sessions`, `analytics_events`) for usage tracking.                                                                    |
+| `004_admin_role.sql`                       | `is_admin()` helper function and admin moderation policies.                                                                                        |
+| `005`–`009`                                | CaDecon table, bridge data source, analytics hardening, and tighter constraints.                                                                   |
+| `010_restrict_submission_pii.sql`          | Locks submission reads to owner+admin; adds PII-free `*_public` browsing views.                                                                    |
+| `011_revoke_public_view_writes.sql`        | Makes the `*_public` views SELECT-only for `anon`/`authenticated` (no writes through the views).                                                   |
+| `012_block_anonymous_submissions.sql`      | Submission INSERT requires a real (non-anonymous) sign-in.                                                                                         |
+| `013_lock_analytics_writes.sql`            | Sessions created only by the edge function; clients may update only `ended_at`/`duration_seconds`; per-session event cap.                          |
+| `014_validate_submission_payloads.sql`     | Length/range/finite CHECKs on every submission column (added `NOT VALID`; validate after cleanup).                                                 |
+| `015_app_name_slug_check.sql`              | Validates `analytics_sessions.app_name` by slug shape instead of a fixed app list.                                                                 |
+| `016_cadecon_max_firing_rate.sql`          | CaDecon `max_firing_rate` NOT NULL (0 < x <= 10000, finite) replaces the dropped `upsample_factor`; public view recreated.                         |
+| `017_analytics_event_name_shape.sql`       | Validates `analytics_events.event_name` by shape (`^[a-z][a-z0-9_]{1,47}$`) instead of a fixed list.                                               |
+| `018_analytics_admin_read_performance.sql` | **Optional.** Indexes and a cheaper admin RLS expression for the Admin app's keyset reads.                                                         |
+| `019_schema_fingerprint.sql`               | **Optional.** `schema_fingerprint()`: read-only, admin-only jsonb of booleans for the Admin "Schema status" panel.                                 |
+| `020_cala_donations.sql`                   | `cala_donations` for raw data donations: owner/admin read, writes only via the `donation` Edge Function.                                           |
+| `021_cala_donations_public.sql`            | **Donation project only.** Sharing choice (public on DANDI / CaLab only), subject fields, `published` status, public view `cala_donations_public`. |
 
 ## Applying migrations
 
@@ -92,7 +94,10 @@ schema may lack, so a missing column degrades a metric to "n/a" instead of faili
 
 ## Edge Functions
 
-CaLab uses one Edge Function for server-side GeoIP resolution during analytics session creation.
+CaLab uses two Edge Functions:
+
+- `geo-session`: server-side GeoIP resolution during analytics session creation.
+- `donation`: the backend for raw data donations from cala (see below).
 
 ### Deploying the Edge Function
 
@@ -121,6 +126,39 @@ supabase functions deploy geo-session --no-verify-jwt --project-ref <your-projec
 Your project ref is the subdomain in your Supabase URL (e.g., `abcdefghijk` from `https://abcdefghijk.supabase.co`).
 
 The Edge Function uses `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` which Supabase auto-injects — no extra configuration needed.
+
+### `donation` Edge Function
+
+Backend for raw data donations (`apps/cala/docs/data-donation.md`). It is the
+only writer of `cala_donations` (migrations `020` and `021` must be applied first; `021` adds the `ingest_published` action the lab uses to mark a donation as published on DANDI) and the
+only holder of the R2 keys: browsers and the lab server get presigned URLs.
+Donor and admin actions verify the caller's Supabase session themselves; lab
+ingest uses the `x-ingest-token` header instead of a JWT, so deploy without
+gateway JWT verification:
+
+```bash
+supabase functions deploy donation --no-verify-jwt --project-ref <your-project-ref>
+supabase secrets set --project-ref <your-project-ref> \
+  R2_ACCOUNT_ID=... R2_ACCESS_KEY_ID=... R2_SECRET_ACCESS_KEY=... R2_BUCKET=... \
+  INGEST_TOKEN="$(openssl rand -hex 32)"
+```
+
+| Secret                                                                   | Purpose                                                                                                                                            |
+| ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | Cloudflare R2 bucket via the S3 API (key needs object read/write on that bucket).                                                                  |
+| `INGEST_TOKEN`                                                           | Shared secret of the lab-server ingest job (at least 32 characters; ingest is disabled without it).                                                |
+| `DONATION_MAX_BYTES`                                                     | Optional. Per-donation cap in bytes (default 10 GiB).                                                                                              |
+| `DONATION_GLOBAL_CAP_BYTES`                                              | Optional. Cap on bytes declared by donations still in the bucket (default 200 GiB).                                                                |
+| `DONATION_MAX_OPEN_PER_USER`                                             | Optional. Donations per user not yet ingested/rejected/withdrawn (default 2).                                                                      |
+| `DONATION_STALE_HOURS`                                                   | Optional. An upload unfinished after this many hours is withdrawn and its files deleted (default 48).                                              |
+| `RESEND_API_KEY`, `DONATION_NOTIFY_EMAILS`                               | Optional. Email (via Resend) to these comma-separated addresses when a donation finishes uploading. Both needed; failures never fail the donation. |
+| `DONATION_NOTIFY_FROM`, `DONATION_ADMIN_URL`                             | Optional. Sender (default `onboarding@resend.dev`, which only delivers to the Resend account's own address) and a review link in the email.        |
+| `DONATION_EXTRA_ORIGINS`                                                 | Optional. Comma-separated extra CORS origins (e.g. preview deploys).                                                                               |
+
+Bucket setup: a CORS rule allowing `PUT` and `GET` from the app origins (the
+browser uploads straight to R2), and a lifecycle rule that expires objects
+under `pending/` after a few weeks (abandoned uploads). Tests:
+`cd supabase/functions/donation && deno test --allow-env --allow-net index.test.ts`.
 
 ## Admin role setup
 

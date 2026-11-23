@@ -18,6 +18,8 @@ export interface AuthGateProps {
   authLoading: Accessor<boolean>;
   signInWithEmail: (email: string) => Promise<{ error?: string | null }>;
   signOut: () => Promise<void> | void;
+  /** Line under the form (default: the community sharing prompt). */
+  prompt?: string;
 }
 
 export function AuthGate(props: AuthGateProps) {
@@ -79,7 +81,9 @@ export function AuthGate(props: AuthGateProps) {
                 <Show when={error()}>
                   <p class="auth-gate__error">{error()}</p>
                 </Show>
-                <p class="auth-gate__prompt">Sign in to share parameters with the community</p>
+                <p class="auth-gate__prompt">
+                  {props.prompt ?? 'Sign in to share parameters with the community'}
+                </p>
               </Show>
             </div>
           }

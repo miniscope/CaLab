@@ -8,8 +8,22 @@ const { subscribeAuth } = vi.hoisted(() => ({
   }),
 }));
 
-vi.mock('../auth.ts', () => ({ subscribeAuth }));
-vi.mock('../supabase.ts', () => ({ supabaseEnabled: false, getSupabase: async () => null }));
+vi.mock('../auth.ts', () => ({
+  subscribeAuth,
+  realUser: (u: unknown) => u ?? null,
+  signInWithEmail: async () => ({ error: null }),
+  signOut: async () => {},
+}));
+vi.mock('../supabase.ts', () => ({
+  supabaseEnabled: false,
+  getSupabase: async () => null,
+  // Donation backend (donation-auth.ts): not configured.
+  separateDonationProject: false,
+  donationSupabaseUrl: undefined,
+  donationSupabaseAnonKey: undefined,
+  DONATION_AUTH_PARAM: 'donation_auth',
+  isDonationAuthReturn: () => false,
+}));
 
 describe('community-store', () => {
   beforeEach(() => {

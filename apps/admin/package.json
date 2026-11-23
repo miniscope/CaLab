@@ -19,6 +19,7 @@
   "dependencies": {
     "@calab/community": "*",
     "@calab/community-ui": "*",
+    "@calab/io": "*",
     "@calab/ui": "*",
     "solid-js": "^1.9.18"
   },
