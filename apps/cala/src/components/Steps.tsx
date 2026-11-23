@@ -145,6 +145,7 @@ function RateChart(props: { samples: { x: number; fps: number }[]; testid: strin
 /** One step's panel: header (name, state, %, frames/s, time left), a bar, then its own body. */
 export function StepPanel(props: { step: StepView; children?: JSX.Element }): JSX.Element {
   const v = () => props.step;
+  const measured = () => v().fraction != null && (v().state === 'running' || v().state === 'done');
   return (
     <section
       class={`cala-step cala-step--${v().state}`}
@@ -158,11 +159,12 @@ export function StepPanel(props: { step: StepView; children?: JSX.Element }): JS
       </div>
       <div
         class="cala-step__bar"
-        role="progressbar"
+        // Only a started step with a known end is a progress bar (a live stream has none).
+        role={measured() ? 'progressbar' : undefined}
         aria-label={v().label}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={Math.round(100 * (v().fraction ?? 0))}
+        aria-valuenow={measured() ? Math.round(100 * (v().fraction ?? 0)) : undefined}
       >
         <i style={{ width: `${100 * (v().state === 'off' ? 0 : (v().fraction ?? 0))}%` }} />
       </div>
