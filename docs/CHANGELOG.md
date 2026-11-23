@@ -5,6 +5,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Changed
+
+- Cala (experimental, `?compress`): the compressor writes factor format v2 (plain tiles, two SVD power iterations, per-pixel discarded variance and valid share; v1 files still read), and the crate can cut and blend the frame on two offset grids. `qc_eval --factors-out` and the history whole-test read and write v2.
+
 ## [2.22.0] - 2026-11-23
 
 ### Added

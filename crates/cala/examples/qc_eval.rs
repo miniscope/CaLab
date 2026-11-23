@@ -144,7 +144,7 @@
 //!   --joint            add test with the joint neighbour-trace check
 //!   --factors-out DIR  compress pass 1's preprocessed frames in 600-frame
 //!                      windows ([`calab_cala::compress`]) and write every
-//!                      window's factors to `DIR/w<start>.fac` (`CALAFAC1`), the
+//!                      window's factors to `DIR/w<start>.fac` (`CALAFAC2`), the
 //!                      input of tools/cala-diagnostics/history_wholetest.py
 //!   --core-test M      transient-band core test: off (default) | report
 //!                      (also writes fast.tsv, split.tsv) | trim | delete
@@ -4505,10 +4505,9 @@ fn write_library(
 }
 
 /// `--factors-out`: compresses the preprocessed frames window by window and
-/// writes each window's factors (`CALAFAC1`) to `dir/w<start frame>.fac`.
+/// writes each window's factors (format v2, `CALAFAC2`) to `dir/w<start frame>.fac`.
 struct FactorDump {
     dir: PathBuf,
-    tile: usize,
     wc: calab_cala::compress::WindowCompressor,
 }
 
@@ -4521,14 +4520,13 @@ impl FactorDump {
         };
         FactorDump {
             dir: dir.to_path_buf(),
-            tile: cfg.tile,
             wc: calab_cala::compress::WindowCompressor::new(dims, cfg),
         }
     }
 
     fn write(&self, wf: calab_cala::compress::WindowFactors) {
         let name = format!("w{:07}.fac", wf.start);
-        std::fs::write(self.dir.join(name), wf.to_bytes(self.tile)).unwrap();
+        std::fs::write(self.dir.join(name), wf.to_bytes()).unwrap();
     }
 
     fn push(&mut self, frame: &[f32]) {

@@ -355,6 +355,14 @@ compressed, the traces of the whole recording are solved again from the
 factors with that library (back-fill): a cell found late gets its trace from
 the first frame on, and the trace viewer shows the back-filled traces.
 
+The files are factor format v2 (`CALAFAC2`: the tiling in the header, and per
+pixel the variance the rank cut discarded and the share of valid frames; v1
+files still read). A non-finite pixel is a missing sample. The app cuts plain
+tiles (the history review reads plain tiles only); the crate can also cut the
+frame on two grids offset by half a tile and blend them (`compress/blend.rs`),
+which removes the jump at tile lines. The randomized SVD runs two power
+iterations.
+
 - `src/lib/compress-feed.ts`: in the fast worker, cuts the stream into windows,
   quantizes each batch in tile order (int16, 1/64 grey level) and transfers it.
   Nothing is dropped, unlike the feed to the slow worker.

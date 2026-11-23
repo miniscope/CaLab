@@ -350,7 +350,8 @@ The lines are set in the evaluation plan before any run.
 - `FactorExtractor` (speed), `min_valid` in the export.
 - Parallel compression (tiles shared across workers), a storage quota or cap, factors saved to the results folder.
 - A flat-field seed for streams from an earlier session.
-- A settle for Joint multi-session runs (no look-back there on `main`, PR #479 "Open").
+- Joint multi-session runs on factors (on `main` since v2.21.0 they have look-back and a Final settle on re-read
+  frames, each frame preprocessed as its own session's).
 - The history review on offset grids (it keeps plain tiles).
 - Changing any default before the measurements.
 
