@@ -87,7 +87,8 @@
 //!                      evenly over the recording to every cell (frozen
 //!                      cell set, untargeted look-back frames), with visits
 //!                      (experiment: a convergence pass inside Discover)
-//!   --settle-frames N  the end-of-Discover settle (needs --lookback; after
+//!   --settle-frames N  the end-of-Discover settle (with --lookback 0 a
+//!                      settle-only look-back is kept for it; after
 //!                      the drain if any, `--lookback-drain 0` for none):
 //!                      cell set frozen, re-read frames go
 //!                      to every cell until N were fed or the stop rule
@@ -4545,6 +4546,13 @@ fn write_library(
 /// Frames per factor window (`--factors-out`; the app's compressor uses the same).
 const FACTOR_WINDOW: usize = 600;
 
+/// Whether the run keeps a `LookBack`: look-back or catch-up, or an
+/// end-of-Discover settle (`--settle-frames N`), which needs one even with
+/// `--lookback 0` (rate 0: it never asks for a frame during Discover).
+fn lookback_wanted(rate: f64, catchup: usize, settle_frames: usize) -> bool {
+    rate > 0.0 || catchup > 0 || settle_frames > 0
+}
+
 /// Where the end-of-Discover settle gets its frames (`--settle-source`).
 enum SettleSource {
     /// Re-read from the recording and preprocessed (the default).
@@ -5692,7 +5700,7 @@ fn main() {
     );
     let noise_dump = args.iter().any(|a| a == "--noise-dump") || lb_target > 0.0;
     let settle_src = settle_source(&args).unwrap_or_else(|m| panic!("{m}"));
-    let mut lookback = (lb_rate > 0.0 || lb_catchup > 0).then(|| {
+    let mut lookback = lookback_wanted(lb_rate, lb_catchup, tail.settle.frames).then(|| {
         LookBack::new(
             lb_rate, lb_frames, lb_newest, lb_catchup, lb_double, lb_target, n_px,
         )
@@ -5713,7 +5721,9 @@ fn main() {
             l.settle_src = Some(FactorFrames::new(d, FACTOR_WINDOW));
         }
     }
-    if lookback.is_some() {
+    if lookback.is_some() && lb_rate == 0.0 && lb_catchup == 0 {
+        println!("lookback: off (settle only)");
+    } else if lookback.is_some() {
         println!(
             "lookback: rate {lb_rate} frames per Discover frame, at most {lb_frames} per job, catchup every {lb_catchup} frames{}, noise target {lb_target}",
             if lb_double { " (doubling)" } else { "" }
@@ -7405,6 +7415,14 @@ mod tests {
         assert!(e.contains("--settle-frames"), "{e}");
         let e = settle_source(&a("x --settle-source frames")).err().unwrap();
         assert!(e.contains("raw or factors"), "{e}");
+    }
+
+    #[test]
+    fn a_settle_alone_keeps_a_lookback_without_look_back() {
+        assert!(!lookback_wanted(0.0, 0, 0));
+        assert!(lookback_wanted(2.0, 0, 0));
+        assert!(lookback_wanted(0.0, 500, 0));
+        assert!(lookback_wanted(0.0, 0, 18_000));
     }
 
     #[test]
