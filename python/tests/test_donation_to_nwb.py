@@ -314,5 +314,15 @@ def test_bad_subject_id_is_refused(tmp_path: Path, subject_id: str) -> None:
 def test_frame_count_must_match_donation_json(tmp_path: Path) -> None:
     d, r = stored(tmp_path, frames_u8(5))
     (d / "donation.json").write_text(json.dumps({**r, "n_frames": 6}))
-    with pytest.raises(nwb.ConversionError):
+    with pytest.raises(nwb.ConversionError, match="NWB has 6 frames"):
+        _convert(tmp_path)
+    # A failed check leaves no file behind, so a corrected rerun is not blocked.
+    assert not list((tmp_path / "work").rglob("*.nwb"))
+
+
+@pytest.mark.parametrize("n_frames", [None, "many", 0])
+def test_bad_frame_count_is_refused(tmp_path: Path, n_frames: Any) -> None:
+    d, r = stored(tmp_path, frames_u8(5))
+    (d / "donation.json").write_text(json.dumps({**r, "n_frames": n_frames}))
+    with pytest.raises(nwb.ConversionError, match="n_frames"):
         _convert(tmp_path)

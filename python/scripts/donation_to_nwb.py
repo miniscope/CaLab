@@ -216,9 +216,15 @@ def write_nwb(donation_dir: Path, row: dict[str, Any], out: Path) -> None:
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.stem + ".part.nwb")
-    with NWBHDF5IO(str(tmp), "w") as io:
-        io.write(nwbfile)
-    tmp.replace(out)
+    try:
+        with NWBHDF5IO(str(tmp), "w") as io:
+            io.write(nwbfile)
+        # Verify before the file gets its final name: a bad file must never sit at `out`.
+        verify_nwb(donation_dir, tmp, n)
+        tmp.replace(out)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def verify_nwb(donation_dir: Path, out: Path, n_frames: int | None = None) -> None:
@@ -293,9 +299,20 @@ def convert(
     if row.get("id") != donation_id:
         raise ConversionError("donation.json belongs to another donation")
     check_public(row, meta)
+    try:
+        n_frames = int(row["n_frames"])
+    except (KeyError, TypeError, ValueError):
+        raise ConversionError(
+            f"donation.json has no integer n_frames: {row.get('n_frames')!r}"
+        ) from None
+    if n_frames < 1:
+        raise ConversionError(f"donation.json n_frames is {n_frames}")
     path = nwb_relpath(row)
     if not DANDI_PATH.fullmatch(path):
-        raise ConversionError(f"not a valid DANDI path: {path!r}")
+        raise ConversionError(
+            f"not a valid DANDI path {path!r}: the animal ID may contain only letters, "
+            "digits and dashes (the lab name and date are fixed up automatically)"
+        )
     dandiset_dir = work / dandiset
     if not (dandiset_dir / "dandiset.yaml").exists():
         dandiset_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -305,10 +322,9 @@ def convert(
         )
     out = dandiset_dir / path
     if out.exists():
-        verify_nwb(donation_dir, out, int(row["n_frames"]))  # reuse a file from an earlier run
+        verify_nwb(donation_dir, out, n_frames)  # reuse a file from an earlier run
     else:
-        write_nwb(donation_dir, row, out)
-        verify_nwb(donation_dir, out, int(row["n_frames"]))
+        write_nwb(donation_dir, row, out)  # verified before it is renamed to `out`
     problems = inspect_nwb(out)
     if problems:
         raise ConversionError("nwbinspector: " + "; ".join(problems))
