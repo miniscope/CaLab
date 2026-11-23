@@ -146,6 +146,9 @@
 //!                      windows ([`calab_cala::compress`]) and write every
 //!                      window's factors to `DIR/w<start>.fac` (`CALAFAC2`), the
 //!                      input of tools/cala-diagnostics/history_wholetest.py
+//!   --settle-source S  raw (default) | factors: where the --settle-frames
+//!                      settle gets its frames: re-read and preprocessed, or
+//!                      rebuilt from the --factors-out windows (no raw read)
 //!   --factors-tiling T plain (default) | offset: how --factors-out cuts the
 //!                      frame (the dump is complete when Discover ends)
 //!   --core-test M      transient-band core test: off (default) | report
@@ -961,6 +964,11 @@ struct LookBack {
     settle: SettleCfg,
     /// The settle feeds frames through the ordinary `observe`.
     full_observe: bool,
+    /// `--settle-source factors`: the settle's frames come from Discover's
+    /// factor windows instead of the recording.
+    settle_src: Option<FactorFrames>,
+    /// Raw frames the settle read and preprocessed (0 on factors).
+    settle_raw: u64,
     /// `settle_checks.tsv` rows and the checkpoint libraries.
     settle_out: String,
     settle_libs: Vec<(usize, Arc<Library>)>,
@@ -1084,6 +1092,8 @@ impl LookBack {
             settle_all: 0,
             settle: SettleCfg::default(),
             full_observe: false,
+            settle_src: None,
+            settle_raw: 0,
             settle_out: String::new(),
             settle_libs: Vec::new(),
             by_tenth: [(0, 0); 11],
@@ -1544,6 +1554,10 @@ impl LookBack {
                     in_batch += 1;
                     steps_owed += cfg.steps_per_frame;
                     if fed.is_multiple_of(200) {
+                        // On `--settle-source factors` the preprocessor copy
+                        // does not run forward, so this sets the noise
+                        // Discover ended with each time. Intended: the
+                        // factors carry each frame's own live preprocessing.
                         sl.set_noise(pre.noise().sigma()).unwrap();
                     }
                     if in_batch < cfg.batch && fed < cfg.frames {
@@ -1629,6 +1643,14 @@ impl LookBack {
         self.wall_s += wall;
         let st = sl.stats();
         println!(
+            "settle source: {}, {} raw frames read",
+            match &self.settle_src {
+                Some(s) => format!("factors ({} window files read)", s.reads()),
+                None => "raw".into(),
+            },
+            self.settle_raw
+        );
+        println!(
             "settle: {fed} frames in {wall:.1} s ({:.0} frames/s), {} visits, {} refines, {} publishes, work {:.3e}{}",
             fed as f64 / wall.max(1e-9),
             st.visits - s0.visits,
@@ -1658,7 +1680,8 @@ impl LookBack {
         n_px: usize,
         tenth: usize,
     ) -> Option<bool> {
-        if f < self.raw_start || f >= self.raw_start + self.raw_n {
+        let from_factors = self.full_observe && self.settle_src.is_some();
+        if !from_factors && (f < self.raw_start || f >= self.raw_start + self.raw_n) {
             let lo = f - f % LB_BLOCK;
             let cnt = LB_BLOCK.min(rec.total as usize - lo);
             self.raw = rec.read(lo as u32, cnt as u32);
@@ -1688,25 +1711,36 @@ impl LookBack {
         let cs_skip = self.cs_jobs && self.cs_now.is_some() && sl.is_test(idx);
         self.cs_skipped += u64::from(cs_skip);
         let skip = cs_skip || self.target > 0.0 && sl.is_test(idx);
-        let o = (f - self.raw_start) * n_px;
-        let raw = &self.raw[o..o + n_px];
-        pre.front(raw, &mut self.buf).unwrap();
-        if let Some(w) = pipe.warp_at(f) {
-            let mut tmp = Vec::new();
-            w.apply_in_place(&mut self.buf, &mut tmp).unwrap();
-        }
-        // The live corrector's `apply`/`validity` only warp by a stored
-        // record (scratch buffers, no estimation state), as a replay does.
-        if let Some(mc) = pipe.mc.as_mut() {
-            let r = &pipe.records[f];
-            mc.apply(Frame::F32(&self.buf), r, &mut self.y, None)
-                .unwrap();
-            mc.validity(r, pipe.src.as_ref().unwrap(), &mut self.valid)
-                .unwrap();
-            pre.back_masked(&mut self.y, &self.valid).unwrap();
+        if from_factors {
+            // The frame as Discover compressed it: no re-read, no
+            // preprocessing (the block's preprocessor copy does not run).
+            let src = self.settle_src.as_mut().unwrap();
+            src.frame(f, &mut self.y)
+                .unwrap_or_else(|m| panic!("settle on factors: {m}"));
         } else {
-            self.y.copy_from_slice(&self.buf);
-            pre.back(&mut self.y).unwrap();
+            if self.full_observe {
+                self.settle_raw += 1;
+            }
+            let o = (f - self.raw_start) * n_px;
+            let raw = &self.raw[o..o + n_px];
+            pre.front(raw, &mut self.buf).unwrap();
+            if let Some(w) = pipe.warp_at(f) {
+                let mut tmp = Vec::new();
+                w.apply_in_place(&mut self.buf, &mut tmp).unwrap();
+            }
+            // The live corrector's `apply`/`validity` only warp by a stored
+            // record (scratch buffers, no estimation state), as a replay does.
+            if let Some(mc) = pipe.mc.as_mut() {
+                let r = &pipe.records[f];
+                mc.apply(Frame::F32(&self.buf), r, &mut self.y, None)
+                    .unwrap();
+                mc.validity(r, pipe.src.as_ref().unwrap(), &mut self.valid)
+                    .unwrap();
+                pre.back_masked(&mut self.y, &self.valid).unwrap();
+            } else {
+                self.y.copy_from_slice(&self.buf);
+                pre.back(&mut self.y).unwrap();
+            }
         }
         if skip {
             return None;
@@ -4511,6 +4545,30 @@ fn write_library(
 /// Frames per factor window (`--factors-out`; the app's compressor uses the same).
 const FACTOR_WINDOW: usize = 600;
 
+/// Where the end-of-Discover settle gets its frames (`--settle-source`).
+enum SettleSource {
+    /// Re-read from the recording and preprocessed (the default).
+    Raw,
+    /// Rebuilt from Discover's factor windows in this folder (`--factors-out`).
+    Factors(PathBuf),
+}
+
+fn settle_source(args: &[String]) -> Result<SettleSource, String> {
+    match arg_value(args, "--settle-source").as_deref() {
+        None | Some("raw") => Ok(SettleSource::Raw),
+        Some("factors") => {
+            let dir = arg_value(args, "--factors-out")
+                .ok_or("--settle-source factors needs --factors-out DIR")?;
+            let n: usize = arg_value(args, "--settle-frames").map_or(0, |s| s.parse().unwrap_or(0));
+            if n == 0 {
+                return Err("--settle-source factors needs --settle-frames N".into());
+            }
+            Ok(SettleSource::Factors(PathBuf::from(dir)))
+        }
+        Some(o) => Err(format!("--settle-source: raw or factors, not {o:?}")),
+    }
+}
+
 /// `--factors-out`: compresses the preprocessed frames of Discover window by
 /// window and writes each window's factors (format v2, `CALAFAC2`, cut by
 /// `--factors-tiling`) to `dir/w<start frame>.fac`.
@@ -5633,6 +5691,7 @@ fn main() {
         "--lookback-target needs --lookback R"
     );
     let noise_dump = args.iter().any(|a| a == "--noise-dump") || lb_target > 0.0;
+    let settle_src = settle_source(&args).unwrap_or_else(|m| panic!("{m}"));
     let mut lookback = (lb_rate > 0.0 || lb_catchup > 0).then(|| {
         LookBack::new(
             lb_rate, lb_frames, lb_newest, lb_catchup, lb_double, lb_target, n_px,
@@ -5650,6 +5709,9 @@ fn main() {
         l.drain_rate = tail.drain_rate;
         l.settle_all = tail.settle_all;
         l.settle = tail.settle.clone();
+        if let SettleSource::Factors(d) = &settle_src {
+            l.settle_src = Some(FactorFrames::new(d, FACTOR_WINDOW));
+        }
     }
     if lookback.is_some() {
         println!(
@@ -7319,6 +7381,30 @@ mod tests {
             .unwrap_err()
             .contains("w0001200.fac"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn settle_source_needs_the_factor_dump_and_a_settle() {
+        let a = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        assert!(matches!(settle_source(&a("x")), Ok(SettleSource::Raw)));
+        assert!(matches!(
+            settle_source(&a("x --settle-source raw")),
+            Ok(SettleSource::Raw)
+        ));
+        let ok = settle_source(&a(
+            "x --settle-source factors --factors-out d --settle-frames 600",
+        ));
+        assert!(matches!(ok, Ok(SettleSource::Factors(p)) if p == Path::new("d")));
+        let e = settle_source(&a("x --settle-source factors --settle-frames 600"))
+            .err()
+            .unwrap();
+        assert!(e.contains("--factors-out"), "{e}");
+        let e = settle_source(&a("x --settle-source factors --factors-out d"))
+            .err()
+            .unwrap();
+        assert!(e.contains("--settle-frames"), "{e}");
+        let e = settle_source(&a("x --settle-source frames")).err().unwrap();
+        assert!(e.contains("raw or factors"), "{e}");
     }
 
     #[test]
