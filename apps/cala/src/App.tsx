@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js';
+import { leaveWarning, resultExported } from './lib/export-state.ts';
 import { createEffect, createSignal, For, on, Show, untrack } from 'solid-js';
 import { CompactHeader, DashboardShell } from '@calab/ui';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
@@ -1131,6 +1132,12 @@ const App: Component = () => {
                     <button
                       class="btn-secondary btn-small"
                       onClick={() => {
+                        const warn = leaveWarning({
+                          extractDone: pass2.status() === 'done',
+                          exported: resultExported(),
+                          multiSession: sessionList.items().length > 1,
+                        });
+                        if (warn && !window.confirm(warn)) return;
                         pipeline.stop();
                         multiRun.stop();
                         sessionList.clear();

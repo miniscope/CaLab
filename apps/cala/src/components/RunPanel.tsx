@@ -7,7 +7,8 @@ import type { CellStore } from '../lib/cell-store.ts';
 import { compressReadout, type CompressStore } from '../lib/compress-store.ts';
 import { reviewReadout, type ReviewStore } from '../lib/review-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
-import { lookbackText } from '../lib/lookback-text.ts';
+import { clearResultExported, markResultExported } from '../lib/export-state.ts';
+import { lookbackText, stageLabel } from '../lib/lookback-text.ts';
 import { FINAL_SETTLE_LEVELS, type FinalSettleLevel } from '../lib/settle.ts';
 import { workText } from '../lib/work-meter.ts';
 export { lookbackText };
@@ -157,11 +158,19 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   const total = () => s().plan()?.frameCount ?? 0;
   const unbounded = () => !Number.isFinite(total());
   const fraction = () => (total() > 0 && !unbounded() ? s().processed() / total() : 0);
+  /** The stage now, once Discover is done: Final settle, Extract, or Done. */
+  const stageNow = () =>
+    stageLabel({
+      discover: s().status(),
+      settling: c().status()?.lookback?.settling === true,
+      extract: p().status(),
+      live: props.live,
+    });
   const statusText = () => {
     const st = s().status();
     if (st === 'starting') return 'Starting';
     if (st === 'error') return 'Stopped by an error';
-    if (st === 'done') return c().status()?.lookback?.settling ? 'Final settle' : 'Done';
+    if (st === 'done') return stageNow();
     const setup = s().setup();
     const prefix = st === 'paused' ? 'Paused: ' : '';
     if (s().processed() === 0 && setup) {
@@ -227,6 +236,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         ),
       );
       reportResultsExported(1);
+      markResultExported();
     } catch (err) {
       setExportError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -239,7 +249,10 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     on(
       () => s().status(),
       (st) => {
-        if (st === 'starting') p().clear();
+        if (st === 'starting') {
+          p().clear();
+          clearResultExported();
+        }
       },
     ),
   );
@@ -469,7 +482,9 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       head={
         <div class="cala-run__conv" data-testid="convergence-status" title={conv().reason}>
           <span class={`cala-conv-chip cala-conv-chip--${conv().state}`}>
-            {STATE_LABEL[conv().state]}
+            {s().status() === 'done' && conv().state !== 'waiting'
+              ? stageNow()
+              : STATE_LABEL[conv().state]}
           </span>
           <span class="cala-visually-hidden">{conv().reason}</span>
         </div>
@@ -526,7 +541,10 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           </Show>
           frame {s().processed().toLocaleString()}
           <Show when={!unbounded()}> / {total().toLocaleString()}</Show>
-          <Show when={s().fps() > 0}> &middot; {s().fps().toFixed(1)} fps</Show>
+          <Show when={s().fps() > 0 && s().status() !== 'done'}>
+            {' '}
+            &middot; {s().fps().toFixed(1)} fps
+          </Show>
         </span>
         <Show when={backend()}>
           {(b) => (
@@ -654,36 +672,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       </Show>
 
       <SpeedControl pipeline={s()} cells={c()} live={props.live} fps={props.fps} />
-      <WorkDisplay pipeline={s()} cells={c()} ui={props.ui} live={props.live} visible={shown()} />
-
       <div class="cala-run__footer">
-        <span class="cala-readout" data-testid="cells-readout">
-          {c().library()?.ids.length ?? 0} cells &middot; library v{c().version()} &middot; lag{' '}
-          {lagNow() ?? 'n/a'} frames
-        </span>
-        <Show when={props.compress}>
-          {(compress) => (
-            <span class="cala-readout cala-wrap" data-testid="compress-readout">
-              {compress().error() ?? compressReadout(compress().status(), compress().backfill())}
-            </span>
-          )}
-        </Show>
-        <Show when={props.review}>
-          {(review) => (
-            <span
-              class="cala-readout cala-wrap"
-              data-testid="review-readout"
-              title="History review: cells the slow loop missed, looked for in the compressed history."
-            >
-              {review().error() ??
-                reviewReadout(
-                  review().status(),
-                  c().status()?.counters.reviewAdds ?? 0,
-                  review().every,
-                )}
-            </span>
-          )}
-        </Show>
         <label class="cala-check" title="Run cell discovery on the frames as they are read.">
           <input
             type="checkbox"
@@ -698,7 +687,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             class="cala-check"
             title={
               s().lookbackBlocked() ??
-              'On by default: Discover also re-reads earlier frames for each new cell and runs a Final settle at the end, so footprints converge. Takes effect when Discover starts: change it, then restart (↻), or open with ?lookback=0 for off.'
+              'On by default: Discover also re-reads earlier frames for each new cell and runs a Final settle at the end, so footprints converge. Takes effect when Discover starts: change it, then restart (↻).'
             }
           >
             <input
@@ -708,7 +697,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               checked={s().lookback() && s().lookbackBlocked() === null}
               onChange={(e) => s().setLookback(e.currentTarget.checked)}
             />
-            Look-back refinement
+            Look-back
           </label>
         </Show>
         <Show when={!props.live && s().lookback() && s().lookbackBlocked() === null}>
@@ -742,79 +731,6 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             />
             Extract after Discover
           </label>
-        </Show>
-      </div>
-      <Show when={!props.live && (s().lookback() || s().lookbackRun())}>
-        <p class="cala-muted cala-run__line" data-testid="lookback-note">
-          <Show
-            when={s().lookbackBlocked()}
-            fallback={
-              s().lookbackRun()
-                ? (s().plan()?.boundaries.length ?? 0) > 0
-                  ? 'Look-back refines footprints during Discover, within the session it is reading, and runs a Final settle over every session after its last frame.'
-                  : 'Look-back refines footprints during Discover and runs a Final settle after its last frame.'
-                : 'Look-back starts with the next Discover run (restart with ↻).'
-            }
-          >
-            {(why) => `Look-back off: ${why()} Footprints get no refinement after Discover.`}
-          </Show>
-        </p>
-      </Show>
-      <Show when={s().lookbackRun() ? c().status()?.lookback : undefined}>
-        {(lb) => (
-          <div class="cala-run__footer">
-            <span class="cala-readout cala-wrap" data-testid="lookback-readout">
-              {lookbackText(lb(), c().status()?.final ?? false)}
-            </span>
-            <Show when={lb().settling && props.onStopSettling}>
-              <button
-                type="button"
-                class="btn-secondary btn-small"
-                data-testid="lookback-stop-settling"
-                title="Stop the final settle now: the footprints refined so far become the final library."
-                onClick={() => props.onStopSettling?.()}
-              >
-                Stop final settle
-              </button>
-            </Show>
-          </div>
-        )}
-      </Show>
-      <Show when={props.live}>
-        <p class="cala-muted cala-run__line" data-testid="live-stage-note">
-          {LIVE_NOTE}
-        </p>
-      </Show>
-      <Show when={!props.live}>
-        <Show
-          when={showNextStepHint({
-            live: props.live === true,
-            discover: s().status() === 'done' ? 'done' : 'running',
-            extract: p().status(),
-          })}
-        >
-          <p class="cala-muted cala-run__line" data-testid="next-step-hint">
-            {NEXT_STEP_HINT}
-          </p>
-        </Show>
-      </Show>
-      <div class="cala-run__footer">
-        <span
-          class="cala-status cala-run__pass2"
-          data-testid="pass2-status"
-          data-state={p().status()}
-        >
-          {pass2Text()}
-        </span>
-        <Show when={pass2Shown()}>
-          <span class="cala-readout" data-testid="pass2-readout">
-            frame {p().processed().toLocaleString()} / {p().total().toLocaleString()}
-            <Show when={p().status() === 'running' && p().fps() > 0}>
-              {' '}
-              &middot; {p().fps().toFixed(1)} frames/s
-            </Show>
-            <Show when={p().motionBackend() === 'webgpu'}> &middot; warp: WebGPU</Show>
-          </span>
         </Show>
       </div>
       <div class="cala-run__footer">
@@ -930,6 +846,109 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           </span>
         </Show>
       </div>
+      <WorkDisplay pipeline={s()} cells={c()} ui={props.ui} live={props.live} visible={shown()} />
+      <div class="cala-run__footer">
+        <span class="cala-readout" data-testid="cells-readout">
+          {c().library()?.ids.length ?? 0} cells &middot; library v{c().version()} &middot; lag{' '}
+          {lagNow() ?? 'n/a'} frames
+        </span>
+        <Show when={props.compress}>
+          {(compress) => (
+            <span class="cala-readout cala-wrap" data-testid="compress-readout">
+              {compress().error() ?? compressReadout(compress().status(), compress().backfill())}
+            </span>
+          )}
+        </Show>
+        <Show when={props.review}>
+          {(review) => (
+            <span
+              class="cala-readout cala-wrap"
+              data-testid="review-readout"
+              title="History review: cells the slow loop missed, looked for in the compressed history."
+            >
+              {review().error() ??
+                reviewReadout(
+                  review().status(),
+                  c().status()?.counters.reviewAdds ?? 0,
+                  review().every,
+                )}
+            </span>
+          )}
+        </Show>
+      </div>
+      <Show when={!props.live && (s().lookback() || s().lookbackRun())}>
+        <p class="cala-muted cala-run__line" data-testid="lookback-note">
+          <Show
+            when={s().lookbackBlocked()}
+            fallback={
+              s().lookbackRun()
+                ? (s().plan()?.boundaries.length ?? 0) > 0
+                  ? 'Look-back refines footprints during Discover, within the session it is reading, and runs a Final settle over every session after its last frame.'
+                  : 'Look-back refines footprints during Discover and runs a Final settle after its last frame.'
+                : 'Look-back starts with the next Discover run (restart with ↻).'
+            }
+          >
+            {(why) => `Look-back off: ${why()} Footprints get no refinement after Discover.`}
+          </Show>
+        </p>
+      </Show>
+      <Show when={s().lookbackRun() ? c().status()?.lookback : undefined}>
+        {(lb) => (
+          <div class="cala-run__footer">
+            <span class="cala-readout cala-wrap" data-testid="lookback-readout">
+              {lookbackText(lb(), c().status()?.final ?? false)}
+            </span>
+            <Show when={lb().settling && props.onStopSettling}>
+              <button
+                type="button"
+                class="btn-secondary btn-small"
+                data-testid="lookback-stop-settling"
+                title="Stop the Final settle now: the footprints refined so far become the final library."
+                onClick={() => props.onStopSettling?.()}
+              >
+                Stop Final settle
+              </button>
+            </Show>
+          </div>
+        )}
+      </Show>
+      <Show when={props.live}>
+        <p class="cala-muted cala-run__line" data-testid="live-stage-note">
+          {LIVE_NOTE}
+        </p>
+      </Show>
+      <Show when={!props.live}>
+        <Show
+          when={showNextStepHint({
+            live: props.live === true,
+            discover: s().status() === 'done' ? 'done' : 'running',
+            extract: p().status(),
+          })}
+        >
+          <p class="cala-muted cala-run__line" data-testid="next-step-hint">
+            {NEXT_STEP_HINT}
+          </p>
+        </Show>
+      </Show>
+      <div class="cala-run__footer">
+        <span
+          class="cala-status cala-run__pass2"
+          data-testid="pass2-status"
+          data-state={p().status()}
+        >
+          {pass2Text()}
+        </span>
+        <Show when={pass2Shown()}>
+          <span class="cala-readout" data-testid="pass2-readout">
+            frame {p().processed().toLocaleString()} / {p().total().toLocaleString()}
+            <Show when={p().status() === 'running' && p().fps() > 0}>
+              {' '}
+              &middot; {p().fps().toFixed(1)} frames/s
+            </Show>
+            <Show when={p().motionBackend() === 'webgpu'}> &middot; warp: WebGPU</Show>
+          </span>
+        </Show>
+      </div>
       <Show when={c().status()?.reservoirWarning}>
         {(w) => (
           <p class="cala-warning" role="status" data-testid="statusbar-warning">
@@ -1041,6 +1060,17 @@ export function RunStatusStrip(props: {
     if (st === 'error')
       return { stage: 'Stopped', fraction: null, state: 'error', detail: 'by an error' };
     if (st === 'idle') return { stage: 'Ready', fraction: null, state: 'idle', detail: '' };
+    const lb = props.cells.status()?.lookback;
+    if (lb?.settling && p().status() !== 'done') {
+      const fed = lb.settle?.fed ?? 0;
+      const tot = lb.settle?.total ?? 0;
+      return {
+        stage: 'Final settle',
+        fraction: tot > 0 ? Math.min(1, fed / tot) : null,
+        state: 'running',
+        detail: cellsText(),
+      };
+    }
     const last = p().status() === 'done' ? STAGE_LABEL.extract : STAGE_LABEL.discover;
     return { stage: `${last} done`, fraction: 1, state: 'complete', detail: cellsText() };
   };

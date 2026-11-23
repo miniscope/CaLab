@@ -470,7 +470,7 @@ export type WorkKind = (typeof WORK_KINDS)[number];
 /** The kinds' names as the display uses them. */
 export const WORK_KIND_LABELS: Record<WorkKind | 'spare', string> = {
   live: 'Live',
-  discovery: 'Discovery',
+  discovery: 'Discover',
   lookback: 'Look-back',
   bgSettle: 'Background settle',
   finalSettle: 'Final settle',

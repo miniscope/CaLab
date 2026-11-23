@@ -209,7 +209,7 @@ describe('App', () => {
     await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
     await vi.waitFor(() => expect(fake.startPipeline).toHaveBeenCalledTimes(1));
     const status = () => root.querySelector('[data-testid="pipeline-status"]')?.textContent;
-    await vi.waitFor(() => expect(status()).toBe('Done'));
+    await vi.waitFor(() => expect(status()).toMatch(/^(Discover done|Done)$/));
     expect(root.querySelector('[data-testid="pipeline-readout"]')?.textContent).toContain(
       'frame 50 / 50',
     );

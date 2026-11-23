@@ -229,7 +229,7 @@ export function speedStatusText(i: SpeedStatusInput): string {
       ? 'Discover will read at this speed once it starts.'
       : 'Discover will run as fast as the machine goes.';
   }
-  if (i.target <= 0) return 'Max: no pacing. Settling happens after the last frame.';
+  if (i.target <= 0) return 'Max: no pacing. The Final settle comes after the last frame.';
   const g = i.governor;
   const parts: string[] = [];
   if (g?.achieved != null) {
@@ -270,16 +270,24 @@ const LIMITING_TEXT = {
 /** The floor as the mark and the line under the track say it. `d` is `FloorMeter.display()`. */
 export function floorWords(d: Pick<FloorDisplay, 'fps' | 'published' | 'prior' | 'estimate'>): {
   mark: string;
+  /** The line under the track. */
   line: string;
+  /** The detail behind it (the tooltip). */
+  detail: string;
 } {
   const fps = Math.round(d.fps);
   if (d.prior) {
-    return { mark: `about ${fps}`, line: `Floor about ${fps} fps (not measured yet)` };
+    return {
+      mark: `about ${fps}`,
+      line: `Slowest useful speed: about ${fps} fps`,
+      detail: `Floor about ${fps} fps (not measured yet)`,
+    };
   }
   const how = d.estimate.confidence === 'unpaced' ? 'measured at Max' : 'measured';
   const about = d.published === null || d.estimate.confidence === 'unpaced';
   return {
     mark: `${about ? 'about ' : 'floor '}${fps}`,
-    line: `Floor ${fps} fps: set by ${LIMITING_TEXT[d.estimate.limiting]} (${how})`,
+    line: `Slowest useful speed: about ${fps} fps`,
+    detail: `Floor ${fps} fps: set by ${LIMITING_TEXT[d.estimate.limiting]} (${how})`,
   };
 }

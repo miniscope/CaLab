@@ -44,6 +44,16 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
     check().errors.length === 0 &&
     (!supportsDirectoryPicker() || l().location() !== null);
 
+  /** Why Start is disabled ('' when it is not). */
+  const startBlock = (): string => {
+    if (l().items().length === 0) return 'Add a session to start';
+    if (l().probing()) return 'Checking the sessions...';
+    if (check().errors.length > 0) return 'Fix the problems above to start';
+    if (supportsDirectoryPicker() && l().location() === null)
+      return 'Choose a results folder to start';
+    return '';
+  };
+
   async function chooseLocation(): Promise<void> {
     setStartError(null);
     try {
@@ -199,7 +209,7 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
           Run
         </h2>
         <fieldset class="cala-sessions__modes">
-          <legend>Library</legend>
+          <legend>Footprints: one set for all sessions (Joint) / one per session (Separate)</legend>
           <For each={OFFERED_MODES}>
             {(m) => (
               <label class="cala-sessions__mode">
@@ -264,6 +274,7 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
             class="btn-primary"
             data-testid="sessions-start"
             disabled={!canStart()}
+            title={canStart() ? undefined : startBlock()}
             onClick={() => void start()}
           >
             Start {l().items().length} {l().items().length === 1 ? 'session' : 'sessions'}
@@ -271,6 +282,12 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
           <button type="button" class="btn-secondary" onClick={() => props.onCancel()}>
             Cancel
           </button>
+          <Show when={!canStart() && startBlock()}>
+            {' '}
+            <span class="cala-muted" data-testid="sessions-start-reason">
+              {startBlock()}
+            </span>
+          </Show>
         </p>
       </section>
     </div>

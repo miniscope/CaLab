@@ -130,15 +130,15 @@ describe('rows', () => {
       'read + prepare',
       'motion',
       'traces',
-      'slow',
-      'visit 1',
-      'visit 2',
+      'cell model',
+      'footprint updates 1',
+      'footprint updates 2',
       'look-back 0',
-      'settle 1',
+      'settle helper 1',
     ]);
     expect(rows.filter((r) => r.groupStart).map((r) => r.label)).toEqual([
-      'slow',
-      'visit 1',
+      'cell model',
+      'footprint updates 1',
       'look-back 0',
     ]);
     expect(groupedRows(null)).toEqual([]);
@@ -297,7 +297,7 @@ describe('accessible names and stopped rows', () => {
   ) => ({ name, group, shares: vals(shares) });
   it('a row names its split as values', () => {
     expect(rowAriaLabel('slow', w('Slow worker', 'slow', { discovery: 0.3, bgSettle: 0.36 }))).toBe(
-      'slow: 66% busy, Discovery 30%, Background settle 36%',
+      'slow: 66% busy, Discover 30%, Background settle 36%',
     );
     expect(rowAriaLabel('traces', w('t', 'fast'))).toBe('traces: 0% busy');
   });
