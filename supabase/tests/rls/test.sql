@@ -1121,4 +1121,93 @@ SELECT assert_row_count(
   'cala_donations_open_bytes sums uploading + uploaded');
 ROLLBACK;
 
+-- ── cala_donations public sharing (021) ──────────────────────────────────
+-- Rows from the 020 block default to sharing = 'lab'. A public, published row
+-- appears in cala_donations_public (anon may read it); nothing else does.
+
+BEGIN;
+SET LOCAL ROLE service_role;
+INSERT INTO cala_donations (
+  id, user_id, status, indicator, species, brain_region, scope, fps, width, height,
+  n_frames, bytes_per_pixel, cala_version, license, rights_attested,
+  protocol_attested, contact_ok, declared_bytes, n_chunks, files,
+  sharing, subject_id, subject_sex, subject_age, session_date,
+  credit_name, credit_lab, dandi_path, published_at
+) VALUES
+  ('d0000000-0000-0000-0000-00000000000c', '11111111-1111-1111-1111-111111111111',
+   'published', 'GCaMP8m', 'mouse', 'M1', 'UCLA v4', 20, 600, 600, 1000, 1, 'test',
+   'cc-by-4.0', true, true, true, 1000, 1,
+   '[{"name":"frames-0000.calaraw.gz","bytes":1000}]',
+   'public', 'm7', 'F', 'P90D', '2026-11-01',
+   'A. Donor', 'Some Lab', 'sub-some-lab-m7/sub-some-lab-m7_ses-20261101-d0000000_ophys.nwb',
+   '2026-11-20T00:00:00Z'),
+  ('d0000000-0000-0000-0000-00000000000d', '11111111-1111-1111-1111-111111111111',
+   'ingested', 'GCaMP8m', 'mouse', 'M1', 'UCLA v4', 20, 600, 600, 1000, 1, 'test',
+   'lab-use-only', true, true, true, 1000, 1,
+   '[{"name":"frames-0000.calaraw.gz","bytes":1000}]',
+   'lab', 'm8', 'M', 'P12W', '2026-11-02',
+   'A. Donor', 'Some Lab', NULL, NULL);
+COMMIT;
+
+BEGIN;
+SET LOCAL ROLE anon;
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM cala_donations_public$sql$, 1,
+  'cala_donations_public anon sees exactly the published public row');
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM cala_donations_public
+      WHERE id = 'd0000000-0000-0000-0000-00000000000c' AND credit_lab = 'Some Lab'$sql$, 1,
+  'cala_donations_public shows the credit of a public donation');
+SELECT assert_row_count(
+  $sql$SELECT COUNT(*)::int FROM cala_donations$sql$, 0,
+  'cala_donations base table still hidden from anon');
+SELECT assert_denied(
+  $sql$SELECT user_id FROM cala_donations_public$sql$,
+  'cala_donations_public has no user_id column', '42703');
+SELECT assert_denied(
+  $sql$SELECT notes FROM cala_donations_public$sql$,
+  'cala_donations_public has no notes column', '42703');
+SELECT assert_denied(
+  $sql$DELETE FROM cala_donations_public$sql$,
+  'cala_donations_public is read-only for anon');
+ROLLBACK;
+
+-- CHECKs of 021 (service role, the only writer).
+BEGIN;
+SET LOCAL ROLE service_role;
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET sharing = 'friends' WHERE id = 'd0000000-0000-0000-0000-00000000000d'$sql$,
+  'cala_donations unknown sharing denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET sharing = 'public' WHERE id = 'd0000000-0000-0000-0000-00000000000d'$sql$,
+  'cala_donations public sharing with lab-use-only license denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET subject_id = 'mouse 7' WHERE id = 'd0000000-0000-0000-0000-00000000000d'$sql$,
+  'cala_donations subject_id with a space denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET subject_sex = 'X' WHERE id = 'd0000000-0000-0000-0000-00000000000d'$sql$,
+  'cala_donations subject_sex X denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET subject_age = 'P' WHERE id = 'd0000000-0000-0000-0000-00000000000d'$sql$,
+  'cala_donations empty age duration denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET subject_age = '90 days' WHERE id = 'd0000000-0000-0000-0000-00000000000d'$sql$,
+  'cala_donations non-ISO age denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET session_date = '1989-12-31' WHERE id = 'd0000000-0000-0000-0000-00000000000d'$sql$,
+  'cala_donations session_date before 1990 denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET dandi_path = '../etc/passwd' WHERE id = 'd0000000-0000-0000-0000-00000000000c'$sql$,
+  'cala_donations bad dandi_path denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET status = 'published' WHERE id = 'd0000000-0000-0000-0000-00000000000d'$sql$,
+  'cala_donations published lab row denied', '23514');
+SELECT assert_denied(
+  $sql$UPDATE cala_donations SET dandi_path = NULL WHERE id = 'd0000000-0000-0000-0000-00000000000c'$sql$,
+  'cala_donations published row without dandi_path denied', '23514');
+SELECT assert_allowed(
+  $sql$UPDATE cala_donations SET subject_age = 'P1Y2M' WHERE id = 'd0000000-0000-0000-0000-00000000000d'$sql$,
+  'cala_donations combined ISO age allowed');
+ROLLBACK;
+
 DO $$ BEGIN RAISE NOTICE 'ALL RLS ASSERTIONS PASSED'; END $$;
