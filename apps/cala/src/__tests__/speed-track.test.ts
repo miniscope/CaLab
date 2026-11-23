@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  achievedSpeed,
   belowFloorNote,
+  DONE_TEXT,
   fpsToPos,
   fpsToStep,
   floorWords,
@@ -146,6 +148,23 @@ describe('status text', () => {
     expect(speedStatusText({ ...base, running: false })).toContain('once it starts');
   });
 
+  it('says the speed is being measured before the governor has a reading (not an empty line)', () => {
+    const t = speedStatusText({ ...base, governor: gov({ achieved: null }) });
+    expect(t).toContain('Measuring the speed.');
+    // Without a governor (look-back off) there is nothing to wait for.
+    expect(speedStatusText({ ...base, governor: null, settleOn: false })).toBe(
+      'Background settle is off.',
+    );
+  });
+
+  it('does not promise a run that already happened once Discover is done', () => {
+    for (const target of [0, 60]) {
+      const t = speedStatusText({ ...base, target, running: false, done: true });
+      expect(t).toBe(DONE_TEXT);
+      expect(t).not.toContain('once it starts');
+    }
+  });
+
   it('never calls below-Max settings experimental or warns about weak cells', () => {
     const all = [
       speedStatusText(base),
@@ -214,5 +233,28 @@ describe('keyboard steps', () => {
     expect(nudgeFps(60, 1, true, [20, 30, 60, 75])).toBe(75);
     expect(nudgeFps(300, 1, true)).toBe(500);
     expect(nudgeFps(12, -1, true)).toBe(10);
+  });
+});
+
+describe('achieved speed', () => {
+  it('shows the governor reading while paced and the live top speed at Max', () => {
+    expect(
+      achievedSpeed({ running: true, target: 60, governor: gov({ achieved: 59.6 }), maxFps: 140 }),
+    ).toBe(59.6);
+    expect(
+      achievedSpeed({ running: true, target: 60, governor: gov({ achieved: null }), maxFps: 140 }),
+    ).toBeNull();
+    expect(achievedSpeed({ running: true, target: 0, governor: null, maxFps: 140 })).toBe(140);
+  });
+
+  it('ignores the reading the governor keeps after Auto or a curve goes to Max', () => {
+    // Seen in the browser: "99.3 fps achieved · target Max" for 15 s while Discover ran at ~130.
+    const stale = gov({ achieved: 99.3, limit: 'off' });
+    expect(achievedSpeed({ running: true, target: 0, governor: stale, maxFps: 131 })).toBe(131);
+    expect(achievedSpeed({ running: true, target: 0, governor: stale, maxFps: 0 })).toBeNull();
+  });
+
+  it('is null before Discover starts and after it has read its last frame', () => {
+    expect(achievedSpeed({ running: false, target: 60, governor: gov(), maxFps: 140 })).toBeNull();
   });
 });

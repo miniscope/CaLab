@@ -6,7 +6,9 @@ import type { CellStore } from '../lib/cell-store.ts';
 import { curveWords, CURVE_PRESETS, presetCurve } from '../lib/speed-schedule.ts';
 import { AUTO_BUDGETS, budgetLabel } from '../lib/speed-auto.ts';
 import {
+  achievedSpeed,
   belowFloorNote,
+  DONE_TEXT,
   CAP_CHOICES,
   capLabel,
   floorWords,
@@ -89,7 +91,8 @@ export function SpeedControl(props: {
   // Neither is a user change (their own sources), and neither is saved. A target that came from
   // the URL (`?debug&pacefps`, a measurement override) is left alone.
   let pinnedFrom: number | null = null;
-  let pinnedCurve: CurvePresetId | null = null;
+  /** The curve as set (a preset, or a run record's replayed curve), restored as it was. */
+  let pinnedCurve: ReturnType<PipelineStore['speedCurve']> = null;
   let pinnedAuto: number | null = null;
   createEffect(() => {
     const why = pinned();
@@ -99,7 +102,7 @@ export function SpeedControl(props: {
       if (why !== null && (s().paceTarget() > 0 || curve || auto !== null) && !s().paceFromUrl()) {
         pinnedAuto = auto;
         pinnedFrom = curve || auto !== null ? null : s().paceTarget();
-        pinnedCurve = curve ? preset() : null;
+        pinnedCurve = curve;
         s().setPaceFps(0, 'pinned');
       } else if (
         why === null &&
@@ -107,7 +110,10 @@ export function SpeedControl(props: {
       ) {
         if (s().paceTarget() === 0 && pinnedAuto !== null) s().setAutoBudget(pinnedAuto);
         else if (s().paceTarget() === 0 && pinnedCurve !== null)
-          s().setSpeedCurve(presetCurve(pinnedCurve), { preset: pinnedCurve });
+          s().setSpeedCurve(pinnedCurve.curve, {
+            preset: pinnedCurve.preset,
+            normalize: pinnedCurve.normalize,
+          });
         else if (s().paceTarget() === 0 && pinnedFrom !== null)
           s().setPaceFps(pinnedFrom, 'pin lifted');
         pinnedFrom = null;
@@ -139,15 +145,18 @@ export function SpeedControl(props: {
   const marks = () => [...SPEED_TICKS, floorFps()];
   const gov = () => props.cells.status()?.lookback?.csettle?.governor ?? null;
   const running = () => s().status() === 'running' || s().status() === 'paused';
+  /** Discover has read its last frame: the block shows the setting for the next run, not a pre-run promise. */
+  const done = () => s().status() === 'done';
   const lookbackOn = () => s().lookback() && s().lookbackBlocked() === null;
   const cap = () => (s().csettle() ? s().csettleCeiling() : 0);
 
-  const achieved = (): number | null => {
-    if (!running()) return null;
-    const g = gov()?.achieved;
-    if (g != null) return g;
-    return target() === 0 && s().workMaxFps() > 0 ? s().workMaxFps() : null;
-  };
+  const achieved = (): number | null =>
+    achievedSpeed({
+      running: running(),
+      target: target(),
+      governor: gov(),
+      maxFps: s().workMaxFps(),
+    });
   const timesReal = (fps: number) => (props.fps > 0 ? fps / props.fps : null);
 
   // ---- changes ----
@@ -277,19 +286,24 @@ export function SpeedControl(props: {
       floor: floorFps(),
       governor: gov(),
       settleOn: lookbackOn() && cap() > 0,
+      done: done(),
     });
   const autoLine = () =>
-    !running()
-      ? `Auto: Discover will aim to finish within ${budgetLabel(budget())} of a Max run's time, never slower than the floor (${floorFps()}). The Final settle comes after.`
-      : `Auto, ${budgetLabel(budget())} time budget: target now ${target() > 0 ? `${target()} fps` : 'Max'}. ${speedLine()}`;
+    done()
+      ? `Auto, ${budgetLabel(budget())} time budget. ${DONE_TEXT}`
+      : !running()
+        ? `Auto: Discover will aim to finish within ${budgetLabel(budget())} of a Max run's time, never slower than the floor (${floorFps()}). The Final settle comes after.`
+        : `Auto, ${budgetLabel(budget())} time budget: target now ${target() > 0 ? `${target()} fps` : 'Max'}. ${speedLine()}`;
   const status = () =>
     mode() === 'auto'
       ? autoLine()
-      : mode() === 'curve' && !running()
-        ? `Discover will follow the curve: ${curveLine()}.`
-        : mode() === 'curve' && s().armedCurve()?.merged
-          ? `Following the curve: ${curveLine()}. ${speedLine()}`
-          : speedLine();
+      : mode() === 'curve' && done()
+        ? `Curve: ${curveLine()}. ${DONE_TEXT}`
+        : mode() === 'curve' && !running()
+          ? `Discover will follow the curve: ${curveLine()}.`
+          : mode() === 'curve' && s().armedCurve()?.merged
+            ? `Following the curve: ${curveLine()}. ${speedLine()}`
+            : speedLine();
   const belowNote = () => (mode() === 'fixed' ? belowFloorNote(shown() ?? 0, floorFps()) : null);
 
   const capSelect = (cls: string): JSX.Element => (

@@ -716,9 +716,13 @@ export function createPipelineStore(
         haveLibrary: st.version > 0,
         run: st.run,
       });
-      setFloorLine(floorText(floorMeter));
       const shown = floorMeter.display();
-      setFloor(shown);
+      // Once Discover has read its last frame there is no live rate left to set a floor for: the
+      // mark and line keep what Discover ended with (the Final settle's load would move them).
+      if (untrack(status) !== 'done') {
+        setFloorLine(floorText(floorMeter));
+        setFloor(shown);
+      }
       // The run record's log: once a second at most, and only for Discover's own run.
       if (workSampleListeners.length > 0 && (st.run ?? 1) === 1) {
         const e = shown.estimate;
@@ -764,7 +768,8 @@ export function createPipelineStore(
     if (stages) rates.fast = { stages };
     const max = maxFpsEstimator.estimate();
     setWork(rates);
-    setWorkMaxFps(max);
+    // Likewise "max now": the fast loop is idle after the last frame, so the estimate only decays.
+    if (untrack(status) !== 'done') setWorkMaxFps(max);
     // Not after Discover's last frame (stream time stands still; see `RunHistory.work`).
     if (untrack(status) !== 'done') {
       runHistory?.work(rates, max);

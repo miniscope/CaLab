@@ -27,6 +27,12 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 - Docs and Admin: a note that runs from local or dev builds send no analytics (no Supabase environment) and are not counted in Admin.
 
+### Fixed
+
+- Cala (pre-beta browser check): the Speed block said "Discover will read at this speed once it starts" (or the Auto/Curve pre-run sentence) through the whole Final settle and Extract; it now says Discover has read every frame and a change applies to the next run. After Auto or a curve went to Max, the headline kept the governor's last paced reading (e.g. "99.3 fps achieved · target Max" for 15 s while Discover ran at about 130); at Max it now shows the live top speed. A paced run's status line was empty until the governor's first reading; it now says "Measuring the speed." The floor mark and "max now" no longer move after Discover's last frame (the Final settle's load is not a live rate).
+- Cala: a run record's replayed curve (`__cala.applyRunRecord` of a Curve or Auto run) was replaced by the saved Curve preset when the recording opened (the Speed block's brief pin to Max while look-back becomes available restored the preset, not the curve). It now restores the exact curve.
+- Cala: a Joint run's status read "Running session 1 of 2" for the whole run; it now reads "Running all 2 sessions (Joint)".
+
 ## [2.20.0] - 2026-11-17
 
 Web apps `v2.20.0`; the Python package `calab` is unchanged (`py/v0.5.0`).
