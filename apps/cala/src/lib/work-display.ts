@@ -111,13 +111,26 @@ export function rowLabel(w: WorkerKindShares): string {
     const stage = n.replace(/^Fast loop: /, '');
     return stage === FAST_STAGE_NAMES[0] ? 'read + prepare' : stage;
   }
-  if (w.group === 'slow') return 'slow';
-  if (w.group === 'visit') return n.replace(/^Visit worker /, 'visit ');
-  if (n.startsWith('Settle worker ')) return n.replace('Settle worker ', 'settle ');
+  if (w.group === 'slow') return 'cell model';
+  if (w.group === 'visit') return n.replace(/^Visit worker /, 'footprint updates ');
+  if (n.startsWith('Settle worker ')) return n.replace('Settle worker ', 'settle helper ');
   return n.replace('Look-back worker', 'look-back').trim();
 }
 
 /** The rows, with a flag where a new group starts (a hair of space between groups). */
+/** What a row's worker does, for its tooltip. */
+export function rowTitle(w: WorkerKindShares): string {
+  if (w.group === 'fast')
+    return 'The fast loop: reads and prepares each frame, corrects motion, and extracts traces, in step with the video.';
+  if (w.group === 'slow')
+    return 'The cell model: finds new cells and keeps the footprints and background up to date.';
+  if (w.group === 'visit')
+    return 'A helper that updates the footprints of cells, in parallel with the cell model.';
+  if (w.name.startsWith('Settle worker '))
+    return 'A helper that runs the Background settle, and the Final settle at the end.';
+  return 'Look-back: re-reads earlier frames for each new cell so its footprint and trace are complete.';
+}
+
 export function groupedRows(
   by: WorkByKind | null,
 ): { row: WorkerKindShares; label: string; groupStart: boolean }[] {

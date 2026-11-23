@@ -83,10 +83,10 @@ describe('background settle in the status line', () => {
 
   it('while Discover runs: frames re-read so far, per live frame, against the ceiling', () => {
     expect(lookbackText({ ...base, csettle: cs }, false)).toBe(
-      'Look-back: 9,000 frames re-read for 700 new cells · 40 cells still need data · background settle: 4,800 saved frames re-read (0.40 per live frame, ceiling 2)',
+      'Look-back: 9,000 frames re-read for 700 new cells · 40 cells still need data · Background settle: 4,800 saved frames re-read (0.40 per live frame, ceiling 2)',
     );
     expect(csettleText({ ...cs, live: 0, fit: 0, heldOut: 0, dropped: 0 }, true)).toBe(
-      ' · background settle: 0 saved frames re-read (ceiling 2)',
+      ' · Background settle: 0 saved frames re-read (ceiling 2)',
     );
     expect(csettleText({ ...cs, live: 2400 }, true)).toContain('(2.0 per live frame, ceiling 2)');
   });
@@ -98,10 +98,30 @@ describe('background settle in the status line', () => {
         false,
       ),
     ).toBe(
-      'Final settle: 9,600 of 9,600 frames · 10 of 500 cells still moving · 4,800 frames re-read by the background settle (0.40 per live frame)',
+      'Final settle: 9,600 of 9,600 frames · 10 of 500 cells still moving · 4,800 frames re-read by the Background settle (0.40 per live frame)',
     );
     expect(lookbackText({ ...base, settle, csettle: cs }, true)).toBe(
-      'Look-back: 9,000 frames re-read for 700 new cells · 4,800 frames re-read by the background settle (0.40 per live frame) · final settle over 9,600 of 9,600 frames · 10 of 500 cells still moving',
+      'Look-back: 9,000 frames re-read for 700 new cells · 4,800 frames re-read by the Background settle (0.40 per live frame) · final settle over 9,600 of 9,600 frames · 10 of 500 cells still moving',
     );
+  });
+});
+
+import { stageLabel } from '../lib/lookback-text.ts';
+import { leaveWarning } from '../lib/export-state.ts';
+
+describe('stage chip', () => {
+  it('follows the stage after Discover', () => {
+    const o = { discover: 'done', settling: false, extract: 'idle' };
+    expect(stageLabel({ ...o, discover: 'running' })).toBe('Discover');
+    expect(stageLabel({ ...o, settling: true })).toBe('Final settle');
+    expect(stageLabel({ ...o, extract: 'running' })).toBe('Extract');
+    expect(stageLabel({ ...o, extract: 'done' })).toBe('Done');
+    expect(stageLabel(o)).toBe('Discover done');
+  });
+  it('warns before dropping an unexported result only', () => {
+    const o = { extractDone: true, exported: false, multiSession: false };
+    expect(leaveWarning(o)).toContain('not been exported');
+    expect(leaveWarning({ ...o, exported: true })).toBeNull();
+    expect(leaveWarning({ ...o, extractDone: false })).toBeNull();
   });
 });

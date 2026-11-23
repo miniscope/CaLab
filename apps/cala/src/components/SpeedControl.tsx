@@ -45,10 +45,10 @@ const MODE_LABELS: Record<SpeedMode, string> = {
   auto: 'Auto',
 };
 const MODE_TITLES: Record<SpeedMode, string> = {
-  max: 'No pacing: Discover as fast as the machine goes; all settling comes after the last frame.',
+  max: 'No pacing: Discover as fast as the machine goes; all settling is the Final settle after the last frame.',
   fixed: 'Read the recording at a target speed; the spare time goes to Background settle.',
   curve: 'The target steps down over the recording: fast while cells are found, slower after.',
-  auto: 'Pick how much longer than a Max run you will wait; Auto sets the speed so Discover finishes about then, never below the floor. The Final settle comes after.',
+  auto: 'Pick how much longer than a Max run you will wait; Auto sets the speed so Discover finishes about then, never below the slowest useful speed. The Final settle comes after.',
 };
 
 /**
@@ -292,7 +292,7 @@ export function SpeedControl(props: {
     done()
       ? `Auto, ${budgetLabel(budget())} time budget. ${DONE_TEXT}`
       : !running()
-        ? `Auto: Discover will aim to finish within ${budgetLabel(budget())} of a Max run's time, never slower than the floor (${floorFps()}). The Final settle comes after.`
+        ? `Auto: Discover will aim to finish within ${budgetLabel(budget())} of a Max run's time, never slower than the slowest useful speed (${floorFps()} fps). The Final settle comes after.`
         : `Auto, ${budgetLabel(budget())} time budget: target now ${target() > 0 ? `${target()} fps` : 'Max'}. ${speedLine()}`;
   const status = () =>
     mode() === 'auto'
@@ -403,7 +403,7 @@ export function SpeedControl(props: {
       <div
         class="cala-speed__trackrow"
         classList={{
-          'cala-speed__trackrow--off': props.live,
+          'cala-speed__trackrow--off': props.live || done(),
           'cala-speed__trackrow--curve': mode() === 'curve' || mode() === 'auto',
         }}
       >
@@ -496,7 +496,7 @@ export function SpeedControl(props: {
               max={TRACK_STEPS}
               step={1}
               value={fpsToStep(shown() ?? fixedFps())}
-              disabled={pinned() !== null}
+              disabled={pinned() !== null || done()}
               aria-label="Target speed, frames per second"
               aria-valuetext={
                 mode() === 'max'
@@ -521,6 +521,11 @@ export function SpeedControl(props: {
               onBlur={commitDraft}
             />
           </Show>
+          <Show when={!props.live && (mode() === 'curve' || mode() === 'auto')}>
+            <span class="cala-muted" data-testid="speed-set-by">
+              {mode() === 'auto' ? 'set by Auto' : 'set by the curve'}
+            </span>
+          </Show>
         </div>
         <button
           type="button"
@@ -528,7 +533,7 @@ export function SpeedControl(props: {
           classList={{ 'cala-speed__maxstop--on': mode() === 'max' && !props.live }}
           data-testid="speed-max"
           aria-pressed={mode() === 'max'}
-          disabled={props.live === true || mode() === 'curve' || mode() === 'auto'}
+          disabled={props.live === true || done() || mode() === 'curve' || mode() === 'auto'}
           title={MODE_TITLES.max}
           onClick={() => setMode('max')}
         >
@@ -553,7 +558,7 @@ export function SpeedControl(props: {
           </p>
         </Show>
         <div class="cala-speed__foot">
-          <span class="cala-muted" data-testid="speed-floor-line" title={words().line}>
+          <span class="cala-muted" data-testid="speed-floor-line" title={words().detail}>
             {words().line}
           </span>
         </div>

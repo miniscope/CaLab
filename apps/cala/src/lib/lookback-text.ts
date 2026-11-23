@@ -39,8 +39,8 @@ export function csettleText(cs: CsettleStatus | undefined, running: boolean): st
   const n = csettleReread(cs).toLocaleString();
   const rate = perLive(cs);
   if (running)
-    return ` · background settle: ${n} saved frames re-read (${rate ? `${rate}, ` : ''}ceiling ${cs.rate})`;
-  return ` · ${n} frames re-read by the background settle${rate ? ` (${rate})` : ''}`;
+    return ` · Background settle: ${n} saved frames re-read (${rate ? `${rate}, ` : ''}ceiling ${cs.rate})`;
+  return ` · ${n} frames re-read by the Background settle${rate ? ` (${rate})` : ''}`;
 }
 
 /** One line on a look-back run (experimental): what it re-read, and the settle after the last frame. */
@@ -58,4 +58,13 @@ export function lookbackText(lb: LookbackStatus, final: boolean): string {
     return `Look-back: ${read}${csettleText(lb.csettle, false)} · ${end}${movingText(st)}${err}`;
   }
   return `Look-back: ${read} · ${lb.inNeed} cells still need data${csettleText(lb.csettle, true)}${err}`;
+}
+
+/** The stage after Discover ended, for the status chip: Final settle, Extract, Done ("Discover done" before Extract). */
+export function stageLabel(s: { discover: string; settling: boolean; extract: string }): string {
+  if (s.discover !== 'done') return 'Discover';
+  if (s.settling) return 'Final settle';
+  if (s.extract === 'running') return 'Extract';
+  if (s.extract === 'done') return 'Done';
+  return 'Discover done';
 }

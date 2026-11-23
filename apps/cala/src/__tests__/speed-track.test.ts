@@ -192,12 +192,14 @@ describe('floor words', () => {
   it('says about, and not measured, for the prior', () => {
     const w = floorWords({ fps: 20, published: null, prior: true, estimate: est({}) });
     expect(w.mark).toBe('about 20');
-    expect(w.line).toContain('not measured yet');
+    expect(w.line).toBe('Slowest useful speed: about 20 fps');
+    expect(w.detail).toContain('not measured yet');
   });
   it('names the limiting kind when measured', () => {
     const w = floorWords({ fps: 60, published: 60, prior: false, estimate: est({}) });
     expect(w.mark).toBe('floor 60');
-    expect(w.line).toBe('Floor 60 fps: set by look-back (measured)');
+    expect(w.line).toBe('Slowest useful speed: about 60 fps');
+    expect(w.detail).toBe('Floor 60 fps: set by look-back (measured)');
   });
   it('is only "about" when measured at Max', () => {
     const w = floorWords({
@@ -207,7 +209,7 @@ describe('floor words', () => {
       estimate: est({ confidence: 'unpaced', limiting: 'slow-worker' }),
     });
     expect(w.mark).toBe('about 30');
-    expect(w.line).toContain('slow worker');
+    expect(w.detail).toContain('slow worker');
     expect(w.line).toContain('measured at Max');
   });
 });

@@ -35,6 +35,7 @@ import {
   formatDuration,
   frameTicks,
   groupedRows,
+  rowTitle,
   BG_SETTLE_HATCH,
   KIND_COLOR,
   legendKinds,
@@ -423,7 +424,9 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
     return [
       `${n0(cellCount())}`,
       need !== undefined && s().lookbackRun() ? `${n0(need)} still need look-back` : null,
-      b !== null ? `${b.toFixed(b < 10 ? 1 : 0)} born per 1,000 frames` : null,
+      b !== null && state() !== 'done'
+        ? `${b.toFixed(b < 10 ? 1 : 0)} born per 1,000 frames`
+        : null,
     ]
       .filter(Boolean)
       .join(' · ');
@@ -491,7 +494,9 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
                 <Show when={r.groupStart}>
                   <div class="cala-work__gap" />
                 </Show>
-                <div class="cala-work__name">{r.label}</div>
+                <div class="cala-work__name" title={rowTitle(r.row)}>
+                  {r.label}
+                </div>
                 <Show
                   when={!stoppedFlags()[i()]}
                   fallback={
