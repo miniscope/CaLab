@@ -459,9 +459,11 @@ download it) or **CaLab only** (only the team uses it to develop and benchmark c
 uploaded until you sign in with your email, fill in the form (indicator, species, brain region,
 scope, and for public donations subject details) and tick both consent boxes. The raw frames are
 then compressed without loss in the browser (about 1.65x smaller, up to 10 GB per donation) and
-uploaded with the file names, never folder paths.
+uploaded with `timeStamps.csv` (if the recording has one) and the file names, never folder paths.
 **My donations** lists what you sent, whether it is in the benchmark, and lets you withdraw
-it until the lab has taken it in.
+it until the lab has taken it in. After that, email the deletion contact shown in the panel. A
+public recording can be removed until the next version of the DANDI collection is published;
+published versions are permanent.
 
 ## Known limitations
 

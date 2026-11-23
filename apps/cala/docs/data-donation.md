@@ -239,7 +239,7 @@ Runs on solaris, by hand at first (`run.sh nwb <donation_id>`), in the
    - `OnePhotonSeries` in `acquisition`: frames streamed with a
      `DataChunkIterator` (a 10 GB donation never sits in memory), native
      `uint8` / `uint16`, HDF5 chunks of 16 whole frames (~6 MB for 600x600
-     8-bit), gzip level 4, `rate` = fps (cala derives it from the timestamps when present);
+     8-bit), gzip level 4, `rate` = fps;
      `timestamps.csv` stays with the donation on solaris. This chunk shape is what Part B streams.
 3. Check: read every frame back and compare with the CALARAW source (bit
    identical), then `nwbinspector` (no critical issues) and `dandi validate`.
@@ -382,7 +382,7 @@ zstd, no WASM codec. ~260 MB per recorded minute of V4. Re-run with
 
 ## Phases
 
-1. **Done (lab-only):** format, edge function, migration 020, panel, admin
+1. **Done (before public sharing):** format, edge function, migration 020, panel, admin
    view, solaris ingest, end-to-end run.
 2. **Part A** (this spec): sharing choice, new fields, migration 021, edge
    function, panel and admin text, conversion script, browse page, tests,
