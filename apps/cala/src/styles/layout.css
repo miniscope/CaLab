@@ -474,6 +474,231 @@
   padding-block: 1px;
 }
 
+/* ---- The three steps (Discover -> Final settle -> Extract): fixed size, each fills ---- */
+.cala-steps {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cala-steps__arrow {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: 0.8rem;
+}
+
+.cala-steps__box {
+  --step-ink: var(--accent, #5b4bb7);
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 30px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm, 4px);
+  overflow: hidden;
+  background: var(--bg-primary, #fff);
+}
+
+.cala-steps__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, var(--step-ink) 22%, transparent);
+  transition: width 0.4s linear;
+}
+
+.cala-steps__text {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  height: 100%;
+  padding: 0 8px;
+  white-space: nowrap;
+  font-size: 0.78rem;
+}
+
+.cala-steps__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: var(--font-weight-semibold, 600);
+}
+
+.cala-steps__num {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+/* Running: the step's colour, a strong edge and moving stripes, so work is visibly happening. */
+.cala-steps__box--running {
+  border-color: var(--step-ink);
+  box-shadow: 0 0 0 1px var(--step-ink);
+}
+
+.cala-steps__box--running .cala-steps__fill {
+  background-color: color-mix(in srgb, var(--step-ink) 30%, transparent);
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 8px,
+    color-mix(in srgb, var(--step-ink) 22%, transparent) 8px 16px
+  );
+  background-size: 22.6px 22.6px;
+  animation: cala-steps-stripe 1s linear infinite;
+}
+
+@keyframes cala-steps-stripe {
+  to {
+    background-position: 22.6px 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cala-steps__box--running .cala-steps__fill {
+    animation: none;
+  }
+}
+
+.cala-steps__box--paused {
+  border-color: var(--step-ink);
+  border-style: dashed;
+}
+
+.cala-steps__box--done {
+  --step-ink: var(--success, #2e7d32);
+}
+
+.cala-steps__box--done .cala-steps__name {
+  color: var(--success, #2e7d32);
+}
+
+.cala-steps__box--off {
+  opacity: 0.45;
+  border-style: dashed;
+}
+
+.cala-steps__box--error {
+  --step-ink: var(--error, #c62828);
+  border-color: var(--error, #c62828);
+}
+
+/* ---- The step panels in the Run tab: one structure for all three ---- */
+.cala-step {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm, 4px);
+}
+
+.cala-step--running {
+  border-color: var(--accent, #5b4bb7);
+}
+
+.cala-step--off {
+  opacity: 0.55;
+}
+
+.cala-step__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+
+.cala-step__state {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.cala-step__nums {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.cala-step__bar {
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--k-spare, #ececec);
+}
+
+.cala-step__bar > i {
+  display: block;
+  height: 100%;
+  background: var(--accent, #5b4bb7);
+  transition: width 0.4s linear;
+}
+
+.cala-step--done .cala-step__bar > i {
+  background: var(--success, #2e7d32);
+}
+
+.cala-step__note {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+
+.cala-step__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cala-step__chart {
+  width: 100%;
+  height: 36px;
+  background: var(--bg-secondary, #f7f7f7);
+  border-radius: 3px;
+}
+
+.cala-step__line {
+  fill: none;
+  stroke: var(--accent, #5b4bb7);
+  stroke-width: 1.5;
+}
+
+.cala-step__grid {
+  stroke: var(--border-default);
+  stroke-dasharray: 2 3;
+  vector-effect: non-scaling-stroke;
+}
+
+/* Fixed-height rows in the step panels, so nothing jumps as lines and buttons come and go. */
+.cala-step__note,
+.cala-step__facts {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Chart, facts and one control row: the room is kept before the first status arrives. */
+.cala-step__body {
+  min-height: 86px;
+}
+
+.cala-step__body .cala-run__footer {
+  min-height: 26px;
+  flex-wrap: nowrap;
+}
+
+.cala-step__facts {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 2px var(--space-md);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
 /* ---- The column's tabs: one row, one panel with the remaining height ---- */
 .cala-main .cala-side-tabs {
   flex: 1 1 0;

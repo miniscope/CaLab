@@ -29,11 +29,7 @@ import { WORK_KIND_LABELS, WORK_KINDS, workByKind, type WorkKind } from '../lib/
 import {
   bandPath,
   busyWorkers,
-  discoverRate,
-  discoverSecondsLeft,
   displayState,
-  finalSettleText,
-  formatDuration,
   frameTicks,
   gridGroups,
   squareStack,
@@ -46,8 +42,6 @@ import {
   rowAriaLabel,
   rowBusy,
   segX,
-  settledSummary,
-  settlednessFromHints,
   speedPos,
   stackBands,
   stoppedLookbackRows,
@@ -92,10 +86,6 @@ const KIND_HELP: Record<WorkKind, string> = {
   bgSettle: 'Background settle: re-read saved frames to refine footprints, during Discover.',
   finalSettle: 'Final settle: the pass after the last frame that lets the footprints converge.',
 };
-
-/** The settledness bar's own colours (neutral: the settle kinds' colours mean work, not state). */
-const SETTLED_INK = 'var(--text-primary)';
-const SETTLING_GREY = 'var(--text-tertiary)';
 
 const n0 = (x: number): string => Math.round(x).toLocaleString('en-US');
 const num = (x: number | undefined | null, digits = 2): string =>
@@ -382,63 +372,10 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
   };
   const yS = (v: number) => GEO.sBot - (GEO.sBot - GEO.sTop) * speedPos(v);
   const N = () => Math.max(1, workerCount());
+  /** The Final settle's planned frames (the strip's settle segment axis). */
+  const settleTotal = () => lb()?.settle?.total ?? plannedSettleFrames(total(), SETTLE.maxFrames);
   const stripEnd = () =>
     props.live ? 'live window' : `frame ${n0(s().processed())} of ${n0(total())}`;
-
-  // ---- Progress ----
-  const fraction = () => (total() > 0 && !unbounded() ? Math.min(1, s().processed() / total()) : 0);
-  const discoverText = (): string => {
-    if (idle()) return '–';
-    const left = discoverSecondsLeft({
-      framesLeft: total() - s().processed(),
-      targetFps: target(),
-      achievedFps: s().fps(),
-    });
-    const frames = `${n0(s().processed())} of ${n0(total())} frames`;
-    if (state() === 'done' || state() === 'final-settle') return `${frames} · done`;
-    if (left === null) return frames;
-    const rate = discoverRate(target(), s().fps());
-    const at = target() > 0 && rate === target() ? `${n0(rate)} fps` : `about ${n0(rate)} fps`;
-    return `${frames} · ${formatDuration(left)} left at ${at}`;
-  };
-  const settlePlan = () => plannedSettleFrames(total(), SETTLE.maxFrames);
-  const settleFed = () => lb()?.settle?.fed ?? 0;
-  const settleTotal = () => lb()?.settle?.total ?? settlePlan();
-  const settleFraction = () => (settleTotal() > 0 ? Math.min(1, settleFed() / settleTotal()) : 0);
-  const settleText = (): string => {
-    if (idle()) return '–';
-    const rate = s().work()?.lookback.kinds.end.framesPerS;
-    return finalSettleText({
-      fed: settleFed(),
-      total: settleTotal(),
-      fps: rate && rate > 0 ? rate : null,
-      settling: state() === 'final-settle',
-    });
-  };
-  const births = () => {
-    beat();
-    const v = props.ui.run.history().latest('births_per_kframe');
-    return Number.isFinite(v) ? v : null;
-  };
-  const cellCount = () => c().library()?.ids.length ?? 0;
-  const cellsText = (): string => {
-    if (idle()) return '–';
-    const need = lb()?.inNeed;
-    const b = births();
-    return [
-      `${n0(cellCount())}`,
-      need !== undefined && s().lookbackRun() ? `${n0(need)} still need look-back` : null,
-      b !== null && state() !== 'done'
-        ? `${b.toFixed(b < 10 ? 1 : 0)} born per 1,000 frames`
-        : null,
-    ]
-      .filter(Boolean)
-      .join(' · ');
-  };
-  const settled = () =>
-    settledSummary(
-      settlednessFromHints(Array.from(c().library()?.ids ?? []), c().stillMoving(), SETTLE.movingK),
-    );
 
   return (
     <div
@@ -706,105 +643,6 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
               )}
             </For>
           </svg>
-        </div>
-      </section>
-
-      {/* ---- Progress ---- */}
-      <section class="cala-work__block" aria-label="Stages">
-        <div class="cala-work__head">
-          <h3 class="cala-work__title">Stages</h3>
-        </div>
-        <dl class="cala-work__kv" data-testid="work-progress">
-          <Show
-            when={!unbounded()}
-            fallback={
-              <>
-                <dt>Stream</dt>
-                <dd class="cala-num">{idle() ? '–' : `${n0(s().processed())} frames received`}</dd>
-              </>
-            }
-          >
-            <dt>Discover</dt>
-            <dd>
-              <div
-                class="cala-work__prog"
-                role="progressbar"
-                aria-label="Discover"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={Math.round(100 * fraction())}
-              >
-                <i style={{ width: `${100 * fraction()}%` }} />
-              </div>
-              <span class="cala-num" data-testid="work-discover">
-                {discoverText()}
-              </span>
-            </dd>
-          </Show>
-          <Show when={hasFinal()}>
-            <dt>Final settle</dt>
-            <dd>
-              <div
-                class="cala-work__prog"
-                role="progressbar"
-                aria-label="Final settle"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={Math.round(100 * settleFraction())}
-              >
-                <i class="cala-work__prog-settle" style={{ width: `${100 * settleFraction()}%` }} />
-              </div>
-              <span class="cala-num" data-testid="work-settle">
-                {settleText()}
-              </span>
-            </dd>
-          </Show>
-          <dt>Cells</dt>
-          <dd class="cala-num" data-testid="work-cells">
-            {cellsText()}
-          </dd>
-        </dl>
-        <div class="cala-work__slot" data-testid="work-settled">
-          <Show
-            when={settled()}
-            fallback={
-              <div class="cala-work__small">
-                Footprints settled: <span class="cala-muted">not measured yet</span>
-              </div>
-            }
-          >
-            {(st) => (
-              <>
-                <div class="cala-work__head cala-work__small">
-                  <span>Footprints settled</span>
-                  <span class="cala-num">
-                    {n0(st().settled)} of {n0(st().total)}
-                  </span>
-                </div>
-                <div
-                  class="cala-work__tri"
-                  role="img"
-                  aria-label={`${st().settled} settled, ${st().settling} still settling, ${st().fresh} too new to tell`}
-                >
-                  <i
-                    style={{
-                      width: `${(100 * st().settled) / Math.max(1, st().total)}%`,
-                      background: SETTLED_INK,
-                    }}
-                  />
-                  <i
-                    style={{
-                      width: `${(100 * st().settling) / Math.max(1, st().total)}%`,
-                      background: SETTLING_GREY,
-                    }}
-                  />
-                </div>
-                <div class="cala-work__small cala-muted">
-                  settled · still settling · too new to tell
-                </div>
-              </>
-            )}
-          </Show>
         </div>
       </section>
     </div>

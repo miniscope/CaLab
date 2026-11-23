@@ -82,12 +82,16 @@ opens the **Cell** tab. The arrow keys move between the tabs (Home and End to th
 first and last), and the app remembers the tab you were on. Below about 1000 px of
 width, or in a portrait window, the column moves under the image and the page scrolls.
 
-**Run strip.** One line: the stage running (**Discover**, **Extract**,
-or **Calibrating** and **Motion template** while a run sets up), its progress, the
-frames per second, and its controls: pause (⏸) and end Discover or stop the live run
-(■), or **Cancel** for Extract. In a multi-session run it shows which
-session is being read (**Session 3/8**). When nothing runs it says what ran last and
-how many cells there are.
+**Run strip.** Above the tabs, three boxes with arrows show the run's main steps:
+**Discover** → **Final settle** → **Extract**. Each fills with its own progress and shows
+its percent and, while it runs, its frames per second; the running step has a coloured
+edge and moving stripes, a finished one a ✓, and a step that will not run (look-back
+off, Extract unticked, a live stream) is dimmed. Look-back and Background settle run
+inside Discover. The cell count, the session (in a multi-session run) and the pause and
+stop controls sit beside the boxes.
+
+While a run sets up (**Calibrating**, **Motion template**) the setup progress shows
+beside the boxes, and Extract has a **Cancel** button there.
 
 **Field of view.**
 
@@ -120,18 +124,22 @@ order you use them:
   Discover starts: change them, then restart (↻); in a Separate multi-session run a
   change applies from the next session. **More settings** holds **Find new cells**
   (on by default; off, Discover keeps tracking the cells it has but finds no new ones).
-- **Progress**: one status line (percent read, frame, frames per second), the
+- **Progress**: one panel per step, **Discover**, **Final settle** and **Extract**, each
+  with the same header (name, state, percent, frames per second, time left) and bar.
+  Discover's panel has the status line (percent read, frame, frames per second), the
   time-window control (**Run** and, when the run is long enough, **24 h**, **1 h**,
-  **10 min**, **1 min**), the whole-run strip, one overlaid plot of the convergence
-  metrics (cells, new cells per minute, churn, stable, explained, residual), the
-  look-back and Extract lines, **Speed**, and **Workers**. Workers is a grid of small
+  **10 min**, **1 min**), the whole-run strip and one overlaid plot of the convergence
+  metrics (cells, new cells per minute, churn, stable, explained, residual). The Final
+  settle and Extract panels each have a frames-per-second trace over the step (fixed
+  10 to 500 fps, log) and their facts: cells still moving and footprints settled, or
+  the traces solved so far. Then **Speed** and **Workers**. Workers is a grid of small
   squares, one per worker (a browser thread), grouped as Frame loop, Cell model,
-  Footprint helpers and Look-back and settle. A square's colour is the job it spent
-  most of the last second on (**Read frames**, **Find cells**, **Look-back**,
-  **Background settle**, **Final settle**; grey is **Idle**) and its fill is how busy it
-  was over that second; hover a square for the split. Read frames, Find cells,
-  Look-back and Background settle are the jobs of Discover; Extract runs after it and
-  is not in the grid.
+  Footprint helpers and Look-back and settle. Each square fills from the bottom with
+  one colour per job (**Read frames**, **Find cells**, **Look-back**, **Background
+  settle**, **Final settle**; grey is **Idle**), each as tall as that job's share of
+  the last second, and shows how busy the worker was as a percent; hover a square for
+  the split. Read frames, Find cells, Look-back and Background settle are the jobs of
+  Discover; Extract runs after it and is not in the grid.
 - **Results**: **Extract** and the **Export** menu.
 
 In a narrow window the stages

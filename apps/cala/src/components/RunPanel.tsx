@@ -1,6 +1,6 @@
 import type { RunRecordExtras } from '../lib/run-provenance.ts';
 import { createEffect, createSignal, For, on, Show, type JSX } from 'solid-js';
-import { MetricTile, ProgressBar, SegmentedControl, type ProgressState } from '@calab/ui';
+import { MetricTile, SegmentedControl, type ProgressState } from '@calab/ui';
 import { formatClock, formatElapsed, windowPresets } from '@calab/ui/chart';
 import type { ByteSink } from '@calab/io';
 import type { CellStore } from '../lib/cell-store.ts';
@@ -14,7 +14,8 @@ import { workText } from '../lib/work-meter.ts';
 export { lookbackText };
 import type { Pass2Result, Pass2Store } from '../lib/pass2-store.ts';
 import {
-  EXTRACT_AFTER_DISCOVER_DEFAULT,
+  extractAfterDiscover,
+  setExtractAfterDiscover,
   LIVE_NOTE,
   NEXT_STEP_HINT,
   showNextStepHint,
@@ -41,6 +42,7 @@ import { DiscoverSettings, type SettingsContext } from './DiscoverSettings.tsx';
 import { SidePanel } from './SidePanel.tsx';
 import { SpeedControl } from './SpeedControl.tsx';
 import { WorkDisplay } from './WorkDisplay.tsx';
+import { createSteps, ExtractBody, SettleBody, StepPanel, StepStepper, stepOf } from './Steps.tsx';
 import { reportResultsExported } from '../lib/analytics-integration.ts';
 
 /** `?debug` is in the URL (read once). */
@@ -169,7 +171,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     const st = s().status();
     if (st === 'starting') return 'Starting';
     if (st === 'error') return 'Stopped by an error';
-    if (st === 'done') return stageNow();
+    if (st === 'done') return props.live ? 'Done' : 'Discover done';
     const setup = s().setup();
     const prefix = st === 'paused' ? 'Paused: ' : '';
     if (s().processed() === 0 && setup) {
@@ -189,13 +191,6 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     const v = c().metrics().lag.at(-1);
     return v === null || v === undefined ? null : v;
   };
-  const pass1State = () => {
-    const st = s().status();
-    if (st === 'done') return 'complete' as const;
-    if (st === 'paused') return 'paused' as const;
-    if (st === 'error') return 'error' as const;
-    return st === 'running' ? ('running' as const) : ('idle' as const);
-  };
 
   const inSessionRun = () => props.sessionMode != null;
   /** When a change to a start-time setting takes effect (`DiscoverSettings`). */
@@ -203,7 +198,8 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     props.sessionMode === 'separate' ? 'separate' : props.sessionMode ? 'joint' : 'single';
 
   // ---- Extract and export ----
-  const [auto, setAuto] = createSignal(EXTRACT_AFTER_DISCOVER_DEFAULT);
+  const auto = extractAfterDiscover;
+  const setAuto = setExtractAfterDiscover;
   const [passOnly, setPassOnly] = createSignal(true);
   const [exporting, setExporting] = createSignal<string | null>(null);
   const [exportError, setExportError] = createSignal<string | null>(null);
@@ -303,23 +299,6 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     }
   };
   const pass2Shown = () => p().status() === 'running' || p().status() === 'done';
-  const pass2Fraction = () => {
-    // On the recording's axis: Extract re-reads the frames Discover read.
-    const all = Number.isFinite(total()) && total() > 0 ? total() : p().total();
-    return all > 0 ? p().processed() / all : 0;
-  };
-  const pass2State = () => {
-    switch (p().status()) {
-      case 'running':
-        return 'running' as const;
-      case 'done':
-        return 'complete' as const;
-      case 'error':
-        return 'error' as const;
-      default:
-        return 'idle' as const;
-    }
-  };
   const pass2Value = () => {
     switch (p().status()) {
       case 'running':
@@ -471,6 +450,15 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     ];
   };
 
+  /** The three main steps (Discover, Final settle, Extract), as the stepper above shows them. */
+  const steps3 = createSteps(() => ({
+    pipeline: s(),
+    cells: c(),
+    pass2: p(),
+    live: props.live,
+    sessionRun: props.sessionMode != null,
+  }));
+
   const [metricsOpen, setMetricsOpen] = createSignal(true);
   const shown = () => props.visible !== false;
 
@@ -600,183 +588,184 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         <h3 id="run-progress" class="cala-run__heading">
           Progress
         </h3>
-        <div class="cala-run__status">
-          <span class="cala-status" data-testid="pipeline-status">
-            {statusText()}
-          </span>
-          <span class="cala-readout" data-testid="pipeline-readout">
-            <Show when={!unbounded() && total() > 0} fallback={props.live ? 'live · ' : ''}>
-              {Math.floor(100 * fraction())}% &middot;{' '}
-            </Show>
-            frame {s().processed().toLocaleString()}
-            <Show when={!unbounded()}> / {total().toLocaleString()}</Show>
-            <Show when={s().fps() > 0 && s().status() !== 'done'}>
-              {' '}
-              &middot; {s().fps().toFixed(1)} fps
-            </Show>
-          </span>
-          <Show when={backend()}>
-            {(b) => (
-              <span
-                class="cala-backend-badge"
-                classList={{ 'cala-backend-badge--gpu': b().key === 'webgpu' }}
-                data-testid="motion-backend"
-                data-backend={b().key}
-                title={b().title}
-              >
-                {b().text}
-              </span>
-            )}
-          </Show>
-          <Show when={inspectedText()}>
-            {(text) => (
-              <button
-                type="button"
-                class="cala-inspected"
-                data-testid="inspected-time"
-                title="The inspected time (click a plot to pin one; Esc or this button returns to now)"
-                onClick={() => win().clearInspected()}
-              >
-                ◉ {text()} ✕
-              </button>
-            )}
-          </Show>
-        </div>
-        {/* `?debug`: who is doing what, once a second (plain text; the real display comes later). */}
-        <Show when={DEBUG}>
-          <pre class="cala-readout cala-run__line" data-testid="work-debug">
-            {workText(s().work(), s().workMaxFps(), c().status()?.lookback?.csettle?.governor)}
-            {'\n'}
-            {s().floorLine() || 'floor: waiting for a status'}
-          </pre>
-        </Show>
-        <Show when={s().live()}>
-          {(live) => (
-            <p class="cala-readout cala-run__line" data-testid="live-readout">
-              live: {live().received.toLocaleString()} received
-              <Show when={live().dropped + live().missed > 0}>
+        <StepPanel step={stepOf(steps3(), 'discover')}>
+          <div class="cala-run__status">
+            <span class="cala-status" data-testid="pipeline-status">
+              {statusText()}
+            </span>
+            <span class="cala-readout" data-testid="pipeline-readout">
+              <Show when={!unbounded() && total() > 0} fallback={props.live ? 'live · ' : ''}>
+                {Math.floor(100 * fraction())}% &middot;{' '}
+              </Show>
+              frame {s().processed().toLocaleString()}
+              <Show when={!unbounded()}> / {total().toLocaleString()}</Show>
+              <Show when={s().fps() > 0 && s().status() !== 'done'}>
                 {' '}
-                &middot; {live().dropped.toLocaleString()} dropped
-                <Show when={live().missed > 0}>
-                  {' '}
-                  ({live().missed.toLocaleString()} missed at the source)
-                </Show>
-              </Show>{' '}
-              &middot; lag {live().lagFrames} frames ({live().lagMs.toFixed(0)} ms)
-            </p>
-          )}
-        </Show>
-        <Show
-          when={!props.narrow}
-          fallback={
-            <>
-              <PassStepper steps={steps()} />
-              <Show when={!unbounded()}>
-                <ProgressBar
-                  fraction={fraction()}
-                  state={pass1State()}
-                  label="Discover"
-                  aria-label="Discover"
-                />
+                &middot; {s().fps().toFixed(1)} fps
               </Show>
-              <Show when={pass2Shown()}>
-                <ProgressBar
-                  fraction={p().total() > 0 ? p().processed() / p().total() : 0}
-                  state={pass2State()}
-                  label="Extract"
-                  aria-label="Extract"
-                />
-              </Show>
-              <Show when={metricsOpen() && shown()}>
-                <div class="cala-run__tiles">
-                  <For each={tiles()}>
-                    {(m) => (
-                      <MetricTile
-                        title={m.title}
-                        value={m.value}
-                        hint={m.hint}
-                        x={m.x}
-                        xMax={m.x1}
-                        lines={m.lines}
-                        range={m.range}
-                        testid={`tile-${m.key}`}
-                      />
-                    )}
-                  </For>
-                </div>
-              </Show>
-            </>
-          }
-        >
-          <div class="cala-run__timeline">
-            <div class="cala-run__window">
-              <SegmentedControl
-                options={windowOptions()}
-                value={windowValue()}
-                onChange={setWindow}
-                aria-label="Time window"
-                size="sm"
-                testid="time-window"
-              />
-            </div>
-            <Show when={shown()}>
-              <RunStrip ui={props.ui} />
+            </span>
+            <Show when={backend()}>
+              {(b) => (
+                <span
+                  class="cala-backend-badge"
+                  classList={{ 'cala-backend-badge--gpu': b().key === 'webgpu' }}
+                  data-testid="motion-backend"
+                  data-backend={b().key}
+                  title={b().title}
+                >
+                  {b().text}
+                </span>
+              )}
             </Show>
-            {/* Expanded, the large History view has the convergence plot; the FOV gets the room. */}
-            <Show when={metricsOpen() && !props.ui.expanded() && shown()}>
-              <AspectPlot>
-                {(h) => <GroupPlot ui={props.ui} group="convergence" height={h()} compact />}
-              </AspectPlot>
-            </Show>
-            <Show when={!props.live && pass2Shown()}>
-              <ProgressBar
-                fraction={pass2Fraction()}
-                state={pass2State()}
-                label="Extract"
-                aria-label="Extract"
-              />
-            </Show>
-          </div>
-        </Show>
-        <Show when={s().lookbackRun() ? c().status()?.lookback : undefined}>
-          {(lb) => (
-            <div class="cala-run__footer">
-              <span class="cala-readout cala-wrap" data-testid="lookback-readout">
-                {lookbackText(lb(), c().status()?.final ?? false)}
-              </span>
-              <Show when={lb().settling && props.onStopSettling}>
+            <Show when={inspectedText()}>
+              {(text) => (
                 <button
                   type="button"
-                  class="btn-secondary btn-small"
-                  data-testid="lookback-stop-settling"
-                  title="Stop the Final settle now: the footprints refined so far become the final library."
-                  onClick={() => props.onStopSettling?.()}
+                  class="cala-inspected"
+                  data-testid="inspected-time"
+                  title="The inspected time (click a plot to pin one; Esc or this button returns to now)"
+                  onClick={() => win().clearInspected()}
                 >
-                  Stop Final settle
+                  ◉ {text()} ✕
                 </button>
+              )}
+            </Show>
+          </div>
+          {/* `?debug`: who is doing what, once a second (plain text; the real display comes later). */}
+          <Show when={DEBUG}>
+            <pre class="cala-readout cala-run__line" data-testid="work-debug">
+              {workText(s().work(), s().workMaxFps(), c().status()?.lookback?.csettle?.governor)}
+              {'\n'}
+              {s().floorLine() || 'floor: waiting for a status'}
+            </pre>
+          </Show>
+          <Show when={s().live()}>
+            {(live) => (
+              <p class="cala-readout cala-run__line" data-testid="live-readout">
+                live: {live().received.toLocaleString()} received
+                <Show when={live().dropped + live().missed > 0}>
+                  {' '}
+                  &middot; {live().dropped.toLocaleString()} dropped
+                  <Show when={live().missed > 0}>
+                    {' '}
+                    ({live().missed.toLocaleString()} missed at the source)
+                  </Show>
+                </Show>{' '}
+                &middot; lag {live().lagFrames} frames ({live().lagMs.toFixed(0)} ms)
+              </p>
+            )}
+          </Show>
+          <Show
+            when={!props.narrow}
+            fallback={
+              <>
+                <PassStepper steps={steps()} />
+                <Show when={metricsOpen() && shown()}>
+                  <div class="cala-run__tiles">
+                    <For each={tiles()}>
+                      {(m) => (
+                        <MetricTile
+                          title={m.title}
+                          value={m.value}
+                          hint={m.hint}
+                          x={m.x}
+                          xMax={m.x1}
+                          lines={m.lines}
+                          range={m.range}
+                          testid={`tile-${m.key}`}
+                        />
+                      )}
+                    </For>
+                  </div>
+                </Show>
+              </>
+            }
+          >
+            <div class="cala-run__timeline">
+              <div class="cala-run__window">
+                <SegmentedControl
+                  options={windowOptions()}
+                  value={windowValue()}
+                  onChange={setWindow}
+                  aria-label="Time window"
+                  size="sm"
+                  testid="time-window"
+                />
+              </div>
+              <Show when={shown()}>
+                <RunStrip ui={props.ui} />
+              </Show>
+              {/* Expanded, the large History view has the convergence plot; the FOV gets the room. */}
+              <Show when={metricsOpen() && !props.ui.expanded() && shown()}>
+                <AspectPlot>
+                  {(h) => <GroupPlot ui={props.ui} group="convergence" height={h()} compact />}
+                </AspectPlot>
               </Show>
             </div>
-          )}
-        </Show>
-        <div class="cala-run__footer">
-          <span
-            class="cala-status cala-run__pass2"
-            data-testid="pass2-status"
-            data-state={p().status()}
-          >
-            {pass2Text()}
-          </span>
-          <Show when={pass2Shown()}>
-            <span class="cala-readout" data-testid="pass2-readout">
-              frame {p().processed().toLocaleString()} / {p().total().toLocaleString()}
-              <Show when={p().status() === 'running' && p().fps() > 0}>
-                {' '}
-                &middot; {p().fps().toFixed(1)} frames/s
-              </Show>
-              <Show when={p().motionBackend() === 'webgpu'}> &middot; warp: WebGPU</Show>
-            </span>
           </Show>
-        </div>
+        </StepPanel>
+        <StepPanel step={stepOf(steps3(), 'settle')}>
+          <SettleBody pipeline={s()} cells={c()} step={stepOf(steps3(), 'settle')}>
+            <Show when={s().lookbackRun() ? c().status()?.lookback : undefined}>
+              {(lb) => (
+                <div class="cala-run__footer">
+                  <span class="cala-readout cala-wrap" data-testid="lookback-readout">
+                    {lookbackText(lb(), c().status()?.final ?? false)}
+                  </span>
+                  <Show when={lb().settling && props.onStopSettling}>
+                    <button
+                      type="button"
+                      class="btn-secondary btn-small"
+                      data-testid="lookback-stop-settling"
+                      title="Stop the Final settle now: the footprints refined so far become the final library."
+                      onClick={() => props.onStopSettling?.()}
+                    >
+                      Stop Final settle
+                    </button>
+                  </Show>
+                </div>
+              )}
+            </Show>
+          </SettleBody>
+        </StepPanel>
+        <Show
+          when={!props.live}
+          fallback={
+            <div class="cala-run__footer">
+              <span
+                class="cala-status cala-run__pass2"
+                data-testid="pass2-status"
+                data-state={p().status()}
+              >
+                {pass2Text()}
+              </span>
+            </div>
+          }
+        >
+          <StepPanel step={stepOf(steps3(), 'extract')}>
+            <ExtractBody pipeline={s()} pass2={p()} cells={c()}>
+              <div class="cala-run__footer">
+                <span
+                  class="cala-status cala-run__pass2"
+                  data-testid="pass2-status"
+                  data-state={p().status()}
+                >
+                  {pass2Text()}
+                </span>
+                <Show when={pass2Shown()}>
+                  <span class="cala-readout" data-testid="pass2-readout">
+                    frame {p().processed().toLocaleString()} / {p().total().toLocaleString()}
+                    <Show when={p().status() === 'running' && p().fps() > 0}>
+                      {' '}
+                      &middot; {p().fps().toFixed(1)} frames/s
+                    </Show>
+                    <Show when={p().motionBackend() === 'webgpu'}> &middot; warp: WebGPU</Show>
+                  </span>
+                </Show>
+              </div>
+            </ExtractBody>
+          </StepPanel>
+        </Show>
         <SpeedControl pipeline={s()} cells={c()} live={props.live} fps={props.fps} />
         <WorkDisplay pipeline={s()} cells={c()} ui={props.ui} live={props.live} visible={shown()} />
         <div class="cala-run__footer">
@@ -1005,6 +994,13 @@ export function RunStatusStrip(props: {
   const s = () => props.pipeline;
   const p = () => props.pass2;
   const cellsText = () => `${props.cells.library()?.ids.length ?? 0} cells`;
+  const steps = createSteps(() => ({
+    pipeline: props.pipeline,
+    cells: props.cells,
+    pass2: props.pass2,
+    live: props.live,
+    sessionRun: props.session != null,
+  }));
   const view = (): StripView => {
     if (p().status() === 'running') {
       const total = p().total();
@@ -1080,20 +1076,10 @@ export function RunStatusStrip(props: {
       data-testid="run-strip"
       data-state={view().state}
     >
-      <strong class="cala-strip__stage" data-testid="run-strip-stage">
+      <strong class="cala-strip__stage cala-visually-hidden" data-testid="run-strip-stage">
         {view().stage}
       </strong>
-      <Show when={view().fraction !== null}>
-        <ProgressBar
-          class="cala-strip__bar"
-          fraction={view().fraction ?? 0}
-          state={view().state}
-          aria-label={view().stage}
-        />
-        <span class="cala-readout cala-strip__pct">
-          {Math.floor(100 * Math.min(1, view().fraction ?? 0))}%
-        </span>
-      </Show>
+      <StepStepper steps={steps()} />
       <span class="cala-readout cala-strip__detail" data-testid="run-strip-detail">
         {view().detail}
       </span>
