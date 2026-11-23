@@ -3,7 +3,7 @@
 
     settle_factors_score.py RUN_ROOT SIM_ROOT [--cut 12000] [--diam 10]
 
-RUN_ROOT holds `motion_s5/`, `motion_s6/` and `wl24_20251201/`, each with `ARM-sSEED/` run folders
+RUN_ROOT holds `motion_s5/` and `wl24_20251201/`, each with `ARM-sSEED/` run folders
 (`settle_factors.sh run`) and, for the real recording, their `hold-*` fixed-library runs
 (`settle_factors.sh hold`). SIM_ROOT holds the sims (`motion_s5/`, ...). Prints Markdown tables:
 
@@ -29,7 +29,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import settle_size as S
 
-SIMS = ("motion_s5", "motion_s6")
+SIMS = ("motion_s5",)
 REAL = "wl24_20251201"
 ARMS = ("SET-R", "SET-F", "STR-0", "STR-F")
 SEEDS = (1, 2)

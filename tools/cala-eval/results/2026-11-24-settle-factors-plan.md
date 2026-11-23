@@ -48,6 +48,8 @@ All read-only, from the evaluation SSD:
     12,000 were seen by no run.
 - **Seeds:** two per arm (`--slow-seed 1` and `2`). That makes 18 runs, plus 8 fixed-library runs on the real
   recording.
+- **Amended during the runs (owner, 23 Nov), before any score was read:** `motion_s6` is dropped to save about 45
+  minutes. The evaluation is `motion_s5` and `wl24_20251201`: 12 runs, plus the 8 fixed-library runs.
 
 ## Checks before the scored runs
 
