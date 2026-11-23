@@ -300,7 +300,7 @@ jobs:
       - name: Create venv and install deps
         run: |
           python -m venv .venv
-          .venv/bin/pip install maturin[patchelf] numpy pydantic pytest h5py zarr ruff mypy
+          .venv/bin/pip install maturin[patchelf] numpy pydantic pytest h5py zarr ruff mypy pynwb nwbinspector
         working-directory: python
 
       - name: Build and install (dev)
