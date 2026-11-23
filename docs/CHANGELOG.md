@@ -5,6 +5,8 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.21.0] - 2026-11-23
+
 ### Added
 
 - Cala: **look-back and the Final settle in Joint runs** (several sessions read as one recording, the default multi-session mode). With the Refine stage gone, a Joint run had no footprint refinement after Discover; now it has the same look-back, Background settle and Final settle as one recording. While Discover runs, look-back re-reads frames of the session it is reading only (from a session's first frame on, an earlier frame is never re-read; new WASM `SlowLoop.setLookbackFloor`). The Final settle samples the whole run as before (same plan and cap) and preprocesses every frame as its own session's, as Extract's replay does: the session's recorded re-registration before the rigid shift, and the back half from that session's own state (stage C now also snapshots each session's first and last batch). The run record's `lookback_ran` is true for Joint runs. See `apps/cala/docs/stages.md`.
