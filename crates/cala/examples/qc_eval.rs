@@ -146,6 +146,8 @@
 //!                      windows ([`calab_cala::compress`]) and write every
 //!                      window's factors to `DIR/w<start>.fac` (`CALAFAC2`), the
 //!                      input of tools/cala-diagnostics/history_wholetest.py
+//!   --factors-tiling T plain (default) | offset: how --factors-out cuts the
+//!                      frame (the dump is complete when Discover ends)
 //!   --core-test M      transient-band core test: off (default) | report
 //!                      (also writes fast.tsv, split.tsv) | trim | delete
 //!   --basin-trim       trim refined footprints to their significant basin
@@ -430,6 +432,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
+use calab_cala::compress::blend::{BlendLayout, Tiling};
+use calab_cala::compress::WindowFactors;
 use calab_cala::discover::{
     CoreTest, EditScope, JointAdmit, JointSign, JointUpdate, LookBack as LbSched, LookbackConfig,
     LookbackNext, LookbackOrder, LookbackOutcome, LookbackReservoir, MergeRule, RefineGate,
@@ -4504,23 +4508,36 @@ fn write_library(
     }
 }
 
-/// `--factors-out`: compresses the preprocessed frames window by window and
-/// writes each window's factors (format v2, `CALAFAC2`) to `dir/w<start frame>.fac`.
+/// Frames per factor window (`--factors-out`; the app's compressor uses the same).
+const FACTOR_WINDOW: usize = 600;
+
+/// `--factors-out`: compresses the preprocessed frames of Discover window by
+/// window and writes each window's factors (format v2, `CALAFAC2`, cut by
+/// `--factors-tiling`) to `dir/w<start frame>.fac`.
 struct FactorDump {
     dir: PathBuf,
     wc: calab_cala::compress::WindowCompressor,
+    /// Frames pushed, and the seconds spent in the compressor (speed report).
+    frames: u64,
+    secs: f64,
+    /// The speed line was printed (once, at the first `finish`).
+    reported: bool,
 }
 
 impl FactorDump {
-    fn new(dir: &Path, dims: Dims) -> FactorDump {
+    fn new(dir: &Path, dims: Dims, tiling: Tiling) -> FactorDump {
         std::fs::create_dir_all(dir).unwrap();
         let cfg = calab_cala::compress::CompressConfig {
-            window: 600,
+            window: FACTOR_WINDOW,
+            tiling,
             ..calab_cala::compress::CompressConfig::default()
         };
         FactorDump {
             dir: dir.to_path_buf(),
             wc: calab_cala::compress::WindowCompressor::new(dims, cfg),
+            frames: 0,
+            secs: 0.0,
+            reported: false,
         }
     }
 
@@ -4530,15 +4547,32 @@ impl FactorDump {
     }
 
     fn push(&mut self, frame: &[f32]) {
-        if let Some(wf) = self.wc.push(frame) {
+        let t0 = Instant::now();
+        let done = self.wc.push(frame);
+        self.secs += t0.elapsed().as_secs_f64();
+        self.frames += 1;
+        if let Some(wf) = done {
             self.write(wf);
         }
     }
 
-    /// Write the last, shorter window.
+    /// Write the last, shorter window (none when no frame is buffered: a
+    /// second call, or a recording of whole windows) and, the first time,
+    /// print the compressor's time.
     fn finish(&mut self) {
-        if let Some(wf) = self.wc.flush() {
+        let t0 = Instant::now();
+        let done = self.wc.flush();
+        self.secs += t0.elapsed().as_secs_f64();
+        if let Some(wf) = done {
             self.write(wf);
+        }
+        if !self.reported {
+            self.reported = true;
+            println!(
+                "factors: {} frames, {:.2} ms per frame in the compressor (one thread)",
+                self.frames,
+                1e3 * self.secs / self.frames.max(1) as f64
+            );
         }
     }
 }
@@ -5589,7 +5623,17 @@ fn main() {
     );
     // `--factors-out`: the compressed history of pass 1.
     let factors_out: Option<PathBuf> = arg_value(&args, "--factors-out").map(PathBuf::from);
-    let mut factors = factors_out.as_deref().map(|d| FactorDump::new(d, dims));
+    // `--factors-tiling plain|offset` (default plain): how the dump cuts the frame.
+    let factors_tiling = arg_value(&args, "--factors-tiling").map_or(Tiling::Plain, |s| {
+        Tiling::parse(&s).unwrap_or_else(|| panic!("--factors-tiling: plain or offset, not {s:?}"))
+    });
+    assert!(
+        factors_out.is_some() || arg_value(&args, "--factors-tiling").is_none(),
+        "--factors-tiling needs --factors-out DIR"
+    );
+    let mut factors = factors_out
+        .as_deref()
+        .map(|d| FactorDump::new(d, dims, factors_tiling));
     for pass in 0.. {
         // `passes` can change at a branch point (the child applies its tail).
         if pass >= passes {
@@ -6278,6 +6322,11 @@ fn main() {
                             );
                         }
                     }
+                }
+                // Discover's factors are complete before the drain and the
+                // settle (`--settle-source factors` reads every window).
+                if let (true, 0, Some(fd)) = (last, pass, factors.as_mut()) {
+                    fd.finish();
                 }
                 if let (Some(lbk), Some(sl), 0, true) = (
                     lookback.as_mut(),
@@ -7109,6 +7158,53 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fresh scratch folder for a test's files.
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("qc_eval-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// `n` frames of a smooth moving pattern (deterministic).
+    fn pattern_frames(dims: Dims, n: usize) -> Vec<Vec<f32>> {
+        (0..n)
+            .map(|t| {
+                (0..dims.pixels())
+                    .map(|p| {
+                        let (y, x) = ((p / dims.width) as f32, (p % dims.width) as f32);
+                        20.0 + 4.0 * (0.05 * t as f32 + 0.11 * x).sin()
+                            + 3.0 * (0.07 * y - 0.03 * t as f32).cos()
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn factor_dump_writes_v2_windows_with_its_tiling_and_finishes_once() {
+        let dims = Dims::new(96, 80).unwrap();
+        let dir = scratch_dir("dump");
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Offset);
+        for fr in pattern_frames(dims, 1250) {
+            fd.push(&fr);
+        }
+        fd.finish();
+        fd.finish();
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["w0000000.fac", "w0000600.fac", "w0001200.fac"]);
+        for (name, frames) in [("w0000000.fac", 600), ("w0001200.fac", 50)] {
+            let wf = WindowFactors::from_bytes(&std::fs::read(dir.join(name)).unwrap()).unwrap();
+            assert_eq!(wf.frames, frames, "{name}");
+            assert_eq!(wf.tiling, Tiling::Offset, "{name}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// A Gaussian blob of sd `sd` centred at `(cy, cx)` (sub-pixel), on a
     /// patch reaching 4 sd.
