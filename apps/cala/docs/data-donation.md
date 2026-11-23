@@ -1,32 +1,50 @@
-# Data donation (design, not built)
+# Data donation
 
 A **Donate data** button in browser cala lets users send a raw recording to the
-lab, compressed without loss, with metadata. The goal is more varied datasets
-(regions, indicators, scopes, settings) to benchmark and improve cala on.
+CaLab team, compressed without loss, with metadata. The donor chooses one of
+two ways to share it:
 
-Status: code for phases 0–5 is written and tested locally (format, edge
-function, migration, cala panel, admin view, ingest script). Nothing is
-deployed; see "To go live" for what needs accounts and people.
+- **Public**: after lab review the recording is converted to NWB and published
+  on [DANDI](https://dandiarchive.org) under CC BY 4.0, in one shared
+  collection anyone can browse, stream and download, e.g. to test and improve
+  their own pipelines. cala uses it too.
+- **CaLab only**: the recording stays on the lab server and is used only by
+  the CaLab team to develop and benchmark cala. The raw data is never shared.
+
+The collection is named for CaLab, not cala, so CaDecon, CaTune and CaBaNA can
+add their own collections (traces rather than raw videos) later. Only cala
+donations are in scope now.
+
+Status (2026-11-23): upload, review and lab ingest are built and tested end
+to end (lab-only design, branch `feature/data-donation`, PR #452). This
+document is the spec for the public-sharing redesign ("Part A" below). The
+panel text on that branch still promises lab-only use, so **Part A must land
+before the release is tagged**. Opening a DANDI recording directly in cala is
+the separate "Part B": [open-from-dandi.md](open-from-dandi.md).
 
 ## Why people donate
 
-1. **cala gets better on their kind of data.** Every donation goes into the
-   cala benchmark set, and the pipeline is developed and tuned against it. A
-   lab with an unusual region, indicator or scope makes sure cala works for that
-   setup.
-2. **Co-authorship.** If a dataset is used in a benchmark / dataset paper, its
-   donors are offered co-authorship. Every use of a donation is verified and
-   logged against it (admin `in_benchmark` / `benchmark_note` for now).
-3. **Credit and control.** Data stays within the lab under CC BY 4.0 (any use
-   credits the donor and their lab); deletion on request at any time.
+1. **cala gets better on their kind of data.** Every donation (public or
+   CaLab only) can go into the cala benchmark set, and the pipeline is
+   developed and tuned against it. A lab with an unusual region, indicator or
+   scope makes sure cala works for that setup.
+2. **Public donations help everyone.** Other developers can test their
+   pipelines on the recording, and anyone can look at how other labs' data
+   looks.
+3. **Credit.**
+   - Public donors and their labs are listed as contributors on the DANDI
+     collection, which has a citable DOI per published version, and users of
+     the data are asked to cite it and acknowledge the contributing lab (see
+     "Citation and acknowledgement").
+   - The CaLab team acknowledges every donor lab, public or CaLab only, in
+     any paper that uses their data.
 
-The panel (bottom of the Run tab, visible without clicking) states all three,
-that a single raw recording is enough (no processing), and the 10 GB cap
-(after compression, ~40 min of 600x600 V4). Donors see in the app whether their
-donation is in the benchmark set ("My donations" in the panel, and on cala's start
-page without opening a recording; withdrawn ones are hidden behind a toggle).
-Uploads left unfinished for 48 h are withdrawn automatically
-(`DONATION_STALE_HOURS`), so they stop holding the donor's slot.
+The panel (bottom of the Run tab, visible without clicking) states these, that
+a single raw recording is enough (no processing), and the 10 GB cap (after
+compression, ~40 min of 600x600 V4). "My donations" (in the panel and on cala's
+start page) shows each donation's state, and for a published one its DANDI
+link. Uploads left unfinished for 48 h are withdrawn automatically
+(`DONATION_STALE_HOURS`).
 
 ## Goals and non-goals
 
@@ -34,115 +52,255 @@ Goals
 
 - One click from an opened recording to a submitted dataset.
 - Raw frames, lossless: noise, motion and artifacts stay as recorded, and any
-  pipeline (cala, Minian, CaImAn, future versions) can run on them.
-- The lab server is never reachable from the internet.
-- Every dataset has the metadata needed to use it and a clear license.
-- Cloud cost bounded by design, not by hope.
+  pipeline (cala, Minian, CaImAn, suite2p, future versions) can run on them.
+- An explicit, recorded choice between public and CaLab only, with nothing
+  preselected.
+- Public donations end up as valid NWB on DANDI with the metadata DANDI needs,
+  one row per recording on a browse page in cala, each with its own download
+  and view link.
+- The lab server is never reachable from the internet, and a CaLab-only
+  donation can never reach DANDI by mistake.
+- Cloud cost bounded by design: R2 is transit only and stays in the free tier
+  in normal use.
 
-Non-goals
+Non-goals (now)
 
-- Public data browsing or redistribution (maybe later via DANDI, separate
-  decision).
-- Archival storage in the cloud: the bucket is transit only.
-
-## Raw, not factors
-
-An earlier version of this design uploaded cala's low-rank factors
-(`CALAFAC1`). Dropped because:
-
-- the compression keeps only temporally non-white components, so the white
-  noise that the in-focus selection and the frame-matched null depend on is
-  gone;
-- the factors are of preprocessed frames, so motion correction and
-  preprocessing could not be developed on donations;
-- `CALAFAC1` is a prototype format; donations must stay readable when it
-  changes.
-
-## Codec (phase 0, measured 2026-11-19)
-
-Lossless compression of miniscope video is bounded by the sensor noise: every
-codec tried lands at 1.4–2.0×. Measured on 300 frames of
-`real_v4/v4_dataverse_20min` (UCLA V4, 600×600, 8-bit) and 2000 frames of
-`real_wireless/wl24_20251201` (200×200, 8-bit):
-
-| Codec                            | V4    | Wireless |
-| -------------------------------- | ----- | -------- |
-| gzip                             | 1.44× | 1.72×    |
-| **up predictor + gzip** (chosen) | 1.65× | 1.81×    |
-| best predictor + zstd -3         | 1.84× | 1.91×    |
-| zstd -19 (one 360 MB V4 segment) | 1.7×  |          |
-| FFV1 (one 360 MB V4 segment)     | 2.0×  |          |
-
-Chosen: the "up" predictor (each pixel minus the one above) and the browser's
-own `CompressionStream('gzip')`. It is within ~10% of zstd, needs no WASM
-codec or new dependency (Chrome has no zstd `CompressionStream`), and Chrome's
-gzip compresses ~5% smaller than Node's, so the numbers above (Node) are a
-lower bound. FFV1 would need ffmpeg.wasm.
-
-At 1.65×: ~260 MB per recorded minute of V4, so a 20-min V4 session is
-~5.2 GB; the 33-min wireless session is ~0.9 GB. Encoding runs at ~25–30
-MB/s on one thread (Node), far above an upload link (50 Mbit/s ≈ 6 MB/s:
-~15 min for 5 GB). Re-run with `apps/cala/scripts/donation-codec-bench.mjs`.
-
-## Builds on
-
-| Piece                         | Where                                                          |
-| ----------------------------- | -------------------------------------------------------------- |
-| Supabase auth, magic link     | `packages/community/src/auth.ts`                               |
-| Non-anonymous insert pattern  | `supabase/migrations/012_block_anonymous_submissions.sql`      |
-| Payload CHECKs                | `supabase/migrations/014_validate_submission_payloads.sql`     |
-| PII-free public views         | `supabase/migrations/010_restrict_submission_pii.sql`          |
-| Admin role and moderation app | `004_admin_role.sql`, `apps/admin`                             |
-| Field options (indicator ...) | `packages/community/src/field-options*.ts`                     |
-| Dataset fingerprint           | `packages/community/src/dataset-hash.ts`                       |
-| Frame decoding (AVI, TIFF)    | cala's file import (`apps/cala/src/components/OpenFolder.tsx`) |
+- Opening a DANDI recording in cala: Part B, its own spec and branch.
+- CaDecon / CaTune / CaBaNA donations.
+- Automatic DANDI publishing: the lab runs the conversion and upload, and
+  publishes versions by hand.
+- Switching a donation between public and CaLab only in the app: by email to
+  the CaLab team.
 
 ## Data flow
 
 ```text
-browser cala                Supabase (free plan)            Cloudflare R2           lab server
-────────────                ────────────────────            ─────────────           ──────────
-metadata form + consent
-decode → CALARAW1 → gzip → OPFS (exact sizes known)
-        │ create ──────────▶ edge fn `donation`: auth, caps,
-        │                    row in cala_donations (uploading)
-        │ upload_url ──────▶ presigned PUT per file (1 h)
-        │ PUT chunks ────────────────────────────────────────▶ pending/<id>/
-        │ finish ──────────▶ edge fn: sizes + magic check
-        │                    status=uploaded
-                             admin app: preview, approve ──────▶ move to approved/<id>/
-                             ingest_list / ingest_download_url ◀── cron pull (outbound only, ingest token)
-                                                                            full parse in sandbox
-                                                                            data/raw/donations/<id>/
-                             ingest_done: delete objects, status=ingested ◀──┘
+browser cala            Supabase (donation project)     Cloudflare R2     lab server (solaris)             DANDI
+────────────            ───────────────────────────     ─────────────     ────────────────────             ─────
+form + sharing choice
+decode → CALARAW1 → gzip → OPFS
+   │ create ──────────▶ edge fn `donation`: auth, caps,
+   │                    row (uploading)
+   │ PUT chunks ─────────────────────────────────────▶ pending/<id>/
+   │ finish ──────────▶ sizes + magic → uploaded
+                        admin: preview, approve ──────▶ approved/<id>/
+                        ingest_list / download_url ◀───────────────────── hourly pull (outbound only)
+                                                                          strict parse, read-only store
+                        ingest_done → ingested ◀───────────────────────── R2 copy deleted
+                                                                          ── public only ──
+                                                                          donation_to_nwb.py → NWB
+                                                                          nwbinspector, dandi validate
+                                                                          dandi upload ──────────────────▶ draft
+                        ingest_published → published ◀─────────────────── (asset path)
+                                                                          lab publishes a version ──────▶ DOI
+browse page ◀── public view (published rows) ─┘                                        ◀── asset links ──┘
 ```
 
-Supabase holds only rows, auth and the edge function. Files never touch
-Supabase Storage (free plan: 1 GB, 50 MB per file, 5 GB/month egress, too
-small). The lab server only makes outbound requests and holds only the ingest
-token (no R2 keys, no Supabase service key); it downloads through presigned
-URLs the edge function hands out.
+Steps up to `ingested` are built and unchanged, apart from the new fields.
+New in Part A:
 
-### Edge function API (`supabase/functions/donation`)
+1. **Sharing choice and DANDI fields** in the form, the row and the edge
+   function.
+2. **`python/scripts/donation_to_nwb.py`** on solaris: converts one ingested
+   public donation to NWB and uploads it to the collection's draft.
+3. **`ingest_published`** edge action: the lab marks the row `published` with
+   its DANDI asset path.
+4. **Browse page** in cala, fed by a public view of published rows.
+5. **Text**: panel, consent, deletion, citation.
 
-POST `{action, ...}`. Client: `packages/community/src/donation-service.ts`.
+Supabase holds only rows, auth and the edge function; files never touch
+Supabase Storage. The lab server only makes outbound requests and holds only
+the ingest token and the DANDI API key (no R2 keys, no Supabase service key).
 
-| Action                | Who                | Does                                                     |
-| --------------------- | ------------------ | -------------------------------------------------------- |
-| `create`              | signed-in donor    | checks meta, file names, caps; row `uploading`           |
-| `upload_url`          | owner, uploading   | presigned PUT for one declared file                      |
-| `finish`              | owner, uploading   | exact sizes + every chunk's CALARAW1 header → `uploaded` |
-| `withdraw`            | owner, not final   | delete files → `withdrawn`                               |
-| `preview_url`         | admin              | presigned GET of one file (first chunk by default)       |
-| `review`              | admin, uploaded    | approve (move to `approved/`) or reject (delete)         |
-| `ingest_list`         | lab (ingest token) | approved rows                                            |
-| `ingest_download_url` | lab                | presigned GET from `approved/`                           |
-| `ingest_done`         | lab                | delete files → `ingested`                                |
+## The sharing choice
 
-Errors: 401/403 auth, 404 not found / not owner, 409 wrong status, 413 size
-cap, 422 failed check, 429 per-user limit, 507 global cap.
+A required radio group, nothing preselected; the Donate button stays disabled
+until one is picked.
 
-## What a donation contains
+- **Public on DANDI (CC BY 4.0).** "After review, your recording is published
+  in the CaLab donated recordings collection on DANDI, where anyone can
+  download it, e.g. to test and improve their pipelines. You and your lab are
+  listed as contributors on its citable DOI. You can withdraw it until the
+  next version of the collection is published; published versions are
+  permanent."
+- **CaLab only.** "Only the CaLab team uses your recording, to develop and
+  benchmark cala. The raw data is never shared; results computed from it may
+  appear in papers, which acknowledge your lab. You can have it deleted at any
+  time, or ask us to make it public later."
+
+Stored as `sharing` (`public` | `lab`) with `license` derived from it
+(`cc-by-4.0` | `lab-use-only`) and a CHECK that the two agree. The license
+value `lab-use-only` already exists in migration 020.
+
+Safety: a CaLab-only row never gets past `ingested`. The edge function refuses
+`ingest_published` for it, the conversion script refuses a donation whose
+`meta.json` or row says `lab`, and the browse view selects only
+`sharing = 'public' AND status = 'published'`.
+
+## Metadata (table `cala_donations`)
+
+Built (migration `020_cala_donations.sql`):
+
+- `id`, `user_id`, `created_at`, `updated_at`, `status`
+- Biology: `indicator`, `species`, `brain_region`, `expression`,
+  `preparation`, `behavior`
+- Optics: `scope`, `fps`, `width`, `height`, `n_frames`, `bytes_per_pixel`,
+  `depth_um`, `led_power`
+- Provenance: `cala_version`, `dataset_hash`
+- Files: `declared_bytes`, `n_chunks`, `files`
+- Consent: `license`, `rights_attested`, `protocol_attested`, `contact_ok`
+- Credit: `credit_name`, `credit_lab` (both required by form and edge
+  function)
+- Benchmark and review: `in_benchmark`, `benchmark_note`, `review_note`,
+  `notes`
+
+New (migration `021_cala_donations_public.sql`; a new migration rather than an
+edit of 020, because 020 is already applied on the test project):
+
+| Column         | Type / check                                                      | Why                                    |
+| -------------- | ----------------------------------------------------------------- | -------------------------------------- |
+| `sharing`      | `public` \| `lab`, NOT NULL; agrees with `license`                | the donor's choice                     |
+| `subject_id`   | text 1–64, `[A-Za-z0-9-]` only                                    | NWB / DANDI subject; donor's own label |
+| `subject_sex`  | `M` \| `F` \| `U` \| `O`                                          | required by DANDI                      |
+| `subject_age`  | ISO 8601 duration, e.g. `P90D`, `P12W`, `P3M` (≤ 16 chars)        | required by DANDI (age or birth date)  |
+| `session_date` | date, not in the future, not before 1990                          | NWB `session_start_time`               |
+| `genotype`     | text ≤ 128, optional                                              | strain / genotype for NWB `Subject`    |
+| `dandi_path`   | text ≤ 256, `^sub-[A-Za-z0-9-]+/[^/]+\.nwb$`, set by the lab only | where the published file is            |
+| `published_at` | timestamptz, set with `dandi_path`                                | shown to the donor                     |
+
+`subject_id`, `subject_sex`, `subject_age` and `session_date` are required for
+both choices: the benchmark needs them too, and a CaLab-only donation can
+then become public later without asking again. The edge function requires
+them on `create`; in the table they stay nullable, so the existing test rows
+migrate as `sharing = 'lab'` with NULL subject fields, and a CHECK requires all
+four (and `dandi_path`, `published_at`) on any `published` row.
+
+Status machine gains `published`:
+
+```text
+uploading → uploaded → approved → ingested → published   (public only)
+                     ↘ rejected
+uploading | uploaded | approved → withdrawn               (by the donor)
+```
+
+The form offers age as a number and a unit (days, weeks, months, years) and
+writes the ISO duration. Species stays the existing free-text field with the
+`SPECIES_OPTIONS` list; the conversion script maps it to the scientific name
+DANDI expects (mouse → _Mus musculus_, rat → _Rattus norvegicus_, macaque →
+_Macaca mulatta_, marmoset → _Callithrix jacchus_, zebrafish → _Danio rerio_,
+...) and stops with a clear message for a species it does not know, so the lab
+adds it to the table rather than guessing.
+
+### Public view
+
+`cala_donations_public` (security definer, like the `*_public` views in 010),
+granted to `anon`:
+
+```text
+id, published_at, indicator, species, brain_region, expression, preparation,
+behavior, scope, fps, width, height, n_frames, bytes_per_pixel, depth_um,
+subject_sex, subject_age, genotype, credit_name, credit_lab, dandi_path
+WHERE sharing = 'public' AND status = 'published'
+```
+
+No `user_id`, email, notes, review fields or file list. The donor's name and
+lab are public for public donations; the form says so next to the choice.
+
+## Edge function changes (`supabase/functions/donation`)
+
+| Action             | Change                                                                                                                      |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `create`           | requires and validates `sharing` and the four subject fields (same rules as the CHECKs); derives `license`                  |
+| `ingest_published` | **new**, lab (ingest token): `{donation_id, dandi_path}` for an `ingested`, `public` row → `published`, sets `published_at` |
+| `ingest_list`      | also returns `sharing` and the subject fields, so the lab side never has to infer them                                      |
+| `withdraw`         | unchanged (until ingested); later requests go to `DELETION_CONTACTS`                                                        |
+
+The new-upload notification email names the sharing choice.
+
+## NWB conversion and DANDI upload (`python/scripts/donation_to_nwb.py`)
+
+Runs on solaris, by hand at first (`run.sh nwb <donation_id>`), in the
+`~/calab-ingest` venv plus `pynwb`, `hdmf`, `nwbinspector` and `dandi`.
+
+1. Read the stored donation (`/mnt/data_1/mbrosch/calab_donations/<id>/`):
+   CALARAW chunks through `calab._calaraw`, `meta.json`, optional
+   `timestamps.csv`. Refuse unless the row and `meta.json` both say `public`.
+2. Write `sub-<subject>/sub-<subject>_ses-<date>-<id8>_ophys.nwb`, where
+   `<subject>` is `<lab-slug>-<subject_id>` (unique across labs) and `<id8>`
+   is the first 8 characters of the donation id:
+   - `NWBFile`: `identifier` = donation id, `session_start_time` =
+     `session_date` at 00:00 UTC (the form asks for no time), `lab` =
+     `credit_lab`, `experimenter` = `credit_name`, `session_description` from
+     behavior and notes.
+   - `Subject`: id, scientific species, sex, age, genotype.
+   - `Device` (scope), `OpticalChannel`, `ImagingPlane` (indicator, location
+     = brain region, imaging rate = fps; excitation/emission unknown → NaN).
+   - `OnePhotonSeries` in `acquisition`: frames streamed with a
+     `DataChunkIterator` (a 10 GB donation never sits in memory), native
+     `uint8` / `uint16`, HDF5 chunks of 16 whole frames (~6 MB for 600x600
+     8-bit), gzip level 4, `rate` = fps, or `timestamps` when the donation has
+     them. This chunk shape is what Part B streams.
+3. Check: read every frame back and compare with the CALARAW source (bit
+   identical), then `nwbinspector` (no critical issues) and `dandi validate`.
+4. `dandi upload` into the collection's draft (`DANDI_API_KEY` in
+   `ingest.env`), then call `ingest_published` with the path.
+
+Size: plain gzip in HDF5 compresses ~1.44x on V4 (no up predictor; see
+"Codec"), so a NWB file is ~15% larger than its CALARAW chunks. DANDI has no
+per-file limit that matters here.
+
+The lab publishes a version of the collection from the DANDI web page when
+enough new recordings are in the draft (e.g. monthly). Each published version
+gets a DOI. The pilot adds each new donor and lab to the collection's
+contributors by hand on the DANDI page (role "Data Collector", included in the
+citation); automating that is later work.
+
+## Browse page in cala
+
+"Browse donated recordings" link on cala's start page, next to "My
+donations", opens a list, no sign-in needed:
+
+- Reads `cala_donations_public` with the donation project's anon key.
+- Resolves each `dandi_path` to its asset in the collection's most recent
+  published version (DANDI REST API, public, CORS open), falling back to the
+  draft for files not yet in a version.
+- One row per recording: indicator, species, region, scope, size, frames and
+  fps, contributing lab. Filters by species, indicator and region.
+- Per row: **Download** (DANDI asset download URL), **View** (Neurosift in a
+  new tab), **Copy acknowledgement** (below). Part B adds **Open in cala**.
+- A "How to cite" box with the collection's citation and DOI, taken from the
+  DANDI version metadata.
+
+## Citation and acknowledgement
+
+- The DANDI collection description and the browse page state: anyone who uses
+  the data cites the collection (DOI of the version used) and acknowledges the
+  contributing labs.
+- **Copy acknowledgement** gives a ready sentence per recording, e.g. "Data
+  were contributed by Jane Doe (Doe Lab) to the CaLab donated recordings
+  collection (DANDI:00XXXX, doi:10.48324/dandi.00XXXX/…)."
+- CC BY 4.0 makes attribution a licence condition; the acknowledgement
+  sentence is the norm we ask for on top, as other open datasets do.
+- Our own papers acknowledge every donor lab whose data they use, public or
+  CaLab only, logged per donation (`in_benchmark` / `benchmark_note`).
+- `contact_ok` now means "the CaLab team may contact me about this recording".
+
+## Consent, deletion and policy
+
+- Checkboxes (both required, unchanged): the donor has the right to share the
+  data, and it was recorded under an approved animal protocol.
+- The sharing choice (above), with its text, right next to the Donate button.
+- Deletion:
+  - Withdraw in the app until ingested.
+  - After that on request to `DELETION_CONTACTS` (`DonatePanel.tsx`): a
+    CaLab-only donation is deleted from the lab server; a public one is
+    removed from the DANDI draft and the lab server, which takes it out of
+    every later version.
+  - A published DANDI version cannot be changed; the panel says so.
+- UCLA IT / data policy: holding other labs' data on solaris still needs an OK
+  (now mostly for CaLab-only donations; public ones also live on DANDI).
+
+## What a donation contains (unchanged)
 
 All objects go under `pending/<donation_id>/` in the R2 bucket.
 
@@ -152,155 +310,103 @@ All objects go under `pending/<donation_id>/` in the R2 bucket.
 | `timestamps.csv`                       | CSV, optional      | Frame timestamps if the recording has them          |
 | `meta.json`                            | JSON (also in row) | Metadata, cala version, source file list (no paths) |
 
-`CALARAW1` (built, phase 1): each chunk file is a plain gzip of a 40-byte
-header (magic, width, height, first frame, frames in chunk, frames in
-recording, bytes per pixel, predictor, fps) and ~64 MB of whole frames. The
-byte layout is documented in `packages/io/src/calaraw.ts`. One canonical
-stream instead of the original AVI/TIFF files means:
+`CALARAW1`: each chunk file is a plain gzip of a 40-byte header (magic, width,
+height, first frame, frames in chunk, frames in recording, bytes per pixel,
+predictor, fps) and ~64 MB of whole frames; byte layout in
+`packages/io/src/calaraw.ts`, Python reader `python/src/calab/_calaraw.py`,
+cross-language fixtures in `packages/io/src/__fixtures__/`. One canonical
+stream means one format to validate, no untrusted AVI/TIFF parsing on the lab
+side, and frames exactly as cala decoded them. NWB is written on the lab side,
+from verified CALARAW, never in the browser.
 
-- one format to validate, no untrusted AVI/TIFF parsing on the lab side;
-- any input cala can open becomes a donation the same way;
-- the frames are exactly what cala decoded.
+## Codec (measured 2026-11-19, unchanged)
 
-Self-describing chunk files rather than one multipart object: each chunk
-uploads, resumes, is checked and can be previewed on its own, with a plain PUT
-(no multipart) and a signed content length per file. A 20-min V4 session is
-~130 chunks.
+| Codec                            | V4    | Wireless |
+| -------------------------------- | ----- | -------- |
+| gzip                             | 1.44× | 1.72×    |
+| **up predictor + gzip** (chosen) | 1.65× | 1.81×    |
+| best predictor + zstd -3         | 1.84× | 1.91×    |
+| FFV1 (one 360 MB V4 segment)     | 2.0×  |          |
 
-Code: writer and decoder `packages/io/src/calaraw.ts` (browser, tests in
-`packages/io/src/__tests__/calaraw.test.ts`); lab reader
-`calab.read_calaraw` / `calab.iter_calaraw` (`python/src/calab/_calaraw.py`).
-`python/tests/test_calaraw.py` decodes fixtures written by the browser encoder
-(`packages/io/src/__fixtures__/gen-calaraw-fixtures.ts`). Both decoders reject
-bad headers, payloads that are not exactly the declared frames, trailing data
-and declared sizes above a cap, and inflate no further than the declared size.
-
-## Metadata (table `cala_donations`)
-
-`supabase/migrations/020_cala_donations.sql`.
-
-- `id`, `user_id`, `created_at`, `updated_at`, `status` (`uploading` →
-  `uploaded` → `approved` | `rejected` → `ingested`; `withdrawn` by the donor)
-- Biology: `indicator`, `species`, `brain_region`, `expression` (virus /
-  transgenic), `preparation` (GRIN / window / ...), `behavior` (short)
-- Optics: `scope` (e.g. UCLA v4, Inscopix, own wireless), `fps`, `width`,
-  `height`, `n_frames`, `bytes_per_pixel`, `depth_um`, `led_power` (optional)
-- Provenance: `cala_version`, `dataset_hash`
-- Files: `declared_bytes`, `n_chunks`, `files` (name + exact bytes)
-- Consent: `license` (`cc-by-4.0` | `lab-use-only`), `rights_attested`,
-  `protocol_attested` (both must be true), `contact_ok` (may we contact them
-  about co-authorship)
-- Credit: `credit_name`, `credit_lab` (shown in the benchmark list), set by the
-  donor
-- Benchmark: `in_benchmark` (bool, admin), `benchmark_note` (admin)
-- `review_note` (admin), `notes` (length-capped)
-
-RLS: select by owner and admin. No client inserts or deletes; every write goes
-through the edge function (service role). Admins may update only
-`in_benchmark` / `benchmark_note` (column grant). CHECKs on every column (as
-in 014).
+Up predictor plus the browser's `CompressionStream('gzip')`: within ~10% of
+zstd, no WASM codec. ~260 MB per recorded minute of V4. Re-run with
+`apps/cala/scripts/donation-codec-bench.mjs`.
 
 ## Caps and cost
 
-Initial caps:
-
-- per donation ≤ 10 GB compressed (a ~38 min V4 session),
-- per user ≤ 2 donations not yet ingested,
-- **global ≤ 200 GB** in the bucket; the edge function refuses new uploads
-  above it. This alone bounds the R2 bill.
-
-R2 (checked 2026-11-19): 10 GB-month free, then $0.015 per GB-month; egress
-free; 1M writes/month free.
-
-| Scenario                                   | R2 cost        |
-| ------------------------------------------ | -------------- |
-| 50 donations/month, ~3 days in bucket each | ~$0.25 / month |
-| Bucket at the 200 GB global cap all month  | ~$2.85 / month |
-| Keep everything in the cloud instead, 1 TB | ~$15 / month   |
-
-Supabase stays on the free plan (rows, auth, edge function calls). The real
-long-term cost is lab-server disk: ~3 TB per year at 50 donations/month
-(20-min V4 sessions).
-
-Fallbacks: Supabase Pro ($25/month, 100 GB storage, 250 GB egress, then
-$0.09/GB) if one vendor matters more than cost; Backblaze B2 ($6.95/TB-month)
-is equivalent to R2.
+- Per donation ≤ 10 GB compressed, per user ≤ 2 donations not yet ingested,
+  global cap on bytes in the bucket (`DONATION_GLOBAL_CAP_BYTES`).
+- R2 is transit only (deleted after ingest), so it stays within the 10 GB-month
+  free tier in normal use; egress is free.
+- DANDI hosting is free (AWS Open Data). Its guaranteed retention is tied to
+  its NIH award (currently to 2029); the solaris copy is our backup.
+- Real long-term cost: solaris disk, ~3 TB per year at 50 donations/month
+  (20-min V4 sessions), plus the NWB copies while they are being made.
 
 ## Security
 
-| Risk                                    | Mitigation                                                                                                                                                     |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Anyone uploads anything                 | Real sign-in required; anonymous sessions rejected (012 pattern).                                                                                              |
-| Huge uploads / cost                     | Edge function checks caps before presigning; each presigned PUT carries a signed content length; global bucket cap.                                            |
-| Arbitrary files                         | Only the chunk, timestamp and meta names; finish step checks sizes against `declared_bytes` and the gzip + `CALARAW1` magic.                                   |
-| Malicious bytes reaching the lab server | Pull only `approved/`; decompress and parse `CALARAW1` (bounds-checked, size must equal header) in a container without network. Nothing else is opened or run. |
-| Non-imaging content                     | Admin preview decodes the first chunk and shows the mean image and a few frames before approval.                                                               |
-| Lab server exposure                     | Outbound pull only; the lab holds only the ingest token, which can list, download and close approved donations and nothing else.                               |
-| Leaked personal info                    | No paths uploaded, only base file names (strippable); email stays in auth, never in public views.                                                              |
-| Spam / flooding                         | Per-user limit, global cap, admin can disable the edge function.                                                                                               |
-| Leaked R2 key                           | R2 keys live only in edge function secrets; the browser and the lab server only ever see presigned URLs.                                                       |
+| Risk                                 | Mitigation                                                                                                     |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| Anyone uploads anything              | Real sign-in required; anonymous sessions rejected.                                                            |
+| Huge uploads / cost                  | Caps checked before presigning; signed content length per PUT; global bucket cap.                              |
+| Arbitrary files                      | Only chunk, timestamp and meta names; finish checks sizes and the gzip + `CALARAW1` magic.                     |
+| Malicious bytes on the lab server    | Pull only `approved/`; strict CALARAW and sidecar parsing; read-only storage; `.rejected/` quarantine.         |
+| Non-imaging content                  | Admin preview (mean image, frames) before approval.                                                            |
+| CaLab-only data published by mistake | `sharing` checked by the edge function, the conversion script and the public view (three independent checks).  |
+| Personal data in public metadata     | Public view lists only recording metadata and the donor-chosen credit; no email, user id, notes or file names. |
+| Lab server exposure                  | Outbound only; holds the ingest token and the DANDI key, nothing else.                                         |
+| Leaked keys                          | R2 keys only in edge function secrets; DANDI key only in `ingest.env` (chmod 600) on solaris.                  |
 
-## Consent and policy
+## Testing
 
-- Checkbox text: the uploader has the right to share the data and agrees to
-  CC BY 4.0, and the recordings were made under an approved animal protocol.
-- License: always CC BY 4.0 (the UI offers no other choice; the table still
-  accepts `lab-use-only`). The data is kept within the lab; attribution is
-  the donor's name and lab, both required (form and edge function).
-- Co-authorship: offered whenever a donation is used in a benchmark / dataset
-  paper; uses are logged per donation.
-- Deletion at any time: withdraw in the app until ingested; after that on
-  request to the CaLab team, and the lab deletes `data/raw/donations/<id>/`.
-  Requests go to the address(es) in `DELETION_CONTACTS` (`DonatePanel.tsx`).
-- Before launch: check with UCLA IT / research data policy about holding other
-  labs' data on the lab server.
+- Edge function (Deno): `create` with and without each new field and invalid
+  values; `sharing`/`license` agreement; `ingest_published` refuses `lab`,
+  wrong status, bad paths, and needs the ingest token.
+- RLS (PGlite): anon sees only published public rows and only the view's
+  columns; the base table stays owner/admin only; existing rows migrate.
+- cala: the Donate button stays disabled without a sharing choice; age writes
+  an ISO duration; "My donations" shows the DANDI link; browse page against a
+  mocked view and mocked DANDI API.
+- Python: `donation_to_nwb.py` on the CALARAW fixtures writes NWB whose frames
+  read back bit identical, with the expected chunks and metadata, passing
+  `nwbinspector`; refuses a `lab` donation and an unknown species.
+- End to end: a synthetic V4 recording donated as public, through ingest and
+  conversion, uploaded to the DANDI **sandbox** (`sandbox.dandiarchive.org`),
+  visible on the browse page with working Download and View links.
 
 ## Phases
 
-0. **Measure.** Done: up predictor + native gzip (see Codec).
-1. **Format.** Done: `CALARAW1` writer/decoder (TypeScript) and reader
-   (Python), with round-trip and cross-language tests.
-2. **Backend.** Code done: migration `020_cala_donations.sql`, edge function
-   `supabase/functions/donation` (Deno tests), RLS tests. Not deployed.
-3. **UI.** Code done: Donate panel at the bottom of cala's Recording tab
-   (`DonatePanel.tsx`, `donation-runner.ts`, `donation-worker.ts`), encode to
-   OPFS then upload with retries and resume; "My donations" list.
-4. **Moderation.** Code done: Donations view in `apps/admin` with preview,
-   approve/reject and benchmark flag.
-5. **Ingest.** Code done: `python/scripts/ingest_donations.py` (cron; setup in
-   its docstring).
-6. **Deploy.** See "To go live".
-7. **Pilot** with 2–3 known labs before announcing it.
+1. **Done (lab-only):** format, edge function, migration 020, panel, admin
+   view, solaris ingest, end-to-end run.
+2. **Part A** (this spec): sharing choice, new fields, migration 021, edge
+   function, panel and admin text, conversion script, browse page, tests,
+   sandbox run.
+3. **Release:** merge PR #452, tag.
+4. **Pilot** with 2–3 known labs before announcing it.
+5. **Part B:** open DANDI recordings in cala.
 
 ## To go live (needs people, not code)
 
-Done on the test setup (2026-11-20, Marcel's own Supabase project `Cala` and
-R2 bucket `calab-donations`): migration (cala-only), edge function with
-secrets, bucket CORS and lifecycle rules, Resend notification email, solaris
-ingest (`~/calab-ingest`, hourly systemd user timer with linger, into
-`/mnt/data_1/mbrosch/calab_donations`). One donation ran end to end: upload,
-preview, approve, ingest; the stored frames are bit-identical to the AVI. R2
-verified: a PUT with a different length than signed is refused (403), CORS,
-Range GET and copy work.
+Done on the test setup (2026-11-20): Supabase project `Cala` (donations
+only), R2 bucket `calab-donations` with CORS and lifecycle rules, Gmail SMTP
+for sign-in, Resend notification email, solaris ingest (`~/calab-ingest`,
+hourly systemd user timer into `/mnt/data_1/mbrosch/calab_donations`), live
+build defaults in `deploy.yml`.
 
 Still open:
 
-1. **Sign-in email for any donor:** done for now: Supabase sends through
-   Gmail SMTP (`marcelbrosch.mb@gmail.com`, app password; ~500 mails/day),
-   email rate limit raised. Later: a verified lab domain (Resend) for a more
-   official sender; only the SMTP settings change.
-2. **Live build:** add repo secrets `DONATION_SUPABASE_URL` and
-   `DONATION_SUPABASE_ANON_KEY` (repo admin, i.e. Daniel); `deploy.yml`
-   passes them as `VITE_DONATION_SUPABASE_*`. Donations then use Marcel's
-   project, everything else stays on Daniel's.
-3. **UCLA IT / data policy:** OK to hold other labs' data on the lab server.
-4. Decide the open questions below (co-authorship criteria at least).
-5. Merge, then tag the release (`v2.21.0`).
+1. **DANDI:** create an account, create the "CaLab donated recordings"
+   dandiset (CC BY 4.0, description with the citation and acknowledgement
+   request), put its API key in `~/calab-ingest/ingest.env`. A sandbox
+   dandiset first for the end-to-end test.
+2. **UCLA IT / data policy:** OK to hold other labs' data on solaris.
+3. **Heads-up to Daniel** before tagging: the release also ships the 23
+   unreleased `main` commits since `v2.20.0`.
+4. Merge, then tag.
 
 ## Open questions
 
-- Co-authorship criteria: which papers, what counts as "used", who decides.
-- Minimum recording length / quality to accept into the benchmark.
-- Publish CC-BY donations on DANDI (free hosting, DOI per dataset) for the
-  benchmark release?
-- Public listing of donations (metadata and credit only) or private to the lab?
+- Minimum recording length / quality to accept.
+- How often to publish a DANDI version (monthly, or per N recordings).
+- Whether CaDecon / CaTune donations go into one collection per app or one
+  per data type.
