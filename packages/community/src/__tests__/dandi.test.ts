@@ -11,7 +11,7 @@ import {
 const CFG = dandiConfig('000999', 'sandbox')!;
 
 function fakeFetch(routes: Record<string, unknown>) {
-  return vi.fn(async (url: string) => {
+  return vi.fn(async (url: string, _init?: RequestInit) => {
     const body = routes[url];
     if (body === undefined) return new Response('not found', { status: 404 });
     return new Response(JSON.stringify(body), { status: 200 });
@@ -94,6 +94,14 @@ describe('dandi helpers', () => {
     expect(c.doi).toBeNull();
     expect(c.citation).toBe('draft cite');
     expect(c.assets.size).toBe(1);
+  });
+
+  it('reports a timed-out DANDI as not reachable', async () => {
+    const stalled = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      throw new DOMException('timed out', 'TimeoutError');
+    }) as unknown as typeof fetch;
+    await expect(loadDandiCollection(CFG, stalled)).rejects.toThrow(/DANDI is not reachable/);
   });
 
   it('throws a readable error when DANDI answers with an error', async () => {

@@ -49,10 +49,13 @@ export const donationDandi: DandiConfig | null = dandiConfig(
   import.meta.env.VITE_DONATION_DANDI_INSTANCE,
 );
 
+/** A stalled DANDI must not leave the browse page loading forever. */
+export const DANDI_TIMEOUT_MS = 15_000;
+
 async function getJson(fetchFn: typeof fetch, url: string): Promise<Record<string, unknown>> {
   let res: Response;
   try {
-    res = await fetchFn(url);
+    res = await fetchFn(url, { signal: AbortSignal.timeout(DANDI_TIMEOUT_MS) });
   } catch (err) {
     throw new Error(`DANDI is not reachable (${err instanceof Error ? err.message : err})`, {
       cause: err,
