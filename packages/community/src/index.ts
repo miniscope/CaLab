@@ -89,6 +89,7 @@ export {
   donationUploadUrl,
   finishDonation,
   listDonations,
+  listPublicDonations,
   putPresigned,
   reviewDonation,
   setDonationBenchmark,
@@ -99,6 +100,19 @@ export type {
   DonationLicense,
   DonationMeta,
   DonationRow,
+  DonationSharing,
   DonationStatus,
   PresignedRequest,
+  PublicDonation,
+  SubjectSex,
 } from './donation-service.ts';
+export {
+  acknowledgementText,
+  dandiConfig,
+  dandiDownloadUrl,
+  dandiFolderUrl,
+  dandiViewUrl,
+  donationDandi,
+  loadDandiCollection,
+} from './dandi.ts';
+export type { DandiAsset, DandiCollection, DandiConfig } from './dandi.ts';

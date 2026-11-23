@@ -9,9 +9,12 @@
 import { getDonationSupabase } from './donation-auth.ts';
 
 export type DonationStatus =
-  'uploading' | 'uploaded' | 'approved' | 'rejected' | 'ingested' | 'withdrawn';
+  'uploading' | 'uploaded' | 'approved' | 'rejected' | 'ingested' | 'withdrawn' | 'published';
 
 export type DonationLicense = 'cc-by-4.0' | 'lab-use-only';
+/** Public on DANDI, or CaLab only. */
+export type DonationSharing = 'public' | 'lab';
+export type SubjectSex = 'M' | 'F' | 'U' | 'O';
 
 /** What the donor declares about the recording; also the row's columns. */
 export interface DonationMeta {
@@ -31,13 +34,21 @@ export interface DonationMeta {
   bytes_per_pixel: 1 | 2;
   cala_version: string;
   dataset_hash?: string | null;
-  license: DonationLicense;
   rights_attested: boolean;
   protocol_attested: boolean;
   contact_ok: boolean;
   credit_name?: string | null;
   credit_lab?: string | null;
   notes?: string | null;
+  sharing: DonationSharing;
+  /** The donor's own label for the animal: letters, digits, dashes. */
+  subject_id: string;
+  subject_sex: SubjectSex;
+  /** ISO 8601 duration, e.g. P90D. */
+  subject_age: string;
+  /** YYYY-MM-DD. */
+  session_date: string;
+  genotype?: string | null;
 }
 
 /** One object of a donation, with its exact size in bytes. */
@@ -58,6 +69,9 @@ export interface DonationRow extends DonationMeta {
   in_benchmark: boolean;
   benchmark_note: string | null;
   review_note: string | null;
+  license: DonationLicense;
+  dandi_path: string | null;
+  published_at: string | null;
 }
 
 /** A presigned request: send it exactly as given. */
@@ -171,6 +185,42 @@ export async function listDonations(): Promise<DonationRow[]> {
     .order('created_at', { ascending: false });
   if (error) throw new DonationApiError(error.message);
   return (data as DonationRow[]) ?? [];
+}
+
+/** A published public donation as the public view shows it (no sign-in needed). */
+export interface PublicDonation {
+  id: string;
+  published_at: string;
+  indicator: string;
+  species: string;
+  brain_region: string;
+  expression: string | null;
+  preparation: string | null;
+  behavior: string | null;
+  scope: string;
+  fps: number;
+  width: number;
+  height: number;
+  n_frames: number;
+  bytes_per_pixel: 1 | 2;
+  depth_um: number | null;
+  subject_sex: SubjectSex;
+  subject_age: string;
+  genotype: string | null;
+  credit_name: string | null;
+  credit_lab: string | null;
+  dandi_path: string;
+}
+
+/** Published public donations (view cala_donations_public), newest first. */
+export async function listPublicDonations(): Promise<PublicDonation[]> {
+  const client = await requireClient();
+  const { data, error } = await client
+    .from('cala_donations_public')
+    .select('*')
+    .order('published_at', { ascending: false });
+  if (error) throw new DonationApiError(error.message);
+  return (data as PublicDonation[]) ?? [];
 }
 
 // ---------------------------------------------------------------------------
