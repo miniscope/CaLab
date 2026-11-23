@@ -5,6 +5,12 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.22.1] - 2026-11-23
+
+### Changed
+
+- **Donate data (cala):** the form's descriptive fields (indicator, species, brain region, expression, preparation, behavior, strain / genotype, scope) are now click-to-open dropdowns with presets and an "Other…" entry for a custom value; before, presets only appeared while typing, and not at all in some browsers. New preset lists for expression, preparation, behavior, strain / genotype and specific scope models in `packages/community/src/field-options.ts`, for reuse by the other CaLab tools.
+
 ## [2.22.0] - 2026-11-23
 
 ### Added

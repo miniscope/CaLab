@@ -983,3 +983,11 @@
   margin: 0.5rem 0;
   font-size: 0.9em;
 }
+.cala-donate__preset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.cala-donate__preset select {
+  max-width: 100%;
+}

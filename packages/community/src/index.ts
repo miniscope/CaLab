@@ -10,7 +10,14 @@ export { createSubmissionService } from './submission-service.ts';
 export type { SubmissionService } from './submission-service.ts';
 
 // Field options
-export { INDICATOR_OPTIONS } from './field-options.ts';
+export {
+  BEHAVIOR_OPTIONS,
+  EXPRESSION_OPTIONS,
+  GENOTYPE_OPTIONS,
+  INDICATOR_OPTIONS,
+  PREPARATION_OPTIONS,
+  SCOPE_MODEL_OPTIONS,
+} from './field-options.ts';
 
 // Analytics
 export { initSession, trackEvent, updateTesterTag } from './analytics.ts';
