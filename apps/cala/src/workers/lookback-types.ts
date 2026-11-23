@@ -39,7 +39,15 @@ export type SlowToLookback =
   /** A library the slow loop published (`TraceLibrary.toBytes()`, a copy; transferred). */
   | { type: 'library'; session: number; version: number; bytes: Uint8Array }
   /** The `frames` buffer of a reply, back for reuse (transferred). */
-  | { type: 'release'; session: number; frames: Float32Array };
+  | { type: 'release'; session: number; frames: Float32Array }
+  /**
+   * The Final settle starts: its whole plan, `[frame, block, ...]` in request
+   * order, requested `chunk` frames at a time (`lib/settle-readers.ts`).
+   * Worker 0 has its settle readers prepare the frames ahead.
+   */
+  | { type: 'settle-plan'; session: number; frames: Float64Array; chunk: number }
+  /** The Final settle ended (done or stopped): the readers stop. */
+  | { type: 'settle-end'; session: number };
 
 /** Look-back worker -> slow worker. */
 export type LookbackToSlow =
@@ -78,7 +86,16 @@ export type MainToLookback =
    * back states of the newest two sessions only (worker 0 keeps every
    * session's, for the Final settle).
    */
-  | { type: 'begin'; session: number; source: LookbackSource; prune?: boolean }
+  | {
+      type: 'begin';
+      session: number;
+      source: LookbackSource;
+      prune?: boolean;
+      /** Worker 0: settle readers for the Final settle (`settleReaderCount`; absent or 0: none). */
+      readers?: number;
+      /** Worker 0 (`?debug&settlecheck`): redo every reader's frame here and count mismatched bits. */
+      check?: boolean;
+    }
   /** What the live pipeline recorded for frames `start..start + dy.length` (copies; transferred). */
   | {
       type: 'rows';
@@ -183,4 +200,8 @@ export interface SettleStatus {
   /** The user stopped it early. */
   stopped: boolean;
   done: boolean;
+  /** Visits and refines over the sweep (before the last round of visits; absent until then). */
+  sweep?: { visits: number; refines: number };
+  /** Visit workers idle when an answer was handled, on average (absent: no answer yet). */
+  idleVisitWorkers?: number;
 }

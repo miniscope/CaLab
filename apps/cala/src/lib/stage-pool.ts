@@ -35,6 +35,14 @@ export class StagePool {
     return new Promise((resolve) => this.waiters.push(resolve));
   }
 
+  /**
+   * A buffer handed out will never come back (the worker it went to was
+   * ended): one more may be made in its place.
+   */
+  forget(): void {
+    if (this.created > this.free.length) this.created--;
+  }
+
   /** A buffer came back. One of the wrong size (not ours) is ignored. */
   release(buf: Float32Array): void {
     if (buf.length !== this.length) return;

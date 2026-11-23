@@ -134,6 +134,12 @@ export interface LookbackWork {
   otherMs: number;
   /** Time the worker waited for the main thread's rows or the back half's state (not busy), ms. */
   waitMs: number;
+  /** Of `preprocessMs`, the back half (stage C) alone, ms. */
+  backMs?: number;
+  /** Final settle: frames prepared by the settle readers; checked and mismatched (`?debug&settlecheck`). */
+  readerFrames?: number;
+  checked?: number;
+  mismatched?: number;
 }
 
 export function emptyLookbackWork(): LookbackWork {
@@ -148,6 +154,15 @@ export interface LookbackTiming {
   /** The rest of the worker's `serve` call: its total, less the waits and the three above. */
   otherMs: number;
   waitMs: number;
+  /** Of `preprocessMs`, the back half (stage C) alone, ms (absent from older builds). */
+  backMs?: number;
+  /** Final settle: busy ms of each settle reader since the last answer (absent: none). */
+  readers?: number[];
+  /** Final settle: frames the readers prepared that this answer used. */
+  readerFrames?: number;
+  /** `?debug&settlecheck`: reader frames redone on worker 0, and those whose bits differed. */
+  checked?: number;
+  mismatched?: number;
 }
 
 /** Add one answer's timing to a kind's totals. */
@@ -160,6 +175,10 @@ export function addLookbackAnswer(into: LookbackWork, frames: number, t?: Lookba
   into.solveMs += t.solveMs;
   into.otherMs += t.otherMs;
   into.waitMs += t.waitMs;
+  if (t.backMs !== undefined) into.backMs = (into.backMs ?? 0) + t.backMs;
+  if (t.readerFrames) into.readerFrames = (into.readerFrames ?? 0) + t.readerFrames;
+  if (t.checked) into.checked = (into.checked ?? 0) + t.checked;
+  if (t.mismatched) into.mismatched = (into.mismatched ?? 0) + t.mismatched;
 }
 
 /** The slow worker's batch wait: how long each live batch sat in its inbox. */
@@ -190,6 +209,8 @@ export interface WorkStatus {
    * from older builds.
    */
   lookbackWorkerBusyMs?: number[];
+  /** Final-settle readers of look-back worker 0 (`lib/settle-readers.ts`): busy ms each, this run (absent: none yet). */
+  settleReaderBusyMs?: number[];
   /** Settle pool workers still serving (a failed one is left out); absent from older builds. */
   settleWorkers?: number;
   /** Live frames the slow loop has observed since the run began (the speed floor's per-frame divisor); absent from older builds. */
@@ -227,6 +248,8 @@ export interface WorkRates {
     busy: number;
     /** Per look-back worker (0: need-driven and the end settle; 1..S: the settle pool), its busy share. */
     workers: number[];
+    /** Per Final-settle reader (worker 0's helpers), its busy share (absent: none this run). */
+    readers?: number[];
     /**
      * Look-back workers able to be busy now (need-driven one plus the live
      * settle pool; a failed pool worker no longer counts). Set by `WorkRater`.
@@ -293,12 +316,15 @@ export function workRates(prev: WorkStatus, cur: WorkStatus): WorkRates | null {
   const workers = (cur.lookbackWorkerBusyMs ?? []).map((v, i) =>
     share(prev.lookbackWorkerBusyMs?.[i] ?? 0, v),
   );
+  const readers = cur.settleReaderBusyMs?.map((v, i) =>
+    share(prev.settleReaderBusyMs?.[i] ?? 0, v),
+  );
   const nb = cur.batchWait.batches - prev.batchWait.batches;
   return {
     spanMs: span,
     slow,
     visit,
-    lookback: { busy, workers, kinds },
+    lookback: { busy, workers, kinds, ...(readers ? { readers } : {}) },
     batchWait: {
       meanMs: nb > 0 ? (cur.batchWait.sumMs - prev.batchWait.sumMs) / nb : 0,
       lastMs: cur.batchWait.lastMs,
@@ -364,6 +390,7 @@ export class WorkRater {
       );
     r.lookback.busy = fit('lb', r.lookback.busy, n);
     r.lookback.workers = r.lookback.workers.map((v, i) => fit(`lb${i}`, v));
+    if (r.lookback.readers) r.lookback.readers = r.lookback.readers.map((v, i) => fit(`rd${i}`, v));
   }
 
   reset(): void {
@@ -587,6 +614,14 @@ export function workByKind(r: WorkRates): WorkByKind {
       shares: fitShares(shares),
     });
   }
+  // Worker 0's Final-settle readers: rows of their own, from the first settle that had them.
+  (lb.readers ?? []).forEach((v, i) =>
+    workers.push({
+      name: `Settle reader ${i + 1}`,
+      group: 'lookback',
+      shares: fitShares({ ...noShares(), finalSettle: v }),
+    }),
+  );
   const totals = { ...noShares(), spare: 0 };
   for (const w of workers) {
     let used = 0;

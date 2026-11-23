@@ -13,10 +13,12 @@
  */
 import { initCalaWasm } from '../lib/cala-wasm.ts';
 import { FrameSource } from '../lib/frame-source.ts';
-import { LookbackReader, lookbackFrames } from '../lib/lookback-reader.ts';
+import { LookbackReader, lookbackFrames, type LookbackSolved } from '../lib/lookback-reader.ts';
+import { SettleReaders, type SettleReaderLike } from '../lib/settle-readers.ts';
 import { LOOKBACK } from '../lib/slow-runner.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import type {
+  LookbackSource,
   LookbackToMain,
   LookbackToSlow,
   MainToLookback,
@@ -34,7 +36,17 @@ interface Run {
   ready: Promise<{ reader: LookbackReader; pool: StagePool }>;
   source: FrameSource | null;
   reader: LookbackReader | null;
+  /** The recording as the main thread gave it (settle readers open their own). */
+  files: LookbackSource;
+  /** Settle readers for the Final settle, and the check mode (`begin`). */
+  readers: number;
+  check: boolean;
+  /** The Final settle's readers while it runs. */
+  settle: SettleReaders | null;
 }
+
+/** Chunks the settle readers prepare ahead of the request being served. */
+const readerDepth = (readers: number) => readers + 1;
 
 let slow: MessagePort | null = null;
 let run: Run | null = null;
@@ -55,6 +67,8 @@ function stop(): void {
   const r = run;
   run = null;
   if (!r) return;
+  r.settle?.dispose();
+  r.settle = null;
   r.reader?.dispose();
   r.source?.dispose();
 }
@@ -62,7 +76,15 @@ function stop(): void {
 function begin(msg: Extract<MainToLookback, { type: 'begin' }>): void {
   stop();
   // `ready` is set right below (it needs `r` to tell a stale open).
-  const r = { session: msg.session, source: null, reader: null } as unknown as Run;
+  const r = {
+    session: msg.session,
+    source: null,
+    reader: null,
+    files: msg.source,
+    readers: Math.max(0, Math.floor(msg.readers ?? 0)),
+    check: msg.check === true,
+    settle: null,
+  } as unknown as Run;
   r.ready = open(r, msg);
   r.ready.catch((err: unknown) => {
     if (run === r)
@@ -93,7 +115,9 @@ async function open(
   }
   r.source = src;
   r.reader = new LookbackReader(src, msg.prune ? { keepSessions: 2 } : {});
-  const pool = new StagePool(2, LOOKBACK.takeMax * src.info.width * src.info.height);
+  // Two buffers (one answer being observed, one being served), and the settle readers' chunks ahead.
+  const ahead = r.readers > 0 ? readerDepth(r.readers) : 0;
+  const pool = new StagePool(2 + ahead, LOOKBACK.takeMax * src.info.width * src.info.height);
   return { reader: r.reader, pool };
 }
 
@@ -131,7 +155,10 @@ function handleMain(msg: MainToLookback): void {
       withReader(msg.session, (reader) => reader.setSession(msg.index, msg.transform));
       return;
     case 'flat':
-      withReader(msg.session, (reader) => reader.setFlatField(msg.map));
+      withReader(msg.session, (reader) => {
+        reader.setFlatField(msg.map);
+        run?.settle?.setFlat(msg.map, reader.flatField.seq);
+      });
       return;
     case 'reset':
       if (run && msg.session >= run.session) stop();
@@ -146,6 +173,15 @@ function handleSlow(msg: SlowToLookback): void {
       return;
     case 'release':
       withReader(msg.session, (_, pool) => pool.release(msg.frames));
+      return;
+    case 'settle-plan':
+      withReader(msg.session, (reader, pool) => void startSettle(msg, reader, pool));
+      return;
+    case 'settle-end':
+      withReader(msg.session, () => {
+        run?.settle?.stop();
+        if (run) run.settle = null;
+      });
       return;
     case 'request': {
       const r = run;
@@ -166,6 +202,113 @@ function handleSlow(msg: SlowToLookback): void {
   }
 }
 
+/**
+ * The Final settle starts: settle readers prepare its frames ahead
+ * (`lib/settle-readers.ts`). Their front half is this worker's own (its
+ * state), so they give the same bits.
+ */
+async function startSettle(
+  msg: Extract<SlowToLookback, { type: 'settle-plan' }>,
+  reader: LookbackReader,
+  pool: StagePool,
+): Promise<void> {
+  const r = run;
+  if (!r || r.readers === 0 || msg.frames.length < 2) return;
+  r.settle?.dispose();
+  r.settle = null;
+  const plan = lookbackPlan(msg.frames);
+  let front: Uint8Array;
+  try {
+    front = await reader.frontState(plan[0].frame);
+  } catch {
+    return; // Look-back stopped: the settle is served here, if at all.
+  }
+  if (run !== r) return;
+  r.settle = new SettleReaders(
+    {
+      makeReader: () =>
+        new Worker(new URL('./settle-reader-worker.ts', import.meta.url), {
+          type: 'module',
+        }) as unknown as SettleReaderLike,
+      acquire: () => pool.acquire(),
+      release: (buf) => pool.release(buf),
+      forget: () => pool.forget(),
+      job: (frames) => reader.readerJob(frames),
+    },
+    plan,
+    {
+      count: r.readers,
+      depth: readerDepth(r.readers),
+      chunk: msg.chunk,
+      source: r.files,
+      front,
+      flat: reader.flatField,
+    },
+  );
+}
+
+/** A settle plan (`[frame, block, ...]`) as frames. */
+function lookbackPlan(flat: Float64Array): { frame: number; block: number }[] {
+  const out: { frame: number; block: number }[] = [];
+  for (let k = 0; k + 1 < flat.length; k += 2) out.push({ frame: flat[k], block: flat[k + 1] });
+  return out;
+}
+
+/**
+ * A Final-settle request whose frames a settle reader prepared: the back
+ * half and the solve here, as `LookbackReader.serve` does them (the library
+ * applied first, the frames in order). Null: not prepared, serve it the old way.
+ */
+async function serveReady(
+  r: Run,
+  reader: LookbackReader,
+  frames: { frame: number; block: number }[],
+): Promise<
+  | { out: Float32Array; solved: LookbackSolved }
+  | { out: null; readers: number[] }
+  | null
+> {
+  const settle = r.settle;
+  if (!settle) return null;
+  const t0 = performance.now();
+  // The library in hand when the request came, as `serve` applies it before its first await.
+  reader.applyLibraryNow();
+  const got = await settle.take(frames);
+  const timing = { readers: settle.drainBusy() };
+  // Not prepared: served the old way, with the library applied above (none newer).
+  if (!got) return { out: null, readers: timing.readers };
+  const t1 = performance.now();
+  const out = got.buf;
+  const px = reader.pixels;
+  // A flat field newer than the one the reader used: these frames are prepared again here.
+  const redo = got.flatSeq !== reader.flatField.seq;
+  let checked = 0;
+  let mismatched = 0;
+  const scratch = r.check && !redo ? new Float32Array(px) : null;
+  for (let i = 0; i < frames.length; i++) {
+    const y = out.subarray(i * px, (i + 1) * px);
+    if (redo) await reader.prepareHere(frames[i].frame, y);
+    else if (scratch) {
+      await reader.prepareHere(frames[i].frame, scratch);
+      const a = new Uint32Array(scratch.buffer);
+      const b = new Uint32Array(y.buffer, y.byteOffset, px);
+      checked++;
+      for (let k = 0; k < px; k++)
+        if (a[k] !== b[k]) {
+          mismatched++;
+          break;
+        }
+    }
+    await reader.backOnly(frames[i].frame, frames[i].block, y);
+  }
+  const solved = reader.solveDone(frames.length, out, t0, t1 - t0);
+  Object.assign(solved.timing, timing, {
+    readerFrames: redo ? 0 : frames.length,
+    ...(r.check ? { checked, mismatched } : {}),
+  });
+  return { out, solved };
+}
+
 async function serve(r: Run, msg: Extract<SlowToLookback, { type: 'request' }>): Promise<void> {
   const { session, id } = msg;
   try {
@@ -173,13 +316,19 @@ async function serve(r: Run, msg: Extract<SlowToLookback, { type: 'request' }>):
     const frames = lookbackFrames(msg.items);
     if (frames.length > LOOKBACK.takeMax)
       throw new Error(`look-back: ${frames.length} frames in one request`);
-    const out = await pool.acquire();
-    let solved;
-    try {
-      solved = await reader.serve(frames, out, msg.skip);
-    } catch (err) {
-      pool.release(out);
-      throw err;
+    const ready = msg.skip ? null : await serveReady(r, reader, frames);
+    let out: Float32Array;
+    let solved: LookbackSolved;
+    if (ready?.out) ({ out, solved } = ready);
+    else {
+      out = await pool.acquire();
+      try {
+        solved = await reader.serve(frames, out, msg.skip, ready !== null);
+      } catch (err) {
+        pool.release(out);
+        throw err;
+      }
+      if (ready && !ready.out) solved.timing.readers = ready.readers;
     }
     if (run !== r) return;
     const transfer: Transferable[] = [out.buffer, solved.traces.buffer];

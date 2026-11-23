@@ -73,6 +73,10 @@ export interface LookbackClientOptions {
     Partial<Pick<SlowClient, 'settlePace' | 'settleCap' | 'settlePool'>>;
   /** The settle pool's size S: look-back workers besides worker 0 (default 0; `settlePoolSize`). */
   pool?: number;
+  /** Worker 0's Final-settle readers (`settleReaderCount`; default 0: none). */
+  readers?: number;
+  /** Worker 0 redoes the readers' frames and counts mismatched bits (`?debug&settlecheck`). */
+  check?: boolean;
   /** The open recording's files (null: none, or a live source). */
   source: () => LookbackSource | null;
   /** Why look-back cannot run besides the source (a live stream, no pipelined workers). */
@@ -196,7 +200,18 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
         newest: null,
         joining: 0,
       };
-      postAll(() => [{ type: 'begin', session, source }, []]);
+      // Worker 0 only (the pool starts later, with `prune`): the Final settle's readers.
+      const readers = Math.max(0, Math.floor(o.readers ?? 0));
+      postAll(() => [
+        {
+          type: 'begin',
+          session,
+          source,
+          ...(readers > 0 ? { readers } : {}),
+          ...(o.check ? { check: true } : {}),
+        },
+        [],
+      ]);
       return true;
     },
     rows(session, start, dy, dx, flags, flickerOffset, flickerGain) {

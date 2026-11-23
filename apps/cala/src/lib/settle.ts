@@ -21,6 +21,12 @@ export const SETTLE = {
   block: 64,
   /** Frames per request to the look-back worker (each earns its visits after it is observed). */
   batch: 16,
+  /**
+   * With visit workers, an answer is fed this many frames at a time, the slow
+   * worker giving way between pieces so visit results are applied and new
+   * visits handed out while the settle goes on (`SlowRunner.settleFeed`).
+   */
+  piece: 4,
   /** Frames between checkpoints: a published library and the "cells still moving" count. */
   checkEvery: 1200,
   /** A cell is moving when it changed by more than this many times its split-half noise since the last checkpoint. */

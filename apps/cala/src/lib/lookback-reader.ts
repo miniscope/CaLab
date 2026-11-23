@@ -67,7 +67,7 @@ import {
 import type { FlatFieldMap } from './flat-field.ts';
 import { sessionOfFrame, type FrameSourceInfo, type FramePixels } from './frame-source.ts';
 import { frontReplay, rigidRecords } from './pipeline-stages.ts';
-import { RunRecord } from './run-record.ts';
+import { RunRecord, type RunSpan } from './run-record.ts';
 import type { SessionTransform } from './session-boundary.ts';
 import type { LookbackTiming } from './work-meter.ts';
 
@@ -93,7 +93,40 @@ function isIdentity(t: SessionTransform | undefined): boolean {
 }
 
 function emptyTiming(): LookbackTiming {
-  return { readMs: 0, preprocessMs: 0, solveMs: 0, otherMs: 0, waitMs: 0 };
+  return { readMs: 0, preprocessMs: 0, solveMs: 0, otherMs: 0, waitMs: 0, backMs: 0 };
+}
+
+/**
+ * The stateless half of a look-back frame (stage A's replay and stage B):
+ * the recorded flicker and the flat field (`front`), the session warp, the
+ * recorded rigid shift, from `raw` into `y` (`buf`: a frame of scratch).
+ * One function for worker 0's own frames and the Final settle's readers
+ * (`settle-feed.ts`), so both give the same bits. `rec` holds the frame's
+ * rows at index 0.
+ */
+export function prepareFrame(
+  front: Preprocessor,
+  aligner: SessionAligner | null,
+  motion: MotionCorrector,
+  raw: FramePixels,
+  rec: Pick<RunSpan, 'dy' | 'dx' | 'flags' | 'flickerOffset' | 'flickerGain'>,
+  buf: Float32Array,
+  y: Float32Array,
+): void {
+  frontReplay(front, raw, 1, buf, rec, 0);
+  // Stage B of a replay: the session's re-registration first, then the rigid shift.
+  aligner?.warpF32(buf);
+  motion.applyF32(buf, rigidRecords(motion, rec.dy, rec.dx, rec.flags, 1), y);
+}
+
+/** A motion corrector for the replay's rigid shifts (default options). */
+export function replayMotion(width: number, height: number): MotionCorrector {
+  const opts = new MotionOptions();
+  try {
+    return new MotionCorrector(width, height, opts);
+  } finally {
+    opts.free();
+  }
 }
 
 /** Block seqs at or below this belong to the settle during Discover (`-(1e6 + k)`); the end settle's are above. */
@@ -114,6 +147,21 @@ export function lookbackFrames(flat: ArrayLike<number>): LookbackFrame[] {
   for (let k = 0; k + 2 < flat.length; k += 3 + flat[k + 2])
     out.push({ frame: flat[k], block: flat[k + 1] });
   return out;
+}
+
+/**
+ * One job of a Final-settle reader (`settle-feed.ts`): the frames to prepare
+ * and, per frame, the rows Discover recorded and the session warp (`warp`,
+ * 3 per frame; zeros: none).
+ */
+export interface SettleReaderJob {
+  frames: Float64Array;
+  dy: Float32Array;
+  dx: Float32Array;
+  flags: Uint8Array;
+  flickerOffset: Float32Array;
+  flickerGain: Float32Array;
+  warp: Float32Array;
 }
 
 /** What `LookbackReader.serve` produced (the frames are in the caller's buffer). */
@@ -145,6 +193,8 @@ export class LookbackReader {
   private alignerSession = -1;
   private flat: FlatFieldMap | null = null;
   private flatDirty = false;
+  /** Flat-field maps received so far (a prepared frame carries the one it used). */
+  private flatSeq = 0;
   /** Front half (calibration and flat field only; replayed, so stateless). */
   private front: Preprocessor | null = null;
   private motion: MotionCorrector | null = null;
@@ -242,6 +292,12 @@ export class LookbackReader {
   setFlatField(map: FlatFieldMap | null): void {
     this.flat = map;
     this.flatDirty = true;
+    this.flatSeq++;
+  }
+
+  /** The newest flat-field map and its sequence number (`setFlatField` calls so far). */
+  get flatField(): { map: FlatFieldMap | null; seq: number } {
+    return { map: this.flat, seq: this.flatSeq };
   }
 
   /** A library the slow loop published (applied before the next solve). */
@@ -260,12 +316,16 @@ export class LookbackReader {
     frames: LookbackFrame[],
     out: Float32Array,
     skip?: ArrayLike<number>,
+    /** The library was applied already for this request (`applyLibraryNow`): apply no newer one. */
+    applied = false,
   ): Promise<LookbackSolved> {
     if (out.length < frames.length * this.px)
       throw new RangeError(`look-back: a buffer of ${out.length} for ${frames.length} frames`);
     const serveT0 = performance.now();
-    this.timing = emptyTiming();
-    this.applyLibrary();
+    if (!applied) {
+      this.timing = emptyTiming();
+      this.applyLibrary();
+    }
     const traces = new Float32Array(frames.length * this.cells);
     let background: Float32Array | undefined;
     for (let i = 0; i < frames.length; i++) {
@@ -308,16 +368,138 @@ export class LookbackReader {
     const t2 = performance.now();
     const raw = await this.rawFrame(frame);
     const t3 = performance.now();
-    frontReplay(front, raw, 1, this.buf, this.record.span(frame, 1), 0);
-    // Stage B of a replay: the session's re-registration first, then the rigid shift.
-    this.sessionAligner(session)?.warpF32(this.buf);
     const rec = this.record.span(frame, 1);
     const motion = (this.motion ??= this.newMotion());
-    motion.applyF32(this.buf, rigidRecords(motion, rec.dy, rec.dx, rec.flags, 1), y);
+    prepareFrame(front, this.sessionAligner(session), motion, raw, rec, this.buf, y);
+    const t4 = performance.now();
     pre.backFramesRegistered(y, 1, rec.dy, rec.dx);
+    this.timing.backMs = (this.timing.backMs ?? 0) + (performance.now() - t4);
     this.timing.waitMs += t1 - t0;
     this.timing.readMs += t3 - t2;
     this.timing.preprocessMs += t2 - t1 + (performance.now() - t3);
+  }
+
+  /**
+   * The back half of frame `frame` of block `block`, on `y` that already
+   * holds its stateless half (`prepareFrame`, done by a settle reader): what
+   * `preprocess` does after the motion warp, with the same block
+   * preprocessor, so the frame comes out the same.
+   */
+  async backOnly(frame: number, block: number, y: Float32Array): Promise<void> {
+    const t0 = performance.now();
+    await this.rows(frame);
+    const session = this.sessionOf(frame);
+    const state = await this.state(session);
+    const t1 = performance.now();
+    const pre = this.blockPre(block, session, state);
+    const rec = this.record.span(frame, 1);
+    pre.backFramesRegistered(y, 1, rec.dy, rec.dx);
+    const t2 = performance.now();
+    this.timing.waitMs += t1 - t0;
+    this.timing.backMs = (this.timing.backMs ?? 0) + (t2 - t1);
+    this.timing.preprocessMs += t2 - t1;
+  }
+
+  /**
+   * The stateless half of `frame` into `y` on this worker (no block
+   * preprocessor touched): the check of a settle reader's frame, or its
+   * redo when the flat field changed after the reader prepared it.
+   */
+  async prepareHere(frame: number, y: Float32Array): Promise<void> {
+    await this.rows(frame);
+    const session = this.sessionOf(frame);
+    const front = this.frontPre(await this.state(session));
+    const t0 = performance.now();
+    const raw = await this.rawFrame(frame);
+    const t1 = performance.now();
+    const motion = (this.motion ??= this.newMotion());
+    prepareFrame(front, this.sessionAligner(session), motion, raw, this.record.span(frame, 1), this.buf, y);
+    this.timing.readMs += t1 - t0;
+    this.timing.preprocessMs += performance.now() - t1;
+  }
+
+  /**
+   * What a settle reader needs to prepare `frames` as this worker would
+   * (waits for their rows): the front half's state (this worker's own front,
+   * made now from the first frame's session state as `preprocess` would make
+   * it), the flat field, and per frame its rows and session warp.
+   */
+  async readerJob(frames: readonly number[]): Promise<SettleReaderJob> {
+    const n = frames.length;
+    const job: SettleReaderJob = {
+      frames: Float64Array.from(frames),
+      dy: new Float32Array(n),
+      dx: new Float32Array(n),
+      flags: new Uint8Array(n),
+      flickerOffset: new Float32Array(n),
+      flickerGain: new Float32Array(n),
+      warp: new Float32Array(3 * n),
+    };
+    for (let i = 0; i < n; i++) {
+      await this.rows(frames[i]);
+      const r = this.record.span(frames[i], 1);
+      job.dy[i] = r.dy[0];
+      job.dx[i] = r.dx[0];
+      job.flags[i] = r.flags[0];
+      job.flickerOffset[i] = r.flickerOffset[0];
+      job.flickerGain[i] = r.flickerGain[0];
+      const t = this.transforms[this.sessionOf(frames[i])];
+      if (!isIdentity(t)) job.warp.set(t!, 3 * i);
+    }
+    return job;
+  }
+
+  /** The front half's state (made from `frame`'s session state when this worker has none yet). */
+  async frontState(frame: number): Promise<Uint8Array> {
+    await this.rows(frame);
+    return this.frontPre(await this.state(this.sessionOf(frame))).state();
+  }
+
+  /**
+   * A request begins (the settle readers' path): its timing starts and the
+   * newest library is applied now, as `serve` does before its first wait.
+   */
+  applyLibraryNow(): void {
+    this.timing = emptyTiming();
+    this.applyLibrary();
+  }
+
+  /** Pixels per frame. */
+  get pixels(): number {
+    return this.px;
+  }
+
+  /**
+   * Solve frames whose preprocessing is done (`out`, in order) with the
+   * library `applyLibraryNow` applied, as the end of `serve` does. `waitMs`:
+   * time spent waiting for a settle reader (not busy).
+   */
+  solveDone(frames: number, out: Float32Array, t0: number, waitMs: number): LookbackSolved {
+    this.timing.waitMs += waitMs;
+    const traces = new Float32Array(frames * this.cells);
+    let background: Float32Array | undefined;
+    if (this.engine && this.cells > 0)
+      for (let i = 0; i < frames; i++) {
+        const y = out.subarray(i * this.px, (i + 1) * this.px);
+        const t1 = performance.now();
+        traces.set(this.engine.processFrames(y, 1), i * this.cells);
+        const bg = this.engine.lastBackground();
+        background ??= new Float32Array(frames * bg.length);
+        background.set(bg, i * bg.length);
+        this.timing.solveMs += performance.now() - t1;
+      }
+    const t = this.timing;
+    t.otherMs = Math.max(
+      0,
+      performance.now() - t0 - t.waitMs - t.readMs - t.preprocessMs - t.solveMs,
+    );
+    return {
+      version: this.engine ? this.version : 0,
+      cells: this.cells,
+      traces,
+      ...(background ? { background } : {}),
+      timing: t,
+    };
   }
 
   private rows(frame: number): Promise<void> {
@@ -393,12 +575,7 @@ export class LookbackReader {
   }
 
   private newMotion(): MotionCorrector {
-    const opts = new MotionOptions();
-    try {
-      return new MotionCorrector(this.source.info.width, this.source.info.height, opts);
-    } finally {
-      opts.free();
-    }
+    return replayMotion(this.source.info.width, this.source.info.height);
   }
 
   /** One raw frame, from a span of `LOOKBACK_READ_SPAN` read at once. */

@@ -64,6 +64,7 @@ import {
 } from './lib/recent-projects.ts';
 import { LIBRARY_MODE_LABEL } from './lib/session-run.ts';
 import { createLookbackClient } from './lib/lookback-client.ts';
+import { settleReaderCount } from './lib/settle-readers.ts';
 import { loadSpeedSettings } from './lib/speed-track.ts';
 import { presetCurve } from './lib/speed-schedule.ts';
 import { PACE_BATCH, PACE_SLACK } from './lib/frame-pacer.ts';
@@ -160,9 +161,21 @@ const App: Component = () => {
     typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined,
     params.has('debug') && params.has('lbpool') ? Number(params.get('lbpool')) || 0 : null,
   );
+  // Final-settle readers: worker 0 has them read and prepare the settle's frames ahead on the
+  // cores the frame loop leaves idle (`settleReaderCount`); `?debug&settlereaders=N` overrides
+  // the count (0: none, worker 0 alone) and `?debug&settlecheck` redoes their frames on worker 0
+  // and counts any bit that differs (measurement).
+  const settleReaders = settleReaderCount(
+    typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined,
+    params.has('debug') && params.has('settlereaders')
+      ? Number(params.get('settlereaders')) || 0
+      : null,
+  );
   const lookbackClient = createLookbackClient({
     slow,
     pool: lbPool,
+    readers: settleReaders,
+    check: params.has('debug') && params.has('settlecheck'),
     source: () => store.source(),
     blocked: () => {
       const i = store.info();
