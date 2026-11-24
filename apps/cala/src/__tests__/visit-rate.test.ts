@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   effectivePace,
+  heldMaxFps,
   VISIT_RATE,
   VisitRateGovernor,
   visitHoldText,
@@ -27,6 +28,16 @@ describe('visit-rate helpers', () => {
     expect(visitRateCap('on')).toBe(VISIT_RATE.cap);
     expect(visitRateCap('cap-only')).toBe(VISIT_RATE.cap);
     expect(visitRateCap('off')).toBe(0);
+  });
+
+  it('lowers Max to what the visits allow, never raises it', () => {
+    expect(heldMaxFps(300, null)).toBe(300);
+    expect(heldMaxFps(300, 150)).toBe(150);
+    expect(heldMaxFps(120, 150)).toBe(120);
+    expect(heldMaxFps(0, null)).toBe(0);
+    expect(heldMaxFps(0, 150)).toBe(150);
+    expect(heldMaxFps(300, 0)).toBe(300);
+    expect(heldMaxFps(Number.NaN, null)).toBe(0);
   });
 
   it('says the hold only while it binds', () => {
@@ -120,6 +131,59 @@ describe('VisitRateGovernor', () => {
     expect(summary.held_s).toBeGreaterThan(250);
     expect(summary.min_hold_fps).not.toBeNull();
     expect(summary.hold_changes.length).toBeGreaterThan(0);
+  });
+
+  it('gives the held speed as Max, not the fast loop top speed', () => {
+    const { gov, tailFps } = simulate({ maxFps: 200, capacity });
+    const fStar = 60 / (VISIT_RATE.target + 0.08);
+    const vmax = gov.visitMaxFps;
+    expect(vmax).not.toBeNull();
+    // Close to the speed the run actually settles at, and well under the fast loop's 200 fps.
+    expect(vmax!).toBeGreaterThan(0.85 * fStar);
+    expect(vmax!).toBeLessThan(1.15 * fStar);
+    expect(heldMaxFps(200, vmax)).toBeCloseTo(vmax!, 9);
+    expect(Math.abs(heldMaxFps(200, vmax) - tailFps) / tailFps).toBeLessThan(0.2);
+  });
+
+  it('gives the held speed as Max for a fast Fixed target the visits cannot keep up with', () => {
+    const { gov } = simulate({ maxFps: 300, capacity, userFps: 250 });
+    const fStar = 60 / (VISIT_RATE.target + 0.08);
+    expect(gov.visitMaxFps!).toBeGreaterThan(0.85 * fStar);
+    expect(gov.visitMaxFps!).toBeLessThan(1.15 * fStar);
+  });
+
+  it('has no visit Max for a paced run the cap limits (its throughput is not its capacity)', () => {
+    // 30 fps, room for 140 visits/s: throughput 0.3 x 30 = 9/s would read as 36 fps.
+    const { gov } = simulate({ maxFps: 200, capacity: () => 140, userFps: 30 });
+    expect(gov.visitMaxFps).toBeNull();
+    expect(heldMaxFps(200, gov.visitMaxFps)).toBe(200);
+  });
+
+  it('raises the visit Max when the run later reads faster and keeps up', () => {
+    const gov = new VisitRateGovernor('on');
+    let t = 0;
+    let read = 0;
+    let visits = 0;
+    const feed = (fps: number, perFrame: number, user: number) => {
+      t += 250;
+      read += fps / 4;
+      visits += (fps / 4) * perFrame;
+      gov.update({
+        now: t,
+        framesRead: read,
+        observed: read,
+        visits,
+        cappedFrames: 0,
+        dueTiles: 3,
+        userFps: user,
+      });
+    };
+    // Behind at 200 fps: 0.15 visits/frame, 30 visits/s -> 120 fps.
+    for (let i = 0; i < 40; i++) feed(200, 0.15, 0);
+    expect(gov.visitMaxFps!).toBeCloseTo(120, 0);
+    // Later the visits keep up at 180 fps: the estimate follows up.
+    for (let i = 0; i < 80; i++) feed(180, 0.3, 0);
+    expect(gov.visitMaxFps!).toBeGreaterThan(170);
   });
 
   it('counts dropped frames against the target (per frame read)', () => {
@@ -229,6 +293,9 @@ describe('VisitRateGovernor', () => {
       expect(summary.achieved_visits_per_frame!).toBeLessThan(VISIT_RATE.floor + 0.05);
       expect(summary.below_floor_s).toBeGreaterThan(0);
       expect(summary.cap).toBe(mode === 'off' ? 0 : VISIT_RATE.cap);
+      // Max stays the fast loop's own (the behaviour before).
+      expect(gov.visitMaxFps).toBeNull();
+      expect(heldMaxFps(300, gov.visitMaxFps)).toBe(300);
     }
   });
 

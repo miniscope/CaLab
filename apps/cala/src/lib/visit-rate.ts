@@ -76,6 +76,8 @@ export const VISIT_RATE = {
   demandShare: 0.5,
   /** The hold is released once it is this far above the frames actually read (not binding any more). */
   releaseMargin: 1.25,
+  /** Windows the visit-limited top speed (`visitMaxFps`) is the median of. */
+  maxWindows: 5,
 } as const;
 
 export type VisitRateConstants = { readonly [K in keyof typeof VISIT_RATE]: number };
@@ -182,6 +184,8 @@ export class VisitRateGovernor {
   private minHold: number | null = null;
   private changes: VisitHoldChange[] = [];
   private dropped = 0;
+  /** Recent readings of the visit-limited top speed, fps (see `visitMaxFps`). */
+  private maxes: number[] = [];
 
   constructor(
     readonly mode: VisitRateMode,
@@ -195,6 +199,27 @@ export class VisitRateGovernor {
 
   /** The newest window's visits per frame read (null before the first window). */
   achieved: number | null = null;
+
+  /**
+   * The fastest the run can read while the visits keep the target, fps (null: not known). With the
+   * hold on, this, not the fast loop's own top speed, is what Max reaches. Measured only where the
+   * visits held the run back (throughput / target), so a paced run whose visits the cap limits gives
+   * no reading (its throughput says nothing about the spare capacity); a later window that read
+   * faster while keeping up raises it. The median of the last `maxWindows` readings. Null unless
+   * the mode is `on`.
+   */
+  get visitMaxFps(): number | null {
+    if (this.mode !== 'on' || this.maxes.length === 0) return null;
+    const a = [...this.maxes].sort((x, y) => x - y);
+    const m = a.length >> 1;
+    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+  }
+
+  private noteMax(fps: number): void {
+    if (!(fps > 0) || !Number.isFinite(fps)) return;
+    this.maxes.push(fps);
+    if (this.maxes.length > this.k.maxWindows) this.maxes.shift();
+  }
 
   /** A status reading; returns the change when the hold moved. */
   update(s: VisitRateSample): VisitHoldChange | null {
@@ -263,6 +288,7 @@ export class VisitRateGovernor {
     const supplyLimited =
       achieved < k.target && (!capBound || dropBound) && demand >= k.demandShare;
     if (supplyLimited) {
+      this.noteMax(throughput / k.target);
       let want = throughput / k.target;
       const reason = achieved < k.floor ? 'below-floor' : 'below-target';
       if (reason === 'below-floor') want *= k.floorCut;
@@ -279,6 +305,9 @@ export class VisitRateGovernor {
         next < (this.hold ?? Infinity) ? reason : 'raised',
       );
     }
+    // Kept up at this read rate: the visits allow at least this speed.
+    const vmax = this.visitMaxFps;
+    if (vmax !== null && readFps > vmax) this.noteMax(readFps);
     if (this.hold === null) return null;
     // Not behind: release once the hold no longer binds (the run reads well below it, or the
     // user's own target is lower), else raise it while the rate is comfortably above the target
@@ -335,6 +364,17 @@ export class VisitRateGovernor {
       hold_changes_dropped: this.dropped,
     };
   }
+}
+
+/**
+ * The top speed a run can reach, fps (0: not known): the fast loop's own (`MaxFpsEstimator`) and,
+ * with the visit rate on, the speed the visits allow (`VisitRateGovernor.visitMaxFps`), whichever
+ * is lower. With the visit rate off or cap-only the second is null and this is the fast loop's.
+ */
+export function heldMaxFps(fastFps: number, visitMax: number | null): number {
+  const fast = fastFps > 0 && Number.isFinite(fastFps) ? fastFps : 0;
+  if (visitMax === null || !(visitMax > 0)) return fast;
+  return fast > 0 ? Math.min(fast, visitMax) : visitMax;
 }
 
 /** The Speed block's line while the hold binds (null: it does not). */

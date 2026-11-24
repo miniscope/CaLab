@@ -10,6 +10,7 @@ import { downsampleFrame, previewFactor } from '../lib/preview.ts';
 import { createRunHistory } from '../lib/run-history.ts';
 import type { LookbackFeed } from '../lib/lookback-client.ts';
 import { FINAL_SETTLE_LEVEL_DEFAULT } from '../lib/settle.ts';
+import { VISIT_RATE } from '../lib/visit-rate.ts';
 import type { FrameRequest, FrameResponse } from '../workers/frame-types.ts';
 
 function walk(cursor: PipelineCursor): PipelineStep[] {
@@ -999,7 +1000,7 @@ describe('pipeline message protocol', () => {
 describe('pipeline store: the Discover visit hold', () => {
   it('holds a saturated Max run, lets a lower user target win, and never logs a target change', async () => {
     await createRoot(async (dispose) => {
-      const { client } = manualClient();
+      const { client, steps } = manualClient();
       const setPace = vi.fn(async (_p: { fps?: number; paused?: boolean }) => {});
       let now = 0;
       const statusCbs: ((st: never) => void)[] = [];
@@ -1041,7 +1042,14 @@ describe('pipeline store: the Discover visit hold', () => {
           for (const cb of statusCbs) cb(st as never);
         }
       };
+      // The fast loop alone could read 1000 / 6 fps (6 ms a frame).
+      steps[0].resolve(batch(0, 8));
+      await flush();
+      expect(store.runMaxFps()).toBeCloseTo(1000 / 6);
       feed(20, 200, 0.15);
+      // Max is what the visits allow: 0.15 x 200 = 30 visits/s keep the target at 120 fps.
+      expect(store.runMaxFps()).toBeCloseTo(30 / VISIT_RATE.target, 0);
+      expect(store.maxFps()).toBeCloseTo(1000 / 6);
       const hold = store.visitHold();
       expect(hold).not.toBeNull();
       expect(hold!).toBeLessThan(200);
@@ -1068,7 +1076,7 @@ describe('pipeline store: the Discover visit hold', () => {
 
   it('does not hold with ?debug&visitrate=off', async () => {
     await createRoot(async (dispose) => {
-      const { client } = manualClient();
+      const { client, steps } = manualClient();
       let now = 0;
       const statusCbs: ((st: never) => void)[] = [];
       const cells = {
@@ -1103,6 +1111,10 @@ describe('pipeline store: the Discover visit hold', () => {
         for (const cb of statusCbs) cb(st as never);
       }
       expect(store.visitHold()).toBeNull();
+      // Max stays the fast loop's own top speed.
+      steps[0].resolve(batch(0, 8));
+      await flush();
+      expect(store.runMaxFps()).toBeCloseTo(1000 / 6);
       dispose();
     });
   });

@@ -44,6 +44,15 @@ Speed block says when the hold binds ("Held at N fps to keep refinement at 0.25
 visits/frame"), and the run log gets an entry each time it moves. Background settle
 is told the user's target, not the hold, so a held Max run does not start it.
 
+The Speed block's "max now" is what the run can actually reach: the fast loop's own
+top speed, lowered to what the visits allow once they have held the run back
+(throughput / target, the median of the last 5 windows where they fell behind,
+raised when a later window reads faster and keeps up). The floor's Max clamp, curves,
+Auto and the run record's `max_fps_median` use the same figure; `fast_max_fps_median`
+keeps the fast loop's own. A paced run whose visits the cap limits has no such
+reading, so its Max stays the fast loop's. With `?debug&visitrate=off` or on a live
+stream, Max is the fast loop's as before.
+
 The floor and target count visits per frame **read** (dropped batches included), the
 cap per frame observed. At Max the fast loop drops batches for the slow loop (about
 25 % of the frames on the 3k sim); counted per observed frame, dropping frames would

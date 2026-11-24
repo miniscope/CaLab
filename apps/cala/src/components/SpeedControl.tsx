@@ -143,6 +143,11 @@ export function SpeedControl(props: {
   };
   const words = createMemo(() => floorWords(floor()));
   const maxNow = () => (s().workMaxFps() > 0 ? Math.round(s().workMaxFps()) : null);
+  /** What "max now" means: the fastest this machine reads frames, or keeps refinement up. */
+  const maxTitle = () =>
+    s().workMaxVisitLimited()
+      ? `The fastest this machine can go now while keeping refinement at ${VISIT_RATE.target} visits/frame. Reading frames alone could go faster.`
+      : 'The fastest this machine can go now.';
   const marks = () => [...SPEED_TICKS, floorFps()];
   const gov = () => props.cells.status()?.lookback?.csettle?.governor ?? null;
   const running = () => s().status() === 'running' || s().status() === 'paused';
@@ -436,7 +441,7 @@ export function SpeedControl(props: {
                   <div
                     class="cala-speed__above"
                     style={{ left: pct(m()) }}
-                    title="Above what this machine reaches now: a target here behaves as Max."
+                    title={`Above what this machine reaches now: a target here behaves as Max. ${maxTitle()}`}
                   />
                 )}
               </Show>
@@ -473,6 +478,7 @@ export function SpeedControl(props: {
                       class="cala-speed__marklabel"
                       style={{ left: pct(m()) }}
                       data-testid="speed-max-label"
+                      title={maxTitle()}
                     >
                       max now {m()}
                     </span>

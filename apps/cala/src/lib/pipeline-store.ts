@@ -73,6 +73,7 @@ import {
   VISIT_RATE,
   VisitRateGovernor,
   effectivePace,
+  heldMaxFps,
   visitRateCap,
   visitRateMode,
   type VisitRateMode,
@@ -633,7 +634,7 @@ export function createPipelineStore(
       totalFrames: curveFrames(),
       floorFps: f.fps,
       seeAllFps: f.estimate.seeAllFps,
-      maxFps: maxFpsEstimator.estimate() || null,
+      maxFps: runMaxFps() || null,
       wallS: pauseClock.now(clock()) / 1000,
     };
   }
@@ -733,12 +734,26 @@ export function createPipelineStore(
   // loop's live estimate of its top speed. Instrumentation only: nothing here steers the run.
   const workRater = new WorkRater();
   const maxFpsEstimator = new MaxFpsEstimator();
+  /**
+   * The top speed the run can reach, fps (0: not known): the fast loop's estimate, lowered to what
+   * the visits allow while the visit rate holds the run (`heldMaxFps`). What the Speed block calls
+   * Max, the floor clamps to, curves and Auto plan with and the run record's Max median counts.
+   */
+  function runMaxFps(): number {
+    return heldMaxFps(maxFpsEstimator.estimate(), visitGov?.visitMaxFps ?? null);
+  }
   const stageBusyMeter = new StageBusyMeter();
   const birthRate = new BirthRate();
   const [work, setWork] = createSignal<WorkRates | null>(null);
   const [maxFps, setMaxFps] = createSignal(0);
-  /** The max estimate as of the last `work` reading (the readout rebuilds once a second, not per batch). */
+  /**
+   * The run's top speed (`runMaxFps`) as of the last `work` reading (the readout rebuilds once a
+   * second, not per batch), and the fast loop's own for the debug readout.
+   */
   const [workMaxFps, setWorkMaxFps] = createSignal(0);
+  const [workFastMaxFps, setWorkFastMaxFps] = createSignal(0);
+  /** `workMaxFps` is what the visits allow, below the fast loop's own top speed. */
+  const [workMaxVisitLimited, setWorkMaxVisitLimited] = createSignal(false);
   // The smart floor estimate (`lib/speed-floor.ts`): shown in the `?debug` readout only, steers nothing.
   const floorMeter = new FloorMeter();
   const [floorLine, setFloorLine] = createSignal('');
@@ -757,7 +772,7 @@ export function createPipelineStore(
         needRate: NEED_RATE,
         // What the frame gate is held to (a visit hold paces a Max run too).
         target: gatePace(),
-        maxFps: maxFpsEstimator.estimate() || null,
+        maxFps: runMaxFps() || null,
         paused: untrack(status) === 'paused',
         governorLimit: gov?.limit,
         haveLibrary: st.version > 0,
@@ -777,7 +792,8 @@ export function createPipelineStore(
         const sample: WorkSample = {
           frame: untrack(processed),
           limit: gov?.limit ?? null,
-          maxFps: maxFpsEstimator.estimate() || null,
+          maxFps: runMaxFps() || null,
+          fastMaxFps: maxFpsEstimator.estimate() || null,
           floor: {
             fps: shown.fps,
             published: shown.published,
@@ -813,13 +829,19 @@ export function createPipelineStore(
     if (!rates) return;
     const stages = stageBusyMeter.take(clock());
     if (stages) rates.fast = { stages };
-    const max = maxFpsEstimator.estimate();
     setWork(rates);
     // Likewise "max now": the fast loop is idle after the last frame, so the estimate only decays.
-    if (untrack(status) !== 'done') setWorkMaxFps(max);
+    if (untrack(status) !== 'done') {
+      const fast = maxFpsEstimator.estimate();
+      const max = runMaxFps();
+      setWorkMaxFps(max);
+      setWorkFastMaxFps(fast);
+      setWorkMaxVisitLimited(max > 0 && max < fast);
+    }
     // Not after Discover's last frame (stream time stands still; see `RunHistory.work`).
     if (untrack(status) !== 'done') {
-      runHistory?.work(rates, max);
+      // The history's series is the fast loop's own top speed (`fast_max_fps`).
+      runHistory?.work(rates, maxFpsEstimator.estimate());
       runHistory?.target(gatePace());
     }
   });
@@ -1085,6 +1107,8 @@ export function createPipelineStore(
     setWork(null);
     setMaxFps(0);
     setWorkMaxFps(0);
+    setWorkFastMaxFps(0);
+    setWorkMaxVisitLimited(false);
     setPlan(null);
     setSetup(null);
     setProcessed(0);
@@ -1360,8 +1384,17 @@ export function createPipelineStore(
     floor,
     /** The fast loop's live estimate of its top speed, frames per second (0 until a batch has busy time). */
     maxFps,
-    /** `maxFps` as of the last `work` reading, for the readout. */
+    /**
+     * The run's top speed as of the last `work` reading: the fast loop's, lowered to what the
+     * visits allow while the visit rate holds the run. The Speed block's Max.
+     */
     workMaxFps,
+    /** The fast loop's own top speed as of the last `work` reading (the `?debug` readout). */
+    workFastMaxFps,
+    /** `workMaxFps` is set by the visits (the refinement rate), not by the fast loop. */
+    workMaxVisitLimited,
+    /** The run's top speed now, fps (0: not known); `workMaxFps` is its once-a-second copy. */
+    runMaxFps,
     /** Read no faster than this many frames a second (0: off); applies to a running recording at once. */
     setPaceFps: (fps: number, source = 'setting') => {
       // Anyone but a curve (or Auto) setting the target takes the pacer back: a curve does not

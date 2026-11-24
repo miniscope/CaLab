@@ -628,6 +628,21 @@ describe('speed record fields', () => {
     expect(t.maxFpsMedian()).toBe(250);
     expect(new RunTrace().limitShares()).toEqual({});
     expect(new RunTrace().maxFpsMedian()).toBeNull();
+    // Without a separate fast-loop reading the fast median is the same as Max's.
+    expect(t.fastMaxFpsMedian()).toBe(250);
+    expect(new RunTrace().fastMaxFpsMedian()).toBeNull();
+  });
+
+  it('keeps the held Max and the fast loop top speed apart while the visits hold the run', () => {
+    const t = new RunTrace();
+    for (const [held, fast] of [
+      [120, 290],
+      [125, 300],
+      [130, 310],
+    ] as const)
+      t.noteSample(sample({ maxFps: held, fastMaxFps: fast }));
+    expect(t.maxFpsMedian()).toBe(125);
+    expect(t.fastMaxFpsMedian()).toBe(300);
   });
 
   it('keeps the counts of Discover for later: the last reading wins, and the limit counts stop at its end', () => {
@@ -718,6 +733,7 @@ describe('speed record fields', () => {
       pace_late_ms: 120,
       pace_reanchors: 4,
       max_fps_median: 200,
+      fast_max_fps_median: 200,
     });
     expect(r.slots.slider_schedule).toEqual(sliderSchedule());
     expect(r.slots.slider_schedule.scale).toEqual([10, 500]);
