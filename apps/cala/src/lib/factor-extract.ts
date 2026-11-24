@@ -8,8 +8,17 @@ import {
 } from './compress-store.ts';
 
 /** One Extract job in the compress worker. */
+/** How an Extract job on factors ended: frames, wall ms per frame, and (with the extractor) its windows and helpers. */
+export interface FactorJobDone {
+  frames: number;
+  msPerFrame: number;
+  projected?: number;
+  rebuilt?: number;
+  workers?: number;
+}
+
 export interface FactorJob {
-  done: Promise<{ frames: number; msPerFrame: number }>;
+  done: Promise<FactorJobDone>;
   cancel(): void;
 }
 
@@ -58,10 +67,10 @@ export function createFactorExtract(
     id: number;
     session: number;
     onWindow: Parameters<FactorExtractPort['run']>[2];
-    resolve: (v: { frames: number; msPerFrame: number }) => void;
+    resolve: (v: FactorJobDone) => void;
     reject: (e: Error) => void;
   } | null = null;
-  const end = (err: Error | null, v?: { frames: number; msPerFrame: number }): void => {
+  const end = (err: Error | null, v?: FactorJobDone): void => {
     const c = cur;
     cur = null;
     if (!c) return;
@@ -80,7 +89,14 @@ export function createFactorExtract(
     if (msg.session !== cur.session || msg.job !== cur.id) return;
     if (msg.type === 'extracted')
       cur.onWindow(msg.start, msg.count, msg.ids, msg.traces, msg.signed);
-    else end(null, { frames: msg.frames, msPerFrame: msg.msPerFrame });
+    else
+      end(null, {
+        frames: msg.frames,
+        msPerFrame: msg.msPerFrame,
+        ...(msg.projected !== undefined ? { projected: msg.projected } : {}),
+        ...(msg.rebuilt !== undefined ? { rebuilt: msg.rebuilt } : {}),
+        ...(msg.workers !== undefined ? { workers: msg.workers } : {}),
+      });
   };
   const fileState = (): FactorState => store.fileFactors(ended(), frames());
   return {
@@ -97,7 +113,7 @@ export function createFactorExtract(
       end(new Error('Another Extract started.'));
       const id = next++;
       const s = session();
-      const done = new Promise<{ frames: number; msPerFrame: number }>((resolve, reject) => {
+      const done = new Promise<FactorJobDone>((resolve, reject) => {
         cur = { id, session: s, onWindow, resolve, reject };
       });
       client.extract(s, id, version, library.slice());

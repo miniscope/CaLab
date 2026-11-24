@@ -8,6 +8,7 @@
  * each window's tiles are shared with them over one port each (`TilePool`).
  */
 import {
+  FactorExtractor,
   FactorWindow,
   initCalaWasm,
   factorHeader,
@@ -17,7 +18,7 @@ import {
   TraceEngine,
   TraceLibrary,
 } from '../lib/cala-wasm.ts';
-import { TilePool } from '../lib/compress-pool.ts';
+import { TilePool, WindowPool } from '../lib/compress-pool.ts';
 import { CompressRunner } from '../lib/compress-runner.ts';
 import { opfsStore } from '../lib/window-store.ts';
 import type {
@@ -38,6 +39,7 @@ let port: MessagePort | null = null;
 let reviewPort: MessagePort | null = null;
 let runner: CompressRunner | null = null;
 let pool: TilePool | null = null;
+let windowPool: WindowPool | null = null;
 let helperPorts: MessagePort[] = [];
 // Messages are handled one at a time, after the WASM module is ready.
 let queue: Promise<void> = Promise.resolve();
@@ -47,6 +49,7 @@ workerScope.onmessage = (e) => {
   const data = e.data;
   if (data.type === 'helper-lost') {
     pool?.lost(data.helper);
+    windowPool?.lost(data.helper);
     return;
   }
   if (data.type === 'backfill' || data.type === 'extract' || data.type === 'extract-cancel') {
@@ -80,10 +83,23 @@ workerScope.onmessage = (e) => {
       postMessage: (m: CoordinatorToHelper, t?: Transferable[]) => p.postMessage(m, t ?? []),
     })),
   });
+  const helperSide = helperPorts.map((p) => ({
+    postMessage: (m: CoordinatorToHelper, t?: Transferable[]) => p.postMessage(m, t ?? []),
+  }));
+  const windows = new WindowPool({ helpers: helperSide });
   helperPorts.forEach((p, k) => {
-    p.onmessage = (ev: MessageEvent<HelperToCoordinator>) => tilePool.onHelper(k, ev.data);
+    // A helper that cannot start is lost to both pools.
+    p.onmessage = (ev: MessageEvent<HelperToCoordinator>) => {
+      const m = ev.data;
+      if (m.type === 'window-done' || m.type === 'window-error') windows.onHelper(k, m);
+      else if (m.type === 'helper-error') {
+        tilePool.onHelper(k, m);
+        windows.onHelper(k, m);
+      } else tilePool.onHelper(k, m);
+    };
   });
   pool = tilePool;
+  windowPool = windows;
   const toReview = reviewPort;
   const r = new CompressRunner({
     store,
@@ -112,6 +128,12 @@ workerScope.onmessage = (e) => {
     factors: (bytes) => FactorWindow.fromBytes(bytes),
     toMain: { postMessage: (m, t) => workerScope.postMessage(m, t) },
     pool: tilePool,
+    windows,
+    extractor: (bytes, signed) => {
+      const x = new FactorExtractor(bytes, 0, 0);
+      if (signed) x.setSigned(true);
+      return x;
+    },
     estimate: () => navigator.storage.estimate(),
     ...(toReview && data.review
       ? {

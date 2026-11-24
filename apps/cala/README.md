@@ -426,9 +426,20 @@ the stream ends:
   (`FactorReader`; NaN where a window never had a valid sample,
   `rebuildFrames`). The stream's slow loop is built with
   `jointUpdate 'refine'`: the cluster replay runs in the settle only.
-- Extract runs in the compress worker on the same rebuilt frames (the
-  back-fill code as a stage; the back-fill itself does not run, so the live
-  traces stay).
+- Extract solves each window from its factors without rebuilding a frame
+  (`FactorExtractor`, ported from #437: `WindowProjector` takes the solver's
+  functionals straight from the factors). A window where a pixel without
+  data lies under a cell, its moat, a ring or a basis map is solved on
+  rebuilt frames with the same engine and its missing-pixel fill, as before
+  (`neverValidUnder`, `solveWindow`). Every window starts the solver cold, so
+  the traces do not depend on which worker solved it. The windows go to the
+  compress helpers (`WindowPool`; on 10 cores 6 of them,
+  `?debug&cpool=D,E,X`), and `extracted` reaches the main thread in window
+  order. `?debug&fextract=0` uses rebuilt frames throughout (measurement).
+  On a 3-min 600 px stream Extract took 4 s on one worker and 1.5 s on six,
+  against 24 s on rebuilt frames
+  (`tools/cala-eval/results/2026-11-24-factor-extractor-speed.md`).
+  The back-fill does not run, so the live traces stay.
 - The export (format version 7 only with these fields, so every stream whose
   factors were usable) keeps `traces_live` beside Extract's `traces` and
   `traces_signed`, names the stage sources and says so in `meta_json.notes`.

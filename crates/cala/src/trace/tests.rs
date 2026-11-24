@@ -1232,3 +1232,144 @@ fn signed_traces_leave_the_solve_bit_identical() {
         }
     }
 }
+
+/// What `process_into` reads of a frame (full field of view), computed outside the engine.
+fn projections_of(lib: &Library, frame: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    let bs = lib.block_px();
+    let mut blocks = vec![0.0f32; lib.grid_len()];
+    if bs > 0 {
+        let gw = W.div_ceil(bs);
+        for (y, row) in frame.chunks(W).enumerate() {
+            for (bx, seg) in row.chunks(bs).enumerate() {
+                blocks[(y / bs) * gw + bx] += seg.iter().sum::<f32>();
+            }
+        }
+    }
+    let cells = (0..lib.len())
+        .map(|i| {
+            let (p, v) = lib.core_col(i);
+            let mut s: f32 = p.iter().zip(v).map(|(&q, &a)| a * frame[q as usize]).sum();
+            let (bi, li) = lib.lowpass(i);
+            for (&b, &l) in bi.iter().zip(li) {
+                s -= l * blocks[b as usize];
+            }
+            s
+        })
+        .collect();
+    let background = match &lib.bg {
+        BgTerms::Basis { k, maps, .. } => (0..*k)
+            .map(|a| {
+                maps[a * W * H..(a + 1) * W * H]
+                    .iter()
+                    .zip(frame)
+                    .map(|(&g, &y)| f64::from(g) * f64::from(y))
+                    .sum::<f64>() as f32
+            })
+            .collect(),
+        BgTerms::Ring {
+            ring_start,
+            ring_pix,
+            ..
+        } => (0..lib.len())
+            .map(|i| {
+                let px = &ring_pix[ring_start[i]..ring_start[i + 1]];
+                if px.is_empty() {
+                    0.0
+                } else {
+                    px.iter().map(|&q| frame[q as usize]).sum::<f32>() / px.len() as f32
+                }
+            })
+            .collect(),
+        BgTerms::None => Vec::new(),
+    };
+    (cells, background)
+}
+
+#[test]
+fn projections_solve_like_the_frame() {
+    let c = traces(6, 40, 3);
+    let frames = filtered_frames(&c, 0.3, 9);
+    for model in [
+        BackgroundModel::None,
+        BackgroundModel::Basis(vec![global_map()]),
+        BackgroundModel::Ring {
+            inner_px: 7.0,
+            outer_px: 12.0,
+        },
+    ] {
+        let lib = Arc::new(library(&[0, 1, 2, 3, 4, 5], model, 1));
+        let mut by_frame = TraceEngine::new(lib.clone(), tight()).unwrap();
+        let mut by_proj = TraceEngine::new(lib.clone(), tight()).unwrap();
+        by_frame.set_consolidated_ring_gradient(true);
+        by_proj.set_consolidated_ring_gradient(true);
+        let (mut a, mut b) = (FrameTraces::default(), FrameTraces::default());
+        for (t, f) in frames.iter().enumerate() {
+            by_frame.process_into(f, &mut a).unwrap();
+            let (cells, background) = projections_of(&lib, f);
+            assert_eq!(background.len(), lib.background_len());
+            by_proj
+                .process_projected(&cells, &background, &mut b)
+                .unwrap();
+            assert_eq!((b.frame_index, b.library_version), (t as u64, 1));
+            for (i, (x, y)) in a.traces.iter().zip(&b.traces).enumerate() {
+                assert!(
+                    (x - y).abs() <= 1e-3 * (1.0 + x.abs()),
+                    "frame {t} cell {i}: {x} from the frame, {y} from its projections"
+                );
+            }
+            assert_eq!(a.background.len(), b.background.len());
+            for (x, y) in a.background.iter().zip(&b.background) {
+                assert!((x - y).abs() <= 1e-3 * (1.0 + x.abs()));
+            }
+        }
+        assert_eq!(by_proj.next_frame(), frames.len() as u64);
+        // Wrong lengths are errors, not panics.
+        assert!(by_proj.process_projected(&[0.0; 5], &[], &mut b).is_err());
+        let bad = vec![0.0f32; lib.background_len() + 1];
+        assert!(by_proj.process_projected(&[0.0; 6], &bad, &mut b).is_err());
+        assert!(by_proj
+            .process_projected(&[f32::NAN; 6], &bad[1..], &mut b)
+            .is_err());
+    }
+}
+
+#[test]
+fn a_rejected_projection_leaves_the_engine_as_it_was() {
+    let c = traces(6, 40, 3);
+    let frames = filtered_frames(&c, 0.3, 9);
+    for model in [
+        BackgroundModel::None,
+        BackgroundModel::Basis(vec![global_map()]),
+        BackgroundModel::Ring {
+            inner_px: 7.0,
+            outer_px: 12.0,
+        },
+    ] {
+        let lib = Arc::new(library(&[0, 1, 2, 3, 4, 5], model, 1));
+        let mut hit = TraceEngine::new(lib.clone(), tight()).unwrap();
+        let mut fresh = TraceEngine::new(lib.clone(), tight()).unwrap();
+        let (mut a, mut b) = (FrameTraces::default(), FrameTraces::default());
+        let (cells, background) = projections_of(&lib, &frames[0]);
+        let mut nan_cells = cells.clone();
+        nan_cells[2] = f32::NAN;
+        assert!(hit
+            .process_projected(&nan_cells, &background, &mut a)
+            .is_err());
+        if !background.is_empty() {
+            let mut nan_bg = background.clone();
+            nan_bg[0] = f32::INFINITY;
+            assert!(hit.process_projected(&cells, &nan_bg, &mut a).is_err());
+        }
+        assert_eq!(hit.next_frame(), 0);
+        for f in &frames[..3] {
+            let (cells, background) = projections_of(&lib, f);
+            hit.process_projected(&cells, &background, &mut a).unwrap();
+            fresh
+                .process_projected(&cells, &background, &mut b)
+                .unwrap();
+            assert_eq!(a.frame_index, b.frame_index);
+            assert_eq!(a.traces, b.traces);
+            assert_eq!(a.background, b.background);
+        }
+    }
+}

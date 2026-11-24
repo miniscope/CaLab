@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   compressPoolSize,
+  helpersFor,
+  WindowPool,
+  type JobIO,
   parsePoolOverride,
   poolForRun,
   TilePool,
@@ -8,23 +11,37 @@ import {
   type TileResult,
   type WindowIO,
 } from '../lib/compress-pool.ts';
+import type { WindowResult } from '../lib/factor-solve.ts';
 import type { CoordinatorToHelper } from '../workers/compress-types.ts';
 
 describe('compressPoolSize', () => {
   it('leaves Discover its cores and uses the freed ones after it', () => {
-    expect(compressPoolSize(10, 4, 0)).toEqual({ discover: 1, after: 3 });
-    expect(compressPoolSize(8, 3, 0)).toEqual({ discover: 1, after: 2 });
-    expect(compressPoolSize(16, 4, 1)).toEqual({ discover: 4, after: 4 });
-    expect(compressPoolSize(undefined, 0, 0)).toEqual({ discover: 1, after: 1 });
+    expect(compressPoolSize(10, 4, 0)).toEqual({ discover: 1, after: 3, extract: 6 });
+    expect(compressPoolSize(8, 3, 0)).toEqual({ discover: 1, after: 2, extract: 5 });
+    expect(compressPoolSize(16, 4, 1)).toEqual({ discover: 4, after: 4, extract: 6 });
+    expect(compressPoolSize(4, 0, 0)).toEqual({ discover: 1, after: 1, extract: 1 });
+    expect(compressPoolSize(undefined, 0, 0)).toEqual({ discover: 1, after: 1, extract: 1 });
+  });
+  it('starts as many helpers as the largest width needs', () => {
+    expect(helpersFor({ discover: 1, after: 3, extract: 6 })).toBe(6);
+    expect(helpersFor({ discover: 1, after: 3 })).toBe(3);
+    expect(helpersFor({ discover: 1, after: 3, extract: 1 })).toBe(2);
+    expect(helpersFor({ discover: 1, after: 1, extract: 1 })).toBe(0);
   });
   it('reads ?debug&cpool=D,E', () => {
-    expect(parsePoolOverride('2,4')).toEqual({ discover: 2, after: 4 });
+    expect(parsePoolOverride('2,4')).toEqual({ discover: 2, after: 4, extract: 4 });
+    expect(parsePoolOverride('1,3,6')).toEqual({ discover: 1, after: 3, extract: 6 });
+    expect(parsePoolOverride('1,3,7')).toBeNull();
     expect(parsePoolOverride('0,9')).toBeNull();
     expect(parsePoolOverride('x')).toBeNull();
     expect(parsePoolOverride(null)).toBeNull();
   });
   it('keeps one worker while a stream streams', () => {
-    expect(poolForRun(true, { discover: 3, after: 4 })).toEqual({ discover: 1, after: 4 });
+    expect(poolForRun(true, { discover: 3, after: 4, extract: 6 })).toEqual({
+      discover: 1,
+      after: 4,
+      extract: 6,
+    });
     expect(poolForRun(false, { discover: 3, after: 4 })).toEqual({ discover: 3, after: 4 });
     expect(poolForRun(false, null)).toBeNull();
   });
@@ -249,5 +266,141 @@ describe('TilePool', () => {
     const before = w.written.length;
     for (const t of out) answer(pool, t);
     expect(w.written.length).toBe(before);
+  });
+});
+
+// ---- the window pool, with fake helpers ----
+
+describe('WindowPool', () => {
+  const result = (index: number, projected = true): WindowResult => ({
+    start: index * 10,
+    count: 10,
+    projected,
+    traces: Float32Array.of(index),
+  });
+
+  function windowPoolWith(helpers: number) {
+    const posted: { k: number; msg: CoordinatorToHelper }[] = [];
+    const timers: { fn: () => void; on: boolean }[] = [];
+    const pool = new WindowPool({
+      helpers: Array.from({ length: helpers }, (_, k) => ({
+        postMessage: (msg: CoordinatorToHelper) => posted.push({ k, msg }),
+      })),
+      setTimer: (fn) => {
+        const t = { fn, on: true };
+        timers.push(t);
+        return t;
+      },
+      clearTimer: (t) => {
+        (t as { on: boolean }).on = false;
+      },
+    });
+    const windows = () =>
+      posted.flatMap((p) => (p.msg.type === 'extract-window' ? [{ k: p.k, msg: p.msg }] : []));
+    return { pool, posted, timers, windows };
+  }
+
+  function io(): JobIO & { emitted: number[]; here: number[] } {
+    const emitted: number[] = [];
+    const here: number[] = [];
+    return {
+      emitted,
+      here,
+      read: async (i) => Uint8Array.of(i),
+      local: (i) => {
+        here.push(i);
+        return result(i, false);
+      },
+      emit: (i) => void emitted.push(i),
+      yieldNow: () => Promise.resolve(),
+    };
+  }
+
+  const answer = (pool: WindowPool, w: { k: number; msg: CoordinatorToHelper }): void => {
+    if (w.msg.type !== 'extract-window') return;
+    pool.onHelper(w.k, {
+      type: 'window-done',
+      job: w.msg.job,
+      index: w.msg.index,
+      ...result(w.msg.index),
+    });
+  };
+
+  it('width 1: the compress worker solves every window, in order', async () => {
+    const { pool, windows } = windowPoolWith(2);
+    pool.setWidth(1);
+    const x = io();
+    expect(await pool.runJob(1, 4, x)).toBe(true);
+    expect(windows()).toEqual([]);
+    expect(x.emitted).toEqual([0, 1, 2, 3]);
+  });
+
+  it('width 3, answers in reverse: emitted in window order, once each', async () => {
+    const { pool, windows } = windowPoolWith(3);
+    pool.setWidth(3);
+    pool.begin(1, Uint8Array.of(9), true, 4);
+    const x = io();
+    const done = pool.runJob(1, 7, x);
+    let answered = 0;
+    let settled = false;
+    void done.finally(() => (settled = true));
+    while (!settled) {
+      await tick();
+      const w = windows();
+      for (const v of w.slice(answered).reverse()) answer(pool, v);
+      answered = w.length;
+    }
+    expect(await done).toBe(true);
+    expect(x.emitted).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(x.here).toEqual([]);
+  });
+
+  it('redoes the window of a crashed, failed or timed-out helper', async () => {
+    for (const how of ['crash', 'start', 'timeout'] as const) {
+      const { pool, windows, timers } = windowPoolWith(1);
+      pool.setWidth(2);
+      const x = io();
+      const done = pool.runJob(1, 2, x);
+      await tick();
+      expect(windows().length).toBe(1);
+      if (how === 'crash') pool.lost(0);
+      else if (how === 'start') pool.onHelper(0, { type: 'helper-error', message: 'no WASM' });
+      else timers.filter((t) => t.on)[0].fn();
+      expect(await done).toBe(true);
+      expect(x.emitted).toEqual([0, 1]);
+      expect(x.here).toEqual([0, 1]);
+    }
+  });
+
+  it("fails the job on a window's error and drops later answers", async () => {
+    const { pool, windows } = windowPoolWith(2);
+    pool.setWidth(2);
+    const x = io();
+    const done = pool.runJob(1, 4, x);
+    await tick();
+    const [first, second] = windows();
+    if (first.msg.type !== 'extract-window') throw new Error('expected a window');
+    pool.onHelper(first.k, {
+      type: 'window-error',
+      job: 1,
+      index: first.msg.index,
+      message: 'solve failed',
+    });
+    await expect(done).rejects.toThrow('solve failed');
+    answer(pool, second);
+    expect(x.emitted).toEqual([]);
+  });
+
+  it('returns false on a reset and emits nothing of a late answer', async () => {
+    const { pool, windows } = windowPoolWith(2);
+    pool.setWidth(2);
+    const x = io();
+    const done = pool.runJob(1, 4, x);
+    await tick();
+    const out = windows();
+    pool.reset();
+    expect(await done).toBe(false);
+    for (const w of out) answer(pool, w);
+    expect(x.emitted).toEqual([]);
   });
 });

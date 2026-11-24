@@ -43,7 +43,10 @@ Refine runs show as "Refine (removed stage)".
   (offset grids) as they come in. When the stream ends, the Final settle
   waits for the last factor window and then settles on frames rebuilt from
   the factors (cell set frozen, the cluster replay on; Discover itself runs
-  as before). Extract follows on the same rebuilt frames. The export (format
+  as before). Extract follows on the factors themselves: each window is
+  solved from them without rebuilding a frame (the factor extractor), on
+  several helper workers at once; a window where a pixel without data lies
+  under a cell is solved on rebuilt frames instead. The export (format
   version 7) keeps the live traces (`traces_live`) beside Extract's. If the
   factors cannot be read (a compression error, a failed OPFS write, a gap, or
   no progress from the compressor for 120 s), the stream ends at Discover's

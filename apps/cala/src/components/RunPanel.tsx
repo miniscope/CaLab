@@ -289,11 +289,15 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         );
       case 'done': {
         const res = p().result();
+        const many = (n: number, one: string): string => `${n} ${one}${n === 1 ? '' : 's'}`;
+        const windows = res?.extractor
+          ? `: ${many(res.extractor.projected, 'window')} projected, ${res.extractor.rebuilt} rebuilt, ${many(res.extractor.workers, 'worker')}`
+          : '';
         const from =
           res?.source === 'factors'
             ? props.live
-              ? " (on the stream's factors)"
-              : ' (on the factors)'
+              ? ` (on the stream's factors${windows})`
+              : ` (on the factors${windows})`
             : res?.source === 'file'
               ? ` (re-read the file: ${res.sourceReason})`
               : '';

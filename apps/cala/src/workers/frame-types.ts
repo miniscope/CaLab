@@ -51,6 +51,8 @@ export interface CellsSettings {
   compressPool?: { discover: number; after: number };
   /** With `compress`: the cap on window files waiting for compression, bytes (`?debug&cbacklog`). */
   compressBacklogCap?: number;
+  /** With `compress`: Extract on factors on rebuilt frames, as before slice 6 (`?debug&fextract=0`). */
+  compressFrameExtract?: boolean;
   /** A live stream with `?factors`: the slow loop settles on the factors after the stream ends (`SlowInit.factorSettle`). */
   factorSettle?: boolean;
   /** A recording with `?factors=file`: at Discover's end the settle may read the factors (`SlowRunner`). */

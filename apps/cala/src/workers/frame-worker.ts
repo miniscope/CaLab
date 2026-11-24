@@ -289,6 +289,7 @@ async function handle(req: FrameRequest): Promise<void> {
                     ...(cells.compressBacklogCap !== undefined
                       ? { backlogCap: cells.compressBacklogCap }
                       : {}),
+                    ...(cells.compressFrameExtract ? { frameExtract: true } : {}),
                   },
                   compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
                 )

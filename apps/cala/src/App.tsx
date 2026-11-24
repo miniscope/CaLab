@@ -22,7 +22,7 @@ import { loadSpanStats } from './lib/extract-qc-wasm.ts';
 import { ASSUMED_FPS } from './lib/miniscope-meta.ts';
 import type { QcSnapshot } from './lib/qc.ts';
 import { createCompressClient } from './lib/compress-client.ts';
-import { compressPoolSize, parsePoolOverride } from './lib/compress-pool.ts';
+import { compressPoolSize, helpersFor, parsePoolOverride } from './lib/compress-pool.ts';
 import { COMPRESS_DEFAULTS } from './lib/compress-feed.ts';
 import {
   createCompressStore,
@@ -194,7 +194,7 @@ const App: Component = () => {
       slow.visitWorkers,
       lbPool,
     );
-  const compressHelpers = Math.max(cpool.discover, cpool.after) - 1;
+  const compressHelpers = helpersFor(cpool);
   const compressClient = compress
     ? createCompressClient(
         client,
@@ -285,6 +285,8 @@ const App: Component = () => {
   // `?debug&cbacklog=GB`: the cap on window files waiting for compression (measurement).
   const cbacklog = params.has('debug') ? Number(params.get('cbacklog')) : NaN;
   if (cbacklog > 0) pipeline.setCompressBacklogCap(cbacklog * 2 ** 30);
+  // `?debug&fextract=0`: Extract on factors on rebuilt frames, as before slice 6 (measurement).
+  pipeline.setFrameExtract(params.has('debug') && params.get('fextract') === '0');
   if (pageFactors.factorsFile)
     pipeline.setFactorsFile(true, () => {
       const s = store.source();
@@ -433,7 +435,13 @@ const App: Component = () => {
             frames: r?.frames ?? 0,
             cells: r?.cells ?? 0,
             libraryVersion: r?.version ?? 0,
-            ...(r?.source === 'factors' ? { source: 'factors' as const, factors: r.factors } : {}),
+            ...(r?.source === 'factors'
+              ? {
+                  source: 'factors' as const,
+                  factors: r.factors,
+                  ...(r.extractor ? { extractor: r.extractor } : {}),
+                }
+              : {}),
             ...(r?.source === 'file'
               ? { source: 'file' as const, sourceReason: r.sourceReason }
               : {}),
