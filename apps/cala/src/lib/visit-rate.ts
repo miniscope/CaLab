@@ -45,9 +45,9 @@ export const VISIT_RATE = {
   /** Visits per observed Discover frame at most (the engine's credit). */
   cap: 1.0,
   /** Measurement window, ms of run time. */
-  windowMs: 2000,
+  windowMs: 1000,
   /** Frames read before the governor acts (the first library and the first visits). */
-  warmupFrames: 200,
+  warmupFrames: 100,
   /** A window with fewer frames read does not count (paused, stalled). */
   minWindowFrames: 16,
   /** The hold never goes below this, fps. */
