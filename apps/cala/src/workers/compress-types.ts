@@ -37,6 +37,12 @@ export interface CompressInit {
   backlogCap?: number;
   /** Extract on factors on rebuilt frames with one engine, as before slice 6 (`?debug&fextract=0`). */
   frameExtract?: boolean;
+  /**
+   * Compress on the GPU (`?factors=gpu`, a recording): windows of the GPU
+   * compressor's length, cut from the stream frame indices (the chunks'
+   * `window` and `last` are ignored).
+   */
+  gpu?: boolean;
 }
 
 /** Fast worker -> compress worker. */
@@ -104,6 +110,10 @@ export interface CompressStatus {
   behindAtEnd?: number | null;
   /** Frames compressed after the recording ended over their wall time (null: none yet). */
   fpsAfter?: number | null;
+  /** Frames per window (the GPU compressor's on the GPU, else the feed's). */
+  window?: number;
+  /** Where the windows are compressed. */
+  backend?: 'cpu' | 'gpu';
 }
 
 /** Compress worker -> main thread. */

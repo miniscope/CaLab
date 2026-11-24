@@ -29,6 +29,8 @@ export interface CompressFeedOptions {
   backlogCap?: number;
   /** Extract on factors on rebuilt frames, as before slice 6 (`?debug&fextract=0`). */
   frameExtract?: boolean;
+  /** Compress on the GPU (`?factors=gpu`, a recording; `CompressInit.gpu`). */
+  gpu?: boolean;
 }
 
 export const COMPRESS_DEFAULTS = {
@@ -50,11 +52,12 @@ export interface CompressFeedLike {
 
 export class CompressFeed implements CompressFeedLike {
   private readonly o: Required<
-    Omit<CompressFeedOptions, 'pool' | 'backlogCap' | 'frameExtract'>
+    Omit<CompressFeedOptions, 'pool' | 'backlogCap' | 'frameExtract' | 'gpu'>
   > & {
     pool?: PoolWidth;
     backlogCap?: number;
     frameExtract?: boolean;
+    gpu?: boolean;
   };
   private readonly px: number;
   private initSent = false;
@@ -91,6 +94,7 @@ export class CompressFeed implements CompressFeedLike {
       pool,
       backlogCap,
       frameExtract,
+      gpu,
     } = this.o;
     if (!this.initSent) {
       this.port.postMessage({
@@ -106,6 +110,7 @@ export class CompressFeed implements CompressFeedLike {
         ...(pool ? { pool } : {}),
         ...(backlogCap !== undefined ? { backlogCap } : {}),
         ...(frameExtract ? { frameExtract } : {}),
+        ...(gpu ? { gpu } : {}),
       });
       this.initSent = true;
     }

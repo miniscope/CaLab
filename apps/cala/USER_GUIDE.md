@@ -89,7 +89,10 @@ its percent and, while it runs, its frames per second; the running step has a co
 edge and moving stripes, a finished one a ✓, and a step that will not run (look-back
 off, Extract unticked) is dimmed. A live stream gets the Final settle and Extract after it
 ends, on the factors it wrote (`?factors=0`: Discover only, as before). With `?factors=file` (experimental) a recording's
-Final settle and Extract read its factors when they are complete, and say "re-reads the file" with the reason when not. Look-back and Background settle run
+Final settle and Extract read its factors when they are complete, and say "re-reads the file" with the reason when not.
+With `?factors=gpu` (experimental) the recording's frames are compressed on the GPU while Discover
+runs, and the Final settle and Extract read those factors; without WebGPU or with too little GPU
+memory the run reads the file and says why. Look-back and Background settle run
 inside Discover. The cell count, the session (in a multi-session run) and the pause and
 stop controls sit beside the boxes.
 

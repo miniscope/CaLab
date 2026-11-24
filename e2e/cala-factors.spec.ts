@@ -93,3 +93,29 @@ test('Cala: a ?factors=file recording compressed and extracted by a pool of thre
   expect(meta).toContain('"compress_workers_after":3');
   expect(meta).toContain('"extract_workers":3');
 });
+
+test('Cala: a ?factors=gpu recording without WebGPU reads the file and says why', async ({
+  page,
+}) => {
+  test.setTimeout(300_000);
+  await openAndExtract(page, '?factors=gpu&debug');
+  // CI's headless Chromium has no WebGPU (no `navigator.gpu`, or no adapter): the compressor
+  // cannot start, so the settle and Extract read the file. With a GPU the run may take either way.
+  const webgpu = await page.evaluate(async () => {
+    const gpu = (navigator as Navigator & { gpu?: { requestAdapter(): Promise<unknown> } }).gpu;
+    return gpu !== undefined && (await gpu.requestAdapter()) !== null;
+  });
+  test.info().annotations.push({ type: 'webgpu', description: String(webgpu) });
+  const meta = metaText(await exportNpz(page));
+  expect(meta).toContain('"format_version":7');
+  if (webgpu) {
+    expect(meta).toMatch(/"settle_source":"(factors|file)"/);
+    return;
+  }
+  await expect(page.getByTestId('lookback-readout')).toContainText('re-reads the file');
+  await expect(page.getByTestId('lookback-readout')).toContainText(
+    'GPU compressor could not start',
+  );
+  expect(meta).toContain('"settle_source":"file"');
+  expect(meta).toContain('GPU compressor could not start');
+});

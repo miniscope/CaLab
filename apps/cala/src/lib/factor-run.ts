@@ -4,7 +4,8 @@
  * during the stream. That is the default for a stream (slice 4); `?factors=0`
  * turns it off. A recording re-reads the file; `?factors=file` (experimental)
  * lets its settle and Extract read its factors, and `?factors` on a recording
- * is a `?compress` run.
+ * is a `?compress` run. `?factors=gpu` (experimental) is `?factors=file` with
+ * the recording's windows compressed on the GPU.
  */
 import type { CompressTiling } from '../workers/compress-types.ts';
 import type { StageRun } from './run-stages.ts';
@@ -20,6 +21,8 @@ export interface FactorRunPlan {
   factorSettle: boolean;
   /** A recording with `?factors=file`: the settle and Extract read the factors when complete (`SlowInit.factorFile`). */
   factorFile: boolean;
+  /** A factor file run compressed on the GPU (`?factors=gpu`; absent: on the CPU). */
+  gpu?: boolean;
 }
 
 export function factorRunPlan(o: {
@@ -27,6 +30,8 @@ export function factorRunPlan(o: {
   /** `?factors` (or `?factors=file`) on the page. */
   factors: boolean;
   factorsFile?: boolean;
+  /** `?factors=gpu`: a factor file run compresses on the GPU. */
+  factorsGpu?: boolean;
   /** No factor switch on the page: a stream is a factor run by default (`factorsFromPage`). */
   factorsDefault?: boolean;
   /** `?compress` on the page. */
@@ -38,7 +43,12 @@ export function factorRunPlan(o: {
   if ((o.factors || o.factorsDefault) && o.live && o.discover)
     return { compress: FACTOR_TILING, factorSettle: true, factorFile: false };
   if (o.factorsFile && !o.live && o.discover && !o.joint)
-    return { compress: FACTOR_TILING, factorSettle: false, factorFile: true };
+    return {
+      compress: FACTOR_TILING,
+      factorSettle: false,
+      factorFile: true,
+      ...(o.factorsGpu ? { gpu: true } : {}),
+    };
   if (o.factors || o.compress) return { compress: 'plain', ...none };
   return { compress: null, ...none };
 }
@@ -65,8 +75,10 @@ export const FACTORS_REVIEW_OFF =
 export interface PageFactors {
   /** `?factors` or `?factors=file` (not `?factors=0`). */
   factors: boolean;
-  /** `?factors=file`. */
+  /** `?factors=file` or `?factors=gpu`. */
   factorsFile: boolean;
+  /** `?factors=gpu`: a recording's windows are compressed on the GPU. */
+  factorsGpu: boolean;
   /** No factor switch and no `?compress&review`: a live stream is a factor run. */
   factorsDefault: boolean;
   /** `?compress`. */
@@ -92,7 +104,8 @@ export function factorsFromPage(p: URLSearchParams): PageFactors {
   const factorsDefault = !p.has('factors') && !reviewAsked;
   return {
     factors,
-    factorsFile: p.get('factors') === 'file',
+    factorsFile: p.get('factors') === 'file' || p.get('factors') === 'gpu',
+    factorsGpu: p.get('factors') === 'gpu',
     factorsDefault,
     compressAsked,
     compressWorker: compressAsked || factors || factorsDefault,

@@ -17,6 +17,7 @@ import { WindowPool, type TilePoolLike } from '../lib/compress-pool.ts';
 import { solveWindow } from '../lib/factor-solve.ts';
 import {
   backlogText,
+  GPU_TEXT,
   STOPPED_TEXT,
   CompressRunner,
   factorName,
@@ -24,6 +25,7 @@ import {
   type CompressRunnerDeps,
 } from '../lib/compress-runner.ts';
 import { compressReadout, createCompressStore } from '../lib/compress-store.ts';
+import type { GpuCompressorLike, GpuWindowJob, GpuWindowResult } from '../lib/gpu-compress.ts';
 import { memoryStore } from '../lib/window-store.ts';
 import type {
   CompressToMain,
@@ -926,5 +928,228 @@ describe('Extract on the factor extractor (slice 6)', () => {
       expect([...b[k].traces]).toEqual([...a[k].traces]);
       expect([...(b[k].signed ?? [])]).toEqual([...(a[k].signed ?? [])]);
     }
+  });
+});
+
+describe('a recording compressed on the GPU', () => {
+  const GW = 64;
+  const GH = 64;
+  const GTILE = 16;
+  /** Tiles of the offset layout of a 64 x 64 frame (after the WASM module is ready). */
+  let GTILES = 0;
+  beforeAll(() => {
+    GTILES = tileLayout(GW, GH, GTILE, 'offset').length / 4;
+  });
+
+  function fakeGpuCompressor(window: number, slack: number) {
+    const pending: { job: GpuWindowJob; resolve: (r: GpuWindowResult) => void }[] = [];
+    const jobs: GpuWindowJob[] = [];
+    let lose: (reason: string) => void = () => {};
+    let destroyed = 0;
+    const gpu: GpuCompressorLike = {
+      window,
+      slack,
+      upload: () => {},
+      compress: (job) =>
+        new Promise((resolve) => {
+          jobs.push(job);
+          pending.push({ job, resolve });
+        }),
+      lost: new Promise((r) => (lose = r)),
+      destroy: () => void destroyed++,
+    };
+    /** Answer the oldest pending window with one 8-byte tile per layout tile. */
+    const answer = (tiles: number) => {
+      const p = pending.shift()!;
+      p.resolve({
+        tiles: Array.from({ length: tiles }, () => new Uint8Array(8)),
+        ranks: Array(tiles).fill(3),
+        ms: 1,
+      });
+    };
+    return {
+      gpu,
+      pending,
+      jobs,
+      answer,
+      lose: (r: string) => lose(r),
+      destroyed: () => destroyed,
+    };
+  }
+
+  /** A runner whose every run opens a new fake GPU compressor (window 50, slack 13). */
+  function gpuRunner(open?: CompressRunnerDeps['openGpu']) {
+    const store = memoryStore();
+    const toMain: CompressToMain[] = [];
+    const fakes: ReturnType<typeof fakeGpuCompressor>[] = [];
+    const r = new CompressRunner({
+      store,
+      quantize: quantizeTiles,
+      layout: tileLayout,
+      header: factorHeader,
+      create: (quant) => new TileCompressor(quant),
+      toMain: { postMessage: (m) => toMain.push(m) },
+      yieldNow: () => Promise.resolve(),
+      openGpu:
+        open ??
+        (async () => {
+          const f = fakeGpuCompressor(50, 13);
+          fakes.push(f);
+          return f.gpu;
+        }),
+    });
+    return { r, store, toMain, fakes };
+  }
+
+  /** The feed's messages for `frames` frames in chunks of 10; its window (30) is not the GPU's. */
+  function gpuFeed(frames: number, session = 7, end = true): FastToCompress[] {
+    const sent: FastToCompress[] = [];
+    const feed = new CompressFeed(
+      {
+        width: GW,
+        height: GH,
+        session,
+        tile: GTILE,
+        tiling: 'offset',
+        window: 30,
+        quant: QUANT,
+        gpu: true,
+      },
+      { postMessage: (m) => sent.push(m) },
+    );
+    for (let s = 0; s < frames; s += 10) {
+      const n = Math.min(10, frames - s);
+      feed.push(new Float32Array(n * GW * GH).fill(s % 7), s, n);
+    }
+    if (end) feed.end();
+    return sent;
+  }
+
+  const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  /** Handle each message, answering every window the GPU was given before the next. */
+  async function feedAnswering(
+    r: CompressRunner,
+    fakes: ReturnType<typeof fakeGpuCompressor>[],
+    sent: FastToCompress[],
+  ): Promise<void> {
+    for (const m of sent) {
+      await r.handle(m);
+      await tick();
+      for (const f of fakes) {
+        while (f.pending.length > 0) {
+          f.answer(GTILES);
+          await tick();
+        }
+      }
+    }
+  }
+
+  const statuses = (toMain: CompressToMain[]) =>
+    toMain.flatMap((m) => (m.type === 'status' ? [m] : []));
+  const errors = (toMain: CompressToMain[]) =>
+    toMain.flatMap((m) => (m.type === 'error' ? [m] : []));
+
+  it("windows of the GPU's length cover every frame but a 1-frame tail", async () => {
+    const { r, store, toMain, fakes } = gpuRunner();
+    const sent = gpuFeed(120);
+    expect(sent[0]).toMatchObject({ type: 'init', gpu: true, window: 30 });
+    await feedAnswering(r, fakes, sent);
+    const last = statuses(toMain).at(-1)!.status;
+    expect(last.compressed).toEqual([
+      { index: 0, start: 0, frames: 50 },
+      { index: 1, start: 50, frames: 50 },
+      { index: 2, start: 100, frames: 20 },
+    ]);
+    expect(last).toMatchObject({ final: true, windows: 3, frames: 120, pending: 0 });
+    expect(last).toMatchObject({ window: 50, backend: 'gpu', meanRank: 3 });
+    // The last window written, the GPU is freed; a device lost then changes nothing.
+    expect(fakes[0].destroyed()).toBe(1);
+    fakes[0].lose('late');
+    await tick();
+    expect(store.files.size).toBe(3);
+    expect([...store.files.keys()].sort()).toEqual(['f0.bin', 'f1.bin', 'f2.bin']);
+    // The factor file: the header, then per tile its length and bytes.
+    const f2 = store.files.get('f2.bin')!;
+    const head = factorHeader(GW, GH, GTILE, 'offset', 20, GTILES, 100);
+    expect(f2.subarray(0, head.length)).toEqual(head);
+    expect(f2.length).toBe(head.length + GTILES * (4 + 8));
+    // The CPU's seeds, and each tile's rank of the window before.
+    const jobs = fakes[0].jobs;
+    expect(jobs.map((j) => [j.index, j.start, j.frames])).toEqual([
+      [0, 0, 50],
+      [1, 50, 50],
+      [2, 100, 20],
+    ]);
+    expect(jobs[1].seeds(5)).toBe(((1 << 20) ^ 5) >>> 0);
+    expect(jobs[0].prevRanks(0)).toBeUndefined();
+    expect(jobs[1].prevRanks(0)).toBe(3);
+    expect(errors(toMain)).toEqual([]);
+
+    // 101 frames: the last frame alone is no window.
+    const b = gpuRunner();
+    await feedAnswering(b.r, b.fakes, gpuFeed(101));
+    expect(statuses(b.toMain).at(-1)!.status.compressed).toEqual([
+      { index: 0, start: 0, frames: 50 },
+      { index: 1, start: 50, frames: 50 },
+    ]);
+    expect([...b.store.files.keys()].sort()).toEqual(['f0.bin', 'f1.bin']);
+  });
+
+  it('a GPU that falls behind gives the factors up and never blocks', async () => {
+    const { r, store, toMain, fakes } = gpuRunner();
+    const sent = gpuFeed(200);
+    for (const m of sent) await r.handle(m); // never answered: every call must resolve
+    expect(errors(toMain)).toEqual([{ type: 'error', session: 7, message: GPU_TEXT.behind }]);
+    expect(store.files.size).toBe(0);
+    expect(fakes[0].jobs).toHaveLength(1);
+    expect(fakes[0].destroyed()).toBe(1);
+    r.extract(7, 1, 0, new Uint8Array(0));
+    expect(toMain.at(-1)).toEqual({ type: 'error', session: 7, job: 1, message: GPU_TEXT.behind });
+  });
+
+  it('a lost device ends the factors', async () => {
+    const { r, store, toMain, fakes } = gpuRunner();
+    const sent = gpuFeed(120);
+    const first = sent.findIndex((m) => m.type === 'chunk' && m.start === 50);
+    await feedAnswering(r, fakes, sent.slice(0, first));
+    expect(store.files.has('f0.bin')).toBe(true);
+    fakes[0].lose('gone');
+    await tick();
+    await feedAnswering(r, fakes, sent.slice(first));
+    const errs = errors(toMain);
+    expect(errs).toHaveLength(1);
+    expect(errs[0].message).toBe(GPU_TEXT.lost('gone'));
+    expect(errs[0].message).toContain('gone');
+    expect(store.files.size).toBe(0);
+    expect(fakes[0].jobs).toHaveLength(1);
+  });
+
+  it('a new run during a pending window writes nothing of the old run', async () => {
+    const { r, store, toMain, fakes } = gpuRunner();
+    for (const m of gpuFeed(50, 7, false)) await r.handle(m);
+    expect(fakes[0].pending).toHaveLength(1);
+    const next = gpuFeed(1, 8, false);
+    await r.handle(next[0]); // init of session 8
+    expect(fakes[0].destroyed()).toBe(1);
+    fakes[0].answer(GTILES);
+    await tick();
+    await tick();
+    expect(store.files.has('f0.bin')).toBe(false);
+    expect(statuses(toMain).filter((m) => m.session === 7)).toEqual([]);
+    await r.handle({ type: 'close', session: 8, final: true });
+    const last = statuses(toMain).at(-1)!;
+    expect(last.session).toBe(8);
+    expect(last.status).toMatchObject({ windows: 0, frames: 0, compressed: [] });
+  });
+
+  it('no GPU: the run says why and has no factors', async () => {
+    const why = 'This browser has no WebGPU.';
+    const { r, store, toMain } = gpuRunner(async () => ({ reason: why }));
+    for (const m of gpuFeed(120)) await r.handle(m);
+    const errs = errors(toMain);
+    expect(errs).toEqual([{ type: 'error', session: 7, message: GPU_TEXT.none(why) }]);
+    expect(errs[0].message).toContain(why);
+    expect(store.files.size).toBe(0);
   });
 });

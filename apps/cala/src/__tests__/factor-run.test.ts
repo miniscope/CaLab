@@ -122,6 +122,29 @@ describe('factorsFromPage: the stream default and its switches', () => {
     expect(plan('compress', true)).toEqual(settle);
     expect(plan('compress', false)).toEqual(plain);
   });
+  it('?factors=gpu is ?factors=file compressed on the GPU, for a recording only', () => {
+    expect(page('factors=gpu')).toMatchObject({
+      factors: true,
+      factorsFile: true,
+      factorsGpu: true,
+    });
+    expect(page('factors=file').factorsGpu).toBe(false);
+    const p = page('factors=gpu');
+    const input = {
+      factors: p.factors,
+      factorsFile: p.factorsFile,
+      factorsGpu: p.factorsGpu,
+      compress: p.compressAsked,
+      discover: true,
+    };
+    expect(factorRunPlan({ ...input, live: false })).toEqual({
+      compress: FACTOR_TILING,
+      factorSettle: false,
+      factorFile: true,
+      gpu: true,
+    });
+    expect(factorRunPlan({ ...input, live: true })).toEqual(settle);
+  });
   it('?factors and ?factors=file keep their meaning', () => {
     expect(plan('factors', true)).toEqual(settle);
     expect(plan('factors', false)).toEqual(plain);

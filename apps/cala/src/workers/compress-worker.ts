@@ -6,7 +6,9 @@
  * thread. With the history review on, each window's factors also go to the
  * review worker over a second port. With helpers (`compress-helper-worker.ts`),
  * each window's tiles are shared with them over one port each (`TilePool`).
+ * A `?factors=gpu` run compresses its windows on the GPU (`openGpuCompressor`).
  */
+/// <reference types="@webgpu/types" />
 import {
   FactorExtractor,
   FactorWindow,
@@ -20,6 +22,7 @@ import {
 } from '../lib/cala-wasm.ts';
 import { TilePool, WindowPool } from '../lib/compress-pool.ts';
 import { CompressRunner } from '../lib/compress-runner.ts';
+import { openGpuCompressor } from '../lib/gpu-compress.ts';
 import { opfsStore } from '../lib/window-store.ts';
 import type {
   CompressToMain,
@@ -140,6 +143,16 @@ workerScope.onmessage = (e) => {
       return x;
     },
     estimate: () => navigator.storage.estimate(),
+    openGpu: (init) =>
+      openGpuCompressor({
+        width: init.width,
+        height: init.height,
+        tile: init.tile,
+        tiling: init.tiling,
+        quant: init.quant,
+        gpu: (navigator as Navigator & { gpu?: GPU }).gpu,
+        layout: tileLayout,
+      }),
     ...(toReview && data.review
       ? {
           review: {

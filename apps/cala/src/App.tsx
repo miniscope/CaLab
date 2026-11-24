@@ -293,6 +293,7 @@ const App: Component = () => {
       const s = store.source();
       return s !== null && 'sessions' in s;
     });
+  pipeline.setFactorsGpu(pageFactors.factorsGpu);
   // Background settle (settle during Discover) is on under look-back whenever the target is
   // below Max; `csettle=0` turns it off, `csettle=yield` or `csettle=yieldN` feeds each answer
   // N frames at a time (1 by default), `csrate=1|0.5` lowers the cap from 2 re-read frames
@@ -403,6 +404,8 @@ const App: Component = () => {
         behindFrames: cs.behindAtEnd ?? null,
         backlogPeakBytes: cs.backlogPeakBytes ?? 0,
         fpsAfter: cs.fpsAfter ?? null,
+        ...(cs.window !== undefined ? { window: cs.window } : {}),
+        ...(cs.backend ? { backend: cs.backend } : {}),
       };
     }
     stageLog.end('discover', 'done', data);
@@ -540,7 +543,8 @@ const App: Component = () => {
         window: COMPRESS_DEFAULTS.window,
         msPerFrame: compress.status()?.msPerFrame ?? 0,
         workers: pipeline.runPool()?.after ?? 1,
-        wait: params.has('debug') && params.has('fwait'),
+        // A GPU run is never more than a window and its slack behind: wait for its last window.
+        wait: (params.has('debug') && params.has('fwait')) || pageFactors.factorsGpu,
         width: i?.width ?? 0,
         height: i?.height ?? 0,
       });
