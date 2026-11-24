@@ -708,6 +708,15 @@ pub struct SlowLoopConfig {
     /// how complete the footprints are. Infinite (the default) keeps the
     /// overlap rule alone.
     pub merge_guard_min_sep: f32,
+    /// Warm starts in a visit's comparisons: every model compared with a
+    /// reference model on the same frames (the cell to add, the merged
+    /// pair, the refined footprint, the split, the reference itself)
+    /// starts its per-frame solve at the reference's solution, mapped by
+    /// cell id (new cells at zero). The exit rule is unchanged, so each
+    /// solve reaches the same optimum to within its tolerance, in fewer
+    /// sweeps; the arms of a comparison share the start, so none is
+    /// solved further than the others. Off: every solve starts at zero.
+    pub warm_start: bool,
     /// Measure the spatial correlation of the noise and widen every noise
     /// null by the variance it adds at cell scale (see `noisecorr.rs`):
     /// sub-pixel motion correction resamples the noise, and a test that
@@ -834,6 +843,7 @@ impl Default for SlowLoopConfig {
             merge_guard_max_ovl: 0.5,
             merge_refit_max_ovl: 0.5,
             merge_guard_min_sep: f32::INFINITY,
+            warm_start: true,
             merge_z: 2.0,
             noise_corr: true,
             shift_nuisance: true,
@@ -875,7 +885,9 @@ impl SlowLoopConfig {
             JointSign::Own => 1,
             JointSign::All => 2,
         };
-        ju | js << 4 | u64::from(self.merge_guard_min_sep.to_bits()) << 8
+        ju | js << 4
+            | u64::from(self.merge_guard_min_sep.to_bits()) << 8
+            | u64::from(self.warm_start) << 40
     }
 
     /// The held-out split: slow-loop frame `frame` (0 = the first frame
@@ -1239,10 +1251,11 @@ pub struct SlowLoop {
     grid_memo: std::cell::RefCell<Option<Arc<PatchGrid>>>,
     /// Within a visit: the columns of the last problem on the tile's own
     /// background and its label ([`Problem::sig`]), and the per-frame
-    /// solves of labelled problems: `(label, frames id, work, fits)`.
+    /// solves of labelled problems: `(label, frames id, start key
+    /// ([`Start::key`], 0: from zero), work, fits)`.
     /// The same model on the same frames is solved once.
     tile_model: Option<(u64, Arc<Vec<Column>>)>,
-    solve_memo: Vec<(u64, u64, u64, Vec<Fit>)>,
+    solve_memo: Vec<(u64, u64, u64, u64, Vec<Fit>)>,
     /// The residuals of the last labelled model: `(label, frames id,
     /// work, fits, residuals)`.
     #[allow(clippy::type_complexity)]
@@ -1330,6 +1343,36 @@ struct Solved {
     base: Problem,
     fits: Vec<Fit>,
     resid: Vec<Vec<f32>>,
+}
+
+/// Where the per-frame solves of a comparison start
+/// ([`SlowConfig::warm_start`]): a reference model's solution on the same
+/// frames, by cell id.
+struct Start {
+    /// The reference problem's label ([`Problem::sig`]; 0: unlabelled),
+    /// which with the frames determines the start (it is always the
+    /// reference's solve from zero).
+    key: u64,
+    ids: Vec<u64>,
+    /// Per frame, the reference's coefficients.
+    c: Vec<Vec<f32>>,
+}
+
+impl Start {
+    /// The start of each of `pr`'s columns on frame `f` (zero for a
+    /// column the reference does not have).
+    fn fill(&self, pr: &Problem, map: &[Option<usize>], f: usize, out: &mut Vec<f32>) {
+        out.clear();
+        out.extend(map.iter().map(|m| m.map_or(0.0, |k| self.c[f][k])));
+        debug_assert_eq!(out.len(), pr.len());
+    }
+
+    fn map(&self, pr: &Problem) -> Vec<Option<usize>> {
+        pr.cols
+            .iter()
+            .map(|col| self.ids.iter().position(|&id| id == col.id))
+            .collect()
+    }
 }
 
 /// A tile's frames loaded for a visit.
@@ -3278,25 +3321,41 @@ impl SlowLoop {
     }
 
     fn solve_all(&mut self, pr: &Problem, fr: &Frames) -> Vec<Fit> {
-        if pr.sig == 0 {
-            return self.solve_frames(pr, fr, &fr.proj);
+        self.solve_all_from(pr, fr, None)
+    }
+
+    /// [`SlowLoop::solve_all`] started at `start` (`None`: at zero).
+    fn solve_all_from(&mut self, pr: &Problem, fr: &Frames, start: Option<&Start>) -> Vec<Fit> {
+        let from = start.map_or(0, |s| s.key);
+        if pr.sig == 0 || start.is_some() && from == 0 {
+            return self.solve_frames_from(pr, fr, &fr.proj, start);
         }
         if let Some(m) = self
             .solve_memo
             .iter()
-            .find(|m| m.0 == pr.sig && m.1 == fr.id)
+            .find(|m| m.0 == pr.sig && m.1 == fr.id && m.2 == from)
         {
-            self.work += m.2;
-            return m.3.clone();
+            self.work += m.3;
+            return m.4.clone();
         }
         let w0 = self.work;
-        let fits = self.solve_frames(pr, fr, &fr.proj);
-        if self.solve_memo.len() >= 4 {
+        let fits = self.solve_frames_from(pr, fr, &fr.proj, start);
+        if self.solve_memo.len() >= 8 {
             self.solve_memo.remove(0);
         }
         self.solve_memo
-            .push((pr.sig, fr.id, self.work - w0, fits.clone()));
+            .push((pr.sig, fr.id, from, self.work - w0, fits.clone()));
         fits
+    }
+
+    /// The start for comparisons against `pr`, whose solve from zero on
+    /// these frames is `fits` (`None` with warm starts off).
+    fn start_at(&self, pr: &Problem, fits: &[Fit]) -> Option<Start> {
+        self.cfg.warm_start.then(|| Start {
+            key: pr.sig,
+            ids: pr.cols.iter().map(|c| c.id).collect(),
+            c: fits.iter().map(|f| f.c.clone()).collect(),
+        })
     }
 
     /// Per-frame solves of `fr` with the background projections `proj`;
@@ -3304,13 +3363,62 @@ impl SlowLoop {
     /// ([`Problem::solve_missing`]). The column dots come from `fr`'s
     /// cache (bitwise what each solve would compute).
     fn solve_frames(&mut self, pr: &Problem, fr: &Frames, proj: &[(Vec<f64>, f64)]) -> Vec<Fit> {
+        self.solve_frames_from(pr, fr, proj, None)
+    }
+
+    /// The reference arm of a comparison on `fr` with the background
+    /// projections `proj`: its solve, and the start of the other arms
+    /// ([`SlowConfig::warm_start`]). With warm starts the reference is
+    /// solved again from its own solution, so it too is solved from the
+    /// arms' start and no arm is solved further than another.
+    fn reference(
+        &mut self,
+        pr: &Problem,
+        fr: &Frames,
+        proj: &[(Vec<f64>, f64)],
+    ) -> (Vec<Fit>, Option<Start>) {
+        let fits = self.solve_frames(pr, fr, proj);
+        match self.start_at(pr, &fits) {
+            Some(st) => (self.solve_frames_from(pr, fr, proj, Some(&st)), Some(st)),
+            None => (fits, None),
+        }
+    }
+
+    /// [`SlowLoop::reference`] on `fr`'s own background projections
+    /// (through the solve memo).
+    fn reference_all(&mut self, pr: &Problem, fr: &Frames) -> (Vec<Fit>, Option<Start>) {
+        let fits = self.solve_all(pr, fr);
+        match self.start_at(pr, &fits) {
+            Some(st) => (self.solve_all_from(pr, fr, Some(&st)), Some(st)),
+            None => (fits, None),
+        }
+    }
+
+    /// [`SlowLoop::solve_frames`] started at `start` (`None`: at zero).
+    fn solve_frames_from(
+        &mut self,
+        pr: &Problem,
+        fr: &Frames,
+        proj: &[(Vec<f64>, f64)],
+        start: Option<&Start>,
+    ) -> Vec<Fit> {
         let mut work = 0;
+        let map = start.map(|st| st.map(pr));
+        let mut c0 = Vec::new();
         if !self.reuse {
             let fits =
                 fr.y.iter()
                     .zip(proj)
                     .zip(&fr.miss)
-                    .map(|((y, (qb, yy)), m)| pr.solve_missing(y, qb, *yy, m, &mut work))
+                    .enumerate()
+                    .map(|(f, ((y, (qb, yy)), m))| {
+                        if let (Some(st), Some(map)) = (start, &map) {
+                            st.fill(pr, map, f, &mut c0);
+                        }
+                        let mut dw = 0;
+                        let s = pr.column_dots(y, &mut dw);
+                        pr.solve_missing_dots_from(&s, dw, qb, *yy, m, &c0, &mut work)
+                    })
                     .collect();
             self.work += work;
             return fits;
@@ -3326,8 +3434,11 @@ impl SlowLoop {
                     for (si, d) in s.iter_mut().zip(&dots) {
                         *si = d[f];
                     }
+                    if let (Some(st), Some(map)) = (start, &map) {
+                        st.fill(pr, map, f, &mut c0);
+                    }
                     let dw = pr.dots_work(y.len());
-                    pr.solve_missing_dots(&s, dw, qb, *yy, m, &mut work)
+                    pr.solve_missing_dots_from(&s, dw, qb, *yy, m, &c0, &mut work)
                 })
                 .collect();
         self.work += work;
@@ -4923,15 +5034,20 @@ impl SlowLoop {
                 self.work += work + (rect.len() * ys.len()) as u64;
                 let k0 = pr.cols.iter().position(|c| c.id == id);
                 let fits = self.solve_all(&pr, &kf);
-                k0.map(|k| fits.iter().map(|f| f64::from(f.c[k])).collect::<Vec<_>>())
+                (
+                    k0.map(|k| fits.iter().map(|f| f64::from(f.c[k])).collect::<Vec<_>>()),
+                    self.start_at(&pr, &fits),
+                )
             };
+            let (plain, start) = plain;
             let (bg, proj) = self.with_bump(ti, center, ys, proj);
             let mut work = 0;
             let full = self.new_problem(self.columns(rect, &[], &[]), &bg, rect.len(), &mut work);
             let red = self.new_problem(self.columns(rect, &[id], &[]), &bg, rect.len(), &mut work);
             self.work += work + (rect.len() * (ys.len() + 2 * bg.k)) as u64;
-            let f = self.solve_frames(&full, &kf, &proj);
-            let r = self.solve_frames(&red, &kf, &proj);
+            // Both arms start at the model without the bump.
+            let f = self.solve_frames_from(&full, &kf, &proj, start.as_ref());
+            let r = self.solve_frames_from(&red, &kf, &proj, start.as_ref());
             let dof = (n_px - (bg.k + full.len()) as f64).max(1.0);
             // Overlap of every other column with this cell's, normalised
             // by the cell's own energy: how much of the cell's signal an
@@ -5096,8 +5212,8 @@ impl SlowLoop {
         let base = self.new_problem(self.columns(rect, &[], &[]), &bg, rect.len(), &mut work);
         let ext = self.new_problem(self.columns(rect, &[], &[cell]), &bg, rect.len(), &mut work);
         self.work += work;
-        let b = self.solve_frames(&base, test_fr, &proj);
-        let e = self.solve_frames(&ext, test_fr, &proj);
+        let (b, start) = self.reference(&base, test_fr, &proj);
+        let e = self.solve_frames_from(&ext, test_fr, &proj, start.as_ref());
         let k = ext.len() - 1;
         // What the base model leaves is noise *plus* everything not modelled
         // (dim cells below detection, neuropil): measure its variance per
@@ -5127,7 +5243,7 @@ impl SlowLoop {
                 &mut work,
             );
             self.work += work;
-            let f = self.solve_frames(&pr, test_fr, &proj);
+            let f = self.solve_frames_from(&pr, test_fr, &proj, start.as_ref());
             let g_even = b_even - even(&f);
             if g_even > best_even {
                 best_even = g_even;
@@ -5549,6 +5665,7 @@ impl SlowLoop {
         (i, j): (usize, usize),
         test_fr: &Frames,
         want_ovl: bool,
+        start: Option<&Start>,
     ) -> RefitPair {
         let mut ca: Vec<f32> = fits.iter().map(|f| f.c[i]).collect();
         let mut cb: Vec<f32> = fits.iter().map(|f| f.c[j]).collect();
@@ -5603,7 +5720,7 @@ impl SlowLoop {
                     out.ovl = overlap(&rp.cols[ka], &rp.cols[kb], rect.len());
                 }
                 if two {
-                    out.fits = Some(self.solve_all(&rp, test_fr));
+                    out.fits = Some(self.solve_all_from(&rp, test_fr, start));
                 }
             }
             out.cells = Some((na, nb));
@@ -5706,7 +5823,7 @@ impl SlowLoop {
             // cell alone with its footprint unchanged (the other being a
             // duplicate or a fragment of it). The best one is taken unless
             // keeping both beats it by the add margin.
-            let sep = self.solve_all(&base, test_fr);
+            let (sep, start) = self.reference_all(&base, test_fr);
             let mut chi_sep = Self::total_chi2(&sep);
             #[cfg(feature = "diagnostics")]
             let mut frames_log = mergelog::Frames {
@@ -5736,8 +5853,18 @@ impl SlowLoop {
             // letting that leftover count kept 4 in 5 pairs on one GT unit
             // apart); then the current pair is the baseline.
             if self.cfg.merge_refit_pair && ovl < self.cfg.merge_refit_max_ovl {
-                let rp =
-                    self.refit_pair(ti, rect, &base, &fits, &data, &dom, (i, j), test_fr, false);
+                let rp = self.refit_pair(
+                    ti,
+                    rect,
+                    &base,
+                    &fits,
+                    &data,
+                    &dom,
+                    (i, j),
+                    test_fr,
+                    false,
+                    start.as_ref(),
+                );
                 if let Some(rf) = &rp.fits {
                     chi_sep = chi_sep.min(Self::total_chi2(rf));
                     #[cfg(feature = "diagnostics")]
@@ -5751,8 +5878,18 @@ impl SlowLoop {
             #[cfg(feature = "diagnostics")]
             if mergelog::on() {
                 let w0 = self.work;
-                let rp =
-                    self.refit_pair(ti, rect, &base, &fits, &data, &dom, (i, j), test_fr, true);
+                let rp = self.refit_pair(
+                    ti,
+                    rect,
+                    &base,
+                    &fits,
+                    &data,
+                    &dom,
+                    (i, j),
+                    test_fr,
+                    true,
+                    start.as_ref(),
+                );
                 self.work = w0;
                 frames_log.refit_diag = Some(rp.diag());
             }
@@ -5760,7 +5897,7 @@ impl SlowLoop {
             if let Some(m) = self.make_cell(keep, rect, &dom, &h, None) {
                 let cols = self.columns(rect, &[ids[i], ids[j]], &[&m]);
                 let mp = self.problem(ti, cols);
-                let mf = self.solve_all(&mp, test_fr);
+                let mf = self.solve_all_from(&mp, test_fr, start.as_ref());
                 let loss = Self::total_chi2(&mf) - chi_sep;
                 #[cfg(feature = "diagnostics")]
                 {
@@ -5776,7 +5913,7 @@ impl SlowLoop {
             for (stay, go) in [(ci, cj), (cj, ci)] {
                 let cols = self.columns(rect, &[self.cells[go].id], &[]);
                 let ap = self.problem(ti, cols);
-                let af = self.solve_all(&ap, test_fr);
+                let af = self.solve_all_from(&ap, test_fr, start.as_ref());
                 let loss = Self::total_chi2(&af) - chi_sep;
                 #[cfg(feature = "diagnostics")]
                 if let Some(k) = ap.cols.iter().position(|c| c.id == self.cells[stay].id) {
@@ -6033,8 +6170,8 @@ impl SlowLoop {
                 &mut work,
             );
             self.work += work + (rect.len() * (test_fr.len() + 2 * bg.k)) as u64;
-            let f1 = self.solve_frames(&one, test_fr, &proj);
-            let f2 = self.solve_frames(&two, test_fr, &proj);
+            let (f1, start) = self.reference(&one, test_fr, &proj);
+            let f2 = self.solve_frames_from(&two, test_fr, &proj, start.as_ref());
             let n_px = self.fov_px(rect) as f64;
             let dof = (test_fr.len() as f64 * (n_px - (bg.k + one.len()) as f64)).max(1.0);
             let chi1 = Self::total_chi2(&f1);
@@ -6064,7 +6201,7 @@ impl SlowLoop {
                 let pr =
                     self.new_problem(self.columns(rect, &[id], &[c1]), &bg, rect.len(), &mut work);
                 self.work += work;
-                let f = self.solve_frames(&pr, test_fr, &proj);
+                let f = self.solve_frames_from(&pr, test_fr, &proj, start.as_ref());
                 best_single = best_single.max((chi1 - Self::total_chi2(&f)) / s2);
             }
             if gain - best_single <= m + f64::from(self.cfg.accept_z) * sd {
@@ -6184,7 +6321,7 @@ impl SlowLoop {
         if base.len() == 0 {
             return;
         }
-        let base_test = self.solve_all(base, test_fr);
+        let (base_test, start) = self.reference_all(base, test_fr);
         let chi_base = Self::total_chi2(&base_test);
         let n_px = self.fov_px(rect) as f64;
         let dof = (test_fr.len() as f64
@@ -6192,7 +6329,15 @@ impl SlowLoop {
             .max(1.0);
         let s2 = (chi_base / dof).max(1.0);
         let mut updates = Vec::new();
-        let joint = self.refine_clusters(ti, base, test_fr, &base_test, chi_base, s2, &mut updates);
+        let joint = self.refine_clusters(
+            ti,
+            base,
+            test_fr,
+            (&base_test, start.as_ref()),
+            chi_base,
+            s2,
+            &mut updates,
+        );
         for i in 0..base.len() {
             let id = base.cols[i].id;
             if joint.contains(&id) {
@@ -6258,7 +6403,7 @@ impl SlowLoop {
             };
             let cols = self.columns(rect, &[id], &[&new]);
             let pr = self.problem(ti, cols);
-            let f = self.solve_all(&pr, test_fr);
+            let f = self.solve_all_from(&pr, test_fr, start.as_ref());
             let gain = (chi_base - Self::total_chi2(&f)) / s2;
             let z = paired_z(&base_test, &f);
             // A reservoir estimate is noisy and re-proposed on every

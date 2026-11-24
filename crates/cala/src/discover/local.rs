@@ -1284,7 +1284,17 @@ impl Problem {
 
     /// [`Problem::solve`] from the column dots `s` ([`Problem::column_dots`]).
     pub fn solve_dots(&self, s: &[f64], qb: &[f64], yy: f64, work: &mut u64) -> Fit {
-        self.finish(&self.t, &self.q, &self.gbc, &self.bg_inv, s, qb, yy, work)
+        self.finish(
+            &self.t,
+            &self.q,
+            &self.gbc,
+            &self.bg_inv,
+            s,
+            qb,
+            yy,
+            &[],
+            work,
+        )
     }
 
     /// The moat grid's block sums of `y` ([`PatchGrid::sums`]) when the
@@ -1353,9 +1363,37 @@ impl Problem {
         miss: &[u32],
         work: &mut u64,
     ) -> Fit {
+        self.solve_missing_dots_from(s, dots_work, qb, yy, miss, &[], work)
+    }
+
+    /// [`Problem::solve_missing_dots`] with the coordinate descent started
+    /// at `start` (one value per column; empty: at zero). The exit rule
+    /// is the same, so the result is the same optimum to within that
+    /// tolerance, reached in fewer sweeps from a nearby start.
+    #[allow(clippy::too_many_arguments)]
+    pub fn solve_missing_dots_from(
+        &self,
+        s: &[f64],
+        dots_work: u64,
+        qb: &[f64],
+        yy: f64,
+        miss: &[u32],
+        start: &[f32],
+        work: &mut u64,
+    ) -> Fit {
         if miss.is_empty() {
             *work += dots_work;
-            return self.solve_dots(s, qb, yy, work);
+            return self.finish(
+                &self.t,
+                &self.q,
+                &self.gbc,
+                &self.bg_inv,
+                s,
+                qb,
+                yy,
+                start,
+                work,
+            );
         }
         let (n, k) = (self.n, self.k);
         let d = n + k;
@@ -1435,12 +1473,12 @@ impl Problem {
             }
         }
         *work += (n * n * k + k * k * k) as u64 + dots_work;
-        self.finish(&t, &q, &gbc, &inv, s, qb, yy, work)
+        self.finish(&t, &q, &gbc, &inv, s, qb, yy, start, work)
     }
 
     /// Non-negative solve from the column dots `s_i = h̃_iᵀ y`, the
     /// background projections `qb` and the energy `yy`, with the given
-    /// Gram terms.
+    /// Gram terms, by coordinate descent from `start` (empty: zero).
     #[allow(clippy::too_many_arguments)]
     fn finish(
         &self,
@@ -1451,6 +1489,7 @@ impl Problem {
         s: &[f64],
         qb: &[f64],
         yy: f64,
+        start: &[f32],
         work: &mut u64,
     ) -> Fit {
         let (n, k) = (self.n, self.k);
@@ -1461,6 +1500,25 @@ impl Problem {
         }
         let mut c = vec![0.0f64; n];
         let mut qc = vec![0.0f64; n];
+        if !start.is_empty() {
+            debug_assert_eq!(start.len(), n);
+            // Only coordinates the sweep updates start away from zero (a
+            // skipped one would keep its start for good).
+            for (i, (ci, &v)) in c.iter_mut().zip(start).enumerate() {
+                if v.is_finite() && v > 0.0 && q_gram[i * n + i] > 0.0 {
+                    *ci = f64::from(v);
+                }
+            }
+            for (i, &ci) in c.iter().enumerate() {
+                if ci != 0.0 {
+                    let row = &q_gram[i * n..(i + 1) * n];
+                    for (q, &r) in qc.iter_mut().zip(row) {
+                        *q += r * ci;
+                    }
+                }
+            }
+            *work += (n * n) as u64;
+        }
         for _sweep in 0..100 {
             let mut worst = 0.0f64;
             for i in 0..n {
@@ -2141,5 +2199,99 @@ mod tests {
         let (qf, yf) = bg.project(&y_full);
         let none = pr.solve_missing(&y_full, &qf, yf, &[], &mut work);
         assert_eq!(none.c, pr.solve(&y_full, &qf, yf, &mut work).c);
+    }
+
+    /// Warm starts ([`Problem::solve_missing_dots_from`]): from the cold
+    /// solution, or from a nearby one, the solve ends at the same optimum
+    /// (within the exit tolerance) in fewer sweeps; values the solve must
+    /// not start from (negative, not finite) are ignored; an empty start
+    /// is the cold solve, bit for bit.
+    #[test]
+    fn warm_start_reaches_the_cold_optimum_in_fewer_sweeps() {
+        let rect = Rect {
+            y0: 0,
+            x0: 0,
+            h: 40,
+            w: 40,
+        };
+        let bg = BgBasis::new(rect);
+        let mk = |cy: f32, cx: f32, id| {
+            let mut pix = Vec::new();
+            let mut val = Vec::new();
+            for y in 0..40 {
+                for x in 0..40 {
+                    let (dy, dx) = (y as f32 - cy, x as f32 - cx);
+                    let r2 = dy * dy + dx * dx;
+                    if r2 < 64.0 {
+                        pix.push((y * 40 + x) as u32);
+                        val.push((-r2 / 18.0).exp());
+                    }
+                }
+            }
+            Column::plain(id, pix, val)
+        };
+        // Strongly overlapping cells: coordinate descent from zero needs
+        // many sweeps.
+        let cols = vec![
+            mk(15.0, 15.0, 1),
+            mk(16.5, 16.0, 2),
+            mk(18.0, 17.5, 3),
+            mk(25.0, 24.0, 4),
+        ];
+        let mut work = 0;
+        let pr = Problem::new(cols, &bg, rect.len(), &mut work);
+        let mut seed = 7u64;
+        let mut noise = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.2
+        };
+        let mut y: Vec<f32> = (0..rect.len()).map(|_| noise()).collect();
+        for (col, c) in pr.cols.iter().zip([3.0f32, 0.0, 2.0, 1.0]) {
+            for (&p, &v) in col.pix.iter().zip(&col.val) {
+                y[p as usize] += v * c;
+            }
+        }
+        let (qb, yy) = bg.project(&y);
+        let s = pr.column_dots(&y, &mut 0);
+        let solve = |start: &[f32]| {
+            let mut w = 0;
+            let f = pr.solve_missing_dots_from(&s, 0, &qb, yy, &[], start, &mut w);
+            (f, w)
+        };
+        let (cold, w_cold) = solve(&[]);
+        let plain = pr.solve(&y, &qb, yy, &mut 0);
+        assert!(bits_eq(&cold.c, &plain.c) && cold.chi2.to_bits() == plain.chi2.to_bits());
+        // The exact optimum, for scale: a long solve from the cold one.
+        let mut best = cold.clone();
+        for _ in 0..50 {
+            best = solve(&best.c).0;
+        }
+        let tol = |f: &Fit| {
+            f.c.iter()
+                .zip(&best.c)
+                .enumerate()
+                .all(|(i, (a, b))| (a - b).abs() < 0.05 * pr.coord_sigma(i).max(1e-3) + 1e-3)
+                && (f.chi2 - best.chi2).abs() < 1e-3 * best.chi2.abs().max(1.0)
+        };
+        assert!(tol(&cold), "cold {:?} vs {:?}", cold.c, best.c);
+        // From the cold solution: one confirming sweep (plus building Q c).
+        let (again, w_again) = solve(&cold.c);
+        assert!(tol(&again));
+        assert!(w_again < w_cold, "{w_again} vs {w_cold}");
+        // From a nearby start (the cold solution moved by a little).
+        let near: Vec<f32> = cold.c.iter().map(|v| v * 0.9 + 0.05).collect();
+        let (from_near, w_near) = solve(&near);
+        assert!(tol(&from_near), "{:?} vs {:?}", from_near.c, best.c);
+        assert!(w_near < w_cold, "{w_near} vs {w_cold}");
+        // Unusable start values are treated as zero.
+        let bad = [f32::NAN, -4.0, f32::INFINITY, cold.c[3]];
+        let mut fixed = vec![0.0f32; 4];
+        fixed[3] = cold.c[3];
+        let (a, wa) = solve(&bad);
+        let (b, wb) = solve(&fixed);
+        assert!(bits_eq(&a.c, &b.c) && a.chi2.to_bits() == b.chi2.to_bits() && wa == wb);
+        assert!(tol(&a));
     }
 }

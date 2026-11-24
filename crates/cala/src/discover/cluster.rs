@@ -28,7 +28,7 @@ use super::local::{Cell, Fit, Problem};
 use super::wire::{Reader, Writer};
 use super::{
     column_on, paired_z, solve_dense, EditScope, Frames, JointAdmit, JointSign, JointUpdate,
-    ReplayStats, SlowLoop,
+    ReplayStats, SlowLoop, Start,
 };
 use crate::trace::{FrameTraces, Library};
 
@@ -1144,7 +1144,7 @@ impl SlowLoop {
         ti: usize,
         base: &Problem,
         test_fr: &Frames,
-        base_test: &[Fit],
+        (base_test, start): (&[Fit], Option<&Start>),
         chi_base: f64,
         s2: f64,
         updates: &mut Vec<(u64, Cell, f32, u64)>,
@@ -1306,7 +1306,7 @@ impl SlowLoop {
                 let refs: Vec<&Cell> = news.iter().collect();
                 let cols = self.columns(rect, &skip, &refs);
                 let pr = self.problem(ti, cols);
-                let f = self.solve_all(&pr, test_fr);
+                let f = self.solve_all_from(&pr, test_fr, start);
                 let gain = (chi_base - SlowLoop::total_chi2(&f)) / s2;
                 let z = paired_z(base_test, &f);
                 let accepted = gain > 0.0 && z > f64::from(self.cfg.refine_z);
@@ -1325,7 +1325,7 @@ impl SlowLoop {
                             };
                             let cols = self.columns(rect, &[nc.id], &[nc]);
                             let pr = self.problem(ti, cols);
-                            let f = self.solve_all(&pr, test_fr);
+                            let f = self.solve_all_from(&pr, test_fr, start);
                             sd.solo[k] = (chi_base - SlowLoop::total_chi2(&f)) / s2;
                         }
                         self.work = w0;
