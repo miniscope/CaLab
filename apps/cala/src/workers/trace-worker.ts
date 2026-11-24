@@ -72,7 +72,13 @@ function handle(msg: StageMsg): void {
                 csettleNeedFirst: cells.csettleNeedFirst ?? false,
               }
             : {}),
-          ...(cells?.lookback && !cells.library && cells.settleFraction !== undefined
+          ...(cells?.factorSettle && !cells.library && !cells.lookback
+            ? { factorSettle: true }
+            : {}),
+          ...(cells?.factorFile && !cells.library && cells.lookback ? { factorFile: true } : {}),
+          ...((cells?.lookback || cells?.factorSettle) &&
+          !cells.library &&
+          cells.settleFraction !== undefined
             ? { settleFraction: cells.settleFraction }
             : {}),
           ...(cells?.lookback && !cells.library && msg.setup.boundaries?.length
@@ -84,7 +90,12 @@ function handle(msg: StageMsg): void {
         traceBackend,
         cells?.compress && compressPort
           ? new CompressFeed(
-              { width: msg.fast.width, height: msg.fast.height, session: cells.session },
+              {
+                width: msg.fast.width,
+                height: msg.fast.height,
+                session: cells.session,
+                ...(cells.compressTiling ? { tiling: cells.compressTiling } : {}),
+              },
               compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
             )
           : null,

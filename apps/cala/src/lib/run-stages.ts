@@ -16,6 +16,7 @@
  * `pass2-store`) run the stages.
  */
 import { createSignal } from 'solid-js';
+import type { FactorInfo } from './compress-store.ts';
 
 export type StageName = 'discover' | 'extract';
 
@@ -52,6 +53,8 @@ export interface StageInput {
   cells: number;
   /** Why the recorded motion and flicker cannot be replayed (null: they can). */
   replayBlocked: string | null;
+  /** A `?factors` stream: Extract solves on the stream's factors. */
+  liveFactors?: boolean;
 }
 
 export const LIVE_NOTE =
@@ -93,7 +96,7 @@ export function stageAvailability(i: StageInput): Record<StageName, string | nul
         ? 'Extract is running.'
         : null;
   const after = (stage: string): string | null => {
-    if (i.live) return LIVE_NOTE;
+    if (i.live && !i.liveFactors) return LIVE_NOTE;
     if (busy) return busy;
     if (i.discover !== 'done') return `${stage} runs after Discover finishes.`;
     if (i.replayBlocked) return i.replayBlocked;
@@ -133,6 +136,13 @@ export interface StageRun {
   splits?: number;
   /** Discover: it ran with look-back (and its settle). */
   lookback?: boolean;
+  /** Discover: the Final settle read the factors or, with `?factors=file`, the file, and why. */
+  settleSource?: 'factors' | 'file';
+  settleSourceReason?: string;
+  /** Extract: it solved the frames rebuilt from the factors (and which), or replayed the file and why. */
+  source?: 'factors' | 'file';
+  sourceReason?: string;
+  factors?: FactorInfo;
 }
 
 /** Runs of the stages since the last Discover start, in order. */

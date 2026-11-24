@@ -9,10 +9,15 @@ import {
   buildCalaExport,
   cadeconCells,
   EXPORT_FORMAT_VERSION,
+  exportFormatVersion,
+  FACTORS_EXPORT_NOTE,
+  factorTailNote,
   fileStem,
+  type ExportInput,
 } from '../lib/export.ts';
 import type { Pass2Result } from '../lib/pass2-store.ts';
 import { memoryTraceFile } from '../lib/trace-file.ts';
+import { fileFactorNotes } from '../lib/factor-run.ts';
 import { RunRecord } from '../lib/run-record.ts';
 import type { LibraryView } from '../workers/slow-types.ts';
 
@@ -308,6 +313,100 @@ describe('export', () => {
     expect('pass2_seconds' in meta).toBe(false);
   });
 
+  it("a ?factors stream keeps the live traces beside Extract's and names its sources (format 7)", async () => {
+    const inp = await input();
+    const live = new Float32Array(T * 3);
+    for (let f = 0; f < T; f++) for (let c = 0; c < 3; c++) live[f * 3 + c] = 7 + 100 * c + f;
+    const stage = (stage: 'discover' | 'extract'): StageRun => ({
+      stage,
+      index: 1,
+      startedAt: '2026-11-23T10:00:00.000Z',
+      endedAt: '2026-11-23T10:01:00.000Z',
+      outcome: 'done',
+      frames: T,
+      cells: 3,
+      libraryVersion: 12,
+    });
+    const stages: StageRun[] = [
+      { ...stage('discover'), settleSource: 'factors' },
+      {
+        ...stage('extract'),
+        source: 'factors',
+        factors: {
+          folder: 'run-a',
+          tiling: 'offset',
+          windows: [
+            { index: 0, start: 0, frames: 4 },
+            { index: 1, start: 4, frames: 3 },
+          ],
+          frames: T,
+          meanRank: 4.5,
+        },
+      },
+    ];
+    const withFactors = {
+      ...inp,
+      liveTraces: await memoryTraceFile(live, T, 3),
+      notes: [FACTORS_EXPORT_NOTE, factorTailNote(T - 1, T)],
+      stages,
+    };
+    expect(exportFormatVersion(withFactors)).toBe(7);
+    const a = parseNpz(await buildCalaExport(withFactors)).arrays;
+    expect(a.traces_live.shape).toEqual([3, T]);
+    expect([...processNpyResult(a.traces_live).data.slice(T, 2 * T)]).toEqual([
+      107, 108, 109, 110, 111, 112, 113,
+    ]);
+    // Extract's traces are still the file's `traces`.
+    expect([...processNpyResult(a.traces).data.slice(T, 2 * T)]).toEqual([
+      100, 101, 102, 103, 104, 105, 106,
+    ]);
+    const meta = JSON.parse(new TextDecoder().decode(a.meta_json.data as Uint8Array));
+    expect(meta.format_version).toBe(7);
+    expect(meta.notes).toEqual([FACTORS_EXPORT_NOTE, factorTailNote(T - 1, T)]);
+    expect(meta.traces_live).toBeTypeOf('string');
+    expect(meta.stages[0].settle_source).toBe('factors');
+    expect(meta.stages[1]).toMatchObject({
+      source: 'factors',
+      factor_tiling: 'offset',
+      factor_windows: 2,
+      factor_mean_rank: 4.5,
+    });
+  });
+
+  it('an export without the factor fields stays format 6 with the same entries', async () => {
+    const inp = await input();
+    expect(exportFormatVersion({})).toBe(6);
+    expect(exportFormatVersion({ notes: [] })).toBe(6);
+    const z = parseNpz(await buildCalaExport(inp));
+    const meta = JSON.parse(new TextDecoder().decode(z.arrays.meta_json.data as Uint8Array));
+    expect(meta.format_version).toBe(6);
+    expect('notes' in meta).toBe(false);
+    expect('traces_live' in z.arrays).toBe(false);
+    expect(Object.keys(z.arrays).sort()).toEqual(
+      [
+        'cell_ids',
+        'centroids_yx',
+        'first_seen_frame',
+        'flicker_gain',
+        'flicker_offset',
+        'footprint_pixels',
+        'footprint_starts',
+        'footprint_values',
+        'fov_shape',
+        'meta_json',
+        'motion_flags',
+        'motion_shift_yx',
+        'qc_flags',
+        'qc_pass',
+        'qc_peak_snr',
+        'radii_px',
+        'sampling_rate_hz',
+        'traces',
+        'traces_signed',
+      ].sort(),
+    );
+  });
+
   it('writes the same archive with ZIP64 records forced', async () => {
     const inp = await input();
     const plain = parseNpz(await buildCalaExport(inp)).arrays;
@@ -374,5 +473,78 @@ describe('export', () => {
   it('makes a safe file stem', () => {
     expect(fileStem('my folder/2026')).toBe('my_folder_2026');
     expect(fileStem('///')).toBe('recording');
+  });
+});
+
+describe('export of a ?factors=file recording', () => {
+  const stage = (stage: 'discover' | 'extract'): StageRun => ({
+    stage,
+    index: 1,
+    startedAt: '2026-11-23T10:00:00.000Z',
+    endedAt: '2026-11-23T10:01:00.000Z',
+    outcome: 'done',
+    frames: T,
+    cells: 3,
+    libraryVersion: 12,
+  });
+  const metaOf = async (inp: ExportInput) =>
+    JSON.parse(
+      new TextDecoder().decode(
+        parseNpz(await buildCalaExport(inp)).arrays.meta_json.data as Uint8Array,
+      ),
+    );
+
+  it('records each stage source and reason, notes what each read, and is format 7', async () => {
+    const stages: StageRun[] = [
+      {
+        ...stage('discover'),
+        settleSource: 'file',
+        settleSourceReason: 'the compressor was 4,210 frames behind when Discover ended',
+      },
+      {
+        ...stage('extract'),
+        source: 'factors',
+        factors: {
+          folder: 'run-a',
+          tiling: 'offset',
+          windows: [{ index: 0, start: 0, frames: T }],
+          frames: T,
+          meanRank: 4,
+        },
+      },
+    ];
+    const meta = await metaOf({ ...(await input()), stages, notes: fileFactorNotes(stages) });
+    expect(meta.format_version).toBe(7);
+    expect(meta.stages[0]).toMatchObject({
+      settle_source: 'file',
+      settle_source_reason: expect.stringContaining('4,210'),
+    });
+    expect(meta.stages[1]).toMatchObject({ source: 'factors', factor_tiling: 'offset' });
+    expect(meta.notes[0]).toContain('the Final settle re-read the file');
+    expect(meta.notes[0]).toContain('Extract read the factors');
+    expect(meta.notes[1]).toContain('less per-frame noise');
+  });
+
+  it('Extract on the file keeps its reason', async () => {
+    const stages: StageRun[] = [
+      stage('discover'),
+      {
+        ...stage('extract'),
+        source: 'file',
+        sourceReason: '1,800 frames are still being compressed.',
+      },
+    ];
+    const meta = await metaOf({ ...(await input()), stages, notes: fileFactorNotes(stages) });
+    expect(meta.stages[1].source_reason).toContain('1,800');
+    expect(meta.notes[0]).toContain('Extract replayed the file');
+    expect(meta.notes).toHaveLength(1);
+  });
+
+  it('an export without stage sources stays 6 and has no notes', async () => {
+    const stages = [stage('discover'), stage('extract')];
+    expect(fileFactorNotes(stages)).toEqual([]);
+    const meta = await metaOf({ ...(await input()), stages });
+    expect(meta.format_version).toBe(6);
+    expect(meta.notes).toBeUndefined();
   });
 });

@@ -7,6 +7,7 @@
  *
  *   node apps/cala/scripts/live-measure.mjs <folder> --url http://localhost:5207
  *        --out <dir> [--mode live|file|both] [--fps 20] [--port 8766] [--headed]
+ *        [--query factors] [--frames N] [--tag NAME] [--channel chrome]
  *
  * `live`: starts `live-sim.mjs` on the folder, opens the app on it with
  * `?live=...&debug`, waits for the stream to end and the final library, and
@@ -16,6 +17,17 @@
  * (pass 1 now includes look-back and its Final settle: look-back is on by default; add ?lookback=0
  * for plain Discover timing) through the directory input, lets pass 1 and pass 2 run, and writes
  * `file_metrics.json` and `file_cala.npz`.
+ *
+ * `--query` adds URL parameters to the run (live or file; `factors=file`: a
+ * recording's settle and Extract may read its factors, summed up in the file
+ * metrics' `factors`; `factors` on a live run: the stream settles
+ * and extracts on its factors after it ends; the script then also waits for
+ * Extract). `--frames N` streams only the first N frames; `--tag` names the
+ * output files (`<tag>_metrics.json`, `<tag>_cala.npz`); `--channel chrome`
+ * runs the installed Google Chrome. Every second the live run samples the
+ * compressor's status, the slow loop's settle and Extract (`timeline`), from
+ * which `factors` sums up the compressor's pace and queue, and the wait,
+ * settle and Extract times after the stream (also per minute of stream).
  */
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -42,6 +54,10 @@ const mode = option('--mode', 'live');
 const fps = option('--fps', undefined);
 const port = Number(option('--port', '8766'));
 const headed = flag('--headed');
+const query = option('--query', '');
+const frames = option('--frames', undefined);
+const tag = option('--tag', 'live');
+const channel = option('--channel', undefined);
 const folder = resolve(args[0] ?? '.');
 mkdirSync(out, { recursive: true });
 const here = import.meta.dirname;
@@ -71,6 +87,9 @@ async function until(page, fn, timeoutMs, what) {
 }
 
 async function exportNpz(page, path) {
+  // The export buttons sit in a menu: open it first.
+  const menu = page.locator('[data-testid=export-menu]');
+  if (!(await menu.evaluate((el) => el.open))) await menu.locator('summary').click();
   const [download] = await Promise.all([
     page.waitForEvent('download'),
     page.click('[data-testid=export-npz]'),
@@ -103,10 +122,131 @@ const pipelineMetrics = () => {
   };
 };
 
+const factorRun = query.split('&').includes('factors');
+
+/** One timeline sample of the live run (runs in the page). */
+const sample = () => {
+  const c = window.__cala;
+  const cs = c.compress?.status() ?? null;
+  const st = c.cells.status();
+  const settle = st?.lookback?.settle ?? null;
+  return {
+    pipeline: c.pipeline.status(),
+    processed: c.pipeline.processed(),
+    slowDropped: c.cells.batch()?.droppedFrames ?? 0,
+    compress: cs && {
+      windows: cs.windows,
+      frames: cs.frames,
+      pending: cs.pending,
+      pendingFrames: cs.pendingFrames,
+      msPerFrame: cs.msPerFrame,
+      final: cs.final,
+    },
+    final: st?.final ?? false,
+    settle: settle && {
+      waiting: settle.waiting ?? false,
+      fed: settle.fed,
+      total: settle.total,
+      done: settle.done,
+      source: settle.source ?? null,
+      fileReason: settle.fileReason ?? null,
+    },
+    pass2: c.pass2.status(),
+    pass2Source: c.pass2.result()?.source ?? null,
+    pass2Reason: c.pass2.result()?.sourceReason ?? c.pass2.fileReason?.() ?? null,
+    pass2Processed: c.pass2.processed(),
+  };
+};
+
+/**
+ * The speed check's numbers from the timeline (spec decision 6): the
+ * compressor's pace and queue, and the times after the stream ended.
+ */
+function factorSummary(timeline, streamFrames, streamFps) {
+  const first = (pred) => timeline.find(pred)?.t ?? null;
+  const streamEnd = first((s) => s.pipeline === 'done' || s.pipeline === 'error');
+  const during = timeline.filter((s) => streamEnd === null || s.t <= streamEnd);
+  // The compressor's compute per frame, one value per window (its status after that window).
+  const perWindow = new Map();
+  for (const s of timeline)
+    if (s.compress?.windows > 0) perWindow.set(s.compress.windows, s.compress.msPerFrame);
+  const ms = [...perWindow.values()].filter((v) => v > 0);
+  const lastCompressed = first((s) => s.compress?.final === true);
+  const waitEnd = first((s) => s.settle && !s.settle.waiting && s.t >= (streamEnd ?? 0));
+  const finalAt = first((s) => s.final);
+  const extractStart = first((s) => s.pass2 === 'running');
+  const extractEnd = first((s) => ['done', 'error', 'cancelled'].includes(s.pass2));
+  const minutes = streamFrames / streamFps / 60;
+  const span = (a, b) => (a !== null && b !== null ? b - a : null);
+  const perMin = (v) => (v !== null && minutes > 0 ? v / minutes : null);
+  const settleS = span(waitEnd, finalAt);
+  const extractS = span(extractStart, extractEnd);
+  const atEnd = timeline.find((s) => s.t === streamEnd) ?? null;
+  return {
+    streamMinutes: minutes,
+    compressorMsPerFrame: summarize(ms),
+    pendingWindowsWhileStreaming: summarize(during.map((s) => s.compress?.pending ?? 0)),
+    pendingAtStreamEnd: atEnd?.compress?.pending ?? null,
+    pendingFramesAtStreamEnd: atEnd?.compress?.pendingFrames ?? null,
+    lastWindowAfterStreamS: span(streamEnd, lastCompressed),
+    slowDropped: timeline.at(-1)?.slowDropped ?? 0,
+    waitForFactorsS: span(streamEnd, waitEnd),
+    settleS,
+    settleFed: timeline.at(-1)?.settle?.fed ?? null,
+    extractS,
+    extractFrames: timeline.at(-1)?.pass2Processed ?? null,
+    settleSPerMinute: perMin(settleS),
+    extractSPerMinute: perMin(extractS),
+    endToExtractDoneS: span(streamEnd, extractEnd),
+  };
+}
+
+/**
+ * A `?factors=file` recording (slice 3): which source the settle and Extract
+ * took and why, the compressor's lag at Discover's end, and the times.
+ */
+function fileFactorSummary(timeline) {
+  const first = (pred) => timeline.find(pred) ?? null;
+  const end = first((s) => s.pipeline === 'done' || s.pipeline === 'error');
+  const ask = first((s) => s.settle?.waiting === true);
+  const settleStart = first(
+    (s) => s.settle && !s.settle.waiting && !s.final && (end ? s.t >= end.t : true),
+  );
+  const finalAt = first((s) => s.final);
+  const extractStart = first((s) => s.pass2 === 'running');
+  const extractEnd = first((s) => ['done', 'error', 'cancelled'].includes(s.pass2));
+  const last = timeline.at(-1) ?? null;
+  const lag = (s) => (s && s.compress ? s.processed - s.compress.frames : s ? s.processed : null);
+  const span = (a, b) => (a && b ? b.t - a.t : null);
+  return {
+    discoverEndS: end?.t ?? null,
+    compressBehindAtDiscoverEnd: lag(end),
+    compressBehindAtAsk: lag(ask),
+    askS: span(ask, settleStart),
+    settleSource: last?.settle?.source ?? null,
+    settleFileReason: last?.settle?.fileReason ?? null,
+    settleS: span(settleStart ?? ask, finalAt),
+    settleFed: last?.settle?.fed ?? null,
+    extractSource: last?.pass2Source ?? null,
+    extractReason: last?.pass2Reason ?? null,
+    extractS: span(extractStart, extractEnd),
+    compressorMsPerFrame: last?.compress?.msPerFrame ?? null,
+    lastWindowCompressedS: first((s) => s.compress?.final === true)?.t ?? null,
+    endToExtractDoneS: span(end, extractEnd),
+  };
+}
+
 async function liveRun(browser) {
   const sim = spawn(
     process.execPath,
-    [join(here, 'live-sim.mjs'), folder, '--port', String(port), ...(fps ? ['--fps', fps] : [])],
+    [
+      join(here, 'live-sim.mjs'),
+      folder,
+      '--port',
+      String(port),
+      ...(fps ? ['--fps', fps] : []),
+      ...(frames ? ['--frames', frames] : []),
+    ],
     { stdio: ['ignore', 'pipe', 'inherit'] },
   );
   const simLog = [];
@@ -123,9 +263,18 @@ async function liveRun(browser) {
     const page = await browser.newPage();
     page.on('pageerror', (e) => console.error('page error:', e.message));
     const t0 = Date.now();
-    await page.goto(`${url}/?live=ws://localhost:${port}&debug`);
+    await page.goto(`${url}/?live=ws://localhost:${port}&debug${query ? `&${query}` : ''}`);
     await until(page, () => window.__cala?.pipeline.status() === 'running', 30_000, 'the live run');
     console.log('live run started');
+    // One sample a second until the run is over (Extract too with ?factors).
+    const timeline = [];
+    let sampling = true;
+    const sampler = (async () => {
+      while (sampling) {
+        timeline.push({ t: (Date.now() - t0) / 1000, ...(await page.evaluate(sample)) });
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    })();
     await until(
       page,
       () => ['done', 'error'].includes(window.__cala.pipeline.status()),
@@ -138,9 +287,21 @@ async function liveRun(browser) {
       () =>
         (window.__cala.cells.status()?.final ?? false) ||
         window.__cala.pipeline.status() === 'error',
-      60_000,
+      factorRun ? 60 * 60_000 : 60_000,
       'the final library',
     );
+    if (factorRun) {
+      console.log('final library out; waiting for Extract on the factors');
+      await until(
+        page,
+        () => ['done', 'error', 'cancelled'].includes(window.__cala.pass2.status()),
+        60 * 60_000,
+        'Extract',
+      );
+    }
+    sampling = false;
+    await sampler;
+    timeline.push({ t: (Date.now() - t0) / 1000, ...(await page.evaluate(sample)) });
     const seconds = (Date.now() - t0) / 1000;
     const raw = await page.evaluate(() => {
       const c = window.__cala;
@@ -186,9 +347,12 @@ async function liveRun(browser) {
       })),
       pipeline: { ...raw.pipeline, slowLag: undefined, fastMs: summarize(raw.pipeline.fastMs) },
       libraries: raw.pipeline.libraries,
+      query,
+      factors: factorSummary(timeline, raw.pipeline.processed, fps ? Number(fps) : 20),
+      timeline,
       simLog,
     };
-    writeFileSync(join(out, 'live_metrics.json'), JSON.stringify(metrics, null, 1));
+    writeFileSync(join(out, `${tag}_metrics.json`), JSON.stringify(metrics, null, 1));
     if (raw.pipeline.cells > 0) {
       await until(
         page,
@@ -196,7 +360,7 @@ async function liveRun(browser) {
         60_000,
         'the live export',
       );
-      await exportNpz(page, join(out, 'live_cala.npz'));
+      await exportNpz(page, join(out, `${tag}_cala.npz`));
     }
     await page.close();
     return metrics;
@@ -208,9 +372,22 @@ async function liveRun(browser) {
 async function fileRun(browser) {
   const page = await browser.newPage();
   page.on('pageerror', (e) => console.error('page error:', e.message));
-  await page.goto(`${url}/?debug`);
+  await page.goto(`${url}/?debug${query ? `&${query}` : ''}`);
   await page.setInputFiles('[data-testid=folder-input]', folder);
   const t0 = Date.now();
+  // One sample a second until Extract is over (the factor summary reads it).
+  const timeline = [];
+  let sampling = true;
+  const sampler = (async () => {
+    while (sampling) {
+      try {
+        timeline.push({ t: (Date.now() - t0) / 1000, ...(await page.evaluate(sample)) });
+      } catch {
+        // the page is not ready yet
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  })();
   await until(page, () => window.__cala?.pipeline.status() === 'running', 60_000, 'the file run');
   console.log('file run started');
   await until(page, () => window.__cala.pipeline.status() === 'done', 180 * 60_000, 'pass 1');
@@ -222,6 +399,9 @@ async function fileRun(browser) {
     60 * 60_000,
     'pass 2',
   );
+  sampling = false;
+  await sampler;
+  timeline.push({ t: (Date.now() - t0) / 1000, ...(await page.evaluate(sample)) });
   const raw = await page.evaluate(() => {
     const c = window.__cala;
     const r = c.pass2.result();
@@ -239,6 +419,7 @@ async function fileRun(browser) {
   });
   const metrics = {
     mode: 'file',
+    query,
     pass1Seconds,
     processed: raw.pipeline.processed,
     slowForwarded: raw.pipeline.forwarded,
@@ -247,15 +428,19 @@ async function fileRun(browser) {
     pass2: raw.pass2,
     pipeline: { ...raw.pipeline, slowLag: undefined, fastMs: summarize(raw.pipeline.fastMs) },
     libraries: raw.pipeline.libraries,
+    factors: fileFactorSummary(timeline),
+    timeline,
   };
-  writeFileSync(join(out, 'file_metrics.json'), JSON.stringify(metrics, null, 1));
-  if (raw.pass2.status === 'done') await exportNpz(page, join(out, 'file_cala.npz'));
+  const name = tag === 'live' ? 'file' : tag;
+  writeFileSync(join(out, `${name}_metrics.json`), JSON.stringify(metrics, null, 1));
+  if (raw.pass2.status === 'done') await exportNpz(page, join(out, `${name}_cala.npz`));
   await page.close();
   return metrics;
 }
 
 const browser = await chromium.launch({
   headless: !headed,
+  ...(channel ? { channel } : {}),
   args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan,WebGPU', '--ignore-gpu-blocklist'],
 });
 try {

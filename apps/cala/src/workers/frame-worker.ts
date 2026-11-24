@@ -265,13 +265,27 @@ async function handle(req: FrameRequest): Promise<void> {
               discover: (cells?.discover ?? true) && port !== null,
               qc: cells?.qc ?? true,
               residual: cells?.residual ?? false,
+              ...(cells?.factorSettle && !cells.library && !cells.lookback
+                ? { factorSettle: true }
+                : {}),
+              ...(cells?.factorFile && !cells.library && cells.lookback
+                ? { factorFile: true }
+                : {}),
+              ...(cells?.factorSettle && !cells.library && cells.settleFraction !== undefined
+                ? { settleFraction: cells.settleFraction }
+                : {}),
               ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
             },
             port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
             backend,
             cells?.compress && compressPort
               ? new CompressFeed(
-                  { width: setup.width, height: setup.height, session: cells.session },
+                  {
+                    width: setup.width,
+                    height: setup.height,
+                    session: cells.session,
+                    ...(cells.compressTiling ? { tiling: cells.compressTiling } : {}),
+                  },
                   compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
                 )
               : null,

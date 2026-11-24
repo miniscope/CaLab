@@ -109,6 +109,14 @@
  *                                        the cell (CNMF's C + YrA), so a quiet cell sits at 0 with
  *                                        symmetric noise where `traces` is clipped at 0
  *
+ * Both trace sets of a `?factors` stream (format version 7, written only when these fields
+ * are present; every other export stays at 6): `traces` and `traces_signed` are Extract's,
+ * which solved frames rebuilt from the stream's own factors; `traces_live` (same cells x
+ * frames layout) holds the traces Discover solved as the frames came in. `meta_json.notes`
+ * says so, and the stage records carry `settle_source` (Discover's Final settle read the
+ * factors) and `source`, `factor_tiling`, `factor_windows` (their count) and
+ * `factor_mean_rank` (Extract).
+ *
  * Session-boundary flags (format version 6; Joint runs, sessions 2..):
  * `meta_json.session.boundary` is the health flag of the boundary the session
  * starts with (`boundary-flags.ts`, docs/stages.md "Boundary flags"):
@@ -155,7 +163,23 @@ import type { RunSpan } from './run-record.ts';
 import type { StageRun } from './run-stages.ts';
 import type { HistoryExport } from '@calab/compute';
 
+/** The format of an export without the factor fields (see `exportFormatVersion`). */
 export const EXPORT_FORMAT_VERSION = 6;
+
+/** Version 7 adds optional fields (`traces_live`, `notes`, the stages' sources); an export without them stays 6. */
+export function exportFormatVersion(
+  input: Pick<ExportInput, 'liveTraces' | 'notes' | 'stages'>,
+): 6 | 7 {
+  const sourced = (input.stages ?? []).some((r) => r.settleSource || r.source);
+  return input.liveTraces || (input.notes?.length ?? 0) > 0 || sourced ? 7 : 6;
+}
+
+export const FACTORS_EXPORT_NOTE =
+  "Settle and Extract read the factors Discover wrote during the stream; there was no file to re-read. Extract's traces (traces, traces_signed) are solved on low-rank frames and carry less per-frame noise than the live traces (traces_live).";
+
+export function factorTailNote(frames: number, of: number): string {
+  return `The stream's last ${of - frames} frame(s) formed a window too short to compress; this export covers frames 0-${frames - 1}.`;
+}
 
 /** Largest CaDecon trace matrix written the classic in-memory way (C order, no ZIP64), bytes. */
 export const CADECON_MEMORY_BYTES = 512 * 1048576;
@@ -171,6 +195,10 @@ export interface ExportInput {
   /** Frame rate, Hz (0 or undefined: unknown). */
   fps: number;
   result: Pass2Result;
+  /** A `?factors` stream: the traces Discover solved live, written as `traces_live` beside Extract's. */
+  liveTraces?: TraceFile;
+  /** Lines for `meta_json.notes`. */
+  notes?: readonly string[];
   /** Discover's per-frame motion and flicker (at least `result.frames` long). */
   run: RunSpan;
   /**
@@ -238,6 +266,15 @@ export function stageMeta(r: StageRun): Record<string, unknown> {
     ['splits', r.splits],
   ];
   for (const [k, v] of counts) if (v !== undefined) out[k] = v;
+  if (r.settleSource) out.settle_source = r.settleSource;
+  if (r.settleSourceReason) out.settle_source_reason = r.settleSourceReason;
+  if (r.source) out.source = r.source;
+  if (r.sourceReason) out.source_reason = r.sourceReason;
+  if (r.factors) {
+    out.factor_tiling = r.factors.tiling;
+    out.factor_windows = r.factors.windows.length;
+    out.factor_mean_rank = r.factors.meanRank;
+  }
   return out;
 }
 
@@ -412,7 +449,7 @@ export async function writeCalaExport(
   const ranges = fovDisplayRanges(input.bitDepth ?? 8);
   const meta = {
     format: 'cala-export',
-    format_version: EXPORT_FORMAT_VERSION,
+    format_version: exportFormatVersion(input),
     app: 'cala',
     app_version: input.version,
     created: input.createdAt ?? new Date().toISOString(),
@@ -432,6 +469,12 @@ export async function writeCalaExport(
             'traces plus the residual projection on each cell (C + YrA): unclipped, zero baseline, symmetric noise',
         }
       : {}),
+    ...(input.liveTraces
+      ? {
+          traces_live: 'the traces Discover solved as the frames came in (same cells and units)',
+        }
+      : {}),
+    ...(input.notes?.length ? { notes: input.notes } : {}),
     footprints: 'sparse CSR over flat pixel index row * width + column, unfiltered weights',
     extract_seconds: result.seconds,
     stages: (input.stages ?? []).map(stageMeta),
@@ -513,6 +556,7 @@ export async function writeCalaExport(
   const zip = new ZipStreamWriter(sink, { forceZip64: options.forceZip64 });
   const matrices: [string, TraceFile][] = [['traces.npy', result.traces]];
   if (result.signed) matrices.push(['traces_signed.npy', result.signed]);
+  if (input.liveTraces) matrices.push(['traces_live.npy', input.liveTraces]);
   // One progress over all trace matrices.
   const each = n * T * 4;
   for (const [k, [name, file]] of matrices.entries()) {

@@ -25,6 +25,7 @@
 import { FINAL_SETTLE_LEVELS, type FinalSettleLevel, type GovernorStatus } from './settle.ts';
 import type { StageRun } from './run-stages.ts';
 import { stageMeta } from './export.ts';
+import { factorsFromPage } from './factor-run.ts';
 import { FLOOR_LADDER, type FloorInputs } from './speed-floor.ts';
 import { SPEED_SCALE } from './speed-track.ts';
 import type { SpeedCurve } from './speed-schedule.ts';
@@ -74,6 +75,7 @@ export const KNOWN_FLAGS = [
   'noqc',
   'visits',
   'compress',
+  'factors',
   'review',
   'pass2',
   'live',
@@ -89,7 +91,7 @@ const DEBUG_ONLY: ReadonlySet<string> = new Set(['lbpool', 'needfirst', 'pacefps
  * Whether a flag changes anything given the others (`App.tsx` reads them the
  * same way): look-back is on by default, so only `lookback=0` changes anything (off); `csettle` changes something only as
  * `csettle=0` (Background settle off) or `csettle=yieldN`, and needs look-back;
- * `review` needs `compress`; debug-only flags need `?debug`.
+ * `review` needs `compress` and no `factors` other than `factors=0`; debug-only flags need `?debug`.
  */
 function inEffect(name: string, value: string, p: URLSearchParams): boolean {
   if (DEBUG_ONLY.has(name) && !p.has('debug')) return false;
@@ -104,7 +106,7 @@ function inEffect(name: string, value: string, p: URLSearchParams): boolean {
     case 'needfirst':
       return value !== '0';
     case 'review':
-      return p.has('compress');
+      return factorsFromPage(p).review;
     default:
       return true;
   }

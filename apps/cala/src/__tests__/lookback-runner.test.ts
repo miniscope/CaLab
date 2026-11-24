@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildSlowLoop,
+  FACTOR_NO_ANSWER,
   framesFrom,
   SlowRunner,
   type PublishedLibrary,
@@ -75,6 +76,7 @@ function fakeLoop(need: number) {
     },
     step: vi.fn(() => undefined),
     finalize: vi.fn(() => fakeLib(++version)),
+    publishedLibrary: vi.fn(() => fakeLib(version)),
     setNoise: vi.fn(),
     setEditScope: vi.fn((s: string) => void calls.push(`scope:${s}`)),
     cellCount: 1,
@@ -118,7 +120,14 @@ function fakeLoop(need: number) {
   return { loop, calls, observed, streams };
 }
 
-function setup(need: number, opts: { visits?: number; lookback?: boolean } = {}) {
+function setup(
+  need: number,
+  opts: {
+    visits?: number;
+    lookback?: boolean;
+    timer?: (fn: () => void, ms: number) => () => void;
+  } = {},
+) {
   const f = fakeLoop(need);
   const toMain: SlowToMain[] = [];
   const toFast: SlowToFast[] = [];
@@ -137,7 +146,7 @@ function setup(need: number, opts: { visits?: number; lookback?: boolean } = {})
     ...(opts.lookback === false ? {} : { lookback: { postMessage: (m) => toLb.push(m) } }),
     now: () => 0,
     defer: (fn) => deferred.push(fn),
-    timer: () => () => {},
+    timer: opts.timer ?? (() => () => {}),
   });
   const answered = new Set<number>();
   const pending = () =>
@@ -207,6 +216,28 @@ describe('buildSlowLoop', () => {
     const l = buildSlowLoop(Fake, init);
     expect(l.args).toEqual(['new', 4, 3, init.fov, init.noise, 9, 0]);
     expect(l.lookback).toBeNull();
+  });
+
+  it('a ?factors stream builds with the replay in refine visits only and no look-back', () => {
+    const l = buildSlowLoop(Fake, { ...init, factorSettle: true });
+    expect(l.args).toEqual([
+      'withConfig',
+      4,
+      3,
+      init.fov,
+      init.noise,
+      9,
+      0,
+      'refine',
+      'all',
+      Infinity,
+    ]);
+    expect(l.lookback).toBeNull();
+  });
+
+  it('look-back wins over factorSettle (they never come together)', () => {
+    const l = buildSlowLoop(Fake, { ...init, lookback: true, factorSettle: true });
+    expect(l.args.slice(-3)).toEqual(['all', 'all', 0.6]);
   });
 
   it('builds with the look-back options and enables it', () => {
@@ -376,6 +407,16 @@ describe('SlowRunner look-back (fake loop)', () => {
     expect(finalize.mock.calls.length - atStart).toBe(3);
     // The fake's footprint never changes: no cell moves.
     expect(statuses(t).at(-1)!.lookback?.settle?.moving).toEqual({ cells: 1, above: 0 });
+  });
+
+  it('a ?factors init reaches the loop with its settle level; a plain one carries neither key', () => {
+    const t = setup(0);
+    t.r.handle({ ...INIT, factorSettle: true, settleFraction: 0.6 });
+    expect(t.created[0]).toMatchObject({ factorSettle: true, settleFraction: 0.6 });
+    const u = setup(0);
+    u.r.handle(INIT);
+    expect(u.created[0]).not.toHaveProperty('factorSettle');
+    expect(u.created[0]).not.toHaveProperty('settleFraction');
   });
 
   it('a Final-settle level stops the pass early: the plan keeps its first share, Thorough is untouched', () => {
@@ -555,5 +596,202 @@ describe('SlowRunner look-back (fake loop)', () => {
     const st = statuses(t).at(-1)!.lookback!;
     expect(st.error).toBe('disk');
     expect(st.settle).toMatchObject({ fed: SETTLE.batch, done: true });
+  });
+});
+
+describe("SlowRunner settle on a stream's factors (fake loop)", () => {
+  const FINIT = { ...INIT, factorSettle: true } as const;
+  const ready = (n: number) => ({ type: 'factors', session: 1, ready: true, frames: n }) as const;
+  const requests = (t: { toLb: SlowToLookback[] }) => t.toLb.filter((m) => m.type === 'request');
+
+  it('waits after the last frame, then settles on the factors through port 0 with the current library first', () => {
+    const t = setup(0);
+    t.r.handle(FINIT);
+    t.r.handle(frames(0, 20));
+    t.r.handle(frames(20, 20));
+    const observes = t.streams.length;
+    // Discover asks look-back nothing and observes without a stream index (as a stream today).
+    expect(requests(t)).toHaveLength(0);
+    expect(t.streams.every((s) => s === undefined)).toBe(true);
+    t.r.handle({ type: 'end', session: 1 });
+    expect(finals(t)).toHaveLength(0);
+    expect(statuses(t).at(-1)!.lookback).toMatchObject({
+      settling: true,
+      settle: { waiting: true, source: 'factors', fed: 0 },
+    });
+    expect(requests(t)).toHaveLength(0);
+    t.r.factors(ready(39)); // one-frame tail left out
+    // The worker gets the library before the first request.
+    const kinds = t.toLb.map((m) => m.type);
+    expect(kinds.indexOf('library')).toBeGreaterThanOrEqual(0);
+    expect(kinds.indexOf('library')).toBeLessThan(kinds.indexOf('request'));
+    expect(t.loop.setEditScope).toHaveBeenCalledWith('refine');
+    t.run();
+    expect(t.streams.slice(observes)).toEqual([...Array(39).keys()]);
+    expect(finals(t)).toHaveLength(1);
+    expect(statuses(t).at(-1)!.lookback!.settle).toMatchObject({
+      fed: 39,
+      total: 39,
+      recording: 39,
+      done: true,
+      source: 'factors',
+    });
+  });
+
+  it("factors that cannot be read end the wait with Discover's library as the final one", () => {
+    const t = setup(0);
+    t.r.handle(FINIT);
+    t.r.handle(frames(0, 20));
+    t.r.handle({ type: 'end', session: 1 });
+    t.r.factors({
+      type: 'factors',
+      session: 1,
+      ready: false,
+      reason: 'The factors do not cover the stream.',
+    });
+    expect(finals(t)).toHaveLength(1);
+    expect(requests(t)).toHaveLength(0);
+    expect(statuses(t).at(-1)!.lookback!.settle).toMatchObject({
+      fed: 0,
+      done: true,
+      error: 'The factors do not cover the stream.',
+    });
+  });
+
+  it('Stop settling while waiting publishes the final library; a late "ready" changes nothing', () => {
+    const t = setup(0);
+    t.r.handle(FINIT);
+    t.r.handle(frames(0, 20));
+    t.r.handle({ type: 'end', session: 1 });
+    t.r.stopSettling(1);
+    expect(finals(t)).toHaveLength(1);
+    expect(statuses(t).at(-1)!.lookback!.settle).toMatchObject({
+      stopped: true,
+      done: true,
+      fed: 0,
+    });
+    t.r.factors(ready(20));
+    expect(requests(t)).toHaveLength(0);
+    expect(finals(t)).toHaveLength(1);
+  });
+
+  it('a stream without factorSettle ends at once, as today', () => {
+    const t = setup(0);
+    t.r.handle(INIT);
+    t.r.handle(frames(0, 20));
+    t.r.handle({ type: 'end', session: 1 });
+    expect(finals(t)).toHaveLength(1);
+    expect(statuses(t).at(-1)!.lookback).toBeUndefined();
+  });
+});
+
+describe("SlowRunner settle on a recording's factors (?factors=file, fake loop)", () => {
+  const FINIT = { ...INIT, lookback: true, factorFile: true } as const;
+  const SRC = {
+    folder: 'run-a',
+    windows: [{ index: 0, start: 0, frames: 40 }],
+    width: 2,
+    height: 1,
+  };
+  // A fake timer the tests fire by hand.
+  const withTimer = () => {
+    const timers: (() => void)[] = [];
+    const t = setup(0, {
+      timer: (fn: () => void) => {
+        timers.push(fn);
+        return () => {};
+      },
+    });
+    return { ...t, timers };
+  };
+  const settleReqs = (t: { toLb: SlowToLookback[] }) =>
+    t.toLb.flatMap((m) =>
+      m.type === 'request' && m.items[2] === 0 ? [lookbackFrames(m.items)] : [],
+    );
+
+  it('asks at the last frame, then switches worker 0 to the factors before any settle request', () => {
+    const t = withTimer();
+    t.r.handle(FINIT);
+    t.r.handle(frames(0, 20));
+    t.r.handle(frames(20, 20));
+    const before = t.toLb.filter((m) => m.type === 'request').length;
+    t.r.handle({ type: 'end', session: 1 });
+    expect(statuses(t).at(-1)!.lookback!.settle).toMatchObject({ waiting: true });
+    // Nothing is asked of worker 0 while the slow loop waits for the answer.
+    expect(t.toLb.filter((m) => m.type === 'request')).toHaveLength(before);
+    t.r.factors({ type: 'factors', session: 1, ready: true, frames: 40, source: SRC });
+    const kinds = t.toLb.map((m) => m.type);
+    const sw = kinds.indexOf('factors');
+    expect(sw).toBeGreaterThanOrEqual(0);
+    expect(kinds.lastIndexOf('library')).toBeGreaterThan(sw);
+    // Every request from here on is the settle's, sent after the switch.
+    expect(kinds.slice(0, sw).filter((k) => k === 'request')).toHaveLength(before);
+    expect(kinds.indexOf('request', sw)).toBeGreaterThan(sw);
+    t.run();
+    expect(finals(t)).toHaveLength(1);
+    expect(statuses(t).at(-1)!.lookback!.settle).toMatchObject({
+      source: 'factors',
+      done: true,
+      fed: 40,
+    });
+  });
+
+  it('not ready: settles on the file at once and keeps the reason; no switch', () => {
+    const t = withTimer();
+    t.r.handle(FINIT);
+    t.r.handle(frames(0, 20));
+    t.r.handle({ type: 'end', session: 1 });
+    t.r.factors({ type: 'factors', session: 1, ready: false, reason: 'behind' });
+    expect(t.toLb.some((m) => m.type === 'factors')).toBe(false);
+    expect(settleReqs(t).length).toBeGreaterThan(0);
+    t.run();
+    expect(finals(t)).toHaveLength(1);
+    expect(statuses(t).at(-1)!.lookback!.settle).toMatchObject({
+      source: 'file',
+      fileReason: 'behind',
+      done: true,
+      fed: 20,
+    });
+  });
+
+  it('no answer within FACTOR_ASK_MS: the file, with that reason', () => {
+    const t = withTimer();
+    t.r.handle(FINIT);
+    t.r.handle(frames(0, 20));
+    t.r.handle({ type: 'end', session: 1 });
+    t.timers.at(-1)!();
+    expect(settleReqs(t).length).toBeGreaterThan(0);
+    expect(statuses(t).at(-1)!.lookback!.settle!.fileReason).toBe(FACTOR_NO_ANSWER);
+  });
+
+  it("Stop settling while it asks: Discover's library is final; a late answer changes nothing", () => {
+    const t = withTimer();
+    t.r.handle(FINIT);
+    t.r.handle(frames(0, 20));
+    t.r.handle({ type: 'end', session: 1 });
+    t.r.stopSettling(1);
+    expect(finals(t)).toHaveLength(1);
+    t.r.factors({ type: 'factors', session: 1, ready: true, frames: 20, source: SRC });
+    expect(t.toLb.some((m) => m.type === 'factors')).toBe(false);
+    expect(finals(t)).toHaveLength(1);
+  });
+
+  it('a new run while it asks clears the ask; a late answer for the old session is ignored', () => {
+    const t = withTimer();
+    t.r.handle(FINIT);
+    t.r.handle(frames(0, 20));
+    t.r.handle({ type: 'end', session: 1 });
+    t.r.handle({ ...FINIT, session: 2 });
+    t.r.factors({ type: 'factors', session: 1, ready: true, frames: 20, source: SRC });
+    expect(t.toLb.some((m) => m.type === 'factors')).toBe(false);
+  });
+
+  it('a look-back run without factorFile settles at once, as today', () => {
+    const t = withTimer();
+    t.r.handle({ ...INIT, lookback: true });
+    t.r.handle(frames(0, 20));
+    t.r.handle({ type: 'end', session: 1 });
+    expect(settleReqs(t).length).toBeGreaterThan(0);
+    expect(statuses(t).at(-1)!.lookback!.settle!.source).toBeUndefined();
   });
 });

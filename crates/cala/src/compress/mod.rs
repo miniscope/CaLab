@@ -248,6 +248,25 @@ pub struct WindowFactors {
 }
 
 impl WindowFactors {
+    /// Pixels with no valid sample in any frame of the window (valid share 0
+    /// in every tile that covers them). A rebuilt frame reads its window
+    /// mean there; the live frame had NaN.
+    pub fn never_valid(&self) -> Vec<bool> {
+        let width = self.dims.width;
+        let mut never = vec![true; self.dims.pixels()];
+        for tf in &self.tiles {
+            for y in 0..tf.h {
+                let row = (tf.y0 + y) * width + tf.x0;
+                for x in 0..tf.w {
+                    if tf.valid[y * tf.w + x] > 0.0 {
+                        never[row + x] = false;
+                    }
+                }
+            }
+        }
+        never
+    }
+
     /// The tiles and blending weights of this window's tiling.
     pub fn layout(&self) -> BlendLayout {
         BlendLayout::new(self.dims, self.tile, self.tiling)
@@ -994,6 +1013,35 @@ mod tests {
 
     fn quantized(y: &[f32]) -> Vec<i16> {
         y.iter().map(|&v| quantize(v, QUANT)).collect()
+    }
+
+    #[test]
+    fn never_valid_marks_pixels_without_a_valid_sample_in_the_window() {
+        let dims = Dims::new(96, 80).unwrap();
+        let cfg = CompressConfig {
+            window: 50,
+            tiling: Tiling::Offset,
+            ..CompressConfig::default()
+        };
+        let mut wc = WindowCompressor::new(dims, cfg);
+        let mut done = None;
+        for t in 0..50 {
+            let mut fr: Vec<f32> = (0..dims.pixels())
+                .map(|p| 20.0 + ((p + t) % 7) as f32)
+                .collect();
+            fr[5] = f32::NAN; // never valid
+            if t < 25 {
+                fr[9] = f32::NAN; // valid in the second half
+            }
+            if let Some(w) = wc.push(&fr) {
+                done = Some(w);
+            }
+        }
+        let wf = done.or_else(|| wc.flush()).unwrap();
+        let never = wf.never_valid();
+        assert!(never[5]);
+        assert!(!never[9]);
+        assert_eq!(never.iter().filter(|&&n| n).count(), 1);
     }
 
     #[test]

@@ -9,7 +9,7 @@
  */
 
 import type { WorkStatus } from '../lib/work-meter.ts';
-import type { LookbackStatus } from './lookback-types.ts';
+import type { FactorSource, LookbackStatus } from './lookback-types.ts';
 
 /**
  * The structural edits the slow loop may make (`SlowLoop.setEditScope`, the
@@ -39,6 +39,15 @@ export interface SlowInit {
    * during Discover and settles after the last frame (see `SlowRunner`).
    */
   lookback?: boolean;
+  /**
+   * A live stream with `?factors` (absent = off; never with `lookback`): the
+   * slow loop is built with `FACTOR_SETTLE` (visit workers alike) and, after
+   * the last frame, waits for the stream's factors and settles on them
+   * (see `SlowRunner`).
+   */
+  factorSettle?: boolean;
+  /** A recording with `?factors=file`: at Discover's end the settle may read the factors (`SlowRunner`). */
+  factorFile?: boolean;
   /**
    * Settle during Discover ("Background settle", frames only; needs
    * `lookback`; absent = off for the run): the run may settle while Discover
@@ -334,7 +343,18 @@ export interface SlowStopSettling {
   session: number;
 }
 
+/**
+ * Main thread -> slow worker: the factors of a `?factors` stream are ready
+ * (the settle can start; `frames` of the stream are covered), or cannot be
+ * used (the run ends with Discover's library).
+ */
+export type SlowFactors = { type: 'factors'; session: number } & (
+  | { ready: true; frames: number; source?: FactorSource['factors'] }
+  | { ready: false; reason: string }
+);
+
 export type MainToSlow =
+  | SlowFactors
   | SlowConnect
   | SlowReviewed
   | SlowLookbackPort

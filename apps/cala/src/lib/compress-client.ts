@@ -9,6 +9,9 @@ import type { CompressToMain, MainToCompress } from '../workers/compress-types.t
 export interface CompressClient {
   /** Ask for the traces of every compressed window, solved with library `version`. */
   backfill(session: number, version: number): void;
+  /** Extract on a stream's factors: solve every window with `library` (transferred). */
+  extract(session: number, job: number, version: number, library: Uint8Array): void;
+  extractCancel(session: number, job: number): void;
   dispose(): void;
 }
 
@@ -42,6 +45,15 @@ export function createCompressClient(
   return {
     backfill(session, version) {
       worker.postMessage({ type: 'backfill', session, version } satisfies MainToCompress);
+    },
+    extract(session, job, version, library) {
+      worker.postMessage(
+        { type: 'extract', session, job, version, library } satisfies MainToCompress,
+        [library.buffer as ArrayBuffer],
+      );
+    },
+    extractCancel(session, job) {
+      worker.postMessage({ type: 'extract-cancel', session, job } satisfies MainToCompress);
     },
     dispose() {
       worker.terminate();

@@ -38,9 +38,27 @@ Refine runs show as "Refine (removed stage)".
   "Extract to solve the final traces with the settled footprints."
   The option is not saved between sessions.
 - A new Discover run (Restart) starts the stage log over.
-- **Streaming runs Discover only.** A live source has no file to replay, and
-  cala does no live re-processing. Save the stream and load it later as a
-  recording to Extract it.
+- **A live stream settles and extracts on its factors.** A live source has no
+  file to replay, so the stream's Discover frames are compressed into factors
+  (offset grids) as they come in. When the stream ends, the Final settle
+  waits for the last factor window and then settles on frames rebuilt from
+  the factors (cell set frozen, the cluster replay on; Discover itself runs
+  as before). Extract follows on the same rebuilt frames. The export (format
+  version 7) keeps the live traces (`traces_live`) beside Extract's. If the
+  factors cannot be read (a compression error, a failed OPFS write, a gap, or
+  no progress from the compressor for 120 s), the stream ends at Discover's
+  library.
+- **`?factors=0` runs a stream on Discover only**, as before this default:
+  no compression, no settle, no Extract (save the stream and load it as a
+  recording to Extract it). `?compress&review` also turns the default off
+  (the history review reads plain tiles only).
+- **A recording with `?factors=file` (experimental).** Discover also
+  compresses its frames. At its last frame the Final settle reads frames
+  rebuilt from the factors if at most the last window is still being
+  compressed (it waits for that window only); otherwise it re-reads the file
+  as without the switch. Extract reads the factors if they cover every frame
+  when it starts, else it replays the file. It never waits. The Run panel and
+  the export say which source each stage read and why.
 
 ## What carries over from Discover to Extract
 

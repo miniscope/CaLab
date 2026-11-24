@@ -3,7 +3,8 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from './fixtures.ts';
-import { buildAvi } from '../apps/cala/src/__tests__/synth-avi.ts';
+import { buildAvi, cellMovie } from '../apps/cala/src/__tests__/synth-avi.ts';
+import { exportNpz, hasEntry, metaText } from './cala-helpers.ts';
 
 /**
  * Cala on a live source: the simulator (`apps/cala/scripts/live-sim.mjs`)
@@ -28,9 +29,10 @@ async function startSim(folder: string, extra: string[] = []): Promise<void> {
       folder,
       '--port',
       String(PORT),
+      // First: the simulator takes the first of a repeated option (a test may set its own --fps).
+      ...extra,
       '--fps',
       '200',
-      ...extra,
     ],
     { stdio: ['ignore', 'pipe', 'inherit'] },
   );
@@ -50,7 +52,8 @@ test('Cala: a live source streams through the pipeline to the end', async ({ pag
   // Frame 7 is never sent: the stream stays contiguous, the gap is counted.
   await startSim(folder, ['--drop', '7']);
 
-  await page.goto(`Cala/?live=ws://127.0.0.1:${PORT}&debug`);
+  // `factors=0`: the stream as before the factor default (it ends at Discover's library).
+  await page.goto(`Cala/?live=ws://127.0.0.1:${PORT}&factors=0&debug`);
   const header = page.getByRole('banner');
   await expect(header.getByText('32 x 24')).toBeVisible();
   await expect(header.getByText('live', { exact: true })).toBeVisible();
@@ -78,7 +81,7 @@ test('Cala: a live run can be stopped, and reconnects on restart', async ({ page
   writeFileSync(join(folder, 'metaData.json'), '{"frameRate":"20FPS"}');
   await startSim(folder);
 
-  await page.goto(`Cala/?live=ws://127.0.0.1:${PORT}`);
+  await page.goto(`Cala/?live=ws://127.0.0.1:${PORT}&factors=0`);
   await expect(page.getByTestId('pipeline-readout')).toContainText('frame 4', { timeout: 30_000 });
   await page.getByTestId('pass2-finish').click(); // "Stop the live run"
   await expect(page.getByTestId('pipeline-status')).toHaveText('Done', { timeout: 15_000 });
@@ -94,4 +97,61 @@ test('Cala: an unreachable live source reports an error', async ({ page }) => {
   await page.getByTestId('live-url').fill(`ws://127.0.0.1:${PORT + 50}`);
   await page.getByTestId('live-connect').click();
   await expect(page.getByRole('alert')).toContainText('Could not connect', { timeout: 15_000 });
+});
+
+test('Cala: a live stream settles and extracts on its factors after it ends, by default', async ({
+  page,
+}) => {
+  test.setTimeout(300_000);
+  const folder = mkdtempSync(join(tmpdir(), 'cala-live-factors-e2e-'));
+  // 1,850 frames: three whole windows of 600 and a last one of 50.
+  const movie = cellMovie(96, 96, 1850);
+  writeFileSync(
+    join(folder, '0.avi'),
+    buildAvi({ width: 96, height: 96, frames: 1850, payload: (f) => movie.payload(f) }),
+  );
+  writeFileSync(join(folder, 'metaData.json'), '{"frameRate":"20FPS"}');
+  // Slower than the other live tests: the slow loop must find cells before the stream ends.
+  await startSim(folder, ['--fps', '100']);
+  // The export then downloads instead of asking for a place.
+  await page.addInitScript(() => {
+    delete (window as { showSaveFilePicker?: unknown }).showSaveFilePicker;
+  });
+  // No switch: a stream with Discover is a factor run by default.
+  await page.goto(`Cala/?live=ws://127.0.0.1:${PORT}&debug`);
+  await expect(page.getByTestId('pipeline-status')).toHaveText('Done', { timeout: 120_000 });
+  await expect(page.getByTestId('live-stage-note')).toContainText('factors');
+  // The settle on the factors, then Extract on them, by themselves.
+  await expect(page.getByTestId('pass2-status')).toContainText(
+    "Extract done (on the stream's factors)",
+    { timeout: 180_000 },
+  );
+  const settle = await page.evaluate(() => {
+    const c = (
+      window as unknown as {
+        __cala: {
+          cells: {
+            status(): {
+              final: boolean;
+              lookback?: { settle?: { source?: string; fed: number; done: boolean } };
+            } | null;
+          };
+        };
+      }
+    ).__cala;
+    const st = c.cells.status();
+    return { final: st?.final, settle: st?.lookback?.settle };
+  });
+  expect(settle.final).toBe(true);
+  expect(settle.settle).toMatchObject({ source: 'factors', done: true });
+  expect(settle.settle!.fed).toBeGreaterThan(0);
+  // The export: Extract's traces, the live traces, the sources and the note.
+  const npz = await exportNpz(page);
+  for (const name of ['traces.npy', 'traces_signed.npy', 'traces_live.npy'])
+    expect(hasEntry(npz, name), name).toBe(true);
+  const meta = metaText(npz);
+  expect(meta).toContain('"format_version":7');
+  expect(meta).toContain('"settle_source":"factors"');
+  expect(meta).toContain('"source":"factors"');
+  expect(meta).toContain('there was no file to re-read');
 });

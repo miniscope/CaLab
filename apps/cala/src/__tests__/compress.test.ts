@@ -506,6 +506,8 @@ describe('back-fill from the factors', () => {
       final: false,
       tiling: 'plain' as const,
       source: 'discover' as const,
+      folder: 'run-a',
+      compressed: [],
     };
     store.onMessage({ type: 'status', session: 3, status });
     expect(store.takeBackfill(true, true, 4)).toBe(false); // windows still open
@@ -544,5 +546,76 @@ describe('back-fill from the factors', () => {
     expect(compressReadout(store.status(), store.backfill())).toMatch(
       /traces back-filled \(100 frames, 2\.5 ms\/frame\)$/,
     );
+  });
+});
+
+describe('Extract on the factors', () => {
+  /** A solver that returns each frame's first value; its signed traces are the negatives. */
+  function extractRunner(onBatch?: () => void) {
+    const toMain: CompressToMain[] = [];
+    const r = new CompressRunner({
+      store: memoryStore(),
+      quantize: quantizeTiles,
+      layout: tileLayout,
+      header: factorHeader,
+      create: (quant) => new TileCompressor(quant),
+      engine: (_bytes, signed) => {
+        let last = new Float32Array(0);
+        return {
+          ids: () => Uint32Array.of(5),
+          processFrames: (frames, count) => {
+            onBatch?.();
+            const out = new Float32Array(count);
+            for (let i = 0; i < count; i++) out[i] = frames[i * PX];
+            last = out.map((v) => -v);
+            return out;
+          },
+          ...(signed ? { lastSigned: () => last } : {}),
+          free: () => {},
+        };
+      },
+      factors: (bytes) => FactorWindow.fromBytes(bytes),
+      toMain: { postMessage: (m) => toMain.push(m) },
+      yieldNow: () => Promise.resolve(),
+    });
+    return { r, toMain };
+  }
+
+  async function fed(r: CompressRunner): Promise<void> {
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 100; s += 10) feed.push(batch(s, 10), s, 10);
+    feed.end();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+  }
+
+  it('posts one extracted per window in stream order, then extract-done', async () => {
+    const { r, toMain } = extractRunner();
+    await fed(r);
+    r.extract(7, 3, 1, Uint8Array.of(1));
+    await r.idle();
+    const windows = toMain.filter((m) => m.type === 'extracted');
+    expect(windows.map((m) => [m.job, m.start, m.count])).toEqual([
+      [3, 0, 50],
+      [3, 50, 50],
+    ]);
+    for (const m of windows) {
+      expect([...m.ids]).toEqual([5]);
+      for (const i of [0, 17, 49]) {
+        expect(m.traces[i]).toBeCloseTo(frame(m.start + i)[0], 0);
+        expect(m.signed?.[i]).toBeCloseTo(-m.traces[i], 5);
+      }
+    }
+    expect(toMain.at(-1)).toMatchObject({ type: 'extract-done', session: 7, job: 3, frames: 100 });
+  });
+
+  it('extractCancel mid-job posts no more windows and no extract-done', async () => {
+    let cancel = (): void => {};
+    const { r, toMain } = extractRunner(() => cancel());
+    await fed(r);
+    cancel = () => r.extractCancel(7, 3);
+    r.extract(7, 3, 1, Uint8Array.of(1));
+    await r.idle();
+    expect(toMain.filter((m) => m.type === 'extracted' || m.type === 'extract-done')).toEqual([]);
   });
 });

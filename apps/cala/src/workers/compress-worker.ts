@@ -35,15 +35,21 @@ const store = opfsStore();
 
 workerScope.onmessage = (e) => {
   const data = e.data;
-  if (data.type === 'backfill') {
+  if (data.type === 'backfill' || data.type === 'extract' || data.type === 'extract-cancel') {
     const r = runner;
     queue = queue
       .then(() => initCalaWasm())
-      .then(() => r?.backfill(data.session, data.version))
+      .then(() => {
+        if (data.type === 'backfill') r?.backfill(data.session, data.version);
+        else if (data.type === 'extract')
+          r?.extract(data.session, data.job, data.version, data.library);
+        else r?.extractCancel(data.session, data.job);
+      })
       .catch((err: unknown) => {
         workerScope.postMessage({
           type: 'error',
           session: data.session,
+          ...(data.type === 'backfill' ? {} : { job: data.job }),
           message: err instanceof Error ? err.message : String(err),
         });
       });
@@ -60,16 +66,18 @@ workerScope.onmessage = (e) => {
     layout: tileLayout,
     header: factorHeader,
     create: (quant) => new TileCompressor(quant),
-    engine: (bytes) => {
+    engine: (bytes, signed) => {
       const lib = TraceLibrary.fromBytes(bytes);
       try {
         // 0, 0: the solver's default tolerance and sweep cap. The engine
         // holds its own reference to the library.
         const engine = new TraceEngine(lib, 0, 0);
+        if (signed) engine.setSigned(true);
         const ids = lib.ids();
         return {
           ids: () => ids,
           processFrames: (frames, count) => engine.processFrames(frames, count),
+          ...(signed ? { lastSigned: () => engine.lastSigned() } : {}),
           free: () => engine.free(),
         };
       } finally {

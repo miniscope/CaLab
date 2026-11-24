@@ -293,6 +293,13 @@ impl JsFactorWindow {
         self.inner.tiling.name()
     }
 
+    /// 1 for each pixel with no valid sample in any frame of the window (a
+    /// rebuilt frame reads its window mean there; the live frame had NaN).
+    #[wasm_bindgen(js_name = neverValid)]
+    pub fn never_valid(&self) -> Vec<u8> {
+        self.inner.never_valid().into_iter().map(u8::from).collect()
+    }
+
     /// Frames `t0..t0 + count` of the window rebuilt into `out`
     /// (`count * width * height` values, frame after frame).
     pub fn reconstruct(&self, t0: u32, count: u32, out: &mut [f32]) -> Result<(), JsError> {
