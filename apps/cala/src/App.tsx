@@ -540,6 +540,7 @@ const App: Component = () => {
         window: COMPRESS_DEFAULTS.window,
         msPerFrame: compress.status()?.msPerFrame ?? 0,
         workers: pipeline.runPool()?.after ?? 1,
+        wait: params.has('debug') && params.has('fwait'),
         width: i?.width ?? 0,
         height: i?.height ?? 0,
       });

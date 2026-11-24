@@ -96,6 +96,8 @@ export interface FileSettleInput {
    * They compress that many windows in about one window's time of one worker.
    */
   workers?: number;
+  /** Wait for the factors however far behind the compressor is (`?debug&fwait`, for measurements). */
+  wait?: boolean;
   width: number;
   height: number;
 }
@@ -139,7 +141,7 @@ export class FileSettleChoice {
         reason: i.reason ?? 'The factors cannot be read.',
       };
     }
-    if (this.looked !== i.session) {
+    if (this.looked !== i.session && !i.wait) {
       this.looked = i.session;
       const workers = Math.max(1, i.workers ?? 1);
       if (i.behind > i.window * workers) {
