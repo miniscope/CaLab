@@ -125,4 +125,29 @@ describe('stage chip', () => {
     expect(leaveWarning({ ...o, exported: true })).toBeNull();
     expect(leaveWarning({ ...o, extractDone: false })).toBeNull();
   });
+
+  it('a ?factors=file settle on the file says why', () => {
+    const lb: LookbackStatus = {
+      ...base,
+      settling: true,
+      settle: {
+        fed: 1200,
+        total: 9000,
+        recording: 9000,
+        moving: null,
+        stopped: false,
+        done: false,
+        source: 'file',
+        fileReason: 'the compressor was 4,210 frames behind when Discover ended',
+      },
+    };
+    expect(lookbackText(lb, false)).toContain(
+      'Final settle (re-reads the file: the compressor was 4,210 frames behind when Discover ended)',
+    );
+    const waiting: LookbackStatus = {
+      ...lb,
+      settle: { ...lb.settle!, source: undefined, fileReason: undefined, waiting: true },
+    };
+    expect(lookbackText(waiting, false)).toContain('waiting for the last factor window');
+  });
 });

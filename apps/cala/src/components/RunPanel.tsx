@@ -28,7 +28,7 @@ import { groupKeys } from '../lib/run-history.ts';
 import { AspectPlot } from '../lib/plot-size.tsx';
 import { GroupPlot, RunStrip, type HistoryUi } from './HistoryPanel.tsx';
 import { liveTraceResult } from '../lib/live-export.ts';
-import { FACTORS_LIVE_NOTE } from '../lib/factor-run.ts';
+import { FACTORS_LIVE_NOTE, fileFactorNotes } from '../lib/factor-run.ts';
 import {
   cadeconCells,
   cadeconIsClassic,
@@ -282,12 +282,23 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     switch (p().status()) {
       case 'running':
         return (
-          p().waiting() ?? 'Extract: solving the traces of every frame with the final footprints'
+          p().waiting() ??
+          (p().fileReason()
+            ? `Extract: re-reading the file (${p().fileReason()})`
+            : 'Extract: solving the traces of every frame with the final footprints')
         );
       case 'done': {
         const res = p().result();
+        const from =
+          res?.source === 'factors'
+            ? props.live
+              ? " (on the stream's factors)"
+              : ' (on the factors)'
+            : res?.source === 'file'
+              ? ` (re-read the file: ${res.sourceReason})`
+              : '';
         return res
-          ? `Extract done${res.source === 'factors' ? " (on the stream's factors)" : ''}: ${res.cells} cells x ${res.frames.toLocaleString()} frames in ${res.seconds.toFixed(1)} s (${(res.frames / res.seconds).toFixed(0)} frames/s)`
+          ? `Extract done${from}: ${res.cells} cells x ${res.frames.toLocaleString()} frames in ${res.seconds.toFixed(1)} s (${(res.frames / res.seconds).toFixed(0)} frames/s)`
           : 'Extract done';
       }
       case 'error':
@@ -333,7 +344,12 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   const factorExport = (
     r: Pass2Result,
   ): Pick<ExportInput, 'liveTraces' | 'notes' | 'frameRange'> | null => {
-    if (!props.live || r.source !== 'factors') return null;
+    if (!props.live) {
+      // A `?factors=file` recording: notes on what the settle and Extract read.
+      const notes = fileFactorNotes(props.stages.runs());
+      return notes.length ? { notes } : null;
+    }
+    if (r.source !== 'factors') return null;
     const live = liveResult();
     const same =
       live !== null &&

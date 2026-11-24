@@ -75,6 +75,7 @@ function handle(msg: StageMsg): void {
           ...(cells?.factorSettle && !cells.library && !cells.lookback
             ? { factorSettle: true }
             : {}),
+          ...(cells?.factorFile && !cells.library && cells.lookback ? { factorFile: true } : {}),
           ...((cells?.lookback || cells?.factorSettle) &&
           !cells.library &&
           cells.settleFraction !== undefined

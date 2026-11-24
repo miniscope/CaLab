@@ -9,7 +9,7 @@
  */
 
 import type { WorkStatus } from '../lib/work-meter.ts';
-import type { LookbackStatus } from './lookback-types.ts';
+import type { FactorSource, LookbackStatus } from './lookback-types.ts';
 
 /**
  * The structural edits the slow loop may make (`SlowLoop.setEditScope`, the
@@ -46,6 +46,8 @@ export interface SlowInit {
    * (see `SlowRunner`).
    */
   factorSettle?: boolean;
+  /** A recording with `?factors=file`: at Discover's end the settle may read the factors (`SlowRunner`). */
+  factorFile?: boolean;
   /**
    * Settle during Discover ("Background settle", frames only; needs
    * `lookback`; absent = off for the run): the run may settle while Discover
@@ -347,7 +349,8 @@ export interface SlowStopSettling {
  * used (the run ends with Discover's library).
  */
 export type SlowFactors = { type: 'factors'; session: number } & (
-  { ready: true; frames: number } | { ready: false; reason: string }
+  | { ready: true; frames: number; source?: FactorSource['factors'] }
+  | { ready: false; reason: string }
 );
 
 export type MainToSlow =

@@ -453,6 +453,8 @@ describe('url flags against the app', () => {
     expect(urlFlags('?lookback=0&csettle').flags.lookback.in_effect).toBe(true);
     expect(urlFlags('?review=4').flags.review.in_effect).toBe(false);
     expect(urlFlags('?compress&review=4').flags.review.in_effect).toBe(true);
+    expect(urlFlags('?compress&review&factors').flags.review.in_effect).toBe(false);
+    expect(urlFlags('?compress&review&factors=0').flags.review.in_effect).toBe(true);
   });
 });
 

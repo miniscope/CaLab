@@ -5,6 +5,7 @@
  * its status and libraries to a listener.
  */
 import type { FrameClient } from './frame-client.ts';
+import type { FactorSource } from '../workers/lookback-types.ts';
 import type {
   SlowConnect,
   SlowLookbackPort,
@@ -34,7 +35,7 @@ export interface SlowClient {
   /** Stop a look-back run's settling now: its final library is published with what was refined. */
   stopSettling(session: number): void;
   /** A `?factors` stream's factors are ready (`frames` covered), or not usable (`reason`). */
-  factorsReady(session: number, frames: number): void;
+  factorsReady(session: number, frames: number, source?: FactorSource['factors']): void;
   factorsFailed(session: number, reason: string): void;
   dispose(): void;
 }
@@ -132,8 +133,14 @@ export function createSlowClient(
       const msg: SlowStopSettling = { type: 'stop-settling', session };
       worker.postMessage(msg);
     },
-    factorsReady(session, frames) {
-      const msg: SlowFactors = { type: 'factors', session, ready: true, frames };
+    factorsReady(session, frames, source) {
+      const msg: SlowFactors = {
+        type: 'factors',
+        session,
+        ready: true,
+        frames,
+        ...(source ? { source } : {}),
+      };
       worker.postMessage(msg);
     },
     factorsFailed(session, reason) {

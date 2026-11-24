@@ -113,3 +113,11 @@ describe('the store', () => {
     });
   });
 });
+
+describe('factorState for a recording (no tail)', () => {
+  it('is ready only when the windows cover every frame', () => {
+    expect(factorState(st(), null, true, 1200, false)).toBe('ready');
+    expect(factorState(st(), null, true, 1201, false)).toBe('unusable');
+    expect(factorState(st(), null, true, 1201)).toBe('ready'); // a stream keeps its tail rule
+  });
+});

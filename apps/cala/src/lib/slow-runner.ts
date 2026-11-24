@@ -201,6 +201,10 @@ export interface SlowLoopLike {
   free(): void;
 }
 
+/** A recording's ask about its factors ends on the file after this long without an answer (`?factors=file`). */
+export const FACTOR_ASK_MS = 150_000;
+export const FACTOR_NO_ANSWER = `No answer about the factors within ${FACTOR_ASK_MS / 1000} s.`;
+
 /**
  * The validated look-back configuration (qc_eval `COMBO`): the slow-loop
  * options it runs with (the cluster history replay, joint sign rule `all`,
@@ -499,7 +503,13 @@ export class SlowRunner {
   /** This run settles on its factors after the last frame (`SlowInit.factorSettle`, Discover). */
   private factorOn = false;
   /** Discover's last frame is in and the factors are not yet ready (released by `factors`, Stop, `drop`). */
-  private factorWait: { since: number } | null = null;
+  private factorWait: { since: number; file?: boolean } | null = null;
+  /** A recording with `?factors=file` (`SlowInit.factorFile`, look-back on). */
+  private factorFile = false;
+  /** Why the settle of a `?factors=file` run reads the file (unset: it reads the factors, or no switch). */
+  private fileReason: string | undefined;
+  /** Cancels the ask's deadline. */
+  private askTimer: (() => void) | null = null;
   /** The settle reads the factors through look-back worker 0 (from `factors` ready to the run's end). */
   private factorLive = false;
   /** Per look-back worker: the request out to it (at most one each), and its timeout's cancel. */
@@ -745,6 +755,7 @@ export class SlowRunner {
         this.run = 1;
         this.lbOn = lookback === true && typeof this.loop.lookbackTake === 'function';
         this.factorOn = this.init.factorSettle === true;
+        this.factorFile = msg.factorFile === true && this.lbOn;
         if (this.lbOn && !this.lbPort) this.lbError = 'The look-back worker is not connected.';
         if (
           this.lbOn &&
@@ -1012,7 +1023,7 @@ export class SlowRunner {
    */
   private lookbackRequest(): boolean {
     const loop = this.loop;
-    if (!loop || !this.lbOn || this.lbError !== undefined) return false;
+    if (!loop || !this.lbOn || this.lbError !== undefined || this.factorWait) return false;
     const cs = this.cs;
     // The governor checks (once a second) and earns up to now before any request.
     cs?.gov.update(this.epochNow(), this.version > 0);
@@ -1398,8 +1409,11 @@ export class SlowRunner {
   stopSettling(session: number): void {
     if (session !== this.session) return;
     if (this.factorWait) {
+      const view = this.waitView();
       this.factorWait = null;
-      this.settleStatus = { ...this.waitView(), waiting: false, stopped: true, done: true };
+      this.askTimer?.();
+      this.askTimer = null;
+      this.settleStatus = { ...view, waiting: false, stopped: true, done: true };
       this.ending = true;
       if (!this.busy.some((b) => b)) this.finish();
       return;
@@ -1615,6 +1629,20 @@ export class SlowRunner {
     if (!loop || this.final || this.ending || this.drain || this.factorWait) return;
     // A look-back Discover settles first (`settlePump`).
     if (this.lbOn && this.run === 1) {
+      if (this.factorFile && this.lbError === undefined) {
+        // Discover's requests still out would mix sources: drop them; nothing is asked while waiting.
+        this.cancelRequests();
+        this.csettleStop();
+        this.reviewed = [];
+        this.factorWait = { since: this.now(), file: true };
+        const session = this.session;
+        this.askTimer = this.timer(() => {
+          this.askTimer = null;
+          this.factors({ type: 'factors', session, ready: false, reason: FACTOR_NO_ANSWER });
+        }, FACTOR_ASK_MS);
+        this.status(0, 0);
+        return;
+      }
       this.clock.span('end', () => this.startDrain());
       return;
     }
@@ -1633,8 +1661,28 @@ export class SlowRunner {
   /** The main thread on the stream's factors: settle on them, or end with Discover's library. */
   factors(msg: SlowFactors): void {
     if (msg.session !== this.session || !this.factorWait || !this.loop) return;
+    const wait = this.factorWait;
     this.factorWait = null;
+    this.askTimer?.();
+    this.askTimer = null;
     try {
+      if (wait.file) {
+        if (msg.ready && msg.source) {
+          // Over the request port, so every settle request below reads the factors.
+          this.lbPorts[0]?.postMessage({
+            type: 'factors',
+            session: this.session,
+            factors: msg.source,
+          });
+          this.factorLive = true;
+          this.sendLibrary(0);
+          this.clock.span('end', () => this.startDrain(Math.min(this.consumed, msg.frames)));
+        } else {
+          this.fileReason = msg.ready ? 'No factor source was given.' : msg.reason;
+          this.clock.span('end', () => this.startDrain());
+        }
+        return;
+      }
       if (!msg.ready) {
         this.settleStatus = {
           ...this.waitView(),
@@ -1678,7 +1726,7 @@ export class SlowRunner {
       moving: null,
       stopped: false,
       done: false,
-      source: 'factors',
+      ...(this.factorWait?.file ? {} : { source: 'factors' as const }),
       waiting: true,
     };
   }
@@ -1751,7 +1799,11 @@ export class SlowRunner {
       moving: d.moving,
       stopped: d.stop,
       done,
-      ...(this.factorLive ? { source: 'factors' as const } : {}),
+      ...(this.factorLive
+        ? { source: 'factors' as const }
+        : this.fileReason !== undefined
+          ? { source: 'file' as const, fileReason: this.fileReason }
+          : {}),
     };
   }
 
@@ -1922,6 +1974,10 @@ export class SlowRunner {
     this.factorOn = false;
     this.factorWait = null;
     this.factorLive = false;
+    this.factorFile = false;
+    this.fileReason = undefined;
+    this.askTimer?.();
+    this.askTimer = null;
     this.lbReqs = [];
     this.lbPortOff = [];
     this.lbPortBusy = [];

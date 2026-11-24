@@ -18,7 +18,9 @@
  * for plain Discover timing) through the directory input, lets pass 1 and pass 2 run, and writes
  * `file_metrics.json` and `file_cala.npz`.
  *
- * `--query` adds URL parameters to the live run (`factors`: the stream settles
+ * `--query` adds URL parameters to the run (live or file; `factors=file`: a
+ * recording's settle and Extract may read its factors, summed up in the file
+ * metrics' `factors`; `factors` on a live run: the stream settles
  * and extracts on its factors after it ends; the script then also waits for
  * Extract). `--frames N` streams only the first N frames; `--tag` names the
  * output files (`<tag>_metrics.json`, `<tag>_cala.npz`); `--channel chrome`
@@ -146,8 +148,12 @@ const sample = () => {
       fed: settle.fed,
       total: settle.total,
       done: settle.done,
+      source: settle.source ?? null,
+      fileReason: settle.fileReason ?? null,
     },
     pass2: c.pass2.status(),
+    pass2Source: c.pass2.result()?.source ?? null,
+    pass2Reason: c.pass2.result()?.sourceReason ?? c.pass2.fileReason?.() ?? null,
     pass2Processed: c.pass2.processed(),
   };
 };
@@ -192,6 +198,41 @@ function factorSummary(timeline, streamFrames, streamFps) {
     settleSPerMinute: perMin(settleS),
     extractSPerMinute: perMin(extractS),
     endToExtractDoneS: span(streamEnd, extractEnd),
+  };
+}
+
+/**
+ * A `?factors=file` recording (slice 3): which source the settle and Extract
+ * took and why, the compressor's lag at Discover's end, and the times.
+ */
+function fileFactorSummary(timeline) {
+  const first = (pred) => timeline.find(pred) ?? null;
+  const end = first((s) => s.pipeline === 'done' || s.pipeline === 'error');
+  const ask = first((s) => s.settle?.waiting === true);
+  const settleStart = first(
+    (s) => s.settle && !s.settle.waiting && !s.final && (end ? s.t >= end.t : true),
+  );
+  const finalAt = first((s) => s.final);
+  const extractStart = first((s) => s.pass2 === 'running');
+  const extractEnd = first((s) => ['done', 'error', 'cancelled'].includes(s.pass2));
+  const last = timeline.at(-1) ?? null;
+  const lag = (s) => (s && s.compress ? s.processed - s.compress.frames : s ? s.processed : null);
+  const span = (a, b) => (a && b ? b.t - a.t : null);
+  return {
+    discoverEndS: end?.t ?? null,
+    compressBehindAtDiscoverEnd: lag(end),
+    compressBehindAtAsk: lag(ask),
+    askS: span(ask, settleStart),
+    settleSource: last?.settle?.source ?? null,
+    settleFileReason: last?.settle?.fileReason ?? null,
+    settleS: span(settleStart ?? ask, finalAt),
+    settleFed: last?.settle?.fed ?? null,
+    extractSource: last?.pass2Source ?? null,
+    extractReason: last?.pass2Reason ?? null,
+    extractS: span(extractStart, extractEnd),
+    compressorMsPerFrame: last?.compress?.msPerFrame ?? null,
+    lastWindowCompressedS: first((s) => s.compress?.final === true)?.t ?? null,
+    endToExtractDoneS: span(end, extractEnd),
   };
 }
 
@@ -331,9 +372,22 @@ async function liveRun(browser) {
 async function fileRun(browser) {
   const page = await browser.newPage();
   page.on('pageerror', (e) => console.error('page error:', e.message));
-  await page.goto(`${url}/?debug`);
+  await page.goto(`${url}/?debug${query ? `&${query}` : ''}`);
   await page.setInputFiles('[data-testid=folder-input]', folder);
   const t0 = Date.now();
+  // One sample a second until Extract is over (the factor summary reads it).
+  const timeline = [];
+  let sampling = true;
+  const sampler = (async () => {
+    while (sampling) {
+      try {
+        timeline.push({ t: (Date.now() - t0) / 1000, ...(await page.evaluate(sample)) });
+      } catch {
+        // the page is not ready yet
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  })();
   await until(page, () => window.__cala?.pipeline.status() === 'running', 60_000, 'the file run');
   console.log('file run started');
   await until(page, () => window.__cala.pipeline.status() === 'done', 180 * 60_000, 'pass 1');
@@ -345,6 +399,9 @@ async function fileRun(browser) {
     60 * 60_000,
     'pass 2',
   );
+  sampling = false;
+  await sampler;
+  timeline.push({ t: (Date.now() - t0) / 1000, ...(await page.evaluate(sample)) });
   const raw = await page.evaluate(() => {
     const c = window.__cala;
     const r = c.pass2.result();
@@ -362,6 +419,7 @@ async function fileRun(browser) {
   });
   const metrics = {
     mode: 'file',
+    query,
     pass1Seconds,
     processed: raw.pipeline.processed,
     slowForwarded: raw.pipeline.forwarded,
@@ -370,9 +428,12 @@ async function fileRun(browser) {
     pass2: raw.pass2,
     pipeline: { ...raw.pipeline, slowLag: undefined, fastMs: summarize(raw.pipeline.fastMs) },
     libraries: raw.pipeline.libraries,
+    factors: fileFactorSummary(timeline),
+    timeline,
   };
-  writeFileSync(join(out, 'file_metrics.json'), JSON.stringify(metrics, null, 1));
-  if (raw.pass2.status === 'done') await exportNpz(page, join(out, 'file_cala.npz'));
+  const name = tag === 'live' ? 'file' : tag;
+  writeFileSync(join(out, `${name}_metrics.json`), JSON.stringify(metrics, null, 1));
+  if (raw.pass2.status === 'done') await exportNpz(page, join(out, `${name}_cala.npz`));
   await page.close();
   return metrics;
 }

@@ -7,6 +7,7 @@
  */
 import type { FactorInfo, FactorState } from './compress-store.ts';
 import type { FactorSource } from '../workers/lookback-types.ts';
+import { fileBehindText } from './factor-run.ts';
 
 export interface FactorSettleInput {
   session: number;
@@ -69,6 +70,76 @@ export class FactorSettle {
         session: i.session,
         reason: i.reason ?? 'The factors cannot be read.',
       };
+    }
+    return { kind: 'none' };
+  }
+}
+
+export interface FileSettleInput {
+  session: number;
+  /** This run is a recording with `?factors=file` (`pipeline.factorFileRun()`). */
+  factorFile: boolean;
+  /** The slow loop asks (`SettleStatus.waiting`). */
+  waiting: boolean;
+  state: FactorState;
+  /** Why the factors cannot be read (`fileFactorsBlocked`). */
+  reason: string | null;
+  info: FactorInfo | null;
+  /** Frames Discover read minus frames compressed (`CompressStore.behind`). */
+  behind: number;
+  /** Frames per window (`COMPRESS_DEFAULTS.window`). */
+  window: number;
+  /** The compressor's last ms per frame (for the reason's seconds). */
+  msPerFrame: number;
+  width: number;
+  height: number;
+}
+
+export type FileSettleAction =
+  | { kind: 'none' }
+  | { kind: 'factors'; session: number; frames: number; factors: FactorSource['factors'] }
+  | { kind: 'file'; session: number; reason: string };
+
+/**
+ * The main thread's answer when a recording's slow loop asks at Discover's
+ * end (spec decision 4, slice 3): the factors when they cover every frame;
+ * at the first look, the file at once when the compressor is more than one
+ * window behind; otherwise wait for that last window. One answer per session.
+ */
+export class FileSettleChoice {
+  private answered = -1;
+  private looked = -1;
+
+  act(i: FileSettleInput): FileSettleAction {
+    if (!i.factorFile || !i.waiting || this.answered === i.session) return { kind: 'none' };
+    if (i.state === 'ready' && i.info) {
+      this.answered = i.session;
+      return {
+        kind: 'factors',
+        session: i.session,
+        frames: i.info.frames,
+        factors: {
+          folder: i.info.folder,
+          windows: i.info.windows,
+          width: i.width,
+          height: i.height,
+        },
+      };
+    }
+    if (i.state === 'unusable' || i.state === 'none') {
+      this.answered = i.session;
+      return {
+        kind: 'file',
+        session: i.session,
+        reason: i.reason ?? 'The factors cannot be read.',
+      };
+    }
+    if (this.looked !== i.session) {
+      this.looked = i.session;
+      if (i.behind > i.window) {
+        this.answered = i.session;
+        return { kind: 'file', session: i.session, reason: fileBehindText(i.behind, i.msPerFrame) };
+      }
     }
     return { kind: 'none' };
   }

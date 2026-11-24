@@ -8,9 +8,11 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 ### Added
 
 - Cala (experimental, `?factors`): a live stream settles and extracts on its own factors after it ends. Discover runs as before; the stream's export keeps the live traces (`traces_live`) beside Extract's and is format version 7. Exports without these fields stay at version 6.
+- Cala (experimental, `?factors=file`): a recording's Final settle and Extract read the factors Discover wrote when they are complete, and re-read the file otherwise (never waiting beyond the last window). The Run panel and the export (format version 7, `settle_source`, `source` and their reasons) say which source each stage read.
 
 ### Changed
 
+- Cala: **a live stream settles and extracts on its factors by default** (what `?factors` did); `?factors=0` runs a stream on Discover only, as before. What changes for a stream: every stream export is format version 7, with the live traces as `traces_live` beside Extract's `traces` and `traces_signed` (a stream whose factors were not usable exports as before, format 6); the factors take about 55 MB per 1,000 frames at 600 x 600 in the browser's storage (OPFS), with no free-space check, and a failed write ends the stream at Discover's library; `?compress` on a stream is a factor run (offset grids, no back-fill); `?compress&review` turns the default off and keeps the review (it reads plain tiles only). The compress worker exists on every page but `?factors=0`. Recordings do not change: they re-read the file, and `?factors=file` stays experimental.
 - Cala (experimental, `?compress`): the compressor writes factor format v2 (plain tiles, two SVD power iterations, per-pixel discarded variance and valid share; v1 files still read), and the crate can cut and blend the frame on two offset grids. `qc_eval --factors-out` and the history whole-test read and write v2.
 
 ## [2.22.0] - 2026-11-23

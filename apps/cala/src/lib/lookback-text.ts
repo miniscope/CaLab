@@ -47,9 +47,14 @@ export function csettleText(cs: CsettleStatus | undefined, running: boolean): st
 export function lookbackText(lb: LookbackStatus, final: boolean): string {
   const err = lb.error ? ` · look-back stopped: ${lb.error}` : '';
   const st = lb.settle;
-  const on = st?.source === 'factors' ? " on the stream's factors" : '';
+  const on =
+    st?.source === 'factors'
+      ? ' on the factors'
+      : st?.source === 'file' && st.fileReason
+        ? ` (re-reads the file: ${st.fileReason})`
+        : '';
   if (lb.settling && st?.waiting)
-    return `Final settle: waiting for the stream's last factor windows${csettleText(lb.csettle, false)}${err}`;
+    return `Final settle: waiting for the last factor window${csettleText(lb.csettle, false)}${err}`;
   if (lb.settling && st)
     return `Final settle${on}: ${settleFrames(st)}${movingText(st)}${csettleText(lb.csettle, false)}${err}`;
   if (lb.settling) return `Final settle${csettleText(lb.csettle, false)}${err}`;

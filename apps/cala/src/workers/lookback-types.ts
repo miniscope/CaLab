@@ -40,7 +40,9 @@ export type SlowToLookback =
   /** A library the slow loop published (`TraceLibrary.toBytes()`, a copy; transferred). */
   | { type: 'library'; session: number; version: number; bytes: Uint8Array }
   /** The `frames` buffer of a reply, back for reuse (transferred). */
-  | { type: 'release'; session: number; frames: Float32Array };
+  | { type: 'release'; session: number; frames: Float32Array }
+  /** A recording's settle with `?factors=file`: serve every later request from these factors (slice 3). */
+  | { type: 'factors'; session: number; factors: FactorSource['factors'] };
 
 /** Look-back worker -> slow worker. */
 export type LookbackToSlow =
@@ -189,8 +191,10 @@ export interface SettleStatus {
   /** The user stopped it early. */
   stopped: boolean;
   done: boolean;
-  /** The settle read the stream's own factors (`?factors`), not the recording. */
-  source?: 'factors';
+  /** The settle read the factors (`?factors`, `?factors=file`) or, with `?factors=file`, the file. */
+  source?: 'factors' | 'file';
+  /** With `?factors=file`: why the settle reads the file. */
+  fileReason?: string;
   /** Discover is over and the factors are not ready yet (the settle has not started). */
   waiting?: boolean;
   /** The factors could not be used: Discover's library is the final one. */

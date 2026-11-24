@@ -87,8 +87,9 @@ width, or in a portrait window, the column moves under the image and the page sc
 **Discover** → **Final settle** → **Extract**. Each fills with its own progress and shows
 its percent and, while it runs, its frames per second; the running step has a coloured
 edge and moving stripes, a finished one a ✓, and a step that will not run (look-back
-off, Extract unticked, a live stream) is dimmed. With `?factors` (experimental) a live
-stream also gets the Final settle and Extract after it ends, on the factors it wrote. Look-back and Background settle run
+off, Extract unticked) is dimmed. A live stream gets the Final settle and Extract after it
+ends, on the factors it wrote (`?factors=0`: Discover only, as before). With `?factors=file` (experimental) a recording's
+Final settle and Extract read its factors when they are complete, and say "re-reads the file" with the reason when not. Look-back and Background settle run
 inside Discover. The cell count, the session (in a multi-session run) and the pause and
 stop controls sit beside the boxes.
 
@@ -146,7 +147,7 @@ order you use them:
 
 In a narrow window the stages
 show as a stepper (Calibrate, Discover, Extract, Export) and the metrics as
-small tiles on the same fixed ranges. A live stream shows Discover only. In a
+small tiles on the same fixed ranges. A live stream with `?factors=0` shows Discover only. In a
 multi-session run the session list (with each boundary's health badge in a Joint run)
 follows.
 
@@ -482,7 +483,11 @@ published versions are permanent.
 - **Live acquisition is experimental.** The live-source field on the start page
   streams frames from a WebSocket (see the README). Apart from
   [testing with a simulated stream](#testing-with-a-simulated-stream), it is not
-  covered by this guide.
+  covered by this guide. A stream keeps its factors in the browser's storage, about
+  55 MB per 1,000 frames at 600 x 600 (about 2 GB for 30 minutes at 20 fps), with no
+  check of free space; if a write fails, the stream ends with Discover's cells and
+  traces, without the Final settle and Extract. Its export is format version 7 and
+  holds the live traces as `traces_live` beside Extract's `traces`.
 - **Everything stays in the tab.** Closing the page discards a run that was not
   exported.
 

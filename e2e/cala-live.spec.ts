@@ -52,7 +52,8 @@ test('Cala: a live source streams through the pipeline to the end', async ({ pag
   // Frame 7 is never sent: the stream stays contiguous, the gap is counted.
   await startSim(folder, ['--drop', '7']);
 
-  await page.goto(`Cala/?live=ws://127.0.0.1:${PORT}&debug`);
+  // `factors=0`: the stream as before the factor default (it ends at Discover's library).
+  await page.goto(`Cala/?live=ws://127.0.0.1:${PORT}&factors=0&debug`);
   const header = page.getByRole('banner');
   await expect(header.getByText('32 x 24')).toBeVisible();
   await expect(header.getByText('live', { exact: true })).toBeVisible();
@@ -80,7 +81,7 @@ test('Cala: a live run can be stopped, and reconnects on restart', async ({ page
   writeFileSync(join(folder, 'metaData.json'), '{"frameRate":"20FPS"}');
   await startSim(folder);
 
-  await page.goto(`Cala/?live=ws://127.0.0.1:${PORT}`);
+  await page.goto(`Cala/?live=ws://127.0.0.1:${PORT}&factors=0`);
   await expect(page.getByTestId('pipeline-readout')).toContainText('frame 4', { timeout: 30_000 });
   await page.getByTestId('pass2-finish').click(); // "Stop the live run"
   await expect(page.getByTestId('pipeline-status')).toHaveText('Done', { timeout: 15_000 });
@@ -98,7 +99,7 @@ test('Cala: an unreachable live source reports an error', async ({ page }) => {
   await expect(page.getByRole('alert')).toContainText('Could not connect', { timeout: 15_000 });
 });
 
-test('Cala: with ?factors a live stream settles and extracts on its factors after it ends', async ({
+test('Cala: a live stream settles and extracts on its factors after it ends, by default', async ({
   page,
 }) => {
   test.setTimeout(300_000);
@@ -116,7 +117,8 @@ test('Cala: with ?factors a live stream settles and extracts on its factors afte
   await page.addInitScript(() => {
     delete (window as { showSaveFilePicker?: unknown }).showSaveFilePicker;
   });
-  await page.goto(`Cala/?live=ws://127.0.0.1:${PORT}&factors&debug`);
+  // No switch: a stream with Discover is a factor run by default.
+  await page.goto(`Cala/?live=ws://127.0.0.1:${PORT}&debug`);
   await expect(page.getByTestId('pipeline-status')).toHaveText('Done', { timeout: 120_000 });
   await expect(page.getByTestId('live-stage-note')).toContainText('factors');
   // The settle on the factors, then Extract on them, by themselves.

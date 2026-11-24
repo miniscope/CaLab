@@ -267,7 +267,9 @@ export function stageMeta(r: StageRun): Record<string, unknown> {
   ];
   for (const [k, v] of counts) if (v !== undefined) out[k] = v;
   if (r.settleSource) out.settle_source = r.settleSource;
+  if (r.settleSourceReason) out.settle_source_reason = r.settleSourceReason;
   if (r.source) out.source = r.source;
+  if (r.sourceReason) out.source_reason = r.sourceReason;
   if (r.factors) {
     out.factor_tiling = r.factors.tiling;
     out.factor_windows = r.factors.windows.length;

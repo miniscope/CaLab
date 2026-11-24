@@ -383,10 +383,11 @@ iterations.
 - `scripts/compress-bench.mjs`: local timing of the WASM compressor on a
   window dumped by `discover_eval --compress-dump`.
 
-### A live stream's settle and Extract on its factors (`?factors`)
+### A live stream's settle and Extract on its factors (the default)
 
-With `?factors` (experimental; it turns compression on by itself) a live
-stream compresses on the two offset grids, and after the stream ends:
+A live stream with Discover compresses on the two offset grids by default
+(`factorsFromPage`, `factorRunPlan`; `?factors=0` turns it off), and after
+the stream ends:
 
 - the slow loop waits for the last window (`SlowRunner.factors`; the main
   thread's `FactorSettle` answers once the factors are `ready` or
@@ -398,15 +399,56 @@ stream compresses on the two offset grids, and after the stream ends:
 - Extract runs in the compress worker on the same rebuilt frames (the
   back-fill code as a stage; the back-fill itself does not run, so the live
   traces stay).
-- The export (format version 7 only with these fields) keeps `traces_live`
-  beside Extract's `traces` and `traces_signed`, names the stage sources and
-  says so in `meta_json.notes`.
+- The export (format version 7 only with these fields, so every stream whose
+  factors were usable) keeps `traces_live` beside Extract's `traces` and
+  `traces_signed`, names the stage sources and says so in `meta_json.notes`.
 
 The look-back worker reads the factor files read-only through `getFile()`
 (`factorFiles`). Each compression run folder holds a Web Lock, so another
-tab's sweep leaves it alone. `?review` is off with `?factors` (the review
-reads plain tiles only). Factors take about 55 MB per 1,000 frames at
-600 px in OPFS. A recording with `?factors` runs as with `?compress`.
+tab's sweep leaves it alone. Factors take about 55 MB per 1,000 frames at
+600 px in OPFS (about 2 GB for 30 min at 20 fps); there is no quota or
+free-space check, and a failed write marks the factors unusable, so the
+stream ends at Discover's library.
+
+The switches on a stream: `?factors=0` runs it on Discover only, as before
+(with `?compress`: plain tiles and the back-fill). `?compress` alone is a
+factor run. `?compress&review` turns the default off and keeps the review
+(it reads plain tiles only); an explicit `?factors` with `?review` drops the
+review with a console warning. The compress worker exists on every page
+but `?factors=0` (idle on a recording that does not compress). Recordings do
+not change: they re-read the file; `?factors` on a recording runs as with
+`?compress`.
+
+### A recording's settle and Extract on its factors (`?factors=file`)
+
+With `?factors=file` (experimental) a recording's Discover also compresses
+its frames on the offset grids. Discover and its look-back are unchanged
+(look-back keeps re-reading the file). Nothing ever waits for the
+compressor beyond the last window:
+
+- At Discover's last frame the slow loop asks the main thread
+  (`SlowRunner.factors`, `FileSettleChoice`). More than one window (600
+  frames) not yet compressed: the Final settle re-reads the file at once.
+  Otherwise it waits for that last window (watchdog 120 s, slow-side limit
+  150 s), then the slow worker switches look-back worker 0 to the factors
+  over the port that carries its requests (`ServerSlot`, `FactorReader`),
+  and the settle runs on rebuilt frames.
+- Extract reads the factors when they are `ready` (every frame covered) as
+  it starts, in the compress worker as for a stream; otherwise it replays
+  the file. It never waits.
+- The Run panel and the export say which source each stage read and why
+  (`settle_source`, `settle_source_reason`, `source`, `source_reason`,
+  a note in `meta_json.notes`; format version 7). Without the switch
+  nothing changes.
+
+At 600 px one compress worker (about 40 frames/s) is slower than Discover
+reads a file, so the settle and often Extract re-read the file there; see
+`tools/cala-eval/results/2026-11-23-factors-file-speed.md`. While the compressor is behind, its
+waiting windows sit in OPFS as raw int16 frames (432 MB per window at
+600 px), so a long backlog needs several GB of free disk; a write that fails
+marks the factors unusable and both stages re-read the file. A Joint run
+with `?factors=file` runs as with `?compress`. `?factors=file` on a live
+stream means `?factors`.
 
 ### History review (`?compress&review`)
 
