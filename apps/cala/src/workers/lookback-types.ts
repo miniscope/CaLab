@@ -40,7 +40,9 @@ export type SlowToLookback =
   /** A library the slow loop published (`TraceLibrary.toBytes()`, a copy; transferred). */
   | { type: 'library'; session: number; version: number; bytes: Uint8Array }
   /** The `frames` buffer of a reply, back for reuse (transferred). */
-  | { type: 'release'; session: number; frames: Float32Array };
+  | { type: 'release'; session: number; frames: Float32Array }
+  /** A recording's settle with `?factors=file`: serve every later request from these factors (slice 3). */
+  | { type: 'factors'; session: number; factors: FactorSource['factors'] };
 
 /** Look-back worker -> slow worker. */
 export type LookbackToSlow =
