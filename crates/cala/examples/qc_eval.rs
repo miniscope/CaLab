@@ -640,8 +640,10 @@ fn replay_visit_jobs(dir: &Path, out: &Path, mut runner: VisitRunner) {
         if g != gen {
             let b = std::fs::read(dir.join(format!("noise_g{g:05}.f32"))).unwrap();
             let noise: Vec<f32> = b
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect();
             while gen < g {
                 runner.set_noise(noise.clone()).unwrap();
