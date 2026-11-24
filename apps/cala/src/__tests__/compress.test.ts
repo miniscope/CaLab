@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  FactorExtractor,
   FactorWindow,
   factorHeader,
   quantizeTiles,
@@ -12,7 +13,8 @@ import {
 } from '../lib/cala-wasm.ts';
 import { createCellStore } from '../lib/cell-store.ts';
 import { CompressFeed } from '../lib/compress-feed.ts';
-import type { TilePoolLike } from '../lib/compress-pool.ts';
+import { WindowPool, type TilePoolLike } from '../lib/compress-pool.ts';
+import { solveWindow } from '../lib/factor-solve.ts';
 import {
   backlogText,
   CompressRunner,
@@ -22,7 +24,11 @@ import {
 } from '../lib/compress-runner.ts';
 import { compressReadout, createCompressStore } from '../lib/compress-store.ts';
 import { memoryStore } from '../lib/window-store.ts';
-import type { CompressToMain, FastToCompress } from '../workers/compress-types.ts';
+import type {
+  CompressToMain,
+  CoordinatorToHelper,
+  FastToCompress,
+} from '../workers/compress-types.ts';
 import { initTestWasm } from './wasm-test.ts';
 
 beforeAll(initTestWasm);
@@ -726,5 +732,178 @@ describe('Extract on the factors', () => {
     r.extract(7, 3, 1, Uint8Array.of(1));
     await r.idle();
     expect(toMain.filter((m) => m.type === 'extracted' || m.type === 'extract-done')).toEqual([]);
+  });
+});
+
+describe('Extract on the factor extractor (slice 6)', () => {
+  type Extracted = Extract<CompressToMain, { type: 'extracted' }>;
+
+  /** A runner with the app's real engines; `extractor`: Extract through the `FactorExtractor`. */
+  function realRunner(o: { extractor: boolean; windows?: WindowPool }) {
+    const toMain: CompressToMain[] = [];
+    const r = new CompressRunner({
+      store: memoryStore(),
+      quantize: quantizeTiles,
+      layout: tileLayout,
+      header: factorHeader,
+      create: (quant) => new TileCompressor(quant),
+      engine: (bytes, signed) => {
+        const lib = TraceLibrary.fromBytes(bytes);
+        const engine = new TraceEngine(lib, 0, 0);
+        if (signed) engine.setSigned(true);
+        const ids = lib.ids();
+        lib.free();
+        return {
+          ids: () => ids,
+          processFrames: (frames, count) => engine.processFrames(frames, count),
+          ...(signed ? { lastSigned: () => engine.lastSigned() } : {}),
+          free: () => engine.free(),
+        };
+      },
+      factors: (bytes) => FactorWindow.fromBytes(bytes),
+      ...(o.extractor
+        ? {
+            extractor: (bytes: Uint8Array, signed: boolean) => {
+              const x = new FactorExtractor(bytes, 0, 0);
+              if (signed) x.setSigned(true);
+              return x;
+            },
+          }
+        : {}),
+      ...(o.windows ? { windows: o.windows } : {}),
+      toMain: { postMessage: (m) => toMain.push(m) },
+      yieldNow: () => Promise.resolve(),
+    });
+    return { r, toMain };
+  }
+
+  /** 150 frames of the two cells in 50-frame windows on the offset grids; `nan`: a pixel missing in frames `from..to`. */
+  async function feedCells(
+    r: CompressRunner,
+    extract = 1,
+    nan?: { pixel: number; from: number; to: number },
+  ): Promise<void> {
+    const sent: FastToCompress[] = [];
+    const feed = new CompressFeed(
+      {
+        width: W,
+        height: H,
+        session: 7,
+        tile: TILE,
+        window: 50,
+        quant: QUANT,
+        tiling: 'offset',
+        pool: { discover: 1, after: 1, extract },
+      },
+      { postMessage: (m) => sent.push(m) },
+    );
+    for (let s = 0; s < 150; s += 10) {
+      const b = cellFrames(s, 10);
+      if (nan) {
+        for (let i = 0; i < 10; i++)
+          if (s + i >= nan.from && s + i < nan.to) b[i * PX + nan.pixel] = NaN;
+      }
+      feed.push(b, s, 10);
+    }
+    feed.end();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+  }
+
+  const extracted = (toMain: CompressToMain[]): Extracted[] =>
+    toMain.filter((m): m is Extracted => m.type === 'extracted');
+
+  /** The largest `|a - b| / (1 + |a|)` over two runs' traces of one window. */
+  function gap(a: Float32Array, b: Float32Array, from = 0, to = a.length): number {
+    let worst = 0;
+    for (let i = from; i < to; i++)
+      worst = Math.max(worst, Math.abs(a[i] - b[i]) / (1 + Math.abs(a[i])));
+    return worst;
+  }
+
+  async function extractAll(r: CompressRunner, toMain: CompressToMain[]): Promise<void> {
+    r.extract(7, 3, 1, cellLibrary().bytes);
+    await r.idle();
+    expect(toMain.at(-1)?.type).toBe('extract-done');
+  }
+
+  it('projects every window of a recording without missing pixels, as the rebuilt frames to rounding', async () => {
+    const ref = realRunner({ extractor: false });
+    await feedCells(ref.r);
+    await extractAll(ref.r, ref.toMain);
+    const fx = realRunner({ extractor: true });
+    await feedCells(fx.r);
+    await extractAll(fx.r, fx.toMain);
+    expect(fx.toMain.at(-1)).toMatchObject({ projected: 3, rebuilt: 0, frames: 150 });
+    const [a, b] = [extracted(ref.toMain), extracted(fx.toMain)];
+    expect(b.map((m) => [m.start, m.count])).toEqual(a.map((m) => [m.start, m.count]));
+    // The first window starts cold in both: phase 2's bound.
+    expect(gap(a[0].traces, b[0].traces)).toBeLessThan(2e-4);
+    // Later windows start cold here and warm in the rebuilt route: their first frames differ
+    // a little (1.3e-3 measured), from frame 10 on (2 cells a frame) again to rounding.
+    for (let k = 1; k < 3; k++) {
+      expect(gap(a[k].traces, b[k].traces)).toBeLessThan(5e-3);
+      expect(gap(a[k].traces, b[k].traces, 20)).toBeLessThan(2e-4);
+    }
+    expect(b[0].signed?.length).toBe(b[0].traces.length);
+  });
+
+  it('solves a window with a pixel without data under a cell on rebuilt frames', async () => {
+    const pixel = CELLS[0].cy * W + CELLS[0].cx;
+    const nan = { pixel, from: 50, to: 100 };
+    const ref = realRunner({ extractor: false });
+    await feedCells(ref.r, 1, nan);
+    await extractAll(ref.r, ref.toMain);
+    const fx = realRunner({ extractor: true });
+    await feedCells(fx.r, 1, nan);
+    await extractAll(fx.r, fx.toMain);
+    expect(fx.toMain.at(-1)).toMatchObject({ projected: 2, rebuilt: 1, frames: 150 });
+    const [a, b] = [extracted(ref.toMain), extracted(fx.toMain)];
+    // The same rebuilt frames, from a cold start instead of the last window's.
+    expect(gap(a[1].traces, b[1].traces)).toBeLessThan(5e-3);
+    expect(gap(a[1].traces, b[1].traces, 20)).toBeLessThan(2e-4);
+  });
+
+  it('gives the same traces with three helpers answering out of order as with none', async () => {
+    const one = realRunner({ extractor: true });
+    await feedCells(one.r, 1);
+    await extractAll(one.r, one.toMain);
+
+    // Three fake helpers that solve in this thread, answering the newest window first.
+    const pending: { k: number; m: Extract<CoordinatorToHelper, { type: 'extract-window' }> }[] =
+      [];
+    const xs = new Map<number, { x: FactorExtractor; px: number }>();
+    const ports = [0, 1, 2].map((k) => ({
+      postMessage: (m: CoordinatorToHelper) => {
+        if (m.type === 'extract-begin') {
+          const x = new FactorExtractor(m.library, 0, 0);
+          if (m.signed) x.setSigned(true);
+          xs.set(k, { x, px: m.px });
+        } else if (m.type === 'extract-window') pending.push({ k, m });
+        else if (m.type === 'extract-end') {
+          xs.get(k)?.x.free();
+          xs.delete(k);
+        }
+      },
+    }));
+    const windows = new WindowPool({ helpers: ports });
+    const three = realRunner({ extractor: true, windows });
+    await feedCells(three.r, 3);
+    three.r.extract(7, 3, 1, cellLibrary().bytes);
+    for (let i = 0; i < 100 && !three.toMain.some((m) => m.type === 'extract-done'); i++) {
+      await new Promise((res) => setTimeout(res, 0));
+      for (const { k, m } of pending.splice(0).reverse()) {
+        const h = xs.get(k)!;
+        const r = solveWindow(h.x, m.bytes, (b) => FactorWindow.fromBytes(b), h.px, true);
+        windows.onHelper(k, { type: 'window-done', job: m.job, index: m.index, ...r });
+      }
+    }
+    expect(three.toMain.at(-1)).toMatchObject({ type: 'extract-done', workers: 3, frames: 150 });
+    const [a, b] = [extracted(one.toMain), extracted(three.toMain)];
+    expect(b.map((m) => m.start)).toEqual([0, 50, 100]);
+    for (let k = 0; k < 3; k++) {
+      expect([...b[k].traces]).toEqual([...a[k].traces]);
+      expect([...(b[k].signed ?? [])]).toEqual([...(a[k].signed ?? [])]);
+    }
   });
 });

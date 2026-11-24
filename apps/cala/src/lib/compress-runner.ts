@@ -17,8 +17,11 @@
  * to the main thread. A cell found late in the recording so gets its trace
  * from the first frame on, without the raw video being read again.
  *
- * Extract on factors (`extract`, a `?factors` stream): the same rebuild, with the
- * final library, one `extracted` message per window (traces and signed traces)
+ * Extract on factors (`extract`): with an `extractor` (slice 6), each window is
+ * solved from its factors (`solveWindow`: the `FactorExtractor`, or rebuilt
+ * frames where a pixel without data lies under a cell), cold, by the helpers of
+ * the window pool or here; without one, the rebuild above with one engine. One
+ * `extracted` message per window in stream order (traces and signed traces)
  * and `extract-done`; one job at a time, cancelled by `extractCancel`.
  *
  * History review (`review`): each compressed window's factor file also goes
@@ -45,7 +48,8 @@ import type {
 } from '../workers/compress-types.ts';
 import type { CompressToReview } from '../workers/review-types.ts';
 import type { PortLike } from '../workers/slow-types.ts';
-import { TilePool, type TileJob, type TilePoolLike } from './compress-pool.ts';
+import { TilePool, WindowPool, type TileJob, type TilePoolLike } from './compress-pool.ts';
+import { solveWindow, type FactorExtractorLike, type WindowResult } from './factor-solve.ts';
 import { rebuildFrames, type FactorWindowLike } from './factor-frames.ts';
 import type { StoreFile, WindowStore } from './window-store.ts';
 
@@ -131,6 +135,10 @@ export interface CompressRunnerDeps {
   toMain: PortLike<CompressToMain>;
   /** The tile pool (absent: the worker compresses every tile itself). */
   pool?: TilePoolLike;
+  /** Extract on factors through the `FactorExtractor` (absent: rebuilt frames, one engine). */
+  extractor?(library: Uint8Array, signed: boolean): FactorExtractorLike;
+  /** The helpers that solve Extract's windows (absent: none, the worker solves them). */
+  windows?: WindowPool;
   /** What the origin may store (`navigator.storage.estimate`; absent: the cap is `BACKLOG_MAX_BYTES`). */
   estimate?: () => Promise<{ quota?: number; usage?: number }>;
   /** The review worker, and the compressed windows between two reviews (absent: no review). */
@@ -189,6 +197,7 @@ export class CompressRunner {
   private layoutPx = 0;
   private compressor: TileCompressorLike | null = null;
   private readonly pool: TilePoolLike;
+  private readonly windowPool: WindowPool;
   private open: (WindowJob & { file: StoreFile }) | null = null;
   /** The quantized chunk being written (reused; a write is synchronous). */
   private scratch = new Int16Array(0);
@@ -210,7 +219,7 @@ export class CompressRunner {
   private meanRank = 0;
   private msPerFrame = 0;
   private fps = 0;
-  private widths = { discover: 1, after: 1 };
+  private widths: { discover: number; after: number; extract?: number } = { discover: 1, after: 1 };
   /** The cap on waiting window files, asked for once per run; past it the run's factors are given up. */
   private cap = BACKLOG_MAX_BYTES;
   private asked = false;
@@ -225,6 +234,7 @@ export class CompressRunner {
     this.yieldNow = deps.yieldNow ?? macrotask;
     this.now = deps.now ?? (() => performance.now());
     this.pool = deps.pool ?? new TilePool({ helpers: [], now: this.now });
+    this.windowPool = deps.windows ?? new WindowPool({ helpers: [] });
   }
 
   /** One message from the fast worker. Calls must not overlap. */
@@ -335,7 +345,10 @@ export class CompressRunner {
   }
 
   extractCancel(session: number, id: number): void {
-    if (this.job?.id === id && this.job.session === session) this.job = null;
+    if (this.job?.id === id && this.job.session === session) {
+      this.job = null;
+      this.windowPool.reset();
+    }
   }
 
   /** Resolves when no window is being compressed or back-filled (for tests). */
@@ -403,8 +416,9 @@ export class CompressRunner {
   private maybeExtract(): void {
     const job = this.job;
     const { engine, factors } = this.deps;
-    if (!job || this.loop || this.open || this.pending.length > 0 || !engine || !factors) return;
-    this.launch(this.runExtract(job, engine, factors));
+    if (!job || this.loop || this.open || this.pending.length > 0 || !factors) return;
+    if (this.deps.extractor) this.launch(this.runFactorExtract(job, this.deps.extractor, factors));
+    else if (engine) this.launch(this.runExtract(job, engine, factors));
   }
 
   /** Run `task` as the worker's one background loop. */
@@ -578,6 +592,87 @@ export class CompressRunner {
     }
   }
 
+  /** Extract through the `FactorExtractor`, its windows spread over the window pool. */
+  private async runFactorExtract(
+    job: { id: number; session: number; library: Uint8Array },
+    makeExtractor: NonNullable<CompressRunnerDeps['extractor']>,
+    openFactors: NonNullable<CompressRunnerDeps['factors']>,
+  ): Promise<void> {
+    const init = this.init;
+    if (!init) return;
+    const epoch = this.epoch;
+    const live = (): boolean => epoch === this.epoch && this.job === job;
+    const t0 = this.now();
+    const px = init.width * init.height;
+    const list = [...this.done];
+    let local: FactorExtractorLike | null = null;
+    const here = (): FactorExtractorLike => (local ??= makeExtractor(job.library, true));
+    this.windowPool.setWidth(this.widths.extract ?? this.widths.after);
+    const workers = Math.max(1, this.windowPool.width());
+    this.windowPool.begin(job.id, job.library, true, px);
+    let frames = 0;
+    let projected = 0;
+    let rebuilt = 0;
+    try {
+      const ids = here().ids();
+      const done = await this.windowPool.runJob(job.id, list.length, {
+        read: (i) => this.deps.store.readAll(factorName(list[i].index)),
+        local: (_i, bytes) => solveWindow(here(), bytes, openFactors, px, true),
+        emit: (_i, r: WindowResult) => {
+          if (!live()) return;
+          const cellIds = ids.slice();
+          const transfer: ArrayBuffer[] = [
+            cellIds.buffer as ArrayBuffer,
+            r.traces.buffer as ArrayBuffer,
+          ];
+          if (r.signed) transfer.push(r.signed.buffer as ArrayBuffer);
+          this.deps.toMain.postMessage(
+            {
+              type: 'extracted',
+              session: job.session,
+              job: job.id,
+              start: r.start,
+              count: r.count,
+              ids: cellIds,
+              traces: r.traces,
+              ...(r.signed ? { signed: r.signed } : {}),
+            },
+            transfer,
+          );
+          frames += r.count;
+          if (r.projected) projected++;
+          else rebuilt++;
+        },
+        yieldNow: this.yieldNow,
+      });
+      if (!done || !live()) return;
+      this.job = null;
+      this.deps.toMain.postMessage({
+        type: 'extract-done',
+        session: job.session,
+        job: job.id,
+        frames,
+        msPerFrame: (this.now() - t0) / Math.max(1, frames),
+        projected,
+        rebuilt,
+        workers,
+      });
+    } catch (err) {
+      if (live()) {
+        this.job = null;
+        this.deps.toMain.postMessage({
+          type: 'error',
+          session: job.session,
+          job: job.id,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    } finally {
+      this.windowPool.end(job.id);
+      (local as FactorExtractorLike | null)?.free();
+    }
+  }
+
   private async run(): Promise<void> {
     const epoch = this.epoch;
     while (this.pending.length > 0) {
@@ -735,6 +830,7 @@ export class CompressRunner {
   private async clear(): Promise<void> {
     this.epoch++;
     this.pool.reset();
+    this.windowPool.reset();
     this.open?.file.close();
     this.open = null;
     this.pending = [];
