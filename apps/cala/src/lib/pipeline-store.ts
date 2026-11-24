@@ -236,6 +236,8 @@ export function createPipelineStore(
   const [runPool, setRunPool] = createSignal<PoolWidth | null>(null);
   // `?debug&cbacklog=GB`: the cap on window files waiting for compression (measurement).
   let backlogCap: number | undefined;
+  // `?debug&fextract=0`: Extract on factors on rebuilt frames, as before slice 6 (measurement).
+  let frameExtract = false;
   let jointOf: () => boolean = () => false;
   /**
    * Settle during Discover ("Background settle", under look-back; runs only
@@ -1125,6 +1127,7 @@ export function createPipelineStore(
                 ...(runPlan.compress !== 'plain' ? { compressTiling: runPlan.compress } : {}),
                 ...(pool ? { compressPool: pool } : {}),
                 ...(backlogCap !== undefined ? { compressBacklogCap: backlogCap } : {}),
+                ...(frameExtract ? { compressFrameExtract: true } : {}),
               }
             : {}),
           ...(runPlan.factorSettle ? { factorSettle: true } : {}),
@@ -1284,6 +1287,10 @@ export function createPipelineStore(
     /** `?debug&cbacklog=GB`: the cap on waiting window files, bytes (undefined: the default). */
     setCompressBacklogCap(bytes: number | undefined): void {
       backlogCap = bytes;
+    },
+    /** `?debug&fextract=0`: Extract on factors on rebuilt frames (measurement). */
+    setFrameExtract(on: boolean): void {
+      frameExtract = on;
     },
     // (Not `??`: `blocked()` returns null when look-back can run.)
     lookbackBlocked: () =>

@@ -285,6 +285,8 @@ const App: Component = () => {
   // `?debug&cbacklog=GB`: the cap on window files waiting for compression (measurement).
   const cbacklog = params.has('debug') ? Number(params.get('cbacklog')) : NaN;
   if (cbacklog > 0) pipeline.setCompressBacklogCap(cbacklog * 2 ** 30);
+  // `?debug&fextract=0`: Extract on factors on rebuilt frames, as before slice 6 (measurement).
+  pipeline.setFrameExtract(params.has('debug') && params.get('fextract') === '0');
   if (pageFactors.factorsFile)
     pipeline.setFactorsFile(true, () => {
       const s = store.source();

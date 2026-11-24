@@ -27,6 +27,8 @@ export interface CompressFeedOptions {
   pool?: PoolWidth;
   /** The cap on window files waiting for compression, bytes (absent: the runner's own). */
   backlogCap?: number;
+  /** Extract on factors on rebuilt frames, as before slice 6 (`?debug&fextract=0`). */
+  frameExtract?: boolean;
 }
 
 export const COMPRESS_DEFAULTS = {
@@ -47,9 +49,12 @@ export interface CompressFeedLike {
 }
 
 export class CompressFeed implements CompressFeedLike {
-  private readonly o: Required<Omit<CompressFeedOptions, 'pool' | 'backlogCap'>> & {
+  private readonly o: Required<
+    Omit<CompressFeedOptions, 'pool' | 'backlogCap' | 'frameExtract'>
+  > & {
     pool?: PoolWidth;
     backlogCap?: number;
+    frameExtract?: boolean;
   };
   private readonly px: number;
   private initSent = false;
@@ -74,8 +79,19 @@ export class CompressFeed implements CompressFeedLike {
   /** `count` frames that start at stream frame `start`. */
   push(batch: Float32Array, start: number, count: number): void {
     if (this.disposed || count <= 0) return;
-    const { session, width, height, tile, window, quant, tiling, source, pool, backlogCap } =
-      this.o;
+    const {
+      session,
+      width,
+      height,
+      tile,
+      window,
+      quant,
+      tiling,
+      source,
+      pool,
+      backlogCap,
+      frameExtract,
+    } = this.o;
     if (!this.initSent) {
       this.port.postMessage({
         type: 'init',
@@ -89,6 +105,7 @@ export class CompressFeed implements CompressFeedLike {
         source,
         ...(pool ? { pool } : {}),
         ...(backlogCap !== undefined ? { backlogCap } : {}),
+        ...(frameExtract ? { frameExtract } : {}),
       });
       this.initSent = true;
     }

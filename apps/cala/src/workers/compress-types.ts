@@ -35,6 +35,8 @@ export interface CompressInit {
   pool?: { discover: number; after: number; extract?: number };
   /** The cap on window files waiting for compression, bytes (absent: from the storage estimate; `?debug&cbacklog`). */
   backlogCap?: number;
+  /** Extract on factors on rebuilt frames with one engine, as before slice 6 (`?debug&fextract=0`). */
+  frameExtract?: boolean;
 }
 
 /** Fast worker -> compress worker. */

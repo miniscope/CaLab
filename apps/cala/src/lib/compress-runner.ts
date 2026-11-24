@@ -417,7 +417,8 @@ export class CompressRunner {
     const job = this.job;
     const { engine, factors } = this.deps;
     if (!job || this.loop || this.open || this.pending.length > 0 || !factors) return;
-    if (this.deps.extractor) this.launch(this.runFactorExtract(job, this.deps.extractor, factors));
+    if (this.deps.extractor && !this.init?.frameExtract)
+      this.launch(this.runFactorExtract(job, this.deps.extractor, factors));
     else if (engine) this.launch(this.runExtract(job, engine, factors));
   }
 
