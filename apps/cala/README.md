@@ -383,10 +383,11 @@ iterations.
 - `scripts/compress-bench.mjs`: local timing of the WASM compressor on a
   window dumped by `discover_eval --compress-dump`.
 
-### A live stream's settle and Extract on its factors (`?factors`)
+### A live stream's settle and Extract on its factors (the default)
 
-With `?factors` (experimental; it turns compression on by itself) a live
-stream compresses on the two offset grids, and after the stream ends:
+A live stream with Discover compresses on the two offset grids by default
+(`factorsFromPage`, `factorRunPlan`; `?factors=0` turns it off), and after
+the stream ends:
 
 - the slow loop waits for the last window (`SlowRunner.factors`; the main
   thread's `FactorSettle` answers once the factors are `ready` or
@@ -398,15 +399,25 @@ stream compresses on the two offset grids, and after the stream ends:
 - Extract runs in the compress worker on the same rebuilt frames (the
   back-fill code as a stage; the back-fill itself does not run, so the live
   traces stay).
-- The export (format version 7 only with these fields) keeps `traces_live`
-  beside Extract's `traces` and `traces_signed`, names the stage sources and
-  says so in `meta_json.notes`.
+- The export (format version 7 only with these fields, so every stream whose
+  factors were usable) keeps `traces_live` beside Extract's `traces` and
+  `traces_signed`, names the stage sources and says so in `meta_json.notes`.
 
 The look-back worker reads the factor files read-only through `getFile()`
 (`factorFiles`). Each compression run folder holds a Web Lock, so another
-tab's sweep leaves it alone. `?review` is off with `?factors` (the review
-reads plain tiles only). Factors take about 55 MB per 1,000 frames at
-600 px in OPFS. A recording with `?factors` runs as with `?compress`.
+tab's sweep leaves it alone. Factors take about 55 MB per 1,000 frames at
+600 px in OPFS (about 2 GB for 30 min at 20 fps); there is no quota or
+free-space check, and a failed write marks the factors unusable, so the
+stream ends at Discover's library.
+
+The switches on a stream: `?factors=0` runs it on Discover only, as before
+(with `?compress`: plain tiles and the back-fill). `?compress` alone is a
+factor run. `?compress&review` turns the default off and keeps the review
+(it reads plain tiles only); an explicit `?factors` with `?review` drops the
+review with a console warning. The compress worker exists on every page
+but `?factors=0` (idle on a recording that does not compress). Recordings do
+not change: they re-read the file; `?factors` on a recording runs as with
+`?compress`.
 
 ### A recording's settle and Extract on its factors (`?factors=file`)
 
