@@ -146,7 +146,7 @@ export interface FastLoopOptions {
   settleFraction?: number;
   /** With `lookback`, a Joint run: the first frame of sessions 1.. (`SlowInit.sessionStarts`). */
   sessionStarts?: readonly number[];
-  /** With `csettle`: the settle delta (`SlowInit.csettleDelta`). */
+  /** With `lookback`: the settle delta (`SlowInit.csettleDelta`). */
   csettleDelta?: boolean;
   /** Return the model residual of each batch's last frame (the app's residual view). */
   residual?: boolean;
@@ -541,9 +541,9 @@ export class FastLoop {
                 csettlePool: this.o.poolSize,
                 ...(this.o.csettleYield > 0 ? { csettleYield: this.o.csettleYield } : {}),
                 ...(this.o.csettleNeedFirst ? { csettleNeedFirst: true } : {}),
-                ...(this.o.csettleDelta ? { csettleDelta: true } : {}),
               }
             : {}),
+          ...(this.o.lookback && this.o.csettleDelta ? { csettleDelta: true } : {}),
         },
         [],
       );

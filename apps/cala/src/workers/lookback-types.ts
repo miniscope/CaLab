@@ -41,8 +41,18 @@ export type SlowToLookback =
        * (`SlowLoop.settleContext()`, a copy; transferred) and answer with
        * `delta` instead of `frames`. `fov` (the slow loop's FOV mask) comes
        * with a worker's first such request.
+       *
+       * The Final settle (`next`): the context is `SlowLoop.settleContextNext()`,
+       * every frame is solved, and the answer is `frames` with the delta in
+       * `delta`: the frames the slow loop will fit on are summed, keyed by the
+       * slow-loop index each will have (`next.first` + its place), the held-out
+       * ones (`next.held`, 1) are not.
        */
-      delta?: { context: Uint8Array; fov?: Uint8Array };
+      delta?: {
+        context: Uint8Array;
+        fov?: Uint8Array;
+        next?: { first: number; held: Uint8Array };
+      };
     }
   /** A library the slow loop published (`TraceLibrary.toBytes()`, a copy; transferred). */
   | { type: 'library'; session: number; version: number; bytes: Uint8Array }
@@ -70,6 +80,12 @@ export type LookbackToSlow =
       background?: Float32Array;
       /** What the worker spent on this answer (instrumentation only; absent from older builds). */
       timing?: LookbackTiming;
+      /**
+       * The Final settle's delta (a request with `delta.next`): the chunk's
+       * statistics, summed (`SettleDeltaBuilder.finish()`; transferred),
+       * the frames summed, and the time spent summing (also in `timing.otherMs`).
+       */
+      delta?: { bytes: Uint8Array; summed: number; ms: number };
     }
   /** The answer to a request with `delta`: the chunk's settle delta (`SettleDeltaBuilder.finish()`; transferred). */
   | {
@@ -223,4 +239,6 @@ export interface SettleStatus {
   /** The user stopped it early. */
   stopped: boolean;
   done: boolean;
+  /** The settle delta (absent: off); `rejected`: chunks observed the ordinary way (a missed prediction). */
+  delta?: CsettleDeltaStatus;
 }

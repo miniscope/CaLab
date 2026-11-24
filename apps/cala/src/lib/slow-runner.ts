@@ -107,6 +107,9 @@ import {
   type WorkStatus,
 } from './work-meter.ts';
 
+/** The settle delta part of a look-back request. */
+type SlowToLookbackDelta = NonNullable<Extract<SlowToLookback, { type: 'request' }>['delta']>;
+
 /** What the runner needs of a published `TraceLibrary`. */
 export interface PublishedLibrary {
   readonly version: number;
@@ -202,6 +205,14 @@ export interface SlowLoopLike {
   /** `false`: refused (a held-out frame in it). */
   applySettleDelta?(bytes: Uint8Array): boolean;
   settleDeltaStats?(): Float64Array;
+  // The Final settle's delta (`SlowLoop.settleContextNext`; absent in older fakes and builds).
+  /** Frames observed so far (the next frame's slow-loop index). */
+  readonly frames?: number;
+  settleContextNext?(): Uint8Array;
+  /** `false`: not the next fitting frames (or the library is gone): observe them as usual. */
+  applySettleDeltaNext?(bytes: Uint8Array, version: number, count: number): boolean;
+  /** 1 per held-out slow-loop index of `first..first + count`. */
+  heldOutFlags?(first: number, count: number): Uint8Array;
   free(): void;
 }
 
@@ -309,6 +320,22 @@ interface LookbackReq {
   items: LookbackItem[];
   /** `csettle`: per frame, 1 = held out (not solved; never handed to the slow loop). */
   skip?: Uint8Array;
+  /** `end` with the settle delta: the slow-loop index its first frame was predicted to get. */
+  first?: number;
+}
+
+/** The Final settle's delta (`SlowInit.csettleDelta`; `SlowLoop.applySettleDeltaNext`). */
+interface FinalDelta {
+  /** The FOV went to look-back worker 0 with a request of this settle. */
+  fovSent: boolean;
+  /** The slow-loop index the next request's first frame will get. */
+  nextIdx: number;
+  applied: number;
+  mismatched: number;
+  contextBytes: number;
+  deltaBytes: number;
+  contextMs: number;
+  buildMs: number;
 }
 
 /** An answer of the settle during Discover being fed to the slow loop. */
@@ -405,6 +432,8 @@ interface Settle {
   /** Stop now (the user's Stop): publish the final library. */
   stop: boolean;
   statusAt: number;
+  /** The settle delta (null: off, every frame's statistics are updated here). */
+  delta: FinalDelta | null;
 }
 
 function counters(s: ArrayLike<number>): SlowCounters {
@@ -738,7 +767,8 @@ export class SlowRunner {
           ...(lookback && msg.sessionStarts?.length
             ? { sessionStarts: [...msg.sessionStarts] }
             : {}),
-          ...(csettle && msg.csettleDelta ? { csettleDelta: true } : {}),
+          // The settle delta: the Final settle's, and with `csettle` the Background settle's.
+          ...(lookback && msg.csettleDelta ? { csettleDelta: true } : {}),
         };
         this.loop = this.clock.span('setup', () => this.deps.create(this.init!));
         this.run = 1;
@@ -1058,10 +1088,18 @@ export class SlowRunner {
     flat: Float64Array,
     items: LookbackItem[],
     skip?: Uint8Array,
-    delta?: { context: Uint8Array; fov?: Uint8Array },
+    delta?: SlowToLookbackDelta,
+    first?: number,
   ): void {
     const id = this.lbNextId++;
-    this.lbReqs[port] = { id, port, kind, items, ...(skip ? { skip } : {}) };
+    this.lbReqs[port] = {
+      id,
+      port,
+      kind,
+      items,
+      ...(skip ? { skip } : {}),
+      ...(first !== undefined ? { first } : {}),
+    };
     // `flat` is a fresh array (from WASM or built here): transferred as is; `skip` is copied.
     this.clock.span(kind, () =>
       this.lbPorts[port]!.postMessage(
@@ -1257,7 +1295,7 @@ export class SlowRunner {
           // The next request goes out first: the look-back worker reads and
           // solves it while these frames are observed here.
           if (!settle.stop && !settle.feed.done) this.settleRequest();
-          this.observeSettle(loop, msg, req.items);
+          this.observeSettle(loop, msg, req.items, req);
         } else if (req.kind === 'need') this.observeLookback(loop, msg, req.items);
         // A settle answer that came when Discover could no longer use it: counted as dropped.
         if (req.kind === 'csettle' && this.cs) this.cs.dropped += req.items.length;
@@ -1502,6 +1540,23 @@ export class SlowRunner {
       finalJobs0: 0,
       stop: false,
       statusAt: this.now(),
+      delta:
+        this.init?.csettleDelta &&
+        typeof loop.settleContextNext === 'function' &&
+        typeof loop.applySettleDeltaNext === 'function' &&
+        typeof loop.heldOutFlags === 'function' &&
+        typeof loop.frames === 'number'
+          ? {
+              fovSent: false,
+              nextIdx: loop.frames,
+              applied: 0,
+              mismatched: 0,
+              contextBytes: 0,
+              deltaBytes: 0,
+              contextMs: 0,
+              buildMs: 0,
+            }
+          : null,
     };
     // The look-back worker solves with the library Discover ended with
     // (qc_eval publishes it before the settle); the first checkpoint's reference.
@@ -1617,7 +1672,27 @@ export class SlowRunner {
       flat[3 * i + 1] = f.block;
     });
     const items = frames.map((f) => ({ frame: f.frame, ids: new Float64Array(0) }));
-    this.sendRequest(0, 'end', flat, items);
+    const fd = d.delta;
+    const loop = this.loop;
+    if (!fd || !loop) {
+      this.sendRequest(0, 'end', flat, items);
+      return;
+    }
+    // The settle delta: the frames get the next slow-loop indices (this request goes out before
+    // the answer before it is observed, so after that answer's frames); the context is made now.
+    const first = fd.nextIdx;
+    fd.nextIdx += frames.length;
+    const t0 = this.now();
+    const context = loop.settleContextNext!();
+    const held = loop.heldOutFlags!(first, frames.length);
+    fd.contextMs += this.now() - t0;
+    fd.contextBytes += context.byteLength;
+    const delta: SlowToLookbackDelta = { context, next: { first, held } };
+    if (!fd.fovSent) {
+      delta.fov = this.init!.fov.slice();
+      fd.fovSent = true;
+    }
+    this.sendRequest(0, 'end', flat, items, undefined, delta, first);
   }
 
   /** A settle answer: every frame through `observe`, then the visits they earn. */
@@ -1625,6 +1700,7 @@ export class SlowRunner {
     loop: SlowLoopLike,
     msg: Extract<LookbackToSlow, { type: 'frames' }>,
     items: LookbackItem[],
+    req?: LookbackReq,
   ): void {
     const d = this.drain!;
     const init = this.init!;
@@ -1634,6 +1710,16 @@ export class SlowRunner {
     const bg = msg.background;
     const nb = bg && msg.count > 0 ? bg.length / msg.count : 0;
     let n = 0;
+    const fd = d.delta;
+    if (fd && msg.delta) {
+      fd.deltaBytes += msg.delta.bytes.byteLength;
+      fd.buildMs += msg.delta.ms;
+      // Added before the frames go through `observe`, which then leaves the statistics alone.
+      if (msg.version !== 0 && loop.applySettleDeltaNext!(msg.delta.bytes, msg.version, msg.count))
+        fd.applied++;
+      else fd.mismatched++;
+    }
+    const before = loop.frames;
     // Version 0: the worker had no library yet, nothing was solved.
     if (msg.version !== 0)
       for (let i = 0; i < msg.count; i++) {
@@ -1648,6 +1734,14 @@ export class SlowRunner {
         if (ok) n++;
         else this.skipped++;
       }
+    // A prediction that missed (frames not observed): the requests from the one after the next
+    // are predicted from where the slow loop is now.
+    if (fd && req && req.first !== undefined && before !== undefined && loop.frames !== undefined) {
+      if (before !== req.first || loop.frames !== req.first + msg.count) {
+        const out = this.lbReqs[0];
+        fd.nextIdx = loop.frames + (out?.kind === 'end' ? out.items.length : 0);
+      }
+    }
     d.fed += msg.count;
     if (this.parallel) {
       this.housekeep();
@@ -1747,6 +1841,7 @@ export class SlowRunner {
   }
 
   private settleView(d: Settle, done: boolean): SettleStatus {
+    const fd = d.delta;
     return {
       fed: d.fed,
       total: d.feed.total,
@@ -1754,6 +1849,19 @@ export class SlowRunner {
       moving: d.moving,
       stopped: d.stop,
       done,
+      ...(fd
+        ? {
+            delta: {
+              applied: fd.applied,
+              rejected: fd.mismatched,
+              contextBytes: fd.contextBytes,
+              deltaBytes: fd.deltaBytes,
+              contextMs: fd.contextMs,
+              buildMs: fd.buildMs,
+              engine: Array.from(this.loop?.settleDeltaStats?.() ?? []),
+            },
+          }
+        : {}),
     };
   }
 

@@ -592,10 +592,57 @@ impl JsSlowLoop {
         Ok(ok)
     }
 
+    /// The Final settle's context (`SlowLoop::settle_context_next`): as
+    /// `settleContext`, for a chunk whose frames go through `observe`
+    /// (`applySettleDeltaNext`). The builder's keys are the slow-loop
+    /// indices the frames will have (`frames` plus their place in line);
+    /// `heldOutFlags` says which of them are held out (not summed).
+    #[wasm_bindgen(js_name = settleContextNext)]
+    pub fn settle_context_next(&self) -> Result<Vec<u8>, JsError> {
+        Ok(self
+            .inner
+            .settle_context_next()
+            .map_err(|e| js_err("settleContextNext", e))?
+            .to_bytes())
+    }
+
+    /// The Final settle: add the delta of the next `count` frames, solved
+    /// with library `version`, before they are fed to `observe`
+    /// (`SlowLoop::apply_settle_delta_next`). `true`: added, and those
+    /// `count` `observe` calls leave the footprint statistics alone; `false`
+    /// (the delta's frames are not the next fitting ones, or that library
+    /// is no longer held): nothing changed, observe them as usual.
+    #[wasm_bindgen(js_name = applySettleDeltaNext)]
+    pub fn apply_settle_delta_next(
+        &mut self,
+        bytes: &[u8],
+        version: f64,
+        count: u32,
+    ) -> Result<bool, JsError> {
+        let d = SettleDelta::from_bytes(bytes).map_err(|e| js_err("applySettleDeltaNext", e))?;
+        let Some(lib) = self.lib(version) else {
+            self.inner.settle_delta_next_missed();
+            return Ok(false);
+        };
+        self.inner
+            .apply_settle_delta_next(&d, &lib, u64::from(count))
+            .map_err(|e| js_err("applySettleDeltaNext", e))
+    }
+
+    /// Whether each of the slow-loop frame indices `first`..`first + count`
+    /// is held out (1) or fitting (0).
+    #[wasm_bindgen(js_name = heldOutFlags)]
+    pub fn held_out_flags(&self, first: f64, count: u32) -> Vec<u8> {
+        let first = first.max(0.0) as u64;
+        (first..first + u64::from(count))
+            .map(|f| u8::from(self.inner.is_test(f)))
+            .collect()
+    }
+
     /// `[applied, rejected, staleVersion, frames, cells, cellsGone,
     /// cellsMoved, cellsAbsent, clusters, clustersGone, clustersStale,
-    /// clustersOff, clustersAbsent, clusterSkips, work, workEquiv]`
-    /// (`SettleDeltaStats`).
+    /// clustersOff, clustersAbsent, clusterSkips, work, workEquiv,
+    /// nextApplied, nextMismatched]` (`SettleDeltaStats`).
     #[wasm_bindgen(js_name = settleDeltaStats)]
     pub fn settle_delta_stats(&self) -> Vec<f64> {
         let d = self.inner.settle_delta_stats();
@@ -616,6 +663,8 @@ impl JsSlowLoop {
             d.cluster_skips,
             d.work,
             d.work_equiv,
+            d.next_applied,
+            d.next_mismatched,
         ]
         .map(|v| v as f64)
         .to_vec()

@@ -1256,6 +1256,9 @@ pub struct SlowLoop {
     /// `observe_settle` would have cost.
     cs_delta: SettleDeltaStats,
     cs_delta_charge_equiv: bool,
+    /// Frames still to be observed whose statistics a Final-settle delta
+    /// already added ([`SlowLoop::apply_settle_delta_next`]).
+    stats_prepaid: u64,
     /// How tiles came due ([`DueDiag`]; diagnostics only).
     due_diag: DueDiag,
 }
@@ -1571,6 +1574,7 @@ impl SlowLoop {
             cs_stats: SettleStats::default(),
             cs_delta: SettleDeltaStats::default(),
             cs_delta_charge_equiv: false,
+            stats_prepaid: 0,
             due_diag: DueDiag::default(),
             merge_rejected: Vec::new(),
             forced: Vec::new(),
@@ -2112,7 +2116,12 @@ impl SlowLoop {
         self.update_ledger(frame, lib, traces);
         let frame_idx = self.frames;
         let test = self.is_test(frame_idx);
-        self.update_fpstats(frame, lib, traces, !test);
+        if self.stats_prepaid > 0 {
+            // A Final-settle delta added this frame's statistics already.
+            self.stats_prepaid -= 1;
+        } else {
+            self.update_fpstats(frame, lib, traces, !test);
+        }
         if self.res_frozen {
             self.frames += 1;
             return Ok(());
@@ -2665,46 +2674,13 @@ impl SlowLoop {
         let w = self.stats_w;
         let ring = matches!(lib.background_model(), BackgroundModel::Ring { .. })
             && traces.background.len() == lib.len();
-        let margin = self.cfg.stats_margin_cells * self.cfg.cell_diameter_px;
-        let (width, height) = (self.dims.width, self.dims.height);
-        let version = lib.version();
+        let geo = self.stats_geometry();
         let mut work = 0u64;
         for (slot, &id) in lib.ids().iter().enumerate() {
             if self.lb_only.as_ref().is_some_and(|o| !o.contains(&id)) {
                 continue;
             }
-            let (center, radius) = lib.support(slot);
-            let want = radius + margin;
-            let st = self.fpstats.entry(id).or_insert_with(|| {
-                FpStats::new(
-                    center,
-                    want,
-                    width,
-                    height,
-                    &self.fov,
-                    self.cfg.core_test.collects(),
-                    parity_block(self.cfg.cell_diameter_px),
-                )
-            });
-            // Under the basin rules the disk also shrinks with the support
-            // (one margin of slack), and pixels new to a moved disk start
-            // at the current model rather than at zero.
-            let basin = self.cfg.support_rule != SupportRule::Rings;
-            let mut old_pix = None;
-            if !st.covers(center, radius) || (basin && st.radius > radius + 2.0 * margin) {
-                let moved = st.moved(center, want, width, height, &self.fov);
-                let old = std::mem::replace(st, moved);
-                if basin {
-                    old_pix = Some(old.pix);
-                }
-            }
-            if st.version != version || old_pix.is_some() {
-                st.col = column_on(lib, slot, &st.pix);
-                st.version = version;
-            }
-            if let Some(old) = &old_pix {
-                st.seed_new(old);
-            }
+            let st = fpstats_upkeep(&mut self.fpstats, &geo, &self.fov, lib, slot, id);
             let c = traces.traces[slot];
             let level = if ring { traces.background[slot] } else { 0.0 };
             self.rbuf.clear();
@@ -2736,6 +2712,18 @@ impl SlowLoop {
         }
         self.work += work;
         self.stats.work_stats += work;
+    }
+
+    /// The settings the per-cell statistics upkeep uses ([`fpstats_upkeep`]).
+    pub(super) fn stats_geometry(&self) -> StatsGeometry {
+        StatsGeometry {
+            margin: self.cfg.stats_margin_cells * self.cfg.cell_diameter_px,
+            width: self.dims.width,
+            height: self.dims.height,
+            collects: self.cfg.core_test.collects(),
+            blk: parity_block(self.cfg.cell_diameter_px),
+            basin: self.cfg.support_rule != SupportRule::Rings,
+        }
     }
 
     /// The cell `id`'s running statistics start over with its next column
@@ -6461,3 +6449,80 @@ fn solve_dense(a: &mut [f64], b: &mut [f64], n: usize) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+/// What the per-cell upkeep of the footprint statistics needs of the slow
+/// loop's settings ([`SlowLoop::stats_geometry`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct StatsGeometry {
+    pub margin: f32,
+    pub width: usize,
+    pub height: usize,
+    pub collects: bool,
+    pub blk: u32,
+    pub basin: bool,
+}
+
+impl StatsGeometry {
+    /// The statistics disk cell `slot` of `lib` has after the upkeep
+    /// ([`fpstats_upkeep`]), given the disk it has before (`None`: no
+    /// statistics yet).
+    pub fn disk_for(
+        &self,
+        have: Option<((f32, f32), f32)>,
+        lib: &Library,
+        slot: usize,
+    ) -> ((f32, f32), f32) {
+        let (center, radius) = lib.support(slot);
+        match have {
+            Some((c, r)) if !self.must_move(c, r, center, radius) => (c, r),
+            _ => (center, radius + self.margin),
+        }
+    }
+
+    fn must_move(&self, c: (f32, f32), r: f32, center: (f32, f32), radius: f32) -> bool {
+        // Not `FpStats::covers`, or (basin rules) the support shrank well inside.
+        let d = ((center.0 - c.0).powi(2) + (center.1 - c.1).powi(2)).sqrt();
+        d + radius > r + 0.5 || (self.basin && r > radius + 2.0 * self.margin)
+    }
+}
+
+/// The geometry upkeep of cell `slot`'s statistics before a frame of `lib`
+/// is pushed (what `update_fpstats` does first): made on its support's disk
+/// when it has none; moved there when the support left the disk (or, under
+/// the basin rules, shrank well inside it), pixels new to the disk seeded at
+/// the current model; the column refreshed for a new library version.
+pub(super) fn fpstats_upkeep<'a>(
+    fpstats: &'a mut HashMap<u64, FpStats>,
+    geo: &StatsGeometry,
+    fov: &[u8],
+    lib: &Library,
+    slot: usize,
+    id: u64,
+) -> &'a mut FpStats {
+    let (center, radius) = lib.support(slot);
+    let want = radius + geo.margin;
+    let (width, height) = (geo.width, geo.height);
+    let st = fpstats
+        .entry(id)
+        .or_insert_with(|| FpStats::new(center, want, width, height, fov, geo.collects, geo.blk));
+    // Under the basin rules the disk also shrinks with the support
+    // (one margin of slack), and pixels new to a moved disk start
+    // at the current model rather than at zero.
+    let mut old_pix = None;
+    if !st.covers(center, radius) || (geo.basin && st.radius > radius + 2.0 * geo.margin) {
+        let moved = st.moved(center, want, width, height, fov);
+        let old = std::mem::replace(st, moved);
+        if geo.basin {
+            old_pix = Some(old.pix);
+        }
+    }
+    let version = lib.version();
+    if st.version != version || old_pix.is_some() {
+        st.col = column_on(lib, slot, &st.pix);
+        st.version = version;
+    }
+    if let Some(old) = &old_pix {
+        st.seed_new(old);
+    }
+    st
+}

@@ -349,6 +349,86 @@ describe('SlowRunner look-back (fake loop)', () => {
     expect(finals(t)[0].footprintNoise).toEqual(Float64Array.of(1, 0.1));
   });
 
+  it('the settle delta: each request predicts its slow-loop indices, the delta is added before its frames are observed', () => {
+    const t = setup(0);
+    let n = 0;
+    const applied: { version: number; count: number; at: number }[] = [];
+    let accept = true;
+    const loop = t.loop;
+    loop.observe = () => {
+      n++;
+      return true;
+    };
+    Object.defineProperty(loop, 'frames', { get: () => n });
+    loop.settleContextNext = () => Uint8Array.of(9, 9);
+    loop.heldOutFlags = (first: number, count: number) =>
+      Uint8Array.from({ length: count }, (_, i) => ((first + i) % 3 === 0 ? 1 : 0));
+    loop.applySettleDeltaNext = (_b: Uint8Array, version: number, count: number) => {
+      applied.push({ version, count, at: n });
+      return accept;
+    };
+    loop.settleDeltaStats = () => Float64Array.of(1, 2);
+    t.r.handle({ ...INIT, lookback: true, csettleDelta: true });
+    expect(t.created[0].csettleDelta).toBe(true);
+    t.r.handle(frames(0, 40));
+    expect(n).toBe(40);
+    t.r.handle({ type: 'end', session: 1 });
+    const answerWithDelta = () => {
+      const req = t.toLb.filter((m) => m.type === 'request').at(-1) as Extract<
+        SlowToLookback,
+        { type: 'request' }
+      >;
+      const k = lookbackFrames(req.items).length;
+      t.r.handleLookback({
+        type: 'frames',
+        session: 1,
+        id: req.id,
+        version: 10,
+        count: k,
+        cells: 1,
+        frames: new Float32Array(2 * k),
+        traces: new Float32Array(k),
+        delta: { bytes: Uint8Array.of(1, 2, 3), summed: k - 1, ms: 2 },
+      });
+      return req;
+    };
+    const r0 = answerWithDelta();
+    // The first request: the next index, the FOV once, the held-out flags of those indices.
+    expect(r0.delta?.next?.first).toBe(40);
+    expect(r0.delta?.fov).toEqual(INIT.fov);
+    expect(r0.delta?.next?.held).toEqual(
+      Uint8Array.from({ length: SETTLE.batch }, (_, i) => ((40 + i) % 3 === 0 ? 1 : 0)),
+    );
+    // Added before the chunk's frames were observed.
+    expect(applied).toEqual([{ version: 10, count: SETTLE.batch, at: 40 }]);
+    // The second request went out before the first answer was observed: after its frames.
+    const r1 = t.toLb.filter((m) => m.type === 'request').at(-1) as Extract<
+      SlowToLookback,
+      { type: 'request' }
+    >;
+    expect(r1.delta?.next?.first).toBe(40 + SETTLE.batch);
+    expect(r1.delta?.fov).toBeUndefined();
+    accept = false;
+    answerWithDelta();
+    t.run();
+    const settle = statuses(t).at(-1)!.lookback?.settle;
+    expect(settle?.done).toBe(true);
+    expect(settle?.delta).toMatchObject({ applied: 1, rejected: 1, deltaBytes: 6, buildMs: 4 });
+    expect(n).toBe(80);
+  });
+
+  it('the settle delta is off unless asked for: no context, no delta in the requests', () => {
+    const t = setup(0);
+    t.loop.settleContextNext = vi.fn(() => Uint8Array.of(9));
+    t.r.handle({ ...INIT, lookback: true });
+    t.r.handle(frames(0, 40));
+    t.r.handle({ type: 'end', session: 1 });
+    t.run();
+    expect(t.loop.settleContextNext).not.toHaveBeenCalled();
+    expect(t.toLb.some((m) => m.type === 'request' && m.delta)).toBe(false);
+    expect(statuses(t).at(-1)!.lookback?.settle?.delta).toBeUndefined();
+  });
+
   it('the next request goes out before the answer is observed', () => {
     const t = setup(0);
     t.r.handle({ ...INIT, lookback: true });

@@ -916,7 +916,7 @@ impl SlowLoop {
 
     /// Clusters of the library's cells (greedy, `cluster_rho_min`,
     /// `cluster_max`). A store whose member set is unchanged is kept.
-    fn build_clusters(&mut self, lib: &Library) {
+    pub(super) fn build_clusters(&mut self, lib: &Library) {
         let edges = overlap_edges(lib);
         let (groups, _) = greedy_clusters(
             lib.len(),
@@ -959,6 +959,53 @@ impl SlowLoop {
     /// statistics, whose disks it reads): each cluster's whitened residual
     /// `y − model − ring level + Σ_members a_k c_k` on its pixels is
     /// accumulated. Returns the work done.
+    /// The geometry upkeep of store `ci` before a frame of `lib` is pushed
+    /// (what `update_clusters` does first): moved to its members' current
+    /// statistics disks when one left the store's pixels (started over
+    /// when that is degenerate), and its columns refreshed for a new library
+    /// version. `None` (nothing done) when a member is not in `lib`;
+    /// otherwise the members' slots in `lib`.
+    pub(super) fn cluster_upkeep(&mut self, ci: usize, lib: &Library) -> Option<Vec<usize>> {
+        let version = lib.version();
+        let slots: Option<Vec<usize>> = self.clusters[ci]
+            .ids
+            .iter()
+            .map(|&id| lib.slot(id))
+            .collect();
+        let slots = slots?;
+        // A member's statistics disk outside the cluster's pixels:
+        // start the store over on the current disks.
+        let covered = self.clusters[ci].ids.iter().enumerate().all(|(k, id)| {
+            self.fpstats
+                .get(id)
+                .is_some_and(|st| self.clusters[ci].covers(k, st.center, st.radius))
+        });
+        if !covered {
+            // Move the store to the members' current disks, keeping
+            // its history; start over only when that is degenerate.
+            let ids = self.clusters[ci].ids.clone();
+            if let Some((disks, pix, is, cols)) = self.store_geometry(lib, &ids) {
+                let w = self.dims.width;
+                if self.clusters[ci].move_to(disks, pix, is, w, version, cols) {
+                    self.replay_stats.moves += 1;
+                } else if let Some(s) = self.new_store(lib, ids) {
+                    self.clusters[ci] = s;
+                    self.cluster_ok[ci] = false;
+                    self.replay_stats.restarts += 1;
+                }
+            }
+        }
+        let st = &mut self.clusters[ci];
+        if st.version != version {
+            st.cols.clear();
+            for &s in &slots {
+                st.cols.extend(column_on(lib, s, &st.pix));
+            }
+            st.version = version;
+        }
+        Some(slots)
+    }
+
     pub(super) fn update_clusters(
         &mut self,
         frame: &[f32],
@@ -975,7 +1022,6 @@ impl SlowLoop {
         if sorted != self.cluster_ids {
             self.build_clusters(lib);
         }
-        let version = lib.version();
         let mut work = 0u64;
         let mut cbuf = std::mem::take(&mut self.cbuf);
         for ci in 0..self.clusters.len() {
@@ -984,45 +1030,11 @@ impl SlowLoop {
                     continue;
                 }
             }
-            let slots: Option<Vec<usize>> = self.clusters[ci]
-                .ids
-                .iter()
-                .map(|&id| lib.slot(id))
-                .collect();
-            let Some(slots) = slots else {
+            let Some(slots) = self.cluster_upkeep(ci, lib) else {
                 continue;
             };
-            // A member's statistics disk outside the cluster's pixels:
-            // start the store over on the current disks.
-            let covered = self.clusters[ci].ids.iter().enumerate().all(|(k, id)| {
-                self.fpstats
-                    .get(id)
-                    .is_some_and(|st| self.clusters[ci].covers(k, st.center, st.radius))
-            });
-            if !covered {
-                // Move the store to the members' current disks, keeping
-                // its history; start over only when that is degenerate.
-                let ids = self.clusters[ci].ids.clone();
-                if let Some((disks, pix, is, cols)) = self.store_geometry(lib, &ids) {
-                    let w = self.dims.width;
-                    if self.clusters[ci].move_to(disks, pix, is, w, version, cols) {
-                        self.replay_stats.moves += 1;
-                    } else if let Some(s) = self.new_store(lib, ids) {
-                        self.clusters[ci] = s;
-                        self.cluster_ok[ci] = false;
-                        self.replay_stats.restarts += 1;
-                    }
-                }
-            }
             let st = &mut self.clusters[ci];
             let n = st.pix.len();
-            if st.version != version {
-                st.cols.clear();
-                for &s in &slots {
-                    st.cols.extend(column_on(lib, s, &st.pix));
-                }
-                st.version = version;
-            }
             let c: Vec<f32> = slots.iter().map(|&s| traces.traces[s]).collect();
             let lv: Vec<f32> = slots
                 .iter()

@@ -35,15 +35,29 @@
 //!
 //! The forgetting clock moves by the chunk's fitting frames at the apply,
 //! as it would have frame by frame (renormalisation included).
+//!
+//! The Final settle (after Discover's last frame, cell set frozen) feeds its
+//! re-read frames through the ordinary [`SlowLoop::observe`], each a new
+//! slow-loop frame with its own held-out side. There the delta covers the
+//! statistics part of `observe` only ([`SlowLoop::settle_context_next`],
+//! [`SlowLoop::apply_settle_delta_next`]): the builder sums the frames the
+//! slow loop will treat as fitting (their slow-loop indices are predicted
+//! with the request and checked at the apply; a chunk that does not match
+//! is observed the ordinary way), on the statistics disks the per-frame
+//! upkeep would give them for the chunk's library; the apply does that
+//! upkeep (disk moves, store moves, columns) as the chunk's first fitting
+//! frame would have, adds the sums, and the chunk's frames then go through
+//! `observe` with the statistics update left out. Everything else in
+//! `observe` (residual, ledger, reservoir, probes, clocks) is unchanged.
 
 use super::cluster::{ClusterDelta, ClusterSnap};
 use super::fpstats::{disk_pixels, parity, FpDelta};
 use super::wire::{Reader, Writer};
-use super::{column_on, SlowLoop};
+use super::{column_on, fpstats_upkeep, SlowLoop, StatsGeometry};
 use crate::trace::{BackgroundModel, FrameTraces, Library, TraceError};
 
 /// Format tags (bump on any layout change).
-const CTX_MAGIC: u32 = 0x5344_4331; // "SDC1"
+const CTX_MAGIC: u32 = 0x5344_4332; // "SDC2"
 const DELTA_MAGIC: u32 = 0x5344_4431; // "SDD1"
 
 /// What a settle request carries for the worker that sums the chunk
@@ -59,6 +73,11 @@ pub struct SettleContext {
     cells: Vec<(u64, (f32, f32), f32)>,
     /// Every cluster store (none when the joint update is off).
     clusters: Vec<ClusterSnap>,
+    /// The Final settle ([`SlowLoop::settle_context_next`]): the builder sums
+    /// each cell on the disk the statistics upkeep would give it for the
+    /// chunk's library (the margin and the basin rule); `None`: on the disk
+    /// listed.
+    upkeep: Option<(f32, bool)>,
 }
 
 impl SettleContext {
@@ -80,6 +99,13 @@ impl SettleContext {
         for c in &self.clusters {
             c.encode(&mut w);
         }
+        match self.upkeep {
+            None => w.u32(0),
+            Some((margin, basin)) => {
+                w.u32(1 + u32::from(basin));
+                w.f32(margin);
+            }
+        }
         w.buf
     }
 
@@ -99,6 +125,11 @@ impl SettleContext {
             let clusters = (0..nk)
                 .map(|_| ClusterSnap::decode(r))
                 .collect::<Option<Vec<_>>>()?;
+            let upkeep = match r.u32()? {
+                0 => None,
+                k @ (1 | 2) => Some((r.f32()?, k == 2)),
+                _ => return None,
+            };
             let n_px = width.checked_mul(height)?;
             let ok = clusters
                 .iter()
@@ -110,6 +141,7 @@ impl SettleContext {
                 gamma,
                 cells,
                 clusters,
+                upkeep,
             })
         };
         f(&mut r).ok_or_else(bad)
@@ -337,10 +369,22 @@ impl SettleDeltaBuilder {
     /// columns.
     fn start(&mut self, lib: &Library) {
         let (w, h) = (self.width, self.height);
+        let geo = self.ctx.upkeep.map(|(margin, basin)| StatsGeometry {
+            margin,
+            width: w,
+            height: h,
+            collects: false,
+            blk: self.ctx.blk,
+            basin,
+        });
         for &(id, center, radius) in &self.ctx.cells {
             let Some(slot) = lib.slot(id) else {
                 self.absent_cells += 1;
                 continue;
+            };
+            let (center, radius) = match &geo {
+                Some(g) => g.disk_for(Some((center, radius)), lib, slot),
+                None => (center, radius),
             };
             let pix = disk_pixels(center, radius, w, h, &self.fov);
             let cls = pix.iter().map(|&p| parity(p, w, self.ctx.blk)).collect();
@@ -543,6 +587,12 @@ pub struct SettleDeltaStats {
     /// spent on the same frames.
     pub work: u64,
     pub work_equiv: u64,
+    /// The Final settle ([`SlowLoop::apply_settle_delta_next`]): deltas
+    /// applied (also in `applied`), and chunks observed the ordinary way
+    /// instead because the delta's frames were not the ones the slow loop
+    /// would fit on next (a prediction that missed, a library not held).
+    pub next_applied: u64,
+    pub next_mismatched: u64,
 }
 
 impl SlowLoop {
@@ -552,6 +602,22 @@ impl SlowLoop {
     /// statistics on (`CoreTest` other than `Off`: they run sequentially
     /// over frames).
     pub fn settle_context(&self) -> Result<SettleContext, TraceError> {
+        self.make_settle_context(None)
+    }
+
+    /// [`SlowLoop::settle_context`] for a Final-settle chunk
+    /// ([`SlowLoop::apply_settle_delta_next`]): the builder sums each cell
+    /// on the disk the statistics upkeep will give it for the chunk's
+    /// library.
+    pub fn settle_context_next(&self) -> Result<SettleContext, TraceError> {
+        let g = self.stats_geometry();
+        self.make_settle_context(Some((g.margin, g.basin)))
+    }
+
+    fn make_settle_context(
+        &self,
+        upkeep: Option<(f32, bool)>,
+    ) -> Result<SettleContext, TraceError> {
         if self.cfg.core_test.collects() {
             return Err(TraceError::Incompatible(
                 "the settle delta needs core_test off".into(),
@@ -579,6 +645,7 @@ impl SlowLoop {
             gamma: self.stats_gamma,
             cells,
             clusters,
+            upkeep,
         })
     }
 
@@ -625,6 +692,113 @@ impl SlowLoop {
         if d.frames.is_empty() {
             return Ok(true);
         }
+        let work = self.add_settle_sums(d);
+        let charged = if self.cs_delta_charge_equiv {
+            d.work_equiv
+        } else {
+            work
+        };
+        self.cs_delta.work += work;
+        self.work += charged;
+        self.cs_stats.frames_fit += d.frames.len() as u64;
+        self.cs_stats.work += charged;
+        Ok(true)
+    }
+
+    /// The Final settle: add the delta of the next `count` frames to be
+    /// observed, solved with `lib` (the delta's library), before they are
+    /// observed. The delta must list exactly the slow-loop indices among
+    /// the next `count` that are fitting frames (made on
+    /// [`SlowLoop::settle_context_next`]); then the statistics upkeep runs
+    /// for `lib` as the chunk's first fitting frame would run it, the sums
+    /// are added (a cell or store whose disk / epoch differs gets nothing,
+    /// counted as in [`SlowLoop::apply_settle_delta`]), and the next
+    /// `count` calls of [`SlowLoop::observe`] leave the statistics alone.
+    /// Otherwise nothing changes (`false`, counted in `next_mismatched`):
+    /// observe the chunk the ordinary way.
+    pub fn apply_settle_delta_next(
+        &mut self,
+        d: &SettleDelta,
+        lib: &Library,
+        count: u64,
+    ) -> Result<bool, TraceError> {
+        if d.gamma != self.stats_gamma {
+            return Err(TraceError::Incompatible(
+                "settle delta made with another forgetting factor".into(),
+            ));
+        }
+        if self.stats_prepaid > 0 {
+            return Err(TraceError::Incompatible(
+                "the frames of the last settle delta are not all observed yet".into(),
+            ));
+        }
+        let first = self.frames;
+        let expect = (first..first + count).filter(|&f| !self.is_test(f));
+        let same = lib.dims() == self.dims
+            && (d.frames.is_empty() || d.version == lib.version())
+            && expect.eq(d.frames.iter().copied());
+        if !same {
+            self.cs_delta.next_mismatched += 1;
+            return Ok(false);
+        }
+        let s = &mut self.cs_delta;
+        s.applied += 1;
+        s.next_applied += 1;
+        s.frames += d.frames.len() as u64;
+        s.cells_absent += d.absent_cells;
+        s.clusters_absent += d.absent_clusters;
+        s.cluster_skips += d.cluster_skips;
+        s.work_equiv += d.work_equiv;
+        if self
+            .published
+            .as_ref()
+            .is_some_and(|l| l.version() != d.version)
+        {
+            s.stale_version += 1;
+        }
+        self.stats_prepaid = count;
+        if d.frames.is_empty() {
+            return Ok(true);
+        }
+        // The upkeep `update_fpstats` / `update_clusters` do on a fitting
+        // frame of `lib`, once (the later frames of the chunk find nothing
+        // left to do).
+        if self.fpstats.len() > lib.len() {
+            let ids: std::collections::HashSet<u64> = lib.ids().iter().copied().collect();
+            self.fpstats.retain(|id, _| ids.contains(id));
+            self.fast_checked.retain(|id, _| ids.contains(id));
+            self.fast_strikes.retain(|id, _| ids.contains(id));
+        }
+        let geo = self.stats_geometry();
+        for (slot, &id) in lib.ids().iter().enumerate() {
+            fpstats_upkeep(&mut self.fpstats, &geo, &self.fov, lib, slot, id);
+        }
+        if self.joint_active() {
+            let mut sorted = lib.ids().to_vec();
+            sorted.sort_unstable();
+            if sorted != self.cluster_ids {
+                self.build_clusters(lib);
+            }
+            for ci in 0..self.clusters.len() {
+                self.cluster_upkeep(ci, lib);
+            }
+        }
+        let work = self.add_settle_sums(d);
+        self.cs_delta.work += work;
+        self.work += work;
+        self.stats.work_stats += work;
+        Ok(true)
+    }
+
+    /// A Final-settle delta that could not be offered (its library is no
+    /// longer held): counted as a mismatch.
+    pub fn settle_delta_next_missed(&mut self) {
+        self.cs_delta.next_mismatched += 1;
+    }
+
+    /// Add a delta's cell and store sums and move the forgetting clock by
+    /// its frames. Returns the work done.
+    fn add_settle_sums(&mut self, d: &SettleDelta) -> u64 {
         let w0 = self.stats_w;
         let mut work = 0u64;
         for (id, center, radius, fd) in &d.cells {
@@ -673,16 +847,7 @@ impl SlowLoop {
                 self.stats_w = 1.0;
             }
         }
-        let charged = if self.cs_delta_charge_equiv {
-            d.work_equiv
-        } else {
-            work
-        };
-        self.cs_delta.work += work;
-        self.work += charged;
-        self.cs_stats.frames_fit += d.frames.len() as u64;
-        self.cs_stats.work += charged;
-        Ok(true)
+        work
     }
 
     /// Counters of [`SlowLoop::apply_settle_delta`].

@@ -454,6 +454,8 @@ export class LookbackReader {
    * statistics summed on `context` (`SlowLoop.settleContext()`), as bytes
    * for `SlowLoop.applySettleDelta`. `fov` (the slow loop's FOV mask)
    * comes with the first request of a run; the builder is made from it.
+   * `key(i)`: the key frame `i` is summed under (default: its stream index;
+   * the Final settle: the slow-loop index it will have).
    */
   settleDelta(
     frames: LookbackFrame[],
@@ -462,6 +464,7 @@ export class LookbackReader {
     skip: ArrayLike<number> | undefined,
     context: Uint8Array,
     fov?: Uint8Array,
+    key: (i: number) => number = (i) => frames[i].frame,
   ): { bytes: Uint8Array; summed: number; ms: number } {
     const t0 = performance.now();
     if (fov) {
@@ -484,7 +487,7 @@ export class LookbackReader {
           lib,
           solved.traces.subarray(i * solved.cells, (i + 1) * solved.cells),
           bg ? bg.subarray(i * nb, (i + 1) * nb) : undefined,
-          frames[i].frame,
+          key(i),
         );
         summed++;
       }

@@ -70,8 +70,10 @@ function handle(msg: StageMsg): void {
                 csettle: true,
                 csettleYield: cells.csettleYield ?? 0,
                 csettleNeedFirst: cells.csettleNeedFirst ?? false,
-                csettleDelta: cells.csettleDelta ?? false,
               }
+            : {}),
+          ...(cells?.lookback && !cells.library && cells.csettleDelta
+            ? { csettleDelta: true }
             : {}),
           ...(cells?.lookback && !cells.library && cells.settleFraction !== undefined
             ? { settleFraction: cells.settleFraction }

@@ -107,7 +107,13 @@
 //!                      K x their split-half noise since the last checkpoint;
 //!                      --settle-stop-checks M in a row; not before
 //!                      --settle-min-frames), --settle-libs (write the
-//!                      checkpoint libraries)
+//!                      checkpoint libraries), --settle-delta (the settle
+//!                      delta: each request's fitting frames are summed by a
+//!                      `SettleDeltaBuilder` on the context taken one request
+//!                      ahead, as the app does, and added with
+//!                      `apply_settle_delta_next` before the frames go
+//!                      through `observe` without the statistics update;
+//!                      with --settle-observe full; `settle_delta.txt`)
 //!   --lookback-drain-rate F  look-back frames per drain step instead of
 //!                      R (bigger batches once Discover has ended)
 //!   --catchup X        reference arm: every X Discover frames give all
@@ -754,6 +760,8 @@ struct SettleCfg {
     min_frames: usize,
     /// Keep the checkpoint libraries (`footprints_settle{k}.bin`).
     libs: bool,
+    /// `--settle-delta`: the settle delta (see `SettleDeltaNext`).
+    delta: bool,
 }
 
 impl Default for SettleCfg {
@@ -772,6 +780,7 @@ impl Default for SettleCfg {
             stop_checks: 1,
             min_frames: 0,
             libs: false,
+            delta: false,
         }
     }
 }
@@ -800,8 +809,13 @@ impl SettleCfg {
             stop_checks: num("--settle-stop-checks").map_or(d.stop_checks, |v| (v as usize).max(1)),
             min_frames: num("--settle-min-frames").map_or(d.min_frames, |v| v as usize),
             libs: args.iter().any(|a| a == "--settle-libs"),
+            delta: args.iter().any(|a| a == "--settle-delta"),
         };
         assert!(c.steps_per_frame >= 0.0, "--settle-steps must be >= 0");
+        assert!(
+            !c.delta || c.observe == SettleObserve::Full,
+            "--settle-delta needs --settle-observe full"
+        );
         c
     }
 }
@@ -919,6 +933,57 @@ impl SettleChange {
     }
 }
 
+/// `--settle-delta`: the settle request in progress. Its fitting frames
+/// (by the slow-loop index each will have, `first` + its place) are summed
+/// on `b`; every frame waits in `frames` (with the noise update due after
+/// it, if any) until the request is done, when the delta is added and the
+/// frames go through `observe` without the statistics update.
+struct SettleDeltaNext {
+    b: SettleDeltaBuilder,
+    first: u64,
+    frames: Vec<(Vec<f32>, FrameTraces, Option<Vec<f32>>)>,
+    lib: Option<Arc<Library>>,
+    /// Requests applied and refused, bytes of contexts and deltas, wall
+    /// seconds of contexts, sums and applies.
+    applied: u64,
+    refused: u64,
+    bytes: [u64; 2],
+    secs: [f64; 3],
+}
+
+impl SettleDeltaNext {
+    /// The request is done: add its delta (made on the context taken now
+    /// for the next request, as the app sends it before this answer is
+    /// fed), feed its frames, and start the next request.
+    fn flush(&mut self, sl: &mut SlowLoop) {
+        let tc = Instant::now();
+        let next = sl.settle_context_next().unwrap();
+        self.bytes[0] += next.to_bytes().len() as u64;
+        self.secs[0] += tc.elapsed().as_secs_f64();
+        let d = self.b.finish();
+        self.bytes[1] += d.to_bytes().len() as u64;
+        let n = self.frames.len() as u64;
+        if let Some(lib) = self.lib.take() {
+            let ta = Instant::now();
+            let ok = sl.apply_settle_delta_next(&d, &lib, n).unwrap();
+            self.secs[2] += ta.elapsed().as_secs_f64();
+            if ok {
+                self.applied += 1;
+            } else {
+                self.refused += 1;
+            }
+            for (y, tr, noise) in self.frames.drain(..) {
+                sl.observe(&y, &lib, &tr).unwrap();
+                if let Some(sigma) = noise {
+                    sl.set_noise(sigma).unwrap();
+                }
+            }
+        }
+        self.b.reset(next).unwrap();
+        self.first = sl.frames();
+    }
+}
+
 /// Concurrent Refine (`--lookback R`, `--catchup X`): the frame I/O around
 /// the crate's look-back scheduler ([`calab_cala::discover::LookBack`],
 /// which decides which past frames to re-read for which cells). Past frames
@@ -967,8 +1032,12 @@ struct LookBack {
     settle: SettleCfg,
     /// The settle feeds frames through the ordinary `observe`.
     full_observe: bool,
+    /// `--settle-delta`: the request in progress.
+    settle_delta: Option<SettleDeltaNext>,
     /// `settle_checks.tsv` rows and the checkpoint libraries.
     settle_out: String,
+    /// `--settle-delta`: `settle_delta.txt`.
+    settle_delta_report: String,
     settle_libs: Vec<(usize, Arc<Library>)>,
     /// Look-back frames and cell-frames per tenth of the recording (row
     /// 10: the drain).
@@ -1098,7 +1167,9 @@ impl LookBack {
             settle_all: 0,
             settle: SettleCfg::default(),
             full_observe: false,
+            settle_delta: None,
             settle_out: String::new(),
+            settle_delta_report: String::new(),
             settle_libs: Vec::new(),
             by_tenth: [(0, 0); 11],
             target,
@@ -1542,6 +1613,20 @@ impl LookBack {
         engine.set_library(sl.finalize().unwrap()).unwrap();
         self.full_observe = cfg.observe != SettleObserve::Stats;
         sl.set_reservoir_frozen(cfg.observe == SettleObserve::Frozen);
+        if cfg.delta {
+            let (w, h) = (sl.dims().width, sl.dims().height);
+            let ctx = sl.settle_context_next().unwrap();
+            self.settle_delta = Some(SettleDeltaNext {
+                b: SettleDeltaBuilder::new(w, h, sl.fov().to_vec(), ctx).unwrap(),
+                first: sl.frames(),
+                frames: Vec::new(),
+                lib: None,
+                applied: 0,
+                refused: 0,
+                bytes: [0; 2],
+                secs: [0.0; 3],
+            });
+        }
         let n_blocks = t_len.div_ceil(LB_BLOCK);
         let round = if cfg.round == 0 { t_len } else { cfg.round };
         // Every `stride`-th block per round; round r starts at block r % stride.
@@ -1585,12 +1670,23 @@ impl LookBack {
                     in_batch += 1;
                     steps_owed += cfg.steps_per_frame;
                     if fed.is_multiple_of(200) {
-                        sl.set_noise(pre.noise().sigma()).unwrap();
+                        match self
+                            .settle_delta
+                            .as_mut()
+                            .and_then(|sd| sd.frames.last_mut())
+                        {
+                            // Set after this frame is observed, as without the delta.
+                            Some(last) => last.2 = Some(pre.noise().sigma()),
+                            None => sl.set_noise(pre.noise().sigma()).unwrap(),
+                        }
                     }
                     if in_batch < cfg.batch && fed < cfg.frames {
                         continue;
                     }
                     in_batch = 0;
+                    if let Some(sd) = self.settle_delta.as_mut() {
+                        sd.flush(sl);
+                    }
                     if cfg.due_every > 0 && fed >= next_due {
                         sl.mark_all_due();
                         next_due += cfg.due_every;
@@ -1666,6 +1762,22 @@ impl LookBack {
         engine.set_library(sl.finalize().unwrap()).unwrap();
         sl.set_reservoir_frozen(false);
         self.full_observe = false;
+        if let Some(sd) = self.settle_delta.take() {
+            let st = sl.settle_delta_stats();
+            let n = (sd.applied + sd.refused).max(1) as f64;
+            let msg = format!(
+                "settle delta: {} applied, {} refused; {st:?}\nper request: context {:.3} MB, delta {:.3} MB; wall ms: context {:.2}, sum {:.2}, apply {:.2}\n",
+                sd.applied,
+                sd.refused,
+                sd.bytes[0] as f64 / n / 1e6,
+                sd.bytes[1] as f64 / n / 1e6,
+                sd.secs[0] / n * 1e3,
+                sd.secs[1] / n * 1e3,
+                sd.secs[2] / n * 1e3,
+            );
+            print!("{msg}");
+            self.settle_delta_report = msg;
+        }
         let wall = t0.elapsed().as_secs_f64();
         self.wall_s += wall;
         let st = sl.stats();
@@ -1775,7 +1887,21 @@ impl LookBack {
             return Some(!held);
         }
         let pushed = if self.full_observe {
-            sl.observe(&self.y, &lib, &tr).unwrap();
+            match self.settle_delta.as_mut() {
+                // `--settle-delta`: summed now if it will be a fitting frame,
+                // observed when the request is done.
+                Some(sd) => {
+                    let key = sd.first + sd.frames.len() as u64;
+                    if !sl.is_test(key) {
+                        let tb = Instant::now();
+                        sd.b.push(&self.y, &lib, &tr, key).unwrap();
+                        sd.secs[1] += tb.elapsed().as_secs_f64();
+                    }
+                    sd.frames.push((self.y.clone(), tr, None));
+                    sd.lib = Some(lib.clone());
+                }
+                None => sl.observe(&self.y, &lib, &tr).unwrap(),
+            }
             true
         } else {
             sl.observe_lookback(&self.y, &lib, &tr, idx, only).unwrap()
@@ -4812,6 +4938,7 @@ const TAIL_FLAGS: &[&str] = &[
     "--settle-stop-checks",
     "--settle-min-frames",
     "--settle-libs",
+    "--settle-delta",
 ];
 const DRAIN_FLAGS: &[&str] = &[
     "--lookback-drain",
@@ -6408,6 +6535,13 @@ fn main() {
                             n_px,
                         );
                         std::fs::write(out_dir.join("settle_checks.tsv"), &lbk.settle_out).unwrap();
+                        if !lbk.settle_delta_report.is_empty() {
+                            std::fs::write(
+                                out_dir.join("settle_delta.txt"),
+                                &lbk.settle_delta_report,
+                            )
+                            .unwrap();
+                        }
                         for (k, l) in std::mem::take(&mut lbk.settle_libs) {
                             write_library(
                                 &out_dir,

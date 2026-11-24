@@ -78,11 +78,16 @@ export interface SlowInit {
    */
   csettlePool?: number;
   /**
-   * With `csettle`: the settle delta (experimental, `?debug&csdelta`): each
-   * settle request carries `SlowLoop.settleContext()`, the look-back worker
-   * sums the chunk's footprint statistics (`SettleDeltaBuilder`) and answers
-   * with the delta instead of the frames, and this worker only adds it
-   * (`SlowLoop.applySettleDelta`). Not with `csettleYield`.
+   * With `lookback`: the settle delta (experimental, `?debug&csdelta`).
+   * Background settle (with `csettle`, not with `csettleYield`): each settle
+   * request carries `SlowLoop.settleContext()`, the look-back worker sums the
+   * chunk's footprint statistics (`SettleDeltaBuilder`) and answers with the
+   * delta instead of the frames, and this worker only adds it
+   * (`SlowLoop.applySettleDelta`). Final settle: each request carries
+   * `SlowLoop.settleContextNext()` and the predicted slow-loop indices, the
+   * answer brings the frames and the delta, and the delta is added
+   * (`SlowLoop.applySettleDeltaNext`) before the frames go through `observe`
+   * without the statistics update.
    */
   csettleDelta?: boolean;
 }

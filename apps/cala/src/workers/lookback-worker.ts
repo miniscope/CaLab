@@ -182,7 +182,26 @@ async function serve(r: Run, msg: Extract<SlowToLookback, { type: 'request' }>):
       throw err;
     }
     if (run !== r) return;
-    if (msg.delta) {
+    // The Final settle's delta: summed here, and the frames go back as well (they are observed).
+    let nextDelta: { bytes: Uint8Array; summed: number; ms: number } | undefined;
+    const next = msg.delta?.next;
+    if (msg.delta && next) {
+      try {
+        nextDelta = reader.settleDelta(
+          frames,
+          out,
+          solved,
+          next.held,
+          msg.delta.context,
+          msg.delta.fov,
+          (i) => next.first + i,
+        );
+      } catch (err) {
+        pool.release(out);
+        throw err;
+      }
+      solved.timing.otherMs += nextDelta.ms;
+    } else if (msg.delta) {
       // The settle delta: the chunk's statistics are summed here; the frames stay in this worker.
       let d;
       try {
@@ -209,6 +228,7 @@ async function serve(r: Run, msg: Extract<SlowToLookback, { type: 'request' }>):
     }
     const transfer: Transferable[] = [out.buffer, solved.traces.buffer];
     if (solved.background) transfer.push(solved.background.buffer);
+    if (nextDelta) transfer.push(nextDelta.bytes.buffer as ArrayBuffer);
     postSlow(
       {
         type: 'frames',
@@ -221,6 +241,7 @@ async function serve(r: Run, msg: Extract<SlowToLookback, { type: 'request' }>):
         traces: solved.traces,
         ...(solved.background ? { background: solved.background } : {}),
         timing: solved.timing,
+        ...(nextDelta ? { delta: nextDelta } : {}),
       },
       transfer,
     );
