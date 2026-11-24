@@ -37,7 +37,7 @@ export interface SequentialReader {
 /** Thrown out of `encodeRecording` when `cancelled()` turns true. */
 export class DonationCancelled extends Error {
   constructor() {
-    super('Donation cancelled');
+    super('Sharing cancelled');
     this.name = 'DonationCancelled';
   }
 }
@@ -46,7 +46,7 @@ export class DonationCancelled extends Error {
 export function bytesPerPixelFor(bitDepth: number): 1 | 2 {
   if (bitDepth === 8) return 1;
   if (bitDepth === 16) return 2;
-  throw new Error(`${bitDepth}-bit video cannot be donated (8 or 16 bit only).`);
+  throw new Error(`${bitDepth}-bit video cannot be shared (8 or 16 bit only).`);
 }
 
 /** The CALARAW1 meta of a recording (predictor "up"). */

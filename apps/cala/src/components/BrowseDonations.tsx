@@ -69,7 +69,7 @@ export function BrowseDonationsEntry(): JSX.Element {
   return (
     <section class="cala-donate-entry" data-testid="browse-donations">
       <button type="button" class="cala-donate__link" onClick={() => setOpen((v) => !v)}>
-        {open() ? 'Hide donated recordings' : 'Browse donated recordings'}
+        {open() ? 'Hide shared recordings' : 'Browse shared recordings'}
       </button>
       <Show when={open()}>
         <Show when={!data.loading} fallback={<p class="cala-muted">Loading...</p>}>
@@ -109,7 +109,7 @@ export function BrowseDonationsEntry(): JSX.Element {
                         <span class="cala-muted">
                           ({r.donation.n_frames.toLocaleString()} frames at {r.donation.fps} Hz
                           {r.asset ? `, ${formatBytes(r.asset.size)}` : ''}) from{' '}
-                          {r.donation.credit_lab ?? 'a donor lab'}
+                          {r.donation.credit_lab ?? 'a contributing lab'}
                         </span>
                       </span>
                       <span class="cala-donate__status">

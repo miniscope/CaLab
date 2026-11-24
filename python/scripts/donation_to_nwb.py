@@ -271,8 +271,14 @@ def inspect_nwb(out: Path) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def resolve_executable(name: str) -> str:
+    """A console script next to this Python (its venv) wins over PATH: the venv need not be active."""
+    sibling = Path(sys.executable).parent / name
+    return str(sibling) if sibling.is_file() else name
+
+
 def run_command(cmd: list[str], cwd: Path) -> None:
-    result = subprocess.run(cmd, cwd=cwd, check=False)
+    result = subprocess.run([resolve_executable(cmd[0]), *cmd[1:]], cwd=cwd, check=False)
     if result.returncode != 0:
         raise ConversionError(f"{' '.join(cmd)} failed with exit code {result.returncode}")
 

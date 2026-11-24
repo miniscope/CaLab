@@ -109,7 +109,7 @@ workerScope.onmessage = (e) => {
   switch (req.type) {
     case 'start':
       if (started) {
-        post({ type: 'error', message: 'This donation worker has already started.' });
+        post({ type: 'error', message: 'This sharing worker has already started.' });
         return;
       }
       started = true;

@@ -5,6 +5,20 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Changed
+
+- **Cala: cheaper Discover visits, same results.** A visit's tests rebuild and re-solve nearly the same patch problem many times (the tile's model, plus or minus a cell, on a few backgrounds). The slow loop now skips cell pairs whose footprints are apart in 2-D, reuses the Gram terms, column dots and solves it already has within a visit, and finds moat levels by table lookup. Every visit's result is bitwise the same as before (236 visit jobs replayed from a 23,711-frame recording), and costs about 45% less once tiles hold 100+ cells (40–50% per visit late in the recording). qc_eval has `--capture-jobs DIR` and `--replay-jobs DIR` to time and compare visits between builds.
+
+## [2.22.2] - 2026-11-24
+
+### Changed
+
+- **Share recording (cala):** the data donation feature is now called "Share recording" / "shared recordings" in the UI, and deletion requests no longer show a personal email.
+
+### Fixed
+
+- **`donation_to_nwb.py`:** runs `dandi` from its own virtual environment, so the upload works without activating it.
+
 ## [2.22.1] - 2026-11-23
 
 ### Changed

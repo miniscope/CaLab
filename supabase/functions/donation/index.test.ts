@@ -513,7 +513,7 @@ Deno.test('create enforces the per-donation total cap', async () => {
   const files = [0, 1, 2].map((i) => ({ name: `frames-000${i}.calaraw.gz`, bytes: 100 }));
   const r = await call(handler, { action: 'create', meta: META, files }, { as: 'alice' });
   assertEquals(r.status, 413);
-  assertStringIncludes(r.json.error as string, 'per-donation cap');
+  assertStringIncludes(r.json.error as string, 'shared recording is');
 });
 
 Deno.test('create enforces the per-user open-donation limit', async () => {
@@ -542,7 +542,7 @@ Deno.test('create enforces the global bucket cap', async () => {
   assertEquals((await call(env.handler, mk(600), { as: 'alice' })).status, 200);
   const full = await call(env.handler, mk(401), { as: 'bob' });
   assertEquals(full.status, 507);
-  assertStringIncludes(full.json.error as string, 'storage is full');
+  assertStringIncludes(full.json.error as string, 'storage for shared recordings is full');
   assertEquals((await call(env.handler, mk(400), { as: 'bob' })).status, 200);
 });
 

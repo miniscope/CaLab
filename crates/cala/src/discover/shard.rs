@@ -1006,6 +1006,17 @@ impl SlowLoop {
         budget: u64,
         runner: &mut VisitRunner,
     ) -> Result<Option<std::sync::Arc<Library>>, TraceError> {
+        self.step_via_tapped(budget, runner, &mut |_| {})
+    }
+
+    /// [`SlowLoop::step_via`], handing every job's bytes to `tap` before
+    /// it runs (measurement: capture jobs to replay them elsewhere).
+    pub fn step_via_tapped(
+        &mut self,
+        budget: u64,
+        runner: &mut VisitRunner,
+        tap: &mut dyn FnMut(&[u8]),
+    ) -> Result<Option<std::sync::Arc<Library>>, TraceError> {
         self.prune();
         self.credit = self.credit.saturating_add(budget as i64);
         while self.credit > 0 {
@@ -1015,6 +1026,7 @@ impl SlowLoop {
             };
             let job = self.make_job(ti, false);
             let bytes = job.encode(&self.tiles[ti], &self.shared);
+            tap(&bytes);
             let job = VisitJob::from_bytes(&bytes)?;
             let res = runner.run(job)?;
             // The test log is not on the wire; this in-process round trip
