@@ -4195,3 +4195,166 @@ fn js_settle_delta_matches_observe_settle_and_refuses_held_out_frames() {
     );
     assert_eq!(b.settle_delta_stats()[1], 1.0);
 }
+
+/// Strip helpers: `chunks` of 16 frames each go through `observe`
+/// (`strips` 0), or a strip batch is begun for each (`strips` helpers at
+/// most), every job's context and delta make a byte round trip, the
+/// builders are given only their rows of the fitting frames, the frames go
+/// through `observe` without the statistics update, and the deltas are
+/// added after. `moved` and `nan` as in `settle_next_run`; `w_start`: the
+/// forgetting weight set before the first chunk (near 1024: the clock is
+/// renormalised inside a batch). Returns the loop and the jobs' row ranges
+/// of the first batch.
+fn strips_run(
+    strips: usize,
+    nan: bool,
+    moved: bool,
+    w_start: Option<f32>,
+    chunks: &[usize],
+) -> (SlowLoop, Vec<(usize, usize)>) {
+    let (mut sl, mut eng, m) = settle_delta_setup(6000.0);
+    if let Some(w) = w_start {
+        sl.stats_w = w;
+    }
+    let n_px = N * N;
+    let mut rows0 = Vec::new();
+    for (ci, &c0) in chunks.iter().enumerate() {
+        if moved && ci == 1 {
+            let old = eng.library().clone();
+            let ids = old.ids().to_vec();
+            let lib = lb_lib(
+                old.version() + 1,
+                &[
+                    blob_w(ids[0], 52.0, 44.0, 2.5),
+                    blob_w(ids[1], 52.0, 47.5, 2.5),
+                ],
+            );
+            eng.set_library(Arc::new(lib)).unwrap();
+        }
+        let lib = eng.library().clone();
+        let first = sl.frames();
+        let mut frames = Vec::new();
+        for (i, k) in (c0..c0 + 16).enumerate() {
+            let mut f = m[k * n_px..(k + 1) * n_px].to_vec();
+            if nan && (i == 2 || i == 5) {
+                nan_patch(&mut f);
+            }
+            let tr = eng.process(&f).unwrap();
+            frames.push((f, tr));
+        }
+        if strips == 0 {
+            for (f, tr) in &frames {
+                sl.observe(f, &lib, tr).unwrap();
+            }
+            continue;
+        }
+        let jobs = sl
+            .strips_begin(&lib, 16, strips)
+            .unwrap()
+            .expect("a strip batch");
+        let keys = sl.strips_keys().to_vec();
+        if ci == 0 {
+            rows0 = jobs.iter().map(|j| (j.row0, j.row1)).collect();
+        }
+        let mut deltas = Vec::new();
+        for j in &jobs {
+            let ctx = SettleContext::from_bytes(&j.ctx.to_bytes()).unwrap();
+            assert_eq!(ctx.rows(), Some((j.row0, j.row1)));
+            let mut b = SettleDeltaBuilder::new(N, N, vec![1; n_px], ctx).unwrap();
+            for (i, (f, tr)) in frames.iter().enumerate() {
+                let key = first + i as u64;
+                if keys.contains(&key) {
+                    b.push(&f[j.row0 * N..j.row1 * N], &lib, tr, key).unwrap();
+                }
+            }
+            deltas.push(SettleDelta::from_bytes(&b.finish().to_bytes()).unwrap());
+        }
+        // Not before the batch is observed.
+        assert!(sl.strips_apply(&deltas).is_err());
+        for (f, tr) in &frames {
+            sl.observe(f, &lib, tr).unwrap();
+        }
+        sl.strips_apply(&deltas).unwrap();
+        assert!(!sl.strips_pending());
+    }
+    (sl, rows0)
+}
+
+/// Strip helpers give the statistics `observe` gives frame by frame (cells
+/// and stores, split halves included), up to rounding, for 1-4 strips:
+/// with missing pixels, across a library change that moves a disk, across
+/// a 256-frame split-half block boundary and a renormalisation inside a
+/// batch. Disks straddle the borders (the strips' rows overlap) and the
+/// store's members fall in different strips. No delta is dropped.
+#[test]
+fn strips_equal_observe() {
+    let chunks = [32, 48, 64, 80];
+    for (nan, moved, w) in [
+        (false, false, None),
+        (true, false, None),
+        (false, true, None),
+        (false, false, Some(1022.0)),
+    ] {
+        let (a, _) = strips_run(0, nan, moved, w, &chunks);
+        for strips in 1..=4 {
+            let (b, rows) = strips_run(strips, nan, moved, w, &chunks);
+            assert_eq!(a.frames(), b.frames());
+            assert_same_statistics(&a, &b, 1e-5, true);
+            let st = b.strip_stats();
+            assert_eq!((st.batches, st.applied), (4, 4), "{strips} strips");
+            assert_eq!(st.dropped_cells + st.dropped_clusters, 0, "{strips} strips");
+            assert_eq!(st.cells as usize, 4 * b.fpstats.len());
+            assert_eq!(st.clusters as usize, 4 * b.clusters.len());
+            if strips > 1 {
+                assert!(rows.len() > 1, "{strips} strips: {rows:?}");
+                // Two strips share rows: a disk straddles their border.
+                assert!(rows.windows(2).any(|r| r[1].0 < r[0].1), "{rows:?}");
+            }
+        }
+    }
+    // The chunks cross a cell's 256-frame block, and the forced weight a
+    // renormalisation.
+    let (a0, _) = strips_run(0, false, false, None, &[]);
+    let (a, _) = strips_run(0, false, false, None, &chunks);
+    let k0: Vec<u64> = a0.fpstats.values().map(|s| s.k / 256).collect();
+    let k1: Vec<u64> = a.fpstats.values().map(|s| s.k / 256).collect();
+    assert_ne!(
+        k0, k1,
+        "the test needs a 256-frame boundary inside the chunks"
+    );
+    let (b, _) = strips_run(0, false, false, Some(1022.0), &chunks);
+    assert!(b.stats_w < 1022.0, "the test needs a renormalisation");
+}
+
+/// A strip batch is not begun when no strip is asked for, and refuses a
+/// second begin, an apply before its frames are observed and deltas of
+/// other frames.
+#[test]
+fn strips_refuse_what_does_not_fit() {
+    let (mut sl, mut eng, m) = settle_delta_setup(6000.0);
+    let lib = eng.library().clone();
+    let n_px = N * N;
+    assert!(sl.strips_begin(&lib, 16, 0).unwrap().is_none());
+    assert!(!sl.strips_pending());
+    let jobs = sl.strips_begin(&lib, 4, 2).unwrap().unwrap();
+    assert!(sl.strips_begin(&lib, 4, 2).is_err());
+    for k in 0..4 {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        sl.observe(f, &lib, &tr).unwrap();
+    }
+    // Deltas of no frames: not the batch's.
+    let empty: Vec<SettleDelta> = jobs
+        .iter()
+        .map(|j| {
+            SettleDeltaBuilder::new(N, N, vec![1; n_px], j.ctx.clone())
+                .unwrap()
+                .finish()
+        })
+        .collect();
+    assert!(!sl.strips_keys().is_empty());
+    assert!(sl.strips_apply(&empty).is_err());
+    assert!(sl.strips_pending());
+    sl.strips_abandon();
+    assert!(!sl.strips_pending());
+}

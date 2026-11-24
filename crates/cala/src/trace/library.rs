@@ -1564,6 +1564,78 @@ impl Library {
         Ok(())
     }
 
+    /// [`Library::render`] on the rows `row0..row1` only (the strip helpers
+    /// of the slow loop): `out` holds those rows, `(row1 - row0) * width`
+    /// values, each the value `render` gives that pixel, bit for bit (the
+    /// same additions in the same order).
+    pub fn render_rows(
+        &self,
+        traces: &[f32],
+        background: Option<&[f32]>,
+        row0: usize,
+        row1: usize,
+        out: &mut [f32],
+    ) -> Result<(), TraceError> {
+        let (w, h) = (self.core.dims.width, self.core.dims.height);
+        let n_px = self.core.dims.pixels();
+        if row0 > row1 || row1 > h {
+            return Err(TraceError::Incompatible(format!(
+                "rows {row0}..{row1} of a {h}-row frame"
+            )));
+        }
+        let (lo, hi) = (row0 * w, row1 * w);
+        check_len("traces", self.len(), traces.len())?;
+        check_len("output rows", hi - lo, out.len())?;
+        out.iter_mut().for_each(|v| *v = 0.0);
+        if let (Some(beta), BgTerms::Basis { k, maps, .. }) = (background, &self.bg) {
+            check_len("background coefficients", *k, beta.len())?;
+            for (b, &bk) in beta.iter().enumerate() {
+                let m = &maps[b * n_px + lo..b * n_px + hi];
+                for (o, &g) in out.iter_mut().zip(m) {
+                    *o += g * bk;
+                }
+            }
+        }
+        let gl = self.core.grid_len();
+        let mut field = vec![0.0f32; gl];
+        let mut any = false;
+        for (i, &c) in traces.iter().enumerate() {
+            if c == 0.0 {
+                continue;
+            }
+            let (p, v) = self.core.core_col(i);
+            for (&q, &a) in p.iter().zip(v) {
+                let q = q as usize;
+                if (lo..hi).contains(&q) {
+                    out[q - lo] += a * c;
+                }
+            }
+            let (bi, li) = self.core.low(i);
+            for (&bq, &l) in bi.iter().zip(li) {
+                field[bq as usize] += l * c;
+                any = true;
+            }
+        }
+        if any {
+            let (b, gw) = (self.core.block, self.core.grid_w());
+            let fov = &self.core.fov[lo..hi];
+            for (j, (row, mrow)) in out.chunks_mut(w).zip(fov.chunks(w)).enumerate() {
+                let y = row0 + j;
+                let frow = &field[(y / b) * gw..(y / b + 1) * gw];
+                for ((seg, mseg), &f) in row.chunks_mut(b).zip(mrow.chunks(b)).zip(frow) {
+                    if f != 0.0 {
+                        for (o, &m) in seg.iter_mut().zip(mseg) {
+                            if m != 0 {
+                                *o -= f;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Residual `y − Σ ã_i c_i` (minus the basis background `Σ g_k β_k` for a
     /// basis model) of one solved frame into `out`: what the model leaves
     /// unexplained, as cell discovery scores it (the ring model's per-cell

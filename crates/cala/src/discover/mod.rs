@@ -230,6 +230,7 @@ mod noisecorr;
 mod reservoir;
 mod settle_delta;
 mod shard;
+mod strips;
 mod wire;
 
 pub use churn::{AddClass, AddRecord, ChurnConfig, ChurnCounts, RemovalKind, RemovalRecord};
@@ -244,6 +245,7 @@ pub use lookback::{
 pub use mergelog::{flush as merge_log_flush, set_gt as merge_log_set_gt};
 pub use settle_delta::{SettleContext, SettleDelta, SettleDeltaBuilder, SettleDeltaStats};
 pub use shard::{VisitJob, VisitResult, VisitRunner};
+pub use strips::{StripJob, StripStats};
 
 #[cfg(feature = "jsbindings")]
 mod js;
@@ -1259,6 +1261,10 @@ pub struct SlowLoop {
     /// Frames still to be observed whose statistics a Final-settle delta
     /// already added ([`SlowLoop::apply_settle_delta_next`]).
     stats_prepaid: u64,
+    /// The strip batch waiting for its deltas, and the strip helpers' counters
+    /// (`strips.rs`).
+    strip_pending: Option<strips::StripPending>,
+    strip_stats: StripStats,
     /// How tiles came due ([`DueDiag`]; diagnostics only).
     due_diag: DueDiag,
 }
@@ -1575,6 +1581,8 @@ impl SlowLoop {
             cs_delta: SettleDeltaStats::default(),
             cs_delta_charge_equiv: false,
             stats_prepaid: 0,
+            strip_pending: None,
+            strip_stats: StripStats::default(),
             due_diag: DueDiag::default(),
             merge_rejected: Vec::new(),
             forced: Vec::new(),

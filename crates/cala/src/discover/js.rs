@@ -62,6 +62,27 @@ pub struct JsSlowLoop {
     /// frame picker, the chunks started, and its counters.
     settle: Option<SettleSched>,
     cs: CsCounts,
+    /// The strip helpers (`stripsBegin`): the pending batch's contexts not
+    /// yet taken, and the deltas staged for `stripsApply`.
+    strip_ctx: Vec<Vec<u8>>,
+    strip_deltas: Vec<SettleDelta>,
+    /// `observe`'s time inside the slow loop (ms, calls; `observeTiming`).
+    observe_ms: f64,
+    observe_n: u64,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    /// `performance.now()` (the worker's clock; `observeTiming` only).
+    #[wasm_bindgen(js_namespace = performance, js_name = now)]
+    fn perf_now() -> f64;
+}
+
+/// No clock off the browser (native tests of the bindings).
+#[cfg(not(target_arch = "wasm32"))]
+fn perf_now() -> f64 {
+    0.0
 }
 
 /// Counters of the concurrent settle's JS surface (`settleStats`).
@@ -277,9 +298,12 @@ impl JsSlowLoop {
         };
         let slow_index = self.inner.frames();
         self.fill_traces(&lib, traces, background, "observe")?;
+        let t0 = perf_now();
         self.inner
             .observe(frame, &lib, &self.traces)
             .map_err(|e| js_err("observe", e))?;
+        self.observe_ms += perf_now() - t0;
+        self.observe_n += 1;
         if let Some(s) = stream {
             self.held.note(s as u64, slow_index, &self.inner);
         }
@@ -631,6 +655,109 @@ impl JsSlowLoop {
 
     /// Whether each of the slow-loop frame indices `first`..`first + count`
     /// is held out (1) or fitting (0).
+    /// `[ms, calls]`: the time `observe` spent inside the slow loop (the
+    /// rest of a call is copying its arguments in and the held-out record).
+    #[wasm_bindgen(js_name = observeTiming)]
+    pub fn observe_timing(&self) -> Vec<f64> {
+        vec![self.observe_ms, self.observe_n as f64]
+    }
+
+    // ---- strip helpers (experimental; `strips.rs`) ------------------------
+
+    /// Begin a strip batch (`SlowLoop::strips_begin`): the next `count`
+    /// frames, solved with library `version`, go through `observe` without
+    /// the footprint-statistics update, and at most `strips` helpers sum
+    /// them. Returns `[row0, row1, ...]`, one pair per job (its context:
+    /// `stripContext(i)`); empty: observe the batch the ordinary way
+    /// (nothing changed; also when the version is no longer held).
+    #[wasm_bindgen(js_name = stripsBegin)]
+    pub fn strips_begin(
+        &mut self,
+        version: f64,
+        count: u32,
+        strips: u32,
+    ) -> Result<Vec<u32>, JsError> {
+        let Some(lib) = self.lib(version) else {
+            return Ok(Vec::new());
+        };
+        let jobs = self
+            .inner
+            .strips_begin(&lib, u64::from(count), strips as usize)
+            .map_err(|e| js_err("stripsBegin", e))?;
+        self.strip_ctx.clear();
+        self.strip_deltas.clear();
+        let mut rows = Vec::new();
+        for j in jobs.unwrap_or_default() {
+            rows.push(j.row0 as u32);
+            rows.push(j.row1 as u32);
+            self.strip_ctx.push(j.ctx.to_bytes());
+        }
+        Ok(rows)
+    }
+
+    /// Job `i`'s context of the batch begun (for `SettleDeltaBuilder.begin`;
+    /// empty once taken).
+    #[wasm_bindgen(js_name = stripContext)]
+    pub fn strip_context(&mut self, i: u32) -> Vec<u8> {
+        self.strip_ctx
+            .get_mut(i as usize)
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
+    /// The slow-loop indices of the pending batch's fitting frames, in order:
+    /// the frames a helper sums (`SettleDeltaBuilder.push` keys).
+    #[wasm_bindgen(js_name = stripsKeys)]
+    pub fn strips_keys(&self) -> Vec<f64> {
+        self.inner.strips_keys().iter().map(|&k| k as f64).collect()
+    }
+
+    /// Stage one job's delta (any order).
+    #[wasm_bindgen(js_name = stripsAdd)]
+    pub fn strips_add(&mut self, bytes: &[u8]) -> Result<(), JsError> {
+        let d = SettleDelta::from_bytes(bytes).map_err(|e| js_err("stripsAdd", e))?;
+        self.strip_deltas.push(d);
+        Ok(())
+    }
+
+    /// Add the staged deltas once the batch's frames are all observed
+    /// (`SlowLoop::strips_apply`).
+    #[wasm_bindgen(js_name = stripsApply)]
+    pub fn strips_apply(&mut self) -> Result<(), JsError> {
+        let d = std::mem::take(&mut self.strip_deltas);
+        self.inner
+            .strips_apply(&d)
+            .map_err(|e| js_err("stripsApply", e))
+    }
+
+    /// Whether a strip batch waits for its deltas.
+    #[wasm_bindgen(getter, js_name = stripsPending)]
+    pub fn strips_pending(&self) -> bool {
+        self.inner.strips_pending()
+    }
+
+    /// `[batches, applied, frames, strips, maxRows, cells, clusters,
+    /// droppedCells, droppedClusters, clusterSkips]` (`StripStats`).
+    #[wasm_bindgen(js_name = stripStats)]
+    pub fn strip_stats(&self) -> Vec<f64> {
+        let s = self.inner.strip_stats();
+        [
+            s.batches,
+            s.applied,
+            s.frames,
+            s.strips,
+            s.max_rows,
+            s.cells,
+            s.clusters,
+            s.dropped_cells,
+            s.dropped_clusters,
+            s.cluster_skips,
+        ]
+        .iter()
+        .map(|&v| v as f64)
+        .collect()
+    }
+
     #[wasm_bindgen(js_name = heldOutFlags)]
     pub fn held_out_flags(&self, first: f64, count: u32) -> Vec<u8> {
         let first = first.max(0.0) as u64;
@@ -1007,6 +1134,10 @@ impl JsSlowLoop {
             lb: LbCounts::default(),
             settle: None,
             cs: CsCounts::default(),
+            strip_ctx: Vec::new(),
+            strip_deltas: Vec::new(),
+            observe_ms: 0.0,
+            observe_n: 0,
         }
     }
 
