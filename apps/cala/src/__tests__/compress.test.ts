@@ -12,7 +12,14 @@ import {
 } from '../lib/cala-wasm.ts';
 import { createCellStore } from '../lib/cell-store.ts';
 import { CompressFeed } from '../lib/compress-feed.ts';
-import { CompressRunner, factorName, tilesOf } from '../lib/compress-runner.ts';
+import type { TilePoolLike } from '../lib/compress-pool.ts';
+import {
+  backlogText,
+  CompressRunner,
+  factorName,
+  tilesOf,
+  type CompressRunnerDeps,
+} from '../lib/compress-runner.ts';
 import { compressReadout, createCompressStore } from '../lib/compress-store.ts';
 import { memoryStore } from '../lib/window-store.ts';
 import type { CompressToMain, FastToCompress } from '../workers/compress-types.ts';
@@ -406,6 +413,108 @@ describe('CompressRunner', () => {
     await r.idle();
     expect(store.files.size).toBe(0);
     expect(toMain.length).toBe(before);
+  });
+});
+
+describe('the compress pool and the cap on waiting windows', () => {
+  /** A pool that keeps every window until it is reset, and records the widths it is given. */
+  function stuckPool() {
+    const widths: number[] = [];
+    let release: (() => void) | null = null;
+    const pool: TilePoolLike = {
+      begin: () => {},
+      setWidth: (n) => void widths.push(n),
+      width: () => widths.at(-1) ?? 1,
+      reset: () => {
+        release?.();
+        release = null;
+      },
+      compressWindow: () =>
+        new Promise<boolean>((resolve) => {
+          release = () => resolve(false);
+        }),
+    };
+    return { pool, widths };
+  }
+
+  function runnerWith(deps: Partial<CompressRunnerDeps>) {
+    const store = memoryStore();
+    const toMain: CompressToMain[] = [];
+    const r = new CompressRunner({
+      store,
+      quantize: quantizeTiles,
+      layout: tileLayout,
+      header: factorHeader,
+      create: (quant) => new TileCompressor(quant),
+      toMain: { postMessage: (m) => toMain.push(m) },
+      yieldNow: () => Promise.resolve(),
+      ...deps,
+    });
+    return { r, store, toMain };
+  }
+
+  /** Bytes of a 50-frame window file (plain tiles cover the frame once, int16). */
+  const WINDOW_BYTES = 50 * PX * 2;
+
+  it('gives the factors up past the cap: one error, no files, nothing written after; a new run compresses again', async () => {
+    const { pool } = stuckPool();
+    const { r, store, toMain } = runnerWith({
+      pool,
+      // Half of what the origin may store: one window.
+      estimate: () => Promise.resolve({ quota: 3 * WINDOW_BYTES, usage: WINDOW_BYTES }),
+    });
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 150; s += 10) feed.push(batch(s, 10), s, 10);
+    for (const m of sent) await r.handle(m);
+    const errors = toMain.filter((m) => m.type === 'error');
+    expect(errors).toEqual([{ type: 'error', session: 7, message: backlogText(WINDOW_BYTES) }]);
+    expect(store.files.size).toBe(0);
+
+    const again: FastToCompress[] = [];
+    const next = new CompressFeed(
+      { width: W, height: H, session: 8, tile: TILE, window: 50, quant: QUANT },
+      { postMessage: (m) => again.push(m) },
+    );
+    next.push(batch(0, 10), 0, 10);
+    for (const m of again) await r.handle(m);
+    expect([...store.files.keys()]).toEqual(['w0.i16']);
+  });
+
+  it('switches from the discover width to the after width when the recording ends', async () => {
+    const { pool, widths } = stuckPool();
+    const { r } = runnerWith({ pool });
+    const sent: FastToCompress[] = [];
+    const feed = new CompressFeed(
+      {
+        width: W,
+        height: H,
+        session: 7,
+        tile: TILE,
+        window: 50,
+        quant: QUANT,
+        pool: { discover: 2, after: 3 },
+      },
+      { postMessage: (m) => sent.push(m) },
+    );
+    feed.push(batch(0, 60), 0, 60);
+    feed.end();
+    for (const m of sent) await r.handle(m);
+    expect(widths).toEqual([2, 3]);
+  });
+
+  it('reports the pool, the backlog and the lag at the end in its status', async () => {
+    const { feed, sent } = collectingFeed(50);
+    feed.push(batch(0, 120), 0, 120);
+    feed.end();
+    const { r, toMain } = runner();
+    for (const m of sent) await r.handle(m);
+    await r.idle();
+    const last = toMain.filter((m) => m.type === 'status').at(-1);
+    if (last?.type !== 'status') throw new Error('expected a status');
+    expect(last.status).toMatchObject({ workers: 1, backlogBytes: 0, final: true });
+    expect(last.status.backlogPeakBytes).toBeGreaterThanOrEqual(WINDOW_BYTES);
+    expect(last.status.behindAtEnd).not.toBeNull();
+    expect(last.status.fps).toBeGreaterThan(0);
   });
 });
 

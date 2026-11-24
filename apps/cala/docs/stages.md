@@ -54,9 +54,10 @@ Refine runs show as "Refine (removed stage)".
   (the history review reads plain tiles only).
 - **A recording with `?factors=file` (experimental).** Discover also
   compresses its frames. At its last frame the Final settle reads frames
-  rebuilt from the factors if at most the last window is still being
-  compressed (it waits for that window only); otherwise it re-reads the file
-  as without the switch. Extract reads the factors if they cover every frame
+  rebuilt from the factors if the compressor is at most as many windows
+  behind as it has workers after Discover's end (one on a machine without
+  helpers: the last window only), and waits for those; otherwise it re-reads
+  the file as without the switch. Extract reads the factors if they cover every frame
   when it starts, else it replays the file. It never waits. The Run panel and
   the export say which source each stage read and why.
 

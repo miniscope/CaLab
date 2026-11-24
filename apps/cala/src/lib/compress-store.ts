@@ -247,16 +247,25 @@ export function createCompressStore(sink?: BackfillSink) {
 
 export type CompressStore = ReturnType<typeof createCompressStore>;
 
-/** `4 windows · rank 5.6 · 8.6 ms/frame · 41 MB · traces back-filled (2,000 frames, 2.1 ms/frame)`. */
+/**
+ * `4 windows · rank 5.6 · 8.6 ms/frame · 41 MB · traces back-filled (2,000 frames, 2.1 ms/frame)`;
+ * with a pool `12 windows · 3 workers · 118 fps · rank 5.6 · … · 9 waiting (3.9 GB on disk)`.
+ */
 export function compressReadout(s: CompressStatus | null, b: BackfillInfo | null = null): string {
   if (!s || s.windows === 0) return 'Compression: waiting for the first window';
   const mb = (s.factorBytes / 1048576).toFixed(0);
-  const waiting = s.pending > 0 ? ` · ${s.pending} waiting` : '';
+  const pool =
+    (s.workers ?? 1) > 1 ? `${s.workers} workers · ${Math.round(s.fps ?? 0)} fps · ` : '';
+  const disk =
+    s.backlogBytes !== undefined && s.backlogBytes > 0
+      ? ` (${(s.backlogBytes / 2 ** 30).toFixed(1)} GB on disk)`
+      : '';
+  const waiting = s.pending > 0 ? ` · ${s.pending} waiting${disk}` : '';
   const filled = b
     ? ` · traces back-filled (${b.frames.toLocaleString('en-US')} frames, ${b.msPerFrame.toFixed(1)} ms/frame)`
     : '';
   return (
-    `Compression: ${s.windows} windows · rank ${s.meanRank.toFixed(1)} · ` +
+    `Compression: ${s.windows} windows · ${pool}rank ${s.meanRank.toFixed(1)} · ` +
     `${s.msPerFrame.toFixed(1)} ms/frame · ${mb} MB${waiting}${filled}`
   );
 }

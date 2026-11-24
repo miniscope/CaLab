@@ -95,6 +95,10 @@ function handle(msg: StageMsg): void {
                 height: msg.fast.height,
                 session: cells.session,
                 ...(cells.compressTiling ? { tiling: cells.compressTiling } : {}),
+                ...(cells.compressPool ? { pool: cells.compressPool } : {}),
+                ...(cells.compressBacklogCap !== undefined
+                  ? { backlogCap: cells.compressBacklogCap }
+                  : {}),
               },
               compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
             )

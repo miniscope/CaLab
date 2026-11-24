@@ -50,8 +50,11 @@ export const FACTOR_TAIL_FILE =
   'The last frame is not in the factors (a window of one frame cannot be compressed).';
 
 /** Why a recording's settle re-reads the file: how far the compressor was behind at Discover's end. */
-export function fileBehindText(behind: number, msPerFrame: number): string {
-  const s = msPerFrame > 0 ? `, about ${Math.round((behind * msPerFrame) / 1000)} s,` : '';
+export function fileBehindText(behind: number, msPerFrame: number, workers = 1): string {
+  const n = Math.max(1, workers);
+  const pool = n > 1 ? ` with ${n} workers` : '';
+  const s =
+    msPerFrame > 0 ? `, about ${Math.round((behind * msPerFrame) / 1000 / n)} s${pool},` : '';
   return `the compressor was ${behind.toLocaleString('en-US')} frames${s} behind when Discover ended`;
 }
 

@@ -4,7 +4,8 @@
  * fast worker over the port the main thread connects; windows and factors
  * are files in the origin private file system; status goes to the main
  * thread. With the history review on, each window's factors also go to the
- * review worker over a second port.
+ * review worker over a second port. With helpers (`compress-helper-worker.ts`),
+ * each window's tiles are shared with them over one port each (`TilePool`).
  */
 import {
   FactorWindow,
@@ -16,9 +17,16 @@ import {
   TraceEngine,
   TraceLibrary,
 } from '../lib/cala-wasm.ts';
+import { TilePool } from '../lib/compress-pool.ts';
 import { CompressRunner } from '../lib/compress-runner.ts';
 import { opfsStore } from '../lib/window-store.ts';
-import type { CompressToMain, FastToCompress, MainToCompress } from './compress-types.ts';
+import type {
+  CompressToMain,
+  CoordinatorToHelper,
+  FastToCompress,
+  HelperToCoordinator,
+  MainToCompress,
+} from './compress-types.ts';
 import type { CompressToReview } from './review-types.ts';
 
 const workerScope = globalThis as unknown as {
@@ -29,12 +37,18 @@ const workerScope = globalThis as unknown as {
 let port: MessagePort | null = null;
 let reviewPort: MessagePort | null = null;
 let runner: CompressRunner | null = null;
+let pool: TilePool | null = null;
+let helperPorts: MessagePort[] = [];
 // Messages are handled one at a time, after the WASM module is ready.
 let queue: Promise<void> = Promise.resolve();
 const store = opfsStore();
 
 workerScope.onmessage = (e) => {
   const data = e.data;
+  if (data.type === 'helper-lost') {
+    pool?.lost(data.helper);
+    return;
+  }
   if (data.type === 'backfill' || data.type === 'extract' || data.type === 'extract-cancel') {
     const r = runner;
     queue = queue
@@ -57,8 +71,19 @@ workerScope.onmessage = (e) => {
   }
   port?.close();
   reviewPort?.close();
+  for (const p of helperPorts) p.close();
   port = data.port;
   reviewPort = data.review?.port ?? null;
+  helperPorts = data.helpers ?? [];
+  const tilePool = new TilePool({
+    helpers: helperPorts.map((p) => ({
+      postMessage: (m: CoordinatorToHelper, t?: Transferable[]) => p.postMessage(m, t ?? []),
+    })),
+  });
+  helperPorts.forEach((p, k) => {
+    p.onmessage = (ev: MessageEvent<HelperToCoordinator>) => tilePool.onHelper(k, ev.data);
+  });
+  pool = tilePool;
   const toReview = reviewPort;
   const r = new CompressRunner({
     store,
@@ -86,6 +111,8 @@ workerScope.onmessage = (e) => {
     },
     factors: (bytes) => FactorWindow.fromBytes(bytes),
     toMain: { postMessage: (m, t) => workerScope.postMessage(m, t) },
+    pool: tilePool,
+    estimate: () => navigator.storage.estimate(),
     ...(toReview && data.review
       ? {
           review: {

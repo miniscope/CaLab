@@ -7,7 +7,7 @@
  *
  *   node apps/cala/scripts/live-measure.mjs <folder> --url http://localhost:5207
  *        --out <dir> [--mode live|file|both] [--fps 20] [--port 8766] [--headed]
- *        [--query factors] [--frames N] [--tag NAME] [--channel chrome]
+ *        [--query factors=0] [--frames N] [--tag NAME] [--channel chrome] [--user-data-dir DIR]
  *
  * `live`: starts `live-sim.mjs` on the folder, opens the app on it with
  * `?live=...&debug`, waits for the stream to end and the final library, and
@@ -20,9 +20,11 @@
  *
  * `--query` adds URL parameters to the run (live or file; `factors=file`: a
  * recording's settle and Extract may read its factors, summed up in the file
- * metrics' `factors`; `factors` on a live run: the stream settles
- * and extracts on its factors after it ends; the script then also waits for
- * Extract). `--frames N` streams only the first N frames; `--tag` names the
+ * metrics' `factors`). A live run settles and extracts on its factors after
+ * the stream ends by default, and the script then also waits for Extract;
+ * `factors=0` runs the stream on Discover only. `--user-data-dir <dir>` runs
+ * a persistent browser profile there, so OPFS (the factors) lives on that
+ * disk; the folder is emptied first. `--frames N` streams only the first N frames; `--tag` names the
  * output files (`<tag>_metrics.json`, `<tag>_cala.npz`); `--channel chrome`
  * runs the installed Google Chrome. Every second the live run samples the
  * compressor's status, the slow loop's settle and Extract (`timeline`), from
@@ -30,7 +32,7 @@
  * settle and Extract times after the stream (also per minute of stream).
  */
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { chromium } from '@playwright/test';
 
@@ -58,6 +60,7 @@ const query = option('--query', '');
 const frames = option('--frames', undefined);
 const tag = option('--tag', 'live');
 const channel = option('--channel', undefined);
+const userDataDir = option('--user-data-dir', undefined);
 const folder = resolve(args[0] ?? '.');
 mkdirSync(out, { recursive: true });
 const here = import.meta.dirname;
@@ -122,7 +125,9 @@ const pipelineMetrics = () => {
   };
 };
 
-const factorRun = query.split('&').includes('factors');
+// A live stream is a factor run by default; `factors=0` (or `compress&review`) turns it off.
+const qp = new URLSearchParams(query);
+const factorRun = qp.get('factors') !== '0' && !(qp.has('compress') && qp.has('review'));
 
 /** One timeline sample of the live run (runs in the page). */
 const sample = () => {
@@ -141,6 +146,12 @@ const sample = () => {
       pendingFrames: cs.pendingFrames,
       msPerFrame: cs.msPerFrame,
       final: cs.final,
+      workers: cs.workers ?? 1,
+      fps: cs.fps ?? null,
+      backlogBytes: cs.backlogBytes ?? null,
+      backlogPeakBytes: cs.backlogPeakBytes ?? null,
+      behindAtEnd: cs.behindAtEnd ?? null,
+      fpsAfter: cs.fpsAfter ?? null,
     },
     final: st?.final ?? false,
     settle: settle && {
@@ -233,6 +244,17 @@ function fileFactorSummary(timeline) {
     compressorMsPerFrame: last?.compress?.msPerFrame ?? null,
     lastWindowCompressedS: first((s) => s.compress?.final === true)?.t ?? null,
     endToExtractDoneS: span(end, extractEnd),
+    // The compress pool (slice 5): workers in use, pace before and after Discover's end, the backlog.
+    compressWorkersMax: Math.max(1, ...timeline.map((s) => s.compress?.workers ?? 1)),
+    compressFpsDuringDiscover: end
+      ? (timeline.filter((s) => s.t <= end.t && s.compress?.fps).at(-1)?.compress.fps ?? null)
+      : null,
+    compressFpsAfter: last?.compress?.fpsAfter ?? null,
+    compressBehindAtEnd: last?.compress?.behindAtEnd ?? null,
+    compressBacklogPeakBytes: Math.max(
+      0,
+      ...timeline.map((s) => s.compress?.backlogPeakBytes ?? 0),
+    ),
   };
 }
 
@@ -373,6 +395,8 @@ async function fileRun(browser) {
   const page = await browser.newPage();
   page.on('pageerror', (e) => console.error('page error:', e.message));
   await page.goto(`${url}/?debug${query ? `&${query}` : ''}`);
+  // What the origin may store at the start (the compress pool's cap reads the same).
+  const storage = await page.evaluate(() => navigator.storage.estimate()).catch(() => null);
   await page.setInputFiles('[data-testid=folder-input]', folder);
   const t0 = Date.now();
   // One sample a second until Extract is over (the factor summary reads it).
@@ -420,6 +444,7 @@ async function fileRun(browser) {
   const metrics = {
     mode: 'file',
     query,
+    storage: storage && { quota: storage.quota ?? null, usage: storage.usage ?? null },
     pass1Seconds,
     processed: raw.pipeline.processed,
     slowForwarded: raw.pipeline.forwarded,
@@ -438,13 +463,17 @@ async function fileRun(browser) {
   return metrics;
 }
 
-const browser = await chromium.launch({
+const launch = {
   headless: !headed,
   ...(channel ? { channel } : {}),
   args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan,WebGPU', '--ignore-gpu-blocklist'],
-});
+};
+if (userDataDir) rmSync(userDataDir, { recursive: true, force: true });
+const browser = userDataDir
+  ? await chromium.launchPersistentContext(userDataDir, { ...launch, acceptDownloads: true })
+  : await chromium.launch(launch);
 try {
-  const context = await browser.newContext({ acceptDownloads: true });
+  const context = userDataDir ? browser : await browser.newContext({ acceptDownloads: true });
   await context.addInitScript(`window.__pipelineMetrics = ${pipelineMetrics.toString()};`);
   // No save dialog in a headless run: the export falls back to a download.
   await context.addInitScript(() => {
