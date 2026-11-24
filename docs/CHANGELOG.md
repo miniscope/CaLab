@@ -17,6 +17,12 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 - Cala: **a live stream settles and extracts on its factors by default** (what `?factors` did); `?factors=0` runs a stream on Discover only, as before. What changes for a stream: every stream export is format version 7, with the live traces as `traces_live` beside Extract's `traces` and `traces_signed` (a stream whose factors were not usable exports as before, format 6); the factors take about 55 MB per 1,000 frames at 600 x 600 in the browser's storage (OPFS), with no free-space check, and a failed write ends the stream at Discover's library; `?compress` on a stream is a factor run (offset grids, no back-fill); `?compress&review` turns the default off and keeps the review (it reads plain tiles only). The compress worker exists on every page but `?factors=0`. Recordings do not change: they re-read the file, and `?factors=file` stays experimental.
 - Cala (experimental, `?compress`): the compressor writes factor format v2 (plain tiles, two SVD power iterations, per-pixel discarded variance and valid share; v1 files still read), and the crate can cut and blend the frame on two offset grids. `qc_eval --factors-out` and the history whole-test read and write v2.
 
+## [2.22.1] - 2026-11-23
+
+### Changed
+
+- **Donate data (cala):** the form's descriptive fields (indicator, species, brain region, expression, preparation, behavior, strain / genotype, scope) are now click-to-open dropdowns with presets and an "Other…" entry for a custom value; before, presets only appeared while typing, and not at all in some browsers. New preset lists for expression, preparation, behavior, strain / genotype and specific scope models in `packages/community/src/field-options.ts`, for reuse by the other CaLab tools.
+
 ## [2.22.0] - 2026-11-23
 
 ### Added

@@ -23,10 +23,16 @@ import {
   dandiFolderUrl,
   type DonationMeta,
   type DonationRow,
+  BEHAVIOR_OPTIONS,
+  EXPRESSION_OPTIONS,
+  GENOTYPE_OPTIONS,
+  PREPARATION_OPTIONS,
+  SCOPE_MODEL_OPTIONS,
   type DonationSharing,
   type SubjectSex,
 } from '@calab/community';
 import type { FrameSourceInfo } from '../lib/frame-source.ts';
+import { PresetField } from './PresetField.tsx';
 import { recordingSidecars } from '../lib/frame-source.ts';
 import { bytesPerPixelFor } from '../lib/donation-encode.ts';
 import {
@@ -359,7 +365,7 @@ export function DonationFormView(props: DonatePanelProps & { onClose: () => void
       | 'contact_ok'
     >,
     label: string,
-    opts: { required?: boolean; list?: string; max?: number; placeholder?: string } = {},
+    opts: { required?: boolean; max?: number; placeholder?: string } = {},
   ) => (
     <label class="cala-donate__field">
       <span>
@@ -369,7 +375,6 @@ export function DonationFormView(props: DonatePanelProps & { onClose: () => void
       <input
         type="text"
         value={form[key]}
-        list={opts.list}
         maxLength={opts.max ?? 128}
         placeholder={opts.placeholder}
         required={opts.required}
@@ -378,21 +383,40 @@ export function DonationFormView(props: DonatePanelProps & { onClose: () => void
     </label>
   );
 
+  /** Fields with presets: a dropdown, or "Other…" for a custom value. */
+  type PresetKey =
+    | 'indicator'
+    | 'species'
+    | 'brain_region'
+    | 'expression'
+    | 'preparation'
+    | 'behavior'
+    | 'genotype'
+    | 'scope';
+  const preset = (
+    key: PresetKey,
+    label: string,
+    options: readonly string[],
+    opts: { required?: boolean; max?: number; placeholder?: string } = {},
+  ) => (
+    <PresetField
+      label={label}
+      value={form[key]}
+      options={options}
+      required={opts.required}
+      max={opts.max}
+      placeholder={opts.placeholder}
+      onChange={(v) => setForm(key, v)}
+    />
+  );
+  /** Specific models first, then the generic types. */
+  const scopeOptions = () => [
+    ...SCOPE_MODEL_OPTIONS,
+    ...fieldOptions().microscopeTypes.filter((t) => !SCOPE_MODEL_OPTIONS.includes(t)),
+  ];
+
   return (
     <form class="cala-donate__form" onSubmit={(e) => void submit(e)} data-testid="donate-form">
-      <datalist id="cala-donate-indicators">
-        <For each={fieldOptions().indicators}>{(o) => <option value={o} />}</For>
-      </datalist>
-      <datalist id="cala-donate-species">
-        <For each={fieldOptions().species}>{(o) => <option value={o} />}</For>
-      </datalist>
-      <datalist id="cala-donate-regions">
-        <For each={fieldOptions().brainRegions}>{(o) => <option value={o} />}</For>
-      </datalist>
-      <datalist id="cala-donate-scopes">
-        <For each={fieldOptions().microscopeTypes}>{(o) => <option value={o} />}</For>
-      </datalist>
-
       <fieldset class="cala-donate__group">
         <legend>Recording</legend>
         <dl class="cala-info">
@@ -439,12 +463,14 @@ export function DonationFormView(props: DonatePanelProps & { onClose: () => void
 
       <fieldset class="cala-donate__group">
         <legend>Biology</legend>
-        {text('indicator', 'Indicator', { required: true, list: 'cala-donate-indicators' })}
-        {text('species', 'Species', { required: true, list: 'cala-donate-species' })}
-        {text('brain_region', 'Brain region', { required: true, list: 'cala-donate-regions' })}
-        {text('expression', 'Expression', { placeholder: 'virus or transgenic line' })}
-        {text('preparation', 'Preparation', { placeholder: 'GRIN lens, cranial window, ...' })}
-        {text('behavior', 'Behavior', { max: 256, placeholder: 'open field, head-fixed, ...' })}
+        {preset('indicator', 'Indicator', fieldOptions().indicators, { required: true })}
+        {preset('species', 'Species', fieldOptions().species, { required: true })}
+        {preset('brain_region', 'Brain region', fieldOptions().brainRegions, { required: true })}
+        {preset('expression', 'Expression', EXPRESSION_OPTIONS, {
+          placeholder: 'virus or transgenic line',
+        })}
+        {preset('preparation', 'Preparation', PREPARATION_OPTIONS)}
+        {preset('behavior', 'Behavior', BEHAVIOR_OPTIONS, { max: 256 })}
       </fieldset>
 
       <fieldset class="cala-donate__group">
@@ -501,16 +527,12 @@ export function DonationFormView(props: DonatePanelProps & { onClose: () => void
             onInput={(e) => setForm('session_date', e.currentTarget.value)}
           />
         </label>
-        {text('genotype', 'Strain / genotype', { placeholder: 'C57BL/6J, Thy1-GCaMP6s, ...' })}
+        {preset('genotype', 'Strain / genotype', GENOTYPE_OPTIONS)}
       </fieldset>
 
       <fieldset class="cala-donate__group">
         <legend>Optics</legend>
-        {text('scope', 'Scope', {
-          required: true,
-          list: 'cala-donate-scopes',
-          placeholder: 'UCLA Miniscope v4, Inscopix, own wireless, ...',
-        })}
+        {preset('scope', 'Scope', scopeOptions(), { required: true })}
         <label class="cala-donate__field">
           <span>Depth (um)</span>
           <input
