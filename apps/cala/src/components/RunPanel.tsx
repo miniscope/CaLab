@@ -28,6 +28,7 @@ import { groupKeys } from '../lib/run-history.ts';
 import { AspectPlot } from '../lib/plot-size.tsx';
 import { GroupPlot, RunStrip, type HistoryUi } from './HistoryPanel.tsx';
 import { liveTraceResult } from '../lib/live-export.ts';
+import { FACTORS_LIVE_NOTE } from '../lib/factor-run.ts';
 import {
   cadeconCells,
   cadeconIsClassic,
@@ -132,6 +133,8 @@ export interface RunPanelProps {
   narrow?: boolean;
   /** The run's history views (shared time window and cursor). */
   ui: HistoryUi;
+  /** A live stream with `?factors`: its settle and Extract read the stream's own factors. */
+  factorRun?: boolean;
   /** Present when the run compresses its frames (`?compress`). */
   compress?: CompressStore;
   /** Present when the run reviews its compressed history (`?compress&review`). */
@@ -168,6 +171,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       settling: c().status()?.lookback?.settling === true,
       extract: p().status(),
       live: props.live,
+      factorRun: props.factorRun,
     });
   const statusText = () => {
     const st = s().status();
@@ -200,6 +204,9 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     props.sessionMode === 'separate' ? 'separate' : props.sessionMode ? 'joint' : 'single';
 
   // ---- Extract and export ----
+  /** Extract runs in this run: a recording, or a stream whose factors it solves on. */
+  const extracts = () => !props.live || props.factorRun === true;
+  const extractsOnFactors = () => props.live === true && props.factorRun === true;
   const auto = extractAfterDiscover;
   const setAuto = setExtractAfterDiscover;
   const [passOnly, setPassOnly] = createSignal(true);
@@ -262,7 +269,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   createEffect(() => {
     if (
       auto() &&
-      !props.live &&
+      extracts() &&
       s().status() === 'done' &&
       p().status() === 'idle' &&
       props.stages.runs().every((x) => x.stage === 'discover') &&
@@ -274,11 +281,13 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   const pass2Text = () => {
     switch (p().status()) {
       case 'running':
-        return 'Extract: solving the traces of every frame with the final footprints';
+        return (
+          p().waiting() ?? 'Extract: solving the traces of every frame with the final footprints'
+        );
       case 'done': {
         const res = p().result();
         return res
-          ? `Extract done: ${res.cells} cells x ${res.frames.toLocaleString()} frames in ${res.seconds.toFixed(1)} s (${(res.frames / res.seconds).toFixed(0)} frames/s)`
+          ? `Extract done${res.source === 'factors' ? " (on the stream's factors)" : ''}: ${res.cells} cells x ${res.frames.toLocaleString()} frames in ${res.seconds.toFixed(1)} s (${(res.frames / res.seconds).toFixed(0)} frames/s)`
           : 'Extract done';
       }
       case 'error':
@@ -286,7 +295,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       case 'cancelled':
         return 'Extract cancelled';
       default:
-        if (props.live) {
+        if (!extracts()) {
           if (pass1Busy()) return 'Live: the traces are solved as the frames come in';
           const r = liveResult();
           return r
@@ -731,7 +740,9 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         </StepPanel>
         <StepPanel step={stepOf(steps3(), 'settle')}>
           <SettleBody pipeline={s()} cells={c()} step={stepOf(steps3(), 'settle')}>
-            <Show when={s().lookbackRun() ? c().status()?.lookback : undefined}>
+            <Show
+              when={s().lookbackRun() || extractsOnFactors() ? c().status()?.lookback : undefined}
+            >
               {(lb) => (
                 <div class="cala-run__footer">
                   <span class="cala-readout cala-wrap" data-testid="lookback-readout">
@@ -754,7 +765,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           </SettleBody>
         </StepPanel>
         <Show
-          when={!props.live}
+          when={extracts()}
           fallback={
             <div class="cala-run__footer">
               <span
@@ -852,7 +863,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         </h3>
         <Show when={props.live}>
           <p class="cala-muted cala-run__line" data-testid="live-stage-note">
-            {LIVE_NOTE}
+            {props.factorRun ? FACTORS_LIVE_NOTE : LIVE_NOTE}
           </p>
         </Show>
         <Show when={!props.live}>
@@ -870,9 +881,9 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         </Show>
         <div class="cala-run__footer">
           <Show
-            when={p().status() !== 'running' && !props.live}
+            when={p().status() !== 'running' && extracts()}
             fallback={
-              <Show when={!props.live}>
+              <Show when={extracts()}>
                 <button type="button" class="btn-secondary btn-small" onClick={() => p().cancel()}>
                   Cancel Extract
                 </button>

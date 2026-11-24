@@ -63,6 +63,7 @@ export function createSteps(src: () => StepSources): () => StepView[] {
       extractTotal: p.total(),
       extractFps: p.fps(),
       autoExtract: o.sessionRun === true || extractAfterDiscover(),
+      factorRun: s.factorRun(),
     });
   };
 }

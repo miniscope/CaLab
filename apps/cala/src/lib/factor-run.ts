@@ -31,3 +31,7 @@ export function factorRunPlan(o: {
 
 export const FACTORS_REVIEW_OFF =
   'cala: ?review is off with ?factors (the history review reads plain tiles only; a stream with ?factors compresses on offset grids).';
+
+/** The Results note of a `?factors` stream (the plain stream says `LIVE_NOTE`). */
+export const FACTORS_LIVE_NOTE =
+  "With ?factors, a live stream settles and extracts on the factors Discover wrote during the stream (there is no file to re-read). The export keeps the live traces beside Extract's.";

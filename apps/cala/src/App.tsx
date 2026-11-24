@@ -989,6 +989,7 @@ const App: Component = () => {
               bitDepth={lp.info.bitDepth}
               narrow={layout().narrow}
               ui={historyUi}
+              factorRun={pipeline.factorRun()}
               compress={compress}
               review={review}
               onStopSettling={() => slow.stopSettling(cells.session())}
