@@ -16,6 +16,7 @@ import type { GovernorStatus } from '../lib/settle.ts';
 import type { LookbackTiming } from '../lib/work-meter.ts';
 import type { FolderEntry, SessionInput } from '../lib/frame-source.ts';
 import type { SessionTransform } from '../lib/session-boundary.ts';
+import type { CompressedWindow } from './compress-types.ts';
 
 /** Slow worker -> look-back worker. */
 export type SlowToLookback =
@@ -68,6 +69,11 @@ export type LookbackToSlow =
 /** The recording the look-back worker opens (its own `FrameSource`, from the same `File`s). */
 export type LookbackSource = { entries: FolderEntry[] } | { sessions: SessionInput[] };
 
+/** A live stream's factors (`?factors`): the compress worker's run folder and its compressed windows. */
+export type FactorSource = {
+  factors: { folder: string; windows: CompressedWindow[]; width: number; height: number };
+};
+
 /** Main thread -> look-back worker. */
 export type MainToLookback =
   /** The port to the slow worker (transferred). */
@@ -78,7 +84,7 @@ export type MainToLookback =
    * back states of the newest two sessions only (worker 0 keeps every
    * session's, for the Final settle).
    */
-  | { type: 'begin'; session: number; source: LookbackSource; prune?: boolean }
+  | { type: 'begin'; session: number; source: LookbackSource | FactorSource; prune?: boolean }
   /** What the live pipeline recorded for frames `start..start + dy.length` (copies; transferred). */
   | {
       type: 'rows';

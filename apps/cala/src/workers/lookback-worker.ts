@@ -13,9 +13,12 @@
  */
 import { initCalaWasm } from '../lib/cala-wasm.ts';
 import { FrameSource } from '../lib/frame-source.ts';
+import { FactorReader, type FrameServer } from '../lib/factor-reader.ts';
+import { FactorWindow, TraceEngine, TraceLibrary } from '../lib/cala-wasm.ts';
 import { LookbackReader, lookbackFrames } from '../lib/lookback-reader.ts';
 import { LOOKBACK } from '../lib/slow-runner.ts';
 import { StagePool } from '../lib/stage-pool.ts';
+import { factorFiles } from '../lib/window-store.ts';
 import type {
   LookbackToMain,
   LookbackToSlow,
@@ -31,9 +34,12 @@ const workerScope = globalThis as unknown as {
 /** The run being served. */
 interface Run {
   session: number;
-  ready: Promise<{ reader: LookbackReader; pool: StagePool }>;
+  ready: Promise<{ server: FrameServer; pool: StagePool }>;
   source: FrameSource | null;
+  /** The recording's reader (null for a factor run). */
   reader: LookbackReader | null;
+  /** What serves requests: `reader`, or a `FactorReader`. */
+  server: FrameServer | null;
 }
 
 let slow: MessagePort | null = null;
@@ -55,21 +61,21 @@ function stop(): void {
   const r = run;
   run = null;
   if (!r) return;
-  r.reader?.dispose();
+  r.server?.dispose();
   r.source?.dispose();
 }
 
 function begin(msg: Extract<MainToLookback, { type: 'begin' }>): void {
   stop();
   // `ready` is set right below (it needs `r` to tell a stale open).
-  const r = { session: msg.session, source: null, reader: null } as unknown as Run;
+  const r = { session: msg.session, source: null, reader: null, server: null } as unknown as Run;
   r.ready = open(r, msg);
   r.ready.catch((err: unknown) => {
     if (run === r)
       workerScope.postMessage({
         type: 'error',
         session: r.session,
-        message: `Look-back could not open the recording: ${messageOf(err)}`,
+        message: `Look-back could not open the ${'factors' in msg.source ? 'factors' : 'recording'}: ${messageOf(err)}`,
       });
   });
   run = r;
@@ -79,10 +85,37 @@ async function open(
   r: Run,
   msg: Extract<MainToLookback, { type: 'begin' }>,
 ): Promise<{
-  reader: LookbackReader;
+  server: FrameServer;
   pool: StagePool;
 }> {
   await initCalaWasm();
+  if ('factors' in msg.source) {
+    const f = msg.source.factors;
+    const server = new FactorReader(factorFiles(f.folder), f.windows, f.width * f.height, {
+      open: (bytes) => FactorWindow.fromBytes(bytes),
+      solver: (bytes) => {
+        const lib = TraceLibrary.fromBytes(bytes);
+        try {
+          // 0, 0: the solver's default tolerance and sweep cap (as the fast loop's engine).
+          const engine = new TraceEngine(lib, 0, 0);
+          return {
+            cells: lib.ids().length,
+            processFrames: (y, n) => engine.processFrames(y, n),
+            lastBackground: () => engine.lastBackground(),
+            free: () => engine.free(),
+          };
+        } finally {
+          lib.free();
+        }
+      },
+    });
+    if (run !== r) {
+      server.dispose();
+      throw new Error('look-back stopped');
+    }
+    r.server = server;
+    return { server, pool: new StagePool(2, LOOKBACK.takeMax * f.width * f.height) };
+  }
   const src =
     'entries' in msg.source
       ? await FrameSource.open(msg.source.entries)
@@ -93,8 +126,9 @@ async function open(
   }
   r.source = src;
   r.reader = new LookbackReader(src, msg.prune ? { keepSessions: 2 } : {});
+  r.server = r.reader;
   const pool = new StagePool(2, LOOKBACK.takeMax * src.info.width * src.info.height);
-  return { reader: r.reader, pool };
+  return { server: r.reader, pool };
 }
 
 /** Run `fn` on the reader of `session` once it is open (in message order). */
@@ -102,8 +136,20 @@ function withReader(session: number, fn: (reader: LookbackReader, pool: StagePoo
   const r = run;
   if (!r || r.session !== session) return;
   r.ready.then(
-    ({ reader, pool }) => {
-      if (run === r) fn(reader, pool);
+    ({ pool }) => {
+      if (run === r && r.reader) fn(r.reader, pool);
+    },
+    () => {},
+  );
+}
+
+/** Run `fn` on the frame server of `session` (recording or factors) once it is open. */
+function withServer(session: number, fn: (server: FrameServer, pool: StagePool) => void): void {
+  const r = run;
+  if (!r || r.session !== session) return;
+  r.ready.then(
+    ({ server, pool }) => {
+      if (run === r) fn(server, pool);
     },
     () => {},
   );
@@ -142,10 +188,10 @@ function handleMain(msg: MainToLookback): void {
 function handleSlow(msg: SlowToLookback): void {
   switch (msg.type) {
     case 'library':
-      withReader(msg.session, (reader) => reader.setLibrary(msg.version, msg.bytes));
+      withServer(msg.session, (server) => server.setLibrary(msg.version, msg.bytes));
       return;
     case 'release':
-      withReader(msg.session, (_, pool) => pool.release(msg.frames));
+      withServer(msg.session, (_, pool) => pool.release(msg.frames));
       return;
     case 'request': {
       const r = run;
@@ -169,14 +215,14 @@ function handleSlow(msg: SlowToLookback): void {
 async function serve(r: Run, msg: Extract<SlowToLookback, { type: 'request' }>): Promise<void> {
   const { session, id } = msg;
   try {
-    const { reader, pool } = await r.ready;
+    const { server, pool } = await r.ready;
     const frames = lookbackFrames(msg.items);
     if (frames.length > LOOKBACK.takeMax)
       throw new Error(`look-back: ${frames.length} frames in one request`);
     const out = await pool.acquire();
     let solved;
     try {
-      solved = await reader.serve(frames, out, msg.skip);
+      solved = await server.serve(frames, out, msg.skip);
     } catch (err) {
       pool.release(out);
       throw err;

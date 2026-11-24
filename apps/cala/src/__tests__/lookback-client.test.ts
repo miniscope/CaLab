@@ -51,6 +51,24 @@ function setup(blocked: string | null = null, pool = 0) {
 }
 
 describe('look-back client', () => {
+  it('beginFactors starts worker 0 on the factors, connects it once and never starts a pool', () => {
+    const t = setup(null, 2);
+    const factors = {
+      folder: 'run-a',
+      windows: [{ index: 0, start: 0, frames: 600 }],
+      width: 4,
+      height: 3,
+    };
+    t.client.beginFactors!(7, factors);
+    expect(t.workers()).toBe(1);
+    expect(t.sent.at(-1)!.msg).toEqual({ type: 'begin', session: 7, source: { factors } });
+    expect(t.ports).toHaveLength(1);
+    expect(t.client.startPool!(7)).toBe(0);
+    expect(t.workers()).toBe(1);
+    t.client.reset(7);
+    expect(t.sent.at(-1)!.msg).toEqual({ type: 'reset', session: 7 });
+  });
+
   it('starts nothing while blocked', () => {
     const t = setup('Look-back needs a recording on disk.');
     expect(t.client.blocked()).toMatch(/recording on disk/);
