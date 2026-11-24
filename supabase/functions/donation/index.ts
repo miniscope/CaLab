@@ -491,7 +491,8 @@ export function validateFiles(
   }
 
   const nChunks = chunkIdx.size;
-  if (nChunks === 0) fail(400, 'a donation needs at least one frames-0000.calaraw.gz chunk');
+  if (nChunks === 0)
+    fail(400, 'a shared recording needs at least one frames-0000.calaraw.gz chunk');
   for (let i = 0; i < nChunks; i++) {
     if (!chunkIdx.has(i))
       fail(400, `chunk ${chunkName(i)} is missing (chunks must be contiguous from 0000)`);
@@ -507,7 +508,7 @@ export function validateFiles(
   if (total > maxBytes) {
     fail(
       413,
-      `donation is ${formatBytes(total)}, above the ${formatBytes(maxBytes)} per-donation cap`,
+      `shared recording is ${formatBytes(total)}, above the ${formatBytes(maxBytes)} limit`,
     );
   }
   return { files, nChunks, total };
@@ -666,7 +667,7 @@ function donationId(body: Body): string {
 function declaredFile(row: DonationRow, name: unknown): DonationFile {
   if (typeof name !== 'string') fail(400, 'name must be text');
   const file = row.files.find((f) => f.name === name);
-  if (!file) fail(404, `${name} is not a declared file of this donation`);
+  if (!file) fail(404, `${name} is not a declared file of this shared recording`);
   return file!;
 }
 
@@ -744,19 +745,19 @@ export function createHandler(deps: DonationDeps): (req: Request) => Promise<Res
   async function loadOwned(body: Body, user: DonationUser): Promise<DonationRow> {
     const row = await db.get(donationId(body));
     // Someone else's donation looks exactly like a missing one.
-    if (!row || row.user_id !== user.id) return fail(404, 'donation not found');
+    if (!row || row.user_id !== user.id) return fail(404, 'shared recording not found');
     return row;
   }
 
   async function load(body: Body): Promise<DonationRow> {
     const row = await db.get(donationId(body));
-    if (!row) return fail(404, 'donation not found');
+    if (!row) return fail(404, 'shared recording not found');
     return row;
   }
 
   function requireStatus(row: DonationRow, allowed: DonationStatus[]): void {
     if (!allowed.includes(row.status)) {
-      fail(409, `donation is ${row.status}; this needs ${allowed.join(' or ')}`);
+      fail(409, `shared recording is ${row.status}; this needs ${allowed.join(' or ')}`);
     }
   }
 
@@ -766,7 +767,7 @@ export function createHandler(deps: DonationDeps): (req: Request) => Promise<Res
     patch: DonationPatch,
   ): Promise<void> {
     if (!(await db.transition(row.id, from, patch))) {
-      fail(409, 'donation status changed meanwhile; reload and try again');
+      fail(409, 'shared recording status changed meanwhile; reload and try again');
     }
   }
 
@@ -801,12 +802,12 @@ export function createHandler(deps: DonationDeps): (req: Request) => Promise<Res
     if (open >= env.maxOpenPerUser) {
       fail(
         429,
-        `you already have ${open} donation(s) in progress; at most ${env.maxOpenPerUser} may wait for review or ingest at a time`,
+        `you already have ${open} shared recording(s) in progress; at most ${env.maxOpenPerUser} may wait for review or ingest at a time`,
       );
     }
     const used = await db.openDeclaredBytes();
     if (used + total > env.globalCapBytes) {
-      fail(507, 'donation storage is full right now; please try again in a few days');
+      fail(507, 'storage for shared recordings is full right now; please try again in a few days');
     }
 
     const id = await db.insert({
@@ -902,7 +903,7 @@ export function createHandler(deps: DonationDeps): (req: Request) => Promise<Res
       }))
     ) {
       await deleteObjects(keysOf(row, approvedKey));
-      fail(409, 'donation status changed meanwhile; reload and try again');
+      fail(409, 'shared recording status changed meanwhile; reload and try again');
     }
     await deleteObjects(keysOf(row, pendingKey));
     return { status: 'approved' };
@@ -920,11 +921,12 @@ export function createHandler(deps: DonationDeps): (req: Request) => Promise<Res
         fail(400, 'dry_run must be a boolean');
       }
       const row = await load(body);
-      if (row.sharing !== 'public') fail(409, 'donation is CaLab only; it is never published');
-      if (row.status === 'published') fail(409, 'donation is already published');
+      if (row.sharing !== 'public')
+        fail(409, 'shared recording is CaLab only; it is never published');
+      if (row.status === 'published') fail(409, 'shared recording is already published');
       requireStatus(row, ['ingested']);
       if (!row.subject_id || !row.subject_sex || !row.subject_age || !row.session_date) {
-        fail(409, 'donation lacks the subject fields DANDI needs');
+        fail(409, 'shared recording lacks the subject fields DANDI needs');
       }
       const path = body.dandi_path;
       if (typeof path !== 'string' || path.length > 256 || !DANDI_PATH.test(path)) {
@@ -982,8 +984,8 @@ export function createHandler(deps: DonationDeps): (req: Request) => Promise<Res
     }
 
     const user = await deps.resolveUser(req.headers.get('authorization'));
-    if (!user) fail(401, 'sign in to donate data');
-    if (user!.isAnonymous) fail(403, 'sign in with your email to donate data');
+    if (!user) fail(401, 'sign in to share a recording');
+    if (user!.isAnonymous) fail(403, 'sign in with your email to share a recording');
 
     if (ADMIN_ACTIONS.has(action)) {
       if (!user!.isAdmin) fail(403, 'admin only');

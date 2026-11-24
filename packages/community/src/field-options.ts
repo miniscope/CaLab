@@ -196,3 +196,82 @@ export const BRAIN_REGION_OPTIONS = [
   'septum',
   'claustrum',
 ];
+
+/** Specific microscopes (models), shown before the generic types. */
+export const SCOPE_MODEL_OPTIONS = [
+  'UCLA Miniscope v4',
+  'UCLA Miniscope V4.4',
+  'UCLA Miniscope v3',
+  'UCLA Miniscope wire-free',
+  'own wireless miniscope',
+  'Inscopix nVista',
+  'Inscopix nVoke',
+  'Doric miniscope',
+  'NINscope',
+  'Bruker 2-photon',
+  'Thorlabs 2-photon',
+  'Neurolabware 2-photon',
+];
+
+/** How the indicator is expressed (virus or transgenic line). */
+export const EXPRESSION_OPTIONS = [
+  'AAV1-Syn-GCaMP6f',
+  'AAV1-Syn-GCaMP6s',
+  'AAV9-Syn-GCaMP7f',
+  'AAV9-Syn-jGCaMP8m',
+  'AAV9-Syn-jGCaMP8s',
+  'AAV1-CaMKII-GCaMP6f',
+  'AAV9-CaMKII-GCaMP7f',
+  'AAV-Flex-GCaMP6f (Cre-dependent)',
+  'AAV-Flex-jGCaMP8m (Cre-dependent)',
+  'Thy1-GCaMP6s (GP4.3)',
+  'Thy1-GCaMP6f (GP5.17)',
+  'Ai148 (TIGRE-GCaMP6f) x Cre',
+  'Ai162 (TIGRE-GCaMP6s) x Cre',
+  'Ai95 (RCL-GCaMP6f) x Cre',
+  'Snap25-GCaMP6s',
+];
+
+/** Surgical / optical preparation. */
+export const PREPARATION_OPTIONS = [
+  'GRIN lens',
+  'GRIN lens + prism',
+  'cranial window',
+  'cranial window + baseplate',
+  'thinned skull',
+  'optical fiber',
+  'acute slice',
+];
+
+/** What the animal was doing during the recording. */
+export const BEHAVIOR_OPTIONS = [
+  'open field',
+  'linear track',
+  'home cage',
+  'sleep',
+  'head-fixed, at rest',
+  'head-fixed, running wheel',
+  'head-fixed, task',
+  'freely moving, task',
+  'fear conditioning',
+  'social interaction',
+  'anesthetized',
+];
+
+/** Strain or genotype of the animal. */
+export const GENOTYPE_OPTIONS = [
+  'C57BL/6J',
+  'C57BL/6N',
+  'Thy1-GCaMP6s (GP4.3)',
+  'Thy1-GCaMP6f (GP5.17)',
+  'Ai148 x Cre',
+  'Ai162 x Cre',
+  'PV-Cre',
+  'SST-Cre',
+  'VIP-Cre',
+  'CaMKIIa-Cre',
+  'Drd1-Cre',
+  'A2a-Cre',
+  'Long-Evans',
+  'Sprague-Dawley',
+];
