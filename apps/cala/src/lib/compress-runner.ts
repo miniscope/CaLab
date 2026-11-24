@@ -109,11 +109,11 @@ export function backlogCap(e: { quota?: number; usage?: number } | null): number
     : BACKLOG_MAX_BYTES;
 }
 
-/** Why a run's factors were given up at the cap. */
 /** Why a recording that settled on the file has no factors. */
 export const STOPPED_TEXT =
   'The Final settle re-read the file, so the compressor stopped: Extract reads the file too.';
 
+/** Why a run's factors were given up at the cap. */
 export function backlogText(cap: number): string {
   return `The windows waiting for compression would need more than ${(cap / 2 ** 30).toFixed(1)} GB of disk.`;
 }
