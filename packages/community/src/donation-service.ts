@@ -101,7 +101,7 @@ export class DonationApiError extends Error {
 
 async function requireClient() {
   const client = await getDonationSupabase();
-  if (!client) throw new DonationApiError('Donation is not configured');
+  if (!client) throw new DonationApiError('Sharing is not configured');
   return client;
 }
 

@@ -214,7 +214,7 @@ the main project, which has no donation tables.
 | `create`           | requires and validates `sharing` and the four subject fields (same rules as the CHECKs); derives `license`                  |
 | `ingest_published` | **new**, lab (ingest token): `{donation_id, dandi_path}` for an `ingested`, `public` row → `published`, sets `published_at` |
 | `ingest_list`      | also returns `sharing` and the subject fields, so the lab side never has to infer them                                      |
-| `withdraw`         | unchanged (until ingested); later requests go to `DELETION_CONTACTS`                                                        |
+| `withdraw`         | unchanged (until ingested); later requests go to the CaLab team                                                             |
 
 The new-upload notification email names the sharing choice.
 
@@ -301,7 +301,8 @@ donations", opens a list, no sign-in needed:
 - The sharing choice (above), with its text, right next to the Donate button.
 - Deletion:
   - Withdraw in the app until ingested.
-  - After that on request to `DELETION_CONTACTS` (`DonatePanel.tsx`): a
+  - After that, people contact the CaLab team (plain text in the panel, no
+    link, no personal email in the app): a
     CaLab-only donation is deleted from the lab server; a public one is
     removed from the DANDI draft and the lab server, which takes it out of
     every later version.

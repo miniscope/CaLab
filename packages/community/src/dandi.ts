@@ -150,5 +150,5 @@ export function acknowledgementText(
     ? `${row.credit_name}${row.credit_lab ? ` (${row.credit_lab})` : ''}`
     : (row.credit_lab ?? 'the contributing lab');
   const ref = doi ? `DANDI:${cfg.dandiset}, doi:${doi}` : `DANDI:${cfg.dandiset}`;
-  return `Data were contributed by ${who} to the CaLab donated recordings collection (${ref}).`;
+  return `Data were contributed by ${who} to the CaLab shared recordings collection (${ref}).`;
 }

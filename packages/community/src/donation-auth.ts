@@ -161,7 +161,7 @@ export function donationAuthLoading(): boolean {
 export async function signInForDonation(email: string): Promise<{ error: string | null }> {
   if (!separateDonationProject) return signInWithEmail(email);
   const client = await getDonationSupabase();
-  if (!client) return { error: 'Donation is not configured' };
+  if (!client) return { error: 'Sharing is not configured' };
   const { error } = await client.auth.signInWithOtp({
     email,
     options: { emailRedirectTo: donationReturnUrl(window.location.href) },

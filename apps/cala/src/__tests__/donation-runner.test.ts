@@ -336,7 +336,7 @@ describe('DonationRunner', () => {
     const { r } = runner(worker, api, store);
     const end = await r.run(job({}, big));
     expect(end.kind).toBe('error');
-    expect((end as { message: string }).message).toMatch(/limit per donation/);
+    expect((end as { message: string }).message).toMatch(/limit per shared recording/);
     expect(worker.received).toEqual([]);
     expect(calls.log).toEqual([]);
   });
