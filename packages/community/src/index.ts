@@ -34,6 +34,7 @@ export {
   buildFeedbackUrl,
   buildFeatureRequestUrl,
   buildBugReportUrl,
+  buildDonationRequestUrl,
 } from './github-issue-url.ts';
 export type { AppLabel } from './github-issue-url.ts';
 

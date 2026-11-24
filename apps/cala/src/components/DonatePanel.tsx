@@ -21,6 +21,7 @@ import {
   signOutDonation,
   donationDandi,
   dandiFolderUrl,
+  buildDonationRequestUrl,
   type DonationMeta,
   type DonationRow,
   BEHAVIOR_OPTIONS,
@@ -68,21 +69,12 @@ const optional = (s: string): string | null => (s.trim() === '' ? null : s.trim(
 
 const CC_BY_URL = 'https://creativecommons.org/licenses/by/4.0/';
 
-/** Who receives deletion requests (add addresses here; all are shown). */
-const DELETION_CONTACTS = ['marcel91@g.ucla.edu'];
-
-function DeletionContacts(): JSX.Element {
+/** Deletion requests go through a GitHub issue (no personal email in the app). */
+function DeletionRequest(): JSX.Element {
   return (
-    <For each={DELETION_CONTACTS}>
-      {(addr, i) => (
-        <>
-          {i() > 0 ? ', ' : ''}
-          <a href={`mailto:${addr}?subject=${encodeURIComponent('CaLab data donation: delete')}`}>
-            {addr}
-          </a>
-        </>
-      )}
-    </For>
+    <a href={buildDonationRequestUrl('cala')} target="_blank" rel="noopener noreferrer">
+      open a GitHub issue
+    </a>
   );
 }
 
@@ -146,8 +138,8 @@ export function DonatePanel(props: DonatePanelProps): JSX.Element {
           <li>
             <strong>Credit.</strong> Public donors and their labs are listed as contributors on the
             collection's citable DOI, and everyone using the data is asked to cite it and
-            acknowledge your lab. Our own papers acknowledge every lab whose data they use. Deletion
-            requests: <DeletionContacts />.
+            acknowledge your lab. Our own papers acknowledge every lab whose data they use. To have
+            a donation deleted, <DeletionRequest />.
           </li>
         </ul>
         <Show when={!expanded()}>
@@ -165,9 +157,10 @@ export function DonatePanel(props: DonatePanelProps): JSX.Element {
         <p class="cala-muted">
           The raw frames are compressed without loss in this browser and uploaded with the metadata
           below. File paths are never sent, only file names. The lab reviews each donation first.
-          Withdraw it under "My donations" below until the lab has taken it in; after that, email{' '}
-          <DeletionContacts />. A public recording can be removed until the next version of the
-          DANDI collection is published; published versions are permanent.
+          Withdraw it under "My donations" below until the lab has taken it in; after that,{' '}
+          <DeletionRequest /> naming the recording and the date you sent it. A public recording can
+          be removed until the next version of the DANDI collection is published; published versions
+          are permanent.
         </p>
         <Show
           when={signedIn()}

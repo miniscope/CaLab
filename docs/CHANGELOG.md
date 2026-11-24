@@ -5,6 +5,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Changed
+
+- **Donate data (cala):** deletion requests now go through a pre-filled GitHub issue instead of a personal email address shown in the panel.
+
 ## [2.22.1] - 2026-11-23
 
 ### Changed

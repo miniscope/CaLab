@@ -461,7 +461,7 @@ scope, and for public donations subject details) and tick both consent boxes. Th
 then compressed without loss in the browser (about 1.65x smaller, up to 10 GB per donation) and
 uploaded with `timeStamps.csv` (if the recording has one) and the file names, never folder paths.
 **My donations** lists what you sent, whether it is in the benchmark, and lets you withdraw
-it until the lab has taken it in. After that, email the deletion contact shown in the panel. A
+it until the lab has taken it in. After that, open a GitHub issue (linked in the panel) to have it deleted. A
 public recording can be removed until the next version of the DANDI collection is published;
 published versions are permanent.
 
