@@ -67,6 +67,8 @@ export const KNOWN_FLAGS = [
   'csrate',
   'pacefps',
   'lbpool',
+  'cpool',
+  'cbacklog',
   'needfirst',
   'smooth',
   'pipeline',
@@ -85,7 +87,14 @@ export const KNOWN_FLAGS = [
 const REDACTED_FLAGS: ReadonlySet<string> = new Set(['live']);
 
 /** What `?debug` gates: these flags only take effect with it. */
-const DEBUG_ONLY: ReadonlySet<string> = new Set(['lbpool', 'needfirst', 'pacefps', 'smooth']);
+const DEBUG_ONLY: ReadonlySet<string> = new Set([
+  'lbpool',
+  'cpool',
+  'cbacklog',
+  'needfirst',
+  'pacefps',
+  'smooth',
+]);
 
 /**
  * Whether a flag changes anything given the others (`App.tsx` reads them the

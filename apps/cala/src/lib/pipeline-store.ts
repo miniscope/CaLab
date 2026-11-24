@@ -18,6 +18,7 @@ import {
 import type { CellStore } from './cell-store.ts';
 import type { CompressStore } from './compress-store.ts';
 import { FACTORS_FILE_JOINT, factorRunPlan } from './factor-run.ts';
+import { poolForRun, type PoolWidth } from './compress-pool.ts';
 import {
   flatFieldKey,
   initialFlatFieldState,
@@ -230,6 +231,11 @@ export function createPipelineStore(
   const [factorsDefault, setFactorsDefault] = createSignal(false);
   const [compressAsked, setCompressAsked] = createSignal(compress !== undefined);
   const [compressRun, setCompressRun] = createSignal(false);
+  // The page's compress pool widths (`compressPoolSize`), and the current run's (`poolForRun`).
+  const [compressPool, setCompressPool] = createSignal<PoolWidth | null>(null);
+  const [runPool, setRunPool] = createSignal<PoolWidth | null>(null);
+  // `?debug&cbacklog=GB`: the cap on window files waiting for compression (measurement).
+  let backlogCap: number | undefined;
   let jointOf: () => boolean = () => false;
   /**
    * Settle during Discover ("Background settle", under look-back; runs only
@@ -1080,6 +1086,10 @@ export function createPipelineStore(
       setFactorRun(runPlan.factorSettle);
       setFactorFileRun(runPlan.factorFile);
       setCompressRun(runPlan.compress !== null);
+      const pool = runPlan.compress
+        ? poolForRun(flat.identity?.()?.live === true, compressPool())
+        : null;
+      setRunPool(pool);
       if (factorsFile() && jointOf()) console.warn(FACTORS_FILE_JOINT);
       runLevel = lb || runPlan.factorSettle ? finalSettleLevelSig() : FINAL_SETTLE_LEVEL_DEFAULT;
       if (lb) {
@@ -1113,6 +1123,8 @@ export function createPipelineStore(
             ? {
                 compress: true,
                 ...(runPlan.compress !== 'plain' ? { compressTiling: runPlan.compress } : {}),
+                ...(pool ? { compressPool: pool } : {}),
+                ...(backlogCap !== undefined ? { compressBacklogCap: backlogCap } : {}),
               }
             : {}),
           ...(runPlan.factorSettle ? { factorSettle: true } : {}),
@@ -1265,6 +1277,14 @@ export function createPipelineStore(
     factorFileRun,
     /** The current run compresses its frames (a factor run or `?compress`). */
     compressRun,
+    /** The page's compress pool widths (set once by the app; null: one worker). */
+    setCompressPool,
+    /** The current run's compress pool widths (null: one worker, or no compression). */
+    runPool,
+    /** `?debug&cbacklog=GB`: the cap on waiting window files, bytes (undefined: the default). */
+    setCompressBacklogCap(bytes: number | undefined): void {
+      backlogCap = bytes;
+    },
     // (Not `??`: `blocked()` returns null when look-back can run.)
     lookbackBlocked: () =>
       lookbackFeed ? lookbackFeed.blocked() : 'Look-back is not available here.',

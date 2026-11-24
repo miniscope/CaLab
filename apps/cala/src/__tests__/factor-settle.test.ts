@@ -112,6 +112,19 @@ describe('FileSettleChoice', () => {
     });
   });
 
+  it('with a pool of 3 after Discover: waits up to 3 windows behind, and the reason names the pool', () => {
+    expect(new FileSettleChoice().act(at({ behind: 1800, workers: 3 }))).toEqual({ kind: 'none' });
+    const a = new FileSettleChoice().act(at({ behind: 7440, workers: 3 }));
+    expect(a).toMatchObject({ kind: 'file', session: 1 });
+    // 7,440 frames x 25 ms / 3 workers = 62 s.
+    expect(a.kind === 'file' && a.reason).toBe(
+      'the compressor was 7,440 frames, about 62 s with 3 workers, behind when Discover ended',
+    );
+    expect(new FileSettleChoice().act(at({ behind: 1801, workers: 3 }))).toMatchObject({
+      kind: 'file',
+    });
+  });
+
   it('unusable factors (an error, the watchdog, a one-frame tail): the file with the reason', () => {
     const c = new FileSettleChoice();
     expect(c.act(at({ behind: 400 }))).toEqual({ kind: 'none' });

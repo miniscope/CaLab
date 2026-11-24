@@ -91,6 +91,11 @@ export interface FileSettleInput {
   window: number;
   /** The compressor's last ms per frame (for the reason's seconds). */
   msPerFrame: number;
+  /**
+   * Compress workers after Discover's end (the pool's `after`; absent: 1).
+   * They compress that many windows in about one window's time of one worker.
+   */
+  workers?: number;
   width: number;
   height: number;
 }
@@ -136,9 +141,14 @@ export class FileSettleChoice {
     }
     if (this.looked !== i.session) {
       this.looked = i.session;
-      if (i.behind > i.window) {
+      const workers = Math.max(1, i.workers ?? 1);
+      if (i.behind > i.window * workers) {
         this.answered = i.session;
-        return { kind: 'file', session: i.session, reason: fileBehindText(i.behind, i.msPerFrame) };
+        return {
+          kind: 'file',
+          session: i.session,
+          reason: fileBehindText(i.behind, i.msPerFrame, workers),
+        };
       }
     }
     return { kind: 'none' };
