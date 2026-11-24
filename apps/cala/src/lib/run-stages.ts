@@ -53,6 +53,8 @@ export interface StageInput {
   cells: number;
   /** Why the recorded motion and flicker cannot be replayed (null: they can). */
   replayBlocked: string | null;
+  /** A `?factors` stream: Extract solves on the stream's factors. */
+  liveFactors?: boolean;
 }
 
 export const LIVE_NOTE =
@@ -94,7 +96,7 @@ export function stageAvailability(i: StageInput): Record<StageName, string | nul
         ? 'Extract is running.'
         : null;
   const after = (stage: string): string | null => {
-    if (i.live) return LIVE_NOTE;
+    if (i.live && !i.liveFactors) return LIVE_NOTE;
     if (busy) return busy;
     if (i.discover !== 'done') return `${stage} runs after Discover finishes.`;
     if (i.replayBlocked) return i.replayBlocked;

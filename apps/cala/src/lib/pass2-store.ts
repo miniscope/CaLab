@@ -34,6 +34,8 @@ import { createTraceFile, type TraceFile } from './trace-file.ts';
 import type { LibraryView } from '../workers/slow-types.ts';
 import type { FovProjections } from './fov-projection.ts';
 import { startReplayPipeline } from './replay-pipeline.ts';
+import type { FactorInfo } from './compress-store.ts';
+import type { FactorExtractPort, FactorJob } from './factor-extract.ts';
 
 export type Pass2Status = 'idle' | 'running' | 'done' | 'error' | 'cancelled';
 
@@ -73,6 +75,9 @@ export interface Pass2Result {
   seconds: number;
   /** Mean and max projections of every frame (absent: the workers kept none). */
   projection?: FovProjections;
+  /** Extract solved frames rebuilt from a live stream's factors (`?factors`), and which factors. */
+  source?: 'factors';
+  factors?: FactorInfo;
 }
 
 export function createPass2Store(
@@ -82,6 +87,8 @@ export function createPass2Store(
   clock: () => number = () => performance.now(),
   /** Another stage's reason to wait (a Refine run going on), checked after Discover's. */
   blocked?: () => string | null,
+  /** A `?factors` stream's factors: Extract solves on them in the compress worker (absent: never). */
+  factors?: FactorExtractPort,
 ) {
   const [status, setStatus] = createSignal<Pass2Status>('idle');
   const [processed, setProcessed] = createSignal(0);
@@ -91,11 +98,16 @@ export function createPass2Store(
   const [error, setError] = createSignal<string | null>(null);
   const [result, setResult] = createSignal<Pass2Result | null>(null);
   const [motionBackend, setMotionBackend] = createSignal<string | null>(null);
+  /** Why a factor run waits (the compressor is not done), or null. */
+  const [waiting, setWaiting] = createSignal<string | null>(null);
 
   let generation = 0;
   /** The trace files of the current run or result (deleted when replaced or cleared). */
   let file: TraceFile | null = null;
   let signedFile: TraceFile | null = null;
+  /** The job in the compress worker, and whether the current run is a factor run (cancel needs the pipeline for a replay only). */
+  let factorJob: FactorJob | null = null;
+  let factorMode = false;
 
   /** Drop the result and delete its trace files. */
   async function discard(): Promise<void> {
@@ -118,7 +130,8 @@ export function createPass2Store(
     if (st !== 'done') return 'Extract runs after Discover finishes.';
     const other = blocked?.();
     if (other) return other;
-    const replay = replayBlocked(pipeline);
+    // A factor run reads no file, so no record to replay; it waits for the factors itself.
+    const replay = factors?.active() ? null : replayBlocked(pipeline);
     if (replay) return replay;
     if (!cells.library() || !cells.libraryBytes()) return 'No cells were found.';
     if ((cells.library()?.ids.length ?? 0) === 0) return 'No cells were found.';
@@ -235,6 +248,8 @@ export function createPass2Store(
    * solved its last frames with an earlier version than the final one).
    */
   async function run(use?: { library: LibraryView; bytes: Uint8Array }): Promise<void> {
+    factorMode = factors?.active() === true;
+    if (factors && factorMode) return runFactors(factors);
     const reason = blockedReason();
     if (reason) {
       setError(reason);
@@ -322,19 +337,124 @@ export function createPass2Store(
     }
   }
 
+  /** Extract on a live stream's factors: wait for `ready`, then one job in the compress worker. */
+  async function runFactors(port: FactorExtractPort): Promise<void> {
+    const reason = blockedReason();
+    if (reason) {
+      setError(reason);
+      setStatus('error');
+      return;
+    }
+    const gen = ++generation;
+    setStatus('running');
+    setError(null);
+    await discard();
+    if (gen !== generation) return;
+    setProcessed(0);
+    setFps(0);
+    while (port.state() === 'compressing') {
+      setWaiting(port.blocked());
+      await port.changed();
+      if (gen !== generation) return;
+    }
+    setWaiting(null);
+    const info = port.info();
+    if (port.state() !== 'ready' || !info) {
+      generation++;
+      setError(port.blocked() ?? 'The factors cannot be read.');
+      setStatus('error');
+      return;
+    }
+    const library = cells.library()!;
+    const bytes = cells.libraryBytes()!;
+    const n = library.ids.length;
+    setTotal(info.frames);
+    let traces: TraceFile;
+    let signed: TraceFile | null;
+    try {
+      traces = await createTraceFile(info.frames, n, { extraBytes: info.frames * n * 4 });
+      signed = await createTraceFile(info.frames, n, {});
+    } catch (err) {
+      if (gen !== generation) return;
+      generation++;
+      setError(err instanceof Error ? err.message : String(err));
+      setStatus('error');
+      return;
+    }
+    file = traces;
+    signedFile = signed;
+    let failure: Error | null = null;
+    const t0 = clock();
+    const job = port.run(library.version, bytes, (start, count, ids, tr, sg) => {
+      if (gen !== generation || failure) return;
+      if (ids.length !== n || ids.some((id, i) => id !== library.ids[i])) {
+        // Thrown here it would land in the compress store's message handler: end the job instead.
+        failure = new Error('Extract got no traces for the final library.');
+        factorJob?.cancel();
+        return;
+      }
+      traces.append(start, tr);
+      if (signed && sg && sg.length === tr.length) signed.append(start, sg);
+      else if (signed) {
+        // A solver without signed traces: the export keeps the clipped ones only.
+        console.warn('Extract: the solver returned no signed traces; exporting clipped only.');
+        const s = signed;
+        signed = null;
+        signedFile = null;
+        void s.dispose().catch(() => {});
+      }
+      setProcessed(start + count);
+    });
+    factorJob = job;
+    try {
+      await job.done.catch((err: unknown) => {
+        throw failure ?? err;
+      });
+      await traces.finish();
+      if (signed) await signed.finish();
+      if (gen !== generation) return;
+      setResult({
+        ids: library.ids.slice(),
+        traces,
+        signed,
+        frames: info.frames,
+        cells: n,
+        version: library.version,
+        library,
+        seconds: (clock() - t0) / 1000,
+        source: 'factors',
+        factors: info,
+      });
+      setStatus('done');
+    } catch (err) {
+      if (gen !== generation) return;
+      generation++;
+      setError(err instanceof Error ? err.message : String(err));
+      setStatus('error');
+      void discard();
+    } finally {
+      factorJob = null;
+    }
+  }
+
   /** Stop a running pass 2 (its partial traces are dropped). */
   function cancel(): void {
     if (status() !== 'running') return;
     generation++;
     inFlight = 0;
     setStatus('cancelled');
+    setWaiting(null);
     void discard();
-    void client.stopPipeline({ keepSlow: true }).catch(() => {});
+    // A factor run (waiting or solving) has no replay pipeline to stop.
+    if (factorMode) factorJob?.cancel();
+    else void client.stopPipeline({ keepSlow: true }).catch(() => {});
   }
 
   /** Forget the result (pass 1 restarted, or another recording opened). */
   function clear(): void {
     if (status() === 'running') generation++;
+    factorJob?.cancel();
+    setWaiting(null);
     setStatus('idle');
     void discard();
     setError(null);
@@ -354,6 +474,8 @@ export function createPass2Store(
     error,
     result,
     motionBackend,
+    /** A factor run waits for the compressor: why (null: not waiting). */
+    waiting,
     blockedReason,
     /** The trace file of the current run (for measurements). */
     traceFile: () => file,

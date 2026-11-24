@@ -121,13 +121,16 @@ export class FactorWatchdog {
   }
 }
 
+/** What Extract's port hears: the compress worker's Extract and error messages, and a reset (a new run). */
+export type ExtractMessage = CompressToMain | { type: 'reset' };
+
 export function createCompressStore(sink?: BackfillSink) {
   const [status, setStatus] = createSignal<CompressStatus | null>(null);
   const [backfill, setBackfill] = createSignal<BackfillInfo | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   let session = -1;
   let requested = -1;
-  let onExtract: ((msg: CompressToMain) => void) | undefined;
+  let onExtract: ((msg: ExtractMessage) => void) | undefined;
   // Everything that waits for the next status, error or reset (`changed`).
   const waiters: (() => void)[] = [];
   const wake = (): void => {
@@ -145,6 +148,7 @@ export function createCompressStore(sink?: BackfillSink) {
       setBackfill(null);
       setError(null);
       wake();
+      onExtract?.({ type: 'reset' });
     },
     /** Resolves at the next status, error or reset. */
     changed: (): Promise<void> => new Promise<void>((r) => waiters.push(r)),
@@ -169,11 +173,11 @@ export function createCompressStore(sink?: BackfillSink) {
         meanRank: s.meanRank,
       };
     },
-    /** Extract's messages (Task 9 adds their types). */
+    /** Extract's messages: its windows, its end, its errors, a crash and a reset. */
     get onExtract() {
       return onExtract;
     },
-    set onExtract(fn: ((msg: CompressToMain) => void) | undefined) {
+    set onExtract(fn: ((msg: ExtractMessage) => void) | undefined) {
       onExtract = fn;
     },
     /**
@@ -189,9 +193,16 @@ export function createCompressStore(sink?: BackfillSink) {
     },
     onMessage(msg: CompressToMain): void {
       if (msg.type === 'error') {
-        setError(msg.message);
-        wake();
+        // An error of an Extract job ends that job only; every other one marks the factors unusable.
+        if (msg.job === undefined) {
+          setError(msg.message);
+          wake();
+        }
+        // A crash (session -1), an error of this run and a job's error end an Extract job.
+        if (msg.job !== undefined || msg.session === -1 || msg.session === session)
+          onExtract?.(msg);
       } else if (msg.session !== session) return;
+      else if (msg.type === 'extracted' || msg.type === 'extract-done') onExtract?.(msg);
       else if (msg.type === 'status') {
         setStatus(msg.status);
         wake();

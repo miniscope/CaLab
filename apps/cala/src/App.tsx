@@ -23,6 +23,7 @@ import { ASSUMED_FPS } from './lib/miniscope-meta.ts';
 import type { QcSnapshot } from './lib/qc.ts';
 import { createCompressClient } from './lib/compress-client.ts';
 import { createCompressStore, FactorWatchdog, factorsBlocked } from './lib/compress-store.ts';
+import { createFactorExtract } from './lib/factor-extract.ts';
 import { FACTOR_STALL_TEXT, FactorSettle } from './lib/factor-settle.ts';
 import { FACTORS_REVIEW_OFF } from './lib/factor-run.ts';
 import { createPass2Store, replayBlocked } from './lib/pass2-store.ts';
@@ -295,10 +296,23 @@ const App: Component = () => {
     extract: pass2.status(),
     finalLibrary: cells.status()?.final ?? false,
     cells: cells.library()?.ids.length ?? 0,
-    replayBlocked: replayBlocked(pipeline),
+    replayBlocked: pipeline.factorRun() ? null : replayBlocked(pipeline),
+    liveFactors: pipeline.factorRun(),
   });
   const availability = () => stageAvailability(stageInput());
-  const pass2 = createPass2Store(client, pipeline, cells);
+  // `?factors`: Extract on a stream solves in the compress worker, on the factors.
+  const factorExtract =
+    compress && compressClient
+      ? createFactorExtract(
+          compress,
+          compressClient,
+          () => cells.session(),
+          () => pipeline.factorRun(),
+          () => pipeline.status() === 'done',
+          () => pipeline.processed(),
+        )
+      : undefined;
+  const pass2 = createPass2Store(client, pipeline, cells, undefined, undefined, factorExtract);
   /** Log a stage event on the run's timeline (at the end of what Discover read). */
   const logStage = (stage: StageName, detail: string) =>
     runHistory.log({
@@ -373,6 +387,7 @@ const App: Component = () => {
             frames: r?.frames ?? 0,
             cells: r?.cells ?? 0,
             libraryVersion: r?.version ?? 0,
+            ...(r?.source === 'factors' ? { source: 'factors' as const, factors: r.factors } : {}),
           });
           logStage('extract', 'Extract done');
           const result = r;

@@ -46,6 +46,14 @@ describe('stage availability (the order of the stages)', () => {
     expect(LIVE_NOTE).toMatch(/load it as a recording/);
   });
 
+  it('lets a ?factors stream extract on its factors', () => {
+    expect(stageAvailability({ ...READY, live: true, liveFactors: true }).extract).toBeNull();
+    expect(
+      stageAvailability({ ...READY, live: true, liveFactors: true, cells: 0 }).extract,
+    ).toMatch(/No cells/);
+    expect(stageAvailability({ ...READY, live: true }).extract).toBe(LIVE_NOTE);
+  });
+
   it('has no Refine stage any more (only saved results mention one)', () => {
     expect(Object.keys(stageAvailability(READY))).toEqual(['discover', 'extract']);
     expect(STAGE_LABEL.refine).toMatch(/removed/);

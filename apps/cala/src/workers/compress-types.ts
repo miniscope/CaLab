@@ -108,7 +108,21 @@ export type CompressToMain =
     }
   /** The back-fill is complete: frames solved and wall time per frame, ms. */
   | { type: 'backfilled'; session: number; version: number; frames: number; msPerFrame: number }
-  | { type: 'error'; session: number; message: string };
+  /** Extract on factors: the traces of one window (`count * ids.length` values, frame after frame), solved with the job's library. */
+  | {
+      type: 'extracted';
+      session: number;
+      job: number;
+      start: number;
+      count: number;
+      ids: Uint32Array;
+      traces: Float32Array;
+      signed?: Float32Array;
+    }
+  /** The Extract job solved every window: frames and wall time per frame, ms. */
+  | { type: 'extract-done'; session: number; job: number; frames: number; msPerFrame: number }
+  /** `job`: the error ends that Extract job. */
+  | { type: 'error'; session: number; job?: number; message: string };
 
 /** Main thread -> compress worker. */
 export type MainToCompress =
@@ -121,4 +135,7 @@ export type MainToCompress =
    * Solve the traces of every compressed window with the library `version`
    * (or a newer one), once that library has arrived and no window is waiting.
    */
-  | { type: 'backfill'; session: number; version: number };
+  | { type: 'backfill'; session: number; version: number }
+  /** Extract on factors: solve every compressed window with `library` (a `TraceLibrary.toBytes()`). */
+  | { type: 'extract'; session: number; job: number; version: number; library: Uint8Array }
+  | { type: 'extract-cancel'; session: number; job: number };
