@@ -27,6 +27,7 @@
  * tiling), then per tile u32 byte length and `TileFactors.toBytes()`.
  */
 import type {
+  CompressedWindow,
   CompressInit,
   CompressStatus,
   CompressToMain,
@@ -166,7 +167,7 @@ export class CompressRunner {
   private epoch = 0;
   private final = false;
   /** Compressed windows, in stream order. */
-  private done: number[] = [];
+  private done: CompressedWindow[] = [];
   private library: { version: number; bytes: Uint8Array } | null = null;
   /** Library version a requested back-fill waits for. */
   private wanted: number | null = null;
@@ -325,7 +326,7 @@ export class CompressRunner {
       const buf = new Float32Array(BACKFILL_BATCH * px);
       let frames = 0;
       let first = true;
-      for (const index of [...this.done]) {
+      for (const { index } of [...this.done]) {
         const file = await this.deps.store.open(factorName(index));
         const bytes = new Uint8Array(file.size());
         file.read(bytes, 0);
@@ -448,7 +449,7 @@ export class CompressRunner {
       }
       close();
       await store.remove(windowName(job.index));
-      this.done.push(job.index);
+      this.done.push({ index: job.index, start: job.start, frames: job.frames });
       this.windows++;
       this.frames += job.frames;
       this.factorBytes += at;
@@ -500,6 +501,8 @@ export class CompressRunner {
       final: this.final && this.pending.length === 0,
       tiling: this.init?.tiling ?? 'plain',
       source: this.init?.source ?? 'discover',
+      folder: this.deps.store.folder,
+      compressed: this.done.map((w) => ({ ...w })),
     };
     this.deps.toMain.postMessage({ type: 'status', session: this.session, status });
   }

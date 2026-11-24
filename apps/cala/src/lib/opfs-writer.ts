@@ -13,6 +13,7 @@
  * `opfsAvailable` says whether any of this can work.
  */
 import type { OpfsRequest, OpfsResponse } from '../workers/opfs-writer-worker.ts';
+import { COMPRESS_ROOT } from './window-store.ts';
 
 /** Prefix of every file this app creates in OPFS. */
 export const OPFS_PREFIX = 'cala-';
@@ -175,7 +176,12 @@ export class OpfsWriterClient {
   /** Delete every `cala-*` file that no tab owns, except those named in `keep`; returns how many were removed. */
   async sweep(keep: string[] = []): Promise<number> {
     const owned = await ownedNames();
-    const res = await this.call({ op: 'sweep', prefix: OPFS_PREFIX, keep: [...keep, ...owned] });
+    // The compression's folder is swept by its own store, per run and by lock (window-store.ts).
+    const res = await this.call({
+      op: 'sweep',
+      prefix: OPFS_PREFIX,
+      keep: [...keep, ...owned, COMPRESS_ROOT],
+    });
     return res.count ?? 0;
   }
 }

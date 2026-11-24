@@ -506,6 +506,8 @@ describe('back-fill from the factors', () => {
       final: false,
       tiling: 'plain' as const,
       source: 'discover' as const,
+      folder: 'run-a',
+      compressed: [],
     };
     store.onMessage({ type: 'status', session: 3, status });
     expect(store.takeBackfill(true, true, 4)).toBe(false); // windows still open

@@ -56,6 +56,13 @@ export type FastToCompress =
   /** Pipeline stopped or restarted: drop everything. */
   | { type: 'reset'; session: number };
 
+/** A compressed window: its factor file `f<index>.bin` holds stream frames `start..start + frames`. */
+export interface CompressedWindow {
+  index: number;
+  start: number;
+  frames: number;
+}
+
 export interface CompressStatus {
   /** Windows compressed so far, and the frames they hold. */
   windows: number;
@@ -75,6 +82,10 @@ export interface CompressStatus {
   tiling: CompressTiling;
   /** Which frames the factor files hold. */
   source: CompressSource;
+  /** The OPFS run folder of the factor files (`WindowStore.folder`). */
+  folder: string;
+  /** The compressed windows, in stream order. */
+  compressed: CompressedWindow[];
 }
 
 /** Compress worker -> main thread. */
