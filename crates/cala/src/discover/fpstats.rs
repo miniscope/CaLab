@@ -706,6 +706,7 @@ impl FpStats {
             }
             i += len;
         }
+        assert_eq!(i, n, "runs cover the pixels");
         if bad || c.is_nan() || self.pm.is_some() || self.fast.is_some() {
             self.push(buf, [c, c], c, w);
             return;

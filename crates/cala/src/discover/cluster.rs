@@ -535,6 +535,7 @@ impl ClusterStore {
             }
             i += len;
         }
+        assert_eq!(i, n, "runs cover the pixels");
         for (k, &ck) in c.iter().enumerate() {
             if ck != 0.0 {
                 for (r, &a) in buf.iter_mut().zip(&self.cols[k * n..(k + 1) * n]) {
