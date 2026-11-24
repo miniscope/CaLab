@@ -5,9 +5,15 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.22.2] - 2026-11-24
+
 ### Changed
 
 - **Share recording (cala):** the data donation feature is now called "Share recording" / "shared recordings" in the UI, and deletion requests no longer show a personal email.
+
+### Fixed
+
+- **`donation_to_nwb.py`:** runs `dandi` from its own virtual environment, so the upload works without activating it.
 
 ## [2.22.1] - 2026-11-23
 
