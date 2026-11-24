@@ -2,45 +2,65 @@
 
 ## Verdict
 
-**Not flat.** Visits per frame in **Discover** set how many cells cala finds. Over the app's range (0.5x to 2x of
-Chrome at Max), the number of cells found moves by 15 seed SDs. Visits in the **Final settle** do not matter for the
-cell count.
+**Not flat.** Visits per frame in **Discover** decide how many cells cala finds, and at high rates how many false
+cells it adds. Over the app's range (0.5x to 2x of Chrome at Max), the cell count moves by about 17 seed SDs. Visits in
+the **Final settle** do not change the cell count.
 
 - **Discover visits move the count.**
-  - On the 3000-frame clips, 0.5x to 2x moves cells from 519 to 678 and recall from 0.64 to 0.82 (+18 points).
-  - Precision falls by 1.4 points. False cells rise from 4 to 16, mostly on the motion sim.
-  - The gain does not level off by 2x: +5.2 recall points from 0.5x to 0.71x, +4.0 from 1x to 1.41x, +1.9 from 1.41x to 2x.
-  - Almost all the effect is cells not yet found when the clip ends. Discover is still adding 70-160 cells a minute at
-    frame 3000, and the Final settle adds fewer than 10.
+  - On the 3000-frame clips, 0.5x to 2x moves cells from 519 to 678, recall from 0.64 to 0.82 (+18 points) and false
+    cells from 4 to 16. Precision falls by 1.4 points.
+  - Recall rises by +7.2, +5.2, +4.0 and +1.9 points per step from 0.5x to 2x, so the gains shrink.
+  - Recall levels off at about **4x** (0.94 visits per Discover frame): +3.2 points from 2x to 4x, +0.5 from 4x to 8x.
+  - False cells keep rising: 16 / 27 / 35 at 2x / 4x / 8x, and precision falls to 0.977 / 0.964 / 0.953.
+  - The rise is almost all on the motion sim, which reaches 59 and 77 false cells. They are truly false: re-matched
+    against all GT units (`--all-det`) the unmatched counts are unchanged.
+  - Almost all of the 0.5x to 2x effect is cells not yet found when the clip ends. Discover is still adding 70-160
+    cells a minute at frame 3000. The Final settle adds fewer than 10.
 - **The effect shrinks with recording length but stays.** Full 9600 frames of `v3_static_s6`, 2 seeds:
   - recall 0.883 / 0.915 / 0.928 at 0.5x / 1x / 2x;
-  - 0.5x to 1x (+3.2 points) is about 2-3 seed SDs, and 1x to 2x (+1.3) is about one seed SD;
-  - the same sim at 3000 frames moved +16.8 points from 0.5x to 2x.
+  - 0.5x to 1x (+3.2 points) is about 3 seed SDs, and 1x to 2x (+1.3) about one;
+  - the same sim at 3000 frames moved +16.8 points over 0.5x to 2x.
 - **Per-cell quality is flat.**
-  - Footprint r of matched cells (all, and close pairs < 1 D) is within seed noise (slope 0.0000 and +0.0006 per doubling).
+  - Footprint r of matched cells, all and close pairs < 1 D, stays within seed noise (slope 0.0000 and +0.0006 per
+    doubling).
   - Median trace r falls by 0.002 from 0.5x to 2x. That is the newly found, weaker cells, not worse traces.
-  - Bitten share falls slightly with more visits (-0.05 from 0.5x to 2x, about 2 seed SDs).
+  - Bitten share falls slightly with more visits (−0.05 over 0.5x to 2x, about 2 seed SDs).
 - **Final settle visits barely matter.** With Discover held at 1x, settle visits from 0.39 to 1.81 per frame (0.45x to
   2.1x) change:
   - cells by 0;
   - footprint r by 0.001 (0.9846 to 0.9857);
   - bitten share from 0.264 to 0.223.
 
-  The PI's −18 % to +36 % settle-speed range is well inside that. Settle speed is not a quality concern.
-- **The 390 vs 401 cells between two app runs fits this.** About ±3 % Discover visits gives about ±2 % cells on this
-  slope.
+  The PI's −18 % to +36 % range in settle speed is well inside this. Settle speed is not a quality concern.
+- **The app shows the same thing.** Chrome on the same clip (`csdelta/chrome-final`, `settle_readers_summary.py`):
+  - At Max, 0.216 visits per Discover frame give 642-647 cells and recall 0.73-0.75. qc_eval at 1x gives 611-612 cells
+    on `v3_motion_s5` and recall 0.73, so the calibration holds.
+  - Paced at 30 fps, 4.7 visits per frame (about 20x) give 845-849 cells, recall 0.85, and 153-157 cells unmatched,
+    against 39-49 at Max.
+  - Pacing also removes the 25 % of frames Max drops, so this is not the visit effect alone. It still points the same
+    way as the 8x arm: more real cells and many more false ones on motion.
+- **The 390 vs 401 cells is within run noise.**
+  - On this slope, ±3 % visits is about ±3 cells (0.5 %).
+  - One seed SD (9 cells) is about ±8 % visits.
+  - A difference of 11 cells is about 1.4 SD of a two-run difference, so it is the usual reshuffle between runs.
+  - Chrome's spread over runs of the same clip (0.207-0.223 visits per frame) is inside ±8 %. The 0.22-0.29 range
+    comes from two clip lengths (`sim3k` against `sim1k`), not from jitter.
 
-**Suggested default.** A Discover visit floor matters more than a user-visible budget. Discover should get at least
-the app's Max rate on a fast machine, about 0.2 visits per observed frame on a 600x600 field. Better is about 2x that
-(0.4), which on these sims is where extra visits stop paying for the false cells they add on the motion sim.
+**Suggested default: a fixed Discover visit rate in place of "whatever time is spare"**, with a floor and a cap. A
+user-visible budget is not needed.
 
-- Two existing ways get there without a new knob:
-  - pacing Discover below Max (at 30 fps Chrome makes 4.7 visit jobs per frame, 20x Max);
-  - letting the slow worker catch up on due tiles after the last frame, before the Final settle.
-- A user-visible budget is needed only if Max must stay as fast as it is now.
-- Below about 0.15 visits per frame (0.71x), recall drops by 5 points or more on 3000 frames and by about 3 points on
-  9600. A slow machine at Max sits there.
-- The Final settle can stay as it is. Its visit rate can float with machine speed.
+- **Floor at about 1x** (0.2 visits per observed Discover frame on a 600x600 field, the app's Max on a fast machine).
+  - Below about 0.71x (0.15 per frame), recall drops by 5 or more points on 3000 frames and by about 3 points on 9600.
+  - A slow machine at Max sits there.
+- **Target about 2x** (0.4 per frame).
+  - Above 2x, recall still gains about 3 points (on the short clips only), but false cells double on the motion sim.
+  - At 4x and above, recall is saturated and only false cells grow.
+- **Cap the visit rate when Discover is paced.**
+  - Paced runs (30 fps) run at about 20x today, in the false-cell regime.
+  - A cap would also make paced runs and Max runs give the same result.
+- Supported by 3 sims at 3000 frames and one sim at full length. Before choosing the number, check it on a full-length
+  motion sim and on real data.
+- **The Final settle can stay as it is.** Its visit rate can float with machine speed.
 
 ## Results
 
@@ -54,6 +74,11 @@ difference against 1x [t 95 % CI]. Full per-run tables: `2026-11-24-visit-budget
 | **1x (1.3e7)**  |                   0.229 |                 0.860 |   624 |     9 |    0.9860 | 0.7628 | -                         |   0.9853 |     0.9835 |  0.9821 |  0.236 |                    62 + 36 |
 | 1.41x (1.84e7)  |                   0.308 |                 1.179 |   657 |     9 |    0.9858 | 0.8032 | +0.040 [+0.029, +0.052]   |   0.9852 |     0.9835 |  0.9816 |  0.229 |                    69 + 43 |
 | 2x (2.6e7)      |                   0.424 |                 1.629 |   678 |    16 |    0.9772 | 0.8218 | +0.059 [+0.041, +0.077]   |   0.9846 |     0.9825 |  0.9814 |  0.227 |                    77 + 52 |
+| 4x (5.2e7) *    |                   0.940 |                 0.732 |   715 |    27 |    0.9636 | 0.8538 | +0.091 [+0.076, +0.107]   |   0.9838 |     0.9819 |  0.9807 |  0.202 |                   105 + 39 |
+| 8x (1.04e8) *   |                   2.382 |                 0.758 |   728 |    35 |    0.9529 | 0.8590 | +0.096 [+0.078, +0.115]   |   0.9836 |     0.9813 |  0.9806 |  0.218 |                   152 + 40 |
+
+\* Added after the first read, to find where recall saturates. The Final settle is held near 1x with `--settle-steps`
+0.3 and 0.15; the 0.15 arm is labelled `k0.1` in the tables file. They are not in the trend fit.
 
 Trend fit (OLS on log2 of the budget, one intercept per sim, 30 runs): change from 0.5x to 2x against the seed SD
 (pooled over 15 same-arm seed pairs).
@@ -171,3 +196,5 @@ Caveats known up front:
   visit workers in parallel; lock-step observes every frame and visits in order.
 - Recall uses the full recording's detectable flags on a 3000-frame clip, so it is low in every arm by the same amount.
 - Two runs at a time: wall seconds carry some contention; the visit counts are exact.
+- qc_eval's own `gt_*` columns (tables file) do not move with the settle-only arms. They appear to be read at the last
+  checkpoint before the Final settle, which was not checked in the code. The verdict uses the demix_metrics columns.

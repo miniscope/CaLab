@@ -7,6 +7,7 @@
 #                    Final-settle frames STEPS x BUDGET (`--settle-steps`, default 1.2)
 #   visit_budget_sweep.sh all     the main sweep: SIMS x SEEDS x BUDGETS at STEPS 1.2
 #   visit_budget_sweep.sh stage   the stage split: Discover at 0.5x / 2x with the Final settle at 1x, and the reverse
+#   visit_budget_sweep.sh high    Discover 4x / 8x with the Final settle near 1x
 #   visit_budget_sweep.sh long    full-length (9600 frames) runs of v3_static_s6 at 0.5x, 1x, 2x
 #
 # The lock-step (untimed) slow loop is deterministic for a given --slow-seed: visits per frame scale with the work
@@ -69,6 +70,11 @@ stage)
       slot $SIM $SEED 13000000 2.4
     done
   done
+  wait
+  ;;
+high)
+  # Added after the first read: Discover 4x / 8x with the Final settle held near 1x (steps 0.3 / 0.15).
+  for SEED in $SEEDS; do for SIM in $SIMS; do slot $SIM $SEED 52000000 0.3; slot $SIM $SEED 104000000 0.15; done; done
   wait
   ;;
 long)
