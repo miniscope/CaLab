@@ -4643,24 +4643,6 @@ impl FactorDump {
     }
 }
 
-/// Pixels with no valid sample in any frame of `wf` (valid share 0 in
-/// every tile that covers them).
-fn never_valid(wf: &WindowFactors) -> Vec<bool> {
-    let width = wf.dims.width;
-    let mut never = vec![true; wf.dims.pixels()];
-    for tf in &wf.tiles {
-        for y in 0..tf.h {
-            let row = (tf.y0 + y) * width + tf.x0;
-            for x in 0..tf.w {
-                if tf.valid[y * tf.w + x] > 0.0 {
-                    never[row + x] = false;
-                }
-            }
-        }
-    }
-    never
-}
-
 /// Windows `FactorFrames` keeps decoded: the settle reads in plan order, so
 /// the current and the next window are enough.
 const FACTOR_CACHE: usize = 2;
@@ -4713,7 +4695,7 @@ impl FactorFrames {
                 let wf = WindowFactors::from_bytes(&bytes)
                     .ok_or_else(|| format!("{}: not a factor file", path.display()))?;
                 let layout = (wf.tiling != Tiling::Plain).then(|| wf.layout());
-                let never = never_valid(&wf);
+                let never = wf.never_valid();
                 if self.cache.len() == FACTOR_CACHE {
                     self.cache.pop_front();
                 }

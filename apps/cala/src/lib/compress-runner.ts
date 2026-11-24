@@ -35,6 +35,7 @@ import type {
 } from '../workers/compress-types.ts';
 import type { CompressToReview } from '../workers/review-types.ts';
 import type { PortLike } from '../workers/slow-types.ts';
+import type { FactorWindowLike } from './factor-frames.ts';
 import type { StoreFile, WindowStore } from './window-store.ts';
 
 /** `quantizeTiles` of the WASM module: `count` frames into `out`, in tile order. */
@@ -74,13 +75,7 @@ export interface BackfillEngineLike {
   processFrames(frames: Float32Array, count: number): Float32Array;
   free(): void;
 }
-export interface FactorWindowLike {
-  readonly frames: number;
-  /** Stream index of the first frame. */
-  readonly start: number;
-  reconstruct(t0: number, count: number, out: Float32Array): void;
-  free(): void;
-}
+export type { FactorWindowLike } from './factor-frames.ts';
 
 /** Frames rebuilt and solved per step of the back-fill. */
 const BACKFILL_BATCH = 16;
