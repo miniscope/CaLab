@@ -226,14 +226,14 @@ pub(crate) fn dot_lanes(a: &[f32], b: &[f32]) -> f32 {
     let n = a.len().min(b.len());
     let (a, b) = (&a[..n], &b[..n]);
     let mut acc = [0.0f32; 8];
-    let mut ca = a.chunks_exact(8);
-    let mut cb = b.chunks_exact(8);
-    for (x, y) in (&mut ca).zip(&mut cb) {
+    let (ca, ra) = a.as_chunks::<8>();
+    let (cb, rb) = b.as_chunks::<8>();
+    for (x, y) in ca.iter().zip(cb) {
         for l in 0..8 {
             acc[l] += x[l] * y[l];
         }
     }
-    for (l, (x, y)) in ca.remainder().iter().zip(cb.remainder()).enumerate() {
+    for (l, (x, y)) in ra.iter().zip(rb).enumerate() {
         acc[l] += x * y;
     }
     ((acc[0] + acc[4]) + (acc[1] + acc[5])) + ((acc[2] + acc[6]) + (acc[3] + acc[7]))
@@ -1105,7 +1105,14 @@ impl SlowLoop {
             let c: Vec<f32> = slots.iter().map(|&s| traces.traces[s]).collect();
             let lv: Option<Vec<f32>> =
                 ring.then(|| slots.iter().map(|&s| traces.background[s]).collect());
-            if !st.push_frame(frame, &self.model, lv.as_deref(), &c, f64::from(w), &mut cbuf) {
+            if !st.push_frame(
+                frame,
+                &self.model,
+                lv.as_deref(),
+                &c,
+                f64::from(w),
+                &mut cbuf,
+            ) {
                 self.replay_stats.skipped_frames += 1;
                 continue;
             }
@@ -3027,19 +3034,20 @@ mod push_frame_tests {
         let (wd, ht) = (48usize, 40usize);
         let mut fov = vec![1u8; wd * ht];
         fov[18 * wd + 20] = 0;
-        let disks = vec![((18.0, 18.0), 8.0), ((20.0, 25.0), 8.0), ((24.0, 20.0), 7.0)];
+        let disks = vec![
+            ((18.0, 18.0), 8.0),
+            ((20.0, 25.0), 8.0),
+            ((24.0, 20.0), 7.0),
+        ];
         for ring in [false, true] {
             let (pix, is, cols) = geometry(&disks, wd, ht, &fov, 1);
             let mut a = ClusterStore::new(vec![1, 2, 3], disks.clone(), pix, is, wd, 1, cols, 300);
             let mut b = a.clone();
             let mut buf = Vec::new();
             for t in 0..600u64 {
-                let mut frame: Vec<f32> = (0..wd * ht)
-                    .map(|i| 3.0 * u(t * 9000 + i as u64))
-                    .collect();
-                let model: Vec<f32> = (0..wd * ht)
-                    .map(|i| u(t * 9000 + i as u64 + 55))
-                    .collect();
+                let mut frame: Vec<f32> =
+                    (0..wd * ht).map(|i| 3.0 * u(t * 9000 + i as u64)).collect();
+                let model: Vec<f32> = (0..wd * ht).map(|i| u(t * 9000 + i as u64 + 55)).collect();
                 if t == 200 {
                     frame[20 * wd + 22] = f32::NAN;
                 }
@@ -3054,9 +3062,14 @@ mod push_frame_tests {
                     .map(|k| if ring { 0.3 * u(t * 11 + k) } else { 0.0 })
                     .collect();
                 if t == 400 {
-                    let moved = vec![((19.0, 18.0), 9.0), ((20.0, 26.0), 8.0), ((24.0, 20.0), 7.0)];
+                    let moved = vec![
+                        ((19.0, 18.0), 9.0),
+                        ((20.0, 26.0), 8.0),
+                        ((24.0, 20.0), 7.0),
+                    ];
                     let (pix, is, cols) = geometry(&moved, wd, ht, &fov, 2);
-                    let ok_a = a.move_to(moved.clone(), pix.clone(), is.clone(), wd, 1, cols.clone());
+                    let ok_a =
+                        a.move_to(moved.clone(), pix.clone(), is.clone(), wd, 1, cols.clone());
                     let ok_b = b.move_to(moved, pix, is, wd, 1, cols);
                     assert!(ok_a && ok_b);
                 }

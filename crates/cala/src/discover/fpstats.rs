@@ -1403,12 +1403,10 @@ mod push_frame_tests {
                 let mut b = a.clone();
                 let mut buf = Vec::new();
                 for t in 0..700u64 {
-                    let mut frame: Vec<f32> = (0..wd * ht)
-                        .map(|i| 3.0 * u(t * 5000 + i as u64))
-                        .collect();
-                    let model: Vec<f32> = (0..wd * ht)
-                        .map(|i| u(t * 5000 + i as u64 + 77))
-                        .collect();
+                    let mut frame: Vec<f32> =
+                        (0..wd * ht).map(|i| 3.0 * u(t * 5000 + i as u64)).collect();
+                    let model: Vec<f32> =
+                        (0..wd * ht).map(|i| u(t * 5000 + i as u64 + 77)).collect();
                     if masked && (t == 300 || t == 450) {
                         frame[15 * wd + 20] = f32::NAN;
                         frame[17 * wd + 22] = f32::INFINITY;
