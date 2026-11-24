@@ -403,16 +403,21 @@ for sign-in, Resend notification email, solaris ingest (`~/calab-ingest`,
 hourly systemd user timer into `/mnt/data_1/mbrosch/calab_donations`), live
 build defaults in `deploy.yml`.
 
+Done 2026-11-24: sandbox end-to-end run (dandiset 219290; public recording
+published, CaLab-only one refused); real dandiset **002097** "CaLab shared
+recordings" (CC BY 4.0); `DANDI_API_KEY` and `DANDI_SANDBOX_API_KEY` in
+`~/calab-ingest/ingest.env`; repository variables `DONATION_DANDISET=002097`
+and `DONATION_DANDI_INSTANCE=dandi` (live since the v2.22.2 deploy).
+
+Sandbox tests share the live donation database: a recording published to the
+sandbox shows on the live browse page (without links). Afterwards, set it to
+`withdrawn` in the SQL editor (`update public.cala_donations set status =
+'withdrawn', review_note = 'sandbox test' where id = '<id>';`).
+
 Still open:
 
-1. **DANDI:** create an account, create the "CaLab donated recordings"
-   dandiset (CC BY 4.0, description with the citation and acknowledgement
-   request), put its API key in `~/calab-ingest/ingest.env`. A sandbox
-   dandiset first for the end-to-end test.
-2. **UCLA IT / data policy:** OK to hold other labs' data on solaris.
-3. **Heads-up to Daniel** before tagging: the release also ships the 23
-   unreleased `main` commits since `v2.20.0`.
-4. Merge, then tag.
+1. **UCLA IT / data policy:** OK to hold other labs' data on solaris.
+2. **Pilot** with 2–3 known labs before announcing it.
 
 ## Open questions
 
