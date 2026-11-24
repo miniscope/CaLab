@@ -217,6 +217,28 @@ impl ClusterHistory for RingHistory {
     }
 }
 
+/// `Σ a_i b_i` in eight interleaved f32 partial sums (lane `i mod 8`),
+/// added pairwise at the end: vectorises, where one running sum is a
+/// serial chain of dependent adds. Differs from the serial sum by float
+/// rounding only.
+#[inline]
+pub(crate) fn dot_lanes(a: &[f32], b: &[f32]) -> f32 {
+    let n = a.len().min(b.len());
+    let (a, b) = (&a[..n], &b[..n]);
+    let mut acc = [0.0f32; 8];
+    let mut ca = a.chunks_exact(8);
+    let mut cb = b.chunks_exact(8);
+    for (x, y) in (&mut ca).zip(&mut cb) {
+        for l in 0..8 {
+            acc[l] += x[l] * y[l];
+        }
+    }
+    for (l, (x, y)) in ca.remainder().iter().zip(cb.remainder()).enumerate() {
+        acc[l] += x * y;
+    }
+    ((acc[0] + acc[4]) + (acc[1] + acc[5])) + ((acc[2] + acc[6]) + (acc[3] + acc[7]))
+}
+
 /// The history store of one cluster (see the module docs).
 #[derive(Debug, Clone)]
 pub(crate) struct ClusterStore {
@@ -455,13 +477,7 @@ impl ClusterStore {
             }
         }
         let v: Vec<f32> = (0..self.rank)
-            .map(|j| {
-                self.ut[j * n..(j + 1) * n]
-                    .iter()
-                    .zip(r)
-                    .map(|(u, x)| u * x)
-                    .sum()
-            })
+            .map(|j| dot_lanes(&self.ut[j * n..(j + 1) * n], r))
             .collect();
         self.hist
             .append(&v, self.k, (self.k / 256).is_multiple_of(2));
@@ -3051,6 +3067,40 @@ mod push_frame_tests {
                 assert_eq!(state(&a), state(&b), "ring {ring} t {t}");
             }
             assert!(a.k > 590);
+        }
+    }
+}
+
+#[cfg(test)]
+mod dot_lanes_tests {
+    use super::dot_lanes;
+
+    /// Lane sums agree with the serial sum (f64 reference) to f32
+    /// rounding, at every length's remainder.
+    #[test]
+    fn dot_lanes_matches_the_serial_sum() {
+        for n in [0usize, 1, 7, 8, 9, 63, 64, 1000, 1777] {
+            let a: Vec<f32> = (0..n)
+                .map(|i| ((i * 37 % 101) as f32 - 50.0) / 7.0)
+                .collect();
+            let b: Vec<f32> = (0..n)
+                .map(|i| ((i * 53 % 97) as f32 - 48.0) / 5.0)
+                .collect();
+            let exact: f64 = a
+                .iter()
+                .zip(&b)
+                .map(|(x, y)| f64::from(*x) * f64::from(*y))
+                .sum();
+            let scale: f64 = a
+                .iter()
+                .zip(&b)
+                .map(|(x, y)| f64::from((x * y).abs()))
+                .sum();
+            let got = f64::from(dot_lanes(&a, &b));
+            assert!(
+                (got - exact).abs() <= 1e-6 * scale.max(1.0),
+                "n {n}: {got} vs {exact}"
+            );
         }
     }
 }
