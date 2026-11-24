@@ -253,6 +253,9 @@ pub(crate) struct ClusterStore {
     rank: usize,
     /// The stored frames' coordinates in the basis (see [`ClusterHistory`]).
     hist: RingHistory,
+    /// Cache of `pix` as contiguous row runs (empty until
+    /// [`ClusterStore::push_frame`] first needs it).
+    runs: Vec<(u32, u32)>,
     /// Frames pushed.
     pub k: u64,
     /// The store's own last joint estimate, whitened (pixel-major `n x K`),
@@ -352,6 +355,7 @@ impl ClusterStore {
             u: Vec::new(),
             rank: 0,
             hist: RingHistory::new(cap, kk),
+            runs: Vec::new(),
             k: 0,
             est: None,
             visited: false,
@@ -462,6 +466,73 @@ impl ClusterStore {
         self.hist
             .append(&v, self.k, (self.k / 256).is_multiple_of(2));
         self.k += 1;
+    }
+
+    /// Test access: the running sums `cy`, `sr` and the stored coordinates.
+    #[cfg(test)]
+    pub fn sums(&self) -> (&[f32], &[f32], &[f32]) {
+        (&self.cy, &self.sr, &self.hist.v)
+    }
+
+    /// The slow loop's push of one fitting frame: the whitened cluster
+    /// residual `r̃ = (y − model − lv_owner + Σ_k a_k c_k) / σ` on `pix`
+    /// (`lv` each member's ring level, `None` without a ring background),
+    /// `c` the members' traces. Element by element the same arithmetic as
+    /// building `r̃` and calling [`ClusterStore::push`], read in contiguous
+    /// row runs. `false` (nothing pushed) when `r̃` or `c` is not finite.
+    /// `buf` is scratch.
+    pub fn push_frame(
+        &mut self,
+        frame: &[f32],
+        model: &[f32],
+        lv: Option<&[f32]>,
+        c: &[f32],
+        w: f64,
+        buf: &mut Vec<f32>,
+    ) -> bool {
+        let n = self.pix.len();
+        if self.runs.is_empty() && n > 0 {
+            self.runs = super::fpstats::pixel_runs(&self.pix);
+        }
+        buf.clear();
+        buf.resize(n, 0.0);
+        let mut i = 0;
+        for &(s, len) in &self.runs {
+            let (s, len) = (s as usize, len as usize);
+            let (y, m) = (&frame[s..s + len], &model[s..s + len]);
+            let out = &mut buf[i..i + len];
+            match lv {
+                None => {
+                    for j in 0..len {
+                        out[j] = y[j] - m[j];
+                    }
+                }
+                Some(lv) => {
+                    let own = &self.owner[i..i + len];
+                    for j in 0..len {
+                        out[j] = y[j] - m[j] - lv[own[j] as usize];
+                    }
+                }
+            }
+            i += len;
+        }
+        for (k, &ck) in c.iter().enumerate() {
+            if ck != 0.0 {
+                for (r, &a) in buf.iter_mut().zip(&self.cols[k * n..(k + 1) * n]) {
+                    *r += a * ck;
+                }
+            }
+        }
+        let mut bad = false;
+        for (r, &is) in buf.iter_mut().zip(&self.is) {
+            *r *= is;
+            bad |= !r.is_finite();
+        }
+        if bad || !c.iter().all(|v| v.is_finite()) {
+            return false;
+        }
+        self.push(buf, c, w);
+        true
     }
 
     /// Refresh the basis to `orth(CY)` (centred; a member whose trace has no
@@ -604,6 +675,7 @@ impl ClusterStore {
         let (owner, cover) = owner_cover(&pix, &disks, &cols, width);
         self.disks = disks;
         self.pix = pix;
+        self.runs.clear();
         self.is = is;
         self.owner = owner;
         self.cover = cover;
@@ -1015,33 +1087,12 @@ impl SlowLoop {
                 st.version = version;
             }
             let c: Vec<f32> = slots.iter().map(|&s| traces.traces[s]).collect();
-            let lv: Vec<f32> = slots
-                .iter()
-                .map(|&s| if ring { traces.background[s] } else { 0.0 })
-                .collect();
-            cbuf.clear();
-            cbuf.extend(
-                st.pix
-                    .iter()
-                    .zip(&st.owner)
-                    .map(|(&p, &o)| frame[p as usize] - self.model[p as usize] - lv[o as usize]),
-            );
-            for (k, &ck) in c.iter().enumerate() {
-                if ck != 0.0 {
-                    for (r, &a) in cbuf.iter_mut().zip(&st.cols[k * n..(k + 1) * n]) {
-                        *r += a * ck;
-                    }
-                }
-            }
-            for (r, &is) in cbuf.iter_mut().zip(&st.is) {
-                *r *= is;
-            }
-            let ok = cbuf.iter().all(|v| v.is_finite());
-            if !ok || !c.iter().all(|v| v.is_finite()) {
+            let lv: Option<Vec<f32>> =
+                ring.then(|| slots.iter().map(|&s| traces.background[s]).collect());
+            if !st.push_frame(frame, &self.model, lv.as_deref(), &c, f64::from(w), &mut cbuf) {
                 self.replay_stats.skipped_frames += 1;
                 continue;
             }
-            st.push(&cbuf, &c, f64::from(w));
             work += (n * (3 * c.len() + 3)) as u64;
         }
         self.cbuf = cbuf;
@@ -1895,6 +1946,7 @@ impl ClusterStore {
             ut: Vec::new(),
             rank: 0,
             hist: RingHistory::new(1, kk),
+            runs: Vec::new(),
             k: 0,
             est: None,
             visited: false,
@@ -2060,6 +2112,7 @@ impl ClusterStore {
             ut: Vec::new(),
             rank: 0,
             hist,
+            runs: Vec::new(),
             k,
             est,
             visited: false,
@@ -2876,6 +2929,128 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod push_frame_tests {
+    use super::*;
+    use crate::discover::fpstats::disk_pixels;
+
+    fn u(k: u64) -> f32 {
+        (crate::discover::reservoir::mix(k) >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+    }
+
+    /// The slow loop's cluster push before `push_frame`.
+    fn reference(
+        st: &mut ClusterStore,
+        frame: &[f32],
+        model: &[f32],
+        lv: &[f32],
+        c: &[f32],
+        w: f64,
+    ) -> bool {
+        let n = st.pix.len();
+        let mut r: Vec<f32> = st
+            .pix
+            .iter()
+            .zip(&st.owner)
+            .map(|(&p, &o)| frame[p as usize] - model[p as usize] - lv[o as usize])
+            .collect();
+        for (k, &ck) in c.iter().enumerate() {
+            if ck != 0.0 {
+                for (r, &a) in r.iter_mut().zip(&st.cols[k * n..(k + 1) * n]) {
+                    *r += a * ck;
+                }
+            }
+        }
+        for (r, &is) in r.iter_mut().zip(&st.is) {
+            *r *= is;
+        }
+        if !r.iter().all(|v| v.is_finite()) || !c.iter().all(|v| v.is_finite()) {
+            return false;
+        }
+        st.push(&r, c, w);
+        true
+    }
+
+    fn state(st: &ClusterStore) -> String {
+        let mut s = st.clone();
+        s.runs.clear();
+        format!("{s:?}")
+    }
+
+    fn geometry(
+        disks: &[((f32, f32), f32)],
+        wd: usize,
+        ht: usize,
+        fov: &[u8],
+        k: u64,
+    ) -> (Vec<u32>, Vec<f32>, Vec<f32>) {
+        let mut pix: Vec<u32> = disks
+            .iter()
+            .flat_map(|d| disk_pixels(d.0, d.1, wd, ht, fov))
+            .collect();
+        pix.sort_unstable();
+        pix.dedup();
+        let n = pix.len();
+        let is = (0..n).map(|i| 1.0 + 0.2 * u(k + i as u64)).collect();
+        let cols = (0..n * disks.len())
+            .map(|i| u(k * 7 + i as u64).max(0.0))
+            .collect();
+        (pix, is, cols)
+    }
+
+    /// `push_frame` leaves the store bit for bit where building the
+    /// whitened residual and calling `push` does: with and without ring
+    /// levels (per-pixel owner), zero and NaN traces, missing pixels (the
+    /// frame is skipped), FOV holes and a moved store.
+    #[test]
+    fn push_frame_matches_building_the_residual() {
+        let (wd, ht) = (48usize, 40usize);
+        let mut fov = vec![1u8; wd * ht];
+        fov[18 * wd + 20] = 0;
+        let disks = vec![((18.0, 18.0), 8.0), ((20.0, 25.0), 8.0), ((24.0, 20.0), 7.0)];
+        for ring in [false, true] {
+            let (pix, is, cols) = geometry(&disks, wd, ht, &fov, 1);
+            let mut a = ClusterStore::new(vec![1, 2, 3], disks.clone(), pix, is, wd, 1, cols, 300);
+            let mut b = a.clone();
+            let mut buf = Vec::new();
+            for t in 0..600u64 {
+                let mut frame: Vec<f32> = (0..wd * ht)
+                    .map(|i| 3.0 * u(t * 9000 + i as u64))
+                    .collect();
+                let model: Vec<f32> = (0..wd * ht)
+                    .map(|i| u(t * 9000 + i as u64 + 55))
+                    .collect();
+                if t == 200 {
+                    frame[20 * wd + 22] = f32::NAN;
+                }
+                let mut c: Vec<f32> = (0..3).map(|k| 2.0 * u(t * 3 + k) + 0.6).collect();
+                if t % 5 == 0 {
+                    c[1] = 0.0;
+                }
+                if t == 77 {
+                    c[2] = f32::NAN;
+                }
+                let lv: Vec<f32> = (0..3)
+                    .map(|k| if ring { 0.3 * u(t * 11 + k) } else { 0.0 })
+                    .collect();
+                if t == 400 {
+                    let moved = vec![((19.0, 18.0), 9.0), ((20.0, 26.0), 8.0), ((24.0, 20.0), 7.0)];
+                    let (pix, is, cols) = geometry(&moved, wd, ht, &fov, 2);
+                    let ok_a = a.move_to(moved.clone(), pix.clone(), is.clone(), wd, 1, cols.clone());
+                    let ok_b = b.move_to(moved, pix, is, wd, 1, cols);
+                    assert!(ok_a && ok_b);
+                }
+                let w = 1.0 + t as f64 * 1e-3;
+                let ra = reference(&mut a, &frame, &model, &lv, &c, w);
+                let rb = b.push_frame(&frame, &model, ring.then_some(&lv[..]), &c, w, &mut buf);
+                assert_eq!(ra, rb, "ring {ring} t {t}");
+                assert_eq!(state(&a), state(&b), "ring {ring} t {t}");
+            }
+            assert!(a.k > 590);
         }
     }
 }

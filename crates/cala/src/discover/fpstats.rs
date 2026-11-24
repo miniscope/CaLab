@@ -73,6 +73,9 @@ pub(crate) struct FpStats {
     /// Transient-band statistics in interleaved block groups (`None` when
     /// [`super::CoreTest`] is `Off`).
     pub fast: Option<Fast>,
+    /// Cache of `pix` as contiguous row runs ([`pixel_runs`]; empty until
+    /// [`FpStats::push_frame`] first needs it).
+    pub runs: Vec<(u32, u32)>,
 }
 
 /// A pixel is trusted only when it was valid in at least this share of the
@@ -394,6 +397,7 @@ impl FpStats {
             pm: None,
             half_pm: None,
             fast: fast.then(|| Fast::new(n, 1.0 / FAST_TAU_FRAMES)),
+            runs: Vec::new(),
         }
     }
 
@@ -639,6 +643,88 @@ impl FpStats {
         self.push_masked(r, z, x, w);
     }
 
+    /// The slow loop's push of one fitting frame: the residual
+    /// `r = y − model − level + col c` on the disk (a non-finite `y` is a
+    /// missing sample), with `c` the instrument and regressor. The same
+    /// arithmetic, element by element, as building `r` and calling
+    /// `push(r, [c, c], c, w)`, but read in contiguous row runs and, for a
+    /// complete disk without the transient band, accumulated in
+    /// vectorisable loops without per-pixel class lookups or branches.
+    /// `buf` is scratch. `col` must be the column on `pix` (or empty with
+    /// `c == 0`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_frame(
+        &mut self,
+        frame: &[f32],
+        model: &[f32],
+        level: f32,
+        c: f32,
+        w: f32,
+        buf: &mut Vec<f32>,
+    ) {
+        let n = self.pix.len();
+        if self.runs.is_empty() && n > 0 {
+            self.runs = pixel_runs(&self.pix);
+        }
+        buf.clear();
+        buf.resize(n, 0.0);
+        let with_col = c != 0.0;
+        debug_assert!(!with_col || self.col.len() == n);
+        let mut bad = false;
+        let mut i = 0;
+        for &(s, len) in &self.runs {
+            let (s, len) = (s as usize, len as usize);
+            let (y, m) = (&frame[s..s + len], &model[s..s + len]);
+            let out = &mut buf[i..i + len];
+            if with_col {
+                let col = &self.col[i..i + len];
+                for j in 0..len {
+                    let yv = y[j];
+                    let v = if yv.is_finite() {
+                        yv - m[j] - level
+                    } else {
+                        f32::NAN
+                    };
+                    let v = v + col[j] * c;
+                    out[j] = v;
+                    bad |= v.is_nan();
+                }
+            } else {
+                for j in 0..len {
+                    let yv = y[j];
+                    let v = if yv.is_finite() {
+                        yv - m[j] - level
+                    } else {
+                        f32::NAN
+                    };
+                    out[j] = v;
+                    bad |= v.is_nan();
+                }
+            }
+            i += len;
+        }
+        if bad || c.is_nan() || self.pm.is_some() || self.fast.is_some() {
+            self.push(buf, [c, c], c, w);
+            return;
+        }
+        // `push` for a complete disk, no transient band, `z = [c, c]`.
+        let in_half = (self.k / 256).is_multiple_of(2);
+        let g = ((self.k / FAST_BLOCK) % FAST_GROUPS as u64) as usize;
+        let wz = w * c;
+        for ((rc, r), &v) in self.rc.iter_mut().zip(self.r.iter_mut()).zip(buf.iter()) {
+            *rc += wz * v;
+            *r += w * v;
+        }
+        if in_half {
+            let (h0, h1) = (&mut self.half.0, &mut self.half.1);
+            for ((rc, r), &v) in h0.iter_mut().zip(h1.iter_mut()).zip(buf.iter()) {
+                *rc += wz * v;
+                *r += w * v;
+            }
+        }
+        self.finish_push([c, c], c, w, in_half, g, [0.0; 2]);
+    }
+
     /// The transient band's moving averages start at the first value.
     fn ensure_fast_ema(&mut self, z: [f32; 2]) {
         if let Some(fa) = &mut self.fast {
@@ -881,6 +967,19 @@ fn scale_mom(m: &mut Mom, f: f64) {
     for v in &mut m[2..] {
         *v *= f;
     }
+}
+
+/// Sorted global pixels `pix` as runs of consecutive indices `(first,
+/// length)`, in order.
+pub(crate) fn pixel_runs(pix: &[u32]) -> Vec<(u32, u32)> {
+    let mut out: Vec<(u32, u32)> = Vec::new();
+    for &p in pix {
+        match out.last_mut() {
+            Some((s, l)) if *s + *l == p => *l += 1,
+            _ => out.push((p, 1)),
+        }
+    }
+    out
 }
 
 /// FOV pixels of a disk, row-major, as global indices.
@@ -1241,5 +1340,108 @@ mod parity_tests {
         assert_eq!(a.std_err(), b.std_err());
         assert_eq!(a.fast_estimate(), b.fast_estimate());
         assert_eq!(a.lambdas(), [1.0, 1.0]);
+    }
+}
+
+#[cfg(test)]
+mod push_frame_tests {
+    use super::*;
+
+    fn u(k: u64) -> f32 {
+        (crate::discover::reservoir::mix(k) >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+    }
+
+    /// The slow loop's push before `push_frame`: build the residual per
+    /// pixel, add the own-signal term, push.
+    fn reference(st: &mut FpStats, frame: &[f32], model: &[f32], level: f32, c: f32, w: f32) {
+        let mut r: Vec<f32> = st
+            .pix
+            .iter()
+            .map(|&p| {
+                let y = frame[p as usize];
+                if y.is_finite() {
+                    y - model[p as usize] - level
+                } else {
+                    f32::NAN
+                }
+            })
+            .collect();
+        if c != 0.0 {
+            for (r, &v) in r.iter_mut().zip(&st.col) {
+                *r += v * c;
+            }
+        }
+        st.push(&r, [c, c], c, w);
+    }
+
+    fn state(st: &FpStats) -> String {
+        let mut s = st.clone();
+        s.runs.clear();
+        format!("{s:?}")
+    }
+
+    /// `push_frame` leaves every sum bit for bit where building the
+    /// residual and calling `push` does: complete and masked disks (a NaN
+    /// or infinite pixel, and every frame after), FOV holes, zero and NaN
+    /// traces, ring levels, the transient band, split-half block changes
+    /// and a moved disk.
+    #[test]
+    fn push_frame_matches_building_the_residual() {
+        let (wd, ht) = (40usize, 32usize);
+        let mut fov = vec![1u8; wd * ht];
+        fov[15 * wd + 18] = 0;
+        fov[16 * wd + 18] = 0;
+        let col_of = |st: &FpStats, k: u64| -> Vec<f32> {
+            (0..st.pix.len())
+                .map(|i| u(k * 1000 + i as u64) + 0.2)
+                .collect()
+        };
+        for fast in [false, true] {
+            for masked in [false, true] {
+                let mut a = FpStats::new((15.0, 20.0), 9.0, wd, ht, &fov, fast, 5);
+                a.col = col_of(&a, 1);
+                let mut b = a.clone();
+                let mut buf = Vec::new();
+                for t in 0..700u64 {
+                    let mut frame: Vec<f32> = (0..wd * ht)
+                        .map(|i| 3.0 * u(t * 5000 + i as u64))
+                        .collect();
+                    let model: Vec<f32> = (0..wd * ht)
+                        .map(|i| u(t * 5000 + i as u64 + 77))
+                        .collect();
+                    if masked && (t == 300 || t == 450) {
+                        frame[15 * wd + 20] = f32::NAN;
+                        frame[17 * wd + 22] = f32::INFINITY;
+                    }
+                    let c = match t % 9 {
+                        0 => 0.0,
+                        4 if t == 13 => f32::NAN,
+                        _ => 2.0 * u(t * 31 + 5) + 0.5,
+                    };
+                    let level = if t % 2 == 0 { 0.25 * u(t) } else { 0.0 };
+                    let w = 1.0 + t as f32 * 1e-3;
+                    if t == 500 {
+                        a = a.moved((16.0, 21.0), 10.0, wd, ht, &fov);
+                        b = b.moved((16.0, 21.0), 10.0, wd, ht, &fov);
+                        a.col = col_of(&a, 2);
+                        b.col = a.col.clone();
+                    }
+                    reference(&mut a, &frame, &model, level, c, w);
+                    b.push_frame(&frame, &model, level, c, w, &mut buf);
+                    assert_eq!(state(&a), state(&b), "fast {fast} masked {masked} t {t}");
+                }
+                assert_eq!(a.pm.is_some(), masked);
+                assert!(a.k > 600);
+            }
+        }
+    }
+
+    #[test]
+    fn pixel_runs_split_at_gaps() {
+        assert_eq!(pixel_runs(&[]), vec![]);
+        assert_eq!(
+            pixel_runs(&[3, 4, 5, 9, 10, 12]),
+            vec![(3, 3), (9, 2), (12, 1)]
+        );
     }
 }
