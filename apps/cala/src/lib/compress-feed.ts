@@ -7,6 +7,7 @@
  */
 import type { CompressSource, CompressTiling, FastToCompress } from '../workers/compress-types.ts';
 import type { PortLike } from '../workers/slow-types.ts';
+import type { PoolWidth } from './compress-pool.ts';
 
 export interface CompressFeedOptions {
   width: number;
@@ -22,6 +23,10 @@ export interface CompressFeedOptions {
   window?: number;
   /** Quantized values are `round(value * quant)`: 1/64 grey level, ±512 grey levels. */
   quant?: number;
+  /** Compress workers while the recording runs and after its end (absent: one and one). */
+  pool?: PoolWidth;
+  /** The cap on window files waiting for compression, bytes (absent: the runner's own). */
+  backlogCap?: number;
 }
 
 export const COMPRESS_DEFAULTS = {
@@ -42,7 +47,10 @@ export interface CompressFeedLike {
 }
 
 export class CompressFeed implements CompressFeedLike {
-  private readonly o: Required<CompressFeedOptions>;
+  private readonly o: Required<Omit<CompressFeedOptions, 'pool' | 'backlogCap'>> & {
+    pool?: PoolWidth;
+    backlogCap?: number;
+  };
   private readonly px: number;
   private initSent = false;
   /** Frames in the open window, its index, and the stream frame expected next. */
@@ -66,7 +74,8 @@ export class CompressFeed implements CompressFeedLike {
   /** `count` frames that start at stream frame `start`. */
   push(batch: Float32Array, start: number, count: number): void {
     if (this.disposed || count <= 0) return;
-    const { session, width, height, tile, window, quant, tiling, source } = this.o;
+    const { session, width, height, tile, window, quant, tiling, source, pool, backlogCap } =
+      this.o;
     if (!this.initSent) {
       this.port.postMessage({
         type: 'init',
@@ -78,6 +87,8 @@ export class CompressFeed implements CompressFeedLike {
         quant,
         tiling,
         source,
+        ...(pool ? { pool } : {}),
+        ...(backlogCap !== undefined ? { backlogCap } : {}),
       });
       this.initSent = true;
     }

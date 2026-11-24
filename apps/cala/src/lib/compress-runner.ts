@@ -26,6 +26,12 @@
  * with the request to review (see `review-runner.ts`). The review itself
  * never runs here: it would hold up the writes of the incoming batches.
  *
+ * Compress pool (`compress-pool.ts`): a window's tiles are shared with the
+ * helpers of `pool`, `discover` of them while the recording runs and `after`
+ * from its end on; the factor bytes are the same for any width. The window
+ * files waiting for compression are capped (`backlogCap`): past the cap the
+ * run's factors are given up, its files removed, and one error says why.
+ *
  * Window file `w<index>.i16`: the chunks as they arrived, each in tile order.
  * Factor file `f<index>.bin`: the header of `factorHeader` (`CALAFAC2`, with the
  * tiling), then per tile u32 byte length and `TileFactors.toBytes()`.
@@ -39,6 +45,7 @@ import type {
 } from '../workers/compress-types.ts';
 import type { CompressToReview } from '../workers/review-types.ts';
 import type { PortLike } from '../workers/slow-types.ts';
+import { TilePool, type TileJob, type TilePoolLike } from './compress-pool.ts';
 import { rebuildFrames, type FactorWindowLike } from './factor-frames.ts';
 import type { StoreFile, WindowStore } from './window-store.ts';
 
@@ -86,6 +93,22 @@ export type { FactorWindowLike } from './factor-frames.ts';
 /** Frames rebuilt and solved per step of the back-fill. */
 const BACKFILL_BATCH = 16;
 
+/** The most bytes of window files that may wait for compression. */
+export const BACKLOG_MAX_BYTES = 8 * 2 ** 30;
+
+/** The cap on waiting window files: `BACKLOG_MAX_BYTES`, or half of what the origin may still store. */
+export function backlogCap(e: { quota?: number; usage?: number } | null): number {
+  const free = (e?.quota ?? NaN) - (e?.usage ?? NaN);
+  return Number.isFinite(free)
+    ? Math.min(BACKLOG_MAX_BYTES, Math.max(0, free / 2))
+    : BACKLOG_MAX_BYTES;
+}
+
+/** Why a run's factors were given up at the cap. */
+export function backlogText(cap: number): string {
+  return `The windows waiting for compression would need more than ${(cap / 2 ** 30).toFixed(1)} GB of disk.`;
+}
+
 export interface CompressRunnerDeps {
   store: WindowStore;
   quantize: QuantizeTiles;
@@ -106,6 +129,10 @@ export interface CompressRunnerDeps {
   engine?(library: Uint8Array, signed?: boolean): BackfillEngineLike;
   factors?(file: Uint8Array): FactorWindowLike;
   toMain: PortLike<CompressToMain>;
+  /** The tile pool (absent: the worker compresses every tile itself). */
+  pool?: TilePoolLike;
+  /** What the origin may store (`navigator.storage.estimate`; absent: the cap is `BACKLOG_MAX_BYTES`). */
+  estimate?: () => Promise<{ quota?: number; usage?: number }>;
   /** The review worker, and the compressed windows between two reviews (absent: no review). */
   review?: { port: PortLike<CompressToReview>; every: number };
   /** Lets queued messages run (default: a macrotask). */
@@ -131,6 +158,8 @@ interface WindowJob {
   chunks: number[];
   /** Time spent quantizing its chunks, ms. */
   quantMs: number;
+  /** Bytes of its window file. */
+  bytes: number;
 }
 
 /** The tiles of a layout (`tileLayout`: x0, y0, w, h each), with their place in a quantized chunk. */
@@ -159,7 +188,8 @@ export class CompressRunner {
   /** Pixels of all tiles (more than a frame when tiles overlap). */
   private layoutPx = 0;
   private compressor: TileCompressorLike | null = null;
-  private open: (WindowJob & { file: StoreFile; bytes: number }) | null = null;
+  private readonly pool: TilePoolLike;
+  private open: (WindowJob & { file: StoreFile }) | null = null;
   /** The quantized chunk being written (reused; a write is synchronous). */
   private scratch = new Int16Array(0);
   private pending: WindowJob[] = [];
@@ -179,10 +209,22 @@ export class CompressRunner {
   private factorBytes = 0;
   private meanRank = 0;
   private msPerFrame = 0;
+  private fps = 0;
+  private widths = { discover: 1, after: 1 };
+  /** The cap on waiting window files, asked for once per run; past it the run's factors are given up. */
+  private cap = BACKLOG_MAX_BYTES;
+  private asked = false;
+  private gaveUp = false;
+  private backlogPeak = 0;
+  /** When the recording ended, the frames then compressed, and those not compressed. */
+  private endAt: number | null = null;
+  private framesAtEnd = 0;
+  private behindAtEnd: number | null = null;
 
   constructor(private readonly deps: CompressRunnerDeps) {
     this.yieldNow = deps.yieldNow ?? macrotask;
     this.now = deps.now ?? (() => performance.now());
+    this.pool = deps.pool ?? new TilePool({ helpers: [], now: this.now });
   }
 
   /** One message from the fast worker. Calls must not overlap. */
@@ -195,6 +237,13 @@ export class CompressRunner {
       this.layoutPx = tiles.reduce((s, t) => s + t.w * t.h, 0);
       this.session = msg.session;
       this.init = msg;
+      this.widths = msg.pool ?? { discover: 1, after: 1 };
+      if (msg.backlogCap !== undefined) {
+        this.cap = msg.backlogCap;
+        this.asked = true;
+      }
+      this.pool.begin(msg.quant);
+      this.pool.setWidth(this.widths.discover);
       this.reviewOf(msg)?.port.postMessage({
         type: 'init',
         session: msg.session,
@@ -215,6 +264,8 @@ export class CompressRunner {
       }
       this.maybeBackfill();
     } else if (msg.type === 'chunk') {
+      if (this.gaveUp) return;
+      this.askEstimate();
       this.open ??= {
         index: msg.window,
         start: msg.start,
@@ -236,11 +287,22 @@ export class CompressRunner {
       w.bytes += data.byteLength;
       w.frames += msg.count;
       w.chunks.push(msg.count);
+      const backlog = this.backlog();
+      this.backlogPeak = Math.max(this.backlogPeak, backlog);
+      if (backlog > this.cap) {
+        await this.giveUp();
+        return;
+      }
       if (msg.last) this.closeOpen();
     } else {
+      if (this.gaveUp) return;
       this.closeOpen();
       if (msg.final) {
         this.final = true;
+        this.endAt = this.now();
+        this.framesAtEnd = this.frames;
+        this.behindAtEnd = this.pending.reduce((s, w) => s + w.frames, 0);
+        this.pool.setWidth(this.widths.after);
         if (!this.loop) this.post();
       }
     }
@@ -259,6 +321,15 @@ export class CompressRunner {
   /** Extract on factors: solve every compressed window with `library`, once no window waits. */
   extract(session: number, id: number, version: number, library: Uint8Array): void {
     if (session !== this.session || !this.init) return;
+    if (this.gaveUp) {
+      this.deps.toMain.postMessage({
+        type: 'error',
+        session,
+        job: id,
+        message: backlogText(this.cap),
+      });
+      return;
+    }
     this.job = { id, session, version, library };
     this.maybeExtract();
   }
@@ -283,8 +354,36 @@ export class CompressRunner {
       frames: w.frames,
       chunks: w.chunks,
       quantMs: w.quantMs,
+      bytes: w.bytes,
     });
     this.kick();
+  }
+
+  /** Bytes of the window files not compressed yet (the open one included). */
+  private backlog(): number {
+    return this.pending.reduce((s, w) => s + w.bytes, this.open?.bytes ?? 0);
+  }
+
+  /** Ask once per run what the origin may still store; until the answer the cap is `BACKLOG_MAX_BYTES`. */
+  private askEstimate(): void {
+    if (this.asked || !this.deps.estimate) return;
+    this.asked = true;
+    const epoch = this.epoch;
+    this.deps.estimate().then(
+      (e) => {
+        if (epoch === this.epoch) this.cap = backlogCap(e);
+      },
+      () => {},
+    );
+  }
+
+  /** The waiting window files passed the cap: drop the run's files, write nothing more, say why once. */
+  private async giveUp(): Promise<void> {
+    const session = this.session;
+    const cap = this.cap;
+    await this.clear();
+    this.gaveUp = true;
+    this.deps.toMain.postMessage({ type: 'error', session, message: backlogText(cap) });
   }
 
   private kick(): void {
@@ -294,7 +393,8 @@ export class CompressRunner {
   private maybeBackfill(): void {
     const lib = this.library;
     const { engine, factors } = this.deps;
-    if (this.loop || this.wanted === null || !lib || lib.version < this.wanted) return;
+    if (this.gaveUp || this.loop || this.wanted === null || !lib || lib.version < this.wanted)
+      return;
     if (this.open || this.pending.length > 0 || !engine || !factors) return;
     this.wanted = null;
     this.launch(this.runBackfill(lib, engine, factors));
@@ -496,7 +596,7 @@ export class CompressRunner {
       await store.remove(windowName(job.index));
       return;
     }
-    this.compressor ??= this.deps.create(init.quant);
+    const compressor = (this.compressor ??= this.deps.create(init.quant));
     const src = await store.open(windowName(job.index));
     const dst = await store.open(factorName(job.index));
     let closed = false;
@@ -518,39 +618,46 @@ export class CompressRunner {
       );
       dst.write(head, 0);
       let at = head.length;
-      const largest = this.tiles.reduce((m, t) => Math.max(m, t.w * t.h), 0);
-      const buf = new Int16Array(job.frames * largest);
       const len = new Uint32Array(1);
       let ms = 0;
       let rank = 0;
-      for (let i = 0; i < this.tiles.length; i++) {
-        const t = this.tiles[i];
-        const p = t.w * t.h;
-        const raw = buf.subarray(0, job.frames * p);
-        let chunkAt = 0;
-        let o = 0;
-        for (const n of job.chunks) {
-          src.read(raw.subarray(o, o + n * p), chunkAt + t.offset * n * 2);
-          chunkAt += n * this.layoutPx * 2;
-          o += n * p;
-        }
-        const t0 = this.now();
-        const seed = ((job.index << 20) ^ i) >>> 0;
-        const f = this.compressor.compress(raw, job.frames, t.x0, t.y0, t.w, t.h, seed);
-        try {
-          ms += this.now() - t0;
-          rank += f.rank;
-          const bytes = f.toBytes();
-          len[0] = bytes.length;
+      const wall0 = this.now();
+      const jobs: TileJob[] = this.tiles.map((t, i) => ({
+        window: job.index,
+        tile: i,
+        frames: job.frames,
+        x0: t.x0,
+        y0: t.y0,
+        w: t.w,
+        h: t.h,
+        seed: ((job.index << 20) ^ i) >>> 0,
+      }));
+      // A reset while the files opened: the pool already started a new run.
+      if (epoch !== this.epoch) return;
+      const done = await this.pool.compressWindow(jobs, {
+        local: compressor,
+        read: (tj, raw) => {
+          const t = this.tiles[tj.tile];
+          const p = t.w * t.h;
+          let chunkAt = 0;
+          let o = 0;
+          for (const n of job.chunks) {
+            src.read(raw.subarray(o, o + n * p), chunkAt + t.offset * n * 2);
+            chunkAt += n * this.layoutPx * 2;
+            o += n * p;
+          }
+        },
+        write: (_tj, r) => {
+          ms += r.ms;
+          rank += r.rank;
+          len[0] = r.bytes.length;
           dst.write(len, at);
-          dst.write(bytes, at + 4);
-          at += 4 + bytes.length;
-        } finally {
-          f.free();
-        }
-        await this.yieldNow();
-        if (epoch !== this.epoch) return;
-      }
+          dst.write(r.bytes, at + 4);
+          at += 4 + r.bytes.length;
+        },
+        yieldNow: this.yieldNow,
+      });
+      if (!done || epoch !== this.epoch) return;
       close();
       await store.remove(windowName(job.index));
       this.done.push({ index: job.index, start: job.start, frames: job.frames });
@@ -559,6 +666,7 @@ export class CompressRunner {
       this.factorBytes += at;
       this.meanRank = rank / Math.max(1, this.tiles.length);
       this.msPerFrame = (ms + job.quantMs) / job.frames;
+      this.fps = (job.frames * 1000) / Math.max(1e-6, this.now() - wall0);
     } finally {
       close();
     }
@@ -607,13 +715,26 @@ export class CompressRunner {
       source: this.init?.source ?? 'discover',
       folder: this.deps.store.folder,
       compressed: this.done.map((w) => ({ ...w })),
+      workers: this.pool.width(),
+      fps: this.fps,
+      backlogBytes: this.backlog(),
+      backlogPeakBytes: this.backlogPeak,
+      behindAtEnd: this.behindAtEnd,
+      fpsAfter: this.fpsAfter(),
     };
     this.deps.toMain.postMessage({ type: 'status', session: this.session, status });
+  }
+
+  /** Frames compressed since the recording ended over the wall time since (null: none yet). */
+  private fpsAfter(): number | null {
+    if (this.endAt === null || this.frames <= this.framesAtEnd) return null;
+    return ((this.frames - this.framesAtEnd) * 1000) / Math.max(1e-6, this.now() - this.endAt);
   }
 
   /** Stop the loop, drop every file and counter. */
   private async clear(): Promise<void> {
     this.epoch++;
+    this.pool.reset();
     this.open?.file.close();
     this.open = null;
     this.pending = [];
@@ -631,6 +752,14 @@ export class CompressRunner {
     this.factorBytes = 0;
     this.meanRank = 0;
     this.msPerFrame = 0;
+    this.fps = 0;
+    this.cap = BACKLOG_MAX_BYTES;
+    this.asked = false;
+    this.gaveUp = false;
+    this.backlogPeak = 0;
+    this.endAt = null;
+    this.framesAtEnd = 0;
+    this.behindAtEnd = null;
     await this.deps.store.clear();
   }
 }

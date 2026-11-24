@@ -47,6 +47,10 @@ export interface CellsSettings {
   compress?: boolean;
   /** With `compress`: how the frames are cut into tiles (default plain). */
   compressTiling?: CompressTiling;
+  /** With `compress`: compress workers while the recording runs and after its end (default one and one). */
+  compressPool?: { discover: number; after: number };
+  /** With `compress`: the cap on window files waiting for compression, bytes (`?debug&cbacklog`). */
+  compressBacklogCap?: number;
   /** A live stream with `?factors`: the slow loop settles on the factors after the stream ends (`SlowInit.factorSettle`). */
   factorSettle?: boolean;
   /** A recording with `?factors=file`: at Discover's end the settle may read the factors (`SlowRunner`). */

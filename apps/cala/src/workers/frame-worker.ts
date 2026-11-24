@@ -285,6 +285,10 @@ async function handle(req: FrameRequest): Promise<void> {
                     height: setup.height,
                     session: cells.session,
                     ...(cells.compressTiling ? { tiling: cells.compressTiling } : {}),
+                    ...(cells.compressPool ? { pool: cells.compressPool } : {}),
+                    ...(cells.compressBacklogCap !== undefined
+                      ? { backlogCap: cells.compressBacklogCap }
+                      : {}),
                   },
                   compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
                 )
