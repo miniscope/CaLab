@@ -41,6 +41,15 @@ Refine runs show as "Refine (removed stage)".
 - **Streaming runs Discover only.** A live source has no file to replay, and
   cala does no live re-processing. Save the stream and load it later as a
   recording to Extract it.
+- **Except with `?factors` (experimental).** The stream's Discover frames are
+  compressed into factors (offset grids) as they come in. When the stream
+  ends, the Final settle waits for the last factor window and then settles
+  on frames rebuilt from the factors (cell set frozen, the cluster replay on;
+  Discover itself runs as without the switch). Extract follows on the same
+  rebuilt frames. The export keeps the live traces (`traces_live`) beside
+  Extract's. If the factors cannot be read (a compression error, a gap, or no
+  progress from the compressor for 120 s), the stream ends at Discover's
+  library as without the switch.
 
 ## What carries over from Discover to Extract
 

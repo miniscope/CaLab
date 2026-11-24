@@ -383,6 +383,31 @@ iterations.
 - `scripts/compress-bench.mjs`: local timing of the WASM compressor on a
   window dumped by `discover_eval --compress-dump`.
 
+### A live stream's settle and Extract on its factors (`?factors`)
+
+With `?factors` (experimental; it turns compression on by itself) a live
+stream compresses on the two offset grids, and after the stream ends:
+
+- the slow loop waits for the last window (`SlowRunner.factors`; the main
+  thread's `FactorSettle` answers once the factors are `ready` or
+  `unusable`, with a 120 s watchdog on the compressor), then runs the Final
+  settle with look-back worker 0 serving frames rebuilt from the factors
+  (`FactorReader`; NaN where a window never had a valid sample,
+  `rebuildFrames`). The stream's slow loop is built with
+  `jointUpdate 'refine'`: the cluster replay runs in the settle only.
+- Extract runs in the compress worker on the same rebuilt frames (the
+  back-fill code as a stage; the back-fill itself does not run, so the live
+  traces stay).
+- The export (format version 7 only with these fields) keeps `traces_live`
+  beside Extract's `traces` and `traces_signed`, names the stage sources and
+  says so in `meta_json.notes`.
+
+The look-back worker reads the factor files read-only through `getFile()`
+(`factorFiles`). Each compression run folder holds a Web Lock, so another
+tab's sweep leaves it alone. `?review` is off with `?factors` (the review
+reads plain tiles only). Factors take about 55 MB per 1,000 frames at
+600 px in OPFS. A recording with `?factors` runs as with `?compress`.
+
 ### History review (`?compress&review`)
 
 With `&review` as well (`review=N`: every N windows, default 8), the run looks

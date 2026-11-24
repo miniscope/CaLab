@@ -87,7 +87,8 @@ width, or in a portrait window, the column moves under the image and the page sc
 **Discover** → **Final settle** → **Extract**. Each fills with its own progress and shows
 its percent and, while it runs, its frames per second; the running step has a coloured
 edge and moving stripes, a finished one a ✓, and a step that will not run (look-back
-off, Extract unticked, a live stream) is dimmed. Look-back and Background settle run
+off, Extract unticked, a live stream) is dimmed. With `?factors` (experimental) a live
+stream also gets the Final settle and Extract after it ends, on the factors it wrote. Look-back and Background settle run
 inside Discover. The cell count, the session (in a multi-session run) and the pause and
 stop controls sit beside the boxes.
 

@@ -5,6 +5,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Added
+
+- Cala (experimental, `?factors`): a live stream settles and extracts on its own factors after it ends. Discover runs as before; the stream's export keeps the live traces (`traces_live`) beside Extract's and is format version 7. Exports without these fields stay at version 6.
+
 ### Changed
 
 - Cala (experimental, `?compress`): the compressor writes factor format v2 (plain tiles, two SVD power iterations, per-pixel discarded variance and valid share; v1 files still read), and the crate can cut and blend the frame on two offset grids. `qc_eval --factors-out` and the history whole-test read and write v2.
