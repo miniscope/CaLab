@@ -12,6 +12,7 @@ import type {
   SlowSettleCap,
   SlowSettlePace,
   SlowSettlePool,
+  SlowFactors,
   SlowStopSettling,
   SlowToMain,
   VisitConnect,
@@ -32,6 +33,9 @@ export interface SlowClient {
   settlePool(session: number, workers: number): void;
   /** Stop a look-back run's settling now: its final library is published with what was refined. */
   stopSettling(session: number): void;
+  /** A `?factors` stream's factors are ready (`frames` covered), or not usable (`reason`). */
+  factorsReady(session: number, frames: number): void;
+  factorsFailed(session: number, reason: string): void;
   dispose(): void;
 }
 
@@ -126,6 +130,14 @@ export function createSlowClient(
     },
     stopSettling(session) {
       const msg: SlowStopSettling = { type: 'stop-settling', session };
+      worker.postMessage(msg);
+    },
+    factorsReady(session, frames) {
+      const msg: SlowFactors = { type: 'factors', session, ready: true, frames };
+      worker.postMessage(msg);
+    },
+    factorsFailed(session, reason) {
+      const msg: SlowFactors = { type: 'factors', session, ready: false, reason };
       worker.postMessage(msg);
     },
     dispose() {

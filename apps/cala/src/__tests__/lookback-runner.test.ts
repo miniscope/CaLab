@@ -75,6 +75,7 @@ function fakeLoop(need: number) {
     },
     step: vi.fn(() => undefined),
     finalize: vi.fn(() => fakeLib(++version)),
+    publishedLibrary: vi.fn(() => fakeLib(version)),
     setNoise: vi.fn(),
     setEditScope: vi.fn((s: string) => void calls.push(`scope:${s}`)),
     cellCount: 1,
@@ -587,5 +588,91 @@ describe('SlowRunner look-back (fake loop)', () => {
     const st = statuses(t).at(-1)!.lookback!;
     expect(st.error).toBe('disk');
     expect(st.settle).toMatchObject({ fed: SETTLE.batch, done: true });
+  });
+});
+
+describe("SlowRunner settle on a stream's factors (fake loop)", () => {
+  const FINIT = { ...INIT, factorSettle: true } as const;
+  const ready = (n: number) => ({ type: 'factors', session: 1, ready: true, frames: n }) as const;
+  const requests = (t: { toLb: SlowToLookback[] }) => t.toLb.filter((m) => m.type === 'request');
+
+  it('waits after the last frame, then settles on the factors through port 0 with the current library first', () => {
+    const t = setup(0);
+    t.r.handle(FINIT);
+    t.r.handle(frames(0, 20));
+    t.r.handle(frames(20, 20));
+    const observes = t.streams.length;
+    // Discover asks look-back nothing and observes without a stream index (as a stream today).
+    expect(requests(t)).toHaveLength(0);
+    expect(t.streams.every((s) => s === undefined)).toBe(true);
+    t.r.handle({ type: 'end', session: 1 });
+    expect(finals(t)).toHaveLength(0);
+    expect(statuses(t).at(-1)!.lookback).toMatchObject({
+      settling: true,
+      settle: { waiting: true, source: 'factors', fed: 0 },
+    });
+    expect(requests(t)).toHaveLength(0);
+    t.r.factors(ready(39)); // one-frame tail left out
+    // The worker gets the library before the first request.
+    const kinds = t.toLb.map((m) => m.type);
+    expect(kinds.indexOf('library')).toBeGreaterThanOrEqual(0);
+    expect(kinds.indexOf('library')).toBeLessThan(kinds.indexOf('request'));
+    expect(t.loop.setEditScope).toHaveBeenCalledWith('refine');
+    t.run();
+    expect(t.streams.slice(observes)).toEqual([...Array(39).keys()]);
+    expect(finals(t)).toHaveLength(1);
+    expect(statuses(t).at(-1)!.lookback!.settle).toMatchObject({
+      fed: 39,
+      total: 39,
+      recording: 39,
+      done: true,
+      source: 'factors',
+    });
+  });
+
+  it("factors that cannot be read end the wait with Discover's library as the final one", () => {
+    const t = setup(0);
+    t.r.handle(FINIT);
+    t.r.handle(frames(0, 20));
+    t.r.handle({ type: 'end', session: 1 });
+    t.r.factors({
+      type: 'factors',
+      session: 1,
+      ready: false,
+      reason: 'The factors do not cover the stream.',
+    });
+    expect(finals(t)).toHaveLength(1);
+    expect(requests(t)).toHaveLength(0);
+    expect(statuses(t).at(-1)!.lookback!.settle).toMatchObject({
+      fed: 0,
+      done: true,
+      error: 'The factors do not cover the stream.',
+    });
+  });
+
+  it('Stop settling while waiting publishes the final library; a late "ready" changes nothing', () => {
+    const t = setup(0);
+    t.r.handle(FINIT);
+    t.r.handle(frames(0, 20));
+    t.r.handle({ type: 'end', session: 1 });
+    t.r.stopSettling(1);
+    expect(finals(t)).toHaveLength(1);
+    expect(statuses(t).at(-1)!.lookback!.settle).toMatchObject({
+      stopped: true,
+      done: true,
+      fed: 0,
+    });
+    t.r.factors(ready(20));
+    expect(requests(t)).toHaveLength(0);
+    expect(finals(t)).toHaveLength(1);
+  });
+
+  it('a stream without factorSettle ends at once, as today', () => {
+    const t = setup(0);
+    t.r.handle(INIT);
+    t.r.handle(frames(0, 20));
+    t.r.handle({ type: 'end', session: 1 });
+    expect(finals(t)).toHaveLength(1);
+    expect(statuses(t).at(-1)!.lookback).toBeUndefined();
   });
 });

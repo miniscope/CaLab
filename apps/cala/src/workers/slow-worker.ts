@@ -81,6 +81,11 @@ workerScope.onmessage = (e) => {
     pool = { session: data.session, workers: data.workers };
     return;
   }
+  // Not queued either: it ends a wait the queue may be behind.
+  if (data.type === 'factors') {
+    runner?.factors(data);
+    return;
+  }
   // Not queued: settling runs between the queued messages (see `SlowRunner.drainPump`).
   if (data.type === 'stop-settling') {
     runner?.stopSettling(data.session);

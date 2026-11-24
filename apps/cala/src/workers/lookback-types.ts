@@ -189,4 +189,10 @@ export interface SettleStatus {
   /** The user stopped it early. */
   stopped: boolean;
   done: boolean;
+  /** The settle read the stream's own factors (`?factors`), not the recording. */
+  source?: 'factors';
+  /** Discover is over and the factors are not ready yet (the settle has not started). */
+  waiting?: boolean;
+  /** The factors could not be used: Discover's library is the final one. */
+  error?: string;
 }

@@ -73,6 +73,7 @@ import type {
   OwnerToVisit,
   PortLike,
   SlowCounters,
+  SlowFactors,
   SlowInit,
   SlowReviewed,
   SlowStatus,
@@ -494,6 +495,13 @@ export class SlowRunner {
   private lbPorts: (PortLike<SlowToLookback> | null)[];
   /** This run uses look-back (`SlowInit.lookback` and a loop that has it). */
   private lbOn = false;
+  // ---- the Final settle on a stream's factors (`SlowInit.factorSettle`) ----
+  /** This run settles on its factors after the last frame (`SlowInit.factorSettle`, Discover). */
+  private factorOn = false;
+  /** Discover's last frame is in and the factors are not yet ready (released by `factors`, Stop, `drop`). */
+  private factorWait: { since: number } | null = null;
+  /** The settle reads the factors through look-back worker 0 (from `factors` ready to the run's end). */
+  private factorLive = false;
   /** Per look-back worker: the request out to it (at most one each), and its timeout's cancel. */
   private lbReqs: (LookbackReq | null)[] = [];
   private lbNextId = 1;
@@ -558,6 +566,11 @@ export class SlowRunner {
    */
   connectLookback(port: PortLike<SlowToLookback>, index = 0): void {
     this.lbPorts[index] = port;
+  }
+
+  /** Look-back worker 0 serves this run: look-back, or the settle on factors. */
+  private get lbServes(): boolean {
+    return this.lbOn || this.factorLive;
   }
 
   /** The port to the need-driven look-back worker (null: not connected). */
@@ -731,6 +744,7 @@ export class SlowRunner {
         this.loop = this.clock.span('setup', () => this.deps.create(this.init!));
         this.run = 1;
         this.lbOn = lookback === true && typeof this.loop.lookbackTake === 'function';
+        this.factorOn = this.init.factorSettle === true;
         if (this.lbOn && !this.lbPort) this.lbError = 'The look-back worker is not connected.';
         if (
           this.lbOn &&
@@ -1382,8 +1396,16 @@ export class SlowRunner {
 
   /** The user's "Stop settling": publish the final library now, with what was refined. */
   stopSettling(session: number): void {
+    if (session !== this.session) return;
+    if (this.factorWait) {
+      this.factorWait = null;
+      this.settleStatus = { ...this.waitView(), waiting: false, stopped: true, done: true };
+      this.ending = true;
+      if (!this.busy.some((b) => b)) this.finish();
+      return;
+    }
     const d = this.drain;
-    if (session !== this.session || !d) return;
+    if (!d) return;
     d.stop = true;
     // A request out is not waited for (its late answer is ignored).
     this.cancelRequests();
@@ -1391,7 +1413,7 @@ export class SlowRunner {
   }
 
   /** Discover's last frame with look-back on: settle (see `settlePump`). */
-  private startDrain(): void {
+  private startDrain(recording = this.consumed): void {
     const loop = this.loop!;
     loop.setEditScope?.('refine');
     this.scope = 'refine';
@@ -1401,7 +1423,6 @@ export class SlowRunner {
     // Requests of Discover's look-back still out are dropped (their late answers are ignored).
     this.cancelRequests();
     // The frames Discover forwarded: the recording (stream index = file frame).
-    const recording = this.consumed;
     const feed = new SettleFeed(
       truncatePlan(settlePlan(recording), this.init?.settleFraction ?? 1),
     );
@@ -1591,15 +1612,75 @@ export class SlowRunner {
 
   private end(): void {
     const loop = this.loop;
-    if (!loop || this.final || this.ending || this.drain) return;
+    if (!loop || this.final || this.ending || this.drain || this.factorWait) return;
     // A look-back Discover settles first (`settlePump`).
     if (this.lbOn && this.run === 1) {
       this.clock.span('end', () => this.startDrain());
       return;
     }
+    // A ?factors stream waits for its factors, then settles on them (`factors`).
+    if (this.factorOn && this.run === 1) {
+      this.factorWait = { since: this.now() };
+      this.reviewed = [];
+      this.status(0, 0);
+      return;
+    }
     // Visits out still come back and are applied before the final library.
     this.ending = true;
     if (!this.busy.some((b) => b)) this.finish();
+  }
+
+  /** The main thread on the stream's factors: settle on them, or end with Discover's library. */
+  factors(msg: SlowFactors): void {
+    if (msg.session !== this.session || !this.factorWait || !this.loop) return;
+    this.factorWait = null;
+    try {
+      if (!msg.ready) {
+        this.settleStatus = {
+          ...this.waitView(),
+          waiting: false,
+          done: true,
+          error: msg.reason,
+        };
+        this.ending = true;
+        if (!this.busy.some((b) => b)) this.finish();
+        return;
+      }
+      this.factorLive = true;
+      // The worker began this run just now: it has no library yet.
+      this.sendLibrary(0);
+      this.clock.span('end', () => this.startDrain(Math.min(this.consumed, msg.frames)));
+    } catch (err) {
+      this.fail(err);
+    }
+  }
+
+  /** The newest published library to look-back worker `port` (a copy). */
+  private sendLibrary(port: number): void {
+    const lib = this.loop?.publishedLibrary?.();
+    if (!lib) return;
+    try {
+      const bytes = lib.toBytes();
+      this.lbPorts[port]?.postMessage(
+        { type: 'library', session: this.session, version: lib.version, bytes },
+        [bytes.buffer as ArrayBuffer],
+      );
+    } finally {
+      lib.free();
+    }
+  }
+
+  private waitView(): SettleStatus {
+    return {
+      fed: 0,
+      total: 0,
+      recording: this.consumed,
+      moving: null,
+      stopped: false,
+      done: false,
+      source: 'factors',
+      waiting: true,
+    };
   }
 
   private finish(): void {
@@ -1622,7 +1703,7 @@ export class SlowRunner {
         // Each look-back worker solves with the newest library (same port as its requests,
         // so it always has the version a request was taken with); a copy each.
         // (Pool workers only once in this run's pool: a worker this run never started has no use for it.)
-        if (this.lbOn && !this.lbError) {
+        if (this.lbServes && !this.lbError) {
           const before = this.settlePorts().length;
           this.lbPorts.forEach((port, i) => {
             if (!port || this.lbPortOff[i] || (i > 0 && !this.lbRun[i])) return;
@@ -1670,6 +1751,7 @@ export class SlowRunner {
       moving: d.moving,
       stopped: d.stop,
       done,
+      ...(this.factorLive ? { source: 'factors' as const } : {}),
     };
   }
 
@@ -1683,14 +1765,16 @@ export class SlowRunner {
       births: s[4] ?? 0,
       inNeed: s[5] ?? 0,
       recordBytes: s[6] ?? 0,
-      settling: this.drain !== null,
+      settling: this.drain !== null || this.factorWait !== null,
       drainSteps: 0,
       capped: false,
       ...(this.drain
         ? { settle: this.settleView(this.drain, false) }
-        : this.settleStatus
-          ? { settle: this.settleStatus }
-          : {}),
+        : this.factorWait
+          ? { settle: this.waitView() }
+          : this.settleStatus
+            ? { settle: this.settleStatus }
+            : {}),
       ...(this.cs ? { csettle: this.csettleStatus(loop, this.cs) } : {}),
       ...(this.lbError !== undefined ? { error: this.lbError } : {}),
     };
@@ -1772,7 +1856,7 @@ export class SlowRunner {
       final: this.final,
       run: this.run,
       editScope: this.scope,
-      ...(this.lbOn ? { lookback: this.lookbackStatus(loop) } : {}),
+      ...(this.lbOn || this.factorOn ? { lookback: this.lookbackStatus(loop) } : {}),
     };
     // Last, so the snapshot includes the time spent building this status.
     status.accounting = this.workStatus();
@@ -1835,6 +1919,9 @@ export class SlowRunner {
     for (const cancel of this.lbTimers) cancel?.();
     this.lbTimers = [];
     this.lbOn = false;
+    this.factorOn = false;
+    this.factorWait = null;
+    this.factorLive = false;
     this.lbReqs = [];
     this.lbPortOff = [];
     this.lbPortBusy = [];

@@ -341,7 +341,17 @@ export interface SlowStopSettling {
   session: number;
 }
 
+/**
+ * Main thread -> slow worker: the factors of a `?factors` stream are ready
+ * (the settle can start; `frames` of the stream are covered), or cannot be
+ * used (the run ends with Discover's library).
+ */
+export type SlowFactors = { type: 'factors'; session: number } & (
+  { ready: true; frames: number } | { ready: false; reason: string }
+);
+
 export type MainToSlow =
+  | SlowFactors
   | SlowConnect
   | SlowReviewed
   | SlowLookbackPort
