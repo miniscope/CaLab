@@ -164,6 +164,8 @@ const sample = () => {
     },
     pass2: c.pass2.status(),
     pass2Source: c.pass2.result()?.source ?? null,
+    // Extract on the factor extractor: windows projected, rebuilt, and its workers (slice 6).
+    pass2Extractor: c.pass2.result()?.extractor ?? null,
     pass2Reason: c.pass2.result()?.sourceReason ?? c.pass2.fileReason?.() ?? null,
     pass2Processed: c.pass2.processed(),
   };
@@ -208,6 +210,7 @@ function factorSummary(timeline, streamFrames, streamFps) {
     extractFrames: timeline.at(-1)?.pass2Processed ?? null,
     settleSPerMinute: perMin(settleS),
     extractSPerMinute: perMin(extractS),
+    extractor: timeline.at(-1)?.pass2Extractor ?? null,
     endToExtractDoneS: span(streamEnd, extractEnd),
   };
 }
@@ -239,6 +242,7 @@ function fileFactorSummary(timeline) {
     settleS: span(settleStart ?? ask, finalAt),
     settleFed: last?.settle?.fed ?? null,
     extractSource: last?.pass2Source ?? null,
+    extractor: last?.pass2Extractor ?? null,
     extractReason: last?.pass2Reason ?? null,
     extractS: span(extractStart, extractEnd),
     compressorMsPerFrame: last?.compress?.msPerFrame ?? null,
