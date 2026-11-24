@@ -74,7 +74,8 @@ def diagnose(run: Path, others: list[Path]):
     matched = {k for k, r in enumerate(DM.read_tsv(run / "final.tsv")) if int(float(r["matched"])) == 1}
     mu = {int(r["u"]) for r in DM.read_tsv(run / "demix_cells.tsv")}  # GT unit ids (index into units)
     qc = load_cells_last(run)
-    mot = DM.read_tsv(run / "motion.tsv")
+    births = DM.read_births(run)
+    mot =DM.read_tsv(run / "motion.tsv")
     sh = np.array([[float(m["dy"]), float(m["dx"])] for m in mot])
     ext = float(np.max(np.abs(sh - np.median(sh, axis=0))))
     oth = [DM.read_library(o / "footprints.bin")[3] for o in others]
@@ -101,6 +102,7 @@ def diagnose(run: Path, others: list[Path]):
             "pass": float(q.get("pass", "nan")), "flags": int(float(q.get("flags", "0"))),
             "nn_r": float(q.get("max_neighbour_r", "nan")),
             "fp_edge": float(q.get("fp_edge_frac", "nan")), "elong": float(q.get("fp_elongation", "nan")),
+            "fpc": q.get("fp_class", "?"), "born": float(births.get(ids[i], np.nan)),
         })  # fmt: skip
     for k, oc in enumerate(oth):
         C = cos_matrix(cells, oc, h * w).max(1)
@@ -193,6 +195,49 @@ def main() -> int:
         ms = lambda rs: float(np.nanmedian([r["snr"] for r in rs])) if rs else float("nan")  # noqa: E731
         nn = lambda rs: sum(r["nn_r"] > 0.8 for r in rs) / max(len(rs), 1)  # noqa: E731
         P(f"| {sc:g}x | {ms(f):.1f} | {ms(t):.1f} | {nn(f):.0%} | {nn(t):.0%} |")
+    # when the false cells are born, qc_eval's own class of them, and the "split" r
+    P("")
+    P("Birth frame (`adds.tsv`) of false and matched cells, qc_eval's own class of the false cells (`fp_class` at the last "
+      "checkpoint) and the best-GT r of the false cells called splits:")
+    P("")
+    P("| arm | median birth: false / matched | false born in the last third | matched born in the last third | false by fp_class | split r quartiles |")
+    P("| --- | --- | ---: | ---: | --- | --- |")
+    for sc, rows in detail.items():
+        f = [r for r in rows if r["false"]]
+        t = [r for r in rows if not r["false"]]
+        last3 = lambda rs: np.nanmean([r["born"] >= 6400 for r in rs if np.isfinite(r["born"])]) if rs else float("nan")  # noqa: E731
+        med = lambda rs: float(np.nanmedian([r["born"] for r in rs])) if rs else float("nan")  # noqa: E731
+        fc = {}
+        for r in f:
+            fc[r["fpc"]] = fc.get(r["fpc"], 0) + 1
+        sr = [r["r"] for r in f if r["cls"] == "split"]
+        q = np.percentile(sr, [25, 50, 75]) if sr else [float("nan")] * 3
+        P(f"| {sc:g}x | {med(f):.0f} / {med(t):.0f} | {last3(f):.0%} | {last3(t):.0%} | "
+          + ", ".join(f"{k} {v}" for k, v in sorted(fc.items())) + f" | {q[0]:.2f} / {q[1]:.2f} / {q[2]:.2f} |")  # fmt: skip
+    # visit-rate profile within each arm (seed 1): visits per observed Discover frame per third of the recording
+    P("")
+    P("Visits per Discover frame within a run (seed 1, from `global.tsv`): a fixed work budget gives a falling visit rate:")
+    P("")
+    P("| arm | frames 0-3200 | 3200-6400 | 6400-9600 (Discover only; settle visits excluded) |")
+    P("| --- | ---: | ---: | ---: |")
+    for sc in sorted(by_scale):
+        d = by_scale[sc].get(1)
+        if d is None:
+            continue
+        g = DM.read_tsv(d / "global.tsv")
+        lg = Path(str(d) + ".log").read_text()
+        st = re.search(r"settle: (\d+) frames in ([\d.]+) s .*?, (\d+) visits", lg)
+        settle_v = int(st.group(3))
+        fr = np.array([float(x["slow_frames"]) for x in g])
+        vs = np.array([float(x["slow_visits"]) for x in g])
+        fr_end = float(fr[-1]) - int(st.group(1))
+        v_end = vs[-1] - settle_v
+        pts = []
+        for lo, hi in ((0, 3200), (3200, 6400), (6400, fr_end)):
+            vlo = np.interp(lo, fr, vs)
+            vhi = np.interp(hi, fr, vs) if hi < fr_end else v_end
+            pts.append((vhi - vlo) / max(hi - lo, 1))
+        P(f"| {sc:g}x | {pts[0]:.3f} | {pts[1]:.3f} | {pts[2]:.3f} |")
     text = "\n".join(out)
     print(text)
     if a.md:

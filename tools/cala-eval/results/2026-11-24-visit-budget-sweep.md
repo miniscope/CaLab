@@ -203,10 +203,12 @@ Caveats known up front:
 
 ## Confirmation: full-length motion sim and real data (24 Nov 2026)
 
-Question: do the proposed numbers (floor about 0.2, target about 0.4 visits per Discover frame, cap at most 4x) hold on a
-full-length motion recording and on real data? **The floor holds. The target and the cap are too high.** The first verdict's
-numbers came from 3000-frame clips; on a full recording the same budget gives fewer visits per frame, and the curves flatten
-earlier.
+Question: do the proposed numbers (floor about 1x, target about 2x, cap at most 4x of the budget; 0.2, 0.4 visits per
+Discover frame on a 3000-frame clip) hold on a full-length motion recording and on real data? **In budget multiples: the
+floor holds at 1x; 2x is not better than 1x by net matched cells or passing real cells, so the target is 1x to 2x and
+the cap is 2x, not 4x.** The first verdict's numbers came from 3000-frame clips; on a full recording the same budget gives
+fewer visits per frame (0.13-0.15 at 1x, not 0.2-0.23), and the curves flatten earlier. No arm tested a constant visits
+per frame, which is what the proposal would build (see the verdict).
 
 ### Method
 
@@ -218,7 +220,7 @@ earlier.
   Discover checkpoint of `cells.tsv` (pass = SNR >= 5 and not a likely duplicate; low SNR = peak SNR < 5); a texture proxy
   (the repo has no texture metric: 3x3-smoothed footprint, mass of the largest component above half its peak over the
   footprint's mass, "textured" = share < 0.35); and cell correspondence between runs (Hungarian on footprint cosine >= 0.7).
-- The PI's hand labels (299, 11 Nov) are all on the workshop recording, none on Samara, so they were not used.
+- The PI's hand labels (299, 11 Nov) appear to be all on the workshop recording (the manifest names the Minian result and three cala runs; inferred, not checked), none on Samara, so they were not used.
 - Visits per frame are measured, not nominal: **a given budget gives fewer visits per frame on a longer recording**
   (1x = 0.128 on the motion sim at 9600 frames, 0.146 on Samara at 17879, 0.229 on 3000 frames). Everything below is
   stated in measured visits per Discover frame over the whole recording.
@@ -254,8 +256,11 @@ earlier.
 to another estimate. 7.5 px = 1.5 x the registration's largest shift from the median, 5.0 px; 5 % of all cells lie there.
 "False" is qc_eval's own match flag, as in the sweep tables.)
 
-- **Mostly splits of real cells, not noise.** 83-87 % of false cells at 1x and above are a second piece of a cell that is
-  already found. Fewer than 10 % have nothing under them.
+- **Mostly a second estimate on a cell that is already found, not noise.** 83-87 % of false cells at 1x and above have
+  their best GT unit already matched to another estimate. Fewer than 10 % have nothing under them. The footprint r to that
+  unit is 0.60-0.79 (median 0.70, 4x: 0.63 / 0.72 / 0.79 quartiles), so these are large overlapping copies rather than small
+  fragments, just under the 0.7 strict-match line. qc_eval's own class agrees (table below): `dup` and `adjacent` make up
+  83 % of the false cells at 4x.
 - **QC does not catch them.** Median peak SNR of the false cells is 7.5-8.9 (matched: 29). At 4x only 12 % fall under SNR 5
   and 14 % fail QC; only 1-3 % have a trace correlated above 0.8 with a neighbour (which the likely-duplicate rule needs). The
   app would colour about 86 % of them as passing.
@@ -263,8 +268,20 @@ to another estimate. 7.5 px = 1.5 x the registration's largest shift from the me
   (4x: 23 of 91) against 0.7-3.4 % beyond 80 px; but the border supplies only 14 % of the false cells at 4x, and from 0.5x to
   4x the false count rises in every distance band (+10 within 10 px, +12, +25, +36, +24 beyond 80 px). Interior splits
   dominate.
-- Not tested: whether Refine or a merge pass removes these splits later. If it does, the cost of high visit rates is lower
-  than the strict-match precision suggests.
+- **They are born later than the real cells.**
+
+  | arm  | median birth frame: false / matched | false born in the last third | matched born in the last third | false by qc_eval `fp_class` (last checkpoint)           |
+  | ---- | ----------------------------------- | ---------------------------: | -----------------------------: | ------------------------------------------------------- |
+  | 0.5x | 4621 / 1441                         |                         25 % |                            9 % | adjacent 12, dup 6, partial 9, tp 4, other 1            |
+  | 1x   | 3117 / 996                          |                         22 % |                            4 % | adjacent 23, dup 23, partial 11, noise 2, tp 2          |
+  | 2x   | 4514 / 689                          |                         33 % |                            2 % | adjacent 46, dup 38, partial 7, noise 4, tp 5           |
+  | 4x   | 3041 / 617                          |                         19 % |                            3 % | adjacent 49, dup 66, partial 10, noise 7, tp 6, other 1 |
+
+  (Birth = `recording_frame` of the cell's add in `adds.tsv`.) A second estimate on a found cell appears after that cell, so
+  this is expected; it matters for a constant visit rate (verdict).
+
+- Not tested: whether Refine or a merge pass removes these later. If it does, the cost of high visit rates is lower than the
+  strict-match precision suggests.
 
 ### Real data (Samara `10_43_21`, 17879 frames, 2 seeds)
 
@@ -304,29 +321,44 @@ Mean of 2 seeds; \* settle steps 0.3; wall = whole run, Discover and settle. See
 
 ### Verdict on floor, target and cap
 
-All values are measured Discover visits per observed frame **over the whole recording** (short clips read higher for the same
-budget).
+Three scales are in play, so each value is given in all of them: the **budget multiple** (what the arms varied), the visits per
+Discover frame **on a 3000-frame clip** (where the proposal's 0.2 and 0.4 came from), and the visits per frame **over a whole
+recording** (what a fixed rate in the app would be). 1x is 0.229 on a 3000-frame clip, 0.128 on the full motion sim and
+0.148 on Samara (17879 frames), so the same budget reads 0.13-0.15 over a whole recording.
 
-| value  |   proposed | confirmed?                                                 | reading                                                                                                                                                                                                                                                             |
-| ------ | ---------: | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| floor  |  about 0.2 | **Yes.** Keep 0.2 (0.15 would also do)                     | At half of 1x (0.07-0.08) the full-length motion sim loses 4 points of recall and the real recording 30 cells (10 %), 16 of them passing QC. 0.2 sits between the 1x and 2x arms, above that knee.                                                                  |
-| target |  about 0.4 | **No: lower it to about 0.25-0.3** (the 2x arm: 0.24-0.29) | From 2x to 4x the motion sim gains 1.0 point of recall and 8 matched cells and pays 20 false cells (precision -2.2 points); matched minus false falls from 669 (1x) to 664 (2x) to 653 (4x). The real recording gains 5 passing and 18 failing cells from 2x to 4x. |
-| cap    | at most 4x | **Cap at about 0.4 (2.5-3x) as a ceiling, not a goal**     | At 4x (0.5-0.65) false cells keep rising with no recall gain, and paced runs at about 20x are deep in that regime. The data show no sharp edge between 0.3 and 0.5; 0.4 is a round number inside it.                                                                |
+| value  | budget multiple           | per frame, 3000-frame clip | per frame, whole recording | confirmed?              | reading                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ------ | ------------------------- | -------------------------: | -------------------------: | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| floor  | **1x**                    |                       0.23 |                  0.13-0.15 | **Yes**                 | At half of 1x (0.07-0.08 whole recording) the motion sim loses 4 points of recall and the real recording 30 cells (10 %), 16 of them passing QC.                                                                                                                                                                                                                                                                                                      |
+| target | **1x to 2x** (about 1.5x) |                    0.3-0.4 |                    0.2-0.3 | **Not 2x as such**      | 1x to 2x adds 1.8 points of recall and 15 matched cells on the motion sim but also 19 false cells: matched minus false is 669 at 1x and 664 at 2x (per seed 667 / 670 against 664 / 663). The real recording gains 4 passing cells and 10 low-SNR ones (QC-passing per seed: 217 / 213 at 1x, 224 / 214 at 2x). The case for 2x over 1x rests on short recordings, where it still gives +5.9 points of recall (3000 frames) and reaches cells sooner. |
+| cap    | **2x** (not 4x)           |                        0.4 |                   0.25-0.3 | **Lower than proposed** | From 2x to 4x the motion sim gains 1.0 point of recall and 8 matched cells and pays 20 false cells (precision -2.2 points); matched minus false falls to 653. The real recording gains 5 passing and 18 low-SNR cells. Paced runs at about 20x are deep in that regime.                                                                                                                                                                               |
 
-- The earlier "target 2x (0.4 per frame)" read 0.42 only because that clip was short. On the full recording the same budget
-  (2x) is 0.24-0.29 visits per frame. The ratio to 1x (about 2) carries over, not the 0.4.
-- The target costs little: 2x adds about 20 % wall time to 1x on both recordings. 4x adds 29 % (Samara, whole run) and 54 %
-  (motion, Discover alone).
-- Limits: one motion sim (two seeds) and one real recording; false cells are strict-match counts and splits may be healed
-  later (Refine and merge not tested); the real-data judgement is QC and cross-run agreement only, with no ground truth and no
-  hand labels on Samara; visits per frame are lock-step qc_eval (in the app, visits fill spare time and Chrome at Max also
-  drops frames).
+Literal translation of the proposal into whole-recording rates: **floor 0.2 stands** (it is about 1.5x, above the knee; 0.15 is
+the least that is needed), **target 0.4 does not** (about 3x, beyond the ceiling; use 0.2-0.3), and **cap 0.3** (about 2x),
+with 0.4 as the absolute limit. Floor and target are then nearly the same number: one fixed rate near 0.25 per frame, with the
+cap as a guard, would do.
+
+**What this does not test: a constant visit rate.** Every arm is a fixed work budget, so the visit rate falls inside a run as
+cells accumulate (seed 1, visits per Discover frame in thirds of the 9600 frames: 0.5x 0.073 / 0.051 / 0.044; 1x 0.139 / 0.098 /
+0.085; 2x 0.299 / 0.192 / 0.163; 4x 0.694 / 0.406 / 0.366). A constant 0.25 gives fewer visits early than the 2x arm (0.30)
+and more late (0.25 against 0.16). The false cells are born late (median 3000-4600 against 600-1400 for the matched ones; 19-33 %
+in the last third against 2-9 %), so extra late visits may add more false cells than the budget arms show. Run a constant-rate
+arm (or a short late-boost check) before fixing the numbers, or build with the cap low and measure.
+
+- The target costs little: 2x adds about 20 % wall time to 1x on both recordings. 4x adds about 33 % (Samara, whole run,
+  13.5 to 18 min) and 54 % (motion, Discover alone).
+- Limits: one motion sim (two seeds) and one real recording (`10_43_21`; `14_57_02` was not run); "false" counts are strict-match
+  counts and the second estimates may be healed later (Refine and merge not tested); the real-data judgement is QC and
+  cross-run agreement only, with no ground truth; no hand labels on Samara (the 299 labels' candidates come from the Minian
+  workshop result and three cala runs on the workshop recording, as read from the manifest, which names Minian and runs
+  `r9`, `r1`, `r2g`; that these are all workshop runs is inferred, not checked); visits per frame are lock-step qc_eval (in
+  the app, visits fill spare time and Chrome at Max also drops frames).
 
 ### Files
 
 - Runs: `~/Projects/cala-data/runs/visit-sweep/v3_motion_s5_s<seed>_b<budget>_k<..>_f9600` and
   `~/Projects/cala-data/runs/visit-sweep/real/10_43_21_s<seed>_b<budget>_k<..>`; summaries `motion_full_summary.md`,
-  `real/summary.md`, overlays `real/png/`.
-- Scripts: `visit_budget_real.sh` (real runs), `visit_confirm_motion.py` (table and false-cell diagnosis),
-  `visit_confirm_real.py` (QC, texture proxy, cross-arm correspondence, overlays). Peak RSS 1.0-1.6 GB per run (the diagnosis
-  script peaks at 3.2 GB). The Samara folder was only read.
+  `real/summary.md`, overlays `real/png/`. The per-run tables are appended to
+  `2026-11-24-visit-budget-sweep-tables.md` (section "Confirmation").
+- Scripts: `visit_budget_real.sh` (real runs), `visit_confirm_motion.py` (table, false-cell diagnosis, birth frames, visit-rate
+  profile), `visit_confirm_real.py` (QC, texture proxy, cross-arm correspondence, overlays). Peak RSS 1.0-1.6 GB per run (the
+  diagnosis script peaks at 3.2 GB). The Samara folder was only read.
