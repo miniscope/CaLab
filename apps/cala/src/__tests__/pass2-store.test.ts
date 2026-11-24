@@ -206,7 +206,7 @@ describe('Extract (pass 2) store', () => {
 });
 
 /** A port to a stream's factors: the test moves `state` and feeds the job's windows. */
-function factorSetup(initial: FactorState = 'ready') {
+function factorSetup(initial: FactorState = 'ready', mode: 'stream' | 'file' = 'stream') {
   let state = initial;
   let wake: (() => void) | null = null;
   const info: FactorInfo = {
@@ -216,14 +216,23 @@ function factorSetup(initial: FactorState = 'ready') {
     frames: 8,
     meanRank: 3,
   };
-  const calls = { runs: 0, cancels: 0 };
+  const calls = { runs: 0, cancels: 0, changed: 0 };
   let onWindow: Parameters<FactorExtractPort['run']>[2] = () => {};
   let finish: () => void = () => {};
   const port: FactorExtractPort = {
-    active: () => true,
+    active: () => mode === 'stream',
+    mode: () => mode,
     state: () => state,
-    blocked: () => (state === 'ready' ? null : 'Waiting for the last windows to be compressed.'),
-    changed: () => new Promise<void>((r) => (wake = r)),
+    blocked: () =>
+      state === 'ready'
+        ? null
+        : mode === 'file'
+          ? '8 frames are still being compressed.'
+          : 'Waiting for the last windows to be compressed.',
+    changed: () => {
+      calls.changed++;
+      return new Promise<void>((r) => (wake = r));
+    },
     info: () => info,
     run(_version, _library, on): FactorJob {
       calls.runs++;
@@ -305,5 +314,31 @@ describe("Extract on a stream's factors", () => {
     await settle();
     expect(t.store.status()).toBe('error');
     expect(t.calls.runs).toBe(0);
+  });
+});
+
+describe("Extract on a recording's factors (?factors=file)", () => {
+  it('ready: solves on the factors', async () => {
+    const t = factorSetup('ready', 'file');
+    const done = t.store.run();
+    await settle();
+    expect(t.calls.runs).toBe(1);
+    t.window(0, 4);
+    t.window(4, 4);
+    t.finish();
+    await done;
+    await settle();
+    expect(t.store.result()!.source).toBe('factors');
+  });
+
+  it('still compressing: replays the file at once with the reason, and never waits', async () => {
+    const t = factorSetup('compressing', 'file');
+    void t.store.run();
+    await settle();
+    expect(t.calls.runs).toBe(0);
+    expect(t.calls.changed).toBe(0);
+    expect(t.started).toHaveLength(1); // the replay pipeline
+    expect(t.store.waiting()).toBeNull();
+    expect(t.store.fileReason()).toMatch(/still being compressed/);
   });
 });

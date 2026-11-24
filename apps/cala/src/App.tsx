@@ -323,6 +323,7 @@ const App: Component = () => {
           () => pipeline.factorRun(),
           () => pipeline.status() === 'done',
           () => pipeline.processed(),
+          () => pipeline.factorFileRun(),
         )
       : undefined;
   const pass2 = createPass2Store(client, pipeline, cells, undefined, undefined, factorExtract);
@@ -404,6 +405,9 @@ const App: Component = () => {
             cells: r?.cells ?? 0,
             libraryVersion: r?.version ?? 0,
             ...(r?.source === 'factors' ? { source: 'factors' as const, factors: r.factors } : {}),
+            ...(r?.source === 'file'
+              ? { source: 'file' as const, sourceReason: r.sourceReason }
+              : {}),
           });
           logStage('extract', 'Extract done');
           const result = r;

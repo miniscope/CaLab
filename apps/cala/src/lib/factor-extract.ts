@@ -1,5 +1,6 @@
 import type { CompressClient } from './compress-client.ts';
 import {
+  fileFactorsBlocked,
   factorsBlocked,
   type CompressStore,
   type FactorInfo,
@@ -16,6 +17,8 @@ export interface FactorJob {
 export interface FactorExtractPort {
   /** This run is a `?factors` stream. */
   active(): boolean;
+  /** 'stream': a `?factors` stream (waits for `ready`); 'file': a `?factors=file` recording (never waits); null: neither. */
+  mode?(): 'stream' | 'file' | null;
   state(): FactorState;
   /** Why the factors cannot be read yet or at all (null: they can). */
   blocked(): string | null;
@@ -48,6 +51,7 @@ export function createFactorExtract(
   active: () => boolean,
   ended: () => boolean,
   frames: () => number,
+  fileRun: () => boolean = () => false,
 ): FactorExtractPort {
   let next = 1;
   let cur: {
@@ -78,10 +82,15 @@ export function createFactorExtract(
       cur.onWindow(msg.start, msg.count, msg.ids, msg.traces, msg.signed);
     else end(null, { frames: msg.frames, msPerFrame: msg.msPerFrame });
   };
+  const fileState = (): FactorState => store.fileFactors(ended(), frames());
   return {
     active,
-    state: () => store.factors(ended(), frames()),
-    blocked: () => factorsBlocked(store.factors(ended(), frames()), store.status(), store.error()),
+    mode: () => (active() ? 'stream' : fileRun() ? 'file' : null),
+    state: () => (fileRun() && !active() ? fileState() : store.factors(ended(), frames())),
+    blocked: () =>
+      fileRun() && !active()
+        ? fileFactorsBlocked(fileState(), store.status(), store.error(), frames())
+        : factorsBlocked(store.factors(ended(), frames()), store.status(), store.error()),
     changed: () => store.changed(),
     info: () => store.factorInfo(),
     run(version, library, onWindow) {

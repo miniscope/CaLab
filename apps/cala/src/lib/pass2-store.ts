@@ -75,8 +75,13 @@ export interface Pass2Result {
   seconds: number;
   /** Mean and max projections of every frame (absent: the workers kept none). */
   projection?: FovProjections;
-  /** Extract solved frames rebuilt from a live stream's factors (`?factors`), and which factors. */
-  source?: 'factors';
+  /**
+   * Extract solved frames rebuilt from the factors (`?factors`, `?factors=file`),
+   * with which factors; or, on a `?factors=file` recording, replayed the file
+   * (`sourceReason` says why).
+   */
+  source?: 'factors' | 'file';
+  sourceReason?: string;
   factors?: FactorInfo;
 }
 
@@ -100,6 +105,8 @@ export function createPass2Store(
   const [motionBackend, setMotionBackend] = createSignal<string | null>(null);
   /** Why a factor run waits (the compressor is not done), or null. */
   const [waiting, setWaiting] = createSignal<string | null>(null);
+  /** A `?factors=file` run replays the file: why (the factors were not ready), or null. */
+  const [fileReason, setFileReason] = createSignal<string | null>(null);
 
   let generation = 0;
   /** The trace files of the current run or result (deleted when replaced or cleared). */
@@ -131,7 +138,10 @@ export function createPass2Store(
     const other = blocked?.();
     if (other) return other;
     // A factor run reads no file, so no record to replay; it waits for the factors itself.
-    const replay = factors?.active() ? null : replayBlocked(pipeline);
+    const replay =
+      factors?.active() || (factors?.mode?.() === 'file' && factors.state() === 'ready')
+        ? null
+        : replayBlocked(pipeline);
     if (replay) return replay;
     if (!cells.library() || !cells.libraryBytes()) return 'No cells were found.';
     if ((cells.library()?.ids.length ?? 0) === 0) return 'No cells were found.';
@@ -194,6 +204,9 @@ export function createPass2Store(
           version: ctx.library.version,
           library: ctx.library,
           seconds: (clock() - ctx.t0) / 1000,
+          ...(fileReason() !== null
+            ? { source: 'file' as const, sourceReason: fileReason()! }
+            : {}),
           ...(step.projection ? { projection: step.projection } : {}),
         });
         setStatus('done');
@@ -248,7 +261,12 @@ export function createPass2Store(
    * solved its last frames with an earlier version than the final one).
    */
   async function run(use?: { library: LibraryView; bytes: Uint8Array }): Promise<void> {
-    factorMode = factors?.active() === true;
+    const mode = factors?.mode?.() ?? (factors?.active() ? 'stream' : null);
+    // A recording never waits for its factors (spec decision 4): the factors when ready, else the file.
+    factorMode = mode === 'stream' || (mode === 'file' && factors!.state() === 'ready');
+    setFileReason(
+      mode === 'file' && !factorMode ? (factors!.blocked() ?? 'The factors cannot be read.') : null,
+    );
     if (factors && factorMode) return runFactors(factors);
     const reason = blockedReason();
     if (reason) {
@@ -455,6 +473,7 @@ export function createPass2Store(
     if (status() === 'running') generation++;
     factorJob?.cancel();
     setWaiting(null);
+    setFileReason(null);
     setStatus('idle');
     void discard();
     setError(null);
@@ -476,6 +495,7 @@ export function createPass2Store(
     motionBackend,
     /** A factor run waits for the compressor: why (null: not waiting). */
     waiting,
+    fileReason,
     blockedReason,
     /** The trace file of the current run (for measurements). */
     traceFile: () => file,
