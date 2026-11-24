@@ -465,12 +465,13 @@ impl BgBasis {
 
     /// The same basis (bitwise).
     pub fn same(&self, o: &BgBasis) -> bool {
+        let f64_eq = |a: &[f64], b: &[f64]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+        };
         self.k == o.k
-            && self
-                .inv
-                .iter()
-                .zip(&o.inv)
-                .all(|(a, b)| a.to_bits() == b.to_bits())
+            && self.maps.len() == o.maps.len()
+            && f64_eq(&self.inv, &o.inv)
+            && f64_eq(&self.gram, &o.gram)
             && self.maps.iter().zip(&o.maps).all(|(a, b)| bits_eq(a, b))
     }
 

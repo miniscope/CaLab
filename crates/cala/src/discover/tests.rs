@@ -935,6 +935,65 @@ fn visits_run_as_jobs_match_step_exactly() {
     assert!(a.finalize().unwrap().to_bytes()[16..] == b.finalize().unwrap().to_bytes()[16..]);
 }
 
+/// The visit memos and caches (Gram reuse, the frames' column dots, the
+/// solve and residual memos, the patch grid) change nothing: a loop with
+/// them and one without make the same edits, count the same work and
+/// publish the same libraries, frame by frame, on a busy movie with a
+/// sweeping missing band.
+#[test]
+fn visit_reuse_matches_the_plain_computation_exactly() {
+    let t = 1500;
+    let (mut m, seed) = busy_movie(t);
+    sweep_missing(&mut m, t, 10..86, 20..70);
+    let cfg = shard_config();
+    let n_px = N * N;
+    let (mut a, mut ea) = start(cfg.clone(), &seed);
+    let (mut b, mut eb) = start(cfg.clone(), &seed);
+    b.set_reuse(false);
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+        assert_eq!(ta.traces, tb.traces, "frame {k}");
+        let (la, lb) = (ea.library().clone(), eb.library().clone());
+        a.observe(f, &la, &ta).unwrap();
+        b.observe(f, &lb, &tb).unwrap();
+        if k % 400 == 399 {
+            let noise: Vec<f32> = (0..n_px)
+                .map(|i| 1.0 + 0.01 * (k / 400) as f32 + 0.001 * (i % 5) as f32)
+                .collect();
+            a.set_noise(noise.clone()).unwrap();
+            b.set_noise(noise).unwrap();
+        }
+        let pa = a.step(5_000_000).unwrap();
+        let pb = b.step(5_000_000).unwrap();
+        assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+        assert_eq!(a.work(), b.work(), "frame {k}");
+        if let (Some(la), Some(lb)) = (pa, pb) {
+            // (Bytes 8..16: the version, from a process-wide counter.)
+            assert!(la.to_bytes()[16..] == lb.to_bytes()[16..], "frame {k}");
+            ea.set_library(la).unwrap();
+            eb.set_library(lb).unwrap();
+        }
+    }
+    let s = a.stats();
+    assert!(
+        s.adds > 0 && s.merges > 0 && s.refines > 0 && s.keep_tests > 0 && s.split_tests > 0,
+        "{s:?}"
+    );
+    assert_eq!(s, b.stats());
+    assert_eq!(a.cell_infos(), b.cell_infos());
+    assert_eq!(
+        format!("{:?}", a.take_add_log()),
+        format!("{:?}", b.take_add_log())
+    );
+    assert_eq!(
+        format!("{:?}", a.take_removal_log()),
+        format!("{:?}", b.take_removal_log())
+    );
+    assert_eq!(a.take_edit_log(), b.take_edit_log());
+    assert!(a.finalize().unwrap().to_bytes()[16..] == b.finalize().unwrap().to_bytes()[16..]);
+}
+
 #[test]
 fn concurrent_jobs_never_share_cells_and_apply_in_any_order() {
     let t = 1500;

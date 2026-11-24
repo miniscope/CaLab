@@ -1249,6 +1249,9 @@ pub struct SlowLoop {
     resid_memo: Option<(u64, u64, u64, Vec<Fit>, Vec<Vec<f32>>)>,
     model_seq: u64,
     frames_seq: u64,
+    /// The visit memos above and the frames' dot cache (off only in tests,
+    /// which compare against the plain computation).
+    reuse: bool,
     /// [`SlowLoop::set_reservoir_frozen`].
     res_frozen: bool,
     /// [`SlowLoop::set_lookback_reservoir`] and its counters (look-back
@@ -1685,6 +1688,7 @@ impl SlowLoop {
             resid_memo: None,
             model_seq: 0,
             frames_seq: 0,
+            reuse: true,
             skip_unused: true,
             cfg,
         };
@@ -1712,6 +1716,8 @@ impl SlowLoop {
 
     /// Replace the noise map (σ per pixel). New patches are whitened with it.
     pub fn set_noise(&mut self, noise: Vec<f32>) -> Result<(), TraceError> {
+        // The patch grid's whitening comes from the noise map.
+        *self.grid_memo.get_mut() = None;
         crate::trace::check_len("noise map", self.dims.pixels(), noise.len())?;
         if noise.iter().any(|v| !v.is_finite() || *v < 0.0) {
             return Err(TraceError::InvalidConfig(
@@ -3228,6 +3234,15 @@ impl SlowLoop {
 
     /// The moat grid and whitening of a patch.
     fn grid(&self, rect: Rect) -> Arc<PatchGrid> {
+        if !self.reuse {
+            return Arc::new(PatchGrid::new(
+                rect,
+                self.dims,
+                &self.inv_sigma,
+                &self.fov,
+                self.filter.moat().map_or(0, |m| m.0),
+            ));
+        }
         let mut memo = self.grid_memo.borrow_mut();
         if let Some(g) = memo.as_ref().filter(|g| g.rect == rect) {
             return g.clone();
@@ -3289,8 +3304,18 @@ impl SlowLoop {
     /// ([`Problem::solve_missing`]). The column dots come from `fr`'s
     /// cache (bitwise what each solve would compute).
     fn solve_frames(&mut self, pr: &Problem, fr: &Frames, proj: &[(Vec<f64>, f64)]) -> Vec<Fit> {
-        let dots = fr.column_dots(pr);
         let mut work = 0;
+        if !self.reuse {
+            let fits =
+                fr.y.iter()
+                    .zip(proj)
+                    .zip(&fr.miss)
+                    .map(|((y, (qb, yy)), m)| pr.solve_missing(y, qb, *yy, m, &mut work))
+                    .collect();
+            self.work += work;
+            return fits;
+        }
+        let dots = fr.column_dots(pr);
         let mut s = vec![0.0f64; pr.len()];
         let fits =
             fr.y.iter()
@@ -3360,6 +3385,9 @@ impl SlowLoop {
         let mut pr = self.new_problem(cols, &bg, self.tiles[ti].rect.len(), &mut work);
         self.bgs[ti] = Some(bg);
         self.work += work;
+        if !self.reuse {
+            return pr;
+        }
         // The same columns on the tile's background: the same problem.
         let same = self.tile_model.as_ref().is_some_and(|(_, cols)| {
             cols.len() == pr.cols.len()
@@ -3387,6 +3415,9 @@ impl SlowLoop {
         n_px: usize,
         work: &mut u64,
     ) -> Problem {
+        if !self.reuse {
+            return Problem::new(cols, bg, n_px, work);
+        }
         let pr = Problem::new_reusing(cols, bg, n_px, work, self.gram_memo.as_ref());
         self.gram_memo = Some(pr.gram_ref());
         pr
@@ -3453,6 +3484,13 @@ impl SlowLoop {
         let r = self.visit_tests(ti);
         self.clear_visit_memos();
         r
+    }
+
+    /// Turn the visit memos and caches off (tests: the plain computation
+    /// to compare against).
+    #[cfg(test)]
+    pub(crate) fn set_reuse(&mut self, on: bool) {
+        self.reuse = on;
     }
 
     fn clear_visit_memos(&mut self) {
