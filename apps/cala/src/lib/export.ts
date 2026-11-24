@@ -115,7 +115,10 @@
  * frames layout) holds the traces Discover solved as the frames came in. `meta_json.notes`
  * says so, and the stage records carry `settle_source` (Discover's Final settle read the
  * factors) and `source`, `factor_tiling`, `factor_windows` (their count) and
- * `factor_mean_rank` (Extract).
+ * `factor_mean_rank` (Extract). Discover's record of a factor run also carries its
+ * compress pool: `compress_workers` (while Discover read), `compress_workers_after`,
+ * `compress_behind_frames` (not compressed at Discover's end), `compress_backlog_peak_bytes`
+ * (window files waiting for compression, at their peak) and `compress_fps_after`.
  *
  * Session-boundary flags (format version 6; Joint runs, sessions 2..):
  * `meta_json.session.boundary` is the health flag of the boundary the session
@@ -274,6 +277,13 @@ export function stageMeta(r: StageRun): Record<string, unknown> {
     out.factor_tiling = r.factors.tiling;
     out.factor_windows = r.factors.windows.length;
     out.factor_mean_rank = r.factors.meanRank;
+  }
+  if (r.compress) {
+    out.compress_workers = r.compress.workers;
+    out.compress_workers_after = r.compress.workersAfter;
+    out.compress_behind_frames = r.compress.behindFrames;
+    out.compress_backlog_peak_bytes = r.compress.backlogPeakBytes;
+    out.compress_fps_after = r.compress.fpsAfter;
   }
   return out;
 }

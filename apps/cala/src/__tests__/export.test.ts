@@ -525,6 +525,34 @@ describe('export of a ?factors=file recording', () => {
     expect(meta.notes[1]).toContain('less per-frame noise');
   });
 
+  it("writes a factor run's compress pool on Discover's record", async () => {
+    const stages: StageRun[] = [
+      {
+        ...stage('discover'),
+        settleSource: 'file',
+        settleSourceReason: 'the compressor was 7,440 frames behind when Discover ended',
+        compress: {
+          workers: 1,
+          workersAfter: 3,
+          behindFrames: 7440,
+          backlogPeakBytes: 5_356_800_000,
+          fpsAfter: 118.5,
+        },
+      },
+      stage('extract'),
+    ];
+    const meta = await metaOf({ ...(await input()), stages, notes: fileFactorNotes(stages) });
+    expect(meta.format_version).toBe(7);
+    expect(meta.stages[0]).toMatchObject({
+      compress_workers: 1,
+      compress_workers_after: 3,
+      compress_behind_frames: 7440,
+      compress_backlog_peak_bytes: 5_356_800_000,
+      compress_fps_after: 118.5,
+    });
+    expect(meta.stages[1]).not.toHaveProperty('compress_workers');
+  });
+
   it('Extract on the file keeps its reason', async () => {
     const stages: StageRun[] = [
       stage('discover'),

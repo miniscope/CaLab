@@ -22,6 +22,7 @@ import { loadSpanStats } from './lib/extract-qc-wasm.ts';
 import { ASSUMED_FPS } from './lib/miniscope-meta.ts';
 import type { QcSnapshot } from './lib/qc.ts';
 import { createCompressClient } from './lib/compress-client.ts';
+import { compressPoolSize, parsePoolOverride } from './lib/compress-pool.ts';
 import { COMPRESS_DEFAULTS } from './lib/compress-feed.ts';
 import {
   createCompressStore,
@@ -176,18 +177,6 @@ const App: Component = () => {
           slow.addReviewed(session, candidates),
         );
   const reviewClient = review ? createReviewClient((msg) => review.onMessage(msg)) : undefined;
-  const compressClient = compress
-    ? createCompressClient(
-        client,
-        (msg) => compress.onMessage(msg),
-        undefined,
-        review && reviewClient ? { port: reviewClient.port, every: review.every } : undefined,
-      )
-    : undefined;
-  // Look-back: Discover refines footprints as it goes by re-reading past frames in a
-  // worker of its own, and settles at the end (the Final settle).
-  // A recording on disk (one session or a Joint run of several), pipelined workers only.
-  const pipelined = params.get('pipeline') !== '0';
   // The settle pool: S more look-back workers that take only the settle's chunks (worker 0
   // keeps need-driven look-back and the end settle), started when a run first goes below
   // Max. S from the core count (`settlePoolSize`); `?debug&lbpool=S` overrides it (measurement).
@@ -195,6 +184,30 @@ const App: Component = () => {
     typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined,
     params.has('debug') && params.has('lbpool') ? Number(params.get('lbpool')) || 0 : null,
   );
+  // The compress pool: a recording's windows are compressed by the compress worker and its
+  // helpers, few while Discover reads and more after its last frame (`compressPoolSize`);
+  // `?debug&cpool=D,E` sets both (measurement).
+  const cpool =
+    (params.has('debug') ? parsePoolOverride(params.get('cpool')) : null) ??
+    compressPoolSize(
+      typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined,
+      slow.visitWorkers,
+      lbPool,
+    );
+  const compressHelpers = Math.max(cpool.discover, cpool.after) - 1;
+  const compressClient = compress
+    ? createCompressClient(
+        client,
+        (msg) => compress.onMessage(msg),
+        undefined,
+        review && reviewClient ? { port: reviewClient.port, every: review.every } : undefined,
+        compressHelpers > 0 ? { count: compressHelpers } : undefined,
+      )
+    : undefined;
+  // Look-back: Discover refines footprints as it goes by re-reading past frames in a
+  // worker of its own, and settles at the end (the Final settle).
+  // A recording on disk (one session or a Joint run of several), pipelined workers only.
+  const pipelined = params.get('pipeline') !== '0';
   const lookbackClient = createLookbackClient({
     slow,
     pool: lbPool,
@@ -268,6 +281,10 @@ const App: Component = () => {
   if (pageFactors.factors) pipeline.setFactors(true);
   pipeline.setFactorsDefault(pageFactors.factorsDefault);
   pipeline.setCompressAsked(pageFactors.compressAsked);
+  pipeline.setCompressPool(cpool);
+  // `?debug&cbacklog=GB`: the cap on window files waiting for compression (measurement).
+  const cbacklog = params.has('debug') ? Number(params.get('cbacklog')) : NaN;
+  if (cbacklog > 0) pipeline.setCompressBacklogCap(cbacklog * 2 ** 30);
   if (pageFactors.factorsFile)
     pipeline.setFactorsFile(true, () => {
       const s = store.source();
@@ -373,6 +390,18 @@ const App: Component = () => {
         ? { settleSource: 'file' as const, settleSourceReason: slow.lookback.settle.fileReason }
         : {}),
     };
+    // A factor run's compress pool (format 7 only: with a settle source).
+    const cs = compress?.status();
+    if (data.settleSource && cs) {
+      const pool = pipeline.runPool();
+      data.compress = {
+        workers: pool?.discover ?? 1,
+        workersAfter: pool?.after ?? 1,
+        behindFrames: cs.behindAtEnd ?? null,
+        backlogPeakBytes: cs.backlogPeakBytes ?? 0,
+        fpsAfter: cs.fpsAfter ?? null,
+      };
+    }
     stageLog.end('discover', 'done', data);
     logStage('discover', `Discover done: ${data.cells} cells`);
   });
@@ -501,6 +530,7 @@ const App: Component = () => {
         behind: compress.behind(frames),
         window: COMPRESS_DEFAULTS.window,
         msPerFrame: compress.status()?.msPerFrame ?? 0,
+        workers: pipeline.runPool()?.after ?? 1,
         width: i?.width ?? 0,
         height: i?.height ?? 0,
       });

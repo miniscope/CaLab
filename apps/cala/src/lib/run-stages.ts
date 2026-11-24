@@ -143,6 +143,18 @@ export interface StageRun {
   source?: 'factors' | 'file';
   sourceReason?: string;
   factors?: FactorInfo;
+  /**
+   * Discover of a factor run: compress workers while it read and after its end,
+   * the frames not compressed at its end, the waiting window files' peak, and
+   * the pace after its end (frames/s).
+   */
+  compress?: {
+    workers: number;
+    workersAfter: number;
+    behindFrames: number | null;
+    backlogPeakBytes: number;
+    fpsAfter: number | null;
+  };
 }
 
 /** Runs of the stages since the last Discover start, in order. */
