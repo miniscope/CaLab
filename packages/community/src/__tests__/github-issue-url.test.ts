@@ -4,7 +4,6 @@ import {
   buildFeedbackUrl,
   buildFeatureRequestUrl,
   buildBugReportUrl,
-  buildDonationRequestUrl,
 } from '../github-issue-url.ts';
 
 const BASE = 'https://github.com/miniscope/CaLab/issues/new?';
@@ -58,14 +57,5 @@ describe('GitHub issue URL builders', () => {
       expect(url).not.toContain('catune');
       expect(url).not.toContain('cabana');
     });
-  });
-
-  it('donation request: feedback template, donation label, deletion title', () => {
-    const url = buildDonationRequestUrl('cala');
-    expect(url.startsWith(BASE)).toBe(true);
-    const params = new URL(url).searchParams;
-    expect(params.get('template')).toBe('feedback.yml');
-    expect(params.get('labels')).toBe('donation,cala');
-    expect(params.get('title')).toBe('[Donation] Please delete my donation: ');
   });
 });

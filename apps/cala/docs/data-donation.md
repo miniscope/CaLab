@@ -301,8 +301,8 @@ donations", opens a list, no sign-in needed:
 - The sharing choice (above), with its text, right next to the Donate button.
 - Deletion:
   - Withdraw in the app until ingested.
-  - After that on request through a GitHub issue (`buildDonationRequestUrl`,
-    linked in `DonatePanel.tsx`; no personal email in the app): a
+  - After that, people contact the CaLab team (plain text in the panel, no
+    link, no personal email in the app): a
     CaLab-only donation is deleted from the lab server; a public one is
     removed from the DANDI draft and the lab server, which takes it out of
     every later version.

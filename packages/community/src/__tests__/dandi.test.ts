@@ -115,10 +115,10 @@ describe('dandi helpers', () => {
       '10.48324/dandi.000999/0.1',
     );
     expect(text).toBe(
-      'Data were contributed by Jane Doe (Doe Lab) to the CaLab donated recordings collection (DANDI:000999, doi:10.48324/dandi.000999/0.1).',
+      'Data were contributed by Jane Doe (Doe Lab) to the CaLab shared recordings collection (DANDI:000999, doi:10.48324/dandi.000999/0.1).',
     );
     expect(acknowledgementText({ credit_name: null, credit_lab: 'Doe Lab' }, CFG, null)).toBe(
-      'Data were contributed by Doe Lab to the CaLab donated recordings collection (DANDI:000999).',
+      'Data were contributed by Doe Lab to the CaLab shared recordings collection (DANDI:000999).',
     );
   });
 });

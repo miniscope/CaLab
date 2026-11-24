@@ -36,7 +36,7 @@ export interface DonationForm {
 export const SHARING_TEXT: Record<DonationSharing, { label: string; text: string }> = {
   public: {
     label: 'Public on DANDI (CC BY 4.0)',
-    text: 'After review, your recording is published in the CaLab donated recordings collection on DANDI, where anyone can download it, e.g. to test and improve their pipelines. You and your lab are listed as contributors on its citable DOI. You can withdraw it until the next version of the collection is published; published versions are permanent.',
+    text: 'After review, your recording is published in the CaLab shared recordings collection on DANDI, where anyone can download it, e.g. to test and improve their pipelines. You and your lab are listed as contributors on its citable DOI. You can withdraw it until the next version of the collection is published; published versions are permanent.',
   },
   lab: {
     label: 'CaLab only',

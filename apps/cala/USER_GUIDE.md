@@ -50,7 +50,7 @@ A **Miniscope recording folder**: a numbered series of `.avi` files, plus the si
 - Open the folder with the picker, or drop it on the page. **Choose individual files**
   is there for odd layouts: those files open in natural order (`clip 2` before `clip 10`)
   even when their names are not numbered like a series. Files are read locally and never leave your computer
-  (unless you choose to donate a recording, see [Donating a recording](#donating-a-recording)). In
+  (unless you choose to share a recording, see [Sharing a recording](#sharing-a-recording)). In
   Chrome and Edge the picker asks permission to "view files" in the folder (read-only).
   Firefox and Safari show their own upload-worded confirmation, which is misleading:
   nothing is uploaded.
@@ -449,19 +449,19 @@ Useful options: `--fps 30` (default: the rate in the recording's metadata),
 if 8765 is taken. Press Ctrl+C to stop the stream. The recording is only read,
 never changed. See the README for the protocol and the full option list.
 
-## Donating a recording
+## Sharing a recording
 
-The **Run** tab of an opened recording (not a live source) has a **Donate data**
+The **Run** tab of an opened recording (not a live source) has a **Share recording**
 button, shown when the app is connected to the CaLab community backend. You choose how it is
-shared: **public on DANDI** (CC BY 4.0, citable; after review it appears in the CaLab donated
-recordings collection and under **Browse donated recordings** on the start page, where anyone can
+shared: **public on DANDI** (CC BY 4.0, citable; after review it appears in the CaLab shared
+recordings collection and under **Browse shared recordings** on the start page, where anyone can
 download it) or **CaLab only** (only the team uses it to develop and benchmark cala). Nothing is
 uploaded until you sign in with your email, fill in the form (indicator, species, brain region,
-scope, and for public donations subject details) and tick both consent boxes. The raw frames are
-then compressed without loss in the browser (about 1.65x smaller, up to 10 GB per donation) and
+scope, and for public recordings subject details) and tick both consent boxes. The raw frames are
+then compressed without loss in the browser (about 1.65x smaller, up to 10 GB per shared recording) and
 uploaded with `timeStamps.csv` (if the recording has one) and the file names, never folder paths.
-**My donations** lists what you sent, whether it is in the benchmark, and lets you withdraw
-it until the lab has taken it in. After that, open a GitHub issue (linked in the panel) to have it deleted. A
+**My shared recordings** lists what you sent, whether it is in the benchmark, and lets you withdraw
+it until the lab has taken it in. After that, contact the CaLab team to have it removed. A
 public recording can be removed until the next version of the DANDI collection is published;
 published versions are permanent.
 

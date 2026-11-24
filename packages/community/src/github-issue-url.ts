@@ -61,13 +61,3 @@ export function buildBugReportUrl(app?: AppLabel): string {
   });
   return `${REPO_BASE}?${params.toString()}`;
 }
-
-/** A request about a donation (e.g. delete it) once it can no longer be withdrawn in the app. */
-export function buildDonationRequestUrl(app?: AppLabel): string {
-  const params = new URLSearchParams({
-    template: 'feedback.yml',
-    title: '[Donation] Please delete my donation: ',
-    labels: joinLabels('donation', app),
-  });
-  return `${REPO_BASE}?${params.toString()}`;
-}
