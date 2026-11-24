@@ -46,6 +46,8 @@ export interface SlowInit {
    * (see `SlowRunner`).
    */
   factorSettle?: boolean;
+  /** A recording with `?factors=file`: at Discover's end the settle may read the factors (`SlowRunner`). */
+  factorFile?: boolean;
   /**
    * Settle during Discover ("Background settle", frames only; needs
    * `lookback`; absent = off for the run): the run may settle while Discover

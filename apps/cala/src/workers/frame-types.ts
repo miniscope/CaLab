@@ -49,6 +49,8 @@ export interface CellsSettings {
   compressTiling?: CompressTiling;
   /** A live stream with `?factors`: the slow loop settles on the factors after the stream ends (`SlowInit.factorSettle`). */
   factorSettle?: boolean;
+  /** A recording with `?factors=file`: at Discover's end the settle may read the factors (`SlowRunner`). */
+  factorFile?: boolean;
   /** Return a residual preview with each batch (the residual view is shown). */
   residual?: boolean;
   /** Return the signed (unclipped) traces with each batch (Extract; `CellsBatch.signed`). */

@@ -17,7 +17,7 @@ import {
 } from './work-meter.ts';
 import type { CellStore } from './cell-store.ts';
 import type { CompressStore } from './compress-store.ts';
-import { factorRunPlan } from './factor-run.ts';
+import { FACTORS_FILE_JOINT, factorRunPlan } from './factor-run.ts';
 import {
   flatFieldKey,
   initialFlatFieldState,
@@ -223,6 +223,9 @@ export function createPipelineStore(
   const [lookbackRun, setLookbackRun] = createSignal(false);
   const [factors, setFactors] = createSignal(false);
   const [factorRun, setFactorRun] = createSignal(false);
+  const [factorsFile, setFactorsFile] = createSignal(false);
+  const [factorFileRun, setFactorFileRun] = createSignal(false);
+  let jointOf: () => boolean = () => false;
   /**
    * Settle during Discover ("Background settle", under look-back; runs only
    * while the target is below Max, at the settle governor's rate): on (the
@@ -985,6 +988,7 @@ export function createPipelineStore(
     lookbackSession = 0;
     setLookbackRun(false);
     setFactorRun(false);
+    setFactorFileRun(false);
     record = new RunRecord();
     pauseClock.reset();
     meter = new ThroughputMeter();
@@ -1062,10 +1066,14 @@ export function createPipelineStore(
       const runPlan = factorRunPlan({
         live: flat.identity?.()?.live === true,
         factors: factors(),
+        factorsFile: factorsFile(),
         compress: compress !== undefined,
         discover: discover(),
+        joint: jointOf(),
       });
       setFactorRun(runPlan.factorSettle);
+      setFactorFileRun(runPlan.factorFile);
+      if (factorsFile() && jointOf()) console.warn(FACTORS_FILE_JOINT);
       runLevel = lb || runPlan.factorSettle ? finalSettleLevelSig() : FINAL_SETTLE_LEVEL_DEFAULT;
       if (lb) {
         lookbackSession = session;
@@ -1101,6 +1109,7 @@ export function createPipelineStore(
               }
             : {}),
           ...(runPlan.factorSettle ? { factorSettle: true } : {}),
+          ...(runPlan.factorFile ? { factorFile: true } : {}),
           ...(runPlan.factorSettle && FINAL_SETTLE_LEVELS[finalSettleLevelSig()].fraction < 1
             ? { settleFraction: FINAL_SETTLE_LEVELS[finalSettleLevelSig()].fraction }
             : {}),
@@ -1239,7 +1248,12 @@ export function createPipelineStore(
     lookback,
     setLookback,
     setFactors,
+    setFactorsFile(on: boolean, joint: () => boolean): void {
+      setFactorsFile(on);
+      jointOf = joint;
+    },
     factorRun,
+    factorFileRun,
     // (Not `??`: `blocked()` returns null when look-back can run.)
     lookbackBlocked: () =>
       lookbackFeed ? lookbackFeed.blocked() : 'Look-back is not available here.',

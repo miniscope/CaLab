@@ -144,7 +144,9 @@ const App: Component = () => {
   // (`?review=N`: every N), in a worker of its own. One core is left for it.
   // `?factors` (experimental): a live stream settles and extracts on the factors Discover
   // writes; it turns compression on by itself. A recording runs as with `?compress`.
+  // `?factors=file` also lets a recording's settle and Extract read them when complete.
   const factors = params.has('factors');
+  const factorsFile = params.get('factors') === 'file';
   const compressOn = params.has('compress') || factors;
   if (factors && params.has('review')) console.warn(FACTORS_REVIEW_OFF);
   const reviewWindows =
@@ -260,6 +262,11 @@ const App: Component = () => {
   // Look-back (with its Final settle) is on by default for recordings; `?lookback=0` turns it off.
   if (params.get('lookback') === '0') pipeline.setLookback(false);
   if (factors) pipeline.setFactors(true);
+  if (factorsFile)
+    pipeline.setFactorsFile(true, () => {
+      const s = store.source();
+      return s !== null && 'sessions' in s;
+    });
   // Background settle (settle during Discover) is on under look-back whenever the target is
   // below Max; `csettle=0` turns it off, `csettle=yield` or `csettle=yieldN` feeds each answer
   // N frames at a time (1 by default), `csrate=1|0.5` lowers the cap from 2 re-read frames
@@ -420,7 +427,7 @@ const App: Component = () => {
     const slow = cells.status();
     const done = pipeline.status() === 'done';
     // A ?factors stream's Extract solves on the factors; the back-fill would replace the live traces.
-    if (pipeline.factorRun()) return;
+    if (pipeline.factorRun() || pipeline.factorFileRun()) return;
     if (compress?.takeBackfill(done, slow?.final ?? false, slow?.version ?? 0)) {
       compressClient?.backfill(cells.session(), slow?.version ?? 0);
     }

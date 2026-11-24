@@ -268,6 +268,9 @@ async function handle(req: FrameRequest): Promise<void> {
               ...(cells?.factorSettle && !cells.library && !cells.lookback
                 ? { factorSettle: true }
                 : {}),
+              ...(cells?.factorFile && !cells.library && cells.lookback
+                ? { factorFile: true }
+                : {}),
               ...(cells?.factorSettle && !cells.library && cells.settleFraction !== undefined
                 ? { settleFraction: cells.settleFraction }
                 : {}),
