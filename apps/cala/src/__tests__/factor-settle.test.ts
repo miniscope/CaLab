@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { FactorSettle, type FactorSettleInput } from '../lib/factor-settle.ts';
+import {
+  FactorSettle,
+  FileSettleChoice,
+  type FactorSettleInput,
+  type FileSettleInput,
+} from '../lib/factor-settle.ts';
 
 const info = {
   folder: 'run-a',
@@ -60,5 +65,71 @@ describe('FactorSettle', () => {
     const c = new FactorSettle();
     c.act(I());
     expect(c.act(I({ session: 6, waiting: false }))).toEqual({ kind: 'release', session: 5 });
+  });
+});
+
+describe('FileSettleChoice', () => {
+  const finfo = {
+    folder: 'run-a',
+    tiling: 'offset' as const,
+    windows: [],
+    frames: 1000,
+    meanRank: 3,
+  };
+  const at = (o: Partial<FileSettleInput>): FileSettleInput => ({
+    session: 1,
+    factorFile: true,
+    waiting: true,
+    state: 'compressing',
+    reason: '2 windows (1,000 frames) are still being compressed.',
+    info: finfo,
+    behind: 400,
+    window: 600,
+    msPerFrame: 25,
+    width: 8,
+    height: 8,
+    ...o,
+  });
+
+  it('more than a window behind at the first look: the file at once, with the lag', () => {
+    const c = new FileSettleChoice();
+    const a = c.act(at({ behind: 4210 }));
+    expect(a).toMatchObject({ kind: 'file', session: 1 });
+    expect(a.kind === 'file' && a.reason).toContain('4,210 frames');
+    expect(c.act(at({ state: 'ready' }))).toEqual({ kind: 'none' }); // answered once
+  });
+
+  it('at most a window behind: waits for it, then the factors', () => {
+    const c = new FileSettleChoice();
+    expect(c.act(at({ behind: 400 }))).toEqual({ kind: 'none' });
+    // Later looks never send it to the file for the lag (only the first look decides that).
+    expect(c.act(at({ behind: 900 }))).toEqual({ kind: 'none' });
+    expect(c.act(at({ state: 'ready', behind: 0 }))).toEqual({
+      kind: 'factors',
+      session: 1,
+      frames: 1000,
+      factors: { folder: 'run-a', windows: [], width: 8, height: 8 },
+    });
+  });
+
+  it('unusable factors (an error, the watchdog, a one-frame tail): the file with the reason', () => {
+    const c = new FileSettleChoice();
+    expect(c.act(at({ behind: 400 }))).toEqual({ kind: 'none' });
+    expect(c.act(at({ state: 'unusable', reason: 'stalled' }))).toEqual({
+      kind: 'file',
+      session: 1,
+      reason: 'stalled',
+    });
+  });
+
+  it('nothing without the switch or while the slow loop does not ask; a new session asks again', () => {
+    const c = new FileSettleChoice();
+    expect(c.act(at({ factorFile: false, state: 'ready' }))).toEqual({ kind: 'none' });
+    expect(c.act(at({ waiting: false, state: 'ready' }))).toEqual({ kind: 'none' });
+    expect(c.act(at({ state: 'ready' }))).toMatchObject({ kind: 'factors', session: 1 });
+    expect(c.act(at({ session: 2, state: 'ready' }))).toMatchObject({
+      kind: 'factors',
+      session: 2,
+    });
   });
 });

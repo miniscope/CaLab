@@ -10,7 +10,7 @@ import type {
   CompressTiling,
   CompressToMain,
 } from '../workers/compress-types.ts';
-import { FACTOR_TILING } from './factor-run.ts';
+import { FACTOR_TAIL_FILE, FACTOR_TILING } from './factor-run.ts';
 
 /** A finished back-fill. */
 export interface BackfillInfo {
@@ -68,14 +68,14 @@ export function factorState(
   error: string | null,
   ended: boolean,
   frames: number,
+  tail = true,
 ): FactorState {
   if (error) return 'unusable';
   if (!ended || !s || !s.final || s.pending > 0) return 'compressing';
   if (s.tiling !== FACTOR_TILING) return 'unusable';
   const c = factorCoverage(s.compressed);
-  return c.gap === null && c.frames >= 2 && c.frames <= frames && c.frames >= frames - 1
-    ? 'ready'
-    : 'unusable';
+  const covers = tail ? c.frames <= frames && c.frames >= frames - 1 : c.frames === frames;
+  return c.gap === null && c.frames >= 2 && covers ? 'ready' : 'unusable';
 }
 
 export function factorsBlocked(
@@ -92,6 +92,30 @@ export function factorsBlocked(
       return error
         ? `The factors cannot be read: ${error}`
         : 'The factors do not cover the stream.';
+    default:
+      return 'This run has no factors.';
+  }
+}
+
+/** Why a recording's settle or Extract re-reads the file (null: the factors can be read). */
+export function fileFactorsBlocked(
+  state: FactorState,
+  s: CompressStatus | null,
+  error: string | null,
+  frames: number,
+): string | null {
+  switch (state) {
+    case 'ready':
+      return null;
+    case 'compressing': {
+      const left = Math.max(0, frames - (s?.frames ?? 0));
+      return `${left.toLocaleString('en-US')} frames are still being compressed.`;
+    }
+    case 'unusable':
+      if (error) return `The factors cannot be read: ${error}`;
+      return s && factorCoverage(s.compressed).frames === frames - 1
+        ? FACTOR_TAIL_FILE
+        : 'The factors do not cover the recording.';
     default:
       return 'This run has no factors.';
   }
@@ -160,6 +184,14 @@ export function createCompressStore(sink?: BackfillSink) {
     /** The state of a live run's factors (`ended`: the stream is over; `frames`: what Discover read). */
     factors(ended: boolean, frames: number): FactorState {
       return factorState(status(), error(), ended, frames);
+    },
+    /** The state of a recording's factors (every frame covered; `frames`: what Discover read). */
+    fileFactors(ended: boolean, frames: number): FactorState {
+      return factorState(status(), error(), ended, frames, false);
+    },
+    /** Frames Discover read that are not compressed yet. */
+    behind(frames: number): number {
+      return Math.max(0, frames - (status()?.frames ?? 0));
     },
     /** The run folder and windows Extract and the settle read (null before the first status). */
     factorInfo(): FactorInfo | null {

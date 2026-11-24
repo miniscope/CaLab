@@ -40,6 +40,15 @@ export function factorRunPlan(o: {
 export const FACTORS_FILE_JOINT =
   'cala: ?factors=file does not apply to a Joint run of several sessions; it runs as ?compress (plain tiles).';
 
+export const FACTOR_TAIL_FILE =
+  'The last frame is not in the factors (a window of one frame cannot be compressed).';
+
+/** Why a recording's settle re-reads the file: how far the compressor was behind at Discover's end. */
+export function fileBehindText(behind: number, msPerFrame: number): string {
+  const s = msPerFrame > 0 ? `, about ${Math.round((behind * msPerFrame) / 1000)} s,` : '';
+  return `the compressor was ${behind.toLocaleString('en-US')} frames${s} behind when Discover ended`;
+}
+
 export const FACTORS_REVIEW_OFF =
   'cala: ?review is off with ?factors (the history review reads plain tiles only; a stream with ?factors compresses on offset grids).';
 
