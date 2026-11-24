@@ -254,7 +254,8 @@ use cluster::ClusterStore;
 use fpstats::{parity_block, FpStats, FAST_BLOCK};
 use ledger::Evidence;
 use local::{
-    rank1, rank2_split, BgBasis, Cell, Column, Extent, Fit, LocalFilter, PatchGrid, Problem, Rect,
+    rank1, rank2_split, BgBasis, Cell, Column, Extent, Fit, GramRef, LocalFilter, PatchGrid,
+    Problem, Rect,
 };
 use noisecorr::NoiseCorr;
 use reservoir::{mix, SharedFrames, Slot, Tile};
@@ -1231,6 +1232,26 @@ pub struct SlowLoop {
     job_seq: u64,
     /// Bumped by every `set_noise` (a visit must run on the same map).
     noise_gen: u64,
+    /// Within a visit: the last problem's Gram terms
+    /// ([`Problem::new_reusing`]) and the tile's moat grid (both are
+    /// cleared when the visit ends).
+    gram_memo: Option<GramRef>,
+    grid_memo: std::cell::RefCell<Option<Arc<PatchGrid>>>,
+    /// Within a visit: the columns of the last problem on the tile's own
+    /// background and its label ([`Problem::sig`]), and the per-frame
+    /// solves of labelled problems: `(label, frames id, work, fits)`.
+    /// The same model on the same frames is solved once.
+    tile_model: Option<(u64, Arc<Vec<Column>>)>,
+    solve_memo: Vec<(u64, u64, u64, Vec<Fit>)>,
+    /// The residuals of the last labelled model: `(label, frames id,
+    /// work, fits, residuals)`.
+    #[allow(clippy::type_complexity)]
+    resid_memo: Option<(u64, u64, u64, Vec<Fit>, Vec<Vec<f32>>)>,
+    model_seq: u64,
+    frames_seq: u64,
+    /// The visit memos above and the frames' dot cache (off only in tests,
+    /// which compare against the plain computation).
+    reuse: bool,
     /// [`SlowLoop::set_reservoir_frozen`].
     res_frozen: bool,
     /// [`SlowLoop::set_lookback_reservoir`] and its counters (look-back
@@ -1313,6 +1334,8 @@ struct Solved {
 
 /// A tile's frames loaded for a visit.
 struct Frames {
+    /// Unique within the slow loop (keys the visit's solve memo).
+    id: u64,
     y: Vec<Vec<f32>>,
     proj: Vec<(Vec<f64>, f64)>,
     /// Frame index of each.
@@ -1320,11 +1343,87 @@ struct Frames {
     /// Patch pixels each frame lacks (registration moved them in from
     /// outside the FOV): zero in `y`, zero weight in the solves.
     miss: Vec<Vec<u32>>,
+    /// The column dots of the solves on these frames, kept for the next
+    /// solve with the same columns ([`SlowLoop::solve_frames`]).
+    dots: std::cell::RefCell<FrameDots>,
+}
+
+/// Per column (by id, with the column they were computed for) its dots
+/// `h̃ᵀ y` on every frame of a [`Frames`], and every frame's moat-grid
+/// block sums, all for the moat grid `grid`.
+#[derive(Default)]
+struct FrameDots {
+    set: bool,
+    grid: Option<Arc<PatchGrid>>,
+    z: Option<Vec<Vec<f64>>>,
+    cols: HashMap<u64, (Column, std::rc::Rc<Vec<f64>>)>,
 }
 
 impl Frames {
+    fn new(
+        id: u64,
+        y: Vec<Vec<f32>>,
+        proj: Vec<(Vec<f64>, f64)>,
+        idx: Vec<u64>,
+        miss: Vec<Vec<u32>>,
+    ) -> Frames {
+        Frames {
+            id,
+            y,
+            proj,
+            idx,
+            miss,
+            dots: Default::default(),
+        }
+    }
+
     fn len(&self) -> usize {
         self.y.len()
+    }
+
+    /// The dots of every column of `pr` on every frame: computed for the
+    /// columns not seen before (on the same moat grid), kept for the next
+    /// call.
+    fn column_dots(&self, pr: &Problem) -> Vec<std::rc::Rc<Vec<f64>>> {
+        let mut d = self.dots.borrow_mut();
+        if !d.set || !local::same_grid(&d.grid, &pr.grid().cloned()) {
+            *d = FrameDots {
+                set: true,
+                grid: pr.grid().cloned(),
+                z: None,
+                cols: HashMap::new(),
+            };
+        }
+        if d.grid.is_some() && d.z.is_none() {
+            d.z = Some(
+                self.y
+                    .iter()
+                    .map(|y| pr.block_sums(y).expect("grid"))
+                    .collect(),
+            );
+        }
+        let d = &mut *d;
+        let mut out = Vec::with_capacity(pr.len());
+        for col in pr.cols.iter() {
+            match d.cols.get(&col.id) {
+                Some((c, v)) if c.same(col) => out.push(v.clone()),
+                _ => {
+                    let v: Vec<f64> = match &d.z {
+                        Some(z) => self
+                            .y
+                            .iter()
+                            .zip(z)
+                            .map(|(y, z)| col.dot_with(y, Some(z)))
+                            .collect(),
+                        None => self.y.iter().map(|y| col.dot_with(y, None)).collect(),
+                    };
+                    let v = std::rc::Rc::new(v);
+                    d.cols.insert(col.id, (col.clone(), v.clone()));
+                    out.push(v);
+                }
+            }
+        }
+        out
     }
 }
 
@@ -1582,6 +1681,14 @@ impl SlowLoop {
             inflight: Vec::new(),
             job_seq: 0,
             noise_gen: 0,
+            gram_memo: None,
+            grid_memo: std::cell::RefCell::new(None),
+            tile_model: None,
+            solve_memo: Vec::new(),
+            resid_memo: None,
+            model_seq: 0,
+            frames_seq: 0,
+            reuse: true,
             skip_unused: true,
             cfg,
         };
@@ -1609,6 +1716,8 @@ impl SlowLoop {
 
     /// Replace the noise map (σ per pixel). New patches are whitened with it.
     pub fn set_noise(&mut self, noise: Vec<f32>) -> Result<(), TraceError> {
+        // The patch grid's whitening comes from the noise map.
+        *self.grid_memo.get_mut() = None;
         crate::trace::check_len("noise map", self.dims.pixels(), noise.len())?;
         if noise.iter().any(|v| !v.is_finite() || *v < 0.0) {
             return Err(TraceError::InvalidConfig(
@@ -3119,18 +3228,34 @@ impl SlowLoop {
             proj.push(slot.proj.clone().expect("set"));
             y.push(v);
         }
-        Frames { y, proj, idx, miss }
+        self.frames_seq += 1;
+        Frames::new(self.frames_seq, y, proj, idx, miss)
     }
 
     /// The moat grid and whitening of a patch.
     fn grid(&self, rect: Rect) -> Arc<PatchGrid> {
-        Arc::new(PatchGrid::new(
+        if !self.reuse {
+            return Arc::new(PatchGrid::new(
+                rect,
+                self.dims,
+                &self.inv_sigma,
+                &self.fov,
+                self.filter.moat().map_or(0, |m| m.0),
+            ));
+        }
+        let mut memo = self.grid_memo.borrow_mut();
+        if let Some(g) = memo.as_ref().filter(|g| g.rect == rect) {
+            return g.clone();
+        }
+        let g = Arc::new(PatchGrid::new(
             rect,
             self.dims,
             &self.inv_sigma,
             &self.fov,
             self.filter.moat().map_or(0, |m| m.0),
-        ))
+        ));
+        *memo = Some(g.clone());
+        g
     }
 
     /// Columns of the cells whose supports meet `rect` (their moats too,
@@ -3153,33 +3278,87 @@ impl SlowLoop {
     }
 
     fn solve_all(&mut self, pr: &Problem, fr: &Frames) -> Vec<Fit> {
-        self.solve_with(pr, &fr.y, &fr.proj, &fr.miss)
+        if pr.sig == 0 {
+            return self.solve_frames(pr, fr, &fr.proj);
+        }
+        if let Some(m) = self
+            .solve_memo
+            .iter()
+            .find(|m| m.0 == pr.sig && m.1 == fr.id)
+        {
+            self.work += m.2;
+            return m.3.clone();
+        }
+        let w0 = self.work;
+        let fits = self.solve_frames(pr, fr, &fr.proj);
+        if self.solve_memo.len() >= 4 {
+            self.solve_memo.remove(0);
+        }
+        self.solve_memo
+            .push((pr.sig, fr.id, self.work - w0, fits.clone()));
+        fits
     }
 
-    /// Per-frame solves; frames with missing pixels (`miss`) give them zero
-    /// weight ([`Problem::solve_missing`]).
-    fn solve_with(
-        &mut self,
-        pr: &Problem,
-        ys: &[Vec<f32>],
-        proj: &[(Vec<f64>, f64)],
-        miss: &[Vec<u32>],
-    ) -> Vec<Fit> {
+    /// Per-frame solves of `fr` with the background projections `proj`;
+    /// frames with missing pixels give them zero weight
+    /// ([`Problem::solve_missing`]). The column dots come from `fr`'s
+    /// cache (bitwise what each solve would compute).
+    fn solve_frames(&mut self, pr: &Problem, fr: &Frames, proj: &[(Vec<f64>, f64)]) -> Vec<Fit> {
         let mut work = 0;
-        let fits = ys
-            .iter()
-            .zip(proj)
-            .zip(miss)
-            .map(|((y, (qb, yy)), m)| pr.solve_missing(y, qb, *yy, m, &mut work))
-            .collect();
+        if !self.reuse {
+            let fits =
+                fr.y.iter()
+                    .zip(proj)
+                    .zip(&fr.miss)
+                    .map(|((y, (qb, yy)), m)| pr.solve_missing(y, qb, *yy, m, &mut work))
+                    .collect();
+            self.work += work;
+            return fits;
+        }
+        let dots = fr.column_dots(pr);
+        let mut s = vec![0.0f64; pr.len()];
+        let fits =
+            fr.y.iter()
+                .zip(proj)
+                .zip(&fr.miss)
+                .enumerate()
+                .map(|(f, ((y, (qb, yy)), m))| {
+                    for (si, d) in s.iter_mut().zip(&dots) {
+                        *si = d[f];
+                    }
+                    let dw = pr.dots_work(y.len());
+                    pr.solve_missing_dots(&s, dw, qb, *yy, m, &mut work)
+                })
+                .collect();
         self.work += work;
         fits
     }
 
     fn residuals(&mut self, pr: &Problem, fr: &Frames, fits: &[Fit], ti: usize) -> Vec<Vec<f32>> {
+        // The same labelled model with the same fits on the same frames:
+        // the same residuals.
+        let same_fits = |a: &[Fit]| {
+            a.len() == fits.len()
+                && a.iter().zip(fits).all(|(x, y)| {
+                    local::bits_eq(&x.c, &y.c)
+                        && x.beta.len() == y.beta.len()
+                        && x.beta
+                            .iter()
+                            .zip(&y.beta)
+                            .all(|(p, q)| p.to_bits() == q.to_bits())
+                })
+        };
+        if let Some(m) = self
+            .resid_memo
+            .as_ref()
+            .filter(|m| pr.sig != 0 && m.0 == pr.sig && m.1 == fr.id && same_fits(&m.3))
+        {
+            self.work += m.2;
+            return m.4.clone();
+        }
         let bg = self.bgs[ti].as_ref().expect("basis");
         let mut work = 0;
-        let out =
+        let out: Vec<Vec<f32>> =
             fr.y.iter()
                 .zip(fits)
                 .zip(&fr.miss)
@@ -3194,14 +3373,53 @@ impl SlowLoop {
                 })
                 .collect();
         self.work += work;
+        if pr.sig != 0 {
+            self.resid_memo = Some((pr.sig, fr.id, work, fits.to_vec(), out.clone()));
+        }
         out
     }
 
     fn problem(&mut self, ti: usize, cols: Vec<Column>) -> Problem {
-        let bg = self.bgs[ti].as_ref().expect("basis");
+        let bg = self.bgs[ti].take().expect("basis");
         let mut work = 0;
-        let pr = Problem::new(cols, bg, self.tiles[ti].rect.len(), &mut work);
+        let mut pr = self.new_problem(cols, &bg, self.tiles[ti].rect.len(), &mut work);
+        self.bgs[ti] = Some(bg);
         self.work += work;
+        if !self.reuse {
+            return pr;
+        }
+        // The same columns on the tile's background: the same problem.
+        let same = self.tile_model.as_ref().is_some_and(|(_, cols)| {
+            cols.len() == pr.cols.len()
+                && cols
+                    .iter()
+                    .zip(pr.cols.iter())
+                    .all(|(a, b)| a.same(b) && local::same_grid(&a.grid, &b.grid))
+        });
+        if same {
+            pr.sig = self.tile_model.as_ref().expect("same").0;
+        } else {
+            self.model_seq += 1;
+            pr.sig = self.model_seq;
+            self.tile_model = Some((pr.sig, pr.cols.clone()));
+        }
+        pr
+    }
+
+    /// [`Problem::new`], reusing the Gram entries of the visit's last
+    /// problem (bitwise the same result).
+    fn new_problem(
+        &mut self,
+        cols: Vec<Column>,
+        bg: &BgBasis,
+        n_px: usize,
+        work: &mut u64,
+    ) -> Problem {
+        if !self.reuse {
+            return Problem::new(cols, bg, n_px, work);
+        }
+        let pr = Problem::new_reusing(cols, bg, n_px, work, self.gram_memo.as_ref());
+        self.gram_memo = Some(pr.gram_ref());
         pr
     }
 
@@ -3262,6 +3480,28 @@ impl SlowLoop {
 
     /// The tests and edits of a visit (here, or in a [`VisitRunner`]).
     fn visit_body(&mut self, ti: usize) -> Result<(), TraceError> {
+        self.clear_visit_memos();
+        let r = self.visit_tests(ti);
+        self.clear_visit_memos();
+        r
+    }
+
+    /// Turn the visit memos and caches off (tests: the plain computation
+    /// to compare against).
+    #[cfg(test)]
+    pub(crate) fn set_reuse(&mut self, on: bool) {
+        self.reuse = on;
+    }
+
+    fn clear_visit_memos(&mut self) {
+        self.gram_memo = None;
+        *self.grid_memo.get_mut() = None;
+        self.tile_model = None;
+        self.solve_memo.clear();
+        self.resid_memo = None;
+    }
+
+    fn visit_tests(&mut self, ti: usize) -> Result<(), TraceError> {
         if self.bgs[ti].is_none() {
             self.bgs[ti] = Some(BgBasis::new(self.tiles[ti].rect));
         }
@@ -4670,28 +4910,28 @@ impl SlowLoop {
                 }
                 self.work += (ys.len() * rect.len() * (bg.k + 1)) as u64;
             }
+            self.frames_seq += 1;
+            let kf = Frames::new(self.frames_seq, ys, proj, Vec::new(), ymiss);
+            let (ys, proj) = (&kf.y, &kf.proj);
             // The cell's amplitude on each probe without the bump: the light
             // a fail claims is not shaped like the cell.
             let plain = {
                 let mut work = 0;
-                let pr = Problem::new(
-                    self.columns(rect, &[], &[]),
-                    self.bgs[ti].as_ref().expect("basis"),
-                    rect.len(),
-                    &mut work,
-                );
+                let bg = self.bgs[ti].take().expect("basis");
+                let pr = self.new_problem(self.columns(rect, &[], &[]), &bg, rect.len(), &mut work);
+                self.bgs[ti] = Some(bg);
                 self.work += work + (rect.len() * ys.len()) as u64;
                 let k0 = pr.cols.iter().position(|c| c.id == id);
-                let fits = self.solve_with(&pr, &ys, &proj, &ymiss);
+                let fits = self.solve_all(&pr, &kf);
                 k0.map(|k| fits.iter().map(|f| f64::from(f.c[k])).collect::<Vec<_>>())
             };
-            let (bg, proj) = self.with_bump(ti, center, &ys, &proj);
+            let (bg, proj) = self.with_bump(ti, center, ys, proj);
             let mut work = 0;
-            let full = Problem::new(self.columns(rect, &[], &[]), &bg, rect.len(), &mut work);
-            let red = Problem::new(self.columns(rect, &[id], &[]), &bg, rect.len(), &mut work);
+            let full = self.new_problem(self.columns(rect, &[], &[]), &bg, rect.len(), &mut work);
+            let red = self.new_problem(self.columns(rect, &[id], &[]), &bg, rect.len(), &mut work);
             self.work += work + (rect.len() * (ys.len() + 2 * bg.k)) as u64;
-            let f = self.solve_with(&full, &ys, &proj, &ymiss);
-            let r = self.solve_with(&red, &ys, &proj, &ymiss);
+            let f = self.solve_frames(&full, &kf, &proj);
+            let r = self.solve_frames(&red, &kf, &proj);
             let dof = (n_px - (bg.k + full.len()) as f64).max(1.0);
             // Overlap of every other column with this cell's, normalised
             // by the cell's own energy: how much of the cell's signal an
@@ -4801,7 +5041,7 @@ impl SlowLoop {
                 id,
                 ti,
                 &probes,
-                &ys,
+                ys,
                 &proj,
                 &bg,
                 &full,
@@ -4853,11 +5093,11 @@ impl SlowLoop {
         };
         self.work += (rect.len() * (test_fr.len() + 2 * bg.k)) as u64;
         let mut work = 0;
-        let base = Problem::new(self.columns(rect, &[], &[]), &bg, rect.len(), &mut work);
-        let ext = Problem::new(self.columns(rect, &[], &[cell]), &bg, rect.len(), &mut work);
+        let base = self.new_problem(self.columns(rect, &[], &[]), &bg, rect.len(), &mut work);
+        let ext = self.new_problem(self.columns(rect, &[], &[cell]), &bg, rect.len(), &mut work);
         self.work += work;
-        let b = self.solve_with(&base, &test_fr.y, &proj, &test_fr.miss);
-        let e = self.solve_with(&ext, &test_fr.y, &proj, &test_fr.miss);
+        let b = self.solve_frames(&base, test_fr, &proj);
+        let e = self.solve_frames(&ext, test_fr, &proj);
         let k = ext.len() - 1;
         // What the base model leaves is noise *plus* everything not modelled
         // (dim cells below detection, neuropil): measure its variance per
@@ -4880,14 +5120,14 @@ impl SlowLoop {
         let (b_even, b_odd) = (even(&b), odd(&b));
         for (i, a) in alts.iter().enumerate() {
             let mut work = 0;
-            let pr = Problem::new(
+            let pr = self.new_problem(
                 self.columns(rect, &[a.id], &[a]),
                 &bg,
                 rect.len(),
                 &mut work,
             );
             self.work += work;
-            let f = self.solve_with(&pr, &test_fr.y, &proj, &test_fr.miss);
+            let f = self.solve_frames(&pr, test_fr, &proj);
             let g_even = b_even - even(&f);
             if g_even > best_even {
                 best_even = g_even;
@@ -5785,16 +6025,16 @@ impl SlowLoop {
             // Held-out test, free bump at the cell in both arms.
             let (bg, proj) = self.with_bump(ti, cell.center, &test_fr.y, &test_fr.proj);
             let mut work = 0;
-            let one = Problem::new(self.columns(rect, &[], &[]), &bg, rect.len(), &mut work);
-            let two = Problem::new(
+            let one = self.new_problem(self.columns(rect, &[], &[]), &bg, rect.len(), &mut work);
+            let two = self.new_problem(
                 self.columns(rect, &[id], &[&a, &b]),
                 &bg,
                 rect.len(),
                 &mut work,
             );
             self.work += work + (rect.len() * (test_fr.len() + 2 * bg.k)) as u64;
-            let f1 = self.solve_with(&one, &test_fr.y, &proj, &test_fr.miss);
-            let f2 = self.solve_with(&two, &test_fr.y, &proj, &test_fr.miss);
+            let f1 = self.solve_frames(&one, test_fr, &proj);
+            let f2 = self.solve_frames(&two, test_fr, &proj);
             let n_px = self.fov_px(rect) as f64;
             let dof = (test_fr.len() as f64 * (n_px - (bg.k + one.len()) as f64)).max(1.0);
             let chi1 = Self::total_chi2(&f1);
@@ -5821,9 +6061,10 @@ impl SlowLoop {
             let mut best_single = 0.0f64;
             for c1 in &singles {
                 let mut work = 0;
-                let pr = Problem::new(self.columns(rect, &[id], &[c1]), &bg, rect.len(), &mut work);
+                let pr =
+                    self.new_problem(self.columns(rect, &[id], &[c1]), &bg, rect.len(), &mut work);
                 self.work += work;
-                let f = self.solve_with(&pr, &test_fr.y, &proj, &test_fr.miss);
+                let f = self.solve_frames(&pr, test_fr, &proj);
                 best_single = best_single.max((chi1 - Self::total_chi2(&f)) / s2);
             }
             if gain - best_single <= m + f64::from(self.cfg.accept_z) * sd {
