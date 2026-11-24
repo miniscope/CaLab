@@ -22,9 +22,15 @@ import { loadSpanStats } from './lib/extract-qc-wasm.ts';
 import { ASSUMED_FPS } from './lib/miniscope-meta.ts';
 import type { QcSnapshot } from './lib/qc.ts';
 import { createCompressClient } from './lib/compress-client.ts';
-import { createCompressStore, FactorWatchdog, factorsBlocked } from './lib/compress-store.ts';
+import { COMPRESS_DEFAULTS } from './lib/compress-feed.ts';
+import {
+  createCompressStore,
+  fileFactorsBlocked,
+  FactorWatchdog,
+  factorsBlocked,
+} from './lib/compress-store.ts';
 import { createFactorExtract } from './lib/factor-extract.ts';
-import { FACTOR_STALL_TEXT, FactorSettle } from './lib/factor-settle.ts';
+import { FACTOR_STALL_TEXT, FactorSettle, FileSettleChoice } from './lib/factor-settle.ts';
 import { FACTORS_REVIEW_OFF } from './lib/factor-run.ts';
 import { createPass2Store, replayBlocked } from './lib/pass2-store.ts';
 import {
@@ -362,6 +368,9 @@ const App: Component = () => {
       splits: c?.splits ?? 0,
       ...(pipeline.lookbackRun() ? { lookback: true } : {}),
       ...(slow?.lookback?.settle?.source === 'factors' ? { settleSource: 'factors' as const } : {}),
+      ...(slow?.lookback?.settle?.source === 'file'
+        ? { settleSource: 'file' as const, settleSourceReason: slow.lookback.settle.fileReason }
+        : {}),
     };
     stageLog.end('discover', 'done', data);
     logStage('discover', `Discover done: ${data.cells} cells`);
@@ -436,6 +445,7 @@ const App: Component = () => {
   // wait; a watchdog gives up on a compressor that stopped.
   if (factors && compress) {
     const factorSettle = new FactorSettle();
+    const fileChoice = new FileSettleChoice();
     const watchdog = new FactorWatchdog();
     const [tick, setTick] = createSignal(0);
     const timer = setInterval(() => setTick((n) => n + 1), 5000);
@@ -450,7 +460,10 @@ const App: Component = () => {
       const now = performance.now();
       if (waiting) {
         watchdog.note(compress.status(), now);
-        if (watchdog.stalled(now) && compress.factors(ended, frames) === 'compressing') {
+        const stallState = pipeline.factorFileRun()
+          ? compress.fileFactors(ended, frames)
+          : compress.factors(ended, frames);
+        if (watchdog.stalled(now) && stallState === 'compressing') {
           compress.fail(FACTOR_STALL_TEXT);
           runHistory.log({ frame: frames, kind: 'warning', detail: FACTOR_STALL_TEXT });
         }
@@ -473,6 +486,29 @@ const App: Component = () => {
         slow.factorsReady(a.session, a.frames);
       } else if (a.kind === 'fail') slow.factorsFailed(a.session, a.reason);
       else if (a.kind === 'release') lookbackClient.reset(a.session);
+      const fileState = compress.fileFactors(ended, frames);
+      const f = fileChoice.act({
+        session,
+        factorFile: pipeline.factorFileRun(),
+        waiting,
+        state: fileState,
+        reason: fileFactorsBlocked(fileState, compress.status(), compress.error(), frames),
+        info: compress.factorInfo(),
+        behind: compress.behind(frames),
+        window: COMPRESS_DEFAULTS.window,
+        msPerFrame: compress.status()?.msPerFrame ?? 0,
+        width: i?.width ?? 0,
+        height: i?.height ?? 0,
+      });
+      if (f.kind === 'factors') slow.factorsReady(f.session, f.frames, f.factors);
+      else if (f.kind === 'file') {
+        slow.factorsFailed(f.session, f.reason);
+        runHistory.log({
+          frame: frames,
+          kind: 'warning',
+          detail: `Final settle re-reads the file: ${f.reason}`,
+        });
+      }
     });
   }
   // `?debug`: expose the stores for measurement scripts (timing, lag, library events).
