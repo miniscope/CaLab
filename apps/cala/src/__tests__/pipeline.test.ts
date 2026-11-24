@@ -995,3 +995,115 @@ describe('pipeline message protocol', () => {
     await expect(client.startPipeline()).rejects.toThrow('Unexpected worker response');
   });
 });
+
+describe('pipeline store: the Discover visit hold', () => {
+  it('holds a saturated Max run, lets a lower user target win, and never logs a target change', async () => {
+    await createRoot(async (dispose) => {
+      const { client } = manualClient();
+      const setPace = vi.fn(async (_p: { fps?: number; paused?: boolean }) => {});
+      let now = 0;
+      const statusCbs: ((st: never) => void)[] = [];
+      const cells = {
+        onStatus: (cb: (st: never) => void) => statusCbs.push(cb),
+        reset: () => {},
+        fps: () => 20,
+      };
+      const store = createPipelineStore(
+        { ...client, setPace },
+        {},
+        () => now,
+        cells as never,
+        true,
+        undefined,
+        { identity: () => ({ frames: 100000, width: 1, height: 1, folder: 'x' }) as never },
+      );
+      const targets: number[] = [];
+      store.onPaceChange((fps) => targets.push(fps));
+      const summaries: number[] = [];
+      store.onVisitRate((s) => summaries.push(s.held_s));
+      await store.start();
+      expect(store.status()).toBe('running');
+      expect(store.visitMode()).toBe('on');
+      // 200 fps read, 0.15 visits per frame, tiles always due: behind the target.
+      let read = 0;
+      const feed = (steps: number, fps: number, perFrame: number) => {
+        for (let i = 0; i < steps; i++) {
+          now += 250;
+          read += fps / 4;
+          const st = {
+            run: 1,
+            frame: read,
+            consumed: read,
+            observed: read,
+            counters: { visits: read * perFrame, adds: 0 },
+            visitRate: { cappedFrames: 0, dueTiles: 5 },
+          };
+          for (const cb of statusCbs) cb(st as never);
+        }
+      };
+      feed(20, 200, 0.15);
+      const hold = store.visitHold();
+      expect(hold).not.toBeNull();
+      expect(hold!).toBeLessThan(200);
+      expect(setPace).toHaveBeenLastCalledWith({ fps: hold, paused: false });
+      expect(store.gatePace()).toBe(hold);
+      // The user's own target stays Max: no target_speed change was logged.
+      expect(targets).toEqual([]);
+      expect(store.paceFps()).toBe(0);
+      expect(summaries.length).toBeGreaterThan(0);
+      // A user target below the hold wins at the gate.
+      store.setPaceFps(5);
+      expect(setPace).toHaveBeenLastCalledWith({ fps: 5, paused: false });
+      // Back to Max: the hold applies again.
+      store.setPaceFps(0);
+      expect(setPace).toHaveBeenLastCalledWith({ fps: store.visitHold(), paused: false });
+      // Pause and resume while held only toggle the gate's pause.
+      store.pause();
+      expect(setPace).toHaveBeenLastCalledWith({ paused: true });
+      store.resume();
+      expect(setPace).toHaveBeenLastCalledWith({ paused: false });
+      dispose();
+    });
+  });
+
+  it('does not hold with ?debug&visitrate=off', async () => {
+    await createRoot(async (dispose) => {
+      const { client } = manualClient();
+      let now = 0;
+      const statusCbs: ((st: never) => void)[] = [];
+      const cells = {
+        onStatus: (cb: (st: never) => void) => statusCbs.push(cb),
+        reset: () => {},
+        fps: () => 20,
+      };
+      const store = createPipelineStore(
+        { ...client, setPace: vi.fn(async () => {}) },
+        {},
+        () => now,
+        cells as never,
+      );
+      store.setVisitRateOff(true);
+      await store.start();
+      expect(store.visitMode()).toBe('off');
+      expect(client.startPipeline).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.not.objectContaining({ visitRate: expect.anything() }),
+        undefined,
+        undefined,
+      );
+      for (let i = 1; i <= 20; i++) {
+        now += 250;
+        const st = {
+          run: 1,
+          frame: i * 50,
+          consumed: i * 50,
+          observed: i * 50,
+          counters: { visits: i * 5, adds: 0 },
+        };
+        for (const cb of statusCbs) cb(st as never);
+      }
+      expect(store.visitHold()).toBeNull();
+      dispose();
+    });
+  });
+});

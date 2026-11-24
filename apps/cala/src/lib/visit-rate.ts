@@ -60,13 +60,15 @@ export const VISIT_RATE = {
   floorCut: 0.75,
   /** The cap held visits back on at least this share of a window's observed frames: the cap binds. */
   capBoundShare: 0.25,
+  /** The visits used at least this share of the credit the observed frames earned: the cap binds. */
+  capBoundCredit: 0.9,
   /** Tiles were due on at least this share of a window's samples: visits had demand. */
   demandShare: 0.5,
   /** The hold is released once it is this far above the frames actually read (not binding any more). */
   releaseMargin: 1.25,
 } as const;
 
-export type VisitRateConstants = typeof VISIT_RATE;
+export type VisitRateConstants = { readonly [K in keyof typeof VISIT_RATE]: number };
 
 /** What the visit rate does in a run. */
 export type VisitRateMode =
@@ -235,7 +237,11 @@ export class VisitRateGovernor {
     this.achieved = achieved;
     const readFps = (dRead / dt) * 1000;
     const throughput = (dVisits / dt) * 1000;
-    const capBound = dObs > 0 && dCapped >= k.capBoundShare * dObs;
+    // The cap binds when the visits used (nearly) all the credit the observed frames earned, or the
+    // engine reported a held-back visit on a good share of them. (The engine counts at most one
+    // capped frame per hand-out, i.e. per batch with visit workers, so the count alone reads low.)
+    const capBound =
+      dObs > 0 && (dVisits >= k.capBoundCredit * k.cap * dObs || dCapped >= k.capBoundShare * dObs);
     // Measured in every mode (the record); only `on` holds the speed.
     if (this.mode !== 'on') return null;
     const supplyLimited = achieved < k.target && !capBound && demand >= k.demandShare;

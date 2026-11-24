@@ -236,3 +236,31 @@ describe('VisitRateGovernor', () => {
     expect(gov.fps).toBeNull();
   });
 });
+
+describe('VisitRateGovernor with the cap at the target', () => {
+  it('does not hold a paced run pinned at the cap, though the engine counts one capped frame per batch', () => {
+    const k = { ...VISIT_RATE, cap: VISIT_RATE.target };
+    const gov = new VisitRateGovernor('on', k);
+    let read = 0;
+    let observed = 0;
+    let capped = 0;
+    // 30 fps, batches of 8 every 267 ms; a few frames dropped; every batch's credit spent.
+    for (let i = 1; i <= 400; i++) {
+      read += 8;
+      observed += 7.8;
+      const visits = Math.floor(observed * k.cap);
+      capped += 1;
+      gov.update({
+        now: i * 267,
+        framesRead: read,
+        observed,
+        visits,
+        cappedFrames: capped,
+        dueTiles: 20,
+        userFps: 30,
+      });
+    }
+    expect(gov.fps).toBeNull();
+    expect(gov.summary().held_s).toBe(0);
+  });
+});

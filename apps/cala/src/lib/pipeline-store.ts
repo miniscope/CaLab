@@ -564,8 +564,11 @@ export function createPipelineStore(
   function endVisitHold(): void {
     if (!visitGov) return;
     tellVisitRate();
+    const before = gatePace();
     visitGov.release();
     setVisitHold(null);
+    // The gate goes back to the user's pace (the next run's start resets it anyway).
+    if (gatePace() !== before) sendPace({ fps: gatePace() });
   }
   /** The pace the frame gate gets: the user's target and the visit hold, whichever is lower (0: Max). */
   function gatePace(): number {
@@ -839,7 +842,10 @@ export function createPipelineStore(
       dueTiles: st.visitRate?.dueTiles ?? 0,
       userFps,
     });
-    setVisitAchieved(gov.achieved);
+    if (gov.achieved !== untrack(visitAchieved)) {
+      setVisitAchieved(gov.achieved);
+      tellVisitRate();
+    }
     if (!change) return;
     const before = gatePace();
     setVisitHold(change.fps);
