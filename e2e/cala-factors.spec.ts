@@ -10,6 +10,10 @@ import { exportNpz, hasEntry, metaText } from './cala-helpers.ts';
 // settle reads the factors whatever the machine's speed (slice 3 plan, decision 2).
 const FRAMES = 590;
 
+// In order, in one worker: with three of these runs at once, the run without the switch
+// (the fastest, nothing compressed) found no cells on a busy 10-core Mac.
+test.describe.configure({ mode: 'default' });
+
 function writeMovie(): string {
   const folder = join(mkdtempSync(join(tmpdir(), 'cala-factors-e2e-')), 'My_V4_Miniscope');
   mkdirSync(folder);
@@ -73,4 +77,18 @@ test('Cala: without ?factors=file a recording is unchanged', async ({ page }) =>
   // (Other records carry their own `source` keys, e.g. the run history's "run start".)
   for (const key of ['settle_source', 'source_reason', '"source":"factors"', '"source":"file"'])
     expect(meta).not.toContain(key);
+});
+
+test('Cala: a ?factors=file recording compressed by a pool of three settles and extracts on its factors', async ({
+  page,
+}) => {
+  test.setTimeout(300_000);
+  await openAndExtract(page, '?factors=file&debug&cpool=3,3');
+  await expect(page.getByTestId('pass2-status')).toContainText('Extract done (on the factors)');
+  await expect(page.getByTestId('compress-readout')).toContainText('3 workers');
+  const meta = metaText(await exportNpz(page));
+  expect(meta).toContain('"format_version":7');
+  expect(meta).toContain('"settle_source":"factors"');
+  expect(meta).toContain('"compress_workers":3');
+  expect(meta).toContain('"compress_workers_after":3');
 });
