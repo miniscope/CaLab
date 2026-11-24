@@ -265,6 +265,12 @@ async function handle(req: FrameRequest): Promise<void> {
               discover: (cells?.discover ?? true) && port !== null,
               qc: cells?.qc ?? true,
               residual: cells?.residual ?? false,
+              ...(cells?.factorSettle && !cells.library && !cells.lookback
+                ? { factorSettle: true }
+                : {}),
+              ...(cells?.factorSettle && !cells.library && cells.settleFraction !== undefined
+                ? { settleFraction: cells.settleFraction }
+                : {}),
               ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
             },
             port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,

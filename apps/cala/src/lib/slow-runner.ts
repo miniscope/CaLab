@@ -242,6 +242,18 @@ export interface SlowLoopCtor<T> {
 }
 
 /**
+ * The slow-loop options of a live stream with `?factors` (owner, 23 Nov):
+ * the cluster history replay in refine-scope visits only, so in the Final
+ * settle on factors; Discover's visits are as without it (no merge guard,
+ * the default sign rule). qc_eval's arm `STR-F`.
+ */
+export const FACTOR_SETTLE = {
+  jointUpdate: 'refine',
+  jointSign: 'all',
+  mergeGuardMinSep: Infinity,
+} as const;
+
+/**
  * Build a `SlowLoop` or `VisitWorker` from the slow loop's settings: the
  * plain constructor, exactly as before look-back existed, unless
  * `init.lookback`, then with the look-back options (`LOOKBACK`; a slow loop
@@ -249,7 +261,21 @@ export interface SlowLoopCtor<T> {
  */
 export function buildSlowLoop<T>(ctor: SlowLoopCtor<T>, init: SlowInit): T {
   const { width, height, fov, noise, cellDiameterPx, flattenSigmaPx } = init;
-  if (!init.lookback) return new ctor(width, height, fov, noise, cellDiameterPx, flattenSigmaPx);
+  if (!init.lookback) {
+    if (!init.factorSettle)
+      return new ctor(width, height, fov, noise, cellDiameterPx, flattenSigmaPx);
+    return ctor.withConfig(
+      width,
+      height,
+      fov,
+      noise,
+      cellDiameterPx,
+      flattenSigmaPx,
+      FACTOR_SETTLE.jointUpdate,
+      FACTOR_SETTLE.jointSign,
+      FACTOR_SETTLE.mergeGuardMinSep,
+    );
+  }
   const loop = ctor.withConfig(
     width,
     height,
@@ -693,8 +719,9 @@ export class SlowRunner {
           flattenSigmaPx,
           budget,
           ...(lookback ? { lookback: true } : {}),
+          ...(msg.factorSettle && !lookback ? { factorSettle: true } : {}),
           ...(csettle ? { csettle } : {}),
-          ...(lookback && (msg.settleFraction ?? 1) < 1
+          ...((lookback || msg.factorSettle) && (msg.settleFraction ?? 1) < 1
             ? { settleFraction: msg.settleFraction }
             : {}),
           ...(lookback && msg.sessionStarts?.length

@@ -72,7 +72,12 @@ function handle(msg: StageMsg): void {
                 csettleNeedFirst: cells.csettleNeedFirst ?? false,
               }
             : {}),
-          ...(cells?.lookback && !cells.library && cells.settleFraction !== undefined
+          ...(cells?.factorSettle && !cells.library && !cells.lookback
+            ? { factorSettle: true }
+            : {}),
+          ...((cells?.lookback || cells?.factorSettle) &&
+          !cells.library &&
+          cells.settleFraction !== undefined
             ? { settleFraction: cells.settleFraction }
             : {}),
           ...(cells?.lookback && !cells.library && msg.setup.boundaries?.length

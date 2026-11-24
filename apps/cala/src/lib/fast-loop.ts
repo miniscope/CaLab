@@ -138,6 +138,8 @@ export interface FastLoopOptions {
   initialLibrary?: Uint8Array;
   /** Discover with look-back (experimental): the slow loop's `init` says so (`SlowInit.lookback`). */
   lookback?: boolean;
+  /** A live stream with `?factors`: the slow loop's `init` says so (`SlowInit.factorSettle`; never with `lookback`). */
+  factorSettle?: boolean;
   /** With `lookback`: settle during Discover may run (`SlowInit.csettle`, `SlowInit.csettleYield`, `SlowInit.csettleNeedFirst`). */
   csettle?: boolean;
   csettleYield?: number;
@@ -167,6 +169,7 @@ export const FAST_LOOP_DEFAULTS = {
   qcEveryS: 1,
   residual: false,
   lookback: false,
+  factorSettle: false,
   csettle: false,
   csettleYield: 0,
   csettleNeedFirst: false,
@@ -526,7 +529,8 @@ export class FastLoop {
           flattenSigmaPx: this.o.flattenSigmaPx,
           budget: this.o.budget,
           ...(this.o.lookback ? { lookback: true } : {}),
-          ...(this.o.lookback && this.o.settleFraction < 1
+          ...(this.o.factorSettle && !this.o.lookback ? { factorSettle: true } : {}),
+          ...((this.o.lookback || this.o.factorSettle) && this.o.settleFraction < 1
             ? { settleFraction: this.o.settleFraction }
             : {}),
           ...(this.o.lookback && this.o.sessionStarts?.length

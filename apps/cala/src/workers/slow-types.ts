@@ -40,6 +40,13 @@ export interface SlowInit {
    */
   lookback?: boolean;
   /**
+   * A live stream with `?factors` (absent = off; never with `lookback`): the
+   * slow loop is built with `FACTOR_SETTLE` (visit workers alike) and, after
+   * the last frame, waits for the stream's factors and settles on them
+   * (see `SlowRunner`).
+   */
+  factorSettle?: boolean;
+  /**
    * Settle during Discover ("Background settle", frames only; needs
    * `lookback`; absent = off for the run): the run may settle while Discover
    * runs. It starts the first time the target is below Max with a cap above

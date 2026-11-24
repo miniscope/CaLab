@@ -209,6 +209,28 @@ describe('buildSlowLoop', () => {
     expect(l.lookback).toBeNull();
   });
 
+  it('a ?factors stream builds with the replay in refine visits only and no look-back', () => {
+    const l = buildSlowLoop(Fake, { ...init, factorSettle: true });
+    expect(l.args).toEqual([
+      'withConfig',
+      4,
+      3,
+      init.fov,
+      init.noise,
+      9,
+      0,
+      'refine',
+      'all',
+      Infinity,
+    ]);
+    expect(l.lookback).toBeNull();
+  });
+
+  it('look-back wins over factorSettle (they never come together)', () => {
+    const l = buildSlowLoop(Fake, { ...init, lookback: true, factorSettle: true });
+    expect(l.args.slice(-3)).toEqual(['all', 'all', 0.6]);
+  });
+
   it('builds with the look-back options and enables it', () => {
     const l = buildSlowLoop(Fake, { ...init, lookback: true });
     expect(l.args).toEqual(['withConfig', 4, 3, init.fov, init.noise, 9, 0, 'all', 'all', 0.6]);
@@ -376,6 +398,16 @@ describe('SlowRunner look-back (fake loop)', () => {
     expect(finalize.mock.calls.length - atStart).toBe(3);
     // The fake's footprint never changes: no cell moves.
     expect(statuses(t).at(-1)!.lookback?.settle?.moving).toEqual({ cells: 1, above: 0 });
+  });
+
+  it('a ?factors init reaches the loop with its settle level; a plain one carries neither key', () => {
+    const t = setup(0);
+    t.r.handle({ ...INIT, factorSettle: true, settleFraction: 0.6 });
+    expect(t.created[0]).toMatchObject({ factorSettle: true, settleFraction: 0.6 });
+    const u = setup(0);
+    u.r.handle(INIT);
+    expect(u.created[0]).not.toHaveProperty('factorSettle');
+    expect(u.created[0]).not.toHaveProperty('settleFraction');
   });
 
   it('a Final-settle level stops the pass early: the plan keeps its first share, Thorough is untouched', () => {
