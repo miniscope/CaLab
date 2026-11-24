@@ -168,6 +168,13 @@ impl VisitJob {
         self.encode(&self.tile, &SharedFrames::new(self.tile.rect))
     }
 
+    /// Measurement only: mark a captured job as made under `runner`'s visit
+    /// options, to replay the same job with other options (warm starts on
+    /// or off). A live loop never needs this.
+    pub fn retarget(&mut self, runner: &VisitRunner) {
+        self.cfg_fp = runner.inner.cfg.visit_fingerprint();
+    }
+
     /// A settle visit ([`SlowLoop::take_settle_job`]).
     pub fn is_settle(&self) -> bool {
         self.settle

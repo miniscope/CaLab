@@ -628,7 +628,7 @@ fn replay_visit_jobs(dir: &Path, out: &Path, mut runner: VisitRunner) {
         .collect();
     files.sort();
     let mut gen = 0u64;
-    let mut tsv = String::from("file\ttile\tcells\tms\twork\thash\n");
+    let mut tsv = String::from("file\ttile\tcells\tms\twork\thash\tdecisions\n");
     let (mut total, mut n) = (0.0f64, 0usize);
     for f in &files {
         let name = f.file_name().unwrap().to_string_lossy().to_string();
@@ -654,17 +654,29 @@ fn replay_visit_jobs(dir: &Path, out: &Path, mut runner: VisitRunner) {
         let mut best = f64::INFINITY;
         let mut row = String::new();
         for _ in 0..reps.max(1) {
-            let job = VisitJob::from_bytes(&bytes).unwrap();
+            let mut job = VisitJob::from_bytes(&bytes).unwrap();
+            job.retarget(&runner);
             let (tile, cells) = (job.tile_index(), job.zone_cells());
             let a = Instant::now();
             let res = runner.run(job).unwrap();
             let ms = a.elapsed().as_secs_f64() * 1e3;
             let mut h = std::collections::hash_map::DefaultHasher::new();
             res.to_bytes().hash(&mut h);
+            let st = res.stats();
             let r = format!(
-                "{name}\t{tile}\t{cells}\t{{}}\t{}\t{:016x}\n",
+                "{name}\t{tile}\t{cells}\t{{}}\t{}\t{:016x}\ta{} r{} p{} m{} mr{} rf{} ab{} d{} s{} kf{}\n",
                 res.work(),
-                h.finish()
+                h.finish(),
+                st.adds,
+                st.rejects,
+                st.pretest_rejects,
+                st.merges,
+                st.merge_rejects,
+                st.refines,
+                st.absorbs,
+                st.deletes,
+                st.splits,
+                st.keep_fails,
             );
             if !row.is_empty() && row != r {
                 panic!("{name}: a replay of the same job gave another result");
@@ -5358,6 +5370,17 @@ fn main() {
             scfg.merge_refit_max_ovl
         );
     }
+    if let Some(v) = arg_value(&args, "--warm-start") {
+        scfg.warm_start = match v.as_str() {
+            "on" => true,
+            "off" => false,
+            _ => panic!("--warm-start on|off"),
+        };
+    }
+    println!(
+        "visit solves: warm starts {}",
+        if scfg.warm_start { "on" } else { "off" }
+    );
     if let Some(v) = arg_value(&args, "--merge-guard-sep") {
         scfg.merge_guard_min_sep = v.parse().unwrap();
         println!(

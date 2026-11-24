@@ -939,13 +939,39 @@ fn visits_run_as_jobs_match_step_exactly() {
 /// solve and residual memos, the patch grid) change nothing: a loop with
 /// them and one without make the same edits, count the same work and
 /// publish the same libraries, frame by frame, on a busy movie with a
-/// sweeping missing band.
+/// sweeping missing band. With warm starts (the default) the memo is
+/// keyed by the start as well; without them every solve starts at zero.
 #[test]
 fn visit_reuse_matches_the_plain_computation_exactly() {
+    visit_reuse_matches_the_plain_computation(true);
+}
+
+#[test]
+fn visit_reuse_matches_the_plain_computation_without_warm_starts() {
+    visit_reuse_matches_the_plain_computation(false);
+}
+
+/// Warm starts change the visits' numbers, so visit workers must be built
+/// with the slow loop's setting: it is part of the visit fingerprint.
+#[test]
+fn warm_start_is_a_visit_option() {
+    let on = shard_config();
+    let off = SlowLoopConfig {
+        warm_start: false,
+        ..shard_config()
+    };
+    assert!(on.warm_start);
+    assert_ne!(on.visit_fingerprint(), off.visit_fingerprint());
+}
+
+fn visit_reuse_matches_the_plain_computation(warm_start: bool) {
     let t = 1500;
     let (mut m, seed) = busy_movie(t);
     sweep_missing(&mut m, t, 10..86, 20..70);
-    let cfg = shard_config();
+    let cfg = SlowLoopConfig {
+        warm_start,
+        ..shard_config()
+    };
     let n_px = N * N;
     let (mut a, mut ea) = start(cfg.clone(), &seed);
     let (mut b, mut eb) = start(cfg.clone(), &seed);
