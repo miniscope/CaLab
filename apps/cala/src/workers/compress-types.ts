@@ -31,6 +31,10 @@ export interface CompressInit {
   tiling: CompressTiling;
   /** Which frames the windows hold. */
   source: CompressSource;
+  /** Compress workers while Discover reads and after its last frame (absent: one and one). */
+  pool?: { discover: number; after: number };
+  /** The cap on window files waiting for compression, bytes (absent: from the storage estimate; `?debug&cbacklog`). */
+  backlogCap?: number;
 }
 
 /** Fast worker -> compress worker. */
@@ -86,6 +90,18 @@ export interface CompressStatus {
   folder: string;
   /** The compressed windows, in stream order. */
   compressed: CompressedWindow[];
+  // Optional for the statuses tests write by hand; the runner always sets them.
+  /** Compress workers in use (the compress worker and its helpers). */
+  workers?: number;
+  /** Frames of the last window over its wall time. */
+  fps?: number;
+  /** Bytes of the window files waiting for compression (the open one included), now and at their peak. */
+  backlogBytes?: number;
+  backlogPeakBytes?: number;
+  /** Frames sent and not compressed when the recording ended (null: not ended). */
+  behindAtEnd?: number | null;
+  /** Frames compressed after the recording ended over their wall time (null: none yet). */
+  fpsAfter?: number | null;
 }
 
 /** Compress worker -> main thread. */
@@ -130,7 +146,15 @@ export type MainToCompress =
    * The port to the fast worker and, with the history review on, the port to
    * the review worker and the closed windows between two reviews.
    */
-  | { type: 'connect'; port: MessagePort; review?: { port: MessagePort; every: number } }
+  | {
+      type: 'connect';
+      port: MessagePort;
+      review?: { port: MessagePort; every: number };
+      /** One port per compress helper (`compress-helper-worker.ts`). */
+      helpers?: MessagePort[];
+    }
+  /** Helper `helper` crashed: its tile is redone elsewhere. */
+  | { type: 'helper-lost'; helper: number }
   /**
    * Solve the traces of every compressed window with the library `version`
    * (or a newer one), once that library has arrived and no window is waiting.
@@ -139,3 +163,40 @@ export type MainToCompress =
   /** Extract on factors: solve every compressed window with `library` (a `TraceLibrary.toBytes()`). */
   | { type: 'extract'; session: number; job: number; version: number; library: Uint8Array }
   | { type: 'extract-cancel'; session: number; job: number };
+
+/**
+ * Compress worker -> a compress helper. `tile`: compress the first
+ * `frames * w * h` values of `raw` (transferred) with `seed`; `epoch` comes
+ * back with the answer.
+ */
+export type CoordinatorToHelper =
+  | { type: 'init'; quant: number }
+  | {
+      type: 'tile';
+      epoch: number;
+      window: number;
+      tile: number;
+      frames: number;
+      x0: number;
+      y0: number;
+      w: number;
+      h: number;
+      seed: number;
+      raw: Int16Array;
+    };
+
+/** A compress helper -> the compress worker. `raw` comes back for reuse. */
+export type HelperToCoordinator =
+  | {
+      type: 'tile-done';
+      epoch: number;
+      window: number;
+      tile: number;
+      rank: number;
+      ms: number;
+      bytes: Uint8Array;
+      raw: Int16Array;
+    }
+  | { type: 'tile-error'; epoch: number; window: number; tile: number; message: string }
+  /** The helper cannot compress (its WASM module failed to start). */
+  | { type: 'helper-error'; message: string };
