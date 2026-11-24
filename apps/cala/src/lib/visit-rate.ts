@@ -30,20 +30,28 @@
  * same recording, which is the speed dependence this removes. Per frame read,
  * a recording gets the same number of visits however fast it was read, and
  * holding the speed also ends most of the drops. The cap is per observed
- * frame because the engine only sees those; it never binds below the target.
+ * frame because the engine only sees those. With the cap close to the target, a run that drops many
+ * frames can sit under the target per frame read while the cap binds per observed frame; the governor
+ * then still slows it (`dropMargin`), since fewer drops is what raises the rate.
  *
  * `?debug&visitrate=off` restores the behaviour before (no cap, no hold).
  * Pure: the clock is passed in; unit-tested in `visit-rate.test.ts`.
  */
 
-/** The constants in one place (provisional: being confirmed on full-length motion sims and real data). */
+/**
+ * The constants in one place. Chosen from constant-rate qc_eval runs (PR #500): on full-length sims
+ * recall saturates by about 0.2 while false cells (late second copies of found cells) keep growing,
+ * and 0.4 has the fewest matched-minus-false cells of the rates tried; early in a recording (2000
+ * frames) more visits still find cells sooner (recall 0.75 / 0.77 / 0.79 / 0.80 at 0.2 / 0.25 / 0.3 /
+ * 0.4). Target 0.25 balances the two; the cap at 0.3 keeps paced runs close to held Max runs.
+ */
 export const VISIT_RATE = {
   /** Visits per Discover frame read: the least the governor accepts. */
   floor: 0.2,
   /** Visits per Discover frame read: what the governor holds the speed for. */
-  target: 0.4,
+  target: 0.25,
   /** Visits per observed Discover frame at most (the engine's credit). */
-  cap: 1.0,
+  cap: 0.3,
   /** Measurement window, ms of run time. */
   windowMs: 1000,
   /** Frames read before the governor acts (the first library and the first visits). */
@@ -62,6 +70,8 @@ export const VISIT_RATE = {
   capBoundShare: 0.25,
   /** The visits used at least this share of the credit the observed frames earned: the cap binds. */
   capBoundCredit: 0.9,
+  /** The cap binds but drops cost more than this share of the target per frame read: hold anyway. */
+  dropMargin: 0.9,
   /** Tiles were due on at least this share of a window's samples: visits had demand. */
   demandShare: 0.5,
   /** The hold is released once it is this far above the frames actually read (not binding any more). */
@@ -239,12 +249,19 @@ export class VisitRateGovernor {
     const throughput = (dVisits / dt) * 1000;
     // The cap binds when the visits used (nearly) all the credit the observed frames earned, or the
     // engine reported a held-back visit on a good share of them. (The engine counts at most one
-    // capped frame per hand-out, i.e. per batch with visit workers, so the count alone reads low.)
+    // capped frame per hand-out, i.e. per batch with visit workers, so the count alone reads low.
+    // Visits are whole and the credit is not: one visit of slack, which matters at low rates, where a
+    // window holds only a handful of visits.)
     const capBound =
-      dObs > 0 && (dVisits >= k.capBoundCredit * k.cap * dObs || dCapped >= k.capBoundShare * dObs);
+      dObs > 0 &&
+      (dVisits + 1 >= k.capBoundCredit * k.cap * dObs || dCapped >= k.capBoundShare * dObs);
     // Measured in every mode (the record); only `on` holds the speed.
     if (this.mode !== 'on') return null;
-    const supplyLimited = achieved < k.target && !capBound && demand >= k.demandShare;
+    // With the cap near the target, dropped frames alone can keep the rate per frame read below the
+    // target while the cap binds per observed frame: then slowing down (fewer drops) is what helps.
+    const dropBound = capBound && dObs < k.dropMargin * dRead * (k.target / k.cap);
+    const supplyLimited =
+      achieved < k.target && (!capBound || dropBound) && demand >= k.demandShare;
     if (supplyLimited) {
       let want = throughput / k.target;
       const reason = achieved < k.floor ? 'below-floor' : 'below-target';

@@ -596,9 +596,9 @@ export function SpeedControl(props: {
           <p
             class="cala-speed__line cala-muted"
             data-testid="speed-visit-live"
-            title={`On a recording, Discover keeps cell refinement at about ${VISIT_RATE.target} visits per frame and slows down when the workers fall behind. A live stream cannot slow down, so it keeps only the cap of ${VISIT_RATE.cap} visit per frame: on a slow machine it may refine less than a recording would.`}
+            title={`On a recording, Discover keeps cell refinement at about ${VISIT_RATE.target} visits per frame and slows down when the workers fall behind. A live stream cannot slow down, so it keeps only the cap of ${VISIT_RATE.cap} visits per frame: on a slow machine it may refine less than a recording would.`}
           >
-            Refinement capped at {VISIT_RATE.cap} visit/frame (no floor on a live stream).
+            Refinement capped at {VISIT_RATE.cap} visits/frame (no floor on a live stream).
           </p>
         </Show>
       </Show>

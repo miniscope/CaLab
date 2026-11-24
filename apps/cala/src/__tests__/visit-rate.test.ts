@@ -75,7 +75,8 @@ function simulate(o: {
     let dVisits = (o.capacity(fps) * step) / 1000;
     if (o.demand === false) dVisits = 0;
     if (o.mode !== 'off') {
-      credit = Math.min(credit + VISIT_RATE.cap * dObs, 16 * VISIT_RATE.cap);
+      // The engine banks at most 16 frames' credit between visits; a step spans many frames.
+      credit = Math.min(credit, 16 * VISIT_RATE.cap) + VISIT_RATE.cap * dObs;
       if (dVisits > credit) {
         dVisits = credit;
         capped += dObs;
@@ -128,6 +129,16 @@ describe('VisitRateGovernor', () => {
     expect(summary.achieved_visits_per_frame!).toBeGreaterThan(0.85 * VISIT_RATE.target);
   });
 
+  it('slows a run whose dropped frames keep it under the target while the cap binds', () => {
+    // Visits to spare (the cap binds per observed frame), but at speed 40 % of the frames are
+    // dropped, so per frame read the run sits at 0.6 x cap, under the target.
+    const drop = (fps: number) => Math.max(0, Math.min(0.4, (fps - 80) / 200));
+    const { gov, summary } = simulate({ maxFps: 200, capacity: () => 500, dropShare: drop });
+    expect(summary.held_s).toBeGreaterThan(0);
+    expect(gov.summary().min_hold_fps!).toBeLessThan(200);
+    expect(summary.achieved_visits_per_frame!).toBeGreaterThan(VISIT_RATE.floor);
+  });
+
   it('does not hold a paced run whose visits the cap limits', () => {
     // 30 fps with room for 140 visits/s: the cap (1 per frame) binds, nothing is behind.
     const { gov, summary } = simulate({ maxFps: 200, capacity: () => 140, userFps: 30 });
@@ -149,9 +160,10 @@ describe('VisitRateGovernor', () => {
   });
 
   it('slows a fast Fixed target that the visits cannot keep up with', () => {
-    const { gov, tailFps } = simulate({ maxFps: 200, capacity, userFps: 180 });
+    // 250 fps target: about 40 visits/s, 0.16 per frame, under the target.
+    const { gov, tailFps } = simulate({ maxFps: 300, capacity, userFps: 250 });
     expect(gov.fps).not.toBeNull();
-    expect(tailFps).toBeLessThan(180);
+    expect(tailFps).toBeLessThan(250);
   });
 
   it('releases the hold once the user target is lower', () => {
@@ -204,7 +216,7 @@ describe('VisitRateGovernor', () => {
       });
     }
     expect(change?.reason).toBe('below-floor');
-    // Throughput 20 visits/s: 20 / 0.4 = 50 fps, cut to 37.5.
+    // Throughput 20 visits/s: 20 / target fps, cut by floorCut.
     expect(change!.fps).toBeCloseTo((20 / VISIT_RATE.target) * VISIT_RATE.floorCut, 5);
   });
 
