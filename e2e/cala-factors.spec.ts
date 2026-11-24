@@ -43,7 +43,7 @@ test('Cala: with ?factors=file a recording settles and extracts on its factors',
 }) => {
   test.setTimeout(300_000);
   await openAndExtract(page, '?factors=file&debug');
-  await expect(page.getByTestId('pass2-status')).toContainText('Extract done (on the factors)');
+  await expect(page.getByTestId('pass2-status')).toContainText('Extract done (on the factors');
   const settle = await page.evaluate(() => {
     const c = (
       window as unknown as {
@@ -79,16 +79,17 @@ test('Cala: without ?factors=file a recording is unchanged', async ({ page }) =>
     expect(meta).not.toContain(key);
 });
 
-test('Cala: a ?factors=file recording compressed by a pool of three settles and extracts on its factors', async ({
+test('Cala: a ?factors=file recording compressed and extracted by a pool of three settles and extracts on its factors', async ({
   page,
 }) => {
   test.setTimeout(300_000);
-  await openAndExtract(page, '?factors=file&debug&cpool=3,3');
-  await expect(page.getByTestId('pass2-status')).toContainText('Extract done (on the factors)');
+  await openAndExtract(page, '?factors=file&debug&cpool=3,3,3');
+  await expect(page.getByTestId('pass2-status')).toContainText('Extract done (on the factors');
   await expect(page.getByTestId('compress-readout')).toContainText('3 workers');
   const meta = metaText(await exportNpz(page));
   expect(meta).toContain('"format_version":7');
   expect(meta).toContain('"settle_source":"factors"');
   expect(meta).toContain('"compress_workers":3');
   expect(meta).toContain('"compress_workers_after":3');
+  expect(meta).toContain('"extract_workers":3');
 });

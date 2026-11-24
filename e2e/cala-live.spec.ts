@@ -123,7 +123,7 @@ test('Cala: a live stream settles and extracts on its factors after it ends, by 
   await expect(page.getByTestId('live-stage-note')).toContainText('factors');
   // The settle on the factors, then Extract on them, by themselves.
   await expect(page.getByTestId('pass2-status')).toContainText(
-    "Extract done (on the stream's factors)",
+    "Extract done (on the stream's factors",
     { timeout: 180_000 },
   );
   const settle = await page.evaluate(() => {
@@ -154,4 +154,7 @@ test('Cala: a live stream settles and extracts on its factors after it ends, by 
   expect(meta).toContain('"settle_source":"factors"');
   expect(meta).toContain('"source":"factors"');
   expect(meta).toContain('there was no file to re-read');
+  // Extract solved the windows from the factors (the factor extractor).
+  expect(meta).toContain('"extract_engine":"factors"');
+  expect(meta).toMatch(/"factor_windows_projected":[1-9]/);
 });
