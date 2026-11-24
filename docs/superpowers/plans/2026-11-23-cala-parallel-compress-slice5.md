@@ -385,9 +385,10 @@ describe('compressPoolSize', () => {
   - with `workers` 1 the old cases hold (unchanged tests);
   - the reason with `workers` 3 says "with 3 workers" and divides the seconds by 3.
 - [ ] **Step 2: Run; expect failures.**
-- [ ] **Step 3: Implement.** `App.tsx` computes `compressPoolSize(navigator.hardwareConcurrency, slow.visitWorkers,
-    lbPool)` once, or `parsePoolOverride(params.get('cpool'))` with `?debug`, creates `after - 1` helpers with the
-      compress client, and gives the widths to the pipeline store. `factorRunPlan` sets a stream's `discover` to 1.
+- [ ] **Step 3: Implement.** `App.tsx` computes the widths once with `compressPoolSize` (the cores, the visit
+      workers and the settle pool), or with `parsePoolOverride` under `?debug&cpool`. It creates `after - 1` helpers
+      with the compress client and gives the widths to the pipeline store. `factorRunPlan` sets a stream's `discover`
+      to 1.
 - [ ] **Step 4: Checks.**
 - [ ] **Step 5: Commit** `feat(cala): a recording's settle waits for the factors when the pool can compress the lag in about one window's time`
 
