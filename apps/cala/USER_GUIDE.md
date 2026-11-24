@@ -228,6 +228,14 @@ A run has two named stages: **Discover** and **Extract** (see
    while the fast loop extracts traces with the library as it stands. The traces
    emitted early were solved with the cells known at that moment. **End Discover**
    (■) ends it at the frames read so far.
+   How many cells Discover finds depends on how often it revisits each part of the
+   field of view (its **visit rate**), so Discover keeps that rate fixed: about 0.4
+   refinement visits per frame, never more than 1 and, on a recording, never below 0.2.
+   On a fast Speed setting or at **Max**, when the workers cannot keep up, the run is
+   held slower than asked and the Speed block says so ("Held at N fps to keep
+   refinement at 0.4 visits/frame"); a slow or paced run no longer over-visits. The
+   same recording then gives about the same cells at any speed and on any machine. A
+   live stream cannot slow down, so it keeps only the upper limit.
 3. **The Final settle ends Discover (recordings).** For a recording, Discover runs with
    **look-back**: it also re-reads earlier frames for each new cell, so footprints
    converge as it goes, and after the last frame it runs a **Final settle** (Thorough by

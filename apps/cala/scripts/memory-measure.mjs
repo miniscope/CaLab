@@ -8,6 +8,7 @@
  *        [--every 10] [--max-min 90] [--cdp 9335] [--headed] [--single]
  *        [--lookback [--toggle] [--csettle-yield N] [--csrate R] [--csettle-off]
  *        [--pacefps F] [--pace-after S:N] [--lbpool S] [--needfirst]] [--extract]
+ *   `--query '&a=b'`: extra URL parameters (e.g. `--query '&visitrate=off'`, the visit rate off).
  *   `--single`: one recording folder (Discover only, no export; `--discover-only`: stop after Discover).
  *   `--smooth 0`: smooth playback off (the comparison run). Every run saves the displayed-frame times
  *   and a once-a-second processing readout as `<tag>-display.json`.
@@ -92,7 +93,10 @@ const csQuery0 = csettle
 // `--smooth 0`: smooth playback off (the comparison run).
 const smoothOpt = opt('--smooth', '');
 const lbPool = opt('--lbpool', '');
+// `--query '&a=b'`: extra URL parameters as given (e.g. `&visitrate=off`).
+const extraQuery = opt('--query', '');
 const csQuery =
+  extraQuery +
   csQuery0 +
   (paceFps ? `&pacefps=${paceFps}` : '') +
   (smoothOpt ? `&smooth=${smoothOpt}` : '') +
@@ -446,6 +450,8 @@ await page.evaluate((withRelease) => {
         p.framesDone = null;
         p.final = null;
         p.checkpoints = [];
+        p.heldMs = 0;
+        p.minHold = null;
       } else if (n > p.frames) {
         const gap = now - p.lastFrameAt;
         if (gap > p.maxGapMs) p.maxGapMs = gap;
@@ -453,6 +459,13 @@ await page.evaluate((withRelease) => {
         p.lastFrameAt = now;
       }
       p.frames = n;
+      // The Discover visit rate's hold (null: not held), its time and lowest value.
+      const hold = c.pipeline.visitHold?.() ?? null;
+      if (hold !== null) {
+        p.heldMs = (p.heldMs ?? 0) + 100;
+        p.minHold =
+          p.minHold === null || p.minHold === undefined ? hold : Math.min(p.minHold, hold);
+      }
     }
     const st = c.cells.status?.();
     const lb = st?.lookback;
@@ -462,6 +475,11 @@ await page.evaluate((withRelease) => {
       const b = c.cells.batch?.();
       p.atFramesDone = {
         cells: c.cells.library?.()?.ids.length ?? 0,
+        heldS: (p.heldMs ?? 0) / 1000,
+        minHold: p.minHold ?? null,
+        visitMode: c.pipeline.visitMode?.() ?? null,
+        consumed: st?.consumed ?? null,
+        visitRate: st?.visitRate ?? null,
         fwd: b?.forwardedFrames ?? 0,
         drop: b?.droppedFrames ?? 0,
         lb: lb ? JSON.parse(JSON.stringify(lb)) : null,

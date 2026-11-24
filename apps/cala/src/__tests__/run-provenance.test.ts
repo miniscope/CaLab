@@ -1,3 +1,4 @@
+import { VISIT_RATE, VisitRateGovernor } from '../lib/visit-rate.ts';
 import type { AutoDecision } from '../lib/speed-auto.ts';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -925,5 +926,36 @@ describe('replaying a curve', () => {
       csettleCeiling: 1,
       capChangedDuringRun: true,
     });
+  });
+});
+
+describe('run record: the Discover visit rate', () => {
+  it('writes work.visit_rate as given and null without one', () => {
+    expect((buildRunRecord(input()) as Rec).work.visit_rate).toBeNull();
+    const summary = new VisitRateGovernor('on').summary();
+    const r = buildRunRecord(input({ visitRate: summary })) as Rec;
+    expect(r.work.visit_rate).toMatchObject({
+      mode: 'on',
+      floor: VISIT_RATE.floor,
+      target: VISIT_RATE.target,
+      cap: VISIT_RATE.cap,
+      held_s: 0,
+      min_hold_fps: null,
+    });
+  });
+
+  it('keeps the summary in the trace until the next run', () => {
+    const t = new RunTrace();
+    expect(t.visitRate()).toBeNull();
+    t.noteVisitRate(new VisitRateGovernor('cap-only').summary());
+    expect(t.visitRate()?.mode).toBe('cap-only');
+    t.reset();
+    expect(t.visitRate()).toBeNull();
+  });
+
+  it('records visitrate=off as a debug flag', () => {
+    expect(urlFlags('?debug&visitrate=off').flags.visitrate.in_effect).toBe(true);
+    expect(urlFlags('?visitrate=off').flags.visitrate.in_effect).toBe(false);
+    expect(urlFlags('?debug&visitrate=on').flags.visitrate.in_effect).toBe(false);
   });
 });
