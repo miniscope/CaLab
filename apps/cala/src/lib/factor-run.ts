@@ -1,9 +1,10 @@
 /**
- * `?factors` (experimental; slice 2 of
- * docs/superpowers/specs/2026-11-23-cala-factors-on-settle-design.md): a
- * live stream's Final settle and Extract read the factors Discover wrote
- * during the stream. A recording with `?factors` is a `?compress` run; slice 3
- * adds recordings behind `?factors=file`.
+ * Factor runs (docs/superpowers/specs/2026-11-23-cala-factors-on-settle-design.md):
+ * a live stream's Final settle and Extract read the factors Discover wrote
+ * during the stream. That is the default for a stream (slice 4); `?factors=0`
+ * turns it off. A recording re-reads the file; `?factors=file` (experimental)
+ * lets its settle and Extract read its factors, and `?factors` on a recording
+ * is a `?compress` run.
  */
 import type { CompressTiling } from '../workers/compress-types.ts';
 import type { StageRun } from './run-stages.ts';
@@ -23,14 +24,18 @@ export interface FactorRunPlan {
 
 export function factorRunPlan(o: {
   live: boolean;
+  /** `?factors` (or `?factors=file`) on the page. */
   factors: boolean;
   factorsFile?: boolean;
+  /** No factor switch on the page: a stream is a factor run by default (`factorsFromPage`). */
+  factorsDefault?: boolean;
+  /** `?compress` on the page. */
   compress: boolean;
   discover: boolean;
   joint?: boolean;
 }): FactorRunPlan {
   const none = { factorSettle: false, factorFile: false };
-  if (o.factors && o.live && o.discover)
+  if ((o.factors || o.factorsDefault) && o.live && o.discover)
     return { compress: FACTOR_TILING, factorSettle: true, factorFile: false };
   if (o.factorsFile && !o.live && o.discover && !o.joint)
     return { compress: FACTOR_TILING, factorSettle: false, factorFile: true };
@@ -53,9 +58,49 @@ export function fileBehindText(behind: number, msPerFrame: number): string {
 export const FACTORS_REVIEW_OFF =
   'cala: ?review is off with ?factors (the history review reads plain tiles only; a stream with ?factors compresses on offset grids).';
 
+/** What the page's factor, compress and review switches ask for. */
+export interface PageFactors {
+  /** `?factors` or `?factors=file` (not `?factors=0`). */
+  factors: boolean;
+  /** `?factors=file`. */
+  factorsFile: boolean;
+  /** No factor switch and no `?compress&review`: a live stream is a factor run. */
+  factorsDefault: boolean;
+  /** `?compress`. */
+  compressAsked: boolean;
+  /** The page needs the compress worker (every page but `?factors=0` without `?compress`). */
+  compressWorker: boolean;
+  /** The history review runs (`?compress&review`, without an explicit `?factors`). */
+  review: boolean;
+  /** A console warning (null: none). */
+  warn: string | null;
+}
+
+/**
+ * Read the page's switches once. A stream is a factor run unless `?factors=0`;
+ * `?compress&review` asks for the review, which reads plain tiles only, so it
+ * turns the default off. An explicit `?factors` wins over `?review`.
+ */
+export function factorsFromPage(p: URLSearchParams): PageFactors {
+  const off = p.get('factors') === '0';
+  const factors = p.has('factors') && !off;
+  const compressAsked = p.has('compress');
+  const reviewAsked = compressAsked && p.has('review');
+  const factorsDefault = !p.has('factors') && !reviewAsked;
+  return {
+    factors,
+    factorsFile: p.get('factors') === 'file',
+    factorsDefault,
+    compressAsked,
+    compressWorker: compressAsked || factors || factorsDefault,
+    review: reviewAsked && !factors,
+    warn: factors && p.has('review') ? FACTORS_REVIEW_OFF : null,
+  };
+}
+
 /** The Results note of a `?factors` stream (the plain stream says `LIVE_NOTE`). */
 export const FACTORS_LIVE_NOTE =
-  "With ?factors, a live stream settles and extracts on the factors Discover wrote during the stream (there is no file to re-read). The export keeps the live traces beside Extract's.";
+  "A live stream settles and extracts on the factors Discover wrote during the stream (there is no file to re-read; ?factors=0 turns this off). The export keeps the live traces beside Extract's.";
 
 /** `meta_json.notes` of a `?factors=file` recording: what the settle and Extract read. */
 export function fileFactorNotes(

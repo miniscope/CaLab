@@ -31,7 +31,7 @@ import {
 } from './lib/compress-store.ts';
 import { createFactorExtract } from './lib/factor-extract.ts';
 import { FACTOR_STALL_TEXT, FactorSettle, FileSettleChoice } from './lib/factor-settle.ts';
-import { FACTORS_REVIEW_OFF } from './lib/factor-run.ts';
+import { factorsFromPage } from './lib/factor-run.ts';
 import { createPass2Store, replayBlocked } from './lib/pass2-store.ts';
 import {
   createStageLog,
@@ -148,15 +148,13 @@ const App: Component = () => {
   const visits = params.get('visits');
   // `?review` (with `?compress`): the history review, every 8 compressed windows
   // (`?review=N`: every N), in a worker of its own. One core is left for it.
-  // `?factors` (experimental): a live stream settles and extracts on the factors Discover
-  // writes; it turns compression on by itself. A recording runs as with `?compress`.
-  // `?factors=file` also lets a recording's settle and Extract read them when complete.
-  const factors = params.has('factors');
-  const factorsFile = params.get('factors') === 'file';
-  const compressOn = params.has('compress') || factors;
-  if (factors && params.has('review')) console.warn(FACTORS_REVIEW_OFF);
-  const reviewWindows =
-    params.has('compress') && !factors ? reviewEvery(params.get('review')) : null;
+  // A live stream settles and extracts on the factors Discover writes, by default
+  // (`?factors=0`: off; `?compress&review` turns it off for the review). A recording
+  // re-reads the file; with `?factors` it runs as with `?compress`, and `?factors=file`
+  // (experimental) lets its settle and Extract read its factors when complete.
+  const pageFactors = factorsFromPage(params);
+  if (pageFactors.warn) console.warn(pageFactors.warn);
+  const reviewWindows = pageFactors.review ? reviewEvery(params.get('review')) : null;
   const slow = createSlowClient(
     client,
     (msg) => cells.onSlowMessage(msg),
@@ -168,7 +166,7 @@ const App: Component = () => {
   // `?noqc`: run without online quality control (to measure its cost).
   // `?compress`: also compress the preprocessed frames into low-rank factors, window by
   // window, in a worker of its own (experimental; windows and factors are files in OPFS).
-  const compress = compressOn ? createCompressStore(cells) : undefined;
+  const compress = pageFactors.compressWorker ? createCompressStore(cells) : undefined;
   // The review worker gets the factors from the compress worker; the cells it
   // finds go to the slow loop, which takes them on probation.
   const review =
@@ -267,8 +265,10 @@ const App: Component = () => {
   else pipeline.setCsettleCeiling(speed.cap);
   // Look-back (with its Final settle) is on by default for recordings; `?lookback=0` turns it off.
   if (params.get('lookback') === '0') pipeline.setLookback(false);
-  if (factors) pipeline.setFactors(true);
-  if (factorsFile)
+  if (pageFactors.factors) pipeline.setFactors(true);
+  pipeline.setFactorsDefault(pageFactors.factorsDefault);
+  pipeline.setCompressAsked(pageFactors.compressAsked);
+  if (pageFactors.factorsFile)
     pipeline.setFactorsFile(true, () => {
       const s = store.source();
       return s !== null && 'sessions' in s;
@@ -445,9 +445,9 @@ const App: Component = () => {
       compressClient?.backfill(cells.session(), slow?.version ?? 0);
     }
   });
-  // `?factors`: when the slow loop waits for the factors, begin the settle on them or end the
-  // wait; a watchdog gives up on a compressor that stopped.
-  if (factors && compress) {
+  // A factor run: when the slow loop waits for the factors, begin the settle on them or end
+  // the wait; a watchdog gives up on a compressor that stopped.
+  if (compress) {
     const factorSettle = new FactorSettle();
     const fileChoice = new FileSettleChoice();
     const watchdog = new FactorWatchdog();
@@ -1037,7 +1037,7 @@ const App: Component = () => {
               narrow={layout().narrow}
               ui={historyUi}
               factorRun={pipeline.factorRun()}
-              compress={compress}
+              compress={pipeline.compressRun() ? compress : undefined}
               review={review}
               onStopSettling={() => slow.stopSettling(cells.session())}
               runRecord={runRecord}
