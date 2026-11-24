@@ -380,3 +380,12 @@ def test_bad_frame_count_is_refused(tmp_path: Path, n_frames: Any) -> None:
     (d / "donation.json").write_text(json.dumps({**r, "n_frames": n_frames}))
     with pytest.raises(nwb.ConversionError, match="n_frames"):
         _convert(tmp_path)
+
+
+def test_resolve_executable_prefers_the_venv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "dandi").write_text("")
+    monkeypatch.setattr(nwb.sys, "executable", str(tmp_path / "python"))
+    assert nwb.resolve_executable("dandi") == str(tmp_path / "dandi")
+    assert nwb.resolve_executable("not-there") == "not-there"

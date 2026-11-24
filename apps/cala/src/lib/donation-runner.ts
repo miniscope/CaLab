@@ -173,7 +173,7 @@ export function checkJob(job: DonationJob): void {
   const estimate = estimateDonationBytes(e.frameCount, e.width, e.height, bpp);
   if (estimate > MAX_DONATION_BYTES) {
     throw new DonationRefused(
-      `This recording would be about ${formatBytes(estimate)} compressed, above the ${formatBytes(MAX_DONATION_BYTES)} limit per donation.`,
+      `This recording would be about ${formatBytes(estimate)} compressed, above the ${formatBytes(MAX_DONATION_BYTES)} limit per shared recording.`,
     );
   }
   if (job.timestamps && job.timestamps.length > MAX_TIMESTAMPS_BYTES) {
@@ -288,7 +288,7 @@ export class DonationRunner {
 
   /** Encode, create, upload and finish. Resolves with the final phase (never rejects). */
   async run(job: DonationJob): Promise<DonationPhase> {
-    if (this.running) throw new Error('A donation is already running.');
+    if (this.running) throw new Error('A share is already running.');
     try {
       checkJob(job);
     } catch (err) {
@@ -414,7 +414,7 @@ export class DonationRunner {
       };
       const progress = (): void =>
         this.set({ kind: 'encoding', frames, totalFrames: total, chunks: files.length, bytes });
-      worker.onerror = (e) => finish(new Error(e.message || 'The donation worker failed.'));
+      worker.onerror = (e) => finish(new Error(e.message || 'The sharing worker failed.'));
       worker.onmessage = (e) => {
         const msg = e.data;
         switch (msg.type) {
@@ -433,7 +433,7 @@ export class DonationRunner {
             if (bytes > MAX_DONATION_BYTES) {
               fail(
                 new DonationRefused(
-                  `The compressed recording is larger than the ${formatBytes(MAX_DONATION_BYTES)} limit per donation.`,
+                  `The compressed recording is larger than the ${formatBytes(MAX_DONATION_BYTES)} limit per shared recording.`,
                 ),
               );
               return;
@@ -487,7 +487,7 @@ export class DonationRunner {
     const totalBytes = stored.files.reduce((a, f) => a + f.bytes, 0);
     if (totalBytes > MAX_DONATION_BYTES) {
       throw new DonationRefused(
-        `The donation is ${formatBytes(totalBytes)}, above the ${formatBytes(MAX_DONATION_BYTES)} limit.`,
+        `The shared recording is ${formatBytes(totalBytes)}, above the ${formatBytes(MAX_DONATION_BYTES)} limit.`,
       );
     }
     if (!this.donationId) {

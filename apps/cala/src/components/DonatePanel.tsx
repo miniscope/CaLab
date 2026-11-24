@@ -1,5 +1,5 @@
 /**
- * "Donate data" (docs/data-donation.md): send the open recording, lossless,
+ * "Share recording" (docs/data-donation.md): send the open recording, lossless,
  * with its metadata, to the CaLab team, public on DANDI or CaLab only. Collapsed to one button
  * at the bottom of the Run tab; nothing is encoded or uploaded until the
  * donor is signed in, has filled the form and ticked both consent boxes.
@@ -68,24 +68,6 @@ const optional = (s: string): string | null => (s.trim() === '' ? null : s.trim(
 
 const CC_BY_URL = 'https://creativecommons.org/licenses/by/4.0/';
 
-/** Who receives deletion requests (add addresses here; all are shown). */
-const DELETION_CONTACTS = ['marcel91@g.ucla.edu'];
-
-function DeletionContacts(): JSX.Element {
-  return (
-    <For each={DELETION_CONTACTS}>
-      {(addr, i) => (
-        <>
-          {i() > 0 ? ', ' : ''}
-          <a href={`mailto:${addr}?subject=${encodeURIComponent('CaLab data donation: delete')}`}>
-            {addr}
-          </a>
-        </>
-      )}
-    </For>
-  );
-}
-
 export interface DonatePanelProps {
   donation: DonationUiStore;
   info: FrameSourceInfo;
@@ -117,7 +99,7 @@ export function DonatePanel(props: DonatePanelProps): JSX.Element {
     <section class="cala-donate" aria-labelledby="cala-donate-title" data-testid="donate">
       <div class="cala-donate__cta">
         <h2 id="cala-donate-title" class="cala-donate__title">
-          Donate this recording
+          Share this recording
         </h2>
         <p class="cala-donate__lead">
           Send this recording to the cala benchmark set (only after you fill in a form). A single
@@ -127,7 +109,7 @@ export function DonatePanel(props: DonatePanelProps): JSX.Element {
         </p>
         <ul class="cala-donate__why">
           <li>
-            <strong>cala gets better on your kind of data.</strong> Donated recordings go into the
+            <strong>cala gets better on your kind of data.</strong> Shared recordings go into the
             benchmark set that cala is developed and tuned against.
           </li>
           <li>
@@ -144,10 +126,10 @@ export function DonatePanel(props: DonatePanelProps): JSX.Element {
             then only the CaLab team uses it, to improve cala.
           </li>
           <li>
-            <strong>Credit.</strong> Public donors and their labs are listed as contributors on the
+            <strong>Credit.</strong> Labs that share publicly are listed as contributors on the
             collection's citable DOI, and everyone using the data is asked to cite it and
-            acknowledge your lab. Our own papers acknowledge every lab whose data they use. Deletion
-            requests: <DeletionContacts />.
+            acknowledge your lab. Our own papers acknowledge every lab whose data they use. To have
+            a shared recording removed after the lab has taken it in, contact the CaLab team.
           </li>
         </ul>
         <Show when={!expanded()}>
@@ -157,24 +139,25 @@ export function DonatePanel(props: DonatePanelProps): JSX.Element {
             data-testid="donate-open"
             onClick={() => setOpen(true)}
           >
-            Donate data
+            Share recording
           </button>
         </Show>
       </div>
       <Show when={expanded()}>
         <p class="cala-muted">
           The raw frames are compressed without loss in this browser and uploaded with the metadata
-          below. File paths are never sent, only file names. The lab reviews each donation first.
-          Withdraw it under "My donations" below until the lab has taken it in; after that, email{' '}
-          <DeletionContacts />. A public recording can be removed until the next version of the
-          DANDI collection is published; published versions are permanent.
+          below. File paths are never sent, only file names. The lab reviews each shared recording
+          first. Withdraw it under "My shared recordings" below until the lab has taken it in; after
+          that, contact the CaLab team, naming the recording and the date you sent it. A public
+          recording can be removed until the next version of the DANDI collection is published;
+          published versions are permanent.
         </p>
         <Show
           when={signedIn()}
           fallback={
             <div class="cala-donate__auth">
               <p class="cala-muted">
-                Donating needs a sign-in with your email address (separate from other CaLab
+                Sharing needs a sign-in with your email address (separate from other CaLab
                 sign-ins).
               </p>
               <AuthGate
@@ -182,7 +165,7 @@ export function DonatePanel(props: DonatePanelProps): JSX.Element {
                 authLoading={donationAuthLoading}
                 signInWithEmail={signInForDonation}
                 signOut={signOutDonation}
-                prompt="Sign in to donate or to see your donations"
+                prompt="Sign in to share or to see your shared recordings"
               />
             </div>
           }
@@ -225,20 +208,20 @@ export function MyDonationsEntry(props: { donation: DonationUiStore }): JSX.Elem
   return (
     <section class="cala-donate-entry" data-testid="my-donations-entry">
       <button type="button" class="cala-donate__link" onClick={() => setOpen((v) => !v)}>
-        {open() ? 'Hide my donations' : 'My donations'}
+        {open() ? 'Hide my shared recordings' : 'My shared recordings'}
       </button>
       <Show when={open()}>
         <Show
           when={signedIn()}
           fallback={
             <div class="cala-donate__auth">
-              <p class="cala-muted">Sign in with the email you donated with.</p>
+              <p class="cala-muted">Sign in with the email you shared with.</p>
               <AuthGate
                 user={donationUser}
                 authLoading={donationAuthLoading}
                 signInWithEmail={signInForDonation}
                 signOut={signOutDonation}
-                prompt="Sign in to donate or to see your donations"
+                prompt="Sign in to share or to see your shared recordings"
               />
             </div>
           }
@@ -273,12 +256,12 @@ export function DonationFormView(props: DonatePanelProps & { onClose: () => void
   const fps = () => Number(form.fps);
   const missing = (): string[] => missingFields(form, new Date());
   const blocked = (): string | null => {
-    if (!props.source) return 'This recording cannot be donated (no files to read).';
-    if (bpp() === null) return `${props.info.bitDepth}-bit video cannot be donated.`;
+    if (!props.source) return 'This recording cannot be shared (no files to read).';
+    if (bpp() === null) return `${props.info.bitDepth}-bit video cannot be shared.`;
     if (tooBig()) {
-      return `About ${formatBytes(estimate())} compressed: above the ${formatBytes(MAX_DONATION_BYTES)} limit per donation.`;
+      return `About ${formatBytes(estimate())} compressed: above the ${formatBytes(MAX_DONATION_BYTES)} limit per shared recording.`;
     }
-    if (props.donation.active()) return 'Another donation is running.';
+    if (props.donation.active()) return 'Another share is running.';
     return null;
   };
 
@@ -455,8 +438,8 @@ export function DonationFormView(props: DonatePanelProps & { onClose: () => void
         </dl>
         <Show when={tooBig()}>
           <p class="cala-warning" data-testid="donate-too-big">
-            This is above the {formatBytes(MAX_DONATION_BYTES)} limit per donation. Contact the lab
-            to donate longer recordings.
+            This is above the {formatBytes(MAX_DONATION_BYTES)} limit per shared recording. Contact
+            the lab to share longer recordings.
           </p>
         </Show>
       </fieldset>
@@ -665,7 +648,10 @@ function phaseText(p: DonationPhase): { text: string; fraction: number | null } 
         fraction: p.totalFrames > 0 ? p.frames / p.totalFrames : 0,
       };
     case 'creating':
-      return { text: `Registering the donation (${formatBytes(p.bytes)})...`, fraction: null };
+      return {
+        text: `Registering the shared recording (${formatBytes(p.bytes)})...`,
+        fraction: null,
+      };
     case 'uploading':
       return {
         text: `Uploading file ${p.index + 1} of ${p.count} (${p.name}): ${formatBytes(p.sentBytes)} of ${formatBytes(p.totalBytes)}${p.attempt > 1 ? `, retry ${p.attempt - 1}` : ''}`,
@@ -712,8 +698,8 @@ function DonationProgress(props: { donation: DonationUiStore }): JSX.Element {
       <Show when={p().kind === 'done' ? (p() as { bytes: number }) : null}>
         {(done) => (
           <p class="cala-donate__done" role="status">
-            Thank you! Your donation ({formatBytes(done().bytes)}) arrived. The lab reviews it
-            before it is used or published.{' '}
+            Thank you! Your shared recording ({formatBytes(done().bytes)}) arrived. The lab reviews
+            it before it is used or published.{' '}
             <button type="button" class="btn-secondary btn-small" onClick={() => d().reset()}>
               Done
             </button>
@@ -791,14 +777,14 @@ export function MyDonations(props: { donation: DonationUiStore }): JSX.Element {
       : (STATUS_LABEL[row.status] ?? row.status);
   function withdraw(row: DonationRow): void {
     const ok = window.confirm(
-      `Withdraw the donation of ${row.created_at.slice(0, 10)}? Its uploaded files are deleted.`,
+      `Withdraw the shared recording of ${row.created_at.slice(0, 10)}? Its uploaded files are deleted.`,
     );
     if (ok) void d().withdraw(row.id);
   }
   return (
-    <section class="cala-donate__mine" aria-label="My donations" data-testid="my-donations">
+    <section class="cala-donate__mine" aria-label="My shared recordings" data-testid="my-donations">
       <h3 class="cala-donate__subtitle">
-        My donations{' '}
+        My shared recordings{' '}
         <button
           type="button"
           class="btn-secondary btn-small"
@@ -818,7 +804,9 @@ export function MyDonations(props: { donation: DonationUiStore }): JSX.Element {
       <Show
         when={shown().length > 0}
         fallback={
-          <p class="cala-muted">{d().listState().loading ? 'Loading...' : 'No donations yet.'}</p>
+          <p class="cala-muted">
+            {d().listState().loading ? 'Loading...' : 'No shared recordings yet.'}
+          </p>
         }
       >
         <ul class="cala-donate__list">
