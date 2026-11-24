@@ -283,6 +283,12 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       postAll(() => [{ type: 'session', session, index, transform: t }, []]);
     },
     reset(session) {
+      // A late reset of an earlier run (a stream's factor settle released after the next run
+      // began) leaves the current run alone; worker 0 ignores a reset older than its run.
+      if (run && run.session > session) {
+        workers[0]?.postMessage({ type: 'reset', session } satisfies MainToLookback);
+        return;
+      }
       // The rows kept for a late pool go with the run.
       run = null;
       workers[0]?.postMessage({ type: 'reset', session } satisfies MainToLookback);
