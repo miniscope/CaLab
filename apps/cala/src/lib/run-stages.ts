@@ -143,6 +143,8 @@ export interface StageRun {
   source?: 'factors' | 'file';
   sourceReason?: string;
   factors?: FactorInfo;
+  /** Extract on factors through the extractor: windows from the factors, on rebuilt frames, and its helpers. */
+  extractor?: { projected: number; rebuilt: number; workers: number };
   /**
    * Discover of a factor run: compress workers while it read and after its end,
    * the frames not compressed at its end, the waiting window files' peak, and

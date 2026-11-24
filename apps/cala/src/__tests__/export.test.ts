@@ -553,6 +553,33 @@ describe('export of a ?factors=file recording', () => {
     expect(meta.stages[1]).not.toHaveProperty('compress_workers');
   });
 
+  it("writes the factor extractor's windows and workers on Extract's record", async () => {
+    const stages: StageRun[] = [
+      { ...stage('discover'), settleSource: 'factors' },
+      {
+        ...stage('extract'),
+        source: 'factors',
+        factors: {
+          folder: 'run-a',
+          tiling: 'offset',
+          windows: [{ index: 0, start: 0, frames: T }],
+          frames: T,
+          meanRank: 4,
+        },
+        extractor: { projected: 118, rebuilt: 2, workers: 6 },
+      },
+    ];
+    const meta = await metaOf({ ...(await input()), stages, notes: fileFactorNotes(stages) });
+    expect(meta.format_version).toBe(7);
+    expect(meta.stages[1]).toMatchObject({
+      extract_engine: 'factors',
+      factor_windows_projected: 118,
+      factor_windows_rebuilt: 2,
+      extract_workers: 6,
+    });
+    expect(meta.stages[0]).not.toHaveProperty('extract_engine');
+  });
+
   it('Extract on the file keeps its reason', async () => {
     const stages: StageRun[] = [
       stage('discover'),

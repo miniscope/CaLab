@@ -83,6 +83,8 @@ export interface Pass2Result {
   source?: 'factors' | 'file';
   sourceReason?: string;
   factors?: FactorInfo;
+  /** Extract on factors through the extractor: windows solved from the factors and on rebuilt frames, and its helpers. */
+  extractor?: { projected: number; rebuilt: number; workers: number };
 }
 
 export function createPass2Store(
@@ -425,7 +427,7 @@ export function createPass2Store(
     });
     factorJob = job;
     try {
-      await job.done.catch((err: unknown) => {
+      const ended = await job.done.catch((err: unknown) => {
         throw failure ?? err;
       });
       await traces.finish();
@@ -442,6 +444,15 @@ export function createPass2Store(
         seconds: (clock() - t0) / 1000,
         source: 'factors',
         factors: info,
+        ...(ended.projected !== undefined && ended.rebuilt !== undefined
+          ? {
+              extractor: {
+                projected: ended.projected,
+                rebuilt: ended.rebuilt,
+                workers: ended.workers ?? 1,
+              },
+            }
+          : {}),
       });
       setStatus('done');
     } catch (err) {

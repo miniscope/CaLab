@@ -118,7 +118,10 @@
  * `factor_mean_rank` (Extract). Discover's record of a factor run also carries its
  * compress pool: `compress_workers` (while Discover read), `compress_workers_after`,
  * `compress_behind_frames` (not compressed at Discover's end), `compress_backlog_peak_bytes`
- * (window files waiting for compression, at their peak) and `compress_fps_after`.
+ * (window files waiting for compression, at their peak) and `compress_fps_after`. Extract's
+ * record of a factor run solved by the extractor carries `extract_engine` ('factors'),
+ * `factor_windows_projected` (solved from the factors), `factor_windows_rebuilt` (on rebuilt
+ * frames: a pixel without data lay under a cell) and `extract_workers`.
  *
  * Session-boundary flags (format version 6; Joint runs, sessions 2..):
  * `meta_json.session.boundary` is the health flag of the boundary the session
@@ -277,6 +280,12 @@ export function stageMeta(r: StageRun): Record<string, unknown> {
     out.factor_tiling = r.factors.tiling;
     out.factor_windows = r.factors.windows.length;
     out.factor_mean_rank = r.factors.meanRank;
+  }
+  if (r.extractor) {
+    out.extract_engine = 'factors';
+    out.factor_windows_projected = r.extractor.projected;
+    out.factor_windows_rebuilt = r.extractor.rebuilt;
+    out.extract_workers = r.extractor.workers;
   }
   if (r.compress) {
     out.compress_workers = r.compress.workers;
