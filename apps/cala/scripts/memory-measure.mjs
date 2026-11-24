@@ -40,6 +40,8 @@
  *   each work reading and logged. `--lbpool S` overrides the pool size (`?debug&lbpool=S`, 0
  *   included); `--needfirst`: one worker, need-driven look-back first (`?debug&needfirst`);
  *   `--csettle-off`: no Background settle (`&csettle=0`).
+ *   `--query "&obsstrips=N"`: N strip helpers (`?debug&obsstrips=N`). Each work reading also
+ *   keeps the slow worker's frame counts, visits, live split and strip counters (`slow`).
  *   `--csdelta`: the settle delta (`?debug&csdelta`): the settle look-back workers sum each
  *   chunk's footprint statistics and the slow worker only adds them.
  *   `--stop-after-settle` (session runs with `--lookback`): stop once the first Discover has settled.
@@ -406,6 +408,13 @@ await page.evaluate((withRelease) => {
       pace: c.pipeline.paceStats?.() ?? null,
       governor: c.lookback?.()?.csettle?.governor ?? null,
       settleWorkers: c.lookback?.()?.csettle?.settleWorkers ?? null,
+      // The slow worker's frame counts, visits, live split and strip helpers (`SlowStatus`).
+      slow: (() => {
+        const st = c.cells?.status?.();
+        if (!st) return null;
+        const { frame, consumed, observed, skipped, jobs, liveSplit, strips } = st;
+        return { frame, consumed, observed, skipped, jobs, liveSplit, strips };
+      })(),
     });
   }, 500);
   // `--pace-after`: the first time the settle pool serves after the target change.

@@ -140,6 +140,13 @@ const App: Component = () => {
   // `?review` (with `?compress`): the history review, every 8 compressed windows
   // (`?review=N`: every N), in a worker of its own. One core is left for it.
   const reviewWindows = params.has('compress') ? reviewEvery(params.get('review')) : null;
+  // `?debug&obsstrips=N` (measurement only): N strip helpers sum the cell model's footprint
+  // statistics by band of image rows (Discover with visit workers, and the Final settle). Extra
+  // threads beyond the visit workers' budget; not with `csdelta` (it wins: no helpers).
+  const obsStrips =
+    params.has('debug') && !(params.has('csdelta') && params.get('csdelta') !== '0')
+      ? Math.max(0, Math.min(8, Math.floor(Number(params.get('obsstrips') ?? 0) || 0)))
+      : 0;
   const slow = createSlowClient(
     client,
     (msg) => cells.onSlowMessage(msg),
@@ -147,6 +154,8 @@ const App: Component = () => {
     visits !== null && visits !== ''
       ? visitWorkerCount(Number(visits) + RESERVED_THREADS)
       : visitWorkerCount(navigator.hardwareConcurrency - (reviewWindows === null ? 0 : 1)),
+    undefined,
+    obsStrips,
   );
   // `?noqc`: run without online quality control (to measure its cost).
   // `?compress`: also compress the preprocessed frames into low-rank factors, window by

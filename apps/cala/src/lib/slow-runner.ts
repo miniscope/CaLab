@@ -81,6 +81,8 @@ import type {
   VisitToOwner,
 } from '../workers/slow-types.ts';
 import { libraryViewTransferables } from '../workers/slow-types.ts';
+import type { OwnerToStrip, StripToOwner } from '../workers/strip-types.ts';
+import { StripHelpers, type StripLoopLike } from './strip-helpers.ts';
 import {
   CSETTLE,
   movedAgainstNoise,
@@ -124,7 +126,7 @@ export interface PublishedLibrary {
 }
 
 /** What the runner needs of the WASM `SlowLoop`. */
-export interface SlowLoopLike {
+export interface SlowLoopLike extends StripLoopLike {
   /**
    * `background`: that frame's background coefficients from the same solve;
    * `stream`: its stream index (look-back keeps its held-out decision).
@@ -213,7 +215,28 @@ export interface SlowLoopLike {
   applySettleDeltaNext?(bytes: Uint8Array, version: number, count: number): boolean;
   /** 1 per held-out slow-loop index of `first..first + count`. */
   heldOutFlags?(first: number, count: number): Uint8Array;
+  /** `[ms, calls]`: `observe`'s time inside the slow loop (absent in older fakes and builds). */
+  observeTiming?(): Float64Array;
   free(): void;
+}
+
+/**
+ * Where the slow worker's `live` duty goes (cumulative ms; `SlowStatus.liveSplit`): the `observe`
+ * calls (`observeCall`), of which `observeInner` inside the slow loop (the rest is copying the
+ * frame, traces and background into WASM and the held-out record), the look-back bookkeeping after
+ * each batch (`lookback`), the strip helpers' begin and apply, and the batch-end visit hand-out and
+ * trimming (`housekeep`, `dispatch`; their own duties, listed here for the sum). Outside `live`:
+ * the status message (`status`) and the frame buffer's ack (`ack`).
+ */
+export interface LiveSplit {
+  observeCall: number;
+  observeInner: number;
+  frames: number;
+  lookback: number;
+  stripBegin: number;
+  stripApply: number;
+  status: number;
+  ack: number;
 }
 
 /**
@@ -293,6 +316,8 @@ export interface SlowRunnerDeps {
   visits?: PortLike<OwnerToVisit>[];
   /** Port to the look-back worker (also `connectLookback`). */
   lookback?: PortLike<SlowToLookback>;
+  /** Ports to the strip helpers (`?debug&obsstrips=N`; none: off). */
+  strips?: PortLike<OwnerToStrip>[];
   now?: () => number;
   /** Epoch clock for the batch wait (`FastToSlow` `sentAt`); default `performance.timeOrigin + performance.now()`. */
   epochNow?: () => number;
@@ -555,10 +580,15 @@ export class SlowRunner {
   private lbLib: boolean[] = [];
   /** The settle's last status (kept for the final status after it ends). */
   private settleStatus: SettleStatus | undefined;
+  /** Frames the last settle answer observed (`settleTail`). */
+  private settleSteps = 0;
   /** The "still moving" hint of the newest checkpoint, sent with the next status (information only). */
   private stillMoving: Float64Array | null = null;
   private readonly defer: (fn: () => void) => void;
   private readonly timer: (fn: () => void, ms: number) => () => void;
+  /** The strip helpers (none: off). */
+  private readonly strips: StripHelpers;
+  private split: LiveSplit = emptySplit();
 
   constructor(deps: SlowRunnerDeps) {
     this.deps = deps;
@@ -570,6 +600,7 @@ export class SlowRunner {
     this.busy = this.visits.map(() => false);
     this.visitBusy = this.visits.map(() => 0);
     this.lbPorts = [deps.lookback ?? null];
+    this.strips = new StripHelpers(deps.strips ?? [], this.now);
     this.defer = deps.defer ?? ((fn) => void setTimeout(fn, 0));
     this.timer =
       deps.timer ??
@@ -732,8 +763,24 @@ export class SlowRunner {
       return;
     }
     try {
-      const steps = this.frameSteps(msg);
-      while (!steps.next().done) await pause();
+      const steps = this.frameSteps(msg, true);
+      // A strip batch yields the wait for its deltas; otherwise a give-way.
+      for (let r = steps.next(); !r.done; r = steps.next()) await (r.value ?? pause());
+    } catch (err) {
+      this.fail(err);
+    }
+    // What came in while a strip batch waited, in arrival order.
+    try {
+      this.strips.release();
+    } catch (err) {
+      this.fail(err);
+    }
+  }
+
+  /** A message from strip helper `i`. */
+  handleStrip(i: number, msg: StripToOwner): void {
+    try {
+      this.strips.handle(i, msg);
     } catch (err) {
       this.fail(err);
     }
@@ -768,7 +815,10 @@ export class SlowRunner {
             ? { sessionStarts: [...msg.sessionStarts] }
             : {}),
           // The settle delta: the Final settle's, and with `csettle` the Background settle's.
-          ...(lookback && msg.csettleDelta ? { csettleDelta: true } : {}),
+          // (Not with the strip helpers: both would take the statistics off this worker.)
+          ...(lookback && msg.csettleDelta && this.strips.count === 0
+            ? { csettleDelta: true }
+            : {}),
         };
         this.loop = this.clock.span('setup', () => this.deps.create(this.init!));
         this.run = 1;
@@ -787,7 +837,7 @@ export class SlowRunner {
             needFirst: msg.csettleNeedFirst === true,
             forwardPool: Math.max(2, Math.floor(msg.csettlePool ?? 2)),
             delta:
-              msg.csettleDelta === true &&
+              this.init.csettleDelta === true &&
               yieldFrames === 0 &&
               typeof this.loop.settleContext === 'function' &&
               typeof this.loop.applySettleDelta === 'function',
@@ -797,6 +847,7 @@ export class SlowRunner {
         if (this.pool?.session === msg.session) this.joinPool(this.pool.workers);
         for (const v of this.visits)
           v.postMessage({ type: 'init', session: msg.session, ...this.init });
+        this.strips.init(msg.session, width, height, fov);
       }
       return;
     }
@@ -813,6 +864,7 @@ export class SlowRunner {
   handleReviewed(msg: SlowReviewed): void {
     if (msg.session !== this.session || !this.loop || this.ending || this.final || this.drain)
       return;
+    if (this.strips.hold(() => this.handleReviewed(msg))) return;
     try {
       this.reviewed.push(msg.candidates);
       this.addReviewed();
@@ -832,6 +884,8 @@ export class SlowRunner {
   /** A message from visit worker `i`. */
   handleVisit(i: number, msg: VisitToOwner): void {
     if (msg.session !== this.session || !this.loop) return;
+    // Visit results write the statistics: after the strip batch waiting is applied.
+    if (this.strips.hold(() => this.handleVisit(i, msg))) return;
     try {
       if (msg.type === 'error') throw new Error(`visit worker ${i}: ${msg.message}`);
       this.busy[i] = false;
@@ -868,7 +922,7 @@ export class SlowRunner {
   }
 
   private frames(msg: Extract<FastToSlow, { type: 'frames' }>): void {
-    for (const _ of this.frameSteps(msg));
+    for (const _ of this.frameSteps(msg, false));
   }
 
   /**
@@ -880,7 +934,10 @@ export class SlowRunner {
    * drops a batch) its visit workers sat idle and a Refine run made a few
    * times fewer visits per frame.
    */
-  private *frameSteps(msg: Extract<FastToSlow, { type: 'frames' }>): Generator<void, void> {
+  private *frameSteps(
+    msg: Extract<FastToSlow, { type: 'frames' }>,
+    async: boolean,
+  ): Generator<Promise<void> | void, void> {
     const loop = this.loop;
     const init = this.init;
     let observed = 0;
@@ -918,6 +975,29 @@ export class SlowRunner {
         const px = init.width * init.height;
         const bg = msg.background;
         const nb = bg && msg.count > 0 ? bg.length / msg.count : 0;
+        // Strip helpers (Discover with visit workers only: visits come after the batch there).
+        const t1 = this.now();
+        const striped =
+          async &&
+          this.parallel &&
+          this.scope === 'all' &&
+          this.strips.begin(
+            loop,
+            msg.version,
+            {
+              width: init.width,
+              height: init.height,
+              frames: msg.frames,
+              traces: msg.traces,
+              cells: msg.cells,
+              background: bg,
+              count: msg.count,
+            },
+            'live',
+          );
+        this.split.stripBegin += this.now() - t1;
+        const inner0 = loop.observeTiming?.()[0] ?? 0;
+        const t2 = this.now();
         for (let i = 0; i < msg.count; i++) {
           const frame = msg.frames.subarray(i * px, (i + 1) * px);
           const traces = msg.traces.subarray(i * msg.cells, (i + 1) * msg.cells);
@@ -925,7 +1005,11 @@ export class SlowRunner {
           // The stream index records the frame's held-out decision for look-back
           // (required with it on); without look-back the call is as before.
           const stream = this.lbOn ? msg.start + i : undefined;
-          if (!loop.observe(frame, msg.version, traces, background, stream)) {
+          const tc = this.now();
+          const ok = loop.observe(frame, msg.version, traces, background, stream);
+          this.split.observeCall += this.now() - tc;
+          this.split.frames++;
+          if (!ok) {
             this.skipped++;
             continue;
           }
@@ -948,12 +1032,26 @@ export class SlowRunner {
           maxStep = Math.max(maxStep, this.now() - s);
           if (lib) this.publish(lib);
         }
+        this.split.observeInner += (loop.observeTiming?.()[0] ?? 0) - inner0;
+        void t2;
+        if (striped) {
+          // The batch's deltas: the slow worker waits (idle) for the slowest helper.
+          endLive();
+          yield new Promise<void>((resolve) => this.strips.whenDone(resolve));
+          // The run was dropped meanwhile.
+          if (this.loop !== loop) return;
+          beginLive();
+          const ta = this.now();
+          this.strips.apply(loop);
+          this.split.stripApply += this.now() - ta;
+        }
         if (this.parallel) {
           const s = this.now();
           this.housekeep();
           maxStep = this.now() - s;
           this.dispatch();
         }
+        const tl = this.now();
         if (this.lookbackLive) {
           this.sessionFloor(loop, msg.start);
           loop.lookbackNote!(msg.start + msg.count, observed);
@@ -972,9 +1070,11 @@ export class SlowRunner {
           this.liveEnd = Math.max(this.liveEnd, msg.start + msg.count);
           this.lookbackRequest();
         }
+        this.split.lookback += this.now() - tl;
       }
     } finally {
       endLive();
+      const tk = this.now();
       this.consumed = Math.max(this.consumed, msg.start + msg.count);
       // The buffer always goes back, or the fast worker's pool would shrink.
       this.deps.toFast.postMessage(
@@ -988,8 +1088,11 @@ export class SlowRunner {
         },
         [msg.frames.buffer as ArrayBuffer],
       );
+      this.split.ack += this.now() - tk;
     }
+    const ts = this.now();
     this.status(this.now() - t0, maxStep);
+    this.split.status += this.now() - ts;
   }
 
   /** Trimming decisions and, when due, a new library (parallel mode). */
@@ -1238,6 +1341,8 @@ export class SlowRunner {
 
   /** An answer from look-back worker `port`: its frames go into the footprint statistics. */
   handleLookback(msg: LookbackToSlow, port = 0): void {
+    if (msg.session === this.session && this.strips.hold(() => this.handleLookback(msg, port)))
+      return;
     const loop = this.loop;
     const req = this.lbReqs[port] ?? null;
     const answer = msg.type === 'frames' || msg.type === 'delta';
@@ -1295,7 +1400,26 @@ export class SlowRunner {
           // The next request goes out first: the look-back worker reads and
           // solves it while these frames are observed here.
           if (!settle.stop && !settle.feed.done) this.settleRequest();
-          this.observeSettle(loop, msg, req.items, req);
+          // Strip helpers: the rest (the visits, the buffer back, the next step) once the
+          // chunk's statistics are added.
+          if (this.observeSettle(loop, msg, req.items, req)) {
+            this.strips.whenDone(() =>
+              this.clock.span('end', () => {
+                try {
+                  if (this.loop !== loop) return;
+                  this.strips.apply(loop);
+                  this.settleTail(loop);
+                  this.releaseFrames(msg, req.port);
+                  if (this.drain) this.settlePump();
+                } catch (err) {
+                  this.fail(err);
+                  return;
+                }
+                this.strips.release();
+              }),
+            );
+            return;
+          }
         } else if (req.kind === 'need') this.observeLookback(loop, msg, req.items);
         // A settle answer that came when Discover could no longer use it: counted as dropped.
         if (req.kind === 'csettle' && this.cs) this.cs.dropped += req.items.length;
@@ -1504,6 +1628,7 @@ export class SlowRunner {
 
   /** The user's "Stop settling": publish the final library now, with what was refined. */
   stopSettling(session: number): void {
+    if (session === this.session && this.strips.hold(() => this.stopSettling(session))) return;
     const d = this.drain;
     if (session !== this.session || !d) return;
     d.stop = true;
@@ -1695,13 +1820,17 @@ export class SlowRunner {
     this.sendRequest(0, 'end', flat, items, undefined, delta, first);
   }
 
-  /** A settle answer: every frame through `observe`, then the visits they earn. */
+  /**
+   * A settle answer: every frame through `observe`, then the visits they earn (`settleTail`).
+   * Returns `true` when the strip helpers sum the chunk's statistics: the caller runs the tail
+   * once they are added.
+   */
   private observeSettle(
     loop: SlowLoopLike,
     msg: Extract<LookbackToSlow, { type: 'frames' }>,
     items: LookbackItem[],
     req?: LookbackReq,
-  ): void {
+  ): boolean {
     const d = this.drain!;
     const init = this.init!;
     if (msg.count !== items.length)
@@ -1720,6 +1849,24 @@ export class SlowRunner {
       else fd.mismatched++;
     }
     const before = loop.frames;
+    const striped =
+      msg.version !== 0 &&
+      this.parallel &&
+      !fd &&
+      this.strips.begin(
+        loop,
+        msg.version,
+        {
+          width: init.width,
+          height: init.height,
+          frames: msg.frames,
+          traces: msg.traces,
+          cells: msg.cells,
+          background: bg,
+          count: msg.count,
+        },
+        'end',
+      );
     // Version 0: the worker had no library yet, nothing was solved.
     if (msg.version !== 0)
       for (let i = 0; i < msg.count; i++) {
@@ -1743,6 +1890,18 @@ export class SlowRunner {
       }
     }
     d.fed += msg.count;
+    this.settleSteps = n;
+    if (striped) return true;
+    this.settleTail(loop);
+    return false;
+  }
+
+  /** The visits a settle answer's frames earn, the checkpoint and the status. */
+  private settleTail(loop: SlowLoopLike): void {
+    const d = this.drain;
+    const init = this.init;
+    if (!d || !init) return;
+    const n = this.settleSteps;
     if (this.parallel) {
       this.housekeep();
       this.dispatch();
@@ -1813,6 +1972,8 @@ export class SlowRunner {
           const after = this.settlePorts().length;
           if (after !== before) this.cs?.gov.setWorkers(after);
         }
+        // The strip helpers sum batches of this version from now on (a copy each).
+        this.strips.library(version, bytes);
         this.deps.toFast.postMessage({ type: 'library', session: this.session, version, bytes }, [
           bytes.buffer as ArrayBuffer,
         ]);
@@ -1940,6 +2101,7 @@ export class SlowRunner {
       lookbackWorkerBusyMs: this.lbPorts.map((p, i) => (p ? (this.lbPortBusy[i] ?? 0) : 0)),
       settleWorkers: this.settlePorts().length,
       observedFrames: this.observed,
+      ...(this.strips.count > 0 ? { stripBusyMs: this.strips.busyMs.map((b) => b.slice()) } : {}),
     };
   }
 
@@ -1978,6 +2140,8 @@ export class SlowRunner {
       run: this.run,
       editScope: this.scope,
       ...(this.lbOn ? { lookback: this.lookbackStatus(loop) } : {}),
+      ...(this.strips.count > 0 ? { strips: this.strips.counters(loop) } : {}),
+      liveSplit: { ...this.split },
     };
     // Last, so the snapshot includes the time spent building this status.
     status.accounting = this.workStatus();
@@ -2008,6 +2172,8 @@ export class SlowRunner {
   }
 
   private drop(): void {
+    this.strips.drop(this.session);
+    this.split = emptySplit();
     this.loop?.free();
     this.loop = null;
     this.init = null;
@@ -2055,4 +2221,17 @@ export class SlowRunner {
     this.settleStatus = undefined;
     this.stillMoving = null;
   }
+}
+
+function emptySplit(): LiveSplit {
+  return {
+    observeCall: 0,
+    observeInner: 0,
+    frames: 0,
+    lookback: 0,
+    stripBegin: 0,
+    stripApply: 0,
+    status: 0,
+    ack: 0,
+  };
 }

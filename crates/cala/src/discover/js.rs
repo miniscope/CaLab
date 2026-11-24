@@ -712,6 +712,60 @@ impl JsSlowLoop {
         self.inner.strips_keys().iter().map(|&k| k as f64).collect()
     }
 
+    /// Sum one job here, as a strip helper would (a helper that failed):
+    /// its `context`, the rows it covers of the fitting frames (`frames`,
+    /// one after another), their `traces` (`cells` per frame) and
+    /// background, and their keys (`stripsKeys`), solved with library
+    /// `version`. Returns the delta's bytes (for `stripsAdd`).
+    #[wasm_bindgen(js_name = stripLocal)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn strip_local(
+        &self,
+        version: f64,
+        context: &[u8],
+        frames: &[f32],
+        traces: &[f32],
+        cells: u32,
+        background: Option<Vec<f32>>,
+        keys: &[f64],
+    ) -> Result<Vec<u8>, JsError> {
+        let f = "stripLocal";
+        let lib = self
+            .lib(version)
+            .ok_or_else(|| js_err(f, format!("library {version} is not held")))?;
+        let ctx = SettleContext::from_bytes(context).map_err(|e| js_err(f, e))?;
+        let d = self.inner.dims();
+        let mut b = SettleDeltaBuilder::new(d.width, d.height, self.inner.fov().to_vec(), ctx)
+            .map_err(|e| js_err(f, e))?;
+        let n = keys.len();
+        let cells = cells as usize;
+        if n == 0 || !frames.len().is_multiple_of(n) || traces.len() != n * cells {
+            return Err(js_err(f, "frames, traces and keys do not agree"));
+        }
+        let span = frames.len() / n;
+        let bg = background.unwrap_or_default();
+        let nb = bg.len() / n;
+        let mut tr = FrameTraces {
+            library_version: lib.version(),
+            ..FrameTraces::default()
+        };
+        for (j, &key) in keys.iter().enumerate() {
+            tr.traces.clear();
+            tr.traces
+                .extend_from_slice(&traces[j * cells..(j + 1) * cells]);
+            tr.background.clear();
+            tr.background.extend_from_slice(&bg[j * nb..(j + 1) * nb]);
+            b.push(
+                &frames[j * span..(j + 1) * span],
+                &lib,
+                &tr,
+                key.max(0.0) as u64,
+            )
+            .map_err(|e| js_err(f, e))?;
+        }
+        Ok(b.finish().to_bytes())
+    }
+
     /// Stage one job's delta (any order).
     #[wasm_bindgen(js_name = stripsAdd)]
     pub fn strips_add(&mut self, bytes: &[u8]) -> Result<(), JsError> {

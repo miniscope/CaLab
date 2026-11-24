@@ -113,6 +113,7 @@ export function rowLabel(w: WorkerKindShares): string {
   }
   if (w.group === 'slow') return 'cell model';
   if (w.group === 'visit') return n.replace(/^Visit worker /, 'footprint helper ');
+  if (w.group === 'strip') return n.replace(/^Strip helper /, 'statistics helper ');
   if (n.startsWith('Settle worker ')) return n.replace('Settle worker ', 'settle helper ');
   return n.replace('Look-back worker', 'look-back').trim();
 }
@@ -126,6 +127,8 @@ export function rowTitle(w: WorkerKindShares): string {
     return 'The cell model: finds new cells and keeps the footprints and background up to date.';
   if (w.group === 'visit')
     return 'A helper that updates the footprints of cells, in parallel with the cell model.';
+  if (w.group === 'strip')
+    return "A helper that sums the cell model's footprint statistics for one band of image rows, in parallel with it (experimental).";
   if (w.name.startsWith('Settle worker '))
     return 'A helper that runs the Background settle, and the Final settle at the end.';
   return 'Look-back: re-reads earlier frames for each new cell so its footprint and trace are complete.';
@@ -432,6 +435,7 @@ export const GRID_GROUP_LABEL: Record<WorkerKindShares['group'], string> = {
   fast: 'Frame loop',
   slow: 'Cell model',
   visit: 'Footprint helpers',
+  strip: 'Statistics helpers',
   lookback: 'Look-back and settle',
 };
 

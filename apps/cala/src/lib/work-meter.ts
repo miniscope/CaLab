@@ -194,6 +194,8 @@ export interface WorkStatus {
   settleWorkers?: number;
   /** Live frames the slow loop has observed since the run began (the speed floor's per-frame divisor); absent from older builds. */
   observedFrames?: number;
+  /** Strip helpers (`?debug&obsstrips=N`): per helper, its ms on Discover's batches and on the Final settle's. Absent when off. */
+  stripBusyMs?: number[][];
 }
 
 export function emptyWork(workers = 0): WorkStatus {
@@ -219,6 +221,8 @@ export interface WorkRates {
   slow: Record<SlowDuty, number> & { idle: number };
   /** Each visit worker's busy share. */
   visit: number[];
+  /** Strip helpers (`?debug&obsstrips=N`): each one's busy share on Discover's batches and on the Final settle's. */
+  strip?: { discovery: number; finalSettle: number }[];
   lookback: {
     /**
      * Busy share of the look-back workers (their `serve` time less waits for
@@ -270,6 +274,10 @@ export function workRates(prev: WorkStatus, cur: WorkStatus): WorkRates | null {
   }
   slow.idle = Math.max(0, 1 - sum);
   const visit = cur.visitBusyMs.map((v, i) => share(prev.visitBusyMs[i] ?? 0, v));
+  const strip = cur.stripBusyMs?.map((v, i) => ({
+    discovery: share(prev.stripBusyMs?.[i]?.[0] ?? 0, v[0]),
+    finalSettle: share(prev.stripBusyMs?.[i]?.[1] ?? 0, v[1]),
+  }));
   const kinds = {} as WorkRates['lookback']['kinds'];
   let busy = 0;
   for (const k of LOOKBACK_KINDS) {
@@ -298,6 +306,7 @@ export function workRates(prev: WorkStatus, cur: WorkStatus): WorkRates | null {
     spanMs: span,
     slow,
     visit,
+    ...(strip ? { strip } : {}),
     lookback: { busy, workers, kinds },
     batchWait: {
       meanMs: nb > 0 ? (cur.batchWait.sumMs - prev.batchWait.sumMs) / nb : 0,
@@ -481,7 +490,7 @@ export const WORK_KIND_LABELS: Record<WorkKind | 'spare', string> = {
 };
 
 /** Which worker a row is. */
-export type WorkerGroup = 'fast' | 'slow' | 'visit' | 'lookback';
+export type WorkerGroup = 'fast' | 'slow' | 'visit' | 'strip' | 'lookback';
 
 export interface WorkerKindShares {
   name: string;
@@ -556,6 +565,13 @@ export function workByKind(r: WorkRates): WorkByKind {
       name: `Visit worker ${i + 1}`,
       group: 'visit',
       shares: fitShares({ ...noShares(), discovery: v }),
+    }),
+  );
+  (r.strip ?? []).forEach((v, i) =>
+    workers.push({
+      name: `Strip helper ${i + 1}`,
+      group: 'strip',
+      shares: fitShares({ ...noShares(), discovery: v.discovery, finalSettle: v.finalSettle }),
     }),
   );
   const lb = r.lookback;

@@ -5,6 +5,7 @@
 #                                    frames, visit workers), cs2f (the same with the Background settle), fs
 #                                    (v3_motion_s5, 1000 frames plus a 1000-frame Final settle). Compare two tags
 #                                    with `cmp_runs.py $ROOT/t0/<a>_<arm> $ROOT/t0/<b>_<arm>`.
+#                                    With EXTRA set (e.g. EXTRA="--observe-strips 3"), only the vw arm, with it.
 #   obsstrips.sh eq FRAMES SEED N    v3_motion_s5, FRAMES frames plus a FRAMES-frame Final settle, arms off and
 #                                    strips (--observe-strips N), untimed (deterministic); compare with
 #                                    `obsstrips_eq.py`.
@@ -26,9 +27,11 @@ case $1 in
 t0)
   TAG=$2; BIN=$3; T=$ROOT/t0
   C="--frames 4800 $D --slow-seed 1 --dump --no-heldout --no-signed --offered-fps 30 --lb-ms 5 --visit-workers 4 --pool 4"
-  run $T/${TAG}_vw $BIN sim $SIM_STATIC_S5 $T/${TAG}_vw $C --csettle 0 &
+  run $T/${TAG}_vw $BIN sim $SIM_STATIC_S5 $T/${TAG}_vw $C --csettle 0 $EXTRA &
+  [ -n "$EXTRA" ] && { wait; exit 0; }
   run $T/${TAG}_cs2f $BIN sim $SIM_STATIC_S5 $T/${TAG}_cs2f $C --csettle 0.667 --csettle-mode frames &
   wait
+  [ -n "$EXTRA" ] && exit 0
   run $T/${TAG}_fs $BIN sim $SIMV3_V3_MOTION_S5 $T/${TAG}_fs $D --frames 1000 --motion --slow-seed 1 \
     --lookback-drain 0 --settle-frames 1000 --settle-batch 16
   ;;

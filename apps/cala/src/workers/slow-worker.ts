@@ -10,6 +10,7 @@ import { initCalaWasm, SlowLoop } from '../lib/cala-wasm.ts';
 import { buildSlowLoop, SlowRunner, type SlowLoopLike } from '../lib/slow-runner.ts';
 import type { LookbackToSlow } from './lookback-types.ts';
 import type { FastToSlow, MainToSlow, SlowToMain, VisitToOwner } from './slow-types.ts';
+import type { StripToOwner } from './strip-types.ts';
 
 const workerScope = globalThis as unknown as {
   postMessage(msg: SlowToMain, transfer?: Transferable[]): void;
@@ -18,6 +19,8 @@ const workerScope = globalThis as unknown as {
 
 let port: MessagePort | null = null;
 let visits: MessagePort[] = [];
+/** The ports to the strip helpers (`?debug&obsstrips=N`; none: off). */
+let strips: MessagePort[] = [];
 /** The ports to the look-back workers, by index (runs with look-back only; see `SlowRunner`). */
 const lookbackPorts: (MessagePort | null)[] = [];
 let runner: SlowRunner | null = null;
@@ -89,8 +92,10 @@ workerScope.onmessage = (e) => {
   if (data.type !== 'connect') return;
   port?.close();
   for (const v of visits) v.close();
+  for (const h of strips) h.close();
   port = data.port;
   visits = data.visits ?? [];
+  strips = data.strips ?? [];
   const toFast = port;
   runner = new SlowRunner({
     // `new SlowLoop(..)` unless the run has look-back (`buildSlowLoop`).
@@ -98,6 +103,7 @@ workerScope.onmessage = (e) => {
     toFast,
     toMain: { postMessage: (m, t) => workerScope.postMessage(m, t) },
     visits,
+    strips,
     // Giving way inside an answer of the settle during Discover: a macrotask, unclamped.
     defer: (fn) => void pause().then(fn),
   });
@@ -115,6 +121,10 @@ workerScope.onmessage = (e) => {
   // Visit results do not queue behind batches of frames: a batch gives way
   // between frames while visits are out (`SlowRunner.handleAsync`). A visit
   // is only handed out once the module is ready, so its result needs no wait.
+  // Strip helpers' deltas go straight to the runner (a batch waits for them).
+  strips.forEach((h, i) => {
+    h.onmessage = (ev: MessageEvent<StripToOwner>) => r.handleStrip(i, ev.data);
+  });
   visits.forEach((v, i) => {
     v.onmessage = (ev: MessageEvent<VisitToOwner>) => {
       try {

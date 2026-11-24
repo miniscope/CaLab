@@ -68,6 +68,7 @@ export const KNOWN_FLAGS = [
   'lbpool',
   'needfirst',
   'csdelta',
+  'obsstrips',
   'smooth',
   'pipeline',
   'gpu',
@@ -88,6 +89,7 @@ const DEBUG_ONLY: ReadonlySet<string> = new Set([
   'lbpool',
   'needfirst',
   'csdelta',
+  'obsstrips',
   'pacefps',
   'smooth',
 ]);
@@ -112,6 +114,9 @@ function inEffect(name: string, value: string, p: URLSearchParams): boolean {
       return value !== '0';
     case 'csdelta':
       return lookbackOn && value !== '0';
+    // Strip helpers: a count; not with `csdelta` (App.tsx starts none then).
+    case 'obsstrips':
+      return Number(value) > 0 && !(p.has('csdelta') && p.get('csdelta') !== '0');
     case 'review':
       return p.has('compress');
     default:

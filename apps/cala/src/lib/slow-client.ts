@@ -16,6 +16,7 @@ import type {
   SlowToMain,
   VisitConnect,
 } from '../workers/slow-types.ts';
+import type { StripConnect } from '../workers/strip-types.ts';
 
 export interface SlowClient {
   /** Visit workers running the slow loop's tile visits. */
@@ -75,6 +76,12 @@ export function createSlowClient(
   visitWorkers = 0,
   makeVisitWorker: () => SlowWorkerLike = () =>
     new Worker(new URL('../workers/visit-worker.ts', import.meta.url), { type: 'module' }),
+  /** Strip helpers (`?debug&obsstrips=N`; experimental, 0: off). */
+  stripHelpers = 0,
+  makeStripWorker: () => SlowWorkerLike = () =>
+    new Worker(new URL('../workers/observe-helper-worker.ts', import.meta.url), {
+      type: 'module',
+    }),
 ): SlowClient {
   const worker = makeWorker();
   const channel = new MessageChannel();
@@ -93,8 +100,24 @@ export function createSlowClient(
     helpers.push(v);
     ports.push(ch.port1);
   }
-  const connect: SlowConnect = { type: 'connect', port: channel.port2, visits: ports };
-  worker.postMessage(connect, [channel.port2, ...ports]);
+  const stripPorts: MessagePort[] = [];
+  for (let i = 0; i < stripHelpers; i++) {
+    const h = makeStripWorker();
+    const ch = new MessageChannel();
+    h.onerror = (e) =>
+      onMessage({ type: 'error', session: -1, message: e.message || 'A strip helper crashed.' });
+    const c: StripConnect = { type: 'connect', port: ch.port2 };
+    h.postMessage(c, [ch.port2]);
+    helpers.push(h);
+    stripPorts.push(ch.port1);
+  }
+  const connect: SlowConnect = {
+    type: 'connect',
+    port: channel.port2,
+    visits: ports,
+    ...(stripPorts.length > 0 ? { strips: stripPorts } : {}),
+  };
+  worker.postMessage(connect, [channel.port2, ...ports, ...stripPorts]);
   void frames.connectSlow?.(channel.port1).catch((err: unknown) =>
     onMessage({
       type: 'error',

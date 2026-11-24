@@ -9,6 +9,8 @@
  */
 
 import type { WorkStatus } from '../lib/work-meter.ts';
+import type { StripCounters } from '../lib/strip-helpers.ts';
+import type { LiveSplit } from '../lib/slow-runner.ts';
 import type { LookbackStatus } from './lookback-types.ts';
 
 /**
@@ -231,6 +233,10 @@ export interface SlowStatus {
   lookback?: LookbackStatus;
   /** Busy and idle accounting by worker (cumulative; `lib/work-meter.ts`). Instrumentation only. */
   accounting?: WorkStatus;
+  /** The strip helpers' counters (`?debug&obsstrips=N`; absent when off). Instrumentation only. */
+  strips?: StripCounters;
+  /** Where the `live` duty's time goes (cumulative; `SlowRunner`'s `LiveSplit`). Instrumentation only. */
+  liveSplit?: LiveSplit;
   /**
    * With the final library of a run: each cell's split-half footprint noise,
    * `[id, noise, ...]` (`SlowLoop.footprintNoise`; absent in older builds).
@@ -282,6 +288,8 @@ export interface SlowConnect {
   type: 'connect';
   port: MessagePort;
   visits?: MessagePort[];
+  /** Ports to the strip helpers (`?debug&obsstrips=N`; absent: off). */
+  strips?: MessagePort[];
 }
 
 /**

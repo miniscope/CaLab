@@ -114,6 +114,15 @@
 //!                      `apply_settle_delta_next` before the frames go
 //!                      through `observe` without the statistics update;
 //!                      with --settle-observe full; `settle_delta.txt`)
+//!   --observe-strips N  the strip helpers' path (`SlowLoop::strips_begin`,
+//!                      the app's `?debug&obsstrips=N`): the footprint
+//!                      statistics of each batch the slow loop observes are
+//!                      summed by up to N row strips (here, one after the
+//!                      other) and added after the batch. A Final-settle
+//!                      request is one batch; Discover's batch is one with
+//!                      --visit-workers (visits come after it, as in the
+//!                      app), else each frame is its own (the visits between
+//!                      frames stay). `strips.txt` (with a settle).
 //!   --lookback-drain-rate F  look-back frames per drain step instead of
 //!                      R (bigger batches once Discover has ended)
 //!   --catchup X        reference arm: every X Discover frames give all
@@ -448,8 +457,8 @@ use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::discover::{
     CoreTest, EditScope, JointAdmit, JointSign, JointUpdate, LookBack as LbSched, LookbackConfig,
     LookbackNext, LookbackOrder, LookbackOutcome, LookbackReservoir, MergeRule, RefineGate,
-    SettleDeltaBuilder, SettleSched, SlowLoop, SlowLoopConfig, SupportRule, VisitResult,
-    VisitRunner, LB_BLOCK,
+    SettleContext, SettleDelta, SettleDeltaBuilder, SettleSched, SlowLoop, SlowLoopConfig,
+    SupportRule, VisitResult, VisitRunner, LB_BLOCK,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -933,6 +942,75 @@ impl SettleChange {
     }
 }
 
+/// `--observe-strips N` (0: off): the strip helpers' path for every batch
+/// the slow loop observes (`SlowLoop::strips_begin`; the app's
+/// `?debug&obsstrips=N`). Set once in `main`.
+static OBS_STRIPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `--observe-strips`: batches observed with strips and the ordinary way,
+/// and the bytes of contexts and deltas (`strips.txt`).
+static OBS_STRIPS_EVAL: std::sync::Mutex<[u64; 4]> = std::sync::Mutex::new([0; 4]);
+
+/// A frame for `observe_frames`: preprocessed, its solve, and the noise map
+/// to set after it.
+type ObserveFrame<'a> = (&'a [f32], &'a FrameTraces, Option<&'a Vec<f32>>);
+
+/// Feed `frames` (all solved with `lib`; each with the noise map to set
+/// after it, if any) through `observe`. With `--observe-strips N`, as the
+/// app's strip helpers do: a strip batch is begun, every job is summed here
+/// on its rows of the fitting frames (context and delta through bytes), the
+/// frames are observed without the statistics update and the deltas added.
+fn observe_frames(sl: &mut SlowLoop, lib: &Library, frames: &[ObserveFrame]) {
+    let n = OBS_STRIPS.load(std::sync::atomic::Ordering::Relaxed);
+    let jobs = if n > 0 && !frames.is_empty() {
+        sl.strips_begin(lib, frames.len() as u64, n).unwrap()
+    } else {
+        None
+    };
+    let observe_all = |sl: &mut SlowLoop| {
+        for (y, tr, noise) in frames {
+            sl.observe(y, lib, tr).unwrap();
+            if let Some(sigma) = noise {
+                sl.set_noise((*sigma).clone()).unwrap();
+            }
+        }
+    };
+    let Some(jobs) = jobs else {
+        observe_all(sl);
+        if n > 0 {
+            OBS_STRIPS_EVAL.lock().unwrap()[1] += 1;
+        }
+        return;
+    };
+    let keys = sl.strips_keys().to_vec();
+    let first = sl.frames();
+    let w = sl.dims().width;
+    let (wd, ht) = (sl.dims().width, sl.dims().height);
+    let mut deltas = Vec::with_capacity(jobs.len());
+    let mut bytes = [0u64; 2];
+    for j in &jobs {
+        let cb = j.ctx.to_bytes();
+        bytes[0] += cb.len() as u64;
+        let ctx = SettleContext::from_bytes(&cb).unwrap();
+        let mut b = SettleDeltaBuilder::new(wd, ht, sl.fov().to_vec(), ctx).unwrap();
+        for (i, (y, tr, _)) in frames.iter().enumerate() {
+            let key = first + i as u64;
+            if keys.binary_search(&key).is_ok() {
+                b.push(&y[j.row0 * w..j.row1 * w], lib, tr, key).unwrap();
+            }
+        }
+        let db = b.finish().to_bytes();
+        bytes[1] += db.len() as u64;
+        deltas.push(SettleDelta::from_bytes(&db).unwrap());
+    }
+    observe_all(sl);
+    sl.strips_apply(&deltas).unwrap();
+    let mut e = OBS_STRIPS_EVAL.lock().unwrap();
+    e[0] += 1;
+    e[2] += bytes[0];
+    e[3] += bytes[1];
+}
+
 /// `--settle-delta`: the settle request in progress. Its fitting frames
 /// (by the slow-loop index each will have, `first` + its place) are summed
 /// on `b`; every frame waits in `frames` (with the noise update due after
@@ -1034,6 +1112,10 @@ struct LookBack {
     full_observe: bool,
     /// `--settle-delta`: the request in progress.
     settle_delta: Option<SettleDeltaNext>,
+    /// `--observe-strips`: the settle request's frames, observed together
+    /// when it is done (one strip batch), and their library.
+    strip_buf: Vec<(Vec<f32>, FrameTraces, Option<Vec<f32>>)>,
+    strip_lib: Option<Arc<Library>>,
     /// `settle_checks.tsv` rows and the checkpoint libraries.
     settle_out: String,
     /// `--settle-delta`: `settle_delta.txt`.
@@ -1123,6 +1205,20 @@ impl CsCfg {
 }
 
 impl LookBack {
+    /// `--observe-strips`: observe the settle frames waiting (one strip
+    /// batch; see [`observe_frames`]).
+    fn flush_strips(&mut self, sl: &mut SlowLoop) {
+        let Some(lib) = self.strip_lib.take() else {
+            return;
+        };
+        let buf = std::mem::take(&mut self.strip_buf);
+        let frames: Vec<_> = buf
+            .iter()
+            .map(|(y, tr, n)| (&y[..], tr, n.as_ref()))
+            .collect();
+        observe_frames(sl, &lib, &frames);
+    }
+
     fn new(
         rate: f64,
         max_frames: usize,
@@ -1168,6 +1264,8 @@ impl LookBack {
             settle: SettleCfg::default(),
             full_observe: false,
             settle_delta: None,
+            strip_buf: Vec::new(),
+            strip_lib: None,
             settle_out: String::new(),
             settle_delta_report: String::new(),
             settle_libs: Vec::new(),
@@ -1670,11 +1768,11 @@ impl LookBack {
                     in_batch += 1;
                     steps_owed += cfg.steps_per_frame;
                     if fed.is_multiple_of(200) {
-                        match self
-                            .settle_delta
-                            .as_mut()
-                            .and_then(|sd| sd.frames.last_mut())
-                        {
+                        let last = match self.settle_delta.as_mut() {
+                            Some(sd) => sd.frames.last_mut(),
+                            None => self.strip_buf.last_mut(),
+                        };
+                        match last {
                             // Set after this frame is observed, as without the delta.
                             Some(last) => last.2 = Some(pre.noise().sigma()),
                             None => sl.set_noise(pre.noise().sigma()).unwrap(),
@@ -1687,6 +1785,7 @@ impl LookBack {
                     if let Some(sd) = self.settle_delta.as_mut() {
                         sd.flush(sl);
                     }
+                    self.flush_strips(sl);
                     if cfg.due_every > 0 && fed >= next_due {
                         sl.mark_all_due();
                         next_due += cfg.due_every;
@@ -1756,6 +1855,7 @@ impl LookBack {
                 }
             }
         }
+        self.flush_strips(sl);
         // A last round of visits on what the settle fed.
         sl.mark_all_due();
         sl.step(budget.saturating_mul(64)).unwrap();
@@ -1899,6 +1999,18 @@ impl LookBack {
                     }
                     sd.frames.push((self.y.clone(), tr, None));
                     sd.lib = Some(lib.clone());
+                }
+                None if OBS_STRIPS.load(std::sync::atomic::Ordering::Relaxed) > 0 => {
+                    // `--observe-strips`: observed with the request's other frames.
+                    if self
+                        .strip_lib
+                        .as_ref()
+                        .is_some_and(|l| l.version() != lib.version())
+                    {
+                        self.flush_strips(sl);
+                    }
+                    self.strip_buf.push((self.y.clone(), tr, None));
+                    self.strip_lib = Some(lib.clone());
                 }
                 None => sl.observe(&self.y, &lib, &tr).unwrap(),
             }
@@ -4012,9 +4124,26 @@ impl Timed {
                             r.set_noise(n.clone()).unwrap();
                         }
                     }
+                    // `--observe-strips` with visit workers: the batch is one
+                    // strip batch, as in the app (visits come after it).
+                    let strips = OBS_STRIPS.load(std::sync::atomic::Ordering::Relaxed) > 0
+                        && !self.runners.is_empty()
+                        && self.observe_ms.is_none()
+                        && frames
+                            .iter()
+                            .all(|f| f.2.version() == frames[0].2.version());
+                    if strips {
+                        let fr: Vec<_> = frames
+                            .iter()
+                            .map(|(y, tr, ..)| (&y[..], tr, None))
+                            .collect();
+                        observe_frames(sl, &frames[0].2, &fr);
+                    }
                     for (y, tr, l, tf) in &frames {
                         let o = sl.work();
-                        sl.observe(y, l, tr).unwrap();
+                        if !strips {
+                            sl.observe(y, l, tr).unwrap();
+                        }
                         if let Some(ms) = self.observe_ms {
                             extra += ms - (sl.work() - o) as f64 / self.units_per_ms;
                         }
@@ -5172,6 +5301,9 @@ fn main() {
     let units_per_ms: f64 =
         arg_value(&args, "--units-per-ms").map_or(2.0e6, |s| s.parse().unwrap());
     let observe_ms: Option<f64> = arg_value(&args, "--observe-ms").map(|s| s.parse().unwrap());
+    if let Some(n) = arg_value(&args, "--observe-strips") {
+        OBS_STRIPS.store(n.parse().unwrap(), std::sync::atomic::Ordering::Relaxed);
+    }
     let depth: usize = arg_value(&args, "--visit-depth").map_or(1, |s| s.parse().unwrap());
     let job_ms: f64 = arg_value(&args, "--job-ms").map_or(1.0, |s| s.parse().unwrap());
     let pool: usize = arg_value(&args, "--pool").map_or(2, |s| s.parse().unwrap());
@@ -6351,7 +6483,9 @@ fn main() {
                         for (yy, tt, ll, tf) in pending.drain(..) {
                             if forward {
                                 let a = Instant::now();
-                                sl.observe(&yy, &ll, &tt).unwrap();
+                                // (`--observe-strips`: a strip batch of one frame,
+                                // the visits between frames stay where they are.)
+                                observe_frames(sl, &ll, &[(&yy, &tt, None)]);
                                 slow_obs_s += a.elapsed().as_secs_f64();
                                 slow_rec.push(tf as u32);
                                 fwd_frames += 1;
@@ -6535,6 +6669,19 @@ fn main() {
                             n_px,
                         );
                         std::fs::write(out_dir.join("settle_checks.tsv"), &lbk.settle_out).unwrap();
+                        if OBS_STRIPS.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+                            let e = *OBS_STRIPS_EVAL.lock().unwrap();
+                            let msg = format!(
+                                "observe strips: {} batches with strips, {} the ordinary way; context {:.3} MB, delta {:.3} MB per batch; {:?}\n",
+                                e[0],
+                                e[1],
+                                e[2] as f64 / e[0].max(1) as f64 / 1e6,
+                                e[3] as f64 / e[0].max(1) as f64 / 1e6,
+                                sl.strip_stats()
+                            );
+                            print!("{msg}");
+                            std::fs::write(out_dir.join("strips.txt"), msg).unwrap();
+                        }
                         if !lbk.settle_delta_report.is_empty() {
                             std::fs::write(
                                 out_dir.join("settle_delta.txt"),
