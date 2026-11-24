@@ -489,6 +489,8 @@ await page.evaluate((withRelease) => {
               refines: st.counters.refines,
               visits: st.counters.visits,
               adds: st.counters.adds,
+              liveSplit: st.liveSplit ?? null,
+              strips: st.strips ?? null,
             }
           : null,
       };
