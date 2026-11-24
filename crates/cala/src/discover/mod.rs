@@ -2689,23 +2689,10 @@ impl SlowLoop {
             }
             let c = traces.traces[slot];
             let level = if ring { traces.background[slot] } else { 0.0 };
-            self.rbuf.clear();
-            self.rbuf.extend(st.pix.iter().map(|&p| {
-                let y = frame[p as usize];
-                if y.is_finite() {
-                    y - self.model[p as usize] - level
-                } else {
-                    // Missing: zero weight in the statistics (NaN marks it;
-                    // `FpStats::push` leaves the pixel's moments alone).
-                    f32::NAN
-                }
-            }));
-            if c != 0.0 {
-                for (r, &v) in self.rbuf.iter_mut().zip(&st.col) {
-                    *r += v * c;
-                }
-            }
-            st.push(&self.rbuf, [c, c], c, w);
+            // Missing pixels (non-finite `y`) get zero weight in the
+            // statistics (NaN marks them; `FpStats::push` leaves their
+            // moments alone).
+            st.push_frame(frame, &self.model, level, c, w, &mut self.rbuf);
             work += st.pix.len() as u64 * 3;
         }
         #[cfg(feature = "diagnostics")]

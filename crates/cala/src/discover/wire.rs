@@ -416,6 +416,7 @@ impl<'a> Reader<'a> {
             pm: None,
             half_pm: None,
             fast: None,
+            runs: Vec::new(),
         })
         .and_then(|mut s: FpStats| {
             if s.cls.len() != s.pix.len() {
