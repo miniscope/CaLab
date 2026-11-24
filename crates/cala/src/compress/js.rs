@@ -6,21 +6,25 @@
 //! each tile's frames go to `TileCompressor.compress`, so only one tile at a
 //! time is copied into the WASM heap. The factor file is `factorHeader`, then
 //! per tile a u32 byte length and `TileFactors.toBytes()`; `FactorWindow`
-//! reads it back to rebuild frames.
+//! reads it back to rebuild frames, and `FactorExtractor` solves a library's
+//! traces from it without rebuilding any.
 //!
 //! `HistoryReview` (see `review.rs`) keeps the factors of every window and
 //! scans them a few grid rows per call, so its worker can read messages
 //! between calls.
 
+use std::sync::Arc;
+
 use wasm_bindgen::prelude::*;
 
 use super::blend::{grid_of, BlendLayout, Tiling};
+use super::project::{never_valid_under, FactorExtractor, WindowProjector};
 use super::review::{
     candidates, candidates_to_wire, scan_band, scan_rows, KnownCell, ReviewConfig, SpotStats,
 };
 use super::{compress_tile, quantize_tiles, CompressConfig, TileFactors, WindowFactors};
 use crate::preprocess::Dims;
-use crate::trace::Library;
+use crate::trace::{FrameTraces, Library, SolverConfig, TraceState};
 
 fn js_err(func: &str, e: impl std::fmt::Display) -> JsError {
     JsError::new(&format!("{func}: {e}"))
@@ -318,6 +322,166 @@ impl JsFactorWindow {
         }
         self.inner.reconstruct_range(t0, count, out);
         Ok(())
+    }
+}
+
+/// Extract on factors: a library's traces from factor files, without
+/// rebuilding a frame. A window whose pixels without data lie under a
+/// functional (`neverValidUnder`) is solved on frames instead (`solveFrames`),
+/// with the same engine.
+#[wasm_bindgen(js_name = FactorExtractor)]
+pub struct JsFactorExtractor {
+    inner: FactorExtractor,
+    ids: Vec<u32>,
+    /// The open window and the library's rows on it; they are replaced together.
+    window: Option<(WindowFactors, WindowProjector)>,
+    /// The open window has a pixel without data under a functional.
+    never: bool,
+    /// The signed traces of the last solve (empty unless `setSigned(true)`).
+    signed: Vec<f32>,
+}
+
+#[wasm_bindgen(js_class = FactorExtractor)]
+impl JsFactorExtractor {
+    /// `library`: `TraceLibrary.toBytes()`. `tol` (noise units) and
+    /// `max_sweeps`: 0 = defaults.
+    #[wasm_bindgen(constructor)]
+    pub fn new(library: &[u8], tol: f32, max_sweeps: u32) -> Result<JsFactorExtractor, JsError> {
+        console_error_panic_hook::set_once();
+        let lib = Library::from_bytes(library).map_err(|e| js_err("FactorExtractor", e))?;
+        let mut cfg = SolverConfig::default();
+        if tol > 0.0 {
+            cfg.tol = tol;
+        }
+        if max_sweeps > 0 {
+            cfg.max_sweeps = max_sweeps;
+        }
+        let ids = lib.ids().iter().map(|&v| v as u32).collect();
+        let inner =
+            FactorExtractor::new(Arc::new(lib), cfg).map_err(|e| js_err("FactorExtractor", e))?;
+        Ok(JsFactorExtractor {
+            inner,
+            ids,
+            window: None,
+            never: false,
+            signed: Vec::new(),
+        })
+    }
+
+    /// Cell ids in trace order.
+    pub fn ids(&self) -> Vec<u32> {
+        self.ids.clone()
+    }
+
+    /// Also compute the signed (unclipped) traces (`lastSigned`).
+    #[wasm_bindgen(js_name = setSigned)]
+    pub fn set_signed(&mut self, on: bool) {
+        self.inner.engine_mut().set_signed(on);
+    }
+
+    /// Start the next frame's solve cold, as a new extractor would.
+    #[wasm_bindgen(js_name = coldStart)]
+    pub fn cold_start(&mut self) -> Result<(), JsError> {
+        self.inner
+            .engine_mut()
+            .restore(&TraceState::default())
+            .map_err(|e| js_err("FactorExtractor.coldStart", e))
+    }
+
+    /// Read a factor file and prepare its solve; returns the window's frames.
+    pub fn open(&mut self, bytes: &[u8]) -> Result<u32, JsError> {
+        // A failed open leaves no window behind: `solve` then says so.
+        self.window = None;
+        let wf = WindowFactors::from_bytes(bytes)
+            .ok_or_else(|| js_err("FactorExtractor.open", "truncated or corrupt factor file"))?;
+        let proj = WindowProjector::new(self.inner.library(), &wf)
+            .map_err(|e| js_err("FactorExtractor.open", e))?;
+        self.never = never_valid_under(self.inner.library(), &wf);
+        let frames = wf.frames as u32;
+        self.window = Some((wf, proj));
+        Ok(frames)
+    }
+
+    /// The open window has a pixel without data under a cell, its moat, a ring
+    /// or a basis map: solve it on rebuilt frames (`solveFrames`).
+    #[wasm_bindgen(js_name = neverValidUnder)]
+    pub fn never_valid_under(&self) -> bool {
+        self.never
+    }
+
+    /// Stream index of the open window's first frame (0 before `open`).
+    #[wasm_bindgen(getter)]
+    pub fn start(&self) -> f64 {
+        self.window.as_ref().map_or(0.0, |w| w.0.start as f64)
+    }
+
+    /// Solve frames `t0..t0 + count` of the open window; returns
+    /// `count x cells` traces, frame after frame, in the library's id order.
+    /// The traces carry no frame index: the first row is frame `t0` of the
+    /// window, whose stream index is `start + t0`.
+    pub fn solve(&mut self, t0: u32, count: u32) -> Result<Vec<f32>, JsError> {
+        let Some((wf, proj)) = self.window.as_ref() else {
+            return Err(js_err("FactorExtractor.solve", "no window is open"));
+        };
+        // Checked here too so that a wild `count` never sizes the buffer.
+        let end = (t0 as usize).saturating_add(count as usize);
+        if end > wf.frames {
+            return Err(js_err(
+                "FactorExtractor.solve",
+                format!("frames {t0}..{end} of {}", wf.frames),
+            ));
+        }
+        let Some(len) = (count as usize).checked_mul(self.ids.len()) else {
+            return Err(js_err(
+                "FactorExtractor.solve",
+                format!("{count} frames of {} cells", self.ids.len()),
+            ));
+        };
+        let mut out = Vec::with_capacity(len);
+        let signed = &mut self.signed;
+        signed.clear();
+        self.inner
+            .solve(wf, proj, t0 as usize, count as usize, |tr| {
+                out.extend_from_slice(&tr.traces);
+                signed.extend_from_slice(&tr.signed);
+            })
+            .map_err(|e| js_err("FactorExtractor.solve", e))?;
+        Ok(out)
+    }
+
+    /// Solve `count` frames (`count x pixels`, frame after frame; NaN for a
+    /// missing pixel) with the same engine, its missing-pixel fill included.
+    #[wasm_bindgen(js_name = solveFrames)]
+    pub fn solve_frames(&mut self, frames: &[f32], count: u32) -> Result<Vec<f32>, JsError> {
+        let px = self.inner.library().dims().pixels();
+        let Some(n) = (count as usize)
+            .checked_mul(px)
+            .filter(|&n| n == frames.len())
+        else {
+            return Err(js_err(
+                "FactorExtractor.solveFrames",
+                format!("{} values for {count} frames of {px} pixels", frames.len()),
+            ));
+        };
+        let mut out = Vec::with_capacity((count as usize).saturating_mul(self.ids.len()));
+        self.signed.clear();
+        let mut tr = FrameTraces::default();
+        for frame in frames[..n].chunks(px) {
+            self.inner
+                .engine_mut()
+                .process_into(frame, &mut tr)
+                .map_err(|e| js_err("FactorExtractor.solveFrames", e))?;
+            out.extend_from_slice(&tr.traces);
+            self.signed.extend_from_slice(&tr.signed);
+        }
+        Ok(out)
+    }
+
+    /// The signed (unclipped) traces of the last `solve` or `solveFrames`,
+    /// laid out as its traces (empty unless `setSigned(true)`).
+    #[wasm_bindgen(js_name = lastSigned)]
+    pub fn last_signed(&self) -> Vec<f32> {
+        self.signed.clone()
     }
 }
 

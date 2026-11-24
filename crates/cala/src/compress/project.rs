@@ -463,6 +463,53 @@ impl FactorExtractor {
     }
 }
 
+/// Whether a pixel without a valid sample in the window
+/// ([`WindowFactors::never_valid`]) is read by one of `lib`'s functionals: a
+/// cell's support, a moat block of the field of view, a ring, or a basis map.
+/// The frame engine fills such a pixel from its model as a missing pixel; the
+/// projector reads its stored mean, 0. The app solves such a window on
+/// rebuilt frames instead. A window of another frame size counts as such a
+/// window (the projector refuses it anyway).
+pub fn never_valid_under(lib: &Library, wf: &WindowFactors) -> bool {
+    if lib.dims() != wf.dims {
+        return true;
+    }
+    let never = wf.never_valid();
+    let pix: Vec<u32> = never
+        .iter()
+        .enumerate()
+        .filter(|(_, &n)| n)
+        .map(|(q, _)| q as u32)
+        .collect();
+    if pix.is_empty() {
+        return false;
+    }
+    let n = lib.len();
+    if (0..n).any(|i| lib.core_col(i).0.iter().any(|&q| never[q as usize])) {
+        return true;
+    }
+    if lib.grid_len() > 0 {
+        let fov = lib.fov();
+        let mut hit = vec![false; lib.grid_len()];
+        for &q in &pix {
+            if fov[q as usize] != 0 {
+                hit[lib.block_of(q)] = true;
+            }
+        }
+        if (0..n).any(|i| lib.lowpass(i).0.iter().any(|&b| hit[b as usize])) {
+            return true;
+        }
+    }
+    let n_px = wf.dims.pixels();
+    match &lib.bg {
+        BgTerms::Basis { k, maps, .. } => pix
+            .iter()
+            .any(|&q| (0..*k).any(|a| maps[a * n_px + q as usize] != 0.0)),
+        BgTerms::Ring { ring_pix, .. } => ring_pix.iter().any(|&q| never[q as usize]),
+        BgTerms::None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1103,5 +1150,88 @@ mod tests {
         let proj = WindowProjector::new(&lib, &wf).unwrap();
         assert!((proj.min_valid()[0] - 0.75).abs() < 1e-6);
         assert!(proj.min_valid()[1..].iter().all(|&v| v == 1.0));
+    }
+
+    #[test]
+    fn never_valid_under_finds_a_pixel_without_data_under_a_functional() {
+        use std::collections::HashSet;
+        let lib = library(BackgroundModel::None, 5);
+        let frames = 40;
+        assert!(!never_valid_under(
+            &lib,
+            &window(Tiling::Offset, frames, None)
+        ));
+        // In cell 0's support, never valid; then valid in part of the window.
+        let (pix, _) = lib.core_col(0);
+        let q = pix[pix.len() / 2] as usize;
+        assert!(never_valid_under(
+            &lib,
+            &window(Tiling::Offset, frames, Some((q, frames)))
+        ));
+        assert!(!never_valid_under(
+            &lib,
+            &window(Tiling::Offset, frames, Some((q, frames / 2)))
+        ));
+        // In a moat block of the field of view, in no support.
+        let support: HashSet<u32> = (0..lib.len())
+            .flat_map(|i| lib.core_col(i).0.to_vec())
+            .collect();
+        let moat: HashSet<usize> = (0..lib.len())
+            .flat_map(|i| {
+                lib.lowpass(i)
+                    .0
+                    .iter()
+                    .map(|&b| b as usize)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let off_support = |q: usize| !support.contains(&(q as u32));
+        let in_moat = (0..W * H)
+            .find(|&q| {
+                off_support(q) && lib.fov()[q] != 0 && moat.contains(&lib.block_of(q as u32))
+            })
+            .expect("a pixel in a moat block");
+        assert!(never_valid_under(
+            &lib,
+            &window(Tiling::Offset, frames, Some((in_moat, frames)))
+        ));
+        // Under no functional.
+        let outside = (0..W * H)
+            .find(|&q| off_support(q) && !moat.contains(&lib.block_of(q as u32)))
+            .expect("a pixel under no functional");
+        assert!(!never_valid_under(
+            &lib,
+            &window(Tiling::Offset, frames, Some((outside, frames)))
+        ));
+        // A ring reads it.
+        let ring = library(models()[2].clone(), 5);
+        let BgTerms::Ring { ring_pix, .. } = &ring.bg else {
+            panic!("a ring model");
+        };
+        let rq = ring_pix[0] as usize;
+        assert!(never_valid_under(
+            &ring,
+            &window(Tiling::Offset, frames, Some((rq, frames)))
+        ));
+    }
+
+    #[test]
+    fn a_cold_start_solves_a_window_as_a_new_extractor_does() {
+        let lib = Arc::new(library(models()[2].clone(), 5));
+        let wf = window(Tiling::Offset, 60, None);
+        let proj = WindowProjector::new(&lib, &wf).unwrap();
+        let solve = |x: &mut FactorExtractor| {
+            let mut out = Vec::new();
+            x.solve(&wf, &proj, 0, 60, |t| out.extend_from_slice(&t.traces))
+                .unwrap();
+            out
+        };
+        let mut a = FactorExtractor::new(lib.clone(), SolverConfig::default()).unwrap();
+        solve(&mut a);
+        a.engine_mut()
+            .restore(&crate::trace::TraceState::default())
+            .unwrap();
+        let mut b = FactorExtractor::new(lib, SolverConfig::default()).unwrap();
+        assert_eq!(solve(&mut a), solve(&mut b));
     }
 }
