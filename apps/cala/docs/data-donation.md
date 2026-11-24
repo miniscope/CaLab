@@ -214,7 +214,7 @@ the main project, which has no donation tables.
 | `create`           | requires and validates `sharing` and the four subject fields (same rules as the CHECKs); derives `license`                  |
 | `ingest_published` | **new**, lab (ingest token): `{donation_id, dandi_path}` for an `ingested`, `public` row → `published`, sets `published_at` |
 | `ingest_list`      | also returns `sharing` and the subject fields, so the lab side never has to infer them                                      |
-| `withdraw`         | unchanged (until ingested); later requests come in as a GitHub issue                                                        |
+| `withdraw`         | unchanged (until ingested); later requests go to the CaLab team                                                             |
 
 The new-upload notification email names the sharing choice.
 
