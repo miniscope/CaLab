@@ -27,8 +27,12 @@ import { APPLY, GEMM, GRAM, TILE_ROWS } from './gpu-compress-kernels.ts';
 export const GPU_WINDOW_LADDER: readonly number[] = [600];
 /** Tiles sketched together (slots of the work buffers). */
 export const GPU_TILE_BATCH = 12;
-/** Sketch columns the work buffers hold. */
-export const GPU_MAX_STRIDE = 128;
+/**
+ * Sketch columns the work buffers hold: the largest sketch a tile can need
+ * (`max_rank` 300 + 10 oversamples), rounded up to 64. At 128, real V4 tiles
+ * grew past it and every window gave the run's factors up (24 Nov check).
+ */
+export const GPU_MAX_STRIDE = 320;
 /** Frames per ring buffer (150 x 600 x 600 x 2 bytes = 108 MB at 600 px). */
 export const GPU_RING_BLOCK = 150;
 
@@ -487,7 +491,7 @@ class GpuCompressor implements GpuCompressorLike {
     device.queue.writeBuffer(bufs.omega, 0, om);
 
     const temp: GPUBuffer[] = [];
-    const run = { n, t, stride, ls, segments, temp };
+    const run = { n, t, stride, ls, idx, segments, temp };
     device.pushErrorScope('validation');
     device.pushErrorScope('out-of-memory');
     let q: Float32Array;
@@ -584,7 +588,15 @@ class GpuCompressor implements GpuCompressorLike {
       await bufs.readG.mapAsync(MAP_MODE_READ, 0, gBytes);
       const g = new Float32Array(bufs.readG.getMappedRange(0, gBytes).slice(0));
       bufs.readG.unmap();
-      device.queue.writeBuffer(bufs.rinv, 0, gpuData(cholInvUpperBatch(g, stride, run.ls)));
+      let rinv: Float32Array;
+      try {
+        rinv = cholInvUpperBatch(g, stride, run.ls);
+      } catch (err) {
+        throw new Error(`${errorMessage(err)}; ${gramReport(g, stride, run.ls, run.idx, m)}`, {
+          cause: err,
+        });
+      }
+      device.queue.writeBuffer(bufs.rinv, 0, gpuData(rinv));
       enc = device.createCommandEncoder();
       pass = enc.beginComputePass();
       pass.setPipeline(pipes.apply);
@@ -631,7 +643,39 @@ interface Run {
   t: number;
   stride: number;
   ls: Uint32Array;
+  /** The layout's tile of each slot. */
+  idx: number[];
   segments: RingSegment[];
   /** Uniform buffers to destroy once the batch is read back. */
   temp: GPUBuffer[];
+}
+
+const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/**
+ * Why CholeskyQR may have refused a batch: per slot whose Gram matrix is all
+ * zero or not finite, its tile, sketch columns and trace (the matrix's rows `m`).
+ */
+export function gramReport(
+  g: Float32Array,
+  stride: number,
+  ls: ArrayLike<number>,
+  idx: number[],
+  m: number,
+): string {
+  const bad: string[] = [];
+  for (let s = 0; s < ls.length; s++) {
+    const l = ls[s];
+    let trace = 0;
+    let nonFinite = 0;
+    for (let i = 0; i < l; i++)
+      for (let j = 0; j < l; j++) {
+        const v = g[s * stride * stride + i * stride + j];
+        if (!Number.isFinite(v)) nonFinite++;
+        else if (i === j) trace += v;
+      }
+    if (nonFinite > 0 || !(trace > 0))
+      bad.push(`tile ${idx[s]} (l ${l}, ${m} rows): trace ${trace}, ${nonFinite} not finite`);
+  }
+  return bad.length > 0 ? bad.join('; ') : 'every Gram matrix finite with a positive trace';
 }

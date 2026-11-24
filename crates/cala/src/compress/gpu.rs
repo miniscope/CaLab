@@ -295,6 +295,30 @@ mod tests {
         }
     }
 
+    /// A tile with nothing to sketch (constant, or never valid in the
+    /// window: V4's corners outside the lens) has an all-zero Gram matrix;
+    /// the GPU path must give `compress_tile`'s tile, not refuse it.
+    #[test]
+    fn a_tile_without_variance_gives_compress_tiles_factors() {
+        let (w, h, t) = (16, 16, 60);
+        let cfg = CompressConfig::default();
+        for raw in [
+            vec![quantize(7.5, 64.0); w * h * t],
+            vec![MISSING; w * h * t],
+        ] {
+            let cpu = compress_tile(&raw, t, w * h, &cfg, 3);
+            let gpu = via_gpu_path(&raw, w, h, t, &cfg, 3, None);
+            assert_eq!((gpu.rank, gpu.svd_rank), (cpu.rank, cpu.svd_rank));
+            assert_eq!(gpu.mean, cpu.mean);
+            assert_eq!(gpu.valid, cpu.valid);
+            assert_eq!(gpu.discarded, cpu.discarded);
+            assert_eq!((gpu.energy, gpu.kept_energy), (0.0, 0.0));
+            assert_eq!(cpu.kept_energy, 0.0);
+            assert!(gpu.spatial.iter().chain(&cpu.spatial).all(|&v| v == 0.0));
+            assert!(gpu.temporal.iter().chain(&cpu.temporal).all(|&v| v == 0.0));
+        }
+    }
+
     #[test]
     fn a_tile_whose_tail_passes_grows_and_draws_on() {
         // k0 = 2 forces growth on a 5-blob tile.

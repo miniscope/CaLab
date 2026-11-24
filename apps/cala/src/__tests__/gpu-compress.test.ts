@@ -1,6 +1,9 @@
 /// <reference types="@webgpu/types" />
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { cholInvUpperBatch, GpuTileJob, WindowStats } from '../lib/cala-wasm.ts';
 import {
+  gramReport,
+  GPU_MAX_STRIDE,
   GPU_RING_BLOCK,
   GPU_WINDOW_LADDER,
   GpuSketchTooLarge,
@@ -10,6 +13,7 @@ import {
   ringSegments,
   type WindowStatsLike,
 } from '../lib/gpu-compress.ts';
+import { initTestWasm } from './wasm-test.ts';
 
 describe('RingClock', () => {
   it('maps stream frames to slots and refuses to overwrite a window not yet compressed', () => {
@@ -147,7 +151,7 @@ describe('openGpuCompressor', () => {
 
   it('gives up a window whose sketch outgrows the GPU buffers', async () => {
     const big = {
-      l: () => 140,
+      l: () => GPU_MAX_STRIDE + 1,
       nIter: () => 2,
       omega: () => new Float32Array(0),
       finish: () => undefined,
@@ -267,3 +271,44 @@ function fakeGpu(ok: (ringBytes: number) => boolean): {
     dispatches,
   };
 }
+
+describe('CholeskyQR of a batch', () => {
+  beforeAll(initTestWasm);
+
+  it("gives a zero R⁻¹ for a tile without variance (V4's dark corners) and names a refused one", () => {
+    const stride = 4;
+    // Slot 0: the identity on its first 2 columns; slot 1: all zero (l 3).
+    const g = new Float32Array(2 * stride * stride);
+    g[0] = 1;
+    g[stride + 1] = 1;
+    const r = cholInvUpperBatch(g, stride, Uint32Array.from([2, 3]));
+    expect(r[0]).toBeCloseTo(1, 6);
+    expect(r[stride + 1]).toBeCloseTo(1, 6);
+    expect(r.subarray(stride * stride).every((v) => v === 0)).toBe(true);
+    // Not finite: refused, and the report names the tile.
+    const bad = g.slice();
+    bad[stride * stride] = NaN;
+    expect(() => cholInvUpperBatch(bad, stride, Uint32Array.from([2, 3]))).toThrow(
+      /block 1 is not positive definite/,
+    );
+    expect(gramReport(bad, stride, [2, 3], [7, 9], 4096)).toBe(
+      'tile 9 (l 3, 4096 rows): trace 0, 1 not finite',
+    );
+    expect(gramReport(g, stride, [2, 3], [7, 9], 4096)).toContain('tile 9');
+  });
+});
+
+describe('the GPU work buffers', () => {
+  beforeAll(initTestWasm);
+
+  it('hold the largest sketch a tile can grow to (a 64 x 64 tile, a window of 600, rank 300 before)', () => {
+    const stats = new WindowStats(64, 64);
+    stats.push(new Int16Array(600 * 64 * 64));
+    // A previous rank at the cap starts the sketch at the cap: `max_rank` + oversamples.
+    const job = new GpuTileJob(stats, 64, 0, 0, 64, 64, 1, 300);
+    expect(job.l()).toBe(310);
+    expect(Math.ceil(job.l() / 64) * 64).toBeLessThanOrEqual(GPU_MAX_STRIDE);
+    job.free();
+    stats.free();
+  });
+});

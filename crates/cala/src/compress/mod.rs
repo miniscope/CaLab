@@ -1224,9 +1224,15 @@ pub fn omega_draws(seed: u64, t: usize, skip: usize, l: usize) -> Vec<f32> {
 /// `stride x stride`, row-major), as `stride x stride` with zeros outside
 /// `l x l`: CholeskyQR's step. A non-positive pivot retries with a diagonal
 /// shift of `1e-10`, `1e-8`, ... `1e-2` times the trace; `None` if all fail.
+/// An all-zero `G` (the sketch of a tile without variance: constant, or
+/// never valid in the window) gives an all-zero `R⁻¹`, so its `Q` is 0 and
+/// the tile finishes as [`compress_tile`]'s does, with every singular value 0.
 pub fn chol_inv_upper(g: &[f32], stride: usize, l: usize) -> Option<Vec<f32>> {
     debug_assert!(l <= stride && g.len() >= stride * stride);
     let tr: f64 = (0..l).map(|i| f64::from(g[i * stride + i])).sum();
+    if tr == 0.0 && (0..l).all(|i| g[i * stride..i * stride + l].iter().all(|&v| v == 0.0)) {
+        return Some(vec![0.0f32; stride * stride]);
+    }
     'shifts: for shift in [0.0, 1e-10, 1e-8, 1e-6, 1e-4, 1e-2] {
         // Upper-triangular R, row by row.
         let mut r = vec![0.0f64; l * l];
