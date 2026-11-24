@@ -271,7 +271,12 @@ async function handle(req: FrameRequest): Promise<void> {
             backend,
             cells?.compress && compressPort
               ? new CompressFeed(
-                  { width: setup.width, height: setup.height, session: cells.session },
+                  {
+                    width: setup.width,
+                    height: setup.height,
+                    session: cells.session,
+                    ...(cells.compressTiling ? { tiling: cells.compressTiling } : {}),
+                  },
                   compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
                 )
               : null,

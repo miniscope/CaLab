@@ -23,6 +23,7 @@ import { ASSUMED_FPS } from './lib/miniscope-meta.ts';
 import type { QcSnapshot } from './lib/qc.ts';
 import { createCompressClient } from './lib/compress-client.ts';
 import { createCompressStore } from './lib/compress-store.ts';
+import { FACTORS_REVIEW_OFF } from './lib/factor-run.ts';
 import { createPass2Store, replayBlocked } from './lib/pass2-store.ts';
 import {
   createStageLog,
@@ -139,7 +140,13 @@ const App: Component = () => {
   const visits = params.get('visits');
   // `?review` (with `?compress`): the history review, every 8 compressed windows
   // (`?review=N`: every N), in a worker of its own. One core is left for it.
-  const reviewWindows = params.has('compress') ? reviewEvery(params.get('review')) : null;
+  // `?factors` (experimental): a live stream settles and extracts on the factors Discover
+  // writes; it turns compression on by itself. A recording runs as with `?compress`.
+  const factors = params.has('factors');
+  const compressOn = params.has('compress') || factors;
+  if (factors && params.has('review')) console.warn(FACTORS_REVIEW_OFF);
+  const reviewWindows =
+    params.has('compress') && !factors ? reviewEvery(params.get('review')) : null;
   const slow = createSlowClient(
     client,
     (msg) => cells.onSlowMessage(msg),
@@ -151,7 +158,7 @@ const App: Component = () => {
   // `?noqc`: run without online quality control (to measure its cost).
   // `?compress`: also compress the preprocessed frames into low-rank factors, window by
   // window, in a worker of its own (experimental; windows and factors are files in OPFS).
-  const compress = params.has('compress') ? createCompressStore(cells) : undefined;
+  const compress = compressOn ? createCompressStore(cells) : undefined;
   // The review worker gets the factors from the compress worker; the cells it
   // finds go to the slow loop, which takes them on probation.
   const review =
@@ -250,6 +257,7 @@ const App: Component = () => {
   else pipeline.setCsettleCeiling(speed.cap);
   // Look-back (with its Final settle) is on by default for recordings; `?lookback=0` turns it off.
   if (params.get('lookback') === '0') pipeline.setLookback(false);
+  if (factors) pipeline.setFactors(true);
   // Background settle (settle during Discover) is on under look-back whenever the target is
   // below Max; `csettle=0` turns it off, `csettle=yield` or `csettle=yieldN` feeds each answer
   // N frames at a time (1 by default), `csrate=1|0.5` lowers the cap from 2 re-read frames

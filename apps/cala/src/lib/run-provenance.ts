@@ -74,6 +74,7 @@ export const KNOWN_FLAGS = [
   'noqc',
   'visits',
   'compress',
+  'factors',
   'review',
   'pass2',
   'live',
@@ -104,7 +105,7 @@ function inEffect(name: string, value: string, p: URLSearchParams): boolean {
     case 'needfirst':
       return value !== '0';
     case 'review':
-      return p.has('compress');
+      return p.has('compress') && !p.has('factors');
     default:
       return true;
   }

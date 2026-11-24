@@ -84,7 +84,12 @@ function handle(msg: StageMsg): void {
         traceBackend,
         cells?.compress && compressPort
           ? new CompressFeed(
-              { width: msg.fast.width, height: msg.fast.height, session: cells.session },
+              {
+                width: msg.fast.width,
+                height: msg.fast.height,
+                session: cells.session,
+                ...(cells.compressTiling ? { tiling: cells.compressTiling } : {}),
+              },
               compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
             )
           : null,

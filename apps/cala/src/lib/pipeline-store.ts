@@ -17,6 +17,7 @@ import {
 } from './work-meter.ts';
 import type { CellStore } from './cell-store.ts';
 import type { CompressStore } from './compress-store.ts';
+import { factorRunPlan } from './factor-run.ts';
 import {
   flatFieldKey,
   initialFlatFieldState,
@@ -220,6 +221,8 @@ export function createPipelineStore(
    */
   const [lookback, setLookback] = createSignal(true);
   const [lookbackRun, setLookbackRun] = createSignal(false);
+  const [factors, setFactors] = createSignal(false);
+  const [factorRun, setFactorRun] = createSignal(false);
   /**
    * Settle during Discover ("Background settle", under look-back; runs only
    * while the target is below Max, at the settle governor's rate): on (the
@@ -981,6 +984,7 @@ export function createPipelineStore(
     if (lookbackSession) lookbackFeed?.reset(lookbackSession);
     lookbackSession = 0;
     setLookbackRun(false);
+    setFactorRun(false);
     record = new RunRecord();
     pauseClock.reset();
     meter = new ThroughputMeter();
@@ -1055,7 +1059,14 @@ export function createPipelineStore(
       });
       // Look-back (experimental): from this start on, if the recording allows it.
       const lb = lookback() && discover() && lookbackFeed?.begin(session) === true;
-      runLevel = lb ? finalSettleLevelSig() : FINAL_SETTLE_LEVEL_DEFAULT;
+      const runPlan = factorRunPlan({
+        live: flat.identity?.()?.live === true,
+        factors: factors(),
+        compress: compress !== undefined,
+        discover: discover(),
+      });
+      setFactorRun(runPlan.factorSettle);
+      runLevel = lb || runPlan.factorSettle ? finalSettleLevelSig() : FINAL_SETTLE_LEVEL_DEFAULT;
       if (lb) {
         lookbackSession = session;
         setLookbackRun(true);
@@ -1083,7 +1094,16 @@ export function createPipelineStore(
           qc,
           residual: residual(),
           ...(forwardBuffers ? { forwardBuffers } : {}),
-          ...(compress ? { compress: true } : {}),
+          ...(runPlan.compress
+            ? {
+                compress: true,
+                ...(runPlan.compress !== 'plain' ? { compressTiling: runPlan.compress } : {}),
+              }
+            : {}),
+          ...(runPlan.factorSettle ? { factorSettle: true } : {}),
+          ...(runPlan.factorSettle && FINAL_SETTLE_LEVELS[finalSettleLevelSig()].fraction < 1
+            ? { settleFraction: FINAL_SETTLE_LEVELS[finalSettleLevelSig()].fraction }
+            : {}),
         },
         undefined,
         seed ? { seed } : undefined,
@@ -1218,6 +1238,8 @@ export function createPipelineStore(
      */
     lookback,
     setLookback,
+    setFactors,
+    factorRun,
     // (Not `??`: `blocked()` returns null when look-back can run.)
     lookbackBlocked: () =>
       lookbackFeed ? lookbackFeed.blocked() : 'Look-back is not available here.',
