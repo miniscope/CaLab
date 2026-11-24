@@ -6,6 +6,7 @@
  * adds recordings behind `?factors=file`.
  */
 import type { CompressTiling } from '../workers/compress-types.ts';
+import type { StageRun } from './run-stages.ts';
 
 /** The tiling a factor run compresses on (two offset grids: no tile-line jump). */
 export const FACTOR_TILING: CompressTiling = 'offset';
@@ -55,3 +56,32 @@ export const FACTORS_REVIEW_OFF =
 /** The Results note of a `?factors` stream (the plain stream says `LIVE_NOTE`). */
 export const FACTORS_LIVE_NOTE =
   "With ?factors, a live stream settles and extracts on the factors Discover wrote during the stream (there is no file to re-read). The export keeps the live traces beside Extract's.";
+
+/** `meta_json.notes` of a `?factors=file` recording: what the settle and Extract read. */
+export function fileFactorNotes(
+  stages: readonly Pick<StageRun, 'stage' | 'settleSource' | 'source'>[],
+): string[] {
+  const d = [...stages].reverse().find((r) => r.stage === 'discover');
+  const e = [...stages].reverse().find((r) => r.stage === 'extract');
+  if (!d?.settleSource && !e?.source) return [];
+  const settle =
+    d?.settleSource === 'factors'
+      ? 'the Final settle read the factors'
+      : d?.settleSource === 'file'
+        ? 'the Final settle re-read the file'
+        : 'there was no Final settle';
+  const extract =
+    e?.source === 'factors'
+      ? 'Extract read the factors'
+      : e?.source === 'file'
+        ? 'Extract replayed the file'
+        : 'Extract did not run';
+  const notes = [
+    `With ?factors=file, ${settle}; ${extract} (stage records: settle_source, source and their reasons).`,
+  ];
+  if (e?.source === 'factors')
+    notes.push(
+      "Extract's traces (traces, traces_signed) are solved on low-rank frames rebuilt from the factors and carry less per-frame noise than traces solved on the file.",
+    );
+  return notes;
+}

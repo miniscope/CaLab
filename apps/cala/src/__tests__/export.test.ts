@@ -13,9 +13,11 @@ import {
   FACTORS_EXPORT_NOTE,
   factorTailNote,
   fileStem,
+  type ExportInput,
 } from '../lib/export.ts';
 import type { Pass2Result } from '../lib/pass2-store.ts';
 import { memoryTraceFile } from '../lib/trace-file.ts';
+import { fileFactorNotes } from '../lib/factor-run.ts';
 import { RunRecord } from '../lib/run-record.ts';
 import type { LibraryView } from '../workers/slow-types.ts';
 
@@ -471,5 +473,78 @@ describe('export', () => {
   it('makes a safe file stem', () => {
     expect(fileStem('my folder/2026')).toBe('my_folder_2026');
     expect(fileStem('///')).toBe('recording');
+  });
+});
+
+describe('export of a ?factors=file recording', () => {
+  const stage = (stage: 'discover' | 'extract'): StageRun => ({
+    stage,
+    index: 1,
+    startedAt: '2026-11-23T10:00:00.000Z',
+    endedAt: '2026-11-23T10:01:00.000Z',
+    outcome: 'done',
+    frames: T,
+    cells: 3,
+    libraryVersion: 12,
+  });
+  const metaOf = async (inp: ExportInput) =>
+    JSON.parse(
+      new TextDecoder().decode(
+        parseNpz(await buildCalaExport(inp)).arrays.meta_json.data as Uint8Array,
+      ),
+    );
+
+  it('records each stage source and reason, notes what each read, and is format 7', async () => {
+    const stages: StageRun[] = [
+      {
+        ...stage('discover'),
+        settleSource: 'file',
+        settleSourceReason: 'the compressor was 4,210 frames behind when Discover ended',
+      },
+      {
+        ...stage('extract'),
+        source: 'factors',
+        factors: {
+          folder: 'run-a',
+          tiling: 'offset',
+          windows: [{ index: 0, start: 0, frames: T }],
+          frames: T,
+          meanRank: 4,
+        },
+      },
+    ];
+    const meta = await metaOf({ ...(await input()), stages, notes: fileFactorNotes(stages) });
+    expect(meta.format_version).toBe(7);
+    expect(meta.stages[0]).toMatchObject({
+      settle_source: 'file',
+      settle_source_reason: expect.stringContaining('4,210'),
+    });
+    expect(meta.stages[1]).toMatchObject({ source: 'factors', factor_tiling: 'offset' });
+    expect(meta.notes[0]).toContain('the Final settle re-read the file');
+    expect(meta.notes[0]).toContain('Extract read the factors');
+    expect(meta.notes[1]).toContain('less per-frame noise');
+  });
+
+  it('Extract on the file keeps its reason', async () => {
+    const stages: StageRun[] = [
+      stage('discover'),
+      {
+        ...stage('extract'),
+        source: 'file',
+        sourceReason: '1,800 frames are still being compressed.',
+      },
+    ];
+    const meta = await metaOf({ ...(await input()), stages, notes: fileFactorNotes(stages) });
+    expect(meta.stages[1].source_reason).toContain('1,800');
+    expect(meta.notes[0]).toContain('Extract replayed the file');
+    expect(meta.notes).toHaveLength(1);
+  });
+
+  it('an export without stage sources stays 6 and has no notes', async () => {
+    const stages = [stage('discover'), stage('extract')];
+    expect(fileFactorNotes(stages)).toEqual([]);
+    const meta = await metaOf({ ...(await input()), stages });
+    expect(meta.format_version).toBe(6);
+    expect(meta.notes).toBeUndefined();
   });
 });

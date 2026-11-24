@@ -28,7 +28,7 @@ import { groupKeys } from '../lib/run-history.ts';
 import { AspectPlot } from '../lib/plot-size.tsx';
 import { GroupPlot, RunStrip, type HistoryUi } from './HistoryPanel.tsx';
 import { liveTraceResult } from '../lib/live-export.ts';
-import { FACTORS_LIVE_NOTE } from '../lib/factor-run.ts';
+import { FACTORS_LIVE_NOTE, fileFactorNotes } from '../lib/factor-run.ts';
 import {
   cadeconCells,
   cadeconIsClassic,
@@ -344,7 +344,12 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   const factorExport = (
     r: Pass2Result,
   ): Pick<ExportInput, 'liveTraces' | 'notes' | 'frameRange'> | null => {
-    if (!props.live || r.source !== 'factors') return null;
+    if (!props.live) {
+      // A `?factors=file` recording: notes on what the settle and Extract read.
+      const notes = fileFactorNotes(props.stages.runs());
+      return notes.length ? { notes } : null;
+    }
+    if (r.source !== 'factors') return null;
     const live = liveResult();
     const same =
       live !== null &&
