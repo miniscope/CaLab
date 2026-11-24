@@ -383,6 +383,36 @@ iterations.
 - `scripts/compress-bench.mjs`: local timing of the WASM compressor on a
   window dumped by `discover_eval --compress-dump`.
 
+### The compress pool
+
+The compress worker shares each window's tiles with compress helpers
+(`src/lib/compress-pool.ts`, `src/workers/compress-helper-worker.ts`). Only
+the compress worker touches OPFS: it reads one tile at a time from the
+window file, hands it to a free slot (itself or a helper), and writes the
+answers in tile order. A tile's seed depends only on its window and index,
+so the factor files are the same bytes for any number of workers. A helper
+that crashes, cannot start or does not answer within 60 s is dropped and
+its tile redone; a tile's error fails the window as before.
+
+The widths (`compressPoolSize`) leave Discover its cores: while Discover
+reads, 1 plus the cores no Discover thread uses (`cores - 6 - visit workers -
+settle pool`); from its last frame on, when the pipeline's stage workers
+are idle, `cores - 3 - visit workers - settle pool`; at most 4 each. On 10
+cores that is 1 and 3, on 8 cores 1 and 2, on 16 cores 4 and 4. A live
+stream keeps one worker while it streams. `?debug&cpool=D,E` sets both
+(measurement). The readout shows the workers and their pace once there is
+more than one.
+
+Window files waiting for compression are capped at 8 GB, or half of what
+the origin may still store (`navigator.storage.estimate()`), whichever is
+smaller. Past the cap the run's factors are given up: its files are
+removed, nothing more is written, and the factors are unusable (a
+recording's settle and Extract re-read the file and say why; a stream ends
+at Discover's library). Discover is not touched. `?debug&cbacklog=GB` sets
+the cap (measurement). In Chrome `quota - usage` came out at 10 GiB whatever
+the disk, so the cap is 5 GB in practice
+(`tools/cala-eval/results/2026-11-24-parallel-compress.md`).
+
 ### A live stream's settle and Extract on its factors (the default)
 
 A live stream with Discover compresses on the two offset grids by default
