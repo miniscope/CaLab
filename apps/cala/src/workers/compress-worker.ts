@@ -52,6 +52,11 @@ workerScope.onmessage = (e) => {
     windowPool?.lost(data.helper);
     return;
   }
+  if (data.type === 'stop') {
+    const r = runner;
+    queue = queue.then(() => r?.stop(data.session)).catch(() => {});
+    return;
+  }
   if (data.type === 'backfill' || data.type === 'extract' || data.type === 'extract-cancel') {
     const r = runner;
     queue = queue

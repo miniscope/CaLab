@@ -17,6 +17,7 @@ import { WindowPool, type TilePoolLike } from '../lib/compress-pool.ts';
 import { solveWindow } from '../lib/factor-solve.ts';
 import {
   backlogText,
+  STOPPED_TEXT,
   CompressRunner,
   factorName,
   tilesOf,
@@ -484,6 +485,26 @@ describe('the compress pool and the cap on waiting windows', () => {
     next.push(batch(0, 10), 0, 10);
     for (const m of again) await r.handle(m);
     expect([...store.files.keys()]).toEqual(['w0.i16']);
+  });
+
+  it('stops a run whose settle re-reads the file: no files, no error, nothing written after; another session is untouched', async () => {
+    const { pool } = stuckPool();
+    const { r, store, toMain } = runnerWith({ pool });
+    const { feed, sent } = collectingFeed(50);
+    for (let s = 0; s < 100; s += 10) feed.push(batch(s, 10), s, 10);
+    for (const m of sent) await r.handle(m);
+    expect(store.files.size).toBeGreaterThan(0);
+    await r.stop(6);
+    expect(store.files.size).toBeGreaterThan(0);
+    await r.stop(7);
+    expect(store.files.size).toBe(0);
+    sent.length = 0;
+    feed.push(batch(100, 10), 100, 10);
+    for (const m of sent) await r.handle(m);
+    expect(store.files.size).toBe(0);
+    expect(toMain.filter((m) => m.type === 'error')).toEqual([]);
+    r.extract(7, 1, 0, new Uint8Array(0));
+    expect(toMain.at(-1)).toEqual({ type: 'error', session: 7, job: 1, message: STOPPED_TEXT });
   });
 
   it('switches from the discover width to the after width when the recording ends', async () => {

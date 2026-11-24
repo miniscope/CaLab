@@ -176,7 +176,12 @@ export type MainToCompress =
   | { type: 'backfill'; session: number; version: number }
   /** Extract on factors: solve every compressed window with `library` (a `TraceLibrary.toBytes()`). */
   | { type: 'extract'; session: number; job: number; version: number; library: Uint8Array }
-  | { type: 'extract-cancel'; session: number; job: number };
+  | { type: 'extract-cancel'; session: number; job: number }
+  /**
+   * A recording's settle re-reads the file: compress no more, drop the run's
+   * window and factor files (no stage will read them).
+   */
+  | { type: 'stop'; session: number };
 
 /**
  * Compress worker -> a compress helper. `tile`: compress the first

@@ -14,6 +14,8 @@ export interface CompressClient {
   /** Extract on a stream's factors: solve every window with `library` (transferred). */
   extract(session: number, job: number, version: number, library: Uint8Array): void;
   extractCancel(session: number, job: number): void;
+  /** Compress no more for this run and drop its files. */
+  stop(session: number): void;
   dispose(): void;
 }
 
@@ -79,6 +81,9 @@ export function createCompressClient(
     },
     extractCancel(session, job) {
       worker.postMessage({ type: 'extract-cancel', session, job } satisfies MainToCompress);
+    },
+    stop(session) {
+      worker.postMessage({ type: 'stop', session } satisfies MainToCompress);
     },
     dispose() {
       worker.terminate();

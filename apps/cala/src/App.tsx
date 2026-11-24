@@ -32,6 +32,7 @@ import {
 } from './lib/compress-store.ts';
 import { createFactorExtract } from './lib/factor-extract.ts';
 import { FACTOR_STALL_TEXT, FactorSettle, FileSettleChoice } from './lib/factor-settle.ts';
+import { STOPPED_TEXT } from './lib/compress-runner.ts';
 import { factorsFromPage } from './lib/factor-run.ts';
 import { createPass2Store, replayBlocked } from './lib/pass2-store.ts';
 import {
@@ -545,6 +546,9 @@ const App: Component = () => {
       if (f.kind === 'factors') slow.factorsReady(f.session, f.frames, f.factors);
       else if (f.kind === 'file') {
         slow.factorsFailed(f.session, f.reason);
+        // No stage reads the factors now: free the CPU and the disk for the file's settle and Extract.
+        compressClient?.stop(f.session);
+        compress.fail(STOPPED_TEXT);
         runHistory.log({
           frame: frames,
           kind: 'warning',

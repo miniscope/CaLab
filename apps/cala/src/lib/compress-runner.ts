@@ -110,6 +110,10 @@ export function backlogCap(e: { quota?: number; usage?: number } | null): number
 }
 
 /** Why a run's factors were given up at the cap. */
+/** Why a recording that settled on the file has no factors. */
+export const STOPPED_TEXT =
+  'The Final settle re-read the file, so the compressor stopped: Extract reads the file too.';
+
 export function backlogText(cap: number): string {
   return `The windows waiting for compression would need more than ${(cap / 2 ** 30).toFixed(1)} GB of disk.`;
 }
@@ -227,6 +231,8 @@ export class CompressRunner {
   private cap = BACKLOG_MAX_BYTES;
   private asked = false;
   private gaveUp = false;
+  /** Why this run compresses no more (the backlog cap, or `stop`). */
+  private stopText: string | null = null;
   private backlogPeak = 0;
   /** When the recording ended, the frames then compressed, and those not compressed. */
   private endAt: number | null = null;
@@ -340,7 +346,7 @@ export class CompressRunner {
         type: 'error',
         session,
         job: id,
-        message: backlogText(this.cap),
+        message: this.stopText ?? backlogText(this.cap),
       });
       return;
     }
@@ -400,7 +406,20 @@ export class CompressRunner {
     const cap = this.cap;
     await this.clear();
     this.gaveUp = true;
-    this.deps.toMain.postMessage({ type: 'error', session, message: backlogText(cap) });
+    this.stopText = backlogText(cap);
+    this.deps.toMain.postMessage({ type: 'error', session, message: this.stopText });
+  }
+
+  /**
+   * A recording's settle re-reads the file (slice 7, decision 4): its
+   * compression would only take CPU from the settle and Extract, which read
+   * the file too. Drop the run's files and compress nothing more of it.
+   */
+  async stop(session: number): Promise<void> {
+    if (session !== this.session || !this.init || this.gaveUp) return;
+    await this.clear();
+    this.gaveUp = true;
+    this.stopText = STOPPED_TEXT;
   }
 
   private kick(): void {
@@ -859,6 +878,7 @@ export class CompressRunner {
     this.cap = BACKLOG_MAX_BYTES;
     this.asked = false;
     this.gaveUp = false;
+    this.stopText = null;
     this.backlogPeak = 0;
     this.endAt = null;
     this.framesAtEnd = 0;
