@@ -40,18 +40,21 @@
 
 /**
  * The constants in one place. Chosen from constant-rate qc_eval runs (PR #500): on full-length sims
- * recall saturates by about 0.2 while false cells (late second copies of found cells) keep growing,
- * and 0.4 has the fewest matched-minus-false cells of the rates tried; early in a recording (2000
- * frames) more visits still find cells sooner (recall 0.75 / 0.77 / 0.79 / 0.80 at 0.2 / 0.25 / 0.3 /
- * 0.4). Target 0.25 balances the two; the cap at 0.3 keeps paced runs close to held Max runs.
+ * recall saturates by about 0.2 while false cells (late second copies of found cells) keep growing.
+ * At 0.15 the motion sim has the most matched-minus-false cells of the rates tried (677 against 660
+ * at 0.25, 35 false cells against 58) and the static sim the same (739 / 737); on real data 0.15
+ * gives the same QC-pass cells as 0.25. Only early in a recording (the first ~2000 frames) do more
+ * visits find cells sooner (recall 4-5 points lower at 0.15 than at 0.25 there). Visits are what the
+ * slow worker spends its time on, so the lower rate also lets Discover run faster. The cap at 0.2
+ * keeps paced runs close to held Max runs.
  */
 export const VISIT_RATE = {
   /** Visits per Discover frame read: the least the governor accepts. */
-  floor: 0.2,
+  floor: 0.1,
   /** Visits per Discover frame read: what the governor holds the speed for. */
-  target: 0.25,
+  target: 0.15,
   /** Visits per observed Discover frame at most (the engine's credit). */
-  cap: 0.3,
+  cap: 0.2,
   /** Measurement window, ms of run time. */
   windowMs: 1000,
   /** Frames read before the governor acts (the first library and the first visits). */

@@ -1025,7 +1025,7 @@ describe('pipeline store: the Discover visit hold', () => {
       await store.start();
       expect(store.status()).toBe('running');
       expect(store.visitMode()).toBe('on');
-      // 200 fps read, 0.15 visits per frame, tiles always due: behind the target.
+      // 200 fps read, 0.1 visits per frame, tiles always due: behind the target.
       let read = 0;
       const feed = (steps: number, fps: number, perFrame: number) => {
         for (let i = 0; i < steps; i++) {
@@ -1046,9 +1046,9 @@ describe('pipeline store: the Discover visit hold', () => {
       steps[0].resolve(batch(0, 8));
       await flush();
       expect(store.runMaxFps()).toBeCloseTo(1000 / 6);
-      feed(20, 200, 0.15);
-      // Max is what the visits allow: 0.15 x 200 = 30 visits/s keep the target at 120 fps.
-      expect(store.runMaxFps()).toBeCloseTo(30 / VISIT_RATE.target, 0);
+      feed(20, 200, 0.1);
+      // Max is what the visits allow: 0.1 x 200 = 20 visits/s keep the target at 133 fps.
+      expect(store.runMaxFps()).toBeCloseTo(20 / VISIT_RATE.target, 0);
       expect(store.maxFps()).toBeCloseTo(1000 / 6);
       const hold = store.visitHold();
       expect(hold).not.toBeNull();

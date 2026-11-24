@@ -114,14 +114,14 @@ function simulate(o: {
 }
 
 describe('VisitRateGovernor', () => {
-  // A saturated Max run: 200 fps read, ~44 visits/s (0.22 per frame), more when slower.
-  const capacity = (fps: number) => 60 - 0.08 * fps;
+  // A saturated Max run: 200 fps read, ~24 visits/s (0.12 per frame), more when slower.
+  const capacity = (fps: number) => 40 - 0.08 * fps;
 
   it('holds a saturated Max run to the speed that keeps the target', () => {
     const { gov, summary, tailFps } = simulate({ maxFps: 200, capacity });
     expect(gov.fps).not.toBeNull();
     // Fixed point: capacity(f) / f = target.
-    const fStar = 60 / (VISIT_RATE.target + 0.08);
+    const fStar = 40 / (VISIT_RATE.target + 0.08);
     expect(tailFps).toBeGreaterThan(0.8 * fStar);
     expect(tailFps).toBeLessThan(1.2 * fStar);
     // Over the run the achieved rate sits at the target (above the floor), well below the cap.
@@ -135,7 +135,7 @@ describe('VisitRateGovernor', () => {
 
   it('gives the held speed as Max, not the fast loop top speed', () => {
     const { gov, tailFps } = simulate({ maxFps: 200, capacity });
-    const fStar = 60 / (VISIT_RATE.target + 0.08);
+    const fStar = 40 / (VISIT_RATE.target + 0.08);
     const vmax = gov.visitMaxFps;
     expect(vmax).not.toBeNull();
     // Close to the speed the run actually settles at, and well under the fast loop's 200 fps.
@@ -147,13 +147,13 @@ describe('VisitRateGovernor', () => {
 
   it('gives the held speed as Max for a fast Fixed target the visits cannot keep up with', () => {
     const { gov } = simulate({ maxFps: 300, capacity, userFps: 250 });
-    const fStar = 60 / (VISIT_RATE.target + 0.08);
+    const fStar = 40 / (VISIT_RATE.target + 0.08);
     expect(gov.visitMaxFps!).toBeGreaterThan(0.85 * fStar);
     expect(gov.visitMaxFps!).toBeLessThan(1.15 * fStar);
   });
 
   it('has no visit Max for a paced run the cap limits (its throughput is not its capacity)', () => {
-    // 30 fps, room for 140 visits/s: throughput 0.3 x 30 = 9/s would read as 36 fps.
+    // 30 fps, room for 140 visits/s: throughput 0.2 x 30 = 6/s would read as 40 fps.
     const { gov } = simulate({ maxFps: 200, capacity: () => 140, userFps: 30 });
     expect(gov.visitMaxFps).toBeNull();
     expect(heldMaxFps(200, gov.visitMaxFps)).toBe(200);
@@ -178,11 +178,11 @@ describe('VisitRateGovernor', () => {
         userFps: user,
       });
     };
-    // Behind at 200 fps: 0.15 visits/frame, 30 visits/s -> 120 fps.
-    for (let i = 0; i < 40; i++) feed(200, 0.15, 0);
-    expect(gov.visitMaxFps!).toBeCloseTo(120, 0);
+    // Behind at 200 fps: 0.1 visits/frame, 20 visits/s -> 133 fps.
+    for (let i = 0; i < 40; i++) feed(200, 0.1, 0);
+    expect(gov.visitMaxFps!).toBeCloseTo(20 / VISIT_RATE.target, 0);
     // Later the visits keep up at 180 fps: the estimate follows up.
-    for (let i = 0; i < 80; i++) feed(180, 0.3, 0);
+    for (let i = 0; i < 80; i++) feed(180, 0.2, 0);
     expect(gov.visitMaxFps!).toBeGreaterThan(170);
   });
 
@@ -194,17 +194,19 @@ describe('VisitRateGovernor', () => {
   });
 
   it('slows a run whose dropped frames keep it under the target while the cap binds', () => {
-    // Visits to spare (the cap binds per observed frame), but at speed 40 % of the frames are
-    // dropped, so per frame read the run sits at 0.6 x cap, under the target.
-    const drop = (fps: number) => Math.max(0, Math.min(0.4, (fps - 80) / 200));
+    // Visits to spare (the cap binds per observed frame), but at speed half the frames are
+    // dropped, so unheld the run sits at 0.5 x cap per frame read (the floor), under the target.
+    // Held, the drops fall to about 1 - dropMargin x target / cap and the rate rises to about
+    // dropMargin x target.
+    const drop = (fps: number) => Math.max(0, Math.min(0.5, (fps - 80) / 200));
     const { gov, summary } = simulate({ maxFps: 200, capacity: () => 500, dropShare: drop });
     expect(summary.held_s).toBeGreaterThan(0);
     expect(gov.summary().min_hold_fps!).toBeLessThan(200);
-    expect(summary.achieved_visits_per_frame!).toBeGreaterThan(VISIT_RATE.floor);
+    expect(summary.achieved_visits_per_frame!).toBeGreaterThan(0.8 * VISIT_RATE.target);
   });
 
   it('does not hold a paced run whose visits the cap limits', () => {
-    // 30 fps with room for 140 visits/s: the cap (1 per frame) binds, nothing is behind.
+    // 30 fps with room for 140 visits/s: the cap binds, nothing is behind.
     const { gov, summary } = simulate({ maxFps: 200, capacity: () => 140, userFps: 30 });
     expect(gov.fps).toBeNull();
     expect(summary.held_s).toBe(0);
@@ -218,13 +220,13 @@ describe('VisitRateGovernor', () => {
   });
 
   it('keeps a user target that is already slow enough', () => {
-    // 50 fps target: capacity 56/s gives 1.1 visits per frame (capped at 1): no hold.
+    // 50 fps target: capacity 36/s gives 0.72 visits per frame (capped): no hold.
     const { gov } = simulate({ maxFps: 200, capacity, userFps: 50 });
     expect(gov.fps).toBeNull();
   });
 
   it('slows a fast Fixed target that the visits cannot keep up with', () => {
-    // 250 fps target: about 40 visits/s, 0.16 per frame, under the target.
+    // 250 fps target: about 20 visits/s, 0.08 per frame, under the target.
     const { gov, tailFps } = simulate({ maxFps: 300, capacity, userFps: 250 });
     expect(gov.fps).not.toBeNull();
     expect(tailFps).toBeLessThan(250);
@@ -249,7 +251,7 @@ describe('VisitRateGovernor', () => {
         userFps: user,
       });
     };
-    for (let i = 0; i < 40; i++) feed(200, 0.15, 0);
+    for (let i = 0; i < 40; i++) feed(200, 0.1, 0);
     expect(gov.fps).not.toBeNull();
     const held = gov.fps!;
     // The user picks a target below the hold: released.
@@ -268,7 +270,7 @@ describe('VisitRateGovernor', () => {
     for (let i = 0; i < 40 && !change; i++) {
       t += 250;
       read += 50;
-      visits += 50 * 0.1;
+      visits += 50 * 0.05;
       change = gov.update({
         now: t,
         framesRead: read,
@@ -280,8 +282,8 @@ describe('VisitRateGovernor', () => {
       });
     }
     expect(change?.reason).toBe('below-floor');
-    // Throughput 20 visits/s: 20 / target fps, cut by floorCut.
-    expect(change!.fps).toBeCloseTo((20 / VISIT_RATE.target) * VISIT_RATE.floorCut, 5);
+    // Throughput 10 visits/s: 10 / target fps, cut by floorCut.
+    expect(change!.fps).toBeCloseTo((10 / VISIT_RATE.target) * VISIT_RATE.floorCut, 5);
   });
 
   it('never holds in cap-only (live) or off mode, but still reports the rate', () => {
@@ -341,5 +343,60 @@ describe('VisitRateGovernor with the cap at the target', () => {
     }
     expect(gov.fps).toBeNull();
     expect(gov.summary().held_s).toBe(0);
+  });
+});
+
+describe('VisitRateGovernor with whole visits at low paced rates', () => {
+  // At 0.15 a 1 s window holds only a handful of visits (4.5 at 30 fps, 2.4 at the 16-frame
+  // minimum): rounding a window's visits down must not read as behind while the cap binds.
+  for (const fps of [16, 20, 24, 30, 45, 60]) {
+    it(`does not hold a ${fps} fps paced run pinned at the cap`, () => {
+      const gov = new VisitRateGovernor('on');
+      const batch = 8;
+      const dt = (batch / fps) * 1000;
+      let read = 0;
+      let observed = 0;
+      let capped = 0;
+      for (let i = 1; i <= 2000; i++) {
+        read += batch;
+        observed += batch - (i % 7 === 0 ? 1 : 0);
+        // Every batch spends its whole visits; the engine counts one capped frame per hand-out.
+        const visits = Math.floor(observed * VISIT_RATE.cap);
+        capped += 1;
+        gov.update({
+          now: i * dt,
+          framesRead: read,
+          observed,
+          visits,
+          cappedFrames: capped,
+          dueTiles: 20,
+          userFps: fps,
+        });
+      }
+      expect(gov.fps).toBeNull();
+      expect(gov.summary().held_s).toBe(0);
+      expect(gov.summary().achieved_visits_per_frame!).toBeGreaterThan(VISIT_RATE.target);
+    });
+  }
+
+  it('still holds a paced run whose visits fall behind the target (not the cap)', () => {
+    // 60 fps target, the workers manage 6 visits/s (0.1 per frame): behind, the cap does not bind.
+    const gov = new VisitRateGovernor('on');
+    const dt = (8 / 60) * 1000;
+    let read = 0;
+    for (let i = 1; i <= 2000; i++) {
+      read += 8;
+      gov.update({
+        now: i * dt,
+        framesRead: read,
+        observed: read,
+        visits: Math.floor((i * dt * 6) / 1000),
+        cappedFrames: 0,
+        dueTiles: 20,
+        userFps: 60,
+      });
+    }
+    expect(gov.fps).not.toBeNull();
+    expect(gov.fps!).toBeLessThan(60);
   });
 });
