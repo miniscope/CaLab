@@ -156,9 +156,8 @@ test --no-default-features --features jsbindings`.
 
 **Files:** `crates/cala/src/trace/solver.rs`, `crates/cala/src/trace/tests.rs`.
 
-- [ ] **Step 1:** Take the solver and test hunks of the source branch (`git diff <merge-base>
-    origin/feat/cala-factor-extract -- crates/cala/src/trace`) onto this branch. Resolve against main's solver
-      without changing main's behaviour.
+- [ ] **Step 1:** Take the solver and test hunks of the source branch (its diff to the merge base, under
+      `crates/cala/src/trace`) onto this branch. Resolve against main's solver without changing main's behaviour.
 - [ ] **Step 2:** Rust checks; the ported tests pass, and every existing test passes unchanged.
 - [ ] **Step 3: Commit** `feat(cala): the trace engine solves a frame from its projections (ported from #437)`
 
