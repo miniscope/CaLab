@@ -32,7 +32,7 @@ export interface CompressInit {
   /** Which frames the windows hold. */
   source: CompressSource;
   /** Compress workers while Discover reads and after its last frame (absent: one and one). */
-  pool?: { discover: number; after: number };
+  pool?: { discover: number; after: number; extract?: number };
   /** The cap on window files waiting for compression, bytes (absent: from the storage estimate; `?debug&cbacklog`). */
   backlogCap?: number;
 }
@@ -135,8 +135,20 @@ export type CompressToMain =
       traces: Float32Array;
       signed?: Float32Array;
     }
-  /** The Extract job solved every window: frames and wall time per frame, ms. */
-  | { type: 'extract-done'; session: number; job: number; frames: number; msPerFrame: number }
+  /**
+   * The Extract job solved every window: frames and wall time per frame, ms;
+   * windows solved from the factors and on rebuilt frames, and the helpers used.
+   */
+  | {
+      type: 'extract-done';
+      session: number;
+      job: number;
+      frames: number;
+      msPerFrame: number;
+      projected?: number;
+      rebuilt?: number;
+      workers?: number;
+    }
   /** `job`: the error ends that Extract job. */
   | { type: 'error'; session: number; job?: number; message: string };
 
@@ -171,6 +183,11 @@ export type MainToCompress =
  */
 export type CoordinatorToHelper =
   | { type: 'init'; quant: number }
+  /** An Extract job: the library its windows are solved with (`TraceLibrary.toBytes()`). */
+  | { type: 'extract-begin'; job: number; library: Uint8Array; signed: boolean; px: number }
+  /** Solve window `index` of the job from its factor file (transferred), cold. */
+  | { type: 'extract-window'; job: number; index: number; bytes: Uint8Array }
+  | { type: 'extract-end'; job: number }
   | {
       type: 'tile';
       epoch: number;
@@ -198,5 +215,17 @@ export type HelperToCoordinator =
       raw: Int16Array;
     }
   | { type: 'tile-error'; epoch: number; window: number; tile: number; message: string }
+  /** Window `index` of Extract job `job`: its traces (and signed traces), `count x cells`. Transferred. */
+  | {
+      type: 'window-done';
+      job: number;
+      index: number;
+      start: number;
+      count: number;
+      projected: boolean;
+      traces: Float32Array;
+      signed?: Float32Array;
+    }
+  | { type: 'window-error'; job: number; index: number; message: string }
   /** The helper cannot compress (its WASM module failed to start). */
   | { type: 'helper-error'; message: string };
