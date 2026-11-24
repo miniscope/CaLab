@@ -64,6 +64,9 @@ def one(d: Path, tag: str) -> dict:
     live_ms = out["d_live"] * disc * 1000 if disc else np.nan
     out["live_ms"] = live_ms / obs if obs else np.nan
     sp = afd.get("liveSplit") or {}
+    if sp.get("live") is not None and obs:
+        # The duty's own total (the share estimate above rests on the readings' windows).
+        out["live_ms"] = live_ms = sp["live"] / obs
     if sp and obs:
         out["obs_call_ms"] = sp["observeCall"] / sp["frames"]
         out["obs_inner_ms"] = sp["observeInner"] / sp["frames"]

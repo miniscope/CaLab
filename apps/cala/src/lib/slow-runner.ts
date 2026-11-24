@@ -229,6 +229,8 @@ export interface SlowLoopLike extends StripLoopLike {
  * the status message (`status`) and the frame buffer's ack (`ack`).
  */
 export interface LiveSplit {
+  /** The `live` duty's total (in a status; the sum of the parts below plus what they leave out). */
+  live?: number;
   observeCall: number;
   observeInner: number;
   frames: number;
@@ -2141,7 +2143,7 @@ export class SlowRunner {
       editScope: this.scope,
       ...(this.lbOn ? { lookback: this.lookbackStatus(loop) } : {}),
       ...(this.strips.count > 0 ? { strips: this.strips.counters(loop) } : {}),
-      liveSplit: { ...this.split },
+      liveSplit: { ...this.split, live: this.clock.snapshot().live },
     };
     // Last, so the snapshot includes the time spent building this status.
     status.accounting = this.workStatus();
