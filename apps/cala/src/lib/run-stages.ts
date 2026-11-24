@@ -16,6 +16,7 @@
  * `pass2-store`) run the stages.
  */
 import { createSignal } from 'solid-js';
+import type { FactorInfo } from './compress-store.ts';
 
 export type StageName = 'discover' | 'extract';
 
@@ -133,6 +134,11 @@ export interface StageRun {
   splits?: number;
   /** Discover: it ran with look-back (and its settle). */
   lookback?: boolean;
+  /** Discover: the Final settle read the stream's own factors (`?factors`). */
+  settleSource?: 'factors';
+  /** Extract: it solved the frames rebuilt from the stream's factors, and which factors. */
+  source?: 'factors';
+  factors?: FactorInfo;
 }
 
 /** Runs of the stages since the last Discover start, in order. */

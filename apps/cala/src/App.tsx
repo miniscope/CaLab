@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js';
 import { leaveWarning, resultExported } from './lib/export-state.ts';
-import { createEffect, createSignal, For, on, Show, untrack } from 'solid-js';
+import { createEffect, createSignal, For, on, onCleanup, Show, untrack } from 'solid-js';
 import { CompactHeader, DashboardShell } from '@calab/ui';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
 import {
@@ -22,7 +22,8 @@ import { loadSpanStats } from './lib/extract-qc-wasm.ts';
 import { ASSUMED_FPS } from './lib/miniscope-meta.ts';
 import type { QcSnapshot } from './lib/qc.ts';
 import { createCompressClient } from './lib/compress-client.ts';
-import { createCompressStore } from './lib/compress-store.ts';
+import { createCompressStore, FactorWatchdog, factorsBlocked } from './lib/compress-store.ts';
+import { FACTOR_STALL_TEXT, FactorSettle } from './lib/factor-settle.ts';
 import { FACTORS_REVIEW_OFF } from './lib/factor-run.ts';
 import { createPass2Store, replayBlocked } from './lib/pass2-store.ts';
 import {
@@ -338,7 +339,8 @@ const App: Component = () => {
       merges: c?.merges ?? 0,
       deletes: c?.deletes ?? 0,
       splits: c?.splits ?? 0,
-      ...(slow?.lookback ? { lookback: true } : {}),
+      ...(pipeline.lookbackRun() ? { lookback: true } : {}),
+      ...(slow?.lookback?.settle?.source === 'factors' ? { settleSource: 'factors' as const } : {}),
     };
     stageLog.end('discover', 'done', data);
     logStage('discover', `Discover done: ${data.cells} cells`);
@@ -402,10 +404,55 @@ const App: Component = () => {
   createEffect(() => {
     const slow = cells.status();
     const done = pipeline.status() === 'done';
+    // A ?factors stream's Extract solves on the factors; the back-fill would replace the live traces.
+    if (pipeline.factorRun()) return;
     if (compress?.takeBackfill(done, slow?.final ?? false, slow?.version ?? 0)) {
       compressClient?.backfill(cells.session(), slow?.version ?? 0);
     }
   });
+  // `?factors`: when the slow loop waits for the factors, begin the settle on them or end the
+  // wait; a watchdog gives up on a compressor that stopped.
+  if (factors && compress) {
+    const factorSettle = new FactorSettle();
+    const watchdog = new FactorWatchdog();
+    const [tick, setTick] = createSignal(0);
+    const timer = setInterval(() => setTick((n) => n + 1), 5000);
+    onCleanup(() => clearInterval(timer));
+    createEffect(() => {
+      tick();
+      const st = cells.status();
+      const session = cells.session();
+      const ended = pipeline.status() === 'done';
+      const frames = pipeline.processed();
+      const waiting = st?.lookback?.settle?.waiting === true;
+      const now = performance.now();
+      if (waiting) {
+        watchdog.note(compress.status(), now);
+        if (watchdog.stalled(now) && compress.factors(ended, frames) === 'compressing') {
+          compress.fail(FACTOR_STALL_TEXT);
+          runHistory.log({ frame: frames, kind: 'warning', detail: FACTOR_STALL_TEXT });
+        }
+      } else watchdog.reset();
+      const state = compress.factors(ended, frames);
+      const i = store.info();
+      const a = factorSettle.act({
+        session,
+        factorRun: pipeline.factorRun(),
+        waiting,
+        final: st?.final === true,
+        state,
+        reason: factorsBlocked(state, compress.status(), compress.error()),
+        info: compress.factorInfo(),
+        width: i?.width ?? 0,
+        height: i?.height ?? 0,
+      });
+      if (a.kind === 'begin') {
+        lookbackClient.beginFactors?.(a.session, a.factors);
+        slow.factorsReady(a.session, a.frames);
+      } else if (a.kind === 'fail') slow.factorsFailed(a.session, a.reason);
+      else if (a.kind === 'release') lookbackClient.reset(a.session);
+    });
+  }
   // `?debug`: expose the stores for measurement scripts (timing, lag, library events).
   let discoverEnd: {
     session: number;
