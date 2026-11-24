@@ -50,6 +50,13 @@ Refine runs show as "Refine (removed stage)".
   Extract's. If the factors cannot be read (a compression error, a gap, or no
   progress from the compressor for 120 s), the stream ends at Discover's
   library as without the switch.
+- **A recording with `?factors=file` (experimental).** Discover also
+  compresses its frames. At its last frame the Final settle reads frames
+  rebuilt from the factors if at most the last window is still being
+  compressed (it waits for that window only); otherwise it re-reads the file
+  as without the switch. Extract reads the factors if they cover every frame
+  when it starts, else it replays the file. It never waits. The Run panel and
+  the export say which source each stage read and why.
 
 ## What carries over from Discover to Extract
 

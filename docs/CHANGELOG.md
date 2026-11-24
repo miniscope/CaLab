@@ -8,6 +8,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 ### Added
 
 - Cala (experimental, `?factors`): a live stream settles and extracts on its own factors after it ends. Discover runs as before; the stream's export keeps the live traces (`traces_live`) beside Extract's and is format version 7. Exports without these fields stay at version 6.
+- Cala (experimental, `?factors=file`): a recording's Final settle and Extract read the factors Discover wrote when they are complete, and re-read the file otherwise (never waiting beyond the last window). The Run panel and the export (format version 7, `settle_source`, `source` and their reasons) say which source each stage read.
 
 ### Changed
 

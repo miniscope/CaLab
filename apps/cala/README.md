@@ -408,6 +408,37 @@ tab's sweep leaves it alone. `?review` is off with `?factors` (the review
 reads plain tiles only). Factors take about 55 MB per 1,000 frames at
 600 px in OPFS. A recording with `?factors` runs as with `?compress`.
 
+### A recording's settle and Extract on its factors (`?factors=file`)
+
+With `?factors=file` (experimental) a recording's Discover also compresses
+its frames on the offset grids. Discover and its look-back are unchanged
+(look-back keeps re-reading the file). Nothing ever waits for the
+compressor beyond the last window:
+
+- At Discover's last frame the slow loop asks the main thread
+  (`SlowRunner.factors`, `FileSettleChoice`). More than one window (600
+  frames) not yet compressed: the Final settle re-reads the file at once.
+  Otherwise it waits for that last window (watchdog 120 s, slow-side limit
+  150 s), then the slow worker switches look-back worker 0 to the factors
+  over the port that carries its requests (`ServerSlot`, `FactorReader`),
+  and the settle runs on rebuilt frames.
+- Extract reads the factors when they are `ready` (every frame covered) as
+  it starts, in the compress worker as for a stream; otherwise it replays
+  the file. It never waits.
+- The Run panel and the export say which source each stage read and why
+  (`settle_source`, `settle_source_reason`, `source`, `source_reason`,
+  a note in `meta_json.notes`; format version 7). Without the switch
+  nothing changes.
+
+At 600 px one compress worker (about 40 frames/s) is slower than Discover
+reads a file, so the settle and often Extract re-read the file there; see
+`tools/cala-eval/results/2026-11-23-factors-file-speed.md`. While the compressor is behind, its
+waiting windows sit in OPFS as raw int16 frames (432 MB per window at
+600 px), so a long backlog needs several GB of free disk; a write that fails
+marks the factors unusable and both stages re-read the file. A Joint run
+with `?factors=file` runs as with `?compress`. `?factors=file` on a live
+stream means `?factors`.
+
 ### History review (`?compress&review`)
 
 With `&review` as well (`review=N`: every N windows, default 8), the run looks
