@@ -101,6 +101,7 @@ function handle(msg: StageMsg): void {
                   : {}),
                 ...(cells.compressFrameExtract ? { frameExtract: true } : {}),
                 ...(cells.compressGpu ? { gpu: true } : {}),
+                ...(cells.compressGpuCheck ? { gpuCheck: cells.compressGpuCheck } : {}),
               },
               compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
             )

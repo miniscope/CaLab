@@ -294,6 +294,9 @@ const App: Component = () => {
       return s !== null && 'sessions' in s;
     });
   pipeline.setFactorsGpu(pageFactors.factorsGpu);
+  // `?debug&gpucheck=N`: the GPU's factors of the first N windows against the CPU's (measurement).
+  const gpucheck = params.has('debug') ? Math.floor(Number(params.get('gpucheck'))) : NaN;
+  pipeline.setGpuCheck(gpucheck > 0 ? gpucheck : 0);
   // Background settle (settle during Discover) is on under look-back whenever the target is
   // below Max; `csettle=0` turns it off, `csettle=yield` or `csettle=yieldN` feeds each answer
   // N frames at a time (1 by default), `csrate=1|0.5` lowers the cap from 2 re-read frames

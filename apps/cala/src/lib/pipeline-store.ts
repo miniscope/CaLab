@@ -240,6 +240,8 @@ export function createPipelineStore(
   let backlogCap: number | undefined;
   // `?debug&fextract=0`: Extract on factors on rebuilt frames, as before slice 6 (measurement).
   let frameExtract = false;
+  // `?debug&gpucheck=N`: a GPU run's first N windows are compressed on the CPU too (measurement).
+  let gpuCheck = 0;
   let jointOf: () => boolean = () => false;
   /**
    * Settle during Discover ("Background settle", under look-back; runs only
@@ -1132,6 +1134,7 @@ export function createPipelineStore(
                 ...(backlogCap !== undefined ? { compressBacklogCap: backlogCap } : {}),
                 ...(frameExtract ? { compressFrameExtract: true } : {}),
                 ...(runPlan.gpu ? { compressGpu: true } : {}),
+                ...(runPlan.gpu && gpuCheck > 0 ? { compressGpuCheck: gpuCheck } : {}),
               }
             : {}),
           ...(runPlan.factorSettle ? { factorSettle: true } : {}),
@@ -1297,6 +1300,10 @@ export function createPipelineStore(
     /** `?debug&fextract=0`: Extract on factors on rebuilt frames (measurement). */
     setFrameExtract(on: boolean): void {
       frameExtract = on;
+    },
+    /** `?debug&gpucheck=N`: windows of a GPU run the CPU compresses too (0: none). */
+    setGpuCheck(windows: number): void {
+      gpuCheck = windows;
     },
     // (Not `??`: `blocked()` returns null when look-back can run.)
     lookbackBlocked: () =>

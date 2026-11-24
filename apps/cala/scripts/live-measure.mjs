@@ -152,7 +152,12 @@ const sample = () => {
       backlogPeakBytes: cs.backlogPeakBytes ?? null,
       behindAtEnd: cs.behindAtEnd ?? null,
       fpsAfter: cs.fpsAfter ?? null,
+      // Frames per window, where they are compressed, and `?debug&gpucheck`'s sums.
+      window: cs.window ?? null,
+      backend: cs.backend ?? null,
+      check: cs.check ?? null,
     },
+    compressError: c.compress?.error?.() ?? null,
     final: st?.final ?? false,
     settle: settle && {
       waiting: settle.waiting ?? false,
@@ -259,6 +264,19 @@ function fileFactorSummary(timeline) {
       0,
       ...timeline.map((s) => s.compress?.backlogPeakBytes ?? 0),
     ),
+    // `?factors=gpu`: frames per window, the backend, the compressor's error, `?debug&gpucheck`.
+    compressWindow: last?.compress?.window ?? null,
+    compressBackend: last?.compress?.backend ?? null,
+    compressError: timeline.find((s) => s.compressError)?.compressError ?? null,
+    // One value per window (the status after that window).
+    compressMsPerFrame: summarize([
+      ...new Map(
+        timeline.flatMap((s) =>
+          s.compress?.windows > 0 ? [[s.compress.windows, s.compress.msPerFrame]] : [],
+        ),
+      ).values(),
+    ]),
+    check: last?.compress?.check ?? null,
   };
 }
 

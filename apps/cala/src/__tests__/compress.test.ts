@@ -17,6 +17,7 @@ import { WindowPool, type TilePoolLike } from '../lib/compress-pool.ts';
 import { solveWindow } from '../lib/factor-solve.ts';
 import {
   backlogText,
+  GPU_CHECK_SEED,
   GPU_TEXT,
   STOPPED_TEXT,
   CompressRunner,
@@ -25,6 +26,7 @@ import {
   type CompressRunnerDeps,
 } from '../lib/compress-runner.ts';
 import { compressReadout, createCompressStore } from '../lib/compress-store.ts';
+import { cutTile } from '../lib/factor-check.ts';
 import type { GpuCompressorLike, GpuWindowJob, GpuWindowResult } from '../lib/gpu-compress.ts';
 import { memoryStore } from '../lib/window-store.ts';
 import type {
@@ -1151,5 +1153,149 @@ describe('a recording compressed on the GPU', () => {
     expect(errs).toEqual([{ type: 'error', session: 7, message: GPU_TEXT.none(why) }]);
     expect(errs[0].message).toContain(why);
     expect(store.files.size).toBe(0);
+  });
+
+  describe('the GPU check (?debug&gpucheck)', () => {
+    /** A movie with noise (fixed LCG): its factors depend on the sketch's seed. */
+    function noisy(n: number, start: number): Float32Array {
+      const out = new Float32Array(n * GW * GH);
+      let s = (start * 2654435761) >>> 0;
+      for (let t = 0; t < n; t++)
+        for (let i = 0; i < GW * GH; i++) {
+          s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+          const a = (start + t) / 7;
+          out[t * GW * GH + i] = 5 + 3 * Math.sin(a) * Math.cos(i / 50) + s / 2 ** 32;
+        }
+      return out;
+    }
+
+    /** A GPU compressor that compresses its ring with the CPU's `TileCompressor`. */
+    function cpuBackedGpu(window: number, slack: number) {
+      const frames = new Map<number, Int16Array>();
+      const hw = GW * GH;
+      const rects = tileLayout(GW, GH, GTILE, 'offset');
+      const jobs: GpuWindowJob[] = [];
+      const gpu: GpuCompressorLike = {
+        window,
+        slack,
+        upload: (q, start, count) => {
+          for (let t = 0; t < count; t++) frames.set(start + t, q.slice(t * hw, (t + 1) * hw));
+        },
+        compress: async (job) => {
+          jobs.push(job);
+          const data = new Int16Array(job.frames * hw);
+          for (let t = 0; t < job.frames; t++) data.set(frames.get(job.start + t)!, t * hw);
+          const c = new TileCompressor(QUANT);
+          const tiles: Uint8Array[] = [];
+          const ranks: number[] = [];
+          for (let i = 0; i < rects.length / 4; i++) {
+            const [x0, y0, w, h] = rects.subarray(4 * i, 4 * i + 4);
+            const raw = new Int16Array(job.frames * w * h);
+            cutTile(data, GW, GH, job.frames, x0, y0, w, h, raw);
+            const f = c.compress(raw, job.frames, x0, y0, w, h, job.seeds(i), job.prevRanks(i));
+            tiles.push(f.toBytes());
+            ranks.push(f.rank);
+            f.free();
+          }
+          c.free();
+          return { tiles, ranks, ms: 1 };
+        },
+        lost: new Promise(() => {}),
+        destroy: () => {},
+      };
+      return { gpu, jobs };
+    }
+
+    async function checkRun(gpuCheck?: number) {
+      const store = memoryStore();
+      const toMain: CompressToMain[] = [];
+      const fake = cpuBackedGpu(50, 13);
+      const r = new CompressRunner({
+        store,
+        quantize: quantizeTiles,
+        layout: tileLayout,
+        header: factorHeader,
+        create: (quant) => new TileCompressor(quant),
+        toMain: { postMessage: (m) => toMain.push(m) },
+        yieldNow: () => Promise.resolve(),
+        openGpu: async () => fake.gpu,
+      });
+      const sent: FastToCompress[] = [];
+      const feed = new CompressFeed(
+        {
+          width: GW,
+          height: GH,
+          session: 7,
+          tile: GTILE,
+          tiling: 'offset',
+          window: 30,
+          quant: QUANT,
+          gpu: true,
+          ...(gpuCheck !== undefined ? { gpuCheck } : {}),
+        },
+        { postMessage: (m) => sent.push(m) },
+      );
+      for (let s = 0; s < 160; s += 10) feed.push(noisy(10, s), s, 10);
+      return { r, store, toMain, fake, sent, feed };
+    }
+
+    it("the CPU's factors of the first windows against the GPU's: the same seeds give the same tiles", async () => {
+      const { r, toMain, fake, sent, feed } = await checkRun(5);
+      expect(sent[0]).toMatchObject({ type: 'init', gpu: true, gpuCheck: 5 });
+      for (const m of sent) {
+        await r.handle(m);
+        await tick();
+      }
+      await r.idle();
+      // Not before the recording ends: the check waits for the last window.
+      expect(statuses(toMain).some((m) => m.status.check)).toBe(false);
+      feed.end();
+      for (const m of sent.slice(sent.length - 1)) await r.handle(m);
+      await tick();
+      await r.idle();
+      const last = statuses(toMain).at(-1)!.status;
+      expect(last.compressed.map((w) => w.frames)).toEqual([50, 50, 50, 10]);
+      expect(fake.jobs).toHaveLength(4);
+      const c = last.check!;
+      // At most GPU_CHECK_MAX (2) windows are kept.
+      expect(c).toMatchObject({
+        windows: 2,
+        tiles: 2 * GTILES,
+        rankDiff: 0,
+        rankDiffTiles: 0,
+        keptDiff: 0,
+        loss: 0,
+      });
+      expect(c.floorKeptDiff).toBeGreaterThan(0);
+      expect(c.error).toBeUndefined();
+      expect(c.floor).toBeGreaterThan(0);
+      expect(c.ref).toBeGreaterThan(c.signal);
+      expect(c.signal).toBeGreaterThan(0);
+      expect(errors(toMain)).toEqual([]);
+      expect(GPU_CHECK_SEED).toBe(7_000_000);
+    });
+
+    it('gpucheck=1 checks one window; without gpucheck there is no check', async () => {
+      const { r, toMain, sent, feed } = await checkRun(1);
+      feed.end();
+      for (const m of sent) {
+        await r.handle(m);
+        await tick();
+      }
+      await r.idle();
+      const st = statuses(toMain);
+      expect(st.at(-1)!.status.check).toMatchObject({ windows: 1, loss: 0, rankDiff: 0 });
+
+      const plain = await checkRun();
+      expect(plain.sent[0]).not.toHaveProperty('gpuCheck');
+      plain.feed.end();
+      for (const m of plain.sent) {
+        await plain.r.handle(m);
+        await tick();
+      }
+      await plain.r.idle();
+      expect(statuses(plain.toMain).at(-1)!.status).toMatchObject({ final: true, windows: 4 });
+      expect(statuses(plain.toMain).some((m) => m.status.check)).toBe(false);
+    });
   });
 });

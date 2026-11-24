@@ -31,6 +31,8 @@ export interface CompressFeedOptions {
   frameExtract?: boolean;
   /** Compress on the GPU (`?factors=gpu`, a recording; `CompressInit.gpu`). */
   gpu?: boolean;
+  /** With `gpu`: windows the CPU compresses too, to check the GPU's factors (`?debug&gpucheck=N`). */
+  gpuCheck?: number;
 }
 
 export const COMPRESS_DEFAULTS = {
@@ -52,12 +54,13 @@ export interface CompressFeedLike {
 
 export class CompressFeed implements CompressFeedLike {
   private readonly o: Required<
-    Omit<CompressFeedOptions, 'pool' | 'backlogCap' | 'frameExtract' | 'gpu'>
+    Omit<CompressFeedOptions, 'pool' | 'backlogCap' | 'frameExtract' | 'gpu' | 'gpuCheck'>
   > & {
     pool?: PoolWidth;
     backlogCap?: number;
     frameExtract?: boolean;
     gpu?: boolean;
+    gpuCheck?: number;
   };
   private readonly px: number;
   private initSent = false;
@@ -95,6 +98,7 @@ export class CompressFeed implements CompressFeedLike {
       backlogCap,
       frameExtract,
       gpu,
+      gpuCheck,
     } = this.o;
     if (!this.initSent) {
       this.port.postMessage({
@@ -111,6 +115,7 @@ export class CompressFeed implements CompressFeedLike {
         ...(backlogCap !== undefined ? { backlogCap } : {}),
         ...(frameExtract ? { frameExtract } : {}),
         ...(gpu ? { gpu } : {}),
+        ...(gpu && gpuCheck ? { gpuCheck } : {}),
       });
       this.initSent = true;
     }

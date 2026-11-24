@@ -55,6 +55,8 @@ export interface CellsSettings {
   compressFrameExtract?: boolean;
   /** With `compress`: a recording with `?factors=gpu` compresses its windows on the GPU (`CompressInit.gpu`). */
   compressGpu?: boolean;
+  /** With `compressGpu`: windows the CPU compresses too, to check the GPU's factors (`?debug&gpucheck=N`). */
+  compressGpuCheck?: number;
   /** A live stream with `?factors`: the slow loop settles on the factors after the stream ends (`SlowInit.factorSettle`). */
   factorSettle?: boolean;
   /** A recording with `?factors=file`: at Discover's end the settle may read the factors (`SlowRunner`). */

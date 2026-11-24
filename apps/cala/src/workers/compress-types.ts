@@ -43,6 +43,38 @@ export interface CompressInit {
    * `window` and `last` are ignored).
    */
   gpu?: boolean;
+  /**
+   * With `gpu`: compress the first `gpuCheck` windows (at most `GPU_CHECK_MAX`)
+   * on the CPU too, once the recording's windows are done, and report how far
+   * the GPU's factors are from the CPU's (`CompressStatus.check`; `?debug&gpucheck=N`).
+   */
+  gpuCheck?: number;
+}
+
+/**
+ * The GPU's factors against the CPU's on the same windows (`?debug&gpucheck`),
+ * summed over the checked tiles: `loss` = `Σ ‖Ŷ_gpu − Ŷ_cpu‖²`, `floor` =
+ * `Σ ‖Ŷ_cpu2 − Ŷ_cpu‖²` (the CPU with another seed: the sketch's own noise),
+ * `ref` = `Σ ‖Ŷ_cpu‖²`, `signal` = `Σ ‖Ŷ_cpu − mean‖²`, `rankDiff` = `Σ |rank_gpu − rank_cpu|`
+ * and `floorRankDiff` = `Σ |rank_cpu2 − rank_cpu|`, `keptDiff` and `floorKeptDiff` the
+ * same of the energy the kept components hold (what a rank difference is worth),
+ * `rankDiffTiles` the tiles whose ranks differ; `ms`: the check's wall time.
+ */
+export interface GpuCheck {
+  windows: number;
+  tiles: number;
+  loss: number;
+  floor: number;
+  ref: number;
+  signal: number;
+  rankDiff: number;
+  floorRankDiff: number;
+  keptDiff: number;
+  floorKeptDiff: number;
+  rankDiffTiles: number;
+  ms: number;
+  /** Why the check stopped early. */
+  error?: string;
 }
 
 /** Fast worker -> compress worker. */
@@ -114,6 +146,8 @@ export interface CompressStatus {
   window?: number;
   /** Where the windows are compressed. */
   backend?: 'cpu' | 'gpu';
+  /** `?debug&gpucheck=N`: the GPU's factors against the CPU's (absent: no check, or none done yet). */
+  check?: GpuCheck;
 }
 
 /** Compress worker -> main thread. */
