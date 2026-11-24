@@ -312,3 +312,57 @@ describe('parallel tile visits over the real WASM bindings', () => {
     fast.dispose();
   });
 });
+
+describe('SlowRunner and the Discover visit cap', () => {
+  function run(visitRate?: number) {
+    const toMain: SlowToMain[] = [];
+    const setVisitRate = vi.fn();
+    const loop: SlowLoopLike = {
+      observe: () => true,
+      step: vi.fn(() => undefined),
+      finalize: () => fakeLib(900),
+      setNoise: vi.fn(),
+      setVisitRate,
+      visitRateStats: () => Float64Array.of(1, 0.5, 10, 7, 3, 2),
+      cellCount: 0,
+      reservoirBytes: 0,
+      stats: () => new Float64Array(16),
+      free: vi.fn(),
+    };
+    const r = new SlowRunner({
+      create: () => loop,
+      toFast: { postMessage: () => {} },
+      toMain: { postMessage: (m) => toMain.push(m) },
+      now: () => 0,
+    });
+    r.handle({ ...INIT, ...(visitRate !== undefined ? { visitRate } : {}) });
+    r.handle(frames(0));
+    const st = toMain.filter((m) => m.type === 'status').at(-1)!;
+    return { setVisitRate, status: st.type === 'status' ? st.status : null };
+  }
+
+  it('sets the cap from the init and reports its counters', () => {
+    const a = run(1);
+    expect(a.setVisitRate).toHaveBeenCalledWith(1);
+    expect(a.status?.visitRate).toEqual({
+      rate: 1,
+      credit: 0.5,
+      frames: 10,
+      visits: 7,
+      cappedFrames: 3,
+      dueTiles: 2,
+    });
+    // No cap asked for (`?debug&visitrate=off`): the loop is never told.
+    expect(run().setVisitRate).not.toHaveBeenCalled();
+    expect(run(0).setVisitRate).not.toHaveBeenCalled();
+  });
+
+  it('the WASM slow loop has the cap', () => {
+    const n = 64 * 64;
+    const s = new SlowLoop(64, 64, new Uint8Array(n).fill(1), new Float32Array(n).fill(1), 10, 0);
+    expect(Array.from(s.visitRateStats())).toEqual([0, 0, 0, 0, 0, 0]);
+    s.setVisitRate(0.5);
+    expect(s.visitRateStats()[0]).toBe(0.5);
+    s.free();
+  });
+});

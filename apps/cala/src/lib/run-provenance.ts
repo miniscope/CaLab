@@ -22,6 +22,7 @@
  * `null` until its feature fills it; add fields under the slot, and bump
  * `RUN_RECORD_VERSION` only when an existing field changes meaning.
  */
+import type { VisitRateSummary } from './visit-rate.ts';
 import { FINAL_SETTLE_LEVELS, type FinalSettleLevel, type GovernorStatus } from './settle.ts';
 import type { StageRun } from './run-stages.ts';
 import { stageMeta } from './export.ts';
@@ -77,13 +78,20 @@ export const KNOWN_FLAGS = [
   'review',
   'pass2',
   'live',
+  'visitrate',
 ] as const;
 
 /** Flags whose value is never written (it can hold a host or address). */
 const REDACTED_FLAGS: ReadonlySet<string> = new Set(['live']);
 
 /** What `?debug` gates: these flags only take effect with it. */
-const DEBUG_ONLY: ReadonlySet<string> = new Set(['lbpool', 'needfirst', 'pacefps', 'smooth']);
+const DEBUG_ONLY: ReadonlySet<string> = new Set([
+  'lbpool',
+  'needfirst',
+  'pacefps',
+  'smooth',
+  'visitrate',
+]);
 
 /**
  * Whether a flag changes anything given the others (`App.tsx` reads them the
@@ -103,6 +111,8 @@ function inEffect(name: string, value: string, p: URLSearchParams): boolean {
       return lookbackOn;
     case 'needfirst':
       return value !== '0';
+    case 'visitrate':
+      return value === 'off';
     case 'review':
       return p.has('compress');
     default:
@@ -364,6 +374,7 @@ export class RunTrace {
   private counts: RunCounters | null = null;
   private curveRec: CurveRecord | null = null;
   private autoRec: { extraTimeShare: number; decisions: AutoDecision[] } | null = null;
+  private visitRec: VisitRateSummary | null = null;
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
@@ -380,6 +391,18 @@ export class RunTrace {
     this.counts = null;
     this.curveRec = null;
     this.autoRec = null;
+    this.visitRec = null;
+  }
+
+  /** The Discover visit rate's summary as of now (the latest one is the record's). */
+  noteVisitRate(s: VisitRateSummary | null): void {
+    this.visitRec = s ? { ...s, hold_changes: s.hold_changes.map((c) => ({ ...c })) } : null;
+  }
+
+  visitRate(): VisitRateSummary | null {
+    return this.visitRec
+      ? { ...this.visitRec, hold_changes: this.visitRec.hold_changes.map((c) => ({ ...c })) }
+      : null;
   }
 
   /** Auto armed or decided (the run's own copy: a later change of Speed must not lose it). */
@@ -637,6 +660,8 @@ export interface RunRecordInput {
   governor: GovernorStatus | null;
   /** What the run realised (null: not known); `work.realised`. */
   realised?: RealisedWork | null;
+  /** The Discover visit rate: its floor, target and cap and what the run achieved (`work.visit_rate`; null: not a Discover run). */
+  visitRate?: VisitRateSummary | null;
   /** Discover's mean processing rate over the run, frames per second (null: not known). */
   achievedFps: number | null;
   machine: MachineContext;
@@ -688,6 +713,7 @@ export function buildRunRecord(i: RunRecordInput): Record<string, unknown> {
     work: {
       ...i.work,
       realised: i.realised ?? null,
+      visit_rate: i.visitRate ?? null,
       /** Time-stamped; cap 0 is Off. The first entry is the cap at the run's start. */
       cap_changes: i.capChanges.map((c) => ({ ...c })),
       achieved_fps: i.achievedFps,
@@ -931,6 +957,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       visit_workers: src.visitWorkers(),
     },
     governor: gov,
+    visitRate: src.trace.visitRate(),
     realised: {
       achieved_fps_mean: achieved,
       dose_per_live_frame:

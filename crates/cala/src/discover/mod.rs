@@ -229,6 +229,7 @@ mod mergelog;
 mod noisecorr;
 mod reservoir;
 mod shard;
+mod visitrate;
 mod wire;
 
 pub use churn::{AddClass, AddRecord, ChurnConfig, ChurnCounts, RemovalKind, RemovalRecord};
@@ -242,6 +243,7 @@ pub use lookback::{
 #[cfg(feature = "diagnostics")]
 pub use mergelog::{flush as merge_log_flush, set_gt as merge_log_set_gt};
 pub use shard::{VisitJob, VisitResult, VisitRunner};
+pub use visitrate::{VisitRateStats, VISIT_BANK_FRAMES};
 
 #[cfg(feature = "jsbindings")]
 mod js;
@@ -1221,6 +1223,8 @@ pub struct SlowLoop {
     /// default; tests turn it off to check that the footprints are the same
     /// without it.
     pub(crate) skip_unused: bool,
+    /// The Discover visit cap ([`SlowLoop::set_visit_rate`]).
+    vrate: visitrate::VisitRate,
     // observe() buffers
     model: Vec<f32>,
     z: Vec<f32>,
@@ -1733,6 +1737,7 @@ impl SlowLoop {
             frames_seq: 0,
             reuse: true,
             skip_unused: true,
+            vrate: visitrate::VisitRate::default(),
             cfg,
         };
         s.set_noise(noise)?;
@@ -2238,6 +2243,7 @@ impl SlowLoop {
     ) -> Result<(), TraceError> {
         let n_px = self.dims.pixels();
         let scale = self.score_residual(frame, lib, traces)?;
+        self.visit_rate_frame();
         self.work += (n_px * 4 + self.coarse.len() * 30) as u64;
         if self.cfg.noise_corr {
             self.work += self.ncorr.push(&self.z, &self.fov, self.dims);
@@ -3138,6 +3144,12 @@ impl SlowLoop {
                 self.credit = 0;
                 break;
             };
+            if !self.visit_allowed(true) {
+                // Held by the visit cap: the work budget is not banked either.
+                self.credit = self.credit.min(budget as i64);
+                break;
+            }
+            self.visit_spent();
             let w0 = self.work;
             self.visit(ti)?;
             self.credit -= (self.work - w0) as i64;
