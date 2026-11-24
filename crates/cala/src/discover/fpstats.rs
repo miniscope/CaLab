@@ -666,8 +666,11 @@ impl FpStats {
         if self.runs.is_empty() && n > 0 {
             self.runs = pixel_runs(&self.pix);
         }
-        buf.clear();
-        buf.resize(n, 0.0);
+        // Scratch of at least `n` (grown only: no fill per call).
+        if buf.len() < n {
+            buf.resize(n, 0.0);
+        }
+        let buf = &mut buf[..n];
         let with_col = c != 0.0;
         debug_assert!(!with_col || self.col.len() == n);
         let mut bad = false;

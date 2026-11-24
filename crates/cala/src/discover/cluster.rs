@@ -510,8 +510,11 @@ impl ClusterStore {
         if self.runs.is_empty() && n > 0 {
             self.runs = super::fpstats::pixel_runs(&self.pix);
         }
-        buf.clear();
-        buf.resize(n, 0.0);
+        // Scratch of at least `n` (grown only: no fill per call).
+        if buf.len() < n {
+            buf.resize(n, 0.0);
+        }
+        let buf = &mut buf[..n];
         let mut i = 0;
         for &(s, len) in &self.runs {
             let (s, len) = (s as usize, len as usize);
