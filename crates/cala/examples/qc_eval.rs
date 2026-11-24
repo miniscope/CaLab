@@ -633,6 +633,18 @@ fn replay_visit_jobs(dir: &Path, out: &Path, mut runner: VisitRunner) {
     files.sort();
     let mut gen = 0u64;
     let mut tsv = String::from("file\ttile\tcells\tms\twork\thash\tdecisions\n");
+    // Feature `timing`: per job, each visit phase's ms (fastest repetition)
+    // and edits (`timing::VISIT_PARTS` x `timing::EDIT_KINDS`).
+    let mut phases = String::from("file\ttile\tcells");
+    for p in calab_cala::discover::timing::VISIT_PARTS {
+        phases.push_str(&format!("\t{p}_ms"));
+    }
+    for p in calab_cala::discover::timing::VISIT_PARTS {
+        for k in calab_cala::discover::timing::EDIT_KINDS {
+            phases.push_str(&format!("\t{p}_{k}"));
+        }
+    }
+    phases.push('\n');
     let (mut total, mut n) = (0.0f64, 0usize);
     for f in &files {
         let name = f.file_name().unwrap().to_string_lossy().to_string();
@@ -657,13 +669,25 @@ fn replay_visit_jobs(dir: &Path, out: &Path, mut runner: VisitRunner) {
         let bytes = std::fs::read(f).unwrap();
         let mut best = f64::INFINITY;
         let mut row = String::new();
+        let mut best_phase = [f64::INFINITY; 7];
+        let mut edits = [[0u64; 7]; 7];
+        let mut head = String::new();
         for _ in 0..reps.max(1) {
             let mut job = VisitJob::from_bytes(&bytes).unwrap();
             job.retarget(&runner);
             let (tile, cells) = (job.tile_index(), job.zone_cells());
+            let before = runner.stage_timing().clone();
             let a = Instant::now();
             let res = runner.run(job).unwrap();
             let ms = a.elapsed().as_secs_f64() * 1e3;
+            let after = runner.stage_timing();
+            for k in 0..7 {
+                best_phase[k] = best_phase[k].min(after.visit[k] - before.visit[k]);
+                for e in 0..7 {
+                    edits[k][e] = after.visit_edits[k][e] - before.visit_edits[k][e];
+                }
+            }
+            head = format!("{name}\t{tile}\t{cells}");
             let mut h = std::collections::hash_map::DefaultHasher::new();
             res.to_bytes().hash(&mut h);
             let st = res.stats();
@@ -689,6 +713,16 @@ fn replay_visit_jobs(dir: &Path, out: &Path, mut runner: VisitRunner) {
             best = best.min(ms);
         }
         tsv.push_str(&row.replacen("{}", &format!("{best:.3}"), 1));
+        phases.push_str(&head);
+        for v in best_phase {
+            phases.push_str(&format!("\t{v:.4}"));
+        }
+        for row in edits {
+            for v in row {
+                phases.push_str(&format!("\t{v}"));
+            }
+        }
+        phases.push('\n');
         total += best;
         n += 1;
     }
@@ -696,6 +730,33 @@ fn replay_visit_jobs(dir: &Path, out: &Path, mut runner: VisitRunner) {
     println!(
         "replayed {n} jobs: {total:.0} ms total, {:.2} ms/job",
         total / n.max(1) as f64
+    );
+    if calab_cala::discover::timing::ON {
+        std::fs::write(out.join("replay_phases.tsv"), phases).unwrap();
+        // Every repetition is timed: divide by CALA_REPLAY_REPS.
+        let v: Vec<String> = runner
+            .stage_timing()
+            .to_vec()
+            .iter()
+            .map(|x| format!("{x:.3}"))
+            .collect();
+        println!("stage replay reps {}: {}", reps.max(1), v.join(" "));
+    }
+}
+
+/// Feature `timing`: one line of the slow loop's cumulative stage timers
+/// (`stage TAG: frames F cells N | v..` in `StageTiming::to_vec` order;
+/// `tools/cala-eval/stage0/stage_tables.py` reads them).
+fn print_stage(tag: &str, sl: &SlowLoop) {
+    if !calab_cala::discover::timing::ON {
+        return;
+    }
+    let v: Vec<String> = sl.stage.to_vec().iter().map(|x| format!("{x:.3}")).collect();
+    println!(
+        "stage {tag}: frames {} cells {} | {}",
+        sl.frames(),
+        sl.len(),
+        v.join(" ")
     );
 }
 
@@ -1595,6 +1656,7 @@ impl LookBack {
         let stride = (t_len as f64 / round as f64).round().max(1.0) as usize;
         let s0 = sl.stats();
         let w0 = sl.work();
+        print_stage("settle-start", sl);
         let mut prev = SettleSnap::take(engine.library(), sl);
         self.settle_out = String::from(
             "check\tframes\twall_s\tcells\trel_l2_med\tshape_med\tnoise_med\tratio_med\tratio_p75\tratio_p90\tshare_gt1\tshare_gt1p5\tshare_gt2\tshare_gt3\tvisits\trefines\tcommits\twork\tstop\n",
@@ -1714,6 +1776,7 @@ impl LookBack {
         sl.set_reservoir_frozen(false);
         self.full_observe = false;
         let wall = t0.elapsed().as_secs_f64();
+        print_stage(&format!("settle-end wall_s {wall:.3}"), sl);
         self.wall_s += wall;
         let st = sl.stats();
         println!(
@@ -6667,6 +6730,9 @@ fn main() {
                         g.cells, g.explained, g.residual_excess, g.snr_median, g.pass_frac, g.adds_per_min, extra,
                         t_all.elapsed().as_secs_f64()
                     );
+                        if let Some(sl) = slow.as_ref() {
+                            print_stage(&format!("t{t_end}"), sl);
+                        }
                     }
                 }
             }

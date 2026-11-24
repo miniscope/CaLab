@@ -3884,4 +3884,45 @@ fn visit_rate_caps_jobs_and_not_refine() {
         "{} Refine visits",
         s.stats().visits - visits0
     );
+
+/// Feature `threads` (stage-0 kill test): the per-cell and per-cluster
+/// footprint statistics on a rayon pool give bit-identical libraries and
+/// counters for 1 and 4 threads (a Discover run with the joint update on,
+/// so both the per-cell and the cluster paths run).
+#[cfg(feature = "threads")]
+#[test]
+fn threaded_statistics_are_bit_identical_for_any_thread_count() {
+    let t = 1500;
+    let mut rng = Lcg(97);
+    let cells = vec![
+        (blob_w(0, 30.0, 30.0, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        (blob_w(1, 30.0, 33.5, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        (blob_w(2, 60.0, 64.0, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        (blob_w(3, 70.0, 40.0, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+    ];
+    let m = movie(&cells, t, 31);
+    let go = |threads: usize| {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            let cfg = SlowLoopConfig {
+                joint_update: JointUpdate::All,
+                ..v2_config()
+            };
+            let (mut slow, mut eng) = start(cfg, &[]);
+            let mut deleted = Vec::new();
+            drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+            let lib = slow.finalize().unwrap();
+            (lib.to_bytes(), slow.stats(), slow.replay_stats, slow.work())
+        })
+    };
+    let one = go(1);
+    let four = go(4);
+    assert!(one.1.adds > 0, "nothing discovered: {:?}", one.1);
+    assert_eq!(one.1, four.1);
+    assert_eq!(one.2, four.2);
+    assert_eq!(one.3, four.3);
+    assert!(one.0 == four.0, "libraries differ between 1 and 4 threads");
 }

@@ -1088,6 +1088,11 @@ impl VisitRunner {
         self.inner.set_noise(noise)
     }
 
+    /// The stage timers of the visits run here (feature `timing`).
+    pub fn stage_timing(&self) -> &super::timing::StageTiming {
+        &self.inner.stage
+    }
+
     /// Tile background bases held between jobs (none: see [`VisitRunner::run`]).
     #[cfg(test)]
     pub(crate) fn cached_bases(&self) -> usize {

@@ -1061,7 +1061,14 @@ impl SlowLoop {
         let version = lib.version();
         let mut work = 0u64;
         let mut cbuf = std::mem::take(&mut self.cbuf);
+        // Feature `threads` (measurement): the clusters' pushes, prepared
+        // here in order, run on a rayon pool after this loop.
+        #[cfg(feature = "threads")]
+        let mut prep: Vec<Option<(Vec<f32>, Option<Vec<f32>>)>> =
+            Vec::with_capacity(self.clusters.len());
         for ci in 0..self.clusters.len() {
+            #[cfg(feature = "threads")]
+            prep.push(None);
             if let Some(o) = &self.lb_only {
                 if !self.clusters[ci].ids.iter().any(|id| o.contains(id)) {
                     continue;
@@ -1098,7 +1105,6 @@ impl SlowLoop {
                 }
             }
             let st = &mut self.clusters[ci];
-            let n = st.pix.len();
             if st.version != version {
                 st.cols.clear();
                 for &s in &slots {
@@ -1109,18 +1115,49 @@ impl SlowLoop {
             let c: Vec<f32> = slots.iter().map(|&s| traces.traces[s]).collect();
             let lv: Option<Vec<f32>> =
                 ring.then(|| slots.iter().map(|&s| traces.background[s]).collect());
-            if !st.push_frame(
-                frame,
-                &self.model,
-                lv.as_deref(),
-                &c,
-                f64::from(w),
-                &mut cbuf,
-            ) {
-                self.replay_stats.skipped_frames += 1;
-                continue;
+            #[cfg(feature = "threads")]
+            {
+                prep[ci] = Some((c, lv));
             }
-            work += (n * (3 * c.len() + 3)) as u64;
+            #[cfg(not(feature = "threads"))]
+            {
+                let n = st.pix.len();
+                if !st.push_frame(
+                    frame,
+                    &self.model,
+                    lv.as_deref(),
+                    &c,
+                    f64::from(w),
+                    &mut cbuf,
+                ) {
+                    self.replay_stats.skipped_frames += 1;
+                    continue;
+                }
+                work += (n * (3 * c.len() + 3)) as u64;
+            }
+        }
+        #[cfg(feature = "threads")]
+        {
+            use rayon::prelude::*;
+            let model = &self.model;
+            let (skipped, w_sum) = self
+                .clusters
+                .par_iter_mut()
+                .zip(prep.par_iter())
+                .map_init(Vec::new, |buf, (st, p)| {
+                    let Some((c, lv)) = p else {
+                        return (0u64, 0u64);
+                    };
+                    let n = st.pix.len();
+                    if st.push_frame(frame, model, lv.as_deref(), c, f64::from(w), buf) {
+                        (0, (n * (3 * c.len() + 3)) as u64)
+                    } else {
+                        (1, 0)
+                    }
+                })
+                .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+            self.replay_stats.skipped_frames += skipped;
+            work += w_sum;
         }
         self.cbuf = cbuf;
         let bytes: usize = self.clusters.iter().map(|c| c.bytes()).sum();

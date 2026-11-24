@@ -102,6 +102,7 @@ workerScope.onmessage = (e) => {
     defer: (fn) => void pause().then(fn),
   });
   const r = runner;
+  if (data.debugTiming) r.setDebugTiming(true);
   if (pace) r.setPace(pace.fps, pace.paused);
   if (cap !== null) r.setCap(cap);
   if (pool) r.setSettlePool(pool.session, pool.workers);
@@ -118,7 +119,7 @@ workerScope.onmessage = (e) => {
   visits.forEach((v, i) => {
     v.onmessage = (ev: MessageEvent<VisitToOwner>) => {
       try {
-        r.handleVisit(i, ev.data);
+        r.handlerSpan('visit', () => r.handleVisit(i, ev.data));
       } catch (err) {
         report(ev.data.session, err);
       }
@@ -137,7 +138,7 @@ function connectLookback(i: number): void {
   r.connectLookback(p, i);
   p.onmessage = (ev: MessageEvent<LookbackToSlow>) => {
     try {
-      r.handleLookback(ev.data, i);
+      r.handlerSpan(`lookback${i}`, () => r.handleLookback(ev.data, i));
     } catch (err) {
       report(ev.data.session, err);
     }
