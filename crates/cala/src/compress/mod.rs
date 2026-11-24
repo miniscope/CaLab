@@ -44,6 +44,11 @@ use crate::preprocess::Dims;
 const N_OVERSAMPLES: usize = 10;
 /// Trailing components that must all fail the cut for the rank to stop growing.
 const ADAPT_MARGIN: usize = 10;
+/// Extra components beyond the previous window's rank plus [`ADAPT_MARGIN`]
+/// when a tile's sketch starts from that rank ([`k0_after`]).
+const ADAPT_SLACK: usize = 4;
+/// Smallest starting rank of [`k0_after`].
+const K0_FLOOR: usize = 16;
 /// Magic and header length of a factor file ([`WindowFactors::to_bytes`]),
 /// and of the files written before format v2.
 const FILE_MAGIC: &[u8; 8] = b"CALAFAC2";
@@ -66,6 +71,9 @@ pub struct CompressConfig {
     pub max_rank: usize,
     /// Power iterations of the randomized SVD.
     pub n_iter: usize,
+    /// From a tile's second window on, start its sketch at [`k0_after`] of
+    /// the rank it kept in the previous window instead of `k0`.
+    pub adapt_k0: bool,
     /// A component is kept when its lag-1 autocorrelation exceeds
     /// `max(z / sqrt(T), rho_min)`.
     pub rho_min: f64,
@@ -92,6 +100,7 @@ impl Default for CompressConfig {
             k0: 40,
             max_rank: 300,
             n_iter: 2,
+            adapt_k0: true,
             rho_min: 0.2,
             z: 4.0,
             seed: 0,
@@ -444,7 +453,13 @@ impl WindowFactors {
 }
 
 /// A tile to compress: its index, `(x0, y0, w, h)` and its buffered frames.
-type Job<'a> = (usize, &'a (usize, usize, usize, usize), &'a mut Vec<i16>);
+/// A tile's index, place, buffer and the rank its previous window kept.
+type Job<'a> = (
+    usize,
+    &'a (usize, usize, usize, usize),
+    &'a mut Vec<i16>,
+    Option<usize>,
+);
 
 /// Buffers frames tile by tile and compresses each full window.
 pub struct WindowCompressor {
@@ -454,6 +469,8 @@ pub struct WindowCompressor {
     grid: Vec<(usize, usize, usize, usize)>,
     /// Per tile, `n x P` row-major, quantized.
     buf: Vec<Vec<i16>>,
+    /// Per tile, the rank its last window kept (0: none yet).
+    ranks: Vec<usize>,
     n: usize,
     start: u64,
     windows: u64,
@@ -474,11 +491,13 @@ impl WindowCompressor {
             .iter()
             .map(|g| Vec::with_capacity(g.2 * g.3 * cfg.window))
             .collect();
+        let ranks = vec![0; grid.len()];
         WindowCompressor {
             dims,
             cfg,
             grid,
             buf,
+            ranks,
             n: 0,
             start: 0,
             windows: 0,
@@ -522,15 +541,16 @@ impl WindowCompressor {
             .grid
             .iter()
             .zip(&mut self.buf)
+            .zip(&self.ranks)
             .enumerate()
-            .map(|(i, (g, b))| (i, g, b))
+            .map(|(i, ((g, b), &r))| (i, g, b, (r > 0).then_some(r)))
             .collect();
-        let run = |(i, g, b): Job| {
+        let run = |(i, g, b, prev): Job| {
             // No clock on wasm32-unknown-unknown (`Instant::now` panics).
             #[cfg(not(target_arch = "wasm32"))]
             let t0 = std::time::Instant::now();
             let seed = cfg.seed ^ (windows << 20) ^ i as u64;
-            let mut tf = compress_tile(b, t, g.2 * g.3, cfg, seed);
+            let mut tf = compress_tile(b, t, g.2 * g.3, &tile_config(cfg, prev), seed);
             (tf.x0, tf.y0, tf.w, tf.h) = *g;
             b.clear();
             #[cfg(not(target_arch = "wasm32"))]
@@ -562,6 +582,9 @@ impl WindowCompressor {
             })
         };
         done.sort_by_key(|d| d.0);
+        for (r, d) in self.ranks.iter_mut().zip(&done) {
+            *r = d.1.rank;
+        }
         let compress_seconds = done.iter().map(|d| d.2).sum();
         let tiles = done.into_iter().map(|d| d.1).collect();
         let out = WindowFactors {
@@ -801,6 +824,27 @@ impl<'a> TileMatrix<'a> {
             }
         }
         out
+    }
+}
+
+/// Starting rank of a tile whose previous window kept `prev_rank`
+/// components: enough that the last [`ADAPT_MARGIN`] components are noise
+/// unless the rank grew by more than [`ADAPT_SLACK`], so the sketch rarely
+/// doubles, at about half today's `k0 = 40` for a tile of rank 6-8.
+/// `_k0` (the configured start) is the rank of a tile's first window.
+pub fn k0_after(prev_rank: usize, _k0: usize) -> usize {
+    (prev_rank + ADAPT_MARGIN + ADAPT_SLACK).max(K0_FLOOR)
+}
+
+/// The settings of a tile whose previous window kept `prev_rank`
+/// components (`None`: its first window, or `cfg.adapt_k0` off).
+pub fn tile_config(cfg: &CompressConfig, prev_rank: Option<usize>) -> CompressConfig {
+    match prev_rank {
+        Some(r) if cfg.adapt_k0 && r > 0 => CompressConfig {
+            k0: k0_after(r, cfg.k0),
+            ..cfg.clone()
+        },
+        _ => cfg.clone(),
     }
 }
 
@@ -1214,6 +1258,26 @@ mod tests {
         }
         assert!(err_rec < 0.1 * err_noisy, "{err_rec} vs {err_noisy}");
         assert!(wf.bytes() * 10 < t * side * side * 4);
+    }
+
+    #[test]
+    fn a_later_window_sketches_near_the_rank_its_tile_kept() {
+        let (t, side, n_cells) = (300, 32, 6);
+        let (noisy, _) = synth(2 * t, side, n_cells, 1.0);
+        let cfg = CompressConfig {
+            window: t,
+            ..CompressConfig::default()
+        };
+        let mut wc = WindowCompressor::new(Dims::new(side, side).unwrap(), cfg);
+        let out: Vec<WindowFactors> = noisy
+            .chunks_exact(side * side)
+            .filter_map(|f| wc.push(f))
+            .collect();
+        let (a, b) = (&out[0].tiles[0], &out[1].tiles[0]);
+        assert_eq!(a.svd_rank, 40, "the first window starts at k0");
+        assert_eq!(b.svd_rank, k0_after(a.rank, 40), "no doubling");
+        assert!(b.svd_rank < a.svd_rank);
+        assert!(b.rank.abs_diff(a.rank) <= 1, "{} vs {}", b.rank, a.rank);
     }
 
     /// A tile record in the v1 layout (`CTF1`), as files written before format v2.

@@ -22,7 +22,9 @@ use super::project::{never_valid_under, FactorExtractor, WindowProjector};
 use super::review::{
     candidates, candidates_to_wire, scan_band, scan_rows, KnownCell, ReviewConfig, SpotStats,
 };
-use super::{compress_tile, quantize_tiles, CompressConfig, TileFactors, WindowFactors};
+use super::{
+    compress_tile, quantize_tiles, tile_config, CompressConfig, TileFactors, WindowFactors,
+};
 use crate::preprocess::Dims;
 use crate::trace::{FrameTraces, Library, SolverConfig, TraceState};
 
@@ -171,7 +173,8 @@ impl JsTileCompressor {
     }
 
     /// `raw`: `frames x (w * h)` quantized values of the tile at `(x0, y0)`,
-    /// a frame per row.
+    /// a frame per row. `prev_rank`: the rank this tile kept in the previous
+    /// window (absent or 0: none), where its sketch starts (`k0_after`).
     #[allow(clippy::too_many_arguments)]
     pub fn compress(
         &self,
@@ -182,6 +185,7 @@ impl JsTileCompressor {
         w: u32,
         h: u32,
         seed: u32,
+        prev_rank: Option<u32>,
     ) -> Result<JsTileFactors, JsError> {
         let (t, p) = (frames as usize, w as usize * h as usize);
         if t < 2 || p < 1 || raw.len() != t * p {
@@ -190,7 +194,8 @@ impl JsTileCompressor {
                 format!("{} values for {t} frames x {p} pixels", raw.len()),
             ));
         }
-        let mut inner = compress_tile(raw, t, p, &self.cfg, u64::from(seed));
+        let cfg = tile_config(&self.cfg, prev_rank.map(|r| r as usize));
+        let mut inner = compress_tile(raw, t, p, &cfg, u64::from(seed));
         (inner.x0, inner.y0, inner.w, inner.h) = (x0 as usize, y0 as usize, w as usize, h as usize);
         Ok(JsTileFactors { inner })
     }

@@ -201,6 +201,8 @@ export type CoordinatorToHelper =
       w: number;
       h: number;
       seed: number;
+      /** The rank this tile kept in the previous window (absent: none). */
+      prevRank?: number;
       raw: Int16Array;
     };
 

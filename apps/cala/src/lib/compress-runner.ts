@@ -80,6 +80,7 @@ export interface TileCompressorLike {
     w: number,
     h: number,
     seed: number,
+    prevRank?: number,
   ): TileFactorsLike;
   free(): void;
 }
@@ -193,6 +194,8 @@ export class CompressRunner {
   private session = -1;
   private init: CompressInit | null = null;
   private tiles: Tile[] = [];
+  /** Per tile, the rank its last compressed window kept (where its next sketch starts). */
+  private tileRanks: number[] = [];
   /** Pixels of all tiles (more than a frame when tiles overlap). */
   private layoutPx = 0;
   private compressor: TileCompressorLike | null = null;
@@ -244,6 +247,7 @@ export class CompressRunner {
       // The layout first: a refused one must not leave a half-initialised session.
       const tiles = tilesOf(this.deps.layout(msg.width, msg.height, msg.tile, msg.tiling));
       this.tiles = tiles;
+      this.tileRanks = [];
       this.layoutPx = tiles.reduce((s, t) => s + t.w * t.h, 0);
       this.session = msg.session;
       this.init = msg;
@@ -727,6 +731,7 @@ export class CompressRunner {
         w: t.w,
         h: t.h,
         seed: ((job.index << 20) ^ i) >>> 0,
+        prevRank: this.tileRanks[i],
       }));
       // A reset while the files opened: the pool already started a new run.
       if (epoch !== this.epoch) return;
@@ -743,7 +748,8 @@ export class CompressRunner {
             o += n * p;
           }
         },
-        write: (_tj, r) => {
+        write: (tj, r) => {
+          this.tileRanks[tj.tile] = r.rank;
           ms += r.ms;
           rank += r.rank;
           len[0] = r.bytes.length;
