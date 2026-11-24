@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Visit budget sweep (results/2026-11-24-visit-budget-sweep.md): one row per run, then per budget the mean over runs.
 
-    $MINISIM_PY tools/cala-eval/visit_budget_summary.py [--root R] [--ref-budget B]
+    $MINISIM_PY tools/cala-eval/visit_budget_summary.py [--root R] [--ref ARM]
 
 Runs are `visit_budget_sweep.sh` outputs `<root>/<sim>_s<seed>_b<budget>/` (with `demix_metrics.py`'s files). Per run:
 visits per observed Discover frame and per Final-settle frame, cells, matched / false (demix_metrics: Hungarian on the
@@ -9,9 +9,10 @@ footprint correlation, r >= 0.7, detectable GT units), precision = matched / cel
 units, mean footprint r of the matched cells (all, and those whose nearest GT neighbour is < 1 D away), median trace r
 (demix_metrics `tr_r`, the dumped traces), bitten share (matched pairs within reach whose estimated footprint at the
 neighbour's centre is < 0.5 of the truth's; slider_tier1_summary's definition), and wall seconds (Discover, Final
-settle) and peak RSS. Per budget and metric: the mean of the paired differences against `--ref-budget` (the app
-calibration) over the (sim, seed) runs, with a t 95 % CI, and the seed-to-seed spread at the reference budget (mean
-|seed 1 - seed 2| over sims). Needs numpy.
+settle) and peak RSS. Arms are named by budget scale (1x = 1.3e7), settle steps and, for full-length runs, frames. Per
+arm and metric: the mean, and the mean paired difference against `--ref` (default `b1.00x k1.2`) with a t 95 % CI;
+then a trend fit over the main sweep (slope per doubling of the budget, one intercept per sim) against the seed SD
+pooled over all same-arm seed pairs, and the full-length arms. Needs numpy.
 """
 
 from __future__ import annotations
