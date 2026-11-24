@@ -5,6 +5,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Added
+
+- **cala (debug only, off by default):** `?debug&csdelta` settle delta: the look-back worker that solved a settle chunk sums its footprint statistics and the cell-model worker only adds them. Covers the Background settle and now the Final settle (the delta is added before the chunk's frames go through the ordinary observe without the statistics update; the slow-loop indices are predicted per request and checked). Byte-identical to before with the flag off. qc_eval `--csdelta` / `--settle-delta`; Chrome scripts `tools/cala-eval/csdelta_chrome_final.{sh,py}`, `memory-measure.mjs --stop-after-settle` and `--query`.
+
 ## [2.22.1] - 2026-11-23
 
 ### Changed

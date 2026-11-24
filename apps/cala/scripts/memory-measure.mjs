@@ -42,6 +42,7 @@
  *   `--csettle-off`: no Background settle (`&csettle=0`).
  *   `--csdelta`: the settle delta (`?debug&csdelta`): the settle look-back workers sum each
  *   chunk's footprint statistics and the slow worker only adds them.
+ *   `--stop-after-settle` (session runs with `--lookback`): stop once the first Discover has settled.
  *   `--headed` runs system Chrome with a real GPU (headless SwiftShader hides memory behaviour).
  *
  * Opens `<folder>` (a session folder or a parent of several) through the
@@ -102,7 +103,9 @@ const csQuery =
   (lbPool !== '' ? `&lbpool=${lbPool}` : '') +
   (args.includes('--needfirst') ? '&needfirst' : '') +
   (args.includes('--csettle-off') ? '&csettle=0' : '') +
-  (csdelta ? '&csdelta' : '');
+  (csdelta ? '&csdelta' : '') +
+  // `--query '&a=b'`: more query parameters, as given (e.g. `&visits=0`).
+  opt('--query', '');
 mkdirSync(out, { recursive: true });
 const udd = join(out, `udd-${tag}`);
 rmSync(udd, { recursive: true, force: true });
@@ -595,6 +598,24 @@ async function probeReport() {
   );
   const ch = await page.evaluate(() => window.__cala.endSettleChange?.() ?? null).catch(() => null);
   L(`PROBE end-settle-change ${JSON.stringify(ch)}`);
+  // Where the Final settle's look-back time went (worker side, summed over its answers).
+  const acc = await page
+    .evaluate(() => {
+      const st = window.__cala.cells.status();
+      const a = st?.accounting;
+      return a
+        ? {
+            end: a.lookback.end,
+            workers: a.lookbackWorkerBusyMs ?? null,
+            readers: a.settleReaderBusyMs ?? null,
+            // The slow loop's counters at the final library (the settle's visits are the rise
+            // from `at-frames-done`).
+            slow: { observed: st.observed, jobs: st.jobs, refines: st.counters.refines },
+          }
+        : null;
+    })
+    .catch(() => null);
+  L(`PROBE settle-work ${JSON.stringify(acc)}`);
   const plain = (l) =>
     l && {
       version: l.version,
@@ -617,6 +638,11 @@ async function probeReport() {
       join(out, `${tag}-final.json`),
       JSON.stringify({ ...libs.final, noise: libs.noise }),
     );
+  // The final footprint values unrounded (bitwise comparisons between builds).
+  const exact = await page
+    .evaluate(() => Array.from(window.__cala.cells.library()?.values ?? []))
+    .catch(() => null);
+  if (exact) writeFileSync(join(out, `${tag}-final-exact.json`), JSON.stringify(exact));
   writeFileSync(join(out, `${tag}-probe.json`), JSON.stringify({ probe: p, endSettleChange: ch }));
 }
 
@@ -754,6 +780,17 @@ while (!stop) {
       stop = 'done';
     }
     if (r.st?.pst === 'error') stop = 'error';
+  }
+  if (!single && lookback && discoverDoneAt === null) {
+    // A session run: the first Discover's Final settle (Joint: the only one), reported once.
+    const fin = await page.evaluate(() => window.__calaProbe?.final ?? null).catch(() => null);
+    if (fin !== null) {
+      discoverDoneAt = r.t;
+      L(`DISCOVER_SETTLED ${r.t.toFixed(1)}s ${JSON.stringify(r.st?.lb)}`);
+      await probeReport();
+      // `--stop-after-settle`: a session run ends here (no Extract or export).
+      if (args.includes('--stop-after-settle')) stop = 'settled';
+    }
   }
   if (!single && downloads > 0 && /done|finished|complete|saved/i.test(run)) stop = 'done';
   if (!single && /error|failed/i.test(run)) stop = 'error: ' + run;
