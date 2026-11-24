@@ -32,6 +32,8 @@ import {
   cadeconCells,
   cadeconIsClassic,
   calaExportBytes,
+  FACTORS_EXPORT_NOTE,
+  factorTailNote,
   fileStem,
   saveExport,
   writeCaDeconExport,
@@ -315,10 +317,33 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   };
 
   /** `withRecord`: gather the run record (at write time only; the cell count in the button reads this reactively without it). */
+  /**
+   * A `?factors` stream: Extract's traces are the export's, with the live traces beside them
+   * (when they are for the same cells), the notes, and the frames both cover.
+   */
+  const factorExport = (
+    r: Pass2Result,
+  ): Pick<ExportInput, 'liveTraces' | 'notes' | 'frameRange'> | null => {
+    if (!props.live || r.source !== 'factors') return null;
+    const live = liveResult();
+    const same =
+      live !== null &&
+      live.ids.length === r.ids.length &&
+      live.ids.every((id, i) => id === r.ids[i]);
+    if (live && !same)
+      console.warn('cala export: the live traces are for other cells than Extract; left out.');
+    const tail = live !== null && r.frames < live.frames;
+    return {
+      ...(live && same ? { liveTraces: live.traces } : {}),
+      notes: [FACTORS_EXPORT_NOTE, ...(tail ? [factorTailNote(r.frames, live.frames)] : [])],
+      ...(tail ? { frameRange: { start: 0, end: r.frames } } : {}),
+    };
+  };
   const exportInput = (withRecord = false): ExportInput | null => {
     const r = exportResult();
     if (!r) return null;
     return {
+      ...factorExport(r),
       label: props.label,
       width: props.width,
       height: props.height,
