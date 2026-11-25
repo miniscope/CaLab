@@ -549,7 +549,7 @@ const App: Component = () => {
         msPerFrame: compress.status()?.msPerFrame ?? 0,
         workers: pipeline.runPool()?.after ?? 1,
         // A GPU run is never more than a window and its slack behind: wait for its last window.
-        wait: (params.has('debug') && params.has('fwait')) || pageFactors.factorsGpu,
+        wait: (params.has('debug') && params.has('fwait')) || pipeline.gpuFactorRun(),
         width: i?.width ?? 0,
         height: i?.height ?? 0,
       });

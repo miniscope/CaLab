@@ -120,7 +120,7 @@
  * `compress_behind_frames` (not compressed at Discover's end), `compress_backlog_peak_bytes`
  * (window files waiting for compression, at their peak), `compress_fps_after`,
  * `compress_window` (frames per window), `compress_ring` (frames the GPU's ring holds),
- * `compress_backend` ('cpu', or 'gpu' with `?factors=gpu`) and, on the GPU,
+ * `compress_backend` ('cpu', or 'gpu' on a GPU factor run) and, on the GPU,
  * `compress_wait_s` and `compress_waits` (Discover waited for room in the GPU's ring:
  * seconds in all, and how many times). Extract's
  * record of a factor run solved by the extractor carries `extract_engine` ('factors'),

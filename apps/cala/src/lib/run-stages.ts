@@ -136,7 +136,7 @@ export interface StageRun {
   splits?: number;
   /** Discover: it ran with look-back (and its settle). */
   lookback?: boolean;
-  /** Discover: the Final settle read the factors or, with `?factors=file`, the file, and why. */
+  /** Discover: the Final settle read the factors or the file, and why. */
   settleSource?: 'factors' | 'file';
   settleSourceReason?: string;
   /** Extract: it solved the frames rebuilt from the factors (and which), or replayed the file and why. */

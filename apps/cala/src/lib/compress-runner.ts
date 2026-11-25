@@ -35,7 +35,7 @@
  * files waiting for compression are capped (`backlogCap`): past the cap the
  * run's factors are given up, its files removed, and one error says why.
  *
- * On the GPU (`CompressInit.gpu`, `?factors=gpu`): no window files. Each
+ * On the GPU (`CompressInit.gpu`, a recording's default): no window files. Each
  * chunk is quantized in frame order and uploaded to the GPU compressor's ring
  * of `window + slack` frames; the runner cuts windows of the GPU's length from
  * the stream frame indices (the feed's `window` and `last` are ignored) and
@@ -159,7 +159,7 @@ export const GPU_WAIT_SHARE_MAX = 0.1;
 /** The wait share is judged once this many windows are written (the first windows wait the most). */
 export const GPU_WAIT_MIN_WINDOWS = 3;
 
-/** Why a GPU run (a recording's default, `?factors=gpu`) has no factors. */
+/** Why a GPU run (a recording's default) has no factors. */
 export const GPU_TEXT = {
   none: (why: string) => `No factors: the GPU compressor could not start (${why}).`,
   behind: 'No factors: the GPU compressor fell a window behind Discover.',

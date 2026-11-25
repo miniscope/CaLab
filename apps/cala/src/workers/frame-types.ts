@@ -53,7 +53,7 @@ export interface CellsSettings {
   compressBacklogCap?: number;
   /** With `compress`: Extract on factors on rebuilt frames, as before slice 6 (`?debug&fextract=0`). */
   compressFrameExtract?: boolean;
-  /** With `compress`: a recording with `?factors=gpu` compresses its windows on the GPU (`CompressInit.gpu`). */
+  /** With `compress`: a recording on the GPU route (the default) compresses its windows on the GPU (`CompressInit.gpu`). */
   compressGpu?: boolean;
   /** With `compressGpu`: windows the CPU compresses too, to check the GPU's factors (`?debug&gpucheck=N`). */
   compressGpuCheck?: number;

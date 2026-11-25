@@ -4,7 +4,7 @@
  * the slow worker. It answers the main thread with the `pipeline-step`
  * response of each request, so it owns the slow-worker port and discovery
  * switch in a pipelined run. It never waits for the slow worker (see
- * `FastLoop`). A `?factors=gpu` recording waits before a batch while the GPU
+ * `FastLoop`). A recording on the GPU route (the default) waits before a batch while the GPU
  * compressor's ring is full (`CompressFeed.room`); holding the job holds its
  * pooled buffer, so the stages before this one wait too. See
  * `lib/pipeline-stages.ts`.

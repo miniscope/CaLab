@@ -6,7 +6,7 @@
  * thread. With the history review on, each window's factors also go to the
  * review worker over a second port. With helpers (`compress-helper-worker.ts`),
  * each window's tiles are shared with them over one port each (`TilePool`).
- * A `?factors=gpu` run compresses its windows on the GPU (`openGpuCompressor`).
+ * A recording's GPU run (the default) compresses its windows on the GPU (`openGpuCompressor`).
  */
 /// <reference types="@webgpu/types" />
 import {

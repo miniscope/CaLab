@@ -46,7 +46,7 @@ export interface CompressFeedOptions {
   backlogCap?: number;
   /** Extract on factors on rebuilt frames, as before slice 6 (`?debug&fextract=0`). */
   frameExtract?: boolean;
-  /** Compress on the GPU (`?factors=gpu`, a recording; `CompressInit.gpu`). */
+  /** Compress on the GPU (a recording's default; `CompressInit.gpu`). */
   gpu?: boolean;
   /** With `gpu`: windows the CPU compresses too, to check the GPU's factors (`?debug&gpucheck=N`). */
   gpuCheck?: number;

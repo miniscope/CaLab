@@ -34,6 +34,7 @@ import {
   cadeconIsClassic,
   calaExportBytes,
   FACTORS_EXPORT_NOTE,
+  exportFormatVersion,
   factorTailNote,
   fileStem,
   saveExport,
@@ -235,6 +236,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     name: string,
     sizeHint: number,
     write: (sink: ByteSink, progress: (done: number, total: number) => void) => Promise<void>,
+    formatVersion?: number,
   ): Promise<void> {
     setExportError(null);
     setExporting(`Exporting ${name}`);
@@ -244,7 +246,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           setExporting(`Exporting ${name}: ${all > 0 ? Math.floor((100 * done) / all) : 0}%`),
         ),
       );
-      reportResultsExported(1);
+      reportResultsExported(1, formatVersion);
       markResultExported();
     } catch (err) {
       setExportError(err instanceof Error ? err.message : String(err));
@@ -349,7 +351,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     r: Pass2Result,
   ): Pick<ExportInput, 'liveTraces' | 'notes' | 'frameRange'> | null => {
     if (!props.live) {
-      // A `?factors=file` recording: notes on what the settle and Extract read.
+      // A recording's factor run (GPU or `?factors=file`): notes on what the settle and Extract read.
       const notes = fileFactorNotes(props.stages.runs());
       return notes.length ? { notes } : null;
     }
@@ -946,6 +948,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
                       `${fileStem(props.label)}_cala.npz`,
                       calaExportBytes(input),
                       (sink, prog) => writeCalaExport(input, sink, { onProgress: prog }),
+                      exportFormatVersion(input),
                     );
                 }}
               >

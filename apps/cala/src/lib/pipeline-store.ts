@@ -226,6 +226,7 @@ export function createPipelineStore(
   const [factorRun, setFactorRun] = createSignal(false);
   const [factorsFile, setFactorsFile] = createSignal(false);
   const [factorFileRun, setFactorFileRun] = createSignal(false);
+  const [gpuFactorRun, setGpuFactorRun] = createSignal(false);
   // A recording's factor file run compresses on the GPU (the default, `?factors=gpu`).
   const [factorsGpu, setFactorsGpu] = createSignal(false);
   // A stream is a factor run without a switch (`factorsFromPage`); `?compress` asked on the page
@@ -1006,6 +1007,7 @@ export function createPipelineStore(
     setLookbackRun(false);
     setFactorRun(false);
     setFactorFileRun(false);
+    setGpuFactorRun(false);
     record = new RunRecord();
     pauseClock.reset();
     meter = new ThroughputMeter();
@@ -1092,6 +1094,7 @@ export function createPipelineStore(
       });
       setFactorRun(runPlan.factorSettle);
       setFactorFileRun(runPlan.factorFile);
+      setGpuFactorRun(runPlan.gpu === true);
       setCompressRun(runPlan.compress !== null);
       const pool = runPlan.compress
         ? poolForRun(flat.identity?.()?.live === true, compressPool())
@@ -1288,6 +1291,8 @@ export function createPipelineStore(
     setCompressAsked,
     factorRun,
     factorFileRun,
+    /** The current run compresses on the GPU (`FactorRunPlan.gpu`). */
+    gpuFactorRun,
     /** The current run compresses its frames (a factor run or `?compress`). */
     compressRun,
     /** The page's compress pool widths (set once by the app; null: one worker). */
