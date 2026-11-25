@@ -87,7 +87,17 @@ width, or in a portrait window, the column moves under the image and the page sc
 **Discover** → **Final settle** → **Extract**. Each fills with its own progress and shows
 its percent and, while it runs, its frames per second; the running step has a coloured
 edge and moving stripes, a finished one a ✓, and a step that will not run (look-back
-off, Extract unticked, a live stream) is dimmed. Look-back and Background settle run
+off, Extract unticked) is dimmed. A live stream gets the Final settle and Extract after it
+ends, on the factors it wrote. A recording's frames are compressed on the GPU while Discover runs (the GPU
+route, by default; `?factors=gpu` asks for the same), and its Final settle and Extract read those factors
+when they are complete; when not they say "re-reads the file" with the reason. Without WebGPU or with too
+little GPU memory the run reads the file and says why. When the GPU falls behind, Discover waits for it (at
+most 30 s without progress, then the run reads the file). A GPU that makes Discover wait more than 10 % of its
+time (judged after each window, from the third on, while the recording runs) gives its factors up, and the Run
+panel and the export say "the GPU compressor made Discover wait N % of its time; the file is read instead". The
+export's `compress_wait_s` says how long Discover waited. `?factors=0` turns factors off for streams and
+recordings: Discover only for a stream, and a recording's settle and Extract read the file, as before.
+`?factors=file` (experimental) compresses a recording's factors on the CPU instead. Look-back and Background settle run
 inside Discover. The cell count, the session (in a multi-session run) and the pause and
 stop controls sit beside the boxes.
 
@@ -145,7 +155,7 @@ order you use them:
 
 In a narrow window the stages
 show as a stepper (Calibrate, Discover, Extract, Export) and the metrics as
-small tiles on the same fixed ranges. A live stream shows Discover only. In a
+small tiles on the same fixed ranges. A live stream with `?factors=0` shows Discover only. In a
 multi-session run the session list (with each boundary's health badge in a Joint run)
 follows.
 
@@ -489,7 +499,11 @@ published versions are permanent.
 - **Live acquisition is experimental.** The live-source field on the start page
   streams frames from a WebSocket (see the README). Apart from
   [testing with a simulated stream](#testing-with-a-simulated-stream), it is not
-  covered by this guide.
+  covered by this guide. A stream keeps its factors in the browser's storage, about
+  55 MB per 1,000 frames at 600 x 600 (about 2 GB for 30 minutes at 20 fps), with no
+  check of free space; if a write fails, the stream ends with Discover's cells and
+  traces, without the Final settle and Extract. Its export is format version 7 and
+  holds the live traces as `traces_live` beside Extract's `traces`.
 - **Everything stays in the tab.** Closing the page discards a run that was not
   exported.
 

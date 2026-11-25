@@ -144,6 +144,17 @@ export function createFrameClient(
   const pending = new Map<number, Pending>();
   let nextId = 1;
   let terminalError: Error | null = null;
+  /** The running pipeline compresses on the GPU (`cells.compressGpu`): its Discover may wait for the GPU. */
+  let gpuRun = false;
+  /**
+   * The run is stopped or replaced: a batch of a GPU run waiting for the GPU
+   * compressor's ring (trace worker, answered at once) must not hold it up.
+   */
+  function releaseGpuWait(): void {
+    if (pipelined && gpuRun)
+      void call({ type: 'release-compress' }, [], traceTarget).catch(() => {});
+    gpuRun = false;
+  }
 
   function fail(err: Error): void {
     terminalError ??= err;
@@ -233,15 +244,18 @@ export function createFrameClient(
         }
       : {}),
     async open(entries) {
+      releaseGpuWait();
       return expectType(await call({ type: 'open', entries }), 'opened').info;
     },
     async openSessions(sessions) {
+      releaseGpuWait();
       return expectType(await call({ type: 'open-sessions', sessions }), 'opened').info;
     },
     async probe(sessions) {
       return expectType(await call({ type: 'probe', sessions }), 'probed').results;
     },
     async openLive(url) {
+      releaseGpuWait();
       return expectType(await call({ type: 'open-live', url }), 'opened').info;
     },
     async readFrames(start, count) {
@@ -251,6 +265,8 @@ export function createFrameClient(
       return this.readFrames(index, 1);
     },
     async startPipeline(options = {}, cells, replay, flat) {
+      releaseGpuWait();
+      gpuRun = cells?.compressGpu === true;
       return expectType(
         await call({
           type: 'pipeline-start',
@@ -287,6 +303,7 @@ export function createFrameClient(
       return expectType(await call({ type: 'pipeline-step' }), 'pipeline-step').step;
     },
     async stopPipeline(opts) {
+      releaseGpuWait();
       expectType(
         await call({ type: 'pipeline-stop', ...(opts?.keepSlow ? { keepSlow: true } : {}) }),
         'pipeline-stopped',

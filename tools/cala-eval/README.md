@@ -487,6 +487,18 @@ are in the header of `qc_eval.rs` (`--settle-batch`, `--settle-round`, `--settle
 It writes `settle_checks.tsv` (per checkpoint: footprint change since the last checkpoint against split-half noise)
 and with `--settle-libs` the checkpoint libraries `footprints_settle{k}.bin` / `final_settle{k}.tsv`.
 
+Settle on Discover's own factors, and a settle without look-back:
+
+- `--factors-tiling plain|offset` (default `plain`; needs `--factors-out DIR`) cuts the factor dump's windows. The
+  dump is complete when Discover ends (before the drain and the settle).
+- `--settle-source raw|factors` (default `raw`) says where the settle's frames come from. `factors` rebuilds each frame
+  from its window in the `--factors-out` folder: no raw read, no preprocessing. Pixels never valid in a window are NaN,
+  as in the live frame. It needs `--factors-out` and `--settle-frames`, and prints
+  `settle source: factors (N window files read), 0 raw frames read`.
+- `--lookback 0 --settle-frames N` now runs the settle (a settle-only `LookBack`, rate 0; it prints
+  `lookback: off (settle only)`). Before, that combination ran no settle and said nothing. Discover is the same as
+  without `--settle-frames`.
+
 ```
 # several arms of a suite run tree against one reference, the rungs between them, and what each tail did
 $MINISIM_PY tools/cala-eval/settle_ladder.py --root $CALA_DATA/demix-suite/<name> --ref COMBO+R \

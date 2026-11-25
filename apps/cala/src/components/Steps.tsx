@@ -64,6 +64,7 @@ export function createSteps(src: () => StepSources): () => StepView[] {
       extractTotal: p.total(),
       extractFps: p.fps(),
       autoExtract: o.sessionRun === true || extractAfterDiscover(),
+      factorRun: s.factorRun(),
       // The visit hold, only while it binds (below the user's target, or any hold at Max).
       visitHold: visitHoldText(s.visitHold(), s.paceTarget()) !== null ? s.visitHold() : null,
     });

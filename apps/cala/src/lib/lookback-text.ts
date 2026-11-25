@@ -47,14 +47,24 @@ export function csettleText(cs: CsettleStatus | undefined, running: boolean): st
 export function lookbackText(lb: LookbackStatus, final: boolean): string {
   const err = lb.error ? ` · look-back stopped: ${lb.error}` : '';
   const st = lb.settle;
+  const on =
+    st?.source === 'factors'
+      ? ' on the factors'
+      : st?.source === 'file' && st.fileReason
+        ? ` (re-reads the file: ${st.fileReason})`
+        : '';
+  if (lb.settling && st?.waiting)
+    return `Final settle: waiting for the last factor window${csettleText(lb.csettle, false)}${err}`;
   if (lb.settling && st)
-    return `Final settle: ${settleFrames(st)}${movingText(st)}${csettleText(lb.csettle, false)}${err}`;
+    return `Final settle${on}: ${settleFrames(st)}${movingText(st)}${csettleText(lb.csettle, false)}${err}`;
   if (lb.settling) return `Final settle${csettleText(lb.csettle, false)}${err}`;
   const read = `${lb.pushed.toLocaleString()} frames re-read for ${lb.births} new cells`;
+  if (final && st?.error)
+    return `Look-back: ${read}${csettleText(lb.csettle, false)} · Final settle skipped: ${st.error}${err}`;
   if (final && st) {
     const end = st.stopped
       ? `final settle stopped by you after ${settleFrames(st)}`
-      : `final settle over ${settleFrames(st)}`;
+      : `final settle${on} over ${settleFrames(st)}`;
     return `Look-back: ${read}${csettleText(lb.csettle, false)} · ${end}${movingText(st)}${err}`;
   }
   return `Look-back: ${read} · ${lb.inNeed} cells still need data${csettleText(lb.csettle, true)}${err}`;
@@ -67,10 +77,12 @@ export function stageLabel(s: {
   extract: string;
   /** A live stream: nothing follows Discover, so its end is Done. */
   live?: boolean;
+  /** A `?factors` stream: Extract follows its Discover as a recording's does. */
+  factorRun?: boolean;
 }): string {
   if (s.discover !== 'done') return 'Discover';
   if (s.settling) return 'Final settle';
-  if (s.live) return 'Done';
+  if (s.live && !s.factorRun) return 'Done';
   if (s.extract === 'running') return 'Extract';
   if (s.extract === 'done') return 'Done';
   return 'Discover done';

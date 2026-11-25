@@ -18,6 +18,8 @@ import {
 } from './work-meter.ts';
 import type { CellStore } from './cell-store.ts';
 import type { CompressStore } from './compress-store.ts';
+import { FACTORS_FILE_JOINT, factorRunPlan } from './factor-run.ts';
+import { poolForRun, type PoolWidth } from './compress-pool.ts';
 import {
   flatFieldKey,
   initialFlatFieldState,
@@ -231,6 +233,28 @@ export function createPipelineStore(
    */
   const [lookback, setLookback] = createSignal(true);
   const [lookbackRun, setLookbackRun] = createSignal(false);
+  const [factors, setFactors] = createSignal(false);
+  const [factorRun, setFactorRun] = createSignal(false);
+  const [factorsFile, setFactorsFile] = createSignal(false);
+  const [factorFileRun, setFactorFileRun] = createSignal(false);
+  const [gpuFactorRun, setGpuFactorRun] = createSignal(false);
+  // A recording's factor file run compresses on the GPU (the default, `?factors=gpu`).
+  const [factorsGpu, setFactorsGpu] = createSignal(false);
+  // A stream is a factor run without a switch (`factorsFromPage`); `?compress` asked on the page
+  // (by default: a compress store was given); the current run compresses.
+  const [factorsDefault, setFactorsDefault] = createSignal(false);
+  const [compressAsked, setCompressAsked] = createSignal(compress !== undefined);
+  const [compressRun, setCompressRun] = createSignal(false);
+  // The page's compress pool widths (`compressPoolSize`), and the current run's (`poolForRun`).
+  const [compressPool, setCompressPool] = createSignal<PoolWidth | null>(null);
+  const [runPool, setRunPool] = createSignal<PoolWidth | null>(null);
+  // `?debug&cbacklog=GB`: the cap on window files waiting for compression (measurement).
+  let backlogCap: number | undefined;
+  // `?debug&fextract=0`: Extract on factors on rebuilt frames, as before slice 6 (measurement).
+  let frameExtract = false;
+  // `?debug&gpucheck=N`: a GPU run's first N windows are compressed on the CPU too (measurement).
+  let gpuCheck = 0;
+  let jointOf: () => boolean = () => false;
   /**
    * Settle during Discover ("Background settle", under look-back; runs only
    * while the target is below Max, at the settle governor's rate): on (the
@@ -1095,6 +1119,9 @@ export function createPipelineStore(
     if (lookbackSession) lookbackFeed?.reset(lookbackSession);
     lookbackSession = 0;
     setLookbackRun(false);
+    setFactorRun(false);
+    setFactorFileRun(false);
+    setGpuFactorRun(false);
     record = new RunRecord();
     pauseClock.reset();
     meter = new ThroughputMeter();
@@ -1171,7 +1198,27 @@ export function createPipelineStore(
       });
       // Look-back (experimental): from this start on, if the recording allows it.
       const lb = lookback() && discover() && lookbackFeed?.begin(session) === true;
-      runLevel = lb ? finalSettleLevelSig() : FINAL_SETTLE_LEVEL_DEFAULT;
+      const runPlan = factorRunPlan({
+        live: flat.identity?.()?.live === true,
+        factors: factors(),
+        factorsFile: factorsFile(),
+        factorsGpu: factorsGpu(),
+        factorsDefault: factorsDefault() && compress !== undefined,
+        compress: compressAsked() && compress !== undefined,
+        discover: discover(),
+        joint: jointOf(),
+      });
+      setFactorRun(runPlan.factorSettle);
+      setFactorFileRun(runPlan.factorFile);
+      setGpuFactorRun(runPlan.gpu === true);
+      setCompressRun(runPlan.compress !== null);
+      const pool = runPlan.compress
+        ? poolForRun(flat.identity?.()?.live === true, compressPool())
+        : null;
+      setRunPool(pool);
+      // Only an explicit `?factors=file`/`gpu`: the default has no factor route on a Joint run.
+      if (factors() && factorsFile() && jointOf()) console.warn(FACTORS_FILE_JOINT);
+      runLevel = lb || runPlan.factorSettle ? finalSettleLevelSig() : FINAL_SETTLE_LEVEL_DEFAULT;
       if (lb) {
         lookbackSession = session;
         setLookbackRun(true);
@@ -1203,7 +1250,22 @@ export function createPipelineStore(
           qc,
           residual: residual(),
           ...(forwardBuffers ? { forwardBuffers } : {}),
-          ...(compress ? { compress: true } : {}),
+          ...(runPlan.compress
+            ? {
+                compress: true,
+                ...(runPlan.compress !== 'plain' ? { compressTiling: runPlan.compress } : {}),
+                ...(pool ? { compressPool: pool } : {}),
+                ...(backlogCap !== undefined ? { compressBacklogCap: backlogCap } : {}),
+                ...(frameExtract ? { compressFrameExtract: true } : {}),
+                ...(runPlan.gpu ? { compressGpu: true } : {}),
+                ...(runPlan.gpu && gpuCheck > 0 ? { compressGpuCheck: gpuCheck } : {}),
+              }
+            : {}),
+          ...(runPlan.factorSettle ? { factorSettle: true } : {}),
+          ...(runPlan.factorFile ? { factorFile: true } : {}),
+          ...(runPlan.factorSettle && FINAL_SETTLE_LEVELS[finalSettleLevelSig()].fraction < 1
+            ? { settleFraction: FINAL_SETTLE_LEVELS[finalSettleLevelSig()].fraction }
+            : {}),
         },
         undefined,
         seed ? { seed } : undefined,
@@ -1348,6 +1410,37 @@ export function createPipelineStore(
      */
     lookback,
     setLookback,
+    setFactors,
+    setFactorsFile(on: boolean, joint: () => boolean): void {
+      setFactorsFile(on);
+      jointOf = joint;
+    },
+    /** A recording's factor file run compresses on the GPU (the default, `?factors=gpu`). */
+    setFactorsGpu,
+    setFactorsDefault,
+    setCompressAsked,
+    factorRun,
+    factorFileRun,
+    /** The current run compresses on the GPU (`FactorRunPlan.gpu`). */
+    gpuFactorRun,
+    /** The current run compresses its frames (a factor run or `?compress`). */
+    compressRun,
+    /** The page's compress pool widths (set once by the app; null: one worker). */
+    setCompressPool,
+    /** The current run's compress pool widths (null: one worker, or no compression). */
+    runPool,
+    /** `?debug&cbacklog=GB`: the cap on waiting window files, bytes (undefined: the default). */
+    setCompressBacklogCap(bytes: number | undefined): void {
+      backlogCap = bytes;
+    },
+    /** `?debug&fextract=0`: Extract on factors on rebuilt frames (measurement). */
+    setFrameExtract(on: boolean): void {
+      frameExtract = on;
+    },
+    /** `?debug&gpucheck=N`: windows of a GPU run the CPU compresses too (0: none). */
+    setGpuCheck(windows: number): void {
+      gpuCheck = windows;
+    },
     // (Not `??`: `blocked()` returns null when look-back can run.)
     lookbackBlocked: () =>
       lookbackFeed ? lookbackFeed.blocked() : 'Look-back is not available here.',

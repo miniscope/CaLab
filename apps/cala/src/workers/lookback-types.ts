@@ -16,6 +16,7 @@ import type { GovernorStatus } from '../lib/settle.ts';
 import type { LookbackTiming } from '../lib/work-meter.ts';
 import type { FolderEntry, SessionInput } from '../lib/frame-source.ts';
 import type { SessionTransform } from '../lib/session-boundary.ts';
+import type { CompressedWindow } from './compress-types.ts';
 
 /** Slow worker -> look-back worker. */
 export type SlowToLookback =
@@ -39,7 +40,9 @@ export type SlowToLookback =
   /** A library the slow loop published (`TraceLibrary.toBytes()`, a copy; transferred). */
   | { type: 'library'; session: number; version: number; bytes: Uint8Array }
   /** The `frames` buffer of a reply, back for reuse (transferred). */
-  | { type: 'release'; session: number; frames: Float32Array };
+  | { type: 'release'; session: number; frames: Float32Array }
+  /** A recording's settle with `?factors=file`: serve every later request from these factors (slice 3). */
+  | { type: 'factors'; session: number; factors: FactorSource['factors'] };
 
 /** Look-back worker -> slow worker. */
 export type LookbackToSlow =
@@ -70,6 +73,11 @@ export type LookbackToSlow =
 /** The recording the look-back worker opens (its own `FrameSource`, from the same `File`s). */
 export type LookbackSource = { entries: FolderEntry[] } | { sessions: SessionInput[] };
 
+/** A live stream's factors (`?factors`): the compress worker's run folder and its compressed windows. */
+export type FactorSource = {
+  factors: { folder: string; windows: CompressedWindow[]; width: number; height: number };
+};
+
 /** Main thread -> look-back worker. */
 export type MainToLookback =
   /** The port to the slow worker (transferred). */
@@ -80,7 +88,7 @@ export type MainToLookback =
    * back states of the newest two sessions only (worker 0 keeps every
    * session's, for the Final settle).
    */
-  | { type: 'begin'; session: number; source: LookbackSource; prune?: boolean }
+  | { type: 'begin'; session: number; source: LookbackSource | FactorSource; prune?: boolean }
   /** What the live pipeline recorded for frames `start..start + dy.length` (copies; transferred). */
   | {
       type: 'rows';
@@ -185,4 +193,17 @@ export interface SettleStatus {
   /** The user stopped it early. */
   stopped: boolean;
   done: boolean;
+  /** The settle read the factors (`?factors`, `?factors=file`) or, with `?factors=file`, the file. */
+  source?: 'factors' | 'file';
+  /** With `?factors=file`: why the settle reads the file. */
+  fileReason?: string;
+  /**
+   * Look-back workers that answered the settle's requests (worker 0 alone, or on a
+   * recording's factors the whole settle pool). Absent before the settle starts and from older builds.
+   */
+  workers?: number;
+  /** Discover is over and the factors are not ready yet (the settle has not started). */
+  waiting?: boolean;
+  /** The factors could not be used: Discover's library is the final one. */
+  error?: string;
 }

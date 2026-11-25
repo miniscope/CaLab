@@ -355,6 +355,14 @@ compressed, the traces of the whole recording are solved again from the
 factors with that library (back-fill): a cell found late gets its trace from
 the first frame on, and the trace viewer shows the back-filled traces.
 
+The files are factor format v2 (`CALAFAC2`: the tiling in the header, and per
+pixel the variance the rank cut discarded and the share of valid frames; v1
+files still read). A non-finite pixel is a missing sample. The app cuts plain
+tiles (the history review reads plain tiles only); the crate can also cut the
+frame on two grids offset by half a tile and blend them (`compress/blend.rs`),
+which removes the jump at tile lines. The randomized SVD runs two power
+iterations.
+
 - `src/lib/compress-feed.ts`: in the fast worker, cuts the stream into windows,
   quantizes each batch in tile order (int16, 1/64 grey level) and transfers it.
   Nothing is dropped, unlike the feed to the slow worker.
@@ -374,6 +382,114 @@ the first frame on, and the trace viewer shows the back-filled traces.
   once-per-run back-fill request.
 - `scripts/compress-bench.mjs`: local timing of the WASM compressor on a
   window dumped by `discover_eval --compress-dump`.
+
+### The compress pool
+
+The compress worker shares each window's tiles with compress helpers
+(`src/lib/compress-pool.ts`, `src/workers/compress-helper-worker.ts`). Only
+the compress worker touches OPFS: it reads one tile at a time from the
+window file, hands it to a free slot (itself or a helper), and writes the
+answers in tile order. A tile's seed depends only on its window and index,
+so the factor files are the same bytes for any number of workers. A helper
+that crashes, cannot start or does not answer within 60 s is dropped and
+its tile redone; a tile's error fails the window as before.
+
+The widths (`compressPoolSize`) leave Discover its cores: while Discover
+reads, 1 plus the cores no Discover thread uses (`cores - 6 - visit workers -
+settle pool`); from its last frame on, when the pipeline's stage workers
+are idle, `cores - 3 - visit workers - settle pool`; at most 4 each. On 10
+cores that is 1 and 3, on 8 cores 1 and 2, on 16 cores 4 and 4. A live
+stream keeps one worker while it streams. `?debug&cpool=D,E` sets both
+(measurement). The readout shows the workers and their pace once there is
+more than one.
+
+Window files waiting for compression are capped at 8 GB, or half of what
+the origin may still store (`navigator.storage.estimate()`), whichever is
+smaller. Past the cap the run's factors are given up: its files are
+removed, nothing more is written, and the factors are unusable (a
+recording's settle and Extract re-read the file and say why; a stream ends
+at Discover's library). Discover is not touched. `?debug&cbacklog=GB` sets
+the cap (measurement). In Chrome `quota - usage` came out at 10 GiB whatever
+the disk, so the cap is 5 GB in practice
+(`tools/cala-eval/results/2026-11-24-parallel-compress.md`).
+
+### A live stream's settle and Extract on its factors (the default)
+
+A live stream with Discover compresses on the two offset grids by default
+(`factorsFromPage`, `factorRunPlan`; `?factors=0` turns it off), and after
+the stream ends:
+
+- the slow loop waits for the last window (`SlowRunner.factors`; the main
+  thread's `FactorSettle` answers once the factors are `ready` or
+  `unusable`, with a 120 s watchdog on the compressor), then runs the Final
+  settle with look-back worker 0 serving frames rebuilt from the factors
+  (`FactorReader`; NaN where a window never had a valid sample,
+  `rebuildFrames`). The stream's slow loop is built with
+  `jointUpdate 'refine'`: the cluster replay runs in the settle only.
+- Extract solves each window from its factors without rebuilding a frame
+  (`FactorExtractor`, ported from #437: `WindowProjector` takes the solver's
+  functionals straight from the factors). A window where a pixel without
+  data lies under a cell, its moat, a ring or a basis map is solved on
+  rebuilt frames with the same engine and its missing-pixel fill, as before
+  (`neverValidUnder`, `solveWindow`). Every window starts the solver cold, so
+  the traces do not depend on which worker solved it. The windows go to the
+  compress helpers (`WindowPool`; on 10 cores 6 of them,
+  `?debug&cpool=D,E,X`), and `extracted` reaches the main thread in window
+  order. `?debug&fextract=0` uses rebuilt frames throughout (measurement).
+  On a 3-min 600 px stream Extract took 4 s on one worker and 1.5 s on six,
+  against 24 s on rebuilt frames
+  (`tools/cala-eval/results/2026-11-24-factor-extractor-speed.md`).
+  The back-fill does not run, so the live traces stay.
+- The export (format version 7 only with these fields, so every stream whose
+  factors were usable) keeps `traces_live` beside Extract's `traces` and
+  `traces_signed`, names the stage sources and says so in `meta_json.notes`.
+
+The look-back worker reads the factor files read-only through `getFile()`
+(`factorFiles`). Each compression run folder holds a Web Lock, so another
+tab's sweep leaves it alone. Factors take about 55 MB per 1,000 frames at
+600 px in OPFS (about 2 GB for 30 min at 20 fps); there is no quota or
+free-space check, and a failed write marks the factors unusable, so the
+stream ends at Discover's library.
+
+The switches on a stream: `?factors=0` runs it on Discover only, as before
+(with `?compress`: plain tiles and the back-fill). `?compress` alone is a
+factor run. `?compress&review` turns the default off and keeps the review
+(it reads plain tiles only); an explicit `?factors` with `?review` drops the
+review with a console warning. The compress worker exists on every page
+but `?factors=0` (idle on a recording that does not compress). Recordings do
+not change: they re-read the file; `?factors` on a recording runs as with
+`?compress`.
+
+### A recording's settle and Extract on its factors (`?factors=file`)
+
+With `?factors=file` (experimental) a recording's Discover also compresses
+its frames on the offset grids. Discover and its look-back are unchanged
+(look-back keeps re-reading the file). Nothing ever waits for the
+compressor beyond the last window:
+
+- At Discover's last frame the slow loop asks the main thread
+  (`SlowRunner.factors`, `FileSettleChoice`). More than one window (600
+  frames) not yet compressed: the Final settle re-reads the file at once.
+  Otherwise it waits for that last window (watchdog 120 s, slow-side limit
+  150 s), then the slow worker switches look-back worker 0 to the factors
+  over the port that carries its requests (`ServerSlot`, `FactorReader`),
+  and the settle runs on rebuilt frames.
+- Extract reads the factors when they are `ready` (every frame covered) as
+  it starts, in the compress worker as for a stream; otherwise it replays
+  the file. It never waits.
+- The Run panel and the export say which source each stage read and why
+  (`settle_source`, `settle_source_reason`, `source`, `source_reason`,
+  a note in `meta_json.notes`; format version 7). Without the switch
+  nothing changes.
+
+At 600 px one compress worker (about 40 frames/s) is slower than Discover
+reads a file, so the settle and often Extract re-read the file there; see
+`tools/cala-eval/results/2026-11-23-factors-file-speed.md`. While the compressor is behind, its
+waiting windows sit in OPFS as raw int16 frames (432 MB per window at
+600 px), so a long backlog needs several GB of free disk; a write that fails
+marks the factors unusable and both stages re-read the file. A Joint run
+with `?factors=file` runs as with `?compress`. `?factors=file` on a live
+stream means `?factors`.
 
 ### History review (`?compress&review`)
 

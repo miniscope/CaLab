@@ -11,6 +11,7 @@
  * carry the solver's precomputed terms, so the swap is a copy (a few ms at
  * hundreds of cells), not a rebuild.
  */
+import type { CompressToFast } from '../workers/compress-types.ts';
 import type { FastToSlow, PortLike, SlowToFast } from '../workers/slow-types.ts';
 import type { CompressFeedLike } from './compress-feed.ts';
 import { ForwardPool } from './forward-pool.ts';
@@ -138,6 +139,10 @@ export interface FastLoopOptions {
   initialLibrary?: Uint8Array;
   /** Discover with look-back (experimental): the slow loop's `init` says so (`SlowInit.lookback`). */
   lookback?: boolean;
+  /** A live stream with `?factors`: the slow loop's `init` says so (`SlowInit.factorSettle`; never with `lookback`). */
+  factorSettle?: boolean;
+  /** With `lookback`, a recording with `?factors=file`: the slow loop's `init` says so (`SlowInit.factorFile`). */
+  factorFile?: boolean;
   /** With `lookback`: settle during Discover may run (`SlowInit.csettle`, `SlowInit.csettleYield`, `SlowInit.csettleNeedFirst`). */
   csettle?: boolean;
   csettleYield?: number;
@@ -169,6 +174,8 @@ export const FAST_LOOP_DEFAULTS = {
   qcEveryS: 1,
   residual: false,
   lookback: false,
+  factorSettle: false,
+  factorFile: false,
   csettle: false,
   csettleYield: 0,
   csettleNeedFirst: false,
@@ -288,6 +295,24 @@ export class FastLoop {
   /** Return the residual of each batch's last frame (see `CellsBatch.residual`), or stop. */
   setResidual(on: boolean): void {
     this.o.residual = on;
+  }
+
+  /**
+   * A GPU factor run: resolves when a batch of `count` frames from `start`
+   * fits the GPU compressor's ring (null: no wait; see `CompressFeed.room`).
+   */
+  compressRoom(start: number, count: number): Promise<void> | null {
+    return this.feed?.room?.(start, count) ?? null;
+  }
+
+  /** The compress worker's answer on the feed's port. */
+  compressAnswer(msg: CompressToFast): void {
+    this.feed?.answer?.(msg);
+  }
+
+  /** The run is stopped or replaced: a batch waiting for the GPU's ring goes on, without the run's factors. */
+  releaseCompress(): void {
+    this.feed?.release?.();
   }
 
   /** A message from the slow worker. Records it; never calls into WASM. */
@@ -530,7 +555,9 @@ export class FastLoop {
           budget: this.o.budget,
           ...(this.o.visitRate && this.o.visitRate > 0 ? { visitRate: this.o.visitRate } : {}),
           ...(this.o.lookback ? { lookback: true } : {}),
-          ...(this.o.lookback && this.o.settleFraction < 1
+          ...(this.o.factorSettle && !this.o.lookback ? { factorSettle: true } : {}),
+          ...(this.o.factorFile && this.o.lookback ? { factorFile: true } : {}),
+          ...((this.o.lookback || this.o.factorSettle) && this.o.settleFraction < 1
             ? { settleFraction: this.o.settleFraction }
             : {}),
           ...(this.o.lookback && this.o.sessionStarts?.length

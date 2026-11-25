@@ -57,6 +57,8 @@ export interface StepInput {
   extractFps: number;
   /** Extract follows Discover by itself (the setting, or always in a session run). */
   autoExtract: boolean;
+  /** A `?factors` stream: its Final settle and Extract run on the stream's own factors. */
+  factorRun?: boolean;
   /** The Discover visit rate holds the run at this speed (fps; null or absent: not held). */
   visitHold?: number | null;
 }
@@ -99,7 +101,9 @@ export function stepViews(i: StepInput): StepView[] {
     discover.note = discover.note ? `${discover.note}; ${held}` : held;
   }
 
-  const settleOn = !i.live && (busy || i.discover === 'done' ? i.lookbackRun : i.lookback);
+  const settleOn =
+    i.factorRun === true ||
+    (!i.live && (busy || i.discover === 'done' ? i.lookbackRun : i.lookback));
   let sState: StepState;
   if (!settleOn) sState = 'off';
   else if (i.settling) sState = 'running';
@@ -117,7 +121,7 @@ export function stepViews(i: StepInput): StepView[] {
   };
 
   let eState: StepState;
-  if (i.live) eState = 'off';
+  if (i.live && !i.factorRun) eState = 'off';
   else if (i.extract === 'running') eState = 'running';
   else if (i.extract === 'done') eState = 'done';
   else if (i.extract === 'error' || i.extract === 'cancelled') eState = 'error';
@@ -130,13 +134,14 @@ export function stepViews(i: StepInput): StepView[] {
       eState === 'done' ? 1 : eState === 'off' ? null : (frac(i.extractDone, i.extractTotal) ?? 0),
     fps: eState === 'running' && i.extractFps > 0 ? i.extractFps : null,
     secondsLeft: eState === 'running' ? left(i.extractTotal - i.extractDone, i.extractFps) : null,
-    note: i.live
-      ? 'not for a live stream'
-      : eState === 'off'
-        ? 'run it from Results'
-        : i.extract === 'cancelled'
-          ? 'cancelled'
-          : '',
+    note:
+      i.live && !i.factorRun
+        ? 'not for a live stream'
+        : eState === 'off'
+          ? 'run it from Results'
+          : i.extract === 'cancelled'
+            ? 'cancelled'
+            : '',
   };
   return [discover, settle, extract];
 }

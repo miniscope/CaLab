@@ -4,6 +4,8 @@ import type { FlatFieldMap } from '../lib/flat-field.ts';
 import type { PipelineClient } from '../lib/frame-client.ts';
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import type { PipelinePlan } from '../lib/pipeline-plan.ts';
+import type { FactorInfo, FactorState } from '../lib/compress-store.ts';
+import type { FactorExtractPort, FactorJob } from '../lib/factor-extract.ts';
 import { createPass2Store } from '../lib/pass2-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { RunRecord } from '../lib/run-record.ts';
@@ -98,7 +100,14 @@ function setup(
     libraryBytes: () => Uint8Array.of(1, 2, 3),
     status: () => ({ final: opts.final ?? true }),
   } as unknown as CellStore;
-  return { store: createPass2Store(client, pipeline, cells), started, steps };
+  return {
+    store: createPass2Store(client, pipeline, cells),
+    started,
+    steps,
+    client,
+    pipeline,
+    cells,
+  };
 }
 
 async function settle(): Promise<void> {
@@ -193,5 +202,143 @@ describe('Extract (pass 2) store', () => {
     expect(store.status()).toBe('error');
     expect(store.error()).toMatch(/final library/);
     expect(store.result()).toBeNull();
+  });
+});
+
+/** A port to a stream's factors: the test moves `state` and feeds the job's windows. */
+function factorSetup(initial: FactorState = 'ready', mode: 'stream' | 'file' = 'stream') {
+  let state = initial;
+  let wake: (() => void) | null = null;
+  const info: FactorInfo = {
+    folder: 'run-a',
+    tiling: 'offset',
+    windows: [{ index: 0, start: 0, frames: 8 }],
+    frames: 8,
+    meanRank: 3,
+  };
+  const calls = { runs: 0, cancels: 0, changed: 0 };
+  let onWindow: Parameters<FactorExtractPort['run']>[2] = () => {};
+  let finish: () => void = () => {};
+  const port: FactorExtractPort = {
+    active: () => mode === 'stream',
+    mode: () => mode,
+    state: () => state,
+    blocked: () =>
+      state === 'ready'
+        ? null
+        : mode === 'file'
+          ? '8 frames are still being compressed.'
+          : 'Waiting for the last windows to be compressed.',
+    changed: () => {
+      calls.changed++;
+      return new Promise<void>((r) => (wake = r));
+    },
+    info: () => info,
+    run(_version, _library, on): FactorJob {
+      calls.runs++;
+      onWindow = on;
+      return {
+        done: new Promise((resolve) => (finish = () => resolve({ frames: 8, msPerFrame: 1 }))),
+        cancel: () => void calls.cancels++,
+      };
+    },
+  };
+  const s = setup();
+  // `setup` builds a port-less store: rebuild with the port over the same fakes.
+  const store = createPass2Store(s.client, s.pipeline, s.cells, undefined, undefined, port);
+  return {
+    store,
+    started: s.started,
+    calls,
+    set: (v: FactorState) => {
+      state = v;
+      wake?.();
+    },
+    window: (start: number, count: number) => {
+      const traces = new Float32Array(count * 2);
+      for (let f = 0; f < count; f++)
+        for (let c = 0; c < 2; c++) traces[f * 2 + c] = 10 * (start + f) + c;
+      onWindow(
+        start,
+        count,
+        IDS,
+        traces,
+        traces.map((v) => v - 1000),
+      );
+    },
+    finish: () => finish(),
+  };
+}
+
+describe("Extract on a stream's factors", () => {
+  it("runs the port's job with the final library, appends each window and never replays", async () => {
+    const t = factorSetup();
+    expect(t.store.blockedReason()).toBeNull();
+    const done = t.store.run();
+    await settle();
+    expect(t.calls.runs).toBe(1);
+    t.window(0, 4);
+    t.window(4, 4);
+    t.finish();
+    await done;
+    await settle();
+    expect(t.store.status()).toBe('done');
+    expect(t.started).toHaveLength(0);
+    const r = t.store.result()!;
+    expect(r.source).toBe('factors');
+    expect(r.frames).toBe(8);
+    expect(r.factors?.folder).toBe('run-a');
+    expect([...(await r.traces.readFrames(5, 6))]).toEqual([50, 51]);
+    expect([...(await r.signed!.readFrames(5, 6))]).toEqual([-950, -949]);
+  });
+
+  it('waits while the factors compress, and Cancel while it waits ends cancelled without a job', async () => {
+    const t = factorSetup('compressing');
+    void t.store.run();
+    await settle();
+    expect(t.store.status()).toBe('running');
+    expect(t.store.waiting()).toMatch(/Waiting for the last windows/);
+    t.store.cancel();
+    expect(t.store.status()).toBe('cancelled');
+    t.set('ready');
+    await settle();
+    expect(t.calls.runs).toBe(0);
+    expect(t.store.status()).toBe('cancelled');
+  });
+
+  it('ends with an error when the factors become unusable while it waits', async () => {
+    const t = factorSetup('compressing');
+    void t.store.run();
+    await settle();
+    t.set('unusable');
+    await settle();
+    expect(t.store.status()).toBe('error');
+    expect(t.calls.runs).toBe(0);
+  });
+});
+
+describe("Extract on a recording's factors (?factors=file)", () => {
+  it('ready: solves on the factors', async () => {
+    const t = factorSetup('ready', 'file');
+    const done = t.store.run();
+    await settle();
+    expect(t.calls.runs).toBe(1);
+    t.window(0, 4);
+    t.window(4, 4);
+    t.finish();
+    await done;
+    await settle();
+    expect(t.store.result()!.source).toBe('factors');
+  });
+
+  it('still compressing: replays the file at once with the reason, and never waits', async () => {
+    const t = factorSetup('compressing', 'file');
+    void t.store.run();
+    await settle();
+    expect(t.calls.runs).toBe(0);
+    expect(t.calls.changed).toBe(0);
+    expect(t.started).toHaveLength(1); // the replay pipeline
+    expect(t.store.waiting()).toBeNull();
+    expect(t.store.fileReason()).toMatch(/still being compressed/);
   });
 });

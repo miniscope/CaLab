@@ -2844,6 +2844,44 @@ fn the_cluster_replay_runs_in_visit_jobs_and_matches_step() {
     }
 }
 
+/// A live stream with `?factors` runs Discover with `JointUpdate::Refine`:
+/// in Discover's own scope that must publish exactly what `Off` publishes
+/// (the store accumulates only in refine-scope visits).
+#[test]
+fn joint_update_refine_leaves_discover_unchanged() {
+    let t = 3000;
+    let mut rng = Lcg(97);
+    let cells = vec![
+        (blob_w(0, 30.0, 30.0, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        (blob_w(1, 30.0, 33.5, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        (blob_w(2, 60.0, 50.0, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+    ];
+    let m = movie(&cells, t, 211);
+    let with = |ju: JointUpdate| SlowLoopConfig {
+        joint_update: ju,
+        ..v2_config()
+    };
+    let (mut sa, mut ea) = start(with(JointUpdate::Off), &[]);
+    let (mut sb, mut eb) = start(with(JointUpdate::Refine), &[]);
+    let n_px = N * N;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+        let (la, lb) = (ea.library().clone(), eb.library().clone());
+        sa.observe(f, &la, &ta).unwrap();
+        sb.observe(f, &lb, &tb).unwrap();
+        let (pa, pb) = (sa.step(5_000_000).unwrap(), sb.step(5_000_000).unwrap());
+        assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+        if let (Some(la), Some(lb)) = (pa, pb) {
+            assert!(la.to_bytes()[16..] == lb.to_bytes()[16..], "frame {k}");
+            ea.set_library(la).unwrap();
+            eb.set_library(lb).unwrap();
+        }
+    }
+    assert!(sa.finalize().unwrap().to_bytes()[16..] == sb.finalize().unwrap().to_bytes()[16..]);
+    assert_eq!(sb.replay_stats.replays, 0, "{:?}", sb.replay_stats);
+}
+
 /// Look-back frames (concurrent Refine) reach only the named cells'
 /// running statistics, keep held-out frames out and leave the slow loop's
 /// frame clock alone.

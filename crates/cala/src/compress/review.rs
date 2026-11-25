@@ -42,6 +42,7 @@
 // Index loops over factor columns read more clearly here.
 #![allow(clippy::needless_range_loop)]
 
+use super::blend::Tiling;
 use super::{TileFactors, WindowFactors};
 use crate::preprocess::Dims;
 use crate::trace::Footprint;
@@ -191,12 +192,15 @@ pub fn scan(
 
 /// The grid rows [`scan`] visits, top to bottom. Empty when the history
 /// cannot be reviewed: fewer than `min_windows` windows, a frame smaller
-/// than a patch, or windows with different tiles.
+/// than a patch, windows with different tiles, or a window whose tiling is
+/// not plain (the review reads tiles side by side; on blended tilings it
+/// would stack overlapping tiles without their weights).
 pub fn scan_rows(windows: &[WindowFactors], dims: Dims, cfg: &ReviewConfig) -> Vec<usize> {
     let size = 2 * cfg.patch_half + 1;
     if windows.len() < cfg.min_windows.max(4)
         || dims.height < size
         || dims.width < size
+        || windows.iter().any(|w| w.tiling != Tiling::Plain)
         || !same_layout(windows)
     {
         return Vec::new();
@@ -1237,6 +1241,19 @@ mod tests {
         // Cut short, or a header that is no pixel count.
         assert!(footprints_from_wire(&wire[..wire.len() - 1]).is_none());
         assert!(footprints_from_wire(&[0.0, 0.0, 2.5, 2.0, 0.0, 0.0]).is_none());
+    }
+
+    #[test]
+    fn a_history_with_a_window_not_on_plain_tiles_is_not_reviewed() {
+        let (mut windows, cells) = movie(6);
+        let dims = Dims::new(N, N).unwrap();
+        let cfg = ReviewConfig::default();
+        assert!(!scan_rows(&windows, dims, &cfg).is_empty());
+        for tiling in [Tiling::Offset, Tiling::Overlap(8)] {
+            windows[2].tiling = tiling;
+            assert!(scan_rows(&windows, dims, &cfg).is_empty(), "{tiling:?}");
+            assert!(scan(&windows, &known(&cells[..1]), dims, &cfg).is_empty());
+        }
     }
 
     #[test]
