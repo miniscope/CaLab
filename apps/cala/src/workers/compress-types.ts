@@ -37,6 +37,44 @@ export interface CompressInit {
   backlogCap?: number;
   /** Extract on factors on rebuilt frames with one engine, as before slice 6 (`?debug&fextract=0`). */
   frameExtract?: boolean;
+  /**
+   * Compress on the GPU (a recording's default): windows of the GPU
+   * compressor's length, cut from the stream frame indices (the chunks'
+   * `window` and `last` are ignored).
+   */
+  gpu?: boolean;
+  /**
+   * With `gpu`: compress the first `gpuCheck` windows (at most `GPU_CHECK_MAX`)
+   * on the CPU too, once the recording's windows are done, and report how far
+   * the GPU's factors are from the CPU's (`CompressStatus.check`; `?debug&gpucheck=N`).
+   */
+  gpuCheck?: number;
+}
+
+/**
+ * The GPU's factors against the CPU's on the same windows (`?debug&gpucheck`),
+ * summed over the checked tiles: `loss` = `Σ ‖Ŷ_gpu − Ŷ_cpu‖²`, `floor` =
+ * `Σ ‖Ŷ_cpu2 − Ŷ_cpu‖²` (the CPU with another seed: the sketch's own noise),
+ * `ref` = `Σ ‖Ŷ_cpu‖²`, `signal` = `Σ ‖Ŷ_cpu − mean‖²`, `rankDiff` = `Σ |rank_gpu − rank_cpu|`
+ * and `floorRankDiff` = `Σ |rank_cpu2 − rank_cpu|`, `keptDiff` and `floorKeptDiff` the
+ * same of the energy the kept components hold (what a rank difference is worth),
+ * `rankDiffTiles` the tiles whose ranks differ; `ms`: the check's wall time.
+ */
+export interface GpuCheck {
+  windows: number;
+  tiles: number;
+  loss: number;
+  floor: number;
+  ref: number;
+  signal: number;
+  rankDiff: number;
+  floorRankDiff: number;
+  keptDiff: number;
+  floorKeptDiff: number;
+  rankDiffTiles: number;
+  ms: number;
+  /** Why the check stopped early. */
+  error?: string;
 }
 
 /** Fast worker -> compress worker. */
@@ -60,7 +98,36 @@ export type FastToCompress =
   /** Close the open (shorter) window; `final`: the recording ended. */
   | { type: 'close'; session: number; final: boolean }
   /** Pipeline stopped or restarted: drop everything. */
-  | { type: 'reset'; session: number };
+  | { type: 'reset'; session: number }
+  /**
+   * A GPU run: Discover waited `ms` for room in the GPU compressor's ring
+   * (`CompressToFast`); `stalled`: the GPU made no progress for `GPU_STALL_S`
+   * while it waited, so the run gives its factors up (`GPU_TEXT.stalled`).
+   */
+  | { type: 'waited'; session: number; ms: number; stalled?: boolean }
+  /**
+   * A GPU run: Discover begins to wait for room in the ring (a `waited` ends it).
+   * The runner counts a wait still running in the share of Discover's time spent
+   * waiting (`GPU_WAIT_SHARE_MAX`).
+   */
+  | { type: 'waiting'; session: number };
+
+/**
+ * Compress worker -> fast worker, on the same port (a GPU run only): the GPU
+ * compressor's ring holds `ring` frames (`window` of them per window) and the
+ * oldest frame it still needs is `keepFrom`, so the feed may send frames up to
+ * `keepFrom + ring` (exclusive). Sent when the GPU opens, whenever `keepFrom`
+ * moves (a window compressed) and after every batch of tiles (the GPU is at
+ * work: a waiting feed's stall clock restarts). `ring` 0: the GPU route ended
+ * (gave up, reset, or the recording's windows are done); the feed never waits again.
+ */
+export interface CompressToFast {
+  type: 'room';
+  session: number;
+  ring: number;
+  window: number;
+  keepFrom: number;
+}
 
 /** A compressed window: its factor file `f<index>.bin` holds stream frames `start..start + frames`. */
 export interface CompressedWindow {
@@ -104,6 +171,17 @@ export interface CompressStatus {
   behindAtEnd?: number | null;
   /** Frames compressed after the recording ended over their wall time (null: none yet). */
   fpsAfter?: number | null;
+  /** Frames per window (the GPU compressor's on the GPU, else the feed's). */
+  window?: number;
+  /** Frames the GPU compressor's ring holds (window + slack; absent: not on the GPU). */
+  ring?: number;
+  /** Where the windows are compressed. */
+  backend?: 'cpu' | 'gpu';
+  /** A GPU run: seconds Discover waited for room in the GPU's ring, and how many times. */
+  waitS?: number;
+  waits?: number;
+  /** `?debug&gpucheck=N`: the GPU's factors against the CPU's (absent: no check, or none done yet). */
+  check?: GpuCheck;
 }
 
 /** Compress worker -> main thread. */
@@ -176,7 +254,12 @@ export type MainToCompress =
   | { type: 'backfill'; session: number; version: number }
   /** Extract on factors: solve every compressed window with `library` (a `TraceLibrary.toBytes()`). */
   | { type: 'extract'; session: number; job: number; version: number; library: Uint8Array }
-  | { type: 'extract-cancel'; session: number; job: number };
+  | { type: 'extract-cancel'; session: number; job: number }
+  /**
+   * A recording's settle re-reads the file: compress no more, drop the run's
+   * window and factor files (no stage will read them).
+   */
+  | { type: 'stop'; session: number };
 
 /**
  * Compress worker -> a compress helper. `tile`: compress the first
@@ -201,6 +284,8 @@ export type CoordinatorToHelper =
       w: number;
       h: number;
       seed: number;
+      /** The rank this tile kept in the previous window (absent: none). */
+      prevRank?: number;
       raw: Int16Array;
     };
 

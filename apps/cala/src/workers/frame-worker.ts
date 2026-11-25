@@ -290,6 +290,8 @@ async function handle(req: FrameRequest): Promise<void> {
                       ? { backlogCap: cells.compressBacklogCap }
                       : {}),
                     ...(cells.compressFrameExtract ? { frameExtract: true } : {}),
+                    ...(cells.compressGpu ? { gpu: true } : {}),
+                    ...(cells.compressGpuCheck ? { gpuCheck: cells.compressGpuCheck } : {}),
                   },
                   compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
                 )

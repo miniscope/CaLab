@@ -113,6 +113,8 @@ function setup(
     csettle?: number;
     /** The pacer's target (default 30 fps; 0 = Max). */
     pace?: number;
+    /** More of the run's init (e.g. `factorFile`). */
+    init?: Partial<typeof INIT>;
   } = {},
 ) {
   const f = fakeLoop(o.need ?? 0);
@@ -153,7 +155,7 @@ function setup(
   r.setPace(pace, false);
   if (o.csettle !== undefined) r.setCap(o.csettle);
   if (ports > 1 && o.join !== false) r.setSettlePool(1, ports - 1);
-  r.handle({ ...INIT, ...(o.csettle !== undefined ? { csettle: true } : {}) });
+  r.handle({ ...INIT, ...(o.csettle !== undefined ? { csettle: true } : {}), ...o.init });
   const requests = (i: number) => toLb[i].filter((m): m is Req => m.type === 'request');
   const answered = new Set<number>();
   const pending = (i: number) => requests(i).find((m) => !answered.has(m.id));
@@ -210,6 +212,7 @@ function setup(
     r,
     f,
     toLb,
+    toMain,
     requests,
     pending,
     answer,
@@ -443,5 +446,127 @@ describe('settle governor in the runner', () => {
       return t.status().lookback!.csettle!.governor!.busy;
     };
     expect(busy(100_000)).toBeGreaterThan(busy(0));
+  });
+});
+
+describe("settle pool on a recording's factors (?factors=file)", () => {
+  const SRC = {
+    folder: 'run-a',
+    windows: [{ index: 0, start: 0, frames: 400 }],
+    width: 2,
+    height: 1,
+  };
+  /** Discover of 50 batches (400 frames), its end and the answer with the factors. */
+  const settleOnFactors = (o: { join?: boolean } = {}) => {
+    const t = setup({ pool: 2, init: { factorFile: true }, ...o });
+    t.live(50);
+    t.r.handle({ type: 'end', session: 1 });
+    const sent = t.toLb.map((m) => m.length);
+    t.r.factors({ type: 'factors', session: 1, ready: true, frames: 400, source: SRC });
+    return { ...t, sent };
+  };
+  /** Port `i`'s messages since the answer with the factors, by type. */
+  const since = (t: ReturnType<typeof settleOnFactors>, i: number) =>
+    t.toLb[i].slice(t.sent[i]).map((m) => m.type);
+  /** One answer per worker in turn, until none is out. */
+  const answerAll = (t: ReturnType<typeof settleOnFactors>) => {
+    for (let k = 0; k < 1000 && [0, 1, 2].some((i) => t.pending(i)); k++)
+      for (const i of [0, 1, 2]) if (t.pending(i)) t.answer(i);
+  };
+
+  it('every worker in the settle pool switches to the factors before its first settle request, and serves the settle', () => {
+    const t = settleOnFactors();
+    for (const i of [0, 1, 2]) {
+      const kinds = since(t, i);
+      expect(kinds.indexOf('factors')).toBeGreaterThanOrEqual(0);
+      expect(kinds.indexOf('request')).toBeGreaterThan(kinds.indexOf('factors'));
+      const sw = t.toLb[i][t.sent[i] + kinds.indexOf('factors')];
+      expect(sw).toEqual({ type: 'factors', session: 1, factors: SRC });
+    }
+    answerAll(t);
+    for (const i of [1, 2])
+      expect(since(t, i).filter((k) => k === 'request').length).toBeGreaterThan(1);
+    expect(t.status().final).toBe(true);
+    expect(t.status().lookback!.settle).toMatchObject({
+      source: 'factors',
+      done: true,
+      fed: 400,
+      workers: 3,
+    });
+  });
+
+  it('a pool that joins after the switch gets the factors with its library, before any settle request', () => {
+    const t = settleOnFactors({ join: false });
+    expect(since(t, 1)).toEqual([]);
+    t.r.setSettlePool(1, 2);
+    for (const i of [1, 2]) {
+      const kinds = since(t, i);
+      expect(kinds.slice(0, 2).sort()).toEqual(['factors', 'library']);
+      expect(kinds.indexOf('request')).toBeGreaterThan(kinds.indexOf('factors'));
+    }
+    answerAll(t);
+    expect(t.status().lookback!.settle).toMatchObject({ source: 'factors', done: true, fed: 400 });
+  });
+
+  it('a pool worker that fails in the settle is left out; the others finish it', () => {
+    const t = settleOnFactors();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    t.answer(1, { error: 'broken' });
+    const n1 = since(t, 1).filter((k) => k === 'request').length;
+    answerAll(t);
+    warn.mockRestore();
+    expect(since(t, 1).filter((k) => k === 'request')).toHaveLength(n1);
+    expect(t.status().final).toBe(true);
+    // Its request's frames went to another worker: every frame fed.
+    expect(t.status().lookback!.settle).toMatchObject({
+      source: 'factors',
+      done: true,
+      workers: 2,
+      fed: 400,
+      total: 400,
+    });
+    expect(t.status().lookback!.error).toBeUndefined();
+  });
+
+  it('every pool worker fails in the settle: worker 0 feeds the rest', () => {
+    const t = settleOnFactors();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    t.answer(1, { error: 'broken' });
+    t.answer(2, { error: 'broken too' });
+    answerAll(t);
+    warn.mockRestore();
+    expect(t.status().final).toBe(true);
+    expect(t.status().lookback!.settle).toMatchObject({
+      source: 'factors',
+      done: true,
+      workers: 1,
+      fed: 400,
+      total: 400,
+    });
+    expect(t.status().lookback!.error).toBeUndefined();
+  });
+
+  it('with no worker left the settle ends with the frames fed so far', () => {
+    const t = settleOnFactors();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    t.answer(1, { error: 'broken' });
+    t.answer(2, { error: 'broken too' });
+    t.answer(0, { error: 'gone' });
+    answerAll(t);
+    warn.mockRestore();
+    expect(t.status().final).toBe(true);
+    const settle = t.status().lookback!.settle!;
+    expect(settle).toMatchObject({ done: true, total: 400 });
+    expect(settle.fed).toBeLessThan(settle.total);
+  });
+
+  it('the settle on the file stays on worker 0 alone', () => {
+    const t = setup({ pool: 2, init: { factorFile: true } });
+    t.live(50);
+    t.r.handle({ type: 'end', session: 1 });
+    t.r.factors({ type: 'factors', session: 1, ready: false, reason: 'behind' });
+    answerAll(t as ReturnType<typeof settleOnFactors>);
+    expect(t.toLb[1].some((m) => m.type === 'request' || m.type === 'factors')).toBe(false);
+    expect(t.status().lookback!.settle).toMatchObject({ source: 'file', done: true, workers: 1 });
   });
 });

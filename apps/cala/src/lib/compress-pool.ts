@@ -5,8 +5,9 @@
  * window file and hands it to a free slot (itself or a helper); a helper
  * compresses it and sends back the tile's factor bytes, which the coordinator
  * writes in tile order. The seed of a tile depends only on its window and
- * index and `TileCompressor` is stateless, so the factor files are the same
- * bytes for any number of workers.
+ * index, its sketch on the rank it kept in the previous window (windows are
+ * compressed one after another) and `TileCompressor` is stateless, so the
+ * factor files are the same bytes for any number of workers.
  *
  * Sizing (`compressPoolSize`): few workers while Discover reads (it keeps its
  * cores), more after its last frame, when the pipeline's stage workers are idle.
@@ -108,6 +109,8 @@ export interface TileJob {
   w: number;
   h: number;
   seed: number;
+  /** The rank this tile kept in the previous window: its sketch starts there (absent: at `k0`). */
+  prevRank?: number;
 }
 
 /** A compressed tile: its kept rank, compute time (ms) and `TileFactors.toBytes()`. */
@@ -127,6 +130,7 @@ export interface LocalCompressor {
     w: number,
     h: number,
     seed: number,
+    prevRank?: number,
   ): { readonly rank: number; toBytes(): Uint8Array; free(): void };
 }
 
@@ -315,7 +319,16 @@ export class TilePool implements TilePoolLike {
     const raw = this.scratch.subarray(0, n);
     io.read(job, raw);
     const t0 = this.now();
-    const f = io.local.compress(raw, job.frames, job.x0, job.y0, job.w, job.h, job.seed);
+    const f = io.local.compress(
+      raw,
+      job.frames,
+      job.x0,
+      job.y0,
+      job.w,
+      job.h,
+      job.seed,
+      job.prevRank,
+    );
     try {
       const ms = this.now() - t0;
       return { rank: f.rank, ms, bytes: f.toBytes() };

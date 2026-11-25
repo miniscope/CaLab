@@ -88,8 +88,16 @@ width, or in a portrait window, the column moves under the image and the page sc
 its percent and, while it runs, its frames per second; the running step has a coloured
 edge and moving stripes, a finished one a ✓, and a step that will not run (look-back
 off, Extract unticked) is dimmed. A live stream gets the Final settle and Extract after it
-ends, on the factors it wrote (`?factors=0`: Discover only, as before). With `?factors=file` (experimental) a recording's
-Final settle and Extract read its factors when they are complete, and say "re-reads the file" with the reason when not. Look-back and Background settle run
+ends, on the factors it wrote. A recording's frames are compressed on the GPU while Discover runs (the GPU
+route, by default; `?factors=gpu` asks for the same), and its Final settle and Extract read those factors
+when they are complete; when not they say "re-reads the file" with the reason. Without WebGPU or with too
+little GPU memory the run reads the file and says why. When the GPU falls behind, Discover waits for it (at
+most 30 s without progress, then the run reads the file). A GPU that makes Discover wait more than 10 % of its
+time (judged after each window, from the third on, while the recording runs) gives its factors up, and the Run
+panel and the export say "the GPU compressor made Discover wait N % of its time; the file is read instead". The
+export's `compress_wait_s` says how long Discover waited. `?factors=0` turns factors off for streams and
+recordings: Discover only for a stream, and a recording's settle and Extract read the file, as before.
+`?factors=file` (experimental) compresses a recording's factors on the CPU instead. Look-back and Background settle run
 inside Discover. The cell count, the session (in a multi-session run) and the pause and
 stop controls sit beside the boxes.
 

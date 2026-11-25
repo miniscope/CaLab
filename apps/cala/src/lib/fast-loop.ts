@@ -11,6 +11,7 @@
  * carry the solver's precomputed terms, so the swap is a copy (a few ms at
  * hundreds of cells), not a rebuild.
  */
+import type { CompressToFast } from '../workers/compress-types.ts';
 import type { FastToSlow, PortLike, SlowToFast } from '../workers/slow-types.ts';
 import type { CompressFeedLike } from './compress-feed.ts';
 import { ForwardPool } from './forward-pool.ts';
@@ -291,6 +292,24 @@ export class FastLoop {
   /** Return the residual of each batch's last frame (see `CellsBatch.residual`), or stop. */
   setResidual(on: boolean): void {
     this.o.residual = on;
+  }
+
+  /**
+   * A GPU factor run: resolves when a batch of `count` frames from `start`
+   * fits the GPU compressor's ring (null: no wait; see `CompressFeed.room`).
+   */
+  compressRoom(start: number, count: number): Promise<void> | null {
+    return this.feed?.room?.(start, count) ?? null;
+  }
+
+  /** The compress worker's answer on the feed's port. */
+  compressAnswer(msg: CompressToFast): void {
+    this.feed?.answer?.(msg);
+  }
+
+  /** The run is stopped or replaced: a batch waiting for the GPU's ring goes on, without the run's factors. */
+  releaseCompress(): void {
+    this.feed?.release?.();
   }
 
   /** A message from the slow worker. Records it; never calls into WASM. */

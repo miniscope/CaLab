@@ -78,34 +78,59 @@ describe('factorRunPlan with ?factors=file', () => {
 
 describe('factorsFromPage: the stream default and its switches', () => {
   const page = (q: string) => factorsFromPage(new URLSearchParams(q));
-  const plan = (q: string, live: boolean) => {
+  const plan = (q: string, live: boolean, joint = false) => {
     const p = page(q);
     return factorRunPlan({
       live,
       factors: p.factors,
       factorsFile: p.factorsFile,
+      factorsGpu: p.factorsGpu,
       factorsDefault: p.factorsDefault,
       compress: p.compressAsked,
       discover: true,
+      joint,
     });
   };
   const settle = { compress: FACTOR_TILING, factorSettle: true, factorFile: false };
   const none = { compress: null, factorSettle: false, factorFile: false };
   const plain = { compress: 'plain', factorSettle: false, factorFile: false };
+  const gpu = { compress: FACTOR_TILING, factorSettle: false, factorFile: true, gpu: true };
+  const cpuFile = { compress: FACTOR_TILING, factorSettle: false, factorFile: true };
 
-  it('without a switch a stream is a factor run and a recording does not compress', () => {
-    expect(page('')).toMatchObject({ factorsDefault: true, compressWorker: true, review: false });
+  it('without a switch a stream is a factor run and a recording a GPU factor run', () => {
+    expect(page('')).toMatchObject({
+      factors: false,
+      factorsFile: true,
+      factorsGpu: true,
+      factorsDefault: true,
+      compressWorker: true,
+      review: false,
+    });
     expect(plan('', true)).toEqual(settle);
-    expect(plan('', false)).toEqual(none);
+    expect(plan('', false)).toEqual(gpu);
   });
-  it('?factors=0 runs a stream as before (no compress worker; ?compress gives plain tiles)', () => {
+  it('a Joint run of several sessions without a switch has no factor route', () => {
+    expect(plan('', false, true)).toEqual(none);
+    expect(plan('factors=gpu', false, true)).toEqual(plain);
+  });
+  it('?factors=0 turns factors off for streams and recordings (no compress worker)', () => {
     expect(page('factors=0')).toMatchObject({
       factors: false,
+      factorsFile: false,
+      factorsGpu: false,
       factorsDefault: false,
       compressWorker: false,
     });
     expect(plan('factors=0', true)).toEqual(none);
+    expect(plan('factors=0', false)).toEqual(none);
     expect(plan('factors=0&compress', true)).toEqual(plain);
+    expect(plan('factors=0&compress', false)).toEqual(plain);
+  });
+  it('?factors=file keeps the CPU route and ?factors=gpu is the default route', () => {
+    expect(page('factors=file')).toMatchObject({ factorsFile: true, factorsGpu: false });
+    expect(plan('factors=file', false)).toEqual(cpuFile);
+    expect(plan('factors=gpu', false)).toEqual(gpu);
+    expect(plan('factors=gpu', false)).toEqual(plan('', false));
   });
   it('?compress&review turns the default off and keeps the review', () => {
     expect(page('compress&review')).toMatchObject({ factorsDefault: false, review: true });
@@ -118,9 +143,36 @@ describe('factorsFromPage: the stream default and its switches', () => {
     });
     expect(page('compress&review').warn).toBeNull();
   });
-  it('?compress alone: a stream is a factor run, a recording compresses plain tiles', () => {
+  it('?compress alone changes no default: a stream is a factor run, a recording a GPU factor run', () => {
     expect(plan('compress', true)).toEqual(settle);
-    expect(plan('compress', false)).toEqual(plain);
+    expect(plan('compress', false)).toEqual(gpu);
+  });
+  it('?compress&review keeps a recording on plain tiles for the review', () => {
+    expect(page('compress&review')).toMatchObject({ factorsFile: false, factorsGpu: false });
+    expect(plan('compress&review', false)).toEqual(plain);
+  });
+  it('?factors=gpu is ?factors=file compressed on the GPU, for a recording only', () => {
+    expect(page('factors=gpu')).toMatchObject({
+      factors: true,
+      factorsFile: true,
+      factorsGpu: true,
+    });
+    expect(page('factors=file').factorsGpu).toBe(false);
+    const p = page('factors=gpu');
+    const input = {
+      factors: p.factors,
+      factorsFile: p.factorsFile,
+      factorsGpu: p.factorsGpu,
+      compress: p.compressAsked,
+      discover: true,
+    };
+    expect(factorRunPlan({ ...input, live: false })).toEqual({
+      compress: FACTOR_TILING,
+      factorSettle: false,
+      factorFile: true,
+      gpu: true,
+    });
+    expect(factorRunPlan({ ...input, live: true })).toEqual(settle);
   });
   it('?factors and ?factors=file keep their meaning', () => {
     expect(plan('factors', true)).toEqual(settle);

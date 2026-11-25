@@ -551,6 +551,40 @@ describe('export of a ?factors=file recording', () => {
       compress_fps_after: 118.5,
     });
     expect(meta.stages[1]).not.toHaveProperty('compress_workers');
+    expect(meta.stages[0]).not.toHaveProperty('compress_window');
+    expect(meta.stages[0]).not.toHaveProperty('compress_ring');
+    expect(meta.stages[0]).not.toHaveProperty('compress_wait_s');
+    expect(meta.stages[0]).not.toHaveProperty('compress_waits');
+  });
+
+  it("writes a GPU factor run's window, backend and waits on Discover's record", async () => {
+    const stages: StageRun[] = [
+      {
+        ...stage('discover'),
+        settleSource: 'factors',
+        compress: {
+          workers: 1,
+          workersAfter: 1,
+          behindFrames: 412,
+          backlogPeakBytes: 0,
+          fpsAfter: 240,
+          window: 600,
+          ring: 1200,
+          backend: 'gpu',
+          waitS: 41.5,
+          waits: 17,
+        },
+      },
+      stage('extract'),
+    ];
+    const meta = await metaOf({ ...(await input()), stages, notes: fileFactorNotes(stages) });
+    expect(meta.stages[0]).toMatchObject({
+      compress_window: 600,
+      compress_ring: 1200,
+      compress_backend: 'gpu',
+      compress_wait_s: 41.5,
+      compress_waits: 17,
+    });
   });
 
   it("writes the factor extractor's windows and workers on Extract's record", async () => {

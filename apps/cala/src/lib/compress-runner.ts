@@ -35,6 +35,30 @@
  * files waiting for compression are capped (`backlogCap`): past the cap the
  * run's factors are given up, its files removed, and one error says why.
  *
+ * On the GPU (`CompressInit.gpu`, a recording's default): no window files. Each
+ * chunk is quantized in frame order and uploaded to the GPU compressor's ring
+ * of `window + slack` frames; the runner cuts windows of the GPU's length from
+ * the stream frame indices (the feed's `window` and `last` are ignored) and
+ * compresses them one at a time. The feed waits for room in the ring
+ * (`CompressFeed.room`): the runner tells it on the same port how much the
+ * ring holds and the oldest frame still needed (`CompressToFast`), when the
+ * GPU opens and after every window, and `ring` 0 when the GPU route ends. A
+ * chunk that would overwrite a frame of a window not yet compressed anyway
+ * (the GPU fell a window behind), a feed that waited `GPU_STALL_S` without
+ * progress, a lost device or a failed window gives the run's factors up, as
+ * the backlog cap does; the chunk calls never wait for the GPU. So does a GPU
+ * that makes Discover wait too much: after each window written while the
+ * recording runs, from the `GPU_WAIT_MIN_WINDOWS`th on, Discover's waits (the
+ * one running included) over its time since the run's first chunk above
+ * `GPU_WAIT_SHARE_MAX` (`GPU_TEXT.slow`).
+ *
+ * The GPU check (`CompressInit.gpuCheck`, `?debug&gpucheck=N`): the quantized
+ * frames of the first N windows (at most `GPU_CHECK_MAX`) stay in memory;
+ * once the recording's windows are all on disk, each kept window is compressed
+ * on the CPU (`TileCompressor`, the GPU's seeds and previous ranks) and once
+ * more with the seeds moved by `GPU_CHECK_SEED` (the sketch's own noise), and
+ * `CompressStatus.check` sums how far apart they are. Extract waits for it.
+ *
  * Window file `w<index>.i16`: the chunks as they arrived, each in tile order.
  * Factor file `f<index>.bin`: the header of `factorHeader` (`CALAFAC2`, with the
  * tiling), then per tile u32 byte length and `TileFactors.toBytes()`.
@@ -43,14 +67,26 @@ import type {
   CompressedWindow,
   CompressInit,
   CompressStatus,
+  CompressToFast,
   CompressToMain,
   FastToCompress,
+  GpuCheck,
 } from '../workers/compress-types.ts';
 import type { CompressToReview } from '../workers/review-types.ts';
 import type { PortLike } from '../workers/slow-types.ts';
+import { quantizeFrames as wasmQuantizeFrames, WindowStats } from './cala-wasm.ts';
+import { GPU_STALL_S } from './compress-feed.ts';
 import { TilePool, WindowPool, type TileJob, type TilePoolLike } from './compress-pool.ts';
+import { cutTile, readTile, tileDiff } from './factor-check.ts';
 import { solveWindow, type FactorExtractorLike, type WindowResult } from './factor-solve.ts';
 import { rebuildFrames, type FactorWindowLike } from './factor-frames.ts';
+import {
+  GpuSketchTooLarge,
+  RingClock,
+  type GpuCompressorLike,
+  type GpuWindowResult,
+  type WindowStatsLike,
+} from './gpu-compress.ts';
 import type { StoreFile, WindowStore } from './window-store.ts';
 
 /** `quantizeTiles` of the WASM module: `count` frames into `out`, in tile order. */
@@ -80,6 +116,7 @@ export interface TileCompressorLike {
     w: number,
     h: number,
     seed: number,
+    prevRank?: number,
   ): TileFactorsLike;
   free(): void;
 }
@@ -108,10 +145,36 @@ export function backlogCap(e: { quota?: number; usage?: number } | null): number
     : BACKLOG_MAX_BYTES;
 }
 
+/** Why a recording that settled on the file has no factors. */
+export const STOPPED_TEXT =
+  'The Final settle re-read the file, so the compressor stopped: Extract reads the file too.';
+
 /** Why a run's factors were given up at the cap. */
 export function backlogText(cap: number): string {
   return `The windows waiting for compression would need more than ${(cap / 2 ** 30).toFixed(1)} GB of disk.`;
 }
+
+/** A GPU run gives its factors up when Discover waited more than this share of its time for the GPU. */
+export const GPU_WAIT_SHARE_MAX = 0.1;
+/** The wait share is judged once this many windows are written (the first windows wait the most). */
+export const GPU_WAIT_MIN_WINDOWS = 3;
+
+/** Why a GPU run (a recording's default) has no factors. */
+export const GPU_TEXT = {
+  none: (why: string) => `No factors: the GPU compressor could not start (${why}).`,
+  behind: 'No factors: the GPU compressor fell a window behind Discover.',
+  stalled: `No factors: the GPU compressor made no progress for ${GPU_STALL_S} s while Discover waited for it.`,
+  lost: (why: string) => `No factors: the GPU was lost (${why}).`,
+  sketch: 'No factors: a tile needed a larger sketch than the GPU compressor holds.',
+  error: (why: string) => `No factors: the GPU compressor failed (${why}).`,
+  slow: (percent: number) =>
+    `No factors: the GPU compressor made Discover wait ${Math.round(percent)} % of its time; the file is read instead.`,
+} as const;
+
+/** The most windows the GPU check keeps (one of 600 frames at 600 px is 432 MB). */
+export const GPU_CHECK_MAX = 2;
+/** The GPU check's second CPU pass moves every seed by this (the noise floor). */
+export const GPU_CHECK_SEED = 7_000_000;
 
 export interface CompressRunnerDeps {
   store: WindowStore;
@@ -133,6 +196,8 @@ export interface CompressRunnerDeps {
   engine?(library: Uint8Array, signed?: boolean): BackfillEngineLike;
   factors?(file: Uint8Array): FactorWindowLike;
   toMain: PortLike<CompressToMain>;
+  /** The fast worker, on the port its chunks come from: room in the GPU's ring (absent: never told). */
+  toFast?: PortLike<CompressToFast>;
   /** The tile pool (absent: the worker compresses every tile itself). */
   pool?: TilePoolLike;
   /** Extract on factors through the `FactorExtractor` (absent: rebuilt frames, one engine). */
@@ -143,9 +208,36 @@ export interface CompressRunnerDeps {
   estimate?: () => Promise<{ quota?: number; usage?: number }>;
   /** The review worker, and the compressed windows between two reviews (absent: no review). */
   review?: { port: PortLike<CompressToReview>; every: number };
+  /** Open the GPU compressor of a `gpu` run (absent: such a run has no factors). */
+  openGpu?: (init: CompressInit) => Promise<GpuCompressorLike | { reason: string }>;
+  /** A GPU window's pixel statistics (default: the WASM `WindowStats`). */
+  stats?: (width: number, height: number) => WindowStatsLike;
+  /** `quantizeFrames` of the WASM module: frames in frame order (default: the WASM function). */
+  quantizeFrames?: (frames: Float32Array, quant: number) => Int16Array;
   /** Lets queued messages run (default: a macrotask). */
   yieldNow?: () => Promise<void>;
   now?: () => number;
+}
+
+/** A window of a GPU run: its frames are in the GPU compressor's ring, its statistics here. */
+interface GpuWindow {
+  index: number;
+  /** Stream index of the first frame. */
+  start: number;
+  frames: number;
+  stats: WindowStatsLike | null;
+}
+
+/** A window the GPU compressed, kept for the check: its frames, and what the GPU was given and gave. */
+interface GpuCheckJob {
+  index: number;
+  frames: number;
+  /** Quantized frames, frame layout (`frames x width*height` used). */
+  data: Int16Array;
+  /** Each tile's rank of the window before (as the GPU job had it). */
+  prev: (number | undefined)[];
+  tiles: Uint8Array[];
+  ranks: number[];
 }
 
 interface Tile {
@@ -187,12 +279,32 @@ export const factorName = (i: number): string => `f${i}.bin`;
 
 const macrotask = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
+const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+const noGpuWindow = (): GpuWindow => ({ index: 0, start: 0, frames: 0, stats: null });
+
+/** A factor file: `head`, then per tile its u32 byte length and bytes. Returns its size. */
+function writeFactorFile(dst: StoreFile, head: Uint8Array, tiles: Uint8Array[]): number {
+  dst.write(head, 0);
+  let at = head.length;
+  const len = new Uint32Array(1);
+  for (const bytes of tiles) {
+    len[0] = bytes.length;
+    dst.write(len, at);
+    dst.write(bytes, at + 4);
+    at += 4 + bytes.length;
+  }
+  return at;
+}
+
 export class CompressRunner {
   private readonly yieldNow: () => Promise<void>;
   private readonly now: () => number;
   private session = -1;
   private init: CompressInit | null = null;
   private tiles: Tile[] = [];
+  /** Per tile, the rank its last compressed window kept (where its next sketch starts). */
+  private tileRanks: number[] = [];
   /** Pixels of all tiles (more than a frame when tiles overlap). */
   private layoutPx = 0;
   private compressor: TileCompressorLike | null = null;
@@ -224,11 +336,40 @@ export class CompressRunner {
   private cap = BACKLOG_MAX_BYTES;
   private asked = false;
   private gaveUp = false;
+  /** Why this run compresses no more (the backlog cap, or `stop`). */
+  private stopText: string | null = null;
   private backlogPeak = 0;
   /** When the recording ended, the frames then compressed, and those not compressed. */
   private endAt: number | null = null;
   private framesAtEnd = 0;
   private behindAtEnd: number | null = null;
+  // ---- A GPU run (`CompressInit.gpu`) ----
+  /** The GPU compressor (null: a CPU run, or the GPU run gave up). */
+  private gpu: GpuCompressorLike | null = null;
+  private ring: RingClock | null = null;
+  /** The GPU's frames per window (0: not a GPU run); kept once the GPU is released. */
+  private gwindow = 0;
+  /** Frames the GPU's ring holds (window + slack); kept once the GPU is released. */
+  private gring = 0;
+  /** The window being filled. */
+  private gwin: GpuWindow = noGpuWindow();
+  /** Closed windows, in stream order; the first is the one being compressed. */
+  private gpending: GpuWindow[] = [];
+  /** Statistics of compressed windows, reset, for the next windows. */
+  private gspare: WindowStatsLike[] = [];
+  /** Ends the wait for the window on the GPU (a reset or a give-up: the GPU may never answer). */
+  private gabort: (() => void) | null = null;
+  private gaborted: Promise<null> = new Promise<null>(() => {});
+  /** The GPU check: frames of the windows it keeps, by index; windows waiting for it; its sums. */
+  private gkeep = new Map<number, Int16Array>();
+  private gchecks: GpuCheckJob[] = [];
+  private gcheck: GpuCheck | null = null;
+  /** Discover's waits for room in the ring (`waited`): their sum, ms, and count; kept across a give-up. */
+  private waitMs = 0;
+  private waits = 0;
+  /** When the wait running began (`waiting`; null: none), and the run's first chunk arrived (null: none yet). */
+  private waitFrom: number | null = null;
+  private firstChunkAt: number | null = null;
 
   constructor(private readonly deps: CompressRunnerDeps) {
     this.yieldNow = deps.yieldNow ?? macrotask;
@@ -244,9 +385,11 @@ export class CompressRunner {
       // The layout first: a refused one must not leave a half-initialised session.
       const tiles = tilesOf(this.deps.layout(msg.width, msg.height, msg.tile, msg.tiling));
       this.tiles = tiles;
+      this.tileRanks = [];
       this.layoutPx = tiles.reduce((s, t) => s + t.w * t.h, 0);
       this.session = msg.session;
       this.init = msg;
+      this.resetWaits();
       this.widths = msg.pool ?? { discover: 1, after: 1 };
       if (msg.backlogCap !== undefined) {
         this.cap = msg.backlogCap;
@@ -260,6 +403,7 @@ export class CompressRunner {
         width: msg.width,
         height: msg.height,
       });
+      if (msg.gpu) await this.openGpuRun(msg);
       return;
     }
     if (msg.session !== this.session || !this.init) return;
@@ -268,6 +412,16 @@ export class CompressRunner {
       this.reviewOf(this.init)?.port.postMessage({ type: 'reset', session: msg.session });
       this.session = -1;
       this.init = null;
+      this.resetWaits();
+    } else if (msg.type === 'waiting') {
+      if (this.init.gpu) this.waitFrom = this.now();
+    } else if (msg.type === 'waited') {
+      if (!this.init.gpu) return;
+      this.waitFrom = null;
+      this.waitMs += msg.ms;
+      this.waits++;
+      if (msg.stalled) await this.gpuFail(GPU_TEXT.stalled);
+      this.post();
     } else if (msg.type === 'library') {
       if (msg.version >= (this.library?.version ?? 0)) {
         this.library = { version: msg.version, bytes: msg.bytes };
@@ -275,6 +429,11 @@ export class CompressRunner {
       this.maybeBackfill();
     } else if (msg.type === 'chunk') {
       if (this.gaveUp) return;
+      if (this.init.gpu) {
+        this.firstChunkAt ??= this.now();
+        if (this.gpu) await this.gpuChunk(msg, this.gpu);
+        return;
+      }
       this.askEstimate();
       this.open ??= {
         index: msg.window,
@@ -306,14 +465,22 @@ export class CompressRunner {
       if (msg.last) this.closeOpen();
     } else {
       if (this.gaveUp) return;
-      this.closeOpen();
+      if (this.init.gpu) {
+        // Not after a give-up that is still clearing (a lost device).
+        if (!this.gpu) return;
+        this.closeGpuWindow();
+      } else this.closeOpen();
       if (msg.final) {
         this.final = true;
         this.endAt = this.now();
         this.framesAtEnd = this.frames;
-        this.behindAtEnd = this.pending.reduce((s, w) => s + w.frames, 0);
+        this.behindAtEnd = this.waiting().reduce((s, w) => s + w.frames, 0);
         this.pool.setWidth(this.widths.after);
-        if (!this.loop) this.post();
+        this.releaseDoneGpu();
+        if (!this.loop) {
+          this.post();
+          this.kick();
+        }
       }
     }
   }
@@ -336,7 +503,7 @@ export class CompressRunner {
         type: 'error',
         session,
         job: id,
-        message: backlogText(this.cap),
+        message: this.stopText ?? backlogText(this.cap),
       });
       return;
     }
@@ -396,11 +563,27 @@ export class CompressRunner {
     const cap = this.cap;
     await this.clear();
     this.gaveUp = true;
-    this.deps.toMain.postMessage({ type: 'error', session, message: backlogText(cap) });
+    this.stopText = backlogText(cap);
+    this.deps.toMain.postMessage({ type: 'error', session, message: this.stopText });
+  }
+
+  /**
+   * A recording's settle re-reads the file (slice 7, decision 4): its
+   * compression would only take CPU from the settle and Extract, which read
+   * the file too. Drop the run's files and compress nothing more of it.
+   */
+  async stop(session: number): Promise<void> {
+    if (session !== this.session || !this.init || this.gaveUp) return;
+    await this.clear();
+    this.gaveUp = true;
+    this.stopText = STOPPED_TEXT;
   }
 
   private kick(): void {
-    if (!this.loop) this.launch(this.run());
+    if (this.loop) return;
+    if (this.gpu && this.gpending.length > 0) this.launch(this.runGpu(this.gpu));
+    else if (this.checkDue()) this.launch(this.runGpuChecks());
+    else if (this.pending.length > 0) this.launch(this.run());
   }
 
   private maybeBackfill(): void {
@@ -408,7 +591,7 @@ export class CompressRunner {
     const { engine, factors } = this.deps;
     if (this.gaveUp || this.loop || this.wanted === null || !lib || lib.version < this.wanted)
       return;
-    if (this.open || this.pending.length > 0 || !engine || !factors) return;
+    if (this.open || this.pending.length > 0 || this.gpuWaits() || !engine || !factors) return;
     this.wanted = null;
     this.launch(this.runBackfill(lib, engine, factors));
   }
@@ -416,7 +599,8 @@ export class CompressRunner {
   private maybeExtract(): void {
     const job = this.job;
     const { engine, factors } = this.deps;
-    if (!job || this.loop || this.open || this.pending.length > 0 || !factors) return;
+    if (!job || this.loop || this.open || this.pending.length > 0 || this.gpuWaits() || !factors)
+      return;
     if (this.deps.extractor && !this.init?.frameExtract)
       this.launch(this.runFactorExtract(job, this.deps.extractor, factors));
     else if (engine) this.launch(this.runExtract(job, engine, factors));
@@ -439,7 +623,7 @@ export class CompressRunner {
         this.loop = null;
         // A window closed, or a back-fill was asked for, while the loop was busy.
         if (failed) return;
-        if (this.pending.length > 0) this.kick();
+        if (this.pending.length > 0 || this.gpending.length > 0 || this.checkDue()) this.kick();
         else {
           this.maybeBackfill();
           this.maybeExtract();
@@ -727,6 +911,7 @@ export class CompressRunner {
         w: t.w,
         h: t.h,
         seed: ((job.index << 20) ^ i) >>> 0,
+        prevRank: this.tileRanks[i],
       }));
       // A reset while the files opened: the pool already started a new run.
       if (epoch !== this.epoch) return;
@@ -743,7 +928,8 @@ export class CompressRunner {
             o += n * p;
           }
         },
-        write: (_tj, r) => {
+        write: (tj, r) => {
+          this.tileRanks[tj.tile] = r.rank;
           ms += r.ms;
           rank += r.rank;
           len[0] = r.bytes.length;
@@ -797,16 +983,432 @@ export class CompressRunner {
     );
   }
 
+  // ---- A GPU run ----
+
+  /** The closed windows not compressed yet (on the GPU or on the CPU: one of the two is empty). */
+  private waiting(): { frames: number }[] {
+    return [...this.pending, ...this.gpending];
+  }
+
+  /**
+   * The recording ended and its last window is written: free the GPU (its
+   * ring is hundreds of MB) for the stages that follow. A device lost after
+   * that changes nothing.
+   */
+  private releaseDoneGpu(): void {
+    if (this.gpu && this.final && this.gpending.length === 0) this.dropGpu();
+  }
+
+  /** A GPU window is being filled, waits for the GPU or for the check. */
+  private gpuWaits(): boolean {
+    return this.gpending.length > 0 || this.gwin.frames > 0 || this.gchecks.length > 0;
+  }
+
+  /** Open the run's GPU compressor; without one the run has no factors and says why, once. */
+  private async openGpuRun(init: CompressInit & { session: number }): Promise<void> {
+    const epoch = this.epoch;
+    const open = this.deps.openGpu;
+    const g = open
+      ? await open(init).catch((err: unknown) => ({ reason: errorText(err) }))
+      : { reason: 'this worker has no GPU compressor' };
+    if (epoch !== this.epoch) {
+      if (!('reason' in g)) g.destroy();
+      return;
+    }
+    if ('reason' in g) {
+      this.roomOff();
+      this.gaveUp = true;
+      this.stopText = GPU_TEXT.none(g.reason);
+      this.deps.toMain.postMessage({
+        type: 'error',
+        session: init.session,
+        message: this.stopText,
+      });
+      return;
+    }
+    this.gpu = g;
+    this.gwindow = g.window;
+    this.gring = g.window + g.slack;
+    this.ring = new RingClock(g.window, g.slack);
+    this.gwin = noGpuWindow();
+    this.gaborted = new Promise<null>((resolve) => (this.gabort = () => resolve(null)));
+    void g.lost.then((why) => this.gpuFail(GPU_TEXT.lost(why), epoch));
+    this.postRoom();
+  }
+
+  /** Tell the feed how far it may send: the ring's size and the oldest frame the GPU still needs. */
+  private postRoom(): void {
+    if (!this.gpu) return;
+    this.deps.toFast?.postMessage({
+      type: 'room',
+      session: this.session,
+      ring: this.gring,
+      window: this.gwindow,
+      keepFrom: this.gpending[0]?.start ?? this.gwin.start,
+    });
+  }
+
+  /** The GPU route ended: the feed never waits again. */
+  private roomOff(): void {
+    this.deps.toFast?.postMessage({
+      type: 'room',
+      session: this.session,
+      ring: 0,
+      window: 0,
+      keepFrom: 0,
+    });
+  }
+
+  /**
+   * Quantize a chunk and upload it to the ring, window by window of the GPU's
+   * length. A frame that would overwrite one of a window not compressed yet
+   * gives the factors up: the chunk never waits for the GPU.
+   */
+  private async gpuChunk(
+    msg: Extract<FastToCompress, { type: 'chunk' }>,
+    g: GpuCompressorLike,
+  ): Promise<void> {
+    const init = this.init!;
+    const ring = this.ring!;
+    const hw = init.width * init.height;
+    // The next stream frame (also after a window boundary): a chunk going back
+    // would overwrite ring slots of a window not compressed yet.
+    const next = this.gwin.start + this.gwin.frames;
+    if (msg.start < next) {
+      await this.gpuFail(GPU_TEXT.error(`frame ${msg.start} after frame ${next - 1}`));
+      return;
+    }
+    // A gap: a window's frames are consecutive.
+    if (this.gwin.frames > 0 && msg.start !== next) this.closeGpuWindow();
+    if (this.gwin.frames === 0) this.gwin.start = msg.start;
+    const quantize = this.deps.quantizeFrames ?? wasmQuantizeFrames;
+    const q = quantize(msg.data.subarray(0, msg.count * hw), init.quant);
+    for (let done = 0; done < msg.count;) {
+      const n = Math.min(msg.count - done, g.window - this.gwin.frames);
+      const start = msg.start + done;
+      // The oldest frame still needed: the first of the window on the GPU, or of the one filling.
+      const keepFrom = this.gpending[0]?.start ?? this.gwin.start;
+      if (!ring.fits(start, n, keepFrom)) {
+        await this.gpuFail(GPU_TEXT.behind);
+        return;
+      }
+      const frames = q.subarray(done * hw, (done + n) * hw);
+      g.upload(frames, start, n);
+      this.keepForCheck(frames);
+      (this.gwin.stats ??= this.takeStats()).push(frames);
+      this.gwin.frames += n;
+      done += n;
+      if (this.gwin.frames === g.window) this.closeGpuWindow();
+    }
+  }
+
+  /** Close the window being filled; one of a single frame is dropped (as on the CPU). */
+  private closeGpuWindow(): void {
+    const w = this.gwin;
+    if (w.frames === 0) return;
+    const keep = w.frames >= 2;
+    this.gwin = {
+      index: w.index + (keep ? 1 : 0),
+      start: w.start + w.frames,
+      frames: 0,
+      stats: null,
+    };
+    if (!keep) {
+      this.spareStats(w.stats);
+      this.postRoom();
+      return;
+    }
+    this.gpending.push(w);
+    this.kick();
+  }
+
+  private takeStats(): WindowStatsLike {
+    const { width, height } = this.init!;
+    const make = this.deps.stats ?? ((w: number, h: number) => new WindowStats(w, h));
+    return this.gspare.pop() ?? make(width, height);
+  }
+
+  private spareStats(s: WindowStatsLike | null): void {
+    if (!s) return;
+    s.reset();
+    this.gspare.push(s);
+  }
+
+  /** Compress the closed windows on the GPU strictly one at a time (it refuses a second). */
+  private async runGpu(g: GpuCompressorLike): Promise<void> {
+    const epoch = this.epoch;
+    while (this.gpending.length > 0) {
+      const w = this.gpending[0];
+      const ok = await this.compressGpu(g, w, epoch);
+      if (!ok || epoch !== this.epoch) return;
+      const share = this.waitShare();
+      if (share !== null) {
+        // Not awaited: the give-up waits for this loop to end.
+        void this.gpuFail(GPU_TEXT.slow(share * 100), epoch);
+        return;
+      }
+      this.gpending.shift();
+      this.spareStats(w.stats);
+      this.postRoom();
+      this.releaseDoneGpu();
+      this.post();
+    }
+  }
+
+  /**
+   * The share of Discover's time since the run's first chunk it spent waiting
+   * for the GPU (the wait running included), when it is above
+   * `GPU_WAIT_SHARE_MAX` with `GPU_WAIT_MIN_WINDOWS` windows written while the
+   * recording runs; null otherwise. After the end Discover waits no more.
+   */
+  private waitShare(): number | null {
+    if (this.final || this.windows < GPU_WAIT_MIN_WINDOWS || this.firstChunkAt === null)
+      return null;
+    const now = this.now();
+    const elapsed = now - this.firstChunkAt;
+    if (!(elapsed > 0)) return null;
+    const waited = this.waitMs + (this.waitFrom === null ? 0 : now - this.waitFrom);
+    const share = waited / elapsed;
+    return share > GPU_WAIT_SHARE_MAX ? share : null;
+  }
+
+  private resetWaits(): void {
+    this.waitMs = 0;
+    this.waits = 0;
+    this.waitFrom = null;
+    this.firstChunkAt = null;
+  }
+
+  /** One window on the GPU into `f<index>.bin`; false when the run ended or gave up meanwhile. */
+  private async compressGpu(g: GpuCompressorLike, w: GpuWindow, epoch: number): Promise<boolean> {
+    const wall0 = this.now();
+    // Each tile's rank of the window before, as it was when this window began.
+    const prev = this.tileRanks.slice();
+    let work: Promise<GpuWindowResult>;
+    try {
+      work = g.compress({
+        index: w.index,
+        start: w.start,
+        frames: w.frames,
+        stats: w.stats!,
+        seeds: (i) => ((w.index << 20) ^ i) >>> 0,
+        prevRanks: (i) => prev[i],
+        // Each batch of tiles tells a waiting feed the GPU is at work (a slow window is no stall).
+        progress: () => {
+          if (epoch === this.epoch) this.postRoom();
+        },
+      });
+    } catch (err) {
+      work = Promise.reject(err instanceof Error ? err : new Error(String(err)));
+    }
+    // A reset or a give-up ends the wait (`gaborted`); the GPU's answer is then dropped.
+    const out = await Promise.race([
+      work.then(
+        (r) => ({ r }),
+        (err: unknown) => ({ err }),
+      ),
+      this.gaborted,
+    ]);
+    if (out === null || epoch !== this.epoch) return false;
+    if ('err' in out) {
+      // Not awaited: the give-up waits for this loop to end.
+      void this.gpuFail(
+        out.err instanceof GpuSketchTooLarge ? GPU_TEXT.sketch : GPU_TEXT.error(errorText(out.err)),
+        epoch,
+      );
+      return false;
+    }
+    const init = this.init!;
+    const { tiles, ranks, ms } = out.r;
+    let size: number;
+    try {
+      const dst = await this.deps.store.open(factorName(w.index));
+      try {
+        if (epoch !== this.epoch) return false;
+        const head = this.deps.header(
+          init.width,
+          init.height,
+          init.tile,
+          init.tiling,
+          w.frames,
+          tiles.length,
+          w.start,
+        );
+        size = writeFactorFile(dst, head, tiles);
+      } finally {
+        dst.close();
+      }
+    } catch (err) {
+      // A window that cannot be written: the factors would have a hole.
+      void this.gpuFail(GPU_TEXT.error(errorText(err)), epoch);
+      return false;
+    }
+    ranks.forEach((r, i) => (this.tileRanks[i] = r));
+    const kept = this.gkeep.get(w.index);
+    if (kept) {
+      this.gkeep.delete(w.index);
+      this.gchecks.push({ index: w.index, frames: w.frames, data: kept, prev, tiles, ranks });
+    }
+    this.done.push({ index: w.index, start: w.start, frames: w.frames });
+    this.windows++;
+    this.frames += w.frames;
+    this.factorBytes += size;
+    this.meanRank = ranks.reduce((s, r) => s + r, 0) / Math.max(1, ranks.length);
+    this.msPerFrame = ms / w.frames;
+    this.fps = (w.frames * 1000) / Math.max(1e-6, this.now() - wall0);
+    return true;
+  }
+
+  // ---- The GPU check ----
+
+  /** Keep frames of the window being filled for the check (one of its first `gpuCheck` windows). */
+  private keepForCheck(frames: Int16Array): void {
+    const { width, height, gpuCheck } = this.init!;
+    const w = this.gwin;
+    if (w.index >= Math.min(gpuCheck ?? 0, GPU_CHECK_MAX)) return;
+    const hw = width * height;
+    let buf = this.gkeep.get(w.index);
+    if (!buf) {
+      buf = new Int16Array(this.gwindow * hw);
+      this.gkeep.set(w.index, buf);
+    }
+    buf.set(frames, w.frames * hw);
+  }
+
+  /** The recording's windows are all on disk and a kept window waits for the check. */
+  private checkDue(): boolean {
+    return this.gchecks.length > 0 && this.final && this.gpending.length === 0 && !this.gaveUp;
+  }
+
+  /** Each kept window on the CPU twice, against the GPU's tiles; its frames go once it is done. */
+  private async runGpuChecks(): Promise<void> {
+    const epoch = this.epoch;
+    const init = this.init!;
+    const local = (this.compressor ??= this.deps.create(init.quant));
+    const sums = (this.gcheck ??= {
+      windows: 0,
+      tiles: 0,
+      loss: 0,
+      floor: 0,
+      ref: 0,
+      signal: 0,
+      rankDiff: 0,
+      floorRankDiff: 0,
+      keptDiff: 0,
+      floorKeptDiff: 0,
+      rankDiffTiles: 0,
+      ms: 0,
+    });
+    try {
+      while (this.gchecks.length > 0) {
+        const c = this.gchecks[0];
+        const t0 = this.now();
+        const cpu = await this.cpuTiles(c, 0, local, epoch);
+        const cpu2 = cpu && (await this.cpuTiles(c, GPU_CHECK_SEED, local, epoch));
+        if (!cpu || !cpu2 || epoch !== this.epoch) return;
+        for (let i = 0; i < cpu.length; i++) {
+          const ref = readTile(cpu[i].bytes);
+          const gpu = readTile(c.tiles[i]);
+          const cpu2Tile = readTile(cpu2[i].bytes);
+          const d = tileDiff(gpu, ref);
+          const f = tileDiff(cpu2Tile, ref);
+          sums.loss += d.diff;
+          sums.ref += d.ref;
+          sums.signal += d.signal;
+          sums.floor += f.diff;
+          sums.rankDiff += Math.abs(c.ranks[i] - cpu[i].rank);
+          sums.floorRankDiff += Math.abs(cpu2[i].rank - cpu[i].rank);
+          sums.keptDiff += Math.abs(gpu.keptEnergy - ref.keptEnergy);
+          sums.floorKeptDiff += Math.abs(cpu2Tile.keptEnergy - ref.keptEnergy);
+          if (c.ranks[i] !== cpu[i].rank) sums.rankDiffTiles++;
+          await this.yieldNow();
+          if (epoch !== this.epoch) return;
+        }
+        sums.windows++;
+        sums.tiles += cpu.length;
+        sums.ms += this.now() - t0;
+        this.gchecks.shift();
+        this.post();
+      }
+    } catch (err) {
+      // A check that fails is the check's news only: the run's factors stay usable.
+      if (epoch !== this.epoch) return;
+      sums.error = errorText(err);
+      this.gchecks = [];
+      this.post();
+    }
+  }
+
+  /** Window `c` on the CPU with its seeds moved by `shift`: each tile's rank and bytes (null: reset). */
+  private async cpuTiles(
+    c: GpuCheckJob,
+    shift: number,
+    local: TileCompressorLike,
+    epoch: number,
+  ): Promise<{ rank: number; bytes: Uint8Array }[] | null> {
+    const { width, height } = this.init!;
+    const out: { rank: number; bytes: Uint8Array }[] = [];
+    const jobs: TileJob[] = this.tiles.map((t, i) => ({
+      window: c.index,
+      tile: i,
+      frames: c.frames,
+      x0: t.x0,
+      y0: t.y0,
+      w: t.w,
+      h: t.h,
+      seed: (((c.index << 20) ^ i) + shift) >>> 0,
+      prevRank: c.prev[i],
+    }));
+    const done = await this.pool.compressWindow(jobs, {
+      local,
+      read: (tj, raw) => cutTile(c.data, width, height, c.frames, tj.x0, tj.y0, tj.w, tj.h, raw),
+      write: (_tj, r) => out.push({ rank: r.rank, bytes: r.bytes }),
+      yieldNow: this.yieldNow,
+    });
+    return done && epoch === this.epoch ? out : null;
+  }
+
+  /** The GPU run cannot go on: drop its files, write nothing more, say why once. */
+  private async gpuFail(text: string, epoch = this.epoch): Promise<void> {
+    if (epoch !== this.epoch || this.gaveUp || !this.gpu) return;
+    const session = this.session;
+    await this.clear();
+    this.gaveUp = true;
+    this.stopText = text;
+    this.deps.toMain.postMessage({ type: 'error', session, message: text });
+  }
+
+  /**
+   * End a GPU run: stop the wait for its window, free the device and the
+   * statistics. A window being compressed read its statistics when it began
+   * (each `GpuTileJob` borrows them only while it is built), so they may go at once.
+   */
+  private dropGpu(): void {
+    if (this.gpu) this.roomOff();
+    this.gabort?.();
+    this.gabort = null;
+    this.gpu?.destroy();
+    this.gpu = null;
+    this.ring = null;
+    for (const s of [this.gwin.stats, ...this.gpending.map((w) => w.stats), ...this.gspare])
+      s?.free();
+    this.gwin = noGpuWindow();
+    this.gpending = [];
+    this.gspare = [];
+  }
+
   private post(): void {
+    const waiting = this.waiting();
+    const window = this.gwindow || this.init?.window;
     const status: CompressStatus = {
       windows: this.windows,
       frames: this.frames,
-      pending: this.pending.length,
-      pendingFrames: this.pending.reduce((s, w) => s + w.frames, 0),
+      pending: waiting.length,
+      pendingFrames: waiting.reduce((s, w) => s + w.frames, 0),
       meanRank: this.meanRank,
       msPerFrame: this.msPerFrame,
       factorBytes: this.factorBytes,
-      final: this.final && this.pending.length === 0,
+      final: this.final && waiting.length === 0,
       tiling: this.init?.tiling ?? 'plain',
       source: this.init?.source ?? 'discover',
       folder: this.deps.store.folder,
@@ -817,6 +1419,11 @@ export class CompressRunner {
       backlogPeakBytes: this.backlogPeak,
       behindAtEnd: this.behindAtEnd,
       fpsAfter: this.fpsAfter(),
+      ...(window !== undefined ? { window } : {}),
+      ...(this.gring > 0 ? { ring: this.gring } : {}),
+      backend: this.gwindow > 0 ? 'gpu' : 'cpu',
+      ...(this.init?.gpu ? { waitS: this.waitMs / 1000, waits: this.waits } : {}),
+      ...(this.gcheck ? { check: { ...this.gcheck } } : {}),
     };
     this.deps.toMain.postMessage({ type: 'status', session: this.session, status });
   }
@@ -830,6 +1437,7 @@ export class CompressRunner {
   /** Stop the loop, drop every file and counter. */
   private async clear(): Promise<void> {
     this.epoch++;
+    this.dropGpu();
     this.pool.reset();
     this.windowPool.reset();
     this.open?.file.close();
@@ -853,10 +1461,16 @@ export class CompressRunner {
     this.cap = BACKLOG_MAX_BYTES;
     this.asked = false;
     this.gaveUp = false;
+    this.stopText = null;
     this.backlogPeak = 0;
     this.endAt = null;
     this.framesAtEnd = 0;
     this.behindAtEnd = null;
+    this.gwindow = 0;
+    this.gring = 0;
+    this.gkeep.clear();
+    this.gchecks = [];
+    this.gcheck = null;
     await this.deps.store.clear();
   }
 }

@@ -32,6 +32,7 @@ import {
 } from './lib/compress-store.ts';
 import { createFactorExtract } from './lib/factor-extract.ts';
 import { FACTOR_STALL_TEXT, FactorSettle, FileSettleChoice } from './lib/factor-settle.ts';
+import { STOPPED_TEXT } from './lib/compress-runner.ts';
 import { factorsFromPage } from './lib/factor-run.ts';
 import { createPass2Store, replayBlocked } from './lib/pass2-store.ts';
 import {
@@ -149,10 +150,10 @@ const App: Component = () => {
   const visits = params.get('visits');
   // `?review` (with `?compress`): the history review, every 8 compressed windows
   // (`?review=N`: every N), in a worker of its own. One core is left for it.
-  // A live stream settles and extracts on the factors Discover writes, by default
-  // (`?factors=0`: off; `?compress&review` turns it off for the review). A recording
-  // re-reads the file; with `?factors` it runs as with `?compress`, and `?factors=file`
-  // (experimental) lets its settle and Extract read its factors when complete.
+  // A live stream settles and extracts on the factors Discover writes, and a recording
+  // on the factors the GPU compresses while Discover runs, by default (`?factors=0`: off;
+  // `?compress&review` turns it off for the review). On a recording `?factors` runs as
+  // with `?compress`, and `?factors=file` (experimental) compresses on the CPU.
   const pageFactors = factorsFromPage(params);
   if (pageFactors.warn) console.warn(pageFactors.warn);
   const reviewWindows = pageFactors.review ? reviewEvery(params.get('review')) : null;
@@ -292,6 +293,10 @@ const App: Component = () => {
       const s = store.source();
       return s !== null && 'sessions' in s;
     });
+  pipeline.setFactorsGpu(pageFactors.factorsGpu);
+  // `?debug&gpucheck=N`: the GPU's factors of the first N windows against the CPU's (measurement).
+  const gpucheck = params.has('debug') ? Math.floor(Number(params.get('gpucheck'))) : NaN;
+  pipeline.setGpuCheck(gpucheck > 0 ? gpucheck : 0);
   // Background settle (settle during Discover) is on under look-back whenever the target is
   // below Max; `csettle=0` turns it off, `csettle=yield` or `csettle=yieldN` feeds each answer
   // N frames at a time (1 by default), `csrate=1|0.5` lowers the cap from 2 re-read frames
@@ -402,6 +407,10 @@ const App: Component = () => {
         behindFrames: cs.behindAtEnd ?? null,
         backlogPeakBytes: cs.backlogPeakBytes ?? 0,
         fpsAfter: cs.fpsAfter ?? null,
+        ...(cs.window !== undefined ? { window: cs.window } : {}),
+        ...(cs.ring !== undefined ? { ring: cs.ring } : {}),
+        ...(cs.backend ? { backend: cs.backend } : {}),
+        ...(cs.waitS !== undefined ? { waitS: cs.waitS, waits: cs.waits ?? 0 } : {}),
       };
     }
     stageLog.end('discover', 'done', data);
@@ -539,12 +548,17 @@ const App: Component = () => {
         window: COMPRESS_DEFAULTS.window,
         msPerFrame: compress.status()?.msPerFrame ?? 0,
         workers: pipeline.runPool()?.after ?? 1,
+        // A GPU run is never more than a window and its slack behind: wait for its last window.
+        wait: (params.has('debug') && params.has('fwait')) || pipeline.gpuFactorRun(),
         width: i?.width ?? 0,
         height: i?.height ?? 0,
       });
       if (f.kind === 'factors') slow.factorsReady(f.session, f.frames, f.factors);
       else if (f.kind === 'file') {
         slow.factorsFailed(f.session, f.reason);
+        // No stage reads the factors now: free the CPU and the disk for the file's settle and Extract.
+        compressClient?.stop(f.session);
+        compress.fail(STOPPED_TEXT);
         runHistory.log({
           frame: frames,
           kind: 'warning',

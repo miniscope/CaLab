@@ -80,11 +80,20 @@ function handle(port: MessagePort, msg: CoordinatorToHelper): void {
     }
     return;
   }
-  const { epoch, window, tile, frames, x0, y0, w, h, seed, raw } = msg;
+  const { epoch, window, tile, frames, x0, y0, w, h, seed, prevRank, raw } = msg;
   try {
     if (!compressor) throw new Error('The compress helper has no compressor (no init).');
     const t0 = performance.now();
-    const f = compressor.compress(raw.subarray(0, frames * w * h), frames, x0, y0, w, h, seed);
+    const f = compressor.compress(
+      raw.subarray(0, frames * w * h),
+      frames,
+      x0,
+      y0,
+      w,
+      h,
+      seed,
+      prevRank,
+    );
     try {
       const ms = performance.now() - t0;
       const bytes = f.toBytes();

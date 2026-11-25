@@ -136,7 +136,7 @@ export interface StageRun {
   splits?: number;
   /** Discover: it ran with look-back (and its settle). */
   lookback?: boolean;
-  /** Discover: the Final settle read the factors or, with `?factors=file`, the file, and why. */
+  /** Discover: the Final settle read the factors or the file, and why. */
   settleSource?: 'factors' | 'file';
   settleSourceReason?: string;
   /** Extract: it solved the frames rebuilt from the factors (and which), or replayed the file and why. */
@@ -148,7 +148,9 @@ export interface StageRun {
   /**
    * Discover of a factor run: compress workers while it read and after its end,
    * the frames not compressed at its end, the waiting window files' peak, and
-   * the pace after its end (frames/s).
+   * the pace after its end (frames/s); frames per window and where the
+   * windows were compressed (absent in older records); a GPU run: the seconds
+   * Discover waited for room in the GPU's ring, and how many times.
    */
   compress?: {
     workers: number;
@@ -156,6 +158,11 @@ export interface StageRun {
     behindFrames: number | null;
     backlogPeakBytes: number;
     fpsAfter: number | null;
+    window?: number;
+    ring?: number;
+    backend?: 'cpu' | 'gpu';
+    waitS?: number;
+    waits?: number;
   };
 }
 

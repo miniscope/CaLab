@@ -92,6 +92,8 @@ export class SettleFeed {
   readonly total: number;
   private run = 0;
   private next: number;
+  /** Frames handed out but not served (`putBack`): handed out again first. */
+  private back: number[] = [];
 
   constructor(private readonly runs: readonly FrameRun[]) {
     this.total = planFrames(runs);
@@ -104,16 +106,26 @@ export class SettleFeed {
     for (let i = 0; i < this.run && i < this.runs.length; i++)
       n += this.runs[i].end - this.runs[i].start;
     if (this.run < this.runs.length) n += this.next - this.runs[this.run].start;
-    return n;
+    return n - this.back.length;
   }
 
   get done(): boolean {
-    return this.run >= this.runs.length;
+    return this.run >= this.runs.length && this.back.length === 0;
+  }
+
+  /** Frames of a request that was not served (its worker failed): the next `take` hands them out first. */
+  putBack(frames: readonly number[]): void {
+    this.back.push(...frames);
   }
 
   /** The next up to `max` frames (empty when done). */
   take(max: number): SettleFrame[] {
     const out: SettleFrame[] = [];
+    while (out.length < max && this.back.length > 0) {
+      const frame = this.back.shift()!;
+      const run = this.runs.findIndex((r) => frame >= r.start && frame < r.end);
+      out.push({ frame, block: -1 - run });
+    }
     while (out.length < max && this.run < this.runs.length) {
       const r = this.runs[this.run];
       out.push({ frame: this.next, block: -1 - this.run });

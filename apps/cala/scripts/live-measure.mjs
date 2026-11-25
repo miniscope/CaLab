@@ -152,7 +152,16 @@ const sample = () => {
       backlogPeakBytes: cs.backlogPeakBytes ?? null,
       behindAtEnd: cs.behindAtEnd ?? null,
       fpsAfter: cs.fpsAfter ?? null,
+      // Frames per window, where they are compressed, and `?debug&gpucheck`'s sums.
+      window: cs.window ?? null,
+      ring: cs.ring ?? null,
+      backend: cs.backend ?? null,
+      // `?factors=gpu`: Discover's waits for room in the GPU's ring (seconds in all, count).
+      waitS: cs.waitS ?? null,
+      waits: cs.waits ?? null,
+      check: cs.check ?? null,
     },
+    compressError: c.compress?.error?.() ?? null,
     final: st?.final ?? false,
     settle: settle && {
       waiting: settle.waiting ?? false,
@@ -161,6 +170,7 @@ const sample = () => {
       done: settle.done,
       source: settle.source ?? null,
       fileReason: settle.fileReason ?? null,
+      workers: settle.workers ?? null,
     },
     pass2: c.pass2.status(),
     pass2Source: c.pass2.result()?.source ?? null,
@@ -241,6 +251,8 @@ function fileFactorSummary(timeline) {
     settleFileReason: last?.settle?.fileReason ?? null,
     settleS: span(settleStart ?? ask, finalAt),
     settleFed: last?.settle?.fed ?? null,
+    // Look-back workers that answered the settle (worker 0 alone, or the settle pool on factors).
+    settleWorkers: last?.settle?.workers ?? null,
     extractSource: last?.pass2Source ?? null,
     extractor: last?.pass2Extractor ?? null,
     extractReason: last?.pass2Reason ?? null,
@@ -259,6 +271,22 @@ function fileFactorSummary(timeline) {
       0,
       ...timeline.map((s) => s.compress?.backlogPeakBytes ?? 0),
     ),
+    // `?factors=gpu`: frames per window, the backend, the compressor's error, `?debug&gpucheck`.
+    compressWindow: last?.compress?.window ?? null,
+    compressRing: last?.compress?.ring ?? null,
+    compressBackend: last?.compress?.backend ?? null,
+    compressWaitS: Math.max(0, ...timeline.map((s) => s.compress?.waitS ?? 0)),
+    compressWaits: Math.max(0, ...timeline.map((s) => s.compress?.waits ?? 0)),
+    compressError: timeline.find((s) => s.compressError)?.compressError ?? null,
+    // One value per window (the status after that window).
+    compressMsPerFrame: summarize([
+      ...new Map(
+        timeline.flatMap((s) =>
+          s.compress?.windows > 0 ? [[s.compress.windows, s.compress.msPerFrame]] : [],
+        ),
+      ).values(),
+    ]),
+    check: last?.compress?.check ?? null,
   };
 }
 

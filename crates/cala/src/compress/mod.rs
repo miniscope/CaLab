@@ -28,6 +28,7 @@
 //! the eigenvectors of `B Bᵀ`) and the autocorrelations run in float64.
 
 pub mod blend;
+pub mod gpu;
 mod linalg;
 pub mod project;
 pub mod review;
@@ -44,6 +45,11 @@ use crate::preprocess::Dims;
 const N_OVERSAMPLES: usize = 10;
 /// Trailing components that must all fail the cut for the rank to stop growing.
 const ADAPT_MARGIN: usize = 10;
+/// Extra components beyond the previous window's rank plus [`ADAPT_MARGIN`]
+/// when a tile's sketch starts from that rank ([`k0_after`]).
+const ADAPT_SLACK: usize = 4;
+/// Smallest starting rank of [`k0_after`].
+const K0_FLOOR: usize = 16;
 /// Magic and header length of a factor file ([`WindowFactors::to_bytes`]),
 /// and of the files written before format v2.
 const FILE_MAGIC: &[u8; 8] = b"CALAFAC2";
@@ -66,6 +72,9 @@ pub struct CompressConfig {
     pub max_rank: usize,
     /// Power iterations of the randomized SVD.
     pub n_iter: usize,
+    /// From a tile's second window on, start its sketch at [`k0_after`] of
+    /// the rank it kept in the previous window instead of `k0`.
+    pub adapt_k0: bool,
     /// A component is kept when its lag-1 autocorrelation exceeds
     /// `max(z / sqrt(T), rho_min)`.
     pub rho_min: f64,
@@ -92,6 +101,7 @@ impl Default for CompressConfig {
             k0: 40,
             max_rank: 300,
             n_iter: 2,
+            adapt_k0: true,
             rho_min: 0.2,
             z: 4.0,
             seed: 0,
@@ -444,7 +454,13 @@ impl WindowFactors {
 }
 
 /// A tile to compress: its index, `(x0, y0, w, h)` and its buffered frames.
-type Job<'a> = (usize, &'a (usize, usize, usize, usize), &'a mut Vec<i16>);
+/// A tile's index, place, buffer and the rank its previous window kept.
+type Job<'a> = (
+    usize,
+    &'a (usize, usize, usize, usize),
+    &'a mut Vec<i16>,
+    Option<usize>,
+);
 
 /// Buffers frames tile by tile and compresses each full window.
 pub struct WindowCompressor {
@@ -454,6 +470,8 @@ pub struct WindowCompressor {
     grid: Vec<(usize, usize, usize, usize)>,
     /// Per tile, `n x P` row-major, quantized.
     buf: Vec<Vec<i16>>,
+    /// Per tile, the rank its last window kept (0: none yet).
+    ranks: Vec<usize>,
     n: usize,
     start: u64,
     windows: u64,
@@ -474,11 +492,13 @@ impl WindowCompressor {
             .iter()
             .map(|g| Vec::with_capacity(g.2 * g.3 * cfg.window))
             .collect();
+        let ranks = vec![0; grid.len()];
         WindowCompressor {
             dims,
             cfg,
             grid,
             buf,
+            ranks,
             n: 0,
             start: 0,
             windows: 0,
@@ -522,15 +542,16 @@ impl WindowCompressor {
             .grid
             .iter()
             .zip(&mut self.buf)
+            .zip(&self.ranks)
             .enumerate()
-            .map(|(i, (g, b))| (i, g, b))
+            .map(|(i, ((g, b), &r))| (i, g, b, (r > 0).then_some(r)))
             .collect();
-        let run = |(i, g, b): Job| {
+        let run = |(i, g, b, prev): Job| {
             // No clock on wasm32-unknown-unknown (`Instant::now` panics).
             #[cfg(not(target_arch = "wasm32"))]
             let t0 = std::time::Instant::now();
             let seed = cfg.seed ^ (windows << 20) ^ i as u64;
-            let mut tf = compress_tile(b, t, g.2 * g.3, cfg, seed);
+            let mut tf = compress_tile(b, t, g.2 * g.3, &tile_config(cfg, prev), seed);
             (tf.x0, tf.y0, tf.w, tf.h) = *g;
             b.clear();
             #[cfg(not(target_arch = "wasm32"))]
@@ -562,6 +583,9 @@ impl WindowCompressor {
             })
         };
         done.sort_by_key(|d| d.0);
+        for (r, d) in self.ranks.iter_mut().zip(&done) {
+            *r = d.1.rank;
+        }
         let compress_seconds = done.iter().map(|d| d.2).sum();
         let tiles = done.into_iter().map(|d| d.1).collect();
         let out = WindowFactors {
@@ -642,6 +666,151 @@ pub fn quantize(v: f32, quant: f32) -> i16 {
 // One tile
 // ---------------------------------------------------------------------------
 
+/// Per-pixel statistics of one tile and window from its exact integer sums
+/// (see [`stats_from_sums`]).
+pub struct TileStats {
+    /// Per-pixel mean, in the frames' units.
+    pub mean: Vec<f32>,
+    /// Per pixel: `Σ (y − mean)²` over its valid samples.
+    pub ss: Vec<f64>,
+    /// Per pixel: the share of the window's frames in which it was not missing.
+    pub valid: Vec<f32>,
+    /// `Σ (y − mean)²` over the tile.
+    pub energy: f64,
+}
+
+/// The statistics of a tile from its per-pixel integer sums (`acc` = Σ v,
+/// `sq` = Σ v², `cnt` = valid samples, over `t` frames quantized at `quant`).
+fn stats_from_sums(acc: &[i64], sq: &[i64], cnt: &[u32], t: usize, quant: f32) -> TileStats {
+    let q = f64::from(quant);
+    // A missing sample counts as the mean of the pixel's valid samples,
+    // which is 0 after centring; a pixel with no valid sample is all 0.
+    // So the stored mean is 0 for a pixel that was never valid in this
+    // window, and a factor solve reads that 0 where a frame solve on a
+    // replay sees a missing pixel.
+    let mean = acc
+        .iter()
+        .zip(cnt)
+        .map(|(&a, &c)| {
+            if c > 0 {
+                (a as f64 / f64::from(c) / q) as f32
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let ss: Vec<f64> = acc
+        .iter()
+        .zip(sq)
+        .zip(cnt)
+        .map(|((&a, &s), &c)| {
+            if c > 0 {
+                (s as f64 - (a as f64) * (a as f64) / f64::from(c)).max(0.0) / (q * q)
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let energy = ss.iter().sum();
+    let valid = cnt.iter().map(|&c| c as f32 / t as f32).collect();
+    TileStats {
+        mean,
+        ss,
+        valid,
+        energy,
+    }
+}
+
+/// Exact per-pixel integer sums of a window of quantized frames in frame
+/// layout (the GPU compressor's side of `TileMatrix::new`).
+pub struct WindowStats {
+    width: usize,
+    height: usize,
+    acc: Vec<i64>,
+    sq: Vec<i64>,
+    cnt: Vec<u32>,
+    frames: usize,
+}
+
+impl WindowStats {
+    pub fn new(width: usize, height: usize) -> WindowStats {
+        let n = width * height;
+        WindowStats {
+            width,
+            height,
+            acc: vec![0; n],
+            sq: vec![0; n],
+            cnt: vec![0; n],
+            frames: 0,
+        }
+    }
+
+    /// Add whole frames (`frames.len()` a multiple of the frame's pixels;
+    /// a partial frame at the end is ignored).
+    pub fn push(&mut self, frames: &[i16]) {
+        let n = self.width * self.height;
+        for f in frames.chunks_exact(n) {
+            for (((a, s), c), &v) in self
+                .acc
+                .iter_mut()
+                .zip(self.sq.iter_mut())
+                .zip(self.cnt.iter_mut())
+                .zip(f)
+            {
+                if v != MISSING {
+                    let v = i64::from(v);
+                    *a += v;
+                    *s += v * v;
+                    *c += 1;
+                }
+            }
+            self.frames += 1;
+        }
+    }
+
+    /// Frames added since the last reset.
+    pub fn frames(&self) -> usize {
+        self.frames
+    }
+
+    /// `(width, height)` of the frames.
+    pub fn size(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
+    /// Pixels of a frame.
+    pub fn pixels(&self) -> usize {
+        self.width * self.height
+    }
+
+    /// Per frame pixel, [`stats_from_sums`]'s mean (0 where no valid sample).
+    pub fn mean(&self, quant: f32) -> Vec<f32> {
+        stats_from_sums(&self.acc, &self.sq, &self.cnt, self.frames, quant).mean
+    }
+
+    pub fn reset(&mut self) {
+        self.acc.fill(0);
+        self.sq.fill(0);
+        self.cnt.fill(0);
+        self.frames = 0;
+    }
+
+    /// The statistics of the tile `(x0, y0, w, h)`, pixels row by row as
+    /// [`compress_tile`] reads them.
+    pub fn tile(&self, x0: usize, y0: usize, w: usize, h: usize, quant: f32) -> TileStats {
+        let mut acc = Vec::with_capacity(w * h);
+        let mut sq = Vec::with_capacity(w * h);
+        let mut cnt = Vec::with_capacity(w * h);
+        for y in y0..y0 + h {
+            let r = y * self.width + x0;
+            acc.extend_from_slice(&self.acc[r..r + w]);
+            sq.extend_from_slice(&self.sq[r..r + w]);
+            cnt.extend_from_slice(&self.cnt[r..r + w]);
+        }
+        stats_from_sums(&acc, &sq, &cnt, self.frames, quant)
+    }
+}
+
 /// `Y` (`P x T`, mean removed) of one tile, held as `(T, P)` quantized
 /// values and used in float32 chunks of [`CHUNK`] frames.
 struct TileMatrix<'a> {
@@ -649,14 +818,7 @@ struct TileMatrix<'a> {
     t: usize,
     p: usize,
     inv_quant: f32,
-    /// Per-pixel mean, in the frames' units.
-    mean: Vec<f32>,
-    /// `Σ (y − mean)²` over the tile.
-    energy: f64,
-    /// Per pixel: `Σ (y − mean)²` over its valid samples.
-    ss: Vec<f64>,
-    /// Per pixel: the share of the window's frames in which it was not missing.
-    valid: Vec<f32>,
+    stats: TileStats,
 }
 
 impl<'a> TileMatrix<'a> {
@@ -681,46 +843,12 @@ impl<'a> TileMatrix<'a> {
                 }
             }
         }
-        let q = f64::from(quant);
-        // A missing sample counts as the mean of the pixel's valid samples,
-        // which is 0 after centring; a pixel with no valid sample is all 0.
-        // So the stored mean is 0 for a pixel that was never valid in this
-        // window, and a factor solve reads that 0 where a frame solve on a
-        // replay sees a missing pixel.
-        let mean = acc
-            .iter()
-            .zip(&cnt)
-            .map(|(&a, &c)| {
-                if c > 0 {
-                    (a as f64 / f64::from(c) / q) as f32
-                } else {
-                    0.0
-                }
-            })
-            .collect();
-        let ss: Vec<f64> = acc
-            .iter()
-            .zip(&sq)
-            .zip(&cnt)
-            .map(|((&a, &s), &c)| {
-                if c > 0 {
-                    (s as f64 - (a as f64) * (a as f64) / f64::from(c)).max(0.0) / (q * q)
-                } else {
-                    0.0
-                }
-            })
-            .collect();
-        let energy = ss.iter().sum();
-        let valid = cnt.iter().map(|&c| c as f32 / t as f32).collect();
         TileMatrix {
             raw,
             t,
             p,
             inv_quant: 1.0 / quant,
-            mean,
-            energy,
-            ss,
-            valid,
+            stats: stats_from_sums(&acc, &sq, &cnt, t, quant),
         }
     }
 
@@ -729,7 +857,7 @@ impl<'a> TileMatrix<'a> {
         buf.clear();
         let s = self.inv_quant;
         for row in self.raw[c0 * self.p..(c0 + n) * self.p].chunks_exact(self.p) {
-            buf.extend(row.iter().zip(&self.mean).map(|(&v, &m)| {
+            buf.extend(row.iter().zip(&self.stats.mean).map(|(&v, &m)| {
                 if v == MISSING {
                     0.0
                 } else {
@@ -804,36 +932,62 @@ impl<'a> TileMatrix<'a> {
     }
 }
 
-/// Compress one tile: `raw` is `t x p` row-major (a frame per row),
-/// quantized with `cfg.quant`. The tile's position is left at 0 for the
-/// caller to fill.
-pub fn compress_tile(
-    raw: &[i16],
-    t: usize,
-    p: usize,
-    cfg: &CompressConfig,
-    seed: u64,
-) -> TileFactors {
-    let y = TileMatrix::new(raw, t, p, cfg.quant);
-    let k_cap = cfg
-        .max_rank
+/// Starting rank of a tile whose previous window kept `prev_rank`
+/// components: enough that the last [`ADAPT_MARGIN`] components are noise
+/// unless the rank grew by more than [`ADAPT_SLACK`], so the sketch rarely
+/// doubles, at about half today's `k0 = 40` for a tile of rank 6-8.
+/// `_k0` (the configured start) is the rank of a tile's first window.
+pub fn k0_after(prev_rank: usize, _k0: usize) -> usize {
+    (prev_rank + ADAPT_MARGIN + ADAPT_SLACK).max(K0_FLOOR)
+}
+
+/// The settings of a tile whose previous window kept `prev_rank`
+/// components (`None`: its first window, or `cfg.adapt_k0` off).
+pub fn tile_config(cfg: &CompressConfig, prev_rank: Option<usize>) -> CompressConfig {
+    match prev_rank {
+        Some(r) if cfg.adapt_k0 && r > 0 => CompressConfig {
+            k0: k0_after(r, cfg.k0),
+            ..cfg.clone()
+        },
+        _ => cfg.clone(),
+    }
+}
+
+/// The rank cut's threshold for a window of `t` frames.
+pub fn rank_threshold(cfg: &CompressConfig, t: usize) -> f64 {
+    (cfg.z / (t as f64).sqrt()).max(cfg.rho_min)
+}
+
+/// The largest rank of a `p`-pixel tile over `t` frames.
+pub fn rank_cap(cfg: &CompressConfig, p: usize, t: usize) -> usize {
+    cfg.max_rank
         .min(p.saturating_sub(1))
         .min(t.saturating_sub(1))
-        .max(1);
-    let mut k = cfg.k0.clamp(1, k_cap);
-    let mut rng = Normals::new(seed);
-    let thr = (cfg.z / (t as f64).sqrt()).max(cfg.rho_min);
-    let (svd, mut keep) = loop {
-        let svd = rsvd(&y, k, cfg.n_iter, &mut rng);
-        let keep: Vec<bool> = (0..svd.k)
-            .map(|j| lag1_autocorr(&svd.v, t, svd.k, j) > thr)
-            .collect();
-        let tail = svd.k.saturating_sub(ADAPT_MARGIN);
-        if k >= k_cap || !keep[tail..].iter().any(|&b| b) {
-            break (svd, keep);
-        }
-        k = (2 * k).min(k_cap);
-    };
+        .max(1)
+}
+
+/// Which components of `svd` pass the lag-1 cut `thr`.
+fn kept(svd: &Svd, t: usize, thr: f64) -> Vec<bool> {
+    (0..svd.k)
+        .map(|j| lag1_autocorr(&svd.v, t, svd.k, j) > thr)
+        .collect()
+}
+
+/// `Some(next k)` when one of the last [`ADAPT_MARGIN`] components of `svd`
+/// (a sketch of rank `k`) passes the cut and `k` may still grow.
+fn grow(svd: &Svd, k: usize, k_cap: usize, thr: f64, t: usize) -> Option<usize> {
+    if k >= k_cap {
+        return None;
+    }
+    let keep = kept(svd, t, thr);
+    let tail = svd.k.saturating_sub(ADAPT_MARGIN);
+    keep[tail..].iter().any(|&b| b).then(|| (2 * k).min(k_cap))
+}
+
+/// The kept components of `svd` as a tile (position left at 0), from the
+/// statistics of its `t` frames.
+fn pack_tile(svd: Svd, stats: TileStats, t: usize, p: usize, thr: f64) -> TileFactors {
+    let mut keep = kept(&svd, t, thr);
     if !keep.iter().any(|&b| b) {
         keep[0] = true;
     }
@@ -857,7 +1011,7 @@ pub fn compress_tile(
                 .iter()
                 .map(|&w| f64::from(w) * f64::from(w))
                 .sum();
-            ((y.ss[i] - kept).max(0.0) / t as f64) as f32
+            ((stats.ss[i] - kept).max(0.0) / t as f64) as f32
         })
         .collect();
     TileFactors {
@@ -868,12 +1022,36 @@ pub fn compress_tile(
         rank,
         spatial,
         temporal,
-        mean: y.mean,
+        mean: stats.mean,
         discarded,
-        valid: y.valid,
-        energy: y.energy,
+        valid: stats.valid,
+        energy: stats.energy,
         kept_energy,
         svd_rank: svd.k,
+    }
+}
+
+/// Compress one tile: `raw` is `t x p` row-major (a frame per row),
+/// quantized with `cfg.quant`. The tile's position is left at 0 for the
+/// caller to fill.
+pub fn compress_tile(
+    raw: &[i16],
+    t: usize,
+    p: usize,
+    cfg: &CompressConfig,
+    seed: u64,
+) -> TileFactors {
+    let y = TileMatrix::new(raw, t, p, cfg.quant);
+    let k_cap = rank_cap(cfg, p, t);
+    let mut k = cfg.k0.clamp(1, k_cap);
+    let mut rng = Normals::new(seed);
+    let thr = rank_threshold(cfg, t);
+    loop {
+        let svd = rsvd(&y, k, cfg.n_iter, &mut rng);
+        match grow(&svd, k, k_cap, thr, t) {
+            Some(k2) => k = k2,
+            None => return pack_tile(svd, y.stats, t, p, thr),
+        }
     }
 }
 
@@ -906,24 +1084,46 @@ struct Svd {
     v: Vec<f32>,
 }
 
+/// Sketch columns and rank of a rank-`k` randomized SVD of a `p x t` tile.
+pub fn sketch_dims(p: usize, t: usize, k: usize) -> (usize, usize) {
+    let l = (k + N_OVERSAMPLES).min(p).min(t);
+    (l, k.min(l))
+}
+
 /// Rank-`k` randomized SVD of `Y` with every product streamed over chunks.
 fn rsvd(y: &TileMatrix, k: usize, n_iter: usize, rng: &mut Normals) -> Svd {
     let (p, t) = (y.p, y.t);
-    let l = (k + N_OVERSAMPLES).min(p).min(t);
-    let k = k.min(l);
+    let (l, k) = sketch_dims(p, t, k);
     let omega: Vec<f32> = (0..t * l).map(|_| rng.next()).collect();
     let mut q = qr_q(&y.matmul(&omega, l), p, l);
     for _ in 0..n_iter {
         let z = qr_q(&y.t_matmul(&q, l), t, l);
         q = qr_q(&y.matmul(&z, l), p, l);
     }
+    let bt = y.t_matmul(&q, l);
+    svd_from_qb(&q, &bt, p, t, l, k, l)
+}
+
+/// The rank-`k` SVD from the range basis `q` (`p x l`, row-major, `stride`
+/// columns of which the first `l` are read) and `bt = Yᵀ q` (`t x l`, likewise
+/// `stride` columns): the tail of [`rsvd`].
+fn svd_from_qb(
+    q: &[f32],
+    bt: &[f32],
+    p: usize,
+    t: usize,
+    l: usize,
+    k: usize,
+    stride: usize,
+) -> Svd {
+    debug_assert!(l <= stride && k <= l);
+    debug_assert!(q.len() >= p * stride && bt.len() >= t * stride);
     // B = Qᵀ Y (l x t), held as Bᵀ (t x l). B Bᵀ = E Λ Eᵀ gives
     // U = Q E, s = sqrt(Λ), V = Bᵀ E / s.
-    let bt = y.t_matmul(&q, l);
     let mut g = vec![0.0f64; l * l];
     let mut rowf = vec![0.0f64; l];
-    for row in bt.chunks_exact(l) {
-        for (d, &v) in rowf.iter_mut().zip(row) {
+    for row in bt.chunks_exact(stride).take(t) {
+        for (d, &v) in rowf.iter_mut().zip(&row[..l]) {
             *d = f64::from(v);
         }
         for a in 0..l {
@@ -959,15 +1159,15 @@ fn rsvd(y: &TileMatrix, k: usize, n_iter: usize, rng: &mut Normals) -> Svd {
     };
     let mut d = vec![0.0f64; k];
     let mut v = vec![0.0f32; t * k];
-    for (br, vr) in bt.chunks_exact(l).zip(v.chunks_exact_mut(k)) {
-        project(br, &mut d);
+    for (br, vr) in bt.chunks_exact(stride).zip(v.chunks_exact_mut(k)) {
+        project(&br[..l], &mut d);
         for ((o, &dv), &sv) in vr.iter_mut().zip(&d).zip(&s) {
             *o = if sv > 0.0 { (dv / sv) as f32 } else { 0.0 };
         }
     }
     let mut u = vec![0.0f32; p * k];
-    for (qr, ur) in q.chunks_exact(l).zip(u.chunks_exact_mut(k)) {
-        project(qr, &mut d);
+    for (qr, ur) in q.chunks_exact(stride).zip(u.chunks_exact_mut(k)) {
+        project(&qr[..l], &mut d);
         for (o, &dv) in ur.iter_mut().zip(&d) {
             *o = dv as f32;
         }
@@ -1007,6 +1207,69 @@ impl Normals {
         self.spare = Some((r * a.sin()) as f32);
         (r * a.cos()) as f32
     }
+}
+
+/// Draws `skip .. skip + t * l` of a tile's random stream (`Normals::new(seed)`),
+/// `(t, l)` row-major: the `Ω` that [`compress_tile`] uses for a sketch of `l`
+/// columns after sketches that took `skip` draws.
+pub fn omega_draws(seed: u64, t: usize, skip: usize, l: usize) -> Vec<f32> {
+    let mut rng = Normals::new(seed);
+    for _ in 0..skip {
+        rng.next();
+    }
+    (0..t * l).map(|_| rng.next()).collect()
+}
+
+/// `R⁻¹` of the Cholesky factor of `G[..l, ..l]` (`Rᵀ R = G`; `G` is
+/// `stride x stride`, row-major), as `stride x stride` with zeros outside
+/// `l x l`: CholeskyQR's step. A non-positive pivot retries with a diagonal
+/// shift of `1e-10`, `1e-8`, ... `1e-2` times the trace; `None` if all fail.
+/// An all-zero `G` (the sketch of a tile without variance: constant, or
+/// never valid in the window) gives an all-zero `R⁻¹`, so its `Q` is 0 and
+/// the tile finishes as [`compress_tile`]'s does, with every singular value 0.
+pub fn chol_inv_upper(g: &[f32], stride: usize, l: usize) -> Option<Vec<f32>> {
+    debug_assert!(l <= stride && g.len() >= stride * stride);
+    let tr: f64 = (0..l).map(|i| f64::from(g[i * stride + i])).sum();
+    if tr == 0.0 && (0..l).all(|i| g[i * stride..i * stride + l].iter().all(|&v| v == 0.0)) {
+        return Some(vec![0.0f32; stride * stride]);
+    }
+    'shifts: for shift in [0.0, 1e-10, 1e-8, 1e-6, 1e-4, 1e-2] {
+        // Upper-triangular R, row by row.
+        let mut r = vec![0.0f64; l * l];
+        for i in 0..l {
+            for j in i..l {
+                let mut s = f64::from(g[i * stride + j]) + if i == j { shift * tr } else { 0.0 };
+                for k in 0..i {
+                    s -= r[k * l + i] * r[k * l + j];
+                }
+                if i == j {
+                    if s <= 0.0 || !s.is_finite() {
+                        continue 'shifts;
+                    }
+                    r[i * l + i] = s.sqrt();
+                } else {
+                    r[i * l + j] = s / r[i * l + i];
+                }
+            }
+        }
+        // R⁻¹ column by column (back substitution of R x = e_j).
+        let mut out = vec![0.0f32; stride * stride];
+        let mut col = vec![0.0f64; l];
+        for j in 0..l {
+            for i in (0..=j).rev() {
+                let mut s = if i == j { 1.0 } else { 0.0 };
+                for k in i + 1..=j {
+                    s -= r[i * l + k] * col[k];
+                }
+                col[i] = s / r[i * l + i];
+            }
+            for i in 0..=j {
+                out[i * stride + j] = col[i] as f32;
+            }
+        }
+        return Some(out);
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1074,15 +1337,15 @@ mod tests {
         ];
         let raw = quantized(&y);
         let m = TileMatrix::new(&raw, 6, 2, QUANT);
-        assert!((m.mean[0] - 3.5).abs() < 1e-6);
+        assert!((m.stats.mean[0] - 3.5).abs() < 1e-6);
         assert!(
-            (m.mean[1] - 8.0).abs() < 1e-6,
+            (m.stats.mean[1] - 8.0).abs() < 1e-6,
             "mean over the 4 valid samples"
         );
-        assert_eq!(m.valid, vec![1.0, 4.0 / 6.0]);
+        assert_eq!(m.stats.valid, vec![1.0, 4.0 / 6.0]);
         // Pixel 0: sum (y - 3.5)^2 = 17.5; pixel 1: 9 + 1 + 1 + 9 = 20.
-        assert!((m.ss[0] - 17.5).abs() < 1e-9 && (m.ss[1] - 20.0).abs() < 1e-9);
-        assert!((m.energy - 37.5).abs() < 1e-9);
+        assert!((m.stats.ss[0] - 17.5).abs() < 1e-9 && (m.stats.ss[1] - 20.0).abs() < 1e-9);
+        assert!((m.stats.energy - 37.5).abs() < 1e-9);
         let mut b = Vec::new();
         m.block(0, 6, &mut b);
         assert_eq!(
@@ -1105,9 +1368,9 @@ mod tests {
         }
         let q = quantized(&y);
         let m = TileMatrix::new(&q, t, p, QUANT);
-        assert_eq!(m.valid[4], 0.0);
-        assert_eq!(m.ss[4], 0.0);
-        assert_eq!(m.mean[4], 0.0);
+        assert_eq!(m.stats.valid[4], 0.0);
+        assert_eq!(m.stats.ss[4], 0.0);
+        assert_eq!(m.stats.mean[4], 0.0);
         let tf = compress_tile(&quantized(&y), t, p, &CompressConfig::default(), 3);
         assert_eq!(tf.mean[4], 0.0);
         // The randomized SVD's basis leaves rounding residue (about 1e-22) on a row of zeros.
@@ -1214,6 +1477,26 @@ mod tests {
         }
         assert!(err_rec < 0.1 * err_noisy, "{err_rec} vs {err_noisy}");
         assert!(wf.bytes() * 10 < t * side * side * 4);
+    }
+
+    #[test]
+    fn a_later_window_sketches_near_the_rank_its_tile_kept() {
+        let (t, side, n_cells) = (300, 32, 6);
+        let (noisy, _) = synth(2 * t, side, n_cells, 1.0);
+        let cfg = CompressConfig {
+            window: t,
+            ..CompressConfig::default()
+        };
+        let mut wc = WindowCompressor::new(Dims::new(side, side).unwrap(), cfg);
+        let out: Vec<WindowFactors> = noisy
+            .chunks_exact(side * side)
+            .filter_map(|f| wc.push(f))
+            .collect();
+        let (a, b) = (&out[0].tiles[0], &out[1].tiles[0]);
+        assert_eq!(a.svd_rank, 40, "the first window starts at k0");
+        assert_eq!(b.svd_rank, k0_after(a.rank, 40), "no doubling");
+        assert!(b.svd_rank < a.svd_rank);
+        assert!(b.rank.abs_diff(a.rank) <= 1, "{} vs {}", b.rank, a.rank);
     }
 
     /// A tile record in the v1 layout (`CTF1`), as files written before format v2.

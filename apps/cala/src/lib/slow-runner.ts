@@ -56,10 +56,20 @@
  * when the main thread says so (it may be mid-run; the main thread waits
  * until the worker has the run's back state) and serves from the library sent
  * to it at once (the current one) or later. A pool worker that fails is left out for the rest of
- * the run; with none left the settle takes turns on worker 0 again.
+ * the run; with none left the settle takes turns on worker 0 again. The end
+ * settle runs on worker 0 alone, except on a recording's factors
+ * (`?factors=file`/`gpu`): there every worker in the run's pool switches to
+ * the factors too (before its first settle request, or as it joins) and the
+ * end settle's requests go to workers 0..S, one out per worker; a failed pool
+ * worker's request goes back to the settle's feed for the others (with no
+ * worker left, the settle ends with the frames fed so far: `fed < total`).
+ * The pooled end settle is order-dependent: answers are observed in the
+ * order they complete, so footprints can differ slightly from run to run;
+ * each pool worker keeps its own factor cache.
  */
 import type {
   CsettleStatus,
+  FactorSource,
   LookbackStatus,
   LookbackToSlow,
   SettleStatus,
@@ -417,6 +427,8 @@ interface Settle {
   /** Stop now (the user's Stop): publish the final library. */
   stop: boolean;
   statusAt: number;
+  /** Look-back workers that answered a settle request (`SettleStatus.workers`). */
+  served: Set<number>;
 }
 
 function counters(s: ArrayLike<number>): SlowCounters {
@@ -512,6 +524,13 @@ export class SlowRunner {
   private askTimer: (() => void) | null = null;
   /** The settle reads the factors through look-back worker 0 (from `factors` ready to the run's end). */
   private factorLive = false;
+  /**
+   * A recording's factors the settle reads (`?factors=file`/`gpu`, from `factors` ready to the
+   * run's end): every worker in the run's pool is switched to them and serves the end settle.
+   */
+  private factorSource: FactorSource['factors'] | null = null;
+  /** Per look-back worker: sent `factorSource` this run (it serves the settle from the factors). */
+  private lbFactors: boolean[] = [];
   /** Per look-back worker: the request out to it (at most one each), and its timeout's cancel. */
   private lbReqs: (LookbackReq | null)[] = [];
   private lbNextId = 1;
@@ -636,7 +655,11 @@ export class SlowRunner {
    */
   private joinPool(workers: number): void {
     const before = this.settlePorts().length;
-    for (let i = 1; i <= workers; i++) this.lbRun[i] = true;
+    for (let i = 1; i <= workers; i++) {
+      this.lbRun[i] = true;
+      // On a recording's factors: switched before its library, so its first settle request reads them.
+      this.sendFactors(i);
+    }
     const loop = this.loop;
     if (!loop || !this.lbOn || this.lbError || this.version <= 0) return;
     const lib = loop.publishedLibrary?.();
@@ -663,6 +686,42 @@ export class SlowRunner {
       this.cs.gov.setWorkers(after);
       this.status(0, 0);
     }
+    // The end settle on a recording's factors: the new workers take requests at once.
+    if (after !== before && this.drain) this.settlePump();
+  }
+
+  /** Switch look-back worker `port` to the run's factors (once; `factorSource` set, connected, not failed). */
+  private sendFactors(port: number): void {
+    const factors = this.factorSource;
+    const p = this.lbPorts[port];
+    if (!factors || !p || this.lbPortOff[port] || this.lbFactors[port]) return;
+    p.postMessage({ type: 'factors', session: this.session, factors });
+    this.lbFactors[port] = true;
+  }
+
+  /**
+   * The look-back workers the end settle asks: worker 0, and on a recording's
+   * factors every pool worker in the settle that was switched to them.
+   */
+  private drainPorts(): number[] {
+    if (!this.factorSource) return [0];
+    return [0, ...this.settlePorts().filter((i) => this.lbFactors[i])];
+  }
+
+  /** An end settle request is out to some look-back worker. */
+  private drainOut(): boolean {
+    return this.lbReqs.some((q) => q?.kind === 'end');
+  }
+
+  /**
+   * A pool worker failed in the end settle: left out for the rest of the run;
+   * its request's frames go back to the feed for another worker (or worker 0).
+   */
+  private drainPortFailed(req: LookbackReq, message: string): void {
+    this.lbPortOff[req.port] = true;
+    this.drain?.feed.putBack(req.items.map((it) => it.frame));
+    console.warn(`cala end settle look-back worker ${req.port} stopped: ${message}`);
+    this.status(0, 0);
   }
 
   /**
@@ -1088,6 +1147,7 @@ export class SlowRunner {
       const why = `no answer within ${LOOKBACK.timeoutMs / 1000} s`;
       // The settle's own request only turns the settle off; look-back and the end settle go on.
       if (failed.kind === 'csettle') this.csettleFailed(failed, why);
+      else if (failed.kind === 'end' && port > 0) this.drainPortFailed(failed, why);
       else this.lookbackFailed(why);
       if (this.drain) this.settlePump();
       else if (this.lookbackLive) this.lookbackRequest();
@@ -1226,6 +1286,7 @@ export class SlowRunner {
     try {
       if (msg.type === 'error') {
         if (req.kind === 'csettle') this.csettleFailed(req, msg.message);
+        else if (req.kind === 'end' && req.port > 0) this.drainPortFailed(req, msg.message);
         else this.lookbackFailed(msg.message);
       } else if (req.kind === 'csettle' && this.cs && this.lookbackLive) {
         // (It gives the buffer back itself, at once or after its last piece.)
@@ -1235,7 +1296,13 @@ export class SlowRunner {
         if (settle) {
           // The next request goes out first: the look-back worker reads and
           // solves it while these frames are observed here.
-          if (!settle.stop && !settle.feed.done) this.settleRequest();
+          const next =
+            !settle.stop &&
+            !settle.feed.done &&
+            this.lbError === undefined &&
+            this.drainPorts().includes(req.port);
+          if (next) this.settleRequest(req.port);
+          settle.served.add(req.port);
           this.observeSettle(loop, msg, req.items);
         } else if (req.kind === 'need') this.observeLookback(loop, msg, req.items);
         // A settle answer that came when Discover could no longer use it: counted as dropped.
@@ -1453,6 +1520,7 @@ export class SlowRunner {
       finalJobs0: 0,
       stop: false,
       statusAt: this.now(),
+      served: new Set(),
     };
     // The look-back worker solves with the library Discover ended with
     // (qc_eval publishes it before the settle); the first checkpoint's reference.
@@ -1530,8 +1598,12 @@ export class SlowRunner {
     }
     if (d.phase === 'sweep') {
       const failed = this.lbError !== undefined || !this.lbPort;
-      if (!this.lbReqs[0] && !d.feed.done && !failed) this.settleRequest();
-      if (!this.lbReqs[0] && (d.feed.done || failed)) {
+      if (!failed)
+        for (const i of this.drainPorts()) {
+          if (d.feed.done) break;
+          if (!this.lbReqs[i]) this.settleRequest(i);
+        }
+      if (!this.drainOut() && (d.feed.done || failed)) {
         d.phase = 'final';
         d.finalWork0 = loop.work ?? 0;
         d.finalJobs0 = this.jobs;
@@ -1557,8 +1629,8 @@ export class SlowRunner {
     this.finishDrain();
   }
 
-  /** The next settle frames to the look-back worker. */
-  private settleRequest(): void {
+  /** The next settle frames to look-back worker `port`. */
+  private settleRequest(port = 0): void {
     const d = this.drain!;
     const frames = d.feed.take(SETTLE.batch);
     if (frames.length === 0) return;
@@ -1568,7 +1640,7 @@ export class SlowRunner {
       flat[3 * i + 1] = f.block;
     });
     const items = frames.map((f) => ({ frame: f.frame, ids: new Float64Array(0) }));
-    this.sendRequest(0, 'end', flat, items);
+    this.sendRequest(port, 'end', flat, items);
   }
 
   /** A settle answer: every frame through `observe`, then the visits they earn. */
@@ -1668,14 +1740,15 @@ export class SlowRunner {
     try {
       if (wait.file) {
         if (msg.ready && msg.source) {
-          // Over the request port, so every settle request below reads the factors.
-          this.lbPorts[0]?.postMessage({
-            type: 'factors',
-            session: this.session,
-            factors: msg.source,
-          });
+          // Over each worker's request port, so every settle request below reads the factors:
+          // worker 0 and every pool worker in this run (one that joins later is switched as it joins).
+          this.factorSource = msg.source;
           this.factorLive = true;
-          this.sendLibrary(0);
+          for (let i = 0; i < this.lbPorts.length; i++) {
+            if (i > 0 && !this.lbRun[i]) continue;
+            this.sendFactors(i);
+            if (this.lbFactors[i]) this.sendLibrary(i);
+          }
           this.clock.span('end', () => this.startDrain(Math.min(this.consumed, msg.frames)));
         } else {
           this.fileReason = msg.ready ? 'No factor source was given.' : msg.reason;
@@ -1799,6 +1872,7 @@ export class SlowRunner {
       moving: d.moving,
       stopped: d.stop,
       done,
+      workers: d.served.size,
       ...(this.factorLive
         ? { source: 'factors' as const }
         : this.fileReason !== undefined
@@ -1974,6 +2048,8 @@ export class SlowRunner {
     this.factorOn = false;
     this.factorWait = null;
     this.factorLive = false;
+    this.factorSource = null;
+    this.lbFactors = [];
     this.factorFile = false;
     this.fileReason = undefined;
     this.askTimer?.();

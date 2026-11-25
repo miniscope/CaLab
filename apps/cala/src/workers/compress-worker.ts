@@ -6,7 +6,9 @@
  * thread. With the history review on, each window's factors also go to the
  * review worker over a second port. With helpers (`compress-helper-worker.ts`),
  * each window's tiles are shared with them over one port each (`TilePool`).
+ * A recording's GPU run (the default) compresses its windows on the GPU (`openGpuCompressor`).
  */
+/// <reference types="@webgpu/types" />
 import {
   FactorExtractor,
   FactorWindow,
@@ -20,6 +22,7 @@ import {
 } from '../lib/cala-wasm.ts';
 import { TilePool, WindowPool } from '../lib/compress-pool.ts';
 import { CompressRunner } from '../lib/compress-runner.ts';
+import { openGpuCompressor } from '../lib/gpu-compress.ts';
 import { opfsStore } from '../lib/window-store.ts';
 import type {
   CompressToMain,
@@ -52,6 +55,11 @@ workerScope.onmessage = (e) => {
     windowPool?.lost(data.helper);
     return;
   }
+  if (data.type === 'stop') {
+    const r = runner;
+    queue = queue.then(() => r?.stop(data.session)).catch(() => {});
+    return;
+  }
   if (data.type === 'backfill' || data.type === 'extract' || data.type === 'extract-cancel') {
     const r = runner;
     queue = queue
@@ -76,6 +84,7 @@ workerScope.onmessage = (e) => {
   reviewPort?.close();
   for (const p of helperPorts) p.close();
   port = data.port;
+  const fastPort = data.port;
   reviewPort = data.review?.port ?? null;
   helperPorts = data.helpers ?? [];
   const tilePool = new TilePool({
@@ -127,6 +136,8 @@ workerScope.onmessage = (e) => {
     },
     factors: (bytes) => FactorWindow.fromBytes(bytes),
     toMain: { postMessage: (m, t) => workerScope.postMessage(m, t) },
+    // The port is two-way: room in the GPU's ring goes back to the feed.
+    toFast: { postMessage: (m) => fastPort.postMessage(m) },
     pool: tilePool,
     windows,
     extractor: (bytes, signed) => {
@@ -135,6 +146,16 @@ workerScope.onmessage = (e) => {
       return x;
     },
     estimate: () => navigator.storage.estimate(),
+    openGpu: (init) =>
+      openGpuCompressor({
+        width: init.width,
+        height: init.height,
+        tile: init.tile,
+        tiling: init.tiling,
+        quant: init.quant,
+        gpu: (navigator as Navigator & { gpu?: GPU }).gpu,
+        layout: tileLayout,
+      }),
     ...(toReview && data.review
       ? {
           review: {

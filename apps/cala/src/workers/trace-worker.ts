@@ -4,7 +4,10 @@
  * the slow worker. It answers the main thread with the `pipeline-step`
  * response of each request, so it owns the slow-worker port and discovery
  * switch in a pipelined run. It never waits for the slow worker (see
- * `FastLoop`). See `lib/pipeline-stages.ts`.
+ * `FastLoop`). A recording on the GPU route (the default) waits before a batch while the GPU
+ * compressor's ring is full (`CompressFeed.room`); holding the job holds its
+ * pooled buffer, so the stages before this one wait too. See
+ * `lib/pipeline-stages.ts`.
  */
 import { initCalaWasm } from '../lib/cala-wasm.ts';
 import { CompressFeed } from '../lib/compress-feed.ts';
@@ -13,7 +16,7 @@ import { FovProjector } from '../lib/fov-projection.ts';
 import { transferablesOf, type PipelineStepResult } from '../lib/pipeline-engine.ts';
 import { BackStage } from '../lib/pipeline-stages.ts';
 import { traceBackend } from '../lib/trace-backend.ts';
-import type { FastToCompress } from './compress-types.ts';
+import type { CompressToFast, FastToCompress } from './compress-types.ts';
 import type { FrameRequest, FrameResponse } from './frame-types.ts';
 import type { FastToSlow, SlowToFast } from './slow-types.ts';
 import type { StageFree, StageLink, StageMsg } from './stage-types.ts';
@@ -47,7 +50,7 @@ function stopStage(keepSlow = false): void {
   }
 }
 
-function handle(msg: StageMsg): void {
+async function handle(msg: StageMsg): Promise<void> {
   switch (msg.type) {
     case 'start': {
       const cells = msg.cells;
@@ -100,6 +103,8 @@ function handle(msg: StageMsg): void {
                   ? { backlogCap: cells.compressBacklogCap }
                   : {}),
                 ...(cells.compressFrameExtract ? { frameExtract: true } : {}),
+                ...(cells.compressGpu ? { gpu: true } : {}),
+                ...(cells.compressGpuCheck ? { gpuCheck: cells.compressGpuCheck } : {}),
               },
               compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
             )
@@ -117,6 +122,11 @@ function handle(msg: StageMsg): void {
     }
     case 'job': {
       if (!stage) throw new Error('The trace stage is not running.');
+      const s = msg.job.step;
+      if (s.phase === 'process') {
+        const room = stage.fast?.compressRoom(s.start, s.count);
+        if (room) await room;
+      }
       const step = stage.handle(msg.job);
       const corrected = msg.job.corrected;
       workerScope.postMessage({ type: 'pipeline-step', id: msg.id, step }, transferablesOf(step));
@@ -174,6 +184,13 @@ workerScope.onmessage = (e) => {
   } else if (data.type === 'connect-compress') {
     compressPort?.close();
     compressPort = data.port;
+    // Room in the GPU compressor's ring: recorded at once (a batch may be waiting for it).
+    compressPort.onmessage = (ev: MessageEvent<CompressToFast>) =>
+      stage?.fast?.compressAnswer(ev.data);
+    workerScope.postMessage({ type: 'ok', id: data.id });
+  } else if (data.type === 'release-compress') {
+    // Stop or a new run: answered at once, not in the queue (a batch may be waiting for the GPU there).
+    stage?.fast?.releaseCompress();
     workerScope.postMessage({ type: 'ok', id: data.id });
   } else if (data.type === 'set-discovery') {
     stage?.fast?.setDiscovery(data.on && slowPort !== null);

@@ -18,11 +18,15 @@ use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
 use super::blend::{grid_of, BlendLayout, Tiling};
+use super::gpu::GpuTile;
 use super::project::{never_valid_under, FactorExtractor, WindowProjector};
 use super::review::{
     candidates, candidates_to_wire, scan_band, scan_rows, KnownCell, ReviewConfig, SpotStats,
 };
-use super::{compress_tile, quantize_tiles, CompressConfig, TileFactors, WindowFactors};
+use super::{
+    chol_inv_upper, compress_tile, quantize, quantize_tiles, tile_config, CompressConfig,
+    TileFactors, WindowFactors, WindowStats,
+};
 use crate::preprocess::Dims;
 use crate::trace::{FrameTraces, Library, SolverConfig, TraceState};
 
@@ -171,7 +175,8 @@ impl JsTileCompressor {
     }
 
     /// `raw`: `frames x (w * h)` quantized values of the tile at `(x0, y0)`,
-    /// a frame per row.
+    /// a frame per row. `prev_rank`: the rank this tile kept in the previous
+    /// window (absent or 0: none), where its sketch starts (`k0_after`).
     #[allow(clippy::too_many_arguments)]
     pub fn compress(
         &self,
@@ -182,6 +187,7 @@ impl JsTileCompressor {
         w: u32,
         h: u32,
         seed: u32,
+        prev_rank: Option<u32>,
     ) -> Result<JsTileFactors, JsError> {
         let (t, p) = (frames as usize, w as usize * h as usize);
         if t < 2 || p < 1 || raw.len() != t * p {
@@ -190,10 +196,212 @@ impl JsTileCompressor {
                 format!("{} values for {t} frames x {p} pixels", raw.len()),
             ));
         }
-        let mut inner = compress_tile(raw, t, p, &self.cfg, u64::from(seed));
+        let cfg = tile_config(&self.cfg, prev_rank.map(|r| r as usize));
+        let mut inner = compress_tile(raw, t, p, &cfg, u64::from(seed));
         (inner.x0, inner.y0, inner.w, inner.h) = (x0 as usize, y0 as usize, w as usize, h as usize);
         Ok(JsTileFactors { inner })
     }
+}
+
+fn check_quant(func: &str, quant: f32) -> Result<(), JsError> {
+    if quant.is_finite() && quant > 0.0 {
+        Ok(())
+    } else {
+        Err(js_err(func, "quant must be positive"))
+    }
+}
+
+/// Exact per-pixel sums of a window's quantized frames (`quantizeFrames`),
+/// in frame layout: the statistics a GPU-compressed window's tiles start from.
+#[wasm_bindgen(js_name = WindowStats)]
+pub struct JsWindowStats {
+    inner: WindowStats,
+}
+
+#[wasm_bindgen(js_class = WindowStats)]
+impl JsWindowStats {
+    #[wasm_bindgen(constructor)]
+    pub fn new(width: u32, height: u32) -> Result<JsWindowStats, JsError> {
+        console_error_panic_hook::set_once();
+        let dims =
+            Dims::new(width as usize, height as usize).map_err(|e| js_err("WindowStats", e))?;
+        Ok(JsWindowStats {
+            inner: WindowStats::new(dims.width, dims.height),
+        })
+    }
+
+    /// Add whole quantized frames, one after the other.
+    pub fn push(&mut self, frames: &[i16]) -> Result<(), JsError> {
+        let n = self.inner.pixels();
+        if !frames.len().is_multiple_of(n) {
+            return Err(js_err(
+                "push",
+                format!("{} values are not whole frames of {n} pixels", frames.len()),
+            ));
+        }
+        self.inner.push(frames);
+        Ok(())
+    }
+
+    /// Frames added since the last reset.
+    pub fn frames(&self) -> u32 {
+        self.inner.frames() as u32
+    }
+
+    pub fn reset(&mut self) {
+        self.inner.reset()
+    }
+
+    /// Per frame pixel, the mean over the window's valid samples (0 where
+    /// none): what the GPU subtracts.
+    pub fn mean(&self, quant: f32) -> Result<Vec<f32>, JsError> {
+        check_quant("mean", quant)?;
+        Ok(self.inner.mean(quant))
+    }
+}
+
+/// One tile of a window compressed on the GPU: `l`, `nIter` and `omega` say
+/// what to sketch, `finish` takes the GPU's `Q` and `Bᵀ = Yᵀ Q`.
+#[wasm_bindgen(js_name = GpuTileJob)]
+pub struct JsGpuTileJob {
+    inner: GpuTile,
+}
+
+#[wasm_bindgen(js_class = GpuTileJob)]
+impl JsGpuTileJob {
+    /// The tile `(x0, y0, w, h)` of the window in `stats`. `seed`: as for
+    /// `TileCompressor.compress`. `prev_rank`: the rank this tile kept in the
+    /// previous window (absent or 0: none).
+    #[wasm_bindgen(constructor)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        stats: &JsWindowStats,
+        quant: f32,
+        x0: u32,
+        y0: u32,
+        w: u32,
+        h: u32,
+        seed: u32,
+        prev_rank: Option<u32>,
+    ) -> Result<JsGpuTileJob, JsError> {
+        check_quant("GpuTileJob", quant)?;
+        let (x0, y0, w, h) = (x0 as usize, y0 as usize, w as usize, h as usize);
+        let (width, height) = stats.inner.size();
+        if w == 0 || h == 0 || x0 + w > width || y0 + h > height {
+            return Err(js_err(
+                "GpuTileJob",
+                format!("tile ({x0}, {y0}, {w}, {h}) outside the {width} x {height} frame"),
+            ));
+        }
+        let t = stats.inner.frames();
+        if t < 2 {
+            return Err(js_err(
+                "GpuTileJob",
+                format!("{t} frames, at least 2 needed"),
+            ));
+        }
+        let cfg = CompressConfig {
+            quant,
+            ..CompressConfig::default()
+        };
+        let s = stats.inner.tile(x0, y0, w, h, quant);
+        let prev = prev_rank.filter(|&r| r > 0).map(|r| r as usize);
+        Ok(JsGpuTileJob {
+            inner: GpuTile::new(&cfg, s, (x0, y0, w, h), t, u64::from(seed), prev),
+        })
+    }
+
+    /// Sketch columns of the current sketch.
+    pub fn l(&self) -> u32 {
+        self.inner.l() as u32
+    }
+
+    /// Power iterations of a sketch.
+    #[wasm_bindgen(js_name = nIter)]
+    pub fn n_iter(&self) -> u32 {
+        self.inner.n_iter() as u32
+    }
+
+    /// The current sketch's `Ω` (`frames x l`, row-major).
+    pub fn omega(&self) -> Vec<f32> {
+        self.inner.omega()
+    }
+
+    /// The tile's bytes (`TileFactors.toBytes`), or `undefined` when the
+    /// sketch grew (sketch again with the new `l` and `omega`). `q` is
+    /// `w * h x stride`, `bt` is `frames x stride`, row-major, of which the
+    /// first `l` columns are read.
+    pub fn finish(
+        &mut self,
+        q: &[f32],
+        bt: &[f32],
+        stride: u32,
+    ) -> Result<Option<Vec<u8>>, JsError> {
+        let (stride, l) = (stride as usize, self.inner.l());
+        let (p, t) = self.inner.dims();
+        if stride < l || q.len() != p * stride || bt.len() != t * stride {
+            return Err(js_err(
+                "finish",
+                format!(
+                    "q {} and bt {} values with stride {stride}; {} and {} with stride >= {l} expected",
+                    q.len(),
+                    bt.len(),
+                    p * stride,
+                    t * stride
+                ),
+            ));
+        }
+        if self.inner.finished() {
+            return Err(js_err("finish", "the tile is already finished"));
+        }
+        Ok(self.inner.finish(q, bt, stride))
+    }
+
+    /// The rank the finished tile kept (0 before).
+    pub fn rank(&self) -> u32 {
+        self.inner.rank() as u32
+    }
+}
+
+/// CholeskyQR's `R⁻¹` for a batch: `g` holds `ls.length` Gram matrices of
+/// `stride x stride` (row-major, the first `ls[i] x ls[i]` read); returns as
+/// many `R⁻¹` blocks, zero outside `ls[i] x ls[i]`. Errors if one is not
+/// positive definite after the diagonal shifts.
+///
+/// No production caller: the GPU compressor computes `R⁻¹` with its WGSL
+/// `CHOL` kernel; this is that kernel's reference rule, used in tests.
+#[wasm_bindgen(js_name = cholInvUpperBatch)]
+pub fn chol_inv_upper_batch(g: &[f32], stride: u32, ls: &[u32]) -> Result<Vec<f32>, JsError> {
+    let s = stride as usize;
+    if s == 0 || g.len() != ls.len() * s * s || ls.iter().any(|&l| l as usize > s) {
+        return Err(js_err(
+            "cholInvUpperBatch",
+            format!(
+                "{} values for {} blocks of {s} x {s}, each l <= {s}",
+                g.len(),
+                ls.len()
+            ),
+        ));
+    }
+    let mut out = Vec::with_capacity(g.len());
+    for (i, (block, &l)) in g.chunks_exact(s * s).zip(ls).enumerate() {
+        let r = chol_inv_upper(block, s, l as usize).ok_or_else(|| {
+            js_err(
+                "cholInvUpperBatch",
+                format!("block {i} is not positive definite"),
+            )
+        })?;
+        out.extend_from_slice(&r);
+    }
+    Ok(out)
+}
+
+/// Frames quantized as `WindowCompressor` buffers them (`quantize`: a
+/// non-finite pixel is a missing sample).
+#[wasm_bindgen(js_name = quantizeFrames)]
+pub fn quantize_frames(frames: &[f32], quant: f32) -> Result<Vec<i16>, JsError> {
+    check_quant("quantizeFrames", quant)?;
+    Ok(frames.iter().map(|&v| quantize(v, quant)).collect())
 }
 
 /// `Y ≈ mean · 1ᵀ + W · Vᵀ` of one tile.

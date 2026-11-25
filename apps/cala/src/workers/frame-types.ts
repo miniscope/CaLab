@@ -53,6 +53,10 @@ export interface CellsSettings {
   compressBacklogCap?: number;
   /** With `compress`: Extract on factors on rebuilt frames, as before slice 6 (`?debug&fextract=0`). */
   compressFrameExtract?: boolean;
+  /** With `compress`: a recording on the GPU route (the default) compresses its windows on the GPU (`CompressInit.gpu`). */
+  compressGpu?: boolean;
+  /** With `compressGpu`: windows the CPU compresses too, to check the GPU's factors (`?debug&gpucheck=N`). */
+  compressGpuCheck?: number;
   /** A live stream with `?factors`: the slow loop settles on the factors after the stream ends (`SlowInit.factorSettle`). */
   factorSettle?: boolean;
   /** A recording with `?factors=file`: at Discover's end the settle may read the factors (`SlowRunner`). */
@@ -111,6 +115,12 @@ export type FrameRequest =
   | { type: 'connect-slow'; id: number; port: MessagePort }
   /** The port to the compress worker (transferred). */
   | { type: 'connect-compress'; id: number; port: MessagePort }
+  /**
+   * Trace worker, answered at once: the run is stopped or replaced, so a batch
+   * waiting for room in the GPU compressor's ring goes on without the run's
+   * factors, and none waits again.
+   */
+  | { type: 'release-compress'; id: number }
   /** Turn cell discovery on or off in the running pipeline. */
   | { type: 'set-discovery'; id: number; on: boolean }
   /** Return (or stop returning) the model residual preview in the running pipeline. */
