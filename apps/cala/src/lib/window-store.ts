@@ -14,8 +14,12 @@ export interface StoreFile {
 }
 
 export interface WindowStore {
+  /** The run folder's name under `COMPRESS_ROOT` (another worker reads it with `factorFiles`). */
+  readonly folder: string;
   /** Open `name` for reading and writing, creating it when missing. */
   open(name: string): Promise<StoreFile>;
+  /** The whole file `name`, without an access handle (no lock against another reader). */
+  readAll(name: string): Promise<Uint8Array>;
   remove(name: string): Promise<void>;
   /** Remove every file of this run. */
   clear(): Promise<void>;
@@ -31,6 +35,7 @@ interface SyncHandle {
 }
 interface FileHandle {
   createSyncAccessHandle(): Promise<SyncHandle>;
+  getFile(): Promise<Blob>;
 }
 interface DirHandle {
   getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<DirHandle>;
@@ -39,30 +44,176 @@ interface DirHandle {
   keys(): AsyncIterable<string>;
 }
 
-const ROOT = 'cala-compress';
+/** The OPFS folder of every run's compression files. */
+export const COMPRESS_ROOT = 'cala-compress';
+
+interface ReadFileHandle {
+  getFile(): Promise<Blob>;
+}
+interface ReadDirHandle {
+  getDirectoryHandle(name: string): Promise<ReadDirHandle>;
+  getFileHandle(name: string): Promise<ReadFileHandle>;
+}
+
+/** Read-only access to a run folder another context writes (the look-back worker reading the factors). */
+export interface FactorFiles {
+  read(name: string): Promise<Uint8Array>;
+}
 
 /**
- * A store in its own OPFS directory (`cala-compress/<run>`). The first use
- * removes what earlier page loads left behind; a directory another tab still
- * holds open refuses removal and is left alone.
+ * Files of the run folder `folder`, read whole through `getFile()`: no
+ * access handle, so no lock against the compress worker, and no `create`,
+ * listing or removal. Read only files the compress worker reported done.
+ */
+export function factorFiles(
+  folder: string,
+  top: () => Promise<unknown> = () => navigator.storage.getDirectory(),
+): FactorFiles {
+  let dir: Promise<ReadDirHandle> | null = null;
+  const directory = (): Promise<ReadDirHandle> =>
+    (dir ??= (async () => {
+      const origin = (await top()) as ReadDirHandle;
+      const root = await pinned(origin, (o) => o.getDirectoryHandle(COMPRESS_ROOT));
+      return pinned(root, (r) => r.getDirectoryHandle(folder));
+    })().catch((err: unknown) => {
+      dir = null;
+      throw err;
+    }));
+  return {
+    async read(name) {
+      try {
+        const d = await directory();
+        const fh = await pinned(d, (x) => x.getFileHandle(name));
+        const file = await pinned(fh, (f) => f.getFile());
+        return new Uint8Array(await file.arrayBuffer());
+      } catch (err) {
+        throw new Error(
+          `${folder}/${name} cannot be read: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        );
+      }
+    },
+  };
+}
+
+/**
+ * Handles with a call in flight. Chrome (seen with 158) never settles the
+ * promise of a pending `createSyncAccessHandle()` once its file handle is
+ * garbage collected: with collections forced during the call, 19 of 20 opens
+ * of `(await dir.getFileHandle(name)).createSyncAccessHandle()` were lost and
+ * none with the handle kept. A lost open stops the compress worker without
+ * an error, so no call here runs on a handle that nothing else references.
+ */
+const inFlight = new Set<{ handle: object }>();
+
+/** `call(handle)`, with `handle` kept reachable until the promise settles. */
+export async function pinned<H extends object, T>(
+  handle: H,
+  call: (handle: H) => Promise<T>,
+): Promise<T> {
+  const pin = { handle };
+  inFlight.add(pin);
+  try {
+    return await call(handle);
+  } finally {
+    inFlight.delete(pin);
+  }
+}
+
+/** Whether a call on `handle` is in flight (for tests). */
+export function isPinned(handle: object): boolean {
+  for (const pin of inFlight) if (pin.handle === handle) return true;
+  return false;
+}
+
+/** The part of the Web Locks API used here (tests pass a fake). */
+export interface Locks {
+  request(name: string, callback: (lock: unknown) => Promise<unknown>): Promise<unknown>;
+  request(
+    name: string,
+    options: { ifAvailable: boolean },
+    callback: (lock: unknown) => Promise<unknown>,
+  ): Promise<unknown>;
+}
+
+/** The Web Lock that marks a run folder as owned by a live context. */
+const lockName = (run: string): string => `${COMPRESS_ROOT}/${run}`;
+
+/**
+ * Take the lock `name` and keep it until this context ends (the browser
+ * releases it when the worker or the tab goes). Resolves once it is held,
+ * or at once when the request fails (the folder is then unprotected).
+ */
+function holdForever(locks: Locks, name: string): Promise<void> {
+  return new Promise((held) => {
+    locks
+      .request(name, () => {
+        held();
+        return new Promise(() => {});
+      })
+      .catch(() => held());
+  });
+}
+
+/**
+ * Remove another run's folder unless a live context owns it. Between stages
+ * no file of a run is open, so only its lock protects it from another tab.
+ */
+async function sweepFolder(root: DirHandle, name: string, locks: Locks | null): Promise<void> {
+  const remove = (): Promise<void> =>
+    pinned(root, (r) => r.removeEntry(name, { recursive: true })).catch(() => {});
+  // Without Web Locks the sweep removes every other folder, as before.
+  if (!locks) return remove();
+  await locks
+    .request(lockName(name), { ifAvailable: true }, async (lock) => {
+      // Null: the lock is held, a live tab owns the folder.
+      if (lock) await remove();
+    })
+    .catch(() => {});
+}
+
+const webLocks = (): Locks | null =>
+  typeof navigator !== 'undefined' && navigator.locks ? navigator.locks : null;
+
+/**
+ * A store in its own OPFS directory (`cala-compress/<run>`). The context that
+ * creates it holds the Web Lock `cala-compress/<run>` for its lifetime. The
+ * first use removes the folders of other runs whose lock is free (what earlier
+ * page loads left behind) and leaves those a live tab owns. `top` is the root
+ * of the origin private file system and `locks` the Web Locks (tests pass
+ * fakes; null: none).
  */
 export function opfsStore(
   run = `run-${Date.now().toString(36)}-${crypto.randomUUID()}`,
+  top: () => Promise<unknown> = () => navigator.storage.getDirectory(),
+  locks: Locks | null = webLocks(),
 ): WindowStore {
   let dir: Promise<DirHandle> | null = null;
   const directory = (): Promise<DirHandle> =>
     (dir ??= (async () => {
-      const top = (await navigator.storage.getDirectory()) as unknown as DirHandle;
-      const root = await top.getDirectoryHandle(ROOT, { create: true });
+      // Owned before it exists: no other tab's sweep can find it unowned.
+      if (locks) await holdForever(locks, lockName(run));
+      const origin = (await top()) as DirHandle;
+      const root = await pinned(origin, (o) =>
+        o.getDirectoryHandle(COMPRESS_ROOT, { create: true }),
+      );
       const stale: string[] = [];
       for await (const name of root.keys()) if (name !== run) stale.push(name);
-      for (const name of stale) await root.removeEntry(name, { recursive: true }).catch(() => {});
-      return root.getDirectoryHandle(run, { create: true });
+      for (const name of stale) await sweepFolder(root, name, locks);
+      return pinned(root, (r) => r.getDirectoryHandle(run, { create: true }));
     })());
   return {
+    folder: run,
+    async readAll(name) {
+      const d = await directory();
+      const fh = await d.getFileHandle(name);
+      const file = await pinned(fh, (f) => f.getFile());
+      return new Uint8Array(await file.arrayBuffer());
+    },
     async open(name) {
       const d = await directory();
-      const h = await (await d.getFileHandle(name, { create: true })).createSyncAccessHandle();
+      const file = await d.getFileHandle(name, { create: true });
+      const h = await pinned(file, (f) => f.createSyncAccessHandle());
       return {
         write: (data, at) => void h.write(data, { at }),
         read: (into, at) => h.read(into, { at }),
@@ -92,6 +243,8 @@ export function memoryStore(): WindowStore & { files: Map<string, Uint8Array> } 
     new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
   return {
     files,
+    folder: 'memory',
+    readAll: async (name) => (files.get(name) ?? new Uint8Array(0)).slice(),
     async open(name) {
       if (!files.has(name)) files.set(name, new Uint8Array(0));
       return {

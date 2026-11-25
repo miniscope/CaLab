@@ -91,7 +91,8 @@
 //!                      evenly over the recording to every cell (frozen
 //!                      cell set, untargeted look-back frames), with visits
 //!                      (experiment: a convergence pass inside Discover)
-//!   --settle-frames N  the end-of-Discover settle (needs --lookback; after
+//!   --settle-frames N  the end-of-Discover settle (with --lookback 0 a
+//!                      settle-only look-back is kept for it; after
 //!                      the drain if any, `--lookback-drain 0` for none):
 //!                      cell set frozen, re-read frames go
 //!                      to every cell until N were fed or the stop rule
@@ -148,8 +149,13 @@
 //!   --joint            add test with the joint neighbour-trace check
 //!   --factors-out DIR  compress pass 1's preprocessed frames in 600-frame
 //!                      windows ([`calab_cala::compress`]) and write every
-//!                      window's factors to `DIR/w<start>.fac` (`CALAFAC1`), the
+//!                      window's factors to `DIR/w<start>.fac` (`CALAFAC2`), the
 //!                      input of tools/cala-diagnostics/history_wholetest.py
+//!   --settle-source S  raw (default) | factors: where the --settle-frames
+//!                      settle gets its frames: re-read and preprocessed, or
+//!                      rebuilt from the --factors-out windows (no raw read)
+//!   --factors-tiling T plain (default) | offset: how --factors-out cuts the
+//!                      frame (the dump is complete when Discover ends)
 //!   --core-test M      transient-band core test: off (default) | report
 //!                      (also writes fast.tsv, split.tsv) | trim | delete
 //!   --basin-trim       trim refined footprints to their significant basin
@@ -255,7 +261,8 @@
 //!                      and steps itself, as the app did before)
 //!   --via-jobs         run every tile visit as a job through the parallel
 //!                      protocol, one at a time (`SlowLoop::step_via`): must
-//!                      give the same results as without
+//!                      give the same results as without (the end
+//!                      settle's visits too)
 //!   --observe-ms O     with --offered-fps: cost of observing one frame (the
 //!                      app's measured time; default: its work units)
 //!   --job-ms C         with K > 0: owner-side cost of a visit job, hand-out
@@ -434,6 +441,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use calab_cala::avi::{idx1_payload_len, AviHeader};
+use calab_cala::compress::blend::{BlendLayout, Tiling};
+use calab_cala::compress::WindowFactors;
 use calab_cala::discover::{
     CoreTest, EditScope, JointAdmit, JointSign, JointUpdate, LookBack as LbSched, LookbackConfig,
     LookbackNext, LookbackOrder, LookbackOutcome, LookbackReservoir, MergeRule, RefineGate,
@@ -1142,6 +1151,11 @@ struct LookBack {
     settle: SettleCfg,
     /// The settle feeds frames through the ordinary `observe`.
     full_observe: bool,
+    /// `--settle-source factors`: the settle's frames come from Discover's
+    /// factor windows instead of the recording.
+    settle_src: Option<FactorFrames>,
+    /// Raw frames the settle read and preprocessed (0 on factors).
+    settle_raw: u64,
     /// `settle_checks.tsv` rows and the checkpoint libraries.
     settle_out: String,
     settle_libs: Vec<(usize, Arc<Library>)>,
@@ -1265,6 +1279,8 @@ impl LookBack {
             settle_all: 0,
             settle: SettleCfg::default(),
             full_observe: false,
+            settle_src: None,
+            settle_raw: 0,
             settle_out: String::new(),
             settle_libs: Vec::new(),
             by_tenth: [(0, 0); 11],
@@ -1673,8 +1689,16 @@ impl LookBack {
         engine: &mut TraceEngine,
         sl: &mut SlowLoop,
         n_px: usize,
+        mut via: Option<&mut VisitRunner>,
     ) -> usize {
         let cfg = self.settle.clone();
+        // `--via-jobs`: every settle visit runs as a job, as without it.
+        let step = |sl: &mut SlowLoop, via: &mut Option<&mut VisitRunner>, budget: u64| match via
+            .as_deref_mut()
+        {
+            Some(r) => sl.step_via(budget, r).unwrap(),
+            None => sl.step(budget).unwrap(),
+        };
         let t0 = Instant::now();
         // The frames Discover read (`--frames` may stop short of the file).
         let t_len = t_len.min(rec.total as usize);
@@ -1726,7 +1750,14 @@ impl LookBack {
                     in_batch += 1;
                     steps_owed += cfg.steps_per_frame;
                     if fed.is_multiple_of(200) {
+                        // On `--settle-source factors` the preprocessor copy
+                        // does not run forward, so this sets the noise
+                        // Discover ended with each time. Intended: the
+                        // factors carry each frame's own live preprocessing.
                         sl.set_noise(pre.noise().sigma()).unwrap();
+                        if let Some(r) = via.as_deref_mut() {
+                            r.set_noise(pre.noise().sigma()).unwrap();
+                        }
                     }
                     if in_batch < cfg.batch && fed < cfg.frames {
                         continue;
@@ -1741,7 +1772,7 @@ impl LookBack {
                     let n = steps_owed.floor();
                     steps_owed -= n;
                     if n >= 1.0 {
-                        let got = sl.step(budget.saturating_mul(n as u64)).unwrap();
+                        let got = step(sl, &mut via, budget.saturating_mul(n as u64));
                         if let Some(l) = got {
                             engine.set_library(l).unwrap();
                         }
@@ -1803,7 +1834,7 @@ impl LookBack {
         }
         // A last round of visits on what the settle fed.
         sl.mark_all_due();
-        sl.step(budget.saturating_mul(64)).unwrap();
+        step(sl, &mut via, budget.saturating_mul(64));
         engine.set_library(sl.finalize().unwrap()).unwrap();
         sl.set_reservoir_frozen(false);
         self.full_observe = false;
@@ -1811,6 +1842,14 @@ impl LookBack {
         print_stage(&format!("settle-end wall_s {wall:.3}"), sl);
         self.wall_s += wall;
         let st = sl.stats();
+        println!(
+            "settle source: {}, {} raw frames read",
+            match &self.settle_src {
+                Some(s) => format!("factors ({} window files read)", s.reads()),
+                None => "raw".into(),
+            },
+            self.settle_raw
+        );
         println!(
             "settle: {fed} frames in {wall:.1} s ({:.0} frames/s), {} visits, {} refines, {} publishes, work {:.3e}{}",
             fed as f64 / wall.max(1e-9),
@@ -1841,7 +1880,8 @@ impl LookBack {
         n_px: usize,
         tenth: usize,
     ) -> Option<bool> {
-        if f < self.raw_start || f >= self.raw_start + self.raw_n {
+        let from_factors = self.full_observe && self.settle_src.is_some();
+        if !from_factors && (f < self.raw_start || f >= self.raw_start + self.raw_n) {
             let lo = f - f % LB_BLOCK;
             let cnt = LB_BLOCK.min(rec.total as usize - lo);
             self.raw = rec.read(lo as u32, cnt as u32);
@@ -1871,25 +1911,36 @@ impl LookBack {
         let cs_skip = self.cs_jobs && self.cs_now.is_some() && sl.is_test(idx);
         self.cs_skipped += u64::from(cs_skip);
         let skip = cs_skip || self.target > 0.0 && sl.is_test(idx);
-        let o = (f - self.raw_start) * n_px;
-        let raw = &self.raw[o..o + n_px];
-        pre.front(raw, &mut self.buf).unwrap();
-        if let Some(w) = pipe.warp_at(f) {
-            let mut tmp = Vec::new();
-            w.apply_in_place(&mut self.buf, &mut tmp).unwrap();
-        }
-        // The live corrector's `apply`/`validity` only warp by a stored
-        // record (scratch buffers, no estimation state), as a replay does.
-        if let Some(mc) = pipe.mc.as_mut() {
-            let r = &pipe.records[f];
-            mc.apply(Frame::F32(&self.buf), r, &mut self.y, None)
-                .unwrap();
-            mc.validity(r, pipe.src.as_ref().unwrap(), &mut self.valid)
-                .unwrap();
-            pre.back_masked(&mut self.y, &self.valid).unwrap();
+        if from_factors {
+            // The frame as Discover compressed it: no re-read, no
+            // preprocessing (the block's preprocessor copy does not run).
+            let src = self.settle_src.as_mut().unwrap();
+            src.frame(f, &mut self.y)
+                .unwrap_or_else(|m| panic!("settle on factors: {m}"));
         } else {
-            self.y.copy_from_slice(&self.buf);
-            pre.back(&mut self.y).unwrap();
+            if self.full_observe {
+                self.settle_raw += 1;
+            }
+            let o = (f - self.raw_start) * n_px;
+            let raw = &self.raw[o..o + n_px];
+            pre.front(raw, &mut self.buf).unwrap();
+            if let Some(w) = pipe.warp_at(f) {
+                let mut tmp = Vec::new();
+                w.apply_in_place(&mut self.buf, &mut tmp).unwrap();
+            }
+            // The live corrector's `apply`/`validity` only warp by a stored
+            // record (scratch buffers, no estimation state), as a replay does.
+            if let Some(mc) = pipe.mc.as_mut() {
+                let r = &pipe.records[f];
+                mc.apply(Frame::F32(&self.buf), r, &mut self.y, None)
+                    .unwrap();
+                mc.validity(r, pipe.src.as_ref().unwrap(), &mut self.valid)
+                    .unwrap();
+                pre.back_masked(&mut self.y, &self.valid).unwrap();
+            } else {
+                self.y.copy_from_slice(&self.buf);
+                pre.back(&mut self.y).unwrap();
+            }
         }
         if skip {
             return None;
@@ -4691,44 +4742,191 @@ fn write_library(
     }
 }
 
-/// `--factors-out`: compresses the preprocessed frames window by window and
-/// writes each window's factors (`CALAFAC1`) to `dir/w<start frame>.fac`.
+/// Frames per factor window (`--factors-out`; the app's compressor uses the same).
+const FACTOR_WINDOW: usize = 600;
+
+/// Whether the run keeps a `LookBack`: look-back or catch-up, or an
+/// end-of-Discover settle (`--settle-frames N`), which needs one even with
+/// `--lookback 0` (rate 0: it never asks for a frame during Discover).
+fn lookback_wanted(rate: f64, catchup: usize, settle_frames: usize) -> bool {
+    rate > 0.0 || catchup > 0 || settle_frames > 0
+}
+
+/// Where the end-of-Discover settle gets its frames (`--settle-source`).
+enum SettleSource {
+    /// Re-read from the recording and preprocessed (the default).
+    Raw,
+    /// Rebuilt from Discover's factor windows in this folder (`--factors-out`).
+    Factors(PathBuf),
+}
+
+fn settle_source(args: &[String]) -> Result<SettleSource, String> {
+    match arg_value(args, "--settle-source").as_deref() {
+        None | Some("raw") => Ok(SettleSource::Raw),
+        Some("factors") => {
+            let dir = arg_value(args, "--factors-out")
+                .ok_or("--settle-source factors needs --factors-out DIR")?;
+            let n: usize = arg_value(args, "--settle-frames").map_or(0, |s| s.parse().unwrap_or(0));
+            if n == 0 {
+                return Err("--settle-source factors needs --settle-frames N".into());
+            }
+            Ok(SettleSource::Factors(PathBuf::from(dir)))
+        }
+        Some(o) => Err(format!("--settle-source: raw or factors, not {o:?}")),
+    }
+}
+
+/// `--factors-out`: compresses the preprocessed frames of Discover window by
+/// window and writes each window's factors (format v2, `CALAFAC2`, cut by
+/// `--factors-tiling`) to `dir/w<start frame>.fac`.
 struct FactorDump {
     dir: PathBuf,
-    tile: usize,
     wc: calab_cala::compress::WindowCompressor,
+    /// Frames pushed, and the seconds spent in the compressor (speed report).
+    frames: u64,
+    secs: f64,
+    /// The speed line was printed (once, at the first `finish`).
+    reported: bool,
 }
 
 impl FactorDump {
-    fn new(dir: &Path, dims: Dims) -> FactorDump {
+    fn new(dir: &Path, dims: Dims, tiling: Tiling) -> FactorDump {
         std::fs::create_dir_all(dir).unwrap();
         let cfg = calab_cala::compress::CompressConfig {
-            window: 600,
+            window: FACTOR_WINDOW,
+            tiling,
             ..calab_cala::compress::CompressConfig::default()
         };
         FactorDump {
             dir: dir.to_path_buf(),
-            tile: cfg.tile,
             wc: calab_cala::compress::WindowCompressor::new(dims, cfg),
+            frames: 0,
+            secs: 0.0,
+            reported: false,
         }
     }
 
     fn write(&self, wf: calab_cala::compress::WindowFactors) {
         let name = format!("w{:07}.fac", wf.start);
-        std::fs::write(self.dir.join(name), wf.to_bytes(self.tile)).unwrap();
+        std::fs::write(self.dir.join(name), wf.to_bytes()).unwrap();
     }
 
     fn push(&mut self, frame: &[f32]) {
-        if let Some(wf) = self.wc.push(frame) {
+        let t0 = Instant::now();
+        let done = self.wc.push(frame);
+        self.secs += t0.elapsed().as_secs_f64();
+        self.frames += 1;
+        if let Some(wf) = done {
             self.write(wf);
         }
     }
 
-    /// Write the last, shorter window.
+    /// Write the last, shorter window (none when no frame is buffered: a
+    /// second call, or a recording of whole windows) and, the first time,
+    /// print the compressor's time.
     fn finish(&mut self) {
-        if let Some(wf) = self.wc.flush() {
+        let t0 = Instant::now();
+        let done = self.wc.flush();
+        self.secs += t0.elapsed().as_secs_f64();
+        if let Some(wf) = done {
             self.write(wf);
         }
+        if !self.reported {
+            self.reported = true;
+            println!(
+                "factors: {} frames, {:.2} ms per frame in the compressor (one thread)",
+                self.frames,
+                1e3 * self.secs / self.frames.max(1) as f64
+            );
+        }
+    }
+}
+
+/// Windows `FactorFrames` keeps decoded: the settle reads in plan order, so
+/// the current and the next window are enough.
+const FACTOR_CACHE: usize = 2;
+
+/// A decoded factor window: its factors, its blend layout (none for a plain
+/// tiling) and its never-valid pixels.
+type FactorWindow = (WindowFactors, Option<BlendLayout>, Vec<bool>);
+
+/// `--settle-source factors`: the frames Discover compressed, read back from
+/// the factor windows of a `FactorDump`. A frame is the live frame as
+/// compressed: pixels never valid in its window are missing (NaN), as in the
+/// live frame; nothing is preprocessed, warped or masked again. A pixel that
+/// became valid partway through its window reads its window mean before that
+/// point (a small difference from the live frame).
+struct FactorFrames {
+    dir: PathBuf,
+    window: usize,
+    cache: std::collections::VecDeque<FactorWindow>,
+    reads: u64,
+}
+
+impl FactorFrames {
+    fn new(dir: &Path, window: usize) -> FactorFrames {
+        FactorFrames {
+            dir: dir.to_path_buf(),
+            window,
+            cache: Default::default(),
+            reads: 0,
+        }
+    }
+
+    /// Window files read (each cache miss).
+    fn reads(&self) -> u64 {
+        self.reads
+    }
+
+    /// Write stream frame `f`, rebuilt from its window, to `y`.
+    fn frame(&mut self, f: usize, y: &mut [f32]) -> Result<(), String> {
+        let start = (f / self.window) * self.window;
+        let at = match self
+            .cache
+            .iter()
+            .position(|(wf, _, _)| wf.start as usize == start)
+        {
+            Some(i) => i,
+            None => {
+                let path = self.dir.join(format!("w{start:07}.fac"));
+                let bytes = std::fs::read(&path)
+                    .map_err(|e| format!("frame {f}: {} cannot be read ({e})", path.display()))?;
+                let wf = WindowFactors::from_bytes(&bytes)
+                    .ok_or_else(|| format!("{}: not a factor file", path.display()))?;
+                let layout = (wf.tiling != Tiling::Plain).then(|| wf.layout());
+                let never = wf.never_valid();
+                if self.cache.len() == FACTOR_CACHE {
+                    self.cache.pop_front();
+                }
+                self.cache.push_back((wf, layout, never));
+                self.reads += 1;
+                self.cache.len() - 1
+            }
+        };
+        let (wf, layout, never) = &self.cache[at];
+        if f - start >= wf.frames {
+            return Err(format!(
+                "frame {f} is past the {} frames of window {start}",
+                wf.frames
+            ));
+        }
+        if y.len() != wf.dims.pixels() {
+            return Err(format!(
+                "frame {f}: {} pixels, the window has {}",
+                y.len(),
+                wf.dims.pixels()
+            ));
+        }
+        match layout {
+            Some(l) => l.reconstruct(wf, f - start, y),
+            None => wf.reconstruct(f - start, y),
+        }
+        for (v, &nv) in y.iter_mut().zip(never) {
+            if nv {
+                *v = f32::NAN;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -5705,7 +5903,8 @@ fn main() {
         "--lookback-target needs --lookback R"
     );
     let noise_dump = args.iter().any(|a| a == "--noise-dump") || lb_target > 0.0;
-    let mut lookback = (lb_rate > 0.0 || lb_catchup > 0).then(|| {
+    let settle_src = settle_source(&args).unwrap_or_else(|m| panic!("{m}"));
+    let mut lookback = lookback_wanted(lb_rate, lb_catchup, tail.settle.frames).then(|| {
         LookBack::new(
             lb_rate, lb_frames, lb_newest, lb_catchup, lb_double, lb_target, n_px,
         )
@@ -5722,8 +5921,13 @@ fn main() {
         l.drain_rate = tail.drain_rate;
         l.settle_all = tail.settle_all;
         l.settle = tail.settle.clone();
+        if let SettleSource::Factors(d) = &settle_src {
+            l.settle_src = Some(FactorFrames::new(d, FACTOR_WINDOW));
+        }
     }
-    if lookback.is_some() {
+    if lookback.is_some() && lb_rate == 0.0 && lb_catchup == 0 {
+        println!("lookback: off (settle only)");
+    } else if lookback.is_some() {
         println!(
             "lookback: rate {lb_rate} frames per Discover frame, at most {lb_frames} per job, catchup every {lb_catchup} frames{}, noise target {lb_target}",
             if lb_double { " (doubling)" } else { "" }
@@ -5801,7 +6005,17 @@ fn main() {
     );
     // `--factors-out`: the compressed history of pass 1.
     let factors_out: Option<PathBuf> = arg_value(&args, "--factors-out").map(PathBuf::from);
-    let mut factors = factors_out.as_deref().map(|d| FactorDump::new(d, dims));
+    // `--factors-tiling plain|offset` (default plain): how the dump cuts the frame.
+    let factors_tiling = arg_value(&args, "--factors-tiling").map_or(Tiling::Plain, |s| {
+        Tiling::parse(&s).unwrap_or_else(|| panic!("--factors-tiling: plain or offset, not {s:?}"))
+    });
+    assert!(
+        factors_out.is_some() || arg_value(&args, "--factors-tiling").is_none(),
+        "--factors-tiling needs --factors-out DIR"
+    );
+    let mut factors = factors_out
+        .as_deref()
+        .map(|d| FactorDump::new(d, dims, factors_tiling));
     for pass in 0.. {
         // `passes` can change at a branch point (the child applies its tail).
         if pass >= passes {
@@ -6537,6 +6751,11 @@ fn main() {
                         }
                     }
                 }
+                // Discover's factors are complete before the drain and the
+                // settle (`--settle-source factors` reads every window).
+                if let (true, 0, Some(fd)) = (last, pass, factors.as_mut()) {
+                    fd.finish();
+                }
                 if let (Some(lbk), Some(sl), 0, true) = (
                     lookback.as_mut(),
                     slow.as_mut(),
@@ -6596,6 +6815,7 @@ fn main() {
                             &mut engine,
                             sl,
                             n_px,
+                            via.as_mut(),
                         );
                         std::fs::write(out_dir.join("settle_checks.tsv"), &lbk.settle_out).unwrap();
                         for (k, l) in std::mem::take(&mut lbk.settle_libs) {
@@ -7370,6 +7590,118 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fresh scratch folder for a test's files.
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("qc_eval-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// `n` frames of a smooth moving pattern (deterministic).
+    fn pattern_frames(dims: Dims, n: usize) -> Vec<Vec<f32>> {
+        (0..n)
+            .map(|t| {
+                (0..dims.pixels())
+                    .map(|p| {
+                        let (y, x) = ((p / dims.width) as f32, (p % dims.width) as f32);
+                        20.0 + 4.0 * (0.05 * t as f32 + 0.11 * x).sin()
+                            + 3.0 * (0.07 * y - 0.03 * t as f32).cos()
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn factor_frames_rebuild_the_dumped_window_and_mark_never_valid_pixels() {
+        let dims = Dims::new(96, 80).unwrap();
+        let dir = scratch_dir("frames");
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Offset);
+        for mut fr in pattern_frames(dims, 650) {
+            fr[5] = f32::NAN; // never valid
+            fd.push(&fr);
+        }
+        fd.finish();
+        let wf =
+            WindowFactors::from_bytes(&std::fs::read(dir.join("w0000600.fac")).unwrap()).unwrap();
+        let mut want = vec![0.0f32; dims.pixels()];
+        wf.layout().reconstruct(&wf, 10, &mut want);
+        let mut ff = FactorFrames::new(&dir, FACTOR_WINDOW);
+        let mut got = vec![0.0f32; dims.pixels()];
+        ff.frame(610, &mut got).unwrap();
+        assert!(got[5].is_nan());
+        for p in (0..dims.pixels()).filter(|&p| p != 5) {
+            assert_eq!(got[p].to_bits(), want[p].to_bits(), "pixel {p}");
+        }
+        // Read once, served from the cache after.
+        ff.frame(611, &mut got).unwrap();
+        assert_eq!(ff.reads(), 1);
+        // Past the last frame of its window, and a window not on disk.
+        assert!(ff.frame(650, &mut got).unwrap_err().contains("past"));
+        assert!(ff
+            .frame(1300, &mut got)
+            .unwrap_err()
+            .contains("w0001200.fac"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn settle_source_needs_the_factor_dump_and_a_settle() {
+        let a = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        assert!(matches!(settle_source(&a("x")), Ok(SettleSource::Raw)));
+        assert!(matches!(
+            settle_source(&a("x --settle-source raw")),
+            Ok(SettleSource::Raw)
+        ));
+        let ok = settle_source(&a(
+            "x --settle-source factors --factors-out d --settle-frames 600",
+        ));
+        assert!(matches!(ok, Ok(SettleSource::Factors(p)) if p == Path::new("d")));
+        let e = settle_source(&a("x --settle-source factors --settle-frames 600"))
+            .err()
+            .unwrap();
+        assert!(e.contains("--factors-out"), "{e}");
+        let e = settle_source(&a("x --settle-source factors --factors-out d"))
+            .err()
+            .unwrap();
+        assert!(e.contains("--settle-frames"), "{e}");
+        let e = settle_source(&a("x --settle-source frames")).err().unwrap();
+        assert!(e.contains("raw or factors"), "{e}");
+    }
+
+    #[test]
+    fn a_settle_alone_keeps_a_lookback_without_look_back() {
+        assert!(!lookback_wanted(0.0, 0, 0));
+        assert!(lookback_wanted(2.0, 0, 0));
+        assert!(lookback_wanted(0.0, 500, 0));
+        assert!(lookback_wanted(0.0, 0, 18_000));
+    }
+
+    #[test]
+    fn factor_dump_writes_v2_windows_with_its_tiling_and_finishes_once() {
+        let dims = Dims::new(96, 80).unwrap();
+        let dir = scratch_dir("dump");
+        let mut fd = FactorDump::new(&dir, dims, Tiling::Offset);
+        for fr in pattern_frames(dims, 1250) {
+            fd.push(&fr);
+        }
+        fd.finish();
+        fd.finish();
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["w0000000.fac", "w0000600.fac", "w0001200.fac"]);
+        for (name, frames) in [("w0000000.fac", 600), ("w0001200.fac", 50)] {
+            let wf = WindowFactors::from_bytes(&std::fs::read(dir.join(name)).unwrap()).unwrap();
+            assert_eq!(wf.frames, frames, "{name}");
+            assert_eq!(wf.tiling, Tiling::Offset, "{name}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// A Gaussian blob of sd `sd` centred at `(cy, cx)` (sub-pixel), on a
     /// patch reaching 4 sd.

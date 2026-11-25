@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js';
 import { leaveWarning, resultExported } from './lib/export-state.ts';
-import { createEffect, createSignal, For, on, Show, untrack } from 'solid-js';
+import { createEffect, createSignal, For, on, onCleanup, Show, untrack } from 'solid-js';
 import { CompactHeader, DashboardShell } from '@calab/ui';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
 import {
@@ -22,7 +22,18 @@ import { loadSpanStats } from './lib/extract-qc-wasm.ts';
 import { ASSUMED_FPS } from './lib/miniscope-meta.ts';
 import type { QcSnapshot } from './lib/qc.ts';
 import { createCompressClient } from './lib/compress-client.ts';
-import { createCompressStore } from './lib/compress-store.ts';
+import { compressPoolSize, helpersFor, parsePoolOverride } from './lib/compress-pool.ts';
+import { COMPRESS_DEFAULTS } from './lib/compress-feed.ts';
+import {
+  createCompressStore,
+  fileFactorsBlocked,
+  FactorWatchdog,
+  factorsBlocked,
+} from './lib/compress-store.ts';
+import { createFactorExtract } from './lib/factor-extract.ts';
+import { FACTOR_STALL_TEXT, FactorSettle, FileSettleChoice } from './lib/factor-settle.ts';
+import { STOPPED_TEXT } from './lib/compress-runner.ts';
+import { factorsFromPage } from './lib/factor-run.ts';
 import { createPass2Store, replayBlocked } from './lib/pass2-store.ts';
 import {
   createStageLog,
@@ -139,7 +150,13 @@ const App: Component = () => {
   const visits = params.get('visits');
   // `?review` (with `?compress`): the history review, every 8 compressed windows
   // (`?review=N`: every N), in a worker of its own. One core is left for it.
-  const reviewWindows = params.has('compress') ? reviewEvery(params.get('review')) : null;
+  // A live stream settles and extracts on the factors Discover writes, and a recording
+  // on the factors the GPU compresses while Discover runs, by default (`?factors=0`: off;
+  // `?compress&review` turns it off for the review). On a recording `?factors` runs as
+  // with `?compress`, and `?factors=file` (experimental) compresses on the CPU.
+  const pageFactors = factorsFromPage(params);
+  if (pageFactors.warn) console.warn(pageFactors.warn);
+  const reviewWindows = pageFactors.review ? reviewEvery(params.get('review')) : null;
   const slow = createSlowClient(
     client,
     (msg) => cells.onSlowMessage(msg),
@@ -151,7 +168,7 @@ const App: Component = () => {
   // `?noqc`: run without online quality control (to measure its cost).
   // `?compress`: also compress the preprocessed frames into low-rank factors, window by
   // window, in a worker of its own (experimental; windows and factors are files in OPFS).
-  const compress = params.has('compress') ? createCompressStore(cells) : undefined;
+  const compress = pageFactors.compressWorker ? createCompressStore(cells) : undefined;
   // The review worker gets the factors from the compress worker; the cells it
   // finds go to the slow loop, which takes them on probation.
   const review =
@@ -161,18 +178,6 @@ const App: Component = () => {
           slow.addReviewed(session, candidates),
         );
   const reviewClient = review ? createReviewClient((msg) => review.onMessage(msg)) : undefined;
-  const compressClient = compress
-    ? createCompressClient(
-        client,
-        (msg) => compress.onMessage(msg),
-        undefined,
-        review && reviewClient ? { port: reviewClient.port, every: review.every } : undefined,
-      )
-    : undefined;
-  // Look-back: Discover refines footprints as it goes by re-reading past frames in a
-  // worker of its own, and settles at the end (the Final settle).
-  // A recording on disk (one session or a Joint run of several), pipelined workers only.
-  const pipelined = params.get('pipeline') !== '0';
   // The settle pool: S more look-back workers that take only the settle's chunks (worker 0
   // keeps need-driven look-back and the end settle), started when a run first goes below
   // Max. S from the core count (`settlePoolSize`); `?debug&lbpool=S` overrides it (measurement).
@@ -180,6 +185,30 @@ const App: Component = () => {
     typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined,
     params.has('debug') && params.has('lbpool') ? Number(params.get('lbpool')) || 0 : null,
   );
+  // The compress pool: a recording's windows are compressed by the compress worker and its
+  // helpers, few while Discover reads and more after its last frame (`compressPoolSize`);
+  // `?debug&cpool=D,E` sets both (measurement).
+  const cpool =
+    (params.has('debug') ? parsePoolOverride(params.get('cpool')) : null) ??
+    compressPoolSize(
+      typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined,
+      slow.visitWorkers,
+      lbPool,
+    );
+  const compressHelpers = helpersFor(cpool);
+  const compressClient = compress
+    ? createCompressClient(
+        client,
+        (msg) => compress.onMessage(msg),
+        undefined,
+        review && reviewClient ? { port: reviewClient.port, every: review.every } : undefined,
+        compressHelpers > 0 ? { count: compressHelpers } : undefined,
+      )
+    : undefined;
+  // Look-back: Discover refines footprints as it goes by re-reading past frames in a
+  // worker of its own, and settles at the end (the Final settle).
+  // A recording on disk (one session or a Joint run of several), pipelined workers only.
+  const pipelined = params.get('pipeline') !== '0';
   const lookbackClient = createLookbackClient({
     slow,
     pool: lbPool,
@@ -250,6 +279,24 @@ const App: Component = () => {
   else pipeline.setCsettleCeiling(speed.cap);
   // Look-back (with its Final settle) is on by default for recordings; `?lookback=0` turns it off.
   if (params.get('lookback') === '0') pipeline.setLookback(false);
+  if (pageFactors.factors) pipeline.setFactors(true);
+  pipeline.setFactorsDefault(pageFactors.factorsDefault);
+  pipeline.setCompressAsked(pageFactors.compressAsked);
+  pipeline.setCompressPool(cpool);
+  // `?debug&cbacklog=GB`: the cap on window files waiting for compression (measurement).
+  const cbacklog = params.has('debug') ? Number(params.get('cbacklog')) : NaN;
+  if (cbacklog > 0) pipeline.setCompressBacklogCap(cbacklog * 2 ** 30);
+  // `?debug&fextract=0`: Extract on factors on rebuilt frames, as before slice 6 (measurement).
+  pipeline.setFrameExtract(params.has('debug') && params.get('fextract') === '0');
+  if (pageFactors.factorsFile)
+    pipeline.setFactorsFile(true, () => {
+      const s = store.source();
+      return s !== null && 'sessions' in s;
+    });
+  pipeline.setFactorsGpu(pageFactors.factorsGpu);
+  // `?debug&gpucheck=N`: the GPU's factors of the first N windows against the CPU's (measurement).
+  const gpucheck = params.has('debug') ? Math.floor(Number(params.get('gpucheck'))) : NaN;
+  pipeline.setGpuCheck(gpucheck > 0 ? gpucheck : 0);
   // Background settle (settle during Discover) is on under look-back whenever the target is
   // below Max; `csettle=0` turns it off, `csettle=yield` or `csettle=yieldN` feeds each answer
   // N frames at a time (1 by default), `csrate=1|0.5` lowers the cap from 2 re-read frames
@@ -289,10 +336,24 @@ const App: Component = () => {
     extract: pass2.status(),
     finalLibrary: cells.status()?.final ?? false,
     cells: cells.library()?.ids.length ?? 0,
-    replayBlocked: replayBlocked(pipeline),
+    replayBlocked: pipeline.factorRun() ? null : replayBlocked(pipeline),
+    liveFactors: pipeline.factorRun(),
   });
   const availability = () => stageAvailability(stageInput());
-  const pass2 = createPass2Store(client, pipeline, cells);
+  // `?factors`: Extract on a stream solves in the compress worker, on the factors.
+  const factorExtract =
+    compress && compressClient
+      ? createFactorExtract(
+          compress,
+          compressClient,
+          () => cells.session(),
+          () => pipeline.factorRun(),
+          () => pipeline.status() === 'done',
+          () => pipeline.processed(),
+          () => pipeline.factorFileRun(),
+        )
+      : undefined;
+  const pass2 = createPass2Store(client, pipeline, cells, undefined, undefined, factorExtract);
   /** Log a stage event on the run's timeline (at the end of what Discover read). */
   const logStage = (stage: StageName, detail: string) =>
     runHistory.log({
@@ -333,8 +394,28 @@ const App: Component = () => {
       merges: c?.merges ?? 0,
       deletes: c?.deletes ?? 0,
       splits: c?.splits ?? 0,
-      ...(slow?.lookback ? { lookback: true } : {}),
+      ...(pipeline.lookbackRun() ? { lookback: true } : {}),
+      ...(slow?.lookback?.settle?.source === 'factors' ? { settleSource: 'factors' as const } : {}),
+      ...(slow?.lookback?.settle?.source === 'file'
+        ? { settleSource: 'file' as const, settleSourceReason: slow.lookback.settle.fileReason }
+        : {}),
     };
+    // A factor run's compress pool (format 7 only: with a settle source).
+    const cs = compress?.status();
+    if (data.settleSource && cs) {
+      const pool = pipeline.runPool();
+      data.compress = {
+        workers: pool?.discover ?? 1,
+        workersAfter: pool?.after ?? 1,
+        behindFrames: cs.behindAtEnd ?? null,
+        backlogPeakBytes: cs.backlogPeakBytes ?? 0,
+        fpsAfter: cs.fpsAfter ?? null,
+        ...(cs.window !== undefined ? { window: cs.window } : {}),
+        ...(cs.ring !== undefined ? { ring: cs.ring } : {}),
+        ...(cs.backend ? { backend: cs.backend } : {}),
+        ...(cs.waitS !== undefined ? { waitS: cs.waitS, waits: cs.waits ?? 0 } : {}),
+      };
+    }
     stageLog.end('discover', 'done', data);
     logStage('discover', `Discover done: ${data.cells} cells`);
   });
@@ -366,6 +447,16 @@ const App: Component = () => {
             frames: r?.frames ?? 0,
             cells: r?.cells ?? 0,
             libraryVersion: r?.version ?? 0,
+            ...(r?.source === 'factors'
+              ? {
+                  source: 'factors' as const,
+                  factors: r.factors,
+                  ...(r.extractor ? { extractor: r.extractor } : {}),
+                }
+              : {}),
+            ...(r?.source === 'file'
+              ? { source: 'file' as const, sourceReason: r.sourceReason }
+              : {}),
           });
           logStage('extract', 'Extract done');
           const result = r;
@@ -397,10 +488,88 @@ const App: Component = () => {
   createEffect(() => {
     const slow = cells.status();
     const done = pipeline.status() === 'done';
+    // A ?factors stream's Extract solves on the factors; the back-fill would replace the live traces.
+    if (pipeline.factorRun() || pipeline.factorFileRun()) return;
     if (compress?.takeBackfill(done, slow?.final ?? false, slow?.version ?? 0)) {
       compressClient?.backfill(cells.session(), slow?.version ?? 0);
     }
   });
+  // A factor run: when the slow loop waits for the factors, begin the settle on them or end
+  // the wait; a watchdog gives up on a compressor that stopped.
+  if (compress) {
+    const factorSettle = new FactorSettle();
+    const fileChoice = new FileSettleChoice();
+    const watchdog = new FactorWatchdog();
+    const [tick, setTick] = createSignal(0);
+    const timer = setInterval(() => setTick((n) => n + 1), 5000);
+    onCleanup(() => clearInterval(timer));
+    createEffect(() => {
+      tick();
+      const st = cells.status();
+      const session = cells.session();
+      const ended = pipeline.status() === 'done';
+      const frames = pipeline.processed();
+      const waiting = st?.lookback?.settle?.waiting === true;
+      const now = performance.now();
+      if (waiting) {
+        watchdog.note(compress.status(), now);
+        const stallState = pipeline.factorFileRun()
+          ? compress.fileFactors(ended, frames)
+          : compress.factors(ended, frames);
+        if (watchdog.stalled(now) && stallState === 'compressing') {
+          compress.fail(FACTOR_STALL_TEXT);
+          runHistory.log({ frame: frames, kind: 'warning', detail: FACTOR_STALL_TEXT });
+        }
+      } else watchdog.reset();
+      const state = compress.factors(ended, frames);
+      const i = store.info();
+      const a = factorSettle.act({
+        session,
+        factorRun: pipeline.factorRun(),
+        waiting,
+        final: st?.final === true,
+        state,
+        reason: factorsBlocked(state, compress.status(), compress.error()),
+        info: compress.factorInfo(),
+        width: i?.width ?? 0,
+        height: i?.height ?? 0,
+      });
+      if (a.kind === 'begin') {
+        lookbackClient.beginFactors?.(a.session, a.factors);
+        slow.factorsReady(a.session, a.frames);
+      } else if (a.kind === 'fail') slow.factorsFailed(a.session, a.reason);
+      else if (a.kind === 'release') lookbackClient.reset(a.session);
+      const fileState = compress.fileFactors(ended, frames);
+      const f = fileChoice.act({
+        session,
+        factorFile: pipeline.factorFileRun(),
+        waiting,
+        state: fileState,
+        reason: fileFactorsBlocked(fileState, compress.status(), compress.error(), frames),
+        info: compress.factorInfo(),
+        behind: compress.behind(frames),
+        window: COMPRESS_DEFAULTS.window,
+        msPerFrame: compress.status()?.msPerFrame ?? 0,
+        workers: pipeline.runPool()?.after ?? 1,
+        // A GPU run is never more than a window and its slack behind: wait for its last window.
+        wait: (params.has('debug') && params.has('fwait')) || pipeline.gpuFactorRun(),
+        width: i?.width ?? 0,
+        height: i?.height ?? 0,
+      });
+      if (f.kind === 'factors') slow.factorsReady(f.session, f.frames, f.factors);
+      else if (f.kind === 'file') {
+        slow.factorsFailed(f.session, f.reason);
+        // No stage reads the factors now: free the CPU and the disk for the file's settle and Extract.
+        compressClient?.stop(f.session);
+        compress.fail(STOPPED_TEXT);
+        runHistory.log({
+          frame: frames,
+          kind: 'warning',
+          detail: `Final settle re-reads the file: ${f.reason}`,
+        });
+      }
+    });
+  }
   // `?debug`: expose the stores for measurement scripts (timing, lag, library events).
   let discoverEnd: {
     session: number;
@@ -924,7 +1093,8 @@ const App: Component = () => {
               bitDepth={lp.info.bitDepth}
               narrow={layout().narrow}
               ui={historyUi}
-              compress={compress}
+              factorRun={pipeline.factorRun()}
+              compress={pipeline.compressRun() ? compress : undefined}
               review={review}
               onStopSettling={() => slow.stopSettling(cells.session())}
               runRecord={runRecord}

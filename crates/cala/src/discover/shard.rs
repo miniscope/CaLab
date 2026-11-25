@@ -191,13 +191,23 @@ impl VisitJob {
     }
 
     /// The bytes, with the reservoir slots taken from `slots` (random
-    /// slots without a patch of their own from `shared`).
+    /// slots without a patch of their own from `shared`). A first pass
+    /// counts them, so the buffer (megabytes for a tile's reservoir) is
+    /// allocated once at its exact size and never copied while it grows.
     fn encode(&self, slots: &Tile, shared: &SharedFrames) -> Vec<u8> {
-        let bytes: usize = (slots.events.len() + slots.randoms.len() + self.tile.probes.len())
-            * (self.tile.rect.len() * 2 + 128);
-        let mut w = Writer {
-            buf: Vec::with_capacity(bytes + 4096),
-        };
+        let mut n = Writer::counter();
+        self.write(&mut n, slots, shared);
+        let mut w = Writer::with_capacity(n.len());
+        self.write(&mut w, slots, shared);
+        debug_assert_eq!(
+            w.buf.len(),
+            n.len(),
+            "visit job: counted and written bytes differ"
+        );
+        w.buf
+    }
+
+    fn write(&self, w: &mut Writer, slots: &Tile, shared: &SharedFrames) {
         w.u32(MAGIC);
         w.u64(self.seq);
         w.usize(self.ti);
@@ -243,9 +253,8 @@ impl VisitJob {
         }
         w.usize(self.clusters.len());
         for c in &self.clusters {
-            c.encode(&mut w);
+            c.encode(w);
         }
-        w.buf
     }
 
     pub fn from_bytes(b: &[u8]) -> Result<VisitJob, TraceError> {

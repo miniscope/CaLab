@@ -17,8 +17,9 @@ pub(crate) const QUANT: f32 = 16.0;
 
 /// The stored value of a missing sample (a pixel registration moved in from
 /// outside the sensor's field of view): `i16::MIN`, which no quantised
-/// value takes (they clamp to ±32767). It crosses the wire unchanged.
-pub(crate) const MISSING: i16 = i16::MIN;
+/// value takes (they clamp to ±32767). It crosses the wire unchanged. The
+/// same marker as the compressor's ([`crate::compress::MISSING`]).
+pub(crate) use crate::compress::MISSING;
 
 /// Decode a stored value: NaN for [`MISSING`].
 #[inline]
@@ -193,14 +194,18 @@ impl SharedFrames {
 
     /// The patch `r` (inside `rect`) of stored frame `j`, quantised.
     pub fn patch(&self, j: usize, r: Rect, out: &mut Vec<i16>) {
-        let src = &self.frames[j].data;
-        let o = self.origin(r);
         out.clear();
         out.reserve(r.len());
-        for y in 0..r.h {
-            let a = o + y * self.rect.w;
-            out.extend_from_slice(&src[a..a + r.w]);
+        for row in self.patch_rows(j, r) {
+            out.extend_from_slice(row);
         }
+    }
+
+    /// The rows of [`SharedFrames::patch`], in order, without copying them.
+    pub fn patch_rows(&self, j: usize, r: Rect) -> impl Iterator<Item = &[i16]> {
+        let src = &self.frames[j].data;
+        let (o, w) = (self.origin(r), self.rect.w);
+        (0..r.h).map(move |y| &src[o + y * w..o + y * w + r.w])
     }
 
     /// The patch `r` of stored frame `j`, in σ units.

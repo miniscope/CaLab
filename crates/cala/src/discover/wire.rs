@@ -12,32 +12,83 @@ use crate::discover::fpstats::{Fast, FpStats, PixMoments, FAST_GROUPS};
 /// Format tag at the start of every buffer (bump on any layout change).
 pub(crate) const MAGIC: u32 = 0x5649_5341; // "VISA"
 
+/// Little-endian byte writer. A counting writer
+/// ([`Writer::counter`]) only adds up the bytes it would write, so a
+/// large buffer can be sized exactly before it is written
+/// (`VisitJob::encode`): no reallocation copies it while it grows.
 #[derive(Default)]
 pub(crate) struct Writer {
     pub buf: Vec<u8>,
+    /// Counting only: the bytes written so far.
+    counted: Option<usize>,
 }
 
 impl Writer {
+    /// A writer into a buffer of capacity `n`.
+    pub fn with_capacity(n: usize) -> Writer {
+        Writer {
+            buf: Vec::with_capacity(n),
+            counted: None,
+        }
+    }
+
+    /// A writer that writes nothing and counts the bytes ([`Writer::len`]).
+    pub fn counter() -> Writer {
+        Writer {
+            buf: Vec::new(),
+            counted: Some(0),
+        }
+    }
+
+    /// Bytes written (or counted) so far.
+    pub fn len(&self) -> usize {
+        self.counted.unwrap_or(self.buf.len())
+    }
+
+    fn put<const N: usize>(&mut self, b: [u8; N]) {
+        match &mut self.counted {
+            Some(n) => *n += N,
+            None => self.buf.extend_from_slice(&b),
+        }
+    }
+
+    /// `v.len()`, then every element of `v` as its `N` bytes: one resize
+    /// and a loop over fixed-size chunks (vectorised), not a capacity
+    /// check per element. The bytes are the same as element by element.
+    fn put_all<T: Copy, const N: usize>(&mut self, v: &[T], le: impl Fn(T) -> [u8; N]) {
+        self.usize(v.len());
+        if let Some(n) = &mut self.counted {
+            *n += v.len() * N;
+            return;
+        }
+        let o = self.buf.len();
+        self.buf.resize(o + v.len() * N, 0);
+        let (chunks, _) = self.buf[o..].as_chunks_mut::<N>();
+        for (b, &x) in chunks.iter_mut().zip(v) {
+            *b = le(x);
+        }
+    }
+
     pub fn u8(&mut self, v: u8) {
-        self.buf.push(v);
+        self.put([v]);
     }
     pub fn bool(&mut self, v: bool) {
         self.u8(u8::from(v));
     }
     pub fn u32(&mut self, v: u32) {
-        self.buf.extend_from_slice(&v.to_le_bytes());
+        self.put(v.to_le_bytes());
     }
     pub fn u64(&mut self, v: u64) {
-        self.buf.extend_from_slice(&v.to_le_bytes());
+        self.put(v.to_le_bytes());
     }
     pub fn usize(&mut self, v: usize) {
         self.u64(v as u64);
     }
     pub fn f32(&mut self, v: f32) {
-        self.buf.extend_from_slice(&v.to_le_bytes());
+        self.put(v.to_le_bytes());
     }
     pub fn f64(&mut self, v: f64) {
-        self.buf.extend_from_slice(&v.to_le_bytes());
+        self.put(v.to_le_bytes());
     }
     pub fn opt_u64(&mut self, v: Option<u64>) {
         self.bool(v.is_some());
@@ -46,37 +97,39 @@ impl Writer {
         }
     }
     pub fn u32s(&mut self, v: &[u32]) {
-        self.usize(v.len());
-        for &x in v {
-            self.u32(x);
-        }
+        self.put_all(v, u32::to_le_bytes);
     }
     pub fn u64s(&mut self, v: &[u64]) {
-        self.usize(v.len());
-        for &x in v {
-            self.u64(x);
-        }
+        self.put_all(v, u64::to_le_bytes);
     }
     pub fn f32s(&mut self, v: &[f32]) {
-        self.usize(v.len());
-        for &x in v {
-            self.f32(x);
-        }
+        self.put_all(v, f32::to_le_bytes);
     }
     pub fn f64s(&mut self, v: &[f64]) {
-        self.usize(v.len());
-        for &x in v {
-            self.f64(x);
-        }
+        self.put_all(v, f64::to_le_bytes);
     }
     pub fn i16s(&mut self, v: &[i16]) {
-        self.usize(v.len());
-        let o = self.buf.len();
-        self.buf.resize(o + v.len() * 2, 0);
-        let (chunks, _) = self.buf[o..].as_chunks_mut::<2>();
-        for (b, x) in chunks.iter_mut().zip(v) {
-            *b = x.to_le_bytes();
+        self.put_all(v, i16::to_le_bytes);
+    }
+    /// The `i16s` of the rows `rows` yields, `n` values in all (a patch
+    /// read straight from a larger store, without copying it out first).
+    fn i16_rows<'a>(&mut self, n: usize, rows: impl Iterator<Item = &'a [i16]>) {
+        self.usize(n);
+        if let Some(c) = &mut self.counted {
+            *c += n * 2;
+            return;
         }
+        let o = self.buf.len();
+        self.buf.resize(o + n * 2, 0);
+        let mut at = o;
+        for row in rows {
+            let (chunks, _) = self.buf[at..at + row.len() * 2].as_chunks_mut::<2>();
+            for (b, &x) in chunks.iter_mut().zip(row) {
+                *b = x.to_le_bytes();
+            }
+            at += row.len() * 2;
+        }
+        debug_assert_eq!(at, o + n * 2, "i16_rows: rows of other than {n} values");
     }
     pub fn rect(&mut self, r: Rect) {
         for v in [r.y0, r.x0, r.h, r.w] {
@@ -108,15 +161,15 @@ impl Writer {
         self.u64(c.born);
     }
     pub fn slot(&mut self, s: &Slot) {
-        self.slot_with(s, &s.data);
+        self.slot_head(s);
+        self.i16s(&s.data);
+        self.proj(s.proj.as_ref());
     }
-    /// `s` with the pixels `data`.
-    fn slot_with(&mut self, s: &Slot, data: &[i16]) {
+    /// A slot's fields before its pixels.
+    fn slot_head(&mut self, s: &Slot) {
         self.u64(s.frame);
         self.f32(s.score);
         self.bool(s.test);
-        self.i16s(data);
-        self.proj(s.proj.as_ref());
     }
     pub fn proj(&mut self, p: Option<&(Vec<f64>, f64)>) {
         self.bool(p.is_some());
@@ -136,11 +189,12 @@ impl Writer {
             self.slot(s);
         }
         self.usize(slots.randoms.len());
-        let mut patch = Vec::new();
         for (j, s) in slots.randoms.iter().enumerate() {
             if s.data.is_empty() {
-                shared.patch(j, slots.rect, &mut patch);
-                self.slot_with(s, &patch);
+                // The patch, read from the shared store (as `SharedFrames::patch`).
+                self.slot_head(s);
+                self.i16_rows(slots.rect.len(), shared.patch_rows(j, slots.rect));
+                self.proj(s.proj.as_ref());
             } else {
                 self.slot(s);
             }
@@ -161,8 +215,7 @@ impl Writer {
         self.f32(s.radius);
         self.u32s(&s.pix);
         self.u32(s.blk);
-        let cls: Vec<u32> = s.cls.iter().map(|&c| u32::from(c)).collect();
-        self.u32s(&cls);
+        self.put_all(&s.cls, |c| u32::from(c).to_le_bytes());
         self.f32s(&s.rc);
         self.f32s(&s.r);
         for m in &s.m {
@@ -186,8 +239,7 @@ impl Writer {
             self.bool(f.wp.is_some());
             if let Some(wp) = &f.wp {
                 for g in wp {
-                    let flat: Vec<f64> = g.iter().flat_map(|w| *w).collect();
-                    self.f64s(&flat);
+                    self.f64s(g.as_flattened());
                 }
             }
         }
@@ -206,10 +258,14 @@ impl Writer {
             self.f64s(m);
         }
         if s.pm.is_some() {
-            let hpm = s
-                .half_pm
-                .clone()
-                .unwrap_or_else(|| PixMoments::filled(&s.cls, &s.half.2));
+            let filled;
+            let hpm = match &s.half_pm {
+                Some(h) => h,
+                None => {
+                    filled = PixMoments::filled(&s.cls, &s.half.2);
+                    &filled
+                }
+            };
             for v in [&hpm.n, &hpm.n2, &hpm.s1, &hpm.s2] {
                 self.f64s(v);
             }
@@ -586,3 +642,59 @@ stats_list!(
     review_adds,
     support_no_se,
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bulk slice writers give the bytes of writing element by
+    /// element, and a counting writer counts exactly what is written.
+    #[test]
+    fn slices_write_element_by_element_bytes_and_count_exactly() {
+        let u32s = [0u32, 1, 0xdead_beef, u32::MAX];
+        let u64s = [7u64, u64::MAX, 1 << 40];
+        let f32s = [0.0f32, -1.5, f32::NAN, f32::INFINITY, 1e-40];
+        let f64s = [0.25f64, -0.0, f64::MAX];
+        let i16s = [0i16, -1, i16::MIN, i16::MAX, 300];
+        let rows: [&[i16]; 3] = [&i16s[..2], &[], &i16s[2..]];
+        let write = |w: &mut Writer| {
+            w.u32s(&u32s);
+            w.u64s(&u64s);
+            w.f32s(&f32s);
+            w.f64s(&f64s);
+            w.i16s(&i16s);
+            w.i16_rows(i16s.len(), rows.into_iter());
+            w.u32s(&[]);
+            w.u8(9);
+        };
+        let mut want = Vec::new();
+        let len = |want: &mut Vec<u8>, n: usize| want.extend_from_slice(&(n as u64).to_le_bytes());
+        len(&mut want, u32s.len());
+        u32s.iter()
+            .for_each(|x| want.extend_from_slice(&x.to_le_bytes()));
+        len(&mut want, u64s.len());
+        u64s.iter()
+            .for_each(|x| want.extend_from_slice(&x.to_le_bytes()));
+        len(&mut want, f32s.len());
+        f32s.iter()
+            .for_each(|x| want.extend_from_slice(&x.to_le_bytes()));
+        len(&mut want, f64s.len());
+        f64s.iter()
+            .for_each(|x| want.extend_from_slice(&x.to_le_bytes()));
+        for _ in 0..2 {
+            len(&mut want, i16s.len());
+            i16s.iter()
+                .for_each(|x| want.extend_from_slice(&x.to_le_bytes()));
+        }
+        len(&mut want, 0);
+        want.push(9);
+
+        let mut w = Writer::default();
+        write(&mut w);
+        assert_eq!(w.buf, want);
+        let mut c = Writer::counter();
+        write(&mut c);
+        assert_eq!(c.len(), want.len());
+        assert!(c.buf.is_empty());
+    }
+}

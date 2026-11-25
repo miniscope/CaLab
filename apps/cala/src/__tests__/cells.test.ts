@@ -267,7 +267,11 @@ const calibration = {
   noiseSigma: () => new Float32Array(4).fill(1),
 };
 
-function fastLoop(port: ReturnType<typeof recorder<FastToSlow>>, backend: TraceBackend) {
+function fastLoop(
+  port: ReturnType<typeof recorder<FastToSlow>>,
+  backend: TraceBackend,
+  extra: Partial<ConstructorParameters<typeof FastLoop>[0]> = {},
+) {
   return new FastLoop(
     {
       width: 2,
@@ -279,6 +283,7 @@ function fastLoop(port: ReturnType<typeof recorder<FastToSlow>>, backend: TraceB
       startFrame: 6,
       noiseEvery: 9,
       poolSize: 2,
+      ...extra,
     },
     port,
     backend,
@@ -410,6 +415,21 @@ describe('FastLoop (fast worker side of the hand-off)', () => {
     expect(batch).toMatchObject({ session: 5, start: 3, count: 3, version: 0, cells: 0 });
     expect(Array.from(batch.frames)).toEqual(Array.from(frames));
     expect(port.sent[1].transfer).toContain(batch.frames.buffer);
+  });
+
+  it('a ?factors stream says so in the slow init, with the settle level; otherwise neither key', () => {
+    const frames = new Float32Array(12);
+    const on = recorder<FastToSlow>();
+    const a = fastLoop(on, fakeBackend().backend, { factorSettle: true, settleFraction: 0.87 });
+    a.process(frames, 0, 3, calibration);
+    a.process(frames, 3, 3, calibration);
+    expect(on.of('init')[0]).toMatchObject({ factorSettle: true, settleFraction: 0.87 });
+    const off = recorder<FastToSlow>();
+    const b = fastLoop(off, fakeBackend().backend, { settleFraction: 0.87 });
+    b.process(frames, 0, 3, calibration);
+    b.process(frames, 3, 3, calibration);
+    expect(off.of('init')[0]).not.toHaveProperty('factorSettle');
+    expect(off.of('init')[0]).not.toHaveProperty('settleFraction');
   });
 
   it('forwards the background levels of the same solve with the traces, transferred', () => {

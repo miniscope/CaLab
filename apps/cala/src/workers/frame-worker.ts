@@ -265,6 +265,15 @@ async function handle(req: FrameRequest): Promise<void> {
               discover: (cells?.discover ?? true) && port !== null,
               qc: cells?.qc ?? true,
               residual: cells?.residual ?? false,
+              ...(cells?.factorSettle && !cells.library && !cells.lookback
+                ? { factorSettle: true }
+                : {}),
+              ...(cells?.factorFile && !cells.library && cells.lookback
+                ? { factorFile: true }
+                : {}),
+              ...(cells?.factorSettle && !cells.library && cells.settleFraction !== undefined
+                ? { settleFraction: cells.settleFraction }
+                : {}),
               ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
               ...(cells?.visitRate ? { visitRate: cells.visitRate } : {}),
             },
@@ -272,7 +281,19 @@ async function handle(req: FrameRequest): Promise<void> {
             backend,
             cells?.compress && compressPort
               ? new CompressFeed(
-                  { width: setup.width, height: setup.height, session: cells.session },
+                  {
+                    width: setup.width,
+                    height: setup.height,
+                    session: cells.session,
+                    ...(cells.compressTiling ? { tiling: cells.compressTiling } : {}),
+                    ...(cells.compressPool ? { pool: cells.compressPool } : {}),
+                    ...(cells.compressBacklogCap !== undefined
+                      ? { backlogCap: cells.compressBacklogCap }
+                      : {}),
+                    ...(cells.compressFrameExtract ? { frameExtract: true } : {}),
+                    ...(cells.compressGpu ? { gpu: true } : {}),
+                    ...(cells.compressGpuCheck ? { gpuCheck: cells.compressGpuCheck } : {}),
+                  },
                   compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
                 )
               : null,

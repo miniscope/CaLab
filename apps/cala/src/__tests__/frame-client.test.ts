@@ -51,3 +51,51 @@ describe('frame client failure handling', () => {
     client.dispose();
   });
 });
+
+describe('a GPU factor run (pipelined) waiting for the GPU compressor', () => {
+  function pipelined() {
+    const fake = (): WorkerLike => ({
+      postMessage: vi.fn(),
+      terminate: vi.fn(),
+      onmessage: null,
+      onerror: null,
+    });
+    const frame = fake();
+    const motion = fake();
+    const trace = fake();
+    const client = createFrameClient(() => frame, {
+      pipelined: true,
+      makeMotionWorker: () => motion,
+      makeTraceWorker: () => trace,
+      makeFlatFieldWorker: false,
+    });
+    const released = () =>
+      vi.mocked(trace.postMessage).mock.calls.filter(([m]) => m.type === 'release-compress').length;
+    return { client, trace, released };
+  }
+
+  it('is released at once on Stop, a new run and a new source; other runs send nothing', () => {
+    const { client, released } = pipelined();
+    void client.startPipeline({}, { session: 1, discover: true, compress: true }).catch(() => {});
+    void client.stopPipeline().catch(() => {});
+    expect(released()).toBe(0); // not a GPU run
+    void client
+      .startPipeline({}, { session: 2, discover: true, compress: true, compressGpu: true })
+      .catch(() => {});
+    expect(released()).toBe(0);
+    void client.stopPipeline().catch(() => {});
+    expect(released()).toBe(1);
+    void client.stopPipeline().catch(() => {});
+    expect(released()).toBe(1); // once per run
+    void client
+      .startPipeline({}, { session: 3, discover: true, compress: true, compressGpu: true })
+      .catch(() => {});
+    void client
+      .startPipeline({}, { session: 4, discover: true, compress: true, compressGpu: true })
+      .catch(() => {});
+    expect(released()).toBe(2); // a new run without a Stop
+    void client.open([]).catch(() => {});
+    expect(released()).toBe(3); // a new source
+    client.dispose();
+  });
+});

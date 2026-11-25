@@ -2603,6 +2603,55 @@ fn refine_makes_idle_visits_at_hand_out_without_changing_footprints() {
     );
 }
 
+/// `take_job_bytes` (one counted, exactly sized pass that reads the random
+/// slots straight from the owner's shared store) gives the bytes the plain
+/// path gives for the same job: decoded, the job carries its own copy of
+/// every slot, and `to_bytes` writes those. Every job of a Discover and a
+/// Refine run. (The bulk writers against element-by-element bytes:
+/// `wire::tests`.)
+#[test]
+fn take_job_bytes_equal_the_plain_encoding() {
+    let t = 900;
+    let (m, seed) = busy_movie(t);
+    let cfg = shard_config();
+    let n_px = N * N;
+    let (mut s, mut eng) = start(cfg.clone(), &seed);
+    let mut runner = VisitRunner::new(new_loop(&cfg));
+    let mut jobs = [0usize; 2];
+    let mut shared = 0;
+    for (pass, scope) in [EditScope::All, EditScope::Refine].into_iter().enumerate() {
+        s.set_edit_scope(scope);
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let tr = eng.process(f).unwrap();
+            let lib = eng.library().clone();
+            s.observe(f, &lib, &tr).unwrap();
+            while let Some(x) = s.take_job_bytes() {
+                let job = VisitJob::from_bytes(&x).unwrap();
+                // The owner's random slots carry no patch: the job's come from the shared store.
+                let ti = job.tile_index();
+                shared += s.tiles[ti]
+                    .randoms
+                    .iter()
+                    .filter(|r| r.data.is_empty())
+                    .count();
+                assert!(
+                    x == job.to_bytes(),
+                    "pass {pass} frame {k}: job bytes differ"
+                );
+                let r = runner.run(job).unwrap().to_bytes();
+                s.apply_job(VisitResult::from_bytes(&r).unwrap()).unwrap();
+                jobs[pass] += 1;
+            }
+            if let Some(l) = s.housekeep().unwrap() {
+                eng.set_library(l).unwrap();
+            }
+        }
+    }
+    assert!(jobs[0] > 0 && jobs[1] > 0, "jobs per run: {jobs:?}");
+    assert!(shared > 0, "no job read random slots from the shared store");
+}
+
 /// Under the split-half merge rule a duplicate of an established cell is
 /// still merged (its light and the cell's form one basin).
 #[test]
@@ -2842,6 +2891,44 @@ fn the_cluster_replay_runs_in_visit_jobs_and_matches_step() {
         assert!(rb.job_stores > 0 && rb.job_store_bytes > 0, "{rb:?}");
         assert!(sa.finalize().unwrap().to_bytes()[16..] == sb.finalize().unwrap().to_bytes()[16..]);
     }
+}
+
+/// A live stream with `?factors` runs Discover with `JointUpdate::Refine`:
+/// in Discover's own scope that must publish exactly what `Off` publishes
+/// (the store accumulates only in refine-scope visits).
+#[test]
+fn joint_update_refine_leaves_discover_unchanged() {
+    let t = 3000;
+    let mut rng = Lcg(97);
+    let cells = vec![
+        (blob_w(0, 30.0, 30.0, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        (blob_w(1, 30.0, 33.5, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        (blob_w(2, 60.0, 50.0, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+    ];
+    let m = movie(&cells, t, 211);
+    let with = |ju: JointUpdate| SlowLoopConfig {
+        joint_update: ju,
+        ..v2_config()
+    };
+    let (mut sa, mut ea) = start(with(JointUpdate::Off), &[]);
+    let (mut sb, mut eb) = start(with(JointUpdate::Refine), &[]);
+    let n_px = N * N;
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+        let (la, lb) = (ea.library().clone(), eb.library().clone());
+        sa.observe(f, &la, &ta).unwrap();
+        sb.observe(f, &lb, &tb).unwrap();
+        let (pa, pb) = (sa.step(5_000_000).unwrap(), sb.step(5_000_000).unwrap());
+        assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+        if let (Some(la), Some(lb)) = (pa, pb) {
+            assert!(la.to_bytes()[16..] == lb.to_bytes()[16..], "frame {k}");
+            ea.set_library(la).unwrap();
+            eb.set_library(lb).unwrap();
+        }
+    }
+    assert!(sa.finalize().unwrap().to_bytes()[16..] == sb.finalize().unwrap().to_bytes()[16..]);
+    assert_eq!(sb.replay_stats.replays, 0, "{:?}", sb.replay_stats);
 }
 
 /// Look-back frames (concurrent Refine) reach only the named cells'
