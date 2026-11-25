@@ -39,10 +39,14 @@
  * chunk is quantized in frame order and uploaded to the GPU compressor's ring
  * of `window + slack` frames; the runner cuts windows of the GPU's length from
  * the stream frame indices (the feed's `window` and `last` are ignored) and
- * compresses them one at a time. A chunk that would overwrite a frame of a
- * window not yet compressed (the GPU fell a window behind), a lost device or a
- * failed window gives the run's factors up, as the backlog cap does; the
- * chunk calls never wait for the GPU.
+ * compresses them one at a time. The feed waits for room in the ring
+ * (`CompressFeed.room`): the runner tells it on the same port how much the
+ * ring holds and the oldest frame still needed (`CompressToFast`), when the
+ * GPU opens and after every window, and `ring` 0 when the GPU route ends. A
+ * chunk that would overwrite a frame of a window not yet compressed anyway
+ * (the GPU fell a window behind), a feed that waited `GPU_STALL_S` without
+ * progress, a lost device or a failed window gives the run's factors up, as
+ * the backlog cap does; the chunk calls never wait for the GPU.
  *
  * The GPU check (`CompressInit.gpuCheck`, `?debug&gpucheck=N`): the quantized
  * frames of the first N windows (at most `GPU_CHECK_MAX`) stay in memory;
@@ -59,6 +63,7 @@ import type {
   CompressedWindow,
   CompressInit,
   CompressStatus,
+  CompressToFast,
   CompressToMain,
   FastToCompress,
   GpuCheck,
@@ -66,6 +71,7 @@ import type {
 import type { CompressToReview } from '../workers/review-types.ts';
 import type { PortLike } from '../workers/slow-types.ts';
 import { quantizeFrames as wasmQuantizeFrames, WindowStats } from './cala-wasm.ts';
+import { GPU_STALL_S } from './compress-feed.ts';
 import { TilePool, WindowPool, type TileJob, type TilePoolLike } from './compress-pool.ts';
 import { cutTile, readTile, tileDiff } from './factor-check.ts';
 import { solveWindow, type FactorExtractorLike, type WindowResult } from './factor-solve.ts';
@@ -148,6 +154,7 @@ export function backlogText(cap: number): string {
 export const GPU_TEXT = {
   none: (why: string) => `No factors: the GPU compressor could not start (${why}).`,
   behind: 'No factors: the GPU compressor fell a window behind Discover.',
+  stalled: `No factors: the GPU compressor made no progress for ${GPU_STALL_S} s while Discover waited for it.`,
   lost: (why: string) => `No factors: the GPU was lost (${why}).`,
   sketch: 'No factors: a tile needed a larger sketch than the GPU compressor holds.',
   error: (why: string) => `No factors: the GPU compressor failed (${why}).`,
@@ -178,6 +185,8 @@ export interface CompressRunnerDeps {
   engine?(library: Uint8Array, signed?: boolean): BackfillEngineLike;
   factors?(file: Uint8Array): FactorWindowLike;
   toMain: PortLike<CompressToMain>;
+  /** The fast worker, on the port its chunks come from: room in the GPU's ring (absent: never told). */
+  toFast?: PortLike<CompressToFast>;
   /** The tile pool (absent: the worker compresses every tile itself). */
   pool?: TilePoolLike;
   /** Extract on factors through the `FactorExtractor` (absent: rebuilt frames, one engine). */
@@ -344,6 +353,9 @@ export class CompressRunner {
   private gkeep = new Map<number, Int16Array>();
   private gchecks: GpuCheckJob[] = [];
   private gcheck: GpuCheck | null = null;
+  /** Discover's waits for room in the ring (`waited`): their sum, ms, and count; kept across a give-up. */
+  private waitMs = 0;
+  private waits = 0;
 
   constructor(private readonly deps: CompressRunnerDeps) {
     this.yieldNow = deps.yieldNow ?? macrotask;
@@ -363,6 +375,8 @@ export class CompressRunner {
       this.layoutPx = tiles.reduce((s, t) => s + t.w * t.h, 0);
       this.session = msg.session;
       this.init = msg;
+      this.waitMs = 0;
+      this.waits = 0;
       this.widths = msg.pool ?? { discover: 1, after: 1 };
       if (msg.backlogCap !== undefined) {
         this.cap = msg.backlogCap;
@@ -385,6 +399,14 @@ export class CompressRunner {
       this.reviewOf(this.init)?.port.postMessage({ type: 'reset', session: msg.session });
       this.session = -1;
       this.init = null;
+      this.waitMs = 0;
+      this.waits = 0;
+    } else if (msg.type === 'waited') {
+      if (!this.init.gpu) return;
+      this.waitMs += msg.ms;
+      this.waits++;
+      if (msg.stalled) await this.gpuFail(GPU_TEXT.stalled);
+      this.post();
     } else if (msg.type === 'library') {
       if (msg.version >= (this.library?.version ?? 0)) {
         this.library = { version: msg.version, bytes: msg.bytes };
@@ -978,6 +1000,7 @@ export class CompressRunner {
       return;
     }
     if ('reason' in g) {
+      this.roomOff();
       this.gaveUp = true;
       this.stopText = GPU_TEXT.none(g.reason);
       this.deps.toMain.postMessage({
@@ -994,6 +1017,30 @@ export class CompressRunner {
     this.gwin = noGpuWindow();
     this.gaborted = new Promise<null>((resolve) => (this.gabort = () => resolve(null)));
     void g.lost.then((why) => this.gpuFail(GPU_TEXT.lost(why), epoch));
+    this.postRoom();
+  }
+
+  /** Tell the feed how far it may send: the ring's size and the oldest frame the GPU still needs. */
+  private postRoom(): void {
+    if (!this.gpu) return;
+    this.deps.toFast?.postMessage({
+      type: 'room',
+      session: this.session,
+      ring: this.gring,
+      window: this.gwindow,
+      keepFrom: this.gpending[0]?.start ?? this.gwin.start,
+    });
+  }
+
+  /** The GPU route ended: the feed never waits again. */
+  private roomOff(): void {
+    this.deps.toFast?.postMessage({
+      type: 'room',
+      session: this.session,
+      ring: 0,
+      window: 0,
+      keepFrom: 0,
+    });
   }
 
   /**
@@ -1052,6 +1099,7 @@ export class CompressRunner {
     };
     if (!keep) {
       this.spareStats(w.stats);
+      this.postRoom();
       return;
     }
     this.gpending.push(w);
@@ -1079,6 +1127,7 @@ export class CompressRunner {
       if (!ok || epoch !== this.epoch) return;
       this.gpending.shift();
       this.spareStats(w.stats);
+      this.postRoom();
       this.releaseDoneGpu();
       this.post();
     }
@@ -1285,6 +1334,7 @@ export class CompressRunner {
    * (each `GpuTileJob` borrows them only while it is built), so they may go at once.
    */
   private dropGpu(): void {
+    if (this.gpu) this.roomOff();
     this.gabort?.();
     this.gabort = null;
     this.gpu?.destroy();
@@ -1322,6 +1372,7 @@ export class CompressRunner {
       ...(window !== undefined ? { window } : {}),
       ...(this.gring > 0 ? { ring: this.gring } : {}),
       backend: this.gwindow > 0 ? 'gpu' : 'cpu',
+      ...(this.init?.gpu ? { waitS: this.waitMs / 1000, waits: this.waits } : {}),
       ...(this.gcheck ? { check: { ...this.gcheck } } : {}),
     };
     this.deps.toMain.postMessage({ type: 'status', session: this.session, status });

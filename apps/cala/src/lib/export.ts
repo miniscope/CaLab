@@ -119,9 +119,10 @@
  * compress pool: `compress_workers` (while Discover read), `compress_workers_after`,
  * `compress_behind_frames` (not compressed at Discover's end), `compress_backlog_peak_bytes`
  * (window files waiting for compression, at their peak), `compress_fps_after`,
- * `compress_window` (frames per window), `compress_ring` (frames the GPU's ring holds) and
- * `compress_backend` ('cpu', or 'gpu' with
- * `?factors=gpu`). Extract's
+ * `compress_window` (frames per window), `compress_ring` (frames the GPU's ring holds),
+ * `compress_backend` ('cpu', or 'gpu' with `?factors=gpu`) and, on the GPU,
+ * `compress_wait_s` and `compress_waits` (Discover waited for room in the GPU's ring:
+ * seconds in all, and how many times). Extract's
  * record of a factor run solved by the extractor carries `extract_engine` ('factors'),
  * `factor_windows_projected` (solved from the factors), `factor_windows_rebuilt` (on rebuilt
  * frames: a pixel without data lay under a cell) and `extract_workers`.
@@ -299,6 +300,8 @@ export function stageMeta(r: StageRun): Record<string, unknown> {
     if (r.compress.window !== undefined) out.compress_window = r.compress.window;
     if (r.compress.ring !== undefined) out.compress_ring = r.compress.ring;
     if (r.compress.backend !== undefined) out.compress_backend = r.compress.backend;
+    if (r.compress.waitS !== undefined) out.compress_wait_s = r.compress.waitS;
+    if (r.compress.waits !== undefined) out.compress_waits = r.compress.waits;
   }
   return out;
 }

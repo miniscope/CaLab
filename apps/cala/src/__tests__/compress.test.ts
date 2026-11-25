@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   FactorExtractor,
   FactorWindow,
@@ -12,7 +12,7 @@ import {
   TraceLibraryBuilder,
 } from '../lib/cala-wasm.ts';
 import { createCellStore } from '../lib/cell-store.ts';
-import { CompressFeed } from '../lib/compress-feed.ts';
+import { CompressFeed, GPU_STALL_S } from '../lib/compress-feed.ts';
 import { WindowPool, type TilePoolLike } from '../lib/compress-pool.ts';
 import { solveWindow } from '../lib/factor-solve.ts';
 import {
@@ -35,6 +35,7 @@ import {
 } from '../lib/gpu-compress.ts';
 import { memoryStore } from '../lib/window-store.ts';
 import type {
+  CompressToFast,
   CompressToMain,
   CoordinatorToHelper,
   FastToCompress,
@@ -955,12 +956,14 @@ describe('a recording compressed on the GPU', () => {
       reject: (err: unknown) => void;
     }[] = [];
     const jobs: GpuWindowJob[] = [];
+    /** Each upload's first stream frame and count. */
+    const uploads: [number, number][] = [];
     let lose: (reason: string) => void = () => {};
     let destroyed = 0;
     const gpu: GpuCompressorLike = {
       window,
       slack,
-      upload: () => {},
+      upload: (_q, start, count) => void uploads.push([start, count]),
       compress: (job) =>
         new Promise((resolve, reject) => {
           jobs.push(job);
@@ -982,6 +985,7 @@ describe('a recording compressed on the GPU', () => {
       gpu,
       pending,
       jobs,
+      uploads,
       answer,
       lose: (r: string) => lose(r),
       destroyed: () => destroyed,
@@ -989,7 +993,7 @@ describe('a recording compressed on the GPU', () => {
   }
 
   /** A runner whose every run opens a new fake GPU compressor (window 50, slack 13). */
-  function gpuRunner(open?: CompressRunnerDeps['openGpu']) {
+  function gpuRunner(open?: CompressRunnerDeps['openGpu'], toFast?: CompressRunnerDeps['toFast']) {
     const store = memoryStore();
     const toMain: CompressToMain[] = [];
     const fakes: ReturnType<typeof fakeGpuCompressor>[] = [];
@@ -1000,6 +1004,7 @@ describe('a recording compressed on the GPU', () => {
       header: factorHeader,
       create: (quant) => new TileCompressor(quant),
       toMain: { postMessage: (m) => toMain.push(m) },
+      ...(toFast ? { toFast } : {}),
       yieldNow: () => Promise.resolve(),
       openGpu:
         open ??
@@ -1220,6 +1225,279 @@ describe('a recording compressed on the GPU', () => {
     expect(errs).toEqual([{ type: 'error', session: 7, message: GPU_TEXT.none(why) }]);
     expect(errs[0].message).toContain(why);
     expect(store.files.size).toBe(0);
+  });
+
+  describe('Discover waits while the GPU ring is full', () => {
+    afterEach(() => void vi.useRealTimers());
+
+    /**
+     * The feed and the runner connected both ways (each direction a macrotask,
+     * as a MessagePort), and a trace stage that waits for room before each
+     * batch of 10 frames, as the trace worker does. The fake GPU (window 50,
+     * slack 13: a ring of 63) answers only when the test says.
+     */
+    function connected(frames: number, o: { stallMs?: number } = {}) {
+      let clock = 0;
+      let feed: CompressFeed | null = null;
+      const toFeed: CompressToFast[] = [];
+      const run = gpuRunner(undefined, {
+        postMessage: (m) => {
+          toFeed.push(m);
+          setTimeout(() => feed?.answer(m), 0);
+        },
+      });
+      let queue = Promise.resolve();
+      const sent: FastToCompress[] = [];
+      feed = new CompressFeed(
+        {
+          width: GW,
+          height: GH,
+          session: 7,
+          tile: GTILE,
+          tiling: 'offset',
+          window: 30,
+          quant: QUANT,
+          gpu: true,
+          ...o,
+        },
+        {
+          postMessage: (m) => {
+            sent.push(m);
+            setTimeout(() => (queue = queue.then(() => run.r.handle(m))), 0);
+          },
+        },
+        () => clock,
+      );
+      const f = feed;
+      /** The batch the trace stage waits before (null: none), and whether it ended. */
+      const stage = { waitingAt: null as number | null, waits: 0, ended: false };
+      const done = (async () => {
+        for (let s = 0; s < frames; s += 10) {
+          await tick(); // one job at a time, as the trace worker's queue
+          const n = Math.min(10, frames - s);
+          const room = f.room(s, n);
+          if (room) {
+            stage.waitingAt = s;
+            stage.waits++;
+            await room;
+            stage.waitingAt = null;
+          }
+          f.push(new Float32Array(n * GW * GH).fill(s % 7), s, n);
+        }
+        f.end();
+        stage.ended = true;
+      })();
+      const settle = async (n = 50) => {
+        for (let i = 0; i < n; i++) await tick();
+        await queue;
+      };
+      return {
+        ...run,
+        feed: f,
+        sent,
+        toFeed,
+        stage,
+        done,
+        settle,
+        advance: (ms: number) => (clock += ms),
+      };
+    }
+
+    it('a GPU slower than the feed: the feed waits, resumes when a window is done, and loses no frame', async () => {
+      const c = connected(200);
+      await c.settle();
+      // Window 0 (frames 0-49) is on the GPU; 50-59 fit the slack, 60-69 would overwrite frame 0.
+      expect(c.fakes[0].pending).toHaveLength(1);
+      expect(c.stage.waitingAt).toBe(60);
+      expect(c.toFeed[0]).toEqual({ type: 'room', session: 7, ring: 63, window: 50, keepFrom: 0 });
+      const chunks = () => c.sent.filter((m) => m.type === 'chunk').length;
+      const before = chunks();
+      await c.settle();
+      expect(chunks()).toBe(before); // still waiting: nothing sent
+      // The GPU finishes window 0 after 2.5 s: room for frames up to 50 + 63.
+      c.advance(2500);
+      c.fakes[0].answer(GTILES);
+      await c.settle();
+      // The rest at the GPU's pace: a window is done only 1 s after the trace stage waits for it.
+      for (let guard = 0; !c.stage.ended; guard++) {
+        expect(guard).toBeLessThan(100);
+        if (c.stage.waitingAt !== null) {
+          expect(c.fakes[0].pending).toHaveLength(1);
+          c.advance(1000);
+          c.fakes[0].answer(GTILES);
+        }
+        await c.settle();
+      }
+      // Waits before frames 60, 110 and 160 (each a window behind the slack).
+      expect(c.stage.waits).toBe(3);
+      await c.done;
+      await c.settle();
+      while (c.fakes[0].pending.length > 0) {
+        c.fakes[0].answer(GTILES);
+        await c.settle();
+      }
+      expect(errors(c.toMain)).toEqual([]);
+      // Every frame uploaded once, in order, and in exactly one window.
+      expect(c.fakes[0].uploads.reduce((s, [, n]) => s + n, 0)).toBe(200);
+      let next = 0;
+      for (const [start, n] of c.fakes[0].uploads) {
+        expect(start).toBe(next);
+        next += n;
+      }
+      const last = statuses(c.toMain).at(-1)!.status;
+      expect(last.compressed).toEqual([
+        { index: 0, start: 0, frames: 50 },
+        { index: 1, start: 50, frames: 50 },
+        { index: 2, start: 100, frames: 50 },
+        { index: 3, start: 150, frames: 50 },
+      ]);
+      expect(last).toMatchObject({ final: true, windows: 4, frames: 200 });
+      // The waits: one 'waited' per wait, summed in the status.
+      const waited = c.sent.flatMap((m) => (m.type === 'waited' ? [m] : []));
+      expect(waited).toHaveLength(c.stage.waits);
+      expect(waited.every((m) => !m.stalled)).toBe(true);
+      expect(last.waits).toBe(c.stage.waits);
+      expect(last.waitS).toBeCloseTo(waited.reduce((s, m) => s + m.ms, 0) / 1000, 9);
+      expect(last.waitS).toBeCloseTo(4.5, 9);
+      // The windows done, the GPU route ends: the feed is told never to wait again.
+      expect(c.toFeed.at(-1)).toMatchObject({ ring: 0 });
+    });
+
+    it('a GPU that gives up releases the wait; the feed runs on without waiting', async () => {
+      const c = connected(200);
+      await c.settle();
+      expect(c.stage.waitingAt).toBe(60);
+      c.fakes[0].pending.shift()!.reject(new Error('device busy'));
+      await c.settle(100);
+      await c.done;
+      expect(c.stage).toMatchObject({ ended: true, waits: 1 });
+      expect(errors(c.toMain)).toEqual([
+        { type: 'error', session: 7, message: GPU_TEXT.error('device busy') },
+      ]);
+      expect(c.store.files.size).toBe(0);
+    });
+
+    it('a lost device releases the wait', async () => {
+      const c = connected(200);
+      await c.settle();
+      expect(c.stage.waitingAt).toBe(60);
+      c.fakes[0].lose('gone');
+      await c.settle(100);
+      await c.done;
+      expect(c.stage).toMatchObject({ ended: true, waits: 1 });
+      expect(errors(c.toMain)).toEqual([
+        { type: 'error', session: 7, message: GPU_TEXT.lost('gone') },
+      ]);
+    });
+
+    it('a reset (Stop, a new run) or a release releases the wait', async () => {
+      for (const end of ['reset', 'release'] as const) {
+        const c = connected(200);
+        await c.settle();
+        expect(c.stage.waitingAt).toBe(60);
+        if (end === 'reset') c.feed.reset();
+        else c.feed.release();
+        await c.settle();
+        await c.done;
+        expect(c.stage.ended).toBe(true);
+        // The run is dropped: no wait reported, no chunk after the reset.
+        const kinds = c.sent.map((m) => m.type);
+        expect(kinds.at(-1)).toBe('reset');
+        expect(kinds).not.toContain('waited');
+        expect(c.store.files.size).toBe(0);
+      }
+    });
+
+    it('a GPU without progress for the stall time ends the wait and the factors', async () => {
+      vi.useFakeTimers();
+      const sent: FastToCompress[] = [];
+      let clock = 0;
+      const feed = new CompressFeed(
+        { width: GW, height: GH, session: 7, tile: GTILE, window: 30, quant: QUANT, gpu: true },
+        { postMessage: (m) => sent.push(m) },
+        () => clock,
+      );
+      feed.answer({ type: 'room', session: 7, ring: 63, window: 50, keepFrom: 0 });
+      for (let s = 0; s < 60; s += 10) {
+        expect(feed.room(s, 10)).toBeNull();
+        feed.push(new Float32Array(10 * GW * GH), s, 10);
+      }
+      let released = false;
+      void feed.room(60, 10)!.then(() => (released = true));
+      // Progress (window 0's first frames freed, still no room) restarts the stall clock.
+      clock = 20_000;
+      vi.advanceTimersByTime(20_000);
+      feed.answer({ type: 'room', session: 7, ring: 63, window: 50, keepFrom: 5 });
+      // An answer of another run is not progress.
+      feed.answer({ type: 'room', session: 8, ring: 63, window: 50, keepFrom: 50 });
+      clock = 49_999;
+      vi.advanceTimersByTime(GPU_STALL_S * 1000 - 1);
+      await Promise.resolve();
+      expect(released).toBe(false);
+      clock = 50_000;
+      vi.advanceTimersByTime(1);
+      await Promise.resolve();
+      expect(released).toBe(true);
+      expect(sent.at(-1)).toEqual({ type: 'waited', session: 7, ms: 50_000, stalled: true });
+      // No more waits: the compress worker judges alone (it gives the factors up).
+      expect(feed.room(60, 10)).toBeNull();
+    });
+
+    it("the runner gives the factors up on a stalled wait and keeps the wait's seconds", async () => {
+      const toFeed: CompressToFast[] = [];
+      const { r, store, toMain, fakes } = gpuRunner(undefined, {
+        postMessage: (m) => toFeed.push(m),
+      });
+      for (const m of gpuFeed(60, 7, false)) await r.handle(m);
+      expect(fakes[0].pending).toHaveLength(1);
+      await r.handle({ type: 'waited', session: 7, ms: 1500 });
+      expect(statuses(toMain).at(-1)!.status).toMatchObject({ waitS: 1.5, waits: 1 });
+      await r.handle({ type: 'waited', session: 7, ms: 30_000, stalled: true });
+      expect(errors(toMain)).toEqual([{ type: 'error', session: 7, message: GPU_TEXT.stalled }]);
+      expect(GPU_TEXT.stalled).toContain(`${GPU_STALL_S} s`);
+      expect(statuses(toMain).at(-1)!.status).toMatchObject({ waitS: 31.5, waits: 2 });
+      expect(store.files.size).toBe(0);
+      expect(fakes[0].destroyed()).toBe(1);
+      expect(toFeed.at(-1)).toMatchObject({ type: 'room', session: 7, ring: 0 });
+      // A new run starts at zero.
+      await r.handle(gpuFeed(1, 8, false)[0]);
+      await r.handle({ type: 'close', session: 8, final: true });
+      expect(statuses(toMain).at(-1)!.status).toMatchObject({ waitS: 0, waits: 0 });
+    });
+
+    it('a stream, a CPU factor run and a run without factor flags never wait', async () => {
+      // A feed without `gpu` never waits, whatever it is told.
+      const { feed, sent } = collectingFeed(10);
+      feed.answer({ type: 'room', session: 7, ring: 12, window: 10, keepFrom: 0 });
+      for (let s = 0; s < 100; s += 5) {
+        expect(feed.room(s, 5)).toBeNull();
+        feed.push(batch(s, 5), s, 5);
+      }
+      feed.end();
+      expect(sent.some((m) => m.type === 'waited')).toBe(false);
+      // A CPU run's runner tells the feed nothing and reports no waits.
+      const toFeed: CompressToFast[] = [];
+      const cpu = runner();
+      const r = new CompressRunner({
+        store: memoryStore(),
+        quantize: quantizeTiles,
+        layout: tileLayout,
+        header: factorHeader,
+        create: (quant) => new TileCompressor(quant),
+        toMain: { postMessage: () => {} },
+        toFast: { postMessage: (m) => toFeed.push(m) },
+        yieldNow: () => Promise.resolve(),
+      });
+      for (const m of sent) await r.handle(m);
+      await r.idle();
+      expect(toFeed).toEqual([]);
+      for (const m of sent) await cpu.r.handle(m);
+      await cpu.r.idle();
+      const last = cpu.toMain.flatMap((m) => (m.type === 'status' ? [m.status] : [])).at(-1)!;
+      expect(last.final).toBe(true);
+      expect(last).not.toHaveProperty('waitS');
+      expect(last).not.toHaveProperty('waits');
+    });
   });
 
   describe('the GPU check (?debug&gpucheck)', () => {

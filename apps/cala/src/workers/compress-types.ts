@@ -98,7 +98,29 @@ export type FastToCompress =
   /** Close the open (shorter) window; `final`: the recording ended. */
   | { type: 'close'; session: number; final: boolean }
   /** Pipeline stopped or restarted: drop everything. */
-  | { type: 'reset'; session: number };
+  | { type: 'reset'; session: number }
+  /**
+   * A GPU run: Discover waited `ms` for room in the GPU compressor's ring
+   * (`CompressToFast`); `stalled`: the GPU made no progress for `GPU_STALL_S`
+   * while it waited, so the run gives its factors up (`GPU_TEXT.stalled`).
+   */
+  | { type: 'waited'; session: number; ms: number; stalled?: boolean };
+
+/**
+ * Compress worker -> fast worker, on the same port (a GPU run only): the GPU
+ * compressor's ring holds `ring` frames (`window` of them per window) and the
+ * oldest frame it still needs is `keepFrom`, so the feed may send frames up to
+ * `keepFrom + ring` (exclusive). Sent when the GPU opens and whenever
+ * `keepFrom` moves (a window compressed). `ring` 0: the GPU route ended (gave
+ * up, reset, or the recording's windows are done); the feed never waits again.
+ */
+export interface CompressToFast {
+  type: 'room';
+  session: number;
+  ring: number;
+  window: number;
+  keepFrom: number;
+}
 
 /** A compressed window: its factor file `f<index>.bin` holds stream frames `start..start + frames`. */
 export interface CompressedWindow {
@@ -148,6 +170,9 @@ export interface CompressStatus {
   ring?: number;
   /** Where the windows are compressed. */
   backend?: 'cpu' | 'gpu';
+  /** A GPU run: seconds Discover waited for room in the GPU's ring, and how many times. */
+  waitS?: number;
+  waits?: number;
   /** `?debug&gpucheck=N`: the GPU's factors against the CPU's (absent: no check, or none done yet). */
   check?: GpuCheck;
 }

@@ -144,6 +144,8 @@ export function createFrameClient(
   const pending = new Map<number, Pending>();
   let nextId = 1;
   let terminalError: Error | null = null;
+  /** The running pipeline compresses on the GPU (`cells.compressGpu`): its Discover may wait for the GPU. */
+  let gpuRun = false;
 
   function fail(err: Error): void {
     terminalError ??= err;
@@ -251,6 +253,7 @@ export function createFrameClient(
       return this.readFrames(index, 1);
     },
     async startPipeline(options = {}, cells, replay, flat) {
+      gpuRun = cells?.compressGpu === true;
       return expectType(
         await call({
           type: 'pipeline-start',
@@ -287,6 +290,9 @@ export function createFrameClient(
       return expectType(await call({ type: 'pipeline-step' }), 'pipeline-step').step;
     },
     async stopPipeline(opts) {
+      // A batch waiting for the GPU compressor's ring (trace worker) must not hold up the stop.
+      if (pipelined && gpuRun)
+        void call({ type: 'release-compress' }, [], traceTarget).catch(() => {});
       expectType(
         await call({ type: 'pipeline-stop', ...(opts?.keepSlow ? { keepSlow: true } : {}) }),
         'pipeline-stopped',

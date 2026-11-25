@@ -4,8 +4,23 @@
  * worker. The copy is all the fast loop pays; quantizing is the compress
  * worker's work. Pure apart from the injected port, so the window bookkeeping
  * is unit-tested without workers.
+ *
+ * A GPU run (`gpu`) waits for room: the compress worker says how many frames
+ * the GPU compressor's ring holds and the oldest frame it still needs
+ * (`CompressToFast`), and `room` gives the trace stage a promise to wait on
+ * before a batch that would overwrite a frame of a window not compressed yet.
+ * The trace stage's wait holds its pooled buffers, so the stages before it
+ * wait too (their credits). The wait ends when room appears, when the GPU
+ * route ends (`ring` 0: a give-up, a reset, a lost device), on `reset` and
+ * `release` (Stop), or after `GPU_STALL_S` without progress from the GPU (the
+ * run then gives its factors up). Every other run never waits.
  */
-import type { CompressSource, CompressTiling, FastToCompress } from '../workers/compress-types.ts';
+import type {
+  CompressSource,
+  CompressTiling,
+  CompressToFast,
+  FastToCompress,
+} from '../workers/compress-types.ts';
 import type { PortLike } from '../workers/slow-types.ts';
 import type { PoolWidth } from './compress-pool.ts';
 
@@ -33,7 +48,12 @@ export interface CompressFeedOptions {
   gpu?: boolean;
   /** With `gpu`: windows the CPU compresses too, to check the GPU's factors (`?debug&gpucheck=N`). */
   gpuCheck?: number;
+  /** With `gpu`: a wait for room gives up after this long without progress, ms (default `GPU_STALL_S`). */
+  stallMs?: number;
 }
+
+/** Discover stops waiting for a GPU compressor that made no progress for this long, s. */
+export const GPU_STALL_S = 30;
 
 export const COMPRESS_DEFAULTS = {
   tile: 64,
@@ -50,17 +70,39 @@ export interface CompressFeedLike {
   library(version: number, bytes: Uint8Array): void;
   end(): void;
   reset(): void;
+  /**
+   * A GPU run: resolves when frames `[start, start + count)` fit the GPU
+   * compressor's ring (null: they fit now, or this run never waits).
+   */
+  room?(start: number, count: number): Promise<void> | null;
+  /** The compress worker's answer on the feed's port. */
+  answer?(msg: CompressToFast): void;
+  /** The run is stopped: a wait for room ends now, and the run's factors with it. */
+  release?(): void;
+}
+
+/** A batch waiting for room in the GPU's ring. */
+interface RoomWait {
+  start: number;
+  count: number;
+  t0: number;
+  timer: ReturnType<typeof setTimeout> | null;
+  resolve: () => void;
 }
 
 export class CompressFeed implements CompressFeedLike {
   private readonly o: Required<
-    Omit<CompressFeedOptions, 'pool' | 'backlogCap' | 'frameExtract' | 'gpu' | 'gpuCheck'>
+    Omit<
+      CompressFeedOptions,
+      'pool' | 'backlogCap' | 'frameExtract' | 'gpu' | 'gpuCheck' | 'stallMs'
+    >
   > & {
     pool?: PoolWidth;
     backlogCap?: number;
     frameExtract?: boolean;
     gpu?: boolean;
     gpuCheck?: number;
+    stallMs?: number;
   };
   private readonly px: number;
   private initSent = false;
@@ -70,10 +112,21 @@ export class CompressFeed implements CompressFeedLike {
   private next = -1;
   private ended = false;
   private disposed = false;
+  // ---- A GPU run: room in the GPU compressor's ring ----
+  /** Frames the ring holds and per window (0: not known yet, or the GPU route ended). */
+  private ring = 0;
+  private gpuWindow = 0;
+  /** The oldest frame the GPU still needs (as last heard), and the first frame sent. */
+  private keepFrom = 0;
+  private first = -1;
+  /** The GPU route ended: no more waits. */
+  private gpuOff = false;
+  private wait: RoomWait | null = null;
 
   constructor(
     options: CompressFeedOptions,
     private readonly port: PortLike<FastToCompress>,
+    private readonly now: () => number = () => performance.now(),
   ) {
     this.o = { ...COMPRESS_DEFAULTS, ...options };
     if (!(this.o.window >= 2) || !(this.o.tile >= 2) || !(this.o.quant > 0)) {
@@ -121,6 +174,7 @@ export class CompressFeed implements CompressFeedLike {
     }
     // A gap in the stream ends the window: its frames must be consecutive.
     if (this.next >= 0 && start !== this.next) this.close(false);
+    if (this.first < 0) this.first = start;
     let done = 0;
     while (done < count) {
       const n = Math.min(count - done, window - this.filled);
@@ -164,6 +218,81 @@ export class CompressFeed implements CompressFeedLike {
     this.port.postMessage({ type: 'close', session: this.o.session, final });
   }
 
+  room(start: number, count: number): Promise<void> | null {
+    // Consecutive frames only: the GPU's ring is addressed by stream frame, so
+    // after a gap (never on a recording) the compress worker judges alone.
+    const consecutive = this.next < 0 || start === this.next;
+    if (!this.o.gpu || this.disposed || this.ended || this.gpuOff || this.ring <= 0) return null;
+    // A batch longer than the ring's slack might never fit: never wait for it.
+    if (!consecutive || count <= 0 || count > this.ring - this.gpuWindow) return null;
+    if (this.fits(start, count)) return null;
+    this.endWait(false);
+    return new Promise<void>((resolve) => {
+      this.wait = { start, count, t0: this.now(), timer: null, resolve };
+      this.armStall();
+    });
+  }
+
+  answer(msg: CompressToFast): void {
+    if (msg.type !== 'room' || msg.session !== this.o.session || this.disposed) return;
+    if (msg.ring <= 0) {
+      this.gpuOff = true;
+      this.ring = 0;
+      this.endWait(false);
+      return;
+    }
+    const progress = msg.keepFrom > this.keepFrom;
+    this.ring = msg.ring;
+    this.gpuWindow = msg.window;
+    this.keepFrom = Math.max(this.keepFrom, msg.keepFrom);
+    const w = this.wait;
+    if (!w) return;
+    if (this.fits(w.start, w.count)) this.endWait(false);
+    else if (progress) this.armStall();
+  }
+
+  release(): void {
+    if (this.wait) this.reset();
+  }
+
+  /** Frames `[start, start + count)` overwrite no frame the GPU still needs. */
+  private fits(start: number, count: number): boolean {
+    const keep = Math.max(this.keepFrom, this.first < 0 ? start : this.first);
+    return start + count - keep <= this.ring;
+  }
+
+  /** (Re)start the stall clock of the wait: no progress for `stallMs` ends it and the factors. */
+  private armStall(): void {
+    const w = this.wait;
+    if (!w) return;
+    if (w.timer !== null) clearTimeout(w.timer);
+    w.timer = setTimeout(
+      () => {
+        this.gpuOff = true;
+        this.endWait(true);
+      },
+      this.o.stallMs ?? GPU_STALL_S * 1000,
+    );
+  }
+
+  /** End the wait (if any) and tell the compress worker how long it took. */
+  private endWait(stalled: boolean): void {
+    const w = this.wait;
+    if (!w) return;
+    this.wait = null;
+    if (w.timer !== null) clearTimeout(w.timer);
+    if (!this.disposed) {
+      const ms = Math.max(0, this.now() - w.t0);
+      this.port.postMessage({
+        type: 'waited',
+        session: this.o.session,
+        ms,
+        ...(stalled ? { stalled } : {}),
+      });
+    }
+    w.resolve();
+  }
+
   /** The recording ended: compress the last, shorter window too. */
   end(): void {
     if (this.disposed || !this.initSent || this.ended) return;
@@ -183,5 +312,6 @@ export class CompressFeed implements CompressFeedLike {
     if (this.initSent && !this.ended) {
       this.port.postMessage({ type: 'reset', session: this.o.session });
     }
+    this.endWait(false);
   }
 }

@@ -149,7 +149,8 @@ export interface StageRun {
    * Discover of a factor run: compress workers while it read and after its end,
    * the frames not compressed at its end, the waiting window files' peak, and
    * the pace after its end (frames/s); frames per window and where the
-   * windows were compressed (absent in older records).
+   * windows were compressed (absent in older records); a GPU run: the seconds
+   * Discover waited for room in the GPU's ring, and how many times.
    */
   compress?: {
     workers: number;
@@ -160,6 +161,8 @@ export interface StageRun {
     window?: number;
     ring?: number;
     backend?: 'cpu' | 'gpu';
+    waitS?: number;
+    waits?: number;
   };
 }
 

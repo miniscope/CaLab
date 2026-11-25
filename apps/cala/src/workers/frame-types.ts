@@ -115,6 +115,11 @@ export type FrameRequest =
   | { type: 'connect-slow'; id: number; port: MessagePort }
   /** The port to the compress worker (transferred). */
   | { type: 'connect-compress'; id: number; port: MessagePort }
+  /**
+   * Trace worker, answered at once: the run is stopped, so a batch waiting for
+   * room in the GPU compressor's ring goes on without the run's factors.
+   */
+  | { type: 'release-compress'; id: number }
   /** Turn cell discovery on or off in the running pipeline. */
   | { type: 'set-discovery'; id: number; on: boolean }
   /** Return (or stop returning) the model residual preview in the running pipeline. */

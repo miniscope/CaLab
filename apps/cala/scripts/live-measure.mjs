@@ -156,6 +156,9 @@ const sample = () => {
       window: cs.window ?? null,
       ring: cs.ring ?? null,
       backend: cs.backend ?? null,
+      // `?factors=gpu`: Discover's waits for room in the GPU's ring (seconds in all, count).
+      waitS: cs.waitS ?? null,
+      waits: cs.waits ?? null,
       check: cs.check ?? null,
     },
     compressError: c.compress?.error?.() ?? null,
@@ -272,6 +275,8 @@ function fileFactorSummary(timeline) {
     compressWindow: last?.compress?.window ?? null,
     compressRing: last?.compress?.ring ?? null,
     compressBackend: last?.compress?.backend ?? null,
+    compressWaitS: Math.max(0, ...timeline.map((s) => s.compress?.waitS ?? 0)),
+    compressWaits: Math.max(0, ...timeline.map((s) => s.compress?.waits ?? 0)),
     compressError: timeline.find((s) => s.compressError)?.compressError ?? null,
     // One value per window (the status after that window).
     compressMsPerFrame: summarize([

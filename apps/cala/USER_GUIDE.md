@@ -92,7 +92,7 @@ ends, on the factors it wrote (`?factors=0`: Discover only, as before). With `?f
 Final settle and Extract read its factors when they are complete, and say "re-reads the file" with the reason when not.
 With `?factors=gpu` (experimental) the recording's frames are compressed on the GPU while Discover
 runs, and the Final settle and Extract read those factors; without WebGPU or with too little GPU
-memory the run reads the file and says why. Look-back and Background settle run
+memory the run reads the file and says why. When the GPU falls behind, Discover waits for it (at most 30 s without progress, then the run reads the file). Look-back and Background settle run
 inside Discover. The cell count, the session (in a multi-session run) and the pause and
 stop controls sit beside the boxes.
 

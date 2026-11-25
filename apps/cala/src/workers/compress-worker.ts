@@ -84,6 +84,7 @@ workerScope.onmessage = (e) => {
   reviewPort?.close();
   for (const p of helperPorts) p.close();
   port = data.port;
+  const fastPort = data.port;
   reviewPort = data.review?.port ?? null;
   helperPorts = data.helpers ?? [];
   const tilePool = new TilePool({
@@ -135,6 +136,8 @@ workerScope.onmessage = (e) => {
     },
     factors: (bytes) => FactorWindow.fromBytes(bytes),
     toMain: { postMessage: (m, t) => workerScope.postMessage(m, t) },
+    // The port is two-way: room in the GPU's ring goes back to the feed.
+    toFast: { postMessage: (m) => fastPort.postMessage(m) },
     pool: tilePool,
     windows,
     extractor: (bytes, signed) => {

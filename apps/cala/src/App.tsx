@@ -410,6 +410,7 @@ const App: Component = () => {
         ...(cs.window !== undefined ? { window: cs.window } : {}),
         ...(cs.ring !== undefined ? { ring: cs.ring } : {}),
         ...(cs.backend ? { backend: cs.backend } : {}),
+        ...(cs.waitS !== undefined ? { waitS: cs.waitS, waits: cs.waits ?? 0 } : {}),
       };
     }
     stageLog.end('discover', 'done', data);
