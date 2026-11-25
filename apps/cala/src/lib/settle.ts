@@ -36,7 +36,36 @@ export const SETTLE = {
   finalSteps: 64,
   /** With visit workers: at most this many visits in the last round (besides the work cap). */
   finalVisitsMax: 4096,
+  /**
+   * With visit workers: tile visits per settle frame fed (`SlowInit.settleVisitRate`). Each
+   * observed frame earns this much credit and a visit is handed out only against it, so the
+   * settle makes the same number of visits however fast it runs (before, a visit worker got its
+   * next visit whenever the slow worker got round to its result: 0.64-0.75 per frame with one
+   * look-back worker on the workshop recording, 0.21 with two). 0.4: at the low end of the
+   * settle visit rates measured without a change in cells or footprints (0.39-1.81 per frame),
+   * and below what one look-back worker gave at Max, so the settle spends less slow-worker time
+   * on visits (hand-out, apply and library builds, about 1.5 ms per frame between 0.21 and 0.65).
+   */
+  visitRate: 0.4,
+  /**
+   * Visits owed (earned, not handed out) above which the settle sends no further look-back
+   * request while a visit is out: it waits for the visit workers instead of running ahead of
+   * them. In settle frames' worth of credit (one request's).
+   */
+  visitOwedFrames: 16,
 } as const;
+
+/**
+ * The settle's visit rate from a `?debug&settlevisits=` value: `off` (or 0) is no rate (visits
+ * whenever a visit worker is free, the behaviour before), a positive number is that rate, and
+ * anything else the default (`SETTLE.visitRate`).
+ */
+export function settleVisitRate(v: string | null): number {
+  if (v === null) return SETTLE.visitRate;
+  if (v === 'off') return 0;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 && v.trim() !== '' ? n : SETTLE.visitRate;
+}
 
 /** A run of consecutive frames `[start, end)` the settle reads. */
 export interface FrameRun {

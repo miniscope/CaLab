@@ -34,6 +34,38 @@ describe('lookbackText', () => {
     );
   });
 
+  it('names the settle visit rate while it runs, and the visits per frame it made once done', () => {
+    const visits = {
+      rate: 0.4,
+      handed: 3840,
+      paidAtEnd: 0,
+      unpaid: 0,
+      owedMax: 6,
+      holds: 0,
+      heldMs: 0,
+      starved: 0,
+      finalRound: 100,
+    };
+    const settle = {
+      fed: 1200,
+      total: 9600,
+      recording: 9600,
+      moving: null,
+      stopped: false,
+      done: false,
+      source: 'factors' as const,
+      visits: { ...visits, handed: 480 },
+    };
+    expect(lookbackText({ ...base, settling: true, settle }, false)).toBe(
+      'Final settle on the factors: 1,200 of 9,600 frames · 0.40 visits/frame',
+    );
+    expect(
+      lookbackText({ ...base, settle: { ...settle, fed: 9600, done: true, visits } }, true),
+    ).toBe(
+      'Look-back: 9,000 frames re-read for 700 new cells · final settle on the factors over 9,600 of 9,600 frames · 0.40 visits/frame',
+    );
+  });
+
   it('after the settle: what it fed, and a Stop is named', () => {
     const settle = {
       fed: 9600,

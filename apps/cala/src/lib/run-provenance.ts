@@ -23,6 +23,7 @@
  * `RUN_RECORD_VERSION` only when an existing field changes meaning.
  */
 import type { VisitRateSummary } from './visit-rate.ts';
+import type { SettleVisits } from '../workers/lookback-types.ts';
 import { FINAL_SETTLE_LEVELS, type FinalSettleLevel, type GovernorStatus } from './settle.ts';
 import type { StageRun } from './run-stages.ts';
 import { stageMeta } from './export.ts';
@@ -69,6 +70,7 @@ export const KNOWN_FLAGS = [
   'pacefps',
   'lbpool',
   'lbpoolmax',
+  'settlevisits',
   'cpool',
   'cbacklog',
   'fextract',
@@ -96,6 +98,7 @@ const REDACTED_FLAGS: ReadonlySet<string> = new Set(['live']);
 const DEBUG_ONLY: ReadonlySet<string> = new Set([
   'lbpool',
   'lbpoolmax',
+  'settlevisits',
   'cpool',
   'cbacklog',
   'fextract',
@@ -588,6 +591,27 @@ export interface SettleSummary {
   /** The user stopped it early. */
   stopped_by_user: boolean;
   done: boolean;
+  /** What it read (`factors`, or `file` after a switch; null: the recording, no factors in the run). */
+  source?: 'factors' | 'file' | null;
+  /** Look-back workers that served it (absent: not reported). */
+  workers?: number;
+  /** Its tile visits on the visit workers (`SettleVisits`; absent without visit workers). */
+  visits?: SettleVisits;
+}
+
+/** The Final settle's visits for the record (snake_case; per frame over the frames fed). */
+function settleVisitsRecord(v: SettleVisits, fed: number): Record<string, number | null> {
+  return {
+    handed_out: v.handed,
+    per_frame: fed > 0 ? v.handed / fed : null,
+    paid_at_end: v.paidAtEnd,
+    unpaid: v.unpaid,
+    owed_max: v.owedMax,
+    holds: v.holds,
+    held_s: v.heldMs / 1000,
+    starved: v.starved,
+    final_round: v.finalRound,
+  };
 }
 
 /** What a run realised, as against what was set (section 5 of the speed control design). Null where not known. */
@@ -741,6 +765,11 @@ export function buildRunRecord(i: RunRecordInput): Record<string, unknown> {
             recording_frames: i.settle.recording,
             stopped_early_by_user: i.settle.stopped_by_user,
             done: i.settle.done,
+            source: i.settle.source ?? null,
+            lookback_workers: i.settle.workers ?? null,
+            // Visits per settle frame: the rate (0: none, visits whenever a worker is free) and what the pass made.
+            visit_rate: i.settle.visits?.rate ?? null,
+            visits: i.settle.visits ? settleVisitsRecord(i.settle.visits, i.settle.fed) : null,
           }
         : { frames_fed: null, stopped_early_by_user: null, done: false }),
       started_at: i.settleTimes.started_at,
@@ -808,7 +837,16 @@ export interface RunRecordSources {
   };
   slowStatus(): {
     lookback?: {
-      settle?: { fed: number; total: number; recording: number; stopped: boolean; done: boolean };
+      settle?: {
+        fed: number;
+        total: number;
+        recording: number;
+        stopped: boolean;
+        done: boolean;
+        source?: 'factors' | 'file';
+        workers?: number;
+        visits?: SettleVisits;
+      };
       settling?: boolean;
       csettle?: { governor?: GovernorStatus };
     };
@@ -986,6 +1024,9 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
           recording: settle.recording,
           stopped_by_user: settle.stopped,
           done: settle.done,
+          source: settle.source ?? null,
+          ...(settle.workers !== undefined ? { workers: settle.workers } : {}),
+          ...(settle.visits ? { visits: settle.visits } : {}),
         }
       : null,
     settleTimes: src.trace.settleTimes(),
