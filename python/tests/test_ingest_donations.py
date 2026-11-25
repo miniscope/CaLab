@@ -176,17 +176,24 @@ def test_ingests_verifies_and_locks_down(backend: FakeBackend, dest: Path) -> No
     files = fixture_files()
     assert len(files) == 4
     files["meta.json"] = b'{"cala_version": "2.19.1"}'
-    row = backend.add(ID_A, files)
+    row = backend.add(ID_A, files, user_id="u-1", contact_email="sharer@lab.org")
 
     assert run_main(backend, dest) == 0
 
     final = dest / ID_A
-    assert sorted(p.name for p in final.iterdir()) == sorted([*files, "donation.json"])
+    assert sorted(p.name for p in final.iterdir()) == sorted(
+        [*files, "donation.json", "contact.json"]
+    )
     for name, data in files.items():
         assert (final / name).read_bytes() == data
-    assert json.loads((final / "donation.json").read_text()) == row
+    # The email lives only in the owner-only contact.json, never in donation.json.
+    stored = json.loads((final / "donation.json").read_text())
+    assert stored == {k: v for k, v in row.items() if k != "contact_email"}
+    contact = final / "contact.json"
+    assert json.loads(contact.read_text()) == {"email": "sharer@lab.org", "user_id": "u-1"}
+    assert stat.S_IMODE(contact.stat().st_mode) == 0o400
     assert stat.S_IMODE(final.stat().st_mode) == 0o555
-    assert all(stat.S_IMODE(p.stat().st_mode) == 0o444 for p in final.iterdir())
+    assert all(stat.S_IMODE(p.stat().st_mode) == 0o444 for p in final.iterdir() if p != contact)
     meta, frames = read_calaraw(final)
     assert frames.shape == (7, 4, 5)
     assert meta.bytes_per_pixel == 2

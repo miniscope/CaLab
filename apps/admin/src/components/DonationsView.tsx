@@ -56,7 +56,6 @@ const COLUMNS: Column[] = [
     label: 'Sharing',
     format: (r) => formatSharing(r as DonationRow),
   },
-  { key: 'contact_ok', label: 'Contact', format: (r) => yesNo(r.contact_ok) },
   { key: 'credit_name', label: 'Credit', format: (r) => formatCredit(r as DonationRow) },
   { key: 'in_benchmark', label: 'Benchmark', format: (r) => yesNo(r.in_benchmark) },
 ];

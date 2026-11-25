@@ -292,7 +292,12 @@ donations", opens a list, no sign-in needed:
   sentence is the norm we ask for on top, as other open datasets do.
 - Our own papers acknowledge every donor lab whose data they use, public or
   CaLab only, logged per donation (`in_benchmark` / `benchmark_note`).
-- `contact_ok` now means "the CaLab team may contact me about this recording".
+- No separate contact opt-in: signing in with an email already lets the team
+  reach the sharer. The form always sends `contact_ok: true` (column kept for
+  old rows). At ingest the edge function adds the sharer's sign-in email
+  (`contact_email`, Auth admin API) to `ingest_list`, and the lab server keeps
+  it in `contact.json` (mode 0400) next to the recording, never in
+  `donation.json`, the NWB file or the notification email.
 
 ## Consent, deletion and policy
 

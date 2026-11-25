@@ -174,6 +174,7 @@ function setup(
     // Just after FakeDb's row stamps, so no row is stale unless a test moves the clock.
     now: now ?? (() => Date.UTC(2026, 0, 1, 1)),
     notify,
+    userEmail: (id) => Promise.resolve(id === ALICE.id ? 'alice@example.org' : null),
   });
   return { db, store, handler };
 }
@@ -1035,6 +1036,14 @@ Deno.test('ingest_list returns sharing and the subject fields', async () => {
   assertEquals(row.subject_id, 'm7');
 });
 
+Deno.test('ingest_list adds the sharer email for the lab records', async () => {
+  const env = setup();
+  await approved(env);
+  const list = await call(env.handler, { action: 'ingest_list' }, ingestAs(INGEST_TOKEN));
+  const row = (list.json.donations as (DonationRow & { contact_email: string | null })[])[0];
+  assertEquals(row.contact_email, 'alice@example.org');
+});
+
 Deno.test('ingest_published marks an ingested public donation published', async () => {
   const env = setup();
   const id = await ingested(env);
@@ -1355,6 +1364,8 @@ Deno.test('notification config, text and Resend request', async () => {
   assertStringIncludes(subject, 'New cala donation');
   assertStringIncludes(text, row.credit_lab!);
   assertStringIncludes(text, 'https://admin.test/donations');
+  assertEquals(text.includes('@'), false); // no sharer email in the notification
+  assertEquals(text.includes('Contact OK'), false);
   assertStringIncludes(text, 'Sharing:    public on DANDI');
 
   let seen: { url: string; init: RequestInit } | null = null;
