@@ -255,7 +255,8 @@
 //!                      and steps itself, as the app did before)
 //!   --via-jobs         run every tile visit as a job through the parallel
 //!                      protocol, one at a time (`SlowLoop::step_via`): must
-//!                      give the same results as without
+//!                      give the same results as without (the end
+//!                      settle's visits too)
 //!   --observe-ms O     with --offered-fps: cost of observing one frame (the
 //!                      app's measured time; default: its work units)
 //!   --job-ms C         with K > 0: owner-side cost of a visit job, hand-out
@@ -1646,8 +1647,16 @@ impl LookBack {
         engine: &mut TraceEngine,
         sl: &mut SlowLoop,
         n_px: usize,
+        mut via: Option<&mut VisitRunner>,
     ) -> usize {
         let cfg = self.settle.clone();
+        // `--via-jobs`: every settle visit runs as a job, as without it.
+        let step = |sl: &mut SlowLoop, via: &mut Option<&mut VisitRunner>, budget: u64| match via
+            .as_deref_mut()
+        {
+            Some(r) => sl.step_via(budget, r).unwrap(),
+            None => sl.step(budget).unwrap(),
+        };
         let t0 = Instant::now();
         // The frames Discover read (`--frames` may stop short of the file).
         let t_len = t_len.min(rec.total as usize);
@@ -1700,6 +1709,9 @@ impl LookBack {
                     steps_owed += cfg.steps_per_frame;
                     if fed.is_multiple_of(200) {
                         sl.set_noise(pre.noise().sigma()).unwrap();
+                        if let Some(r) = via.as_deref_mut() {
+                            r.set_noise(pre.noise().sigma()).unwrap();
+                        }
                     }
                     if in_batch < cfg.batch && fed < cfg.frames {
                         continue;
@@ -1714,7 +1726,7 @@ impl LookBack {
                     let n = steps_owed.floor();
                     steps_owed -= n;
                     if n >= 1.0 {
-                        let got = sl.step(budget.saturating_mul(n as u64)).unwrap();
+                        let got = step(sl, &mut via, budget.saturating_mul(n as u64));
                         if let Some(l) = got {
                             engine.set_library(l).unwrap();
                         }
@@ -1776,7 +1788,7 @@ impl LookBack {
         }
         // A last round of visits on what the settle fed.
         sl.mark_all_due();
-        sl.step(budget.saturating_mul(64)).unwrap();
+        step(sl, &mut via, budget.saturating_mul(64));
         engine.set_library(sl.finalize().unwrap()).unwrap();
         sl.set_reservoir_frozen(false);
         self.full_observe = false;
@@ -6568,6 +6580,7 @@ fn main() {
                             &mut engine,
                             sl,
                             n_px,
+                            via.as_mut(),
                         );
                         std::fs::write(out_dir.join("settle_checks.tsv"), &lbk.settle_out).unwrap();
                         for (k, l) in std::mem::take(&mut lbk.settle_libs) {
