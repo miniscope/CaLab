@@ -76,7 +76,8 @@ def run(d, tag):
     w = DT.window(rows, ends[0] - 1, ends[-1])
     det_all = rows[-1]["acct"].get("detail", {})
     jobs = settle_jobs(d, tag)
-    return dict(tag=tag, disc=disc, dfps=frames / disc, sett=sett, sfps=fed / sett if sett else 0, rss=rss, rss_pre=rss_pre,
+    return dict(tag=tag, disc=disc, dfps=frames / disc, sett=sett, sfps=fed / sett if sett else 0,
+                rss=rss, rss_pre=rss_pre,
                 cells=cells, source=st.get("source", "recording"), workers=st.get("workers"), fed=fed,
                 total=st.get("total"), comp=comp, w=w, det_all=det_all, jobs=jobs)
 
@@ -85,7 +86,7 @@ def main():
     d = Path(sys.argv[1])
     runs = [run(d, t) for t in sys.argv[2:]]
     print("| run | Discover s | Discover fps | factor wait s | settle s | settle fps | source | workers | fed/total |"
-          " peak RSS GB (to final / all) | cells | GPU waits s (n) | settle jobs/frame | jobs/s |")
+          " peak RSS GiB (to final / all) | cells | GPU waits s (n) | settle jobs/frame | jobs/s |")
     print("|---" * 14 + "|")
     for r in runs:
         fw = r["det_all"].get("end.factorWait")

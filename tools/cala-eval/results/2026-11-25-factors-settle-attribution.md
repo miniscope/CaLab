@@ -37,6 +37,7 @@ Nothing else was missing.
 - Max, `--single --lookback`, `?debug`, plain WASM (md5 `b575a1d9`), tree `eb13ce29`.
 - One Chrome job at a time, in the order F1, R1, F2, P1, X1.
 - Background load: the Jamf agent used about one core throughout; others' idle vite servers.
+- One rule slip: `cpuprofile_bindings.py` (under `tools/`, outside the vite root) was written while X1 ran.
 
 | run                          | Discover s | Discover fps | factor wait s | settle s | settle fps | source    | workers | peak RSS GiB, to final / all | cells | GPU waits s (n) | settle jobs per frame | jobs/s |
 | ---------------------------- | ---------: | -----------: | ------------: | -------: | ---------: | --------- | ------: | ---------------------------: | ----: | --------------: | --------------------: | -----: |
@@ -46,14 +47,19 @@ Nothing else was missing.
 | P1, default + CPU profiles   |        115 |          207 |           0.4 |      189 |      95.2¹ | factors   |       1 |                  4.39 / 5.78 |   764 |         0.4 (2) |                 0.625 |   59.5 |
 | X1, `&lbpoolmax` (extra arm) |        116 |          204 |           0.4 |      130 |      138.3 | factors   |       2 |                  4.53 / 6.00 |   798 |         0.4 (2) |                 0.212 |   29.4 |
 
-¹ Not a timed run: profiling costs time, and its Discover ended with 764 cells.
+¹ Not a timed run (profiling costs time). Its Discover ended with 764 cells instead of about 790, and its solve was
+cheaper (4.6 against 5.3 ms per frame) and its `observe` 5.3 ms: fewer cells, a faster settle. So the factors settle
+spans 88–95 fps over three runs, and depends on the cell count.
 
 How to read the table:
 
 - Every run fed the whole settle plan (17,984 of 17,984 frames) and passed `LOOKBACK_CHECK`.
-- **Peak RSS.** "To final" covers Discover and the settle. "All" adds what follows the final library: on factors the
-  app's Extract runs at once on six compress helpers at about 250 MB each. That is where the 5.8–6.0 GiB peaks come
-  from, not the settle. It is a memory note for Extract on factors.
+- **Peak RSS.** "To final" covers Discover and the settle. "All" adds what follows the final library: the run plan
+  (`multi-run.ts`, `nextAutoAction`) starts Extract at once, and on factors it runs on six compress helpers at about
+  250 MB each. That is where the 5.8–6.0 GiB peaks come from, not the settle.
+  - In decimal GB these peaks are 5.9–6.0 GB for F1/F2/P1 and 6.14 GB for X1. That is at or over the 6 GB per-job
+    budget, briefly, after the measured part of the run.
+  - It is a memory note for Extract on factors.
 - **Factor wait.** The settle waits 0.3–0.4 s for the factors. The compressor is 311 frames behind at Discover's end
   and runs at 717 fps.
 - **Discover.** Factors 203–208 fps against 217 for R1 (−5%), in line with #517's +4.8%.
@@ -63,7 +69,8 @@ How to read the table:
 
 ## 1. The factors settle is slower than the recording settle
 
-The factors settle runs at 88–89 fps. The recording settle with #515 runs at 99 fps.
+The factors settle runs at 88–89 fps in the timed runs (95 in the profiled run, with 764 cells). The recording
+settle with #515 runs at 99 fps in R1, and at 103–109 in Stage 1's runs with 765–784 cells.
 
 | per settle frame, ms (share of wall) |      F1 / F2, factors |           R1, recording | X1, factors, 2 workers |
 | ------------------------------------ | --------------------: | ----------------------: | ---------------------: |
@@ -94,12 +101,11 @@ The factors settle runs at 88–89 fps. The recording settle with #515 runs at 9
   - The profile agrees: in the settle, `reconstruct` and the NaN pass take 41–49% of look-back worker 0's busy time
     and `processFrames` takes 49–57%.
   - The solve is about 0.3 ms per frame slower on factors (5.3 against 5.0).
-- **Settle `observe` costs more on factors**: 5.5–5.6 ms per frame against 4.9 on the recording (+0.7 ms, +14%), with
-  the same cell count.
-  - It is not a contention artefact of X1: X1's slow worker is the busiest of all and reads 5.1.
-  - It is the second reason the factors settle is slower.
-  - A `timing` build would split it by stage. Rebuilt frames are low-rank and smooth, so the fitting stages likely do
-    more work. Not measured.
+- **Settle `observe` reads higher on factors, but this is tentative.**
+  - F1/F2 read 5.5–5.6 ms per frame against 4.9 for R1, with the same cell count.
+  - X1 (factors, fewer visits) reads 5.1, and P1 (factors, 764 cells) reads 5.3.
+  - So `observe` moves with visit activity and cell count at least as much as with the source.
+  - A `timing` build on both sources at equal visits would settle it. Not established here.
 - **The profiles match the timers.**
   - Slow worker, settle at 20 s / 120 s: `observe` 58% / 65% of busy, `housekeep` 23% / 19%, `takeJob` 11% / 9%, idle
     24% / 15%.
@@ -124,8 +130,10 @@ With `&lbpoolmax` the one pool worker (18 cores, so S = 1) joins, and the factor
   - That is why the slow worker's visit hand-out (0.83 → 0.27 ms per frame) and its library builds (2.1 → 1.2 ms per
     frame, fewer edits) fall.
   - Part of the 56% is therefore less refinement, not the same work done faster.
-  - At F's per-frame visit and housekeep cost (+1.5 ms per frame), the slow worker would need about 8.5 ms per frame:
-    **about 115–118 fps (+30%) at equal work** (estimate).
+  - **At equal work the estimate is about 108–118 fps (+22–30%).**
+    - Adding back F's per-frame visit and housekeep cost (+1.5 ms) gives about 8.5 ms per frame, about 118 fps.
+    - X1's lower `observe` may also come from fewer visits. At F's full 9.1 ms per frame, the slow-bound figure is
+      about 110 fps.
 - **Discover is unchanged**: 204 fps, within F1/F2. The pool worker sits idle at Max during Discover, because
   Background settle is armed only below Max. Its memory costs +0.2–0.35 GiB before final.
 - Cells 798 (one run). Quality was not checked here. The pooled settle is order-dependent by design.
@@ -137,9 +145,16 @@ With `&lbpoolmax` the one pool worker (18 cores, so S = 1) joins, and the factor
   - Here, the one-worker runs hand out 0.64–0.68 visits per frame, at 57–67 per second.
   - X1, 1.55x faster with its slow worker 98% busy, hands out 0.21 per frame, at 29 per second. So the visit rate
     falls per second too, not only per frame.
-  - The mechanism was not identified. Candidates:
-    - fewer `dispatch` chances while the slow worker is saturated;
-    - tiles not yet due.
+  - **Mechanism: the visit round trip goes through the slow worker's queue.** A visit worker gets its next job only
+    when the slow worker handles its result (`handleVisit` → `dispatch`, or after an answer). With the slow worker
+    saturated, results wait as long as the look-back answers do (82 ms in X1 against 35 in F).
+    - The evidence is in the settle window. `takeJob` calls fall from 80–82 per second (F, R1, P1; about 28% come back
+      empty) to 30 per second in X1, almost none empty.
+    - The four visit workers drop from 15–42% busy each to 19–21%.
+    - So due tiles were there. The hand-out was starved, which points at the slow worker's occupancy, not the visit
+      logic.
+  - As in Stage 1, the visit-rate sweep found that settle visits don't move cell count or recall. So the fewer visits
+    in X1 are probably cheap in quality, but that is not checked here.
   - Whatever the cause, a faster settle (a faster machine, more workers) does fewer settle visits. That breaks
     `cala-compute-budget-user-visible`. It is the main confound for any settle speed-up, and it should be fixed (visits
     earned per settle frame) before a speed-up is judged.
@@ -149,9 +164,11 @@ With `&lbpoolmax` the one pool worker (18 cores, so S = 1) joins, and the factor
   - With Auto, the policy lowers the target from measured speeds, so whether the settle is pooled depends on the
     machine.
   - At Max (the default) it never joins.
-- **The settle source can depend on the GPU.**
-  - A GPU that keeps Discover waiting more than 10% after 3 windows gives up, and the settle reads the file
-    (#517's rule).
+- **The settle source can depend on the GPU.** Three rules flip it:
+  - #517's give-up rule: a GPU that keeps Discover waiting more than 10% after 3 windows gives up, and the settle
+    reads the file;
+  - the factors' answer timeout (`FACTOR_ASK_MS`, 150 s);
+  - the compress backlog cap.
   - Here the waits were 0.4 s, under 0.5% of Discover.
   - A slower GPU would flip the source, and with it the settle path and its results.
 - **No dependence in the settle plan.** `fed/total` is 17,984 in every arm, and the factor wait is 0.3–0.4 s.
@@ -160,9 +177,9 @@ With `&lbpoolmax` the one pool worker (18 cores, so S = 1) joins, and the factor
 
 **What limits the factors settle now?** The alternation between the slow worker and look-back worker 0.
 
-- The settle runs at 88–89 fps, 10–11% below the recording settle (99 fps), for two reasons:
-  - the factors path has no prepare-ahead relay;
-  - settle `observe` costs 0.7 ms more per frame on factors.
+- The settle runs at 88–89 fps (95 with fewer cells), 4–11% below the recording settle (99 fps in R1), mainly
+  because the factors path has no prepare-ahead relay.
+- `observe` also read 0.7 ms per frame higher in F1/F2, but X1 and P1 don't support a factors premium (see 1).
 - The two workers cost about the same, each 9.1 ms per frame and 80% busy.
 - Look-back worker 0's time splits about 40/60 between rebuild and solve.
 
@@ -178,7 +195,7 @@ With `&lbpoolmax` the one pool worker (18 cores, so S = 1) joins, and the factor
 **Would a second look-back worker at Max help?** Yes, more than prepare-ahead.
 
 - Measured: 138 fps (+56%), but with a third of the settle visits per frame.
-- At equal visit work, the estimate is about 115–118 fps (+30%), bound by the slow worker.
+- At equal visit work, the estimate is about 108–118 fps (+22–30%), bound by the slow worker.
 - Its costs:
   - about +0.3 GiB before final;
   - an order-dependent settle;
@@ -187,11 +204,13 @@ With `&lbpoolmax` the one pool worker (18 cores, so S = 1) joins, and the factor
 
 ## 5. Next steps, ranked
 
-1. **Settle visits per frame, not per second (a prerequisite, not a speed step).** Without it, every speed-up below
-   also cuts refinement (X1: 0.65 → 0.21 visits per frame), and its gain is overstated.
+1. **Settle visits per frame, not per slow-worker occupancy (a prerequisite, not a speed step).** Without it, every
+   speed-up below also cuts refinement (X1: 0.65 → 0.21 visits per frame), and its gain is overstated.
+   - One way: the settle's feed holds back a batch while the visits it earned are still owed.
+   - Another: visit results are handled before the next answer.
 2. **Start the pool for the end settle at Max, on factors.**
    - Join the pool worker at Discover's end, not at the start.
-   - Estimated +30% at equal work: about 89 → 115 fps, settle 203 → about 155 s. Measured +56% with fewer visits.
+   - Estimated +22–30% at equal work: about 89 → 108–118 fps, settle 203 → about 155–165 s. Measured +56% with fewer visits.
    - A small change: `startSettlePool` plus the existing `joinPool`/`drainPorts` path.
    - The choice to make: accept an order-dependent default settle and a core-count-dependent worker count, or keep
      one worker and do step 3.
