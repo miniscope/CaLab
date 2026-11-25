@@ -725,7 +725,22 @@ export class SlowRunner {
    */
   setSettlePool(session: number, workers: number): void {
     this.pool = { session, workers: Math.max(0, Math.floor(workers)) };
-    if (session === this.session && this.loop) this.joinPool(this.pool.workers);
+    if (session !== this.session || !this.loop) return;
+    if (this.pool.workers > 0) this.joinPool(this.pool.workers);
+    else this.leavePool();
+  }
+
+  /**
+   * The main thread ended this run's pool workers (`workers` 0: after the Final settle's
+   * library, `LookbackFeed.endPool`): nothing more goes to them (no library copies for a
+   * Refine run); worker 0 is not one of them.
+   */
+  private leavePool(): void {
+    for (let i = 1; i < this.lbPorts.length; i++) {
+      this.lbRun[i] = false;
+      this.lbLib[i] = false;
+      this.lbFactors[i] = false;
+    }
   }
 
   /**

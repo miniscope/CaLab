@@ -64,6 +64,7 @@ import {
 } from './speed-schedule.ts';
 import { AutoPolicy, PauseClock, type AutoDecision } from './speed-auto.ts';
 import type { LookbackFeed } from './lookback-client.ts';
+import type { FactorSource } from '../workers/lookback-types.ts';
 import {
   CSETTLE,
   csettleRate,
@@ -635,7 +636,7 @@ export function createPipelineStore(
   /** Frames the fast loop did not forward to the slow loop, as of the last batch (this run). */
   let forwardDrops: number | null = null;
   /** Told when a run's settle pool starts (its workers, the frame reached); the run record's log. */
-  const poolListeners: ((workers: number, frame: number) => void)[] = [];
+  const poolListeners: ((workers: number, frame: number, forFinal: boolean) => void)[] = [];
   /**
    * The speed curve chosen in the Speed control (Curve mode), as set; `normalize` is false for a
    * replayed record's curve, which must run exactly as recorded.
@@ -1013,17 +1014,46 @@ export function createPipelineStore(
     const st = untrack(status);
     if (st !== 'starting' && st !== 'running' && st !== 'paused') return;
     if (!lookbackSession || !(paceRun() || poolAtMax) || !(settleCap() > 0)) return;
-    const n = lookbackFeed?.startPool?.(lookbackSession) ?? 0;
-    // The run record notes the first start only (this runs on every pace or cap change).
+    notePool(lookbackFeed?.startPool?.(lookbackSession) ?? 0, false);
+  }
+  /** The run record notes the pool's first start only (this runs on every pace or cap change). */
+  function notePool(n: number, forFinal: boolean): void {
     if (n <= 0 || poolNoted === lookbackSession) return;
     poolNoted = lookbackSession;
     for (const cb of poolListeners) {
       try {
-        cb(n, untrack(processed));
+        cb(n, untrack(processed), forFinal);
       } catch {
         // Observers only.
       }
     }
+  }
+  /**
+   * Discover of look-back run `session` ended and its Final settle reads the recording's factors
+   * (`factors`): the settle pool starts now if it is not running (a run at Max, or a paced one
+   * whose Background settle was off), so the settle runs on S + 1 look-back workers. S is the
+   * pool size from the core count (`settlePoolSize`), never from a measured speed. The pooled
+   * settle is order-dependent (footprints within noise, not bit-repeatable); its visits are not
+   * (`SETTLE.visitRate`). `?debug&lbpool=0` turns it off.
+   */
+  function startFactorPool(session: number, factors: FactorSource['factors']): number {
+    if (!lookbackSession || session !== lookbackSession) return 0;
+    const n = lookbackFeed?.startFactorPool?.(session, factors) ?? 0;
+    if (n > 0 && poolForFinal !== session && poolNoted !== session) poolForFinal = session;
+    notePool(n, true);
+    return n;
+  }
+  /** The look-back session whose pool was started for its Final settle (0: none). */
+  let poolForFinal = 0;
+  /**
+   * The final library of look-back run `session` is out: a pool started for its Final settle
+   * ends now, before Extract (which never uses it), so it adds nothing to Extract's memory.
+   * A pool started below Max for the Background settle is left as before.
+   */
+  function endFactorPool(session: number): number {
+    if (!session || session !== poolForFinal) return 0;
+    poolForFinal = 0;
+    return lookbackFeed?.endPool?.(session) ?? 0;
   }
 
   /** Show one played frame: its view's image, the batch's last-frame images for the other views. */
@@ -1652,7 +1682,11 @@ export function createPipelineStore(
       workSampleListeners.push(cb);
     },
     /** Called once per run when its settle pool starts: the pool workers and the frame reached. */
-    onPoolStart: (cb: (workers: number, frame: number) => void) => {
+    /** The Final settle on the recording's factors begins: start the settle pool for it (`startFactorPool`). */
+    startFactorPool,
+    /** The final library is out: end a pool started for the Final settle (`endFactorPool`). */
+    endFactorPool,
+    onPoolStart: (cb: (workers: number, frame: number, forFinal: boolean) => void) => {
       poolListeners.push(cb);
     },
     smoothPlayback: () => smoothOn,

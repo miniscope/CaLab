@@ -509,6 +509,20 @@ describe("settle pool on a recording's factors (?factors=file)", () => {
     expect(t.status().lookback!.settle).toMatchObject({ source: 'factors', done: true, fed: 400 });
   });
 
+  it('a pool ended by the main thread (0 workers) gets nothing more: no request, no library', () => {
+    const t = settleOnFactors();
+    for (let k = 0; k < 3; k++) for (const i of [0, 1, 2]) if (t.pending(i)) t.answer(i);
+    t.r.setSettlePool(1, 0);
+    const after = t.toLb.map((m) => m.length);
+    answerAll(t);
+    for (const i of [1, 2])
+      expect(
+        t.toLb[i].slice(after[i]).filter((m) => m.type === 'request' || m.type === 'library'),
+      ).toEqual([]);
+    expect(t.status().final).toBe(true);
+    expect(t.status().lookback!.settle).toMatchObject({ source: 'factors', done: true, fed: 400 });
+  });
+
   it('a pool worker that fails in the settle is left out; the others finish it', () => {
     const t = settleOnFactors();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

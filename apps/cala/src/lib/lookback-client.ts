@@ -17,6 +17,11 @@
  * request reaches a worker that cannot serve it; it sends them its current
  * library then. A run's `reset` ends them (worker 0 stays for the page), so a
  * run at Max after a paced one holds no pool workers.
+ *
+ * A run at Max (or one whose pool never started) gets the pool at Discover's
+ * end when its Final settle reads the recording's factors
+ * (`startFactorPool`): those workers open the factors, need nothing Discover
+ * recorded, and are announced to the slow worker at once.
  */
 import type { FlatFieldMap } from './flat-field.ts';
 import type { BackStateSnapshot } from './pipeline-engine.ts';
@@ -75,6 +80,19 @@ export interface LookbackFeed {
    * run; nothing when the pool size is 0). Returns the pool workers in the run.
    */
   startPool?(session: number): number;
+  /**
+   * `session`'s Discover ended and its Final settle reads the recording's factors: start the
+   * settle pool for that settle if it is not running (a run at Max, or one whose Background
+   * settle was off). Its workers open the factors themselves, need nothing Discover recorded,
+   * and are announced to the slow worker at once. Returns the pool workers in the run.
+   */
+  startFactorPool?(session: number, factors: FactorSource['factors']): number;
+  /**
+   * `session`'s final library is out: end its pool workers (they serve the settles only, and
+   * Extract never uses them), so they hold no memory while Extract runs. The slow worker hears
+   * of it (`settlePool` with 0 workers). Returns the workers ended.
+   */
+  endPool?(session: number): number;
   /** The settle pool's size S on this machine (started or not). */
   readonly poolSize?: number;
 }
@@ -362,6 +380,40 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       // Announced at the next back state (`backState`), when they can serve.
       r.joining = poolSize;
       return poolSize;
+    },
+    startFactorPool(session, factors) {
+      const r = run;
+      if (!r || r.session !== session) return 0;
+      if ('factors' in r.source) return 0;
+      if (r.active > 1 || poolSize === 0) return r.active - 1;
+      ensureWorkers(1 + poolSize);
+      // Nothing recorded is needed now: the rows kept for a late pool go.
+      r.rows = [];
+      r.newest = null;
+      for (let i = 1; i <= poolSize; i++)
+        workers[i].postMessage({
+          type: 'begin',
+          session,
+          source: { factors },
+          prune: true,
+        } satisfies MainToLookback);
+      r.active = 1 + poolSize;
+      r.joining = 0;
+      // On the factors from their begin: they serve at once (no back state to wait for). The slow
+      // worker sends them the factors too (as to every pool worker) and its library.
+      o.slow.settlePool?.(session, poolSize);
+      return poolSize;
+    },
+    endPool(session) {
+      const r = run;
+      if (!r || r.session !== session || r.active <= 1) return 0;
+      const n = r.active - 1;
+      for (const w of workers.slice(1)) w.terminate();
+      workers = workers.slice(0, 1);
+      r.active = 1;
+      r.joining = 0;
+      o.slow.settlePool?.(session, 0);
+      return n;
     },
     poolSize,
     dispose() {

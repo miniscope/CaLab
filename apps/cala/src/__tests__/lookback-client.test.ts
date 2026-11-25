@@ -319,4 +319,80 @@ describe('look-back client', () => {
     t.client.backState(2, { frame: 256, state: Uint8Array.of(1) } as never);
     expect(t.pools).toEqual([]);
   });
+
+  it('the Final settle on factors at Max: the pool opens the factors and joins at once, once', () => {
+    const factors = { folder: 'run-a', windows: [], width: 4, height: 3 };
+    const t = setup(null, 1);
+    t.client.begin(1);
+    const dy = Float32Array.of(1, 2);
+    t.client.rows(1, 0, dy, dy, [0, 1], dy, dy);
+    // Another session's settle starts nothing.
+    expect(t.client.startFactorPool!(2, factors)).toBe(0);
+    expect(t.workers()).toBe(1);
+    expect(t.client.startFactorPool!(1, factors)).toBe(1);
+    expect(t.workers()).toBe(2);
+    expect(t.indices).toEqual([0, 1]);
+    // The pool worker opens the factors (nothing Discover recorded) and is announced at once.
+    const toPool = t.sent.filter((s) => s.worker === 1).map((s) => s.msg);
+    expect(toPool).toEqual([
+      { type: 'connect', port: expect.anything() },
+      { type: 'begin', session: 1, source: { factors }, prune: true },
+    ]);
+    expect(t.pools).toEqual([[1, 1]]);
+    // Once per run, and a later back state does not announce it again.
+    expect(t.client.startFactorPool!(1, factors)).toBe(1);
+    t.client.backState(1, { frame: 256, state: Uint8Array.of(1) } as never);
+    expect(t.workers()).toBe(2);
+    expect(t.pools).toEqual([[1, 1]]);
+  });
+
+  it('the final library is out: the pool ends (the slow worker hears 0), and a later run starts afresh', () => {
+    const factors = { folder: 'run-a', windows: [], width: 4, height: 3 };
+    const t = setup(null, 1);
+    t.client.begin(1);
+    expect(t.client.endPool!(1)).toBe(0);
+    t.client.startFactorPool!(1, factors);
+    // Another session's end does nothing.
+    expect(t.client.endPool!(2)).toBe(0);
+    expect(t.client.endPool!(1)).toBe(1);
+    expect(t.terminated).toEqual([1]);
+    expect(t.pools).toEqual([
+      [1, 1],
+      [1, 0],
+    ]);
+    expect(t.client.endPool!(1)).toBe(0);
+    // The run's reset terminates nothing more; worker 0 stays for the page.
+    t.client.reset(1);
+    expect(t.terminated).toEqual([1]);
+    // A restart's settle gets a fresh pool worker, wired by its index again.
+    t.client.begin(2);
+    expect(t.client.startFactorPool!(2, factors)).toBe(1);
+    expect(t.workers()).toBe(3);
+    expect(t.indices).toEqual([0, 1, 1]);
+    expect(t.pools.at(-1)).toEqual([2, 1]);
+  });
+
+  it('the Final settle on factors after a pool started below Max: the running pool serves it', () => {
+    const t = setup(null, 1);
+    t.client.begin(1);
+    expect(t.client.startPool!(1)).toBe(1);
+    const begins = t.sent.filter((s) => s.msg.type === 'begin').length;
+    expect(
+      t.client.startFactorPool!(1, { folder: 'run-a', windows: [], width: 4, height: 3 }),
+    ).toBe(1);
+    expect(t.sent.filter((s) => s.msg.type === 'begin')).toHaveLength(begins);
+    // No pool on a machine without one, nor on a live stream's factor run.
+    const none = setup(null, 0);
+    none.client.begin(1);
+    expect(none.client.startFactorPool!(1, { folder: 'f', windows: [], width: 1, height: 1 })).toBe(
+      0,
+    );
+    expect(none.workers()).toBe(1);
+    const stream = setup(null, 1);
+    stream.client.beginFactors!(3, { folder: 'f', windows: [], width: 1, height: 1 });
+    expect(
+      stream.client.startFactorPool!(3, { folder: 'f', windows: [], width: 1, height: 1 }),
+    ).toBe(0);
+    expect(stream.workers()).toBe(1);
+  });
 });
