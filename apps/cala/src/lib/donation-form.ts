@@ -27,7 +27,6 @@ export interface DonationForm {
   genotype: string;
   rights_attested: boolean;
   protocol_attested: boolean;
-  contact_ok: boolean;
   credit_name: string;
   credit_lab: string;
   notes: string;
@@ -70,7 +69,6 @@ export function emptyForm(fps: number | null): DonationForm {
     genotype: '',
     rights_attested: false,
     protocol_attested: false,
-    contact_ok: false,
     credit_name: '',
     credit_lab: '',
     notes: '',

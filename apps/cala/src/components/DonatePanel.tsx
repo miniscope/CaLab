@@ -310,7 +310,8 @@ export function DonationFormView(props: DonatePanelProps & { onClose: () => void
       genotype: optional(form.genotype),
       rights_attested: form.rights_attested,
       protocol_attested: form.protocol_attested,
-      contact_ok: form.contact_ok,
+      // Signing in with an email already lets the team reach the sharer (no separate opt-in).
+      contact_ok: true,
       credit_name: optional(form.credit_name),
       credit_lab: optional(form.credit_lab),
       notes: optional(form.notes),
@@ -340,12 +341,7 @@ export function DonationFormView(props: DonatePanelProps & { onClose: () => void
   const text = (
     key: Exclude<
       keyof DonationForm,
-      | 'sharing'
-      | 'subject_sex'
-      | 'age_unit'
-      | 'rights_attested'
-      | 'protocol_attested'
-      | 'contact_ok'
+      'sharing' | 'subject_sex' | 'age_unit' | 'rights_attested' | 'protocol_attested'
     >,
     label: string,
     opts: { required?: boolean; max?: number; placeholder?: string } = {},
@@ -574,14 +570,6 @@ export function DonationFormView(props: DonatePanelProps & { onClose: () => void
             onChange={(e) => setForm('protocol_attested', e.currentTarget.checked)}
           />{' '}
           The recordings were made under an approved animal protocol. *
-        </label>
-        <label class="cala-donate__check">
-          <input
-            type="checkbox"
-            checked={form.contact_ok}
-            onChange={(e) => setForm('contact_ok', e.currentTarget.checked)}
-          />{' '}
-          The CaLab team may contact me about this recording.
         </label>
       </fieldset>
 
