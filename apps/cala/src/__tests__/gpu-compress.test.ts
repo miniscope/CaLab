@@ -10,9 +10,11 @@ import {
   RingClock,
   openGpuCompressor,
   ringFrameBytes,
+  ringBlockFrames,
   ringSegments,
   takeBatch,
   workColumns,
+  workLadder,
   type GpuTileJobLike,
   type WindowStatsLike,
 } from '../lib/gpu-compress.ts';
@@ -139,7 +141,10 @@ describe('openGpuCompressor', () => {
     if ('reason' in r) throw new Error(r.reason);
     expect(r.window).toBe(600);
     expect(r.slack).toBe(150);
-    expect(tried).toEqual([1200 * fb, 750 * fb]);
+    // Every work budget with two windows of ring, then the smaller ring at the full budget.
+    const tries = workLadder(workColumns({})).length;
+    expect(tries).toBe(6);
+    expect(tried).toEqual([...Array<number>(tries).fill(1200 * fb), 750 * fb]);
     r.destroy();
   });
 
@@ -154,7 +159,65 @@ describe('openGpuCompressor', () => {
     });
     expect(r).toEqual({ reason: expect.stringContaining('GPU memory') });
     const fb = ringFrameBytes(64 * 64);
-    expect(tried).toEqual([1200 * fb, 750 * fb]);
+    const tries = workLadder(workColumns({})).length;
+    expect(tried).toEqual([
+      ...Array<number>(tries).fill(1200 * fb),
+      ...Array<number>(tries).fill(750 * fb),
+    ]);
+  });
+
+  it('halves the work buffers before it shrinks the ring', async () => {
+    const work: number[] = [];
+    const full = 3 * GPU_WORK_BYTES; // Y, its copy, its readback
+    const r = await openGpuCompressor({
+      ...base,
+      gpu: fakeGpu((_, w) => {
+        work.push(w);
+        return w < full;
+      }).gpu,
+    });
+    if ('reason' in r) throw new Error(r.reason);
+    expect(r.slack).toBe(600);
+    expect(work).toEqual([full, full / 2]);
+    r.destroy();
+  });
+
+  it('cuts a large frame into smaller ring blocks under the default 128 MB binding', async () => {
+    const [w, h] = [1296, 972];
+    const hw = w * h;
+    const fb = ringFrameBytes(hw);
+    const block = ringBlockFrames({}, hw);
+    expect(block).toBe(Math.floor((128 * 2 ** 20) / fb)); // 53 frames, not 150
+    const fake = fakeGpu(() => true);
+    const r = await openGpuCompressor({ ...base, width: w, height: h, gpu: fake.gpu });
+    if ('reason' in r) throw new Error(r.reason);
+    expect(r.slack).toBe(600);
+    expect(fake.rings).toHaveLength(Math.ceil(1200 / block));
+    const sizes = fake.rings.map((b) => (b as { size: number }).size);
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(128 * 2 ** 20);
+    expect(sizes.reduce((a, b) => a + b, 0)).toBe(1200 * fb);
+    // Stream frames 1199 and 1200: the last block's last slot, then block 0 slot 0.
+    fake.writes.length = 0;
+    r.upload(new Int16Array(2 * hw), 1199, 2);
+    const last = Math.floor(1199 / block);
+    expect(fake.writes.map((x) => [fake.rings.indexOf(x.buffer), x.offset, x.bytes])).toEqual([
+      [last, (1199 - last * block) * fb, fb],
+      [0, 0, fb],
+    ]);
+    r.destroy();
+  });
+
+  it('names the limit when not even one frame fits a buffer', async () => {
+    const r = await openGpuCompressor({
+      ...base,
+      width: 1000,
+      height: 1000,
+      gpu: fakeGpu(() => true, { maxStorageBufferBindingSize: 2 ** 20 }).gpu,
+    });
+    expect(r).toEqual({
+      reason:
+        "A frame of 1000 x 1000 pixels (2 MB) is over the GPU's maxStorageBufferBindingSize (1 MB).",
+    });
   });
 
   it('uploads each frame into its block and slot, padded to whole words', async () => {
@@ -234,7 +297,7 @@ interface FakeWrite {
  * ring writes and dispatches.
  */
 function fakeGpu(
-  ok: (ringBytes: number) => boolean,
+  ok: (ringBytes: number, workBytes: number) => boolean,
   limits: Partial<GPUSupportedLimits> = {},
 ): {
   gpu: GPU;
@@ -245,6 +308,7 @@ function fakeGpu(
 } {
   const submits = { n: 0 };
   let ringBytes = 0;
+  let workBytes = 0;
   const rings: object[] = [];
   const writes: FakeWrite[] = [];
   const dispatches: number[][] = [];
@@ -281,11 +345,14 @@ function fakeGpu(
     pushErrorScope() {},
     popErrorScope: async () => {
       const bytes = ringBytes;
+      const work = workBytes;
       ringBytes = 0;
-      return bytes > 0 && !ok(bytes) ? ({ message: 'out of memory' } as GPUError) : null;
+      workBytes = 0;
+      return bytes > 0 && !ok(bytes, work) ? ({ message: 'out of memory' } as GPUError) : null;
     },
     createBuffer: (d: GPUBufferDescriptor) => {
       const b = buffer(d.size);
+      if (d.label === 'work') workBytes += d.size;
       if (d.label === 'ring') {
         ringBytes += d.size;
         rings.push(b);
@@ -315,6 +382,28 @@ function fakeGpu(
     submits,
   };
 }
+
+describe('ring blocks and work budgets', () => {
+  it('hold 150 frames where they fit, fewer for a large frame, none past the limit', () => {
+    expect(ringBlockFrames({}, 600 * 600)).toBe(150);
+    expect(ringBlockFrames({}, 1296 * 972)).toBe(53);
+    // The lower of the two limits counts.
+    expect(
+      ringBlockFrames(
+        { maxStorageBufferBindingSize: 2 ** 30, maxBufferSize: 2 ** 24 },
+        1000 * 1000,
+      ),
+    ).toBe(8);
+    expect(ringBlockFrames({ maxStorageBufferBindingSize: 2 ** 20 }, 1000 * 1000)).toBe(0);
+  });
+
+  it('halve the work budget in whole sketches down to one widest sketch', () => {
+    expect(workLadder(8192)).toEqual([8192, 4096, 2048, 1024, 512, 320]);
+    expect(workLadder(640)).toEqual([640, 320]);
+    expect(workLadder(320)).toEqual([320]);
+    expect(workLadder(256)).toEqual([]);
+  });
+});
 
 describe('batches', () => {
   it('fill the work buffers of the default 128 MB binding, or of a device with less', () => {

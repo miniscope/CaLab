@@ -5,16 +5,18 @@
  * tile (`GpuTileJob`).
  *
  * The frames live in a ring of `window + slack` slots (`gpuSlacks`: two
- * windows, or a window and a quarter where that does not allocate), stored as blocks of
- * `GPU_RING_BLOCK` frames (one buffer each, so every binding stays under
- * WebGPU's default 128 MB storage-binding limit). A window may start at any
- * slot and wrap around the ring, so each product with the window's data is
- * dispatched once per *segment*: a run of window frames that sit
+ * windows, or a window and a quarter where that does not allocate), stored as
+ * blocks of up to `GPU_RING_BLOCK` frames, one buffer each, as many frames as
+ * fit the device's binding and buffer limits (`ringBlockFrames`: fewer for
+ * frames over ~668 x 668 px at WebGPU's default 128 MB). A window may start
+ * at any slot and wrap around the ring, so each product with the window's
+ * data is dispatched once per *segment*: a run of window frames that sit
  * contiguously in one block (`ringSegments`).
  *
  * Tiles are sketched in batches as large as the work buffers hold
  * (`workColumns`: WebGPU's default 128 MB per binding, or the device's lower
- * limit), tiles of similar sketch size together (`takeBatch`). Per batch,
+ * limit; halved down to one widest sketch where that does not allocate),
+ * tiles of similar sketch size together (`takeBatch`). Per batch,
  * all on the GPU in one submission: `Y = A Ω`, CholeskyQR2 (Gram, `R⁻¹` by
  * the `CHOL` kernel, `Q = Y R⁻¹`), `n_iter` power iterations, `Bᵀ = Aᵀ Q`.
  * Then one readback of `Q`, `Bᵀ` and the per-tile Cholesky flags, and
@@ -41,8 +43,35 @@ export const GPU_WORK_BYTES = 128 * 2 ** 20;
  * grew past it and every window gave the run's factors up (24 Nov check).
  */
 export const GPU_MAX_STRIDE = 320;
-/** Frames per ring buffer (150 x 600 x 600 x 2 bytes = 108 MB at 600 px). */
+/** The most frames per ring buffer (150 x 600 x 600 x 2 bytes = 108 MB at 600 px). */
 export const GPU_RING_BLOCK = 150;
+
+/** WebGPU's default `maxStorageBufferBindingSize` and `maxBufferSize` (a device reports at least these). */
+const DEFAULT_BINDING = 128 * 2 ** 20;
+const DEFAULT_BUFFER = 256 * 2 ** 20;
+
+/** The binding size a buffer may have on a device: the lower of its two limits, and which one that is. */
+function bufferLimit(limits: { maxStorageBufferBindingSize?: number; maxBufferSize?: number }): {
+  bytes: number;
+  name: string;
+} {
+  const binding = limits.maxStorageBufferBindingSize ?? DEFAULT_BINDING;
+  const buffer = limits.maxBufferSize ?? DEFAULT_BUFFER;
+  return binding <= buffer
+    ? { bytes: binding, name: 'maxStorageBufferBindingSize' }
+    : { bytes: buffer, name: 'maxBufferSize' };
+}
+
+/**
+ * Frames per ring block on a device: `GPU_RING_BLOCK`, or as many frames of
+ * `hw` pixels as one buffer may hold; 0 when not even one frame fits.
+ */
+export function ringBlockFrames(
+  limits: { maxStorageBufferBindingSize?: number; maxBufferSize?: number },
+  hw: number,
+): number {
+  return Math.min(GPU_RING_BLOCK, Math.floor(bufferLimit(limits).bytes / ringFrameBytes(hw)));
+}
 
 /**
  * Ring slots beyond the window, most first: room to upload the next frames
@@ -149,6 +178,20 @@ export function workColumns(limits: {
     limits.maxBufferSize ?? GPU_WORK_BYTES,
   );
   return Math.floor(bytes / (TILE_ROWS * 4 * 64)) * 64;
+}
+
+/**
+ * Work budgets to try, largest first: `cols`, then halved (in whole sketches
+ * of 64 columns) down to `GPU_MAX_STRIDE`, one tile's widest sketch.
+ */
+export function workLadder(cols: number): number[] {
+  if (cols < GPU_MAX_STRIDE) return [];
+  const out = [cols];
+  for (let c = cols; c > GPU_MAX_STRIDE;) {
+    c = Math.max(GPU_MAX_STRIDE, Math.floor(c / 2 / 64) * 64);
+    out.push(c);
+  }
+  return out;
 }
 
 /**
@@ -288,9 +331,24 @@ export async function openGpuCompressor(o: {
     return { reason: `The GPU compressor's kernels do not build: ${bad.message}` };
   }
   const hw = o.width * o.height;
+  const block = ringBlockFrames(device.limits, hw);
+  if (block < 1) {
+    const lim = bufferLimit(device.limits);
+    device.destroy();
+    const mb = (b: number) => `${(b / 2 ** 20).toFixed(0)} MB`;
+    return {
+      reason: `A frame of ${o.width} x ${o.height} pixels (${mb(ringFrameBytes(hw))}) is over the GPU's ${lim.name} (${mb(lim.bytes)}).`,
+    };
+  }
+  // The ring's slack first (it decides whether the GPU keeps up), then the
+  // batch size: every work budget with two windows of ring, then with 1.25.
   for (const window of GPU_WINDOW_LADDER) {
     for (const slack of gpuSlacks(window)) {
-      const bufs = await allocate(device, window, slack, hw);
+      let bufs: Buffers | null = null;
+      for (const cols of workLadder(workColumns(device.limits))) {
+        bufs = await allocate(device, { window, slack, hw, block, cols });
+        if (bufs) break;
+      }
       if (!bufs) continue;
       return new GpuCompressor(device, pipes, bufs, {
         window,
@@ -309,8 +367,10 @@ export async function openGpuCompressor(o: {
 }
 
 interface Buffers {
-  /** Ring blocks of `GPU_RING_BLOCK` frames (the last may be shorter). */
+  /** Ring blocks of `block` frames (the last may be shorter). */
   ring: GPUBuffer[];
+  /** Frames per ring block (`ringBlockFrames`). */
+  block: number;
   mean: GPUBuffer;
   tiles: GPUBuffer;
   /** Per slot: sketch columns `l` (u32). */
@@ -335,20 +395,19 @@ interface Buffers {
   all: GPUBuffer[];
 }
 
-/** The ring and work buffers for `window`, or `null` when they do not fit the device. */
+/**
+ * The ring (`window + slack` frames in blocks of `block`) and work buffers of
+ * `cols` slot columns, or `null` when they do not fit the device.
+ */
 async function allocate(
   device: GPUDevice,
-  window: number,
-  slack: number,
-  hw: number,
+  o: { window: number; slack: number; hw: number; block: number; cols: number },
 ): Promise<Buffers | null> {
-  const size = window + slack;
-  const blockBytes = (i: number) =>
-    Math.min(GPU_RING_BLOCK, size - i * GPU_RING_BLOCK) * ringFrameBytes(hw);
-  const nBlocks = Math.ceil(size / GPU_RING_BLOCK);
+  const { window, hw, block, cols } = o;
+  const size = window + o.slack;
+  const blockBytes = (i: number) => Math.min(block, size - i * block) * ringFrameBytes(hw);
+  const nBlocks = Math.ceil(size / block);
   const lim = device.limits;
-  const cols = workColumns(lim);
-  if (cols < GPU_MAX_STRIDE) return null;
   const maxSlots = Math.min(cols / 64, lim.maxComputeWorkgroupsPerDimension ?? 65535);
   // A batch of slots at stride `s` holds `slots * s <= cols` columns: `Y` is
   // TILE_ROWS rows of them, `Ω` / `Z` `window` rows, a Gram block `s` rows.
@@ -356,8 +415,7 @@ async function allocate(
   const frameWork = cols * window * 4;
   const gram = cols * GPU_MAX_STRIDE * 4;
   const largest = Math.max(blockBytes(0), work, frameWork, gram, hw * 4);
-  if (largest > (lim.maxStorageBufferBindingSize ?? Infinity)) return null;
-  if (largest > (lim.maxBufferSize ?? Infinity)) return null;
+  if (largest > bufferLimit(lim).bytes) return null;
 
   const all: GPUBuffer[] = [];
   const mk = (bytes: number, usage: number, label?: string): GPUBuffer => {
@@ -373,19 +431,20 @@ async function allocate(
   try {
     bufs = {
       ring: Array.from({ length: nBlocks }, (_, i) => mk(blockBytes(i), storage, 'ring')),
+      block,
       mean: mk(hw * 4, storage),
       tiles: mk(maxSlots * 16, storage),
       ls: mk(maxSlots * 4, storage),
       flags: mk(maxSlots * 4, storage),
       omega: mk(frameWork, storage),
-      y: mk(work, storage),
-      ytmp: mk(work, storage),
+      y: mk(work, storage, 'work'),
+      ytmp: mk(work, storage, 'work'),
       z: mk(frameWork, storage),
       ztmp: mk(frameWork, storage),
       g: mk(gram, storage),
       r: mk(gram, storage),
       rinv: mk(gram, storage),
-      readQ: mk(work, read),
+      readQ: mk(work, read, 'work'),
       readB: mk(frameWork, read),
       readF: mk(maxSlots * 4, read),
       cols,
@@ -457,7 +516,7 @@ class GpuCompressor implements GpuCompressorLike {
     }
     const fb = ringFrameBytes(hw);
     const q = this.device.queue;
-    for (const seg of ringSegments(this.clock, GPU_RING_BLOCK, start, count)) {
+    for (const seg of ringSegments(this.clock, this.bufs.block, start, count)) {
       const ring = this.bufs.ring[seg.block];
       if (hw === this.hwp) {
         q.writeBuffer(ring, seg.first * fb, gpuData(frames), seg.offset * hw, seg.count * hw);
@@ -492,7 +551,7 @@ class GpuCompressor implements GpuCompressorLike {
         const [x0, y0, w, h] = rects.subarray(4 * i, 4 * i + 4);
         jobs.push(this.s.jobs(job.stats, quant, x0, y0, w, h, job.seeds(i), job.prevRanks(i)));
       }
-      const segments = ringSegments(this.clock, GPU_RING_BLOCK, job.start, t);
+      const segments = ringSegments(this.clock, this.bufs.block, job.start, t);
       const tiles: Uint8Array[] = new Array<Uint8Array>(n);
       const ranks = new Array<number>(n).fill(0);
       const queue = Array.from({ length: n }, (_, i) => i);
