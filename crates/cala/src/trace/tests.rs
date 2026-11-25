@@ -729,6 +729,104 @@ fn rebuild_with_reuse_has_the_terms_of_a_full_assemble() {
     }
 }
 
+/// A chain of rebuilds, each with `reuse` of the one before, as the slow
+/// loop publishes them: besides the pair terms, a rebuild copies the block
+/// FOV counts and noise, the `vc` columns, the diagonal and noise terms and
+/// the ring sums and pixels of unchanged cells. Every step must have the
+/// terms of a full assemble of the same footprint columns, bit for bit,
+/// under random edits (rescaled, moved, added, removed and reordered
+/// cells), noise-map and FOV changes (cells partly outside the FOV, a cell
+/// whose ring lies outside it), and a `prev` read back from its bytes.
+#[test]
+fn rebuild_chain_with_reuse_has_the_terms_of_a_full_assemble() {
+    let fov_cut: Vec<u8> = (0..W * H).map(|i| u8::from(i % W >= 6)).collect();
+    // FOV without the annulus 14..=20 px around (14, 14): that cell's ring
+    // (inner 7 → its support radius + 1, outer 12 → inner + 2) is empty.
+    let fov_hole: Vec<u8> = (0..W * H)
+        .map(|i| {
+            let (dy, dx) = ((i / W) as f32 - 14.0, (i % W) as f32 - 14.0);
+            let d = (dy * dy + dx * dx).sqrt();
+            u8::from(!(14.0..=20.0).contains(&d))
+        })
+        .collect();
+    let fovs = [vec![1u8; W * H], fov_cut, fov_hole];
+    for model in [
+        BackgroundModel::None,
+        BackgroundModel::Ring {
+            inner_px: 7.0,
+            outer_px: 12.0,
+        },
+        BackgroundModel::Basis(vec![global_map()]),
+    ] {
+        let mut rng = Lcg(77);
+        let mut noise: Vec<f32> = vec![1.0; W * H];
+        let mut fov = 0usize;
+        // (id, centre, scale)
+        let mut cells: Vec<(u64, (f32, f32), f32)> =
+            (0..5).map(|i| (i as u64, CENTRES[i], 1.0)).collect();
+        let mut next_id = 10u64;
+        let mut prev: Option<Arc<Library>> = None;
+        let (mut copied, mut built) = (0usize, 0usize);
+        for step in 0..24u64 {
+            if step > 0 {
+                let n = cells.len();
+                match (rng.next() * 7.0) as usize {
+                    0 => cells[(rng.next() * n as f32) as usize % n].2 *= 1.05,
+                    1 => cells[(rng.next() * n as f32) as usize % n].1 .1 += 0.5,
+                    2 if n > 3 => {
+                        cells.remove((rng.next() * n as f32) as usize % n);
+                    }
+                    3 if n < 8 => {
+                        let c = (10.0 + 35.0 * rng.next(), 10.0 + 43.0 * rng.next());
+                        cells.push((next_id, c, 1.0));
+                        next_id += 1;
+                    }
+                    4 => cells.rotate_left(1),
+                    5 => {
+                        noise = (0..W * H).map(|_| 0.5 + rng.next()).collect();
+                    }
+                    _ => fov = (fov + 1) % fovs.len(),
+                }
+            }
+            let mut b = LibraryBuilder::new(dims())
+                .background(model.clone())
+                .fov(fovs[fov].clone())
+                .noise(noise.clone())
+                .version(100 + step);
+            if let Some(p) = &prev {
+                // Every third step, `prev` comes back from its bytes (no
+                // per-cell noise terms to copy).
+                let p = if step % 3 == 0 {
+                    Arc::new(Library::from_bytes(&p.to_bytes()).unwrap())
+                } else {
+                    p.clone()
+                };
+                b = b.reuse(p);
+            }
+            for &(id, c, k) in &cells {
+                let mut fp = footprint(id, c);
+                fp.values.iter_mut().for_each(|v| *v *= k);
+                b.push(fp);
+            }
+            let lib = match b.build(&mut flattener()) {
+                Ok(l) => l,
+                // A cell entirely outside the FOV is an error, as without
+                // reuse; skip the step.
+                Err(_) => continue,
+            };
+            let full = Library::from_bytes(&lib.core_bytes(CORE_MAGIC)).unwrap();
+            assert_eq!(lib.to_bytes(), full.to_bytes(), "{model:?}, step {step}");
+            assert_eq!(lib.groups, full.groups, "{model:?}, step {step}");
+            if prev.is_some() {
+                copied += 1;
+            }
+            built += 1;
+            prev = Some(Arc::new(lib));
+        }
+        assert!(built >= 20 && copied >= 19, "{model:?}: {built} built");
+    }
+}
+
 #[test]
 fn library_bytes_with_damaged_terms_are_refused() {
     let lib = library(

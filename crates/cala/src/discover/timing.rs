@@ -82,8 +82,118 @@ impl StageTiming {
     }
 }
 
+/// The parts of a library build (`SlowLoop::publish`:
+/// `LibraryBuilder::build` then the working-set rebuild), in order:
+///
+/// - `prep`: supports, moat blocks, the reuse check of unchanged cells;
+/// - `filter`: canvas packing and the filter passes (with the moat block
+///   means and skirts of the filtered cells);
+/// - `finish`: `Core::finish` (block FOV counts and noise, `vc`);
+/// - `setup`: assemble's extents, neighbour grid and pair-reuse table;
+/// - `cell`: assemble's per-cell scans (paint, diagonal, noise, clear);
+/// - `pair`: the off-diagonal Gram terms (computed or copied);
+/// - `ring_scan`: ring sums and ring pixels of each cell;
+/// - `ring_q`: the ring couplings (paint, computed or copied, clear);
+/// - `rest`: groups, sorting rows, background terms other than the ring;
+/// - `cells`: `publish` rebuilding its working set from the library.
+///
+/// `cell`, `pair`, `ring_scan` and `ring_q` are lapped per cell, natively
+/// only (the browser clock is too coarse); in a WASM build their time is
+/// in `rest`.
+pub const BUILD_PARTS: [&str; 10] = [
+    "prep",
+    "filter",
+    "finish",
+    "setup",
+    "cell",
+    "pair",
+    "ring_scan",
+    "ring_q",
+    "rest",
+    "cells",
+];
+
+/// The counts of [`BuildTiming`], in order: builds, cells, cells filtered
+/// (changed), filter passes (canvases), Gram pair terms computed and
+/// copied, ring couplings computed and copied, grid-block look-ups of a
+/// pixel (`block_of` or its table; the cached ones are not counted), and the
+/// calibration pass (`block_of` over every support pixel once per build,
+/// timed on its own: `cal_ms` / `cal_calls` is the cost of one call).
+pub const BUILD_COUNTS: [&str; 10] = [
+    "builds",
+    "cells",
+    "filtered",
+    "passes",
+    "pairs_computed",
+    "pairs_copied",
+    "ring_computed",
+    "ring_copied",
+    "block_of_calls",
+    "cal_calls",
+];
+
+/// Summed library-build times (ms) and counts (feature `timing`; zero
+/// otherwise). Measurement only.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BuildTiming {
+    pub ms: [f64; BUILD_PARTS.len()],
+    pub counts: [u64; BUILD_COUNTS.len()],
+    /// The calibration pass's ms (not part of any build part).
+    pub cal_ms: f64,
+}
+
+impl BuildTiming {
+    /// `[ms.., counts.., cal_ms]`.
+    pub fn to_vec(&self) -> Vec<f64> {
+        let mut v: Vec<f64> = self.ms.to_vec();
+        v.extend(self.counts.iter().map(|&c| c as f64));
+        v.push(self.cal_ms);
+        v
+    }
+
+    /// Add `n` to count `k` (no-op without `timing`).
+    #[inline(always)]
+    pub fn count(&mut self, _k: usize, _n: u64) {
+        #[cfg(feature = "timing")]
+        {
+            self.counts[_k] += _n;
+        }
+    }
+}
+
+/// Index of a [`BUILD_PARTS`] entry.
+pub mod part {
+    pub const PREP: usize = 0;
+    pub const FILTER: usize = 1;
+    pub const FINISH: usize = 2;
+    pub const SETUP: usize = 3;
+    pub const CELL: usize = 4;
+    pub const PAIR: usize = 5;
+    pub const RING_SCAN: usize = 6;
+    pub const RING_Q: usize = 7;
+    pub const REST: usize = 8;
+    pub const CELLS: usize = 9;
+}
+
+/// Index of a [`BUILD_COUNTS`] entry.
+pub mod count {
+    pub const BUILDS: usize = 0;
+    pub const CELLS: usize = 1;
+    pub const FILTERED: usize = 2;
+    pub const PASSES: usize = 3;
+    pub const PAIRS_COMPUTED: usize = 4;
+    pub const PAIRS_COPIED: usize = 5;
+    pub const RING_COMPUTED: usize = 6;
+    pub const RING_COPIED: usize = 7;
+    pub const BLOCK_OF: usize = 8;
+    pub const CAL: usize = 9;
+}
+
 /// Whether the timers are compiled in.
 pub const ON: bool = cfg!(feature = "timing");
+
+/// Whether the per-cell laps of a build run (native `timing` builds only).
+pub const FINE: bool = ON && !cfg!(target_arch = "wasm32");
 
 #[cfg(all(feature = "timing", target_arch = "wasm32", feature = "jsbindings"))]
 mod clock {
@@ -146,6 +256,16 @@ impl Lap {
             let t = clock::now_ms();
             *_sum += t - self.t;
             self.t = t;
+        }
+    }
+
+    /// [`Lap::lap`] where the clock is fine enough for per-cell laps
+    /// ([`FINE`]); elsewhere the mark stays, so the time goes to the next
+    /// plain lap.
+    #[inline(always)]
+    pub fn lap_fine(&mut self, sum: &mut f64) {
+        if FINE {
+            self.lap(sum);
         }
     }
 }

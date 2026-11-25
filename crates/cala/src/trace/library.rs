@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::background::BackgroundModel;
 use super::{check_len, FrameTraces, TraceError};
+use crate::discover::timing::{count, part, BuildTiming, Lap};
 use crate::preprocess::flatten::GlowFlattener;
 use crate::preprocess::{Dims, PreprocessError};
 
@@ -396,6 +397,18 @@ impl LibraryBuilder {
 
     /// Filter every footprint with `filter` and precompute the solve terms.
     pub fn build(self, filter: &mut dyn LinearFilter) -> Result<Library, TraceError> {
+        self.build_timed(filter, &mut BuildTiming::default())
+    }
+
+    /// [`LibraryBuilder::build`], adding its parts' times and counts to `t`
+    /// (feature `timing`; measurement only, no result changes).
+    pub fn build_timed(
+        self,
+        filter: &mut dyn LinearFilter,
+        t: &mut BuildTiming,
+    ) -> Result<Library, TraceError> {
+        let mut lap = Lap::start();
+        t.count(count::BUILDS, 1);
         let dims = self.dims;
         let n_px = dims.pixels();
         if filter.dims() != dims {
@@ -490,6 +503,8 @@ impl LibraryBuilder {
         let mut low_val = vec![0.0f32; low_blk.len()];
         // Unchanged footprints keep the filtered values of `reuse`.
         let mut done = vec![false; n];
+        // ... and their slot in it (`Core::finish_from` copies more).
+        let mut from_prev: Vec<Option<usize>> = vec![None; n];
         if let Some(prev) = &self.reuse {
             if prev.dims() == dims {
                 for i in 0..n {
@@ -510,10 +525,14 @@ impl LibraryBuilder {
                         val[a..b].copy_from_slice(prev.filtered(slot).1);
                         low_val[la..lz].copy_from_slice(lv);
                         done[i] = true;
+                        from_prev[i] = Some(slot);
                     }
                 }
             }
         }
+        lap.lap(&mut t.ms[part::PREP]);
+        t.count(count::CELLS, n as u64);
+        t.count(count::FILTERED, done.iter().filter(|&&d| !d).count() as u64);
         // Filter the support-limited footprints, many per pass when they are
         // further apart than the filter's reach.
         let reach = filter.reach_px();
@@ -552,6 +571,7 @@ impl LibraryBuilder {
                 None => canvases.push(vec![i]),
             }
         }
+        t.count(count::PASSES, canvases.len() as u64);
         let mut img = vec![0.0f32; n_px];
         let mut src = vec![0.0f32; n_px];
         let w = dims.width;
@@ -638,6 +658,7 @@ impl LibraryBuilder {
             skirt_blk,
             skirt_val,
             vc: Vec::new(),
+            blk: Vec::new(),
             blk_fov: Vec::new(),
             blk_noise2: Vec::new(),
             dims,
@@ -656,7 +677,11 @@ impl LibraryBuilder {
             .version
             .unwrap_or_else(|| NEXT_VERSION.fetch_add(1, Ordering::Relaxed));
         let prev = self.reuse.as_deref();
-        Library::assemble(core.finish(), self.background, version, prev)
+        lap.lap(&mut t.ms[part::FILTER]);
+        let core = core.finish_from(prev.map(|p| (&p.core, from_prev.as_slice())));
+        lap.lap(&mut t.ms[part::FINISH]);
+        core.calibrate(t);
+        Library::assemble(core, self.background, version, prev, t)
     }
 }
 
@@ -760,6 +785,9 @@ struct Core {
     /// Derived ([`Core::finish`]): `val + low(B(p))` on the support, so the
     /// column is `vc · 1_S − P low` (P: block-constant expansion, FOV only).
     vc: Vec<f32>,
+    /// Derived: the grid block of each support pixel (aligned with `pix`;
+    /// empty without a moat).
+    blk: Vec<u32>,
     /// FOV pixels and summed noise variance of each grid block.
     blk_fov: Vec<f32>,
     blk_noise2: Vec<f32>,
@@ -995,6 +1023,10 @@ pub struct Library {
     pub(crate) mdiag: Vec<f32>,
     /// Noise σ of each trace's coordinate estimate.
     pub(crate) trace_noise: Vec<f32>,
+    /// `trace_noise · mdiag` before the ring rule (`‖h σ‖`), kept so a
+    /// rebuild can copy it for unchanged cells. Not serialised: empty for a
+    /// library read from bytes.
+    noise_num: Vec<f32>,
     pub(crate) groups: Vec<Vec<u32>>,
     pub(crate) group_of: Vec<u32>,
     pub(crate) bg: BgTerms,
@@ -1011,7 +1043,9 @@ impl Library {
         model: BackgroundModel,
         version: u64,
         prev: Option<&Library>,
+        t: &mut BuildTiming,
     ) -> Result<Library, TraceError> {
+        let mut lap = Lap::start();
         let n = core.ids.len();
         let dims = core.dims;
         let n_px = dims.pixels();
@@ -1073,6 +1107,14 @@ impl Library {
         };
 
         let reuse = prev.and_then(|p| PairReuse::new(p, &core, &model));
+        // The per-cell terms of an unchanged cell (diagonal, noise, ring sum
+        // and pixels) depend on its own column, the FOV, the noise map and
+        // the ring radii only: `PairReuse` checks all but the noise map.
+        let same_noise = reuse.as_ref().is_some_and(|r| {
+            !r.prev.noise_num.is_empty() && same_bits(&r.prev.core.noise, &core.noise)
+        });
+        let own = |i: usize| reuse.as_ref().and_then(|r| r.slot[i]);
+        let bmap = BlockMap::new(&core);
         // Gram of the columns `vc_i 1_S − P low_i`:
         // `Σ_S∩S vc vc − Σ_S_j vc_j low_i(B) − Σ_B low_j ccore_i + Σ_B low_i low_j n_B`.
         let gl = core.grid_len();
@@ -1082,15 +1124,19 @@ impl Library {
         let mut rows: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n];
         let mut gram_diag = vec![0.0f32; n];
         let mut noise_num = vec![0.0f32; n];
+        lap.lap(&mut t.ms[part::SETUP]);
         let pair = |j: usize, img: &[f32], lim: &[f32], ccore: &[f32]| -> f64 {
             let (pj, vj) = core.core_col(j);
             let mut g = 0.0f64;
-            for (&q, &a) in pj.iter().zip(vj) {
-                let mut t = img[q as usize];
-                if gl > 0 {
-                    t -= lim[core.block_of(q)];
+            if gl > 0 {
+                for ((&q, &a), &bq) in pj.iter().zip(vj).zip(core.col_blk(j)) {
+                    let t = img[q as usize] - lim[bq as usize];
+                    g += f64::from(a) * f64::from(t);
                 }
-                g += f64::from(a) * f64::from(t);
+            } else {
+                for (&q, &a) in pj.iter().zip(vj) {
+                    g += f64::from(a) * f64::from(img[q as usize]);
+                }
             }
             let (bj, lj) = core.low(j);
             for (&bq, &l) in bj.iter().zip(lj) {
@@ -1102,40 +1148,65 @@ impl Library {
         };
         for i in 0..n {
             let (p, v) = core.core_col(i);
-            for (&q, &a) in p.iter().zip(v) {
-                img[q as usize] = a;
-                if gl > 0 {
-                    ccore[core.block_of(q)] += a;
+            let pb = core.col_blk(i);
+            if gl > 0 {
+                for ((&q, &a), &bq) in p.iter().zip(v).zip(pb) {
+                    img[q as usize] = a;
+                    ccore[bq as usize] += a;
+                }
+            } else {
+                for (&q, &a) in p.iter().zip(v) {
+                    img[q as usize] = a;
                 }
             }
             let (bi, li) = core.low(i);
             for (&bq, &l) in bi.iter().zip(li) {
                 lim[bq as usize] = l;
             }
-            gram_diag[i] = pair(i, &img, &lim, &ccore) as f32;
-            // Noise of hᵀy: Σ h² σ² in the same representation.
-            let mut s2 = 0.0f64;
-            for (&q, &a) in p.iter().zip(v) {
-                let sg = f64::from(core.noise[q as usize]);
-                let mut h2 = f64::from(a) * f64::from(a);
+            if let (Some(s), true) = (own(i), same_noise) {
+                let r = reuse.as_ref().expect("reuse");
+                gram_diag[i] = r.prev.gram_diag[s];
+                noise_num[i] = r.prev.noise_num[s];
+            } else {
+                gram_diag[i] = pair(i, &img, &lim, &ccore) as f32;
+                // Noise of hᵀy: Σ h² σ² in the same representation.
+                let mut s2 = 0.0f64;
                 if gl > 0 {
-                    let l = f64::from(lim[core.block_of(q)]);
-                    h2 -= 2.0 * f64::from(a) * l;
+                    for ((&q, &a), &bq) in p.iter().zip(v).zip(pb) {
+                        let sg = f64::from(core.noise[q as usize]);
+                        let mut h2 = f64::from(a) * f64::from(a);
+                        let l = f64::from(lim[bq as usize]);
+                        h2 -= 2.0 * f64::from(a) * l;
+                        s2 += h2 * sg * sg;
+                    }
+                } else {
+                    for (&q, &a) in p.iter().zip(v) {
+                        let sg = f64::from(core.noise[q as usize]);
+                        let h2 = f64::from(a) * f64::from(a);
+                        s2 += h2 * sg * sg;
+                    }
                 }
-                s2 += h2 * sg * sg;
+                for (&bq, &l) in bi.iter().zip(li) {
+                    s2 += f64::from(l) * f64::from(l) * f64::from(core.blk_noise2[bq as usize]);
+                }
+                noise_num[i] = s2.max(0.0).sqrt() as f32;
             }
-            for (&bq, &l) in bi.iter().zip(li) {
-                s2 += f64::from(l) * f64::from(l) * f64::from(core.blk_noise2[bq as usize]);
-            }
-            noise_num[i] = s2.max(0.0).sqrt() as f32;
+            lap.lap_fine(&mut t.ms[part::CELL]);
             for j in near(i, ext[i] + rmax + 1.0) {
                 if j <= i {
                     continue;
                 }
                 let g = match reuse.as_ref().and_then(|r| r.gram(i, j)) {
-                    Some(Some(g)) => g,
-                    Some(None) => continue,
+                    Some(Some(g)) => {
+                        t.count(count::PAIRS_COPIED, 1);
+                        g
+                    }
+                    Some(None) => {
+                        t.count(count::PAIRS_COPIED, 1);
+                        continue;
+                    }
                     None => {
+                        t.count(count::PAIRS_COMPUTED, 1);
                         let g = pair(j, &img, &lim, &ccore);
                         if g == 0.0 {
                             continue;
@@ -1146,15 +1217,17 @@ impl Library {
                 rows[i].push((j as u32, g));
                 rows[j].push((i as u32, g));
             }
+            lap.lap_fine(&mut t.ms[part::PAIR]);
             for &q in p {
                 img[q as usize] = 0.0;
-                if gl > 0 {
-                    ccore[core.block_of(q)] = 0.0;
-                }
+            }
+            for &bq in pb {
+                ccore[bq as usize] = 0.0;
             }
             for &bq in bi {
                 lim[bq as usize] = 0.0;
             }
+            lap.lap_fine(&mut t.ms[part::CELL]);
         }
         if let Some(i) = gram_diag.iter().position(|&d| d.is_nan() || d <= 0.0) {
             return Err(TraceError::InvalidFootprint(format!(
@@ -1224,7 +1297,7 @@ impl Library {
                             let m = &flat[b * n_px..(b + 1) * n_px];
                             for q in 0..n_px {
                                 if core.fov[q] != 0 {
-                                    msum[b * gl + core.block_of(q as u32)] += f64::from(m[q]);
+                                    msum[b * gl + bmap.of(q as u32)] += f64::from(m[q]);
                                 }
                             }
                         }
@@ -1273,59 +1346,92 @@ impl Library {
                 let mut ring_pix = Vec::new();
                 let mut s = vec![0.0f32; n];
                 let mut qrows: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n];
+                // Only from a `prev` assembled in this process (not read from
+                // bytes, which may predate a change of the ring rule).
+                let prev_ring = match reuse
+                    .as_ref()
+                    .filter(|r| !r.prev.noise_num.is_empty())
+                    .map(|r| &r.prev.bg)
+                {
+                    Some(BgTerms::Ring {
+                        ring_start,
+                        ring_pix,
+                        s,
+                        ..
+                    }) => Some((ring_start, ring_pix, s)),
+                    _ => None,
+                };
+                let mut rblk: Vec<u32> = Vec::new();
+                lap.lap_fine(&mut t.ms[part::REST]);
                 for i in 0..n {
-                    // `s_i` is the sum of the whole column (support `vc` minus
-                    // the moat's block means over their FOV pixels), the same
-                    // column the projection uses.
-                    s[i] = {
-                        let sc: f32 = core.core_col(i).1.iter().sum();
-                        let (bj, lj) = core.low(i);
-                        let sm: f32 = bj
-                            .iter()
-                            .zip(lj)
-                            .map(|(&bq, &l)| l * core.blk_fov[bq as usize])
-                            .sum();
-                        sc - sm
-                    };
                     let (cy, cx) = core.centers[i];
                     let inner = inner_px.max(core.radii[i] + 1.0);
                     let outer = outer_px.max(inner + 2.0);
-                    let y0 = (cy - outer).floor().max(0.0) as usize;
-                    let y1 = ((cy + outer).ceil() as usize).min(dims.height - 1);
-                    let x0 = (cx - outer).floor().max(0.0) as usize;
-                    let x1 = ((cx + outer).ceil() as usize).min(dims.width - 1);
                     let start = ring_pix.len();
-                    for y in y0..=y1 {
-                        for x in x0..=x1 {
-                            let (dy, dx) = (y as f32 - cy, x as f32 - cx);
-                            let d2 = dy * dy + dx * dx;
-                            let q = y * dims.width + x;
-                            if d2 >= inner * inner && d2 <= outer * outer && core.fov[q] != 0 {
-                                ring_pix.push(q as u32);
+                    // An unchanged cell (same column, centre, radius, FOV and
+                    // ring radii) keeps its ring sum and ring pixels.
+                    if let Some((ps, (prs, prp, pss))) = own(i).zip(prev_ring) {
+                        s[i] = pss[ps];
+                        ring_pix.extend_from_slice(&prp[prs[ps]..prs[ps + 1]]);
+                    } else {
+                        // `s_i` is the sum of the whole column (support `vc` minus
+                        // the moat's block means over their FOV pixels), the same
+                        // column the projection uses.
+                        s[i] = {
+                            let sc: f32 = core.core_col(i).1.iter().sum();
+                            let (bj, lj) = core.low(i);
+                            let sm: f32 = bj
+                                .iter()
+                                .zip(lj)
+                                .map(|(&bq, &l)| l * core.blk_fov[bq as usize])
+                                .sum();
+                            sc - sm
+                        };
+                        let y0 = (cy - outer).floor().max(0.0) as usize;
+                        let y1 = ((cy + outer).ceil() as usize).min(dims.height - 1);
+                        let x0 = (cx - outer).floor().max(0.0) as usize;
+                        let x1 = ((cx + outer).ceil() as usize).min(dims.width - 1);
+                        for y in y0..=y1 {
+                            for x in x0..=x1 {
+                                let (dy, dx) = (y as f32 - cy, x as f32 - cx);
+                                let d2 = dy * dy + dx * dx;
+                                let q = y * dims.width + x;
+                                if d2 >= inner * inner && d2 <= outer * outer && core.fov[q] != 0 {
+                                    ring_pix.push(q as u32);
+                                }
                             }
                         }
                     }
                     let len = ring_pix.len() - start;
                     ring_start.push(ring_pix.len());
+                    lap.lap_fine(&mut t.ms[part::RING_SCAN]);
                     if len == 0 {
                         continue;
                     }
+                    if gl > 0 {
+                        t.count(count::BLOCK_OF, len as u64);
+                    }
                     let inv = 1.0 / len as f32;
+                    rblk.clear();
                     for &q in &ring_pix[start..] {
                         img[q as usize] = inv;
                         if gl > 0 {
-                            ccore[core.block_of(q)] += inv;
+                            let bq = bmap.of(q);
+                            ccore[bq] += inv;
+                            rblk.push(bq as u32);
                         }
                     }
                     // Ring mean of every column that reaches the ring, the
                     // cell's own moat included.
                     for j in near(i, outer + rmax + 1.0) {
                         if let Some(copied) = reuse.as_ref().and_then(|r| r.ring(i, j)) {
+                            t.count(count::RING_COPIED, 1);
                             if let Some(g) = copied {
                                 qrows[i].push((j as u32, g));
                             }
                             continue;
                         }
+                        t.count(count::RING_COMPUTED, 1);
                         let (pj, vj) = core.core_col(j);
                         let mut g = 0.0f32;
                         for (&q, &a) in pj.iter().zip(vj) {
@@ -1341,10 +1447,11 @@ impl Library {
                     }
                     for &q in &ring_pix[start..] {
                         img[q as usize] = 0.0;
-                        if gl > 0 {
-                            ccore[core.block_of(q)] = 0.0;
-                        }
                     }
+                    for &bq in &rblk {
+                        ccore[bq as usize] = 0.0;
+                    }
+                    lap.lap_fine(&mut t.ms[part::RING_Q]);
                 }
                 for (i, r) in qrows.iter().enumerate() {
                     for &(j, _) in r {
@@ -1383,6 +1490,7 @@ impl Library {
             groups[gi as usize].push(i as u32);
             *g = gi;
         }
+        lap.lap(&mut t.ms[part::REST]);
         Ok(Library {
             version,
             core,
@@ -1391,6 +1499,7 @@ impl Library {
             gram_diag,
             mdiag,
             trace_noise,
+            noise_num,
             groups,
             group_of,
             bg,
@@ -1404,6 +1513,7 @@ impl Library {
             model,
             NEXT_VERSION.fetch_add(1, Ordering::Relaxed),
             None,
+            &mut BuildTiming::default(),
         )
     }
 
@@ -2032,11 +2142,18 @@ impl Library {
             skirt_blk,
             skirt_val,
             vc: Vec::new(),
+            blk: Vec::new(),
             blk_fov: Vec::new(),
             blk_noise2: Vec::new(),
         };
         let Some(t) = terms else {
-            return Library::assemble(core.finish(), model, version, None);
+            return Library::assemble(
+                core.finish(),
+                model,
+                version,
+                None,
+                &mut BuildTiming::default(),
+            );
         };
         // The overlap groups, numbered in order of their first cell, as
         // `assemble` numbers them.
@@ -2076,6 +2193,7 @@ impl Library {
             gram_diag: t.gram_diag,
             mdiag,
             trace_noise,
+            noise_num: Vec::new(),
             groups,
             group_of: t.group_of,
             bg,
@@ -2183,6 +2301,16 @@ impl Core {
         (&self.pix[a..b], &self.vc[a..b])
     }
 
+    /// Grid blocks of cell `i`'s support pixels (empty without a moat).
+    #[inline]
+    fn col_blk(&self, i: usize) -> &[u32] {
+        if self.blk.is_empty() {
+            &[]
+        } else {
+            &self.blk[self.col_start[i]..self.col_start[i + 1]]
+        }
+    }
+
     #[inline]
     fn low(&self, i: usize) -> (&[u32], &[f32]) {
         let (a, b) = (self.low_start[i], self.low_start[i + 1]);
@@ -2219,37 +2347,122 @@ impl Core {
         (y / self.block) * self.grid_w() + x / self.block
     }
 
+    /// Measurement (feature `timing`): count `finish`'s `block_of` calls
+    /// into `t`, and time `block_of` once over every support pixel on its
+    /// own (`t.cal_ms`, calls under `count::CAL`). Outside the build's laps.
+    fn calibrate(&self, t: &mut BuildTiming) {
+        if !crate::discover::timing::ON || self.block == 0 {
+            return;
+        }
+        let mut lap = Lap::start();
+        let mut acc = 0usize;
+        for &q in &self.pix {
+            acc = acc.wrapping_add(self.block_of(q));
+        }
+        std::hint::black_box(acc);
+        lap.lap(&mut t.cal_ms);
+        t.count(count::CAL, self.pix.len() as u64);
+        let in_fov = self.fov.iter().filter(|&&f| f != 0).count();
+        let sup_fov = self
+            .pix
+            .iter()
+            .filter(|&&q| self.fov[q as usize] != 0)
+            .count();
+        t.count(count::BLOCK_OF, (in_fov + sup_fov) as u64);
+    }
+
     /// Fill the derived terms.
-    fn finish(mut self) -> Core {
+    fn finish(self) -> Core {
+        self.finish_from(None)
+    }
+
+    /// [`Core::finish`], copying what is unchanged from `prev`: its block
+    /// FOV counts and noise when the frame, grid, FOV and noise map are the
+    /// same, and the `vc` of each cell `i` with `slots[i] = Some(s)` (its
+    /// support, values and moat are those of `prev`'s slot `s`, see
+    /// `LibraryBuilder::build`) when the FOV is the same. A copy is the
+    /// value the computation gives, bit for bit.
+    fn finish_from(mut self, prev: Option<(&Core, &[Option<usize>])>) -> Core {
         let gl = self.grid_len();
-        self.blk_fov = vec![0.0; gl];
-        self.blk_noise2 = vec![0.0; gl];
-        if self.block > 0 {
-            for q in 0..self.dims.pixels() {
-                if self.fov[q] != 0 {
-                    let bq = self.block_of(q as u32);
-                    self.blk_fov[bq] += 1.0;
-                    self.blk_noise2[bq] += self.noise[q] * self.noise[q];
+        let bmap = BlockMap::new(&self);
+        self.blk = if self.block > 0 {
+            self.pix.iter().map(|&q| bmap.of(q) as u32).collect()
+        } else {
+            Vec::new()
+        };
+        let prev =
+            prev.filter(|(p, _)| p.dims == self.dims && p.block == self.block && p.fov == self.fov);
+        match prev {
+            Some((p, _)) if same_bits(&p.noise, &self.noise) => {
+                self.blk_fov = p.blk_fov.clone();
+                self.blk_noise2 = p.blk_noise2.clone();
+            }
+            _ => {
+                self.blk_fov = vec![0.0; gl];
+                self.blk_noise2 = vec![0.0; gl];
+                if self.block > 0 {
+                    for q in 0..self.dims.pixels() {
+                        if self.fov[q] != 0 {
+                            let bq = bmap.of(q as u32);
+                            self.blk_fov[bq] += 1.0;
+                            self.blk_noise2[bq] += self.noise[q] * self.noise[q];
+                        }
+                    }
                 }
             }
         }
         self.vc = self.val.clone();
         if self.block > 0 {
             for i in 0..self.ids.len() {
+                let (a, b) = (self.col_start[i], self.col_start[i + 1]);
+                if let Some((p, slots)) = prev {
+                    if let Some(s) = slots[i] {
+                        self.vc[a..b].copy_from_slice(&p.vc[p.col_start[s]..p.col_start[s + 1]]);
+                        continue;
+                    }
+                }
                 let (la, lz) = (self.low_start[i], self.low_start[i + 1]);
-                for k in self.col_start[i]..self.col_start[i + 1] {
+                for k in a..b {
                     // Outside the FOV the column is 0 (the filtered data is).
                     if self.fov[self.pix[k] as usize] == 0 {
                         continue;
                     }
-                    let bq = self.block_of(self.pix[k]) as u32;
-                    if let Ok(j) = self.low_blk[la..lz].binary_search(&bq) {
+                    if let Ok(j) = self.low_blk[la..lz].binary_search(&self.blk[k]) {
                         self.vc[k] += self.low_val[la + j];
                     }
                 }
             }
         }
         self
+    }
+}
+
+/// [`Core::block_of`] from two small tables: one division per pixel instead
+/// of four. The same integer.
+struct BlockMap {
+    width: u32,
+    /// `(y / block) · grid_w` per row, `x / block` per column.
+    row: Vec<u32>,
+    col: Vec<u32>,
+}
+
+impl BlockMap {
+    fn new(core: &Core) -> BlockMap {
+        let (b, gw) = (core.block.max(1), core.grid_w());
+        BlockMap {
+            width: core.dims.width as u32,
+            row: (0..core.dims.height)
+                .map(|y| ((y / b) * gw) as u32)
+                .collect(),
+            col: (0..core.dims.width).map(|x| (x / b) as u32).collect(),
+        }
+    }
+
+    #[inline]
+    fn of(&self, q: u32) -> usize {
+        let y = q / self.width;
+        let x = q - y * self.width;
+        (self.row[y as usize] + self.col[x as usize]) as usize
     }
 }
 
@@ -2293,4 +2506,47 @@ pub(crate) fn invert_spd(a: &[f64], k: usize) -> Option<Vec<f64>> {
         }
     }
     Some(inv)
+}
+
+#[cfg(test)]
+mod block_map_tests {
+    use super::*;
+
+    /// The table lookup is `Core::block_of`, pixel for pixel, on frames
+    /// the grid does not divide; `finish` stores it for every support
+    /// pixel.
+    #[test]
+    fn block_map_is_block_of() {
+        for (w, h, sigma) in [
+            (64, 56, 20.0f32),
+            (61, 37, 7.5),
+            (600, 600, 20.0),
+            (9, 5, 2.5),
+        ] {
+            let dims = Dims::new(w, h).unwrap();
+            let block = moat_geometry(sigma).unwrap().0;
+            let mut b = LibraryBuilder::new(dims).version(1);
+            b.push(Footprint {
+                id: 1,
+                y0: 0,
+                x0: 0,
+                height: h,
+                width: w,
+                values: vec![1.0; w * h],
+            });
+            let lib = b.build(&mut IdentityFilter(dims)).unwrap();
+            // An identity filter has no moat: set the grid by hand.
+            let mut core = lib.core.clone();
+            core.block = block;
+            let core = core.finish();
+            let map = BlockMap::new(&core);
+            for q in 0..(w * h) as u32 {
+                assert_eq!(map.of(q), core.block_of(q), "{w}x{h} block {block} px {q}");
+            }
+            assert_eq!(core.blk.len(), core.pix.len());
+            for (k, &q) in core.pix.iter().enumerate() {
+                assert_eq!(core.blk[k] as usize, core.block_of(q));
+            }
+        }
+    }
 }
