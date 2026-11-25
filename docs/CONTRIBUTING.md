@@ -170,8 +170,8 @@ withdraw a version, remove its folder on the server by hand.
 The job needs the repository secrets `CALAB_DEPLOY_KEY` (the deploy key's private key)
 and `CALAB_DEPLOY_KNOWN_HOSTS` (the server's `ssh-keyscan` line) and fails if either is
 missing. Pages deploys independently of it. Only per-app URLs are versioned: an old
-release's landing page and `apps.json` are not reachable, and links from any app's page
-to the landing page go to `/`. Sign-in links return to the page they were requested from,
+release's landing page and `apps.json` are not reachable; `/` is always the newest landing
+page. Sign-in links return to the page they were requested from,
 versioned or not (Supabase's redirect allowlist must include
 `https://calab.miniscope.org/**`).
 
