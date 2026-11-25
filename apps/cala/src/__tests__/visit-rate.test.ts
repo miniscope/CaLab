@@ -186,6 +186,35 @@ describe('VisitRateGovernor', () => {
     expect(gov.visitMaxFps!).toBeGreaterThan(170);
   });
 
+  it('raises a hold below minWindowFrames fps once the visits allow it', () => {
+    // Held at 5 fps (fewer than minWindowFrames frames per 1 s window) with visits to spare:
+    // windows must stay open until they hold enough frames, or the hold can never rise.
+    const gov = new VisitRateGovernor('on');
+    let t = 0;
+    let read = 0;
+    let visits = 0;
+    const feed = (fps: number, perSec: number) => {
+      t += 100;
+      read += fps / 10;
+      visits += perSec / 10;
+      gov.update({
+        now: t,
+        framesRead: Math.floor(read),
+        observed: Math.floor(read),
+        visits: Math.floor(visits),
+        cappedFrames: 0,
+        dueTiles: 3,
+        userFps: 0,
+      });
+    };
+    // Behind at 200 fps (1 visit/s): held down to the floor cut, below minWindowFrames fps.
+    for (let i = 0; i < 40; i++) feed(gov.fps ?? 200, 1);
+    expect(gov.fps!).toBeLessThan(VISIT_RATE.minWindowFrames);
+    // The visits become cheap (30/s): the hold rises to where they keep the target.
+    for (let i = 0; i < 1200; i++) feed(gov.fps ?? 200, 30);
+    expect(gov.fps ?? Infinity).toBeGreaterThan(0.8 * (30 / VISIT_RATE.target));
+  });
+
   it('counts dropped frames against the target (per frame read)', () => {
     // A third of the frames never reach the slow loop at speed; fewer when slower.
     const drop = (fps: number) => Math.max(0, Math.min(0.33, (fps - 120) / 240));

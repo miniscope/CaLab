@@ -261,6 +261,10 @@ export class VisitRateGovernor {
     const dVisits = s.visits - w.visits;
     const dCapped = s.cappedFrames - w.capped;
     const demand = w.samples > 0 ? w.due / w.samples : 0;
+    // Too few frames read: keep the window open rather than start a new one. Closing it would make a
+    // hold below `minWindowFrames` fps per window permanent (no window would ever count, so the hold
+    // could never rise); seen on a 3 h v4 recording held at 5 fps for minutes.
+    if (dRead < k.minWindowFrames) return null;
     this.w = {
       t: s.now,
       read: s.framesRead,
@@ -270,7 +274,6 @@ export class VisitRateGovernor {
       samples: 0,
       due: 0,
     };
-    if (dRead < k.minWindowFrames) return null;
     const achieved = dVisits / dRead;
     this.achieved = achieved;
     const readFps = (dRead / dt) * 1000;
