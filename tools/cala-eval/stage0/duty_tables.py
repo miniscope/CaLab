@@ -128,8 +128,9 @@ def main():
         t0 = rows[live[0]]["t"]
         a = next((k for k in live if rows[k]["t"] - t0 >= skip), live[0])
         # The last sample whose observed count still rose (Discover's last live frame).
-        b = max(k for k in live if (rows[k]["acct"].get("observedFrames") or 0)
-                > (rows[live[0]]["acct"].get("observedFrames") or 0))
+        # (`status` turns `done` at frames-done, so `running` rows are Discover only.)
+        obs = lambda k: rows[k]["acct"].get("observedFrames") or 0
+        b = max((k for k in live[1:] if obs(k) > obs(k - 1)), default=live[-1])
         b = max(b, a + 1) if b <= a else b
         d = window(rows, a, b)
         fmt_table("Discover (steady)", d, max(d["observed"], 1), "frames observed")
