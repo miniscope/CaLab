@@ -143,7 +143,7 @@ describe('openGpuCompressor', () => {
     expect(r.slack).toBe(150);
     // Every work budget with two windows of ring, then the smaller ring at the full budget.
     const tries = workLadder(workColumns({})).length;
-    expect(tries).toBe(6);
+    expect(tries).toBe(4); // 2048, 1024, 512, 320 columns
     expect(tried).toEqual([...Array<number>(tries).fill(1200 * fb), 750 * fb]);
     r.destroy();
   });
@@ -406,10 +406,12 @@ describe('ring blocks and work budgets', () => {
 });
 
 describe('batches', () => {
-  it('fill the work buffers of the default 128 MB binding, or of a device with less', () => {
-    expect(workColumns({})).toBe(GPU_WORK_BYTES / (TILE_ROWS * 4));
+  it('fill work buffers of 32 MB, or of a device with less', () => {
+    expect(GPU_WORK_BYTES).toBe(32 * 2 ** 20);
+    expect(workColumns({})).toBe(2048);
+    // A device above WebGPU's defaults still gets 32 MB (one submission's work stays small).
     expect(workColumns({ maxStorageBufferBindingSize: 2 ** 31, maxBufferSize: 2 ** 31 })).toBe(
-      8192,
+      2048,
     );
     // A device below the default: whole sketches of 64 columns that fit it.
     expect(workColumns({ maxStorageBufferBindingSize: TILE_ROWS * 4 * 700 })).toBe(640);

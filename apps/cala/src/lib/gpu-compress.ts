@@ -14,8 +14,8 @@
  * contiguously in one block (`ringSegments`).
  *
  * Tiles are sketched in batches as large as the work buffers hold
- * (`workColumns`: WebGPU's default 128 MB per binding, or the device's lower
- * limit; halved down to one widest sketch where that does not allocate),
+ * (`workColumns`: 32 MB each, or the device's lower limit; halved down to one
+ * widest sketch where that does not allocate),
  * tiles of similar sketch size together (`takeBatch`). Per batch,
  * all on the GPU in one submission: `Y = A Ω`, CholeskyQR2 (Gram, `R⁻¹` by
  * the `CHOL` kernel, `Q = Y R⁻¹`), `n_iter` power iterations, `Bᵀ = Aᵀ Q`.
@@ -34,9 +34,11 @@ import { APPLY, CHOL, GEMM, GRAM, TILE_ROWS } from './gpu-compress-kernels.ts';
 export const GPU_WINDOW_LADDER: readonly number[] = [600];
 /**
  * Bytes a work buffer (`Y`, its copy for CholeskyQR, its readback) may take:
- * WebGPU's default `maxStorageBufferBindingSize`, so every device holds it.
+ * a quarter of WebGPU's default `maxStorageBufferBindingSize`, so one batch's
+ * submission stays short on a weak integrated GPU (no driver watchdog reset,
+ * no starving motion correction) and the work buffers take ~0.13 GB.
  */
-export const GPU_WORK_BYTES = 128 * 2 ** 20;
+export const GPU_WORK_BYTES = 32 * 2 ** 20;
 /**
  * Sketch columns the work buffers hold: the largest sketch a tile can need
  * (`max_rank` 300 + 10 oversamples), rounded up to 64. At 128, real V4 tiles
