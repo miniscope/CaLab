@@ -304,6 +304,8 @@ export interface SlowConnect {
   type: 'connect';
   port: MessagePort;
   visits?: MessagePort[];
+  /** Measurement only (`?debug`): finer timers in `WorkStatus.detail` (`SlowRunner.setDebugTiming`). */
+  debugTiming?: boolean;
 }
 
 /**

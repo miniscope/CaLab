@@ -62,6 +62,8 @@ export type LookbackToSlow =
       background?: Float32Array;
       /** What the worker spent on this answer (instrumentation only; absent from older builds). */
       timing?: LookbackTiming;
+      /** When the worker posted it, epoch ms (instrumentation only: the `?debug` relay timing). */
+      postedAt?: number;
     }
   | { type: 'error'; session: number; id: number; message: string };
 

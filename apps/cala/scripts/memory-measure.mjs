@@ -42,6 +42,10 @@
  *   included); `--needfirst`: one worker, need-driven look-back first (`?debug&needfirst`);
  *   `--csettle-off`: no Background settle (`&csettle=0`).
  *   `--headed` runs system Chrome with a real GPU (headless SwiftShader hides memory behaviour).
+ *   `--profile-slow d20:10,s5:10` (measurement): CPU profiles of the slow worker, each
+ *   `d<start>:<len>` seconds after Discover started or `s<start>:<len>` seconds after its last
+ *   frame (the Final settle), written as `<tag>-slow-<spec>.cpuprofile` (sampling every
+ *   `--profile-us` µs, default 500). Run it apart from timed runs: profiling costs time.
  *
  * Opens `<folder>` (a session folder or a parent of several) through the
  * folder input with `?debug`, keeps the sessions whose names contain one of
@@ -354,6 +358,58 @@ const fmt = (r) => {
 let t0 = Date.now();
 await page.goto(`${url}?debug${lookback && !toggle ? '' : '&lookback=0'}${csQuery}`);
 await attachPage();
+
+// ---- `--profile-slow`: CPU profiles of the slow worker (measurement only) ----
+const profileSpecs = (opt('--profile-slow', '') || '')
+  .split(',')
+  .filter(Boolean)
+  .map((x) => {
+    const m = x.match(/^([ds])(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/);
+    if (!m) throw new Error(`--profile-slow: bad spec ${x}`);
+    return { spec: x, base: m[1], at: Number(m[2]) * 1000, len: Number(m[3]) * 1000, done: false };
+  });
+const profileUs = Number(opt('--profile-us', '500'));
+function slowSession() {
+  for (const [sid, u] of workers) if (u.startsWith('slow-worker')) return sid;
+  return null;
+}
+async function profileOnce(p) {
+  const sid = slowSession();
+  if (!sid) {
+    L(`PROFILE ${p.spec}: no slow worker target`);
+    return;
+  }
+  await send('Profiler.enable', {}, sid);
+  await send('Profiler.setSamplingInterval', { interval: profileUs }, sid);
+  await send('Profiler.start', {}, sid);
+  L(`PROFILE ${p.spec}: start`);
+  await new Promise((r) => setTimeout(r, p.len));
+  const { profile } = await send('Profiler.stop', {}, sid);
+  writeFileSync(
+    join(out, `${tag}-slow-${p.spec.replace(':', '_')}.cpuprofile`),
+    JSON.stringify(profile),
+  );
+  L(`PROFILE ${p.spec}: ${profile.samples?.length ?? 0} samples written`);
+}
+if (profileSpecs.length) {
+  (async () => {
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 250));
+      const pr = await page.evaluate(() => window.__calaProbe).catch(() => null);
+      if (!pr || pr.t0 === null) continue;
+      const now = await page.evaluate(() => performance.now()).catch(() => null);
+      if (now === null) continue;
+      for (const p of profileSpecs) {
+        if (p.done) continue;
+        const base = p.base === 'd' ? pr.t0 : pr.framesDone;
+        if (base === null || now - base < p.at) continue;
+        p.done = true;
+        await profileOnce(p).catch((e) => L(`PROFILE ${p.spec}: ${e.message}`));
+      }
+      if (profileSpecs.every((p) => p.done)) break;
+    }
+  })();
+}
 // Exact times and every settle checkpoint (the 5 s samples miss them): an in-page probe.
 await page.evaluate((withRelease) => {
   const p = (window.__calaProbe = {
@@ -403,6 +459,8 @@ await page.evaluate((withRelease) => {
       pace: c.pipeline.paceStats?.() ?? null,
       governor: c.lookback?.()?.csettle?.governor ?? null,
       settleWorkers: c.lookback?.()?.csettle?.settleWorkers ?? null,
+      // The slow worker's raw cumulative accounting (with `detail` and `stage` under ?debug).
+      acct: c.pipeline.accounting?.() ?? null,
     });
   }, 500);
   // `--pace-after`: the first time the settle pool serves after the target change.

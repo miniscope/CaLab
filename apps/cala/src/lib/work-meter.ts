@@ -91,6 +91,36 @@ export class DutyClock<K extends string> {
   }
 }
 
+/**
+ * Measurement only (`?debug`; the stage-0 attribution): named sums of ms
+ * and counts, overlapping freely (unlike `DutyClock`'s exclusive buckets).
+ * Reported raw in `WorkStatus.detail`; nothing reads them back.
+ */
+export class DetailTimer {
+  readonly sums: Record<string, number> = {};
+
+  constructor(private readonly now: () => number) {}
+
+  add(key: string, v: number): void {
+    this.sums[key] = (this.sums[key] ?? 0) + v;
+  }
+
+  /** Run `fn`, adding its wall time to `key` (and 1 to `key#`). */
+  time<T>(key: string, fn: () => T): T {
+    const t0 = this.now();
+    try {
+      return fn();
+    } finally {
+      this.add(key, this.now() - t0);
+      this.add(`${key}#`, 1);
+    }
+  }
+
+  reset(): void {
+    for (const k of Object.keys(this.sums)) delete this.sums[k];
+  }
+}
+
 /** The largest value pushed within the last `windowMs`. */
 export class WindowMax {
   private samples: { t: number; v: number }[] = [];
@@ -194,6 +224,13 @@ export interface WorkStatus {
   settleWorkers?: number;
   /** Live frames the slow loop has observed since the run began (the speed floor's per-frame divisor); absent from older builds. */
   observedFrames?: number;
+  /**
+   * Measurement only (`?debug`): finer cumulative sums (`DetailTimer`; ms,
+   * and counts under `key#`) and the WASM stage timers (`SlowLoop.stageTiming`,
+   * all zero unless the module was built with the `timing` feature).
+   */
+  detail?: Record<string, number>;
+  stage?: number[];
 }
 
 export function emptyWork(workers = 0): WorkStatus {

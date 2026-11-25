@@ -14,6 +14,7 @@ import {
   StageBusyMeter,
   WorkRater,
   type WorkRates,
+  type WorkStatus,
 } from './work-meter.ts';
 import type { CellStore } from './cell-store.ts';
 import type { CompressStore } from './compress-store.ts';
@@ -759,8 +760,11 @@ export function createPipelineStore(
   const [floorLine, setFloorLine] = createSignal('');
   /** The floor as the Speed control's mark shows it (the prior until a measurement). */
   const [floor, setFloor] = createSignal<FloorDisplay>(floorMeter.display());
+  /** Measurement only: the slow worker's newest raw accounting (cumulative; `__cala.pipeline.accounting()`). */
+  let lastAccounting: WorkStatus | null = null;
   cells?.onStatus((st) => {
     if (!st.accounting) return;
+    lastAccounting = st.accounting;
     // Throttled to about 1 Hz inside the meter: no per-batch work for a debug readout.
     if (floorMeter.due(st.accounting.wallMs)) {
       const lb = st.lookback;
@@ -1378,6 +1382,8 @@ export function createPipelineStore(
     paceStats,
     /** Who is doing what, over the last second or so (the slow, visit and look-back workers); null until a second of data. */
     work,
+    /** Measurement only: the slow worker's newest raw cumulative accounting (`?debug` adds `detail`, `stage`). */
+    accounting: (): WorkStatus | null => lastAccounting,
     /** The smart floor's `?debug` lines (value, which consumer sets it, confidence); empty before the first status. */
     floorLine,
     /** The floor for the Speed control's mark: `published` once measured, else the prior; refreshed about once a second. */

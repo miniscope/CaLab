@@ -229,6 +229,7 @@ mod mergelog;
 mod noisecorr;
 mod reservoir;
 mod shard;
+pub mod timing;
 mod visitrate;
 mod wire;
 
@@ -1205,6 +1206,8 @@ pub struct SlowLoop {
     cbuf: Vec<f32>,
     /// Counters of the joint update.
     pub replay_stats: ReplayStats,
+    /// Stage timers (feature `timing`; zero otherwise). Measurement only.
+    pub stage: timing::StageTiming,
     stats_w: f32,
     stats_gamma: f32,
     rbuf: Vec<f32>,
@@ -1694,6 +1697,7 @@ impl SlowLoop {
             cluster_ok: Vec::new(),
             cbuf: Vec::new(),
             replay_stats: ReplayStats::default(),
+            stage: timing::StageTiming::default(),
             stats_w: 1.0,
             stats_gamma: 0.5f32.powf(1.0 / cfg.stats_half_life_frames),
             rbuf: Vec::new(),
@@ -2242,17 +2246,24 @@ impl SlowLoop {
         traces: &FrameTraces,
     ) -> Result<(), TraceError> {
         let n_px = self.dims.pixels();
+        self.stage.observe_calls += u64::from(timing::ON);
         let scale = self.score_residual(frame, lib, traces)?;
         self.visit_rate_frame();
+        let mut lap = timing::Lap::start();
         self.work += (n_px * 4 + self.coarse.len() * 30) as u64;
         if self.cfg.noise_corr {
             self.work += self.ncorr.push(&self.z, &self.fov, self.dims);
             self.rho = self.ncorr.rho(self.cfg.cell_diameter_px);
         }
+        lap.lap(&mut self.stage.observe[3]);
         self.update_ledger(frame, lib, traces);
+        lap.lap(&mut self.stage.observe[4]);
         let frame_idx = self.frames;
         let test = self.is_test(frame_idx);
-        self.update_fpstats(frame, lib, traces, !test);
+        let (per_cell, clusters) = self.update_fpstats(frame, lib, traces, !test);
+        self.stage.observe[5] += per_cell;
+        self.stage.observe[6] += clusters;
+        let mut lap = timing::Lap::start();
         if self.res_frozen {
             self.frames += 1;
             return Ok(());
@@ -2285,9 +2296,11 @@ impl SlowLoop {
                 *c += tile.fresh.saturating_sub(before);
             }
         }
+        lap.lap(&mut self.stage.observe[7]);
         if test {
             self.take_probes(lib, frame_idx);
         }
+        lap.lap(&mut self.stage.observe[8]);
         self.frames += 1;
         Ok(())
     }
@@ -2653,7 +2666,9 @@ impl SlowLoop {
             BackgroundModel::Basis(_) => Some(traces.background.as_slice()),
             _ => None,
         };
+        let mut lap = timing::Lap::start();
         lib.render(&traces.traces, bg, &mut self.model)?;
+        lap.lap(&mut self.stage.observe[0]);
         // Whitened frame (stored) and whitened residual (scored).
         whiten(
             frame,
@@ -2664,6 +2679,7 @@ impl SlowLoop {
             self.dims.width,
             &mut self.qrow,
         );
+        lap.lap(&mut self.stage.observe[1]);
         self.coarse_gauss
             .blur(&self.coarse, &mut self.coarse_blur)
             .map_err(TraceError::Preprocess)?;
@@ -2683,6 +2699,7 @@ impl SlowLoop {
                 .select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
             (1.4826 * *m).max(1e-6)
         };
+        lap.lap(&mut self.stage.observe[2]);
         Ok(scale)
     }
 
@@ -2771,17 +2788,20 @@ impl SlowLoop {
     }
 
     /// Running footprint statistics (see `fpstats.rs`): a `fitting` frame's
-    /// residual is accumulated.
+    /// residual is accumulated. Returns the ms of the per-cell part and of
+    /// the clusters' part (feature `timing`; zero otherwise).
     fn update_fpstats(
         &mut self,
         frame: &[f32],
         lib: &Library,
         traces: &FrameTraces,
         fitting: bool,
-    ) {
+    ) -> (f64, f64) {
         if !fitting {
-            return;
+            return (0.0, 0.0);
         }
+        let mut lap = timing::Lap::start();
+        let (mut per_cell_ms, mut clusters_ms) = (0.0, 0.0);
         #[cfg(feature = "diagnostics")]
         let t0 = std::time::Instant::now();
         if self.fpstats.len() > lib.len() {
@@ -2809,6 +2829,7 @@ impl SlowLoop {
         let (width, height) = (self.dims.width, self.dims.height);
         let version = lib.version();
         let mut work = 0u64;
+        #[cfg(not(feature = "threads"))]
         for (slot, &id) in lib.ids().iter().enumerate() {
             if self.lb_only.as_ref().is_some_and(|o| !o.contains(&id)) {
                 continue;
@@ -2853,9 +2874,68 @@ impl SlowLoop {
             st.push_frame(frame, &self.model, level, c, w, &mut self.rbuf);
             work += st.pix.len() as u64 * 3;
         }
+        // Feature `threads` (measurement): the same per-cell update on a
+        // rayon pool. Each cell's statistics are its own (no float sum is
+        // split across threads), so the result is bit-identical to the
+        // loop above for any thread count.
+        #[cfg(feature = "threads")]
+        {
+            use rayon::prelude::*;
+            let fov = &self.fov;
+            let collects = self.cfg.core_test.collects();
+            let block = parity_block(self.cfg.cell_diameter_px);
+            let basin = self.cfg.support_rule != SupportRule::Rings;
+            let lb_only = self.lb_only.as_ref();
+            let mut slot_of: HashMap<u64, usize> = HashMap::with_capacity(lib.len());
+            for (slot, &id) in lib.ids().iter().enumerate() {
+                if lb_only.is_some_and(|o| !o.contains(&id)) {
+                    continue;
+                }
+                slot_of.insert(id, slot);
+                self.fpstats.entry(id).or_insert_with(|| {
+                    let (center, radius) = lib.support(slot);
+                    FpStats::new(center, radius + margin, width, height, fov, collects, block)
+                });
+            }
+            let mut cells: Vec<(usize, &mut FpStats)> = self
+                .fpstats
+                .iter_mut()
+                .filter_map(|(id, st)| slot_of.get(id).map(|&slot| (slot, st)))
+                .collect();
+            let model = &self.model;
+            work += cells
+                .par_iter_mut()
+                .map_init(Vec::new, |buf, (slot, st)| {
+                    let slot = *slot;
+                    let (center, radius) = lib.support(slot);
+                    let want = radius + margin;
+                    let mut old_pix = None;
+                    if !st.covers(center, radius) || (basin && st.radius > radius + 2.0 * margin) {
+                        let moved = st.moved(center, want, width, height, fov);
+                        let old = std::mem::replace(&mut **st, moved);
+                        if basin {
+                            old_pix = Some(old.pix);
+                        }
+                    }
+                    if st.version != version || old_pix.is_some() {
+                        st.col = column_on(lib, slot, &st.pix);
+                        st.version = version;
+                    }
+                    if let Some(old) = &old_pix {
+                        st.seed_new(old);
+                    }
+                    let c = traces.traces[slot];
+                    let level = if ring { traces.background[slot] } else { 0.0 };
+                    st.push_frame(frame, model, level, c, w, buf);
+                    st.pix.len() as u64 * 3
+                })
+                .sum::<u64>();
+        }
         #[cfg(feature = "diagnostics")]
         let t1 = std::time::Instant::now();
+        lap.lap(&mut per_cell_ms);
         work += self.update_clusters(frame, lib, traces, w, ring);
+        lap.lap(&mut clusters_ms);
         #[cfg(feature = "diagnostics")]
         {
             self.replay_stats.per_cell_ns += (t1 - t0).as_nanos() as u64;
@@ -2863,6 +2943,7 @@ impl SlowLoop {
         }
         self.work += work;
         self.stats.work_stats += work;
+        (per_cell_ms, clusters_ms)
     }
 
     /// The cell `id`'s running statistics start over with its next column
@@ -3628,16 +3709,21 @@ impl SlowLoop {
         if self.bgs[ti].is_none() {
             self.bgs[ti] = Some(BgBasis::new(self.tiles[ti].rect));
         }
+        self.stage.visit_calls += u64::from(timing::ON);
+        let mut lap = timing::Lap::start();
+        let mut snap = self.stats;
         let scope = self.scope;
         let w0 = self.work;
         if scope.prunes() {
             self.keep_tests(ti);
         }
         self.stats.work_keep += self.work - w0;
+        self.stage_visit(0, &mut lap, &mut snap);
         let w0 = self.work;
         let fit_fr = self.load(ti, false);
         let test_fr = self.load(ti, true);
         self.stats.work_load += self.work - w0;
+        self.stage_visit(1, &mut lap, &mut snap);
         if fit_fr.len() < self.cfg.min_fit_frames || test_fr.len() < self.cfg.min_test_frames {
             return Ok(());
         }
@@ -3652,6 +3738,7 @@ impl SlowLoop {
         let w0 = self.work;
         let mut solved = self.solve_tile(ti, &fit_fr);
         self.stats.work_load += self.work - w0;
+        self.stage_visit(2, &mut lap, &mut snap);
         let split = scope.grows()
             && self.cfg.split_every_visits > 0
             && self.tile_visits[ti].is_multiple_of(self.cfg.split_every_visits);
@@ -3661,24 +3748,53 @@ impl SlowLoop {
                 solved = self.solve_tile(ti, &fit_fr);
             }
             self.stats.work_split += self.work - w0;
+            self.stage_visit(3, &mut lap, &mut snap);
         }
         if refine {
             let w0 = self.work;
             self.refine(ti, &solved, &test_fr);
             self.stats.work_refine += self.work - w0;
+            self.stage_visit(4, &mut lap, &mut snap);
         }
         if scope.merges() {
             let w0 = self.work;
             self.merge(ti, &fit_fr, &test_fr);
             self.stats.work_merge += self.work - w0;
+            self.stage_visit(5, &mut lap, &mut snap);
         }
         if scope.grows() {
             let w0 = self.work;
             let Solved { base, fits, resid } = solved;
             self.add(ti, resid, &base, &fits, &test_fr);
             self.stats.work_add += self.work - w0;
+            self.stage_visit(6, &mut lap, &mut snap);
         }
         Ok(())
+    }
+
+    /// Feature `timing`: charge a visit phase its time since the last mark
+    /// and the edits it made since `snap` (then move `snap`). A no-op
+    /// otherwise.
+    #[inline(always)]
+    fn stage_visit(&mut self, phase: usize, lap: &mut timing::Lap, snap: &mut SlowStats) {
+        if !timing::ON {
+            return;
+        }
+        lap.lap(&mut self.stage.visit[phase]);
+        let (a, b) = (*snap, self.stats);
+        let d = [
+            b.adds - a.adds,
+            b.merges - a.merges,
+            b.refines - a.refines,
+            b.splits - a.splits,
+            b.deletes - a.deletes,
+            b.absorbs - a.absorbs,
+            b.proposals - a.proposals,
+        ];
+        for (x, y) in self.stage.visit_edits[phase].iter_mut().zip(d) {
+            *x += y;
+        }
+        *snap = b;
     }
 
     /// Mark the tiles whose patch overlaps `bbox` as due for a visit.
