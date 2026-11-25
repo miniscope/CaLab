@@ -178,6 +178,8 @@ export interface LookbackTiming {
   /** The rest of the worker's `serve` call: its total, less the waits and the three above. */
   otherMs: number;
   waitMs: number;
+  /** The end settle: the wait for the main thread's `final` (inputs final) before reading, ms. Not busy; not in `waitMs`. */
+  finalWaitMs?: number;
 }
 
 /** Add one answer's timing to a kind's totals. */

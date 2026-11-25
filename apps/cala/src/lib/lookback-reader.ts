@@ -24,7 +24,9 @@
  *  - The back half starts from the live state at the time the block is
  *    served (up to `LOOKBACK_SNAPSHOT_EVERY` frames old), not the state the
  *    live pipeline had at that frame: background and noise are those of a
- *    later time (qc_eval: the current state, exactly).
+ *    later time (qc_eval: the current state, exactly). The end settle reads
+ *    only after Discover's last state and flat-field map are in (`final`,
+ *    `LookbackService`), so its blocks all start from the final state.
  *  - The flat field is the newest map for every frame; Discover corrected
  *    frames before its first map not at all, and later ones with the map of
  *    their time (the same choice as Extract).
@@ -114,6 +116,15 @@ export function lookbackFrames(flat: ArrayLike<number>): LookbackFrame[] {
   for (let k = 0; k + 2 < flat.length; k += 3 + flat[k + 2])
     out.push({ frame: flat[k], block: flat[k + 1] });
   return out;
+}
+
+/** Frames `LookbackReader.prepare` read and preprocessed, waiting for `solve`. */
+export interface LookbackPrepared {
+  count: number;
+  /** The caller's buffer, holding the preprocessed frames. */
+  out: Float32Array;
+  /** The read and preprocessing time so far. */
+  timing: LookbackTiming;
 }
 
 /** What `LookbackReader.serve` produced (the frames are in the caller's buffer). */
@@ -254,38 +265,59 @@ export class LookbackReader {
    * Re-read, preprocess and solve the requested frames, in order, into
    * `out` (at least `frames.length * width * height` values). A frame with
    * `skip[i]` set is preprocessed (its block's preprocessor runs on) but not
-   * solved: its traces stay 0 and must not be used.
+   * solved: its traces stay 0 and must not be used. The libraries in hand
+   * when it starts are the ones it solves with.
    */
   async serve(
     frames: LookbackFrame[],
     out: Float32Array,
     skip?: ArrayLike<number>,
   ): Promise<LookbackSolved> {
+    this.applyLibrary();
+    return this.solve(await this.prepare(frames, out), skip);
+  }
+
+  /**
+   * The first half of `serve`: re-read and preprocess the frames into `out`.
+   * Nothing here reads the library, so a request can be prepared ahead and
+   * solved later (`solve`) with the library it is due.
+   */
+  async prepare(frames: LookbackFrame[], out: Float32Array): Promise<LookbackPrepared> {
     if (out.length < frames.length * this.px)
       throw new RangeError(`look-back: a buffer of ${out.length} for ${frames.length} frames`);
-    const serveT0 = performance.now();
+    const t0 = performance.now();
     this.timing = emptyTiming();
-    this.applyLibrary();
-    const traces = new Float32Array(frames.length * this.cells);
-    let background: Float32Array | undefined;
     for (let i = 0; i < frames.length; i++) {
       const { frame, block } = frames[i];
-      const y = out.subarray(i * this.px, (i + 1) * this.px);
-      await this.preprocess(frame, block, y);
+      await this.preprocess(frame, block, out.subarray(i * this.px, (i + 1) * this.px));
       if (this.disposed) throw new Error('look-back stopped');
-      if (!this.engine || this.cells === 0 || skip?.[i]) continue;
-      const t0 = performance.now();
-      traces.set(this.engine.processFrames(y, 1), i * this.cells);
-      const bg = this.engine.lastBackground();
-      background ??= new Float32Array(frames.length * bg.length);
-      background.set(bg, i * bg.length);
-      this.timing.solveMs += performance.now() - t0;
     }
     const t = this.timing;
-    t.otherMs = Math.max(
-      0,
-      performance.now() - serveT0 - t.waitMs - t.readMs - t.preprocessMs - t.solveMs,
-    );
+    t.otherMs = Math.max(0, performance.now() - t0 - t.waitMs - t.readMs - t.preprocessMs);
+    return { count: frames.length, out, timing: t };
+  }
+
+  /**
+   * The second half of `serve`: solve prepared frames with the engine's
+   * library (`applyLibrary` decides which). Synchronous, so no message comes
+   * in between its frames.
+   */
+  solve(p: LookbackPrepared, skip?: ArrayLike<number>): LookbackSolved {
+    const t0 = performance.now();
+    const t = { ...p.timing };
+    const traces = new Float32Array(p.count * this.cells);
+    let background: Float32Array | undefined;
+    for (let i = 0; i < p.count; i++) {
+      if (!this.engine || this.cells === 0 || skip?.[i]) continue;
+      const y = p.out.subarray(i * this.px, (i + 1) * this.px);
+      const ts = performance.now();
+      traces.set(this.engine.processFrames(y, 1), i * this.cells);
+      const bg = this.engine.lastBackground();
+      background ??= new Float32Array(p.count * bg.length);
+      background.set(bg, i * bg.length);
+      t.solveMs += performance.now() - ts;
+    }
+    t.otherMs += Math.max(0, performance.now() - t0 - t.solveMs + p.timing.solveMs);
     return {
       version: this.engine ? this.version : 0,
       cells: this.cells,
@@ -424,7 +456,8 @@ export class LookbackReader {
     return this.raw.subarray(o, o + this.px);
   }
 
-  private applyLibrary(): void {
+  /** Make the newest library in hand (`setLibrary`) the one the next `solve` uses. */
+  applyLibrary(): void {
     const p = this.pendingLibrary;
     if (!p) return;
     this.pendingLibrary = null;

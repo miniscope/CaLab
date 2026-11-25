@@ -23,7 +23,8 @@ export type SlowToLookback =
   /**
    * Frames to supply: `SlowLoop.lookbackTake` output, `[frame, block, n,
    * id_1..id_n, ...]` (transferred). Answered by one `frames` (or `error`)
-   * with the same `id`. At most one is outstanding.
+   * with the same `id`. At most one is outstanding, besides one `hold`
+   * request of the end settle waiting for its cue.
    */
   | {
       type: 'request';
@@ -36,7 +37,23 @@ export type SlowToLookback =
        * never reaches fitting). Absent: solve every frame.
        */
       skip?: Uint8Array;
+      /**
+       * The end settle: read nothing before the main thread's `final` (the
+       * last back state and flat-field map are in), so every settle frame is
+       * preprocessed from the same inputs whatever the machine's speed.
+       */
+      final?: boolean;
+      /**
+       * The end settle: read and preprocess now, then wait for this id's
+       * `solve` (solved with the newest library that came before it, then
+       * answered) or `drop` (never answered).
+       */
+      hold?: boolean;
     }
+  /** Solve the `hold` request `id` now, with the newest library that came before this message. */
+  | { type: 'solve'; session: number; id: number }
+  /** Give up the `hold` request `id` (Stop, cancelled requests): it is not answered. */
+  | { type: 'drop'; session: number; id: number }
   /** A library the slow loop published (`TraceLibrary.toBytes()`, a copy; transferred). */
   | { type: 'library'; session: number; version: number; bytes: Uint8Array }
   /** The `frames` buffer of a reply, back for reuse (transferred). */
@@ -113,6 +130,12 @@ export type MainToLookback =
    * session's first frame.
    */
   | { type: 'session'; session: number; index: number; transform: SessionTransform }
+  /**
+   * Discover ended and the inputs above are final: its last back state was
+   * sent, and the flat field's last map (the estimator finished). The end
+   * settle's requests (`final`) wait for it.
+   */
+  | { type: 'final'; session: number }
   /** The run stopped: close the recording, drop everything. */
   | { type: 'reset'; session: number };
 

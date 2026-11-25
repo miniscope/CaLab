@@ -49,6 +49,11 @@ async function handle(msg: FlatFieldDown): Promise<void> {
       port?.postMessage({ type: 'ack', session: msg.session } satisfies FlatFieldUp);
       if (msg.session === session) runner.push(msg);
       break;
+    case 'finish':
+      // In queue order, after every batch before it (a refine runs inside `push`): no map of
+      // this session follows. Said even when the estimator stopped or never started.
+      scope.postMessage({ type: 'finished', session: msg.session });
+      break;
     case 'stop':
       runner.stop();
       session = -1;

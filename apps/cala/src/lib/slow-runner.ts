@@ -35,6 +35,20 @@
  * visits those frames earn; then a last round of visits on every tile, and
  * only then the final library.
  *
+ * The end settle's requests (`final`) are read only once the main thread
+ * says Discover's inputs are final (its last back state and flat-field map),
+ * so its frames never depend on when those arrived. Its relay keeps two
+ * requests on worker 0 (`settleNext`): the one out, and the next, sent
+ * `hold` to be read and preprocessed meanwhile. The held one is cued
+ * (`solve`) where the request itself used to go out, at the top of the
+ * answer before, so it is solved with the same library as with one request
+ * out. (The `?debug` relay round trip, `relay.end.p0.rtt`, now runs from
+ * the cue, not from the request.) Both apply only to a settle on the
+ * recording (`relayed`). A settle on factors (below) has neither: the
+ * factors are the frames Discover preprocessed itself, complete before the
+ * settle starts (the wait for `factors`), so back state and flat field play
+ * no part; and the pooled settle keeps one plain request out per worker.
+ *
  * Settle during Discover ("Background settle", `SlowInit.csettle`, frames
  * only; `CSETTLE` in `settle.ts`): while a look-back Discover runs below Max,
  * the look-back worker also re-reads saved frames spread over the history
@@ -542,6 +556,8 @@ export class SlowRunner {
   private lbReqs: (LookbackReq | null)[] = [];
   private lbNextId = 1;
   private lbTimers: ((() => void) | null)[] = [];
+  /** The end settle's next request, prepared ahead on worker 0 and waiting for its cue (`solveHeld`). */
+  private lbHeld: LookbackReq | null = null;
   /** Pool workers (1..S) left out for the rest of this run after a failure. */
   private lbPortOff: boolean[] = [];
   /** Per look-back worker: the busy ms of its answers this run (`WorkStatus.lookbackWorkerBusyMs`). */
@@ -732,6 +748,18 @@ export class SlowRunner {
   private drainPorts(): number[] {
     if (!this.factorSource) return [0];
     return [0, ...this.settlePorts().filter((i) => this.lbFactors[i])];
+  }
+
+  /**
+   * The end settle reads the recording, on worker 0 alone: its requests wait
+   * for final inputs (`final`) and are relayed with one prepared ahead
+   * (`settleNext`). On factors (a live stream's, or a recording's, possibly
+   * on the whole pool) neither: the factors hold the frames Discover
+   * preprocessed itself, ready before the settle starts, and the pooled
+   * settle keeps one plain request out per worker.
+   */
+  private relayed(): boolean {
+    return !this.factorLive;
   }
 
   /** An end settle request is out to some look-back worker. */
@@ -1159,17 +1187,21 @@ export class SlowRunner {
     return !cs.turn && this.csettleRequest(loop, cs, 0);
   }
 
-  /** Send a request to look-back worker `port` and start its timeout. */
+  /**
+   * Send a request to look-back worker `port` and start its timeout. `hold`
+   * (the end settle, worker 0): it is prepared ahead and waits for its cue
+   * (`solveHeld`); it is not the request out until then.
+   */
   private sendRequest(
     port: number,
     kind: LookbackReq['kind'],
     flat: Float64Array,
     items: LookbackItem[],
     skip?: Uint8Array,
+    hold = false,
   ): void {
     const id = this.lbNextId++;
-    this.lbReqs[port] = { id, port, kind, items, ...(skip ? { skip } : {}) };
-    this.lbSentAt[port] = this.epochNow();
+    const req: LookbackReq = { id, port, kind, items, ...(skip ? { skip } : {}) };
     // `flat` is a fresh array (from WASM or built here): transferred as is; `skip` is copied.
     this.clock.span(kind, () =>
       this.lbPorts[port]!.postMessage(
@@ -1179,10 +1211,45 @@ export class SlowRunner {
           id,
           items: flat,
           ...(skip ? { skip: skip.slice() } : {}),
+          // The end settle reads nothing before the main thread's `final` (inputs final).
+          // (Not on factors: they hold Discover's own preprocessed frames, see `relayed`.)
+          ...(kind === 'end' && !this.factorLive ? { final: true } : {}),
+          ...(hold ? { hold: true } : {}),
         },
         [flat.buffer as ArrayBuffer],
       ),
     );
+    if (hold) this.lbHeld = req;
+    else this.awaitAnswer(req);
+  }
+
+  /**
+   * The held request (`sendRequest` with `hold`) becomes the request out:
+   * its cue goes out now, where the request itself went before, so it is
+   * solved with the same library.
+   */
+  private solveHeld(): void {
+    const req = this.lbHeld!;
+    this.lbHeld = null;
+    this.clock.span(req.kind, () =>
+      this.lbPorts[req.port]!.postMessage({ type: 'solve', session: this.session, id: req.id }),
+    );
+    this.awaitAnswer(req);
+  }
+
+  /** Give up the held request (it is never answered). */
+  private dropHeld(): void {
+    const req = this.lbHeld;
+    if (!req) return;
+    this.lbHeld = null;
+    this.lbPorts[req.port]?.postMessage({ type: 'drop', session: this.session, id: req.id });
+  }
+
+  /** `req` is the request out on its port: wait for its answer, at most `LOOKBACK.timeoutMs`. */
+  private awaitAnswer(req: LookbackReq): void {
+    const { port, id } = req;
+    this.lbReqs[port] = req;
+    this.lbSentAt[port] = this.epochNow();
     this.lbTimers[port] = this.timer(() => {
       const failed = this.lbReqs[port];
       if (failed?.id !== id) return;
@@ -1314,6 +1381,9 @@ export class SlowRunner {
       this.dt.add(`${k}.rtt`, at - (this.lbSentAt[port] ?? at));
       if (msg.postedAt !== undefined) this.dt.add(`${k}.queued`, at - msg.postedAt);
       this.dt.add(`${k}#`, 1);
+      // The end settle's wait for final inputs (in practice only its first request waits).
+      if (msg.timing?.finalWaitMs !== undefined)
+        this.dt.add(`${k}.finalWait`, msg.timing.finalWaitMs);
     }
     if (msg.type === 'frames') {
       addLookbackAnswer(this.lbWork[req.kind], msg.count, msg.timing);
@@ -1346,14 +1416,20 @@ export class SlowRunner {
         return;
       } else {
         if (settle) {
-          // The next request goes out first: the look-back worker reads and
-          // solves it while these frames are observed here.
-          const next =
-            !settle.stop &&
-            !settle.feed.done &&
-            this.lbError === undefined &&
-            this.drainPorts().includes(req.port);
-          if (next) this.tm('end.request', () => this.settleRequest(req.port));
+          if (this.relayed()) {
+            // The next request is solved first (and the one after it prepared): the look-back
+            // worker works on them while these frames are observed here. Not gated on the feed:
+            // the last batch may be held while the feed is already done.
+            this.tm('end.request', () => this.settleNext());
+          } else {
+            // The pooled settle on factors: the next request to this worker goes out first.
+            const next =
+              !settle.stop &&
+              !settle.feed.done &&
+              this.lbError === undefined &&
+              this.drainPorts().includes(req.port);
+            if (next) this.tm('end.request', () => this.settleRequest(req.port));
+          }
           settle.served.add(req.port);
           this.observeSettle(loop, msg, req.items);
         } else if (req.kind === 'need') this.observeLookback(loop, msg, req.items);
@@ -1516,9 +1592,10 @@ export class SlowRunner {
   /**
    * Every request out is no longer waited for (their late answers are
    * ignored and their buffers go back); a settle request's frames count as
-   * dropped, so re-read = fitted + held out + dropped.
+   * dropped, so re-read = fitted + held out + dropped. A held request is dropped.
    */
   private cancelRequests(): void {
+    this.dropHeld();
     for (let i = 0; i < this.lbReqs.length; i++) {
       const req = this.lbReqs[i];
       if (!req) continue;
@@ -1659,12 +1736,15 @@ export class SlowRunner {
     }
     if (d.phase === 'sweep') {
       const failed = this.lbError !== undefined || !this.lbPort;
-      if (!failed)
+      if (this.relayed()) {
+        if (failed) this.dropHeld();
+        else if (!this.lbReqs[0]) this.settleNext();
+      } else if (!failed)
         for (const i of this.drainPorts()) {
           if (d.feed.done) break;
           if (!this.lbReqs[i]) this.settleRequest(i);
         }
-      if (!this.drainOut() && (d.feed.done || failed)) {
+      if (!this.drainOut() && !this.lbHeld && (d.feed.done || failed)) {
         d.phase = 'final';
         d.finalWork0 = loop.work ?? 0;
         d.finalJobs0 = this.jobs;
@@ -1690,8 +1770,26 @@ export class SlowRunner {
     this.finishDrain();
   }
 
-  /** The next settle frames to look-back worker `port`. */
-  private settleRequest(port = 0): void {
+  /**
+   * The settle's next request out: the held one is cued (or, with none, a
+   * request goes out), at the point where the request itself went before;
+   * and the one after it goes out held, to be read and preprocessed while
+   * the slow worker works on the answer in hand. Same frames, same order,
+   * and each request is solved with the library it was before.
+   */
+  private settleNext(): void {
+    const d = this.drain!;
+    if (d.stop) return;
+    if (this.lbHeld) this.solveHeld();
+    else this.settleRequest(0);
+    if (this.lbReqs[0]) this.settleRequest(0, true);
+  }
+
+  /**
+   * The next settle frames to look-back worker `port` (`hold`, worker 0 on the
+   * recording: prepared ahead, see `settleNext`).
+   */
+  private settleRequest(port = 0, hold = false): void {
     const d = this.drain!;
     const frames = d.feed.take(SETTLE.batch);
     if (frames.length === 0) return;
@@ -1701,7 +1799,7 @@ export class SlowRunner {
       flat[3 * i + 1] = f.block;
     });
     const items = frames.map((f) => ({ frame: f.frame, ids: new Float64Array(0) }));
-    this.sendRequest(port, 'end', flat, items);
+    this.sendRequest(port, 'end', flat, items, undefined, hold);
   }
 
   /** A settle answer: every frame through `observe`, then the visits they earn. */
@@ -2132,6 +2230,8 @@ export class SlowRunner {
     this.askTimer?.();
     this.askTimer = null;
     this.lbReqs = [];
+    // (The look-back worker's run is reset too, which lets a held request go.)
+    this.lbHeld = null;
     this.lbPortOff = [];
     this.lbPortBusy = [];
     this.lbRun = [];

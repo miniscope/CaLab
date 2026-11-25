@@ -9,6 +9,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { SlowRunner, type PublishedLibrary, type SlowLoopLike } from '../lib/slow-runner.ts';
 import { lookbackFrames } from '../lib/lookback-reader.ts';
+import { SETTLE } from '../lib/settle.ts';
 import type { LookbackToSlow, SlowToLookback } from '../workers/lookback-types.ts';
 import type { FastToSlow, SlowToMain } from '../workers/slow-types.ts';
 
@@ -558,6 +559,40 @@ describe("settle pool on a recording's factors (?factors=file)", () => {
     const settle = t.status().lookback!.settle!;
     expect(settle).toMatchObject({ done: true, total: 400 });
     expect(settle.fed).toBeLessThan(settle.total);
+  });
+
+  it('the pooled settle on factors sends plain requests: none waits for final inputs or is held, no cues', () => {
+    const t = settleOnFactors();
+    answerAll(t);
+    expect(t.status().lookback!.settle).toMatchObject({ source: 'factors', done: true, fed: 400 });
+    for (const i of [0, 1, 2]) {
+      const msgs = t.toLb[i].slice(t.sent[i]);
+      const reqs = msgs.filter((m): m is Req => m.type === 'request');
+      expect(reqs.length).toBeGreaterThan(0);
+      for (const q of reqs) {
+        expect(q.final).toBeUndefined();
+        expect(q.hold).toBeUndefined();
+      }
+      expect(msgs.some((m) => m.type === 'solve' || m.type === 'drop')).toBe(false);
+    }
+  });
+
+  it('the settle on the file waits for final inputs and is relayed on worker 0 (held, then cued)', () => {
+    const t = setup({ pool: 2, init: { factorFile: true } });
+    t.live(50);
+    t.r.handle({ type: 'end', session: 1 });
+    const sent = t.toLb[0].length;
+    t.r.factors({ type: 'factors', session: 1, ready: false, reason: 'behind' });
+    answerAll(t as ReturnType<typeof settleOnFactors>);
+    const msgs = t.toLb[0].slice(sent);
+    const reqs = msgs.filter((m): m is Req => m.type === 'request');
+    expect(reqs.length).toBe(Math.ceil(400 / SETTLE.batch));
+    expect(reqs.every((q) => q.final === true)).toBe(true);
+    // The first goes out to be solved; every later one is held and cued once.
+    expect(reqs.map((q) => q.hold === true)).toEqual(reqs.map((_, k) => k > 0));
+    const cues = msgs.flatMap((m) => (m.type === 'solve' ? [m.id] : []));
+    expect(cues).toEqual(reqs.slice(1).map((q) => q.id));
+    expect(t.status().lookback!.settle).toMatchObject({ source: 'file', done: true, fed: 400 });
   });
 
   it('the settle on the file stays on worker 0 alone', () => {

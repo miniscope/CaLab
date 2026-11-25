@@ -8,6 +8,7 @@ import { makePlan, PipelineCursor, type PipelineStep } from '../lib/pipeline-pla
 import { createPipelineStore, MAX_IN_FLIGHT, ThroughputMeter } from '../lib/pipeline-store.ts';
 import { downsampleFrame, previewFactor } from '../lib/preview.ts';
 import { createRunHistory } from '../lib/run-history.ts';
+import type { FlatFieldEvent, FlatFieldMap } from '../lib/flat-field.ts';
 import type { LookbackFeed } from '../lib/lookback-client.ts';
 import { FINAL_SETTLE_LEVEL_DEFAULT } from '../lib/settle.ts';
 import { VISIT_RATE } from '../lib/visit-rate.ts';
@@ -846,6 +847,65 @@ describe('pipeline store: Background settle and the settle pool', () => {
       expect(calls.pool).toEqual([session, session]);
       expect(started).toHaveLength(1);
       dispose();
+    });
+  });
+
+  /**
+   * The end settle's `final`: after Discover's last back state (the `done`
+   * step) and after the flat field's last map (its `finished`), in whichever
+   * order they come; without an estimator, at `done`.
+   */
+  describe('final inputs for the end settle', () => {
+    async function finalRun(order: ('done' | 'finished' | 'map')[], flat = true) {
+      const log: string[] = [];
+      const feed: LookbackFeed = {
+        ...feedSpy([]).feed,
+        backState: () => void log.push('back'),
+        flatField: () => void log.push('flat'),
+        final: () => void log.push('final'),
+      };
+      const { client, steps } = manualClient();
+      let listener: ((e: FlatFieldEvent) => void) | null = null;
+      const c = flat
+        ? {
+            ...client,
+            subscribeFlatField: (l: (e: FlatFieldEvent) => void) => {
+              listener = l;
+              return () => {};
+            },
+          }
+        : client;
+      await createRoot(async (dispose) => {
+        const store = make(feed, c as typeof client);
+        store.setLookback(true);
+        await store.start();
+        const session = (
+          client.startPipeline.mock.calls[0] as unknown as [unknown, { session: number }]
+        )[1].session;
+        log.length = 0;
+        for (const ev of order) {
+          if (ev === 'done') {
+            steps[0].resolve({ kind: 'done', backState: { frame: 9, state: new Uint8Array(1) } });
+            await flush();
+          } else if (ev === 'map')
+            listener!({ type: 'map', session, seq: 1, map: {} as FlatFieldMap, change: null });
+          else listener!({ type: 'finished', session });
+        }
+        dispose();
+      });
+      return log;
+    }
+
+    it('waits for the flat field when it finishes after the last back state', async () => {
+      expect(await finalRun(['done', 'map', 'finished'])).toEqual(['back', 'flat', 'final']);
+    });
+
+    it('waits for the last back state when the flat field finished first', async () => {
+      expect(await finalRun(['map', 'finished', 'done'])).toEqual(['flat', 'back', 'final']);
+    });
+
+    it('goes at the last back state when no estimator runs', async () => {
+      expect(await finalRun(['done'], false)).toEqual(['back', 'final']);
     });
   });
 

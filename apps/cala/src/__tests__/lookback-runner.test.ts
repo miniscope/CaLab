@@ -149,9 +149,16 @@ function setup(
     timer: opts.timer ?? (() => () => {}),
   });
   const answered = new Set<number>();
+  /** A held request is answered only after its `solve` (never after a `drop`). */
+  const cued = (id: number, cue: 'solve' | 'drop') =>
+    toLb.some((m) => m.type === cue && m.id === id);
   const pending = () =>
-    toLb.find((m) => m.type === 'request' && !answered.has(m.id)) as
-      Extract<SlowToLookback, { type: 'request' }> | undefined;
+    toLb.find(
+      (m) =>
+        m.type === 'request' &&
+        !answered.has(m.id) &&
+        (!m.hold || (cued(m.id, 'solve') && !cued(m.id, 'drop'))),
+    ) as Extract<SlowToLookback, { type: 'request' }> | undefined;
   /** Answer the oldest unanswered request with one frame per item. */
   const answer = () => {
     const req = pending();
@@ -357,11 +364,17 @@ describe('SlowRunner look-back (fake loop)', () => {
     const first = statuses(t).at(-1)!;
     expect(first.lookback?.settling).toBe(true);
     expect(first.lookback?.settle).toMatchObject({ fed: 0, total: 40, recording: 40, done: false });
-    // Requests of SETTLE.batch frames, in order, one preprocessor block (no gap).
+    // Requests of SETTLE.batch frames, in order, one preprocessor block (no gap): the first
+    // out, the next held (prepared ahead, solved on its cue).
     const reqs = settleReqs(t);
-    expect(reqs).toHaveLength(1);
-    expect(reqs[0].map((f) => f.frame)).toEqual([...Array(SETTLE.batch).keys()]);
-    expect(new Set(reqs[0].map((f) => f.block))).toEqual(new Set([-1]));
+    expect(reqs).toHaveLength(2);
+    expect(reqs.flat().map((f) => f.frame)).toEqual([...Array(2 * SETTLE.batch).keys()]);
+    expect(new Set(reqs.flat().map((f) => f.block))).toEqual(new Set([-1]));
+    const sent = t.toLb.filter((m) => m.type === 'request');
+    expect(sent.map((m) => [m.final, m.hold ?? false])).toEqual([
+      [true, false],
+      [true, true],
+    ]);
     t.run();
     // Every frame once, through the ordinary observe with its stream index.
     expect(t.streams.slice(discoverObserves)).toEqual([...Array(40).keys()]);
@@ -380,19 +393,23 @@ describe('SlowRunner look-back (fake loop)', () => {
     expect(finals(t)[0].footprintNoise).toEqual(Float64Array.of(1, 0.1));
   });
 
-  it('the next request goes out before the answer is observed', () => {
+  it('the next request is cued before the answer is observed, and the one after goes out held', () => {
     const t = setup(0);
     t.r.handle({ ...INIT, lookback: true });
-    t.r.handle(frames(0, 40));
+    t.r.handle(frames(0, 48));
     t.r.handle({ type: 'end', session: 1 });
     const before = t.calls.length;
     t.answer();
     const reqs = t.toLb.filter((m) => m.type === 'request');
-    expect(reqs).toHaveLength(2);
-    // The second request was sent while the first answer had not been observed yet.
+    expect(reqs).toHaveLength(3);
+    // The second request's cue and the third (held) went out while the first answer had not
+    // been observed yet (the buffer goes back after it is).
     expect(t.calls.slice(before).filter((c) => c === 'observe')).toHaveLength(SETTLE.batch);
     const order = t.toLb.map((m) => m.type);
+    expect(order.lastIndexOf('solve')).toBeLessThan(order.lastIndexOf('request'));
     expect(order.lastIndexOf('request')).toBeLessThan(order.lastIndexOf('release'));
+    const solve = t.toLb.find((m) => m.type === 'solve');
+    expect(solve?.type === 'solve' && solve.id).toBe(reqs[1].type === 'request' && reqs[1].id);
   });
 
   it('checkpoints publish the library and count the cells still moving', () => {
@@ -584,15 +601,21 @@ describe('SlowRunner look-back (fake loop)', () => {
     t.r.handle(frames(0, 100));
     t.r.handle({ type: 'end', session: 1 });
     t.answer();
-    const req = t.toLb.filter((m) => m.type === 'request').at(-1)!;
+    // The request out is the one cued (the newest request is held behind it).
+    const cue = t.toLb.filter((m) => m.type === 'solve').at(-1)!;
+    const held = t.toLb.filter((m) => m.type === 'request').at(-1)!;
     t.r.handleLookback({
       type: 'error',
       session: 1,
-      id: req.type === 'request' ? req.id : 0,
+      id: cue.type === 'solve' ? cue.id : 0,
       message: 'disk',
     });
     t.run();
     expect(finals(t)).toHaveLength(1);
+    // The held request is given up (never answered).
+    expect(
+      t.toLb.some((m) => m.type === 'drop' && held.type === 'request' && m.id === held.id),
+    ).toBe(true);
     const st = statuses(t).at(-1)!.lookback!;
     expect(st.error).toBe('disk');
     expect(st.settle).toMatchObject({ fed: SETTLE.batch, done: true });
@@ -636,6 +659,21 @@ describe("SlowRunner settle on a stream's factors (fake loop)", () => {
       done: true,
       source: 'factors',
     });
+  });
+
+  it('its requests neither wait for final inputs (no recording: none is ever sent) nor are held', () => {
+    const t = setup(0);
+    t.r.handle(FINIT);
+    t.r.handle(frames(0, 20));
+    t.r.handle(frames(20, 20));
+    t.r.handle({ type: 'end', session: 1 });
+    t.r.factors(ready(40));
+    t.run();
+    expect(finals(t)).toHaveLength(1);
+    const reqs = t.toLb.filter((m) => m.type === 'request');
+    expect(reqs.length).toBeGreaterThan(1);
+    for (const q of reqs) expect([q.final, q.hold]).toEqual([undefined, undefined]);
+    expect(t.toLb.some((m) => m.type === 'solve' || m.type === 'drop')).toBe(false);
   });
 
   it("factors that cannot be read end the wait with Discover's library as the final one", () => {
@@ -728,6 +766,11 @@ describe("SlowRunner settle on a recording's factors (?factors=file, fake loop)"
     expect(kinds.slice(0, sw).filter((k) => k === 'request')).toHaveLength(before);
     expect(kinds.indexOf('request', sw)).toBeGreaterThan(sw);
     t.run();
+    // On factors (worker 0 alone here) the settle is not gated or relayed: plain requests.
+    const after = t.toLb.slice(sw);
+    for (const m of after)
+      if (m.type === 'request') expect([m.final, m.hold]).toEqual([undefined, undefined]);
+    expect(after.some((m) => m.type === 'solve' || m.type === 'drop')).toBe(false);
     expect(finals(t)).toHaveLength(1);
     expect(statuses(t).at(-1)!.lookback!.settle).toMatchObject({
       source: 'factors',
