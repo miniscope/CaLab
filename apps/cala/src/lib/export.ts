@@ -119,7 +119,8 @@
  * compress pool: `compress_workers` (while Discover read), `compress_workers_after`,
  * `compress_behind_frames` (not compressed at Discover's end), `compress_backlog_peak_bytes`
  * (window files waiting for compression, at their peak), `compress_fps_after`,
- * `compress_window` (frames per window) and `compress_backend` ('cpu', or 'gpu' with
+ * `compress_window` (frames per window), `compress_ring` (frames the GPU's ring holds) and
+ * `compress_backend` ('cpu', or 'gpu' with
  * `?factors=gpu`). Extract's
  * record of a factor run solved by the extractor carries `extract_engine` ('factors'),
  * `factor_windows_projected` (solved from the factors), `factor_windows_rebuilt` (on rebuilt
@@ -296,6 +297,7 @@ export function stageMeta(r: StageRun): Record<string, unknown> {
     out.compress_backlog_peak_bytes = r.compress.backlogPeakBytes;
     out.compress_fps_after = r.compress.fpsAfter;
     if (r.compress.window !== undefined) out.compress_window = r.compress.window;
+    if (r.compress.ring !== undefined) out.compress_ring = r.compress.ring;
     if (r.compress.backend !== undefined) out.compress_backend = r.compress.backend;
   }
   return out;

@@ -158,6 +158,7 @@ export interface StageRun {
     backlogPeakBytes: number;
     fpsAfter: number | null;
     window?: number;
+    ring?: number;
     backend?: 'cpu' | 'gpu';
   };
 }

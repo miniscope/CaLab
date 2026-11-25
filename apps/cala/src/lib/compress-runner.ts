@@ -329,6 +329,8 @@ export class CompressRunner {
   private ring: RingClock | null = null;
   /** The GPU's frames per window (0: not a GPU run); kept once the GPU is released. */
   private gwindow = 0;
+  /** Frames the GPU's ring holds (window + slack); kept once the GPU is released. */
+  private gring = 0;
   /** The window being filled. */
   private gwin: GpuWindow = noGpuWindow();
   /** Closed windows, in stream order; the first is the one being compressed. */
@@ -987,6 +989,7 @@ export class CompressRunner {
     }
     this.gpu = g;
     this.gwindow = g.window;
+    this.gring = g.window + g.slack;
     this.ring = new RingClock(g.window, g.slack);
     this.gwin = noGpuWindow();
     this.gaborted = new Promise<null>((resolve) => (this.gabort = () => resolve(null)));
@@ -1310,6 +1313,7 @@ export class CompressRunner {
       behindAtEnd: this.behindAtEnd,
       fpsAfter: this.fpsAfter(),
       ...(window !== undefined ? { window } : {}),
+      ...(this.gring > 0 ? { ring: this.gring } : {}),
       backend: this.gwindow > 0 ? 'gpu' : 'cpu',
       ...(this.gcheck ? { check: { ...this.gcheck } } : {}),
     };
@@ -1355,6 +1359,7 @@ export class CompressRunner {
     this.framesAtEnd = 0;
     this.behindAtEnd = null;
     this.gwindow = 0;
+    this.gring = 0;
     this.gkeep.clear();
     this.gchecks = [];
     this.gcheck = null;

@@ -16,6 +16,20 @@ import {
 import { initTestWasm } from './wasm-test.ts';
 
 describe('RingClock', () => {
+  it('holds a second window of slack: a full window fits behind the one compressing', () => {
+    const r = new RingClock(600, 600);
+    expect(r.size).toBe(1200);
+    expect(r.slot(1199)).toBe(1199);
+    expect(r.slot(1201)).toBe(1);
+    // Window [0, 600) compressing: the whole next window [600, 1200) fits, one frame more does not.
+    expect(r.fits(600, 600, 0)).toBe(true);
+    expect(r.fits(600, 601, 0)).toBe(false);
+    expect(r.fits(1199, 2, 0)).toBe(false);
+    // Window [600, 1200) compressing: frames up to 1800 fit.
+    expect(r.fits(1200, 600, 600)).toBe(true);
+    expect(r.fits(1200, 601, 600)).toBe(false);
+  });
+
   it('maps stream frames to slots and refuses to overwrite a window not yet compressed', () => {
     const r = new RingClock(600, 150);
     expect(r.size).toBe(750);
@@ -90,7 +104,7 @@ describe('openGpuCompressor', () => {
     expect(r).toEqual({ reason: 'This browser has no WebGPU.' });
   });
 
-  it('opens with a window from the ladder when its ring fits', async () => {
+  it('opens with a ring of two windows when it fits', async () => {
     const tried: number[] = [];
     const r = await openGpuCompressor({
       ...base,
@@ -102,13 +116,30 @@ describe('openGpuCompressor', () => {
     if ('reason' in r) throw new Error(r.reason);
     expect(GPU_WINDOW_LADDER).toEqual([600]);
     expect(r.window).toBe(600);
-    expect(r.slack).toBe(150);
+    expect(r.slack).toBe(600);
     // The whole ring (window + slack frames) is one allocation attempt.
-    expect(tried).toEqual([750 * ringFrameBytes(64 * 64)]);
+    expect(tried).toEqual([1200 * ringFrameBytes(64 * 64)]);
     r.destroy();
   });
 
-  it('gives no compressor when no window length fits', async () => {
+  it('falls back to a ring of a window and a quarter when two windows do not fit', async () => {
+    const tried: number[] = [];
+    const fb = ringFrameBytes(64 * 64);
+    const r = await openGpuCompressor({
+      ...base,
+      gpu: fakeGpu((bytes) => {
+        tried.push(bytes);
+        return bytes <= 750 * fb;
+      }).gpu,
+    });
+    if ('reason' in r) throw new Error(r.reason);
+    expect(r.window).toBe(600);
+    expect(r.slack).toBe(150);
+    expect(tried).toEqual([1200 * fb, 750 * fb]);
+    r.destroy();
+  });
+
+  it('gives no compressor, and says why, when neither ring fits', async () => {
     const tried: number[] = [];
     const r = await openGpuCompressor({
       ...base,
@@ -118,7 +149,8 @@ describe('openGpuCompressor', () => {
       }).gpu,
     });
     expect(r).toEqual({ reason: expect.stringContaining('GPU memory') });
-    expect(tried).toHaveLength(GPU_WINDOW_LADDER.length);
+    const fb = ringFrameBytes(64 * 64);
+    expect(tried).toEqual([1200 * fb, 750 * fb]);
   });
 
   it('uploads each frame into its block and slot, padded to whole words', async () => {
@@ -131,15 +163,15 @@ describe('openGpuCompressor', () => {
       gpu: fake.gpu,
     });
     if ('reason' in r) throw new Error(r.reason);
-    expect(fake.rings).toHaveLength(5);
+    expect(fake.rings).toHaveLength(8);
     const hw = 33 * 33;
     const frames = new Int16Array(3 * hw).map((_, i) => i % 1000);
     fake.writes.length = 0;
-    // Stream frames 749, 750, 751: the ring's last slot, then slots 0 and 1.
-    r.upload(frames, 749, 3);
+    // Stream frames 1199, 1200, 1201: the ring's last slot, then slots 0 and 1.
+    r.upload(frames, 1199, 3);
     const fb = ringFrameBytes(hw);
     expect(fake.writes.map((w) => [fake.rings.indexOf(w.buffer), w.offset, w.bytes])).toEqual([
-      [4, 149 * fb, fb],
+      [7, 149 * fb, fb],
       [0, 0, fb],
       [0, fb, fb],
     ]);

@@ -1064,7 +1064,7 @@ describe('a recording compressed on the GPU', () => {
       { index: 2, start: 100, frames: 20 },
     ]);
     expect(last).toMatchObject({ final: true, windows: 3, frames: 120, pending: 0 });
-    expect(last).toMatchObject({ window: 50, backend: 'gpu', meanRank: 3 });
+    expect(last).toMatchObject({ window: 50, ring: 63, backend: 'gpu', meanRank: 3 });
     // The last window written, the GPU is freed; a device lost then changes nothing.
     expect(fakes[0].destroyed()).toBe(1);
     fakes[0].lose('late');

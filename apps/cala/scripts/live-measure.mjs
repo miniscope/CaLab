@@ -154,6 +154,7 @@ const sample = () => {
       fpsAfter: cs.fpsAfter ?? null,
       // Frames per window, where they are compressed, and `?debug&gpucheck`'s sums.
       window: cs.window ?? null,
+      ring: cs.ring ?? null,
       backend: cs.backend ?? null,
       check: cs.check ?? null,
     },
@@ -266,6 +267,7 @@ function fileFactorSummary(timeline) {
     ),
     // `?factors=gpu`: frames per window, the backend, the compressor's error, `?debug&gpucheck`.
     compressWindow: last?.compress?.window ?? null,
+    compressRing: last?.compress?.ring ?? null,
     compressBackend: last?.compress?.backend ?? null,
     compressError: timeline.find((s) => s.compressError)?.compressError ?? null,
     // One value per window (the status after that window).

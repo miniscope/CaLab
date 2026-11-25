@@ -408,6 +408,7 @@ const App: Component = () => {
         backlogPeakBytes: cs.backlogPeakBytes ?? 0,
         fpsAfter: cs.fpsAfter ?? null,
         ...(cs.window !== undefined ? { window: cs.window } : {}),
+        ...(cs.ring !== undefined ? { ring: cs.ring } : {}),
         ...(cs.backend ? { backend: cs.backend } : {}),
       };
     }

@@ -4,7 +4,8 @@
  * on a window of quantized frames held on the GPU, with WASM finishing each
  * tile (`GpuTileJob`).
  *
- * The frames live in a ring of `window + slack` slots, stored as blocks of
+ * The frames live in a ring of `window + slack` slots (`gpuSlacks`: two
+ * windows, or a window and a quarter where that does not allocate), stored as blocks of
  * `GPU_RING_BLOCK` frames (one buffer each, so every binding stays under
  * WebGPU's default 128 MB storage-binding limit). A window may start at any
  * slot and wrap around the ring, so each product with the window's data is
@@ -36,8 +37,13 @@ export const GPU_MAX_STRIDE = 320;
 /** Frames per ring buffer (150 x 600 x 600 x 2 bytes = 108 MB at 600 px). */
 export const GPU_RING_BLOCK = 150;
 
-/** Ring slots beyond the window: room to upload the next frames while a window compresses. */
-export const gpuSlack = (window: number): number => Math.ceil(window / 4);
+/**
+ * Ring slots beyond the window, most first: room to upload the next frames
+ * while a window compresses. A full window of slack lets the GPU take a
+ * whole window's reading time per window; a quarter window is the fallback
+ * where a ring of two windows does not allocate (864 MB at 600 px).
+ */
+export const gpuSlacks = (window: number): number[] => [window, Math.ceil(window / 4)];
 
 // `GPUBufferUsage` / `GPUMapMode` values (not defined outside a WebGPU browser).
 const USAGE_MAP_READ = 0x1;
@@ -237,10 +243,12 @@ export async function openGpuCompressor(o: {
   }
   const hw = o.width * o.height;
   for (const window of GPU_WINDOW_LADDER) {
-    const bufs = await allocate(device, window, gpuSlack(window), hw);
-    if (bufs) {
+    for (const slack of gpuSlacks(window)) {
+      const bufs = await allocate(device, window, slack, hw);
+      if (!bufs) continue;
       return new GpuCompressor(device, pipes, bufs, {
         window,
+        slack,
         width: o.width,
         hw,
         quant: o.quant,
@@ -344,6 +352,7 @@ interface Pipes {
 
 interface Setup {
   window: number;
+  slack: number;
   width: number;
   hw: number;
   quant: number;
@@ -368,7 +377,7 @@ class GpuCompressor implements GpuCompressorLike {
     private readonly s: Setup,
   ) {
     this.window = s.window;
-    this.slack = gpuSlack(s.window);
+    this.slack = s.slack;
     this.clock = new RingClock(this.window, this.slack);
     this.hwp = s.hw + (s.hw & 1);
     this.lost = device.lost.then((info) =>

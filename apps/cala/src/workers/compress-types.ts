@@ -144,6 +144,8 @@ export interface CompressStatus {
   fpsAfter?: number | null;
   /** Frames per window (the GPU compressor's on the GPU, else the feed's). */
   window?: number;
+  /** Frames the GPU compressor's ring holds (window + slack; absent: not on the GPU). */
+  ring?: number;
   /** Where the windows are compressed. */
   backend?: 'cpu' | 'gpu';
   /** `?debug&gpucheck=N`: the GPU's factors against the CPU's (absent: no check, or none done yet). */
