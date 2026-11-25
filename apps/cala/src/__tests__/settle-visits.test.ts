@@ -125,19 +125,23 @@ function fakeLoop(due: number) {
  * A look-back worker: answers every request after its port's delay; a `hold` request waits for
  * its `solve` (`drop`: never answered).
  */
-function fakeLookback(answer: (m: LookbackToSlow) => void) {
+function fakeLookback(
+  answer: (m: LookbackToSlow) => void,
+  count: { answers: number; releases: number },
+) {
   const held = new Map<number, Extract<SlowToLookback, { type: 'request' }>>();
   const reply = (m: Extract<SlowToLookback, { type: 'request' }>) => {
-    const count = m.items.length / 3;
+    const n = m.items.length / 3;
+    count.answers++;
     answer({
       type: 'frames',
       session: m.session,
       id: m.id,
       version: 1,
-      count,
+      count: n,
       cells: 1,
-      frames: new Float32Array(2 * count),
-      traces: new Float32Array(count),
+      frames: new Float32Array(2 * n),
+      traces: new Float32Array(n),
     });
   };
   return (m: SlowToLookback) => {
@@ -149,6 +153,7 @@ function fakeLookback(answer: (m: LookbackToSlow) => void) {
       held.delete(m.id);
       if (r) reply(r);
     } else if (m.type === 'drop') held.delete(m.id);
+    else if (m.type === 'release') count.releases++;
   };
 }
 
@@ -167,6 +172,8 @@ interface Schedule {
   due?: number;
   /** The settle's visit rate (0: none, the behaviour before). */
   rate?: number;
+  /** Press Stop this many ms into the settle. */
+  stopAfterMs?: number;
 }
 
 /** One Discover run of `FRAMES` frames and its Final settle under `sch`; the settle's last status. */
@@ -192,9 +199,10 @@ async function settleRun(sch: Schedule) {
       sch.visitMs,
     ),
   );
+  const count = { answers: 0, releases: 0 };
   const lbPorts = Array.from({ length: sch.pool ? 2 : 1 }, (_, k) => {
     const toSlow = port<LookbackToSlow>((m) => runner!.handleLookback(m, k), rand, sch.answerMs);
-    return port<SlowToLookback>(fakeLookback(toSlow), rand, 1);
+    return port<SlowToLookback>(fakeLookback(toSlow, count), rand, 1);
   });
   runner = new SlowRunner({
     create: () => loop,
@@ -245,6 +253,7 @@ async function settleRun(sch: Schedule) {
     });
     runner.setSettlePool(1, 1);
   }
+  if (sch.stopAfterMs !== undefined) setTimeout(() => runner!.stopSettling(1), sch.stopAfterMs);
   const final = () => toMain.some((m) => m.type === 'status' && m.status.final);
   for (let k = 0; k < 20_000 && !final(); k++) await new Promise((r) => setTimeout(r, 1));
   expect(final()).toBe(true);
@@ -253,7 +262,9 @@ async function settleRun(sch: Schedule) {
     .map((m) => (m.type === 'status' ? m.status.lookback?.settle : undefined))
     .filter((s): s is SettleStatus => s !== undefined)
     .at(-1)!;
-  return { st, pass };
+  // Answers still on their way when the settle ended (after a Stop) are released as they come.
+  await new Promise((r) => setTimeout(r, 4 * (sch.answerMs + 2)));
+  return { st, pass, count };
 }
 
 const SCHEDULES: Schedule[] = [
@@ -273,7 +284,9 @@ describe('Final settle visit rate', () => {
   it.each(SCHEDULES)(
     'hands out floor(rate x fed) visits in the pass, never ahead of the frames (%o)',
     async (sch) => {
-      const { st, pass } = await settleRun(sch);
+      const { st, pass, count } = await settleRun(sch);
+      // Every answer was observed and its buffer went back.
+      expect(count.releases).toBe(count.answers);
       expect(st.fed).toBe(st.total);
       expect(st.total).toBe(FRAMES);
       expect(st.workers).toBe(sch.pool ? 2 : 1);
@@ -306,6 +319,20 @@ describe('Final settle visit rate', () => {
     expect(v.paidAtEnd).toBeGreaterThan(0);
     // What the pass could still pay with every tile due (one visit per tile, then nothing is due).
     expect(v.handed + v.unpaid).toBe(Math.floor(SETTLE.visitRate * FRAMES + 1e-9));
+  }, 20_000);
+
+  it('a Stop while answers wait to be observed: they are not observed, their buffers go back', async () => {
+    const { st, count } = await settleRun({
+      seed: 11,
+      visitWorkers: 1,
+      visitMs: 25,
+      answerMs: 1,
+      pool: true,
+      stopAfterMs: 60,
+    });
+    expect(st.stopped).toBe(true);
+    expect(st.fed).toBeLessThan(st.total);
+    expect(count.releases).toBe(count.answers);
   }, 20_000);
 
   it('without a rate (the behaviour before) the visit count follows the timing', async () => {

@@ -218,7 +218,7 @@ export interface SettleVisits {
   unpaid: number;
   /** The most visits owed at once (earned, not yet handed out). */
   owedMax: number;
-  /** Look-back requests held back while the visits owed were above `SETTLE.visitOwedFrames`' worth, and that wait, ms. */
+  /** Waits of the settle's observation while the visits owed were above `SETTLE.visitOwedFrames`' worth, and their time, ms. */
   holds: number;
   heldMs: number;
   /** Times credit was owed with no visit out and no tile due (it was carried to later frames). */

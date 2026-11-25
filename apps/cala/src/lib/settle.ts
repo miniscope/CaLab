@@ -48,11 +48,17 @@ export const SETTLE = {
    */
   visitRate: 0.4,
   /**
-   * Visits owed (earned, not handed out) above which the settle sends no further look-back
-   * request while a visit is out: it waits for the visit workers instead of running ahead of
-   * them. In settle frames' worth of credit (one request's).
+   * Visits owed (earned, not handed out) above which the settle observes no further frame
+   * while a visit is out: it waits for the visit workers instead of running ahead of them. In
+   * settle frames' worth of credit (one request's).
    */
   visitOwedFrames: 16,
+  /**
+   * With visit workers: settle frames observed between give-ways while a visit is out (a frame
+   * takes about 5.5 ms on the workshop recording), so visit results are applied within an
+   * answer instead of after all 16 of its frames. Divides `batch` and `checkEvery`.
+   */
+  observePiece: 4,
 } as const;
 
 /**
