@@ -1363,13 +1363,15 @@ export class SlowRunner {
         skipped++;
         continue;
       }
-      this.tm('csettle.observe', () => loop.observeSettle!(
-        msg.frames.subarray(i * px, (i + 1) * px),
-        msg.version,
-        msg.traces.subarray(i * msg.cells, (i + 1) * msg.cells),
-        bg?.subarray(i * nb, (i + 1) * nb),
-        req.items[i].frame,
-      ));
+      this.tm('csettle.observe', () =>
+        loop.observeSettle!(
+          msg.frames.subarray(i * px, (i + 1) * px),
+          msg.version,
+          msg.traces.subarray(i * msg.cells, (i + 1) * msg.cells),
+          bg?.subarray(i * nb, (i + 1) * nb),
+          req.items[i].frame,
+        ),
+      );
     }
     if (skipped > 0) loop.settleSkipped?.(skipped);
     work.next = end;

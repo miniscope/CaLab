@@ -385,7 +385,10 @@ async function profileOnce(p) {
   L(`PROFILE ${p.spec}: start`);
   await new Promise((r) => setTimeout(r, p.len));
   const { profile } = await send('Profiler.stop', {}, sid);
-  writeFileSync(join(out, `${tag}-slow-${p.spec.replace(':', '_')}.cpuprofile`), JSON.stringify(profile));
+  writeFileSync(
+    join(out, `${tag}-slow-${p.spec.replace(':', '_')}.cpuprofile`),
+    JSON.stringify(profile),
+  );
   L(`PROFILE ${p.spec}: ${profile.samples?.length ?? 0} samples written`);
 }
 if (profileSpecs.length) {
