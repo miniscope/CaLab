@@ -10,6 +10,7 @@ import type { FlatFieldMap } from '../lib/flat-field.ts';
 import type { FrameView } from '../lib/preview.ts';
 import type { PaceStats } from '../lib/frame-pacer.ts';
 import type { ReplayInput } from '../lib/pipeline-stages.ts';
+import type { CompressTiling } from './compress-types.ts';
 
 /** Fast-loop settings of a pipeline run. */
 export interface CellsSettings {
@@ -46,6 +47,22 @@ export interface CellsSettings {
   visitRate?: number;
   /** Feed the compress worker (default off; needs its port). */
   compress?: boolean;
+  /** With `compress`: how the frames are cut into tiles (default plain). */
+  compressTiling?: CompressTiling;
+  /** With `compress`: compress workers while the recording runs and after its end (default one and one). */
+  compressPool?: { discover: number; after: number };
+  /** With `compress`: the cap on window files waiting for compression, bytes (`?debug&cbacklog`). */
+  compressBacklogCap?: number;
+  /** With `compress`: Extract on factors on rebuilt frames, as before slice 6 (`?debug&fextract=0`). */
+  compressFrameExtract?: boolean;
+  /** With `compress`: a recording on the GPU route (the default) compresses its windows on the GPU (`CompressInit.gpu`). */
+  compressGpu?: boolean;
+  /** With `compressGpu`: windows the CPU compresses too, to check the GPU's factors (`?debug&gpucheck=N`). */
+  compressGpuCheck?: number;
+  /** A live stream with `?factors`: the slow loop settles on the factors after the stream ends (`SlowInit.factorSettle`). */
+  factorSettle?: boolean;
+  /** A recording with `?factors=file`: at Discover's end the settle may read the factors (`SlowRunner`). */
+  factorFile?: boolean;
   /** Return a residual preview with each batch (the residual view is shown). */
   residual?: boolean;
   /** Return the signed (unclipped) traces with each batch (Extract; `CellsBatch.signed`). */
@@ -100,6 +117,12 @@ export type FrameRequest =
   | { type: 'connect-slow'; id: number; port: MessagePort }
   /** The port to the compress worker (transferred). */
   | { type: 'connect-compress'; id: number; port: MessagePort }
+  /**
+   * Trace worker, answered at once: the run is stopped or replaced, so a batch
+   * waiting for room in the GPU compressor's ring goes on without the run's
+   * factors, and none waits again.
+   */
+  | { type: 'release-compress'; id: number }
   /** Turn cell discovery on or off in the running pipeline. */
   | { type: 'set-discovery'; id: number; on: boolean }
   /** Return (or stop returning) the model residual preview in the running pipeline. */

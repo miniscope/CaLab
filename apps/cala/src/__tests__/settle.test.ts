@@ -74,6 +74,30 @@ describe('SettleFeed', () => {
     expect(feed.taken).toBe(7);
     expect(feed.take(4)).toEqual([]);
   });
+
+  it('hands out frames put back (a failed request) again first, in their own block', () => {
+    const feed = new SettleFeed([
+      { start: 0, end: 5 },
+      { start: 64, end: 66 },
+    ]);
+    const a = feed.take(3);
+    feed.take(4);
+    expect(feed.done).toBe(true);
+    feed.putBack(a.map((f) => f.frame));
+    expect(feed.done).toBe(false);
+    expect(feed.taken).toBe(4);
+    expect(feed.take(2)).toEqual([
+      { frame: 0, block: -1 },
+      { frame: 1, block: -1 },
+    ]);
+    feed.putBack([65]);
+    expect(feed.take(4)).toEqual([
+      { frame: 2, block: -1 },
+      { frame: 65, block: -2 },
+    ]);
+    expect(feed.done).toBe(true);
+    expect(feed.taken).toBe(7);
+  });
 });
 
 describe('movedAgainstNoise', () => {

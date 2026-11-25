@@ -250,11 +250,14 @@ export interface AnalyticsDeps {
   sampleMs?: number;
 }
 
-let reportExport: ((sessions: number) => void) | null = null;
+let reportExport: ((sessions: number, formatVersion: number) => void) | null = null;
 
 /** A results export finished outside a multi-session run (the Export button). */
-export function reportResultsExported(sessions: number): void {
-  reportExport?.(sessions);
+export function reportResultsExported(
+  sessions: number,
+  formatVersion: number = EXPORT_FORMAT_VERSION,
+): void {
+  reportExport?.(sessions, formatVersion);
 }
 
 function defaultAdapter(): Promise<AdapterLike | null> {
@@ -436,8 +439,8 @@ export function setupAnalyticsEffects(deps: AnalyticsDeps): void {
     if (written > 0)
       send('results_exported', { sessions: written, format_version: EXPORT_FORMAT_VERSION });
   });
-  reportExport = (sessions) =>
-    send('results_exported', { sessions, format_version: EXPORT_FORMAT_VERSION });
+  reportExport = (sessions, formatVersion) =>
+    send('results_exported', { sessions, format_version: formatVersion });
   onCleanup(() => {
     reportExport = null;
   });

@@ -69,22 +69,50 @@ def read_tsv(path: Path) -> list[dict[str, str]]:
     return [dict(zip(head, ln.split("\t"), strict=False)) for ln in lines[1:]]
 
 
+# Header length of a factor file: v2 (`CALAFAC2`) adds the tiling kind and its parameter
+# (u32 each) after the f64 start of v1 (`CALAFAC1`). See `WindowFactors::to_bytes` in
+# crates/cala/src/compress/mod.rs.
+FACTOR_HEADER = {b"CALAFAC1": 36, b"CALAFAC2": 44}
+# Per-pixel float arrays between the mean and the factors of a tile record: `CTF2` holds
+# `discarded` and `valid` there (not used here), `CTF1` none.
+RECORD_EXTRA = {b"CTF1": 0, b"CTF2": 2}
+
+
 def read_factor_file(path: Path) -> list[Tile]:
-    """(x0, y0, w, h, spatial P x r, temporal T x r, mean P) per tile of one window."""
+    """(x0, y0, w, h, spatial P x r, temporal T x r, mean P) per tile of one window.
+
+    Reads v1 and v2 files. Only plain tiles (side by side) are read: a file on another
+    tiling (overlap, offset grids) is refused, since its tiles overlap.
+    """
     b = path.read_bytes()
-    assert b[:8] == b"CALAFAC1", path
+    header = FACTOR_HEADER.get(b[:8])
+    if header is None:
+        raise ValueError(f"{path}: not a factor file (magic {b[:8]!r})")
+    if header == 44:
+        kind, param = struct.unpack_from("<II", b, 36)
+        if (kind, param) != (0, 0):
+            raise ValueError(
+                f"{path}: tiling kind {kind} (parameter {param}); this test reads plain "
+                "tiles only (kind 0), not overlapping or offset ones"
+            )
     n = struct.unpack_from("<I", b, 24)[0]
-    at, out = 36, []
+    at, out = header, []
     for _ in range(n):
         (ln,) = struct.unpack_from("<I", b, at)
         tb = b[at + 4 : at + 4 + ln]
         at += 4 + ln
+        extra = RECORD_EXTRA.get(tb[:4])
+        if extra is None:
+            raise ValueError(f"{path}: unknown tile record {tb[:4]!r}")
         x0, y0, w, h, rank, frames, _ = struct.unpack_from("<7I", tb, 4)
-        mean = np.frombuffer(tb, "<f4", w * h, 48)
-        o = 48 + 4 * w * h
-        sp = np.frombuffer(tb, "<f4", w * h * rank, o).reshape(w * h, rank)
-        tm = np.frombuffer(tb, "<f4", frames * rank, o + 4 * w * h * rank)
+        p = w * h
+        mean = np.frombuffer(tb, "<f4", p, 48)
+        o = 48 + 4 * p * (1 + extra)
+        sp = np.frombuffer(tb, "<f4", p * rank, o).reshape(p, rank)
+        tm = np.frombuffer(tb, "<f4", frames * rank, o + 4 * p * rank)
         out.append((x0, y0, w, h, sp, tm.reshape(frames, rank), mean))
+    if at != len(b):
+        raise ValueError(f"{path}: {len(b) - at} bytes after the last tile")
     return out
 
 

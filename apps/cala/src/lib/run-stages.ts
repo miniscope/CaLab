@@ -16,6 +16,7 @@
  * `pass2-store`) run the stages.
  */
 import { createSignal } from 'solid-js';
+import type { FactorInfo } from './compress-store.ts';
 
 export type StageName = 'discover' | 'extract';
 
@@ -52,6 +53,8 @@ export interface StageInput {
   cells: number;
   /** Why the recorded motion and flicker cannot be replayed (null: they can). */
   replayBlocked: string | null;
+  /** A `?factors` stream: Extract solves on the stream's factors. */
+  liveFactors?: boolean;
 }
 
 export const LIVE_NOTE =
@@ -93,7 +96,7 @@ export function stageAvailability(i: StageInput): Record<StageName, string | nul
         ? 'Extract is running.'
         : null;
   const after = (stage: string): string | null => {
-    if (i.live) return LIVE_NOTE;
+    if (i.live && !i.liveFactors) return LIVE_NOTE;
     if (busy) return busy;
     if (i.discover !== 'done') return `${stage} runs after Discover finishes.`;
     if (i.replayBlocked) return i.replayBlocked;
@@ -133,6 +136,34 @@ export interface StageRun {
   splits?: number;
   /** Discover: it ran with look-back (and its settle). */
   lookback?: boolean;
+  /** Discover: the Final settle read the factors or the file, and why. */
+  settleSource?: 'factors' | 'file';
+  settleSourceReason?: string;
+  /** Extract: it solved the frames rebuilt from the factors (and which), or replayed the file and why. */
+  source?: 'factors' | 'file';
+  sourceReason?: string;
+  factors?: FactorInfo;
+  /** Extract on factors through the extractor: windows from the factors, on rebuilt frames, and its helpers. */
+  extractor?: { projected: number; rebuilt: number; workers: number };
+  /**
+   * Discover of a factor run: compress workers while it read and after its end,
+   * the frames not compressed at its end, the waiting window files' peak, and
+   * the pace after its end (frames/s); frames per window and where the
+   * windows were compressed (absent in older records); a GPU run: the seconds
+   * Discover waited for room in the GPU's ring, and how many times.
+   */
+  compress?: {
+    workers: number;
+    workersAfter: number;
+    behindFrames: number | null;
+    backlogPeakBytes: number;
+    fpsAfter: number | null;
+    window?: number;
+    ring?: number;
+    backend?: 'cpu' | 'gpu';
+    waitS?: number;
+    waits?: number;
+  };
 }
 
 /** Runs of the stages since the last Discover start, in order. */

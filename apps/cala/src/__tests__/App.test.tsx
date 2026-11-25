@@ -54,6 +54,11 @@ vi.mock('../lib/slow-client.ts', () => ({
   visitWorkerCount: () => 0,
 }));
 
+// The compress worker exists on every page but `?factors=0` (a stream's factor default); none in jsdom.
+vi.mock('../lib/compress-client.ts', () => ({
+  createCompressClient: () => ({ backfill() {}, extract() {}, extractCancel() {}, dispose() {} }),
+}));
+
 // Look-back is on by default for recordings but needs worker threads, which jsdom has not.
 vi.mock('../lib/lookback-client.ts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/lookback-client.ts')>()),

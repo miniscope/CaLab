@@ -22,7 +22,12 @@ import type { FlatFieldMap } from './flat-field.ts';
 import type { BackStateSnapshot } from './pipeline-engine.ts';
 import type { SessionTransform } from './session-boundary.ts';
 import type { SlowClient } from './slow-client.ts';
-import type { LookbackSource, LookbackToMain, MainToLookback } from '../workers/lookback-types.ts';
+import type {
+  FactorSource,
+  LookbackSource,
+  LookbackToMain,
+  MainToLookback,
+} from '../workers/lookback-types.ts';
 
 /** What the pipeline store feeds look-back (all per Discover `session`). */
 export interface LookbackFeed {
@@ -30,6 +35,11 @@ export interface LookbackFeed {
   blocked(): string | null;
   /** A Discover run with look-back starts; false: it cannot (nothing was started). */
   begin(session: number): boolean;
+  /**
+   * A live stream with `?factors` ends and its factors are ready: start
+   * look-back worker 0 on them (no pool, nothing recorded is fed).
+   */
+  beginFactors?(session: number, factors: FactorSource['factors']): void;
   /** Discover recorded frames `start..start + dy.length` (the arrays are copied). */
   rows(
     session: number,
@@ -139,7 +149,7 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
   let run: {
     session: number;
     active: number;
-    source: LookbackSource;
+    source: LookbackSource | FactorSource;
     rows: RowsChunk[];
     flat: FlatFieldMap | null | undefined;
     /** Session re-registrations so far (a Joint run), in order. */
@@ -199,6 +209,24 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       postAll(() => [{ type: 'begin', session, source }, []]);
       return true;
     },
+    beginFactors(session, factors) {
+      ensureWorkers(1);
+      run = {
+        session,
+        active: 1,
+        source: { factors },
+        rows: [],
+        flat: undefined,
+        sessions: [],
+        newest: null,
+        joining: 0,
+      };
+      workers[0].postMessage({
+        type: 'begin',
+        session,
+        source: { factors },
+      } satisfies MainToLookback);
+    },
     rows(session, start, dy, dx, flags, flickerOffset, flickerGain) {
       // Kept for a pool worker that joins later (a few bytes a frame), while the pool may still start.
       if (run?.session === session && run.active === 1 && poolSize > 0)
@@ -255,6 +283,12 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       postAll(() => [{ type: 'session', session, index, transform: t }, []]);
     },
     reset(session) {
+      // A late reset of an earlier run (a stream's factor settle released after the next run
+      // began) leaves the current run alone; worker 0 ignores a reset older than its run.
+      if (run && run.session > session) {
+        workers[0]?.postMessage({ type: 'reset', session } satisfies MainToLookback);
+        return;
+      }
       // The rows kept for a late pool go with the run.
       run = null;
       workers[0]?.postMessage({ type: 'reset', session } satisfies MainToLookback);
@@ -272,6 +306,7 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
     startPool(session) {
       const r = run;
       if (!r || r.session !== session) return 0;
+      if ('factors' in r.source) return 0;
       if (r.active > 1 || poolSize === 0) return r.active - 1;
       ensureWorkers(1 + poolSize);
       const rows = joinRows(r.rows);
