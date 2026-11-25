@@ -1,0 +1,12 @@
+sa f10 80
+sa f14 112
+sa f07 56
+sa see 129
+m5 f10 60
+m5 f14 84
+m5 f07 42
+m5 see 72
+t6 f10 30
+t6 f14 42
+t6 f07 21
+t6 see 77
