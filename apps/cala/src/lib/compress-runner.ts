@@ -1008,14 +1008,15 @@ export class CompressRunner {
     const init = this.init!;
     const ring = this.ring!;
     const hw = init.width * init.height;
+    // The next stream frame (also after a window boundary): a chunk going back
+    // would overwrite ring slots of a window not compressed yet.
     const next = this.gwin.start + this.gwin.frames;
-    if (this.gwin.frames > 0 && msg.start !== next) {
-      if (msg.start < next) {
-        await this.gpuFail(GPU_TEXT.error(`frame ${msg.start} after frame ${next - 1}`));
-        return;
-      }
-      this.closeGpuWindow(); // a gap: a window's frames are consecutive
+    if (msg.start < next) {
+      await this.gpuFail(GPU_TEXT.error(`frame ${msg.start} after frame ${next - 1}`));
+      return;
     }
+    // A gap: a window's frames are consecutive.
+    if (this.gwin.frames > 0 && msg.start !== next) this.closeGpuWindow();
     if (this.gwin.frames === 0) this.gwin.start = msg.start;
     const quantize = this.deps.quantizeFrames ?? wasmQuantizeFrames;
     const q = quantize(msg.data.subarray(0, msg.count * hw), init.quant);

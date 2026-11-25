@@ -1145,6 +1145,25 @@ describe('a recording compressed on the GPU', () => {
     expect(last.status).toMatchObject({ windows: 0, frames: 0, compressed: [] });
   });
 
+  it('a chunk going back in the stream after a window boundary gives the factors up', async () => {
+    const { r, store, toMain, fakes } = gpuRunner();
+    const sent = gpuFeed(60, 7, false);
+    const at50 = sent.findIndex((m) => m.type === 'chunk' && m.start === 50);
+    for (const m of sent.slice(0, at50)) await r.handle(m);
+    expect(fakes[0].pending).toHaveLength(1); // window 0 (frames 0-49) on the GPU
+    const back = gpuFeed(60, 7, false).find((m) => m.type === 'chunk' && m.start === 40)!;
+    await r.handle(back); // frames 40-49 again: would overwrite window 0's ring slots
+    expect(fakes[0].pending).toHaveLength(1);
+    fakes[0].answer(GTILES);
+    await tick();
+    await tick();
+    const errs = errors(toMain);
+    expect(errs).toHaveLength(1);
+    expect(errs[0].message).toBe(GPU_TEXT.error('frame 40 after frame 49'));
+    expect(store.files.size).toBe(0);
+    expect(fakes[0].jobs).toHaveLength(1);
+  });
+
   it('no GPU: the run says why and has no factors', async () => {
     const why = 'This browser has no WebGPU.';
     const { r, store, toMain } = gpuRunner(async () => ({ reason: why }));
