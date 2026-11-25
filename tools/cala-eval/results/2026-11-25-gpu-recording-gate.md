@@ -241,7 +241,7 @@ Extract traces between runs (cells matched one to one by footprint cosine >= 0.7
 
 ### Conclusion (waiting build)
 
-- Waiting works: 10 of 10 gpu runs kept their factors (V4 0 of 2 on the first build), the waits cost about 1 s per hour
+- Waiting works: 9 of 9 gpu runs kept their factors (V4 0 of 2 on the first build), the waits cost about 1 s per hour
   of V4, and no run stalled.
 - On every recording the run finishes much sooner: open to Extract done -34 % on V4 (1,416 vs 2,136 s), -36 % plain,
   -28 % wl200, -22 to -27 % on wl24 without the outlier; after Discover -55 to -57 %.
