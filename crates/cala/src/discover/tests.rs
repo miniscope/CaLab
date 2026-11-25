@@ -3884,6 +3884,7 @@ fn visit_rate_caps_jobs_and_not_refine() {
         "{} Refine visits",
         s.stats().visits - visits0
     );
+}
 
 /// Feature `threads` (stage-0 kill test): the per-cell and per-cluster
 /// footprint statistics on a rayon pool give bit-identical libraries and
