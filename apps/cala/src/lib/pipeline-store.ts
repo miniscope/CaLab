@@ -1039,8 +1039,21 @@ export function createPipelineStore(
   function startFactorPool(session: number, factors: FactorSource['factors']): number {
     if (!lookbackSession || session !== lookbackSession) return 0;
     const n = lookbackFeed?.startFactorPool?.(session, factors) ?? 0;
+    if (n > 0 && poolForFinal !== session && poolNoted !== session) poolForFinal = session;
     notePool(n, true);
     return n;
+  }
+  /** The look-back session whose pool was started for its Final settle (0: none). */
+  let poolForFinal = 0;
+  /**
+   * The final library of look-back run `session` is out: a pool started for its Final settle
+   * ends now, before Extract (which never uses it), so it adds nothing to Extract's memory.
+   * A pool started below Max for the Background settle is left as before.
+   */
+  function endFactorPool(session: number): number {
+    if (!session || session !== poolForFinal) return 0;
+    poolForFinal = 0;
+    return lookbackFeed?.endPool?.(session) ?? 0;
   }
 
   /** Show one played frame: its view's image, the batch's last-frame images for the other views. */
@@ -1671,6 +1684,8 @@ export function createPipelineStore(
     /** Called once per run when its settle pool starts: the pool workers and the frame reached. */
     /** The Final settle on the recording's factors begins: start the settle pool for it (`startFactorPool`). */
     startFactorPool,
+    /** The final library is out: end a pool started for the Final settle (`endFactorPool`). */
+    endFactorPool,
     onPoolStart: (cb: (workers: number, frame: number, forFinal: boolean) => void) => {
       poolListeners.push(cb);
     },

@@ -568,7 +568,10 @@ const App: Component = () => {
         // The Final settle on the factors runs on the settle pool too, at Max as well (after
         // `factorsReady`, so the slow worker switches the joining workers to the factors).
         pipeline.startFactorPool(f.session, f.factors);
-      } else if (f.kind === 'file') {
+      }
+      // The final library is out: the pool started for the Final settle ends before Extract.
+      if (st?.final === true) pipeline.endFactorPool(session);
+      else if (f.kind === 'file') {
         slow.factorsFailed(f.session, f.reason);
         // No stage reads the factors now: free the CPU and the disk for the file's settle and Extract.
         compressClient?.stop(f.session);

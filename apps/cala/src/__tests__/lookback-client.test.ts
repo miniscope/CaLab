@@ -346,6 +346,32 @@ describe('look-back client', () => {
     expect(t.pools).toEqual([[1, 1]]);
   });
 
+  it('the final library is out: the pool ends (the slow worker hears 0), and a later run starts afresh', () => {
+    const factors = { folder: 'run-a', windows: [], width: 4, height: 3 };
+    const t = setup(null, 1);
+    t.client.begin(1);
+    expect(t.client.endPool!(1)).toBe(0);
+    t.client.startFactorPool!(1, factors);
+    // Another session's end does nothing.
+    expect(t.client.endPool!(2)).toBe(0);
+    expect(t.client.endPool!(1)).toBe(1);
+    expect(t.terminated).toEqual([1]);
+    expect(t.pools).toEqual([
+      [1, 1],
+      [1, 0],
+    ]);
+    expect(t.client.endPool!(1)).toBe(0);
+    // The run's reset terminates nothing more; worker 0 stays for the page.
+    t.client.reset(1);
+    expect(t.terminated).toEqual([1]);
+    // A restart's settle gets a fresh pool worker, wired by its index again.
+    t.client.begin(2);
+    expect(t.client.startFactorPool!(2, factors)).toBe(1);
+    expect(t.workers()).toBe(3);
+    expect(t.indices).toEqual([0, 1, 1]);
+    expect(t.pools.at(-1)).toEqual([2, 1]);
+  });
+
   it('the Final settle on factors after a pool started below Max: the running pool serves it', () => {
     const t = setup(null, 1);
     t.client.begin(1);

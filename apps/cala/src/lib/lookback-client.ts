@@ -87,6 +87,12 @@ export interface LookbackFeed {
    * and are announced to the slow worker at once. Returns the pool workers in the run.
    */
   startFactorPool?(session: number, factors: FactorSource['factors']): number;
+  /**
+   * `session`'s final library is out: end its pool workers (they serve the settles only, and
+   * Extract never uses them), so they hold no memory while Extract runs. The slow worker hears
+   * of it (`settlePool` with 0 workers). Returns the workers ended.
+   */
+  endPool?(session: number): number;
   /** The settle pool's size S on this machine (started or not). */
   readonly poolSize?: number;
 }
@@ -397,6 +403,17 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       // worker sends them the factors too (as to every pool worker) and its library.
       o.slow.settlePool?.(session, poolSize);
       return poolSize;
+    },
+    endPool(session) {
+      const r = run;
+      if (!r || r.session !== session || r.active <= 1) return 0;
+      const n = r.active - 1;
+      for (const w of workers.slice(1)) w.terminate();
+      workers = workers.slice(0, 1);
+      r.active = 1;
+      r.joining = 0;
+      o.slow.settlePool?.(session, 0);
+      return n;
     },
     poolSize,
     dispose() {
