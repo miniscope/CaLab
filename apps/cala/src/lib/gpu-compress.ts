@@ -12,13 +12,17 @@
  * dispatched once per *segment*: a run of window frames that sit
  * contiguously in one block (`ringSegments`).
  *
- * Per batch of up to `GPU_TILE_BATCH` tiles: `Y = A Ω`, CholeskyQR2 (Gram on
- * the GPU, `R⁻¹` in WASM), `n_iter` power iterations, `Bᵀ = Aᵀ Q`; `Q` and
- * `Bᵀ` are read back and `GpuTileJob.finish` does the rest (eigen step,
- * lag-1 cut, growth, bytes). A tile whose sketch grew goes back on the queue.
+ * Tiles are sketched in batches as large as the work buffers hold
+ * (`workColumns`: WebGPU's default 128 MB per binding, or the device's lower
+ * limit), tiles of similar sketch size together (`takeBatch`). Per batch,
+ * all on the GPU in one submission: `Y = A Ω`, CholeskyQR2 (Gram, `R⁻¹` by
+ * the `CHOL` kernel, `Q = Y R⁻¹`), `n_iter` power iterations, `Bᵀ = Aᵀ Q`.
+ * Then one readback of `Q`, `Bᵀ` and the per-tile Cholesky flags, and
+ * `GpuTileJob.finish` does the rest in WASM (eigen step, lag-1 cut, growth,
+ * bytes). A tile whose sketch grew goes back on the queue.
  */
-import { cholInvUpperBatch, GpuTileJob, type WindowStats } from './cala-wasm.ts';
-import { APPLY, GEMM, GRAM, TILE_ROWS } from './gpu-compress-kernels.ts';
+import { GpuTileJob, type WindowStats } from './cala-wasm.ts';
+import { APPLY, CHOL, GEMM, GRAM, TILE_ROWS } from './gpu-compress-kernels.ts';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -26,8 +30,11 @@ import { APPLY, GEMM, GRAM, TILE_ROWS } from './gpu-compress-kernels.ts';
 
 /** Window lengths to try, longest first (shorter windows keep too little signal). */
 export const GPU_WINDOW_LADDER: readonly number[] = [600];
-/** Tiles sketched together (slots of the work buffers). */
-export const GPU_TILE_BATCH = 12;
+/**
+ * Bytes a work buffer (`Y`, its copy for CholeskyQR, its readback) may take:
+ * WebGPU's default `maxStorageBufferBindingSize`, so every device holds it.
+ */
+export const GPU_WORK_BYTES = 128 * 2 ** 20;
 /**
  * Sketch columns the work buffers hold: the largest sketch a tile can need
  * (`max_rank` 300 + 10 oversamples), rounded up to 64. At 128, real V4 tiles
@@ -118,6 +125,49 @@ export function ringSegments(
     offset += count;
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Batches
+// ---------------------------------------------------------------------------
+
+/** Sketch columns of a batch whose largest sketch has `l` columns. */
+export const strideOf = (l: number): number => Math.ceil(l / 64) * 64;
+
+/**
+ * Slot columns the work buffers hold (`TILE_ROWS` rows each): the device's
+ * storage-binding and buffer limits, at most `GPU_WORK_BYTES`, in whole
+ * sketches of 64 columns.
+ */
+export function workColumns(limits: {
+  maxStorageBufferBindingSize?: number;
+  maxBufferSize?: number;
+}): number {
+  const bytes = Math.min(
+    GPU_WORK_BYTES,
+    limits.maxStorageBufferBindingSize ?? GPU_WORK_BYTES,
+    limits.maxBufferSize ?? GPU_WORK_BYTES,
+  );
+  return Math.floor(bytes / (TILE_ROWS * 4 * 64)) * 64;
+}
+
+/**
+ * Take the next batch from `queue` (tile indices; sorted in place by sketch
+ * columns `l`, then index): the smallest sketches first, as many as fit
+ * `cols` slot columns at the batch's stride, at most `maxSlots`. Never empty
+ * for a non-empty queue: the first tile always goes (the caller checks its
+ * stride against `GPU_MAX_STRIDE`).
+ */
+export function takeBatch(
+  queue: number[],
+  l: (tile: number) => number,
+  cols: number,
+  maxSlots: number,
+): number[] {
+  queue.sort((a, b) => l(a) - l(b) || a - b);
+  let n = 1;
+  while (n < queue.length && n < maxSlots && (n + 1) * strideOf(l(queue[n])) <= cols) n++;
+  return queue.splice(0, n);
 }
 
 // ---------------------------------------------------------------------------
@@ -220,12 +270,8 @@ export async function openGpuCompressor(o: {
   try {
     const adapter = await o.gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) return { reason: 'No WebGPU adapter.' };
-    device = await adapter.requestDevice({
-      requiredLimits: {
-        maxBufferSize: adapter.limits.maxBufferSize,
-        maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
-      },
-    });
+    // WebGPU's default limits: every buffer is sized to fit them (or the device's own, if lower).
+    device = await adapter.requestDevice();
   } catch (e) {
     return { reason: `No WebGPU device: ${e instanceof Error ? e.message : String(e)}` };
   }
@@ -235,7 +281,7 @@ export async function openGpuCompressor(o: {
       layout: 'auto',
       compute: { module: device.createShaderModule({ code }), entryPoint: 'main' },
     });
-  const pipes = { gemm: pipe(GEMM), gram: pipe(GRAM), apply: pipe(APPLY) };
+  const pipes = { gemm: pipe(GEMM), gram: pipe(GRAM), chol: pipe(CHOL), apply: pipe(APPLY) };
   const bad = await device.popErrorScope();
   if (bad) {
     device.destroy();
@@ -267,16 +313,25 @@ interface Buffers {
   ring: GPUBuffer[];
   mean: GPUBuffer;
   tiles: GPUBuffer;
+  /** Per slot: sketch columns `l` (u32). */
+  ls: GPUBuffer;
+  /** Per slot: 1 when its Cholesky failed at every shift (u32). */
+  flags: GPUBuffer;
   omega: GPUBuffer;
   y: GPUBuffer;
   ytmp: GPUBuffer;
   z: GPUBuffer;
   ztmp: GPUBuffer;
   g: GPUBuffer;
+  /** The Cholesky factor (the `CHOL` kernel's scratch). */
+  r: GPUBuffer;
   rinv: GPUBuffer;
   readQ: GPUBuffer;
   readB: GPUBuffer;
-  readG: GPUBuffer;
+  readF: GPUBuffer;
+  /** Slot columns of the work buffers (`workColumns`), and the most slots of a batch. */
+  cols: number;
+  maxSlots: number;
   all: GPUBuffer[];
 }
 
@@ -292,10 +347,14 @@ async function allocate(
     Math.min(GPU_RING_BLOCK, size - i * GPU_RING_BLOCK) * ringFrameBytes(hw);
   const nBlocks = Math.ceil(size / GPU_RING_BLOCK);
   const lim = device.limits;
-  const batch = GPU_TILE_BATCH;
-  const work = batch * TILE_ROWS * GPU_MAX_STRIDE * 4;
-  const frameWork = batch * window * GPU_MAX_STRIDE * 4;
-  const gram = batch * GPU_MAX_STRIDE * GPU_MAX_STRIDE * 4;
+  const cols = workColumns(lim);
+  if (cols < GPU_MAX_STRIDE) return null;
+  const maxSlots = Math.min(cols / 64, lim.maxComputeWorkgroupsPerDimension ?? 65535);
+  // A batch of slots at stride `s` holds `slots * s <= cols` columns: `Y` is
+  // TILE_ROWS rows of them, `Ω` / `Z` `window` rows, a Gram block `s` rows.
+  const work = cols * TILE_ROWS * 4;
+  const frameWork = cols * window * 4;
+  const gram = cols * GPU_MAX_STRIDE * 4;
   const largest = Math.max(blockBytes(0), work, frameWork, gram, hw * 4);
   if (largest > (lim.maxStorageBufferBindingSize ?? Infinity)) return null;
   if (largest > (lim.maxBufferSize ?? Infinity)) return null;
@@ -315,17 +374,22 @@ async function allocate(
     bufs = {
       ring: Array.from({ length: nBlocks }, (_, i) => mk(blockBytes(i), storage, 'ring')),
       mean: mk(hw * 4, storage),
-      tiles: mk(batch * 16, storage),
+      tiles: mk(maxSlots * 16, storage),
+      ls: mk(maxSlots * 4, storage),
+      flags: mk(maxSlots * 4, storage),
       omega: mk(frameWork, storage),
       y: mk(work, storage),
       ytmp: mk(work, storage),
       z: mk(frameWork, storage),
       ztmp: mk(frameWork, storage),
       g: mk(gram, storage),
+      r: mk(gram, storage),
       rinv: mk(gram, storage),
       readQ: mk(work, read),
       readB: mk(frameWork, read),
-      readG: mk(gram, read),
+      readF: mk(maxSlots * 4, read),
+      cols,
+      maxSlots,
       all,
     };
   } catch {
@@ -347,6 +411,7 @@ async function allocate(
 interface Pipes {
   gemm: GPUComputePipeline;
   gram: GPUComputePipeline;
+  chol: GPUComputePipeline;
   apply: GPUComputePipeline;
 }
 
@@ -431,8 +496,9 @@ class GpuCompressor implements GpuCompressorLike {
       const tiles: Uint8Array[] = new Array<Uint8Array>(n);
       const ranks = new Array<number>(n).fill(0);
       const queue = Array.from({ length: n }, (_, i) => i);
+      const ls = jobs.map((j) => j!.l());
       while (queue.length > 0) {
-        const batch = queue.splice(0, GPU_TILE_BATCH);
+        const batch = takeBatch(queue, (i) => ls[i], this.bufs.cols, this.bufs.maxSlots);
         const out = await this.sketch(
           batch.map((i) => jobs[i]!),
           batch,
@@ -442,6 +508,7 @@ class GpuCompressor implements GpuCompressorLike {
         batch.forEach((i, slot) => {
           const bytes = out[slot];
           if (bytes === undefined) {
+            ls[i] = jobs[i]!.l();
             queue.push(i); // the sketch grew: sketch again with the new `l`
             return;
           }
@@ -477,7 +544,7 @@ class GpuCompressor implements GpuCompressorLike {
     const n = slots.length;
     const ls = Uint32Array.from(slots, (j) => j.l());
     const lMax = Math.max(...ls);
-    const stride = Math.ceil(lMax / 64) * 64;
+    const stride = strideOf(lMax);
     if (stride > GPU_MAX_STRIDE) {
       throw new GpuSketchTooLarge(
         `A tile's sketch needs ${lMax} columns; the GPU buffers hold ${GPU_MAX_STRIDE}.`,
@@ -489,6 +556,8 @@ class GpuCompressor implements GpuCompressorLike {
     const rec = new Uint32Array(n * 4);
     idx.forEach((i, s) => rec.set(this.s.rects.subarray(4 * i, 4 * i + 4), 4 * s));
     device.queue.writeBuffer(bufs.tiles, 0, rec);
+    device.queue.writeBuffer(bufs.ls, 0, ls);
+    device.queue.writeBuffer(bufs.flags, 0, new Uint32Array(n));
     const om = new Float32Array(n * t * stride);
     slots.forEach((j, s) => {
       const l = ls[s];
@@ -500,26 +569,58 @@ class GpuCompressor implements GpuCompressorLike {
     device.queue.writeBuffer(bufs.omega, 0, om);
 
     const temp: GPUBuffer[] = [];
-    const run = { n, t, stride, ls, idx, segments, temp };
+    const run = { n, t, stride, segments, temp };
+    const qBytes = n * TILE_ROWS * stride * 4;
+    const bBytes = n * t * stride * 4;
+    const fBytes = n * 4;
     device.pushErrorScope('validation');
     device.pushErrorScope('out-of-memory');
-    let q: Float32Array;
-    let bt: Float32Array;
+    let mapped = false;
     try {
-      this.gemm(run, 0, bufs.omega, bufs.y);
-      await this.cholqr2(run, bufs.y, bufs.ytmp, TILE_ROWS);
+      // The whole sketch in one submission: no round trip until the readback.
+      const enc = device.createCommandEncoder();
+      const pass = enc.beginComputePass();
+      this.gemm(pass, run, 0, bufs.omega, bufs.y);
+      this.cholqr2(pass, run, bufs.y, bufs.ytmp, TILE_ROWS);
       for (let it = 0; it < nIter; it++) {
-        this.gemm(run, 1, bufs.y, bufs.z);
-        await this.cholqr2(run, bufs.z, bufs.ztmp, t);
-        this.gemm(run, 0, bufs.z, bufs.y);
-        await this.cholqr2(run, bufs.y, bufs.ytmp, TILE_ROWS);
+        this.gemm(pass, run, 1, bufs.y, bufs.z);
+        this.cholqr2(pass, run, bufs.z, bufs.ztmp, t);
+        this.gemm(pass, run, 0, bufs.z, bufs.y);
+        this.cholqr2(pass, run, bufs.y, bufs.ytmp, TILE_ROWS);
       }
-      this.gemm(run, 1, bufs.y, bufs.z);
-      [q, bt] = await Promise.all([
-        this.read(bufs.y, bufs.readQ, n * TILE_ROWS * stride),
-        this.read(bufs.z, bufs.readB, n * t * stride),
+      this.gemm(pass, run, 1, bufs.y, bufs.z);
+      pass.end();
+      enc.copyBufferToBuffer(bufs.y, 0, bufs.readQ, 0, qBytes);
+      enc.copyBufferToBuffer(bufs.z, 0, bufs.readB, 0, bBytes);
+      enc.copyBufferToBuffer(bufs.flags, 0, bufs.readF, 0, fBytes);
+      device.queue.submit([enc.finish()]);
+      await Promise.all([
+        bufs.readQ.mapAsync(MAP_MODE_READ, 0, qBytes),
+        bufs.readB.mapAsync(MAP_MODE_READ, 0, bBytes),
+        bufs.readF.mapAsync(MAP_MODE_READ, 0, fBytes),
       ]);
+      mapped = true;
+      const flags = new Uint32Array(bufs.readF.getMappedRange(0, fBytes));
+      const failed = idx.filter((_, s) => flags[s] !== 0);
+      if (failed.length > 0) {
+        throw new Error(
+          `the Cholesky of CholeskyQR failed at every shift for tile ${failed.join(', ')}`,
+        );
+      }
+      // Finish straight from the mapped readback (WASM copies what it reads).
+      const q = new Float32Array(bufs.readQ.getMappedRange(0, qBytes));
+      const bt = new Float32Array(bufs.readB.getMappedRange(0, bBytes));
+      return slots.map((j, s) => {
+        const [, , w, h] = this.s.rects.subarray(4 * idx[s], 4 * idx[s] + 4);
+        const q0 = s * TILE_ROWS * stride;
+        return j.finish(
+          q.subarray(q0, q0 + w * h * stride),
+          bt.subarray(s * t * stride, (s + 1) * t * stride),
+          stride,
+        );
+      });
     } finally {
+      if (mapped) for (const b of [bufs.readQ, bufs.readB, bufs.readF]) b.unmap();
       const oom = await device.popErrorScope();
       const invalid = await device.popErrorScope();
       for (const b of temp) b.destroy();
@@ -528,25 +629,20 @@ class GpuCompressor implements GpuCompressorLike {
       // eslint-disable-next-line no-unsafe-finally
       if (err) throw new Error(`GPU compressor: ${err.message}`);
     }
-    return slots.map((j, s) => {
-      const [, , w, h] = this.s.rects.subarray(4 * idx[s], 4 * idx[s] + 4);
-      const q0 = s * TILE_ROWS * stride;
-      return j.finish(
-        q.subarray(q0, q0 + w * h * stride),
-        bt.subarray(s * t * stride, (s + 1) * t * stride),
-        stride,
-      );
-    });
   }
 
   /**
    * `C = A B` (`trans` 0) or `C = Aᵀ B` (`trans` 1) for every slot, one
    * dispatch per ring segment of the window.
    */
-  private gemm(run: Run, trans: 0 | 1, b: GPUBuffer, c: GPUBuffer): void {
-    const { device, bufs, pipes } = this;
-    const enc = device.createCommandEncoder();
-    const pass = enc.beginComputePass();
+  private gemm(
+    pass: GPUComputePassEncoder,
+    run: Run,
+    trans: 0 | 1,
+    b: GPUBuffer,
+    c: GPUBuffer,
+  ): void {
+    const { bufs, pipes } = this;
     pass.setPipeline(pipes.gemm);
     run.segments.forEach((seg, i) => {
       const m = trans === 0 ? TILE_ROWS : seg.count;
@@ -572,60 +668,40 @@ class GpuCompressor implements GpuCompressorLike {
       pass.setBindGroup(0, this.bind(pipes.gemm, [ring, bufs.tiles, bufs.mean, b, c, u]));
       pass.dispatchWorkgroups(Math.ceil(m / 64), run.stride / 64, run.n);
     });
-    pass.end();
-    device.queue.submit([enc.finish()]);
   }
 
-  /** CholeskyQR2 of `src` (`m x stride` per slot) in place, `tmp` in between. */
-  private async cholqr2(run: Run, src: GPUBuffer, tmp: GPUBuffer, m: number): Promise<void> {
-    const { device, bufs, pipes } = this;
+  /**
+   * CholeskyQR2 of `src` (`m x stride` per slot) in place, `tmp` in between:
+   * twice the Gram, its `R⁻¹` (`CHOL`) and `Q = Y R⁻¹`, all on the GPU.
+   */
+  private cholqr2(
+    pass: GPUComputePassEncoder,
+    run: Run,
+    src: GPUBuffer,
+    tmp: GPUBuffer,
+    m: number,
+  ): void {
+    const { bufs, pipes } = this;
     const { n, stride } = run;
     const u = this.uniform(run, new Uint32Array([m, stride, 0, 0]));
-    const gBytes = n * stride * stride * 4;
+    const uc = this.uniform(run, new Uint32Array([stride, 0, 0, 0]));
     for (const [a, b] of [
       [src, tmp],
       [tmp, src],
     ]) {
-      let enc = device.createCommandEncoder();
-      let pass = enc.beginComputePass();
       pass.setPipeline(pipes.gram);
       pass.setBindGroup(0, this.bind(pipes.gram, [a, bufs.g, u]));
       pass.dispatchWorkgroups(stride / 64, stride / 64, n);
-      pass.end();
-      enc.copyBufferToBuffer(bufs.g, 0, bufs.readG, 0, gBytes);
-      device.queue.submit([enc.finish()]);
-      await bufs.readG.mapAsync(MAP_MODE_READ, 0, gBytes);
-      const g = new Float32Array(bufs.readG.getMappedRange(0, gBytes).slice(0));
-      bufs.readG.unmap();
-      let rinv: Float32Array;
-      try {
-        rinv = cholInvUpperBatch(g, stride, run.ls);
-      } catch (err) {
-        throw new Error(`${errorMessage(err)}; ${gramReport(g, stride, run.ls, run.idx, m)}`, {
-          cause: err,
-        });
-      }
-      device.queue.writeBuffer(bufs.rinv, 0, gpuData(rinv));
-      enc = device.createCommandEncoder();
-      pass = enc.beginComputePass();
+      pass.setPipeline(pipes.chol);
+      pass.setBindGroup(
+        0,
+        this.bind(pipes.chol, [bufs.g, bufs.ls, bufs.r, bufs.rinv, bufs.flags, uc]),
+      );
+      pass.dispatchWorkgroups(n);
       pass.setPipeline(pipes.apply);
       pass.setBindGroup(0, this.bind(pipes.apply, [a, bufs.rinv, b, u]));
       pass.dispatchWorkgroups(stride / 64, Math.ceil(m / 4), n);
-      pass.end();
-      device.queue.submit([enc.finish()]);
     }
-  }
-
-  /** The first `floats` values of `src`, through the map-read buffer `via`. */
-  private async read(src: GPUBuffer, via: GPUBuffer, floats: number): Promise<Float32Array> {
-    const bytes = floats * 4;
-    const enc = this.device.createCommandEncoder();
-    enc.copyBufferToBuffer(src, 0, via, 0, bytes);
-    this.device.queue.submit([enc.finish()]);
-    await via.mapAsync(MAP_MODE_READ, 0, bytes);
-    const out = new Float32Array(via.getMappedRange(0, bytes).slice(0));
-    via.unmap();
-    return out;
   }
 
   private uniform(run: Run, words: Uint32Array): GPUBuffer {
@@ -651,40 +727,7 @@ interface Run {
   n: number;
   t: number;
   stride: number;
-  ls: Uint32Array;
-  /** The layout's tile of each slot. */
-  idx: number[];
   segments: RingSegment[];
   /** Uniform buffers to destroy once the batch is read back. */
   temp: GPUBuffer[];
-}
-
-const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
-
-/**
- * Why CholeskyQR may have refused a batch: per slot whose Gram matrix is all
- * zero or not finite, its tile, sketch columns and trace (the matrix's rows `m`).
- */
-export function gramReport(
-  g: Float32Array,
-  stride: number,
-  ls: ArrayLike<number>,
-  idx: number[],
-  m: number,
-): string {
-  const bad: string[] = [];
-  for (let s = 0; s < ls.length; s++) {
-    const l = ls[s];
-    let trace = 0;
-    let nonFinite = 0;
-    for (let i = 0; i < l; i++)
-      for (let j = 0; j < l; j++) {
-        const v = g[s * stride * stride + i * stride + j];
-        if (!Number.isFinite(v)) nonFinite++;
-        else if (i === j) trace += v;
-      }
-    if (nonFinite > 0 || !(trace > 0))
-      bad.push(`tile ${idx[s]} (l ${l}, ${m} rows): trace ${trace}, ${nonFinite} not finite`);
-  }
-  return bad.length > 0 ? bad.join('; ') : 'every Gram matrix finite with a positive trace';
 }

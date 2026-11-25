@@ -156,3 +156,129 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(workgroup_id) wg
   for (var k = 0u; k <= c; k++) { s += Y[yo + k] * R[ro + k * g.stride + c]; }
   Q[yo + c] = s;
 }`;
+
+/** Invocations of a `CHOL` workgroup (WebGPU's default limit). */
+export const CHOL_THREADS = 256;
+
+/**
+ * CholeskyQR's `R⁻¹` per slot from its Gram block, one workgroup per slot:
+ * `chol_inv_upper` (Rust, `compress/mod.rs`) in f32. A slot whose leading
+ * `l x l` block is all zero gets a zero `R⁻¹` (a tile without variance);
+ * otherwise the upper Cholesky factor of `G + shift * trace * I` for the
+ * first shift of `[0, 1e-10, 1e-8, 1e-6, 1e-4, 1e-2]` whose every pivot is
+ * positive and finite, then its inverse by back substitution, a column per
+ * invocation. A slot that fails at every shift sets `flags[slot] = 1` (and
+ * a zero `R⁻¹`); `flags` is never cleared here.
+ *
+ * `G`, `Rw` (the factor, scratch) and `Rinv` are `stride x stride` per slot,
+ * row-major; entries outside the leading `l x l` block of `Rinv` are zero.
+ * The blocks stay in storage buffers: at `l = 320` one is 400 KB, far over
+ * the 16 KB of workgroup memory WebGPU guarantees. Dispatch `(slots, 1, 1)`.
+ */
+export const CHOL = /* wgsl */ `
+struct C { stride: u32, p0: u32, p1: u32, p2: u32 }
+@group(0) @binding(0) var<storage, read> G: array<f32>;
+@group(0) @binding(1) var<storage, read> ls: array<u32>;
+@group(0) @binding(2) var<storage, read_write> Rw: array<f32>;
+@group(0) @binding(3) var<storage, read_write> Rinv: array<f32>;
+@group(0) @binding(4) var<storage, read_write> flags: array<u32>;
+@group(0) @binding(5) var<uniform> c: C;
+const NT: u32 = ${CHOL_THREADS}u;
+var<workgroup> sumTr: array<f32, ${CHOL_THREADS}>;
+var<workgroup> sumNz: array<u32, ${CHOL_THREADS}>;
+var<workgroup> wl: u32;
+var<workgroup> wtr: f32;
+var<workgroup> wnz: u32;
+var<workgroup> wpiv: f32;
+// Finite by its exponent bits: comparisons with NaN may be folded away.
+fn finite(x: f32) -> bool { return (bitcast<u32>(x) & 0x7f800000u) != 0x7f800000u; }
+fn shiftAt(i: u32) -> f32 {
+  switch i {
+    case 0u: { return 0.0; }
+    case 1u: { return 1e-10; }
+    case 2u: { return 1e-8; }
+    case 3u: { return 1e-6; }
+    case 4u: { return 1e-4; }
+    default: { return 1e-2; }
+  }
+}
+fn zeroRinv(g0: u32, li: u32) {
+  for (var e = li; e < c.stride * c.stride; e += NT) { Rinv[g0 + e] = 0.0; }
+}
+@compute @workgroup_size(${CHOL_THREADS})
+fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+  let slot = wg.x;
+  let st = c.stride;
+  let g0 = slot * st * st;
+  if (li == 0u) { wl = ls[slot]; }
+  let l = workgroupUniformLoad(&wl);
+  // The trace and the non-zero entries (NaN counts as non-zero) of the l x l block.
+  var tr = 0.0;
+  var nz = 0u;
+  for (var i = li; i < l; i += NT) { tr += G[g0 + i * st + i]; }
+  for (var e = li; e < l * l; e += NT) {
+    if ((bitcast<u32>(G[g0 + (e / l) * st + e % l]) & 0x7fffffffu) != 0u) { nz += 1u; }
+  }
+  sumTr[li] = tr;
+  sumNz[li] = nz;
+  workgroupBarrier();
+  for (var h = NT / 2u; h > 0u; h >>= 1u) {
+    if (li < h) { sumTr[li] += sumTr[li + h]; sumNz[li] += sumNz[li + h]; }
+    workgroupBarrier();
+  }
+  if (li == 0u) { wtr = sumTr[0]; wnz = sumNz[0]; }
+  let trace = workgroupUniformLoad(&wtr);
+  if (workgroupUniformLoad(&wnz) == 0u) {
+    zeroRinv(g0, li); // nothing to sketch: Q = 0, as compress_tile's tile
+    return;
+  }
+  var ok = false;
+  for (var si = 0u; si < 6u; si++) {
+    let shift = shiftAt(si) * trace;
+    var failed = false;
+    // Upper R row by row: R[i, j] = (G[i, j] (+ shift) - sum_k<i R[k, i] R[k, j]) / R[i, i].
+    for (var i = 0u; i < l; i++) {
+      for (var j = i + li; j < l; j += NT) {
+        var s = G[g0 + i * st + j];
+        if (j == i) { s += shift; }
+        for (var k = 0u; k < i; k++) { s -= Rw[g0 + k * st + i] * Rw[g0 + k * st + j]; }
+        Rw[g0 + i * st + j] = s;
+        if (j == i) { wpiv = s; }
+      }
+      let piv = workgroupUniformLoad(&wpiv);
+      if (!(piv > 0.0) || !finite(piv)) {
+        failed = true;
+        break;
+      }
+      let d = sqrt(piv);
+      for (var j = i + li; j < l; j += NT) {
+        if (j == i) { Rw[g0 + i * st + i] = d; } else { Rw[g0 + i * st + j] /= d; }
+      }
+      storageBarrier();
+    }
+    if (!failed) {
+      ok = true;
+      break;
+    }
+    storageBarrier();
+  }
+  if (!ok) {
+    if (li == 0u) { flags[slot] = 1u; }
+    zeroRinv(g0, li);
+    return;
+  }
+  // R⁻¹ column j by back substitution of R x = e_j; zero below and beyond l.
+  for (var j = li; j < st; j += NT) {
+    var top = 0u;
+    if (j < l) {
+      for (var ii = 0u; ii <= j; ii++) {
+        let i = j - ii;
+        var s = select(0.0, 1.0, i == j);
+        for (var k = i + 1u; k <= j; k++) { s -= Rw[g0 + i * st + k] * Rinv[g0 + k * st + j]; }
+        Rinv[g0 + i * st + j] = s / Rw[g0 + i * st + i];
+      }
+      top = j + 1u;
+    }
+    for (var i = top; i < st; i++) { Rinv[g0 + i * st + j] = 0.0; }
+  }
+}`;

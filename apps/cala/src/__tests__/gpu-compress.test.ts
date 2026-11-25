@@ -2,17 +2,21 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { cholInvUpperBatch, GpuTileJob, WindowStats } from '../lib/cala-wasm.ts';
 import {
-  gramReport,
   GPU_MAX_STRIDE,
   GPU_RING_BLOCK,
   GPU_WINDOW_LADDER,
+  GPU_WORK_BYTES,
   GpuSketchTooLarge,
   RingClock,
   openGpuCompressor,
   ringFrameBytes,
   ringSegments,
+  takeBatch,
+  workColumns,
+  type GpuTileJobLike,
   type WindowStatsLike,
 } from '../lib/gpu-compress.ts';
+import { TILE_ROWS } from '../lib/gpu-compress-kernels.ts';
 import { initTestWasm } from './wasm-test.ts';
 
 describe('RingClock', () => {
@@ -229,12 +233,17 @@ interface FakeWrite {
  * other buffers always allocate; pipelines and queues are no-ops that record
  * ring writes and dispatches.
  */
-function fakeGpu(ok: (ringBytes: number) => boolean): {
+function fakeGpu(
+  ok: (ringBytes: number) => boolean,
+  limits: Partial<GPUSupportedLimits> = {},
+): {
   gpu: GPU;
   rings: object[];
   writes: FakeWrite[];
   dispatches: number[][];
+  submits: { n: number };
 } {
+  const submits = { n: 0 };
   let ringBytes = 0;
   const rings: object[] = [];
   const writes: FakeWrite[] = [];
@@ -255,7 +264,7 @@ function fakeGpu(ok: (ringBytes: number) => boolean): {
     end() {},
   };
   const device = {
-    limits: {},
+    limits,
     lost: new Promise(() => {}),
     queue: {
       writeBuffer(b: object, offset: number, data: ArrayBufferView, start = 0, count?: number) {
@@ -264,7 +273,9 @@ function fakeGpu(ok: (ringBytes: number) => boolean): {
         const view = all.subarray(start, count === undefined ? undefined : start + count);
         writes.push({ buffer: b, offset, bytes: view.byteLength, data: view.slice() });
       },
-      submit() {},
+      submit() {
+        submits.n++;
+      },
       onSubmittedWorkDone: async () => {},
     },
     pushErrorScope() {},
@@ -301,13 +312,103 @@ function fakeGpu(ok: (ringBytes: number) => boolean): {
     rings,
     writes,
     dispatches,
+    submits,
   };
 }
+
+describe('batches', () => {
+  it('fill the work buffers of the default 128 MB binding, or of a device with less', () => {
+    expect(workColumns({})).toBe(GPU_WORK_BYTES / (TILE_ROWS * 4));
+    expect(workColumns({ maxStorageBufferBindingSize: 2 ** 31, maxBufferSize: 2 ** 31 })).toBe(
+      8192,
+    );
+    // A device below the default: whole sketches of 64 columns that fit it.
+    expect(workColumns({ maxStorageBufferBindingSize: TILE_ROWS * 4 * 700 })).toBe(640);
+  });
+
+  it('take the smallest sketches first, as many as fit, every tile once', () => {
+    const l = [300, 20, 20, 70, 20, 130, 20];
+    const queue = l.map((_, i) => i);
+    const got: number[][] = [];
+    while (queue.length > 0) got.push(takeBatch(queue, (i) => l[i], 640, 1000));
+    // Stride 64: 10 fit 640 columns; with a 70 (stride 128) 5 fit; 130 (192) 3; 300 (320) 2.
+    expect(got).toEqual([
+      [1, 2, 4, 6, 3],
+      [5, 0],
+    ]);
+    expect(got.flat().sort()).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    // At most `maxSlots`, and never empty even when one tile alone overfills.
+    const q2 = [0, 1, 2];
+    expect(takeBatch(q2, () => 20, 640, 2)).toEqual([0, 1]);
+    expect(takeBatch([0], () => 400, 64, 10)).toEqual([0]);
+  });
+
+  it('compress every tile once, in batches the device limits size, growth included', async () => {
+    const n = 25;
+    const layout = () => Uint32Array.from({ length: 4 * n }, (_, k) => (k % 4 < 2 ? 0 : 64));
+    const finished: number[] = [];
+    const jobs = (tile: number): GpuTileJobLike => {
+      let l = 20;
+      let grown = tile !== 3; // tile 3 grows once, to a sketch of 100 columns
+      return {
+        l: () => l,
+        nIter: () => 2,
+        omega: () => new Float32Array(10 * l),
+        finish: () => {
+          if (!grown) {
+            grown = true;
+            l = 100;
+            return undefined;
+          }
+          finished.push(tile);
+          return new Uint8Array([tile]);
+        },
+        rank: () => tile,
+        free: () => {},
+      };
+    };
+    let next = 0;
+    const fake = fakeGpu(() => true, { maxStorageBufferBindingSize: TILE_ROWS * 4 * 640 });
+    const r = await openGpuCompressor({
+      width: 64,
+      height: 64,
+      tile: 64,
+      tiling: 'plain',
+      quant: 64,
+      layout,
+      gpu: fake.gpu,
+      jobs: () => jobs(next++),
+    });
+    if ('reason' in r) throw new Error(r.reason);
+    fake.submits.n = 0;
+    const out = await r.compress({
+      index: 0,
+      start: 0,
+      frames: 10,
+      stats: {
+        push: () => {},
+        frames: () => 10,
+        reset: () => {},
+        mean: () => new Float32Array(64 * 64),
+        free: () => {},
+      },
+      seeds: () => 0,
+      prevRanks: () => undefined,
+    });
+    // 640 columns: 10 tiles per batch at stride 64 (3 batches), then tile 3 at stride 128.
+    expect(fake.submits.n).toBe(4);
+    expect(finished.slice().sort((a, b) => a - b)).toEqual(Array.from({ length: n }, (_, i) => i));
+    expect(out.tiles.map((t) => t[0])).toEqual(Array.from({ length: n }, (_, i) => i));
+    expect(out.ranks).toEqual(Array.from({ length: n }, (_, i) => i));
+    r.destroy();
+  });
+});
 
 describe('CholeskyQR of a batch', () => {
   beforeAll(initTestWasm);
 
-  it("gives a zero R⁻¹ for a tile without variance (V4's dark corners) and names a refused one", () => {
+  // The rule the GPU's `CHOL` kernel follows (`chol_inv_upper`, the WASM reference).
+  it("gives a zero R⁻¹ for a tile without variance (V4's dark corners) and refuses a NaN", () => {
     const stride = 4;
     // Slot 0: the identity on its first 2 columns; slot 1: all zero (l 3).
     const g = new Float32Array(2 * stride * stride);
@@ -317,16 +418,12 @@ describe('CholeskyQR of a batch', () => {
     expect(r[0]).toBeCloseTo(1, 6);
     expect(r[stride + 1]).toBeCloseTo(1, 6);
     expect(r.subarray(stride * stride).every((v) => v === 0)).toBe(true);
-    // Not finite: refused, and the report names the tile.
+    // Not finite: refused.
     const bad = g.slice();
     bad[stride * stride] = NaN;
     expect(() => cholInvUpperBatch(bad, stride, Uint32Array.from([2, 3]))).toThrow(
       /block 1 is not positive definite/,
     );
-    expect(gramReport(bad, stride, [2, 3], [7, 9], 4096)).toBe(
-      'tile 9 (l 3, 4096 rows): trace 0, 1 not finite',
-    );
-    expect(gramReport(g, stride, [2, 3], [7, 9], 4096)).toContain('tile 9');
   });
 });
 
