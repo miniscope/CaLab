@@ -14,7 +14,8 @@
  * route ends (`ring` 0: a give-up, a reset, a lost device), on `reset` and
  * `release` (Stop, a new run), or after `GPU_STALL_S` without word from the
  * GPU (it says so after every batch of tiles; the run then gives its factors
- * up). Every other run never waits.
+ * up). The compress worker hears when each wait begins (`waiting`) and how
+ * long it took (`waited`). Every other run never waits.
  */
 import type {
   CompressSource,
@@ -231,6 +232,7 @@ export class CompressFeed implements CompressFeedLike {
     if (!consecutive || count <= 0 || count > this.ring - this.gpuWindow) return null;
     if (this.fits(start, count)) return null;
     this.endWait(false);
+    this.port.postMessage({ type: 'waiting', session: this.o.session });
     return new Promise<void>((resolve) => {
       this.wait = { start, count, t0: this.now(), timer: null, resolve };
       this.armStall();

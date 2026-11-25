@@ -104,7 +104,13 @@ export type FastToCompress =
    * (`CompressToFast`); `stalled`: the GPU made no progress for `GPU_STALL_S`
    * while it waited, so the run gives its factors up (`GPU_TEXT.stalled`).
    */
-  | { type: 'waited'; session: number; ms: number; stalled?: boolean };
+  | { type: 'waited'; session: number; ms: number; stalled?: boolean }
+  /**
+   * A GPU run: Discover begins to wait for room in the ring (a `waited` ends it).
+   * The runner counts a wait still running in the share of Discover's time spent
+   * waiting (`GPU_WAIT_SHARE_MAX`).
+   */
+  | { type: 'waiting'; session: number };
 
 /**
  * Compress worker -> fast worker, on the same port (a GPU run only): the GPU

@@ -46,7 +46,11 @@
  * chunk that would overwrite a frame of a window not yet compressed anyway
  * (the GPU fell a window behind), a feed that waited `GPU_STALL_S` without
  * progress, a lost device or a failed window gives the run's factors up, as
- * the backlog cap does; the chunk calls never wait for the GPU.
+ * the backlog cap does; the chunk calls never wait for the GPU. So does a GPU
+ * that makes Discover wait too much: after each window written while the
+ * recording runs, from the `GPU_WAIT_MIN_WINDOWS`th on, Discover's waits (the
+ * one running included) over its time since the run's first chunk above
+ * `GPU_WAIT_SHARE_MAX` (`GPU_TEXT.slow`).
  *
  * The GPU check (`CompressInit.gpuCheck`, `?debug&gpucheck=N`): the quantized
  * frames of the first N windows (at most `GPU_CHECK_MAX`) stay in memory;
@@ -150,7 +154,12 @@ export function backlogText(cap: number): string {
   return `The windows waiting for compression would need more than ${(cap / 2 ** 30).toFixed(1)} GB of disk.`;
 }
 
-/** Why a `?factors=gpu` run has no factors. */
+/** A GPU run gives its factors up when Discover waited more than this share of its time for the GPU. */
+export const GPU_WAIT_SHARE_MAX = 0.1;
+/** The wait share is judged once this many windows are written (the first windows wait the most). */
+export const GPU_WAIT_MIN_WINDOWS = 3;
+
+/** Why a GPU run (a recording's default, `?factors=gpu`) has no factors. */
 export const GPU_TEXT = {
   none: (why: string) => `No factors: the GPU compressor could not start (${why}).`,
   behind: 'No factors: the GPU compressor fell a window behind Discover.',
@@ -158,6 +167,8 @@ export const GPU_TEXT = {
   lost: (why: string) => `No factors: the GPU was lost (${why}).`,
   sketch: 'No factors: a tile needed a larger sketch than the GPU compressor holds.',
   error: (why: string) => `No factors: the GPU compressor failed (${why}).`,
+  slow: (percent: number) =>
+    `No factors: the GPU compressor made Discover wait ${Math.round(percent)} % of its time; the file is read instead.`,
 } as const;
 
 /** The most windows the GPU check keeps (one of 600 frames at 600 px is 432 MB). */
@@ -356,6 +367,9 @@ export class CompressRunner {
   /** Discover's waits for room in the ring (`waited`): their sum, ms, and count; kept across a give-up. */
   private waitMs = 0;
   private waits = 0;
+  /** When the wait running began (`waiting`; null: none), and the run's first chunk arrived (null: none yet). */
+  private waitFrom: number | null = null;
+  private firstChunkAt: number | null = null;
 
   constructor(private readonly deps: CompressRunnerDeps) {
     this.yieldNow = deps.yieldNow ?? macrotask;
@@ -375,8 +389,7 @@ export class CompressRunner {
       this.layoutPx = tiles.reduce((s, t) => s + t.w * t.h, 0);
       this.session = msg.session;
       this.init = msg;
-      this.waitMs = 0;
-      this.waits = 0;
+      this.resetWaits();
       this.widths = msg.pool ?? { discover: 1, after: 1 };
       if (msg.backlogCap !== undefined) {
         this.cap = msg.backlogCap;
@@ -399,10 +412,12 @@ export class CompressRunner {
       this.reviewOf(this.init)?.port.postMessage({ type: 'reset', session: msg.session });
       this.session = -1;
       this.init = null;
-      this.waitMs = 0;
-      this.waits = 0;
+      this.resetWaits();
+    } else if (msg.type === 'waiting') {
+      if (this.init.gpu) this.waitFrom = this.now();
     } else if (msg.type === 'waited') {
       if (!this.init.gpu) return;
+      this.waitFrom = null;
       this.waitMs += msg.ms;
       this.waits++;
       if (msg.stalled) await this.gpuFail(GPU_TEXT.stalled);
@@ -415,6 +430,7 @@ export class CompressRunner {
     } else if (msg.type === 'chunk') {
       if (this.gaveUp) return;
       if (this.init.gpu) {
+        this.firstChunkAt ??= this.now();
         if (this.gpu) await this.gpuChunk(msg, this.gpu);
         return;
       }
@@ -1125,12 +1141,42 @@ export class CompressRunner {
       const w = this.gpending[0];
       const ok = await this.compressGpu(g, w, epoch);
       if (!ok || epoch !== this.epoch) return;
+      const share = this.waitShare();
+      if (share !== null) {
+        // Not awaited: the give-up waits for this loop to end.
+        void this.gpuFail(GPU_TEXT.slow(share * 100), epoch);
+        return;
+      }
       this.gpending.shift();
       this.spareStats(w.stats);
       this.postRoom();
       this.releaseDoneGpu();
       this.post();
     }
+  }
+
+  /**
+   * The share of Discover's time since the run's first chunk it spent waiting
+   * for the GPU (the wait running included), when it is above
+   * `GPU_WAIT_SHARE_MAX` with `GPU_WAIT_MIN_WINDOWS` windows written while the
+   * recording runs; null otherwise. After the end Discover waits no more.
+   */
+  private waitShare(): number | null {
+    if (this.final || this.windows < GPU_WAIT_MIN_WINDOWS || this.firstChunkAt === null)
+      return null;
+    const now = this.now();
+    const elapsed = now - this.firstChunkAt;
+    if (!(elapsed > 0)) return null;
+    const waited = this.waitMs + (this.waitFrom === null ? 0 : now - this.waitFrom);
+    const share = waited / elapsed;
+    return share > GPU_WAIT_SHARE_MAX ? share : null;
+  }
+
+  private resetWaits(): void {
+    this.waitMs = 0;
+    this.waits = 0;
+    this.waitFrom = null;
+    this.firstChunkAt = null;
   }
 
   /** One window on the GPU into `f<index>.bin`; false when the run ended or gave up meanwhile. */

@@ -19,6 +19,8 @@ import {
   backlogText,
   GPU_CHECK_SEED,
   GPU_TEXT,
+  GPU_WAIT_MIN_WINDOWS,
+  GPU_WAIT_SHARE_MAX,
   STOPPED_TEXT,
   CompressRunner,
   factorName,
@@ -993,7 +995,11 @@ describe('a recording compressed on the GPU', () => {
   }
 
   /** A runner whose every run opens a new fake GPU compressor (window 50, slack 13). */
-  function gpuRunner(open?: CompressRunnerDeps['openGpu'], toFast?: CompressRunnerDeps['toFast']) {
+  function gpuRunner(
+    open?: CompressRunnerDeps['openGpu'],
+    toFast?: CompressRunnerDeps['toFast'],
+    now?: () => number,
+  ) {
     const store = memoryStore();
     const toMain: CompressToMain[] = [];
     const fakes: ReturnType<typeof fakeGpuCompressor>[] = [];
@@ -1005,6 +1011,7 @@ describe('a recording compressed on the GPU', () => {
       create: (quant) => new TileCompressor(quant),
       toMain: { postMessage: (m) => toMain.push(m) },
       ...(toFast ? { toFast } : {}),
+      ...(now ? { now } : {}),
       yieldNow: () => Promise.resolve(),
       openGpu:
         open ??
@@ -1232,20 +1239,26 @@ describe('a recording compressed on the GPU', () => {
 
     /**
      * The feed and the runner connected both ways (each direction a macrotask,
-     * as a MessagePort), and a trace stage that waits for room before each
-     * batch of 10 frames, as the trace worker does. The fake GPU (window 50,
-     * slack 13: a ring of 63) answers only when the test says.
+     * as a MessagePort), and a trace stage that works `batchMs` on each batch
+     * of 10 frames (on the shared clock) and then waits for room, as the trace
+     * worker does. The fake GPU (window 50, slack 13: a ring of 63) answers
+     * only when the test says.
      */
-    function connected(frames: number, o: { stallMs?: number } = {}) {
+    function connected(frames: number, o: { stallMs?: number; batchMs?: number } = {}) {
+      const { batchMs = 0, ...feedOptions } = o;
       let clock = 0;
       let feed: CompressFeed | null = null;
       const toFeed: CompressToFast[] = [];
-      const run = gpuRunner(undefined, {
-        postMessage: (m) => {
-          toFeed.push(m);
-          setTimeout(() => feed?.answer(m), 0);
+      const run = gpuRunner(
+        undefined,
+        {
+          postMessage: (m) => {
+            toFeed.push(m);
+            setTimeout(() => feed?.answer(m), 0);
+          },
         },
-      });
+        () => clock,
+      );
       let queue = Promise.resolve();
       const sent: FastToCompress[] = [];
       feed = new CompressFeed(
@@ -1258,7 +1271,7 @@ describe('a recording compressed on the GPU', () => {
           window: 30,
           quant: QUANT,
           gpu: true,
-          ...o,
+          ...feedOptions,
         },
         {
           postMessage: (m) => {
@@ -1274,6 +1287,7 @@ describe('a recording compressed on the GPU', () => {
       const done = (async () => {
         for (let s = 0; s < frames; s += 10) {
           await tick(); // one job at a time, as the trace worker's queue
+          clock += batchMs;
           const n = Math.min(10, frames - s);
           const room = f.room(s, n);
           if (room) {
@@ -1304,7 +1318,8 @@ describe('a recording compressed on the GPU', () => {
     }
 
     it('a GPU slower than the feed: the feed waits, resumes when a window is done, and loses no frame', async () => {
-      const c = connected(200);
+      // Discover works 3 s on each batch: its 4.5 s of waits stay under 10 % of its time.
+      const c = connected(200, { batchMs: 3000 });
       await c.settle();
       // Window 0 (frames 0-49) is on the GPU; 50-59 fit the slack, 60-69 would overwrite frame 0.
       expect(c.fakes[0].pending).toHaveLength(1);
@@ -1359,8 +1374,96 @@ describe('a recording compressed on the GPU', () => {
       expect(last.waits).toBe(c.stage.waits);
       expect(last.waitS).toBeCloseTo(waited.reduce((s, m) => s + m.ms, 0) / 1000, 9);
       expect(last.waitS).toBeCloseTo(4.5, 9);
+      // One message when each wait begins (the runner counts a wait still running).
+      expect(c.sent.filter((m) => m.type === 'waiting')).toHaveLength(c.stage.waits);
       // The windows done, the GPU route ends: the feed is told never to wait again.
       expect(c.toFeed.at(-1)).toMatchObject({ ring: 0 });
+    });
+
+    it('the fallback rule: more than 10 % of the time waiting, over at least 3 windows', () => {
+      expect(GPU_WAIT_SHARE_MAX).toBe(0.1);
+      expect(GPU_WAIT_MIN_WINDOWS).toBe(3);
+      expect(GPU_TEXT.slow(22)).toBe(
+        'No factors: the GPU compressor made Discover wait 22 % of its time; the file is read instead.',
+      );
+    });
+
+    it('a GPU that keeps Discover waiting more than 10 % of its time gives up its factors at the third window', async () => {
+      // Discover works 1 s on each batch; the GPU makes it wait 2.5 s, then 1 s, then 1 s.
+      const c = connected(200, { batchMs: 1000 });
+      await c.settle();
+      expect(c.stage.waitingAt).toBe(60);
+      c.advance(2500);
+      c.fakes[0].answer(GTILES);
+      await c.settle();
+      expect(c.stage.waitingAt).toBe(110);
+      c.advance(1000);
+      c.fakes[0].answer(GTILES);
+      await c.settle();
+      // 3.5 s of 14.5 s (24 %) after two windows: fewer than 3, so the run goes on.
+      expect(errors(c.toMain)).toEqual([]);
+      expect(c.stage.waitingAt).toBe(160);
+      // The third window written while Discover still waits: 4.5 s of 20.5 s (the wait
+      // running counts) since the first chunk is 22 %.
+      c.advance(1000);
+      c.fakes[0].answer(GTILES);
+      await c.settle(100);
+      await c.done;
+      expect(errors(c.toMain)).toEqual([{ type: 'error', session: 7, message: GPU_TEXT.slow(22) }]);
+      // The wait released, the feed runs to the end without waiting again.
+      expect(c.stage).toMatchObject({ ended: true, waits: 3 });
+      expect(c.toFeed.at(-1)).toMatchObject({ type: 'room', session: 7, ring: 0 });
+      // No more windows: the GPU got three, is freed, and the files are cleared.
+      expect(c.fakes[0].jobs).toHaveLength(3);
+      expect(c.fakes[0].destroyed()).toBe(1);
+      expect(c.store.files.size).toBe(0);
+      expect(statuses(c.toMain).at(-1)!.status).toMatchObject({ waits: 3 });
+      expect(statuses(c.toMain).at(-1)!.status.waitS).toBeCloseTo(4.5, 9);
+    });
+
+    it('a GPU that keeps Discover waiting less than 10 % of its time keeps its factors', async () => {
+      // 1 s of waits per window against 5 batches of 3 s: under 10 % from the third window on.
+      const c = connected(300, { batchMs: 3000 });
+      for (let guard = 0; !c.stage.ended; guard++) {
+        expect(guard).toBeLessThan(100);
+        await c.settle();
+        if (c.stage.waitingAt !== null) {
+          c.advance(1000);
+          c.fakes[0].answer(GTILES);
+        }
+      }
+      await c.done;
+      await c.settle();
+      while (c.fakes[0].pending.length > 0) {
+        c.fakes[0].answer(GTILES);
+        await c.settle();
+      }
+      expect(errors(c.toMain)).toEqual([]);
+      expect(c.stage.waits).toBe(5);
+      expect(statuses(c.toMain).at(-1)!.status).toMatchObject({ final: true, windows: 6 });
+      expect(c.store.files.size).toBe(6);
+    });
+
+    it('after the recording ended no wait share gives the factors up (Discover waits no more)', async () => {
+      // 150 frames: the third window closes at the end, after 3.5 s of waits in 15.5 s.
+      const c = connected(150, { batchMs: 1000 });
+      for (let guard = 0; !c.stage.ended; guard++) {
+        expect(guard).toBeLessThan(100);
+        await c.settle();
+        if (c.stage.waitingAt !== null) {
+          c.advance(c.stage.waits === 1 ? 2500 : 1000);
+          c.fakes[0].answer(GTILES);
+        }
+      }
+      await c.done;
+      await c.settle();
+      while (c.fakes[0].pending.length > 0) {
+        c.fakes[0].answer(GTILES);
+        await c.settle();
+      }
+      expect(errors(c.toMain)).toEqual([]);
+      expect(statuses(c.toMain).at(-1)!.status).toMatchObject({ final: true, windows: 3 });
+      expect(c.store.files.size).toBe(3);
     });
 
     it('a GPU that gives up releases the wait; the feed runs on without waiting', async () => {
