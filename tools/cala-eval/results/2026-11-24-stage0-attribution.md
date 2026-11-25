@@ -39,21 +39,27 @@ Native runs used `qc_eval` built from the same commit:
 The window runs from 15 s after the start to the last live frame, about 92 s and 13.2k observed frames. Values are
 T1 / T2.
 
-| duty                                          | ms per observed frame | share of wall |
-| --------------------------------------------- | --------------------: | ------------: |
-| live (batches: `observe` + glue)              |           4.16 / 4.07 |           59% |
-| of which WASM `observe`                       |           4.15 / 4.06 |           59% |
-| housekeep (`prune` after every applied visit) |           0.78 / 0.75 |           11% |
-| need (look-back answers: `observeLookback`)   |           0.70 / 0.67 |           10% |
-| visit (hand-out `takeJob` 0.26, apply 0.02)   |           0.29 / 0.28 |            4% |
-| publish, status                               |                  0.08 |            1% |
-| **busy**                                      |       **6.00 / 5.84** |    **85–86%** |
-| idle (no duty)                                |           1.03 / 0.97 |        14–15% |
+| duty                                            | ms per observed frame | share of wall |
+| ----------------------------------------------- | --------------------: | ------------: |
+| live (batches: `observe` + glue)                |           4.16 / 4.07 |           59% |
+| of which WASM `observe`                         |           4.15 / 4.06 |           59% |
+| housekeep (almost all of it: the library build) |           0.78 / 0.75 |           11% |
+| need (look-back answers: `observeLookback`)     |           0.70 / 0.67 |           10% |
+| visit (hand-out `takeJob` 0.26, apply 0.02)     |           0.29 / 0.28 |            4% |
+| publish, status                                 |                  0.08 |            1% |
+| **busy**                                        |       **6.00 / 5.84** |    **85–86%** |
+| idle (no duty)                                  |           1.03 / 0.97 |        14–15% |
 
 - **Everything is accounted for.** The `onmessage` handler spans sum to the duty total within 0.004 ms per frame, so
   there is no JS glue outside the duties. The profile of the slow worker over 10 s of mid-Discover (PR1) reads 83% WASM,
   3% JS, 13.5% idle, 0.0% GC and 0.0% `(program)` (deserialisation). That idle matches the duty clock's 14%.
-- **The worker reads 85% busy, not 95–100%.** The other 15% is real idle, waiting for the next batch or answer.
+- **The worker reads 85% busy, not 95–100%.** The other 15% is real idle, waiting for the next batch or answer. The
+  #500 reference runs' 1 s readings (A1/B1, mid-Discover) also show 13–19% idle, so the 95–100% figure doesn't describe
+  this recording on current `main`.
+- **`housekeep` is the library build, not `prune`.** `housekeep()` runs `prune()` and then, when edits are pending and
+  `commit_interval_frames` (100) has passed, `publish()`: a new `Library`, filters, Gram and terms. Discover makes about
+  127 such builds in the window. `housekeep` totals about 80 ms per build, which leaves almost nothing for the 4.2k
+  `prune` calls. That is consistent with a ledger scan over fewer than 800 cells.
 
 WASM `observe` split, in ms per call (T1, Discover window):
 
@@ -65,18 +71,23 @@ WASM `observe` split, in ms per call (T1, Discover window):
 - By third, WASM observe goes 3.6 → 4.3 → 4.6 ms as the library grows from about 300 to 775 cells.
 
 **The native comparison, and what explains the gap.** Native `observe` at a matching cell count (500–780 cells) is
-1.5–2.8 ms per frame (table in section 3). In the app it is 3.6–4.6, which is 1.6–2.2x. The cell-independent stages show
-how much of that is the browser rather than the work:
+1.5–2.8 ms per frame (table in section 3). In the app it is 3.6–4.6, which is 1.6–2.2x. The cell matching is
+approximate: the native run has more visits and more cells at a given frame. The stages that don't depend on cells give
+a cleaner read:
 
-| stage  | WASM / native, Discover | WASM / native, Final settle |
-| ------ | ----------------------: | --------------------------: |
-| whiten |                    1.5x |                       1.25x |
-| scale  |                    1.3x |                        1.0x |
+| stage                                     | WASM / native, Discover | WASM / native, Final settle |
+| ----------------------------------------- | ----------------------: | --------------------------: |
+| whiten                                    |                    1.5x |                       1.25x |
+| scale                                     |                    1.3x |                        1.0x |
+| reservoir (copy into the frame reservoir) |                  2.4–3x |                        1.8x |
 
 The Final settle is quieter: the fast loop is idle. There the cell-dependent stages are about 1.1–1.4x native per cell
 (scaled linearly from 900 to 780 cells). In Discover they are about 1.6–2.2x.
-So during Discover the slow worker's code runs about 1.3–1.5x slower than native. This is most likely contention from
-the fast loop, the visit workers and the look-back worker on shared cores, not the WASM itself.
+A ratio that needs no cell matching gives the same picture. Take WASM late-Discover over WASM settle, divided by native
+late-Discover over native settle: about 1.3x. So during Discover the slow worker's code runs roughly 1.3–1.5x slower
+than in the quiet settle. This is an inference, not a direct measurement: the likeliest cause is contention from the
+fast loop, four visit workers and the look-back worker on shared cores (6 P-cores). `reservoir`, a memory copy, is the
+stage most affected in both phases.
 
 A native-ms model counts only `observe` at native speed: about 2.4 of the 7.0 ms per observed frame, about 35%. The
 remaining ~65% is:
@@ -89,7 +100,8 @@ remaining ~65% is:
 | visit hand-out                                      |                  0.28 |
 | idle                                                |                   1.0 |
 
-This is the "measured work explains ~40%" gap. Nothing is hidden: no GC, no deserialisation, no JS glue.
+This reconstruction is ours: we did not see the model behind the "explains ~40%" figure. But a native `observe`-only
+model lands at 35%, and every other part is measured. Nothing is hidden: no GC, no deserialisation, no JS glue.
 
 ## 2. Final settle: the slow worker, look-back worker 0, and the relay
 
@@ -99,7 +111,7 @@ This is the "measured work explains ~40%" gap. Nothing is hidden: no GC, no dese
 | ------------------------------------------------------------------------------------ | ------------------: | ------------: |
 | end: WASM `observe`                                                                  |         5.05 / 4.89 |        44–45% |
 | end: checkpoints (finalize, unit footprints, noise, moved, still-moving; 14 of them) |         0.40 / 0.37 |          3–4% |
-| housekeep (`prune`, 14–15k calls, ~0.17–0.19 ms each)                                |         2.70 / 2.43 |        22–24% |
+| housekeep: library builds (~165, ~265–300 ms each at 780 cells), plus `prune`        |         2.70 / 2.43 |        22–24% |
 | visit: `takeJob` (job encoding with the tile's reservoir; 16–17k calls)              |         1.12 / 1.12 |           10% |
 | visit: apply                                                                         |                0.12 |            1% |
 | publish                                                                              |                0.08 |            1% |
@@ -119,10 +131,17 @@ on the workshop library is 4.7 ms at 900 cells. That is about 1.4x Discover's na
 because every settle frame is a fitting frame and the supports have grown. WASM in the settle runs at about native speed
 per cell. The other ~4 ms are three things, none of them `observe`:
 
-- `housekeep` 2.4–2.7 ms. `prune()` scans every cell's ledger once per applied visit, and there are about 0.8 applied
-  visits per settle frame.
-- `takeJob` 1.1 ms.
-- Checkpoints 0.4 ms.
+- **`housekeep` 2.4–2.7 ms: library builds.** During the settle, refines are pending all the time, so `housekeep()`
+  publishes a new library every 100 frames: about 165 builds in the settle. Δ`housekeep` ÷ libraries published is
+  265–308 ms per build. A checkpoint's `finalize` costs about the same, 221–266 ms per call. So the bucket is about 165
+  library builds. `prune` is negligible.
+- **`takeJob` 1.1 ms.**
+- **Checkpoints 0.4 ms**, which are 14 more library builds.
+
+The settle CPU profile (PR1, 10 s) agrees: `observe` 44%, `housekeep` 28%, `takeJob` 10%, `applyJob` 1%, idle 16%.
+
+Native settle `observe` comes from a run that shared the machine with one sim job from about frame 13k on. The ctl1 vs
+all-s1 sim pair shows that costs about 8%, so the native settle figure is about 8% high.
 
 **Look-back worker 0** (the end settle's only reader), in ms per settle frame:
 
@@ -135,7 +154,9 @@ per cell. The other ~4 ms are three things, none of them `observe`:
 | waits for rows |               0.002 |
 | **busy**       |       **8.6 / 8.3** |
 
-It is 76–77% busy. The trace solve is the larger half, then preprocess.
+It is 76–77% busy. The trace solve is the larger half, then preprocess. The brief's "~4.3 ms/frame" does not hold for
+this recording: the solve alone is 4.4–4.7 ms per frame. The #500 runs' readout shows the same (B1: solve about 82 ms per
+16-frame answer, against 13 ms in the older Samara measurements).
 
 **Relay** (16-frame answers, 1,124 per run). The round trip from request to handler is 182 / 173 ms per answer:
 
@@ -147,6 +168,9 @@ and 8.3–8.6 ms per frame) therefore alternate instead of overlapping. Neither 
 settle runs at 88–92 fps, where full overlap would allow about 105–110 fps.
 
 ## 3. Visits by phase (native)
+
+Caveat: the native workshop run and the replay shared the machine with one sim job, from about frame 13k on (about 8%
+on timings, from ctl1 vs all-s1). Shares and edits are unaffected.
 
 Workshop recording, native `step` (visits inline), `--visit-rate 0.2`. 4,730 Discover visits, 58.5 ms per visit.
 
@@ -225,6 +249,8 @@ the same timing build without `threads`, run twice. Values are ms per `observe` 
 | threads, 4        |            1.321 |            0.240 |         18% | **1.30x** |          1.545 | **1.33x** |    273 | same / same                |
 | threads, 8        |            1.332 |            0.234 |         18% |     1.29x |          1.552 |     1.32x |    275 | same / same                |
 
+- **The plain build matches too.** The plain build (no `timing`) gives byte-identical `footprints.bin` and `final.tsv`
+  to ctl1, at 281 s wall against 285 s. The native timers cost about 1.5%.
 - **Bit-identity holds.** `footprints.bin` and `final.tsv` match byte for byte at every thread count, and between the two
   no-threads controls. So `qc_eval` is deterministic and the threaded path changes nothing. The unit test
   `threaded_statistics_are_bit_identical_for_any_thread_count` checks the same at 1 and 4 threads.
@@ -242,19 +268,25 @@ the same timing build without `threads`, run twice. Values are ms per `observe` 
 **The gate ("the two unexplained costs are explained") is met.** The slow worker's time is all WASM work plus real idle;
 there is no hidden GC, deserialisation or glue. The unexplained part came from two things:
 
-- native-ms models that leave out `housekeep`, `need` and visit hand-out;
-- a native `observe` reference that is too low for the settle, and about 1.3–1.5x too optimistic for Discover under
-  browser contention.
+- native-ms models that leave out `housekeep` (library builds), `need` and visit hand-out;
+- a native `observe` reference that is too low for the settle, and roughly 1.3–1.5x too optimistic for Discover under
+  browser contention (inferred, see section 1).
 
 **Threads are killed** (section 5). Stage 1 should go after these instead, in order of what they buy:
 
-1. **`housekeep` per applied visit.** It costs 2.4–2.7 ms per settle frame (23% of the settle's wall) and 0.75 ms per
-   observed frame in Discover (11%). `prune()` scans every cell's ledger after every applied job. Running it once per
-   batch or answer, or only over the cells the job touched, should remove most of that without changing a decision.
-   This needs a check that the prune order doesn't matter, or a bit-identity test. It is the cheapest large win.
+1. **Library builds (`publish`) on the slow worker.** They cost 2.4–2.7 ms per settle frame (23% of the settle's wall)
+   and 0.75 ms per observed frame in Discover (11%). Each build is about 265 ms at 780 cells in the settle and about
+   80 ms in Discover, and one happens every 100 frames while edits are pending. The levers are:
+   - a longer commit interval during the Final settle, where the fast loop no longer needs fresh libraries;
+   - an incremental build that keeps the Gram and terms of unchanged cells (the builder already reuses filtered
+     footprints);
+   - building off the slow worker.
+
+   A cadence change alters what the settle's observes see. It is a results change and needs the usual quality check.
+
 2. **Final settle overlap.** The settle alternates between the slow worker (9.0–9.5 ms per frame) and look-back worker 0
    (8.3–8.6 ms per frame) with one answer in flight, so it runs at 88–92 fps. Two answers in flight would let them
-   overlap: about 105–110 fps, then about 115 fps once item 1 has trimmed the slow worker. A second end-settle reader is
+   overlap: about 105–110 fps, then about 115 fps (look-back-bound) once item 1 has trimmed the slow worker. A second end-settle reader is
    the step after that. The look-back worker's time is 42% preprocess and 55% trace solve.
 3. **`takeJob` in the settle**: 1.1 ms per settle frame (10%). It is the job encoding with the tile's reservoir; about
    20% of the calls return no job.
