@@ -79,6 +79,7 @@ function handle(msg: StageMsg): void {
             ? { sessionStarts: msg.setup.boundaries }
             : {}),
           ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
+          ...(cells?.visitRate ? { visitRate: cells.visitRate } : {}),
         },
         port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
         traceBackend,

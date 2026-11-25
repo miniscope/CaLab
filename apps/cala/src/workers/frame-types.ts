@@ -42,6 +42,8 @@ export interface CellsSettings {
   settleFraction?: number;
   /** Batches in flight to the slow worker (default `FAST_LOOP_DEFAULTS.poolSize`). */
   forwardBuffers?: number;
+  /** The Discover visit cap, visits per observed frame (`SlowInit.visitRate`; absent or 0 = none). */
+  visitRate?: number;
   /** Feed the compress worker (default off; needs its port). */
   compress?: boolean;
   /** Return a residual preview with each batch (the residual view is shown). */

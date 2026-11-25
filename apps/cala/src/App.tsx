@@ -266,6 +266,9 @@ const App: Component = () => {
   // goes first and Background settle asks only when it has nothing to ask.
   if (params.has('debug') && params.has('needfirst') && params.get('needfirst') !== '0')
     pipeline.setCsettleNeedFirst(true);
+  // `?debug&visitrate=off` (measurement only): no Discover visit cap and no hold (the behaviour
+  // before the fixed visit rate; `lib/visit-rate.ts`).
+  if (params.has('debug') && params.get('visitrate') === 'off') pipeline.setVisitRateOff(true);
   // `?debug&pacefps=30` (measurement only): read the recording at a stream's rate.
   if (params.has('debug') && params.has('pacefps'))
     pipeline.setPaceFps(Number(params.get('pacefps')), 'url');
@@ -493,6 +496,8 @@ const App: Component = () => {
   pipeline.onCurveArmed((curve) => runTrace.noteCurve(curve));
   // Auto's budget and decisions are kept in the trace, so changing Speed after the run does not lose them.
   pipeline.onAutoChange((a) => runTrace.noteAuto(a));
+  // The Discover visit rate's summary (floor, target, cap, achieved, time held).
+  pipeline.onVisitRate((s) => runTrace.noteVisitRate(s));
   // A Discover start begins a new run: the target speed in force is its first entry.
   createEffect(
     on(

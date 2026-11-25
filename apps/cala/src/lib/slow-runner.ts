@@ -80,7 +80,7 @@ import type {
   SlowToMain,
   VisitToOwner,
 } from '../workers/slow-types.ts';
-import { libraryViewTransferables } from '../workers/slow-types.ts';
+import { libraryViewTransferables, visitRateCounters } from '../workers/slow-types.ts';
 import {
   CSETTLE,
   movedAgainstNoise,
@@ -138,6 +138,10 @@ export interface SlowLoopLike {
   setNoise(noise: Float32Array): void;
   /** Restrict the structural edits (absent in older fakes: a replay is refused). */
   setEditScope?(scope: string): void;
+  /** The Discover visit cap, visits per observed frame (0: off; absent in older fakes and builds). */
+  setVisitRate?(rate: number): void;
+  /** `[rate, credit, frames, visits, cappedFrames, dueTiles]` (`visitRateCounters`). */
+  visitRateStats?(): Float64Array | number[];
   /** Parallel visits (needed only with visit workers). */
   takeJob?(): Uint8Array | undefined;
   applyJob?(bytes: Uint8Array): void;
@@ -702,6 +706,10 @@ export class SlowRunner {
             : {}),
         };
         this.loop = this.clock.span('setup', () => this.deps.create(this.init!));
+        // The Discover visit cap (`lib/visit-rate.ts`): ordinary visits only, in Discover's
+        // edit scope (the end settle and Refine runs are not held).
+        if (msg.visitRate !== undefined && msg.visitRate > 0)
+          this.loop.setVisitRate?.(msg.visitRate);
         this.run = 1;
         this.lbOn = lookback === true && typeof this.loop.lookbackTake === 'function';
         if (this.lbOn && !this.lbPort) this.lbError = 'The look-back worker is not connected.';
@@ -1746,6 +1754,7 @@ export class SlowRunner {
       run: this.run,
       editScope: this.scope,
       ...(this.lbOn ? { lookback: this.lookbackStatus(loop) } : {}),
+      ...(loop.visitRateStats ? { visitRate: visitRateCounters(loop.visitRateStats()) } : {}),
     };
     // Last, so the snapshot includes the time spent building this status.
     status.accounting = this.workStatus();

@@ -22,6 +22,7 @@
  * `null` until its feature fills it; add fields under the slot, and bump
  * `RUN_RECORD_VERSION` only when an existing field changes meaning.
  */
+import type { VisitRateSummary } from './visit-rate.ts';
 import { FINAL_SETTLE_LEVELS, type FinalSettleLevel, type GovernorStatus } from './settle.ts';
 import type { StageRun } from './run-stages.ts';
 import { stageMeta } from './export.ts';
@@ -77,13 +78,20 @@ export const KNOWN_FLAGS = [
   'review',
   'pass2',
   'live',
+  'visitrate',
 ] as const;
 
 /** Flags whose value is never written (it can hold a host or address). */
 const REDACTED_FLAGS: ReadonlySet<string> = new Set(['live']);
 
 /** What `?debug` gates: these flags only take effect with it. */
-const DEBUG_ONLY: ReadonlySet<string> = new Set(['lbpool', 'needfirst', 'pacefps', 'smooth']);
+const DEBUG_ONLY: ReadonlySet<string> = new Set([
+  'lbpool',
+  'needfirst',
+  'pacefps',
+  'smooth',
+  'visitrate',
+]);
 
 /**
  * Whether a flag changes anything given the others (`App.tsx` reads them the
@@ -103,6 +111,8 @@ function inEffect(name: string, value: string, p: URLSearchParams): boolean {
       return lookbackOn;
     case 'needfirst':
       return value !== '0';
+    case 'visitrate':
+      return value === 'off';
     case 'review':
       return p.has('compress');
     default:
@@ -290,8 +300,13 @@ export interface WorkSample {
   frame: number;
   /** The settle governor's limit now (null: no governor, e.g. a run at Max). */
   limit: string | null;
-  /** The fast loop's live estimate of its top speed, fps (null: not known yet). */
+  /**
+   * The run's top speed as the Speed block shows it (Max), fps (null: not known yet): the fast
+   * loop's, lowered to what the visits allow while the visit rate holds the run.
+   */
   maxFps: number | null;
+  /** The fast loop's own live estimate of its top speed, fps (null: not known; absent: as `maxFps`). */
+  fastMaxFps?: number | null;
   /** The floor as the Speed control shows it. */
   floor: {
     fps: number;
@@ -335,6 +350,13 @@ export interface RunCounters {
 export const RECORD_LIST_CAP = 2000;
 
 /** Thin the oldest half of `rows` (keep every second one) once it is over `cap`; the newest stay whole. */
+function median(xs: readonly number[]): number | null {
+  const a = [...xs].sort((x, y) => x - y);
+  if (a.length === 0) return null;
+  const m = a.length >> 1;
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+}
+
 export function thinOldest<T>(rows: T[], cap = RECORD_LIST_CAP): T[] {
   if (rows.length <= cap) return rows;
   const half = rows.length >> 1;
@@ -361,9 +383,11 @@ export class RunTrace {
   private floorLast: FloorInputs | null = null;
   private limitCounts: Record<string, number> = {};
   private maxSamples: number[] = [];
+  private fastMaxSamples: number[] = [];
   private counts: RunCounters | null = null;
   private curveRec: CurveRecord | null = null;
   private autoRec: { extraTimeShare: number; decisions: AutoDecision[] } | null = null;
+  private visitRec: VisitRateSummary | null = null;
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
@@ -377,9 +401,22 @@ export class RunTrace {
     this.floorLast = null;
     this.limitCounts = {};
     this.maxSamples = [];
+    this.fastMaxSamples = [];
     this.counts = null;
     this.curveRec = null;
     this.autoRec = null;
+    this.visitRec = null;
+  }
+
+  /** The Discover visit rate's summary as of now (the latest one is the record's). */
+  noteVisitRate(s: VisitRateSummary | null): void {
+    this.visitRec = s ? { ...s, hold_changes: s.hold_changes.map((c) => ({ ...c })) } : null;
+  }
+
+  visitRate(): VisitRateSummary | null {
+    return this.visitRec
+      ? { ...this.visitRec, hold_changes: this.visitRec.hold_changes.map((c) => ({ ...c })) }
+      : null;
   }
 
   /** Auto armed or decided (the run's own copy: a later change of Speed must not lose it). */
@@ -439,6 +476,11 @@ export class RunTrace {
       this.maxSamples.push(s.maxFps);
       this.maxSamples = thinOldest(this.maxSamples);
     }
+    const fast = s.fastMaxFps === undefined ? s.maxFps : s.fastMaxFps;
+    if (fast !== null && fast > 0) {
+      this.fastMaxSamples.push(fast);
+      this.fastMaxSamples = thinOldest(this.fastMaxSamples);
+    }
   }
 
   /** The floor over the run, or null when nothing was read. */
@@ -463,12 +505,14 @@ export class RunTrace {
     return out;
   }
 
-  /** The median of the Max estimates read, fps (null: none). */
+  /** The median of the Max estimates read (the run's top speed, as shown), fps (null: none). */
   maxFpsMedian(): number | null {
-    const a = [...this.maxSamples].sort((x, y) => x - y);
-    if (a.length === 0) return null;
-    const m = a.length >> 1;
-    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+    return median(this.maxSamples);
+  }
+
+  /** The median of the fast loop's own top-speed estimates, fps (null: none). */
+  fastMaxFpsMedian(): number | null {
+    return median(this.fastMaxSamples);
   }
 
   /** The settle cap is `cap` now (0: Off). Repeats of the same value are not recorded again. */
@@ -549,8 +593,13 @@ export interface RealisedWork {
   /** Lateness the pacer dropped at re-anchors, ms, and how often it re-anchored. */
   pace_late_ms: number | null;
   pace_reanchors: number | null;
-  /** Median of the live Max estimate, fps. */
+  /**
+   * Median of the live Max estimate, fps: the run's top speed as the Speed block showed it (with
+   * the visit rate on, lowered to what the visits allow while they hold the run).
+   */
   max_fps_median: number | null;
+  /** Median of the fast loop's own top-speed estimate, fps (equal to `max_fps_median` with the visit rate off). */
+  fast_max_fps_median?: number | null;
 }
 
 /** The Speed block's mode for a run: `stream` for a live source, else what was set. */
@@ -637,6 +686,8 @@ export interface RunRecordInput {
   governor: GovernorStatus | null;
   /** What the run realised (null: not known); `work.realised`. */
   realised?: RealisedWork | null;
+  /** The Discover visit rate: its floor, target and cap and what the run achieved (`work.visit_rate`; null: not a Discover run). */
+  visitRate?: VisitRateSummary | null;
   /** Discover's mean processing rate over the run, frames per second (null: not known). */
   achievedFps: number | null;
   machine: MachineContext;
@@ -688,6 +739,7 @@ export function buildRunRecord(i: RunRecordInput): Record<string, unknown> {
     work: {
       ...i.work,
       realised: i.realised ?? null,
+      visit_rate: i.visitRate ?? null,
       /** Time-stamped; cap 0 is Off. The first entry is the cap at the run's start. */
       cap_changes: i.capChanges.map((c) => ({ ...c })),
       achieved_fps: i.achievedFps,
@@ -931,6 +983,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       visit_workers: src.visitWorkers(),
     },
     governor: gov,
+    visitRate: src.trace.visitRate(),
     realised: {
       achieved_fps_mean: achieved,
       dose_per_live_frame:
@@ -944,6 +997,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       pace_late_ms: n?.paceLateMs ?? null,
       pace_reanchors: n?.paceReanchors ?? null,
       max_fps_median: src.trace.maxFpsMedian(),
+      fast_max_fps_median: src.trace.fastMaxFpsMedian(),
     },
     achievedFps: achieved,
     machine: machineContext(),

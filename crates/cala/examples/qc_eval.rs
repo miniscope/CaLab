@@ -16,6 +16,10 @@
 //!                      into cala's registered frame (see "GT frame");
 //!                      `none` scores against the tissue frame as before
 //!   --budget U         slow-loop work units per frame (default 3e7)
+//!   --visit-rate R     cap Discover's ordinary tile visits at R per observed
+//!                      frame (`SlowLoop::set_visit_rate`, the app's cap; off
+//!                      by default). Pair it with a large `--budget` so the
+//!                      rate, not the work budget, binds (as in the app)
 //!   --start N          frame at which the slow loop / oracle library starts (50)
 //!   --every K          checkpoint every K frames (default 300)
 //!   --perturb-frac F   oracle: share of cells perturbed (default 0.3)
@@ -5064,6 +5068,7 @@ fn main() {
     let dump = args.iter().any(|a| a == "--dump");
     let dump_signed = !args.iter().any(|a| a == "--no-signed");
     let budget: u64 = arg_value(&args, "--budget").map_or(30_000_000, |s| s.parse().unwrap());
+    let visit_rate: f64 = arg_value(&args, "--visit-rate").map_or(0.0, |s| s.parse().unwrap());
     let start: usize = arg_value(&args, "--start").map_or(50, |s| s.parse().unwrap());
     let every: usize = arg_value(&args, "--every").map_or(300, |s| s.parse().unwrap());
     let frac: f64 = arg_value(&args, "--perturb-frac").map_or(0.3, |s| s.parse().unwrap());
@@ -6004,6 +6009,7 @@ fn main() {
                         };
                         slow = Some(mk());
                         if let Some(s) = slow.as_mut() {
+                            s.set_visit_rate(visit_rate);
                             s.set_lookback_reservoir(lb_res, lb_res_share);
                             if let Some(c) = &cs_cfg {
                                 s.enable_settle(c.quiet);
@@ -6404,6 +6410,19 @@ fn main() {
                         tm.ending = true;
                         tm.advance(f64::INFINITY, sl, &mut slow_rec, &mut |_| None);
                         engine.set_library(sl.finalize().unwrap()).unwrap();
+                    }
+                }
+                if let (true, 0, Some(sl)) = (last, pass, slow.as_ref()) {
+                    let v = sl.visit_rate_stats();
+                    if v.rate > 0.0 {
+                        println!(
+                            "visit rate: cap {} per frame: {} visits over {} frames ({:.3} per frame), capped on {} frames",
+                            v.rate,
+                            v.visits,
+                            v.frames,
+                            v.visits as f64 / v.frames.max(1) as f64,
+                            v.capped_frames
+                        );
                     }
                 }
                 // Branch point `discover`: Discover's last frame is done, the

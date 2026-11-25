@@ -204,6 +204,28 @@ impl JsSlowLoop {
         Ok(out.map(|lib| self.keep(lib)))
     }
 
+    /// Cap ordinary Discover visits at `rate` per observed frame (0: off,
+    /// the default; see `discover/visitrate.rs`).
+    #[wasm_bindgen(js_name = setVisitRate)]
+    pub fn set_visit_rate(&mut self, rate: f64) {
+        self.inner.set_visit_rate(rate);
+    }
+
+    /// The visit cap's counters: `[rate, credit, frames, visits,
+    /// cappedFrames, dueTiles]`.
+    #[wasm_bindgen(js_name = visitRateStats)]
+    pub fn visit_rate_stats(&self) -> Vec<f64> {
+        let v = self.inner.visit_rate_stats();
+        vec![
+            v.rate,
+            v.credit,
+            v.frames as f64,
+            v.visits as f64,
+            v.capped_frames as f64,
+            v.due_tiles as f64,
+        ]
+    }
+
     /// Visits handed out and not yet applied.
     #[wasm_bindgen(getter, js_name = jobsInFlight)]
     pub fn jobs_in_flight(&self) -> u32 {

@@ -641,6 +641,11 @@ impl SlowLoop {
         loop {
             let ti = self.next_free_tile()?;
             if !(self.skip_unused && self.idle_visit(ti)) {
+                // The Discover visit cap (`visitrate.rs`).
+                if !self.visit_allowed(true) {
+                    return None;
+                }
+                self.visit_spent();
                 return Some(ti);
             }
             // (Sets the tile's fresh count to 0: it is not due again.)
@@ -1031,6 +1036,11 @@ impl SlowLoop {
                 self.credit = 0;
                 break;
             };
+            if !self.visit_allowed(true) {
+                self.credit = self.credit.min(budget as i64);
+                break;
+            }
+            self.visit_spent();
             let job = self.make_job(ti, false);
             let bytes = job.encode(&self.tiles[ti], &self.shared);
             tap(&bytes);

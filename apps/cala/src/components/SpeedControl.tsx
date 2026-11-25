@@ -5,6 +5,7 @@ import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { CellStore } from '../lib/cell-store.ts';
 import { curveWords, CURVE_PRESETS, presetCurve } from '../lib/speed-schedule.ts';
 import { AUTO_BUDGETS, budgetLabel } from '../lib/speed-auto.ts';
+import { VISIT_RATE, visitHoldText } from '../lib/visit-rate.ts';
 import {
   achievedSpeed,
   belowFloorNote,
@@ -142,6 +143,11 @@ export function SpeedControl(props: {
   };
   const words = createMemo(() => floorWords(floor()));
   const maxNow = () => (s().workMaxFps() > 0 ? Math.round(s().workMaxFps()) : null);
+  /** What "max now" means: the fastest this machine reads frames, or keeps refinement up. */
+  const maxTitle = () =>
+    s().workMaxVisitLimited()
+      ? `The fastest this machine can go now while keeping refinement at ${VISIT_RATE.target} visits/frame. Reading frames alone could go faster.`
+      : 'The fastest this machine can go now.';
   const marks = () => [...SPEED_TICKS, floorFps()];
   const gov = () => props.cells.status()?.lookback?.csettle?.governor ?? null;
   const running = () => s().status() === 'running' || s().status() === 'paused';
@@ -305,6 +311,9 @@ export function SpeedControl(props: {
             ? `Following the curve: ${curveLine()}. ${speedLine()}`
             : speedLine();
   const belowNote = () => (mode() === 'fixed' ? belowFloorNote(shown() ?? 0, floorFps()) : null);
+  // The Discover visit rate's hold (`lib/visit-rate.ts`): the run goes slower than asked.
+  const holdLine = () =>
+    running() && !done() ? visitHoldText(s().visitHold(), s().paceTarget(), VISIT_RATE) : null;
 
   const capSelect = (cls: string): JSX.Element => (
     <label class={cls}>
@@ -398,6 +407,17 @@ export function SpeedControl(props: {
         <p class="cala-speed__line" data-testid="speed-status">
           {pinned() !== null ? `Pinned at Max: ${pinned()}` : status()}
         </p>
+        <Show when={holdLine()}>
+          {(line) => (
+            <p
+              class="cala-speed__line"
+              data-testid="speed-visit-hold"
+              title={`Discover keeps cell refinement between ${VISIT_RATE.floor} and ${VISIT_RATE.cap} visits per frame, so results do not depend on how fast this machine is. When the workers cannot keep up with ${VISIT_RATE.target}, the run is held slower than the Speed setting.`}
+            >
+              {line()}
+            </p>
+          )}
+        </Show>
       </Show>
 
       <div
@@ -421,7 +441,7 @@ export function SpeedControl(props: {
                   <div
                     class="cala-speed__above"
                     style={{ left: pct(m()) }}
-                    title="Above what this machine reaches now: a target here behaves as Max."
+                    title={`Above what this machine reaches now: a target here behaves as Max. ${maxTitle()}`}
                   />
                 )}
               </Show>
@@ -458,6 +478,7 @@ export function SpeedControl(props: {
                       class="cala-speed__marklabel"
                       style={{ left: pct(m()) }}
                       data-testid="speed-max-label"
+                      title={maxTitle()}
                     >
                       max now {m()}
                     </span>
@@ -577,6 +598,15 @@ export function SpeedControl(props: {
         <p class="cala-speed__line cala-muted" data-testid="speed-live-reason">
           {NO_BUFFER_REASON}
         </p>
+        <Show when={s().visitMode() === 'cap-only'}>
+          <p
+            class="cala-speed__line cala-muted"
+            data-testid="speed-visit-live"
+            title={`On a recording, Discover keeps cell refinement at about ${VISIT_RATE.target} visits per frame and slows down when the workers fall behind. A live stream cannot slow down, so it keeps only the cap of ${VISIT_RATE.cap} visits per frame: on a slow machine it may refine less than a recording would.`}
+          >
+            Refinement capped at {VISIT_RATE.cap} visits/frame (no floor on a live stream).
+          </p>
+        </Show>
       </Show>
     </section>
   );

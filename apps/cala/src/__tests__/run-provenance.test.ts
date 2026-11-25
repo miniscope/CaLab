@@ -1,3 +1,4 @@
+import { VISIT_RATE, VisitRateGovernor } from '../lib/visit-rate.ts';
 import type { AutoDecision } from '../lib/speed-auto.ts';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -627,6 +628,21 @@ describe('speed record fields', () => {
     expect(t.maxFpsMedian()).toBe(250);
     expect(new RunTrace().limitShares()).toEqual({});
     expect(new RunTrace().maxFpsMedian()).toBeNull();
+    // Without a separate fast-loop reading the fast median is the same as Max's.
+    expect(t.fastMaxFpsMedian()).toBe(250);
+    expect(new RunTrace().fastMaxFpsMedian()).toBeNull();
+  });
+
+  it('keeps the held Max and the fast loop top speed apart while the visits hold the run', () => {
+    const t = new RunTrace();
+    for (const [held, fast] of [
+      [120, 290],
+      [125, 300],
+      [130, 310],
+    ] as const)
+      t.noteSample(sample({ maxFps: held, fastMaxFps: fast }));
+    expect(t.maxFpsMedian()).toBe(125);
+    expect(t.fastMaxFpsMedian()).toBe(300);
   });
 
   it('keeps the counts of Discover for later: the last reading wins, and the limit counts stop at its end', () => {
@@ -717,6 +733,7 @@ describe('speed record fields', () => {
       pace_late_ms: 120,
       pace_reanchors: 4,
       max_fps_median: 200,
+      fast_max_fps_median: 200,
     });
     expect(r.slots.slider_schedule).toEqual(sliderSchedule());
     expect(r.slots.slider_schedule.scale).toEqual([10, 500]);
@@ -925,5 +942,36 @@ describe('replaying a curve', () => {
       csettleCeiling: 1,
       capChangedDuringRun: true,
     });
+  });
+});
+
+describe('run record: the Discover visit rate', () => {
+  it('writes work.visit_rate as given and null without one', () => {
+    expect((buildRunRecord(input()) as Rec).work.visit_rate).toBeNull();
+    const summary = new VisitRateGovernor('on').summary();
+    const r = buildRunRecord(input({ visitRate: summary })) as Rec;
+    expect(r.work.visit_rate).toMatchObject({
+      mode: 'on',
+      floor: VISIT_RATE.floor,
+      target: VISIT_RATE.target,
+      cap: VISIT_RATE.cap,
+      held_s: 0,
+      min_hold_fps: null,
+    });
+  });
+
+  it('keeps the summary in the trace until the next run', () => {
+    const t = new RunTrace();
+    expect(t.visitRate()).toBeNull();
+    t.noteVisitRate(new VisitRateGovernor('cap-only').summary());
+    expect(t.visitRate()?.mode).toBe('cap-only');
+    t.reset();
+    expect(t.visitRate()).toBeNull();
+  });
+
+  it('records visitrate=off as a debug flag', () => {
+    expect(urlFlags('?debug&visitrate=off').flags.visitrate.in_effect).toBe(true);
+    expect(urlFlags('?visitrate=off').flags.visitrate.in_effect).toBe(false);
+    expect(urlFlags('?debug&visitrate=on').flags.visitrate.in_effect).toBe(false);
   });
 });
