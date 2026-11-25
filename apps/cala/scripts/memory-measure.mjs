@@ -33,7 +33,9 @@
  *   `POOL_JOINED` with the seconds from that change to the first `settleWorkers` >= 1 and the
  *   frames dropped for the slow loop by then (total, and since the change).
  *   `--finish-after S`: press "End Discover" once Discover has run S seconds (a short run: the end
- *   settle then covers the frames read so far). Every run also records the work readout
+ *   settle then covers the frames read so far). `--stop-settle-after S`: press "Stop Final
+ *   settle" once the settle has run S seconds; `--restart-after-settle S`: once settled, start
+ *   Discover again and log look-back after S seconds (smoke tests). Every run also records the work readout
  *   (`__cala.pipeline.work()`, once a second) as `<tag>-work.json` and logs the `?debug` text
  *   readout at each sample.
  *   Background settle (the settle governor) runs by default in a look-back run below Max
@@ -88,6 +90,12 @@ const csYield = opt('--csettle-yield', '');
 const csRate = opt('--csrate', '');
 const paceFps = opt('--pacefps', '');
 const finishAfter = Number(opt('--finish-after', '0'));
+// `--stop-settle-after S`: press "Stop Final settle" once the settle has run S seconds (smoke tests).
+const stopSettleAfter = Number(opt('--stop-settle-after', '0'));
+let settleStopped = false;
+// `--restart-after-settle S`: once settled, start Discover again and log look-back after S seconds.
+const restartAfter = Number(opt('--restart-after-settle', '0'));
+let restartAt = null;
 // `--pace-after S:N`: once Discover has run S seconds, set the target to N fps mid-run (0 = Max).
 const paceAfter = (opt('--pace-after', '') || '').split(':').map(Number);
 const csQuery0 = csettle
@@ -785,6 +793,17 @@ while (!stop) {
     L(`FINISH_EARLY ${r.t.toFixed(1)}s`);
     await page.evaluate(() => window.__cala.pipeline.finishEarly());
   }
+  if (
+    stopSettleAfter > 0 &&
+    framesDoneAt !== null &&
+    r.st?.lb?.settling &&
+    r.t - framesDoneAt > stopSettleAfter &&
+    !settleStopped
+  ) {
+    settleStopped = true;
+    L(`STOP_SETTLE ${r.t.toFixed(1)}s ${JSON.stringify(r.st.lb.settle ?? null)}`);
+    await page.click('[data-testid=lookback-stop-settling]');
+  }
   if (r.rendererFoot > 6000 || r.rendererRss > 6000) stop = 'cap';
   const key = `${r.st?.pst}|${r.st?.extract}`;
   if (key !== lastKey) lastKey = key;
@@ -803,7 +822,18 @@ while (!stop) {
       if (extract) {
         extractClicked = true;
         await page.click('[data-testid=pass2-run]');
+      } else if (restartAfter > 0) {
+        // Smoke: Discover again in the same page; the look-back worker must still serve.
+        restartAt = r.t;
+        L(`RESTART ${r.t.toFixed(1)}s`);
+        await page.evaluate(() => void window.__cala.pipeline.start());
       } else stop = 'done';
+    }
+    if (restartAt !== null && r.t - restartAt > restartAfter) {
+      L(
+        `RESTART_LB ${(r.t - restartAt).toFixed(1)}s ${r.st?.pst} ${JSON.stringify(r.st?.lb ?? null)}`,
+      );
+      stop = 'done';
     }
     if (extractClicked && r.st?.extract === 'done') {
       L(`EXTRACT_DONE ${r.t.toFixed(1)}s`);

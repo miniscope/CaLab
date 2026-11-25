@@ -65,7 +65,12 @@ export type FlatFieldEvent =
       change: FlatFieldChange | null;
     }
   | { type: 'skipped'; session: number; message: string }
-  | { type: 'error'; session: number; message: string };
+  | { type: 'error'; session: number; message: string }
+  /**
+   * The recording ended and every batch sent was taken in: no map of this
+   * session comes after this one (`FlatFieldDown` `finish`).
+   */
+  | { type: 'finished'; session: number };
 
 // ---------------------------------------------------------------------------
 // Device identity and cache key

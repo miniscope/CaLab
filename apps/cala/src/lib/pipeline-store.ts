@@ -277,6 +277,18 @@ export function createPipelineStore(
   let runLevel: ReturnType<typeof finalSettleLevel> | null = null;
   /** Session of the current run with look-back (0: none). */
   let lookbackSession = 0;
+  /**
+   * What the end settle waits for (`LookbackFeed.final`): Discover's last
+   * back state sent (`back`), and the flat field's last map (`flat`: its
+   * estimator finished, failed, or does not run this session).
+   */
+  let finalInputs = { back: false, flat: false, sent: false };
+  function noteFinalInputs(p: Partial<typeof finalInputs>): void {
+    finalInputs = { ...finalInputs, ...p };
+    if (!lookbackSession || finalInputs.sent || !finalInputs.back || !finalInputs.flat) return;
+    finalInputs.sent = true;
+    lookbackFeed?.final?.(lookbackSession);
+  }
   /** The live source's counters after the newest batch (null on a file source). */
   const [live, setLive] = createSignal<LivePoint | null>(null);
   let livePoints: LivePoint[] = [];
@@ -322,11 +334,18 @@ export function createPipelineStore(
   function onFlatEvent(e: FlatFieldEvent): void {
     if (e.type === 'error') {
       // A crashed estimator (session -1) or this run's: reported, the run goes on uncorrected.
-      if (e.session === -1 || e.session === flatSessionId) patchFlat({ error: e.message });
+      if (e.session === -1 || e.session === flatSessionId) {
+        patchFlat({ error: e.message });
+        // No map of this run comes any more.
+        noteFinalInputs({ flat: true });
+      }
       return;
     }
     if (e.session !== flatSessionId) return;
     switch (e.type) {
+      case 'finished':
+        noteFinalInputs({ flat: true });
+        return;
       case 'progress':
         patchFlat({ frames: e.frames, fps: e.fps });
         return;
@@ -540,6 +559,7 @@ export function createPipelineStore(
       case 'done':
         if (lookbackSession && step.backState)
           lookbackFeed?.backState(lookbackSession, step.backState);
+        noteFinalInputs({ back: true });
         curveDriver = null;
         if (!exhausted) {
           exhausted = true;
@@ -1221,6 +1241,8 @@ export function createPipelineStore(
       runLevel = lb || runPlan.factorSettle ? finalSettleLevelSig() : FINAL_SETTLE_LEVEL_DEFAULT;
       if (lb) {
         lookbackSession = session;
+        // Without an estimator this session, the flat-field input is final from the start.
+        finalInputs = { back: false, flat: !useFlat, sent: false };
         setLookbackRun(true);
         if (flatLatest) lookbackFeed!.flatField(session, flatLatest);
         // The cap and the target before the run's init (the slow worker keeps them across runs).

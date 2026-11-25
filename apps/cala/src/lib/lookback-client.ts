@@ -58,6 +58,12 @@ export interface LookbackFeed {
    * (`RunRecord.noteSession`). Call it before that batch's `rows`.
    */
   session?(session: number, index: number, transform: SessionTransform): void;
+  /**
+   * Discover ended and what was fed above is final: its last back state
+   * went out, and the flat field's last map. The end settle reads nothing
+   * before it (worker 0; `MainToLookback` `final`).
+   */
+  final?(session: number): void;
   /** The run stopped. */
   reset(session: number): void;
   /** The pacer's target live fps (0: Max) and pause, for the settle governor (`SlowRunner.setPace`). */
@@ -281,6 +287,11 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       const t: SessionTransform = [transform[0], transform[1], transform[2]];
       if (run?.session === session) run.sessions.push({ index, transform: t });
       postAll(() => [{ type: 'session', session, index, transform: t }, []]);
+    },
+    final(session) {
+      // Worker 0 serves the end settle (the pool serves the settle during Discover only).
+      if (run?.session === session)
+        workers[0]?.postMessage({ type: 'final', session } satisfies MainToLookback);
     },
     reset(session) {
       // A late reset of an earlier run (a stream's factor settle released after the next run

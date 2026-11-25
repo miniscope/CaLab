@@ -104,6 +104,16 @@ describe('look-back client', () => {
     expect(dy.length).toBe(2);
   });
 
+  it("`final` goes to worker 0 only (the end settle's), and only for the current run", () => {
+    const t = setup(null, 1);
+    t.client.begin(3);
+    t.client.startPool?.(3);
+    t.client.final?.(2);
+    t.client.final?.(3);
+    const finals = t.sent.filter((s) => s.msg.type === 'final');
+    expect(finals.map((s) => [s.worker, s.msg])).toEqual([[0, { type: 'final', session: 3 }]]);
+  });
+
   it('a pool: no pool worker until the run goes below Max', () => {
     const t = setup(null, 2);
     expect(t.client.begin(1)).toBe(true);

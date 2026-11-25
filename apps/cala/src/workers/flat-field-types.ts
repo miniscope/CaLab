@@ -15,7 +15,15 @@ export interface FlatFieldLink {
 
 /** Frame worker -> flat-field worker (over the port). */
 export type FlatFieldDown =
-  ({ type: 'start' } & FlatFieldStart) | ({ type: 'batch' } & FlatFieldBatch) | { type: 'stop' };
+  | ({ type: 'start' } & FlatFieldStart)
+  | ({ type: 'batch' } & FlatFieldBatch)
+  /**
+   * The recording ended (no batch of `session` follows): once the batches
+   * before it are in, the worker tells the main thread its last map is out
+   * (`FlatFieldEvent` `finished`).
+   */
+  | { type: 'finish'; session: number }
+  | { type: 'stop' };
 
 /** Flat-field worker -> frame worker (over the port). */
 export type FlatFieldUp =

@@ -83,6 +83,11 @@ class PortSink implements FlatFieldSink {
     ]);
   }
 
+  /** The recording ended: no batch follows (the worker then says its last map is out). */
+  finish(): void {
+    this.port.postMessage({ type: 'finish', session: this.session } satisfies FlatFieldDown);
+  }
+
   stop(): void {
     this.port.postMessage({ type: 'stop' } satisfies FlatFieldDown);
   }
@@ -315,6 +320,8 @@ async function handle(req: FrameRequest): Promise<void> {
           const job = await front.next();
           if (!job) {
             flushPaceStats();
+            // The flat-field estimator gets no more batches: it says when its last map is out.
+            flatSink?.finish();
             down.postMessage({ type: 'end', epoch, id: req.id } satisfies StageMsg);
           } else {
             down.postMessage(

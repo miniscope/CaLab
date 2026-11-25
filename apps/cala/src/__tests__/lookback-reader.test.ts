@@ -1,7 +1,10 @@
 // @vitest-environment node
 import { beforeAll, describe, expect, it } from 'vitest';
 import { entriesFromFiles, FrameSource } from '../lib/frame-source.ts';
+import { TraceLibraryBuilder } from '../lib/cala-wasm.ts';
 import { LookbackReader, lookbackFrames } from '../lib/lookback-reader.ts';
+import { LookbackService } from '../lib/lookback-service.ts';
+import type { LookbackToSlow } from '../workers/lookback-types.ts';
 import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
 import { BackStage, FrontStage, MotionStage, type ReplayInput } from '../lib/pipeline-stages.ts';
 import { RunRecord } from '../lib/run-record.ts';
@@ -101,6 +104,169 @@ describe('LookbackReader', () => {
     expect(z.some((v) => v !== 0)).toBe(true);
     reader.dispose();
     src.dispose();
+  });
+
+  it('prepare then solve gives what serve gives, solved with the library applied in between', async () => {
+    const live = await liveRun();
+    const batches = live.steps.filter((s) => s.kind === 'batch');
+    const lib = (centres: [number, number][], version: number) => {
+      const b = new TraceLibraryBuilder(W, H);
+      centres.forEach(([cy, cx], i) => {
+        const v = new Float32Array(81).fill(0.5);
+        v[40] = 1;
+        b.addFootprint(i + 1, cy - 4, cx - 4, 9, 9, v);
+      });
+      const l = b.buildUnfiltered();
+      const out = { bytes: l.toBytes(), version };
+      l.free();
+      return out;
+    };
+    const a = lib([[12, 14]], 7);
+    const b = lib(
+      [
+        [12, 14],
+        [26, 30],
+      ],
+      8,
+    );
+    const px = W * H;
+    const frames = [24, 25, 26].map((frame) => ({ frame, block: 1 }));
+    const open = async () => {
+      const src = await openAvi();
+      const reader = new LookbackReader(src);
+      for (const s of batches)
+        reader.pushRows(s.start, s.dy, s.dx, s.flags, s.flickerOffset, s.flickerGain);
+      reader.setBackState(live.before.get(24)!);
+      return { src, reader };
+    };
+    // `serve` with library b in hand.
+    const one = await open();
+    one.reader.setLibrary(a.version, a.bytes);
+    await one.reader.serve([{ frame: 23, block: 0 }], new Float32Array(px));
+    one.reader.setLibrary(b.version, b.bytes);
+    const y1 = new Float32Array(3 * px);
+    const served = await one.reader.serve(frames, y1);
+    // Prepared while library a is in use; b arrives, is applied (the cue), then the solve.
+    const two = await open();
+    two.reader.setLibrary(a.version, a.bytes);
+    await two.reader.serve([{ frame: 23, block: 0 }], new Float32Array(px));
+    const y2 = new Float32Array(3 * px);
+    const prepared = await two.reader.prepare(frames, y2);
+    two.reader.setLibrary(b.version, b.bytes);
+    two.reader.applyLibrary();
+    const solved = two.reader.solve(prepared);
+    // (The version is the library's own, from its bytes: b's, built after a's.)
+    expect(served.version).toBeGreaterThan(0);
+    expect(solved.version).toBe(served.version);
+    expect(solved.cells).toBe(2);
+    expect(Array.from(y2)).toEqual(Array.from(y1));
+    expect(Array.from(solved.traces)).toEqual(Array.from(served.traces));
+    expect(Array.from(solved.background ?? [])).toEqual(Array.from(served.background ?? []));
+    expect(served.traces.some((v) => v !== 0)).toBe(true);
+    for (const o of [one, two]) {
+      o.reader.dispose();
+      o.src.dispose();
+    }
+  });
+
+  it('the worker service with the real reader: a gated, held request answers what serve gives', async () => {
+    const live = await liveRun();
+    const batches = live.steps.filter((s) => s.kind === 'batch');
+    const px = W * H;
+    const lib = (centres: [number, number][]) => {
+      const b = new TraceLibraryBuilder(W, H);
+      centres.forEach(([cy, cx], i) => {
+        const v = new Float32Array(81).fill(0.5);
+        v[40] = 1;
+        b.addFootprint(i + 1, cy - 4, cx - 4, 9, 9, v);
+      });
+      const l = b.buildUnfiltered();
+      const out = { bytes: l.toBytes(), version: Number(l.version) };
+      l.free();
+      return out;
+    };
+    const a = lib([[12, 14]]);
+    const b = lib([
+      [12, 14],
+      [26, 30],
+    ]);
+    const open = async () => {
+      const src = await openAvi();
+      const reader = new LookbackReader(src);
+      for (const s of batches)
+        reader.pushRows(s.start, s.dy, s.dx, s.flags, s.flickerOffset, s.flickerGain);
+      return { src, reader };
+    };
+    // Direct: the final back state in hand, library a for the first request, b for the second.
+    const direct = await open();
+    direct.reader.setBackState(live.before.get(24)!);
+    direct.reader.setLibrary(a.version, a.bytes);
+    const d1 = await direct.reader.serve(
+      [24, 25].map((frame) => ({ frame, block: 1 })),
+      new Float32Array(2 * px),
+    );
+    direct.reader.setLibrary(b.version, b.bytes);
+    const y2 = new Float32Array(2 * px);
+    const d2 = await direct.reader.serve(
+      [26, 27].map((frame) => ({ frame, block: 1 })),
+      y2,
+    );
+    // Through the service: an older back state first; the final one and `final` come after the
+    // requests; the second request is held, and library b comes just before its cue.
+    const svc = await open();
+    const answers: LookbackToSlow[] = [];
+    const service = new LookbackService({
+      open: () =>
+        Promise.resolve({
+          server: svc.reader,
+          reader: svc.reader,
+          pool: new StagePool(3, 16 * px),
+        }),
+      factorServer: () => {
+        throw new Error('no factors here');
+      },
+      postSlow: (m) => answers.push(m),
+      postMain: () => {},
+    });
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+    service.handleMain({ type: 'begin', session: 1, source: { entries: [] } });
+    service.handleMain({
+      type: 'back-state',
+      session: 1,
+      frame: 8,
+      state: live.before.get(8)!.slice(),
+    });
+    await tick();
+    service.handleSlow({ type: 'library', session: 1, version: a.version, bytes: a.bytes });
+    const items = (frames: number[]) => Float64Array.from(frames.flatMap((f) => [f, 1, 0]));
+    service.handleSlow({ type: 'request', session: 1, id: 1, items: items([24, 25]), final: true });
+    service.handleSlow({
+      type: 'request',
+      session: 1,
+      id: 2,
+      items: items([26, 27]),
+      final: true,
+      hold: true,
+    });
+    await tick();
+    expect(answers).toHaveLength(0);
+    service.handleMain({ type: 'back-state', session: 1, frame: 24, state: live.before.get(24)! });
+    service.handleMain({ type: 'final', session: 1 });
+    for (let k = 0; k < 20 && answers.length < 1; k++) await tick();
+    service.handleSlow({ type: 'library', session: 1, version: b.version, bytes: b.bytes });
+    service.handleSlow({ type: 'solve', session: 1, id: 2 });
+    for (let k = 0; k < 20 && answers.length < 2; k++) await tick();
+    const [s1, s2] = answers.map((m) => (m.type === 'frames' ? m : null));
+    expect(s1?.id).toBe(1);
+    expect(s2?.id).toBe(2);
+    expect(Array.from(s1!.traces)).toEqual(Array.from(d1.traces));
+    expect(Array.from(s2!.traces)).toEqual(Array.from(d2.traces));
+    expect(s2!.cells).toBe(2);
+    expect(Array.from(s2!.frames.subarray(0, 2 * px))).toEqual(Array.from(y2));
+    expect(Array.from(y2)).toEqual(Array.from(live.out.subarray(26 * px, 28 * px)));
+    direct.reader.dispose();
+    direct.src.dispose();
+    svc.src.dispose();
   });
 
   it('a frame marked to skip is still preprocessed, so its block runs on', async () => {
