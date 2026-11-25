@@ -17,6 +17,17 @@ function settleFrames(st: SettleStatus): string {
   return st.total < st.recording ? `${of} (spread over ${st.recording.toLocaleString()})` : of;
 }
 
+/**
+ * " · 0.40 visits/frame" while the settle runs at a visit rate, the visits it made per frame once
+ * done (on the visit workers; '' without a rate).
+ */
+function visitsText(st: SettleStatus, done: boolean): string {
+  const v = st.visits;
+  if (!v || !(v.rate > 0)) return '';
+  if (!done || !(st.fed > 0)) return ` · ${v.rate.toFixed(2)} visits/frame`;
+  return ` · ${(v.handed / st.fed).toFixed(2)} visits/frame`;
+}
+
 /** Frames the settle during Discover has re-read (fitted, held out or dropped: every frame that came back). */
 export function csettleReread(cs: CsettleStatus): number {
   return cs.fit + cs.heldOut + cs.dropped;
@@ -56,7 +67,7 @@ export function lookbackText(lb: LookbackStatus, final: boolean): string {
   if (lb.settling && st?.waiting)
     return `Final settle: waiting for the last factor window${csettleText(lb.csettle, false)}${err}`;
   if (lb.settling && st)
-    return `Final settle${on}: ${settleFrames(st)}${movingText(st)}${csettleText(lb.csettle, false)}${err}`;
+    return `Final settle${on}: ${settleFrames(st)}${visitsText(st, false)}${movingText(st)}${csettleText(lb.csettle, false)}${err}`;
   if (lb.settling) return `Final settle${csettleText(lb.csettle, false)}${err}`;
   const read = `${lb.pushed.toLocaleString()} frames re-read for ${lb.births} new cells`;
   if (final && st?.error)
@@ -64,7 +75,7 @@ export function lookbackText(lb: LookbackStatus, final: boolean): string {
   if (final && st) {
     const end = st.stopped
       ? `final settle stopped by you after ${settleFrames(st)}`
-      : `final settle${on} over ${settleFrames(st)}`;
+      : `final settle${on} over ${settleFrames(st)}${visitsText(st, true)}`;
     return `Look-back: ${read}${csettleText(lb.csettle, false)} · ${end}${movingText(st)}${err}`;
   }
   return `Look-back: ${read} · ${lb.inNeed} cells still need data${csettleText(lb.csettle, true)}${err}`;

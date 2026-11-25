@@ -201,6 +201,32 @@ export interface CsettleStatus {
 }
 
 /** The settle pass of a look-back run (`lib/settle.ts`). */
+/**
+ * The Final settle's tile visits on the visit workers (`SETTLE.visitRate`). In the pass, each
+ * frame fed earns `rate` visits and a visit is handed out only against that credit; what was
+ * earned and not yet handed out is handed out before the last round. So with a rate the pass
+ * makes `floor(rate x fed)` visits whatever the timing (`handed`), unless `unpaid` > 0.
+ */
+export interface SettleVisits {
+  /** Visits per settle frame fed (0: no rate, visits whenever a visit worker is free). */
+  rate: number;
+  /** Visits handed out in the pass (paid at its end included). */
+  handed: number;
+  /** Of those, handed out after the last frame was fed (credit the pass could not spend in time). */
+  paidAtEnd: number;
+  /** Earned and never handed out (nothing could be visited even with every tile due; 0 normally). */
+  unpaid: number;
+  /** The most visits owed at once (earned, not yet handed out). */
+  owedMax: number;
+  /** Waits of the settle's observation while the visits owed were above `SETTLE.visitOwedFrames`' worth, and their time, ms. */
+  holds: number;
+  heldMs: number;
+  /** Times credit was owed with no visit out and no tile due (it was carried to later frames). */
+  starved: number;
+  /** Visits handed out in the last round (every tile due; under its own caps, not the rate). */
+  finalRound: number;
+}
+
 export interface SettleStatus {
   /** Frames fed through `observe`, of the frames planned (one pass, at most `SETTLE.maxFrames`). */
   fed: number;
@@ -225,6 +251,8 @@ export interface SettleStatus {
    * recording's factors the whole settle pool). Absent before the settle starts and from older builds.
    */
   workers?: number;
+  /** The settle's tile visits (with visit workers; absent without them and from older builds). */
+  visits?: SettleVisits;
   /** Discover is over and the factors are not ready yet (the settle has not started). */
   waiting?: boolean;
   /** The factors could not be used: Discover's library is the final one. */

@@ -70,6 +70,7 @@ import {
   FINAL_SETTLE_LEVEL_DEFAULT,
   FINAL_SETTLE_LEVELS,
   finalSettleLevel,
+  SETTLE,
 } from './settle.ts';
 import { FloorMeter, NEED_RATE, floorText, type FloorDisplay } from './speed-floor.ts';
 import {
@@ -592,6 +593,11 @@ export function createPipelineStore(
    * hold: the speed the frame loop is held to so the visits keep up (null: not held).
    */
   const [visitRateOff, setVisitRateOff] = createSignal(false);
+  /**
+   * The Final settle's visit rate, visits per settle frame (`SETTLE.visitRate`; 0: none, visits
+   * whenever a visit worker is free, as before): `?debug&settlevisits=` sets it (measurement).
+   */
+  let settleVisits: number = SETTLE.visitRate;
   let visitGov: VisitRateGovernor | null = null;
   const [visitHold, setVisitHold] = createSignal<number | null>(null);
   const [visitAchieved, setVisitAchieved] = createSignal<number | null>(null);
@@ -1272,6 +1278,8 @@ export function createPipelineStore(
           ...(discover() && visitRateCap(visitRateMode(untrack(visitRateOff), false)) > 0
             ? { visitRate: visitRateCap(visitRateMode(untrack(visitRateOff), false)) }
             : {}),
+          // The Final settle's visit rate (a recording's or a stream's settle; with visit workers).
+          ...(discover() && settleVisits > 0 ? { settleVisitRate: settleVisits } : {}),
           qc,
           residual: residual(),
           ...(forwardBuffers ? { forwardBuffers } : {}),
@@ -1603,6 +1611,12 @@ export function createPipelineStore(
     paceFps: () => paceFps,
     /** `?debug&visitrate=off`: no visit cap and no hold, from the next start (the behaviour before). */
     setVisitRateOff,
+    /** `?debug&settlevisits=`: the Final settle's visit rate from the next start (0: none, as before). */
+    setSettleVisitRate(rate: number): void {
+      settleVisits = Number.isFinite(rate) && rate > 0 ? rate : 0;
+    },
+    /** The Final settle's visit rate the next run starts with (0: none). */
+    settleVisitRate: (): number => settleVisits,
     visitRateOff,
     /** This run's visit-rate mode (null: not a Discover run), the hold (fps; null: not held) and the newest window's visits per frame read. */
     visitMode,

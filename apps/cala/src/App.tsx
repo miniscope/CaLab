@@ -96,6 +96,7 @@ import {
   SETTLE,
   settleChange,
   settlePoolSize,
+  settleVisitRate,
   unitFootprints,
 } from './lib/settle.ts';
 import {
@@ -318,6 +319,10 @@ const App: Component = () => {
   // `?debug&visitrate=off` (measurement only): no Discover visit cap and no hold (the behaviour
   // before the fixed visit rate; `lib/visit-rate.ts`).
   if (params.has('debug') && params.get('visitrate') === 'off') pipeline.setVisitRateOff(true);
+  // `?debug&settlevisits=R` (measurement only): the Final settle's visit rate, visits per settle
+  // frame; `off` hands out visits whenever a visit worker is free (the behaviour before).
+  if (params.has('debug') && params.has('settlevisits'))
+    pipeline.setSettleVisitRate(settleVisitRate(params.get('settlevisits')));
   // `?debug&pacefps=30` (measurement only): read the recording at a stream's rate.
   if (params.has('debug') && params.has('pacefps'))
     pipeline.setPaceFps(Number(params.get('pacefps')), 'url');

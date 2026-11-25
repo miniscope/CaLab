@@ -35,6 +35,19 @@
  * visits those frames earn; then a last round of visits on every tile, and
  * only then the final library.
  *
+ * The settle's visits on the visit workers are earned per frame fed
+ * (`SETTLE.visitRate`, `SlowInit.settleVisitRate`): a visit is handed out
+ * only against that credit (`settleDispatch`). Settle answers are observed
+ * one at a time in pieces (`settleObserve`): with a visit out the worker gives
+ * way between pieces, so visit results do not wait for a whole answer, and
+ * while more than `SETTLE.visitOwedFrames` frames' worth is owed with a visit
+ * out, observation waits for the next result; what is still owed after the last
+ * answer is handed out before the last round (`settlePaid`). So the pass
+ * makes `floor(rate x fed)` visits however fast the machine, the look-back
+ * workers or the visit workers are; before, a visit worker got its next visit
+ * whenever this worker got round to its result, and a faster settle visited
+ * less (0.65 -> 0.21 visits per frame with a second look-back worker).
+ *
  * The end settle's requests (`final`) are read only once the main thread
  * says Discover's inputs are final (its last back state and flat-field map),
  * so its frames never depend on when those arrived. Its relay keeps two
@@ -87,6 +100,7 @@ import type {
   LookbackStatus,
   LookbackToSlow,
   SettleStatus,
+  SettleVisits,
   SlowToLookback,
 } from '../workers/lookback-types.ts';
 import type {
@@ -450,6 +464,28 @@ interface Settle {
   statusAt: number;
   /** Look-back workers that answered a settle request (`SettleStatus.workers`). */
   served: Set<number>;
+  /** The settle's visits (`SETTLE.visitRate`; counted with visit workers only). */
+  v: SettleVisits;
+  /**
+   * Settle answers being observed, oldest first: the head is observed in pieces
+   * (`settleObserve`), the rest wait for it (one answer at a time, in arrival order).
+   */
+  answers: SettleAnswer[];
+  /** The head answer waits between pieces for the visits owed (`settleObserve`); since when (null: not). */
+  holdSince: number | null;
+  /** Visits handed out when the pass's last answer was in (null: before; the rest is paid at the end). */
+  payFrom: number | null;
+  /** Every tile was made due to pay what the pass owed. */
+  allDue: boolean;
+}
+
+/** A settle answer observed in pieces (`Settle.answers`). */
+interface SettleAnswer {
+  msg: Extract<LookbackToSlow, { type: 'frames' }>;
+  req: LookbackReq;
+  /** Frames observed so far; whether its observation began (its worker's next request went out). */
+  next: number;
+  begun: boolean;
 }
 
 function counters(s: ArrayLike<number>): SlowCounters {
@@ -507,6 +543,8 @@ export class SlowRunner {
   private statusAt = -Infinity;
   /** Per visit worker: a visit is out. */
   private busy: boolean[];
+  /** The Final settle's visit rate, visits per settle frame fed (`SlowInit.settleVisitRate`; 0: none). */
+  private settleRate = 0;
   private jobs = 0;
   private visitMsSum = 0;
   private visitMsN = 0;
@@ -869,6 +907,12 @@ export class SlowRunner {
         // edit scope (the end settle and Refine runs are not held).
         if (msg.visitRate !== undefined && msg.visitRate > 0)
           this.loop.setVisitRate?.(msg.visitRate);
+        this.settleRate =
+          msg.settleVisitRate !== undefined &&
+          Number.isFinite(msg.settleVisitRate) &&
+          msg.settleVisitRate > 0
+            ? msg.settleVisitRate
+            : 0;
         this.run = 1;
         this.lbOn = lookback === true && typeof this.loop.lookbackTake === 'function';
         this.factorOn = this.init.factorSettle === true;
@@ -937,9 +981,15 @@ export class SlowRunner {
       this.visitBusy[i] = (this.visitBusy[i] ?? 0) + msg.ms;
       this.housekeep();
       if (this.drain) {
-        // The settle keeps its visit workers busy; the last round and a Stop wait for them.
-        if (this.drain.phase === 'sweep' && !this.drain.stop) this.dispatch();
-        else if (!this.busy.some((b) => b)) this.settlePump();
+        // The settle keeps its visit workers busy, within the visits its frames earned; a request
+        // held back for the visits owed may go out now. The last round and a Stop wait for them.
+        if (this.drain.phase === 'sweep' && !this.drain.stop) {
+          const d = this.drain;
+          this.settleDispatch(d);
+          // An answer waiting between pieces for the visits owed goes on.
+          if (d.holdSince !== null) this.clock.span('end', () => this.settleObserve(this.loop!, d));
+          if (this.drain === d) this.settlePump();
+        } else if (!this.busy.some((b) => b)) this.settlePump();
       } else if (this.ending) {
         if (!this.busy.some((b) => b)) this.finish();
       } else {
@@ -1104,14 +1154,17 @@ export class SlowRunner {
     });
   }
 
-  /** A tile visit to every idle visit worker, while any is due; returns how many were handed out. */
-  private dispatch(): number {
+  /**
+   * A tile visit to every idle visit worker, while any is due (at most `limit`); returns how many
+   * were handed out.
+   */
+  private dispatch(limit = Infinity): number {
     const loop = this.loop;
     // Reviewed cells wait for the visits out: hand out no new one meanwhile.
-    if (!loop || this.ending || this.reviewed.length > 0) return 0;
+    if (!loop || this.ending || this.reviewed.length > 0 || !(limit > 0)) return 0;
     return this.clock.span('visit', () => {
       let handed = 0;
-      for (let i = 0; i < this.visits.length; i++) {
+      for (let i = 0; i < this.visits.length && handed < limit; i++) {
         if (this.busy[i]) continue;
         const t0 = this.now();
         const bytes = this.tm('visit.take', () => loop.takeJob!());
@@ -1416,22 +1469,13 @@ export class SlowRunner {
         return;
       } else {
         if (settle) {
-          if (this.relayed()) {
-            // The next request is solved first (and the one after it prepared): the look-back
-            // worker works on them while these frames are observed here. Not gated on the feed:
-            // the last batch may be held while the feed is already done.
-            this.tm('end.request', () => this.settleNext());
-          } else {
-            // The pooled settle on factors: the next request to this worker goes out first.
-            const next =
-              !settle.stop &&
-              !settle.feed.done &&
-              this.lbError === undefined &&
-              this.drainPorts().includes(req.port);
-            if (next) this.tm('end.request', () => this.settleRequest(req.port));
-          }
+          if (msg.count !== req.items.length)
+            throw new Error(`settle: ${msg.count} frames for a request of ${req.items.length}`);
           settle.served.add(req.port);
-          this.observeSettle(loop, msg, req.items);
+          // Observed in arrival order, one answer at a time (its buffer goes back after its last piece).
+          settle.answers.push({ msg, req, next: 0, begun: false });
+          if (settle.answers.length === 1) this.settleObserve(loop, settle);
+          return;
         } else if (req.kind === 'need') this.observeLookback(loop, msg, req.items);
         // A settle answer that came when Discover could no longer use it: counted as dropped.
         if (req.kind === 'csettle' && this.cs) this.cs.dropped += req.items.length;
@@ -1655,6 +1699,21 @@ export class SlowRunner {
       stop: false,
       statusAt: this.now(),
       served: new Set(),
+      v: {
+        rate: this.parallel ? this.settleRate : 0,
+        handed: 0,
+        paidAtEnd: 0,
+        unpaid: 0,
+        owedMax: 0,
+        holds: 0,
+        heldMs: 0,
+        starved: 0,
+        finalRound: 0,
+      },
+      answers: [],
+      holdSince: null,
+      payFrom: null,
+      allDue: false,
     };
     // The look-back worker solves with the library Discover ended with
     // (qc_eval publishes it before the settle); the first checkpoint's reference.
@@ -1731,20 +1790,30 @@ export class SlowRunner {
     const init = this.init;
     if (!d || !loop || !init) return;
     if (d.stop) {
+      // Answers not yet observed are not: their buffers go back.
+      for (const a of d.answers.splice(0)) this.releaseFrames(a.msg, a.req.port);
+      if (d.holdSince !== null) {
+        d.v.heldMs += this.now() - d.holdSince;
+        d.holdSince = null;
+      }
       if (!this.busy.some((b) => b)) this.finishDrain();
       return;
     }
     if (d.phase === 'sweep') {
       const failed = this.lbError !== undefined || !this.lbPort;
+      // A worker whose answer waits to be observed gets its next request when that begins.
+      const waiting = (i: number) => d.answers.some((a) => a.req.port === i && !a.begun);
       if (this.relayed()) {
         if (failed) this.dropHeld();
-        else if (!this.lbReqs[0]) this.settleNext();
+        else if (!this.lbReqs[0] && !waiting(0)) this.settleNext();
       } else if (!failed)
         for (const i of this.drainPorts()) {
           if (d.feed.done) break;
-          if (!this.lbReqs[i]) this.settleRequest(i);
+          if (!this.lbReqs[i] && !waiting(i)) this.settleRequest(i);
         }
-      if (!this.drainOut() && !this.lbHeld && (d.feed.done || failed)) {
+      if (!this.drainOut() && !this.lbHeld && d.answers.length === 0 && (d.feed.done || failed)) {
+        // The visits the pass earned and could not hand out in time, before the last round.
+        if (!this.settlePaid(loop, d)) return;
         d.phase = 'final';
         d.finalWork0 = loop.work ?? 0;
         d.finalJobs0 = this.jobs;
@@ -1761,13 +1830,83 @@ export class SlowRunner {
       const capped =
         (loop.work ?? 0) - d.finalWork0 >= init.budget * SETTLE.finalSteps ||
         this.jobs - d.finalJobs0 >= SETTLE.finalVisitsMax;
-      if (!capped && this.dispatch() > 0) return;
+      const n = capped ? 0 : this.dispatch();
+      d.v.finalRound += n;
+      if (n > 0) return;
     } else if (d.finalSteps === 0) {
       d.finalSteps++;
       const lib = loop.step(init.budget * SETTLE.finalSteps);
       if (lib) this.publish(lib);
     }
     this.finishDrain();
+  }
+
+  /** The settle counts its visits against a rate (`SETTLE.visitRate`; visit workers only). */
+  private settleMetered(d: Settle): boolean {
+    return d.v.rate > 0 && this.parallel;
+  }
+
+  /** Visits the settle's frames earned and are not handed out yet (Infinity: no rate). */
+  private settleOwed(d: Settle): number {
+    if (!this.settleMetered(d)) return Infinity;
+    // (The small slack keeps a product such as 0.4 x 160 from rounding down a whole visit.)
+    return Math.floor(d.v.rate * d.fed + 1e-9) - d.v.handed;
+  }
+
+  /**
+   * Hand out the settle's visits: to every idle visit worker, at most the visits owed. Credit
+   * that finds nothing due is kept for later frames (never dropped: the pass hands out
+   * `floor(rate x fed)` in all, `settlePaid`).
+   */
+  private settleDispatch(d: Settle): void {
+    if (d.stop) return;
+    const owed = this.settleOwed(d);
+    const n = this.dispatch(owed);
+    if (!this.settleMetered(d)) return;
+    d.v.handed += n;
+    const left = owed - n;
+    d.v.owedMax = Math.max(d.v.owedMax, left);
+    if (left > 0 && d.payFrom === null && !this.busy.some((b) => b)) d.v.starved++;
+  }
+
+  /**
+   * The settle's observation waits between pieces: more than `SETTLE.visitOwedFrames` frames'
+   * worth of visits is owed and a visit is out (its result frees a worker for the next). So a
+   * settle whose visit workers fall behind waits for them, rather than handing out fewer visits
+   * per frame. With nothing out, nothing waits (the credit is carried; see `settleDispatch`).
+   */
+  private settleOwedTooMuch(d: Settle): boolean {
+    return (
+      this.settleMetered(d) &&
+      !d.stop &&
+      this.settleOwed(d) > d.v.rate * SETTLE.visitOwedFrames &&
+      this.busy.some((b) => b)
+    );
+  }
+
+  /**
+   * After the pass's last answer: hand out what it still owes (waiting for visits out; with
+   * nothing due, every tile is made due first, as the last round does anyway). Returns true when
+   * the last round may start.
+   */
+  private settlePaid(loop: SlowLoopLike, d: Settle): boolean {
+    if (!this.settleMetered(d) || d.stop) return true;
+    d.payFrom ??= d.v.handed;
+    const done = (): boolean => {
+      d.v.paidAtEnd = d.v.handed - (d.payFrom ?? d.v.handed);
+      return true;
+    };
+    if (this.settleOwed(d) <= 0) return done();
+    this.settleDispatch(d);
+    if (this.busy.some((b) => b)) return false;
+    if (!d.allDue && this.settleOwed(d) > 0) {
+      d.allDue = true;
+      loop.markAllDue?.();
+      this.settleDispatch(d);
+      if (this.busy.some((b) => b)) return false;
+    }
+    d.v.unpaid = Math.max(0, this.settleOwed(d));
+    return done();
   }
 
   /**
@@ -1802,26 +1941,97 @@ export class SlowRunner {
     this.sendRequest(port, 'end', flat, items, undefined, hold);
   }
 
-  /** A settle answer: every frame through `observe`, then the visits they earn. */
-  private observeSettle(
-    loop: SlowLoopLike,
-    msg: Extract<LookbackToSlow, { type: 'frames' }>,
-    items: LookbackItem[],
-  ): void {
-    const d = this.drain!;
+  /**
+   * Observe the settle's answers, oldest first. As an answer begins, its worker's next request
+   * goes out (on the recording, the held one is cued and the next prepared, `settleNext`), as
+   * it did when the answer arrived; then its frames go through `observe` in pieces of
+   * `SETTLE.observePiece`, each followed by the visits they earned. While a visit is out the
+   * worker gives way between pieces (`defer`), so visit results are applied within an answer
+   * and the visit workers get their next visits without waiting for the whole answer (a 16-frame
+   * answer takes about 90 ms to observe). While too many visits are owed
+   * (`settleOwedTooMuch`) it waits for the next result (`handleVisit` resumes it). Without visit
+   * workers an answer is observed in one go, as before.
+   */
+  private settleObserve(loop: SlowLoopLike, d: Settle): void {
+    for (;;) {
+      if (this.drain !== d || d.stop) return;
+      const a = d.answers[0];
+      if (!a) {
+        this.settlePump();
+        return;
+      }
+      if (!a.begun) {
+        a.begun = true;
+        this.settleNextFor(d, a.req.port);
+      }
+      while (a.next < a.msg.count) {
+        if (this.settleOwedTooMuch(d)) {
+          if (d.holdSince === null) {
+            d.holdSince = this.now();
+            d.v.holds++;
+          }
+          return;
+        }
+        if (d.holdSince !== null) {
+          d.v.heldMs += this.now() - d.holdSince;
+          d.holdSince = null;
+        }
+        const n = this.parallel ? SETTLE.observePiece : a.msg.count;
+        this.observeSettle(loop, d, a, n);
+        if (this.drain !== d || d.stop) return;
+        if (a.next < a.msg.count && this.parallel && this.busy.some((b) => b)) {
+          this.defer(() => {
+            try {
+              // (A hold is resumed by the visit result that ends it, not here.)
+              if (this.drain === d && !d.stop && d.holdSince === null)
+                this.clock.span('end', () => this.settleObserve(loop, d));
+            } catch (err) {
+              this.fail(err);
+            }
+          });
+          return;
+        }
+      }
+      d.answers.shift();
+      this.releaseFrames(a.msg, a.req.port);
+    }
+  }
+
+  /** As a settle answer from look-back worker `port` begins: that worker's next request. */
+  private settleNextFor(d: Settle, port: number): void {
+    if (this.relayed()) {
+      // The next request is solved first (and the one after it prepared): the look-back
+      // worker works on them while these frames are observed here. Not gated on the feed:
+      // the last batch may be held while the feed is already done.
+      if (!d.stop) this.tm('end.request', () => this.settleNext());
+      return;
+    }
+    // The pooled settle on factors: the next request to this worker.
+    const next =
+      !d.stop &&
+      !d.feed.done &&
+      this.lbError === undefined &&
+      !this.lbReqs[port] &&
+      this.drainPorts().includes(port);
+    if (next) this.tm('end.request', () => this.settleRequest(port));
+  }
+
+  /** The next `n` frames of settle answer `a` through `observe`, then the visits they earn. */
+  private observeSettle(loop: SlowLoopLike, d: Settle, a: SettleAnswer, n: number): void {
     const init = this.init!;
-    if (msg.count !== items.length)
-      throw new Error(`settle: ${msg.count} frames for a request of ${items.length}`);
+    const { msg, req } = a;
+    const items = req.items;
     const px = init.width * init.height;
     const bg = msg.background;
     const nb = bg && msg.count > 0 ? bg.length / msg.count : 0;
-    let n = 0;
+    const end = Math.min(msg.count, a.next + Math.max(1, n));
+    let ok = 0;
     // Version 0: the worker had no library yet, nothing was solved.
     if (msg.version !== 0)
-      for (let i = 0; i < msg.count; i++) {
+      for (let i = a.next; i < end; i++) {
         // The stream index is required with look-back on; nothing reads it after Discover.
         const te = this.dt ? this.now() : 0;
-        const ok = loop.observe(
+        const seen = loop.observe(
           msg.frames.subarray(i * px, (i + 1) * px),
           msg.version,
           msg.traces.subarray(i * msg.cells, (i + 1) * msg.cells),
@@ -1832,15 +2042,16 @@ export class SlowRunner {
           this.dt.add('end.observe', this.now() - te);
           this.dt.add('end.observe#', 1);
         }
-        if (ok) n++;
+        if (seen) ok++;
         else this.skipped++;
       }
-    d.fed += msg.count;
+    d.fed += end - a.next;
+    a.next = end;
     if (this.parallel) {
       this.housekeep();
-      this.dispatch();
-    } else if (n > 0) {
-      const lib = loop.step(init.budget * n);
+      this.settleDispatch(d);
+    } else if (ok > 0) {
+      const lib = loop.step(init.budget * ok);
       if (lib) this.publish(lib);
     }
     if (d.fed >= d.nextCheck) {
@@ -2045,6 +2256,7 @@ export class SlowRunner {
       stopped: d.stop,
       done,
       workers: d.served.size,
+      ...(this.parallel ? { visits: { ...d.v } } : {}),
       ...(this.factorLive
         ? { source: 'factors' as const }
         : this.fileReason !== undefined

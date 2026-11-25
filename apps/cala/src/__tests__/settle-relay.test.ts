@@ -16,7 +16,7 @@ import { SETTLE } from '../lib/settle.ts';
 import { SlowRunner, type PublishedLibrary, type SlowLoopLike } from '../lib/slow-runner.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import type { LookbackToSlow, SlowToLookback } from '../workers/lookback-types.ts';
-import type { FastToSlow, SlowToMain } from '../workers/slow-types.ts';
+import type { FastToSlow, OwnerToVisit, SlowToMain, VisitToOwner } from '../workers/slow-types.ts';
 
 /** A small seeded generator (the delays of a schedule). */
 function lcg(seed: number): () => number {
@@ -65,6 +65,7 @@ function fakeLoop() {
   const loop: SlowLoopLike = {
     observe: (_f, v, _t, _b, stream) => {
       seen.push({ stream, version: v });
+      due++;
       return true;
     },
     step: () => fakeLib(++version),
@@ -85,7 +86,14 @@ function fakeLoop() {
     lookbackStats: () => new Float64Array(7),
     footprintNoise: () => Float64Array.of(1, 0.1),
     footprintNoiseOn: () => 0.1,
+    // With visit workers: a visit comes due with every observed frame, and a library at every
+    // other housekeeping.
+    takeJob: () => (due > 0 ? (due--, Uint8Array.of(1)) : undefined),
+    applyJob: () => {},
+    housekeep: () => (++housekeeps % 2 === 0 ? fakeLib(++version) : undefined),
   };
+  let housekeeps = 0;
+  let due = 0;
   /** A version as the loop's next publish would have it. */
   const nextVersion = () => ++version;
   return { loop, seen, nextVersion };
@@ -133,7 +141,7 @@ function fakeReader(rand: () => number) {
 const FRAMES = 6 * SETTLE.batch + 5;
 
 /** One Discover run of `FRAMES` frames and its end settle, under schedule `seed`. */
-async function settleRun(seed: number, finalDelayMs: number) {
+async function settleRun(seed: number, finalDelayMs: number, visitWorkers = 0) {
   const rand = lcg(seed);
   const { loop, seen, nextVersion } = fakeLoop();
   const toMain: SlowToMain[] = [];
@@ -182,7 +190,15 @@ async function settleRun(seed: number, finalDelayMs: number) {
     create: () => loop,
     toFast: { postMessage: () => {} },
     toMain: { postMessage: (m) => toMain.push(m) },
-    visits: [],
+    visits: Array.from({ length: visitWorkers }, (_, i) => {
+      const back = port<VisitToOwner>((m) => runner!.handleVisit(i, m), rand, 6);
+      return {
+        postMessage: (m: OwnerToVisit) => {
+          if (m.type === 'job')
+            back.postMessage({ type: 'result', session: 1, bytes: m.bytes, ms: 1 });
+        },
+      };
+    }),
     lookback: {
       postMessage: (m: SlowToLookback) => {
         sent.push(m);
@@ -204,6 +220,7 @@ async function settleRun(seed: number, finalDelayMs: number) {
     cellDiameterPx: 10,
     flattenSigmaPx: 0,
     budget: 1,
+    ...(visitWorkers > 0 ? { settleVisitRate: 0.4 } : {}),
     lookback: true,
   };
   runner.handle(init);
@@ -294,5 +311,20 @@ describe('end settle relay (prepare ahead, solve on cue)', () => {
     }
     // And so the same versions per frame under every schedule.
     for (const r of runs.slice(1)) expect(r.seen).toEqual(runs[0].seen);
+  });
+
+  it('with visit workers (answers observed in pieces, visits applied between them): the same frames in order, each solved with the library before its cue', async () => {
+    for (const seed of [5, 6, 7]) {
+      const r = await settleRun(seed, seed, 2);
+      expect(r.seen.map((s) => s.stream)).toEqual([...Array(FRAMES).keys()]);
+      const held = r.sent.filter((m) => m.type === 'request' && m.hold).length;
+      expect(held).toBe(Math.ceil(FRAMES / SETTLE.batch) - 1);
+      expect(r.sent.filter((m) => m.type === 'solve')).toHaveLength(held);
+      // The cue goes out as its answer before begins (not when it arrived, if it waited).
+      expect(r.seen.map((s) => s.version)).toEqual(expectedVersions(r.sent));
+      expect(new Set(r.seen.map((s) => s.version)).size).toBeGreaterThan(2);
+      // Every answer's buffer went back.
+      expect(r.sent.filter((m) => m.type === 'release')).toHaveLength(held + 1);
+    }
   });
 });

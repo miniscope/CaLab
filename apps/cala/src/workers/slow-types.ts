@@ -92,6 +92,12 @@ export interface SlowInit {
    * no cap (`?debug&visitrate=off`).
    */
   visitRate?: number;
+  /**
+   * The Final settle's visit rate (`SETTLE.visitRate`): with visit workers, tile visits handed
+   * out per settle frame fed, a fixed count however fast the settle runs; absent or 0 = visits
+   * whenever a visit worker is free (`?debug&settlevisits=off`, the behaviour before).
+   */
+  settleVisitRate?: number;
 }
 
 /** Fast worker -> slow worker. */
