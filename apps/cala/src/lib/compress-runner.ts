@@ -1121,22 +1121,28 @@ export class CompressRunner {
     }
     const init = this.init!;
     const { tiles, ranks, ms } = out.r;
-    const dst = await this.deps.store.open(factorName(w.index));
     let size: number;
     try {
-      if (epoch !== this.epoch) return false;
-      const head = this.deps.header(
-        init.width,
-        init.height,
-        init.tile,
-        init.tiling,
-        w.frames,
-        tiles.length,
-        w.start,
-      );
-      size = writeFactorFile(dst, head, tiles);
-    } finally {
-      dst.close();
+      const dst = await this.deps.store.open(factorName(w.index));
+      try {
+        if (epoch !== this.epoch) return false;
+        const head = this.deps.header(
+          init.width,
+          init.height,
+          init.tile,
+          init.tiling,
+          w.frames,
+          tiles.length,
+          w.start,
+        );
+        size = writeFactorFile(dst, head, tiles);
+      } finally {
+        dst.close();
+      }
+    } catch (err) {
+      // A window that cannot be written: the factors would have a hole.
+      void this.gpuFail(GPU_TEXT.error(errorText(err)), epoch);
+      return false;
     }
     ranks.forEach((r, i) => (this.tileRanks[i] = r));
     const kept = this.gkeep.get(w.index);

@@ -27,7 +27,12 @@ import {
 } from '../lib/compress-runner.ts';
 import { compressReadout, createCompressStore } from '../lib/compress-store.ts';
 import { cutTile } from '../lib/factor-check.ts';
-import type { GpuCompressorLike, GpuWindowJob, GpuWindowResult } from '../lib/gpu-compress.ts';
+import {
+  GpuSketchTooLarge,
+  type GpuCompressorLike,
+  type GpuWindowJob,
+  type GpuWindowResult,
+} from '../lib/gpu-compress.ts';
 import { memoryStore } from '../lib/window-store.ts';
 import type {
   CompressToMain,
@@ -944,7 +949,11 @@ describe('a recording compressed on the GPU', () => {
   });
 
   function fakeGpuCompressor(window: number, slack: number) {
-    const pending: { job: GpuWindowJob; resolve: (r: GpuWindowResult) => void }[] = [];
+    const pending: {
+      job: GpuWindowJob;
+      resolve: (r: GpuWindowResult) => void;
+      reject: (err: unknown) => void;
+    }[] = [];
     const jobs: GpuWindowJob[] = [];
     let lose: (reason: string) => void = () => {};
     let destroyed = 0;
@@ -953,9 +962,9 @@ describe('a recording compressed on the GPU', () => {
       slack,
       upload: () => {},
       compress: (job) =>
-        new Promise((resolve) => {
+        new Promise((resolve, reject) => {
           jobs.push(job);
-          pending.push({ job, resolve });
+          pending.push({ job, resolve, reject });
         }),
       lost: new Promise((r) => (lose = r)),
       destroy: () => void destroyed++,
@@ -1162,6 +1171,45 @@ describe('a recording compressed on the GPU', () => {
     expect(errs[0].message).toBe(GPU_TEXT.error('frame 40 after frame 49'));
     expect(store.files.size).toBe(0);
     expect(fakes[0].jobs).toHaveLength(1);
+  });
+
+  it('a window the GPU cannot compress gives the factors up: no files, one error, no more windows', async () => {
+    for (const [err, text] of [
+      [new GpuSketchTooLarge('tile 3'), GPU_TEXT.sketch],
+      [new Error('device busy'), GPU_TEXT.error('device busy')],
+    ] as const) {
+      const { r, store, toMain, fakes } = gpuRunner();
+      const sent = gpuFeed(160);
+      const at50 = sent.findIndex((m) => m.type === 'chunk' && m.start === 50);
+      await feedAnswering(r, fakes, sent.slice(0, at50));
+      expect(store.files.has('f0.bin')).toBe(true);
+      for (const m of sent.slice(at50, at50 + 5)) await r.handle(m); // window 1 on the GPU
+      expect(fakes[0].pending).toHaveLength(1);
+      fakes[0].pending.shift()!.reject(err);
+      await tick();
+      await tick();
+      await feedAnswering(r, fakes, sent.slice(at50 + 5));
+      expect(errors(toMain)).toEqual([{ type: 'error', session: 7, message: text }]);
+      expect(store.files.size).toBe(0);
+      expect(fakes[0].jobs).toHaveLength(2);
+      expect(fakes[0].destroyed()).toBe(1);
+    }
+  });
+
+  it('a GPU window that cannot be written gives the factors up: no files, one error, no more windows', async () => {
+    const { r, store, toMain, fakes } = gpuRunner();
+    const open = store.open;
+    store.open = async (name) => {
+      if (name === 'f1.bin') throw new Error('disk full');
+      return open(name);
+    };
+    await feedAnswering(r, fakes, gpuFeed(160));
+    expect(errors(toMain)).toEqual([
+      { type: 'error', session: 7, message: GPU_TEXT.error('disk full') },
+    ]);
+    expect(store.files.size).toBe(0);
+    expect(fakes[0].jobs).toHaveLength(2);
+    expect(fakes[0].destroyed()).toBe(1);
   });
 
   it('no GPU: the run says why and has no factors', async () => {
