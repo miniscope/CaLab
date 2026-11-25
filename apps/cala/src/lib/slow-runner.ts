@@ -91,7 +91,7 @@ import type {
   SlowToMain,
   VisitToOwner,
 } from '../workers/slow-types.ts';
-import { libraryViewTransferables } from '../workers/slow-types.ts';
+import { libraryViewTransferables, visitRateCounters } from '../workers/slow-types.ts';
 import {
   CSETTLE,
   movedAgainstNoise,
@@ -106,6 +106,7 @@ import {
 } from './settle.ts';
 import {
   addLookbackAnswer,
+  DetailTimer,
   DutyClock,
   emptyLookbackWork,
   LOOKBACK_KINDS,
@@ -133,6 +134,8 @@ export interface PublishedLibrary {
 
 /** What the runner needs of the WASM `SlowLoop`. */
 export interface SlowLoopLike {
+  /** Measurement only: the WASM stage timers (`SlowLoop.stageTiming`; feature `timing`). */
+  stageTiming?(): Float64Array | number[];
   /**
    * `background`: that frame's background coefficients from the same solve;
    * `stream`: its stream index (look-back keeps its held-out decision).
@@ -149,6 +152,10 @@ export interface SlowLoopLike {
   setNoise(noise: Float32Array): void;
   /** Restrict the structural edits (absent in older fakes: a replay is refused). */
   setEditScope?(scope: string): void;
+  /** The Discover visit cap, visits per observed frame (0: off; absent in older fakes and builds). */
+  setVisitRate?(rate: number): void;
+  /** `[rate, credit, frames, visits, cappedFrames, dueTiles]` (`visitRateCounters`). */
+  visitRateStats?(): Float64Array | number[];
   /** Parallel visits (needed only with visit workers). */
   takeJob?(): Uint8Array | undefined;
   applyJob?(bytes: Uint8Array): void;
@@ -566,6 +573,10 @@ export class SlowRunner {
   private settleStatus: SettleStatus | undefined;
   /** The "still moving" hint of the newest checkpoint, sent with the next status (information only). */
   private stillMoving: Float64Array | null = null;
+  /** Measurement only (`?debug`, `setDebugTiming`): finer sums for the stage-0 attribution. */
+  private dt: DetailTimer | null = null;
+  /** Per look-back worker: epoch ms the request out was sent (relay timing). */
+  private lbSentAt: number[] = [];
   private readonly defer: (fn: () => void) => void;
   private readonly timer: (fn: () => void, ms: number) => () => void;
 
@@ -586,6 +597,21 @@ export class SlowRunner {
         const t = setTimeout(fn, ms);
         return () => clearTimeout(t);
       });
+  }
+
+  /** Measurement only: finer timers into `WorkStatus.detail` (`?debug`). Changes no decision. */
+  setDebugTiming(on: boolean): void {
+    this.dt = on ? new DetailTimer(this.now) : null;
+  }
+
+  /** `fn` timed under `key` when debug timing is on (else just run). */
+  private tm<T>(key: string, fn: () => T): T {
+    return this.dt ? this.dt.time(key, fn) : fn();
+  }
+
+  /** A message handler's whole synchronous run, by source (debug timing; `slow-worker.ts`). */
+  handlerSpan<T>(source: string, fn: () => T): T {
+    return this.dt ? this.dt.time(`handler.${source}`, fn) : fn();
   }
 
   /**
@@ -774,7 +800,7 @@ export class SlowRunner {
     }
     try {
       const steps = this.frameSteps(msg);
-      while (!steps.next().done) await pause();
+      while (!this.handlerSpan('fast', () => steps.next()).done) await pause();
     } catch (err) {
       this.fail(err);
     }
@@ -811,6 +837,10 @@ export class SlowRunner {
             : {}),
         };
         this.loop = this.clock.span('setup', () => this.deps.create(this.init!));
+        // The Discover visit cap (`lib/visit-rate.ts`): ordinary visits only, in Discover's
+        // edit scope (the end settle and Refine runs are not held).
+        if (msg.visitRate !== undefined && msg.visitRate > 0)
+          this.loop.setVisitRate?.(msg.visitRate);
         this.run = 1;
         this.lbOn = lookback === true && typeof this.loop.lookbackTake === 'function';
         this.factorOn = this.init.factorSettle === true;
@@ -871,7 +901,7 @@ export class SlowRunner {
       if (msg.type === 'error') throw new Error(`visit worker ${i}: ${msg.message}`);
       this.busy[i] = false;
       const t0 = this.now();
-      this.clock.span('visit', () => this.loop!.applyJob!(msg.bytes));
+      this.clock.span('visit', () => this.tm('visit.apply', () => this.loop!.applyJob!(msg.bytes)));
       this.jobOwnerMs += this.now() - t0;
       this.jobs++;
       this.visitMsSum += msg.ms;
@@ -946,7 +976,7 @@ export class SlowRunner {
     try {
       if (loop && init) {
         if (msg.noise) {
-          loop.setNoise(msg.noise);
+          this.tm('live.setNoise', () => loop.setNoise(msg.noise!));
           for (const v of this.visits)
             v.postMessage({ type: 'noise', session: this.session, noise: msg.noise });
         }
@@ -960,7 +990,13 @@ export class SlowRunner {
           // The stream index records the frame's held-out decision for look-back
           // (required with it on); without look-back the call is as before.
           const stream = this.lbOn ? msg.start + i : undefined;
-          if (!loop.observe(frame, msg.version, traces, background, stream)) {
+          const t0 = this.dt ? this.now() : 0;
+          const ok = loop.observe(frame, msg.version, traces, background, stream);
+          if (this.dt) {
+            this.dt.add('live.observe', this.now() - t0);
+            this.dt.add('live.observe#', 1);
+          }
+          if (!ok) {
             this.skipped++;
             continue;
           }
@@ -990,8 +1026,10 @@ export class SlowRunner {
           this.dispatch();
         }
         if (this.lookbackLive) {
+          const tn = this.dt ? this.now() : 0;
           this.sessionFloor(loop, msg.start);
           loop.lookbackNote!(msg.start + msg.count, observed);
+          this.dt?.add('live.lookbackNote', this.now() - tn);
           if (this.cs) {
             this.cs.live += observed;
             // A batch that does not follow the last one: the forward pool dropped the ones between.
@@ -1005,13 +1043,14 @@ export class SlowRunner {
             );
           }
           this.liveEnd = Math.max(this.liveEnd, msg.start + msg.count);
-          this.lookbackRequest();
+          this.tm('live.lookbackRequest', () => this.lookbackRequest());
         }
       }
     } finally {
       endLive();
       this.consumed = Math.max(this.consumed, msg.start + msg.count);
       // The buffer always goes back, or the fast worker's pool would shrink.
+      const ta = this.dt ? this.now() : 0;
       this.deps.toFast.postMessage(
         {
           type: 'ack',
@@ -1023,6 +1062,8 @@ export class SlowRunner {
         },
         [msg.frames.buffer as ArrayBuffer],
       );
+      this.dt?.add('live.ack', this.now() - ta);
+      this.dt?.add('live.batches', 1);
     }
     this.status(this.now() - t0, maxStep);
   }
@@ -1030,7 +1071,7 @@ export class SlowRunner {
   /** Trimming decisions and, when due, a new library (parallel mode). */
   private housekeep(): void {
     this.clock.span('housekeep', () => {
-      const lib = this.loop?.housekeep!();
+      const lib = this.tm('housekeep.wasm', () => this.loop?.housekeep!());
       if (lib) this.publish(lib);
     });
   }
@@ -1045,13 +1086,15 @@ export class SlowRunner {
       for (let i = 0; i < this.visits.length; i++) {
         if (this.busy[i]) continue;
         const t0 = this.now();
-        const bytes = loop.takeJob!();
+        const bytes = this.tm('visit.take', () => loop.takeJob!());
         if (!bytes) break;
         this.busy[i] = true;
         handed++;
+        const tp = this.now();
         this.visits[i].postMessage({ type: 'job', session: this.session, bytes }, [
           bytes.buffer as ArrayBuffer,
         ]);
+        this.dt?.add('visit.post', this.now() - tp);
         this.jobOwnerMs += this.now() - t0;
       }
       return handed;
@@ -1126,6 +1169,7 @@ export class SlowRunner {
   ): void {
     const id = this.lbNextId++;
     this.lbReqs[port] = { id, port, kind, items, ...(skip ? { skip } : {}) };
+    this.lbSentAt[port] = this.epochNow();
     // `flat` is a fresh array (from WASM or built here): transferred as is; `skip` is copied.
     this.clock.span(kind, () =>
       this.lbPorts[port]!.postMessage(
@@ -1263,6 +1307,14 @@ export class SlowRunner {
     this.lbReqs[port] = null;
     this.lbTimers[port]?.();
     this.lbTimers[port] = null;
+    if (this.dt && msg.type === 'frames') {
+      // Relay timing: request sent -> this handler (round trip), and answer posted -> here (queued).
+      const at = this.epochNow();
+      const k = `relay.${req.kind}.p${port}`;
+      this.dt.add(`${k}.rtt`, at - (this.lbSentAt[port] ?? at));
+      if (msg.postedAt !== undefined) this.dt.add(`${k}.queued`, at - msg.postedAt);
+      this.dt.add(`${k}#`, 1);
+    }
     if (msg.type === 'frames') {
       addLookbackAnswer(this.lbWork[req.kind], msg.count, msg.timing);
       const busy = msg.timing ? timingBusyMs(msg.timing) : 0;
@@ -1301,7 +1353,7 @@ export class SlowRunner {
             !settle.feed.done &&
             this.lbError === undefined &&
             this.drainPorts().includes(req.port);
-          if (next) this.settleRequest(req.port);
+          if (next) this.tm('end.request', () => this.settleRequest(req.port));
           settle.served.add(req.port);
           this.observeSettle(loop, msg, req.items);
         } else if (req.kind === 'need') this.observeLookback(loop, msg, req.items);
@@ -1331,6 +1383,7 @@ export class SlowRunner {
     const px = init.width * init.height;
     const bg = msg.background;
     const nb = bg && msg.count > 0 ? bg.length / msg.count : 0;
+    const tl = this.dt ? this.now() : 0;
     for (let i = 0; i < msg.count; i++) {
       loop.observeLookback!(
         msg.frames.subarray(i * px, (i + 1) * px),
@@ -1341,6 +1394,8 @@ export class SlowRunner {
         items[i].ids,
       );
     }
+    this.dt?.add('need.observe', this.now() - tl);
+    this.dt?.add('need.observe#', msg.count);
   }
 
   /** An answer's frame buffer, back to the pool of the look-back worker it came from. */
@@ -1427,12 +1482,14 @@ export class SlowRunner {
         skipped++;
         continue;
       }
-      loop.observeSettle!(
-        msg.frames.subarray(i * px, (i + 1) * px),
-        msg.version,
-        msg.traces.subarray(i * msg.cells, (i + 1) * msg.cells),
-        bg?.subarray(i * nb, (i + 1) * nb),
-        req.items[i].frame,
+      this.tm('csettle.observe', () =>
+        loop.observeSettle!(
+          msg.frames.subarray(i * px, (i + 1) * px),
+          msg.version,
+          msg.traces.subarray(i * msg.cells, (i + 1) * msg.cells),
+          bg?.subarray(i * nb, (i + 1) * nb),
+          req.items[i].frame,
+        ),
       );
     }
     if (skipped > 0) loop.settleSkipped?.(skipped);
@@ -1534,26 +1591,30 @@ export class SlowRunner {
    * unit-peak footprints (a settle checkpoint).
    */
   private checkpointLibrary(loop: SlowLoopLike): ReturnType<typeof unitFootprints> {
-    const lib = this.clock.span('end', () => loop.finalize());
+    const lib = this.clock.span('end', () => this.tm('end.finalize', () => loop.finalize()));
+    const tu = this.dt ? this.now() : 0;
     const fps = unitFootprints({
       ids: lib.ids(),
       starts: lib.supportStarts(),
       pixels: lib.supportPixels(),
       values: lib.footprintValues(),
     });
+    this.dt?.add('end.unitFootprints', this.now() - tu);
     this.publish(lib);
     return fps;
   }
 
   /** A checkpoint: publish, and count the cells that moved more than `SETTLE.movingK` x their noise since the last. */
   private settleCheckpoint(loop: SlowLoopLike, d: Settle): void {
-    const now = this.checkpointLibrary(loop);
-    const noise = loop.footprintNoise ? noiseMap(loop.footprintNoise()) : null;
+    const now = this.tm('end.checkpoint', () => this.checkpointLibrary(loop));
+    const noise = this.tm('end.footprintNoise', () =>
+      loop.footprintNoise ? noiseMap(loop.footprintNoise()) : null,
+    );
     if (d.prev && noise) {
-      const m = movedAgainstNoise(d.prev, now, noise, SETTLE.movingK);
+      const m = this.tm('end.moved', () => movedAgainstNoise(d.prev!, now, noise, SETTLE.movingK));
       d.moving = { cells: m.cells, above: m.aboveK };
     }
-    this.noteStillMoving(loop, d.prev, now);
+    this.tm('end.stillMoving', () => this.noteStillMoving(loop, d.prev, now));
     d.prev = now;
   }
 
@@ -1661,6 +1722,7 @@ export class SlowRunner {
     if (msg.version !== 0)
       for (let i = 0; i < msg.count; i++) {
         // The stream index is required with look-back on; nothing reads it after Discover.
+        const te = this.dt ? this.now() : 0;
         const ok = loop.observe(
           msg.frames.subarray(i * px, (i + 1) * px),
           msg.version,
@@ -1668,6 +1730,10 @@ export class SlowRunner {
           bg?.subarray(i * nb, (i + 1) * nb),
           items[i].frame,
         );
+        if (this.dt) {
+          this.dt.add('end.observe', this.now() - te);
+          this.dt.add('end.observe#', 1);
+        }
         if (ok) n++;
         else this.skipped++;
       }
@@ -1818,7 +1884,10 @@ export class SlowRunner {
       const version = lib.version;
       if (version !== this.version) {
         this.version = version;
+        const tb = this.dt ? this.now() : 0;
         const bytes = lib.toBytes();
+        this.dt?.add('publish.toBytes', this.now() - tb);
+        this.dt?.add('publish.libraries', 1);
         // The main thread keeps the newest library's bytes for pass 2.
         const mainBytes = bytes.slice();
         // Each look-back worker solves with the newest library (same port as its requests,
@@ -1945,13 +2014,19 @@ export class SlowRunner {
       lookbackWorkerBusyMs: this.lbPorts.map((p, i) => (p ? (this.lbPortBusy[i] ?? 0) : 0)),
       settleWorkers: this.settlePorts().length,
       observedFrames: this.observed,
+      ...(this.dt
+        ? {
+            detail: { ...this.dt.sums },
+            ...(this.loop?.stageTiming ? { stage: Array.from(this.loop.stageTiming()) } : {}),
+          }
+        : {}),
     };
   }
 
   private status(batchMs: number, maxStepMs: number): void {
     this.clock.begin('publish');
     try {
-      this.statusInner(batchMs, maxStepMs);
+      this.tm('status', () => this.statusInner(batchMs, maxStepMs));
     } finally {
       this.clock.end();
     }
@@ -1983,6 +2058,7 @@ export class SlowRunner {
       run: this.run,
       editScope: this.scope,
       ...(this.lbOn || this.factorOn ? { lookback: this.lookbackStatus(loop) } : {}),
+      ...(loop.visitRateStats ? { visitRate: visitRateCounters(loop.visitRateStats()) } : {}),
     };
     // Last, so the snapshot includes the time spent building this status.
     status.accounting = this.workStatus();
@@ -2033,6 +2109,7 @@ export class SlowRunner {
     this.visitMs = 0;
     this.jobOwnerMs = 0;
     this.clock.reset();
+    this.dt?.reset();
     this.workT0 = this.now();
     this.visitBusy = this.visits.map(() => 0);
     this.lbWork = emptyWorkByKind();

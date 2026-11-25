@@ -28,7 +28,7 @@ use super::local::{Cell, Fit, Problem};
 use super::wire::{Reader, Writer};
 use super::{
     column_on, paired_z, solve_dense, EditScope, Frames, JointAdmit, JointSign, JointUpdate,
-    ReplayStats, SlowLoop,
+    ReplayStats, SlowLoop, Start,
 };
 use crate::trace::{FrameTraces, Library};
 
@@ -217,6 +217,28 @@ impl ClusterHistory for RingHistory {
     }
 }
 
+/// `Σ a_i b_i` in eight interleaved f32 partial sums (lane `i mod 8`),
+/// added pairwise at the end: vectorises, where one running sum is a
+/// serial chain of dependent adds. Differs from the serial sum by float
+/// rounding only.
+#[inline]
+pub(crate) fn dot_lanes(a: &[f32], b: &[f32]) -> f32 {
+    let n = a.len().min(b.len());
+    let (a, b) = (&a[..n], &b[..n]);
+    let mut acc = [0.0f32; 8];
+    let (ca, ra) = a.as_chunks::<8>();
+    let (cb, rb) = b.as_chunks::<8>();
+    for (x, y) in ca.iter().zip(cb) {
+        for l in 0..8 {
+            acc[l] += x[l] * y[l];
+        }
+    }
+    for (l, (x, y)) in ra.iter().zip(rb).enumerate() {
+        acc[l] += x * y;
+    }
+    ((acc[0] + acc[4]) + (acc[1] + acc[5])) + ((acc[2] + acc[6]) + (acc[3] + acc[7]))
+}
+
 /// The history store of one cluster (see the module docs).
 #[derive(Debug, Clone)]
 pub(crate) struct ClusterStore {
@@ -253,6 +275,9 @@ pub(crate) struct ClusterStore {
     rank: usize,
     /// The stored frames' coordinates in the basis (see [`ClusterHistory`]).
     hist: RingHistory,
+    /// Cache of `pix` as contiguous row runs (empty until
+    /// [`ClusterStore::push_frame`] first needs it).
+    runs: Vec<(u32, u32)>,
     /// Frames pushed.
     pub k: u64,
     /// The store's own last joint estimate, whitened (pixel-major `n x K`),
@@ -352,6 +377,7 @@ impl ClusterStore {
             u: Vec::new(),
             rank: 0,
             hist: RingHistory::new(cap, kk),
+            runs: Vec::new(),
             k: 0,
             est: None,
             visited: false,
@@ -451,17 +477,82 @@ impl ClusterStore {
             }
         }
         let v: Vec<f32> = (0..self.rank)
-            .map(|j| {
-                self.ut[j * n..(j + 1) * n]
-                    .iter()
-                    .zip(r)
-                    .map(|(u, x)| u * x)
-                    .sum()
-            })
+            .map(|j| dot_lanes(&self.ut[j * n..(j + 1) * n], r))
             .collect();
         self.hist
             .append(&v, self.k, (self.k / 256).is_multiple_of(2));
         self.k += 1;
+    }
+
+    /// Test access: the running sums `cy`, `sr` and the stored coordinates.
+    #[cfg(test)]
+    pub fn sums(&self) -> (&[f32], &[f32], &[f32]) {
+        (&self.cy, &self.sr, &self.hist.v)
+    }
+
+    /// The slow loop's push of one fitting frame: the whitened cluster
+    /// residual `r̃ = (y − model − lv_owner + Σ_k a_k c_k) / σ` on `pix`
+    /// (`lv` each member's ring level, `None` without a ring background),
+    /// `c` the members' traces. Element by element the same arithmetic as
+    /// building `r̃` and calling [`ClusterStore::push`], read in contiguous
+    /// row runs. `false` (nothing pushed) when `r̃` or `c` is not finite.
+    /// `buf` is scratch.
+    pub fn push_frame(
+        &mut self,
+        frame: &[f32],
+        model: &[f32],
+        lv: Option<&[f32]>,
+        c: &[f32],
+        w: f64,
+        buf: &mut Vec<f32>,
+    ) -> bool {
+        let n = self.pix.len();
+        if self.runs.is_empty() && n > 0 {
+            self.runs = super::fpstats::pixel_runs(&self.pix);
+        }
+        // Scratch of at least `n` (grown only: no fill per call).
+        if buf.len() < n {
+            buf.resize(n, 0.0);
+        }
+        let buf = &mut buf[..n];
+        let mut i = 0;
+        for &(s, len) in &self.runs {
+            let (s, len) = (s as usize, len as usize);
+            let (y, m) = (&frame[s..s + len], &model[s..s + len]);
+            let out = &mut buf[i..i + len];
+            match lv {
+                None => {
+                    for j in 0..len {
+                        out[j] = y[j] - m[j];
+                    }
+                }
+                Some(lv) => {
+                    let own = &self.owner[i..i + len];
+                    for j in 0..len {
+                        out[j] = y[j] - m[j] - lv[own[j] as usize];
+                    }
+                }
+            }
+            i += len;
+        }
+        assert_eq!(i, n, "runs cover the pixels");
+        for (k, &ck) in c.iter().enumerate() {
+            if ck != 0.0 {
+                for (r, &a) in buf.iter_mut().zip(&self.cols[k * n..(k + 1) * n]) {
+                    *r += a * ck;
+                }
+            }
+        }
+        let mut bad = false;
+        for (r, &is) in buf.iter_mut().zip(&self.is) {
+            *r *= is;
+            bad |= !r.is_finite();
+        }
+        if bad || !c.iter().all(|v| v.is_finite()) {
+            return false;
+        }
+        self.push(buf, c, w);
+        true
     }
 
     /// Refresh the basis to `orth(CY)` (centred; a member whose trace has no
@@ -604,6 +695,7 @@ impl ClusterStore {
         let (owner, cover) = owner_cover(&pix, &disks, &cols, width);
         self.disks = disks;
         self.pix = pix;
+        self.runs.clear();
         self.is = is;
         self.owner = owner;
         self.cover = cover;
@@ -968,8 +1060,16 @@ impl SlowLoop {
         }
         let version = lib.version();
         let mut work = 0u64;
+        #[cfg_attr(feature = "threads", allow(unused_mut))]
         let mut cbuf = std::mem::take(&mut self.cbuf);
+        // Feature `threads` (measurement): the clusters' pushes, prepared
+        // here in order, run on a rayon pool after this loop.
+        #[cfg(feature = "threads")]
+        let mut prep: Vec<Option<(Vec<f32>, Option<Vec<f32>>)>> =
+            Vec::with_capacity(self.clusters.len());
         for ci in 0..self.clusters.len() {
+            #[cfg(feature = "threads")]
+            prep.push(None);
             if let Some(o) = &self.lb_only {
                 if !self.clusters[ci].ids.iter().any(|id| o.contains(id)) {
                     continue;
@@ -1006,7 +1106,6 @@ impl SlowLoop {
                 }
             }
             let st = &mut self.clusters[ci];
-            let n = st.pix.len();
             if st.version != version {
                 st.cols.clear();
                 for &s in &slots {
@@ -1015,34 +1114,51 @@ impl SlowLoop {
                 st.version = version;
             }
             let c: Vec<f32> = slots.iter().map(|&s| traces.traces[s]).collect();
-            let lv: Vec<f32> = slots
-                .iter()
-                .map(|&s| if ring { traces.background[s] } else { 0.0 })
-                .collect();
-            cbuf.clear();
-            cbuf.extend(
-                st.pix
-                    .iter()
-                    .zip(&st.owner)
-                    .map(|(&p, &o)| frame[p as usize] - self.model[p as usize] - lv[o as usize]),
-            );
-            for (k, &ck) in c.iter().enumerate() {
-                if ck != 0.0 {
-                    for (r, &a) in cbuf.iter_mut().zip(&st.cols[k * n..(k + 1) * n]) {
-                        *r += a * ck;
-                    }
+            let lv: Option<Vec<f32>> =
+                ring.then(|| slots.iter().map(|&s| traces.background[s]).collect());
+            #[cfg(feature = "threads")]
+            {
+                prep[ci] = Some((c, lv));
+            }
+            #[cfg(not(feature = "threads"))]
+            {
+                let n = st.pix.len();
+                if !st.push_frame(
+                    frame,
+                    &self.model,
+                    lv.as_deref(),
+                    &c,
+                    f64::from(w),
+                    &mut cbuf,
+                ) {
+                    self.replay_stats.skipped_frames += 1;
+                    continue;
                 }
+                work += (n * (3 * c.len() + 3)) as u64;
             }
-            for (r, &is) in cbuf.iter_mut().zip(&st.is) {
-                *r *= is;
-            }
-            let ok = cbuf.iter().all(|v| v.is_finite());
-            if !ok || !c.iter().all(|v| v.is_finite()) {
-                self.replay_stats.skipped_frames += 1;
-                continue;
-            }
-            st.push(&cbuf, &c, f64::from(w));
-            work += (n * (3 * c.len() + 3)) as u64;
+        }
+        #[cfg(feature = "threads")]
+        {
+            use rayon::prelude::*;
+            let model = &self.model;
+            let (skipped, w_sum) = self
+                .clusters
+                .par_iter_mut()
+                .zip(prep.par_iter())
+                .map_init(Vec::new, |buf, (st, p)| {
+                    let Some((c, lv)) = p else {
+                        return (0u64, 0u64);
+                    };
+                    let n = st.pix.len();
+                    if st.push_frame(frame, model, lv.as_deref(), c, f64::from(w), buf) {
+                        (0, (n * (3 * c.len() + 3)) as u64)
+                    } else {
+                        (1, 0)
+                    }
+                })
+                .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+            self.replay_stats.skipped_frames += skipped;
+            work += w_sum;
         }
         self.cbuf = cbuf;
         let bytes: usize = self.clusters.iter().map(|c| c.bytes()).sum();
@@ -1066,7 +1182,7 @@ impl SlowLoop {
         ti: usize,
         base: &Problem,
         test_fr: &Frames,
-        base_test: &[Fit],
+        (base_test, start): (&[Fit], Option<&Start>),
         chi_base: f64,
         s2: f64,
         updates: &mut Vec<(u64, Cell, f32, u64)>,
@@ -1228,7 +1344,7 @@ impl SlowLoop {
                 let refs: Vec<&Cell> = news.iter().collect();
                 let cols = self.columns(rect, &skip, &refs);
                 let pr = self.problem(ti, cols);
-                let f = self.solve_all(&pr, test_fr);
+                let f = self.solve_all_from(&pr, test_fr, start);
                 let gain = (chi_base - SlowLoop::total_chi2(&f)) / s2;
                 let z = paired_z(base_test, &f);
                 let accepted = gain > 0.0 && z > f64::from(self.cfg.refine_z);
@@ -1247,7 +1363,7 @@ impl SlowLoop {
                             };
                             let cols = self.columns(rect, &[nc.id], &[nc]);
                             let pr = self.problem(ti, cols);
-                            let f = self.solve_all(&pr, test_fr);
+                            let f = self.solve_all_from(&pr, test_fr, start);
                             sd.solo[k] = (chi_base - SlowLoop::total_chi2(&f)) / s2;
                         }
                         self.work = w0;
@@ -1895,6 +2011,7 @@ impl ClusterStore {
             ut: Vec::new(),
             rank: 0,
             hist: RingHistory::new(1, kk),
+            runs: Vec::new(),
             k: 0,
             est: None,
             visited: false,
@@ -2060,6 +2177,7 @@ impl ClusterStore {
             ut: Vec::new(),
             rank: 0,
             hist,
+            runs: Vec::new(),
             k,
             est,
             visited: false,
@@ -2876,6 +2994,168 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod push_frame_tests {
+    use super::*;
+    use crate::discover::fpstats::disk_pixels;
+
+    fn u(k: u64) -> f32 {
+        (crate::discover::reservoir::mix(k) >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+    }
+
+    /// The slow loop's cluster push before `push_frame`.
+    fn reference(
+        st: &mut ClusterStore,
+        frame: &[f32],
+        model: &[f32],
+        lv: &[f32],
+        c: &[f32],
+        w: f64,
+    ) -> bool {
+        let n = st.pix.len();
+        let mut r: Vec<f32> = st
+            .pix
+            .iter()
+            .zip(&st.owner)
+            .map(|(&p, &o)| frame[p as usize] - model[p as usize] - lv[o as usize])
+            .collect();
+        for (k, &ck) in c.iter().enumerate() {
+            if ck != 0.0 {
+                for (r, &a) in r.iter_mut().zip(&st.cols[k * n..(k + 1) * n]) {
+                    *r += a * ck;
+                }
+            }
+        }
+        for (r, &is) in r.iter_mut().zip(&st.is) {
+            *r *= is;
+        }
+        if !r.iter().all(|v| v.is_finite()) || !c.iter().all(|v| v.is_finite()) {
+            return false;
+        }
+        st.push(&r, c, w);
+        true
+    }
+
+    fn state(st: &ClusterStore) -> String {
+        let mut s = st.clone();
+        s.runs.clear();
+        format!("{s:?}")
+    }
+
+    fn geometry(
+        disks: &[((f32, f32), f32)],
+        wd: usize,
+        ht: usize,
+        fov: &[u8],
+        k: u64,
+    ) -> (Vec<u32>, Vec<f32>, Vec<f32>) {
+        let mut pix: Vec<u32> = disks
+            .iter()
+            .flat_map(|d| disk_pixels(d.0, d.1, wd, ht, fov))
+            .collect();
+        pix.sort_unstable();
+        pix.dedup();
+        let n = pix.len();
+        let is = (0..n).map(|i| 1.0 + 0.2 * u(k + i as u64)).collect();
+        let cols = (0..n * disks.len())
+            .map(|i| u(k * 7 + i as u64).max(0.0))
+            .collect();
+        (pix, is, cols)
+    }
+
+    /// `push_frame` leaves the store bit for bit where building the
+    /// whitened residual and calling `push` does: with and without ring
+    /// levels (per-pixel owner), zero and NaN traces, missing pixels (the
+    /// frame is skipped), FOV holes and a moved store.
+    #[test]
+    fn push_frame_matches_building_the_residual() {
+        let (wd, ht) = (48usize, 40usize);
+        let mut fov = vec![1u8; wd * ht];
+        fov[18 * wd + 20] = 0;
+        let disks = vec![
+            ((18.0, 18.0), 8.0),
+            ((20.0, 25.0), 8.0),
+            ((24.0, 20.0), 7.0),
+        ];
+        for ring in [false, true] {
+            let (pix, is, cols) = geometry(&disks, wd, ht, &fov, 1);
+            let mut a = ClusterStore::new(vec![1, 2, 3], disks.clone(), pix, is, wd, 1, cols, 300);
+            let mut b = a.clone();
+            let mut buf = Vec::new();
+            for t in 0..600u64 {
+                let mut frame: Vec<f32> =
+                    (0..wd * ht).map(|i| 3.0 * u(t * 9000 + i as u64)).collect();
+                let model: Vec<f32> = (0..wd * ht).map(|i| u(t * 9000 + i as u64 + 55)).collect();
+                if t == 200 {
+                    frame[20 * wd + 22] = f32::NAN;
+                }
+                let mut c: Vec<f32> = (0..3).map(|k| 2.0 * u(t * 3 + k) + 0.6).collect();
+                if t % 5 == 0 {
+                    c[1] = 0.0;
+                }
+                if t == 77 {
+                    c[2] = f32::NAN;
+                }
+                let lv: Vec<f32> = (0..3)
+                    .map(|k| if ring { 0.3 * u(t * 11 + k) } else { 0.0 })
+                    .collect();
+                if t == 400 {
+                    let moved = vec![
+                        ((19.0, 18.0), 9.0),
+                        ((20.0, 26.0), 8.0),
+                        ((24.0, 20.0), 7.0),
+                    ];
+                    let (pix, is, cols) = geometry(&moved, wd, ht, &fov, 2);
+                    let ok_a =
+                        a.move_to(moved.clone(), pix.clone(), is.clone(), wd, 1, cols.clone());
+                    let ok_b = b.move_to(moved, pix, is, wd, 1, cols);
+                    assert!(ok_a && ok_b);
+                }
+                let w = 1.0 + t as f64 * 1e-3;
+                let ra = reference(&mut a, &frame, &model, &lv, &c, w);
+                let rb = b.push_frame(&frame, &model, ring.then_some(&lv[..]), &c, w, &mut buf);
+                assert_eq!(ra, rb, "ring {ring} t {t}");
+                assert_eq!(state(&a), state(&b), "ring {ring} t {t}");
+            }
+            assert!(a.k > 590);
+        }
+    }
+}
+
+#[cfg(test)]
+mod dot_lanes_tests {
+    use super::dot_lanes;
+
+    /// Lane sums agree with the serial sum (f64 reference) to f32
+    /// rounding, at every length's remainder.
+    #[test]
+    fn dot_lanes_matches_the_serial_sum() {
+        for n in [0usize, 1, 7, 8, 9, 63, 64, 1000, 1777] {
+            let a: Vec<f32> = (0..n)
+                .map(|i| ((i * 37 % 101) as f32 - 50.0) / 7.0)
+                .collect();
+            let b: Vec<f32> = (0..n)
+                .map(|i| ((i * 53 % 97) as f32 - 48.0) / 5.0)
+                .collect();
+            let exact: f64 = a
+                .iter()
+                .zip(&b)
+                .map(|(x, y)| f64::from(*x) * f64::from(*y))
+                .sum();
+            let scale: f64 = a
+                .iter()
+                .zip(&b)
+                .map(|(x, y)| f64::from((x * y).abs()))
+                .sum();
+            let got = f64::from(dot_lanes(&a, &b));
+            assert!(
+                (got - exact).abs() <= 1e-6 * scale.max(1.0),
+                "n {n}: {got} vs {exact}"
+            );
         }
     }
 }

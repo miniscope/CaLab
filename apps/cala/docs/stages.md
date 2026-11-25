@@ -20,6 +20,53 @@ Refine runs show as "Refine (removed stage)".
 | **Discover** | Finds cells and builds their footprints from an empty library, with live traces. Every edit is allowed: adds, absorbs, splits, merges, keep tests and deletions. For a recording it runs with look-back and ends with the Final settle. | yes       | yes (first)                                                   |
 | **Extract**  | Solves the final traces of every frame with the footprints frozen.                                                                                                                                                                      | no        | after Discover; once at the end, again if the library changed |
 
+## Discover's visit rate
+
+Discover's slow loop refines the model tile by tile ("visits"). How many visits it
+makes per frame sets how many cells it finds and, at high rates, how many false
+cells it adds; footprint and trace quality do not move
+(`tools/cala-eval/results/2026-11-24-visit-budget-sweep.md`). The rate used to be
+whatever time was spare: about 0.2 visits per frame at Max (the cell-model worker
+saturated) and about 4.7 paced at 30 fps, so the result depended on the machine and
+the Speed setting. Discover now keeps it fixed (`src/lib/visit-rate.ts`, constants in
+`VISIT_RATE`; values from constant-rate runs on full-length sims and Samara data, see the
+results note and PR #500; recall levels off near 0.2 while false cells keep growing, and
+visits are most of the cell-model worker's time, so the target sits low, at 0.15, for speed;
+only the first ~2000 frames find cells a little later than at 0.25):
+
+| Bound  | Visits per frame | Where                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------ | ---------------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| cap    |              0.2 | in the slow loop (`crates/cala/src/discover/visitrate.rs`): ordinary visits are handed out against a credit that grows by 0.2 per observed Discover frame (banked at most 16 frames' worth, not banked while nothing is due). It covers every ordinary visit, whatever made its tile due (live frames, look-back frames, edits nearby); settle visits, the Final settle and Refine-scope visits are not held. Recordings and live streams. |
+| target |             0.15 | the governor (`VisitRateGovernor`): every second of run time it compares the visits per frame **read** with the target; when they fall behind while tiles are due and the cap is not what limits them, it holds the frame loop to the speed at which the measured visit throughput meets the target (down at once, up by at most 25 % per window, released once the hold no longer binds). Recordings only.                                |
+| floor  |              0.1 | below it the hold is cut a further 25 % so the run catches up. Recordings only: a live stream cannot slow down, so it keeps the cap only.                                                                                                                                                                                                                                                                                                  |
+
+The hold combines with the Speed setting: the frame loop gets the lower of the two
+(Max, Fixed, Curve and Auto keep their own target; the hold only lowers it). The
+Speed block says when the hold binds ("Held at N fps to keep refinement at 0.15
+visits/frame"), and the run log gets an entry each time it moves. Background settle
+is told the user's target, not the hold, so a held Max run does not start it.
+
+The Speed block's "max now" is what the run can actually reach: the fast loop's own
+top speed, lowered to what the visits allow once they have held the run back
+(throughput / target, the median of the last 5 windows where they fell behind,
+raised when a later window reads faster and keeps up). The floor's Max clamp, curves,
+Auto and the run record's `max_fps_median` use the same figure; `fast_max_fps_median`
+keeps the fast loop's own. A paced run whose visits the cap limits has no such
+reading, so its Max stays the fast loop's. With `?debug&visitrate=off` or on a live
+stream, Max is the fast loop's as before.
+
+The floor and target count visits per frame **read** (dropped batches included), the
+cap per frame observed. At Max the fast loop drops batches for the slow loop (about
+25 % of the frames on the 3k sim); counted per observed frame, dropping frames would
+itself meet the rate, and a run that drops more would visit less over the same
+recording, which is the speed dependence this removes. Because the cap (0.2) is close
+to the target, a run that drops many frames can stay under the target per frame read
+while the cap binds per observed frame; the governor then still slows it, since fewer
+drops is what raises the rate. The run record keeps the
+bounds and what the run achieved (`work.visit_rate`, [run-record.md](run-record.md)).
+`?debug&visitrate=off` restores the behaviour before (no cap, no hold); qc_eval's
+`--visit-rate R` sets the same cap.
+
 ## Order
 
 - Extract runs only after Discover has finished and the slow loop has

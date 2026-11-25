@@ -14,6 +14,7 @@ import {
   StageBusyMeter,
   WorkRater,
   type WorkRates,
+  type WorkStatus,
 } from './work-meter.ts';
 import type { CellStore } from './cell-store.ts';
 import type { CompressStore } from './compress-store.ts';
@@ -71,6 +72,16 @@ import {
   finalSettleLevel,
 } from './settle.ts';
 import { FloorMeter, NEED_RATE, floorText, type FloorDisplay } from './speed-floor.ts';
+import {
+  VISIT_RATE,
+  VisitRateGovernor,
+  effectivePace,
+  heldMaxFps,
+  visitRateCap,
+  visitRateMode,
+  type VisitRateMode,
+  type VisitRateSummary,
+} from './visit-rate.ts';
 
 /** Step requests kept outstanding: one running, one queued so the worker never idles. */
 export const MAX_IN_FLIGHT = 2;
@@ -532,6 +543,7 @@ export function createPipelineStore(
         curveDriver = null;
         if (!exhausted) {
           exhausted = true;
+          endVisitHold();
           boundaryMonitor?.end();
           refreshBoundaryFlags(true);
           flushFlatField();
@@ -552,6 +564,42 @@ export function createPipelineStore(
   const [paceTarget, setPaceTarget] = createSignal(0);
   /** The current target came from the URL (`?debug&pacefps`, source `url`): the Speed control must not override it. */
   const [paceFromUrl, setPaceFromUrl] = createSignal(false);
+  /**
+   * The Discover visit rate (`lib/visit-rate.ts`): off only with `?debug&visitrate=off` (the
+   * behaviour before). The governor of this run (null: none yet, or not a Discover run) and its
+   * hold: the speed the frame loop is held to so the visits keep up (null: not held).
+   */
+  const [visitRateOff, setVisitRateOff] = createSignal(false);
+  let visitGov: VisitRateGovernor | null = null;
+  const [visitHold, setVisitHold] = createSignal<number | null>(null);
+  const [visitAchieved, setVisitAchieved] = createSignal<number | null>(null);
+  const [visitMode, setVisitMode] = createSignal<VisitRateMode | null>(null);
+  const visitListeners: ((s: VisitRateSummary) => void)[] = [];
+  function tellVisitRate(): void {
+    if (!visitGov) return;
+    const s = visitGov.summary();
+    for (const cb of visitListeners) {
+      try {
+        cb(s);
+      } catch {
+        // Observers only.
+      }
+    }
+  }
+  /** Discover read its last frame (or was ended): the hold ends; the record keeps the summary. */
+  function endVisitHold(): void {
+    if (!visitGov) return;
+    tellVisitRate();
+    const before = gatePace();
+    visitGov.release();
+    setVisitHold(null);
+    // The gate goes back to the user's pace (the next run's start resets it anyway).
+    if (gatePace() !== before) sendPace({ fps: gatePace() });
+  }
+  /** The pace the frame gate gets: the user's target and the visit hold, whichever is lower (0: Max). */
+  function gatePace(): number {
+    return effectivePace(paceRun() ? paceFps : 0, untrack(visitHold));
+  }
   const paceListeners: ((fps: number, frame: number, source: string) => void)[] = [];
   const capListeners: ((cap: number, frame: number, source: string) => void)[] = [];
   /** Told about the work and the floor about once a second (the run record's log). */
@@ -611,7 +659,7 @@ export function createPipelineStore(
       totalFrames: curveFrames(),
       floorFps: f.fps,
       seeAllFps: f.estimate.seeAllFps,
-      maxFps: maxFpsEstimator.estimate() || null,
+      maxFps: runMaxFps() || null,
       wallS: pauseClock.now(clock()) / 1000,
     };
   }
@@ -711,19 +759,36 @@ export function createPipelineStore(
   // loop's live estimate of its top speed. Instrumentation only: nothing here steers the run.
   const workRater = new WorkRater();
   const maxFpsEstimator = new MaxFpsEstimator();
+  /**
+   * The top speed the run can reach, fps (0: not known): the fast loop's estimate, lowered to what
+   * the visits allow while the visit rate holds the run (`heldMaxFps`). What the Speed block calls
+   * Max, the floor clamps to, curves and Auto plan with and the run record's Max median counts.
+   */
+  function runMaxFps(): number {
+    return heldMaxFps(maxFpsEstimator.estimate(), visitGov?.visitMaxFps ?? null);
+  }
   const stageBusyMeter = new StageBusyMeter();
   const birthRate = new BirthRate();
   const [work, setWork] = createSignal<WorkRates | null>(null);
   const [maxFps, setMaxFps] = createSignal(0);
-  /** The max estimate as of the last `work` reading (the readout rebuilds once a second, not per batch). */
+  /**
+   * The run's top speed (`runMaxFps`) as of the last `work` reading (the readout rebuilds once a
+   * second, not per batch), and the fast loop's own for the debug readout.
+   */
   const [workMaxFps, setWorkMaxFps] = createSignal(0);
+  const [workFastMaxFps, setWorkFastMaxFps] = createSignal(0);
+  /** `workMaxFps` is what the visits allow, below the fast loop's own top speed. */
+  const [workMaxVisitLimited, setWorkMaxVisitLimited] = createSignal(false);
   // The smart floor estimate (`lib/speed-floor.ts`): shown in the `?debug` readout only, steers nothing.
   const floorMeter = new FloorMeter();
   const [floorLine, setFloorLine] = createSignal('');
   /** The floor as the Speed control's mark shows it (the prior until a measurement). */
   const [floor, setFloor] = createSignal<FloorDisplay>(floorMeter.display());
+  /** Measurement only: the slow worker's newest raw accounting (cumulative; `__cala.pipeline.accounting()`). */
+  let lastAccounting: WorkStatus | null = null;
   cells?.onStatus((st) => {
     if (!st.accounting) return;
+    lastAccounting = st.accounting;
     // Throttled to about 1 Hz inside the meter: no per-batch work for a debug readout.
     if (floorMeter.due(st.accounting.wallMs)) {
       const lb = st.lookback;
@@ -733,8 +798,9 @@ export function createPipelineStore(
         inNeed: lb?.inNeed ?? 0,
         cap: gov?.cap ?? lb?.csettle?.rate ?? 0,
         needRate: NEED_RATE,
-        target: paceRun() ? paceFps : 0,
-        maxFps: maxFpsEstimator.estimate() || null,
+        // What the frame gate is held to (a visit hold paces a Max run too).
+        target: gatePace(),
+        maxFps: runMaxFps() || null,
         paused: untrack(status) === 'paused',
         governorLimit: gov?.limit,
         haveLibrary: st.version > 0,
@@ -754,7 +820,8 @@ export function createPipelineStore(
         const sample: WorkSample = {
           frame: untrack(processed),
           limit: gov?.limit ?? null,
-          maxFps: maxFpsEstimator.estimate() || null,
+          maxFps: runMaxFps() || null,
+          fastMaxFps: maxFpsEstimator.estimate() || null,
           floor: {
             fps: shown.fps,
             published: shown.published,
@@ -790,19 +857,66 @@ export function createPipelineStore(
     if (!rates) return;
     const stages = stageBusyMeter.take(clock());
     if (stages) rates.fast = { stages };
-    const max = maxFpsEstimator.estimate();
     setWork(rates);
     // Likewise "max now": the fast loop is idle after the last frame, so the estimate only decays.
-    if (untrack(status) !== 'done') setWorkMaxFps(max);
+    if (untrack(status) !== 'done') {
+      const fast = maxFpsEstimator.estimate();
+      const max = runMaxFps();
+      setWorkMaxFps(max);
+      setWorkFastMaxFps(fast);
+      setWorkMaxVisitLimited(max > 0 && max < fast);
+    }
     // Not after Discover's last frame (stream time stands still; see `RunHistory.work`).
     if (untrack(status) !== 'done') {
-      runHistory?.work(rates, max);
-      runHistory?.target(paceRun() ? paceFps : 0);
+      // The history's series is the fast loop's own top speed (`fast_max_fps`).
+      runHistory?.work(rates, maxFpsEstimator.estimate());
+      runHistory?.target(gatePace());
     }
   });
   cells?.onStatus((st) => {
     const births = birthRate.push(st.frame, st.counters.adds);
     if (births !== null && untrack(status) !== 'done') runHistory?.births(st.frame, births);
+  });
+  // The Discover visit rate: every status of Discover's own run, until its last frame is read.
+  cells?.onStatus((st) => {
+    const gov = visitGov;
+    const s = untrack(status);
+    if (!gov || (st.run ?? 1) !== 1 || (s !== 'running' && s !== 'paused')) return;
+    const userFps = paceRun() ? paceFps : 0;
+    const change = gov.update({
+      now: pauseClock.now(clock()),
+      framesRead: st.consumed ?? st.frame,
+      observed: st.observed,
+      visits: st.counters.visits,
+      cappedFrames: st.visitRate?.cappedFrames ?? 0,
+      dueTiles: st.visitRate?.dueTiles ?? 0,
+      userFps,
+    });
+    if (gov.achieved !== untrack(visitAchieved)) {
+      setVisitAchieved(gov.achieved);
+      tellVisitRate();
+    }
+    if (!change) return;
+    const before = gatePace();
+    setVisitHold(change.fps);
+    if (change.fps !== null) paceEver = true;
+    const after = gatePace();
+    if (after !== before) {
+      sendPace({ fps: after, paused: s === 'paused' });
+      const fmt = (f: number) => (f > 0 ? `${Math.round(f)} fps` : 'Max');
+      runHistory?.log({
+        frame: untrack(processed),
+        kind: 'setting',
+        key: 'visit_hold',
+        from: before,
+        to: after,
+        detail:
+          change.fps === null
+            ? `Visit hold released (${change.achieved.toFixed(2)} visits/frame)`
+            : `Held at ${fmt(after)} to keep refinement at ${VISIT_RATE.target} visits/frame (was ${fmt(before)}; ${change.achieved.toFixed(2)} visits/frame)`,
+      });
+    }
+    tellVisitRate();
   });
   function setPace(fps: number, source: string): void {
     const before = paceRun() ? paceFps : 0;
@@ -815,7 +929,7 @@ export function createPipelineStore(
     if (after !== before && (st === 'running' || st === 'paused'))
       runHistory?.speedSetting('target_speed', processed(), before, after, undefined, source);
     // A run paused before a pace existed must start held.
-    if (st === 'running' || st === 'paused') sendPace({ fps: paceFps, paused: st === 'paused' });
+    if (st === 'running' || st === 'paused') sendPace({ fps: gatePace(), paused: st === 'paused' });
     tellSettlePace();
     // Last, and guarded: a listener (the run record's log) must never disturb pacing.
     for (const cb of paceListeners) {
@@ -1024,6 +1138,8 @@ export function createPipelineStore(
     setWork(null);
     setMaxFps(0);
     setWorkMaxFps(0);
+    setWorkFastMaxFps(0);
+    setWorkMaxVisitLimited(false);
     setPlan(null);
     setSetup(null);
     setProcessed(0);
@@ -1127,6 +1243,10 @@ export function createPipelineStore(
               }
             : {}),
           discover: discover(),
+          // The Discover visit cap (the slow loop's credit; recordings and live streams alike).
+          ...(discover() && visitRateCap(visitRateMode(untrack(visitRateOff), false)) > 0
+            ? { visitRate: visitRateCap(visitRateMode(untrack(visitRateOff), false)) }
+            : {}),
           qc,
           residual: residual(),
           ...(forwardBuffers ? { forwardBuffers } : {}),
@@ -1171,6 +1291,16 @@ export function createPipelineStore(
       setStatus('running');
       syncFramePreview(0);
       if (paceRun()) sendPace({ fps: paceFps });
+      setVisitHold(null);
+      setVisitAchieved(null);
+      // The visit governor: Discover only; a live stream keeps the cap (in the slow loop) only.
+      visitGov = discover()
+        ? new VisitRateGovernor(
+            visitRateMode(untrack(visitRateOff), flat.identity?.()?.live === true),
+          )
+        : null;
+      setVisitMode(visitGov?.mode ?? null);
+      tellVisitRate();
       pump();
     } catch (err) {
       if (gen !== generation) return;
@@ -1345,14 +1475,25 @@ export function createPipelineStore(
     paceStats,
     /** Who is doing what, over the last second or so (the slow, visit and look-back workers); null until a second of data. */
     work,
+    /** Measurement only: the slow worker's newest raw cumulative accounting (`?debug` adds `detail`, `stage`). */
+    accounting: (): WorkStatus | null => lastAccounting,
     /** The smart floor's `?debug` lines (value, which consumer sets it, confidence); empty before the first status. */
     floorLine,
     /** The floor for the Speed control's mark: `published` once measured, else the prior; refreshed about once a second. */
     floor,
     /** The fast loop's live estimate of its top speed, frames per second (0 until a batch has busy time). */
     maxFps,
-    /** `maxFps` as of the last `work` reading, for the readout. */
+    /**
+     * The run's top speed as of the last `work` reading: the fast loop's, lowered to what the
+     * visits allow while the visit rate holds the run. The Speed block's Max.
+     */
     workMaxFps,
+    /** The fast loop's own top speed as of the last `work` reading (the `?debug` readout). */
+    workFastMaxFps,
+    /** `workMaxFps` is set by the visits (the refinement rate), not by the fast loop. */
+    workMaxVisitLimited,
+    /** The run's top speed now, fps (0: not known); `workMaxFps` is its once-a-second copy. */
+    runMaxFps,
     /** Read no faster than this many frames a second (0: off); applies to a running recording at once. */
     setPaceFps: (fps: number, source = 'setting') => {
       // Anyone but a curve (or Auto) setting the target takes the pacer back: a curve does not
@@ -1431,6 +1572,23 @@ export function createPipelineStore(
     },
     /** The target speed now, frames per second (0: Max). */
     paceFps: () => paceFps,
+    /** `?debug&visitrate=off`: no visit cap and no hold, from the next start (the behaviour before). */
+    setVisitRateOff,
+    visitRateOff,
+    /** This run's visit-rate mode (null: not a Discover run), the hold (fps; null: not held) and the newest window's visits per frame read. */
+    visitMode,
+    visitHold,
+    visitAchieved,
+    /** The pace the frame gate is held to now (the user's target or the visit hold, whichever is lower; 0: Max). */
+    gatePace: () => {
+      visitHold();
+      paceTarget();
+      return gatePace();
+    },
+    /** Called with the visit-rate summary as it changes and when Discover ends (the run record). */
+    onVisitRate: (cb: (s: VisitRateSummary) => void) => {
+      visitListeners.push(cb);
+    },
     /** The target speed as a signal (0: Max). */
     paceTarget,
     paceFromUrl,

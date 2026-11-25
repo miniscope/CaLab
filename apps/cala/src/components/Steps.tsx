@@ -2,6 +2,7 @@
  * The run's three main steps (Discover, Final settle, Extract): the stepper above the tabs and
  * the step panels in the Run tab share one view (`lib/step-view.ts`), so they always agree.
  */
+import { visitHoldText } from '../lib/visit-rate.ts';
 import { createEffect, createSignal, For, on, Show, type JSX } from 'solid-js';
 import type { CellStore } from '../lib/cell-store.ts';
 import type { Pass2Store } from '../lib/pass2-store.ts';
@@ -64,6 +65,8 @@ export function createSteps(src: () => StepSources): () => StepView[] {
       extractFps: p.fps(),
       autoExtract: o.sessionRun === true || extractAfterDiscover(),
       factorRun: s.factorRun(),
+      // The visit hold, only while it binds (below the user's target, or any hold at Max).
+      visitHold: visitHoldText(s.visitHold(), s.paceTarget()) !== null ? s.visitHold() : null,
     });
   };
 }

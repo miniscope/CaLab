@@ -59,6 +59,8 @@ export interface StepInput {
   autoExtract: boolean;
   /** A `?factors` stream: its Final settle and Extract run on the stream's own factors. */
   factorRun?: boolean;
+  /** The Discover visit rate holds the run at this speed (fps; null or absent: not held). */
+  visitHold?: number | null;
 }
 
 const left = (framesLeft: number, fps: number): number | null =>
@@ -94,6 +96,10 @@ export function stepViews(i: StepInput): StepView[] {
         ? `with look-back${i.inNeed !== null && i.inNeed > 0 ? ` (${i.inNeed.toLocaleString('en-US')} cells waiting)` : ''} and Background settle`
         : '',
   };
+  if (busy && !i.live && i.visitHold != null && i.visitHold > 0) {
+    const held = `held at ${Math.round(i.visitHold)} fps to keep refinement`;
+    discover.note = discover.note ? `${discover.note}; ${held}` : held;
+  }
 
   const settleOn =
     i.factorRun === true ||

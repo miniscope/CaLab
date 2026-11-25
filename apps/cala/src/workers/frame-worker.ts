@@ -275,6 +275,7 @@ async function handle(req: FrameRequest): Promise<void> {
                 ? { settleFraction: cells.settleFraction }
                 : {}),
               ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
+              ...(cells?.visitRate ? { visitRate: cells.visitRate } : {}),
             },
             port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
             backend,

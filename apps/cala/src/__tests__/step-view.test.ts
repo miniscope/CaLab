@@ -98,3 +98,18 @@ describe('stepViews', () => {
     expect(stepNumbers(d, formatDuration)).toBe('30 frames/s');
   });
 });
+
+describe('stepViews and the visit hold', () => {
+  it('notes the hold on Discover while it runs, not on a live stream', () => {
+    const run = { discover: 'running', processed: 100, discoverFps: 80 } as const;
+    expect(stepViews({ ...base, ...run, visitHold: 81.6 })[0].note).toBe(
+      'held at 82 fps to keep refinement',
+    );
+    expect(stepViews({ ...base, ...run, lookbackRun: true, visitHold: 40 })[0].note).toBe(
+      'with look-back and Background settle; held at 40 fps to keep refinement',
+    );
+    expect(stepViews({ ...base, ...run, visitHold: null })[0].note).toBe('');
+    expect(stepViews({ ...base, ...run, live: true, visitHold: 40 })[0].note).toBe('live stream');
+    expect(stepViews({ ...base, discover: 'done', visitHold: 40 })[0].note).toBe('');
+  });
+});

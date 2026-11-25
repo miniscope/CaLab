@@ -11,7 +11,9 @@ Per donation::
 
     <dest>/.incoming/<id>/   download + verification (never read by anything else)
     <dest>/<id>/             verified: chunk files, timestamps.csv, meta.json,
-                             donation.json (the row); files 0444, folder 0555
+                             donation.json (the row); files 0444, folder 0555;
+                             contact.json (the sharer's sign-in email, kept
+                             out of donation.json and never published) 0400
     <dest>/.rejected/<id>/   failed verification: the download plus reason.txt;
                              not marked ingested, so the cloud copy stays.
                              Delete the folder to retry on the next run.
@@ -116,6 +118,7 @@ INCOMING = ".incoming"
 REJECTED = ".rejected"
 LOCK_FILE = ".ingest.lock"
 ROW_FILE = "donation.json"
+CONTACT_FILE = "contact.json"
 REASON_FILE = "reason.txt"
 
 
@@ -382,13 +385,20 @@ class Layout:
 
 
 def write_row(directory: Path, row: dict[str, Any]) -> None:
-    (directory / ROW_FILE).write_text(json.dumps(row, indent=2, sort_keys=True) + "\n")
+    """donation.json (the row, without the email) and the private contact.json."""
+    record = {k: v for k, v in row.items() if k != "contact_email"}
+    (directory / ROW_FILE).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    contact = {"email": row.get("contact_email"), "user_id": row.get("user_id")}
+    path = directory / CONTACT_FILE
+    path.touch(mode=0o600)
+    path.chmod(0o600)
+    path.write_text(json.dumps(contact, indent=2, sort_keys=True) + "\n")
 
 
 def publish(incoming: Path, final: Path) -> None:
     """Make the verified download read-only and move it into place in one rename."""
     for p in incoming.iterdir():
-        p.chmod(0o444)
+        p.chmod(0o400 if p.name == CONTACT_FILE else 0o444)
     # Moving a directory to a new parent updates its "..", which needs write
     # permission on it: rename first, then lock the folder.
     os.rename(incoming, final)

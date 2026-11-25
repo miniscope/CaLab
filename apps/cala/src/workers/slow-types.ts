@@ -86,6 +86,12 @@ export interface SlowInit {
    * (the governor's batch-wait guard scales with it; absent: 2).
    */
   csettlePool?: number;
+  /**
+   * The Discover visit cap (`lib/visit-rate.ts`): ordinary tile visits per
+   * observed Discover frame at most (`SlowLoop.setVisitRate`); absent or 0 =
+   * no cap (`?debug&visitrate=off`).
+   */
+  visitRate?: number;
 }
 
 /** Fast worker -> slow worker. */
@@ -178,7 +184,36 @@ export interface CellStatusView {
   established: Uint8Array;
 }
 
+/** The Discover visit cap's counters (`SlowLoop.visitRateStats`; see `lib/visit-rate.ts`). */
+export interface VisitRateCounters {
+  /** The cap, visits per observed frame (0: off). */
+  rate: number;
+  /** Unspent credit, visits. */
+  credit: number;
+  /** Frames observed under the cap, and the ordinary visits made under it. */
+  frames: number;
+  visits: number;
+  /** Frames on which the cap held a due visit back. */
+  cappedFrames: number;
+  /** Tiles due for a visit now (not out). */
+  dueTiles: number;
+}
+
+/** `SlowLoop.visitRateStats()` as named counters. */
+export function visitRateCounters(s: ArrayLike<number>): VisitRateCounters {
+  return {
+    rate: s[0] ?? 0,
+    credit: s[1] ?? 0,
+    frames: s[2] ?? 0,
+    visits: s[3] ?? 0,
+    cappedFrames: s[4] ?? 0,
+    dueTiles: s[5] ?? 0,
+  };
+}
+
 export interface SlowStatus {
+  /** The Discover visit cap's counters (absent in builds without it). */
+  visitRate?: VisitRateCounters;
   /** Stream index after the last observed frame. */
   frame: number;
   /** Stream index after the last batch received, observed or not (a Refine run's backpressure). */
@@ -278,6 +313,8 @@ export interface SlowConnect {
   type: 'connect';
   port: MessagePort;
   visits?: MessagePort[];
+  /** Measurement only (`?debug`): finer timers in `WorkStatus.detail` (`SlowRunner.setDebugTiming`). */
+  debugTiming?: boolean;
 }
 
 /**

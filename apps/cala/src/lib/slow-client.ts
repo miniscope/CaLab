@@ -98,7 +98,15 @@ export function createSlowClient(
     helpers.push(v);
     ports.push(ch.port1);
   }
-  const connect: SlowConnect = { type: 'connect', port: channel.port2, visits: ports };
+  // Measurement only: `?debug` turns the slow worker's finer timers on (`WorkStatus.detail`).
+  const debugTiming =
+    typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug');
+  const connect: SlowConnect = {
+    type: 'connect',
+    port: channel.port2,
+    visits: ports,
+    ...(debugTiming ? { debugTiming } : {}),
+  };
   worker.postMessage(connect, [channel.port2, ...ports]);
   void frames.connectSlow?.(channel.port1).catch((err: unknown) =>
     onMessage({

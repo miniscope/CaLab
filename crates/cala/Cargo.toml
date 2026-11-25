@@ -13,6 +13,13 @@ crate-type = ["cdylib", "rlib"]
 default = ["jsbindings"]
 # Explicit opt-in for target-only frozen keep-test evidence.
 diagnostics = []
+# Measurement only: stage timers of observe and of the visit phases
+# (`discover/timing.rs`); no result changes. Off in every shipped build.
+timing = []
+# Measurement only (stage-0 threads kill test): the per-cell and per-cluster
+# footprint statistics of a fitting frame on a rayon pool (native qc_eval;
+# bit-identical for any thread count). Off in every shipped build.
+threads = ["rayon"]
 jsbindings = ["wasm-bindgen", "console_error_panic_hook"]
 # Stub for now: the Python module only reports the crate version. It exists so
 # the feature set mirrors crates/solver and the CI lint covers both surfaces.
@@ -26,10 +33,16 @@ realfft = "3"
 rustfft = { version = "6", features = ["wasm_simd"] }
 # Float32 GEMMs of the compression (has a wasm simd128 kernel).
 matrixmultiply = "0.3"
+rayon = { version = "1", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 # Same pyo3 pin and abi3 rationale as crates/solver/Cargo.toml.
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py311"], optional = true }
+
+[dev-dependencies]
+# Property tests (tests/fft_proptest.rs, tests/avi_proptest.rs). `std` only,
+# same as crates/solver.
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 # qc_eval's unit tests (GT frame alignment) run with `cargo test`.
 [[example]]

@@ -168,6 +168,13 @@ impl VisitJob {
         self.encode(&self.tile, &SharedFrames::new(self.tile.rect))
     }
 
+    /// Measurement only: mark a captured job as made under `runner`'s visit
+    /// options, to replay the same job with other options (warm starts on
+    /// or off). A live loop never needs this.
+    pub fn retarget(&mut self, runner: &VisitRunner) {
+        self.cfg_fp = runner.inner.cfg.visit_fingerprint();
+    }
+
     /// A settle visit ([`SlowLoop::take_settle_job`]).
     pub fn is_settle(&self) -> bool {
         self.settle
@@ -634,6 +641,11 @@ impl SlowLoop {
         loop {
             let ti = self.next_free_tile()?;
             if !(self.skip_unused && self.idle_visit(ti)) {
+                // The Discover visit cap (`visitrate.rs`).
+                if !self.visit_allowed(true) {
+                    return None;
+                }
+                self.visit_spent();
                 return Some(ti);
             }
             // (Sets the tile's fresh count to 0: it is not due again.)
@@ -1006,6 +1018,17 @@ impl SlowLoop {
         budget: u64,
         runner: &mut VisitRunner,
     ) -> Result<Option<std::sync::Arc<Library>>, TraceError> {
+        self.step_via_tapped(budget, runner, &mut |_| {})
+    }
+
+    /// [`SlowLoop::step_via`], handing every job's bytes to `tap` before
+    /// it runs (measurement: capture jobs to replay them elsewhere).
+    pub fn step_via_tapped(
+        &mut self,
+        budget: u64,
+        runner: &mut VisitRunner,
+        tap: &mut dyn FnMut(&[u8]),
+    ) -> Result<Option<std::sync::Arc<Library>>, TraceError> {
         self.prune();
         self.credit = self.credit.saturating_add(budget as i64);
         while self.credit > 0 {
@@ -1013,8 +1036,14 @@ impl SlowLoop {
                 self.credit = 0;
                 break;
             };
+            if !self.visit_allowed(true) {
+                self.credit = self.credit.min(budget as i64);
+                break;
+            }
+            self.visit_spent();
             let job = self.make_job(ti, false);
             let bytes = job.encode(&self.tiles[ti], &self.shared);
+            tap(&bytes);
             let job = VisitJob::from_bytes(&bytes)?;
             let res = runner.run(job)?;
             // The test log is not on the wire; this in-process round trip
@@ -1057,6 +1086,11 @@ impl VisitRunner {
 
     pub fn set_noise(&mut self, noise: Vec<f32>) -> Result<(), TraceError> {
         self.inner.set_noise(noise)
+    }
+
+    /// The stage timers of the visits run here (feature `timing`).
+    pub fn stage_timing(&self) -> &super::timing::StageTiming {
+        &self.inner.stage
     }
 
     /// Tile background bases held between jobs (none: see [`VisitRunner::run`]).

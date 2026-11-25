@@ -151,6 +151,8 @@ export interface FastLoopOptions {
   settleFraction?: number;
   /** With `lookback`, a Joint run: the first frame of sessions 1.. (`SlowInit.sessionStarts`). */
   sessionStarts?: readonly number[];
+  /** The Discover visit cap, visits per observed frame (`SlowInit.visitRate`; 0 = none). */
+  visitRate?: number;
   /** Return the model residual of each batch's last frame (the app's residual view). */
   residual?: boolean;
   /**
@@ -180,6 +182,7 @@ export const FAST_LOOP_DEFAULTS = {
   settleFraction: 1,
   sessionStarts: [] as readonly number[],
   signed: false,
+  visitRate: 0,
 } as const;
 
 /** The fast loop's output for one batch. */
@@ -550,6 +553,7 @@ export class FastLoop {
           cellDiameterPx: this.o.cellDiameterPx,
           flattenSigmaPx: this.o.flattenSigmaPx,
           budget: this.o.budget,
+          ...(this.o.visitRate && this.o.visitRate > 0 ? { visitRate: this.o.visitRate } : {}),
           ...(this.o.lookback ? { lookback: true } : {}),
           ...(this.o.factorSettle && !this.o.lookback ? { factorSettle: true } : {}),
           ...(this.o.factorFile && this.o.lookback ? { factorFile: true } : {}),

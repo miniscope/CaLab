@@ -9,6 +9,8 @@
 
 #![allow(clippy::needless_range_loop, clippy::neg_cmp_op_on_partial_ord)]
 
+use std::sync::Arc;
+
 use crate::preprocess::gaussian::RecursiveGaussian;
 use crate::preprocess::Dims;
 use crate::trace::{
@@ -461,6 +463,18 @@ impl BgBasis {
         BgBasis::from_maps(maps)
     }
 
+    /// The same basis (bitwise).
+    pub fn same(&self, o: &BgBasis) -> bool {
+        let f64_eq = |a: &[f64], b: &[f64]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+        };
+        self.k == o.k
+            && self.maps.len() == o.maps.len()
+            && f64_eq(&self.inv, &o.inv)
+            && f64_eq(&self.gram, &o.gram)
+            && self.maps.iter().zip(&o.maps).all(|(a, b)| bits_eq(a, b))
+    }
+
     /// This basis plus one more map (same patch): only the new Gram row is
     /// computed.
     pub fn with_extra(&self, map: &[f32]) -> BgBasis {
@@ -523,6 +537,58 @@ impl BgBasis {
             .collect();
         let yy = y.iter().map(|&v| f64::from(v * v)).sum();
         (q, yy)
+    }
+}
+
+/// Bounding box `[y0, y1, x0, x1]` (inclusive) of points `(y, x)`; `None`
+/// when there are none.
+fn bbox(pts: impl Iterator<Item = (u32, u32)>) -> Option<[u32; 4]> {
+    pts.fold(None, |b, (y, x)| {
+        Some(match b {
+            None => [y, y, x, x],
+            Some([y0, y1, x0, x1]) => [y0.min(y), y1.max(y), x0.min(x), x1.max(x)],
+        })
+    })
+}
+
+/// `acc_j = Σ_a t_a G_bc[a, j]` for every `j` (`G_bc` is k x n), summed
+/// over `a` in order from the value an empty f64 sum starts at: per `j`
+/// bitwise the same as `(0..k).map(|a| t[a] * gbc[a * n + j]).sum()`.
+fn t_gbc_row(t: &[f64], gbc: &[f64], n: usize, acc: &mut [f64]) {
+    let zero: f64 = std::iter::empty::<f64>().sum();
+    acc.fill(zero);
+    for (a, &ta) in t.iter().enumerate() {
+        for (s, &g) in acc.iter_mut().zip(&gbc[a * n..(a + 1) * n]) {
+            *s += ta * g;
+        }
+    }
+}
+
+/// Bitwise equality of two slices.
+pub(crate) fn bits_eq(a: &[f32], b: &[f32]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+}
+
+/// Whether two patch problems use the same moat grid (or none).
+pub(crate) fn same_grid(
+    a: &Option<std::sync::Arc<PatchGrid>>,
+    b: &Option<std::sync::Arc<PatchGrid>>,
+) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            std::sync::Arc::ptr_eq(a, b)
+                || (a.rect == b.rect && a.block == b.block && a.gw == b.gw && bits_eq(&a.s, &b.s))
+        }
+        _ => false,
+    }
+}
+
+/// Whether two boxes meet; `unknown` when either box is unknown.
+fn meets(a: Option<[u32; 4]>, b: Option<[u32; 4]>, unknown: bool) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a[0] <= b[1] && b[0] <= a[1] && a[2] <= b[3] && b[2] <= a[3],
+        _ => unknown,
     }
 }
 
@@ -694,6 +760,8 @@ pub(crate) struct Column {
     /// Local blocks of the moat and its low-pass block means (unwhitened).
     pub blk: Vec<u32>,
     pub low: Vec<f32>,
+    /// Width of the patch `pix` index (0: unknown).
+    pub width: u32,
 }
 
 impl Column {
@@ -715,11 +783,25 @@ impl Column {
         }
         let mut pix = Vec::new();
         let mut val = Vec::new();
+        // The moat level of each patch block (by local block): what the
+        // binary search below finds, when the blocks are strictly sorted.
+        let lut: Option<Vec<Option<f32>>> =
+            (grid.block > 0 && gl.windows(2).all(|w| w[0].0 < w[1].0)).then(|| {
+                let mut t = vec![None; grid.len()];
+                for (&lb, &l) in blk.iter().zip(&low) {
+                    t[lb as usize] = Some(l);
+                }
+                t
+            });
         for (&g, &v) in cell.pix.iter().zip(&cell.filt) {
             let (gy, gx) = (g as usize / width, g as usize % width);
             if let Some(l) = rect.local(gy, gx) {
                 let mut u = v;
-                if let (Some(by), Some(bx)) =
+                if let Some(t) = &lut {
+                    if let Some(m) = t[grid.of[l] as usize] {
+                        u += m;
+                    }
+                } else if let (Some(by), Some(bx)) =
                     (gy.checked_div(grid.block), gx.checked_div(grid.block))
                 {
                     let bq = (by * grid.gw + bx) as u32;
@@ -738,6 +820,7 @@ impl Column {
             grid: (grid.block > 0 && !blk.is_empty()).then(|| grid.clone()),
             blk,
             low,
+            width: rect.w as u32,
         }
     }
 
@@ -751,7 +834,20 @@ impl Column {
             grid: None,
             blk: Vec::new(),
             low: Vec::new(),
+            width: 0,
         }
+    }
+
+    /// The same column (its Gram entries with any other column are the
+    /// same on the same moat grid).
+    pub fn same(&self, o: &Column) -> bool {
+        self.id == o.id
+            && self.width == o.width
+            && self.pix == o.pix
+            && bits_eq(&self.val, &o.val)
+            && self.blk == o.blk
+            && bits_eq(&self.low, &o.low)
+            && self.grid.is_some() == o.grid.is_some()
     }
 
     /// `out += c h̃` on the patch.
@@ -792,6 +888,23 @@ impl Column {
                     .collect()
             }
         }
+    }
+
+    /// `h̃ᵀ y` given the moat grid's block sums `z` of `y` (`None`: no
+    /// grid), in f64: the column dots of a solve.
+    pub fn dot_with(&self, y: &[f32], z: Option<&[f64]>) -> f64 {
+        let mut s: f64 = self
+            .pix
+            .iter()
+            .zip(&self.val)
+            .map(|(&px, &v)| f64::from(v * y[px as usize]))
+            .sum();
+        if let Some(z) = z {
+            for (&b, &l) in self.blk.iter().zip(&self.low) {
+                s -= f64::from(l) * z[b as usize];
+            }
+        }
+        s
     }
 
     /// `h̃ᵀ y` for a dense patch `y`.
@@ -841,30 +954,66 @@ pub(crate) struct Fit {
     pub chi2: f64,
 }
 
+/// The columns, moat grid and `G_cc` of a built [`Problem`]
+/// ([`Problem::new_reusing`]).
+#[derive(Debug, Clone)]
+pub(crate) struct GramRef {
+    cols: Arc<Vec<Column>>,
+    gcc: Arc<Vec<f64>>,
+    grid: Option<Arc<PatchGrid>>,
+    bg: Arc<BgBasis>,
+    /// The background maps' block sums, `G_bc` and `Q`.
+    mb: Arc<Vec<Vec<f64>>>,
+    gbc: Arc<Vec<f64>>,
+    q: Arc<Vec<f64>>,
+}
+
 /// Non-negative least squares for a few cells plus the bump background on
 /// one patch, with every frame-independent term precomputed.
 #[derive(Debug, Clone)]
 pub(crate) struct Problem {
-    pub cols: Vec<Column>,
+    pub cols: Arc<Vec<Column>>,
     n: usize,
     k: usize,
     /// `T = G_cb G_bb⁻¹` (n x k).
     t: Vec<f64>,
     /// Reduced Gram `Q = G_cc − G_cb G_bb⁻¹ G_bc` (n x n).
-    pub q: Vec<f64>,
+    pub q: Arc<Vec<f64>>,
     /// `G_bc` (k x n), for the background coefficients.
-    gbc: Vec<f64>,
+    gbc: Arc<Vec<f64>>,
+    /// The background maps' block sums on the moat grid.
+    mb: Arc<Vec<Vec<f64>>>,
     bg_inv: Vec<f64>,
     /// The background the problem was built with (the per-frame solve with
     /// missing pixels takes their rows out of its Gram).
-    bg: BgBasis,
+    bg: Arc<BgBasis>,
     /// The moat grid of the patch (when any column has a moat).
-    grid: Option<std::sync::Arc<PatchGrid>>,
+    grid: Option<Arc<PatchGrid>>,
+    /// `G_cc` (n x n), for [`Problem::new_reusing`].
+    gcc: Arc<Vec<f64>>,
+    /// The slow loop's label of the model (0: none): problems with the
+    /// same nonzero label are the same problem.
+    pub sig: u64,
 }
 
 impl Problem {
     /// Builds the precomputed terms; `work` counts multiply-adds.
     pub fn new(cols: Vec<Column>, bg: &BgBasis, n_px: usize, work: &mut u64) -> Problem {
+        Self::new_reusing(cols, bg, n_px, work, None)
+    }
+
+    /// [`Problem::new`], taking the `G_cc` entries of column pairs that
+    /// `from` also has (same columns, same order, same moat grid) from
+    /// `from` instead of computing them: every entry depends only on its
+    /// two columns, so the result is bitwise the same. `work` counts what
+    /// a full build would.
+    pub fn new_reusing(
+        cols: Vec<Column>,
+        bg: &BgBasis,
+        n_px: usize,
+        work: &mut u64,
+        from: Option<&GramRef>,
+    ) -> Problem {
         let n = cols.len();
         let k = bg.k;
         let mut gcc = vec![0.0f64; n * n];
@@ -879,6 +1028,27 @@ impl Problem {
             .collect();
         let grid = cols.iter().find_map(|c| c.grid.clone());
         let nb = grid.as_ref().map_or(0, |g| g.len());
+        // Where each column sits in `from`, if it is there unchanged.
+        let at: Vec<Option<usize>> = match from.filter(|f| same_grid(&f.grid, &grid)) {
+            Some(f) => {
+                let pos: std::collections::HashMap<u64, usize> =
+                    f.cols.iter().enumerate().map(|(i, c)| (c.id, i)).collect();
+                cols.iter()
+                    .map(|c| pos.get(&c.id).copied().filter(|&i| f.cols[i].same(c)))
+                    .collect()
+            }
+            None => vec![None; n],
+        };
+        // Entry (i, j), i <= j, as `from` computed it (with the columns in
+        // the same order, so the same sums in the same order).
+        let reused = |i: usize, j: usize| -> Option<f64> {
+            let f = from?;
+            let m = f.cols.len();
+            match (at[i], at[j]) {
+                (Some(a), Some(b)) if a < b || (i == j && a == b) => Some(f.gcc[a * m + b]),
+                _ => None,
+            }
+        };
         // Per column: its moat as a dense block vector, and its support
         // part summed per block (`Σ_{p∈S∩B} val_p s_p`).
         let mut lo_i = vec![0.0f64; nb];
@@ -902,11 +1072,46 @@ impl Problem {
                 .collect(),
             None => Vec::new(),
         };
-        for i in 0..n {
-            for (&p, &v) in cols[i].pix.iter().zip(&cols[i].val) {
-                buf[p as usize] = v;
+        // 2-D bounding boxes, to skip pairs whose supports (or moats) are
+        // apart. A skipped pair's terms are exact zeros, so the Gram is
+        // bitwise the same; `work` still counts what the row-range test
+        // above admits.
+        let pbox: Vec<Option<[u32; 4]>> = cols
+            .iter()
+            .map(|c| {
+                let w = c.width;
+                (w > 0)
+                    .then(|| bbox(c.pix.iter().map(|&p| (p / w, p % w))))
+                    .flatten()
+            })
+            .collect();
+        let bbox_blk: Vec<Option<[u32; 4]>> = match &grid {
+            Some(g) => {
+                let bw = g.bw.max(1) as u32;
+                cols.iter()
+                    .zip(&cs)
+                    .map(|(c, m)| {
+                        bbox(
+                            c.blk
+                                .iter()
+                                .copied()
+                                .chain(m.iter().map(|e| e.0))
+                                .map(|b| (b / bw, b % bw)),
+                        )
+                    })
+                    .collect()
             }
-            if grid.is_some() {
+            None => Vec::new(),
+        };
+        for i in 0..n {
+            // A row whose entries are all reused needs no scratch.
+            let scatter = (i..n).any(|j| reused(i, j).is_none());
+            if scatter {
+                for (&p, &v) in cols[i].pix.iter().zip(&cols[i].val) {
+                    buf[p as usize] = v;
+                }
+            }
+            if scatter && grid.is_some() {
                 for (&b, &l) in cols[i].blk.iter().zip(&cols[i].low) {
                     lo_i[b as usize] = f64::from(l);
                 }
@@ -915,17 +1120,33 @@ impl Problem {
                 }
             }
             for j in i..n {
+                if let Some(d) = reused(i, j) {
+                    if !(cols[j].pix.is_empty() || lo[j] > hi[i] || hi[j] < lo[i]) {
+                        *work += cols[j].pix.len() as u64;
+                    }
+                    if grid.is_some() {
+                        *work += (cs[j].len() + cols[j].blk.len()) as u64;
+                    }
+                    gcc[i * n + j] = d;
+                    gcc[j * n + i] = d;
+                    continue;
+                }
                 let mut d = 0.0f64;
                 if !(cols[j].pix.is_empty() || lo[j] > hi[i] || hi[j] < lo[i]) {
-                    d += cols[j]
-                        .pix
-                        .iter()
-                        .zip(&cols[j].val)
-                        .map(|(&p, &v)| f64::from(buf[p as usize] * v))
-                        .sum::<f64>();
+                    if meets(pbox[i], pbox[j], true) {
+                        d += cols[j]
+                            .pix
+                            .iter()
+                            .zip(&cols[j].val)
+                            .map(|(&p, &v)| f64::from(buf[p as usize] * v))
+                            .sum::<f64>();
+                    }
                     *work += cols[j].pix.len() as u64;
                 }
-                if let Some(g) = &grid {
+                if let Some(g) = grid
+                    .as_ref()
+                    .filter(|_| meets(bbox_blk[i], bbox_blk[j], false))
+                {
                     // − Σ_{S_j} val_j s low_i − Σ_{B_j} low_j cs_i + Σ low_i low_j V.
                     if !cols[i].blk.is_empty() {
                         for &(b, x) in &cs[j] {
@@ -936,27 +1157,43 @@ impl Problem {
                         let b = b as usize;
                         d += f64::from(l) * (lo_i[b] * g.v[b] - cs_i[b]);
                     }
+                }
+                if grid.is_some() {
                     *work += (cs[j].len() + cols[j].blk.len()) as u64;
                 }
                 gcc[i * n + j] = d;
                 gcc[j * n + i] = d;
             }
-            for &p in &cols[i].pix {
-                buf[p as usize] = 0.0;
+            if scatter {
+                for &p in &cols[i].pix {
+                    buf[p as usize] = 0.0;
+                }
+                lo_i.iter_mut().for_each(|v| *v = 0.0);
+                cs_i.iter_mut().for_each(|v| *v = 0.0);
             }
-            lo_i.iter_mut().for_each(|v| *v = 0.0);
-            cs_i.iter_mut().for_each(|v| *v = 0.0);
         }
+        // With the same background as `from` (and the same moat grid), a
+        // column's `G_bc` column and a pair's `Q` entry are `from`'s too.
+        let fb = from.filter(|f| same_grid(&f.grid, &grid) && f.bg.same(bg));
         // Background maps summed per block with the whitening.
-        let mb: Vec<Vec<f64>> = match &grid {
-            Some(g) => bg.maps.iter().map(|m| g.sums(m)).collect(),
-            None => Vec::new(),
+        let mb: Arc<Vec<Vec<f64>>> = match (&grid, fb) {
+            (Some(_), Some(f)) => f.mb.clone(),
+            (Some(g), None) => Arc::new(bg.maps.iter().map(|m| g.sums(m)).collect()),
+            (None, _) => Arc::new(Vec::new()),
         };
         if grid.is_some() {
             *work += (k * n_px) as u64;
         }
         let mut gbc = vec![0.0f64; k * n];
         for (i, c) in cols.iter().enumerate() {
+            if let (Some(f), Some(a)) = (fb, at[i]) {
+                let m = f.cols.len();
+                for b in 0..k {
+                    gbc[b * n + i] = f.gbc[b * m + a];
+                }
+                *work += (k * c.pix.len()) as u64;
+                continue;
+            }
             for a in 0..k {
                 let m = &bg.maps[a];
                 gbc[a * n + i] = c
@@ -980,29 +1217,57 @@ impl Problem {
                 t[i * k + a] = (0..k).map(|b| gbc[b * n + i] * bg.inv[b * k + a]).sum();
             }
         }
-        let mut q = gcc;
+        let mut q = gcc.clone();
+        let mut acc = vec![0.0f64; n];
         for i in 0..n {
-            for j in 0..n {
-                let s: f64 = (0..k).map(|a| t[i * k + a] * gbc[a * n + j]).sum();
-                q[i * n + j] -= s;
+            let row = &mut q[i * n..(i + 1) * n];
+            if let Some(f) = fb.filter(|_| (0..n).all(|j| reused(i.min(j), i.max(j)).is_some())) {
+                let (m, a) = (f.cols.len(), at[i].expect("reused"));
+                for (j, r) in row.iter_mut().enumerate() {
+                    *r = f.q[a * m + at[j].expect("reused")];
+                }
+                continue;
+            }
+            t_gbc_row(&t[i * k..(i + 1) * k], &gbc, n, &mut acc);
+            for (r, s) in row.iter_mut().zip(&acc) {
+                *r -= s;
             }
         }
         *work += (n * n * k) as u64;
         Problem {
-            cols,
+            cols: Arc::new(cols),
             n,
             k,
             t,
-            q,
-            gbc,
+            q: Arc::new(q),
+            gbc: Arc::new(gbc),
+            mb,
             bg_inv: bg.inv.clone(),
-            bg: bg.clone(),
+            bg: match fb {
+                Some(f) => f.bg.clone(),
+                None => Arc::new(bg.clone()),
+            },
             grid,
+            gcc: Arc::new(gcc),
+            sig: 0,
         }
     }
 
     pub fn len(&self) -> usize {
         self.n
+    }
+
+    /// What [`Problem::new_reusing`] reuses from this problem.
+    pub fn gram_ref(&self) -> GramRef {
+        GramRef {
+            cols: self.cols.clone(),
+            gcc: self.gcc.clone(),
+            grid: self.grid.clone(),
+            bg: self.bg.clone(),
+            mb: self.mb.clone(),
+            gbc: self.gbc.clone(),
+            q: self.q.clone(),
+        }
     }
 
     /// Noise σ of coordinate `i` (whitened units).
@@ -1014,32 +1279,53 @@ impl Problem {
     /// energy (from [`BgBasis::project`]).
     pub fn solve(&self, y: &[f32], qb: &[f64], yy: f64, work: &mut u64) -> Fit {
         let s = self.column_dots(y, work);
-        self.finish(&self.t, &self.q, &self.gbc, &self.bg_inv, &s, qb, yy, work)
+        self.solve_dots(&s, qb, yy, work)
+    }
+
+    /// [`Problem::solve`] from the column dots `s` ([`Problem::column_dots`]).
+    pub fn solve_dots(&self, s: &[f64], qb: &[f64], yy: f64, work: &mut u64) -> Fit {
+        self.finish(
+            &self.t,
+            &self.q,
+            &self.gbc,
+            &self.bg_inv,
+            s,
+            qb,
+            yy,
+            &[],
+            work,
+        )
+    }
+
+    /// The moat grid's block sums of `y` ([`PatchGrid::sums`]) when the
+    /// problem has a moat grid.
+    pub fn block_sums(&self, y: &[f32]) -> Option<Vec<f64>> {
+        self.grid.as_ref().map(|g| g.sums(y))
+    }
+
+    /// The problem's moat grid.
+    pub fn grid(&self) -> Option<&std::sync::Arc<PatchGrid>> {
+        self.grid.as_ref()
+    }
+
+    /// The work [`Problem::column_dots`] counts for a patch of `n_px` pixels.
+    pub fn dots_work(&self, n_px: usize) -> u64 {
+        let sums = if self.grid.is_some() { n_px } else { 0 };
+        (sums
+            + self
+                .cols
+                .iter()
+                .map(|c| c.pix.len() + c.blk.len())
+                .sum::<usize>()) as u64
     }
 
     /// `h̃_iᵀ y` per column.
-    fn column_dots(&self, y: &[f32], work: &mut u64) -> Vec<f64> {
-        let z = self.grid.as_ref().map(|g| {
-            *work += y.len() as u64;
-            g.sums(y)
-        });
+    pub fn column_dots(&self, y: &[f32], work: &mut u64) -> Vec<f64> {
+        let z = self.block_sums(y);
+        *work += self.dots_work(y.len());
         self.cols
             .iter()
-            .map(|col| {
-                let mut s: f64 = col
-                    .pix
-                    .iter()
-                    .zip(&col.val)
-                    .map(|(&px, &v)| f64::from(v * y[px as usize]))
-                    .sum();
-                if let Some(z) = &z {
-                    for (&b, &l) in col.blk.iter().zip(&col.low) {
-                        s -= f64::from(l) * z[b as usize];
-                    }
-                }
-                *work += (col.pix.len() + col.blk.len()) as u64;
-                s
-            })
+            .map(|col| col.dot_with(y, z.as_deref()))
             .collect()
     }
 
@@ -1060,8 +1346,54 @@ impl Problem {
         miss: &[u32],
         work: &mut u64,
     ) -> Fit {
+        let mut dots_work = 0;
+        let s = self.column_dots(y, &mut dots_work);
+        self.solve_missing_dots(&s, dots_work, qb, yy, miss, work)
+    }
+
+    /// [`Problem::solve_missing`] from the column dots `s`
+    /// ([`Problem::column_dots`], which counted `dots_work`; a frame with
+    /// no usable solution does not count it).
+    pub fn solve_missing_dots(
+        &self,
+        s: &[f64],
+        dots_work: u64,
+        qb: &[f64],
+        yy: f64,
+        miss: &[u32],
+        work: &mut u64,
+    ) -> Fit {
+        self.solve_missing_dots_from(s, dots_work, qb, yy, miss, &[], work)
+    }
+
+    /// [`Problem::solve_missing_dots`] with the coordinate descent started
+    /// at `start` (one value per column; empty: at zero). The exit rule
+    /// is the same, so the result is the same optimum to within that
+    /// tolerance, reached in fewer sweeps from a nearby start.
+    #[allow(clippy::too_many_arguments)]
+    pub fn solve_missing_dots_from(
+        &self,
+        s: &[f64],
+        dots_work: u64,
+        qb: &[f64],
+        yy: f64,
+        miss: &[u32],
+        start: &[f32],
+        work: &mut u64,
+    ) -> Fit {
         if miss.is_empty() {
-            return self.solve(y, qb, yy, work);
+            *work += dots_work;
+            return self.finish(
+                &self.t,
+                &self.q,
+                &self.gbc,
+                &self.bg_inv,
+                s,
+                qb,
+                yy,
+                start,
+                work,
+            );
         }
         let (n, k) = (self.n, self.k);
         let d = n + k;
@@ -1089,15 +1421,15 @@ impl Problem {
         }
         *work += (miss.len() * (d * d + d)) as u64;
         // G_cc, G_bc, G_bb of the frame.
-        let mut gcc = self.q.clone();
+        let mut gcc = self.q.to_vec();
+        let mut acc = vec![0.0f64; n];
         for i in 0..n {
-            for j in 0..n {
-                gcc[i * n + j] += (0..k)
-                    .map(|b| self.t[i * k + b] * self.gbc[b * n + j])
-                    .sum::<f64>();
+            t_gbc_row(&self.t[i * k..(i + 1) * k], &self.gbc, n, &mut acc);
+            for (g, s) in gcc[i * n..(i + 1) * n].iter_mut().zip(&acc) {
+                *g += s;
             }
         }
-        let mut gbc = self.gbc.clone();
+        let mut gbc = self.gbc.to_vec();
         let mut gbb = self.bg.gram.clone();
         for row in a.chunks_exact(d) {
             for i in 0..n {
@@ -1135,18 +1467,18 @@ impl Problem {
         }
         let mut q = gcc;
         for i in 0..n {
-            for j in 0..n {
-                q[i * n + j] -= (0..k).map(|b| t[i * k + b] * gbc[b * n + j]).sum::<f64>();
+            t_gbc_row(&t[i * k..(i + 1) * k], &gbc, n, &mut acc);
+            for (r, s) in q[i * n..(i + 1) * n].iter_mut().zip(&acc) {
+                *r -= s;
             }
         }
-        *work += (n * n * k + k * k * k) as u64;
-        let s = self.column_dots(y, work);
-        self.finish(&t, &q, &gbc, &inv, &s, qb, yy, work)
+        *work += (n * n * k + k * k * k) as u64 + dots_work;
+        self.finish(&t, &q, &gbc, &inv, s, qb, yy, start, work)
     }
 
     /// Non-negative solve from the column dots `s_i = h̃_iᵀ y`, the
     /// background projections `qb` and the energy `yy`, with the given
-    /// Gram terms.
+    /// Gram terms, by coordinate descent from `start` (empty: zero).
     #[allow(clippy::too_many_arguments)]
     fn finish(
         &self,
@@ -1157,6 +1489,7 @@ impl Problem {
         s: &[f64],
         qb: &[f64],
         yy: f64,
+        start: &[f32],
         work: &mut u64,
     ) -> Fit {
         let (n, k) = (self.n, self.k);
@@ -1167,6 +1500,25 @@ impl Problem {
         }
         let mut c = vec![0.0f64; n];
         let mut qc = vec![0.0f64; n];
+        if !start.is_empty() {
+            debug_assert_eq!(start.len(), n);
+            // Only coordinates the sweep updates start away from zero (a
+            // skipped one would keep its start for good).
+            for (i, (ci, &v)) in c.iter_mut().zip(start).enumerate() {
+                if v.is_finite() && v > 0.0 && q_gram[i * n + i] > 0.0 {
+                    *ci = f64::from(v);
+                }
+            }
+            for (i, &ci) in c.iter().enumerate() {
+                if ci != 0.0 {
+                    let row = &q_gram[i * n..(i + 1) * n];
+                    for (q, &r) in qc.iter_mut().zip(row) {
+                        *q += r * ci;
+                    }
+                }
+            }
+            *work += (n * n) as u64;
+        }
         for _sweep in 0..100 {
             let mut worst = 0.0f64;
             for i in 0..n {
@@ -1454,6 +1806,10 @@ pub(crate) fn rank2_split(
     (sse1 - sse2 > 2.0 * (nt + np) as f64 && share >= 0.2 && r < f64::from(max_corr))
         .then_some((ha, hb, h1))
 }
+
+#[cfg(test)]
+#[path = "local_equiv_tests.rs"]
+mod equiv_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1843,5 +2199,99 @@ mod tests {
         let (qf, yf) = bg.project(&y_full);
         let none = pr.solve_missing(&y_full, &qf, yf, &[], &mut work);
         assert_eq!(none.c, pr.solve(&y_full, &qf, yf, &mut work).c);
+    }
+
+    /// Warm starts ([`Problem::solve_missing_dots_from`]): from the cold
+    /// solution, or from a nearby one, the solve ends at the same optimum
+    /// (within the exit tolerance) in fewer sweeps; values the solve must
+    /// not start from (negative, not finite) are ignored; an empty start
+    /// is the cold solve, bit for bit.
+    #[test]
+    fn warm_start_reaches_the_cold_optimum_in_fewer_sweeps() {
+        let rect = Rect {
+            y0: 0,
+            x0: 0,
+            h: 40,
+            w: 40,
+        };
+        let bg = BgBasis::new(rect);
+        let mk = |cy: f32, cx: f32, id| {
+            let mut pix = Vec::new();
+            let mut val = Vec::new();
+            for y in 0..40 {
+                for x in 0..40 {
+                    let (dy, dx) = (y as f32 - cy, x as f32 - cx);
+                    let r2 = dy * dy + dx * dx;
+                    if r2 < 64.0 {
+                        pix.push((y * 40 + x) as u32);
+                        val.push((-r2 / 18.0).exp());
+                    }
+                }
+            }
+            Column::plain(id, pix, val)
+        };
+        // Strongly overlapping cells: coordinate descent from zero needs
+        // many sweeps.
+        let cols = vec![
+            mk(15.0, 15.0, 1),
+            mk(16.5, 16.0, 2),
+            mk(18.0, 17.5, 3),
+            mk(25.0, 24.0, 4),
+        ];
+        let mut work = 0;
+        let pr = Problem::new(cols, &bg, rect.len(), &mut work);
+        let mut seed = 7u64;
+        let mut noise = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.2
+        };
+        let mut y: Vec<f32> = (0..rect.len()).map(|_| noise()).collect();
+        for (col, c) in pr.cols.iter().zip([3.0f32, 0.0, 2.0, 1.0]) {
+            for (&p, &v) in col.pix.iter().zip(&col.val) {
+                y[p as usize] += v * c;
+            }
+        }
+        let (qb, yy) = bg.project(&y);
+        let s = pr.column_dots(&y, &mut 0);
+        let solve = |start: &[f32]| {
+            let mut w = 0;
+            let f = pr.solve_missing_dots_from(&s, 0, &qb, yy, &[], start, &mut w);
+            (f, w)
+        };
+        let (cold, w_cold) = solve(&[]);
+        let plain = pr.solve(&y, &qb, yy, &mut 0);
+        assert!(bits_eq(&cold.c, &plain.c) && cold.chi2.to_bits() == plain.chi2.to_bits());
+        // The exact optimum, for scale: a long solve from the cold one.
+        let mut best = cold.clone();
+        for _ in 0..50 {
+            best = solve(&best.c).0;
+        }
+        let tol = |f: &Fit| {
+            f.c.iter()
+                .zip(&best.c)
+                .enumerate()
+                .all(|(i, (a, b))| (a - b).abs() < 0.05 * pr.coord_sigma(i).max(1e-3) + 1e-3)
+                && (f.chi2 - best.chi2).abs() < 1e-3 * best.chi2.abs().max(1.0)
+        };
+        assert!(tol(&cold), "cold {:?} vs {:?}", cold.c, best.c);
+        // From the cold solution: one confirming sweep (plus building Q c).
+        let (again, w_again) = solve(&cold.c);
+        assert!(tol(&again));
+        assert!(w_again < w_cold, "{w_again} vs {w_cold}");
+        // From a nearby start (the cold solution moved by a little).
+        let near: Vec<f32> = cold.c.iter().map(|v| v * 0.9 + 0.05).collect();
+        let (from_near, w_near) = solve(&near);
+        assert!(tol(&from_near), "{:?} vs {:?}", from_near.c, best.c);
+        assert!(w_near < w_cold, "{w_near} vs {w_cold}");
+        // Unusable start values are treated as zero.
+        let bad = [f32::NAN, -4.0, f32::INFINITY, cold.c[3]];
+        let mut fixed = vec![0.0f32; 4];
+        fixed[3] = cold.c[3];
+        let (a, wa) = solve(&bad);
+        let (b, wb) = solve(&fixed);
+        assert!(bits_eq(&a.c, &b.c) && a.chi2.to_bits() == b.chi2.to_bits() && wa == wb);
+        assert!(tol(&a));
     }
 }

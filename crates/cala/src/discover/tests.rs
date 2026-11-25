@@ -935,6 +935,91 @@ fn visits_run_as_jobs_match_step_exactly() {
     assert!(a.finalize().unwrap().to_bytes()[16..] == b.finalize().unwrap().to_bytes()[16..]);
 }
 
+/// The visit memos and caches (Gram reuse, the frames' column dots, the
+/// solve and residual memos, the patch grid) change nothing: a loop with
+/// them and one without make the same edits, count the same work and
+/// publish the same libraries, frame by frame, on a busy movie with a
+/// sweeping missing band. With warm starts (the default) the memo is
+/// keyed by the start as well; without them every solve starts at zero.
+#[test]
+fn visit_reuse_matches_the_plain_computation_exactly() {
+    visit_reuse_matches_the_plain_computation(true);
+}
+
+#[test]
+fn visit_reuse_matches_the_plain_computation_without_warm_starts() {
+    visit_reuse_matches_the_plain_computation(false);
+}
+
+/// Warm starts change the visits' numbers, so visit workers must be built
+/// with the slow loop's setting: it is part of the visit fingerprint.
+#[test]
+fn warm_start_is_a_visit_option() {
+    let on = shard_config();
+    let off = SlowLoopConfig {
+        warm_start: false,
+        ..shard_config()
+    };
+    assert!(on.warm_start);
+    assert_ne!(on.visit_fingerprint(), off.visit_fingerprint());
+}
+
+fn visit_reuse_matches_the_plain_computation(warm_start: bool) {
+    let t = 1500;
+    let (mut m, seed) = busy_movie(t);
+    sweep_missing(&mut m, t, 10..86, 20..70);
+    let cfg = SlowLoopConfig {
+        warm_start,
+        ..shard_config()
+    };
+    let n_px = N * N;
+    let (mut a, mut ea) = start(cfg.clone(), &seed);
+    let (mut b, mut eb) = start(cfg.clone(), &seed);
+    b.set_reuse(false);
+    for k in 0..t {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let (ta, tb) = (ea.process(f).unwrap(), eb.process(f).unwrap());
+        assert_eq!(ta.traces, tb.traces, "frame {k}");
+        let (la, lb) = (ea.library().clone(), eb.library().clone());
+        a.observe(f, &la, &ta).unwrap();
+        b.observe(f, &lb, &tb).unwrap();
+        if k % 400 == 399 {
+            let noise: Vec<f32> = (0..n_px)
+                .map(|i| 1.0 + 0.01 * (k / 400) as f32 + 0.001 * (i % 5) as f32)
+                .collect();
+            a.set_noise(noise.clone()).unwrap();
+            b.set_noise(noise).unwrap();
+        }
+        let pa = a.step(5_000_000).unwrap();
+        let pb = b.step(5_000_000).unwrap();
+        assert_eq!(pa.is_some(), pb.is_some(), "frame {k}");
+        assert_eq!(a.work(), b.work(), "frame {k}");
+        if let (Some(la), Some(lb)) = (pa, pb) {
+            // (Bytes 8..16: the version, from a process-wide counter.)
+            assert!(la.to_bytes()[16..] == lb.to_bytes()[16..], "frame {k}");
+            ea.set_library(la).unwrap();
+            eb.set_library(lb).unwrap();
+        }
+    }
+    let s = a.stats();
+    assert!(
+        s.adds > 0 && s.merges > 0 && s.refines > 0 && s.keep_tests > 0 && s.split_tests > 0,
+        "{s:?}"
+    );
+    assert_eq!(s, b.stats());
+    assert_eq!(a.cell_infos(), b.cell_infos());
+    assert_eq!(
+        format!("{:?}", a.take_add_log()),
+        format!("{:?}", b.take_add_log())
+    );
+    assert_eq!(
+        format!("{:?}", a.take_removal_log()),
+        format!("{:?}", b.take_removal_log())
+    );
+    assert_eq!(a.take_edit_log(), b.take_edit_log());
+    assert!(a.finalize().unwrap().to_bytes()[16..] == b.finalize().unwrap().to_bytes()[16..]);
+}
+
 #[test]
 fn concurrent_jobs_never_share_cells_and_apply_in_any_order() {
     let t = 1500;
@@ -3725,4 +3810,162 @@ fn settle_jobs_equal_settle_visits() {
     let job = b.take_job().unwrap();
     assert!(!job.is_settle());
     assert!(!VisitJob::from_bytes(&job.to_bytes()).unwrap().is_settle());
+}
+
+/// The Discover visit cap (`visitrate.rs`): with a large work budget, a
+/// capped loop makes at most `rate` ordinary visits per observed frame (plus
+/// the bank), an uncapped one more; a rate of 0 or less is off and changes
+/// nothing.
+#[test]
+fn visit_rate_caps_ordinary_visits_per_frame() {
+    let t = 1200;
+    let (m, seed) = busy_movie(t);
+    let cfg = shard_config();
+    let n_px = N * N;
+    let run = |rate: f64| -> (SlowLoop, Vec<u8>) {
+        let (mut s, mut eng) = start(cfg.clone(), &seed);
+        s.set_visit_rate(rate);
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let tr = eng.process(f).unwrap();
+            let lib = eng.library().clone();
+            s.observe(f, &lib, &tr).unwrap();
+            if let Some(l) = s.step(1_000_000_000).unwrap() {
+                eng.set_library(l).unwrap();
+            }
+        }
+        let lib = s.finalize().unwrap().to_bytes()[16..].to_vec();
+        (s, lib)
+    };
+    let (free, free_lib) = run(0.0);
+    let (off, off_lib) = run(-1.0);
+    assert_eq!(free.stats(), off.stats(), "rate <= 0 must be off");
+    assert!(free_lib == off_lib);
+    assert_eq!(free.visit_rate_stats().frames, 0);
+    let per_frame = free.stats().visits as f64 / t as f64;
+    let rate = 0.25;
+    assert!(
+        per_frame > 2.0 * rate,
+        "uncapped {per_frame:.3} visits per frame"
+    );
+    let (capped, _) = run(rate);
+    let v = capped.visit_rate_stats();
+    assert_eq!(v.frames, t as u64);
+    assert_eq!(v.visits, capped.stats().visits);
+    assert!(
+        (v.visits as f64) <= rate * t as f64 + rate * VISIT_BANK_FRAMES + 1.0,
+        "{} visits over {t} frames at {rate}",
+        v.visits
+    );
+    // Demand is far above the cap: it binds on most frames and the visits sit close to it.
+    assert!(
+        v.visits as f64 >= 0.9 * rate * t as f64,
+        "{} visits",
+        v.visits
+    );
+    assert!(
+        v.capped_frames as f64 > 0.5 * t as f64,
+        "{} capped frames",
+        v.capped_frames
+    );
+}
+
+/// The cap holds visits handed out as jobs as well (`take_job_bytes`), and
+/// leaves Refine-scope visits alone.
+#[test]
+fn visit_rate_caps_jobs_and_not_refine() {
+    let t = 900;
+    let (m, seed) = busy_movie(t);
+    let cfg = shard_config();
+    let n_px = N * N;
+    let (mut s, mut eng) = start(cfg.clone(), &seed);
+    let mut runner = VisitRunner::new(new_loop(&cfg));
+    let rate = 0.5;
+    s.set_visit_rate(rate);
+    let feed = |s: &mut SlowLoop, eng: &mut TraceEngine, runner: &mut VisitRunner, k: usize| {
+        let f = &m[k * n_px..(k + 1) * n_px];
+        let tr = eng.process(f).unwrap();
+        let lib = eng.library().clone();
+        s.observe(f, &lib, &tr).unwrap();
+        while let Some(b) = s.take_job_bytes() {
+            let r = runner.run(VisitJob::from_bytes(&b).unwrap()).unwrap();
+            s.apply_job(VisitResult::from_bytes(&r.to_bytes()).unwrap())
+                .unwrap();
+        }
+        if let Some(l) = s.housekeep().unwrap() {
+            eng.set_library(l).unwrap();
+        }
+    };
+    for k in 0..t {
+        feed(&mut s, &mut eng, &mut runner, k);
+    }
+    let v = s.visit_rate_stats();
+    assert_eq!(v.visits, s.stats().visits);
+    assert!((v.visits as f64) <= rate * t as f64 + rate * VISIT_BANK_FRAMES + 1.0);
+    assert!(
+        v.visits as f64 >= 0.9 * rate * t as f64,
+        "{} visits",
+        v.visits
+    );
+    // Refine scope: the cap is still set but neither counts nor holds.
+    let lib = s.finalize().unwrap();
+    eng.set_library(lib).unwrap();
+    s.set_edit_scope(EditScope::Refine);
+    let visits0 = s.stats().visits;
+    for k in 0..t {
+        feed(&mut s, &mut eng, &mut runner, k);
+    }
+    assert_eq!(s.visit_rate_stats().frames, v.frames);
+    assert_eq!(s.visit_rate_stats().visits, v.visits);
+    assert!(
+        (s.stats().visits - visits0) as f64 > 1.2 * (rate * t as f64 + rate * VISIT_BANK_FRAMES),
+        "{} Refine visits",
+        s.stats().visits - visits0
+    );
+}
+
+/// Feature `threads` (stage-0 kill test): the per-cell and per-cluster
+/// footprint statistics on a rayon pool give bit-identical libraries and
+/// counters for 1 and 4 threads (a Discover run with the joint update on,
+/// so both the per-cell and the cluster paths run).
+#[cfg(feature = "threads")]
+#[test]
+fn threaded_statistics_are_bit_identical_for_any_thread_count() {
+    let t = 1500;
+    let mut rng = Lcg(97);
+    let cells = vec![
+        (blob_w(0, 30.0, 30.0, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        (blob_w(1, 30.0, 33.5, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        (blob_w(2, 60.0, 64.0, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+        (blob_w(3, 70.0, 40.0, 2.5), trace(&mut rng, t, 0.03, 6.0)),
+    ];
+    let m = movie(&cells, t, 31);
+    let go = |threads: usize| {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            let cfg = SlowLoopConfig {
+                joint_update: JointUpdate::All,
+                ..v2_config()
+            };
+            let (mut slow, mut eng) = start(cfg, &[]);
+            let mut deleted = Vec::new();
+            drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
+            let lib = slow.finalize().unwrap();
+            (lib.to_bytes(), slow.stats(), slow.replay_stats, slow.work())
+        })
+    };
+    let one = go(1);
+    let four = go(4);
+    assert!(one.1.adds > 0, "nothing discovered: {:?}", one.1);
+    assert_eq!(one.1, four.1);
+    assert_eq!(one.2, four.2);
+    assert_eq!(one.3, four.3);
+    // Bytes 8..16 hold the process-global library version (differs per run).
+    assert!(
+        one.0[16..] == four.0[16..],
+        "libraries differ between 1 and 4 threads"
+    );
 }

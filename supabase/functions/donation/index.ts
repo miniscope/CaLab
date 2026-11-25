@@ -16,7 +16,7 @@
 //     preview_url  {donation_id, name?}     -> presigned GET
 //     review       {donation_id, decision, note} -> approve (move to approved/) or reject
 //   lab ingest (x-ingest-token header, no user JWT)
-//     ingest_list                           -> {donations: approved rows}
+//     ingest_list                           -> {donations: approved rows + contact_email}
 //     ingest_download_url {donation_id, name} -> presigned GET in approved/
 //     ingest_done  {donation_id}            -> objects deleted, status ingested
 //     ingest_published {donation_id, dandi_path, dry_run?} -> status published;
@@ -200,6 +200,8 @@ export interface DonationDeps {
   now?: () => number;
   /** Tell the lab a donation is ready for review (absent: no notification). */
   notify?: (row: DonationRow) => Promise<void>;
+  /** The sign-in email of a user, for the lab's own records at ingest (absent or unknown: null). */
+  userEmail?: (userId: string) => Promise<string | null>;
 }
 
 function positiveIntEnv(v: string | undefined, fallback: number): number {
@@ -911,10 +913,25 @@ export function createHandler(deps: DonationDeps): (req: Request) => Promise<Res
 
   // ── lab ingest ───────────────────────────────────────────────────────────
 
+  async function contactEmail(userId: string): Promise<string | null> {
+    if (!deps.userEmail) return null;
+    try {
+      return await deps.userEmail(userId);
+    } catch (e) {
+      console.error('email lookup failed', e);
+      return null;
+    }
+  }
+
   async function ingest(action: string, body: Body): Promise<Body> {
     if (action === 'ingest_list') {
       await expireStaleUploads();
-      return { donations: await db.listByStatus('approved') };
+      const rows = await db.listByStatus('approved');
+      // The lab keeps the sharer's email with the recording, to reach them later.
+      const donations = await Promise.all(
+        rows.map(async (row) => ({ ...row, contact_email: await contactEmail(row.user_id) })),
+      );
+      return { donations };
     }
     if (action === 'ingest_published') {
       if (body.dry_run !== undefined && typeof body.dry_run !== 'boolean') {
@@ -1158,6 +1175,15 @@ export function r2Store(cfg: R2Config, fetchFn: typeof fetch = fetch): ObjectSto
   };
 }
 
+/** A user's sign-in email via the Auth admin API (service role). */
+export function supabaseUserEmail(client: SupabaseClient) {
+  return async (userId: string): Promise<string | null> => {
+    const { data, error } = await client.auth.admin.getUserById(userId);
+    if (error) throw error;
+    return data.user?.email ?? null;
+  };
+}
+
 /** Verify the bearer token with Supabase Auth (never trust the JWT body alone). */
 export function supabaseResolveUser(client: SupabaseClient) {
   return async (authHeader: string | null): Promise<DonationUser | null> => {
@@ -1227,7 +1253,6 @@ export function notificationText(row: DonationRow, adminUrl: string | null) {
     `Scope:      ${row.scope}`,
     `Recording:  ${row.width} x ${row.height}, ${row.n_frames} frames at ${row.fps} Hz (${minutes} min)`,
     `Size:       ${mb} MB in ${row.n_chunks} chunks`,
-    `Contact OK: ${row.contact_ok ? 'yes' : 'no'}`,
     `Donation:   ${row.id}`,
   ];
   if (row.notes) lines.push('', `Notes: ${row.notes}`);
@@ -1271,6 +1296,7 @@ if (import.meta.main) {
     }),
     env: readEnv((k) => Deno.env.get(k)),
     resolveUser: supabaseResolveUser(supabase),
+    userEmail: supabaseUserEmail(supabase),
     notify: (() => {
       const cfg = readNotifyConfig((k) => Deno.env.get(k));
       return cfg ? resendNotifier(cfg) : undefined;

@@ -58,6 +58,8 @@ function messageOf(err: unknown): string {
 }
 
 function postSlow(msg: LookbackToSlow, transfer: Transferable[] = []): void {
+  // When the answer left (epoch ms): the slow worker's `?debug` relay timing reads it.
+  if (msg.type === 'frames') msg.postedAt = performance.timeOrigin + performance.now();
   slow?.postMessage(msg, transfer);
 }
 

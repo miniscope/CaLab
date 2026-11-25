@@ -16,6 +16,10 @@
 //!                      into cala's registered frame (see "GT frame");
 //!                      `none` scores against the tissue frame as before
 //!   --budget U         slow-loop work units per frame (default 3e7)
+//!   --visit-rate R     cap Discover's ordinary tile visits at R per observed
+//!                      frame (`SlowLoop::set_visit_rate`, the app's cap; off
+//!                      by default). Pair it with a large `--budget` so the
+//!                      rate, not the work budget, binds (as in the app)
 //!   --start N          frame at which the slow loop / oracle library starts (50)
 //!   --every K          checkpoint every K frames (default 300)
 //!   --perturb-frac F   oracle: share of cells perturbed (default 0.3)
@@ -441,7 +445,8 @@ use calab_cala::compress::WindowFactors;
 use calab_cala::discover::{
     CoreTest, EditScope, JointAdmit, JointSign, JointUpdate, LookBack as LbSched, LookbackConfig,
     LookbackNext, LookbackOrder, LookbackOutcome, LookbackReservoir, MergeRule, RefineGate,
-    SettleSched, SlowLoop, SlowLoopConfig, SupportRule, VisitResult, VisitRunner, LB_BLOCK,
+    SettleSched, SlowLoop, SlowLoopConfig, SupportRule, VisitJob, VisitResult, VisitRunner,
+    LB_BLOCK,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -613,6 +618,159 @@ fn quantile(v: &[f64], q: f64) -> f64 {
     let pos = q * (s.len() - 1) as f64;
     let (lo, hi) = (pos.floor() as usize, pos.ceil() as usize);
     s[lo] + (s[hi] - s[lo]) * (pos - lo as f64)
+}
+
+/// `--replay-jobs DIR`: run the captured visit jobs (`--capture-jobs`) in
+/// file order through `runner`, each `CALA_REPLAY_REPS` times (default 3,
+/// fastest kept), and write `replay.tsv` to `out`: file, tile, zone cells,
+/// ms, work, a hash of the result bytes (equal hashes = equal visits).
+fn replay_visit_jobs(dir: &Path, out: &Path, mut runner: VisitRunner) {
+    use std::hash::{Hash, Hasher};
+    let reps: usize = std::env::var("CALA_REPLAY_REPS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3);
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("job_"))
+        })
+        .collect();
+    files.sort();
+    let mut gen = 0u64;
+    let mut tsv = String::from("file\ttile\tcells\tms\twork\thash\tdecisions\n");
+    // Feature `timing`: per job, each visit phase's ms (fastest repetition)
+    // and edits (`timing::VISIT_PARTS` x `timing::EDIT_KINDS`).
+    let mut phases = String::from("file\ttile\tcells");
+    for p in calab_cala::discover::timing::VISIT_PARTS {
+        phases.push_str(&format!("\t{p}_ms"));
+    }
+    for p in calab_cala::discover::timing::VISIT_PARTS {
+        for k in calab_cala::discover::timing::EDIT_KINDS {
+            phases.push_str(&format!("\t{p}_{k}"));
+        }
+    }
+    phases.push('\n');
+    let (mut total, mut n) = (0.0f64, 0usize);
+    for f in &files {
+        let name = f.file_name().unwrap().to_string_lossy().to_string();
+        let g: u64 = name
+            .rsplit("_g")
+            .next()
+            .and_then(|s| s.trim_end_matches(".bin").parse().ok())
+            .unwrap();
+        if g != gen {
+            let b = std::fs::read(dir.join(format!("noise_g{g:05}.f32"))).unwrap();
+            let noise: Vec<f32> = b
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
+                .collect();
+            while gen < g {
+                runner.set_noise(noise.clone()).unwrap();
+                gen += 1;
+            }
+        }
+        let bytes = std::fs::read(f).unwrap();
+        let mut best = f64::INFINITY;
+        let mut row = String::new();
+        let mut best_phase = [f64::INFINITY; 7];
+        let mut edits = [[0u64; 7]; 7];
+        let mut head = String::new();
+        for _ in 0..reps.max(1) {
+            let mut job = VisitJob::from_bytes(&bytes).unwrap();
+            job.retarget(&runner);
+            let (tile, cells) = (job.tile_index(), job.zone_cells());
+            let before = runner.stage_timing().clone();
+            let a = Instant::now();
+            let res = runner.run(job).unwrap();
+            let ms = a.elapsed().as_secs_f64() * 1e3;
+            let after = runner.stage_timing();
+            for (k, row) in edits.iter_mut().enumerate() {
+                best_phase[k] = best_phase[k].min(after.visit[k] - before.visit[k]);
+                for (e, x) in row.iter_mut().enumerate() {
+                    *x = after.visit_edits[k][e] - before.visit_edits[k][e];
+                }
+            }
+            head = format!("{name}\t{tile}\t{cells}");
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            res.to_bytes().hash(&mut h);
+            let st = res.stats();
+            let r = format!(
+                "{name}\t{tile}\t{cells}\t{{}}\t{}\t{:016x}\ta{} r{} p{} m{} mr{} rf{} ab{} d{} s{} kf{}\n",
+                res.work(),
+                h.finish(),
+                st.adds,
+                st.rejects,
+                st.pretest_rejects,
+                st.merges,
+                st.merge_rejects,
+                st.refines,
+                st.absorbs,
+                st.deletes,
+                st.splits,
+                st.keep_fails,
+            );
+            if !row.is_empty() && row != r {
+                panic!("{name}: a replay of the same job gave another result");
+            }
+            row = r;
+            best = best.min(ms);
+        }
+        tsv.push_str(&row.replacen("{}", &format!("{best:.3}"), 1));
+        phases.push_str(&head);
+        for v in best_phase {
+            phases.push_str(&format!("\t{v:.4}"));
+        }
+        for row in edits {
+            for v in row {
+                phases.push_str(&format!("\t{v}"));
+            }
+        }
+        phases.push('\n');
+        total += best;
+        n += 1;
+    }
+    std::fs::write(out.join("replay.tsv"), tsv).unwrap();
+    println!(
+        "replayed {n} jobs: {total:.0} ms total, {:.2} ms/job",
+        total / n.max(1) as f64
+    );
+    if calab_cala::discover::timing::ON {
+        std::fs::write(out.join("replay_phases.tsv"), phases).unwrap();
+        // Every repetition is timed: divide by CALA_REPLAY_REPS.
+        let v: Vec<String> = runner
+            .stage_timing()
+            .to_vec()
+            .iter()
+            .map(|x| format!("{x:.3}"))
+            .collect();
+        println!("stage replay reps {}: {}", reps.max(1), v.join(" "));
+    }
+}
+
+/// Feature `timing`: one line of the slow loop's cumulative stage timers
+/// (`stage TAG: frames F cells N | v..` in `StageTiming::to_vec` order;
+/// `tools/cala-eval/stage0/stage_tables.py` reads them).
+fn print_stage(tag: &str, sl: &SlowLoop) {
+    if !calab_cala::discover::timing::ON {
+        return;
+    }
+    let v: Vec<String> = sl
+        .stage
+        .to_vec()
+        .iter()
+        .map(|x| format!("{x:.3}"))
+        .collect();
+    println!(
+        "stage {tag}: frames {} cells {} | {}",
+        sl.frames(),
+        sl.len(),
+        v.join(" ")
+    );
 }
 
 fn arg_value(args: &[String], key: &str) -> Option<String> {
@@ -1518,6 +1676,7 @@ impl LookBack {
         let stride = (t_len as f64 / round as f64).round().max(1.0) as usize;
         let s0 = sl.stats();
         let w0 = sl.work();
+        print_stage("settle-start", sl);
         let mut prev = SettleSnap::take(engine.library(), sl);
         self.settle_out = String::from(
             "check\tframes\twall_s\tcells\trel_l2_med\tshape_med\tnoise_med\tratio_med\tratio_p75\tratio_p90\tshare_gt1\tshare_gt1p5\tshare_gt2\tshare_gt3\tvisits\trefines\tcommits\twork\tstop\n",
@@ -1641,6 +1800,7 @@ impl LookBack {
         sl.set_reservoir_frozen(false);
         self.full_observe = false;
         let wall = t0.elapsed().as_secs_f64();
+        print_stage(&format!("settle-end wall_s {wall:.3}"), sl);
         self.wall_s += wall;
         let st = sl.stats();
         println!(
@@ -5162,6 +5322,7 @@ fn main() {
     let dump = args.iter().any(|a| a == "--dump");
     let dump_signed = !args.iter().any(|a| a == "--no-signed");
     let budget: u64 = arg_value(&args, "--budget").map_or(30_000_000, |s| s.parse().unwrap());
+    let visit_rate: f64 = arg_value(&args, "--visit-rate").map_or(0.0, |s| s.parse().unwrap());
     let start: usize = arg_value(&args, "--start").map_or(50, |s| s.parse().unwrap());
     let every: usize = arg_value(&args, "--every").map_or(300, |s| s.parse().unwrap());
     let frac: f64 = arg_value(&args, "--perturb-frac").map_or(0.3, |s| s.parse().unwrap());
@@ -5172,6 +5333,17 @@ fn main() {
     let drop_step = args.iter().any(|a| a == "--drop-step");
     let no_bg_levels = args.iter().any(|a| a == "--no-bg-levels");
     let via_jobs = args.iter().any(|a| a == "--via-jobs");
+    // Measurement: `--capture-jobs DIR` (with `--via-jobs`) writes every
+    // `--capture-every`-th visit job and the noise maps the jobs need;
+    // `--replay-jobs DIR` runs those jobs through one `VisitRunner` and
+    // writes `replay.tsv` (ms, cells, a hash of the result bytes).
+    let capture_jobs: Option<PathBuf> = arg_value(&args, "--capture-jobs").map(PathBuf::from);
+    let capture_every: u64 = arg_value(&args, "--capture-every").map_or(25, |s| s.parse().unwrap());
+    let replay_jobs: Option<PathBuf> = arg_value(&args, "--replay-jobs").map(PathBuf::from);
+    let mut cap_seen: u64 = 0;
+    let mut cap_gen: u64 = 0;
+    let mut cap_noise_written: u64 = 0;
+    let mut cap_noise: Vec<f32> = Vec::new();
     let offered_fps: Option<f64> = arg_value(&args, "--offered-fps").map(|s| s.parse().unwrap());
     let visit_workers: usize =
         arg_value(&args, "--visit-workers").map_or(0, |s| s.parse().unwrap());
@@ -5457,6 +5629,17 @@ fn main() {
             scfg.merge_refit_max_ovl
         );
     }
+    if let Some(v) = arg_value(&args, "--warm-start") {
+        scfg.warm_start = match v.as_str() {
+            "on" => true,
+            "off" => false,
+            _ => panic!("--warm-start on|off"),
+        };
+    }
+    println!(
+        "visit solves: warm starts {}",
+        if scfg.warm_start { "on" } else { "off" }
+    );
     if let Some(v) = arg_value(&args, "--merge-guard-sep") {
         scfg.merge_guard_min_sep = v.parse().unwrap();
         println!(
@@ -6096,6 +6279,7 @@ fn main() {
                         };
                         slow = Some(mk());
                         if let Some(s) = slow.as_mut() {
+                            s.set_visit_rate(visit_rate);
                             s.set_lookback_reservoir(lb_res, lb_res_share);
                             if let Some(c) = &cs_cfg {
                                 s.enable_settle(c.quiet);
@@ -6118,6 +6302,10 @@ fn main() {
                         }
                         if via_jobs {
                             via = Some(VisitRunner::new(mk()));
+                        }
+                        if let Some(dir) = &replay_jobs {
+                            replay_visit_jobs(dir, &out_dir, VisitRunner::new(mk()));
+                            std::process::exit(0);
                         }
                         if let Some(fps) = offered_fps {
                             let runners =
@@ -6302,6 +6490,10 @@ fn main() {
                         if let Some(r) = via.as_mut() {
                             r.set_noise(pipe.pre.noise().sigma()).unwrap();
                         }
+                        cap_gen += 1;
+                        if capture_jobs.is_some() {
+                            cap_noise = pipe.pre.noise().sigma().to_vec();
+                        }
                     }
                     let mut fwd_tr = tr.clone();
                     if no_bg_levels {
@@ -6368,9 +6560,32 @@ fn main() {
                                 continue;
                             }
                             let a = Instant::now();
-                            let published = match via.as_mut() {
-                                Some(r) => sl.step_via(budget, r).unwrap(),
-                                None => sl.step(budget).unwrap(),
+                            let published = match (via.as_mut(), &capture_jobs) {
+                                (Some(r), Some(dir)) => {
+                                    let noise = &cap_noise;
+                                    let mut tap = |b: &[u8]| {
+                                        cap_seen += 1;
+                                        if !cap_seen.is_multiple_of(capture_every) {
+                                            return;
+                                        }
+                                        if cap_noise_written != cap_gen {
+                                            let p = dir.join(format!("noise_g{cap_gen:05}.f32"));
+                                            let bytes: Vec<u8> = noise
+                                                .iter()
+                                                .flat_map(|v| v.to_le_bytes())
+                                                .collect();
+                                            std::fs::write(p, bytes).unwrap();
+                                            cap_noise_written = cap_gen;
+                                        }
+                                        let p = dir.join(format!(
+                                            "job_{cap_seen:07}_f{tf:06}_g{cap_gen:05}.bin"
+                                        ));
+                                        std::fs::write(p, b).unwrap();
+                                    };
+                                    sl.step_via_tapped(budget, r, &mut tap).unwrap()
+                                }
+                                (Some(r), None) => sl.step_via(budget, r).unwrap(),
+                                (None, _) => sl.step(budget).unwrap(),
                             };
                             slow_step_s += a.elapsed().as_secs_f64();
                             if let Some(l) = published {
@@ -6465,6 +6680,19 @@ fn main() {
                         tm.ending = true;
                         tm.advance(f64::INFINITY, sl, &mut slow_rec, &mut |_| None);
                         engine.set_library(sl.finalize().unwrap()).unwrap();
+                    }
+                }
+                if let (true, 0, Some(sl)) = (last, pass, slow.as_ref()) {
+                    let v = sl.visit_rate_stats();
+                    if v.rate > 0.0 {
+                        println!(
+                            "visit rate: cap {} per frame: {} visits over {} frames ({:.3} per frame), capped on {} frames",
+                            v.rate,
+                            v.visits,
+                            v.frames,
+                            v.visits as f64 / v.frames.max(1) as f64,
+                            v.capped_frames
+                        );
                     }
                 }
                 // Branch point `discover`: Discover's last frame is done, the
@@ -6714,6 +6942,9 @@ fn main() {
                         g.cells, g.explained, g.residual_excess, g.snr_median, g.pass_frac, g.adds_per_min, extra,
                         t_all.elapsed().as_secs_f64()
                     );
+                        if let Some(sl) = slow.as_ref() {
+                            print_stage(&format!("t{t_end}"), sl);
+                        }
                     }
                 }
             }
