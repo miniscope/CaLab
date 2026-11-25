@@ -54,17 +54,20 @@ function fakeLib(version: number): PublishedLibrary {
   };
 }
 
-/** The slow loop: publishes a library every third step (as visits commit edits). */
+/**
+ * The slow loop: publishes a library at every step (as visits commit edits),
+ * so a cue sent after an answer's observation, not before it, would take a
+ * newer library (`librariesBeforeCues`).
+ */
 function fakeLoop() {
   let version = 10;
-  let steps = 0;
   const seen: { stream: number | undefined; version: number }[] = [];
   const loop: SlowLoopLike = {
     observe: (_f, v, _t, _b, stream) => {
       seen.push({ stream, version: v });
       return true;
     },
-    step: () => (++steps % 3 === 0 ? fakeLib(++version) : undefined),
+    step: () => fakeLib(++version),
     finalize: () => fakeLib(++version),
     setNoise: () => {},
     setEditScope: () => {},
@@ -136,6 +139,8 @@ async function settleRun(seed: number, finalDelayMs: number) {
   const toMain: SlowToMain[] = [];
   /** What the slow worker posted to worker 0, in order (`library`, `request`, `solve`, ...). */
   const sent: SlowToLookback[] = [];
+  /** Where in `sent` each answer reached the slow worker (the trigger of the next batch). */
+  const arrivals: number[] = [];
   let runner: SlowRunner | null = null;
   const service = new LookbackService({
     open: () => {
@@ -152,7 +157,14 @@ async function settleRun(seed: number, finalDelayMs: number) {
     postSlow: (m) => toSlowPort.postMessage(m),
     postMain: () => {},
   });
-  const toSlowPort = port<LookbackToSlow>((m) => runner!.handleLookback(m, 0), rand, 3);
+  const toSlowPort = port<LookbackToSlow>(
+    (m) => {
+      if (m.type === 'frames') arrivals.push(sent.length);
+      runner!.handleLookback(m, 0);
+    },
+    rand,
+    3,
+  );
   let finalSent = false;
   const toLbPort = port<SlowToLookback>(
     (m) => {
@@ -219,7 +231,7 @@ async function settleRun(seed: number, finalDelayMs: number) {
   toLbPort.postMessage(late);
   for (let k = 0; k < 2000 && !toMain.some((m) => m.type === 'status' && m.status.final); k++)
     await new Promise((r) => setTimeout(r, 1));
-  return { seen: seen.slice(discover), sent, toMain };
+  return { seen: seen.slice(discover), sent, toMain, arrivals };
 }
 
 /**
@@ -242,6 +254,22 @@ function expectedVersions(sent: SlowToLookback[]): number[] {
   return out;
 }
 
+/**
+ * Every cue went out where the one-request relay sent its request: at the
+ * top of the handler of the answer before, so no library the slow worker
+ * published while observing that answer comes between the answer and the
+ * cue (the last batch's included, whose cue must not wait for the feed).
+ */
+function librariesBeforeCues(sent: SlowToLookback[], arrivals: number[]): number[] {
+  const out: number[] = [];
+  sent.forEach((m, i) => {
+    if (m.type !== 'solve') return;
+    const a = arrivals.filter((at) => at <= i).at(-1) ?? 0;
+    out.push(sent.slice(a, i).filter((x) => x.type === 'library').length);
+  });
+  return out;
+}
+
 describe('end settle relay (prepare ahead, solve on cue)', () => {
   it('same frames in the same order, each solved with the library of the one-request relay', async () => {
     const runs = [];
@@ -259,6 +287,8 @@ describe('end settle relay (prepare ahead, solve on cue)', () => {
       expect(held).toBe(Math.ceil(FRAMES / SETTLE.batch) - 1);
       expect(r.sent.filter((m) => m.type === 'solve')).toHaveLength(held);
       expect(r.seen.map((s) => s.version)).toEqual(expectedVersions(r.sent));
+      const cues = librariesBeforeCues(r.sent, r.arrivals);
+      expect(cues).toEqual(cues.map(() => 0));
       // Libraries did change during the settle (the check has teeth).
       expect(new Set(r.seen.map((s) => s.version)).size).toBeGreaterThan(2);
     }
