@@ -131,7 +131,11 @@ The `CALAB_APPS_MANIFEST` environment variable points the lookup at another
 manifest, for example a local `npm run build:pages` (written to
 `dist/CaLab/`) served by any static file server at `http://localhost:8000/`:
 `CALAB_APPS_MANIFEST=http://localhost:8000/apps.json`. App URLs are then
-resolved relative to that address. Set it to `off` to never fetch.
+resolved relative to that address. Set it to `off` to never fetch. The
+lab's own server publishes the same site, so
+`CALAB_APPS_MANIFEST=https://calab.miniscope.org/apps.json` opens the apps
+there; to pin one release, pass `app_url=` (e.g.
+`https://calab.miniscope.org/CaTune/v2.23.1/`).
 
 Result schemas are deliberately not in the manifest. The schema name and
 version stay in the registry, where `tests/test_bridge_registry.py` checks

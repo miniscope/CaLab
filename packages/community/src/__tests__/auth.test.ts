@@ -19,7 +19,7 @@ vi.mock('../supabase.ts', () => ({
   })),
 }));
 
-import { realUser, subscribeAuth } from '../auth.ts';
+import { appRootUrl, realUser, subscribeAuth } from '../auth.ts';
 import type { AuthState } from '../auth.ts';
 
 const anonymous = { id: 'anon', is_anonymous: true } as User;
@@ -56,5 +56,26 @@ describe('subscribeAuth', () => {
 
     handlers.at(-1)!('SIGNED_IN', { user: anonymous });
     expect(states.at(-1)).toEqual({ user: null, loading: false });
+  });
+});
+
+describe('appRootUrl', () => {
+  it('gives origin + base for an absolute (GitHub Pages) base', () => {
+    expect(appRootUrl('https://miniscope.github.io/CaLab/CaTune/?x=1#t', '/CaLab/CaTune/')).toBe(
+      'https://miniscope.github.io/CaLab/CaTune/',
+    );
+  });
+
+  it('gives the page folder for the relative base, latest and versioned', () => {
+    expect(appRootUrl('https://calab.miniscope.org/CaTune/#t', './')).toBe(
+      'https://calab.miniscope.org/CaTune/',
+    );
+    expect(appRootUrl('https://calab.miniscope.org/Cala/v2.23.1/index.html?a=b', './')).toBe(
+      'https://calab.miniscope.org/Cala/v2.23.1/',
+    );
+  });
+
+  it('falls back to the site root without a base', () => {
+    expect(appRootUrl('http://localhost:5173/x/y', undefined)).toBe('http://localhost:5173/');
   });
 });

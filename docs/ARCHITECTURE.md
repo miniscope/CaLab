@@ -439,6 +439,9 @@ and that `apps.json` matches the cards. See [e2e/README.md](../e2e/README.md).
 lint, typecheck, app-test check, tests), `rust`, `python`, `supabase` and `e2e`,
 mirrors of the CI jobs. It then runs `npm run build:pages` (build, `combine-dist`,
 `check-apps-manifest`) and uploads `dist/<repository name>` to GitHub Pages.
+`deploy-vps`, gated the same way and only on tags, builds with `npm run build:site`
+(relative base `./`, see `appBase`) and rsyncs the site to calab.miniscope.org, into
+`v<version>/` and then `latest/` (see CONTRIBUTING.md, "Releases and hosting").
 
 **Python release (`publish-python.yml`, `py/v*` tags).** `test` and `rust` gate
 wheel and sdist builds; wheels are smoke-tested before `publish` to PyPI.

@@ -54,6 +54,7 @@ Deno.test('allowedOrigins includes the hardcoded defaults', () => {
   Deno.env.delete('GEO_SESSION_EXTRA_ORIGINS');
   const origins = allowedOrigins();
   assertEquals(origins.has('https://miniscope.github.io'), true);
+  assertEquals(origins.has('https://calab.miniscope.org'), true);
   assertEquals(origins.has('http://localhost:5173'), true);
   assertEquals(origins.has('http://127.0.0.1:5173'), true);
 });

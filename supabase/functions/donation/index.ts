@@ -233,6 +233,7 @@ export function readEnv(get: (k: string) => string | undefined): DonationEnv {
 
 const DEFAULT_ALLOWED_ORIGINS = [
   'https://miniscope.github.io',
+  'https://calab.miniscope.org',
   'http://localhost:5173',
   'http://127.0.0.1:5173',
 ];

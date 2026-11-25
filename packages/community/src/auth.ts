@@ -74,6 +74,20 @@ export function subscribeAuth(callback: (state: AuthState) => void): () => void 
   };
 }
 
+/**
+ * The app's root URL: Vite's `BASE_URL` resolved against the current page.
+ * An absolute base (`/CaLab/CaTune/`, GitHub Pages) gives origin + base, as
+ * before; the relative `./` of the calab.miniscope.org build gives the folder
+ * the page is served from, so a magic link returns to /CaTune/ or
+ * /CaTune/v2.23.1/ alike.
+ */
+export function appRootUrl(href: string, baseUrl: string | undefined): string {
+  const url = new URL(baseUrl || '/', href);
+  url.search = '';
+  url.hash = '';
+  return url.href;
+}
+
 /** Sign in with email magic link. */
 export async function signInWithEmail(
   email: string,
@@ -87,8 +101,10 @@ export async function signInWithEmail(
     options: {
       emailRedirectTo:
         redirectTo ??
-        window.location.origin +
-          ((import.meta as unknown as { env: Record<string, string> }).env.BASE_URL || '/'),
+        appRootUrl(
+          window.location.href,
+          (import.meta as unknown as { env: Record<string, string> }).env.BASE_URL,
+        ),
     },
   });
 

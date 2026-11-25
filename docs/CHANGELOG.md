@@ -5,6 +5,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Added
+
+- Releases also deploy to the lab's own server, <https://calab.miniscope.org>, where every release stays reachable at `/<App>/v<version>/` (e.g. `/CaTune/v2.23.1/`) and `/<App>/` is the newest. GitHub Pages keeps deploying as before. The server build (`npm run build:site`) uses relative asset paths; sign-in links return to the page they came from on either host, and the `geo-session` and `donation` edge functions accept the new origin. See `docs/CONTRIBUTING.md`, "Releases and hosting".
+
 ## [2.23.0] - 2026-11-25
 
 ### Added
