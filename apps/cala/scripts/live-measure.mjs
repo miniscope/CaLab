@@ -167,6 +167,7 @@ const sample = () => {
       done: settle.done,
       source: settle.source ?? null,
       fileReason: settle.fileReason ?? null,
+      workers: settle.workers ?? null,
     },
     pass2: c.pass2.status(),
     pass2Source: c.pass2.result()?.source ?? null,
@@ -247,6 +248,8 @@ function fileFactorSummary(timeline) {
     settleFileReason: last?.settle?.fileReason ?? null,
     settleS: span(settleStart ?? ask, finalAt),
     settleFed: last?.settle?.fed ?? null,
+    // Look-back workers that answered the settle (worker 0 alone, or the settle pool on factors).
+    settleWorkers: last?.settle?.workers ?? null,
     extractSource: last?.pass2Source ?? null,
     extractor: last?.pass2Extractor ?? null,
     extractReason: last?.pass2Reason ?? null,

@@ -195,6 +195,11 @@ export interface SettleStatus {
   source?: 'factors' | 'file';
   /** With `?factors=file`: why the settle reads the file. */
   fileReason?: string;
+  /**
+   * Look-back workers that answered the settle's requests (worker 0 alone, or on a
+   * recording's factors the whole settle pool). Absent before the settle starts and from older builds.
+   */
+  workers?: number;
   /** Discover is over and the factors are not ready yet (the settle has not started). */
   waiting?: boolean;
   /** The factors could not be used: Discover's library is the final one. */
