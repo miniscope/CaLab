@@ -5,6 +5,8 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.22.3] - 2026-11-24
+
 ### Changed
 
 - **Share recording (cala):** the "CaLab team may contact me" checkbox is gone; signing in with an email already covers it. The lab server now keeps each sharer's sign-in email in a private `contact.json` next to the recording (from the edge function's `ingest_list`), so the lab can reach them later; it never goes into `donation.json`, NWB files or DANDI.
