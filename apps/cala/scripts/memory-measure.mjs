@@ -48,6 +48,7 @@
  *   `d<start>:<len>` seconds after Discover started or `s<start>:<len>` seconds after its last
  *   frame (the Final settle), written as `<tag>-slow-<spec>.cpuprofile` (sampling every
  *   `--profile-us` µs, default 500). Run it apart from timed runs: profiling costs time.
+ *   `--profile-lookback`: the look-back workers too, in the same windows (`<tag>-lb<k>-<spec>`).
  *
  * Opens `<folder>` (a session folder or a parent of several) through the
  * folder input with `?debug`, keeps the sessions whose names contain one of
@@ -381,23 +382,37 @@ function slowSession() {
   for (const [sid, u] of workers) if (u.startsWith('slow-worker')) return sid;
   return null;
 }
+// `--profile-lookback`: the look-back workers are profiled in the same windows (`<tag>-lb<k>-<spec>`,
+// k in attach order: 0 is look-back worker 0, which the page starts first; pool workers follow).
+const profileLb = args.includes('--profile-lookback');
+function lookbackSessions() {
+  const out = [];
+  for (const [sid, u] of workers) if (u.startsWith('lookback-worker')) out.push(sid);
+  return out;
+}
 async function profileOnce(p) {
   const sid = slowSession();
   if (!sid) {
     L(`PROFILE ${p.spec}: no slow worker target`);
     return;
   }
-  await send('Profiler.enable', {}, sid);
-  await send('Profiler.setSamplingInterval', { interval: profileUs }, sid);
-  await send('Profiler.start', {}, sid);
-  L(`PROFILE ${p.spec}: start`);
+  const targets = [{ sid, name: 'slow' }];
+  if (profileLb) lookbackSessions().forEach((s, k) => targets.push({ sid: s, name: `lb${k}` }));
+  for (const t of targets) {
+    await send('Profiler.enable', {}, t.sid);
+    await send('Profiler.setSamplingInterval', { interval: profileUs }, t.sid);
+  }
+  await Promise.all(targets.map((t) => send('Profiler.start', {}, t.sid)));
+  L(`PROFILE ${p.spec}: start (${targets.map((t) => t.name).join(', ')})`);
   await new Promise((r) => setTimeout(r, p.len));
-  const { profile } = await send('Profiler.stop', {}, sid);
-  writeFileSync(
-    join(out, `${tag}-slow-${p.spec.replace(':', '_')}.cpuprofile`),
-    JSON.stringify(profile),
-  );
-  L(`PROFILE ${p.spec}: ${profile.samples?.length ?? 0} samples written`);
+  for (const t of targets) {
+    const { profile } = await send('Profiler.stop', {}, t.sid);
+    writeFileSync(
+      join(out, `${tag}-${t.name}-${p.spec.replace(':', '_')}.cpuprofile`),
+      JSON.stringify(profile),
+    );
+    L(`PROFILE ${p.spec} ${t.name}: ${profile.samples?.length ?? 0} samples written`);
+  }
 }
 if (profileSpecs.length) {
   (async () => {
@@ -469,6 +484,15 @@ await page.evaluate((withRelease) => {
       settleWorkers: c.lookback?.()?.csettle?.settleWorkers ?? null,
       // The slow worker's raw cumulative accounting (with `detail` and `stage` under ?debug).
       acct: c.pipeline.accounting?.() ?? null,
+      // The Final settle's status (source, workers, fed/total, waiting) and the compressor's
+      // (backend, Discover's GPU waits, lag at the end), without the window list.
+      settle: c.lookback?.()?.settle ?? null,
+      compress: (() => {
+        const cs = c.compress?.status?.();
+        if (!cs) return null;
+        const { compressed, ...rest } = cs;
+        return { ...rest, windowsDone: compressed?.length ?? 0 };
+      })(),
     });
   }, 500);
   // `--pace-after`: the first time the settle pool serves after the target change.

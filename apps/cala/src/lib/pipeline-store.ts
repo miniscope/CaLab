@@ -254,6 +254,8 @@ export function createPipelineStore(
   let frameExtract = false;
   // `?debug&gpucheck=N`: a GPU run's first N windows are compressed on the CPU too (measurement).
   let gpuCheck = 0;
+  // `?debug&lbpoolmax`: the settle pool starts at Max too (measurement: the pooled Final settle at Max).
+  let poolAtMax = false;
   let jointOf: () => boolean = () => false;
   /**
    * Settle during Discover ("Background settle", under look-back; runs only
@@ -998,12 +1000,13 @@ export function createPipelineStore(
   }
   /**
    * The settle pool starts the first time a look-back run is below Max with
-   * the settle on (mid-run too); a run at Max never starts it.
+   * the settle on (mid-run too); a run at Max never starts it (unless
+   * `?debug&lbpoolmax`, a measurement arm).
    */
   function startSettlePool(): void {
     const st = untrack(status);
     if (st !== 'starting' && st !== 'running' && st !== 'paused') return;
-    if (!lookbackSession || !paceRun() || !(settleCap() > 0)) return;
+    if (!lookbackSession || !(paceRun() || poolAtMax) || !(settleCap() > 0)) return;
     const n = lookbackFeed?.startPool?.(lookbackSession) ?? 0;
     // The run record notes the first start only (this runs on every pace or cap change).
     if (n <= 0 || poolNoted === lookbackSession) return;
@@ -1458,6 +1461,10 @@ export function createPipelineStore(
     /** `?debug&fextract=0`: Extract on factors on rebuilt frames (measurement). */
     setFrameExtract(on: boolean): void {
       frameExtract = on;
+    },
+    /** `?debug&lbpoolmax`: the settle pool starts at Max too (measurement). */
+    setPoolAtMax(on: boolean): void {
+      poolAtMax = on;
     },
     /** `?debug&gpucheck=N`: windows of a GPU run the CPU compresses too (0: none). */
     setGpuCheck(windows: number): void {

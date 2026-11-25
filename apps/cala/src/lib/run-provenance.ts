@@ -68,6 +68,7 @@ export const KNOWN_FLAGS = [
   'csrate',
   'pacefps',
   'lbpool',
+  'lbpoolmax',
   'cpool',
   'cbacklog',
   'fextract',
@@ -94,6 +95,7 @@ const REDACTED_FLAGS: ReadonlySet<string> = new Set(['live']);
 /** What `?debug` gates: these flags only take effect with it. */
 const DEBUG_ONLY: ReadonlySet<string> = new Set([
   'lbpool',
+  'lbpoolmax',
   'cpool',
   'cbacklog',
   'fextract',
