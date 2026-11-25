@@ -63,7 +63,12 @@ def run(d, tag):
     st = chk.get("settle") or last_settle
     fed = st.get("fed", 0)
     S = json.loads((d / f"{tag}.json").read_text())
-    rss = max(max(x.get("rendererFoot") or 0, x.get("rendererRss") or 0) for x in S) / 1024
+    def peak(xs):
+        return max((max(x.get("rendererFoot") or 0, x.get("rendererRss") or 0) for x in xs), default=0) / 1024
+
+    rss = peak(S)
+    # Before the final library: Discover and the settle (after it, the app's Extract can run).
+    rss_pre = peak([x for x in S if not (x.get("st") or {}).get("final")])
     cells = len(json.loads((d / f"{tag}-final.json").read_text())["ids"])
     comp = next((r.get("compress") for r in reversed(rows) if r.get("compress")), None) or {}
     ends = [k for k in range(1, len(rows))
@@ -71,7 +76,7 @@ def run(d, tag):
     w = DT.window(rows, ends[0] - 1, ends[-1])
     det_all = rows[-1]["acct"].get("detail", {})
     jobs = settle_jobs(d, tag)
-    return dict(tag=tag, disc=disc, dfps=frames / disc, sett=sett, sfps=fed / sett if sett else 0, rss=rss,
+    return dict(tag=tag, disc=disc, dfps=frames / disc, sett=sett, sfps=fed / sett if sett else 0, rss=rss, rss_pre=rss_pre,
                 cells=cells, source=st.get("source", "recording"), workers=st.get("workers"), fed=fed,
                 total=st.get("total"), comp=comp, w=w, det_all=det_all, jobs=jobs)
 
@@ -80,7 +85,7 @@ def main():
     d = Path(sys.argv[1])
     runs = [run(d, t) for t in sys.argv[2:]]
     print("| run | Discover s | Discover fps | factor wait s | settle s | settle fps | source | workers | fed/total |"
-          " peak RSS GB | cells | GPU waits s (n) | settle jobs/frame | jobs/s |")
+          " peak RSS GB (to final / all) | cells | GPU waits s (n) | settle jobs/frame | jobs/s |")
     print("|---" * 14 + "|")
     for r in runs:
         fw = r["det_all"].get("end.factorWait")
@@ -91,7 +96,7 @@ def main():
         jps = "-" if jb is None or not r["sett"] else f"{jb / r['sett']:.1f}"
         print(f"| {r['tag']} | {r['disc']:.0f} | {r['dfps']:.0f} | {'-' if fw is None else f'{fw / 1000:.1f}'} | "
               f"{r['sett']:.0f} | {r['sfps']:.1f} | {r['source']} | {r['workers']} | {r['fed']}/{r['total']} | "
-              f"{r['rss']:.2f} | {r['cells']} | {gw} {c.get('backend', '')} | "
+              f"{r['rss_pre']:.2f} / {r['rss']:.2f} | {r['cells']} | {gw} {c.get('backend', '')} | "
               f"{jpf} | {jps} |")
     for r in runs:
         w = r["w"]
