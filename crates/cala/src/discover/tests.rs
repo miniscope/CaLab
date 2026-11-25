@@ -3924,5 +3924,9 @@ fn threaded_statistics_are_bit_identical_for_any_thread_count() {
     assert_eq!(one.1, four.1);
     assert_eq!(one.2, four.2);
     assert_eq!(one.3, four.3);
-    assert!(one.0 == four.0, "libraries differ between 1 and 4 threads");
+    // Bytes 8..16 hold the process-global library version (differs per run).
+    assert!(
+        one.0[16..] == four.0[16..],
+        "libraries differ between 1 and 4 threads"
+    );
 }

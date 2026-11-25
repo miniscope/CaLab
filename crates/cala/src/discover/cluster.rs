@@ -1060,6 +1060,7 @@ impl SlowLoop {
         }
         let version = lib.version();
         let mut work = 0u64;
+        #[cfg_attr(feature = "threads", allow(unused_mut))]
         let mut cbuf = std::mem::take(&mut self.cbuf);
         // Feature `threads` (measurement): the clusters' pushes, prepared
         // here in order, run on a rayon pool after this loop.

@@ -681,10 +681,10 @@ fn replay_visit_jobs(dir: &Path, out: &Path, mut runner: VisitRunner) {
             let res = runner.run(job).unwrap();
             let ms = a.elapsed().as_secs_f64() * 1e3;
             let after = runner.stage_timing();
-            for k in 0..7 {
+            for (k, row) in edits.iter_mut().enumerate() {
                 best_phase[k] = best_phase[k].min(after.visit[k] - before.visit[k]);
-                for e in 0..7 {
-                    edits[k][e] = after.visit_edits[k][e] - before.visit_edits[k][e];
+                for (e, x) in row.iter_mut().enumerate() {
+                    *x = after.visit_edits[k][e] - before.visit_edits[k][e];
                 }
             }
             head = format!("{name}\t{tile}\t{cells}");
@@ -751,7 +751,12 @@ fn print_stage(tag: &str, sl: &SlowLoop) {
     if !calab_cala::discover::timing::ON {
         return;
     }
-    let v: Vec<String> = sl.stage.to_vec().iter().map(|x| format!("{x:.3}")).collect();
+    let v: Vec<String> = sl
+        .stage
+        .to_vec()
+        .iter()
+        .map(|x| format!("{x:.3}"))
+        .collect();
     println!(
         "stage {tag}: frames {} cells {} | {}",
         sl.frames(),

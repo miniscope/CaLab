@@ -2892,19 +2892,10 @@ impl SlowLoop {
                     continue;
                 }
                 slot_of.insert(id, slot);
-                if !self.fpstats.contains_key(&id) {
+                self.fpstats.entry(id).or_insert_with(|| {
                     let (center, radius) = lib.support(slot);
-                    let st = FpStats::new(
-                        center,
-                        radius + margin,
-                        width,
-                        height,
-                        fov,
-                        collects,
-                        block,
-                    );
-                    self.fpstats.insert(id, st);
-                }
+                    FpStats::new(center, radius + margin, width, height, fov, collects, block)
+                });
             }
             let mut cells: Vec<(usize, &mut FpStats)> = self
                 .fpstats

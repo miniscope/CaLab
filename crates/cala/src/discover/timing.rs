@@ -112,7 +112,11 @@ mod clock {
     }
 }
 
-#[cfg(all(feature = "timing", target_arch = "wasm32", not(feature = "jsbindings")))]
+#[cfg(all(
+    feature = "timing",
+    target_arch = "wasm32",
+    not(feature = "jsbindings")
+))]
 mod clock {
     pub fn now_ms() -> f64 {
         0.0
