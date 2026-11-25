@@ -493,6 +493,67 @@ describe('batches', () => {
     expect(out.ranks).toEqual(Array.from({ length: n }, (_, i) => i));
     r.destroy();
   });
+
+  it("let queued messages in between a batch's tile finishes, and stop once destroyed", async () => {
+    const n = 25;
+    const layout = () => Uint32Array.from({ length: 4 * n }, (_, k) => (k % 4 < 2 ? 0 : 64));
+    let calls = 0;
+    const jobs = (): GpuTileJobLike => ({
+      l: () => 20,
+      nIter: () => 2,
+      omega: () => new Float32Array(10 * 20),
+      finish: () => new Uint8Array([calls++]),
+      rank: () => 1,
+      free: () => {},
+    });
+    const job = {
+      index: 0,
+      start: 0,
+      frames: 10,
+      stats: {
+        push: () => {},
+        frames: () => 10,
+        reset: () => {},
+        mean: () => new Float32Array(64 * 64),
+        free: () => {},
+      },
+      seeds: () => 0,
+      prevRanks: () => undefined,
+    };
+    const open = (yieldNow: () => Promise<void>) =>
+      openGpuCompressor({
+        width: 64,
+        height: 64,
+        tile: 64,
+        tiling: 'plain',
+        quant: 64,
+        layout,
+        gpu: fakeGpu(() => true, { maxStorageBufferBindingSize: TILE_ROWS * 4 * 640 }).gpu,
+        jobs,
+        yieldNow,
+      });
+    const yields: number[] = [];
+    const r = await open(async () => void yields.push(calls));
+    if ('reason' in r) throw new Error(r.reason);
+    await r.compress(job);
+    // Batches of 10, 10 and 5 tiles: a yield before every finish but a batch's first.
+    expect(calls).toBe(n);
+    expect(yields).toEqual([
+      ...Array.from({ length: 9 }, (_, i) => 1 + i),
+      ...Array.from({ length: 9 }, (_, i) => 11 + i),
+      ...Array.from({ length: 4 }, (_, i) => 21 + i),
+    ]);
+    r.destroy();
+
+    // Destroyed while it yields (a reset): no more finishes.
+    calls = 0;
+    let reset = (): void => {};
+    const d = await open(async () => reset());
+    if ('reason' in d) throw new Error(d.reason);
+    reset = () => d.destroy();
+    await expect(d.compress(job)).rejects.toThrow(/destroyed/);
+    expect(calls).toBe(1);
+  });
 });
 
 describe('CholeskyQR of a batch', () => {

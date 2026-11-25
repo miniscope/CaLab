@@ -300,6 +300,8 @@ export async function openGpuCompressor(o: {
   gpu?: GPU | undefined;
   layout: (w: number, h: number, tile: number, tiling: string) => Uint32Array;
   jobs?: JobFactory;
+  /** Lets queued messages run between tile finishes (default: `macrotask`). */
+  yieldNow?: () => Promise<void>;
 }): Promise<GpuCompressorLike | { reason: string }> {
   if (!o.gpu) return { reason: 'This browser has no WebGPU.' };
   const rects = o.layout(o.width, o.height, o.tile, o.tiling);
@@ -360,6 +362,7 @@ export async function openGpuCompressor(o: {
         quant: o.quant,
         rects,
         jobs: o.jobs ?? wasmJob,
+        yieldNow: o.yieldNow ?? macrotask,
       });
     }
   }
@@ -484,6 +487,22 @@ interface Setup {
   quant: number;
   rects: Uint32Array;
   jobs: JobFactory;
+  yieldNow: () => Promise<void>;
+}
+
+/**
+ * A macrotask: messages already queued run first. A `MessageChannel`, not
+ * `setTimeout`, whose nested calls are held 4 ms each.
+ */
+function macrotask(): Promise<void> {
+  return new Promise((resolve) => {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => {
+      ch.port1.close();
+      resolve();
+    };
+    ch.port2.postMessage(null);
+  });
 }
 
 class GpuCompressor implements GpuCompressorLike {
@@ -668,18 +687,28 @@ class GpuCompressor implements GpuCompressorLike {
           `the Cholesky of CholeskyQR failed at every shift for tile ${failed.join(', ')}`,
         );
       }
-      // Finish straight from the mapped readback (WASM copies what it reads).
+      // Finish straight from the mapped readback (WASM copies what it reads),
+      // yielding between tiles so chunk messages are not held for a whole batch.
       const q = new Float32Array(bufs.readQ.getMappedRange(0, qBytes));
       const bt = new Float32Array(bufs.readB.getMappedRange(0, bBytes));
-      return slots.map((j, s) => {
+      const out: (Uint8Array | undefined)[] = [];
+      for (let s = 0; s < n; s++) {
+        if (s > 0) {
+          await this.s.yieldNow();
+          // Destroyed meanwhile (a reset): the mapped readback is gone.
+          if (this.destroyed) throw new Error('The GPU compressor was destroyed.');
+        }
         const [, , w, h] = this.s.rects.subarray(4 * idx[s], 4 * idx[s] + 4);
         const q0 = s * TILE_ROWS * stride;
-        return j.finish(
-          q.subarray(q0, q0 + w * h * stride),
-          bt.subarray(s * t * stride, (s + 1) * t * stride),
-          stride,
+        out.push(
+          slots[s].finish(
+            q.subarray(q0, q0 + w * h * stride),
+            bt.subarray(s * t * stride, (s + 1) * t * stride),
+            stride,
+          ),
         );
-      });
+      }
+      return out;
     } finally {
       if (mapped) for (const b of [bufs.readQ, bufs.readB, bufs.readF]) b.unmap();
       const oom = await device.popErrorScope();
