@@ -10,7 +10,7 @@ import { exportNpz, hasEntry, metaText } from './cala-helpers.ts';
 // settle reads the factors whatever the machine's speed (slice 3 plan, decision 2).
 const FRAMES = 590;
 
-// In order, in one worker: with three of these runs at once, the run without the switch
+// In order, in one worker: with three of these runs at once, the run without factors
 // (the fastest, nothing compressed) found no cells on a busy 10-core Mac.
 test.describe.configure({ mode: 'default' });
 
@@ -69,14 +69,16 @@ test('Cala: with ?factors=file a recording settles and extracts on its factors',
   expect(meta).toContain('Extract read the factors');
 });
 
-test('Cala: without ?factors=file a recording is unchanged', async ({ page }) => {
+test('Cala: with ?factors=0 a recording has no factors', async ({ page }) => {
   test.setTimeout(300_000);
-  await openAndExtract(page, '?debug');
+  await openAndExtract(page, '?factors=0&debug');
   const meta = metaText(await exportNpz(page));
   expect(meta).toContain('"format_version":6');
   // (Other records carry their own `source` keys, e.g. the run history's "run start".)
   for (const key of ['settle_source', 'source_reason', '"source":"factors"', '"source":"file"'])
     expect(meta).not.toContain(key);
+  expect(meta).not.toContain("A recording's factor run");
+  expect(meta).not.toContain('No factors');
 });
 
 test('Cala: a ?factors=file recording compressed and extracted by a pool of three settles and extracts on its factors', async ({
@@ -94,13 +96,14 @@ test('Cala: a ?factors=file recording compressed and extracted by a pool of thre
   expect(meta).toContain('"extract_workers":3');
 });
 
-test('Cala: a ?factors=gpu recording without WebGPU reads the file and says why', async ({
+test('Cala: a recording without a switch is a GPU factor run; without WebGPU it reads the file and says why', async ({
   page,
 }) => {
   test.setTimeout(300_000);
-  await openAndExtract(page, '?factors=gpu&debug');
-  // CI's headless Chromium has no WebGPU (no `navigator.gpu`, or no adapter): the compressor
-  // cannot start, so the settle and Extract read the file. With a GPU the run may take either way.
+  // No switch: the GPU route (what ?factors=gpu asks for). CI's headless Chromium has no WebGPU
+  // (no `navigator.gpu`, or no adapter): the compressor cannot start, so the settle and Extract
+  // read the file. With a GPU the run may take either way.
+  await openAndExtract(page, '?debug');
   const webgpu = await page.evaluate(async () => {
     const gpu = (navigator as Navigator & { gpu?: { requestAdapter(): Promise<unknown> } }).gpu;
     return gpu !== undefined && (await gpu.requestAdapter()) !== null;

@@ -226,7 +226,7 @@ export function createPipelineStore(
   const [factorRun, setFactorRun] = createSignal(false);
   const [factorsFile, setFactorsFile] = createSignal(false);
   const [factorFileRun, setFactorFileRun] = createSignal(false);
-  // `?factors=gpu`: a recording's factor file run compresses on the GPU.
+  // A recording's factor file run compresses on the GPU (the default, `?factors=gpu`).
   const [factorsGpu, setFactorsGpu] = createSignal(false);
   // A stream is a factor run without a switch (`factorsFromPage`); `?compress` asked on the page
   // (by default: a compress store was given); the current run compresses.
@@ -1097,7 +1097,8 @@ export function createPipelineStore(
         ? poolForRun(flat.identity?.()?.live === true, compressPool())
         : null;
       setRunPool(pool);
-      if (factorsFile() && jointOf()) console.warn(FACTORS_FILE_JOINT);
+      // Only an explicit `?factors=file`/`gpu`: the default has no factor route on a Joint run.
+      if (factors() && factorsFile() && jointOf()) console.warn(FACTORS_FILE_JOINT);
       runLevel = lb || runPlan.factorSettle ? finalSettleLevelSig() : FINAL_SETTLE_LEVEL_DEFAULT;
       if (lb) {
         lookbackSession = session;
@@ -1281,7 +1282,7 @@ export function createPipelineStore(
       setFactorsFile(on);
       jointOf = joint;
     },
-    /** `?factors=gpu`: a recording's factor file run compresses on the GPU. */
+    /** A recording's factor file run compresses on the GPU (the default, `?factors=gpu`). */
     setFactorsGpu,
     setFactorsDefault,
     setCompressAsked,

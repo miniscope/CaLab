@@ -1,11 +1,11 @@
 /**
  * Factor runs (docs/superpowers/specs/2026-11-23-cala-factors-on-settle-design.md):
  * a live stream's Final settle and Extract read the factors Discover wrote
- * during the stream. That is the default for a stream (slice 4); `?factors=0`
- * turns it off. A recording re-reads the file; `?factors=file` (experimental)
- * lets its settle and Extract read its factors, and `?factors` on a recording
- * is a `?compress` run. `?factors=gpu` (experimental) is `?factors=file` with
- * the recording's windows compressed on the GPU.
+ * during the stream (slice 4). A recording's windows are compressed on the GPU
+ * while Discover runs and its settle and Extract read those factors when
+ * complete (the GPU route, what `?factors=gpu` asks for). Both are the default;
+ * `?factors=0` turns them off. `?factors=file` (experimental) is the recording's
+ * factor run on the CPU, and `?factors` on a recording is a `?compress` run.
  */
 import type { CompressTiling } from '../workers/compress-types.ts';
 import type { StageRun } from './run-stages.ts';
@@ -19,9 +19,9 @@ export interface FactorRunPlan {
   compress: CompressTiling | null;
   /** The slow loop settles on the factors after the stream ends (`SlowInit.factorSettle`). */
   factorSettle: boolean;
-  /** A recording with `?factors=file`: the settle and Extract read the factors when complete (`SlowInit.factorFile`). */
+  /** A recording's factor run: the settle and Extract read the factors when complete (`SlowInit.factorFile`). */
   factorFile: boolean;
-  /** A factor file run compressed on the GPU (`?factors=gpu`; absent: on the CPU). */
+  /** A factor file run compressed on the GPU (the default, `?factors=gpu`; absent: on the CPU, `?factors=file`). */
   gpu?: boolean;
 }
 
@@ -29,8 +29,9 @@ export function factorRunPlan(o: {
   live: boolean;
   /** `?factors` (or `?factors=file`) on the page. */
   factors: boolean;
+  /** A recording's factor run (`?factors=file`, `?factors=gpu` or no switch). */
   factorsFile?: boolean;
-  /** `?factors=gpu`: a factor file run compresses on the GPU. */
+  /** A factor file run compresses on the GPU (`?factors=gpu` or no switch). */
   factorsGpu?: boolean;
   /** No factor switch on the page: a stream is a factor run by default (`factorsFromPage`). */
   factorsDefault?: boolean;
@@ -75,11 +76,11 @@ export const FACTORS_REVIEW_OFF =
 export interface PageFactors {
   /** `?factors` or `?factors=file` (not `?factors=0`). */
   factors: boolean;
-  /** `?factors=file` or `?factors=gpu`. */
+  /** A recording is a factor run: `?factors=file`, `?factors=gpu`, or the default. */
   factorsFile: boolean;
-  /** `?factors=gpu`: a recording's windows are compressed on the GPU. */
+  /** A recording's windows are compressed on the GPU: `?factors=gpu`, or the default. */
   factorsGpu: boolean;
-  /** No factor switch and no `?compress&review`: a live stream is a factor run. */
+  /** No factor switch and no `?compress&review`: a live stream is a factor run, a recording a GPU one. */
   factorsDefault: boolean;
   /** `?compress`. */
   compressAsked: boolean;
@@ -92,9 +93,10 @@ export interface PageFactors {
 }
 
 /**
- * Read the page's switches once. A stream is a factor run unless `?factors=0`;
- * `?compress&review` asks for the review, which reads plain tiles only, so it
- * turns the default off. An explicit `?factors` wins over `?review`.
+ * Read the page's switches once. A stream is a factor run and a recording a GPU
+ * factor run unless `?factors=0`; `?compress&review` asks for the review, which
+ * reads plain tiles only, so it turns the default off. An explicit `?factors`
+ * wins over `?review`.
  */
 export function factorsFromPage(p: URLSearchParams): PageFactors {
   const off = p.get('factors') === '0';
@@ -104,8 +106,8 @@ export function factorsFromPage(p: URLSearchParams): PageFactors {
   const factorsDefault = !p.has('factors') && !reviewAsked;
   return {
     factors,
-    factorsFile: p.get('factors') === 'file' || p.get('factors') === 'gpu',
-    factorsGpu: p.get('factors') === 'gpu',
+    factorsFile: p.get('factors') === 'file' || p.get('factors') === 'gpu' || factorsDefault,
+    factorsGpu: p.get('factors') === 'gpu' || factorsDefault,
     factorsDefault,
     compressAsked,
     compressWorker: compressAsked || factors || factorsDefault,
@@ -118,7 +120,7 @@ export function factorsFromPage(p: URLSearchParams): PageFactors {
 export const FACTORS_LIVE_NOTE =
   "A live stream settles and extracts on the factors Discover wrote during the stream (there is no file to re-read; ?factors=0 turns this off). The export keeps the live traces beside Extract's.";
 
-/** `meta_json.notes` of a `?factors=file` recording: what the settle and Extract read. */
+/** `meta_json.notes` of a recording's factor run (GPU or `?factors=file`): what the settle and Extract read. */
 export function fileFactorNotes(
   stages: readonly Pick<StageRun, 'stage' | 'settleSource' | 'source'>[],
 ): string[] {
@@ -138,7 +140,7 @@ export function fileFactorNotes(
         ? 'Extract replayed the file'
         : 'Extract did not run';
   const notes = [
-    `With ?factors=file, ${settle}; ${extract} (stage records: settle_source, source and their reasons).`,
+    `A recording's factor run: ${settle}; ${extract} (stage records: settle_source, source and their reasons).`,
   ];
   if (e?.source === 'factors')
     notes.push(

@@ -150,10 +150,10 @@ const App: Component = () => {
   const visits = params.get('visits');
   // `?review` (with `?compress`): the history review, every 8 compressed windows
   // (`?review=N`: every N), in a worker of its own. One core is left for it.
-  // A live stream settles and extracts on the factors Discover writes, by default
-  // (`?factors=0`: off; `?compress&review` turns it off for the review). A recording
-  // re-reads the file; with `?factors` it runs as with `?compress`, and `?factors=file`
-  // (experimental) lets its settle and Extract read its factors when complete.
+  // A live stream settles and extracts on the factors Discover writes, and a recording
+  // on the factors the GPU compresses while Discover runs, by default (`?factors=0`: off;
+  // `?compress&review` turns it off for the review). On a recording `?factors` runs as
+  // with `?compress`, and `?factors=file` (experimental) compresses on the CPU.
   const pageFactors = factorsFromPage(params);
   if (pageFactors.warn) console.warn(pageFactors.warn);
   const reviewWindows = pageFactors.review ? reviewEvery(params.get('review')) : null;
