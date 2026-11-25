@@ -1899,6 +1899,11 @@ export class SlowRunner {
     if (msg.session !== this.session || !this.factorWait || !this.loop) return;
     const wait = this.factorWait;
     this.factorWait = null;
+    // `?debug`: Discover's end to the factors' answer (the compressor's last windows), ms.
+    if (this.dt) {
+      this.dt.add('end.factorWait', this.now() - wait.since);
+      this.dt.add('end.factorWait#', 1);
+    }
     this.askTimer?.();
     this.askTimer = null;
     try {
