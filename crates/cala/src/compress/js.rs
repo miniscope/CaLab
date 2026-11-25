@@ -367,6 +367,9 @@ impl JsGpuTileJob {
 /// `stride x stride` (row-major, the first `ls[i] x ls[i]` read); returns as
 /// many `R⁻¹` blocks, zero outside `ls[i] x ls[i]`. Errors if one is not
 /// positive definite after the diagonal shifts.
+///
+/// No production caller: the GPU compressor computes `R⁻¹` with its WGSL
+/// `CHOL` kernel; this is that kernel's reference rule, used in tests.
 #[wasm_bindgen(js_name = cholInvUpperBatch)]
 pub fn chol_inv_upper_batch(g: &[f32], stride: u32, ls: &[u32]) -> Result<Vec<f32>, JsError> {
     let s = stride as usize;

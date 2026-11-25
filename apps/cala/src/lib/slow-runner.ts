@@ -63,6 +63,9 @@
  * end settle's requests go to workers 0..S, one out per worker; a failed pool
  * worker's request goes back to the settle's feed for the others (with no
  * worker left, the settle ends with the frames fed so far: `fed < total`).
+ * The pooled end settle is order-dependent: answers are observed in the
+ * order they complete, so footprints can differ slightly from run to run;
+ * each pool worker keeps its own factor cache.
  */
 import type {
   CsettleStatus,

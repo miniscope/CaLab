@@ -559,7 +559,8 @@ describe('batches', () => {
 describe('CholeskyQR of a batch', () => {
   beforeAll(initTestWasm);
 
-  // The rule the GPU's `CHOL` kernel follows (`chol_inv_upper`, the WASM reference).
+  // The rule the GPU's WGSL `CHOL` kernel follows: `cholInvUpperBatch` has no production
+  // caller (the GPU computes `R⁻¹` itself); it is that kernel's reference, used in tests.
   it("gives a zero R⁻¹ for a tile without variance (V4's dark corners) and refuses a NaN", () => {
     const stride = 4;
     // Slot 0: the identity on its first 2 columns; slot 1: all zero (l 3).
