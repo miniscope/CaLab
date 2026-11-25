@@ -115,7 +115,8 @@ pub const BUILD_PARTS: [&str; 10] = [
 
 /// The counts of [`BuildTiming`], in order: builds, cells, cells filtered
 /// (changed), filter passes (canvases), Gram pair terms computed and
-/// copied, ring couplings computed and copied, `block_of` calls, and the
+/// copied, ring couplings computed and copied, grid-block look-ups of a
+/// pixel (`block_of` or its table; the cached ones are not counted), and the
 /// calibration pass (`block_of` over every support pixel once per build,
 /// timed on its own: `cal_ms` / `cal_calls` is the cost of one call).
 pub const BUILD_COUNTS: [&str; 10] = [

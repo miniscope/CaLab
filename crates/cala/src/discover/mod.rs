@@ -244,6 +244,10 @@ pub use lookback::{
 #[cfg(feature = "diagnostics")]
 pub use mergelog::{flush as merge_log_flush, set_gt as merge_log_set_gt};
 pub use shard::{VisitJob, VisitResult, VisitRunner};
+
+/// Measurement hook: called with every library a [`SlowLoop`] publishes
+/// ([`SlowLoop::publish_tap`]).
+pub type PublishTap = Box<dyn FnMut(&Library) + Send>;
 pub use visitrate::{VisitRateStats, VISIT_BANK_FRAMES};
 
 #[cfg(feature = "jsbindings")]
@@ -1213,7 +1217,7 @@ pub struct SlowLoop {
     pub build: timing::BuildTiming,
     /// Measurement: called with every library this loop publishes (after
     /// the build and its timers). `qc_eval` hashes them.
-    pub publish_tap: Option<Box<dyn FnMut(&Library) + Send>>,
+    pub publish_tap: Option<PublishTap>,
     stats_w: f32,
     stats_gamma: f32,
     rbuf: Vec<f32>,

@@ -777,7 +777,7 @@ fn print_stage(tag: &str, sl: &SlowLoop) {
 /// loop publishes, `n\tcells\tbytes\thash` with the hash of
 /// `to_bytes()[16..]` (bytes 8..16 hold the process-wide version counter),
 /// for byte-identity checks of library builds across code versions.
-fn lib_hash_tap() -> Option<Box<dyn FnMut(&Library) + Send>> {
+fn lib_hash_tap() -> Option<calab_cala::discover::PublishTap> {
     use std::hash::{Hash, Hasher};
     let path = std::env::var("CALA_LIB_HASHES").ok()?;
     let mut f = BufWriter::new(File::create(&path).unwrap());
