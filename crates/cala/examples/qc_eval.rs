@@ -763,6 +763,33 @@ fn print_stage(tag: &str, sl: &SlowLoop) {
         sl.len(),
         v.join(" ")
     );
+    // The library builds (`timing::BUILD_PARTS` ms, `BUILD_COUNTS`, cal_ms).
+    let b: Vec<String> = sl
+        .build
+        .to_vec()
+        .iter()
+        .map(|x| format!("{x:.3}"))
+        .collect();
+    println!("build {tag}: | {}", b.join(" "));
+}
+
+/// `CALA_LIB_HASHES=FILE` (measurement): one line per library the slow
+/// loop publishes, `n\tcells\tbytes\thash` with the hash of
+/// `to_bytes()[16..]` (bytes 8..16 hold the process-wide version counter),
+/// for byte-identity checks of library builds across code versions.
+fn lib_hash_tap() -> Option<Box<dyn FnMut(&Library) + Send>> {
+    use std::hash::{Hash, Hasher};
+    let path = std::env::var("CALA_LIB_HASHES").ok()?;
+    let mut f = BufWriter::new(File::create(&path).unwrap());
+    let mut k = 0u64;
+    Some(Box::new(move |lib: &Library| {
+        let b = lib.to_bytes();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        b[16..].hash(&mut h);
+        writeln!(f, "{k}\t{}\t{}\t{:016x}", lib.len(), b.len(), h.finish()).unwrap();
+        f.flush().unwrap();
+        k += 1;
+    }))
 }
 
 fn arg_value(args: &[String], key: &str) -> Option<String> {
@@ -6077,6 +6104,7 @@ fn main() {
                         };
                         slow = Some(mk());
                         if let Some(s) = slow.as_mut() {
+                            s.publish_tap = lib_hash_tap();
                             s.set_visit_rate(visit_rate);
                             s.set_lookback_reservoir(lb_res, lb_res_share);
                             if let Some(c) = &cs_cfg {

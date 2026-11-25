@@ -1208,6 +1208,12 @@ pub struct SlowLoop {
     pub replay_stats: ReplayStats,
     /// Stage timers (feature `timing`; zero otherwise). Measurement only.
     pub stage: timing::StageTiming,
+    /// Library-build timers and counts (feature `timing`; zero otherwise).
+    /// Measurement only.
+    pub build: timing::BuildTiming,
+    /// Measurement: called with every library this loop publishes (after
+    /// the build and its timers). `qc_eval` hashes them.
+    pub publish_tap: Option<Box<dyn FnMut(&Library) + Send>>,
     stats_w: f32,
     stats_gamma: f32,
     rbuf: Vec<f32>,
@@ -1698,6 +1704,8 @@ impl SlowLoop {
             cbuf: Vec::new(),
             replay_stats: ReplayStats::default(),
             stage: timing::StageTiming::default(),
+            build: timing::BuildTiming::default(),
+            publish_tap: None,
             stats_w: 1.0,
             stats_gamma: 0.5f32.powf(1.0 / cfg.stats_half_life_frames),
             rbuf: Vec::new(),
@@ -3291,7 +3299,8 @@ impl SlowLoop {
                 b.push_disk_skirt(c.footprint(self.dims), c.center, c.radius, skirt.collect());
             }
         }
-        let lib = b.build(&mut self.flattener)?;
+        let lib = b.build_timed(&mut self.flattener, &mut self.build)?;
+        let mut lap = timing::Lap::start();
         // The working set takes the exact filtered columns.
         let w = self.dims.width;
         let mut cells = Vec::with_capacity(lib.len());
@@ -3327,6 +3336,10 @@ impl SlowLoop {
         self.work +=
             (self.dims.pixels() * 40) as u64 * (1 + changed as u64 / 50) + support as u64 * 40;
         self.cells = cells;
+        lap.lap(&mut self.build.ms[timing::part::CELLS]);
+        if let Some(tap) = self.publish_tap.as_mut() {
+            tap(&lib);
+        }
         #[cfg(feature = "diagnostics")]
         diagnostics::support_library(self);
         let lib = Arc::new(lib);

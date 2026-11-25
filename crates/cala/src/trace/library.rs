@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::background::BackgroundModel;
 use super::{check_len, FrameTraces, TraceError};
+use crate::discover::timing::{count, part, BuildTiming, Lap};
 use crate::preprocess::flatten::GlowFlattener;
 use crate::preprocess::{Dims, PreprocessError};
 
@@ -396,6 +397,18 @@ impl LibraryBuilder {
 
     /// Filter every footprint with `filter` and precompute the solve terms.
     pub fn build(self, filter: &mut dyn LinearFilter) -> Result<Library, TraceError> {
+        self.build_timed(filter, &mut BuildTiming::default())
+    }
+
+    /// [`LibraryBuilder::build`], adding its parts' times and counts to `t`
+    /// (feature `timing`; measurement only, no result changes).
+    pub fn build_timed(
+        self,
+        filter: &mut dyn LinearFilter,
+        t: &mut BuildTiming,
+    ) -> Result<Library, TraceError> {
+        let mut lap = Lap::start();
+        t.count(count::BUILDS, 1);
         let dims = self.dims;
         let n_px = dims.pixels();
         if filter.dims() != dims {
@@ -514,6 +527,9 @@ impl LibraryBuilder {
                 }
             }
         }
+        lap.lap(&mut t.ms[part::PREP]);
+        t.count(count::CELLS, n as u64);
+        t.count(count::FILTERED, done.iter().filter(|&&d| !d).count() as u64);
         // Filter the support-limited footprints, many per pass when they are
         // further apart than the filter's reach.
         let reach = filter.reach_px();
@@ -552,6 +568,7 @@ impl LibraryBuilder {
                 None => canvases.push(vec![i]),
             }
         }
+        t.count(count::PASSES, canvases.len() as u64);
         let mut img = vec![0.0f32; n_px];
         let mut src = vec![0.0f32; n_px];
         let w = dims.width;
@@ -656,7 +673,11 @@ impl LibraryBuilder {
             .version
             .unwrap_or_else(|| NEXT_VERSION.fetch_add(1, Ordering::Relaxed));
         let prev = self.reuse.as_deref();
-        Library::assemble(core.finish(), self.background, version, prev)
+        lap.lap(&mut t.ms[part::FILTER]);
+        let core = core.finish();
+        lap.lap(&mut t.ms[part::FINISH]);
+        core.calibrate(t);
+        Library::assemble(core, self.background, version, prev, t)
     }
 }
 
@@ -1011,7 +1032,9 @@ impl Library {
         model: BackgroundModel,
         version: u64,
         prev: Option<&Library>,
+        t: &mut BuildTiming,
     ) -> Result<Library, TraceError> {
+        let mut lap = Lap::start();
         let n = core.ids.len();
         let dims = core.dims;
         let n_px = dims.pixels();
@@ -1082,6 +1105,7 @@ impl Library {
         let mut rows: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n];
         let mut gram_diag = vec![0.0f32; n];
         let mut noise_num = vec![0.0f32; n];
+        lap.lap(&mut t.ms[part::SETUP]);
         let pair = |j: usize, img: &[f32], lim: &[f32], ccore: &[f32]| -> f64 {
             let (pj, vj) = core.core_col(j);
             let mut g = 0.0f64;
@@ -1128,14 +1152,32 @@ impl Library {
                 s2 += f64::from(l) * f64::from(l) * f64::from(core.blk_noise2[bq as usize]);
             }
             noise_num[i] = s2.max(0.0).sqrt() as f32;
+            if gl > 0 {
+                // paint, diagonal, noise and clear
+                t.count(count::BLOCK_OF, 4 * p.len() as u64);
+            }
+            lap.lap_fine(&mut t.ms[part::CELL]);
             for j in near(i, ext[i] + rmax + 1.0) {
                 if j <= i {
                     continue;
                 }
                 let g = match reuse.as_ref().and_then(|r| r.gram(i, j)) {
-                    Some(Some(g)) => g,
-                    Some(None) => continue,
+                    Some(Some(g)) => {
+                        t.count(count::PAIRS_COPIED, 1);
+                        g
+                    }
+                    Some(None) => {
+                        t.count(count::PAIRS_COPIED, 1);
+                        continue;
+                    }
                     None => {
+                        t.count(count::PAIRS_COMPUTED, 1);
+                        if gl > 0 {
+                            t.count(
+                                count::BLOCK_OF,
+                                core.col_start[j + 1] as u64 - core.col_start[j] as u64,
+                            );
+                        }
                         let g = pair(j, &img, &lim, &ccore);
                         if g == 0.0 {
                             continue;
@@ -1146,6 +1188,7 @@ impl Library {
                 rows[i].push((j as u32, g));
                 rows[j].push((i as u32, g));
             }
+            lap.lap_fine(&mut t.ms[part::PAIR]);
             for &q in p {
                 img[q as usize] = 0.0;
                 if gl > 0 {
@@ -1155,6 +1198,7 @@ impl Library {
             for &bq in bi {
                 lim[bq as usize] = 0.0;
             }
+            lap.lap_fine(&mut t.ms[part::CELL]);
         }
         if let Some(i) = gram_diag.iter().position(|&d| d.is_nan() || d <= 0.0) {
             return Err(TraceError::InvalidFootprint(format!(
@@ -1273,6 +1317,7 @@ impl Library {
                 let mut ring_pix = Vec::new();
                 let mut s = vec![0.0f32; n];
                 let mut qrows: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n];
+                lap.lap_fine(&mut t.ms[part::REST]);
                 for i in 0..n {
                     // `s_i` is the sum of the whole column (support `vc` minus
                     // the moat's block means over their FOV pixels), the same
@@ -1307,8 +1352,12 @@ impl Library {
                     }
                     let len = ring_pix.len() - start;
                     ring_start.push(ring_pix.len());
+                    lap.lap_fine(&mut t.ms[part::RING_SCAN]);
                     if len == 0 {
                         continue;
+                    }
+                    if gl > 0 {
+                        t.count(count::BLOCK_OF, 2 * len as u64);
                     }
                     let inv = 1.0 / len as f32;
                     for &q in &ring_pix[start..] {
@@ -1321,11 +1370,13 @@ impl Library {
                     // cell's own moat included.
                     for j in near(i, outer + rmax + 1.0) {
                         if let Some(copied) = reuse.as_ref().and_then(|r| r.ring(i, j)) {
+                            t.count(count::RING_COPIED, 1);
                             if let Some(g) = copied {
                                 qrows[i].push((j as u32, g));
                             }
                             continue;
                         }
+                        t.count(count::RING_COMPUTED, 1);
                         let (pj, vj) = core.core_col(j);
                         let mut g = 0.0f32;
                         for (&q, &a) in pj.iter().zip(vj) {
@@ -1345,6 +1396,7 @@ impl Library {
                             ccore[core.block_of(q)] = 0.0;
                         }
                     }
+                    lap.lap_fine(&mut t.ms[part::RING_Q]);
                 }
                 for (i, r) in qrows.iter().enumerate() {
                     for &(j, _) in r {
@@ -1383,6 +1435,7 @@ impl Library {
             groups[gi as usize].push(i as u32);
             *g = gi;
         }
+        lap.lap(&mut t.ms[part::REST]);
         Ok(Library {
             version,
             core,
@@ -1404,6 +1457,7 @@ impl Library {
             model,
             NEXT_VERSION.fetch_add(1, Ordering::Relaxed),
             None,
+            &mut BuildTiming::default(),
         )
     }
 
@@ -2036,7 +2090,13 @@ impl Library {
             blk_noise2: Vec::new(),
         };
         let Some(t) = terms else {
-            return Library::assemble(core.finish(), model, version, None);
+            return Library::assemble(
+                core.finish(),
+                model,
+                version,
+                None,
+                &mut BuildTiming::default(),
+            );
         };
         // The overlap groups, numbered in order of their first cell, as
         // `assemble` numbers them.
@@ -2217,6 +2277,30 @@ impl Core {
     fn block_of(&self, q: u32) -> usize {
         let (y, x) = (q as usize / self.dims.width, q as usize % self.dims.width);
         (y / self.block) * self.grid_w() + x / self.block
+    }
+
+    /// Measurement (feature `timing`): count `finish`'s `block_of` calls
+    /// into `t`, and time `block_of` once over every support pixel on its
+    /// own (`t.cal_ms`, calls under `count::CAL`). Outside the build's laps.
+    fn calibrate(&self, t: &mut BuildTiming) {
+        if !crate::discover::timing::ON || self.block == 0 {
+            return;
+        }
+        let mut lap = Lap::start();
+        let mut acc = 0usize;
+        for &q in &self.pix {
+            acc = acc.wrapping_add(self.block_of(q));
+        }
+        std::hint::black_box(acc);
+        lap.lap(&mut t.cal_ms);
+        t.count(count::CAL, self.pix.len() as u64);
+        let in_fov = self.fov.iter().filter(|&&f| f != 0).count();
+        let sup_fov = self
+            .pix
+            .iter()
+            .filter(|&&q| self.fov[q as usize] != 0)
+            .count();
+        t.count(count::BLOCK_OF, (in_fov + sup_fov) as u64);
     }
 
     /// Fill the derived terms.
