@@ -517,12 +517,47 @@ describe("settle pool on a recording's factors (?factors=file)", () => {
     warn.mockRestore();
     expect(since(t, 1).filter((k) => k === 'request')).toHaveLength(n1);
     expect(t.status().final).toBe(true);
+    // Its request's frames went to another worker: every frame fed.
     expect(t.status().lookback!.settle).toMatchObject({
       source: 'factors',
       done: true,
       workers: 2,
+      fed: 400,
+      total: 400,
     });
     expect(t.status().lookback!.error).toBeUndefined();
+  });
+
+  it('every pool worker fails in the settle: worker 0 feeds the rest', () => {
+    const t = settleOnFactors();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    t.answer(1, { error: 'broken' });
+    t.answer(2, { error: 'broken too' });
+    answerAll(t);
+    warn.mockRestore();
+    expect(t.status().final).toBe(true);
+    expect(t.status().lookback!.settle).toMatchObject({
+      source: 'factors',
+      done: true,
+      workers: 1,
+      fed: 400,
+      total: 400,
+    });
+    expect(t.status().lookback!.error).toBeUndefined();
+  });
+
+  it('with no worker left the settle ends with the frames fed so far', () => {
+    const t = settleOnFactors();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    t.answer(1, { error: 'broken' });
+    t.answer(2, { error: 'broken too' });
+    t.answer(0, { error: 'gone' });
+    answerAll(t);
+    warn.mockRestore();
+    expect(t.status().final).toBe(true);
+    const settle = t.status().lookback!.settle!;
+    expect(settle).toMatchObject({ done: true, total: 400 });
+    expect(settle.fed).toBeLessThan(settle.total);
   });
 
   it('the settle on the file stays on worker 0 alone', () => {

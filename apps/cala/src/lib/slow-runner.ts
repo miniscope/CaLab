@@ -60,7 +60,9 @@
  * settle runs on worker 0 alone, except on a recording's factors
  * (`?factors=file`/`gpu`): there every worker in the run's pool switches to
  * the factors too (before its first settle request, or as it joins) and the
- * end settle's requests go to workers 0..S, one out per worker.
+ * end settle's requests go to workers 0..S, one out per worker; a failed pool
+ * worker's request goes back to the settle's feed for the others (with no
+ * worker left, the settle ends with the frames fed so far: `fed < total`).
  */
 import type {
   CsettleStatus,
@@ -708,10 +710,14 @@ export class SlowRunner {
     return this.lbReqs.some((q) => q?.kind === 'end');
   }
 
-  /** A pool worker failed in the end settle: left out for the rest of the run (its frames are not fed). */
-  private drainPortFailed(port: number, message: string): void {
-    this.lbPortOff[port] = true;
-    console.warn(`cala end settle look-back worker ${port} stopped: ${message}`);
+  /**
+   * A pool worker failed in the end settle: left out for the rest of the run;
+   * its request's frames go back to the feed for another worker (or worker 0).
+   */
+  private drainPortFailed(req: LookbackReq, message: string): void {
+    this.lbPortOff[req.port] = true;
+    this.drain?.feed.putBack(req.items.map((it) => it.frame));
+    console.warn(`cala end settle look-back worker ${req.port} stopped: ${message}`);
     this.status(0, 0);
   }
 
@@ -1138,7 +1144,7 @@ export class SlowRunner {
       const why = `no answer within ${LOOKBACK.timeoutMs / 1000} s`;
       // The settle's own request only turns the settle off; look-back and the end settle go on.
       if (failed.kind === 'csettle') this.csettleFailed(failed, why);
-      else if (failed.kind === 'end' && port > 0) this.drainPortFailed(port, why);
+      else if (failed.kind === 'end' && port > 0) this.drainPortFailed(failed, why);
       else this.lookbackFailed(why);
       if (this.drain) this.settlePump();
       else if (this.lookbackLive) this.lookbackRequest();
@@ -1277,7 +1283,7 @@ export class SlowRunner {
     try {
       if (msg.type === 'error') {
         if (req.kind === 'csettle') this.csettleFailed(req, msg.message);
-        else if (req.kind === 'end' && req.port > 0) this.drainPortFailed(req.port, msg.message);
+        else if (req.kind === 'end' && req.port > 0) this.drainPortFailed(req, msg.message);
         else this.lookbackFailed(msg.message);
       } else if (req.kind === 'csettle' && this.cs && this.lookbackLive) {
         // (It gives the buffer back itself, at once or after its last piece.)
