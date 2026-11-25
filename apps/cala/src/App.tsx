@@ -563,8 +563,12 @@ const App: Component = () => {
         width: i?.width ?? 0,
         height: i?.height ?? 0,
       });
-      if (f.kind === 'factors') slow.factorsReady(f.session, f.frames, f.factors);
-      else if (f.kind === 'file') {
+      if (f.kind === 'factors') {
+        slow.factorsReady(f.session, f.frames, f.factors);
+        // The Final settle on the factors runs on the settle pool too, at Max as well (after
+        // `factorsReady`, so the slow worker switches the joining workers to the factors).
+        pipeline.startFactorPool(f.session, f.factors);
+      } else if (f.kind === 'file') {
         slow.factorsFailed(f.session, f.reason);
         // No stage reads the factors now: free the CPU and the disk for the file's settle and Extract.
         compressClient?.stop(f.session);
@@ -666,7 +670,9 @@ const App: Component = () => {
   const runTrace = new RunTrace();
   pipeline.onPaceChange((fps, frame, source) => runTrace.noteTargetSpeed(fps, frame, source));
   pipeline.onCapChange((cap, frame, source) => runTrace.noteCap(cap, frame, source));
-  pipeline.onPoolStart((workers, frame) => runTrace.notePoolStart(workers, frame));
+  pipeline.onPoolStart((workers, frame, forFinal) =>
+    runTrace.notePoolStart(workers, frame, forFinal),
+  );
   pipeline.onWorkSample((sample) => runTrace.noteSample(sample));
   // A curve that takes over mid-run replaces the one noted at the start.
   pipeline.onCurveArmed((curve) => runTrace.noteCurve(curve));

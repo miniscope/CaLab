@@ -348,7 +348,18 @@ export function csettleRate(v: unknown): number {
  * Settle look-back workers besides worker 0 (the settle pool's S; beta speed
  * control, section 1 "Pool size"; PI decision of 22 Nov 2026: one more worker
  * on machines with at least `minCores` logical cores, else none, and one
- * worker takes turns). Started only once a run's target goes below Max.
+ * worker takes turns). Started the first time a run's target goes below Max,
+ * or at Discover's end for a Final settle on the recording's factors (at Max
+ * too).
+ *
+ * S depends on the logical core count alone (`navigator.hardwareConcurrency`,
+ * which the run record keeps as `machine.hardware_concurrency`, next to
+ * `settings.lookback_pool`), never on a measured speed, so the same machine
+ * always runs the same settle shape. One worker is enough: with it the Final
+ * settle on factors is bound by the slow worker (98 % busy in #518's X1), so a
+ * second would add memory, not speed. The 12-core line is kept as decided:
+ * below it the end settle's threads (slow worker, two look-back workers and
+ * the visit workers) would outnumber the cores, and that was not measured.
  */
 export const SETTLE_POOL = {
   /** Logical cores (`navigator.hardwareConcurrency`) from which the pool has `workers` workers. */

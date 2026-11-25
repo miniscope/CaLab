@@ -393,7 +393,7 @@ export interface SettleTimes {
 export class RunTrace {
   private speed: TargetSpeedChange[] = [];
   private settle: SettleTimes = { started_at: null, ended_at: null };
-  private pool: { workers: number; frame: number } | null = null;
+  private pool: { workers: number; frame: number; forFinal: boolean } | null = null;
   private caps: CapChange[] = [];
   private floorStart: { fps: number; confidence: string } | null = null;
   private floorRows: FloorChange[] = [];
@@ -543,13 +543,17 @@ export class RunTrace {
     return this.caps;
   }
 
-  /** The run's settle pool started with `workers` workers at `frame` (the first start counts). */
-  notePoolStart(workers: number, frame: number): void {
-    this.pool ??= { workers, frame };
+  /**
+   * The run's settle pool started with `workers` workers at `frame` (the first start counts);
+   * `forFinal`: at Discover's end, for the Final settle on the factors (else below Max, for the
+   * Background settle).
+   */
+  notePoolStart(workers: number, frame: number, forFinal = false): void {
+    this.pool ??= { workers, frame, forFinal };
   }
 
   /** The settle pool this run started (null: none). */
-  poolStart(): { workers: number; frame: number } | null {
+  poolStart(): { workers: number; frame: number; forFinal: boolean } | null {
     return this.pool ? { ...this.pool } : null;
   }
 
@@ -967,6 +971,9 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
         planned_S: src.lookbackPoolSize(),
         started_S: pool?.workers ?? 0,
         started_at_frame: pool?.frame ?? null,
+        // Why it started: below Max for the Background settle, or at Discover's end for the
+        // Final settle on the factors (null: never started).
+        started_for: pool ? (pool.forFinal ? 'final-settle' : 'background-settle') : null,
       },
       final_settle_level: p.finalSettleLevel(),
       speed_mode: speedMode,

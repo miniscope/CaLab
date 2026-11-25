@@ -367,11 +367,27 @@ describe('gatherRunRecord', () => {
     src.trace.notePoolStart(1, 640);
     src.trace.notePoolStart(1, 900);
     r = gatherRunRecord(src) as Rec;
-    expect(r.settings.lookback_pool).toEqual({ planned_S: 1, started_S: 1, started_at_frame: 640 });
+    expect(r.settings.lookback_pool).toEqual({
+      planned_S: 1,
+      started_S: 1,
+      started_at_frame: 640,
+      started_for: 'background-settle',
+    });
     expect(r.work).toMatchObject({ pool: 2 });
     // A new run starts with no pool.
     src.trace.reset();
-    expect((gatherRunRecord(src) as Rec).settings.lookback_pool.started_S).toBe(0);
+    expect((gatherRunRecord(src) as Rec).settings.lookback_pool).toMatchObject({
+      started_S: 0,
+      started_for: null,
+    });
+    // A run at Max: the pool starts at Discover's end, for the Final settle on the factors.
+    src.trace.notePoolStart(1, 23_711, true);
+    expect((gatherRunRecord(src) as Rec).settings.lookback_pool).toEqual({
+      planned_S: 1,
+      started_S: 1,
+      started_at_frame: 23_711,
+      started_for: 'final-settle',
+    });
   });
 
   it('records the backend that ran, the flat-field source, fps source and git state', () => {
