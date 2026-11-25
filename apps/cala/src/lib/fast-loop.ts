@@ -307,7 +307,7 @@ export class FastLoop {
     this.feed?.answer?.(msg);
   }
 
-  /** The run is stopped: a batch waiting for the GPU's ring goes on, without the run's factors. */
+  /** The run is stopped or replaced: a batch waiting for the GPU's ring goes on, without the run's factors. */
   releaseCompress(): void {
     this.feed?.release?.();
   }

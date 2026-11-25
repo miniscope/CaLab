@@ -1147,6 +1147,10 @@ export class CompressRunner {
         stats: w.stats!,
         seeds: (i) => ((w.index << 20) ^ i) >>> 0,
         prevRanks: (i) => prev[i],
+        // Each batch of tiles tells a waiting feed the GPU is at work (a slow window is no stall).
+        progress: () => {
+          if (epoch === this.epoch) this.postRoom();
+        },
       });
     } catch (err) {
       work = Promise.reject(err instanceof Error ? err : new Error(String(err)));

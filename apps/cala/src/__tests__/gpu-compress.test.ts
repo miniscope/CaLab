@@ -472,7 +472,9 @@ describe('batches', () => {
     });
     if ('reason' in r) throw new Error(r.reason);
     fake.submits.n = 0;
+    let progress = 0;
     const out = await r.compress({
+      progress: () => void progress++,
       index: 0,
       start: 0,
       frames: 10,
@@ -488,6 +490,7 @@ describe('batches', () => {
     });
     // 640 columns: 10 tiles per batch at stride 64 (3 batches), then tile 3 at stride 128.
     expect(fake.submits.n).toBe(4);
+    expect(progress).toBe(4); // word after every batch: a waiting Discover's stall clock restarts
     expect(finished.slice().sort((a, b) => a - b)).toEqual(Array.from({ length: n }, (_, i) => i));
     expect(out.tiles.map((t) => t[0])).toEqual(Array.from({ length: n }, (_, i) => i));
     expect(out.ranks).toEqual(Array.from({ length: n }, (_, i) => i));

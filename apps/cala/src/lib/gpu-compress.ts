@@ -247,6 +247,8 @@ export interface GpuWindowJob {
   stats: WindowStatsLike;
   seeds: (tile: number) => number;
   prevRanks: (tile: number) => number | undefined;
+  /** Called after every batch of tiles (the GPU is at work; absent: not told). */
+  progress?: () => void;
 }
 
 export interface GpuWindowResult {
@@ -585,6 +587,7 @@ class GpuCompressor implements GpuCompressorLike {
           t,
           segments,
         );
+        job.progress?.();
         batch.forEach((i, slot) => {
           const bytes = out[slot];
           if (bytes === undefined) {

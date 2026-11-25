@@ -116,8 +116,9 @@ export type FrameRequest =
   /** The port to the compress worker (transferred). */
   | { type: 'connect-compress'; id: number; port: MessagePort }
   /**
-   * Trace worker, answered at once: the run is stopped, so a batch waiting for
-   * room in the GPU compressor's ring goes on without the run's factors.
+   * Trace worker, answered at once: the run is stopped or replaced, so a batch
+   * waiting for room in the GPU compressor's ring goes on without the run's
+   * factors, and none waits again.
    */
   | { type: 'release-compress'; id: number }
   /** Turn cell discovery on or off in the running pipeline. */

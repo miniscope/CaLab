@@ -12,8 +12,9 @@
  * The trace stage's wait holds its pooled buffers, so the stages before it
  * wait too (their credits). The wait ends when room appears, when the GPU
  * route ends (`ring` 0: a give-up, a reset, a lost device), on `reset` and
- * `release` (Stop), or after `GPU_STALL_S` without progress from the GPU (the
- * run then gives its factors up). Every other run never waits.
+ * `release` (Stop, a new run), or after `GPU_STALL_S` without word from the
+ * GPU (it says so after every batch of tiles; the run then gives its factors
+ * up). Every other run never waits.
  */
 import type {
   CompressSource,
@@ -77,7 +78,10 @@ export interface CompressFeedLike {
   room?(start: number, count: number): Promise<void> | null;
   /** The compress worker's answer on the feed's port. */
   answer?(msg: CompressToFast): void;
-  /** The run is stopped: a wait for room ends now, and the run's factors with it. */
+  /**
+   * The run is stopped or replaced: a wait for room ends now, the run's
+   * factors with it, and no batch waits again (`reset`; after the end: nothing).
+   */
   release?(): void;
 }
 
@@ -241,18 +245,18 @@ export class CompressFeed implements CompressFeedLike {
       this.endWait(false);
       return;
     }
-    const progress = msg.keepFrom > this.keepFrom;
     this.ring = msg.ring;
     this.gpuWindow = msg.window;
     this.keepFrom = Math.max(this.keepFrom, msg.keepFrom);
     const w = this.wait;
     if (!w) return;
+    // Every answer is the GPU at work (a window or a batch of tiles done): the stall clock restarts.
     if (this.fits(w.start, w.count)) this.endWait(false);
-    else if (progress) this.armStall();
+    else this.armStall();
   }
 
   release(): void {
-    if (this.wait) this.reset();
+    if (!this.ended) this.reset();
   }
 
   /** Frames `[start, start + count)` overwrite no frame the GPU still needs. */
@@ -261,7 +265,7 @@ export class CompressFeed implements CompressFeedLike {
     return start + count - keep <= this.ring;
   }
 
-  /** (Re)start the stall clock of the wait: no progress for `stallMs` ends it and the factors. */
+  /** (Re)start the stall clock of the wait: no word from the GPU for `stallMs` ends it and the factors. */
   private armStall(): void {
     const w = this.wait;
     if (!w) return;

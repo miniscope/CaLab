@@ -1443,6 +1443,92 @@ describe('a recording compressed on the GPU', () => {
       expect(feed.room(60, 10)).toBeNull();
     });
 
+    it('a release before the wait: no batch of the run waits again', async () => {
+      const sent: FastToCompress[] = [];
+      const feed = new CompressFeed(
+        { width: GW, height: GH, session: 7, tile: GTILE, window: 30, quant: QUANT, gpu: true },
+        { postMessage: (m) => sent.push(m) },
+      );
+      feed.answer({ type: 'room', session: 7, ring: 63, window: 50, keepFrom: 0 });
+      for (let s = 0; s < 60; s += 10) feed.push(new Float32Array(10 * GW * GH), s, 10);
+      // Stop (or a new run) is answered at once, while the trace queue still holds batches.
+      feed.release();
+      expect(sent.at(-1)).toEqual({ type: 'reset', session: 7 });
+      expect(feed.room(60, 10)).toBeNull(); // would not fit: still no wait
+      feed.push(new Float32Array(10 * GW * GH), 60, 10);
+      feed.answer({ type: 'room', session: 7, ring: 63, window: 50, keepFrom: 0 });
+      expect(feed.room(70, 10)).toBeNull();
+      expect(sent.at(-1)).toEqual({ type: 'reset', session: 7 });
+      // After the end, a release changes nothing: the windows are the record of the run.
+      const after: FastToCompress[] = [];
+      const ended = new CompressFeed(
+        { width: GW, height: GH, session: 7, tile: GTILE, window: 30, quant: QUANT, gpu: true },
+        { postMessage: (m) => after.push(m) },
+      );
+      ended.push(new Float32Array(10 * GW * GH), 0, 10);
+      ended.end();
+      ended.release();
+      expect(after.map((m) => m.type)).toEqual(['init', 'chunk', 'close']);
+    });
+
+    it('word from the GPU within a window (a batch of tiles done) keeps the stall clock from firing', async () => {
+      vi.useFakeTimers();
+      const sent: FastToCompress[] = [];
+      const feed = new CompressFeed(
+        { width: GW, height: GH, session: 7, tile: GTILE, window: 30, quant: QUANT, gpu: true },
+        { postMessage: (m) => sent.push(m) },
+        () => Date.now(),
+      );
+      const room = { type: 'room', session: 7, ring: 63, window: 50, keepFrom: 0 } as const;
+      feed.answer(room);
+      for (let s = 0; s < 60; s += 10) feed.push(new Float32Array(10 * GW * GH), s, 10);
+      let released = false;
+      void feed.room(60, 10)!.then(() => (released = true));
+      // A slow window: 100 s, a batch of tiles every 20 s (no frame freed yet).
+      for (let t = 0; t < 5; t++) {
+        vi.advanceTimersByTime(20_000);
+        feed.answer(room);
+        await Promise.resolve();
+        expect(released).toBe(false);
+      }
+      // The window done: room.
+      feed.answer({ ...room, keepFrom: 50 });
+      await Promise.resolve();
+      expect(released).toBe(true);
+      expect(sent.at(-1)).toMatchObject({ type: 'waited', session: 7, ms: 100_000 });
+      expect(sent.at(-1)).not.toHaveProperty('stalled');
+      // Then silence: the next wait stalls after GPU_STALL_S.
+      for (let s = 60; s < 110; s += 10) {
+        feed.room(s, 10);
+        feed.push(new Float32Array(10 * GW * GH), s, 10);
+      }
+      let stalled = false;
+      void feed.room(110, 10)!.then(() => (stalled = true));
+      vi.advanceTimersByTime(GPU_STALL_S * 1000);
+      await Promise.resolve();
+      expect(stalled).toBe(true);
+      expect(sent.at(-1)).toMatchObject({ type: 'waited', stalled: true });
+    });
+
+    it('the runner tells the feed after every batch of tiles of a window', async () => {
+      const toFeed: CompressToFast[] = [];
+      const { r, fakes } = gpuRunner(undefined, { postMessage: (m) => toFeed.push(m) });
+      for (const m of gpuFeed(60, 7, false)) await r.handle(m);
+      expect(fakes[0].pending).toHaveLength(1);
+      const n = toFeed.length;
+      fakes[0].pending[0].job.progress!();
+      fakes[0].pending[0].job.progress!();
+      expect(toFeed.slice(n)).toEqual([
+        { type: 'room', session: 7, ring: 63, window: 50, keepFrom: 0 },
+        { type: 'room', session: 7, ring: 63, window: 50, keepFrom: 0 },
+      ]);
+      // A run that ended says nothing more of its windows.
+      await r.handle({ type: 'reset', session: 7 });
+      const m = toFeed.length;
+      fakes[0].pending[0].job.progress!();
+      expect(toFeed.length).toBe(m);
+    });
+
     it("the runner gives the factors up on a stalled wait and keeps the wait's seconds", async () => {
       const toFeed: CompressToFast[] = [];
       const { r, store, toMain, fakes } = gpuRunner(undefined, {

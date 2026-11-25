@@ -189,7 +189,7 @@ workerScope.onmessage = (e) => {
       stage?.fast?.compressAnswer(ev.data);
     workerScope.postMessage({ type: 'ok', id: data.id });
   } else if (data.type === 'release-compress') {
-    // Stop: answered at once, not in the queue (a batch may be waiting for the GPU there).
+    // Stop or a new run: answered at once, not in the queue (a batch may be waiting for the GPU there).
     stage?.fast?.releaseCompress();
     workerScope.postMessage({ type: 'ok', id: data.id });
   } else if (data.type === 'set-discovery') {

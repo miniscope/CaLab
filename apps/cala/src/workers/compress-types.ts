@@ -110,9 +110,10 @@ export type FastToCompress =
  * Compress worker -> fast worker, on the same port (a GPU run only): the GPU
  * compressor's ring holds `ring` frames (`window` of them per window) and the
  * oldest frame it still needs is `keepFrom`, so the feed may send frames up to
- * `keepFrom + ring` (exclusive). Sent when the GPU opens and whenever
- * `keepFrom` moves (a window compressed). `ring` 0: the GPU route ended (gave
- * up, reset, or the recording's windows are done); the feed never waits again.
+ * `keepFrom + ring` (exclusive). Sent when the GPU opens, whenever `keepFrom`
+ * moves (a window compressed) and after every batch of tiles (the GPU is at
+ * work: a waiting feed's stall clock restarts). `ring` 0: the GPU route ended
+ * (gave up, reset, or the recording's windows are done); the feed never waits again.
  */
 export interface CompressToFast {
   type: 'room';
