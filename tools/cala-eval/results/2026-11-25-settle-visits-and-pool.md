@@ -91,11 +91,23 @@ Slow worker per settle frame (ms):
 - **`?debug&settlevisits=R|off`** sets the rate for measurement. `off` restores visits whenever a worker is free, as before.
 - **The Final-settle line** shows "0.40 visits/frame".
 
-## Memory (report only)
+## Memory: the pool ends at the final library
 
-- With B, the pool worker stays alive until the run resets, so it is still there during Extract.
-- Peak RSS including Extract:
-  - B: 5.98–6.05 GiB (6.4–6.5 GB);
-  - M1 and A1: 5.65–5.78 GiB.
-- Up to the final library, B adds 0.3–0.5 GiB.
-- Terminating the pool workers at the final library would take that back before Extract. Not done here.
+- B2 and B3 kept the pool worker alive until the run reset, so it was still there during Extract. Their peak RSS
+  including Extract was 5.98–6.05 GiB (6.4–6.5 GB), against 5.65–5.78 GiB for M1 and A1.
+- Commit `54af7c19` ends a pool started for the Final settle as soon as the main thread sees the final library:
+  - its workers are terminated (`LookbackFeed.endPool`);
+  - the slow worker hears 0 workers and sends them no further request or library.
+- Extract never uses look-back workers. A pool started below Max for the Background settle is left as before. A
+  restart starts fresh pool workers.
+- One more workshop run at Max on that commit:
+
+| run | tree                    | Discover fps | settle s | settle fps | look-back workers | visits / frame | slow busy | peak RSS GiB, to final / all | cells |
+| --- | ----------------------- | -----------: | -------: | ---------: | ----------------: | -------------: | --------: | ---------------------------: | ----: |
+| B4  | A+B, pool ends at final |          195 |      155 |      115.9 |                 2 |          0.400 |       99% |                  4.39 / 5.48 |   777 |
+
+- **Peak including Extract: 5.48 GiB**, below main's 5.65–5.78. Every arm has two memory samples after the final
+  library (about 10 s into Extract), so the windows match. The later part of Extract is not sampled in any arm.
+- **Settle fps 115.9**, against 119–124 for B2 and B3. Discover was also lower (195 against 204–208 fps): Zoom and the
+  camera service used about 0.4–0.6 of a core during this run, so both phases ran a few percent slower. Nothing in
+  this change runs before the final library.
