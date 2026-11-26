@@ -3,6 +3,11 @@
 #
 #   tools/cala-eval/motion_bias_ab.sh <motion_eval binary built with the XCORR_NO_ENV probe> <out dir>
 #
+# The probe is not in the repo: build motion_eval with
+# ~/Projects/cala-data/runs/motion-xcorr-bias/xcorr_no_env_toggle.patch applied (in
+# `Correlator::new`, XCORR_NO_ENV=1 makes the window-overlap envelope 1). On a stock build the
+# `noenv` arms silently equal the `env` arms.
+#
 # Arms: `env` (the shipped estimator), `noenv` (envelope division disabled), and both with
 # the patch smoothing and shrinkage off (`MOTION_ALPHA=1 MOTION_NOSHRINK=1`, raw patch
 # residuals). One job at a time (~110 s and ~0.5 GB each). Score with motion_bias.py.
