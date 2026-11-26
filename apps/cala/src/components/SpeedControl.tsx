@@ -5,7 +5,7 @@ import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { CellStore } from '../lib/cell-store.ts';
 import { curveWords, CURVE_PRESETS, presetCurve } from '../lib/speed-schedule.ts';
 import { AUTO_BUDGETS, budgetLabel } from '../lib/speed-auto.ts';
-import { VISIT_RATE, visitHoldText } from '../lib/visit-rate.ts';
+import { VISIT_RATE, maxRepeatText, visitHoldText } from '../lib/visit-rate.ts';
 import {
   achievedSpeed,
   belowFloorNote,
@@ -315,6 +315,9 @@ export function SpeedControl(props: {
   const holdLine = () =>
     running() && !done() ? visitHoldText(s().visitHold(), s().paceTarget(), VISIT_RATE) : null;
 
+  // Only at Max (mode 'max'; a curve or Auto run has its own target).
+  const repeatLine = () => (mode() === 'max' ? maxRepeatText(target()) : null);
+
   const capSelect = (cls: string): JSX.Element => (
     <label class={cls}>
       <span class={props.live ? 'cala-speed__cap-name--main' : undefined}>Background settle</span>
@@ -407,6 +410,13 @@ export function SpeedControl(props: {
         <p class="cala-speed__line" data-testid="speed-status">
           {pinned() !== null ? `Pinned at Max: ${pinned()}` : status()}
         </p>
+        <Show when={repeatLine()}>
+          {(line) => (
+            <p class="cala-speed__line" data-testid="speed-max-repeat">
+              {line()}
+            </p>
+          )}
+        </Show>
         <Show when={holdLine()}>
           {(line) => (
             <p

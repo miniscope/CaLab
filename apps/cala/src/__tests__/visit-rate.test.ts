@@ -5,6 +5,7 @@ import {
   VISIT_RATE,
   VisitRateGovernor,
   visitHoldText,
+  maxRepeatText,
   visitRateCap,
   visitRateMode,
   type VisitRateMode,
@@ -427,5 +428,14 @@ describe('VisitRateGovernor with whole visits at low paced rates', () => {
     }
     expect(gov.fps).not.toBeNull();
     expect(gov.fps!).toBeLessThan(60);
+  });
+});
+
+describe('maxRepeatText', () => {
+  it('notes run-to-run differences only at Max (user fps 0)', () => {
+    expect(maxRepeatText(0)).toBe(
+      'Results can differ slightly between runs at Max; set a target fps for repeatable runs.',
+    );
+    expect(maxRepeatText(30)).toBeNull();
   });
 });
