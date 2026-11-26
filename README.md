@@ -171,6 +171,7 @@ also works once the solver has been built, but skips the WASM check.
 | `npm run dev [app]`     | Start an app's dev server (default CaTune)                              |
 | `npm run build`         | Build WASM + every app in `apps/`                                       |
 | `npm run build:pages`   | Build + combine dist for GitHub Pages (`dist/CaLab/`, with `apps.json`) |
+| `npm run build:site`    | The same with relative asset paths, for calab.miniscope.org             |
 | `npm run build:wasm`    | Compile Rust solver to WASM                                             |
 | `npm run test`          | Run Vitest tests across all workspaces                                  |
 | `npm run test:coverage` | Tests under V8 coverage, with per-package floors                        |

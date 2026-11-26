@@ -56,6 +56,7 @@ Run from the repo root:
 | `npm run dev [app]`           | Start an app's dev server (default: CaTune)                         |
 | `npm run build`               | Build WASM + every app in `apps/`                                   |
 | `npm run build:pages`         | Build + combine dist for GitHub Pages                               |
+| `npm run build:site`          | The same with relative asset paths, for calab.miniscope.org         |
 | `npm run build:wasm`          | Compile the Rust solver and cala crates to WASM                     |
 | `npm run test`                | Run Vitest tests across all workspaces                              |
 | `npm run test:watch`          | Run tests in watch mode (`apps/catune`)                             |
@@ -138,6 +139,41 @@ these steps. Separate jobs run the Playwright smoke tests (`e2e`), `cargo fmt`/`
 for the solver, the Python package's ruff/mypy/pytest, and the Supabase RLS policy tests.
 A `v*` tag deploys to GitHub Pages only after `deploy.yml` reruns the check, e2e, Rust,
 Python and Supabase jobs.
+
+## Releases and hosting
+
+A `v*` tag (e.g. `v2.23.1`; the Python package's `py/v*` tags don't trigger it) runs
+`deploy.yml`, which publishes the release to two hosts once the gating jobs pass:
+
+- **GitHub Pages**, <https://miniscope.github.io/CaLab/> (job `deploy`), unchanged:
+  `npm run build:pages`, absolute base `/CaLab/<App>/`. Pages only ever has the newest
+  release.
+- **The lab's server**, <https://calab.miniscope.org> (job `deploy-vps`):
+  `npm run build:site`, the same combined site built with Vite base `./`, so every asset,
+  worker and `.wasm` URL is relative to the page and one build works at any path.
+
+URL layout on calab.miniscope.org (Caddy, static files from `/srv/calab/releases/`):
+
+| URL                                       | Served from                                 |
+| ----------------------------------------- | ------------------------------------------- |
+| `/`, `/apps.json`                         | `latest/` (landing page, manifest)          |
+| `/<App>/` (e.g. `/CaTune/`)               | `latest/<App>/`, the newest release         |
+| `/<App>/v<version>/` (`/CaTune/v2.23.1/`) | `v<version>/<App>/`, that release, for good |
+
+`deploy-vps` rsyncs the site to `v<version>/` first and then to `latest/` (all files but
+the HTML, then the HTML, so a new `index.html` never points at missing assets). Nothing is
+ever deleted: the deploy key is restricted on the server to write-only, no-delete rsync
+into the releases folder, so each `v<version>/` folder, and the URLs into it, stay
+reachable after later releases. Old hashed assets pile up harmlessly in `latest/`. To
+withdraw a version, remove its folder on the server by hand.
+
+The job needs the repository secrets `CALAB_DEPLOY_KEY` (the deploy key's private key)
+and `CALAB_DEPLOY_KNOWN_HOSTS` (the server's `ssh-keyscan` line) and fails if either is
+missing. Pages deploys independently of it. Only per-app URLs are versioned: an old
+release's landing page and `apps.json` are not reachable; `/` is always the newest landing
+page. Sign-in links return to the page they were requested from,
+versioned or not (Supabase's redirect allowlist must include
+`https://calab.miniscope.org/**`).
 
 ## Commit Conventions
 

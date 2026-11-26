@@ -82,8 +82,15 @@ export function readAppIdentity(
  * /<repo>/<displayName>/ (scripts/combine-dist.mjs copies each app's dist to
  * its displayName); a local `build:pages` serves it from /<displayName>/; dev
  * and plain builds use /.
+ *
+ * `CALAB_RELATIVE_BASE` (`npm run build:site`, the calab.miniscope.org build)
+ * wins over all of those: base `./` makes every asset, worker and WASM URL
+ * relative to the page, so one build works at both /<displayName>/ and
+ * /<displayName>/v<version>/ on that host. It is checked before
+ * GITHUB_ACTIONS so the deploy job's build is relative too.
  */
 export function appBase(displayName: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (env.CALAB_RELATIVE_BASE) return './';
   if (env.GITHUB_ACTIONS) {
     const repo = env.GITHUB_REPOSITORY?.split('/')[1] || DEFAULT_PAGES_REPO;
     return `/${repo}/${displayName}/`;

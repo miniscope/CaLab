@@ -342,3 +342,152 @@ jobs:
 
       - id: deployment
         uses: actions/deploy-pages@v5
+
+  # The same release on the lab's own server, https://calab.miniscope.org.
+  # Caddy there serves /srv/calab/releases read-only: /<App>/v<version>/... from
+  # v<version>/<App>/... and everything else from latest/, so every release
+  # stays reachable at its versioned URL. This job uploads the combined site to
+  # v<version>/ and then to latest/. It never deletes anything: the deploy key
+  # is forced to `rrsync -wo -no-del /srv/calab/releases` on the server, and the
+  # rsync calls below pass no --delete. See docs/CONTRIBUTING.md "Releases and
+  # hosting".
+  #
+  # It builds the site separately from `deploy` (relative asset base, `npm run
+  # build:site`) so the GitHub Pages build stays exactly as it was. Runs on `v*`
+  # tag pushes only (python's `py/v*` tags don't match the trigger), never on a
+  # manual run from a branch.
+  deploy-vps:
+    needs: [check, rust, python, supabase, e2e]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      group: 'calab-vps'
+      cancel-in-progress: false
+    env:
+      DEPLOY_HOST: '172.233.157.81'
+      DEPLOY_USER: 'calab-deploy'
+    steps:
+      - name: Check deploy secrets and release tag
+        env:
+          CALAB_DEPLOY_KEY: ${{ secrets.CALAB_DEPLOY_KEY }}
+          CALAB_DEPLOY_KNOWN_HOSTS: ${{ secrets.CALAB_DEPLOY_KNOWN_HOSTS }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          fail=0
+          if [ -z "$CALAB_DEPLOY_KEY" ]; then
+            echo "::error::Secret CALAB_DEPLOY_KEY is not set; cannot deploy to calab.miniscope.org."
+            fail=1
+          fi
+          if [ -z "$CALAB_DEPLOY_KNOWN_HOSTS" ]; then
+            echo "::error::Secret CALAB_DEPLOY_KNOWN_HOSTS is not set; cannot deploy to calab.miniscope.org."
+            fail=1
+          fi
+          # The folder name becomes part of the URL (/<App>/<tag>/), which the
+          # server matches as v[0-9][^/]*.
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not a release version like v2.23.1."
+            fail=1
+          fi
+          exit $fail
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-04-15)
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            crates/solver -> target
+            crates/cala -> target
+
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: wasm-pack@0.13.1
+
+      - run: npm ci
+
+      # Same environment as the Pages build; only the asset base differs.
+      - run: npm run build:site
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          VITE_DONATION_SUPABASE_URL: ${{ secrets.DONATION_SUPABASE_URL || 'https://wdvqmppmevzqphcwobix.supabase.co' }}
+          VITE_DONATION_SUPABASE_ANON_KEY: ${{ secrets.DONATION_SUPABASE_ANON_KEY || 'sb_publishable_Szs0UPItDRWn1XD_g1HSpA_17rCZUx-' }}
+          VITE_DONATION_DANDISET: ${{ vars.DONATION_DANDISET || '' }}
+          VITE_DONATION_DANDI_INSTANCE: ${{ vars.DONATION_DANDI_INSTANCE || 'dandi' }}
+          VITE_APP_VERSION: ${{ github.ref_name }}
+
+      # The site must not contain the Pages base: an absolute /CaLab/... URL
+      # 404s on calab.miniscope.org. Every app page must load ./assets/.
+      - name: Check the site uses relative asset paths
+        run: |
+          site="dist/${{ github.event.repository.name }}"
+          if grep -rlE '"/CaLab/' "$site"; then
+            echo "::error::The files above contain absolute /CaLab/ paths; the site was not built with a relative base."
+            exit 1
+          fi
+          for page in "$site"/*/index.html; do
+            if ! grep -q 'src="\./assets/' "$page"; then
+              echo "::error::$page does not load ./assets/ (relative base missing)."
+              exit 1
+            fi
+          done
+
+      - name: Set up SSH
+        env:
+          CALAB_DEPLOY_KEY: ${{ secrets.CALAB_DEPLOY_KEY }}
+          CALAB_DEPLOY_KNOWN_HOSTS: ${{ secrets.CALAB_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$CALAB_DEPLOY_KEY" > ~/.ssh/calab_deploy
+          chmod 600 ~/.ssh/calab_deploy
+          printf '%s\n' "$CALAB_DEPLOY_KNOWN_HOSTS" > ~/.ssh/calab_known_hosts
+          chmod 644 ~/.ssh/calab_known_hosts
+
+      # Remote paths are relative to /srv/calab/releases (rrsync on the server).
+      # v<version>/ first, so the versioned URLs work before latest/ changes;
+      # then latest/ in two passes, everything but HTML and then the HTML, so a
+      # visitor never gets a new index.html that points at assets not yet
+      # uploaded. No --delete: old versions stay, and stale hashed assets in
+      # latest/ are harmless.
+      - name: Upload to calab.miniscope.org
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          site="dist/${{ github.event.repository.name }}"
+          ssh_cmd="ssh -i $HOME/.ssh/calab_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/calab_known_hosts -o BatchMode=yes"
+          dest="$DEPLOY_USER@$DEPLOY_HOST"
+
+          # Assets-only copy of the site for the first latest/ pass.
+          assets="$RUNNER_TEMP/site-assets"
+          rm -rf "$assets"
+          cp -R "$site" "$assets"
+          find "$assets" -name '*.html' -type f -delete
+
+          set -x
+          rsync -rlz --checksum -e "$ssh_cmd" "$site/" "$dest:$VERSION/"
+          rsync -rlz --checksum -e "$ssh_cmd" "$assets/" "$dest:latest/"
+          rsync -rlz --checksum -e "$ssh_cmd" "$site/" "$dest:latest/"
+
+      - name: Summary
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          {
+            echo "### Deployed $VERSION to calab.miniscope.org"
+            echo ""
+            echo "- Latest: https://calab.miniscope.org/"
+            echo "- This version: https://calab.miniscope.org/<App>/$VERSION/ (e.g. https://calab.miniscope.org/CaTune/$VERSION/)"
+          } >> "$GITHUB_STEP_SUMMARY"
