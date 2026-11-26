@@ -5,6 +5,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Changed
+
+- Cala: at Max, the Run tab's Speed block now notes that results can differ slightly between runs (the settle pool's second look-back worker answers in varying order) and that a target fps makes runs repeatable.
+
 ## [2.23.1] - 2026-11-25
 
 ### Added

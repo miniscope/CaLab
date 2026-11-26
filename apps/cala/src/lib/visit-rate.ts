@@ -392,3 +392,14 @@ export function visitHoldText(
   if (hold === null || (userFps > 0 && hold >= userFps)) return null;
   return `Held at ${Math.round(hold)} fps to keep refinement at ${k.target} visits/frame`;
 }
+
+/**
+ * The Speed block's note at Max (null: not at Max). With 12 or more cores the Final settle runs a
+ * second look-back worker (the settle pool), whose answers can arrive in a different order, so two
+ * runs at Max can differ slightly; a target fps makes the run repeatable.
+ */
+export function maxRepeatText(userFps: number): string | null {
+  return userFps > 0
+    ? null
+    : 'Results can differ slightly between runs at Max; set a target fps for repeatable runs.';
+}
