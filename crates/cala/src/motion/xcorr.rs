@@ -22,6 +22,16 @@
 //! value (integer and upsampled) is divided by `A(u)`, computed from the
 //! window's power spectrum, which removes that pull to first order.
 //!
+//! The correction assumes the texture fills the window. Content that sits
+//! only in the window's flat middle is not attenuated by the taper, so the
+//! division over-corrects it and the shift reads too large: by about 9 % for
+//! a lone blob and up to about 1.3x (plus a fixed part) for a tight cluster
+//! with a broad correlation peak. cala never sees this: the corrector
+//! correlates band-passed frames that fill the region and re-cuts the crop at
+//! the integer estimate, so the final residual is under a pixel; end to end
+//! the rigid shift has no measurable gain bias
+//! (`tools/cala-eval/results/2026-11-26-motion-xcorr-bias.md`).
+//!
 //! # Sub-pixel refinement
 //!
 //! The integer peak (restricted to `|s| <= max_shift`) is refined with the

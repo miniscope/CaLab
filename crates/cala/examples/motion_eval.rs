@@ -414,6 +414,21 @@ fn minisim(dir: &Path, gt: &Path, max: usize) -> Res<()> {
         .collect();
     let ptsf: Vec<(f64, f64)> = pts.iter().map(|&(y, x)| (y as f64, x as f64)).collect();
     let frames: Vec<usize> = (0..nr.records.len()).collect();
+    if let Ok(dir) = std::env::var("MOTION_SAVE") {
+        // Rigid shifts of both runs, and the non-rigid run's registering
+        // displacement at every patch centre with the true content motion
+        // there (frame-major, `(frames * points, 2)`).
+        let dir = Path::new(&dir);
+        save_shifts(&dir.join("cala_rigid.npy"), &rigid(&rg))?;
+        save_shifts(&dir.join("cala_nonrigid.npy"), &rigid(&nr))?;
+        let est: Vec<(f64, f64)> = at_points(&nr, &pts)?.into_iter().flatten().collect();
+        let tru: Vec<(f64, f64)> = frames
+            .iter()
+            .flat_map(|&f| truth.displacement(f, &ptsf))
+            .collect();
+        save_shifts(&dir.join("cala_patch_est.npy"), &est)?;
+        save_shifts(&dir.join("true_patch.npy"), &tru)?;
+    }
     let e_on = patch_rmse_aligned(&at_points(&nr, &pts)?, &truth, &frames, &ptsf);
     let e_off = patch_rmse_aligned(&at_points(&rg, &pts)?, &truth, &frames, &ptsf);
     println!(
