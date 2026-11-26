@@ -5,9 +5,19 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+## [2.23.1] - 2026-11-25
+
 ### Added
 
 - Releases also deploy to the lab's own server, <https://calab.miniscope.org>, where every release stays reachable at `/<App>/v<version>/` (e.g. `/CaTune/v2.23.1/`) and `/<App>/` is the newest. GitHub Pages keeps deploying as before. The server build (`npm run build:site`) uses relative asset paths; sign-in links return to the page they came from on either host, and the `geo-session` and `donation` edge functions accept the new origin. See `docs/CONTRIBUTING.md`, "Releases and hosting".
+
+### Fixed
+
+- Cala: **a recording held below 16 fps by the visit rate can speed up again.** The visit-rate governor judged its speed in 1 s windows and skipped any window with fewer than 16 frames, so once it held a run below 16 fps (early in a recording, when visits are slow) it could never raise the hold again; a 3 h recording stayed at about 5 fps for minutes. A short window now stays open until it has 16 frames (#522).
+
+### Changed
+
+- Cala: **faster Final settle at Max.** The Final settle now earns its refinement visits per settle frame (0.4 visits per frame, `?debug&settlevisits=R|off` to measure), not from whatever time the slow worker had spare, so its visits no longer depend on machine speed (#520). On machines with 12 or more cores at Max, the settle on factors also runs a second look-back worker (the settle pool), stopped once the final library is built; the workshop recording's settle went from about 198 s to about 150 s with quality on the sims within run-to-run noise. Because the two look-back workers can answer in a different order, results at Max can differ slightly between runs; set a target fps for repeatable runs (#521). Timing instrumentation for the factor settle (#518).
 
 ## [2.23.0] - 2026-11-25
 
