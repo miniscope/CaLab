@@ -145,6 +145,10 @@ Headed Chrome 156 on the real GPU (Metal), port 5277 / CDP 9377, `memory-measure
   `2026-11-25-settle-visits-and-pool.md`). A real main arm, not this branch with `visitrate=fixed`: the branch
   also changes the governor's windows, so its fixed mode is not main in the app.
 - auto = this branch (WASM md5 `0041fb7b`), default settings.
+- Both arms ran in this branch's worktree (`drive.log` says `head=781be6f1` for both); for main the
+  `origin/main` `apps/cala` tree and WASM were swapped in (`scripts/chrome_swap.sh`).
+- Chrome Discover fps has repeated within about 2 % in earlier runs, so the 8 % on the 30k sim is likely real,
+  but each arm is one run.
 
 | run                  | frames | Discover s | Discover fps | Final settle s | Discover visits | visits / frame read | target at end (changes) | held at Max       | cells | matched / false (recall) | peak renderer GB, to final / all |
 | -------------------- | -----: | ---------: | -----------: | -------------: | --------------: | ------------------: | ----------------------- | ----------------- | ----: | ------------------------ | -------------------------------: |
@@ -156,11 +160,12 @@ Headed Chrome 156 on the real GPU (Metal), port 5277 / CDP 9377, `memory-measure
 - **Workshop recording:** 12 % fewer visits, Discover 117 → 113 s (−3 %, within run-to-run noise), 32 fewer
   cells (792 → 760). Earlier main runs at Max on this recording gave 764–796 cells, so one run each cannot
   separate the cell drop from Max's run-to-run spread; it points the same way as the qc_eval real-data runs.
-  At Max the slow worker also drops frames (about 5,200 of 23,700 in both arms), which caps how far the visit
-  rate can fall per frame read; the target ended at 0.075 but visits per frame read stayed at 0.136.
+  At Max the slow worker drops about 5,200 of 23,700 frames in both arms; per observed frame Auto made 0.174
+  visits and main 0.199 (main's cap is 0.2; Auto spent part of the run at higher rungs, with a 4/3 cap).
 - **30,000-frame sim:** 59 % fewer visits and much less holding (42 → 9 s), but Discover only 201 → 185 s
   (−8 %). Recall 0.883 → 0.862 (17 fewer matched cells), false cells 15 → 7. Same direction and size as qc_eval.
-- **Memory:** no change beyond run-to-run noise (peaks to the final library 3.3–5.6 GB in both arms).
+- **Memory:** main-ws1's 5.63 GB "to final" is a sample taken at the final-library boundary (t = 272 s, final at
+  272.3 s), the same post-settle peak as auto's "all"; it is not a 1.1 GB saving. No change beyond run-to-run noise (peaks to the final library 3.3–5.6 GB in both arms).
 - So in the app at Max the speed gain is small: Discover's time at Max is mostly not visits.
 
 Scoring of the sim libraries: `stage1-chrome/scripts/score_app.py` (the `demix_metrics.py` rule).
