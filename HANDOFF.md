@@ -49,7 +49,9 @@ summary_real.py, yield_curve.py, chrome_arm.sh). Binaries: main `bin/qc_eval-mai
 
 ## Left to do
 
-- Check fixed == main (motion_s5 s1). If not exact, find why before trusting "main" as the fixed arm.
+- DONE: fixed == main on motion_s5 s1, exactly: 1432 visits over 9550 frames, 743 cells, adds 748 merges 39
+  splits 34, settle 5064 visits / 7999 refines / 89 publishes, work 2.515e11 (only wall time differs, 469 vs
+  499 s, from load). So "main" is a valid fixed arm.
 - Read Auto results; if real-data cells/QC-pass drop noticeably, consider full_yield 0.1 (rerun auto arms).
   The calibration table (new cells per visit at 0.15) is in the visitrate.rs doc comment.
 - Long sims: show visits/frame falling and recall holding (sparse sim = discovery continues late).
