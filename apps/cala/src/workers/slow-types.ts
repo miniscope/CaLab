@@ -93,6 +93,12 @@ export interface SlowInit {
    */
   visitRate?: number;
   /**
+   * The Discover visit rate's schedule (`SlowLoop.setVisitSchedule`, `discover/visitrate.rs`):
+   * `auto` (the default) or `fixed`; it sets the cap (and the target the frame-loop hold aims
+   * at) instead of `visitRate`. Absent: `visitRate` alone (a bare cap).
+   */
+  visitSchedule?: 'auto' | 'fixed';
+  /**
    * The Final settle's visit rate (`SETTLE.visitRate`): with visit workers, tile visits handed
    * out per settle frame fed, a fixed count however fast the settle runs; absent or 0 = visits
    * whenever a visit worker is free (`?debug&settlevisits=off`, the behaviour before).
@@ -203,11 +209,35 @@ export interface VisitRateCounters {
   cappedFrames: number;
   /** Tiles due for a visit now (not out). */
   dueTiles: number;
+  /** Credit earned so far, visits (absent in older builds). */
+  earned?: number;
+  /** The schedule's target in force and the hold's floor under it, visits per frame (0: no schedule). */
+  target?: number;
+  holdFloor?: number;
+  /** Auto (true) or fixed. */
+  auto?: boolean;
+  /** The rung in force (0: the top target). */
+  rung?: number;
+  /** New cells per visit, slow and fast windows. */
+  yieldSlow?: number;
+  yieldFast?: number;
+  /** Ordinary visits the schedule was fed, the new cells they found, and how often the rung changed. */
+  fedVisits?: number;
+  fedNew?: number;
+  rungChanges?: number;
+  /**
+   * The schedule's parameters (`SlowLoop.visitSchedule`; absent: none): `[auto, target, steps,
+   * fullYield, slowHalfLife, fastHalfLife, warmupVisitsPerTile, capRatio, floor, holdFloorRatio]`.
+   */
+  schedule?: number[];
 }
 
-/** `SlowLoop.visitRateStats()` as named counters. */
-export function visitRateCounters(s: ArrayLike<number>): VisitRateCounters {
-  return {
+/** `SlowLoop.visitRateStats()` (and `visitSchedule()`) as named counters. */
+export function visitRateCounters(
+  s: ArrayLike<number>,
+  schedule?: ArrayLike<number>,
+): VisitRateCounters {
+  const c: VisitRateCounters = {
     rate: s[0] ?? 0,
     credit: s[1] ?? 0,
     frames: s[2] ?? 0,
@@ -215,6 +245,20 @@ export function visitRateCounters(s: ArrayLike<number>): VisitRateCounters {
     cappedFrames: s[4] ?? 0,
     dueTiles: s[5] ?? 0,
   };
+  if (s.length >= 16) {
+    c.earned = s[6];
+    c.target = s[7];
+    c.holdFloor = s[8];
+    c.auto = s[9] === 1;
+    c.rung = s[10];
+    c.yieldSlow = s[11];
+    c.yieldFast = s[12];
+    c.fedVisits = s[13];
+    c.fedNew = s[14];
+    c.rungChanges = s[15];
+  }
+  if (schedule && schedule.length > 0) c.schedule = Array.from(schedule);
+  return c;
 }
 
 export interface SlowStatus {

@@ -12,6 +12,8 @@ import type {
   SlowToMain,
   VisitToOwner,
 } from '../workers/slow-types.ts';
+import { visitRateCounters } from '../workers/slow-types.ts';
+import { VISIT_RATE } from '../lib/visit-rate.ts';
 import { initTestWasm } from './wasm-test.ts';
 
 beforeAll(initTestWasm);
@@ -314,15 +316,17 @@ describe('parallel tile visits over the real WASM bindings', () => {
 });
 
 describe('SlowRunner and the Discover visit cap', () => {
-  function run(visitRate?: number) {
+  function run(visitRate?: number, visitSchedule?: 'auto' | 'fixed') {
     const toMain: SlowToMain[] = [];
     const setVisitRate = vi.fn();
+    const setVisitSchedule = vi.fn();
     const loop: SlowLoopLike = {
       observe: () => true,
       step: vi.fn(() => undefined),
       finalize: () => fakeLib(900),
       setNoise: vi.fn(),
       setVisitRate,
+      setVisitSchedule,
       visitRateStats: () => Float64Array.of(1, 0.5, 10, 7, 3, 2),
       cellCount: 0,
       reservoirBytes: 0,
@@ -335,11 +339,23 @@ describe('SlowRunner and the Discover visit cap', () => {
       toMain: { postMessage: (m) => toMain.push(m) },
       now: () => 0,
     });
-    r.handle({ ...INIT, ...(visitRate !== undefined ? { visitRate } : {}) });
+    r.handle({
+      ...INIT,
+      ...(visitRate !== undefined ? { visitRate } : {}),
+      ...(visitSchedule ? { visitSchedule } : {}),
+    });
     r.handle(frames(0));
     const st = toMain.filter((m) => m.type === 'status').at(-1)!;
-    return { setVisitRate, status: st.type === 'status' ? st.status : null };
+    return { setVisitRate, setVisitSchedule, status: st.type === 'status' ? st.status : null };
   }
+
+  it('starts the schedule instead of a bare cap when one is asked for', () => {
+    const a = run(0.2, 'auto');
+    expect(a.setVisitSchedule).toHaveBeenCalledWith(true);
+    expect(a.setVisitRate).not.toHaveBeenCalled();
+    const f = run(0.2, 'fixed');
+    expect(f.setVisitSchedule).toHaveBeenCalledWith(false);
+  });
 
   it('sets the cap from the init and reports its counters', () => {
     const a = run(1);
@@ -360,9 +376,27 @@ describe('SlowRunner and the Discover visit cap', () => {
   it('the WASM slow loop has the cap', () => {
     const n = 64 * 64;
     const s = new SlowLoop(64, 64, new Uint8Array(n).fill(1), new Float32Array(n).fill(1), 10, 0);
-    expect(Array.from(s.visitRateStats())).toEqual([0, 0, 0, 0, 0, 0]);
+    expect(Array.from(s.visitRateStats())).toEqual(new Array(16).fill(0));
+    expect(Array.from(s.visitSchedule())).toEqual([]);
     s.setVisitRate(0.5);
     expect(s.visitRateStats()[0]).toBe(0.5);
+    // A bare cap: its target is the cap, no schedule.
+    expect(s.visitRateStats()[7]).toBe(0.5);
+    // Auto (the app's default): the cap at 4/3 of the 0.15 target, the hold's floor at 2/3.
+    s.setVisitSchedule(true);
+    const c = visitRateCounters(s.visitRateStats(), s.visitSchedule());
+    expect(c.rate).toBeCloseTo(0.2, 12);
+    expect(c.target).toBeCloseTo(VISIT_RATE.target, 12);
+    expect(c.holdFloor).toBeCloseTo(VISIT_RATE.floor, 12);
+    expect(c.auto).toBe(true);
+    expect(c.rung).toBe(0);
+    expect(c.schedule?.[0]).toBe(1);
+    // The TS mirror of the engine's constants agrees with the engine.
+    expect(c.schedule?.[1]).toBeCloseTo(VISIT_RATE.target, 12);
+    expect(c.schedule?.[8]).toBeCloseTo(VISIT_RATE.autoFloor, 12);
+    expect((c.schedule?.[1] ?? 0) * (c.schedule?.[7] ?? 0)).toBeCloseTo(VISIT_RATE.cap, 12);
+    s.setVisitSchedule(false);
+    expect(visitRateCounters(s.visitRateStats()).auto).toBe(false);
     s.free();
   });
 });

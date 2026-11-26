@@ -28,28 +28,54 @@ cells it adds; footprint and trace quality do not move
 (`tools/cala-eval/results/2026-11-24-visit-budget-sweep.md`). The rate used to be
 whatever time was spare: about 0.2 visits per frame at Max (the cell-model worker
 saturated) and about 4.7 paced at 30 fps, so the result depended on the machine and
-the Speed setting. Discover now keeps it fixed (`src/lib/visit-rate.ts`, constants in
-`VISIT_RATE`; values from constant-rate runs on full-length sims and Samara data, see the
-results note and PR #500; recall levels off near 0.2 while false cells keep growing, and
-visits are most of the cell-model worker's time, so the target sits low, at 0.15, for speed;
-only the first ~2000 frames find cells a little later than at 0.25):
+the Speed setting. Discover now sets it from the data (`src/lib/visit-rate.ts`, the
+schedule in `crates/cala/src/discover/visitrate.rs`, `VisitSchedule`; the fixed values
+from constant-rate runs on full-length sims and Samara data, see the results note and
+PR #500; recall levels off near 0.2 while false cells keep growing, and visits are most of
+the cell-model worker's time, so the target sits low, at 0.15, for speed; only the first
+~2000 frames find cells a little later than at 0.25).
 
-| Bound  | Visits per frame | Where                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| ------ | ---------------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| cap    |              0.2 | in the slow loop (`crates/cala/src/discover/visitrate.rs`): ordinary visits are handed out against a credit that grows by 0.2 per observed Discover frame (banked at most 16 frames' worth, not banked while nothing is due). It covers every ordinary visit, whatever made its tile due (live frames, look-back frames, edits nearby); settle visits, the Final settle and Refine-scope visits are not held. Recordings and live streams. |
-| target |             0.15 | the governor (`VisitRateGovernor`): every second of run time it compares the visits per frame **read** with the target; when they fall behind while tiles are due and the cap is not what limits them, it holds the frame loop to the speed at which the measured visit throughput meets the target (down at once, up by at most 25 % per window, released once the hold no longer binds). Recordings only.                                |
-| floor  |              0.1 | below it the hold is cut a further 25 % so the run catches up. Recordings only: a live stream cannot slow down, so it keeps the cap only.                                                                                                                                                                                                                                                                                                  |
+### The target: Auto (the default)
+
+A fixed rate spends as many visits per frame at the end of a 3 h recording, when the
+field is mapped, as at its start. **Auto** keeps the target at 0.15 visits per frame
+while visits find new cells and moves it down a ladder of steps of 1/√2 (0.15, 0.106,
+0.075, 0.053, 0.0375) as new cells stop turning up, and back up when they appear again
+(`tools/cala-eval/results/2026-11-26-visit-rate-auto.md`):
+
+- The signal is the **yield**: new cells (adds the add classification calls new; re-adds
+  where a cell was just removed do not count) per completed ordinary visit. Per visit,
+  not per frame or per second: nothing in it depends on how fast the machine is, and a
+  lower rate does not itself lower it.
+- The target is 0.15 × yield / 0.2 (one new cell per five visits holds the top), rounded
+  up to a rung. It goes down when the yield over the last ~64 visits (exponentially
+  weighted) asks for the rung below, and up when that or the yield over the last ~24
+  visits asks for at least the rung above. The first 2 visits per tile hold the top, so a
+  quiet start does not drop it.
+- It is fed where each visit's result lands, with or without visit workers, so the app
+  and `qc_eval --visit-rate auto` follow the same rule.
+
+`?debug&visitrate=fixed` keeps the target at 0.15 (the behaviour before Auto). The cap
+and the floor follow the target in force:
+
+| Bound  | Visits per frame (top) | Where                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------ | ---------------------: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| cap    |    0.2 (4/3 of target) | in the slow loop (`crates/cala/src/discover/visitrate.rs`): ordinary visits are handed out against a credit that grows by the cap per observed Discover frame (banked at most 16 frames' worth, not banked while nothing is due). It covers every ordinary visit, whatever made its tile due (live frames, look-back frames, edits nearby); settle visits, the Final settle and Refine-scope visits are not held. Recordings and live streams.                                   |
+| target |                   0.15 | the governor (`VisitRateGovernor`): every second of run time (longer while a window would hold fewer than 8 visits at the target) it compares the visits per frame **read** with the target; when they fall behind while tiles are due and the cap is not what limits them, it holds the frame loop to the speed at which the measured visit throughput meets the target (down at once, up by at most 25 % per window, released once the hold no longer binds). Recordings only. |
+| floor  |    0.1 (2/3 of target) | below it the hold is cut a further 25 % so the run catches up. Recordings only: a live stream cannot slow down, so it keeps the cap only (which follows the same schedule).                                                                                                                                                                                                                                                                                                      |
 
 The hold combines with the Speed setting: the frame loop gets the lower of the two
-(Max, Fixed, Curve and Auto keep their own target; the hold only lowers it). The
-Speed block says when the hold binds ("Held at N fps to keep refinement at 0.15
-visits/frame"), and the run log gets an entry each time it moves. Background settle
-is told the user's target, not the hold, so a held Max run does not start it.
+(Max, Fixed, Curve and Auto keep their own target; the hold only lowers it). The Speed
+block shows the rate in force during Discover ("Refinement 0.075 visits/frame (Auto:
+fewer new cells lately, …)") and says when the hold binds ("Held at N fps to keep
+refinement at 0.15 visits/frame"); the run log gets an entry each time the hold or the
+target moves. Background settle is told the user's target, not the hold, so a held Max
+run does not start it.
 
 The Speed block's "max now" is what the run can actually reach: the fast loop's own
 top speed, lowered to what the visits allow once they have held the run back
-(throughput / target, the median of the last 5 windows where they fell behind,
-raised when a later window reads faster and keeps up). The floor's Max clamp, curves,
+(throughput / target in force, the median throughput of the last 5 windows where they
+fell behind, raised when a later window reads faster and keeps up). The floor's Max clamp, curves,
 Auto and the run record's `max_fps_median` use the same figure; `fast_max_fps_median`
 keeps the fast loop's own. A paced run whose visits the cap limits has no such
 reading, so its Max stays the fast loop's. With `?debug&visitrate=off` or on a live
@@ -59,13 +85,15 @@ The floor and target count visits per frame **read** (dropped batches included),
 cap per frame observed. At Max the fast loop drops batches for the slow loop (about
 25 % of the frames on the 3k sim); counted per observed frame, dropping frames would
 itself meet the rate, and a run that drops more would visit less over the same
-recording, which is the speed dependence this removes. Because the cap (0.2) is close
+recording, which is the speed dependence this removes. Because the cap (4/3) is close
 to the target, a run that drops many frames can stay under the target per frame read
 while the cap binds per observed frame; the governor then still slows it, since fewer
 drops is what raises the rate. The run record keeps the
-bounds and what the run achieved (`work.visit_rate`, [run-record.md](run-record.md)).
-`?debug&visitrate=off` restores the behaviour before (no cap, no hold); qc_eval's
-`--visit-rate R` sets the same cap.
+schedule, its parameters, the target's curve and what the run achieved
+(`work.visit_rate`, [run-record.md](run-record.md)). `?debug&visitrate=off` restores the
+behaviour before the fixed rate (no cap, no hold); qc_eval's `--visit-rate auto|fixed`
+runs the same schedule (with the cap at the target, as a held Max run sits, unless
+`--visit-cap-ratio` says otherwise) and `--visit-rate R` a bare cap of R.
 
 ## Order
 

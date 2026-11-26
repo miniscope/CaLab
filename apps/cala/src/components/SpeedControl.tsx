@@ -5,7 +5,13 @@ import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { CellStore } from '../lib/cell-store.ts';
 import { curveWords, CURVE_PRESETS, presetCurve } from '../lib/speed-schedule.ts';
 import { AUTO_BUDGETS, budgetLabel } from '../lib/speed-auto.ts';
-import { VISIT_RATE, maxRepeatText, visitHoldText } from '../lib/visit-rate.ts';
+import {
+  VISIT_RATE,
+  fmtVisitRate,
+  maxRepeatText,
+  visitHoldText,
+  visitRateText,
+} from '../lib/visit-rate.ts';
 import {
   achievedSpeed,
   belowFloorNote,
@@ -143,10 +149,12 @@ export function SpeedControl(props: {
   };
   const words = createMemo(() => floorWords(floor()));
   const maxNow = () => (s().workMaxFps() > 0 ? Math.round(s().workMaxFps()) : null);
+  /** The Discover visit rate's target in force (the engine's schedule; the fixed value before). */
+  const visitTarget = () => s().visitTarget() ?? VISIT_RATE.target;
   /** What "max now" means: the fastest this machine reads frames, or keeps refinement up. */
   const maxTitle = () =>
     s().workMaxVisitLimited()
-      ? `The fastest this machine can go now while keeping refinement at ${VISIT_RATE.target} visits/frame. Reading frames alone could go faster.`
+      ? `The fastest this machine can go now while keeping refinement at ${fmtVisitRate(visitTarget())} visits/frame. Reading frames alone could go faster.`
       : 'The fastest this machine can go now.';
   const marks = () => [...SPEED_TICKS, floorFps()];
   const gov = () => props.cells.status()?.lookback?.csettle?.governor ?? null;
@@ -313,7 +321,12 @@ export function SpeedControl(props: {
   const belowNote = () => (mode() === 'fixed' ? belowFloorNote(shown() ?? 0, floorFps()) : null);
   // The Discover visit rate's hold (`lib/visit-rate.ts`): the run goes slower than asked.
   const holdLine = () =>
-    running() && !done() ? visitHoldText(s().visitHold(), s().paceTarget(), VISIT_RATE) : null;
+    running() && !done() ? visitHoldText(s().visitHold(), s().paceTarget(), visitTarget()) : null;
+  // The rate in force (Auto moves it with the new cells visits find), while Discover runs.
+  const rateLine = () =>
+    running() && !done() && s().visitMode() === 'on'
+      ? visitRateText(s().visitMode(), s().visitSchedule(), s().visitTarget(), s().visitYield())
+      : null;
 
   // Only at Max (mode 'max'; a curve or Auto run has its own target).
   const repeatLine = () => (mode() === 'max' ? maxRepeatText(target()) : null);
@@ -417,12 +430,27 @@ export function SpeedControl(props: {
             </p>
           )}
         </Show>
+        <Show when={rateLine()}>
+          {(line) => (
+            <p
+              class="cala-speed__line"
+              data-testid="speed-visit-rate"
+              title={
+                s().visitSchedule() === 'auto'
+                  ? `Discover's refinement visits per frame (Auto): ${VISIT_RATE.target} while visits keep finding new cells, sliding down to ${fmtVisitRate(VISIT_RATE.autoFloor)} as new cells stop turning up, and back up when they appear again. It follows what the visits find, never how fast this machine is, so the same recording gets the same visits on any machine.`
+                  : `Discover keeps cell refinement at ${VISIT_RATE.target} visits per frame (fixed), so results do not depend on how fast this machine is.`
+              }
+            >
+              {line()}
+            </p>
+          )}
+        </Show>
         <Show when={holdLine()}>
           {(line) => (
             <p
               class="cala-speed__line"
               data-testid="speed-visit-hold"
-              title={`Discover keeps cell refinement between ${VISIT_RATE.floor} and ${VISIT_RATE.cap} visits per frame, so results do not depend on how fast this machine is. When the workers cannot keep up with ${VISIT_RATE.target}, the run is held slower than the Speed setting.`}
+              title={`Discover keeps cell refinement between 2/3 and 4/3 of its target (now ${fmtVisitRate(visitTarget())} visits per frame), so results do not depend on how fast this machine is. When the workers cannot keep up with the target, the run is held slower than the Speed setting.`}
             >
               {line()}
             </p>
@@ -612,9 +640,12 @@ export function SpeedControl(props: {
           <p
             class="cala-speed__line cala-muted"
             data-testid="speed-visit-live"
-            title={`On a recording, Discover keeps cell refinement at about ${VISIT_RATE.target} visits per frame and slows down when the workers fall behind. A live stream cannot slow down, so it keeps only the cap of ${VISIT_RATE.cap} visits per frame: on a slow machine it may refine less than a recording would.`}
+            title={`On a recording, Discover keeps cell refinement at its target (${VISIT_RATE.target} visits per frame while new cells turn up, lower once they stop) and slows down when the workers fall behind. A live stream cannot slow down, so it keeps only the cap of 4/3 of the target: on a slow machine it may refine less than a recording would.`}
           >
-            Refinement capped at {VISIT_RATE.cap} visits/frame (no floor on a live stream).
+            Refinement capped at{' '}
+            {fmtVisitRate((visitTarget() * VISIT_RATE.cap) / VISIT_RATE.target)} visits/frame (no
+            floor on a live stream
+            {s().visitSchedule() === 'auto' ? '; Auto: follows the new cells' : ''}).
           </p>
         </Show>
       </Show>

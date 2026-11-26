@@ -78,11 +78,14 @@ import {
   VISIT_RATE,
   VisitRateGovernor,
   effectivePace,
+  fmtVisitRate,
   heldMaxFps,
   visitRateCap,
   visitRateMode,
   type VisitRateMode,
+  type VisitRateSetting,
   type VisitRateSummary,
+  type VisitSchedule,
 } from './visit-rate.ts';
 
 /** Step requests kept outstanding: one running, one queued so the worker never idles. */
@@ -589,11 +592,15 @@ export function createPipelineStore(
   /** The current target came from the URL (`?debug&pacefps`, source `url`): the Speed control must not override it. */
   const [paceFromUrl, setPaceFromUrl] = createSignal(false);
   /**
-   * The Discover visit rate (`lib/visit-rate.ts`): off only with `?debug&visitrate=off` (the
-   * behaviour before). The governor of this run (null: none yet, or not a Discover run) and its
-   * hold: the speed the frame loop is held to so the visits keep up (null: not held).
+   * The Discover visit rate (`lib/visit-rate.ts`): Auto by default, `?debug&visitrate=fixed` the
+   * fixed rate, `?debug&visitrate=off` none (the behaviour before). The governor of this run (null:
+   * none yet, or not a Discover run) and its hold: the speed the frame loop is held to so the
+   * visits keep up (null: not held); the target in force (the engine's schedule) and its yield.
    */
-  const [visitRateOff, setVisitRateOff] = createSignal(false);
+  const [visitRateSetting, setVisitRateSetting] = createSignal<VisitRateSetting>('auto');
+  const visitRateOff = () => visitRateSetting() === 'off';
+  const [visitTarget, setVisitTarget] = createSignal<number | null>(null);
+  const [visitYield, setVisitYield] = createSignal<number | null>(null);
   /**
    * The Final settle's visit rate, visits per settle frame (`SETTLE.visitRate`; 0: none, visits
    * whenever a visit worker is free, as before): `?debug&settlevisits=` sets it (measurement).
@@ -912,19 +919,47 @@ export function createPipelineStore(
     const s = untrack(status);
     if (!gov || (st.run ?? 1) !== 1 || (s !== 'running' && s !== 'paused')) return;
     const userFps = paceRun() ? paceFps : 0;
+    const vr = st.visitRate;
     const change = gov.update({
       now: pauseClock.now(clock()),
       framesRead: st.consumed ?? st.frame,
       observed: st.observed,
       visits: st.counters.visits,
-      cappedFrames: st.visitRate?.cappedFrames ?? 0,
-      dueTiles: st.visitRate?.dueTiles ?? 0,
+      cappedFrames: vr?.cappedFrames ?? 0,
+      dueTiles: vr?.dueTiles ?? 0,
       userFps,
+      // The engine's schedule (`discover/visitrate.rs`): the target in force and its bounds.
+      ...(vr?.target !== undefined && vr.target > 0
+        ? {
+            target: vr.target,
+            holdFloor: vr.holdFloor,
+            cap: vr.rate,
+            earned: vr.earned,
+            yieldSlow: vr.yieldSlow,
+            yieldFast: vr.yieldFast,
+            newCells: vr.fedNew,
+            scheduleParams: vr.schedule,
+          }
+        : {}),
     });
     if (gov.achieved !== untrack(visitAchieved)) {
       setVisitAchieved(gov.achieved);
       tellVisitRate();
     }
+    if (gov.target !== untrack(visitTarget)) {
+      if (untrack(visitTarget) !== null)
+        runHistory?.log({
+          frame: untrack(processed),
+          kind: 'setting',
+          key: 'visit_target',
+          from: untrack(visitTarget) ?? 0,
+          to: gov.target,
+          detail: `Discover visit rate ${fmtVisitRate(gov.target)} visits/frame (${gov.schedule ?? 'fixed'}; ${gov.yieldSlow !== null ? `${fmtVisitRate(gov.yieldSlow * 100)} new cells per 100 visits` : 'no yield yet'})`,
+        });
+      setVisitTarget(gov.target);
+      tellVisitRate();
+    }
+    setVisitYield(gov.yieldSlow);
     if (!change) return;
     const before = gatePace();
     setVisitHold(change.fps);
@@ -942,7 +977,7 @@ export function createPipelineStore(
         detail:
           change.fps === null
             ? `Visit hold released (${change.achieved.toFixed(2)} visits/frame)`
-            : `Held at ${fmt(after)} to keep refinement at ${VISIT_RATE.target} visits/frame (was ${fmt(before)}; ${change.achieved.toFixed(2)} visits/frame)`,
+            : `Held at ${fmt(after)} to keep refinement at ${fmtVisitRate(gov.target)} visits/frame (was ${fmt(before)}; ${change.achieved.toFixed(2)} visits/frame)`,
       });
     }
     tellVisitRate();
@@ -1306,7 +1341,11 @@ export function createPipelineStore(
           discover: discover(),
           // The Discover visit cap (the slow loop's credit; recordings and live streams alike).
           ...(discover() && visitRateCap(visitRateMode(untrack(visitRateOff), false)) > 0
-            ? { visitRate: visitRateCap(visitRateMode(untrack(visitRateOff), false)) }
+            ? {
+                visitRate: visitRateCap(visitRateMode(untrack(visitRateOff), false)),
+                // The engine's schedule sets the cap (and the target) from here on.
+                visitSchedule: untrack(visitRateSetting) === 'fixed' ? 'fixed' : 'auto',
+              }
             : {}),
           // The Final settle's visit rate (a recording's or a stream's settle; with visit workers).
           ...(discover() && settleVisits > 0 ? { settleVisitRate: settleVisits } : {}),
@@ -1356,10 +1395,15 @@ export function createPipelineStore(
       if (paceRun()) sendPace({ fps: paceFps });
       setVisitHold(null);
       setVisitAchieved(null);
+      setVisitTarget(null);
+      setVisitYield(null);
       // The visit governor: Discover only; a live stream keeps the cap (in the slow loop) only.
+      const vs = untrack(visitRateSetting);
       visitGov = discover()
         ? new VisitRateGovernor(
-            visitRateMode(untrack(visitRateOff), flat.identity?.()?.live === true),
+            visitRateMode(vs === 'off', flat.identity?.()?.live === true),
+            VISIT_RATE,
+            vs === 'off' ? null : vs,
           )
         : null;
       setVisitMode(visitGov?.mode ?? null);
@@ -1639,8 +1683,12 @@ export function createPipelineStore(
     },
     /** The target speed now, frames per second (0: Max). */
     paceFps: () => paceFps,
-    /** `?debug&visitrate=off`: no visit cap and no hold, from the next start (the behaviour before). */
-    setVisitRateOff,
+    /**
+     * `?debug&visitrate=off|fixed` (measurement): no visit cap and no hold (the behaviour before
+     * the fixed rate), or the fixed rate instead of Auto, from the next start.
+     */
+    setVisitRateSetting,
+    visitRateSetting,
     /** `?debug&settlevisits=`: the Final settle's visit rate from the next start (0: none, as before). */
     setSettleVisitRate(rate: number): void {
       settleVisits = Number.isFinite(rate) && rate > 0 ? rate : 0;
@@ -1652,6 +1700,14 @@ export function createPipelineStore(
     visitMode,
     visitHold,
     visitAchieved,
+    /** This run's schedule (`auto`, `fixed`; null: off or not a Discover run). */
+    visitSchedule: (): VisitSchedule | null => {
+      visitMode();
+      return visitGov?.schedule ?? null;
+    },
+    /** The schedule's target in force, visits per frame (null: not reported yet), and new cells per visit. */
+    visitTarget,
+    visitYield,
     /** The pace the frame gate is held to now (the user's target or the visit hold, whichever is lower; 0: Max). */
     gatePace: () => {
       visitHold();

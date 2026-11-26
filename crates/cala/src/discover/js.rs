@@ -26,6 +26,7 @@ use wasm_bindgen::prelude::*;
 use super::{
     EditScope, HeldOutRecord, JointSign, JointUpdate, LookBack, LookbackConfig, LookbackNext,
     LookbackOutcome, SettleSched, SlowLoop, SlowLoopConfig, VisitJob, VisitResult, VisitRunner,
+    VisitSchedule, VISIT_HOLD_FLOOR_RATIO,
 };
 use crate::compress::review::footprints_from_wire;
 use crate::preprocess::flatten::{FlattenConfig, GlowFlattener};
@@ -208,14 +209,48 @@ impl JsSlowLoop {
     }
 
     /// Cap ordinary Discover visits at `rate` per observed frame (0: off,
-    /// the default; see `discover/visitrate.rs`).
+    /// the default), with no schedule (see `discover/visitrate.rs`).
     #[wasm_bindgen(js_name = setVisitRate)]
     pub fn set_visit_rate(&mut self, rate: f64) {
         self.inner.set_visit_rate(rate);
     }
 
+    /// Run the Discover visit cap from the app's schedule: Auto (`auto`,
+    /// the default) or the fixed rate (`VisitSchedule::auto` / `fixed`).
+    #[wasm_bindgen(js_name = setVisitSchedule)]
+    pub fn set_visit_schedule(&mut self, auto: bool) {
+        self.inner.set_visit_schedule(if auto {
+            VisitSchedule::auto()
+        } else {
+            VisitSchedule::fixed()
+        });
+    }
+
+    /// The schedule in force (empty: none): `[auto, target, steps,
+    /// fullYield, slowHalfLife, fastHalfLife, warmupVisitsPerTile,
+    /// capRatio, floor, holdFloorRatio]`.
+    #[wasm_bindgen(js_name = visitSchedule)]
+    pub fn visit_schedule(&self) -> Vec<f64> {
+        match self.inner.visit_schedule() {
+            None => Vec::new(),
+            Some(s) => vec![
+                f64::from(u8::from(s.auto)),
+                s.target,
+                f64::from(s.steps),
+                s.full_yield,
+                s.slow_half_life,
+                s.fast_half_life,
+                s.warmup_visits_per_tile,
+                s.cap_ratio,
+                s.floor(),
+                VISIT_HOLD_FLOOR_RATIO,
+            ],
+        }
+    }
+
     /// The visit cap's counters: `[rate, credit, frames, visits,
-    /// cappedFrames, dueTiles]`.
+    /// cappedFrames, dueTiles, earned, target, holdFloor, auto, rung,
+    /// yieldSlow, yieldFast, fedVisits, fedNew, rungChanges]`.
     #[wasm_bindgen(js_name = visitRateStats)]
     pub fn visit_rate_stats(&self) -> Vec<f64> {
         let v = self.inner.visit_rate_stats();
@@ -226,6 +261,16 @@ impl JsSlowLoop {
             v.visits as f64,
             v.capped_frames as f64,
             v.due_tiles as f64,
+            v.earned,
+            v.target,
+            v.hold_floor,
+            f64::from(u8::from(v.auto)),
+            f64::from(v.rung),
+            v.yield_slow,
+            v.yield_fast,
+            v.fed_visits as f64,
+            v.fed_new as f64,
+            v.rung_changes as f64,
         ]
     }
 

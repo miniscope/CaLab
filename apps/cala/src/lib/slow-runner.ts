@@ -182,7 +182,11 @@ export interface SlowLoopLike {
   setEditScope?(scope: string): void;
   /** The Discover visit cap, visits per observed frame (0: off; absent in older fakes and builds). */
   setVisitRate?(rate: number): void;
-  /** `[rate, credit, frames, visits, cappedFrames, dueTiles]` (`visitRateCounters`). */
+  /** The Discover visit rate's schedule: Auto (`true`) or fixed (absent in older fakes and builds). */
+  setVisitSchedule?(auto: boolean): void;
+  /** The schedule's parameters (`visitRateCounters`' `schedule`; empty: none). */
+  visitSchedule?(): Float64Array | number[];
+  /** `[rate, credit, frames, visits, cappedFrames, dueTiles, earned, target, holdFloor, auto, rung, yieldSlow, yieldFast, fedVisits, fedNew, rungChanges]` (`visitRateCounters`). */
   visitRateStats?(): Float64Array | number[];
   /** Parallel visits (needed only with visit workers). */
   takeJob?(): Uint8Array | undefined;
@@ -920,7 +924,11 @@ export class SlowRunner {
         this.loop = this.clock.span('setup', () => this.deps.create(this.init!));
         // The Discover visit cap (`lib/visit-rate.ts`): ordinary visits only, in Discover's
         // edit scope (the end settle and Refine runs are not held).
-        if (msg.visitRate !== undefined && msg.visitRate > 0)
+        // With a schedule (`auto`, the default, or `fixed`; `discover/visitrate.rs`) the engine
+        // sets the cap from it; `visitRate` alone is a bare cap (older builds, measurement).
+        if (msg.visitSchedule && this.loop.setVisitSchedule)
+          this.loop.setVisitSchedule(msg.visitSchedule === 'auto');
+        else if (msg.visitRate !== undefined && msg.visitRate > 0)
           this.loop.setVisitRate?.(msg.visitRate);
         this.settleRate =
           msg.settleVisitRate !== undefined &&
@@ -2388,7 +2396,9 @@ export class SlowRunner {
       run: this.run,
       editScope: this.scope,
       ...(this.lbOn || this.factorOn ? { lookback: this.lookbackStatus(loop) } : {}),
-      ...(loop.visitRateStats ? { visitRate: visitRateCounters(loop.visitRateStats()) } : {}),
+      ...(loop.visitRateStats
+        ? { visitRate: visitRateCounters(loop.visitRateStats(), loop.visitSchedule?.()) }
+        : {}),
     };
     // Last, so the snapshot includes the time spent building this status.
     status.accounting = this.workStatus();
