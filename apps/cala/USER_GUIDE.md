@@ -242,8 +242,11 @@ A run has two named stages: **Discover** and **Extract** (see
    field of view (its **visit rate**), so Discover sets that rate from what the visits
    find, not from how fast the machine is (**Auto**): 0.15 refinement visits per frame
    while new cells keep turning up, sliding down to about 0.04 as they stop, and back up
-   if new cells appear later. On a long recording most of the time is spent after the
-   field is mapped, so Auto makes Discover much faster there. The Speed block shows the
+   if new cells appear later. Once the field is mapped this saves visits (about half on a
+   30,000-frame recording), but Discover is only somewhat faster for it (about 8–19 %
+   on long recordings, little on short ones), and it finds a few fewer cells: the late,
+   rarely active cells that extra visits still pick up (1–2 % of matched cells on
+   simulations, about 5 % of cells on real data). The Speed block shows the
    rate in force ("Refinement 0.075 visits/frame (Auto: fewer new cells lately, …)").
    Within the rate, a run never makes more than 4/3 and, on a recording, never fewer
    than 2/3 of its visits per frame: on a fast Speed setting or at **Max**, when the
