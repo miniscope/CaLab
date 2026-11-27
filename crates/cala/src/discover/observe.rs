@@ -2,6 +2,7 @@
 //! frames the concurrent settle and look-back feed to the statistics.
 
 use super::local::Rect;
+use super::math::MAD_TO_SIGMA;
 use super::reservoir::mix;
 use super::{timing, SettleStats, SlowLoop};
 use crate::trace::{BackgroundModel, FrameTraces, Library, TraceError};
@@ -103,13 +104,7 @@ impl SlowLoop {
                 "the concurrent settle is not enabled".into(),
             ));
         }
-        let n_px = self.dims.pixels();
-        crate::trace::check_len("frame", n_px, frame.len())?;
-        if lib.dims() != self.dims || traces.library_version != lib.version() {
-            return Err(TraceError::Incompatible(
-                "traces do not come from this library / frame size".into(),
-            ));
-        }
+        self.check_frame(frame, lib, traces)?;
         let w0 = self.work;
         if held_out {
             self.cs_stats.frames_test += 1;
@@ -148,13 +143,7 @@ impl SlowLoop {
         slow_index: u64,
         only: Option<&[u64]>,
     ) -> Result<bool, TraceError> {
-        let n_px = self.dims.pixels();
-        crate::trace::check_len("frame", n_px, frame.len())?;
-        if lib.dims() != self.dims || traces.library_version != lib.version() {
-            return Err(TraceError::Incompatible(
-                "traces do not come from this library / frame size".into(),
-            ));
-        }
+        self.check_frame(frame, lib, traces)?;
         if self.is_test(slow_index) {
             return Ok(false);
         }
@@ -173,13 +162,7 @@ impl SlowLoop {
         held_out: bool,
         only: Option<&[u64]>,
     ) -> Result<bool, TraceError> {
-        let n_px = self.dims.pixels();
-        crate::trace::check_len("frame", n_px, frame.len())?;
-        if lib.dims() != self.dims || traces.library_version != lib.version() {
-            return Err(TraceError::Incompatible(
-                "traces do not come from this library / frame size".into(),
-            ));
-        }
+        self.check_frame(frame, lib, traces)?;
         if held_out {
             return Ok(false);
         }
@@ -216,6 +199,23 @@ impl SlowLoop {
         }
     }
 
+    /// A frame of this loop's size, and traces solved with `lib` (of the
+    /// same size).
+    fn check_frame(
+        &self,
+        frame: &[f32],
+        lib: &Library,
+        traces: &FrameTraces,
+    ) -> Result<(), TraceError> {
+        crate::trace::check_len("frame", self.dims.pixels(), frame.len())?;
+        if lib.dims() != self.dims || traces.library_version != lib.version() {
+            return Err(TraceError::Incompatible(
+                "traces do not come from this library / frame size".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Whitened frame (`z`) and the residual blurred to cell scale
     /// (`coarse_blur`), with the residual's robust noise scale.
     fn score_residual(
@@ -224,13 +224,7 @@ impl SlowLoop {
         lib: &Library,
         traces: &FrameTraces,
     ) -> Result<f32, TraceError> {
-        let n_px = self.dims.pixels();
-        crate::trace::check_len("frame", n_px, frame.len())?;
-        if lib.dims() != self.dims || traces.library_version != lib.version() {
-            return Err(TraceError::Incompatible(
-                "traces do not come from this library / frame size".into(),
-            ));
-        }
+        self.check_frame(frame, lib, traces)?;
         let bg = match lib.background_model() {
             BackgroundModel::Basis(_) => Some(traces.background.as_slice()),
             _ => None,
@@ -266,7 +260,7 @@ impl SlowLoop {
             let (_, m, _) = self
                 .sample
                 .select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
-            (1.4826 * *m).max(1e-6)
+            (MAD_TO_SIGMA * *m).max(1e-6)
         };
         lap.lap(&mut self.stage.observe[2]);
         Ok(scale)

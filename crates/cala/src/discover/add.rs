@@ -2,7 +2,7 @@
 //! explanations (absorb, merge-in) they must beat.
 
 use super::local::{rank1, BgBasis, Cell, Column, Fit, Problem, Rect};
-use super::math::{adjusted_r2, clip, corr, paired_z};
+use super::math::{adjusted_r2, clip, corr, paired_z, MAD_TO_SIGMA};
 use super::shard::Op;
 use super::solve::Frames;
 use super::{EditKind, SlowLoop};
@@ -51,30 +51,7 @@ impl SlowLoop {
         while adds < self.cfg.max_adds_per_visit && rejects < self.cfg.max_rejects_per_visit {
             if maps.is_none() {
                 let resid = resid.take().expect("first pass");
-                // Cell-scale blur of each residual (over the core only), then
-                // a robust noise scale.
-                let mut blurred = Vec::with_capacity(resid.len());
-                for r in &resid {
-                    let mut b = vec![0.0f32; r.len()];
-                    self.blur_window(rect, core, r, &mut b);
-                    blurred.push(b);
-                }
-                let mut sample: Vec<f32> = blurred
-                    .iter()
-                    .flat_map(|b| {
-                        (0..core.h).step_by(3).flat_map(move |y| {
-                            let row = (core.y0 - rect.y0 + y) * rect.w + core.x0 - rect.x0;
-                            b[row..row + core.w].iter().step_by(3).map(|v| v.abs())
-                        })
-                    })
-                    .collect();
-                let mid = sample.len() / 2;
-                let scale = if sample.is_empty() {
-                    1.0
-                } else {
-                    1.4826 * *sample.select_nth_unstable_by(mid, |a, b| a.total_cmp(b)).1
-                }
-                .max(1e-6);
+                let (blurred, scale) = self.blurred_maps(rect, core, &resid);
                 let mut score = vec![0.0f32; core.len()];
                 self.score_window(rect, core, core, &blurred, scale, &mut score);
                 maps = Some((resid, blurred, scale, score));
@@ -277,33 +254,42 @@ impl SlowLoop {
             let base = self.problem(ti, cols);
             let fits = self.solve_all(&base, test_fr);
             let resid = self.residuals(&base, test_fr, &fits, ti);
-            let mut blurred = Vec::with_capacity(resid.len());
-            for r in &resid {
-                let mut b = vec![0.0f32; r.len()];
-                self.blur_window(rect, core, r, &mut b);
-                blurred.push(b);
-            }
-            let mut sample: Vec<f32> = blurred
-                .iter()
-                .flat_map(|b| {
-                    (0..core.h).step_by(3).flat_map(move |y| {
-                        let row = (core.y0 - rect.y0 + y) * rect.w + core.x0 - rect.x0;
-                        b[row..row + core.w].iter().step_by(3).map(|v| v.abs())
-                    })
-                })
-                .collect();
-            let mid = sample.len() / 2;
-            let scale = if sample.is_empty() {
-                1.0
-            } else {
-                1.4826 * *sample.select_nth_unstable_by(mid, |a, b| a.total_cmp(b)).1
-            }
-            .max(1e-6);
+            let (blurred, scale) = self.blurred_maps(rect, core, &resid);
             *maps = Some((blurred, scale));
         }
         let (blurred, scale) = maps.as_ref().expect("computed");
         let hits = blurred.iter().filter(|b| b[l] / scale > 2.0).count();
         hits >= self.cfg.min_events as usize
+    }
+
+    /// Each residual of `rect` blurred to cell scale over `core` (zero
+    /// elsewhere), and their robust noise scale: `MAD_TO_SIGMA` times the
+    /// median |value| over every third core pixel and row of every map (at
+    /// least 1e-6; 1 when there are none).
+    fn blurred_maps(&mut self, rect: Rect, core: Rect, resid: &[Vec<f32>]) -> (Vec<Vec<f32>>, f32) {
+        let mut blurred = Vec::with_capacity(resid.len());
+        for r in resid {
+            let mut b = vec![0.0f32; r.len()];
+            self.blur_window(rect, core, r, &mut b);
+            blurred.push(b);
+        }
+        let mut sample: Vec<f32> = blurred
+            .iter()
+            .flat_map(|b| {
+                (0..core.h).step_by(3).flat_map(move |y| {
+                    let row = (core.y0 - rect.y0 + y) * rect.w + core.x0 - rect.x0;
+                    b[row..row + core.w].iter().step_by(3).map(|v| v.abs())
+                })
+            })
+            .collect();
+        let mid = sample.len() / 2;
+        let scale = if sample.is_empty() {
+            1.0
+        } else {
+            MAD_TO_SIGMA * *sample.select_nth_unstable_by(mid, |a, b| a.total_cmp(b)).1
+        }
+        .max(1e-6);
+        (blurred, scale)
     }
 
     fn detect_sigma(&self) -> f32 {

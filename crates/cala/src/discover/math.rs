@@ -4,6 +4,12 @@ use super::local;
 use super::local::{Column, Fit, Rect};
 use crate::trace::Library;
 
+/// Gaussian σ per unit of median absolute deviation (1 / 0.6745, to the
+/// digits the slow loop has always used): the robust scale of its residual
+/// maps. Deliberately not `preprocess::stats::MAD_GAUSSIAN`, whose reciprocal
+/// differs in the fifth digit and would change results.
+pub(super) const MAD_TO_SIGMA: f32 = 1.4826;
+
 /// The filtered column of the cell in `slot` on the sorted pixels `pix`, as
 /// the fast loop models it: exact on the support, the moat's block means
 /// off it, 0 beyond.
