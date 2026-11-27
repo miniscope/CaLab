@@ -13,9 +13,9 @@ import type { FactorSource, LookbackStatus } from './lookback-types.ts';
 
 /**
  * The structural edits the slow loop may make (`SlowLoop.setEditScope`, the
- * engine's `EditScope` names). Discover runs with `all`, Refine with `refine`;
- * the others exist in the engine (qc_eval's `--later-passes`) but no stage
- * uses them yet (docs/stages.md).
+ * engine's `EditScope` names). Discover runs with `all`, the Final settle with
+ * `refine`; the others exist in the engine (qc_eval's `--later-passes`) but no
+ * stage uses them (docs/stages.md).
  */
 export type EditScopeName = 'all' | 'refine' | 'refine-prune' | 'refine-merge';
 
@@ -33,7 +33,7 @@ export interface SlowInit {
   /** Slow-loop work units per observed frame (about multiply-adds). */
   budget: number;
   /**
-   * Look-back (experimental; absent = off): the slow loop is built with the
+   * Look-back (on by default for recordings; absent = off): the slow loop is built with the
    * options look-back runs with (`SlowLoop.withConfig(.., 'all', 'all', 0.6)`,
    * visit workers alike), re-reads past frames through the look-back worker
    * during Discover and settles after the last frame (see `SlowRunner`).

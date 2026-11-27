@@ -3,6 +3,7 @@
  * synchronous access handles (see lib/opfs-writer.ts). One handle per open
  * file name; requests are answered in order.
  */
+import { errMsg } from '../lib/errors.ts';
 export type OpfsRequest =
   | { id: number; op: 'open'; name: string }
   | { id: number; op: 'write'; name: string; at: number; bytes: Uint8Array }
@@ -116,7 +117,7 @@ self.onmessage = (e: MessageEvent<OpfsRequest>) => {
         id: req.id,
         ok: false,
         name: err instanceof Error ? err.name : 'Error',
-        message: err instanceof Error ? err.message : String(err),
+        message: errMsg(err),
       };
       self.postMessage(res);
     },

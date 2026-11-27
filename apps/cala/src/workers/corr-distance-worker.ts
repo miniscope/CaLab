@@ -3,6 +3,7 @@
  * Runs once on demand, away from the main thread and the pipeline.
  */
 import { computeCorrDistance, type CorrDistanceResult } from '../lib/corr-distance.ts';
+import { errMsg } from '../lib/errors.ts';
 
 export interface CorrRequest {
   id: number;
@@ -31,6 +32,6 @@ workerScope.onmessage = (e) => {
     result.bytes = e.data.traces.byteLength;
     workerScope.postMessage({ id, result });
   } catch (err) {
-    workerScope.postMessage({ id, error: err instanceof Error ? err.message : String(err) });
+    workerScope.postMessage({ id, error: errMsg(err) });
   }
 };

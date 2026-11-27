@@ -308,7 +308,6 @@ export function SelectedCellPanel(props: {
   return (
     <SidePanel
       id="cell"
-      fixed
       class="cala-cell-panel"
       title={
         <Show when={props.cells.selected()} fallback="Cell">

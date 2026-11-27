@@ -9,6 +9,7 @@ import {
   FLAG_UNMEASURED,
   MIN_SNR,
   normalize,
+  PAIR_R,
   verdict,
   type Neighbour,
 } from '../lib/qc.ts';
@@ -196,7 +197,7 @@ export function DemixView(props: { cells: CellStore; id: number }): JSX.Element 
       </p>
       <p class="cala-muted cala-demix__self">
         <span class="cala-legend__swatch" style={{ background: SELF_COLOR }} />#{props.id}: vif{' '}
-        {num(row()?.vif)}, max overlap {num(row()?.maxOverlap)}; red rows: trace r &gt; 0.8
+        {num(row()?.vif)}, max overlap {num(row()?.maxOverlap)}; red rows: trace r &gt; {PAIR_R}
       </p>
       <div class="cala-demix__top">
         <canvas
@@ -216,7 +217,7 @@ export function DemixView(props: { cells: CellStore; id: number }): JSX.Element 
           <tbody>
             <For each={nbs()}>
               {(n, i) => (
-                <tr classList={{ 'cala-demix__pair': n.r > 0.8 }}>
+                <tr classList={{ 'cala-demix__pair': n.r > PAIR_R }}>
                   <td>
                     <span class="cala-legend__swatch" style={{ background: NB_COLORS[i()] }} />
                     <button type="button" class="cala-link" onClick={() => c().select(n.id)}>

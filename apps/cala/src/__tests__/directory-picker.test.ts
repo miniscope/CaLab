@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   entriesFromDirectoryHandle,
-  pickDirectory,
+  pickDirectoryWithHandle,
   supportsDirectoryPicker,
   type DirHandleLike,
   type FileHandleLike,
@@ -67,7 +67,7 @@ describe('picker selection', () => {
     const show = vi.fn(async () => dir('rec', [file('0.avi')]));
     (window as unknown as { showDirectoryPicker: unknown }).showDirectoryPicker = show;
     expect(supportsDirectoryPicker()).toBe(true);
-    const entries = await pickDirectory();
+    const entries = (await pickDirectoryWithHandle())?.entries;
     expect(show).toHaveBeenCalledWith({ mode: 'read' });
     expect(entries?.map((e) => e.relPath)).toEqual(['rec/0.avi']);
   });
@@ -76,13 +76,13 @@ describe('picker selection', () => {
     (window as unknown as { showDirectoryPicker: unknown }).showDirectoryPicker = async () => {
       throw new DOMException('cancelled', 'AbortError');
     };
-    expect(await pickDirectory()).toBeNull();
+    expect(await pickDirectoryWithHandle()).toBeNull();
   });
 
   it('propagates other errors', async () => {
     (window as unknown as { showDirectoryPicker: unknown }).showDirectoryPicker = async () => {
       throw new DOMException('blocked', 'SecurityError');
     };
-    await expect(pickDirectory()).rejects.toThrow('blocked');
+    await expect(pickDirectoryWithHandle()).rejects.toThrow('blocked');
   });
 });

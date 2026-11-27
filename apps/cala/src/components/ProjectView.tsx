@@ -14,6 +14,7 @@ import type { ProjectResult } from '../lib/project-index.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { BoundaryBadge } from './BoundaryBadge.tsx';
 import { DiscoverSettings } from './DiscoverSettings.tsx';
+import { errMsg } from '../lib/errors.ts';
 
 interface ProjectViewProps {
   project: ProjectStore;
@@ -86,7 +87,7 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
       const h = await showPicker('readwrite');
       if (h) await p().useResultsFolder(h as unknown as ReadDirLike);
     } catch (err) {
-      if (!isPickerAbort(err)) setStartError(err instanceof Error ? err.message : String(err));
+      if (!isPickerAbort(err)) setStartError(errMsg(err));
     }
   }
 
@@ -96,7 +97,7 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
       if (!(await p().startPlan()))
         setStartError('The browser did not allow writing to the results folder.');
     } catch (err) {
-      setStartError(err instanceof Error ? err.message : String(err));
+      setStartError(errMsg(err));
     }
   }
 

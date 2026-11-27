@@ -245,7 +245,7 @@ function factorSetup(initial: FactorState = 'ready', mode: 'stream' | 'file' = '
   };
   const s = setup();
   // `setup` builds a port-less store: rebuild with the port over the same fakes.
-  const store = createPass2Store(s.client, s.pipeline, s.cells, undefined, undefined, port);
+  const store = createPass2Store(s.client, s.pipeline, s.cells, undefined, port);
   return {
     store,
     started: s.started,

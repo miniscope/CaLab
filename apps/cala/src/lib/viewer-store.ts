@@ -7,6 +7,7 @@
 import { createSignal, onCleanup } from 'solid-js';
 import type { FrameClient } from './frame-client.ts';
 import type { FolderEntry, FramePixels, FrameSourceInfo, SessionInput } from './frame-source.ts';
+import { errMsg } from './errors.ts';
 
 /** Playback rate when the recording has neither timestamps nor metadata. */
 export const FALLBACK_PLAYBACK_FPS = 20;
@@ -43,7 +44,7 @@ export function createViewerStore(client: FrameClient) {
     } catch (err) {
       if (gen === generation) {
         setPlaying(false);
-        setError(err instanceof Error ? err.message : String(err));
+        setError(errMsg(err));
       }
     } finally {
       inFlight = false;
@@ -125,7 +126,7 @@ export function createViewerStore(client: FrameClient) {
       showFrame(0);
       return true;
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
       return false;
     } finally {
       setLoading(false);
@@ -148,7 +149,7 @@ export function createViewerStore(client: FrameClient) {
       setFrame(null);
       setFrameIndex(0);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
     } finally {
       setLoading(false);
     }

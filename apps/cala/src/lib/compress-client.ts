@@ -7,6 +7,7 @@
  */
 import type { FrameClient } from './frame-client.ts';
 import type { CompressToMain, MainToCompress } from '../workers/compress-types.ts';
+import { errMsg } from './errors.ts';
 
 export interface CompressClient {
   /** Ask for the traces of every compressed window, solved with library `version`. */
@@ -66,9 +67,7 @@ export function createCompressClient(
     ...(helperPorts.length > 0 ? { helpers: helperPorts } : {}),
   };
   worker.postMessage(connect, [channel.port2, ...(review ? [review.port] : []), ...helperPorts]);
-  void frames
-    .connectCompress?.(channel.port1)
-    .catch((err: unknown) => fail(err instanceof Error ? err.message : String(err)));
+  void frames.connectCompress?.(channel.port1).catch((err: unknown) => fail(errMsg(err)));
   return {
     backfill(session, version) {
       worker.postMessage({ type: 'backfill', session, version } satisfies MainToCompress);

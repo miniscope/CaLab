@@ -304,7 +304,7 @@
   flex-basis: 100%;
 }
 
-/* ---- Right-hand column: collapsible panels ---- */
+/* ---- Right-hand column: panels ---- */
 .cala-side-panel {
   flex: none;
   display: flex;
@@ -318,61 +318,6 @@
   flex-wrap: wrap;
   gap: var(--space-xs) var(--space-sm);
   min-height: 26px;
-}
-
-.cala-side-panel__toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-xs);
-  padding: 0;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  color: var(--text-secondary);
-}
-
-.cala-side-panel__toggle:hover .panel-label {
-  color: var(--accent);
-}
-
-/* The chevron sits in a small bordered button so the panels read as
-   collapsible: it points down when open and right when collapsed. */
-.cala-side-panel__chev {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  background: var(--bg-primary);
-  color: var(--text-secondary);
-  transition:
-    background var(--transition-fast),
-    border-color var(--transition-fast),
-    color var(--transition-fast);
-}
-
-.cala-side-panel__chev-icon {
-  transition: transform var(--transition-fast);
-}
-
-.cala-side-panel--closed .cala-side-panel__chev-icon {
-  transform: rotate(-90deg);
-}
-
-.cala-side-panel__toggle:hover .cala-side-panel__chev,
-.cala-side-panel__toggle:focus-visible .cala-side-panel__chev {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-}
-
-/* A collapsed panel says so, and its whole header is the target. */
-.cala-side-panel--closed .cala-side-panel__title::after {
-  content: ' · collapsed';
-  font-weight: var(--font-weight-normal, 400);
-  color: var(--text-tertiary);
 }
 
 .cala-side-panel__title {
@@ -400,10 +345,6 @@
   gap: var(--space-xs);
   min-height: 0;
   margin-top: var(--space-xs);
-}
-
-.cala-side-panel__body[hidden] {
-  display: none;
 }
 
 /* ---- Run strip: the run on one line, always in view ---- */
@@ -435,14 +376,6 @@
   flex: 1 1 4rem;
   min-width: 3rem;
   margin: 0;
-}
-
-.cala-strip__pct {
-  flex: none;
-  min-width: 2.6em;
-  text-align: right;
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
 }
 
 .cala-strip__detail {
@@ -1220,7 +1153,7 @@
 }
 
 /* Stacked: every panel takes its natural height; the page scrolls. */
-.cala-main--narrow .cala-side-panel:not(.cala-side-panel--closed) {
+.cala-main--narrow .cala-side-panel {
   flex: none;
 }
 
@@ -1659,8 +1592,7 @@
   color: var(--text-secondary);
 }
 
-.cala-work__aside,
-.cala-work__small {
+.cala-work__aside {
   font-size: 0.75rem;
   line-height: 18px;
   color: var(--text-secondary);
@@ -1849,65 +1781,6 @@
 .cala-work__now {
   stroke: var(--text-primary);
   stroke-width: 1;
-}
-
-.cala-work__kv {
-  display: grid;
-  grid-template-columns: minmax(64px, 96px) 1fr;
-  gap: 2px 8px;
-  margin: 0;
-  font-size: 0.75rem;
-  line-height: 18px;
-}
-
-.cala-work__kv dt {
-  color: var(--text-secondary);
-}
-
-.cala-work__kv dd {
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.cala-work__prog {
-  height: 6px;
-  margin: 3px 0 2px;
-  border-radius: 3px;
-  overflow: hidden;
-  background: var(--k-spare);
-}
-
-.cala-work__prog > i {
-  display: block;
-  height: 100%;
-  background: var(--text-primary);
-}
-
-.cala-work__prog > i.cala-work__prog-settle {
-  background: var(--k-final-settle);
-}
-
-.cala-work__slot {
-  margin-top: 6px;
-  padding: 4px 8px;
-  border: 1px dashed var(--border-default);
-  border-radius: var(--radius-md);
-}
-
-.cala-work__tri {
-  display: flex;
-  height: 8px;
-  margin: 3px 0;
-  border-radius: 2px;
-  overflow: hidden;
-  background: var(--k-spare);
-}
-
-.cala-work__tri > i {
-  display: block;
-  height: 100%;
-  border-right: 1px solid #fff;
 }
 
 /* Paused or done: the bars keep their last values, dimmed. */

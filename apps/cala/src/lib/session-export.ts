@@ -287,14 +287,3 @@ export function zipResultsSink(
     },
   };
 }
-
-/** Readwrite permission on a directory handle (asked inside a click). */
-export async function ensureReadwrite(handle: unknown): Promise<boolean> {
-  const h = handle as {
-    queryPermission?: (o: { mode: 'readwrite' }) => Promise<PermissionState>;
-    requestPermission?: (o: { mode: 'readwrite' }) => Promise<PermissionState>;
-  };
-  if (typeof h.requestPermission !== 'function') return true;
-  if ((await h.queryPermission?.({ mode: 'readwrite' })) === 'granted') return true;
-  return (await h.requestPermission({ mode: 'readwrite' })) === 'granted';
-}

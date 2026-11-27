@@ -22,7 +22,7 @@ import { loadSpanStats } from './lib/extract-qc-wasm.ts';
 import { ASSUMED_FPS } from './lib/miniscope-meta.ts';
 import type { QcSnapshot } from './lib/qc.ts';
 import { createCompressClient } from './lib/compress-client.ts';
-import { compressPoolSize, helpersFor, parsePoolOverride } from './lib/compress-pool.ts';
+import { compressPoolSize, helpersFor } from './lib/compress-pool.ts';
 import { COMPRESS_DEFAULTS } from './lib/compress-feed.ts';
 import {
   createCompressStore,
@@ -33,7 +33,7 @@ import {
 import { createFactorExtract } from './lib/factor-extract.ts';
 import { FACTOR_STALL_TEXT, FactorSettle, FileSettleChoice } from './lib/factor-settle.ts';
 import { STOPPED_TEXT } from './lib/compress-runner.ts';
-import { factorsFromPage } from './lib/factor-run.ts';
+import { parsePageFlags } from './lib/page-flags.ts';
 import { createPass2Store, replayBlocked } from './lib/pass2-store.ts';
 import {
   createStageLog,
@@ -70,10 +70,10 @@ import { setupAnalyticsEffects } from './lib/analytics-integration.ts';
 import { sessionBoundaries, sessionOfFrame } from './lib/frame-source.ts';
 import {
   directoryResultsSink,
-  ensureReadwrite,
   zipResultsSink,
   type WritableDirLike,
 } from './lib/session-export.ts';
+import { ensurePermission } from './lib/fs-handles.ts';
 import { supportsDirectoryPicker } from './lib/directory-picker.ts';
 import { ProjectView } from './components/ProjectView.tsx';
 import { createProjectStore } from './lib/project-store.ts';
@@ -89,7 +89,6 @@ import { presetCurve } from './lib/speed-schedule.ts';
 import { PACE_BATCH, PACE_SLACK } from './lib/frame-pacer.ts';
 import { FLOOR, TRACKER } from './lib/speed-floor.ts';
 import { LOOKBACK } from './lib/slow-runner.ts';
-import { visitRateSetting } from './lib/visit-rate.ts';
 import {
   CSETTLE,
   GOVERNOR,
@@ -97,7 +96,6 @@ import {
   SETTLE,
   settleChange,
   settlePoolSize,
-  settleVisitRate,
   unitFootprints,
 } from './lib/settle.ts';
 import {
@@ -117,6 +115,7 @@ import { DonatePanel, MyDonationsEntry } from './components/DonatePanel.tsx';
 import { BrowseDonationsEntry } from './components/BrowseDonations.tsx';
 import { createDonationStore } from './lib/donation-store.ts';
 import type { DonationSource } from './workers/donation-types.ts';
+import { errMsg } from './lib/errors.ts';
 
 const App: Component = () => {
   // Magic-link redirect: show the sign-in confirmation instead of the app.
@@ -134,12 +133,13 @@ const App: Component = () => {
   if (isAuthCallback()) return <AuthCallback user={user} loading={authLoading} />;
 
   // The worker (and the files it holds) lives as long as the app.
+  // The page's URL flags, read once (`lib/page-flags.ts`).
+  const flags = parsePageFlags(window.location.search);
   // `?pipeline=0`: the old single-worker path (to compare frame rates).
-  const params = new URLSearchParams(window.location.search);
   const client = createFrameClient(undefined, {
-    pipelined: params.get('pipeline') !== '0',
+    pipelined: flags.pipelined,
     // `?gpu=0`: WASM motion correction (to compare with WebGPU).
-    gpu: params.get('gpu') !== '0',
+    gpu: flags.gpu,
   });
   const store = createViewerStore(client);
   // The run's history over stream time: fed by the cell and pipeline stores, read by the History views.
@@ -149,22 +149,21 @@ const App: Component = () => {
   // Cell discovery runs in a worker of its own, fed directly by the frame
   // worker, with its tile visits spread over the spare cores.
   // `?visits=N`: that many visit workers (0 = the slow worker visits itself).
-  const visits = params.get('visits');
   // `?review` (with `?compress`): the history review, every 8 compressed windows
   // (`?review=N`: every N), in a worker of its own. One core is left for it.
   // A live stream settles and extracts on the factors Discover writes, and a recording
   // on the factors the GPU compresses while Discover runs, by default (`?factors=0`: off;
   // `?compress&review` turns it off for the review). On a recording `?factors` runs as
   // with `?compress`, and `?factors=file` (experimental) compresses on the CPU.
-  const pageFactors = factorsFromPage(params);
+  const pageFactors = flags.factors;
   if (pageFactors.warn) console.warn(pageFactors.warn);
-  const reviewWindows = pageFactors.review ? reviewEvery(params.get('review')) : null;
+  const reviewWindows = pageFactors.review ? reviewEvery(flags.review) : null;
   const slow = createSlowClient(
     client,
     (msg) => cells.onSlowMessage(msg),
     undefined,
-    visits !== null && visits !== ''
-      ? visitWorkerCount(Number(visits) + RESERVED_THREADS)
+    flags.visits !== null
+      ? visitWorkerCount(flags.visits + RESERVED_THREADS)
       : visitWorkerCount(navigator.hardwareConcurrency - (reviewWindows === null ? 0 : 1)),
   );
   // `?noqc`: run without online quality control (to measure its cost).
@@ -185,13 +184,13 @@ const App: Component = () => {
   // Max. S from the core count (`settlePoolSize`); `?debug&lbpool=S` overrides it (measurement).
   const lbPool = settlePoolSize(
     typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined,
-    params.has('debug') && params.has('lbpool') ? Number(params.get('lbpool')) || 0 : null,
+    flags.lbpool,
   );
   // The compress pool: a recording's windows are compressed by the compress worker and its
   // helpers, few while Discover reads and more after its last frame (`compressPoolSize`);
   // `?debug&cpool=D,E` sets both (measurement).
   const cpool =
-    (params.has('debug') ? parsePoolOverride(params.get('cpool')) : null) ??
+    flags.cpool ??
     compressPoolSize(
       typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined,
       slow.visitWorkers,
@@ -210,7 +209,7 @@ const App: Component = () => {
   // Look-back: Discover refines footprints as it goes by re-reading past frames in a
   // worker of its own, and settles at the end (the Final settle).
   // A recording on disk (one session or a Joint run of several), pipelined workers only.
-  const pipelined = params.get('pipeline') !== '0';
+  const pipelined = flags.pipelined;
   const lookbackClient = createLookbackClient({
     slow,
     pool: lbPool,
@@ -237,10 +236,10 @@ const App: Component = () => {
   // `?flatfield=0`: start with the sensor flat field off (to compare frame rates).
   const pipeline = createPipelineStore(
     client,
-    params.get('flatfield') === '0' ? { flatField: false } : {},
+    flags.flatFieldOff ? { flatField: false } : {},
     undefined,
     cells,
-    !params.has('noqc'),
+    !flags.noqc,
     slow.visitWorkers > 0 ? PARALLEL_FORWARD_BUFFERS : undefined,
     {
       // The sensor flat field is stored per device in this browser (IndexedDB).
@@ -280,18 +279,17 @@ const App: Component = () => {
   if (speed.cap === 0) pipeline.setCsettle(false);
   else pipeline.setCsettleCeiling(speed.cap);
   // Look-back (with its Final settle) is on by default for recordings; `?lookback=0` turns it off.
-  if (params.get('lookback') === '0') pipeline.setLookback(false);
+  if (flags.lookbackOff) pipeline.setLookback(false);
   if (pageFactors.factors) pipeline.setFactors(true);
   pipeline.setFactorsDefault(pageFactors.factorsDefault);
   pipeline.setCompressAsked(pageFactors.compressAsked);
   pipeline.setCompressPool(cpool);
   // `?debug&cbacklog=GB`: the cap on window files waiting for compression (measurement).
-  const cbacklog = params.has('debug') ? Number(params.get('cbacklog')) : NaN;
-  if (cbacklog > 0) pipeline.setCompressBacklogCap(cbacklog * 2 ** 30);
+  if (flags.cbacklogGb > 0) pipeline.setCompressBacklogCap(flags.cbacklogGb * 2 ** 30);
   // `?debug&fextract=0`: Extract on factors on rebuilt frames, as before slice 6 (measurement).
-  pipeline.setFrameExtract(params.has('debug') && params.get('fextract') === '0');
+  pipeline.setFrameExtract(flags.frameExtract);
   // `?debug&lbpoolmax`: the settle pool starts at Max too (measurement: the pooled Final settle at Max).
-  pipeline.setPoolAtMax(params.has('debug') && params.has('lbpoolmax'));
+  pipeline.setPoolAtMax(flags.poolAtMax);
   if (pageFactors.factorsFile)
     pipeline.setFactorsFile(true, () => {
       const s = store.source();
@@ -299,39 +297,32 @@ const App: Component = () => {
     });
   pipeline.setFactorsGpu(pageFactors.factorsGpu);
   // `?debug&gpucheck=N`: the GPU's factors of the first N windows against the CPU's (measurement).
-  const gpucheck = params.has('debug') ? Math.floor(Number(params.get('gpucheck'))) : NaN;
-  pipeline.setGpuCheck(gpucheck > 0 ? gpucheck : 0);
+  pipeline.setGpuCheck(flags.gpucheck > 0 ? flags.gpucheck : 0);
   // Background settle (settle during Discover) is on under look-back whenever the target is
   // below Max; `csettle=0` turns it off, `csettle=yield` or `csettle=yieldN` feeds each answer
   // N frames at a time (1 by default), `csrate=1|0.5` lowers the cap from 2 re-read frames
   // per live frame.
-  const cs = params.get('csettle');
   // The URL decides the settle when it says anything about it, over the Speed block's saved cap.
-  if (cs !== null || params.has('csrate')) pipeline.setCsettle(cs !== '0', 'url');
-  if (cs !== null && cs !== '0') {
-    const y = /^yield(\d*)$/.exec(cs);
-    if (y) pipeline.setCsettleYield(y[1] ? Number(y[1]) : 1);
+  if (flags.csettle) {
+    pipeline.setCsettle(flags.csettle.on, 'url');
+    if (flags.csettle.yield !== null) pipeline.setCsettleYield(flags.csettle.yield);
+    if (flags.csettle.ceiling !== null) pipeline.setCsettleCeiling(flags.csettle.ceiling, 'url');
   }
-  if (params.has('csrate')) pipeline.setCsettleCeiling(Number(params.get('csrate')), 'url');
   // `?debug&needfirst` (measurement only): with one look-back worker, need-driven look-back
   // goes first and Background settle asks only when it has nothing to ask.
-  if (params.has('debug') && params.has('needfirst') && params.get('needfirst') !== '0')
-    pipeline.setCsettleNeedFirst(true);
+  if (flags.needFirst) pipeline.setCsettleNeedFirst(true);
   // `?debug&visitrate=off|auto` (measurement only): no Discover visit cap and no hold (the
   // behaviour before the fixed visit rate), or the opt-in Auto schedule instead of the fixed rate (`lib/visit-rate.ts`).
-  if (params.has('debug') && params.has('visitrate'))
-    pipeline.setVisitRateSetting(visitRateSetting(params.get('visitrate')));
+  if (flags.visitRate !== null) pipeline.setVisitRateSetting(flags.visitRate);
   // `?debug&settlevisits=R` (measurement only): the Final settle's visit rate, visits per settle
   // frame; `off` hands out visits whenever a visit worker is free (the behaviour before).
-  if (params.has('debug') && params.has('settlevisits'))
-    pipeline.setSettleVisitRate(settleVisitRate(params.get('settlevisits')));
+  if (flags.settleVisits !== null) pipeline.setSettleVisitRate(flags.settleVisits);
   // `?debug&pacefps=30` (measurement only): read the recording at a stream's rate.
-  if (params.has('debug') && params.has('pacefps'))
-    pipeline.setPaceFps(Number(params.get('pacefps')), 'url');
+  if (flags.paceFps !== null) pipeline.setPaceFps(flags.paceFps, 'url');
   // `?debug`: log the time of each displayed frame change; `smooth=0` turns smooth playback off.
-  if (params.has('debug')) {
+  if (flags.debug) {
     pipeline.setDisplayLog(true);
-    if (params.get('smooth') === '0') pipeline.setSmoothPlayback(false);
+    if (flags.smoothOff) pipeline.setSmoothPlayback(false);
   }
   // ---- Run stages (docs/stages.md): Discover (look-back and Final settle), Extract ----
   const stageLog = createStageLog();
@@ -362,7 +353,7 @@ const App: Component = () => {
           () => pipeline.factorFileRun(),
         )
       : undefined;
-  const pass2 = createPass2Store(client, pipeline, cells, undefined, undefined, factorExtract);
+  const pass2 = createPass2Store(client, pipeline, cells, undefined, factorExtract);
   /** Log a stage event on the run's timeline (at the end of what Discover read). */
   const logStage = (stage: StageName, detail: string) =>
     runHistory.log({
@@ -561,7 +552,7 @@ const App: Component = () => {
         msPerFrame: compress.status()?.msPerFrame ?? 0,
         workers: pipeline.runPool()?.after ?? 1,
         // A GPU run is never more than a window and its slack behind: wait for its last window.
-        wait: (params.has('debug') && params.has('fwait')) || pipeline.gpuFactorRun(),
+        wait: flags.fwait || pipeline.gpuFactorRun(),
         width: i?.width ?? 0,
         height: i?.height ?? 0,
       });
@@ -594,7 +585,7 @@ const App: Component = () => {
       'version' | 'frame' | 'width' | 'height' | 'ids' | 'starts' | 'pixels' | 'values'
     >;
   } | null = null;
-  if (params.has('debug')) {
+  if (flags.debug) {
     (globalThis as { __cala?: unknown }).__cala = {
       cells,
       pipeline,
@@ -873,7 +864,7 @@ const App: Component = () => {
     } catch (err) {
       setViewState({
         busy: false,
-        error: `This result could not be opened: ${err instanceof Error ? err.message : String(err)}`,
+        error: `This result could not be opened: ${errMsg(err)}`,
       });
     }
   }
@@ -891,7 +882,7 @@ const App: Component = () => {
   async function grantResults(): Promise<boolean> {
     if (!supportsDirectoryPicker()) return true;
     const loc = sessionList.location();
-    return loc?.handle ? ensureReadwrite(loc.handle) : false;
+    return loc?.handle ? ensurePermission(loc.handle, 'readwrite') : false;
   }
   function startSessions(settings: Parameters<typeof multiRun.start>[0]['settings']): void {
     const loc = sessionList.location();
@@ -930,7 +921,7 @@ const App: Component = () => {
       });
     }
   });
-  if (params.has('debug')) {
+  if (flags.debug) {
     Object.assign((globalThis as { __cala?: object }).__cala ?? {}, {
       multiRun,
       sessionList,
@@ -987,7 +978,7 @@ const App: Component = () => {
     await store.openLive(url);
     if (store.info()) void pipeline.start();
   }
-  const liveParam = params.get('live');
+  const liveParam = flags.live;
 
   /** "Session 3/8" in a multi-session run: the session being read (Joint: the one the frame is in). */
   const sessionLabel = (): string | null => {
@@ -1117,7 +1108,6 @@ const App: Component = () => {
               onStopSettling={() => slow.stopSettling(cells.session())}
               runRecord={runRecord}
               sessionMode={multiRun.plan()?.settings.mode ?? null}
-              fixed
               visible={tab.active() === 'run'}
             />
             <SessionRunStatus />

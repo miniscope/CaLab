@@ -10,6 +10,7 @@ import { initCalaWasm } from '../lib/cala-wasm.ts';
 import type { FlatFieldEvent } from '../lib/flat-field.ts';
 import { FlatFieldRunner } from '../lib/flat-field-runner.ts';
 import type { FlatFieldDown, FlatFieldLink, FlatFieldUp } from './flat-field-types.ts';
+import { errMsg } from '../lib/errors.ts';
 
 const scope = globalThis as unknown as {
   postMessage(msg: FlatFieldEvent): void;
@@ -39,7 +40,7 @@ async function handle(msg: FlatFieldDown): Promise<void> {
         scope.postMessage({
           type: 'error',
           session: msg.session,
-          message: err instanceof Error ? err.message : String(err),
+          message: errMsg(err),
         });
       }
       break;

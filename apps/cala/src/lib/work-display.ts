@@ -10,6 +10,7 @@
 import { SPEED_SCALE } from './speed-track.ts';
 import {
   FAST_STAGE_NAMES,
+  KIND_COLOR,
   WORK_KIND_LABELS,
   WORK_KINDS,
   type WorkByKind,
@@ -17,14 +18,8 @@ import {
   type WorkKind,
 } from './work-meter.ts';
 
-/** Colours of the kinds (Okabe-Ito; the same as the History series and the mock's CSS variables). */
-export const KIND_COLOR: Record<WorkKind, string> = {
-  live: '#0072b2',
-  discovery: '#009e73',
-  lookback: '#e69f00',
-  bgSettle: '#e3b1cb',
-  finalSettle: '#a8497d',
-};
+/** Colours of the kinds (defined next to their labels in `work-meter.ts`, shared with the History series). */
+export { KIND_COLOR };
 
 /** Background settle's HTML fill: a hatch of the settle hue over its pale tint (not lightness alone). */
 export const BG_SETTLE_HATCH = `repeating-linear-gradient(135deg, ${KIND_COLOR.bgSettle} 0 3px, ${KIND_COLOR.finalSettle} 3px 4px)`;
@@ -59,37 +54,6 @@ export function planPath(
   return linePath(xs, ys);
 }
 
-/** One slice of the stacked bar. */
-export interface Segment {
-  kind: WorkKind;
-  /** Worker-seconds per second. */
-  value: number;
-  /** Share of the bar's full width (0..1 of `count`). */
-  frac: number;
-}
-
-/**
- * The stacked work bar: each kind's share of `count` workers, in the fixed kind order, zeros left
- * out. A sum above `count` (a rounding hair) is scaled down so the bar never overflows.
- */
-export function stackSegments(totals: Record<WorkKind, number>, count: number): Segment[] {
-  const n = Math.max(1, count);
-  let sum = 0;
-  for (const k of WORK_KINDS) sum += Math.max(0, totals[k] || 0);
-  const scale = sum > n ? n / sum : 1;
-  const out: Segment[] = [];
-  for (const kind of WORK_KINDS) {
-    const v = Math.max(0, totals[kind] || 0);
-    if (v > 0) out.push({ kind, value: v * scale, frac: (v * scale) / n });
-  }
-  return out;
-}
-
-/** The kinds the legend lists: all of them, but Background settle is absent at Max (nothing settles during Discover). */
-export function legendKinds(atMax: boolean): WorkKind[] {
-  return WORK_KINDS.filter((k) => !(atMax && k === 'bgSettle'));
-}
-
 /** Workers busy: the kinds' sum, never above the count. */
 export function busyWorkers(totals: Record<WorkKind, number>, count: number): number {
   let sum = 0;
@@ -117,7 +81,6 @@ export function rowLabel(w: WorkerKindShares): string {
   return n.replace('Look-back worker', 'look-back').trim();
 }
 
-/** The rows, with a flag where a new group starts (a hair of space between groups). */
 /** What a row's worker does, for its tooltip. */
 export function rowTitle(w: WorkerKindShares): string {
   if (w.group === 'fast')
@@ -131,6 +94,7 @@ export function rowTitle(w: WorkerKindShares): string {
   return 'Look-back: re-reads earlier frames for each new cell so its footprint and trace are complete.';
 }
 
+/** The rows, with a flag where a new group starts (a hair of space between groups). */
 export function groupedRows(
   by: WorkByKind | null,
 ): { row: WorkerKindShares; label: string; groupStart: boolean }[] {
@@ -167,49 +131,9 @@ export function formatDuration(sec: number | null | undefined): string {
   return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`;
 }
 
-/**
- * The speed Discover finishes at: the slower of the target and what the machine achieves (a
- * target it cannot hold is not the speed). At Max, or with no achieved reading, whichever exists.
- */
-export function discoverRate(targetFps: number, achievedFps: number): number {
-  const t = targetFps > 0 ? targetFps : 0;
-  const a = achievedFps > 0 && Number.isFinite(achievedFps) ? achievedFps : 0;
-  if (t > 0 && a > 0) return Math.min(t, a);
-  return t > 0 ? t : a;
-}
-
-/** Seconds of Discover left: frames left over `discoverRate` (null: not known). */
-export function discoverSecondsLeft(o: {
-  framesLeft: number;
-  targetFps: number;
-  achievedFps: number;
-}): number | null {
-  const rate = discoverRate(o.targetFps, o.achievedFps);
-  if (!(rate > 0) || !Number.isFinite(o.framesLeft)) return null;
-  return Math.max(0, o.framesLeft) / rate;
-}
-
 /** The Final settle's planned frames: the recording, at most the settle's cap (`SETTLE.maxFrames`). */
 export function plannedSettleFrames(recordingFrames: number, cap: number): number {
   return Number.isFinite(recordingFrames) ? Math.min(recordingFrames, cap) : 0;
-}
-
-/**
- * The Final settle line: frames fed of planned, and the time after Discover. The time uses the last
- * measured settle rate; before any it reads "about one pass".
- */
-export function finalSettleText(o: {
-  fed: number;
-  total: number;
-  fps: number | null;
-  settling: boolean;
-}): string {
-  const frames = `${o.fed.toLocaleString('en-US')} of ${o.total.toLocaleString('en-US')} frames`;
-  if (o.fps === null || !(o.fps > 0)) return `${frames} · about one pass after Discover`;
-  const left = formatDuration(Math.max(0, o.total - o.fed) / o.fps);
-  return o.settling
-    ? `${frames} · ${left} left at ${Math.round(o.fps)} frames/s`
-    : `${frames} · about ${left} after Discover`;
 }
 
 /** One footprint's settledness, as the engine or the slow worker will report it (measure defined elsewhere). */
@@ -363,18 +287,6 @@ export function rowAriaLabel(label: string, w: WorkerKindShares): string {
   );
   const busy = Math.round(100 * rowBusy(w));
   return `${label}: ${busy}% busy${parts.length > 0 ? `, ${parts.join(', ')}` : ''}`;
-}
-
-/** The work bar's accessible name: each kind's worker-seconds of the fixed 0 to count range. */
-export function totalAriaLabel(
-  totals: Record<WorkKind | 'spare', number> | undefined,
-  count: number,
-): string {
-  if (!totals || count <= 0) return 'Workers busy by kind of work: no reading yet';
-  const parts = WORK_KINDS.filter((k) => totals[k] > 0).map(
-    (k) => `${WORK_KIND_LABELS[k]} ${totals[k].toFixed(2)}`,
-  );
-  return `Workers busy by kind of work, of ${count} workers: ${parts.join(', ')}${parts.length > 0 ? ', ' : ''}Idle ${totals.spare.toFixed(2)}`;
 }
 
 /**

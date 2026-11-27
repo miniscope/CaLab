@@ -1,7 +1,7 @@
 # Cala user guide (beta)
 
 Cala turns raw 1-photon Miniscope video into cell footprints and traces, in your
-browser. Open it at [miniscope.github.io/CaLab/Cala](https://miniscope.github.io/CaLab/Cala/).
+browser. Open it at [calab.miniscope.org/Cala](https://calab.miniscope.org/Cala/).
 It is a **beta**: the pipeline works end to end, and the limits are listed at the
 bottom. Developer notes are in [README.md](README.md).
 

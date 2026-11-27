@@ -19,6 +19,7 @@ import {
   type SessionCandidate,
   type SessionCheck,
 } from './sessions.ts';
+import { errMsg } from './errors.ts';
 
 /** Where the results go: a folder handle (File System Access API) or a zip download. */
 export interface ResultsLocation {
@@ -75,7 +76,7 @@ export function createSessionList(probe: (s: SessionInput[]) => Promise<SessionP
       const [starts, probed] = await Promise.all([
         Promise.all(fresh.map(readStartMs)),
         probe(fresh.map(toSessionInput)).catch((err: unknown) =>
-          fresh.map(() => ({ error: err instanceof Error ? err.message : String(err) })),
+          fresh.map(() => ({ error: errMsg(err) })),
         ),
       ]);
       const added: PlannedSession[] = fresh.map((candidate, i) => {

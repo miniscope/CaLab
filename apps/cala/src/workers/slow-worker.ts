@@ -10,6 +10,7 @@ import { initCalaWasm, SlowLoop } from '../lib/cala-wasm.ts';
 import { buildSlowLoop, SlowRunner, type SlowLoopLike } from '../lib/slow-runner.ts';
 import type { LookbackToSlow } from './lookback-types.ts';
 import type { FastToSlow, MainToSlow, SlowToMain, VisitToOwner } from './slow-types.ts';
+import { errMsg } from '../lib/errors.ts';
 
 const workerScope = globalThis as unknown as {
   postMessage(msg: SlowToMain, transfer?: Transferable[]): void;
@@ -45,7 +46,7 @@ function report(session: number, err: unknown): void {
   workerScope.postMessage({
     type: 'error',
     session,
-    message: err instanceof Error ? err.message : String(err),
+    message: errMsg(err),
   });
 }
 

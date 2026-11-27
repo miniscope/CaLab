@@ -12,7 +12,7 @@ CaTune is a browser-based tool for tuning calcium deconvolution parameters. Load
 
 ### Live App
 
-Open **[CaTune](https://miniscope.github.io/CaLab/catune/)** in your browser — no installation required.
+Open **[CaTune](https://calab.miniscope.org/CaTune/)** in your browser — no installation required.
 
 ### Loading Data
 

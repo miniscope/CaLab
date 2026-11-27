@@ -13,6 +13,7 @@
  */
 import { parseBoundaryFlag, type BoundaryFlag } from './boundary-flags.ts';
 import type { LibraryMode } from './session-run.ts';
+import { baseOf, dirOf } from './video-series.ts';
 
 export const PROJECT_INDEX_FILE = 'cala-project.json';
 export const PROJECT_FORMAT = 'cala-project';
@@ -443,8 +444,6 @@ export interface ResultsFile {
   text: string;
 }
 
-const dirname = (p: string) => (p.lastIndexOf('/') < 0 ? '' : p.slice(0, p.lastIndexOf('/')));
-const basename = (p: string) => p.slice(p.lastIndexOf('/') + 1);
 const join = (...parts: string[]) => parts.filter((p) => p !== '').join('/');
 
 interface FoundRun {
@@ -469,17 +468,17 @@ export function findRuns(files: ResultsFile[]): { runs: FoundRun[]; unreadable: 
   };
   const runs = new Map<string, FoundRun>();
   for (const f of files) {
-    if (basename(f.path) !== RUN_FILE) continue;
+    if (baseOf(f.path) !== RUN_FILE) continue;
     const m = parse(f);
     if (m && m.format === 'cala-run') {
-      runs.set(dirname(f.path), { folder: dirname(f.path), manifest: m, sessions: [] });
+      runs.set(dirOf(f.path), { folder: dirOf(f.path), manifest: m, sessions: [] });
     }
   }
   for (const f of files) {
-    if (basename(f.path) !== SESSION_FILE) continue;
-    let dir = dirname(f.path);
+    if (baseOf(f.path) !== SESSION_FILE) continue;
+    let dir = dirOf(f.path);
     let owner: FoundRun | undefined;
-    for (let d = dir; ; d = dirname(d)) {
+    for (let d = dir; ; d = dirOf(d)) {
       owner = runs.get(d);
       if (owner || d === '') break;
     }
@@ -522,7 +521,7 @@ const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFi
 
 /** A run's id: its folder name below `runs/`, else `legacy-` and its folder or start time. */
 export function runIdFromFolder(folder: string, created: string): string {
-  if (dirname(folder) === RUNS_DIR) return basename(folder);
+  if (dirOf(folder) === RUNS_DIR) return baseOf(folder);
   if (folder !== '') return `legacy-${folder.replace(/\//g, '_')}`;
   const t = isoMs(created);
   return `legacy-${t === null ? 'run' : runIdFor(new Date(t), new Set())}`;

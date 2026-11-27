@@ -12,6 +12,7 @@
  */
 import type { PortLike } from '../workers/slow-types.ts';
 import type { CompressToReview, ReviewStatus, ReviewToMain } from '../workers/review-types.ts';
+import { errMsg } from './errors.ts';
 
 /** What the runner needs of the WASM `HistoryReview`. */
 export interface HistoryReviewLike {
@@ -186,7 +187,7 @@ export class ReviewRunner {
     this.deps.toMain.postMessage({
       type: 'error',
       session,
-      message: err instanceof Error ? err.message : String(err),
+      message: errMsg(err),
     });
   }
 
