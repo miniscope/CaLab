@@ -7,6 +7,7 @@
 import { calaWasmHeapBytes, HistoryReview, initCalaWasm } from '../lib/cala-wasm.ts';
 import { ReviewRunner } from '../lib/review-runner.ts';
 import type { CompressToReview, ReviewConnect, ReviewToMain } from './review-types.ts';
+import { errMsg } from '../lib/errors.ts';
 
 const workerScope = globalThis as unknown as {
   postMessage(msg: ReviewToMain, transfer?: Transferable[]): void;
@@ -34,7 +35,7 @@ workerScope.onmessage = (e) => {
         workerScope.postMessage({
           type: 'error',
           session: ev.data.session,
-          message: err instanceof Error ? err.message : String(err),
+          message: errMsg(err),
         });
       });
   };

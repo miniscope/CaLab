@@ -36,6 +36,7 @@ import type { FovProjections } from './fov-projection.ts';
 import { startReplayPipeline } from './replay-pipeline.ts';
 import type { FactorInfo } from './compress-store.ts';
 import type { FactorExtractPort, FactorJob } from './factor-extract.ts';
+import { errMsg } from './errors.ts';
 
 export type Pass2Status = 'idle' | 'running' | 'done' | 'error' | 'cancelled';
 
@@ -241,7 +242,7 @@ export function createPass2Store(
         .catch((err: unknown) => {
           if (gen !== generation) return;
           generation++;
-          setError(err instanceof Error ? err.message : String(err));
+          setError(errMsg(err));
           setStatus('error');
           void discard();
         })
@@ -306,7 +307,7 @@ export function createPass2Store(
     } catch (err) {
       void traces?.dispose();
       if (gen !== generation) return;
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
       setStatus('error');
       return;
     }
@@ -348,7 +349,7 @@ export function createPass2Store(
     } catch (err) {
       if (gen !== generation) return;
       generation++;
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
       setStatus('error');
     }
   }
@@ -393,7 +394,7 @@ export function createPass2Store(
     } catch (err) {
       if (gen !== generation) return;
       generation++;
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
       setStatus('error');
       return;
     }
@@ -454,7 +455,7 @@ export function createPass2Store(
     } catch (err) {
       if (gen !== generation) return;
       generation++;
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
       setStatus('error');
       void discard();
     } finally {

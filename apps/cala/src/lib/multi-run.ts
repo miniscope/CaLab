@@ -32,6 +32,7 @@ import {
   type SessionRecord,
 } from './session-export.ts';
 import type { SessionCandidate } from './sessions.ts';
+import { errMsg } from './errors.ts';
 
 /** A session in the list, with what probing it found. */
 export interface PlannedSession {
@@ -176,7 +177,7 @@ export function createMultiRun(deps: MultiRunDeps) {
         updatedAt: now().toISOString(),
       });
     } catch (err) {
-      setProgressError(err instanceof Error ? err.message : String(err));
+      setProgressError(errMsg(err));
     }
   }
 
@@ -361,7 +362,7 @@ export function createMultiRun(deps: MultiRunDeps) {
       try {
         await job();
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(errMsg(err));
       }
     })();
   }

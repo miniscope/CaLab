@@ -8,6 +8,7 @@
 import { FactorExtractor, FactorWindow, initCalaWasm, TileCompressor } from '../lib/cala-wasm.ts';
 import { solveWindow } from '../lib/factor-solve.ts';
 import type { CoordinatorToHelper, HelperToCoordinator } from './compress-types.ts';
+import { errMsg } from '../lib/errors.ts';
 
 const workerScope = globalThis as unknown as {
   onmessage: ((e: MessageEvent<{ port: MessagePort }>) => void) | null;
@@ -21,8 +22,6 @@ let extractError: { job: number; message: string } | null = null;
 // Tiles are compressed one at a time, after the WASM module is ready.
 let queue: Promise<void> = Promise.resolve();
 let failed: string | null = null;
-
-const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 function handle(port: MessagePort, msg: CoordinatorToHelper): void {
   const post = (m: HelperToCoordinator, transfer: Transferable[] = []): void =>
@@ -45,7 +44,7 @@ function handle(port: MessagePort, msg: CoordinatorToHelper): void {
       if (msg.signed) x.setSigned(true);
       extract = { job: msg.job, x, signed: msg.signed, px: msg.px };
     } catch (err) {
-      extractError = { job: msg.job, message: message(err) };
+      extractError = { job: msg.job, message: errMsg(err) };
     }
     return;
   }
@@ -76,7 +75,7 @@ function handle(port: MessagePort, msg: CoordinatorToHelper): void {
       if (r.signed) transfer.push(r.signed.buffer as ArrayBuffer);
       post({ type: 'window-done', job, index, ...r }, transfer);
     } catch (err) {
-      post({ type: 'window-error', job, index, message: message(err) });
+      post({ type: 'window-error', job, index, message: errMsg(err) });
     }
     return;
   }
@@ -105,7 +104,7 @@ function handle(port: MessagePort, msg: CoordinatorToHelper): void {
       f.free();
     }
   } catch (err) {
-    post({ type: 'tile-error', epoch, window, tile, message: message(err) });
+    post({ type: 'tile-error', epoch, window, tile, message: errMsg(err) });
   }
 }
 
@@ -118,7 +117,7 @@ workerScope.onmessage = (e) => {
       .then(
         () => handle(port, ev.data),
         (err: unknown) => {
-          failed ??= `The compress helper could not start: ${message(err)}`;
+          failed ??= `The compress helper could not start: ${errMsg(err)}`;
           handle(port, ev.data);
         },
       );

@@ -11,6 +11,7 @@ import { clearResultExported, markResultExported } from '../lib/export-state.ts'
 import { lookbackText, stageLabel } from '../lib/lookback-text.ts';
 import type { LibraryMode } from '../lib/session-run.ts';
 import { workText } from '../lib/work-meter.ts';
+import { errMsg } from '../lib/errors.ts';
 export { lookbackText };
 import type { Pass2Result, Pass2Store } from '../lib/pass2-store.ts';
 import {
@@ -224,7 +225,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       return;
     }
     liveTraceResult(c(), frames, 0).then(setLiveResult, (err: unknown) =>
-      setExportError(err instanceof Error ? err.message : String(err)),
+      setExportError(errMsg(err)),
     );
   });
   const exportResult = () => p().result() ?? liveResult();
@@ -247,7 +248,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       reportResultsExported(1, formatVersion);
       markResultExported();
     } catch (err) {
-      setExportError(err instanceof Error ? err.message : String(err));
+      setExportError(errMsg(err));
     } finally {
       setExporting(null);
     }

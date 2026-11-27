@@ -25,6 +25,7 @@ import { createHistoryUi, GroupPlot, HistoryExpanded, RunStrip } from './History
 import { SelectedCellPanel } from './CellsPanel.tsx';
 import { BoundaryBadge } from './BoundaryBadge.tsx';
 import { SidePanel } from './SidePanel.tsx';
+import { errMsg } from '../lib/errors.ts';
 
 /** Where the result came from (the project index), for the readout. */
 export interface ResultOrigin {
@@ -261,7 +262,7 @@ export function ResultView(props: { result: LoadedResult; origin: ResultOrigin }
         setLoaded(to);
       }
     } catch (err) {
-      if (gen === generation) setLoadError(err instanceof Error ? err.message : String(err));
+      if (gen === generation) setLoadError(errMsg(err));
     }
   }
   void loadTraces('clipped');

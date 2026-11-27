@@ -32,6 +32,7 @@ import type {
   MainToCompress,
 } from './compress-types.ts';
 import type { CompressToReview } from './review-types.ts';
+import { errMsg } from '../lib/errors.ts';
 
 const workerScope = globalThis as unknown as {
   postMessage(msg: CompressToMain, transfer?: Transferable[]): void;
@@ -75,7 +76,7 @@ workerScope.onmessage = (e) => {
           type: 'error',
           session: data.session,
           ...(data.type === 'backfill' ? {} : { job: data.job }),
-          message: err instanceof Error ? err.message : String(err),
+          message: errMsg(err),
         });
       });
     return;
@@ -174,7 +175,7 @@ workerScope.onmessage = (e) => {
         workerScope.postMessage({
           type: 'error',
           session: ev.data.session,
-          message: err instanceof Error ? err.message : String(err),
+          message: errMsg(err),
         });
       });
   };

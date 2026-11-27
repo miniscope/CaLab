@@ -115,6 +115,7 @@ import { DonatePanel, MyDonationsEntry } from './components/DonatePanel.tsx';
 import { BrowseDonationsEntry } from './components/BrowseDonations.tsx';
 import { createDonationStore } from './lib/donation-store.ts';
 import type { DonationSource } from './workers/donation-types.ts';
+import { errMsg } from './lib/errors.ts';
 
 const App: Component = () => {
   // Magic-link redirect: show the sign-in confirmation instead of the app.
@@ -863,7 +864,7 @@ const App: Component = () => {
     } catch (err) {
       setViewState({
         busy: false,
-        error: `This result could not be opened: ${err instanceof Error ? err.message : String(err)}`,
+        error: `This result could not be opened: ${errMsg(err)}`,
       });
     }
   }

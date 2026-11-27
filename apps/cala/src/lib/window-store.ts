@@ -4,6 +4,7 @@
  * they live in the origin private file system (OPFS), whose synchronous
  * access handles exist only in workers; tests use the in-memory store.
  */
+import { errMsg } from './errors.ts';
 
 export interface StoreFile {
   write(data: ArrayBufferView, at: number): void;
@@ -87,10 +88,7 @@ export function factorFiles(
         const file = await pinned(fh, (f) => f.getFile());
         return new Uint8Array(await file.arrayBuffer());
       } catch (err) {
-        throw new Error(
-          `${folder}/${name} cannot be read: ${err instanceof Error ? err.message : String(err)}`,
-          { cause: err },
-        );
+        throw new Error(`${folder}/${name} cannot be read: ${errMsg(err)}`, { cause: err });
       }
     },
   };

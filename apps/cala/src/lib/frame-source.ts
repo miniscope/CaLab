@@ -28,6 +28,7 @@ import {
   parseTimeStamps,
   type MiniscopeMetadata,
 } from './miniscope-meta.ts';
+import { errMsg } from './errors.ts';
 
 /** First read of each file. The Miniscope header is a few KB; JUNK padding fits too. */
 export const HEADER_PREFIX_BYTES = 64 * 1024;
@@ -332,7 +333,7 @@ async function openAvi(file: File): Promise<AviHeader> {
 }
 
 function withFile(file: File, err: unknown): Error {
-  const msg = err instanceof Error ? err.message : String(err);
+  const msg = errMsg(err);
   return new Error(`${file.name}: ${msg}`);
 }
 

@@ -88,6 +88,7 @@ import {
   type WindowStatsLike,
 } from './gpu-compress.ts';
 import type { StoreFile, WindowStore } from './window-store.ts';
+import { errMsg } from './errors.ts';
 
 /** `quantizeTiles` of the WASM module: `count` frames into `out`, in tile order. */
 export type QuantizeTiles = (
@@ -278,8 +279,6 @@ const windowName = (i: number): string => `w${i}.i16`;
 export const factorName = (i: number): string => `f${i}.bin`;
 
 const macrotask = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
-
-const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 const noGpuWindow = (): GpuWindow => ({ index: 0, start: 0, frames: 0, stats: null });
 
@@ -616,7 +615,7 @@ export class CompressRunner {
         this.deps.toMain.postMessage({
           type: 'error',
           session,
-          message: err instanceof Error ? err.message : String(err),
+          message: errMsg(err),
         });
       })
       .finally(() => {
@@ -769,7 +768,7 @@ export class CompressRunner {
           type: 'error',
           session: job.session,
           job: job.id,
-          message: err instanceof Error ? err.message : String(err),
+          message: errMsg(err),
         });
       }
     } finally {
@@ -849,7 +848,7 @@ export class CompressRunner {
           type: 'error',
           session: job.session,
           job: job.id,
-          message: err instanceof Error ? err.message : String(err),
+          message: errMsg(err),
         });
       }
     } finally {
@@ -1009,7 +1008,7 @@ export class CompressRunner {
     const epoch = this.epoch;
     const open = this.deps.openGpu;
     const g = open
-      ? await open(init).catch((err: unknown) => ({ reason: errorText(err) }))
+      ? await open(init).catch((err: unknown) => ({ reason: errMsg(err) }))
       : { reason: 'this worker has no GPU compressor' };
     if (epoch !== this.epoch) {
       if (!('reason' in g)) g.destroy();
@@ -1213,7 +1212,7 @@ export class CompressRunner {
     if ('err' in out) {
       // Not awaited: the give-up waits for this loop to end.
       void this.gpuFail(
-        out.err instanceof GpuSketchTooLarge ? GPU_TEXT.sketch : GPU_TEXT.error(errorText(out.err)),
+        out.err instanceof GpuSketchTooLarge ? GPU_TEXT.sketch : GPU_TEXT.error(errMsg(out.err)),
         epoch,
       );
       return false;
@@ -1240,7 +1239,7 @@ export class CompressRunner {
       }
     } catch (err) {
       // A window that cannot be written: the factors would have a hole.
-      void this.gpuFail(GPU_TEXT.error(errorText(err)), epoch);
+      void this.gpuFail(GPU_TEXT.error(errMsg(err)), epoch);
       return false;
     }
     ranks.forEach((r, i) => (this.tileRanks[i] = r));
@@ -1333,7 +1332,7 @@ export class CompressRunner {
     } catch (err) {
       // A check that fails is the check's news only: the run's factors stay usable.
       if (epoch !== this.epoch) return;
-      sums.error = errorText(err);
+      sums.error = errMsg(err);
       this.gchecks = [];
       this.post();
     }
