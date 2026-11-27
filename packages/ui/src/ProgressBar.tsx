@@ -1,6 +1,6 @@
 import { Show, type JSX } from 'solid-js';
 
-/** 'stopping' looks like 'idle': no pulse and no fill modifier. */
+/** Fill treatment of the bar; 'running' and 'stopping' look like 'idle' (no fill modifier, no motion). */
 export type ProgressState = 'idle' | 'running' | 'paused' | 'complete' | 'error' | 'stopping';
 
 export interface ProgressBarProps {
@@ -18,6 +18,7 @@ export interface ProgressBarProps {
   'aria-label'?: string;
 }
 
+/** A determinate progress bar, 0..100 %, with optional label, phase and status lines. */
 export function ProgressBar(p: ProgressBarProps): JSX.Element {
   const pct = () => Math.round(Math.min(1, Math.max(0, p.fraction || 0)) * 100);
   const state = () => p.state ?? 'idle';
@@ -33,7 +34,6 @@ export function ProgressBar(p: ProgressBarProps): JSX.Element {
       </Show>
       <div
         class="progress-bar__track"
-        classList={{ 'progress-bar__track--running': state() === 'running' }}
         role="progressbar"
         aria-valuemin={0}
         aria-valuemax={100}

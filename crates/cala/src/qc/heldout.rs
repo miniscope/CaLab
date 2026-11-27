@@ -24,7 +24,7 @@
 //! **Placebo columns.** The trace of each column is fitted on the frame it
 //! is scored on, so any non-negative column gains on every frame, a column
 //! on pure structured noise included; a white-noise null for that gain is
-//! wrong by the residual's spatial correlation (5–12× on real data). The
+//! wrong by the residual's spatial correlation. The
 //! null is measured instead: for a random share of the cells, redrawn for
 //! every library version (and every `redraw_frames` held-out frames), the
 //! footprint is translated by `2d` in one of the four axis directions (`d`
@@ -49,9 +49,9 @@
 //! `S` depends on how much the cells fired in the frames scored; `S_frac`
 //! divides that out and is the one to compare across windows of one run.
 //!
-//! The plan's estimator of `μ` was the median of `g_k,t`; it is 0 (most
-//! placebos are clamped at 0 on most frames), so it would not penalise
-//! anything. The mean is the expected gain of a non-cell column.
+//! `μ` is the mean of `g_k,t`, not the median: most placebos are clamped at 0
+//! on most frames, so the median is 0 and would not penalise anything. The
+//! mean is the expected gain of a non-cell column.
 //!
 //! **Per cell.** On every `drop_every`-th held-out frame each cell whose
 //! trace exceeds `active_sigma` of its trace noise is dropped from the

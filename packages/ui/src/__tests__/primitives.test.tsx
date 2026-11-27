@@ -276,15 +276,15 @@ describe('ProgressBar', () => {
   });
 
   it.each([
-    ['idle', false, null],
-    ['stopping', false, null],
-    ['running', true, null],
-    ['paused', false, 'progress-bar__fill--paused'],
-    ['complete', false, 'progress-bar__fill--complete'],
-    ['error', false, 'progress-bar__fill--error'],
-  ] as const)('state %s sets the right classes', (state, pulses, modifier) => {
+    ['idle', null],
+    ['stopping', null],
+    ['running', null],
+    ['paused', 'progress-bar__fill--paused'],
+    ['complete', 'progress-bar__fill--complete'],
+    ['error', 'progress-bar__fill--error'],
+  ] as const)('state %s sets the right classes', (state, modifier) => {
     const host = mount(() => <ProgressBar fraction={0.2} state={state} />);
-    expect(track(host).classList.contains('progress-bar__track--running')).toBe(pulses);
+    expect(Array.from(track(host).classList)).toEqual(['progress-bar__track']);
     const mods = Array.from(fill(host).classList).filter((c) =>
       c.startsWith('progress-bar__fill--'),
     );
@@ -319,6 +319,10 @@ describe('sparkPath', () => {
 
   it('puts everything at x=0 when x1 is 0 and clamps above hi', () => {
     expect(sparkPath([0], [5], 0, 0, 1, 100, 10)).toBe('M0.0,1.0');
+  });
+
+  it('clamps below lo to the bottom edge', () => {
+    expect(sparkPath([0], [-5], 0, 0, 1, 100, 10)).toBe('M0.0,9.0');
   });
 
   it('generalises to w and h', () => {

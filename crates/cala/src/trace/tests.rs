@@ -215,7 +215,7 @@ fn recovers_traces_through_the_high_pass() {
         }
     }
     // With the moat modelled (block means of `L a` out to 2σ) the model is
-    // all but exact: 0.05 % of the peak (1.1 % with the moat dropped).
+    // all but exact; dropping the moat would cost far more.
     assert!(worst < 0.002 * peak, "worst error {worst}, peak {peak}");
     // Clipping the filtered footprints at zero (the tempting shortcut) is
     // measurably worse on the same data.
@@ -606,8 +606,8 @@ fn library_bytes_round_trip_solves_identically() {
 
 /// The fast loop installs a published library from its bytes between
 /// frames. The bytes carry the precomputed terms, so the install is a copy;
-/// a library rebuilt from the footprints alone (the footprints-only layout,
-/// the install before the terms travelled) must solve bit-identically when
+/// a library rebuilt from the footprints alone (the footprints-only layout)
+/// must solve bit-identically when
 /// installed at the same frame, missing pixels (the EM refill) included.
 #[test]
 fn library_install_from_terms_matches_full_rebuild_at_the_same_frame() {
@@ -974,11 +974,10 @@ fn missing_pixels_get_zero_weight() {
 
 #[test]
 fn ring_self_term_that_dominates_the_curvature_does_not_diverge() {
-    // halo_s5: a large footprint at the FOV edge, its ring clipped to a few
-    // pixels that its own moat fills, had `ã_iᵀã_i − s_i q_ii < 0`. The
-    // curvature was floored at 1e-3 `ã_iᵀã_i`, so each SOR step was ~1000x
-    // too long with the wrong sign: traces ran to 1e37, then inf, which
-    // hung the QC event scan downstream. Reproduce the degenerate terms on
+    // A large footprint at the FOV edge, its ring clipped to a few pixels
+    // that its own moat fills, has `ã_iᵀã_i − s_i q_ii < 0`. Flooring that
+    // curvature makes each SOR step far too long with the wrong sign: traces
+    // run to inf, which would hang the QC event scan downstream. Reproduce the degenerate terms on
     // the ring probe by scaling `s_0` until the self term exceeds the Gram.
     let d = Dims::new(64, 64).unwrap();
     let cfg = FlattenConfig {
@@ -1039,15 +1038,14 @@ fn ring_self_term_that_dominates_the_curvature_does_not_diverge() {
 
 #[test]
 fn ring_self_term_that_nearly_cancels_the_curvature_does_not_diverge() {
-    // A Joint run in the app (two stitched sessions of a minisim motion
-    // recording): a 26 px footprint at the FOV edge had `ã_iᵀã_i − s_i q_ii`
-    // = 0.012 `ã_iᵀã_i` (positive, so the m <= 0 rule above left it alone)
-    // with `s_i` = −116. Its row of the coordinate system was then the
-    // small curvature against ring couplings `−s_i q_ij` of ~10 to its
-    // neighbours: projected SOR grew by ~11x per sweep, the traces ran to
-    // inf within one frame's 200 sweeps, and the next frame with missing
-    // pixels filled them with NaN ("frame N has non-finite pixels under
-    // cell M", which stopped Refine or Extract). Reproduce the terms: the
+    // A footprint at the FOV edge with `ã_iᵀã_i − s_i q_ii` = 0.012
+    // `ã_iᵀã_i` (positive, so the m <= 0 rule above leaves it alone) and a
+    // large negative `s_i`: its row of the coordinate system is a small
+    // curvature against ring couplings `−s_i q_ij` far above it to its
+    // neighbours. Projected SOR then grows geometrically per sweep, the
+    // traces run to inf within one frame's sweeps, and the next frame with
+    // missing pixels fills them with NaN ("non-finite pixels under cell M"),
+    // which would stop Refine or Extract. Reproduce the terms: the
     // ring probe plus a neighbour in its ring, `s_0` scaled to that ratio.
     let d = Dims::new(64, 64).unwrap();
     let cfg = FlattenConfig {
@@ -1079,12 +1077,12 @@ fn ring_self_term_that_nearly_cancels_the_curvature_does_not_diverge() {
             .binary_search(&1)
             .expect("the neighbour is in the ring")];
         assert!(q01 != 0.0 && s[0] != 0.0);
-        // `ã_0ᵀã_0 − s_0 q_00 = 0.012 ã_0ᵀã_0`, as in the app (its own moat
+        // `ã_0ᵀã_0 − s_0 q_00 = 0.012 ã_0ᵀã_0` (its own moat
         // filling a clipped ring: set `q_00`, the couplings stay as built).
         q.val[q.start[0] + k00] = (1.0 - 0.012) * gd / s[0];
     }
-    // As the old rule left it (that curvature kept): a library saved then
-    // must be repaired when it is read back.
+    // Terms built without the rule (that curvature kept), as in a library
+    // saved by a build that lacked it, must be repaired when read back.
     let mut saved = lib.clone();
     saved.trace_noise[0] *= lib.mdiag[0] / (0.012 * gd);
     saved.mdiag[0] = 0.012 * gd;

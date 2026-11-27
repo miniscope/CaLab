@@ -31,10 +31,8 @@
 //!   `sigma_floor` so a noiseless synthetic image does not flag rounding
 //!   differences.
 //!
-//!   Default `k = 5`: on the workshop CA1 data (global σ_r ≈ 2.25 grey
-//!   levels) the cut is ≈ 11 levels, close to the +10 reference used to
-//!   describe that recording, and far beyond the Gaussian tail of the texture
-//!   (a 5σ one-sided tail is 3 pixels in 10⁷).
+//!   Default `k = 5`: far beyond the Gaussian tail of the texture (a 5σ
+//!   one-sided tail is 3 pixels in 10⁷).
 //! * **Stuck / dead.** Inside the field of view every live pixel shows shot
 //!   and read noise. A pixel whose temporal standard deviation is below
 //!   `stuck_rel_std` (default 0.1) times the median standard deviation over

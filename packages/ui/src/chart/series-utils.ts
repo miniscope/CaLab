@@ -1,23 +1,8 @@
 // Shared chart series utilities: color palette, subset coloring, opacity helpers.
 
-/**
- * Okabe-Ito qualitative palette — colorblind-safe under deuteranopia,
- * protanopia, and tritanopia. From Okabe & Ito (2008); popularized for
- * scientific figures by Wong, "Points of view: Color blindness",
- * Nature Methods 8:441 (2011). This is CaLab's single source of chart color;
- * every series/metric color below is drawn from it so no red/green pair is
- * ever used to distinguish two co-plotted series.
- */
-export const OKABE_ITO = {
-  black: '#000000',
-  orange: '#e69f00',
-  skyBlue: '#56b4e9',
-  bluishGreen: '#009e73',
-  yellow: '#f0e442',
-  blue: '#0072b2',
-  vermillion: '#d55e00',
-  reddishPurple: '#cc79a7',
-} as const;
+import { OKABE_ITO } from '../palette.ts';
+
+export { OKABE_ITO };
 
 /**
  * Ordered qualitative cycle for categorical series (e.g. per-subset curves).

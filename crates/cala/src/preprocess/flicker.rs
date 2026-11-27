@@ -18,8 +18,7 @@
 //! a plain cumulative mean until that many frames have been seen). The frame
 //! is regressed on it, `y = a + (1 + m) · R`, over a sparse grid of FOV
 //! pixels (every `s`-th pixel in each direction, with `s` the largest step
-//! that keeps at least [`FlickerConfig::grid_pixels`] pixels: 4287 at stride 8
-//! on the workshop data's 600x600 frames). The fit is trimmed least squares:
+//! that keeps at least [`FlickerConfig::grid_pixels`] pixels). The fit is trimmed least squares:
 //! start from the median and MAD of `y − R`, then refit on the pixels whose
 //! residual is within `clip_sigma` σ, re-estimating σ from the kept pixels,
 //! for [`FIT_ITERATIONS`] rounds. Active cells are large residuals and drop
@@ -33,11 +32,9 @@
 //! slow brightness change, bleaching included, and freeze the output level.)
 //! The time constant trades the low edge of the flicker band against the
 //! scene's own slow common mode (neuropil, synchronous activity), which the
-//! regression cannot tell from flicker: on a 600x600 calibrated minisim
-//! render without flicker the stage reads `m` with an RMS of 1.4 % at 1 s, of
-//! which 0.3 % is in the 2–8 Hz band (0.8 % / 0.3 % at 0.25 s, 1.8 % / 0.3 %
-//! at 2 s), while the band-limited recovery of an injected flicker is the
-//! same for all three (r 0.95–0.96).
+//! regression cannot tell from flicker: a longer constant lets less of the
+//! scene's slow common mode into `m`, a shorter one lets more, while the
+//! recovery of the flicker band itself is the same.
 //!
 //! # Where in the chain
 //!
@@ -48,10 +45,9 @@
 //! stage. Before flattening it is one global number. The lens disk and the
 //! vignette are fixed to the sensor and dominate the spatial structure of
 //! `R`, so the regression is done in sensor coordinates; brain motion only
-//! moves the fine texture. Measured on the workshop CA1 data (frames
-//! 5000–7000, `examples/flicker_eval.rs`): estimating on the raw frames after
-//! the recorded motion correction leaves 4.0 % of the 2–8 Hz pixel power in
-//! the common mode, against 0.4 % in sensor coordinates (12.4 % before).
+//! moves the fine texture. Estimating after motion correction would leave
+//! part of the flicker band in the common mode of the registered pixels, so
+//! the stage runs on the raw frames (`examples/flicker_eval.rs` measures it).
 //!
 //! A purely additive `a_t` is constant over the FOV and glow flattening
 //! removes it anyway; it is fitted alongside `m_t` so the gain is measured
@@ -63,13 +59,10 @@
 //! contrast of `R` (`σ(R) / mean(R)` over the fitted pixels): on a flat
 //! reference `a` and `m · R` are the same image. Below
 //! [`FlickerConfig::min_contrast`] the `Both` mode falls back to a gain-only
-//! fit (the dominant kind on the workshop data) and reports
-//! [`FlickerRecord::separable`] `= false`. On the workshop data the contrast
-//! is 0.39 and every frame separates, but the split is only moderately
-//! identified: regressing each pixel's 2–8 Hz series on the estimated `a_t`
-//! and `m_t` gives a loading of 0.95 on `a_t` and `13 + 0.73 · F0` on `m_t`
-//! (`F0` the pixel's mean), so part of an offset that moves with the gain is
-//! booked as gain. Their sum, the change at each pixel, is what is removed.
+//! fit (the dominant kind on real data) and reports
+//! [`FlickerRecord::separable`] `= false`. Even when the contrast allows a
+//! split it is only moderately identified, so part of an offset that moves
+//! with the gain is booked as gain. Their sum, the change at each pixel, is what is removed.
 //!
 //! # Replay
 //!
@@ -81,9 +74,8 @@
 //!
 //! # Cost
 //!
-//! Proportional to the grid (~11 µs per 1000 grid pixels: four passes and two
-//! selections) plus one multiply-add over the FOV: 62 µs per 600x600 frame
-//! native, ~0.1 ms in WASM.
+//! Proportional to the grid (four passes and two selections over its pixels)
+//! plus one multiply-add over the FOV.
 
 use super::fov::FovMask;
 use super::stats::{quantile_in_place, MAD_GAUSSIAN};

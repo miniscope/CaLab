@@ -32,10 +32,10 @@ fn calcium(n: usize, every: usize, amp: f32, tau: f32, phase: usize) -> Vec<f32>
 
 #[test]
 fn non_finite_trace_samples_do_not_stall_the_event_scan() {
-    // A diverged trace (halo_s5: the fast loop returned 1e37, then inf):
-    // the running mean turns NaN once `inf - inf` enters its sum, and the
-    // event scan used to spin on the first NaN sample forever. Run it on a
-    // thread so a regression fails here instead of hanging the suite.
+    // A diverged trace (the fast loop returned 1e37, then inf): the running
+    // mean turns NaN once `inf - inf` enters its sum, and the event scan must
+    // not spin on the first NaN sample. Run it on a thread so a regression
+    // fails here instead of hanging the suite.
     let mut rng = Lcg(3);
     let mut x: Vec<f32> = calcium(600, 97, 10.0, 12.0, 20)
         .iter()

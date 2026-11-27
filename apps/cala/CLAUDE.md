@@ -85,8 +85,10 @@ Pipeline wiring: `src/lib/pipeline-stages.ts`. Message conventions:
   selection and focus only. Status colours always come with an icon and a label.
 - No pulsing or decorative motion; respect `prefers-reduced-motion`.
 - Colours and spacing come from tokens (`packages/ui/src/styles/tokens.css`), not literals.
-- Shared primitives belong in `packages/ui` (today: `MetricTile`, `ProgressBar`, `DashboardPanel`,
-  `Tabs`, `SegmentedControl`, `chart/`); add Meter, StageTrack, Sparkline, Legend, Badge there,
-  not in cala. cala keeps only cala-specific compositions (run rail, worker squares, FOV overlays).
+- Shared primitives live in `packages/ui`: `MetricTile`, `ProgressBar`, `DashboardPanel`, `Tabs`,
+  `SegmentedControl`, `chart/`, and the instruments `Meter`/`MeterRow`, `StageTrack`, `Sparkline`,
+  `SegmentedBar`, `RangeBar`, `Legend`, `Badge`, `Icon` (fixed ranges via `range.ts`). Add new
+  shared ones there, not in cala. cala keeps only cala-specific compositions (run rail, worker
+  squares, FOV overlays). Series colours: `OKABE_ITO` from `@calab/ui/palette`.
 - UI changes keep or migrate `data-testid`s used by `e2e/cala*.spec.ts`, and update
   `USER_GUIDE.md` and `screenshot.png` when the screen changes.

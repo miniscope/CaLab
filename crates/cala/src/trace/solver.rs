@@ -335,7 +335,7 @@ impl TraceEngine {
     /// with the new traces, up to [`EM_PASSES`] solves or until no trace
     /// moves by `tol` of its noise. At the fixed point the missing pixels
     /// pull no trace away from what the valid pixels say. Frames without
-    /// missing pixels take a single solve, as before. A solve that fails
+    /// missing pixels take a single solve. A solve that fails
     /// on a non-finite projection still advances the frame counter; a wrong
     /// frame length does not.
     pub fn process_into(&mut self, frame: &[f32], out: &mut FrameTraces) -> Result<(), TraceError> {

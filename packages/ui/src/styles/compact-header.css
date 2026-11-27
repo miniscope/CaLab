@@ -32,7 +32,7 @@
 .compact-header__version {
   font-size: 0.6rem;
   color: var(--text-tertiary);
-  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   line-height: 1;
 }
 
@@ -43,7 +43,7 @@
   flex: 1;
   min-width: 0;
   font-size: 0.85rem;
-  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
   overflow: hidden;
   white-space: nowrap;

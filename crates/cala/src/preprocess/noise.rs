@@ -12,9 +12,8 @@
 //!
 //! # Streaming the median
 //!
-//! An exact per-pixel median needs every past |Δy| (or a histogram per pixel:
-//! 32 bins x 360 k pixels x 2 bytes = 23 MB at 600x600, plus a choice of bin
-//! range). Two O(1)-memory estimators are offered:
+//! An exact per-pixel median needs every past |Δy| (or a histogram per pixel: tens of
+//! bins per pixel, plus a choice of bin range). Two O(1)-memory estimators are offered:
 //!
 //! * [`NoiseEstimator::MedianTracker`] (default): a stochastic-approximation
 //!   ("frugal") median, `m ← m · (1 ± η)` as |Δy| is above or below `m`.
@@ -32,30 +31,29 @@
 //!   `√π / 2` (the Gaussian mean-to-σ factor for a difference, after the √2).
 //!   Exact (no step-size noise) and order-independent, but not robust: every
 //!   transient onset adds its full size, so it reads high on active pixels
-//!   (measured on the minisim fixture in the integration tests).
+//!   (the integration tests show it).
 //!
 //! # Quantized input: dither
 //!
 //! 8-bit frames make |Δy| (nearly) integer-valued, and a median of a discrete
 //! distribution is not a smooth function of σ: on integer-valued noise of
-//! σ = 3 the undithered tracker reads 4 % high (3.13 against 3.01, see the
+//! σ = 3 the undithered tracker reads several percent high (see the
 //! tests). With `dither` (default on), the tracker
 //! compares `|Δy + u|` instead, `u` uniform in (−½, ½) from a hash of the
 //! pixel index and frame number (so replay is exact). That turns the
 //! integer-valued difference back into a continuous one whose median tracks
-//! σ smoothly (3.03); the dither adds 1/12 to the variance of Δy, a bias of
-//! +0.5 % at σ = 3 grey levels (+4 % at σ = 1). After flattening, real frames
-//! are no longer exactly integer and the dither makes no measurable
-//! difference there; it matters for raw integer input.
+//! σ smoothly; the dither adds 1/12 to the variance of Δy, a bias that shrinks
+//! as σ grows. After flattening, frames are not exactly integer and the
+//! dither makes no measurable difference there; it matters for raw integer
+//! input.
 //!
-//! # Measured
+//! # Agreement with the batch estimator
 //!
-//! On the workshop CA1 data (`examples/preprocess_eval.rs`, 4000 frames) the
-//! tracker equals the batch MAD-diff of the last 600 frames to 0.1 %. It reads
-//! 4 % below the batch value over all 4000 frames, correctly: the noise fell
-//! with the brightness step at frame 2000 (shot noise), and the tracker
-//! follows the present. On the minisim fixture it matches the simulator's
-//! per-pixel σ to 0.3 % off cells.
+//! `examples/preprocess_eval.rs` compares the tracker with the batch MAD-diff.
+//! Over the last window they agree closely; over a whole recording the
+//! tracker reads the present noise level, so it differs from a batch value
+//! when the noise changed (a brightness step changes shot noise). Off cells it
+//! matches the simulator's per-pixel σ.
 //!
 //! The state is the previous frame plus one (or two) floats per pixel, so it
 //! is snapshot-able like the background ([`NoiseState`]).

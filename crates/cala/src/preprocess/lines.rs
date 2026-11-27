@@ -18,37 +18,32 @@
 //! A plain mean is pulled up by the cells on the line: a bright cell lifts its
 //! row's and column's mean by (its extent on the line / line length) of its
 //! amplitude, and subtracting that along the whole line draws a dark cross
-//! through every bright cell. On an early version of the minisim fixture
-//! (dense cells twice as bright as their background)
-//! plain column means removed the column fixed-pattern noise but left *more*
-//! column structure on the background than they removed. So the level is the
+//! through every bright cell. On dense bright cells plain column means leave
+//! *more* column structure on the background than they remove. So the level is the
 //! mean of the pixels below `m + 2.5 σ̂`, where `m` is the line mean and
 //! `σ̂ = √(π/2) · mean|x − m|` (the Gaussian σ from the mean absolute
 //! deviation): cells, which are bright outliers on a ~0 floor, drop out, and
-//! the clipped mean of the noise is biased by only −0.02 σ. Three passes over
+//! the clipped mean of the noise is biased by a small fraction of σ. Three passes over
 //! the line instead of one; a median would be exact but needs a selection per
 //! line per frame.
 //!
 //! Whether it helps depends on the sensor, so it is optional ([`LineMode`]).
-//! Its default (both) comes from the workshop CA1 recording, measured by
-//! `examples/preprocess_eval.rs` on 2000 frames after flattening:
+//! Its default (both) follows what real recordings show
+//! (`examples/preprocess_eval.rs` measures it):
 //!
-//! * **Rows carry per-frame noise.** The frame-to-frame MAD-diff σ of a row's
-//!   mean is 0.42 grey levels where white pixel noise alone gives 0.13
-//!   (3.3x); for columns it is 0.17 against 0.13. Shared row noise couples
-//!   the noise of cells on the same rows: 9x9-pixel blocks on the same rows
-//!   had a noise correlation of 0.035 (0.000 across rows). Correcting rows
-//!   brings it to −0.016 and lowers the block-trace noise by 2.6 % (3.3 %
-//!   with columns too).
+//! * **Rows carry per-frame noise.** A row's mean fluctuates from frame to
+//!   frame well above what white pixel noise gives. Shared row noise couples
+//!   the noise of cells on the same rows; correcting rows removes that
+//!   correlation and lowers the block-trace noise.
 //! * **Columns carry static fixed-pattern noise.** The column profile of the
-//!   flattened mean image has 0.85 grey levels of column-to-column structure
-//!   (rows: 0.15). Without motion the background stage absorbs it (it is
+//!   flattened mean image has column-to-column structure that rows lack.
+//!   Without motion the background stage absorbs it (it is
 //!   static per pixel), but the background lives in tissue coordinates:
 //!   once frames are registered, a sensor-fixed column pattern moves against
 //!   the tissue and can no longer be absorbed, so it has to go here, before
 //!   registration.
 //!
-//! The cost is 0.34 ms per 600x600 frame for both.
+//! The cost is a few passes over the FOV per frame.
 
 use super::fov::FovMask;
 use super::{Dims, PreprocessError};
