@@ -1,12 +1,10 @@
 /**
  * The page's URL flags, in one place: what each one does to a run (`parsePageFlags`, read once by
  * `App.tsx`) and how the run record lists them (`urlFlags`, `cala-run-record.json`
- * `url_flags`). Debug-only flags take effect only with `?debug` (`DEBUG_ONLY`).
+ * `url_flags`). Debug-only flags take effect only with `?debug`.
  *
- * The two readings are not the same rule: the record's `inEffect` is coarser. It marks some
- * values the app ignores as in effect (`?flatfield=1`, `?gpu=1`, `?debug&smooth=1`), and a
- * bare `?csettle` (or `csettle=1`) as not in effect although the app then turns Background settle
- * on over a saved cap of 0. Both are kept as they were in `App.tsx` and `run-provenance.ts`.
+ * `urlFlags` derives each flag's `in_effect` from `parsePageFlags`, so the record says what the
+ * run did: a flag is in effect when the app's reading of it differs from the default.
  */
 import { parsePoolOverride, type PoolWidth } from './compress-pool.ts';
 import { factorsFromPage, type PageFactors } from './factor-run.ts';
@@ -153,47 +151,68 @@ export const KNOWN_FLAGS = [
 /** Flags whose value is never written (it can hold a host or address). */
 const REDACTED_FLAGS: ReadonlySet<string> = new Set(['live']);
 
-/** What `?debug` gates: these flags only take effect with it. */
-const DEBUG_ONLY: ReadonlySet<string> = new Set([
-  'lbpool',
-  'lbpoolmax',
-  'settlevisits',
-  'cpool',
-  'cbacklog',
-  'fextract',
-  'fwait',
-  'gpucheck',
-  'needfirst',
-  'pacefps',
-  'smooth',
-  'visitrate',
-]);
+const DEFAULT_FACTORS = JSON.stringify(factorsFromPage(new URLSearchParams()));
 
 /**
- * Whether a flag changes anything given the others (as `parsePageFlags` reads them, coarser): look-back is on by default, so only `lookback=0` changes anything (off); `csettle` changes something only as
- * `csettle=0` (Background settle off) or `csettle=yieldN`, and needs look-back;
- * `review` needs `compress` and no `factors` other than `factors=0`; `visitrate` only as `off` or `auto`;
- * debug-only flags need `?debug`.
+ * Whether a flag changes the run, from `parsePageFlags` (the app's own reading): a debug-only flag
+ * needs `?debug`, the off switches (`gpu`, `flatfield`, `lookback`) only at `0`, `visitrate` only
+ * as `off` or `auto`, `review` needs `compress` and no `factors` other than `factors=0`. Background
+ * settle (`csettle`, `csrate`) needs look-back.
  */
-function inEffect(name: string, value: string, p: URLSearchParams): boolean {
-  if (DEBUG_ONLY.has(name) && !p.has('debug')) return false;
-  const lookbackOn = p.get('lookback') !== '0';
+function inEffect(name: string, p: URLSearchParams): boolean {
+  const f = parsePageFlags(p);
   switch (name) {
-    case 'lookback':
-      return value === '0';
-    case 'csettle':
-      return lookbackOn && (value === '0' || CSETTLE_YIELD.test(value));
-    case 'csrate':
-      return lookbackOn;
-    case 'needfirst':
-      return value !== '0';
-    case 'visitrate':
-      // `off` and `auto` change the run (`parsePageFlags`: `visitRateSetting`); anything else is the fixed default.
-      return visitRateSetting(value) !== 'fixed';
-    case 'review':
-      return factorsFromPage(p).review;
-    default:
+    case 'debug':
       return true;
+    case 'lookback':
+      return f.lookbackOff;
+    case 'csettle':
+    case 'csrate':
+      return !f.lookbackOff && f.csettle !== null;
+    case 'pacefps':
+      return f.paceFps !== null;
+    case 'lbpool':
+      return f.lbpool !== null;
+    case 'lbpoolmax':
+      return f.poolAtMax;
+    case 'settlevisits':
+      return f.settleVisits !== null;
+    case 'cpool':
+      return f.cpool !== null;
+    case 'cbacklog':
+      return f.cbacklogGb > 0;
+    case 'fextract':
+      return f.frameExtract;
+    case 'fwait':
+      return f.fwait;
+    case 'gpucheck':
+      return f.gpucheck > 0;
+    case 'needfirst':
+      return f.needFirst;
+    case 'smooth':
+      return f.smoothOff;
+    case 'gpu':
+      return !f.gpu;
+    case 'flatfield':
+      return f.flatFieldOff;
+    case 'noqc':
+      return f.noqc;
+    case 'visits':
+      return f.visits !== null;
+    case 'compress':
+      return f.factors.compressAsked;
+    case 'factors':
+      return JSON.stringify(f.factors) !== DEFAULT_FACTORS;
+    case 'review':
+      return f.factors.review;
+    case 'pass2':
+      return p.get('pass2') === 'memory';
+    case 'live':
+      return f.live !== null;
+    case 'visitrate':
+      return f.visitRate !== null && f.visitRate !== 'fixed';
+    default:
+      return false;
   }
 }
 
@@ -218,7 +237,7 @@ export function urlFlags(search: string): UrlFlags {
     if (known.has(k)) {
       flags[k] = {
         value: REDACTED_FLAGS.has(k) ? '(redacted)' : v,
-        in_effect: inEffect(k, v, p),
+        in_effect: inEffect(k, p),
       };
     } else if (!other.includes(k)) other.push(k);
   }
