@@ -69,7 +69,7 @@ checks if you touched those trees. Full CI: `.github/workflows/ci.yml`.
 
 ## Comment policy
 
-Comments say what the code guarantees and why, as of now. They are read as current truth, and
+Comments say what the code guarantees and why. They are read as current truth, and
 agents copy them, so a stale or narrative comment does damage twice.
 
 Write:
@@ -91,7 +91,7 @@ Do not write:
 - Status words that are never revisited: "experimental", "for now", "temporary", "prototype".
   If something really is opt-in or provisional, say what turns it on and how it will be removed.
 - Commented-out code. Delete it.
-- `TODO` / `FIXME` without an issue link (`// TODO(#123): ...`).
+- `TODO` / `FIXME` without an issue (`// TODO(#123): ...` is the one allowed issue reference).
 - Comments that restate the code (`// increment i`).
 
 Maintenance: when you change code, update or delete the comments it invalidates in the same
