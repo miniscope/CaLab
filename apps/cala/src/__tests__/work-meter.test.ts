@@ -16,7 +16,7 @@ import {
   workText,
   type WorkStatus,
 } from '../lib/work-meter.ts';
-import { SettleGovernor } from '../lib/settle.ts';
+import { SettleGovernor } from '../lib/settle-governor.ts';
 import { SlowRunner, type PublishedLibrary, type SlowLoopLike } from '../lib/slow-runner.ts';
 import { createRunHistory, kindSeriesKey } from '../lib/run-history.ts';
 import type { LookbackToSlow, SlowToLookback } from '../workers/lookback-types.ts';

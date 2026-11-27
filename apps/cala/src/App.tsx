@@ -91,13 +91,13 @@ import { FLOOR, TRACKER } from './lib/speed-floor.ts';
 import { LOOKBACK } from './lib/slow-runner.ts';
 import {
   CSETTLE,
-  GOVERNOR,
   noiseMap,
   SETTLE,
   settleChange,
   settlePoolSize,
   unitFootprints,
 } from './lib/settle.ts';
+import { GOVERNOR } from './lib/settle-governor.ts';
 import {
   gatherRunRecord,
   primeRunRecordContext,

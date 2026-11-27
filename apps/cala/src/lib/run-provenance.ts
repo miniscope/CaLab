@@ -24,7 +24,8 @@
  */
 import type { VisitRateSummary } from './visit-rate.ts';
 import type { SettleVisits } from '../workers/lookback-types.ts';
-import { FINAL_SETTLE_LEVELS, type FinalSettleLevel, type GovernorStatus } from './settle.ts';
+import { FINAL_SETTLE_LEVELS, type FinalSettleLevel } from './settle.ts';
+import type { GovernorStatus } from './settle-governor.ts';
 import type { StageRun } from './run-stages.ts';
 import { stageMeta } from './export.ts';
 import { urlFlags } from './page-flags.ts';
