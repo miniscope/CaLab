@@ -8,9 +8,21 @@
  */
 import type { FlatFieldKey, FlatFieldKeySource, FlatFieldMap } from './flat-field.ts';
 
+/**
+ * Version of the flat-field solve whose maps may seed a run. Bump it when a
+ * solve change makes stored maps wrong: a record of another version, or with
+ * none, does not fit, so the run estimates fresh and overwrites it. Version 2 is
+ * the solve that models each shift bin's sub-pixel offset; records without a
+ * version hold maps with a tissue copy that biases registration (see
+ * tools/cala-eval/results/2026-11-27-ff-motion-gain.md).
+ */
+export const FLAT_FIELD_SOLVER_VERSION = 2;
+
 /** What is stored per device key. */
 export interface FlatFieldRecord {
   key: string;
+  /** `FLAT_FIELD_SOLVER_VERSION` of the solve that made the map; absent in records of version 1. */
+  solver?: number;
   keySource: FlatFieldKeySource;
   width: number;
   height: number;
@@ -44,6 +56,7 @@ export function recordFromMap(
 ): FlatFieldRecord {
   return {
     key: key.key,
+    solver: FLAT_FIELD_SOLVER_VERSION,
     keySource: key.source,
     width,
     height,
@@ -100,9 +113,18 @@ export function mapIsValid(m: FlatFieldMap | null | undefined, w: number, h: num
   );
 }
 
-/** True when a stored record can seed a run of `width x height` frames. */
+/**
+ * True when a stored record can seed a run of `width x height` frames: made by
+ * the current solve version, of the frame size, with a valid map.
+ */
 export function recordFits(r: FlatFieldRecord | null | undefined, w: number, h: number): boolean {
-  return !!r && r.width === w && r.height === h && mapIsValid(mapFromRecord(r), w, h);
+  return (
+    !!r &&
+    r.solver === FLAT_FIELD_SOLVER_VERSION &&
+    r.width === w &&
+    r.height === h &&
+    mapIsValid(mapFromRecord(r), w, h)
+  );
 }
 
 function request<T>(req: IDBRequest<T>): Promise<T> {

@@ -53,10 +53,9 @@
  * so its frames never depend on when those arrived. Its relay keeps two
  * requests on worker 0 (`settleNext`): the one out, and the next, sent
  * `hold` to be read and preprocessed meanwhile. The held one is cued
- * (`solve`) where the request itself used to go out, at the top of the
- * answer before, so it is solved with the same library as with one request
- * out. (The `?debug` relay round trip, `relay.end.p0.rtt`, now runs from
- * the cue, not from the request.) Both apply only to a settle on the
+ * (`solve`) at the top of the answer before, so it is solved with the same
+ * library as with one request out. (The `?debug` relay round trip,
+ * `relay.end.p0.rtt`, runs from the cue, not from the request.) Both apply only to a settle on the
  * recording (`relayed`). A settle on factors (below) has neither: the
  * factors are the frames Discover preprocessed itself, complete before the
  * settle starts (the wait for `factors`), so back state and flat field play
@@ -120,6 +119,8 @@ import type {
   VisitToOwner,
 } from '../workers/slow-types.ts';
 import { libraryViewTransferables, visitRateCounters } from '../workers/slow-types.ts';
+import { errMsg } from './errors.ts';
+import { normalizeRunCells } from './run-cells.ts';
 import {
   CSETTLE,
   movedAgainstNoise,
@@ -178,11 +179,9 @@ export interface SlowLoopLike {
   step(budget: number): PublishedLibrary | undefined;
   finalize(): PublishedLibrary;
   setNoise(noise: Float32Array): void;
-  /** Restrict the structural edits (absent in older fakes: a replay is refused). */
+  /** Restrict the structural edits (absent in some test fakes: a replay is refused). */
   setEditScope?(scope: string): void;
-  /** The Discover visit cap, visits per observed frame (0: off; absent in older fakes and builds). */
-  setVisitRate?(rate: number): void;
-  /** The Discover visit rate's schedule: Auto (`true`) or fixed (absent in older fakes and builds). */
+  /** The Discover visit rate's schedule: Auto (`true`) or fixed (absent in some test fakes). */
   setVisitSchedule?(auto: boolean): void;
   /** The schedule's parameters (`visitRateCounters`' `schedule`; empty: none). */
   visitSchedule?(): Float64Array | number[];
@@ -192,24 +191,24 @@ export interface SlowLoopLike {
   takeJob?(): Uint8Array | undefined;
   applyJob?(bytes: Uint8Array): void;
   housekeep?(): PublishedLibrary | undefined;
-  /** The last published library without publishing (none before the first; absent in older fakes). */
+  /** The last published library without publishing (none before the first; absent in some test fakes). */
   publishedLibrary?(): PublishedLibrary | undefined;
-  /** Adds the candidates of a history review; returns how many (absent in older fakes). */
+  /** Adds the candidates of a history review; returns how many (absent in some test fakes). */
   addReviewed?(candidates: Float32Array): number;
   readonly cellCount: number;
   readonly reservoirBytes: number;
-  /** Frames stored per tile, and why that is below target (absent in older fakes). */
+  /** Frames stored per tile, and why that is below target (absent in some test fakes). */
   readonly framesPerTile?: number;
   readonly reservoirWarning?: string;
-  /** Work spent so far, about multiply-adds (absent in older fakes). */
+  /** Work spent so far, about multiply-adds (absent in some test fakes). */
   readonly work?: number;
   stats(): Float64Array;
-  /** `(id, established, transients)` triples (absent in older fakes). */
+  /** `(id, established, transients)` triples (absent in some test fakes). */
   cellStatus?(): Float64Array;
-  // Look-back (see `SlowLoop.enableLookback`; absent in older fakes and builds).
+  // Look-back (see `SlowLoop.enableLookback`; absent in some test fakes).
   enableLookback?(rate: number, maxFrames: number): void;
   lookbackNote?(seen: number, frames: number): void;
-  /** Never re-read a frame before `frame` again (a Joint run's current session; absent in older builds). */
+  /** Never re-read a frame before `frame` again (a Joint run's current session; absent in some test fakes). */
   setLookbackFloor?(frame: number): void;
   /** `[frame, block, n, id_1..id_n, ...]`; empty when the budget is spent or nothing is needed. */
   lookbackTake?(max: number): Float64Array;
@@ -224,11 +223,11 @@ export interface SlowLoopLike {
   markAllDue?(): void;
   /** `[requested, pushed, heldOut, dropped, births, inNeed, recordBytes]`. */
   lookbackStats?(): Float64Array;
-  /** `[id, noise, ...]`: split-half footprint noise of the newest library's cells (absent in older builds). */
+  /** `[id, noise, ...]`: split-half footprint noise of the newest library's cells (absent in some test fakes). */
   footprintNoise?(): Float64Array;
-  /** Split-half noise of one cell on the given pixels (`footprintNoiseOn`; absent in older builds). */
+  /** Split-half noise of one cell on the given pixels (`footprintNoiseOn`; absent in some test fakes). */
   footprintNoiseOn?(id: number, support: Uint32Array): number;
-  // Settle during Discover, frames only (see `SlowLoop.enableSettle`; absent in older fakes and builds).
+  // Settle during Discover, frames only (see `SlowLoop.enableSettle`; absent in some test fakes).
   enableSettle?(chunk: number): void;
   /** `[frame, block, held, ...]`: saved frames to re-read among stream frames `0..seen`. */
   settleTake?(seen: number, max: number): Float64Array;
@@ -306,8 +305,7 @@ export const FACTOR_SETTLE = {
 
 /**
  * Build a `SlowLoop` or `VisitWorker` from the slow loop's settings: the
- * plain constructor, exactly as before look-back existed, unless
- * `init.lookback`, then with the look-back options (`LOOKBACK`; a slow loop
+ * plain constructor, unless `init.lookback`, then with the look-back options (`LOOKBACK`; a slow loop
  * and its visit workers must agree on them).
  */
 export function buildSlowLoop<T>(ctor: SlowLoopCtor<T>, init: SlowInit): T {
@@ -897,9 +895,11 @@ export class SlowRunner {
       if (msg.type === 'reset')
         for (const v of this.visits) v.postMessage({ type: 'reset', session: msg.session });
       if (msg.type === 'init') {
-        const { width, height, fov, noise, cellDiameterPx, flattenSigmaPx, budget, lookback } = msg;
-        // Settle during Discover: only with look-back, and only when asked for.
-        const csettle = lookback === true && msg.csettle === true;
+        const { width, height, fov, noise, cellDiameterPx, flattenSigmaPx, budget } = msg;
+        // Tests feed raw inits here: the run's rules apply as in every other layer.
+        const run = normalizeRunCells(msg);
+        const lookback = run.lookback === true;
+        // The loop and the visit workers are built from these (`buildSlowLoop`).
         this.init = {
           width,
           height,
@@ -908,45 +908,33 @@ export class SlowRunner {
           cellDiameterPx,
           flattenSigmaPx,
           budget,
-          ...(lookback ? { lookback: true } : {}),
-          ...(msg.factorSettle && !lookback ? { factorSettle: true } : {}),
-          ...(csettle ? { csettle } : {}),
-          ...((lookback || msg.factorSettle) && (msg.settleFraction ?? 1) < 1
-            ? { settleFraction: msg.settleFraction }
-            : {}),
-          ...(lookback && msg.sessionStarts?.length
-            ? { sessionStarts: [...msg.sessionStarts] }
-            : {}),
+          ...(lookback ? { lookback } : {}),
+          ...(run.factorSettle ? { factorSettle: true } : {}),
+          ...(run.csettle ? { csettle: true } : {}),
+          ...(run.settleFraction !== undefined ? { settleFraction: run.settleFraction } : {}),
+          ...(run.sessionStarts ? { sessionStarts: run.sessionStarts } : {}),
         };
         this.loop = this.clock.span('setup', () => this.deps.create(this.init!));
-        // The Discover visit cap (`lib/visit-rate.ts`): ordinary visits only, in Discover's
-        // edit scope (the end settle and Refine runs are not held).
-        // With a schedule (`fixed`, the default, or `auto`; `discover/visitrate.rs`) the engine
-        // sets the cap from it; `visitRate` alone is a bare cap (older builds, measurement).
-        if (msg.visitSchedule && this.loop.setVisitSchedule)
-          this.loop.setVisitSchedule(msg.visitSchedule === 'auto');
-        else if (msg.visitRate !== undefined && msg.visitRate > 0)
-          this.loop.setVisitRate?.(msg.visitRate);
-        this.settleRate =
-          msg.settleVisitRate !== undefined &&
-          Number.isFinite(msg.settleVisitRate) &&
-          msg.settleVisitRate > 0
-            ? msg.settleVisitRate
-            : 0;
+        // The Discover visit rate's schedule (`fixed` or `auto`; `discover/visitrate.rs`) sets
+        // the cap on ordinary visits in Discover's edit scope (the Final settle and Refine runs
+        // are not held); without one, no cap.
+        if (run.visitSchedule && this.loop.setVisitSchedule)
+          this.loop.setVisitSchedule(run.visitSchedule === 'auto');
+        this.settleRate = run.settleVisitRate ?? 0;
         this.run = 1;
-        this.lbOn = lookback === true && typeof this.loop.lookbackTake === 'function';
+        this.lbOn = lookback && typeof this.loop.lookbackTake === 'function';
         this.factorOn = this.init.factorSettle === true;
-        this.factorFile = msg.factorFile === true && this.lbOn;
+        this.factorFile = run.factorFile === true && this.lbOn;
         if (this.lbOn && !this.lbPort) this.lbError = 'The look-back worker is not connected.';
         if (
           this.lbOn &&
-          csettle &&
+          run.csettle === true &&
           typeof this.loop.settleTake === 'function' &&
           typeof this.loop.observeSettle === 'function'
         ) {
           this.csArm = {
-            yieldFrames: Math.max(0, Math.floor(msg.csettleYield ?? 0)),
-            needFirst: msg.csettleNeedFirst === true,
+            yieldFrames: Math.max(0, Math.floor(run.csettleYield ?? 0)),
+            needFirst: run.csettleNeedFirst === true,
             forwardPool: Math.max(2, Math.floor(msg.csettlePool ?? 2)),
           };
           this.armSettle();
@@ -1025,7 +1013,7 @@ export class SlowRunner {
     this.deps.toMain.postMessage({
       type: 'error',
       session: this.session,
-      message: err instanceof Error ? err.message : String(err),
+      message: errMsg(err),
     });
     this.drop();
   }
@@ -1085,7 +1073,7 @@ export class SlowRunner {
           const traces = msg.traces.subarray(i * msg.cells, (i + 1) * msg.cells);
           const background = bg?.subarray(i * nb, (i + 1) * nb);
           // The stream index records the frame's held-out decision for look-back
-          // (required with it on); without look-back the call is as before.
+          // (required with it on); without look-back there is none.
           const stream = this.lbOn ? msg.start + i : undefined;
           const t0 = this.dt ? this.now() : 0;
           const ok = loop.observe(frame, msg.version, traces, background, stream);
@@ -1966,10 +1954,9 @@ export class SlowRunner {
    * it did when the answer arrived; then its frames go through `observe` in pieces of
    * `SETTLE.observePiece`, each followed by the visits they earned. While a visit is out the
    * worker gives way between pieces (`defer`), so visit results are applied within an answer
-   * and the visit workers get their next visits without waiting for the whole answer (a 16-frame
-   * answer takes about 90 ms to observe). While too many visits are owed
-   * (`settleOwedTooMuch`) it waits for the next result (`handleVisit` resumes it). Without visit
-   * workers an answer is observed in one go, as before.
+   * and the visit workers get their next visits without waiting for the whole answer. While too
+   * many visits are owed (`settleOwedTooMuch`) it waits for the next result (`handleVisit`
+   * resumes it). Without visit workers an answer is observed in one go.
    */
   private settleObserve(loop: SlowLoopLike, d: Settle): void {
     for (;;) {
@@ -2221,7 +2208,7 @@ export class SlowRunner {
         const bytes = lib.toBytes();
         this.dt?.add('publish.toBytes', this.now() - tb);
         this.dt?.add('publish.libraries', 1);
-        // The main thread keeps the newest library's bytes for pass 2.
+        // The main thread keeps the newest library's bytes for Extract.
         const mainBytes = bytes.slice();
         // Each look-back worker solves with the newest library (same port as its requests,
         // so it always has the version a request was taken with); a copy each.

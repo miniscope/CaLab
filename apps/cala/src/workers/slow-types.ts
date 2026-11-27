@@ -1,8 +1,8 @@
 /**
- * Messages between the fast worker (frame worker: read, preprocess, motion,
- * trace solve), the slow worker (cell discovery) and the main thread.
+ * Messages between the fast loop (trace worker), the slow worker (cell
+ * discovery), its visit workers and the main thread.
  *
- * The fast and slow workers talk over a `MessageChannel` whose ports the main
+ * The trace and slow workers talk over a `MessageChannel` whose ports the main
  * thread hands out, so the frame path never goes through the UI thread. Every
  * message carries the pipeline `session`; a restart bumps it and late messages
  * of the old session are dropped.
@@ -10,6 +10,7 @@
 
 import type { WorkStatus } from '../lib/work-meter.ts';
 import type { FactorSource, LookbackStatus } from './lookback-types.ts';
+import type { RunCells } from '../lib/run-cells.ts';
 
 /**
  * The structural edits the slow loop may make (`SlowLoop.setEditScope`, the
@@ -19,8 +20,8 @@ import type { FactorSource, LookbackStatus } from './lookback-types.ts';
  */
 export type EditScopeName = 'all' | 'refine' | 'refine-prune' | 'refine-merge';
 
-/** Settings and calibration the slow loop starts from. */
-export interface SlowInit {
+/** Settings and calibration the slow loop starts from, with the run's options (`RunCells`, normalized). */
+export interface SlowInit extends RunCells {
   width: number;
   height: number;
   /** FOV mask of the preprocessor (1 = inside). */
@@ -32,78 +33,8 @@ export interface SlowInit {
   flattenSigmaPx: number;
   /** Slow-loop work units per observed frame (about multiply-adds). */
   budget: number;
-  /**
-   * Look-back (on by default for recordings; absent = off): the slow loop is built with the
-   * options look-back runs with (`SlowLoop.withConfig(.., 'all', 'all', 0.6)`,
-   * visit workers alike), re-reads past frames through the look-back worker
-   * during Discover and settles after the last frame (see `SlowRunner`).
-   */
-  lookback?: boolean;
-  /**
-   * A live stream with `?factors` (absent = off; never with `lookback`): the
-   * slow loop is built with `FACTOR_SETTLE` (visit workers alike) and, after
-   * the last frame, waits for the stream's factors and settles on them
-   * (see `SlowRunner`).
-   */
-  factorSettle?: boolean;
-  /** A recording with `?factors=file`: at Discover's end the settle may read the factors (`SlowRunner`). */
-  factorFile?: boolean;
-  /**
-   * Settle during Discover ("Background settle", frames only; needs
-   * `lookback`; absent = off for the run): the run may settle while Discover
-   * runs. It starts the first time the target is below Max with a cap above
-   * 0; the settle governor (`SettleGovernor` in `lib/settle.ts`) sets its
-   * rate. The cap comes from `SlowSettleCap`, the target from
-   * `SlowSettlePace` (see `SlowRunner`).
-   */
-  csettle?: boolean;
-  /**
-   * With `csettle`: the slow worker handles an answer of re-read frames this
-   * many frames at a time and gives way in between (absent or 0: the whole
-   * answer in one go, as measured in qc_eval's arm `CS2F`).
-   */
-  csettleYield?: number;
-  /**
-   * With `csettle`, one look-back worker (no settle pool): need-driven
-   * look-back first, the settle only when it asks for nothing (measurement
-   * option, `?debug&needfirst`; absent: the two take turns).
-   */
-  csettleNeedFirst?: boolean;
-  /**
-   * The share of the final settle pass to read, in plan order (a Final-settle
-   * level, `FINAL_SETTLE_LEVELS`); absent or 1 = the whole pass.
-   */
-  settleFraction?: number;
-  /**
-   * With `lookback`, a Joint run: the first stream frame of sessions 1..
-   * (the plan's boundaries). While Discover runs, look-back and the settle
-   * during Discover re-read frames of the current session only
-   * (`SlowLoop.setLookbackFloor`); the end settle covers every session.
-   */
-  sessionStarts?: number[];
-  /**
-   * With `csettle`: batches the forward pool holds in flight to this worker
-   * (the governor's batch-wait guard scales with it; absent: 2).
-   */
+  /** With `csettle`: batches the forward pool holds in flight to this worker (the governor's batch-wait guard scales with it; absent: 2). */
   csettlePool?: number;
-  /**
-   * The Discover visit cap (`lib/visit-rate.ts`): ordinary tile visits per
-   * observed Discover frame at most (`SlowLoop.setVisitRate`); absent or 0 =
-   * no cap (`?debug&visitrate=off`).
-   */
-  visitRate?: number;
-  /**
-   * The Discover visit rate's schedule (`SlowLoop.setVisitSchedule`, `discover/visitrate.rs`):
-   * `fixed` (the default) or `auto`; it sets the cap (and the target the frame-loop hold aims
-   * at) instead of `visitRate`. Absent: `visitRate` alone (a bare cap).
-   */
-  visitSchedule?: 'auto' | 'fixed';
-  /**
-   * The Final settle's visit rate (`SETTLE.visitRate`): with visit workers, tile visits handed
-   * out per settle frame fed, a fixed count however fast the settle runs; absent or 0 = visits
-   * whenever a visit worker is free (`?debug&settlevisits=off`, the behaviour before).
-   */
-  settleVisitRate?: number;
 }
 
 /** Fast worker -> slow worker. */
@@ -209,7 +140,7 @@ export interface VisitRateCounters {
   cappedFrames: number;
   /** Tiles due for a visit now (not out). */
   dueTiles: number;
-  /** Credit earned so far, visits (absent in older builds). */
+  /** Credit earned so far, visits (absent with a short counter array, as test fakes send). */
   earned?: number;
   /** The schedule's target in force and the hold's floor under it, visits per frame (0: no schedule). */
   target?: number;
@@ -314,7 +245,7 @@ export interface SlowStatus {
   accounting?: WorkStatus;
   /**
    * With the final library of a run: each cell's split-half footprint noise,
-   * `[id, noise, ...]` (`SlowLoop.footprintNoise`; absent in older builds).
+   * `[id, noise, ...]` (`SlowLoop.footprintNoise`; absent when the loop does not have it).
    * The Refine readout compares footprint changes with it.
    */
   footprintNoise?: Float64Array;
@@ -350,7 +281,7 @@ export type SlowToMain =
       type: 'library';
       session: number;
       library: LibraryView;
-      /** The same library as `TraceLibrary.toBytes()` (a copy), so pass 2 can solve with the final one. */
+      /** The same library as `TraceLibrary.toBytes()` (a copy), so Extract can solve with the final one. */
       bytes: Uint8Array;
     }
   | { type: 'error'; session: number; message: string };

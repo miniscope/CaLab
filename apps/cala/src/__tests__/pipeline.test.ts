@@ -1157,7 +1157,7 @@ describe('pipeline store: the Discover visit hold', () => {
       expect(store.visitMode()).toBe('off');
       expect(client.startPipeline).toHaveBeenLastCalledWith(
         expect.anything(),
-        expect.not.objectContaining({ visitRate: expect.anything() }),
+        expect.not.objectContaining({ visitSchedule: expect.anything() }),
         undefined,
         undefined,
       );
@@ -1207,7 +1207,7 @@ describe('pipeline store: the Discover visit hold', () => {
         await store.start();
         expect(client.startPipeline).toHaveBeenLastCalledWith(
           expect.anything(),
-          expect.objectContaining({ visitRate: VISIT_RATE.cap, visitSchedule: setting }),
+          expect.objectContaining({ visitSchedule: setting }),
           undefined,
           undefined,
         );
