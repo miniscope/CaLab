@@ -1,6 +1,6 @@
 """Score a learned flat-field gain map against a sim's true sensor PRNU and its tissue.
 
-    $MINISIM_PY -I tools/cala-eval/ff_map_score.py <gt root> <sims root> <arm dir> ... [--frames N]
+    $MINISIM_PY -I tools/cala-eval/ff_map_score.py <gt root> <sims root> <arm dir> ... [--frames N] [--destripe]
 
 `<arm dir>/<sim>/final_log_gain.npy` is `motion_eval`'s `MOTION_FF_OUT` map (0 where the solve
 left a pixel undefined); `<gt root>/<sim>/prnu_gain.npy` is the true per-pixel PRNU gain
@@ -16,6 +16,9 @@ sensor pattern). Per sim, over defined pixels that are not hot or stuck (`hot_pi
 - `resid sd`: sd of the learned high-passed log gain minus slope x PRNU (what is not PRNU);
 - `tissue r`: correlation of that residual with the tissue's fine structure (high-passed log mean
   image minus its σ = 2 blur, a DoG), the leak this work removes.
+
+`--destripe` removes each column's median from the high-passed map and from the tissue reference before
+scoring (column FPN is an offset; with it in both, stripes alone would correlate them).
 
 Prints one row per arm with mean ± 95 % t interval over sims, and, with two or more arms, the
 paired difference of each arm minus the first.
@@ -59,11 +62,23 @@ def bad_pixels(gt: Path) -> np.ndarray | bool:
     return bad
 
 
-def score(g: np.ndarray, prnu: np.ndarray, dog: np.ndarray, bad) -> list[float]:
+def destripe(x: np.ndarray, m: np.ndarray) -> np.ndarray:
+    """`x` minus its per-column median over the pixels in `m` (column FPN shows up as stripes)."""
+    out = x.copy()
+    for c in range(x.shape[1]):
+        if m[:, c].any():
+            out[:, c] -= np.median(x[m[:, c], c])
+    return out
+
+
+def score(g: np.ndarray, prnu: np.ndarray, dog: np.ndarray, bad, stripes: bool) -> list[float]:
     m = (g != 0) & ~bad
     # Fill undefined pixels with the defined mean before filtering, then score defined ones only.
     gf = np.where(m, g, g[m].mean())
-    a = hp(gf)[m]
+    hg = hp(gf)
+    if stripes:
+        hg, dog = destripe(hg, m), destripe(dog, m)
+    a = hg[m]
     p = hp(np.log(prnu))[m]
     a, p = a - a.mean(), p - p.mean()
     r = float(np.corrcoef(a, p)[0, 1])
@@ -103,6 +118,7 @@ def main() -> int:
                     np.load(gt / s / "prnu_gain.npy"),
                     dogs[s],
                     bad_pixels(gt / s),
+                    "--destripe" in sys.argv,
                 )
                 for s in names
             ]

@@ -3,13 +3,16 @@
 #
 #   tools/cala-eval/ff_motion_arms.sh <arm> <seed...>
 #
-# Needs in $R (default ~/Projects/cala-data/runs/ff-motion-gain):
-#   bin/motion_eval_main  motion_eval built from main (with the MOTION_FF_* knobs)
-#   bin/motion_eval_fix   motion_eval built from this branch
-#   front/v3_motion_s<seed>/cala_rigid.npy   the no-flat-field ("plain") shifts (MOTION_FRONT=1 run)
-#   gt/<sim>/             motion ground truth (export_gt_nonrigid.py; --prnu for the fpn sims)
-#   scaled105/<sim>.npy   the plain shifts x 1.05; fpn/truthshifts/<sim>.npy the true shifts
-#                         (registering sign, offset matched to the front run)
+# The layout of ~/Projects/cala-data/runs/ff-motion-gain ($R), where the note's numbers were made:
+#   bin/motion_eval_diag  motion_eval built from main 0e5c3619 plus this branch's MOTION_FF_* knobs
+#                         (example only, library untouched); bin/motion_eval_fix  built from this branch
+#   $G/<sim>/             motion ground truth (export_gt_nonrigid.py; default runs/motion-xcorr-bias/gt)
+#   $P/<sim>/cala_rigid.npy  the no-flat-field ("plain", MOTION_FRONT=1) shifts (default
+#                         runs/motion-xcorr-bias/front)
+#   scaled105/<sim>.npy   the plain shifts x 1.05
+#   fpn_gt/<sim>/         fpn ground truth (--prnu); fpn/truthshifts/<sim>.npy the true shifts
+#                         (registering sign, offset matched to the fpn front run)
+# Outputs go to $OUT/<arm>/<sim> (fpn arms: $OUT/fpn/<arm>/<sim>), OUT defaulting to $R.
 # v3_motion arms (sims in $CALA_SIMS_V3):
 #   ff          main, online flat field (maps saved)       fix         branch, the same
 #   fixed       main's final map applied from frame 0       fixfixed    the fix's final map from frame 0
@@ -25,17 +28,20 @@ set -euo pipefail
 R=${R:-$HOME/Projects/cala-data/runs/ff-motion-gain}
 S=${CALA_SIMS_V3:-$HOME/Projects/cala-data/sims-v3}
 F=${FPN_SIMS:-$HOME/Projects/cala-data/sims-fpn}
+G=${G:-$HOME/Projects/cala-data/runs/motion-xcorr-bias/gt}
+P=${P:-$HOME/Projects/cala-data/runs/motion-xcorr-bias/front}
+OUT=${OUT:-$R}
 arm=$1
 shift
 for seed in "$@"; do
   case $arm in
-    fpn-*) s=fpn_s$seed; d=$R/fpn/${arm#fpn-}/$s; daq=$F/$s/daq ;;
-    *) s=v3_motion_s$seed; d=$R/$arm/$s; daq=$S/$s/daq ;;
+    fpn-*) s=fpn_s$seed; d=$OUT/fpn/${arm#fpn-}/$s; daq=$F/$s/daq; gt=$R/fpn_gt/$s ;;
+    *) s=v3_motion_s$seed; d=$OUT/$arm/$s; daq=$S/$s/daq; gt=$G/$s ;;
   esac
   [ -f "$d/true_patch.npy" ] && continue
   mkdir -p "$d"
   env=(MOTION_FRONT=ff MOTION_RIGID_ONLY=1 MOTION_SAVE=$d)
-  main=$R/bin/motion_eval_main
+  main=$R/bin/motion_eval_diag
   fix=$R/bin/motion_eval_fix
   bin=$main
   case $arm in
@@ -43,8 +49,8 @@ for seed in "$@"; do
     fix | fpn-fix) env+=(MOTION_FF_OUT=$d); bin=$fix ;;
     fixed) env+=(MOTION_FF_FIXED=$R/ff/$s) ;;
     fixfixed) env+=(MOTION_FF_FIXED=$R/fix/$s); bin=$fix ;;
-    plainfed) env+=(MOTION_FF_OUT=$d MOTION_FF_SHIFTS=$R/front/$s/cala_rigid.npy) ;;
-    fixplainfed) env+=(MOTION_FF_OUT=$d MOTION_FF_SHIFTS=$R/front/$s/cala_rigid.npy); bin=$fix ;;
+    plainfed) env+=(MOTION_FF_OUT=$d MOTION_FF_SHIFTS=$P/$s/cala_rigid.npy) ;;
+    fixplainfed) env+=(MOTION_FF_OUT=$d MOTION_FF_SHIFTS=$P/$s/cala_rigid.npy); bin=$fix ;;
     mainfed105) env+=(MOTION_FF_OUT=$d MOTION_FF_SHIFTS=$R/scaled105/$s.npy) ;;
     fixfed105) env+=(MOTION_FF_OUT=$d MOTION_FF_SHIFTS=$R/scaled105/$s.npy); bin=$fix ;;
     fixrefed) env+=(MOTION_FF_OUT=$d MOTION_FF_SHIFTS=$R/fixfed105/$s/cala_rigid.npy); bin=$fix ;;
@@ -53,5 +59,5 @@ for seed in "$@"; do
     fpn-fixtruth) env+=(MOTION_FF_OUT=$d MOTION_FF_SHIFTS=$R/fpn/truthshifts/$s.npy); bin=$fix ;;
     *) echo "unknown arm $arm" >&2; exit 2 ;;
   esac
-  env "${env[@]}" /usr/bin/time -l "$bin" minisim "$daq" "$R/gt/$s" > "$d/log.txt" 2> "$d/time.txt"
+  env "${env[@]}" /usr/bin/time -l "$bin" minisim "$daq" "$gt" > "$d/log.txt" 2> "$d/time.txt"
 done

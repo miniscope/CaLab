@@ -21,11 +21,13 @@ late gain 1.065 → 1.003 on the motion sims, RMS error 0.071 → 0.048 px (no f
 
 - The fix is in `DitherFlatField` (`crates/cala/src/preprocess/flatfield.rs`); signatures are unchanged, so the
   app and qc_eval both get it.
-- The fix removes the source term, not the solve's sensitivity to biased input shifts (§2): a registration-gain
-  error fed in from outside comes back at about half size. The loop contracts to gain 1.00.
+- The fix removes the source term, not the solve's sensitivity to biased input shifts (§2): on the v3 motion
+  sims a registration-gain error fed in from outside comes back at about half size. The loop contracts to 1.00.
 - On sims with a sensor pattern (PRNU 2.4 %, column FPN, hot pixels; §3), registration error improves a little
-  and the learned map is unchanged. The fix's late gain is 0.987, main's 1.000: on these sims main's leak
-  happens to cancel a separate under-correction of the sensor pattern that both builds share (§3).
+  and the learned PRNU is unchanged. The fix's late gain is 0.987, main's 1.000. The no-sensor twin of those
+  sims shows why: there main's leak is +.012 (smaller on the v2 tissue than on v3) and the fix matches no flat
+  field. On fpn the same +.013 leak in main offsets a residual sensor pull (no flat field 0.944, fix 0.987)
+  that both builds share.
 - Stored maps from shipped versions (v2.13.0 – v2.23.x) carry the leak. The app's per-device cache now has a
   solve version, so those maps are not reused (§5).
 
@@ -42,7 +44,7 @@ late gain 1.065 → 1.003 on the motion sims, RMS error 0.071 → 0.048 px (no f
 By block of 1200 frames, main's gain rises from 1.00 to 1.06–1.10 after the first map (frame 3000) and is still
 climbing at frame 9600; the fix stays at 0.99–1.03 in every block of every seed.
 
-How the cause was isolated (main build, diagnostic knobs in `motion_eval`):
+How the cause was isolated (main build plus the diagnostic knobs in `motion_eval`):
 
 - **Not the template.** `fixed` (main's final map applied from frame 0, so the warm-up template is built with
   it): gain 1.0721 ± .0113 already in frames 0–3000. A template rebuild would not help.
@@ -94,17 +96,30 @@ model as v3_motion), seeds 5–9, generated for this work. Truth from `export_gt
 | main, fed true shifts |  .1305 ± .0134 |  .9910 ± .0109 |               | 1.0012 ± .0151 |
 | fix, fed true shifts  |  .1286 ± .0135 |  .9829 ± .0101 |               |  .9894 ± .0141 |
 
-- Without a flat field the sensor pattern pulls registration towards zero shift: gain 0.95. The first map
-  (frame 3000) lifts it to ~0.99–1.00 in both builds.
-- The fix lowers RMS error (paired −.0020 ± .0009) and ends at gain .987; main ends at 1.000. Feeding the
-  estimator the true shifts changes neither (≤ .002), so this is not the shift loop.
-- Learned map vs truth (`ff_map_score.py`, high-passed σ 8 px, hot/stuck pixels excluded): PRNU correlation
-  .792 ± .062 (main) and .793 ± .062 (fix), paired +.0012 ± .0003. Both maps overshoot PRNU (slope 1.33) and
-  their residual correlates with the tissue (r .53 main, .52 fix; paired −.011 ± .002), also with true shifts.
-  So both builds share a tissue-correlated map error on these sims that is not the sub-pixel leak and not the
-  shift loop (a dark-level / offset interaction is the first suspect). Main's sub-pixel leak pushes gain up and
-  this shared error pulls it down; on fpn they happen to cancel in main's gain, which is why main reads 1.000.
-  Not fixed here; worth its own look.
+**No-sensor twin.** The v2 `motion_s5..9` sims have exactly the fpn spec minus `sensor_defects` (same seed,
+tissue, motion; checked). Rigid, same builds:
+
+| arm (v2 motion, no sensor pattern) |         RMS px |      gain late |
+| ---------------------------------- | -------------: | -------------: |
+| no flat field                      |  .1271 ± .0123 |  .9920 ± .0148 |
+| flat field, main                   |  .1302 ± .0123 | 1.0055 ± .0170 |
+| flat field, fix                    |  .1279 ± .0125 |  .9931 ± .0158 |
+| _paired fix − main_                | −.0023 ± .0010 | −.0124 ± .0014 |
+
+- Main's leak is +.012 on the v2 tissue (vs +.06 on v3, whose spec differs in cell size and density, neuropil and photon count), and the fix removes it
+  (fix − no flat field +.001). Main's map differs from the fix's by sd .0014 here and .0015 on fpn: the same
+  small effect. So on fpn the fix removes the same leak, and main's 1.000 is that +.013 leak sitting on top of a
+  residual sensor pull both builds share.
+- Without a flat field the sensor pattern pulls registration towards zero shift: gain 0.944 late. The flat
+  field removes about three quarters of that pull (fix 0.987). What is left is not identified (hot pixels,
+  column FPN or the map error below are candidates). Feeding the estimator the true shifts changes neither
+  build (≤ .002), so it is not the shift loop. The sensitivity k of §2 was measured on v3 and does not apply
+  here: on fpn the shift source hardly matters.
+- Learned map vs truth (`ff_map_score.py`, high-passed σ 8 px, hot/stuck pixels excluded, per-column medians
+  removed from map and tissue reference with `--destripe`): PRNU correlation .907 ± .036 (main) and .909 ± .036
+  (fix), paired +.0014 ± .0003. Both maps overshoot PRNU (regression slope 1.33), and their residual
+  correlates with the tissue (r .44 main, .39 fix; paired −.046 ± .007). Both are unexplained and shared by
+  the two builds; not addressed here. Without `--destripe` the PRNU correlation is .79 and the tissue r .53.
 
 ## 4. End-to-end qc_eval and real data
 
@@ -119,10 +134,13 @@ pre-declared). Raw: `runs/ff-motion-gain/qc/`, `qc_v3.md`, `qc_fpn.md`.
 
 - qc_eval's own registration (`motion.tsv`) matches the `motion_eval` arms above to the fourth decimal, so the
   registration gain is the same on qc_eval's path.
-- No detection metric moves beyond its CI on either arm. On v3_motion R8 is lower on 5/5 seeds by .003 (CI
-  covers 0). The held-out score's rank correlation with true positives drops on v3_motion (`rho_Sf_TP`
-  −.054 ± .030, `rho_S_TP` −.040 ± .059) but not on fpn (−.004 ± .016). `S8` falls by ~290 on both arms (5/5
-  seeds), a scale change of the held-out score, not a ranking change.
+- P8 (primary), R8, cells and the AUCs move within their CIs on both arms. On v3_motion R8 is lower on 5/5
+  seeds by .003 (CI covers 0).
+- Observed and unexplained: on v3_motion the held-out score's rank correlation with true positives drops
+  (`rho_Sf_TP` −.054 ± .030, 5/5 seeds; `rho_S_TP` −.040 ± .059); on fpn it does not (−.004 ± .016). `S8`
+  falls by ~290 on both arms (5/5 seeds).
+- Cost: qc_eval wall time is the same (main/fix 259/260 s on v3_motion_s5, 240/239 s on fpn_s5, similar on the
+  rest).
 - Registration error on these sims is small next to the cell size (~10 px), so a 0.02 px RMS change was not
   expected to move detection much; the gain matters more for long recordings (§2 projection).
 
@@ -134,10 +152,14 @@ comparison is the slope of the flat-field arm's rigid shifts on the no-flat-fiel
 | main | 1.047 | 1.125 |
 | fix  | 0.981 | 1.078 |
 
-The no-flat-field reference is not unbiased on real data: on the fpn sims it reads gain 0.95, and the workshop
-sensor's learned gain sd (6.3 %) is larger than the sims' PRNU (2.4 %). A slope above 1 is therefore expected
-from correcting the sensor pull, and these numbers cannot say how much of the remaining 1.08 in dx is real.
-The fix moves both axes down by 0.05–0.07, the same size as the leak it removes on sims.
+The no-flat-field reference is not unbiased when the sensor has a pattern. Calibration on the fpn sims, where
+truth is known: the same slope (flat-field arm on no-flat-field arm, frames 3000–end) is 1.063 / 1.055 (dy /
+dx) for main and 1.048 / 1.041 for the fix, while their true late gains are 1.000 and 0.987. The workshop
+sensor's learned gain sd (6.3 %) is larger than the sims' PRNU (2.4 %), so its pull is probably larger too.
+
+Unresolved: the fix's workshop dy slope is 0.981, below 1, where the sims would predict above 1, and dx is
+1.078. Without truth for this recording these numbers cannot say which axis is right. The fix moves both axes
+down by 0.05–0.07, the size of the leak it removes on v3.
 
 ## 5. Stored maps (app cache)
 
