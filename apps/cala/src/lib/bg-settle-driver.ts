@@ -20,7 +20,8 @@
  */
 import type { LookbackToSlow } from '../workers/lookback-types.ts';
 import type { SlowInit } from '../workers/slow-types.ts';
-import { CSETTLE, SettleGovernor } from './settle.ts';
+import { CSETTLE } from './settle.ts';
+import { SettleGovernor } from './settle-governor.ts';
 import type { LookbackItem, LookbackReq, SlowLoopLike } from './slow-runner.ts';
 import type { DutyClock, SlowDuty } from './work-meter.ts';
 

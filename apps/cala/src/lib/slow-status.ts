@@ -10,7 +10,7 @@ import type {
   SettleVisits,
 } from '../workers/lookback-types.ts';
 import type { CellStatusView, SlowCounters } from '../workers/slow-types.ts';
-import type { SettleGovernor } from './settle.ts';
+import type { SettleGovernor } from './settle-governor.ts';
 import type { SlowLoopLike } from './slow-runner.ts';
 import type {
   DetailTimer,
