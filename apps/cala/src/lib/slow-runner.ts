@@ -103,13 +103,11 @@ import type {
   SlowToLookback,
 } from '../workers/lookback-types.ts';
 import type {
-  CellStatusView,
   EditScopeName,
   FastToSlow,
   LibraryView,
   OwnerToVisit,
   PortLike,
-  SlowCounters,
   SlowFactors,
   SlowInit,
   SlowReviewed,
@@ -121,6 +119,15 @@ import type {
 import { libraryViewTransferables, visitRateCounters } from '../workers/slow-types.ts';
 import { errMsg } from './errors.ts';
 import { normalizeRunCells } from './run-cells.ts';
+import {
+  cellStatusView,
+  counters,
+  csettleStatus,
+  lookbackStatus,
+  settleView,
+  waitView,
+  workStatus,
+} from './slow-status.ts';
 import {
   CSETTLE,
   movedAgainstNoise,
@@ -138,7 +145,6 @@ import {
   DetailTimer,
   DutyClock,
   emptyLookbackWork,
-  LOOKBACK_KINDS,
   SLOW_DUTIES,
   WindowMax,
   type LookbackKind,
@@ -490,40 +496,8 @@ interface SettleAnswer {
   begun: boolean;
 }
 
-function counters(s: ArrayLike<number>): SlowCounters {
-  return {
-    visits: s[0] ?? 0,
-    proposals: s[1] ?? 0,
-    adds: s[2] ?? 0,
-    rejects: s[3] ?? 0,
-    merges: s[4] ?? 0,
-    mergeTests: s[5] ?? 0,
-    refines: s[6] ?? 0,
-    commits: s[7] ?? 0,
-    deletes: s[8] ?? 0,
-    splits: s[9] ?? 0,
-    absorbs: s[10] ?? 0,
-    newAdds: s[11] ?? 0,
-    reAdds: s[12] ?? 0,
-    churned: s[13] ?? 0,
-    establishedRemovals: s[15] ?? 0,
-    reviewAdds: s[16] ?? 0,
-  };
-}
-
 /** Wall time between cell-status updates to the main thread, ms. */
 export const CELL_STATUS_EVERY_MS = 1000;
-
-function cellStatusView(flat: ArrayLike<number>): CellStatusView {
-  const n = Math.floor(flat.length / 3);
-  const ids = new Uint32Array(n);
-  const established = new Uint8Array(n);
-  for (let i = 0; i < n; i++) {
-    ids[i] = flat[3 * i];
-    established[i] = flat[3 * i + 1] > 0 ? 1 : 0;
-  }
-  return { ids, established };
-}
 
 export class SlowRunner {
   private readonly deps: SlowRunnerDeps;
@@ -2172,16 +2146,7 @@ export class SlowRunner {
   }
 
   private waitView(): SettleStatus {
-    return {
-      fed: 0,
-      total: 0,
-      recording: this.consumed,
-      moving: null,
-      stopped: false,
-      done: false,
-      ...(this.factorWait?.file ? {} : { source: 'factors' as const }),
-      waiting: true,
-    };
+    return waitView(this.consumed, this.factorWait?.file === true);
   }
 
   private finish(): void {
@@ -2248,94 +2213,51 @@ export class SlowRunner {
   }
 
   private settleView(d: Settle, done: boolean): SettleStatus {
-    return {
-      fed: d.fed,
-      total: d.feed.total,
-      recording: d.recording,
-      moving: d.moving,
-      stopped: d.stop,
-      done,
-      workers: d.served.size,
-      ...(this.parallel ? { visits: { ...d.v } } : {}),
-      ...(this.factorLive
-        ? { source: 'factors' as const }
-        : this.fileReason !== undefined
-          ? { source: 'file' as const, fileReason: this.fileReason }
-          : {}),
-    };
+    return settleView(d, done, {
+      parallel: this.parallel,
+      factorLive: this.factorLive,
+      fileReason: this.fileReason,
+    });
   }
 
   private lookbackStatus(loop: SlowLoopLike): LookbackStatus {
     const s = loop.lookbackStats();
-    return {
-      requested: s[0] ?? 0,
-      pushed: s[1] ?? 0,
-      heldOut: s[2] ?? 0,
-      dropped: s[3] ?? 0,
-      births: s[4] ?? 0,
-      inNeed: s[5] ?? 0,
-      recordBytes: s[6] ?? 0,
+    return lookbackStatus(s, {
       settling: this.drain !== null || this.factorWait !== null,
-      drainSteps: 0,
-      capped: false,
-      ...(this.drain
-        ? { settle: this.settleView(this.drain, false) }
+      settle: this.drain
+        ? this.settleView(this.drain, false)
         : this.factorWait
-          ? { settle: this.waitView() }
-          : this.settleStatus
-            ? { settle: this.settleStatus }
-            : {}),
-      ...(this.cs ? { csettle: this.csettleStatus(loop, this.cs) } : {}),
-      ...(this.lbError !== undefined ? { error: this.lbError } : {}),
-    };
+          ? this.waitView()
+          : this.settleStatus,
+      csettle: this.cs ? this.csettleStatus(loop, this.cs) : undefined,
+      error: this.lbError,
+    });
   }
 
   private csettleStatus(loop: SlowLoopLike, cs: Csettle): CsettleStatus {
-    const s = loop.settleStats();
-    return {
-      rate: cs.gov.cap,
-      requested: cs.requested,
-      fit: s[1] ?? 0,
-      heldOut: s[2] ?? 0,
-      dropped: (s[3] ?? 0) + cs.dropped,
-      live: cs.live,
-      answers: cs.answers,
-      answerMs: cs.answerMs,
-      maxBlockMs: cs.maxBlockMs,
-      yieldFrames: cs.yieldFrames,
-      settleWorkers: this.settlePorts().length,
-      governor: cs.gov.status(),
-    };
+    return csettleStatus(loop.settleStats(), cs, this.settlePorts().length);
   }
 
   /** The work accounting so far (`SlowStatus.accounting`): the clock's buckets, the visit workers' sums, the look-back answers. */
   private workStatus(): WorkStatus {
-    const t = this.now();
-    return {
-      wallMs: t - this.workT0,
-      busyMs: this.clock.snapshot(),
-      batchWait: {
-        batches: this.waitN,
-        sumMs: this.waitSum,
-        lastMs: this.waitLast,
-        max1sMs: this.waitMax.max(t),
-      },
-      visitBusyMs: this.visitBusy.slice(),
-      lookback: Object.fromEntries(LOOKBACK_KINDS.map((k) => [k, { ...this.lbWork[k] }])) as Record<
-        LookbackKind,
-        LookbackWork
-      >,
-      discarded: { ...this.lbDiscarded },
-      lookbackWorkerBusyMs: this.lbPorts.map((p, i) => (p ? (this.lbPortBusy[i] ?? 0) : 0)),
+    return workStatus({
+      t: this.now(),
+      workT0: this.workT0,
+      clock: this.clock,
+      waitN: this.waitN,
+      waitSum: this.waitSum,
+      waitLast: this.waitLast,
+      waitMax: this.waitMax,
+      visitBusy: this.visitBusy,
+      lbWork: this.lbWork,
+      lbDiscarded: this.lbDiscarded,
+      lbPorts: this.lbPorts,
+      lbPortBusy: this.lbPortBusy,
       settleWorkers: this.settlePorts().length,
-      observedFrames: this.observed,
-      ...(this.dt
-        ? {
-            detail: { ...this.dt.sums },
-            ...(this.loop ? { stage: Array.from(this.loop.stageTiming()) } : {}),
-          }
-        : {}),
-    };
+      observed: this.observed,
+      dt: this.dt,
+      loop: this.loop,
+    });
   }
 
   private status(batchMs: number, maxStepMs: number): void {
