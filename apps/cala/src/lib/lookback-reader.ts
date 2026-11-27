@@ -1,5 +1,5 @@
 /**
- * Look-back's frame supply (experimental; the look-back worker's core):
+ * Look-back's frame supply (the look-back worker's core):
  * re-read the past frames the slow loop's scheduler asks for
  * (`SlowLoop.lookbackTake`), preprocess them as the live pipeline did, and
  * solve them with the newest published library. The slow loop then feeds

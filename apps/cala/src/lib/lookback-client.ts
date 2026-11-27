@@ -1,5 +1,5 @@
 /**
- * Main-thread side of look-back (experimental; see `lookback-reader.ts` and
+ * Main-thread side of look-back (see `lookback-reader.ts` and
  * `SlowRunner`): starts the look-back worker on the first Discover run with
  * look-back on, wires a `MessageChannel` between it and the slow worker,
  * and feeds it what Discover records as it goes (motion and flicker rows,

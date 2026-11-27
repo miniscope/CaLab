@@ -362,7 +362,7 @@ const App: Component = () => {
           () => pipeline.factorFileRun(),
         )
       : undefined;
-  const pass2 = createPass2Store(client, pipeline, cells, undefined, undefined, factorExtract);
+  const pass2 = createPass2Store(client, pipeline, cells, undefined, factorExtract);
   /** Log a stage event on the run's timeline (at the end of what Discover read). */
   const logStage = (stage: StageName, detail: string) =>
     runHistory.log({
@@ -1117,7 +1117,6 @@ const App: Component = () => {
               onStopSettling={() => slow.stopSettling(cells.session())}
               runRecord={runRecord}
               sessionMode={multiRun.plan()?.settings.mode ?? null}
-              fixed
               visible={tab.active() === 'run'}
             />
             <SessionRunStatus />

@@ -191,7 +191,7 @@ export function createPipelineStore(
   runHistory?: RunHistory,
   /** Feed the compress worker; its store is reset with each run. */
   compress?: Pick<CompressStore, 'reset'>,
-  /** Look-back (experimental): the look-back worker's feed (absent: look-back is not offered). */
+  /** Look-back: the look-back worker's feed (absent: look-back is not offered). */
   lookbackFeed?: LookbackFeed,
 ) {
   const [status, setStatus] = createSignal<PipelineStatus>('idle');
@@ -815,7 +815,7 @@ export function createPipelineStore(
   const [workFastMaxFps, setWorkFastMaxFps] = createSignal(0);
   /** `workMaxFps` is what the visits allow, below the fast loop's own top speed. */
   const [workMaxVisitLimited, setWorkMaxVisitLimited] = createSignal(false);
-  // The smart floor estimate (`lib/speed-floor.ts`): shown in the `?debug` readout only, steers nothing.
+  // The smart floor estimate (`lib/speed-floor.ts`): the Speed control's floor mark and the Auto policy's input (`policyInput`).
   const floorMeter = new FloorMeter();
   const [floorLine, setFloorLine] = createSignal('');
   /** The floor as the Speed control's mark shows it (the prior until a measurement). */
@@ -825,7 +825,7 @@ export function createPipelineStore(
   cells?.onStatus((st) => {
     if (!st.accounting) return;
     lastAccounting = st.accounting;
-    // Throttled to about 1 Hz inside the meter: no per-batch work for a debug readout.
+    // Throttled to about 1 Hz inside the meter: no per-batch work for the floor estimate.
     if (floorMeter.due(st.accounting.wallMs)) {
       const lb = st.lookback;
       const gov = lb?.csettle?.governor;
@@ -1290,7 +1290,7 @@ export function createPipelineStore(
         reused: seed !== undefined,
         map: seed ?? null,
       });
-      // Look-back (experimental): from this start on, if the recording allows it.
+      // Look-back (on by default for recordings): from this start on, if the recording allows it.
       const lb = lookback() && discover() && lookbackFeed?.begin(session) === true;
       const runPlan = factorRunPlan({
         live: flat.identity?.()?.live === true,
@@ -1511,7 +1511,7 @@ export function createPipelineStore(
     /** The residual preview is being produced (the residual view is shown). */
     residual,
     /**
-     * Look-back (experimental): the setting for the next Discover start, why
+     * Look-back (on by default for recordings): the setting for the next Discover start, why
      * the open recording cannot have it (null: it can), and whether the
      * current run has it.
      */
@@ -1561,7 +1561,7 @@ export function createPipelineStore(
     /** The level the current run started with (the selection before any run); what the run record names. */
     runFinalSettleLevel: () => runLevel ?? finalSettleLevelSig(),
     setFinalSettleLevel: (level: unknown) => setFinalSettleLevelSig(finalSettleLevel(level)),
-    /** Settle during Discover (experimental; only with look-back): the settings for the next Discover start. */
+    /** Settle during Discover (only with look-back): the settings for the next Discover start. */
     csettle,
     /** Background settle on or off (off = cap 0); during a run too. */
     setCsettle: (on: boolean, source = 'setting') => {

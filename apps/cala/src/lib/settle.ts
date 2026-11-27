@@ -1,5 +1,5 @@
 /**
- * The end-of-Discover settle of a look-back run (experimental; qc_eval's
+ * The end-of-Discover settle of a look-back run (qc_eval's
  * `--settle-frames N --settle-batch 16`, `LookBack::settle`): with the cell
  * set frozen, the look-back worker re-reads the recording once and every
  * frame goes through the slow loop's ordinary `observe`, as a Refine pass

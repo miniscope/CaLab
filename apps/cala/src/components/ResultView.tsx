@@ -286,7 +286,7 @@ export function ResultView(props: { result: LoadedResult; origin: ResultOrigin }
 
   /** The Result tab: what was saved, the stages that ran and the convergence plot. */
   const resultPanel = () => (
-    <SidePanel id="run" title="Saved result" class="cala-run" fixed>
+    <SidePanel id="run" title="Saved result" class="cala-run">
       <p class="cala-muted" data-testid="result-readonly">
         Read-only: this is the result as it was saved. Start a new run from the project to Discover,
         Extract again.

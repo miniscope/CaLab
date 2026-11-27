@@ -92,8 +92,6 @@ export function createPass2Store(
   pipeline: PipelineStore,
   cells: CellStore,
   clock: () => number = () => performance.now(),
-  /** Another stage's reason to wait (a Refine run going on), checked after Discover's. */
-  blocked?: () => string | null,
   /** A `?factors` stream's factors: Extract solves on them in the compress worker (absent: never). */
   factors?: FactorExtractPort,
 ) {
@@ -137,8 +135,6 @@ export function createPass2Store(
     if (st === 'running' || st === 'paused' || st === 'starting')
       return 'Extract runs after Discover finishes.';
     if (st !== 'done') return 'Extract runs after Discover finishes.';
-    const other = blocked?.();
-    if (other) return other;
     // A factor run reads no file, so no record to replay; it waits for the factors itself.
     const replay =
       factors?.active() || (factors?.mode?.() === 'file' && factors.state() === 'ready')

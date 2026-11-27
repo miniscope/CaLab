@@ -140,8 +140,6 @@ export interface RunPanelProps {
   compress?: CompressStore;
   /** Present when the run reviews its compressed history (`?compress&review`). */
   review?: ReviewStore;
-  /** In a tab of its own: not collapsible (the convergence plot always shows). */
-  fixed?: boolean;
   /** False while its tab is hidden: the plots stop drawing (the panel stays mounted for its state). Default true. */
   visible?: boolean;
   /** Stop a look-back run's settling: the footprints refined so far become the final library. */
@@ -515,7 +513,6 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     sessionRun: props.sessionMode != null,
   }));
 
-  const [metricsOpen, setMetricsOpen] = createSignal(true);
   const shown = () => props.visible !== false;
 
   return (
@@ -523,10 +520,6 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       id="run"
       title="Run"
       class="cala-run"
-      fixed={props.fixed}
-      open={metricsOpen()}
-      onToggle={setMetricsOpen}
-      toggleLabel={(open) => (open ? 'Hide the convergence plot' : 'Show the convergence plot')}
       head={
         <div class="cala-run__conv" data-testid="convergence-status" title={conv().reason}>
           <span class={`cala-conv-chip cala-conv-chip--${conv().state}`}>
@@ -576,8 +569,6 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           </Show>
         </>
       }
-      // The pass rows stay when the metric rows are folded away.
-      alwaysShown
     >
       {/* ---- 1. Settings: chosen before a run ---- */}
       <section class="cala-run__section" aria-labelledby="run-settings" data-testid="run-settings">
@@ -687,7 +678,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               )}
             </Show>
           </div>
-          {/* `?debug`: who is doing what, once a second (plain text; the real display comes later). */}
+          {/* `?debug`: who is doing what, once a second, as plain text (the Work display shows it as a grid). */}
           <Show when={DEBUG}>
             <pre class="cala-readout cala-run__line" data-testid="work-debug">
               {workText(
@@ -720,7 +711,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             fallback={
               <>
                 <PassStepper steps={steps()} />
-                <Show when={metricsOpen() && shown()}>
+                <Show when={shown()}>
                   <div class="cala-run__tiles">
                     <For each={tiles()}>
                       {(m) => (
@@ -756,7 +747,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
                 <RunStrip ui={props.ui} />
               </Show>
               {/* Expanded, the large History view has the convergence plot; the FOV gets the room. */}
-              <Show when={metricsOpen() && !props.ui.expanded() && shown()}>
+              <Show when={!props.ui.expanded() && shown()}>
                 <AspectPlot>
                   {(h) => <GroupPlot ui={props.ui} group="convergence" height={h()} compact />}
                 </AspectPlot>

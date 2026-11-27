@@ -26,7 +26,7 @@ export interface CellsSettings {
    */
   library?: Uint8Array;
   /**
-   * Look-back (experimental; Discover of a recording only): the slow loop
+   * Look-back (Discover of a recording only): the slow loop
    * runs with it (`SlowInit.lookback`) and stage C reports its back half's
    * state now and then (`PipelineStepResult` `backState`) for the look-back
    * worker. Pipelined workers only.

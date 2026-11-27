@@ -580,5 +580,3 @@ export class GpuMotion {
     return done;
   }
 }
-
-export type GpuSlot = Awaited<ReturnType<GpuMotion['prefilter']>>['slot'];
