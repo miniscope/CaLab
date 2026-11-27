@@ -5,6 +5,7 @@
  */
 
 import type { DeviceIdentity } from './flat-field.ts';
+import { median } from './stats.ts';
 
 /**
  * The frame rate time-based settings assume when the recording gives none
@@ -127,14 +128,12 @@ export function fpsFromTimeStamps(ms: Float64Array): number | null {
     const d = ms[i] - ms[i - 1];
     if (d > 0) diffs.push(d);
   }
-  if (diffs.length === 0) return null;
-  const sorted = [...diffs].sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  const med = median(diffs);
+  if (med === null) return null;
   let sum = 0;
   let n = 0;
   for (const d of diffs) {
-    if (d <= 2 * median) {
+    if (d <= 2 * med) {
       sum += d;
       n++;
     }

@@ -30,6 +30,7 @@ import { stageMeta } from './export.ts';
 import { factorsFromPage } from './factor-run.ts';
 import { FLOOR_LADDER, type FloorInputs } from './speed-floor.ts';
 import { SPEED_SCALE } from './speed-track.ts';
+import { median } from './stats.ts';
 import type { SpeedCurve } from './speed-schedule.ts';
 import type { AutoDecision } from './speed-auto.ts';
 
@@ -369,13 +370,6 @@ export interface RunCounters {
 export const RECORD_LIST_CAP = 2000;
 
 /** Thin the oldest half of `rows` (keep every second one) once it is over `cap`; the newest stay whole. */
-function median(xs: readonly number[]): number | null {
-  const a = [...xs].sort((x, y) => x - y);
-  if (a.length === 0) return null;
-  const m = a.length >> 1;
-  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
-}
-
 export function thinOldest<T>(rows: T[], cap = RECORD_LIST_CAP): T[] {
   if (rows.length <= cap) return rows;
   const half = rows.length >> 1;

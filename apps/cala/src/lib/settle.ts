@@ -8,6 +8,7 @@
  * 2026-11-19-lookback-settle.md). `SlowRunner` drives it; this module holds
  * the frame plan and the "cells still moving" readout, both pure.
  */
+import { median } from './stats.ts';
 
 /** The settle's settings (see `settle_design.md`, "Design of the end-of-Discover settle"). */
 export const SETTLE = {
@@ -299,12 +300,6 @@ export function settleChange(
   k: number = SETTLE.movingK,
 ): SettleChange {
   const ch = footprintChanges(before, after, noise);
-  const median = (v: number[]) => {
-    if (v.length === 0) return null;
-    const s = [...v].sort((x, y) => x - y);
-    const m = s.length >> 1;
-    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-  };
   return {
     ...movedAgainstNoise(before, after, noise, k),
     cellsBefore: before.size,

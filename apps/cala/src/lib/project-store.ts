@@ -57,7 +57,8 @@ import {
   type PlanState,
 } from './run-plan.ts';
 import { readStartMs, toSessionInput } from './session-list.ts';
-import { ensureReadwrite, type WritableDirLike } from './session-export.ts';
+import type { WritableDirLike } from './session-export.ts';
+import { ensurePermission } from './fs-handles.ts';
 import {
   RESULTS_DIR,
   uniqueResultsPaths,
@@ -154,7 +155,7 @@ export function createProjectStore(deps: ProjectDeps) {
   async function grant(): Promise<boolean> {
     if (!canWrite()) return true;
     const target = resultsHandle() ?? opened()?.handle;
-    return target ? ensureReadwrite(target) : false;
+    return target ? ensurePermission(target, 'readwrite') : false;
   }
 
   async function readFiles(): Promise<ResultsFile[]> {

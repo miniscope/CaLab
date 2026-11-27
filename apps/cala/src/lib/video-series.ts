@@ -56,6 +56,12 @@ export function dirOf(relPath: string): string {
   return slash < 0 ? '' : relPath.slice(0, slash);
 }
 
+/** The last `/`-separated part of a path (the whole path when it has no `/`). */
+export function baseOf(path: string): string {
+  const slash = path.lastIndexOf('/');
+  return slash < 0 ? path : path.slice(slash + 1);
+}
+
 /** Group the numbered `.avi` entries into series keyed by (directory, prefix, extension). */
 export function detectSeries<E extends NamedEntry>(entries: E[]): VideoSeries<E>[] {
   const byKey = new Map<string, VideoSeries<E>>();

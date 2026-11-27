@@ -20,17 +20,12 @@
 import type { FolderEntry } from './frame-source.ts';
 import { readDeviceRoles, roleFromName, type RoleInfo, type RoleSource } from './device-roles.ts';
 import { naturalCompare } from './natural-sort.ts';
-import { detectSeries, dirOf, seriesLabel, type VideoSeries } from './video-series.ts';
+import { baseOf, detectSeries, dirOf, seriesLabel, type VideoSeries } from './video-series.ts';
 
 /** Same patterns as the sidecar lookup in `frame-source.ts`. */
 const METADATA_NAME = /(?:^|[_-])metadata\.json$/i;
 const TIMESTAMPS_NAME = /(?:^|[_-])time_?stamps?\.csv$/i;
 const MINISCOPE_DIR = /miniscope/i;
-
-function basename(dir: string): string {
-  const slash = dir.lastIndexOf('/');
-  return slash < 0 ? dir : dir.slice(slash + 1);
-}
 
 /** Series that are "the same kind of recording" across sessions. */
 export interface SeriesKind {
@@ -70,7 +65,7 @@ export function seriesKindKey(s: VideoSeries): string {
   const ext = s.ext.toLowerCase();
   return s.prefix !== ''
     ? `p:${s.prefix.toLowerCase()}:${ext}`
-    : `d:${basename(s.dir).toLowerCase()}:${ext}`;
+    : `d:${baseOf(s.dir).toLowerCase()}:${ext}`;
 }
 
 /**
@@ -87,9 +82,9 @@ export function groupKinds(
     let k = byKey.get(key);
     if (!k) {
       const label =
-        s.prefix !== '' || basename(s.dir) === ''
+        s.prefix !== '' || baseOf(s.dir) === ''
           ? seriesLabel(s)
-          : `${basename(s.dir)}/${seriesLabel(s)}`;
+          : `${baseOf(s.dir)}/${seriesLabel(s)}`;
       k = { key, label, series: [], files: 0, role: null };
       byKey.set(key, k);
     }

@@ -4,7 +4,6 @@ import {
   ALLOWED_FIELDS,
   errorCategory,
   fileExtension,
-  median,
   errorType,
   setupAnalyticsEffects,
   webgpuPayload,
@@ -16,6 +15,7 @@ import {
 } from '../lib/analytics-integration.ts';
 import type { FrameSourceInfo } from '../lib/frame-source.ts';
 import type { StageRun } from '../lib/run-stages.ts';
+import { median } from '../lib/stats.ts';
 
 vi.mock('@calab/community', () => ({ trackEvent: vi.fn() }));
 

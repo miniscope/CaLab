@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   directoryResultsSink,
-  ensureReadwrite,
   exportSessionBlock,
   runManifest,
   sessionMetadata,
@@ -358,34 +357,5 @@ describe('zipResultsSink', () => {
   it('rejects bad paths', async () => {
     const sink = zipResultsSink(() => {});
     await expect(sink.writeText('../x', 'y')).rejects.toThrow(/Not a results path/);
-  });
-});
-
-describe('ensureReadwrite', () => {
-  it('is true without requestPermission', async () => {
-    expect(await ensureReadwrite({})).toBe(true);
-  });
-  it('is true when already granted, without a request', async () => {
-    let requested = false;
-    const h = {
-      queryPermission: async () => 'granted',
-      requestPermission: async () => {
-        requested = true;
-        return 'denied';
-      },
-    };
-    expect(await ensureReadwrite(h)).toBe(true);
-    expect(requested).toBe(false);
-  });
-  it('requests when not granted', async () => {
-    const mk = (r: string) => ({
-      queryPermission: async () => 'prompt',
-      requestPermission: async () => r,
-    });
-    expect(await ensureReadwrite(mk('granted'))).toBe(true);
-    expect(await ensureReadwrite(mk('denied'))).toBe(false);
-  });
-  it('requests when there is no queryPermission', async () => {
-    expect(await ensureReadwrite({ requestPermission: async () => 'denied' })).toBe(false);
   });
 });

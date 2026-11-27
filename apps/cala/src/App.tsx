@@ -70,10 +70,10 @@ import { setupAnalyticsEffects } from './lib/analytics-integration.ts';
 import { sessionBoundaries, sessionOfFrame } from './lib/frame-source.ts';
 import {
   directoryResultsSink,
-  ensureReadwrite,
   zipResultsSink,
   type WritableDirLike,
 } from './lib/session-export.ts';
+import { ensurePermission } from './lib/fs-handles.ts';
 import { supportsDirectoryPicker } from './lib/directory-picker.ts';
 import { ProjectView } from './components/ProjectView.tsx';
 import { createProjectStore } from './lib/project-store.ts';
@@ -891,7 +891,7 @@ const App: Component = () => {
   async function grantResults(): Promise<boolean> {
     if (!supportsDirectoryPicker()) return true;
     const loc = sessionList.location();
-    return loc?.handle ? ensureReadwrite(loc.handle) : false;
+    return loc?.handle ? ensurePermission(loc.handle, 'readwrite') : false;
   }
   function startSessions(settings: Parameters<typeof multiRun.start>[0]['settings']): void {
     const loc = sessionList.location();
