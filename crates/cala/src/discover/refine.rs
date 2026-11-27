@@ -229,10 +229,8 @@ impl SlowLoop {
     /// statistics' estimate within `refine_min_change` of the current one)
     /// are not proposed. (Under the split-half gate with `refine_z` 0,
     /// refinements do not die out in count: later passes keep accepting
-    /// thousands of small ones on a dense recording. They move footprints
-    /// less and less: on the dense sims the share of cells whose footprint
-    /// correlates < 0.99 with the previous pass falls to about 2 % by pass
-    /// 5, below the old gate's 4 %.)
+    /// many small ones on a dense recording, each pass moving footprints
+    /// less: `tools/cala-eval/results/2026-11-17-refine-gate-refill.md`.)
     pub(super) fn refine(&mut self, ti: usize, solved: &Solved, test_fr: &Frames) {
         let core = self.tiles[ti].core;
         let rect = self.tiles[ti].rect;

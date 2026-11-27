@@ -135,8 +135,7 @@ impl SlowLoop {
     /// neighbour's halo) does not count. Each probe is used once.
     ///
     /// The bump (σ = one cell diameter, centred on the cell) overlaps the
-    /// cell itself: on the minisim recordings it takes ~70% of a typical
-    /// footprint's energy, so a weak transient of a real cell cannot pass.
+    /// cell itself: it takes most of a typical footprint's energy, so a weak transient of a real cell cannot pass.
     /// A probe that is not needed therefore only counts as a *fail* when
     /// the test had the power to pass it: when the cell's light on the
     /// probe, measured without the bump, would have passed by `keep_z`

@@ -132,7 +132,7 @@ impl SlowLoop {
                 let pen = f64::from(self.cfg.accept_z) * sd;
                 // An alternative that explains only part of the new cell's
                 // gain is a neighbour stretched over a distinct cell (on the
-                // minisim recordings, letting it win cost half the recall):
+                // minisim recordings, letting it win cost much of the recall):
                 // the candidate is then added if it passes the add test on
                 // its own. Only an alternative that explains most of it
                 // (`absorb_share`) holds the add to the stricter margin.
@@ -727,7 +727,7 @@ impl SlowLoop {
             // trace follows the cell's (the residual is that cell's light):
             // otherwise a neighbouring cell would be swallowed whenever a
             // stretched footprint happens to explain part of it (on the
-            // minisim recordings this cost half the recall).
+            // minisim recordings this cost much of the recall).
             if corr(cand_trace, &c0) < self.cfg.merge_corr {
                 continue;
             }

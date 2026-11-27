@@ -16,7 +16,7 @@ pub(super) struct Solved {
 }
 
 /// Where the per-frame solves of a comparison start
-/// ([`SlowConfig::warm_start`]): a reference model's solution on the same
+/// ([`SlowLoopConfig::warm_start`]): a reference model's solution on the same
 /// frames, by cell id.
 pub(super) struct Start {
     /// The reference problem's label ([`Problem::sig`]; 0: unlabelled),
@@ -267,7 +267,7 @@ impl SlowLoop {
 
     /// The reference arm of a comparison on `fr` with the background
     /// projections `proj`: its solve, and the start of the other arms
-    /// ([`SlowConfig::warm_start`]). With warm starts the reference is
+    /// ([`SlowLoopConfig::warm_start`]). With warm starts the reference is
     /// solved again from its own solution, so it too is solved from the
     /// arms' start and no arm is solved further than another.
     pub(super) fn reference(

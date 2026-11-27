@@ -8,14 +8,14 @@ use crate::trace::{BackgroundModel, LibraryConfig, TraceError};
 /// resolution): the default of [`SlowLoopConfig::psf_sigma_px`].
 pub const PSF_SIGMA_PX: f32 = 1.5;
 
-/// When the statistics path proposes a refinement (S2.1c, the minimal
-/// refine gate). Absorptions, merges and the reservoir path are unaffected.
+/// When the statistics path proposes a refinement
+/// (`tools/cala-eval/results/2026-11-12-refine-gate.md`). Absorptions,
+/// merges and the reservoir path are unaffected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RefineGate {
     /// The estimate disagrees with the current footprint beyond its χ²
     /// null (`n + 3 sqrt(2 n)` standard errors) and the proposal turns the
-    /// whitened column by at least `refine_min_change` (the rule before
-    /// S2.1c).
+    /// whitened column by at least `refine_min_change`.
     Legacy,
     /// The default. The change exceeds the estimate's own split-half noise:
     /// `Î = ‖h/a − cur‖² − ½‖(h_A − h_B)/a‖² > 0` (whitened, in units of
@@ -33,7 +33,8 @@ pub enum RefineGate {
 /// visit re-solves the stored frames' traces with the current footprints
 /// and refits the footprints jointly, and the cluster's members are
 /// proposed and gated together. Cells outside clusters keep the per-cell
-/// running statistics. Off by default (experimental).
+/// running statistics. Off by default; the app turns it on
+/// (`jointUpdate`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum JointUpdate {
     /// Per-cell statistics only.
@@ -53,10 +54,8 @@ pub enum JointUpdate {
 /// rotation between a bitten newcomer and its over-filled neighbour is a
 /// free direction of a linear footprint fit (`A R`, `R⁻¹ C`); what pins it
 /// is the newcomer's light clipped at zero on the older cell's far side.
-/// On the quick demixing tier (17 Nov 2026) `All` lowered the 0.75-1 D bite
-/// share 0.50 -> 0.36 and the < 1 D trace correlation excess +0.14 ->
-/// +0.10; `Off` gave 0.50 -> 0.42 and no correlation gain; `Own` was no
-/// different from `Off` (`tools/cala-eval/results/2026-11-17-cluster-replay.md`).
+/// `All` heals bites best and is the default; `Own` is no better than `Off`
+/// (`tools/cala-eval/results/2026-11-17-cluster-replay.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum JointSign {
     /// A plain per-pixel joint least-squares fit; the sign rule enters only
@@ -76,11 +75,11 @@ pub enum JointSign {
 /// halves are fitted in the store's one basis, which is estimated from all
 /// stored frames; their difference therefore misses the basis's own noise
 /// and understates the estimate's noise (toy: `a_member_at_the_truth_is_not_proposed`).
-/// Even so `Cluster` is the default: on static s5 + pairs s5 (18 Nov 2026)
-/// `Member` proposed about half as often, and the bites healed less
-/// (0.75-1 D bite share 0.34 -> 0.46): a bitten member heals by small
-/// accepted steps, each below its own split-half noise. The held-out gate
-/// decides either way.
+/// Even so `Cluster` is the default: `Member` proposes less often and heals
+/// bites less, because a bitten member heals by small accepted steps, each
+/// below its own split-half noise
+/// (`tools/cala-eval/results/2026-11-18-replay-stage2.md`). The held-out
+/// gate decides either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum JointAdmit {
     /// Stage 1: every significant member, when the members' summed
@@ -96,13 +95,13 @@ pub enum JointAdmit {
     Member,
 }
 
-/// Which merge tests may merge (S2.1c merge redesign).
+/// Which merge tests may merge
+/// (`tools/cala-eval/results/2026-11-13-merge-rule.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MergeRule {
     /// The held-out test alone: a single column (merged footprint, or
     /// either cell dropped) explains the tile's held-out frames within
-    /// `merge_z` of the pair, or the `one` shortcut (the rule before
-    /// S2.1c).
+    /// `merge_z` of the pair, or the `one` shortcut.
     Legacy,
     /// The default. The held-out test, and a pair whose footprints do not largely
     /// coincide (overlap below ½, the bound of the `one` shortcut) must
@@ -117,8 +116,8 @@ pub enum MergeRule {
     SplitHalf,
 }
 
-/// Which structural edits the slow loop may make (S2.3b: refinement-only
-/// later passes). Refinements of existing footprints are always allowed;
+/// Which structural edits the slow loop may make (refinement-only later
+/// passes use it). Refinements of existing footprints are always allowed;
 /// the default allows everything. A visit that may only refine skips the
 /// add proposals (and with them absorbs and re-adds), splits and merges;
 /// [`EditScope::Refine`] also skips the keep tests and every deletion.
@@ -201,9 +200,8 @@ pub struct SlowLoopConfig {
     /// it to the running statistics, which see all of it.
     pub margin_px: usize,
     /// Reservoir size: stored frames per tile (event plus random slots).
-    /// Recall rises steeply with it up to about this many (measured at
-    /// 600 x 600: 31 / 63 / 126 / 252 frames per tile gave recall .52 /
-    /// .67 / .76 / .78 at 8 min), and a visit's cost grows with it.
+    /// Recall rises steeply with it up to about the default and little
+    /// beyond, and a visit's cost grows with it.
     pub frames_per_tile: usize,
     /// Cap on the reservoir's bytes (event slots, shared random frames and
     /// probes). When `frames_per_tile` does not fit (large sensors), the
@@ -307,14 +305,14 @@ pub struct SlowLoopConfig {
     pub split_every_visits: u32,
     /// A pair of cells is kept apart when separating them beats the best
     /// single-cell alternative on held-out frames by this many standard
-    /// deviations of the noise-column null (v2: `accept_z`). Below
+    /// deviations of the noise-column null. Below
     /// `accept_z`, this is hysteresis: a cell that once passed the add test
     /// is not removed on the next unlucky set of test frames.
     pub merge_z: f32,
     /// Compare a merge with the pair refitted on the same fitting frames
     /// (not only with their current footprints). The merged arm is a fresh
     /// fit; without this, two distinct cells whose footprints lag the data
-    /// lose to one fresh footprint and are merged (v3 churn on real data).
+    /// lose to one fresh footprint and are merged (churn on real data).
     pub merge_refit_pair: bool,
     /// The refitted pair is the baseline only when its weaker part
     /// carries at least this share of the stronger one's fitted energy
@@ -388,15 +386,15 @@ pub struct SlowLoopConfig {
     /// Which members of a replayed cluster are proposed (see
     /// [`JointAdmit`]).
     pub joint_admit: JointAdmit,
-    /// Experimental: the store keeps its own last joint estimate and
-    /// re-solves the next replay's traces with it (one more alternation per
-    /// visit, carried across visits) instead of with the published columns.
-    /// The estimate is never published except through the cluster gate.
-    /// Off: on static s5 + pairs s5 (18 Nov 2026) it healed more bites
-    /// (0.75-1 D share 0.23 -> 0.17) but raised over-fill (est/true > 1.3,
-    /// pairs < 1 D) 0.075 -> 0.112, as more alternations did in Stage 1.
+    /// Eval switch (qc_eval `--joint-carry`): the store keeps its own last
+    /// joint estimate and re-solves the next replay's traces with it (one
+    /// more alternation per visit, carried across visits) instead of with
+    /// the published columns. The estimate is never published except
+    /// through the cluster gate. Off: it heals more bites but over-fills
+    /// close pairs, as more alternations do
+    /// (`tools/cala-eval/results/2026-11-18-joint-l1.md`).
     pub joint_carry: bool,
-    /// Experimental: L1 weight `μ` of the replay's trace step. Each stored
+    /// L1 weight `μ` of the replay's trace step. Each stored
     /// frame's traces solve `argmin_{c ≥ 0} ‖U v − A c‖² + 2 μ Σ_k ‖a_k‖ c_k`
     /// (whitened), a soft threshold of `μ` trace-noise SDs per member,
     /// invariant to the footprints' scale. The bitten split (wide − λ·small,

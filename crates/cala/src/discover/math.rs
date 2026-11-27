@@ -153,6 +153,8 @@ pub(crate) fn norm_quantile(p: f64) -> f64 {
     }
 }
 
+/// The intersection of `a` and `b` (empty, at the clamped corner, when they
+/// do not overlap).
 pub(super) fn clip(a: Rect, b: Rect) -> Rect {
     let y0 = a.y0.max(b.y0);
     let x0 = a.x0.max(b.x0);
@@ -183,6 +185,7 @@ pub(super) fn paired_z(base: &[Fit], alt: &[Fit]) -> f64 {
     m / (v / n).sqrt()
 }
 
+/// Cosine similarity of two patch columns.
 pub(super) fn overlap(a: &Column, b: &Column, n: usize) -> f32 {
     let ab = b.dot(&a.dense(n));
     let (aa, bb) = (a.norm2(), b.norm2());
@@ -249,6 +252,8 @@ pub(super) fn adjusted_r2(y: &[f32], xs: &[Vec<f32>]) -> f32 {
     (1.0 - (1.0 - r2) * (n - 1) as f64 / (n - p - 1) as f64) as f32
 }
 
+/// Pearson correlation of `a` and `b` (same length), accumulated in f64; 0
+/// for fewer than two samples or a constant series.
 pub(super) fn corr(a: &[f32], b: &[f32]) -> f32 {
     let n = a.len() as f64;
     if n < 2.0 {

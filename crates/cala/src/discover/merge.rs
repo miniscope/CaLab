@@ -455,7 +455,6 @@ impl SlowLoop {
     }
 }
 
-/// Cosine similarity of two patch columns.
 /// A merge test's refitted pair (see `SlowLoop::refit_pair`).
 struct RefitPair {
     /// Weaker over stronger part's energy.

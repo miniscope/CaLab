@@ -73,14 +73,12 @@
 //!      1e-3): light left over by *several* neighbours (tails, the
 //!      high-pass moat, footprints lagging motion) follows none of them
 //!      alone. On the minisim recordings it lifts precision most where
-//!      compute is high (motion, 4x visits: .858 -> .900 at 8 min); on the
-//!      workshop recording it also blocks real cells, whose neighbours
-//!      co-fire (`tools/cala-diagnostics/LEFTOVER_LIGHT.md`).
+//!      compute is high; on the workshop recording it also blocks real
+//!      cells, whose neighbours co-fire
+//!      (`tools/cala-diagnostics/LEFTOVER_LIGHT.md`).
 //!
-//!   On the calibrated minisim recording, without 1-3 the loop kept adding
-//!   cells (2187 cells for 823 GT units, precision 0.24); with them
-//!   precision is 0.92. Thresholds are in noise units throughout, never raw
-//!   intensity.
+//!   Without 1-3 the loop keeps adding cells far beyond the true count.
+//!   Thresholds are in noise units throughout, never raw intensity.
 //! * **Merge.** Two cells whose supports overlap and whose traces correlate
 //!   over the fitting frames are refitted as one (rank 1 on the union of the
 //!   supports, from the residual plus both cells' fitted signal). The merge
@@ -144,13 +142,13 @@
 //! libraries filter again only the footprints that changed
 //! ([`LibraryBuilder::reuse`]).
 //!
-//! # Competing explanations (v3)
+//! # Competing explanations
 //!
-//! v2 still churned on real data: residual left around an existing cell
-//! (its footprint imperfect) was added as a small new cell and later
-//! merged back, over and over. v3 decides every structural edit by model
-//! comparison on held-out frames, and keeps footprints converging so that
-//! less residual arises in the first place.
+//! Residual left around an existing cell (its footprint imperfect) would be
+//! added as a small new cell and later merged back, over and over. So every
+//! structural edit is decided by model comparison on held-out frames, and
+//! footprints keep converging so that less residual arises in the first
+//! place.
 //!
 //! * **Running footprint statistics** (`fpstats.rs`). Every fitting frame
 //!   updates, per cell, the centred covariance of its own-signal residual
