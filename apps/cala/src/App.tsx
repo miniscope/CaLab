@@ -1196,7 +1196,7 @@ const App: Component = () => {
               <span class="compact-header__file">{v.result.label}</span>
               <span class="compact-header__sep">&middot;</span>
               <span>
-                {v.result.width} x {v.result.height}
+                {v.result.width} &times; {v.result.height}
               </span>
               <span class="compact-header__sep">&middot;</span>
               <span>{v.result.frames.toLocaleString()} frames</span>
@@ -1329,7 +1329,7 @@ const App: Component = () => {
                     <span class="compact-header__file">{store.label()}</span>
                     <span class="compact-header__sep">&middot;</span>
                     <span>
-                      {info().width} x {info().height}
+                      {info().width} &times; {info().height}
                     </span>
                     <span class="compact-header__sep">&middot;</span>
                     <span>

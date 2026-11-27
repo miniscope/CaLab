@@ -55,7 +55,7 @@ test('Cala: a live source streams through the pipeline to the end', async ({ pag
   // `factors=0`: the stream as before the factor default (it ends at Discover's library).
   await page.goto(`Cala/?live=ws://127.0.0.1:${PORT}&factors=0&debug`);
   const header = page.getByRole('banner');
-  await expect(header.getByText('32 x 24')).toBeVisible();
+  await expect(header.getByText('32 × 24')).toBeVisible();
   await expect(header.getByText('live', { exact: true })).toBeVisible();
   // Unbounded: no total, no progress bar, no raw-file scrubber.
   await expect(page.getByTestId('pipeline-readout')).not.toContainText('/');

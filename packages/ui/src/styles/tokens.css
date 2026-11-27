@@ -1,40 +1,118 @@
-/* CaLab Design Tokens — shared custom properties for both apps */
+/* CaLab design tokens: the custom properties every app and shared component styles with.
+
+   Two layers:
+   - Role tokens (spacing steps, type sizes, radii, ground/surface/inset, ink tiers, lines,
+     status, stage hues) hold the values. New CSS uses these.
+   - The older names (--bg-*, --text-*, --border-*, --space-xs..xl, --radius-sm..lg) are
+     aliases of the role tokens, so existing app CSS and app overrides keep working. An app
+     that overrides an alias (Admin's dark blocks, an app's --accent) changes only the
+     consumers of that alias.
+
+   Apps set their own --accent (selection and focus only). Status colours are reserved for
+   status and always appear with an icon and a label. Stage hues mark the cala run stages;
+   a finished stage is its full hue plus a check mark, never the ok green. */
 
 :root {
-  /* Typography — system fonts for scientific tool feel */
+  color-scheme: light;
+
+  /* Typography: system UI text face; monospace only for IDs, paths and debug output. */
   --font-body: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  --font-mono:
+    ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, 'Cascadia Code', Consolas, monospace;
   --font-weight-normal: 400;
   --font-weight-medium: 500;
   --font-weight-semibold: 600;
 
-  /* Background layers — white content, grey chrome */
-  --bg-primary: #ffffff;
-  --bg-secondary: #f0f0f0;
-  --bg-inset: #fafafa;
+  /* Type scale, px. */
+  --font-size-xs: 11px; /* chips, axis ticks */
+  --font-size-sm: 12px; /* labels, meta */
+  --font-size-md: 13px; /* body, table cells */
+  --font-size-title: 16px; /* panel titles, weight 600 */
+  --font-size-figure: 20px; /* KPI figures, weight 500 */
+  --font-size-hero: 28px; /* at most one figure per screen */
 
-  /* Text hierarchy */
-  --text-primary: #1a1a1a;
-  --text-secondary: #616161;
-  --text-tertiary: #9e9e9e;
+  /* Spacing steps, px. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
 
-  /* Accent — muted blue, used sparingly */
+  /* Radii: controls and chips, or panels. No other radius. */
+  --radius-control: 3px;
+  --radius-panel: 6px;
+
+  /* Grounds: the page, a raised surface on it, an inset well inside a surface. */
+  --ground: #f6f6f6;
+  --surface: #ffffff;
+  --inset: #f2f2f2;
+
+  /* Ink tiers; each is at least 4.5:1 on --surface, --ground and --inset. */
+  --ink-1: #1a1a1a;
+  --ink-2: #5c5c5c;
+  --ink-3: #6b6b6b;
+  /* Text on a saturated fill (primary button, stage segment). */
+  --ink-on-fill: #ffffff;
+
+  /* Lines: dividers and panel edges, then control borders. */
+  --line: #e6e6e6;
+  --line-control: #cfcfcf;
+
+  /* Status inks (text, icons, small marks) and their pale tints. */
+  --status-ok: #17703a;
+  --status-ok-tint: #dcf5e3;
+  --status-warning: #8a5a00;
+  --status-warning-tint: #fff3d6;
+  --status-critical: #c62828;
+  --status-critical-tint: #ffe9e7;
+
+  /* cala run stages: full hue (fill, done) and tint (waiting). Validated as one set with the
+     dataviz palette validator. */
+  --stage-discover: #257de0;
+  --stage-discover-tint: #dceafb;
+  --stage-settle: #b8407e;
+  --stage-settle-tint: #f5e1eb;
+  --stage-extract: #e0701f;
+  --stage-extract-tint: #fbe6d8;
+
+  /* Neutral marks (not text): a meter's empty track, a not-measured or neutral fill. */
+  --track: #ececec;
+  --mark-neutral: #8a8a8a;
+
+  /* Accent: the app's selection and focus colour. Apps override all three. */
   --accent: #2171b5;
   --accent-hover: #185a92;
   --accent-muted: rgba(33, 113, 181, 0.08);
-  --accent-warm: #1a1a1a;
+  --focus-ring: var(--accent);
+  /* Primary action fill (near-black in every app). */
+  --accent-warm: var(--ink-1);
   --accent-warm-hover: #333333;
 
-  /* Status */
+  /* Status fills and borders used across the apps; status text uses the --status-* inks. */
   --warning: #e09800;
   --warning-bg: rgba(224, 152, 0, 0.08);
   --error: #d32f2f;
   --error-bg: rgba(211, 47, 47, 0.06);
   --success: #2e7d32;
 
-  /* Semantic borders — thin, neutral */
-  --border-subtle: #e8e8e8;
-  --border-default: #d4d4d4;
+  /* Aliases of the role tokens. */
+  --bg-primary: var(--surface);
+  --bg-secondary: var(--ground);
+  --bg-inset: var(--inset);
+  --text-primary: var(--ink-1);
+  --text-secondary: var(--ink-2);
+  --text-tertiary: var(--ink-3);
+  --border-subtle: var(--line);
+  --border-default: var(--line-control);
+  --space-xs: var(--space-1);
+  --space-sm: var(--space-2);
+  --space-md: var(--space-4);
+  --space-lg: var(--space-6);
+  --space-xl: var(--space-8);
+  --radius-sm: var(--radius-control);
+  --radius-md: var(--radius-panel);
+  --radius-lg: var(--radius-panel);
 
   /* Panel tokens */
   --panel-bg: var(--bg-primary);
@@ -42,29 +120,37 @@
   --panel-bg-data: var(--bg-primary);
   --panel-bg-interactive: var(--bg-primary);
   --panel-border: var(--border-subtle);
-  --panel-radius: var(--radius-md);
+  --panel-radius: var(--radius-panel);
   --panel-padding: var(--space-lg);
   --panel-gap: var(--space-md);
 
-  /* Shadows — flat UI, minimal */
+  /* Shadows: only on what floats (menus, dialogs, popovers). */
   --shadow-panel: none;
   --shadow-elevated: 0 2px 8px rgba(0, 0, 0, 0.12);
   --shadow-inset: none;
 
-  /* Transitions */
+  /* Transitions: feedback only. */
   --transition-fast: 0.1s ease;
   --transition-normal: 0.2s ease;
   --transition-slow: 0.35s ease;
+}
 
-  /* Spacing */
-  --space-xs: 4px;
-  --space-sm: 8px;
-  --space-md: 16px;
-  --space-lg: 24px;
-  --space-xl: 32px;
+/* Dark theme hook, on the selectors Admin uses: the OS preference unless the page sets
+   data-theme="light", or data-theme="dark" explicitly. These blocks redefine role tokens and
+   color-scheme only. They are empty: until they are filled, every app except Admin renders
+   the light values in both schemes. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+  }
+}
 
-  /* Border radius — tight for scientific feel */
-  --radius-sm: 2px;
-  --radius-md: 4px;
-  --radius-lg: 6px;
+:root[data-theme='dark'] {
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --transition-fast: 0s;
+    --transition-normal: 0s;
+    --transition-slow: 0s;
+  }
 }
