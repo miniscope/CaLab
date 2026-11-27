@@ -3,10 +3,10 @@
  * `App.tsx`) and how the run record lists them (`urlFlags`, `cala-run-record.json`
  * `url_flags`). Debug-only flags take effect only with `?debug` (`DEBUG_ONLY`).
  *
- * The two readings agree on what each flag does, but the record is coarser: it marks a flag in
- * effect whenever it can change the run (`inEffect`), so a value the app ignores (for example
- * `?flatfield=1` or `?debug&smooth=1`) is still recorded as in effect. Both are unchanged from
- * when they lived in `App.tsx` and `run-provenance.ts`.
+ * The two readings are not the same rule: the record's `inEffect` is coarser. It marks some
+ * values the app ignores as in effect (`?flatfield=1`, `?pipeline=1`, `?debug&smooth=1`), and a
+ * bare `?csettle` (or `csettle=1`) as not in effect although the app then turns Background settle
+ * on over a saved cap of 0. Both are kept as they were in `App.tsx` and `run-provenance.ts`.
  */
 import { parsePoolOverride, type PoolWidth } from './compress-pool.ts';
 import { factorsFromPage, type PageFactors } from './factor-run.ts';
