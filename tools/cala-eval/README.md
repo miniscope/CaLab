@@ -82,7 +82,7 @@ MS=<minisim venv>/bin/python   # or $MINISIM_PY from sims.env
 $MS tools/cala-eval/gen_sims.py --sims <sims> --arms static,motion --seeds 5-9 --reuse <old sims>
 
 python tools/cala-eval/run_arms.py --bin base=tools/cala-eval/bin/<base> \
-    --bin new=tools/cala-eval/bin/<new> --extra "new=--core-test trim" \
+    --bin new=tools/cala-eval/bin/<new> --extra "new=--joint" \
     --sims <sims> --arms static,motion --seeds 5-9 --out <runs> \
     -- --batch 8 --budget 30000000 --slow-seed 1
 
@@ -350,18 +350,21 @@ capped at 40.
 
 ## Support rule (S2.1)
 
-`qc_eval --support-rule basin-skirt|basin|rings` picks how the statistics path
-measures a footprint's pixel support (`SlowLoopConfig::support_rule`, default
-`basin-skirt` since the S2.1 default flip; `rings` is byte-identical to the
-rule before S2.1 and stays selectable for comparisons, and is the rule
-`--core-test` and `--basin-trim` need). `discover_eval` takes the same flag.
-Runs before the flip that did not pass the flag used `rings`. `basin` keeps the
-pixels where the PSF-smoothed measured light is significant (family-wise
-`--support-alpha`, default 0.05, per footprint; standard error measured from
-the split halves) in the single-peaked basin of the cell's peak; `basin-skirt`
-also gives the footprint a skirt: unfiltered light per 8 px moat block on the
-rest of the statistics disk, solved so that the column (the filter of support
-plus skirt, whose low-pass reaches the moat) matches the measured light there.
+The statistics path measures a footprint's pixel support with one rule,
+`basin-skirt`: the pixels where the PSF-smoothed measured light is significant
+(family-wise `--support-alpha`, default 0.05, per footprint; standard error
+measured from the split halves) in the single-peaked basin of the cell's peak,
+plus a skirt: unfiltered light per 8 px moat block on the rest of the
+statistics disk, solved so that the column (the filter of support plus skirt,
+whose low-pass reaches the moat) matches the measured light there.
+
+The other rules (`rings`, the rule before S2.1, and `basin`, without the
+skirt), the transient-band core test and the basin trim were measured and are
+not in the engine (`results/2026-11-12-support-rule.md`,
+`results/2026-11-12-skirt-stability.md`, `results/2026-11-11-e1-core-test-trim.md`).
+`qc_eval` and `discover_eval` accept `--support-rule basin-skirt` and
+`--core-test off` and refuse any other value and `--basin-trim`. Runs made
+before the S2.1 default flip that did not pass `--support-rule` used `rings`.
 
 ## Refine gate (S2.1c)
 
@@ -418,7 +421,8 @@ start, so the solve can be replayed offline.
   to compare with it.
 - Null comparison (same binary, `--slow-seed 1` vs `2`, seeds 5-9, both arms):
   `results/2026-11-11-e1-null.md`. The primary-metric CIs cover 0.
-- Demo comparison (`--core-test trim` vs off): `results/2026-11-11-e1-core-test-trim.md`.
+- Demo comparison (`--core-test trim` vs off; the test is not in the engine):
+  `results/2026-11-11-e1-core-test-trim.md`.
 - Seed-to-seed spread is larger than the binomial SE: on `motion` the P8 CI
   half-width is about .024 for the null, so one run decides nothing.
 

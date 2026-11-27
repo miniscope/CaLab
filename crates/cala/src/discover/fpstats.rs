@@ -70,9 +70,6 @@ pub(crate) struct FpStats {
     pub pm: Option<PixMoments>,
     /// The split-half sums' per-pixel moments.
     pub half_pm: Option<PixMoments>,
-    /// Transient-band statistics in interleaved block groups (`None` when
-    /// [`super::CoreTest`] is `Off`).
-    pub fast: Option<Fast>,
     /// Cache of `pix` as contiguous row runs ([`pixel_runs`]; empty until
     /// [`FpStats::push_frame`] first needs it).
     pub runs: Vec<(u32, u32)>,
@@ -213,159 +210,6 @@ fn median_finite(mut v: Vec<f64>) -> f64 {
     *v.select_nth_unstable_by(mid, f64::total_cmp).1
 }
 
-/// Number of interleaved block groups of the transient-band statistics.
-pub(crate) const FAST_GROUPS: usize = 8;
-/// Frames per block of the groups (block `k / FAST_BLOCK` goes to group
-/// `(k / FAST_BLOCK) % FAST_GROUPS`).
-pub(crate) const FAST_BLOCK: u64 = 256;
-
-/// Transient-band ("fast") running statistics: the residual and the
-/// trace high-passed in time by subtracting their exponential moving average
-/// (time constant `1 / alpha` frames), `r~ = r - ema(r)`, `c~ = c - ema(c)`,
-/// so that light following the trace only on slow time scales (drift,
-/// vignetting-dependent baseline wander, slow motion or filtering
-/// artifacts) does not count as footprint light; calcium transients keep
-/// most of their energy. The sums `Σ w c~ r~(p)`, `Σ w c~²`, `Σ w² c~²`
-/// are kept per interleaved block group so that the estimate's noise can be
-/// measured from the spread of the group estimates (all spatial and
-/// temporal correlation included) instead of being assumed white.
-///
-/// `c` is each pixel class's instrument (the band's trace sums are per
-/// class) and the estimates are divided by the all-band `λ` of the class,
-/// so they are on the all-band estimate's scale.
-#[derive(Debug, Clone)]
-pub(crate) struct Fast {
-    pub alpha: f32,
-    /// Per-pixel moving average of `r` (NaN until the pixel's first frame).
-    pub ema: Vec<f32>,
-    /// Moving average of each class's instrument.
-    pub ema_c: [f64; 2],
-    /// `Σ w c~ r~(p)` per group.
-    pub rc: Vec<Vec<f32>>,
-    /// `[Σ w c~², Σ w² c~²]` per group and pixel class.
-    pub w: [[[f64; 2]; 2]; FAST_GROUPS],
-    /// The same per group and pixel over the frames in which the pixel was
-    /// valid (`None` until a missing pixel has been pushed).
-    pub wp: Option<Vec<Vec<[f64; 2]>>>,
-}
-
-impl Fast {
-    pub fn new(n: usize, alpha: f32) -> Fast {
-        Fast {
-            alpha,
-            ema: vec![f32::NAN; n],
-            ema_c: [f64::NAN; 2],
-            rc: vec![vec![0.0; n]; FAST_GROUPS],
-            w: [[[0.0; 2]; 2]; FAST_GROUPS],
-            wp: None,
-        }
-    }
-
-    /// `[Σ w c~², Σ w² c~²]` of pixel `i` (class `c`) in group `g`.
-    #[inline]
-    fn wpix(&self, g: usize, i: usize, c: u8) -> [f64; 2] {
-        match &self.wp {
-            Some(wp) => wp[g][i],
-            None => self.w[g][c as usize],
-        }
-    }
-
-    /// Per-group estimates `h_g(p) = Σ c~ r~ / Σ c~² / λ` (groups without
-    /// trace variance get `None`), for pixel classes `cls` with gains `lam`.
-    pub fn groups(&self, cls: &[u8], lam: [f64; 2]) -> Vec<Option<Vec<f32>>> {
-        (0..FAST_GROUPS)
-            .map(|g| {
-                let used = [0u8, 1].map(|c| cls.contains(&c));
-                let ok = (0..2).all(|c| !used[c] || self.w[g][c][0] > 0.0);
-                ok.then(|| {
-                    self.rc[g]
-                        .iter()
-                        .zip(cls)
-                        .enumerate()
-                        .map(|(i, (&v, &c))| {
-                            let w = self.wpix(g, i, c);
-                            if w[0] > 0.0 {
-                                (f64::from(v) / w[0] / lam[c as usize]) as f32
-                            } else {
-                                0.0
-                            }
-                        })
-                        .collect()
-                })
-            })
-            .collect()
-    }
-
-    /// Per-group `[Σ w c~², Σ w² c~²]` pooled over the classes (pixel-count
-    /// weighted) and rescaled by `λ²`, so that their ratios are the white
-    /// noise units of the rescaled estimates.
-    pub fn group_weights(&self, cls: &[u8], lam: [f64; 2]) -> Vec<[f64; 2]> {
-        let n1 = cls.iter().filter(|&&c| c == 1).count() as f64;
-        let n = cls.len().max(1) as f64;
-        let share = [(n - n1) / n, n1 / n];
-        (0..FAST_GROUPS)
-            .map(|g| {
-                let mut out = [0.0; 2];
-                for c in 0..2 {
-                    let l2 = lam[c] * lam[c];
-                    out[0] += share[c] * self.w[g][c][0] * l2;
-                    out[1] += share[c] * self.w[g][c][1] * l2;
-                }
-                out
-            })
-            .collect()
-    }
-
-    /// The pooled estimate `Σ_g Σ c~ r~ / Σ_g Σ c~² / λ` and its white
-    /// standard error per unit pixel noise `sqrt(Σ w² c~²) / Σ w c~² / λ`
-    /// (median over pixels).
-    pub fn estimate(&self, cls: &[u8], lam: [f64; 2]) -> Option<(Vec<f32>, f64)> {
-        let tot = |c: usize, j: usize| self.w.iter().map(|w| w[c][j]).sum::<f64>();
-        for c in 0..2 {
-            if cls.contains(&(c as u8)) && !(tot(c, 0) > 0.0) {
-                return None;
-            }
-        }
-        let n = self.ema.len();
-        let mut h = vec![0.0f64; n];
-        for rc in &self.rc {
-            for (a, &v) in h.iter_mut().zip(rc) {
-                *a += f64::from(v);
-            }
-        }
-        // Per pixel: only the frames in which it was valid count, in the
-        // numerator and in the denominator; pixels valid in too few
-        // frames keep 0. The standard error is the median over pixels.
-        let mut se = Vec::with_capacity(n);
-        let out: Vec<f32> = (0..n)
-            .map(|i| {
-                let c = cls[i];
-                let l = lam[c as usize];
-                let (d0, d1) = match &self.wp {
-                    Some(wp) => (
-                        wp.iter().map(|g| g[i][0]).sum::<f64>(),
-                        wp.iter().map(|g| g[i][1]).sum::<f64>(),
-                    ),
-                    None => (tot(c as usize, 0), tot(c as usize, 1)),
-                };
-                if d0 > 0.0 && d0 >= MIN_VALID_SHARE * tot(c as usize, 0) {
-                    se.push(d1.sqrt() / d0 / l);
-                    (h[i] / d0 / l) as f32
-                } else {
-                    0.0
-                }
-            })
-            .collect();
-        Some((out, median_finite(se)))
-    }
-}
-
-/// Time constant of the transient band's high-pass, frames: 2 s at the
-/// Miniscope's 20 fps, longer than a calcium transient's rise and decay
-/// (so transients keep most of their energy) and shorter than baseline
-/// drift and bleaching.
-pub(crate) const FAST_TAU_FRAMES: f32 = 40.0;
-
 impl FpStats {
     /// Empty statistics on the FOV pixels of the disk `(center, radius)`,
     /// pixel classes from blocks of side `blk`.
@@ -375,7 +219,6 @@ impl FpStats {
         width: usize,
         height: usize,
         fov: &[u8],
-        fast: bool,
         blk: u32,
     ) -> FpStats {
         let pix = disk_pixels(center, radius, width, height, fov);
@@ -396,7 +239,6 @@ impl FpStats {
             k: 0,
             pm: None,
             half_pm: None,
-            fast: fast.then(|| Fast::new(n, 1.0 / FAST_TAU_FRAMES)),
             runs: Vec::new(),
         }
     }
@@ -412,43 +254,10 @@ impl FpStats {
         height: usize,
         fov: &[u8],
     ) -> FpStats {
-        let mut s = FpStats::new(
-            center,
-            radius,
-            width,
-            height,
-            fov,
-            self.fast.is_some(),
-            self.blk,
-        );
+        let mut s = FpStats::new(center, radius, width, height, fov, self.blk);
         s.m = self.m;
         s.half.2 = self.half.2;
         s.k = self.k;
-        if let (Some(f), Some(nf)) = (&self.fast, &mut s.fast) {
-            nf.ema_c = f.ema_c;
-            nf.w = f.w;
-            if let Some(wp) = &f.wp {
-                // New pixels start as if valid in every frame so far.
-                nf.wp = Some(
-                    (0..FAST_GROUPS)
-                        .map(|g| {
-                            let mut v: Vec<[f64; 2]> =
-                                s.cls.iter().map(|&c| f.w[g][c as usize]).collect();
-                            let mut j = 0;
-                            for (i, &p) in s.pix.iter().enumerate() {
-                                while j < self.pix.len() && self.pix[j] < p {
-                                    j += 1;
-                                }
-                                if j < self.pix.len() && self.pix[j] == p {
-                                    v[i] = wp[g][j];
-                                }
-                            }
-                            v
-                        })
-                        .collect(),
-                );
-            }
-        }
         if let Some(pm) = &self.pm {
             s.pm = Some(pm.moved(&self.pix, &s.pix, &s.cls, &self.m));
         }
@@ -466,12 +275,6 @@ impl FpStats {
                 s.r[i] = self.r[j];
                 s.half.0[i] = self.half.0[j];
                 s.half.1[i] = self.half.1[j];
-                if let (Some(f), Some(nf)) = (&self.fast, &mut s.fast) {
-                    nf.ema[i] = f.ema[j];
-                    for g in 0..FAST_GROUPS {
-                        nf.rc[g][i] = f.rc[g][j];
-                    }
-                }
             }
         }
         s
@@ -530,23 +333,6 @@ impl FpStats {
         self.half.0.iter_mut().for_each(|v| *v *= f);
         self.half.1.iter_mut().for_each(|v| *v *= f);
         let ff = f64::from(f);
-        if let Some(fa) = &mut self.fast {
-            for g in 0..FAST_GROUPS {
-                fa.rc[g].iter_mut().for_each(|v| *v *= f);
-                for c in 0..2 {
-                    fa.w[g][c][0] *= ff;
-                    fa.w[g][c][1] *= ff * ff;
-                }
-            }
-        }
-        if let Some(wp) = self.fast.as_mut().and_then(|fa| fa.wp.as_mut()) {
-            for g in wp.iter_mut() {
-                for w in g.iter_mut() {
-                    w[0] *= ff;
-                    w[1] *= ff * ff;
-                }
-            }
-        }
         if let Some(pm) = &mut self.pm {
             pm.scale(ff);
         }
@@ -611,10 +397,7 @@ impl FpStats {
             return;
         }
         if self.pm.is_none() && !r.iter().any(|v| v.is_nan()) {
-            self.ensure_fast_ema(z);
             let in_half = (self.k / 256).is_multiple_of(2);
-            let g = ((self.k / FAST_BLOCK) % FAST_GROUPS as u64) as usize;
-            let ct = self.fast_trace(z);
             for (i, &v) in r.iter().enumerate() {
                 let c = self.cls[i] as usize;
                 let zc = z[c];
@@ -628,16 +411,8 @@ impl FpStats {
                     self.half.0[i] += wz * v;
                     self.half.1[i] += w * v;
                 }
-                if let Some(fa) = &mut self.fast {
-                    let e = &mut fa.ema[i];
-                    if e.is_nan() {
-                        *e = v;
-                    }
-                    fa.rc[g][i] += w * ct[c] * (v - *e);
-                    *e += fa.alpha * (v - *e);
-                }
             }
-            self.finish_push(z, x, w, in_half, g, ct);
+            self.finish_push(z, x, w, in_half);
             return;
         }
         self.push_masked(r, z, x, w);
@@ -648,8 +423,7 @@ impl FpStats {
     /// missing sample), with `c` the instrument and regressor. The same
     /// arithmetic, element by element, as building `r` and calling
     /// `push(r, [c, c], c, w)`, but read in contiguous row runs and, for a
-    /// complete disk without the transient band, accumulated in
-    /// vectorisable loops without per-pixel class lookups or branches.
+    /// complete disk, accumulated in vectorisable loops without per-pixel class lookups or branches.
     /// `buf` is scratch. `col` must be the column on `pix` (or empty with
     /// `c == 0`).
     #[allow(clippy::too_many_arguments)]
@@ -707,13 +481,12 @@ impl FpStats {
             i += len;
         }
         assert_eq!(i, n, "runs cover the pixels");
-        if bad || c.is_nan() || self.pm.is_some() || self.fast.is_some() {
+        if bad || c.is_nan() || self.pm.is_some() {
             self.push(buf, [c, c], c, w);
             return;
         }
-        // `push` for a complete disk, no transient band, `z = [c, c]`.
+        // `push` for a complete disk, `z = [c, c]`.
         let in_half = (self.k / 256).is_multiple_of(2);
-        let g = ((self.k / FAST_BLOCK) % FAST_GROUPS as u64) as usize;
         let wz = w * c;
         for ((rc, r), &v) in self.rc.iter_mut().zip(self.r.iter_mut()).zip(buf.iter()) {
             *rc += wz * v;
@@ -726,31 +499,11 @@ impl FpStats {
                 *r += w * v;
             }
         }
-        self.finish_push([c, c], c, w, in_half, g, [0.0; 2]);
+        self.finish_push([c, c], c, w, in_half);
     }
 
-    /// The transient band's moving averages start at the first value.
-    fn ensure_fast_ema(&mut self, z: [f32; 2]) {
-        if let Some(fa) = &mut self.fast {
-            for c in 0..2 {
-                if fa.ema_c[c].is_nan() && !z[c].is_nan() {
-                    fa.ema_c[c] = f64::from(z[c]);
-                }
-            }
-        }
-    }
-
-    /// Each class's high-passed instrument `z~ = z − ema(z)` this frame.
-    fn fast_trace(&self, z: [f32; 2]) -> [f32; 2] {
-        match &self.fast {
-            Some(fa) => [0, 1].map(|c| (f64::from(z[c]) - fa.ema_c[c]) as f32),
-            None => [0.0; 2],
-        }
-    }
-
-    /// The class moments, the transient band's trace sums and moving
-    /// averages, and the frame counter, after the pixels of a frame.
-    fn finish_push(&mut self, z: [f32; 2], x: f32, w: f32, in_half: bool, g: usize, ct: [f32; 2]) {
+    /// The class moments and the frame counter, after the pixels of a frame.
+    fn finish_push(&mut self, z: [f32; 2], x: f32, w: f32, in_half: bool) {
         let (wf, xf) = (f64::from(w), f64::from(x));
         for c in 0..2 {
             if z[c].is_nan() {
@@ -760,12 +513,6 @@ impl FpStats {
             add_mom(&mut self.m[c], wf, zf, xf);
             if in_half {
                 add_mom(&mut self.half.2[c], wf, zf, xf);
-            }
-            if let Some(fa) = &mut self.fast {
-                let cw = wf * f64::from(ct[c]) * f64::from(ct[c]);
-                fa.w[g][c][0] += cw;
-                fa.w[g][c][1] += wf * cw;
-                fa.ema_c[c] += f64::from(fa.alpha) * (zf - fa.ema_c[c]);
             }
         }
         self.k += 1;
@@ -780,20 +527,9 @@ impl FpStats {
             // Every earlier frame saw every pixel.
             self.pm = Some(PixMoments::filled(&self.cls, &self.m));
             self.half_pm = Some(PixMoments::filled(&self.cls, &self.half.2));
-            if let Some(fa) = &mut self.fast {
-                let cls = &self.cls;
-                fa.wp = Some(
-                    (0..FAST_GROUPS)
-                        .map(|g| cls.iter().map(|&c| fa.w[g][c as usize]).collect())
-                        .collect(),
-                );
-            }
         }
-        self.ensure_fast_ema(z);
         let wf = f64::from(w);
         let in_half = (self.k / 256).is_multiple_of(2);
-        let g = ((self.k / FAST_BLOCK) % FAST_GROUPS as u64) as usize;
-        let ct = self.fast_trace(z);
         let pm = self.pm.as_mut().expect("set");
         let hpm = self.half_pm.as_mut().expect("set");
         for (i, &v) in r.iter().enumerate() {
@@ -811,20 +547,8 @@ impl FpStats {
                 self.half.1[i] += w * v;
                 hpm.add(i, wf, zf);
             }
-            if let Some(fa) = &mut self.fast {
-                let e = &mut fa.ema[i];
-                if e.is_nan() {
-                    *e = v;
-                }
-                fa.rc[g][i] += w * ct[c] * (v - *e);
-                *e += fa.alpha * (v - *e);
-                let cw = wf * f64::from(ct[c]) * f64::from(ct[c]);
-                let wp = fa.wp.as_mut().expect("set");
-                wp[g][i][0] += cw;
-                wp[g][i][1] += wf * cw;
-            }
         }
-        self.finish_push(z, x, w, in_half, g, ct);
+        self.finish_push(z, x, w, in_half);
     }
 
     /// The estimate of pixel `i` from `rc`, `r` and its (or its class's)
@@ -938,21 +662,6 @@ impl FpStats {
         }
         Some(out)
     }
-
-    /// The transient-band estimate on the all-band scale (see [`Fast`]).
-    pub fn fast_estimate(&self) -> Option<(Vec<f32>, f64)> {
-        self.fast.as_ref()?.estimate(&self.cls, self.lambdas())
-    }
-
-    /// The transient band's per-group estimates (see [`Fast::groups`]).
-    pub fn fast_groups(&self) -> Option<Vec<Option<Vec<f32>>>> {
-        Some(self.fast.as_ref()?.groups(&self.cls, self.lambdas()))
-    }
-
-    /// The transient band's per-group weights (see [`Fast::group_weights`]).
-    pub fn fast_weights(&self) -> Option<Vec<[f64; 2]>> {
-        Some(self.fast.as_ref()?.group_weights(&self.cls, self.lambdas()))
-    }
 }
 
 #[inline]
@@ -1011,7 +720,7 @@ pub(crate) fn disk_pixels(
 }
 
 #[cfg(test)]
-mod fast_tests {
+mod stats_tests {
     use super::*;
 
     /// Push as the slow loop does: the trace is instrument and regressor.
@@ -1024,81 +733,13 @@ mod fast_tests {
         (crate::discover::reservoir::mix(k) >> 40) as f32 / (1u64 << 24) as f32 - 0.5
     }
 
-    /// White noise: the transient-band estimate is unbiased and its group
-    /// spread matches the white standard error; light that follows only
-    /// the trace's slow component is removed by the high-pass.
-    #[test]
-    fn fast_band_groups_measure_white_noise_and_drop_slow_light() {
-        let mut st = FpStats::new((4.0, 4.0), 4.0, 9, 9, &[1u8; 81], false, 5);
-        st.fast = Some(Fast::new(st.pix.len(), 1.0 / 40.0));
-        let m = st.pix.len();
-        let sd = (1.0f32 / 12.0).sqrt();
-        let mut c_fast = 0.0f32;
-        let mut r = vec![0.0f32; m];
-        for t in 0..(FAST_BLOCK * FAST_GROUPS as u64 * 4) {
-            // fast transients (decay 10 frames) plus a slow sinusoid
-            let kick = if u(t * 7 + 1) > 0.47 { 5.0 } else { 0.0 };
-            c_fast = 0.9 * c_fast + kick;
-            let slow = (t as f32 / 3000.0 * std::f32::consts::TAU).sin() * 5.0;
-            let c = c_fast + slow;
-            for (i, v) in r.iter_mut().enumerate() {
-                // footprint 1 on the first half; light that follows only
-                // the slow component on the second half
-                let light = if i < m / 2 { c } else { slow };
-                *v = light + u(t * 1000 + i as u64 + 99) / sd;
-            }
-            push1(&mut st, &r, c, 1.0);
-        }
-        let (h, se) = st.fast_estimate().unwrap();
-        let mean_in = h[..m / 2].iter().sum::<f32>() / (m / 2) as f32;
-        let mean_out = h[m / 2..].iter().sum::<f32>() / (m - m / 2) as f32;
-        assert!((mean_in - 1.0).abs() < 0.05, "{mean_in}");
-        assert!(mean_out.abs() < 0.15, "{mean_out}");
-        // the all-band estimate keeps the slow-only light
-        let all = st.estimate().unwrap();
-        let all_out = all[m / 2..].iter().sum::<f32>() / (m - m / 2) as f32;
-        assert!(all_out > 0.3, "{all_out}");
-        // per-pixel group spread over the white variance ≈ 1
-        let groups: Vec<Vec<f32>> = st
-            .fast_groups()
-            .unwrap()
-            .into_iter()
-            .map(|g| g.unwrap())
-            .collect();
-        let wg: Vec<f64> = st.fast_weights().unwrap().iter().map(|w| w[0]).collect();
-        let sw: f64 = wg.iter().sum();
-        let mut ratio = 0.0;
-        for i in 0..m / 2 {
-            let mu: f64 = (0..FAST_GROUPS)
-                .map(|g| wg[g] * f64::from(groups[g][i]))
-                .sum::<f64>()
-                / sw;
-            let s2: f64 = (0..FAST_GROUPS)
-                .map(|g| wg[g] * (f64::from(groups[g][i]) - mu).powi(2))
-                .sum::<f64>()
-                / (FAST_GROUPS as f64 - 1.0)
-                / sw;
-            ratio += s2 / (se * se);
-        }
-        ratio /= (m / 2) as f64;
-        assert!((0.75..1.35).contains(&ratio), "{ratio}");
-    }
-
     /// A cell whose rim is missing on half the frames: with zero weight for
     /// the missing samples the rim estimate is unbiased (within 2 standard
     /// errors); standing in a value of 0 (what the sums saw before) halves it.
     #[test]
     fn fpstats_ignores_missing_pixels() {
         let side = 11usize;
-        let mut st = FpStats::new(
-            (5.0, 5.0),
-            5.5,
-            side,
-            side,
-            &vec![1u8; side * side],
-            true,
-            5,
-        );
+        let mut st = FpStats::new((5.0, 5.0), 5.5, side, side, &vec![1u8; side * side], 5);
         let mut zero = st.clone();
         let m = st.pix.len();
         let rim: Vec<bool> = st
@@ -1151,16 +792,6 @@ mod fast_tests {
         let inner = h.iter().zip(&rim).filter(|(_, &r)| !r).map(|(&v, _)| v);
         let (s, k) = inner.fold((0.0f32, 0.0f32), |(s, k), v| (s + v, k + 1.0));
         assert!((s / k - 1.0).abs() < 0.05);
-        // The transient-band estimate uses the same per-pixel weights.
-        let (hf, _) = st.fast_estimate().unwrap();
-        let fm = hf
-            .iter()
-            .zip(&rim)
-            .filter(|(_, &r)| r)
-            .map(|(&v, _)| v)
-            .sum::<f32>()
-            / n_rim;
-        assert!((fm - 1.0).abs() < 0.15, "fast rim {fm}");
         // The split halves too.
         let (ha, hb, ..) = st.halves().unwrap();
         assert!((mean(&ha) - 1.0).abs() < 0.3 && (mean(&hb) - 1.0).abs() < 0.3);
@@ -1169,15 +800,12 @@ mod fast_tests {
     /// With no missing sample the masked path is the scalar one.
     #[test]
     fn masked_push_without_missing_equals_scalar_push() {
-        let mut a = FpStats::new((4.0, 4.0), 4.0, 9, 9, &[1u8; 81], true, 5);
+        let mut a = FpStats::new((4.0, 4.0), 4.0, 9, 9, &[1u8; 81], 5);
         let mut b = a.clone();
         let m = a.pix.len();
         // Per-pixel moments from the start: they must track the scalar ones.
         b.pm = Some(PixMoments::filled(&b.cls, &[[0.0; 6]; 2]));
         b.half_pm = Some(PixMoments::filled(&b.cls, &[[0.0; 6]; 2]));
-        if let Some(f) = &mut b.fast {
-            f.wp = Some(vec![vec![[0.0; 2]; m]; FAST_GROUPS]);
-        }
         for t in 0..2000u64 {
             let r: Vec<f32> = (0..m)
                 .map(|i| u(t * 100 + i as u64) * 3.0 + i as f32 * 0.1)
@@ -1191,18 +819,14 @@ mod fast_tests {
             assert!((x - y).abs() < 1e-4 * x.abs().max(1.0), "{x} vs {y}");
         }
         assert!((a.std_err() - b.std_err()).abs() < 1e-6 * a.std_err());
-        let (fa, fb) = (a.fast_estimate().unwrap(), b.fast_estimate().unwrap());
-        for (x, y) in fa.0.iter().zip(&fb.0) {
-            assert!((x - y).abs() < 1e-4 * x.abs().max(1.0), "{x} vs {y}");
-        }
     }
 
-    /// Per-pixel moments and weights cross the wire and survive a move.
+    /// Per-pixel moments cross the wire and survive a move.
     #[test]
     fn per_pixel_moments_cross_the_wire_and_a_move() {
-        let mut st = FpStats::new((4.0, 4.0), 4.0, 9, 9, &[1u8; 81], true, 5);
+        let mut st = FpStats::new((4.0, 4.0), 4.0, 9, 9, &[1u8; 81], 5);
         let m = st.pix.len();
-        for t in 0..(FAST_BLOCK * 3) {
+        for t in 0..768u64 {
             let r: Vec<f32> = (0..m)
                 .map(|i| {
                     if (i + t as usize).is_multiple_of(5) {
@@ -1221,7 +845,6 @@ mod fast_tests {
             .unwrap();
         assert_eq!(st.estimate(), back.estimate());
         assert_eq!(st.std_err(), back.std_err());
-        assert_eq!(st.fast_estimate(), back.fast_estimate());
         // A larger disk keeps the shared pixels' moments.
         let big = st.moved((4.0, 4.0), 4.0, 9, 9, &[1u8; 81]);
         assert_eq!(big.estimate(), st.estimate());
@@ -1240,7 +863,7 @@ mod fast_tests {
     #[test]
     fn moved_seeds_new_pixels_at_the_model() {
         for missing in [false, true] {
-            let mut st = FpStats::new((8.0, 8.0), 3.0, 17, 17, &[1u8; 289], false, 5);
+            let mut st = FpStats::new((8.0, 8.0), 3.0, 17, 17, &[1u8; 289], 5);
             let m = st.pix.len();
             for t in 0..1300u64 {
                 let r: Vec<f32> = (0..m)
@@ -1281,33 +904,6 @@ mod fast_tests {
             assert!(new > 50);
         }
     }
-
-    /// A visit in another worker sees the same transient-band estimate.
-    #[test]
-    fn fast_sums_cross_the_wire() {
-        let mut st = FpStats::new((4.0, 4.0), 4.0, 9, 9, &[1u8; 81], false, 5);
-        st.fast = Some(Fast::new(st.pix.len(), 1.0 / FAST_TAU_FRAMES));
-        let r: Vec<f32> = (0..st.pix.len()).map(|i| i as f32).collect();
-        for t in 0..(FAST_BLOCK * FAST_GROUPS as u64) {
-            push1(&mut st, &r, u(t), 1.0);
-        }
-        let mut w = crate::discover::wire::Writer::default();
-        w.fpstats(&st);
-        let back = crate::discover::wire::Reader::new(&w.buf)
-            .fpstats()
-            .unwrap();
-        assert_eq!(st.fast_estimate(), back.fast_estimate());
-        assert_eq!(st.fast_groups(), back.fast_groups());
-        let mut st2 = st.clone();
-        st2.fast = None;
-        let mut w = crate::discover::wire::Writer::default();
-        w.fpstats(&st2);
-        assert!(crate::discover::wire::Reader::new(&w.buf)
-            .fpstats()
-            .unwrap()
-            .fast
-            .is_none());
-    }
 }
 
 /// The per-class moments with one trace for both classes.
@@ -1327,8 +923,8 @@ mod parity_tests {
     /// trace, so splitting changes nothing.
     #[test]
     fn fpstats_push_parity_sums_equal_full_sums() {
-        let mut a = FpStats::new((6.0, 6.0), 6.0, 13, 13, &[1u8; 169], true, 1000);
-        let mut b = FpStats::new((6.0, 6.0), 6.0, 13, 13, &[1u8; 169], true, 3);
+        let mut a = FpStats::new((6.0, 6.0), 6.0, 13, 13, &[1u8; 169], 1000);
+        let mut b = FpStats::new((6.0, 6.0), 6.0, 13, 13, &[1u8; 169], 3);
         assert!(a.cls.iter().all(|&c| c == 0));
         assert!(b.cls.contains(&0) && b.cls.contains(&1));
         let m = a.pix.len();
@@ -1342,7 +938,6 @@ mod parity_tests {
         }
         assert_eq!(a.estimate(), b.estimate());
         assert_eq!(a.std_err(), b.std_err());
-        assert_eq!(a.fast_estimate(), b.fast_estimate());
         assert_eq!(a.lambdas(), [1.0, 1.0]);
     }
 }
@@ -1387,8 +982,7 @@ mod push_frame_tests {
     /// `push_frame` leaves every sum bit for bit where building the
     /// residual and calling `push` does: complete and masked disks (a NaN
     /// or infinite pixel, and every frame after), FOV holes, zero and NaN
-    /// traces, ring levels, the transient band, split-half block changes
-    /// and a moved disk.
+    /// traces, ring levels, split-half block changes and a moved disk.
     #[test]
     fn push_frame_matches_building_the_residual() {
         let (wd, ht) = (40usize, 32usize);
@@ -1400,41 +994,38 @@ mod push_frame_tests {
                 .map(|i| u(k * 1000 + i as u64) + 0.2)
                 .collect()
         };
-        for fast in [false, true] {
-            for masked in [false, true] {
-                let mut a = FpStats::new((15.0, 20.0), 9.0, wd, ht, &fov, fast, 5);
-                a.col = col_of(&a, 1);
-                let mut b = a.clone();
-                let mut buf = Vec::new();
-                for t in 0..700u64 {
-                    let mut frame: Vec<f32> =
-                        (0..wd * ht).map(|i| 3.0 * u(t * 5000 + i as u64)).collect();
-                    let model: Vec<f32> =
-                        (0..wd * ht).map(|i| u(t * 5000 + i as u64 + 77)).collect();
-                    if masked && (t == 300 || t == 450) {
-                        frame[15 * wd + 20] = f32::NAN;
-                        frame[17 * wd + 22] = f32::INFINITY;
-                    }
-                    let c = match t % 9 {
-                        0 => 0.0,
-                        4 if t == 13 => f32::NAN,
-                        _ => 2.0 * u(t * 31 + 5) + 0.5,
-                    };
-                    let level = if t % 2 == 0 { 0.25 * u(t) } else { 0.0 };
-                    let w = 1.0 + t as f32 * 1e-3;
-                    if t == 500 {
-                        a = a.moved((16.0, 21.0), 10.0, wd, ht, &fov);
-                        b = b.moved((16.0, 21.0), 10.0, wd, ht, &fov);
-                        a.col = col_of(&a, 2);
-                        b.col = a.col.clone();
-                    }
-                    reference(&mut a, &frame, &model, level, c, w);
-                    b.push_frame(&frame, &model, level, c, w, &mut buf);
-                    assert_eq!(state(&a), state(&b), "fast {fast} masked {masked} t {t}");
+        for masked in [false, true] {
+            let mut a = FpStats::new((15.0, 20.0), 9.0, wd, ht, &fov, 5);
+            a.col = col_of(&a, 1);
+            let mut b = a.clone();
+            let mut buf = Vec::new();
+            for t in 0..700u64 {
+                let mut frame: Vec<f32> =
+                    (0..wd * ht).map(|i| 3.0 * u(t * 5000 + i as u64)).collect();
+                let model: Vec<f32> = (0..wd * ht).map(|i| u(t * 5000 + i as u64 + 77)).collect();
+                if masked && (t == 300 || t == 450) {
+                    frame[15 * wd + 20] = f32::NAN;
+                    frame[17 * wd + 22] = f32::INFINITY;
                 }
-                assert_eq!(a.pm.is_some(), masked);
-                assert!(a.k > 600);
+                let c = match t % 9 {
+                    0 => 0.0,
+                    4 if t == 13 => f32::NAN,
+                    _ => 2.0 * u(t * 31 + 5) + 0.5,
+                };
+                let level = if t % 2 == 0 { 0.25 * u(t) } else { 0.0 };
+                let w = 1.0 + t as f32 * 1e-3;
+                if t == 500 {
+                    a = a.moved((16.0, 21.0), 10.0, wd, ht, &fov);
+                    b = b.moved((16.0, 21.0), 10.0, wd, ht, &fov);
+                    a.col = col_of(&a, 2);
+                    b.col = a.col.clone();
+                }
+                reference(&mut a, &frame, &model, level, c, w);
+                b.push_frame(&frame, &model, level, c, w, &mut buf);
+                assert_eq!(state(&a), state(&b), "masked {masked} t {t}");
             }
+            assert_eq!(a.pm.is_some(), masked);
+            assert!(a.k > 600);
         }
     }
 

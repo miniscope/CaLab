@@ -463,7 +463,7 @@ pub(super) fn delete(slow: &SlowLoop, target: &Cell, reason: &str) {
 // ---- support audit (S2.1) -------------------------------------------------
 
 /// `CALA_SUPPORT_AUDIT=<file>`: one tab-separated row per footprint
-/// construction on the statistics path (`C`, every support rule) and per
+/// construction on the statistics path (`C`) and per
 /// published cell at each publish (`L`). Columns are in
 /// [`SUPPORT_AUDIT_HEADER`]. Independent of `CALA_TRACE_CELL`; it only
 /// writes observations.
@@ -480,7 +480,8 @@ fn support_audit() -> Option<&'static Mutex<BufWriter<File>>> {
         .as_ref()
 }
 
-/// Header of the support audit: `C` rows, then the `L` rows' columns.
+/// Header of the support audit: `C` rows, then the `L` rows' columns. The
+/// `rule` column is always `basin-skirt`, the one support rule.
 const SUPPORT_AUDIT_HEADER: &str = "#C\tframe\tid\trule\tN\tse\tphi\tz_fw\tn_S\tradius\tr_h\tr_u\tn_X\tsecond\tmass_S\tn_beyond_rh\tmass_beyond_rh\tn_skirt_blocks\tskirt_mass\tleftover_med_z\tleftover_share_z3\tn_leftover_blocks\tn_whole_blocks\tleftover_share_z3_whole\tleftover_share_z3_partial\n#L\tframe\tid\tn_pos\tradius\tn_skirt_blocks\n";
 
 pub(super) fn support_audit_on() -> bool {
@@ -499,10 +500,8 @@ fn support_row(line: &str) {
 /// (unsmoothed) light `h`, the disk `mask`, the published footprint's
 /// low-pass `low` in data units, the published column `col` in data
 /// units, the white standard error `se` per unit pixel noise, the split
-/// halves on the canvas, and the measured support (basin rules; also
-/// computed for the audit under the ring rule).
+/// halves on the canvas, and the measured support.
 pub(super) struct SupportInput<'a> {
-    pub rule: &'a str,
     pub canvas: Rect,
     pub h: &'a [f32],
     pub mask: &'a [bool],
@@ -515,8 +514,12 @@ pub(super) struct SupportInput<'a> {
     pub block: usize,
 }
 
+/// The audit's ring threshold: `r_h` and `r_u` end at the first ring whose
+/// light is less than this many white standard errors above zero.
+const RING_Z: f64 = 2.0;
+
 /// Radius (whole rings of 1 px around `c`) out to which the ring sums of
-/// `light` stay `z` white standard errors above zero (the s20 `r_h`/`r_u`).
+/// `light` stay `z` white standard errors above zero (`r_h`/`r_u`).
 fn ring_radius(
     slow: &SlowLoop,
     canvas: Rect,
@@ -551,7 +554,7 @@ fn ring_radius(
 pub(super) fn support_construction(slow: &SlowLoop, i: &SupportInput) {
     let (canvas, w) = (i.canvas, slow.dims.width);
     let n = canvas.len();
-    let z = f64::from(slow.cfg.support_z);
+    let z = RING_Z;
     let c = i.cell.center;
     let r_h = ring_radius(slow, canvas, i.h, i.mask, c, i.se, z);
     let u: Vec<f32> = (0..n).map(|p| i.h[p] + i.low[p]).collect();
@@ -703,7 +706,7 @@ pub(super) fn support_construction(slow: &SlowLoop, i: &SupportInput) {
         "C\t{}\t{}\t{}\t{}\t{:.6e}\t{:.4}\t{:.4}\t{}\t{:.2}\t{}\t{}\t{}\t{}\t{:.4}\t{}\t{:.4}\t{}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{:.4}\t{:.4}\n",
         slow.frames,
         i.cell.id,
-        i.rule,
+        "basin-skirt",
         n_test,
         i.se,
         phi,
