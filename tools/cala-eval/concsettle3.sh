@@ -24,7 +24,6 @@ V="--offered-fps 30 --visit-workers ${VW:-4} --pool 4 --lb-ms 5"
 arm_flags() {
   case $1 in
     V30) echo "--csettle 0" ;;
-    CS2) echo "--csettle 0.667 --csettle-mode stats" ;;
     CS2F) echo "--csettle 0.667 --csettle-mode frames" ;;
     # Diagnosis: the re-read frames at no cost to the slow worker; the slow worker's lost time without the frames.
     CS2F-free) echo "--csettle 0.667 --csettle-mode frames --cs-answer-scale 0" ;;
@@ -71,7 +70,6 @@ t0)
     X=$BIN; [ $b = main ] && X=$MAIN
     slot_run $T/${b}_settle $X $S $T/${b}_settle $C --settle-frames 2400 --settle-batch 16 &
     slot_run $T/${b}_vw $X $S $T/${b}_vw $C $V --csettle 0 &
-    slot_run $T/${b}_cs2 $X $S $T/${b}_cs2 $C $V --csettle 0.667 --csettle-mode stats &
     slot_run $T/${b}_cs2f $X $S $T/${b}_cs2f $C $V --csettle 0.667 --csettle-mode frames &
     sleep 2
   done
@@ -79,7 +77,7 @@ t0)
   slot_run $T/diag_cs2f $BIN $S $T/diag_cs2f $C $V --csettle 0.667 --csettle-mode frames --visit-diag &
   wait
   cd "$(dirname "$ME")/../.."
-  for k in settle vw cs2 cs2f; do
+  for k in settle vw cs2f; do
     echo "main_$k vs new_$k: $($MINISIM_PY tools/cala-eval/cmp_runs.py $T/main_$k $T/new_$k | tail -3 | tr '\n' ' ')"
   done > $T/report.txt
   for k in vw cs2f; do

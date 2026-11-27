@@ -778,7 +778,8 @@ struct Core {
     /// `skirt_blk[skirt_start[i]..skirt_start[i + 1]]` (ascending, a subset
     /// of its moat blocks) with the measured block means `skirt_val` it
     /// carries ([`apply_skirt`]; already folded into `val` and `low_val`).
-    /// Empty for every cell under the ring support rule.
+    /// Empty for a cell whose support was not measured (a seeded or given
+    /// footprint).
     skirt_start: Vec<usize>,
     skirt_blk: Vec<u32>,
     skirt_val: Vec<f32>,

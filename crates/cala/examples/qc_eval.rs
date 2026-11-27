@@ -68,11 +68,8 @@
 //!                      new cells' and their neighbours' running statistics
 //!                      and cluster stores, at R look-back frames per
 //!                      Discover frame (see `LookBack`; `lookback.tsv`)
-//!   --lookback-reservoir M  experimental: look-back frames are also
-//!                      offered to the reservoir, on the held-out side they
-//!                      had as live frames: `test` (held-out frames only) or
-//!                      `all`; --lookback-reservoir-share S offers the share
-//!                      S of them (`LookbackReservoir`). Default off.
+//!   --lookback-reservoir off  accepted (the only value); any other
+//!                      value panics
 //!   --lookback-frames K  at most K frames before its birth per cell
 //!                      (default 3000)
 //!   --lookback-order O `shared` (default): the 64-frame block most cells
@@ -164,13 +161,8 @@
 //!                      rebuilt from the --factors-out windows (no raw read)
 //!   --factors-tiling T plain (default) | offset: how --factors-out cuts the
 //!                      frame (the dump is complete when Discover ends)
-//!   --core-test M      transient-band core test: off (default) | report
-//!                      (also writes fast.tsv, split.tsv) | trim | delete
-//!   --basin-trim       trim refined footprints to their significant basin
-//!                      (needs --support-rule rings, as does --core-test)
-//!   --support-rule R   how the footprint statistics measure a support:
-//!                      basin-skirt (default) | basin | rings (the rule
-//!                      before S2.1)
+//!   --core-test off / --support-rule basin-skirt   accepted (the only
+//!                      values); any other value, and --basin-trim, panics
 //!   --support-alpha A  family-wise error rate of a basin support (0.05)
 //!   --refine-gate G    when the statistics path proposes a refinement:
 //!                      split-half (default; the change exceeds the
@@ -206,14 +198,14 @@
 //!                      (default 6000).
 //!   --drop-step        keep stepping the slow loop on dropped batches (only
 //!                      the observation is lost, not the compute)
-//!   --csettle S        the concurrent settle (experimental; needs --lookback):
-//!                      while Discover runs, a share S of the slow loop's
-//!                      compute goes to settle work: saved frames spread
-//!                      over the history are re-read (16 in a row,
-//!                      `--csettle-chunk`), fed on the side they had live
-//!                      (`SlowLoop::observe_settle`), and each earns one
-//!                      frame's budget of refinement-only visits
-//!                      (`SlowLoop::step_settle`). Without --offered-fps
+//!   --csettle S        the concurrent settle (needs --lookback): while
+//!                      Discover runs, a share S of the slow loop's compute
+//!                      goes to settle work: saved frames spread over the
+//!                      history are re-read (16 in a row, `--csettle-chunk`)
+//!                      and fed on the side they had live
+//!                      (`SlowLoop::observe_settle`) to the footprint
+//!                      statistics; the ordinary visits do all the
+//!                      refining. Without --offered-fps
 //!                      every live frame earns S / (1 - S) settle frames,
 //!                      weighted over the recording by `--csettle-ramp
 //!                      flat|linear|late` (same total); with it the slow
@@ -224,25 +216,18 @@
 //!                      past the next expected batch (0: off).
 //!                      S = 0: no settle (with --offered-fps the look-back
 //!                      then runs on the virtual clock, the baseline).
-//!                      `--csettle-mode visits|stats|full`: settle visits
-//!                      only (no frames), frames to the statistics, frames
-//!                      to the statistics and the reservoir (default);
-//!                      `frames`: as `stats` without the settle visits
-//!                      (the ordinary visits do all the refining).
-//!                      `--csettle-quiet F`: no settle visit on a tile
-//!                      whose cell set changed in the last F frames.
-//!                      With `--offered-fps` and `--visit-workers K` > 0
-//!                      (modes `stats` and `frames`): every live frame the
+//!                      `--csettle-mode frames` and `--csettle-quiet 0` are
+//!                      accepted (the only values; without them the same
+//!                      settle runs); any other value panics.
+//!                      With `--offered-fps` and `--visit-workers K` > 0:
+//!                      every live frame the
 //!                      slow worker observes earns S / (1 - S) re-read
 //!                      frames; they are requested from the look-back
 //!                      worker 16 at a time, one request out at a time
 //!                      (`--lb-ms` per frame on that worker, after the
 //!                      need-driven look-back frames), the answer costs the
 //!                      slow worker the statistics update of its fitting
-//!                      frames (held-out frames are not solved), and the
-//!                      settle visits they earn run as jobs on visit
-//!                      workers that have no ordinary visit to run
-//!                      (`SlowLoop::take_settle_job`).
+//!                      frames (held-out frames are not solved).
 //!                      `--csettle-yield N` (N divides the chunk): the slow
 //!                      worker handles an answer N frames at a time and
 //!                      goes back to its inbox in between (waiting batches
@@ -452,10 +437,9 @@ use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::compress::blend::{BlendLayout, Tiling};
 use calab_cala::compress::WindowFactors;
 use calab_cala::discover::{
-    CoreTest, EditScope, JointAdmit, JointSign, JointUpdate, LookBack as LbSched, LookbackConfig,
-    LookbackNext, LookbackOrder, LookbackOutcome, LookbackReservoir, MergeRule, RefineGate,
-    SettleSched, SlowLoop, SlowLoopConfig, SupportRule, VisitJob, VisitResult, VisitRunner,
-    VisitSchedule, LB_BLOCK,
+    EditScope, JointAdmit, JointSign, JointUpdate, LookBack as LbSched, LookbackConfig,
+    LookbackNext, LookbackOrder, LookbackOutcome, MergeRule, RefineGate, SettleSched, SlowLoop,
+    SlowLoopConfig, VisitJob, VisitResult, VisitRunner, VisitSchedule, LB_BLOCK,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -1179,14 +1163,13 @@ struct LookBack {
     cs_sched: SettleSched,
     /// The preprocessor copy of the settle chunk in progress.
     cs_pre: Option<Preprocessor>,
-    /// A settle frame is being fed (`frame` hands it to `observe_settle`,
-    /// with or without the reservoir).
-    cs_now: Option<bool>,
+    /// A settle frame is being fed (`frame` hands it to `observe_settle`).
+    cs_now: bool,
     cs_frames: u64,
     cs_wall_s: f64,
     /// The settle with visit workers: a unit is a whole chunk of frames,
-    /// held-out frames are passed over before the solve (counted in
-    /// `cs_skipped`), and the settle visits are jobs.
+    /// and held-out frames are passed over before the solve (counted in
+    /// `cs_skipped`).
     cs_jobs: bool,
     /// `--csettle-yield N`: frames per call of `cs_unit` (0: a whole chunk).
     cs_step: usize,
@@ -1197,23 +1180,12 @@ struct LookBack {
     slow_of: Vec<u32>,
 }
 
-/// What a settle frame feeds (`--csettle-mode`).
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum CsMode {
-    Visits,
-    Frames,
-    Stats,
-    Full,
-}
-
 /// The concurrent settle (`--csettle S` and its options).
 #[derive(Clone, Debug)]
 struct CsCfg {
     share: f64,
-    mode: CsMode,
     /// 0 flat, 1 linear, 2 late (weights of the lock-step schedule).
     ramp: u8,
-    quiet: u64,
     chunk: usize,
 }
 
@@ -1221,22 +1193,27 @@ impl CsCfg {
     fn parse(args: &[String]) -> Option<CsCfg> {
         let share: f64 = arg_value(args, "--csettle")?.parse().unwrap();
         assert!((0.0..=1.0).contains(&share), "--csettle must be in [0, 1]");
+        // Settle visits, their quiet period and the reservoir feed are not
+        // in the engine (tools/cala-eval/results/2026-11-20-concurrent-settle2.md,
+        // 2026-11-21-csettle-app.md): the settle feeds frames only, and the
+        // flags of the other modes are refused rather than ignored.
+        if let Some(m) = arg_value(args, "--csettle-mode") {
+            assert!(
+                m == "frames",
+                "--csettle-mode {m}: not supported (only frames)"
+            );
+        }
+        if let Some(q) = arg_value(args, "--csettle-quiet") {
+            assert!(q == "0", "--csettle-quiet {q}: not supported (only 0)");
+        }
         Some(CsCfg {
             share,
-            mode: match arg_value(args, "--csettle-mode").as_deref() {
-                None | Some("full") => CsMode::Full,
-                Some("stats") => CsMode::Stats,
-                Some("frames") => CsMode::Frames,
-                Some("visits") => CsMode::Visits,
-                Some(m) => panic!("--csettle-mode: unknown mode {m}"),
-            },
             ramp: match arg_value(args, "--csettle-ramp").as_deref() {
                 None | Some("flat") => 0,
                 Some("linear") => 1,
                 Some("late") => 2,
                 Some(m) => panic!("--csettle-ramp: unknown schedule {m}"),
             },
-            quiet: arg_value(args, "--csettle-quiet").map_or(0, |s| s.parse().unwrap()),
             chunk: arg_value(args, "--csettle-chunk").map_or(16, |s| s.parse().unwrap()),
         })
     }
@@ -1297,7 +1274,7 @@ impl LookBack {
             cs: None,
             cs_sched: SettleSched::new(0.0, 16),
             cs_pre: None,
-            cs_now: None,
+            cs_now: false,
             cs_frames: 0,
             cs_wall_s: 0.0,
             cs_jobs: false,
@@ -1308,15 +1285,13 @@ impl LookBack {
     }
 
     /// One unit of concurrent settle work: re-read the next scheduled frame
-    /// among recording frames `start..seen` and feed it, then the settle
-    /// visits it earns (`budget`). In `visits` mode only the visits.
-    /// Returns the slow-loop work spent; `None` when there is no saved
-    /// frame to read yet.
+    /// among recording frames `start..seen` and feed it. Returns the
+    /// slow-loop work spent; `None` when there is no saved frame to read
+    /// yet.
     #[allow(clippy::too_many_arguments)]
     fn cs_unit(
         &mut self,
         seen: usize,
-        budget: u64,
         start: usize,
         rec: &mut Recording,
         drift: Option<&Drift>,
@@ -1325,12 +1300,12 @@ impl LookBack {
         sl: &mut SlowLoop,
         n_px: usize,
     ) -> Option<u64> {
-        let mode = self.cs.as_ref()?.mode;
+        self.cs.as_ref()?;
         let t0 = Instant::now();
         let w0 = sl.work();
         if self.cs_jobs {
             // One answer of the look-back worker: a chunk of frames to the
-            // statistics; the visits they earn go out as jobs.
+            // statistics.
             let chunk = match self.cs_step {
                 0 => self.cs.as_ref()?.chunk,
                 n => n,
@@ -1344,7 +1319,7 @@ impl LookBack {
                     Some(p) if !new => p,
                     _ => pipe.pre.clone(),
                 };
-                self.cs_now = Some(false);
+                self.cs_now = true;
                 self.frame(
                     f + start,
                     &mut pre,
@@ -1358,7 +1333,7 @@ impl LookBack {
                     n_px,
                     10,
                 );
-                self.cs_now = None;
+                self.cs_now = false;
                 self.cs_pre = Some(pre);
                 self.cs_frames += 1;
                 n += 1;
@@ -1367,38 +1342,30 @@ impl LookBack {
             if n == 0 {
                 return None;
             }
-            if mode != CsMode::Frames {
-                sl.settle_credit(budget * n, budget * 64);
-            }
             return Some(sl.work() - w0);
         }
-        if mode != CsMode::Visits {
-            let (f, new) = self.cs_sched.next_frame(seen.saturating_sub(start))?;
-            let mut pre = match self.cs_pre.take() {
-                Some(p) if !new => p,
-                _ => pipe.pre.clone(),
-            };
-            self.cs_now = Some(mode == CsMode::Full);
-            self.frame(
-                f + start,
-                &mut pre,
-                None,
-                start,
-                rec,
-                drift,
-                pipe,
-                live,
-                sl,
-                n_px,
-                10,
-            );
-            self.cs_now = None;
-            self.cs_pre = Some(pre);
-            self.cs_frames += 1;
-        }
-        if mode != CsMode::Frames {
-            sl.step_settle(budget).unwrap();
-        }
+        let (f, new) = self.cs_sched.next_frame(seen.saturating_sub(start))?;
+        let mut pre = match self.cs_pre.take() {
+            Some(p) if !new => p,
+            _ => pipe.pre.clone(),
+        };
+        self.cs_now = true;
+        self.frame(
+            f + start,
+            &mut pre,
+            None,
+            start,
+            rec,
+            drift,
+            pipe,
+            live,
+            sl,
+            n_px,
+            10,
+        );
+        self.cs_now = false;
+        self.cs_pre = Some(pre);
+        self.cs_frames += 1;
         self.cs_wall_s += t0.elapsed().as_secs_f64();
         Some(sl.work() - w0)
     }
@@ -1410,7 +1377,6 @@ impl LookBack {
         &mut self,
         t_rec: usize,
         t_len: usize,
-        budget: u64,
         start: usize,
         rec: &mut Recording,
         drift: Option<&Drift>,
@@ -1435,7 +1401,7 @@ impl LookBack {
         self.cs_sched.earn(w);
         while self.cs_sched.take() {
             if self
-                .cs_unit(t_rec + 1, budget, start, rec, drift, pipe, live, sl, n_px)
+                .cs_unit(t_rec + 1, start, rec, drift, pipe, live, sl, n_px)
                 .is_none()
             {
                 break;
@@ -1916,7 +1882,7 @@ impl LookBack {
         };
         // Precision mode: a held-out frame is still preprocessed (the block's
         // preprocessor copy runs forward) but not solved.
-        let cs_skip = self.cs_jobs && self.cs_now.is_some() && sl.is_test(idx);
+        let cs_skip = self.cs_jobs && self.cs_now && sl.is_test(idx);
         self.cs_skipped += u64::from(cs_skip);
         let skip = cs_skip || self.target > 0.0 && sl.is_test(idx);
         if from_factors {
@@ -1961,10 +1927,9 @@ impl LookBack {
         let tr = eng.process(&self.y).unwrap();
         let lib = eng.library().clone();
         let n_cells = only.map_or(lib.len(), <[u64]>::len) as u64;
-        if let Some(reservoir) = self.cs_now {
+        if self.cs_now {
             let held = sl.is_test(idx);
-            sl.observe_settle(&self.y, &lib, &tr, idx, held, reservoir)
-                .unwrap();
+            sl.observe_settle(&self.y, &lib, &tr, held).unwrap();
             return Some(!held);
         }
         let pushed = if self.full_observe {
@@ -3737,7 +3702,7 @@ struct Timed {
     /// `--csettle` with visit workers: re-read frames earned per observed
     /// live frame (0: off) and the frames per request; the frames owed; a
     /// request is out; when the look-back worker is free, and its busy
-    /// time; settle requests and settle jobs; the longest wait of a batch
+    /// time; settle requests; the longest wait of a batch
     /// for the owner.
     pub cs_rate: f64,
     pub cs_chunk: usize,
@@ -3746,7 +3711,6 @@ struct Timed {
     lb_free: f64,
     pub lb_worker_busy: f64,
     pub cs_reqs: u64,
-    pub cs_jobs: u64,
     pub max_wait: f64,
     /// `--visit-diag`.
     diag: Option<VisitDiag>,
@@ -3839,7 +3803,6 @@ impl Timed {
             lb_free: 0.0,
             lb_worker_busy: 0.0,
             cs_reqs: 0,
-            cs_jobs: 0,
             max_wait: 0.0,
             diag: None,
             cs_answer_scale: 1.0,
@@ -4165,40 +4128,29 @@ impl Timed {
                     if self.ending || self.runners[i].2 >= self.depth {
                         continue;
                     }
-                    let job = match sl.take_job() {
-                        Some(j) => j,
-                        // No ordinary visit to run: a settle visit.
-                        None => match (self.cs_rate > 0.0).then(|| sl.take_settle_job()) {
-                            Some(Some(j)) => {
-                                self.cs_jobs += 1;
-                                j
-                            }
-                            _ => break 'hand,
-                        },
+                    let Some(job) = sl.take_job() else {
+                        break 'hand;
                     };
                     end += 0.5 * self.job_ms;
-                    let (jt, jc, js) = (job.tile_index(), job.zone_cells(), job.is_settle());
+                    let (jt, jc) = (job.tile_index(), job.zone_cells());
                     let res = self.runners[i].0.run(job).unwrap();
                     let dur = res.work() as f64 / self.visit_units_per_ms + self.job_ms;
                     self.runner_busy += dur;
                     self.jobs += 1;
                     let done = end.max(self.runners[i].1) + dur;
                     if let Some(d) = self.diag.as_mut() {
-                        let due_at = if js { f64::NAN } else { d.stamp[jt] };
-                        let slots = if js { 0 } else { d.fresh[jt] };
-                        if !js {
-                            d.jobs += 1;
-                            d.wait_sum += end - due_at;
-                            d.fresh_sum += u64::from(slots);
-                            d.stamp[jt] = f64::NAN;
-                        }
+                        let due_at = d.stamp[jt];
+                        let slots = d.fresh[jt];
+                        d.jobs += 1;
+                        d.wait_sum += end - due_at;
+                        d.fresh_sum += u64::from(slots);
+                        d.stamp[jt] = f64::NAN;
                         let s = res.stats();
                         let _ = writeln!(
                             d.rows,
-                            "{:.2}\t{}\t{}\t{}\t{}\t{:.2}\t{:.2}\t{}\t{:.2}\t{:.2}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                            "{:.2}\t{}\tvisit\t{}\t{}\t{:.2}\t{:.2}\t{}\t{:.2}\t{:.2}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                             end,
                             sl.frames(),
-                            if js { "settle" } else { "visit" },
                             jt,
                             i,
                             due_at,
@@ -5584,26 +5536,19 @@ fn main() {
     if let Some(v) = arg_value(&args, "--accept-z") {
         scfg.accept_z = v.parse().unwrap();
     }
-    if let Some(v) = arg_value(&args, "--core-test") {
-        scfg.core_test = match v.as_str() {
-            "off" => CoreTest::Off,
-            "report" => CoreTest::Report,
-            "trim" => CoreTest::Trim,
-            "delete" => CoreTest::Delete,
-            other => panic!("--core-test: off|report|trim|delete, not {other}"),
-        };
+    // The core test, the basin trim and the other support rules are not in
+    // the engine (tools/cala-eval/results/2026-11-11-e1-core-test-trim.md,
+    // 2026-11-12-support-rule.md): their flags are refused rather than
+    // ignored, so an old command line cannot run the default unnoticed.
+    for (flag, only) in [("--core-test", "off"), ("--support-rule", "basin-skirt")] {
+        if let Some(v) = arg_value(&args, flag) {
+            assert!(v == only, "{flag} {v}: not supported (only {only})");
+        }
     }
-    if args.iter().any(|a| a == "--basin-trim") {
-        scfg.basin_trim = true;
-    }
-    if let Some(v) = arg_value(&args, "--support-rule") {
-        scfg.support_rule = match v.as_str() {
-            "rings" => SupportRule::Rings,
-            "basin" => SupportRule::Basin,
-            "basin-skirt" => SupportRule::BasinSkirt,
-            other => panic!("--support-rule: rings|basin|basin-skirt, not {other}"),
-        };
-    }
+    assert!(
+        !args.iter().any(|a| a == "--basin-trim"),
+        "--basin-trim: not supported"
+    );
     if let Some(v) = arg_value(&args, "--support-alpha") {
         scfg.support_alpha = v.parse().unwrap();
     }
@@ -5719,17 +5664,7 @@ fn main() {
     if scfg.refine_gate != RefineGate::SplitHalf {
         println!("refine gate: {:?}", scfg.refine_gate);
     }
-    assert!(
-        scfg.support_rule == SupportRule::Rings
-            || (scfg.core_test == CoreTest::Off && !scfg.basin_trim),
-        "--core-test and --basin-trim need --support-rule rings"
-    );
-    if scfg.support_rule != SupportRule::Rings {
-        println!(
-            "support rule: {:?}, alpha {}",
-            scfg.support_rule, scfg.support_alpha
-        );
-    }
+    println!("support rule: basin-skirt, alpha {}", scfg.support_alpha);
     if args.iter().any(|a| a == "--joint") {
         scfg.joint_neighbours = true;
     }
@@ -5894,23 +5829,14 @@ fn main() {
         Some("newest") => true,
         Some(m) => panic!("--lookback-order: unknown mode {m}"),
     };
-    // `--lookback-reservoir test|all` (experimental, default off): look-back
-    // frames are also offered to the reservoir (`LookbackReservoir`);
-    // `--lookback-reservoir-share S` offers that share of them.
-    let lb_res = match arg_value(&args, "--lookback-reservoir").as_deref() {
-        None | Some("off") => LookbackReservoir::Off,
-        Some("test") => LookbackReservoir::Test,
-        Some("all") => LookbackReservoir::All,
-        Some(m) => panic!("--lookback-reservoir: unknown mode {m} (off | test | all)"),
-    };
-    let lb_res_share: f32 =
-        arg_value(&args, "--lookback-reservoir-share").map_or(1.0, |s| s.parse().unwrap());
-    assert!(
-        lb_res_share > 0.0 && lb_res_share <= 1.0,
-        "--lookback-reservoir-share must be in (0, 1]"
-    );
-    if lb_res != LookbackReservoir::Off {
-        println!("lookback reservoir: {lb_res:?}, share {lb_res_share}");
+    // Look-back frames offered to the reservoir are not in the engine
+    // (tools/cala-eval/results/2026-11-19-lookback-settle2.md): the flag is
+    // refused rather than ignored.
+    if let Some(m) = arg_value(&args, "--lookback-reservoir") {
+        assert!(
+            m == "off",
+            "--lookback-reservoir {m}: not supported (only off)"
+        );
     }
     let cs_cfg = CsCfg::parse(&args);
     let lb_ms: f64 = arg_value(&args, "--lb-ms").map_or(10.0, |s| s.parse().unwrap());
@@ -6350,9 +6276,8 @@ fn main() {
                             if let Some(vs) = visit_schedule {
                                 s.set_visit_schedule(vs);
                             }
-                            s.set_lookback_reservoir(lb_res, lb_res_share);
-                            if let Some(c) = &cs_cfg {
-                                s.enable_settle(c.quiet);
+                            if cs_cfg.is_some() {
+                                s.enable_settle();
                             }
                         }
                         if let Some(s) = &slow {
@@ -6392,11 +6317,6 @@ fn main() {
                             ));
                             if let (Some(c), Some(tm)) = (&cs_cfg, timed.as_mut()) {
                                 if visit_workers > 0 {
-                                    assert!(
-                                        c.share == 0.0
-                                            || matches!(c.mode, CsMode::Stats | CsMode::Frames),
-                                        "--csettle with --visit-workers needs --csettle-mode stats or frames"
-                                    );
                                     assert!(c.share < 1.0, "--csettle with --visit-workers: S < 1");
                                     tm.cs_rate = c.share / (1.0 - c.share);
                                     tm.cs_chunk = c.chunk;
@@ -6459,7 +6379,6 @@ fn main() {
                     let mut unit = |sl: &mut SlowLoop| match (lookback.as_mut(), pass) {
                         (Some(l), 0) => l.cs_unit(
                             slow_seen,
-                            budget,
                             start,
                             &mut rec,
                             drift.as_ref(),
@@ -6730,7 +6649,6 @@ fn main() {
                         None => lbk.cs_after_frame(
                             t_rec,
                             t_len,
-                            budget,
                             start,
                             &mut rec,
                             drift.as_ref(),
@@ -7141,10 +7059,13 @@ fn main() {
     if let (Some(l), Some(sl)) = (&lookback, slow.as_ref()) {
         if let Some(c) = &l.cs {
             let st = sl.settle_stats();
+            // `mode Frames`, `quiet 0` and the zero slot, visit, refine and
+            // quiet-skip counts keep the line's format (concsettle2_summary.py
+            // reads it): the settle feeds frames only.
             let msg = format!(
-                "csettle: share {} mode {:?} ramp {} quiet {}: {} frames re-read ({} fit, {} held out), {} slots, {} visits, {} refines, {} quiet skips, work {:.4e} of {:.4e}, {:.1} s wall\n",
-                c.share, c.mode, c.ramp, c.quiet, l.cs_frames, st.frames_fit, st.frames_test,
-                st.slots, st.visits, st.refines, st.quiet_skips, st.work as f64, sl.work() as f64,
+                "csettle: share {} mode Frames ramp {} quiet 0: {} frames re-read ({} fit, {} held out), 0 slots, 0 visits, 0 refines, 0 quiet skips, work {:.4e} of {:.4e}, {:.1} s wall\n",
+                c.share, c.ramp, l.cs_frames, st.frames_fit, st.frames_test,
+                st.work as f64, sl.work() as f64,
                 l.cs_wall_s
             );
             print!("{msg}");
@@ -7161,13 +7082,6 @@ fn main() {
             l.sched.in_need(),
             l.wall_s
         );
-        if let (Some(sl), true) = (slow.as_ref(), lb_res != LookbackReservoir::Off) {
-            let c = sl.lookback_reservoir_counts();
-            println!(
-                "lookback reservoir: {} frames scored, {} event slots and {} random slots taken",
-                c[0], c[1], c[2]
-            );
-        }
         let mut t = format!(
             "rate\tmax_frames\tcatchup\tdouble\tframes\tpushed\tcell_frames\tbirths\tin_need\twall_s\tdrain_steps\tdrain_frames\n{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}\n\ntenth\tframes\tcell_frames\n",
             l.rate,
@@ -7233,14 +7147,13 @@ fn main() {
         {
             let st = sl.settle_stats();
             format!(
-                "{}timed settle jobs: {} frames re-read in {} requests ({:.2} per forwarded frame; {} fit, {} held out and not solved), {} settle jobs; owner busy {:.1}% on settle answers and {:.1}% on look-back frames, idle {:.1}%; look-back worker busy {:.1}%; longest batch wait {:.1} ms\n",
+                "{}timed settle jobs: {} frames re-read in {} requests ({:.2} per forwarded frame; {} fit, {} held out and not solved); owner busy {:.1}% on settle answers and {:.1}% on look-back frames, idle {:.1}%; look-back worker busy {:.1}%; longest batch wait {:.1} ms\n",
                 msg,
                 tm.cs_units,
                 tm.cs_reqs,
                 tm.cs_units as f64 / tm.forwarded.max(1) as f64,
                 st.frames_fit,
                 lookback.as_ref().map_or(0, |l| l.cs_skipped),
-                tm.cs_jobs,
                 100.0 * tm.cs_busy / wall,
                 100.0 * tm.lb_busy / wall,
                 100.0 * (1.0 - tm.owner_busy / wall),
@@ -7283,7 +7196,7 @@ fn main() {
             let st = sl.stats();
             let k = ["batch", "result", "lookback", "settle", "load"];
             let mut m = format!(
-                "wall_ms\t{:.1}\nworkers\t{}\nvisits\t{}\njobs\t{}\nidle_visits\t{}\ndue_seen\t{}\ndue_by_slots\t{}\ndue_by_lookback\t{}\ndue_by_touch\t{}\ndue_by_own_visit\t{}\nwait_ms_mean_job\t{:.3}\nwait_ms_mean_idle_visit\t{:.3}\nslots_at_handout_mean\t{:.3}\nworker_busy_ms\t{:.1}\nworker_idle_nothing_due_ms\t{:.1}\nworker_idle_zone_held_ms\t{:.1}\n",
+                "wall_ms\t{:.1}\nworkers\t{}\nvisits\t{}\njobs\t{}\nidle_visits\t{}\ndue_seen\t{}\ndue_by_slots\t{}\ndue_by_touch\t{}\ndue_by_own_visit\t{}\nwait_ms_mean_job\t{:.3}\nwait_ms_mean_idle_visit\t{:.3}\nslots_at_handout_mean\t{:.3}\nworker_busy_ms\t{:.1}\nworker_idle_nothing_due_ms\t{:.1}\nworker_idle_zone_held_ms\t{:.1}\n",
                 wall,
                 tm.runners.len(),
                 st.visits,
@@ -7291,7 +7204,6 @@ fn main() {
                 d.idle_visits,
                 d.due_events,
                 dd.slots,
-                dd.lookback,
                 dd.touch,
                 dd.own,
                 d.wait_sum / d.jobs.max(1) as f64,
@@ -7447,19 +7359,8 @@ fn main() {
     }
     println!("slow loop: {n_fwd} of {n_batches} batches forwarded ({fwd_frames} frames)");
     if let Some(sl) = &slow {
-        if sl.config().core_test != CoreTest::Off {
-            let (fp, ff, fd) = sl.fast_diag;
-            println!("fast: proposals with core {fp}, without {ff}, nocore deletions {fd}");
-            std::fs::write(out_dir.join("split.tsv"), sl.split_report()).unwrap();
-            std::fs::write(out_dir.join("fast.tsv"), sl.fast_report()).unwrap();
-        }
-        if sl.config().basin_trim || sl.config().support_rule != SupportRule::Rings {
-            let (c, f, s2) = sl.basin_diag;
-            println!(
-                "basin: {c} trims, mean light cut {:.3}, second peaks {s2}",
-                if c > 0 { f / c as f64 } else { 0.0 }
-            );
-        }
+        let (c, s2) = sl.basin_diag;
+        println!("basin: {c} supports, second peaks {s2}");
     }
     let q = qc.expect("QC started");
     let mut sorted = qc_ms.clone();

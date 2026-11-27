@@ -19,9 +19,8 @@
  *   (`VisitRateCounters.target`); this file reads it from there.
  * - **Cap** (in the engine): ordinary visits are handed out against a credit
  *   that grows by the cap (4/3 of the target in force) per observed Discover
- *   frame, so a paced or slow run stops over-visiting. Settle visits, the
- *   Final settle and Refine-scope visits are not held. Recordings and live
- *   streams alike.
+ *   frame, so a paced or slow run stops over-visiting. The Final settle and
+ *   Refine-scope visits are not held. Recordings and live streams alike.
  * - **Floor and target** (here, `VisitRateGovernor`): when the visits fall
  *   behind the target because the slow worker and the visit workers cannot keep
  *   up, the frame loop is held to a lower speed, the speed at which the

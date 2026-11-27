@@ -7,7 +7,7 @@ use super::ledger::{EditCounts, EditEvent, EditKind};
 use super::local::{Cell, Rect};
 use super::reservoir::{Probe, SharedFrames, Slot, Tile};
 use super::SlowStats;
-use crate::discover::fpstats::{Fast, FpStats, PixMoments, FAST_GROUPS};
+use crate::discover::fpstats::{FpStats, PixMoments};
 
 /// Format tag at the start of every buffer (bump on any layout change).
 pub(crate) const MAGIC: u32 = 0x5649_5341; // "VISA"
@@ -223,26 +223,8 @@ impl Writer {
         }
         self.u64(s.version);
         self.f32s(&s.col);
-        // Transient-band sums (the moving averages stay with the owner,
-        // which is the only one that adds frames).
-        self.bool(s.fast.is_some());
-        if let Some(f) = &s.fast {
-            self.f32(f.alpha);
-            self.f64s(&f.ema_c);
-            for (rc, w) in f.rc.iter().zip(&f.w) {
-                self.f32s(rc);
-                for wc in w {
-                    self.f64s(wc);
-                }
-            }
-            // Per-pixel valid-frame weights (pixels with missing samples).
-            self.bool(f.wp.is_some());
-            if let Some(wp) = &f.wp {
-                for g in wp {
-                    self.f64s(g.as_flattened());
-                }
-            }
-        }
+        // The layout's transient-band slot: always absent.
+        self.bool(false);
         // Per-pixel moments (cells whose disk has seen missing samples).
         self.bool(s.pm.is_some());
         if let Some(pm) = &s.pm {
@@ -471,43 +453,16 @@ impl<'a> Reader<'a> {
             k: 0,
             pm: None,
             half_pm: None,
-            fast: None,
             runs: Vec::new(),
         })
         .and_then(|mut s: FpStats| {
             if s.cls.len() != s.pix.len() {
                 return None;
             }
+            // The layout's transient-band slot: a buffer that sets it is
+            // malformed.
             if self.bool()? {
-                let mut f = Fast::new(s.pix.len(), self.f32()?);
-                f.ema_c = self.f64s()?.try_into().ok()?;
-                for g in 0..FAST_GROUPS {
-                    f.rc[g] = self.f32s()?;
-                    for c in 0..2 {
-                        f.w[g][c] = self.f64s()?.try_into().ok()?;
-                    }
-                    if f.rc[g].len() != s.pix.len() {
-                        return None;
-                    }
-                }
-                if self.bool()? {
-                    let mut wp = Vec::with_capacity(FAST_GROUPS);
-                    for _ in 0..FAST_GROUPS {
-                        let flat = self.f64s()?;
-                        if flat.len() != 2 * s.pix.len() {
-                            return None;
-                        }
-                        wp.push(
-                            flat.as_chunks::<2>()
-                                .0
-                                .iter()
-                                .map(|c| [c[0], c[1]])
-                                .collect(),
-                        );
-                    }
-                    f.wp = Some(wp);
-                }
-                s.fast = Some(f);
+                return None;
             }
             if self.bool()? {
                 let pm = PixMoments {

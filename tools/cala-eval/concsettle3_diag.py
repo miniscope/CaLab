@@ -68,7 +68,6 @@ def main(argv=None):
     add("round 2's \"visits\" (these plus the visits of the end pass after the stream)", lambda kv, t: kv["visits"])
     add("tiles seen coming due", lambda kv, t: kv["due_seen"])
     add("came due: live-frame slots", lambda kv, t: kv["due_by_slots"])
-    add("came due: look-back slots", lambda kv, t: kv["due_by_lookback"])
     add("came due: edit by a visit of another tile", lambda kv, t: kv["due_by_touch"])
     add("came due: own visit", lambda kv, t: kv["due_by_own_visit"])
     add("wait of a due tile for its hand-out, mean ms", lambda kv, t: kv["wait_ms_mean_job"])

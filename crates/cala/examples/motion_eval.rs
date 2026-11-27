@@ -52,8 +52,8 @@ use calab_cala::motion::{
     NonRigidConfig, TemplateStrategy, Warper,
 };
 use calab_cala::preprocess::flatfield::{
-    OnlineFlatField, OnlineFlatFieldConfig, RefineOutcome, FIRST_MAP_S, GAIN_HALF_LIFE_S,
-    OFFSET_HALF_LIFE_S, REFINE_EVERY_S,
+    FlatField, OnlineFlatField, OnlineFlatFieldConfig, RefineOutcome, FIRST_MAP_S,
+    GAIN_HALF_LIFE_S, OFFSET_HALF_LIFE_S, REFINE_EVERY_S,
 };
 use calab_cala::preprocess::warmup::WarmupAccumulator;
 use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor};
@@ -262,7 +262,64 @@ fn run(src: &AviFrames, cfg: MotionConfig, max: usize, warm: usize) -> Res<Run> 
         if mode != "fov" {
             pre = Some(Preprocessor::new(cal, &pcfg)?);
         }
+        // MOTION_FF_FIXED=<dir>: a stored map (`MOTION_FF_OUT`'s `final_*`)
+        // applied from the first frame (before the warm-up template is
+        // built), with no online learning.
+        if let (Ok(d), Some(p)) = (std::env::var("MOTION_FF_FIXED"), pre.as_mut()) {
+            let d = Path::new(&d);
+            let f32v = |n: &str| -> Res<Vec<f32>> {
+                Ok(Npy::read(d.join(n))?
+                    .into_f64()
+                    .iter()
+                    .map(|&v| v as f32)
+                    .collect())
+            };
+            let dims = Dims::new(w, h)?;
+            let offset = if d.join("final_offset.npy").exists() {
+                Some(f32v("final_offset.npy")?)
+            } else {
+                None
+            };
+            let ff = FlatField {
+                gain: f32v("final_gain.npy")?,
+                log_gain: f32v("final_log_gain.npy")?,
+                offset,
+                dark: std::fs::read_to_string(d.join("final_dark.txt"))?
+                    .trim()
+                    .parse()?,
+                ..FlatField::identity(dims)
+            };
+            ff.apply(p)?;
+            online_ff = None;
+        }
     }
+    // Flat-field diagnostics (ff mode):
+    // MOTION_FF_SHIFTS=<npy>: feed the estimator these registering shifts
+    //   (e.g. the plain arm's `cala_rigid.npy`) instead of the corrector's.
+    // MOTION_FF_COLD=1: every solve from zero (30 iterations), not warm.
+    // MOTION_FF_OUT=<dir>: save every applied map and the last one.
+    let ff_shifts: Option<Vec<(f64, f64)>> = match std::env::var("MOTION_FF_SHIFTS") {
+        Ok(p) => Some(pairs(Npy::read(p)?.into_f64())),
+        Err(_) => None,
+    };
+    let ff_cold = std::env::var("MOTION_FF_COLD").is_ok_and(|v| v == "1");
+    let ff_out = std::env::var("MOTION_FF_OUT").ok().map(PathBuf::from);
+    let mut ff_k = 0usize;
+    let save_map = |dir: &Path, tag: &str, ff: &FlatField| -> Res<()> {
+        let f = |v: &[f32]| v.iter().map(|&x| f64::from(x)).collect::<Vec<f64>>();
+        save_image(&dir.join(format!("{tag}_gain.npy")), &f(&ff.gain), h, w)?;
+        save_image(
+            &dir.join(format!("{tag}_log_gain.npy")),
+            &f(&ff.log_gain),
+            h,
+            w,
+        )?;
+        if let Some(o) = &ff.offset {
+            save_image(&dir.join(format!("{tag}_offset.npy")), &f(o), h, w)?;
+        }
+        std::fs::write(dir.join(format!("{tag}_dark.txt")), format!("{}", ff.dark))?;
+        Ok(())
+    };
     let mut fbuf = vec![0.0f32; h * w];
     match pre.as_mut() {
         Some(p) => {
@@ -300,7 +357,7 @@ fn run(src: &AviFrames, cfg: MotionConfig, max: usize, warm: usize) -> Res<Run> 
         }),
         ..MotionConfig::default()
     };
-    src.for_each(max, |_, px| {
+    src.for_each(max, |fi, px| {
         let t = Instant::now();
         let r = match pre.as_mut() {
             Some(p) => {
@@ -310,10 +367,35 @@ fn run(src: &AviFrames, cfg: MotionConfig, max: usize, warm: usize) -> Res<Run> 
             None => mc.process(Frame::U8(px), &mut out)?,
         };
         if let (Some(o), Some(p)) = (online_ff.as_mut(), pre.as_mut()) {
-            o.push(px, (r.dy, r.dx))?;
+            let sh = match &ff_shifts {
+                Some(v) => (v[fi].0 as f32, v[fi].1 as f32),
+                None => (r.dy, r.dx),
+            };
+            o.push(px, sh)?;
             if o.due() {
-                if let RefineOutcome::Updated(_) = o.refine() {
-                    o.current().ok_or("no flat field")?.apply(p)?;
+                if let RefineOutcome::Updated(u) = o.refine() {
+                    let cold;
+                    let ff = if ff_cold {
+                        let mut c = o.estimator().solve()?;
+                        if let Some(cur) = o.current() {
+                            c.offset = cur.offset.clone();
+                            c.dark = cur.dark;
+                        }
+                        cold = c;
+                        &cold
+                    } else {
+                        o.current().ok_or("no flat field")?
+                    };
+                    ff.apply(p)?;
+                    if let Some(d) = &ff_out {
+                        save_map(d, &format!("update{ff_k:02}"), ff)?;
+                        save_map(d, "final", ff)?;
+                        ff_k += 1;
+                        println!(
+                            "    ff update {ff_k} at frame {}: gain sd {:.4}, tissue sd {:.4}, change median {:.3}",
+                            u.frame, ff.gain_sd, ff.tissue_sd, u.change_median
+                        );
+                    }
                 }
             }
         }
@@ -457,6 +539,26 @@ fn minisim(dir: &Path, gt: &Path, max: usize) -> Res<()> {
     let n = max.min(truth.frames());
     let rg = run(&src, config(false), n, 200)?;
     summary("rigid", &rg);
+    // MOTION_RIGID_ONLY=1 (with MOTION_SAVE): write the rigid shifts and the
+    // true motion at the patch centres (geometry from a short non-rigid run)
+    // and stop.
+    if std::env::var("MOTION_RIGID_ONLY").is_ok_and(|v| v == "1") {
+        let dir =
+            std::env::var("MOTION_SAVE").map_err(|_| "MOTION_RIGID_ONLY needs MOTION_SAVE")?;
+        let dir = Path::new(&dir);
+        let g = run(&src, config(true), 201, 200)?.geometry;
+        let ptsf: Vec<(f64, f64)> = g
+            .node_ys
+            .iter()
+            .flat_map(|&y| g.node_xs.iter().map(move |&x| (y.round(), x.round())))
+            .collect();
+        save_shifts(&dir.join("cala_rigid.npy"), &rigid(&rg))?;
+        let tru: Vec<(f64, f64)> = (0..rg.records.len())
+            .flat_map(|f| truth.displacement(f, &ptsf))
+            .collect();
+        save_shifts(&dir.join("true_patch.npy"), &tru)?;
+        return Ok(());
+    }
     let nr = run(&src, config(true), n, 200)?;
     summary("non-rigid", &nr);
     let shifts = &truth.shifts[..rg.records.len()];

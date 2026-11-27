@@ -4,7 +4,7 @@
     python tools/cala-eval/run_arms.py \
         --bin base=tools/cala-eval/bin/<base> --bin new=tools/cala-eval/bin/<new> \
         --sims <sims> --arms static,motion --seeds 5-9 --out <runs> [--parallel 4] \
-        [--extra new="--core-test trim"] [--budget-mult 4] \
+        [--extra new="--joint"] [--budget-mult 4] \
         -- --batch 8 --budget 30000000 --slow-seed 1
 
 Arguments after `--` go to every `qc_eval`; `--extra LABEL="..."` adds (or, for

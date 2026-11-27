@@ -206,6 +206,10 @@ pub struct DitherFlatField {
     sums: Vec<Option<Vec<f64>>>,
     /// Per bin: weighted frame count (divide by `wscale` for effective frames).
     counts: Vec<f64>,
+    /// Per bin: weighted sum of the frames' sub-pixel shift residuals
+    /// `(dy − iy, dx − ix)` (same weights as `counts`): the bin's mean
+    /// tissue position relative to its integer shift.
+    resid: Vec<[f64; 2]>,
     /// Per bin: frames binned since [`Self::take_recent`].
     recent: Vec<u64>,
     /// Mean of the outside-FOV pixels (dark level), weighted sum over frames.
@@ -289,6 +293,7 @@ impl DitherFlatField {
             cfg,
             sums: vec![None; nb * nb],
             counts: vec![0.0; nb * nb],
+            resid: vec![[0.0; 2]; nb * nb],
             recent: vec![0; nb * nb],
             dark_sum: 0.0,
             dark_w: 0.0,
@@ -427,6 +432,7 @@ impl DitherFlatField {
                     s.iter_mut().for_each(|v| *v *= k);
                 }
                 self.counts.iter_mut().for_each(|c| *c *= k);
+                self.resid.iter_mut().flatten().for_each(|v| *v *= k);
                 self.dark_sum *= k;
                 self.dark_w *= k;
                 self.wscale = 1.0;
@@ -491,6 +497,8 @@ impl DitherFlatField {
             }
         }
         self.counts[b] += wt;
+        self.resid[b][0] += wt * f64::from(dy - iy as f32);
+        self.resid[b][1] += wt * f64::from(dx - ix as f32);
         self.recent[b] += 1;
         Ok(true)
     }
@@ -526,6 +534,8 @@ impl DitherFlatField {
             0.0
         };
         let mut used: Vec<((i32, i32), f64, Vec<f32>)> = Vec::new();
+        // Per used bin: its frames' mean sub-pixel shift residual.
+        let mut delta: Vec<(f32, f32)> = Vec::new();
         let mut hp = HighPass::new(self.dims, &self.mask, self.cfg.highpass_sigma)?;
         for (b, s) in self.sums.iter().enumerate() {
             let c = self.counts[b];
@@ -540,6 +550,7 @@ impl DitherFlatField {
             hp.apply(&mut l)?;
             let shift = ((b / nb) as i32 - r, (b % nb) as i32 - r);
             used.push((shift, c / self.wscale, l));
+            delta.push(((self.resid[b][0] / c) as f32, (self.resid[b][1] / c) as f32));
         }
         if used.len() < 2 {
             return Err(PreprocessError::InvalidConfig(format!(
@@ -565,17 +576,35 @@ impl DitherFlatField {
         // Geometry and bin weights are constant during this solve. Preserve
         // the original accumulation order, but compute denominators only once.
         let mut gw = vec![0.0f64; n];
-        for &((sy, sx), wgt, _) in &used {
+        // Sub-pixel model: a bin's frames are not all at its integer shift
+        // `s` but spread over `s ± 0.5`, with a mean `s + δ` that is pulled
+        // towards the centre of the shift distribution (`s · δ < 0` in every
+        // outer bin). Modelling every bin at exactly `s` would leave a misfit
+        // `δ · ∇t` whose weighted mean over the bins does not vanish; the
+        // gain would absorb it as a copy of the tissue's fine structure,
+        // fixed to the sensor, and divided out that copy biases registration
+        // gain above 1 (see tools/cala-eval/results/2026-11-27-ff-motion-gain.md).
+        // So the first-order term is part of the model:
+        // `L_s(x) = g(x) + t(x + s) + δ_s · ∇t(x + s)`, with `∇t` the
+        // gradient of the current tissue estimate. Per tissue pixel, `dw`
+        // sums `w_s δ_s` over the bins that see it.
+        let mut dw = vec![[0.0f64; 2]; n];
+        for (&((sy, sx), wgt, _), &(dly, dlx)) in used.iter().zip(&delta) {
             for y in 0..h {
                 for x in 0..w {
                     if let Some(p) = inside(y as isize - sy as isize, x as isize - sx as isize) {
                         if self.mask[p] != 0 {
-                            tw[y * w + x] += wgt;
+                            let u = y * w + x;
+                            tw[u] += wgt;
+                            dw[u][0] += wgt * f64::from(dly);
+                            dw[u][1] += wgt * f64::from(dlx);
                         }
                     }
                 }
             }
         }
+        let mut gy = vec![0.0f32; n];
+        let mut gx = vec![0.0f32; n];
         for &((sy, sx), wgt, _) in &used {
             for y in 0..h {
                 for x in 0..w {
@@ -592,7 +621,9 @@ impl DitherFlatField {
             }
         }
         for _ in 0..iterations.max(1) {
-            // t(u) = mean over bins of (L_s - g)(u - s), sensor pixel u - s in the FOV.
+            // t(u) = mean over bins of (L_s - g)(u - s) - δ_s · ∇t(u), sensor
+            // pixel u - s in the FOV (∇t from the previous iteration).
+            gradient(&t, &tw, w, h, &mut gy, &mut gx);
             acc.fill(0.0);
             for &((sy, sx), wgt, ref l) in &used {
                 for y in 0..h {
@@ -611,14 +642,17 @@ impl DitherFlatField {
             }
             for u in 0..n {
                 t[u] = if tw[u] > 0.0 {
-                    (acc[u] / tw[u]) as f32
+                    let d = dw[u][0] * f64::from(gy[u]) + dw[u][1] * f64::from(gx[u]);
+                    ((acc[u] - d) / tw[u]) as f32
                 } else {
                     0.0
                 };
             }
-            // g(x) = mean over bins of L_s(x) - t(x + s), tissue x + s seen.
+            // g(x) = mean over bins of L_s(x) - t(x + s) - δ_s · ∇t(x + s),
+            // tissue x + s seen.
+            gradient(&t, &tw, w, h, &mut gy, &mut gx);
             acc.fill(0.0);
-            for &((sy, sx), wgt, ref l) in &used {
+            for (&((sy, sx), wgt, ref l), &(dly, dlx)) in used.iter().zip(&delta) {
                 for y in 0..h {
                     for x in 0..w {
                         let p = y * w + x;
@@ -632,7 +666,8 @@ impl DitherFlatField {
                         if tw[u] <= 0.0 {
                             continue;
                         }
-                        acc[p] += wgt * f64::from(l[p] - t[u]);
+                        let d = dly * gy[u] + dlx * gx[u];
+                        acc[p] += wgt * f64::from(l[p] - t[u] - d);
                     }
                 }
             }
@@ -646,8 +681,9 @@ impl DitherFlatField {
             hp.apply(&mut g)?;
         }
         // Misfit and spreads.
+        gradient(&t, &tw, w, h, &mut gy, &mut gx);
         let (mut res, mut rn) = (0.0f64, 0.0f64);
-        for &((sy, sx), wgt, ref l) in &used {
+        for (&((sy, sx), wgt, ref l), &(dly, dlx)) in used.iter().zip(&delta) {
             for y in 0..h {
                 for x in 0..w {
                     let p = y * w + x;
@@ -660,7 +696,7 @@ impl DitherFlatField {
                     if tw[u] <= 0.0 {
                         continue;
                     }
-                    let e = f64::from(l[p] - g[p] - t[u]);
+                    let e = f64::from(l[p] - g[p] - t[u] - dly * gy[u] - dlx * gx[u]);
                     res += wgt * e * e;
                     rn += wgt;
                 }
@@ -1037,6 +1073,38 @@ impl OnlineFlatField {
     }
 }
 
+/// Spatial gradient `(∂/∂y, ∂/∂x)` of `t` where `tw > 0`: the 5-point
+/// derivative `(f₋₂ − 8f₋₁ + 8f₊₁ − f₊₂) / 12` where all its taps are
+/// defined (flat response to well above the tissue's frequencies; the
+/// 3-point one would under-correct fine structure by up to a quarter), the
+/// central difference where only the inner ones are, else 0.
+fn gradient(t: &[f32], tw: &[f64], w: usize, h: usize, gy: &mut [f32], gx: &mut [f32]) {
+    let ok = |q: usize| tw[q] > 0.0;
+    let along = |p: usize, step: usize, pos: usize, len: usize| -> f32 {
+        if pos >= 1 && pos + 1 < len && ok(p - step) && ok(p + step) {
+            if pos >= 2 && pos + 2 < len && ok(p - 2 * step) && ok(p + 2 * step) {
+                (t[p - 2 * step] - 8.0 * t[p - step] + 8.0 * t[p + step] - t[p + 2 * step]) / 12.0
+            } else {
+                (t[p + step] - t[p - step]) * 0.5
+            }
+        } else {
+            0.0
+        }
+    };
+    for y in 0..h {
+        for x in 0..w {
+            let p = y * w + x;
+            if !ok(p) {
+                gy[p] = 0.0;
+                gx[p] = 0.0;
+                continue;
+            }
+            gy[p] = along(p, w, y, h);
+            gx[p] = along(p, 1, x, w);
+        }
+    }
+}
+
 /// `img − G_σ*(img·M)/G_σ*M` inside the mask `M`, 0 outside.
 struct HighPass {
     blur: RecursiveGaussian,
@@ -1081,7 +1149,7 @@ mod tests {
     use super::*;
 
     /// Deterministic pseudo-random field in [-1, 1].
-    fn noise(n: usize, seed: u64) -> Vec<f32> {
+    pub(super) fn noise(n: usize, seed: u64) -> Vec<f32> {
         let mut s = seed;
         (0..n)
             .map(|_| {
@@ -1479,5 +1547,114 @@ mod compact_storage_tests {
                 assert_eq!(warm.gain[p], 1.0);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod subpixel_tests {
+    use super::tests::noise;
+    use super::*;
+
+    /// Frames `gain(x) · T(x + d)` with continuous (sub-pixel) shifts `d`
+    /// from a ~1 px Gaussian dither, `T` an analytic texture (plane waves
+    /// up to 0.15 cycles/px). Returns the solved log gain, the true log
+    /// gain and the tissue at the mean position, inside the interior.
+    fn subpixel_solve(gain_sd: f32) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let (h, w) = (64usize, 64usize);
+        let dims = Dims::new(w, h).unwrap();
+        let n = h * w;
+        let mask = vec![1u8; n];
+        let gain: Vec<f32> = noise(n, 3).iter().map(|v| (gain_sd * v).exp()).collect();
+        let (u, k) = (noise(64, 4), noise(64, 5));
+        let waves: Vec<(f32, f32, f32, f32)> = (0..16)
+            .map(|i| {
+                let f = 0.04 + 0.11 * (0.5 + 0.5 * u[i]);
+                let a = std::f32::consts::PI * k[i];
+                (
+                    f * a.cos(),
+                    f * a.sin(),
+                    std::f32::consts::TAU * u[16 + i],
+                    4.0 + 3.0 * k[16 + i],
+                )
+            })
+            .collect();
+        let tissue = |y: f32, x: f32| -> f32 {
+            let tau = std::f32::consts::TAU;
+            60.0 + waves
+                .iter()
+                .map(|&(fy, fx, ph, a)| a * (tau * (fy * y + fx * x) + ph).cos())
+                .sum::<f32>()
+        };
+        let mut ff = DitherFlatField::new(
+            dims,
+            &mask,
+            FlatFieldConfig {
+                min_bin_frames: 5,
+                ..FlatFieldConfig::default()
+            },
+        )
+        .unwrap();
+        // Box-Muller from the deterministic uniform stream.
+        let z = noise(2 * 600, 6);
+        let mut frame = vec![0.0f32; n];
+        for i in 0..600 {
+            let (u1, u2): (f32, f32) = (0.5 + 0.4999 * z[2 * i], 0.5 + 0.4999 * z[2 * i + 1]);
+            let r = (-2.0 * u1.ln()).sqrt();
+            let a = std::f32::consts::TAU * u2;
+            let (dy, dx) = (r * a.cos(), r * a.sin());
+            for (p, f) in frame.iter_mut().enumerate() {
+                let (y, x) = ((p / w) as f32, (p % w) as f32);
+                *f = gain[p] * tissue(y + dy, x + dx);
+            }
+            ff.push(&frame, (dy, dx)).unwrap();
+        }
+        let out = ff.solve().unwrap();
+        let (mut a, mut b, mut c) = (Vec::new(), Vec::new(), Vec::new());
+        for y in 12..h - 12 {
+            for x in 12..w - 12 {
+                let p = y * w + x;
+                a.push(f64::from(out.log_gain[p]));
+                b.push(f64::from(gain[p].ln()));
+                c.push(f64::from(tissue(y as f32, x as f32).ln()));
+            }
+        }
+        (a, b, c)
+    }
+
+    fn sd(v: &[f64]) -> f64 {
+        let m = v.iter().sum::<f64>() / v.len() as f64;
+        (v.iter().map(|a| (a - m) * (a - m)).sum::<f64>() / v.len() as f64).sqrt()
+    }
+
+    fn corr(u: &[f64], v: &[f64]) -> f64 {
+        let (mu, mv) = (
+            u.iter().sum::<f64>() / u.len() as f64,
+            v.iter().sum::<f64>() / v.len() as f64,
+        );
+        let cov: f64 = u.iter().zip(v).map(|(p, q)| (p - mu) * (q - mv)).sum();
+        cov / (sd(u) * sd(v) * u.len() as f64)
+    }
+
+    /// With sub-pixel shifts and no gain at all, the solve must not put the
+    /// tissue into the map: an integer-shift model fails this (see
+    /// tools/cala-eval/results/2026-11-27-ff-motion-gain.md).
+    #[test]
+    fn subpixel_dither_leaves_no_tissue_in_the_gain() {
+        let (g, _, t) = subpixel_solve(0.0);
+        let (r, s) = (corr(&g, &t), sd(&g));
+        let ts = sd(&t);
+        assert!(
+            r.abs() < 0.5 && s < 0.01 * ts,
+            "tissue leaks into the gain: r {r:.3}, gain sd {s:.5} (tissue sd {ts:.4})"
+        );
+    }
+
+    /// The same sub-pixel dither with a real gain pattern: still recovered.
+    #[test]
+    fn subpixel_dither_recovers_sensor_gain() {
+        let (g, truth, t) = subpixel_solve(0.03);
+        let (rg, rt) = (corr(&g, &truth), corr(&g, &t));
+        assert!(rg > 0.97, "gain r {rg:.3}");
+        assert!(rt.abs() < 0.2, "tissue r {rt:.3}");
     }
 }

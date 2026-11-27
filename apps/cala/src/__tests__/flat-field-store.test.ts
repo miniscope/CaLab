@@ -3,6 +3,7 @@ import { createRoot } from 'solid-js';
 import type { FlatFieldEvent, FlatFieldMap } from '../lib/flat-field.ts';
 import { flatFieldStatusLine } from '../lib/flat-field.ts';
 import type { FlatFieldCache, FlatFieldRecord } from '../lib/flat-field-cache.ts';
+import { FLAT_FIELD_SOLVER_VERSION } from '../lib/flat-field-cache.ts';
 import type { PipelineClient } from '../lib/frame-client.ts';
 import type { PipelineStepResult } from '../lib/pipeline-types.ts';
 import { makePlan } from '../lib/pipeline-plan.ts';
@@ -158,6 +159,7 @@ describe('flat field in the pipeline store', () => {
 
   it('seeds the run from a stored map of the same device and frame size', async () => {
     const stored: FlatFieldRecord = {
+      solver: FLAT_FIELD_SOLVER_VERSION,
       key: 'device:SN1|4x3',
       keySource: 'device',
       width: W,
@@ -192,8 +194,48 @@ describe('flat field in the pipeline store', () => {
     });
   });
 
+  it('does not apply a stored map of an older solve version: it estimates fresh', async () => {
+    for (const solver of [undefined, FLAT_FIELD_SOLVER_VERSION - 1]) {
+      const stored: FlatFieldRecord = {
+        solver,
+        key: 'device:SN1|4x3',
+        keySource: 'device',
+        width: W,
+        height: H,
+        gain: new Float32Array(W * H).fill(0.97),
+        offset: new Float32Array(0),
+        dark: 2,
+        framesUsed: 9000,
+        binsUsed: 6,
+        gainSd: 0.04,
+        updatedAt: 1,
+      };
+      const { client, startPipeline, emit } = fakeClient([]);
+      const { cache, put } = memoryCache(stored);
+      let t = 0;
+      await createRoot(async (dispose) => {
+        const store = createPipelineStore(client, {}, undefined, undefined, true, undefined, {
+          cache,
+          identity,
+          writeIntervalMs: 60_000,
+          now: () => t,
+        });
+        await store.start();
+        expect((startPipeline.mock.calls[0] as unknown[])[3]).toBeUndefined();
+        expect(store.flatFieldMap()).toBeNull();
+        // The fresh estimate overwrites the stale record with the current version.
+        t = 100_000;
+        emit({ type: 'map', session: sid(startPipeline), seq: 1, map: map(), change: null });
+        expect(put).toHaveBeenCalledTimes(1);
+        expect((put.mock.calls[0][0] as FlatFieldRecord).solver).toBe(FLAT_FIELD_SOLVER_VERSION);
+        dispose();
+      });
+    }
+  });
+
   it('does not apply a stored map with implausible gain: it estimates fresh', async () => {
     const stored: FlatFieldRecord = {
+      solver: FLAT_FIELD_SOLVER_VERSION,
       key: 'device:SN1|4x3',
       keySource: 'device',
       width: W,
@@ -222,6 +264,7 @@ describe('flat field in the pipeline store', () => {
 
   it('a live source neither reads nor writes the cache', async () => {
     const stored: FlatFieldRecord = {
+      solver: FLAT_FIELD_SOLVER_VERSION,
       key: 'live-device:SN1|4x3',
       keySource: 'live-device',
       width: W,
@@ -252,6 +295,7 @@ describe('flat field in the pipeline store', () => {
 
   it('does not reuse a map of another frame size', async () => {
     const stored: FlatFieldRecord = {
+      solver: FLAT_FIELD_SOLVER_VERSION,
       key: 'device:SN1|4x3',
       keySource: 'device',
       width: 8,

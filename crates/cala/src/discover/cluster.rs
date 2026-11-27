@@ -1261,7 +1261,6 @@ impl SlowLoop {
                 }
                 let mut news: Vec<Cell> = Vec::new();
                 for (k, pix, h, ha, hb) in props {
-                    self.fast_tmp = None;
                     self.support_tmp = Some((pix.clone(), ha, hb, rep.sa[k], rep.sb[k]));
                     #[cfg(feature = "diagnostics")]
                     {
