@@ -31,18 +31,19 @@ late gain 1.065 → 1.003 on the motion sims, RMS error 0.071 → 0.048 px (no f
 
 ## 1. Cause and fix (motion sims, no sensor pattern)
 
-| arm (v3_motion, rigid) | RMS px | p95 px | gain | gain late |
-|---|---:|---:|---:|---:|
-| no flat field | .0451 ± .0057 | .0899 ± .0123 | 1.0014 ± .0038 | 1.0015 ± .0045 |
-| flat field, main | .0708 ± .0053 | .1418 ± .0096 | 1.0414 ± .0067 | 1.0649 ± .0093 |
-| flat field, fix | .0475 ± .0065 | .0937 ± .0134 | 1.0029 ± .0060 | 1.0025 ± .0062 |
-| *paired fix − main* | −.0233 ± .0046 | −.0481 ± .0107 | −.0385 ± .0027 | −.0624 ± .0046 |
-| *paired fix − no ff* | +.0024 ± .0010 | +.0038 ± .0020 | +.0015 ± .0024 | +.0011 ± .0031 |
+| arm (v3_motion, rigid) |         RMS px |         p95 px |           gain |      gain late |
+| ---------------------- | -------------: | -------------: | -------------: | -------------: |
+| no flat field          |  .0451 ± .0057 |  .0899 ± .0123 | 1.0014 ± .0038 | 1.0015 ± .0045 |
+| flat field, main       |  .0708 ± .0053 |  .1418 ± .0096 | 1.0414 ± .0067 | 1.0649 ± .0093 |
+| flat field, fix        |  .0475 ± .0065 |  .0937 ± .0134 | 1.0029 ± .0060 | 1.0025 ± .0062 |
+| _paired fix − main_    | −.0233 ± .0046 | −.0481 ± .0107 | −.0385 ± .0027 | −.0624 ± .0046 |
+| _paired fix − no ff_   | +.0024 ± .0010 | +.0038 ± .0020 | +.0015 ± .0024 | +.0011 ± .0031 |
 
 By block of 1200 frames, main's gain rises from 1.00 to 1.06–1.10 after the first map (frame 3000) and is still
 climbing at frame 9600; the fix stays at 0.99–1.03 in every block of every seed.
 
 How the cause was isolated (main build, diagnostic knobs in `motion_eval`):
+
 - **Not the template.** `fixed` (main's final map applied from frame 0, so the warm-up template is built with
   it): gain 1.0721 ± .0113 already in frames 0–3000. A template rebuild would not help.
 - **Leak, not feedback.** `plainfed` (estimator fed the no-flat-field run's unbiased shifts): late gain
@@ -62,11 +63,11 @@ The flat field bins frames by the registration's own shifts, so a gain error in 
 the map. Arms feed the estimator fixed shift series instead (`MOTION_FF_SHIFTS`); registration still runs on the
 divided frames.
 
-| fed shifts | main: late gain − no ff (paired) | fix: late gain − no ff (paired) |
-|---|---:|---:|
-| plain (no-ff run, gain ~1.00) | +.0491 ± .0042 | +.0003 ± .0022 |
-| plain × 1.05 | +.0721 ± .0038 | +.0272 ± .0018 |
-| fix's ×1.05 output (gain ~1.027) | | +.0090 ± .0028 |
+| fed shifts                       | main: late gain − no ff (paired) | fix: late gain − no ff (paired) |
+| -------------------------------- | -------------------------------: | ------------------------------: |
+| plain (no-ff run, gain ~1.00)    |                   +.0491 ± .0042 |                  +.0003 ± .0022 |
+| plain × 1.05                     |                   +.0721 ± .0038 |                  +.0272 ± .0018 |
+| fix's ×1.05 output (gain ~1.027) |                                  |                  +.0090 ± .0028 |
 
 - **Offset**: with unbiased shifts the fix leaves no excess (+.0003); main leaves +.049.
 - **Sensitivity** k = late-gain excess per unit of fed scale error: fix .54 ± .02 (paired fixfed105 −
@@ -84,14 +85,14 @@ divided frames.
 `ca1_workshop_v2_fpn.spec.json` (PRNU sd 2.4 %, column FPN sd 1 grey level, 0.058 % hot pixels, same motion
 model as v3_motion), seeds 5–9, generated for this work. Truth from `export_gt_nonrigid.py --prnu`.
 
-| arm (fpn, rigid) | RMS px | gain | gain early | gain late |
-|---|---:|---:|---:|---:|
-| no flat field | .1318 ± .0140 | .9509 ± .0143 | .9539 ± .0138 | .9444 ± .0195 |
-| flat field, main | .1304 ± .0131 | .9897 ± .0119 | .9539 ± .0138 | 1.0003 ± .0163 |
-| flat field, fix | .1284 ± .0133 | .9807 ± .0111 | .9539 ± .0138 | .9871 ± .0152 |
-| *paired fix − main* | −.0020 ± .0009 | −.0090 ± .0011 | 0 | −.0131 ± .0014 |
-| main, fed true shifts | .1305 ± .0134 | .9910 ± .0109 | | 1.0012 ± .0151 |
-| fix, fed true shifts | .1286 ± .0135 | .9829 ± .0101 | | .9894 ± .0141 |
+| arm (fpn, rigid)      |         RMS px |           gain |    gain early |      gain late |
+| --------------------- | -------------: | -------------: | ------------: | -------------: |
+| no flat field         |  .1318 ± .0140 |  .9509 ± .0143 | .9539 ± .0138 |  .9444 ± .0195 |
+| flat field, main      |  .1304 ± .0131 |  .9897 ± .0119 | .9539 ± .0138 | 1.0003 ± .0163 |
+| flat field, fix       |  .1284 ± .0133 |  .9807 ± .0111 | .9539 ± .0138 |  .9871 ± .0152 |
+| _paired fix − main_   | −.0020 ± .0009 | −.0090 ± .0011 |             0 | −.0131 ± .0014 |
+| main, fed true shifts |  .1305 ± .0134 |  .9910 ± .0109 |               | 1.0012 ± .0151 |
+| fix, fed true shifts  |  .1286 ± .0135 |  .9829 ± .0101 |               |  .9894 ± .0141 |
 
 - Without a flat field the sensor pattern pulls registration towards zero shift: gain 0.95. The first map
   (frame 3000) lifts it to ~0.99–1.00 in both builds.
@@ -107,15 +108,31 @@ model as v3_motion), seeds 5–9, generated for this work. Truth from `export_gt
 
 ## 4. End-to-end qc_eval and real data
 
-QC_EVAL_SECTION
+`qc_eval sim` built from main `6fe2ede6` and from this branch, `run_arms.py ... -- --batch 8 --budget 30000000
+--slow-seed 1` (flat field `online`, the default with motion), seeds 5–9, paired by `summarize.py` (primary P8,
+pre-declared). Raw: `runs/ff-motion-gain/qc/`, `qc_v3.md`, `qc_fpn.md`.
+
+| arm       | P8 main → fix |         d P8 |         d R8 |    d cells | registration RMS px main → fix | late gain main → fix |
+| --------- | ------------- | -----------: | -----------: | ---------: | ------------------------------ | -------------------- |
+| v3_motion | .918 → .918   | −.001 ± .008 | −.003 ± .004 | −2.4 ± 7.2 | .0708 → .0475                  | 1.065 → 1.003        |
+| fpn       | .921 → .924   | +.003 ± .010 | +.004 ± .007 | +0.8 ± 7.2 | .1304 → .1284                  | 1.000 → .987         |
+
+- qc_eval's own registration (`motion.tsv`) matches the `motion_eval` arms above to the fourth decimal, so the
+  registration gain is the same on qc_eval's path.
+- No detection metric moves beyond its CI on either arm. On v3_motion R8 is lower on 5/5 seeds by .003 (CI
+  covers 0). The held-out score's rank correlation with true positives drops on v3_motion (`rho_Sf_TP`
+  −.054 ± .030, `rho_S_TP` −.040 ± .059) but not on fpn (−.004 ± .016). `S8` falls by ~290 on both arms (5/5
+  seeds), a scale change of the held-out score, not a ranking change.
+- Registration error on these sims is small next to the cell size (~10 px), so a 0.02 px RMS change was not
+  expected to move detection much; the gain matters more for long recordings (§2 projection).
 
 **Workshop recording** (`prerecorded/raw`, 23,711 frames, input read-only). There is no truth, so the
 comparison is the slope of the flat-field arm's rigid shifts on the no-flat-field arm's, frames 3000–end:
 
-| | dy | dx |
-|---|---:|---:|
+|      |    dy |    dx |
+| ---- | ----: | ----: |
 | main | 1.047 | 1.125 |
-| fix | 0.981 | 1.078 |
+| fix  | 0.981 | 1.078 |
 
 The no-flat-field reference is not unbiased on real data: on the fpn sims it reads gain 0.95, and the workshop
 sensor's learned gain sd (6.3 %) is larger than the sims' PRNU (2.4 %). A slope above 1 is therefore expected
@@ -139,7 +156,7 @@ stored map of an older solve version".
 - `flatfield::subpixel_tests::subpixel_dither_recovers_sensor_gain`: a known sensor gain under the same dither
   (main: gain r .76, tissue r .64 → fails; fix: .996 / .02).
 - `cargo test --release` (crate), clippy (jsbindings, pybindings, diagnostics, `-D warnings`), `cargo fmt
-  --check`, `apps/cala` vitest.
+--check`, `apps/cala` vitest.
 
 ## Tooling added
 
