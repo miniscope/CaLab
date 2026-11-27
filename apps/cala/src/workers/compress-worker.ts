@@ -49,11 +49,36 @@ let helperPorts: MessagePort[] = [];
 let queue: Promise<void> = Promise.resolve();
 const store = opfsStore();
 
+/** Helper `k`'s messages to the pools (a helper that cannot start is lost to both). */
+function listenHelper(k: number, p: MessagePort): void {
+  p.onmessage = (ev: MessageEvent<HelperToCoordinator>) => {
+    const m = ev.data;
+    if (m.type === 'window-done' || m.type === 'window-error') windowPool?.onHelper(k, m);
+    else if (m.type === 'helper-error') {
+      pool?.onHelper(k, m);
+      windowPool?.onHelper(k, m);
+    } else pool?.onHelper(k, m);
+  };
+}
+
 workerScope.onmessage = (e) => {
   const data = e.data;
   if (data.type === 'helper-lost') {
     pool?.lost(data.helper);
     windowPool?.lost(data.helper);
+    return;
+  }
+  if (data.type === 'helper-revive') {
+    const k = data.helper;
+    helperPorts[k]?.close();
+    helperPorts[k] = data.port;
+    listenHelper(k, data.port);
+    const side = {
+      postMessage: (m: CoordinatorToHelper, t?: Transferable[]) =>
+        data.port.postMessage(m, t ?? []),
+    };
+    pool?.revive(k, side);
+    windowPool?.revive(k, side);
     return;
   }
   if (data.type === 'stop') {
@@ -97,19 +122,9 @@ workerScope.onmessage = (e) => {
     postMessage: (m: CoordinatorToHelper, t?: Transferable[]) => p.postMessage(m, t ?? []),
   }));
   const windows = new WindowPool({ helpers: helperSide });
-  helperPorts.forEach((p, k) => {
-    // A helper that cannot start is lost to both pools.
-    p.onmessage = (ev: MessageEvent<HelperToCoordinator>) => {
-      const m = ev.data;
-      if (m.type === 'window-done' || m.type === 'window-error') windows.onHelper(k, m);
-      else if (m.type === 'helper-error') {
-        tilePool.onHelper(k, m);
-        windows.onHelper(k, m);
-      } else tilePool.onHelper(k, m);
-    };
-  });
   pool = tilePool;
   windowPool = windows;
+  helperPorts.forEach((p, k) => listenHelper(k, p));
   const toReview = reviewPort;
   const r = new CompressRunner({
     store,

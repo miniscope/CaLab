@@ -3,7 +3,9 @@
  * `MessageChannel` between it and the fast worker (so frames go worker to
  * worker), and passes its status to a listener. With `helpers`, it also
  * starts that many compress helpers, each with a channel to the compress
- * worker, and tells the compress worker when one crashes.
+ * worker, and tells the compress worker when one crashes. `releaseHelpers`
+ * ends the helpers (only ending a worker returns its WASM memory); a run, a
+ * back-fill or an Extract started after it gets new ones (`helpersReady`).
  */
 import type { FrameClient } from './frame-client.ts';
 import type { CompressToMain, MainToCompress } from '../workers/compress-types.ts';
@@ -17,6 +19,13 @@ export interface CompressClient {
   extractCancel(session: number, job: number): void;
   /** Compress no more for this run and drop its files. */
   stop(session: number): void;
+  /**
+   * End the helpers while nothing is compressed or extracted (the compress worker keeps its
+   * files and does any work itself until they are back).
+   */
+  releaseHelpers(): void;
+  /** Start the helpers again if `releaseHelpers` ended them (before a run compresses). */
+  helpersReady(): void;
   dispose(): void;
 }
 
@@ -46,9 +55,9 @@ export function createCompressClient(
       new Worker(new URL('../workers/compress-helper-worker.ts', import.meta.url), {
         type: 'module',
       }));
-  const helperWorkers: CompressWorkerLike[] = [];
-  const helperPorts: MessagePort[] = [];
-  for (let k = 0; k < Math.max(0, helpers?.count ?? 0); k++) {
+  const helperCount = Math.max(0, helpers?.count ?? 0);
+  /** Helper `k` on a new channel; returns the compress worker's end of it. */
+  function startHelper(k: number): { worker: CompressWorkerLike; port: MessagePort } {
     const h = makeHelper();
     const ch = new MessageChannel();
     h.onerror = (e) => {
@@ -57,8 +66,28 @@ export function createCompressClient(
       worker.postMessage({ type: 'helper-lost', helper: k } satisfies MainToCompress);
     };
     h.postMessage({ port: ch.port1 }, [ch.port1]);
-    helperWorkers.push(h);
-    helperPorts.push(ch.port2);
+    return { worker: h, port: ch.port2 };
+  }
+  let helperWorkers: CompressWorkerLike[] = [];
+  const helperPorts: MessagePort[] = [];
+  for (let k = 0; k < helperCount; k++) {
+    const h = startHelper(k);
+    helperWorkers.push(h.worker);
+    helperPorts.push(h.port);
+  }
+  let helpersLive = true;
+  function helpersReady(): void {
+    if (helpersLive) return;
+    helpersLive = true;
+    helperWorkers = [];
+    for (let k = 0; k < helperCount; k++) {
+      const h = startHelper(k);
+      helperWorkers.push(h.worker);
+      worker.postMessage(
+        { type: 'helper-revive', helper: k, port: h.port } satisfies MainToCompress,
+        [h.port],
+      );
+    }
   }
   const connect: MainToCompress = {
     type: 'connect',
@@ -70,9 +99,11 @@ export function createCompressClient(
   void frames.connectCompress?.(channel.port1).catch((err: unknown) => fail(errMsg(err)));
   return {
     backfill(session, version) {
+      helpersReady();
       worker.postMessage({ type: 'backfill', session, version } satisfies MainToCompress);
     },
     extract(session, job, version, library) {
+      helpersReady();
       worker.postMessage(
         { type: 'extract', session, job, version, library } satisfies MainToCompress,
         [library.buffer as ArrayBuffer],
@@ -84,6 +115,16 @@ export function createCompressClient(
     stop(session) {
       worker.postMessage({ type: 'stop', session } satisfies MainToCompress);
     },
+    releaseHelpers() {
+      if (!helpersLive || helperCount === 0) return;
+      helpersLive = false;
+      for (let k = 0; k < helperWorkers.length; k++) {
+        helperWorkers[k].terminate();
+        worker.postMessage({ type: 'helper-lost', helper: k } satisfies MainToCompress);
+      }
+      helperWorkers = [];
+    },
+    helpersReady,
     dispose() {
       worker.terminate();
       for (const h of helperWorkers) h.terminate();

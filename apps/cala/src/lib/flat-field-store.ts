@@ -50,7 +50,7 @@ const FLAT_FIELD_WRITE_INTERVAL_MS = 60_000;
 
 /** What the flat-field store reads from, and tells, the pipeline store. */
 export interface FlatFieldDeps {
-  client: Pick<PipelineClient, 'subscribeFlatField'>;
+  client: Pick<PipelineClient, 'subscribeFlatField' | 'releaseFlatField'>;
   /** The setting's initial value. */
   enabled: boolean;
   flat: FlatFieldStoreOptions;
@@ -109,7 +109,8 @@ export function createFlatFieldStore(deps: FlatFieldDeps) {
       // A crashed estimator (session -1) or this run's: reported, the run goes on uncorrected.
       if (e.session === -1 || e.session === flatSessionId) {
         patchFlat({ error: e.message });
-        // No map of this run comes any more.
+        // No map of this run comes any more: the estimator's worker can go.
+        client.releaseFlatField?.();
         deps.onFinal();
       }
       return;
@@ -117,6 +118,8 @@ export function createFlatFieldStore(deps: FlatFieldDeps) {
     if (e.session !== flatSessionId) return;
     switch (e.type) {
       case 'finished':
+        // The estimator's last map of this run is out (the recording ended): its worker can go.
+        client.releaseFlatField?.();
         deps.onFinal();
         return;
       case 'progress':

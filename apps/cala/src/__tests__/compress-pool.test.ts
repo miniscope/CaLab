@@ -207,6 +207,25 @@ describe('TilePool', () => {
     expect(pool.width()).toBe(1);
   });
 
+  it("a revived helper gets the run's compressor and takes tiles again", async () => {
+    const { pool, h } = poolWith(1);
+    pool.setWidth(2);
+    pool.lost(0);
+    expect(pool.width()).toBe(1);
+    const posted: CoordinatorToHelper[] = [];
+    pool.revive(0, { postMessage: (m: CoordinatorToHelper) => posted.push(m) });
+    expect(posted).toEqual([{ type: 'init', quant: 64 }]);
+    expect(pool.width()).toBe(2);
+    const w = io();
+    const done = pool.compressWindow(jobsOf(0, 4), w);
+    await tick();
+    expect(posted.filter((m) => m.type === 'tile').length).toBe(1);
+    // The old port gets nothing more.
+    expect(h.tiles().length).toBe(0);
+    pool.reset();
+    expect(await done).toBe(false);
+  });
+
   it('treats a helper that cannot start as a crash', async () => {
     const { pool, h } = poolWith(1);
     pool.setWidth(2);
@@ -370,6 +389,23 @@ describe('WindowPool', () => {
       expect(x.emitted).toEqual([0, 1]);
       expect(x.here).toEqual([0, 1]);
     }
+  });
+
+  it('a helper revived during a job joins at its end (it has no library of the job)', async () => {
+    const { pool } = windowPoolWith(1);
+    pool.setWidth(2);
+    pool.lost(0);
+    pool.begin(1, Uint8Array.of(9), true, 4);
+    const posted: CoordinatorToHelper[] = [];
+    pool.revive(0, { postMessage: (m: CoordinatorToHelper) => posted.push(m) });
+    expect(pool.width()).toBe(0);
+    const x = io();
+    expect(await pool.runJob(1, 2, x)).toBe(true);
+    expect(x.here).toEqual([0, 1]);
+    pool.end(1);
+    expect(pool.width()).toBe(1);
+    pool.begin(2, Uint8Array.of(9), true, 4);
+    expect(posted.map((m) => m.type)).toEqual(['extract-begin']);
   });
 
   it("fails the job on a window's error and drops later answers", async () => {

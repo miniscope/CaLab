@@ -3,6 +3,11 @@
  * visit workers, wires a `MessageChannel` between it and the frame worker
  * (so frames go worker to worker) and one to each visit worker, and passes
  * its status and libraries to a listener.
+ *
+ * `release` ends the slow worker and its visit workers (only ending a worker
+ * returns its WASM memory); the next call that needs them starts them again
+ * and wires them anew. The look-back workers' ports go with the slow worker,
+ * so their client is released with it (`LookbackFeed.release`).
  */
 import type { FrameClient } from './frame-client.ts';
 import type { FactorSource } from '../workers/lookback-types.ts';
@@ -38,6 +43,18 @@ export interface SlowClient {
   /** A `?factors` stream's factors are ready (`frames` covered), or not usable (`reason`). */
   factorsReady(session: number, frames: number, source?: FactorSource['factors']): void;
   factorsFailed(session: number, reason: string): void;
+  /**
+   * End the slow worker and its visit workers. Run messages sent while they are ended
+   * (`addReviewed`, `settlePool`, `stopSettling`, `factors*`) are dropped: they belong to a run
+   * that is over. The pacer's target and the settle's cap are kept and sent to the next workers.
+   */
+  release(): void;
+  /**
+   * The workers are running and the frame worker holds their port: starts them if `release`
+   * ended them. Resolves once the frame worker has the port, so a pipeline started after it
+   * forwards its frames to them.
+   */
+  ready(): Promise<void>;
   dispose(): void;
 }
 
@@ -82,65 +99,93 @@ export function createSlowClient(
   makeVisitWorker: () => SlowWorkerLike = () =>
     new Worker(new URL('../workers/visit-worker.ts', import.meta.url), { type: 'module' }),
 ): SlowClient {
-  const worker = makeWorker();
-  const channel = new MessageChannel();
-  worker.onmessage = (e: MessageEvent<SlowToMain>) => onMessage(e.data);
-  worker.onerror = (e) =>
-    onMessage({ type: 'error', session: -1, message: e.message || 'The slow worker crashed.' });
-  const helpers: SlowWorkerLike[] = [];
-  const ports: MessagePort[] = [];
-  for (let i = 0; i < visitWorkers; i++) {
-    const v = makeVisitWorker();
-    const ch = new MessageChannel();
-    v.onerror = (e) =>
-      onMessage({ type: 'error', session: -1, message: e.message || 'A visit worker crashed.' });
-    const c: VisitConnect = { type: 'connect', port: ch.port2 };
-    v.postMessage(c, [ch.port2]);
-    helpers.push(v);
-    ports.push(ch.port1);
+  /** The running workers (null: ended by `release`), and the frame worker's connection to them. */
+  let live: {
+    worker: SlowWorkerLike;
+    helpers: SlowWorkerLike[];
+    channel: MessageChannel;
+    connected: Promise<void>;
+  } | null = null;
+  /** The last pacer target and settle cap sent: a slow worker started later gets them first. */
+  let pace: SlowSettlePace | null = null;
+  let cap: SlowSettleCap | null = null;
+
+  function start(): NonNullable<typeof live> {
+    const worker = makeWorker();
+    const channel = new MessageChannel();
+    worker.onmessage = (e: MessageEvent<SlowToMain>) => onMessage(e.data);
+    worker.onerror = (e) =>
+      onMessage({ type: 'error', session: -1, message: e.message || 'The slow worker crashed.' });
+    const helpers: SlowWorkerLike[] = [];
+    const ports: MessagePort[] = [];
+    for (let i = 0; i < visitWorkers; i++) {
+      const v = makeVisitWorker();
+      const ch = new MessageChannel();
+      v.onerror = (e) =>
+        onMessage({ type: 'error', session: -1, message: e.message || 'A visit worker crashed.' });
+      const c: VisitConnect = { type: 'connect', port: ch.port2 };
+      v.postMessage(c, [ch.port2]);
+      helpers.push(v);
+      ports.push(ch.port1);
+    }
+    // Measurement only: `?debug` turns the slow worker's finer timers on (`WorkStatus.detail`).
+    const debugTiming =
+      typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug');
+    const connect: SlowConnect = {
+      type: 'connect',
+      port: channel.port2,
+      visits: ports,
+      ...(debugTiming ? { debugTiming } : {}),
+    };
+    worker.postMessage(connect, [channel.port2, ...ports]);
+    if (pace) worker.postMessage(pace);
+    if (cap) worker.postMessage(cap);
+    const connected = (frames.connectSlow?.(channel.port1) ?? Promise.resolve()).catch(
+      (err: unknown) =>
+        onMessage({
+          type: 'error',
+          session: -1,
+          message: errMsg(err),
+        }),
+    );
+    return { worker, helpers, channel, connected };
   }
-  // Measurement only: `?debug` turns the slow worker's finer timers on (`WorkStatus.detail`).
-  const debugTiming =
-    typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug');
-  const connect: SlowConnect = {
-    type: 'connect',
-    port: channel.port2,
-    visits: ports,
-    ...(debugTiming ? { debugTiming } : {}),
-  };
-  worker.postMessage(connect, [channel.port2, ...ports]);
-  void frames.connectSlow?.(channel.port1).catch((err: unknown) =>
-    onMessage({
-      type: 'error',
-      session: -1,
-      message: errMsg(err),
-    }),
-  );
+  function release(): void {
+    if (!live) return;
+    live.worker.terminate();
+    for (const v of live.helpers) v.terminate();
+    live.channel.port1.close();
+    live = null;
+  }
+  /** The running slow worker, started if `release` ended it. */
+  const running = () => (live ??= start());
+  live = start();
+
   return {
     visitWorkers,
     addReviewed(session, candidates) {
       const msg: SlowReviewed = { type: 'reviewed', session, candidates };
-      worker.postMessage(msg, [candidates.buffer as ArrayBuffer]);
+      live?.worker.postMessage(msg, [candidates.buffer as ArrayBuffer]);
     },
     connectLookback(port, index = 0) {
       const msg: SlowLookbackPort = { type: 'lookback-port', port, ...(index ? { index } : {}) };
-      worker.postMessage(msg, [port]);
+      running().worker.postMessage(msg, [port]);
     },
     settlePace(fps, paused) {
-      const msg: SlowSettlePace = { type: 'settle-pace', fps, paused };
-      worker.postMessage(msg);
+      pace = { type: 'settle-pace', fps, paused };
+      live?.worker.postMessage(pace);
     },
-    settleCap(cap) {
-      const msg: SlowSettleCap = { type: 'settle-cap', cap };
-      worker.postMessage(msg);
+    settleCap(c) {
+      cap = { type: 'settle-cap', cap: c };
+      live?.worker.postMessage(cap);
     },
     settlePool(session, workers) {
       const msg: SlowSettlePool = { type: 'settle-pool', session, workers };
-      worker.postMessage(msg);
+      live?.worker.postMessage(msg);
     },
     stopSettling(session) {
       const msg: SlowStopSettling = { type: 'stop-settling', session };
-      worker.postMessage(msg);
+      live?.worker.postMessage(msg);
     },
     factorsReady(session, frames, source) {
       const msg: SlowFactors = {
@@ -150,16 +195,16 @@ export function createSlowClient(
         frames,
         ...(source ? { source } : {}),
       };
-      worker.postMessage(msg);
+      live?.worker.postMessage(msg);
     },
     factorsFailed(session, reason) {
       const msg: SlowFactors = { type: 'factors', session, ready: false, reason };
-      worker.postMessage(msg);
+      live?.worker.postMessage(msg);
     },
-    dispose() {
-      worker.terminate();
-      for (const v of helpers) v.terminate();
-      channel.port1.close();
+    release,
+    ready() {
+      return running().connected;
     },
+    dispose: release,
   };
 }

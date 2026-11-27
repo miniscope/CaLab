@@ -40,8 +40,8 @@ let slowSession = -1;
 
 /**
  * Stop the running stage. `keepSlow`: a replay stage (Extract) follows or is
- * stopped, so the slow loop stays; otherwise it is dropped, also when the stage was an Extract run,
- * which never talks to it.
+ * stopped, so the slow loop is not reset; otherwise it is dropped, also when the stage was an
+ * Extract run, which never talks to it (the slow worker may be ended by then: see `FastLoop.dispose`).
  */
 function stopStage(keepSlow = false): void {
   stage?.dispose(keepSlow);

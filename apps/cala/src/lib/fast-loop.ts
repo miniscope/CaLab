@@ -473,8 +473,10 @@ export class FastLoop {
   }
 
   /**
-   * Free the loop. The slow loop is dropped, unless `keepSlow` (Extract follows): then it is only told to
-   * publish what it has (a no-op when it already did).
+   * Free the loop. The slow loop is dropped, unless `keepSlow` (an Extract run starts or stops):
+   * then it is only told to publish what it has, a no-op once its final library is out, which
+   * Extract requires. Extract never talks to the slow loop: it solves with the library it is
+   * given, so the main thread may end the slow worker once that library is out (`App.tsx`).
    */
   dispose(keepSlow = false): void {
     if (this.disposed) return;

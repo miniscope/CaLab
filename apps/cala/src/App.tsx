@@ -251,6 +251,11 @@ const App: Component = () => {
         }
       : compress,
     lookbackClient,
+    // Workers ended after the previous run (`releaseAfterDiscover`, `releaseAfterExtract`).
+    async () => {
+      compressClient?.helpersReady();
+      await slow.ready();
+    },
   );
   // The Speed block's saved settings (mode, last Fixed speed, Background settle cap); the URL
   // parameters below win for this page.
@@ -337,6 +342,30 @@ const App: Component = () => {
         )
       : undefined;
   const pass2 = createPass2Store(client, pipeline, cells, undefined, factorExtract);
+  // ---- Workers with no job left: ending a worker is what returns its WASM memory ----
+  // Once Discover's final library is out, nothing talks to the slow worker, its visit workers or
+  // the look-back workers until the next Discover start: Extract solves with the library the main
+  // thread holds, and the export reads the slow loop's last status kept here. They end now, before
+  // Extract's memory peak; the next start brings them back (`workersReady` above).
+  let releasedFor = 0;
+  createEffect(() => {
+    const session = cells.session();
+    if (cells.status()?.final !== true || session === releasedFor) return;
+    releasedFor = session;
+    lookbackClient.release?.();
+    slow.release();
+  });
+  // A finished Extract on factors leaves the compress helpers nothing to do until the next run,
+  // back-fill or Extract (`helpersReady`).
+  createEffect(
+    on(
+      () => pass2.status(),
+      (st) => {
+        if (st === 'done' && untrack(pass2.result)?.source === 'factors')
+          compressClient?.releaseHelpers();
+      },
+    ),
+  );
   /** Log a stage event on the run's timeline (at the end of what Discover read). */
   const logStage = (stage: StageName, detail: string) =>
     runHistory.log({
