@@ -1,0 +1,422 @@
+/* Instrument primitives: Icon, Meter, MeterRow, Sparkline, SegmentedBar, RangeBar, Legend,
+   Badge, StageTrack, and the MetricTile status dot and meter slot. Colours come from tokens
+   only, so the dark theme follows the tokens. No decorative motion: fills snap to the value. */
+
+/* ========================
+   Icon
+   ======================== */
+.icon {
+  flex-shrink: 0;
+  vertical-align: -0.125em;
+}
+
+/* ========================
+   Meter
+   ======================== */
+.meter {
+  position: relative;
+  height: 6px;
+  min-width: 48px;
+  background: var(--track);
+  border-radius: 999px;
+}
+
+.meter--sm {
+  height: 4px;
+}
+
+.meter__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--meter-color);
+  border-radius: 999px;
+}
+
+.meter__band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--meter-color) 22%, transparent);
+}
+
+.meter__tick {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--ink-1);
+  border-radius: 1px;
+}
+
+/* A value past the declared range: a square end cap on the clamped side. */
+.meter[data-clamped='over'] .meter__fill {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  box-shadow: 2px 0 0 var(--ink-1);
+}
+
+.meter[data-clamped='under']::before {
+  content: '';
+  position: absolute;
+  left: -2px;
+  top: -1px;
+  bottom: -1px;
+  width: 2px;
+  background: var(--ink-1);
+}
+
+/* Not measured: a dashed track. */
+.meter--empty {
+  background: repeating-linear-gradient(90deg, var(--track) 0 6px, transparent 6px 10px);
+}
+
+/* ========================
+   Meter row
+   ======================== */
+.meter-row {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) minmax(64px, 2fr) minmax(4rem, auto);
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--font-size-md);
+  color: var(--ink-1);
+  min-height: 22px;
+}
+
+.meter-row__label {
+  color: var(--ink-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meter-row__value {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.meter-row__dash {
+  color: var(--ink-3);
+}
+
+/* ========================
+   Sparkline
+   ======================== */
+.sparkline {
+  display: block;
+  overflow: visible;
+}
+
+.sparkline__line {
+  fill: none;
+  stroke: var(--spark-color);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.sparkline__dot {
+  fill: var(--spark-color);
+  stroke: var(--surface);
+  stroke-width: 1;
+}
+
+/* ========================
+   Segmented bar
+   ======================== */
+.segmented-bar {
+  display: flex;
+  height: 8px;
+  background: var(--track);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.segmented-bar__part {
+  box-sizing: border-box;
+  height: 100%;
+  border-right: 2px solid var(--surface);
+}
+
+.segmented-bar__part:last-child {
+  border-right: none;
+}
+
+.segmented-bar__part--hatched {
+  background-image: repeating-linear-gradient(
+    45deg,
+    color-mix(in srgb, var(--surface) 55%, transparent) 0 2px,
+    transparent 2px 5px
+  );
+}
+
+/* ========================
+   Range bar
+   ======================== */
+.range-bar {
+  position: relative;
+  height: 12px;
+  min-width: 48px;
+}
+
+.range-bar::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 5px;
+  height: 2px;
+  background: var(--track);
+}
+
+.range-bar__span {
+  position: absolute;
+  top: 3px;
+  height: 6px;
+  min-width: 2px;
+  background: var(--range-color);
+  border-radius: 3px;
+}
+
+.range-bar__mark {
+  position: absolute;
+  top: 2px;
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  background: var(--surface);
+  border: 2px solid var(--ink-1);
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+
+.range-bar__ref {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  margin-left: -1px;
+  border-left: 2px dashed var(--ink-2);
+}
+
+/* ========================
+   Legend
+   ======================== */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--font-size-sm);
+  color: var(--ink-1);
+}
+
+.legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.legend__mark {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  background: var(--legend-color);
+  border-radius: 2px;
+}
+
+.legend__mark--line {
+  width: 14px;
+  height: 0;
+  background: none;
+  border-top: 2px solid var(--legend-color);
+  border-radius: 0;
+}
+
+.legend__mark--line.legend__mark--dashed {
+  border-top-style: dashed;
+}
+
+.legend__mark--dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.legend__mark--hatched {
+  background-image: repeating-linear-gradient(
+    45deg,
+    color-mix(in srgb, var(--surface) 55%, transparent) 0 2px,
+    transparent 2px 5px
+  );
+}
+
+.legend__value {
+  color: var(--ink-2);
+}
+
+/* ========================
+   Badge
+   ======================== */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-control);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--ink-1);
+  background: var(--inset);
+}
+
+.badge--discover {
+  background: var(--stage-discover-tint);
+  --badge-hue: var(--stage-discover);
+}
+
+.badge--settle {
+  background: var(--stage-settle-tint);
+  --badge-hue: var(--stage-settle);
+}
+
+.badge--extract {
+  background: var(--stage-extract-tint);
+  --badge-hue: var(--stage-extract);
+}
+
+.badge--accent {
+  background: var(--accent-muted);
+  --badge-hue: var(--accent);
+}
+
+.badge--ok {
+  color: var(--status-ok);
+  background: var(--status-ok-tint);
+}
+
+.badge--warning {
+  color: var(--status-warning);
+  background: var(--status-warning-tint);
+}
+
+.badge--critical {
+  color: var(--status-critical);
+  background: var(--status-critical-tint);
+}
+
+.badge__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--badge-hue);
+}
+
+.badge--discover .icon,
+.badge--settle .icon,
+.badge--extract .icon,
+.badge--accent .icon {
+  color: var(--badge-hue);
+}
+
+/* ========================
+   Stage track
+   ======================== */
+.stage-track {
+  display: flex;
+  gap: 2px;
+  height: 22px;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+}
+
+.stage-track__seg {
+  position: relative;
+  flex-basis: 0;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--stage-tint);
+  border-radius: var(--radius-control);
+}
+
+.stage-track__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--stage-fill);
+  background: var(--stage-color);
+}
+
+.stage-track__label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  color: var(--ink-1);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* The same label in the on-fill ink, visible only over the fill. */
+.stage-track__label--on-fill {
+  color: var(--stage-on-fill);
+  clip-path: inset(0 calc(100% - var(--stage-fill)) 0 0);
+}
+
+/* Running: a top edge in the full hue marks the live segment. */
+.stage-track__seg--running {
+  box-shadow: inset 0 2px 0 var(--stage-color);
+}
+
+.stage-track__seg--off {
+  background: repeating-linear-gradient(45deg, var(--inset) 0 4px, var(--track) 4px 8px);
+}
+
+.stage-track__seg--off .stage-track__label {
+  color: var(--ink-3);
+  font-weight: var(--font-weight-normal);
+}
+
+.stage-track__seg--error {
+  box-shadow: inset 0 0 0 2px var(--status-critical);
+}
+
+.stage-track__seg--error .stage-track__label {
+  color: var(--status-critical);
+}
+
+/* ========================
+   Metric tile: status dot and meter slot
+   ======================== */
+.metric-tile__status {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: var(--space-1);
+  border-radius: 50%;
+  vertical-align: 0.05em;
+  background: var(--mark-neutral);
+}
+
+.metric-tile__status--ok {
+  background: var(--status-ok);
+}
+
+.metric-tile__status--warning {
+  background: var(--status-warning);
+}
+
+.metric-tile__status--critical {
+  background: var(--status-critical);
+}
+
+.metric-tile__meter {
+  margin-top: var(--space-1);
+}

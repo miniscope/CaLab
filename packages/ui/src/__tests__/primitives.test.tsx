@@ -321,6 +321,10 @@ describe('sparkPath', () => {
     expect(sparkPath([0], [5], 0, 0, 1, 100, 10)).toBe('M0.0,1.0');
   });
 
+  it('clamps below lo to the bottom edge', () => {
+    expect(sparkPath([0], [-5], 0, 0, 1, 100, 10)).toBe('M0.0,9.0');
+  });
+
   it('generalises to w and h', () => {
     expect(sparkPath([0, 2], [0, 1], 2, 0, 1, 20, 10)).toBe('M0.0,9.0L20.0,1.0');
   });
