@@ -2,6 +2,7 @@
  * The run's three main steps (Discover, Final settle, Extract): the stepper above the tabs and
  * the step panels in the Run tab share one view (`lib/step-view.ts`), so they always agree.
  */
+import { Icon } from '@calab/ui';
 import { visitHoldText } from '../lib/visit-rate.ts';
 import { createEffect, createSignal, For, on, Show, type JSX } from 'solid-js';
 import type { CellStore } from '../lib/cell-store.ts';
@@ -87,7 +88,7 @@ export function StepStepper(props: { steps: StepView[] }): JSX.Element {
               </li>
             </Show>
             <li
-              class={`cala-steps__box cala-steps__box--${v.state}`}
+              class={`cala-steps__box cala-steps__box--${v.state} cala-stage--${v.key}`}
               data-testid={`run-step-${v.key}`}
               data-state={v.state}
               title={`${v.label}: ${STATE_WORD[v.state]}${v.note ? ` (${v.note})` : ''}`}
@@ -100,7 +101,9 @@ export function StepStepper(props: { steps: StepView[] }): JSX.Element {
               />
               <span class="cala-steps__text">
                 <span class="cala-steps__name">
-                  {v.state === 'done' ? '✓ ' : ''}
+                  <Show when={v.state === 'done'}>
+                    <Icon name="check" size={12} />{' '}
+                  </Show>
                   {v.label}
                 </span>
                 <span class="cala-steps__num cala-num">
@@ -152,13 +155,18 @@ export function StepPanel(props: { step: StepView; children?: JSX.Element }): JS
   const measured = () => v().fraction != null && (v().state === 'running' || v().state === 'done');
   return (
     <section
-      class={`cala-step cala-step--${v().state}`}
+      class={`cala-step cala-step--${v().state} cala-stage--${v().key}`}
       data-testid={`step-panel-${v().key}`}
       aria-label={v().label}
     >
       <div class="cala-step__head">
         <strong class="cala-step__name">{v().label}</strong>
-        <span class="cala-step__state">{STATE_WORD[v().state]}</span>
+        <span class="cala-step__state">
+          <Show when={v().state === 'done'}>
+            <Icon name="check" size={12} />{' '}
+          </Show>
+          {STATE_WORD[v().state]}
+        </span>
         <span class="cala-step__nums cala-num">{stepNumbers(v(), formatDuration)}</span>
       </div>
       <div

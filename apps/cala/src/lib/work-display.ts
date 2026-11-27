@@ -9,7 +9,9 @@
  */
 import { SPEED_SCALE } from './speed-track.ts';
 import {
+  BG_SETTLE_GROUND,
   FAST_STAGE_NAMES,
+  IDLE_COLOR,
   KIND_COLOR,
   WORK_KIND_LABELS,
   WORK_KINDS,
@@ -19,10 +21,10 @@ import {
 } from './work-meter.ts';
 
 /** Colours of the kinds (defined next to their labels in `work-meter.ts`, shared with the History series). */
-export { KIND_COLOR };
+export { BG_SETTLE_GROUND, IDLE_COLOR, KIND_COLOR };
 
-/** Background settle's HTML fill: a hatch of the settle hue over its pale tint (not lightness alone). */
-export const BG_SETTLE_HATCH = `repeating-linear-gradient(135deg, ${KIND_COLOR.bgSettle} 0 3px, ${KIND_COLOR.finalSettle} 3px 4px)`;
+/** Background settle's HTML fill: stripes of the settle hue over its tint, so it differs from Final settle by more than colour. */
+export const BG_SETTLE_HATCH = `repeating-linear-gradient(135deg, ${BG_SETTLE_GROUND} 0 3px, ${KIND_COLOR.bgSettle} 3px 5px)`;
 
 /** Where the Final settle segment sits: a fixed quarter of the strip's width (PI decision Q8). */
 export const FINAL_SEGMENT_SHARE = 0.25;

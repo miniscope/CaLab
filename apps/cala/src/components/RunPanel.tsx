@@ -1,6 +1,6 @@
 import type { RunRecordExtras } from '../lib/run-provenance.ts';
 import { createEffect, createSignal, For, on, Show, type JSX } from 'solid-js';
-import { MetricTile, SegmentedControl, type ProgressState } from '@calab/ui';
+import { Icon, MetricTile, SegmentedControl, type ProgressState } from '@calab/ui';
 import { formatClock, formatElapsed, windowPresets } from '@calab/ui/chart';
 import type { ByteSink } from '@calab/io';
 import type { CellStore } from '../lib/cell-store.ts';
@@ -524,6 +524,9 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       head={
         <div class="cala-run__conv" data-testid="convergence-status" title={conv().reason}>
           <span class={`cala-conv-chip cala-conv-chip--${conv().state}`}>
+            <Show when={conv().state === 'converged'}>
+              <Icon name="check" size={12} />
+            </Show>
             {s().status() === 'done' && conv().state !== 'waiting'
               ? stageNow()
               : STATE_LABEL[conv().state]}
@@ -656,11 +659,17 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               {(b) => (
                 <span
                   class="cala-backend-badge"
-                  classList={{ 'cala-backend-badge--gpu': b().key === 'webgpu' }}
+                  classList={{ 'cala-backend-badge--warning': b().key === 'wasm-failed' }}
                   data-testid="motion-backend"
                   data-backend={b().key}
                   title={b().title}
                 >
+                  <Show when={b().key === 'webgpu'}>
+                    <Icon name="gpu" size={12} />
+                  </Show>
+                  <Show when={b().key === 'wasm-failed'}>
+                    <Icon name="warning" size={12} />
+                  </Show>
                   {b().text}
                 </span>
               )}

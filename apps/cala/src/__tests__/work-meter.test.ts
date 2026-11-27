@@ -791,12 +791,15 @@ describe('run history display series', () => {
         hist.spec(kindSeriesKey(k))!.color,
       ]),
     ).toEqual([
-      ['Work: Read frames', '#0072b2'],
-      ['Work: Find cells', '#009e73'],
-      ['Work: Look-back', '#e69f00'],
-      ['Work: Background settle', '#e3b1cb'],
-      ['Work: Final settle', '#a8497d'],
+      ['Work: Read frames', '#84b9f3'],
+      ['Work: Find cells', '#1f75d7'],
+      ['Work: Look-back', '#00a888'],
+      ['Work: Background settle', '#b8407e'],
+      ['Work: Final settle', '#b8407e'],
     ]);
+    // Background settle shares the Final settle hue; only its dash tells the lines apart.
+    expect(hist.spec(kindSeriesKey('bgSettle'))!.dash).toEqual([4, 3]);
+    expect(hist.spec(kindSeriesKey('finalSettle'))!.dash).toBeUndefined();
     expect(hist.spec('target_fps')!.range).toEqual([10, 500]);
     expect(hist.spec('births_per_kframe')!.rangeRule).toBe('fixed');
     h.births(60, 400); // the opening burst clips; it does not step the range
