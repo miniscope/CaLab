@@ -477,18 +477,17 @@ impl JsSlowLoop {
         Ok(fit)
     }
 
-    // ---- concurrent settle, frames only (settling while Discover runs) ---
+    // ---- concurrent settle (settling while Discover runs) ---------------
     //
-    // qc_eval's `--csettle S --csettle-mode frames` with visit workers
-    // (arm `CS2F`): while Discover runs, a driver re-reads saved frames
-    // spread over everything seen so far (`settleTake`), solves the ones
-    // on the fitting side with a published library and hands them back
-    // (`observeSettle`); they update the footprint statistics and cluster
-    // stores of every cell, and the ordinary visits do all the refining.
-    // No settle visits, no quiet rule, nothing offered to the reservoir.
-    // How many frames are due is the driver's business.
+    // qc_eval's `--csettle S` with visit workers: while Discover runs, a
+    // driver re-reads saved frames spread over everything seen so far
+    // (`settleTake`), solves the ones on the fitting side with a published
+    // library and hands them back (`observeSettle`); they update the
+    // footprint statistics and cluster stores of every cell, and the
+    // ordinary visits do all the refining. How many frames are due is the
+    // driver's business.
 
-    /// Turn the concurrent settle on (frames only): saved frames are
+    /// Turn the concurrent settle on: saved frames are
     /// re-read `chunk` in a row, the chunks spread evenly over the history
     /// (`SettleSched`). Needs look-back (`enableLookback`), whose record
     /// holds every stream frame's held-out decision.
@@ -500,7 +499,7 @@ impl JsSlowLoop {
         if chunk == 0 {
             return Err(js_err("enableSettle", "chunk must be > 0"));
         }
-        self.inner.enable_settle(0);
+        self.inner.enable_settle();
         // The share is unused here: the driver keeps the dose.
         let mut sched = SettleSched::new(0.0, chunk as usize);
         sched.set_floor(self.lb.floor);
@@ -567,9 +566,8 @@ impl JsSlowLoop {
             return Ok(false);
         };
         self.fill_traces(&lib, traces, background, "observeSettle")?;
-        // Not offered to the reservoir, so the key is unused.
         self.inner
-            .observe_settle(frame, &lib, &self.traces, 0, false, false)
+            .observe_settle(frame, &lib, &self.traces, false)
             .map_err(|e| js_err("observeSettle", e))?;
         self.cs.fit += 1;
         Ok(true)

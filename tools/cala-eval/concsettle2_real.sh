@@ -11,19 +11,18 @@ source ~/Projects/cala-data/sims.env
 BIN=${BIN:-$CALA_DATA/bin/qc_eval-cs2-b}
 ROOT=$CALA_DATA/runs/concsettle2/real
 ME="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-ARMS="V30 CS2 CS2-Q"
-SENS="CS1 CS2-Q18"
-POST="CS2F" # added after the first results
+# Arms that run: the baseline, and CS2F (added after the first results). The settle-visit arms CS2, CS2-Q, CS1
+# and CS2-Q18 are not runnable (qc_eval refuses --csettle-mode stats and --csettle-quiet); `report` still reads
+# their saved runs, keyed A-F in the study's order.
+ARMS="V30"
+POST="CS2F"
+REPORTED="V30 CS2 CS2-Q CS1 CS2-Q18 CS2F"
 WS=${WS:-$HOME/Projects/workshop-processing-and-analysis/data/sessions/prerecorded/raw}
 SAMARA=${SAMARA:-"$HOME/Downloads/Samara Data"}
 
 arm_flags() {
   case $1 in
     V30) echo "--csettle 0" ;;
-    CS1) echo "--csettle 0.5 --csettle-mode stats" ;;
-    CS2) echo "--csettle 0.667 --csettle-mode stats" ;;
-    CS2-Q) echo "--csettle 0.667 --csettle-mode stats --csettle-quiet 600" ;;
-    CS2-Q18) echo "--csettle 0.667 --csettle-mode stats --csettle-quiet 1800" ;;
     CS2F) echo "--csettle 0.667 --csettle-mode frames" ;;
   esac
 }
@@ -56,18 +55,12 @@ run)
   echo "rc $?" > $OUT.done
   ;;
 all)
-  # Full arms first (they decide), then the two sensitivity arms (workshop, seeds 1-2).
   for arm in $ARMS; do
     F=$(arm_flags $arm)
     for s in 1 2 3; do $ME run ws_${arm}_s$s "$WS" $s --frames 18000 $F & done
     for ses in 10_43_21 14_57_02; do for s in 1 2; do
       $ME run ${ses}_${arm}_s$s "$SAMARA/$ses/img" $s --fps 30 $F &
     done; done
-  done
-  sleep 60
-  for arm in $SENS; do
-    F=$(arm_flags $arm)
-    for s in 1 2; do $ME run ws_${arm}_s$s "$WS" $s --frames 18000 $F & done
   done
   wait
   echo ALLDONE > $ROOT/all.done
@@ -87,7 +80,7 @@ report)
   P=$2; SEEDS=($3); M=$4
   cd "$(dirname "$ME")/../.."
   A=(); PR=(); k=0
-  for n in $ARMS $SENS $POST; do
+  for n in $REPORTED; do
     K=$(echo ABCDEF | cut -c$((k + 1))); k=$((k + 1))
     [ -f $ROOT/${P}_${n}_s${SEEDS[0]}.done ] || continue
     for s in "${SEEDS[@]}"; do [ -f $ROOT/${P}_${n}_s$s.done ] && A+=(--run $K$s=$ROOT/${P}_${n}_s$s); done
@@ -107,13 +100,13 @@ report)
     --md $ROOT/${P}_agreement.md > /dev/null 2> $ROOT/${P}_agreement.time
   grep "maximum resident" $ROOT/${P}_agreement.time
   R=()
-  for n in $ARMS $SENS $POST; do
+  for n in $REPORTED; do
     L=""
     for s in "${SEEDS[@]}"; do [ -f $ROOT/${P}_${n}_s$s.done ] && L="$L,$ROOT/${P}_${n}_s$s"; done
     [ -n "$L" ] && R+=(--runs $n=${L#,})
   done
   $MINISIM_PY tools/cala-eval/concsettle_checkpoints.py "${R[@]}" --end-suffix _settle0 --md $ROOT/${P}_checkpoints.md > /dev/null
-  for n in $ARMS $SENS $POST; do for s in "${SEEDS[@]}"; do
+  for n in $REPORTED; do for s in "${SEEDS[@]}"; do
     [ -f $ROOT/${P}_${n}_s$s.log ] || continue
     echo "$n s$s: $(grep -h '^timed' $ROOT/${P}_${n}_s$s.log | tr '\n' ' ') | $(cat $ROOT/${P}_${n}_s$s/csettle.txt) | $(grep -h 'pass 1 done' $ROOT/${P}_${n}_s$s.log | cut -c1-80)"
   done; done > $ROOT/${P}_runs.txt
