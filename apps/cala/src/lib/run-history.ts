@@ -355,6 +355,8 @@ function displaySeries(workers: number): SeriesSpec[] {
       range: [0, Math.max(1, workers)],
       rangeRule: 'fixed',
       color,
+      // Background settle shares the Final settle hue; the dash tells the lines apart.
+      ...(kind === 'bgSettle' ? { dash: [4, 3] } : {}),
       digits: 2,
       hint: 'Worker-seconds of work per second of wall time.',
     })),

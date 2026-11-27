@@ -369,7 +369,7 @@
 }
 
 .cala-strip[data-state='error'] .cala-strip__stage {
-  color: var(--error);
+  color: var(--status-critical);
 }
 
 .cala-strip__bar.progress-bar {
@@ -425,8 +425,24 @@
   font-size: 0.8rem;
 }
 
+/* Each step's colours: its stage hue, tint, and the label ink over the full hue (white on
+   Discover and Final settle, the text ink on Extract's orange). */
+.cala-stage--discover {
+  --step-ink: var(--stage-discover);
+  --step-on-fill: var(--ink-on-fill);
+}
+
+.cala-stage--settle {
+  --step-ink: var(--stage-settle);
+  --step-on-fill: var(--ink-on-fill);
+}
+
+.cala-stage--extract {
+  --step-ink: var(--stage-extract);
+  --step-on-fill: var(--ink-1);
+}
+
 .cala-steps__box {
-  --step-ink: var(--accent, #5b4bb7);
   position: relative;
   flex: 1 1 0;
   min-width: 0;
@@ -503,12 +519,23 @@
   border-style: dashed;
 }
 
+/* Done: the stage's full hue with a check mark (never the ok green). */
 .cala-steps__box--done {
-  --step-ink: var(--success, #2e7d32);
+  border-color: var(--step-ink);
+  background: var(--step-ink);
 }
 
-.cala-steps__box--done .cala-steps__name {
-  color: var(--success, #2e7d32);
+.cala-steps__box--done .cala-steps__fill {
+  background: var(--step-ink);
+}
+
+.cala-steps__box--done .cala-steps__name,
+.cala-steps__box--done .cala-steps__num {
+  color: var(--step-on-fill);
+}
+
+.cala-steps__name .icon {
+  vertical-align: -0.15em;
 }
 
 .cala-steps__box--off {
@@ -517,8 +544,8 @@
 }
 
 .cala-steps__box--error {
-  --step-ink: var(--error, #c62828);
-  border-color: var(--error, #c62828);
+  --step-ink: var(--status-critical);
+  border-color: var(--status-critical);
 }
 
 /* ---- The step panels in the Run tab: one structure for all three ---- */
@@ -532,7 +559,7 @@
 }
 
 .cala-step--running {
-  border-color: var(--accent, #5b4bb7);
+  border-color: var(--step-ink);
 }
 
 .cala-step--off {
@@ -560,18 +587,19 @@
   height: 6px;
   border-radius: 3px;
   overflow: hidden;
-  background: var(--k-spare, #ececec);
+  background: var(--track);
 }
 
 .cala-step__bar > i {
   display: block;
   height: 100%;
-  background: var(--accent, #5b4bb7);
+  background: var(--step-ink);
   transition: width 0.4s linear;
 }
 
-.cala-step--done .cala-step__bar > i {
-  background: var(--success, #2e7d32);
+.cala-step__state .icon {
+  color: var(--step-ink);
+  vertical-align: -0.15em;
 }
 
 .cala-step__note {
@@ -595,7 +623,7 @@
 
 .cala-step__line {
   fill: none;
-  stroke: var(--accent, #5b4bb7);
+  stroke: var(--step-ink);
   stroke-width: 1.5;
 }
 
@@ -1028,8 +1056,8 @@
 }
 
 .cala-stepper__step--active {
-  border-color: var(--accent);
-  background: var(--accent-muted);
+  border-color: var(--ink-2);
+  background: var(--inset);
 }
 
 .cala-stepper__dot {
@@ -1046,13 +1074,14 @@
 }
 
 .cala-stepper__step--active .cala-stepper__dot {
-  background: var(--accent);
-  color: #fff;
+  background: var(--ink-1);
+  color: var(--ink-on-fill);
 }
 
+/* Calibrate and Export have no stage hue: a done step is the secondary ink with its check. */
 .cala-stepper__step--done .cala-stepper__dot {
-  background: var(--success);
-  color: #fff;
+  background: var(--ink-2);
+  color: var(--ink-on-fill);
 }
 
 .cala-stepper__text {
@@ -1342,7 +1371,7 @@
 
 .cala-speed__achieved {
   left: 0;
-  background: var(--accent);
+  background: var(--stage-discover);
   opacity: 0.3;
   border-radius: 3px 0 0 3px;
 }
@@ -1368,7 +1397,7 @@
 
 .cala-speed__mark--stream {
   width: 2px;
-  background: var(--accent);
+  background: var(--ink-2);
 }
 
 .cala-speed__ticklabel,
@@ -1398,7 +1427,7 @@
 }
 
 .cala-speed__marklabel--stream {
-  color: var(--accent);
+  color: var(--ink-2);
 }
 
 .cala-speed__nogain-label {
@@ -1559,7 +1588,6 @@
 
 /* ---- Work display (components/WorkDisplay.tsx). Kind colours are set on the root (`--k-*`). ---- */
 .cala-work {
-  --k-spare: #ececec;
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
@@ -1752,25 +1780,26 @@
   stroke-dasharray: 3 3;
 }
 
-/* The planned target of a curve, over the whole recording: violet, long dashes (UI state). */
+/* The planned target of a curve, over the whole recording: long dashes in the secondary ink. */
 .cala-work__line--plan {
-  stroke: var(--accent);
+  stroke: var(--ink-2);
   stroke-width: 1.5;
   stroke-dasharray: 7 3;
 }
 
 .cala-work__line--achieved {
-  stroke: var(--k-live);
+  stroke: var(--stage-discover);
   stroke-width: 2;
 }
 
-/* Violet is UI state: target-change marks and the inspected time. */
+/* Target-change marks in the secondary ink; the inspected time (dotted) is a selection, so violet. */
 .cala-work__mark {
-  stroke: var(--accent);
+  stroke: var(--ink-2);
   stroke-width: 1;
 }
 
 .cala-work__mark--dotted {
+  stroke: var(--accent);
   stroke-dasharray: 1 3;
 }
 

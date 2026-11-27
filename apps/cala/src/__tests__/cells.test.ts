@@ -817,6 +817,21 @@ describe('cell overlay geometry', () => {
     expect(px(0)).toEqual([0, 0, 0, 0]);
   });
 
+  it('draws the selected cell with a 2 px white outline: its contour and the ring outside it', () => {
+    const g = buildGeometry(view);
+    const rgba = renderOverlay(g, { selected: 10, color: () => [1, 2, 3], fill: () => 0 });
+    const alpha = (p: number) => rgba[p * 4 + 3];
+    const white = (p: number) =>
+      Array.from(rgba.slice(p * 4, p * 4 + 4)).join() === '255,255,255,255';
+    // Cell 10 is the 3x3 block at x 0..2, y 1..3 minus its dim corner (pixel 20) on a 6x5 grid.
+    for (const p of g.shapes[0].contour) expect(white(p)).toBe(true);
+    // One pixel outside the block on each side: above (1), right (9), below (24).
+    for (const p of [1, 9, 24]) expect(white(p)).toBe(true);
+    // The interior stays a faint white wash, and two pixels out nothing is drawn.
+    expect(alpha(13)).toBe(Math.round(255 * 0.3));
+    expect(alpha(10)).toBe(0);
+  });
+
   it('keeps every support pixel with its value over the peak', () => {
     const g = buildGeometry(view);
     expect(Array.from(g.shapes[0].support)).toEqual([6, 7, 8, 12, 13, 14, 18, 19, 20]);

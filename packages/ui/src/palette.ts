@@ -18,3 +18,16 @@ export const OKABE_ITO = {
   vermillion: '#d55e00',
   reddishPurple: '#cc79a7',
 } as const;
+
+/**
+ * cala run stage hues and tints, for code that cannot read CSS variables (canvas series). The
+ * same values as the `--stage-*` tokens in `styles/tokens.css` (a test keeps them equal).
+ */
+export const STAGE_HUES = {
+  discover: '#1f75d7',
+  discoverTint: '#dceafb',
+  settle: '#b8407e',
+  settleTint: '#f5e1eb',
+  extract: '#e0701f',
+  extractTint: '#fbe6d8',
+} as const;

@@ -34,7 +34,9 @@ import {
   gridGroups,
   squareStack,
   squareTitle,
+  BG_SETTLE_GROUND,
   BG_SETTLE_HATCH,
+  IDLE_COLOR,
   KIND_COLOR,
   linePath,
   planPath,
@@ -68,6 +70,7 @@ const KIND_VARS = {
   '--k-bg-settle': KIND_COLOR.bgSettle,
   '--k-final-settle': KIND_COLOR.finalSettle,
   '--k-bg-settle-fill': BG_SETTLE_HATCH,
+  '--k-spare': IDLE_COLOR,
 } as const;
 
 /** HTML fill of a kind: Background settle is hatched, so it differs from Final settle by more than lightness. */
@@ -504,15 +507,15 @@ export function WorkDisplay(props: WorkDisplayProps): JSX.Element {
                 patternUnits="userSpaceOnUse"
                 patternTransform="rotate(45)"
               >
-                <rect width="5" height="5" style={{ fill: KIND_COLOR.bgSettle }} />
-                <rect width="1.2" height="5" style={{ fill: KIND_COLOR.finalSettle }} />
+                <rect width="5" height="5" style={{ fill: BG_SETTLE_GROUND }} />
+                <rect width="2" height="5" style={{ fill: KIND_COLOR.bgSettle }} />
               </pattern>
             </defs>
             <text x={GEO.left} y="9">
               {compact()
                 ? 'fps (10 to 500)'
                 : plan()
-                  ? 'fps, fixed 10 to 500: plan violet, target dashed, achieved solid'
+                  ? 'fps, fixed 10 to 500: plan long dashes, target short dashes, achieved solid'
                   : 'fps, fixed 10 to 500: target dashed, achieved solid'}
             </text>
             <For each={speedTicks}>

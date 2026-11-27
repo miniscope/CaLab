@@ -85,9 +85,11 @@ width, or in a portrait window, the column moves under the image and the page sc
 
 **Run strip.** Above the tabs, three boxes with arrows show the run's main steps:
 **Discover** → **Final settle** → **Extract**. Each fills with its own progress and shows
-its percent and, while it runs, its frames per second; the running step has a coloured
-edge and moving stripes, a finished one a ✓, and a step that will not run (look-back
-off, Extract unticked) is dimmed. A live stream gets the Final settle and Extract after it
+its percent and, while it runs, its frames per second. Each step has its own colour
+(Discover blue, Final settle plum, Extract orange): the running step has an edge in that
+colour and moving stripes, a finished one is filled with it and has a ✓ (green is kept
+for QC pass and other status), and a step that will not run (look-back off, Extract
+unticked) is dimmed. A live stream gets the Final settle and Extract after it
 ends, on the factors it wrote. A recording's frames are compressed on the GPU while Discover runs (the GPU
 route, by default; `?factors=gpu` asks for the same), and its Final settle and Extract read those factors
 when they are complete; when not they say "re-reads the file" with the reason. Without WebGPU or with too
@@ -146,8 +148,9 @@ order you use them:
   the traces solved so far. Then **Speed** and **Workers**. Workers is a grid of small
   squares, one per worker (a browser thread), grouped as Frame loop, Cell model,
   Footprint helpers and Look-back and settle. Each square fills from the bottom with
-  one colour per job (**Read frames**, **Find cells**, **Look-back**, **Background
-  settle**, **Final settle**; grey is **Idle**), each as tall as that job's share of
+  one colour per job (**Read frames** light blue and **Find cells** blue, the Discover
+  colour; **Look-back** teal; **Background settle** plum stripes and **Final settle**
+  plum, the Final settle colour; grey is **Idle**), each as tall as that job's share of
   the last second, and shows how busy the worker was as a percent; hover a square for
   the split. Read frames, Find cells, Look-back and Background settle are the jobs of
   Discover; while the Final settle runs, all the work shown (the cell model's, the

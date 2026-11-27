@@ -1,12 +1,27 @@
 /* App-specific styles and design token overrides */
 
 /* Cala's accent: violet, so it reads apart from CaTune (blue) and CaDecon
-   (teal) at a glance. 7.6:1 on white, 6.7:1 on the grey chrome; no colour-by
-   palette (viridis on the image, Okabe-Ito) uses a violet for UI meaning. */
+   (teal) at a glance. 7.6:1 on white, 6.7:1 on the grey chrome. It marks
+   selection and focus only: run stages use the --stage-* hues, status the
+   --status-* colours. */
 :root {
   --accent: #6a3d9a;
   --accent-hover: #573182;
   --accent-muted: rgba(106, 61, 154, 0.1);
+  /* Joint-run id groups (project view): Okabe-Ito in its fixed order, each with the label ink
+     that reaches 4.5:1 on it. Validated as a set (dataviz palette validator, all pairs). */
+  --ids-0: #0072b2;
+  --ids-0-ink: var(--ink-on-fill);
+  --ids-1: #d55e00;
+  --ids-1-ink: var(--ink-1);
+  --ids-2: #009e73;
+  --ids-2-ink: var(--ink-1);
+  --ids-3: #cc79a7;
+  --ids-3-ink: var(--ink-1);
+  --ids-4: #e69f00;
+  --ids-4-ink: var(--ink-1);
+  --ids-5: #56b4e9;
+  --ids-5-ink: var(--ink-1);
 }
 
 .cala-hidden-input {
@@ -64,9 +79,17 @@
   cursor: help;
 }
 
-.cala-backend-badge--gpu {
-  border-color: var(--success);
-  color: var(--success);
+/* A fallback to the CPU after WebGPU failed: the warning pair (tint, ink, icon). GPU and a chosen
+   or unavailable CPU stay neutral. */
+.cala-backend-badge--warning {
+  border-color: var(--status-warning-mark);
+  background: var(--status-warning-tint);
+  color: var(--status-warning);
+}
+
+.cala-backend-badge .icon {
+  vertical-align: -0.2em;
+  margin-right: 2px;
 }
 
 .cala-contrast {
@@ -105,7 +128,7 @@
 
 .cala-warning {
   margin: var(--space-sm) 0 0;
-  color: var(--warning);
+  color: var(--status-warning);
   font-size: 0.85rem;
 }
 
@@ -212,16 +235,33 @@
   color: var(--text-secondary);
 }
 
+/* After Discover the chip names the current stage: neutral (stage progress is the strip's job). */
+.cala-conv-chip--stage {
+  color: var(--ink-1);
+}
+
+/* In progress: the stage's tint and hue edge, the label in the text ink. */
 .cala-conv-chip--discovering {
-  color: #b07800;
+  color: var(--ink-1);
+  border-color: var(--stage-discover);
+  background: var(--stage-discover-tint);
 }
 
 .cala-conv-chip--settling {
-  color: #0072b2;
+  color: var(--ink-1);
+  border-color: var(--stage-settle);
+  background: var(--stage-settle-tint);
 }
 
+/* Converged is a status (ok): its ink on its tint, with a check mark. */
 .cala-conv-chip--converged {
-  color: #007a59;
+  color: var(--status-ok);
+  background: var(--status-ok-tint);
+}
+
+.cala-conv-chip .icon {
+  vertical-align: -0.15em;
+  margin-right: 2px;
 }
 
 /* Overlay modes */
@@ -322,23 +362,24 @@
   white-space: nowrap;
 }
 
+/* QC verdicts are status: each status ink on its tint. */
 .cala-qc-badge--pass {
-  background: rgba(0, 158, 115, 0.18);
-  color: #007a59;
+  background: var(--status-ok-tint);
+  color: var(--status-ok);
 }
 
 .cala-qc-badge--fail {
-  background: rgba(213, 94, 0, 0.16);
-  color: #b04c00;
+  background: var(--status-critical-tint);
+  color: var(--status-critical);
 }
 
 .cala-qc-badge--warn {
-  background: rgba(230, 159, 0, 0.2);
-  color: #8a5f00;
+  background: var(--status-warning-tint);
+  color: var(--status-warning);
 }
 
 .cala-qc-badge--pending {
-  background: var(--border-subtle);
+  background: var(--inset);
   color: var(--text-secondary);
 }
 
@@ -409,7 +450,7 @@
 }
 
 .cala-demix__pair td {
-  color: #b04c00;
+  color: var(--status-warning);
   font-weight: var(--font-weight-medium, 500);
 }
 
@@ -503,7 +544,7 @@
 
 .cala-series-chooser__role--camera {
   font-weight: 600;
-  color: var(--warning, #b26a00);
+  color: var(--status-warning);
 }
 
 /* Sensor flat field panel */
@@ -626,7 +667,7 @@
 }
 .cala-sessions__warning {
   margin: 0.25rem 0;
-  color: var(--warning, #b26a00);
+  color: var(--status-warning);
 }
 .cala-sessions__note {
   font-size: 0.85rem;
@@ -713,7 +754,7 @@
   color: var(--text-secondary);
 }
 .cala-project__row--selected td {
-  background: color-mix(in srgb, var(--accent, #3b82f6) 8%, transparent);
+  background: var(--accent-muted);
 }
 .cala-project__table td.cala-project__wrap {
   white-space: normal;
@@ -738,46 +779,51 @@
   display: inline-block;
   min-width: 1.4em;
   padding: 0 0.35em;
-  border-radius: 3px;
+  border-radius: var(--radius-control);
   font-weight: 700;
   text-align: center;
-  color: #fff;
 }
 .cala-project__ids--0 {
-  background: #2563eb;
+  background: var(--ids-0);
+  color: var(--ids-0-ink);
 }
 .cala-project__ids--1 {
-  background: #c2410c;
+  background: var(--ids-1);
+  color: var(--ids-1-ink);
 }
 .cala-project__ids--2 {
-  background: #15803d;
+  background: var(--ids-2);
+  color: var(--ids-2-ink);
 }
 .cala-project__ids--3 {
-  background: #7c3aed;
+  background: var(--ids-3);
+  color: var(--ids-3-ink);
 }
 .cala-project__ids--4 {
-  background: #be185d;
+  background: var(--ids-4);
+  color: var(--ids-4-ink);
 }
 .cala-project__ids--5 {
-  background: #0e7490;
+  background: var(--ids-5);
+  color: var(--ids-5-ink);
 }
 .cala-project__row--ids0 td:first-child {
-  box-shadow: inset 4px 0 #2563eb;
+  box-shadow: inset 4px 0 var(--ids-0);
 }
 .cala-project__row--ids1 td:first-child {
-  box-shadow: inset 4px 0 #c2410c;
+  box-shadow: inset 4px 0 var(--ids-1);
 }
 .cala-project__row--ids2 td:first-child {
-  box-shadow: inset 4px 0 #15803d;
+  box-shadow: inset 4px 0 var(--ids-2);
 }
 .cala-project__row--ids3 td:first-child {
-  box-shadow: inset 4px 0 #7c3aed;
+  box-shadow: inset 4px 0 var(--ids-3);
 }
 .cala-project__row--ids4 td:first-child {
-  box-shadow: inset 4px 0 #be185d;
+  box-shadow: inset 4px 0 var(--ids-4);
 }
 .cala-project__row--ids5 td:first-child {
-  box-shadow: inset 4px 0 #0e7490;
+  box-shadow: inset 4px 0 var(--ids-5);
 }
 
 /* A saved result in the viewer (ResultView): the stages that ran. */

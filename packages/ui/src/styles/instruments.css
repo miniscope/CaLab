@@ -410,7 +410,7 @@
 }
 
 .metric-tile__status--warning {
-  background: var(--status-warning);
+  background: var(--status-warning-mark);
 }
 
 .metric-tile__status--critical {
