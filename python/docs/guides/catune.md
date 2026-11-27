@@ -47,14 +47,14 @@ calab.tune(
 ) -> dict | None
 ```
 
-| Parameter      | Description                                                                       |
-| -------------- | --------------------------------------------------------------------------------- |
-| `traces`       | Calcium traces. Shape `(n_cells, n_timepoints)` or `(n_timepoints,)`.             |
-| `fs`           | Sampling rate in Hz. Default: `30.0`.                                             |
-| `timeout`      | Seconds to wait. `None` waits forever (until Ctrl-C or browser close).            |
-| `port`         | Port to bind the bridge server to. `None` auto-assigns a free port.               |
-| `app_url`      | Override the CaTune URL (useful for local dev). Default: the `calab.miniscope.org` deployment. |
-| `open_browser` | Whether to auto-open the browser. Default: `True`.                                |
+| Parameter      | Description                                                                                     |
+| -------------- | ----------------------------------------------------------------------------------------------- |
+| `traces`       | Calcium traces. Shape `(n_cells, n_timepoints)` or `(n_timepoints,)`.                           |
+| `fs`           | Sampling rate in Hz. Default: `30.0`.                                                           |
+| `timeout`      | Seconds to wait. `None` waits forever (until Ctrl-C or browser close).                          |
+| `port`         | Port to bind the bridge server to. `None` auto-assigns a free port.                             |
+| `app_url`      | Override the CaTune URL (useful for local dev). Default: the `calab.miniscope.org` deployment.  |
+| `open_browser` | Whether to auto-open the browser. Default: `True`.                                              |
 | `version`      | Open a kept release (e.g. `"2.23.1"`) instead of the newest. See [the bridge guide](bridge.md). |
 
 ### Return value

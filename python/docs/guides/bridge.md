@@ -55,8 +55,8 @@ Every app the bridge knows about is one entry in
 built-in defaults; the deployed site can update them (see "The app manifest"
 below):
 
-| Slug      | Deployed at                                  | Results schema          |
-| --------- | -------------------------------------------- | ----------------------- |
+| Slug      | Deployed at                            | Results schema          |
+| --------- | -------------------------------------- | ----------------------- |
 | `catune`  | `https://calab.miniscope.org/CaTune/`  | `catune-export` 1.2.0   |
 | `cadecon` | `https://calab.miniscope.org/CaDecon/` | `cadecon-results` 2     |
 | `cabana`  | `https://calab.miniscope.org/CaBaNA/`  | none (no bridge export) |
