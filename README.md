@@ -4,7 +4,7 @@ Calcium imaging analysis tools
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/miniscope/CaLab/actions/workflows/ci.yml/badge.svg)](https://github.com/miniscope/CaLab/actions/workflows/ci.yml)
-[![GitHub Pages](https://github.com/miniscope/CaLab/actions/workflows/deploy.yml/badge.svg)](https://miniscope.github.io/CaLab/)
+[![GitHub Pages](https://github.com/miniscope/CaLab/actions/workflows/deploy.yml/badge.svg)](https://calab.miniscope.org/)
 [![PyPI](https://img.shields.io/pypi/v/calab)](https://pypi.org/project/calab/)
 [![Documentation](https://readthedocs.org/projects/calab/badge/?version=latest)](https://calab.readthedocs.io)
 
@@ -16,10 +16,10 @@ Your trace data never leaves the browser. The apps collect anonymous usage analy
 
 CaLab provides two deconvolution approaches:
 
-- **[CaTune](https://miniscope.github.io/CaLab/CaTune/)** — interactive parameter tuning. You choose the deconvolution parameters (rise time, decay time, sparsity) while watching the solver update in real time, then export them for batch processing.
-- **[CaDecon](https://miniscope.github.io/CaLab/CaDecon/)** — automated deconvolution. Estimates the calcium kernel and deconvolution parameters directly from your data using the InDeCa algorithm — no manual tuning needed.
+- **[CaTune](https://calab.miniscope.org/CaTune/)** — interactive parameter tuning. You choose the deconvolution parameters (rise time, decay time, sparsity) while watching the solver update in real time, then export them for batch processing.
+- **[CaDecon](https://calab.miniscope.org/CaDecon/)** — automated deconvolution. Estimates the calcium kernel and deconvolution parameters directly from your data using the InDeCa algorithm — no manual tuning needed.
 
-- **[Cala](https://miniscope.github.io/CaLab/Cala/)** (beta) — streaming cell finding. Reads a raw 1-photon Miniscope AVI folder in place and finds somatic footprints and extracts traces frame by frame, with quality-control indicators. See the **[user guide](apps/cala/USER_GUIDE.md)**.
+- **[Cala](https://calab.miniscope.org/Cala/)** (beta) — streaming cell finding. Reads a raw 1-photon Miniscope AVI folder in place and finds somatic footprints and extracts traces frame by frame, with quality-control indicators. See the **[user guide](apps/cala/USER_GUIDE.md)**.
 
 A companion **[Python package](https://calab.readthedocs.io)** (`calab`) provides the same solver as a native Python extension, plus utilities for loading data from CaImAn and Minian, synthetic trace simulation, and batch processing from scripts.
 
@@ -34,7 +34,7 @@ An optional **community sharing** feature (powered by Supabase) lets users share
 
 ### Browser (no install)
 
-1. Open **[CaTune](https://miniscope.github.io/CaLab/CaTune/)** or **[CaDecon](https://miniscope.github.io/CaLab/CaDecon/)** in your browser
+1. Open **[CaTune](https://calab.miniscope.org/CaTune/)** or **[CaDecon](https://calab.miniscope.org/CaDecon/)** in your browser
 2. Try the built-in demo data to explore the interface
 3. Drag and drop your own `.npy` or `.npz` file containing calcium traces
 4. **CaTune:** adjust parameters with the sliders, then export as JSON
@@ -66,12 +66,12 @@ See the **[Python documentation](https://calab.readthedocs.io)** for the full AP
 
 ## Apps
 
-| App                                                   | Description                                                                        | Status      |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------- |
-| [CaTune](https://miniscope.github.io/CaLab/CaTune/)   | Interactive deconvolution parameter tuning                                         | Stable      |
-| [CaDecon](https://miniscope.github.io/CaLab/CaDecon/) | Automated deconvolution with kernel estimation                                     | Stable      |
-| [Cala](https://miniscope.github.io/CaLab/Cala/)       | Streaming cell finding from raw Miniscope video ([guide](apps/cala/USER_GUIDE.md)) | Beta        |
-| [CaBaNA](apps/cabana/)                                | Behavioral and neural analysis                                                     | Coming soon |
+| App                                             | Description                                                                        | Status      |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------- | ----------- |
+| [CaTune](https://calab.miniscope.org/CaTune/)   | Interactive deconvolution parameter tuning                                         | Stable      |
+| [CaDecon](https://calab.miniscope.org/CaDecon/) | Automated deconvolution with kernel estimation                                     | Stable      |
+| [Cala](https://calab.miniscope.org/Cala/)       | Streaming cell finding from raw Miniscope video ([guide](apps/cala/USER_GUIDE.md)) | Beta        |
+| [CaBaNA](apps/cabana/)                          | Behavioral and neural analysis                                                     | Coming soon |
 
 ## Python Package
 
