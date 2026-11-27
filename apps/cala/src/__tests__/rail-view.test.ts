@@ -7,6 +7,7 @@ import {
   MIN_SHARE,
   niceCeil,
   RailHistory,
+  railKey,
   railLabel,
   railStages,
   runSecondsLeft,
@@ -208,5 +209,30 @@ describe('formatting', () => {
     expect(formatBytes(0)).toBe('0 MB');
     expect(formatBytes(380 * 1024 ** 2)).toBe('380 MB');
     expect(formatBytes(1.44 * 1024 ** 3)).toBe('1.4 GB');
+  });
+});
+
+describe('railKey', () => {
+  const k = {
+    discover: 'running',
+    extract: 'idle',
+    settling: false,
+    finalLibrary: false,
+    setupPhase: '',
+    noFrames: false,
+    libraryVersion: 3,
+    hasWork: false,
+    hasVisits: false,
+  };
+
+  it('changes on a new library and on the first work and visit readings', () => {
+    expect(railKey({ ...k, libraryVersion: 4 })).not.toBe(railKey(k));
+    expect(railKey({ ...k, hasWork: true })).not.toBe(railKey(k));
+    expect(railKey({ ...k, hasVisits: true })).not.toBe(railKey(k));
+    expect(railKey({ ...k, discover: 'done' })).not.toBe(railKey(k));
+  });
+
+  it('is the same for the same facts (frames read and rates alone do not refresh it)', () => {
+    expect(railKey({ ...k })).toBe(railKey(k));
   });
 });

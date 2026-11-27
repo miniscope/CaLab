@@ -337,3 +337,38 @@ export function railStatus(i: RailTrackInput & { discover: string }): {
   const last = e.state === 'done' ? STEP_LABEL.extract : STEP_LABEL.discover;
   return { stage: `${last} done`, state: 'complete' };
 }
+
+/** What, besides the 2 Hz beat, refreshes the rail at once (`createSampled`'s key). */
+export interface RailKeyInput {
+  discover: string;
+  extract: string;
+  settling: boolean;
+  finalLibrary: boolean;
+  setupPhase: string;
+  /** No Discover frame read yet. */
+  noFrames: boolean;
+  /** The published library's version: a new cell count lands at once. */
+  libraryVersion: number;
+  /** A work reading and a visit-rate reading exist: the first of each lands at once. */
+  hasWork: boolean;
+  hasVisits: boolean;
+}
+
+/**
+ * The rail's refresh key: changes of stage, a newly published library, and the first work and
+ * visit readings of a run. Each changes a few times per run, so the figures stay at 2 Hz
+ * between them, and a discrete fact never waits for the beat.
+ */
+export function railKey(i: RailKeyInput): string {
+  return [
+    i.discover,
+    i.extract,
+    i.settling,
+    i.finalLibrary,
+    i.setupPhase,
+    i.noFrames,
+    i.libraryVersion,
+    i.hasWork,
+    i.hasVisits,
+  ].join('|');
+}

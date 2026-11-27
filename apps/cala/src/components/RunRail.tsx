@@ -27,6 +27,7 @@ import {
   RAIL_SPEED_RANGE,
   RAIL_VISIT_RANGE,
   RailHistory,
+  railKey,
   railLabel,
   railStages,
   railStatus,
@@ -105,17 +106,18 @@ export function RunRail(props: RunRailProps): JSX.Element {
     sessionRun: props.sessions != null,
   }));
 
-  const phase = () => {
-    const lb = c().status()?.lookback;
-    return [
-      s().status(),
-      p().status(),
-      lb?.settling === true,
-      c().status()?.final === true,
-      s().setup()?.phase ?? '',
-      s().processed() === 0,
-    ].join('|');
-  };
+  const phase = () =>
+    railKey({
+      discover: s().status(),
+      extract: p().status(),
+      settling: c().status()?.lookback?.settling === true,
+      finalLibrary: c().status()?.final === true,
+      setupPhase: s().setup()?.phase ?? '',
+      noFrames: s().processed() === 0,
+      libraryVersion: c().library()?.version ?? -1,
+      hasWork: s().work() !== null,
+      hasVisits: s().visitAchieved() !== null,
+    });
 
   const read = (): Snapshot => {
     const lb = c().status()?.lookback;
