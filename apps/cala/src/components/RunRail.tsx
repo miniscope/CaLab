@@ -203,7 +203,7 @@ export function RunRail(props: RunRailProps): JSX.Element {
     // Not while starting: the last run's library is still loaded then.
     const sampling = v.track.discover !== 'idle' && v.track.discover !== 'starting';
     if (v.cells !== null && sampling) history.addCells(x, v.cells);
-    history.addWorkers(v.workers.count);
+    if (sampling) history.addWorkers(v.workers.count);
     setHist({
       x: history.x.slice(),
       cells: history.cells.slice(),
@@ -218,14 +218,9 @@ export function RunRail(props: RunRailProps): JSX.Element {
     snap().track.steps.find((v) => v.state === 'running' || v.state === 'paused')?.key ?? null;
 
   return (
-    <section
-      class="cala-rail"
-      role="status"
-      aria-label="Run"
-      data-testid="run-strip"
-      data-state={status().state}
-    >
-      <strong class="cala-visually-hidden" data-testid="run-strip-stage">
+    <section class="cala-rail" aria-label="Run" data-testid="run-strip" data-state={status().state}>
+      {/* The live region: only the stage word, so the 2 Hz figures are not announced. */}
+      <strong class="cala-visually-hidden" role="status" data-testid="run-strip-stage">
         {status().stage}
       </strong>
       <Show when={props.sessions}>
