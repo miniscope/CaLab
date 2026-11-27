@@ -89,6 +89,7 @@ import { presetCurve } from './lib/speed-schedule.ts';
 import { PACE_BATCH, PACE_SLACK } from './lib/frame-pacer.ts';
 import { FLOOR, TRACKER } from './lib/speed-floor.ts';
 import { LOOKBACK } from './lib/slow-runner.ts';
+import { visitRateSetting } from './lib/visit-rate.ts';
 import {
   CSETTLE,
   GOVERNOR,
@@ -316,9 +317,10 @@ const App: Component = () => {
   // goes first and Background settle asks only when it has nothing to ask.
   if (params.has('debug') && params.has('needfirst') && params.get('needfirst') !== '0')
     pipeline.setCsettleNeedFirst(true);
-  // `?debug&visitrate=off` (measurement only): no Discover visit cap and no hold (the behaviour
-  // before the fixed visit rate; `lib/visit-rate.ts`).
-  if (params.has('debug') && params.get('visitrate') === 'off') pipeline.setVisitRateOff(true);
+  // `?debug&visitrate=off|auto` (measurement only): no Discover visit cap and no hold (the
+  // behaviour before the fixed visit rate), or the opt-in Auto schedule instead of the fixed rate (`lib/visit-rate.ts`).
+  if (params.has('debug') && params.has('visitrate'))
+    pipeline.setVisitRateSetting(visitRateSetting(params.get('visitrate')));
   // `?debug&settlevisits=R` (measurement only): the Final settle's visit rate, visits per settle
   // frame; `off` hands out visits whenever a visit worker is free (the behaviour before).
   if (params.has('debug') && params.has('settlevisits'))

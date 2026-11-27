@@ -3919,6 +3919,86 @@ fn visit_rate_caps_ordinary_visits_per_frame() {
     );
 }
 
+/// The Auto schedule (`visitrate.rs`) is fed where a visit's result lands:
+/// visits made in place (`step`) and run as jobs (`step_via`) give the same
+/// curve, the same visits and the same library; it counts every ordinary
+/// visit and the new cells they found, and a fixed schedule with the cap at
+/// its target behaves exactly as the bare cap.
+#[test]
+fn visit_schedule_same_in_place_and_as_jobs() {
+    let t = 1500;
+    let (m, seed) = busy_movie(t);
+    let cfg = shard_config();
+    let n_px = N * N;
+    let sched = VisitSchedule {
+        // Small enough that the busy movie's few tiles leave the warm-up and move the target.
+        slow_half_life: 8.0,
+        fast_half_life: 4.0,
+        cap_ratio: 1.0,
+        target: 0.5,
+        ..VisitSchedule::auto()
+    };
+    let run = |via: bool, s: Option<VisitSchedule>, rate: f64| {
+        let (mut a, mut ea) = start(cfg.clone(), &seed);
+        let mut runner = VisitRunner::new(new_loop(&cfg));
+        a.set_visit_rate(rate);
+        if let Some(s) = s {
+            a.set_visit_schedule(s);
+        }
+        let mut targets = Vec::new();
+        for k in 0..t {
+            let f = &m[k * n_px..(k + 1) * n_px];
+            let tr = ea.process(f).unwrap();
+            let lib = ea.library().clone();
+            a.observe(f, &lib, &tr).unwrap();
+            let p = if via {
+                a.step_via(1_000_000_000, &mut runner).unwrap()
+            } else {
+                a.step(1_000_000_000).unwrap()
+            };
+            if let Some(l) = p {
+                ea.set_library(l).unwrap();
+            }
+            targets.push(a.visit_rate_stats().target);
+        }
+        let lib = a.finalize().unwrap().to_bytes()[16..].to_vec();
+        (
+            a.visit_rate_stats(),
+            a.stats(),
+            a.churn_counts(),
+            targets,
+            lib,
+        )
+    };
+    let (va, sa, ca, ta, la) = run(false, Some(sched), 0.0);
+    let (vb, sb, _, tb, lb) = run(true, Some(sched), 0.0);
+    assert_eq!(va, vb);
+    assert_eq!(sa, sb);
+    assert_eq!(ta, tb);
+    assert!(la == lb);
+    assert!(va.auto);
+    assert_eq!(va.fed_visits, sa.visits);
+    assert_eq!(va.fed_new, ca.adds_new);
+    assert!(va.fed_new > 0);
+    assert!(
+        va.rung_changes > 0,
+        "the target never moved: {va:?} over {} visits",
+        sa.visits
+    );
+    // Fixed at the bare cap's rate: the same visits and library as the bare cap.
+    let fixed = VisitSchedule {
+        auto: false,
+        ..sched
+    };
+    let (vf, sf, _, tf, lf) = run(false, Some(fixed), 0.0);
+    let (vc, sc, _, _, lc) = run(false, None, 0.5);
+    assert_eq!(sf, sc);
+    assert!(lf == lc);
+    assert_eq!(vf.visits, vc.visits);
+    assert!(tf.iter().all(|&x| x == 0.5));
+    assert_eq!(vf.rung_changes, 0);
+}
+
 /// The cap holds visits handed out as jobs as well (`take_job_bytes`), and
 /// leaves Refine-scope visits alone.
 #[test]

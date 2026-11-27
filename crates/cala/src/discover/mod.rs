@@ -248,7 +248,7 @@ pub use shard::{VisitJob, VisitResult, VisitRunner};
 /// Measurement hook: called with every library a [`SlowLoop`] publishes
 /// ([`SlowLoop::publish_tap`]).
 pub type PublishTap = Box<dyn FnMut(&Library) + Send>;
-pub use visitrate::{VisitRateStats, VISIT_BANK_FRAMES};
+pub use visitrate::{VisitRateStats, VisitSchedule, VISIT_BANK_FRAMES, VISIT_HOLD_FLOOR_RATIO};
 
 #[cfg(feature = "jsbindings")]
 mod js;
@@ -3244,7 +3244,9 @@ impl SlowLoop {
             }
             self.visit_spent();
             let w0 = self.work;
+            let new0 = self.churn.counts().adds_new;
             self.visit(ti)?;
+            self.visit_rate_done(new0);
             self.credit -= (self.work - w0) as i64;
         }
         if self.pending && self.frames >= self.last_commit + self.cfg.commit_interval_frames {

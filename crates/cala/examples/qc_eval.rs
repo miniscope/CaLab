@@ -19,7 +19,15 @@
 //!   --visit-rate R     cap Discover's ordinary tile visits at R per observed
 //!                      frame (`SlowLoop::set_visit_rate`, the app's cap; off
 //!                      by default). Pair it with a large `--budget` so the
-//!                      rate, not the work budget, binds (as in the app)
+//!                      rate, not the work budget, binds (as in the app).
+//!                      `fixed` or `auto`: the app's schedule
+//!                      (`VisitSchedule::fixed` / `auto`, `discover/visitrate.rs`)
+//!                      with the cap at `--visit-cap-ratio` (default 1) times
+//!                      the target in force (the app's held runs sit at the
+//!                      target; its cap is 4/3 of it). `global.tsv` has the
+//!                      target, the cap and the yields every 100 frames
+//!                      (`visit_target`, `visit_cap`, `visit_yield_slow`,
+//!                      `visit_yield_fast`, `visit_fed_new`)
 //!   --start N          frame at which the slow loop / oracle library starts (50)
 //!   --every K          checkpoint every K frames (default 300)
 //!   --perturb-frac F   oracle: share of cells perturbed (default 0.3)
@@ -447,7 +455,7 @@ use calab_cala::discover::{
     CoreTest, EditScope, JointAdmit, JointSign, JointUpdate, LookBack as LbSched, LookbackConfig,
     LookbackNext, LookbackOrder, LookbackOutcome, LookbackReservoir, MergeRule, RefineGate,
     SettleSched, SlowLoop, SlowLoopConfig, SupportRule, VisitJob, VisitResult, VisitRunner,
-    LB_BLOCK,
+    VisitSchedule, LB_BLOCK,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -5361,7 +5369,26 @@ fn main() {
     let dump = args.iter().any(|a| a == "--dump");
     let dump_signed = !args.iter().any(|a| a == "--no-signed");
     let budget: u64 = arg_value(&args, "--budget").map_or(30_000_000, |s| s.parse().unwrap());
-    let visit_rate: f64 = arg_value(&args, "--visit-rate").map_or(0.0, |s| s.parse().unwrap());
+    // `--visit-rate R` (a bare cap, as before), `fixed` or `auto` (the app's schedules,
+    // `VisitSchedule`, with the cap at `--visit-cap-ratio` times the target: 1 by default, since
+    // qc_eval has no frame-loop hold and the app's held runs sit at the target).
+    let visit_cap_ratio: f64 =
+        arg_value(&args, "--visit-cap-ratio").map_or(1.0, |s| s.parse().unwrap());
+    let visit_schedule: Option<VisitSchedule> = match arg_value(&args, "--visit-rate").as_deref() {
+        Some("auto") => Some(VisitSchedule {
+            cap_ratio: visit_cap_ratio,
+            ..VisitSchedule::auto()
+        }),
+        Some("fixed") => Some(VisitSchedule {
+            cap_ratio: visit_cap_ratio,
+            ..VisitSchedule::fixed()
+        }),
+        _ => None,
+    };
+    let visit_rate: f64 = match arg_value(&args, "--visit-rate").as_deref() {
+        Some("auto") | Some("fixed") | None => 0.0,
+        Some(s) => s.parse().unwrap(),
+    };
     let start: usize = arg_value(&args, "--start").map_or(50, |s| s.parse().unwrap());
     let every: usize = arg_value(&args, "--every").map_or(300, |s| s.parse().unwrap());
     let frac: f64 = arg_value(&args, "--perturb-frac").map_or(0.3, |s| s.parse().unwrap());
@@ -5962,7 +5989,7 @@ fn main() {
         let _ = write!(global, "{f}\t");
     }
     global.push_str("gt_precision\tgt_recall\tgt_median_true_r\t");
-    global.push_str("adds_new\tadds_readd\tchurned\tchurned_readd\testablished_removals\tslow_adds\tslow_merges\tslow_deletes\tslow_splits\tslow_frames\tslow_cells\tforwarded_frames\tdropped_frames\tslow_visits\tvisit_jobs\tvirtual_ms\tho_frames\tho_gain_per_frame\tho_cells\tho_placebos\tho_mu\tho_penalty\tho_score\tho_penalty_ci\tho_signal\tho_score_frac\n");
+    global.push_str("adds_new\tadds_readd\tchurned\tchurned_readd\testablished_removals\tslow_adds\tslow_merges\tslow_deletes\tslow_splits\tslow_frames\tslow_cells\tforwarded_frames\tdropped_frames\tslow_visits\tvisit_jobs\tvirtual_ms\tho_frames\tho_gain_per_frame\tho_cells\tho_placebos\tho_mu\tho_penalty\tho_score\tho_penalty_ci\tho_signal\tho_score_frac\tvisit_target\tvisit_cap\tvisit_yield_slow\tvisit_yield_fast\tvisit_fed_new\n");
     // Batches waiting to be forwarded: (frame, traces, library, recording frame).
     let mut pending: Vec<(Vec<f32>, FrameTraces, Arc<Library>, usize)> = Vec::new();
     let (mut n_batches, mut n_fwd, mut fwd_frames) = (0u64, 0u64, 0u64);
@@ -6320,6 +6347,9 @@ fn main() {
                         if let Some(s) = slow.as_mut() {
                             s.publish_tap = lib_hash_tap();
                             s.set_visit_rate(visit_rate);
+                            if let Some(vs) = visit_schedule {
+                                s.set_visit_schedule(vs);
+                            }
                             s.set_lookback_reservoir(lb_res, lb_res_share);
                             if let Some(c) = &cs_cfg {
                                 s.enable_settle(c.quiet);
@@ -6734,6 +6764,26 @@ fn main() {
                             v.capped_frames
                         );
                     }
+                    if let Some(vs) = sl.visit_schedule() {
+                        println!(
+                            "visit schedule: {} target {} floor {:.4} full yield {} half-lives {}/{} visits, warm-up {} visits/tile, cap ratio {}; at the end: target {:.4}, rung {}, yield {:.3} (slow) {:.3} (fast), {} new cells over {} visits, {} rung changes",
+                            if vs.auto { "auto" } else { "fixed" },
+                            vs.target,
+                            vs.floor(),
+                            vs.full_yield,
+                            vs.slow_half_life,
+                            vs.fast_half_life,
+                            vs.warmup_visits_per_tile,
+                            vs.cap_ratio,
+                            v.target,
+                            v.rung,
+                            v.yield_slow,
+                            v.yield_fast,
+                            v.fed_new,
+                            v.fed_visits,
+                            v.rung_changes
+                        );
+                    }
                 }
                 // Branch point `discover`: Discover's last frame is done, the
                 // look-back drain has not started.
@@ -6976,6 +7026,18 @@ fn main() {
                         ]),
                         None => extra.extend([f64::NAN; 10]),
                     }
+                    // The Discover visit rate's schedule (`visitrate.rs`; 0 without a cap).
+                    let vr = slow
+                        .as_ref()
+                        .map(|sl| sl.visit_rate_stats())
+                        .unwrap_or_default();
+                    extra.extend([
+                        vr.target,
+                        vr.rate,
+                        vr.yield_slow,
+                        vr.yield_fast,
+                        vr.fed_new as f64,
+                    ]);
                     global.push_str(&global_line(&g, &extra));
                     if t_end.is_multiple_of(1200) || last {
                         println!(

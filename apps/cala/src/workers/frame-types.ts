@@ -45,6 +45,8 @@ export interface CellsSettings {
   forwardBuffers?: number;
   /** The Discover visit cap, visits per observed frame (`SlowInit.visitRate`; absent or 0 = none). */
   visitRate?: number;
+  /** The Discover visit rate's schedule (`SlowInit.visitSchedule`; absent = `visitRate` alone). */
+  visitSchedule?: 'auto' | 'fixed';
   /** The Final settle's visit rate, visits per settle frame (`SlowInit.settleVisitRate`; absent or 0 = none). */
   settleVisitRate?: number;
   /** Feed the compress worker (default off; needs its port). */

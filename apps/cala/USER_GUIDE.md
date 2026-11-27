@@ -239,13 +239,22 @@ A run has two named stages: **Discover** and **Extract** (see
    emitted early were solved with the cells known at that moment. **End Discover**
    (■) ends it at the frames read so far.
    How many cells Discover finds depends on how often it revisits each part of the
-   field of view (its **visit rate**), so Discover keeps that rate fixed: about 0.15
-   refinement visits per frame, never more than 0.2 and, on a recording, never below 0.1.
-   On a fast Speed setting or at **Max**, when the workers cannot keep up, the run is
-   held slower than asked and the Speed block says so ("Held at N fps to keep
-   refinement at 0.15 visits/frame"); a slow or paced run no longer over-visits. The
-   same recording then gives about the same cells at any speed and on any machine. A
-   live stream cannot slow down, so it keeps only the upper limit.
+   field of view (its **visit rate**), so Discover keeps that rate fixed, not tied to how
+   fast the machine is: 0.15 refinement visits per frame. (An experimental **Auto** schedule,
+   opt in with `?debug&visitrate=auto`, instead keeps 0.15 while new cells keep turning up,
+   slides down to about 0.04 as they stop, and goes back up if new cells appear later.
+   Once the field is mapped it saves visits (about half on a
+   30,000-frame recording), but Discover is only a little faster for it (3–8 % at Max in our tests on long
+   recordings, little on short ones), and it finds a few fewer cells: the late,
+   rarely active cells that extra visits still pick up (1–2 % of matched cells on
+   simulations, about 5 % of cells on real data), so it is not the default.) The Speed block shows the
+   rate in force ("Refinement 0.15 visits/frame (fixed)" or, with Auto, "Refinement 0.075 visits/frame (Auto: fewer new cells lately, …)").
+   Within the rate, a run never makes more than 4/3 and, on a recording, never fewer
+   than 2/3 of its visits per frame: on a fast Speed setting or at **Max**, when the
+   workers cannot keep up, the run is held slower than asked and the Speed block says so
+   ("Held at N fps to keep refinement at 0.15 visits/frame"); a slow or paced run no
+   longer over-visits. The same recording then gives about the same cells at any speed
+   and on any machine. A live stream cannot slow down, so it keeps only the upper limit.
 3. **The Final settle ends Discover (recordings).** For a recording, Discover runs with
    **look-back**: it also re-reads earlier frames for each new cell, so footprints
    converge as it goes, and after the last frame it runs a **Final settle** (Thorough by
