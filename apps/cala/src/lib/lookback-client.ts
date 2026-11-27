@@ -310,7 +310,8 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       postAll(() => [{ type: 'session', session, index, transform: t }, []]);
     },
     final(session) {
-      // Worker 0 serves the end settle (the pool serves the settle during Discover only).
+      // Only worker 0 reads what Discover recorded in the Final settle; pool workers serve it
+      // only on the factors, which need nothing from Discover.
       if (run?.session === session)
         workers[0]?.postMessage({ type: 'final', session } satisfies MainToLookback);
     },

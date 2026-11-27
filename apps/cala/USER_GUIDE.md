@@ -150,7 +150,9 @@ order you use them:
   settle**, **Final settle**; grey is **Idle**), each as tall as that job's share of
   the last second, and shows how busy the worker was as a percent; hover a square for
   the split. Read frames, Find cells, Look-back and Background settle are the jobs of
-  Discover; Extract runs after it and is not in the grid.
+  Discover; while the Final settle runs, all the work shown (the cell model's, the
+  footprint helpers' and every look-back worker's) is Final settle. Extract runs after it
+  and is not in the grid.
 - **Results**: **Extract** and the **Export** menu.
 
 In a narrow window the stages

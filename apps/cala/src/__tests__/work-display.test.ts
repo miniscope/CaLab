@@ -72,9 +72,14 @@ describe('rows', () => {
       idle: 0.4,
     },
     visit: [0.5, 0.6],
+    settle: {
+      slow: { live: 0, visit: 0, housekeep: 0, need: 0, csettle: 0, end: 0, publish: 0, setup: 0 },
+      visit: [0, 0],
+    },
     lookback: {
       busy: 1.5,
       workers: [0.7, 0.8],
+      workersEnd: [0, 0],
       capacity: 2,
       kinds: {
         need: {
@@ -99,7 +104,7 @@ describe('rows', () => {
     },
     batchWait: { meanMs: 0, lastMs: 0, max1sMs: 0 },
     fast: { stages: [0.16, 0.12, 0.24] },
-  } as unknown as WorkRates;
+  } satisfies WorkRates;
   const by = workByKind(rates);
 
   it('short labels and a flag where a group starts', () => {

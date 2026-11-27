@@ -84,6 +84,28 @@ describe('DutyClock', () => {
   });
 });
 
+describe('DutyClock tagged time', () => {
+  it('sums apart the time charged while the tag holds, by duty, and a reset zeroes it', () => {
+    let t = 0;
+    let tag = false;
+    const c = new DutyClock(
+      ['a', 'b'] as const,
+      () => t,
+      () => tag,
+    );
+    c.span('a', () => (t += 10));
+    tag = true;
+    c.span('a', () => (t += 5));
+    c.span('b', () => (t += 7));
+    tag = false;
+    c.span('b', () => (t += 3));
+    expect(c.snapshot()).toEqual({ a: 15, b: 10 });
+    expect(c.snapshotTagged()).toEqual({ a: 5, b: 7 });
+    c.reset();
+    expect(c.snapshotTagged()).toEqual({ a: 0, b: 0 });
+  });
+});
+
 describe('WindowMax', () => {
   it('keeps the largest value of the last window and forgets older ones', () => {
     const w = new WindowMax(1000);
@@ -594,6 +616,60 @@ describe('workByKind', () => {
     expect(w1.shares.bgSettle).toBeCloseTo(0.3);
     expect(w0.shares.bgSettle).toBeGreaterThan(0);
     expect(WORK_KINDS.reduce((a, k) => a + w0.shares[k], 0)).toBeLessThanOrEqual(1 + 1e-9);
+  });
+
+  it("files a pool worker's Final-settle answers as Final settle, the rest of its share as Background settle", () => {
+    const r = rates((w) => {
+      w.lookbackWorkerBusyMs = [500, 600, 400];
+      w.lookbackWorkerEndBusyMs = [500, 600, 100];
+      w.lookback.end.solveMs = 1200;
+      w.lookback.csettle.solveMs = 300;
+    });
+    r.lookback.capacity = 3;
+    const lb = workByKind(r).workers.filter((w) => w.group === 'lookback');
+    expect(lb[0].shares.finalSettle).toBeCloseTo(0.5);
+    expect(lb[0].shares.bgSettle).toBe(0);
+    expect(lb[1].shares.finalSettle).toBeCloseTo(0.6);
+    expect(lb[1].shares.bgSettle).toBe(0);
+    expect(lb[2].shares.finalSettle).toBeCloseTo(0.1);
+    expect(lb[2].shares.bgSettle).toBeCloseTo(0.3);
+  });
+
+  it('holds the pooled Final settle at one share per worker, not one in all', () => {
+    const rater = new WorkRater(1000);
+    rater.push(snap(0, (w) => (w.lookbackWorkerBusyMs = [0, 0])));
+    const r = rater.push(
+      snap(1000, (w) => {
+        w.lookback.end = { ...emptyLookbackWork(), answers: 4, frames: 64, solveMs: 1100 };
+        w.lookbackWorkerBusyMs = [550, 550];
+        w.lookbackWorkerEndBusyMs = [550, 550];
+        w.settleWorkers = 1;
+      }),
+    )!;
+    expect(r.lookback.kinds.end.busy).toBeCloseTo(1.1);
+    const lb = workByKind(r).workers.filter((w) => w.group === 'lookback');
+    expect(lb.map((w) => +w.shares.finalSettle.toFixed(2))).toEqual([0.55, 0.55]);
+  });
+
+  it("files the Final settle's visits and the slow worker's time in it as Final settle, not Find cells", () => {
+    const r = rates((w) => {
+      w.busyMs.visit = 100;
+      w.busyMs.housekeep = 200;
+      w.busyMs.publish = 50;
+      w.busyMs.end = 500;
+      w.settleBusyMs = { ...emptyWork().busyMs, visit: 60, housekeep: 200, publish: 30, end: 500 };
+      w.visitBusyMs = [400, 300];
+      w.settleVisitBusyMs = [250, 300];
+    });
+    const k = workByKind(r);
+    const slow = k.workers.find((w) => w.group === 'slow')!;
+    expect(slow.shares.discovery).toBeCloseTo(0.04 + 0.02);
+    expect(slow.shares.finalSettle).toBeCloseTo(0.5 + 0.06 + 0.2 + 0.03);
+    const [v0, v1] = k.workers.filter((w) => w.group === 'visit');
+    expect(v0.shares.discovery).toBeCloseTo(0.15);
+    expect(v0.shares.finalSettle).toBeCloseTo(0.25);
+    expect(v1.shares.discovery).toBe(0);
+    expect(v1.shares.finalSettle).toBeCloseTo(0.3);
   });
 
   it('has no look-back rows without look-back, and no fast rows without stage shares', () => {
