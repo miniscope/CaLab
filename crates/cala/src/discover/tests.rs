@@ -6,6 +6,7 @@ use std::sync::Arc;
 use super::*;
 use crate::preprocess::flatten::{FlattenConfig, GlowFlattener};
 use crate::preprocess::fov::FovMask;
+use crate::test_rng::Lcg;
 use crate::trace::{Footprint, LibraryBuilder, SolverConfig, TraceEngine};
 
 const N: usize = 96;
@@ -20,20 +21,6 @@ fn flattener() -> GlowFlattener {
         ..FlattenConfig::default()
     };
     GlowFlattener::new(&FovMask::full(dims()), &cfg).unwrap()
-}
-
-struct Lcg(u64);
-impl Lcg {
-    fn next(&mut self) -> f32 {
-        self.0 = self
-            .0
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        ((self.0 >> 40) as f32) / (1u64 << 24) as f32
-    }
-    fn normal(&mut self) -> f32 {
-        (0..12).map(|_| self.next()).sum::<f32>() - 6.0
-    }
 }
 
 /// Gaussian soma (σ 2.5 px, peak 1) as an unfiltered footprint.
@@ -330,27 +317,39 @@ fn a_true_cell_is_never_deleted_over_a_long_run() {
     }
 }
 
+/// Under either merge rule a duplicate of an established cell is merged
+/// (under the split-half rule: its light and the cell's form one basin).
 #[test]
 fn a_duplicate_of_an_established_cell_is_merged() {
     let t = 1200;
     let mut rng = Lcg(41);
     let cells = vec![(blob(0, 47.0, 47.0), trace(&mut rng, t, 0.03, 6.0))];
     let m = movie(&cells, t, 43);
-    let (mut slow, mut eng) = start(v2_config(), &[blob(1, 47.0, 47.0)]);
-    let mut deleted = Vec::new();
-    drive(&m, 0..600, &mut slow, &mut eng, &mut deleted);
-    assert_eq!(
-        slow.cell_info(1).map(|c| c.status),
-        Some(CellStatus::Established)
-    );
-    // A second copy, 2 px off, appears later (as a late add would).
-    assert_eq!(slow.seed(&[blob(9, 49.0, 48.0)]).unwrap(), 1);
-    assert_eq!(slow.finalize().unwrap().len(), 2);
-    drive(&m, 600..t, &mut slow, &mut eng, &mut deleted);
-    let lib = slow.finalize().unwrap();
-    assert_eq!(lib.ids(), &[1], "stats {:?}", slow.stats());
-    assert!(slow.stats().merges >= 1);
-    assert!(deleted.is_empty(), "merged, not deleted: {deleted:?}");
+    for rule in [MergeRule::Legacy, MergeRule::SplitHalf] {
+        let cfg = SlowLoopConfig {
+            merge_rule: rule,
+            ..v2_config()
+        };
+        let (mut slow, mut eng) = start(cfg, &[blob(1, 47.0, 47.0)]);
+        let mut deleted = Vec::new();
+        drive(&m, 0..600, &mut slow, &mut eng, &mut deleted);
+        assert_eq!(
+            slow.cell_info(1).map(|c| c.status),
+            Some(CellStatus::Established),
+            "{rule:?}"
+        );
+        // A second copy, 2 px off, appears later (as a late add would).
+        assert_eq!(slow.seed(&[blob(9, 49.0, 48.0)]).unwrap(), 1);
+        assert_eq!(slow.finalize().unwrap().len(), 2);
+        drive(&m, 600..t, &mut slow, &mut eng, &mut deleted);
+        let lib = slow.finalize().unwrap();
+        assert_eq!(lib.ids(), &[1], "{rule:?}: stats {:?}", slow.stats());
+        assert!(slow.stats().merges >= 1, "{rule:?}");
+        assert!(
+            deleted.is_empty(),
+            "{rule:?}: merged, not deleted: {deleted:?}"
+        );
+    }
 }
 
 #[test]
@@ -2588,28 +2587,6 @@ fn take_job_bytes_equal_the_plain_encoding() {
     }
     assert!(jobs[0] > 0 && jobs[1] > 0, "jobs per run: {jobs:?}");
     assert!(shared > 0, "no job read random slots from the shared store");
-}
-
-/// Under the split-half merge rule a duplicate of an established cell is
-/// still merged (its light and the cell's form one basin).
-#[test]
-fn split_half_merge_rule_still_merges_a_duplicate() {
-    let t = 1200;
-    let mut rng = Lcg(41);
-    let cells = vec![(blob(0, 47.0, 47.0), trace(&mut rng, t, 0.03, 6.0))];
-    let m = movie(&cells, t, 43);
-    let cfg = SlowLoopConfig {
-        merge_rule: MergeRule::SplitHalf,
-        ..v2_config()
-    };
-    let (mut slow, mut eng) = start(cfg, &[blob(1, 47.0, 47.0)]);
-    let mut deleted = Vec::new();
-    drive(&m, 0..600, &mut slow, &mut eng, &mut deleted);
-    assert_eq!(slow.seed(&[blob(9, 49.0, 48.0)]).unwrap(), 1);
-    drive(&m, 600..t, &mut slow, &mut eng, &mut deleted);
-    let lib = slow.finalize().unwrap();
-    assert_eq!(lib.ids(), &[1], "stats {:?}", slow.stats());
-    assert!(slow.stats().merges >= 1);
 }
 
 /// The split-half merge statistic: two independent neighbours (supports

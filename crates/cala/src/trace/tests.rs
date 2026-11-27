@@ -9,28 +9,13 @@ use crate::preprocess::flatten::{FlattenConfig, GlowFlattener};
 use crate::preprocess::fov::FovMask;
 use crate::preprocess::hot_pixels::HotPixelMap;
 use crate::preprocess::{Calibration, Dims, NoRegistration, PreprocessConfig, Preprocessor};
+use crate::test_rng::Lcg;
 
 const W: usize = 64;
 const H: usize = 56;
 
 fn dims() -> Dims {
     Dims::new(W, H).unwrap()
-}
-
-/// Deterministic uniform numbers in [0, 1).
-struct Lcg(u64);
-impl Lcg {
-    fn next(&mut self) -> f32 {
-        self.0 = self
-            .0
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        ((self.0 >> 40) as f32) / (1u64 << 24) as f32
-    }
-    fn normal(&mut self) -> f32 {
-        // Sum of 12 uniforms − 6: unit variance, good enough here.
-        (0..12).map(|_| self.next()).sum::<f32>() - 6.0
-    }
 }
 
 /// Cell centres: two overlapping pairs and two isolated cells.

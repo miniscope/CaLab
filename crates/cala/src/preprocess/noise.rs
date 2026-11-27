@@ -523,28 +523,13 @@ impl NoiseMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct Lcg(u64);
-    impl Lcg {
-        fn uniform(&mut self) -> f32 {
-            self.0 = self
-                .0
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            ((self.0 >> 40) as f32 + 0.5) / (1u64 << 24) as f32
-        }
-        /// Box-Muller.
-        fn normal(&mut self) -> f32 {
-            let (u, v) = (self.uniform(), self.uniform());
-            (-2.0 * u.ln()).sqrt() * (2.0 * std::f32::consts::PI * v).cos()
-        }
-    }
+    use crate::test_rng::LcgBoxMuller;
 
     /// Returns the streamed σ map and the exact batch MAD-diff σ (pooled).
     fn feed(cfg: &NoiseConfig, frames: usize, sigma: f32, spikes: bool) -> (Vec<f32>, f32) {
         let dims = Dims::new(16, 16).unwrap();
         let mut nm = NoiseMap::new(dims, cfg).unwrap();
-        let mut rng = Lcg(3);
+        let mut rng = LcgBoxMuller(3);
         let mut prev: Option<Vec<f32>> = None;
         let mut diffs = Vec::new();
         for t in 0..frames {
@@ -617,7 +602,7 @@ mod tests {
                 ..NoiseConfig::default()
             };
             let mut nm = NoiseMap::new(dims, &cfg).unwrap();
-            let mut rng = Lcg(17);
+            let mut rng = LcgBoxMuller(17);
             for _ in 0..4000 {
                 let f: Vec<f32> = (0..256)
                     .map(|_| (50.0 + 3.0 * rng.normal()).floor())
@@ -674,7 +659,7 @@ mod tests {
         for _ in 0..30 {
             nm.update(&[5.0]).unwrap();
         }
-        let mut rng = Lcg(5);
+        let mut rng = LcgBoxMuller(5);
         for _ in 0..4000 {
             nm.update(&[5.0 + 2.0 * rng.normal()]).unwrap();
         }
@@ -690,7 +675,7 @@ mod tests {
         let dims = Dims::new(1, 3).unwrap();
         let mut masked = NoiseMap::new(dims, &NoiseConfig::default()).unwrap();
         let mut plain = NoiseMap::new(dims, &NoiseConfig::default()).unwrap();
-        let mut rng = Lcg(9);
+        let mut rng = LcgBoxMuller(9);
         for t in 0..6000 {
             // Pixel 0 always valid, 1 valid in runs (4 on, 4 off), 2 never.
             let on1 = t % 8 < 4;
