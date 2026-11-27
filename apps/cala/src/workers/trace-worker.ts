@@ -13,7 +13,7 @@ import { initCalaWasm } from '../lib/cala-wasm.ts';
 import { CompressFeed } from '../lib/compress-feed.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
 import { FovProjector } from '../lib/fov-projection.ts';
-import { transferablesOf, type PipelineStepResult } from '../lib/pipeline-engine.ts';
+import { transferablesOf, type PipelineStepResult } from '../lib/pipeline-types.ts';
 import { BackStage } from '../lib/pipeline-stages.ts';
 import { traceBackend } from '../lib/trace-backend.ts';
 import type { CompressToFast, FastToCompress } from './compress-types.ts';

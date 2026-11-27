@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createRoot } from 'solid-js';
-import { createFrameClient, type WorkerLike } from '../lib/frame-client.ts';
+import type { WorkerLike } from '../lib/frame-client.ts';
+import { frameClientOn } from './fake-workers.ts';
 import { MAX_FRAMES_PER_READ } from '../lib/frame-source.ts';
 import type { PaceStats } from '../lib/frame-pacer.ts';
-import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
+import type { PipelineStepResult } from '../lib/pipeline-types.ts';
 import { makePlan, PipelineCursor, type PipelineStep } from '../lib/pipeline-plan.ts';
 import { createPipelineStore, MAX_IN_FLIGHT, ThroughputMeter } from '../lib/pipeline-store.ts';
 import { downsampleFrame, previewFactor } from '../lib/preview.ts';
@@ -1036,13 +1037,14 @@ describe('pipeline message protocol', () => {
           return { type: 'error', id: req.id, message: 'unexpected' };
       }
     });
-    const client = createFrameClient(() => worker);
+    const client = frameClientOn(worker);
     expect(await client.startPipeline({ batchSize: 4 })).toEqual(plan);
     expect(await client.stepPipeline()).toEqual({ kind: 'done' });
     await client.stopPipeline();
-    expect(sent.map((r) => r.type)).toEqual(['pipeline-start', 'pipeline-step', 'pipeline-stop']);
-    expect(sent[0]).toMatchObject({ options: { batchSize: 4 } });
-    expect(new Set(sent.map((r) => r.id)).size).toBe(3);
+    const calls = sent.filter((r) => r.type !== 'link');
+    expect(calls.map((r) => r.type)).toEqual(['pipeline-start', 'pipeline-step', 'pipeline-stop']);
+    expect(calls[0]).toMatchObject({ options: { batchSize: 4 } });
+    expect(new Set(sent.map((r) => r.id)).size).toBe(4);
   });
 
   it('rejects on a worker error or a mismatched response', async () => {
@@ -1051,7 +1053,7 @@ describe('pipeline message protocol', () => {
         ? { type: 'error', id: req.id, message: 'The pipeline is not running.' }
         : { type: 'pipeline-stopped', id: req.id },
     );
-    const client = createFrameClient(() => worker);
+    const client = frameClientOn(worker);
     await expect(client.stepPipeline()).rejects.toThrow('not running');
     await expect(client.startPipeline()).rejects.toThrow('Unexpected worker response');
   });

@@ -25,7 +25,7 @@ import {
   zoomAt,
   type FovView,
 } from '../lib/fov-view.ts';
-import type { BatchPreviews } from '../lib/pipeline-engine.ts';
+import type { BatchPreviews } from '../lib/pipeline-types.ts';
 import type { FrameView } from '../lib/preview.ts';
 import type { PreviewImage } from '../lib/preview.ts';
 import type { DisplayRange } from '../lib/frame-display.ts';

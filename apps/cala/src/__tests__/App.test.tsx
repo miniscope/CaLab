@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render } from 'solid-js/web';
 import type { FrameSourceInfo } from '../lib/frame-source.ts';
 import type { FrameClient } from '../lib/frame-client.ts';
-import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
+import type { PipelineStepResult } from '../lib/pipeline-types.ts';
 import type { PipelinePlan } from '../lib/pipeline-plan.ts';
 import { makeFile } from './synth-avi.ts';
 

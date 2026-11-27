@@ -13,7 +13,7 @@ import { createSignal } from 'solid-js';
 import type { LibraryView, SlowStatus, SlowToMain } from '../workers/slow-types.ts';
 import { buildGeometry, type CellGeometry } from './cell-overlay.ts';
 import type { CellsBatch } from './fast-loop.ts';
-import type { StageTimings } from './pipeline-engine.ts';
+import type { StageTimings } from './pipeline-types.ts';
 import { FootprintHistory } from './footprint-history.ts';
 import { stillMovingMap } from './settle.ts';
 import { TraceHistory } from './trace-history.ts';

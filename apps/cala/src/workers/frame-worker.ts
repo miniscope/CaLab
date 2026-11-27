@@ -1,46 +1,33 @@
 /**
  * Frame worker: owns the wasm AVI parser and the `FrameSource` (so file
- * reads and decoding stay off the main thread) and transfers each decoded
- * batch back as a Transferable. Also runs the preprocess + motion pipeline
- * (`PipelineEngine`), one step per request, so the pipeline reads frames
- * without a round trip through the main thread.
- *
- * This is the fast loop: after motion correction each batch is solved for
- * the traces of the current footprint library, and the frames are forwarded
- * to the slow worker (cell discovery) over a `MessagePort`. The fast loop
- * never waits for the slow worker: see `FastLoop` and `ForwardPool`.
+ * reads and decoding stay off the main thread) and answers random reads with
+ * Transferables. During a run it is stage A of `pipeline-stages.ts` (read,
+ * preprocess front half, flat-field apply), one job per `pipeline-step`
+ * request, sent down to the motion worker over the `link` port; the trace
+ * worker answers the request.
  */
 import { initCalaWasm } from '../lib/cala-wasm.ts';
-import { CompressFeed } from '../lib/compress-feed.ts';
-import { FastLoop } from '../lib/fast-loop.ts';
 import { FLAT_FIELD_MAX_QUEUE } from '../lib/flat-field.ts';
 import type { FlatFieldBatch, FlatFieldSink, FlatFieldStart } from '../lib/flat-field-runner.ts';
 import { PaceGate, PacedQueue } from '../lib/frame-pacer.ts';
 import { FrameSource } from '../lib/frame-source.ts';
 import { LiveSource, type SocketLike } from '../lib/live-source.ts';
-import { PipelineEngine, transferablesOf, type FrameReader } from '../lib/pipeline-engine.ts';
+import type { FrameReader } from '../lib/pipeline-types.ts';
 import { FrontStage, jobTransferables } from '../lib/pipeline-stages.ts';
 import { FramePreviewSetting } from '../lib/frame-preview-setting.ts';
 import { StagePool } from '../lib/stage-pool.ts';
-import { traceBackend as backend } from '../lib/trace-backend.ts';
-import type { FastToCompress } from './compress-types.ts';
 import type { FrameRequest, FrameResponse, SessionProbeResult } from './frame-types.ts';
 import type { FlatFieldDown, FlatFieldUp } from './flat-field-types.ts';
 import type { StageFree, StageMsg, StageShifts } from './stage-types.ts';
-import type { FastToSlow, SlowToFast } from './slow-types.ts';
 
 let source: FrameSource | null = null;
 /** A live source (the socket lives here): frames arrive while steps wait for them. */
 let live: LiveSource | null = null;
 let liveUrl: string | null = null;
-let pipeline: PipelineEngine | null = null;
-let slowPort: MessagePort | null = null;
-let compressPort: MessagePort | null = null;
 /** Smooth pacing of a recording's Discover run, at the entry of the first stage (unpaced by default). */
 const gate = new PaceGate();
 
-// Pipelined run (`link` received): this worker is stage A only (read +
-// preprocess front half); the motion and trace workers do the rest.
+/** The port to the motion worker (stage B), from `link`. */
 let down: MessagePort | null = null;
 let front: FrontStage | null = null;
 /** The view previewed for every frame (smooth playback); cleared at every run start. */
@@ -132,8 +119,6 @@ function openLive(url: string): Promise<LiveSource> {
 
 /** `keepSlow`: a replay stage follows (or one is stopped): the slow loop stays. */
 function stopPipeline(keepSlow = false): void {
-  pipeline?.dispose();
-  pipeline = null;
   if (front) {
     front.dispose();
     front = null;
@@ -218,125 +203,64 @@ async function handle(req: FrameRequest): Promise<void> {
           throw new Error(
             'Extract needs the recording on disk (save the stream and open it as a recording).',
           );
-        if (down) {
-          epoch++;
-          // The stage asks for buffers only from its first `next()`, after the pool exists.
-          // Pass 1 estimates the flat field in the flat-field worker; pass 2 replays pass 1's map.
-          flatSession = req.cells?.session ?? 0;
-          flatSink =
-            flatPort && !req.replay && req.options.flatField !== false
-              ? new PortSink(flatPort, flatSession)
-              : null;
-          const stage = new FrontStage(
-            src,
-            req.options,
-            () => frontPool!.acquire(),
-            undefined,
-            req.replay,
-            {
-              session: flatSession,
-              ...(flatSink ? { sink: flatSink } : {}),
-              ...(req.flat?.seed ? { initial: req.flat.seed } : {}),
-            },
-          );
-          live?.setRetainFrames(
-            Math.max(stage.plan.calibrationFrames, stage.plan.motionWarmupFrames),
-          );
-          frontPool = new StagePool(
-            FRONT_BUFFERS,
-            stage.plan.batchSize * src.info.width * src.info.height,
-          );
-          stage.framePreview = framePreview.current;
-          front = stage;
-          down.postMessage({
-            type: 'start',
-            epoch,
-            id: req.id,
-            setup: stage.setup,
-            fast: stage.fastSetup,
-            cells: req.cells,
-          } satisfies StageMsg);
-          post({ type: 'pipeline-ready', id: req.id, plan: stage.plan });
-          break;
-        }
-        if (req.replay) throw new Error('Extract needs the pipelined workers.');
-        const cells = req.cells;
-        const port = slowPort;
-        pipeline = new PipelineEngine(src, req.options, undefined, (setup) => {
-          return new FastLoop(
-            {
-              ...setup,
-              session: cells?.session ?? 0,
-              discover: (cells?.discover ?? true) && port !== null,
-              qc: cells?.qc ?? true,
-              residual: cells?.residual ?? false,
-              ...(cells?.factorSettle && !cells.library && !cells.lookback
-                ? { factorSettle: true }
-                : {}),
-              ...(cells?.factorFile && !cells.library && cells.lookback
-                ? { factorFile: true }
-                : {}),
-              ...(cells?.factorSettle && !cells.library && cells.settleFraction !== undefined
-                ? { settleFraction: cells.settleFraction }
-                : {}),
-              ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
-              ...(cells?.visitRate ? { visitRate: cells.visitRate } : {}),
-              ...(cells?.visitSchedule ? { visitSchedule: cells.visitSchedule } : {}),
-              ...(cells?.settleVisitRate ? { settleVisitRate: cells.settleVisitRate } : {}),
-            },
-            port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
-            backend,
-            cells?.compress && compressPort
-              ? new CompressFeed(
-                  {
-                    width: setup.width,
-                    height: setup.height,
-                    session: cells.session,
-                    ...(cells.compressTiling ? { tiling: cells.compressTiling } : {}),
-                    ...(cells.compressPool ? { pool: cells.compressPool } : {}),
-                    ...(cells.compressBacklogCap !== undefined
-                      ? { backlogCap: cells.compressBacklogCap }
-                      : {}),
-                    ...(cells.compressFrameExtract ? { frameExtract: true } : {}),
-                    ...(cells.compressGpu ? { gpu: true } : {}),
-                    ...(cells.compressGpuCheck ? { gpuCheck: cells.compressGpuCheck } : {}),
-                  },
-                  compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
-                )
-              : null,
-          );
-        });
-        pipeline.framePreview = framePreview.current;
-        live?.setRetainFrames(
-          Math.max(pipeline.plan.calibrationFrames, pipeline.plan.motionWarmupFrames),
+        if (!down) throw new Error('The frame worker is not linked to the motion worker.');
+        epoch++;
+        // The stage asks for buffers only from its first `next()`, after the pool exists.
+        // Pass 1 estimates the flat field in the flat-field worker; pass 2 replays pass 1's map.
+        flatSession = req.cells?.session ?? 0;
+        flatSink =
+          flatPort && !req.replay && req.options.flatField !== false
+            ? new PortSink(flatPort, flatSession)
+            : null;
+        const stage = new FrontStage(
+          src,
+          req.options,
+          () => frontPool!.acquire(),
+          undefined,
+          req.replay,
+          {
+            session: flatSession,
+            ...(flatSink ? { sink: flatSink } : {}),
+            ...(req.flat?.seed ? { initial: req.flat.seed } : {}),
+          },
         );
-        post({ type: 'pipeline-ready', id: req.id, plan: pipeline.plan });
+        live?.setRetainFrames(
+          Math.max(stage.plan.calibrationFrames, stage.plan.motionWarmupFrames),
+        );
+        frontPool = new StagePool(
+          FRONT_BUFFERS,
+          stage.plan.batchSize * src.info.width * src.info.height,
+        );
+        stage.framePreview = framePreview.current;
+        front = stage;
+        down.postMessage({
+          type: 'start',
+          epoch,
+          id: req.id,
+          setup: stage.setup,
+          fast: stage.fastSetup,
+          cells: req.cells,
+        } satisfies StageMsg);
+        post({ type: 'pipeline-ready', id: req.id, plan: stage.plan });
         break;
       }
       case 'pipeline-step': {
-        // Both paths enter here. A paced step has already waited at the gate (`PacedQueue`), outside
-        // the serial queue and before any stage's timing starts, so the wait is not busy time.
-        if (down) {
-          // The answer comes from the trace worker, with this request's id.
-          if (!front) throw new Error('The pipeline is not running.');
-          const job = await front.next();
-          if (!job) {
-            flushPaceStats();
-            // The flat-field estimator gets no more batches: it says when its last map is out.
-            flatSink?.finish();
-            down.postMessage({ type: 'end', epoch, id: req.id } satisfies StageMsg);
-          } else {
-            down.postMessage(
-              { type: 'job', epoch, id: req.id, job } satisfies StageMsg,
-              jobTransferables(job),
-            );
-          }
-          break;
+        // A paced step has already waited at the gate (`PacedQueue`), outside the serial queue
+        // and before any stage's timing starts, so the wait is not busy time. The answer comes
+        // from the trace worker, with this request's id.
+        if (!front || !down) throw new Error('The pipeline is not running.');
+        const job = await front.next();
+        if (!job) {
+          flushPaceStats();
+          // The flat-field estimator gets no more batches: it says when its last map is out.
+          flatSink?.finish();
+          down.postMessage({ type: 'end', epoch, id: req.id } satisfies StageMsg);
+        } else {
+          down.postMessage(
+            { type: 'job', epoch, id: req.id, job } satisfies StageMsg,
+            jobTransferables(job),
+          );
         }
-        if (!pipeline) throw new Error('The pipeline is not running.');
-        const step = await pipeline.step();
-        if (step.kind === 'done') flushPaceStats();
-        post({ type: 'pipeline-step', id: req.id, step }, transferablesOf(step));
         break;
       }
       case 'pipeline-truncate': {
@@ -373,31 +297,6 @@ async function handle(req: FrameRequest): Promise<void> {
         post({ type: 'ok', id: req.id });
         break;
       }
-      case 'connect-slow': {
-        slowPort?.close();
-        slowPort = req.port;
-        // Slow-worker answers only record state; they are applied between batches.
-        slowPort.onmessage = (e: MessageEvent<SlowToFast>) =>
-          pipeline?.fastLoop?.handleSlow(e.data);
-        post({ type: 'ok', id: req.id });
-        break;
-      }
-      case 'connect-compress': {
-        compressPort?.close();
-        compressPort = req.port;
-        post({ type: 'ok', id: req.id });
-        break;
-      }
-      case 'set-discovery': {
-        pipeline?.fastLoop?.setDiscovery(req.on && slowPort !== null);
-        post({ type: 'ok', id: req.id });
-        break;
-      }
-      case 'set-residual': {
-        pipeline?.fastLoop?.setResidual(req.on);
-        post({ type: 'ok', id: req.id });
-        break;
-      }
     }
   } catch (err) {
     post({ type: 'error', id: req.id, message: messageOf(err) });
@@ -412,7 +311,6 @@ async function handle(req: FrameRequest): Promise<void> {
  */
 function truncateNow(): void {
   front?.truncate();
-  pipeline?.truncate();
   live?.stop();
 }
 
@@ -432,7 +330,6 @@ function actNow(req: FrameRequest): boolean {
     case 'set-frame-preview':
       framePreview.set(req.view);
       if (front) front.framePreview = framePreview.current;
-      if (pipeline) pipeline.framePreview = framePreview.current;
       post({ type: 'ok', id: req.id });
       return true;
     case 'pipeline-truncate':

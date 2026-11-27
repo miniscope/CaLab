@@ -26,7 +26,7 @@ What is here:
 - `src/lib/viewer-store.ts`, `src/components/`: open-folder screen (directory
   picker, drag and drop; `lib/directory-picker.ts` uses `showDirectoryPicker` in read
   mode where it exists, else the `webkitdirectory` input), frame canvas, scrubber, play/pause, info panel.
-- `src/lib/pipeline-plan.ts`, `src/lib/pipeline-engine.ts`: the streaming
+- `src/lib/pipeline-plan.ts`, `src/lib/pipeline-stages.ts`: the streaming
   preprocess + motion pipeline. Three walks over the recording in small
   batches: preprocessing calibration (200 raw frames), motion warm-up template
   (200 preprocessed frames, pushed batch by batch into the corrector), then every frame through the front half of the
@@ -34,9 +34,10 @@ What is here:
   corrector (warm-up template, pinned running template) and the back half
   (background floor, noise map). Each batch yields per-frame shifts and
   downsampled previews of its last frame, plus the flicker offset and gain
-  removed per frame. Runs in the frame worker, one step
-  per request; `src/lib/pipeline-store.ts` keeps at most two requests
-  outstanding (backpressure) and only the latest previews.
+  removed per frame. Runs in three workers (frame -> motion -> trace), one
+  step per request; `src/lib/pipeline-store.ts` keeps at most
+  `PIPELINED_IN_FLIGHT` requests outstanding (backpressure) and only the latest
+  previews.
 - `src/workers/slow-worker.ts` + `src/lib/slow-runner.ts`: the slow loop
   (cell discovery). With spare cores (`navigator.hardwareConcurrency` minus 5,
   at most 4; `?visits=N` sets 0 to 4) it only observes frames and hands its tile
@@ -64,7 +65,8 @@ What is here:
   the app test with a fake frame client. The browser path is in
   `e2e/cala.spec.ts`.
 - `scripts/real-data-check.mjs`: local-only check against a real recording
-  (not run in CI); also runs the pipeline headless on the first frames
+  (not run in CI; `node --experimental-transform-types`); also runs the pipeline stages
+  headless on the first frames (`StageChain`, no flat field)
   (`--motion N`, `--motion-only`) and prints shift and flicker statistics and
   throughput (`--flicker-mode 0` turns the flicker stage off, for timing it).
 
@@ -72,7 +74,7 @@ What is here:
 
 Sensor pixel gain (about 5% SD, fixed to the sensor) rides over the tissue as
 registration moves it, and motion-correlated traces pick it up as footprint
-texture. The pipelined path divides it out of the raw frames, with a gain map
+texture. The pipeline divides it out of the raw frames, with a gain map
 estimated from the recording's own motion dither (`FlatFieldEstimator`, crates/cala):
 
 - **Off the frame path.** Stage A (frame worker) keeps one copy of each process
@@ -98,8 +100,6 @@ estimated from the recording's own motion dither (`FlatFieldEstimator`, crates/c
   `metaData.json` has no serial (`deviceID` is a camera index), so folders are
   keyed by name. See `flatFieldKey` in `src/lib/flat-field.ts`.
 - **Extract** applies Discover's newest map from frame 0 and estimate nothing.
-- **Single-worker `PipelineEngine`** (`?pipeline=0`) has no flat field: estimating
-  there would put the solve on the frame path.
 - The Flat field tab shows the gain map at a fixed 0.9 to 1.1 range (no
   auto-contrast), the status, the last update's change, and the on/off setting
   (`PipelineOptions.flatField`, applied at the next start of Discover).

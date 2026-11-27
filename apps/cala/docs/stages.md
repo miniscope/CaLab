@@ -106,8 +106,8 @@ runs the same schedule (with the cap at the target, as a held Max run sits, unle
 - **Look-back and the Final settle** are on by default for recordings (the
   "Look-back refinement" checkbox and the "Final settle" level, Thorough, in
   the Run panel; `?lookback=0` turns look-back off). They need a recording on
-  disk (one session, or a Joint run of several) and the pipelined workers.
-  Where they cannot run (a live stream, `?pipeline=0`) the panel says why, and
+  disk (one session, or a Joint run of several).
+  Where they cannot run (a live stream) the panel says why, and
   the footprints get no refinement after Discover.
 - **Extract after Discover** (on by default for recordings) starts Extract
   when Discover finishes (its Final settle included). Turn it off to inspect

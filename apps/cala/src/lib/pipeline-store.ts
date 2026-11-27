@@ -43,7 +43,7 @@ import type {
   MotionBackend,
   PipelineStepResult,
   StageTimings,
-} from './pipeline-engine.ts';
+} from './pipeline-types.ts';
 import type { PipelineOptions, PipelinePhase, PipelinePlan } from './pipeline-plan.ts';
 import { PlaybackScheduler, playbackWanted } from './playback.ts';
 import { framePreviewImage, type FrameView } from './preview.ts';
@@ -223,9 +223,9 @@ export function createPipelineStore(
   const hasRaf = typeof requestAnimationFrame === 'function';
   /** Mean wall time per processed frame and stage, ms. */
   const [stageMs, setStageMs] = createSignal<StageTimings>(ZERO_TIMINGS);
-  /** Mean busy time per processed frame of each pipeline stage (A, B, C), ms; empty unless pipelined. */
+  /** Mean busy time per processed frame of each pipeline stage (A, B, C), ms; empty before the first batch. */
   const [stageBusy, setStageBusy] = createSignal<number[]>([]);
-  /** Where motion correction runs (`null` before the first batch or on the single-worker path). */
+  /** Where motion correction runs (`null` before the first batch). */
   const [motionBackend, setMotionBackend] = createSignal<MotionBackend | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   /** Cell discovery (the slow loop) on or off. */

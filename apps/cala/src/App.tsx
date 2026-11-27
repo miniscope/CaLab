@@ -132,12 +132,10 @@ const App: Component = () => {
   // eslint-disable-next-line solid/components-return-once
   if (isAuthCallback()) return <AuthCallback user={user} loading={authLoading} />;
 
-  // The worker (and the files it holds) lives as long as the app.
   // The page's URL flags, read once (`lib/page-flags.ts`).
   const flags = parsePageFlags(window.location.search);
-  // `?pipeline=0`: the old single-worker path (to compare frame rates).
+  // The workers (and the files they hold) live as long as the app.
   const client = createFrameClient(undefined, {
-    pipelined: flags.pipelined,
     // `?gpu=0`: WASM motion correction (to compare with WebGPU).
     gpu: flags.gpu,
   });
@@ -154,7 +152,7 @@ const App: Component = () => {
   // A live stream settles and extracts on the factors Discover writes, and a recording
   // on the factors the GPU compresses while Discover runs, by default (`?factors=0`: off;
   // `?compress&review` turns it off for the review). On a recording `?factors` runs as
-  // with `?compress`, and `?factors=file` (experimental) compresses on the CPU.
+  // with `?compress`, and `?factors=file` compresses on the CPU.
   const pageFactors = flags.factors;
   if (pageFactors.warn) console.warn(pageFactors.warn);
   const reviewWindows = pageFactors.review ? reviewEvery(flags.review) : null;
@@ -168,7 +166,7 @@ const App: Component = () => {
   );
   // `?noqc`: run without online quality control (to measure its cost).
   // `?compress`: also compress the preprocessed frames into low-rank factors, window by
-  // window, in a worker of its own (experimental; windows and factors are files in OPFS).
+  // window, in a worker of its own (windows and factors are files in OPFS).
   const compress = pageFactors.compressWorker ? createCompressStore(cells) : undefined;
   // The review worker gets the factors from the compress worker; the cells it
   // finds go to the slow loop, which takes them on probation.
@@ -208,15 +206,13 @@ const App: Component = () => {
     : undefined;
   // Look-back: Discover refines footprints as it goes by re-reading past frames in a
   // worker of its own, and settles at the end (the Final settle).
-  // A recording on disk (one session or a Joint run of several), pipelined workers only.
-  const pipelined = flags.pipelined;
+  // A recording on disk (one session or a Joint run of several) only.
   const lookbackClient = createLookbackClient({
     slow,
     pool: lbPool,
     source: () => store.source(),
     blocked: () => {
       const i = store.info();
-      if (!pipelined) return 'Look-back needs the pipelined workers (not ?pipeline=0).';
       if (!i) return 'Open a recording first.';
       if (i.live) return 'Look-back needs a recording on disk (not a live stream).';
       return null;
@@ -286,7 +282,7 @@ const App: Component = () => {
   pipeline.setCompressPool(cpool);
   // `?debug&cbacklog=GB`: the cap on window files waiting for compression (measurement).
   if (flags.cbacklogGb > 0) pipeline.setCompressBacklogCap(flags.cbacklogGb * 2 ** 30);
-  // `?debug&fextract=0`: Extract on factors on rebuilt frames, as before slice 6 (measurement).
+  // `?debug&fextract=0`: Extract on factors on rebuilt frames, (measurement).
   pipeline.setFrameExtract(flags.frameExtract);
   // `?debug&lbpoolmax`: the settle pool starts at Max too (measurement: the pooled Final settle at Max).
   pipeline.setPoolAtMax(flags.poolAtMax);

@@ -8,8 +8,6 @@
  *   MotionStage (B) the motion corrector (template, warm-up, per-batch registration)
  *   BackStage (C)   preprocess back half (background, noise), fast loop (traces, slow feed)
  *
- * The stage order and every call are those of `PipelineEngine.step`, so the
- * results are bit-identical to the single-worker path (the test runs both).
  * Each piece of state lives in exactly one stage: the flicker reference in A,
  * the motion template in B, the background and noise map, the trace engine
  * and the library swaps in C. A and C hold separate `Preprocessor` objects,
@@ -51,7 +49,7 @@ import {
   type MotionBackend,
   type PipelineStepResult,
   type StageTimings,
-} from './pipeline-engine.ts';
+} from './pipeline-types.ts';
 import {
   makePlan,
   PipelineCursor,
@@ -110,7 +108,7 @@ export interface StageJob {
   flags?: Uint32Array;
   /** Preview of the last registered frame, before the back half. */
   before?: PreviewImage;
-  /** Wall time per stage so far (the sums C reports are those of `PipelineEngine`). */
+  /** Wall time per stage so far (C completes it and reports it with the step result). */
   timings: StageTimings;
   /** Busy wall time of each stage (A, B, C) for this step, ms. */
   busyMs: number[];

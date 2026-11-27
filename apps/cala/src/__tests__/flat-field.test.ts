@@ -25,7 +25,7 @@ import {
 } from '../lib/flat-field-runner.ts';
 import type { FramePixels } from '../lib/frame-source.ts';
 import { parseDeviceIdentity } from '../lib/miniscope-meta.ts';
-import type { FrameReader } from '../lib/pipeline-engine.ts';
+import type { FrameReader } from '../lib/pipeline-types.ts';
 import {
   FrontStage,
   MotionStage,

@@ -5,6 +5,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Removed
+
+- Cala: the single-worker pipeline (`?pipeline=0`) is gone; every run uses the frame, motion and trace workers. That path had no flat field, look-back, Final settle, Extract or factors. A `?pipeline=` in the URL is ignored and the run record lists it under `url_flags.other_flags`; older records that list `pipeline` under `url_flags.flags` still open.
+
 ### Changed
 
 - Cala: at Max, the Run tab's Speed block now notes that results can differ slightly between runs (the settle pool's second look-back worker answers in varying order) and that a target fps makes runs repeatable.

@@ -1,10 +1,12 @@
 /**
- * Main-thread handle on the frame worker: promise-based `open` / `readFrame`
+ * Main-thread handle on the pipeline workers: promise-based `open` / `readFrame`
  * and the pipeline calls, over the message protocol in
- * `workers/frame-types.ts`.
+ * `workers/frame-types.ts`. The per-frame work is split across three workers
+ * (frame -> motion -> trace, see `lib/pipeline-stages.ts`), with the flat-field
+ * estimator in a fourth.
  */
 import type { FolderEntry, FramePixels, FrameSourceInfo, SessionInput } from './frame-source.ts';
-import type { PipelineStepResult } from './pipeline-engine.ts';
+import type { PipelineStepResult } from './pipeline-types.ts';
 import type { PipelineOptions, PipelinePlan } from './pipeline-plan.ts';
 import type { FlatFieldEvent, FlatFieldMap } from './flat-field.ts';
 import type { ReplayInput } from './pipeline-stages.ts';
@@ -33,8 +35,7 @@ export interface PipelineClient {
   truncatePipeline?(): Promise<void>;
   /** Run one step in the worker. Calls are answered in order. */
   stepPipeline(): Promise<PipelineStepResult>;
-  /** Free the worker-side pipeline. */
-  /** `keepSlow`: keep the slow loop (an Extract run is stopped; see `pipeline-stop`). */
+  /** Free the worker-side pipeline. `keepSlow`: keep the slow loop (an Extract run is stopped; see `pipeline-stop`). */
   stopPipeline(opts?: { keepSlow?: boolean }): Promise<void>;
   /** Pace the running pipeline (`fps`, 0 = unpaced) or hold and resume its gate (`paused`). */
   setPace?(pace: { fps?: number; paused?: boolean }): Promise<void>;
@@ -47,11 +48,11 @@ export interface PipelineClient {
   /** Preview this view of every frame of the next batches (null: the last frame only); smooth playback. */
   setFramePreview?(view: FrameView | null): Promise<void>;
   /**
-   * The flat-field estimator's status events (pipelined clients with the
-   * estimator worker only; absent: no online flat field). Returns an unsubscribe.
+   * The flat-field estimator's status events (absent: no estimator worker, so no
+   * online flat field). Returns an unsubscribe.
    */
   readonly subscribeFlatField?: (listener: (e: FlatFieldEvent) => void) => () => void;
-  /** Step requests the caller may keep outstanding (default 2; a pipelined client needs more to keep every stage busy). */
+  /** Step requests the caller may keep outstanding (default 2; `createFrameClient` sets `PIPELINED_IN_FLIGHT`). */
   readonly maxInFlight?: number;
 }
 
@@ -67,9 +68,9 @@ export interface FrameClient extends PipelineClient {
   readFrame(index: number): Promise<FramePixels>;
   /** `count` consecutive frames in one buffer of `count * width * height` samples. */
   readFrames(start: number, count: number): Promise<FramePixels>;
-  /** Hand the frame worker its port to the slow worker (cell discovery). */
+  /** Hand the trace worker its port to the slow worker (cell discovery). */
   connectSlow?(port: MessagePort): Promise<void>;
-  /** Hand the fast worker its port to the compress worker. */
+  /** Hand the trace worker its port to the compress worker. */
   connectCompress?(port: MessagePort): Promise<void>;
   dispose(): void;
 }
@@ -90,46 +91,39 @@ function expectType<T extends FrameResponse['type']>(
   return res as Extract<FrameResponse, { type: T }>;
 }
 
-/** Step requests outstanding on a pipelined client: one per stage plus one in transit. */
+/** Step requests outstanding on the client: one per stage plus one in transit. */
 export const PIPELINED_IN_FLIGHT = 4;
 
+/** Worker factories (tests pass fakes) and the motion backend. */
 export interface FrameClientOptions {
-  /**
-   * Split the per-frame work across three workers (frame -> motion -> trace,
-   * see `lib/pipeline-stages.ts`). Off: the frame worker runs it all, as before.
-   */
-  pipelined?: boolean;
   /** WebGPU motion correction (default true; falls back to WASM when unavailable). */
   gpu?: boolean;
   makeMotionWorker?: () => WorkerLike;
   makeTraceWorker?: () => WorkerLike;
-  /** The flat-field estimator's worker (pipelined only; `false`: none, so no online flat field). */
+  /** The flat-field estimator's worker (`false`: none, so no online flat field). */
   makeFlatFieldWorker?: (() => WorkerLike) | false;
 }
 
+/** Create the pipeline workers, wire their stage and flat-field links, and return the client. */
 export function createFrameClient(
   makeWorker: () => WorkerLike = () =>
     new Worker(new URL('../workers/frame-worker.ts', import.meta.url), { type: 'module' }),
   options: FrameClientOptions = {},
 ): FrameClient {
   const worker = makeWorker();
-  const pipelined = options.pipelined === true;
-  const stageWorkers: WorkerLike[] = pipelined
-    ? [
-        (
-          options.makeMotionWorker ??
-          (() =>
-            new Worker(new URL('../workers/motion-worker.ts', import.meta.url), { type: 'module' }))
-        )(),
-        (
-          options.makeTraceWorker ??
-          (() =>
-            new Worker(new URL('../workers/trace-worker.ts', import.meta.url), { type: 'module' }))
-        )(),
-      ]
-    : [];
+  const stageWorkers: WorkerLike[] = [
+    (
+      options.makeMotionWorker ??
+      (() =>
+        new Worker(new URL('../workers/motion-worker.ts', import.meta.url), { type: 'module' }))
+    )(),
+    (
+      options.makeTraceWorker ??
+      (() => new Worker(new URL('../workers/trace-worker.ts', import.meta.url), { type: 'module' }))
+    )(),
+  ];
   const flatWorker: WorkerLike | null =
-    pipelined && options.makeFlatFieldWorker !== false
+    options.makeFlatFieldWorker !== false
       ? (
           options.makeFlatFieldWorker ??
           (() =>
@@ -140,7 +134,7 @@ export function createFrameClient(
       : null;
   const flatListeners = new Set<(e: FlatFieldEvent) => void>();
   /** The worker that owns the slow-worker port and the discovery switch. */
-  const traceTarget = pipelined ? stageWorkers[1] : worker;
+  const traceTarget = stageWorkers[1];
   const pending = new Map<number, Pending>();
   let nextId = 1;
   let terminalError: Error | null = null;
@@ -151,8 +145,7 @@ export function createFrameClient(
    * compressor's ring (trace worker, answered at once) must not hold it up.
    */
   function releaseGpuWait(): void {
-    if (pipelined && gpuRun)
-      void call({ type: 'release-compress' }, [], traceTarget).catch(() => {});
+    if (gpuRun) void call({ type: 'release-compress' }, [], traceTarget).catch(() => {});
     gpuRun = false;
   }
 
@@ -191,22 +184,20 @@ export function createFrameClient(
         l({ type: 'error', session: -1, message: e.message || 'The flat-field worker crashed.' });
     };
   }
-  if (pipelined) {
-    // frame (A) -> motion (B) -> trace (C): jobs go down, freed buffers come back up.
-    const ab = new MessageChannel();
-    const bc = new MessageChannel();
-    stageWorkers[0].postMessage(
-      { type: 'stage-link', up: ab.port2, down: bc.port1, gpu: options.gpu },
-      [ab.port2, bc.port1],
-    );
-    stageWorkers[1].postMessage({ type: 'stage-link', up: bc.port2 }, [bc.port2]);
-    void call({ type: 'link', down: ab.port1 }, [ab.port1]).catch(() => {});
-    if (flatWorker) {
-      // frame (A) <-> flat-field worker: raw batches with shifts go out, maps and acks come back.
-      const af = new MessageChannel();
-      flatWorker.postMessage({ type: 'flat-link', port: af.port2 }, [af.port2]);
-      void call({ type: 'link-flat', port: af.port1 }, [af.port1]).catch(() => {});
-    }
+  // frame (A) -> motion (B) -> trace (C): jobs go down, freed buffers come back up.
+  const ab = new MessageChannel();
+  const bc = new MessageChannel();
+  stageWorkers[0].postMessage(
+    { type: 'stage-link', up: ab.port2, down: bc.port1, gpu: options.gpu },
+    [ab.port2, bc.port1],
+  );
+  stageWorkers[1].postMessage({ type: 'stage-link', up: bc.port2 }, [bc.port2]);
+  void call({ type: 'link', down: ab.port1 }, [ab.port1]).catch(() => {});
+  if (flatWorker) {
+    // frame (A) <-> flat-field worker: raw batches with shifts go out, maps and acks come back.
+    const af = new MessageChannel();
+    flatWorker.postMessage({ type: 'flat-link', port: af.port2 }, [af.port2]);
+    void call({ type: 'link-flat', port: af.port1 }, [af.port1]).catch(() => {});
   }
 
   function call(
@@ -230,7 +221,7 @@ export function createFrameClient(
   }
 
   return {
-    ...(pipelined ? { maxInFlight: PIPELINED_IN_FLIGHT } : {}),
+    maxInFlight: PIPELINED_IN_FLIGHT,
     subscribePaceStats(listener: (s: PaceStats) => void) {
       paceListeners.add(listener);
       return () => void paceListeners.delete(listener);
