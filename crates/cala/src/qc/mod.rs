@@ -14,7 +14,8 @@
 //!
 //! The metrics were checked against ground truth on minisim recordings and
 //! against Minian on real data (`examples/qc_eval.rs`; the SNR convention is in
-//! `tools/cala-eval/results/2026-11-13-qc-snr.md`).
+//! `tools/cala-eval/results/2026-11-13-qc-snr.md`; the measured AUCs and
+//! correlations are in `tools/cala-eval/results/2026-11-27-measurements-moved-from-comments.md`).
 //!
 //! * **Trace quality.** [`TraceStats::peak_snr`] (CaLab robust peak SNR) and
 //!   `proj_r` (trace vs the cell's own footprint projection) separate real
