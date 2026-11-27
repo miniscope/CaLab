@@ -855,6 +855,7 @@ impl SlowLoop {
         let ti = r.ti;
         let now = self.frames;
         self.merge_rejected.retain(|p| p.2 > now);
+        let new0 = self.churn.counts().adds_new;
         for op in r.ops {
             match op {
                 Op::Push(mut c) => {
@@ -949,6 +950,10 @@ impl SlowLoop {
                 }
                 Op::ChurnSplit(id) => self.churn.on_split(self.frames, map(id)),
             }
+        }
+        if !own.settle {
+            // The Discover visit rate's schedule (`visitrate.rs`).
+            self.visit_rate_done(new0);
         }
         for mut e in r.log {
             e.id = map(e.id);

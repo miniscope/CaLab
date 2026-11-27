@@ -153,6 +153,8 @@ export interface FastLoopOptions {
   sessionStarts?: readonly number[];
   /** The Discover visit cap, visits per observed frame (`SlowInit.visitRate`; 0 = none). */
   visitRate?: number;
+  /** The Discover visit rate's schedule (`SlowInit.visitSchedule`; `none` = `visitRate` alone). */
+  visitSchedule?: 'auto' | 'fixed' | 'none';
   /** The Final settle's visit rate, visits per settle frame (`SlowInit.settleVisitRate`; 0 = none). */
   settleVisitRate?: number;
   /** Return the model residual of each batch's last frame (the app's residual view). */
@@ -185,6 +187,7 @@ export const FAST_LOOP_DEFAULTS = {
   sessionStarts: [] as readonly number[],
   signed: false,
   visitRate: 0,
+  visitSchedule: 'none',
   settleVisitRate: 0,
 } as const;
 
@@ -557,6 +560,7 @@ export class FastLoop {
           flattenSigmaPx: this.o.flattenSigmaPx,
           budget: this.o.budget,
           ...(this.o.visitRate && this.o.visitRate > 0 ? { visitRate: this.o.visitRate } : {}),
+          ...(this.o.visitSchedule !== 'none' ? { visitSchedule: this.o.visitSchedule } : {}),
           ...(this.o.settleVisitRate && this.o.settleVisitRate > 0
             ? { settleVisitRate: this.o.settleVisitRate }
             : {}),

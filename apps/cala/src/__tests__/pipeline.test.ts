@@ -1150,7 +1150,7 @@ describe('pipeline store: the Discover visit hold', () => {
         () => now,
         cells as never,
       );
-      store.setVisitRateOff(true);
+      store.setVisitRateSetting('off');
       await store.start();
       expect(store.visitMode()).toBe('off');
       expect(client.startPipeline).toHaveBeenLastCalledWith(
@@ -1177,5 +1177,70 @@ describe('pipeline store: the Discover visit hold', () => {
       expect(store.runMaxFps()).toBeCloseTo(1000 / 6);
       dispose();
     });
+  });
+
+  it('starts the fixed rate by default (Auto on request) and follows the target the engine reports', async () => {
+    for (const setting of ['fixed', 'auto'] as const) {
+      await createRoot(async (dispose) => {
+        const { client } = manualClient();
+        let now = 0;
+        const statusCbs: ((st: never) => void)[] = [];
+        const cells = {
+          onStatus: (cb: (st: never) => void) => statusCbs.push(cb),
+          reset: () => {},
+          fps: () => 20,
+        };
+        const store = createPipelineStore(
+          { ...client, setPace: vi.fn(async () => {}) },
+          {},
+          () => now,
+          cells as never,
+          true,
+          undefined,
+          { identity: () => ({ frames: 100000, width: 1, height: 1, folder: 'x' }) as never },
+        );
+        if (setting === 'auto') store.setVisitRateSetting('auto');
+        const records: number[] = [];
+        store.onVisitRate((s) => records.push(s.target_now ?? 0));
+        await store.start();
+        expect(client.startPipeline).toHaveBeenLastCalledWith(
+          expect.anything(),
+          expect.objectContaining({ visitRate: VISIT_RATE.cap, visitSchedule: setting }),
+          undefined,
+          undefined,
+        );
+        expect(store.visitSchedule()).toBe(setting);
+        // The engine reports Auto's floor: 200 fps read at 0.04 visits per frame keeps it, no hold.
+        let read = 0;
+        let visits = 0;
+        for (let i = 0; i < 40; i++) {
+          now += 250;
+          read += 50;
+          visits += 50 * 0.04;
+          const st = {
+            run: 1,
+            frame: read,
+            consumed: read,
+            observed: read,
+            counters: { visits, adds: 0 },
+            visitRate: {
+              rate: 0.05,
+              cappedFrames: 0,
+              dueTiles: 5,
+              earned: read * 0.05,
+              target: 0.0375,
+              holdFloor: 0.025,
+              yieldSlow: 0.01,
+            },
+          };
+          for (const cb of statusCbs) cb(st as never);
+        }
+        expect(store.visitTarget()).toBe(0.0375);
+        expect(store.visitYield()).toBe(0.01);
+        expect(store.visitHold()).toBeNull();
+        expect(records.at(-1)).toBe(0.0375);
+        dispose();
+      });
+    }
   });
 });

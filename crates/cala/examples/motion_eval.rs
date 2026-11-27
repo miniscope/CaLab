@@ -27,6 +27,16 @@
 //! Set `MOTION_UPSAMPLE`, `MOTION_ANCHOR`, `MOTION_ALPHA` (temporal), `MOTION_GRID`
 //! (e.g. `5x5`), `MOTION_SAVE=<dir>` (write rigid shifts as .npy), `MOTION_STRATEGY`, `MOTION_VARW=1`, `MOTION_BILINEAR=1`, `MOTION_NOSHRINK=1`, `MOTION_TAU`, `MOTION_SIGMA2` to vary the
 //! configuration.
+//!
+//! By default the corrector sees the raw 8-bit frames. `MOTION_FRONT=1`
+//! feeds it the way qc_eval and the app do: through the preprocessor's front
+//! half (calibrated on the first frames at 20 fps) with the sensor FOV mask
+//! set. `MOTION_FRONT=ff` adds qc_eval's default online sensor flat field,
+//! learned from the corrector's rigid shifts and applied as it updates;
+//! `MOTION_FRONT=fov` sets only the FOV mask. In `minisim` mode
+//! `MOTION_SAVE=<dir>` writes both runs' rigid shifts and the non-rigid run's
+//! displacement and the true motion at the patch centres
+//! (`tools/cala-eval/motion_bias.py` scores them).
 
 #[path = "../tests/common/metrics.rs"]
 mod metrics;
@@ -41,6 +51,12 @@ use calab_cala::motion::{
     Frame, Frames, Interpolation, MotionConfig, MotionCorrector, MotionGeometry, MotionRecord,
     NonRigidConfig, TemplateStrategy, Warper,
 };
+use calab_cala::preprocess::flatfield::{
+    OnlineFlatField, OnlineFlatFieldConfig, RefineOutcome, FIRST_MAP_S, GAIN_HALF_LIFE_S,
+    OFFSET_HALF_LIFE_S, REFINE_EVERY_S,
+};
+use calab_cala::preprocess::warmup::WarmupAccumulator;
+use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor};
 use metrics::{patch_rmse_aligned, shift_rmse_aligned, Truth};
 use npy::Npy;
 
@@ -214,7 +230,53 @@ fn run(src: &AviFrames, cfg: MotionConfig, max: usize, warm: usize) -> Res<Run> 
     let mut mc = MotionCorrector::new(h, w, cfg)?;
     let t0 = Instant::now();
     let warm_frames = src.first(warm.min(max))?;
-    mc.initialize(Frames::U8(&warm_frames))?;
+    // MOTION_FRONT=1: feed the corrector the way qc_eval and the app do,
+    // through the preprocessor's front half (calibrated on the first frames,
+    // 20 fps) with the sensor FOV mask set; the online flat field is off.
+    // MOTION_FRONT=fov: only the FOV mask. MOTION_FRONT=ff: the front half
+    // plus qc_eval's default online sensor flat field, learned from the
+    // corrector's rigid shifts and applied to the preprocessor as it updates.
+    let front_mode = std::env::var("MOTION_FRONT").ok();
+    let mut pre = None;
+    let mut online_ff = None;
+    if let Some(mode) = &front_mode {
+        let pcfg = PreprocessConfig::for_fps(20.0);
+        let dims = Dims::new(w, h)?;
+        let all = src.first(pcfg.warmup_frames.min(max))?;
+        let mut acc = WarmupAccumulator::new(dims);
+        for f in all.chunks_exact(h * w) {
+            acc.push(f)?;
+        }
+        let cal = Calibration::from_warmup(&acc, &pcfg)?;
+        mc.set_fov_mask(cal.fov().mask())?;
+        if mode == "ff" {
+            let fps = 20.0f32;
+            let fr = |s: f32| (s * fps).round();
+            let mut c = OnlineFlatFieldConfig::for_fps(fps);
+            c.estimator.half_life_frames = f64::from(fr(GAIN_HALF_LIFE_S));
+            c.estimator.offset_half_life_frames = f64::from(fr(OFFSET_HALF_LIFE_S));
+            c.first_frames = fr(FIRST_MAP_S).max(1.0) as u64;
+            c.refine_every_frames = fr(REFINE_EVERY_S).max(1.0) as u64;
+            online_ff = Some(OnlineFlatField::new(dims, cal.fov().mask(), c, None)?);
+        }
+        if mode != "fov" {
+            pre = Some(Preprocessor::new(cal, &pcfg)?);
+        }
+    }
+    let mut fbuf = vec![0.0f32; h * w];
+    match pre.as_mut() {
+        Some(p) => {
+            let mut fr = vec![0.0f32; warm_frames.len()];
+            for (r, o) in warm_frames
+                .chunks_exact(h * w)
+                .zip(fr.chunks_exact_mut(h * w))
+            {
+                p.front(r, o)?;
+            }
+            mc.initialize(Frames::F32(&fr))?;
+        }
+        None => mc.initialize(Frames::U8(&warm_frames))?,
+    }
     let warmup_s = t0.elapsed().as_secs_f64();
     drop(warm_frames);
     let mut out = vec![0.0f32; h * w];
@@ -240,7 +302,21 @@ fn run(src: &AviFrames, cfg: MotionConfig, max: usize, warm: usize) -> Res<Run> 
     };
     src.for_each(max, |_, px| {
         let t = Instant::now();
-        let r = mc.process(Frame::U8(px), &mut out)?;
+        let r = match pre.as_mut() {
+            Some(p) => {
+                p.front(px, &mut fbuf)?;
+                mc.process(Frame::F32(&fbuf), &mut out)?
+            }
+            None => mc.process(Frame::U8(px), &mut out)?,
+        };
+        if let (Some(o), Some(p)) = (online_ff.as_mut(), pre.as_mut()) {
+            o.push(px, (r.dy, r.dx))?;
+            if o.due() {
+                if let RefineOutcome::Updated(_) = o.refine() {
+                    o.current().ok_or("no flat field")?.apply(p)?;
+                }
+            }
+        }
         busy += t.elapsed().as_secs_f64();
         records.push(r);
         for (m, &v) in mean.iter_mut().zip(&out) {
@@ -414,6 +490,21 @@ fn minisim(dir: &Path, gt: &Path, max: usize) -> Res<()> {
         .collect();
     let ptsf: Vec<(f64, f64)> = pts.iter().map(|&(y, x)| (y as f64, x as f64)).collect();
     let frames: Vec<usize> = (0..nr.records.len()).collect();
+    if let Ok(dir) = std::env::var("MOTION_SAVE") {
+        // Rigid shifts of both runs, and the non-rigid run's registering
+        // displacement at every patch centre with the true content motion
+        // there (frame-major, `(frames * points, 2)`).
+        let dir = Path::new(&dir);
+        save_shifts(&dir.join("cala_rigid.npy"), &rigid(&rg))?;
+        save_shifts(&dir.join("cala_nonrigid.npy"), &rigid(&nr))?;
+        let est: Vec<(f64, f64)> = at_points(&nr, &pts)?.into_iter().flatten().collect();
+        let tru: Vec<(f64, f64)> = frames
+            .iter()
+            .flat_map(|&f| truth.displacement(f, &ptsf))
+            .collect();
+        save_shifts(&dir.join("cala_patch_est.npy"), &est)?;
+        save_shifts(&dir.join("true_patch.npy"), &tru)?;
+    }
     let e_on = patch_rmse_aligned(&at_points(&nr, &pts)?, &truth, &frames, &ptsf);
     let e_off = patch_rmse_aligned(&at_points(&rg, &pts)?, &truth, &frames, &ptsf);
     println!(

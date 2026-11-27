@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 943070ef17e3cbc1757e7ce5ee94b48003a0297fc7e4f0f43c9904546ccd026f # xcorr_recovers_shift: 9 clustered blobs, true shift (2.667, -3.207), estimated dx 4.24 (the window-envelope gain on content inside the flat part of the window)

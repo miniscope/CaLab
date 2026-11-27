@@ -84,11 +84,42 @@ fn texture(h: usize, w: usize, blobs: &[(f32, f32, f32)], sy: f32, sx: f32) -> V
     img
 }
 
+/// Window-filling texture: a sum of plane waves `(fy, fx, phase)` (cycles
+/// per px), evaluated analytically at `(y - sy, x - sx)`.
+fn waves(h: usize, w: usize, waves: &[(f32, f32, f32)], sy: f32, sx: f32) -> Vec<f32> {
+    let mut img = vec![0.0f32; h * w];
+    for y in 0..h {
+        for x in 0..w {
+            let (py, px) = (y as f32 - sy, x as f32 - sx);
+            img[y * w + x] = waves
+                .iter()
+                .map(|&(fy, fx, p)| (std::f32::consts::TAU * (fy * py + fx * px) + p).cos())
+                .sum();
+        }
+    }
+    img
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
-    /// `register` recovers a known shift of a synthetic texture to within
-    /// one pixel, with a high normalised correlation.
+    /// `register` recovers a known shift of a few blobs clustered in the
+    /// middle of the window, with a high normalised correlation.
+    ///
+    /// The tolerance grows with the shift because the estimator has a known
+    /// gain on this kind of content. Every correlation value is divided by
+    /// the Tukey window's overlap envelope (its autocorrelation), which is
+    /// exact for texture that fills the window (see `xcorr_exact_on_texture`)
+    /// but over-corrects content that sits in the window's flat middle and so
+    /// is not attenuated by it: a lone sigma-3 blob reads 2 px as 2.18, and
+    /// a tight cluster of blobs, whose correlation peak is broad, can read
+    /// 0.5 px as 0.96 and 4 px as 5.2 (worst of 20 000 random cases: 1.28 px
+    /// off, 0.64 px beyond 0.35 |s|). The corrector's rigid stage avoids it
+    /// by re-cutting the crop at the integer estimate, so the division acts
+    /// only on a sub-pixel residual; patches and session alignment rely on
+    /// band-passed images that fill the window. On the v3 motion sims
+    /// switching the division off changes the rigid shift by about 0.001 px
+    /// RMS (`tools/cala-eval/results/2026-11-26-motion-xcorr-bias.md`).
     #[test]
     fn xcorr_recovers_shift(
         blobs in prop::collection::vec((20.0f32..44.0, 20.0f32..44.0, 0.5f32..2.0), 6..14),
@@ -105,9 +136,41 @@ proptest! {
         let em = c.spectrum(&moved, &mut ms).unwrap();
         let p = c.register(&rs, er, &ms, em, 8.0, 10).unwrap();
         // Content moved by (sy, sx); the registering shift is its negative.
-        prop_assert!((p.dy + sy).abs() < 1.0, "dy {} vs {}", p.dy, -sy);
-        prop_assert!((p.dx + sx).abs() < 1.0, "dx {} vs {}", p.dx, -sx);
+        let tol = |s: f32| 0.8 + 0.35 * s.abs();
+        prop_assert!((p.dy + sy).abs() < tol(sy), "dy {} vs {}", p.dy, -sy);
+        prop_assert!((p.dx + sx).abs() < tol(sx), "dx {} vs {}", p.dx, -sx);
         prop_assert!(p.ncc > 0.5 && p.ncc <= 1.0 + 1e-3, "ncc {}", p.ncc);
+    }
+
+    /// On smooth texture that fills the window (what the corrector
+    /// correlates: band-passed frames covering the region) `register` has no
+    /// gain bias. Without the window-envelope division the taper pulls the
+    /// estimate towards zero by about 4 % of the shift, which this catches
+    /// (on 2000 random cases 3 % of the axes fail, so a 64-case run almost
+    /// always does).
+    #[test]
+    fn xcorr_exact_on_texture(
+        w in prop::collection::vec(
+            (-0.1f32..0.1, -0.1f32..0.1, 0.0f32..std::f32::consts::TAU),
+            40..80,
+        ),
+        sy in -4.0f32..4.0,
+        sx in -4.0f32..4.0,
+    ) {
+        let n = 64;
+        let reference = waves(n, n, &w, 0.0, 0.0);
+        let moved = waves(n, n, &w, sy, sx);
+        let mut c = Correlator::new(n, n, 0.3).unwrap();
+        let mut rs = c.make_spectrum();
+        let mut ms = c.make_spectrum();
+        let er = c.spectrum(&reference, &mut rs).unwrap();
+        let em = c.spectrum(&moved, &mut ms).unwrap();
+        let p = c.register(&rs, er, &ms, em, 8.0, 10).unwrap();
+        // Worst of 20 000 random cases: 0.069 px beyond 0.02 |s|.
+        let tol = |s: f32| 0.1 + 0.02 * s.abs();
+        prop_assert!((p.dy + sy).abs() < tol(sy), "dy {} vs {}", p.dy, -sy);
+        prop_assert!((p.dx + sx).abs() < tol(sx), "dx {} vs {}", p.dx, -sx);
+        prop_assert!(p.ncc > 0.8, "ncc {}", p.ncc);
     }
 
     /// A blank image has nothing to align: zero shift, zero quality.

@@ -89,6 +89,7 @@ async function handle(msg: StageMsg): Promise<void> {
             : {}),
           ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
           ...(cells?.visitRate ? { visitRate: cells.visitRate } : {}),
+          ...(cells?.visitSchedule ? { visitSchedule: cells.visitSchedule } : {}),
           ...(cells?.settleVisitRate ? { settleVisitRate: cells.settleVisitRate } : {}),
         },
         port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,

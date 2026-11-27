@@ -8,6 +8,8 @@ import {
   maxRepeatText,
   visitRateCap,
   visitRateMode,
+  visitRateSetting,
+  visitRateText,
   type VisitRateMode,
   type VisitRateSample,
 } from '../lib/visit-rate.ts';
@@ -437,5 +439,118 @@ describe('maxRepeatText', () => {
       'Results can differ slightly between runs at Max; set a target fps for repeatable runs.',
     );
     expect(maxRepeatText(30)).toBeNull();
+  });
+});
+
+describe('VisitRateGovernor with the target the engine reports (Auto)', () => {
+  /** A run at `fps` (pace `user`, 0 = Max) making `perFrame` visits per frame, the engine at `target`. */
+  function feedRun(
+    gov: VisitRateGovernor,
+    o: { steps: number; fps: number; perFrame: number; target: number; user?: number; t0?: number },
+    st: { t: number; read: number; visits: number; earned: number },
+  ) {
+    const cap = (o.target * VISIT_RATE.cap) / VISIT_RATE.target;
+    for (let i = 0; i < o.steps; i++) {
+      st.t += 250;
+      const d = Math.min(o.fps, gov.fps ?? Infinity) / 4;
+      st.read += d;
+      st.visits += d * o.perFrame;
+      st.earned += d * cap;
+      gov.update({
+        now: st.t,
+        framesRead: st.read,
+        observed: st.read,
+        visits: Math.floor(st.visits),
+        cappedFrames: 0,
+        dueTiles: 5,
+        userFps: o.user ?? 0,
+        target: o.target,
+        holdFloor: (o.target * 2) / 3,
+        cap,
+        earned: st.earned,
+        yieldSlow: o.target / 1.5,
+        newCells: 0,
+        scheduleParams: [1, 0.15, 4, 0.2, 64, 24, 2, 4 / 3, 0.0375, 2 / 3],
+      });
+    }
+  }
+
+  it('does not hold a Max run that keeps Auto floor target, though a 1 s window holds a few visits', () => {
+    // 160 fps at 0.04 visits/frame: 6.4 visits per second, the target 0.0375.
+    const gov = new VisitRateGovernor('on');
+    const st = { t: 0, read: 0, visits: 0, earned: 0 };
+    feedRun(gov, { steps: 2000, fps: 160, perFrame: 0.04, target: 0.0375 }, st);
+    expect(gov.fps).toBeNull();
+    expect(gov.summary().held_s).toBe(0);
+  });
+
+  it('still holds a run that falls behind the lowered target', () => {
+    const gov = new VisitRateGovernor('on');
+    const st = { t: 0, read: 0, visits: 0, earned: 0 };
+    feedRun(gov, { steps: 400, fps: 300, perFrame: 0.02, target: 0.0375 }, st);
+    expect(gov.fps).not.toBeNull();
+    // Throughput 6 visits/s keeps 0.0375 at 160 fps (the floor cut lands lower).
+    expect(gov.fps!).toBeLessThan(170);
+  });
+
+  it('releases the hold when the target falls, and Max follows the target', () => {
+    const gov = new VisitRateGovernor('on');
+    const st = { t: 0, read: 0, visits: 0, earned: 0 };
+    // At the top target the visits (18/s) hold a 200 fps run to about 120 fps.
+    const visitsPerS = 18;
+    for (let i = 0; i < 200; i++) {
+      const fps = Math.min(200, gov.fps ?? Infinity);
+      feedRun(gov, { steps: 1, fps, perFrame: visitsPerS / fps, target: 0.15 }, st);
+    }
+    expect(gov.fps).not.toBeNull();
+    expect(gov.visitMaxFps!).toBeCloseTo(visitsPerS / 0.15, -1);
+    // Auto drops the target to 0.075: the same throughput now allows 200 fps.
+    for (let i = 0; i < 200; i++) {
+      const fps = Math.min(200, gov.fps ?? Infinity);
+      feedRun(gov, { steps: 1, fps, perFrame: Math.min(visitsPerS / fps, 0.1), target: 0.075 }, st);
+    }
+    expect(gov.fps).toBeNull();
+    expect(gov.visitMaxFps!).toBeGreaterThan(180);
+  });
+
+  it('logs the target, its frames and its lowest value in the summary', () => {
+    const gov = new VisitRateGovernor('on', VISIT_RATE, 'auto');
+    const st = { t: 0, read: 0, visits: 0, earned: 0 };
+    feedRun(gov, { steps: 40, fps: 100, perFrame: 0.2, target: 0.15 }, st);
+    feedRun(gov, { steps: 40, fps: 100, perFrame: 0.1, target: 0.075 }, st);
+    feedRun(gov, { steps: 40, fps: 100, perFrame: 0.2, target: 0.15 }, st);
+    const s = gov.summary();
+    expect(s.schedule).toBe('auto');
+    expect(s.schedule_params?.floor).toBe(0.0375);
+    expect(s.schedule_params?.cap_ratio).toBeCloseTo(4 / 3, 12);
+    expect(s.target_changes.map((c) => c.target)).toEqual([0.15, 0.075, 0.15]);
+    expect(s.target_now).toBe(0.15);
+    expect(s.target_min).toBe(0.075);
+    const frames = Object.fromEntries(s.target_frames.map((e) => [e.target, e.frames]));
+    expect(frames[0.075]).toBeCloseTo(1000, 0);
+    expect(frames[0.15]).toBeCloseTo(1975, 0);
+  });
+
+  it('says the rate in force', () => {
+    expect(visitRateText('off', null, null, null)).toBeNull();
+    expect(visitRateText(null, 'auto', 0.15, null)).toBeNull();
+    expect(visitRateText('on', 'auto', 0.15, 0.4)).toBe(
+      'Refinement 0.15 visits/frame (Auto: new cells still turning up, 40 new cells per 100 visits)',
+    );
+    expect(visitRateText('on', 'auto', 0.0375, 0.012)).toBe(
+      'Refinement 0.0375 visits/frame (Auto: fewer new cells lately, 1.2 new cells per 100 visits; back up when they turn up)',
+    );
+    expect(visitRateText('on', 'fixed', 0.15, 0.1)).toBe('Refinement 0.15 visits/frame (fixed)');
+    expect(visitHoldText(42.4, 0, 0.075)).toBe(
+      'Held at 42 fps to keep refinement at 0.075 visits/frame',
+    );
+  });
+
+  it('reads the URL setting', () => {
+    expect(visitRateSetting(null)).toBe('fixed');
+    expect(visitRateSetting('auto')).toBe('auto');
+    expect(visitRateSetting('fixed')).toBe('fixed');
+    expect(visitRateSetting('off')).toBe('off');
+    expect(visitRateSetting('bogus')).toBe('fixed');
   });
 });
