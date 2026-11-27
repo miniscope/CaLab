@@ -6,7 +6,9 @@ import {
   FLAG_LOW_SNR,
   FLAG_UNMEASURED,
   followsMotion,
+  MIN_SNR,
   MOTION_R2_FLAG,
+  PAIR_R,
   sortRows,
   verdict,
   type CellQcRow,
@@ -29,7 +31,7 @@ const COLUMNS: Column[] = [
     label: 'QC',
     title: 'Verdict: failing cells first, then correlated pairs, passing, not measured',
   },
-  { key: 'peakSnr', label: 'SNR', title: 'Peak SNR in noise units (pass needs >= 5)' },
+  { key: 'peakSnr', label: 'SNR', title: `Peak SNR in noise units (pass needs >= ${MIN_SNR})` },
   {
     key: 'projR',
     label: 'proj r',
@@ -45,7 +47,7 @@ const COLUMNS: Column[] = [
   {
     key: 'maxNeighbourR',
     label: 'nb r',
-    title: 'Largest trace correlation with an overlapping neighbour (> 0.8 = split/duplicate flag)',
+    title: `Largest trace correlation with an overlapping neighbour (> ${PAIR_R} = split/duplicate flag)`,
     desc: true,
   },
   {

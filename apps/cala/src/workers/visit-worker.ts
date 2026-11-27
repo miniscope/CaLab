@@ -7,6 +7,7 @@
 import { initCalaWasm, VisitWorker } from '../lib/cala-wasm.ts';
 import { buildSlowLoop } from '../lib/slow-runner.ts';
 import type { OwnerToVisit, VisitConnect, VisitToOwner } from './slow-types.ts';
+import { errMsg } from '../lib/errors.ts';
 
 const workerScope = globalThis as unknown as {
   onmessage: ((e: MessageEvent<VisitConnect>) => void) | null;
@@ -55,7 +56,7 @@ workerScope.onmessage = (e) => {
         post({
           type: 'error',
           session: ev.data.session,
-          message: err instanceof Error ? err.message : String(err),
+          message: errMsg(err),
         }),
       );
   };

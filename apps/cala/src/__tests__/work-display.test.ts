@@ -2,17 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   bandPath,
   busyWorkers,
-  discoverRate,
-  discoverSecondsLeft,
   displayState,
-  finalSettleText,
   formatDuration,
   frameTicks,
   squareStack,
   gridGroups,
   groupedRows,
   squareTitle,
-  legendKinds,
   linePath,
   planPath,
   plannedSettleFrames,
@@ -24,9 +20,7 @@ import {
   speedPos,
   settlednessFromHints,
   stackBands,
-  stackSegments,
   stoppedLookbackRows,
-  totalAriaLabel,
   BG_SETTLE_HATCH,
   KIND_COLOR,
   stripLayout,
@@ -56,29 +50,10 @@ describe('speedPos', () => {
   });
 });
 
-describe('stackSegments', () => {
-  it('shares of the worker count, in kind order, zeros left out', () => {
-    const seg = stackSegments(vals({ live: 0.5, lookback: 1, finalSettle: 2 }), 10);
-    expect(seg.map((s) => s.kind)).toEqual(['live', 'lookback', 'finalSettle']);
-    expect(seg.map((s) => s.frac)).toEqual([0.05, 0.1, 0.2]);
-  });
-  it('never overflows the bar', () => {
-    const seg = stackSegments(vals({ live: 6, discovery: 6 }), 10);
-    expect(seg.reduce((a, s) => a + s.frac, 0)).toBeCloseTo(1, 10);
-  });
-  it('ignores negatives and NaN', () => {
-    expect(stackSegments(vals({ live: -1, discovery: NaN }), 4)).toEqual([]);
-  });
-  it('busyWorkers is capped at the count', () => {
+describe('busyWorkers', () => {
+  it('is capped at the count', () => {
     expect(busyWorkers(vals({ live: 3, discovery: 3 }), 5)).toBe(5);
     expect(busyWorkers(vals({ live: 1 }), 5)).toBe(1);
-  });
-});
-
-describe('legendKinds', () => {
-  it('drops Background settle at Max only', () => {
-    expect(legendKinds(false)).toEqual([...WORK_KINDS]);
-    expect(legendKinds(true)).toEqual(['live', 'discovery', 'lookback', 'finalSettle']);
   });
 });
 
@@ -212,27 +187,6 @@ describe('text', () => {
     expect(formatDuration(null)).toBe('-');
     expect(formatDuration(-1)).toBe('-');
   });
-  it('time left is frames left over the target, or over the achieved speed at Max', () => {
-    // The slower of target and achieved: a target the machine cannot hold is not the speed.
-    expect(discoverSecondsLeft({ framesLeft: 8000, targetFps: 80, achievedFps: 100 })).toBe(100);
-    expect(discoverSecondsLeft({ framesLeft: 8000, targetFps: 80, achievedFps: 40 })).toBe(200);
-    expect(discoverRate(80, 0)).toBe(80);
-    expect(discoverRate(0, 55)).toBe(55);
-    expect(discoverSecondsLeft({ framesLeft: 300, targetFps: 0, achievedFps: 100 })).toBe(3);
-    expect(discoverSecondsLeft({ framesLeft: 300, targetFps: 0, achievedFps: 0 })).toBeNull();
-    expect(discoverSecondsLeft({ framesLeft: -5, targetFps: 10, achievedFps: 0 })).toBe(0);
-  });
-  it('the Final settle line: one pass before any measured rate, then the time', () => {
-    expect(finalSettleText({ fed: 0, total: 17879, fps: null, settling: false })).toBe(
-      '0 of 17,879 frames · about one pass after Discover',
-    );
-    expect(finalSettleText({ fed: 0, total: 9000, fps: 100, settling: false })).toBe(
-      '0 of 9,000 frames · about 1 min 30 s after Discover',
-    );
-    expect(finalSettleText({ fed: 4500, total: 9000, fps: 100, settling: true })).toBe(
-      '4,500 of 9,000 frames · 45 s left at 100 frames/s',
-    );
-  });
   it('plans at most the settle cap', () => {
     expect(plannedSettleFrames(30000, 18000)).toBe(18000);
     expect(plannedSettleFrames(5000, 18000)).toBe(5000);
@@ -335,13 +289,6 @@ describe('accessible names and stopped rows', () => {
       'slow: 66% busy, Find cells 30%, Background settle 36%',
     );
     expect(rowAriaLabel('traces', w('t', 'fast'))).toBe('traces: 0% busy');
-  });
-  it('the work bar names its values and its fixed range', () => {
-    const label = totalAriaLabel({ ...vals({ live: 0.5, lookback: 1 }), spare: 8.5 }, 10);
-    expect(label).toBe(
-      'Workers busy by kind of work, of 10 workers: Read frames 0.50, Look-back 1.00, Idle 8.50',
-    );
-    expect(totalAriaLabel(undefined, 0)).toContain('no reading');
   });
   const rows = [
     w('Slow worker', 'slow'),

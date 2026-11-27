@@ -57,7 +57,8 @@ import {
   type PlanState,
 } from './run-plan.ts';
 import { readStartMs, toSessionInput } from './session-list.ts';
-import { ensureReadwrite, type WritableDirLike } from './session-export.ts';
+import type { WritableDirLike } from './session-export.ts';
+import { ensurePermission } from './fs-handles.ts';
 import {
   RESULTS_DIR,
   uniqueResultsPaths,
@@ -66,6 +67,7 @@ import {
 } from './sessions.ts';
 import { stageMeta } from './export.ts';
 import { rememberProject, type RecentStore } from './recent-projects.ts';
+import { errMsg } from './errors.ts';
 
 export interface ProjectOpen {
   rootName: string;
@@ -154,7 +156,7 @@ export function createProjectStore(deps: ProjectDeps) {
   async function grant(): Promise<boolean> {
     if (!canWrite()) return true;
     const target = resultsHandle() ?? opened()?.handle;
-    return target ? ensureReadwrite(target) : false;
+    return target ? ensurePermission(target, 'readwrite') : false;
   }
 
   async function readFiles(): Promise<ResultsFile[]> {
@@ -285,9 +287,7 @@ export function createProjectStore(deps: ProjectDeps) {
         Promise.all(o.sessions.map(readStartMs)),
         deps
           .probe(o.sessions.map(toSessionInput))
-          .catch((err: unknown) =>
-            o.sessions.map(() => ({ error: err instanceof Error ? err.message : String(err) })),
-          ),
+          .catch((err: unknown) => o.sessions.map(() => ({ error: errMsg(err) }))),
       ]);
       const paths = uniqueResultsPaths(o.sessions.map((c) => c.dir));
       setRows(
@@ -309,7 +309,7 @@ export function createProjectStore(deps: ProjectDeps) {
       if (o.handle && deps.recent)
         await rememberProject(deps.recent, o.handle, o.resultsHandle ?? null, now());
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
     } finally {
       setLoading(false);
     }
@@ -321,7 +321,7 @@ export function createProjectStore(deps: ProjectDeps) {
     try {
       await loadIndex();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
     }
   }
 
@@ -386,7 +386,7 @@ export function createProjectStore(deps: ProjectDeps) {
       const next = setCurrentIn(idx, session, run);
       await save({ ...next, project: { ...next.project, updated: now().toISOString() } });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
     }
   }
 

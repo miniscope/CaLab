@@ -19,6 +19,7 @@ import type { FrameSourceInfo } from './frame-source.ts';
 import type { RecordedStageName, StageRun } from './run-stages.ts';
 import { EXPORT_FORMAT_VERSION } from './export.ts';
 import { startMemoryCollector, totalWasmHeapBytes } from './memory-telemetry.ts';
+import { median } from './stats.ts';
 
 export type RunMode = 'joint' | 'separate' | 'apply' | 'single';
 export type ErrorCategory = 'out_of_memory' | 'webgpu' | 'decode' | 'worker' | 'unknown';
@@ -100,13 +101,6 @@ export function errorCategory(message: string): ErrorCategory {
 function round(x: number, digits = 1): number {
   const k = 10 ** digits;
   return Math.round(x * k) / k;
-}
-
-export function median(xs: readonly number[]): number | null {
-  if (xs.length === 0) return null;
-  const s = [...xs].sort((a, b) => a - b);
-  const k = s.length >> 1;
-  return s.length % 2 ? s[k] : (s[k - 1] + s[k]) / 2;
 }
 
 /** Lowercase extension of a file name, or 'other' when it is not a short alphanumeric one. */

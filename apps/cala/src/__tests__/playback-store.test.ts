@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRoot } from 'solid-js';
 import type { PipelineClient } from '../lib/frame-client.ts';
-import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
+import type { PipelineStepResult } from '../lib/pipeline-types.ts';
 import { makePlan } from '../lib/pipeline-plan.ts';
 import { createPipelineStore } from '../lib/pipeline-store.ts';
 

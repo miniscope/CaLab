@@ -10,6 +10,7 @@ import { createEffect, createMemo, createSignal, For, Show, type JSX } from 'sol
 import type { CellStore } from '../lib/cell-store.ts';
 import { corrRequest, runCorrDistance } from '../lib/corr-distance-client.ts';
 import { SCATTER_X_MAX, selectScatter, type CorrDistanceResult } from '../lib/corr-distance.ts';
+import { errMsg } from '../lib/errors.ts';
 
 const W = 360;
 const H = 210;
@@ -219,7 +220,7 @@ export function CorrDistancePanel(props: { cells: CellStore }): JSX.Element {
     try {
       setResult(await runCorrDistance(req));
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
     } finally {
       setBusy(false);
     }

@@ -1,15 +1,10 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
-import { createFrameClient, type WorkerLike } from '../lib/frame-client.ts';
+import { frameClientOn, inertWorker } from './fake-workers.ts';
 
 function setup() {
-  const worker: WorkerLike = {
-    postMessage: vi.fn(),
-    terminate: vi.fn(),
-    onmessage: null,
-    onerror: null,
-  };
-  return { worker, client: createFrameClient(() => worker) };
+  const worker = inertWorker();
+  return { worker, client: frameClientOn(worker) };
 }
 
 describe('frame client failure handling', () => {
@@ -20,7 +15,8 @@ describe('frame client failure handling', () => {
     worker.onerror!.call({} as Worker, { message: 'worker failed' } as ErrorEvent);
     await Promise.all([read, step]);
     await expect(client.open([])).rejects.toThrow('worker failed');
-    expect(worker.postMessage).toHaveBeenCalledTimes(2);
+    // `link`, the read and the step.
+    expect(worker.postMessage).toHaveBeenCalledTimes(3);
     client.dispose();
   });
 
@@ -30,7 +26,8 @@ describe('frame client failure handling', () => {
     client.dispose();
     await read;
     await expect(client.readFrame(1)).rejects.toThrow('disposed');
-    expect(worker.postMessage).toHaveBeenCalledTimes(1);
+    // `link` and the read.
+    expect(worker.postMessage).toHaveBeenCalledTimes(2);
     expect(worker.terminate).toHaveBeenCalledOnce();
   });
 
@@ -44,7 +41,7 @@ describe('frame client failure handling', () => {
     worker.onmessage!.call(
       {} as Worker,
       {
-        data: { type: 'frames', id: 2, start: 1, count: 1, pixels: new Uint8Array([42]) },
+        data: { type: 'frames', id: 3, start: 1, count: 1, pixels: new Uint8Array([42]) },
       } as MessageEvent,
     );
     await expect(next).resolves.toEqual(new Uint8Array([42]));
@@ -52,23 +49,10 @@ describe('frame client failure handling', () => {
   });
 });
 
-describe('a GPU factor run (pipelined) waiting for the GPU compressor', () => {
+describe('a GPU factor run waiting for the GPU compressor', () => {
   function pipelined() {
-    const fake = (): WorkerLike => ({
-      postMessage: vi.fn(),
-      terminate: vi.fn(),
-      onmessage: null,
-      onerror: null,
-    });
-    const frame = fake();
-    const motion = fake();
-    const trace = fake();
-    const client = createFrameClient(() => frame, {
-      pipelined: true,
-      makeMotionWorker: () => motion,
-      makeTraceWorker: () => trace,
-      makeFlatFieldWorker: false,
-    });
+    const trace = inertWorker();
+    const client = frameClientOn(inertWorker(), { trace });
     const released = () =>
       vi.mocked(trace.postMessage).mock.calls.filter(([m]) => m.type === 'release-compress').length;
     return { client, trace, released };

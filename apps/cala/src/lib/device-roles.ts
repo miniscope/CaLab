@@ -22,7 +22,7 @@
  * the names count there.
  */
 import type { FolderEntry } from './frame-source.ts';
-import { dirOf, isBehaviourPrefix, type VideoSeries } from './video-series.ts';
+import { baseOf, dirOf, isBehaviourPrefix, type VideoSeries } from './video-series.ts';
 
 export type DeviceRole = 'miniscope' | 'camera';
 /** Where a role came from, strongest first. */
@@ -58,11 +58,6 @@ function parseObject(text: string): Record<string, unknown> | null {
     : null;
 }
 
-function basename(dir: string): string {
-  const slash = dir.lastIndexOf('/');
-  return slash < 0 ? dir : dir.slice(slash + 1);
-}
-
 /** A device name as its folder is named: trimmed, spaces as `_`, lower case. */
 export function deviceFolderKey(name: string): string {
   return name.trim().replace(/\s+/g, '_').toLowerCase();
@@ -95,7 +90,7 @@ export function deviceRoleFromMetadata(text: string): DeviceRole | null {
 export function roleFromName(series: VideoSeries): DeviceRole | null {
   if (isBehaviourPrefix(series.prefix)) return 'camera';
   if (series.prefix !== '') return null;
-  const name = basename(series.dir);
+  const name = baseOf(series.dir);
   if (BEHAVIOUR_DIR.test(name)) return 'camera';
   return MINISCOPE_DIR.test(name) ? 'miniscope' : null;
 }
@@ -114,7 +109,7 @@ export function roleForSeries(
   if (!sharedDir && series.dir !== '') {
     const devices = experimentText === null ? null : parseExperimentDevices(experimentText);
     if (devices) {
-      const key = deviceFolderKey(basename(series.dir));
+      const key = deviceFolderKey(baseOf(series.dir));
       if (devices.miniscopes.some((n) => deviceFolderKey(n) === key)) {
         return { role: 'miniscope', source: 'experiment' };
       }

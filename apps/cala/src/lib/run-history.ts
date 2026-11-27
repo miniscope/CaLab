@@ -11,7 +11,14 @@
 import { createSignal } from 'solid-js';
 import { StreamHistory, type HistoryExport, type SeriesSpec } from '@calab/compute';
 import { RunEvents, type RunEvent } from './run-events.ts';
-import { WORK_KINDS, workByKind, type WorkKind, type WorkRates } from './work-meter.ts';
+import {
+  KIND_COLOR,
+  WORK_KIND_LABELS,
+  WORK_KINDS,
+  workByKind,
+  type WorkKind,
+  type WorkRates,
+} from './work-meter.ts';
 
 /** Motion record flag bits (crates/cala/src/motion/corrector.rs) that count as a flagged frame. */
 const MOTION_FLAG_ANOMALOUS = 2;
@@ -332,14 +339,12 @@ const WORK_SERIES: SeriesSpec[] = [
   },
 ];
 
-/** The work-by-kind series (`workByKind` totals, worker-seconds per second), in the display's colours. */
-const KIND_SERIES: [WorkKind, string, string][] = [
-  ['live', 'Read frames', '#0072b2'],
-  ['discovery', 'Find cells', '#009e73'],
-  ['lookback', 'Look-back', '#e69f00'],
-  ['bgSettle', 'Background settle', '#e3b1cb'],
-  ['finalSettle', 'Final settle', '#a8497d'],
-];
+/** The work-by-kind series (`workByKind` totals, worker-seconds per second), in the display's names and colours. */
+const KIND_SERIES: [WorkKind, string, string][] = WORK_KINDS.map((k) => [
+  k,
+  WORK_KIND_LABELS[k],
+  KIND_COLOR[k],
+]);
 
 /** The history key of a kind's series. */
 export const kindSeriesKey = (k: WorkKind): string =>

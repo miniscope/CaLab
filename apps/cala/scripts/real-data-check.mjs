@@ -3,7 +3,7 @@
  * Local-only check of the cala frame source against a real Miniscope
  * recording. Not run in CI (it needs ~8 GB of data on disk).
  *
- *   node apps/cala/scripts/real-data-check.mjs [dir] [--python <python>] [--samples N]
+ *   node --experimental-transform-types apps/cala/scripts/real-data-check.mjs [dir] [--python <python>] [--samples N]
  *        [--throughput N] [--motion N] [--batch N] [--motion-only] [--flicker-mode M]
  *
  * Opens the folder with the real `FrameSource` (the wasm AviHeader reading
@@ -12,8 +12,10 @@
  * SHA-256 digests to `verify_frames.py`, an independent reader that walks the
  * RIFF chunks itself and reads the pixels with numpy. Any disagreement fails.
  *
- * Then runs the app's preprocess + motion pipeline (`PipelineEngine`, the
- * same code the worker runs) headless over the first `--motion` frames
+ * Then runs the app's preprocess + motion pipeline (the stages of
+ * `pipeline-stages.ts` the workers run, chained in-process by `StageChain`,
+ * without a fast loop or the online flat field, whose estimator runs in a
+ * worker of its own) headless over the first `--motion` frames
  * (default 300; 0 skips it) and prints rigid-shift and global-flicker
  * statistics and per-stage throughput (`--flicker-mode`: 0 off, 3 both, the
  * default; compare the preprocess ms/frame to time the flicker stage). `--motion-only` skips the frame checks and the Python reader.
@@ -21,8 +23,9 @@
  * `--python` (or $CALA_PYTHON) must point at an interpreter with numpy, e.g.
  *   uv venv <dir> && uv pip install --python <dir>/bin/python numpy
  *
- * Needs Node >= 22.18 (type stripping, for the .ts imports). The dataset is
- * only ever read.
+ * Needs Node >= 22.18 with `--experimental-transform-types` (the .ts imports
+ * use constructor parameter properties, which type stripping alone rejects).
+ * The dataset is only ever read.
  */
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -64,7 +67,7 @@ const { initCalaWasm } = await import(resolve(here, '../src/lib/cala-wasm.ts'));
 const { FrameSource, entriesFromFiles, MAX_FRAMES_PER_READ } = await import(
   resolve(here, '../src/lib/frame-source.ts')
 );
-const { PipelineEngine } = await import(resolve(here, '../src/lib/pipeline-engine.ts'));
+const { StageChain } = await import(resolve(here, '../src/lib/stage-chain.ts'));
 await initCalaWasm(readFileSync(resolve(here, '../../../crates/cala/pkg/calab_cala_bg.wasm')));
 
 /** mulberry32: a seeded PRNG, so a failing sample list is reproducible. */
@@ -112,8 +115,12 @@ function stats(xs) {
 
 // The app's preprocess + motion pipeline, headless, over the first frames.
 if (motionFrames > 0) {
-  const engine = new PipelineEngine(source, { batchSize: motionBatch }, flickerMode);
-  const plan = engine.plan;
+  const chain = new StageChain(
+    source,
+    { batchSize: motionBatch, flatField: false },
+    flickerMode === undefined ? {} : { flickerMode },
+  );
+  const plan = chain.plan;
   const want = Math.min(motionFrames, plan.frameCount);
   console.log(
     `pipeline: calibration ${plan.calibrationFrames} frames, motion warm-up ${plan.motionWarmupFrames}, ` +
@@ -130,7 +137,7 @@ if (motionFrames > 0) {
   const tSetup = performance.now();
   let tProcess = 0;
   while (dy.length < want) {
-    const r = await engine.step();
+    const r = await chain.step();
     peakRss = Math.max(peakRss, process.memoryUsage().rss);
     if (r.kind === 'done') break;
     if (r.kind === 'setup') continue;
@@ -154,7 +161,7 @@ if (motionFrames > 0) {
   }
   const secs = (performance.now() - tProcess) / 1000;
   const n = dy.length;
-  engine.dispose();
+  chain.dispose();
   const q = [...quality].sort((a, b) => a - b);
   console.log(`  dy (px): ${stats(dy)}`);
   console.log(`  dx (px): ${stats(dx)}`);

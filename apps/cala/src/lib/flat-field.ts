@@ -86,8 +86,10 @@ export interface DeviceIdentity {
   deviceId?: string;
 }
 
+/** Where a flat-field cache key came from (see `flatFieldKey`). */
 export type FlatFieldKeySource = 'device' | 'live-device' | 'live-name' | 'folder';
 
+/** A flat-field cache key and how it was derived. */
 export interface FlatFieldKey {
   key: string;
   source: FlatFieldKeySource;
@@ -150,7 +152,7 @@ export function flatFieldKey(args: {
 
 /** Everything the status line needs (kept by the pipeline store). */
 export interface FlatFieldState {
-  /** The estimator exists on this client (pipelined workers). */
+  /** The client has a flat-field estimator worker (`PipelineClient.subscribeFlatField`). */
   supported: boolean;
   /** The user's setting for the current run. */
   enabled: boolean;
@@ -172,6 +174,7 @@ export interface FlatFieldState {
   error: string | null;
 }
 
+/** The status before any run: enabled, no estimator, no map. */
 export function initialFlatFieldState(): FlatFieldState {
   return {
     supported: false,
@@ -192,7 +195,7 @@ export function initialFlatFieldState(): FlatFieldState {
 /** The status line of the flat field panel. */
 export function flatFieldStatusLine(s: FlatFieldState): string {
   if (!s.enabled) return 'off';
-  if (!s.supported) return 'off: needs the pipelined workers (not available with ?pipeline=0)';
+  if (!s.supported) return 'off: no flat-field estimator';
   if (s.error) return `error: ${s.error}`;
   const reason = s.skipped?.split(':')[0];
   if (s.skipped) {

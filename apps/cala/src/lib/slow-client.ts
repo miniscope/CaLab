@@ -18,6 +18,7 @@ import type {
   SlowToMain,
   VisitConnect,
 } from '../workers/slow-types.ts';
+import { errMsg } from './errors.ts';
 
 export interface SlowClient {
   /** Visit workers running the slow loop's tile visits. */
@@ -112,7 +113,7 @@ export function createSlowClient(
     onMessage({
       type: 'error',
       session: -1,
-      message: err instanceof Error ? err.message : String(err),
+      message: errMsg(err),
     }),
   );
   return {

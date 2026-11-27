@@ -137,7 +137,7 @@ export interface FastLoopOptions {
   qcEveryS?: number;
   /** Solve with this library (`TraceLibrary.toBytes()`) from the first frame (Extract: the final library). */
   initialLibrary?: Uint8Array;
-  /** Discover with look-back (experimental): the slow loop's `init` says so (`SlowInit.lookback`). */
+  /** Discover with look-back (on by default for recordings): the slow loop's `init` says so (`SlowInit.lookback`). */
   lookback?: boolean;
   /** A live stream with `?factors`: the slow loop's `init` says so (`SlowInit.factorSettle`; never with `lookback`). */
   factorSettle?: boolean;

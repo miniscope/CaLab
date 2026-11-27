@@ -25,6 +25,7 @@
  */
 import { GpuTileJob, type WindowStats } from './cala-wasm.ts';
 import { APPLY, CHOL, GEMM, GRAM, TILE_ROWS } from './gpu-compress-kernels.ts';
+import { errMsg } from './errors.ts';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -322,7 +323,7 @@ export async function openGpuCompressor(o: {
     // WebGPU's default limits: every buffer is sized to fit them (or the device's own, if lower).
     device = await adapter.requestDevice();
   } catch (e) {
-    return { reason: `No WebGPU device: ${e instanceof Error ? e.message : String(e)}` };
+    return { reason: `No WebGPU device: ${errMsg(e)}` };
   }
   device.pushErrorScope('validation');
   const pipe = (code: string): GPUComputePipeline =>

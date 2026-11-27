@@ -519,6 +519,15 @@ export const WORK_KIND_LABELS: Record<WorkKind | 'spare', string> = {
   spare: 'Idle',
 };
 
+/** Colours of the kinds (Okabe-Ito; the Work display's and the History series', and the mock's CSS variables). */
+export const KIND_COLOR: Record<WorkKind, string> = {
+  live: '#0072b2',
+  discovery: '#009e73',
+  lookback: '#e69f00',
+  bgSettle: '#e3b1cb',
+  finalSettle: '#a8497d',
+};
+
 /** Which worker a row is. */
 export type WorkerGroup = 'fast' | 'slow' | 'visit' | 'lookback';
 

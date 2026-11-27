@@ -1,5 +1,5 @@
 /**
- * The end-of-Discover settle of a look-back run (experimental; qc_eval's
+ * The end-of-Discover settle of a look-back run (qc_eval's
  * `--settle-frames N --settle-batch 16`, `LookBack::settle`): with the cell
  * set frozen, the look-back worker re-reads the recording once and every
  * frame goes through the slow loop's ordinary `observe`, as a Refine pass
@@ -8,6 +8,7 @@
  * 2026-11-19-lookback-settle.md). `SlowRunner` drives it; this module holds
  * the frame plan and the "cells still moving" readout, both pure.
  */
+import { median } from './stats.ts';
 
 /** The settle's settings (see `settle_design.md`, "Design of the end-of-Discover settle"). */
 export const SETTLE = {
@@ -299,12 +300,6 @@ export function settleChange(
   k: number = SETTLE.movingK,
 ): SettleChange {
   const ch = footprintChanges(before, after, noise);
-  const median = (v: number[]) => {
-    if (v.length === 0) return null;
-    const s = [...v].sort((x, y) => x - y);
-    const m = s.length >> 1;
-    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-  };
   return {
     ...movedAgainstNoise(before, after, noise, k),
     cellsBefore: before.size,

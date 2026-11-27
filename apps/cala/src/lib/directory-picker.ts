@@ -61,18 +61,10 @@ export async function entriesFromDirectoryHandle(root: DirHandleLike): Promise<F
 }
 
 /**
- * Show the read-only directory picker and walk the chosen folder. Resolves
- * `null` when the user cancels. Other errors (SecurityError, NotAllowedError)
- * propagate to the caller.
- */
-export async function pickDirectory(): Promise<FolderEntry[] | null> {
-  return (await pickDirectoryWithHandle())?.entries ?? null;
-}
-
-/**
- * `pickDirectory`, also returning the handle: a multi-session run writes its
- * results next to the data (`session-export.ts`) and asks for `readwrite` on
- * this handle when the run starts.
+ * Show the read-only directory picker and walk the chosen folder, returning its entries and the
+ * handle. Resolves `null` when the user cancels. Other errors (SecurityError, NotAllowedError)
+ * propagate to the caller. A multi-session run writes its results next to the data
+ * (`session-export.ts`) and asks for `readwrite` on this handle when the run starts.
  */
 export async function pickDirectoryWithHandle(): Promise<{
   entries: FolderEntry[];

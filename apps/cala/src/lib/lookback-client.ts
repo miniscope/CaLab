@@ -1,5 +1,5 @@
 /**
- * Main-thread side of look-back (experimental; see `lookback-reader.ts` and
+ * Main-thread side of look-back (see `lookback-reader.ts` and
  * `SlowRunner`): starts the look-back worker on the first Discover run with
  * look-back on, wires a `MessageChannel` between it and the slow worker,
  * and feeds it what Discover records as it goes (motion and flicker rows,
@@ -24,7 +24,7 @@
  * recorded, and are announced to the slow worker at once.
  */
 import type { FlatFieldMap } from './flat-field.ts';
-import type { BackStateSnapshot } from './pipeline-engine.ts';
+import type { BackStateSnapshot } from './pipeline-types.ts';
 import type { SessionTransform } from './session-boundary.ts';
 import type { SlowClient } from './slow-client.ts';
 import type {
@@ -97,11 +97,13 @@ export interface LookbackFeed {
   readonly poolSize?: number;
 }
 
+/** The subset of `Worker` the client uses (so tests can pass a fake). */
 export type LookbackWorkerLike = Pick<
   Worker,
   'postMessage' | 'terminate' | 'onmessage' | 'onerror'
 >;
 
+/** What the look-back client is built from. */
 export interface LookbackClientOptions {
   slow: Pick<SlowClient, 'connectLookback'> &
     Partial<Pick<SlowClient, 'settlePace' | 'settleCap' | 'settlePool'>>;
@@ -109,7 +111,7 @@ export interface LookbackClientOptions {
   pool?: number;
   /** The open recording's files (null: none, or a live source). */
   source: () => LookbackSource | null;
-  /** Why look-back cannot run besides the source (a live stream, no pipelined workers). */
+  /** Why look-back cannot run besides the source (e.g. a live stream; null: it can). */
   blocked: () => string | null;
   /** A look-back worker error (worker 0: it stops look-back for the run; a pool worker: that worker only; Discover goes on). */
   onError?: (session: number, message: string, worker: number) => void;
@@ -161,6 +163,7 @@ function joinRows(chunks: RowsChunk[]): RowsChunk[] {
   return out;
 }
 
+/** Create the look-back client (worker 0 and `o.pool` settle-pool workers), wired to `o.slow`. */
 export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
   dispose(): void;
 } {

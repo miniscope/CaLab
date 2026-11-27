@@ -172,7 +172,7 @@ export interface LookbackStatus {
 }
 
 /**
- * Settle during Discover (experimental, frames only; `SlowRunner`): saved
+ * Settle during Discover (frames only; `SlowRunner`): saved
  * frames re-read while Discover runs, spread over the history seen so far.
  */
 export interface CsettleStatus {

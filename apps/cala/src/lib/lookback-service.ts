@@ -43,6 +43,7 @@ import type {
   MainToLookback,
   SlowToLookback,
 } from '../workers/lookback-types.ts';
+import { errMsg } from './errors.ts';
 
 /** What the service needs of `LookbackReader` (a frame server that also splits `serve`). */
 export interface LookbackReaderLike extends FrameServer {
@@ -112,7 +113,7 @@ interface Run {
 }
 
 function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  return errMsg(err);
 }
 
 export class LookbackService {

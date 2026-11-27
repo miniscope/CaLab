@@ -25,6 +25,7 @@ import { createHistoryUi, GroupPlot, HistoryExpanded, RunStrip } from './History
 import { SelectedCellPanel } from './CellsPanel.tsx';
 import { BoundaryBadge } from './BoundaryBadge.tsx';
 import { SidePanel } from './SidePanel.tsx';
+import { errMsg } from '../lib/errors.ts';
 
 /** Where the result came from (the project index), for the readout. */
 export interface ResultOrigin {
@@ -261,7 +262,7 @@ export function ResultView(props: { result: LoadedResult; origin: ResultOrigin }
         setLoaded(to);
       }
     } catch (err) {
-      if (gen === generation) setLoadError(err instanceof Error ? err.message : String(err));
+      if (gen === generation) setLoadError(errMsg(err));
     }
   }
   void loadTraces('clipped');
@@ -286,7 +287,7 @@ export function ResultView(props: { result: LoadedResult; origin: ResultOrigin }
 
   /** The Result tab: what was saved, the stages that ran and the convergence plot. */
   const resultPanel = () => (
-    <SidePanel id="run" title="Saved result" class="cala-run" fixed>
+    <SidePanel id="run" title="Saved result" class="cala-run">
       <p class="cala-muted" data-testid="result-readonly">
         Read-only: this is the result as it was saved. Start a new run from the project to Discover,
         Extract again.

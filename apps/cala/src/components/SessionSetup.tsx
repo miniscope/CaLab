@@ -12,6 +12,7 @@ import { RESULTS_DIR } from '../lib/sessions.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { DiscoverSettings } from './DiscoverSettings.tsx';
 import { isPickerAbort, showPicker, supportsDirectoryPicker } from '../lib/directory-picker.ts';
+import { errMsg } from '../lib/errors.ts';
 
 interface SessionSetupProps {
   list: SessionList;
@@ -64,7 +65,7 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
       const handle = await showPicker('readwrite');
       if (handle) l().setLocation({ handle, label: handle.name, chosen: true });
     } catch (err) {
-      if (!isPickerAbort(err)) setStartError(err instanceof Error ? err.message : String(err));
+      if (!isPickerAbort(err)) setStartError(errMsg(err));
     }
   }
 
@@ -79,7 +80,7 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
       }
       props.onStart({ mode: mode() });
     } catch (err) {
-      setStartError(err instanceof Error ? err.message : String(err));
+      setStartError(errMsg(err));
     }
   }
 

@@ -13,7 +13,7 @@
  */
 import { GOVERNOR } from './settle.ts';
 import { snapToLadder } from './speed-floor.ts';
-import { CURVE_PRESET_IDS, SPEED_SCALE, type CurvePresetId } from './speed-track.ts';
+import { SPEED_SCALE, type CurvePresetId } from './speed-track.ts';
 
 /** A target: frames per second, `'max'` (unpaced), or a symbol resolved against the live floor. */
 export type CurveFps = number | 'max' | 'floor' | 'seeAll';
@@ -83,10 +83,6 @@ export const CURVE_PRESETS: Record<
 
 export function presetCurve(id: CurvePresetId): SpeedCurve {
   return { points: CURVE_PRESETS[id].curve.points.map((p) => ({ ...p })) };
-}
-
-export function isPresetId(x: unknown): x is CurvePresetId {
-  return typeof x === 'string' && (CURVE_PRESET_IDS as readonly string[]).includes(x);
 }
 
 // ---- resolving ----

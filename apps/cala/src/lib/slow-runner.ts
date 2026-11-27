@@ -20,7 +20,7 @@
  * delay this worker; the fast worker drops batches for it instead of waiting
  * (see `ForwardPool`).
  *
- * Look-back (experimental, `SlowInit.lookback`; the scheduler is the
+ * Look-back (`SlowInit.lookback`; the scheduler is the
  * engine's, `discover/lookback.rs`): after each observed batch of Discover
  * the runner notes what the slow loop has seen (`lookbackNote`) and, with no
  * request outstanding, hands the frames the scheduler wants re-read
@@ -1035,13 +1035,12 @@ export class SlowRunner {
   }
 
   /**
-   * Observe a batch. With visit workers, in a Refine run, it yields after
-   * each frame while a visit is out: the caller may then let visit results
-   * in (`handleAsync`).
-   * Without that, a result waited for the whole batch, and once the frames
-   * came as fast as the slow worker could observe them (Refine, which never
-   * drops a batch) its visit workers sat idle and a Refine run made a few
-   * times fewer visits per frame.
+   * Observe a batch. With visit workers, outside the `all` edit scope (the Final settle, which
+   * runs with `refine`), it yields after each frame while a visit is out: the caller may then let
+   * visit results in (`handleAsync`).
+   * Without that, a result waited for the whole batch, and once the frames came as fast as the
+   * slow worker could observe them (a settle never drops a batch) its visit workers sat idle and
+   * made a few times fewer visits per frame (measured on the Refine stage this path was built for).
    */
   private *frameSteps(msg: Extract<FastToSlow, { type: 'frames' }>): Generator<void, void> {
     const loop = this.loop;
@@ -1102,7 +1101,7 @@ export class SlowRunner {
           this.observed++;
           this.frame = msg.start + i + 1;
           if (this.parallel) {
-            // Refine only: Discover keeps its timing (it drops batches instead).
+            // The Final settle only (scope `refine`): Discover keeps its timing (it drops batches instead).
             if (this.scope !== 'all' && i + 1 < msg.count && this.busy.some((b) => b)) {
               endLive();
               yield;

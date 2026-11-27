@@ -10,6 +10,7 @@ import { jobTransferables, MotionStage } from '../lib/pipeline-stages.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import type { FrameResponse } from './frame-types.ts';
 import type { StageFree, StageLink, StageMsg, StageShifts } from './stage-types.ts';
+import { errMsg } from '../lib/errors.ts';
 
 /** Registered-frame buffers between this stage and the trace stage. */
 const OUT_BUFFERS = 3;
@@ -91,7 +92,7 @@ async function handle(msg: StageMsg): Promise<void> {
             workerScope.postMessage({
               type: 'error',
               id: msg.id,
-              message: err instanceof Error ? err.message : String(err),
+              message: errMsg(err),
             });
           },
         );
@@ -124,7 +125,7 @@ workerScope.onmessage = (e) => {
           workerScope.postMessage({
             type: 'error',
             id: msg.id,
-            message: err instanceof Error ? err.message : String(err),
+            message: errMsg(err),
           });
         }
       }),

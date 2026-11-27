@@ -738,6 +738,19 @@ describe('run history display series', () => {
       expect(spec.range).toEqual([0, 12]);
       expect(spec.rangeRule).toBe('fixed');
     }
+    // The kinds' series keep the Work display's names and colours, in the fixed kind order.
+    expect(
+      WORK_KINDS.map((k) => [
+        hist.spec(kindSeriesKey(k))!.label,
+        hist.spec(kindSeriesKey(k))!.color,
+      ]),
+    ).toEqual([
+      ['Work: Read frames', '#0072b2'],
+      ['Work: Find cells', '#009e73'],
+      ['Work: Look-back', '#e69f00'],
+      ['Work: Background settle', '#e3b1cb'],
+      ['Work: Final settle', '#a8497d'],
+    ]);
     expect(hist.spec('target_fps')!.range).toEqual([10, 500]);
     expect(hist.spec('births_per_kframe')!.rangeRule).toBe('fixed');
     h.births(60, 400); // the opening burst clips; it does not step the range

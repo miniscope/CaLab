@@ -36,6 +36,7 @@ import type { FovProjections } from './fov-projection.ts';
 import { startReplayPipeline } from './replay-pipeline.ts';
 import type { FactorInfo } from './compress-store.ts';
 import type { FactorExtractPort, FactorJob } from './factor-extract.ts';
+import { errMsg } from './errors.ts';
 
 export type Pass2Status = 'idle' | 'running' | 'done' | 'error' | 'cancelled';
 
@@ -92,8 +93,6 @@ export function createPass2Store(
   pipeline: PipelineStore,
   cells: CellStore,
   clock: () => number = () => performance.now(),
-  /** Another stage's reason to wait (a Refine run going on), checked after Discover's. */
-  blocked?: () => string | null,
   /** A `?factors` stream's factors: Extract solves on them in the compress worker (absent: never). */
   factors?: FactorExtractPort,
 ) {
@@ -137,8 +136,6 @@ export function createPass2Store(
     if (st === 'running' || st === 'paused' || st === 'starting')
       return 'Extract runs after Discover finishes.';
     if (st !== 'done') return 'Extract runs after Discover finishes.';
-    const other = blocked?.();
-    if (other) return other;
     // A factor run reads no file, so no record to replay; it waits for the factors itself.
     const replay =
       factors?.active() || (factors?.mode?.() === 'file' && factors.state() === 'ready')
@@ -245,7 +242,7 @@ export function createPass2Store(
         .catch((err: unknown) => {
           if (gen !== generation) return;
           generation++;
-          setError(err instanceof Error ? err.message : String(err));
+          setError(errMsg(err));
           setStatus('error');
           void discard();
         })
@@ -310,7 +307,7 @@ export function createPass2Store(
     } catch (err) {
       void traces?.dispose();
       if (gen !== generation) return;
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
       setStatus('error');
       return;
     }
@@ -352,7 +349,7 @@ export function createPass2Store(
     } catch (err) {
       if (gen !== generation) return;
       generation++;
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
       setStatus('error');
     }
   }
@@ -397,7 +394,7 @@ export function createPass2Store(
     } catch (err) {
       if (gen !== generation) return;
       generation++;
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
       setStatus('error');
       return;
     }
@@ -458,7 +455,7 @@ export function createPass2Store(
     } catch (err) {
       if (gen !== generation) return;
       generation++;
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
       setStatus('error');
       void discard();
     } finally {

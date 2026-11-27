@@ -4,10 +4,10 @@
  * `MessageChannel` the main thread wires up. Jobs flow downstream; pooled
  * buffers flow back upstream as `free` acks. C answers the main thread
  * directly with the `pipeline-step` response of the request that started the
- * job, so the request ids pair up as in the single-worker path.
+ * job, so the main thread pairs it by id like an answer from the frame worker.
  */
 import type { CellsSettings } from './frame-types.ts';
-import type { FastLoopSetup } from '../lib/pipeline-engine.ts';
+import type { FastLoopSetup } from '../lib/pipeline-types.ts';
 import type { StageJob, StageSetup } from '../lib/pipeline-stages.ts';
 
 /** Downstream (A -> B -> C). `epoch` changes at every pipeline start. */

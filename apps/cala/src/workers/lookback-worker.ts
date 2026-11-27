@@ -1,5 +1,5 @@
 /**
- * Look-back worker (experimental; created only for Discover runs with
+ * Look-back worker (created only for Discover runs with
  * look-back on): re-reads the past frames the slow loop's scheduler asks
  * for from the recording, with a `FrameSource` of its own opened from the
  * same `File`s (Discover's sequential reader is never touched), and

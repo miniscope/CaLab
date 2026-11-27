@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CellStore } from '../lib/cell-store.ts';
 import type { FlatFieldMap } from '../lib/flat-field.ts';
 import type { PipelineClient } from '../lib/frame-client.ts';
-import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
+import type { PipelineStepResult } from '../lib/pipeline-types.ts';
 import type { PipelinePlan } from '../lib/pipeline-plan.ts';
 import type { FactorInfo, FactorState } from '../lib/compress-store.ts';
 import type { FactorExtractPort, FactorJob } from '../lib/factor-extract.ts';
@@ -245,7 +245,7 @@ function factorSetup(initial: FactorState = 'ready', mode: 'stream' | 'file' = '
   };
   const s = setup();
   // `setup` builds a port-less store: rebuild with the port over the same fakes.
-  const store = createPass2Store(s.client, s.pipeline, s.cells, undefined, undefined, port);
+  const store = createPass2Store(s.client, s.pipeline, s.cells, undefined, port);
   return {
     store,
     started: s.started,

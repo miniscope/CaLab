@@ -8,7 +8,6 @@ import {
   achievedFps,
   browserInfo,
   gatherRunRecord,
-  KNOWN_FLAGS,
   machineContext,
   resetRunRecordContext,
   curveFromChanges,
@@ -18,12 +17,12 @@ import {
   speedModeOf,
   thinOldest,
   type WorkSample,
-  urlFlags,
   WORK_SLIDER_SLOTS,
   type RunRecordInput,
   type RunRecordSources,
 } from '../lib/run-provenance.ts';
 import type { StageRun } from '../lib/run-stages.ts';
+import { KNOWN_FLAGS, urlFlags } from '../lib/page-flags.ts';
 
 /** A loosely typed JSON document, for reading the record in assertions. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -478,10 +477,12 @@ describe('browserInfo', () => {
 });
 
 describe('url flags against the app', () => {
-  it('every flag App.tsx reads is a known flag', () => {
-    const src = readFileSync(resolve(import.meta.dirname, '../App.tsx'), 'utf8');
-    const names = new Set([...src.matchAll(/params\.(?:get|has)\('(\w+)'\)/g)].map((m) => m[1]));
+  it('every flag the app reads (page-flags.ts) is a known flag, and App.tsx reads none itself', () => {
+    const src = readFileSync(resolve(import.meta.dirname, '../lib/page-flags.ts'), 'utf8');
+    const names = new Set([...src.matchAll(/\bp\.(?:get|has)\('(\w+)'\)/g)].map((m) => m[1]));
     expect(names.size).toBeGreaterThan(10);
+    const app = readFileSync(resolve(import.meta.dirname, '../App.tsx'), 'utf8');
+    expect(app).not.toMatch(/URLSearchParams|params\.(?:get|has)\(/);
     const known = new Set<string>(KNOWN_FLAGS);
     expect([...names].filter((n) => !known.has(n))).toEqual([]);
   });
@@ -1020,9 +1021,13 @@ describe('run record: the Discover visit rate', () => {
     expect(t.visitRate()).toBeNull();
   });
 
-  it('records visitrate=off as a debug flag', () => {
+  it('records visitrate=off and visitrate=auto as debug flags', () => {
     expect(urlFlags('?debug&visitrate=off').flags.visitrate.in_effect).toBe(true);
     expect(urlFlags('?visitrate=off').flags.visitrate.in_effect).toBe(false);
     expect(urlFlags('?debug&visitrate=on').flags.visitrate.in_effect).toBe(false);
+    // #528: `auto` selects the Auto schedule, so it is in effect (with `?debug` only).
+    expect(urlFlags('?debug&visitrate=auto').flags.visitrate.in_effect).toBe(true);
+    expect(urlFlags('?visitrate=auto').flags.visitrate.in_effect).toBe(false);
+    expect(urlFlags('?debug&visitrate=fixed').flags.visitrate.in_effect).toBe(false);
   });
 });

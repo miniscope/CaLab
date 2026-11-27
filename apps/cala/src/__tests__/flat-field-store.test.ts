@@ -4,7 +4,7 @@ import type { FlatFieldEvent, FlatFieldMap } from '../lib/flat-field.ts';
 import { flatFieldStatusLine } from '../lib/flat-field.ts';
 import type { FlatFieldCache, FlatFieldRecord } from '../lib/flat-field-cache.ts';
 import type { PipelineClient } from '../lib/frame-client.ts';
-import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
+import type { PipelineStepResult } from '../lib/pipeline-types.ts';
 import { makePlan } from '../lib/pipeline-plan.ts';
 import { createPipelineStore } from '../lib/pipeline-store.ts';
 
@@ -323,7 +323,7 @@ describe('flat field in the pipeline store', () => {
     });
   });
 
-  it('works without a cache or an estimator (single-worker client)', async () => {
+  it('works without a cache or an estimator (a client without a flat-field worker)', async () => {
     const client: PipelineClient = {
       startPipeline: async () => makePlan(100),
       stepPipeline: async () => ({ kind: 'done' }),

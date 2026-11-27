@@ -1,4 +1,4 @@
-/** The Run panel's line on a look-back run (experimental). */
+/** The Run panel's line on a look-back run. */
 import type { CsettleStatus, LookbackStatus, SettleStatus } from '../workers/lookback-types.ts';
 import { SETTLE } from './settle.ts';
 
@@ -54,7 +54,7 @@ export function csettleText(cs: CsettleStatus | undefined, running: boolean): st
   return ` · ${n} frames re-read by the Background settle${rate ? ` (${rate})` : ''}`;
 }
 
-/** One line on a look-back run (experimental): what it re-read, and the settle after the last frame. */
+/** One line on a look-back run: what it re-read, and the settle after the last frame. */
 export function lookbackText(lb: LookbackStatus, final: boolean): string {
   const err = lb.error ? ` · look-back stopped: ${lb.error}` : '';
   const st = lb.settle;

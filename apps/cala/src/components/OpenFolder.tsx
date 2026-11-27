@@ -5,6 +5,7 @@ import { filesFromDrop } from '../lib/dropped-files.ts';
 import { entriesFromFiles, type FolderEntry } from '../lib/frame-source.ts';
 import { detectSeries, entriesForSeries, seriesLabel } from '../lib/video-series.ts';
 import {
+  entriesFromDirectoryHandle,
   pickDirectoryWithHandle,
   supportsDirectoryPicker,
   type DirHandleLike,
@@ -13,6 +14,7 @@ import { roleLabel } from '../lib/device-roles.ts';
 import {
   chooseKind,
   discoverKinds,
+  RESULTS_DIR,
   sessionsForKind,
   type SeriesKind,
   type SessionCandidate,
@@ -25,9 +27,8 @@ import {
 } from '../lib/project-index.ts';
 import type { ProjectOpen } from '../lib/project-store.ts';
 import type { ReadDirLike } from '../lib/project-io.ts';
-import { ensureRead, type RecentProject } from '../lib/recent-projects.ts';
-import { entriesFromDirectoryHandle } from '../lib/directory-picker.ts';
-import { RESULTS_DIR } from '../lib/sessions.ts';
+import type { RecentProject } from '../lib/recent-projects.ts';
+import { ensurePermission } from '../lib/fs-handles.ts';
 
 /** The files of one top-level subfolder, re-rooted so that subfolder is the picked folder. */
 export function subfolderEntries(entries: FolderEntry[], root: string, sub: string): FolderEntry[] {
@@ -62,12 +63,6 @@ interface OpenFolderProps {
   /** Recent projects (Chrome, Edge), most recent first. */
   recent?: RecentProject[];
   onForget?: (r: RecentProject) => void;
-}
-
-/** Sessions found in the picked or dropped files (see `lib/sessions.ts`). */
-export interface FoundSessions {
-  sessions: SessionCandidate[];
-  handle: DirHandleLike | null;
 }
 
 /**
@@ -181,14 +176,14 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
   async function reopen(r: RecentProject) {
     setPickError(null);
     try {
-      if (!(await ensureRead(r.handle))) {
+      if (!(await ensurePermission(r.handle, 'read'))) {
         setPickError(
           `The browser did not allow reading ${r.name}. Open it with "Open animal project".`,
         );
         return;
       }
       reopenResults =
-        r.resultsHandle && (await ensureRead(r.resultsHandle))
+        r.resultsHandle && (await ensurePermission(r.resultsHandle, 'read'))
           ? (r.resultsHandle as ReadDirLike)
           : null;
       const handle = r.handle as DirHandleLike;

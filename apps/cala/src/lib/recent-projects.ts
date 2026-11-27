@@ -4,6 +4,7 @@
  * browser asks for permission again). Other browsers keep no handles; the
  * folder is picked again.
  */
+import { idbRequest, lazyIdb } from './idb.ts';
 
 export const MAX_RECENT = 12;
 const DB_NAME = 'cala-projects';
@@ -64,17 +65,6 @@ export async function rememberProject(
   return rec;
 }
 
-/** Read permission on a stored handle, asked for inside a click when needed. */
-export async function ensureRead(handle: unknown): Promise<boolean> {
-  const h = handle as {
-    queryPermission?: (o: { mode: 'read' }) => Promise<PermissionState>;
-    requestPermission?: (o: { mode: 'read' }) => Promise<PermissionState>;
-  };
-  if (typeof h.requestPermission !== 'function') return true;
-  if ((await h.queryPermission?.({ mode: 'read' })) === 'granted') return true;
-  return (await h.requestPermission({ mode: 'read' })) === 'granted';
-}
-
 const byRecent = (a: RecentProject, b: RecentProject) =>
   a.openedAt < b.openedAt ? 1 : a.openedAt > b.openedAt ? -1 : 0;
 
@@ -93,39 +83,17 @@ export function createMemoryRecentStore(): RecentStore {
   };
 }
 
-function request<T>(req: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error ?? new Error('IndexedDB request failed.'));
-  });
-}
-
 /** The IndexedDB list (an empty, inert one where IndexedDB does not exist). */
 export function createIndexedDbRecentStore(
   factory: IDBFactory | undefined = typeof indexedDB === 'undefined' ? undefined : indexedDB,
 ): RecentStore {
-  let dbPromise: Promise<IDBDatabase | null> | null = null;
-  const open = (): Promise<IDBDatabase | null> => {
-    if (!factory) return Promise.resolve(null);
-    dbPromise ??= new Promise<IDBDatabase | null>((resolve) => {
-      try {
-        const req = factory.open(DB_NAME, 1);
-        req.onupgradeneeded = () => req.result.createObjectStore(STORE, { keyPath: 'id' });
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => resolve(null);
-        req.onblocked = () => resolve(null);
-      } catch {
-        resolve(null);
-      }
-    });
-    return dbPromise;
-  };
+  const open = lazyIdb(factory, DB_NAME, STORE, 'id');
   return {
     async list() {
       try {
         const db = await open();
         if (!db) return [];
-        const all = await request<RecentProject[]>(
+        const all = await idbRequest<RecentProject[]>(
           db.transaction(STORE, 'readonly').objectStore(STORE).getAll(),
         );
         return all.sort(byRecent);
@@ -136,7 +104,7 @@ export function createIndexedDbRecentStore(
     async put(r) {
       try {
         const db = await open();
-        if (db) await request(db.transaction(STORE, 'readwrite').objectStore(STORE).put(r));
+        if (db) await idbRequest(db.transaction(STORE, 'readwrite').objectStore(STORE).put(r));
       } catch {
         // A handle that cannot be stored (or quota): the list is a convenience.
       }
@@ -144,7 +112,7 @@ export function createIndexedDbRecentStore(
     async remove(id) {
       try {
         const db = await open();
-        if (db) await request(db.transaction(STORE, 'readwrite').objectStore(STORE).delete(id));
+        if (db) await idbRequest(db.transaction(STORE, 'readwrite').objectStore(STORE).delete(id));
       } catch {
         // ignore
       }

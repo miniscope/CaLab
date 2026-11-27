@@ -13,6 +13,7 @@ import {
   type FlatFieldMap,
 } from './flat-field.ts';
 import type { FramePixels } from './frame-source.ts';
+import { errMsg } from './errors.ts';
 
 /** Stage A -> estimator: a run begins (after calibration). */
 export interface FlatFieldStart {
@@ -108,7 +109,7 @@ export class FlatFieldRunner {
       this.emit({
         type: 'error',
         session: this.session,
-        message: err instanceof Error ? err.message : String(err),
+        message: errMsg(err),
       });
       this.stop();
     }
