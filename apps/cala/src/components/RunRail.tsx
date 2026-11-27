@@ -426,7 +426,7 @@ function CellsFigure(p: {
           x={p.hist.x}
           xMax={1}
           range={[0, p.hist.cellsMax]}
-          width={96}
+          width={84}
           height={22}
           color="var(--stage-discover)"
           label="Cells along the run"

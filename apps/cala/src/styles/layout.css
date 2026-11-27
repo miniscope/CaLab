@@ -441,6 +441,14 @@
   gap: 2px;
   min-width: 0;
   padding: 0 var(--space-2);
+  container-type: inline-size;
+}
+
+/* A narrow figure drops its sub-label (the tooltip keeps it) rather than truncate it. */
+@container (max-width: 120px) {
+  .cala-fig__sub {
+    display: none;
+  }
 }
 
 .cala-fig:first-child {
@@ -497,15 +505,15 @@
 
 .cala-fig__spark {
   position: relative;
-  display: flex;
-  align-items: flex-end;
-  gap: var(--space-1);
+  display: block;
 }
 
-/* The Cells sparkline's range end, printed beside its top because it steps (1, 2, 5 x 10^k). */
+/* The Cells sparkline's range end, printed at its top left (an axis tick) because it steps
+   (1, 2, 5 x 10^k); the line starts at the bottom left, so the two do not meet. */
 .cala-fig__axis {
-  order: 1;
-  align-self: flex-start;
+  position: absolute;
+  top: -3px;
+  left: 0;
   color: var(--ink-3);
   font-size: var(--font-size-xs);
   line-height: 1;
