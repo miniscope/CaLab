@@ -1,12 +1,14 @@
-/** Bounded whole-session min/max envelope. Coarsening never drops extrema. */
+/** Number of min/max buckets in a whole-session envelope. */
 export const OVERVIEW_BUCKETS = 512;
 
+/** Whole-session min/max envelope as alternating extrema points over stream frames. */
 export interface TraceEnvelope {
   frames: number[];
   values: (number | null)[];
   bucketFrames: number;
 }
 
+/** Bounded whole-session min/max envelope of one trace. Coarsening never drops extrema. */
 export class TraceOverviewHistory {
   private width = 8;
   private readonly low = new Float32Array(OVERVIEW_BUCKETS).fill(Infinity);

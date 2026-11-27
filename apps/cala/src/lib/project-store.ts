@@ -257,7 +257,7 @@ export function createProjectStore(deps: ProjectDeps) {
     setIndex(idx);
     setDirty(changed);
     setWarnings(notes);
-    // Saved now when writing is already allowed (a reopened project), else at the next change.
+    // Saved at once when writing is already allowed (a reopened project), else at the next change.
     if (changed && canWrite() && (await hasReadwrite(resultsHandle() ?? o.handle))) await save(idx);
   }
 

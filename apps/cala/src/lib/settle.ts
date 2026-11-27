@@ -10,7 +10,7 @@
  */
 import { median } from './stats.ts';
 
-/** The settle's settings (see `settle_design.md`, "Design of the end-of-Discover settle"). */
+/** The settle's settings. */
 export const SETTLE = {
   /**
    * Frames fed at most: one pass over a recording up to this length; a
@@ -29,8 +29,7 @@ export const SETTLE = {
   /**
    * Above this share of cells moving at the last checkpoint the run reports
    * "not settled" (a floor, not a stop rule: the settle always feeds its
-   * whole budget; 4 % separated settled from unsettled libraries on sims and
-   * the workshop recording).
+   * whole budget). See tools/cala-eval/results/2026-11-22-settledness.md.
    */
   movingShare: 0.04,
   /** The last round of visits: every tile due, this many slow-loop budgets (without visit workers). */
@@ -40,12 +39,10 @@ export const SETTLE = {
   /**
    * With visit workers: tile visits per settle frame fed (`SlowInit.settleVisitRate`). Each
    * observed frame earns this much credit and a visit is handed out only against it, so the
-   * settle makes the same number of visits however fast it runs (before, a visit worker got its
-   * next visit whenever the slow worker got round to its result: 0.64-0.75 per frame with one
-   * look-back worker on the workshop recording, 0.21 with two). 0.4: at the low end of the
-   * settle visit rates measured without a change in cells or footprints (0.39-1.81 per frame),
-   * and below what one look-back worker gave at Max, so the settle spends less slow-worker time
-   * on visits (hand-out, apply and library builds, about 1.5 ms per frame between 0.21 and 0.65).
+   * settle makes the same number of visits however fast it runs. 0.4 is at the low end of the
+   * rates that leave cells and footprints unchanged, so the settle spends little slow-worker
+   * time on visits (hand-out, apply and library builds). See
+   * tools/cala-eval/results/2026-11-25-settle-visits-and-pool.md.
    */
   visitRate: 0.4,
   /**
@@ -55,16 +52,16 @@ export const SETTLE = {
    */
   visitOwedFrames: 16,
   /**
-   * With visit workers: settle frames observed between give-ways while a visit is out (a frame
-   * takes about 5.5 ms on the workshop recording), so visit results are applied within an
-   * answer instead of after all 16 of its frames. Divides `batch` and `checkEvery`.
+   * With visit workers: settle frames observed between give-ways while a visit is out, so visit
+   * results are applied within an answer instead of after all 16 of its frames. Divides `batch`
+   * and `checkEvery`.
    */
   observePiece: 4,
 } as const;
 
 /**
  * The settle's visit rate from a `?debug&settlevisits=` value: `off` (or 0) is no rate (visits
- * whenever a visit worker is free, the behaviour before), a positive number is that rate, and
+ * whenever a visit worker is free), a positive number is that rate, and
  * anything else the default (`SETTLE.visitRate`).
  */
 export function settleVisitRate(v: string | null): number {
@@ -115,7 +112,7 @@ export function planFrames(runs: readonly FrameRun[]): number {
 export interface SettleFrame {
   frame: number;
   /**
-   * Block sequence for the look-back worker: a new value starts a fresh copy
+   * Block sequence for the look-back worker: a changed value starts a fresh copy
    * of the live back half (only at a gap in the plan, as qc_eval restarts
    * its preprocessor only when a frame does not follow the last one).
    * Negative, so never one of the scheduler's.
@@ -341,7 +338,7 @@ export function csettleRate(v: unknown): number {
 
 /**
  * Settle look-back workers besides worker 0 (the settle pool's S; beta speed
- * control, section 1 "Pool size"; PI decision of 22 Nov 2026: one more worker
+ * control, section 1 "Pool size"): one more worker
  * on machines with at least `minCores` logical cores, else none, and one
  * worker takes turns). Started the first time a run's target goes below Max,
  * or at Discover's end for a Final settle on the recording's factors (at Max
@@ -351,10 +348,10 @@ export function csettleRate(v: unknown): number {
  * which the run record keeps as `machine.hardware_concurrency`, next to
  * `settings.lookback_pool`), never on a measured speed, so the same machine
  * always runs the same settle shape. One worker is enough: with it the Final
- * settle on factors is bound by the slow worker (98 % busy in #518's X1), so a
- * second would add memory, not speed. The 12-core line is kept as decided:
- * below it the end settle's threads (slow worker, two look-back workers and
- * the visit workers) would outnumber the cores, and that was not measured.
+ * settle on factors is bound by the slow worker, so a second would add memory,
+ * not speed. Below the 12-core line the end settle's threads (slow worker,
+ * two look-back workers and the visit workers) would outnumber the cores.
+ * See tools/cala-eval/results/2026-11-25-settle-visits-and-pool.md.
  */
 export const SETTLE_POOL = {
   /** Logical cores (`navigator.hardwareConcurrency`) from which the pool has `workers` workers. */
@@ -395,8 +392,10 @@ export const FINAL_SETTLE_LEVELS = {
   },
 } as const;
 
+/** A key of `FINAL_SETTLE_LEVELS`. */
 export type FinalSettleLevel = keyof typeof FINAL_SETTLE_LEVELS;
 
+/** The level used when none is chosen. */
 export const FINAL_SETTLE_LEVEL_DEFAULT: FinalSettleLevel = 'thorough';
 
 /** A valid level from a setting or a run record; anything else is the default. */

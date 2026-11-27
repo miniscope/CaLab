@@ -53,8 +53,8 @@
  * frame covers every session this way.
  *
  * Frames come from a `HistorySource` (a recording's own `FrameSource`, never
- * the one Discover reads sequentially), so a raw-frame store for live
- * streams can plug in later. The recorded motion and flicker arrive as
+ * the one Discover reads sequentially), so any raw-frame store implementing
+ * the interface can serve it. The recorded motion and flicker arrive as
  * Discover records them (`pushRows`); a request for a frame not recorded yet
  * waits for its row.
  */
@@ -75,7 +75,7 @@ import type { LookbackTiming } from './work-meter.ts';
 
 /**
  * Where look-back reads raw frames from: a recording's `FrameSource`, or
- * later a history store. Frames are global stream indices; a Joint run's
+ * any history store. Frames are global stream indices; a Joint run's
  * source maps one to its session's file and the frame in it
  * (`FrameSource.openSessions`), and `info.sessions` says where each
  * session starts (`sessionOfFrame`).

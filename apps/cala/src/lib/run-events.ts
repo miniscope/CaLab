@@ -35,7 +35,7 @@ export interface RunEvent {
   from?: number | string;
   to?: number | string;
   detail?: string;
-  /** Pass 2 / downstream must apply it; never folded. */
+  /** Extract / downstream must apply it; never folded. */
   replay?: boolean;
   /** Folded summaries: events merged into this one. */
   count?: number;

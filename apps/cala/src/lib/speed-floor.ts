@@ -1,18 +1,19 @@
 /**
- * The smart floor of the Speed control (`beta_speed_control_design.md`,
- * section 2): the highest speed at which every user of spare compute (Background settle,
- * need-driven look-back, the slow loop, the visit workers) is fully served.
+ * The smart floor of the Speed control: the highest speed at which every user of spare
+ * compute (Background settle, need-driven look-back, the slow loop, the visit workers)
+ * is fully served.
  * Below it, going slower only adds idle time.
  *
  * Everything here is pure (clocks are passed in), so it is unit-tested:
  * `speedFloor` (the function), `workCapacities` (the inputs, from two
  * `WorkStatus` snapshots), `FloorTracker` (averaging, ladder snapping,
  * hysteresis) and `FloorMeter` (the glue the `?debug` readout uses).
- * It steers nothing yet.
+ * The floor itself sets no speed; the Speed control and the curves read it.
  */
 
 import { LOOKBACK_KINDS, type LookbackWork, type WorkStatus } from './work-meter.ts';
 
+/** What `speedFloor` is worked from. */
 export interface FloorInputs {
   /** Re-read frames per live frame; 0 = Background settle off. */
   cap: number;
@@ -39,6 +40,7 @@ export interface FloorInputs {
   measuredAt: 'none' | 'unpaced' | 'paced';
 }
 
+/** The result of `speedFloor`. */
 export interface FloorEstimate {
   /** The floor, fps, after the hard minimum and the Max clamp. */
   fps: number;
@@ -58,6 +60,7 @@ export interface FloorEstimate {
   aboveMax: boolean;
 }
 
+/** Constants of `speedFloor`. */
 export const FLOOR = {
   hardMinFps: 10,
   /** Share of a worker's time it can be busy and still count as keeping up. */
@@ -79,6 +82,7 @@ export type FloorConstants = Omit<typeof FLOOR, 'visitsBind'> & { visitsBind: bo
 
 const pos = (x: number | null): x is number => x !== null && Number.isFinite(x) && x > 0;
 
+/** The smart floor, fps, from the capacities and settings in `i`. */
 export function speedFloor(i: FloorInputs, k: FloorConstants = FLOOR): FloorEstimate {
   const n = i.needRate * i.needActive;
   const c = i.cap;
@@ -188,6 +192,7 @@ export type WorkCapacities = Pick<
   observedFrames: number;
 };
 
+/** Thresholds of `workCapacities`. */
 export const CAPACITY = {
   /** The snapshots must be at least this far apart, ms. */
   minSpanMs: 5000,
@@ -245,7 +250,7 @@ export function workCapacities(
       : null;
   // With no pool, worker 0 does both kinds: when it gave too little need time (paced runs, few
   // cells in need), its settle rate, or its combined frames over combined busy time, stands in.
-  // Leaving the term out instead would let the slow-worker term set a floor about twice too high.
+  // Leaving the term out instead would let the slow-worker term set a floor far too high.
   const bothBusy = need.busyMs + csettle.busyMs;
   const combined =
     need.frames + csettle.frames > 0 && bothBusy >= CAPACITY.needMinBusyMs
@@ -301,6 +306,7 @@ export function snapToLadder(fps: number): number {
   return out;
 }
 
+/** Settings of `FloorTracker`. */
 export const TRACKER = {
   /** Inputs are averaged over this long, ms. */
   averageMs: 30_000,

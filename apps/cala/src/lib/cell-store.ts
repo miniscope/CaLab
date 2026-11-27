@@ -57,8 +57,7 @@ export function summarize(v: readonly number[]): Summary {
  * Timing samples kept per series. These are read on every batch tick
  * (`summarize` copies and sorts them), so an unbounded series makes the
  * main thread, which also drives the pipeline, slower the longer a run
- * goes: at 8 h of 30 fps video (108k batches) the nine timing summaries took
- * ~170 ms per tick. A series holds the newest `MAX_TIMING_SAMPLES` to
+ * goes. A series holds the newest `MAX_TIMING_SAMPLES` to
  * `2 * MAX_TIMING_SAMPLES` samples.
  */
 export const MAX_TIMING_SAMPLES = 4096;
@@ -195,7 +194,7 @@ export function createCellStore(
   let session = -1;
   /** Told every slow-loop status of the current session (`onStatus`). */
   const statusListeners: ((st: SlowStatus) => void)[] = [];
-  /** Newest published library as `TraceLibrary.toBytes()` (pass 2 solves with it). */
+  /** Newest published library as `TraceLibrary.toBytes()` (Extract solves with it). */
   let latestBytes: Uint8Array | null = null;
   let convHistory = new ConvergenceHistory();
   let editRates = new EditRates();
@@ -352,7 +351,7 @@ export function createCellStore(
 
   /** The fast loop's result for one pipeline batch. */
   function onBatch(start: number, count: number, cells: CellsBatch, t: StageTimings): void {
-    // Cells the fast loop no longer solves (merged, deleted) lose their history.
+    // Cells absent from the fast loop's library (merged, deleted) lose their history.
     if (cells.version !== version()) history.retain(cells.ids, selected());
     history.push(start, count, cells.ids, cells.traces);
     const end = start + count;

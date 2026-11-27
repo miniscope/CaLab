@@ -6,6 +6,7 @@
  */
 import { errMsg } from './errors.ts';
 
+/** One open file of a store: synchronous reads and writes at byte offsets. */
 export interface StoreFile {
   write(data: ArrayBufferView, at: number): void;
   /** Fills `into` from byte `at`; returns the bytes read. */
@@ -14,6 +15,7 @@ export interface StoreFile {
   close(): void;
 }
 
+/** The files of one run's compression: quantized windows and factors. */
 export interface WindowStore {
   /** The run folder's name under `COMPRESS_ROOT` (another worker reads it with `factorFiles`). */
   readonly folder: string;
@@ -95,12 +97,10 @@ export function factorFiles(
 }
 
 /**
- * Handles with a call in flight. Chrome (seen with 158) never settles the
- * promise of a pending `createSyncAccessHandle()` once its file handle is
- * garbage collected: with collections forced during the call, 19 of 20 opens
- * of `(await dir.getFileHandle(name)).createSyncAccessHandle()` were lost and
- * none with the handle kept. A lost open stops the compress worker without
- * an error, so no call here runs on a handle that nothing else references.
+ * Handles with a call in flight. Chrome never settles the promise of a
+ * pending `createSyncAccessHandle()` once its file handle is garbage
+ * collected. A lost open stops the compress worker without an error, so no
+ * call here runs on a handle that nothing else references.
  */
 const inFlight = new Set<{ handle: object }>();
 
@@ -160,7 +160,7 @@ function holdForever(locks: Locks, name: string): Promise<void> {
 async function sweepFolder(root: DirHandle, name: string, locks: Locks | null): Promise<void> {
   const remove = (): Promise<void> =>
     pinned(root, (r) => r.removeEntry(name, { recursive: true })).catch(() => {});
-  // Without Web Locks the sweep removes every other folder, as before.
+  // Without Web Locks the sweep removes every other folder.
   if (!locks) return remove();
   await locks
     .request(lockName(name), { ifAvailable: true }, async (lock) => {

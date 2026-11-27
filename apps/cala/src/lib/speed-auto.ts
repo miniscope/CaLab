@@ -1,7 +1,6 @@
 /**
- * Auto speed (beta speed control, PR I; `beta_speed_control_design.md`, PI decision Q3): a time
- * budget. The user picks how much extra time over a Max-speed run they will spend (+50, +100 or
- * +200 %); Auto estimates the Max run's time from the measured Max rate and the frame count, and
+ * Auto speed: a time budget. The user picks how much extra time over a Max-speed run they
+ * will spend (+50, +100 or +200 %); Auto estimates the Max run's time from the measured Max rate and the frame count, and
  * paces the run so it ends near that budget. A `TargetPolicy`: it plugs into the same
  * `SpeedDriver` and `armPolicy` seam as a curve. Pure: no store, no DOM, the clock is passed in.
  *
@@ -29,12 +28,13 @@ import {
   type TargetPolicy,
 } from './speed-schedule.ts';
 
+/** Settings of Auto speed. */
 export const AUTO = {
   /** Work the target out again this many frames after the last time ... */
   evalFrames: 2000,
   /** ... or this many seconds, whichever comes first. */
   evalS: 30,
-  /** A new target closer than this (a ratio) to the one in force is not taken. */
+  /** A target closer than this (a ratio) to the one in force is not taken. */
   holdRatio: 0.15,
   /** Batches read at Max before the Max rate is trusted (the first is warm-up and may read slow). */
   minBatches: 5,
@@ -42,12 +42,13 @@ export const AUTO = {
   maxDecisions: 40,
 } as const;
 
+/** Why Auto chose its target. */
 export type AutoReason = 'budget' | 'floor' | 'max' | 'over budget';
 
 /** One change of target, compact, for the run record. */
 export interface AutoDecision {
   frame: number;
-  /** The new target, fps (0: Max). */
+  /** The target set, fps (0: Max). */
   fps: number;
   reason: AutoReason;
   /** The Max rate it was worked from, fps. */
@@ -89,6 +90,7 @@ export class PauseClock {
   }
 }
 
+/** The Auto target policy: paces the run to end within a time budget. */
 export class AutoPolicy implements TargetPolicy {
   readonly source = 'auto' as const;
   readonly decisions: AutoDecision[] = [];
@@ -177,4 +179,5 @@ export class AutoPolicy implements TargetPolicy {
   }
 }
 
+/** Re-exported for callers of Auto. */
 export { AUTO_BUDGETS, AUTO_DEFAULT_BUDGET, budgetLabel, isAutoBudget };

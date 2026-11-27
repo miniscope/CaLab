@@ -2,6 +2,7 @@
 import { Preprocessor, QcMonitor, TraceEngine, TraceLibrary } from './cala-wasm.ts';
 import type { TraceBackend } from './fast-loop.ts';
 
+/** The fast loop's trace backend, built on the WASM solver and QC monitor. */
 export const traceBackend: TraceBackend = {
   libraryFromBytes: (bytes) => TraceLibrary.fromBytes(bytes),
   // 0, 0: the solver's default tolerance and sweep cap.

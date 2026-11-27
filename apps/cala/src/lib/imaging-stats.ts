@@ -5,8 +5,7 @@
  * the median background floor, both in grey levels over the FOV mask.
  *
  * Read about once per `IMAGING_EVERY_FRAMES` frames: the maps are copied out
- * of WASM (4 bytes per pixel each) and a strided subsample's median is taken,
- * which costs about a millisecond at 600 x 600.
+ * of WASM (4 bytes per pixel each) and a strided subsample's median is taken.
  */
 
 /** Frames between imaging summaries (about one per second of stream at 20-60 fps). */
@@ -78,7 +77,7 @@ export function maskedMedian(
   return select(buf, n, n >> 1);
 }
 
-/** Summaries now, every `IMAGING_EVERY_FRAMES` frames of the stream (undefined in between). */
+/** Summaries for the current batch, every `IMAGING_EVERY_FRAMES` frames of the stream (undefined in between). */
 export class ImagingSampler {
   private next = 0;
   private scratch: Float32Array | undefined;

@@ -50,10 +50,12 @@ export function orderSessions(list: readonly PlannedSession[]): PlannedSession[]
   );
 }
 
+/** The probe input of a discovered session candidate. */
 export function toSessionInput(c: SessionCandidate): SessionInput {
   return { name: c.name, dir: c.dir, entries: c.entries };
 }
 
+/** A session list: the planned sessions, their probing and the user's edits. */
 export function createSessionList(probe: (s: SessionInput[]) => Promise<SessionProbeResult[]>) {
   const [items, setItems] = createSignal<PlannedSession[]>([]);
   const [reordered, setReordered] = createSignal(false);
@@ -148,4 +150,5 @@ export function createSessionList(probe: (s: SessionInput[]) => Promise<SessionP
   };
 }
 
+/** The list `createSessionList` returns. */
 export type SessionList = ReturnType<typeof createSessionList>;

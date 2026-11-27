@@ -4,6 +4,7 @@
  * file name; requests are answered in order.
  */
 import { errMsg } from '../lib/errors.ts';
+/** Main thread -> OPFS writer worker; each carries an `id` echoed in the response. */
 export type OpfsRequest =
   | { id: number; op: 'open'; name: string }
   | { id: number; op: 'write'; name: string; at: number; bytes: Uint8Array }
@@ -12,6 +13,7 @@ export type OpfsRequest =
   | { id: number; op: 'sweep'; prefix: string; keep: string[] }
   | { id: number; op: 'probe' };
 
+/** OPFS writer worker -> main thread: success (with a `count` where the request returns one) or the failure. */
 export type OpfsResponse =
   | { id: number; ok: true; count?: number }
   | { id: number; ok: false; name: string; message: string };

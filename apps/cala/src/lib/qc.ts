@@ -5,7 +5,7 @@
  * status. Pure, unit-tested.
  *
  * The metrics come from `QcMonitor` (crates/cala/src/qc), validated against
- * ground truth in PR #284. Only some of them are judgements:
+ * ground truth. Only some of them are judgements:
  *   - pass/fail (`pass`, `flags`): enough history, peak SNR >= 5, and not the
  *     weaker member of a pair of overlapping cells whose traces correlate
  *     above 0.8 (a likely split or duplicate);
@@ -534,12 +534,9 @@ export interface ConvergenceStatus {
 
 /**
  * Thresholds of the convergence rule. Cell discovery never stops on long
- * recordings (batch tools find nearly twice the cells in 30-120 min as in
- * 10-30 min), so converged means that the cells already found stopped
+ * recordings, so converged means that the cells already found stopped
  * changing and spurious churn died out, not that adds stopped: new-cell adds
  * are shown as their own slowly declining curve and never block it.
- * Validated against minisim ground truth (PR body: the rule says converged
- * once GT precision has plateaued).
  */
 export const CONVERGENCE_RULE = {
   /** Minutes of history the rule looks back over. */

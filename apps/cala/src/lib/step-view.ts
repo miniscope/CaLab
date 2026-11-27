@@ -5,11 +5,13 @@
  * Discover and are its sub-line, not steps of their own.
  */
 
+/** The main steps of a run. */
 export type StepKey = 'discover' | 'settle' | 'extract';
 
 /** waiting: not started; off: will not run (look-back off, Extract unticked, a live stream). */
 export type StepState = 'waiting' | 'running' | 'paused' | 'done' | 'off' | 'error';
 
+/** What a step's header and panel show. */
 export interface StepView {
   key: StepKey;
   label: string;
@@ -24,12 +26,14 @@ export interface StepView {
   note: string;
 }
 
+/** The display name of each step. */
 export const STEP_LABEL: Record<StepKey, string> = {
   discover: 'Discover',
   settle: 'Final settle',
   extract: 'Extract',
 };
 
+/** What the step views are worked from. */
 export interface StepInput {
   live: boolean;
   /** The pipeline: idle, starting, running, paused, done, error. */
@@ -69,7 +73,7 @@ const left = (framesLeft: number, fps: number): number | null =>
 const frac = (a: number, b: number): number | null =>
   b > 0 && Number.isFinite(b) ? Math.min(1, Math.max(0, a / b)) : null;
 
-/** The three steps now. */
+/** The three steps. */
 export function stepViews(i: StepInput): StepView[] {
   const busy = i.discover === 'running' || i.discover === 'paused' || i.discover === 'starting';
   const dState: StepState =
@@ -155,6 +159,7 @@ export function stepNumbers(v: StepView, fmtDuration: (s: number) => string): st
   return parts.join(' · ');
 }
 
+/** The word for each step state. */
 export const STATE_WORD: Record<StepState, string> = {
   waiting: 'waiting',
   running: 'running',
