@@ -22,7 +22,7 @@
  * `null` until its feature fills it; add fields under the slot, and bump
  * `RUN_RECORD_VERSION` only when an existing field changes meaning.
  */
-import type { VisitRateSummary } from './visit-rate.ts';
+import { visitRateSetting, type VisitRateSummary } from './visit-rate.ts';
 import type { SettleVisits } from '../workers/lookback-types.ts';
 import { FINAL_SETTLE_LEVELS, type FinalSettleLevel, type GovernorStatus } from './settle.ts';
 import type { StageRun } from './run-stages.ts';
@@ -114,7 +114,8 @@ const DEBUG_ONLY: ReadonlySet<string> = new Set([
  * Whether a flag changes anything given the others (`App.tsx` reads them the
  * same way): look-back is on by default, so only `lookback=0` changes anything (off); `csettle` changes something only as
  * `csettle=0` (Background settle off) or `csettle=yieldN`, and needs look-back;
- * `review` needs `compress` and no `factors` other than `factors=0`; debug-only flags need `?debug`.
+ * `review` needs `compress` and no `factors` other than `factors=0`; `visitrate` only as `off` or `auto`;
+ * debug-only flags need `?debug`.
  */
 function inEffect(name: string, value: string, p: URLSearchParams): boolean {
   if (DEBUG_ONLY.has(name) && !p.has('debug')) return false;
@@ -129,7 +130,8 @@ function inEffect(name: string, value: string, p: URLSearchParams): boolean {
     case 'needfirst':
       return value !== '0';
     case 'visitrate':
-      return value === 'off';
+      // `off` and `auto` change the run (App.tsx: `visitRateSetting`); anything else is the fixed default.
+      return visitRateSetting(value) !== 'fixed';
     case 'review':
       return factorsFromPage(p).review;
     default:

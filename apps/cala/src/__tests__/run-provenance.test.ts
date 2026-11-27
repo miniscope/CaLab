@@ -1020,9 +1020,13 @@ describe('run record: the Discover visit rate', () => {
     expect(t.visitRate()).toBeNull();
   });
 
-  it('records visitrate=off as a debug flag', () => {
+  it('records visitrate=off and visitrate=auto as debug flags', () => {
     expect(urlFlags('?debug&visitrate=off').flags.visitrate.in_effect).toBe(true);
     expect(urlFlags('?visitrate=off').flags.visitrate.in_effect).toBe(false);
     expect(urlFlags('?debug&visitrate=on').flags.visitrate.in_effect).toBe(false);
+    // #528: `auto` selects the Auto schedule, so it is in effect (with `?debug` only).
+    expect(urlFlags('?debug&visitrate=auto').flags.visitrate.in_effect).toBe(true);
+    expect(urlFlags('?visitrate=auto').flags.visitrate.in_effect).toBe(false);
+    expect(urlFlags('?debug&visitrate=fixed').flags.visitrate.in_effect).toBe(false);
   });
 });
