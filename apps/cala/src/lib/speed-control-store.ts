@@ -66,9 +66,9 @@ export interface SpeedControlDeps {
 export function createSpeedControl(deps: SpeedControlDeps) {
   const { client, clock, status, processed, runHistory, lookbackFeed, settleCap } = deps;
   /**
-   * Smooth pacing (`?debug&pacefps=N` until a slider exists): read a recording
-   * no faster than `N` frames a second, one batch per period, as a stream
-   * would arrive (0: as fast as it goes). The gate itself runs in the frame
+   * The target speed (the Speed control, or `?debug&pacefps=N`): read a recording
+   * no faster than `paceFps` frames a second, one batch per period, as a stream
+   * would arrive (0: Max, as fast as it goes). The gate itself runs in the frame
    * worker (`lib/frame-pacer.ts`); this only tells it the target and when we pause.
    */
   let paceFps = 0;
@@ -78,7 +78,7 @@ export function createSpeedControl(deps: SpeedControlDeps) {
   const [paceFromUrl, setPaceFromUrl] = createSignal(false);
   /**
    * The Discover visit rate (`lib/visit-rate.ts`): the fixed rate by default, `?debug&visitrate=auto`
-   * the Auto schedule (opt-in), `?debug&visitrate=off` none (the behaviour before). The governor of this run (null:
+   * the Auto schedule (opt-in), `?debug&visitrate=off` none. The governor of this run (null:
    * none yet, or not a Discover run) and its hold: the speed the frame loop is held to so the
    * visits keep up (null: not held); the target in force (the engine's schedule) and its yield.
    */
@@ -177,8 +177,8 @@ export function createSpeedControl(deps: SpeedControlDeps) {
     null,
   );
   /**
-   * Take over the target with a policy from `frame` on. Any `TargetPolicy` fits (a curve now, Auto
-   * later); `record` is what the run record keeps of it (null: nothing to record).
+   * Take over the target with a policy from `frame` on. Any `TargetPolicy` fits (a curve or
+   * Auto); `record` is what the run record keeps of it (null: nothing to record).
    */
   function armPolicy(policy: TargetPolicy, frame: number, record: CurveRecord | null): void {
     curveDriver = new SpeedDriver(policy);

@@ -152,8 +152,8 @@ export function createPipelineStore(
   const [residual, setResidualSignal] = createSignal(false);
   /**
    * Look-back (and its Final settle) on for the next Discover start (the setting), and on in the
-   * current run. On by default for recordings: it is how footprints converge now that there is no
-   * Refine stage. A live stream or a source that cannot be re-read has none (`lookbackBlocked`).
+   * current run. On by default for recordings: it is how footprints converge (there is no Refine
+   * stage). A live stream or a source that cannot be re-read has none (`lookbackBlocked`).
    */
   const [lookback, setLookback] = createSignal(true);
   const [lookbackRun, setLookbackRun] = createSignal(false);
@@ -809,7 +809,7 @@ export function createPipelineStore(
     onAutoChange: speed.onAutoChange,
     /** The curve the run follows after the minimum-step rule (null: none armed), with the steps merged; a signal. */
     armedCurve: speed.armedCurve,
-    /** Install another policy (Auto, PR I) in place of the curve; `record` is kept in the run record. */
+    /** Install another policy (Auto) in place of the curve; `record` is kept in the run record. */
     armPolicy: speed.armPolicy,
     /** The curve this run is following (null: none), as the run record keeps it. */
     curveNow: speed.curveNow,
@@ -818,8 +818,8 @@ export function createPipelineStore(
     /** The target speed now, frames per second (0: Max). */
     paceFps: speed.paceFps,
     /**
-     * `?debug&visitrate=off|auto` (measurement): no visit cap and no hold (the behaviour before
-     * the fixed rate), or the Auto schedule instead of the fixed rate, from the next start.
+     * `?debug&visitrate=off|auto` (measurement): no visit cap and no hold, or the Auto schedule
+     * instead of the fixed rate, from the next start.
      */
     setVisitRateSetting: speed.setVisitRateSetting,
     visitRateSetting: speed.visitRateSetting,
