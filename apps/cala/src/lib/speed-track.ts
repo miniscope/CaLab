@@ -3,7 +3,7 @@
  * logarithmic track, snapping, the settings that persist, and the status
  * sentence. No DOM and no store: `components/SpeedControl.tsx` draws them.
  */
-import { GOVERNOR_LIMIT_TEXT, type GovernorStatus } from './settle.ts';
+import { GOVERNOR_LIMIT_TEXT, type GovernorStatus } from './settle-governor.ts';
 import type { FloorDisplay } from './speed-floor.ts';
 
 /** The track: the same 10 to 500 fps scale on every machine and recording; it never rescales. */

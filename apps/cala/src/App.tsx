@@ -22,7 +22,7 @@ import { loadSpanStats } from './lib/extract-qc-wasm.ts';
 import { ASSUMED_FPS } from './lib/miniscope-meta.ts';
 import type { QcSnapshot } from './lib/qc.ts';
 import { createCompressClient } from './lib/compress-client.ts';
-import { compressPoolSize, helpersFor } from './lib/compress-pool.ts';
+import { helpersFor } from './lib/compress-pool.ts';
 import { COMPRESS_DEFAULTS } from './lib/compress-feed.ts';
 import {
   createCompressStore,
@@ -46,12 +46,8 @@ import {
 import { createReviewClient } from './lib/review-client.ts';
 import { createReviewStore, reviewEvery } from './lib/review-store.ts';
 import { createIndexedDbFlatFieldCache } from './lib/flat-field-cache.ts';
-import {
-  createSlowClient,
-  PARALLEL_FORWARD_BUFFERS,
-  RESERVED_THREADS,
-  visitWorkerCount,
-} from './lib/slow-client.ts';
+import { createSlowClient, PARALLEL_FORWARD_BUFFERS } from './lib/slow-client.ts';
+import { threadBudget } from './lib/thread-budget.ts';
 import { FovPanel, pipelineFovSource } from './components/FovPanel.tsx';
 import { SelectedCellPanel } from './components/CellsPanel.tsx';
 import { BoundaryBadge } from './components/BoundaryBadge.tsx';
@@ -89,15 +85,8 @@ import { presetCurve } from './lib/speed-schedule.ts';
 import { PACE_BATCH, PACE_SLACK } from './lib/frame-pacer.ts';
 import { FLOOR, TRACKER } from './lib/speed-floor.ts';
 import { LOOKBACK } from './lib/slow-runner.ts';
-import {
-  CSETTLE,
-  GOVERNOR,
-  noiseMap,
-  SETTLE,
-  settleChange,
-  settlePoolSize,
-  unitFootprints,
-} from './lib/settle.ts';
+import { CSETTLE, noiseMap, SETTLE, settleChange, unitFootprints } from './lib/settle.ts';
+import { GOVERNOR } from './lib/settle-governor.ts';
 import {
   gatherRunRecord,
   primeRunRecordContext,
@@ -156,13 +145,26 @@ const App: Component = () => {
   const pageFactors = flags.factors;
   if (pageFactors.warn) console.warn(pageFactors.warn);
   const reviewWindows = pageFactors.review ? reviewEvery(flags.review) : null;
+  // The visit workers, the settle pool and the compress pool from one core count
+  // (`lib/thread-budget.ts`). The settle pool: S more look-back workers that take only the
+  // settle's chunks (worker 0 keeps need-driven look-back and the end settle), started when a
+  // run first goes below Max; `?debug&lbpool=S` overrides S (measurement). The compress pool: a
+  // recording's windows are compressed by the compress worker and its helpers, few while
+  // Discover reads and more after its last frame; `?debug&cpool=D,E` sets both (measurement).
+  const threads = threadBudget(
+    typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined,
+    {
+      visits: flags.visits,
+      review: reviewWindows !== null,
+      lbpool: flags.lbpool,
+      cpool: flags.cpool,
+    },
+  );
   const slow = createSlowClient(
     client,
     (msg) => cells.onSlowMessage(msg),
     undefined,
-    flags.visits !== null
-      ? visitWorkerCount(flags.visits + RESERVED_THREADS)
-      : visitWorkerCount(navigator.hardwareConcurrency - (reviewWindows === null ? 0 : 1)),
+    threads.visitWorkers,
   );
   // `?noqc`: run without online quality control (to measure its cost).
   // `?compress`: also compress the preprocessed frames into low-rank factors, window by
@@ -177,23 +179,8 @@ const App: Component = () => {
           slow.addReviewed(session, candidates),
         );
   const reviewClient = review ? createReviewClient((msg) => review.onMessage(msg)) : undefined;
-  // The settle pool: S more look-back workers that take only the settle's chunks (worker 0
-  // keeps need-driven look-back and the end settle), started when a run first goes below
-  // Max. S from the core count (`settlePoolSize`); `?debug&lbpool=S` overrides it (measurement).
-  const lbPool = settlePoolSize(
-    typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined,
-    flags.lbpool,
-  );
-  // The compress pool: a recording's windows are compressed by the compress worker and its
-  // helpers, few while Discover reads and more after its last frame (`compressPoolSize`);
-  // `?debug&cpool=D,E` sets both (measurement).
-  const cpool =
-    flags.cpool ??
-    compressPoolSize(
-      typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : undefined,
-      slow.visitWorkers,
-      lbPool,
-    );
+  const lbPool = threads.settlePool;
+  const cpool = threads.compressPool;
   const compressHelpers = helpersFor(cpool);
   const compressClient = compress
     ? createCompressClient(

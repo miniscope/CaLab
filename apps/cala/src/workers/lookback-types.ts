@@ -12,7 +12,7 @@
  * carries the pipeline `session`; stale ones are dropped.
  */
 import type { FlatFieldMap } from '../lib/flat-field.ts';
-import type { GovernorStatus } from '../lib/settle.ts';
+import type { GovernorStatus } from '../lib/settle-governor.ts';
 import type { LookbackTiming } from '../lib/work-meter.ts';
 import type { FolderEntry, SessionInput } from '../lib/frame-source.ts';
 import type { SessionTransform } from '../lib/session-boundary.ts';

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GOVERNOR } from '../lib/settle.ts';
+import { GOVERNOR } from '../lib/settle-governor.ts';
 import {
   climbSeconds,
   CURVE_PRESETS,

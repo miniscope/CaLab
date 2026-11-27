@@ -11,7 +11,7 @@
  * Everything here is pure (clocks are passed in), so it is unit-tested.
  */
 
-import { GOVERNOR_LIMIT_TEXT, type GovernorStatus } from './settle.ts';
+import { GOVERNOR_LIMIT_TEXT, type GovernorStatus } from './settle-governor.ts';
 
 /** What the slow worker spends its time on (`SlowRunner`); whatever is left of the wall time is idle. */
 export const SLOW_DUTIES = [

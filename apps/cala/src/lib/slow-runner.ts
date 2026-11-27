@@ -129,10 +129,10 @@ import {
   noiseMap,
   SETTLE,
   SettleFeed,
-  SettleGovernor,
   settlePlan,
   unitFootprints,
 } from './settle.ts';
+import { SettleGovernor } from './settle-governor.ts';
 import {
   addLookbackAnswer,
   DetailTimer,

@@ -16,7 +16,7 @@ import {
   stepToFps,
   TRACK_STEPS,
 } from '../lib/speed-track.ts';
-import type { GovernorStatus } from '../lib/settle.ts';
+import type { GovernorStatus } from '../lib/settle-governor.ts';
 
 const gov = (o: Partial<GovernorStatus> = {}): GovernorStatus => ({
   rate: 122,

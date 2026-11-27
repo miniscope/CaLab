@@ -5,7 +5,8 @@
  * guard) and the limiting factor it reports.
  */
 import { describe, expect, it } from 'vitest';
-import { CSETTLE, GOVERNOR, GOVERNOR_LIMIT_TEXT, SettleGovernor } from '../lib/settle.ts';
+import { CSETTLE } from '../lib/settle.ts';
+import { GOVERNOR, GOVERNOR_LIMIT_TEXT, SettleGovernor } from '../lib/settle-governor.ts';
 
 /**
  * A paced run: live batches of 8 frames at `fps` (sent on time, no wait),

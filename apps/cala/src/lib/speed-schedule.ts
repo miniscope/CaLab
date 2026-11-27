@@ -11,7 +11,7 @@
  * - `TargetPolicy` is the seam: a policy turns the run's state into a target. `SpeedSchedule` is
  *   one; Auto (PR I) is another that plugs into the same `SpeedDriver` and the same record fields.
  */
-import { GOVERNOR } from './settle.ts';
+import { GOVERNOR } from './settle-governor.ts';
 import { snapToLadder } from './speed-floor.ts';
 import { SPEED_SCALE, type CurvePresetId } from './speed-track.ts';
 
