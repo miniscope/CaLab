@@ -446,13 +446,27 @@ def test_options_preflight_exempt_from_secret(bridge_server: BridgeServer) -> No
     """CORS preflights have no way to carry custom headers and must be allowed."""
     url = f"http://127.0.0.1:{bridge_server.port}/api/v1/traces"
     req = urllib.request.Request(url, method="OPTIONS")
-    req.add_header("Origin", "https://miniscope.github.io")
+    req.add_header("Origin", "https://calab.miniscope.org")
     req.add_header("Access-Control-Request-Method", "GET")
     req.add_header("Access-Control-Request-Headers", "x-bridge-secret")
     with urllib.request.urlopen(req, timeout=5) as resp:
         assert resp.status == 200
         allow_headers = resp.headers.get("Access-Control-Allow-Headers", "")
         assert "X-Bridge-Secret" in allow_headers
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["https://calab.miniscope.org", "https://miniscope.github.io"],
+)
+def test_cors_allows_both_hosts(bridge_server: BridgeServer, origin: str) -> None:
+    """The bridge answers the new host and the old GitHub Pages host alike."""
+    url = f"http://127.0.0.1:{bridge_server.port}/api/v1/traces"
+    req = urllib.request.Request(url, method="OPTIONS")
+    req.add_header("Origin", origin)
+    req.add_header("Access-Control-Request-Method", "GET")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        assert resp.headers.get("Access-Control-Allow-Origin") == "*"
 
 
 def test_options_preflight_echoes_private_network_when_requested(
@@ -467,7 +481,7 @@ def test_options_preflight_echoes_private_network_when_requested(
     """
     url = f"http://127.0.0.1:{bridge_server.port}/api/v1/traces"
     req = urllib.request.Request(url, method="OPTIONS")
-    req.add_header("Origin", "https://miniscope.github.io")
+    req.add_header("Origin", "https://calab.miniscope.org")
     req.add_header("Access-Control-Request-Method", "GET")
     req.add_header("Access-Control-Request-Private-Network", "true")
     with urllib.request.urlopen(req, timeout=5) as resp:
@@ -478,7 +492,7 @@ def test_options_without_pna_request_omits_pna_header(bridge_server: BridgeServe
     """Don't opt into PNA when the client isn't asking for it."""
     url = f"http://127.0.0.1:{bridge_server.port}/api/v1/traces"
     req = urllib.request.Request(url, method="OPTIONS")
-    req.add_header("Origin", "https://miniscope.github.io")
+    req.add_header("Origin", "https://calab.miniscope.org")
     req.add_header("Access-Control-Request-Method", "GET")
     with urllib.request.urlopen(req, timeout=5) as resp:
         assert resp.headers.get("Access-Control-Allow-Private-Network") is None

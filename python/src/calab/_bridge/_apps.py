@@ -146,6 +146,7 @@ def launch(
     timeout: float | None = None,
     port: int | None = None,
     app_url: str | None = None,
+    version: str | None = None,
     open_browser: bool = True,
     headless: HeadlessBrowser | bool | None = None,
     config: dict | None = None,
@@ -171,8 +172,12 @@ def launch(
         Port to bind to. None = auto-assign.
     app_url : str, optional
         Override the app URL (for local dev). Default: the app's URL from the
-        deployed site's ``apps.json``, falling back to the registry's GitHub
-        Pages URL. When given, the manifest is not fetched.
+        deployed site's ``apps.json``, falling back to the registry's
+        ``calab.miniscope.org`` URL. When given, the manifest is not fetched.
+    version : str, optional
+        Open this kept release of the app (e.g. ``"2.23.1"``, served at
+        ``<site>/<App>/v2.23.1/``) instead of the newest. Cannot be combined
+        with *app_url*.
     open_browser : bool
         Whether to auto-open the browser. Default: True.
     headless : HeadlessBrowser or bool or None
@@ -200,7 +205,7 @@ def launch(
     BridgeVersionError
         If the app's results fail the version handshake.
     """
-    spec = bridge_app(app, app_url=app_url)
+    spec = bridge_app(app, app_url=app_url, version=version)
 
     server = BridgeServer(traces, fs, port=port or 0, app=spec.slug, config=config)
     with _managed_headless(headless) as headless_browser:
@@ -230,6 +235,7 @@ def tune(
     port: int | None = None,
     app_url: str | None = None,
     open_browser: bool = True,
+    version: str | None = None,
 ) -> dict | None:
     """Open CaTune in the browser for interactive parameter tuning.
 
@@ -248,9 +254,12 @@ def tune(
     port : int, optional
         Port to bind to. None = auto-assign.
     app_url : str, optional
-        Override CaTune URL (for local dev). Default: GitHub Pages.
+        Override CaTune URL (for local dev). Default: calab.miniscope.org.
     open_browser : bool
         Whether to auto-open the browser. Default: True.
+    version : str, optional
+        Open this kept release (e.g. ``"2.23.1"``) instead of the newest.
+        See :func:`launch`.
 
     Returns
     -------
@@ -265,7 +274,8 @@ def tune(
     """
     result: dict | None = launch(
         "catune", traces, fs,
-        timeout=timeout, port=port, app_url=app_url, open_browser=open_browser,
+        timeout=timeout, port=port, app_url=app_url, version=version,
+        open_browser=open_browser,
     )
     return result
 
@@ -279,6 +289,7 @@ def decon(
     open_browser: bool = True,
     headless: HeadlessBrowser | bool | None = None,
     *,
+    version: str | None = None,
     autorun: bool = False,
     max_firing_rate: float | None = None,
     hp_filter_enabled: bool | None = None,
@@ -307,13 +318,16 @@ def decon(
     port : int, optional
         Port to bind to. None = auto-assign.
     app_url : str, optional
-        Override CaDecon URL (for local dev). Default: GitHub Pages.
+        Override CaDecon URL (for local dev). Default: calab.miniscope.org.
     open_browser : bool
         Whether to auto-open the browser. Default: True.
     headless : HeadlessBrowser or bool or None
         ``None``/``False``: default (use ``webbrowser.open``).
         ``True``: create a temporary headless browser for this call.
         ``HeadlessBrowser``: reuse an existing browser instance (for batch).
+    version : str, optional
+        Open this kept release (e.g. ``"2.23.1"``) instead of the newest.
+        See :func:`launch`.
     autorun : bool
         If True, the solver starts automatically after loading. Default: False.
     max_firing_rate : float, optional
@@ -361,7 +375,8 @@ def decon(
     )
     result: CaDeconResult | None = launch(
         "cadecon", traces, fs,
-        timeout=timeout, port=port, app_url=app_url, open_browser=open_browser,
+        timeout=timeout, port=port, app_url=app_url, version=version,
+        open_browser=open_browser,
         headless=headless,
         config=config.model_dump(exclude_none=True),
         show_progress=autorun,

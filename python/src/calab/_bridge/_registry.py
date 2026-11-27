@@ -29,7 +29,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from ._manifest import PAGES_BASE_URL, load_manifest
+from ._manifest import SITE_BASE_URL, load_manifest
 
 if TYPE_CHECKING:
     from ._handshake import BridgeResult
@@ -40,6 +40,9 @@ if TYPE_CHECKING:
 RESERVED_SLUGS = frozenset({"activity"})
 
 _SLUG_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+# A release version as it appears in ``/<App>/v<version>/``: semver, optional
+# leading ``v``, optional pre-release/build suffix.
+_VERSION_RE = re.compile(r"^v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$")
 
 
 @dataclass(frozen=True)
@@ -74,7 +77,7 @@ class AppSpec:
     display_name
         Human-readable name used in terminal messages.
     path_segment
-        GitHub Pages path segment (case-sensitive, as deployed).
+        URL path segment on the site (case-sensitive, as deployed).
     result_schema
         The result payload the app sends back, or ``None`` if the app cannot
         export to the bridge yet (it can still be resolved to a URL).
@@ -90,7 +93,7 @@ class AppSpec:
         Hook turning the raw :class:`BridgeResult` into the value returned to
         the caller. ``None`` returns the :class:`BridgeResult` itself.
     base_url
-        Site root ``path_segment`` is relative to: :data:`PAGES_BASE_URL`, or
+        Site root ``path_segment`` is relative to: :data:`SITE_BASE_URL`, or
         the directory the manifest was fetched from.
     registered
         ``False`` for an app known only from the deployed manifest: it has a
@@ -104,7 +107,7 @@ class AppSpec:
     arrays: tuple[str, ...] = ()
     legacy_result_paths: tuple[str, ...] = ()
     postprocess: PostProcess | None = field(default=None, compare=False)
-    base_url: str = PAGES_BASE_URL
+    base_url: str = SITE_BASE_URL
     registered: bool = True
 
     @property
@@ -238,19 +241,44 @@ def resolve_app(slug: str) -> AppSpec:
     )
 
 
-def bridge_app(slug: str, *, app_url: str | None = None) -> AppSpec:
-    """The spec :func:`._apps.launch` runs: resolved, and able to use the bridge.
+def pin_version(spec: AppSpec, version: str) -> AppSpec:
+    """*spec* pointed at the kept release *version* (``/<App>/v<version>/``).
 
-    With an explicit *app_url* the manifest is not consulted (the caller has
-    said where the app is), so only built-in apps are accepted.
+    *version* is a release number such as ``"2.23.1"`` (a leading ``v`` is
+    accepted). Releases are published from CaLab 2.23.1 on.
 
     Raises
     ------
     ValueError
-        If the app is unknown, known only from the manifest (``calab`` is too
+        If *version* is not a ``MAJOR.MINOR.PATCH`` release number.
+    """
+    match = _VERSION_RE.match(version.strip())
+    if match is None:
+        raise ValueError(f"invalid app version {version!r}; expected e.g. '2.23.1'")
+    return dataclasses.replace(spec, path_segment=f"{spec.path_segment}/v{match.group(1)}")
+
+
+def bridge_app(
+    slug: str, *, app_url: str | None = None, version: str | None = None
+) -> AppSpec:
+    """The spec :func:`._apps.launch` runs: resolved, and able to use the bridge.
+
+    With an explicit *app_url* the manifest is not consulted (the caller has
+    said where the app is), so only built-in apps are accepted. *version* opens
+    that kept release of the app (see :func:`pin_version`) instead of the
+    newest; it cannot be combined with *app_url*.
+
+    Raises
+    ------
+    ValueError
+        If *version* is invalid or combined with *app_url*, the app is unknown, known only from the manifest (``calab`` is too
         old to read its results), or has no bridge export.
     """
+    if version is not None and app_url is not None:
+        raise ValueError("pass either app_url= or version=, not both")
     spec = get_app(slug) if app_url is not None else resolve_app(slug)
+    if version is not None:
+        spec = pin_version(spec, version)
     if not spec.registered:
         manifest = load_manifest()
         release = f" (CaLab release {manifest.release})" if manifest and manifest.release else ""

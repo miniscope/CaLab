@@ -7,7 +7,7 @@ checks that the app's results are safe for your installed `calab` to read.
 
 ## Version compatibility
 
-The web apps on GitHub Pages always run their latest build, while `calab` is
+The web apps at calab.miniscope.org always run their latest build, while `calab` is
 whatever version you installed with pip. Before the bridge accepts results it
 compares two versions:
 
@@ -57,9 +57,9 @@ below):
 
 | Slug      | Deployed at                                  | Results schema          |
 | --------- | -------------------------------------------- | ----------------------- |
-| `catune`  | `https://miniscope.github.io/CaLab/CaTune/`  | `catune-export` 1.2.0   |
-| `cadecon` | `https://miniscope.github.io/CaLab/CaDecon/` | `cadecon-results` 2     |
-| `cabana`  | `https://miniscope.github.io/CaLab/CaBaNA/`  | none (no bridge export) |
+| `catune`  | `https://calab.miniscope.org/CaTune/`  | `catune-export` 1.2.0   |
+| `cadecon` | `https://calab.miniscope.org/CaDecon/` | `cadecon-results` 2     |
+| `cabana`  | `https://calab.miniscope.org/CaBaNA/`  | none (no bridge export) |
 
 An app posts its results to the generic routes:
 
@@ -81,7 +81,7 @@ post-processing. An app with no post-processing hook returns a
 ## The app manifest
 
 The deployed site publishes the list of its apps at
-<https://miniscope.github.io/CaLab/apps.json>. The web build writes it
+<https://calab.miniscope.org/apps.json>. The web build writes it
 (`scripts/combine-dist.mjs`) from each app's `package.json`, so it is never
 edited by hand:
 
@@ -133,9 +133,30 @@ manifest, for example a local `npm run build:pages` (written to
 `CALAB_APPS_MANIFEST=http://localhost:8000/apps.json`. App URLs are then
 resolved relative to that address. Set it to `off` to never fetch. The
 lab's own server publishes the same site, so
-`CALAB_APPS_MANIFEST=https://calab.miniscope.org/apps.json` opens the apps
-there; to pin one release, pass `app_url=` (e.g.
-`https://calab.miniscope.org/CaTune/v2.23.1/`).
+`CALAB_APPS_MANIFEST` can also point at another published copy of the site,
+such as the old GitHub Pages one
+(`https://miniscope.github.io/CaLab/apps.json`, which still serves the apps
+but will later redirect to `calab.miniscope.org`).
+
+### Opening a specific release
+
+`calab.miniscope.org` keeps every release at `/<App>/v<version>/`, with
+`/<App>/` always the newest. To open one, pass `version=` to `tune()`,
+`decon()` or `launch()`:
+
+```python
+calab.decon(traces, fs=30.0, version="2.23.1")  # https://calab.miniscope.org/CaDecon/v2.23.1/
+```
+
+The path is built from the app's manifest entry (or the built-in default when
+there is no manifest), so it follows the same site root. A leading `v` is
+accepted; anything that is not `MAJOR.MINOR.PATCH` (with an optional
+pre-release suffix) raises `ValueError`, and so does combining `version=` with
+`app_url=`. Releases are published on the lab's server from 2.23.1 on. The
+manifest lists only the newest release, so `calab` does not check that the
+version exists: an unknown one opens a 404 page and the call waits until it
+times out. If the app's results are incompatible with your `calab`, the usual
+version handshake raises `BridgeVersionError`.
 
 Result schemas are deliberately not in the manifest. The schema name and
 version stay in the registry, where `tests/test_bridge_registry.py` checks

@@ -118,9 +118,9 @@ def test_registry_keys_are_lowercase_slugs() -> None:
 
 def test_default_urls_match_current_deployment() -> None:
     # Must stay byte-identical to what GitHub Pages serves today.
-    assert app_url("catune") == "https://miniscope.github.io/CaLab/CaTune/"
-    assert app_url("cadecon") == "https://miniscope.github.io/CaLab/CaDecon/"
-    assert app_url("cabana") == "https://miniscope.github.io/CaLab/CaBaNA/"
+    assert app_url("catune") == "https://calab.miniscope.org/CaTune/"
+    assert app_url("cadecon") == "https://calab.miniscope.org/CaDecon/"
+    assert app_url("cabana") == "https://calab.miniscope.org/CaBaNA/"
 
 
 def test_get_app_is_case_insensitive_and_rejects_unknown() -> None:

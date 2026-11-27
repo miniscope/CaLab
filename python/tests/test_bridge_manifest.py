@@ -118,7 +118,7 @@ def test_manifest_version_matches_build_script() -> None:
     assert m is not None
     assert int(m.group(1)) in _manifest.SUPPORTED_MANIFEST_VERSIONS
     assert re.search(r"MANIFEST_FILE\s*=\s*'apps\.json'", src)
-    assert _manifest.DEFAULT_MANIFEST_URL == "https://miniscope.github.io/CaLab/apps.json"
+    assert _manifest.DEFAULT_MANIFEST_URL == "https://calab.miniscope.org/apps.json"
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +143,7 @@ def test_fetch_failure_falls_back_to_builtin_registry(
 ) -> None:
     site.doc = failure
     assert load_manifest() is None
-    assert app_url("catune") == "https://miniscope.github.io/CaLab/CaTune/"
+    assert app_url("catune") == "https://calab.miniscope.org/CaTune/"
     assert resolve_app("cadecon") is APPS["cadecon"]
     assert site.fetched == [MANIFEST_URL]  # the failure is remembered, not retried
 
@@ -161,12 +161,12 @@ def test_manifest_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     for value in ("off", "0", "", "none"):
         monkeypatch.setenv(_manifest.MANIFEST_ENV, value)
         assert load_manifest() is None
-    assert app_url("catune") == "https://miniscope.github.io/CaLab/CaTune/"
+    assert app_url("catune") == "https://calab.miniscope.org/CaTune/"
 
 
 def test_default_manifest_url_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(_manifest.MANIFEST_ENV, raising=False)
-    assert _manifest.manifest_url() == "https://miniscope.github.io/CaLab/apps.json"
+    assert _manifest.manifest_url() == "https://calab.miniscope.org/apps.json"
 
 
 def test_non_http_manifest_url_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -190,7 +190,7 @@ def test_manifest_path_overrides_builtin_segment(site: StubSite) -> None:
     assert spec.legacy_result_paths == APPS["catune"].legacy_result_paths
     assert spec.registered
     # get_app stays the offline, built-in view.
-    assert get_app("catune").default_url == "https://miniscope.github.io/CaLab/CaTune/"
+    assert get_app("catune").default_url == "https://calab.miniscope.org/CaTune/"
 
 
 def test_new_app_in_manifest_resolves_to_url_only(site: StubSite) -> None:
@@ -215,7 +215,7 @@ def test_unknown_everywhere_still_raises(site: StubSite) -> None:
 def test_stale_manifest_missing_known_app_uses_builtin(site: StubSite) -> None:
     site.doc = _doc(_entry("catune", "CaTune"))
     assert resolve_app("cadecon") is APPS["cadecon"]
-    assert app_url("cadecon") == "https://miniscope.github.io/CaLab/CaDecon/"
+    assert app_url("cadecon") == "https://calab.miniscope.org/CaDecon/"
     assert bridge_app("cadecon") is APPS["cadecon"]
 
 
@@ -263,6 +263,33 @@ def test_explicit_app_url_wins_and_skips_the_fetch(
     assert _apps.launch("catune", np.zeros((1, 10)), timeout=1, app_url=local) is None
     assert opened == [local]
     assert site.fetched == []  # the manifest was never fetched
+
+
+def test_version_opens_a_kept_release(site: StubSite, opened: list[str]) -> None:
+    site.doc = _doc(_entry("catune", "CaTuneNext"))
+    for version in ("2.23.1", "v2.23.1"):
+        opened.clear()
+        _apps.launch("catune", np.zeros((1, 10)), timeout=1, version=version)
+        assert opened == [SITE + "CaTuneNext/v2.23.1/"]
+
+
+def test_version_works_without_a_manifest(
+    monkeypatch: pytest.MonkeyPatch, opened: list[str],
+) -> None:
+    monkeypatch.setenv(_manifest.MANIFEST_ENV, "off")
+    _apps.launch("cadecon", np.zeros((1, 10)), timeout=1, version="2.24.0-beta.1")
+    assert opened == ["https://calab.miniscope.org/CaDecon/v2.24.0-beta.1/"]
+
+
+@pytest.mark.parametrize("bad", ["", "2.23", "latest", "../2.23.1", "2.23.1/x", "v v2.23.1"])
+def test_invalid_version_is_rejected(site: StubSite, bad: str) -> None:
+    with pytest.raises(ValueError, match="invalid app version"):
+        bridge_app("catune", version=bad)
+
+
+def test_version_and_app_url_are_exclusive() -> None:
+    with pytest.raises(ValueError, match="either app_url= or version="):
+        bridge_app("catune", app_url="http://localhost:5173/", version="2.23.1")
 
 
 def test_explicit_app_url_still_needs_a_registered_app(site: StubSite) -> None:
@@ -318,7 +345,7 @@ def test_http_fetch_serves_manifest_and_site_root(monkeypatch: pytest.MonkeyPatc
 def test_http_error_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
     server = _http_server(monkeypatch, status=404, body=b"not found")
     try:
-        assert app_url("catune") == "https://miniscope.github.io/CaLab/CaTune/"
+        assert app_url("catune") == "https://calab.miniscope.org/CaTune/"
     finally:
         server.shutdown()
 
@@ -328,11 +355,11 @@ def test_http_timeout_falls_back_quickly(monkeypatch: pytest.MonkeyPatch) -> Non
     server = _http_server(monkeypatch, body=json.dumps(CURRENT).encode(), delay=2.0)
     try:
         start = time.monotonic()
-        assert app_url("catune") == "https://miniscope.github.io/CaLab/CaTune/"
+        assert app_url("catune") == "https://calab.miniscope.org/CaTune/"
         assert time.monotonic() - start < 1.5
         # Remembered: a second lookup does not wait again.
         start = time.monotonic()
-        assert app_url("cadecon") == "https://miniscope.github.io/CaLab/CaDecon/"
+        assert app_url("cadecon") == "https://calab.miniscope.org/CaDecon/"
         assert time.monotonic() - start < 0.1
     finally:
         server.shutdown()
@@ -347,5 +374,10 @@ def test_oversized_manifest_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None
         server.shutdown()
 
 
-def test_registry_module_reexports_pages_base() -> None:
-    assert _registry.PAGES_BASE_URL == _manifest.PAGES_BASE_URL
+def test_registry_module_reexports_site_base() -> None:
+    assert _registry.SITE_BASE_URL == _manifest.SITE_BASE_URL
+    assert _manifest.SITE_BASE_URL == "https://calab.miniscope.org/"
+
+
+def test_pages_base_url_alias_kept() -> None:
+    assert _manifest.PAGES_BASE_URL == _manifest.SITE_BASE_URL

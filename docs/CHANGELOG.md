@@ -7,6 +7,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Changed
 
+- Python (`calab`): the bridge now opens the apps at <https://calab.miniscope.org> by default (app manifest `https://calab.miniscope.org/apps.json`; the old `miniscope.github.io` host still works and still reaches the bridge). `tune()`, `decon()` and `launch()` take `version="2.23.1"` to open a kept release at `/<App>/v2.23.1/`. `PAGES_BASE_URL` stays as an alias of the new `SITE_BASE_URL`. `CALAB_APPS_MANIFEST` and `app_url=` work as before.
 - Cala: at Max, the Run tab's Speed block now notes that results can differ slightly between runs (the settle pool's second look-back worker answers in varying order) and that a target fps makes runs repeatable.
 
 ## [2.23.1] - 2026-11-25
