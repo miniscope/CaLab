@@ -296,8 +296,7 @@ export class FinalSettleDriver {
   }
 
   /**
-   * Settling, event-driven (qc_eval's `LookBack::settle` with `--settle-batch
-   * 16`): the next `SETTLE.batch` frames of the plan go to the look-back
+   * Settling, event-driven (qc_eval's `LookBack::settle`): the next `SETTLE.batch` frames of the plan go to the look-back
    * worker; an answer is observed through the ordinary `observe` (the next
    * request is already out), and then earns its visits (`step` at the summed
    * budget here; with visit workers, the due tiles are handed out). A
@@ -442,10 +441,10 @@ export class FinalSettleDriver {
 
   /**
    * The settle's next request out: the held one is cued (or, with none, a
-   * request goes out), at the point where the request itself went before;
+   * request goes out), at the point where the request itself would go;
    * and the one after it goes out held, to be read and preprocessed while
-   * the slow worker works on the answer in hand. Same frames, same order,
-   * and each request is solved with the library it was before.
+   * the slow worker works on the answer in hand. Frames and order are those of a plain request, and each request is solved
+   * with the library a plain request would use.
    */
   private settleNext(): void {
     const d = this.state!;
@@ -474,8 +473,7 @@ export class FinalSettleDriver {
 
   /**
    * Observe the settle's answers, oldest first. As an answer begins, its worker's next request
-   * goes out (on the recording, the held one is cued and the next prepared, `settleNext`), as
-   * it did when the answer arrived; then its frames go through `observe` in pieces of
+   * goes out (on the recording, the held one is cued and the next prepared, `settleNext`); then its frames go through `observe` in pieces of
    * `SETTLE.observePiece`, each followed by the visits they earned. While a visit is out the
    * worker gives way between pieces (`defer`), so visit results are applied within an answer
    * and the visit workers get their next visits without waiting for the whole answer. While too

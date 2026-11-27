@@ -1,5 +1,5 @@
 /**
- * Messages of look-back (concurrent Refine inside Discover, experimental;
+ * Messages of look-back (concurrent Refine inside Discover;
  * see `lib/lookback-reader.ts`): between the slow worker, which owns the
  * scheduler (`SlowLoop.lookbackTake`), the look-back worker, which re-reads
  * the frames it asks for from the recording and preprocesses and solves
@@ -58,7 +58,7 @@ export type SlowToLookback =
   | { type: 'library'; session: number; version: number; bytes: Uint8Array }
   /** The `frames` buffer of a reply, back for reuse (transferred). */
   | { type: 'release'; session: number; frames: Float32Array }
-  /** A recording's settle with `?factors=file`: serve every later request from these factors (slice 3). */
+  /** A recording's settle with `?factors=file`: serve every later request from these factors. */
   | { type: 'factors'; session: number; factors: FactorSource['factors'] };
 
 /** Look-back worker -> slow worker. */
@@ -80,7 +80,7 @@ export type LookbackToSlow =
       traces: Float32Array;
       /** The background coefficients of the same solve, frame after frame (absent: no cells). */
       background?: Float32Array;
-      /** What the worker spent on this answer (instrumentation only; absent from older builds). */
+      /** What the worker spent on this answer (instrumentation only; absent: not reported). */
       timing?: LookbackTiming;
       /** When the worker posted it, epoch ms (instrumentation only: the `?debug` relay timing). */
       postedAt?: number;
@@ -194,13 +194,12 @@ export interface CsettleStatus {
   maxBlockMs: number;
   /** Frames per piece when the slow worker gives way inside an answer (0: whole answers). */
   yieldFrames: number;
-  /** Pool look-back workers serving the settle now (0: it takes turns on worker 0). Absent from older builds. */
+  /** Pool look-back workers serving the settle now (0: it takes turns on worker 0). Absent: not reported. */
   settleWorkers?: number;
   /** The settle governor's state (absent: governor off, the per-live-frame dose). */
   governor?: GovernorStatus;
 }
 
-/** The settle pass of a look-back run (`lib/settle.ts`). */
 /**
  * The Final settle's tile visits on the visit workers (`SETTLE.visitRate`). In the pass, each
  * frame fed earns `rate` visits and a visit is handed out only against that credit; what was
@@ -227,6 +226,7 @@ export interface SettleVisits {
   finalRound: number;
 }
 
+/** The settle pass of a look-back run (`lib/settle.ts`). */
 export interface SettleStatus {
   /** Frames fed through `observe`, of the frames planned (one pass, at most `SETTLE.maxFrames`). */
   fed: number;
@@ -248,10 +248,10 @@ export interface SettleStatus {
   fileReason?: string;
   /**
    * Look-back workers that answered the settle's requests (worker 0 alone, or on a
-   * recording's factors the whole settle pool). Absent before the settle starts and from older builds.
+   * recording's factors the whole settle pool). Absent before the settle starts.
    */
   workers?: number;
-  /** The settle's tile visits (with visit workers; absent without them and from older builds). */
+  /** The settle's tile visits (with visit workers; absent without them). */
   visits?: SettleVisits;
   /** Discover is over and the factors are not ready yet (the settle has not started). */
   waiting?: boolean;

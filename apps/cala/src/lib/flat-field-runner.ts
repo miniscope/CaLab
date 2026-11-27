@@ -61,7 +61,7 @@ export class FlatFieldRunner {
   private reportedSecond = -1;
 
   /**
-   * `emit`: events for the main thread. `deliver`: a new map for stage A
+   * `emit`: events for the main thread. `deliver`: a map for stage A
    * (a copy: both sides take ownership of their arrays).
    */
   constructor(

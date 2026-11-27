@@ -42,7 +42,7 @@ export const MAX_CHUNK_BYTES = DONATION_MAX_CHUNK_BYTES;
 export const MAX_TIMESTAMPS_BYTES = DONATION_MAX_TIMESTAMPS_BYTES;
 export const MAX_META_BYTES = DONATION_MAX_META_BYTES;
 
-/** Lossless compression measured on miniscope video (docs/data-donation.md, Codec). */
+/** Expected lossless compression ratio of miniscope video (docs/data-donation.md, Codec). */
 export const EXPECTED_COMPRESSION = 1.65;
 /** Retries of a failed upload (each with a fresh presigned URL) before giving up. */
 export const UPLOAD_RETRIES = 3;

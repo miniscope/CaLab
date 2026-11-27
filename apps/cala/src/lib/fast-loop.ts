@@ -8,8 +8,7 @@
  * arrived (a returned buffer, the newest library's bytes); the library is
  * read back and swapped at the start of the next `process` call, so a swap
  * always happens between frames, and warm starts follow cell ids. The bytes
- * carry the solver's precomputed terms, so the swap is a copy (a few ms at
- * hundreds of cells), not a rebuild.
+ * carry the solver's precomputed terms, so the swap is a copy, not a rebuild.
  */
 import type { CompressToFast } from '../workers/compress-types.ts';
 import type { FastToSlow, PortLike, SlowToFast } from '../workers/slow-types.ts';
@@ -148,8 +147,9 @@ export interface FastLoopOptions extends RunCells {
   signed?: boolean;
 }
 
+/** Defaults of `FastLoopOptions`. */
 export const FAST_LOOP_DEFAULTS = {
-  // The slow loop's validated default work per frame (see `SlowInit.budget`).
+  // The slow loop's default work per frame (see `SlowInit.budget`).
   budget: 3e7,
   startFrame: 50,
   noiseEvery: 200,

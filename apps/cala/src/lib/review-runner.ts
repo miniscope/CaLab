@@ -44,9 +44,9 @@ export interface ReviewRunnerDeps {
 /** Grid rows scanned between two looks at the message queue. */
 export const REVIEW_ROWS_PER_STEP = 4;
 /**
- * Factors the review worker holds at most: its WASM heap ends at 4 GB. A
- * 600-frame window of a real 600 x 600 recording is 15-30 MB, so this is
- * 1-2 h at 20 fps; a longer session is reviewed on its most recent windows.
+ * Factors the review worker holds at most: its WASM heap ends at 4 GB. Beyond
+ * the cap the oldest windows are dropped, so a long session is reviewed on its
+ * most recent windows.
  */
 export const MAX_REVIEW_FACTOR_BYTES = 3 * 2 ** 30;
 

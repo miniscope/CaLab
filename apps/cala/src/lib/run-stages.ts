@@ -4,10 +4,8 @@
  * - Discover finds cells and builds footprints with live traces (a file or a
  *   live stream). For a recording it runs with look-back, which re-reads
  *   earlier frames for each new cell, and ends with the Final settle, which
- *   lets the footprints converge with the cell set frozen. (There used to be
- *   a separate Refine stage that replayed the recording for that; look-back
- *   and the Final settle replaced it. Saved results from before still list
- *   `refine` runs, hence `RecordedStageName`.)
+ *   lets the footprints converge with the cell set frozen. Results saved by
+ *   older builds may list `refine` runs (`RecordedStageName`).
  * - Extract (recordings only) solves the final traces of every frame with the
  *   footprints frozen.
  *
@@ -20,7 +18,7 @@ import type { FactorInfo } from './compress-store.ts';
 
 export type StageName = 'discover' | 'extract';
 
-/** A stage name as a saved result may hold it: `refine` runs exist only in results from builds before Refine was removed. */
+/** A stage name as a saved result may hold it: `refine` runs exist only in results saved by older builds. */
 export type RecordedStageName = StageName | 'refine';
 
 /** The names as the UI, the export and the logs spell them. */
@@ -31,10 +29,7 @@ export const STAGE_LABEL: Record<RecordedStageName, string> = {
 };
 
 /**
- * Where a run's starting library comes from. Only `discover` (an empty
- * library) exists; a library from a file (a past session) is deferred until
- * cross-session alignment (lateral registration for 1p) exists, and would be
- * a second variant here.
+ * Where a run's starting library comes from: `discover` (an empty library).
  */
 export type LibrarySource = { kind: 'discover' };
 
@@ -61,10 +56,9 @@ export const LIVE_NOTE =
   'A live stream runs Discover only: there is no file to replay. Save the stream and load it as a recording later to Extract.';
 
 /**
- * "Extract after Discover" default for recordings: on. With Refine gone,
- * Discover (with look-back and its Final settle) hands over settled
- * footprints, so Extract follows it directly. Nothing persists the option,
- * so there is no saved value to respect.
+ * "Extract after Discover" default for recordings: on. Discover (with look-back
+ * and its Final settle) hands over settled footprints, so Extract follows it
+ * directly. Nothing persists the option.
  */
 export const EXTRACT_AFTER_DISCOVER_DEFAULT = true;
 
@@ -113,7 +107,7 @@ export function stageAvailability(i: StageInput): Record<StageName, string | nul
 
 /** What one run of a stage did (the panel's readout, the export's `stages`). */
 export interface StageRun {
-  /** `refine` only in a saved result from before Refine was removed. */
+  /** `refine` only in a result saved by an older build. */
   stage: RecordedStageName;
   /** 1-based count of this stage's runs since Discover started. */
   index: number;

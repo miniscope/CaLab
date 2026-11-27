@@ -1,22 +1,21 @@
 /**
- * The Extract stage (docs/stages.md; "pass 2" in the code's older names), on
- * the main thread: with the final cell library, extract the traces of every
+ * The Extract stage (docs/stages.md), on the main thread: with the final cell library, extract the traces of every
  * frame from the recording on disk, footprints frozen.
  *
- * The recording is walked again through the same three workers as pass 1, but
- * nothing is estimated: the frame worker replays the flicker pass 1 recorded
- * (`Preprocessor.frontFramesReplay`), the motion worker warps by the recorded
- * shifts (the GPU warp when pass 1 used it), and the trace worker solves every
+ * The recording is walked again through the same three workers as Discover,
+ * but nothing is estimated: the frame worker replays the flicker Discover
+ * recorded (`Preprocessor.frontFramesReplay`), the motion worker warps by the
+ * recorded shifts (the GPU warp when Discover used it), and the trace worker solves every
  * frame with the final library from frame 0. Background and noise restart from
  * the calibrated state (calibration is a pure function of the first frames,
  * so it is recomputed identically) and are rebuilt by the same frames in the
- * same order, which gives the same state pass 1 had at each frame: that is why
+ * same order, which gives the same state Discover had at each frame: that is why
  * no checkpoints are needed when the whole recording is replayed.
  *
- * The one deliberate difference is the sensor flat field: pass 1 switched from
- * uncorrected to corrected frames when its first map arrived (and refined it
- * after); pass 2 applies pass 1's newest map from frame 0, so the whole
- * recording is corrected the same way. Nothing is estimated in pass 2.
+ * The one deliberate difference is the sensor flat field: Discover switches
+ * from uncorrected to corrected frames when its first map arrives (and refines
+ * it after); Extract applies Discover's newest map from frame 0, so the whole
+ * recording is corrected the same way.
  *
  * Traces go straight to a `TraceFile` (trace-file.ts), and the signed
  * (unclipped) traces of the same solve to a second one: frame-major (frames x
@@ -54,7 +53,7 @@ export function replayBlocked(pipeline: Pick<PipelineStore, 'record' | 'plan'>):
   return null;
 }
 
-/** What pass 2 produced. */
+/** What Extract produced. */
 export interface Pass2Result {
   /** Cell ids in column order of `traces`. */
   ids: Uint32Array;
@@ -256,12 +255,12 @@ export function createPass2Store(
 
   /**
    * Re-extract every recorded frame with the final library (or `use`, a
-   * library published earlier: lets a run be compared with pass 1, which
+   * library published earlier: lets a run be compared with Discover, which
    * solved its last frames with an earlier version than the final one).
    */
   async function run(use?: { library: LibraryView; bytes: Uint8Array }): Promise<void> {
     const mode = factors?.mode?.() ?? (factors?.active() ? 'stream' : null);
-    // A recording never waits for its factors (spec decision 4): the factors when ready, else the file.
+    // A recording never waits for its factors (the factors when ready, else the file).
     factorMode = mode === 'stream' || (mode === 'file' && factors!.state() === 'ready');
     setFileReason(
       mode === 'file' && !factorMode ? (factors!.blocked() ?? 'The factors cannot be read.') : null,
@@ -294,7 +293,7 @@ export function createPass2Store(
     let traces: TraceFile | undefined;
     let signed: TraceFile;
     try {
-      // `?pass2=memory` keeps the matrix in memory (the pre-OPFS behaviour), for measurements.
+      // `?pass2=memory` keeps the matrix in memory (the no-OPFS path), for measurements.
       const forceMemory =
         typeof location !== 'undefined' &&
         new URLSearchParams(location.search).get('pass2') === 'memory';
@@ -463,7 +462,7 @@ export function createPass2Store(
     }
   }
 
-  /** Stop a running pass 2 (its partial traces are dropped). */
+  /** Stop a running Extract (its partial traces are dropped). */
   function cancel(): void {
     if (status() !== 'running') return;
     generation++;
@@ -476,7 +475,7 @@ export function createPass2Store(
     else void client.stopPipeline({ keepSlow: true }).catch(() => {});
   }
 
-  /** Forget the result (pass 1 restarted, or another recording opened). */
+  /** Forget the result (Discover restarted, or another recording opened). */
   function clear(): void {
     if (status() === 'running') generation++;
     factorJob?.cancel();

@@ -6,7 +6,6 @@
  * `FramePacer` is pure (the clock is passed in). `PaceGate` wraps it with the
  * waiting, pause and stop that the frame worker needs; it runs there, not on
  * the main thread, because main-thread timers are throttled in a hidden tab.
- * See tools/cala-eval notes `work_slider_design.md`, section 4.
  */
 
 /** Frames per released batch: the app's batch (`PipelinePlan.batchSize`). */

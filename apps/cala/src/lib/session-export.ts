@@ -7,7 +7,7 @@
  *
  *   <results location>/cala-results/            run folder (cala-results_<time> if taken)
  *     cala-run.json                             run manifest: mode, settings, sessions
- *     2026_11_10/14_02_33/My_V4_Miniscope/      each session's path below the picked folder
+ *     <date>/<time>/My_V4_Miniscope/          each session's path below the picked folder
  *       cala-export.npz                         the export (format v3, `export.ts`)
  *       cala-session.json                       session metadata
  *
@@ -278,7 +278,7 @@ export function zipResultsSink(
       for (const [path, bytes] of files) await zip.addFile(`${root}/${path}`, bytes);
       await zip.finish();
       // The run keeps its sink until the next run starts: do not keep every
-      // session's export alive with it (one 10-minute session is ~65 MB).
+      // session's export alive with it.
       files.clear();
       deliver(
         `${prefix ? `${RESULTS_DIR}_${prefix.replace(/\//g, '_')}` : root}.zip`,

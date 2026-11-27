@@ -44,7 +44,7 @@ export interface CompressFeedOptions {
   pool?: PoolWidth;
   /** The cap on window files waiting for compression, bytes (absent: the runner's own). */
   backlogCap?: number;
-  /** Extract on factors on rebuilt frames, as before slice 6 (`?debug&fextract=0`). */
+  /** Extract on rebuilt frames instead of on factors (`?debug&fextract=0`). */
   frameExtract?: boolean;
   /** Compress on the GPU (a recording's default; `CompressInit.gpu`). */
   gpu?: boolean;
@@ -308,8 +308,8 @@ export class CompressFeed implements CompressFeedLike {
 
   /**
    * The fast loop is dropped. Before the end of the recording that is a stop
-   * or restart, and the compress worker drops its windows too. After it (pass
-   * 2 replaces the fast loop in the same worker) the windows stay: they are
+   * or restart, and the compress worker drops its windows too. After it (Extract
+   * replaces the fast loop in the same worker) the windows stay: they are
    * the record of the run, and the next run's `init` clears them.
    */
   reset(): void {

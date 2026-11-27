@@ -14,8 +14,7 @@
  * Defaults: 256 MB, so 4000 cells keep 16k frames each (9 min at 30 fps), 700
  * cells keep 93k (52 min). Up to `maxCells` cells are tracked (default 20000,
  * well above any library; each costs a fixed 12 KiB envelope too). Frames a
- * cell missed (a gap in the
- * stream) are stored as NaN. Cells that leave the library are dropped by
+ * cell missed (a gap in the stream) are stored as NaN. Cells that leave the library are dropped by
  * `retain`. Each tracked cell also retains a fixed 12 KiB whole-session min/max
  * envelope (at most about 36 MiB at maxCells). Pure, unit-tested.
  */
@@ -39,6 +38,7 @@ interface Buffer {
   end: number;
 }
 
+/** One cell's stored trace: stream frames and values, oldest first. */
 export interface CellTrace {
   /** Stream frame of each sample, oldest first. */
   frames: number[];
@@ -52,6 +52,7 @@ const MIN_RING = 256;
 /** Buffer growth factor: at most a third of a buffer is unused headroom. */
 const GROWTH = 1.5;
 
+/** Per-cell trace buffers under a shared memory budget. */
 export class TraceHistory {
   readonly capacity: number;
   readonly maxCells: number;

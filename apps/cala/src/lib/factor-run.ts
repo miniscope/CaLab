@@ -1,10 +1,9 @@
 /**
- * Factor runs (docs/superpowers/specs/2026-11-23-cala-factors-on-settle-design.md):
- * a live stream's Final settle and Extract read the factors Discover wrote
- * during the stream (slice 4). A recording's windows are compressed on the GPU
+ * Factor runs: a live stream's Final settle and Extract read the factors
+ * Discover wrote during the stream. A recording's windows are compressed on the GPU
  * while Discover runs and its settle and Extract read those factors when
  * complete (the GPU route, what `?factors=gpu` asks for). Both are the default;
- * `?factors=0` turns them off. `?factors=file` (experimental) is the recording's
+ * `?factors=0` turns them off. `?factors=file` selects the recording's
  * factor run on the CPU, and `?factors` on a recording is a `?compress` run.
  */
 import type { CompressTiling } from '../workers/compress-types.ts';

@@ -48,9 +48,9 @@ export interface FactorExtractPort {
 }
 
 /**
- * Extract on a live stream's factors (`?factors`; spec decision 4): one job
+ * Extract on a live stream's factors (`?factors`): one job
  * at a time in the compress worker. A job's `done` always settles: at
- * `extract-done`, its error, `cancel()`, the store's reset (a new run) or a
+ * `extract-done`, its error, `cancel()`, the store's reset (the next run) or a
  * crash of the compress worker.
  */
 export function createFactorExtract(

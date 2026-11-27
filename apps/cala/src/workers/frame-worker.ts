@@ -206,7 +206,7 @@ async function handle(req: FrameRequest): Promise<void> {
         if (!down) throw new Error('The frame worker is not linked to the motion worker.');
         epoch++;
         // The stage asks for buffers only from its first `next()`, after the pool exists.
-        // Pass 1 estimates the flat field in the flat-field worker; pass 2 replays pass 1's map.
+        // Discover estimates the flat field in the flat-field worker; Extract replays Discover's map.
         flatSession = req.cells?.session ?? 0;
         flatSink =
           flatPort && !req.replay && req.options.flatField !== false
@@ -340,7 +340,7 @@ function actNow(req: FrameRequest): boolean {
       pacedQueue.cancelWaiting();
       truncateNow();
       return false;
-    // A restart or a new source: steps still waiting at the gate belong to the old run.
+    // A restart or a new source: steps still waiting at the gate belong to the previous run.
     case 'pipeline-start':
     case 'open':
     case 'open-sessions':

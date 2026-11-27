@@ -5,9 +5,8 @@
  *
  * Visits per Discover frame set how many cells Discover finds and, at high
  * rates, how many false cells it adds; footprint and trace quality do not
- * move (`tools/cala-eval/results/2026-11-24-visit-budget-sweep.md`). Before
- * the fixed rate, the rate was whatever time was spare: about 0.2 visits per
- * frame at Max (the slow worker saturated) and about 4.7 paced at 30 fps.
+ * move. Without a held rate the rate would be whatever time is spare, so it
+ * would differ between Max and a paced run.
  *
  * - **Schedule** (in the engine, `crates/cala/src/discover/visitrate.rs`,
  *   `VisitSchedule`; the one source of truth, shared with `qc_eval`): **Auto**
@@ -31,8 +30,7 @@
  *
  * The floor and target count visits per frame **read** (the stream frames
  * Discover went through, dropped batches included), the cap per frame
- * observed. A run at Max drops batches for the slow loop (about 25 % of the
- * frames on the 3k sim); counted per observed frame, dropping frames would
+ * observed. A run at Max drops batches for the slow loop; counted per observed frame, dropping frames would
  * itself meet the rate, and a run that drops more would visit less over the
  * same recording, which is the speed dependence this removes. Per frame read,
  * a recording gets the same number of visits however fast it was read, and
@@ -41,23 +39,20 @@
  * frames can sit under the target per frame read while the cap binds per observed frame; the governor
  * then still slows it (`dropMargin`), since fewer drops is what raises the rate.
  *
- * `?debug&visitrate=off` restores the behaviour before the fixed rate (no cap, no hold);
- * `?debug&visitrate=auto` the Auto schedule (the default is the fixed rate).
+ * `?debug&visitrate=off` turns the visit rate off (no cap, no hold);
+ * `?debug&visitrate=auto` selects the Auto schedule (the default is the fixed rate).
  * Pure: the clock is passed in; unit-tested in `visit-rate.test.ts`.
  */
 
 /**
  * The constants in one place. `floor`, `target` and `cap` are the fixed schedule's values and
  * where Auto starts (the engine's `VisitSchedule::fixed`; mirrored here for the Speed block's
- * text before the first status and for older builds). During a run the governor uses the values
- * the engine reports. Chosen from constant-rate qc_eval runs (PR #500): on full-length sims
- * recall saturates by about 0.2 while false cells (late second copies of found cells) keep growing.
- * At 0.15 the motion sim has the most matched-minus-false cells of the rates tried (677 against 660
- * at 0.25, 35 false cells against 58) and the static sim the same (739 / 737); on real data 0.15
- * gives the same QC-pass cells as 0.25. Only early in a recording (the first ~2000 frames) do more
- * visits find cells sooner (recall 4-5 points lower at 0.15 than at 0.25 there). Visits are what the
- * slow worker spends its time on, so the lower rate also lets Discover run faster. The cap at 0.2
- * keeps paced runs close to held Max runs.
+ * text before the first status). During a run the governor uses the values the engine reports.
+ * The rate is chosen from constant-rate qc_eval runs: recall saturates while false cells (late
+ * second copies of found cells) keep growing with more visits, and 0.15 gives the most matched
+ * minus false cells; only early in a recording do more visits find cells sooner. Visits are what
+ * the slow worker spends its time on, so the lower rate also lets Discover run faster. The cap
+ * keeps paced runs close to held Max runs. See tools/cala-eval/results/2026-11-26-visit-rate-auto.md.
  */
 export const VISIT_RATE = {
   /** Visits per Discover frame read: the least the governor accepts (2/3 of the target). */
@@ -101,6 +96,7 @@ export const VISIT_RATE = {
   maxWindows: 5,
 } as const;
 
+/** The `VISIT_RATE` constants with their literal types widened, so a run can override them. */
 export type VisitRateConstants = { readonly [K in keyof typeof VISIT_RATE]: number };
 
 /** What the visit rate does in a run. */
@@ -109,7 +105,7 @@ export type VisitRateMode =
   | 'on'
   /** Cap only (a live stream: it cannot slow down). */
   | 'cap-only'
-  /** Neither (`?debug&visitrate=off`: the behaviour before). */
+  /** Neither (`?debug&visitrate=off`). */
   | 'off';
 
 /** How the target is set: the fixed rate (the default) or the engine's Auto schedule (opt-in). */
@@ -156,7 +152,7 @@ export interface VisitRateSample {
   /** The user's target, fps (0 = Max). */
   userFps: number;
   /**
-   * The engine's schedule (`VisitRateCounters`; absent in older builds: the constants): the target
+   * The engine's schedule (`VisitRateCounters`; absent: the constants): the target
    * in force and the hold's floor under it, visits per frame; the cap in force, visits per observed
    * frame; the credit earned so far; the yields (new cells per visit); the schedule's parameters.
    */
@@ -227,7 +223,7 @@ export interface VisitRateSummary {
   mode: VisitRateMode;
   /** The schedule asked for (`auto` or `fixed`; null with the visit rate off). */
   schedule: VisitSchedule | null;
-  /** The engine's schedule parameters (null: none reported, e.g. off or an older build). */
+  /** The engine's schedule parameters (null: none reported, e.g. the visit rate off). */
   schedule_params: VisitScheduleParams | null;
   /** The fixed rate's values (Auto's top): the governor's floor and target, and the cap. */
   floor: number;
@@ -263,6 +259,7 @@ export interface VisitRateSummary {
   hold_changes_dropped: number;
 }
 
+/** The most hold and target changes the run record keeps; the rest are counted. */
 export const HOLD_LOG_MAX = 200;
 
 /**
@@ -416,9 +413,8 @@ export class VisitRateGovernor {
     const demand = w.samples > 0 ? w.due / w.samples : 0;
     // Too few frames read, or too few visits expected at the target: keep the window open rather
     // than start a new one. Closing it would make a hold below `minWindowFrames` fps per window
-    // permanent (no window would ever count, so the hold could never rise); seen on a 3 h v4
-    // recording held at 5 fps for minutes. At Auto's low targets a short window holds only a few
-    // visits, and rounding would read as behind (the fixed rate keeps main's window rule exactly).
+    // permanent (no window would ever count, so the hold could never rise). At Auto's low targets
+    // a short window holds only a few visits, and rounding would read as behind.
     if (dRead < k.minWindowFrames) return null;
     if (this.schedule === 'auto' && dRead * target < k.minWindowVisits) return null;
     this.w = {
@@ -472,7 +468,7 @@ export class VisitRateGovernor {
     const vmax = this.visitMaxFps;
     if (vmax !== null && readFps > vmax) this.noteMax(readFps * target);
     if (this.hold === null) return null;
-    // Not behind: release once the hold no longer binds (the run reads well below it, or the
+    // Not behind: release once the hold stops binding (the run reads well below it, or the
     // user's own target is lower), else raise it while the rate is comfortably above the target
     // (or the cap or a lack of due tiles is what limits the visits).
     const userBinds = s.userFps > 0 && this.hold >= s.userFps;

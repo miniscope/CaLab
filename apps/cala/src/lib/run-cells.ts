@@ -16,7 +16,7 @@ export interface RunCells {
    * Look-back (a recording's Discover; absent = off): the slow loop is built with the look-back
    * options (`LOOKBACK` in `lib/slow-runner.ts`, visit workers alike),
    * re-reads past frames through the look-back worker during Discover and settles after the
-   * last frame (see `SlowRunner`). Stage C reports its back half's state now and then
+   * last frame (see `SlowRunner`). Stage C reports its back half's state periodically
    * (`PipelineStepResult` `backState`) for the look-back worker.
    */
   lookback?: boolean;
@@ -37,7 +37,7 @@ export interface RunCells {
   csettle?: boolean;
   /**
    * With `csettle`: the slow worker handles an answer of re-read frames this many frames at a
-   * time and gives way in between (absent or 0: the whole answer in one go, qc_eval's arm `CS2F`).
+   * time and gives way in between (absent or 0: the whole answer in one go).
    */
   csettleYield?: number;
   /**
