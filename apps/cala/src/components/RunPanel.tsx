@@ -172,6 +172,9 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       live: props.live,
       factorRun: props.factorRun,
     });
+  /** The chip's colour role: after Discover it names the stage (neutral, never the ok green). */
+  const chipState = (): ConvergenceState | 'stage' =>
+    s().status() === 'done' && conv().state !== 'waiting' ? 'stage' : conv().state;
   const statusText = () => {
     const st = s().status();
     if (st === 'starting') return 'Starting';
@@ -523,13 +526,11 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
       class="cala-run"
       head={
         <div class="cala-run__conv" data-testid="convergence-status" title={conv().reason}>
-          <span class={`cala-conv-chip cala-conv-chip--${conv().state}`}>
-            <Show when={conv().state === 'converged'}>
+          <span class={`cala-conv-chip cala-conv-chip--${chipState()}`}>
+            <Show when={chipState() === 'converged'}>
               <Icon name="check" size={12} />
             </Show>
-            {s().status() === 'done' && conv().state !== 'waiting'
-              ? stageNow()
-              : STATE_LABEL[conv().state]}
+            {chipState() === 'stage' ? stageNow() : STATE_LABEL[conv().state]}
           </span>
           <span class="cala-visually-hidden">{conv().reason}</span>
         </div>

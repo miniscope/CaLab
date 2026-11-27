@@ -235,6 +235,11 @@
   color: var(--text-secondary);
 }
 
+/* After Discover the chip names the current stage: neutral (stage progress is the strip's job). */
+.cala-conv-chip--stage {
+  color: var(--ink-1);
+}
+
 /* In progress: the stage's tint and hue edge, the label in the text ink. */
 .cala-conv-chip--discovering {
   color: var(--ink-1);

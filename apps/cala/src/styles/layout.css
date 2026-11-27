@@ -522,6 +522,7 @@
 /* Done: the stage's full hue with a check mark (never the ok green). */
 .cala-steps__box--done {
   border-color: var(--step-ink);
+  background: var(--step-ink);
 }
 
 .cala-steps__box--done .cala-steps__fill {
