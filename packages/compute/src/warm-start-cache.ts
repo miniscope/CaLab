@@ -20,8 +20,7 @@ export interface WarmStartEntry {
 /**
  * Compute the overlap-and-discard padded window for artifact-free windowed computation.
  *
- * Adds padding samples on each side of the visible region (per research
- * Pattern 3) to prevent edge artifacts from kernel truncation. The padding
+ * Adds padding samples on each side of the visible region to prevent edge artifacts from kernel truncation. The padding
  * target is ``max(visibleSamples, tauPadding)`` — wide enough to cover one
  * full visible window of overlap OR the ``5 * tauDecay * fs`` artifact
  * horizon, whichever is larger. The result is capped at ``MAX_PADDING_SECONDS``
@@ -72,7 +71,7 @@ export function computeSafeMargin(tauDecay: number, fs: number): number {
  *   is invalid, but solution magnitude is still useful as initial point.
  * - 'cold': Window shifted, tau changed significantly, or no cached state.
  *
- * The 20% threshold is a heuristic from research Pattern 4.
+ * The 20% threshold is a heuristic.
  */
 export function shouldWarmStart(
   cached: WarmStartEntry | null,

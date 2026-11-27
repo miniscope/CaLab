@@ -1,4 +1,4 @@
-// Moderation of raw data donations (apps/cala/docs/data-donation.md, phase 4).
+// Moderation of raw data donations (apps/cala/docs/data-donation.md).
 // Rows come straight from `cala_donations` (RLS returns every row to an admin);
 // review and benchmark actions go through donation-service.
 

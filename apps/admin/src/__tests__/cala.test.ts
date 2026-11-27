@@ -341,11 +341,11 @@ describe('sessions processed per run', () => {
   it('counts a Joint run once over all its sessions, a Separate plan once per session, old events too', () => {
     const s = session();
     const evs = [
-      // New events: sessions = this run's, plan_sessions = the plan's.
+      // Events carrying plan_sessions: sessions = this run's, plan_sessions = the plan's.
       run(s.id, 1, 'discover', { mode: 'joint', sessions: 4, plan_sessions: 4, refine_runs: 1 }),
       run(s.id, 2, 'discover', { mode: 'separate', sessions: 1, plan_sessions: 4, refine_runs: 0 }),
       run(s.id, 3, 'discover', { mode: 'separate', sessions: 1, plan_sessions: 4, refine_runs: 0 }),
-      // Old events: sessions was the plan's size in every mode.
+      // Events without plan_sessions: sessions is the plan's size in every mode.
       run(s.id, 4, 'extract', { mode: 'separate', sessions: 4 }),
       run(s.id, 5, 'extract', { mode: 'separate', sessions: 4 }),
       run(s.id, 6, 'extract', { mode: 'joint', sessions: 16 }),

@@ -3,8 +3,7 @@
 // The solver fits its WORKING trace (rolling-percentile baseline subtracted,
 // optionally bandpass-filtered) over the visible window. Fit quality must be
 // scored against that working trace over the same window. Scoring the full raw
-// trace against the windowed reconvolution compares different quantities (and,
-// before this was fixed, silently reported 0 whenever the lengths differed).
+// trace against the windowed reconvolution compares different quantities.
 
 import { computeFitMetrics, computeSparsityRatio, type FitMetricsResult } from '@calab/core';
 import type { CellTraces } from './multi-cell-store.ts';

@@ -27,8 +27,8 @@ export const TABLES: Record<TableName, { table: string; columns: string; label: 
     table: 'analytics_sessions',
     label: 'Sessions',
     columns:
-      // select('*'): never name a column the deployed schema may lack (008's
-      // is_anonymous was missing in production). lib/schema.ts reports what is absent.
+      // select('*'): never name a column the deployed schema may lack (e.g. 008's
+      // is_anonymous). lib/schema.ts reports what is absent.
       '*',
   },
   events: {

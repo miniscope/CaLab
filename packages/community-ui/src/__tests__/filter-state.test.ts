@@ -33,7 +33,7 @@ describe('clearedFilterState', () => {
 
 describe('DEMO_PRESET_FILTER', () => {
   // The dropdown must only offer ids the simulator can actually record, or a
-  // selection silently matches nothing (the bug this filter had with 'clean').
+  // selection silently matches nothing.
   it('offers the simulator indicator ids the write side records', () => {
     expect(DEMO_PRESET_FILTER.id).toBe('demoPreset');
     expect(DEMO_PRESET_FILTER.options.map((o) => o.id)).toEqual([
