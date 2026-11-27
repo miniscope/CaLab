@@ -13,8 +13,8 @@ import type { FastLoopSetup } from './pipeline-types.ts';
 /** The slow loop's run options (`CellsSettings`, `FastLoopOptions` and `SlowInit` share them). */
 export interface RunCells {
   /**
-   * Look-back (a recording's Discover; absent = off): the slow loop is built with the options
-   * look-back runs with (`SlowLoop.withConfig(.., 'all', 'all', 0.6)`, visit workers alike),
+   * Look-back (a recording's Discover; absent = off): the slow loop is built with the look-back
+   * options (`LOOKBACK` in `lib/slow-runner.ts`, visit workers alike),
    * re-reads past frames through the look-back worker during Discover and settles after the
    * last frame (see `SlowRunner`). Stage C reports its back half's state now and then
    * (`PipelineStepResult` `backState`) for the look-back worker.
