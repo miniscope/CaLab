@@ -170,7 +170,9 @@ order you use them:
   Discover's panel has the status line (percent read, frame, frames per second), the
   time-window control (**Run** and, when the run is long enough, **24 h**, **1 h**,
   **10 min**, **1 min**), the whole-run strip and one overlaid plot of the convergence
-  metrics (cells, new cells per minute, churn, stable, explained, residual). The Final
+  metrics (cells at frame, new cells per minute, churn, stable, explained, residual). **Cells
+  at frame** is the count at each QC snapshot (once per second of recording); it stops at the
+  end of Discover, so afterwards the rail's **Cells** is the current count. The Final
   settle and Extract panels each have a frames-per-second trace over the step (fixed
   10 to 500 fps, log) and their facts: cells still moving and footprints settled, or
   the traces solved so far. Then **Speed** and **Workers**. Workers is a grid of small
