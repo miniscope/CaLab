@@ -9,9 +9,9 @@
  *   same id in every session. Look-back runs too: during Discover it re-reads
  *   frames of the session being read only, and the Final settle covers every
  *   session (each frame preprocessed as its own session's).
- * - **Apply:** a fixed library goes straight to Extract on each session. Not
- *   built yet (it needs a library from a file, `LibrarySource` in
- *   `run-stages.ts`); the setting has the slot so the flow can be added.
+ * - **Apply:** a fixed library goes straight to Extract on each session. It
+ *   needs a library from a file (`LibrarySource` in `run-stages.ts`) and is not
+ *   offered.
  *
  * A run with more than one session is automatic: after Discover (and its Final
  * settle) it runs Extract, then writes the results
@@ -20,14 +20,17 @@
  */
 import type { StageActivity, StageName } from './run-stages.ts';
 
+/** How a multi-session run shares the cell library. */
 export type LibraryMode = 'separate' | 'joint' | 'apply';
 
+/** Short name of each library mode. */
 export const LIBRARY_MODE_LABEL: Record<LibraryMode, string> = {
   separate: 'Separate',
   joint: 'Joint',
   apply: 'Apply',
 };
 
+/** One-sentence description of each library mode. */
 export const LIBRARY_MODE_HINT: Record<LibraryMode, string> = {
   separate:
     'Each session gets its own Discover (with look-back and Final settle) and Extract. Cell ids are per session.',
@@ -36,11 +39,13 @@ export const LIBRARY_MODE_HINT: Record<LibraryMode, string> = {
   apply: 'A fixed library goes straight to Extract on each session (not available yet).',
 };
 
-/** The modes offered in the UI. Apply waits for libraries from a file. */
+/** The modes offered in the UI. Apply is not offered: it needs a library from a file. */
 export const OFFERED_MODES: readonly LibraryMode[] = ['joint', 'separate'];
 
+/** The library flow a multi-session run starts with. */
 export const DEFAULT_MODE: LibraryMode = 'joint';
 
+/** The settings of a multi-session run. */
 export interface RunSettings {
   mode: LibraryMode;
 }
@@ -61,6 +66,7 @@ export interface AutoInput {
   sessions: number;
 }
 
+/** What the automatic run does next. */
 export type AutoAction =
   | { kind: 'wait' }
   | { kind: 'extract' }

@@ -15,7 +15,7 @@
  *     Miniscope has. `gain` and `led0` are not used: a Minicam writes both.
  *  3. Else the names (a `behav...` folder or prefix is a camera, a folder
  *     mentioning "miniscope" a Miniscope); nothing is excluded on a name
- *     alone beyond what `chooseKind` always did.
+ *     alone beyond `chooseKind`'s own rules.
  *
  * A folder that holds several series (older DAQ software: `msCam*.avi` and
  * `behavCam*.avi` side by side) shares one metadata file between them, so only

@@ -166,7 +166,7 @@ export type PipelineStepResult =
        * correlation's null, completed with this batch (`boundary-flags.ts`).
        */
       boundaryNull?: number;
-      /** Look-back runs: the back half's state after this batch, now and then (`BackStage`). */
+      /** Look-back runs: the back half's state after this batch, periodically (`BackStage`). */
       backState?: BackStateSnapshot;
     }
   | {

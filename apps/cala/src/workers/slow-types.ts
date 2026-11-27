@@ -5,7 +5,7 @@
  * The trace and slow workers talk over a `MessageChannel` whose ports the main
  * thread hands out, so the frame path never goes through the UI thread. Every
  * message carries the pipeline `session`; a restart bumps it and late messages
- * of the old session are dropped.
+ * of an earlier session are dropped.
  */
 
 import type { WorkStatus } from '../lib/work-meter.ts';
@@ -69,7 +69,7 @@ export type FastToSlow =
       /**
        * When the batch was sent, ms on the epoch clock (`performance.timeOrigin + performance.now()`,
        * comparable across workers): the slow worker's batch wait is the time from here to the start
-       * of its processing. Absent from older senders.
+       * of its processing. Absent: unknown.
        */
       sentAt?: number;
     }
@@ -87,7 +87,7 @@ export type SlowToFast =
       frames: Float32Array;
       start: number;
       count: number;
-      /** Frames of the batch the slow loop observed (others came from a version it no longer holds). */
+      /** Frames of the batch the slow loop observed (others came from a version it does not hold). */
       observed: number;
     }
   /** A published library, `TraceLibrary.toBytes()`. */
@@ -108,7 +108,7 @@ export interface SlowCounters {
   splits: number;
   absorbs: number;
   /**
-   * Add classification (cumulative; 0 from an older WASM build): adds at a
+   * Add classification (cumulative): adds at a
    * fresh spot, adds where a cell was just removed, adds removed again soon
    * after (counted at the removal), and merges/deletes of established cells.
    */
@@ -192,8 +192,9 @@ export function visitRateCounters(
   return c;
 }
 
+/** The slow worker's status: counters, library state and timings. */
 export interface SlowStatus {
-  /** The Discover visit cap's counters (absent in builds without it). */
+  /** The Discover visit cap's counters (absent: not reported). */
   visitRate?: VisitRateCounters;
   /** Stream index after the last observed frame. */
   frame: number;
@@ -233,7 +234,7 @@ export interface SlowStatus {
   work: number;
   /** The recording ended and the final library is out. */
   final: boolean;
-  /** Runs over the recording into this slow loop: 1 = Discover (always 1 now: Refine, which made it 2 and up, is gone) */
+  /** Runs over the recording into this slow loop: 1 = Discover. */
   run: number;
   /** The current run's edit scope. */
   editScope: EditScopeName;
@@ -371,6 +372,7 @@ export type SlowFactors = { type: 'factors'; session: number } & (
   | { ready: false; reason: string }
 );
 
+/** Messages from the main thread to the slow worker. */
 export type MainToSlow =
   | SlowFactors
   | SlowConnect
@@ -410,6 +412,7 @@ export interface PortLike<T> {
   postMessage(msg: T, transfer?: Transferable[]): void;
 }
 
+/** The buffers of a library view (and optional `bytes`) to transfer with it. */
 export function libraryViewTransferables(v: LibraryView, bytes?: Uint8Array): ArrayBuffer[] {
   return [v.ids, v.centers, v.radii, v.starts, v.pixels, v.values, ...(bytes ? [bytes] : [])].map(
     (a) => a.buffer as ArrayBuffer,

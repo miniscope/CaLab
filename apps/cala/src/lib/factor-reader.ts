@@ -1,6 +1,6 @@
 /**
  * The Final settle's frame supply on a live stream with `?factors` (look-back
- * worker 0; spec decision 2): the frames the slow loop asks for, rebuilt
+ * worker 0): the frames the slow loop asks for, rebuilt
  * from the factor windows Discover wrote (`rebuildFrames`) and solved with
  * the newest published library, as `LookbackReader` does for a recording.
  * It reads only windows the compress worker reported done, whole, through

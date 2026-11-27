@@ -17,7 +17,7 @@
  * to the main thread. A cell found late in the recording so gets its trace
  * from the first frame on, without the raw video being read again.
  *
- * Extract on factors (`extract`): with an `extractor` (slice 6), each window is
+ * Extract on factors (`extract`): with an `extractor`, each window is
  * solved from its factors (`solveWindow`: the `FactorExtractor`, or rebuilt
  * frames where a pixel without data lies under a cell), cold, by the helpers of
  * the window pool or here; without one, the rebuild above with one engine. One
@@ -567,7 +567,7 @@ export class CompressRunner {
   }
 
   /**
-   * A recording's settle re-reads the file (slice 7, decision 4): its
+   * A recording's settle re-reads the file: its
    * compression would only take CPU from the settle and Extract, which read
    * the file too. Drop the run's files and compress nothing more of it.
    */

@@ -109,7 +109,7 @@ export type FileSettleAction =
 
 /**
  * The main thread's answer when a recording's slow loop asks at Discover's
- * end (spec decision 4, slice 3): the factors when they cover every frame;
+ * end: the factors when they cover every frame;
  * at the first look, the file at once when the compressor is more than one
  * window behind; otherwise wait for that last window. One answer per session.
  */

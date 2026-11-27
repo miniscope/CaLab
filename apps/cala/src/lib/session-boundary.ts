@@ -58,7 +58,7 @@ export interface SessionStart {
 
 /**
  * The step result's record of a session start: `align` is
- * `SessionAligner.beginSession`'s values (pass 1), `fit`
+ * `SessionAligner.beginSession`'s values (Discover), `fit`
  * `Preprocessor.beginSessionBack`'s.
  */
 export function sessionStart(

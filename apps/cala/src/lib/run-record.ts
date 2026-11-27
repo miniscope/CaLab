@@ -1,5 +1,5 @@
 /**
- * What pass 1 records about every frame so pass 2 can replay the recording
+ * What Discover records about every frame so Extract can replay the recording
  * without estimating anything again: the rigid motion shift, the motion flags
  * and the global flicker (additive offset, relative gain).
  *
@@ -9,8 +9,8 @@
  *
  * It also lists the sensor flat-field maps that took effect (frame index of
  * the batch each one first corrected, see `FlatFieldApplied`): the first is the
- * one-time switch from uncorrected frames, so pass 2 and exports know which
- * frames pass 1 saw uncorrected.
+ * one-time switch from uncorrected frames, so Extract and exports know which
+ * frames Discover saw uncorrected.
  *
  * Batches must arrive in order starting at frame 0. A gap (a restarted or
  * truncated stream, a dropped batch) marks the record incomplete rather than

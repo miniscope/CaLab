@@ -1,9 +1,9 @@
 /**
- * One window of Extract on factors (slice 6): solved from its factors by the
+ * One window of Extract on factors: solved from its factors by the
  * `FactorExtractor` (the solver's functionals taken straight from the factors,
  * no frame rebuilt), or, when a pixel without data in the window lies under a
  * cell, its moat, a ring or a basis map, on frames rebuilt from the factors
- * with the same engine, as Extract did before. The engine starts cold for
+ * with the same engine. The engine starts cold for
  * every window, so a window's traces do not depend on which worker solved it
  * or what it solved before. Shared by the compress worker and its helpers.
  */
@@ -37,7 +37,7 @@ export interface WindowResult {
   signed?: Float32Array;
 }
 
-/** Frames solved per call (as the rebuilt-frame Extract). */
+/** Frames solved per call. */
 export const SOLVE_BATCH = 16;
 
 /**

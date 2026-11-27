@@ -1,6 +1,6 @@
 /**
- * Speed curves (beta speed control, PR G; `beta_speed_control_design.md` section 4): a step schedule
- * of the target speed over a recording, and the driver that applies a schedule (or, later, Auto)
+ * Speed curves: a step schedule
+ * of the target speed over a recording, and the driver that applies a schedule (or Auto)
  * during a run. Pure: no store and no DOM; the clock is passed in.
  *
  * - `SpeedCurve` is what the user sets and what the run record keeps: points `{ at, fps }`, `at` the
@@ -9,7 +9,7 @@
  * - `normalizeCurve` merges steps too short for the governor's ramp (an authored curve only; a
  *   replayed curve passes through untouched).
  * - `TargetPolicy` is the seam: a policy turns the run's state into a target. `SpeedSchedule` is
- *   one; Auto (PR I) is another that plugs into the same `SpeedDriver` and the same record fields.
+ *   one; Auto is another that plugs into the same `SpeedDriver` and the same record fields.
  */
 import { GOVERNOR } from './settle-governor.ts';
 import { snapToLadder } from './speed-floor.ts';
@@ -18,12 +18,14 @@ import { SPEED_SCALE, type CurvePresetId } from './speed-track.ts';
 /** A target: frames per second, `'max'` (unpaced), or a symbol resolved against the live floor. */
 export type CurveFps = number | 'max' | 'floor' | 'seeAll';
 
+/** One step of a curve: from `at` on, the target is `fps`. */
 export interface CurvePoint {
   /** Position in the recording, 0 to 1 (the share of its frames). */
   at: number;
   fps: CurveFps;
 }
 
+/** A step schedule of the target over a recording. */
 export interface SpeedCurve {
   points: CurvePoint[];
 }
@@ -54,6 +56,7 @@ export function minStepSeconds(fps: number, cap: number): number {
 
 // ---- presets ----
 
+/** The curve presets of the Curve mode. */
 export const CURVE_PRESETS: Record<
   CurvePresetId,
   { label: string; title: string; curve: SpeedCurve }
@@ -81,6 +84,7 @@ export const CURVE_PRESETS: Record<
   },
 };
 
+/** A copy of a preset's curve. */
 export function presetCurve(id: CurvePresetId): SpeedCurve {
   return { points: CURVE_PRESETS[id].curve.points.map((p) => ({ ...p })) };
 }
@@ -89,7 +93,7 @@ export function presetCurve(id: CurvePresetId): SpeedCurve {
 
 const clampFps = (x: number) => Math.min(SPEED_SCALE.hi, Math.max(SPEED_SCALE.lo, x));
 
-/** What a symbol or number means now, as a pacer target: fps, 0 for Max. */
+/** What a symbol or number means at this moment, as a pacer target: fps, 0 for Max. */
 export function resolveFps(f: CurveFps, live: { floorFps: number; seeAllFps: number }): number {
   if (f === 'max') return 0;
   // The ladder keeps the symbols from drifting with the raw estimates (each change re-anchors the pacer).
@@ -229,7 +233,7 @@ export interface PolicyTarget {
 }
 
 /**
- * The seam between a rule and the pacer: `SpeedSchedule` follows a curve, Auto will decide from the
+ * The seam between a rule and the pacer: `SpeedSchedule` follows a curve, Auto decides from the
  * run. `source` is what the run record's `target_speed.changes` names.
  */
 export interface TargetPolicy {

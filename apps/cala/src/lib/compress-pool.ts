@@ -1,5 +1,5 @@
 /**
- * The compress pool (docs/superpowers/plans/2026-11-23-cala-parallel-compress-slice5.md):
+ * The compress pool:
  * the compress worker (the coordinator) shares the tiles of each window with
  * helper workers. Only the coordinator touches OPFS: it reads a tile from the
  * window file and hands it to a free slot (itself or a helper); a helper

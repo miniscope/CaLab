@@ -39,7 +39,7 @@ export interface CellsSettings extends Omit<RunCells, 'sessionStarts'> {
   compressPool?: { discover: number; after: number };
   /** With `compress`: the cap on window files waiting for compression, bytes (`?debug&cbacklog`). */
   compressBacklogCap?: number;
-  /** With `compress`: Extract on factors on rebuilt frames (`?debug&fextract=0`). */
+  /** With `compress`: Extract on rebuilt frames instead of the factors (`?debug&fextract=0`). */
   compressFrameExtract?: boolean;
   /** With `compress`: a recording on the GPU route (the default) compresses its windows on the GPU (`CompressInit.gpu`). */
   compressGpu?: boolean;

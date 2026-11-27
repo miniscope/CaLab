@@ -8,8 +8,8 @@
 // of each thread and sums them with its own.
 //
 // No JS-heap figure is reported: `performance.memory` (Chrome only) sees the
-// main thread alone, which held ~1% of the tab's footprint in a real run, and
-// workers have none (see the PR description for the measurements).
+// main thread alone, a small share of the tab's footprint, and workers have
+// none.
 
 const CHANNEL = 'calab-cala-memory';
 /** A thread silent for this long has exited (or is stuck in one long call): drop it. */

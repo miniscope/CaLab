@@ -24,6 +24,7 @@ export interface NamedEntry {
   relPath: string;
 }
 
+/** One numbered video file of a series. */
 export interface SeriesFile<E extends NamedEntry = NamedEntry> {
   entry: E;
   /** The number in the name, `msCam001.avi` -> 1. */
@@ -32,6 +33,7 @@ export interface SeriesFile<E extends NamedEntry = NamedEntry> {
   digits: string;
 }
 
+/** The numbered video files that share a directory, prefix and extension. */
 export interface VideoSeries<E extends NamedEntry = NamedEntry> {
   /** Stable identity: directory, prefix and extension. */
   key: string;
@@ -44,6 +46,7 @@ export interface VideoSeries<E extends NamedEntry = NamedEntry> {
   files: SeriesFile<E>[];
 }
 
+/** The outcome of choosing among series: the clear choice, or the candidates to ask about. */
 export interface SeriesChoice<E extends NamedEntry = NamedEntry> {
   /** The series to use, when one is the clear choice. */
   chosen: VideoSeries<E> | null;
@@ -51,6 +54,7 @@ export interface SeriesChoice<E extends NamedEntry = NamedEntry> {
   candidates: VideoSeries<E>[];
 }
 
+/** The directory part of a `/`-separated path (`''` when it has none). */
 export function dirOf(relPath: string): string {
   const slash = relPath.lastIndexOf('/');
   return slash < 0 ? '' : relPath.slice(0, slash);

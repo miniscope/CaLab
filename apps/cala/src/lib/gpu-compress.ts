@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPU window compressor: today's per-tile randomized SVD (`compress_tile`)
+ * WebGPU window compressor: per-tile randomized SVD (`compress_tile`)
  * on a window of quantized frames held on the GPU, with WASM finishing each
  * tile (`GpuTileJob`).
  *
@@ -42,8 +42,9 @@ export const GPU_WINDOW_LADDER: readonly number[] = [600];
 export const GPU_WORK_BYTES = 32 * 2 ** 20;
 /**
  * Sketch columns the work buffers hold: the largest sketch a tile can need
- * (`max_rank` 300 + 10 oversamples), rounded up to 64. At 128, real V4 tiles
- * grew past it and every window gave the run's factors up (24 Nov check).
+ * (`max_rank` 300 + 10 oversamples), rounded up to 64. A smaller value lets real
+ * tiles outgrow it, and every window then gives up the run's factors. See
+ * tools/cala-eval/results/2026-11-24-gpu-compressor-check.md.
  */
 export const GPU_MAX_STRIDE = 320;
 /** The most frames per ring buffer (150 x 600 x 600 x 2 bytes = 108 MB at 600 px). */

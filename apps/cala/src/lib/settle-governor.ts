@@ -5,8 +5,7 @@
 import { CSETTLE } from './settle.ts';
 
 /**
- * The governor's settings (`work_slider_design.md`, section 2, "The
- * governor"). Its state is one number, the settle rate in re-read frames per
+ * The governor's settings. Its state is one number, the settle rate in re-read frames per
  * second; the smallest of three limits wins: the cap (`cap x achieved live
  * fps`), what the settle look-back workers deliver, and the guard (additive
  * increase, halving on trouble, checked once a second).
@@ -42,10 +41,11 @@ export const GOVERNOR = {
 } as const;
 
 /**
- * What limits the settle now (`SettleGovernor.limit`): the six of the design,
- * and two passing states (`waiting`: no library yet, no settle read goes
+ * What limits the settle (`SettleGovernor.limit`): `cap`, `look-back`, `slow-worker`,
+ * `backing-off`, `discover`, and `off` (the target is Max) and `cap-off` (below Max with the
+ * cap Off); plus two passing states (`waiting`: no library yet, no settle read goes
  * out; `ramping`: climbing by the guard's step with no limit reached and no
- * recent trouble). `off`: the target is Max; `cap-off`: below Max with the cap Off.
+ * recent trouble).
  */
 export type GovernorLimit =
   | 'off'
@@ -58,6 +58,7 @@ export type GovernorLimit =
   | 'backing-off'
   | 'discover';
 
+/** The readout's words for each limit. */
 export const GOVERNOR_LIMIT_TEXT: Record<GovernorLimit, string> = {
   off: 'off (Max)',
   'cap-off': 'cap off',
@@ -105,8 +106,8 @@ interface LiveSample {
 /**
  * The settle governor (pure; clocks are passed in): decides how many saved
  * frames per second are re-read for the settle during Discover: a rate in
- * frames per second (it replaced the per-live-frame dose, so a low target no
- * longer leaves the look-back workers idle), backing off when the slow worker
+ * frames per second, independent of the live frame rate (so a low target does
+ * not leave the look-back workers idle), backing off when the slow worker
  * falls behind. It is the settle's only dose rule; at Max it is off.
  *
  * Inputs: the pacer's target (`setTarget`; 0 = Max, where the settle is off),

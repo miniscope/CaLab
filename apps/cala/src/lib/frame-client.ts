@@ -26,12 +26,12 @@ export interface PipelineClient {
   startPipeline(
     options?: PipelineOptions,
     cells?: CellsSettings,
-    /** Pass 2: replay the recorded flicker and motion over the first `replay.frameCount` frames. */
+    /** Extract: replay the recorded flicker and motion over the first `replay.frameCount` frames. */
     replay?: ReplayInput,
-    /** Pass 1 flat field: a stored map of this sensor to start from. */
+    /** Discover flat field: a stored map of this sensor to start from. */
     flat?: { seed?: FlatFieldMap },
   ): Promise<PipelinePlan>;
-  /** End the running pipeline's recording at the current position (finish pass 1 early). */
+  /** End the running pipeline's recording at the current position (finish Discover early). */
   truncatePipeline?(): Promise<void>;
   /** Run one step in the worker. Calls are answered in order. */
   stepPipeline(): Promise<PipelineStepResult>;
@@ -54,7 +54,7 @@ export interface PipelineClient {
   readonly subscribeFlatField?: (listener: (e: FlatFieldEvent) => void) => () => void;
   /**
    * End the flat-field estimator's worker (its run is over: no map follows), so it holds no
-   * memory; the next Discover start with the flat field on starts and links a new one.
+   * memory; the next Discover start with the flat field on starts and links another.
    */
   releaseFlatField?(): void;
   /** Step requests the caller may keep outstanding (default 2; `createFrameClient` sets `PIPELINED_IN_FLIGHT`). */

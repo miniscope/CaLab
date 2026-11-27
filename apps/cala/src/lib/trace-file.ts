@@ -1,7 +1,7 @@
 /**
- * The pass-2 trace matrix (frames x cells, f32) kept off the JS heap.
+ * The Extract trace matrix (frames x cells, f32) kept off the JS heap.
  *
- * Pass 2 solves frames in order and every batch carries `count x cells` values
+ * Extract solves frames in order and every batch carries `count x cells` values
  * frame after frame, so the natural layout is one file of frame-major rows:
  * frame f, cell c at element `f * cells + c`. That is also, byte for byte, a
  * Fortran-order `.npy` of shape (cells, frames), which is how the export
@@ -19,8 +19,7 @@
  *     tests. Bounded by `MAX_MEMORY_TRACE_BYTES`.
  *
  * Files are named `cala-pass2-<stamp>.bin` and swept (`sweepOpfs`) when a new
- * run starts, so an abandoned tab never leaves a multi-GB file behind for
- * long.
+ * run starts, so an abandoned tab does not leave a multi-GB file behind.
  */
 import { OpfsWriterClient, opfsUsable, sweepOpfs } from './opfs-writer.ts';
 
@@ -54,6 +53,7 @@ const DRAIN_LIMIT_BYTES = 32 * 1048576;
 /** Frames per read when scanning a whole file for one cell (bounds the read at ~16 MB). */
 const SCAN_BYTES = 16 * 1048576;
 
+/** The frame-major f32 trace matrix on a `BlockBackend`. */
 export class TraceFile {
   readonly frames: number;
   readonly cells: number;
@@ -253,7 +253,7 @@ export async function storageShortfall(bytes: number): Promise<{ free: number } 
 /**
  * A trace file for `frames x cells`: in OPFS when the browser has it (the
  * quota is checked first, with a clear error when the matrix cannot fit),
- * else in memory up to `MAX_MEMORY_TRACE_BYTES`. Older pass-2 and export files
+ * else in memory up to `MAX_MEMORY_TRACE_BYTES`. Older Extract trace and export files
  * are swept first.
  */
 export async function createTraceFile(

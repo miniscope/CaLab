@@ -152,23 +152,23 @@ export function jobTransferables(job: StageJob): ArrayBuffer[] {
 }
 
 /**
- * Pass 2: what pass 1 recorded about frames `[0, frameCount)`, so the stages
+ * Extract: what Discover recorded about frames `[0, frameCount)`, so the stages
  * replay them instead of estimating (see `FrontStage` and `MotionStage`).
  */
 export interface ReplayInput extends RunSpan {
   /** Frames to replay (the recorded ones, which may be fewer than the recording has). */
   frameCount: number;
   /**
-   * The latest flat-field map of pass 1: the whole recording is corrected with
-   * it from frame 0 (no estimation in pass 2). Absent: no flat field.
+   * The latest flat-field map of Discover: the whole recording is corrected with
+   * it from frame 0 (no estimation in Extract). Absent: no flat field.
    */
   flatField?: FlatFieldMap;
 }
 
 /**
- * The flat field of one run. Pass 1: `sink` receives the raw batches (with
+ * The flat field of one run. Discover: `sink` receives the raw batches (with
  * their shifts) for estimation; `initial` is a stored map in force from the
- * first processed frame (also the estimator's seed). Pass 2 takes its map from
+ * first processed frame (also the estimator's seed). Extract takes its map from
  * `ReplayInput.flatField` instead.
  */
 export interface FlatFieldRun {
@@ -192,7 +192,7 @@ export interface StageSetup {
   width: number;
   height: number;
   plan: PipelinePlan;
-  /** Pass 2: motion shifts come with the jobs and are applied, not estimated. */
+  /** Extract: motion shifts come with the jobs and are applied, not estimated. */
   replay?: boolean;
   /** First frames of sessions 1.. of a multi-session recording (absent or empty for one). */
   boundaries?: number[];
@@ -239,9 +239,9 @@ export class FrontStage {
     options: PipelineOptions,
     private readonly acquireFront: () => Promise<Float32Array>,
     flickerMode?: number,
-    /** Pass 2: replay the recorded flicker and motion over the first `replay.frameCount` frames. */
+    /** Extract: replay the recorded flicker and motion over the first `replay.frameCount` frames. */
     private readonly replay?: ReplayInput,
-    /** Pass 1: the sensor flat field (estimator sink, stored map). Pass 2 uses `replay.flatField`. */
+    /** Discover: the sensor flat field (estimator sink, stored map). Extract uses `replay.flatField`. */
     private readonly flat?: FlatFieldRun,
   ) {
     const { width, height, bitDepth, frameCount: recorded, fps } = reader.info;
@@ -289,7 +289,7 @@ export class FrontStage {
    */
   framePreview: FrameView | null = null;
 
-  /** End the recording here: `next()` returns `null` from now on (pass 1 finished early). */
+  /** End the recording here: `next()` returns `null` from now on (Discover finished early). */
   truncate(): void {
     this.cursor.truncate();
   }
@@ -361,7 +361,7 @@ export class FrontStage {
     // The plan starts every session with a batch (see `PipelinePlan.boundaries`).
     const session = this.plan.sessionFix ? bs.find((b) => b.frame === s.start) : undefined;
     const rp = this.replay;
-    // A replay applies the recorded flicker; pass 1 re-seats the reference on the new session.
+    // A replay applies the recorded flicker; Discover re-seats the reference on the new session.
     if (session && !rp) this.pre!.beginSessionFront();
     const sessionReplay = session && rp ? rp.sessionTransforms?.[session.index] : undefined;
     // A new flat-field map takes effect here, between batches, never mid-batch.
@@ -377,7 +377,7 @@ export class FrontStage {
       flickerOffset[i] = frontRec[i * FRONT_RECORD_STRIDE + 4];
       flickerGain[i] = frontRec[i * FRONT_RECORD_STRIDE + 5];
     }
-    // Pass 2: the recorded shifts travel with the job (copies: the job's buffers are transferred).
+    // Extract: the recorded shifts travel with the job (copies: the job's buffers are transferred).
     const shifts = rp
       ? {
           dy: rp.dy.slice(s.start, s.start + s.count),
@@ -502,7 +502,7 @@ export class FrontStage {
     this.warmup!.free();
     this.warmup = null;
     this.pre = pre;
-    // A stored (or, in pass 2, the final) map is in force from the first processed frame:
+    // A stored (or, in Extract, the final) map is in force from the first processed frame:
     // on the motion warm-up's front half too, so the template is built from corrected frames.
     const initial = this.flatInitial;
     if (initial) {
@@ -681,7 +681,7 @@ export class MotionStage {
 
   /**
    * Session re-registration, before the per-frame corrector: on a session's
-   * first batch, estimate its transform (pass 1) or install the recorded one
+   * first batch, estimate its transform (Discover) or install the recorded one
    * (a replay; none recorded: identity), then warp every frame of the
    * session by it in place.
    */
@@ -709,8 +709,8 @@ export class MotionStage {
   }
 
   /**
-   * Pass 2: warp the frames by the shifts pass 1 recorded (`job.dy`, `job.dx`,
-   * `job.flags`), without estimating them. Same warp as pass 1 (the GPU one
+   * Extract: warp the frames by the shifts Discover recorded (`job.dy`, `job.dx`,
+   * `job.flags`), without estimating them. Same warp as Discover (the GPU one
    * when it ran there), so the registered frames are the same.
    */
   private async replayShifts(
