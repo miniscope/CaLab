@@ -164,13 +164,8 @@
 //!                      rebuilt from the --factors-out windows (no raw read)
 //!   --factors-tiling T plain (default) | offset: how --factors-out cuts the
 //!                      frame (the dump is complete when Discover ends)
-//!   --core-test M      transient-band core test: off (default) | report
-//!                      (also writes fast.tsv, split.tsv) | trim | delete
-//!   --basin-trim       trim refined footprints to their significant basin
-//!                      (needs --support-rule rings, as does --core-test)
-//!   --support-rule R   how the footprint statistics measure a support:
-//!                      basin-skirt (default) | basin | rings (the rule
-//!                      before S2.1)
+//!   --core-test off / --support-rule basin-skirt   accepted (the only
+//!                      values); any other value, and --basin-trim, panics
 //!   --support-alpha A  family-wise error rate of a basin support (0.05)
 //!   --refine-gate G    when the statistics path proposes a refinement:
 //!                      split-half (default; the change exceeds the
@@ -452,10 +447,10 @@ use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::compress::blend::{BlendLayout, Tiling};
 use calab_cala::compress::WindowFactors;
 use calab_cala::discover::{
-    CoreTest, EditScope, JointAdmit, JointSign, JointUpdate, LookBack as LbSched, LookbackConfig,
+    EditScope, JointAdmit, JointSign, JointUpdate, LookBack as LbSched, LookbackConfig,
     LookbackNext, LookbackOrder, LookbackOutcome, LookbackReservoir, MergeRule, RefineGate,
-    SettleSched, SlowLoop, SlowLoopConfig, SupportRule, VisitJob, VisitResult, VisitRunner,
-    VisitSchedule, LB_BLOCK,
+    SettleSched, SlowLoop, SlowLoopConfig, VisitJob, VisitResult, VisitRunner, VisitSchedule,
+    LB_BLOCK,
 };
 use calab_cala::motion::{
     Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
@@ -5584,26 +5579,19 @@ fn main() {
     if let Some(v) = arg_value(&args, "--accept-z") {
         scfg.accept_z = v.parse().unwrap();
     }
-    if let Some(v) = arg_value(&args, "--core-test") {
-        scfg.core_test = match v.as_str() {
-            "off" => CoreTest::Off,
-            "report" => CoreTest::Report,
-            "trim" => CoreTest::Trim,
-            "delete" => CoreTest::Delete,
-            other => panic!("--core-test: off|report|trim|delete, not {other}"),
-        };
+    // The core test, the basin trim and the other support rules are not in
+    // the engine (tools/cala-eval/results/2026-11-11-e1-core-test-trim.md,
+    // 2026-11-12-support-rule.md): their flags are refused rather than
+    // ignored, so an old command line cannot run the default unnoticed.
+    for (flag, only) in [("--core-test", "off"), ("--support-rule", "basin-skirt")] {
+        if let Some(v) = arg_value(&args, flag) {
+            assert!(v == only, "{flag} {v}: not supported (only {only})");
+        }
     }
-    if args.iter().any(|a| a == "--basin-trim") {
-        scfg.basin_trim = true;
-    }
-    if let Some(v) = arg_value(&args, "--support-rule") {
-        scfg.support_rule = match v.as_str() {
-            "rings" => SupportRule::Rings,
-            "basin" => SupportRule::Basin,
-            "basin-skirt" => SupportRule::BasinSkirt,
-            other => panic!("--support-rule: rings|basin|basin-skirt, not {other}"),
-        };
-    }
+    assert!(
+        !args.iter().any(|a| a == "--basin-trim"),
+        "--basin-trim: not supported"
+    );
     if let Some(v) = arg_value(&args, "--support-alpha") {
         scfg.support_alpha = v.parse().unwrap();
     }
@@ -5719,17 +5707,7 @@ fn main() {
     if scfg.refine_gate != RefineGate::SplitHalf {
         println!("refine gate: {:?}", scfg.refine_gate);
     }
-    assert!(
-        scfg.support_rule == SupportRule::Rings
-            || (scfg.core_test == CoreTest::Off && !scfg.basin_trim),
-        "--core-test and --basin-trim need --support-rule rings"
-    );
-    if scfg.support_rule != SupportRule::Rings {
-        println!(
-            "support rule: {:?}, alpha {}",
-            scfg.support_rule, scfg.support_alpha
-        );
-    }
+    println!("support rule: basin-skirt, alpha {}", scfg.support_alpha);
     if args.iter().any(|a| a == "--joint") {
         scfg.joint_neighbours = true;
     }
@@ -7447,19 +7425,8 @@ fn main() {
     }
     println!("slow loop: {n_fwd} of {n_batches} batches forwarded ({fwd_frames} frames)");
     if let Some(sl) = &slow {
-        if sl.config().core_test != CoreTest::Off {
-            let (fp, ff, fd) = sl.fast_diag;
-            println!("fast: proposals with core {fp}, without {ff}, nocore deletions {fd}");
-            std::fs::write(out_dir.join("split.tsv"), sl.split_report()).unwrap();
-            std::fs::write(out_dir.join("fast.tsv"), sl.fast_report()).unwrap();
-        }
-        if sl.config().basin_trim || sl.config().support_rule != SupportRule::Rings {
-            let (c, f, s2) = sl.basin_diag;
-            println!(
-                "basin: {c} trims, mean light cut {:.3}, second peaks {s2}",
-                if c > 0 { f / c as f64 } else { 0.0 }
-            );
-        }
+        let (c, s2) = sl.basin_diag;
+        println!("basin: {c} supports, second peaks {s2}");
     }
     let q = qc.expect("QC started");
     let mut sorted = qc_ms.clone();

@@ -184,9 +184,6 @@ pub(crate) enum Extent {
     /// The seed rule ([`LibraryConfig::seed_radius`]): a candidate whose
     /// extent has not been measured yet.
     Seed,
-    /// A measured radius around the half-max centroid (at least the seed
-    /// rule's).
-    Radius(f32),
 }
 
 /// A footprint in the slow loop's working set, on its library support disk.
@@ -210,7 +207,7 @@ pub(crate) struct Cell {
     pub low: Vec<f32>,
     /// The skirt: global grid blocks (ascending) and the block means of the
     /// measured light outside the support that the moat carries (see
-    /// [`apply_skirt`]); empty under the ring support rule. Already folded
+    /// [`apply_skirt`]); empty when the support was not measured. Already folded
     /// into `filt` and `low`; kept so the library can rebuild the column.
     pub skirt_blk: Vec<u32>,
     pub skirt: Vec<f32>,
@@ -254,9 +251,6 @@ impl Cell {
         let r = match extent {
             Extent::Given => own,
             Extent::Seed => cfg.seed_radius(hwhm),
-            // Never tighter than the seed rule: a dim cell's tail is not
-            // significant ring by ring, but it is still the cell's light.
-            Extent::Radius(r) => r.max(cfg.seed_radius(hwhm)),
         };
         let bbox = Rect::around(cy, cx, r, dims);
         let mut canvas = vec![0.0f32; bbox.len()];
