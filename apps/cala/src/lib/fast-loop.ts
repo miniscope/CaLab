@@ -473,16 +473,14 @@ export class FastLoop {
   }
 
   /**
-   * Free the loop. The slow loop is dropped, unless `keepSlow` (an Extract run starts or stops):
-   * then it is only told to publish what it has, a no-op once its final library is out, which
-   * Extract requires. Extract never talks to the slow loop: it solves with the library it is
-   * given, so the main thread may end the slow worker once that library is out (`App.tsx`).
+   * Free the loop and drop the slow loop. Extract never talks to the slow loop: it solves with
+   * the library it is given, so the main thread ends the slow worker once that library is out
+   * (`App.tsx`).
    */
-  dispose(keepSlow = false): void {
+  dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    if (!keepSlow) this.port?.postMessage({ type: 'reset', session: this.o.session });
-    else if (this.initSent) this.port?.postMessage({ type: 'end', session: this.o.session });
+    this.port?.postMessage({ type: 'reset', session: this.o.session });
     this.feed?.reset();
     this.qc?.free();
     this.qc = null;

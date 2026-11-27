@@ -94,8 +94,8 @@ export type FrameRequest =
    * worker never runs ahead of what the UI has asked for.
    */
   | { type: 'pipeline-step'; id: number }
-  /** Free the pipeline's WASM state. `keepSlow`: keep the slow loop (Extract may follow). */
-  | { type: 'pipeline-stop'; id: number; keepSlow?: boolean }
+  /** Free the pipeline's WASM state. */
+  | { type: 'pipeline-stop'; id: number }
   /** The port to the slow worker (transferred). */
   | { type: 'connect-slow'; id: number; port: MessagePort }
   /** The port to the compress worker (transferred). */

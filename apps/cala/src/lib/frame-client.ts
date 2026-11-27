@@ -35,8 +35,8 @@ export interface PipelineClient {
   truncatePipeline?(): Promise<void>;
   /** Run one step in the worker. Calls are answered in order. */
   stepPipeline(): Promise<PipelineStepResult>;
-  /** Free the worker-side pipeline. `keepSlow`: keep the slow loop (an Extract run is stopped; see `pipeline-stop`). */
-  stopPipeline(opts?: { keepSlow?: boolean }): Promise<void>;
+  /** Free the worker-side pipeline. */
+  stopPipeline(): Promise<void>;
   /** Pace the running pipeline (`fps`, 0 = unpaced) or hold and resume its gate (`paused`). */
   setPace?(pace: { fps?: number; paused?: boolean }): Promise<void>;
   /** The pace gate's readouts (wait, lateness, re-anchors), pushed by the frame worker. Returns an unsubscribe. */
@@ -308,12 +308,9 @@ export function createFrameClient(
     async stepPipeline() {
       return expectType(await call({ type: 'pipeline-step' }), 'pipeline-step').step;
     },
-    async stopPipeline(opts) {
+    async stopPipeline() {
       releaseGpuWait();
-      expectType(
-        await call({ type: 'pipeline-stop', ...(opts?.keepSlow ? { keepSlow: true } : {}) }),
-        'pipeline-stopped',
-      );
+      expectType(await call({ type: 'pipeline-stop' }), 'pipeline-stopped');
     },
     dispose() {
       // Terminating drops the worker's wasm memory along with its tables.
