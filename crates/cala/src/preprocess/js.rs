@@ -7,11 +7,14 @@
 //! ([`RECORD_STRIDE`] fields per frame, documented on
 //! [`JsPreprocessor::process_frames`]).
 //!
-//! Motion correction is not in here yet: use `frontFrames`, register the
-//! frames, then `backFrames`; `processFrames` is the no-motion shortcut.
+//! Motion correction runs between the two halves of the chain: `frontFrames`
+//! (or `frontFrames16`), register the frames (`MotionCorrector`), then
+//! `backFramesRegistered` (or a `backTrace*FramesRegistered` variant, which
+//! also solves the traces); `processFrames` is the no-motion shortcut.
 
 use wasm_bindgen::prelude::*;
 
+use crate::js_util::{init_panic_hook, js_err};
 use crate::qc::js::JsQcMonitor;
 use crate::trace::js::JsTraceEngine;
 
@@ -21,9 +24,7 @@ use super::flatfield::{
 use super::flicker::{FlickerMode, FlickerRecord};
 use super::lines::LineMode;
 use super::warmup::WarmupAccumulator;
-use super::{
-    Calibration, Dims, PreprocessConfig, PreprocessError, PreprocessState, Preprocessor, RawPixel,
-};
+use super::{Calibration, Dims, PreprocessConfig, PreprocessState, Preprocessor, RawPixel};
 
 /// Fields per frame in the record array of `processFrames`.
 pub const RECORD_STRIDE: usize = 10;
@@ -31,10 +32,6 @@ pub const RECORD_STRIDE: usize = 10;
 pub const FRONT_RECORD_STRIDE: usize = 6;
 /// Fields per frame from `backFrames`.
 pub const HALF_RECORD_STRIDE: usize = 4;
-
-fn js_err(func: &str, e: PreprocessError) -> JsError {
-    JsError::new(&format!("{func}: {e}"))
-}
 
 /// `count` frames of `n` samples each, or an error naming the mismatch.
 fn check_batch(func: &str, len: usize, count: u32, n: usize) -> Result<usize, JsError> {
@@ -59,7 +56,7 @@ impl JsPreprocessConfig {
     /// Defaults for a recording at `fps` frames per second (0 = 20 fps).
     #[wasm_bindgen(constructor)]
     pub fn new(fps: f32) -> JsPreprocessConfig {
-        console_error_panic_hook::set_once();
+        init_panic_hook();
         JsPreprocessConfig {
             inner: PreprocessConfig::for_fps(fps),
         }
@@ -169,7 +166,7 @@ pub struct JsWarmup {
 impl JsWarmup {
     #[wasm_bindgen(constructor)]
     pub fn new(width: u32, height: u32, config: &JsPreprocessConfig) -> Result<JsWarmup, JsError> {
-        console_error_panic_hook::set_once();
+        init_panic_hook();
         let dims = Dims::new(width as usize, height as usize)
             .map_err(|e| js_err("PreprocessWarmup", e))?;
         config
@@ -577,7 +574,7 @@ impl JsPreprocessor {
     /// A preprocessor that continues exactly where `state` was taken.
     #[wasm_bindgen(js_name = fromState)]
     pub fn from_state(state: &[u8]) -> Result<JsPreprocessor, JsError> {
-        console_error_panic_hook::set_once();
+        init_panic_hook();
         let st = PreprocessState::from_bytes(state).map_err(|e| js_err("fromState", e))?;
         let inner = Preprocessor::from_state(&st).map_err(|e| js_err("fromState", e))?;
         Ok(JsPreprocessor { inner })
@@ -694,7 +691,7 @@ impl JsFlatFieldEstimator {
         seed_dark: f32,
         seed_frames: f64,
     ) -> Result<JsFlatFieldEstimator, JsError> {
-        console_error_panic_hook::set_once();
+        init_panic_hook();
         let dims = Dims::new(width as usize, height as usize)
             .map_err(|e| js_err("FlatFieldEstimator", e))?;
         let mut cfg = OnlineFlatFieldConfig::for_fps(fps);

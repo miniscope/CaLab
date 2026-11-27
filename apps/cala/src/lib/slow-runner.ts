@@ -209,13 +209,10 @@ export interface SlowLoopLike {
   // Look-back (see `SlowLoop.enableLookback`; absent in older fakes and builds).
   enableLookback?(rate: number, maxFrames: number): void;
   lookbackNote?(seen: number, frames: number): void;
-  lookbackAddCredit?(frames: number): void;
   /** Never re-read a frame before `frame` again (a Joint run's current session; absent in older builds). */
   setLookbackFloor?(frame: number): void;
   /** `[frame, block, n, id_1..id_n, ...]`; empty when the budget is spent or nothing is needed. */
   lookbackTake?(max: number): Float64Array;
-  /** The last `lookbackTake` stopped because no cell needs anything. */
-  readonly lookbackIdle?: boolean;
   observeLookback?(
     frame: Float32Array,
     version: number,

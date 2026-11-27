@@ -8,7 +8,7 @@
 //! cross-origin isolation: read sums over many frames, never one frame).
 //! Nothing here is read back by the loop; it changes no result.
 
-/// The stages of [`super::SlowLoop::observe`], in order.
+/// The stages of [`crate::discover::SlowLoop::observe`], in order.
 pub const OBS_PARTS: [&str; 9] = [
     "render",
     "whiten",
@@ -27,7 +27,7 @@ pub const OBS_PARTS: [&str; 9] = [
 pub const VISIT_PARTS: [&str; 7] = ["keep", "load", "solve", "split", "refine", "merge", "add"];
 
 /// What a visit phase changed: adds, merges, refines, splits, deletes,
-/// absorbs, proposals (counts from [`super::SlowStats`] deltas).
+/// absorbs, proposals (counts from [`crate::discover::SlowStats`] deltas).
 pub const EDIT_KINDS: [&str; 7] = [
     "adds",
     "merges",

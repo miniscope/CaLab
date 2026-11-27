@@ -8,13 +8,10 @@
 use wasm_bindgen::prelude::*;
 
 use super::{CellQc, GlobalQc, QcConfig, QcMonitor};
+use crate::js_util::{init_panic_hook, js_err};
 use crate::preprocess::Dims;
 use crate::trace::js::JsTraceEngine;
 use crate::trace::TraceError;
-
-fn js_err(func: &str, e: impl std::fmt::Display) -> JsError {
-    JsError::new(&format!("{func}: {e}"))
-}
 
 /// Field names of `QcMonitor.spanStats`.
 const SPAN_FIELDS: [&str; 7] = [
@@ -47,7 +44,7 @@ impl JsQcMonitor {
         fps: f32,
         window_frames: u32,
     ) -> Result<JsQcMonitor, JsError> {
-        console_error_panic_hook::set_once();
+        init_panic_hook();
         let dims =
             Dims::new(width as usize, height as usize).map_err(|e| js_err("QcMonitor", e))?;
         // Every QC duration at the recording's frame rate.

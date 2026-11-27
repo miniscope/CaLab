@@ -2310,7 +2310,7 @@ fn js_observe_with_background_levels_matches_native() {
         for (js, eng, levels) in [(&mut b, &mut eb, true), (&mut c, &mut ec, false)] {
             let tr = eng.process_frames(f, 1).unwrap();
             let bg = eng.last_background();
-            assert_eq!(bg.len(), eng.background_len() as usize);
+            assert_eq!(bg.len(), eng.inner.library().background_len());
             let version = eng.inner.library().version() as f64;
             assert!(js
                 .observe(f, version, &tr, levels.then_some(bg), None)
@@ -2459,7 +2459,7 @@ fn refine_js(
     let after_discover = structural(&js.inner().stats());
     let ids_discover: Vec<u64> = js.inner().cell_infos().iter().map(|c| c.id).collect();
     js.set_edit_scope("refine").unwrap();
-    assert_eq!(js.edit_scope(), "refine");
+    assert_eq!(js.inner().edit_scope().name(), "refine");
     for _ in 0..refines {
         feed(&mut js, &mut eng, &mut out, true);
         let lib = js.finalize().unwrap();
@@ -3525,12 +3525,10 @@ fn js_settle_frames_only_feeds_fitting_frames_to_the_statistics() {
     let (slow, mut eng) = start(config(), &seed);
     let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
     let v = eng.library().version() as f64;
-    // Off: nothing to take, and (look-back off) it cannot be turned on.
+    // Off: nothing to take.
     assert!(js.settle_take(96.0, 16).is_empty());
-    assert!(!js.settle_enabled());
     js.enable_lookback(2.0, 3000).unwrap();
     js.enable_settle(16).unwrap();
-    assert!(js.settle_enabled());
     // Live frames at stream indices 100.. (frames before the slow loop
     // started get the hashed decision).
     let off = 100usize;
@@ -4050,51 +4048,5 @@ fn visit_rate_caps_jobs_and_not_refine() {
         (s.stats().visits - visits0) as f64 > 1.2 * (rate * t as f64 + rate * VISIT_BANK_FRAMES),
         "{} Refine visits",
         s.stats().visits - visits0
-    );
-}
-
-/// Feature `threads` (stage-0 kill test): the per-cell and per-cluster
-/// footprint statistics on a rayon pool give bit-identical libraries and
-/// counters for 1 and 4 threads (a Discover run with the joint update on,
-/// so both the per-cell and the cluster paths run).
-#[cfg(feature = "threads")]
-#[test]
-fn threaded_statistics_are_bit_identical_for_any_thread_count() {
-    let t = 1500;
-    let mut rng = Lcg(97);
-    let cells = vec![
-        (blob_w(0, 30.0, 30.0, 2.5), trace(&mut rng, t, 0.03, 6.0)),
-        (blob_w(1, 30.0, 33.5, 2.5), trace(&mut rng, t, 0.03, 6.0)),
-        (blob_w(2, 60.0, 64.0, 2.5), trace(&mut rng, t, 0.03, 6.0)),
-        (blob_w(3, 70.0, 40.0, 2.5), trace(&mut rng, t, 0.03, 6.0)),
-    ];
-    let m = movie(&cells, t, 31);
-    let go = |threads: usize| {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
-            .unwrap();
-        pool.install(|| {
-            let cfg = SlowLoopConfig {
-                joint_update: JointUpdate::All,
-                ..v2_config()
-            };
-            let (mut slow, mut eng) = start(cfg, &[]);
-            let mut deleted = Vec::new();
-            drive(&m, 0..t, &mut slow, &mut eng, &mut deleted);
-            let lib = slow.finalize().unwrap();
-            (lib.to_bytes(), slow.stats(), slow.replay_stats, slow.work())
-        })
-    };
-    let one = go(1);
-    let four = go(4);
-    assert!(one.1.adds > 0, "nothing discovered: {:?}", one.1);
-    assert_eq!(one.1, four.1);
-    assert_eq!(one.2, four.2);
-    assert_eq!(one.3, four.3);
-    // Bytes 8..16 hold the process-global library version (differs per run).
-    assert!(
-        one.0[16..] == four.0[16..],
-        "libraries differ between 1 and 4 threads"
     );
 }

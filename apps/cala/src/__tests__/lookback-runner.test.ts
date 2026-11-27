@@ -63,7 +63,6 @@ function frames(start: number, count = 2): Extract<FastToSlow, { type: 'frames' 
 function fakeLoop(need: number) {
   let credit = 0;
   let left = need;
-  let idle = false;
   const calls: string[] = [];
   const observed: { stream: number; ids: number[] }[] = [];
   const streams: (number | undefined)[] = [];
@@ -87,17 +86,10 @@ function fakeLoop(need: number) {
     lookbackNote: vi.fn((_seen: number, n: number) => {
       credit += 2 * n;
     }),
-    lookbackAddCredit: vi.fn((n: number) => {
-      credit += n;
-    }),
     lookbackTake: vi.fn((max: number) => {
       const out: number[] = [];
-      idle = false;
       for (let k = 0; k < max; k++) {
-        if (left === 0) {
-          idle = true;
-          break;
-        }
+        if (left === 0) break;
         if (credit < 1) break;
         credit--;
         out.push(need - left, 0, 1, 7);
@@ -105,9 +97,6 @@ function fakeLoop(need: number) {
       }
       return Float64Array.from(out);
     }),
-    get lookbackIdle() {
-      return idle;
-    },
     observeLookback: vi.fn((_f, _v, _t, _b, stream: number, ids: Float64Array) => {
       observed.push({ stream, ids: [...ids] });
       return true;

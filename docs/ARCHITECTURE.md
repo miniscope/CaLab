@@ -308,10 +308,11 @@ non-component code (the tutorial engine, the solve managers) read the same state
 `pybindings` stub, typed `AviError`, no panics on bad input) and is built by
 `npm run build:wasm` into `crates/cala/pkg/`. Its `avi` module parses an
 uncompressed grayscale RIFF AVI from a byte prefix plus the `idx1` payload and
-returns per-frame byte ranges; `AviHeader.decodeFrame` validates a chunk and
-strips row padding. Orientation is reported (`bottomUp`) but frames are returned
-as stored, matching OpenCV, unless flipping is requested. The declared AVI frame
-rate is exposed for diagnostics only.
+returns byte ranges of contiguous frame spans (`AviHeader.spanByteRange`);
+`AviHeader.decodeSpanInto` validates each chunk of a span and strips row
+padding. Orientation is reported (`bottomUp`) but frames are returned as
+stored, matching OpenCV. The declared AVI frame rate is exposed for
+diagnostics only.
 
 The TypeScript side lives in `apps/cala/src/lib/` (not a package: only cala uses
 it, and `@calab/core` must stay wasm-free). `frame-source.ts` sorts `N.avi` files
