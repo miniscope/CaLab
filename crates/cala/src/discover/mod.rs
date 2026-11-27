@@ -2843,7 +2843,6 @@ impl SlowLoop {
         let (width, height) = (self.dims.width, self.dims.height);
         let version = lib.version();
         let mut work = 0u64;
-        #[cfg(not(feature = "threads"))]
         for (slot, &id) in lib.ids().iter().enumerate() {
             if self.lb_only.as_ref().is_some_and(|o| !o.contains(&id)) {
                 continue;
@@ -2887,63 +2886,6 @@ impl SlowLoop {
             // moments alone).
             st.push_frame(frame, &self.model, level, c, w, &mut self.rbuf);
             work += st.pix.len() as u64 * 3;
-        }
-        // Feature `threads` (measurement): the same per-cell update on a
-        // rayon pool. Each cell's statistics are its own (no float sum is
-        // split across threads), so the result is bit-identical to the
-        // loop above for any thread count.
-        #[cfg(feature = "threads")]
-        {
-            use rayon::prelude::*;
-            let fov = &self.fov;
-            let collects = self.cfg.core_test.collects();
-            let block = parity_block(self.cfg.cell_diameter_px);
-            let basin = self.cfg.support_rule != SupportRule::Rings;
-            let lb_only = self.lb_only.as_ref();
-            let mut slot_of: HashMap<u64, usize> = HashMap::with_capacity(lib.len());
-            for (slot, &id) in lib.ids().iter().enumerate() {
-                if lb_only.is_some_and(|o| !o.contains(&id)) {
-                    continue;
-                }
-                slot_of.insert(id, slot);
-                self.fpstats.entry(id).or_insert_with(|| {
-                    let (center, radius) = lib.support(slot);
-                    FpStats::new(center, radius + margin, width, height, fov, collects, block)
-                });
-            }
-            let mut cells: Vec<(usize, &mut FpStats)> = self
-                .fpstats
-                .iter_mut()
-                .filter_map(|(id, st)| slot_of.get(id).map(|&slot| (slot, st)))
-                .collect();
-            let model = &self.model;
-            work += cells
-                .par_iter_mut()
-                .map_init(Vec::new, |buf, (slot, st)| {
-                    let slot = *slot;
-                    let (center, radius) = lib.support(slot);
-                    let want = radius + margin;
-                    let mut old_pix = None;
-                    if !st.covers(center, radius) || (basin && st.radius > radius + 2.0 * margin) {
-                        let moved = st.moved(center, want, width, height, fov);
-                        let old = std::mem::replace(&mut **st, moved);
-                        if basin {
-                            old_pix = Some(old.pix);
-                        }
-                    }
-                    if st.version != version || old_pix.is_some() {
-                        st.col = column_on(lib, slot, &st.pix);
-                        st.version = version;
-                    }
-                    if let Some(old) = &old_pix {
-                        st.seed_new(old);
-                    }
-                    let c = traces.traces[slot];
-                    let level = if ring { traces.background[slot] } else { 0.0 };
-                    st.push_frame(frame, model, level, c, w, buf);
-                    st.pix.len() as u64 * 3
-                })
-                .sum::<u64>();
         }
         #[cfg(feature = "diagnostics")]
         let t1 = std::time::Instant::now();
