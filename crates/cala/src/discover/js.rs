@@ -29,6 +29,7 @@ use super::{
     VisitSchedule, VISIT_HOLD_FLOOR_RATIO,
 };
 use crate::compress::review::footprints_from_wire;
+use crate::js_util::{init_panic_hook, js_err};
 use crate::preprocess::flatten::{FlattenConfig, GlowFlattener};
 use crate::preprocess::fov::FovMask;
 use crate::preprocess::Dims;
@@ -41,10 +42,6 @@ const KEEP_VERSIONS: usize = 6;
 /// Block numbers of the concurrent settle's chunks start below minus this
 /// (`SlowLoop.settleTake`).
 const SETTLE_BLOCK_BASE: f64 = 1_000_000.0;
-
-fn js_err(func: &str, e: impl std::fmt::Display) -> JsError {
-    JsError::new(&format!("{func}: {e}"))
-}
 
 /// Streaming cell discovery (see the `discover` module docs).
 #[wasm_bindgen(js_name = SlowLoop)]
@@ -83,7 +80,6 @@ struct LbCounts {
     pushed: u64,
     held_out: u64,
     dropped: u64,
-    idle: bool,
     /// The look-back floor (`setLookbackFloor`), for a settle enabled later.
     floor: usize,
 }
@@ -274,12 +270,6 @@ impl JsSlowLoop {
         ]
     }
 
-    /// Visits handed out and not yet applied.
-    #[wasm_bindgen(getter, js_name = jobsInFlight)]
-    pub fn jobs_in_flight(&self) -> u32 {
-        self.inner.jobs_in_flight() as u32
-    }
-
     /// Work spent so far (about multiply-adds), visits included.
     #[wasm_bindgen(getter)]
     pub fn work(&self) -> f64 {
@@ -309,18 +299,6 @@ impl JsSlowLoop {
         Ok(())
     }
 
-    /// The current edit scope's name (`setEditScope`).
-    #[wasm_bindgen(getter, js_name = editScope)]
-    pub fn edit_scope(&self) -> String {
-        self.inner.edit_scope().name().to_string()
-    }
-
-    /// Whether frames solved with library `version` can still be observed.
-    #[wasm_bindgen(js_name = knowsVersion)]
-    pub fn knows_version(&self, version: f64) -> bool {
-        self.lib(version).is_some()
-    }
-
     /// Feed one preprocessed frame and its traces (library slot order) from
     /// the library with `version`, with the background coefficients the same
     /// solve gave (`TraceEngine.lastBackground`, one frame's worth: the
@@ -341,7 +319,7 @@ impl JsSlowLoop {
             // look-back re-read could fit on a test frame.
             return Err(js_err("observe", "look-back is on: pass the stream index"));
         }
-        let mut lap = super::timing::Lap::start();
+        let mut lap = crate::timing::Lap::start();
         let Some(lib) = self.lib(version) else {
             return Ok(false);
         };
@@ -367,7 +345,7 @@ impl JsSlowLoop {
     pub fn stage_timing(&self) -> Vec<f64> {
         let mut v = self.inner.stage.to_vec();
         v.push(self.observe_rust_ms);
-        v.push(f64::from(u8::from(super::timing::ON)));
+        v.push(f64::from(u8::from(crate::timing::ON)));
         v
     }
 
@@ -406,12 +384,6 @@ impl JsSlowLoop {
         Ok(())
     }
 
-    /// Whether look-back is on.
-    #[wasm_bindgen(getter, js_name = lookbackEnabled)]
-    pub fn lookback_enabled(&self) -> bool {
-        self.lookback.is_some()
-    }
-
     /// Discover has seen stream frames `0..seen`, `frames` of them new
     /// since the last call: note births in the newest published library and
     /// add `rate * frames` of look-back budget.
@@ -441,21 +413,12 @@ impl JsSlowLoop {
         }
     }
 
-    /// Add look-back budget directly (frames; the drain after the last
-    /// frame).
-    #[wasm_bindgen(js_name = lookbackAddCredit)]
-    pub fn lookback_add_credit(&mut self, frames: f64) {
-        if let Some(lb) = self.lookback.as_mut() {
-            lb.add_credit(frames.max(0.0));
-        }
-    }
-
     /// Take up to `max` look-back frames to supply, flattened as
     /// `[frame, block, n, id_1..id_n, frame, block, n, ...]` (stream frame
     /// index; block sequence number: start a fresh copy of the live
     /// preprocessor state when it changes; the cell ids that take it). The
     /// budget is spent at hand-out. Empty when the budget is spent or no
-    /// cell needs anything (`lookbackIdle`).
+    /// cell needs anything.
     #[wasm_bindgen(js_name = lookbackTake)]
     pub fn lookback_take(&mut self, max: u32) -> Vec<f64> {
         let mut out = Vec::new();
@@ -463,7 +426,6 @@ impl JsSlowLoop {
         let Some(lb) = self.lookback.as_mut() else {
             return out;
         };
-        self.lb.idle = false;
         for _ in 0..max {
             match lb.next(&self.inner, &lib) {
                 LookbackNext::Frame(r) => {
@@ -473,21 +435,10 @@ impl JsSlowLoop {
                     out.extend(r.ids.iter().map(|&i| i as f64));
                     lb.frame_done(LookbackOutcome::Observed);
                 }
-                LookbackNext::NoCredit => break,
-                LookbackNext::Idle => {
-                    self.lb.idle = true;
-                    break;
-                }
+                LookbackNext::NoCredit | LookbackNext::Idle => break,
             }
         }
         out
-    }
-
-    /// Whether the last `lookbackTake` stopped because no cell needs
-    /// anything.
-    #[wasm_bindgen(getter, js_name = lookbackIdle)]
-    pub fn lookback_idle(&self) -> bool {
-        self.lb.idle
     }
 
     /// Feed a look-back frame (`lookbackTake`): the preprocessed stream
@@ -555,12 +506,6 @@ impl JsSlowLoop {
         sched.set_floor(self.lb.floor);
         self.settle = Some(sched);
         Ok(())
-    }
-
-    /// Whether the concurrent settle is on.
-    #[wasm_bindgen(getter, js_name = settleEnabled)]
-    pub fn settle_enabled(&self) -> bool {
-        self.settle.is_some()
     }
 
     /// Take up to `max` saved frames to re-read among stream frames
@@ -849,7 +794,7 @@ fn build(
     flatten_sigma_px: f32,
     set: impl Fn(&mut SlowLoopConfig),
 ) -> Result<(SlowLoop, Library), JsError> {
-    console_error_panic_hook::set_once();
+    init_panic_hook();
     let dims = Dims::new(width as usize, height as usize).map_err(|e| js_err(func, e))?;
     let mask = FovMask::from_mask(dims, fov).map_err(|e| js_err(func, e))?;
     let fcfg = FlattenConfig {
@@ -961,7 +906,7 @@ impl JsVisitWorker {
     pub fn stage_timing(&self) -> Vec<f64> {
         let mut v = self.inner.stage_timing().to_vec();
         v.push(0.0);
-        v.push(f64::from(u8::from(super::timing::ON)));
+        v.push(f64::from(u8::from(crate::timing::ON)));
         v
     }
 }

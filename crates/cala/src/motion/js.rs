@@ -12,10 +12,7 @@ use super::{
     Frame, Frames, Interpolation, MotionConfig, MotionCorrector, MotionError, MotionRecord,
     NonRigidConfig, Warper,
 };
-
-fn js_err(func: &str, e: MotionError) -> JsError {
-    JsError::new(&format!("{func}: {e}"))
-}
+use crate::js_util::{init_panic_hook, js_err};
 
 /// Motion-correction options; `new MotionOptions()` gives the defaults.
 #[wasm_bindgen]
@@ -126,7 +123,7 @@ impl JsMotionCorrector {
         height: u32,
         options: &MotionOptions,
     ) -> Result<JsMotionCorrector, JsError> {
-        console_error_panic_hook::set_once();
+        init_panic_hook();
         MotionCorrector::new(height as usize, width as usize, options.to_config())
             .map(|inner| JsMotionCorrector { inner })
             .map_err(|e| js_err("MotionCorrector", e))

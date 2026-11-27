@@ -229,9 +229,11 @@ mod mergelog;
 mod noisecorr;
 mod reservoir;
 mod shard;
-pub mod timing;
 mod visitrate;
 mod wire;
+
+/// Re-export of the crate-level stage timers (`discover::timing` paths, e.g. qc_eval).
+pub use crate::timing;
 
 pub use churn::{AddClass, AddRecord, ChurnConfig, ChurnCounts, RemovalKind, RemovalRecord};
 pub use ledger::{
@@ -336,7 +338,6 @@ pub enum RefineGate {
     SplitHalf,
 }
 
-/// Which merge tests may merge (S2.1c merge redesign).
 /// Experimental (off by default): which look-back frames
 /// ([`SlowLoop::observe_lookback`]) are also offered to the frame reservoir
 /// while Discover runs, so the held-out frames a footprint change is tested
@@ -426,6 +427,7 @@ pub enum JointAdmit {
     Member,
 }
 
+/// Which merge tests may merge (S2.1c merge redesign).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MergeRule {
     /// The held-out test alone: a single column (merged footprint, or
@@ -1892,8 +1894,6 @@ impl SlowLoop {
         self.cells.iter().map(|c| (c.id, c.born)).collect()
     }
 
-    /// Evidence on every working-set cell (cells not yet published have
-    /// `frames == 0`).
     /// DIAG: measured / assumed variance of ring means of the running
     /// statistics' footprint estimate: rings (1 px) around the statistics
     /// disk centre; per ring the mean split-half difference against its
@@ -2004,6 +2004,8 @@ impl SlowLoop {
         out
     }
 
+    /// Evidence on every working-set cell (cells not yet published have
+    /// `frames == 0`).
     pub fn cell_infos(&self) -> Vec<CellInfo> {
         self.cells.iter().map(|c| self.info(c)).collect()
     }
