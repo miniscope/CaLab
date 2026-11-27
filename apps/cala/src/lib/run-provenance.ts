@@ -22,12 +22,12 @@
  * `null` until its feature fills it; add fields under the slot, and bump
  * `RUN_RECORD_VERSION` only when an existing field changes meaning.
  */
-import { visitRateSetting, type VisitRateSummary } from './visit-rate.ts';
+import type { VisitRateSummary } from './visit-rate.ts';
 import type { SettleVisits } from '../workers/lookback-types.ts';
 import { FINAL_SETTLE_LEVELS, type FinalSettleLevel, type GovernorStatus } from './settle.ts';
 import type { StageRun } from './run-stages.ts';
 import { stageMeta } from './export.ts';
-import { factorsFromPage } from './factor-run.ts';
+import { urlFlags } from './page-flags.ts';
 import { FLOOR_LADDER, type FloorInputs } from './speed-floor.ts';
 import { SPEED_SCALE } from './speed-track.ts';
 import { median } from './stats.ts';
@@ -56,116 +56,6 @@ export const WORK_SLIDER_SLOTS = [
   'auto_extra_time_share',
 ] as const;
 export type WorkSliderSlot = (typeof WORK_SLIDER_SLOTS)[number];
-
-// ---- URL flags ----
-
-/**
- * The URL flags that change how a run is made, with what they mean here. A
- * flag not in this list is recorded by name only (`other_flags`).
- */
-export const KNOWN_FLAGS = [
-  'debug',
-  'lookback',
-  'csettle',
-  'csrate',
-  'pacefps',
-  'lbpool',
-  'lbpoolmax',
-  'settlevisits',
-  'cpool',
-  'cbacklog',
-  'fextract',
-  'fwait',
-  'gpucheck',
-  'needfirst',
-  'smooth',
-  'pipeline',
-  'gpu',
-  'flatfield',
-  'noqc',
-  'visits',
-  'compress',
-  'factors',
-  'review',
-  'pass2',
-  'live',
-  'visitrate',
-] as const;
-
-/** Flags whose value is never written (it can hold a host or address). */
-const REDACTED_FLAGS: ReadonlySet<string> = new Set(['live']);
-
-/** What `?debug` gates: these flags only take effect with it. */
-const DEBUG_ONLY: ReadonlySet<string> = new Set([
-  'lbpool',
-  'lbpoolmax',
-  'settlevisits',
-  'cpool',
-  'cbacklog',
-  'fextract',
-  'fwait',
-  'gpucheck',
-  'needfirst',
-  'pacefps',
-  'smooth',
-  'visitrate',
-]);
-
-/**
- * Whether a flag changes anything given the others (`App.tsx` reads them the
- * same way): look-back is on by default, so only `lookback=0` changes anything (off); `csettle` changes something only as
- * `csettle=0` (Background settle off) or `csettle=yieldN`, and needs look-back;
- * `review` needs `compress` and no `factors` other than `factors=0`; `visitrate` only as `off` or `auto`;
- * debug-only flags need `?debug`.
- */
-function inEffect(name: string, value: string, p: URLSearchParams): boolean {
-  if (DEBUG_ONLY.has(name) && !p.has('debug')) return false;
-  const lookbackOn = p.get('lookback') !== '0';
-  switch (name) {
-    case 'lookback':
-      return value === '0';
-    case 'csettle':
-      return lookbackOn && (value === '0' || /^yield\d*$/.test(value));
-    case 'csrate':
-      return lookbackOn;
-    case 'needfirst':
-      return value !== '0';
-    case 'visitrate':
-      // `off` and `auto` change the run (App.tsx: `visitRateSetting`); anything else is the fixed default.
-      return visitRateSetting(value) !== 'fixed';
-    case 'review':
-      return factorsFromPage(p).review;
-    default:
-      return true;
-  }
-}
-
-export interface UrlFlags {
-  /** `?debug` is present. */
-  debug: boolean;
-  /** Each known flag present: its raw value (`''` for a bare flag; `'(redacted)'` for `live`) and whether it is in effect. */
-  flags: Record<string, { value: string; in_effect: boolean }>;
-  /** Names of other query parameters (values not recorded). */
-  other_flags: string[];
-}
-
-/** Read the flags in a query string (`location.search`). */
-export function urlFlags(search: string): UrlFlags {
-  const p = new URLSearchParams(search);
-  const debug = p.has('debug');
-  const known = new Set<string>(KNOWN_FLAGS);
-  const flags: UrlFlags['flags'] = {};
-  const other: string[] = [];
-  for (const [k, v] of p) {
-    if (known.has(k)) {
-      flags[k] = {
-        value: REDACTED_FLAGS.has(k) ? '(redacted)' : v,
-        in_effect: inEffect(k, v, p),
-      };
-    } else if (!other.includes(k)) other.push(k);
-  }
-  return { debug, flags, other_flags: other };
-}
 
 // ---- Machine ----
 
