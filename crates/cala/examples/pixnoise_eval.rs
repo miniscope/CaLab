@@ -21,108 +21,16 @@
 //! activity), and the 0.5 / 99.5 % quantiles that the app's per-frame
 //! auto-contrast used (`disp_lo`, `disp_hi`).
 
+#[path = "common/avi.rs"]
+mod avi;
+use avi::Recording;
 use std::fs::File;
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
 
-use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::motion::{Frame, Frames, MotionConfig, MotionCorrector, NonRigidConfig};
 use calab_cala::preprocess::warmup::WarmupAccumulator;
-use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor};
-
-struct Avi {
-    file: File,
-    header: AviHeader,
-}
-
-impl Avi {
-    fn open(path: &Path) -> Avi {
-        let mut file = File::open(path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
-        let size = file.metadata().unwrap().len();
-        let mut prefix = vec![0u8; (64 * 1024).min(size as usize)];
-        file.read_exact(&mut prefix).unwrap();
-        let layout = AviHeader::parse_header(&prefix).expect("AVI header");
-        let mut idx1 = None;
-        if layout.info.movi_end > 0 && layout.info.movi_end + 8 <= size {
-            let mut hdr = [0u8; 8];
-            file.seek(SeekFrom::Start(layout.info.movi_end)).unwrap();
-            file.read_exact(&mut hdr).unwrap();
-            if let Ok(len) = idx1_payload_len(&hdr) {
-                let mut payload = vec![0u8; len as usize];
-                file.read_exact(&mut payload).unwrap();
-                idx1 = Some(payload);
-            }
-        }
-        let header = AviHeader::parse_with_size(&prefix, idx1.as_deref(), size).expect("AVI index");
-        Avi { file, header }
-    }
-
-    fn read(&mut self, start: u32, count: u32, out: &mut Vec<u8>) {
-        let px = self.header.pixel_bytes();
-        let mut s = start;
-        while s < start + count {
-            let run = self.header.contiguous_run(s, start + count - s).max(1);
-            let (a, b) = self.header.span_range(s, run).unwrap();
-            let mut span = vec![0u8; (b - a) as usize];
-            self.file.seek(SeekFrom::Start(a)).unwrap();
-            self.file.read_exact(&mut span).unwrap();
-            let o = out.len();
-            out.resize(o + run as usize * px, 0);
-            self.header
-                .decode_span_into(&span, run, &mut out[o..])
-                .unwrap();
-            s += run;
-        }
-    }
-}
-
-struct Recording {
-    files: Vec<Avi>,
-    starts: Vec<u32>,
-    dims: Dims,
-    total: u32,
-}
-
-impl Recording {
-    fn open(dir: &Path) -> Recording {
-        let mut files = Vec::new();
-        for i in 0.. {
-            let p = dir.join(format!("{i}.avi"));
-            if !p.exists() {
-                break;
-            }
-            files.push(Avi::open(&p));
-        }
-        assert!(!files.is_empty(), "no 0.avi in {dir:?}");
-        let mut starts = Vec::new();
-        let mut total = 0;
-        for f in &files {
-            starts.push(total);
-            total += f.header.frame_count();
-        }
-        let info = files[0].header.info();
-        let dims = Dims::new(info.width as usize, info.height as usize).unwrap();
-        Recording {
-            files,
-            starts,
-            dims,
-            total,
-        }
-    }
-
-    fn read(&mut self, start: u32, count: u32) -> Vec<u8> {
-        let mut out = Vec::with_capacity(count as usize * self.dims.pixels());
-        let mut s = start;
-        while s < start + count {
-            let k = self.starts.partition_point(|&x| x <= s) - 1;
-            let local = s - self.starts[k];
-            let n = (self.files[k].header.frame_count() - local).min(start + count - s);
-            self.files[k].read(local, n, &mut out);
-            s += n;
-        }
-        out
-    }
-}
+use calab_cala::preprocess::{Calibration, PreprocessConfig, Preprocessor};
 
 fn arg_value(args: &[String], key: &str, k: usize) -> Option<String> {
     args.iter()
@@ -163,7 +71,7 @@ fn main() {
     } else {
         input.clone()
     };
-    let mut rec = Recording::open(&avi_dir);
+    let mut rec = Recording::open(&avi_dir, 1);
     let dims = rec.dims;
     let (w, h, n_px) = (dims.width, dims.height, dims.pixels());
     let frames = arg_value(&args, "--frames", 0)
