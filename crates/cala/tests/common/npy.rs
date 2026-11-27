@@ -1,4 +1,4 @@
-//! Minimal `.npy` reader for test fixtures: C-order `u1`, `<i8`, `<f4` and `<f8`
+//! Minimal `.npy` reader for test fixtures: C-order `u1`, `<u2`, `<i8`, `<f4` and `<f8`
 //! arrays, format versions 1-3. Not a general parser.
 
 use std::path::Path;
@@ -10,6 +10,7 @@ pub struct Npy {
 
 pub enum NpyData {
     U8(Vec<u8>),
+    U16(Vec<u16>),
     F32(Vec<f32>),
     F64(Vec<f64>),
     I64(Vec<i64>),
@@ -66,6 +67,14 @@ impl Npy {
         };
         let data = match descr {
             "|u1" | "<u1" => NpyData::U8(need(1)?.to_vec()),
+            "<u2" => NpyData::U16(
+                need(2)?
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| u16::from_le_bytes(*c))
+                    .collect(),
+            ),
             "<f4" => NpyData::F32(
                 need(4)?
                     .as_chunks::<4>()
@@ -102,9 +111,24 @@ impl Npy {
         }
     }
 
+    pub fn into_u16(self) -> Result<Vec<u16>, String> {
+        match self.data {
+            NpyData::U16(v) => Ok(v),
+            _ => Err("expected a <u2 array".into()),
+        }
+    }
+
+    pub fn into_f32(self) -> Result<Vec<f32>, String> {
+        match self.data {
+            NpyData::F32(v) => Ok(v),
+            _ => Err("expected a <f4 array".into()),
+        }
+    }
+
     pub fn into_f64(self) -> Vec<f64> {
         match self.data {
             NpyData::U8(v) => v.into_iter().map(f64::from).collect(),
+            NpyData::U16(v) => v.into_iter().map(f64::from).collect(),
             NpyData::F32(v) => v.into_iter().map(f64::from).collect(),
             NpyData::F64(v) => v,
             NpyData::I64(v) => v.into_iter().map(|x| x as f64).collect(),

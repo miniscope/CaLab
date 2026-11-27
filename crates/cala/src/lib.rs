@@ -43,6 +43,9 @@ mod js_util;
 #[cfg(feature = "pybindings")]
 mod py_api;
 
+#[cfg(test)]
+mod test_rng;
+
 /// WASM export of [`CALA_VERSION`], so the app can report the core's version.
 #[cfg(feature = "jsbindings")]
 #[wasm_bindgen::prelude::wasm_bindgen]
