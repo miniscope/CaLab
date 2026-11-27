@@ -5,7 +5,7 @@
  * figure's tooltip. The figures are sampled at most twice a second and on every change of
  * stage, never per batch.
  */
-import { createEffect, createMemo, createSignal, on, onCleanup, Show, untrack } from 'solid-js';
+import { createEffect, createMemo, createSignal, on, Show } from 'solid-js';
 import type { JSX } from 'solid-js';
 import {
   Icon,
@@ -34,6 +34,7 @@ import {
   VISIT_BAND,
   type RailTrackInput,
 } from '../lib/rail-view.ts';
+import { createSampled } from '../lib/sampled.ts';
 import { SETTLE } from '../lib/settle.ts';
 import { achievedSpeed } from '../lib/speed-track.ts';
 import { fmtVisitRate, visitHoldText } from '../lib/visit-rate.ts';
@@ -104,10 +105,6 @@ export function RunRail(props: RunRailProps): JSX.Element {
     sessionRun: props.sessions != null,
   }));
 
-  const [beat, setBeat] = createSignal(0);
-  const timer = setInterval(() => setBeat((b) => b + 1), SAMPLE_MS);
-  onCleanup(() => clearInterval(timer));
-  /** Changes of stage: they refresh the snapshot at once, so a stage's end lands without delay. */
   const phase = () => {
     const lb = c().status()?.lookback;
     return [
@@ -179,8 +176,8 @@ export function RunRail(props: RunRailProps): JSX.Element {
     };
   };
 
-  // One snapshot per beat or change of stage; nothing else here reads the stores.
-  const snap = createMemo(on([beat, phase], () => untrack(read)));
+  // One snapshot per beat or change of stage; nothing else here reads the fast stores.
+  const snap = createSampled(read, phase, SAMPLE_MS);
 
   const history = new RailHistory();
   const [hist, setHist] = createSignal(
@@ -203,7 +200,9 @@ export function RunRail(props: RunRailProps): JSX.Element {
   createEffect(() => {
     const v = snap();
     const x = trackPosition(stages());
-    if (v.cells !== null && v.track.discover !== 'idle') history.addCells(x, v.cells);
+    // Not while starting: the last run's library is still loaded then.
+    const sampling = v.track.discover !== 'idle' && v.track.discover !== 'starting';
+    if (v.cells !== null && sampling) history.addCells(x, v.cells);
     history.addWorkers(v.workers.count);
     setHist({
       x: history.x.slice(),
@@ -378,6 +377,18 @@ function CellsFigure(p: {
   hist: { x: number[]; cells: number[]; cellsMax: number };
 }): JSX.Element {
   const conv = () => p.snap.conv;
+  /**
+   * After Discover only Converged stays a status (the ok check); a run that ended while cells
+   * were still changing shows a neutral dot, so the dot never reads as live work.
+   */
+  const dotState = (): string =>
+    p.snap.track.steps[0].state === 'done' && conv().state !== 'converged'
+      ? 'waiting'
+      : conv().state;
+  const dotWord = (): string =>
+    p.snap.track.steps[0].state === 'done' && conv().state !== 'converged'
+      ? `${CONV_LABEL[conv().state]} at the end of Discover`
+      : CONV_LABEL[conv().state];
   const title = () => {
     const n = p.snap.cells;
     const lib =
@@ -385,7 +396,7 @@ function CellsFigure(p: {
         ? 'no library yet'
         : `${n0(n)} cells in library v${p.snap.libraryVersion}` +
           (p.snap.lag !== null ? ` · lag ${n0(p.snap.lag)} frames` : '');
-    return `${lib}. ${CONV_LABEL[conv().state]}: ${conv().reason}. Sparkline: cells along the run, fixed range 0 to ${n0(p.hist.cellsMax)}.`;
+    return `${lib}. ${dotWord()}: ${conv().reason}. Sparkline: cells along the run, fixed range 0 to ${n0(p.hist.cellsMax)}.`;
   };
   return (
     <Fig
@@ -393,13 +404,13 @@ function CellsFigure(p: {
         <>
           Cells
           <span
-            class={`cala-fig__status cala-fig__status--${conv().state}`}
+            class={`cala-fig__status cala-fig__status--${dotState()}`}
             data-testid="convergence-status"
           >
             <Show when={conv().state === 'converged'} fallback={<i aria-hidden="true" />}>
               <Icon name="check" size={12} />
             </Show>
-            <span class="cala-visually-hidden">{CONV_LABEL[conv().state]}</span>
+            <span class="cala-visually-hidden">{dotWord()}</span>
           </span>
         </>
       }

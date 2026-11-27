@@ -105,12 +105,14 @@ scrolls, so the run's state stays at the top.
   (the same left-to-right as the stage track). Its range starts at 0 and ends at the
   number printed beside it (10, 20, 50, 100, ...): it rounds up and never shrinks during a
   run. The dot is the convergence state (blue while cells are still changing, a green ✓
-  once converged); hover for the reason, the library version and its lag.
+  once converged, grey once Discover has ended without converging); hover for the reason,
+  the library version and its lag.
 - **Speed**: the speed achieved now, on a fixed log scale from 10 to 500 fps. The black
   tick is the target (none at Max), the grey tick the floor (the slowest speed that still
   gains anything).
 - **Workers busy**: how many workers' worth of time was in use over the last second, of N,
-  the most workers counted in this run (N does not drop during a run).
+  the most workers counted so far in this run. N never drops during a run; it grows once
+  when the Final settle starts its pool of look-back workers.
 - **Refinement**: Discover's refinement visits per frame, on a fixed 0 to 0.5 scale, with
   the target tick and its allowed band (2/3 to 4/3 of the target) shaded. It turns amber
   with ⚠ while the run is held slower than your Speed setting to keep refinement up.
