@@ -924,7 +924,7 @@ export class SlowRunner {
         this.loop = this.clock.span('setup', () => this.deps.create(this.init!));
         // The Discover visit cap (`lib/visit-rate.ts`): ordinary visits only, in Discover's
         // edit scope (the end settle and Refine runs are not held).
-        // With a schedule (`auto`, the default, or `fixed`; `discover/visitrate.rs`) the engine
+        // With a schedule (`fixed`, the default, or `auto`; `discover/visitrate.rs`) the engine
         // sets the cap from it; `visitRate` alone is a bare cap (older builds, measurement).
         if (msg.visitSchedule && this.loop.setVisitSchedule)
           this.loop.setVisitSchedule(msg.visitSchedule === 'auto');

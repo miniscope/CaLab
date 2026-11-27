@@ -382,7 +382,7 @@ describe('SlowRunner and the Discover visit cap', () => {
     expect(s.visitRateStats()[0]).toBe(0.5);
     // A bare cap: its target is the cap, no schedule.
     expect(s.visitRateStats()[7]).toBe(0.5);
-    // Auto (the app's default): the cap at 4/3 of the 0.15 target, the hold's floor at 2/3.
+    // Auto (opt-in): the cap at 4/3 of the 0.15 target, the hold's floor at 2/3.
     s.setVisitSchedule(true);
     const c = visitRateCounters(s.visitRateStats(), s.visitSchedule());
     expect(c.rate).toBeCloseTo(0.2, 12);

@@ -592,12 +592,12 @@ export function createPipelineStore(
   /** The current target came from the URL (`?debug&pacefps`, source `url`): the Speed control must not override it. */
   const [paceFromUrl, setPaceFromUrl] = createSignal(false);
   /**
-   * The Discover visit rate (`lib/visit-rate.ts`): Auto by default, `?debug&visitrate=fixed` the
-   * fixed rate, `?debug&visitrate=off` none (the behaviour before). The governor of this run (null:
+   * The Discover visit rate (`lib/visit-rate.ts`): the fixed rate by default, `?debug&visitrate=auto`
+   * the Auto schedule (opt-in), `?debug&visitrate=off` none (the behaviour before). The governor of this run (null:
    * none yet, or not a Discover run) and its hold: the speed the frame loop is held to so the
    * visits keep up (null: not held); the target in force (the engine's schedule) and its yield.
    */
-  const [visitRateSetting, setVisitRateSetting] = createSignal<VisitRateSetting>('auto');
+  const [visitRateSetting, setVisitRateSetting] = createSignal<VisitRateSetting>('fixed');
   const visitRateOff = () => visitRateSetting() === 'off';
   const [visitTarget, setVisitTarget] = createSignal<number | null>(null);
   const [visitYield, setVisitYield] = createSignal<number | null>(null);
@@ -1344,7 +1344,7 @@ export function createPipelineStore(
             ? {
                 visitRate: visitRateCap(visitRateMode(untrack(visitRateOff), false)),
                 // The engine's schedule sets the cap (and the target) from here on.
-                visitSchedule: untrack(visitRateSetting) === 'fixed' ? 'fixed' : 'auto',
+                visitSchedule: untrack(visitRateSetting) === 'auto' ? 'auto' : 'fixed',
               }
             : {}),
           // The Final settle's visit rate (a recording's or a stream's settle; with visit workers).
@@ -1684,8 +1684,8 @@ export function createPipelineStore(
     /** The target speed now, frames per second (0: Max). */
     paceFps: () => paceFps,
     /**
-     * `?debug&visitrate=off|fixed` (measurement): no visit cap and no hold (the behaviour before
-     * the fixed rate), or the fixed rate instead of Auto, from the next start.
+     * `?debug&visitrate=off|auto` (measurement): no visit cap and no hold (the behaviour before
+     * the fixed rate), or the Auto schedule instead of the fixed rate, from the next start.
      */
     setVisitRateSetting,
     visitRateSetting,

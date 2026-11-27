@@ -317,8 +317,8 @@ const App: Component = () => {
   // goes first and Background settle asks only when it has nothing to ask.
   if (params.has('debug') && params.has('needfirst') && params.get('needfirst') !== '0')
     pipeline.setCsettleNeedFirst(true);
-  // `?debug&visitrate=off|fixed` (measurement only): no Discover visit cap and no hold (the
-  // behaviour before the fixed visit rate), or the fixed rate instead of Auto (`lib/visit-rate.ts`).
+  // `?debug&visitrate=off|auto` (measurement only): no Discover visit cap and no hold (the
+  // behaviour before the fixed visit rate), or the opt-in Auto schedule instead of the fixed rate (`lib/visit-rate.ts`).
   if (params.has('debug') && params.has('visitrate'))
     pipeline.setVisitRateSetting(visitRateSetting(params.get('visitrate')));
   // `?debug&settlevisits=R` (measurement only): the Final settle's visit rate, visits per settle

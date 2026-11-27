@@ -30,7 +30,7 @@
 - Arms:
   - main = `qc_eval --visit-rate 0.15` on `c380b6b3` (the fixed 0.15 rate, a bare cap).
   - fixed = the branch with `--visit-rate fixed`.
-  - auto = the branch with `--visit-rate auto` (the default).
+  - auto = the branch with `--visit-rate auto` (measured when Auto was still the default; fixed is now the default and Auto opt-in).
   - qc_eval runs the schedule with the cap at the target (`--visit-cap-ratio 1`, as a held Max run sits); the
     app's cap is 4/3 of the target.
 - **fixed reproduces main exactly** on `v3_motion_s5` seed 1: 1,432 Discover visits over 9,600 frames,
@@ -144,7 +144,7 @@ Headed Chrome 156 on the real GPU (Metal), port 5277 / CDP 9377, `memory-measure
 - main = `origin/main` (`f28b75f7`) JS tree with its own WASM (md5 `b575a1d9`, the same as main's in
   `2026-11-25-settle-visits-and-pool.md`). A real main arm, not this branch with `visitrate=fixed`: the branch
   also changes the governor's windows, so its fixed mode is not main in the app.
-- auto = this branch (WASM md5 `0041fb7b`), default settings.
+- auto = this branch (WASM md5 `0041fb7b`), measured when Auto was still the default.
 - Both arms ran in this branch's worktree (`drive.log` says `head=781be6f1` for both); for main the
   `origin/main` `apps/cala` tree and WASM were swapped in (`scripts/chrome_swap.sh`).
 - Chrome Discover fps has repeated within about 2 % in earlier runs, so the 8 % on the 30k sim is likely real,

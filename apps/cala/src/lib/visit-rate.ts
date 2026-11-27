@@ -11,10 +11,10 @@
  *
  * - **Schedule** (in the engine, `crates/cala/src/discover/visitrate.rs`,
  *   `VisitSchedule`; the one source of truth, shared with `qc_eval`): **Auto**
- *   (the default) keeps the target at 0.15 visits per frame while visits find
+ *   (opt-in, `?debug&visitrate=auto`) keeps the target at 0.15 visits per frame while visits find
  *   new cells, slides it down a ladder to 0.0375 as new cells stop turning up
  *   and back up when they appear again. The signal is new cells per visit,
- *   never time or speed. **Fixed** (`?debug&visitrate=fixed`) keeps 0.15.
+ *   never time or speed. **Fixed** (the default) keeps 0.15.
  *   The engine reports the target in force with every status
  *   (`VisitRateCounters.target`); this file reads it from there.
  * - **Cap** (in the engine): ordinary visits are handed out against a credit
@@ -43,7 +43,7 @@
  * then still slows it (`dropMargin`), since fewer drops is what raises the rate.
  *
  * `?debug&visitrate=off` restores the behaviour before the fixed rate (no cap, no hold);
- * `?debug&visitrate=fixed` the fixed rate (no schedule).
+ * `?debug&visitrate=auto` the Auto schedule (the default is the fixed rate).
  * Pure: the clock is passed in; unit-tested in `visit-rate.test.ts`.
  */
 
@@ -113,15 +113,15 @@ export type VisitRateMode =
   /** Neither (`?debug&visitrate=off`: the behaviour before). */
   | 'off';
 
-/** How the target is set: the engine's Auto schedule (the default) or the fixed rate. */
+/** How the target is set: the fixed rate (the default) or the engine's Auto schedule (opt-in). */
 export type VisitSchedule = 'auto' | 'fixed';
 
-/** The `?debug&visitrate=` setting: `off`, `fixed` or (default) `auto`. */
+/** The `?debug&visitrate=` setting: `off`, `auto` or (default) `fixed`. */
 export type VisitRateSetting = VisitSchedule | 'off';
 
-/** The URL's `visitrate` value as a setting (anything else: Auto). */
+/** The URL's `visitrate` value as a setting (anything else: the fixed default). */
 export function visitRateSetting(param: string | null | undefined): VisitRateSetting {
-  return param === 'off' || param === 'fixed' ? param : 'auto';
+  return param === 'off' || param === 'auto' ? param : 'fixed';
 }
 
 /** The mode of a run: `off` from the URL wins, a live stream gets the cap only. */
@@ -302,7 +302,7 @@ export class VisitRateGovernor {
   constructor(
     readonly mode: VisitRateMode,
     private readonly k: VisitRateConstants = VISIT_RATE,
-    readonly schedule: VisitSchedule | null = mode === 'off' ? null : 'auto',
+    readonly schedule: VisitSchedule | null = mode === 'off' ? null : 'fixed',
   ) {}
 
   /** The hold now, fps (null: none). */
@@ -419,8 +419,9 @@ export class VisitRateGovernor {
     // than start a new one. Closing it would make a hold below `minWindowFrames` fps per window
     // permanent (no window would ever count, so the hold could never rise); seen on a 3 h v4
     // recording held at 5 fps for minutes. At Auto's low targets a short window holds only a few
-    // visits, and rounding would read as behind.
-    if (dRead < k.minWindowFrames || dRead * target < k.minWindowVisits) return null;
+    // visits, and rounding would read as behind (the fixed rate keeps main's window rule exactly).
+    if (dRead < k.minWindowFrames) return null;
+    if (this.schedule === 'auto' && dRead * target < k.minWindowVisits) return null;
     this.w = {
       t: s.now,
       read: s.framesRead,

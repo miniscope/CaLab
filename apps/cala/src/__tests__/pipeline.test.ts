@@ -1179,8 +1179,8 @@ describe('pipeline store: the Discover visit hold', () => {
     });
   });
 
-  it('starts Auto by default (fixed on request) and follows the target the engine reports', async () => {
-    for (const setting of ['auto', 'fixed'] as const) {
+  it('starts the fixed rate by default (Auto on request) and follows the target the engine reports', async () => {
+    for (const setting of ['fixed', 'auto'] as const) {
       await createRoot(async (dispose) => {
         const { client } = manualClient();
         let now = 0;
@@ -1199,7 +1199,7 @@ describe('pipeline store: the Discover visit hold', () => {
           undefined,
           { identity: () => ({ frames: 100000, width: 1, height: 1, folder: 'x' }) as never },
         );
-        if (setting === 'fixed') store.setVisitRateSetting('fixed');
+        if (setting === 'auto') store.setVisitRateSetting('auto');
         const records: number[] = [];
         store.onVisitRate((s) => records.push(s.target_now ?? 0));
         await store.start();

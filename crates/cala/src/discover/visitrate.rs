@@ -17,7 +17,7 @@
 //!
 //! A fixed rate spends as many visits per frame at the end of a 3 h
 //! recording, when the field is mapped, as at its start. **Auto** (the
-//! app's default) moves the target down a ladder while visits stop finding
+//! app's opt-in, `?debug&visitrate=auto`; the fixed rate is its default) moves the target down a ladder while visits stop finding
 //! new cells and back up when they find them again:
 //!
 //! * The signal is the **yield**: new cells (adds the add classification,
@@ -87,7 +87,7 @@ pub struct VisitSchedule {
 }
 
 impl VisitSchedule {
-    /// The app's default.
+    /// The app's opt-in Auto schedule (the fixed rate is the default).
     ///
     /// * `target` 0.15 and the cap at 4/3 of it: the fixed rate's values
     ///   (PR #500: on full-length sims recall saturates by about 0.2 visits
@@ -114,7 +114,7 @@ impl VisitSchedule {
         }
     }
 
-    /// The fixed rate (`?debug&visitrate=fixed`; the default before Auto).
+    /// The fixed rate (the app's default; `?debug&visitrate=auto` opts into Auto).
     pub const fn fixed() -> VisitSchedule {
         VisitSchedule {
             auto: false,

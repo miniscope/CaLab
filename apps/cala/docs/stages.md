@@ -35,10 +35,12 @@ PR #500; recall levels off near 0.2 while false cells keep growing, and visits a
 the cell-model worker's time, so the target sits low, at 0.15, for speed; only the first
 ~2000 frames find cells a little later than at 0.25).
 
-### The target: Auto (the default)
+### The target: fixed (the default) or Auto (opt-in)
 
-A fixed rate spends as many visits per frame at the end of a 3 h recording, when the
-field is mapped, as at its start. **Auto** keeps the target at 0.15 visits per frame
+The default is the **fixed** rate: the target stays at 0.15 visits per frame all run,
+as before Auto existed. A fixed rate spends as many visits per frame at the end of a 3 h
+recording, when the field is mapped, as at its start. **Auto** (opt-in, `?debug&visitrate=auto`
+or `qc_eval --visit-rate auto`; not the default, because it finds a few fewer cells) keeps the target at 0.15 visits per frame
 while visits find new cells and moves it down a ladder of steps of 1/√2 (0.15, 0.106,
 0.075, 0.053, 0.0375) as new cells stop turning up, and back up when they appear again
 (`tools/cala-eval/results/2026-11-26-visit-rate-auto.md`):
@@ -55,8 +57,8 @@ while visits find new cells and moves it down a ladder of steps of 1/√2 (0.15,
 - It is fed where each visit's result lands, with or without visit workers, so the app
   and `qc_eval --visit-rate auto` follow the same rule.
 
-`?debug&visitrate=fixed` keeps the target at 0.15 (the behaviour before Auto). The cap
-and the floor follow the target in force:
+`?debug&visitrate=fixed` (the default) keeps the target at 0.15. The cap
+and the floor follow the target in force (the values below are the fixed rate's):
 
 | Bound  | Visits per frame (top) | Where                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ------ | ---------------------: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -66,8 +68,8 @@ and the floor follow the target in force:
 
 The hold combines with the Speed setting: the frame loop gets the lower of the two
 (Max, Fixed, Curve and Auto keep their own target; the hold only lowers it). The Speed
-block shows the rate in force during Discover ("Refinement 0.075 visits/frame (Auto:
-fewer new cells lately, …)") and says when the hold binds ("Held at N fps to keep
+block shows the rate in force during Discover ("Refinement 0.15 visits/frame (fixed)"; with Auto,
+"Refinement 0.075 visits/frame (Auto: fewer new cells lately, …)") and says when the hold binds ("Held at N fps to keep
 refinement at 0.15 visits/frame"); the run log gets an entry each time the hold or the
 target moves. Background settle is told the user's target, not the hold, so a held Max
 run does not start it.

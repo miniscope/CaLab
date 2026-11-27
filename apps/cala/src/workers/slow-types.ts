@@ -94,7 +94,7 @@ export interface SlowInit {
   visitRate?: number;
   /**
    * The Discover visit rate's schedule (`SlowLoop.setVisitSchedule`, `discover/visitrate.rs`):
-   * `auto` (the default) or `fixed`; it sets the cap (and the target the frame-loop hold aims
+   * `fixed` (the default) or `auto`; it sets the cap (and the target the frame-loop hold aims
    * at) instead of `visitRate`. Absent: `visitRate` alone (a bare cap).
    */
   visitSchedule?: 'auto' | 'fixed';

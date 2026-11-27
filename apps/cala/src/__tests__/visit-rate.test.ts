@@ -514,7 +514,7 @@ describe('VisitRateGovernor with the target the engine reports (Auto)', () => {
   });
 
   it('logs the target, its frames and its lowest value in the summary', () => {
-    const gov = new VisitRateGovernor('on');
+    const gov = new VisitRateGovernor('on', VISIT_RATE, 'auto');
     const st = { t: 0, read: 0, visits: 0, earned: 0 };
     feedRun(gov, { steps: 40, fps: 100, perFrame: 0.2, target: 0.15 }, st);
     feedRun(gov, { steps: 40, fps: 100, perFrame: 0.1, target: 0.075 }, st);
@@ -547,10 +547,10 @@ describe('VisitRateGovernor with the target the engine reports (Auto)', () => {
   });
 
   it('reads the URL setting', () => {
-    expect(visitRateSetting(null)).toBe('auto');
+    expect(visitRateSetting(null)).toBe('fixed');
     expect(visitRateSetting('auto')).toBe('auto');
     expect(visitRateSetting('fixed')).toBe('fixed');
     expect(visitRateSetting('off')).toBe('off');
-    expect(visitRateSetting('bogus')).toBe('auto');
+    expect(visitRateSetting('bogus')).toBe('fixed');
   });
 });

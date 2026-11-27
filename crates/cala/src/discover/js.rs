@@ -215,8 +215,8 @@ impl JsSlowLoop {
         self.inner.set_visit_rate(rate);
     }
 
-    /// Run the Discover visit cap from the app's schedule: Auto (`auto`,
-    /// the default) or the fixed rate (`VisitSchedule::auto` / `fixed`).
+    /// Run the Discover visit cap from the app's schedule: the fixed
+    /// rate (the default) or Auto (`VisitSchedule::fixed` / `auto`).
     #[wasm_bindgen(js_name = setVisitSchedule)]
     pub fn set_visit_schedule(&mut self, auto: bool) {
         self.inner.set_visit_schedule(if auto {
