@@ -716,8 +716,9 @@ impl JsSlowLoop {
     /// Add the candidates of a history review (`HistoryReview.finish`) as
     /// new cells on probation; one on an existing cell or a recently deleted
     /// spot is skipped. Returns how many were added; they are published
-    /// with the next commit. Call it while no visit is out (`jobsInFlight`
-    /// 0): a visit in flight does not know the new cells.
+    /// with the next commit. Call it while no visit is out (every
+    /// `takeJob` answered by `applyJob`): a visit in flight does not know
+    /// the new cells.
     #[wasm_bindgen(js_name = addReviewed)]
     pub fn add_reviewed(&mut self, candidates: &[f32]) -> Result<u32, JsError> {
         let fps = footprints_from_wire(candidates)
