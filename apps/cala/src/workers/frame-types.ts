@@ -10,10 +10,14 @@ import type { FlatFieldMap } from '../lib/flat-field.ts';
 import type { FrameView } from '../lib/preview.ts';
 import type { PaceStats } from '../lib/frame-pacer.ts';
 import type { ReplayInput } from '../lib/pipeline-stages.ts';
+import type { RunCells } from '../lib/run-cells.ts';
 import type { CompressTiling } from './compress-types.ts';
 
-/** Fast-loop settings of a pipeline run. */
-export interface CellsSettings {
+/**
+ * Fast-loop settings of a pipeline run, with the slow loop's run options (`RunCells`; the trace
+ * worker normalizes them and adds `sessionStarts` from the plan, `lib/run-cells.ts`).
+ */
+export interface CellsSettings extends Omit<RunCells, 'sessionStarts'> {
   /** Tags the run's messages to the slow worker and the main thread. */
   session: number;
   /** Run cell discovery (forward frames to the slow worker). */
@@ -25,30 +29,8 @@ export interface CellsSettings {
    * with this library (`TraceLibrary.toBytes()`). Nothing goes to the slow loop.
    */
   library?: Uint8Array;
-  /**
-   * Look-back (Discover of a recording only): the slow loop
-   * runs with it (`SlowInit.lookback`) and stage C reports its back half's
-   * state now and then (`PipelineStepResult` `backState`) for the look-back
-   * worker. Pipelined workers only.
-   */
-  lookback?: boolean;
-  /**
-   * With `lookback`: settle during Discover may run below Max (`SlowInit.csettle`,
-   * `SlowInit.csettleYield`, `SlowInit.csettleNeedFirst`; the cap goes to the slow worker apart).
-   */
-  csettle?: boolean;
-  csettleYield?: number;
-  csettleNeedFirst?: boolean;
-  /** The share of the final settle pass to read (`SlowInit.settleFraction`; absent = all). */
-  settleFraction?: number;
   /** Batches in flight to the slow worker (default `FAST_LOOP_DEFAULTS.poolSize`). */
   forwardBuffers?: number;
-  /** The Discover visit cap, visits per observed frame (`SlowInit.visitRate`; absent or 0 = none). */
-  visitRate?: number;
-  /** The Discover visit rate's schedule (`SlowInit.visitSchedule`; absent = `visitRate` alone). */
-  visitSchedule?: 'auto' | 'fixed';
-  /** The Final settle's visit rate, visits per settle frame (`SlowInit.settleVisitRate`; absent or 0 = none). */
-  settleVisitRate?: number;
   /** Feed the compress worker (default off; needs its port). */
   compress?: boolean;
   /** With `compress`: how the frames are cut into tiles (default plain). */
@@ -63,10 +45,6 @@ export interface CellsSettings {
   compressGpu?: boolean;
   /** With `compressGpu`: windows the CPU compresses too, to check the GPU's factors (`?debug&gpucheck=N`). */
   compressGpuCheck?: number;
-  /** A live stream with `?factors`: the slow loop settles on the factors after the stream ends (`SlowInit.factorSettle`). */
-  factorSettle?: boolean;
-  /** A recording with `?factors=file`: at Discover's end the settle may read the factors (`SlowRunner`). */
-  factorFile?: boolean;
   /** Return a residual preview with each batch (the residual view is shown). */
   residual?: boolean;
   /** Return the signed (unclipped) traces with each batch (Extract; `CellsBatch.signed`). */
@@ -103,9 +81,9 @@ export type FrameRequest =
       id: number;
       options: PipelineOptions;
       cells?: CellsSettings;
-      /** Pass 2: replay the recorded flicker and motion. */
+      /** Extract: replay the recorded flicker and motion. */
       replay?: ReplayInput;
-      /** Pass 1 flat field: a stored map of this sensor, in force from the first processed frame and seeding the estimator. */
+      /** Discover's flat field: a stored map of this sensor, in force from the first processed frame and seeding the estimator. */
       flat?: { seed?: FlatFieldMap };
     }
   /** Stop reading at the current position: the next step reports the end of the recording. */
