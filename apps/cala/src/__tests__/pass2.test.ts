@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { TraceLibraryBuilder } from '../lib/cala-wasm.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
 import type { FramePixels } from '../lib/frame-source.ts';
-import type { FrameReader, PipelineStepResult } from '../lib/pipeline-engine.ts';
+import type { FrameReader, PipelineStepResult } from '../lib/pipeline-types.ts';
 import {
   BackStage,
   FrontStage,

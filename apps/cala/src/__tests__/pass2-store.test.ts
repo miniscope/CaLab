@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CellStore } from '../lib/cell-store.ts';
 import type { FlatFieldMap } from '../lib/flat-field.ts';
 import type { PipelineClient } from '../lib/frame-client.ts';
-import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
+import type { PipelineStepResult } from '../lib/pipeline-types.ts';
 import type { PipelinePlan } from '../lib/pipeline-plan.ts';
 import type { FactorInfo, FactorState } from '../lib/compress-store.ts';
 import type { FactorExtractPort, FactorJob } from '../lib/factor-extract.ts';

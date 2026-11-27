@@ -261,7 +261,7 @@ A run has two named stages: **Discover** and **Extract** (see
    default; pick Quick, Standard or Thorough under **Final settle**) before it publishes
    the final library. The status reads **Final settle** while that runs, and **Stop final
    settle** keeps what was refined so far. Look-back needs a recording on disk with
-   one session; on a live stream, a Joint run of several sessions or with `?pipeline=0`
+   one session; on a live stream or a Joint run of several sessions
    it is off and the Run tab says why (the footprints then get no refinement after
    Discover). Untick **Look-back refinement** or open the page with `?lookback=0` to
    turn it off. There is no separate Refine stage any more: look-back and the Final

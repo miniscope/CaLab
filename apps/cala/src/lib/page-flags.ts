@@ -4,7 +4,7 @@
  * `url_flags`). Debug-only flags take effect only with `?debug` (`DEBUG_ONLY`).
  *
  * The two readings are not the same rule: the record's `inEffect` is coarser. It marks some
- * values the app ignores as in effect (`?flatfield=1`, `?pipeline=1`, `?debug&smooth=1`), and a
+ * values the app ignores as in effect (`?flatfield=1`, `?gpu=1`, `?debug&smooth=1`), and a
  * bare `?csettle` (or `csettle=1`) as not in effect although the app then turns Background settle
  * on over a saved cap of 0. Both are kept as they were in `App.tsx` and `run-provenance.ts`.
  */
@@ -32,8 +32,6 @@ export interface PageCsettle {
 export interface PageFlags {
   /** `?debug`. */
   debug: boolean;
-  /** Not `?pipeline=0` (the old single-worker path, to compare frame rates). */
-  pipelined: boolean;
   /** Not `?gpu=0` (WASM motion correction, to compare with WebGPU). */
   gpu: boolean;
   /** `?visits=N`: that many visit workers (null: absent or empty; NaN for a non-number, as given). */
@@ -87,7 +85,6 @@ export function parsePageFlags(search: string | URLSearchParams): PageFlags {
   const y = cs !== null && cs !== '0' ? CSETTLE_YIELD.exec(cs) : null;
   return {
     debug,
-    pipelined: p.get('pipeline') !== '0',
     gpu: p.get('gpu') !== '0',
     visits: visits !== null && visits !== '' ? Number(visits) : null,
     factors: factorsFromPage(p),
@@ -141,7 +138,6 @@ export const KNOWN_FLAGS = [
   'gpucheck',
   'needfirst',
   'smooth',
-  'pipeline',
   'gpu',
   'flatfield',
   'noqc',
@@ -201,6 +197,7 @@ function inEffect(name: string, value: string, p: URLSearchParams): boolean {
   }
 }
 
+/** The run record's `url_flags`. */
 export interface UrlFlags {
   /** `?debug` is present. */
   debug: boolean;

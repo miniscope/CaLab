@@ -16,6 +16,7 @@
  */
 import { MAX_FRAMES_PER_READ } from './frame-source.ts';
 
+/** Run options of the pipeline (absent: `PIPELINE_DEFAULTS`). */
 export interface PipelineOptions {
   /** Frames per processing batch (one preview and one message each). */
   batchSize?: number;
@@ -27,8 +28,7 @@ export interface PipelineOptions {
   previewMaxSide?: number;
   /**
    * Divide out the sensor gain map estimated online from the recording's own
-   * motion (default on). Pipelined workers only: the single-worker
-   * `PipelineEngine` ignores it (see the note there).
+   * motion (default on).
    */
   flatField?: boolean;
   /**
@@ -39,6 +39,7 @@ export interface PipelineOptions {
   sessionFix?: boolean;
 }
 
+/** The default of every `PipelineOptions` field. */
 export const PIPELINE_DEFAULTS: Required<PipelineOptions> = {
   batchSize: 8,
   calibrationFrames: 200,
@@ -50,8 +51,10 @@ export const PIPELINE_DEFAULTS: Required<PipelineOptions> = {
   sessionFix: true,
 };
 
+/** The walks over the recording, in order. */
 export type PipelinePhase = 'calibrate' | 'motion-warmup' | 'process';
 
+/** The resolved options and frame counts of one run. */
 export interface PipelinePlan {
   frameCount: number;
   batchSize: number;

@@ -4,7 +4,7 @@ import type {
   FramePixels,
   SessionInput,
 } from '../lib/frame-source.ts';
-import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
+import type { PipelineStepResult } from '../lib/pipeline-types.ts';
 import type { PipelineOptions, PipelinePlan } from '../lib/pipeline-plan.ts';
 import type { FlatFieldMap } from '../lib/flat-field.ts';
 import type { FrameView } from '../lib/preview.ts';
@@ -57,7 +57,7 @@ export interface CellsSettings {
   compressPool?: { discover: number; after: number };
   /** With `compress`: the cap on window files waiting for compression, bytes (`?debug&cbacklog`). */
   compressBacklogCap?: number;
-  /** With `compress`: Extract on factors on rebuilt frames, as before slice 6 (`?debug&fextract=0`). */
+  /** With `compress`: Extract on factors on rebuilt frames (`?debug&fextract=0`). */
   compressFrameExtract?: boolean;
   /** With `compress`: a recording on the GPU route (the default) compresses its windows on the GPU (`CompressInit.gpu`). */
   compressGpu?: boolean;
@@ -73,7 +73,7 @@ export interface CellsSettings {
   signed?: boolean;
   /**
    * Keep the mean and max projections of every frame and return them with the
-   * `done` step (Extract, for the export; pipelined workers only).
+   * `done` step (Extract, for the export).
    */
   projection?: boolean;
 }
@@ -81,7 +81,11 @@ export interface CellsSettings {
 /** A probed session: its info, or the error opening it. */
 export type SessionProbeResult = { info: FrameSourceInfo } | { error: string };
 
-/** Main thread -> frame worker. `id` pairs a request with its response. */
+/**
+ * Main thread -> pipeline workers. `id` pairs a request with its response. The frame worker takes
+ * all but `connect-slow`, `connect-compress`, `release-compress`, `set-discovery` and
+ * `set-residual`, which go to the trace worker (`frame-client.ts`).
+ */
 export type FrameRequest =
   /** Entries carry their folder path as data: a File property would not survive structured clone. */
   | { type: 'open'; id: number; entries: FolderEntry[] }
@@ -99,7 +103,7 @@ export type FrameRequest =
       id: number;
       options: PipelineOptions;
       cells?: CellsSettings;
-      /** Pass 2: replay the recorded flicker and motion (pipelined workers only). */
+      /** Pass 2: replay the recorded flicker and motion. */
       replay?: ReplayInput;
       /** Pass 1 flat field: a stored map of this sensor, in force from the first processed frame and seeding the estimator. */
       flat?: { seed?: FlatFieldMap };
@@ -112,10 +116,7 @@ export type FrameRequest =
    * worker never runs ahead of what the UI has asked for.
    */
   | { type: 'pipeline-step'; id: number }
-  /** Free the pipeline's WASM state. */
-  /**
-   * `keepSlow`: keep the slow loop (Extract may follow) instead of dropping it.
-   */
+  /** Free the pipeline's WASM state. `keepSlow`: keep the slow loop (Extract may follow). */
   | { type: 'pipeline-stop'; id: number; keepSlow?: boolean }
   /** The port to the slow worker (transferred). */
   | { type: 'connect-slow'; id: number; port: MessagePort }
@@ -136,7 +137,7 @@ export type FrameRequest =
    * batches from now on (null: the last frame only). Held across pipeline starts.
    */
   | { type: 'set-frame-preview'; id: number; view: FrameView | null }
-  /** Pipelined run: the port to the motion worker (transferred). The frame worker then runs stage A only. */
+  /** The port to the motion worker (transferred), sent once when the client is created. */
   | { type: 'link'; id: number; down: MessagePort }
   /**
    * Smooth pacing (`lib/frame-pacer.ts`), answered at once, not in the queue: `fps` sets the

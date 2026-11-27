@@ -5,7 +5,7 @@ import { TraceLibraryBuilder } from '../lib/cala-wasm.ts';
 import { LookbackReader, lookbackFrames } from '../lib/lookback-reader.ts';
 import { LookbackService } from '../lib/lookback-service.ts';
 import type { LookbackToSlow } from '../workers/lookback-types.ts';
-import type { PipelineStepResult } from '../lib/pipeline-engine.ts';
+import type { PipelineStepResult } from '../lib/pipeline-types.ts';
 import { BackStage, FrontStage, MotionStage, type ReplayInput } from '../lib/pipeline-stages.ts';
 import { RunRecord } from '../lib/run-record.ts';
 import type { SessionTransform } from '../lib/session-boundary.ts';

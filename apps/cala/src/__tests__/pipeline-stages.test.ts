@@ -3,12 +3,13 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { FastLoop, type TraceBackend } from '../lib/fast-loop.ts';
 import type { FramePixels } from '../lib/frame-source.ts';
 import {
-  PipelineEngine,
+  transferablesOf,
   type FastLoopSetup,
   type FrameReader,
   type PipelineStepResult,
-} from '../lib/pipeline-engine.ts';
-import { BackStage, FrontStage, MotionStage } from '../lib/pipeline-stages.ts';
+} from '../lib/pipeline-types.ts';
+import { framePreviewImage } from '../lib/preview.ts';
+import { StageChain } from '../lib/stage-chain.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import type { FastToSlow } from '../workers/slow-types.ts';
 import { initTestWasm } from './wasm-test.ts';
@@ -22,7 +23,7 @@ const H = 48;
  * A seeded blob movie with a moving field of view and a global flicker.
  * `boundary`: a second session starts there, ×0.8 as bright and moved.
  */
-function makeMovie(frames: number, boundary?: number): FrameReader {
+function sessionMovie(frames: number, boundary?: number): FrameReader {
   let seed = 11;
   const rand = () => {
     seed = (seed * 1103515245 + 12345) % 2147483648;
@@ -120,120 +121,111 @@ function recordingFastLoop(setup: FastLoopSetup, sent: FastToSlow[]): FastLoop {
   return fast;
 }
 
+/**
+ * Seeded blob texture at 96 x 80, sampled at `(y - sy, x - sx)`: content moved by
+ * `shifts[f]`. `gain(f)` scales every lit pixel of frame `f` (a global LED flicker).
+ */
+function shiftedMovie(
+  shifts: [number, number][],
+  gain: (f: number) => number = () => 1,
+): FrameReader & { reads: [number, number][] } {
+  const w = 96;
+  const h = 80;
+  let seed = 7;
+  const rand = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
+  };
+  const blobs = Array.from({ length: 70 }, () => ({
+    y: rand() * h,
+    x: rand() * w,
+    a: 40 + rand() * 60,
+  }));
+  const frame = (f: number, out: Uint8Array) => {
+    const [sy, sx] = shifts[f];
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        // The lens disk is fixed to the sensor; only the tissue moves.
+        const lit = (y - h / 2) ** 2 + (x - w / 2) ** 2 < (0.48 * w) ** 2;
+        let v = 110;
+        for (const b of blobs) {
+          const d2 = (y - sy - b.y) ** 2 + (x - sx - b.x) ** 2;
+          if (d2 < 40) v += b.a * Math.exp(-d2 / 6);
+        }
+        const lv = gain(f) * (v + ((f * 31 + y * 7 + x * 13) % 5));
+        out[y * w + x] = lit ? Math.min(255, Math.round(lv)) : 3;
+      }
+    }
+  };
+  const reads: [number, number][] = [];
+  return {
+    reads,
+    info: { width: w, height: h, bitDepth: 8, frameCount: shifts.length, fps: 20 },
+    async readFrames(start: number, count: number, out?: FramePixels) {
+      reads.push([start, count]);
+      const dst = (out as Uint8Array | undefined) ?? new Uint8Array(count * w * h);
+      expect(dst.length).toBe(count * w * h);
+      for (let i = 0; i < count; i++) frame(start + i, dst.subarray(i * w * h, (i + 1) * w * h));
+      return dst;
+    },
+  };
+}
+
+/** Every step of `chain` up to and including `done`; `after` sees the chain after each step. */
+async function runAll(
+  chain: StageChain,
+  after?: (chain: StageChain) => void,
+): Promise<PipelineStepResult[]> {
+  const out: PipelineStepResult[] = [];
+  for (;;) {
+    const r = await chain.step();
+    after?.(chain);
+    out.push(r);
+    if (r.kind === 'done') return out;
+  }
+}
+
 const OPTIONS = { calibrationFrames: 20, motionWarmupFrames: 20, batchSize: 8, previewMaxSide: 32 };
 const FRAMES = 70;
+/** `shiftedMovie` runs: previews of at most 48 px. */
+const SHIFTED_OPTIONS = { ...OPTIONS, previewMaxSide: 48 };
 
 describe('pipeline stages', () => {
   it.each([
     ['one session', undefined],
     ['two sessions (session fix)', 37],
-  ])(
-    'give the same results and slow-loop feed as the single-worker engine: %s',
-    async (_, boundary) => {
-      // Single-worker path.
-      const sentOld: FastToSlow[] = [];
-      const engine = new PipelineEngine(makeMovie(FRAMES, boundary), OPTIONS, undefined, (setup) =>
-        recordingFastLoop(setup, sentOld),
-      );
-      const old: PipelineStepResult[] = [];
-      for (;;) {
-        const r = await engine.step();
-        old.push(r);
-        if (r.kind === 'done') break;
-      }
-      engine.dispose();
+  ])('cover the recording and feed the slow loop: %s', async (_, boundary) => {
+    const sent: FastToSlow[] = [];
+    const chain = new StageChain(sessionMovie(FRAMES, boundary), OPTIONS, {
+      fastLoop: (setup) => recordingFastLoop(setup, sent),
+    });
+    // The pools are bounded and every buffer comes back after each step.
+    const results = await runAll(chain, (c) => expect(c.inFlight).toEqual([0, 0]));
+    chain.dispose();
 
-      // Three stages chained in-process, with the same bounded pools the workers use.
-      const sentNew: FastToSlow[] = [];
-      const len = OPTIONS.batchSize * W * H;
-      const frontPool = new StagePool(3, len);
-      const outPool = new StagePool(3, len);
-      const a = new FrontStage(makeMovie(FRAMES, boundary), OPTIONS, () => frontPool.acquire());
-      const b = new MotionStage(a.setup, () => outPool.acquire());
-      const c = new BackStage(a.setup, recordingFastLoop(a.fastSetup, sentNew));
-      const staged: PipelineStepResult[] = [];
-      for (;;) {
-        const job = await a.next();
-        if (!job) {
-          c.end();
-          staged.push({ kind: 'done' });
-          break;
-        }
-        const done = await b.handle(job);
-        // As the motion worker's postMessage does: the calibration's FOV mask
-        // moves on to C, detached in B (B must keep its own copy).
-        if (done.calib) {
-          const m = done.calib.fovMask;
-          done.calib = { ...done.calib, fovMask: structuredClone(m, { transfer: [m.buffer] }) };
-        }
-        if (done.front) frontPool.release(done.front);
-        staged.push(c.handle(done));
-        if (done.corrected) outPool.release(done.corrected);
-        expect(frontPool.inFlight).toBe(0);
-        expect(outPool.inFlight).toBe(0);
-      }
-      a.dispose();
-      b.dispose();
-      c.dispose();
-
-      expect(staged).toHaveLength(old.length);
-      const batches = old.filter((r) => r.kind === 'batch');
-      if (boundary === undefined) expect(batches.length).toBe(Math.ceil(FRAMES / 8));
-      else {
-        // The batch before the boundary is cut short; the session starts a batch and reports.
-        expect(batches.map((r) => r.start)).toContain(boundary);
-        const first = batches.find((r) => r.start === boundary)!;
-        expect(first.session?.index).toBe(1);
-        expect(first.session?.frame).toBe(boundary);
-        // The floor and noise follow the ×0.8 step. Loose: on a 64 x 48 movie
-        // flattened at σ = 20 px little tissue texture is left to fit (the
-        // stitched sims read ×1.25 as ×1.248).
-        expect(first.session?.floorGain).toBeGreaterThan(0.3);
-        expect(first.session?.floorGain).toBeLessThan(0.95);
-        expect(first.session?.noiseRatio).toBeGreaterThan(0.7);
-        expect(first.session?.noiseRatio).toBeLessThan(0.9);
-        expect(batches.filter((r) => r.session).length).toBe(1);
-      }
-      for (let i = 0; i < old.length; i++) {
-        const o = old[i];
-        const s = staged[i];
-        expect(s.kind).toBe(o.kind);
-        if (o.kind === 'setup' && s.kind === 'setup') {
-          expect([s.phase, s.done, s.total]).toEqual([o.phase, o.done, o.total]);
-        } else if (o.kind === 'batch' && s.kind === 'batch') {
-          expect(s.start).toBe(o.start);
-          expect(s.count).toBe(o.count);
-          // Bit-identical, not merely close.
-          for (const key of [
-            'dy',
-            'dx',
-            'quality',
-            'flags',
-            'flickerOffset',
-            'flickerGain',
-          ] as const) {
-            expect(s[key], `${key} of batch ${i}`).toEqual(o[key]);
-          }
-          expect(s.previews, `previews of batch ${i}`).toEqual(o.previews);
-          expect(s.session, `session of batch ${i}`).toEqual(o.session);
-          // The boundary flags' null samples (none here: the sessions are under 100 frames).
-          expect(s.boundaryNull).toBe(o.boundaryNull);
-          expect(s.cells?.traces).toEqual(o.cells?.traces);
-          expect(s.cells?.ids).toEqual(o.cells?.ids);
-          expect(s.cells?.version).toBe(o.cells?.version);
-          expect(s.cells?.forwardedFrames).toBe(o.cells?.forwardedFrames);
-          expect(s.cells?.droppedFrames).toBe(o.cells?.droppedFrames);
-          expect(s.stageBusyMs).toHaveLength(3);
-        }
-      }
-      // The slow loop sees the same init, noise maps and frames, byte for byte.
-      expect(sentOld.some((m) => m.type === 'frames')).toBe(true);
-      expect(sentOld.some((m) => m.type === 'frames' && m.noise)).toBe(true);
-      // (`sentAt` is a send timestamp, different by definition.)
-      const unstamped = (m: FastToSlow) => (m.type === 'frames' ? { ...m, sentAt: 0 } : m);
-      expect(sentNew.map(unstamped)).toEqual(sentOld.map(unstamped));
-    },
-  );
+    const batches = results.filter((r) => r.kind === 'batch');
+    expect(batches.reduce((n, b) => n + b.count, 0)).toBe(FRAMES);
+    for (const b of batches) expect(b.stageBusyMs).toHaveLength(3);
+    if (boundary === undefined) expect(batches.length).toBe(Math.ceil(FRAMES / 8));
+    else {
+      // The batch before the boundary is cut short; the session starts a batch and reports.
+      expect(batches.map((r) => r.start)).toContain(boundary);
+      const first = batches.find((r) => r.start === boundary)!;
+      expect(first.session?.index).toBe(1);
+      expect(first.session?.frame).toBe(boundary);
+      // The floor and noise follow the ×0.8 step. Loose: on a 64 x 48 movie
+      // flattened at σ = 20 px little tissue texture is left to fit (the
+      // stitched sims read ×1.25 as ×1.248).
+      expect(first.session?.floorGain).toBeGreaterThan(0.3);
+      expect(first.session?.floorGain).toBeLessThan(0.95);
+      expect(first.session?.noiseRatio).toBeGreaterThan(0.7);
+      expect(first.session?.noiseRatio).toBeLessThan(0.9);
+      expect(batches.filter((r) => r.session).length).toBe(1);
+    }
+    // The slow loop gets frames, with noise maps.
+    expect(sent.some((m) => m.type === 'frames')).toBe(true);
+    expect(sent.some((m) => m.type === 'frames' && m.noise)).toBe(true);
+  });
 
   it('keeps the queues bounded: a stalled consumer blocks the producer', async () => {
     const pool = new StagePool(2, 4);
@@ -252,56 +244,122 @@ describe('pipeline stages', () => {
     expect(pool.inFlight).toBe(2);
   });
 
+  it('calibrates, warms up, then reports registering shifts and previews per batch', async () => {
+    // Still for 40 frames (the warm-ups), then content moved by (+2, -3) px.
+    const shifts: [number, number][] = Array.from({ length: 60 }, (_, f) =>
+      f < 40 ? [0, 0] : [2, -3],
+    );
+    const movie = shiftedMovie(shifts);
+    const chain = new StageChain(movie, SHIFTED_OPTIONS);
+    const results = await runAll(chain);
+    chain.dispose();
+
+    const setup = results.filter((r) => r.kind === 'setup');
+    // The calibration is one read; the motion warm-up streams in batches of 8
+    // (20 frames: 8 + 8 + 4) into the corrector.
+    expect(setup.map((r) => r.kind === 'setup' && r.phase)).toEqual([
+      'calibrate',
+      'motion-warmup',
+      'motion-warmup',
+      'motion-warmup',
+    ]);
+    // Reads stay batch-sized: the whole movie is never requested at once.
+    expect(Math.max(...movie.reads.map(([, n]) => n))).toBeLessThanOrEqual(20);
+
+    const batches = results.filter((r) => r.kind === 'batch');
+    expect(batches.reduce((n, b) => n + b.count, 0)).toBe(60);
+    const dy = batches.flatMap((b) => Array.from(b.dy));
+    const dx = batches.flatMap((b) => Array.from(b.dx));
+    // The registering shift undoes the content motion.
+    for (let f = 0; f < 40; f++) {
+      expect(Math.abs(dy[f])).toBeLessThan(0.3);
+      expect(Math.abs(dx[f])).toBeLessThan(0.3);
+    }
+    for (let f = 45; f < 60; f++) {
+      expect(dy[f]).toBeCloseTo(-2, 0);
+      expect(dx[f]).toBeCloseTo(3, 0);
+    }
+
+    const last = batches[batches.length - 1];
+    expect(last.previews.frame).toBe(59);
+    expect(last.previews.raw.width).toBe(48);
+    expect(last.previews.raw.height).toBe(40);
+    for (const img of Object.values(last.previews).filter((v) => typeof v === 'object')) {
+      expect(img.data.every(Number.isFinite)).toBe(true);
+    }
+    expect(last.timings.motionMs).toBeGreaterThanOrEqual(0);
+    expect(last.flickerGain).toHaveLength(last.count);
+    expect(last.flickerOffset).toHaveLength(last.count);
+    expect(transferablesOf(last)).toHaveLength(10);
+    expect(results[results.length - 1]).toEqual({ kind: 'done' });
+  });
+
   it.each(['raw', 'preprocessed', 'corrected', 'output'] as const)(
-    'previews every frame of the %s view the same through the stages as in the engine',
+    'previews every frame of the %s view when asked, the last one equal to the batch preview',
     async (view) => {
-      const engine = new PipelineEngine(makeMovie(FRAMES), OPTIONS, undefined, (setup) =>
-        recordingFastLoop(setup, []),
+      const chain = new StageChain(
+        shiftedMovie(Array.from({ length: 60 }, () => [0, 0] as [number, number])),
+        SHIFTED_OPTIONS,
       );
-      engine.framePreview = view;
-      const old: PipelineStepResult[] = [];
-      for (;;) {
-        const r = await engine.step();
-        old.push(r);
-        if (r.kind === 'done') break;
-      }
-      engine.dispose();
-
-      const len = OPTIONS.batchSize * W * H;
-      const frontPool = new StagePool(3, len);
-      const outPool = new StagePool(3, len);
-      const a = new FrontStage(makeMovie(FRAMES), OPTIONS, () => frontPool.acquire());
-      a.framePreview = view;
-      const b = new MotionStage(a.setup, () => outPool.acquire());
-      const c = new BackStage(a.setup, recordingFastLoop(a.fastSetup, []));
-      const staged: PipelineStepResult[] = [];
-      for (;;) {
-        const job = await a.next();
-        if (!job) break;
-        const done = await b.handle(job);
-        if (done.calib) {
-          const m = done.calib.fovMask;
-          done.calib = { ...done.calib, fovMask: structuredClone(m, { transfer: [m.buffer] }) };
-        }
-        if (done.front) frontPool.release(done.front);
-        staged.push(c.handle(done));
-        if (done.corrected) outPool.release(done.corrected);
-      }
-      a.dispose();
-      b.dispose();
-      c.dispose();
-
-      const o = old.filter((r) => r.kind === 'batch');
-      const n = staged.filter((r) => r.kind === 'batch');
-      expect(n).toHaveLength(o.length);
-      for (let i = 0; i < o.length; i++) {
-        const fo = o[i].previews.frames!;
-        const fn = n[i].previews.frames!;
-        expect(fn.view).toBe(view);
-        expect([fn.first, fn.count]).toEqual([fo.first, fo.count]);
-        expect(fn.data).toHaveLength(fo.data.length);
-        for (let k = 0; k < fo.data.length; k++) expect(fn.data[k]).toBeCloseTo(fo.data[k], 3);
+      chain.framePreview = view;
+      const batches = (await runAll(chain)).filter((r) => r.kind === 'batch');
+      chain.dispose();
+      for (const b of batches) {
+        const fp = b.previews.frames!;
+        expect(fp.view).toBe(view);
+        expect(fp.first).toBe(b.start);
+        expect(fp.count).toBe(b.count);
+        expect(fp.data).toHaveLength(b.count * fp.width * fp.height);
+        // The last frame of the batch is the batch's own preview of that view.
+        expect(Array.from(framePreviewImage(fp, fp.count - 1).data)).toEqual(
+          Array.from(b.previews[view].data),
+        );
+        expect(transferablesOf(b)).toHaveLength(11);
       }
     },
   );
+
+  it('reports the global flicker it removes', async () => {
+    // A 4 % LED gain flicker at 4 Hz (5 frames per period at 20 fps).
+    const m = (f: number) => 0.04 * Math.sin((2 * Math.PI * f) / 5);
+    const shifts: [number, number][] = Array.from({ length: 80 }, () => [0, 0]);
+    const run = async (flickerMode?: number) => {
+      const chain = new StageChain(
+        shiftedMovie(shifts, (f) => 1 + m(f)),
+        SHIFTED_OPTIONS,
+        {
+          ...(flickerMode !== undefined ? { flickerMode } : {}),
+        },
+      );
+      const batches = (await runAll(chain)).filter((r) => r.kind === 'batch');
+      chain.dispose();
+      return {
+        gain: batches.flatMap((b) => Array.from(b.flickerGain)),
+        offset: batches.flatMap((b) => Array.from(b.flickerOffset)),
+      };
+    };
+    // Gain only (2): the estimate follows the injected gain. It is relative to
+    // the running mean of the frames, which the zero-mean flicker barely moves.
+    const mult = await run(2);
+    expect(mult.gain).toHaveLength(80);
+    for (let f = 20; f < 80; f++) expect(mult.gain[f]).toBeCloseTo(m(f), 2);
+    expect(mult.offset.every((a) => a === 0)).toBe(true);
+    // Both (the default): on this nearly flat scene the offset and the gain
+    // trade off against each other, but their sum at the mean brightness
+    // (~120 grey levels) is the injected change.
+    const both = await run();
+    for (let f = 20; f < 80; f++) {
+      expect(both.offset[f] + 120 * both.gain[f]).toBeCloseTo(120 * m(f), -0.5);
+    }
+    // Off (0): nothing is reported.
+    const off = await run(0);
+    expect(off.gain.every((g) => g === 0) && off.offset.every((a) => a === 0)).toBe(true);
+    // Three runs: slow under coverage instrumentation in CI.
+  }, 30_000);
+
+  it('refuses to step after dispose', async () => {
+    const chain = new StageChain(shiftedMovie([[0, 0]]), {});
+    chain.dispose();
+    await expect(chain.step()).rejects.toThrow('disposed');
+  });
 });

@@ -27,7 +27,7 @@
  */
 import type { FramePixels, FrameSourceInfo } from './frame-source.ts';
 import { ASSUMED_FPS } from './miniscope-meta.ts';
-import type { FrameReader, LiveBatchInfo } from './pipeline-engine.ts';
+import type { FrameReader, LiveBatchInfo } from './pipeline-types.ts';
 import { UNBOUNDED } from './pipeline-plan.ts';
 
 /** Bytes before the pixels of a binary frame. */

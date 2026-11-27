@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { LIVE_HEADER_BYTES, LIVE_MAGIC, LiveSource, type SocketLike } from '../lib/live-source.ts';
-import { nextStep } from '../lib/pipeline-engine.ts';
+import { nextStep } from '../lib/pipeline-types.ts';
 import { makePlan, PipelineCursor, UNBOUNDED } from '../lib/pipeline-plan.ts';
 
 const W = 4;

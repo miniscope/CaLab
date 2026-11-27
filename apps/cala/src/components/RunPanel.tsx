@@ -77,7 +77,6 @@ const MOTION_BACKEND = {
     'Motion: CPU',
     'WebGPU failed during the run; continued on the CPU. See the console.',
   ],
-  single: ['Motion: CPU', 'Single-worker pipeline (?pipeline=0) runs motion in WASM.'],
 } as const;
 
 const STATE_LABEL: Record<ConvergenceState, string> = {
@@ -187,7 +186,8 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   };
   const backend = () => {
     if (s().fps() <= 0) return null;
-    const b = s().motionBackend() ?? 'single';
+    const b = s().motionBackend();
+    if (!b) return null;
     return { key: b, text: MOTION_BACKEND[b][0], title: MOTION_BACKEND[b][1] };
   };
   const pass1Busy = () => s().status() === 'running' || s().status() === 'paused';

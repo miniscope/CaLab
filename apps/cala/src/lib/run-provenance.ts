@@ -837,7 +837,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       residual_preview: p.residual(),
       lookback: p.lookback(),
       // The setting above is on by default; this says whether the run really had look-back
-      // (not for a live stream or ?pipeline=0; a Joint run has it).
+      // (not for a live stream; a Joint run has it).
       lookback_ran: p.lookbackRun ? p.lookbackRun() : p.lookback(),
       // Background settle (v2): runs whenever the target is below Max, at most `settle_cap`
       // re-read frames per live frame; 'off' (the checkbox unticked, `csettle=0`) never.

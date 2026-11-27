@@ -1,12 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { parsePageFlags } from '../lib/page-flags.ts';
+import { parsePageFlags, urlFlags } from '../lib/page-flags.ts';
 
 describe('parsePageFlags', () => {
-  it('defaults: pipelined, WebGPU, look-back and QC on, nothing from the URL', () => {
+  it('defaults: WebGPU, look-back and QC on, nothing from the URL', () => {
     const f = parsePageFlags('');
     expect(f).toMatchObject({
       debug: false,
-      pipelined: true,
       gpu: true,
       visits: null,
       lookbackOff: false,
@@ -68,17 +67,24 @@ describe('parsePageFlags', () => {
     expect(parsePageFlags('?visits=').visits).toBeNull();
     expect(parsePageFlags('?visits=2').visits).toBe(2);
     expect(parsePageFlags('?debug&lbpool=x').lbpool).toBe(0);
-    expect(parsePageFlags('?pipeline=0&gpu=0&flatfield=0&lookback=0')).toMatchObject({
-      pipelined: false,
+    expect(parsePageFlags('?gpu=0&flatfield=0&lookback=0')).toMatchObject({
       gpu: false,
       flatFieldOff: true,
       lookbackOff: true,
     });
-    expect(parsePageFlags('?pipeline=1&gpu&flatfield&lookback')).toMatchObject({
-      pipelined: true,
+    expect(parsePageFlags('?gpu&flatfield&lookback')).toMatchObject({
       gpu: true,
       flatFieldOff: false,
       lookbackOff: false,
     });
+  });
+});
+
+describe('urlFlags', () => {
+  it('records a flag the app does not read (e.g. `pipeline`) by name only', () => {
+    const f = urlFlags('?pipeline=0&gpu=0');
+    expect(f.flags.pipeline).toBeUndefined();
+    expect(f.other_flags).toEqual(['pipeline']);
+    expect(f.flags.gpu).toEqual({ value: '0', in_effect: true });
   });
 });
