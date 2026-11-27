@@ -14,12 +14,9 @@
  *   max (background removed): 0 .. full scale / 4 (0 .. 64 at 8 bits): the
  *        cells' rise above the floor.
  *
- * Measured on minisim motion_s6 (8-bit, 1000 frames): the mean spans -14 .. 54
- * (1st-99th percentile -7 .. 20), the max 0 .. 108 (99th percentile 40).
- *
  * The export stores the range it was written with (`meta_json.fov_images`),
- * and the viewer draws with the stored range, so a later change here does not
- * change how an old export looks. The lo/hi inputs over the image still set a
+ * and the viewer draws with the stored range, so changing the ranges here does
+ * not change how an existing export looks. The lo/hi inputs over the image still set a
  * range by hand.
  */
 import type { DisplayRange } from './frame-display.ts';

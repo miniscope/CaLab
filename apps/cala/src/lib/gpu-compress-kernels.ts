@@ -1,6 +1,6 @@
 /**
- * WGSL kernels of the GPU window compressor (`gpu-compress.ts`): the 24 Nov
- * probe's kernels generalised to tiles of any size up to 64 x 64, a ring of
+ * WGSL kernels of the GPU window compressor (`gpu-compress.ts`) for tiles of
+ * any size up to 64 x 64, a ring of
  * frames held in blocks, `stride` sketch columns (a multiple of 64), the mean
  * per frame pixel and missing samples.
  *

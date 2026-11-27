@@ -17,8 +17,8 @@
  * own file names goes in. A `?live=` URL (a host) is never recorded, only
  * that the flag was present. Nothing here is sent anywhere (no analytics).
  *
- * Extending: the `slots` block holds clearly named places for the later
- * work-slider, curve and auto-mode PRs (`WORK_SLIDER_SLOTS`). A slot is
+ * Extending: the `slots` block holds clearly named places for the Speed
+ * control's data (`WORK_SLIDER_SLOTS`). A slot is
  * `null` until its feature fills it; add fields under the slot, and bump
  * `RUN_RECORD_VERSION` only when an existing field changes meaning.
  */
@@ -41,8 +41,9 @@ export const RUN_RECORD_FORMAT = 'cala-run-record';
 export const RUN_RECORD_VERSION = 2;
 
 /**
- * Places the later PRs fill. All `null` today; the record always has them so a
- * reader can tell "not run" from "not recorded".
+ * Named places for the Speed control's data. A slot is `null` until its feature
+ * fills it; the record always has them so a reader can tell "not run" from
+ * "not recorded".
  */
 export const WORK_SLIDER_SLOTS = [
   /** The Speed track the run was made with (scale and the floor's ladder); the position over the run is `target_speed.changes`. */
@@ -209,7 +210,7 @@ export interface CurveRecord {
 export interface WorkSample {
   /** Frame the run had processed. */
   frame: number;
-  /** The settle governor's limit now (null: no governor, e.g. a run at Max). */
+  /** The settle governor's current limit (null: no governor, e.g. a run at Max). */
   limit: string | null;
   /**
    * The run's top speed as the Speed block shows it (Max), fps (null: not known yet): the fast
@@ -419,7 +420,7 @@ export class RunTrace {
     return median(this.fastMaxSamples);
   }
 
-  /** The settle cap is `cap` now (0: Off). Repeats of the same value are not recorded again. */
+  /** The settle cap becomes `cap` (0: Off). Repeats of the same value are not recorded again. */
   noteCap(cap: number, frame: number, source: string): void {
     const last = this.caps[this.caps.length - 1];
     if (last && last.cap === cap) return;
@@ -444,7 +445,7 @@ export class RunTrace {
     return this.pool ? { ...this.pool } : null;
   }
 
-  /** The target speed is `fps` now (0: Max). Repeats of the same value are not recorded again. */
+  /** The target speed becomes `fps` (0: Max). Repeats of the same value are not recorded again. */
   noteTargetSpeed(fps: number, frame: number, source: string): void {
     const last = this.speed[this.speed.length - 1];
     if (last && last.fps === fps) return;
@@ -505,7 +506,7 @@ function settleVisitsRecord(v: SettleVisits, fed: number): Record<string, number
   };
 }
 
-/** What a run realised, as against what was set (section 5 of the speed control design). Null where not known. */
+/** What a run realised, as against what was set Null where not known. */
 export interface RealisedWork {
   /** Discover's frames over its wall time, fps. */
   achieved_fps_mean: number | null;
@@ -620,7 +621,7 @@ export interface RunRecordInput {
   /** Discover's mean processing rate over the run, frames per second (null: not known). */
   achievedFps: number | null;
   machine: MachineContext;
-  /** What the later PRs fill (`WORK_SLIDER_SLOTS`); absent slots are written as null. */
+  /** The Speed control's slots (`WORK_SLIDER_SLOTS`); absent slots are written as null. */
   slots?: Partial<Record<WorkSliderSlot, unknown>>;
 }
 
@@ -840,7 +841,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       // The setting above is on by default; this says whether the run really had look-back
       // (not for a live stream; a Joint run has it).
       lookback_ran: p.lookbackRun ? p.lookbackRun() : p.lookback(),
-      // Background settle (v2): runs whenever the target is below Max, at most `settle_cap`
+      // Background settle: runs whenever the target is below Max, at most `settle_cap`
       // re-read frames per live frame; 'off' (the checkbox unticked, `csettle=0`) never.
       background_settle: p.csettle() ? 'auto-below-max' : 'off',
       settle_cap:
@@ -983,7 +984,7 @@ export interface AppliedSettings {
   paceFps?: number;
   smoothPlayback?: boolean;
   /**
-   * The settle pool size S the run had planned (v2). It cannot be applied (it
+   * The settle pool size S the run had planned. It cannot be applied (it
    * is fixed at page load from the core count, or `?debug&lbpool=S`); the app
    * reports a mismatch.
    */
@@ -997,9 +998,8 @@ export interface AppliedSettings {
    */
   curve?: ReplayCurve;
   /**
-   * The record says Refine ran (`settings.refine_runs` above 0, or a `refine` stage run). That stage
-   * was removed: look-back and the Final settle replace it, so the replay has no Refine run and
-   * `lookback` is forced on.
+   * The record says Refine ran (`settings.refine_runs` above 0, or a `refine` stage run). The replay
+   * has no Refine run: look-back and the Final settle cover it, so `lookback` is forced on.
    */
   refineUsed?: boolean;
   /** The run changed its settle cap part-way (`work.cap_changes` has more than one distinct value); not replayed. */
@@ -1056,8 +1056,8 @@ export function settingsFromRecord(rec: unknown): AppliedSettings | null {
   bool('discovery', 'discover');
   bool('lookback', 'lookback');
   if (v === 1) {
-    // v1: `settle_during_discover` false was the cap Off; true is Background settle as now
-    // (the default), at the recorded ceiling. `settle_governor` has no meaning any more.
+    // Record version 1: `settle_during_discover` false is the cap Off; true is Background settle
+    // (the default), at the recorded ceiling. `settle_governor` is ignored.
     bool('settle_during_discover', 'csettle');
     num('settle_ceiling_per_live_frame', 'csettleCeiling');
   } else {
@@ -1108,7 +1108,7 @@ export function settingsFromRecord(rec: unknown): AppliedSettings | null {
     stages.some((x) => (x as Record<string, unknown> | null)?.stage === 'refine')
   )
     out.refineUsed = true;
-  // Look-back with its Final settle is the modern equivalent of a Refine run: keep it on for such a record.
+  // Look-back with its Final settle covers what a Refine run did: keep it on for such a record.
   if (out.refineUsed) out.lookback = true;
   const work = r.work as { cap_changes?: unknown } | undefined;
   if (Array.isArray(work?.cap_changes)) {

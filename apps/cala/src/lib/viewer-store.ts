@@ -12,11 +12,13 @@ import { errMsg } from './errors.ts';
 /** Playback rate when the recording has neither timestamps nor metadata. */
 export const FALLBACK_PLAYBACK_FPS = 20;
 
+/** The frame on display: its stream index and pixels. */
 export interface CurrentFrame {
   index: number;
   pixels: FramePixels;
 }
 
+/** Creates the viewer state (opened recording, current frame, playback) over a frame client. */
 export function createViewerStore(client: FrameClient) {
   const [info, setInfo] = createSignal<FrameSourceInfo | null>(null);
   const [label, setLabel] = createSignal('');
@@ -194,4 +196,5 @@ export function createViewerStore(client: FrameClient) {
   };
 }
 
+/** The viewer store's API. */
 export type ViewerStore = ReturnType<typeof createViewerStore>;

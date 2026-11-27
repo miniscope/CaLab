@@ -2,20 +2,14 @@
  * Trace QC of the extracted traces, per session.
  *
  * The live QC (`QcMonitor`, Discover) reads each cell's last
- * `window_frames` (60 s) of Discover's traces. Extract runs no
- * monitor, so before this module the app kept showing, and exported, the
- * QC of the last minute of Discover: for a cell that happened to be quiet
- * then a low SNR, and in a Joint run the same numbers (the end of the last
- * session) for every session.
- *
- * After Extract this recomputes the trace statistics (peak SNR, events, the
+ * `window_frames` (60 s) of Discover's traces. Extract runs no monitor, so
+ * this module recomputes the trace statistics (peak SNR, events, the
  * low-SNR flag) from the extracted traces, per session span, with the
  * monitor's own function (`QcMonitor.spanStats`, Rust `QcConfig::trace_stats`)
  * at the recording's frame rate:
- *   - scope `'session'` (default, PI decision 13 Nov 2026): the whole span,
- *     the span CaLab's shipped SNR convention reads (crates/solver/src/snr.rs).
- *     On minisim it ranks GT-matched cells and GT trace quality better
- *     (results note tools/cala-eval/results/2026-11-13-qc-snr.md);
+ *   - scope `'session'` (default): the whole span, the span CaLab's SNR
+ *     convention reads (crates/solver/src/snr.rs). See
+ *     tools/cala-eval/results/2026-11-13-qc-snr.md;
  *   - scope `'window'`: the last 60 s of the span, the monitor's definition.
  * The other metrics (demixing, neighbours, motion) stay those of Discover;
  * the duplicate flag is kept, the pass rule is recomputed from the new
@@ -34,8 +28,8 @@ import {
 export type QcScope = 'window' | 'session';
 
 /**
- * Scope of the after-Extract QC: the whole session (PI decision 13 Nov
- * 2026). `'window'` would keep the monitor's last-60-s definition.
+ * Scope of the after-Extract QC: `'session'` is the whole session span;
+ * `'window'` keeps the monitor's last-60-s definition.
  */
 export const QC_SCOPE_DEFAULT: QcScope = 'session';
 

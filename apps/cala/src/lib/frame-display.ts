@@ -80,9 +80,9 @@ export function displayRange(bytes: DisplayPixels, bitDepth: number, auto: boole
 /** Images pooled for the one-time range fit (one preview image per batch). */
 export const FIT_FRAMES = 8;
 /**
- * White-level headroom for background-removed views: the fitted white level
- * is about 6 on real 1p recordings, where about 20 shows the cells without
- * saturating them (PI, 22 Nov 2026).
+ * White-level headroom for background-removed views: the plain fitted white
+ * level is too low to show the cells without saturating them, so the fitted
+ * span above `lo` is multiplied by this factor.
  */
 export const BG_REMOVED_HEADROOM = 3.5;
 /** Pixels sampled per image for the range fit. */

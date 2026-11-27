@@ -14,6 +14,7 @@ export const DONATION_CHUNKS_AHEAD = 2;
 /** The recording to encode: a folder's files, or sessions opened as one recording. */
 export type DonationSource = { entries: FolderEntry[] } | { sessions: SessionInput[] };
 
+/** What the donation worker needs to open and encode a recording. */
 export interface DonationEncodeInput {
   source: DonationSource;
   /** Frame rate written into every chunk header, Hz. */

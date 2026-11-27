@@ -2,9 +2,9 @@
 /**
  * WebGPU half of the motion corrector (rigid registration only).
  *
- * The CPU (WASM) corrector spends most of its time in two places that are
- * pure image filtering: the registration prefilter (3x3 median, then a
- * difference of Gaussians) and the full-frame bicubic warp. Both run here.
+ * The two heavy steps of the CPU (WASM) corrector are pure image filtering:
+ * the registration prefilter (3x3 median, then a difference of Gaussians)
+ * and the full-frame bicubic warp. Both run here.
  * What stays in WASM is everything stateful and small: the FFT correlation
  * against the template, the sub-pixel peak, the anomaly screen and the
  * template / drift bookkeeping (`MotionCorrector.estimateF32Prefiltered`).
@@ -515,7 +515,7 @@ export class GpuMotion {
   }
 
   /**
-   * Upload `count` frames and warp them by known rigid shifts (pass 2: no
+   * Upload `count` frames and warp them by known rigid shifts (Extract: no
    * prefilter, no estimate). Resolves once the work is queued, with `done`,
    * the promise of the corrected frames in `out` (boxed, so awaiting this
    * call does not wait for the readback).

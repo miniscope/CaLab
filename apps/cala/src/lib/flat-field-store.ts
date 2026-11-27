@@ -59,7 +59,7 @@ export interface FlatFieldDeps {
   record: () => RunRecord;
   /** No further map of this run will come (the estimator finished or failed). */
   onFinal: () => void;
-  /** A new map of this run's estimator. */
+  /** A map of this run's estimator. */
   onMap: (map: FlatFieldMap) => void;
 }
 
@@ -109,7 +109,7 @@ export function createFlatFieldStore(deps: FlatFieldDeps) {
       // A crashed estimator (session -1) or this run's: reported, the run goes on uncorrected.
       if (e.session === -1 || e.session === flatSessionId) {
         patchFlat({ error: e.message });
-        // No map of this run comes any more: the estimator's worker can go.
+        // No further map of this run comes: the estimator's worker can go.
         client.releaseFlatField?.();
         deps.onFinal();
       }

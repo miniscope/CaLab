@@ -5,7 +5,7 @@
  * median Pearson r of far pairs sits near 0; neighbours whose light is shared
  * between their traces show excess r at close range.
  *
- * Definitions (the PI's reference analysis):
+ * Definitions:
  * - traces are high-passed by subtracting a 15 s centred moving average (edges
  *   extended with the nearest sample), so slow drift does not correlate cells;
  * - r is the Pearson correlation of two high-passed traces over all frames;

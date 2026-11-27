@@ -219,8 +219,7 @@ export class BgSettleDriver {
   }
 
   /**
-   * An answer of Background settle. Whole (the default, as qc_eval
-   * measured it): the next request goes out first, so the look-back worker
+   * An answer of Background settle. Whole (the default): the next request goes out first, so the look-back worker
    * reads on while every frame of this answer is fed here in one go. In
    * pieces (`SlowInit.csettleYield`): `yieldFrames` frames, then this worker
    * gives way to the batches and visit results waiting, and so on; the next

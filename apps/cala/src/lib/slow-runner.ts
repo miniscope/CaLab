@@ -1,7 +1,7 @@
 /**
  * The slow loop (streaming cell discovery), inside its own worker: observes
  * every frame the fast worker forwards, returns the frame buffer, and
- * publishes each new library version to the fast worker (bytes) and to the
+ * publishes each library version to the fast worker (bytes) and to the
  * main thread (footprints for drawing).
  *
  * Tile visits (the expensive part) run either here, `budget` work units
@@ -16,7 +16,7 @@
  * is out, as a visit in flight does not know them: no new visit is handed
  * out until the ones out are back and the cells are in.
  *
- * Its stalls (a tile visit or a library rebuild can take 50-160 ms) only
+ * Its stalls (a tile visit or a library rebuild) only
  * delay this worker; the fast worker drops batches for it instead of waiting
  * (see `ForwardPool`).
  *
@@ -211,6 +211,7 @@ export interface SlowLoopLike {
 
 /** A recording's ask about its factors ends on the file after this long without an answer (`?factors=file`). */
 export const FACTOR_ASK_MS = 150_000;
+/** The message shown when the factors ask times out. */
 export const FACTOR_NO_ANSWER = `No answer about the factors within ${FACTOR_ASK_MS / 1000} s.`;
 
 /**
@@ -307,6 +308,7 @@ export function buildSlowLoop<T>(ctor: SlowLoopCtor<T>, init: SlowInit): T {
   return loop;
 }
 
+/** What a `SlowRunner` needs from its environment (workers, clocks, timers). */
 export interface SlowRunnerDeps {
   create(init: SlowInit): SlowLoopLike;
   toFast: PortLike<SlowToFast>;
@@ -375,6 +377,7 @@ function lookbackItems(flat: ArrayLike<number>): LookbackItem[] {
 /** Wall time between cell-status updates to the main thread, ms. */
 export const CELL_STATUS_EVERY_MS = 1000;
 
+/** The slow loop's driver inside the slow worker. */
 export class SlowRunner {
   private readonly deps: SlowRunnerDeps;
   private readonly now: () => number;
@@ -413,7 +416,7 @@ export class SlowRunner {
   /** Per visit worker: the busy ms of its Final-settle visits (`WorkStatus.settleVisitBusyMs`). */
   private settleVisitBusy: number[];
   private lbWork = emptyWorkByKind();
-  /** Answers that arrived for a request no longer waited for (cancelled, timed out, stale). */
+  /** Answers that arrived for a request nobody waits for (cancelled, timed out, stale). */
   private lbDiscarded = emptyLookbackWork();
   private waitN = 0;
   private waitSum = 0;
@@ -665,8 +668,8 @@ export class SlowRunner {
 
   /**
    * The port to look-back worker `index` (0: need-driven look-back and the
-   * end settle; 1..S: the settle pool). Runs with look-back started from now
-   * on use it; a pool port serves once `setSettlePool` joins it to a run.
+   * end settle; 1..S: the settle pool). Runs with look-back started after this
+   * call use it; a pool port serves once `setSettlePool` joins it to a run.
    */
   connectLookback(port: PortLike<SlowToLookback>, index = 0): void {
     this.lbPorts[index] = port;
@@ -1082,7 +1085,7 @@ export class SlowRunner {
     this.status(this.now() - t0, maxStep);
   }
 
-  /** Trimming decisions and, when due, a new library (parallel mode). */
+  /** Trimming decisions and, when due, a library (parallel mode). */
   private housekeep(): void {
     this.clock.span('housekeep', () => {
       const lib = this.tm('housekeep.wasm', () => this.loop?.housekeep());
@@ -1247,7 +1250,7 @@ export class SlowRunner {
    * A Joint run: the batch from stream frame `start` is in the session that
    * starts at the last session start at or before it (not only at it: the
    * forward pool may have dropped the session's first batches). Look-back
-   * moves its floor there (`setLookbackFloor`): from now on it re-reads the
+   * moves its floor there (`setLookbackFloor`): it re-reads the
    * current session only.
    */
   private sessionFloor(loop: SlowLoopLike, start: number): void {
@@ -1348,7 +1351,7 @@ export class SlowRunner {
           if (settle.answers.length === 1) this.finalSettle.settleObserve(loop, settle);
           return;
         } else if (req.kind === 'need') this.observeLookback(loop, msg, req.items);
-        // A settle answer that came when Discover could no longer use it: counted as dropped.
+        // A settle answer that came when Discover could not use it: counted as dropped.
         if (req.kind === 'csettle' && this.bgSettle.bgs)
           this.bgSettle.bgs.dropped += req.items.length;
         // The buffer goes back to the look-back worker's pool (never detached here).
@@ -1398,7 +1401,7 @@ export class SlowRunner {
   }
 
   /**
-   * Every request out is no longer waited for (their late answers are
+   * Every request out stops being waited for (their late answers are
    * ignored and their buffers go back); a settle request's frames count as
    * dropped, so re-read = fitted + held out + dropped. A held request is dropped.
    */
@@ -1415,7 +1418,7 @@ export class SlowRunner {
     }
   }
 
-  /** The user's "Stop settling": publish the final library now, with what was refined. */
+  /** The user's "Stop settling": publish the final library at once, with what was refined. */
   stopSettling(session: number): void {
     if (session !== this.session) return;
     if (this.factorWait) {

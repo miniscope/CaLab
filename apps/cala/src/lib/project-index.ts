@@ -67,7 +67,7 @@ export interface ProjectRunSession {
 export interface ProjectRun {
   /** The run folder's name (a timestamp), or `legacy-<time>` for a tree at the results root. */
   id: string;
-  /** Its folder relative to the results folder ('' for a #377 tree written there). */
+  /** Its folder relative to the results folder ('' for a legacy tree written there). */
   folder: string;
   mode: LibraryMode;
   sessions: ProjectRunSession[];
@@ -80,7 +80,7 @@ export interface ProjectRun {
   stopped?: string;
   /** A run plan's group: plan id, 1-based group, and the plan's group count. */
   plan?: { id: string; group: number; groups: number };
-  /** PR 2: the library a run started from, and the one it saved. */
+  /** The library a run started from, and the one it saved. */
   library_in: null;
   library_out: null;
 }
@@ -96,8 +96,7 @@ export interface ProjectResult {
    * Where the cell ids come from. Results with the same id space share cell
    * ids: cell 7 is the same neuron in each of them. A Joint run is one id
    * space across its sessions (`run:<run>`); a Separate run gives each session
-   * its own (`run:<run>/<session>`); a saved library (PR 2) will be
-   * `library:<id>`, shared by every session it is applied to.
+   * its own (`run:<run>/<session>`).
    */
   id_space: string;
   /** The library version the ids belong to (the final library of the run). */
@@ -425,7 +424,7 @@ export function upsertRun(index: ProjectIndex, run: ProjectRun): ProjectIndex {
   return { ...index, runs };
 }
 
-/** A run id from the time (local), unique among `taken`: `2026-11-13_14-02-33`. */
+/** A run id from the time (local), unique among `taken`: `YYYY-MM-DD_HH-MM-SS`. */
 export function runIdFor(now: Date, taken: ReadonlySet<string>): string {
   const p = (n: number) => String(n).padStart(2, '0');
   const base =
@@ -739,8 +738,8 @@ export function sessionStatus(index: ProjectIndex, sessionId: string): SessionSt
 
 /** Folder names that look like a date, a time or a numbered session, not an animal. */
 const NOT_ANIMAL = [
-  /^\d{4}[-_.]?\d{1,2}[-_.]?\d{1,2}/, // 2026_11_10, 20261110
-  /^\d{1,2}[-_.]\d{2}([-_.]\d{2})?$/, // 14_02_33
+  /^\d{4}[-_.]?\d{1,2}[-_.]?\d{1,2}/, // YYYY_MM_DD, YYYYMMDD
+  /^\d{1,2}[-_.]\d{2}([-_.]\d{2})?$/, // HH_MM_SS
   /^(day|session|ses|sess|d|s|rec|recording|trial|run)[-_ ]?\d+$/i,
   /^\d+$/,
 ];

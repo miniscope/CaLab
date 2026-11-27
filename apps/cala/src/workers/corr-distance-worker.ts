@@ -5,6 +5,7 @@
 import { computeCorrDistance, type CorrDistanceResult } from '../lib/corr-distance.ts';
 import { errMsg } from '../lib/errors.ts';
 
+/** Request: the traces and cell centers to correlate (`computeCorrDistance`). */
 export interface CorrRequest {
   id: number;
   traces: Float32Array;
@@ -15,6 +16,7 @@ export interface CorrRequest {
   diameter: number;
 }
 
+/** Answer to the request with the same `id`: the result, or an error message. */
 export type CorrResponse =
   { id: number; result: CorrDistanceResult } | { id: number; error: string };
 

@@ -1,9 +1,9 @@
 /**
  * The export of a live run. A live source has no file to re-read, so there
- * is no pass 2: the traces exported are the ones the fast loop solved as the
+ * is no Extract: the traces exported are the ones the fast loop solved as the
  * frames came in (the trace history), laid out frames x cells from frame 0
- * like a pass-2 result. A cell's frames before it was found, and frames a
- * bounded history no longer holds, are NaN.
+ * like an Extract result. A cell's frames before it was found, and frames a
+ * bounded history does not hold, are NaN.
  */
 import type { CellStore } from './cell-store.ts';
 import type { Pass2Result } from './pass2-store.ts';
@@ -14,7 +14,7 @@ const STEP_FRAMES = 1024;
 
 /**
  * The live traces of the cells in the current library over `frames` frames
- * as a pass-2 result (null without a library). Throws when the matrix is too
+ * as an Extract result (null without a library). Throws when the matrix is too
  * large to hold in memory.
  */
 export async function liveTraceResult(

@@ -23,10 +23,10 @@
  *    Discover itself preprocessed, so back state and flat field play no part.
  *  - **Prepare ahead, solve on cue.** A `hold` request is read and
  *    preprocessed at once, then waits for its `solve` (or `drop`). The slow
- *    worker sends `solve` exactly where it used to send the request, so the
- *    library it is solved with (the newest that arrived before the `solve`)
- *    is the same as before, while the reading and preprocessing overlap
- *    with the slow worker's work on the answer before. (The slow worker
+ *    worker sends `solve` at the point an unheld request would go, so the
+ *    library a request is solved with is the newest that arrived before the
+ *    `solve`, while the reading and preprocessing overlap with the slow
+ *    worker's work on the preceding answer. (The slow worker
  *    holds only recording requests; were a factor server's request held, it
  *    would wait for its cue and then be served whole, with the same library.)
  */
@@ -348,7 +348,7 @@ export class LookbackService {
           finalWaitMs = this.now() - t0;
         }
         out = await pool.acquire();
-        // (Any other request: the libraries in hand once it has a buffer, as `serve` always did.)
+        // (Any other request: the libraries in hand once it has a buffer, as `serve` does.)
         if (!final && !msg.hold) reader.applyLibrary();
         let prepared: LookbackPrepared | null = null;
         let failed: unknown = null;
