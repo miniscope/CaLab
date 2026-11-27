@@ -81,6 +81,16 @@ export function subscribeAuth(callback: (state: AuthState) => void): () => void 
  * the page is served from, so a magic link returns to /CaTune/ or
  * /CaTune/v2.23.1/ alike.
  */
+/**
+ * True when a URL fragment carries a sign-in link's result
+ * (`#access_token=...`, or `#error=...` for a failed link). An app that routes
+ * by the fragment must leave such a fragment alone until Supabase has read it,
+ * or the sign-in is lost and the page asks for the email again.
+ */
+export function isAuthReturnFragment(hash: string): boolean {
+  return /(^#|&)(access_token|refresh_token|error)=/.test(hash);
+}
+
 export function appRootUrl(href: string, baseUrl: string | undefined): string {
   const url = new URL(baseUrl || '/', href);
   url.search = '';

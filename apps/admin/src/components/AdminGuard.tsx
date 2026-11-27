@@ -26,7 +26,10 @@ function SignInForm(): JSX.Element {
     if (!addr) return;
     setSending(true);
     setError(null);
-    const result = await signInWithEmail(addr, window.location.href);
+    // Return to the app root, not the current `#/view` address: Supabase puts
+    // the session in the fragment, and a fragment already holding a route
+    // would garble it.
+    const result = await signInWithEmail(addr);
     if (result.error) {
       setError(result.error);
     } else {

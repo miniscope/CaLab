@@ -19,7 +19,7 @@ vi.mock('../supabase.ts', () => ({
   })),
 }));
 
-import { appRootUrl, realUser, subscribeAuth } from '../auth.ts';
+import { appRootUrl, isAuthReturnFragment, realUser, subscribeAuth } from '../auth.ts';
 import type { AuthState } from '../auth.ts';
 
 const anonymous = { id: 'anon', is_anonymous: true } as User;
@@ -77,5 +77,18 @@ describe('appRootUrl', () => {
 
   it('falls back to the site root without a base', () => {
     expect(appRootUrl('http://localhost:5173/x/y', undefined)).toBe('http://localhost:5173/');
+  });
+});
+
+describe('isAuthReturnFragment', () => {
+  it('spots a sign-in link result in the fragment', () => {
+    expect(isAuthReturnFragment('#access_token=a&refresh_token=b&type=magiclink')).toBe(true);
+    expect(isAuthReturnFragment('#error=access_denied&error_description=expired')).toBe(true);
+  });
+
+  it('leaves app routes alone', () => {
+    expect(isAuthReturnFragment('')).toBe(false);
+    expect(isAuthReturnFragment('#/overview')).toBe(false);
+    expect(isAuthReturnFragment('#/cala?app=cala&range=30d')).toBe(false);
   });
 });
