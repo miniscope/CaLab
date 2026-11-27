@@ -5,43 +5,14 @@
  * look-back worker, and what reaches the slow loop.
  */
 import { describe, expect, it, vi } from 'vitest';
-import {
-  buildSlowLoop,
-  SlowRunner,
-  type PublishedLibrary,
-  type SlowLoopLike,
-} from '../lib/slow-runner.ts';
+import { buildSlowLoop, SlowRunner } from '../lib/slow-runner.ts';
 import { lookbackFrames } from '../lib/lookback-reader.ts';
 import { CSETTLE } from '../lib/settle.ts';
 import type { LookbackToSlow, SlowToLookback } from '../workers/lookback-types.ts';
 import type { FastToSlow, SlowInit, SlowToFast, SlowToMain } from '../workers/slow-types.ts';
+import { fakeLib, INIT as BASE_INIT, stubSlowLoop } from './slow-fixtures.ts';
 
-function fakeLib(version: number): PublishedLibrary {
-  return {
-    version,
-    ids: () => Uint32Array.of(1),
-    centers: () => Float32Array.of(0, 0),
-    radii: () => Float32Array.of(1),
-    supportStarts: () => Uint32Array.of(0, 1),
-    supportPixels: () => Uint32Array.of(0),
-    footprintValues: () => Float32Array.of(1),
-    toBytes: () => Uint8Array.of(version),
-    free: vi.fn(),
-  };
-}
-
-const INIT: Extract<FastToSlow, { type: 'init' }> = {
-  type: 'init',
-  session: 1,
-  width: 2,
-  height: 1,
-  fov: Uint8Array.of(1, 1),
-  noise: Float32Array.of(1, 1),
-  cellDiameterPx: 10,
-  flattenSigmaPx: 0,
-  budget: 123,
-  lookback: true,
-};
+const INIT: Extract<FastToSlow, { type: 'init' }> = { ...BASE_INIT, lookback: true };
 
 function frames(start: number, count = 8): Extract<FastToSlow, { type: 'frames' }> {
   return {
@@ -60,7 +31,7 @@ function frames(start: number, count = 8): Extract<FastToSlow, { type: 'frames' 
 const held = (f: number) => f % 3 === 0;
 
 /** A fake loop: `need` need-driven look-back frames wanted, and the settle's frame picker. */
-function fakeLoop(need: number, settle = true, gate = { open: true }) {
+function fakeLoop(need: number, gate = { open: true }) {
   let credit = 0;
   let published = false;
   let left = need;
@@ -71,8 +42,7 @@ function fakeLoop(need: number, settle = true, gate = { open: true }) {
   const lookedBack: number[] = [];
   const seens: number[] = [];
   let version = 10;
-  const loop: SlowLoopLike = {
-    observe: () => true,
+  const loop = stubSlowLoop({
     // The first library (version 10) comes with the first step once the gate is open.
     step: vi.fn(() => {
       if (!gate.open || published) return undefined;
@@ -80,13 +50,7 @@ function fakeLoop(need: number, settle = true, gate = { open: true }) {
       return fakeLib(10);
     }),
     finalize: vi.fn(() => fakeLib(++version)),
-    setNoise: vi.fn(),
-    setEditScope: vi.fn(),
     cellCount: 1,
-    reservoirBytes: 0,
-    stats: () => new Float64Array(17),
-    free: vi.fn(),
-    enableLookback: vi.fn(),
     lookbackNote: vi.fn((_seen: number, n: number) => {
       credit += 2 * n;
     }),
@@ -103,35 +67,29 @@ function fakeLoop(need: number, settle = true, gate = { open: true }) {
       lookedBack.push(stream);
       return true;
     }),
-    markAllDue: vi.fn(),
     lookbackStats: () => Float64Array.of(need - left, lookedBack.length, 0, 0, 1, left, 8),
     footprintNoise: vi.fn(() => Float64Array.of(1, 0.1)),
-    ...(settle
-      ? {
-          enableSettle: vi.fn(),
-          settleTake: vi.fn((seen: number, max: number) => {
-            seens.push(seen);
-            if (seen < max) return new Float64Array(0);
-            chunk++;
-            const start = (chunk * 5) % (seen - max + 1);
-            const out: number[] = [];
-            for (let k = 0; k < max; k++)
-              out.push(start + k, -1_000_000 - chunk, held(start + k) ? 1 : 0);
-            taken += max;
-            return Float64Array.from(out);
-          }),
-          observeSettle: vi.fn((_f, _v, _t, _b, stream: number) => {
-            if (held(stream)) throw new Error(`held-out frame ${stream} reached the slow loop`);
-            settled.push(stream);
-            return true;
-          }),
-          settleSkipped: vi.fn((n: number) => {
-            skipped += n;
-          }),
-          settleStats: () => Float64Array.of(taken, settled.length, skipped, 0),
-        }
-      : {}),
-  };
+    settleTake: vi.fn((seen: number, max: number) => {
+      seens.push(seen);
+      if (seen < max) return new Float64Array(0);
+      chunk++;
+      const start = (chunk * 5) % (seen - max + 1);
+      const out: number[] = [];
+      for (let k = 0; k < max; k++)
+        out.push(start + k, -1_000_000 - chunk, held(start + k) ? 1 : 0);
+      taken += max;
+      return Float64Array.from(out);
+    }),
+    observeSettle: vi.fn((_f, _v, _t, _b, stream: number) => {
+      if (held(stream)) throw new Error(`held-out frame ${stream} reached the slow loop`);
+      settled.push(stream);
+      return true;
+    }),
+    settleSkipped: vi.fn((n: number) => {
+      skipped += n;
+    }),
+    settleStats: () => Float64Array.of(taken, settled.length, skipped, 0),
+  });
   return { loop, settled, lookedBack, seens };
 }
 
@@ -144,7 +102,6 @@ function setup(
     pace?: number;
     needFirst?: boolean;
     yieldFrames?: number;
-    settle?: boolean;
     lb?: boolean;
     /** false: the slow loop publishes no library until `gate.open` is set. */
     library?: boolean;
@@ -153,7 +110,7 @@ function setup(
   } = {},
 ) {
   const gate = { open: o.library !== false };
-  const f = fakeLoop(o.need ?? 0, o.settle ?? true, gate);
+  const f = fakeLoop(o.need ?? 0, gate);
   const timers: (() => void)[] = [];
   const toMain: SlowToMain[] = [];
   const toFast: SlowToFast[] = [];
@@ -309,15 +266,11 @@ describe('settle during Discover: off by default', () => {
     expect(t.status()).not.toHaveProperty('csettle');
   });
 
-  it('is ignored without look-back, and with a slow loop that cannot do it', () => {
+  it('is ignored without look-back', () => {
     const a = setup({ csettle: 2, lb: false });
     a.live(8);
     expect(a.created[0]).not.toHaveProperty('csettle');
     expect(a.toLb).toEqual([]);
-    const b = setup({ csettle: 2, settle: false });
-    b.live(8);
-    expect(b.requests()).toEqual([]);
-    expect(b.status()).not.toHaveProperty('csettle');
   });
 
   it('buildSlowLoop never turns the engine side on: the runner does, when it arms the settle', () => {

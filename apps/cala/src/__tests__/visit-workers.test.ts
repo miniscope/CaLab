@@ -4,7 +4,7 @@ import { QcMonitor, SlowLoop, TraceEngine, TraceLibrary, VisitWorker } from '../
 import { buildGeometry, pickCell } from '../lib/cell-overlay.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
 import { RESERVED_THREADS, visitWorkerCount } from '../lib/slow-client.ts';
-import { SlowRunner, type PublishedLibrary, type SlowLoopLike } from '../lib/slow-runner.ts';
+import { SlowRunner } from '../lib/slow-runner.ts';
 import type {
   FastToSlow,
   OwnerToVisit,
@@ -15,6 +15,7 @@ import type {
 import { visitRateCounters } from '../workers/slow-types.ts';
 import { VISIT_RATE } from '../lib/visit-rate.ts';
 import { initTestWasm } from './wasm-test.ts';
+import { fakeLib, INIT, stubSlowLoop } from './slow-fixtures.ts';
 
 beforeAll(initTestWasm);
 
@@ -28,32 +29,6 @@ describe('visitWorkerCount', () => {
     expect(visitWorkerCount(Number.NaN)).toBe(0);
   });
 });
-
-function fakeLib(version: number): PublishedLibrary {
-  return {
-    version,
-    ids: () => Uint32Array.of(1),
-    centers: () => Float32Array.of(0, 0),
-    radii: () => Float32Array.of(1),
-    supportStarts: () => Uint32Array.of(0, 1),
-    supportPixels: () => Uint32Array.of(0),
-    footprintValues: () => Float32Array.of(1),
-    toBytes: () => Uint8Array.of(version),
-    free: vi.fn(),
-  };
-}
-
-const INIT: Extract<FastToSlow, { type: 'init' }> = {
-  type: 'init',
-  session: 1,
-  width: 2,
-  height: 1,
-  fov: Uint8Array.of(1, 1),
-  noise: Float32Array.of(1, 1),
-  cellDiameterPx: 10,
-  flattenSigmaPx: 0,
-  budget: 123,
-};
 
 function frames(start: number, noise?: Float32Array): Extract<FastToSlow, { type: 'frames' }> {
   return {
@@ -77,19 +52,14 @@ describe('SlowRunner with visit workers (fakes)', () => {
     let due = jobsDue;
     const applied: number[] = [];
     let housekeeps = 0;
-    const loop: SlowLoopLike = {
-      observe: () => true,
-      step: vi.fn(() => undefined),
+    const loop = stubSlowLoop({
       finalize: () => fakeLib(900),
-      setNoise: vi.fn(),
       takeJob: () => (due-- > 0 ? Uint8Array.of(due) : undefined),
       applyJob: (b) => applied.push(b[0]),
       housekeep: () => (++housekeeps === 3 ? fakeLib(7) : undefined),
       cellCount: 0,
-      reservoirBytes: 0,
       stats: () => new Float64Array(16),
-      free: vi.fn(),
-    };
+    });
     const r = new SlowRunner({
       create: () => loop,
       toFast: { postMessage: (m) => toFast.push(m) },
@@ -270,14 +240,7 @@ describe('parallel tile visits over the real WASM bindings', () => {
     };
     const slow = new SlowRunner({
       create: (i) =>
-        new SlowLoop(
-          i.width,
-          i.height,
-          i.fov,
-          i.noise,
-          i.cellDiameterPx,
-          i.flattenSigmaPx,
-        ) as unknown as SlowLoopLike,
+        new SlowLoop(i.width, i.height, i.fov, i.noise, i.cellDiameterPx, i.flattenSigmaPx),
       toFast: { postMessage: (msg) => toFast.push(msg) },
       toMain: { postMessage: (msg) => toMain.push(msg) },
       visits: [0, 1].map((i) => ({ postMessage: (m: OwnerToVisit) => inbox[i].push(m) })),
@@ -319,18 +282,13 @@ describe('SlowRunner and the Discover visit cap', () => {
   function run(visitSchedule?: 'auto' | 'fixed') {
     const toMain: SlowToMain[] = [];
     const setVisitSchedule = vi.fn();
-    const loop: SlowLoopLike = {
-      observe: () => true,
-      step: vi.fn(() => undefined),
+    const loop = stubSlowLoop({
       finalize: () => fakeLib(900),
-      setNoise: vi.fn(),
       setVisitSchedule,
       visitRateStats: () => Float64Array.of(1, 0.5, 10, 7, 3, 2),
       cellCount: 0,
-      reservoirBytes: 0,
       stats: () => new Float64Array(16),
-      free: vi.fn(),
-    };
+    });
     const r = new SlowRunner({
       create: () => loop,
       toFast: { postMessage: () => {} },

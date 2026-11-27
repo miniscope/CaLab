@@ -26,12 +26,13 @@ import {
   reviewReadout,
 } from '../lib/review-store.ts';
 import { createSlowClient } from '../lib/slow-client.ts';
-import { SlowRunner, type PublishedLibrary, type SlowLoopLike } from '../lib/slow-runner.ts';
+import { SlowRunner } from '../lib/slow-runner.ts';
 import { memoryStore } from '../lib/window-store.ts';
 import type { CompressToMain, FastToCompress } from '../workers/compress-types.ts';
 import type { CompressToReview, ReviewStatus, ReviewToMain } from '../workers/review-types.ts';
 import type { FastToSlow, OwnerToVisit, SlowToMain, VisitToOwner } from '../workers/slow-types.ts';
 import { initTestWasm } from './wasm-test.ts';
+import { fakeLib, INIT, stubSlowLoop } from './slow-fixtures.ts';
 
 beforeAll(initTestWasm);
 
@@ -356,32 +357,6 @@ describe('CompressRunner feeding the review worker', () => {
   });
 });
 
-function fakeLib(version: number): PublishedLibrary {
-  return {
-    version,
-    ids: () => Uint32Array.of(1),
-    centers: () => Float32Array.of(0, 0),
-    radii: () => Float32Array.of(1),
-    supportStarts: () => Uint32Array.of(0, 1),
-    supportPixels: () => Uint32Array.of(0),
-    footprintValues: () => Float32Array.of(1),
-    toBytes: () => Uint8Array.of(version),
-    free: vi.fn(),
-  };
-}
-
-const INIT: Extract<FastToSlow, { type: 'init' }> = {
-  type: 'init',
-  session: 1,
-  width: 2,
-  height: 1,
-  fov: Uint8Array.of(1, 1),
-  noise: Float32Array.of(1, 1),
-  cellDiameterPx: 10,
-  flattenSigmaPx: 0,
-  budget: 123,
-};
-
 const FRAMES: Extract<FastToSlow, { type: 'frames' }> = {
   type: 'frames',
   session: 1,
@@ -398,20 +373,14 @@ describe('SlowRunner taking reviewed cells', () => {
     const log: string[] = [];
     const toMain: SlowToMain[] = [];
     let due = 4;
-    const loop: SlowLoopLike = {
-      observe: () => true,
-      step: () => undefined,
+    const loop = stubSlowLoop({
       finalize: () => fakeLib(9),
-      setNoise: () => {},
       takeJob: () => (due-- > 0 ? (log.push('take'), Uint8Array.of(due)) : undefined),
       applyJob: () => void log.push('apply'),
-      housekeep: () => undefined,
       addReviewed: (c) => (log.push(`add ${c[0]}`), 1),
       cellCount: 0,
-      reservoirBytes: 0,
       stats: () => Float64Array.from({ length: 17 }, (_, i) => (i === 16 ? 5 : 0)),
-      free: () => {},
-    };
+    });
     const r = new SlowRunner({
       create: () => loop,
       toFast: { postMessage: () => {} },

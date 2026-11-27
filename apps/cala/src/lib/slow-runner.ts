@@ -161,10 +161,13 @@ export interface PublishedLibrary {
   free(): void;
 }
 
-/** What the runner needs of the WASM `SlowLoop`. */
+/**
+ * What the runner needs of the WASM `SlowLoop` (`crates/cala/src/discover/js.rs`): every
+ * member is required, as the WASM class has them all; test fakes start from `stubSlowLoop`.
+ */
 export interface SlowLoopLike {
-  /** Measurement only: the WASM stage timers (`SlowLoop.stageTiming`; feature `timing`). */
-  stageTiming?(): Float64Array | number[];
+  /** Measurement only: the WASM stage timers (`SlowLoop.stageTiming`; the last entry is 1 when built with feature `timing`). */
+  stageTiming(): Float64Array | number[];
   /**
    * `background`: that frame's background coefficients from the same solve;
    * `stream`: its stream index (look-back keeps its held-out decision).
@@ -179,40 +182,40 @@ export interface SlowLoopLike {
   step(budget: number): PublishedLibrary | undefined;
   finalize(): PublishedLibrary;
   setNoise(noise: Float32Array): void;
-  /** Restrict the structural edits (absent in some test fakes: a replay is refused). */
-  setEditScope?(scope: string): void;
-  /** The Discover visit rate's schedule: Auto (`true`) or fixed (absent in some test fakes). */
-  setVisitSchedule?(auto: boolean): void;
+  /** Restrict the structural edits. */
+  setEditScope(scope: string): void;
+  /** The Discover visit rate's schedule: Auto (`true`) or fixed. */
+  setVisitSchedule(auto: boolean): void;
   /** The schedule's parameters (`visitRateCounters`' `schedule`; empty: none). */
-  visitSchedule?(): Float64Array | number[];
+  visitSchedule(): Float64Array | number[];
   /** `[rate, credit, frames, visits, cappedFrames, dueTiles, earned, target, holdFloor, auto, rung, yieldSlow, yieldFast, fedVisits, fedNew, rungChanges]` (`visitRateCounters`). */
-  visitRateStats?(): Float64Array | number[];
-  /** Parallel visits (needed only with visit workers). */
-  takeJob?(): Uint8Array | undefined;
-  applyJob?(bytes: Uint8Array): void;
-  housekeep?(): PublishedLibrary | undefined;
-  /** The last published library without publishing (none before the first; absent in some test fakes). */
-  publishedLibrary?(): PublishedLibrary | undefined;
-  /** Adds the candidates of a history review; returns how many (absent in some test fakes). */
-  addReviewed?(candidates: Float32Array): number;
+  visitRateStats(): Float64Array | number[];
+  /** Parallel visits (used only with visit workers). */
+  takeJob(): Uint8Array | undefined;
+  applyJob(bytes: Uint8Array): void;
+  housekeep(): PublishedLibrary | undefined;
+  /** The last published library without publishing (none before the first). */
+  publishedLibrary(): PublishedLibrary | undefined;
+  /** Adds the candidates of a history review; returns how many. */
+  addReviewed(candidates: Float32Array): number;
   readonly cellCount: number;
   readonly reservoirBytes: number;
-  /** Frames stored per tile, and why that is below target (absent in some test fakes). */
-  readonly framesPerTile?: number;
-  readonly reservoirWarning?: string;
-  /** Work spent so far, about multiply-adds (absent in some test fakes). */
-  readonly work?: number;
+  /** Frames stored per tile, and why that is below target. */
+  readonly framesPerTile: number;
+  readonly reservoirWarning: string | undefined;
+  /** Work spent so far, about multiply-adds. */
+  readonly work: number;
   stats(): Float64Array;
-  /** `(id, established, transients)` triples (absent in some test fakes). */
-  cellStatus?(): Float64Array;
-  // Look-back (see `SlowLoop.enableLookback`; absent in some test fakes).
-  enableLookback?(rate: number, maxFrames: number): void;
-  lookbackNote?(seen: number, frames: number): void;
-  /** Never re-read a frame before `frame` again (a Joint run's current session; absent in some test fakes). */
-  setLookbackFloor?(frame: number): void;
+  /** `(id, established, transients)` triples. */
+  cellStatus(): Float64Array;
+  // Look-back (see `SlowLoop.enableLookback`).
+  enableLookback(rate: number, maxFrames: number): void;
+  lookbackNote(seen: number, frames: number): void;
+  /** Never re-read a frame before `frame` again (a Joint run's current session). */
+  setLookbackFloor(frame: number): void;
   /** `[frame, block, n, id_1..id_n, ...]`; empty when the budget is spent or nothing is needed. */
-  lookbackTake?(max: number): Float64Array;
-  observeLookback?(
+  lookbackTake(max: number): Float64Array;
+  observeLookback(
     frame: Float32Array,
     version: number,
     traces: Float32Array,
@@ -220,19 +223,19 @@ export interface SlowLoopLike {
     stream: number,
     ids: Float64Array,
   ): boolean;
-  markAllDue?(): void;
+  markAllDue(): void;
   /** `[requested, pushed, heldOut, dropped, births, inNeed, recordBytes]`. */
-  lookbackStats?(): Float64Array;
-  /** `[id, noise, ...]`: split-half footprint noise of the newest library's cells (absent in some test fakes). */
-  footprintNoise?(): Float64Array;
-  /** Split-half noise of one cell on the given pixels (`footprintNoiseOn`; absent in some test fakes). */
-  footprintNoiseOn?(id: number, support: Uint32Array): number;
-  // Settle during Discover, frames only (see `SlowLoop.enableSettle`; absent in some test fakes).
-  enableSettle?(chunk: number): void;
+  lookbackStats(): Float64Array;
+  /** `[id, noise, ...]`: split-half footprint noise of the newest library's cells. */
+  footprintNoise(): Float64Array;
+  /** Split-half noise of one cell on the given pixels. */
+  footprintNoiseOn(id: number, support: Uint32Array): number;
+  // Background settle, frames only (see `SlowLoop.enableSettle`).
+  enableSettle(chunk: number): void;
   /** `[frame, block, held, ...]`: saved frames to re-read among stream frames `0..seen`. */
-  settleTake?(seen: number, max: number): Float64Array;
+  settleTake(seen: number, max: number): Float64Array;
   /** `false`: held out (never fitted) or the version is gone. */
-  observeSettle?(
+  observeSettle(
     frame: Float32Array,
     version: number,
     traces: Float32Array,
@@ -240,9 +243,9 @@ export interface SlowLoopLike {
     stream: number,
   ): boolean;
   /** Held-out frames of `settleTake` passed over without a solve. */
-  settleSkipped?(frames: number): void;
+  settleSkipped(frames: number): void;
   /** `[taken, fit, heldOut, dropped]`. */
-  settleStats?(): Float64Array;
+  settleStats(): Float64Array;
   free(): void;
 }
 
@@ -756,7 +759,7 @@ export class SlowRunner {
     }
     const loop = this.loop;
     if (!loop || !this.lbOn || this.lbError || this.version <= 0) return;
-    const lib = loop.publishedLibrary?.();
+    const lib = loop.publishedLibrary();
     if (!lib) return;
     try {
       // Only the version the other workers have (an older one would solve against a stale library).
@@ -839,7 +842,7 @@ export class SlowRunner {
     const loop = this.loop;
     if (this.cs || !arm || !loop || !this.lookbackLive || !(this.pace.fps > 0) || !(this.cap > 0))
       return;
-    loop.enableSettle?.(CSETTLE.chunk);
+    loop.enableSettle(CSETTLE.chunk);
     const gov = new SettleGovernor(
       this.cap,
       Math.max(1, this.settlePorts().length),
@@ -918,20 +921,14 @@ export class SlowRunner {
         // The Discover visit rate's schedule (`fixed` or `auto`; `discover/visitrate.rs`) sets
         // the cap on ordinary visits in Discover's edit scope (the Final settle and Refine runs
         // are not held); without one, no cap.
-        if (run.visitSchedule && this.loop.setVisitSchedule)
-          this.loop.setVisitSchedule(run.visitSchedule === 'auto');
+        if (run.visitSchedule) this.loop.setVisitSchedule(run.visitSchedule === 'auto');
         this.settleRate = run.settleVisitRate ?? 0;
         this.run = 1;
-        this.lbOn = lookback && typeof this.loop.lookbackTake === 'function';
+        this.lbOn = lookback;
         this.factorOn = this.init.factorSettle === true;
         this.factorFile = run.factorFile === true && this.lbOn;
         if (this.lbOn && !this.lbPort) this.lbError = 'The look-back worker is not connected.';
-        if (
-          this.lbOn &&
-          run.csettle === true &&
-          typeof this.loop.settleTake === 'function' &&
-          typeof this.loop.observeSettle === 'function'
-        ) {
+        if (this.lbOn && run.csettle === true) {
           this.csArm = {
             yieldFrames: Math.max(0, Math.floor(run.csettleYield ?? 0)),
             needFirst: run.csettleNeedFirst === true,
@@ -971,7 +968,7 @@ export class SlowRunner {
   private addReviewed(): void {
     const loop = this.loop;
     if (!loop || this.reviewed.length === 0 || this.busy.some((b) => b)) return;
-    for (const candidates of this.reviewed.splice(0)) loop.addReviewed?.(candidates);
+    for (const candidates of this.reviewed.splice(0)) loop.addReviewed(candidates);
   }
 
   /** A message from visit worker `i`. */
@@ -981,7 +978,7 @@ export class SlowRunner {
       if (msg.type === 'error') throw new Error(`visit worker ${i}: ${msg.message}`);
       this.busy[i] = false;
       const t0 = this.now();
-      this.clock.span('visit', () => this.tm('visit.apply', () => this.loop!.applyJob!(msg.bytes)));
+      this.clock.span('visit', () => this.tm('visit.apply', () => this.loop!.applyJob(msg.bytes)));
       this.jobOwnerMs += this.now() - t0;
       this.jobs++;
       this.visitMsSum += msg.ms;
@@ -1113,7 +1110,7 @@ export class SlowRunner {
         if (this.lookbackLive) {
           const tn = this.dt ? this.now() : 0;
           this.sessionFloor(loop, msg.start);
-          loop.lookbackNote!(msg.start + msg.count, observed);
+          loop.lookbackNote(msg.start + msg.count, observed);
           this.dt?.add('live.lookbackNote', this.now() - tn);
           if (this.cs) {
             this.cs.live += observed;
@@ -1156,7 +1153,7 @@ export class SlowRunner {
   /** Trimming decisions and, when due, a new library (parallel mode). */
   private housekeep(): void {
     this.clock.span('housekeep', () => {
-      const lib = this.tm('housekeep.wasm', () => this.loop?.housekeep!());
+      const lib = this.tm('housekeep.wasm', () => this.loop?.housekeep());
       if (lib) this.publish(lib);
     });
   }
@@ -1174,7 +1171,7 @@ export class SlowRunner {
       for (let i = 0; i < this.visits.length && handed < limit; i++) {
         if (this.busy[i]) continue;
         const t0 = this.now();
-        const bytes = this.tm('visit.take', () => loop.takeJob!());
+        const bytes = this.tm('visit.take', () => loop.takeJob());
         if (!bytes) break;
         this.busy[i] = true;
         handed++;
@@ -1337,13 +1334,13 @@ export class SlowRunner {
     for (const b of this.init?.sessionStarts ?? []) if (b <= start && b > floor) floor = b;
     if (floor === this.lbFloor) return;
     this.lbFloor = floor;
-    loop.setLookbackFloor?.(floor);
+    loop.setLookbackFloor(floor);
   }
 
   /** Need-driven look-back: the frames the scheduler wants now. */
   private needRequest(loop: SlowLoopLike): boolean {
-    const took = this.clock.span('need', () => loop.lookbackTake!(LOOKBACK.takeMax));
-    // (A build without `setLookbackFloor` may still hand out an earlier session's frames.)
+    const took = this.clock.span('need', () => loop.lookbackTake(LOOKBACK.takeMax));
+    // Frames before the session's floor never go out, whatever the scheduler hands out.
     const flat = this.lbFloor > 0 ? framesFrom(took, this.lbFloor) : took;
     if (flat.length === 0) return false;
     this.sendRequest(0, 'need', flat, lookbackItems(flat));
@@ -1366,8 +1363,8 @@ export class SlowRunner {
     )
       return false;
     // The frames forwarded so far are the saved history (stream index = file frame).
-    const take = this.clock.span('csettle', () => loop.settleTake!(this.consumed, CSETTLE.chunk));
-    // The current session only (as `needRequest`: a build without the floor may go earlier).
+    const take = this.clock.span('csettle', () => loop.settleTake(this.consumed, CSETTLE.chunk));
+    // The current session only (as `needRequest`).
     const keep: number[] = [];
     for (let i = 0; 3 * i + 2 < take.length; i++) if (take[3 * i] >= this.lbFloor) keep.push(i);
     const n = keep.length;
@@ -1512,7 +1509,7 @@ export class SlowRunner {
     const nb = bg && msg.count > 0 ? bg.length / msg.count : 0;
     const tl = this.dt ? this.now() : 0;
     for (let i = 0; i < msg.count; i++) {
-      loop.observeLookback!(
+      loop.observeLookback(
         msg.frames.subarray(i * px, (i + 1) * px),
         msg.version,
         msg.traces.subarray(i * msg.cells, (i + 1) * msg.cells),
@@ -1610,7 +1607,7 @@ export class SlowRunner {
         continue;
       }
       this.tm('csettle.observe', () =>
-        loop.observeSettle!(
+        loop.observeSettle(
           msg.frames.subarray(i * px, (i + 1) * px),
           msg.version,
           msg.traces.subarray(i * msg.cells, (i + 1) * msg.cells),
@@ -1619,7 +1616,7 @@ export class SlowRunner {
         ),
       );
     }
-    if (skipped > 0) loop.settleSkipped?.(skipped);
+    if (skipped > 0) loop.settleSkipped(skipped);
     work.next = end;
     if (this.parallel) {
       this.housekeep();
@@ -1681,7 +1678,7 @@ export class SlowRunner {
   /** Discover's last frame with look-back on: settle (see `settlePump`). */
   private startDrain(recording = this.consumed): void {
     const loop = this.loop!;
-    loop.setEditScope?.('refine');
+    loop.setEditScope('refine');
     this.scope = 'refine';
     // Review candidates would wait for every visit out; Discover is over.
     this.reviewed = [];
@@ -1750,10 +1747,8 @@ export class SlowRunner {
   /** A checkpoint: publish, and count the cells that moved more than `SETTLE.movingK` x their noise since the last. */
   private settleCheckpoint(loop: SlowLoopLike, d: Settle): void {
     const now = this.tm('end.checkpoint', () => this.checkpointLibrary(loop));
-    const noise = this.tm('end.footprintNoise', () =>
-      loop.footprintNoise ? noiseMap(loop.footprintNoise()) : null,
-    );
-    if (d.prev && noise) {
+    const noise = this.tm('end.footprintNoise', () => noiseMap(loop.footprintNoise()));
+    if (d.prev) {
       const m = this.tm('end.moved', () => movedAgainstNoise(d.prev!, now, noise, SETTLE.movingK));
       d.moving = { cells: m.cells, above: m.aboveK };
     }
@@ -1771,9 +1766,8 @@ export class SlowRunner {
     before: ReturnType<typeof unitFootprints> | null,
     after: ReturnType<typeof unitFootprints>,
   ): void {
-    const on = loop.footprintNoiseOn;
-    if (!before || !on) return;
-    this.stillMoving = stillMovingRatios(before, after, (id, px) => on.call(loop, id, px));
+    if (!before) return;
+    this.stillMoving = stillMovingRatios(before, after, (id, px) => loop.footprintNoiseOn(id, px));
   }
 
   /**
@@ -1822,9 +1816,9 @@ export class SlowRunner {
         // The visits the pass earned and could not hand out in time, before the last round.
         if (!this.settlePaid(loop, d)) return;
         d.phase = 'final';
-        d.finalWork0 = loop.work ?? 0;
+        d.finalWork0 = loop.work;
         d.finalJobs0 = this.jobs;
-        loop.markAllDue?.();
+        loop.markAllDue();
         this.status(0, 0);
       } else return;
     }
@@ -1835,7 +1829,7 @@ export class SlowRunner {
       // The same cap as without workers (`SETTLE.finalSteps` budgets of work):
       // visits keep making tiles due again, so "until none is due" may not end.
       const capped =
-        (loop.work ?? 0) - d.finalWork0 >= init.budget * SETTLE.finalSteps ||
+        loop.work - d.finalWork0 >= init.budget * SETTLE.finalSteps ||
         this.jobs - d.finalJobs0 >= SETTLE.finalVisitsMax;
       const n = capped ? 0 : this.dispatch();
       d.v.finalRound += n;
@@ -1908,7 +1902,7 @@ export class SlowRunner {
     if (this.busy.some((b) => b)) return false;
     if (!d.allDue && this.settleOwed(d) > 0) {
       d.allDue = true;
-      loop.markAllDue?.();
+      loop.markAllDue();
       this.settleDispatch(d);
       if (this.busy.some((b) => b)) return false;
     }
@@ -2164,7 +2158,7 @@ export class SlowRunner {
 
   /** The newest published library to look-back worker `port` (a copy). */
   private sendLibrary(port: number): void {
-    const lib = this.loop?.publishedLibrary?.();
+    const lib = this.loop?.publishedLibrary();
     if (!lib) return;
     try {
       const bytes = lib.toBytes();
@@ -2272,7 +2266,7 @@ export class SlowRunner {
   }
 
   private lookbackStatus(loop: SlowLoopLike): LookbackStatus {
-    const s = loop.lookbackStats?.() ?? new Float64Array(0);
+    const s = loop.lookbackStats();
     return {
       requested: s[0] ?? 0,
       pushed: s[1] ?? 0,
@@ -2297,7 +2291,7 @@ export class SlowRunner {
   }
 
   private csettleStatus(loop: SlowLoopLike, cs: Csettle): CsettleStatus {
-    const s = loop.settleStats?.() ?? new Float64Array(0);
+    const s = loop.settleStats();
     return {
       rate: cs.gov.cap,
       requested: cs.requested,
@@ -2338,7 +2332,7 @@ export class SlowRunner {
       ...(this.dt
         ? {
             detail: { ...this.dt.sums },
-            ...(this.loop?.stageTiming ? { stage: Array.from(this.loop.stageTiming()) } : {}),
+            ...(this.loop ? { stage: Array.from(this.loop.stageTiming()) } : {}),
           }
         : {}),
     };
@@ -2365,7 +2359,7 @@ export class SlowRunner {
       version: this.version,
       counters: counters(loop.stats()),
       reservoirBytes: loop.reservoirBytes,
-      framesPerTile: loop.framesPerTile ?? 0,
+      framesPerTile: loop.framesPerTile,
       reservoirWarning: loop.reservoirWarning,
       batchMs,
       maxStepMs,
@@ -2374,14 +2368,12 @@ export class SlowRunner {
       jobsInFlight: this.busy.filter((b) => b).length,
       visitMs: this.visitMsN > 0 ? this.visitMsSum / this.visitMsN : this.visitMs,
       jobOwnerMs: this.jobOwnerMs,
-      work: loop.work ?? 0,
+      work: loop.work,
       final: this.final,
       run: this.run,
       editScope: this.scope,
       ...(this.lbOn || this.factorOn ? { lookback: this.lookbackStatus(loop) } : {}),
-      ...(loop.visitRateStats
-        ? { visitRate: visitRateCounters(loop.visitRateStats(), loop.visitSchedule?.()) }
-        : {}),
+      visitRate: visitRateCounters(loop.visitRateStats(), loop.visitSchedule()),
     };
     // Last, so the snapshot includes the time spent building this status.
     status.accounting = this.workStatus();
@@ -2390,14 +2382,14 @@ export class SlowRunner {
     this.visitMsN = 0;
     const t = this.now();
     const transfer: Transferable[] = [];
-    if (loop.cellStatus && (this.final || t - this.statusAt >= CELL_STATUS_EVERY_MS)) {
+    if (this.final || t - this.statusAt >= CELL_STATUS_EVERY_MS) {
       this.statusAt = t;
       const view = cellStatusView(loop.cellStatus());
       status.cellStatus = view;
       transfer.push(view.ids.buffer as ArrayBuffer, view.established.buffer as ArrayBuffer);
     }
     // With a run's final library: the cells' split-half noise (the Refine readout).
-    if (this.final && loop.footprintNoise) {
+    if (this.final) {
       const noise = loop.footprintNoise();
       status.footprintNoise = noise;
       transfer.push(noise.buffer as ArrayBuffer);

@@ -16,16 +16,12 @@ import {
   type TraceLibraryLike,
 } from '../lib/fast-loop.ts';
 import { ForwardPool } from '../lib/forward-pool.ts';
-import {
-  SlowRunner,
-  type PublishedLibrary,
-  type SlowLoopLike,
-  type SlowRunnerDeps,
-} from '../lib/slow-runner.ts';
+import { SlowRunner, type PublishedLibrary, type SlowRunnerDeps } from '../lib/slow-runner.ts';
 import { TraceHistory } from '../lib/trace-history.ts';
 import { parseQc } from '../lib/qc.ts';
 import type { FastToSlow, LibraryView, SlowToFast, SlowToMain } from '../workers/slow-types.ts';
 import { initTestWasm } from './wasm-test.ts';
+import { INIT as BASE_INIT, stubSlowLoop } from './slow-fixtures.ts';
 
 beforeAll(initTestWasm);
 
@@ -622,7 +618,7 @@ function runner(publishAt: Set<number>) {
     [];
   let steps = 0;
   const libs: ReturnType<typeof fakeLib>[] = [];
-  const loop: SlowLoopLike = {
+  const loop = stubSlowLoop({
     observe(frame, version, traces, background) {
       if (version === 99) return false;
       observed.push({
@@ -645,31 +641,19 @@ function runner(publishAt: Set<number>) {
       libs.push(l);
       return l;
     },
-    setNoise: vi.fn(),
     cellCount: 3,
     reservoirBytes: 1024,
     framesPerTile: 40,
     reservoirWarning: 'capped',
     stats: () => Float64Array.of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
     cellStatus: () => Float64Array.of(1, 1, 3, 2, 0, 0),
-    free: vi.fn(),
-  };
+  });
   const create = vi.fn<SlowRunnerDeps['create']>(() => loop);
   const r = new SlowRunner({ create, toFast, toMain, now: () => 0 });
   return { r, toFast, toMain, observed, libs, loop, create };
 }
 
-const INIT: Extract<FastToSlow, { type: 'init' }> = {
-  type: 'init',
-  session: 2,
-  width: 2,
-  height: 1,
-  fov: Uint8Array.of(1, 1),
-  noise: Float32Array.of(1, 1),
-  cellDiameterPx: 10,
-  flattenSigmaPx: 0,
-  budget: 123,
-};
+const INIT: Extract<FastToSlow, { type: 'init' }> = { ...BASE_INIT, session: 2 };
 
 describe('SlowRunner (slow worker side of the hand-off)', () => {
   it('observes each frame with its own traces, steps, and returns the buffer', () => {
@@ -983,14 +967,7 @@ describe('fast and slow loop over the real WASM bindings', () => {
     );
     const slow = new SlowRunner({
       create: (i) =>
-        new SlowLoop(
-          i.width,
-          i.height,
-          i.fov,
-          i.noise,
-          i.cellDiameterPx,
-          i.flattenSigmaPx,
-        ) as unknown as SlowLoopLike,
+        new SlowLoop(i.width, i.height, i.fov, i.noise, i.cellDiameterPx, i.flattenSigmaPx),
       toFast: { postMessage: (msg) => toFast.push({ msg }) },
       toMain,
     });
