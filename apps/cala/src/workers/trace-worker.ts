@@ -10,9 +10,11 @@
  * `lib/pipeline-stages.ts`.
  */
 import { initCalaWasm } from '../lib/cala-wasm.ts';
+import { errMsg } from '../lib/errors.ts';
 import { CompressFeed } from '../lib/compress-feed.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
 import { FovProjector } from '../lib/fov-projection.ts';
+import { compressFeedOptions, fastLoopOptions } from '../lib/run-cells.ts';
 import { transferablesOf, type PipelineStepResult } from '../lib/pipeline-types.ts';
 import { BackStage } from '../lib/pipeline-stages.ts';
 import { traceBackend } from '../lib/trace-backend.ts';
@@ -58,57 +60,14 @@ async function handle(msg: StageMsg): Promise<void> {
       stopStage(cells?.library !== undefined);
       const port = cells?.library ? null : slowPort;
       if (port && !cells?.library && (cells?.discover ?? true)) slowSession = cells?.session ?? 0;
+      const options = fastLoopOptions(msg.fast, cells, msg.setup.boundaries, port !== null);
       const fast = new FastLoop(
-        {
-          ...msg.fast,
-          session: cells?.session ?? 0,
-          discover: (cells?.discover ?? true) && port !== null,
-          qc: cells?.qc ?? true,
-          residual: cells?.residual ?? false,
-          signed: cells?.signed ?? false,
-          ...(cells?.library ? { initialLibrary: cells.library } : {}),
-          ...(cells?.lookback && !cells.library ? { lookback: true } : {}),
-          ...(cells?.lookback && !cells.library && cells.csettle
-            ? {
-                csettle: true,
-                csettleYield: cells.csettleYield ?? 0,
-                csettleNeedFirst: cells.csettleNeedFirst ?? false,
-              }
-            : {}),
-          ...(cells?.factorSettle && !cells.library && !cells.lookback
-            ? { factorSettle: true }
-            : {}),
-          ...(cells?.factorFile && !cells.library && cells.lookback ? { factorFile: true } : {}),
-          ...((cells?.lookback || cells?.factorSettle) &&
-          !cells.library &&
-          cells.settleFraction !== undefined
-            ? { settleFraction: cells.settleFraction }
-            : {}),
-          ...(cells?.lookback && !cells.library && msg.setup.boundaries?.length
-            ? { sessionStarts: msg.setup.boundaries }
-            : {}),
-          ...(cells?.forwardBuffers ? { poolSize: cells.forwardBuffers } : {}),
-          ...(cells?.visitRate ? { visitRate: cells.visitRate } : {}),
-          ...(cells?.visitSchedule ? { visitSchedule: cells.visitSchedule } : {}),
-          ...(cells?.settleVisitRate ? { settleVisitRate: cells.settleVisitRate } : {}),
-        },
+        options,
         port as { postMessage(m: FastToSlow, t?: Transferable[]): void } | null,
         traceBackend,
         cells?.compress && compressPort
           ? new CompressFeed(
-              {
-                width: msg.fast.width,
-                height: msg.fast.height,
-                session: cells.session,
-                ...(cells.compressTiling ? { tiling: cells.compressTiling } : {}),
-                ...(cells.compressPool ? { pool: cells.compressPool } : {}),
-                ...(cells.compressBacklogCap !== undefined
-                  ? { backlogCap: cells.compressBacklogCap }
-                  : {}),
-                ...(cells.compressFrameExtract ? { frameExtract: true } : {}),
-                ...(cells.compressGpu ? { gpu: true } : {}),
-                ...(cells.compressGpuCheck ? { gpuCheck: cells.compressGpuCheck } : {}),
-              },
+              compressFeedOptions(cells, msg.fast.width, msg.fast.height),
               compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
             )
           : null,
@@ -119,7 +78,7 @@ async function handle(msg: StageMsg): Promise<void> {
         cells?.projection
           ? new FovProjector(msg.setup.width, msg.setup.height, msg.setup.boundaries ?? [])
           : null,
-        cells?.lookback && !cells.library ? LOOKBACK_SNAPSHOT_EVERY : 0,
+        options.lookback ? LOOKBACK_SNAPSHOT_EVERY : 0,
       );
       break;
     }
@@ -173,7 +132,7 @@ workerScope.onmessage = (e) => {
             workerScope.postMessage({
               type: 'error',
               id: msg.id,
-              message: err instanceof Error ? err.message : String(err),
+              message: errMsg(err),
             });
           }
         });

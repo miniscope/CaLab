@@ -1,5 +1,5 @@
 /**
- * The fast loop, inside the frame worker: solves every preprocessed,
+ * The fast loop, inside the trace worker: solves every preprocessed,
  * motion-corrected frame for the traces of the current footprint library,
  * forwards frames to the slow worker (cell discovery) without ever waiting
  * for it, and swaps in the libraries it publishes between batches.
@@ -17,6 +17,7 @@ import type { CompressFeedLike } from './compress-feed.ts';
 import { ForwardPool } from './forward-pool.ts';
 import { ASSUMED_FPS } from './miniscope-meta.ts';
 import type { QcWire } from './qc.ts';
+import { normalizeRunCells, type RunCells } from './run-cells.ts';
 
 /** What the fast loop needs of a `TraceLibrary`. */
 export interface TraceLibraryLike {
@@ -31,7 +32,7 @@ export interface TraceEngineLike {
   processFrames(frames: Float32Array, count: number): Float32Array;
   /**
    * Background coefficients of the last solved batch (also through a QC monitor), frame
-   * after frame; the slow loop needs them with the traces. Absent in older fakes.
+   * after frame; the slow loop needs them with the traces. Absent in some test fakes.
    */
   lastBackground?(): Float32Array;
   /** Residual of the last solved frame (`frame` is that frame); empty when there is none. */
@@ -111,7 +112,8 @@ export interface RegisteredPreprocessor extends CalibrationSource {
   ): Float64Array;
 }
 
-export interface FastLoopOptions {
+/** The fast loop's settings; the slow loop's run options (`RunCells`) go to its `init`. */
+export interface FastLoopOptions extends RunCells {
   width: number;
   height: number;
   /** Frames per batch: the size of the forwarded buffers. */
@@ -137,26 +139,6 @@ export interface FastLoopOptions {
   qcEveryS?: number;
   /** Solve with this library (`TraceLibrary.toBytes()`) from the first frame (Extract: the final library). */
   initialLibrary?: Uint8Array;
-  /** Discover with look-back (on by default for recordings): the slow loop's `init` says so (`SlowInit.lookback`). */
-  lookback?: boolean;
-  /** A live stream with `?factors`: the slow loop's `init` says so (`SlowInit.factorSettle`; never with `lookback`). */
-  factorSettle?: boolean;
-  /** With `lookback`, a recording with `?factors=file`: the slow loop's `init` says so (`SlowInit.factorFile`). */
-  factorFile?: boolean;
-  /** With `lookback`: settle during Discover may run (`SlowInit.csettle`, `SlowInit.csettleYield`, `SlowInit.csettleNeedFirst`). */
-  csettle?: boolean;
-  csettleYield?: number;
-  csettleNeedFirst?: boolean;
-  /** With `lookback`: the share of the final settle pass to read (`SlowInit.settleFraction`; 1 = all). */
-  settleFraction?: number;
-  /** With `lookback`, a Joint run: the first frame of sessions 1.. (`SlowInit.sessionStarts`). */
-  sessionStarts?: readonly number[];
-  /** The Discover visit cap, visits per observed frame (`SlowInit.visitRate`; 0 = none). */
-  visitRate?: number;
-  /** The Discover visit rate's schedule (`SlowInit.visitSchedule`; `none` = `visitRate` alone). */
-  visitSchedule?: 'auto' | 'fixed' | 'none';
-  /** The Final settle's visit rate, visits per settle frame (`SlowInit.settleVisitRate`; 0 = none). */
-  settleVisitRate?: number;
   /** Return the model residual of each batch's last frame (the app's residual view). */
   residual?: boolean;
   /**
@@ -167,7 +149,7 @@ export interface FastLoopOptions {
 }
 
 export const FAST_LOOP_DEFAULTS = {
-  // The slow loop's validated default (PR #281): ~11 ms per frame in WASM.
+  // The slow loop's validated default work per frame (see `SlowInit.budget`).
   budget: 3e7,
   startFrame: 50,
   noiseEvery: 200,
@@ -177,18 +159,7 @@ export const FAST_LOOP_DEFAULTS = {
   fps: ASSUMED_FPS,
   qcEveryS: 1,
   residual: false,
-  lookback: false,
-  factorSettle: false,
-  factorFile: false,
-  csettle: false,
-  csettleYield: 0,
-  csettleNeedFirst: false,
-  settleFraction: 1,
-  sessionStarts: [] as readonly number[],
   signed: false,
-  visitRate: 0,
-  visitSchedule: 'none',
-  settleVisitRate: 0,
 } as const;
 
 /** The fast loop's output for one batch. */
@@ -233,7 +204,9 @@ export interface CellsBatch {
 const now = (): number => performance.now();
 
 export class FastLoop {
-  private readonly o: Required<Omit<FastLoopOptions, 'initialLibrary'>>;
+  private readonly o: Required<Omit<FastLoopOptions, 'initialLibrary' | keyof RunCells>>;
+  /** The slow loop's run options, normalized; sent as they are in its `init`. */
+  private readonly run: RunCells;
   private readonly frozenReplay: boolean;
   private readonly px: number;
   private readonly port: PortLike<FastToSlow> | null;
@@ -264,6 +237,7 @@ export class FastLoop {
     private readonly feed: CompressFeedLike | null = null,
   ) {
     const { initialLibrary, ...rest } = options;
+    this.run = normalizeRunCells(rest);
     this.o = { ...FAST_LOOP_DEFAULTS, discover: true, ...rest };
     this.pendingLibrary = initialLibrary ?? null;
     this.frozenReplay = initialLibrary !== undefined;
@@ -559,28 +533,8 @@ export class FastLoop {
           cellDiameterPx: this.o.cellDiameterPx,
           flattenSigmaPx: this.o.flattenSigmaPx,
           budget: this.o.budget,
-          ...(this.o.visitRate && this.o.visitRate > 0 ? { visitRate: this.o.visitRate } : {}),
-          ...(this.o.visitSchedule !== 'none' ? { visitSchedule: this.o.visitSchedule } : {}),
-          ...(this.o.settleVisitRate && this.o.settleVisitRate > 0
-            ? { settleVisitRate: this.o.settleVisitRate }
-            : {}),
-          ...(this.o.lookback ? { lookback: true } : {}),
-          ...(this.o.factorSettle && !this.o.lookback ? { factorSettle: true } : {}),
-          ...(this.o.factorFile && this.o.lookback ? { factorFile: true } : {}),
-          ...((this.o.lookback || this.o.factorSettle) && this.o.settleFraction < 1
-            ? { settleFraction: this.o.settleFraction }
-            : {}),
-          ...(this.o.lookback && this.o.sessionStarts?.length
-            ? { sessionStarts: [...this.o.sessionStarts] }
-            : {}),
-          ...(this.o.lookback && this.o.csettle
-            ? {
-                csettle: true,
-                csettlePool: this.o.poolSize,
-                ...(this.o.csettleYield > 0 ? { csettleYield: this.o.csettleYield } : {}),
-                ...(this.o.csettleNeedFirst ? { csettleNeedFirst: true } : {}),
-              }
-            : {}),
+          ...this.run,
+          ...(this.run.csettle ? { csettlePool: this.o.poolSize } : {}),
         },
         [],
       );
