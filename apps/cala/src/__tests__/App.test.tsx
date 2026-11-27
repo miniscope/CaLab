@@ -48,7 +48,12 @@ const fake = vi.hoisted(() => ({
 vi.mock('../lib/frame-client.ts', () => ({ createFrameClient: (): FrameClient => fake }));
 // No slow worker in jsdom; discovery itself is tested in cells.test.ts.
 vi.mock('../lib/slow-client.ts', () => ({
-  createSlowClient: () => ({ visitWorkers: 0, dispose() {} }),
+  createSlowClient: () => ({
+    visitWorkers: 0,
+    release() {},
+    ready: () => Promise.resolve(),
+    dispose() {},
+  }),
   RESERVED_THREADS: 5,
   PARALLEL_FORWARD_BUFFERS: 4,
   visitWorkerCount: () => 0,
@@ -56,7 +61,14 @@ vi.mock('../lib/slow-client.ts', () => ({
 
 // The compress worker exists on every page but `?factors=0` (a stream's factor default); none in jsdom.
 vi.mock('../lib/compress-client.ts', () => ({
-  createCompressClient: () => ({ backfill() {}, extract() {}, extractCancel() {}, dispose() {} }),
+  createCompressClient: () => ({
+    backfill() {},
+    extract() {},
+    extractCancel() {},
+    releaseHelpers() {},
+    helpersReady() {},
+    dispose() {},
+  }),
 }));
 
 // Look-back is on by default for recordings but needs worker threads, which jsdom has not.

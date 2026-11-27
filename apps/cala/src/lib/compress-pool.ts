@@ -205,6 +205,8 @@ export class TilePool implements TilePoolLike {
   private wanted = 1;
   private run: WindowRun | null = null;
   private scratch = new Int16Array(0);
+  /** The quantisation of the current run (`begin`; null: none yet), for a helper that joins. */
+  private quant: number | null = null;
 
   constructor(deps: TilePoolDeps) {
     this.helpers = deps.helpers.map((port) => ({ port, alive: true, busy: null, spare: null }));
@@ -216,7 +218,23 @@ export class TilePool implements TilePoolLike {
 
   begin(quant: number): void {
     this.reset();
+    this.quant = quant;
     for (const h of this.helpers) if (h.alive) h.port.postMessage({ type: 'init', quant });
+  }
+
+  /**
+   * Helper `k` was lost (`lost`) and a new one runs on `port`: it takes tiles again, with the
+   * current run's compressor (`init`).
+   */
+  revive(k: number, port: PortLike<CoordinatorToHelper>): void {
+    const h = this.helpers[k];
+    if (!h || h.alive) return;
+    h.port = port;
+    h.busy = null;
+    h.spare = null;
+    h.alive = true;
+    if (this.quant !== null) port.postMessage({ type: 'init', quant: this.quant });
+    this.run?.wake?.();
   }
 
   setWidth(n: number): void {
@@ -424,6 +442,10 @@ export class WindowPool {
   private gen = 0;
   private wanted = 1;
   private run: JobRun | null = null;
+  /** The job between `begin` and `end` (null: none). */
+  private job: number | null = null;
+  /** Helpers revived while a job ran: they join at its `end` (they lack its library). */
+  private joining = new Map<number, PortLike<CoordinatorToHelper>>();
 
   constructor(deps: TilePoolDeps) {
     this.helpers = deps.helpers.map((port) => ({ port, alive: true, busy: null }));
@@ -444,6 +466,7 @@ export class WindowPool {
 
   /** A job starts: every live helper gets its library (any of them may take a window). */
   begin(job: number, library: Uint8Array, signed: boolean, px: number): void {
+    this.job = job;
     if (this.width() === 0) return;
     for (const h of this.helpers) {
       if (!h.alive) continue;
@@ -457,6 +480,25 @@ export class WindowPool {
   /** The job is over: the helpers free its extractor. */
   end(job: number): void {
     for (const h of this.helpers) if (h.alive) h.port.postMessage({ type: 'extract-end', job });
+    if (this.job === job) this.job = null;
+    for (const [k, port] of this.joining) this.revive(k, port);
+    this.joining.clear();
+  }
+
+  /**
+   * Helper `k` was lost (`lost`) and a new one runs on `port`: it takes windows from the next
+   * job on (during a job it waits for that job's `end`, as it has no library of it).
+   */
+  revive(k: number, port: PortLike<CoordinatorToHelper>): void {
+    const h = this.helpers[k];
+    if (!h || h.alive) return;
+    if (this.job !== null) {
+      this.joining.set(k, port);
+      return;
+    }
+    h.port = port;
+    h.busy = null;
+    h.alive = true;
   }
 
   /** Drop what is in flight; a running `run` returns false. */

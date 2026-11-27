@@ -245,8 +245,10 @@ export type MainToCompress =
       /** One port per compress helper (`compress-helper-worker.ts`). */
       helpers?: MessagePort[];
     }
-  /** Helper `helper` crashed: its tile is redone elsewhere. */
+  /** Helper `helper` crashed or was ended: its tile is redone elsewhere. */
   | { type: 'helper-lost'; helper: number }
+  /** A new helper `helper` runs on `port` (after `helper-lost`): it takes work again. */
+  | { type: 'helper-revive'; helper: number; port: MessagePort }
   /**
    * Solve the traces of every compressed window with the library `version`
    * (or a newer one), once that library has arrived and no window is waiting.

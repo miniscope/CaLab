@@ -96,6 +96,13 @@ const stopSettleAfter = Number(opt('--stop-settle-after', '0'));
 let settleStopped = false;
 // `--restart-after-settle S`: once settled, start Discover again and log look-back after S seconds.
 const restartAfter = Number(opt('--restart-after-settle', '0'));
+// `--again` (with `--extract`): after Extract, Discover and Extract once more in the same page
+// (workers ended after a run must come back); the second Extract's digest is `<tag>-extract2.json`.
+const again = args.includes('--again');
+// `--reextract` (with `--extract`): Extract once more in the same page with the same library; the
+// second digest is `<tag>-extract2.json` (equal to the first: Extract depends on the library only).
+const reextract = args.includes('--reextract');
+let round = 1;
 let restartAt = null;
 // `--pace-after S:N`: once Discover has run S seconds, set the target to N fps mid-run (0 = Max).
 const paceAfter = (opt('--pace-after', '') || '').split(':').map(Number);
@@ -762,6 +769,55 @@ async function saveLibrary(kind) {
   }
 }
 
+/**
+ * `--extract`: what Extract produced, as FNV-1a digests of its bytes (cell ids, the footprints
+ * solved with, the clipped and the signed traces), written as `<tag>-<kind>.json`: two runs
+ * with equal digests produced the same results bit for bit.
+ */
+async function saveExtractDigest(kind) {
+  const d = await page
+    .evaluate(async () => {
+      const r = window.__cala.pass2.result();
+      if (!r) return null;
+      const fnv = () => {
+        let h = 0x811c9dc5;
+        return {
+          add(a) {
+            const b = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+            for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i], 0x01000193) >>> 0;
+          },
+          hex: () => h.toString(16).padStart(8, '0'),
+        };
+      };
+      const one = (a) => {
+        const f = fnv();
+        f.add(a);
+        return f.hex();
+      };
+      const file = async (t) => {
+        if (!t) return null;
+        const f = fnv();
+        for (let s = 0; s < r.frames; s += 1024)
+          f.add(await t.readFrames(s, Math.min(r.frames, s + 1024)));
+        return f.hex();
+      };
+      const l = r.library;
+      return {
+        frames: r.frames,
+        cells: r.cells,
+        version: r.version,
+        source: r.source ?? null,
+        ids: one(r.ids),
+        footprints: { starts: one(l.starts), pixels: one(l.pixels), values: one(l.values) },
+        traces: await file(r.traces),
+        signed: await file(r.signed),
+      };
+    })
+    .catch((e) => (L(`EXTRACT_DIGEST failed: ${e.message}`), null));
+  L(`EXTRACT_DIGEST ${JSON.stringify(d)}`);
+  if (d) writeFileSync(join(out, `${tag}-${kind}.json`), JSON.stringify(d));
+}
+
 /** The work readings of the page, saved (also when a run stops without settling). */
 async function saveWork() {
   const w = await page.evaluate(() => window.__calaWork).catch(() => null);
@@ -842,10 +898,14 @@ while (!stop) {
     if (settled && discoverDoneAt === null) {
       discoverDoneAt = r.t;
       L(`DISCOVER_SETTLED ${r.t.toFixed(1)}s ${JSON.stringify(r.st.lb)}`);
-      await probeReport();
+      if (round === 1) await probeReport();
       if (extract) {
         extractClicked = true;
-        await page.click('[data-testid=pass2-run]');
+        // "Extract after Discover" (on by default) starts it by itself: press it only if not.
+        await page.waitForTimeout(2000);
+        const ext = await page.evaluate(() => window.__cala.pass2.status());
+        if (ext === 'idle') await page.click('[data-testid=pass2-run]');
+        else L(`EXTRACT_AUTO ${ext}`);
       } else if (restartAfter > 0) {
         // Smoke: Discover again in the same page; the look-back worker must still serve.
         restartAt = r.t;
@@ -861,7 +921,30 @@ while (!stop) {
     }
     if (extractClicked && r.st?.extract === 'done') {
       L(`EXTRACT_DONE ${r.t.toFixed(1)}s`);
-      stop = 'done';
+      await saveExtractDigest(round === 1 ? 'extract' : 'extract2');
+      if (reextract && round === 1) {
+        // Extract once more with the same library (its helpers were ended after the first).
+        round = 2;
+        L(`REEXTRACT ${r.t.toFixed(1)}s`);
+        await page.click('[data-testid=pass2-run]');
+        await page.waitForFunction(() => window.__cala.pass2.status() === 'running', null, {
+          timeout: 60_000,
+        });
+        await page.waitForFunction(() => window.__cala.pass2.status() === 'done', null, {
+          timeout: 30 * 60_000,
+          polling: 1000,
+        });
+        L(`REEXTRACT_DONE`);
+        await saveExtractDigest('extract2');
+        stop = 'done';
+      } else if (again && round === 1) {
+        round = 2;
+        extractClicked = false;
+        discoverDoneAt = null;
+        framesDoneAt = null;
+        L(`AGAIN ${r.t.toFixed(1)}s`);
+        await page.evaluate(() => void window.__cala.pipeline.start());
+      } else stop = 'done';
     }
     if (r.st?.pst === 'error' || r.st?.extract === 'error') stop = 'error';
   } else if (single && args.includes('--discover-only')) {

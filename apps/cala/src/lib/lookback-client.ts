@@ -15,7 +15,7 @@
  * field) at once, the back half's state from its next snapshot. Only after
  * that snapshot does the slow worker hear of them (`settlePool`), so no
  * request reaches a worker that cannot serve it; it sends them its current
- * library then. A run's `reset` ends them (worker 0 stays for the page), so a
+ * library then. A run's `reset` ends them (worker 0 stays until `release`), so a
  * run at Max after a paced one holds no pool workers.
  *
  * A run at Max (or one whose pool never started) gets the pool at Discover's
@@ -93,6 +93,12 @@ export interface LookbackFeed {
    * of it (`settlePool` with 0 workers). Returns the workers ended.
    */
   endPool?(session: number): number;
+  /**
+   * End every look-back worker (worker 0 too), so they hold no memory while nothing reads
+   * the recording again; the next run starts and wires them anew. Released with the slow
+   * worker (`SlowClient.release`), which holds their ports.
+   */
+  release?(): void;
   /** The settle pool's size S on this machine (started or not). */
   readonly poolSize?: number;
 }
@@ -199,7 +205,10 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
     }
   }
 
-  /** At least `count` workers, each wired to the slow worker by its index. */
+  /**
+   * At least `count` workers, each wired to the slow worker by its index (which starts the slow
+   * worker if it was released).
+   */
   function ensureWorkers(count: number): void {
     for (let i = workers.length; i < count; i++) {
       const w =
@@ -213,6 +222,12 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       o.slow.connectLookback(ch.port1, i);
       workers.push(w);
     }
+  }
+
+  function release(): void {
+    for (const w of workers) w.terminate();
+    workers = [];
+    run = null;
   }
 
   return {
@@ -420,9 +435,7 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       return n;
     },
     poolSize,
-    dispose() {
-      for (const w of workers) w.terminate();
-      workers = [];
-    },
+    release,
+    dispose: release,
   };
 }

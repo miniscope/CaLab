@@ -52,6 +52,11 @@ export interface PipelineClient {
    * online flat field). Returns an unsubscribe.
    */
   readonly subscribeFlatField?: (listener: (e: FlatFieldEvent) => void) => () => void;
+  /**
+   * End the flat-field estimator's worker (its run is over: no map follows), so it holds no
+   * memory; the next Discover start with the flat field on starts and links a new one.
+   */
+  releaseFlatField?(): void;
   /** Step requests the caller may keep outstanding (default 2; `createFrameClient` sets `PIPELINED_IN_FLIGHT`). */
   readonly maxInFlight?: number;
 }
@@ -122,16 +127,16 @@ export function createFrameClient(
       (() => new Worker(new URL('../workers/trace-worker.ts', import.meta.url), { type: 'module' }))
     )(),
   ];
-  const flatWorker: WorkerLike | null =
+  const makeFlatWorker: (() => WorkerLike) | null =
     options.makeFlatFieldWorker !== false
-      ? (
-          options.makeFlatFieldWorker ??
-          (() =>
-            new Worker(new URL('../workers/flat-field-worker.ts', import.meta.url), {
-              type: 'module',
-            }))
-        )()
+      ? (options.makeFlatFieldWorker ??
+        (() =>
+          new Worker(new URL('../workers/flat-field-worker.ts', import.meta.url), {
+            type: 'module',
+          })))
       : null;
+  /** The flat-field worker (null: none on this page, or ended by `releaseFlatField`). */
+  let flatWorker: WorkerLike | null = null;
   const flatListeners = new Set<(e: FlatFieldEvent) => void>();
   /** The worker that owns the slow-worker port and the discovery switch. */
   const traceTarget = stageWorkers[1];
@@ -174,15 +179,23 @@ export function createFrameClient(
     w.onmessage = onmessage;
     w.onerror = onerror;
   }
-  if (flatWorker) {
-    flatWorker.onmessage = (e: MessageEvent<FlatFieldEvent>) => {
+  /** Start the flat-field worker and link it to the frame worker. */
+  function startFlatWorker(make: () => WorkerLike): void {
+    const w = make();
+    flatWorker = w;
+    w.onmessage = (e: MessageEvent<FlatFieldEvent>) => {
       for (const l of flatListeners) l(e.data);
     };
     // The estimator failing must never stop the pipeline: it is reported, not fatal.
-    flatWorker.onerror = (e: ErrorEvent) => {
+    w.onerror = (e: ErrorEvent) => {
       for (const l of flatListeners)
         l({ type: 'error', session: -1, message: e.message || 'The flat-field worker crashed.' });
     };
+    // frame (A) <-> flat-field worker: raw batches with shifts go out, maps and acks come back.
+    const af = new MessageChannel();
+    w.postMessage({ type: 'flat-link', port: af.port2 }, [af.port2]);
+    // The frame worker handles `link-flat` at once, so a request sent after it sees the link.
+    void call({ type: 'link-flat', port: af.port1 }, [af.port1]).catch(() => {});
   }
   // frame (A) -> motion (B) -> trace (C): jobs go down, freed buffers come back up.
   const ab = new MessageChannel();
@@ -193,12 +206,7 @@ export function createFrameClient(
   );
   stageWorkers[1].postMessage({ type: 'stage-link', up: bc.port2 }, [bc.port2]);
   void call({ type: 'link', down: ab.port1 }, [ab.port1]).catch(() => {});
-  if (flatWorker) {
-    // frame (A) <-> flat-field worker: raw batches with shifts go out, maps and acks come back.
-    const af = new MessageChannel();
-    flatWorker.postMessage({ type: 'flat-link', port: af.port2 }, [af.port2]);
-    void call({ type: 'link-flat', port: af.port1 }, [af.port1]).catch(() => {});
-  }
+  if (makeFlatWorker) startFlatWorker(makeFlatWorker);
 
   function call(
     req: FrameRequestBody,
@@ -226,11 +234,15 @@ export function createFrameClient(
       paceListeners.add(listener);
       return () => void paceListeners.delete(listener);
     },
-    ...(flatWorker
+    ...(makeFlatWorker
       ? {
           subscribeFlatField(listener: (e: FlatFieldEvent) => void) {
             flatListeners.add(listener);
             return () => void flatListeners.delete(listener);
+          },
+          releaseFlatField() {
+            flatWorker?.terminate();
+            flatWorker = null;
           },
         }
       : {}),
@@ -257,6 +269,9 @@ export function createFrameClient(
     },
     async startPipeline(options = {}, cells, replay, flat) {
       releaseGpuWait();
+      // A Discover run with the flat field on needs its estimator: started again if it was ended.
+      if (makeFlatWorker && !flatWorker && !replay && options.flatField !== false)
+        startFlatWorker(makeFlatWorker);
       gpuRun = cells?.compressGpu === true;
       return expectType(
         await call({

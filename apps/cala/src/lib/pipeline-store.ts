@@ -125,6 +125,11 @@ export function createPipelineStore(
   compress?: Pick<CompressStore, 'reset'>,
   /** Look-back: the look-back worker's feed (absent: look-back is not offered). */
   lookbackFeed?: LookbackFeed,
+  /**
+   * Starts the workers a Discover run needs that were ended once the previous run had no more
+   * use for them; resolves when they are wired (absent: they are never ended).
+   */
+  workersReady?: () => Promise<void>,
 ) {
   const [status, setStatus] = createSignal<PipelineStatus>('idle');
   const [plan, setPlan] = createSignal<PipelinePlan | null>(null);
@@ -517,6 +522,10 @@ export function createPipelineStore(
     cells?.reset(session);
     compress?.reset(session);
     try {
+      if (workersReady) {
+        await workersReady();
+        if (gen !== generation) return;
+      }
       // Flat field: a stored map of this device (if any) is in force from the first processed frame.
       const { useFlat, read } = flatStore.begin(session);
       const rec = read ? await read : null;
