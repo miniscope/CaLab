@@ -2,7 +2,7 @@
 export { getSupabase, supabaseEnabled } from './supabase.ts';
 
 // Auth
-export { subscribeAuth, signInWithEmail, signOut } from './auth.ts';
+export { subscribeAuth, signInWithEmail, signOut, isAuthReturnFragment } from './auth.ts';
 export type { User, AuthState } from './auth.ts';
 
 // CRUD factory
