@@ -14,9 +14,8 @@
  * out, observation waits for the next result; what is still owed after the last
  * answer is handed out before the last round (`settlePaid`). So the pass
  * makes `floor(rate x fed)` visits however fast the machine, the look-back
- * workers or the visit workers are; before, a visit worker got its next visit
- * whenever this worker got round to its result, and a faster settle visited
- * less (0.65 -> 0.21 visits per frame with a second look-back worker).
+ * workers or the visit workers are (handing out a visit whenever this worker
+ * gets round to a result would make a faster settle visit less).
  *
  * The Final settle's requests (`final`) are read only once the main thread
  * says Discover's inputs are final (its last back state and flat-field map),

@@ -255,7 +255,7 @@ export interface SlowLoopCtor<T> {
 }
 
 /**
- * The slow-loop options of a live stream with `?factors` (owner, 23 Nov):
+ * The slow-loop options of a live stream with `?factors`:
  * the cluster history replay in refine-scope visits only, so in the Final
  * settle on factors; Discover's visits are as without it (no merge guard,
  * the default sign rule). qc_eval's arm `STR-F`.
@@ -945,9 +945,9 @@ export class SlowRunner {
    * Observe a batch. With visit workers, outside the `all` edit scope (the Final settle, which
    * runs with `refine`), it yields after each frame while a visit is out: the caller may then let
    * visit results in (`handleAsync`).
-   * Without that, a result waited for the whole batch, and once the frames came as fast as the
-   * slow worker could observe them (a settle never drops a batch) its visit workers sat idle and
-   * made a few times fewer visits per frame (measured on the Refine stage this path was built for).
+   * Otherwise a result would wait for the whole batch, and once the frames come as fast as the
+   * slow worker can observe them (a settle never drops a batch) its visit workers would sit idle
+   * and make fewer visits per frame.
    */
   private *frameSteps(msg: Extract<FastToSlow, { type: 'frames' }>): Generator<void, void> {
     const loop = this.loop;
@@ -1190,8 +1190,8 @@ export class SlowRunner {
 
   /**
    * The held request (`sendRequest` with `hold`) becomes the request out:
-   * its cue goes out now, where the request itself went before, so it is
-   * solved with the same library.
+   * its cue goes out at the point where an unheld request would go out, so
+   * it is solved with the same library.
    */
   private solveHeld(): void {
     const req = this.lbHeld!;
