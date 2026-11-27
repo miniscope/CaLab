@@ -121,7 +121,7 @@ pub struct MotionConfig {
     /// warm-up mean), trimmed to an FFT-friendly side.
     pub roi: Option<Roi>,
     /// Cap on the side of an automatically chosen region (0 = no cap).
-    /// Default 384: beyond it accuracy no longer improves but cost does.
+    /// Default 384: beyond it accuracy stops improving while cost keeps growing.
     pub roi_max_side: usize,
     /// 3x3 median before the band-pass (default true).
     pub median_prefilter: bool,
@@ -411,8 +411,8 @@ impl Tracker {
     }
 
     /// Update with `v`, winsorised at `k` deviations so a single outlier
-    /// barely moves the statistics while a lasting step (a new brightness
-    /// level after a file boundary, say) is still followed within a few
+    /// barely moves the statistics while a lasting step (a brightness level
+    /// change after a file boundary, say) is still followed within a few
     /// dozen frames instead of locking every later frame out.
     fn update(&mut self, v: f32, k: f32) {
         let lim = k * self.dev.max(self.floor);

@@ -559,7 +559,7 @@ fn idx1_wins_over_a_stride_that_would_fail() {
             AviHeader::parse(&file, None),
             Err(AviError::InvalidIndex(_))
         ));
-        // ...but with it the file opens, as the TS source now does.
+        // ...but with it the file opens, as the TS source does.
         let layout = AviHeader::parse_header(&file).unwrap();
         let at = layout.info.movi_end as usize;
         let len = idx1_payload_len(&file[at..at + 8]).unwrap() as usize;

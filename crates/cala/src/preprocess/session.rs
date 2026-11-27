@@ -3,12 +3,11 @@
 //! When sessions of one animal run as one recording (a Joint run), the
 //! light can step at the boundary (the LED or focus was set again). The
 //! stateful stages read a step as a slow change and take seconds to minutes
-//! to follow it. Measured on stitched sims
-//! (`tools/cala-eval/results/2026-11-13-session-boundary.md`): a ×1.25 step
-//! lifts every cell's baseline by ~5 % of its peak for ~150 frames, mostly
-//! because the background floor (a running minimum) drops at once but rises
-//! with τ = 120 s; the flicker reference holds the step for ~1 s first; the
-//! noise map needs ~800 frames to follow.
+//! to follow it: a brightness step lifts every cell's baseline for
+//! many frames, mostly because the background floor (a running minimum) drops
+//! at once but rises slowly; the flicker reference holds the step for about a
+//! second first; the noise map needs hundreds of frames to follow (see
+//! `tools/cala-eval/results/2026-11-13-session-boundary.md`).
 //!
 //! The fixes here run once, at the session's first frame, and never within
 //! a session:
@@ -21,9 +20,9 @@
 //!   fitted between the new session's first frames and the floor's own
 //!   boxcar of the previous session's last frames (robust: active pixels
 //!   drop out) map the old floor into the new session's brightness. A cold
-//!   reset would also remove the bump (measured: +5.1 % → +1.4 %) but warms
-//!   up on frames that hold activity and dips by ~1 %; a rescaled floor
-//!   keeps everything the old one had learned.
+//!   reset would also remove the bump but warms up on frames that hold
+//!   activity and dips; a rescaled floor keeps everything the old one had
+//!   learned.
 //! * **Noise map** ([`noise_ratio`], [`super::noise::NoiseMap::rescale`]):
 //!   the new session's frame-to-frame differences, in units of the old map,
 //!   give one robust ratio that scales the whole map. The map keeps its

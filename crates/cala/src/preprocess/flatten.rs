@@ -64,7 +64,7 @@
 //!
 //! Default: `cell_diameter_px` = 10 (a CA1 pyramidal soma of ~15 µm at the
 //! ~1.6 µm/px of a 600x600 Miniscope V4 frame), so σ = 20 px. That matches the
-//! two references on this data: minian's tophat window (radius 20 px) and
+//! two references: minian's tophat window (radius 20 px) and
 //! cala's Butterworth cutoff of 0.01 cycles/px, whose half-power point equals
 //! a Gaussian of σ = √(ln 2 / 2) / (π · 0.01) ≈ 18.7 px.
 //!

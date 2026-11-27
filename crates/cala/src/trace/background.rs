@@ -1,8 +1,8 @@
 //! Background models for the trace solve, and learning their spatial maps.
 //!
 //! On real 1-photon data the light left after the σ = 20 px high-pass that is
-//! not explained by cells is dominated by one global mode (about 90 % of the
-//! non-noise variance on the workshop CA1 recording: common-mode flicker and
+//! not explained by cells is dominated by one global mode (most of the
+//! non-noise variance: common-mode flicker and
 //! slow gain changes, spatially a smooth vignetted gain map), then a smooth
 //! local field with a ~100-120 px correlation length. So the default model is
 //! a few smooth spatial maps with a free coefficient each per frame

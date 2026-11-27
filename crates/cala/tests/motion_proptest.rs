@@ -118,8 +118,8 @@ proptest! {
     /// by re-cutting the crop at the integer estimate, so the division acts
     /// only on a sub-pixel residual; patches and session alignment rely on
     /// band-passed images that fill the window. On the v3 motion sims
-    /// switching the division off changes the rigid shift by about 0.001 px
-    /// RMS (`tools/cala-eval/results/2026-11-26-motion-xcorr-bias.md`).
+    /// switching the division off changes the rigid shift negligibly
+    /// (`tools/cala-eval/results/2026-11-26-motion-xcorr-bias.md`).
     #[test]
     fn xcorr_recovers_shift(
         blobs in prop::collection::vec((20.0f32..44.0, 20.0f32..44.0, 0.5f32..2.0), 6..14),
@@ -145,9 +145,8 @@ proptest! {
     /// On smooth texture that fills the window (what the corrector
     /// correlates: band-passed frames covering the region) `register` has no
     /// gain bias. Without the window-envelope division the taper pulls the
-    /// estimate towards zero by about 4 % of the shift, which this catches
-    /// (on 2000 random cases 3 % of the axes fail, so a 64-case run almost
-    /// always does).
+    /// estimate towards zero by a few percent of the shift, which this catches
+    /// over a 64-case run.
     #[test]
     fn xcorr_exact_on_texture(
         w in prop::collection::vec(

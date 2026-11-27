@@ -17,7 +17,7 @@
 //!   computed by running the same flattener on the footprint
 //!   ([`LinearFilter`]). It has negative lobes and is never clipped: fitting
 //!   `max(H a, 0)` or a footprint estimated non-negative in filtered space
-//!   leaks 3-11 % of each neighbour into a trace (experiments for milestone 3).
+//!   leaks part of each neighbour into a trace.
 //! * Each footprint keeps its full extent: its support is the disk that holds
 //!   all of its values (no size cap; the slow loop grows it to wherever the
 //!   cell's light is significant). Off the support the filtered column is the

@@ -1,8 +1,7 @@
 //! Field-of-view mask: the lit lens region of the sensor.
 //!
 //! A Miniscope's GRIN lens images a disk onto a square sensor. Outside it the
-//! sensor reads only its dark level (the workshop CA1 data: corners ~0 against
-//! ~115 in the centre), and every later stage should ignore those pixels: they
+//! sensor reads only its dark level (corners near 0 against a bright centre), and every later stage should ignore those pixels: they
 //! carry no tissue, and if they enter a spatial filter they pull the
 //! illumination estimate down and draw a dark ring at the lens edge.
 //!
@@ -46,8 +45,8 @@
 //!   (robust, from first differences along rows), so the edge is a real step,
 //!   not a bright patch picked out of noise and texture.
 //!
-//! A real lens disk fails neither by a wide margin (CA1 data: ~60% of the
-//! frame, a contrast of hundreds of noise sigmas).
+//! A real lens disk fails neither by a wide margin (it covers a large part of
+//! the frame, at a contrast of many noise sigmas).
 //!
 //! The mask is frozen after warm-up: it is a property of the optics, not the
 //! tissue, and changing it mid-recording would change every downstream stage.

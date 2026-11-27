@@ -12,61 +12,45 @@
 //!
 //! # What each metric is worth
 //!
-//! Every metric was checked against ground truth (`examples/qc_eval.rs`):
-//! minisim recordings run through the merged fast and slow loops (1759
-//! cells, 1540 true positives, three recordings), the GT footprints with a
-//! share deliberately wrong (shifted, merged, split, a neighbour deleted),
-//! and 10 min of real CA1 data against Minian. Numbers are AUC for "detected
-//! cell is real" and Spearman ρ with the true trace r.
+//! The metrics were checked against ground truth on minisim recordings and
+//! against Minian on real data (`examples/qc_eval.rs`; the SNR convention is in
+//! `tools/cala-eval/results/2026-11-13-qc-snr.md`).
 //!
-//! * **Trace quality, validated.** [`TraceStats::peak_snr`] (CaLab robust
-//!   peak SNR): AUC 0.80, ρ 0.78 on sims, 0.95 with oracle footprints; on
-//!   real data AUC 0.75 for "also found by Minian", ρ 0.39 with the trace r
-//!   against Minian. `proj_r` (trace vs the cell's own footprint
-//!   projection): AUC 0.71, ρ 0.57 (oracle); real AUC 0.64, ρ 0.37.
-//! * **Demixing, validated.** `vif` (noise inflation from the local Gram
-//!   matrix) and `max_overlap` rank true crosstalk (ρ 0.44-0.47 with the
-//!   neighbours' share of the trace variance). `max_neighbour_r` finds split
-//!   cells (AUC 1.00 against unperturbed cells; r > 0.8 flags 87 % of split
-//!   halves and no unperturbed cell) and duplicates: in a pair above 0.8 the
-//!   lower-SNR member is the extra cell in 22 of 45 pairs, the other in 3.
-//!   `fp_error` (residual a cell leaves when it fires, relative to its SNR)
-//!   ranks wrong footprints (AUC 0.68-0.73 for shifted, merged, missing
-//!   neighbour; inverted AUC 0.71 for real cells) but no threshold separates
-//!   them, so it is a colour scale, not a flag.
+//! * **Trace quality.** [`TraceStats::peak_snr`] (CaLab robust peak SNR) and
+//!   `proj_r` (trace vs the cell's own footprint projection) separate real
+//!   cells from false ones, more weakly on real data than on sims.
+//! * **Demixing.** `vif` (noise inflation from the local Gram matrix) and
+//!   `max_overlap` rank true crosstalk. `max_neighbour_r` finds split cells
+//!   and duplicates; in a duplicate pair the lower-SNR member is usually the
+//!   extra cell. `fp_error` (residual a cell leaves when it fires, relative to
+//!   its SNR) ranks wrong footprints but no threshold separates them, so it is
+//!   a colour scale, not a flag.
 //! * **Regime-dependent, descriptive only.** `diff_skew` and `asymmetry`
-//!   (fast rise, slow decay) predict real cells on sims (AUC 0.82 / 0.66) but
-//!   not on the real recording (0.52 / 0.60), whose transients rise over
-//!   several frames. `slow_frac` is not a failure: on the real recording the
-//!   slow "humps" are long calcium events that Minian finds too (low-pass r
-//!   0.89), and slow share correlates *positively* with agreement with
-//!   Minian (ρ 0.63). `events`, widths, `zero_frac` (non-negativity clamp),
-//!   footprint shape and stability are descriptive.
-//! * **Global, validated.** `explained` and `residual_excess` track true
-//!   recall over a run (ρ 0.93-1.00 and −0.87 to −1.00), and `adds_per_min`
-//!   falls as recall rises (ρ −0.64 to −0.92). `pass_frac` and the median
-//!   SNR do not track recall consistently. For comparing runs or library
-//!   versions, `explained` is superseded by the held-out score
-//!   ([`heldout`]): `explained` also rises with every column that soaks up
-//!   structured noise, the held-out score nets out what a cell-shaped
-//!   non-cell gains.
-//! * **Convergence: existing-cell stability.** Cell discovery never stops
-//!   on long recordings (batch tools find nearly twice the cells in 30-120
-//!   min as in 10-30 min), so adds per minute cannot say whether a run has
+//!   (fast rise, slow decay) predict real cells on sims but not on real
+//!   recordings, whose transients rise over several frames. `slow_frac` is not
+//!   a failure: slow "humps" in real data are long calcium events. `events`,
+//!   widths, `zero_frac` (non-negativity clamp), footprint shape and stability
+//!   are descriptive.
+//! * **Global.** `explained` and `residual_excess` track true recall over a
+//!   run, and `adds_per_min` falls as recall rises. `pass_frac` and the median
+//!   SNR do not track recall consistently. To compare runs or library
+//!   versions use the held-out score ([`heldout`]) rather than `explained`:
+//!   `explained` also rises with every column that soaks up structured noise,
+//!   while the held-out score nets out what a cell-shaped non-cell gains.
+//! * **Convergence: existing-cell stability.** Cell discovery does not stop on
+//!   long recordings, so adds per minute cannot say whether a run has
 //!   converged. What should settle is the cells already found: every
 //!   `stability_lag_s` the monitor snapshots each cell's unfiltered
 //!   footprint and trace noise σ (own footprint and demixing with its
 //!   neighbours), and compares every cell older than `stable_min_age_s` with
 //!   the snapshot one to two lags old (`stable_frac`, `fp_stability`,
-//!   `trace_sigma_change`; per cell `fp_ref_cos`, `sigma_ref_change`). On
-//!   minisim, `stable_frac` rises from ~0.6 to a plateau of 0.87-0.96 while
-//!   GT precision is flat. It is a run-level signal, not a per-cell flag:
-//!   cells that are unstable at a given moment are true positives about as
-//!   often as stable ones (0.96 vs 0.98, 8-min runs; 0.89 vs 0.96, 20 min)
-//!   with traces as good (true r 0.95-0.96 either way). The slow loop's add
-//!   classification (re-adds, adds removed again, removals of established
-//!   cells: `crate::discover::ChurnCounts`) is the other half of the
-//!   convergence rule, which lives in the app (`apps/cala/src/lib/qc.ts`).
+//!   `trace_sigma_change`; per cell `fp_ref_cos`, `sigma_ref_change`).
+//!   `stable_frac` rises to a plateau while ground-truth precision stays flat.
+//!   It is a run-level signal, not a per-cell flag: cells that are unstable at
+//!   a given moment are true positives about as often as stable ones. The slow
+//!   loop's add classification (re-adds, adds removed again, removals of
+//!   established cells: `crate::discover::ChurnCounts`) is the other half of
+//!   the convergence rule, which lives in the app (`apps/cala/src/lib/qc.ts`).
 
 // Index loops over pixels and cells read more clearly here; `!(x > 0.0)`
 // deliberately treats NaN as "not positive".

@@ -7,7 +7,7 @@
 //! taken off and put back: the tissue can move by more than the search
 //! window and turn by a degree or more. On stitched two-session sims
 //! (`tools/cala-eval/results/2026-11-13-session-boundary.md`) a 1° rotation
-//! cost P8 .95 → .80 and doubled the adds, because neither the rigid shift
+//! degraded detection and inflated the cell count, because neither the rigid shift
 //! nor the 4 x 4 patch field absorbs a rotation (up to 5 px at the edge).
 //!
 //! So at a session boundary the new session's first frames are registered
@@ -46,9 +46,7 @@
 //! * a rotation of at least `min_rotation_deg` (a 0.1° rotation moves the
 //!   frame edge by 0.5 px at 300 px radius) that removes at least
 //!   `min_rotation_gain` of the unrotated fit's decorrelation `1 − ncc` (a
-//!   rotation the data do not ask for still raises the peak a little: on a
-//!   64 x 48 test movie with no rotation, 0.28° gave ncc .9633 against
-//!   .9630);
+//!   rotation the data do not ask for still raises the peak slightly);
 //! * otherwise a translation beyond `min_translation_px`, rounded to whole
 //!   pixels (an integer shift is an exact copy; the corrector finds the
 //!   sub-pixel rest, as it does within a session).

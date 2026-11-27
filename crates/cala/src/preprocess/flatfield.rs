@@ -12,11 +12,9 @@
 //! fixed in tissue coordinates as a function of `d`, so it repeats across any
 //! split of the recording; a footprint whose trace correlates with motion
 //! picks up `B · ∇gain` as a high-frequency texture with no compact core. On
-//! the workshop CA1 recording (D4 diagnosis, Nov 2026) the motion-response
-//! images of the registered video are explained by this pattern (R² 0.55-0.65
-//! of their high-passed variance) and not at all by misregistered tissue
-//! (R² 0.001), and 75 % of the texture-flagged cells had traces with a
-//! cross-validated motion R² above 0.2 (6 % of the others).
+//! real recordings the motion-response images of the registered video are
+//! explained by this pattern and not by misregistered tissue; see
+//! `tools/cala-eval/results/2026-11-11-d4-flat-field.md`.
 //!
 //! # Method: self-calibration from shifted frames (Kuhn, Lin & Loranz 1991)
 //!
@@ -46,10 +44,9 @@
 //!
 //! The model above is multiplicative; the sensor also adds a fixed-pattern
 //! dark offset (DSNU), part of it per column, and it drifts with
-//! temperature. On the workshop recording the column profile is 12 % of the
-//! high-passed log-gain variance, and the column offsets measured in the
-//! unlit rows explain about a sixth of that (r .41, slope .74 where a pure
-//! offset predicts 1): the column structure is part offset, part gain.
+//! temperature. The column structure of real sensors is part offset, part
+//! gain: the column offsets measured in the unlit rows explain only part of
+//! it.
 //! Offsets inside the FOV are only identifiable per column (from the unlit
 //! rows of the same column); a per-pixel offset cannot be told from gain
 //! without a change of illumination. With
@@ -72,10 +69,8 @@
 //! with the gain half-life.
 //!
 //! Before the first map the data are uncorrected; the first map is a single
-//! switch at a batch boundary (on the workshop recording it moves the
-//! corrected mean image by 0.8 σ median per pixel), later refinements are
-//! small (median 0.07 σ falling to 0.02 σ, 99th percentile below 0.35 σ;
-//! [`FlatFieldUpdate`]). What the slow loop accumulated across a change:
+//! switch at a batch boundary, later refinements are much smaller
+//! ([`FlatFieldUpdate`] reports each move in noise units). What the slow loop accumulated across a change:
 //! the running footprint statistics are centred covariances with a
 //! half-life (`stats_half_life_frames`, 6000 frames), so the static light a
 //! map change moves cancels in the centring, and the motion-locked texture
@@ -583,7 +578,7 @@ impl DitherFlatField {
         // `δ · ∇t` whose weighted mean over the bins does not vanish; the
         // gain would absorb it as a copy of the tissue's fine structure,
         // fixed to the sensor, and divided out that copy biases registration
-        // gain above 1 (see tools/cala-eval/results/2026-11-27-ff-motion-gain.md).
+        // gain above 1; see tools/cala-eval/results/2026-11-27-ff-motion-gain.md.
         // So the first-order term is part of the model:
         // `L_s(x) = g(x) + t(x + s) + δ_s · ∇t(x + s)`, with `∇t` the
         // gradient of the current tissue estimate. Per tissue pixel, `dw`

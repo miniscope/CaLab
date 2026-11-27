@@ -462,8 +462,7 @@ impl Preprocessor {
     /// The floor is quasi-static, so the output has the same noise; but when
     /// a pixel's floor snaps down it does so to a value that contains the
     /// current frame's noise, which would correlate with that noise and bias
-    /// the estimate low (by ~4 % over the first 160 frames of the minisim
-    /// fixture, while the floor is still settling).
+    /// the estimate low, most while the floor is still settling.
     pub fn back(&mut self, frame: &mut [f32]) -> Result<BackRecord, PreprocessError> {
         self.dims().check("frame", frame.len())?;
         self.noise.update(frame)?;
@@ -484,10 +483,9 @@ impl Preprocessor {
     /// Registration moves the sensor's FOV mask in tissue coordinates, so near
     /// its edge a pixel holds tissue light in some frames and the zeros
     /// outside the mask (or an interpolation blend with them) in others.
-    /// Those samples are missing, not data (on the minisim motion
-    /// recordings, the median-|Δ| σ of a pixel 1 px inside the mask edge
-    /// fell to about half that of the tissue next to it, and the on/off
-    /// light read as 5-30 σ events that grew false cells):
+    /// Those samples are missing, not data (left in, the on/off light
+    /// at the mask edge deflates the pixel's noise estimate and reads as
+    /// events that grow false cells):
     ///
     /// * the noise map and the background floor are updated only from a
     ///   pixel's valid samples ([`NoiseMap::update_masked`],
