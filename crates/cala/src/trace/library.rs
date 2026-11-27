@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::background::BackgroundModel;
 use super::{check_len, FrameTraces, TraceError};
-use crate::discover::timing::{count, part, BuildTiming, Lap};
 use crate::preprocess::flatten::GlowFlattener;
 use crate::preprocess::{Dims, PreprocessError};
+use crate::timing::{count, part, BuildTiming, Lap};
 
 /// Source of library version numbers when the caller gives none.
 static NEXT_VERSION: AtomicU64 = AtomicU64::new(1);
@@ -2351,7 +2351,7 @@ impl Core {
     /// into `t`, and time `block_of` once over every support pixel on its
     /// own (`t.cal_ms`, calls under `count::CAL`). Outside the build's laps.
     fn calibrate(&self, t: &mut BuildTiming) {
-        if !crate::discover::timing::ON || self.block == 0 {
+        if !crate::timing::ON || self.block == 0 {
             return;
         }
         let mut lap = Lap::start();

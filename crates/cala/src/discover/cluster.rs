@@ -401,10 +401,6 @@ impl ClusterStore {
         self.rank = rank;
     }
 
-    pub fn members(&self) -> usize {
-        self.ids.len()
-    }
-
     /// Stored frames.
     pub fn stored(&self) -> usize {
         self.hist.stored()

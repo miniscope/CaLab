@@ -14,7 +14,7 @@ default = ["jsbindings"]
 # Explicit opt-in for target-only frozen keep-test evidence.
 diagnostics = []
 # Measurement only: stage timers of observe and of the visit phases
-# (`discover/timing.rs`); no result changes. Off in every shipped build.
+# (`src/timing.rs`); no result changes. Off in every shipped build.
 timing = []
 # Measurement only (stage-0 threads kill test): the per-cell and per-cluster
 # footprint statistics of a fitting frame on a rayon pool (native qc_eval;
@@ -40,7 +40,7 @@ console_error_panic_hook = { version = "0.1", optional = true }
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py311"], optional = true }
 
 [dev-dependencies]
-# Property tests (tests/fft_proptest.rs, tests/avi_proptest.rs). `std` only,
+# Property tests (tests/*_proptest.rs: fft, avi, motion, preprocess). `std` only,
 # same as crates/solver.
 proptest = { version = "1", default-features = false, features = ["std"] }
 

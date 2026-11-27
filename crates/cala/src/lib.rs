@@ -13,8 +13,8 @@
 //!   refine footprints) that publishes new library versions to the fast loop.
 //! * [`trace`]: the fast loop, per-frame cell traces from a (swappable)
 //!   footprint library, and re-extraction of past frames.
-//! * [`compress`]: windowed low-rank factors of the preprocessed frames
-//!   (prototype), so past frames can be revisited without the raw video.
+//! * [`compress`]: windowed low-rank factors of the preprocessed frames, so
+//!   past frames can be revisited without the raw video.
 //! * [`qc`]: online quality control of traces, footprints and demixing,
 //!   computed alongside the fast loop from the data alone.
 //!
@@ -27,6 +27,7 @@ pub mod discover;
 pub mod motion;
 pub mod preprocess;
 pub mod qc;
+pub mod timing;
 pub mod trace;
 
 pub use avi::{AviError, AviHeader, AviInfo, PixelFormat};
@@ -36,6 +37,8 @@ pub const CALA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(feature = "jsbindings")]
 mod js_avi;
+#[cfg(feature = "jsbindings")]
+mod js_util;
 
 #[cfg(feature = "pybindings")]
 mod py_api;

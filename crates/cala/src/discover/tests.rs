@@ -2310,7 +2310,7 @@ fn js_observe_with_background_levels_matches_native() {
         for (js, eng, levels) in [(&mut b, &mut eb, true), (&mut c, &mut ec, false)] {
             let tr = eng.process_frames(f, 1).unwrap();
             let bg = eng.last_background();
-            assert_eq!(bg.len(), eng.background_len() as usize);
+            assert_eq!(bg.len(), eng.inner.library().background_len());
             let version = eng.inner.library().version() as f64;
             assert!(js
                 .observe(f, version, &tr, levels.then_some(bg), None)
@@ -2459,7 +2459,7 @@ fn refine_js(
     let after_discover = structural(&js.inner().stats());
     let ids_discover: Vec<u64> = js.inner().cell_infos().iter().map(|c| c.id).collect();
     js.set_edit_scope("refine").unwrap();
-    assert_eq!(js.edit_scope(), "refine");
+    assert_eq!(js.inner().edit_scope().name(), "refine");
     for _ in 0..refines {
         feed(&mut js, &mut eng, &mut out, true);
         let lib = js.finalize().unwrap();
@@ -3525,12 +3525,10 @@ fn js_settle_frames_only_feeds_fitting_frames_to_the_statistics() {
     let (slow, mut eng) = start(config(), &seed);
     let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
     let v = eng.library().version() as f64;
-    // Off: nothing to take, and (look-back off) it cannot be turned on.
+    // Off: nothing to take.
     assert!(js.settle_take(96.0, 16).is_empty());
-    assert!(!js.settle_enabled());
     js.enable_lookback(2.0, 3000).unwrap();
     js.enable_settle(16).unwrap();
-    assert!(js.settle_enabled());
     // Live frames at stream indices 100.. (frames before the slow loop
     // started get the hashed decision).
     let off = 100usize;

@@ -1,24 +1,18 @@
 //! wasm-bindgen surface of the fast loop, for a Web Worker.
 //!
-//! Build a library with `TraceLibraryBuilder` (footprints are unfiltered,
-//! non-negative patches; `buildFlattened` applies the preprocessing high-pass
-//! with the same FOV mask and σ as the preprocessing chain), wrap it in a
-//! `TraceEngine`, and feed preprocessed frames in batches. A new library
-//! (from the slow loop) is swapped in with `setLibrary` between batches.
+//! Wrap a library (`TraceLibrary.fromBytes`, as the slow loop publishes it,
+//! or `TraceLibraryBuilder` for tests and scripts) in a `TraceEngine`, and
+//! feed preprocessed frames in batches. A new library (from the slow loop)
+//! is swapped in with `setLibrary` between batches.
 
 use std::sync::Arc;
 
 use wasm_bindgen::prelude::*;
 
 use super::library::{IdentityFilter, Library, LibraryBuilder};
-use super::{BackgroundModel, Footprint, FrameTraces, SolverConfig, TraceEngine, TraceError};
-use crate::preprocess::flatten::{FlattenConfig, GlowFlattener};
-use crate::preprocess::fov::FovMask;
+use super::{Footprint, FrameTraces, SolverConfig, TraceEngine, TraceError};
+use crate::js_util::{init_panic_hook, js_err};
 use crate::preprocess::Dims;
-
-fn js_err(func: &str, e: impl std::fmt::Display) -> JsError {
-    JsError::new(&format!("{func}: {e}"))
-}
 
 /// Collects footprints and settings for a [`JsTraceLibrary`].
 #[wasm_bindgen(js_name = TraceLibraryBuilder)]
@@ -31,7 +25,7 @@ pub struct JsTraceLibraryBuilder {
 impl JsTraceLibraryBuilder {
     #[wasm_bindgen(constructor)]
     pub fn new(width: u32, height: u32) -> Result<JsTraceLibraryBuilder, JsError> {
-        console_error_panic_hook::set_once();
+        init_panic_hook();
         let dims = Dims::new(width as usize, height as usize)
             .map_err(|e| js_err("TraceLibraryBuilder", e))?;
         Ok(JsTraceLibraryBuilder {
@@ -80,53 +74,6 @@ impl JsTraceLibraryBuilder {
         Ok(())
     }
 
-    /// Background basis: `count` full-frame maps, concatenated.
-    #[wasm_bindgen(js_name = setBackgroundMaps)]
-    pub fn set_background_maps(&mut self, maps: &[f32], count: u32) -> Result<(), JsError> {
-        let n = self.dims.pixels();
-        if maps.len() != n * count as usize {
-            return Err(JsError::new(&format!(
-                "setBackgroundMaps: {} values for {count} maps of {n}",
-                maps.len()
-            )));
-        }
-        let b = self.take("setBackgroundMaps")?;
-        let m = maps.chunks_exact(n).map(<[f32]>::to_vec).collect();
-        self.inner = Some(b.background(BackgroundModel::Basis(m)));
-        Ok(())
-    }
-
-    /// Ring background `inner..outer` px around each cell.
-    #[wasm_bindgen(js_name = setRing)]
-    pub fn set_ring(&mut self, inner_px: f32, outer_px: f32) -> Result<(), JsError> {
-        let b = self.take("setRing")?;
-        self.inner = Some(b.background(BackgroundModel::Ring { inner_px, outer_px }));
-        Ok(())
-    }
-
-    /// Build with the glow-flattening high-pass of the preprocessing chain
-    /// (`fov` = its FOV mask, `cell_diameter_px` = its setting).
-    #[wasm_bindgen(js_name = buildFlattened)]
-    pub fn build_flattened(
-        &mut self,
-        fov: &[u8],
-        cell_diameter_px: f32,
-    ) -> Result<JsTraceLibrary, JsError> {
-        let mask = FovMask::from_mask(self.dims, fov).map_err(|e| js_err("buildFlattened", e))?;
-        let cfg = FlattenConfig {
-            cell_diameter_px,
-            ..FlattenConfig::default()
-        };
-        let mut flat = GlowFlattener::new(&mask, &cfg).map_err(|e| js_err("buildFlattened", e))?;
-        let b = self.take("buildFlattened")?.fov(fov.to_vec());
-        let lib = b
-            .build(&mut flat)
-            .map_err(|e| js_err("buildFlattened", e))?;
-        Ok(JsTraceLibrary {
-            inner: Arc::new(lib),
-        })
-    }
-
     /// Build without filtering the footprints.
     #[wasm_bindgen(js_name = buildUnfiltered)]
     pub fn build_unfiltered(&mut self) -> Result<JsTraceLibrary, JsError> {
@@ -163,12 +110,6 @@ impl JsTraceLibrary {
         self.inner.ids().iter().map(|&v| v as u32).collect()
     }
 
-    /// Noise σ of each trace.
-    #[wasm_bindgen(js_name = traceNoise)]
-    pub fn trace_noise(&self) -> Vec<f32> {
-        self.inner.trace_noise().to_vec()
-    }
-
     /// The library as bytes, to send to another worker (`fromBytes`).
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -180,7 +121,7 @@ impl JsTraceLibrary {
     /// rebuild: the fast loop calls it between frames.
     #[wasm_bindgen(js_name = fromBytes)]
     pub fn from_bytes(bytes: &[u8]) -> Result<JsTraceLibrary, JsError> {
-        console_error_panic_hook::set_once();
+        init_panic_hook();
         let lib = Library::from_bytes(bytes).map_err(|e| js_err("fromBytes", e))?;
         Ok(JsTraceLibrary::from_arc(Arc::new(lib)))
     }
@@ -264,7 +205,7 @@ impl JsTraceEngine {
         tol: f32,
         max_sweeps: u32,
     ) -> Result<JsTraceEngine, JsError> {
-        console_error_panic_hook::set_once();
+        init_panic_hook();
         let mut cfg = SolverConfig::default();
         if tol > 0.0 {
             cfg.tol = tol;
@@ -345,20 +286,13 @@ impl JsTraceEngine {
     }
 
     /// The background coefficients of the last `processFrames` batch (also
-    /// `QcMonitor.processFrames`), frame after frame: `count x
-    /// backgroundLen` values, in the library's slot order under the ring
-    /// model (one local level per cell). The slow loop takes one frame's
+    /// `QcMonitor.processFrames`), frame after frame: `count x` the
+    /// library's background length, in its slot order under the ring model
+    /// (one local level per cell). The slow loop takes one frame's
     /// worth with the traces (`SlowLoop.observe`).
     #[wasm_bindgen(js_name = lastBackground)]
     pub fn last_background(&self) -> Vec<f32> {
         self.batch_background.clone()
-    }
-
-    /// Background coefficients per frame for the current library (cells,
-    /// under the ring model).
-    #[wasm_bindgen(getter, js_name = backgroundLen)]
-    pub fn background_len(&self) -> u32 {
-        self.inner.library().background_len() as u32
     }
 
     /// Residual of the last solved frame: `frame` (that frame, as passed to
@@ -375,10 +309,5 @@ impl JsTraceEngine {
         lib.residual(frame, &self.out, &mut out)
             .map_err(|e| js_err("residualOfLast", e))?;
         Ok(out)
-    }
-
-    #[wasm_bindgen(getter, js_name = nextFrame)]
-    pub fn next_frame(&self) -> f64 {
-        self.inner.next_frame() as f64
     }
 }
