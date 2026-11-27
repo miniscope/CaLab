@@ -147,7 +147,8 @@ export function RunRail(props: RunRailProps): JSX.Element {
         // The settle reports its total once it starts; the plan's until then.
         settleTotal: lb?.settle?.total || settleFrames,
         extractDone: p().processed(),
-        extractTotal: p().total(),
+        // Extract reports its total after its first batch; the recording's until then.
+        extractTotal: p().total() || total,
         discover: s().status(),
       },
       // Zero until the first library of a run; a dash only before any run.
@@ -407,6 +408,12 @@ function CellsFigure(p: {
             </Show>
             <span class="cala-visually-hidden">{dotWord()}</span>
           </span>
+          <span
+            class="cala-fig__axis cala-num"
+            title="The sparkline's fixed range: 0 to this, rounded up; it never shrinks in a run."
+          >
+            0–{n0(p.hist.cellsMax)}
+          </span>
         </>
       }
       value={
@@ -418,9 +425,6 @@ function CellsFigure(p: {
       testid="run-rail-cells"
     >
       <span class="cala-fig__spark">
-        <span class="cala-fig__axis cala-num" aria-hidden="true">
-          {n0(p.hist.cellsMax)}
-        </span>
         <Sparkline
           values={p.hist.cells}
           x={p.hist.x}

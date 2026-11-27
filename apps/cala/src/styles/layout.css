@@ -508,12 +508,10 @@
   display: block;
 }
 
-/* The Cells sparkline's range end, printed at its top left (an axis tick) because it steps
-   (1, 2, 5 x 10^k); the line starts at the bottom left, so the two do not meet. */
+/* The Cells sparkline's range, printed at the right of the name because its end steps
+   (1, 2, 5 x 10^k). */
 .cala-fig__axis {
-  position: absolute;
-  top: -3px;
-  left: 0;
+  margin-left: auto;
   color: var(--ink-3);
   font-size: var(--font-size-xs);
   line-height: 1;
