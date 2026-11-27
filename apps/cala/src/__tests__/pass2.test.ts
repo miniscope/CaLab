@@ -2,7 +2,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { TraceLibraryBuilder } from '../lib/cala-wasm.ts';
 import { FastLoop } from '../lib/fast-loop.ts';
-import type { FramePixels } from '../lib/frame-source.ts';
 import type { FrameReader, PipelineStepResult } from '../lib/pipeline-types.ts';
 import {
   BackStage,
@@ -14,6 +13,7 @@ import {
 import { RunRecord } from '../lib/run-record.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import { traceBackend } from '../lib/trace-backend.ts';
+import { blobMovie } from './blob-movie.ts';
 import { initTestWasm } from './wasm-test.ts';
 
 beforeAll(initTestWasm);
@@ -25,43 +25,28 @@ const OPTIONS = { calibrationFrames: 20, motionWarmupFrames: 20, batchSize: 8, p
 
 /** A seeded blob movie with a jump in field of view at frame 30 and a global flicker. */
 function makeMovie(frames: number): FrameReader {
-  let seed = 11;
-  const rand = () => {
-    seed = (seed * 1103515245 + 12345) % 2147483648;
-    return seed / 2147483648;
-  };
-  const blobs = Array.from({ length: 40 }, () => ({
-    y: rand() * H,
-    x: rand() * W,
-    a: 40 + rand() * 60,
-  }));
-  return {
-    info: { width: W, height: H, bitDepth: 8, frameCount: frames, fps: 20 },
-    async readFrames(start: number, count: number, out?: FramePixels) {
-      const dst = (out as Uint8Array | undefined) ?? new Uint8Array(count * W * H);
-      for (let i = 0; i < count; i++) {
-        const f = start + i;
-        const sy = f < 30 ? 0 : 2;
-        const sx = f < 30 ? 0 : -3;
-        const gain = 1 + 0.04 * Math.sin((2 * Math.PI * f) / 5);
-        // Blobs flash on and off so the traces are not constant.
-        const on = (k: number) => (Math.floor(f / 9) + k) % 3 === 0;
-        for (let y = 0; y < H; y++) {
-          for (let x = 0; x < W; x++) {
-            const lit = (y - H / 2) ** 2 + (x - W / 2) ** 2 < (0.48 * W) ** 2;
-            let v = 110;
-            blobs.forEach((b, k) => {
-              const d2 = (y - sy - b.y) ** 2 + (x - sx - b.x) ** 2;
-              if (d2 < 40) v += (on(k) ? 1.6 : 0.6) * b.a * Math.exp(-d2 / 6);
-            });
-            const lv = gain * (v + ((f * 31 + y * 7 + x * 13) % 5));
-            dst[i * W * H + y * W + x] = lit ? Math.min(255, Math.round(lv)) : 3;
-          }
-        }
-      }
-      return dst;
+  return blobMovie({
+    width: W,
+    height: H,
+    frames,
+    seed: 11,
+    blobs: 40,
+    frame: (f, blobs) => {
+      const sy = f < 30 ? 0 : 2;
+      const sx = f < 30 ? 0 : -3;
+      const gain = 1 + 0.04 * Math.sin((2 * Math.PI * f) / 5);
+      // Blobs flash on and off so the traces are not constant.
+      const on = (k: number) => (Math.floor(f / 9) + k) % 3 === 0;
+      return (y, x) => {
+        let v = 110;
+        blobs.forEach((b, k) => {
+          const d2 = (y - sy - b.y) ** 2 + (x - sx - b.x) ** 2;
+          if (d2 < 40) v += (on(k) ? 1.6 : 0.6) * b.a * Math.exp(-d2 / 6);
+        });
+        return gain * (v + ((f * 31 + y * 7 + x * 13) % 5));
+      };
     },
-  };
+  });
 }
 
 /** A library of Gaussian footprints at the given centres (row, column). */

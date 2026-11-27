@@ -12,6 +12,7 @@ import { framePreviewImage } from '../lib/preview.ts';
 import { StageChain } from '../lib/stage-chain.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import type { FastToSlow } from '../workers/slow-types.ts';
+import { blobMovie } from './blob-movie.ts';
 import { initTestWasm } from './wasm-test.ts';
 
 beforeAll(initTestWasm);
@@ -24,24 +25,14 @@ const H = 48;
  * `boundary`: a second session starts there, ×0.8 as bright and moved.
  */
 function sessionMovie(frames: number, boundary?: number): FrameReader {
-  let seed = 11;
-  const rand = () => {
-    seed = (seed * 1103515245 + 12345) % 2147483648;
-    return seed / 2147483648;
-  };
-  const blobs = Array.from({ length: 40 }, () => ({
-    y: rand() * H,
-    x: rand() * W,
-    a: 40 + rand() * 60,
-  }));
-  return {
-    info: {
-      width: W,
-      height: H,
-      bitDepth: 8,
-      frameCount: frames,
-      fps: 20,
-      ...(boundary !== undefined
+  return blobMovie({
+    width: W,
+    height: H,
+    frames,
+    seed: 11,
+    blobs: 40,
+    info:
+      boundary !== undefined
         ? {
             sessions: [0, boundary].map((startFrame, index) => ({
               index,
@@ -53,32 +44,22 @@ function sessionMovie(frames: number, boundary?: number): FrameReader {
               files: 1,
             })),
           }
-        : {}),
-    },
-    async readFrames(start: number, count: number, out?: FramePixels) {
-      const dst = (out as Uint8Array | undefined) ?? new Uint8Array(count * W * H);
-      for (let i = 0; i < count; i++) {
-        const f = start + i;
-        const b = boundary !== undefined && f >= boundary;
-        const sy = (f < 30 ? 0 : 2) + (b ? 3 : 0);
-        const sx = (f < 30 ? 0 : -3) + (b ? -2 : 0);
-        const gain = (1 + 0.04 * Math.sin((2 * Math.PI * f) / 5)) * (b ? 0.8 : 1);
-        for (let y = 0; y < H; y++) {
-          for (let x = 0; x < W; x++) {
-            const lit = (y - H / 2) ** 2 + (x - W / 2) ** 2 < (0.48 * W) ** 2;
-            let v = 110;
-            for (const b of blobs) {
-              const d2 = (y - sy - b.y) ** 2 + (x - sx - b.x) ** 2;
-              if (d2 < 40) v += b.a * Math.exp(-d2 / (6 + (f % 7) * 0.1));
-            }
-            const lv = gain * (v + ((f * 31 + y * 7 + x * 13) % 5));
-            dst[i * W * H + y * W + x] = lit ? Math.min(255, Math.round(lv)) : 3;
-          }
+        : {},
+    frame: (f, blobs) => {
+      const b = boundary !== undefined && f >= boundary;
+      const sy = (f < 30 ? 0 : 2) + (b ? 3 : 0);
+      const sx = (f < 30 ? 0 : -3) + (b ? -2 : 0);
+      const gain = (1 + 0.04 * Math.sin((2 * Math.PI * f) / 5)) * (b ? 0.8 : 1);
+      return (y, x) => {
+        let v = 110;
+        for (const blob of blobs) {
+          const d2 = (y - sy - blob.y) ** 2 + (x - sx - blob.x) ** 2;
+          if (d2 < 40) v += blob.a * Math.exp(-d2 / (6 + (f % 7) * 0.1));
         }
-      }
-      return dst;
+        return gain * (v + ((f * 31 + y * 7 + x * 13) % 5));
+      };
     },
-  };
+  });
 }
 
 /** A fast loop whose port records what it is sent and acks every batch at once. */
@@ -131,41 +112,33 @@ function shiftedMovie(
 ): FrameReader & { reads: [number, number][] } {
   const w = 96;
   const h = 80;
-  let seed = 7;
-  const rand = () => {
-    seed = (seed * 1103515245 + 12345) % 2147483648;
-    return seed / 2147483648;
-  };
-  const blobs = Array.from({ length: 70 }, () => ({
-    y: rand() * h,
-    x: rand() * w,
-    a: 40 + rand() * 60,
-  }));
-  const frame = (f: number, out: Uint8Array) => {
-    const [sy, sx] = shifts[f];
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        // The lens disk is fixed to the sensor; only the tissue moves.
-        const lit = (y - h / 2) ** 2 + (x - w / 2) ** 2 < (0.48 * w) ** 2;
+  const movie = blobMovie({
+    width: w,
+    height: h,
+    frames: shifts.length,
+    seed: 7,
+    blobs: 70,
+    frame: (f, blobs) => {
+      const [sy, sx] = shifts[f];
+      // The lens disk is fixed to the sensor; only the tissue moves.
+      return (y, x) => {
         let v = 110;
         for (const b of blobs) {
           const d2 = (y - sy - b.y) ** 2 + (x - sx - b.x) ** 2;
           if (d2 < 40) v += b.a * Math.exp(-d2 / 6);
         }
-        const lv = gain(f) * (v + ((f * 31 + y * 7 + x * 13) % 5));
-        out[y * w + x] = lit ? Math.min(255, Math.round(lv)) : 3;
-      }
-    }
-  };
+        return gain(f) * (v + ((f * 31 + y * 7 + x * 13) % 5));
+      };
+    },
+  });
   const reads: [number, number][] = [];
   return {
     reads,
-    info: { width: w, height: h, bitDepth: 8, frameCount: shifts.length, fps: 20 },
+    info: movie.info,
     async readFrames(start: number, count: number, out?: FramePixels) {
       reads.push([start, count]);
-      const dst = (out as Uint8Array | undefined) ?? new Uint8Array(count * w * h);
+      const dst = await movie.readFrames(start, count, out);
       expect(dst.length).toBe(count * w * h);
-      for (let i = 0; i < count; i++) frame(start + i, dst.subarray(i * w * h, (i + 1) * w * h));
       return dst;
     },
   };

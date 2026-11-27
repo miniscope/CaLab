@@ -14,6 +14,7 @@ import type {
 } from '../workers/slow-types.ts';
 import { visitRateCounters } from '../workers/slow-types.ts';
 import { VISIT_RATE } from '../lib/visit-rate.ts';
+import { lcgClassic } from './blob-movie.ts';
 import { initTestWasm } from './wasm-test.ts';
 import { fakeLib, INIT, stubSlowLoop } from './slow-fixtures.ts';
 
@@ -153,11 +154,7 @@ describe('parallel tile visits over the real WASM bindings', () => {
       [48, 50],
       [50, 14],
     ];
-    let seed = 3;
-    const rand = () => {
-      seed = (seed * 1103515245 + 12345) % 2147483648;
-      return seed / 2147483648;
-    };
+    const rand = lcgClassic(3);
     const gauss = () => {
       let s = 0;
       for (let k = 0; k < 12; k++) s += rand();
