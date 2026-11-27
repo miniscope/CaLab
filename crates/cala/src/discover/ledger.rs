@@ -215,6 +215,8 @@ pub(crate) struct Evidence {
 
 /// Frames the trackers start from.
 const WARM: usize = 32;
+/// Median |z| of standard normal noise (its MAD), to four digits.
+const MAD_Z: f32 = 0.6745;
 /// Longest excursion (frames) during which the trackers stay frozen.
 const MAX_FREEZE: u32 = 100;
 
@@ -267,14 +269,14 @@ impl Evidence {
             self.base = buf[buf.len() * 3 / 10];
             let mid = d.len() / 2;
             let (_, m, _) = d.select_nth_unstable_by(mid, f32::total_cmp);
-            self.scale = (*m / 0.6745 / std::f32::consts::SQRT_2).max(floor);
+            self.scale = (*m / MAD_Z / std::f32::consts::SQRT_2).max(floor);
             self.warm = None;
             return;
         }
         let s = self.scale.max(floor);
         let z = (u - self.base) / s;
         self.z = z;
-        // Baseline: a median tracker; scale: a median-|z| tracker (0.6745 σ
+        // Baseline: a median tracker; scale: a median-|z| tracker (`MAD_Z` σ
         // for Gaussian noise). Both are frozen during a positive excursion
         // beyond 2 σ, so a calcium transient does not lift the baseline nor
         // inflate the scale, but only for `MAX_FREEZE` frames, so a
@@ -282,7 +284,7 @@ impl Evidence {
         let frozen = z >= 2.0 && self.run_len < MAX_FREEZE;
         if !frozen {
             self.base += 0.02 * s * z.clamp(-1.0, 1.0);
-            if z.abs() > 0.6745 {
+            if z.abs() > MAD_Z {
                 self.scale = s * 1.01;
             } else {
                 self.scale = (s * 0.99).max(floor);
