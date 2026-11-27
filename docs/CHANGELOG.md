@@ -16,6 +16,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Fixed
 
+- Cala: **with the sensor flat field on (the default), motion correction no longer overestimates shifts.** The flat field's solve modelled each shift bin at its integer shift, so its gain map took a copy of the tissue's fine structure, and dividing that out made rigid shifts read about 4 % too long overall and 6–10 % late in a recording. The solve now models each bin's sub-pixel offset (`DitherFlatField`, `crates/cala/src/preprocess/flatfield.rs`). On the motion sims registration error falls from 0.071 to 0.048 px RMS (no flat field: 0.045) and the gain from 1.065 to 1.003 late in the run; cell detection is unchanged within its CI (`tools/cala-eval/results/2026-11-27-ff-motion-gain.md`). Flat-field maps cached in the browser by earlier versions carry the copy, so they are no longer reused: the first run per device estimates a fresh map, as on a first visit.
 - Cala: the run record's `url_flags.*.in_effect` now comes from the same reading of the URL the app uses, so it says what the run did. A bare `?csettle` (or `csettle=1`) is recorded as in effect (it turns Background settle on over a saved cap of 0); `?flatfield=1`, `?gpu=1`, `?debug&smooth=1` and other values the app ignores are recorded as not in effect. Keys and format are unchanged.
 - Cala: the run record now marks `?debug&visitrate=auto` as in effect (`url_flags.flags.visitrate.in_effect`); since the opt-in Auto schedule it was written as `false`, although `work.visit_rate.schedule` said `auto`.
 
