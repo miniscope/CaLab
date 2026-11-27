@@ -37,6 +37,8 @@ import {
   type FlatFieldCache,
 } from './flat-field-cache.ts';
 import type { PipelineClient } from './frame-client.ts';
+import { errMsg } from './errors.ts';
+import { normalizeRunCells } from './run-cells.ts';
 import type {
   BatchPreviews,
   LiveBatchInfo,
@@ -255,7 +257,7 @@ export function createPipelineStore(
   const [runPool, setRunPool] = createSignal<PoolWidth | null>(null);
   // `?debug&cbacklog=GB`: the cap on window files waiting for compression (measurement).
   let backlogCap: number | undefined;
-  // `?debug&fextract=0`: Extract on factors on rebuilt frames, as before slice 6 (measurement).
+  // `?debug&fextract=0`: Extract on factors on rebuilt frames (measurement).
   let frameExtract = false;
   // `?debug&gpucheck=N`: a GPU run's first N windows are compressed on the CPU too (measurement).
   let gpuCheck = 0;
@@ -378,7 +380,7 @@ export function createPipelineStore(
 
   /** Frames processed this run (the denominator of the per-frame timing means). */
   let framesDone = 0;
-  /** Pass 1's per-frame motion and flicker, kept in full for pass 2 and the export. */
+  /** Discover's per-frame motion and flicker, kept in full for Extract and the export. */
   let record = new RunRecord();
   let meter = new ThroughputMeter();
   let totals: StageTimings = { ...ZERO_TIMINGS };
@@ -603,7 +605,7 @@ export function createPipelineStore(
   const [visitYield, setVisitYield] = createSignal<number | null>(null);
   /**
    * The Final settle's visit rate, visits per settle frame (`SETTLE.visitRate`; 0: none, visits
-   * whenever a visit worker is free, as before): `?debug&settlevisits=` sets it (measurement).
+   * whenever a visit worker is free): `?debug&settlevisits=` sets it (measurement).
    */
   let settleVisits: number = SETTLE.visitRate;
   let visitGov: VisitRateGovernor | null = null;
@@ -1083,7 +1085,7 @@ export function createPipelineStore(
   /**
    * The final library of look-back run `session` is out: a pool started for its Final settle
    * ends now, before Extract (which never uses it), so it adds nothing to Extract's memory.
-   * A pool started below Max for the Background settle is left as before.
+   * A pool started below Max for the Background settle is left running.
    */
   function endFactorPool(session: number): number {
     if (!session || session !== poolForFinal) return 0;
@@ -1180,7 +1182,7 @@ export function createPipelineStore(
         })
         .catch((err: unknown) => {
           if (gen !== generation) return;
-          const message = err instanceof Error ? err.message : String(err);
+          const message = errMsg(err);
           setError(message);
           setStatus('error');
           runHistory?.log({ frame: processed(), kind: 'error', detail: message });
@@ -1327,28 +1329,24 @@ export function createPipelineStore(
         { ...options, flatField: useFlat },
         {
           session,
-          ...(lb ? { lookback: true } : {}),
-          ...(lb && FINAL_SETTLE_LEVELS[finalSettleLevelSig()].fraction < 1
-            ? { settleFraction: FINAL_SETTLE_LEVELS[finalSettleLevelSig()].fraction }
-            : {}),
-          ...(lb
-            ? {
-                csettle: true,
-                ...(csettleYield() > 0 ? { csettleYield: csettleYield() } : {}),
-                ...(csettleNeedFirst() ? { csettleNeedFirst: true } : {}),
-              }
-            : {}),
           discover: discover(),
-          // The Discover visit cap (the slow loop's credit; recordings and live streams alike).
-          ...(discover() && visitRateCap(visitRateMode(untrack(visitRateOff), false)) > 0
-            ? {
-                visitRate: visitRateCap(visitRateMode(untrack(visitRateOff), false)),
-                // The engine's schedule sets the cap (and the target) from here on.
-                visitSchedule: untrack(visitRateSetting) === 'auto' ? 'auto' : 'fixed',
-              }
-            : {}),
-          // The Final settle's visit rate (a recording's or a stream's settle; with visit workers).
-          ...(discover() && settleVisits > 0 ? { settleVisitRate: settleVisits } : {}),
+          ...normalizeRunCells({
+            lookback: lb,
+            // Background settle may run whenever look-back does (below Max, `SlowRunner`).
+            csettle: lb,
+            csettleYield: csettleYield(),
+            csettleNeedFirst: csettleNeedFirst(),
+            factorSettle: runPlan.factorSettle,
+            factorFile: runPlan.factorFile,
+            settleFraction: FINAL_SETTLE_LEVELS[finalSettleLevelSig()].fraction,
+            // The Discover visit rate's schedule sets the cap and the target (recordings and live
+            // streams alike); `?debug&visitrate=off` sends none.
+            ...(discover() && visitRateCap(visitRateMode(untrack(visitRateOff), false)) > 0
+              ? { visitSchedule: untrack(visitRateSetting) === 'auto' ? 'auto' : 'fixed' }
+              : {}),
+            // The Final settle's visit rate (a recording's or a stream's settle; with visit workers).
+            ...(discover() ? { settleVisitRate: settleVisits } : {}),
+          }),
           qc,
           residual: residual(),
           ...(forwardBuffers ? { forwardBuffers } : {}),
@@ -1362,11 +1360,6 @@ export function createPipelineStore(
                 ...(runPlan.gpu ? { compressGpu: true } : {}),
                 ...(runPlan.gpu && gpuCheck > 0 ? { compressGpuCheck: gpuCheck } : {}),
               }
-            : {}),
-          ...(runPlan.factorSettle ? { factorSettle: true } : {}),
-          ...(runPlan.factorFile ? { factorFile: true } : {}),
-          ...(runPlan.factorSettle && FINAL_SETTLE_LEVELS[finalSettleLevelSig()].fraction < 1
-            ? { settleFraction: FINAL_SETTLE_LEVELS[finalSettleLevelSig()].fraction }
             : {}),
         },
         undefined,
@@ -1411,7 +1404,7 @@ export function createPipelineStore(
       pump();
     } catch (err) {
       if (gen !== generation) return;
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
       setStatus('error');
     }
   }
@@ -1455,7 +1448,7 @@ export function createPipelineStore(
   }
 
   /**
-   * End pass 1 at the frames processed so far (the rest of the recording is not
+   * End Discover at the frames processed so far (the rest of the recording is not
    * read): the slow loop publishes its final library and the run reports done.
    */
   async function finishEarly(): Promise<void> {
@@ -1466,7 +1459,7 @@ export function createPipelineStore(
       await client.truncatePipeline?.();
     } catch (err) {
       if (gen !== generation) return;
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errMsg(err));
       setStatus('error');
       return;
     }
@@ -1475,7 +1468,7 @@ export function createPipelineStore(
     pump();
   }
 
-  /** Turn the online flat field on or off (takes effect at the next start of pass 1). */
+  /** Turn the online flat field on or off (takes effect at the next Discover start). */
   function setFlatEnabled(on: boolean): void {
     setFlatEnabledSignal(on);
     // Not mid-run: the run keeps what it started with. The panel says so.
@@ -1689,7 +1682,7 @@ export function createPipelineStore(
      */
     setVisitRateSetting,
     visitRateSetting,
-    /** `?debug&settlevisits=`: the Final settle's visit rate from the next start (0: none, as before). */
+    /** `?debug&settlevisits=`: the Final settle's visit rate from the next start (0: none). */
     setSettleVisitRate(rate: number): void {
       settleVisits = Number.isFinite(rate) && rate > 0 ? rate : 0;
     },
@@ -1805,7 +1798,7 @@ export function createPipelineStore(
     flatFieldMap: () => flatLatest,
     /** Write the newest map to the per-device cache now (the run end does it too). */
     flushFlatField,
-    /** What pass 1 recorded per frame (motion shifts and flicker) so far. */
+    /** What Discover recorded per frame (motion shifts and flicker) so far. */
     record: () => record,
     /** Joint: Discover's session-boundary health flags, one per boundary reached (`boundary-flags.ts`). */
     boundaryFlags,

@@ -316,16 +316,14 @@ describe('parallel tile visits over the real WASM bindings', () => {
 });
 
 describe('SlowRunner and the Discover visit cap', () => {
-  function run(visitRate?: number, visitSchedule?: 'auto' | 'fixed') {
+  function run(visitSchedule?: 'auto' | 'fixed') {
     const toMain: SlowToMain[] = [];
-    const setVisitRate = vi.fn();
     const setVisitSchedule = vi.fn();
     const loop: SlowLoopLike = {
       observe: () => true,
       step: vi.fn(() => undefined),
       finalize: () => fakeLib(900),
       setNoise: vi.fn(),
-      setVisitRate,
       setVisitSchedule,
       visitRateStats: () => Float64Array.of(1, 0.5, 10, 7, 3, 2),
       cellCount: 0,
@@ -339,27 +337,19 @@ describe('SlowRunner and the Discover visit cap', () => {
       toMain: { postMessage: (m) => toMain.push(m) },
       now: () => 0,
     });
-    r.handle({
-      ...INIT,
-      ...(visitRate !== undefined ? { visitRate } : {}),
-      ...(visitSchedule ? { visitSchedule } : {}),
-    });
+    r.handle({ ...INIT, ...(visitSchedule ? { visitSchedule } : {}) });
     r.handle(frames(0));
     const st = toMain.filter((m) => m.type === 'status').at(-1)!;
-    return { setVisitRate, setVisitSchedule, status: st.type === 'status' ? st.status : null };
+    return { setVisitSchedule, status: st.type === 'status' ? st.status : null };
   }
 
-  it('starts the schedule instead of a bare cap when one is asked for', () => {
-    const a = run(0.2, 'auto');
-    expect(a.setVisitSchedule).toHaveBeenCalledWith(true);
-    expect(a.setVisitRate).not.toHaveBeenCalled();
-    const f = run(0.2, 'fixed');
-    expect(f.setVisitSchedule).toHaveBeenCalledWith(false);
+  it('starts the schedule the init asks for', () => {
+    expect(run('auto').setVisitSchedule).toHaveBeenCalledWith(true);
+    expect(run('fixed').setVisitSchedule).toHaveBeenCalledWith(false);
   });
 
-  it('sets the cap from the init and reports its counters', () => {
-    const a = run(1);
-    expect(a.setVisitRate).toHaveBeenCalledWith(1);
+  it('reports the cap counters', () => {
+    const a = run('fixed');
     expect(a.status?.visitRate).toEqual({
       rate: 1,
       credit: 0.5,
@@ -368,9 +358,8 @@ describe('SlowRunner and the Discover visit cap', () => {
       cappedFrames: 3,
       dueTiles: 2,
     });
-    // No cap asked for (`?debug&visitrate=off`): the loop is never told.
-    expect(run().setVisitRate).not.toHaveBeenCalled();
-    expect(run(0).setVisitRate).not.toHaveBeenCalled();
+    // No schedule asked for (`?debug&visitrate=off`): the loop is never told.
+    expect(run().setVisitSchedule).not.toHaveBeenCalled();
   });
 
   it('the WASM slow loop has the cap', () => {
