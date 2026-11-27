@@ -86,9 +86,9 @@ export const OVERVIEW_PARAMS = {
    *  above its median can read up to ~2× the SNR at the same noise. */
   heightBandConsistentRatio: 2,
   /** No consistency verdict below this median event count per cell: the band
-   *  is then mostly sampling noise. On homogeneous simulated cells (one burst
-   *  distribution) the band measured 4.2× at ~6 events, 2.1× at ~19 and 1.5×
-   *  at ~60, shrinking as 1/√n; 30 events keeps that noise-only band under 2×. */
+   *  is then mostly sampling noise. The band of homogeneous cells (one burst
+   *  distribution) is sampling noise that shrinks as 1/√n; 30 events keeps that
+   *  noise-only band under 2×. */
   heightVerdictMinEvents: 30,
 } as const;
 

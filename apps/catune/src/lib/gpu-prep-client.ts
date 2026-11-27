@@ -3,14 +3,11 @@
 // bandpass cutoffs and the baseline window both depend on tau; LRU), and
 // WASM reference solves for the dev readout's GPU-vs-WASM check.
 //
-// TODO(gpu-backend): preprocessing runs on ONE worker, serially, so a
-// parameter change that misses the cache (tau or filter changed) costs
-// cells x per-cell prep before the GPU batch can load. Measured in Chromium
-// on an Apple M5 Max, demo data (20 cells, 30 Hz, 1381-sample padded
-// windows), round trip per trace from `prepStats`: 11.4 ms (8 to 10 ms with
-// 5 cells), so ~0.23 s before a 20-cell batch can start, growing linearly
-// with cells and window length. Spread it over the WASM pool or a few prep
-// workers once that shows up next to the GPU solve time.
+// Limitation: preprocessing runs on ONE worker, serially, so a parameter
+// change that misses the cache (tau or filter changed) costs cells x per-cell
+// prep before the GPU batch can load, growing linearly with cells and window
+// length. Spreading it over the WASM pool or a few prep workers is the
+// remedy if that shows up next to the GPU solve time.
 
 import type { SolverParams, WarmStartStrategy } from '@calab/core';
 import { GPU_STARTUP_TIMEOUT_MS } from '@calab/compute';

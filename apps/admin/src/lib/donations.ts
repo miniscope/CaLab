@@ -1,4 +1,4 @@
-// Pure helpers for the Donations view (apps/cala/docs/data-donation.md, phase 4):
+// Pure helpers for the Donations view (apps/cala/docs/data-donation.md):
 // table filters and formatting, and the preview's mean image and contrast stretch.
 
 import type { DonationRow, DonationStatus, PresignedRequest } from '@calab/community';
