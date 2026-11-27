@@ -9,19 +9,19 @@
 import type { FlatFieldKey, FlatFieldKeySource, FlatFieldMap } from './flat-field.ts';
 
 /**
- * Version of the flat-field solve that made a stored map. Bumped when a solve
- * change makes older maps wrong, so they are not applied to a new run: a record
- * of another (or no) version does not fit, and the run estimates fresh and
- * overwrites it. 2: the solve models each shift bin's sub-pixel offset; maps of
- * version 1 (no field; v2.13.0 to v2.23.x) carry a copy of the tissue's fine
- * structure that biases registration gain to about 1.04-1.07.
+ * Version of the flat-field solve whose maps may seed a run. Bump it when a
+ * solve change makes stored maps wrong: a record of another version, or with
+ * none, does not fit, so the run estimates fresh and overwrites it. Version 2 is
+ * the solve that models each shift bin's sub-pixel offset; records without a
+ * version hold maps with a tissue copy that biases registration (see
+ * tools/cala-eval/results/2026-11-27-ff-motion-gain.md).
  */
 export const FLAT_FIELD_SOLVER_VERSION = 2;
 
 /** What is stored per device key. */
 export interface FlatFieldRecord {
   key: string;
-  /** `FLAT_FIELD_SOLVER_VERSION` of the solve that made the map; absent before version 2. */
+  /** `FLAT_FIELD_SOLVER_VERSION` of the solve that made the map; absent in records of version 1. */
   solver?: number;
   keySource: FlatFieldKeySource;
   width: number;

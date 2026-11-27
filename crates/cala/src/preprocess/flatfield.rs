@@ -578,18 +578,16 @@ impl DitherFlatField {
         let mut gw = vec![0.0f64; n];
         // Sub-pixel model: a bin's frames are not all at its integer shift
         // `s` but spread over `s ± 0.5`, with a mean `s + δ` that is pulled
-        // towards the centre of the shift distribution (|δ| up to ~0.2 px
-        // in the outer bins of a ~1 px dither). Modelling every bin at
-        // exactly `s` leaves a misfit `δ · ∇t` whose weighted mean over the
-        // bins does not vanish (`s · δ < 0` for every bin), and the gain
-        // absorbs it as a copy of the tissue's fine structure, fixed to the
-        // sensor. Divided out, that copy repels registration from the
-        // template position: the rigid shifts read 5–8 % too long on the
-        // motion sims (2026-11-27-ff-motion-gain.md). The first-order term
-        // `δ · ∇t(u)` (gradient of the current tissue estimate) is
-        // therefore part of the model: `L_s(x) = g(x) + t(x + s) + δ_s ·
-        // ∇t(x + s)`. Per tissue pixel, `dw` sums `w_s δ_s` over the bins
-        // that see it.
+        // towards the centre of the shift distribution (`s · δ < 0` in every
+        // outer bin). Modelling every bin at exactly `s` would leave a misfit
+        // `δ · ∇t` whose weighted mean over the bins does not vanish; the
+        // gain would absorb it as a copy of the tissue's fine structure,
+        // fixed to the sensor, and divided out that copy biases registration
+        // gain above 1 (see tools/cala-eval/results/2026-11-27-ff-motion-gain.md).
+        // So the first-order term is part of the model:
+        // `L_s(x) = g(x) + t(x + s) + δ_s · ∇t(x + s)`, with `∇t` the
+        // gradient of the current tissue estimate. Per tissue pixel, `dw`
+        // sums `w_s δ_s` over the bins that see it.
         let mut dw = vec![[0.0f64; 2]; n];
         for (&((sy, sx), wgt, _), &(dly, dlx)) in used.iter().zip(&delta) {
             for y in 0..h {
@@ -1637,17 +1635,14 @@ mod subpixel_tests {
         cov / (sd(u) * sd(v) * u.len() as f64)
     }
 
-    /// Regression (2026-11-27-ff-motion-gain.md): with sub-pixel shifts and
-    /// no gain at all, the solve must not put the tissue into the map.
-    /// Modelling every bin at its integer shift did: the map took a copy of
-    /// the texture (r ≈ .9), which, divided out, biased registration.
+    /// With sub-pixel shifts and no gain at all, the solve must not put the
+    /// tissue into the map: an integer-shift model fails this (see
+    /// tools/cala-eval/results/2026-11-27-ff-motion-gain.md).
     #[test]
     fn subpixel_dither_leaves_no_tissue_in_the_gain() {
         let (g, _, t) = subpixel_solve(0.0);
         let (r, s) = (corr(&g, &t), sd(&g));
         let ts = sd(&t);
-        // Integer-bin model: r .98, sd .0146; with the sub-pixel term: r .25,
-        // sd .0010 (tissue sd .20).
         assert!(
             r.abs() < 0.5 && s < 0.01 * ts,
             "tissue leaks into the gain: r {r:.3}, gain sd {s:.5} (tissue sd {ts:.4})"
@@ -1659,7 +1654,6 @@ mod subpixel_tests {
     fn subpixel_dither_recovers_sensor_gain() {
         let (g, truth, t) = subpixel_solve(0.03);
         let (rg, rt) = (corr(&g, &truth), corr(&g, &t));
-        // Integer-bin model: gain r .76, tissue r .64; sub-pixel: .996, .02.
         assert!(rg > 0.97, "gain r {rg:.3}");
         assert!(rt.abs() < 0.2, "tissue r {rt:.3}");
     }
