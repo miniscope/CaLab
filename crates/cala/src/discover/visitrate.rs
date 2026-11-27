@@ -47,12 +47,10 @@
 //! not feed it.
 //!
 //! The cap applies to ordinary visits only (`step`, `step_via`,
-//! `take_job`), however their tiles came due (live frames, look-back
-//! frames, edits nearby). Settle visits ([`SlowLoop::step_settle`],
-//! [`SlowLoop::take_settle_job`]) and every visit outside
-//! [`EditScope::All`] (the Final settle, Refine runs) are not counted or
-//! held and do not feed the schedule. Off (rate 0) by default: the loop
-//! then behaves exactly as before.
+//! `take_job`), however their tiles came due (live frames, edits nearby).
+//! Every visit outside [`EditScope::All`] (the Final settle, Refine runs)
+//! is not counted or held and does not feed the schedule. Off (rate 0) by
+//! default: no visit is held.
 
 use super::{EditScope, SlowLoop};
 

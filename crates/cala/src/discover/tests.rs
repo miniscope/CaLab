@@ -2935,111 +2935,6 @@ fn frozen_reservoir_takes_no_frames_but_statistics_and_clock_run() {
     assert!(slow.reservoir_bytes() > 0);
 }
 
-/// Look-back frames offered to the reservoir (experimental switch) keep
-/// the held-out side they had as live frames: a held-out frame becomes a
-/// test slot only and leaves the footprint statistics untouched, a fitting
-/// frame becomes a fitting slot only, no tile stores a frame twice, and
-/// `Test` mode adds no fitting slot. Off (the default) stores nothing.
-#[test]
-fn lookback_reservoir_keeps_the_held_out_side_and_stores_no_frame_twice() {
-    let t = 90;
-    let mut rng = Lcg(5);
-    let cells = vec![(blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0))];
-    let m = movie(&cells, t, 7);
-    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
-    let n_px = N * N;
-    // Live frames with the reservoir frozen (the clock runs, nothing is
-    // stored), then the same frames as look-back frames, twice.
-    let run = |mode: LookbackReservoir, skip_held: bool| {
-        let (mut slow, mut eng) = start(config(), &seed);
-        let lib = eng.library().clone();
-        slow.set_reservoir_frozen(true);
-        for k in 0..t {
-            let f = &m[k * n_px..(k + 1) * n_px];
-            let tr = eng.process(f).unwrap();
-            slow.observe(f, &lib, &tr).unwrap();
-        }
-        slow.set_reservoir_frozen(false);
-        slow.set_lookback_reservoir(mode, 1.0);
-        for _ in 0..2 {
-            for k in 0..t {
-                let held = slow.is_test(k as u64);
-                let f = &m[k * n_px..(k + 1) * n_px];
-                let tr = eng.process(f).unwrap();
-                if held && skip_held {
-                    continue;
-                }
-                let pushed = slow.observe_lookback(f, &lib, &tr, k as u64, None).unwrap();
-                assert_eq!(pushed, !held);
-            }
-        }
-        // A frame that was never live (index beyond the clock) is not stored.
-        let f = &m[..n_px];
-        let tr = eng.process(f).unwrap();
-        let before = slow.lookback_reservoir_counts();
-        slow.observe_lookback(f, &lib, &tr, t as u64 + 5, None)
-            .unwrap();
-        assert_eq!(slow.lookback_reservoir_counts(), before);
-        slow
-    };
-    let slots = |slow: &SlowLoop| -> Vec<Vec<(u64, bool)>> {
-        slow.tiles
-            .iter()
-            .map(|tile| {
-                tile.slots()
-                    .into_iter()
-                    .map(|w| (tile.slot(w).frame, tile.slot(w).test))
-                    .collect()
-            })
-            .collect()
-    };
-    let off = run(LookbackReservoir::Off, false);
-    assert_eq!(off.reservoir_bytes(), 0);
-    assert_eq!(off.lookback_reservoir_counts(), [0; 3]);
-
-    let all = run(LookbackReservoir::All, false);
-    let (mut n_test, mut n_fit) = (0, 0);
-    for tile in slots(&all) {
-        let mut seen = std::collections::HashSet::new();
-        for (frame, test) in tile {
-            assert!(frame < t as u64);
-            assert_eq!(test, all.is_test(frame), "frame {frame} changed side");
-            assert!(seen.insert(frame), "frame {frame} stored twice");
-            n_test += usize::from(test);
-            n_fit += usize::from(!test);
-        }
-    }
-    assert!(n_test > 0 && n_fit > 0, "{n_test} test, {n_fit} fit slots");
-    for tile in &all.tiles {
-        let mut ev: Vec<u64> = tile.events.iter().map(|s| s.frame).collect();
-        ev.sort_unstable();
-        assert!(ev.windows(2).all(|w| w[0] != w[1]));
-    }
-    // Held-out frames never reach the statistics: the same run without them
-    // (or with the switch off) has the same statistics.
-    let no_held = run(LookbackReservoir::All, true);
-    let id = all.fpstats.keys().next().copied().unwrap();
-    // (The library version is a process-wide counter: left out.)
-    let dbg = |s: &SlowLoop| {
-        let mut st = s.fpstats[&id].clone();
-        st.version = 0;
-        format!("{st:?}")
-    };
-    assert!(dbg(&all) == dbg(&no_held));
-    assert!(dbg(&all) == dbg(&off));
-
-    let test_only = run(LookbackReservoir::Test, false);
-    let mut n = 0;
-    for tile in slots(&test_only) {
-        for (frame, test) in tile {
-            assert!(test && test_only.is_test(frame));
-            n += 1;
-        }
-    }
-    assert!(n > 0);
-    assert!(dbg(&test_only) == dbg(&off));
-}
-
 // ---- look-back scheduler (`lookback.rs`) ----------------------------------
 
 fn lb_lib(version: u64, cells: &[Footprint]) -> Library {
@@ -3361,11 +3256,10 @@ fn lookback_misuse_is_refused() {
     assert!(js.stream_ok(Some(0.0)));
 }
 
-/// The concurrent settle's frames: a re-read frame keeps the side it had
-/// live (a held-out frame becomes a test slot only and never reaches the
-/// footprint statistics), no tile stores a frame twice, the slots count
-/// towards settle visits only, and the loop's frame clock does not move.
-/// Before `enable_settle` the calls are refused.
+/// The concurrent settle's frames: a held-out frame never reaches the
+/// footprint statistics, nothing enters the reservoir, no tile comes due
+/// and the loop's frame clock does not move. Before `enable_settle` the
+/// call is refused.
 #[test]
 fn settle_frames_keep_their_side_and_leave_discover_clocks_alone() {
     let t = 90;
@@ -3374,14 +3268,13 @@ fn settle_frames_keep_their_side_and_leave_discover_clocks_alone() {
     let m = movie(&cells, t, 7);
     let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
     let n_px = N * N;
-    let run = |reservoir: bool, skip_held: bool| {
+    let run = |skip_held: bool| {
         let (mut slow, mut eng) = start(config(), &seed);
         let lib = eng.library().clone();
         let f = &m[..n_px];
         let tr = eng.process(f).unwrap();
-        assert!(slow.observe_settle(f, &lib, &tr, 0, false, true).is_err());
-        assert!(slow.step_settle(1).is_err());
-        slow.enable_settle(0);
+        assert!(slow.observe_settle(f, &lib, &tr, false).is_err());
+        slow.enable_settle();
         // Live frames with the reservoir frozen: the clock runs, nothing
         // is stored.
         slow.set_reservoir_frozen(true);
@@ -3401,8 +3294,7 @@ fn settle_frames_keep_their_side_and_leave_discover_clocks_alone() {
                 if held && skip_held {
                     continue;
                 }
-                slow.observe_settle(f, &lib, &tr, k as u64, held, reservoir)
-                    .unwrap();
+                slow.observe_settle(f, &lib, &tr, held).unwrap();
             }
         }
         assert_eq!(slow.frames(), frames);
@@ -3410,38 +3302,18 @@ fn settle_frames_keep_their_side_and_leave_discover_clocks_alone() {
         assert_eq!(after, fresh, "a settle frame made a tile due for Discover");
         slow
     };
-    let full = run(true, false);
+    let full = run(false);
     let st = full.settle_stats();
-    assert!(st.frames_fit > 0 && st.frames_test > 0 && st.slots > 0);
-    assert_eq!(
-        full.cs_fresh.iter().map(|&c| u64::from(c)).sum::<u64>(),
-        st.slots
-    );
-    let (mut n_test, mut n_fit) = (0, 0);
-    for tile in &full.tiles {
-        let mut seen = std::collections::HashSet::new();
-        for w in tile.slots() {
-            let (frame, test) = (tile.slot(w).frame, tile.slot(w).test);
-            assert_eq!(test, full.is_test(frame), "frame {frame} changed side");
-            assert!(seen.insert(frame), "frame {frame} stored twice");
-            n_test += usize::from(test);
-            n_fit += usize::from(!test);
-        }
-    }
-    assert!(n_test > 0 && n_fit > 0, "{n_test} test, {n_fit} fit slots");
-    // Held-out frames never reach the statistics, with or without the
-    // reservoir.
+    assert!(st.frames_fit > 0 && st.frames_test > 0);
+    assert_eq!(full.reservoir_bytes(), 0);
+    // Held-out frames never reach the statistics.
     let id = full.fpstats.keys().next().copied().unwrap();
     let dbg = |s: &SlowLoop| {
         let mut st = s.fpstats[&id].clone();
         st.version = 0;
         format!("{st:?}")
     };
-    let no_held = run(true, true);
-    let stats_only = run(false, false);
-    assert!(dbg(&full) == dbg(&no_held));
-    assert!(dbg(&full) == dbg(&stats_only));
-    assert_eq!(stats_only.reservoir_bytes(), 0);
+    assert!(dbg(&full) == dbg(&run(true)));
 }
 
 /// The app's concurrent settle (frames only; `SlowLoop.enableSettle`,
@@ -3553,69 +3425,6 @@ fn js_settle_frames_only_feeds_fitting_frames_to_the_statistics() {
     assert_eq!(js.settle_stats()[3], 1.0);
 }
 
-/// A settle visit refines and nothing else: the cell set, the tiles'
-/// ordinary due counters and visit numbers are as before it, and with the
-/// quiet period a tile whose cell set just changed is passed over.
-#[test]
-fn settle_visits_only_refine() {
-    let t = 240;
-    let mut rng = Lcg(11);
-    let cells = vec![
-        (blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0)),
-        (blob(1, 34.0, 36.0), trace(&mut rng, t, 0.05, 6.0)),
-    ];
-    let m = movie(&cells, t, 3);
-    let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
-    let n_px = N * N;
-    let (mut slow, mut eng) = start(config(), &seed);
-    slow.enable_settle(0);
-    let lib = eng.library().clone();
-    for k in 0..t {
-        let f = &m[k * n_px..(k + 1) * n_px];
-        let tr = eng.process(f).unwrap();
-        slow.observe(f, &lib, &tr).unwrap();
-    }
-    let ids: Vec<u64> = slow.cells.iter().map(|c| c.id).collect();
-    let fresh: Vec<u32> = slow.tiles.iter().map(|t| t.fresh).collect();
-    let visits = slow.tile_visits.clone();
-    let s0 = slow.stats();
-    slow.step_settle(u64::MAX / 4).unwrap();
-    let s1 = slow.stats();
-    let st = slow.settle_stats();
-    assert!(st.visits > 0, "no settle visit ran");
-    assert_eq!(slow.cells.iter().map(|c| c.id).collect::<Vec<_>>(), ids);
-    assert_eq!(
-        (s1.adds, s1.merges, s1.splits, s1.deletes, s1.absorbs, s1.visits),
-        (s0.adds, s0.merges, s0.splits, s0.deletes, s0.absorbs, s0.visits)
-    );
-    assert_eq!(s1.refines - s0.refines, st.refines);
-    assert_eq!(slow.tile_visits, visits);
-    for (tile, f0) in slow.tiles.iter().zip(&fresh) {
-        assert!(
-            tile.fresh >= *f0,
-            "a settle visit cancelled an ordinary visit"
-        );
-    }
-    assert!(slow
-        .cs_fresh
-        .iter()
-        .all(|&c| c < slow.cfg.visit_after_slots));
-    assert_eq!(slow.scope, EditScope::All);
-
-    // The quiet period: every due tile whose cell set changed recently
-    // is passed over.
-    let due = slow.cfg.visit_after_slots;
-    slow.enable_settle(1000);
-    for ti in 0..slow.tiles.len() {
-        slow.cs_fresh[ti] = due;
-        slow.cs_struct[ti] = slow.frames;
-    }
-    let v = slow.settle_stats().visits;
-    slow.step_settle(u64::MAX / 4).unwrap();
-    assert_eq!(slow.settle_stats().visits, v);
-    assert!(slow.settle_stats().quiet_skips > 0);
-}
-
 /// The settle scheduler: the share sets the frames owed per live frame,
 /// and the chunks cover the saved history about evenly.
 #[test]
@@ -3706,95 +3515,6 @@ fn settle_sched_floor_keeps_chunks_in_the_current_session() {
     assert!(hits.iter().all(|&h| h > 250), "{hits:?}");
     s.set_floor(5);
     assert!(s.next_frame(seen).unwrap().0 >= 1000);
-}
-
-/// A settle visit run as a job on a visit worker (through the byte
-/// encoding both ways) does what the owner's own settle visit does: the
-/// same footprints, the same counters, and the tiles' ordinary visit
-/// state untouched. An ordinary job's bytes carry no settle flag.
-#[test]
-fn settle_jobs_equal_settle_visits() {
-    let t = 600;
-    let mut rng = Lcg(11);
-    let cells = vec![
-        (blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0)),
-        (blob(1, 34.0, 36.0), trace(&mut rng, t, 0.05, 6.0)),
-    ];
-    let m = movie(&cells, t, 3);
-    // Seeded too narrow, so the settle visits have something to refine.
-    let seed = vec![blob_w(0, 30.0, 30.0, 1.6), blob_w(1, 34.0, 36.0, 1.6)];
-    let n_px = N * N;
-    let make = || {
-        let (mut slow, mut eng) = start(config(), &seed);
-        slow.enable_settle(0);
-        let lib = eng.library().clone();
-        for k in 0..t {
-            let f = &m[k * n_px..(k + 1) * n_px];
-            let tr = eng.process(f).unwrap();
-            slow.observe(f, &lib, &tr).unwrap();
-        }
-        // No ordinary visit is due (they come first at hand-out).
-        for tile in &mut slow.tiles {
-            tile.fresh = 0;
-        }
-        slow
-    };
-    let (mut a, mut b) = (make(), make());
-    let mut runner = VisitRunner::new(
-        SlowLoop::new(
-            dims(),
-            vec![1; n_px],
-            vec![1.0; n_px],
-            flattener(),
-            config(),
-        )
-        .unwrap(),
-    );
-    a.step_settle(u64::MAX / 4).unwrap();
-    assert!(b.take_settle_job().is_none(), "a settle job without credit");
-    b.settle_credit(u64::MAX / 4, u64::MAX / 4);
-    let visits = b.tile_visits.clone();
-    let probes: Vec<usize> = b.tiles.iter().map(|t| t.probes.len()).collect();
-    let mut n = 0;
-    while let Some(job) = b.take_settle_job() {
-        assert_eq!(b.jobs_in_flight(), 1);
-        assert!(job.is_settle());
-        let job = VisitJob::from_bytes(&job.to_bytes()).unwrap();
-        assert!(job.is_settle());
-        let res = runner.run(job).unwrap();
-        let res = VisitResult::from_bytes(&res.to_bytes()).unwrap();
-        b.apply_job(res).unwrap();
-        n += 1;
-    }
-    assert!(n > 0, "no settle job was handed out");
-    let (sa, sb) = (a.settle_stats(), b.settle_stats());
-    assert_eq!((sa.visits, sa.refines), (sb.visits, sb.refines));
-    assert!(sb.refines > 0, "no settle job refined a footprint");
-    assert_eq!(sb.visits, n);
-    assert_eq!(a.stats().refines, b.stats().refines);
-    assert_eq!(a.stats().visits, b.stats().visits);
-    assert_eq!(b.tile_visits, visits);
-    assert_eq!(
-        b.tiles.iter().map(|t| t.probes.len()).collect::<Vec<_>>(),
-        probes
-    );
-    let (la, lb) = (a.finalize().unwrap(), b.finalize().unwrap());
-    assert!(la.to_bytes()[16..] == lb.to_bytes()[16..]);
-    // The quiet period holds a settle job back as it holds a settle visit.
-    let due = b.cfg.visit_after_slots;
-    b.enable_settle(1000);
-    for ti in 0..b.tiles.len() {
-        b.cs_fresh[ti] = due;
-        b.cs_struct[ti] = b.frames;
-    }
-    assert!(b.take_settle_job().is_none());
-    assert!(b.settle_stats().quiet_skips > 0);
-    // An ordinary job is not a settle job after the round trip.
-    b.enable_settle(0);
-    b.tiles[0].fresh = due;
-    let job = b.take_job().unwrap();
-    assert!(!job.is_settle());
-    assert!(!VisitJob::from_bytes(&job.to_bytes()).unwrap().is_settle());
 }
 
 /// The Discover visit cap (`visitrate.rs`): with a large work budget, a

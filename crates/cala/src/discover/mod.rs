@@ -297,24 +297,6 @@ pub enum RefineGate {
     SplitHalf,
 }
 
-/// Experimental (off by default): which look-back frames
-/// ([`SlowLoop::observe_lookback`]) are also offered to the frame reservoir
-/// while Discover runs, so the held-out frames a footprint change is tested
-/// on keep turning over without an end-of-recording pass (a live stream has
-/// none). A look-back frame keeps the held-out decision it had as a live
-/// frame: a held-out frame can only become a test slot and never reaches
-/// the footprint statistics; a fitting frame can only become a fitting slot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LookbackReservoir {
-    /// Look-back frames feed the statistics and cluster stores only.
-    #[default]
-    Off,
-    /// Held-out look-back frames are offered (as test frames).
-    Test,
-    /// Every look-back frame is offered, on the side it had.
-    All,
-}
-
 /// Where footprints of overlapping cells are updated jointly from a
 /// replay of their stored history (`cluster.rs`, the Stage 1 design in
 /// `demix-bench/design_joint_update.md`): a cluster of cells whose
@@ -936,8 +918,6 @@ impl ReservoirPlan {
 pub struct DueDiag {
     /// A live frame took reservoir slots of the tile.
     pub slots: u64,
-    /// A look-back frame took reservoir slots of the tile.
-    pub lookback: u64,
     /// An edit to a cell that overlaps the tile, made by a visit of
     /// another tile (or by the loop itself).
     pub touch: u64,
@@ -988,21 +968,13 @@ pub struct SlowStats {
     pub support_no_se: u64,
 }
 
-/// Counters of the concurrent settle ([`SlowLoop::observe_settle`],
-/// [`SlowLoop::step_settle`]).
+/// Counters of the concurrent settle ([`SlowLoop::observe_settle`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SettleStats {
     /// Re-read frames taken (fitting side, held-out side).
     pub frames_fit: u64,
     pub frames_test: u64,
-    /// Reservoir slots those frames took.
-    pub slots: u64,
-    /// Settle visits, the ones passed over because the tile's cell set
-    /// changed within the quiet period, and the refinements they accepted.
-    pub visits: u64,
-    pub quiet_skips: u64,
-    pub refines: u64,
-    /// Work units of the settle (frames and visits).
+    /// Work units of the settle frames.
     pub work: u64,
 }
 
@@ -1199,21 +1171,9 @@ pub struct SlowLoop {
     reuse: bool,
     /// [`SlowLoop::set_reservoir_frozen`].
     res_frozen: bool,
-    /// [`SlowLoop::set_lookback_reservoir`] and its counters (look-back
-    /// frames scored, event slots and random slots they took).
-    lb_res: LookbackReservoir,
-    lb_res_share: f32,
-    lb_res_counts: [u64; 3],
-    /// The concurrent settle ([`SlowLoop::observe_settle`],
-    /// [`SlowLoop::step_settle`]): per tile, the reservoir slots taken
-    /// since its last settle visit and the frame of the last visit that
-    /// changed the cell set there; the work credit of the settle visits;
-    /// the quiet period; a settle visit is running; the counters.
-    cs_fresh: Vec<u32>,
-    cs_struct: Vec<u64>,
-    cs_credit: i64,
-    cs_quiet: u64,
-    cs_visiting: bool,
+    /// The concurrent settle ([`SlowLoop::observe_settle`]): on, and its
+    /// counters.
+    cs_on: bool,
     cs_stats: SettleStats,
     /// How tiles came due ([`DueDiag`]; diagnostics only).
     due_diag: DueDiag,
@@ -1626,14 +1586,7 @@ impl SlowLoop {
             rbuf: Vec::new(),
             lb_only: None,
             res_frozen: false,
-            lb_res: LookbackReservoir::Off,
-            lb_res_share: 1.0,
-            lb_res_counts: [0; 3],
-            cs_fresh: Vec::new(),
-            cs_struct: Vec::new(),
-            cs_credit: 0,
-            cs_quiet: 0,
-            cs_visiting: false,
+            cs_on: false,
             cs_stats: SettleStats::default(),
             due_diag: DueDiag::default(),
             merge_rejected: Vec::new(),
@@ -2105,9 +2058,6 @@ impl SlowLoop {
             }
             let due = self.cfg.visit_after_slots;
             self.due_diag.slots += u64::from(before < due && tile.fresh >= due);
-            if let Some(c) = self.cs_fresh.get_mut(ti) {
-                *c += tile.fresh.saturating_sub(before);
-            }
         }
         lap.lap(&mut self.stage.observe[7]);
         if test {
@@ -2118,26 +2068,10 @@ impl SlowLoop {
         Ok(())
     }
 
-    /// Experimental (off by default): turn the concurrent settle on. A
-    /// settle visit passes over a tile whose cell set changed (an add,
-    /// merge, split, absorb or deletion on one of its ordinary visits)
-    /// within the last `quiet_frames` frames (0: no quiet period). Until
-    /// this is called [`SlowLoop::observe_settle`] and
-    /// [`SlowLoop::step_settle`] refuse to run and nothing else changes.
-    pub fn enable_settle(&mut self, quiet_frames: u64) {
-        self.cs_fresh = vec![0; self.tiles.len()];
-        self.cs_struct = vec![0; self.tiles.len()];
-        self.cs_quiet = quiet_frames;
-    }
-
-    /// Concurrent settle with visit workers: the settle visits handed out
-    /// by [`SlowLoop::take_settle_job`] may spend `units` more work (at
-    /// most `cap` saved up).
-    pub fn settle_credit(&mut self, units: u64, cap: u64) {
-        self.cs_credit = self
-            .cs_credit
-            .saturating_add(units as i64)
-            .min(cap.min(i64::MAX as u64) as i64);
+    /// Turn the concurrent settle on. Until this is called
+    /// [`SlowLoop::observe_settle`] refuses to run and nothing else changes.
+    pub fn enable_settle(&mut self) {
+        self.cs_on = true;
     }
 
     /// Counters of the concurrent settle.
@@ -2146,28 +2080,21 @@ impl SlowLoop {
     }
 
     /// Concurrent settle: feed one *past* frame while Discover goes on.
-    /// The frame keeps the side it had as a live frame (`held_out`; `key`
-    /// is the slow-loop index it had, under which the reservoir stores
-    /// it): a fitting frame updates the footprint statistics and the
-    /// cluster stores of every cell, solved with the current library, as
+    /// The frame keeps the side it had as a live frame (`held_out`): a
+    /// fitting frame updates the footprint statistics and the cluster
+    /// stores of every cell, solved with the current library, as
     /// [`SlowLoop::observe_lookback`] does; a held-out frame never does.
-    /// With `reservoir` the frame is also offered to the reservoir on its
-    /// own side (a frame a tile already holds is passed over), so the
-    /// test frames of the settle visits turn over. The slots it takes
-    /// count towards the settle visits only: ordinary visits (adds,
-    /// merges, keep tests) stay on the live frames' cadence. No frame
-    /// counter, ledger, probes or noise correlation: Discover's clocks and
-    /// its evidence for new cells are those of the live frames alone.
+    /// No frame counter, reservoir, ledger, probes or noise correlation:
+    /// Discover's clocks and its evidence for new cells are those of the
+    /// live frames alone, and the ordinary visits do all the refining.
     pub fn observe_settle(
         &mut self,
         frame: &[f32],
         lib: &Library,
         traces: &FrameTraces,
-        key: u64,
         held_out: bool,
-        reservoir: bool,
     ) -> Result<(), TraceError> {
-        if self.cs_fresh.is_empty() {
+        if !self.cs_on {
             return Err(TraceError::Incompatible(
                 "the concurrent settle is not enabled".into(),
             ));
@@ -2180,24 +2107,6 @@ impl SlowLoop {
             ));
         }
         let w0 = self.work;
-        // Only a frame the loop has seen live has an index to be stored
-        // under.
-        if reservoir && key < self.frames {
-            let fresh: Vec<u32> = self.tiles.iter().map(|t| t.fresh).collect();
-            let slots0 = self.lb_res_counts;
-            let share = std::mem::replace(&mut self.lb_res_share, 1.0);
-            let r = self.offer_lookback(frame, lib, traces, key, held_out);
-            self.lb_res_share = share;
-            // The slots count towards the settle's visits, not Discover's.
-            for (ti, f0) in fresh.into_iter().enumerate() {
-                let t = &mut self.tiles[ti];
-                self.cs_fresh[ti] += t.fresh.saturating_sub(f0);
-                t.fresh = f0;
-            }
-            self.cs_stats.slots += self.lb_res_counts[1] - slots0[1];
-            self.lb_res_counts = slots0;
-            r?;
-        }
         if held_out {
             self.cs_stats.frames_test += 1;
         } else {
@@ -2206,78 +2115,6 @@ impl SlowLoop {
         }
         self.cs_stats.work += self.work - w0;
         Ok(())
-    }
-
-    /// Concurrent settle: spend about `budget` work units on settle
-    /// visits (refinements only, tested on the tile's held-out frames as
-    /// any refinement is), carrying any overrun into the next call. The
-    /// tile with the most new reservoir slots since its last settle visit
-    /// goes first. The cell set is not frozen: ordinary visits go on in
-    /// [`SlowLoop::step`], which also publishes what the settle changed.
-    /// Not for a loop whose visits run as jobs on other workers.
-    pub fn step_settle(&mut self, budget: u64) -> Result<(), TraceError> {
-        if self.cs_fresh.is_empty() {
-            return Err(TraceError::Incompatible(
-                "the concurrent settle is not enabled".into(),
-            ));
-        }
-        if !self.inflight.is_empty() {
-            return Err(TraceError::Incompatible(
-                "settle visits cannot run while visit jobs are out".into(),
-            ));
-        }
-        self.cs_credit = self.cs_credit.saturating_add(budget as i64);
-        let w_start = self.work;
-        while self.cs_credit > 0 {
-            let due = self.cfg.visit_after_slots;
-            let now = self.frames;
-            let mut best: Option<(usize, u32)> = None;
-            for ti in 0..self.tiles.len() {
-                let f = self.cs_fresh[ti];
-                if f < due {
-                    continue;
-                }
-                if self.cs_quiet > 0
-                    && self.cs_struct[ti] > 0
-                    && self.cs_struct[ti] + self.cs_quiet > now
-                {
-                    continue;
-                }
-                if best.is_none_or(|(_, b)| f > b) {
-                    best = Some((ti, f));
-                }
-            }
-            let Some((ti, _)) = best else {
-                self.cs_stats.quiet_skips +=
-                    self.cs_fresh.iter().filter(|&&f| f >= due).count() as u64;
-                self.cs_credit = 0;
-                break;
-            };
-            let w0 = self.work;
-            self.settle_visit(ti)?;
-            self.cs_credit -= (self.work - w0).max(1) as i64;
-        }
-        self.cs_stats.work += self.work - w_start;
-        Ok(())
-    }
-
-    /// One settle visit of tile `ti`: the refinement part of a visit, on
-    /// the tile's current reservoir, leaving the tile's ordinary visit
-    /// state (its due counter, visit number, cooldowns) as it is.
-    fn settle_visit(&mut self, ti: usize) -> Result<(), TraceError> {
-        self.cs_fresh[ti] = 0;
-        self.cs_stats.visits += 1;
-        let scope = std::mem::replace(&mut self.scope, EditScope::Refine);
-        let fresh = self.tiles[ti].fresh;
-        let refines = self.stats.refines;
-        self.cs_visiting = true;
-        let r = self.visit_body(ti);
-        self.cs_visiting = false;
-        self.scope = scope;
-        self.cs_stats.refines += self.stats.refines - refines;
-        let t = &mut self.tiles[ti];
-        t.fresh = t.fresh.max(fresh);
-        r
     }
 
     /// Experimental (evaluation only, off by default): while frozen,
@@ -2297,9 +2134,8 @@ impl SlowLoop {
     /// library (`traces` from a separate trace engine on `lib`). Nothing
     /// else sees it: no frame counter, ledger, probes, reservoir or noise
     /// correlation, so the slow loop's clocks and held-out tests are those
-    /// of Discover alone (the reservoir only with the experimental
-    /// [`SlowLoop::set_lookback_reservoir`]). `slow_index` is the index the frame had (or would
-    /// have had) in the slow loop: a held-out frame stays held out.
+    /// of Discover alone. `slow_index` is the index the frame had (or
+    /// would have had) in the slow loop: a held-out frame stays held out.
     pub fn observe_lookback(
         &mut self,
         frame: &[f32],
@@ -2315,94 +2151,10 @@ impl SlowLoop {
                 "traces do not come from this library / frame size".into(),
             ));
         }
-        let test = self.is_test(slow_index);
-        // Only a frame the loop has already seen live has an index of its
-        // own to be stored under (warm-up frames do not).
-        if slow_index < self.frames
-            && match self.lb_res {
-                LookbackReservoir::Off => false,
-                LookbackReservoir::Test => test,
-                LookbackReservoir::All => true,
-            }
-        {
-            self.offer_lookback(frame, lib, traces, slow_index, test)?;
-        }
-        if test {
+        if self.is_test(slow_index) {
             return Ok(false);
         }
         self.observe_lookback_fit(frame, lib, traces, only)
-    }
-
-    /// Experimental (off by default): offer look-back frames to the
-    /// reservoir as well (see [`LookbackReservoir`]); `share` in (0, 1] is
-    /// the share of the eligible frames offered (chosen by a hash of the
-    /// frame index). Only [`SlowLoop::observe_lookback`] does it: the
-    /// flagged variant has no slow-loop index to store a frame under.
-    pub fn set_lookback_reservoir(&mut self, mode: LookbackReservoir, share: f32) {
-        self.lb_res = mode;
-        self.lb_res_share = share.clamp(0.0, 1.0);
-    }
-
-    /// Look-back frames scored for the reservoir, and the event slots and
-    /// random slots they took ([`SlowLoop::set_lookback_reservoir`]).
-    pub fn lookback_reservoir_counts(&self) -> [u64; 3] {
-        self.lb_res_counts
-    }
-
-    /// Offer past frame `slow_index` (its side: `test`) to the reservoir,
-    /// scored by the current library's residual and dated now. A frame a
-    /// tile already holds is not stored again. No probes, ledger or frame
-    /// counter.
-    fn offer_lookback(
-        &mut self,
-        frame: &[f32],
-        lib: &Library,
-        traces: &FrameTraces,
-        slow_index: u64,
-        test: bool,
-    ) -> Result<(), TraceError> {
-        if self.lb_res_share < 1.0 {
-            let u = (mix(slow_index ^ 0x6c62_7265_7331) >> 40) as f32 / (1u64 << 24) as f32;
-            if u >= self.lb_res_share {
-                return Ok(());
-            }
-        }
-        let n_px = self.dims.pixels();
-        let scale = self.score_residual(frame, lib, traces)?;
-        self.work += (n_px * 4 + self.coarse.len() * 30) as u64;
-        self.lb_res_counts[0] += 1;
-        let clock = self.frames;
-        let w = self.dims.width;
-        let took = if self.shared.frames.iter().any(|f| f.frame == slow_index) {
-            None
-        } else {
-            self.rng = mix(self.rng);
-            self.shared
-                .offer(&self.z, w, slow_index, test, self.cap_random, self.rng)
-        };
-        self.lb_res_counts[2] += u64::from(took.is_some());
-        for ti in 0..self.tiles.len() {
-            let score = self.tile_score(ti, scale);
-            let tile = &mut self.tiles[ti];
-            let before = tile.fresh;
-            tile.offer_at(
-                &self.z,
-                w,
-                slow_index,
-                clock,
-                score,
-                test,
-                self.cap_events,
-                self.ln_decay,
-            );
-            self.lb_res_counts[1] += u64::from(tile.fresh - before);
-            if let Some(j) = took {
-                tile.set_random(j, slow_index, test);
-            }
-            let due = self.cfg.visit_after_slots;
-            self.due_diag.lookback += u64::from(before < due && tile.fresh >= due);
-        }
-        Ok(())
     }
 
     /// [`SlowLoop::observe_lookback`] with the held-out decision given
@@ -3354,17 +3106,7 @@ impl SlowLoop {
 
     fn visit(&mut self, ti: usize) -> Result<(), TraceError> {
         self.visit_begin(ti);
-        if self.cs_struct.is_empty() {
-            return self.visit_body(ti);
-        }
-        let s = self.stats;
-        let cells = (s.adds, s.merges, s.splits, s.absorbs, s.deletes);
-        let r = self.visit_body(ti);
-        let s = self.stats;
-        if cells != (s.adds, s.merges, s.splits, s.absorbs, s.deletes) {
-            self.cs_struct[ti] = self.frames.max(1);
-        }
-        r
+        self.visit_body(ti)
     }
 
     /// The bookkeeping of a visit (on the slow loop that owns the tile).
@@ -3437,7 +3179,7 @@ impl SlowLoop {
         if fit_fr.len() < self.cfg.min_fit_frames || test_fr.len() < self.cfg.min_test_frames {
             return Ok(());
         }
-        let refine = self.cs_visiting || self.refines_on(self.tile_visits[ti]);
+        let refine = self.refines_on(self.tile_visits[ti]);
         if !refine && !scope.merges() && !scope.grows() {
             // Nothing this visit would use the tile's solve for.
             return Ok(());

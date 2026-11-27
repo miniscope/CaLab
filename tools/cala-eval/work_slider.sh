@@ -49,8 +49,7 @@ slot_run() {
 
 case $1 in
 t0)
-  # Flags off = main: lock-step with a final settle, the virtual clock with visit workers (V30, CS2, CS2F), and
-  # round 1's single-worker concurrent settle (no visit workers).
+  # Flags off = main: lock-step with a final settle, the virtual clock with visit workers (V30, CS2F).
   T=$ROOT/t0
   S="sim $SIM_STATIC_S5"
   C="--frames 4800 $D --slow-seed 1 --dump --no-heldout --no-signed"
@@ -59,14 +58,12 @@ t0)
     X=$BIN; [ $b = main ] && X=$MAIN
     slot_run $T/${b}_settle $X $S $T/${b}_settle $C --settle-frames 2400 --settle-batch 16 &
     slot_run $T/${b}_vw $X $S $T/${b}_vw $C $O $V --csettle 0 &
-    slot_run $T/${b}_cs2 $X $S $T/${b}_cs2 $C $O $V --csettle 0.667 --csettle-mode stats &
     slot_run $T/${b}_cs2f $X $S $T/${b}_cs2f $C $O $V --csettle 0.667 --csettle-mode frames &
-    slot_run $T/${b}_cs75 $X $S $T/${b}_cs75 $C $O --csettle 0.75 --csettle-mode stats &
     sleep 2
   done
   wait
   cd "$(dirname "$ME")/../.."
-  for k in settle vw cs2 cs2f cs75; do
+  for k in settle vw cs2f; do
     echo "main_$k vs new_$k: $($MINISIM_PY tools/cala-eval/cmp_runs.py $T/main_$k $T/new_$k | tail -3 | tr '\n' ' ')"
   done > $T/report.txt
   cat $T/report.txt
