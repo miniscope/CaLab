@@ -1,7 +1,7 @@
 """The deployed site's app manifest (``apps.json``), fetched once per session.
 
 The web build (``scripts/combine-dist.mjs``) writes ``apps.json`` at the root
-of the GitHub Pages site, listing every published app with its slug (``id``)
+of the site, listing every published app with its slug (``id``)
 and URL path segment. Reading it lets an older, pinned ``calab`` follow a
 renamed path and see apps added after it was released.
 
@@ -32,12 +32,18 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-#: Root of the GitHub Pages deployment; each app is served under
-#: ``PAGES_BASE_URL + path_segment + "/"``.
-PAGES_BASE_URL = "https://miniscope.github.io/CaLab/"
+#: Root of the lab's CaLab site; each app is served under
+#: ``SITE_BASE_URL + path_segment + "/"`` (the newest release) or
+#: ``SITE_BASE_URL + path_segment + "/v<version>/"`` (one kept release).
+SITE_BASE_URL = "https://calab.miniscope.org/"
+
+#: Backward-compatible alias of :data:`SITE_BASE_URL` (it used to be the GitHub
+#: Pages root, ``https://miniscope.github.io/CaLab/``, which still serves the
+#: apps but will later redirect here).
+PAGES_BASE_URL = SITE_BASE_URL
 
 #: Where the deployed site publishes its manifest.
-DEFAULT_MANIFEST_URL = urllib.parse.urljoin(PAGES_BASE_URL, "apps.json")
+DEFAULT_MANIFEST_URL = urllib.parse.urljoin(SITE_BASE_URL, "apps.json")
 
 #: Environment variable overriding the manifest URL; ``off``/``0``/``false``/
 #: ``none``/empty disables fetching.

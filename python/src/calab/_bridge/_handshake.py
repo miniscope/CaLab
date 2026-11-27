@@ -1,6 +1,6 @@
 """Version handshake between the Python bridge and a live web app.
 
-The web apps are served from GitHub Pages and always run their latest build,
+The web apps are served from calab.miniscope.org and always run their latest build,
 while ``calab`` is whatever the user pinned with pip. This module decides
 whether a result payload from the browser can be consumed by *this* package.
 

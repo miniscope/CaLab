@@ -41,6 +41,7 @@ calab.decon(
     open_browser: bool = True,
     headless: HeadlessBrowser | bool | None = None,
     *,
+    version: str | None = None,
     autorun: bool = False,
     max_firing_rate: float | None = None,
     hp_filter_enabled: bool | None = None,
@@ -66,9 +67,10 @@ CaDecon expects raw or signed traces. Traces that are non-negative with many exa
 | `fs`                | Sampling rate in Hz. Default: `30.0`.                                                                                                              |
 | `timeout`           | Seconds to wait for results. `None` waits forever (until Ctrl-C or browser close).                                                                 |
 | `port`              | Port to bind the bridge server to. `None` auto-assigns a free port.                                                                                |
-| `app_url`           | Override CaDecon URL (useful for local dev). Default: GitHub Pages deployment.                                                                     |
+| `app_url`           | Override CaDecon URL (useful for local dev). Default: the `calab.miniscope.org` deployment.                                                        |
 | `open_browser`      | Auto-open the browser. Default: `True`.                                                                                                            |
 | `headless`          | `None`/`False`: normal browser. `True`: create a temporary headless browser. `HeadlessBrowser`: reuse an existing instance.                        |
+| `version`           | Open a kept release (e.g. `"2.23.1"`) instead of the newest. See [the bridge guide](bridge.md).                                                    |
 | `autorun`           | Start the solver automatically after traces load. Default: `False`.                                                                                |
 | `max_firing_rate`   | Maximum firing rate (spikes/s) the solver may assign; caps spikes per frame at `round(max_firing_rate / fs)`. Range (0, 10000]. App default `300`. |
 | `hp_filter_enabled` | Enable high-pass filter before deconvolution.                                                                                                      |
