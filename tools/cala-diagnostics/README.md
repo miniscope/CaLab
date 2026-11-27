@@ -235,8 +235,11 @@ the footprint mask; this experiment does not change the production detector.
 
 `PIXEL_NOISE.md` covers the fine noise in the preprocessed video and its
 apparent waves, measured with `crates/cala/examples/pixnoise_eval.rs`. It
-also has the ground-truth tests of spatial pre-filters and a flat field
-(`CALA_PREFILTER`, `CALA_FLATFIELD` in `discover_eval` / `trace_eval`).
+also has the ground-truth tests of spatial pre-filters and a static flat
+field. Both were rejected; their eval paths (`CALA_PREFILTER`,
+`CALA_FLATFIELD` in `discover_eval` / `trace_eval`) are not in the examples,
+so the note's Reproduce commands for them need a checkout from before their
+removal (`git log -S CALA_PREFILTER`).
 
 ## Leftover light vs neuropil
 
