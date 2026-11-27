@@ -6,6 +6,8 @@ export class MemDir implements WritableDirLike {
   dirs = new Map<string, MemDir>();
   files = new Map<string, string>();
   writes: string[] = [];
+  /** Files whose write was aborted (never stored). */
+  aborts: string[] = [];
   constructor(readonly name: string) {}
   async *keys() {
     yield* this.dirs.keys();
@@ -37,6 +39,9 @@ export class MemDir implements WritableDirLike {
           close: async () => {
             this.files.set(name, buf);
             this.writes.push(name);
+          },
+          abort: async () => {
+            this.aborts.push(name);
           },
         };
       },

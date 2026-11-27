@@ -10,6 +10,7 @@ import { createPass2Store } from '../lib/pass2-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { RunRecord } from '../lib/run-record.ts';
 import type { LibraryView } from '../workers/slow-types.ts';
+import { stepBatch } from './step-fixtures.ts';
 
 const PLAN: PipelinePlan = {
   frameCount: 100,
@@ -28,19 +29,8 @@ function batch(start: number, count: number, ids = IDS, withSigned = true): Pipe
     for (let c = 0; c < ids.length; c++) traces[f * ids.length + c] = 10 * (start + f) + c;
   // Signed: the traces minus 1000 (made-up values; only where they land matters).
   const signed = withSigned ? traces.map((v) => v - 1000) : undefined;
-  const z = new Float32Array(count);
-  return {
-    kind: 'batch',
-    start,
-    count,
-    dy: z,
-    dx: z,
-    quality: z,
-    flags: new Uint32Array(count),
-    flickerOffset: z,
-    flickerGain: z,
+  return stepBatch(start, count, {
     previews: {} as never,
-    timings: { readMs: 0, preprocessMs: 0, motionMs: 0, otherMs: 0, traceMs: 0 },
     stageBusyMs: [1, 1, 1],
     cells: {
       version: 5,
@@ -56,7 +46,7 @@ function batch(start: number, count: number, ids = IDS, withSigned = true): Pipe
       slowFrame: 0,
       qcOn: false,
     },
-  };
+  });
 }
 
 function setup(

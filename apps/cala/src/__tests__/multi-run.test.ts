@@ -23,12 +23,17 @@ function session(i: number): PlannedSession {
   };
 }
 
-const sink: ResultsSink = {
-  root: 'r',
-  writeFile: async () => {},
-  writeText: async () => {},
-  finish: async () => {},
-} as unknown as ResultsSink;
+/** A results sink that discards everything, but for what `over` replaces. */
+const sinkWith = (over: Partial<ResultsSink> = {}): ResultsSink =>
+  ({
+    root: 'r',
+    writeFile: async () => {},
+    writeText: async () => {},
+    finish: async () => {},
+    ...over,
+  }) as unknown as ResultsSink;
+
+const sink = sinkWith();
 
 function harness(
   mode: 'joint' | 'separate',
@@ -135,16 +140,14 @@ describe('run record in the results', () => {
       format: 'cala-run-record',
       record_version: 1,
     };
-    const writing: ResultsSink = {
-      root: 'r',
+    const writing = sinkWith({
       writeFile: async (path: string) => {
         exported.push(path);
       },
       writeText: async (path: string, text: string) => {
         texts.set(path, text);
       },
-      finish: async () => {},
-    } as unknown as ResultsSink;
+    });
     const calls: unknown[] = [];
     const h = harness('joint', 2, {
       sink: writing,
@@ -170,14 +173,11 @@ describe('run record in the results', () => {
 describe('run record in a Separate run', () => {
   it('writes one record beside the results of each session and none at the root', async () => {
     const texts = new Map<string, string>();
-    const writing: ResultsSink = {
-      root: 'r',
-      writeFile: async () => {},
+    const writing = sinkWith({
       writeText: async (path: string, text: string) => {
         texts.set(path, text);
       },
-      finish: async () => {},
-    } as unknown as ResultsSink;
+    });
     const h = harness('separate', 2, {
       sink: writing,
       runRecord: (st, index) => ({ format: 'cala-run-record', session_index: index ?? null }),

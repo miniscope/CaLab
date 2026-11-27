@@ -16,22 +16,16 @@ import {
   type QcSnapshot,
 } from '../lib/qc.ts';
 import { memoryTraceFile } from '../lib/trace-file.ts';
+import { lcg } from './blob-movie.ts';
 import { initTestWasm } from './wasm-test.ts';
 
 beforeAll(initTestWasm);
 
-/** Deterministic noise in [-0.5, 0.5). */
-function lcg(seed: number): () => number {
-  let s = seed >>> 0;
-  return () => {
-    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
-    return s / 2 ** 32 - 0.5;
-  };
-}
-
 /** Clipped calcium trace: a transient every `every` frames in `[from, to)`, noise elsewhere. */
 function trace(n: number, every: number, from: number, to: number, seed: number): Float32Array {
-  const r = lcg(seed);
+  const u = lcg(seed);
+  /** Deterministic noise in [-0.5, 0.5). */
+  const r = () => u() - 0.5;
   const x = new Float32Array(n);
   let v = 0;
   for (let t = 0; t < n; t++) {

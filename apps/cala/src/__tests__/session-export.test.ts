@@ -6,11 +6,10 @@ import {
   sessionMetadata,
   zipResultsSink,
   type SessionRecord,
-  type WritableDirLike,
-  type WritableFileLike,
 } from '../lib/session-export.ts';
 import { stageMeta } from '../lib/export.ts';
 import type { StageRun } from '../lib/run-stages.ts';
+import { MemDir } from './mem-dir.ts';
 
 const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({
   index: 1,
@@ -166,67 +165,11 @@ describe('runManifest', () => {
 
 // ---- directory sink ----
 
-class MockFile implements WritableFileLike {
-  data: Uint8Array = new Uint8Array(0);
-  aborted = false;
-  closed = false;
-  async createWritable() {
-    const chunks: Uint8Array[] = [];
-    return {
-      write: async (d: Uint8Array | string) => {
-        chunks.push(typeof d === 'string' ? new TextEncoder().encode(d) : d);
-      },
-      close: async () => {
-        this.closed = true;
-        const n = chunks.reduce((s, c) => s + c.length, 0);
-        const out = new Uint8Array(n);
-        let o = 0;
-        for (const c of chunks) {
-          out.set(c, o);
-          o += c.length;
-        }
-        this.data = out;
-      },
-      abort: async () => {
-        this.aborted = true;
-      },
-    };
-  }
-}
-
-class MockDir implements WritableDirLike {
-  dirs = new Map<string, MockDir>();
-  files = new Map<string, MockFile>();
-  constructor(readonly name: string) {}
-  async *keys() {
-    yield* this.dirs.keys();
-    yield* this.files.keys();
-  }
-  async getDirectoryHandle(name: string, o?: { create?: boolean }) {
-    let d = this.dirs.get(name);
-    if (!d) {
-      if (!o?.create) throw new Error('NotFound');
-      d = new MockDir(name);
-      this.dirs.set(name, d);
-    }
-    return d;
-  }
-  async getFileHandle(name: string, o?: { create?: boolean }) {
-    let f = this.files.get(name);
-    if (!f) {
-      if (!o?.create) throw new Error('NotFound');
-      f = new MockFile();
-      this.files.set(name, f);
-    }
-    return f;
-  }
-}
-
 describe('directoryResultsSink', () => {
   const now = new Date(2026, 10, 12, 9, 5, 7);
 
   it('uses cala-results when absent', async () => {
-    const loc = new MockDir('data');
+    const loc = new MemDir('data');
     const sink = await directoryResultsSink(loc, now);
     expect(sink.root).toBe('cala-results');
     expect(sink.method).toBe('directory');
@@ -234,7 +177,7 @@ describe('directoryResultsSink', () => {
   });
 
   it('timestamps the run folder when cala-results exists', async () => {
-    const loc = new MockDir('data');
+    const loc = new MemDir('data');
     await loc.getDirectoryHandle('cala-results', { create: true });
     const sink = await directoryResultsSink(loc, now);
     expect(sink.root).toBe('cala-results_2026-11-12_09-05-07');
@@ -244,7 +187,7 @@ describe('directoryResultsSink', () => {
   });
 
   it('writes nested paths, bytes and text', async () => {
-    const loc = new MockDir('data');
+    const loc = new MemDir('data');
     const sink = await directoryResultsSink(loc, now);
     const path = '2026_11_10/14_02_33/My_V4_Miniscope/cala-session.json';
     await sink.writeText(path, '{"a":1}');
@@ -255,27 +198,28 @@ describe('directoryResultsSink', () => {
     await sink.finish();
     const run = loc.dirs.get('cala-results')!;
     const leaf = run.dirs.get('2026_11_10')!.dirs.get('14_02_33')!.dirs.get('My_V4_Miniscope')!;
-    expect(new TextDecoder().decode(leaf.files.get('cala-session.json')!.data)).toBe('{"a":1}');
-    const npz = run.dirs.get('2026_11_10')!.files.get('cala-export.npz')!;
-    expect([...npz.data]).toEqual([1, 2, 3]);
-    expect(npz.closed).toBe(true);
+    expect(leaf.files.get('cala-session.json')).toBe('{"a":1}');
+    const dated = run.dirs.get('2026_11_10')!;
+    const npz = dated.files.get('cala-export.npz')!;
+    expect([...npz].map((c) => c.charCodeAt(0))).toEqual([1, 2, 3]);
+    expect(dated.writes).toContain('cala-export.npz');
   });
 
   it('aborts and rejects when the write callback throws', async () => {
-    const loc = new MockDir('data');
+    const loc = new MemDir('data');
     const sink = await directoryResultsSink(loc, now);
     await expect(
       sink.writeFile('a/b.bin', async () => {
         throw new Error('boom');
       }),
     ).rejects.toThrow('boom');
-    const f = loc.dirs.get('cala-results')!.dirs.get('a')!.files.get('b.bin')!;
-    expect(f.aborted).toBe(true);
-    expect(f.closed).toBe(false);
+    const dir = loc.dirs.get('cala-results')!.dirs.get('a')!;
+    expect(dir.aborts).toEqual(['b.bin']);
+    expect(dir.writes).toEqual([]);
   });
 
   it('rejects bad paths', async () => {
-    const loc = new MockDir('data');
+    const loc = new MemDir('data');
     const sink = await directoryResultsSink(loc, now);
     await expect(sink.writeText('../escape.txt', 'x')).rejects.toThrow(/Not a results path/);
     await expect(sink.writeText('a/../b.txt', 'x')).rejects.toThrow(/Not a results path/);

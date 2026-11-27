@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createRoot } from 'solid-js';
 import type { WorkerLike } from '../lib/frame-client.ts';
+import { stepBatch } from './step-fixtures.ts';
 import { frameClientOn } from './fake-workers.ts';
 import { MAX_FRAMES_PER_READ } from '../lib/frame-source.ts';
 import type { PaceStats } from '../lib/frame-pacer.ts';
@@ -150,18 +151,9 @@ function manualClient() {
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 function batch(start: number, count: number): PipelineStepResult {
-  const image = { width: 1, height: 1, data: new Float32Array(1) };
-  return {
-    kind: 'batch',
-    start,
-    count,
+  return stepBatch(start, count, {
     dy: new Float32Array(count).fill(1),
     dx: new Float32Array(count).fill(-2),
-    quality: new Float32Array(count),
-    flags: new Uint32Array(count),
-    flickerOffset: new Float32Array(count),
-    flickerGain: new Float32Array(count),
-    previews: { frame: start, raw: image, preprocessed: image, corrected: image, output: image },
     timings: {
       readMs: count,
       preprocessMs: 2 * count,
@@ -169,7 +161,7 @@ function batch(start: number, count: number): PipelineStepResult {
       otherMs: 0,
       traceMs: 0,
     },
-  };
+  });
 }
 
 describe('pipeline store backpressure', () => {
