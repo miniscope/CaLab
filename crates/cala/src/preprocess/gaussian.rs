@@ -20,14 +20,12 @@
 //! three poles optimized once for a unit-scale Gaussian
 //! (`1.41650 ± 1.00829i`, `1.86543`) are raised to the power `1/q`, with `q`
 //! solved numerically so that the cascade's variance,
-//! `σ² = Σₖ 2 dₖ / (dₖ − 1)²`, is exactly the requested σ². The older
-//! Young & van Vliet (1995) closed-form coefficients were tried first and
-//! rejected: their effective σ is 8-13 % larger than requested (measured
-//! 21.7 for σ = 20) with heavy tails (kurtosis 5.7 against 3), which breaks
-//! the derivative identity the flattening stage relies on. Measured here: the
+//! `σ² = Σₖ 2 dₖ / (dₖ − 1)²`, is exactly the requested σ². The
+//! Young & van Vliet (1995) closed-form coefficients are not used: their
+//! effective σ is larger than requested and their tails are heavy, which
+//! breaks the derivative identity the flattening stage relies on. Here the
 //! variance is exact, and the 2-D impulse response matches a sampled Gaussian
-//! to within 2 % of its peak for σ ≥ 5 (4 % at σ = 2, 7 % at σ = 1; see the
-//! tests).
+//! closely for σ ≥ 5 (the tests give the tolerance at smaller σ).
 //!
 //! # Boundaries: zero padding, done exactly
 //!

@@ -1,8 +1,7 @@
 //! Stage timers of the slow loop (measurement only; feature `timing`).
 //!
 //! Without the feature every [`Lap`] is a zero-sized no-op and the sums in
-//! [`StageTiming`] stay zero, so a normal build does exactly what it did
-//! before. With it, `observe` is split into its stages and every visit into
+//! [`StageTiming`] stay zero, so a normal build is unaffected. With it, `observe` is split into its stages and every visit into
 //! its phases (wall ms, summed), natively on `std::time::Instant` and in
 //! the browser on `performance.now()` (about 0.1 ms resolution without
 //! cross-origin isolation: read sums over many frames, never one frame).

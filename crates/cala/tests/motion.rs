@@ -82,8 +82,7 @@ fn corr(a: &[f64], b: &[f64]) -> f64 {
     cov / (va * vb).sqrt()
 }
 
-/// Rigid shifts against minisim's ground truth (content-calibrated preset;
-/// measured 0.28 px RMSE, correlation 0.97 / 0.96). Cell activity still moves
+/// Rigid shifts against minisim's ground truth (content-calibrated preset). Cell activity still moves
 /// the registration peak by a few tenths of a pixel on a 128 px field (see
 /// the fixture README); the sub-pixel accuracy check is
 /// `recovers_known_shifts_of_a_static_image`.

@@ -20,12 +20,11 @@
 //!    and when the peak lies more than 0.75 px from the cut the crop is cut
 //!    again at the new integer estimate and re-registered. Both steps remove
 //!    the pull of the fixed window towards zero shift, which on a smooth
-//!    texture is a sizeable fraction of the shift (0.7 px of 4.6 px on a
-//!    108 px region before; under 0.015 px after). The peak is refined to a
+//!    texture is a sizeable fraction of the shift. The peak is refined to a
 //!    fraction of a pixel with an upsampled DFT (Guizar-Sicairos 2008).
 //!    *Phase* correlation (whitening the cross-power spectrum) is
 //!    deliberately not used: on Miniscope data it lets noise-only frequencies
-//!    dominate and returns (0, 0) even for a known 3 px shift; plain
+//!    dominate and the shift reads (0, 0); plain
 //!    cross-correlation of band-passed frames is unbiased.
 //! 3. **Template.** A warm-up template is the mean of the first frames,
 //!    iteratively re-registered and re-averaged
@@ -34,8 +33,7 @@
 //!    of rigidly corrected registration images, whose *position* is pinned
 //!    to the warm-up template (at every refresh the running template is
 //!    registered onto it and the offset added to every shift; without this,
-//!    slowly varying registration bias integrates into a drift of ~0.5 px
-//!    over 20 minutes). Frames whose brightness or peak quality is anomalous
+//!    slowly varying registration bias integrates into a drift). Frames whose brightness or peak quality is anomalous
 //!    against robust running statistics (flashes, blank or corrupt frames)
 //!    are corrected but never folded into the template.
 //! 4. **Piecewise-rigid refinement** (optional, [`NonRigidConfig`]). The

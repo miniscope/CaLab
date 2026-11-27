@@ -863,19 +863,17 @@ pub(crate) const RING_SELF_MIN_CURVATURE: f32 = 0.5;
 ///
 /// * not positive: raising `c_i` lowers the level by more than the cell's
 ///   own light, the coordinate equation has the wrong sign, and the
-///   projected SOR step runs away (halo_s5: traces of 1e37, then inf);
+///   projected SOR step runs away (traces blow up to inf);
 /// * positive but small: the same `s_i` scales the cell's ring couplings
-///   `−s_i q_ij` to its neighbours, which then dwarf the curvature (a Joint
-///   run in the app: 0.012 `ã_iᵀã_i` with `s_i` = −116 and couplings of
-///   ~10). The coordinate system is far from diagonally dominant, projected
-///   SOR grows ~11x per sweep, the traces reach inf within one frame, and
+///   `−s_i q_ij` to its neighbours, which then dwarf the curvature (a
+///   degenerate cell in a Joint run has a tiny curvature, a large negative
+///   `s_i` and couplings far above it). The coordinate system is far from diagonally dominant, projected
+///   SOR grows geometrically per sweep, the traces reach inf within one frame, and
 ///   the next frame with missing pixels fills them with NaN.
 ///
 /// Below [`RING_SELF_MIN_CURVATURE`] of `ã_iᵀã_i` the level is therefore
 /// taken from the ring without the cell's own term (`q_ii = 0`, curvature
-/// `ã_iᵀã_i`). Other cells are unchanged. (On the app library above the
-/// next-smallest ratio was 0.69: the rule picks out the degenerate cell
-/// only.)
+/// `ã_iᵀã_i`). Other cells are unchanged.
 pub(crate) fn ring_self_curvature(gram_diag: &[f32], s: &[f32], q: &mut Csr, mdiag: &mut [f32]) {
     for i in 0..gram_diag.len() {
         let (a, b) = (q.start[i], q.start[i + 1]);
@@ -893,8 +891,8 @@ pub(crate) fn ring_self_curvature(gram_diag: &[f32], s: &[f32], q: &mut Csr, mdi
 }
 
 /// [`ring_self_curvature`] on the terms of a [`Library::to_bytes`] buffer,
-/// which may predate its current threshold (a library saved before it, then
-/// Extracted): a cell it picks out loses its self term and takes the
+/// which may have been built without it (a library saved by a build that
+/// lacked the rule, then Extracted): a cell it picks out loses its self term and takes the
 /// curvature `ã_iᵀã_i`, its trace noise rescaled to match (the noise is
 /// `‖·‖ / mdiag_i`). A no-op on terms built with the current rule (their
 /// picked cells already have `q_ii = 0`), so those still solve
@@ -1778,7 +1776,7 @@ impl Library {
 /// precomputed terms.
 const LIBRARY_MAGIC: &[u8; 8] = b"CALALIB3";
 /// [`LIBRARY_MAGIC`] with the cells' skirts (written only when a cell has
-/// one, so a library without skirts keeps the old bytes).
+/// one, so a library without skirts keeps the [`LIBRARY_MAGIC`] layout).
 const LIBRARY_SKIRT_MAGIC: &[u8; 8] = b"CALALIB4";
 /// Magic of the footprints-only layout (no precomputed terms), which
 /// [`Library::from_bytes`] still reads (and assembles).

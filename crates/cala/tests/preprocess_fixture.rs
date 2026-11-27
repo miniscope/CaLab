@@ -395,8 +395,8 @@ fn background_recovers_static_floor_and_tracks_up_step() {
                 .collect();
         }
     }
-    // Before the step: the floor sits a stationary ~2-3 σ_s below the truth
-    // (σ_s = σ/√5 = 1.34), uniformly (that offset is the same everywhere).
+    // Before the step: the floor sits a stationary few σ_s below the truth
+    // (σ_s = σ/√5), uniformly (that offset is the same everywhere).
     let bias = median(errs.clone());
     let spread = median(errs.iter().map(|e| (e - bias).abs()).collect()) * 1.4826;
     eprintln!(
@@ -644,8 +644,8 @@ fn pearson(a: &[f64], b: &[f64]) -> f64 {
 
 /// The lens-disk check of the FOV mask must not touch a recording that has a
 /// disk: the strongly vignetted fixture keeps exactly the mask the plain
-/// relative threshold gave before the check existed (area and FNV-1a hash of
-/// the mask bytes, recorded from that version).
+/// relative threshold gives (area and FNV-1a hash of the mask bytes, recorded
+/// from the threshold alone).
 #[test]
 fn vignetted_fixture_keeps_its_fov_mask() {
     let fx = fixture();

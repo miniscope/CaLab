@@ -25,10 +25,10 @@
 //!   cell's activity into the floor. While fewer than k frames have been
 //!   seen, the floor is just the running average.
 //! * **Upward relaxation.** A pure minimum only ever goes down. That handles
-//!   a downward step in baseline brightness (the workshop CA1 data drops from
-//!   ~53 to ~41 at file 2) and bleaching, but it has two failure modes:
+//!   a downward step in baseline brightness (at a file boundary, say) and
+//!   bleaching, but it has two failure modes:
 //!   1. *A rising baseline is never tracked.* If the floor rises (LED drift
-//!      up, a change of focus, recovery after a dim period) the old, lower
+//!      up, a change of focus, recovery after a dim period) the earlier, lower
 //!      minimum stays, and everything after the rise reads as permanent
 //!      activity above background.
 //!   2. *The floor keeps sinking.* Over a long recording the minimum of the
@@ -39,19 +39,20 @@
 //!   The leak `b += α (s − b)` when `s ≥ b` fixes both: a rise is followed
 //!   with time constant `relax_frames`, and the floor settles at a stationary
 //!   low quantile of `s` (balance of the slow leak against the downward
-//!   snaps; about 2.7 σ_s below the mean for α = 1/2400) instead of drifting.
+//!   snaps; a fixed number of σ_s below the mean for a given α) instead of drifting.
 //!   The leak must be slow next to sustained activity, which it would
 //!   otherwise absorb: a cell held on for `d` frames lifts its own floor by a
 //!   fraction ≈ d/relax_frames of its amplitude, and the floor snaps back down
 //!   as soon as the cell returns to rest. Default `relax_frames` = 2400
-//!   (120 s at 20 fps): a 5 s burst loses about 4 % of its amplitude at its
-//!   end, while a baseline rise is 95 % tracked after 3 · 120 s = 6 min.
+//!   (120 s at 20 fps): a burst of `d` frames loses about `d / relax_frames` of
+//!   its amplitude at its end, while a baseline rise is 95 % tracked after
+//!   3 · `relax_frames`.
 //!   `relax_frames = 0` disables the leak (pure running minimum).
 //!
 //! # State, snapshots and replay
 //!
 //! The state ([`BackgroundState`]) is the k-frame ring buffer, the floor image
-//! and a frame counter: `(k + 1) · W · H` floats (8.6 MB at 600x600, k = 5).
+//! and a frame counter: `(k + 1) · W · H` floats.
 //! Restoring a state and feeding the same frames reproduces the outputs bit
 //! for bit. With `snapshot_every > 0` the stage keeps a copy of its state
 //! every that many frames, so pass 2 can replay any frame by restoring the
@@ -343,9 +344,8 @@ impl RunningMinBackground {
     ///   missing one gets its recent level, `s − b` with `s` the boxcar of
     ///   its latest valid samples: no data, but no step either. (Filled with
     ///   0, a pixel that switches between data and none would switch between
-    ///   its level above the floor, about 1.3 σ, and 0, an edge of false
-    ///   events along the FOV edge; measured on the minisim motion
-    ///   recordings.) It is NaN while the pixel has no valid sample yet, and
+    ///   its level above the floor and 0, an edge of false events along the
+    ///   FOV edge.) It is NaN while the pixel has no valid sample yet, and
     ///   when frozen (pass 2), where the boxcar is not current.
     ///
     /// Start a recording in this mode (the first frame sets it up) and do
