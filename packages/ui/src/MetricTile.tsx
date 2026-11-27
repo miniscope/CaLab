@@ -1,4 +1,5 @@
 import { createMemo, For, Show, type JSX } from 'solid-js';
+import type { StatusTone } from './tones.ts';
 
 const W = 150;
 const H = 30;
@@ -18,7 +19,10 @@ export function sparkRange(range: [number, number]): { lo: number; hi: number } 
   return { lo: range[0], hi: range[1] > range[0] ? range[1] : range[0] + 1 };
 }
 
-/** SVG path of `values` against `x` (0..x1) scaled into a w by h box; gaps at non-finite values. */
+/**
+ * SVG path of `values` against `x` (0..x1) scaled into a w by h box on the range [lo, hi];
+ * values outside the range are drawn at the nearest edge; gaps at non-finite values.
+ */
 export function sparkPath(
   x: number[],
   values: number[],
@@ -38,7 +42,7 @@ export function sparkPath(
       continue;
     }
     const px = x1 > 0 ? (x[i] / x1) * w : 0;
-    const py = h - 1 - Math.min(1, (v - lo) / span) * (h - 2);
+    const py = h - 1 - Math.min(1, Math.max(0, (v - lo) / span)) * (h - 2);
     d += `${pen ? 'L' : 'M'}${px.toFixed(1)},${py.toFixed(1)}`;
     pen = true;
   }
@@ -57,6 +61,10 @@ export interface MetricTileProps {
   xMax?: number;
   testid?: string;
   class?: string;
+  /** Status dot before the title (always with a label: it becomes the dot's tooltip and accessible name). */
+  status?: { tone: StatusTone | 'neutral'; label: string };
+  /** Slot under the head (and sparkline), e.g. a Meter on the figure's declared range. */
+  meter?: JSX.Element;
 }
 
 /** Small multiple: title, current value, and optional sparkline(s). */
@@ -68,7 +76,19 @@ export function MetricTile(p: MetricTileProps): JSX.Element {
   return (
     <div class={`metric-tile${p.class ? ' ' + p.class : ''}`} title={p.hint} data-testid={p.testid}>
       <div class="metric-tile__head">
-        <span class="metric-tile__title">{p.title}</span>
+        <span class="metric-tile__title">
+          <Show when={p.status}>
+            {(st) => (
+              <span
+                class={`metric-tile__status metric-tile__status--${st().tone}`}
+                role="img"
+                aria-label={st().label}
+                title={st().label}
+              />
+            )}
+          </Show>
+          {p.title}
+        </span>
         <span class="metric-tile__value">{p.value}</span>
       </div>
       <Show when={p.lines}>
@@ -88,6 +108,9 @@ export function MetricTile(p: MetricTileProps): JSX.Element {
             </For>
           </svg>
         )}
+      </Show>
+      <Show when={p.meter !== undefined}>
+        <div class="metric-tile__meter">{p.meter}</div>
       </Show>
     </div>
   );

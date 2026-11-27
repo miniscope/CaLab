@@ -10,6 +10,7 @@
  */
 import { createSignal } from 'solid-js';
 import { StreamHistory, type HistoryExport, type SeriesSpec } from '@calab/compute';
+import { OKABE_ITO } from '@calab/ui/palette';
 import { RunEvents, type RunEvent } from './run-events.ts';
 import {
   KIND_COLOR,
@@ -44,17 +45,6 @@ export const HISTORY_GROUPS: { id: HistoryGroup; label: string }[] = [
 
 type Spec = Omit<SeriesSpec, 'group'>;
 
-/** Okabe-Ito (as `OKABE_ITO` in @calab/ui/chart; repeated so this store stays free of UI imports). */
-const C = {
-  black: '#000000',
-  orange: '#e69f00',
-  skyBlue: '#56b4e9',
-  bluishGreen: '#009e73',
-  blue: '#0072b2',
-  vermillion: '#d55e00',
-  reddishPurple: '#cc79a7',
-} as const;
-
 /**
  * The series of each group, at most six, each with its own Okabe-Ito hue.
  * Initial ranges are DESIGN §3.5; they never come from the data.
@@ -69,7 +59,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'value',
       range: [0, 200],
       rangeRule: 'ladder125',
-      color: C.blue,
+      color: OKABE_ITO.blue,
       digits: 0,
       hint: 'Cells in the library the fast loop solves.',
     },
@@ -81,7 +71,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'value',
       range: [0, 50],
       rangeRule: 'ladder125',
-      color: C.bluishGreen,
+      color: OKABE_ITO.bluishGreen,
       digits: 1,
       hint: 'Cells added where nothing was just removed, per minute of stream (last minute). It slows but need not reach zero.',
     },
@@ -93,7 +83,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'value',
       range: [0, 10],
       rangeRule: 'ladder125',
-      color: C.orange,
+      color: OKABE_ITO.orange,
       digits: 1,
       hint: 'Spurious edits per minute of stream: re-adds + adds removed again within 2 min + established cells merged or deleted (each also exported). Should die out; it feeds the status.',
     },
@@ -105,7 +95,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'value',
       range: [0, 1],
       rangeRule: 'fixed',
-      color: C.reddishPurple,
+      color: OKABE_ITO.reddishPurple,
       digits: 2,
       hint: 'Share of cells older than 2 min whose footprint (cosine >= 0.95) and trace noise (within 10%) match 1-2 min ago. Should rise to a plateau; it feeds the status.',
     },
@@ -117,7 +107,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'value',
       range: [0, 1],
       rangeRule: 'fixed',
-      color: C.skyBlue,
+      color: OKABE_ITO.skyBlue,
       digits: 2,
       hint: 'Share of the signal variance above noise that the model explains.',
     },
@@ -129,7 +119,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'value',
       range: [0, 5],
       rangeRule: 'ladder125',
-      color: C.vermillion,
+      color: OKABE_ITO.vermillion,
       digits: 2,
       hint: 'Residual variance above noise, averaged over the field of view. Falls as the model explains more.',
     },
@@ -145,7 +135,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'value',
       range: [0, 5],
       rangeRule: 'ladder125',
-      color: C.blue,
+      color: OKABE_ITO.blue,
       digits: 2,
       hint: 'Per-pixel noise σ (MAD of frame-to-frame differences, the SNR convention), median over the FOV.',
     },
@@ -158,7 +148,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       // The floor is estimated after flattening, so it sits near zero and can go below it.
       range: [-50, 50],
       rangeRule: 'ladder125',
-      color: C.orange,
+      color: OKABE_ITO.orange,
       digits: 1,
       hint: 'Background floor removed by preprocessing (after flattening), median over the FOV.',
     },
@@ -170,7 +160,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'value',
       range: [-5, 5],
       rangeRule: 'ladder125',
-      color: C.bluishGreen,
+      color: OKABE_ITO.bluishGreen,
       digits: 2,
       hint: 'Global LED gain removed per frame, relative to the last ~second.',
     },
@@ -182,7 +172,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'value',
       range: [-2, 2],
       rangeRule: 'ladder125',
-      color: C.reddishPurple,
+      color: OKABE_ITO.reddishPurple,
       digits: 2,
       hint: 'Global sensor offset removed per frame, relative to the last ~second.',
     },
@@ -194,7 +184,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'stem',
       range: [0, 2],
       rangeRule: 'ladder125',
-      color: C.black,
+      color: OKABE_ITO.black,
       digits: 2,
       hint: 'How much the sensor flat field moved at each new map: the median change in units of its own uncertainty.',
     },
@@ -208,7 +198,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'value',
       range: [-10, 10],
       rangeRule: 'ladder125',
-      color: C.blue,
+      color: OKABE_ITO.blue,
       digits: 2,
       hint: 'Registering shift per frame, rows.',
     },
@@ -220,7 +210,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'value',
       range: [-10, 10],
       rangeRule: 'ladder125',
-      color: C.vermillion,
+      color: OKABE_ITO.vermillion,
       digits: 2,
       hint: 'Registering shift per frame, columns.',
     },
@@ -232,7 +222,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'value',
       range: [0, 100],
       rangeRule: 'fixed',
-      color: C.orange,
+      color: OKABE_ITO.orange,
       digits: 1,
       hint: 'Share of frames flagged by motion correction (low quality, anomalous, held or brightness outlier).',
     },
@@ -244,7 +234,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'value',
       range: [0, 1],
       rangeRule: 'ladder125',
-      color: C.bluishGreen,
+      color: OKABE_ITO.bluishGreen,
       digits: 2,
       hint: 'Correlation peak quality of the registration per frame.',
     },
@@ -258,7 +248,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'value',
       range: [0, 120],
       rangeRule: 'ladder125',
-      color: C.blue,
+      color: OKABE_ITO.blue,
       digits: 1,
       hint: 'Frames processed per second of wall time (3 s window).',
     },
@@ -270,7 +260,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'value',
       range: [0, 60],
       rangeRule: 'ladder125',
-      color: C.orange,
+      color: OKABE_ITO.orange,
       digits: 1,
       hint: 'Seconds of stream the slow loop (discovery) is behind the fast loop.',
     },
@@ -282,7 +272,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'rate',
       range: [0, 50],
       rangeRule: 'ladder125',
-      color: C.vermillion,
+      color: OKABE_ITO.vermillion,
       digits: 0,
       hint: 'Live frames dropped or missed at the source, per minute.',
     },
@@ -294,7 +284,7 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
       kind: 'value',
       range: [0, 10],
       rangeRule: 'ladder125',
-      color: C.skyBlue,
+      color: OKABE_ITO.skyBlue,
       digits: 2,
       hint: 'How far processing is behind the live stream, seconds.',
     },
@@ -305,15 +295,15 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
 const WORK_SERIES: SeriesSpec[] = [
   ...(
     [
-      ['work_live', 'Slow worker: live batches', C.blue],
-      ['work_visit', 'Slow worker: visit hand-out and apply', C.bluishGreen],
-      ['work_need', 'Slow worker: need-driven look-back answers', C.orange],
-      ['work_settle', 'Slow worker: settle answers and end settle', C.reddishPurple],
-      ['work_publish', 'Slow worker: publishing', C.skyBlue],
-      ['work_other', 'Slow worker: housekeeping, set-up and replay', C.vermillion],
-      ['work_idle', 'Slow worker: idle', C.black],
-      ['work_visit_busy', 'Visit workers: mean busy share', C.bluishGreen],
-      ['work_lookback_busy', 'Look-back worker: busy share', C.orange],
+      ['work_live', 'Slow worker: live batches', OKABE_ITO.blue],
+      ['work_visit', 'Slow worker: visit hand-out and apply', OKABE_ITO.bluishGreen],
+      ['work_need', 'Slow worker: need-driven look-back answers', OKABE_ITO.orange],
+      ['work_settle', 'Slow worker: settle answers and end settle', OKABE_ITO.reddishPurple],
+      ['work_publish', 'Slow worker: publishing', OKABE_ITO.skyBlue],
+      ['work_other', 'Slow worker: housekeeping, set-up and replay', OKABE_ITO.vermillion],
+      ['work_idle', 'Slow worker: idle', OKABE_ITO.black],
+      ['work_visit_busy', 'Visit workers: mean busy share', OKABE_ITO.bluishGreen],
+      ['work_lookback_busy', 'Look-back worker: busy share', OKABE_ITO.orange],
     ] as const
   ).map(([key, label, color]): SeriesSpec => ({
     key,
@@ -334,7 +324,7 @@ const WORK_SERIES: SeriesSpec[] = [
     kind: 'value',
     range: [0, 120],
     rangeRule: 'ladder125',
-    color: C.blue,
+    color: OKABE_ITO.blue,
     digits: 0,
   },
 ];
@@ -376,7 +366,7 @@ function displaySeries(workers: number): SeriesSpec[] {
       kind: 'value',
       range: [10, 500],
       rangeRule: 'fixed',
-      color: C.blue,
+      color: OKABE_ITO.blue,
       dash: [4, 3],
       digits: 0,
       hint: 'The speed the run is paced to; 0 is Max (no pacing).',
@@ -390,7 +380,7 @@ function displaySeries(workers: number): SeriesSpec[] {
       range: [0, 50],
       // Fixed: the opening burst of a run clips instead of stepping the range and flagging History.
       rangeRule: 'fixed',
-      color: C.bluishGreen,
+      color: OKABE_ITO.bluishGreen,
       digits: 1,
       hint: 'Cells added by the slow loop per 1,000 frames of stream (last 2,000 frames).',
     },
@@ -407,7 +397,7 @@ const EXTRA: SeriesSpec[] = [
     kind: 'value',
     range: [0, 200],
     rangeRule: 'ladder125',
-    color: C.bluishGreen,
+    color: OKABE_ITO.bluishGreen,
     digits: 0,
   },
   ...(['reAdds', 'churned', 'establishedRemovals'] as const).map((k): SeriesSpec => ({
@@ -418,7 +408,7 @@ const EXTRA: SeriesSpec[] = [
     kind: 'value',
     range: [0, 10],
     rangeRule: 'ladder125',
-    color: C.orange,
+    color: OKABE_ITO.orange,
     digits: 1,
   })),
   {
@@ -429,7 +419,7 @@ const EXTRA: SeriesSpec[] = [
     kind: 'value',
     range: [0, 1],
     rangeRule: 'fixed',
-    color: C.reddishPurple,
+    color: OKABE_ITO.reddishPurple,
     digits: 2,
   },
   {
@@ -440,7 +430,7 @@ const EXTRA: SeriesSpec[] = [
     kind: 'value',
     range: [0, 20],
     rangeRule: 'ladder125',
-    color: C.blue,
+    color: OKABE_ITO.blue,
     digits: 1,
   },
   {
@@ -451,7 +441,7 @@ const EXTRA: SeriesSpec[] = [
     kind: 'value',
     range: [0, 1],
     rangeRule: 'fixed',
-    color: C.blue,
+    color: OKABE_ITO.blue,
     digits: 2,
   },
   {
@@ -462,7 +452,7 @@ const EXTRA: SeriesSpec[] = [
     kind: 'value',
     range: [0, 50],
     rangeRule: 'ladder125',
-    color: C.blue,
+    color: OKABE_ITO.blue,
     digits: 1,
   },
   // Who is doing what (`lib/work-meter.ts`): the slow worker's shares of wall time by duty, the
@@ -476,7 +466,7 @@ const EXTRA: SeriesSpec[] = [
     kind: 'value',
     range: [0, 1],
     rangeRule: 'double',
-    color: C.black,
+    color: OKABE_ITO.black,
     digits: 0,
   },
 ];
