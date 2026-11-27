@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FramePacer, PaceGate, PacedQueue, PACE_BATCH } from '../lib/frame-pacer.ts';
+import { lcgClassic } from './blob-movie.ts';
 
 /**
  * A simulated frame worker: step requests are served one after another (the worker's queue is
@@ -142,8 +143,8 @@ describe('PaceGate', () => {
     gate.setTarget(30);
     const period = (PACE_BATCH / 30) * 1000;
     // Processing between 0 and 200 ms, pseudo-random, always inside the period.
-    let seed = 7;
-    const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648) * 200;
+    const next = lcgClassic(7);
+    const rnd = () => next() * 200;
     const t = await sim(() => simulate(gate, { batches: 1000, work: rnd }));
     const iv = intervals(t);
     for (const v of iv) {

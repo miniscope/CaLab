@@ -23,7 +23,6 @@ import {
   type FlatFieldSink,
   type FlatFieldStart,
 } from '../lib/flat-field-runner.ts';
-import type { FramePixels } from '../lib/frame-source.ts';
 import { parseDeviceIdentity } from '../lib/miniscope-meta.ts';
 import type { FrameReader } from '../lib/pipeline-types.ts';
 import {
@@ -34,6 +33,7 @@ import {
 } from '../lib/pipeline-stages.ts';
 import { RunRecord } from '../lib/run-record.ts';
 import { StagePool } from '../lib/stage-pool.ts';
+import { blobMovie } from './blob-movie.ts';
 import { initTestWasm } from './wasm-test.ts';
 
 beforeAll(initTestWasm);
@@ -46,40 +46,26 @@ const FRAMES = 70;
 
 /** A textured scene panned over a lit disc: shifts change at frame 30. */
 function makeMovie(frames: number, gain?: Float32Array): FrameReader {
-  let seed = 5;
-  const rand = () => {
-    seed = (seed * 1103515245 + 12345) % 2147483648;
-    return seed / 2147483648;
-  };
-  const blobs = Array.from({ length: 40 }, () => ({
-    y: rand() * H,
-    x: rand() * W,
-    a: 40 + rand() * 60,
-  }));
-  return {
-    info: { width: W, height: H, bitDepth: 8, frameCount: frames, fps: 20 },
-    async readFrames(start: number, count: number, out?: FramePixels) {
-      const dst = (out as Uint8Array | undefined) ?? new Uint8Array(count * PX);
-      for (let i = 0; i < count; i++) {
-        const f = start + i;
-        const sy = f < 30 ? 0 : 2;
-        const sx = f < 30 ? 0 : -3;
-        for (let y = 0; y < H; y++) {
-          for (let x = 0; x < W; x++) {
-            const lit = (y - H / 2) ** 2 + (x - W / 2) ** 2 < (0.48 * W) ** 2;
-            let v = 110;
-            for (const b of blobs) {
-              const d2 = (y - sy - b.y) ** 2 + (x - sx - b.x) ** 2;
-              if (d2 < 40) v += b.a * Math.exp(-d2 / 6);
-            }
-            const g = gain ? gain[y * W + x] : 1;
-            dst[i * PX + y * W + x] = lit ? Math.min(255, Math.round(g * v)) : 3;
-          }
+  return blobMovie({
+    width: W,
+    height: H,
+    frames,
+    seed: 5,
+    blobs: 40,
+    frame: (f, blobs) => {
+      const sy = f < 30 ? 0 : 2;
+      const sx = f < 30 ? 0 : -3;
+      return (y, x) => {
+        let v = 110;
+        for (const b of blobs) {
+          const d2 = (y - sy - b.y) ** 2 + (x - sx - b.x) ** 2;
+          if (d2 < 40) v += b.a * Math.exp(-d2 / 6);
         }
-      }
-      return dst;
+        const g = gain ? gain[y * W + x] : 1;
+        return g * v;
+      };
     },
-  };
+  });
 }
 
 /** A map that scales the left half of the frame down by 8%. */

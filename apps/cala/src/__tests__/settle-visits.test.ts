@@ -18,16 +18,8 @@ import { SETTLE } from '../lib/settle.ts';
 import { SlowRunner } from '../lib/slow-runner.ts';
 import type { LookbackToSlow, SettleStatus, SlowToLookback } from '../workers/lookback-types.ts';
 import type { FastToSlow, OwnerToVisit, SlowToMain } from '../workers/slow-types.ts';
+import { lcg } from './blob-movie.ts';
 import { fakeLib, stubSlowLoop } from './slow-fixtures.ts';
-
-/** A small seeded generator (the delays of a schedule). */
-function lcg(seed: number): () => number {
-  let s = seed >>> 0;
-  return () => {
-    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
-    return s / 2 ** 32;
-  };
-}
 
 /** A port: in order, each message a random 0..`maxMs` ms after the one before is delivered. */
 function port<T>(deliver: (m: T) => void, rand: () => number, maxMs: number) {

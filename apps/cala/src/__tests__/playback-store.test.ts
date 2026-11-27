@@ -5,22 +5,14 @@ import type { PipelineStepResult } from '../lib/pipeline-types.ts';
 import { makePlan } from '../lib/pipeline-plan.ts';
 import { createPipelineStore } from '../lib/pipeline-store.ts';
 
+import { stepBatch } from './step-fixtures.ts';
 const img = () => ({ width: 2, height: 1, data: new Float32Array(2) });
 
 /** A batch of `count` frames from `start`, with every frame's preview of the output view (value = frame). */
 function batch(start: number, count: number, withFrames: boolean): PipelineStepResult {
   const data = new Float32Array(count * 2);
   for (let i = 0; i < count; i++) data.fill(start + i, i * 2, i * 2 + 2);
-  return {
-    kind: 'batch',
-    start,
-    count,
-    dy: new Float32Array(count),
-    dx: new Float32Array(count),
-    quality: new Float32Array(count),
-    flags: new Uint32Array(count),
-    flickerOffset: new Float32Array(count),
-    flickerGain: new Float32Array(count),
+  return stepBatch(start, count, {
     previews: {
       frame: start + count - 1,
       raw: img(),
@@ -31,8 +23,7 @@ function batch(start: number, count: number, withFrames: boolean): PipelineStepR
         ? { frames: { view: 'output', first: start, count, width: 2, height: 1, data } }
         : {}),
     },
-    timings: { readMs: 0, preprocessMs: 0, motionMs: 0, otherMs: 0, traceMs: 0 },
-  };
+  });
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));

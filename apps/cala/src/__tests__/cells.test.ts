@@ -20,6 +20,7 @@ import { SlowRunner, type PublishedLibrary, type SlowRunnerDeps } from '../lib/s
 import { TraceHistory } from '../lib/trace-history.ts';
 import { parseQc } from '../lib/qc.ts';
 import type { FastToSlow, LibraryView, SlowToFast, SlowToMain } from '../workers/slow-types.ts';
+import { lcgClassic } from './blob-movie.ts';
 import { initTestWasm } from './wasm-test.ts';
 import { INIT as BASE_INIT, stubSlowLoop } from './slow-fixtures.ts';
 
@@ -894,11 +895,7 @@ describe('fast and slow loop over the real WASM bindings', () => {
       [40, 44],
       [44, 18],
     ];
-    let seed = 3;
-    const rand = () => {
-      seed = (seed * 1103515245 + 12345) % 2147483648;
-      return seed / 2147483648;
-    };
+    const rand = lcgClassic(3);
     const gauss = () => {
       let s = 0;
       for (let k = 0; k < 12; k++) s += rand();
