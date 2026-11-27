@@ -216,7 +216,7 @@ main {
 .table-search {
   padding: 4px 8px;
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-control);
   font-size: 0.8rem;
   color: var(--text-primary);
   background: var(--bg-primary);
@@ -844,7 +844,7 @@ main {
 .data-table__delete {
   padding: 2px var(--space-sm);
   border: 1px solid var(--error);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-control);
   background: none;
   color: var(--error);
   font-size: 0.72rem;
@@ -872,7 +872,7 @@ main {
 .app-toggle {
   display: flex;
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-control);
   overflow: hidden;
   width: fit-content;
   max-width: 100%;
@@ -919,7 +919,7 @@ main {
 .bulk-toolbar__delete {
   padding: 3px 12px;
   border: 1px solid var(--error);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-control);
   background: none;
   color: var(--error);
   font-size: 0.8rem;
@@ -1094,14 +1094,14 @@ main {
 .admin-guard__form input {
   padding: var(--space-sm) 12px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-control);
   font-size: 0.85rem;
 }
 
 .admin-guard__form button {
   padding: var(--space-sm) 12px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-control);
   background: var(--bg-primary);
   font-size: 0.85rem;
   cursor: pointer;
