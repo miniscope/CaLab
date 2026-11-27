@@ -7,38 +7,14 @@
  * pacer's target.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { SlowRunner, type PublishedLibrary, type SlowLoopLike } from '../lib/slow-runner.ts';
+import { SlowRunner } from '../lib/slow-runner.ts';
 import { lookbackFrames } from '../lib/lookback-reader.ts';
 import { SETTLE } from '../lib/settle.ts';
 import type { LookbackToSlow, SlowToLookback } from '../workers/lookback-types.ts';
 import type { FastToSlow, SlowToMain } from '../workers/slow-types.ts';
+import { fakeLib, INIT as BASE_INIT, stubSlowLoop } from './slow-fixtures.ts';
 
-function fakeLib(version: number): PublishedLibrary {
-  return {
-    version,
-    ids: () => Uint32Array.of(1),
-    centers: () => Float32Array.of(0, 0),
-    radii: () => Float32Array.of(1),
-    supportStarts: () => Uint32Array.of(0, 1),
-    supportPixels: () => Uint32Array.of(0),
-    footprintValues: () => Float32Array.of(1),
-    toBytes: () => Uint8Array.of(version),
-    free: vi.fn(),
-  };
-}
-
-const INIT: Extract<FastToSlow, { type: 'init' }> = {
-  type: 'init',
-  session: 1,
-  width: 2,
-  height: 1,
-  fov: Uint8Array.of(1, 1),
-  noise: Float32Array.of(1, 1),
-  cellDiameterPx: 10,
-  flattenSigmaPx: 0,
-  budget: 123,
-  lookback: true,
-};
+const INIT: Extract<FastToSlow, { type: 'init' }> = { ...BASE_INIT, lookback: true };
 
 /** A fake loop: `need` need-driven frames wanted (2 per live frame), and the settle's picker. */
 function fakeLoop(need: number) {
@@ -50,8 +26,7 @@ function fakeLoop(need: number) {
   let chunk = 0;
   let version = 10;
   const settled: number[] = [];
-  const loop: SlowLoopLike = {
-    observe: () => true,
+  const loop = stubSlowLoop({
     step: vi.fn(() => {
       if (again.on) {
         again.on = false;
@@ -63,12 +38,7 @@ function fakeLoop(need: number) {
     }),
     finalize: vi.fn(() => fakeLib(++version)),
     publishedLibrary: vi.fn(() => (published ? fakeLib(version) : undefined)),
-    setNoise: vi.fn(),
-    setEditScope: vi.fn(),
     cellCount: 1,
-    reservoirBytes: 0,
-    stats: () => new Float64Array(17),
-    free: vi.fn(),
     lookbackNote: vi.fn((_seen: number, n: number) => {
       credit += 2 * n;
     }),
@@ -81,8 +51,6 @@ function fakeLoop(need: number) {
       }
       return Float64Array.from(out);
     }),
-    observeLookback: vi.fn(() => true),
-    markAllDue: vi.fn(),
     lookbackStats: () => Float64Array.of(need - left, 0, 0, 0, 1, left, 8),
     footprintNoise: vi.fn(() => Float64Array.of(1, 0.1)),
     settleTake: vi.fn((seen: number, max: number) => {
@@ -97,9 +65,8 @@ function fakeLoop(need: number) {
       settled.push(stream);
       return true;
     }),
-    settleSkipped: vi.fn(),
     settleStats: () => Float64Array.of(0, settled.length, 0, 0),
-  };
+  });
   return { loop, settled, again };
 }
 

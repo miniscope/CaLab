@@ -9,14 +9,15 @@
  * worker had posted before the point where that batch's request used to go
  * out (its cue now; the first batch's request itself).
  */
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { LookbackPrepared } from '../lib/lookback-reader.ts';
 import { LookbackService, type LookbackReaderLike } from '../lib/lookback-service.ts';
 import { SETTLE } from '../lib/settle.ts';
-import { SlowRunner, type PublishedLibrary, type SlowLoopLike } from '../lib/slow-runner.ts';
+import { SlowRunner } from '../lib/slow-runner.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import type { LookbackToSlow, SlowToLookback } from '../workers/lookback-types.ts';
 import type { FastToSlow, OwnerToVisit, SlowToMain, VisitToOwner } from '../workers/slow-types.ts';
+import { fakeLib, stubSlowLoop } from './slow-fixtures.ts';
 
 /** A small seeded generator (the delays of a schedule). */
 function lcg(seed: number): () => number {
@@ -40,20 +41,6 @@ function port<T>(deliver: (m: T) => void, rand: () => number, maxMs: number) {
   };
 }
 
-function fakeLib(version: number): PublishedLibrary {
-  return {
-    version,
-    ids: () => Uint32Array.of(1),
-    centers: () => Float32Array.of(0, 0),
-    radii: () => Float32Array.of(1),
-    supportStarts: () => Uint32Array.of(0, 1),
-    supportPixels: () => Uint32Array.of(0),
-    footprintValues: () => Float32Array.of(1),
-    toBytes: () => Uint8Array.of(version),
-    free: vi.fn(),
-  };
-}
-
 /**
  * The slow loop: publishes a library at every step (as visits commit edits),
  * so a cue sent after an answer's observation, not before it, would take a
@@ -62,7 +49,7 @@ function fakeLib(version: number): PublishedLibrary {
 function fakeLoop() {
   let version = 10;
   const seen: { stream: number | undefined; version: number }[] = [];
-  const loop: SlowLoopLike = {
+  const loop = stubSlowLoop({
     observe: (_f, v, _t, _b, stream) => {
       seen.push({ stream, version: v });
       due++;
@@ -70,26 +57,14 @@ function fakeLoop() {
     },
     step: () => fakeLib(++version),
     finalize: () => fakeLib(++version),
-    setNoise: () => {},
-    setEditScope: () => {},
     cellCount: 1,
-    reservoirBytes: 0,
-    stats: () => new Float64Array(17),
-    free: () => {},
-    enableLookback: () => {},
-    lookbackNote: () => {},
-    lookbackTake: () => new Float64Array(0),
-    observeLookback: () => true,
-    markAllDue: () => {},
-    lookbackStats: () => new Float64Array(7),
     footprintNoise: () => Float64Array.of(1, 0.1),
     footprintNoiseOn: () => 0.1,
     // With visit workers: a visit comes due with every observed frame, and a library at every
     // other housekeeping.
     takeJob: () => (due > 0 ? (due--, Uint8Array.of(1)) : undefined),
-    applyJob: () => {},
     housekeep: () => (++housekeeps % 2 === 0 ? fakeLib(++version) : undefined),
-  };
+  });
   let housekeeps = 0;
   let due = 0;
   /** A version as the loop's next publish would have it. */

@@ -1,13 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
-import {
-  buildSlowLoop,
-  FACTOR_NO_ANSWER,
-  framesFrom,
-  SlowRunner,
-  type PublishedLibrary,
-  type SlowLoopLike,
-} from '../lib/slow-runner.ts';
+import { buildSlowLoop, FACTOR_NO_ANSWER, framesFrom, SlowRunner } from '../lib/slow-runner.ts';
 import { lookbackFrames } from '../lib/lookback-reader.ts';
 import { SETTLE } from '../lib/settle.ts';
 import type { LookbackToSlow, SlowToLookback } from '../workers/lookback-types.ts';
@@ -19,32 +12,7 @@ import type {
   SlowToMain,
   VisitToOwner,
 } from '../workers/slow-types.ts';
-
-function fakeLib(version: number): PublishedLibrary {
-  return {
-    version,
-    ids: () => Uint32Array.of(1),
-    centers: () => Float32Array.of(0, 0),
-    radii: () => Float32Array.of(1),
-    supportStarts: () => Uint32Array.of(0, 1),
-    supportPixels: () => Uint32Array.of(0),
-    footprintValues: () => Float32Array.of(1),
-    toBytes: () => Uint8Array.of(version),
-    free: vi.fn(),
-  };
-}
-
-const INIT: Extract<FastToSlow, { type: 'init' }> = {
-  type: 'init',
-  session: 1,
-  width: 2,
-  height: 1,
-  fov: Uint8Array.of(1, 1),
-  noise: Float32Array.of(1, 1),
-  cellDiameterPx: 10,
-  flattenSigmaPx: 0,
-  budget: 123,
-};
+import { fakeLib, INIT, stubSlowLoop } from './slow-fixtures.ts';
 
 function frames(start: number, count = 2): Extract<FastToSlow, { type: 'frames' }> {
   return {
@@ -67,22 +35,16 @@ function fakeLoop(need: number) {
   const observed: { stream: number; ids: number[] }[] = [];
   const streams: (number | undefined)[] = [];
   let version = 10;
-  const loop: SlowLoopLike = {
+  const loop = stubSlowLoop({
     observe: (_f, _v, _t, _b, stream) => {
       streams.push(stream);
       calls.push('observe');
       return true;
     },
-    step: vi.fn(() => undefined),
     finalize: vi.fn(() => fakeLib(++version)),
     publishedLibrary: vi.fn(() => fakeLib(version)),
-    setNoise: vi.fn(),
     setEditScope: vi.fn((s: string) => void calls.push(`scope:${s}`)),
     cellCount: 1,
-    reservoirBytes: 0,
-    stats: () => new Float64Array(17),
-    free: vi.fn(),
-    enableLookback: vi.fn(),
     lookbackNote: vi.fn((_seen: number, n: number) => {
       credit += 2 * n;
     }),
@@ -105,7 +67,7 @@ function fakeLoop(need: number) {
     lookbackStats: () => Float64Array.of(need - left, observed.length, 0, 0, 1, left, 8),
     footprintNoise: vi.fn(() => Float64Array.of(1, 0.1)),
     footprintNoiseOn: vi.fn(() => 0.1),
-  };
+  });
   return { loop, calls, observed, streams };
 }
 

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   addLookbackAnswer,
   BirthRate,
@@ -17,7 +17,7 @@ import {
   type WorkStatus,
 } from '../lib/work-meter.ts';
 import { SettleGovernor } from '../lib/settle-governor.ts';
-import { SlowRunner, type PublishedLibrary, type SlowLoopLike } from '../lib/slow-runner.ts';
+import { SlowRunner } from '../lib/slow-runner.ts';
 import { createRunHistory, kindSeriesKey } from '../lib/run-history.ts';
 import type { LookbackToSlow, SlowToLookback } from '../workers/lookback-types.ts';
 import type {
@@ -27,6 +27,7 @@ import type {
   SlowToMain,
   VisitToOwner,
 } from '../workers/slow-types.ts';
+import { fakeLib, INIT as BASE_INIT, stubSlowLoop } from './slow-fixtures.ts';
 
 describe('DutyClock', () => {
   it('charges time to the open duty, nested spans to the inner one only', () => {
@@ -324,31 +325,7 @@ describe('run history work series', () => {
 
 // ---- the slow runner's accounting ----
 
-function lib(version: number): PublishedLibrary {
-  return {
-    version,
-    ids: () => Uint32Array.of(1),
-    centers: () => Float32Array.of(0, 0),
-    radii: () => Float32Array.of(1),
-    supportStarts: () => Uint32Array.of(0, 1),
-    supportPixels: () => Uint32Array.of(0),
-    footprintValues: () => Float32Array.of(1),
-    toBytes: () => Uint8Array.of(version),
-    free: vi.fn(),
-  };
-}
-
-const INIT: Extract<FastToSlow, { type: 'init' }> = {
-  type: 'init',
-  session: 1,
-  width: 2,
-  height: 1,
-  fov: Uint8Array.of(1, 1),
-  noise: Float32Array.of(1, 1),
-  cellDiameterPx: 10,
-  flattenSigmaPx: 0,
-  budget: 1,
-};
+const INIT: Extract<FastToSlow, { type: 'init' }> = { ...BASE_INIT, budget: 1 };
 
 function batch(start: number, sentAt?: number): Extract<FastToSlow, { type: 'frames' }> {
   return {
@@ -371,14 +348,12 @@ function rig(opts: { visits?: number; lookback?: boolean } = {}) {
   const toLb: SlowToLookback[] = [];
   const toVisit: OwnerToVisit[][] = Array.from({ length: opts.visits ?? 0 }, () => []);
   let wanted = 0;
-  const loop: SlowLoopLike = {
+  const loop = stubSlowLoop({
     observe: () => {
       t += 5; // each frame costs 5 ms
       return true;
     },
-    step: () => undefined,
-    finalize: () => lib(2),
-    setNoise: () => {},
+    finalize: () => fakeLib(2),
     takeJob: () => {
       t += 1;
       return Uint8Array.of(1);
@@ -386,11 +361,7 @@ function rig(opts: { visits?: number; lookback?: boolean } = {}) {
     applyJob: () => {
       t += 3;
     },
-    housekeep: () => undefined,
     cellCount: 1,
-    reservoirBytes: 0,
-    stats: () => new Float64Array(17),
-    free: () => {},
     lookbackNote: () => {
       wanted = 2;
     },
@@ -403,8 +374,7 @@ function rig(opts: { visits?: number; lookback?: boolean } = {}) {
       t += 2;
       return true;
     },
-    lookbackStats: () => new Float64Array(7),
-  } as SlowLoopLike;
+  });
   const r = new SlowRunner({
     create: () => loop,
     toFast: { postMessage: () => {} },

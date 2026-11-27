@@ -15,9 +15,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import { SETTLE } from '../lib/settle.ts';
-import { SlowRunner, type PublishedLibrary, type SlowLoopLike } from '../lib/slow-runner.ts';
+import { SlowRunner } from '../lib/slow-runner.ts';
 import type { LookbackToSlow, SettleStatus, SlowToLookback } from '../workers/lookback-types.ts';
 import type { FastToSlow, OwnerToVisit, SlowToMain } from '../workers/slow-types.ts';
+import { fakeLib, stubSlowLoop } from './slow-fixtures.ts';
 
 /** A small seeded generator (the delays of a schedule). */
 function lcg(seed: number): () => number {
@@ -37,20 +38,6 @@ function port<T>(deliver: (m: T) => void, rand: () => number, maxMs: number) {
   };
 }
 
-function fakeLib(version: number): PublishedLibrary {
-  return {
-    version,
-    ids: () => Uint32Array.of(1),
-    centers: () => Float32Array.of(0, 0),
-    radii: () => Float32Array.of(1),
-    supportStarts: () => Uint32Array.of(0, 1),
-    supportPixels: () => Uint32Array.of(0),
-    footprintValues: () => Float32Array.of(1),
-    toBytes: () => Uint8Array.of(version),
-    free: () => {},
-  };
-}
-
 const TILES = 24;
 
 /**
@@ -65,7 +52,7 @@ function fakeLoop(due: number) {
   let observed = 0;
   /** Settle frames observed, and visits handed out in the pass (before any tile was made due at once). */
   const pass = { frames: 0, visits: 0, settling: false, allDue: false, over: 0 };
-  const loop: SlowLoopLike = {
+  const loop = stubSlowLoop({
     observe: () => {
       const f = observed++;
       fresh[f % TILES]++;
@@ -73,10 +60,8 @@ function fakeLoop(due: number) {
       if (pass.settling) pass.frames++;
       return true;
     },
-    step: () => undefined,
     finalize: () => fakeLib(++version),
     publishedLibrary: () => fakeLib(version),
-    setNoise: () => {},
     setEditScope: (s) => {
       if (s === 'refine') pass.settling = true;
     },
@@ -99,23 +84,14 @@ function fakeLoop(due: number) {
     applyJob: (b) => {
       out.delete(b[0]);
     },
-    housekeep: () => undefined,
     markAllDue: () => {
       pass.allDue = true;
       fresh.fill(due);
     },
     cellCount: 1,
-    reservoirBytes: 0,
-    stats: () => new Float64Array(17),
-    free: () => {},
-    enableLookback: () => {},
-    lookbackNote: () => {},
-    lookbackTake: () => new Float64Array(0),
-    observeLookback: () => true,
-    lookbackStats: () => new Float64Array(7),
     footprintNoise: () => Float64Array.of(1, 0.1),
     footprintNoiseOn: () => 0.1,
-  };
+  });
   return { loop, pass };
 }
 
