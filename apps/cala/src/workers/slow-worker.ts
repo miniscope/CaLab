@@ -87,7 +87,7 @@ workerScope.onmessage = (e) => {
     runner?.factors(data);
     return;
   }
-  // Not queued: settling runs between the queued messages (see `SlowRunner.drainPump`).
+  // Not queued: settling runs between the queued messages (see `FinalSettleDriver.settlePump`).
   if (data.type === 'stop-settling') {
     runner?.stopSettling(data.session);
     return;
@@ -104,7 +104,7 @@ workerScope.onmessage = (e) => {
     toFast,
     toMain: { postMessage: (m, t) => workerScope.postMessage(m, t) },
     visits,
-    // Giving way inside an answer of the settle during Discover: a macrotask, unclamped.
+    // Giving way inside an answer of Background settle: a macrotask, unclamped.
     defer: (fn) => void pause().then(fn),
   });
   const r = runner;

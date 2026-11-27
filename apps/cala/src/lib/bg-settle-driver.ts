@@ -4,7 +4,7 @@
  * `SlowRunner` owns the ports and the requests out; this driver owns the
  * settle's state, its requests and how its answers are fed.
  *
- * Settle during Discover ("Background settle", `SlowInit.csettle`, frames
+ * Background settle (`SlowInit.csettle`, frames
  * only; `CSETTLE` in `settle.ts`): while a look-back Discover runs below Max,
  * the look-back worker also re-reads saved frames spread over the history
  * seen so far (`settleTake`), at the settle governor's rate (`SettleGovernor`:
@@ -15,7 +15,7 @@
  * settle visits: Discover's own visits refine with the better statistics.
  * Need-driven look-back and these requests share the one look-back worker
  * and take turns when both have frames to ask for (or need-driven first,
- * `SlowInit.csettleNeedFirst`). The end settle runs after the last frame as
+ * `SlowInit.csettleNeedFirst`). The Final settle runs after the last frame as
  * without it.
  */
 import type { LookbackToSlow } from '../workers/lookback-types.ts';
@@ -61,8 +61,8 @@ export interface BgSettleHost {
   releaseFrames(msg: Extract<LookbackToSlow, { type: 'frames' }>, port: number): void;
 }
 
-/** Settle during Discover (`SlowInit.csettle`), for the current run, once armed. */
-export interface Csettle {
+/** Background settle (`SlowInit.csettle`), for the current run, once armed. */
+export interface BgSettle {
   /** The rate per second, the re-read frames owed, and the cap. */
   gov: SettleGovernor;
   /** Frames per piece of an answer (0: whole answers). */
@@ -74,7 +74,7 @@ export interface Csettle {
   /** The settle's own request on worker 0 failed or timed out: no more settle requests there this run (need-driven look-back goes on). */
   off: boolean;
   /** The answers in hand, when they are handled in pieces (at most one per look-back worker). */
-  works: CsettleWork[];
+  works: BgSettleWork[];
   requested: number;
   /** Frames dropped here (an answer with no library yet, or one cut short by the end of Discover). */
   dropped: number;
@@ -85,8 +85,8 @@ export interface Csettle {
   maxBlockMs: number;
 }
 
-/** An answer of the settle during Discover being fed to the slow loop. */
-interface CsettleWork {
+/** An answer of Background settle being fed to the slow loop. */
+interface BgSettleWork {
   msg: Extract<LookbackToSlow, { type: 'frames' }>;
   req: LookbackReq;
   /** Frames handled so far. */
@@ -97,21 +97,21 @@ interface CsettleWork {
 export class BgSettleDriver {
   constructor(private readonly r: BgSettleHost) {}
 
-  /** Settle during Discover (null: not armed in this run). */
-  cs: Csettle | null = null;
+  /** Background settle (null: not armed in this run). */
+  bgs: BgSettle | null = null;
 
-  /** This run may arm the settle during Discover (`SlowInit.csettle` and a loop that has it), and how. */
-  csArm: { yieldFrames: number; needFirst: boolean; forwardPool: number } | null = null;
+  /** This run may arm Background settle (`SlowInit.csettle` with look-back), and how. */
+  bgArm: { yieldFrames: number; needFirst: boolean; forwardPool: number } | null = null;
 
   /**
-   * Arm the settle during Discover the first time this run's target is below
+   * Arm Background settle the first time this run's target is below
    * Max with a cap above 0 (a run at Max never arms it: nothing changes there).
    */
   armSettle(): void {
-    const arm = this.csArm;
+    const arm = this.bgArm;
     const loop = this.r.loop;
     if (
-      this.cs ||
+      this.bgs ||
       !arm ||
       !loop ||
       !this.r.lookbackLive ||
@@ -126,7 +126,7 @@ export class BgSettleDriver {
       arm.forwardPool,
     );
     gov.setTarget(this.r.pace.fps, this.r.pace.paused);
-    this.cs = {
+    this.bgs = {
       gov,
       yieldFrames: arm.yieldFrames,
       needFirst: arm.needFirst,
@@ -146,27 +146,27 @@ export class BgSettleDriver {
    * Worker 0 without a settle pool: need-driven look-back and the settle take
    * turns, or with `needFirst` the settle asks only when look-back asks nothing.
    */
-  turnRequest(loop: SlowLoopLike, cs: Csettle): boolean {
-    if (cs.needFirst) return this.r.needRequest(loop) || this.csettleRequest(loop, cs, 0);
-    if (cs.turn && this.csettleRequest(loop, cs, 0)) return true;
+  turnRequest(loop: SlowLoopLike, bgs: BgSettle): boolean {
+    if (bgs.needFirst) return this.r.needRequest(loop) || this.bgSettleRequest(loop, bgs, 0);
+    if (bgs.turn && this.bgSettleRequest(loop, bgs, 0)) return true;
     if (this.r.needRequest(loop)) {
-      cs.turn = true;
+      bgs.turn = true;
       return true;
     }
-    return !cs.turn && this.csettleRequest(loop, cs, 0);
+    return !bgs.turn && this.bgSettleRequest(loop, bgs, 0);
   }
 
   /**
-   * Settle during Discover: one chunk of saved frames to look-back worker
+   * Background settle: one chunk of saved frames to look-back worker
    * `port`, when a whole chunk is owed (`SettleGovernor`)
    * and no answer of that worker is still being fed in pieces.
    */
-  csettleRequest(loop: SlowLoopLike, cs: Csettle, port: number): boolean {
+  bgSettleRequest(loop: SlowLoopLike, bgs: BgSettle, port: number): boolean {
     // No settle reads before the first library: the look-back worker would solve nothing.
     if (
-      (port === 0 && cs.off) ||
-      cs.works.some((w) => w.req.port === port) ||
-      !cs.gov.ready ||
+      (port === 0 && bgs.off) ||
+      bgs.works.some((w) => w.req.port === port) ||
+      !bgs.gov.ready ||
       !this.r.lookbackLive ||
       this.r.version <= 0
     )
@@ -189,9 +189,9 @@ export class BgSettleDriver {
       skip[i] = take[3 * k + 2] > 0 ? 1 : 0;
       items.push({ frame: take[3 * k], ids: new Float64Array(0) });
     });
-    cs.gov.spend(n);
-    cs.requested += n;
-    if (port === 0) cs.turn = false;
+    bgs.gov.spend(n);
+    bgs.requested += n;
+    if (port === 0) bgs.turn = false;
     this.r.sendRequest(port, 'csettle', flat, items, skip);
     return true;
   }
@@ -202,69 +202,69 @@ export class BgSettleDriver {
    * for the rest of the run (the others go on; with none left, the settle
    * takes turns on worker 0 again).
    */
-  csettleFailed(req: LookbackReq, message: string): void {
-    const cs = this.cs;
-    if (!cs) return;
-    cs.dropped += req.items.length;
+  bgSettleFailed(req: LookbackReq, message: string): void {
+    const bgs = this.bgs;
+    if (!bgs) return;
+    bgs.dropped += req.items.length;
     if (req.port > 0) {
       this.r.lbPortOff[req.port] = true;
-      cs.gov.setWorkers(this.r.settlePorts().length);
+      bgs.gov.setWorkers(this.r.settlePorts().length);
       console.warn(`cala settle look-back worker ${req.port} stopped: ${message}`);
     } else {
-      cs.off = true;
+      bgs.off = true;
       console.warn(`cala settle during Discover stopped: ${message}`);
     }
     this.r.status(0, 0);
   }
 
   /**
-   * An answer of the settle during Discover. Whole (the default, as qc_eval
+   * An answer of Background settle. Whole (the default, as qc_eval
    * measured it): the next request goes out first, so the look-back worker
    * reads on while every frame of this answer is fed here in one go. In
    * pieces (`SlowInit.csettleYield`): `yieldFrames` frames, then this worker
    * gives way to the batches and visit results waiting, and so on; the next
    * settle request waits for the last piece.
    */
-  csettleAnswer(
+  bgSettleAnswer(
     loop: SlowLoopLike,
-    cs: Csettle,
+    bgs: BgSettle,
     msg: Extract<LookbackToSlow, { type: 'frames' }>,
     req: LookbackReq,
   ): void {
     if (msg.count !== req.items.length)
       throw new Error(`settle: ${msg.count} frames for a request of ${req.items.length}`);
-    const work: CsettleWork = { msg, req, next: 0 };
-    cs.answers++;
-    if (cs.yieldFrames > 0) {
-      cs.works.push(work);
+    const work: BgSettleWork = { msg, req, next: 0 };
+    bgs.answers++;
+    if (bgs.yieldFrames > 0) {
+      bgs.works.push(work);
       // Need-driven look-back may use the worker meanwhile.
       this.r.lookbackRequest();
-      this.csettlePiece(work);
+      this.bgSettlePiece(work);
       return;
     }
     this.r.lookbackRequest();
-    this.csettleFeed(loop, cs, work, msg.count);
+    this.bgSettleFeed(loop, bgs, work, msg.count);
     this.r.releaseFrames(msg, req.port);
   }
 
   /** The next piece of an answer handled in pieces; then give way, or finish. */
-  private csettlePiece(work: CsettleWork): void {
-    const cs = this.cs;
+  private bgSettlePiece(work: BgSettleWork): void {
+    const bgs = this.bgs;
     const loop = this.r.loop;
     // Dropped meanwhile (a reset, an error, the end of Discover): nothing left to do.
-    if (!cs || !loop || !cs.works.includes(work)) return;
-    this.r.clock.span('csettle', () => this.csettleFeed(loop, cs, work, cs.yieldFrames));
+    if (!bgs || !loop || !bgs.works.includes(work)) return;
+    this.r.clock.span('csettle', () => this.bgSettleFeed(loop, bgs, work, bgs.yieldFrames));
     if (work.next < work.msg.count) {
       this.r.defer(() => {
         try {
-          this.csettlePiece(work);
+          this.bgSettlePiece(work);
         } catch (err) {
           this.r.fail(err);
         }
       });
       return;
     }
-    cs.works.splice(cs.works.indexOf(work), 1);
+    bgs.works.splice(bgs.works.indexOf(work), 1);
     this.r.releaseFrames(work.msg, work.req.port);
     if (this.r.lookbackLive) this.r.lookbackRequest();
   }
@@ -274,14 +274,14 @@ export class BgSettleDriver {
    * (`observeSettle`): held-out frames are passed over (they were not
    * solved); then the visits waiting are handed out, as after any message.
    */
-  private csettleFeed(loop: SlowLoopLike, cs: Csettle, work: CsettleWork, n: number): void {
+  private bgSettleFeed(loop: SlowLoopLike, bgs: BgSettle, work: BgSettleWork, n: number): void {
     const init = this.r.init!;
     const { msg, req } = work;
     const t0 = this.r.now();
     const end = Math.min(msg.count, work.next + Math.max(1, n));
     // Version 0: the worker had no library yet, nothing was solved.
     if (msg.version === 0) {
-      cs.dropped += end - work.next;
+      bgs.dropped += end - work.next;
       work.next = end;
       return;
     }
@@ -311,16 +311,16 @@ export class BgSettleDriver {
       this.r.dispatch();
     }
     const ms = this.r.now() - t0;
-    cs.answerMs += ms;
-    cs.maxBlockMs = Math.max(cs.maxBlockMs, ms);
+    bgs.answerMs += ms;
+    bgs.maxBlockMs = Math.max(bgs.maxBlockMs, ms);
   }
 
   /** Discover is over: answers still being fed in pieces are dropped (their buffers go back). */
-  csettleStop(): void {
-    const cs = this.cs;
-    if (!cs) return;
-    for (const work of cs.works.splice(0)) {
-      cs.dropped += work.msg.count - work.next;
+  bgSettleStop(): void {
+    const bgs = this.bgs;
+    if (!bgs) return;
+    for (const work of bgs.works.splice(0)) {
+      bgs.dropped += work.msg.count - work.next;
       this.r.releaseFrames(work.msg, work.req.port);
     }
   }

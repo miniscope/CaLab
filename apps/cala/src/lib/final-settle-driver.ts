@@ -18,7 +18,7 @@
  * whenever this worker got round to its result, and a faster settle visited
  * less (0.65 -> 0.21 visits per frame with a second look-back worker).
  *
- * The end settle's requests (`final`) are read only once the main thread
+ * The Final settle's requests (`final`) are read only once the main thread
  * says Discover's inputs are final (its last back state and flat-field map),
  * so its frames never depend on when those arrived. Its relay keeps two
  * requests on worker 0 (`settleNext`): the one out, and the next, sent
@@ -104,7 +104,7 @@ export interface FinalSettleHost {
   cancelRequests(): void;
   releaseFrames(msg: Extract<LookbackToSlow, { type: 'frames' }>, port: number): void;
   /** Background settle: answers still being fed in pieces are dropped. */
-  csettleStop(): void;
+  bgSettleStop(): void;
   settleView(d: Settle, done: boolean): SettleStatus;
 }
 
@@ -158,19 +158,19 @@ export interface SettleAnswer {
 export class FinalSettleDriver {
   constructor(private readonly r: FinalSettleHost) {}
 
-  drain: Settle | null = null;
+  state: Settle | null = null;
 
   /**
-   * The look-back workers the end settle asks: worker 0, and on a recording's
+   * The look-back workers the Final settle asks: worker 0, and on a recording's
    * factors every pool worker in the settle that was switched to them.
    */
-  private drainPorts(): number[] {
+  private finalSettlePorts(): number[] {
     if (!this.r.factorSource) return [0];
     return [0, ...this.r.settlePorts().filter((i) => this.r.lbFactors[i])];
   }
 
   /**
-   * The end settle reads the recording, on worker 0 alone: its requests wait
+   * The Final settle reads the recording, on worker 0 alone: its requests wait
    * for final inputs (`final`) and are relayed with one prepared ahead
    * (`settleNext`). On factors (a live stream's, or a recording's, possibly
    * on the whole pool) neither: the factors hold the frames Discover
@@ -181,37 +181,37 @@ export class FinalSettleDriver {
     return !this.r.factorLive;
   }
 
-  /** An end settle request is out to some look-back worker. */
-  private drainOut(): boolean {
+  /** A Final settle request is out to some look-back worker. */
+  private finalSettleOut(): boolean {
     return this.r.lbReqs.some((q) => q?.kind === 'end');
   }
 
   /**
-   * A pool worker failed in the end settle: left out for the rest of the run;
+   * A pool worker failed in the Final settle: left out for the rest of the run;
    * its request's frames go back to the feed for another worker (or worker 0).
    */
-  drainPortFailed(req: LookbackReq, message: string): void {
+  finalSettlePortFailed(req: LookbackReq, message: string): void {
     this.r.lbPortOff[req.port] = true;
-    this.drain?.feed.putBack(req.items.map((it) => it.frame));
+    this.state?.feed.putBack(req.items.map((it) => it.frame));
     console.warn(`cala end settle look-back worker ${req.port} stopped: ${message}`);
     this.r.status(0, 0);
   }
 
   /** Discover's last frame with look-back on: settle (see `settlePump`). */
-  startDrain(recording = this.r.consumed): void {
+  startFinalSettle(recording = this.r.consumed): void {
     const loop = this.r.loop!;
     loop.setEditScope('refine');
     this.r.scope = 'refine';
     // Review candidates would wait for every visit out; Discover is over.
     this.r.reviewed = [];
-    this.r.csettleStop();
+    this.r.bgSettleStop();
     // Requests of Discover's look-back still out are dropped (their late answers are ignored).
     this.r.cancelRequests();
     // The frames Discover forwarded: the recording (stream index = file frame).
     const feed = new SettleFeed(
       truncatePlan(settlePlan(recording), this.r.init?.settleFraction ?? 1),
     );
-    this.drain = {
+    this.state = {
       phase: 'sweep',
       feed,
       fed: 0,
@@ -243,7 +243,7 @@ export class FinalSettleDriver {
     };
     // The look-back worker solves with the library Discover ended with
     // (qc_eval publishes it before the settle); the first checkpoint's reference.
-    this.drain.prev = this.checkpointLibrary(loop);
+    this.state.prev = this.checkpointLibrary(loop);
     this.r.status(0, 0);
     this.settlePump();
   }
@@ -312,7 +312,7 @@ export class FinalSettleDriver {
   }
 
   private settlePumpInner(): void {
-    const d = this.drain;
+    const d = this.state;
     const loop = this.r.loop;
     const init = this.r.init;
     if (!d || !loop || !init) return;
@@ -323,7 +323,7 @@ export class FinalSettleDriver {
         d.v.heldMs += this.r.now() - d.holdSince;
         d.holdSince = null;
       }
-      if (!this.r.busy.some((b) => b)) this.finishDrain();
+      if (!this.r.busy.some((b) => b)) this.finishFinalSettle();
       return;
     }
     if (d.phase === 'sweep') {
@@ -334,11 +334,16 @@ export class FinalSettleDriver {
         if (failed) this.r.dropHeld();
         else if (!this.r.lbReqs[0] && !waiting(0)) this.settleNext();
       } else if (!failed)
-        for (const i of this.drainPorts()) {
+        for (const i of this.finalSettlePorts()) {
           if (d.feed.done) break;
           if (!this.r.lbReqs[i] && !waiting(i)) this.settleRequest(i);
         }
-      if (!this.drainOut() && !this.r.lbHeld && d.answers.length === 0 && (d.feed.done || failed)) {
+      if (
+        !this.finalSettleOut() &&
+        !this.r.lbHeld &&
+        d.answers.length === 0 &&
+        (d.feed.done || failed)
+      ) {
         // The visits the pass earned and could not hand out in time, before the last round.
         if (!this.settlePaid(loop, d)) return;
         d.phase = 'final';
@@ -365,7 +370,7 @@ export class FinalSettleDriver {
       const lib = loop.step(init.budget * SETTLE.finalSteps);
       if (lib) this.r.publish(lib);
     }
-    this.finishDrain();
+    this.finishFinalSettle();
   }
 
   /** The settle counts its visits against a rate (`SETTLE.visitRate`; visit workers only). */
@@ -444,7 +449,7 @@ export class FinalSettleDriver {
    * and each request is solved with the library it was before.
    */
   private settleNext(): void {
-    const d = this.drain!;
+    const d = this.state!;
     if (d.stop) return;
     if (this.r.lbHeld) this.r.solveHeld();
     else this.settleRequest(0);
@@ -456,7 +461,7 @@ export class FinalSettleDriver {
    * recording: prepared ahead, see `settleNext`).
    */
   private settleRequest(port = 0, hold = false): void {
-    const d = this.drain!;
+    const d = this.state!;
     const frames = d.feed.take(SETTLE.batch);
     if (frames.length === 0) return;
     const flat = new Float64Array(3 * frames.length);
@@ -480,7 +485,7 @@ export class FinalSettleDriver {
    */
   settleObserve(loop: SlowLoopLike, d: Settle): void {
     for (;;) {
-      if (this.drain !== d || d.stop) return;
+      if (this.state !== d || d.stop) return;
       const a = d.answers[0];
       if (!a) {
         this.settlePump();
@@ -504,12 +509,12 @@ export class FinalSettleDriver {
         }
         const n = this.r.parallel ? SETTLE.observePiece : a.msg.count;
         this.observeSettle(loop, d, a, n);
-        if (this.drain !== d || d.stop) return;
+        if (this.state !== d || d.stop) return;
         if (a.next < a.msg.count && this.r.parallel && this.r.busy.some((b) => b)) {
           this.r.defer(() => {
             try {
               // (A hold is resumed by the visit result that ends it, not here.)
-              if (this.drain === d && !d.stop && d.holdSince === null)
+              if (this.state === d && !d.stop && d.holdSince === null)
                 this.r.clock.span('end', () => this.settleObserve(loop, d));
             } catch (err) {
               this.r.fail(err);
@@ -538,7 +543,7 @@ export class FinalSettleDriver {
       !d.feed.done &&
       this.r.lbError === undefined &&
       !this.r.lbReqs[port] &&
-      this.drainPorts().includes(port);
+      this.finalSettlePorts().includes(port);
     if (next) this.r.tm('end.request', () => this.settleRequest(port));
   }
 
@@ -590,10 +595,10 @@ export class FinalSettleDriver {
     }
   }
 
-  private finishDrain(): void {
-    const d = this.drain;
+  private finishFinalSettle(): void {
+    const d = this.state;
     if (d) this.r.settleStatus = this.r.settleView(d, true);
-    this.drain = null;
+    this.state = null;
     this.r.finish();
   }
 }

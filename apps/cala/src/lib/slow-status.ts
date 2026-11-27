@@ -135,8 +135,8 @@ export function lookbackStatus(
   };
 }
 
-/** What `csettleStatus` reads of a Background settle that is armed. */
-export interface CsettleProgress {
+/** What `bgSettleStatus` reads of a Background settle that is armed. */
+export interface BgSettleProgress {
   readonly gov: Pick<SettleGovernor, 'cap' | 'status'>;
   readonly requested: number;
   readonly dropped: number;
@@ -151,24 +151,24 @@ export interface CsettleProgress {
  * The Background settle's status from `SlowLoop.settleStats()` (`s`), the
  * runner's counts and the settle pool's size (`settleWorkers`).
  */
-export function csettleStatus(
+export function bgSettleStatus(
   s: ArrayLike<number>,
-  cs: CsettleProgress,
+  bgs: BgSettleProgress,
   settleWorkers: number,
 ): CsettleStatus {
   return {
-    rate: cs.gov.cap,
-    requested: cs.requested,
+    rate: bgs.gov.cap,
+    requested: bgs.requested,
     fit: s[1] ?? 0,
     heldOut: s[2] ?? 0,
-    dropped: (s[3] ?? 0) + cs.dropped,
-    live: cs.live,
-    answers: cs.answers,
-    answerMs: cs.answerMs,
-    maxBlockMs: cs.maxBlockMs,
-    yieldFrames: cs.yieldFrames,
+    dropped: (s[3] ?? 0) + bgs.dropped,
+    live: bgs.live,
+    answers: bgs.answers,
+    answerMs: bgs.answerMs,
+    maxBlockMs: bgs.maxBlockMs,
+    yieldFrames: bgs.yieldFrames,
     settleWorkers,
-    governor: cs.gov.status(),
+    governor: bgs.gov.status(),
   };
 }
 
