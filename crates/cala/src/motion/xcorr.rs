@@ -22,6 +22,17 @@
 //! value (integer and upsampled) is divided by `A(u)`, computed from the
 //! window's power spectrum, which removes that pull to first order.
 //!
+//! The correction assumes the texture fills the window. Content that sits
+//! only in the window's flat middle is not attenuated by the taper, so the
+//! division over-corrects it and the shift reads too large: by about 9 % for
+//! a lone blob and up to about 1.3x (plus a fixed part) for a tight cluster
+//! with a broad correlation peak. The corrector's rigid stage re-cuts the
+//! crop at the integer estimate, so the division acts only on a sub-pixel
+//! residual; its patches and the session alignment register single-shot and
+//! rely on band-passed images that fill the window. On the v3 motion sims
+//! switching the division off changes the rigid shift by about 0.001 px RMS
+//! (`tools/cala-eval/results/2026-11-26-motion-xcorr-bias.md`).
+//!
 //! # Sub-pixel refinement
 //!
 //! The integer peak (restricted to `|s| <= max_shift`) is refined with the
