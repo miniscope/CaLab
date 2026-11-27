@@ -6,7 +6,7 @@ Reads `<sim>/daq/ground_truth/ground_truth.zarr` and writes `shifts.npy`,
 `nonrigid_field.npy`, `nonrigid_nodes_y.npy` and `nonrigid_nodes_x.npy` (float64)
 into `<out dir>`, the layout `motion_eval minisim <daq> <gt dir>` reads. With
 `--prnu`, also writes every 2-D sensor-pattern array it finds in the ground truth
-(`*prnu*`, `*gain*`, `*fpn*`) as `<name>.npy` for scoring a learned flat field.
+(`*prnu*`, `*gain*`, `*fpn*`, `*pixel_mask*`) as `<name>.npy` for scoring a learned flat field.
 """
 
 import sys
@@ -28,7 +28,7 @@ def main() -> int:
         np.save(out / f"{k}.npy", np.asarray(gt[k], dtype=np.float64))
     if "--prnu" in sys.argv:
         for k in gt.array_keys():
-            if any(s in k.lower() for s in ("prnu", "gain", "fpn")) and gt[k].ndim == 2:
+            if any(s in k.lower() for s in ("prnu", "gain", "fpn", "pixel_mask")) and gt[k].ndim == 2:
                 np.save(out / f"{k}.npy", np.asarray(gt[k], dtype=np.float64))
                 print("sensor pattern:", k, gt[k].shape)
     return 0

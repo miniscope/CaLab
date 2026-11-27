@@ -36,3 +36,12 @@ Paired fix − front: RMS +.0024 ± .0010, gain +.0015 ± .0024 (late +.0011 ± 
 5. Write `tools/cala-eval/results/2026-11-27-ff-motion-gain.md`, run full `cargo test --release` + clippy + fmt, open ready-for-review PR (do not merge).
 
 New tooling in commit: motion_eval knobs `MOTION_RIGID_ONLY`, `MOTION_FF_OUT`, `MOTION_FF_FIXED`, `MOTION_FF_SHIFTS`, `MOTION_FF_COLD`; `tools/cala-eval/motion_ff_score.py`, `tools/cala-eval/export_gt_nonrigid.py`.
+
+## Progress 27 Nov (second agent)
+- Rebased onto origin/main 6fe2ede6 (clean). Binaries rebuilt; fix rerun s5 identical (max diff 0).
+- Step 1 done (5 seeds, `runs/ff-motion-gain/scores_restoring.md`, `scores_refed.md`): fixplainfed − front late +.0003 ± .0022 (offset gone); sensitivity k = late gain excess per fed scale error: fix .54 ± .02, main .46 ± .02; fixrefed (fed fixfed105's output) +.0090 ± .0028 vs fixfed105 +.0272 → loop contracts. Map DoG corr: fix .12, fixfed105 .24, main .41.
+- Cache version: committed f8e08b13 (`FLAT_FIELD_SOLVER_VERSION = 2`, recordFits requires it; test added). Only the IndexedDB cache loads stored maps (checked export/lookback/provenance).
+- Workshop (READ-ONLY input, `runs/ff-motion-gain/workshop/{main,fix}`): slope vs front after frame 3000: main dy 1.047 dx 1.125, fix dy .981 dx 1.078. NOTE front is NOT truth on real data: on fpn sims front gain is .951 (sensor pattern pulls registration to 0).
+- fpn (`runs/ff-motion-gain/fpn/`, `scores_fpn.md`, `scores_fpn_map.md`): gain late front .944, ff 1.000, fix .987 (paired fix − ff −.013 ± .0014); RMS fix − ff −.0020 ± .0009. Maps nearly identical ff vs fix (PRNU r .79, slope 1.33, residual tissue r .53 both). Running fftruth/fixtruth (estimator fed true shifts) to see whether the fpn tissue residual comes from the sensor-pulled shifts.
+- qc_eval binaries built: tools/cala-eval/bin/qc_eval-main-6fe2ede6, qc_eval-fffix-f8e08b13 (not run yet).
+- fmt + clippy (js/py/diagnostics) clean; apps/cala npm test 1269 pass.
