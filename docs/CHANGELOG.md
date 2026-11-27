@@ -16,6 +16,7 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ### Fixed
 
+- Cala: the run record's `url_flags.*.in_effect` now comes from the same reading of the URL the app uses, so it says what the run did. A bare `?csettle` (or `csettle=1`) is recorded as in effect (it turns Background settle on over a saved cap of 0); `?flatfield=1`, `?gpu=1`, `?debug&smooth=1` and other values the app ignores are recorded as not in effect. Keys and format are unchanged.
 - Cala: the run record now marks `?debug&visitrate=auto` as in effect (`url_flags.flags.visitrate.in_effect`); since the opt-in Auto schedule it was written as `false`, although `work.visit_rate.schedule` said `auto`.
 
 ## [py/v0.6.0] - 2026-11-27

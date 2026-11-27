@@ -489,14 +489,14 @@ describe('url flags against the app', () => {
 
   it('marks inert combinations', () => {
     // Look-back is on by default, so the settle flags apply without `?lookback`.
-    expect(urlFlags('?csettle&csrate=1').flags.csettle.in_effect).toBe(false);
+    expect(urlFlags('?csettle&csrate=1').flags.csettle.in_effect).toBe(true);
     expect(urlFlags('?csettle&csrate=1').flags.csrate.in_effect).toBe(true);
     // ... and are inert once it is turned off.
     expect(urlFlags('?lookback=0&csettle=0&csrate=1').flags.csettle.in_effect).toBe(false);
     expect(urlFlags('?lookback=0&csrate=1').flags.csrate.in_effect).toBe(false);
     // Background settle is on by default under look-back: a bare `csettle` changes nothing,
     // `csettle=0` (off) and `csettle=yieldN` do.
-    expect(urlFlags('?lookback&csettle&csrate=1').flags.csettle.in_effect).toBe(false);
+    expect(urlFlags('?lookback&csettle&csrate=1').flags.csettle.in_effect).toBe(true);
     expect(urlFlags('?lookback&csettle=0').flags.csettle.in_effect).toBe(true);
     expect(urlFlags('?lookback&csettle=yield2').flags.csettle.in_effect).toBe(true);
     expect(urlFlags('?needfirst').flags.needfirst.in_effect).toBe(false);
