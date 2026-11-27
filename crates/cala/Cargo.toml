@@ -44,6 +44,10 @@ proptest = { version = "1", default-features = false, features = ["std"] }
 name = "qc_eval"
 test = true
 
+[[example]]
+name = "fpstats_bench"
+required-features = ["timing"]
+
 # Unit tests of the slow loop are numerically heavy: optimised test builds
 # run them in seconds instead of minutes (debug assertions stay on).
 [profile.test]

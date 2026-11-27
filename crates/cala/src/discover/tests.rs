@@ -3685,3 +3685,206 @@ fn visit_rate_caps_jobs_and_not_refine() {
         s.stats().visits - visits0
     );
 }
+
+/// The mean-field statistics read back (`stats_of`) as the plain sums a loop
+/// that keeps every cell plain accumulates, to rounding: live frames on one
+/// library interleaved with look-back frames on another (alternating
+/// versions fold the own-signal sums; a cell of the live library misses
+/// the look-back frames' field pushes; a shifted footprint moves its disk), look-back pushes to a subset, missing samples on one cell's disk
+/// (it turns plain) and elsewhere, forgetting rescales and split-half block
+/// changes.
+#[test]
+fn mean_field_statistics_match_the_plain_sums() {
+    let t = 1100;
+    let mut rng = Lcg(11);
+    let cells = vec![
+        (blob(0, 30.0, 30.0), trace(&mut rng, t, 0.05, 6.0)),
+        (blob(1, 70.0, 70.0), trace(&mut rng, t, 0.05, 6.0)),
+        (blob(2, 48.0, 20.0), trace(&mut rng, t, 0.05, 6.0)),
+        (blob(3, 75.0, 25.0), trace(&mut rng, t, 0.05, 6.0)),
+    ];
+    let n_px = N * N;
+    let mut m = movie(&cells, t, 3);
+    for k in 0..t {
+        let f = &mut m[k * n_px..(k + 1) * n_px];
+        // A missing sample away from every disk on some frames, and a
+        // missing patch on cell 2 on a few.
+        if k % 5 == 0 {
+            f[2 * N + 93] = f32::NAN;
+        }
+        if (700..720).contains(&k) {
+            for y in 46..51 {
+                for x in 18..23 {
+                    f[y * N + x] = f32::NAN;
+                }
+            }
+        }
+    }
+    let ring = crate::trace::BackgroundModel::Ring {
+        inner_px: 12.0,
+        outer_px: 20.0,
+    };
+    let build = |fps: Vec<Footprint>, v: u64| {
+        let mut b = LibraryBuilder::new(dims())
+            .background(ring.clone())
+            .version(v);
+        for fp in fps {
+            b = b.footprint(fp);
+        }
+        Arc::new(b.build(&mut flattener()).unwrap())
+    };
+    let live_a = build(
+        vec![
+            blob(0, 30.0, 30.0),
+            blob(1, 70.0, 70.0),
+            blob(3, 75.0, 25.0),
+        ],
+        1,
+    );
+    let live_b = build(
+        vec![
+            blob_w(0, 30.0, 36.0, 3.0),
+            blob(1, 70.0, 70.0),
+            blob(2, 48.0, 20.0),
+        ],
+        3,
+    );
+    let back = build(
+        vec![
+            blob_w(0, 30.0, 36.0, 3.0),
+            blob(1, 70.0, 70.0),
+            blob(2, 48.0, 20.0),
+        ],
+        2,
+    );
+    let cfg = SlowLoopConfig {
+        stats_half_life_frames: 40.0,
+        ..config()
+    };
+    let new_loop = || {
+        SlowLoop::new(
+            dims(),
+            vec![1; n_px],
+            vec![1.0; n_px],
+            flattener(),
+            cfg.clone(),
+        )
+    };
+    let (mut sm, mut sp) = (new_loop().unwrap(), new_loop().unwrap());
+    sp.stats_plain = true;
+    let mut eng_a = TraceEngine::new(live_a.clone(), SolverConfig::default()).unwrap();
+    let mut eng_b = TraceEngine::new(live_b.clone(), SolverConfig::default()).unwrap();
+    let mut eng_back = TraceEngine::new(back.clone(), SolverConfig::default()).unwrap();
+    let frame = |k: usize| &m[k * n_px..(k + 1) * n_px];
+    let check = |sm: &SlowLoop, sp: &SlowLoop, at: usize| {
+        assert_eq!(
+            sm.fpstats.keys().collect::<std::collections::BTreeSet<_>>(),
+            sp.fpstats.keys().collect::<std::collections::BTreeSet<_>>()
+        );
+        for (id, want) in &sp.fpstats {
+            let got = sm.stats_of(*id).unwrap();
+            assert_eq!(got.pix, want.pix, "cell {id} frame {at}");
+            assert_eq!(got.k, want.k);
+            assert_eq!(got.pm.is_some(), want.pm.is_some());
+            let close_tol = |a: &[f32], b: &[f32], what: &str, tol: f32| {
+                let top = b.iter().fold(0.0f32, |t, v| t.max(v.abs())).max(1e-6);
+                for (x, y) in a.iter().zip(b) {
+                    assert!(
+                        (x - y).abs() <= tol * top,
+                        "cell {id} frame {at} {what}: {x} vs {y} (top {top})"
+                    );
+                }
+            };
+            let close = |a: &[f32], b: &[f32], what: &str| close_tol(a, b, what, 1e-5);
+            close(&got.rc, &want.rc, "rc");
+            close(&got.r, &want.r, "r");
+            close(&got.half.0, &want.half.0, "half rc");
+            close(&got.half.1, &want.half.1, "half r");
+            if want.k < 100 {
+                // Too few frames: the estimates are ill-conditioned.
+                continue;
+            }
+            match (got.estimate(), want.estimate()) {
+                (Some(a), Some(b)) => close(&a, &b, "estimate"),
+                (a, b) => assert_eq!(a.is_some(), b.is_some()),
+            }
+            match (got.halves(), want.halves()) {
+                (Some(a), Some(b)) => {
+                    // Half B is total − A of f32 sums: the reference's own
+                    // rounding is amplified there.
+                    close_tol(&a.0, &b.0, "half A", 1e-4);
+                    close_tol(&a.1, &b.1, "half B", 1e-4);
+                    assert!((a.2 - b.2).abs() <= 1e-5 * b.2 && (a.3 - b.3).abs() <= 1e-5 * b.3);
+                }
+                (a, b) => assert_eq!(a.is_some(), b.is_some()),
+            }
+            let (ea, eb) = (got.std_err(), want.std_err());
+            assert!(ea == eb || (ea - eb).abs() <= 1e-5 * eb, "{ea} vs {eb}");
+        }
+    };
+    let mut plain_seen = false;
+    for k in 0..t {
+        let (eng, lib) = if k < 600 {
+            (&mut eng_a, &live_a)
+        } else {
+            (&mut eng_b, &live_b)
+        };
+        let tr = eng.process(frame(k)).unwrap();
+        sm.observe(frame(k), lib, &tr).unwrap();
+        sp.observe(frame(k), lib, &tr).unwrap();
+        if k >= 50 {
+            let j = k - 50;
+            let tr = eng_back.process(frame(j)).unwrap();
+            let only = [1u64];
+            let only = (k % 2 == 0).then_some(&only[..]);
+            sm.observe_lookback(frame(j), &back, &tr, j as u64, only)
+                .unwrap();
+            sp.observe_lookback(frame(j), &back, &tr, j as u64, only)
+                .unwrap();
+        }
+        plain_seen |= sm.fpstats.get(&2).is_some_and(|s| s.mf.is_none());
+        if k % 100 == 99 {
+            check(&sm, &sp, k);
+        }
+    }
+    check(&sm, &sp, t);
+    // The paths the test is meant to cover were taken.
+    assert!(plain_seen && sm.fpstats[&2].pm.is_some());
+    assert!(sm.fpstats[&1].mf.is_some());
+    assert!(sm.stats_gen > 0 && sm.fpstats[&1].k > 600);
+}
+
+/// The ledger's run-wise eight-lane sum is the serial sum to rounding, and
+/// NaN when a sample on the pixels is missing (the ledger then takes the
+/// masked sum, which skips it).
+#[test]
+fn runs_dot_matches_the_serial_sum() {
+    use super::evidence::{masked_dot, runs_dot};
+    use super::fpstats::pixel_runs;
+    let mut rng = Lcg(3);
+    let d: Vec<f32> = (0..4000).map(|_| rng.normal()).collect();
+    for len in [0usize, 1, 7, 9, 33, 700] {
+        let pix: Vec<u32> = (0..len as u32).map(|i| 5 + i + (i / 13) * 40).collect();
+        let w: Vec<f32> = (0..len).map(|_| rng.next()).collect();
+        let runs = pixel_runs(&pix);
+        let got = runs_dot(&d, &runs, &w);
+        let (want, n_miss, w_miss) = masked_dot(&d, &pix, &w, &w);
+        assert_eq!((n_miss, w_miss), (0.0, 0.0));
+        let scale: f32 = pix
+            .iter()
+            .zip(&w)
+            .map(|(&p, &k)| (k * d[p as usize]).abs())
+            .sum();
+        assert!(
+            (got - want).abs() <= 1e-5 * scale.max(1.0),
+            "{len}: {got} vs {want}"
+        );
+        if len > 0 {
+            let mut dm = d.clone();
+            dm[pix[len / 2] as usize] = f32::NAN;
+            assert!(runs_dot(&dm, &runs, &w).is_nan());
+            let (g, n_miss, _) = masked_dot(&dm, &pix, &w, &w);
+            assert!(g.is_finite() && n_miss == w[len / 2]);
+        }
+    }
+}

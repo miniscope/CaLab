@@ -32,6 +32,16 @@
 //! was then. Old frames are forgotten with a half-life, because the other
 //! cells' footprints (and so the residual) keep improving. Held-out frames
 //! are never accumulated: the slow loop's tests stay out of sample.
+//!
+//! The slow loop keeps a cell's per-pixel sums in mean-field form
+//! ([`MeanField`]): the part every cell shares (`Σ w (y − model)`) is one field
+//! for the whole frame, and a cell's own per-pixel work on a frame is one
+//! multiply-add per disk pixel when its trace is non-zero and none when it is
+//! zero. It is the same estimator as the plain per-frame push, with the terms
+//! summed in another order, so the two agree to rounding
+//! (`tools/cala-eval/results/2026-11-27-mean-field-fpstats.md`). A disk that
+//! meets a missing sample, and a non-finite ring level, turn the cell's sums
+//! plain for good ([`FpStats::push_frame`]).
 
 /// Trace moments of one pixel class over the frames that pushed it:
 /// `[Σ w, Σ w², Σ w z, Σ w z², Σ w x, Σ w x z]` (`z` the instrument, `x`
@@ -71,8 +81,105 @@ pub(crate) struct FpStats {
     /// The split-half sums' per-pixel moments.
     pub half_pm: Option<PixMoments>,
     /// Cache of `pix` as contiguous row runs ([`pixel_runs`]; empty until
-    /// [`FpStats::push_frame`] first needs it).
+    /// a push first needs it).
     pub runs: Vec<(u32, u32)>,
+    /// The mean-field form of `rc`, `r` and the split-half sums ([`MeanField`]).
+    /// While it is `Some`, those four vectors are empty and the sums are read
+    /// through [`FpStats::materialised`]; `pm` is then `None`.
+    pub mf: Option<Box<MeanField>>,
+}
+
+/// The per-pixel sums of one cell in mean-field form.
+///
+/// With `P(p) = Σ_t w_t d_t(p)` the loop's shared field of residuals `d = y −
+/// model` over every frame pushed to all cells, the plain sums are
+///
+/// - `r = P + rb − l[0] + col·s[0]`,
+/// - `rc = rcx − l[1] + col·s[1]`,
+/// - `half.1 = [in_a]·P + hb − hl[0] + col·hs[0]`,
+/// - `half.0 = hrcx − hl[1] + col·hs[1]`,
+///
+/// the same terms as the plain push, summed in a different order: the field
+/// carries the part every cell shares, `rb` cancels the field before the cell
+/// joined, `rcx` takes `w c d` on frames where the trace is non-zero, and the
+/// level and own-signal terms are scalars (`l = [Σ w level, Σ w c level]`,
+/// `s = [Σ w c, Σ w c²]` since the column last changed, when they are folded
+/// into `rb` and `rcx`). A push for a subset of cells (which leaves the field
+/// alone) adds `w d` to `rb` directly. `in_a`: `hb` holds `−P` of the start of
+/// the current split-half block A.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MeanField {
+    pub rb: Vec<f64>,
+    pub rcx: Vec<f32>,
+    pub hb: Vec<f64>,
+    pub hrcx: Vec<f32>,
+    pub l: [f64; 2],
+    pub hl: [f64; 2],
+    pub s: [f64; 2],
+    pub hs: [f64; 2],
+    pub in_a: bool,
+    /// Pushes of the field this cell's sums account for (the loop sweeps the
+    /// cells a field push did not reach; see [`FpStats::exclude`]).
+    pub gen: u64,
+}
+
+/// The residual `d = y − model` of one frame (NaN where it is not finite: a
+/// missing sample) and, when the frame has missing samples, their running
+/// count, so a disk is checked per row run instead of per pixel.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Residual {
+    pub d: Vec<f32>,
+    /// `miss[p]`: missing samples before pixel `p` (`len + 1` entries); empty
+    /// when the frame has none.
+    miss: Vec<u32>,
+}
+
+impl Residual {
+    /// `d = y − model` for one frame.
+    pub fn fill(&mut self, frame: &[f32], model: &[f32]) {
+        self.d.resize(frame.len(), 0.0);
+        // `y − model` is finite exactly when both are (and it does not
+        // overflow).
+        for ((d, &y), &m) in self.d.iter_mut().zip(frame).zip(model) {
+            let v = y - m;
+            *d = if v.is_finite() { v } else { f32::NAN };
+        }
+        let any = self.d.iter().fold(false, |a, v| a | v.is_nan());
+        self.miss.clear();
+        if any {
+            self.miss.reserve(self.d.len() + 1);
+            let mut n = 0u32;
+            self.miss.push(0);
+            for v in &self.d {
+                n += u32::from(v.is_nan());
+                self.miss.push(n);
+            }
+        }
+    }
+
+    /// Whether the pixels of `runs` include a missing sample.
+    pub fn missing_in(&self, runs: &[(u32, u32)]) -> bool {
+        !self.miss.is_empty()
+            && runs
+                .iter()
+                .any(|&(s, l)| self.miss[(s + l) as usize] != self.miss[s as usize])
+    }
+
+    /// Add `w d` to the field `p` (missing samples add nothing).
+    pub fn add_to(&self, p: &mut [f64], w: f32) {
+        let wf = f64::from(w);
+        if self.miss.is_empty() {
+            for (a, &v) in p.iter_mut().zip(&self.d) {
+                *a += wf * f64::from(v);
+            }
+        } else {
+            for (a, &v) in p.iter_mut().zip(&self.d) {
+                if !v.is_nan() {
+                    *a += wf * f64::from(v);
+                }
+            }
+        }
+    }
 }
 
 /// A pixel is trusted only when it was valid in at least this share of the
@@ -240,6 +347,7 @@ impl FpStats {
             pm: None,
             half_pm: None,
             runs: Vec::new(),
+            mf: None,
         }
     }
 
@@ -254,6 +362,7 @@ impl FpStats {
         height: usize,
         fov: &[u8],
     ) -> FpStats {
+        debug_assert!(self.mf.is_none(), "move plain statistics");
         let mut s = FpStats::new(center, radius, width, height, fov, self.blk);
         s.m = self.m;
         s.half.2 = self.half.2;
@@ -333,6 +442,20 @@ impl FpStats {
         self.half.0.iter_mut().for_each(|v| *v *= f);
         self.half.1.iter_mut().for_each(|v| *v *= f);
         let ff = f64::from(f);
+        if let Some(mf) = &mut self.mf {
+            mf.rcx.iter_mut().for_each(|v| *v *= f);
+            mf.hrcx.iter_mut().for_each(|v| *v *= f);
+            mf.rb.iter_mut().for_each(|v| *v *= ff);
+            mf.hb.iter_mut().for_each(|v| *v *= ff);
+            for v in
+                mf.l.iter_mut()
+                    .chain(&mut mf.hl)
+                    .chain(&mut mf.s)
+                    .chain(&mut mf.hs)
+            {
+                *v *= ff;
+            }
+        }
         if let Some(pm) = &mut self.pm {
             pm.scale(ff);
         }
@@ -393,6 +516,7 @@ impl FpStats {
     /// weight in that pixel's moments (see [`PixMoments`]) rather than a
     /// value. The slow loop passes `z = [c, c]` and `x = c`.
     pub fn push(&mut self, r: &[f32], z: [f32; 2], x: f32, w: f32) {
+        debug_assert!(self.mf.is_none(), "push to plain statistics");
         if x.is_nan() || z.iter().all(|v| v.is_nan()) {
             return;
         }
@@ -418,8 +542,8 @@ impl FpStats {
         self.push_masked(r, z, x, w);
     }
 
-    /// The slow loop's push of one fitting frame: the residual
-    /// `r = y − model − level + col c` on the disk (a non-finite `y` is a
+    /// The plain push of one fitting frame (cells whose disk met a missing
+    /// sample): the residual `r = y − model − level + col c` on the disk (a non-finite `y` is a
     /// missing sample), with `c` the instrument and regressor. The same
     /// arithmetic, element by element, as building `r` and calling
     /// `push(r, [c, c], c, w)`, but read in contiguous row runs and, for a
@@ -436,6 +560,7 @@ impl FpStats {
         w: f32,
         buf: &mut Vec<f32>,
     ) {
+        debug_assert!(self.mf.is_none(), "push to plain statistics");
         let n = self.pix.len();
         if self.runs.is_empty() && n > 0 {
             self.runs = pixel_runs(&self.pix);
@@ -572,6 +697,7 @@ impl FpStats {
     /// their standard errors per unit pixel noise. Both are divided by the
     /// full statistics' `λ`.
     pub fn halves(&self) -> Option<(Vec<f32>, Vec<f32>, f64, f64)> {
+        debug_assert!(self.mf.is_none(), "read materialised statistics");
         if !self.classes_ok() {
             return None;
         }
@@ -637,6 +763,7 @@ impl FpStats {
     /// filtered); `None` while a pixel class's instrument has no variance
     /// or does not follow the trace.
     pub fn estimate(&self) -> Option<Vec<f32>> {
+        debug_assert!(self.mf.is_none(), "read materialised statistics");
         if !self.classes_ok() {
             return None;
         }
@@ -661,6 +788,208 @@ impl FpStats {
             }
         }
         Some(out)
+    }
+
+    /// The plain sums `(rc, r, half.0, half.1)` of a mean-field cell under
+    /// the field `p` (see [`MeanField`]), rounded to f32 once.
+    fn plain_sums(&self, mf: &MeanField, p: &[f64]) -> [Vec<f32>; 4] {
+        let n = self.pix.len();
+        let col = |i: usize| self.col.get(i).map_or(0.0, |&v| f64::from(v));
+        let mut out = [(); 4].map(|_| Vec::with_capacity(n));
+        for (i, &q) in self.pix.iter().enumerate() {
+            let (pv, ci) = (p[q as usize], col(i));
+            let ha = if mf.in_a { pv } else { 0.0 };
+            out[0].push((f64::from(mf.rcx[i]) - mf.l[1] + ci * mf.s[1]) as f32);
+            out[1].push((pv + mf.rb[i] - mf.l[0] + ci * mf.s[0]) as f32);
+            out[2].push((f64::from(mf.hrcx[i]) - mf.hl[1] + ci * mf.hs[1]) as f32);
+            out[3].push((ha + mf.hb[i] - mf.hl[0] + ci * mf.hs[0]) as f32);
+        }
+        out
+    }
+
+    /// These statistics with plain sums: a mean-field cell's sums are
+    /// computed under the field `p` (the loop's current one); a plain cell is
+    /// returned as it is. Every reader of `rc`, `r` or the split halves goes
+    /// through here.
+    pub fn materialised(&self, p: &[f64]) -> std::borrow::Cow<'_, FpStats> {
+        let Some(mf) = &self.mf else {
+            return std::borrow::Cow::Borrowed(self);
+        };
+        let [rc, r, h0, h1] = self.plain_sums(mf, p);
+        let mut out = FpStats {
+            mf: None,
+            rc,
+            r,
+            ..self.clone()
+        };
+        out.half.0 = h0;
+        out.half.1 = h1;
+        std::borrow::Cow::Owned(out)
+    }
+
+    /// Turn a mean-field cell into a plain one under the field `p` (no-op
+    /// for a plain cell).
+    pub fn materialise(&mut self, p: &[f64]) {
+        if let Some(mf) = self.mf.take() {
+            let [rc, r, h0, h1] = self.plain_sums(&mf, p);
+            self.rc = rc;
+            self.r = r;
+            self.half.0 = h0;
+            self.half.1 = h1;
+        }
+    }
+
+    /// Turn a plain cell without per-pixel moments into a mean-field one
+    /// whose sums under the field `p` are its plain sums (no-op otherwise).
+    /// `gen`: the field pushes `p` holds.
+    pub fn rebase(&mut self, p: &[f64], gen: u64) {
+        if self.mf.is_some() || self.pm.is_some() {
+            return;
+        }
+        let rb = self
+            .pix
+            .iter()
+            .zip(&self.r)
+            .map(|(&q, &v)| f64::from(v) - p[q as usize])
+            .collect();
+        let hb = self.half.1.iter().map(|&v| f64::from(v)).collect();
+        self.mf = Some(Box::new(MeanField {
+            rb,
+            rcx: std::mem::take(&mut self.rc),
+            hb,
+            hrcx: std::mem::take(&mut self.half.0),
+            gen,
+            ..MeanField::default()
+        }));
+        self.r = Vec::new();
+        self.half.1 = Vec::new();
+    }
+
+    /// Set the column on `pix` (a new library version): a mean-field cell
+    /// first folds its own-signal sums under the old column into `rb` and
+    /// `rcx`.
+    pub fn set_col(&mut self, col: Vec<f32>) {
+        if let Some(mf) = &mut self.mf {
+            if mf.s != [0.0; 2] || mf.hs != [0.0; 2] {
+                for (i, &v) in self.col.iter().enumerate() {
+                    let v = f64::from(v);
+                    mf.rb[i] += v * mf.s[0];
+                    mf.rcx[i] = (f64::from(mf.rcx[i]) + v * mf.s[1]) as f32;
+                    mf.hb[i] += v * mf.hs[0];
+                    mf.hrcx[i] = (f64::from(mf.hrcx[i]) + v * mf.hs[1]) as f32;
+                }
+            }
+            mf.s = [0.0; 2];
+            mf.hs = [0.0; 2];
+        }
+        self.col = col;
+    }
+
+    /// The row runs of `pix` (cached).
+    pub fn runs(&mut self) -> &[(u32, u32)] {
+        if self.runs.is_empty() && !self.pix.is_empty() {
+            self.runs = pixel_runs(&self.pix);
+        }
+        &self.runs
+    }
+
+    /// The mean-field push of one fitting frame: the same statistics as
+    /// [`FpStats::push_frame`] with `y − model = d`, for a mean-field cell
+    /// whose disk has no missing sample in `d`, with finite `c` and `level`.
+    /// `p` is the field before this frame. `field`: the frame also goes into
+    /// the field (a push to every cell; the loop adds it after all cells),
+    /// so `w d` reaches `r` from there; otherwise it is added here.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_mean(
+        &mut self,
+        d: &[f32],
+        p: &[f64],
+        level: f32,
+        c: f32,
+        w: f32,
+        field: bool,
+        gen: u64,
+    ) {
+        self.runs();
+        let in_a = (self.k / 256).is_multiple_of(2);
+        let mf = self.mf.as_mut().expect("a mean-field cell");
+        if in_a != mf.in_a {
+            // Block A starts (hb −= P) or ends (hb += P) before this frame.
+            let sign = if in_a { -1.0 } else { 1.0 };
+            let mut i = 0;
+            for &(s, len) in &self.runs {
+                let (s, len) = (s as usize, len as usize);
+                for (h, &v) in mf.hb[i..i + len].iter_mut().zip(&p[s..s + len]) {
+                    *h += sign * v;
+                }
+                i += len;
+            }
+            mf.in_a = in_a;
+        }
+        let wf = f64::from(w);
+        let wc = w * c;
+        let mut i = 0;
+        for &(s, len) in &self.runs {
+            let (s, len) = (s as usize, len as usize);
+            let dv = &d[s..s + len];
+            if !field {
+                for (a, &v) in mf.rb[i..i + len].iter_mut().zip(dv) {
+                    *a += wf * f64::from(v);
+                }
+                if in_a {
+                    for (a, &v) in mf.hb[i..i + len].iter_mut().zip(dv) {
+                        *a += wf * f64::from(v);
+                    }
+                }
+            }
+            if c != 0.0 {
+                for (a, &v) in mf.rcx[i..i + len].iter_mut().zip(dv) {
+                    *a += wc * v;
+                }
+                if in_a {
+                    for (a, &v) in mf.hrcx[i..i + len].iter_mut().zip(dv) {
+                        *a += wc * v;
+                    }
+                }
+            }
+            i += len;
+        }
+        let (cf, lf) = (f64::from(c), f64::from(level));
+        let add = |l: &mut [f64; 2], s: &mut [f64; 2]| {
+            l[0] += wf * lf;
+            l[1] += wf * cf * lf;
+            s[0] += wf * cf;
+            s[1] += wf * cf * cf;
+        };
+        add(&mut mf.l, &mut mf.s);
+        if in_a {
+            add(&mut mf.hl, &mut mf.hs);
+        }
+        if field {
+            mf.gen = gen;
+        }
+        self.finish_push([c, c], c, w, in_a);
+    }
+
+    /// A field push that must not reach this mean-field cell (it was not in
+    /// the frame's library, or its trace was not finite): cancel the frame's
+    /// `w d` before the loop adds it to the field. `gen`: the field pushes
+    /// after it.
+    pub fn exclude(&mut self, d: &[f32], w: f32, gen: u64) {
+        let Some(mf) = self.mf.as_mut() else {
+            return;
+        };
+        let wf = f64::from(w);
+        for (i, &q) in self.pix.iter().enumerate() {
+            let v = d[q as usize];
+            if !v.is_nan() {
+                mf.rb[i] -= wf * f64::from(v);
+                if mf.in_a {
+                    mf.hb[i] -= wf * f64::from(v);
+                }
+            }
+        }
+        mf.gen = gen;
     }
 }
 
@@ -1026,6 +1355,57 @@ mod push_frame_tests {
             }
             assert_eq!(a.pm.is_some(), masked);
             assert!(a.k > 600);
+        }
+    }
+
+    /// A field push followed by [`FpStats::exclude`] leaves the sums where
+    /// they were once the loop adds the frame to the field; a subset push
+    /// (no field) adds the frame as the plain push does.
+    #[test]
+    fn exclude_cancels_a_field_push_and_a_subset_push_is_plain() {
+        let (wd, ht) = (30usize, 30usize);
+        let fov = vec![1u8; wd * ht];
+        let mut plain = FpStats::new((15.0, 15.0), 7.0, wd, ht, &fov, 5);
+        plain.col = (0..plain.pix.len()).map(|i| 0.3 + u(i as u64)).collect();
+        let mut mean = plain.clone();
+        let mut p = vec![0.0f64; wd * ht];
+        mean.rebase(&p, 0);
+        let (mut res, mut buf) = (Residual::default(), Vec::new());
+        let mut gen = 0;
+        for t in 0..600u64 {
+            let frame: Vec<f32> = (0..wd * ht).map(|i| 2.0 * u(t * 9000 + i as u64)).collect();
+            let model: Vec<f32> = (0..wd * ht).map(|i| u(t * 9000 + i as u64 + 5)).collect();
+            res.fill(&frame, &model);
+            let (c, level, w) = (u(t + 77) + 0.6, 0.1 * u(t + 99), 1.0 + t as f32 * 1e-3);
+            match t % 3 {
+                // A field push this cell must not take.
+                0 => mean.exclude(&res.d, w, gen + 1),
+                // A subset push: the field does not move.
+                1 => {
+                    plain.push_frame(&frame, &model, level, c, w, &mut buf);
+                    mean.push_mean(&res.d, &p, level, c, w, false, gen);
+                    continue;
+                }
+                _ => {
+                    plain.push_frame(&frame, &model, level, c, w, &mut buf);
+                    mean.push_mean(&res.d, &p, level, c, w, true, gen + 1);
+                }
+            }
+            res.add_to(&mut p, w);
+            gen += 1;
+        }
+        let got = mean.materialised(&p);
+        assert_eq!(got.k, plain.k);
+        for (a, b) in [
+            (&got.rc, &plain.rc),
+            (&got.r, &plain.r),
+            (&got.half.0, &plain.half.0),
+            (&got.half.1, &plain.half.1),
+        ] {
+            let top = b.iter().fold(0.0f32, |t, v| t.max(v.abs()));
+            for (x, y) in a.iter().zip(b.iter()) {
+                assert!((x - y).abs() <= 1e-5 * top, "{x} vs {y}");
+            }
         }
     }
 

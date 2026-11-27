@@ -10,7 +10,7 @@ impl SlowLoop {
     /// the statistics disk, unwhitened filtered values), once its peak is
     /// `stats_min_snr` standard errors above zero.
     pub(super) fn stats_estimate(&self, id: u64) -> Option<(Vec<u32>, Vec<f32>)> {
-        let st = self.fpstats.get(&id)?;
+        let st = self.stats_of(id)?;
         let se = st.std_err();
         let h = st.estimate()?;
         let peak = h
@@ -41,7 +41,7 @@ impl SlowLoop {
             return None;
         }
         let se = self.fpstats.get(&cell.id).map(|st| st.std_err());
-        let halves = self.fpstats.get(&cell.id).and_then(|st| {
+        let halves = self.stats_of(cell.id).and_then(|st| {
             let (ha, hb, sa, sb) = st.halves()?;
             Some((st.pix.clone(), ha, hb, sa, sb))
         });
@@ -70,7 +70,7 @@ impl SlowLoop {
     /// without split halves; `+∞` when the estimate does not project
     /// positively on the current column (any change is then real).
     fn split_half_excess(&self, cell: &Cell, pix: &[u32], h: &[f32]) -> Option<f64> {
-        let st = self.fpstats.get(&cell.id)?;
+        let st = self.stats_of(cell.id)?;
         let (ha, hb, _, _) = st.halves()?;
         Some(self.half_excess(cell, pix, h, &ha, &hb))
     }
@@ -125,7 +125,7 @@ impl SlowLoop {
     /// has no split halves; `+∞` when the disks share too few support
     /// pixels to compare (no evidence that the shapes agree).
     pub(super) fn merge_shape_excess(&self, a: &Cell, b: &Cell) -> Option<f64> {
-        let (sa, sb) = (self.fpstats.get(&a.id)?, self.fpstats.get(&b.id)?);
+        let (sa, sb) = (self.stats_of(a.id)?, self.stats_of(b.id)?);
         let (ha, (ha1, ha2, _, _)) = (sa.estimate()?, sa.halves()?);
         let (hb, (hb1, hb2, _, _)) = (sb.estimate()?, sb.halves()?);
         let at: HashMap<u32, usize> = sa.pix.iter().enumerate().map(|(k, &p)| (p, k)).collect();

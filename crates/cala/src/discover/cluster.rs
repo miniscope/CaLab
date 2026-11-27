@@ -1628,8 +1628,7 @@ fn dump_replay(slow: &SlowLoop, cells: &[Cell], cpix: &[u32], rep: &Replay) {
     let mut s = String::new();
     for (i, ci) in cells.iter().enumerate() {
         let stats = slow
-            .fpstats
-            .get(&ci.id)
+            .stats_of(ci.id)
             .and_then(|st| Some((st.pix.clone(), st.estimate()?)));
         for (j, cj) in cells.iter().enumerate() {
             if i == j {

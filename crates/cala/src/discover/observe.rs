@@ -27,7 +27,8 @@ impl SlowLoop {
             self.rho = self.ncorr.rho(self.cfg.cell_diameter_px);
         }
         lap.lap(&mut self.stage.observe[3]);
-        self.update_ledger(frame, lib, traces);
+        self.resid.fill(frame, &self.model);
+        self.update_ledger(lib, traces);
         lap.lap(&mut self.stage.observe[4]);
         let frame_idx = self.frames;
         let test = self.is_test(frame_idx);
@@ -183,6 +184,7 @@ impl SlowLoop {
         };
         lib.render(&traces.traces, bg, &mut self.model)?;
         self.work += n_px as u64;
+        self.resid.fill(frame, &self.model);
         self.lb_only = only.map(|ids| ids.iter().copied().collect());
         self.update_fpstats(frame, lib, traces, true);
         self.lb_only = None;
