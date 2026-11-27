@@ -7,6 +7,10 @@
 
 use std::path::PathBuf;
 
+mod common;
+use common::npy::Npy;
+use common::test_rng::LcgBoxMuller;
+
 use calab_cala::preprocess::background::{BackgroundConfig, RunningMinBackground};
 use calab_cala::preprocess::flatten::{FlattenConfig, GlowFlattener};
 use calab_cala::preprocess::flicker::{FlickerConfig, FlickerMode};
@@ -17,80 +21,18 @@ use calab_cala::preprocess::noise::{NoiseConfig, NoiseEstimator};
 use calab_cala::preprocess::warmup::WarmupAccumulator;
 use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, PreprocessState, Preprocessor};
 
-// ---------------------------------------------------------------- .npy reader
-
-struct Npy {
-    shape: Vec<usize>,
-    descr: String,
-    data: Vec<u8>,
-}
-
-impl Npy {
-    fn load(name: &str) -> Npy {
-        let path: PathBuf = [
-            env!("CARGO_MANIFEST_DIR"),
-            "tests",
-            "fixtures",
-            "preprocess_small",
-            name,
-        ]
-        .iter()
-        .collect();
-        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
-        assert_eq!(&bytes[..6], b"\x93NUMPY");
-        let (hlen, start) = if bytes[6] == 1 {
-            (u16::from_le_bytes([bytes[8], bytes[9]]) as usize, 10)
-        } else {
-            (
-                u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize,
-                12,
-            )
-        };
-        let header = std::str::from_utf8(&bytes[start..start + hlen]).unwrap();
-        assert!(header.contains("'fortran_order': False"), "{header}");
-        let descr = header
-            .split("'descr': '")
-            .nth(1)
-            .unwrap()
-            .split('\'')
-            .next()
-            .unwrap()
-            .to_string();
-        let shape_txt = header
-            .split("'shape': (")
-            .nth(1)
-            .unwrap()
-            .split(')')
-            .next()
-            .unwrap();
-        let shape = shape_txt
-            .split(',')
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| s.trim().parse().unwrap())
-            .collect();
-        Npy {
-            shape,
-            descr,
-            data: bytes[start + hlen..].to_vec(),
-        }
-    }
-
-    fn u8(&self) -> Vec<u8> {
-        assert_eq!(self.descr, "|u1");
-        self.data.clone()
-    }
-
-    fn f32(&self) -> Vec<f32> {
-        assert_eq!(self.descr, "<f4");
-        let (words, _) = self.data.as_chunks::<4>();
-        words.iter().map(|&c| f32::from_le_bytes(c)).collect()
-    }
-
-    fn u16(&self) -> Vec<u16> {
-        assert_eq!(self.descr, "<u2");
-        let (words, _) = self.data.as_chunks::<2>();
-        words.iter().map(|&c| u16::from_le_bytes(c)).collect()
-    }
+/// A `.npy` file of `tests/fixtures/preprocess_small`.
+fn load(name: &str) -> Npy {
+    let path: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "tests",
+        "fixtures",
+        "preprocess_small",
+        name,
+    ]
+    .iter()
+    .collect();
+    Npy::read(&path).unwrap_or_else(|e| panic!("{e}"))
 }
 
 struct Fixture {
@@ -99,9 +41,9 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
-    let m = Npy::load("movie_u8.npy");
+    let m = load("movie_u8.npy");
     let (t, h, w) = (m.shape[0], m.shape[1], m.shape[2]);
-    let data = m.u8();
+    let data = m.into_u8().unwrap();
     Fixture {
         dims: Dims::new(w, h).unwrap(),
         frames: data
@@ -132,8 +74,8 @@ fn score_defects(fx: &Fixture, k_sigma: f32) -> (Calibration, usize, usize, usiz
     let mut cfg = PreprocessConfig::default();
     cfg.hot.k_sigma = k_sigma;
     let cal = calibrate(fx, &cfg);
-    let hot_gt = Npy::load("hot_pixel_mask.npy").u8();
-    let stuck_gt = Npy::load("stuck_pixel_mask.npy").u8();
+    let hot_gt = load("hot_pixel_mask.npy").into_u8().unwrap();
+    let stuck_gt = load("stuck_pixel_mask.npy").into_u8().unwrap();
     let flags = cal.hot_pixels().flags();
     let (mut tp, mut fp, mut fn_) = (0, 0, 0);
     for i in 0..flags.len() {
@@ -162,7 +104,7 @@ fn hot_pixel_precision_and_recall() {
     let recall = tp as f32 / (tp + fn_).max(1) as f32;
     let flags = cal.hot_pixels().flags();
     // Stuck pixels inside the FOV must be flagged as stuck (not just hot).
-    let stuck_gt = Npy::load("stuck_pixel_mask.npy").u8();
+    let stuck_gt = load("stuck_pixel_mask.npy").into_u8().unwrap();
     let stuck_in_fov = (0..flags.len())
         .filter(|&i| stuck_gt[i] != 0 && cal.fov().contains(i))
         .count();
@@ -221,8 +163,8 @@ fn flatten_metrics(fx: &Fixture, sigma: f32) -> (f32, f32, f64, Vec<f32>) {
     // Ground truth (expected counts, see the fixture README): the cells'
     // light and everything else ("glow": neuropil and leakage through the
     // illumination falloff and the vignette).
-    let cells = Npy::load("cells_mean.npy").f32();
-    let glow = Npy::load("glow_mean.npy").f32();
+    let cells = load("cells_mean.npy").into_f32().unwrap();
+    let glow = load("glow_mean.npy").into_f32().unwrap();
     let std_in = |img: &[f32]| -> f32 {
         let v: Vec<f32> = (0..n)
             .filter(|&i| fov.contains(i))
@@ -277,7 +219,7 @@ fn flatten_metrics(fx: &Fixture, sigma: f32) -> (f32, f32, f64, Vec<f32>) {
 
     // 3. Cell contrast: peak of each cell minus a ring around it, on the raw
     //    and flattened mean images.
-    let labels = Npy::load("cell_label.npy").u16();
+    let labels = load("cell_label.npy").into_u16().unwrap();
     let n_cells = *labels.iter().max().unwrap() as usize;
     let mut ratios = Vec::new();
     for c in 1..=n_cells {
@@ -402,21 +344,6 @@ fn r_squared(xs: &[Vec<f64>], y: &[f64]) -> f64 {
     1.0 - ss_res / ss_tot
 }
 
-struct Lcg(u64);
-impl Lcg {
-    fn uniform(&mut self) -> f32 {
-        self.0 = self
-            .0
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        ((self.0 >> 40) as f32 + 0.5) / (1u64 << 24) as f32
-    }
-    fn normal(&mut self) -> f32 {
-        let (u, v) = (self.uniform(), self.uniform());
-        (-2.0 * u.ln()).sqrt() * (2.0 * std::f32::consts::PI * v).cos()
-    }
-}
-
 /// The background stage recovers a known static floor under sparse
 /// transients, and follows an upward step once relaxation is on.
 #[test]
@@ -442,7 +369,7 @@ fn background_recovers_static_floor_and_tracks_up_step() {
     }
     let sigma = 3.0f32;
     let mut bg = RunningMinBackground::new(dims, &BackgroundConfig::default()).unwrap();
-    let mut rng = Lcg(11);
+    let mut rng = LcgBoxMuller(11);
     // Sparse transients: each pixel block of 8x8 lights up for 40 frames
     // (+30) once every ~600 frames, staggered.
     let frames = 3000;
@@ -527,8 +454,8 @@ fn noise_map_matches_simulator_noise() {
             p.process_frame(f, &mut out).unwrap();
         }
         let est = p.noise().sigma();
-        let truth = Npy::load("noise_sigma.npy").f32();
-        let labels = Npy::load("cell_label.npy").u16();
+        let truth = load("noise_sigma.npy").into_f32().unwrap();
+        let labels = load("cell_label.npy").into_u16().unwrap();
         let ratio = |cells: bool| {
             median(
                 (0..truth.len())
@@ -637,8 +564,8 @@ fn replay_from_serialized_state_is_bit_exact() {
 #[test]
 fn column_mode_removes_column_fixed_pattern() {
     let fx = fixture();
-    let fpn = Npy::load("fpn_column.npy").f32();
-    let labels = Npy::load("cell_label.npy").u16();
+    let fpn = load("fpn_column.npy").into_f32().unwrap();
+    let labels = load("cell_label.npy").into_u16().unwrap();
     let w = fx.dims.width;
     let mut res = Vec::new();
     for mode in [LineMode::Off, LineMode::Columns] {
@@ -743,7 +670,7 @@ const EXPECTED_HASH: u64 = 0x9e65794d8c789191;
 #[test]
 fn flicker_stage_on_a_flicker_free_scene() {
     let fx = fixture();
-    let truth = Npy::load("noise_sigma.npy").f32();
+    let truth = load("noise_sigma.npy").into_f32().unwrap();
     let mut res = Vec::new();
     for mode in [
         FlickerMode::Off,

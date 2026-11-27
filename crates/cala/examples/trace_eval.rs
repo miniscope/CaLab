@@ -36,74 +36,46 @@
 mod oracle;
 use oracle::{read_oracle, Oracle};
 
+#[path = "common/avi.rs"]
+mod avi;
+#[path = "common/util.rs"]
+mod util;
+use avi::Recording;
+use util::{arg_value, pearson, quantile};
+
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::preprocess::flatten::GlowFlattener;
 use calab_cala::preprocess::warmup::WarmupAccumulator;
-use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor};
+use calab_cala::preprocess::{Calibration, PreprocessConfig, Preprocessor};
 use calab_cala::trace::{
     BackgroundLearner, BackgroundModel, Library, LibraryBuilder, SolverConfig, TraceEngine,
 };
 
-struct Avi {
-    file: File,
-    header: AviHeader,
-}
-
-impl Avi {
-    fn open(path: &Path) -> Avi {
-        let mut file = File::open(path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
-        let size = file.metadata().unwrap().len();
-        let mut prefix = vec![0u8; (64 * 1024).min(size as usize)];
-        file.read_exact(&mut prefix).unwrap();
-        let layout = AviHeader::parse_header(&prefix).expect("AVI header");
-        let mut idx1 = None;
-        if layout.info.movi_end > 0 && layout.info.movi_end + 8 <= size {
-            let mut hdr = [0u8; 8];
-            file.seek(SeekFrom::Start(layout.info.movi_end)).unwrap();
-            file.read_exact(&mut hdr).unwrap();
-            if let Ok(len) = idx1_payload_len(&hdr) {
-                let mut payload = vec![0u8; len as usize];
-                file.read_exact(&mut payload).unwrap();
-                idx1 = Some(payload);
+/// Frames `start..start + count` of `rec` with the injected flicker
+/// `y = a_t + (1 + m_t) x` (rounded, clamped to 8 bits), if any.
+fn read_flickered(
+    rec: &mut Recording,
+    flicker: &Option<(Vec<f64>, Vec<f64>)>,
+    start: u32,
+    count: u32,
+) -> Vec<u8> {
+    let mut out = rec.read(start, count);
+    if let Some((a, m)) = flicker {
+        let px = rec.dims.pixels();
+        for (k, f) in out.chunks_exact_mut(px).enumerate() {
+            let t = start as usize + k;
+            let (a, g) = (a[t] as f32, (1.0 + m[t]) as f32);
+            for v in f {
+                *v = (a + g * f32::from(*v)).round().clamp(0.0, 255.0) as u8;
             }
         }
-        let header = AviHeader::parse_with_size(&prefix, idx1.as_deref(), size).expect("AVI index");
-        Avi { file, header }
     }
-
-    fn read(&mut self, start: u32, count: u32, out: &mut Vec<u8>) {
-        let px = self.header.pixel_bytes();
-        let mut s = start;
-        while s < start + count {
-            let run = self.header.contiguous_run(s, start + count - s).max(1);
-            let (a, b) = self.header.span_range(s, run).unwrap();
-            let mut span = vec![0u8; (b - a) as usize];
-            self.file.seek(SeekFrom::Start(a)).unwrap();
-            self.file.read_exact(&mut span).unwrap();
-            let o = out.len();
-            out.resize(o + run as usize * px, 0);
-            self.header
-                .decode_span_into(&span, run, &mut out[o..])
-                .unwrap();
-            s += run;
-        }
-    }
-}
-
-/// The numbered AVIs of a recording directory as one frame stream.
-struct Recording {
-    files: Vec<Avi>,
-    starts: Vec<u32>,
-    dims: Dims,
-    total: u32,
-    /// Injected flicker `(a_t, m_t)` per frame.
-    flicker: Option<(Vec<f64>, Vec<f64>)>,
+    out
 }
 
 /// 2-8 Hz broadband series with RMS `amp` (same as examples/flicker_eval.rs).
@@ -129,76 +101,6 @@ fn flicker_series(n: usize, fps: f64, amp: f64, seed: u64) -> Vec<f64> {
         .collect();
     let r = (x.iter().map(|v| v * v).sum::<f64>() / n.max(1) as f64).sqrt();
     x.iter().map(|v| v * amp / r).collect()
-}
-
-impl Recording {
-    fn open(dir: &Path) -> Recording {
-        let mut files = Vec::new();
-        for i in 0.. {
-            let p = dir.join(format!("{i}.avi"));
-            if !p.exists() {
-                break;
-            }
-            files.push(Avi::open(&p));
-        }
-        assert!(!files.is_empty(), "no 0.avi in {dir:?}");
-        let mut starts = Vec::new();
-        let mut total = 0;
-        for f in &files {
-            starts.push(total);
-            total += f.header.frame_count();
-        }
-        let info = files[0].header.info();
-        let dims = Dims::new(info.width as usize, info.height as usize).unwrap();
-        Recording {
-            files,
-            starts,
-            dims,
-            total,
-            flicker: None,
-        }
-    }
-
-    fn read(&mut self, start: u32, count: u32) -> Vec<u8> {
-        let mut out = Vec::with_capacity(count as usize * self.dims.pixels());
-        let mut s = start;
-        while s < start + count {
-            let k = self.starts.partition_point(|&x| x <= s) - 1;
-            let local = s - self.starts[k];
-            let n = (self.files[k].header.frame_count() - local).min(start + count - s);
-            self.files[k].read(local, n, &mut out);
-            s += n;
-        }
-        if let Some((a, m)) = &self.flicker {
-            let px = self.dims.pixels();
-            for (k, f) in out.chunks_exact_mut(px).enumerate() {
-                let t = start as usize + k;
-                let (a, g) = (a[t] as f32, (1.0 + m[t]) as f32);
-                for v in f {
-                    *v = (a + g * f32::from(*v)).round().clamp(0.0, 255.0) as u8;
-                }
-            }
-        }
-        out
-    }
-}
-
-fn pearson(a: &[f32], b: &[f32]) -> f64 {
-    let n = a.len() as f64;
-    let ma = a.iter().map(|&v| f64::from(v)).sum::<f64>() / n;
-    let mb = b.iter().map(|&v| f64::from(v)).sum::<f64>() / n;
-    let (mut sab, mut saa, mut sbb) = (0.0, 0.0, 0.0);
-    for (&x, &y) in a.iter().zip(b) {
-        let (dx, dy) = (f64::from(x) - ma, f64::from(y) - mb);
-        sab += dx * dy;
-        saa += dx * dx;
-        sbb += dy * dy;
-    }
-    if saa <= 0.0 || sbb <= 0.0 {
-        0.0
-    } else {
-        sab / (saa * sbb).sqrt()
-    }
 }
 
 /// Least squares `y ≈ X b + b0` (columns of `x` centred internally).
@@ -278,17 +180,6 @@ fn r2(y: &[f32], xs: &[&[f32]], b: &[f64]) -> f64 {
     }
 }
 
-fn quantile(v: &[f64], q: f64) -> f64 {
-    let mut s: Vec<f64> = v.iter().copied().filter(|x| x.is_finite()).collect();
-    if s.is_empty() {
-        return f64::NAN;
-    }
-    s.sort_by(f64::total_cmp);
-    let pos = q * (s.len() - 1) as f64;
-    let (lo, hi) = (pos.floor() as usize, pos.ceil() as usize);
-    s[lo] + (s[hi] - s[lo]) * (pos - lo as f64)
-}
-
 struct Metrics {
     r: Vec<f64>,
     xtalk: Vec<f64>,
@@ -345,12 +236,6 @@ fn metrics(oracle: &Oracle, lib_units: &[usize], traces: &[f32], t: usize) -> Me
     out
 }
 
-fn arg_value(args: &[String], key: &str) -> Option<String> {
-    args.iter()
-        .position(|a| a == key)
-        .and_then(|i| args.get(i + 1).cloned())
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let sim = PathBuf::from(args.get(1).expect("sim dir"));
@@ -380,7 +265,9 @@ fn main() {
     }
 
     let oracle = read_oracle(&sim.join("oracle.bin"));
-    let mut rec = Recording::open(&sim.join("daq/Miniscope"));
+    let mut rec = Recording::open(&sim.join("daq/Miniscope"), 1);
+    // Injected flicker `(a_t, m_t)` per frame (`--inject-flicker`).
+    let mut flicker: Option<(Vec<f64>, Vec<f64>)> = None;
     let dims = rec.dims;
     assert_eq!(dims, oracle.dims);
     let n_px = dims.pixels();
@@ -393,7 +280,7 @@ fn main() {
         let v: Vec<f64> = spec.split(',').map(|x| x.parse().unwrap()).collect();
         let seed = v.get(2).map_or(1, |&s| s as u64);
         let n = rec.total as usize;
-        rec.flicker = Some((
+        flicker = Some((
             flicker_series(n, 20.0, v[1], seed + 1000),
             flicker_series(n, 20.0, v[0], seed),
         ));
@@ -412,7 +299,12 @@ fn main() {
     if let Some(v) = arg_value(&args, "--flicker-tau") {
         cfg.flicker.tau_frames = v.parse().unwrap();
     }
-    let warm = rec.read(0, (cfg.warmup_frames as u32).min(frames));
+    let warm = read_flickered(
+        &mut rec,
+        &flicker,
+        0,
+        (cfg.warmup_frames as u32).min(frames),
+    );
     let mut acc = WarmupAccumulator::new(dims);
     for f in warm.chunks_exact(n_px) {
         acc.push(f).unwrap();
@@ -454,7 +346,7 @@ fn main() {
     let mut s = 0;
     while s < learn {
         let cnt = 64.min(learn - s);
-        let raw = rec.read(s, cnt);
+        let raw = read_flickered(&mut rec, &flicker, s, cnt);
         for (k, f) in raw.chunks_exact(n_px).enumerate() {
             let o = (s as usize + k) * n_px;
             pre.process_frame(f, &mut learn_frames[o..o + n_px])
@@ -562,7 +454,7 @@ fn main() {
             let mut s = 0u32;
             while s < frames {
                 let cnt = 64.min(frames - s);
-                let raw = rec.read(s, cnt);
+                let raw = read_flickered(&mut rec, &flicker, s, cnt);
                 for (k, f) in raw.chunks_exact(n_px).enumerate() {
                     let a = Instant::now();
                     pre.process_frame(f, &mut buf).unwrap();

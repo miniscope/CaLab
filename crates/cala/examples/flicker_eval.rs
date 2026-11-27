@@ -31,119 +31,21 @@
 //! Memory: the kept grid (3 x frames x pixels/K² floats) plus 200 frames for
 //! the motion template; ~0.5 GB for the defaults on 600x600.
 
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+#[path = "common/avi.rs"]
+mod avi;
+#[path = "common/util.rs"]
+mod util;
+use avi::Recording;
+use std::path::PathBuf;
 use std::time::Instant;
+use util::arg_value;
 
-use calab_cala::avi::{idx1_payload_len, AviHeader};
 use calab_cala::motion::{Frame, Frames, MotionConfig, MotionCorrector};
 use calab_cala::preprocess::flicker::{FlickerConfig, FlickerCorrector, FlickerMode};
 use calab_cala::preprocess::warmup::WarmupAccumulator;
-use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor};
+use calab_cala::preprocess::{Calibration, PreprocessConfig, Preprocessor};
 use rustfft::num_complex::Complex64;
 use rustfft::FftPlanner;
-
-struct Avi {
-    file: File,
-    header: AviHeader,
-}
-
-impl Avi {
-    fn open(path: &Path) -> Avi {
-        let mut file = File::open(path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
-        let size = file.metadata().unwrap().len();
-        let mut prefix = vec![0u8; (64 * 1024).min(size as usize)];
-        file.read_exact(&mut prefix).unwrap();
-        let layout = AviHeader::parse_header(&prefix).expect("AVI header");
-        let mut idx1 = None;
-        if layout.info.movi_end > 0 && layout.info.movi_end + 8 <= size {
-            let mut hdr = [0u8; 8];
-            file.seek(SeekFrom::Start(layout.info.movi_end)).unwrap();
-            file.read_exact(&mut hdr).unwrap();
-            if let Ok(len) = idx1_payload_len(&hdr) {
-                let mut payload = vec![0u8; len as usize];
-                file.read_exact(&mut payload).unwrap();
-                idx1 = Some(payload);
-            }
-        }
-        let header = AviHeader::parse_with_size(&prefix, idx1.as_deref(), size).expect("AVI index");
-        Avi { file, header }
-    }
-
-    fn read(&mut self, start: u32, count: u32, out: &mut Vec<u8>) {
-        let px = self.header.pixel_bytes();
-        let mut s = start;
-        while s < start + count {
-            let run = self.header.contiguous_run(s, start + count - s).max(1);
-            let (a, b) = self.header.span_range(s, run).unwrap();
-            let mut span = vec![0u8; (b - a) as usize];
-            self.file.seek(SeekFrom::Start(a)).unwrap();
-            self.file.read_exact(&mut span).unwrap();
-            let o = out.len();
-            out.resize(o + run as usize * px, 0);
-            self.header
-                .decode_span_into(&span, run, &mut out[o..])
-                .unwrap();
-            s += run;
-        }
-    }
-}
-
-struct Recording {
-    files: Vec<Avi>,
-    starts: Vec<u32>,
-    dims: Dims,
-    total: u32,
-}
-
-impl Recording {
-    fn open(dir: &Path) -> Recording {
-        let mut files = Vec::new();
-        for i in 0.. {
-            let p = dir.join(format!("{i}.avi"));
-            if !p.exists() {
-                break;
-            }
-            files.push(Avi::open(&p));
-        }
-        assert!(!files.is_empty(), "no 0.avi in {dir:?}");
-        let mut starts = Vec::new();
-        let mut total = 0;
-        for f in &files {
-            starts.push(total);
-            total += f.header.frame_count();
-        }
-        let info = files[0].header.info();
-        assert_eq!(info.bit_depth, 8, "this evaluation reads 8-bit video");
-        let dims = Dims::new(info.width as usize, info.height as usize).unwrap();
-        Recording {
-            files,
-            starts,
-            dims,
-            total,
-        }
-    }
-
-    fn read(&mut self, start: u32, count: u32) -> Vec<u8> {
-        let mut out = Vec::with_capacity(count as usize * self.dims.pixels());
-        let mut s = start;
-        while s < start + count {
-            let k = self.starts.partition_point(|&x| x <= s) - 1;
-            let local = s - self.starts[k];
-            let n = (self.files[k].header.frame_count() - local).min(start + count - s);
-            self.files[k].read(local, n, &mut out);
-            s += n;
-        }
-        out
-    }
-}
-
-fn arg_value(args: &[String], key: &str) -> Option<String> {
-    args.iter()
-        .position(|a| a == key)
-        .and_then(|i| args.get(i + 1).cloned())
-}
 
 // ------------------------------------------------------------ statistics
 
@@ -312,7 +214,8 @@ fn real(args: &[String]) {
     let frames: u32 = arg_value(args, "--frames").map_or(2000, |s| s.parse().unwrap());
     let stride: usize = arg_value(args, "--stride").map_or(6, |s| s.parse().unwrap());
     let fps = 20.0;
-    let mut rec = Recording::open(&dir);
+    let mut rec = Recording::open(&dir, 1);
+    rec.assert_8bit();
     let frames = frames.min(rec.total - start);
     let t_len = frames as usize;
     let dims = rec.dims;
@@ -626,7 +529,8 @@ fn inject(args: &[String]) {
     let m_amp: f64 = arg_value(args, "--m-rms").map_or(0.004, |s| s.parse().unwrap());
     let a_amp: f64 = arg_value(args, "--a-rms").map_or(0.1, |s| s.parse().unwrap());
     let seed: u64 = arg_value(args, "--seed").map_or(1, |s| s.parse().unwrap());
-    let mut rec = Recording::open(&dir);
+    let mut rec = Recording::open(&dir, 1);
+    rec.assert_8bit();
     let frames: u32 = arg_value(args, "--frames").map_or(rec.total, |s| s.parse().unwrap());
     let frames = frames.min(rec.total);
     let t_len = frames as usize;

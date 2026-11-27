@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use super::*;
+use crate::test_rng::Lcg;
 use crate::trace::{
     BackgroundModel, Footprint, IdentityFilter, LibraryBuilder, SolverConfig, TraceEngine,
 };
@@ -13,20 +14,6 @@ const H: usize = 40;
 
 fn dims() -> Dims {
     Dims::new(W, H).unwrap()
-}
-
-struct Lcg(u64);
-impl Lcg {
-    fn next(&mut self) -> f32 {
-        self.0 = self
-            .0
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        ((self.0 >> 40) as f32) / (1u64 << 24) as f32
-    }
-    fn normal(&mut self) -> f32 {
-        (0..12).map(|_| self.next()).sum::<f32>() - 6.0
-    }
 }
 
 /// Calcium-like train: instantaneous rise, exponential decay (τ frames).
