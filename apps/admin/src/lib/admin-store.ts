@@ -3,7 +3,7 @@
 import { createEffect, createMemo, createSignal, onCleanup, untrack } from 'solid-js';
 // user/authLoading come from the shared community store, so the admin app runs
 // a single auth subscription (started by initCommunityStore() in index.tsx).
-import { user, authLoading } from '@calab/community';
+import { user, authLoading, isAuthReturnFragment } from '@calab/community';
 import type { AdminView, EventRow, SessionRow } from './types.ts';
 import {
   type Filters,
@@ -210,10 +210,14 @@ function refresh(): void {
 if (typeof window !== 'undefined') {
   createEffect(() => {
     const h = toHash(view(), filters());
+    // A sign-in link lands with the session in the fragment; Supabase loads
+    // lazily, so rewriting the fragment here would drop the sign-in.
+    if (isAuthReturnFragment(location.hash)) return;
     if (location.hash !== h)
       history.replaceState(null, '', `${location.pathname}${location.search}${h}`);
   });
   window.addEventListener('hashchange', () => {
+    if (isAuthReturnFragment(location.hash)) return;
     const s = parseHash(location.hash);
     setView(s.view);
     setFilters(s.filters);

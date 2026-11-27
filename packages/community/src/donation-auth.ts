@@ -9,7 +9,7 @@
 
 import type { SupabaseClient, User } from '@supabase/supabase-js';
 import { createSignal } from 'solid-js';
-import { realUser, signInWithEmail, signOut } from './auth.ts';
+import { isAuthReturnFragment, realUser, signInWithEmail, signOut } from './auth.ts';
 import { authLoading, user } from './community-store.ts';
 import {
   DONATION_AUTH_PARAM,
@@ -68,7 +68,7 @@ export function tokensFromHash(
 export function urlWithoutDonationReturn(href: string): string {
   const u = new URL(href);
   u.searchParams.delete(DONATION_AUTH_PARAM);
-  if (/(^#|&)(access_token|refresh_token|error)=/.test(u.hash)) u.hash = '';
+  if (isAuthReturnFragment(u.hash)) u.hash = '';
   return u.toString();
 }
 
