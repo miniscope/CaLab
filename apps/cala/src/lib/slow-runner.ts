@@ -408,6 +408,10 @@ export class SlowRunner {
   private readonly clock: DutyClock<SlowDuty>;
   private workT0: number;
   private visitBusy: number[];
+  /** Per visit worker: whether the job out was handed out in the Final settle. */
+  private jobSettle: boolean[];
+  /** Per visit worker: the busy ms of its Final-settle visits (`WorkStatus.settleVisitBusyMs`). */
+  private settleVisitBusy: number[];
   private lbWork = emptyWorkByKind();
   /** Answers that arrived for a request no longer waited for (cancelled, timed out, stale). */
   private lbDiscarded = emptyLookbackWork();
@@ -452,6 +456,8 @@ export class SlowRunner {
   private lbPortOff: boolean[] = [];
   /** Per look-back worker: the busy ms of its answers this run (`WorkStatus.lookbackWorkerBusyMs`). */
   private lbPortBusy: number[] = [];
+  /** Per look-back worker: the part of `lbPortBusy` on Final-settle answers (`WorkStatus.lookbackWorkerEndBusyMs`). */
+  private lbPortEndBusy: number[] = [];
   /** The pacer's target and pause (`setPace`; kept across runs: the main thread sends it when it changes). */
   private pace = { fps: 0, paused: false };
   /** Stream index after the last live batch of this run (-1: none yet): a gap is a forward-pool drop. */
@@ -490,11 +496,14 @@ export class SlowRunner {
     this.deps = deps;
     this.now = deps.now ?? (() => performance.now());
     this.epochNow = deps.epochNow ?? (() => performance.timeOrigin + performance.now());
-    this.clock = new DutyClock(SLOW_DUTIES, this.now);
+    // Time charged while the Final settle runs is summed apart (`WorkStatus.settleBusyMs`).
+    this.clock = new DutyClock(SLOW_DUTIES, this.now, () => this.finalSettle?.state != null);
     this.workT0 = this.now();
     this.visits = deps.visits ?? [];
     this.busy = this.visits.map(() => false);
     this.visitBusy = this.visits.map(() => 0);
+    this.jobSettle = this.visits.map(() => false);
+    this.settleVisitBusy = this.visits.map(() => 0);
     this.lbPorts = [deps.lookback ?? null];
     this.defer = deps.defer ?? ((fn) => void setTimeout(fn, 0));
     this.timer =
@@ -905,6 +914,7 @@ export class SlowRunner {
       this.visitMsSum += msg.ms;
       this.visitMsN++;
       this.visitBusy[i] = (this.visitBusy[i] ?? 0) + msg.ms;
+      if (this.jobSettle[i]) this.settleVisitBusy[i] = (this.settleVisitBusy[i] ?? 0) + msg.ms;
       this.housekeep();
       if (this.finalSettle.state) {
         // The settle keeps its visit workers busy, within the visits its frames earned; a request
@@ -1088,6 +1098,7 @@ export class SlowRunner {
     const loop = this.loop;
     // Reviewed cells wait for the visits out: hand out no new one meanwhile.
     if (!loop || this.ending || this.reviewed.length > 0 || !(limit > 0)) return 0;
+    const settling = this.finalSettle.state !== null;
     return this.clock.span('visit', () => {
       let handed = 0;
       for (let i = 0; i < this.visits.length && handed < limit; i++) {
@@ -1096,6 +1107,7 @@ export class SlowRunner {
         const bytes = this.tm('visit.take', () => loop.takeJob());
         if (!bytes) break;
         this.busy[i] = true;
+        this.jobSettle[i] = settling;
         handed++;
         const tp = this.now();
         this.visits[i].postMessage({ type: 'job', session: this.session, bytes }, [
@@ -1268,8 +1280,11 @@ export class SlowRunner {
   handleLookback(msg: LookbackToSlow, port = 0): void {
     const loop = this.loop;
     const req = this.lbReqs[port] ?? null;
-    if (msg.type === 'frames' && msg.session === this.session && msg.timing)
-      this.lbPortBusy[port] = (this.lbPortBusy[port] ?? 0) + timingBusyMs(msg.timing);
+    if (msg.type === 'frames' && msg.session === this.session && msg.timing) {
+      const busy = timingBusyMs(msg.timing);
+      this.lbPortBusy[port] = (this.lbPortBusy[port] ?? 0) + busy;
+      if (req?.kind === 'end') this.lbPortEndBusy[port] = (this.lbPortEndBusy[port] ?? 0) + busy;
+    }
     if (msg.session !== this.session || !loop || !req || msg.id !== req.id) {
       // Its time was spent all the same: counted apart (only this session's).
       if (msg.type === 'frames' && msg.session === this.session)
@@ -1629,10 +1644,12 @@ export class SlowRunner {
       waitLast: this.waitLast,
       waitMax: this.waitMax,
       visitBusy: this.visitBusy,
+      settleVisitBusy: this.settleVisitBusy,
       lbWork: this.lbWork,
       lbDiscarded: this.lbDiscarded,
       lbPorts: this.lbPorts,
       lbPortBusy: this.lbPortBusy,
+      lbPortEndBusy: this.lbPortEndBusy,
       settleWorkers: this.settlePorts().length,
       observed: this.observed,
       dt: this.dt,
@@ -1729,6 +1746,8 @@ export class SlowRunner {
     this.dt?.reset();
     this.workT0 = this.now();
     this.visitBusy = this.visits.map(() => 0);
+    this.jobSettle = this.visits.map(() => false);
+    this.settleVisitBusy = this.visits.map(() => 0);
     this.lbWork = emptyWorkByKind();
     this.lbDiscarded = emptyLookbackWork();
     this.waitN = 0;
@@ -1753,6 +1772,7 @@ export class SlowRunner {
     this.lbHeld = null;
     this.lbPortOff = [];
     this.lbPortBusy = [];
+    this.lbPortEndBusy = [];
     this.lbRun = [];
     this.lbLib = [];
     this.bgSettle.bgArm = null;

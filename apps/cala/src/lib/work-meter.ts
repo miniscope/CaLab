@@ -38,21 +38,34 @@ export type LookbackKind = (typeof LOOKBACK_KINDS)[number];
  */
 export class DutyClock<K extends string> {
   private readonly totals: Record<string, number> = {};
+  private readonly taggedTotals: Record<string, number> = {};
   private stack: K[] = [];
   private mark: number;
 
+  /**
+   * `tagged`: read at each charge; while it is true, the time charged is also summed apart
+   * (`snapshotTagged`). A charge covers the time since the previous one, so a span that
+   * straddles a change of `tagged` goes wholly to the side it ends on.
+   */
   constructor(
     private readonly duties: readonly K[],
     private readonly now: () => number,
+    private readonly tagged?: () => boolean,
   ) {
-    for (const d of duties) this.totals[d] = 0;
+    for (const d of duties) {
+      this.totals[d] = 0;
+      this.taggedTotals[d] = 0;
+    }
     this.mark = now();
   }
 
   private charge(): void {
     const t = this.now();
     const top = this.stack[this.stack.length - 1];
-    if (top !== undefined) this.totals[top] += t - this.mark;
+    if (top !== undefined) {
+      this.totals[top] += t - this.mark;
+      if (this.tagged?.()) this.taggedTotals[top] += t - this.mark;
+    }
     this.mark = t;
   }
 
@@ -83,9 +96,18 @@ export class DutyClock<K extends string> {
     return { ...this.totals } as Record<K, number>;
   }
 
+  /** The part of `snapshot()` charged while `tagged` was true, by duty. */
+  snapshotTagged(): Record<K, number> {
+    this.charge();
+    return { ...this.taggedTotals } as Record<K, number>;
+  }
+
   /** A new run: zero everything, no open span. */
   reset(): void {
-    for (const d of this.duties) this.totals[d] = 0;
+    for (const d of this.duties) {
+      this.totals[d] = 0;
+      this.taggedTotals[d] = 0;
+    }
     this.stack = [];
     this.mark = this.now();
   }
@@ -212,6 +234,10 @@ export interface WorkStatus {
   batchWait: BatchWait;
   /** Visit workers: the sum of the `ms` of each one's visits, per worker. */
   visitBusyMs: number[];
+  /** The part of `visitBusyMs` spent on visits handed out in the Final settle, per worker; absent from older builds. */
+  settleVisitBusyMs?: number[];
+  /** The part of `busyMs` charged while the Final settle ran, by duty; absent from older builds. */
+  settleBusyMs?: Record<SlowDuty, number>;
   /** Look-back answers by kind, as the look-back worker timed them (all zero without look-back). */
   lookback: Record<LookbackKind, LookbackWork>;
   /** Look-back answers that arrived for a request no longer waited for (their worker time still counts as busy). */
@@ -222,6 +248,11 @@ export interface WorkStatus {
    * from older builds.
    */
   lookbackWorkerBusyMs?: number[];
+  /**
+   * The part of `lookbackWorkerBusyMs` spent on Final-settle (`end`) answers, per look-back
+   * worker (the settle pool serves the Final settle on factors too). Absent from older builds.
+   */
+  lookbackWorkerEndBusyMs?: number[];
   /** Settle pool workers still serving (a failed one is left out); absent from older builds. */
   settleWorkers?: number;
   /** Live frames the slow loop has observed since the run began (the speed floor's per-frame divisor); absent from older builds. */
@@ -258,6 +289,11 @@ export interface WorkRates {
   slow: Record<SlowDuty, number> & { idle: number };
   /** Each visit worker's busy share. */
   visit: number[];
+  /**
+   * The Final settle's part of the shares above: the slow worker's by duty (part of `slow`),
+   * and each visit worker's on the visits handed out in the Final settle (part of `visit[i]`).
+   */
+  settle: { slow: Record<SlowDuty, number>; visit: number[] };
   lookback: {
     /**
      * Busy share of the look-back workers (their `serve` time less waits for
@@ -266,6 +302,8 @@ export interface WorkRates {
     busy: number;
     /** Per look-back worker (0: need-driven and the end settle; 1..S: the settle pool), its busy share. */
     workers: number[];
+    /** Per look-back worker, the part of `workers[i]` on Final-settle (`end`) answers. */
+    workersEnd: number[];
     /**
      * Look-back workers able to be busy now (need-driven one plus the live
      * settle pool; a failed pool worker no longer counts). Set by `WorkRater`.
@@ -309,6 +347,18 @@ export function workRates(prev: WorkStatus, cur: WorkStatus): WorkRates | null {
   }
   slow.idle = Math.max(0, 1 - sum);
   const visit = cur.visitBusyMs.map((v, i) => share(prev.visitBusyMs[i] ?? 0, v));
+  const settleSlow = {} as Record<SlowDuty, number>;
+  for (const d of SLOW_DUTIES)
+    settleSlow[d] = Math.min(
+      slow[d],
+      share(prev.settleBusyMs?.[d] ?? 0, cur.settleBusyMs?.[d] ?? 0),
+    );
+  const settle = {
+    slow: settleSlow,
+    visit: cur.visitBusyMs.map((_, i) =>
+      share(prev.settleVisitBusyMs?.[i] ?? 0, cur.settleVisitBusyMs?.[i] ?? 0),
+    ),
+  };
   const kinds = {} as WorkRates['lookback']['kinds'];
   let busy = 0;
   for (const k of LOOKBACK_KINDS) {
@@ -332,12 +382,16 @@ export function workRates(prev: WorkStatus, cur: WorkStatus): WorkRates | null {
   const workers = (cur.lookbackWorkerBusyMs ?? []).map((v, i) =>
     share(prev.lookbackWorkerBusyMs?.[i] ?? 0, v),
   );
+  const workersEnd = workers.map((_, i) =>
+    share(prev.lookbackWorkerEndBusyMs?.[i] ?? 0, cur.lookbackWorkerEndBusyMs?.[i] ?? 0),
+  );
   const nb = cur.batchWait.batches - prev.batchWait.batches;
   return {
     spanMs: span,
     slow,
     visit,
-    lookback: { busy, workers, kinds },
+    settle,
+    lookback: { busy, workers, workersEnd, kinds },
     batchWait: {
       meanMs: nb > 0 ? (cur.batchWait.sumMs - prev.batchWait.sumMs) / nb : 0,
       lastMs: cur.batchWait.lastMs,
@@ -379,8 +433,8 @@ export class WorkRater {
   /**
    * A visit's or an answer's ms is credited when it arrives, so one window can read above 100 %:
    * clamp each busy share at what the workers behind it can hold (1 per worker) and carry the
-   * excess into the next window. With a settle pool the settle's share is held by S workers,
-   * the total by S + 1.
+   * excess into the next window. With a settle pool the Background settle's share is held by S
+   * workers, the Final settle's and the total by S + 1.
    */
   private settle(r: WorkRates): void {
     const fit = (key: string, v: number, cap = 1): number => {
@@ -395,14 +449,13 @@ export class WorkRater {
     const n = 1 + pool;
     r.lookback.capacity = n;
     r.visit = r.visit.map((v, i) => fit(`v${i}`, v));
+    r.settle.visit = r.settle.visit.map((v, i) => fit(`vs${i}`, v));
+    const cap: Record<LookbackKind, number> = { need: 1, csettle: Math.max(1, pool), end: n };
     for (const k of LOOKBACK_KINDS)
-      r.lookback.kinds[k].busy = fit(
-        k,
-        r.lookback.kinds[k].busy,
-        k === 'csettle' ? Math.max(1, pool) : 1,
-      );
+      r.lookback.kinds[k].busy = fit(k, r.lookback.kinds[k].busy, cap[k]);
     r.lookback.busy = fit('lb', r.lookback.busy, n);
     r.lookback.workers = r.lookback.workers.map((v, i) => fit(`lb${i}`, v));
+    r.lookback.workersEnd = r.lookback.workersEnd.map((v, i) => fit(`lbe${i}`, v));
   }
 
   reset(): void {
@@ -570,13 +623,16 @@ function fitShares(shares: Record<WorkKind, number>): Record<WorkKind, number> {
  *
  * - fast loop stages: Live;
  * - slow worker duties `live`, `visit`, `housekeep`, `publish`, `setup`, and every visit worker:
- *   Discovery (the slow worker's `live` duty is Discovery, not Live);
+ *   Discovery (the slow worker's `live` duty is Discovery, not Live), except what they do while
+ *   the Final settle runs (its visits, library builds, publishing), which is Final settle: the
+ *   cell set is frozen then;
  * - `need` answers: Look-back; `csettle`: Background settle; `end`: Final settle (on the slow
  *   worker and on the look-back workers);
  * - wall time no duty claims: Spare.
  *
  * Look-back worker 0 serves need and end answers (and Background settle too when there is no
- * pool); pool workers 1..S serve Background settle only.
+ * pool); pool workers 1..S serve Background settle and, on factors, the Final settle: each pool
+ * worker's own `end` share is Final settle, the rest of its share Background settle.
  */
 export function workByKind(r: WorkRates): WorkByKind {
   const workers: WorkerKindShares[] = [];
@@ -588,46 +644,59 @@ export function workByKind(r: WorkRates): WorkByKind {
     }),
   );
   const s = r.slow;
+  const ss = r.settle.slow;
+  // The Discovery duties' Final-settle part (`end` is Final settle whenever it runs).
+  const inSettle = ss.live + ss.visit + ss.housekeep + ss.publish + ss.setup;
   workers.push({
     name: 'Slow worker',
     group: 'slow',
     shares: fitShares({
       ...noShares(),
-      discovery: s.live + s.visit + s.housekeep + s.publish + s.setup,
+      discovery: s.live + s.visit + s.housekeep + s.publish + s.setup - inSettle,
       lookback: s.need,
       bgSettle: s.csettle,
-      finalSettle: s.end,
+      finalSettle: s.end + inSettle,
     }),
   });
-  r.visit.forEach((v, i) =>
+  r.visit.forEach((v, i) => {
+    const settle = Math.min(v, r.settle.visit[i] ?? 0);
     workers.push({
       name: `Visit worker ${i + 1}`,
       group: 'visit',
-      shares: fitShares({ ...noShares(), discovery: v }),
-    }),
-  );
+      shares: fitShares({ ...noShares(), discovery: v - settle, finalSettle: settle }),
+    });
+  });
   const lb = r.lookback;
   const k = lb.kinds;
   const rows = Math.max(lb.workers.length, lb.capacity ?? 0);
   const anyBusy = k.need.busy + k.csettle.busy + k.end.busy > 0;
   const n = rows === 0 && anyBusy ? 1 : rows;
+  // A pool worker's share by kind: its own `end` share is Final settle, the rest Background settle.
+  const poolEnd = (i: number) => Math.min(lb.workers[i] ?? 0, lb.workersEnd[i] ?? 0);
+  const poolBg = (i: number) => (lb.workers[i] ?? 0) - poolEnd(i);
+  let poolEndSum = 0;
+  let poolBgSum = 0;
+  for (let i = 1; i < lb.workers.length; i++) {
+    poolEndSum += poolEnd(i);
+    poolBgSum += poolBg(i);
+  }
   for (let i = 0; i < n; i++) {
     const own = lb.workers[i];
     const shares = noShares();
     if (i === 0) {
       shares.lookback = k.need.busy;
-      shares.finalSettle = k.end.busy;
-      // Background settle on worker 0 is what the pool workers did not do (the whole of it
-      // with no pool, and the time after a pool worker failed).
-      const pool = lb.workers.slice(1).reduce((a, b) => a + b, 0);
-      shares.bgSettle = Math.max(0, k.csettle.busy - pool);
+      // Worker 0's settle shares are what the pool workers did not do (the whole of them with no
+      // pool, and the time after a pool worker failed).
+      shares.finalSettle = Math.max(0, k.end.busy - poolEndSum);
+      shares.bgSettle = Math.max(0, k.csettle.busy - poolBgSum);
       // Never claim more than the worker itself reported busy.
       if (own !== undefined) {
         const sum = shares.lookback + shares.finalSettle + shares.bgSettle;
         if (sum > own && sum > 0) for (const kind of WORK_KINDS) shares[kind] *= own / sum;
       }
     } else {
-      shares.bgSettle = own ?? 0;
+      shares.finalSettle = poolEnd(i);
+      shares.bgSettle = poolBg(i);
     }
     workers.push({
       name: n === 1 ? 'Look-back worker' : i === 0 ? 'Look-back worker 0' : `Settle worker ${i}`,

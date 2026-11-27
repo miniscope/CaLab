@@ -182,11 +182,13 @@ export interface WorkSource {
   waitLast: number;
   waitMax: WindowMax;
   visitBusy: number[];
+  settleVisitBusy: number[];
   lbWork: Record<LookbackKind, LookbackWork>;
   lbDiscarded: LookbackWork;
   /** Ports to the look-back workers (null or a hole: not connected). */
   lbPorts: readonly unknown[];
   lbPortBusy: number[];
+  lbPortEndBusy: number[];
   settleWorkers: number;
   observed: number;
   /** Debug timing (`?debug`); with it, the loop's WASM stage timers are read too. */
@@ -207,12 +209,15 @@ export function workStatus(w: WorkSource): WorkStatus {
       max1sMs: w.waitMax.max(t),
     },
     visitBusyMs: w.visitBusy.slice(),
+    settleVisitBusyMs: w.settleVisitBusy.slice(),
+    settleBusyMs: w.clock.snapshotTagged(),
     lookback: Object.fromEntries(LOOKBACK_KINDS.map((k) => [k, { ...w.lbWork[k] }])) as Record<
       LookbackKind,
       LookbackWork
     >,
     discarded: { ...w.lbDiscarded },
     lookbackWorkerBusyMs: w.lbPorts.map((p, i) => (p ? (w.lbPortBusy[i] ?? 0) : 0)),
+    lookbackWorkerEndBusyMs: w.lbPorts.map((p, i) => (p ? (w.lbPortEndBusy[i] ?? 0) : 0)),
     settleWorkers: w.settleWorkers,
     observedFrames: w.observed,
     ...(w.dt

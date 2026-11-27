@@ -108,6 +108,7 @@ function fakeLookback(
       cells: 1,
       frames: new Float32Array(2 * n),
       traces: new Float32Array(n),
+      timing: { readMs: 0, preprocessMs: 0, solveMs: 1, otherMs: 0, waitMs: 0 },
     });
   };
   return (m: SlowToLookback) => {
@@ -228,9 +229,13 @@ async function settleRun(sch: Schedule) {
     .map((m) => (m.type === 'status' ? m.status.lookback?.settle : undefined))
     .filter((s): s is SettleStatus => s !== undefined)
     .at(-1)!;
+  const accounting = toMain
+    .map((m) => (m.type === 'status' ? m.status.accounting : undefined))
+    .filter((a) => a !== undefined)
+    .at(-1)!;
   // Answers still on their way when the settle ended (after a Stop) are released as they come.
   await new Promise((r) => setTimeout(r, 4 * (sch.answerMs + 2)));
-  return { st, pass, count };
+  return { st, pass, count, accounting };
 }
 
 const SCHEDULES: Schedule[] = [
@@ -299,6 +304,21 @@ describe('Final settle visit rate', () => {
     expect(st.stopped).toBe(true);
     expect(st.fed).toBeLessThan(st.total);
     expect(count.releases).toBe(count.answers);
+  }, 20_000);
+
+  it("accounts the settle's visits, its pool worker's answers and the slow worker's time in it to the Final settle", async () => {
+    const { st, accounting: w } = await settleRun({ ...SCHEDULES[4] });
+    const sum = (a: number[] | undefined) => (a ?? []).reduce((x, y) => x + y, 0);
+    // Every visit result is 1 ms: the settle's visits are the ones handed out in it.
+    expect(sum(w.settleVisitBusyMs)).toBeGreaterThanOrEqual(st.visits!.handed);
+    expect(sum(w.settleVisitBusyMs)).toBeLessThanOrEqual(sum(w.visitBusyMs));
+    // Every answer is 1 ms of solve; on factors the pool worker serves only the Final settle.
+    expect(w.lookbackWorkerEndBusyMs![1]).toBeGreaterThan(0);
+    expect(w.lookbackWorkerEndBusyMs![1]).toBe(w.lookbackWorkerBusyMs![1]);
+    expect(w.settleBusyMs!.end).toBeGreaterThan(0);
+    expect(w.settleBusyMs!.end).toBeLessThanOrEqual(w.busyMs.end);
+    expect(w.settleBusyMs!.visit).toBeGreaterThan(0);
+    expect(w.settleBusyMs!.visit).toBeLessThanOrEqual(w.busyMs.visit);
   }, 20_000);
 
   it('without a rate (the behaviour before) the visit count follows the timing', async () => {
