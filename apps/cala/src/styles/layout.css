@@ -1461,7 +1461,7 @@
 .cala-speed__trackwrap:has(.cala-speed__range--max:focus-visible) {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-control);
 }
 
 .cala-speed__range--max::-webkit-slider-thumb {

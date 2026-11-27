@@ -25,6 +25,23 @@ apps/catune, apps/cabana
 | `TutorialLauncher` | `TutorialLauncher.tsx` | Tutorial launch button component                                      |
 | `Card`             | `Card.tsx`             | Generic card wrapper component                                        |
 
+### Instruments
+
+Live figures on declared, fixed ranges (`range.ts`: `rangePosition`, `assertRange`). None rescales to its data: a value outside the range is drawn at the nearest end and flagged with `data-clamped`, and a missing value is drawn as "not measured". Styles in `styles/instruments.css`, colours from tokens only.
+
+| Export                            | Description                                                                                      |
+| --------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `Meter`, `MeterRow`               | `role="meter"` bar with target tick and band; a row adds the label and the tabular figure        |
+| `StageTrack`                      | Run stages as one bar, sized by expected share; waiting, running, done (hue + check), off, error |
+| `Sparkline`                       | 1.5 px line on a declared y range with a last-point dot                                          |
+| `SegmentedBar`                    | One declared whole split into parts                                                              |
+| `RangeBar`                        | A span (e.g. mean to p99) with a mark and a reference line on a declared domain                  |
+| `Legend`                          | One-row legend whose swatches are the marks themselves                                           |
+| `Badge`                           | 18 px tinted chip; status tones always carry their icon                                          |
+| `Icon`                            | 16 px outline set: play, pause, stop, restart, check, cross, info, warning, gpu                  |
+| `MetricTile`                      | Title, figure, optional sparkline, status dot and meter slot                                     |
+| `OKABE_ITO` (`@calab/ui/palette`) | The one Okabe-Ito definition; dependency-free for stores and workers                             |
+
 The table above covers the layout components. Chart utilities, the import flow and the dataset overview (cards plus the `createOverviewStore` factory each app instantiates) have their own entry points (below). Community and auth widgets live in `@calab/community-ui`, so `@calab/ui` never loads Supabase or auth code. Consult `src/index.ts` for the authoritative export list.
 
 ## Import flow (`@calab/ui/import`)
@@ -49,4 +66,4 @@ Shared uPlot primitives so every app charts consistently:
 
 ## CSS
 
-Layout styles are in `styles/layout.css`. Apps define their own design tokens (colors, spacing, shadows) in their `global.css` files, following the dark-theme scientific instrument aesthetic.
+Design tokens are in `styles/tokens.css` (role tokens plus the older names as aliases); layout styles in `styles/layout.css`. Apps override only their accent (and Admin its dark values) in their `global.css`.

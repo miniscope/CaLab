@@ -1,8 +1,8 @@
-/* CaLab Buttons — shared button styles for both apps */
+/* Shared buttons: one primary fill (near-black), a bordered secondary, a small size. */
 
 .btn-primary {
   background: var(--accent-warm);
-  color: #ffffff;
+  color: var(--ink-on-fill);
   border: none;
   border-radius: var(--radius-sm);
   padding: var(--space-sm) var(--space-lg);
@@ -53,6 +53,12 @@
 }
 
 .btn-small {
-  padding: var(--space-xs) var(--space-md);
+  padding: var(--space-1) var(--space-4);
   font-size: 0.85rem;
+}
+
+.btn-primary:focus-visible,
+.btn-secondary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }

@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./chart": "./src/chart/index.ts",
+    "./palette": "./src/palette.ts",
     "./import": "./src/import/index.ts",
     "./dataset": "./src/dataset/index.ts",
     "./dataset/dataset.css": "./src/dataset/dataset.css",

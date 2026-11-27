@@ -48,7 +48,7 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await page.getByRole('tab', { name: 'Raw file' }).click();
   await expect(page.getByTestId('frame-readout')).toContainText('1 / 6');
   const header = page.getByRole('banner');
-  await expect(header.getByText('24 x 16')).toBeVisible();
+  await expect(header.getByText('24 × 16')).toBeVisible();
   await expect(header.getByText('6 frames')).toBeVisible();
   await page.getByRole('tab', { name: 'Recording' }).click();
   const info = page.locator('[data-panel-id="info"]');
