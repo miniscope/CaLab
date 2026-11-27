@@ -21,6 +21,12 @@ describe('FOV layout', () => {
     expect(l.fovWidth).toBe(1100 - SIDE_MIN_PX - 8);
   });
 
+  it('keeps a 1024 px window side by side, the column at its minimum', () => {
+    const l = fovLayout(992, 820, 600, 600);
+    expect(l.narrow).toBe(false);
+    expect(l.fovWidth).toBe(992 - SIDE_MIN_PX - 8);
+  });
+
   it('stacks on narrow or portrait windows', () => {
     expect(fovLayout(NARROW_BELOW_PX - 1, 700, 600, 600)).toEqual({
       narrow: true,

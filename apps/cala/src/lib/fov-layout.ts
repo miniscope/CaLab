@@ -1,14 +1,18 @@
 /**
  * Width of the field-of-view column: the image is sized by the window's
  * height (as large as fits), and the rest of the width is the right-hand
- * column. Narrow or portrait windows stack the column under the image.
+ * column. Narrow or portrait windows stack: the run rail, then the image,
+ * then the tabs.
  */
 import { createSignal, onCleanup, onMount, type Accessor } from 'solid-js';
 
 /** The right-hand column never gets narrower than this (CSS px). */
 export const SIDE_MIN_PX = 440;
-/** Below this window width (or in portrait), the layout stacks. */
-export const NARROW_BELOW_PX = 1000;
+/**
+ * Below this main-area width (or in portrait), the layout stacks. A 1024 px window (a main
+ * area of about 990 px) stays side by side: the run rail and the image are seen together.
+ */
+export const NARROW_BELOW_PX = 960;
 /** Height the FOV panel spends outside the image (toolbar, padding), CSS px. */
 export const FOV_CHROME_V_PX = 58;
 /** Width the FOV panel spends outside the image (padding, borders), CSS px. */

@@ -230,11 +230,8 @@ describe('App', () => {
     expect(root.querySelector('[data-testid="pipeline-readout"]')?.textContent).toContain(
       'frame 50 / 50',
     );
-    // The Run panel's convergence plot (tiles in a narrow window, as jsdom's is) and the
-    // History tab (one group shown) are up.
-    expect(
-      root.querySelector('[data-testid="history-convergence"], [data-testid="tile-cells"]'),
-    ).not.toBeNull();
+    // The Run panel's convergence plot (in every layout) and the History tab (one group shown) are up.
+    expect(root.querySelector('[data-testid="history-convergence"]')).not.toBeNull();
     // Batch timings (3 ms of motion per 25 frames, twice) are averaged per frame.
     openTab(root, 'timing');
     expect(root.querySelector('[data-testid="pipeline-stages"]')?.textContent).toContain(
@@ -250,14 +247,21 @@ describe('App', () => {
     expect(fake.stopPipeline).toHaveBeenCalled();
   });
 
-  it('puts the run strip over one row of tabs, keyboard-operable and remembered', async () => {
+  it('puts the run rail over one row of tabs, keyboard-operable and remembered', async () => {
     fake.open.mockResolvedValue(INFO);
     fake.readFrame.mockImplementation(async () => new Uint8Array(12));
     const root = mount();
     await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
     const stage = () => root.querySelector('[data-testid="run-strip-stage"]')?.textContent;
     await vi.waitFor(() => expect(stage()).toBe('Discover done'));
-    expect(root.querySelector('[data-testid="run-strip-detail"]')?.textContent).toBe('0 cells');
+    // The rail: the stage track with Discover done, and Cells at 0 on this cell-less recording.
+    expect(
+      root.querySelector('[data-testid="run-step-discover"]')?.getAttribute('data-state'),
+    ).toBe('done');
+    expect(root.querySelector('[data-testid="cells-readout"]')?.textContent).toBe('0');
+    expect(root.querySelector('[data-testid="pipeline-readout"]')?.textContent).toMatch(
+      /^frame 50 \/ 50 · /,
+    );
     // One tab row (the cell's Trace / Demixing is a switch, not a second row).
     const lists = root.querySelectorAll('[role="tablist"]');
     expect(lists).toHaveLength(1);

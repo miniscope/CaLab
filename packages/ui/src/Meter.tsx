@@ -1,4 +1,4 @@
-import { createMemo, Show, type JSX } from 'solid-js';
+import { createMemo, For, Show, type JSX } from 'solid-js';
 import { assertRange, pct, rangePosition, type FixedRange, type RangeScale } from './range.ts';
 import { toneColor, type Tone } from './tones.ts';
 
@@ -17,6 +17,8 @@ export interface MeterProps {
   format?: (v: number) => string;
   /** A tick at this value (the target or the limit). Clamped to the range. */
   target?: number;
+  /** Secondary ticks (a floor, a reference), drawn shorter and in the secondary ink. Clamped to the range. */
+  marks?: number[];
   /** A shaded band [lo, hi] (an expected or allowed zone). Clamped to the range. */
   band?: [number, number];
   /** Colour role of the fill (default neutral). */
@@ -36,6 +38,12 @@ export function Meter(p: MeterProps): JSX.Element {
   const range = (): FixedRange => ({ min: p.min, max: p.max, scale: p.scale });
   const pos = createMemo(() => rangePosition(p.value, range()));
   const tick = createMemo(() => (p.target === undefined ? null : rangePosition(p.target, range())));
+  const marks = createMemo(() =>
+    (p.marks ?? []).flatMap((m) => {
+      const r = rangePosition(m, range());
+      return r ? [r.t] : [];
+    }),
+  );
   const band = createMemo(() => {
     if (!p.band) return null;
     const a = rangePosition(p.band[0], range());
@@ -77,6 +85,9 @@ export function Meter(p: MeterProps): JSX.Element {
       <Show when={pos()}>
         {(q) => <span class="meter__fill" style={{ width: pct(q().t) }} aria-hidden="true" />}
       </Show>
+      <For each={marks()}>
+        {(t) => <span class="meter__mark" style={{ left: pct(t) }} aria-hidden="true" />}
+      </For>
       <Show when={tick()}>
         {(t) => <span class="meter__tick" style={{ left: pct(t().t) }} aria-hidden="true" />}
       </Show>
@@ -108,6 +119,7 @@ export function MeterRow(p: MeterRowProps): JSX.Element {
         valueText={p.valueText}
         format={p.format}
         target={p.target}
+        marks={p.marks}
         band={p.band}
         tone={p.tone}
         size={p.size}

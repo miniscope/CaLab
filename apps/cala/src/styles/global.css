@@ -222,48 +222,6 @@
   white-space: nowrap;
 }
 
-.cala-conv-chip {
-  align-self: flex-start;
-  font-size: 0.85rem;
-  font-weight: var(--font-weight-medium, 500);
-  padding: 1px 8px;
-  border-radius: 10px;
-  border: 1px solid currentColor;
-}
-
-.cala-conv-chip--waiting {
-  color: var(--text-secondary);
-}
-
-/* After Discover the chip names the current stage: neutral (stage progress is the strip's job). */
-.cala-conv-chip--stage {
-  color: var(--ink-1);
-}
-
-/* In progress: the stage's tint and hue edge, the label in the text ink. */
-.cala-conv-chip--discovering {
-  color: var(--ink-1);
-  border-color: var(--stage-discover);
-  background: var(--stage-discover-tint);
-}
-
-.cala-conv-chip--settling {
-  color: var(--ink-1);
-  border-color: var(--stage-settle);
-  background: var(--stage-settle-tint);
-}
-
-/* Converged is a status (ok): its ink on its tint, with a check mark. */
-.cala-conv-chip--converged {
-  color: var(--status-ok);
-  background: var(--status-ok-tint);
-}
-
-.cala-conv-chip .icon {
-  vertical-align: -0.15em;
-  margin-right: 2px;
-}
-
 /* Overlay modes */
 .cala-heat-layer {
   position: absolute;

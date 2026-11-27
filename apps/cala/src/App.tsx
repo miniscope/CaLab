@@ -55,7 +55,8 @@ import { detailTabs, SideColumn } from './components/SideTabs.tsx';
 import { createQcTableState } from './components/QcTable.tsx';
 import { createSideTab, showPickedCell } from './lib/side-tab.ts';
 import { OpenFolder } from './components/OpenFolder.tsx';
-import { RunPanel, RunStatusStrip } from './components/RunPanel.tsx';
+import { RunPanel } from './components/RunPanel.tsx';
+import { RunRail, type RailSession } from './components/RunRail.tsx';
 import { createFovLayout } from './lib/fov-layout.ts';
 import { createRunHistory } from './lib/run-history.ts';
 import { createHistoryUi, HistoryExpanded } from './components/HistoryPanel.tsx';
@@ -1002,6 +1003,39 @@ const App: Component = () => {
     return `Session ${(info ? sessionOfFrame(info, pipeline.processed()) : 0) + 1}/${n}`;
   };
 
+  /** The rail's session ribbon: each session's state in a multi-session run (null: not one). */
+  const railSessions = (): { label: string; items: RailSession[] } | null => {
+    const label = sessionLabel();
+    const p = multiRun.plan();
+    if (!label || !p) return null;
+    const joint = p.settings.mode === 'joint';
+    const info = store.info();
+    const now = joint
+      ? info
+        ? sessionOfFrame(info, pipeline.processed())
+        : 0
+      : multiRun.current();
+    return {
+      label,
+      items: multiRun.records().map((r) => ({
+        name: r.name,
+        status: `${r.status}${r.note ? ` (${r.note})` : ''}`,
+        state:
+          r.status === 'written'
+            ? 'done'
+            : r.status === 'failed'
+              ? 'error'
+              : r.status === 'skipped'
+                ? 'off'
+                : r.index === now
+                  ? 'running'
+                  : r.index < now
+                    ? 'done'
+                    : 'waiting',
+      })),
+    };
+  };
+
   /** A multi-session run's state, in the Run tab under the Run panel. */
   function SessionRunStatus() {
     return (
@@ -1070,9 +1104,10 @@ const App: Component = () => {
 
   /**
    * One screen, no page scroll: the field of view, square-ish and as tall as
-   * the window, on the left; on the right the run strip over one row of tabs
+   * the window, on the left; on the right the run rail over one row of tabs
    * (Run, Cell, QC, History, details), one panel with the column's height.
-   * Narrow windows stack the column under the image and scroll.
+   * Narrow windows stack rail, image and tabs, in that order, and scroll. The
+   * rail is one element in both layouts (CSS places it), so its history stays.
    */
   function Layout(lp: { info: NonNullable<ReturnType<typeof store.info>> }) {
     let main!: HTMLDivElement;
@@ -1112,7 +1147,6 @@ const App: Component = () => {
               height={lp.info.height}
               fps={lp.info.fps ?? 0}
               bitDepth={lp.info.bitDepth}
-              narrow={layout().narrow}
               ui={historyUi}
               factorRun={pipeline.factorRun()}
               compress={pipeline.compressRun() ? compress : undefined}
@@ -1191,22 +1225,19 @@ const App: Component = () => {
             <HistoryExpanded ui={historyUi} />
           </Show>
         </div>
-        <div class="cala-main__side">
-          <SideColumn
-            strip={
-              <RunStatusStrip
-                pipeline={pipeline}
-                pass2={pass2}
-                stages={stageLog}
-                cells={cells}
-                live={lp.info.live !== undefined}
-                session={sessionLabel()}
-              />
-            }
-            tabs={tabs}
-            active={tab.active()}
-            onActive={tab.set}
+        <div class="cala-main__rail">
+          <RunRail
+            pipeline={pipeline}
+            pass2={pass2}
+            cells={cells}
+            live={lp.info.live !== undefined}
+            fps={lp.info.fps ?? 0}
+            sessions={railSessions()}
+            onStopSettling={() => slow.stopSettling(cells.session())}
           />
+        </div>
+        <div class="cala-main__side">
+          <SideColumn tabs={tabs} active={tab.active()} onActive={tab.set} />
         </div>
       </div>
     );

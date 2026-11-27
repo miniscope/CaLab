@@ -447,8 +447,9 @@ export function ResultView(props: { result: LoadedResult; origin: ResultOrigin }
           <HistoryExpanded ui={ui} />
         </Show>
       </div>
+      <div class="cala-main__rail">{strip}</div>
       <div class="cala-main__side">
-        <SideColumn strip={strip} tabs={tabs} active={tab.active()} onActive={tab.set} />
+        <SideColumn tabs={tabs} active={tab.active()} onActive={tab.set} />
       </div>
     </div>
   );
