@@ -6,7 +6,15 @@ import type { CellStore } from '../lib/cell-store.ts';
 import { CellTraceViewer } from './CellTraceViewer.tsx';
 import { CellMetricBars, CellQcSummary, DemixView } from './CellQcView.tsx';
 import { QcDot } from './QcDot.tsx';
-import { metricText, qcMetric, qcStatus, topBySnr } from '../lib/qc-view.ts';
+import { QcBarKey } from './QcBarKey.tsx';
+import {
+  metricText,
+  qcMedian,
+  qcMetric,
+  qcStatus,
+  thresholdTitle,
+  topBySnr,
+} from '../lib/qc-view.ts';
 import { SidePanel } from './SidePanel.tsx';
 
 export type FootprintScale = 'linear' | 'log';
@@ -296,6 +304,7 @@ const TOP_CELLS = 8;
 function TopCells(props: { cells: CellStore }): JSX.Element {
   const top = createMemo(() => topBySnr(props.cells.qc()?.rows ?? [], TOP_CELLS));
   const snr = qcMetric('peakSnr');
+  const median = createMemo(() => qcMedian(props.cells.qc()?.rows ?? [], 'peakSnr'));
   return (
     <div class="cala-top-cells" data-testid="cell-empty">
       <p class="cala-muted cala-top-cells__lead">
@@ -303,6 +312,7 @@ function TopCells(props: { cells: CellStore }): JSX.Element {
         <Show when={top().length > 0}>, or one of the cells with the highest SNR</Show>.
       </p>
       <Show when={top().length > 0}>
+        <QcBarKey threshold={snr.thresholdText} median={median()} digits={snr.digits} />
         <ol class="cala-top-cells__list" data-testid="cell-top-list">
           <For each={top()}>
             {(r) => (
@@ -322,6 +332,9 @@ function TopCells(props: { cells: CellStore }): JSX.Element {
                     scale={snr.range!.scale}
                     max={snr.range!.max}
                     target={snr.threshold}
+                    targetTitle={thresholdTitle(snr)}
+                    median={median()?.value}
+                    medianTitle={median()?.title}
                     label={`Cell ${r.id} peak SNR`}
                     format={(v) => v.toFixed(1)}
                     size="sm"

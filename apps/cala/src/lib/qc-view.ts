@@ -109,6 +109,8 @@ export interface QcMetricSpec {
   range?: { min: number; max: number; scale?: 'linear' | 'log' };
   /** The rule's threshold, drawn as a tick; absent when no threshold separates good from bad. */
   threshold?: number;
+  /** The threshold as the legend reads it ("pass ≥ 5"); present with `threshold`. */
+  thresholdText?: string;
   /** Decimals of the figure. */
   digits: number;
   /** Unit after the figure. */
@@ -123,6 +125,7 @@ export const QC_METRICS: readonly QcMetricSpec[] = [
     help: `Peak SNR in noise units, on a log scale from ${SNR_BAR.min} to ${SNR_BAR.max}. Pass needs at least ${MIN_SNR} (the tick).`,
     range: SNR_BAR,
     threshold: MIN_SNR,
+    thresholdText: `pass ≥ ${MIN_SNR}`,
     digits: 1,
   },
   {
@@ -131,6 +134,7 @@ export const QC_METRICS: readonly QcMetricSpec[] = [
     help: `Largest trace correlation with an overlapping neighbour. Above ${PAIR_R} (the tick) the two are a pair; the weaker one is flagged a likely duplicate.`,
     range: { min: 0, max: 1 },
     threshold: PAIR_R,
+    thresholdText: `pair > ${PAIR_R}`,
     digits: 2,
   },
   {
@@ -139,6 +143,7 @@ export const QC_METRICS: readonly QcMetricSpec[] = [
     help: `Cross-validated R² of the trace on the frame's rigid shift. Above ${MOTION_R2_FLAG} (the tick) the trace follows motion: a flag only, pass/fail is unchanged. Negative values sit at the left end.`,
     range: { min: 0, max: 1 },
     threshold: MOTION_R2_FLAG,
+    thresholdText: `flag > ${MOTION_R2_FLAG}`,
     digits: 2,
   },
   {
@@ -187,4 +192,44 @@ export function qcMetric(key: QcMetricKey): QcMetricSpec {
 /** A metric's figure with its spec's decimals, or null when not measured (drawn as a grey dash). */
 export function metricText(spec: QcMetricSpec, v: number | undefined): string | null {
   return v === undefined || !Number.isFinite(v) ? null : v.toFixed(spec.digits);
+}
+
+/** The tooltip of a metric's threshold tick: the rule's value, spelled out. */
+export function thresholdTitle(spec: QcMetricSpec): string | undefined {
+  return spec.thresholdText === undefined ? undefined : `Threshold, ${spec.thresholdText}`;
+}
+
+/** The median of one metric over the measured cells, and how many cells it is over. */
+export interface QcMedian {
+  value: number;
+  n: number;
+  /** Tooltip, e.g. "median of 40 cells: 18.3". */
+  title: string;
+}
+
+/**
+ * The median of `key` over the measured cells of `rows` (unmeasured and
+ * non-finite values left out); null when no cell has one. Meant to be computed
+ * once per QC snapshot, not per row.
+ */
+export function qcMedian(
+  rows: readonly CellQcRow[],
+  key: QcMetricKey,
+  digits = qcMetric(key).digits,
+): QcMedian | null {
+  const v: number[] = [];
+  for (const r of rows) {
+    if (r.flags & FLAG_UNMEASURED) continue;
+    const x = r[key as keyof CellQcRow] as number;
+    if (Number.isFinite(x)) v.push(x);
+  }
+  if (v.length === 0) return null;
+  v.sort((a, b) => a - b);
+  const m = v.length >> 1;
+  const value = v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+  return {
+    value,
+    n: v.length,
+    title: `median of ${v.length} cell${v.length === 1 ? '' : 's'}: ${value.toFixed(digits)}`,
+  };
 }

@@ -7,14 +7,17 @@ import {
   metricText,
   QC_STATUS_LABEL,
   qcCounts,
+  qcMedian,
   qcMetric,
   qcReason,
   qcStatus,
+  thresholdTitle,
   type QcFilter,
   type QcMetricKey,
   type QcStatus,
 } from '../lib/qc-view.ts';
 import { QC_STATUS_COLOR, QcDot } from './QcDot.tsx';
+import { QcBarKey } from './QcBarKey.tsx';
 import { STILL_MOVING_HELP, STILL_MOVING_SCALE } from '../lib/settle.ts';
 
 /** Columns the picker can show or hide; the cell and its SNR are always shown. */
@@ -149,6 +152,8 @@ export function QcTable(props: { cells: CellStore; state?: QcTableState }): JSX.
   const fps = () => props.cells.fps();
   const shown = createMemo(() => COLUMNS.filter((c) => columns().includes(c.key)));
   const snr = qcMetric('peakSnr');
+  // One median per QC snapshot, shared by every row's bar.
+  const snrMedian = createMemo(() => qcMedian(qc()?.rows ?? [], 'peakSnr'));
 
   const rows = createMemo(() => {
     const snap = qc();
@@ -188,6 +193,7 @@ export function QcTable(props: { cells: CellStore; state?: QcTableState }): JSX.
     sort: SortKey | 'moving';
     desc?: boolean;
     num?: boolean;
+    children?: JSX.Element;
   }) => (
     <th
       title={p.title}
@@ -198,6 +204,7 @@ export function QcTable(props: { cells: CellStore; state?: QcTableState }): JSX.
         {p.label}
         <Show when={key() === p.sort}>{dir() === 1 ? ' ▲' : ' ▼'}</Show>
       </button>
+      {p.children}
     </th>
   );
 
@@ -332,7 +339,9 @@ export function QcTable(props: { cells: CellStore; state?: QcTableState }): JSX.
           <thead>
             <tr>
               <SortHead label="Cell" title="Cell id, with its QC status" sort="id" />
-              <SortHead label="SNR" title={snr.help} sort="peakSnr" desc num />
+              <SortHead label="SNR" title={snr.help} sort="peakSnr" desc num>
+                <QcBarKey threshold={snr.thresholdText} median={snrMedian()} digits={snr.digits} />
+              </SortHead>
               <For each={shown()}>
                 {(c) => (
                   <Show
@@ -378,6 +387,9 @@ export function QcTable(props: { cells: CellStore; state?: QcTableState }): JSX.
                         scale={snr.range!.scale}
                         max={snr.range!.max}
                         target={snr.threshold}
+                        targetTitle={thresholdTitle(snr)}
+                        median={snrMedian()?.value}
+                        medianTitle={snrMedian()?.title}
                         label={`Cell ${r().id} peak SNR`}
                         format={(v) => v.toFixed(1)}
                         size="sm"

@@ -13,7 +13,16 @@ import {
   verdict,
   type Neighbour,
 } from '../lib/qc.ts';
-import { metricText, QC_METRICS, qcStatus, type QcMetricKey } from '../lib/qc-view.ts';
+import {
+  metricText,
+  QC_METRICS,
+  qcMedian,
+  qcStatus,
+  thresholdTitle,
+  type QcMedian,
+  type QcMetricKey,
+} from '../lib/qc-view.ts';
+import { QcBarKey } from './QcBarKey.tsx';
 import { QcDot } from './QcDot.tsx';
 
 const num = (v: number | undefined, d = 2) =>
@@ -52,6 +61,13 @@ export function CellMetricBars(props: { cells: CellStore; id: number }): JSX.Ele
     const r = row();
     return !r || r.flags & FLAG_UNMEASURED ? undefined : r[k];
   };
+  // The population medians, once per QC snapshot (not per bar).
+  const medians = createMemo(() => {
+    const rows = props.cells.qc()?.rows ?? [];
+    const out = new Map<QcMetricKey, QcMedian | null>();
+    for (const m of QC_METRICS) if (m.range) out.set(m.key, qcMedian(rows, m.key));
+    return out;
+  });
   return (
     <div class="cala-cellqc__bars" data-testid="cell-metrics">
       <For each={QC_METRICS}>
@@ -82,18 +98,30 @@ export function CellMetricBars(props: { cells: CellStore; id: number }): JSX.Ele
               }
             >
               {(r) => (
-                <MeterRow
-                  label={m.label}
-                  value={value(m.key)}
-                  min={r().min}
-                  scale={r().scale}
-                  max={r().max}
-                  target={m.threshold}
-                  format={(x) => x.toFixed(m.digits)}
-                  unit={m.unit}
-                  size="sm"
-                  testid={`cell-metric-${m.key}`}
-                />
+                <>
+                  <MeterRow
+                    label={m.label}
+                    value={value(m.key)}
+                    min={r().min}
+                    scale={r().scale}
+                    max={r().max}
+                    target={m.threshold}
+                    targetTitle={thresholdTitle(m)}
+                    median={medians().get(m.key)?.value}
+                    medianTitle={medians().get(m.key)?.title}
+                    format={(x) => x.toFixed(m.digits)}
+                    unit={m.unit}
+                    size="sm"
+                    testid={`cell-metric-${m.key}`}
+                  />
+                  <Show when={m.thresholdText}>
+                    <QcBarKey
+                      threshold={m.thresholdText}
+                      median={medians().get(m.key)}
+                      digits={m.digits}
+                    />
+                  </Show>
+                </>
               )}
             </Show>
           </div>
