@@ -146,6 +146,20 @@ test('Cala: one recording is a one-session project; Run writes its run into cala
   expect(run.results).toMatchObject([{ stream: '.', status: 'written', path: 'cala-export.npz' }]);
   const meta = JSON.parse(metaText(readFileSync(join(tree, runFolder, 'cala-export.npz'))));
   expect(meta.run.run.id).toBe(id);
+  // Restart after the run ended: a new run of the same step, written in full.
+  await page.getByRole('button', { name: 'Restart' }).click();
+  await expect.poll(() => downloads.length, { timeout: 360_000, intervals: [2000] }).toBe(2);
+  const out2 = join(base, 'unzipped2');
+  extract(unzip(readFileSync((await downloads[1].path())!)), out2);
+  const index2 = json(join(out2, 'calab-project', 'calab-index.json'));
+  expect(index2.runs.map((r: { id: string; status: string }) => r.status)).toEqual([
+    'finished',
+    'finished',
+  ]);
+  const second = index2.runs[1] as { id: string; folder: string };
+  expect(second.id).not.toBe(id);
+  const run2 = json(join(out2, 'calab-project', second.folder, 'calab-run.json'));
+  expect(run2.results).toMatchObject([{ stream: '.', status: 'written' }]);
   // The table of the one-session project lists its run.
   await page.getByTestId('back-to-project').click();
   await expect(page.getByTestId('project-row')).toHaveCount(1);

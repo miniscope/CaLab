@@ -119,8 +119,10 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
           <Show when={!p().canWrite()}>
             <span class="cala-muted">
               {' '}
-              This browser cannot write to the folder: each run downloads a zip of its run folder,
-              and changes to the index are not saved.
+              {p().declined()
+                ? 'Writing to the folder was declined'
+                : 'This browser cannot write to the folder'}
+              : each run downloads a zip of its run folder, and changes to the index are not saved.
             </span>
           </Show>
         </p>

@@ -523,6 +523,29 @@ describe('one-session projects', () => {
     expect(again.store.plan()).toHaveLength(1);
   });
 
+  it('a declined permission still runs: into a zip, the folder left as it was', async () => {
+    const root = animalDir(false);
+    const { store, fake } = await single({ root });
+    expect(store.canWrite()).toBe(true);
+    expect(await store.runStreams(['.'])).toBe(true);
+    expect(store.declined()).toBe(true);
+    expect(store.canWrite()).toBe(false);
+    const run = await fake.plans[0].openRun(0);
+    expect(run.sink.method).toBe('zip');
+    expect(projectDir(root)).toBeUndefined();
+  });
+
+  it('an unreadable project file: Run refuses, and the file is never written over', async () => {
+    const root = animalDir(true);
+    await root.put('calab-project/calab-project.json', '{bad');
+    const { store, fake } = await single({ root });
+    expect(store.readOnly()).toBe(true);
+    expect(store.warnings()[0]).toContain('could not be read');
+    expect(await store.runStreams(['.'])).toBe(false);
+    expect(fake.plans).toHaveLength(0);
+    expect(projectDir(root)!.files.get('calab-project.json')).toBe('{bad');
+  });
+
   it('a live stream is a one-session project with a live stream and no folder: its run is a zip', async () => {
     const { store, fake } = await single({ live: 'ws://127.0.0.1:8765' });
     expect(store.single()?.planned).toMatchObject({ stream: '.', live: 'ws://127.0.0.1:8765' });

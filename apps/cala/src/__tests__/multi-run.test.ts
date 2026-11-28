@@ -238,6 +238,26 @@ describe('run files', () => {
     h.dispose();
   });
 
+  it('a finished one-session run started again is a new run, written in full', async () => {
+    const r = recording();
+    const h = harness('separate', 1, { sink: r.sinkFor, runRecord: record, appLike: true });
+    await h.start();
+    await h.done();
+    // Restart after the run ended: the same plan again, without leaving it first.
+    await h.start();
+    expect(h.multi.finished()).toBe(false);
+    await h.done();
+    expect(r.runFiles(0).map((f) => f.run.status)).toEqual([
+      'planned',
+      'running',
+      'finished',
+      'planned',
+      'running',
+      'finished',
+    ]);
+    h.dispose();
+  });
+
   it('Separate sessions are one run each, with a run file of their own', async () => {
     const r = recording();
     const h = harness('separate', 2, { sink: r.sinkFor, runRecord: record });

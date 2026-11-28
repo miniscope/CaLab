@@ -950,6 +950,7 @@ const App: Component = () => {
    * one-session project opens on its recording (the pre-run sheet), a larger one on its table.
    */
   async function openProject(o: ProjectOpen): Promise<void> {
+    leaveRun();
     setScreen('project');
     await project.open(o);
     loadRecent();
@@ -962,10 +963,29 @@ const App: Component = () => {
     }
   }
 
+  /** Why the last Run or Restart did not start a run (null: it did, or none was asked for). */
+  const [runRefused, setRunRefused] = createSignal<string | null>(null);
+  /** Start a run of `refs` through the project; when it cannot start, say why. */
+  async function runProject(refs: string[], kind: 'joint' | 'separate' = 'separate') {
+    setRunRefused(null);
+    if (await project.runStreams(refs, kind)) return;
+    setRunRefused(
+      project.readOnly()
+        ? (project.warnings()[0] ?? 'The project file could not be read; nothing runs here.')
+        : (project.planErrors()[0] ?? project.error() ?? 'The run could not start.'),
+    );
+  }
+  /** Leave the current run (a new source is opened): an unfinished run's file says it stopped. */
+  function leaveRun(): void {
+    pipeline.stop();
+    multiRun.stop();
+    setRunRefused(null);
+  }
+
   /** Run: the open recording's run, a new run of its project step (inside the click). */
   function runOpen(): void {
     const one = project.single();
-    if (one) void project.runStreams([one.planned.stream]);
+    if (one) void runProject([one.planned.stream]);
   }
 
   /**
@@ -985,7 +1005,7 @@ const App: Component = () => {
       : project.single()
         ? [project.single()!.planned.stream]
         : [];
-    if (refs.length > 0) void project.runStreams(refs, p?.kind === 'joint' ? 'joint' : 'separate');
+    if (refs.length > 0) void runProject(refs, p?.kind === 'joint' ? 'joint' : 'separate');
   }
 
   // Joint: each session boundary goes into the run's event log as Discover reaches it.
@@ -1078,6 +1098,7 @@ const App: Component = () => {
    * run starts at once, and its files go into a zip at the end.
    */
   async function openLive(url: string) {
+    leaveRun();
     await project.open({
       rootName: 'live stream',
       entries: [],
@@ -1085,7 +1106,12 @@ const App: Component = () => {
       sessions: [],
       live: url,
     });
-    if (!(await project.runStreams(['.']))) setScreen('project');
+    await project.runStreams(['.']);
+    // Not connected (the error shows on the start screen): no run is going.
+    if (!store.info()) {
+      multiRun.stop();
+      project.close();
+    }
   }
   const liveParam = flags.live;
 
@@ -1370,9 +1396,9 @@ const App: Component = () => {
         classList={{ 'cala-main--narrow': layout().narrow }}
         style={layout().narrow ? {} : { '--cala-fov-w': `${layout().fovWidth}px` }}
       >
-        <Show when={store.error()}>
+        <Show when={store.error() ?? runRefused()}>
           {(message) => (
-            <div class="error-card cala-main__error" role="alert">
+            <div class="error-card cala-main__error" role="alert" data-testid="run-refused">
               <span>{message()}</span>
             </div>
           )}

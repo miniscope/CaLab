@@ -253,9 +253,13 @@ export function createProjectStore(deps: ProjectDeps) {
       ? { kind: 'custom' as const, label: custom.name }
       : { kind: 'default' as const, label: `${root}/${PROJECT_DIR}` };
   };
-  /** Results can be written to a folder (File System Access API). */
+  /** Writing to the folder was declined at a Start: the runs go into zips until the next open. */
+  const [declined, setDeclined] = createSignal(false);
+  /** Results can be written to a folder (File System Access API, and not declined). */
   const canWrite = () =>
-    opened()?.handle != null && typeof opened()?.handle?.getDirectoryHandle === 'function';
+    !declined() &&
+    opened()?.handle != null &&
+    typeof opened()?.handle?.getDirectoryHandle === 'function';
 
   /** The project folder to read: the custom one, or `<animal>/calab-project` if it exists. */
   async function projectDirForRead(): Promise<ReadDirLike | null> {
@@ -413,6 +417,7 @@ export function createProjectStore(deps: ProjectDeps) {
     setError(null);
     setOpened(o);
     setResultsHandle(o.resultsHandle ?? null);
+    setDeclined(false);
     setSelected(new Set<string>());
     setPlanState({ kind: 'idle' });
     setProject(null);
@@ -720,7 +725,11 @@ export function createProjectStore(deps: ProjectDeps) {
       (s) => !only || only.includes(s.id),
     );
     if (!writer || steps.length === 0 || planErrors().length > 0) return false;
-    if (!(await grant())) return false;
+    // A declined permission still runs: the run goes into a zip, as without the API.
+    if (!(await grant())) {
+      setDeclined(true);
+      writer = makeWriter(writer.project, writer.index);
+    }
     const t = now();
     writer.project = {
       ...writer.project,
@@ -764,6 +773,8 @@ export function createProjectStore(deps: ProjectDeps) {
     readOnly,
     dirty,
     canWrite,
+    /** Writing to the folder was declined: runs go into zips. */
+    declined,
     location,
     selected,
     toggle,

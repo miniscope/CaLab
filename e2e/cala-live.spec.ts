@@ -119,6 +119,11 @@ test('Cala: an unreachable live source reports an error', async ({ page }) => {
   await page.getByTestId('live-url').fill(`ws://127.0.0.1:${PORT + 50}`);
   await page.getByTestId('live-connect').click();
   await expect(page.getByRole('alert')).toContainText('Could not connect', { timeout: 15_000 });
+  // No run is left going: a recording opened next shows its own pre-run sheet.
+  const folder = mkdtempSync(join(tmpdir(), 'cala-after-live-e2e-'));
+  writeFileSync(join(folder, '0.avi'), buildAvi({ width: 24, height: 16, frames: 3 }));
+  await page.getByTestId('folder-input').setInputFiles(folder);
+  await expect(page.getByTestId('prerun-sheet')).toBeVisible();
 });
 
 test('Cala: a live stream settles and extracts on its factors after it ends, by default', async ({

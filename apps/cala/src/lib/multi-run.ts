@@ -442,16 +442,20 @@ export function createMultiRun(deps: MultiRunDeps) {
   async function start(p: MultiRunPlan): Promise<void> {
     run = null;
     dispatched = '';
-    setRoot(null);
-    setError(null);
-    setStopped(null);
-    setProgressError(null);
-    setFinished(false);
-    setSessionOpen(false);
-    setExported(false);
-    setCurrent(0);
-    setPlan(p);
-    setRecords(recordsFor(p));
+    // All at once: a run started again after it ended still has the last run's plan and finished
+    // stages, and the automatic run must not see them with `finished` cleared.
+    batch(() => {
+      setSessionOpen(false);
+      setRoot(null);
+      setError(null);
+      setStopped(null);
+      setProgressError(null);
+      setFinished(false);
+      setExported(false);
+      setCurrent(0);
+      setPlan(p);
+      setRecords(recordsFor(p));
+    });
     try {
       await openRun(0);
     } catch (err) {
