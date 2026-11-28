@@ -88,17 +88,36 @@ async function noFileSystemAccess(page: Page): Promise<void> {
   });
 }
 
-/** A screenshot of the page at 1440 and 400 px wide, into the evidence folder (when set). */
-async function evidence(page: Page, name: string): Promise<void> {
-  if (!EVIDENCE) return;
-  const size = page.viewportSize();
+/** Screenshots of the open flow, loaded at 1440 and at 400 px wide (evidence only). */
+test('Cala: the open flow, as screenshots', async ({ page }) => {
+  test.skip(!EVIDENCE, 'evidence only (CALA_E2E_EVIDENCE)');
+  const base = mkdtempSync(join(tmpdir(), 'cala-shots-e2e-'));
+  const single = join(base, 'My_V4_Miniscope');
+  mkdirSync(single);
+  writeFileSync(join(single, '0.avi'), buildAvi({ width: 96, height: 96, frames: 3 }));
+  writeFileSync(join(single, 'metaData.json'), '{"frameRate":"20FPS"}');
+  const animal = join(base, 'mouse1');
+  writeAnimal(animal);
+  await noFileSystemAccess(page);
+  const shot = (name: string, width: number) =>
+    page.screenshot({ path: join(EVIDENCE!, 'pr6', `${name}-${width}.png`), fullPage: true });
   for (const width of [1440, 400]) {
     await page.setViewportSize({ width, height: 900 });
-    await page.waitForTimeout(300);
-    await page.screenshot({ path: join(EVIDENCE, 'pr6', `${name}-${width}.png`), fullPage: true });
+    await page.goto('Cala/');
+    await shot('start', width);
+    await page.getByTestId('folder-input').setInputFiles(single);
+    await expect(page.getByTestId('prerun-sheet')).toBeVisible();
+    await shot('single-recording', width);
+    await page.getByTestId('back-to-project').click();
+    await expect(page.getByTestId('project-row')).toHaveCount(1);
+    await shot('single-recording-project', width);
+    await page.goto('Cala/');
+    await page.getByTestId('folder-input').setInputFiles(animal);
+    await expect(page.getByTestId('project-row')).toHaveCount(3);
+    await shot('animal-folder', width);
   }
-  if (size) await page.setViewportSize(size);
-}
+  rmSync(base, { recursive: true, force: true });
+});
 
 test('Cala: one recording is a one-session project; Run writes its run into calab-project/', async ({
   page,
@@ -118,13 +137,11 @@ test('Cala: one recording is a one-session project; Run writes its run into cala
   page.on('download', (d) => downloads.push(d));
 
   await page.goto('Cala/');
-  await evidence(page, 'start');
   await page.getByTestId('folder-input').setInputFiles(folder);
   // No table: the recording opens on its pre-run sheet; the project is one click away.
   await expect(page.getByTestId('prerun-sheet')).toBeVisible();
   await expect(page.getByTestId('project-row')).toHaveCount(0);
   await expect(page.getByTestId('back-to-project')).toHaveText('Project');
-  await evidence(page, 'single-recording');
   await page.getByTestId('run-start').click();
   await expect(page.getByTestId('session-run-root')).toContainText('calab-project/runs/');
   await expect.poll(() => downloads.length, { timeout: 360_000, intervals: [2000] }).toBe(1);
@@ -185,7 +202,6 @@ test('Cala: a 3-session project runs a Joint step and a Separate step into calab
   await page.goto('Cala/');
   await page.getByTestId('folder-input').setInputFiles(animal);
   await expect(page.getByTestId('project-row')).toHaveCount(3);
-  await evidence(page, 'animal-folder');
   await expect(page.getByTestId('project-row').nth(0)).toContainText(STREAMS[0]);
   await selectRow(page, 0);
   await selectRow(page, 1);
