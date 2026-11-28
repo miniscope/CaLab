@@ -776,6 +776,8 @@ export function createPipelineStore(
     paceStats: speed.paceStats,
     /** Who is doing what, over the last second or so (the slow, visit and look-back workers); null until a second of data. */
     work: workReadout.work,
+    /** The open interval's work since the last reading (`WorkReadout.workPeek`; read it, don't track it). */
+    workPeek: workReadout.workPeek,
     /** Measurement only: the slow worker's newest raw cumulative accounting (`?debug` adds `detail`, `stage`). */
     accounting: workReadout.accounting,
     /** The smart floor's `?debug` lines (value, which consumer sets it, confidence); empty before the first status. */

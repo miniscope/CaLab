@@ -21,7 +21,7 @@ import {
 } from './work-meter.ts';
 import type { SlowStatus } from '../workers/slow-types.ts';
 
-/** Shortest last interval closed at Discover's end, ms: shorter ones are too noisy to show. */
+/** Shortest interval shown, ms (the last one closed at Discover's end, an open one peeked at): shorter ones are too noisy. */
 const TAIL_MIN_MS = 200;
 
 /** What the work readout reads from the pipeline store and the Speed control. */
@@ -194,6 +194,20 @@ export function createWorkReadout(deps: WorkReadoutDeps) {
     if (stageBusyMs) stageBusyMeter.record(stageBusyMs);
   }
 
+  /**
+   * The open interval's work, from the last reading to the newest slow status (at least
+   * `TAIL_MIN_MS` long), without closing it; null unless Discover is running. Lets a plot reach
+   * the playhead between readings; nothing is written to History.
+   */
+  function workPeek(): WorkRates | null {
+    if (untrack(status) !== 'running' || !lastAccounting) return null;
+    const rates = workRater.peek(lastAccounting, TAIL_MIN_MS);
+    if (!rates) return null;
+    const stages = stageBusyMeter.peek(clock());
+    if (stages) rates.fast = { stages };
+    return rates;
+  }
+
   /** A run starts or stops: every meter and readout is cleared. */
   function reset(): void {
     forwardDrops = null;
@@ -226,6 +240,7 @@ export function createWorkReadout(deps: WorkReadoutDeps) {
       stageBusyMeter.start(clock());
     },
     work,
+    workPeek,
     /** Measurement only: the slow worker's newest raw cumulative accounting. */
     accounting: (): WorkStatus | null => lastAccounting,
     floorLine,

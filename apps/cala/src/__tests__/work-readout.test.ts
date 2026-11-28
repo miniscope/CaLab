@@ -65,4 +65,23 @@ describe('work readout and History', () => {
     readout.onStatus(status(3400, 900));
     expect(calls).toEqual(['kinds']);
   });
+
+  it('peeks at the open interval while Discover runs, writing nothing', () => {
+    const { readout, setSt, calls } = setup();
+    expect(readout.workPeek()).toBeNull();
+    readout.onStatus(status(0));
+    readout.onStatus(status(100, 50));
+    // Shorter than the shortest interval shown.
+    expect(readout.workPeek()).toBeNull();
+    readout.onStatus(status(500, 200));
+    expect(readout.workPeek()?.slow.live).toBeCloseTo(0.4);
+    expect(calls.filter((c) => c !== 'open')).toEqual([]);
+    // The peek did not close the interval: the reading still comes at the period.
+    readout.onStatus(status(1000, 300));
+    expect(calls.filter((c) => c === 'work')).toHaveLength(1);
+    readout.onStatus(status(1400, 400));
+    expect(readout.workPeek()?.slow.live).toBeCloseTo(0.25);
+    setSt('done');
+    expect(readout.workPeek()).toBeNull();
+  });
 });

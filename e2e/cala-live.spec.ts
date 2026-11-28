@@ -60,7 +60,10 @@ test('Cala: a live source streams through the pipeline to the end', async ({ pag
   // Unbounded: no total, no progress bar, no raw-file scrubber.
   await expect(page.getByTestId('pipeline-readout')).not.toContainText('/');
   await expect(page.getByRole('progressbar')).toHaveCount(0);
-  await expect(page.getByRole('tab', { name: 'Raw file' })).toHaveCount(0);
+  await page.getByTestId('tab-more').click();
+  await expect(page.getByTestId('tab-recording')).toBeVisible();
+  await expect(page.getByTestId('tab-raw')).toHaveCount(0);
+  await page.keyboard.press('Escape');
   await expect(page.getByTestId('pipeline-status')).toHaveText('Done', { timeout: 30_000 });
   await expect(page.getByTestId('pipeline-readout')).toContainText('frame 449');
   await expect(page.getByTestId('live-readout')).toContainText('449 received');

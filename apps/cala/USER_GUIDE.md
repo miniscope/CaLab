@@ -76,14 +76,17 @@ few batches of frames is plenty.
 
 The field of view fills the left of the window, as tall as the window allows. The
 right-hand column has the **run rail** at the top, always in view, and below it one
-row of tabs: **Run**, **Cell**, **QC**, **History**, **Correlation**, **Flat field**,
-**Timing**, **Raw file** and **Recording**. One tab shows at a time, with the column's whole
-height. Selecting a cell (in the field of view, the QC table or a neighbour link)
-opens the **Cell** tab. The arrow keys move between the tabs (Home and End to the
-first and last), and the app remembers the tab you were on. A 1024 px window keeps the
-image and the column side by side (the column is at least 440 px wide). Narrower, or in a
-portrait window, the page stacks the run rail, the image and the tabs, in that order, and
-scrolls, so the run's state stays at the top.
+row of tabs: **Run**, **Cell**, **QC** and **History**, then **More ▾**, a menu of the
+diagnostics: **Correlation**, **Flat field**, **Timing**, **Raw file** and **Recording**.
+While one of those is shown, the More tab carries its name. One tab shows at a time, with
+the column's whole height. Selecting a cell (in the field of view, the QC table or a
+neighbour link) opens the **Cell** tab. The arrow keys move between the tabs (Home and End
+to the first and last); on **More**, Down, Enter or Space opens its menu, Up and Down move
+in it and Escape closes it. The app remembers the tab you were on. A 1024 px window keeps
+the image and the column side by side (the column is at least 440 px wide). Narrower, or in
+a portrait window, the page stacks the run rail, the image and the tabs, in that order, and
+scrolls up and down (never sideways), so the run's state is at the top. On a phone-wide
+window the rail's four figures sit in two rows of two.
 
 **Run rail.** Above the tabs, one place for every live figure of the run:
 
@@ -205,9 +208,10 @@ Discover or stop the live run, and the tab shows, in the order you use them:
   - **fps** on a fixed 10 to 500 log scale: the target dashed (Max at the top), the speed
     achieved solid, the floor dotted, and in Curve mode the plan in long dashes; a thin
     line marks each change of target.
-  - **Workers busy, by kind**, 0 to the number of workers: each reading covers the time
-    since the reading before it, so the bands are steps; the colours are the worker
-    squares' (below).
+  - **Workers busy, by kind**, 0 to the number of workers: each reading (about once a
+    second) covers the time since the reading before it, so the bands are steps; the
+    interval since the last reading is drawn up to the playhead and settles when its
+    reading comes in. The colours are the worker squares' (below).
 
   A recording with look-back adds a **Final settle** column on the right, on its own axis
   (the frames it re-read, 0 to its plan), because no recording time passes then: its
@@ -261,7 +265,8 @@ window that takes the rest of the tab's height; **Demixing** shows the overlappi
 neighbours. The arrows step through the cells by id.
 
 **The other tabs.** **QC** (the cell table: click a row to select the cell; its sort
-and filter stay while you look at other tabs), **History** (see below), **Correlation** (the
+and filter stay while you look at other tabs), **History** (see below), and under **More**:
+**Correlation** (the
 pairwise trace correlation against distance plot; see below), **Flat field**,
 **Timing** (per-stage times and the slow loop's counters), **Raw file** (scrub the
 recording as read from disk) and **Recording**.

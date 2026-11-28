@@ -210,6 +210,29 @@ describe('workRates', () => {
   });
 });
 
+describe('WorkRater peek', () => {
+  it('reads the open interval without moving the reference or the carry', () => {
+    const rater = new WorkRater(1000);
+    expect(
+      rater.peek(
+        snap(0, () => {}),
+        200,
+      ),
+    ).toBeNull();
+    rater.push(snap(0, () => {}));
+    const visits = (ms: number) => (w: WorkStatus) => {
+      w.visitBusyMs = [ms, 0];
+    };
+    expect(rater.peek(snap(100, visits(50)), 200)).toBeNull();
+    expect(rater.peek(snap(500, visits(250)), 200)!.visit[0]).toBeCloseTo(0.5);
+    // A peek above 100 % is clamped, and its excess is not carried into the next reading.
+    expect(rater.peek(snap(500, visits(900)), 200)!.visit[0]).toBe(1);
+    expect(rater.push(snap(1000, visits(500)))!.visit[0]).toBeCloseTo(0.5);
+    // The reference moved to the reading.
+    expect(rater.peek(snap(1500, visits(750)), 200)!.visit[0]).toBeCloseTo(0.5);
+  });
+});
+
 describe('WorkRater carry', () => {
   it('clamps a busy share at 1 and carries the excess into the next window', () => {
     const rater = new WorkRater(1000);
@@ -742,6 +765,19 @@ describe('StageBusyMeter', () => {
     m.record([1500]);
     expect(m.take(1000)).toEqual([1]);
     expect(m.take(2000)).toEqual([0.5]);
+  });
+
+  it('peeks at the open window without closing it or spending the carry', () => {
+    const m = new StageBusyMeter();
+    expect(m.peek(500)).toBeNull();
+    m.start(0);
+    m.record([1500]);
+    expect(m.take(1000)).toEqual([1]);
+    m.record([100]);
+    expect(m.peek(1000)).toBeNull();
+    expect(m.peek(1500)).toEqual([1]);
+    expect(m.peek(2000)).toEqual([0.6]);
+    expect(m.take(2000)).toEqual([0.6]);
   });
 
   it('has no window before a start, and after a reset', () => {
