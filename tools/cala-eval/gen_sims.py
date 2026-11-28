@@ -48,6 +48,7 @@ def expected_spec_json(arm: str, seed: int) -> str:
         n_px=None if A.NPX == 600 else A.NPX,
         motion=cfg["motion"],
         base=base,
+        **({"fps": cfg["fps"]} if "fps" in cfg else {}),
     )
     if cfg["halo"] > 0:
         acq = spec.acquisition
@@ -80,6 +81,8 @@ def command(arm: str, seed: int, out: Path, python: str) -> list[str]:
         cmd.append("--motion")
     if cfg["halo"] > 0:
         cmd += ["--f", str(cfg["halo"])]
+    if "fps" in cfg:
+        cmd += ["--fps", str(cfg["fps"])]
     return cmd
 
 

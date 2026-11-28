@@ -36,6 +36,7 @@ ap.add_argument("--dur", type=float, default=60.0)
 ap.add_argument("--npx", type=int, default=600)
 ap.add_argument("--seed", type=int, default=0)
 ap.add_argument("--motion", action="store_true")
+ap.add_argument("--fps", type=float, default=None, help="frame rate, Hz (default: the calibrated spec's)")
 ap.add_argument("--spec", default=None, help="base spec JSON (default: ca1_workshop_calibrated.spec.json)")
 ap.add_argument("--target-depth-um", type=float, nargs=2, default=None, metavar=("LO", "HI"),
                 help="mark units whose depth (centers_um[:,0]) is outside [LO, HI] as non-detectable in "
@@ -48,7 +49,8 @@ out = Path(a.out)
 out.mkdir(parents=True, exist_ok=True)
 
 base = None if a.spec is None else Spec.model_validate_json(Path(a.spec).read_text())
-spec = calibrated_spec(a.dur, seed=a.seed, n_px=None if a.npx == 600 else a.npx, motion=a.motion, base=base)
+fps_kw = {} if a.fps is None else {"fps": a.fps}
+spec = calibrated_spec(a.dur, seed=a.seed, n_px=None if a.npx == 600 else a.npx, motion=a.motion, base=base, **fps_kw)
 acq = spec.acquisition
 if a.f > 0:
     acq = acq.model_copy(update={"tissue": acq.tissue.model_copy(update={"scatter_halo_fraction": a.f})})

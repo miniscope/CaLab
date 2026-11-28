@@ -33,6 +33,10 @@ ARMS = {
     "size6_motion": {"spec": "ca1_workshop_v3_size6.spec.json", "motion": True, "halo": 0.0},
     "size16_static": {"spec": "ca1_workshop_v3_size16.spec.json", "motion": False, "halo": 0.0},
     "size16_motion": {"spec": "ca1_workshop_v3_size16.spec.json", "motion": True, "halo": 0.0},
+    # The v3 arms recorded at 30 fps (the Miniscope V4's usual rate), same 480 s: only the
+    # frame rate changes. minisim's burst gate steps per frame, so its bouts are 2/3 as long.
+    "v3fps30_static": {"spec": "ca1_workshop_v3.spec.json", "motion": False, "halo": 0.0, "fps": 30.0},
+    "v3fps30_motion": {"spec": "ca1_workshop_v3.spec.json", "motion": True, "halo": 0.0, "fps": 30.0},
 }
 
 
@@ -48,6 +52,8 @@ GT_SCALES = {
     "size6_motion": {"d": 6.0, "edge": 1.5},
     "size16_static": {"d": 15.9, "edge": 1.6},
     "size16_motion": {"d": 15.9, "edge": 1.6},
+    "v3fps30_static": {"d": 10.1, "edge": 1.6},
+    "v3fps30_motion": {"d": 10.1, "edge": 1.6},
 }
 
 # S2.4 M0 one-at-a-time scale arms: `qc_eval` flags added to a run (section 6.1). The diameter
@@ -65,6 +71,16 @@ SCALE_ARMS = {
     "f80": "--flatten-sigma 80",
     "tile16": "--cell-diameter 16 --flatten-sigma 20 --tile-px 102 --margin-px 38",
 }
+
+
+def fps(arm: str) -> float:
+    """The arm's frame rate, Hz."""
+    return ARMS[arm].get("fps", FPS)
+
+
+def frames(arm: str) -> int:
+    """The arm's frame count (`DUR_S` at its frame rate)."""
+    return round(DUR_S * fps(arm))
 
 
 def spec_path(arm: str) -> Path:
