@@ -337,7 +337,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             context="prerun"
             autoExtract={auto()}
             onAutoExtract={setExtractAfterDiscover}
-            sessionRun={false}
+            sessionRun={props.onRun !== undefined}
             frameWidth={props.frameWidth}
             onRun={() => (props.onRun ? props.onRun() : void s().start())}
           />

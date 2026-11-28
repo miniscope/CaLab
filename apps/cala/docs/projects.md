@@ -1,9 +1,24 @@
-# Animal projects
+# Projects
 
-Most Miniscope experiments are many sessions from one animal. Cala opens
-the animal's folder as a **project**, the unit of work: one table of every
-session, with its recording facts and cala status, a plan of runs over any mix
-of sessions, and every result kept together in `calab-project/`.
+The **project** is the unit of work. Most Miniscope experiments are many
+sessions from one animal: cala opens the animal's folder as a project, with
+one table of every session, its recording facts and cala status, a plan of runs
+over any mix of sessions, and every result kept together in `calab-project/`.
+
+There is one way in. Whatever is opened becomes a project through the same
+code path and writes the same files:
+
+| Opened                                            | Project                                                                                        | First screen                          |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------- |
+| An animal folder of sessions                      | one session per recording folder                                                               | the session table                     |
+| One recording folder (or files picked one by one) | one session, id `.`; its plan is one Separate step                                             | the recording, with its pre-run sheet |
+| A live stream                                     | one session, id `.`, whose stream has the role `live` and no files; no folder (zip at the end) | the recording, running                |
+
+A one-session project never shows its table unless asked (**Project** in the
+header). **Run** on its pre-run sheet starts that step: permission to write is
+asked, the project file and the run file (`planned`) are written before the
+first frame, and the run's results go into its run folder like any other
+run's. **Restart** after a run ended starts a new run of the same step.
 
 The project files are app-neutral: `@calab/project` (`packages/project`) owns
 their schemas, reading, refusal, the index and the plan, so a later CaDecon,
@@ -11,17 +26,18 @@ CaBaNA or behaviour run writes into the same tree. Code on the cala side:
 `src/lib/run-file.ts` (cala's run file), `src/lib/project-index.ts` (what the
 table shows), `src/lib/project-io.ts` (reading and writing the folder),
 `src/lib/project-store.ts` (the open project, its plan and `ProjectWriter`),
-`src/lib/recent-projects.ts`, `src/components/ProjectView.tsx`. Runs go
-through the multi-session runner (`src/lib/multi-run.ts`, [stages.md](stages.md),
-"Sessions").
+`src/lib/recent-projects.ts`, `src/components/ProjectView.tsx`. Every run is the
+run of a plan step, through the step runner (`src/lib/multi-run.ts`,
+[stages.md](stages.md), "Sessions").
 
-## The project root is the animal folder
+## The project root is the picked folder
 
-**Open animal project** on the start screen picks the animal's folder. The
-sessions are found as for a multi-session run (`discoverKinds` and
-`chooseKind`: every numbered video series at any depth, the Miniscope kind
-chosen, behaviour cameras left out). A session's id is its folder relative to
-the animal folder, e.g. `2026_11_10/14_02_33/My_V4_Miniscope`.
+**Open a Miniscope folder** on the start screen (or a drop) picks the folder.
+The sessions are found by `discoverKinds` and `chooseKind`: every numbered
+video series at any depth, the Miniscope kind chosen, behaviour cameras left
+out. A session's id is its folder relative to the picked folder, e.g.
+`2026_11_10/14_02_33/My_V4_Miniscope`; a folder that holds the videos itself is
+the session `.`, and its results sit at the root of each run folder.
 
 ### Miniscope or behaviour camera
 
@@ -194,7 +210,7 @@ edges; `own` marks a session with ids of its own.
 
 ### Rules
 
-- **The project folder.** `<animal>/calab-project/` by default. **Choose
+- **The project folder.** `<picked folder>/calab-project/` by default. **Choose
   another folder...** writes to a folder the user picks instead, which then
   plays its role; Recent projects keeps its handle. A raw data folder is only
   ever read.
@@ -300,9 +316,20 @@ results already written stay, and the steps not finished stay in the plan to
 start again. **Back to project** in the viewer's header returns to the table
 (stopping a running plan).
 
+## Live streams
+
+A live stream (**Connect**, or `?live=<url>` on load) is a one-session project
+in memory: the session `.`, its stream's role `live`, no files and no folder.
+Its run starts on connect; its run file is written (`planned`) before the
+first frame, into the run's zip, which downloads when the run ends. The
+results are the stream's traces as the fast loop solved them (`live-export.ts`)
+or, on a factor run, Extract's on the stream's factors. A stream that found no
+cells writes its run file with the result `skipped`. **Restart** connects again
+as a new run.
+
 ## Reopening
 
-Chrome and Edge keep the animal folder's handle (and a chosen project
+Chrome and Edge keep the picked folder's handle (and a chosen project
 folder's) in IndexedDB (`cala-projects`, `recent`); **Recent projects** on the
 start screen reopens one with a click (the browser asks for permission again).
 Other browsers pick the folder again; each run downloads as
@@ -334,9 +361,10 @@ the flag of the result's session.
 
 - `defaults`, per-stream `overrides` and step `params` in `calab-project.json`
   are kept and written back, but not yet applied as layers to a run's params.
-- Without write permission the draft project is not mirrored in IndexedDB.
-- The session setup (a folder of sessions opened outside a project) still
-  exists; it writes the same tree. A single recording writes no run folder.
+- Without write permission the draft project is not mirrored in IndexedDB, and
+  without the File System Access API there is no OPFS copy of the run file.
+- A live stream's results folder cannot be picked before it starts: its run is
+  always a zip.
 - Saved library files, **Apply**, extending a Joint run from its library, the
   **Library** column.
 - Cross-session cell matching (`identity/`).

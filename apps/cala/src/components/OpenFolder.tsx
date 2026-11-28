@@ -292,11 +292,10 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
             <strong>Open a Miniscope folder</strong> or drop it here
           </p>
           <p class="drop-zone__subtext">
-            One recording (the folder with the numbered videos, 0.avi, 1.avi, ... or msCam0.avi,
-            msCam1.avi, ..., and metaData.json, timeStamps.csv) or an animal folder of several
-            sessions (each recording folder becomes one session). Either opens as a project, with
-            its results in a <code>calab-project</code> folder. Videos are read frame by frame from
-            disk, never loaded whole, and never uploaded.
+            A recording folder (0.avi, 1.avi, ... or msCam0.avi, ..., with metaData.json and
+            timeStamps.csv) or an animal folder of sessions. Either opens as a project; results go
+            to its <code>calab-project</code> folder. Videos are read frame by frame from disk and
+            never uploaded.
           </p>
         </div>
         <input

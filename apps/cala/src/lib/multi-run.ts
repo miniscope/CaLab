@@ -318,6 +318,14 @@ export function createMultiRun(deps: MultiRunDeps) {
 
   async function finish(skipped?: string): Promise<void> {
     if (skipped) patchRecord(current(), { status: 'skipped', note: skipped });
+    // A live stream's length is what Discover read (an export already set it).
+    if (plan()?.sessions[current()]?.live && skipped) {
+      const discover = deps
+        .stages()
+        .runs.filter((r) => r.stage === 'discover')
+        .at(-1);
+      patchRecord(current(), { frames: discover?.frames ?? 0, fps: deps.info()?.fps ?? null });
+    }
     await closeRun('finished');
     setFinished(true);
   }

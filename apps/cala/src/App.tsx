@@ -807,7 +807,8 @@ const App: Component = () => {
     return ended && (cells.library()?.ids.length ?? 0) === 0 ? 'empty' : 'waiting';
   };
   const multiRun = createMultiRun({
-    runRecord: (kind) => runRecord({ mode: kind }),
+    // Every run Extracts after its Discover.
+    runRecord: (kind) => runRecord({ mode: kind, extractAfterDiscover: true }),
     liveResult: liveState,
     async openJoint(sessions) {
       pipeline.stop();
