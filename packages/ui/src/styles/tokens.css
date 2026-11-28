@@ -159,8 +159,8 @@
 
 /* Dark theme: the OS preference when the page pins no theme, or data-theme="dark". The two
    blocks are identical (a test keeps them so). Inks are at least 4.5:1 on --surface, --ground
-   and --inset; stage hues and the cala work kinds are validated as sets on the dark surface
-   with the dataviz palette validator. Stage labels take the dark ink on every stage hue. Apps
+   and --inset; the dark stage hues pass the dataviz palette validator as a set on the dark
+   surface. Stage labels take the dark ink on every stage hue. Apps
    keep their own --accent; an app that runs in dark sets its dark accent in its own blocks on
    the same two selectors. */
 @media (prefers-color-scheme: dark) {

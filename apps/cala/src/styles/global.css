@@ -29,14 +29,17 @@
 }
 
 /* Dark values of cala's own tokens, on the selectors of the shared dark set (tokens.css); the
-   two blocks are identical. The work steps are validated with the dark stage hues as one set
-   on the dark surface; Joint id 0 takes a lighter blue so the dark label ink reaches 4.5:1. */
+   two blocks are identical. With the dark stage hues, the work steps pass the palette
+   validator's colour-vision, normal-vision and contrast checks on the dark surface, all pairs;
+   Read frames and Look-back sit above its lightness band (lighter than a series step), and
+   Background settle is told apart from Final settle by its hatch or dash. Joint id 0 takes a
+   lighter blue so the dark label ink reaches 4.5:1. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
     --accent: #a98bd6;
     --accent-hover: #bda5e0;
     --accent-muted: rgba(169, 139, 214, 0.16);
-    --work-read: #8abcf0;
+    --work-read: #86bcfa;
     --work-lookback: #40c99a;
     --work-idle: #3a3a3a;
     --ids-0: #2a8fd6;
@@ -47,7 +50,7 @@
   --accent: #a98bd6;
   --accent-hover: #bda5e0;
   --accent-muted: rgba(169, 139, 214, 0.16);
-  --work-read: #8abcf0;
+  --work-read: #86bcfa;
   --work-lookback: #40c99a;
   --work-idle: #3a3a3a;
   --ids-0: #2a8fd6;

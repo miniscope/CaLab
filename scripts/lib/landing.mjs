@@ -5,7 +5,7 @@
  * Its colours, type, spacing and radii come from the apps' own design tokens,
  * packages/ui/src/styles/tokens.css, inlined at build time, so the page tracks
  * the apps instead of keeping a copy of their values. The page pins the light
- * set (data-theme="light"); its dark rendering has not been checked.
+ * set (data-theme="light").
  *
  * Everything about an app comes from its `calab` block (discoverApps() in
  * scripts/lib/apps.mjs); nothing here names an app. Released apps (stable,

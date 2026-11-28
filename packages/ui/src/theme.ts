@@ -4,8 +4,9 @@
  *
  * A theme is a `data-theme` value on the root element. No attribute means "system": the light
  * tokens, or the dark ones when the OS prefers dark. `data-theme="light"` and `"dark"` pin a
- * set. A further theme is one more `:root[data-theme='<name>']` block in `tokens.css` and one
- * more entry in `THEMES`; nothing else changes.
+ * set. A further theme is one more `:root[data-theme='<name>']` block in `tokens.css`, one
+ * more entry in `THEMES` and its name in the boot script of the pages that restore a choice
+ * before first paint (`apps/cala/index.html`).
  *
  * Canvas cannot read CSS variables, so canvas code resolves its colours with `resolveCssColor`
  * and redraws on `onThemeChange`.

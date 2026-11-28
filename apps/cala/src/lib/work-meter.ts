@@ -611,8 +611,9 @@ export const WORK_KIND_LABELS: Record<WorkKind | 'spare', string> = {
  * stage's hue: Read frames a light step of Discover blue (`--work-read`), Find cells the
  * Discover hue, Look-back a teal (`--work-lookback`), both settles the Final settle hue.
  * Background settle shares the settle hue and is told apart by its hatch (HTML, SVG) or dash
- * (History line), never by colour alone. The light and dark steps (`styles/global.css`) are
- * validated as sets on their surfaces (dataviz palette validator, all pairs).
+ * (History line), never by colour alone. The light and dark steps (`styles/global.css`) pass
+ * the palette validator's colour-vision checks on their surfaces, all pairs; the exceptions it
+ * reports are noted there.
  */
 export const KIND_COLOR: Record<WorkKind, string> = {
   live: 'var(--work-read)',
