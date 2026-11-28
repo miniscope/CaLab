@@ -417,3 +417,10 @@
     transform: none;
   }
 }
+
+/* A phone-wide header has no room for the sparkle: the choice made on a wider window holds. */
+@media (max-width: 480px) {
+  .compact-header .cala-fun-toggle {
+    display: none;
+  }
+}
