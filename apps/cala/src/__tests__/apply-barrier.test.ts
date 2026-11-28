@@ -279,6 +279,25 @@ describe('SlowRunner apply barrier', () => {
     expect(libs.at(-1)).not.toHaveProperty('frame');
   });
 
+  it('adds history-review candidates once the visits out are applied, then hands out again', async () => {
+    const t = setup({ lookback: false });
+    const added: number[] = [];
+    const loop = (t.r as unknown as { loop: { addReviewed: (c: Float32Array) => number } }).loop;
+    loop.addReviewed = (c) => {
+      added.push(c.length);
+      t.calls.push('r');
+      return c.length;
+    };
+    await t.r.handleAsync(frames(48), pause);
+    t.r.handleReviewed({ type: 'reviewed', session: 1, candidates: new Float32Array(3) });
+    expect(added).toEqual([]);
+    t.deliver('sent');
+    await t.r.handleAsync(frames(56), pause);
+    await t.r.handleAsync(frames(64), pause);
+    const i = t.calls.lastIndexOf('o');
+    expect(t.calls.slice(i + 1)).toEqual(['a1', 'a2', 'p1', 'r', 't3', 't4']);
+  });
+
   it('applies on arrival when the run is not repeatable, or at Max', async () => {
     for (const o of [{ repeatable: false }, { pace: 0 }]) {
       const t = setup(o);

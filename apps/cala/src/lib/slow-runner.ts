@@ -1187,6 +1187,9 @@ export class SlowRunner {
           const s = this.now();
           this.housekeep();
           maxStep = this.now() - s;
+          // History-review candidates wait for every visit out; under the barrier the last one is
+          // applied here, not on arrival.
+          if (this.barrierOn) this.addReviewed();
           this.dispatch();
         }
         if (this.lookbackLive) {
