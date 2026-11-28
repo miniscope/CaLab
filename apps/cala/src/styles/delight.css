@@ -33,7 +33,7 @@
   }
 
   :root:not([data-fun='off']) .cala-moment {
-    animation: cala-moment 2000ms ease-out both;
+    animation: cala-moment 2400ms ease-out both;
   }
 }
 
@@ -150,48 +150,24 @@
   }
 }
 
-/* ---- The Cala mark: a small indicator dot after the name. While Discover runs it pulses like
-   a calcium transient (a fast rise, a slow decay); otherwise it rests. ---- */
+/* ---- The Cala mark: a small dot after the name. While a stage runs it is lit, and it beats
+   with the cells (one beat per 2 Hz tick with onsets, sized by the share that fired; driven
+   from `ThemeMenu` with the Web Animations API, transform and opacity only). Idle: it rests. */
 :root:not([data-fun='off']) .compact-header__title::after {
   content: '';
   display: inline-block;
-  width: 5px;
-  height: 5px;
-  margin-left: 3px;
+  width: 6px;
+  height: 6px;
+  margin-left: 4px;
   border-radius: 50%;
   background: var(--accent);
   opacity: 0.35;
   vertical-align: 0.1em;
+  transform-origin: center;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  :root:not([data-fun='off'])[data-cala-run='discover'] .compact-header__title::after {
-    animation: cala-calcium 2.4s infinite;
-  }
-}
-
-/* Reduced motion: the dot is lit while Discover runs, without the pulse. */
-:root:not([data-fun='off'])[data-cala-run='discover'] .compact-header__title::after {
+:root:not([data-fun='off'])[data-cala-run] .compact-header__title::after {
   opacity: 0.9;
-}
-
-@keyframes cala-calcium {
-  0% {
-    opacity: 0.3;
-    transform: scale(0.85);
-    animation-timing-function: cubic-bezier(0.3, 0, 0.6, 1);
-  }
-  7% {
-    opacity: 1;
-    transform: scale(1.35);
-    box-shadow: 0 0 6px var(--accent);
-    animation-timing-function: cubic-bezier(0.1, 0.6, 0.3, 1);
-  }
-  100% {
-    opacity: 0.3;
-    transform: scale(0.85);
-    box-shadow: 0 0 0 transparent;
-  }
 }
 
 /* ---- Hidden themes: the flourishes beyond their tokens (tokens.css, global.css). Grounds and
@@ -355,31 +331,25 @@
   color: var(--ink-3);
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  :root:not([data-fun='off']) .cala-neuron__glow {
-    transform-box: fill-box;
-    transform-origin: center;
-    animation: cala-soma 3.2s infinite;
-  }
-
-  :root:not([data-fun='off']) .drop-zone:hover .cala-neuron__glow {
-    animation-duration: 1.1s;
-  }
+/* The sketch's own life is JavaScript (`NeuronSketch`): sparse random spikes, a lean toward
+   the cursor. Here only how it moves. */
+.cala-neuron__glow {
+  transform-box: fill-box;
+  transform-origin: center;
 }
 
-@keyframes cala-soma {
-  0%,
-  62% {
-    opacity: 0.1;
-    transform: scale(1);
-  }
-  66% {
-    opacity: 0.75;
-    transform: scale(1.3);
-  }
-  100% {
-    opacity: 0.1;
-    transform: scale(1);
+.cala-neuron__lean {
+  transform-origin: 35.5px 36px;
+}
+
+.cala-neuron__spike {
+  fill: var(--accent);
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .cala-neuron__lean {
+    transition: transform 900ms cubic-bezier(0.2, 0.8, 0.3, 1);
   }
 }
 
@@ -422,5 +392,702 @@
 @media (max-width: 480px) {
   .compact-header .cala-fun-toggle {
     display: none;
+  }
+}
+
+/* Fire colours of the rail's juice and the ribbon's synchronous columns: fixed, like a flame
+   (the theme's warm accent is near-black in the light theme). */
+:root {
+  --cala-ember: #ff9f2e;
+  --cala-ember-hot: #fff6c8;
+}
+
+/* ======================================================================================
+   Ambient life (`lib/soul.ts`): births, the run's moments over the field of view, the hover
+   halo, the session portrait and the activity ribbon. Overlay only: the image, its display
+   range and the cells' own colours are never changed.
+   ====================================================================================== */
+
+/* Fun layer in the image's coordinates (inside the zoomed world, so it follows zoom and pan). */
+.cala-fov__fx {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  contain: strict;
+}
+
+.cala-bloom,
+.cala-halo,
+.cala-moment-ring {
+  display: none;
+}
+
+/* A birth: a soft ring at the new cell's centre that blooms out of white into the cell's colour
+   and settles (~1.2 s). Reduced motion: the ring shows in place for that time, then goes. */
+:root:not([data-fun='off']) .cala-bloom {
+  display: block;
+  position: absolute;
+  aspect-ratio: 1;
+  min-width: 10px;
+  translate: -50% -50%;
+  border-radius: 50%;
+  border: 2px solid var(--bloom-color, #fff);
+  background: radial-gradient(
+    closest-side,
+    transparent 55%,
+    color-mix(in srgb, var(--bloom-color, #fff) 45%, transparent)
+  );
+  /* Reduced motion: the ring shows in place (the app's reset cuts every animation short), and
+     goes when the bloom is removed. */
+  opacity: 0.9;
+}
+
+:root:not([data-fun='off']) .cala-bloom::after {
+  content: '';
+  position: absolute;
+  inset: 30%;
+  border-radius: 50%;
+  background: #fff;
+  opacity: 0;
+  animation: cala-bloom-core 1200ms ease-out both;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-fun='off']) .cala-bloom {
+    animation: cala-bloom 1200ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+  }
+}
+
+@keyframes cala-bloom {
+  0% {
+    opacity: 0;
+    transform: scale(0.2);
+  }
+  14% {
+    opacity: 1;
+  }
+  45% {
+    opacity: 0.9;
+    transform: scale(1.15);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.75);
+  }
+}
+
+@keyframes cala-bloom-core {
+  0% {
+    opacity: 0.95;
+  }
+  40% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Hover halo: the footprint under the mouse gets a soft lit ring. */
+:root:not([data-fun='off']) .cala-halo {
+  display: block;
+  position: absolute;
+  aspect-ratio: 1;
+  min-width: 12px;
+  translate: -50% -50%;
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    transparent 58%,
+    rgba(255, 255, 255, 0.55) 76%,
+    rgba(255, 255, 255, 0.15) 88%,
+    transparent
+  );
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-fun='off']) .cala-halo {
+    animation: cala-halo-in 220ms ease-out both;
+  }
+}
+
+@keyframes cala-halo-in {
+  from {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* A milestone: a wide ring bursts from the newest cell... */
+:root:not([data-fun='off']) .cala-moment-ring {
+  display: block;
+  position: absolute;
+  aspect-ratio: 1;
+  min-width: 24px;
+  translate: -50% -50%;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-fun='off']) .cala-moment-ring {
+    animation: cala-ring 1400ms cubic-bezier(0.1, 0.6, 0.3, 1) both;
+  }
+}
+
+@keyframes cala-ring {
+  0% {
+    opacity: 0.95;
+    transform: scale(0.15);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.6);
+  }
+}
+
+/* ...and the number itself stands over the field of view for a moment. */
+.cala-fov__moment {
+  display: none;
+}
+
+:root:not([data-fun='off']) .cala-fov__moment {
+  position: absolute;
+  top: 14%;
+  left: 50%;
+  translate: -50% 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, #000 62%, transparent);
+  color: #fff;
+  text-align: center;
+  pointer-events: none;
+}
+
+.cala-fov__moment-title {
+  font-size: clamp(22px, 7cqi, 44px);
+  font-weight: var(--font-weight-semibold);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+}
+
+.cala-fov__moment[data-kind='milestone'] .cala-fov__moment-title {
+  background: linear-gradient(180deg, #fff 30%, color-mix(in srgb, var(--accent) 55%, #fff));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.cala-fov__moment[data-kind='converged'] .cala-fov__moment-title,
+.cala-fov__moment[data-kind='handoff'] .cala-fov__moment-title {
+  font-size: clamp(16px, 4cqi, 26px);
+}
+
+.cala-fov__moment-note {
+  font-size: var(--font-size-sm);
+  color: rgba(255, 255, 255, 0.78);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-fun='off']) .cala-fov__moment {
+    animation: cala-banner 2800ms cubic-bezier(0.2, 1.2, 0.4, 1) both;
+  }
+}
+
+@keyframes cala-banner {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.86);
+  }
+  10% {
+    opacity: 1;
+    transform: none;
+  }
+  82% {
+    opacity: 1;
+    transform: none;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+/* ---- Session portrait: a card over the field of view at the end of a run ---- */
+.cala-portrait {
+  display: none;
+}
+
+:root:not([data-fun='off']) .cala-portrait {
+  position: absolute;
+  inset: auto var(--space-3) var(--space-3) auto;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: min(320px, calc(100% - 2 * var(--space-3)));
+  max-height: calc(100% - 2 * var(--space-3));
+  overflow: auto;
+  border-radius: var(--radius-lg);
+  background: var(--surface-float);
+  color: var(--ink-1);
+  box-shadow: var(--shadow-elevated);
+  border: 1px solid var(--line);
+  cursor: default;
+}
+
+.cala-portrait__art {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #000;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  image-rendering: pixelated;
+}
+
+.cala-portrait__body {
+  padding: var(--space-3);
+  display: grid;
+  gap: var(--space-2);
+}
+
+.cala-portrait__name {
+  margin: 0;
+  font-weight: var(--font-weight-semibold);
+  overflow-wrap: anywhere;
+}
+
+.cala-portrait__stats {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px var(--space-3);
+  font-size: var(--font-size-sm);
+}
+
+.cala-portrait__stats > div {
+  display: contents;
+}
+
+.cala-portrait__stats dt {
+  color: var(--ink-2);
+}
+
+.cala-portrait__stats dd {
+  margin: 0;
+}
+
+.cala-portrait__actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-fun='off']) .cala-portrait {
+    animation: cala-portrait-in 520ms cubic-bezier(0.2, 1.3, 0.4, 1) both;
+  }
+}
+
+@keyframes cala-portrait-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---- Activity ribbon under the field of view (a data view: shown with the switch off too) ---- */
+.cala-ribbon {
+  --cala-ribbon-ink: var(--stage-discover);
+  --cala-ribbon-hot: var(--cala-ember);
+  --cala-ribbon-base: var(--track);
+  flex: none;
+  display: grid;
+  gap: 2px;
+  padding: 0 2px;
+}
+
+.cala-ribbon__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--font-size-xs);
+  color: var(--ink-2);
+}
+
+.cala-ribbon__title {
+  font-weight: var(--font-weight-semibold);
+  color: var(--ink-1);
+  cursor: help;
+}
+
+.cala-ribbon__scale {
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+/* A phone-wide window: the scale stays in the title's tooltip. */
+@media (max-width: 560px) {
+  .cala-ribbon__scale {
+    display: none;
+  }
+}
+
+.cala-ribbon__caption {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cala-ribbon__btn {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cala-ribbon__btn:hover {
+  text-decoration: underline;
+}
+
+.cala-ribbon__on {
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.cala-ribbon__plot {
+  position: relative;
+}
+
+.cala-ribbon__canvas {
+  display: block;
+  width: 100%;
+  border-radius: var(--radius-sm);
+  background: var(--inset);
+}
+
+/* ======================================================================================
+   Game juice on the run rail, tied to the run: the running bar shines and its leading edge
+   glows; running fast it throws embers; a finished stage bursts into sparks; the next stage
+   lights up as it takes over. Transform and opacity only for anything that loops.
+   ====================================================================================== */
+.cala-rail__track {
+  position: relative;
+}
+
+.cala-track-fx {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: none;
+  contain: layout style;
+}
+
+:root:not([data-fun='off']) .cala-track-fx {
+  display: block;
+}
+
+.cala-rail .stage-track__fill {
+  overflow: hidden;
+}
+
+:root:not([data-fun='off']) .cala-rail .stage-track__seg--running .stage-track__fill::before,
+:root:not([data-fun='off']) .cala-rail .stage-track__seg--running .stage-track__fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+
+/* The leading edge: a bright lip at the fill's end. */
+:root:not([data-fun='off']) .cala-rail .stage-track__seg--running .stage-track__fill::after {
+  right: 0;
+  width: 10px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.75));
+  opacity: 0.6;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* A sheen that runs along the running fill. */
+  :root:not([data-fun='off']) .cala-rail .stage-track__seg--running .stage-track__fill::before {
+    left: 0;
+    width: 40%;
+    background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.32) 50%, transparent);
+    animation: cala-sheen 2.4s ease-in-out infinite;
+  }
+
+  :root:not([data-fun='off'])
+    .cala-rail[data-hot]
+    .stage-track__seg--running
+    .stage-track__fill::before {
+    animation-duration: 1.1s;
+  }
+}
+
+@keyframes cala-sheen {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(260%);
+  }
+}
+
+/* Embers at the running edge while the run is fast (at its target, or fast unpaced). */
+.cala-embers {
+  position: absolute;
+  bottom: 50%;
+  width: 0;
+  height: 0;
+}
+
+.cala-embers i {
+  position: absolute;
+  left: -3px;
+  bottom: -3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    var(--cala-ember-hot),
+    var(--cala-ember) 55%,
+    transparent 72%
+  );
+  opacity: 0;
+}
+
+/* Reduced motion: a steady warm glow at the edge instead of embers. */
+.cala-embers::before {
+  content: '';
+  position: absolute;
+  left: -6px;
+  top: -9px;
+  width: 12px;
+  height: 18px;
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--cala-ember) 75%, transparent),
+    transparent
+  );
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .cala-embers i {
+    animation: cala-ember 0.9s ease-out infinite;
+  }
+
+  .cala-embers i:nth-child(2) {
+    animation-delay: 0.3s;
+    --dx: -7px;
+  }
+
+  .cala-embers i:nth-child(3) {
+    animation-delay: 0.6s;
+    --dx: 5px;
+  }
+}
+
+@keyframes cala-ember {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) scale(1);
+  }
+  15% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--dx, 2px), -26px) scale(0.3);
+  }
+}
+
+/* A finished stage: sparks fly from its end. */
+.cala-burst {
+  position: absolute;
+  top: 50%;
+  width: 0;
+  height: 0;
+}
+
+.cala-burst i {
+  position: absolute;
+  left: -2px;
+  top: -2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--cala-ember);
+  box-shadow: 0 0 4px var(--cala-ember-hot);
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .cala-burst i {
+    animation: cala-spark 700ms cubic-bezier(0.1, 0.7, 0.3, 1) both;
+    animation-delay: inherit;
+  }
+
+  .cala-burst i:nth-child(1) {
+    --sx: 16px;
+    --sy: -12px;
+  }
+
+  .cala-burst i:nth-child(2) {
+    --sx: 20px;
+    --sy: 4px;
+  }
+
+  .cala-burst i:nth-child(3) {
+    --sx: 8px;
+    --sy: 16px;
+  }
+
+  .cala-burst i:nth-child(4) {
+    --sx: -10px;
+    --sy: 14px;
+  }
+
+  .cala-burst i:nth-child(5) {
+    --sx: -14px;
+    --sy: -10px;
+  }
+
+  .cala-burst i:nth-child(6) {
+    --sx: 2px;
+    --sy: -18px;
+  }
+}
+
+@keyframes cala-spark {
+  0% {
+    opacity: 1;
+    transform: translate(0, 0) scale(1.2);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--sx), var(--sy)) scale(0.4);
+  }
+}
+
+/* The stage that takes over lights up (a brief glow over its segment). */
+:root:not([data-fun='off']) .cala-rail[data-handoff='settle'] [data-stage='settle'],
+:root:not([data-fun='off']) .cala-rail[data-handoff='extract'] [data-stage='extract'] {
+  outline: 2px solid var(--stage-color);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-fun='off']) .cala-rail[data-handoff='settle'] [data-stage='settle'],
+  :root:not([data-fun='off']) .cala-rail[data-handoff='extract'] [data-stage='extract'] {
+    animation: cala-handoff 1800ms ease-out both;
+  }
+}
+
+@keyframes cala-handoff {
+  0% {
+    outline-color: transparent;
+    outline-offset: 6px;
+  }
+  20% {
+    outline-color: var(--stage-color);
+    outline-offset: 1px;
+  }
+  100% {
+    outline-color: transparent;
+    outline-offset: 1px;
+  }
+}
+
+/* ---- Hover flourishes: controls lift a little and glow; primary buttons shine and squish ---- */
+@media (prefers-reduced-motion: no-preference) {
+  /* One class at the right of each selector (an :is() list there is matched against every
+     element on each style pass). */
+  :root:not([data-fun='off']) .btn-secondary,
+  :root:not([data-fun='off']) .btn-primary,
+  :root:not([data-fun='off']) .segmented-control button,
+  :root:not([data-fun='off']) .cala-fov__chip,
+  :root:not([data-fun='off']) .cala-fov__zoom button {
+    transition:
+      transform 160ms ease,
+      box-shadow 160ms ease,
+      background-color 160ms ease;
+  }
+
+  :root:not([data-fun='off']) .btn-secondary:hover:not(:disabled),
+  :root:not([data-fun='off']) .segmented-control button:hover:not(:disabled),
+  :root:not([data-fun='off']) .cala-fov__chip:hover,
+  :root:not([data-fun='off']) .cala-fov__zoom button:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 3px 10px -4px color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+
+  :root:not([data-fun='off']) .btn-primary {
+    position: relative;
+    overflow: hidden;
+  }
+
+  :root:not([data-fun='off']) .btn-primary:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px -6px color-mix(in srgb, var(--accent) 70%, transparent);
+  }
+
+  :root:not([data-fun='off']) .btn-primary::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    width: 45%;
+    background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+    transform: translateX(-130%);
+    pointer-events: none;
+  }
+
+  :root:not([data-fun='off']) .btn-primary:hover:not(:disabled)::after {
+    transform: translateX(330%);
+    transition: transform 650ms ease;
+  }
+
+  :root:not([data-fun='off']) .btn-primary:active:not(:disabled),
+  :root:not([data-fun='off']) .btn-secondary:active:not(:disabled) {
+    transform: translateY(0) scale(0.96);
+    transition-duration: 60ms;
+  }
+
+  :root:not([data-fun='off']) .cala-fig {
+    transition: transform 160ms ease;
+  }
+
+  :root:not([data-fun='off']) .cala-fig:hover {
+    transform: translateY(-1px);
+  }
+}
+
+/* Reduced motion: a static glow on hover instead of the lift. */
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-fun='off']) .btn-primary:hover:not(:disabled),
+  :root:not([data-fun='off']) .btn-secondary:hover:not(:disabled) {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
   }
 }

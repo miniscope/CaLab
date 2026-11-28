@@ -94,14 +94,29 @@ browser. The theme changes only the page around the image: the field of view kee
 fixed display range and its overlay colours in both themes.
 
 **Fun touches.** The sparkle button next to the theme buttons turns the app's small
-moments on or off (on by default; remembered in this browser): a short note and a pop on
-the Cells figure when a run reaches its first, 100th and 500th cell; a glint and the ✓
-easing in when a stage finishes, and a shimmer across the stage track when Extract is
-done; the Cala name's dot pulsing like a calcium transient while Discover runs; the
-playful overlay colour schemes; and a few small surprises, which we leave for you to find.
-None of them touch the data, the image's display range or any result, nothing makes a
-sound unless you ask for it, and with the system's "reduce motion" setting the moments
-stay but nothing moves.
+moments on or off (on by default; remembered in this browser). They all come from the run
+itself:
+
+- every new cell arrives with a soft bloom at its place in the field of view;
+- cell-count milestones (the first cell, 50, 100, 250, 500, 1,000) stand over the field of
+  view for a moment, with how far into the recording they came, and pop on the Cells figure;
+  so do convergence, the hand-over to Final settle and to Extract, and the end of the run;
+- the dot after the Cala name beats with the cells while a stage runs (one beat per update
+  with onsets, larger when more of them fire at once) and rests when idle;
+- the stage track's running bar shines, its leading edge glows, and it throws embers while
+  the run is fast (at its target, or above 150 fps unpaced); a finished stage gives off a few
+  sparks and the next one lights up as it takes over;
+- the footprint under the mouse gets a soft halo, and buttons lift a little on hover;
+- at the end of a run, a **session portrait**: the footprints in your colour scheme (with
+  Live activity, or no scheme picked, each cell coloured by how often it fired over the run)
+  with the cell count, recording length, run time and most active cell, and **Save PNG**;
+- the neuron on the start screen fires now and then, more often with the cursor near;
+- the playful overlay colour schemes, and a few small surprises, which we leave for you to
+  find.
+
+None of them touch the data, the image's display range or any result, nothing makes a sound
+unless you ask for it, and with the system's "reduce motion" setting the moments stay but
+nothing moves.
 
 **Run rail.** Above the tabs, one place for every live figure of the run:
 
@@ -173,12 +188,21 @@ inside Discover.
   crosstalk, footprint error). The legend shows the scale, which is fixed per mode.
   Under **Display**: **Live activity** lights each footprint up as its cell fires while
   the run plays (the largest trace value since the last update, against that cell's own
-  running range), then lets it fade; it updates twice a second. **Rainbow by ID**,
+  running range), then lets it fade; it updates twice a second. Until you pick a colouring
+  yourself, Live activity is the colouring while Discover runs and QC pass/fail otherwise;
+  your pick is remembered in this browser. **Rainbow by ID**,
   **Neon** (glowing outlines) and **Candy** give every cell its own colour; these three
   are hidden while Fun touches are off. They change only the overlay colours.
   **Residual heat map** lays the per-block residual (noise units, log scale) over the
   image. Click the chip again to fold the card. On a narrow image (a phone-wide
   window) the card starts folded so it does not cover the cells.
+- **Onsets** (the strip under the field of view): the population's activity over the last
+  minute of recording, one column per half second. A column's height is the share of the
+  cells read there whose trace rose 8 noise sigmas over its baseline in that half second, on
+  a fixed scale of 0 to 25% of cells; a column of 15% or more is drawn warm (many cells at
+  once: a real burst, or often motion). Columns are placed by recording time, so the strip
+  looks the same at any speed; an empty column was not read. The line above it says what the
+  last two seconds show. **Show on cells** switches the colouring to Live activity.
 - **Zoom and pan**: scroll to zoom around the pointer, or use **-**, **+**, **Fit** and
   **1:1** (one recording pixel per screen pixel). Drag to pan. While zoomed, a minimap
   in the top right shows where you are; click it to jump. Click a cell to select it.

@@ -12,7 +12,13 @@ import {
 } from 'solid-js';
 import { createThemeVersion, DashboardPanel, SegmentedControl } from '@calab/ui';
 import { OKABE_ITO, viridisRGB } from '@calab/ui/chart';
-import { pickCell, renderOverlay, type OverlayMode, type Rgb } from '../lib/cell-overlay.ts';
+import {
+  pickCell,
+  renderOverlay,
+  type CellGeometry,
+  type OverlayMode,
+  type Rgb,
+} from '../lib/cell-overlay.ts';
 import { NEW_CELL_FRAMES, type CellStore } from '../lib/cell-store.ts';
 import { BG_REMOVED_HEADROOM, grayToImageData, toGray8 } from '../lib/frame-display.ts';
 import {
@@ -48,7 +54,18 @@ import {
   type ColorMode,
 } from '../lib/qc-colors.ts';
 import { createHeldRange, RangeControl, type HeldRange } from './RangeControl.tsx';
-import { createActivity } from '../lib/activity.ts';
+import { countOnsets, createActivity } from '../lib/activity.ts';
+import {
+  BirthQueue,
+  MAX_BLOOMS,
+  mostActive,
+  newIds,
+  shapeCentre,
+  soul,
+  type PortraitStats,
+} from '../lib/soul.ts';
+import { ActivityRibbon } from './ActivityRibbon.tsx';
+import { SessionPortrait } from './SessionPortrait.tsx';
 import { pageChoir } from '../lib/choir.ts';
 import { delight } from '../lib/delight.ts';
 import { NeuronSketch } from './NeuronSketch.tsx';
@@ -67,6 +84,26 @@ import {
 /** What the overlay is coloured by: a QC mode, or a display scheme (`fun-colors.ts`). */
 type Scheme = ColorMode | FunMode;
 const schemeInfo = (m: Scheme) => (isFunMode(m) ? FUN_MODES[m] : COLOR_MODES[m]);
+
+/** localStorage key of the colour scheme the user picked (absent: the default per stage). */
+export const SCHEME_KEY = 'cala-fov-scheme';
+
+function readScheme(): Scheme | null {
+  try {
+    const v = localStorage.getItem(SCHEME_KEY);
+    return v !== null && (v in COLOR_MODES || isFunMode(v)) ? (v as Scheme) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeScheme(m: Scheme): void {
+  try {
+    localStorage.setItem(SCHEME_KEY, m);
+  } catch {
+    /* storage blocked: the pick holds for this page */
+  }
+}
 
 const PLAYABLE: ReadonlySet<string> = new Set(['raw', 'preprocessed', 'corrected', 'output']);
 
@@ -140,9 +177,11 @@ export function pipelineFovSource(store: PipelineStore): FovSource {
     emptyText: (v) =>
       store.status() === 'idle'
         ? 'The frames show here once the run starts: pick the settings in the Run tab, then Run.'
-        : v === 'residual'
-          ? 'The residual comes with the frames processed while the model has cells: it shows from the next batch of a running pass.'
-          : null,
+        : store.status() === 'starting'
+          ? 'Warming up: the first frames show in a moment.'
+          : v === 'residual'
+            ? 'The residual comes with the frames processed while the model has cells: it shows from the next batch of a running pass.'
+            : null,
   };
 }
 
@@ -314,6 +353,8 @@ export function FovPanel(props: {
   width: number;
   height: number;
   fps: number;
+  /** The recording's name (the session portrait). */
+  name?: string;
 }): JSX.Element {
   // The source is fixed for the panel's life (the live pipeline, or one saved result).
   // eslint-disable-next-line solid/reactivity
@@ -321,13 +362,25 @@ export function FovPanel(props: {
   const label = (v: string) => src.views.find((x) => x.value === v)?.label ?? v;
   const [view, setView] = createSignal<string>(src.initial);
   const [overlay, setOverlay] = createSignal<OverlayMode>('contours');
-  const [mode, setMode] = createSignal<Scheme>('pass');
   const fun = delight();
+  const life = soul();
+  /**
+   * The colour scheme: the user's own pick (kept in this browser), else Live activity while
+   * Discover runs and QC pass / fail otherwise (Live activity has nothing to show once playback
+   * stops).
+   */
+  const [chosen, setChosen] = createSignal<Scheme | null>(readScheme());
+  const mode = (): Scheme => chosen() ?? (life.stage() === 'discover' ? 'activity' : 'pass');
+  const setMode = (m: Scheme) => {
+    setChosen(m);
+    writeScheme(m);
+  };
   // The switch off hides the playful schemes; one in use falls back to QC pass / fail.
   createEffect(() => {
     const m = mode();
     if (!fun.on() && isFunMode(m) && FUN_MODES[m].playful) setMode('pass');
   });
+  createEffect(() => life.setFps(props.fps));
   const themeVersion = createThemeVersion();
   /** Cell id to its shape slot, per geometry (the choir's positions). */
   const slotOf = createMemo(() => {
@@ -341,7 +394,8 @@ export function FovPanel(props: {
       range: (id, a, b) => props.cells.history().range(id, a, b),
       frame: () => src.frame() ?? props.cells.frame(),
     },
-    () => mode() === 'activity' || fun.choir(),
+    // Always on while there are frames: the ribbon and the heartbeat read it too.
+    () => true,
     (fired) => {
       if (!fun.choir()) return;
       const g = props.cells.geometry();
@@ -359,6 +413,7 @@ export function FovPanel(props: {
       }
       pageChoir().play(notes);
     },
+    (t) => life.tick(t),
   );
   const [residualMap, setResidualMap] = createSignal(false);
   /** The overlay legend card is open (else its one-line chip); first set from the image's width. */
@@ -473,6 +528,57 @@ export function FovPanel(props: {
     };
   };
 
+  /**
+   * The overlay colours of the scheme in use (reactive: reads what the scheme depends on). The
+   * births, the hover halo and the session portrait use the same colours as the overlay.
+   */
+  const schemeStyle = (): {
+    color: (id: number) => Rgb;
+    fill: (id: number) => number;
+    glow: boolean;
+  } => {
+    // A snapshot of the scheme for one drawing (callers re-read it when it changes).
+    // eslint-disable-next-line solid/reactivity
+    const sc = mode();
+    themeVersion();
+    const synthwave = document.documentElement.getAttribute('data-theme') === 'synthwave';
+    if (isFunMode(sc)) {
+      if (sc === 'activity') activity.version();
+      return {
+        glow: sc === 'neon' || synthwave,
+        color: (id) =>
+          sc === 'activity'
+            ? activityColor(activity.glow(id))
+            : sc === 'neon'
+              ? neonColor(id)
+              : sc === 'candy'
+                ? candyColor(id)
+                : rainbowColor(id),
+        fill: (id) => (sc === 'activity' ? activityFill(activity.glow(id)) : 0),
+      };
+    }
+    const m = sc;
+    const qc = m === 'found' ? null : props.cells.qc();
+    const est = m === 'status' ? props.cells.established() : null;
+    const mov = m === 'stillMoving' ? props.cells.stillMoving() : null;
+    const scale = m === 'found' ? { lo: 0, hi: 1 } : modeScale(m, qc?.rows ?? []);
+    return {
+      glow: synthwave,
+      color: (id) => {
+        if (m !== 'found')
+          return qcColor(m, qc?.byId.get(id), est?.get(id), scale, viridisRGB, mov?.get(id));
+        return props.cells.age(id) < NEW_CELL_FRAMES
+          ? NEW_COLOR
+          : foundColor(props.cells.firstSeen(id), untrack(props.cells.frame));
+      },
+      fill: (id) => {
+        if (m !== 'found') return 0;
+        const age = props.cells.age(id);
+        return age < NEW_CELL_FRAMES ? 0.3 * (1 - age / NEW_CELL_FRAMES) + 0.08 : 0;
+      },
+    };
+  };
+
   // Cells: redraw on a new library, selection, mode, or every 50 frames (new-cell fade).
   const fadeTick = createMemo(() => Math.floor(props.cells.frame() / 50));
   createEffect(() => {
@@ -488,60 +594,207 @@ export function FovPanel(props: {
       ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
       return;
     }
-    const frame = props.cells.frame();
-    const sc = mode();
-    themeVersion();
-    const synthwave = document.documentElement.getAttribute('data-theme') === 'synthwave';
-    if (isFunMode(sc)) {
-      if (sc === 'activity') activity.version();
-      const rgba = renderOverlay(g, {
-        selected,
-        mode: show,
-        glow: sc === 'neon' || synthwave,
-        color: (id) =>
-          sc === 'activity'
-            ? activityColor(activity.glow(id))
-            : sc === 'neon'
-              ? neonColor(id)
-              : sc === 'candy'
-                ? candyColor(id)
-                : rainbowColor(id),
-        fill: (id) => (sc === 'activity' ? activityFill(activity.glow(id)) : 0),
-      });
-      ctx.putImageData(
-        new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, g.width, g.height),
-        0,
-        0,
-      );
-      return;
-    }
-    const m = sc;
-    const qc = m === 'found' ? null : props.cells.qc();
-    const est = m === 'status' ? props.cells.established() : null;
-    const mov = m === 'stillMoving' ? props.cells.stillMoving() : null;
-    const scale = m === 'found' ? { lo: 0, hi: 1 } : modeScale(m, qc?.rows ?? []);
-    const rgba = renderOverlay(g, {
-      selected,
-      mode: show,
-      glow: synthwave,
-      color: (id) => {
-        if (m !== 'found')
-          return qcColor(m, qc?.byId.get(id), est?.get(id), scale, viridisRGB, mov?.get(id));
-        return props.cells.age(id) < NEW_CELL_FRAMES
-          ? NEW_COLOR
-          : foundColor(props.cells.firstSeen(id), frame);
-      },
-      fill: (id) => {
-        if (m !== 'found') return 0;
-        const age = props.cells.age(id);
-        return age < NEW_CELL_FRAMES ? 0.3 * (1 - age / NEW_CELL_FRAMES) + 0.08 : 0;
-      },
-    });
+    const style = schemeStyle();
+    const rgba = renderOverlay(g, { selected, mode: show, ...style });
     ctx.putImageData(
       new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, g.width, g.height),
       0,
       0,
     );
+  });
+
+  // ---- Births: every new cell arrives with a bloom at its centre (Fun touches) ----
+  interface Bloom {
+    key: number;
+    x: number;
+    y: number;
+    d: number;
+    color: string;
+  }
+  const [blooms, setBlooms] = createSignal<Bloom[]>([]);
+  const births = new BirthQueue<{ id: number; x: number; y: number; r: number }>();
+  /** The newest birth's place (a milestone blooms there), in recording pixels. */
+  let newest: { x: number; y: number; r: number } | null = null;
+  let bloomKey = 0;
+  let pump: ReturnType<typeof setInterval> | undefined;
+  /** Ids of the last geometry seen (undefined: not primed yet, so a remount never blooms). */
+  let prevIds: number[] | null | undefined;
+  const BLOOM_MS = 1200;
+  const releaseBlooms = () => {
+    const free = Math.min(4, MAX_BLOOMS - untrack(blooms).length);
+    const next = births.take(free);
+    if (next.length === 0) {
+      if (births.size === 0) {
+        clearInterval(pump);
+        pump = undefined;
+      }
+      return;
+    }
+    const color = untrack(schemeStyle).color;
+    const w = props.width;
+    const add = next.map((b) => ({
+      key: ++bloomKey,
+      x: (b.x / w) * 100,
+      y: (b.y / props.height) * 100,
+      d: ((b.r * 2.4) / w) * 100,
+      color: rgbCss(color(b.id)),
+    }));
+    setBlooms((v) => [...v, ...add]);
+    const keys = new Set(add.map((a) => a.key));
+    setTimeout(() => setBlooms((v) => v.filter((x) => !keys.has(x.key))), BLOOM_MS);
+  };
+  createEffect(() => {
+    const g = props.cells.geometry();
+    const ids = g ? g.shapes.map((sh) => sh.id) : null;
+    const prev = prevIds;
+    prevIds = ids;
+    if (prev === undefined || !g || untrack(props.cells.saved) || !untrack(fun.on)) return;
+    const born = new Set(newIds(prev, ids ?? []));
+    if (born.size === 0) return;
+    const items = [];
+    for (const sh of g.shapes) {
+      if (!born.has(sh.id)) continue;
+      const c = shapeCentre(sh, g.width);
+      items.push({ id: sh.id, ...c });
+    }
+    newest = items.at(-1) ?? newest;
+    births.push(items);
+    releaseBlooms();
+    pump ??= setInterval(releaseBlooms, 160);
+  });
+  onCleanup(() => clearInterval(pump));
+
+  // ---- The run's moments over the field of view (milestones, convergence) ----
+  const [shownMoment, setShownMoment] = createSignal<{
+    seq: number;
+    kind: string;
+    title: string;
+    note: string;
+    at: { x: number; y: number; d: number } | null;
+  } | null>(null);
+  let momentTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Moments waiting: several in a moment (a fast run) each get at least `MOMENT_MIN_MS`. */
+  const waiting: NonNullable<ReturnType<typeof shownMoment>>[] = [];
+  let shownAt = 0;
+  const MOMENT_MS = 2800;
+  const MOMENT_MIN_MS = 1300;
+  const showNext = () => {
+    clearTimeout(momentTimer);
+    const m = waiting.shift();
+    if (!m) {
+      setShownMoment(null);
+      return;
+    }
+    setShownMoment(m);
+    shownAt = performance.now();
+    momentTimer = setTimeout(showNext, waiting.length > 0 ? MOMENT_MIN_MS : MOMENT_MS);
+  };
+  /** A moment said before this panel mounted is not replayed (a remount, e.g. back from a result). */
+  let seenSeq = untrack(life.moment)?.seq ?? 0;
+  createEffect(() => {
+    const m = life.moment();
+    if (m && m.seq <= seenSeq) return;
+    if (m) seenSeq = m.seq;
+    if (!m) {
+      waiting.length = 0;
+      clearTimeout(momentTimer);
+      setShownMoment(null);
+      return;
+    }
+    if (!untrack(fun.on)) return;
+    const at =
+      m.kind === 'milestone' && newest
+        ? {
+            x: (newest.x / props.width) * 100,
+            y: (newest.y / props.height) * 100,
+            d: ((newest.r * 7) / props.width) * 100,
+          }
+        : null;
+    waiting.push({ ...m, at });
+    if (waiting.length > 3) waiting.splice(0, waiting.length - 3);
+    const current = untrack(shownMoment);
+    if (!current) return showNext();
+    // One is showing: cut it short to the minimum, then the next.
+    clearTimeout(momentTimer);
+    momentTimer = setTimeout(showNext, Math.max(0, MOMENT_MIN_MS - (performance.now() - shownAt)));
+  });
+  onCleanup(() => clearTimeout(momentTimer));
+
+  // ---- Hover halo: the footprint under the cursor (Fun touches) ----
+  const [halo, setHalo] = createSignal<{ id: number; x: number; y: number; d: number } | null>(
+    null,
+  );
+  let hoverRaf = 0;
+  let hoverAt: { clientX: number; clientY: number } | null = null;
+  const hoverCell = () => {
+    hoverRaf = 0;
+    const g = props.cells.geometry();
+    if (!hoverAt || !g || !fun.on() || press) return setHalo(null);
+    const rect = overlayCanvas.getBoundingClientRect();
+    const x = ((hoverAt.clientX - rect.left) / rect.width) * g.width;
+    const y = ((hoverAt.clientY - rect.top) / rect.height) * g.height;
+    const id = pickCell(g, x, y);
+    if (id === null) return setHalo(null);
+    if (untrack(halo)?.id === id) return;
+    const sh = g.shapes[slotOf().get(id) ?? -1];
+    if (!sh) return setHalo(null);
+    const c = shapeCentre(sh, g.width);
+    setHalo({
+      id,
+      x: (c.x / g.width) * 100,
+      y: (c.y / g.height) * 100,
+      d: ((c.r * 2.3) / g.width) * 100,
+    });
+  };
+  const onHover = (e: PointerEvent) => {
+    if (e.pointerType !== 'mouse') return;
+    hoverAt = { clientX: e.clientX, clientY: e.clientY };
+    if (!hoverRaf) hoverRaf = requestAnimationFrame(hoverCell);
+  };
+  onCleanup(() => cancelAnimationFrame(hoverRaf));
+
+  // ---- The session portrait at the end of a run (Fun touches) ----
+  const [portrait, setPortrait] = createSignal<{
+    geometry: CellGeometry;
+    color: (id: number) => Rgb;
+    fill: (id: number) => number;
+    glow: boolean;
+    scheme: string;
+    stats: PortraitStats;
+  } | null>(null);
+  createEffect(() => {
+    const p = life.portrait();
+    if (!p) return setPortrait(null);
+    if (!untrack(fun.on)) return;
+    const g = untrack(props.cells.geometry);
+    if (!g || g.shapes.length === 0) return;
+    // Onsets over each cell's whole live trace, read once (not the 2 Hz live ticks).
+    const end = untrack(props.cells.frame);
+    const counts = new Map<number, number>();
+    for (const sh of g.shapes)
+      counts.set(sh.id, countOnsets(props.cells.history().range(sh.id, 0, end)));
+    const top = Math.max(1, ...counts.values());
+    // Live activity (picked, or the run's default) has gone dark by now: the portrait colours
+    // each cell by its onsets over the run instead. A scheme the user picked is kept.
+    const sc = untrack(mode);
+    const byActivity = sc === 'activity' || untrack(chosen) === null;
+    const style = untrack(schemeStyle);
+    const color = byActivity
+      ? (id: number) => activityColor((counts.get(id) ?? 0) / top)
+      : style.color;
+    setPortrait({
+      geometry: g,
+      color,
+      fill: byActivity ? (id: number) => 0.12 + 0.5 * ((counts.get(id) ?? 0) / top) : () => 0.3,
+      glow: byActivity || style.glow,
+      scheme: byActivity ? 'activity over the run' : schemeInfo(sc).label,
+      stats: {
+        cells: g.shapes.length,
+        runMs: p.runMs,
+        recordingS: props.fps > 0 && end > 0 ? end / props.fps : null,
+        mostActive: mostActive(counts),
+      },
+    });
   });
 
   // ---- zoom and pan ----
@@ -569,6 +822,7 @@ export function FovPanel(props: {
     press = { x: e.clientX, y: e.clientY, id: e.pointerId, moved: false };
   };
   const onPointerMove = (e: PointerEvent) => {
+    onHover(e);
     if (!press || press.id !== e.pointerId) return;
     const dx = e.clientX - press.x;
     const dy = e.clientY - press.y;
@@ -638,6 +892,10 @@ export function FovPanel(props: {
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={() => (press = null)}
+          onPointerLeave={() => {
+            hoverAt = null;
+            setHalo(null);
+          }}
         >
           <div class="cala-fov__world" style={{ transform: viewTransform(fov()) }}>
             <canvas ref={video} class="cala-fov__layer" aria-label={label(view())} />
@@ -655,7 +913,69 @@ export function FovPanel(props: {
               aria-label="Cells (click one)"
               data-testid="cells-overlay"
             />
+            {/* Fun touches over the cells, in the image's own coordinates (they follow zoom). */}
+            <div class="cala-fov__fx" aria-hidden="true">
+              <For each={blooms()}>
+                {(b) => (
+                  <span
+                    class="cala-bloom"
+                    data-testid="cell-bloom"
+                    style={{
+                      left: `${b.x}%`,
+                      top: `${b.y}%`,
+                      width: `${b.d}%`,
+                      '--bloom-color': b.color,
+                    }}
+                  />
+                )}
+              </For>
+              <Show when={halo()}>
+                {(h) => (
+                  <span
+                    class="cala-halo"
+                    style={{ left: `${h().x}%`, top: `${h().y}%`, width: `${h().d}%` }}
+                  />
+                )}
+              </Show>
+              <Show when={shownMoment()?.at} keyed>
+                {(a) => (
+                  <span
+                    class="cala-moment-ring"
+                    style={{ left: `${a.x}%`, top: `${a.y}%`, width: `${a.d}%` }}
+                  />
+                )}
+              </Show>
+            </div>
           </div>
+          <Show when={shownMoment()} keyed>
+            {(m) => (
+              <div
+                class="cala-fov__moment"
+                data-kind={m.kind}
+                data-testid="fov-milestone"
+                aria-hidden="true"
+              >
+                <span class="cala-fov__moment-title">{m.title}</span>
+                <Show when={m.note}>
+                  <span class="cala-fov__moment-note">{m.note}</span>
+                </Show>
+              </div>
+            )}
+          </Show>
+          <Show when={portrait()}>
+            {(p) => (
+              <SessionPortrait
+                geometry={p().geometry}
+                color={p().color}
+                fill={p().fill}
+                glow={p().glow}
+                scheme={p().scheme}
+                stats={p().stats}
+                name={props.name ?? 'Cala session'}
+                onClose={() => life.closePortrait()}
+              />
+            )}
+          </Show>
           <Show when={!image() && src.emptyText?.(view())}>
             {(text) => (
               <div class="cala-fov__empty">
@@ -801,6 +1121,7 @@ export function FovPanel(props: {
           </div>
         </div>
       </div>
+      <ActivityRibbon activityOn={mode() === 'activity'} onActivity={() => setMode('activity')} />
     </DashboardPanel>
   );
 }

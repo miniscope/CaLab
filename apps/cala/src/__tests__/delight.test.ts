@@ -33,23 +33,24 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('milestones', () => {
-  it('fires 1, 100 and 500 once each as the count crosses them', () => {
+  it('fires each once as the count crosses it', () => {
     const fired = new Set<number>();
     expect(crossMilestones(0, 0, fired)).toEqual([]);
     expect(crossMilestones(0, 1, fired)).toEqual([1]);
-    expect(crossMilestones(1, 50, fired)).toEqual([]);
-    expect(crossMilestones(50, 120, fired)).toEqual([100]);
+    expect(crossMilestones(1, 49, fired)).toEqual([]);
+    expect(crossMilestones(49, 120, fired)).toEqual([50, 100]);
     // A dip and a recovery does not fire 100 again.
     expect(crossMilestones(120, 95, fired)).toEqual([]);
     expect(crossMilestones(95, 130, fired)).toEqual([]);
-    expect(crossMilestones(130, 501, fired)).toEqual([500]);
-    expect(crossMilestones(501, 9000, fired)).toEqual([]);
+    expect(crossMilestones(130, 501, fired)).toEqual([250, 500]);
+    expect(crossMilestones(501, 9000, fired)).toEqual([1000]);
+    expect(crossMilestones(9000, 9500, fired)).toEqual([]);
   });
 
   it('several crossed in one 2 Hz step come highest last (the one shown)', () => {
     const fired = new Set<number>();
-    expect(crossMilestones(0, 140, fired)).toEqual([1, 100]);
-    expect(fired).toEqual(new Set([1, 100]));
+    expect(crossMilestones(0, 140, fired)).toEqual([1, 50, 100]);
+    expect(fired).toEqual(new Set([1, 50, 100]));
   });
 
   it('a primed count above a milestone never fires it (remount mid-run)', () => {
@@ -229,32 +230,47 @@ describe('live activity', () => {
 });
 
 describe('milestone tracker (the rail)', () => {
-  it('fires on a fresh run, resets on the next start', () => {
+  it('fires on a fresh run, resets on the next run', () => {
     const m = createMilestoneTracker();
-    expect(m.observe('idle', null)).toBeNull();
-    expect(m.observe('starting', 380)).toBeNull();
-    expect(m.observe('running', 0)).toBeNull();
-    expect(m.observe('running', 3)).toBe(1);
-    expect(m.observe('running', 150)).toBe(100);
-    expect(m.observe('done', 402)).toBeNull();
+    expect(m.observe('idle', null, -1)).toBeNull();
+    expect(m.observe('starting', 380, -1)).toBeNull();
+    expect(m.observe('running', 0, 1)).toBeNull();
+    expect(m.observe('running', 3, 1)).toBe(1);
+    expect(m.observe('running', 150, 1)).toBe(100);
+    expect(m.observe('done', 402, 1)).toBe(250);
     // A rerun: the last library is still loaded while starting; milestones fire again after.
-    expect(m.observe('starting', 402)).toBeNull();
-    expect(m.observe('running', 1)).toBe(1);
+    expect(m.observe('starting', 402, 1)).toBeNull();
+    expect(m.observe('running', 1, 2)).toBe(1);
+  });
+
+  it('fires without ever seeing the starting status (a new run key is enough)', () => {
+    const m = createMilestoneTracker();
+    expect(m.observe('running', 0, 3)).toBeNull();
+    expect(m.observe('running', 20, 3)).toBe(1);
+    expect(m.observe('done', 401, 3)).toBe(250);
+    // The next run, its 'starting' missed between two readings, already has cells.
+    expect(m.observe('running', 60, 4)).toBe(50);
   });
 
   it('a rail mounted mid-run (or after it) is primed, never replays', () => {
     const m = createMilestoneTracker();
-    expect(m.observe('running', 380)).toBeNull();
-    expect(m.observe('running', 520)).toBe(500);
+    expect(m.observe('running', 380, 5)).toBeNull();
+    expect(m.observe('running', 520, 5)).toBe(500);
     const after = createMilestoneTracker();
-    expect(after.observe('done', 402)).toBeNull();
-    expect(after.observe('done', 402)).toBeNull();
+    expect(after.observe('done', 402, 5)).toBeNull();
+    expect(after.observe('done', 402, 5)).toBeNull();
+  });
+
+  it('a saved result never fires', () => {
+    const m = createMilestoneTracker();
+    expect(m.observe('idle', 300, -2)).toBeNull();
+    expect(m.observe('done', 300, -2)).toBeNull();
   });
 
   it('shows the highest when several are crossed between two readings', () => {
     const m = createMilestoneTracker();
-    m.observe('starting', null);
-    expect(m.observe('running', 140)).toBe(100);
+    m.observe('starting', null, -1);
+    expect(m.observe('running', 140, 6)).toBe(100);
   });
 });
 

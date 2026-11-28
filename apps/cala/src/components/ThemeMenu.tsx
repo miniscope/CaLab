@@ -21,6 +21,7 @@ import {
   HIDDEN_THEMES,
   isTypingTarget,
 } from '../lib/delight.ts';
+import { soul } from '../lib/soul.ts';
 
 /** The app's name in any header: seven quick clicks on it unlock the hidden themes. */
 const MARK = '.compact-header__title, .app-header__title';
@@ -81,6 +82,27 @@ export function installEasterEggs(): void {
   createRoot(() => {
     createEffect(() => {
       if (!fun.choir()) pageChoir().stop();
+    });
+    // The heartbeat: while a stage runs, the dot after the name beats with the cells' onsets
+    // (one beat per 2 Hz tick that had any, its size the share of cells that fired). Quiet ticks
+    // and idle: still. Transform and opacity only, on the compositor.
+    const life = soul();
+    createEffect(() => {
+      const b = life.beat();
+      if (b.strength <= 0 || !fun.motion()) return;
+      if (!document.documentElement.hasAttribute('data-cala-run')) return;
+      for (const el of document.querySelectorAll<HTMLElement>(MARK)) {
+        if (typeof el.animate !== 'function') continue;
+        const k = 1.35 + 1.25 * b.strength;
+        el.animate(
+          [
+            { transform: 'scale(1)', opacity: 0.9, easing: 'cubic-bezier(0.2, 0.7, 0.3, 1)' },
+            { transform: `scale(${k})`, opacity: 1, offset: 0.12, easing: 'ease-out' },
+            { transform: 'scale(1)', opacity: 0.9 },
+          ],
+          { duration: 420 + 260 * b.strength, pseudoElement: '::after' },
+        );
+      }
     });
   });
 }
