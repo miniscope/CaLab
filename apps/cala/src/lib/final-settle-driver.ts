@@ -558,7 +558,7 @@ export class FinalSettleDriver {
    */
   private settlePaid(loop: SlowLoopLike, d: Settle): boolean {
     if (!this.settleMetered(d) || d.stop) return true;
-    if (!this.drained(d)) return false;
+    if (d.bar && !this.drained(d)) return false;
     d.payFrom ??= d.v.handed;
     const done = (): boolean => {
       d.v.paidAtEnd = d.v.handed - (d.payFrom ?? d.v.handed);
