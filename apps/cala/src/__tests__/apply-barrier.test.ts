@@ -298,6 +298,22 @@ describe('SlowRunner apply barrier', () => {
     expect(t.calls.slice(i + 1)).toEqual(['a1', 'a2', 'p1', 'r', 't3', 't4']);
   });
 
+  it('applies on arrival from a dropped batch on', async () => {
+    const t = setup();
+    await t.r.handleAsync(frames(48), pause);
+    // Frames 56..63 never came: the batch from 64 ends the barrier, after the items out.
+    const p = t.r.handleAsync(frames(64), pause);
+    await tick();
+    t.deliver('sent');
+    await p;
+    expect(t.calls.filter((c) => c.startsWith('a'))).toEqual(['a1', 'a2']);
+    t.deliver('sent');
+    // Applied on arrival now.
+    expect(t.calls.filter((c) => c.startsWith('a'))).toEqual(['a1', 'a2', 'a3', 'a4']);
+    const status = t.toMain.filter((m) => m.type === 'status').at(-1);
+    expect(status?.type === 'status' && status.status.repeatable?.lostAt).toBe(56);
+  });
+
   it('applies on arrival when the run is not repeatable, or at Max', async () => {
     for (const o of [{ repeatable: false }, { pace: 0 }]) {
       const t = setup(o);

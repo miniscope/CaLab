@@ -512,6 +512,12 @@ export class SlowRunner {
   private barrierWaitMs = 0;
   /** The fast loop's count of libraries adopted after their stamped frame (`FastToSlow` `lateLibraries`). */
   private lateLibraries = 0;
+  /**
+   * A repeatable run that lost a batch (the fast loop dropped it): the stream frame where the
+   * gap was seen. From there results apply as they arrive, as at Max (the run is not repeatable
+   * any more, and waiting at the barrier would only drop more).
+   */
+  private barrierLostAt: number | null = null;
   private readonly defer: (fn: () => void) => void;
   private readonly timer: (fn: () => void, ms: number) => () => void;
 
@@ -843,6 +849,7 @@ export class SlowRunner {
   private get barrierOn(): boolean {
     return (
       this.init?.repeatable === true &&
+      this.barrierLostAt === null &&
       this.pace.fps > 0 &&
       this.run === 1 &&
       this.scope === 'all' &&
@@ -1095,6 +1102,9 @@ export class SlowRunner {
     const loop = this.loop;
     const init = this.init;
     let observed = 0;
+    // A gap before this batch: the fast loop dropped one, so the run cannot be repeated.
+    if (this.batchEnd > 0 && msg.start > this.batchEnd && this.barrierOn)
+      this.barrierLostAt = this.batchEnd;
     this.batchEnd = msg.start + msg.count;
     if (msg.lateLibraries !== undefined)
       this.lateLibraries = Math.max(this.lateLibraries, msg.lateLibraries);
@@ -1894,6 +1904,7 @@ export class SlowRunner {
               barrierWaits: this.barrierWaits,
               barrierWaitMs: this.barrierWaitMs,
               lateLibraries: this.lateLibraries,
+              lostAt: this.barrierLostAt,
             },
           }
         : {}),
@@ -1994,5 +2005,6 @@ export class SlowRunner {
     this.barrierWaits = 0;
     this.barrierWaitMs = 0;
     this.lateLibraries = 0;
+    this.barrierLostAt = null;
   }
 }

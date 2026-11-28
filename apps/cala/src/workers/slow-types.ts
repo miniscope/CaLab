@@ -207,9 +207,16 @@ export interface SlowStatus {
   /**
    * A repeatable run (`SlowInit.repeatable`): batch ends that waited at the apply barrier for a
    * late visit or answer and the time waited (ms), and the libraries the fast loop adopted after
-   * their stamped frame (any above 0: this run was not repeatable). Absent: not a repeatable run.
+   * their stamped frame (any above 0: this run was not repeatable), and the stream frame where a
+   * dropped batch ended the barrier (null: none; results apply as they arrive from there).
+   * Absent: not a repeatable run.
    */
-  repeatable?: { barrierWaits: number; barrierWaitMs: number; lateLibraries: number };
+  repeatable?: {
+    barrierWaits: number;
+    barrierWaitMs: number;
+    lateLibraries: number;
+    lostAt: number | null;
+  };
   /** Stream index after the last observed frame. */
   frame: number;
   /** Stream index after the last batch received, observed or not (a Refine run's backpressure). */

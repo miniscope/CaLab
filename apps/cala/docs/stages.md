@@ -111,7 +111,9 @@ late while no batch is dropped. At Discover's end the visits out are applied in 
 look-back answers not yet applied are dropped. Each visit slot and each look-back worker has
 one item out at a time, so a slot makes at most one visit per two batches and need-driven
 look-back reads at most one request per two batches. At Max (no target) results apply as
-they arrive. The slow worker's status reports the batch ends that waited and the libraries
+they arrive, and so they do from the first batch the fast loop drops (a target the machine
+cannot hold: the run is no longer repeatable, and waiting would only drop more; lockstep at
+the source is the planned answer). The slow worker's status reports the batch ends that waited and the libraries
 the fast loop adopted late (`SlowStatus.repeatable`). Not covered yet: look-back answers are
 preprocessed from whichever back state the look-back worker holds, and the Final settle
 observes pooled answers in arrival order.
