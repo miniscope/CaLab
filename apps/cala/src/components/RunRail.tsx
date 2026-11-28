@@ -41,7 +41,7 @@ import { fmtVisitRate, visitHoldText } from '../lib/visit-rate.ts';
 import { workByKind } from '../lib/work-meter.ts';
 import { busyWorkers, plannedSettleFrames } from '../lib/work-display.ts';
 import { createSteps } from './Steps.tsx';
-import { crossMilestones, delight, milestoneNote } from '../lib/delight.ts';
+import { createMilestoneTracker, delight, milestoneNote } from '../lib/delight.ts';
 import { createTween } from '../lib/tween.ts';
 
 /** Live figures refresh at most this often, ms (2 Hz). */
@@ -225,34 +225,19 @@ export function RunRail(props: RunRailProps): JSX.Element {
   const fun = delight();
   /** A cell-count milestone of this run, shown for about 2 s (null: none). */
   const [moment, setMoment] = createSignal<{ at: number; note: string } | null>(null);
-  const fired = new Set<number>();
-  // Primed on the first reading, so a remount mid-run (or after it) does not replay milestones.
-  let lastCells: number | null = null;
+  const milestones = createMilestoneTracker();
   let momentTimer: ReturnType<typeof setTimeout> | undefined;
+  // The status at once (a run start may fall between two 2 Hz readings), the count at 2 Hz.
   createEffect(
     on(
       () => s().status(),
-      (st) => {
-        if (st === 'starting') {
-          fired.clear();
-          lastCells = 0;
-        }
-      },
+      (st) => st === 'starting' && milestones.observe(st, null),
     ),
   );
   createEffect(() => {
     const v = snap();
-    const st = v.track.discover;
-    // Not while starting or idle: the last run's library is still loaded then.
-    if (v.cells === null || st === 'idle' || st === 'starting') return;
-    if (lastCells === null) {
-      lastCells = v.cells;
-      return;
-    }
-    const crossed = crossMilestones(lastCells, v.cells, fired);
-    lastCells = v.cells;
-    const at = crossed.at(-1);
-    if (at === undefined || !untrack(fun.on)) return;
+    const at = milestones.observe(v.track.discover, v.cells);
+    if (at === null || !untrack(fun.on)) return;
     setMoment({ at, note: milestoneNote(at) });
     clearTimeout(momentTimer);
     momentTimer = setTimeout(() => setMoment(null), 2000);

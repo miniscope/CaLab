@@ -73,10 +73,22 @@
   position: relative;
 }
 
+/* The note never spills into the next figure: clipped sideways, and left out where the figure is
+   too narrow for it (the pop alone marks the moment there). */
+.cala-fig__value {
+  overflow-x: clip;
+}
+
+@container (max-width: 116px) {
+  :root:not([data-fun='off']) .cala-moment {
+    display: none;
+  }
+}
+
 @media (prefers-reduced-motion: no-preference) {
   :root:not([data-fun='off']) .cala-rail[data-flash='discover'] [data-stage='discover'] svg,
   :root:not([data-fun='off']) .cala-rail[data-flash='settle'] [data-stage='settle'] svg,
-  :root:not([data-fun='off']) .cala-rail[data-flash='all'] .stage-track__seg svg {
+  :root:not([data-fun='off']) .cala-rail[data-flash='all'] [data-testid='run-step'] svg {
     animation: cala-check-in 640ms cubic-bezier(0.2, 1.4, 0.4, 1) both;
   }
 
@@ -95,7 +107,7 @@
   /* A glint across the segment that just finished (e.g. the footprints settled). */
   :root:not([data-fun='off']) .cala-rail[data-flash='discover'] [data-stage='discover']::after,
   :root:not([data-fun='off']) .cala-rail[data-flash='settle'] [data-stage='settle']::after,
-  :root:not([data-fun='off']) .cala-rail[data-flash='all'] .stage-track::after {
+  :root:not([data-fun='off']) .cala-rail[data-flash='all'] [data-testid='run-step']::after {
     content: '';
     position: absolute;
     inset: 0;
@@ -103,7 +115,7 @@
     background: linear-gradient(
       100deg,
       transparent 30%,
-      color-mix(in srgb, var(--surface) 70%, transparent) 50%,
+      rgba(255, 255, 255, 0.6) 50%,
       transparent 70%
     );
     background-size: 250% 100%;
@@ -112,7 +124,7 @@
     animation: cala-shimmer 1100ms ease-in-out 1 both;
   }
 
-  :root:not([data-fun='off']) .cala-rail[data-flash='all'] .stage-track::after {
+  :root:not([data-fun='off']) .cala-rail[data-flash='all'] [data-testid='run-step']::after {
     animation-duration: 1500ms;
     animation-delay: 120ms;
   }
@@ -331,7 +343,11 @@
 
 /* On the camera's dark ground the sketch takes the same light grey as the line under it. */
 .cala-fov__empty .cala-neuron {
-  color: #bbb;
+  color: #e4e4e4;
+}
+
+.cala-fov__empty .cala-neuron__ink {
+  opacity: 0.8;
 }
 
 .cala-neuron--drop {

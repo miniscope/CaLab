@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createClickCounter,
   createDelight,
+  createMilestoneTracker,
   createSequenceDetector,
   crossMilestones,
   FUN_KEY,
@@ -12,7 +13,7 @@ import {
   readUnlocked,
   UNLOCKED_KEY,
 } from '../lib/delight.ts';
-import { emptyActivity, finiteMax, stepActivity, WARMUP_TICKS } from '../lib/activity.ts';
+import { emptyActivity, finiteMax, seedOf, stepActivity } from '../lib/activity.ts';
 import { panOf, pitchHz } from '../lib/choir.ts';
 import { easeOut, tweenAt, TWEEN_MS } from '../lib/tween.ts';
 
@@ -58,7 +59,7 @@ describe('milestones', () => {
 
   it('has a short note per milestone', () => {
     expect(milestoneNote(1)).toBe('First cell!');
-    expect(milestoneNote(100)).toMatch(/100/);
+    expect(milestoneNote(100)).toBe('100 cells!');
     expect(milestoneNote(500)).toMatch(/500/);
   });
 });
@@ -168,33 +169,92 @@ describe('the Fun touches switch', () => {
 });
 
 describe('live activity', () => {
-  it('a cell fires when its window maximum jumps above half its range, then fades', () => {
+  /** A deterministic jittered baseline: level 10, noise of sd about 1. */
+  const jitter = (i: number) => 10 + Math.sin(i * 12.9898) * 1.7;
+  const history = (n: number) => Array.from({ length: n }, (_, i) => jitter(i));
+
+  it('reads baseline and noise from recent history', () => {
+    const sd = seedOf(history(1000))!;
+    expect(sd.base).toBeGreaterThan(9);
+    expect(sd.base).toBeLessThan(11);
+    expect(sd.noise).toBeGreaterThan(0.3);
+    expect(sd.noise).toBeLessThan(3);
+    expect(seedOf([1, 2, NaN])).toBeNull();
+  });
+
+  it('a noisy baseline never fires and stays dark', () => {
     const st = emptyActivity();
-    const quiet = () => 1;
-    for (let i = 0; i <= WARMUP_TICKS; i++) expect(stepActivity(st, [7], quiet)).toEqual([]);
-    // A transient: fires once, glows fully.
-    expect(stepActivity(st, [7], () => 5)).toEqual([7]);
+    const seed = () => seedOf(history(1000));
+    for (let t = 0; t < 60; t++) {
+      // The largest of ~150 noisy frames since the last tick.
+      const w = finiteMax(Array.from({ length: 150 }, (_, i) => jitter(t * 150 + i)));
+      expect(stepActivity(st, [7], () => w, seed)).toEqual([]);
+    }
+    expect(st.get(7)!.glow).toBe(0);
+  });
+
+  it('a transient fires once, glows fully, then fades', () => {
+    const st = emptyActivity();
+    const seed = () => seedOf(history(1000));
+    stepActivity(st, [7], () => 12, seed);
+    expect(stepActivity(st, [7], () => 40, seed)).toEqual([7]);
     expect(st.get(7)!.glow).toBe(1);
-    expect(stepActivity(st, [7], () => 5)).toEqual([]);
-    // Back to baseline: the glow decays over the next ticks.
-    stepActivity(st, [7], quiet);
+    expect(stepActivity(st, [7], () => 40, seed)).toEqual([]);
+    stepActivity(st, [7], () => 12, seed);
     const g1 = st.get(7)!.glow;
-    stepActivity(st, [7], quiet);
+    stepActivity(st, [7], () => 12, seed);
     expect(st.get(7)!.glow).toBeLessThan(g1);
     expect(g1).toBeLessThan(1);
   });
 
-  it('never fires during warm-up and drops cells that left the library', () => {
+  it('skips a cell without history and drops cells that left the library', () => {
     const st = emptyActivity();
-    expect(stepActivity(st, [1, 2], (id) => id)).toEqual([]);
-    expect(stepActivity(st, [1, 2], (id) => 100 * id)).toEqual([]);
-    stepActivity(st, [2], () => 3);
+    expect(
+      stepActivity(
+        st,
+        [1, 2],
+        () => 5,
+        (id) => (id === 2 ? seedOf(history(50)) : null),
+      ),
+    ).toEqual([]);
     expect([...st.keys()]).toEqual([2]);
+    stepActivity(st, [], () => 3);
+    expect(st.size).toBe(0);
   });
 
   it('skips non-finite samples', () => {
     expect(finiteMax([NaN, 2, Infinity, 5, NaN])).toBe(5);
     expect(Number.isNaN(finiteMax([NaN]))).toBe(true);
+  });
+});
+
+describe('milestone tracker (the rail)', () => {
+  it('fires on a fresh run, resets on the next start', () => {
+    const m = createMilestoneTracker();
+    expect(m.observe('idle', null)).toBeNull();
+    expect(m.observe('starting', 380)).toBeNull();
+    expect(m.observe('running', 0)).toBeNull();
+    expect(m.observe('running', 3)).toBe(1);
+    expect(m.observe('running', 150)).toBe(100);
+    expect(m.observe('done', 402)).toBeNull();
+    // A rerun: the last library is still loaded while starting; milestones fire again after.
+    expect(m.observe('starting', 402)).toBeNull();
+    expect(m.observe('running', 1)).toBe(1);
+  });
+
+  it('a rail mounted mid-run (or after it) is primed, never replays', () => {
+    const m = createMilestoneTracker();
+    expect(m.observe('running', 380)).toBeNull();
+    expect(m.observe('running', 520)).toBe(500);
+    const after = createMilestoneTracker();
+    expect(after.observe('done', 402)).toBeNull();
+    expect(after.observe('done', 402)).toBeNull();
+  });
+
+  it('shows the highest when several are crossed between two readings', () => {
+    const m = createMilestoneTracker();
+    m.observe('starting', null);
+    expect(m.observe('running', 140)).toBe(100);
   });
 });
 

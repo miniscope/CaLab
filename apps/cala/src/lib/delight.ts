@@ -23,8 +23,8 @@ export const UNLOCKED_KEY = 'cala-unlocked-themes';
 /** Cell counts that get a moment, with their note. */
 export const MILESTONES: readonly { at: number; note: string }[] = [
   { at: 1, note: 'First cell!' },
-  { at: 100, note: '100 cells' },
-  { at: 500, note: '500 cells. What a field of view.' },
+  { at: 100, note: '100 cells!' },
+  { at: 500, note: '500 cells!' },
 ];
 
 /**
@@ -40,6 +40,34 @@ export function crossMilestones(prev: number, next: number, fired: Set<number>):
     }
   }
   return out;
+}
+
+/**
+ * Milestones of one run's live cell count, read at the rail's 2 Hz: reset when a run starts,
+ * nothing while idle or starting (the last run's library is still loaded then), and primed on
+ * its first reading, so a remount mid-run or after it never replays a milestone. `observe`
+ * returns the milestone to show (the highest one crossed), or null.
+ */
+export function createMilestoneTracker() {
+  const fired = new Set<number>();
+  let last: number | null = null;
+  return {
+    observe(status: string, cells: number | null): number | null {
+      if (status === 'starting') {
+        fired.clear();
+        last = 0;
+        return null;
+      }
+      if (cells === null || status === 'idle') return null;
+      if (last === null) {
+        last = cells;
+        return null;
+      }
+      const crossed = crossMilestones(last, cells, fired);
+      last = cells;
+      return crossed.at(-1) ?? null;
+    },
+  };
 }
 
 export const milestoneNote = (at: number): string =>

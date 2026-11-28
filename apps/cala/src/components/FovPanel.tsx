@@ -48,7 +48,7 @@ import {
   type ColorMode,
 } from '../lib/qc-colors.ts';
 import { createHeldRange, RangeControl, type HeldRange } from './RangeControl.tsx';
-import { createActivity, finiteMax } from '../lib/activity.ts';
+import { createActivity } from '../lib/activity.ts';
 import { pageChoir } from '../lib/choir.ts';
 import { delight } from '../lib/delight.ts';
 import { NeuronSketch } from './NeuronSketch.tsx';
@@ -338,7 +338,7 @@ export function FovPanel(props: {
   const activity = createActivity(
     {
       ids: () => props.cells.library()?.ids ?? null,
-      windowMax: (id, a, b) => finiteMax(props.cells.history().range(id, a, b)),
+      range: (id, a, b) => props.cells.history().range(id, a, b),
       frame: () => src.frame() ?? props.cells.frame(),
     },
     () => mode() === 'activity' || fun.choir(),

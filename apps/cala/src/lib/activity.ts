@@ -2,8 +2,10 @@
  * Cell activity around the shown frame, for the "Live activity" colour scheme and the choir.
  * Read at most twice a second: per cell, the largest trace value over the frames shown since
  * the last tick (`TraceHistory.range` on that window only, never the whole history), placed
- * between the cell's running baseline and running peak. A cell that fires glows at once and
- * fades over the next ticks. Display only: it reads the traces, never changes them.
+ * between the cell's baseline and its running peak; within a few noise sigmas of the baseline
+ * it is noise and stays dark (baseline and noise come from the cell's last `SEED_FRAMES`
+ * frames, re-read now and then). A cell that fires glows at once and fades over the next
+ * ticks. Display only: it reads the traces, never changes them.
  */
 import { createEffect, createSignal, onCleanup } from 'solid-js';
 
@@ -11,16 +13,41 @@ import { createEffect, createSignal, onCleanup } from 'solid-js';
 export const GLOW_DECAY = 0.45;
 /** A cell "fires" (an onset, one choir note) when its level crosses this share of its range. */
 export const ONSET = 0.5;
-/** Ticks a cell is watched before it can fire (its baseline and peak need a few samples). */
-export const WARMUP_TICKS = 3;
+/** A window maximum within this many noise sigmas of the baseline is noise: level 0. */
+export const NOISE_K = 5;
+/** Frames of recent history a cell's baseline and noise are read from. */
+export const SEED_FRAMES = 1000;
+/** A cell's baseline and noise are re-read every this many ticks (staggered by id). */
+export const RESEED_TICKS = 20;
 /** The running peak relaxes this much per tick, so a cell that dims is not dark forever. */
 const PEAK_RELAX = 0.99;
-/** The running baseline follows a lower window maximum at once and a higher one slowly. */
-const BASE_RISE = 0.05;
 
-export interface CellActivity {
-  peak: number;
+/** A cell's recent baseline (median), noise (sigma from the median absolute first difference) and peak. */
+export interface ActivitySeed {
   base: number;
+  noise: number;
+  peak: number;
+}
+
+/** Baseline, noise and peak of a stretch of trace (null when fewer than 8 finite samples). */
+export function seedOf(v: ArrayLike<number>): ActivitySeed | null {
+  const x: number[] = [];
+  for (let i = 0; i < v.length; i++) if (Number.isFinite(v[i])) x.push(v[i]);
+  if (x.length < 8) return null;
+  const d: number[] = [];
+  for (let i = 1; i < x.length; i++) d.push(Math.abs(x[i] - x[i - 1]));
+  const median = (a: number[]) => {
+    const s = a.slice().sort((p, q) => p - q);
+    return s[Math.floor(s.length / 2)];
+  };
+  // First differences of white noise have sigma * sqrt 2; their MAD is 0.6745 of that.
+  const noise = median(d) / (0.6745 * Math.SQRT2);
+  let peak = -Infinity;
+  for (const y of x) if (y > peak) peak = y;
+  return { base: median(x), noise, peak };
+}
+
+export interface CellActivity extends ActivitySeed {
   /** Level 0..1 at the last tick. */
   level: number;
   /** Display glow 0..1. */
@@ -44,13 +71,16 @@ export function finiteMax(v: ArrayLike<number>): number {
 
 /**
  * One tick: `windowMax(id)` is the cell's largest trace value over the frames shown since the
- * last tick (NaN: no samples). Updates `st` (dropping cells not in `ids`) and returns the ids
- * that fired, i.e. crossed `ONSET` from below.
+ * last tick (NaN: no samples); `seed(id)` reads its recent baseline and noise (on first sight
+ * and every `RESEED_TICKS`). A value within `NOISE_K` sigmas of the baseline is level 0; above
+ * it the level is the height over the baseline against the cell's running peak. Updates `st`
+ * (dropping cells not in `ids`) and returns the ids that fired, i.e. crossed `ONSET` from below.
  */
 export function stepActivity(
   st: ActivityState,
   ids: readonly number[],
   windowMax: (id: number) => number,
+  seed: (id: number) => ActivitySeed | null = () => null,
 ): number[] {
   const fired: number[] = [];
   const keep = new Set(ids);
@@ -62,15 +92,24 @@ export function stepActivity(
       if (c) c.glow *= GLOW_DECAY;
       continue;
     }
-    if (!c) {
-      c = { peak: v, base: v, level: 0, glow: 0, ticks: 0 };
-      st.set(id, c);
+    if (!c || (c.ticks + id) % RESEED_TICKS === 0) {
+      const sd = seed(id);
+      if (!c) {
+        if (!sd) continue;
+        c = { ...sd, level: 0, glow: 0, ticks: 0 };
+        st.set(id, c);
+      } else if (sd) {
+        c.base = sd.base;
+        c.noise = sd.noise;
+        c.peak = Math.max(c.peak, sd.peak);
+      }
     }
     c.ticks++;
-    c.base = v < c.base ? v : c.base + BASE_RISE * (v - c.base);
+    const floor = NOISE_K * c.noise;
     c.peak = Math.max(v, c.base + (c.peak - c.base) * PEAK_RELAX);
-    const span = c.peak - c.base;
-    const lvl = c.ticks > WARMUP_TICKS && span > 0 ? Math.min(1, (v - c.base) / span) : 0;
+    const h = v - c.base;
+    const span = Math.max(c.peak - c.base, 2 * floor);
+    const lvl = h <= floor || span <= 0 ? 0 : Math.min(1, h / span);
     if (lvl >= ONSET && c.level < ONSET) fired.push(id);
     c.level = lvl;
     c.glow = Math.max(c.glow * GLOW_DECAY, lvl);
@@ -86,8 +125,8 @@ const MAX_WINDOW = 400;
 export interface ActivitySource {
   /** Ids of the cells in the library (null: none yet). */
   ids(): ArrayLike<number> | null;
-  /** Largest trace value of `id` over stream frames [first, end) (NaN: no samples). */
-  windowMax(id: number, first: number, end: number): number;
+  /** The trace of `id` over stream frames [first, end) (NaN where it has no sample). */
+  range(id: number, first: number, end: number): ArrayLike<number>;
   /** The frame on screen (null: none). */
   frame(): number | null;
 }
@@ -115,7 +154,12 @@ export function createActivity(
       if (f !== null && (last === null || f < last)) last = f;
     } else {
       const lo = Math.max(last + 1, f + 1 - MAX_WINDOW);
-      const fired = stepActivity(st, ids, (id) => src.windowMax(id, lo, f + 1));
+      const fired = stepActivity(
+        st,
+        ids,
+        (id) => finiteMax(src.range(id, lo, f + 1)),
+        (id) => seedOf(src.range(id, f + 1 - SEED_FRAMES, f + 1)),
+      );
       last = f;
       if (fired.length > 0) onFire?.(fired);
     }

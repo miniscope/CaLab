@@ -146,7 +146,7 @@ export interface OverlayStyle {
 
 /** Halo reach of `glow`, px, and its opacity at 1 and 2 px from the outline. */
 export const GLOW_RADIUS = 2;
-const GLOW_ALPHA = [0, 0.42, 0.18];
+const GLOW_ALPHA = [0, 0.55, 0.26];
 
 const SELECTED: Rgb = [255, 255, 255];
 /** Opacity of a footprint fill at the cell's peak. */
