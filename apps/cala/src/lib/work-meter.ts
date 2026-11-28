@@ -410,8 +410,6 @@ export class WorkRater {
   private ref: WorkStatus | null = null;
   /** Busy time credited at an answer's arrival that a window could not hold (share > 1), carried on. */
   private carry = new Map<string, number>();
-  /** Settle pool workers still serving at the latest snapshot (undefined: not reported). */
-  private settleWorkers: number | undefined;
 
   constructor(private readonly everyMs = 1000) {}
 
@@ -428,9 +426,21 @@ export class WorkRater {
     }
     if (w.wallMs - ref.wallMs < minMs || w.wallMs === ref.wallMs) return null;
     this.ref = w;
-    this.settleWorkers = w.settleWorkers;
     const r = workRates(ref, w);
-    if (r) this.settle(r);
+    if (r) this.settle(r, this.carry, w.settleWorkers);
+    return r;
+  }
+
+  /**
+   * The rates of the open interval, from the reference snapshot to `w`, without closing it: the
+   * reference, the carry and the next `push` are untouched. Null while the interval is shorter
+   * than `minMs`, or before the first snapshot.
+   */
+  peek(w: WorkStatus, minMs: number): WorkRates | null {
+    const ref = this.ref;
+    if (!ref || !(w.wallMs - ref.wallMs >= minMs) || w.wallMs === ref.wallMs) return null;
+    const r = workRates(ref, w);
+    if (r) this.settle(r, new Map(this.carry), w.settleWorkers);
     return r;
   }
 
@@ -440,15 +450,14 @@ export class WorkRater {
    * excess into the next window. With a settle pool the Background settle's share is held by S
    * workers, the Final settle's and the total by S + 1.
    */
-  private settle(r: WorkRates): void {
+  private settle(r: WorkRates, carry: Map<string, number>, live: number | undefined): void {
     const fit = (key: string, v: number, cap = 1): number => {
-      const total = v + (this.carry.get(key) ?? 0);
+      const total = v + (carry.get(key) ?? 0);
       const shown = Math.min(cap, total);
-      this.carry.set(key, total - shown);
+      carry.set(key, total - shown);
       return shown;
     };
     // Failed pool workers hold nothing: count the live ones when the worker reports them.
-    const live = this.settleWorkers;
     const pool = live !== undefined ? live : Math.max(0, r.lookback.workers.length - 1);
     const n = 1 + pool;
     r.lookback.capacity = n;
@@ -506,6 +515,22 @@ export class MaxFpsEstimator {
 /** The fast loop's stage names, in the order of `stageBusyMs` (the pipelined run's stages A, B, C). */
 export const FAST_STAGE_NAMES = ['read and prepare', 'motion', 'traces'] as const;
 
+/** Shares of `busy` (+ `carry`) ms over `span` ms, at most 1 each, and what exceeds 1 (the next carry). */
+function stageShares(
+  busy: readonly number[],
+  carry: readonly number[],
+  span: number,
+): { shares: number[]; carry: number[] } {
+  const next: number[] = [];
+  const shares = busy.map((v, i) => {
+    const total = v + (carry[i] ?? 0);
+    const share = Math.min(1, total / span);
+    next[i] = total - share * span;
+    return share;
+  });
+  return { shares, carry: next };
+}
+
 /**
  * Per-stage busy shares of the fast loop. Each batch reports every stage's busy ms
  * (`stageBusyMs`), credited when the batch arrives, so one window can read above 100 %: like
@@ -544,12 +569,16 @@ export class StageBusyMeter {
       this.carry = busy.map((v, i) => v + (this.carry[i] ?? 0));
       return null;
     }
-    return busy.map((v, i) => {
-      const total = v + (this.carry[i] ?? 0);
-      const share = Math.min(1, total / span);
-      this.carry[i] = total - share * span;
-      return share;
-    });
+    const { shares, carry } = stageShares(busy, this.carry, span);
+    this.carry = carry;
+    return shares;
+  }
+
+  /** The busy share of each stage in the open window up to `nowMs`, without closing it (see `take`). */
+  peek(nowMs: number): number[] | null {
+    const span = this.t0 === null ? 0 : nowMs - this.t0;
+    if (!(span > 0)) return null;
+    return stageShares(this.busy, this.carry, span).shares;
   }
 
   reset(): void {

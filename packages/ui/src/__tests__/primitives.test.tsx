@@ -92,6 +92,82 @@ describe('TabStrip', () => {
   });
   /* eslint-enable solid/reactivity */
 
+  /* eslint-disable solid/reactivity -- the test reads the selection untracked */
+  it('folds `more` tabs under a More menu: keys, pick, Escape and outside click', async () => {
+    const [active, setActive] = createSignal('a');
+    const host = mount(() => (
+      <TabStrip
+        tabs={[
+          { id: 'a', label: 'A' },
+          { id: 'b', label: 'B' },
+          { id: 'x', label: 'X', more: true, testid: 'tab-x' },
+          { id: 'y', label: 'Y', more: true, testid: 'tab-y' },
+        ]}
+        active={active()}
+        onSelect={setActive}
+        idBase="t"
+        moreTestid="tab-more"
+      />
+    ));
+    const tick = () => new Promise<void>((r) => queueMicrotask(r));
+    const key = (el: Element, k: string) =>
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+    const [a, b, more] = tabButtons(host);
+    expect(tabButtons(host)).toHaveLength(3);
+    expect(host.querySelector('.tab-strip--has-more')).not.toBeNull();
+    expect(more.dataset.testid).toBe('tab-more');
+    expect(more.textContent).toBe('More▾');
+    expect(more.getAttribute('aria-selected')).toBe('false');
+    expect(host.querySelector('[data-testid="tab-x"]')).toBeNull();
+    // Arrows reach More without selecting it, and wrap past it.
+    key(a, 'ArrowRight');
+    expect(active()).toBe('b');
+    key(b, 'ArrowRight');
+    expect(active()).toBe('b');
+    await tick();
+    expect(document.activeElement).toBe(more);
+    key(more, 'ArrowRight');
+    expect(active()).toBe('a');
+    // Down opens the menu on its first item; Down/Up move, Escape closes back to More.
+    key(more, 'ArrowDown');
+    expect(more.getAttribute('aria-expanded')).toBe('true');
+    const menu = host.querySelector('[data-testid="tab-more-menu"]')!;
+    expect(menu.getAttribute('aria-labelledby')).toBe('t-more');
+    await tick();
+    const [x, y] = [...menu.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
+    expect(document.activeElement).toBe(x);
+    key(x, 'ArrowDown');
+    expect(document.activeElement).toBe(y);
+    key(y, 'Escape');
+    expect(host.querySelector('[data-testid="tab-more-menu"]')).toBeNull();
+    expect(document.activeElement).toBe(more);
+    expect(active()).toBe('a');
+    // Picking an item selects it; More then stands for it (selected, labelled, the tab stop).
+    more.click();
+    host.querySelector<HTMLElement>('[data-testid="tab-y"]')!.click();
+    expect(active()).toBe('y');
+    expect(host.querySelector('[data-testid="tab-more-menu"]')).toBeNull();
+    expect(more.getAttribute('aria-selected')).toBe('true');
+    expect(more.textContent).toBe('Y▾');
+    expect(more.getAttribute('aria-controls')).toBe('t-panel-y');
+    expect([a.tabIndex, more.tabIndex]).toEqual([-1, 0]);
+    // The open menu marks the active item; a click outside closes it.
+    more.click();
+    const checked = host.querySelector('[aria-checked="true"]');
+    expect(checked?.getAttribute('data-testid')).toBe('tab-y');
+    document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    expect(host.querySelector('[data-testid="tab-more-menu"]')).toBeNull();
+  });
+  /* eslint-enable solid/reactivity */
+
+  it('has no More button without `more` tabs', () => {
+    const host = mount(() => (
+      <TabStrip tabs={[{ id: 'a', label: 'A' }]} active="a" onSelect={() => {}} />
+    ));
+    expect(host.querySelector('.tab-strip__more')).toBeNull();
+    expect(host.querySelector('.tab-strip--has-more')).toBeNull();
+  });
+
   it('defaults to the underline variant', () => {
     const host = mount(() => <TabStrip tabs={[]} active={null} onSelect={() => {}} />);
     expect(host.querySelector('.tab-strip--underline')).not.toBeNull();

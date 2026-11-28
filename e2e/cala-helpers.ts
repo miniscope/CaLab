@@ -11,6 +11,12 @@ export async function startRun(page: Page): Promise<void> {
   await page.getByTestId('run-start').click();
 }
 
+/** Show a diagnostics tab of the right-hand column: they sit in the tab row's More menu. */
+export async function openMoreTab(page: Page, name: string): Promise<void> {
+  await page.getByTestId('tab-more').click();
+  await page.getByTestId('tab-more-menu').getByRole('menuitemradio', { name }).click();
+}
+
 /** The .npz export of the run (the run rail's Export menu), as downloaded bytes. */
 export async function exportNpz(page: Page): Promise<Buffer> {
   // A second export finds the menu still open: a click on its summary would close it.

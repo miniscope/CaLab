@@ -14,8 +14,8 @@ import { QcTable, type QcTableState } from './QcTable.tsx';
 
 /**
  * The right-hand column under the run rail: one row of tabs (Run, Cell, QC,
- * History and the pipeline details), one panel at a time with the column's
- * whole height. Arrow keys move between the tabs.
+ * History, then "More ▾" holding the diagnostics), one panel at a time with the
+ * column's whole height. Arrow keys move between the tabs.
  *
  * Panels mount only while shown, except those whose state would be lost
  * (`keepMounted` on the tab): Run (the run's controls and export), Cell (the
@@ -39,6 +39,7 @@ export function SideColumn(props: {
           panelDisplay="flex"
           aria-label="Panels"
           idBase="cala-side"
+          moreTestid="tab-more"
         />
       </DashboardPanel>
     </>
@@ -46,10 +47,10 @@ export function SideColumn(props: {
 }
 
 /**
- * The pipeline-detail tabs after Run and Cell: QC, History, Flat field,
- * Timing, Raw file and Recording (a saved result: no Timing, no Raw file).
- * While History is expanded into the large area, its tab holds the field of
- * view instead.
+ * The pipeline-detail tabs after Run and Cell: QC and History in the row, then
+ * the diagnostics under More: Correlation, Flat field, Timing, Raw file and
+ * Recording (a saved result: no Timing, no Raw file). While History is expanded
+ * into the large area, its tab holds the field of view instead.
  */
 export function detailTabs(props: {
   /** The live pipeline (absent: a saved result; give `flatField` and `recording`). */
@@ -105,12 +106,14 @@ export function detailTabs(props: {
       label: 'Correlation',
       title: 'Pairwise trace correlation against distance: a check for incomplete demixing',
       testid: 'tab-corr',
+      more: true,
       content: () => <CorrDistancePanel cells={props.cells} />,
     },
     {
       id: 'flatfield',
       label: 'Flat field',
       testid: 'tab-flatfield',
+      more: true,
       content: () =>
         store ? (
           <FlatFieldPanel
@@ -129,6 +132,7 @@ export function detailTabs(props: {
             id: 'timing',
             label: 'Timing',
             testid: 'tab-timing',
+            more: true,
             content: () => <TimingText store={store} cells={props.cells} />,
           },
         ]
@@ -143,6 +147,7 @@ export function detailTabs(props: {
             id: 'raw',
             label: 'Raw file',
             testid: 'tab-raw',
+            more: true,
             keepMounted: true,
             content: () => <FrameViewer store={props.viewer!} />,
           },
@@ -151,6 +156,7 @@ export function detailTabs(props: {
       id: 'recording',
       label: 'Recording',
       testid: 'tab-recording',
+      more: true,
       content: () => (props.info ? <InfoPanel info={props.info} /> : props.recording?.()),
     },
   ];
