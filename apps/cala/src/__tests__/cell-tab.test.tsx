@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import type { CellStore } from '../lib/cell-store.ts';
 import { FLAG_LOW_SNR, FLAG_UNMEASURED, MIN_SNR, type QcSnapshot } from '../lib/qc.ts';
@@ -27,15 +26,17 @@ function snapshot(): QcSnapshot {
   return { rows, byId: new Map(rows.map((r) => [r.id, r])) } as unknown as QcSnapshot;
 }
 
+/** A store with nothing selected; `select` only records (the selected view needs the full store). */
 function fakeCells(qc: QcSnapshot | null) {
-  const [selected, select] = createSignal<number | null>(null);
-  return {
+  const picked: (number | null)[] = [];
+  const cells = {
     qc: () => qc,
-    selected,
-    select,
+    selected: () => null,
+    select: (id: number | null) => picked.push(id),
     library: () => null,
     established: () => new Map<number, boolean>(),
   } as unknown as CellStore;
+  return Object.assign(cells, { picked });
 }
 
 function mountIn(el: () => import('solid-js').JSX.Element): HTMLElement {
@@ -56,7 +57,7 @@ describe('Cell tab with nothing selected', () => {
       '#2',
     ]);
     rows[1].click();
-    expect(cells.selected()).toBe(1);
+    expect(cells.picked).toEqual([1]);
   });
 
   it('is one sentence before QC has measured any cell', () => {
