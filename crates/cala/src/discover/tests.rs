@@ -3900,6 +3900,150 @@ fn mean_field_statistics_match_the_plain_sums() {
     assert!(sm.stats_gen > 0 && sm.fpstats[&1].k > 600);
 }
 
+/// The cluster stores of a loop on the mean-field push hold what a loop on
+/// the plain push accumulates, to rounding: overlapping cells (two
+/// clusters), live frames on one library interleaved with look-back frames
+/// on another (a moved member: its columns change at every alternation;
+/// the other cluster's columns do not), look-back pushes to a subset,
+/// missing samples on a cluster's pixels (skipped frames), forgetting
+/// rescales, and a new live library with a moved member. (Moved stores are
+/// covered by `cluster::push_frame_tests::push_mean_matches_the_plain_push`.)
+#[test]
+fn mean_field_cluster_stores_match_the_plain_push() {
+    let t = 900;
+    let mut rng = Lcg(5);
+    let cells = vec![
+        (blob_w(0, 30.0, 30.0, 2.5), trace(&mut rng, t, 0.05, 6.0)),
+        (blob_w(1, 30.0, 34.0, 2.5), trace(&mut rng, t, 0.05, 6.0)),
+        (blob_w(2, 70.0, 66.0, 2.5), trace(&mut rng, t, 0.05, 6.0)),
+        (blob_w(3, 70.0, 70.0, 2.5), trace(&mut rng, t, 0.05, 6.0)),
+    ];
+    let n_px = N * N;
+    let mut m = movie(&cells, t, 4);
+    for k in 0..t {
+        if (300..310).contains(&k) {
+            m[k * n_px + 70 * N + 68] = f32::NAN;
+        }
+    }
+    let ring = crate::trace::BackgroundModel::Ring {
+        inner_px: 12.0,
+        outer_px: 20.0,
+    };
+    let build = |fps: Vec<Footprint>, v: u64| {
+        let mut b = LibraryBuilder::new(dims())
+            .background(ring.clone())
+            .version(v);
+        for fp in fps {
+            b = b.footprint(fp);
+        }
+        Arc::new(b.build(&mut flattener()).unwrap())
+    };
+    let live_a = build(
+        vec![
+            blob_w(0, 30.0, 30.0, 2.5),
+            blob_w(1, 30.0, 34.0, 2.5),
+            blob_w(2, 70.0, 66.0, 2.5),
+            blob_w(3, 70.0, 70.0, 2.5),
+        ],
+        1,
+    );
+    let back = build(
+        vec![
+            blob_w(0, 31.0, 30.0, 2.5),
+            blob_w(1, 30.0, 34.0, 2.5),
+            blob_w(2, 70.0, 66.0, 2.5),
+            blob_w(3, 70.0, 70.0, 2.5),
+        ],
+        2,
+    );
+    let live_b = build(
+        vec![
+            blob_w(0, 31.0, 30.0, 2.5),
+            blob_w(1, 30.0, 34.0, 2.5),
+            blob_w(2, 70.0, 66.0, 2.5),
+            blob_w(3, 70.0, 73.0, 2.5),
+        ],
+        3,
+    );
+    let cfg = SlowLoopConfig {
+        stats_half_life_frames: 40.0,
+        joint_update: JointUpdate::All,
+        ..config()
+    };
+    let new_loop = || {
+        SlowLoop::new(
+            dims(),
+            vec![1; n_px],
+            vec![1.0; n_px],
+            flattener(),
+            cfg.clone(),
+        )
+    };
+    let (mut sm, mut sp) = (new_loop().unwrap(), new_loop().unwrap());
+    sp.stats_plain = true;
+    let mut eng_a = TraceEngine::new(live_a.clone(), SolverConfig::default()).unwrap();
+    let mut eng_b = TraceEngine::new(live_b.clone(), SolverConfig::default()).unwrap();
+    let mut eng_back = TraceEngine::new(back.clone(), SolverConfig::default()).unwrap();
+    let frame = |k: usize| &m[k * n_px..(k + 1) * n_px];
+    let rel = |x: &[f32], y: &[f32]| -> f32 {
+        let top = y.iter().fold(0.0f32, |a, v| a.max(v.abs())).max(1e-6);
+        x.iter()
+            .zip(y)
+            .fold(0.0f32, |a, (p, q)| a.max((p - q).abs()))
+            / top
+    };
+    let check = |sm: &SlowLoop, sp: &SlowLoop, at: usize| {
+        assert_eq!(sm.clusters.len(), sp.clusters.len(), "frame {at}");
+        for (a, b) in sm.clusters.iter().zip(&sp.clusters) {
+            assert_eq!(a.ids, b.ids);
+            assert_eq!((a.k, &a.pix), (b.k, &b.pix), "frame {at}");
+            let ((cya, sra, va), (cyb, srb, vb)) = (a.sums(), b.sums());
+            assert!(rel(&cya, &cyb) < 1e-5, "cy {:?} frame {at}", a.ids);
+            assert!(rel(&sra, &srb) < 1e-5, "sr {:?} frame {at}", a.ids);
+            assert!(rel(va, vb) < 1e-5, "v {:?} frame {at}", a.ids);
+        }
+        assert_eq!(
+            sm.replay_stats.skipped_frames,
+            sp.replay_stats.skipped_frames
+        );
+    };
+    for k in 0..t {
+        let (eng, lib) = if k < 500 {
+            (&mut eng_a, &live_a)
+        } else {
+            (&mut eng_b, &live_b)
+        };
+        let tr = eng.process(frame(k)).unwrap();
+        sm.observe(frame(k), lib, &tr).unwrap();
+        sp.observe(frame(k), lib, &tr).unwrap();
+        if k >= 50 {
+            let j = k - 50;
+            let tr = eng_back.process(frame(j)).unwrap();
+            let only = [2u64];
+            let only = (k % 3 == 0).then_some(&only[..]);
+            sm.observe_lookback(frame(j), &back, &tr, j as u64, only)
+                .unwrap();
+            sp.observe_lookback(frame(j), &back, &tr, j as u64, only)
+                .unwrap();
+        }
+        if k % 100 == 99 {
+            check(&sm, &sp, k);
+        }
+    }
+    check(&sm, &sp, t);
+    // The paths the test is meant to cover were taken.
+    eprintln!(
+        "clusters {} skipped {} moves {} k {:?}",
+        sm.clusters.len(),
+        sm.replay_stats.skipped_frames,
+        sm.replay_stats.moves,
+        sm.clusters.iter().map(|c| c.k).collect::<Vec<_>>()
+    );
+    assert!(!sm.clusters.is_empty());
+    assert!(sm.replay_stats.skipped_frames > 0);
+    assert!(sm.clusters.iter().all(|c| c.k > 600));
+}
+
 /// The ledger's run-wise eight-lane sum is the serial sum to rounding, and
 /// NaN when a sample on the pixels is missing (the ledger then takes the
 /// masked sum, which skips it).
