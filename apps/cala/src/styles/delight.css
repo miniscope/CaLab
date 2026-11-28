@@ -424,7 +424,7 @@
 }
 
 /* A birth: a soft ring at the new cell's centre that blooms out of white into the cell's colour
-   and settles (~1.2 s). Reduced motion: the ring shows in place, then goes. */
+   and settles (~1.2 s). Reduced motion: the ring shows in place for that time, then goes. */
 :root:not([data-fun='off']) .cala-bloom {
   display: block;
   position: absolute;
@@ -438,8 +438,9 @@
     transparent 55%,
     color-mix(in srgb, var(--bloom-color, #fff) 45%, transparent)
   );
-  opacity: 0;
-  animation: cala-bloom-still 1200ms linear both;
+  /* Reduced motion: the ring shows in place (the app's reset cuts every animation short), and
+     goes when the bloom is removed. */
+  opacity: 0.9;
 }
 
 :root:not([data-fun='off']) .cala-bloom::after {
@@ -473,16 +474,6 @@
   100% {
     opacity: 0;
     transform: scale(0.75);
-  }
-}
-
-@keyframes cala-bloom-still {
-  0%,
-  85% {
-    opacity: 0.9;
-  }
-  100% {
-    opacity: 0;
   }
 }
 
@@ -582,7 +573,6 @@
   color: #fff;
   text-align: center;
   pointer-events: none;
-  animation: cala-banner-still 2800ms linear both;
 }
 
 .cala-fov__moment-title {
@@ -632,16 +622,6 @@
   100% {
     opacity: 0;
     transform: translateY(-6px);
-  }
-}
-
-@keyframes cala-banner-still {
-  0%,
-  90% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 0;
   }
 }
 
@@ -761,6 +741,13 @@
   white-space: nowrap;
 }
 
+/* A phone-wide window: the scale stays in the title's tooltip. */
+@media (max-width: 560px) {
+  .cala-ribbon__scale {
+    display: none;
+  }
+}
+
 .cala-ribbon__caption {
   flex: 1;
   min-width: 0;
@@ -797,25 +784,6 @@
   width: 100%;
   border-radius: var(--radius-sm);
   background: var(--inset);
-}
-
-.cala-ribbon__axis {
-  position: absolute;
-  text-shadow: 0 0 2px var(--inset);
-  font-size: 10px;
-  line-height: 1;
-  color: var(--ink-3);
-  pointer-events: none;
-}
-
-.cala-ribbon__axis--l {
-  left: 3px;
-  bottom: 4px;
-}
-
-.cala-ribbon__axis--r {
-  right: 3px;
-  bottom: 4px;
 }
 
 /* ======================================================================================
