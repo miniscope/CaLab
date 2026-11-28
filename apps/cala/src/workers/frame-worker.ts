@@ -117,15 +117,14 @@ function openLive(url: string): Promise<LiveSource> {
   return LiveSource.open(new WebSocket(url) as unknown as SocketLike, url);
 }
 
-/** `keepSlow`: a replay stage follows (or one is stopped): the slow loop stays. */
-function stopPipeline(keepSlow = false): void {
+function stopPipeline(): void {
   if (front) {
     front.dispose();
     front = null;
     frontPool = null;
     flatSink = null;
   }
-  down?.postMessage({ type: 'stop', epoch, keepSlow } satisfies StageMsg);
+  down?.postMessage({ type: 'stop', epoch } satisfies StageMsg);
 }
 
 async function handle(req: FrameRequest): Promise<void> {
@@ -186,8 +185,7 @@ async function handle(req: FrameRequest): Promise<void> {
       }
       case 'pipeline-start': {
         gate.begin(req.cells?.session ?? 0);
-        // A replay stage (Extract) keeps the slow loop of the Discover run.
-        stopPipeline(req.cells?.library !== undefined);
+        stopPipeline();
         // A live stream cannot be rewound: a restart (or a run after the stream
         // ended) connects again, and the source streams from where it is now.
         if (live && liveUrl && (live.used || live.stats().ended)) {
@@ -270,7 +268,7 @@ async function handle(req: FrameRequest): Promise<void> {
       }
       case 'pipeline-stop': {
         flushPaceStats();
-        stopPipeline(req.keepSlow === true);
+        stopPipeline();
         post({ type: 'pipeline-stopped', id: req.id });
         break;
       }
