@@ -171,6 +171,29 @@ export interface FlatFieldRun {
   initial?: FlatFieldMap;
   /** Tags the estimator run (echoed by its answers). */
   session?: number;
+  /**
+   * A repeatable run (`RunCells.repeatable`): every batch goes to the estimator, and each map takes
+   * effect at a frame fixed by the batch that made it (`FLAT_APPLY_LAG`), not when it arrives.
+   */
+  repeatable?: boolean;
+}
+
+/**
+ * A repeatable run: frames from the end of the batch whose push made a flat-field map to the first
+ * batch that map is in force for. Stage A waits there for the estimator if it is late, so the map
+ * in force at every frame depends on the data only.
+ */
+export const FLAT_APPLY_LAG = 128;
+
+/** A repeatable run gives up waiting for the estimator after this long (it then counts as lost). */
+const FLAT_WAIT_MAX_MS = 30_000;
+
+/** A repeatable run's batch on its way through the estimator (`FrontStage.flatLedger`). */
+interface FlatLedgerEntry {
+  end: number;
+  /** Pushed, with the newest map's seq after it; or never fed (no sink, a rotated session). */
+  done: boolean;
+  seq: number;
 }
 
 /** A batch whose raw frames wait for the shifts stage B is still finding. */
@@ -228,6 +251,20 @@ export class FrontStage {
   /** A map in force from the first processed frame, reported with that batch. */
   private initialEvent: FlatFieldApplied | null = null;
   private flatApplied = false;
+  /** A repeatable run (`FlatFieldRun.repeatable`): maps follow `FLAT_APPLY_LAG`. */
+  private readonly flatRepeatable: boolean;
+  /** Repeatable: batches fed or to be fed, by start, until the schedule has passed them. */
+  private readonly flatLedger = new Map<number, FlatLedgerEntry>();
+  /** Repeatable: maps by seq, not yet in force; the seq in force (0: none from the estimator). */
+  private readonly flatMaps = new Map<number, FlatFieldMap>();
+  private flatSeq = 0;
+  private flatDueSeq = 0;
+  private flatWaiter: (() => void) | null = null;
+  /** Repeatable: the estimator stopped answering; maps apply as they arrive from then on. */
+  private flatLost = false;
+  /** Repeatable: batches that waited for the estimator, and the wait, ms. */
+  flatWaits = 0;
+  flatWaitMs = 0;
 
   /**
    * `acquireFront` hands out a buffer of `plan.batchSize * width * height`
@@ -257,6 +294,7 @@ export class FrontStage {
     this.flatOn = options.flatField !== false && this.params.engine.flat_field.enabled;
     this.flatSink = this.flatOn && !replay ? flat?.sink : undefined;
     this.flatInitial = this.flatOn ? ((replay ? replay.flatField : flat?.initial) ?? null) : null;
+    this.flatRepeatable = this.flatSink !== undefined && flat?.repeatable === true;
     this.boundaries = sessionBoundaries(reader.info);
     this.plan = makePlan(frameCount, this.params, options, this.boundaries);
     this.cursor = new PipelineCursor(this.plan);
@@ -353,6 +391,7 @@ export class FrontStage {
     if (session && !rp) this.pre!.beginSessionFront();
     const sessionReplay = session && rp ? rp.sessionTransforms?.[session.index] : undefined;
     // A new flat-field map takes effect here, between batches, never mid-batch.
+    if (this.flatRepeatable && !rp) await this.flatSchedule(s.start);
     const flatField = this.takeFlatField(s.start);
     const frontRec = rp
       ? this.runFrontReplay(this.pre!, raw, s.count, frontView, s.start)
@@ -374,8 +413,12 @@ export class FrontStage {
         }
       : {};
     // The estimator needs the raw frames with the shifts stage B will find: keep one copy
-    // (a memcpy) until they come back, unless the estimator has fallen behind.
-    if (this.flatSink && this.flatSink.ready()) {
+    // (a memcpy) until they come back, unless the estimator has fallen behind. A repeatable run
+    // feeds every batch (the pipeline's buffers bound how many wait here).
+    if (this.flatRepeatable && !this.flatLost) {
+      this.flatLedger.set(s.start, { end: s.start + s.count, done: false, seq: 0 });
+      this.pendingRaw.set(s.start, { raw: raw.slice(0, s.count * this.px), count: s.count });
+    } else if (this.flatSink && this.flatSink.ready()) {
       if (this.pendingRaw.size >= MAX_PENDING_RAW) {
         const oldest = this.pendingRaw.keys().next().value;
         if (oldest !== undefined) this.pendingRaw.delete(oldest);
@@ -435,7 +478,12 @@ export class FrontStage {
     if (!pending) return;
     this.pendingRaw.delete(start);
     const sink = this.flatSink;
-    if (!sink || !sink.ready() || (session && session[0] !== 0)) return;
+    const entry = this.flatLedger.get(start);
+    // A repeatable run's batch never goes unfed for want of room (only for a rotated session).
+    if (!sink || (!entry && !sink.ready()) || (session && session[0] !== 0)) {
+      if (entry) this.flatPushed(start, -1);
+      return;
+    }
     if (session) {
       dy = dy.map((v) => v + session[1]);
       dx = dx.map((v) => v + session[2]);
@@ -450,9 +498,80 @@ export class FrontStage {
     });
   }
 
-  /** The estimator produced a map: it is applied at the next batch boundary (the newest wins). */
+  /**
+   * The estimator produced a map: applied at the next batch boundary (the newest wins), or in a
+   * repeatable run kept until its frame (`flatSchedule`).
+   */
   offerFlatField(seq: number, map: FlatFieldMap): void {
-    if (this.flatOn && !this.replay && this.pre) this.offered = { seq, map };
+    if (!this.flatOn || this.replay || !this.pre) return;
+    if (this.flatRepeatable && !this.flatLost) this.flatMaps.set(seq, map);
+    else this.offered = { seq, map };
+  }
+
+  /** The estimator took the batch that starts at `start` (`seq`: its newest map then). */
+  onFlatPushed(start: number, seq: number): void {
+    this.flatPushed(start, seq);
+  }
+
+  /** Batch `start` is through the estimator with `seq` its newest map (-1: never fed). */
+  private flatPushed(start: number, seq: number): void {
+    const e = this.flatLedger.get(start);
+    if (!e) return;
+    e.done = true;
+    e.seq = Math.max(0, seq);
+    const w = this.flatWaiter;
+    this.flatWaiter = null;
+    w?.();
+  }
+
+  /**
+   * A repeatable run, before the batch that starts at `start`: the map in force is the newest made
+   * by a batch that ended at least `FLAT_APPLY_LAG` frames before it. Waits until every such batch
+   * is through the estimator; after `FLAT_WAIT_MAX_MS` without an answer the schedule is lost
+   * (maps apply as they arrive, as without repeatable).
+   */
+  private async flatSchedule(start: number): Promise<void> {
+    if (this.flatLost) return;
+    const upTo = start - FLAT_APPLY_LAG;
+    const late = () => [...this.flatLedger.values()].some((e) => e.end <= upTo && !e.done);
+    if (late()) {
+      const t0 = now();
+      this.flatWaits++;
+      while (late() && !this.flatLost) {
+        const answered = await new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => resolve(false), FLAT_WAIT_MAX_MS);
+          this.flatWaiter = () => {
+            clearTimeout(timer);
+            resolve(true);
+          };
+        });
+        if (!answered) this.loseFlatSchedule();
+      }
+      this.flatWaitMs += now() - t0;
+      if (this.flatLost) return;
+    }
+    for (const [k, e] of this.flatLedger)
+      if (e.end <= upTo) {
+        this.flatDueSeq = Math.max(this.flatDueSeq, e.seq);
+        this.flatLedger.delete(k);
+      }
+    if (this.flatDueSeq > this.flatSeq) {
+      const map = this.flatMaps.get(this.flatDueSeq);
+      if (!map) throw new Error(`flat field: map ${this.flatDueSeq} is due but never came`);
+      this.flatSeq = this.flatDueSeq;
+      this.offered = { seq: this.flatSeq, map };
+      for (const k of [...this.flatMaps.keys()]) if (k <= this.flatSeq) this.flatMaps.delete(k);
+    }
+  }
+
+  /** The estimator stopped answering: maps from now on apply as they arrive (the newest kept). */
+  private loseFlatSchedule(): void {
+    this.flatLost = true;
+    const newest = Math.max(0, ...this.flatMaps.keys());
+    if (newest > this.flatSeq) this.offered = { seq: newest, map: this.flatMaps.get(newest)! };
+    this.flatMaps.clear();
+    this.flatLedger.clear();
+    console.warn('cala flat field: the estimator stopped answering; maps apply as they arrive');
   }
 
   private takeFlatField(start: number): FlatFieldApplied | undefined {
@@ -478,6 +597,12 @@ export class FrontStage {
     this.flatSink?.stop();
     this.pendingRaw.clear();
     this.offered = null;
+    // A batch waiting for the estimator goes on (and finds nothing late).
+    this.flatLedger.clear();
+    this.flatMaps.clear();
+    const w = this.flatWaiter;
+    this.flatWaiter = null;
+    w?.();
     this.warmup?.free();
     this.pre?.free();
     this.warmupPre?.free();
@@ -914,6 +1039,8 @@ export class BackStage {
   /** Stream frame after the last state snapshot (-Infinity: none yet), and after the last batch. */
   private snapshotAt = -Infinity;
   private lastEnd = 0;
+  /** The flat-field map in force (its seq, from stage A's `flatField` events; 0: none or the stored one). */
+  private flatSeq = 0;
 
   /**
    * `fast`: the trace solver and slow-loop feed (none: no traces). It is owned (disposed) here.
@@ -960,6 +1087,19 @@ export class BackStage {
     this.projector?.addRegistered(corrected, s.start, s.count);
     // With a library, the fast loop can back-process and solve in one WASM
     // call. Without one, it still runs the back half exactly once.
+    // Decided before the solve, so the batch sent to the slow worker names the snapshot taken
+    // after it (look-back requests issued at its end are pinned to it, `LookbackPins`).
+    if (job.flatField) this.flatSeq = job.flatField.seq;
+    const end = s.start + s.count;
+    const bounds = this.setup.plan.boundaries;
+    const joins = this.snapshotEvery > 0 && (bounds.includes(s.start) || bounds.includes(end));
+    const snapshot =
+      this.snapshotEvery > 0 && (joins || end - this.snapshotAt >= this.snapshotEvery);
+    if (this.fast && this.snapshotEvery > 0)
+      this.fast.pins = {
+        flat: this.flatSeq,
+        state: snapshot ? end : Math.max(0, this.snapshotAt),
+      };
     let cells;
     if (this.fast)
       cells = this.fast.process(
@@ -993,16 +1133,10 @@ export class BackStage {
             s.start,
           )
         : job.frames;
-    const end = s.start + s.count;
     this.lastEnd = end;
     // A Joint run also snapshots the first batch of every session (look-back serves the new
     // session from its own state at once) and the last (the Final settle's state for it).
-    const bounds = this.setup.plan.boundaries;
-    const joins = this.snapshotEvery > 0 && (bounds.includes(s.start) || bounds.includes(end));
-    const backState =
-      this.snapshotEvery > 0 && (joins || end - this.snapshotAt >= this.snapshotEvery)
-        ? { frame: end, state: pre.state() }
-        : undefined;
+    const backState = snapshot ? { frame: end, state: pre.state() } : undefined;
     if (backState) this.snapshotAt = end;
     const t3 = now();
     // The fused WASM call spans both operations, so attribute it to Stage C

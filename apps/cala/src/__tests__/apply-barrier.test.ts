@@ -386,6 +386,23 @@ describe('SlowRunner apply barrier: look-back requests', () => {
     ]);
   });
 
+  it('names the live inputs of the batch it was issued at (flat-field map, back-state snapshot)', async () => {
+    const t = setup({ lookback: true });
+    await t.r.handleAsync({ ...frames(48), pins: { flat: 0, state: 32 } }, pause);
+    await t.r.handleAsync({ ...frames(56), pins: { flat: 2, state: 56 } }, pause);
+    expect(t.sentLb.map((q) => q.pins)).toEqual([
+      { flat: 0, state: 32 },
+      { flat: 2, state: 56 },
+    ]);
+  });
+
+  it('pins nothing when the run is not repeatable', async () => {
+    const t = setup({ lookback: true, repeatable: false });
+    await t.r.handleAsync({ ...frames(48), pins: { flat: 1, state: 32 } }, pause);
+    expect(t.sentLb.length).toBeGreaterThan(0);
+    expect(t.sentLb.every((q) => q.pins === undefined)).toBe(true);
+  });
+
   it('a timed-out request is not waited for; the other one out is still applied', async () => {
     const t = setup({ lookback: true });
     await t.r.handleAsync(frames(48), pause);

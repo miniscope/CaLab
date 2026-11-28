@@ -67,6 +67,7 @@
 import type {
   CsettleStatus,
   FactorSource,
+  LookbackPins,
   LookbackStatus,
   LookbackToSlow,
   SettleStatus,
@@ -456,6 +457,8 @@ export class SlowRunner {
   private lbBarTimers = new Map<number, () => void>();
   /** The last stream frame of the batch being observed (the barrier's clock). */
   private batchEnd = 0;
+  /** The live inputs after that batch (`FastToSlow` `pins`), named by the requests issued at its end. */
+  private pins: LookbackPins | null = null;
   /** A repeatable run: batch ends that waited for something late, and the wait, ms. */
   private barrierWaits = 0;
   private barrierWaitMs = 0;
@@ -1022,12 +1025,12 @@ export class SlowRunner {
   }
 
   /**
-   * `depth` visit slots per visit worker (`busy`), as a repeatable Final settle starts (a worker
-   * then has up to `depth` jobs queued). Only with no visit out (else nothing changes); a run's
-   * reset makes it 1.
+   * `depth` visit slots per visit worker (`busy`): set as a repeatable Final settle starts (a
+   * worker then has up to `depth` jobs queued) and back to 1 as it ends; a run's reset makes it 1
+   * too. Throws with a visit out (the slots would lose track of it).
    */
   private setVisitDepth(depth: number): void {
-    if (this.busy.some((b) => b)) return;
+    if (this.busy.some((b) => b)) throw new Error('visit slots changed with a visit out');
     const n = this.visits.length * Math.max(1, Math.floor(depth));
     this.busy = new Array<boolean>(n).fill(false);
     this.jobSettle = new Array<boolean>(n).fill(false);
@@ -1081,6 +1084,7 @@ export class SlowRunner {
     if (this.batchEnd > 0 && msg.start > this.batchEnd && this.barrierOn)
       this.barrierLostAt = this.batchEnd;
     this.batchEnd = msg.start + msg.count;
+    this.pins = msg.pins ?? null;
     if (msg.lateLibraries !== undefined)
       this.lateLibraries = Math.max(this.lateLibraries, msg.lateLibraries);
     let maxStep = 0;
@@ -1338,7 +1342,18 @@ export class SlowRunner {
     const req: LookbackReq = { id, port, kind, items, ...(skip ? { skip } : {}) };
     // Under the barrier a request may wait behind others, so it names the library to solve with.
     const barrier = !hold && kind !== 'end' && this.barrierOn;
-    this.det?.row('req', this.detAt, id, port, kind, items.length, fnvBytes(flat));
+    const pins = barrier ? this.pins : null;
+    this.det?.row(
+      'req',
+      this.detAt,
+      id,
+      port,
+      kind,
+      items.length,
+      fnvBytes(flat),
+      pins?.flat ?? -1,
+      pins?.state ?? -1,
+    );
     // `flat` is a fresh array (from WASM or built here): transferred as is; `skip` is copied.
     this.clock.span(kind, () =>
       this.lbPorts[port]!.postMessage(
@@ -1353,6 +1368,7 @@ export class SlowRunner {
           ...(kind === 'end' && !this.factorLive ? { final: true } : {}),
           ...(hold ? { hold: true } : {}),
           ...(barrier ? { version: this.version } : {}),
+          ...(pins ? { pins: { ...pins } } : {}),
         },
         [flat.buffer as ArrayBuffer],
       ),

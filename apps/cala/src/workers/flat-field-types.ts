@@ -29,4 +29,10 @@ export type FlatFieldDown =
 export type FlatFieldUp =
   /** A batch left the queue (the frame worker's queue bound counts these). */
   | { type: 'ack'; session: number }
-  | { type: 'map'; session: number; seq: number; map: FlatFieldMap };
+  | { type: 'map'; session: number; seq: number; map: FlatFieldMap }
+  /**
+   * The batch that starts at `start` went through the estimator (pushed, and refined if due; any
+   * map it made was sent before this): `seq` is the newest map's sequence number (0: none yet).
+   * Stage A of a repeatable run schedules maps by it (`FrontStage`).
+   */
+  | { type: 'pushed'; session: number; start: number; seq: number };

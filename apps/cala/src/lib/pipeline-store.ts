@@ -266,8 +266,8 @@ export function createPipelineStore(
     runHistory,
     record: () => record,
     onFinal: () => noteFinalInputs({ flat: true }),
-    onMap: (map: FlatFieldMap) => {
-      if (lookbackSession) lookbackFeed?.flatField(lookbackSession, map);
+    onMap: (map: FlatFieldMap, seq: number) => {
+      if (lookbackSession) lookbackFeed?.flatField(lookbackSession, map, seq);
     },
   });
   const { flatEnabled, flushFlatField } = flatStore;
@@ -649,7 +649,8 @@ export function createPipelineStore(
         finalInputs = { back: false, flat: !useFlat, sent: false };
         setLookbackRun(true);
         const flatLatest = flatStore.flatFieldMap();
-        if (flatLatest) lookbackFeed!.flatField(session, flatLatest);
+        // The map in force from the run's first frame (a stored one), as map 0.
+        if (flatLatest) lookbackFeed!.flatField(session, flatLatest, 0);
         // The cap and the target before the run's init (the slow worker keeps them across runs).
         lookbackFeed!.cap?.(settleCap());
         tellSettlePace();

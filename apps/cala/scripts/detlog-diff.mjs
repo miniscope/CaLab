@@ -48,7 +48,7 @@ const FIELDS = {
   take: ['seq', 'worker', 'job'],
   apply: ['seq', 'worker', 'result', 'work'],
   pub: ['version', 'bytes'],
-  req: ['id', 'port', 'kind', 'frames', 'list'],
+  req: ['id', 'port', 'kind', 'frames', 'list', 'flat', 'state'],
   ans: ['id', 'port', 'kind', 'version', 'traces'],
   end: [],
   final: [],

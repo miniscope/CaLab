@@ -27,6 +27,7 @@ import {
 import { parseDeviceIdentity } from '../lib/miniscope-meta.ts';
 import type { FrameReader } from '../lib/pipeline-types.ts';
 import {
+  FLAT_APPLY_LAG,
   FrontStage,
   MotionStage,
   type FlatFieldRun,
@@ -45,6 +46,8 @@ const H = 48;
 const PX = W * H;
 const OPTIONS = { calibrationFrames: 20, motionWarmupFrames: 20, batchSize: 8, previewMaxSide: 32 };
 const FRAMES = 70;
+/** Long enough for a map to come due `FLAT_APPLY_LAG` frames after the batch that made it. */
+const FLAT_FRAMES = 240;
 
 /** A textured scene panned over a lit disc: shifts change at frame 30. */
 function makeMovie(frames: number, gain?: Float32Array): FrameReader {
@@ -245,6 +248,69 @@ describe('flat field in the stages', () => {
       { frame: 8, seq: 1, source: 'estimate', first: true },
       { frame: 32, seq: 2, source: 'estimate', first: false },
     ]);
+  });
+
+  it('a repeatable run applies a map at a frame set by the batch that made it, whatever the timing', async () => {
+    // The estimator answers each push after `delay(k)` ms; batch 2's push makes map 1.
+    const run = async (delay: (k: number) => number) => {
+      const len = OPTIONS.batchSize * PX;
+      const frontPool = new StagePool(3, len);
+      const outPool = new StagePool(3, len);
+      let a: FrontStage | null = null;
+      let pushes = 0;
+      const sink: FlatFieldSink = {
+        start: () => {},
+        // Never ready: a repeatable run feeds every batch anyway.
+        ready: () => false,
+        stop: () => {},
+        push: (b) => {
+          const k = pushes++;
+          setTimeout(() => {
+            if (k === 2) a!.offerFlatField(1, halfMap());
+            a!.onFlatPushed(b.start, k >= 2 ? 1 : 0);
+          }, delay(k));
+        },
+      };
+      a = new FrontStage(makeMovie(FLAT_FRAMES), OPTIONS, () => frontPool.acquire(), undefined, {
+        sink,
+        repeatable: true,
+      });
+      const b = new MotionStage(a.setup, () => outPool.acquire());
+      const events: { start: number; e: FlatFieldApplied | undefined }[] = [];
+      const fronts: number[] = [];
+      for (;;) {
+        const job = await a.next();
+        if (!job) break;
+        if (job.step.phase === 'process') {
+          events.push({ start: job.step.start, e: job.flatField });
+          fronts.push(sum(job.front!.subarray(0, job.step.count * PX)));
+        }
+        const done = await b.handle(job);
+        if (done.step.phase === 'process') a.onShifts(done.step.start, done.dy!, done.dx!);
+        if (done.front) frontPool.release(done.front);
+        if (done.corrected) outPool.release(done.corrected);
+      }
+      const waits = a.flatWaits;
+      a.dispose();
+      b.dispose();
+      return { events, fronts, pushes, waits };
+    };
+    const quick = await run(() => 0);
+    // Batch 2's answer comes late (after stage A reached its due point: A waits for it).
+    const slow = await run((k) => (k === 2 ? 60 : 0));
+    expect(slow.waits).toBeGreaterThan(0);
+    for (const r of [quick, slow]) {
+      expect(r.pushes).toBe(r.events.length);
+      const applied = r.events.filter((x) => x.e);
+      // Map 1 came from the third process batch; it is in force from the first batch that
+      // starts FLAT_APPLY_LAG frames after that batch's end.
+      const madeBy = r.events[2].start + OPTIONS.batchSize;
+      const at = r.events.find((x) => x.start >= madeBy + FLAT_APPLY_LAG)!.start;
+      expect(applied).toEqual([
+        { start: at, e: { frame: at, seq: 1, source: 'estimate', first: true } },
+      ]);
+    }
+    expect(slow.fronts).toEqual(quick.fronts);
   });
 
   it('flatField: false ignores the sink, a stored map and offers', async () => {

@@ -212,6 +212,7 @@ async function handle(req: FrameRequest): Promise<void> {
             : null;
         const stage = new FrontStage(src, req.options, () => frontPool!.acquire(), req.replay, {
           session: flatSession,
+          ...(req.cells?.repeatable ? { repeatable: true } : {}),
           ...(flatSink ? { sink: flatSink } : {}),
           ...(req.flat?.seed ? { initial: req.flat.seed } : {}),
         });
@@ -283,6 +284,7 @@ async function handle(req: FrameRequest): Promise<void> {
           const m = e.data;
           if (m.session !== flatSession) return;
           if (m.type === 'ack') flatSink?.acked();
+          else if (m.type === 'pushed') front?.onFlatPushed(m.start, m.seq);
           else front?.offerFlatField(m.seq, m.map);
         };
         post({ type: 'ok', id: req.id });

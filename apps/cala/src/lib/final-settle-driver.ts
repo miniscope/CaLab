@@ -773,6 +773,8 @@ export class FinalSettleDriver {
   private finishFinalSettle(): void {
     const d = this.state;
     if (d) this.r.settleStatus = this.r.settleView(d, true);
+    // Every visit is back and applied (`drained`): one slot per worker again.
+    if (d?.bar) this.r.setVisitDepth(1);
     this.state = null;
     this.r.finish();
   }

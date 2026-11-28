@@ -59,8 +59,8 @@ export interface FlatFieldDeps {
   record: () => RunRecord;
   /** No further map of this run will come (the estimator finished or failed). */
   onFinal: () => void;
-  /** A map of this run's estimator. */
-  onMap: (map: FlatFieldMap) => void;
+  /** A map of this run's estimator, with its sequence number (`FlatFieldUp` `map`). */
+  onMap: (map: FlatFieldMap, seq: number) => void;
 }
 
 /** The flat field's setting, status and newest map; subscribes to the client's estimator events. */
@@ -130,7 +130,7 @@ export function createFlatFieldStore(deps: FlatFieldDeps) {
         return;
       case 'map':
         flatLatest = e.map;
-        deps.onMap(e.map);
+        deps.onMap(e.map, e.seq);
         if (e.change) runHistory?.flatMap(e.change.median);
         setFlatField((s) => ({
           ...s,

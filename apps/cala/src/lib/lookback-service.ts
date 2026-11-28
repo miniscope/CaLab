@@ -38,6 +38,7 @@ import { ServerSlot } from './server-slot.ts';
 import { LOOKBACK } from './slow-runner.ts';
 import type {
   FactorSource,
+  LookbackPins,
   LookbackToMain,
   LookbackToSlow,
   MainToLookback,
@@ -57,11 +58,15 @@ export interface LookbackReaderLike extends FrameServer {
   ): void;
   setBackState(state: Uint8Array, frame?: number): void;
   setSession(index: number, transform: SessionTransform): void;
-  setFlatField(map: FlatFieldMap | null): void;
+  setFlatField(map: FlatFieldMap | null, seq?: number): void;
   /** The run's resolved params (`run-params.ts`): its motion corrector and trace engine follow them. */
   setParams(params: string): void;
   applyLibrary(upTo?: number): void;
-  prepare(frames: { frame: number; block: number }[], out: Float32Array): Promise<LookbackPrepared>;
+  prepare(
+    frames: { frame: number; block: number }[],
+    out: Float32Array,
+    pins?: LookbackPins,
+  ): Promise<LookbackPrepared>;
   solve(p: LookbackPrepared, skip?: ArrayLike<number>): LookbackSolved;
 }
 
@@ -169,7 +174,7 @@ export class LookbackService {
         });
         return;
       case 'flat':
-        this.withReader(msg.session, (reader) => reader.setFlatField(msg.map));
+        this.withReader(msg.session, (reader) => reader.setFlatField(msg.map, msg.seq));
         return;
       case 'final':
         // In order after the back states and maps before it (the same chain).
@@ -364,7 +369,7 @@ export class LookbackService {
         let prepared: LookbackPrepared | null = null;
         let failed: unknown = null;
         try {
-          prepared = await reader.prepare(frames, out);
+          prepared = await reader.prepare(frames, out, msg.pins);
         } catch (err) {
           failed = err;
         }

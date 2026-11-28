@@ -57,7 +57,8 @@ export interface LookbackFeed {
   ): void;
   /** Stage C's back-half state (transferred on). */
   backState(session: number, snap: BackStateSnapshot): void;
-  flatField(session: number, map: FlatFieldMap | null): void;
+  /** A flat-field map and its sequence number (0: the one in force from the run's first frame). */
+  flatField(session: number, map: FlatFieldMap | null, seq: number): void;
   /** The run's resolved params (`run-params.ts`), once the pipeline has them. */
   params(session: number, params: string): void;
   /**
@@ -186,7 +187,8 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
     active: number;
     source: LookbackSource | FactorSource;
     rows: RowsChunk[];
-    flat: FlatFieldMap | null | undefined;
+    /** Every flat-field map of the run so far with its seq (a pinned request may name an older one). */
+    flats: { map: FlatFieldMap | null; seq: number }[];
     /** The run's resolved params (undefined: not sent yet). */
     params: string | undefined;
     /** Session re-registrations so far (a Joint run), in order. */
@@ -247,7 +249,7 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
         active: 1,
         source,
         rows: [],
-        flat: undefined,
+        flats: [],
         params: undefined,
         sessions: [],
         newest: null,
@@ -263,7 +265,7 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
         active: 1,
         source: { factors },
         rows: [],
-        flat: undefined,
+        flats: [],
         params: undefined,
         sessions: [],
         newest: null,
@@ -324,10 +326,10 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
       if (run?.session === session) run.params = params;
       postAll(() => [{ type: 'params', session, params }, []]);
     },
-    flatField(session, map) {
-      if (run?.session === session) run.flat = map;
+    flatField(session, map, seq) {
+      if (run?.session === session) run.flats.push({ map, seq });
       // Copied (the pipeline store keeps its map).
-      postAll(() => [{ type: 'flat', session, map }, []]);
+      postAll(() => [{ type: 'flat', session, map, seq }, []]);
     },
     session(session, index, transform) {
       const t: SessionTransform = [transform[0], transform[1], transform[2]];
@@ -394,8 +396,8 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
             a.flickerGain.buffer,
           ]);
         }
-        if (r.flat !== undefined)
-          w.postMessage({ type: 'flat', session, map: r.flat } satisfies MainToLookback);
+        for (const f of r.flats)
+          w.postMessage({ type: 'flat', session, ...f } satisfies MainToLookback);
         // The newest back state so far (its session may still be asked for after the next one starts).
         const st = r.newest;
         if (st) {

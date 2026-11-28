@@ -10,7 +10,7 @@
 
 import type { DetLogRow } from '../lib/detlog.ts';
 import type { WorkStatus } from '../lib/work-meter.ts';
-import type { FactorSource, LookbackStatus } from './lookback-types.ts';
+import type { FactorSource, LookbackPins, LookbackStatus } from './lookback-types.ts';
 import type { RunCells } from '../lib/run-cells.ts';
 
 /**
@@ -75,6 +75,11 @@ export type FastToSlow =
        * message came too late; that run is not repeatable). Absent: none.
        */
       lateLibraries?: number;
+      /**
+       * Look-back runs: the flat-field map and back-state snapshot in force after this batch
+       * (stage C), named by the look-back requests a repeatable run issues at this batch end.
+       */
+      pins?: LookbackPins;
     }
   /** The recording ended: publish what is pending. */
   | { type: 'end'; session: number }

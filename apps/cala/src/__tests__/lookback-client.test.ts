@@ -143,7 +143,7 @@ describe('look-back client', () => {
     rows(0, 8);
     rows(8, 8);
     const map = { gain: new Float32Array(1) } as never;
-    t.client.flatField(1, map);
+    t.client.flatField(1, map, 1);
     expect(t.client.startPool?.(1)).toBe(2);
     expect(t.workers()).toBe(3);
     expect(t.indices).toEqual([0, 1, 2]);
@@ -268,7 +268,7 @@ describe('look-back client', () => {
     expect(new Set(states.map((x) => x.buffer)).size).toBe(3);
     expect(states.every((x) => Array.from(x).join() === '1,2,3')).toBe(true);
     expect(t.pools).toEqual([[1, 2]]);
-    t.client.flatField(1, null);
+    t.client.flatField(1, null, 2);
     // The run ends: worker 0 is reset and kept, the pool is ended.
     t.client.reset(1);
     expect(t.sent.filter((x) => x.msg.type === 'reset').map((x) => x.worker)).toEqual([0]);

@@ -102,7 +102,7 @@ async function setup() {
   const backState = (k: number) =>
     main({ type: 'back-state', session: 1, frame: 100, state: Uint8Array.of(k) });
   const flatMap = (k: number) =>
-    main({ type: 'flat', session: 1, map: { dark: k } as unknown as FlatFieldMap });
+    main({ type: 'flat', session: 1, map: { dark: k } as unknown as FlatFieldMap, seq: k });
   return { s, ...f, toSlow, pool, main, request, backState, flatMap };
 }
 

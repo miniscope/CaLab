@@ -54,6 +54,12 @@ export type SlowToLookback =
        * not a newer one that came meanwhile. Absent: the newest in hand.
        */
       version?: number;
+      /**
+       * A repeatable run's request: the inputs the live pipeline had at the batch end it was
+       * issued at (`LookbackPins`), so it is preprocessed the same whenever its turn comes.
+       * Absent: the newest in hand.
+       */
+      pins?: LookbackPins;
     }
   /** Solve the `hold` request `id` now, with the newest library that came before this message. */
   | { type: 'solve'; session: number; id: number }
@@ -65,6 +71,14 @@ export type SlowToLookback =
   | { type: 'release'; session: number; frames: Float32Array }
   /** A recording's settle with `?factors=file`: serve every later request from these factors. */
   | { type: 'factors'; session: number; factors: FactorSource['factors'] };
+
+/** What a repeatable run's look-back request is preprocessed with (`FastToSlow` `frames` stamps). */
+export interface LookbackPins {
+  /** The flat-field map in force (its seq; 0: the map from the first frame, or none). */
+  flat: number;
+  /** The stream frame of the back-state snapshot a new block starts from (0: none taken yet). */
+  state: number;
+}
 
 /** Look-back worker -> slow worker. */
 export type LookbackToSlow =
@@ -132,8 +146,11 @@ export type MainToLookback =
    * any request: the motion corrector and trace engines are built from them.
    */
   | { type: 'params'; session: number; params: string }
-  /** The newest flat-field map (null: none). */
-  | { type: 'flat'; session: number; map: FlatFieldMap | null }
+  /**
+   * The newest flat-field map (null: none) and its sequence number (the estimator's; 0: the map in
+   * force from the run's first frame). A pinned request names the seq it is preprocessed with.
+   */
+  | { type: 'flat'; session: number; map: FlatFieldMap | null; seq: number }
   /**
    * A Joint run: Discover re-registered session `index` (1-based) by
    * `transform` (`RunRecord.noteSession`); sent before the rows of the
