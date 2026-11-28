@@ -68,13 +68,14 @@ and the floor follow the target in force (the values below are the fixed rate's)
 
 The hold combines with the Speed setting: the frame loop gets the lower of the two
 (Max, Fixed, Curve and Auto keep their own target; the hold only lowers it). The Speed
-block shows the rate in force during Discover ("Refinement 0.15 visits/frame (fixed)"; with Auto,
-"Refinement 0.075 visits/frame (Auto: fewer new cells lately, …)") and says when the hold binds ("Held at N fps to keep
-refinement at 0.15 visits/frame"); the run log gets an entry each time the hold or the
-target moves. Background settle is told the user's target, not the hold, so a held Max
+block shows the rate in force during Discover as a **Refinement** gauge (0 to 0.5 visits per frame,
+the target ticked and its 2/3 to 4/3 band shaded; its tooltip names the schedule, for example
+"Refinement 0.075 visits/frame (Auto: fewer new cells lately, …)") and says when the hold binds
+(the gauge turns amber, with "Held at N fps to keep refinement up"); the run log gets an entry
+each time the hold or the target moves. Background settle is told the user's target, not the hold, so a held Max
 run does not start it.
 
-The Speed block's "max now" is what the run can actually reach: the fast loop's own
+The Speed block's "max" mark is what the run can actually reach: the fast loop's own
 top speed, lowered to what the visits allow once they have held the run back
 (throughput / target in force, the median throughput of the last 5 windows where they
 fell behind, raised when a later window reads faster and keeps up). The floor's Max clamp, curves,
