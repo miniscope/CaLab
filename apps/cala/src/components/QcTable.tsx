@@ -122,6 +122,13 @@ export function movingText(v: number | undefined): string {
 
 const STATUSES: readonly QcStatus[] = ['pass', 'fail', 'unmeasured'];
 
+/** The line under an empty filtered table: what the empty result means, kindly. */
+const QC_EMPTY_LINE: Record<QcStatus, string> = {
+  pass: 'No cell passes QC yet. Cells often need a few transients before their SNR counts.',
+  fail: 'Nothing fails QC. Every measured cell passes.',
+  unmeasured: 'Every cell has been measured.',
+};
+
 /** The QC table's sort, filter and columns, kept by its owner so they outlive the table (a hidden tab). */
 export function createQcTableState() {
   const [key, setKey] = createSignal<SortKey | 'moving'>('flagged');
@@ -393,6 +400,14 @@ export function QcTable(props: { cells: CellStore; state?: QcTableState }): JSX.
             </Index>
           </tbody>
         </table>
+        <Show when={qc() && counts().all > 0 && rows().length === 0 && filter() !== 'all'}>
+          <p class="cala-qc-empty" data-testid="qc-filter-empty">
+            {QC_EMPTY_LINE[filter() as QcStatus]}{' '}
+            <button type="button" class="cala-link" onClick={() => setFilter('all')}>
+              Show all cells
+            </button>
+          </p>
+        </Show>
       </div>
     </div>
   );

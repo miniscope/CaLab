@@ -136,7 +136,17 @@ export interface OverlayStyle {
   selected: number | null;
   /** Default `contours`. */
   mode?: OverlayMode;
+  /**
+   * A soft halo around each outline (the Neon scheme and the synthwave theme): pixels within
+   * `GLOW_RADIUS` of an outline, outside its cell, in the outline colour at a falling opacity.
+   * Overlay only, drawn under the outlines.
+   */
+  glow?: boolean;
 }
+
+/** Halo reach of `glow`, px, and its opacity at 1 and 2 px from the outline. */
+export const GLOW_RADIUS = 2;
+const GLOW_ALPHA = [0, 0.42, 0.18];
 
 const SELECTED: Rgb = [255, 255, 255];
 /** Opacity of a footprint fill at the cell's peak. */
@@ -178,6 +188,7 @@ export function renderOverlay(g: CellGeometry, style: OverlayStyle, out?: Uint8C
       }
     }
   }
+  if (outlines && style.glow) drawGlow(g, style, rgba);
   for (const shape of g.shapes) {
     if (shape.id === style.selected) {
       sel = shape;
@@ -206,4 +217,38 @@ export function renderOverlay(g: CellGeometry, style: OverlayStyle, out?: Uint8C
     }
   }
   return rgba;
+}
+
+/** The halo of `OverlayStyle.glow`: keeps the strongest halo where two meet, never overwrites a fill. */
+function drawGlow(g: CellGeometry, style: OverlayStyle, rgba: Uint8ClampedArray): void {
+  const { width, height } = g;
+  for (const shape of g.shapes) {
+    if (shape.id === style.selected) continue;
+    const c = style.color(shape.id);
+    const inside = new Set(shape.inside);
+    for (const p of shape.contour) {
+      const x0 = p % width;
+      const y0 = (p - x0) / width;
+      for (let dy = -GLOW_RADIUS; dy <= GLOW_RADIUS; dy++) {
+        const y = y0 + dy;
+        if (y < 0 || y >= height) continue;
+        for (let dx = -GLOW_RADIUS; dx <= GLOW_RADIUS; dx++) {
+          const x = x0 + dx;
+          if (x < 0 || x >= width) continue;
+          const d = Math.max(Math.abs(dx), Math.abs(dy));
+          if (d === 0) continue;
+          const q = y * width + x;
+          if (inside.has(q)) continue;
+          const a = Math.round(255 * GLOW_ALPHA[d]);
+          const o = q * 4;
+          if (a > rgba[o + 3]) {
+            rgba[o] = c[0];
+            rgba[o + 1] = c[1];
+            rgba[o + 2] = c[2];
+            rgba[o + 3] = a;
+          }
+        }
+      }
+    }
+  }
 }

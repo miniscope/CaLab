@@ -13,8 +13,13 @@
  */
 import { createSignal, onCleanup, type Accessor } from 'solid-js';
 
-/** Themes a page can pin, besides following the system. */
-export const THEMES = ['light', 'dark'] as const;
+/**
+ * Themes a page can pin, besides following the system. The last two are hidden: a toggle shows
+ * them only when the app passes them in (cala unlocks them with an Easter egg).
+ */
+export const THEMES = ['light', 'dark', 'synthwave', 'notebook'] as const;
+/** The themes every toggle shows. */
+export const BASE_THEMES = ['light', 'dark'] as const;
 /** A pinned theme (a `data-theme` value with a token set in `tokens.css`). */
 export type Theme = (typeof THEMES)[number];
 /** The user's choice: follow the OS, or pin a theme. */

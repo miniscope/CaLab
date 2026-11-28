@@ -1,14 +1,28 @@
-import { createSignal, type JSX } from 'solid-js';
+import { createSignal, onCleanup, type JSX } from 'solid-js';
 import { Icon } from './Icon.tsx';
 import { SegmentedControl, type SegmentedOption } from './SegmentedControl.tsx';
-import { applyThemeChoice, readThemeChoice, saveThemeChoice, type ThemeChoice } from './theme.ts';
+import {
+  applyThemeChoice,
+  onThemeChange,
+  readThemeChoice,
+  saveThemeChoice,
+  type Theme,
+  type ThemeChoice,
+} from './theme.ts';
 
 export interface ThemeToggleProps {
   testid?: string;
+  /** Hidden themes to offer as well (e.g. ones the user unlocked), after system, light, dark. */
+  extra?: readonly Theme[];
 }
 
+const EXTRA: Partial<Record<Theme, { icon: 'wave' | 'pen'; title: string }>> = {
+  synthwave: { icon: 'wave', title: 'Theme: synthwave' },
+  notebook: { icon: 'pen', title: 'Theme: lab notebook' },
+};
+
 /** Built per toggle: JSX nodes cannot be shared between two mounted toggles. */
-const options = (): SegmentedOption<ThemeChoice>[] => [
+const options = (extra: readonly Theme[] = []): SegmentedOption<ThemeChoice>[] => [
   {
     value: 'system',
     label: <Icon name="system" size={14} label="System" />,
@@ -27,6 +41,19 @@ const options = (): SegmentedOption<ThemeChoice>[] => [
     title: 'Theme: dark',
     testid: 'theme-dark',
   },
+  ...extra.flatMap((t) => {
+    const e = EXTRA[t];
+    return e
+      ? [
+          {
+            value: t,
+            label: <Icon name={e.icon} size={14} label={e.title.replace('Theme: ', '')} />,
+            title: e.title,
+            testid: `theme-${t}`,
+          },
+        ]
+      : [];
+  }),
 ];
 
 /**
@@ -36,6 +63,8 @@ const options = (): SegmentedOption<ThemeChoice>[] => [
  */
 export function ThemeToggle(props: ThemeToggleProps): JSX.Element {
   const [choice, setChoice] = createSignal<ThemeChoice>(readThemeChoice());
+  // A theme applied elsewhere (another toggle, an app's shortcut) shows here too.
+  onCleanup(onThemeChange(() => setChoice(readThemeChoice())));
   const pick = (c: ThemeChoice) => {
     setChoice(c);
     applyThemeChoice(c);
@@ -43,7 +72,7 @@ export function ThemeToggle(props: ThemeToggleProps): JSX.Element {
   };
   return (
     <SegmentedControl
-      options={options()}
+      options={options(props.extra)}
       value={choice()}
       onChange={pick}
       aria-label="Colour theme"

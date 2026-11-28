@@ -1,5 +1,6 @@
 import { createSignal, For, Show, type JSX } from 'solid-js';
-import { ThemeToggle } from '@calab/ui';
+import { ThemeMenu } from './ThemeMenu.tsx';
+import { NeuronSketch } from './NeuronSketch.tsx';
 import { ImportFeedbackLinks } from '@calab/community-ui';
 import { AnalyticsNotice } from './AnalyticsNotice.tsx';
 import { filesFromDrop } from '../lib/dropped-files.ts';
@@ -319,7 +320,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
     <div class="import-container cala-open">
       <div class="app-header cala-app-header">
         <h1 class="app-header__title">Cala</h1>
-        <ThemeToggle />
+        <ThemeMenu />
         <p class="app-header__subtitle">
           Streaming calcium imaging from raw 1-photon Miniscope video
         </p>
@@ -358,6 +359,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
             }
           }}
         >
+          <NeuronSketch class="cala-neuron--drop" />
           <p class="drop-zone__text">
             <strong>{props.addMode ? 'Add a session folder' : 'Open a Miniscope folder'}</strong> or
             drop it here

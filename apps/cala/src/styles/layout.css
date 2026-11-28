@@ -161,12 +161,20 @@
 
 .cala-fov__empty {
   position: absolute;
-  inset: 40% 10% auto;
+  inset: 34% 10% auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
   margin: 0;
   text-align: center;
   color: #ddd;
   font-size: 0.85rem;
   pointer-events: none;
+}
+
+.cala-fov__empty p {
+  margin: 0;
 }
 
 /* Overlay card, zoom bar, HUD and minimap float on the image. */

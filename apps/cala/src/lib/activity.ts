@@ -5,6 +5,7 @@
  * between the cell's running baseline and running peak. A cell that fires glows at once and
  * fades over the next ticks. Display only: it reads the traces, never changes them.
  */
+import { createEffect, createSignal, onCleanup } from 'solid-js';
 
 /** Glow kept per tick (2 Hz): about 1.5 s to fade to a tenth. */
 export const GLOW_DECAY = 0.45;
@@ -75,4 +76,67 @@ export function stepActivity(
     c.glow = Math.max(c.glow * GLOW_DECAY, lvl);
   }
   return fired;
+}
+
+/** Ticks per second of the sampler (the 2 Hz limit of every live fun touch). */
+export const ACTIVITY_MS = 500;
+/** Frames read per cell per tick at most (the newest ones). */
+const MAX_WINDOW = 400;
+
+export interface ActivitySource {
+  /** Ids of the cells in the library (null: none yet). */
+  ids(): ArrayLike<number> | null;
+  /** Largest trace value of `id` over stream frames [first, end) (NaN: no samples). */
+  windowMax(id: number, first: number, end: number): number;
+  /** The frame on screen (null: none). */
+  frame(): number | null;
+}
+
+/**
+ * The 2 Hz activity sampler. While `active()`, every `ACTIVITY_MS` it reads each cell's window
+ * since the last tick and bumps `version()`; `onFire` gets the cells that fired. A paused or
+ * stopped stream (no new frame) only lets the glow fade. Call inside a component.
+ */
+export function createActivity(
+  src: ActivitySource,
+  active: () => boolean,
+  onFire?: (ids: number[]) => void,
+) {
+  const st = emptyActivity();
+  const [version, setVersion] = createSignal(0);
+  let last: number | null = null;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const tick = () => {
+    const ids = Array.from(src.ids() ?? []);
+    const f = src.frame();
+    if (f === null || last === null || f <= last) {
+      // Nothing new on screen (paused, or a jump back): fade only.
+      stepActivity(st, ids, () => NaN);
+      if (f !== null && (last === null || f < last)) last = f;
+    } else {
+      const lo = Math.max(last + 1, f + 1 - MAX_WINDOW);
+      const fired = stepActivity(st, ids, (id) => src.windowMax(id, lo, f + 1));
+      last = f;
+      if (fired.length > 0) onFire?.(fired);
+    }
+    setVersion((v) => v + 1);
+  };
+  createEffect(() => {
+    if (!active()) {
+      clearInterval(timer);
+      timer = undefined;
+      last = null;
+      st.clear();
+      return;
+    }
+    timer ??= setInterval(tick, ACTIVITY_MS);
+  });
+  onCleanup(() => clearInterval(timer));
+  return {
+    version,
+    /** Display glow 0..1 of `id` (0 when unknown). */
+    glow: (id: number): number => st.get(id)?.glow ?? 0,
+    /** Level 0..1 of `id` at the last tick. */
+    level: (id: number): number => st.get(id)?.level ?? 0,
+  };
 }

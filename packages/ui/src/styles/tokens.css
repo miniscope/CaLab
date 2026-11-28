@@ -241,6 +241,93 @@
   --shadow-elevated: 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
+/* Hidden themes, unlocked in cala by an Easter egg and offered by its toggle only then. Each is
+   one more self-contained block on the dark-theme recipe: colour role tokens and color-scheme
+   only, every token the dark set redefines.
+
+   Synthwave: a night drive. Indigo grounds, lavender inks, the stage hues as neon (cyan,
+   hot pink, sunset amber) and a pink glow under floating panels. Inks at least 4.5:1 on all
+   three grounds. */
+:root[data-theme='synthwave'] {
+  color-scheme: dark;
+  --ground: #120a22;
+  --surface: #1b1030;
+  --inset: #251640;
+  --ink-1: #f7edff;
+  --ink-2: #cdb6ec;
+  --ink-3: #ad94d4;
+  --ink-on-fill: #120a22;
+  --line: #36215a;
+  --line-control: #5d3d8c;
+  --status-ok: #3ee6a8;
+  --status-ok-tint: #0f2f28;
+  --status-warning: #ffc552;
+  --status-warning-tint: #362611;
+  --status-warning-mark: #ffc552;
+  --status-critical: #ff6a92;
+  --status-critical-tint: #3a1228;
+  --stage-discover: #3fd0ff;
+  --stage-discover-tint: #142a4c;
+  --stage-settle: #ff4fd8;
+  --stage-settle-tint: #3c1240;
+  --stage-extract: #ffa94d;
+  --stage-extract-tint: #3d2318;
+  --track: #2c1a48;
+  --mark-neutral: #8f7bb0;
+  --surface-float: rgba(27, 16, 48, 0.94);
+  --chart-tick: rgba(236, 200, 255, 0.22);
+  --chart-dim: rgba(236, 200, 255, 0.07);
+  --accent-warm-hover: #e6d6ff;
+  --accent-warm-active: #d2bbf7;
+  --warning-bg: rgba(255, 197, 82, 0.12);
+  --error: #ff6a92;
+  --error-bg: rgba(255, 106, 146, 0.12);
+  --success: #3ee6a8;
+  --shadow-elevated: 0 2px 14px rgba(255, 79, 216, 0.28);
+}
+
+/* Lab notebook: graph paper and pen. Paper grounds with a faint blue-grey cast (no cream),
+   iron-gall sepia inks, and blue-black fountain-pen ink for Discover; the hand-drawn touches
+   (ruled ground, pen-weight titles) are app CSS on the same selector. Inks at least 4.5:1 on
+   all three grounds. */
+:root[data-theme='notebook'] {
+  color-scheme: light;
+  --ground: #eceee8;
+  --surface: #f8f9f4;
+  --inset: #e4e7df;
+  --ink-1: #2b2118;
+  --ink-2: #5a4632;
+  --ink-3: #6a553f;
+  --ink-on-fill: #fbfbf7;
+  --line: #d3d8cc;
+  --line-control: #a9b0a0;
+  --status-ok: #2c6a35;
+  --status-ok-tint: #dcebd6;
+  --status-warning: #7a5000;
+  --status-warning-tint: #f4e8c8;
+  --status-warning-mark: #c98a00;
+  --status-critical: #a8312b;
+  --status-critical-tint: #f5dcd6;
+  --stage-discover: #24508f;
+  --stage-discover-tint: #d9e2ee;
+  --stage-settle: #8a3566;
+  --stage-settle-tint: #eedbe5;
+  --stage-extract: #d07a1e;
+  --stage-extract-tint: #f2e2cd;
+  --track: #dde1d6;
+  --mark-neutral: #8a8576;
+  --surface-float: rgba(248, 249, 244, 0.95);
+  --chart-tick: rgba(43, 33, 24, 0.16);
+  --chart-dim: rgba(43, 33, 24, 0.05);
+  --accent-warm-hover: #46382a;
+  --accent-warm-active: #1d160f;
+  --warning-bg: rgba(201, 138, 0, 0.1);
+  --error: #a8312b;
+  --error-bg: rgba(168, 49, 43, 0.07);
+  --success: #2c6a35;
+  --shadow-elevated: 1px 2px 0 rgba(43, 33, 24, 0.18);
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root {
     --transition-fast: 0s;

@@ -26,6 +26,21 @@ const PATHS = {
     'M11.6 4.4l1-1',
   ],
   moon: ['M13 9.5A5.5 5.5 0 1 1 6.5 3a4.5 4.5 0 0 0 6.5 6.5z'],
+  /** Unlockable themes: synthwave (a sun setting on a ruled horizon), lab notebook (a pen nib). */
+  wave: ['M3 9a5 5 0 0 1 10 0', 'M1.5 9h13', 'M3 11.5h10', 'M5 14h6'],
+  pen: ['M10.5 2.5l3 3-7.5 7.5-3.75.75.75-3.75z', 'M9 4l3 3', 'M3 13l1.5-1.5'],
+  /** Fun touches: a four-point sparkle. */
+  sparkle: [
+    'M8 1.5c.6 3.4 1.6 4.4 5 5c-3.4.6-4.4 1.6-5 5c-.6-3.4-1.6-4.4-5-5c3.4-.6 4.4-1.6 5-5z',
+    'M13 11.5v3',
+    'M11.5 13h3',
+  ],
+  /** A music note (the choir). */
+  note: [
+    'M6 12.5a1.75 1.75 0 1 1-3.5 0a1.75 1.75 0 1 1 3.5 0z',
+    'M6 12.5V3l7-1.5v9',
+    'M13 10.5a1.75 1.75 0 1 1-3.5 0a1.75 1.75 0 1 1 3.5 0z',
+  ],
   gpu: [
     'M3.5 3.5h9v9h-9z',
     'M6 6h4v4H6z',

@@ -109,3 +109,10 @@ export function createChoir() {
 }
 
 export type Choir = ReturnType<typeof createChoir>;
+
+let page: Choir | null = null;
+/** The page's one choir. */
+export function pageChoir(): Choir {
+  page ??= createChoir();
+  return page;
+}

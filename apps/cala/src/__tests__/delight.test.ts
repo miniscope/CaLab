@@ -86,7 +86,7 @@ describe('Easter-egg detection', () => {
     for (let i = 0; i < 6; i++) expect(click((t += 200))).toBe(false);
     expect(click((t += 200))).toBe(true);
     // Counting starts over after a trigger.
-    expect(click((t += 200))).toBe(false);
+    expect(click(t + 200)).toBe(false);
   });
 
   it('keys typed into a field never count', () => {

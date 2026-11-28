@@ -1,5 +1,5 @@
 import { createSignal, For, Show, type JSX } from 'solid-js';
-import { ThemeToggle } from '@calab/ui';
+import { ThemeMenu } from './ThemeMenu.tsx';
 import type { ProjectStore } from '../lib/project-store.ts';
 import {
   sharedIdGroups,
@@ -106,7 +106,7 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
     <div class="import-container cala-open cala-project" data-testid="project-view">
       <div class="app-header cala-app-header">
         <h1 class="app-header__title">Cala</h1>
-        <ThemeToggle />
+        <ThemeMenu />
         <p class="app-header__subtitle">
           Project <strong data-testid="project-name">{p().opened()?.rootName}</strong>
         </p>

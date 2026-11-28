@@ -137,7 +137,8 @@ function reducedMotionQuery(): MediaQueryList | null {
 
 /** The fun state of the page (one per page; `delight` below). */
 export function createDelight(hidden: readonly string[]) {
-  const [on, setOnSig] = createSignal(readFun());
+  const initial = readFun();
+  const [on, setOnSig] = createSignal(initial);
   const mq = reducedMotionQuery();
   const [reduced, setReduced] = createSignal(mq?.matches ?? false);
   mq?.addEventListener?.('change', (e) => setReduced(e.matches));
@@ -150,7 +151,7 @@ export function createDelight(hidden: readonly string[]) {
     if (v) document.documentElement.removeAttribute('data-fun');
     else document.documentElement.setAttribute('data-fun', 'off');
   };
-  mark(on());
+  mark(initial);
 
   return {
     /** Fun touches on. */

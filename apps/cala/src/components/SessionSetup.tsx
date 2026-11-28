@@ -1,5 +1,5 @@
 import { createSignal, For, Index, Show, type JSX } from 'solid-js';
-import { ThemeToggle } from '@calab/ui';
+import { ThemeMenu } from './ThemeMenu.tsx';
 import type { SessionList } from '../lib/session-list.ts';
 import {
   DEFAULT_MODE,
@@ -89,7 +89,7 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
     <div class="import-container cala-open cala-sessions" data-testid="session-setup">
       <div class="app-header cala-app-header">
         <h1 class="app-header__title">Cala</h1>
-        <ThemeToggle />
+        <ThemeMenu />
         <p class="app-header__subtitle">Multi-session run</p>
       </div>
 
