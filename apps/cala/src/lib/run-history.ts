@@ -53,15 +53,15 @@ const SERIES: Record<HistoryGroup, Spec[]> = {
   convergence: [
     {
       key: 'cells',
-      label: 'Cells in the library',
-      short: 'Cells',
+      label: 'Cells at frame',
+      short: 'Cells at frame',
       unit: 'cells',
       kind: 'value',
       range: [0, 200],
       rangeRule: 'ladder125',
       color: OKABE_ITO.blue,
       digits: 0,
-      hint: 'Cells in the library the fast loop solves.',
+      hint: "Cells in the fast loop's library at each QC snapshot (once per second of recording). The Final settle takes none, so after Discover the run rail's Cells is the current count.",
     },
     {
       key: 'new_per_min',

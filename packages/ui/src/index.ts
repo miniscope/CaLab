@@ -50,5 +50,5 @@ export { RangeBar } from './RangeBar.tsx';
 export type { RangeBarProps } from './RangeBar.tsx';
 export { Legend } from './Legend.tsx';
 export type { LegendItem, LegendProps } from './Legend.tsx';
-export { StageTrack, stageFill } from './StageTrack.tsx';
+export { StageTrack, stageFill, stageMeasured } from './StageTrack.tsx';
 export type { StageSegment, StageState, StageTrackProps } from './StageTrack.tsx';

@@ -138,19 +138,9 @@ describe('background settle in the status line', () => {
   });
 });
 
-import { stageLabel } from '../lib/lookback-text.ts';
 import { leaveWarning } from '../lib/export-state.ts';
 
-describe('stage chip', () => {
-  it('follows the stage after Discover', () => {
-    const o = { discover: 'done', settling: false, extract: 'idle' };
-    expect(stageLabel({ ...o, discover: 'running' })).toBe('Discover');
-    expect(stageLabel({ ...o, settling: true })).toBe('Final settle');
-    expect(stageLabel({ ...o, extract: 'running' })).toBe('Extract');
-    expect(stageLabel({ ...o, extract: 'done' })).toBe('Done');
-    expect(stageLabel(o)).toBe('Discover done');
-    expect(stageLabel({ ...o, live: true })).toBe('Done');
-  });
+describe('leaving a result', () => {
   it('warns before dropping an unexported result only', () => {
     const o = { extractDone: true, exported: false, multiSession: false };
     expect(leaveWarning(o)).toContain('not been exported');

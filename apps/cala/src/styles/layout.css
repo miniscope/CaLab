@@ -1,15 +1,19 @@
 /* ========================
    Layout C: the field of view sized by the window height on the left; on the
-   right the run strip over one row of tabs (Run, Cell, QC, History, details),
-   one panel at a time with the column's height. One screen, no page scroll;
-   narrow or portrait windows stack and scroll.
+   right the run rail over one row of tabs (Run, Cell, QC, History, details),
+   one panel at a time with the column's height. One screen, no page scroll.
+   Narrow or portrait windows stack rail, image and tabs, in that order, and
+   scroll: the run state stays at the top.
    ======================== */
 .cala-main {
   position: relative;
   display: grid;
   grid-template-columns: var(--cala-fov-w, 60%) minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
-  gap: var(--space-sm);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    'fov rail'
+    'fov side';
+  gap: var(--space-xs) var(--space-sm);
   height: 100%;
   padding: var(--space-sm) var(--space-md) var(--space-md);
   overflow: hidden;
@@ -34,11 +38,18 @@
 }
 
 .cala-main__fov {
+  grid-area: fov;
   display: flex;
   flex-direction: column;
 }
 
+.cala-main__rail {
+  grid-area: rail;
+  min-width: 0;
+}
+
 .cala-main__side {
+  grid-area: side;
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
@@ -47,7 +58,11 @@
 
 .cala-main--narrow {
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto;
+  grid-template-rows: auto auto auto;
+  grid-template-areas:
+    'rail'
+    'fov'
+    'side';
   overflow-y: auto;
 }
 
@@ -347,7 +362,211 @@
   margin-top: var(--space-xs);
 }
 
-/* ---- Run strip: the run on one line, always in view ---- */
+/* ---- Run rail: the stage track, its line, and the live figures, always in view ---- */
+.cala-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-radius);
+  background: var(--surface);
+  font-size: var(--font-size-sm);
+  color: var(--ink-1);
+}
+
+.cala-rail__sessions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.cala-rail__session-label {
+  flex: none;
+  color: var(--ink-2);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+
+.cala-rail__ribbon.stage-track {
+  flex: 1;
+  height: 14px;
+  font-size: var(--font-size-xs);
+}
+
+.cala-rail__ribbon .stage-track__label {
+  padding: 0 var(--space-1);
+}
+
+.cala-rail__line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 22px;
+}
+
+.cala-rail__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-2);
+}
+
+.cala-rail__controls {
+  flex: none;
+  display: flex;
+  gap: var(--space-1);
+}
+
+.cala-rail__controls .cala-icon-btn {
+  margin-left: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Four figures in one row, each a name, a number and its mark on a fixed range. */
+.cala-rail__figs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-2);
+}
+
+.cala-fig {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 0 var(--space-2);
+  container-type: inline-size;
+}
+
+/* A narrow figure drops its sub-label (the tooltip keeps it) rather than truncate it. */
+@container (max-width: 120px) {
+  .cala-fig__sub {
+    display: none;
+  }
+}
+
+.cala-fig:first-child {
+  padding-left: 0;
+}
+
+.cala-fig + .cala-fig {
+  border-left: 1px solid var(--line);
+}
+
+.cala-fig__name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--ink-2);
+}
+
+.cala-fig__sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink-3);
+  font-size: var(--font-size-xs);
+}
+
+.cala-fig__value {
+  font-size: var(--font-size-figure);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.cala-fig__value .unit {
+  font-size: var(--font-size-sm);
+}
+
+.cala-fig__dash {
+  color: var(--ink-3);
+}
+
+.cala-fig__mark {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 22px;
+}
+
+.cala-fig__mark .meter {
+  flex: 1;
+  min-width: 0;
+}
+
+.cala-fig__spark {
+  position: relative;
+  display: block;
+}
+
+/* The Cells sparkline's range, printed at the right of the name because its end steps
+   (1, 2, 5 x 10^k). */
+.cala-fig__axis {
+  margin-left: auto;
+  color: var(--ink-3);
+  font-size: var(--font-size-xs);
+  line-height: 1;
+}
+
+/* Convergence: a dot in the stage hue while cells change; the ok check once converged. */
+.cala-fig__status {
+  display: inline-flex;
+  align-items: center;
+}
+
+.cala-fig__status i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--mark-neutral);
+}
+
+.cala-fig__status--discovering i,
+.cala-fig__status--settling i {
+  background: var(--stage-discover);
+}
+
+.cala-fig__status--converged {
+  color: var(--status-ok);
+}
+
+.cala-fig__warn {
+  display: inline-flex;
+  color: var(--status-warning);
+}
+
+.cala-rail__memory {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.cala-rail__memory .meter-row {
+  flex: 1;
+  min-width: 0;
+  grid-template-columns: 4.5rem minmax(64px, 1fr) 4.5rem;
+  font-size: var(--font-size-sm);
+  min-height: 18px;
+}
+
+.cala-rail__memory .meter-row__label {
+  color: var(--ink-2);
+}
+
+.cala-rail__info {
+  color: var(--ink-3);
+}
+
+/* ---- Result strip: a saved result on one line, in the rail's place (ResultView) ---- */
 .cala-strip {
   flex: none;
   display: flex;
@@ -392,37 +611,9 @@
   flex: 1 1 auto;
 }
 
-.cala-strip__session {
-  flex: none;
-  padding: 1px 6px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
-  font-size: 0.72rem;
-  white-space: nowrap;
-}
-
 .cala-strip .btn-small {
   flex: none;
   padding-block: 1px;
-}
-
-/* ---- The three steps (Discover -> Final settle -> Extract): fixed size, each fills ---- */
-.cala-steps {
-  flex: 1 1 auto;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.cala-steps__arrow {
-  flex: none;
-  color: var(--text-tertiary);
-  font-size: 0.8rem;
 }
 
 /* Each step's colours: its stage hue, tint, and the label ink over the full hue (white on
@@ -440,112 +631,6 @@
 .cala-stage--extract {
   --step-ink: var(--stage-extract);
   --step-on-fill: var(--ink-1);
-}
-
-.cala-steps__box {
-  position: relative;
-  flex: 1 1 0;
-  min-width: 0;
-  height: 30px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm, 4px);
-  overflow: hidden;
-  background: var(--bg-primary, #fff);
-}
-
-.cala-steps__fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  background: color-mix(in srgb, var(--step-ink) 22%, transparent);
-  transition: width 0.4s linear;
-}
-
-.cala-steps__text {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  height: 100%;
-  padding: 0 8px;
-  white-space: nowrap;
-  font-size: 0.78rem;
-}
-
-.cala-steps__name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-weight: var(--font-weight-semibold, 600);
-}
-
-.cala-steps__num {
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--text-secondary);
-}
-
-/* Running: the step's colour, a strong edge and moving stripes, so work is visibly happening. */
-.cala-steps__box--running {
-  border-color: var(--step-ink);
-  box-shadow: 0 0 0 1px var(--step-ink);
-}
-
-.cala-steps__box--running .cala-steps__fill {
-  background-color: color-mix(in srgb, var(--step-ink) 30%, transparent);
-  background-image: repeating-linear-gradient(
-    -45deg,
-    transparent 0 8px,
-    color-mix(in srgb, var(--step-ink) 22%, transparent) 8px 16px
-  );
-  background-size: 22.6px 22.6px;
-  animation: cala-steps-stripe 1s linear infinite;
-}
-
-@keyframes cala-steps-stripe {
-  to {
-    background-position: 22.6px 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .cala-steps__box--running .cala-steps__fill {
-    animation: none;
-  }
-}
-
-.cala-steps__box--paused {
-  border-color: var(--step-ink);
-  border-style: dashed;
-}
-
-/* Done: the stage's full hue with a check mark (never the ok green). */
-.cala-steps__box--done {
-  border-color: var(--step-ink);
-  background: var(--step-ink);
-}
-
-.cala-steps__box--done .cala-steps__fill {
-  background: var(--step-ink);
-}
-
-.cala-steps__box--done .cala-steps__name,
-.cala-steps__box--done .cala-steps__num {
-  color: var(--step-on-fill);
-}
-
-.cala-steps__name .icon {
-  vertical-align: -0.15em;
-}
-
-.cala-steps__box--off {
-  opacity: 0.45;
-  border-style: dashed;
-}
-
-.cala-steps__box--error {
-  --step-ink: var(--status-critical);
-  border-color: var(--status-critical);
 }
 
 /* ---- The step panels in the Run tab: one structure for all three ---- */
@@ -805,21 +890,7 @@
 
 .cala-status {
   font-size: 0.85rem;
-  font-weight: var(--font-weight-medium, 500);
-}
-
-/* ---- Run panel ---- */
-.cala-run__conv {
-  display: flex;
-  align-items: center;
-  gap: var(--space-xs);
-  min-width: 0;
-}
-
-.cala-run .cala-conv-chip {
-  flex: none;
-  font-size: 0.75rem;
-  white-space: nowrap;
+  font-weight: var(--font-weight-medium);
 }
 
 .cala-run__status,
@@ -1029,80 +1100,6 @@
   margin: 0 0 2px;
 }
 
-.cala-run__tiles {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-sm) var(--space-md);
-  margin: var(--space-xs) 0;
-}
-
-.cala-stepper {
-  display: flex;
-  gap: var(--space-xs);
-  margin: var(--space-xs) 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.cala-stepper__step {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: var(--space-xs);
-  padding: 4px 6px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  min-width: 0;
-}
-
-.cala-stepper__step--active {
-  border-color: var(--ink-2);
-  background: var(--inset);
-}
-
-.cala-stepper__dot {
-  flex: none;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.7rem;
-  background: var(--border-default);
-  color: var(--text-primary);
-}
-
-.cala-stepper__step--active .cala-stepper__dot {
-  background: var(--ink-1);
-  color: var(--ink-on-fill);
-}
-
-/* Calibrate and Export have no stage hue: a done step is the secondary ink with its check. */
-.cala-stepper__step--done .cala-stepper__dot {
-  background: var(--ink-2);
-  color: var(--ink-on-fill);
-}
-
-.cala-stepper__text {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.cala-stepper__label {
-  font-size: 0.8rem;
-  font-weight: var(--font-weight-medium);
-}
-
-.cala-stepper__sub {
-  font-size: 0.7rem;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 /* Export menu */
 .cala-menu {
   position: relative;
@@ -1274,26 +1271,6 @@
 .cala-speed__tag,
 .cala-speed__hint {
   font-size: 0.75rem;
-}
-
-.cala-speed__answer {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-sm);
-  flex-wrap: wrap;
-}
-
-.cala-speed__figure {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-  font-size: 1.4rem;
-  line-height: 1.8rem;
-  font-weight: var(--font-weight-semibold, 600);
-}
-
-.cala-speed__unit {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
 }
 
 .cala-speed__line {

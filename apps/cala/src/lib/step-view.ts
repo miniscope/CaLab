@@ -1,6 +1,6 @@
 /**
- * The three main steps of a run as the stepper and the step panels show them: Discover, Final
- * settle, Extract (docs/stages.md). Pure: numbers in, words and fractions out, so the stepper and
+ * The three main steps of a run as the run rail and the step panels show them: Discover, Final
+ * settle, Extract (docs/stages.md). Pure: numbers in, words and fractions out, so the rail and
  * the panels agree and are tested without a DOM. Look-back and Background settle run inside
  * Discover and are its sub-line, not steps of their own.
  */

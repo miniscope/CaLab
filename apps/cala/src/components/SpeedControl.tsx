@@ -171,7 +171,6 @@ export function SpeedControl(props: {
       governor: gov(),
       maxFps: s().workMaxFps(),
     });
-  const timesReal = (fps: number) => (props.fps > 0 ? fps / props.fps : null);
 
   // ---- changes ----
 
@@ -257,32 +256,6 @@ export function SpeedControl(props: {
         : !s().lookback()
           ? 'Needs look-back refinement: tick it below.'
           : null;
-
-  const headline = () => {
-    if (props.live) return props.fps > 0 ? props.fps.toFixed(1) : '-';
-    const a = achieved();
-    if (a !== null) return a.toFixed(1);
-    if (mode() === 'curve') return !running() ? 'Curve' : target() > 0 ? String(target()) : 'Max';
-    if (mode() === 'auto') return !running() ? 'Auto' : target() > 0 ? String(target()) : 'Max';
-    return mode() === 'max' ? 'Max' : String(shown());
-  };
-  const unitText = () => {
-    if (props.live) return 'fps from the stream · sets the pace';
-    const curve = mode() === 'curve' || mode() === 'auto';
-    const t = curve
-      ? target() > 0
-        ? String(target())
-        : 'Max'
-      : mode() === 'max'
-        ? 'Max'
-        : String(shown());
-    const x = mode() === 'fixed' ? timesReal(shown() as number) : null;
-    const xt = x !== null ? ` · ${x.toFixed(1)}× real time` : '';
-    if (achieved() !== null) return `fps achieved · target ${t}${xt}`;
-    if (mode() === 'auto')
-      return running() ? `fps · Auto, ${budgetLabel(budget())} time budget` : '';
-    return curve ? (running() ? 'fps · following the curve' : '') : `fps target${xt}`;
-  };
 
   // What the run follows: the curve after the minimum-step rule, and a note when steps merged.
   const curveLine = () => {
@@ -415,10 +388,6 @@ export function SpeedControl(props: {
           </select>
         </label>
       </Show>
-      <div class="cala-speed__answer" data-testid="speed-headline">
-        <span class="cala-speed__figure">{headline()}</span>
-        <span class="cala-speed__unit">{unitText()}</span>
-      </div>
       <Show when={!props.live}>
         <p class="cala-speed__line" data-testid="speed-status">
           {pinned() !== null ? `Pinned at Max: ${pinned()}` : status()}

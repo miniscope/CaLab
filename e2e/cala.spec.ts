@@ -61,7 +61,8 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await expect(page.getByTestId('pipeline-status')).toHaveText(/^(Discover done|Done)$/, {
     timeout: 20_000,
   });
-  await expect(page.getByTestId('pipeline-readout')).toContainText('frame 6 / 6');
+  // The run rail's Discover segment carries the exact frame count.
+  await expect(page.getByTestId('run-step-discover')).toHaveAttribute('title', /6 \/ 6 frames/);
   // The work display is in the Run panel, with its fixed ranges and honest empty values.
   await page.getByRole('tab', { name: 'Run' }).click();
   await expect(page.getByTestId('work-display')).toBeVisible();
@@ -78,7 +79,7 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await expect(page.getByTestId('history-expanded')).toHaveCount(0);
   // The cells panel is up; six frames are too few for the slow loop to start.
   await expect(page.getByTestId('cells-view')).toBeVisible();
-  await expect(page.getByTestId('cells-readout')).toContainText('0 cells');
+  await expect(page.getByTestId('cells-readout')).toHaveText('0');
   // The Speed block: Max by default; Fixed shows the target and persists; the old toggle is gone.
   await page.getByTestId('tab-run').click();
   const speed = page.getByTestId('speed-control');
