@@ -440,23 +440,28 @@ export class FinalSettleDriver {
     return true;
   }
 
-  /** Apply the visits due by `fed` frames, in hand-out order (all of them are back), then housekeep. */
-  private applyHeld(d: Settle, fed: number): void {
+  /**
+   * Apply the visits due by `fed` frames, in hand-out order (all of them are back), then
+   * housekeep. Returns whether any was applied.
+   */
+  private applyHeld(d: Settle, fed: number): boolean {
     const due = d.bar!.takeDue(fed);
     for (const it of due) this.r.applyVisit(it.key, it.result!);
     if (due.length > 0) this.r.housekeep();
+    return due.length > 0;
   }
 
   /**
    * Under `Settle.bar`, before the next piece: the visits due by the frames fed so far are
-   * applied, then, while too many visits are owed (`settleOwedTooMuch`), the oldest out is
-   * applied and the next handed out. False when one of them is not back yet (the settle holds;
-   * `visitArrived` resumes it).
+   * applied and their workers handed the next at once, then, while too many visits are owed
+   * (`settleOwedTooMuch`), the oldest out is applied and the next handed out. False when one of
+   * them is not back yet (the settle holds; `visitArrived` resumes it).
    */
   private settleBarrierStep(d: Settle): boolean {
     const bar = d.bar!;
     if (!bar.ready(d.fed)) return false;
-    this.applyHeld(d, d.fed);
+    // Handed out only after an apply: how often this step is re-entered depends on timing.
+    if (this.applyHeld(d, d.fed)) this.settleDispatch(d);
     while (this.settleOwedTooMuch(d)) {
       const oldest = bar.nextDue();
       if (!bar.ready(oldest)) return false;

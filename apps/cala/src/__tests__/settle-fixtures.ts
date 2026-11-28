@@ -136,6 +136,8 @@ export interface Schedule {
   visitWorkers: number;
   /** Most delay of a visit result and of a look-back answer, ms. */
   visitMs: number;
+  /** Visit results come back before anything else runs (microtasks, not timers; `visitMs` unused). */
+  visitInstant?: boolean;
   answerMs: number;
   /** The settle on factors with a pool worker (two look-back workers), else the recording's relay. */
   pool: boolean;
@@ -159,20 +161,18 @@ export async function settleRun(sch: Schedule) {
   const { loop, pass } = fakeLoop(sch.due ?? 2, log);
   const toMain: SlowToMain[] = [];
   let runner: SlowRunner | null = null;
+  /** Delivered in order after a random delay, or in a microtask with `visitInstant`. */
+  const visitPort = <T>(deliver: (m: T) => void, maxMs: number) =>
+    sch.visitInstant ? (m: T) => queueMicrotask(() => deliver(m)) : port(deliver, rand, maxMs);
   const toVisit = Array.from({ length: sch.visitWorkers }, (_, i) =>
-    port<OwnerToVisit>(
-      (m) => {
-        if (m.type !== 'job') return;
-        back[i]({ type: 'result', session: m.session, bytes: m.bytes, ms: 1 });
-      },
-      rand,
-      0,
-    ),
+    visitPort<OwnerToVisit>((m) => {
+      if (m.type !== 'job') return;
+      back[i]({ type: 'result', session: m.session, bytes: m.bytes, ms: 1 });
+    }, 0),
   );
   const back = Array.from({ length: sch.visitWorkers }, (_, i) =>
-    port<Parameters<SlowRunner['handleVisit']>[1]>(
+    visitPort<Parameters<SlowRunner['handleVisit']>[1]>(
       (m) => runner!.handleVisit(i, m),
-      rand,
       sch.visitMs,
     ),
   );

@@ -56,6 +56,29 @@ describe('repeatable Final settle', () => {
     }
   }, 60_000);
 
+  it('never holds or falls behind when visits come back at once', async () => {
+    // 4 slots at a lag of 2 pieces keep up with the rate only if a slot freed at its due point
+    // goes out again at once: handed out after the next piece instead, a slot makes a visit per
+    // 3 pieces, under the rate, the visits owed pile up to the hold threshold and the rest is
+    // paid at the end.
+    for (const seed of [41, 42]) {
+      const { st } = await settleRun({
+        seed,
+        visitWorkers: 4,
+        visitMs: 0,
+        visitInstant: true,
+        answerMs: 1,
+        pool: true,
+        repeatable: true,
+      });
+      const v = st.visits!;
+      expect(v.handed).toBe(Math.floor(SETTLE.visitRate * FRAMES + 1e-9));
+      expect(v.holds).toBe(0);
+      expect(v.owedMax).toBeLessThanOrEqual(Math.ceil(SETTLE.visitRate * SETTLE.observePiece));
+      expect(v.paidAtEnd).toBe(0);
+    }
+  }, 60_000);
+
   it('without repeatable the order follows the timing (the fakes can tell)', async () => {
     const runs = await logs(timings({ pool: true, visitWorkers: 4 }));
     expect(runs.some((log) => JSON.stringify(log) !== JSON.stringify(runs[0]))).toBe(true);
