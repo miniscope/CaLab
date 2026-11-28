@@ -917,9 +917,8 @@ export class SlowRunner {
     for (const it of this.bar.takeDue(frame)) {
       const m = it.result!;
       if (it.kind === 'visit') {
-        if (m.type !== 'result') continue;
         this.busy[it.key] = false;
-        this.applyVisit(it.key, m);
+        if (m.type === 'result') this.applyVisit(it.key, m);
         continue;
       }
       const lm = m as LookbackToSlow;

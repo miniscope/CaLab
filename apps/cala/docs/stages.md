@@ -97,6 +97,25 @@ behaviour before the fixed rate (no cap, no hold); qc_eval's `--visit-rate auto|
 runs the same schedule (with the cap at the target, as a held Max run sits, unless
 `--visit-cap-ratio` says otherwise) and `--visit-rate R` a bare cap of R.
 
+## Repeatable runs
+
+A recording's Discover at a target speed is repeatable in its timing (`RunCells.repeatable`,
+on for recordings, off for live streams; `?debug&repeatable=0` turns it off). The slow
+worker hands out tile visits and look-back requests (need-driven and Background settle)
+only at batch ends, and applies what comes back two batches (16 frames) later, in the order
+it went out (`ApplyBarrier`, `src/lib/apply-barrier.ts`); it waits there for anything late.
+Libraries are published at batch ends only and stamped with that batch's last frame; the
+fast loop adopts each one forward-buffer-count + 1 batches after it (`FastLoop.adoptFrame`),
+which is before the slow worker can have freed the buffer for that batch, so it is never
+late while no batch is dropped. At Discover's end the visits out are applied in order and
+look-back answers not yet applied are dropped. Each visit slot and each look-back worker has
+one item out at a time, so a slot makes at most one visit per two batches and need-driven
+look-back reads at most one request per two batches. At Max (no target) results apply as
+they arrive. The slow worker's status reports the batch ends that waited and the libraries
+the fast loop adopted late (`SlowStatus.repeatable`). Not covered yet: look-back answers are
+preprocessed from whichever back state the look-back worker holds, and the Final settle
+observes pooled answers in arrival order.
+
 ## Order
 
 - Extract runs only after Discover has finished and the slow loop has
