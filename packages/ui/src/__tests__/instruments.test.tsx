@@ -8,6 +8,7 @@ import { SegmentedBar } from '../SegmentedBar.tsx';
 import { RangeBar } from '../RangeBar.tsx';
 import { Legend } from '../Legend.tsx';
 import { Badge } from '../Badge.tsx';
+import { StatusNote } from '../StatusNote.tsx';
 import { Icon, ICON_NAMES } from '../Icon.tsx';
 import { StageTrack, stageFill, type StageSegment } from '../StageTrack.tsx';
 import { MetricTile } from '../MetricTile.tsx';
@@ -446,6 +447,27 @@ describe('Badge', () => {
     expect(stage.querySelector('.icon')).toBeNull();
     expect(neutral.querySelector('.badge__dot, .icon')).toBeNull();
     expect(neutral.textContent).toBe('v7');
+  });
+});
+
+describe('StatusNote', () => {
+  it('pairs the status tint with its icon and the text, warning by default', () => {
+    const host = mount(() => (
+      <>
+        <StatusNote testid="w">Frame count differs from the timestamps.</StatusNote>
+        <StatusNote tone="critical" role="alert">
+          Failed.
+        </StatusNote>
+      </>
+    ));
+    const [warn, crit] = Array.from(host.querySelectorAll('.status-note'));
+    expect(warn.classList.contains('status-note--warning')).toBe(true);
+    expect(warn.querySelector('.icon--warning')).not.toBeNull();
+    expect(warn.getAttribute('data-testid')).toBe('w');
+    expect(warn.hasAttribute('role')).toBe(false);
+    expect(warn.textContent).toBe('Frame count differs from the timestamps.');
+    expect(crit.querySelector('.icon--cross')).not.toBeNull();
+    expect(crit.getAttribute('role')).toBe('alert');
   });
 });
 
