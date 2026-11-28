@@ -84,8 +84,15 @@ describe('QC table', () => {
     const meter = first.querySelector('[role="meter"]')!;
     expect(meter.getAttribute('aria-valuemax')).toBe('100');
     expect(first.querySelector('.meter__tick')).not.toBeNull();
+    // The threshold and the population median are told apart and labelled once, in the header.
+    expect(first.querySelector('.meter__median')).not.toBeNull();
+    const key = host.querySelector('thead [data-testid="qc-bar-key"]')!.textContent!;
+    expect(key).toContain('pass ≥ 5');
+    expect(key).toContain('median');
     const heads = () =>
-      Array.from(host.querySelectorAll('thead th')).map((t) => t.textContent!.replace(/ [▲▼]/, ''));
+      Array.from(host.querySelectorAll('thead th')).map((t) =>
+        (t.querySelector('button') ?? t).textContent!.replace(/ [▲▼]/, ''),
+      );
     expect(heads()).toEqual(['Cell', 'SNR', 'Flag', 'nb r', 'proj r', 'motion R²']);
     expect(first.textContent).toContain('low SNR');
     const vif = q('qc-column-vif') as HTMLInputElement;

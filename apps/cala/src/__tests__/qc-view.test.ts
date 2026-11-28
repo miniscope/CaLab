@@ -1,4 +1,4 @@
-// @vitest-environment node
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 import {
   FLAG_CORRELATED_PAIR,
@@ -16,11 +16,15 @@ import {
   metricText,
   QC_METRICS,
   qcCounts,
+  qcMedian,
   qcMetric,
   qcReason,
   qcStatus,
+  SNR_BAR,
+  thresholdTitle,
   topBySnr,
 } from '../lib/qc-view.ts';
+import { rangePosition } from '@calab/ui';
 import { qcRow } from './qc-fixtures.ts';
 
 const pass = qcRow({ id: 1 });
@@ -110,5 +114,39 @@ describe('metric specs', () => {
     expect(metricText(qcMetric('peakSnr'), 12.345)).toBe('12.3');
     expect(metricText(qcMetric('projR'), NaN)).toBeNull();
     expect(metricText(qcMetric('projR'), undefined)).toBeNull();
+  });
+});
+
+describe('population median and bar position', () => {
+  it('puts SNR 10 in the middle of the log 1-100 bar and the threshold at log(MIN_SNR)/log(100)', () => {
+    expect(rangePosition(10, SNR_BAR)!.t).toBeCloseTo(0.5, 12);
+    expect(rangePosition(1, SNR_BAR)!.t).toBeCloseTo(0, 12);
+    expect(rangePosition(100, SNR_BAR)!.t).toBeCloseTo(1, 12);
+    expect(rangePosition(qcMetric('peakSnr').threshold, SNR_BAR)!.t).toBeCloseTo(
+      Math.log(MIN_SNR) / Math.log(100),
+      12,
+    );
+  });
+
+  it('is the median of the measured, finite values only', () => {
+    const rows = [
+      qcRow({ id: 1, peakSnr: 10 }),
+      qcRow({ id: 2, peakSnr: 30 }),
+      qcRow({ id: 3, peakSnr: 20 }),
+      qcRow({ id: 4, peakSnr: 999, flags: FLAG_UNMEASURED }),
+      qcRow({ id: 5, peakSnr: NaN }),
+    ];
+    const m = qcMedian(rows, 'peakSnr')!;
+    expect(m.value).toBe(20);
+    expect(m.n).toBe(3);
+    expect(m.title).toBe('median of 3 cells: 20.0');
+    expect(qcMedian([...rows, qcRow({ id: 6, peakSnr: 40 })], 'peakSnr')!.value).toBe(25);
+    expect(qcMedian([rows[3], rows[4]], 'peakSnr')).toBeNull();
+    expect(qcMedian([], 'peakSnr')).toBeNull();
+  });
+
+  it('spells the threshold out', () => {
+    expect(qcMetric('peakSnr').thresholdText).toBe(`pass ≥ ${MIN_SNR}`);
+    expect(thresholdTitle(qcMetric('projR'))).toBeUndefined();
   });
 });

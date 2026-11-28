@@ -17,6 +17,12 @@ export interface MeterProps {
   format?: (v: number) => string;
   /** A tick at this value (the target or the limit). Clamped to the range. */
   target?: number;
+  /** Tooltip of the target tick (e.g. "pass at 5 or more"). */
+  targetTitle?: string;
+  /** A population marker (a small triangle under the track, e.g. the median of all cells); drawn unlike the target tick. */
+  median?: number | null;
+  /** Tooltip of the population marker (e.g. "median of 40 cells: 18.3"). */
+  medianTitle?: string;
   /** Secondary ticks (a floor, a reference), drawn shorter and in the secondary ink. Clamped to the range. */
   marks?: number[];
   /** A shaded band [lo, hi] (an expected or allowed zone). Clamped to the range. */
@@ -38,6 +44,7 @@ export function Meter(p: MeterProps): JSX.Element {
   const range = (): FixedRange => ({ min: p.min, max: p.max, scale: p.scale });
   const pos = createMemo(() => rangePosition(p.value, range()));
   const tick = createMemo(() => (p.target === undefined ? null : rangePosition(p.target, range())));
+  const med = createMemo(() => rangePosition(p.median, range()));
   const marks = createMemo(() =>
     (p.marks ?? []).flatMap((m) => {
       const r = rangePosition(m, range());
@@ -89,7 +96,24 @@ export function Meter(p: MeterProps): JSX.Element {
         {(t) => <span class="meter__mark" style={{ left: pct(t) }} aria-hidden="true" />}
       </For>
       <Show when={tick()}>
-        {(t) => <span class="meter__tick" style={{ left: pct(t().t) }} aria-hidden="true" />}
+        {(t) => (
+          <span
+            class="meter__tick"
+            style={{ left: pct(t().t) }}
+            title={p.targetTitle}
+            aria-hidden="true"
+          />
+        )}
+      </Show>
+      <Show when={med()}>
+        {(t) => (
+          <span
+            class="meter__median"
+            style={{ left: pct(t().t) }}
+            title={p.medianTitle}
+            aria-hidden="true"
+          />
+        )}
       </Show>
     </div>
   );
@@ -119,6 +143,9 @@ export function MeterRow(p: MeterRowProps): JSX.Element {
         valueText={p.valueText}
         format={p.format}
         target={p.target}
+        targetTitle={p.targetTitle}
+        median={p.median}
+        medianTitle={p.medianTitle}
         marks={p.marks}
         band={p.band}
         tone={p.tone}

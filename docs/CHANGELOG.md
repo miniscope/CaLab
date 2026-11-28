@@ -19,6 +19,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 - Cala: **a past run's settings load from its export.** **Load config…** takes a `cala-export.npz` (its `meta_json.run`) or a `calab-run.json`: what that run asked for, not what its data set; **Also pin what the data set** adds the measured values (the frame rate) as settings for an exact repeat. **Config (.json)** in the Export menu saves a run's settings as a config file. Also fixed: a run file's params version was read from the wrong place, so one of another version was not refused.
 - Cala: **the project is kept in the browser until it is on disk.** Before write permission (and always in Firefox and Safari) the project file's draft (the plan, defaults and session settings) is kept in IndexedDB and comes back when the same folder is opened again, also after a reload. Without the File System Access API a run's file is kept in browser storage (OPFS) until its zip downloads; after a crash or a closed tab the next open offers **Download run file**, and the step it was running can start again.
 
+### Fixed
+
+- Cala: **the tick on the SNR bars is now labelled as the pass threshold, and the median of all cells is marked too.** The dashed tick on the Cell tab and QC table bars was the pass rule (peak SNR at least 5), explained only in a tooltip, so it read as a population average. The threshold is now a dashed tick with a visible key ("pass ≥ 5", also "pair > 0.8" and "flag > 0.2" on the other bars) and the median over the run's measured cells is a small triangle under each bar (tooltip: "median of N cells: 18.3"), computed once per QC update. The key sits in the QC table's SNR header, under the Cell tab's threshold bars and over the top-SNR list. `Meter` in `@calab/ui` gains `median`, `targetTitle` and `medianTitle`.
+
 ### Removed
 
 - Cala: **the session setup screen and the plain folder open.** The **Multi-session run** and **Open animal project** buttons, the session list and its own results layout are gone; every folder opens through one path as a project (see Changed).
