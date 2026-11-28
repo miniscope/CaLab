@@ -570,3 +570,378 @@ fn defaults_resolve_to_the_engines_values() {
         assert_eq!(v.qc.motion_r2_flag as f32, qc.motion_r2_flag);
     }
 }
+
+// ---- engine configs built from params ----
+
+/// Frame rates the builders are checked at: integer and non-integer, and
+/// one where the two groups of durations differ.
+const BUILD_FPS: [f32; 6] = [19.98, 20.0, 23.976, 29.97, 30.0, 60.0];
+
+fn engine_at(p: &CalaParams, fps: f32) -> super::engine::Engine {
+    super::engine::Engine::build(
+        p,
+        Context {
+            fps: f64::from(fps),
+            frame: [600, 600],
+        },
+    )
+    .unwrap()
+}
+
+/// The engine's own configuration, as params, builds exactly the configs
+/// the engine's `Default` and `for_fps` give, at any frame rate.
+#[test]
+fn engine_params_build_the_engines_configs() {
+    use super::loose::engine_params;
+    use crate::discover::{LookbackConfig, SlowLoopConfig, VisitSchedule};
+    use crate::motion::{MotionConfig, NonRigidConfig};
+    use crate::preprocess::flatfield::OnlineFlatFieldConfig;
+    use crate::preprocess::PreprocessConfig;
+    use crate::qc::QcConfig;
+    use crate::trace::SolverConfig;
+
+    for fps in BUILD_FPS {
+        let e = engine_at(&engine_params(), fps);
+        assert_eq!(e.preprocess, PreprocessConfig::for_fps(fps), "{fps}");
+        assert_eq!(e.flat_field, OnlineFlatFieldConfig::for_fps(fps), "{fps}");
+        assert_eq!(e.qc, QcConfig::for_fps(fps), "{fps}");
+        assert_eq!(e.qc_at(20.0), QcConfig::default());
+        assert_eq!(e.motion, MotionConfig::default());
+        assert_eq!(e.motion_warmup_frames, 200);
+        assert_eq!(e.solver, SolverConfig::default());
+        assert_eq!(e.visit, VisitSchedule::fixed());
+        assert!(e.lookback.is_none());
+        assert_ne!(e.slow_loop.fingerprint, 0);
+        assert_eq!(
+            e.slow_loop,
+            SlowLoopConfig {
+                fingerprint: e.slow_loop.fingerprint,
+                ..SlowLoopConfig::default()
+            },
+            "{fps}"
+        );
+        let mut p = engine_params();
+        p.motion.nonrigid.enabled = true;
+        p.lookback.enabled = true;
+        let e = engine_at(&p, fps);
+        assert_eq!(
+            e.motion,
+            MotionConfig {
+                nonrigid: Some(NonRigidConfig::default()),
+                ..MotionConfig::default()
+            }
+        );
+        let lb = e.lookback.unwrap();
+        let d = LookbackConfig::default();
+        assert_eq!(
+            (lb.rate, lb.max_frames, lb.order, lb.target),
+            (d.rate, d.max_frames, d.order, d.target)
+        );
+    }
+}
+
+/// The default params differ from the engine's configuration only in the
+/// cluster replay, the merge guard and look-back.
+#[test]
+fn default_params_are_the_engine_params_plus_the_apps_look_back() {
+    use crate::discover::{JointUpdate, SlowLoopConfig};
+    let e = engine_at(&CalaParams::default(), 20.0);
+    assert_eq!(e.slow_loop.joint_update, JointUpdate::All);
+    assert_eq!(e.slow_loop.merge_guard_min_sep, 0.6);
+    assert_eq!(
+        e.slow_loop,
+        SlowLoopConfig {
+            joint_update: JointUpdate::All,
+            merge_guard_min_sep: 0.6,
+            fingerprint: e.slow_loop.fingerprint,
+            ..SlowLoopConfig::default()
+        }
+    );
+    let lb = e.lookback.unwrap();
+    assert_eq!((lb.rate, lb.max_frames), (2.0, 3000));
+}
+
+/// The loose-argument entry points keep the ring and the margin at their
+/// pixel sizes at any diameter, exactly.
+#[test]
+fn a_fixed_ring_is_exact_at_any_diameter() {
+    use super::loose::{engine_params, set_diameter_fixed_ring};
+    use crate::trace::BackgroundModel as EBg;
+    let mut ds: Vec<f64> = (2..=128).map(f64::from).collect();
+    ds.extend([2.5, 6.4, 7.3, 9.99, 10.5, 12.7, 14.5, 15.9, 33.3]);
+    ds.extend((1..200).map(|k| 2.0 + f64::from(k) * 0.317));
+    for d in ds {
+        let mut p = engine_params();
+        set_diameter_fixed_ring(&mut p, f64::from(d as f32));
+        let s = engine_at(&p, 20.0).slow_loop;
+        assert_eq!(s.cell_diameter_px, d as f32);
+        assert_eq!(s.margin_px, 24, "{d}");
+        assert_eq!(
+            s.background,
+            EBg::Ring {
+                inner_px: 12.0,
+                outer_px: 20.0
+            },
+            "{d}"
+        );
+    }
+}
+
+/// A flattening σ is passed explicitly only when it is not the default
+/// multiple of the diameter, as the engine's own configs do.
+#[test]
+fn the_flattening_sigma_stays_derived_by_default() {
+    let mut p = CalaParams::default();
+    assert_eq!(engine_at(&p, 20.0).preprocess.flatten.sigma_px, None);
+    p.scales.flatten_sigma_px = Some(20.0);
+    assert_eq!(engine_at(&p, 20.0).preprocess.flatten.sigma_px, Some(20.0));
+    p.scales.flatten_sigma_px = None;
+    p.scales.flatten_sigma_per_d = 3.0;
+    assert_eq!(engine_at(&p, 20.0).preprocess.flatten.sigma_px, Some(30.0));
+}
+
+/// The fingerprint covers what changes results and nothing else.
+#[test]
+fn the_fingerprint_follows_the_results_fields_only() {
+    use super::engine::{fingerprint, fingerprint_hex};
+    let a = CalaParams::default();
+    assert_eq!(fingerprint(&a), fingerprint(&a.clone()));
+    assert_eq!(fingerprint_hex(&a).len(), 64);
+    let mut b = a.clone();
+    b.discover.merge.guard_min_sep_d = None;
+    assert_ne!(fingerprint(&a), fingerprint(&b));
+    let mut c = a.clone();
+    c.compute.repeatable = !c.compute.repeatable;
+    assert_ne!(fingerprint(&a), fingerprint(&c));
+    let mut d = a.clone();
+    d.compute.batch_frames += 1;
+    d.export.pass_qc_only = !d.export.pass_qc_only;
+    assert_eq!(fingerprint(&a), fingerprint(&d));
+}
+
+// ---- the loose-argument entry points (the wasm bindings) ----
+//
+// Each `loose::*` function against the construction its binding inlined
+// before it went through params, over frame rates and argument values.
+
+const BINDING_FPS: [f32; 9] = [0.0, -1.0, f32::NAN, 19.98, 20.0, 23.976, 29.97, 30.0, 60.0];
+
+#[test]
+fn preprocess_config_matches_for_fps() {
+    use crate::preprocess::PreprocessConfig;
+    for fps in BINDING_FPS {
+        assert_eq!(
+            super::loose::preprocess_config(fps),
+            PreprocessConfig::for_fps(fps),
+            "{fps}"
+        );
+    }
+}
+
+#[test]
+fn flat_field_config_matches_the_inline_overrides() {
+    use crate::preprocess::flatfield::OnlineFlatFieldConfig;
+    let inline = |fps: f32, g: f32, o: f32, f: f32, r: f32| {
+        let mut cfg = OnlineFlatFieldConfig::for_fps(fps);
+        let rate = if fps.is_finite() && fps > 0.0 {
+            fps
+        } else {
+            20.0
+        };
+        let set = |s: f32| (s.is_finite() && s >= 0.0).then(|| (s * rate).round());
+        if let Some(v) = set(g) {
+            cfg.estimator.half_life_frames = f64::from(v);
+        }
+        if let Some(v) = set(o) {
+            cfg.estimator.offset_half_life_frames = f64::from(v);
+        }
+        if let Some(v) = set(f) {
+            cfg.first_frames = (v as u64).max(1);
+        }
+        if let Some(v) = set(r) {
+            cfg.refine_every_frames = (v as u64).max(1);
+        }
+        cfg
+    };
+    // The app's arguments (NaN = default, 150 s, 60 s), zero (no offset
+    // model), and other durations of at least half a frame.
+    let durations = [
+        f32::NAN,
+        -1.0,
+        0.0,
+        0.5,
+        1.0,
+        7.3,
+        60.0,
+        120.0,
+        150.0,
+        7200.0,
+    ];
+    for fps in BINDING_FPS {
+        for &g in &durations {
+            for &o in &durations {
+                for (f, r) in [(150.0, 60.0), (f32::NAN, f32::NAN), (0.0, 0.0), (33.3, 1.0)] {
+                    assert_eq!(
+                        super::loose::flat_field_config(fps, g, o, f, r),
+                        inline(fps, g, o, f, r),
+                        "{fps} {g} {o} {f} {r}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn slow_loop_config_matches_the_inline_build() {
+    use super::loose::{slow_loop_config, ClusterArgs};
+    use crate::discover::{JointSign, JointUpdate, SlowLoopConfig};
+    use crate::preprocess::flatten::FlattenConfig;
+    let cluster = [
+        None,
+        Some((ClusterUpdate::All, ClusterSign::All, f32::INFINITY)),
+        Some((ClusterUpdate::All, ClusterSign::All, 0.6)),
+        Some((ClusterUpdate::Refine, ClusterSign::Own, 0.0)),
+        Some((ClusterUpdate::Off, ClusterSign::Off, 1.25)),
+    ];
+    for d in [4.0f32, 6.0, 10.0, 12.5, 16.0, 33.3] {
+        for sigma in [0.0f32, -1.0, 8.0, 20.0, 31.7] {
+            for c in cluster {
+                let (f, s) = slow_loop_config(
+                    d,
+                    sigma,
+                    c.map(|(update, sign, g)| ClusterArgs {
+                        update,
+                        sign,
+                        guard_min_sep_d: super::loose::guard_min_sep(g),
+                    }),
+                )
+                .unwrap();
+                let want_f = FlattenConfig {
+                    cell_diameter_px: d,
+                    sigma_px: (sigma > 0.0).then_some(sigma),
+                    ..FlattenConfig::default()
+                };
+                let mut want = SlowLoopConfig {
+                    cell_diameter_px: d,
+                    fingerprint: s.fingerprint,
+                    ..SlowLoopConfig::default()
+                };
+                if let Some((u, sg, g)) = c {
+                    want.joint_update = match u {
+                        ClusterUpdate::Off => JointUpdate::Off,
+                        ClusterUpdate::Refine => JointUpdate::Refine,
+                        ClusterUpdate::All => JointUpdate::All,
+                    };
+                    want.joint_sign_rule = match sg {
+                        ClusterSign::Off => JointSign::Off,
+                        ClusterSign::Own => JointSign::Own,
+                        ClusterSign::All => JointSign::All,
+                    };
+                    want.merge_guard_min_sep = g;
+                }
+                assert_eq!(f, want_f, "{d} {sigma}");
+                assert_eq!(s, want, "{d} {sigma} {c:?}");
+            }
+        }
+    }
+}
+
+/// A slow loop and a visit worker built from the same arguments share a
+/// fingerprint; another option gives another one.
+#[test]
+fn the_same_arguments_give_the_same_fingerprint() {
+    use super::loose::{slow_loop_config, ClusterArgs};
+    let args = |g: Option<f64>| {
+        Some(ClusterArgs {
+            update: ClusterUpdate::All,
+            sign: ClusterSign::All,
+            guard_min_sep_d: g,
+        })
+    };
+    let a = slow_loop_config(10.0, 0.0, args(Some(0.6))).unwrap().1;
+    let b = slow_loop_config(10.0, 0.0, args(Some(0.6))).unwrap().1;
+    let c = slow_loop_config(10.0, 0.0, args(None)).unwrap().1;
+    let d = slow_loop_config(10.0, 0.0, None).unwrap().1;
+    assert_eq!(a.fingerprint, b.fingerprint);
+    assert_ne!(a.fingerprint, c.fingerprint);
+    assert_ne!(c.fingerprint, d.fingerprint);
+}
+
+#[test]
+fn lookback_visit_solver_and_qc_match_the_inline_values() {
+    use crate::discover::{LookbackConfig, VisitSchedule};
+    use crate::qc::QcConfig;
+    use crate::trace::SolverConfig;
+    for (rate, k) in [(2.0, 3000u32), (0.5, 1), (1.25, 2999), (3.0, 123_457)] {
+        let l = super::loose::lookback_config(rate, k);
+        let d = LookbackConfig::default();
+        assert_eq!(
+            (l.rate, l.max_frames, l.order, l.target),
+            (rate, k as usize, d.order, d.target)
+        );
+    }
+    assert_eq!(super::loose::visit_schedule(false), VisitSchedule::fixed());
+    assert_eq!(super::loose::visit_schedule(true), VisitSchedule::auto());
+    for (tol, n) in [
+        (0.0f32, 0u32),
+        (-1.0, 0),
+        (0.01, 50),
+        (0.05, 200),
+        (0.123, 7),
+    ] {
+        let mut want = SolverConfig::default();
+        if tol > 0.0 {
+            want.tol = tol;
+        }
+        if n > 0 {
+            want.max_sweeps = n;
+        }
+        assert_eq!(super::loose::solver_config(tol, n), want, "{tol} {n}");
+    }
+    for fps in BINDING_FPS {
+        for w in [0u32, 1, 600, 1200] {
+            let mut want = QcConfig::for_fps(fps);
+            if w > 0 {
+                want.window_frames = w as usize;
+            }
+            let got = super::loose::qc_config(fps, w);
+            // NaN compares unequal: compare the debug text.
+            assert_eq!(format!("{got:?}"), format!("{want:?}"), "{fps} {w}");
+        }
+    }
+}
+
+#[test]
+fn motion_config_matches_the_inline_options() {
+    use super::loose::{motion_config, MotionArgs};
+    use crate::motion::{MotionConfig, NonRigidConfig};
+    for max_shift in [1.0f32, 7.5, 15.0, 40.0] {
+        for tau in [0.0f32, 1.0, 400.0, 399.5, 1234.0] {
+            for nonrigid in [false, true] {
+                for grid in [(4usize, 4usize), (2, 3), (6, 6)] {
+                    for mps in [1.0f32, 3.0, 4.25] {
+                        let got = motion_config(MotionArgs {
+                            max_shift,
+                            template_tau: tau,
+                            nonrigid,
+                            grid,
+                            max_patch_shift: mps,
+                        });
+                        let want = MotionConfig {
+                            max_shift,
+                            template_tau: tau,
+                            nonrigid: nonrigid.then(|| NonRigidConfig {
+                                grid,
+                                max_patch_shift: mps,
+                                ..NonRigidConfig::default()
+                            }),
+                            ..MotionConfig::default()
+                        };
+                        assert_eq!(got, want);
+                    }
+                }
+            }
+        }
+    }
+}

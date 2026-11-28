@@ -9,9 +9,11 @@
 //! * converted at `time.legacy_frame_fps` (default 20) when it is set: every
 //!   other duration, which the engine counts in fixed frames.
 //!
-//! Nothing in the engine is built from the view yet. The golden files in
-//! `crates/cala/tests/golden/` pin it at the default params, so a change of
-//! an engine value shows up as a diff there.
+//! The real-fps group is converted in the engine's f32 arithmetic
+//! ([`frames_f32`]), the expression of its `for_fps` functions.
+//! [`super::engine::Engine`] builds the engine's configs from the view. The
+//! golden files in `crates/cala/tests/golden/` pin it at the default params,
+//! so a change of an engine value shows up as a diff there.
 
 use serde::{Deserialize, Serialize};
 
@@ -242,6 +244,18 @@ pub fn frames(seconds: f64, fps: f64) -> u64 {
     }
 }
 
+/// [`frames`] in the engine's f32 arithmetic (`round(s × fps)` of two
+/// f32), for the durations the engine has always converted at the
+/// recording's frame rate: the same expression as its `for_fps`
+/// functions, so a non-integer frame rate gives the same frame counts.
+pub fn frames_f32(seconds: f64, fps: f64) -> u64 {
+    if seconds == 0.0 {
+        0
+    } else {
+        (seconds as f32 * fps as f32).round().max(1.0) as u64
+    }
+}
+
 /// The cell diameter in pixels: `scales.cell_diameter_px` when set, else
 /// `scales.expected_cell_diameter_um` over the optics' µm per frame pixel.
 pub fn cell_diameter(p: &CalaParams, frame: [u32; 2]) -> Result<CellDiameter, ResolveError> {
@@ -295,7 +309,7 @@ pub fn resolve(p: &CalaParams, ctx: Context) -> Result<EngineView, ResolveError>
     }
     let legacy = p.time.legacy_frame_fps.unwrap_or(fps);
     let lf = |s: f64| frames(s, legacy);
-    let rf = |s: f64| frames(s, fps);
+    let rf = |s: f64| frames_f32(s, fps);
     let d = cell_diameter(p, ctx.frame)?;
     let dpx = d.px;
     let s = &p.scales;
@@ -317,7 +331,7 @@ pub fn resolve(p: &CalaParams, ctx: Context) -> Result<EngineView, ResolveError>
             fov_margin_px: pre.fov.margin_px,
             hot_pixel_k_sigma: pre.hot_pixel_k_sigma,
             background_boxcar: lf(pre.background.boxcar_s),
-            background_relax_frames: pre.background.relax_s * fps,
+            background_relax_frames: f64::from(pre.background.relax_s as f32 * fps as f32),
             flatten_cell_diameter_px: dpx,
             flatten_sigma_px: s.flatten_sigma_px.unwrap_or(s.flatten_sigma_per_d * dpx),
         },
@@ -336,8 +350,9 @@ pub fn resolve(p: &CalaParams, ctx: Context) -> Result<EngineView, ResolveError>
             enabled: ff.enabled,
             half_life_frames: rf(ff.gain_half_life_s),
             offset_half_life_frames: rf(ff.offset_half_life_s),
-            first_frames: rf(ff.first_map_s),
-            refine_every_frames: rf(ff.refine_every_s),
+            // At least one frame: 0 does not mean off here.
+            first_frames: rf(ff.first_map_s).max(1),
+            refine_every_frames: rf(ff.refine_every_s).max(1),
         },
         slow_loop: SlowLoopView {
             cell_diameter_px: dpx,

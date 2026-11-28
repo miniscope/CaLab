@@ -9,6 +9,7 @@ use wasm_bindgen::prelude::*;
 
 use super::{CellQc, GlobalQc, QcConfig, QcMonitor};
 use crate::js_util::{init_panic_hook, js_err};
+use crate::params::loose;
 use crate::preprocess::Dims;
 use crate::trace::js::JsTraceEngine;
 use crate::trace::TraceError;
@@ -48,10 +49,7 @@ impl JsQcMonitor {
         let dims =
             Dims::new(width as usize, height as usize).map_err(|e| js_err("QcMonitor", e))?;
         // Every QC duration at the recording's frame rate.
-        let mut cfg = QcConfig::for_fps(fps);
-        if window_frames > 0 {
-            cfg.window_frames = window_frames as usize;
-        }
+        let cfg = loose::qc_config(fps, window_frames);
         let inner = QcMonitor::new(dims, fov.to_vec(), noise.to_vec(), cfg)
             .map_err(|e| js_err("QcMonitor", e))?;
         Ok(JsQcMonitor { inner })

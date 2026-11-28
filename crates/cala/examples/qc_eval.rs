@@ -429,10 +429,16 @@ use oracle::{read_f32s, read_oracle, read_u32, Oracle};
 
 #[path = "common/avi.rs"]
 mod avi;
+#[path = "common/eval_params.rs"]
+mod eval_params;
 #[path = "common/matching.rs"]
 mod matching;
 #[path = "common/util.rs"]
 mod util;
+
+/// The frame rate of `qc_eval`'s QC monitor: its windows count frames at
+/// 20 Hz whatever `--fps` is.
+const QC_FPS: f32 = 20.0;
 use avi::Recording;
 #[cfg(test)]
 use matching::sparse_corr;
@@ -448,25 +454,23 @@ use std::time::Instant;
 use calab_cala::compress::blend::{BlendLayout, Tiling};
 use calab_cala::compress::WindowFactors;
 use calab_cala::discover::{
-    EditScope, JointAdmit, JointSign, JointUpdate, LookBack as LbSched, LookbackConfig,
-    LookbackNext, LookbackOrder, LookbackOutcome, MergeRule, RefineGate, SettleSched, SlowLoop,
-    SlowLoopConfig, VisitJob, VisitResult, VisitRunner, VisitSchedule, LB_BLOCK,
+    EditScope, JointUpdate, LookBack as LbSched, LookbackConfig, LookbackNext, LookbackOrder,
+    LookbackOutcome, MergeRule, RefineGate, SettleSched, SlowLoop, SlowLoopConfig, VisitJob,
+    VisitResult, VisitRunner, VisitSchedule, LB_BLOCK,
 };
-use calab_cala::motion::{
-    Frame, Frames, MotionConfig, MotionCorrector, MotionRecord, NonRigidConfig,
-};
+use calab_cala::motion::{Frame, Frames, MotionConfig, MotionCorrector, MotionRecord};
+use calab_cala::params::engine::{fingerprint_hex, Engine};
+use calab_cala::params::resolve::Context;
 use calab_cala::preprocess::flatfield::{
-    DitherFlatField, FlatField, FlatFieldConfig, FlatFieldSeed, OnlineFlatField,
-    OnlineFlatFieldConfig, RefineOutcome, FIRST_MAP_S, GAIN_HALF_LIFE_S, OFFSET_HALF_LIFE_S,
-    REFINE_EVERY_S,
+    DitherFlatField, FlatField, FlatFieldConfig, FlatFieldSeed, OnlineFlatField, RefineOutcome,
 };
 use calab_cala::preprocess::flatten::GlowFlattener;
 use calab_cala::preprocess::warmup::WarmupAccumulator;
-use calab_cala::preprocess::{Calibration, Dims, PreprocessConfig, Preprocessor};
+use calab_cala::preprocess::{Calibration, Dims, Preprocessor};
 use calab_cala::qc::heldout::{HeldOutConfig, HeldOutScore, HeldOutWindow};
-use calab_cala::qc::{CellQc, GlobalQc, QcConfig, QcMonitor};
+use calab_cala::qc::{CellQc, GlobalQc, QcMonitor};
 use calab_cala::trace::{
-    BackgroundModel, Footprint, FrameTraces, Library, LibraryBuilder, SolverConfig, TraceEngine,
+    BackgroundModel, Footprint, FrameTraces, Library, LibraryBuilder, TraceEngine,
 };
 use std::fmt::Write as _;
 
@@ -1895,28 +1899,31 @@ impl SessionFix {
     }
 }
 
+/// The motion correction of a run (`--motion`): its config and the frames
+/// its template is built from.
+#[derive(Clone, Debug)]
+struct MotionSetup {
+    cfg: MotionConfig,
+    warm: u32,
+}
+
 impl Pipeline {
     fn new(
         rec: &mut Recording,
         pre: Preprocessor,
         cal: &Calibration,
-        motion: bool,
-        warm: u32,
+        motion: Option<&MotionSetup>,
     ) -> Pipeline {
         let dims = rec.dims;
         let n_px = dims.pixels();
         let mut pre = pre;
-        let mc = if motion {
-            let raw = rec.read(0, warm.min(rec.total));
+        let mc = if let Some(ms) = motion {
+            let raw = rec.read(0, ms.warm.min(rec.total));
             let mut frames = vec![0.0f32; raw.len()];
             for (r, o) in raw.chunks_exact(n_px).zip(frames.chunks_exact_mut(n_px)) {
                 pre.front(r, o).unwrap();
             }
-            let cfg = MotionConfig {
-                nonrigid: Some(NonRigidConfig::default()),
-                ..MotionConfig::default()
-            };
-            let mut mc = MotionCorrector::new(dims.height, dims.width, cfg).unwrap();
+            let mut mc = MotionCorrector::new(dims.height, dims.width, ms.cfg.clone()).unwrap();
             mc.set_fov_mask(cal.fov().mask()).unwrap();
             mc.initialize(Frames::F32(&frames)).unwrap();
             Some(mc)
@@ -2479,7 +2486,7 @@ fn rescore(
     rec: &mut Recording,
     pre0: &Preprocessor,
     cal: &Calibration,
-    motion: bool,
+    motion: Option<&MotionSetup>,
     start: usize,
     mut o: Oracle,
     shifts: Option<&[(f64, f64)]>,
@@ -2490,8 +2497,8 @@ fn rescore(
     let fov = cal.fov().mask().to_vec();
     let noise = vec![1.0f32; dims.pixels()];
     let mut off = FrameOffset::ZERO;
-    if let (true, Some(m)) = (motion, shifts) {
-        let mut pipe = Pipeline::new(rec, pre0.clone(), cal, true, 200);
+    if let (Some(ms), Some(m)) = (motion, shifts) {
+        let mut pipe = Pipeline::new(rec, pre0.clone(), cal, Some(ms));
         let mut y = vec![0.0f32; dims.pixels()];
         let raw = rec.read(0, start as u32 + 1);
         let rigid: Vec<(f32, f32)> = raw
@@ -4121,7 +4128,7 @@ fn label_bundle(
     rec: &mut Recording,
     pre0: &Preprocessor,
     cal: &Calibration,
-    motion: bool,
+    motion: Option<&MotionSetup>,
     cand_tsv: &Path,
     crop: usize,
     frames: u32,
@@ -4144,7 +4151,7 @@ fn label_bundle(
     let mut y = vec![0.0f32; n_px];
     let mut pre = vec![0.0f32; n_px];
 
-    let mut pipe = Pipeline::new(rec, pre0.clone(), cal, motion, 200);
+    let mut pipe = Pipeline::new(rec, pre0.clone(), cal, motion);
     let mut traces = vec![0.0f32; n * t_len];
     let mut s = 0u32;
     while s < frames {
@@ -4248,7 +4255,7 @@ fn label_bundle(
             }
         }
     };
-    let mut pipe = Pipeline::new(rec, pre0.clone(), cal, motion, 200);
+    let mut pipe = Pipeline::new(rec, pre0.clone(), cal, motion);
     let mut s = 0u32;
     while s < frames {
         let cnt = 64.min(frames - s);
@@ -5153,26 +5160,34 @@ fn main() {
     // `--fps R`: the recording's frame rate for the time-based preprocessing
     // and flat-field settings (default 20, the sims'; Miniscope V4 runs at 30).
     let fps: f32 = arg_value(&args, "--fps").map_or(20.0, |s| s.parse().unwrap());
-    let mut cfg = PreprocessConfig::for_fps(fps);
-    if let Some(v) = arg_value(&args, "--cell-diameter") {
-        cfg.flatten.cell_diameter_px = v.parse().unwrap();
+    // The run's params: the app's configuration, `--params FILE`, then the
+    // config flags (`common/eval_params.rs`).
+    let params = eval_params::eval_params(&args, f64::from(fps));
+    let ecfg = Engine::build(
+        &params,
+        Context {
+            fps: f64::from(fps),
+            frame: [dims.width as u32, dims.height as u32],
+        },
+    )
+    .unwrap_or_else(|e| panic!("params: {e}"));
+    // `--dump-params`: print the params, their fingerprint and the engine
+    // view they resolve to, and stop.
+    if args.iter().any(|a| a == "--dump-params") {
+        let dump = serde_json::json!({
+            "params": params,
+            "fingerprint": fingerprint_hex(&params),
+            "engine": ecfg.view,
+        });
+        println!("{}", serde_json::to_string_pretty(&dump).unwrap());
+        return;
     }
-    if let Some(v) = arg_value(&args, "--flatten-sigma") {
-        cfg.flatten.sigma_px = Some(v.parse().unwrap());
-    }
-    let mut scfg = SlowLoopConfig {
-        cell_diameter_px: cfg.flatten.cell_diameter_px,
-        ..SlowLoopConfig::default()
-    };
-    if let Some(v) = arg_value(&args, "--psf-sigma") {
-        scfg.psf_sigma_px = v.parse().unwrap();
-    }
-    if let Some(v) = arg_value(&args, "--tile-px") {
-        scfg.tile_px = v.parse().unwrap();
-    }
-    if let Some(v) = arg_value(&args, "--margin-px") {
-        scfg.margin_px = v.parse().unwrap();
-    }
+    let cfg = ecfg.preprocess;
+    let scfg = ecfg.slow_loop.clone();
+    let motion_setup = motion.then(|| MotionSetup {
+        cfg: ecfg.motion.clone(),
+        warm: ecfg.motion_warmup_frames as u32,
+    });
     let scales_set = [
         "--cell-diameter",
         "--flatten-sigma",
@@ -5192,12 +5207,6 @@ fn main() {
             scfg.margin_px
         );
     }
-    if let Some(v) = arg_value(&args, "--slow-seed") {
-        scfg.seed = v.parse().unwrap();
-    }
-    if let Some(v) = arg_value(&args, "--accept-z") {
-        scfg.accept_z = v.parse().unwrap();
-    }
     // The core test, the basin trim and the other support rules are not in
     // the engine (tools/cala-eval/results/2026-11-11-e1-core-test-trim.md,
     // 2026-11-12-support-rule.md): their flags are refused rather than
@@ -5211,33 +5220,8 @@ fn main() {
         !args.iter().any(|a| a == "--basin-trim"),
         "--basin-trim: not supported"
     );
-    if let Some(v) = arg_value(&args, "--support-alpha") {
-        scfg.support_alpha = v.parse().unwrap();
-    }
-    if let Some(v) = arg_value(&args, "--refine-gate") {
-        scfg.refine_gate = match v.as_str() {
-            "legacy" => RefineGate::Legacy,
-            "split-half" => RefineGate::SplitHalf,
-            other => panic!("--refine-gate: legacy|split-half, not {other}"),
-        };
-    }
-    if let Some(v) = arg_value(&args, "--refine-z") {
-        scfg.refine_z = v.parse().unwrap();
+    if args.iter().any(|a| a == "--refine-z") {
         println!("refine z: {}", scfg.refine_z);
-    }
-    if let Some(v) = arg_value(&args, "--joint-update") {
-        scfg.joint_update = match v.as_str() {
-            "off" => JointUpdate::Off,
-            "refine" => JointUpdate::Refine,
-            "all" => JointUpdate::All,
-            other => panic!("--joint-update: off|refine|all, not {other}"),
-        };
-    }
-    if let Some(v) = arg_value(&args, "--cluster-rho-min") {
-        scfg.cluster_rho_min = v.parse().unwrap();
-    }
-    if let Some(v) = arg_value(&args, "--cluster-max") {
-        scfg.cluster_max = v.parse().unwrap();
     }
     if scfg.joint_update != JointUpdate::Off {
         println!(
@@ -5245,76 +5229,39 @@ fn main() {
             scfg.joint_update, scfg.cluster_rho_min, scfg.cluster_max
         );
     }
-    if let Some(v) = arg_value(&args, "--joint-sign") {
-        scfg.joint_sign_rule = match v.as_str() {
-            "off" => JointSign::Off,
-            "own" => JointSign::Own,
-            "all" => JointSign::All,
-            other => panic!("--joint-sign: off|own|all, not {other}"),
-        };
+    if args.iter().any(|a| a == "--joint-sign") {
         println!("joint update: sign rule {:?}", scfg.joint_sign_rule);
     }
-    if let Some(v) = arg_value(&args, "--bg") {
-        scfg.background = match v.as_str() {
-            "none" => calab_cala::trace::BackgroundModel::None,
-            "ring" => scfg.background.clone(),
-            other => panic!("--bg: none|ring, not {other}"),
-        };
+    if args.iter().any(|a| a == "--bg") {
         println!("slow-loop background model: {:?}", scfg.background);
     }
-    if let Some(v) = arg_value(&args, "--joint-admit") {
-        scfg.joint_admit = match v.as_str() {
-            "cluster" => JointAdmit::Cluster,
-            "member" => JointAdmit::Member,
-            other => panic!("--joint-admit: cluster|member, not {other}"),
-        };
+    if args.iter().any(|a| a == "--joint-admit") {
         println!("joint update: admission {:?}", scfg.joint_admit);
     }
-    if args.iter().any(|a| a == "--joint-carry") {
-        scfg.joint_carry = true;
+    if scfg.joint_carry {
         println!("joint update: the store carries its own estimate across replays");
     }
-    if let Some(v) = arg_value(&args, "--joint-l1") {
-        scfg.joint_l1 = v.parse().unwrap();
+    if args.iter().any(|a| a == "--joint-l1") {
         println!("joint update: trace-step L1 weight {}", scfg.joint_l1);
     }
-    if let Some(v) = arg_value(&args, "--joint-iters") {
-        scfg.joint_iters = v.parse().unwrap();
+    if args.iter().any(|a| a == "--joint-iters") {
         println!("joint update: {} alternations per replay", scfg.joint_iters);
     }
     let cluster_census = args.iter().any(|a| a == "--cluster-census");
-    if let Some(v) = arg_value(&args, "--merge-rule") {
-        scfg.merge_rule = match v.as_str() {
-            "legacy" => MergeRule::Legacy,
-            "split-half" => MergeRule::SplitHalf,
-            other => panic!("--merge-rule: legacy|split-half, not {other}"),
-        };
-    }
-    if let Some(v) = arg_value(&args, "--merge-guard-max-ovl") {
-        scfg.merge_guard_max_ovl = v.parse().unwrap();
-        scfg.merge_refit_max_ovl = scfg.merge_guard_max_ovl;
+    if args.iter().any(|a| a == "--merge-guard-max-ovl") {
         println!("merge guards up to overlap {}", scfg.merge_guard_max_ovl);
     }
-    if let Some(v) = arg_value(&args, "--merge-refit-max-ovl") {
-        scfg.merge_refit_max_ovl = v.parse().unwrap();
+    if args.iter().any(|a| a == "--merge-refit-max-ovl") {
         println!(
             "merge refit baseline up to overlap {}",
             scfg.merge_refit_max_ovl
         );
     }
-    if let Some(v) = arg_value(&args, "--warm-start") {
-        scfg.warm_start = match v.as_str() {
-            "on" => true,
-            "off" => false,
-            _ => panic!("--warm-start on|off"),
-        };
-    }
     println!(
         "visit solves: warm starts {}",
         if scfg.warm_start { "on" } else { "off" }
     );
-    if let Some(v) = arg_value(&args, "--merge-guard-sep") {
-        scfg.merge_guard_min_sep = v.parse().unwrap();
+    if scfg.merge_guard_min_sep.is_finite() {
         println!(
             "merge shape gate for centres >= {} cell diameters apart",
             scfg.merge_guard_min_sep
@@ -5327,24 +5274,6 @@ fn main() {
         println!("refine gate: {:?}", scfg.refine_gate);
     }
     println!("support rule: basin-skirt, alpha {}", scfg.support_alpha);
-    if args.iter().any(|a| a == "--joint") {
-        scfg.joint_neighbours = true;
-    }
-    if let Some(v) = arg_value(&args, "--stats-half-life") {
-        scfg.stats_half_life_frames = v.parse().unwrap();
-    }
-    if let Some(v) = arg_value(&args, "--frames-per-tile") {
-        scfg.frames_per_tile = v.parse().unwrap();
-    }
-    if let Some(v) = arg_value(&args, "--reservoir-max-mb") {
-        scfg.reservoir_max_bytes = v.parse::<usize>().unwrap() << 20;
-    }
-    if let Some(v) = arg_value(&args, "--readd-window") {
-        scfg.churn.readd_window_frames = v.parse().unwrap();
-    }
-    if let Some(v) = arg_value(&args, "--churn-frames") {
-        scfg.churn.churn_frames = v.parse().unwrap();
-    }
     let warm = rec.read(0, (cfg.warmup_frames as u32).min(frames));
     let mut acc = WarmupAccumulator::new(dims);
     for f in warm.chunks_exact(n_px) {
@@ -5366,20 +5295,19 @@ fn main() {
         "frame\toutcome\tfirst\tbins\tframes_used\tgain_sd\ttissue_sd\tresidual\tdark\tchange_median\tchange_p99\tchange_max\tsolve_s\n",
     );
     // Default: the online flat field (what the app runs) with motion, off without.
-    let ff_mode = arg_value(&args, "--flat-field")
-        .unwrap_or_else(|| if motion { "online" } else { "off" }.into());
+    let ff_mode = arg_value(&args, "--flat-field").unwrap_or_else(|| {
+        if motion && params.flat_field.enabled {
+            "online"
+        } else {
+            "off"
+        }
+        .into()
+    });
     if ff_mode == "off" {
         println!("flat field: off");
     } else if ff_mode == "online" {
         assert!(motion, "--flat-field online needs --motion");
-        let secs = |k: &str, d: f32| arg_value(&args, k).map_or(d, |s| s.parse().unwrap());
-        let mut c = OnlineFlatFieldConfig::for_fps(fps);
-        let fr = |s: f32| (s * fps).round();
-        c.estimator.half_life_frames = f64::from(fr(secs("--ff-gain-half-life", GAIN_HALF_LIFE_S)));
-        c.estimator.offset_half_life_frames =
-            f64::from(fr(secs("--ff-offset-half-life", OFFSET_HALF_LIFE_S)));
-        c.first_frames = fr(secs("--ff-first", FIRST_MAP_S)).max(1.0) as u64;
-        c.refine_every_frames = fr(secs("--ff-refine", REFINE_EVERY_S)).max(1.0) as u64;
+        let c = ecfg.flat_field;
         let seed = arg_value(&args, "--ff-seed").map(|f| FlatFieldSeed {
             gain: read_f32_file(&f),
             offset: None,
@@ -5404,7 +5332,7 @@ fn main() {
             let k = k.min(frames);
             let t0 = Instant::now();
             let mut est = DitherFlatField::new(dims, &fov, FlatFieldConfig::default()).unwrap();
-            let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, true, 200);
+            let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, motion_setup.as_ref());
             let mut out = vec![0.0f32; n_px];
             let mut s = 0u32;
             while s < k {
@@ -5449,7 +5377,7 @@ fn main() {
             &mut rec,
             &pre0,
             &cal,
-            motion,
+            motion_setup.as_ref(),
             Path::new(&c),
             crop,
             frames,
@@ -5465,7 +5393,7 @@ fn main() {
             &mut rec,
             &pre0,
             &cal,
-            motion,
+            motion_setup.as_ref(),
             start,
             o,
             gt_shifts.as_deref(),
@@ -5481,9 +5409,9 @@ fn main() {
         dims.height
     );
 
-    let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, motion, 200);
+    let mut pipe = Pipeline::new(&mut rec, pre0.clone(), &cal, motion_setup.as_ref());
     // `--lookback R` / `--catchup X` (concurrent Refine, pass 1 only).
-    let lb_rate: f64 = arg_value(&args, "--lookback").map_or(0.0, |s| s.parse().unwrap());
+    let lb_rate: f64 = ecfg.lookback.as_ref().map_or(0.0, |l| l.rate);
     let lb_catchup: usize = arg_value(&args, "--catchup").map_or(0, |s| s.parse().unwrap());
     let lb_double = args.iter().any(|a| a == "--catchup-double");
     let lb_newest = match arg_value(&args, "--lookback-order").as_deref() {
@@ -5509,8 +5437,7 @@ fn main() {
     let lb_take: usize = arg_value(&args, "--lb-take").map_or(16, |s| s.parse().unwrap());
     let mut lb_fwd_seen: u64 = 0;
     let mut lb_drain: usize = tail.drain;
-    let lb_frames: usize =
-        arg_value(&args, "--lookback-frames").map_or(3000, |s| s.parse().unwrap());
+    let lb_frames: usize = ecfg.view.lookback.max_frames as usize;
     assert!(lb_rate >= 0.0, "--lookback must be >= 0");
     let lb_target: f64 = arg_value(&args, "--lookback-target").map_or(0.0, |s| s.parse().unwrap());
     assert!(
@@ -5559,7 +5486,7 @@ fn main() {
         .background(scfg.background.clone())
         .build(&mut flat)
         .unwrap();
-    let mut engine = TraceEngine::new(Arc::new(empty), SolverConfig::default()).unwrap();
+    let mut engine = TraceEngine::new(Arc::new(empty), ecfg.solver).unwrap();
     let mut diverge = std::env::var_os("CALA_DIVERGE_DIR").map(|d| DivergeProbe::new(d.into()));
     let mut slow: Option<SlowLoop> = None;
     let mut timed: Option<Timed> = None;
@@ -6032,9 +5959,8 @@ fn main() {
                             }
                         }
                     }
-                    qc = Some(
-                        QcMonitor::new(dims, fov.clone(), noise, QcConfig::default()).unwrap(),
-                    );
+                    qc =
+                        Some(QcMonitor::new(dims, fov.clone(), noise, ecfg.qc_at(QC_FPS)).unwrap());
                 }
                 if let (Some(tm), Some(sl)) = (timed.as_mut(), slow.as_mut()) {
                     let now = tm.at(t);
@@ -7105,15 +7031,15 @@ fn main() {
     if let Some(ff) = online_ff.as_ref().and_then(|o| o.current()) {
         ff.apply(&mut pre2).unwrap();
     }
-    let mut pipe = Pipeline::new(&mut rec, pre2, &cal, motion, 200);
-    let mut eng = TraceEngine::new(lib.clone(), SolverConfig::default()).unwrap();
+    let mut pipe = Pipeline::new(&mut rec, pre2, &cal, motion_setup.as_ref());
+    let mut eng = TraceEngine::new(lib.clone(), ecfg.solver).unwrap();
     eng.set_signed(dump_signed);
     eng.set_consolidated_ring_gradient(true);
     let mut q2 = QcMonitor::new(
         dims,
         fov.clone(),
         pipe.pre.noise().sigma(),
-        QcConfig::default(),
+        ecfg.qc_at(QC_FPS),
     )
     .unwrap();
     let n = lib.len();

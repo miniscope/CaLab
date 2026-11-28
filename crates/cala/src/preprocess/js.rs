@@ -15,12 +15,11 @@
 use wasm_bindgen::prelude::*;
 
 use crate::js_util::{init_panic_hook, js_err};
+use crate::params::loose;
 use crate::qc::js::JsQcMonitor;
 use crate::trace::js::JsTraceEngine;
 
-use super::flatfield::{
-    FlatFieldSeed, FlatFieldUpdate, OnlineFlatField, OnlineFlatFieldConfig, RefineOutcome,
-};
+use super::flatfield::{FlatFieldSeed, FlatFieldUpdate, OnlineFlatField, RefineOutcome};
 use super::flicker::{FlickerMode, FlickerRecord};
 use super::lines::LineMode;
 use super::warmup::WarmupAccumulator;
@@ -58,7 +57,7 @@ impl JsPreprocessConfig {
     pub fn new(fps: f32) -> JsPreprocessConfig {
         init_panic_hook();
         JsPreprocessConfig {
-            inner: PreprocessConfig::for_fps(fps),
+            inner: loose::preprocess_config(fps),
         }
     }
 
@@ -694,25 +693,8 @@ impl JsFlatFieldEstimator {
         init_panic_hook();
         let dims = Dims::new(width as usize, height as usize)
             .map_err(|e| js_err("FlatFieldEstimator", e))?;
-        let mut cfg = OnlineFlatFieldConfig::for_fps(fps);
-        let rate = if fps.is_finite() && fps > 0.0 {
-            fps
-        } else {
-            20.0
-        };
-        let set = |s: f32| (s.is_finite() && s >= 0.0).then(|| (s * rate).round());
-        if let Some(v) = set(gain_half_life_s) {
-            cfg.estimator.half_life_frames = f64::from(v);
-        }
-        if let Some(v) = set(offset_half_life_s) {
-            cfg.estimator.offset_half_life_frames = f64::from(v);
-        }
-        if let Some(v) = set(first_s) {
-            cfg.first_frames = (v as u64).max(1);
-        }
-        if let Some(v) = set(refine_s) {
-            cfg.refine_every_frames = (v as u64).max(1);
-        }
+        let cfg =
+            loose::flat_field_config(fps, gain_half_life_s, offset_half_life_s, first_s, refine_s);
         let seed = seed_gain.map(|gain| FlatFieldSeed {
             gain,
             offset: seed_offset,

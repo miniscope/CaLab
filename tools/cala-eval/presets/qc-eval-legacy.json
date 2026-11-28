@@ -1,0 +1,9 @@
+{
+  "params_version": 1,
+  "discover": {
+    "cluster": { "update": "off" },
+    "merge": { "guard_min_sep_d": null }
+  },
+  "lookback": { "enabled": false },
+  "motion": { "nonrigid": { "enabled": true } }
+}
