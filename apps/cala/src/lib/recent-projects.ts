@@ -15,7 +15,7 @@ export interface RecentProject {
   name: string;
   /** The animal folder (a FileSystemDirectoryHandle). */
   handle: unknown;
-  /** A results folder the user picked instead of `<animal>/cala-results`. */
+  /** A results folder the user picked instead of `<animal>/calab-project`. */
   resultsHandle: unknown | null;
   openedAt: string;
 }

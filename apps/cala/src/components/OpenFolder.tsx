@@ -470,7 +470,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
               </For>
             </ul>
             <p class="cala-muted">
-              Each animal becomes its own project with its own <code>cala-results</code> folder
+              Each animal becomes its own project with its own <code>calab-project</code> folder
               {supportsDirectoryPicker() ? '; the others are added to Recent projects' : ''}.
             </p>
             <button
