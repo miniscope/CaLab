@@ -9,6 +9,28 @@ use super::{timing, SlowLoop, SlowStats};
 use crate::trace::{Library, LibraryBuilder, TraceError};
 use std::sync::Arc;
 
+/// Wall clock of one recorded visit (`diagnostics`; reads 0 on wasm, which
+/// has no `Instant`).
+#[cfg(feature = "diagnostics")]
+struct VisitClock(#[cfg(not(target_arch = "wasm32"))] std::time::Instant);
+
+#[cfg(feature = "diagnostics")]
+impl VisitClock {
+    fn start() -> VisitClock {
+        VisitClock(
+            #[cfg(not(target_arch = "wasm32"))]
+            std::time::Instant::now(),
+        )
+    }
+
+    fn ns(&self) -> u64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.0.elapsed().as_nanos() as u64;
+        #[cfg(target_arch = "wasm32")]
+        0
+    }
+}
+
 impl SlowLoop {
     /// Whether slow-loop frame `frame` (0 = the first frame observed) is
     /// held out: never used to fit footprints, only to test edits. See
@@ -37,7 +59,16 @@ impl SlowLoop {
             self.visit_spent();
             let w0 = self.work;
             let new0 = self.churn.counts().adds_new;
+            #[cfg(feature = "diagnostics")]
+            let rec = self
+                .visit_log
+                .is_some()
+                .then(|| (self.stats, VisitClock::start()));
             self.visit(ti)?;
+            #[cfg(feature = "diagnostics")]
+            if let Some((s0, clock)) = rec {
+                self.record_visit(ti, w0, s0, clock.ns());
+            }
             self.visit_rate_done(new0);
             self.credit -= (self.work - w0) as i64;
         }
@@ -53,6 +84,31 @@ impl SlowLoop {
             return self.publish();
         }
         Ok(self.published.clone().expect("published"))
+    }
+
+    /// Diagnostics: append the visit of tile `ti` that began at work `w0`
+    /// with counters `s0` to the visit log.
+    #[cfg(feature = "diagnostics")]
+    fn record_visit(&mut self, ti: usize, w0: u64, s0: SlowStats, ns: u64) {
+        let s = self.stats;
+        let d = |a: u64, b: u64| (a - b) as u32;
+        let rec = super::VisitRecord {
+            frame: self.frames,
+            tile: ti as u32,
+            grows: self.scope.grows(),
+            work: self.work - w0,
+            ns,
+            proposals: d(s.proposals, s0.proposals),
+            pretest_pass: d(
+                s.proposals - s.pretest_rejects,
+                s0.proposals - s0.pretest_rejects,
+            ),
+            adds: d(s.adds, s0.adds),
+            absorbs: d(s.absorbs, s0.absorbs),
+        };
+        if let Some(log) = self.visit_log.as_mut() {
+            log.push(rec);
+        }
     }
 
     pub(super) fn next_tile(&self) -> Option<usize> {
