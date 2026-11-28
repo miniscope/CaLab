@@ -69,7 +69,7 @@ export interface BgSettleHost {
 export interface BgSettle {
   /** The dose per live frame, the re-read frames owed, and the cap. */
   gov: SettleGovernor;
-  /** Chunks taken at batch ends and not yet asked for (at most `CSETTLE.bankChunks`), oldest first. */
+  /** Chunks taken at batch ends and not yet asked for, oldest first (dropped at Discover's end). */
   queue: BgSettleChunk[];
   /** Frames per piece of an answer (0: whole answers). */
   yieldFrames: number;
@@ -81,6 +81,7 @@ export interface BgSettle {
   off: boolean;
   /** The answers in hand, when they are handled in pieces (at most one per look-back worker). */
   works: BgSettleWork[];
+  /** Re-read frames taken into the queue (asked for, or dropped while queued). */
   requested: number;
   /** Frames dropped here (an answer with no library yet, or one cut short by the end of Discover). */
   dropped: number;
@@ -169,13 +170,14 @@ export class BgSettleDriver {
   /**
    * A live batch of `observed` frames went into the slow loop: they earn the dose, and every
    * whole chunk owed is taken now (`settleTake` over the frames forwarded so far) into the
-   * queue, while it has room. Called at the end of every live batch, so the frames taken depend
+   * queue (no bound: a queue that keeps growing is the readout's `look-back` or `slow-worker`
+   * limit, and what is left at Discover's end is dropped). Called at the end of every live batch, so the frames taken depend
    * on the live frames only, not on when answers arrive.
    */
   liveFrames(loop: SlowLoopLike, bgs: BgSettle, observed: number): void {
     bgs.live += observed;
     bgs.gov.liveFrames(observed, this.r.version > 0);
-    while (bgs.gov.ready && bgs.queue.length < CSETTLE.bankChunks) {
+    while (bgs.gov.ready) {
       // The frames forwarded so far are the saved history (stream index = file frame).
       const take = this.r.clock.span('csettle', () =>
         loop.settleTake(this.r.consumed, CSETTLE.chunk),
@@ -184,7 +186,7 @@ export class BgSettleDriver {
       const keep: number[] = [];
       for (let i = 0; 3 * i + 2 < take.length; i++) if (take[3 * i] >= this.r.lbFloor) keep.push(i);
       const n = keep.length;
-      if (n === 0) return;
+      if (n === 0) break;
       const flat = new Float64Array(3 * n);
       const skip = new Uint8Array(n);
       const items: LookbackItem[] = [];
@@ -198,6 +200,7 @@ export class BgSettleDriver {
       bgs.requested += n;
       bgs.queue.push({ flat, items, skip });
     }
+    this.noteBacklog(bgs);
   }
 
   /**
@@ -205,6 +208,11 @@ export class BgSettleDriver {
    * and no answer of that worker is still being fed in pieces.
    */
   bgSettleRequest(_loop: SlowLoopLike, bgs: BgSettle, port: number): boolean {
+    // Switched off meanwhile (the cap Off, or the target at Max): what is queued is dropped.
+    if (!bgs.gov.active) {
+      this.dropQueue(bgs);
+      return false;
+    }
     if (
       (port === 0 && bgs.off) ||
       bgs.works.some((w) => w.req.port === port) ||
@@ -213,6 +221,7 @@ export class BgSettleDriver {
     )
       return false;
     const chunk = bgs.queue.shift()!;
+    this.noteBacklog(bgs);
     if (port === 0) bgs.turn = false;
     this.r.sendRequest(port, 'csettle', chunk.flat, chunk.items, chunk.skip);
     return true;
@@ -336,11 +345,22 @@ export class BgSettleDriver {
     bgs.maxBlockMs = Math.max(bgs.maxBlockMs, ms);
   }
 
+  /** The queued chunks are dropped (counted in `dropped`). */
+  private dropQueue(bgs: BgSettle): void {
+    for (const chunk of bgs.queue.splice(0)) bgs.dropped += chunk.items.length;
+    this.noteBacklog(bgs);
+  }
+
+  /** The governor's readout of the frames queued. */
+  private noteBacklog(bgs: BgSettle): void {
+    bgs.gov.setBacklog(bgs.queue.reduce((n, c) => n + c.items.length, 0));
+  }
+
   /** Discover is over: queued chunks and answers still being fed in pieces are dropped (their buffers go back). */
   bgSettleStop(): void {
     const bgs = this.bgs;
     if (!bgs) return;
-    for (const chunk of bgs.queue.splice(0)) bgs.dropped += chunk.items.length;
+    this.dropQueue(bgs);
     for (const work of bgs.works.splice(0)) {
       bgs.dropped += work.msg.count - work.next;
       this.r.releaseFrames(work.msg, work.req.port);

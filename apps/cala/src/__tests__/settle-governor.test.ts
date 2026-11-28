@@ -105,23 +105,23 @@ describe('SettleGovernor', () => {
     expect(g.owed).toBeCloseTo(1 / GOVERNOR.rampFrames);
   });
 
-  it('owes at most the bank: the rest slips, and the readout names who fell behind', () => {
+  it('drops nothing owed, and names who falls behind when the backlog passes the bank', () => {
     const g = paced();
     const bank = CSETTLE.chunk * CSETTLE.bankChunks;
-    // Nothing is asked for: everything beyond the bank slips.
+    // Nothing is taken: everything earned stays owed.
     g.liveFrames(1000, true);
-    expect(g.owed).toBe(bank);
-    expect(g.status().slipped).toBeCloseTo(earned(1000, 2) - bank, 6);
+    expect(g.owed).toBeCloseTo(earned(1000, 2), 6);
+    g.setBacklog(bank + 1);
     g.update(0, true);
     g.delivered(16, 900);
     g.update(GOVERNOR.checkMs, true);
     expect(g.limit).toBe('look-back');
-    g.liveFrames(8, true);
     g.update(2 * GOVERNOR.checkMs, true);
     expect(g.limit).toBe('slow-worker');
-    // No new slip in the next window: back to the dose's own state.
+    g.setBacklog(bank);
     g.update(3 * GOVERNOR.checkMs, true);
     expect(g.limit).toBe('cap');
+    expect(g.status().backlog).toBe(bank);
   });
 
   it('reports the achieved live fps from the batches it saw', () => {

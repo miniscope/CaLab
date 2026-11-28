@@ -386,23 +386,45 @@ describe('settle governor in the runner', () => {
     expect(t.requests(1).length).toBeGreaterThan(20);
   });
 
-  it('asks for the same frames in the same order whenever the answers come back', () => {
-    const asked = (lag: number, ms: number) => {
-      const t = setup({ pool: 1, csettle: 2 });
-      for (let k = 0; k < 200; k++) {
-        t.live(1, ms);
-        // Answers held back for `lag` batches at a time.
-        if (k % lag === 0) while (t.pending(1)) t.answer(1);
-      }
-      expect(t.status().lookback!.csettle!.governor!.slipped).toBe(0);
-      return t.requests(1).map((q) => Array.from(q.items));
-    };
-    const prompt = asked(1, 267);
-    expect(prompt.length).toBeGreaterThan(20);
-    // Late answers and another wall-clock period: the requests that went out are the same.
-    const late = asked(3, 120);
-    expect(late).toEqual(prompt.slice(0, late.length));
-    expect(late.length).toBeGreaterThan(prompt.length - 4);
+  for (const pool of [1, 0])
+    it(`asks for the same frames in the same order whenever the answers come back (pool ${pool})`, () => {
+      const port = pool > 0 ? 1 : 0;
+      const asked = (lag: number, ms: number) => {
+        const t = setup({ pool, csettle: 2 });
+        for (let k = 0; k < 200; k++) {
+          t.live(1, ms);
+          // Answers held back for `lag` batches at a time.
+          if (k % lag === 0) while (t.pending(port)) t.answer(port);
+        }
+        const cs = t.status().lookback!.csettle!;
+        return {
+          taken: cs.requested,
+          sent: t.requests(port).flatMap((q) => (q.skip ? [Array.from(q.items)] : [])),
+        };
+      };
+      const prompt = asked(1, 267);
+      expect(prompt.sent.length).toBeGreaterThan(20);
+      // Late answers and another wall-clock period: the same frames are taken, and the requests
+      // that went out are the first of the same sequence.
+      const late = asked(5, 120);
+      expect(late.taken).toBe(prompt.taken);
+      expect(late.sent).toEqual(prompt.sent.slice(0, late.sent.length));
+    });
+
+  it('sends nothing queued once the cap is Off; the queued frames count as dropped', () => {
+    const t = setup({ pool: 1, csettle: 2 });
+    // The worker never answers: chunks pile up in the queue.
+    t.live(120, 267);
+    const cs = t.status().lookback!.csettle!;
+    expect(cs.governor!.backlog).toBeGreaterThan(0);
+    const sent = t.requests(1).length;
+    t.r.setCap(0);
+    while (t.pending(1)) t.answer(1);
+    t.live(2, 267);
+    expect(t.requests(1).length).toBe(sent);
+    const after = t.status().lookback!.csettle!;
+    expect(after.governor!.backlog).toBe(0);
+    expect(after.dropped).toBeGreaterThanOrEqual(cs.governor!.backlog);
   });
 
   it('taking turns, worker 0 need-driven time counts towards the settle busy share', () => {

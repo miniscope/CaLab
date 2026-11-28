@@ -794,6 +794,6 @@ export function governorText(s: GovernorStatus): string {
   const target = s.target > 0 ? `${s.target}` : 'Max';
   return (
     `governor ${s.rate.toFixed(0)} frames/s · limit: ${GOVERNOR_LIMIT_TEXT[s.limit]}${s.paused ? ' (paused)' : ''}\n` +
-    `        cap ${s.capFps.toFixed(0)} (${s.cap} x ${fps} of ${target} fps), delivered ${s.deliveredFps.toFixed(0)}/s, settle workers busy ${pct(s.busy)}, owed ${s.credit.toFixed(0)}, slipped ${s.slipped.toFixed(0)}`
+    `        cap ${s.capFps.toFixed(0)} (${s.cap} x ${fps} of ${target} fps), delivered ${s.deliveredFps.toFixed(0)}/s, settle workers busy ${pct(s.busy)}, owed ${s.credit.toFixed(0)}, backlog ${s.backlog.toFixed(0)}`
   );
 }

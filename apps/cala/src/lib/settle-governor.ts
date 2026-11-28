@@ -30,9 +30,9 @@ export const GOVERNOR = {
 /**
  * What limits the settle (`SettleGovernor.limit`): `off` (the target is Max), `cap-off` (below
  * Max with the cap Off), `waiting` (no library yet: nothing is owed), `ramping` (the dose is
- * climbing), `cap` (the dose is at the cap), `look-back` or `slow-worker` (chunks owed beyond
- * the bank were not asked for: the settle workers, or the slow worker taking their answers, fell
- * behind). `backing-off` and `discover` are names of the speed readout and of run records that
+ * climbing), `cap` (the dose is at the cap), `look-back` or `slow-worker` (more than
+ * `CSETTLE.bankChunks` chunks wait to be asked for: the settle workers, or the slow worker taking
+ * their answers, fall behind). `backing-off` and `discover` are names of the speed readout and of run records that
  * older dose rules wrote.
  */
 export type GovernorLimit =
@@ -81,8 +81,8 @@ export interface GovernorStatus {
   /** Halvings of the dose: the frame-counted dose never halves, so 0 (kept in the run record's shape). */
   halvings: number;
   slowHalvings: number;
-  /** Re-read frames owed beyond the bank and so never asked for (the settle fell behind). */
-  slipped: number;
+  /** Re-read frames taken and waiting for a settle worker (`setBacklog`). */
+  backlog: number;
 }
 
 /** A live batch, as the governor sees it. */
@@ -97,9 +97,9 @@ interface LiveSample {
  * The settle governor (pure; clocks are passed in for the readout only): how many saved frames
  * are re-read for the settle during Discover, counted per live frame the slow loop observes.
  * Each live frame observed with a library earns the dose, `min(cap, frames since the first
- * library / GOVERNOR.rampFrames)` re-read frames; a request goes out per whole chunk owed
- * (`ready`, `spend`), at most `CSETTLE.bankChunks` chunks are owed, and what is owed beyond
- * that is counted as slipped. At Max, or with the cap Off, it is off and the climb starts again
+ * library / GOVERNOR.rampFrames)` re-read frames; the driver takes a chunk per whole chunk owed
+ * (`ready`, `spend`). Nothing owed is ever dropped here, so the frames taken depend on the live
+ * frames only. At Max, or with the cap Off, it is off (`active`) and the climb starts again
  * from 0 when it comes back on.
  *
  * Inputs: the pacer's target (`setTarget`; 0 = Max), the cap (`setCap`, during a run too),
@@ -111,12 +111,11 @@ export class SettleGovernor {
   private target = 0;
   private paused = false;
   private owedFrames = 0;
+  /** Readout only: chunks queued beyond this many name the limit `look-back` or `slow-worker`. */
   private readonly bank: number;
   /** Live frames observed with a library since the settle came on (the climb). */
   private climbed = 0;
-  private slippedFrames = 0;
-  /** Frames slipped at the last readout window's start (a slip in the window names the limit). */
-  private slippedAtCheck = 0;
+  private backlogFrames = 0;
   private lastCheck: number | null = null;
   private samples: LiveSample[] = [];
   private deliveredFrames = 0;
@@ -200,7 +199,7 @@ export class SettleGovernor {
 
   /**
    * `observed` live frames went into the slow loop (a batch); `hasLibrary`: a library was
-   * published before them. Each earns the dose; owed frames beyond the bank slip.
+   * published before them. Each earns the dose.
    */
   liveFrames(observed: number, hasLibrary: boolean): void {
     if (!this.on || !hasLibrary) return;
@@ -208,11 +207,12 @@ export class SettleGovernor {
       this.owedFrames += this.dose;
       this.climbed++;
     }
-    if (this.owedFrames > this.bank) {
-      this.slippedFrames += this.owedFrames - this.bank;
-      this.owedFrames = this.bank;
-    }
     if (this.limitNow === 'waiting') this.limitNow = this.atCap ? 'cap' : 'ramping';
+  }
+
+  /** Re-read frames taken and not yet asked for (readout). */
+  setBacklog(frames: number): void {
+    this.backlogFrames = frames;
   }
 
   /** A live batch reached the slow worker: sent at `t` (ms, the clock of `update`), ending at stream index `end` (readout). */
@@ -259,13 +259,16 @@ export class SettleGovernor {
     this.deliveredFrames = 0;
     this.busyMs = 0;
     this.achievedFps = this.achieved(now);
-    const slipped = this.slippedFrames > this.slippedAtCheck;
-    this.slippedAtCheck = this.slippedFrames;
     if (!this.on || this.paused) return;
     if (!hasLibrary) this.limitNow = 'waiting';
-    else if (slipped)
+    else if (this.backlogFrames > this.bank)
       this.limitNow = this.lastBusy >= GOVERNOR.busyShare ? 'look-back' : 'slow-worker';
     else this.limitNow = this.atCap ? 'cap' : 'ramping';
+  }
+
+  /** The settle may run now (a target below Max and a cap above 0): queued chunks may go out. */
+  get active(): boolean {
+    return this.on;
   }
 
   /** The dose as a rate at the target, re-read frames per second. */
@@ -306,7 +309,7 @@ export class SettleGovernor {
       credit: this.owedFrames,
       halvings: 0,
       slowHalvings: 0,
-      slipped: this.slippedFrames,
+      backlog: this.backlogFrames,
     };
   }
 }
