@@ -64,7 +64,7 @@ test('Cala: with ?factors=file a recording settles and extracts on its factors',
   const npz = await exportNpz(page);
   expect(hasEntry(npz, 'traces_live.npy')).toBe(false);
   const meta = metaText(npz);
-  expect(meta).toContain('"format_version":7');
+  expect(meta).toContain('"format_version":8');
   expect(meta).toContain('"settle_source":"factors"');
   expect(meta).toContain('"source":"factors"');
   expect(meta).toContain('Extract read the factors');
@@ -74,7 +74,7 @@ test('Cala: with ?factors=0 a recording has no factors', async ({ page }) => {
   test.setTimeout(300_000);
   await openAndExtract(page, '?factors=0&debug');
   const meta = metaText(await exportNpz(page));
-  expect(meta).toContain('"format_version":6');
+  expect(meta).toContain('"format_version":8');
   // (Other records carry their own `source` keys, e.g. the run history's "run start".)
   for (const key of ['settle_source', 'source_reason', '"source":"factors"', '"source":"file"'])
     expect(meta).not.toContain(key);
@@ -90,7 +90,7 @@ test('Cala: a ?factors=file recording compressed and extracted by a pool of thre
   await expect(page.getByTestId('pass2-status')).toContainText('Extract done (on the factors');
   await expect(page.getByTestId('compress-readout')).toContainText('3 workers');
   const meta = metaText(await exportNpz(page));
-  expect(meta).toContain('"format_version":7');
+  expect(meta).toContain('"format_version":8');
   expect(meta).toContain('"settle_source":"factors"');
   expect(meta).toContain('"compress_workers":3');
   expect(meta).toContain('"compress_workers_after":3');
@@ -111,7 +111,7 @@ test('Cala: a recording without a switch is a GPU factor run; without WebGPU it 
   });
   test.info().annotations.push({ type: 'webgpu', description: String(webgpu) });
   const meta = metaText(await exportNpz(page));
-  expect(meta).toContain('"format_version":7');
+  expect(meta).toContain('"format_version":8');
   if (webgpu) {
     expect(meta).toMatch(/"settle_source":"(factors|file)"/);
     return;
