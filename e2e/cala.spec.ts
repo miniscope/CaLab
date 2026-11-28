@@ -113,8 +113,12 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await expect(page.getByTestId('work-plan')).toHaveCount(0);
   // Quality control: the convergence strip, the cell table and the overlay modes.
   await expect(page.getByTestId('convergence-status')).toContainText('Waiting for cells');
+  await page.getByRole('tab', { name: 'Cell', exact: true }).click();
+  await expect(page.getByTestId('cell-empty')).toContainText('Click a cell');
   await page.getByRole('tab', { name: 'QC', exact: true }).click();
   await expect(page.getByTestId('qc-counts')).toContainText('QC starts once');
+  // A wide image opens with the overlay legend card open.
+  await expect(page.getByTestId('fov-legend-chip')).toHaveAttribute('aria-expanded', 'true');
   await page.getByTestId('color-mode').selectOption('peakSnr');
   await expect(page.getByTestId('color-legend')).toContainText('drives pass/fail');
   await page.getByTestId('residual-toggle').check();
@@ -189,6 +193,12 @@ test('Cala: a phone-wide window stacks the rail above the image, with no sideway
     }),
   );
   for (const w of widths) expect(w.scroll, w.sel).toBeLessThanOrEqual(w.client);
+  // On a phone-wide image the overlay legend starts as its one-line chip, not a card over the image.
+  const chip = page.getByTestId('fov-legend-chip');
+  await expect(chip).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByTestId('color-mode')).toBeHidden();
+  await chip.click();
+  await expect(page.getByTestId('color-mode')).toBeVisible();
   // Run, Cell, QC and History in the row; the diagnostics behind More.
   await expect(page.getByRole('tab')).toHaveText(['Run', 'Cell', 'QC', 'History', /^More/]);
   await openMoreTab(page, 'Recording');

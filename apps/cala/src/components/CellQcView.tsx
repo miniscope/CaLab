@@ -3,21 +3,28 @@ import { AspectPlot } from '../lib/plot-size.tsx';
 import { OKABE_ITO, TracePanel } from '@calab/ui/chart';
 import type uPlot from 'uplot';
 import type { CellStore } from '../lib/cell-store.ts';
+import { MeterRow } from '@calab/ui';
 import {
   correlation,
   demixVerdict,
   FLAG_UNMEASURED,
-  MIN_SNR,
   normalize,
   PAIR_R,
   verdict,
   type Neighbour,
 } from '../lib/qc.ts';
+import { metricText, QC_METRICS, qcStatus, type QcMetricKey } from '../lib/qc-view.ts';
+import { QcDot } from './QcDot.tsx';
 
 const num = (v: number | undefined, d = 2) =>
   v === undefined || !Number.isFinite(v) ? 'n/a' : v.toFixed(d);
 
-/** The selected cell's QC numbers with a plain-language verdict. */
+/**
+ * The selected cell's QC: its status (one mark and a short label) with the
+ * reasons, then every metric as a bullet bar on its fixed range with the rule's
+ * threshold as a tick (a figure only where the metric has no absolute scale).
+ * Not measured is a grey dash. Reads `qc()`, a snapshot about once a second.
+ */
 export function CellQcSummary(props: { cells: CellStore; id: number }): JSX.Element {
   const row = () => props.cells.qc()?.byId.get(props.id);
   const v = () => verdict(row());
@@ -26,35 +33,72 @@ export function CellQcSummary(props: { cells: CellStore; id: number }): JSX.Elem
     <div class="cala-cellqc" data-testid="cell-qc">
       <div class="cala-cellqc__verdict">
         <span class={`cala-qc-badge cala-qc-badge--${v().kind}`} data-testid="cell-qc-verdict">
+          <QcDot status={qcStatus(row())} />
           {v().label}
         </span>
         <Show when={est() !== undefined}>
           <span class="cala-muted">slow loop: {est() ? 'established' : 'on probation'}</span>
         </Show>
       </div>
-      <Show when={row() && !(row()!.flags & FLAG_UNMEASURED)}>
-        <dl class="cala-cellqc__grid">
-          <dt title={`Peak SNR in noise units; pass needs >= ${MIN_SNR}`}>peak SNR</dt>
-          <dd>{num(row()?.peakSnr, 1)}</dd>
-          <dt title="Trace vs its own footprint projection (trace fidelity; validated, no threshold)">
-            proj r
-          </dt>
-          <dd>{num(row()?.projR)}</dd>
-          <dt title="Variance inflation from overlapping footprints (expected crosstalk; 1 = none)">
-            vif
-          </dt>
-          <dd>{num(row()?.vif)}</dd>
-          <dt title="Largest normalised footprint overlap with a neighbour">max overlap</dt>
-          <dd>{num(row()?.maxOverlap)}</dd>
-          <dt title="Footprint mismatch, relative only (no threshold separates good from bad)">
-            fp error
-          </dt>
-          <dd>{num(row()?.fpError)}</dd>
-          <dt title="Descriptive only">events/min</dt>
-          <dd>{num(row()?.eventRate, 1)}</dd>
-        </dl>
-      </Show>
       <For each={v().notes}>{(n) => <p class="cala-muted cala-cellqc__note">{n}</p>}</For>
+    </div>
+  );
+}
+
+/** The selected cell's metrics as bullet bars (`QC_METRICS`), in a fixed order. */
+export function CellMetricBars(props: { cells: CellStore; id: number }): JSX.Element {
+  const row = () => props.cells.qc()?.byId.get(props.id);
+  const value = (k: QcMetricKey) => {
+    const r = row();
+    return !r || r.flags & FLAG_UNMEASURED ? undefined : r[k];
+  };
+  return (
+    <div class="cala-cellqc__bars" data-testid="cell-metrics">
+      <For each={QC_METRICS}>
+        {(m) => (
+          <div class="cala-cellqc__bar" title={m.help} data-metric={m.key}>
+            <Show
+              when={m.range}
+              fallback={
+                <div class="meter-row" data-testid={`cell-metric-${m.key}`}>
+                  <span class="meter-row__label">{m.label}</span>
+                  <span aria-hidden="true" />
+                  <span class="meter-row__value num">
+                    <Show
+                      when={metricText(m, value(m.key))}
+                      fallback={<span class="meter-row__dash">–</span>}
+                    >
+                      {(t) => (
+                        <>
+                          {t()}
+                          <Show when={m.unit}>
+                            <span class="unit"> {m.unit}</span>
+                          </Show>
+                        </>
+                      )}
+                    </Show>
+                  </span>
+                </div>
+              }
+            >
+              {(r) => (
+                <MeterRow
+                  label={m.label}
+                  value={value(m.key)}
+                  min={r().min}
+                  scale={r().scale}
+                  max={r().max}
+                  target={m.threshold}
+                  format={(x) => x.toFixed(m.digits)}
+                  unit={m.unit}
+                  size="sm"
+                  testid={`cell-metric-${m.key}`}
+                />
+              )}
+            </Show>
+          </div>
+        )}
+      </For>
     </div>
   );
 }

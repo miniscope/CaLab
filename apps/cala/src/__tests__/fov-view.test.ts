@@ -10,6 +10,8 @@ import {
   viewTransform,
   visibleRect,
   zoomAt,
+  legendStartsOpen,
+  LEGEND_OPEN_MIN_PX,
 } from '../lib/fov-view.ts';
 
 describe('FOV zoom and pan', () => {
@@ -55,5 +57,15 @@ describe('FOV zoom and pan', () => {
       'translate(-100.0000%, -50.0000%) scale(2.00000)',
     );
     expect(visibleRect({ zoom: 4, u: 0.5, v: 0.25 })).toEqual([0.375, 0.125, 0.25, 0.25]);
+  });
+});
+
+describe('legendStartsOpen', () => {
+  it('starts the legend as a chip on a narrow image, open on a wide or unmeasured one', () => {
+    expect(legendStartsOpen(380)).toBe(false);
+    expect(legendStartsOpen(LEGEND_OPEN_MIN_PX - 1)).toBe(false);
+    expect(legendStartsOpen(LEGEND_OPEN_MIN_PX)).toBe(true);
+    expect(legendStartsOpen(800)).toBe(true);
+    expect(legendStartsOpen(0)).toBe(true);
   });
 });

@@ -196,6 +196,14 @@
   border-right: none;
 }
 
+.segmented-bar__part--faded {
+  opacity: 0.35;
+}
+
+.segmented-bar__part--clickable {
+  cursor: pointer;
+}
+
 .segmented-bar__part--hatched {
   background-image: repeating-linear-gradient(
     45deg,
