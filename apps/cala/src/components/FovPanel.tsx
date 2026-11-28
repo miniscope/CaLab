@@ -689,8 +689,12 @@ export function FovPanel(props: {
     shownAt = performance.now();
     momentTimer = setTimeout(showNext, waiting.length > 0 ? MOMENT_MIN_MS : MOMENT_MS);
   };
+  /** A moment said before this panel mounted is not replayed (a remount, e.g. back from a result). */
+  let seenSeq = untrack(life.moment)?.seq ?? 0;
   createEffect(() => {
     const m = life.moment();
+    if (m && m.seq <= seenSeq) return;
+    if (m) seenSeq = m.seq;
     if (!m) {
       waiting.length = 0;
       clearTimeout(momentTimer);
