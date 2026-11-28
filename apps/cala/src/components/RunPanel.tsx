@@ -353,6 +353,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               autoExtract={auto()}
               onAutoExtract={setExtractAfterDiscover}
               sessionRun={inSessionRun()}
+              extractRunning={p().status() === 'running'}
             />
           }
         >

@@ -16,6 +16,8 @@ export interface RunSettingsProps {
   autoExtract: boolean;
   onAutoExtract: (on: boolean) => void;
   sessionRun: boolean;
+  /** Extract is running: Find new cells cannot change under it. */
+  extractRunning?: boolean;
 }
 
 /** The setting fields, shared by the sheet and the summary's disclosure. */
@@ -50,6 +52,7 @@ function RunSettingsFields(props: RunSettingsProps): JSX.Element {
         >
           <input
             type="checkbox"
+            disabled={props.extractRunning === true}
             checked={s().discover()}
             onChange={(e) => s().setDiscover(e.currentTarget.checked)}
           />
@@ -106,9 +109,7 @@ export function PreRunSheet(
           <h3 id="run-settings" class="cala-sheet__title">
             Before the run
           </h3>
-          <p class="cala-sheet__lede">
-            The recording is open. Pick the settings, then Run; they are read when Discover starts.
-          </p>
+          <p class="cala-sheet__lede">Settings are read when Discover starts.</p>
         </div>
         <button
           type="button"

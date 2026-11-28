@@ -663,15 +663,23 @@ const App: Component = () => {
   const [donationSource, setDonationSource] = createSignal<DonationSource | null>(null);
 
   // Opening a folder loads the recording and nothing else: the Run tab shows the pre-run sheet,
-  // and Discover starts on its Run button. The previous recording's Extract result, stage log
-  // and export mark are dropped, so nothing of it shows or exports under the new label.
+  // and Discover starts on its Run button. The previous recording's Extract result, stage log,
+  // run history and export mark are dropped, so nothing of it shows or exports under the new label.
   async function open(files: Parameters<typeof store.openFiles>[0], label: string) {
     pipeline.stop();
     pass2.clear();
     stageLog.reset();
     clearResultExported();
     await store.openFiles(files, label);
-    setDonationSource(store.info() ? { entries: files } : null);
+    const info = store.info();
+    if (info)
+      runHistory.reset({
+        fps: info.fps ?? 0,
+        live: false,
+        frameCount: info.frameCount,
+        workers: 0,
+      });
+    setDonationSource(info ? { entries: files } : null);
   }
 
   // ---- Multi-session runs (docs/stages.md, "Sessions") ----
@@ -1258,7 +1266,8 @@ const App: Component = () => {
     const ids = tabs.map((t) => t.id);
     const tab = createSideTab('run', 'run', () => ids);
     // A recording opened for a new run shows the Run tab, where its pre-run sheet and Run are.
-    if (untrack(pipeline.status) === 'idle' && !untrack(multiRun.plan)) tab.show('run');
+    if (untrack(pipeline.status) === 'idle' && !untrack(multiRun.plan) && !lp.info.live)
+      tab.show('run');
     // Expanding swaps History into the large area and shows the FOV in the History tab.
     createEffect(
       on(historyUi.expanded, (x) => {
