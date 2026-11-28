@@ -621,7 +621,7 @@ export function FovPanel(props: {
   let prevIds: number[] | null | undefined;
   const BLOOM_MS = 1200;
   const releaseBlooms = () => {
-    const free = Math.min(6, MAX_BLOOMS - untrack(blooms).length);
+    const free = Math.min(4, MAX_BLOOMS - untrack(blooms).length);
     const next = births.take(free);
     if (next.length === 0) {
       if (births.size === 0) {
@@ -660,7 +660,7 @@ export function FovPanel(props: {
     newest = items.at(-1) ?? newest;
     births.push(items);
     releaseBlooms();
-    pump ??= setInterval(releaseBlooms, 140);
+    pump ??= setInterval(releaseBlooms, 160);
   });
   onCleanup(() => clearInterval(pump));
 

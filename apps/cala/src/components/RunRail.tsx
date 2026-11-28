@@ -413,8 +413,6 @@ export function RunRail(props: RunRailProps): JSX.Element {
               <i />
               <i />
               <i />
-              <i />
-              <i />
             </span>
           </Show>
           <For each={bursts()}>

@@ -31,20 +31,23 @@ export interface ActivitySeed {
 
 /** Baseline, noise and peak of a stretch of trace (null when fewer than 8 finite samples). */
 export function seedOf(v: ArrayLike<number>): ActivitySeed | null {
-  const x: number[] = [];
-  for (let i = 0; i < v.length; i++) if (Number.isFinite(v[i])) x.push(v[i]);
-  if (x.length < 8) return null;
-  const d: number[] = [];
-  for (let i = 1; i < x.length; i++) d.push(Math.abs(x[i] - x[i - 1]));
-  const median = (a: number[]) => {
-    const s = a.slice().sort((p, q) => p - q);
-    return s[Math.floor(s.length / 2)];
-  };
-  // First differences of white noise have sigma * sqrt 2; their MAD is 0.6745 of that.
-  const noise = median(d) / (0.6745 * Math.SQRT2);
+  let n = 0;
+  for (let i = 0; i < v.length; i++) if (Number.isFinite(v[i])) n++;
+  if (n < 8) return null;
+  // Typed arrays: their sort is numeric and fast (a seed is read for every cell now and then).
+  const x = new Float64Array(n);
+  for (let i = 0, j = 0; i < v.length; i++) if (Number.isFinite(v[i])) x[j++] = v[i];
+  const d = new Float64Array(n - 1);
   let peak = -Infinity;
-  for (const y of x) if (y > peak) peak = y;
-  return { base: median(x), noise, peak };
+  for (let i = 0; i < n; i++) {
+    if (x[i] > peak) peak = x[i];
+    if (i > 0) d[i - 1] = Math.abs(x[i] - x[i - 1]);
+  }
+  d.sort();
+  // First differences of white noise have sigma * sqrt 2; their MAD is 0.6745 of that.
+  const noise = d[Math.floor(d.length / 2)] / (0.6745 * Math.SQRT2);
+  x.sort();
+  return { base: x[Math.floor(n / 2)], noise, peak };
 }
 
 export interface CellActivity extends ActivitySeed {
@@ -59,8 +62,12 @@ export interface CellActivity extends ActivitySeed {
   seededAt?: number;
 }
 
-/** With per-frame onsets, a cell's seed is re-read every this many stream frames too. */
-export const RESEED_FRAMES = 200;
+/**
+ * With per-frame onsets, a cell's seed is also re-read once this many stream frames have passed
+ * (plus a stagger by id, so cells do not all re-read on one tick): at a high speed the 20-tick
+ * rule alone would leave a baseline thousands of frames old.
+ */
+export const RESEED_FRAMES = 1500;
 
 /**
  * Per-frame onsets (the ribbon, the portrait) are gated by noise alone: a rise to `ONSET_K`
@@ -168,7 +175,7 @@ export function stepActivity(
     const due =
       !c ||
       (c.ticks + id) % RESEED_TICKS === 0 ||
-      (end !== undefined && end - (c.seededAt ?? -Infinity) >= RESEED_FRAMES);
+      (end !== undefined && end - (c.seededAt ?? -Infinity) >= RESEED_FRAMES + (id % 16) * 50);
     if (due) {
       const sd = seed(id);
       if (!c) {

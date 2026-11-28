@@ -169,7 +169,7 @@ export function shapeCentre(sh: CellShape, width: number): { x: number; y: numbe
 }
 
 /** Blooms on screen at once at most; more births wait their turn. */
-export const MAX_BLOOMS = 24;
+export const MAX_BLOOMS = 12;
 /** Births waiting at most; older ones are dropped (a library that adds hundreds at once). */
 export const MAX_BIRTH_QUEUE = 96;
 
