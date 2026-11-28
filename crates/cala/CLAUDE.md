@@ -33,8 +33,10 @@ Each module's WASM binding is its `js.rs`; the Python stub is `src/py_api.rs`. T
 - `npm run gen:params` (repo root) regenerates the params schema, the golden engine views and
   the TS types after a change in `src/params`; the drift tests fail until it is run.
 - The engine's config structs (`SlowLoopConfig`, `PreprocessConfig`, `MotionConfig`, ...) are
-  built from params by `params::engine::Engine`; the bindings turn their loose arguments into
-  params first (`params::loose`). A config built by hand (tests) skips that and has fingerprint 0.
+  built from params by `params::engine::Engine`. Every wasm constructor that needs a config takes
+  a `ResolvedParams` handle (`params/js.rs`: `resolveParams`, `ResolvedParams.fromJson`), never
+  loose arguments; `qc_eval`'s flags become params with `params::loose`. A config built by hand
+  (tests) skips that and has fingerprint 0.
 - `npm run build:wasm` (repo root) builds `pkg/` with wasm-pack and `+simd128` (`.cargo/config.toml`).
 
 ## WASM bindings
@@ -44,9 +46,8 @@ Each module's WASM binding is its `js.rs`; the Python stub is `src/py_api.rs`. T
 - Errors cross the boundary as `JsError` through one helper (`js_err`, in `src/js_util.rs` if
   present); do not add another per-module copy. Public paths return typed errors and never panic:
   a panic traps and leaves the module unusable in its worker.
-- No binding without a caller in `apps/cala` (or a script that loads `pkg/`). Exception: the
-  motion and preprocess option setters (`MotionOptions`, `PreprocessConfig`) are a capability
-  surface kept on purpose for features still to be wired; do not trim them.
+- No binding without a caller in `apps/cala` (or a script that loads `pkg/`). A setting the app
+  can change is a params field read through `ResolvedParams`, not a binding argument or setter.
 - Changing a binding means changing, in the same PR: `apps/cala/src/lib/cala-wasm.ts` (the only
   import point), hand-written TS mirrors such as `SlowLoopLike` in `src/lib/slow-runner.ts`,
   and the test fakes that implement them. Then run `npm run typecheck` and the cala tests.

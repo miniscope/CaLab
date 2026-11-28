@@ -5,6 +5,7 @@
  * `solveWindow`) and sends back their traces. It holds no store and touches
  * no file: the compress worker reads the tiles and factor files and writes.
  */
+import { paramsHandle } from '../lib/params-handle.ts';
 import { FactorExtractor, FactorWindow, initCalaWasm, TileCompressor } from '../lib/cala-wasm.ts';
 import { solveWindow } from '../lib/factor-solve.ts';
 import type { CoordinatorToHelper, HelperToCoordinator } from './compress-types.ts';
@@ -40,7 +41,7 @@ function handle(port: MessagePort, msg: CoordinatorToHelper): void {
     extract = null;
     extractError = null;
     try {
-      const x = new FactorExtractor(msg.library, 0, 0);
+      const x = new FactorExtractor(msg.library, paramsHandle(msg.params));
       if (msg.signed) x.setSigned(true);
       extract = { job: msg.job, x, signed: msg.signed, px: msg.px };
     } catch (err) {

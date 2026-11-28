@@ -250,7 +250,7 @@ a boundary short, so every session starts a batch. Both pipeline engines call
 `sessionHooks.onSessionBoundary(index, frame)` (`src/lib/session-boundary.ts`)
 before that batch.
 
-With `PipelineOptions.sessionFix` on (the default), the stages carry the run
+With the params' `motion.session_fix` on (the default), the stages carry the run
 into the new session (measured in
 `tools/cala-eval/results/2026-11-13-session-boundary-fix.md`). Within a session
 nothing changes, and a one-session run is byte-identical to before.

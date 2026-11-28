@@ -23,6 +23,8 @@ import type { FastToSlow, LibraryView, SlowToFast, SlowToMain } from '../workers
 import { lcgClassic } from './blob-movie.ts';
 import { initTestWasm } from './wasm-test.ts';
 import { INIT as BASE_INIT, stubSlowLoop } from './slow-fixtures.ts';
+import { DEFAULT_PARAMS, DEFAULT_RUN, engineLayer, resolvedParams } from './params-fixtures.ts';
+import { paramsHandle } from '../lib/params-handle.ts';
 
 beforeAll(initTestWasm);
 
@@ -275,8 +277,7 @@ function fastLoop(
       height: 2,
       batchSize: 3,
       session: 5,
-      cellDiameterPx: 10,
-      flattenSigmaPx: 0,
+      params: DEFAULT_PARAMS,
       startFrame: 6,
       noiseEvery: 9,
       poolSize: 2,
@@ -325,10 +326,8 @@ describe('FastLoop online QC', () => {
         height: 2,
         batchSize: 3,
         session: 1,
-        cellDiameterPx: 10,
-        flattenSigmaPx: 0,
-        // 4 frames of stream between snapshots.
-        fps: 20,
+        // 4 frames of stream between snapshots (20 fps).
+        params: DEFAULT_PARAMS,
         qcEveryS: 0.2,
         noiseEvery: 6,
       },
@@ -377,8 +376,7 @@ describe('FastLoop online QC', () => {
         height: 2,
         batchSize: 3,
         session: 1,
-        cellDiameterPx: 10,
-        flattenSigmaPx: 0,
+        params: DEFAULT_PARAMS,
         qc: false,
       },
       null,
@@ -405,8 +403,8 @@ describe('FastLoop (fast worker side of the hand-off)', () => {
       session: 5,
       width: 2,
       height: 2,
-      cellDiameterPx: 10,
-      budget: 3e7,
+      params: DEFAULT_PARAMS,
+      budget: DEFAULT_RUN.engine.slow_loop.budget,
     });
     const [batch] = port.of('frames');
     expect(batch).toMatchObject({ session: 5, start: 3, count: 3, version: 0, cells: 0 });
@@ -523,8 +521,8 @@ describe('FastLoop (fast worker side of the hand-off)', () => {
       fake.libs.set(3, [11]);
       const enabled: boolean[] = [];
       const newEngine = fake.backend.newEngine;
-      fake.backend.newEngine = (lib) => ({
-        ...newEngine(lib),
+      fake.backend.newEngine = (lib, p) => ({
+        ...newEngine(lib, p),
         setConsolidatedRingGradient: (on) => enabled.push(on),
       });
       const fl = new FastLoop(
@@ -532,9 +530,7 @@ describe('FastLoop (fast worker side of the hand-off)', () => {
           width: 2,
           height: 2,
           batchSize: 3,
-          cellDiameterPx: 1,
-          flattenSigmaPx: 1,
-          fps: 20,
+          params: DEFAULT_PARAMS,
           session: 5,
           qc: false,
           ...(mode !== 'discover' ? { initialLibrary: Uint8Array.of(3) } : {}),
@@ -556,8 +552,8 @@ describe('FastLoop (fast worker side of the hand-off)', () => {
     fake.libs.set(3, [11]);
     const seen: number[][] = [];
     const newEngine = fake.backend.newEngine;
-    fake.backend.newEngine = (l) => ({
-      ...newEngine(l),
+    fake.backend.newEngine = (l, p) => ({
+      ...newEngine(l, p),
       residualOfLast(f) {
         seen.push(Array.from(f));
         return f.map((v) => v - 1);
@@ -944,8 +940,7 @@ describe('fast and slow loop over the real WASM bindings', () => {
         height: H,
         batchSize: 8,
         session: 1,
-        cellDiameterPx: 6,
-        flattenSigmaPx: 0,
+        params: resolvedParams(engineLayer(6)),
         startFrame: 8,
         // Plenty of budget per frame for a 64 x 64 movie.
         budget: 1e8,
@@ -960,9 +955,9 @@ describe('fast and slow loop over the real WASM bindings', () => {
       },
       {
         libraryFromBytes: (b) => TraceLibrary.fromBytes(b),
-        newEngine: (l) => new TraceEngine(l as TraceLibrary, 0, 0),
+        newEngine: (l, p) => new TraceEngine(l as TraceLibrary, paramsHandle(p)),
         newQc: (q) => {
-          const m = new QcMonitor(q.width, q.height, q.fov, q.noise, q.fps, 0);
+          const m = new QcMonitor(q.width, q.height, q.fov, q.noise, paramsHandle(q.params));
           return {
             processFrames: (e, f, n) => m.processFrames(e as TraceEngine, f, n),
             setNoise: (n) => m.setNoise(n),
@@ -978,8 +973,7 @@ describe('fast and slow loop over the real WASM bindings', () => {
       },
     );
     const slow = new SlowRunner({
-      create: (i) =>
-        new SlowLoop(i.width, i.height, i.fov, i.noise, i.cellDiameterPx, i.flattenSigmaPx),
+      create: (i) => new SlowLoop(i.width, i.height, i.fov, i.noise, paramsHandle(i.params)),
       toFast: { postMessage: (msg) => toFast.push({ msg }) },
       toMain,
     });

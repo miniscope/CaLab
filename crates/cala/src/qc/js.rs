@@ -9,7 +9,7 @@ use wasm_bindgen::prelude::*;
 
 use super::{CellQc, GlobalQc, QcMonitor};
 use crate::js_util::{init_panic_hook, js_err};
-use crate::params::loose;
+use crate::params::js::ResolvedParams;
 use crate::preprocess::Dims;
 use crate::trace::js::JsTraceEngine;
 use crate::trace::TraceError;
@@ -33,23 +33,21 @@ pub struct JsQcMonitor {
 
 #[wasm_bindgen(js_class = QcMonitor)]
 impl JsQcMonitor {
-    /// `fov` (0/1 per pixel) and `noise` (σ per pixel) of the preprocessing;
-    /// `fps` the frame rate (every QC duration follows it); `window_frames`
-    /// the trace history (0 = the default 60 s at `fps`).
+    /// `fov` (0/1 per pixel) and `noise` (σ per pixel) of the preprocessing.
+    /// The QC's settings come from `params` (`qc`), every duration at the
+    /// run's frame rate.
     #[wasm_bindgen(constructor)]
     pub fn new(
         width: u32,
         height: u32,
         fov: &[u8],
         noise: &[f32],
-        fps: f32,
-        window_frames: u32,
+        params: &ResolvedParams,
     ) -> Result<JsQcMonitor, JsError> {
         init_panic_hook();
         let dims =
             Dims::new(width as usize, height as usize).map_err(|e| js_err("QcMonitor", e))?;
-        // Every QC duration at the recording's frame rate.
-        let cfg = loose::qc_config(fps, window_frames);
+        let cfg = params.engine().qc.clone();
         let inner = QcMonitor::new(dims, fov.to_vec(), noise.to_vec(), cfg)
             .map_err(|e| js_err("QcMonitor", e))?;
         Ok(JsQcMonitor { inner })
@@ -126,13 +124,19 @@ impl JsQcMonitor {
 
     /// The monitor's trace statistics of one cell, on any span of its trace
     /// (chronological), at frame rate `fps`: `QcConfig::trace_stats` with
-    /// `QcConfig::for_fps(fps)`. After Extract the app calls it on each
-    /// session's frames (the whole span, or its last window). `modelSigma`:
-    /// the cell's model trace noise, or NaN when unknown (exact zeros count
-    /// as zero, no fallback σ). Values in `spanStatsFields` order.
+    /// the QC config of `params` at `fps` (a session of a Joint run keeps its
+    /// own rate). After Extract the app calls it on each session's frames
+    /// (the whole span, or its last window). `modelSigma`: the cell's model
+    /// trace noise, or NaN when unknown (exact zeros count as zero, no
+    /// fallback σ). Values in `spanStatsFields` order.
     #[wasm_bindgen(js_name = spanStats)]
-    pub fn span_stats(trace: &[f32], model_sigma: f32, fps: f32) -> Result<Vec<f64>, JsError> {
-        let cfg = loose::qc_config(fps, 0);
+    pub fn span_stats(
+        trace: &[f32],
+        model_sigma: f32,
+        params: &ResolvedParams,
+        fps: f32,
+    ) -> Result<Vec<f64>, JsError> {
+        let cfg = params.engine().qc_at(fps);
         cfg.validate().map_err(|e| js_err("spanStats", e))?;
         let st = cfg.trace_stats(trace, model_sigma, &mut Vec::new());
         let f = |v: f32| f64::from(v);
@@ -148,10 +152,10 @@ impl JsQcMonitor {
         ])
     }
 
-    /// The window the monitor reads at frame rate `fps`, frames.
+    /// The window the monitor reads with `params` at frame rate `fps`, frames.
     #[wasm_bindgen(js_name = windowFrames)]
-    pub fn window_frames(fps: f32) -> u32 {
-        loose::qc_config(fps, 0).window_frames as u32
+    pub fn window_frames(params: &ResolvedParams, fps: f32) -> u32 {
+        params.engine().qc_at(fps).window_frames as u32
     }
 
     /// Comma-separated names of the per-cell fields.

@@ -5,7 +5,6 @@ import {
   FLOOR_LADDER,
   FloorMeter,
   FloorTracker,
-  NEED_RATE,
   floorText,
   snapToLadder,
   speedFloor,
@@ -13,7 +12,6 @@ import {
   type FloorInputs,
 } from '../lib/speed-floor.ts';
 import { emptyLookbackWork, emptyWork, type WorkStatus } from '../lib/work-meter.ts';
-import { LOOKBACK } from '../lib/slow-runner.ts';
 
 const base: FloorInputs = {
   cap: 2,
@@ -344,10 +342,6 @@ describe('FloorTracker', () => {
 });
 
 describe('FloorMeter and floorText', () => {
-  it('keeps NEED_RATE equal to LOOKBACK.rate', () => {
-    expect(NEED_RATE).toBe(LOOKBACK.rate);
-  });
-
   it('measures from a stream of snapshots, freezes without a library, and prints the readout', () => {
     const m = new FloorMeter();
     expect(floorText(m)).toMatch(/not measured/);

@@ -24,12 +24,14 @@
 //! The defaults are the app's shipped configuration. [`resolve::resolve`]
 //! turns params into [`resolve::EngineView`], the engine-unit view pinned by
 //! the golden files in `tests/golden/`, and [`engine::Engine`] builds the
-//! engine's config structs from it. The wasm bindings and `qc_eval` take
-//! loose arguments and flags; [`loose`] turns those into params.
+//! engine's config structs from it. The wasm bindings take a resolved
+//! handle (`js::ResolvedParams`); `qc_eval`'s flags are turned into params
+//! with the help of [`loose`].
 
 pub mod engine;
 #[cfg(feature = "jsbindings")]
 pub mod js;
+pub mod layer;
 pub mod loose;
 pub mod meta;
 pub mod migrate;

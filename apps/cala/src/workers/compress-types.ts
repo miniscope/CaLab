@@ -21,6 +21,8 @@ export type CompressSource = 'discover' | 'replay';
 export interface CompressInit {
   width: number;
   height: number;
+  /** The run's resolved params (`run-params.ts`): the trace solver of back-fill and Extract. */
+  params: string;
   /** Tile edge, px. */
   tile: number;
   /** Frames per window. */
@@ -272,7 +274,15 @@ export type MainToCompress =
 export type CoordinatorToHelper =
   | { type: 'init'; quant: number }
   /** An Extract job: the library its windows are solved with (`TraceLibrary.toBytes()`). */
-  | { type: 'extract-begin'; job: number; library: Uint8Array; signed: boolean; px: number }
+  | {
+      type: 'extract-begin';
+      job: number;
+      library: Uint8Array;
+      signed: boolean;
+      px: number;
+      /** The run's resolved params (`run-params.ts`): the extractor's solver settings. */
+      params: string;
+    }
   /** Solve window `index` of the job from its factor file (transferred), cold. */
   | { type: 'extract-window'; job: number; index: number; bytes: Uint8Array }
   | { type: 'extract-end'; job: number }

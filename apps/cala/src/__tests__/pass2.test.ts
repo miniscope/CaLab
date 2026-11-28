@@ -85,13 +85,7 @@ async function run(
   const len = OPTIONS.batchSize * W * H;
   const frontPool = new StagePool(3, len);
   const outPool = new StagePool(3, len);
-  const a = new FrontStage(
-    makeMovie(FRAMES),
-    OPTIONS,
-    () => frontPool.acquire(),
-    undefined,
-    options.replay,
-  );
+  const a = new FrontStage(makeMovie(FRAMES), OPTIONS, () => frontPool.acquire(), options.replay);
   const b = new MotionStage(a.setup, () => outPool.acquire());
   const fast = new FastLoop(
     {
@@ -284,19 +278,12 @@ describe('pass 2', () => {
           makeMovie(FRAMES),
           OPTIONS,
           () => frontPool.acquire(),
-          undefined,
           replayOf(rec, FRAMES + 1),
         ),
     ).toThrow(/The replay \(Extract\) covers/);
     expect(
       () =>
-        new FrontStage(
-          makeMovie(FRAMES),
-          OPTIONS,
-          () => frontPool.acquire(),
-          undefined,
-          replayOf(rec, 10),
-        ),
+        new FrontStage(makeMovie(FRAMES), OPTIONS, () => frontPool.acquire(), replayOf(rec, 10)),
     ).toThrow(/fewer values/);
   });
 });

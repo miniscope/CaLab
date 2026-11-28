@@ -2242,8 +2242,16 @@ fn js_observe_with_background_levels_matches_native() {
     let js = |cfg: &SlowLoopConfig| {
         let (s, e) = start(cfg.clone(), &seed);
         let lib = e.library().clone();
-        let eng = JsTraceEngine::new(&JsTraceLibrary::from_arc(lib.clone()), 0.0, 0).unwrap();
-        (super::js::JsSlowLoop::from_parts(s, lib), eng)
+        let params = crate::params::js::ResolvedParams::new(
+            crate::params::CalaParams::default(),
+            crate::params::resolve::Context {
+                fps: 20.0,
+                frame: [N as u32, N as u32],
+            },
+        )
+        .unwrap();
+        let eng = JsTraceEngine::new(&JsTraceLibrary::from_arc(lib.clone()), &params).unwrap();
+        (super::js::JsSlowLoop::from_parts(s, lib, None), eng)
     };
     let (mut b, mut eb) = js(&cfg);
     let (mut c, mut ec) = js(&cfg);
@@ -2379,7 +2387,7 @@ fn refine_js(
     use super::js::JsSlowLoop;
     let n_px = N * N;
     let (slow, mut eng) = start(shard_config(), seed);
-    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone(), None);
     let feed = |js: &mut JsSlowLoop, eng: &mut TraceEngine, out: &mut Vec<Vec<u8>>, keep: bool| {
         for k in 0..t {
             let f = &m[k * n_px..(k + 1) * n_px];
@@ -3123,8 +3131,7 @@ fn js_lookback_matches_the_native_driver() {
 
     // JS surface.
     let (slow, mut eng) = start(cfg, seed);
-    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
-    js.enable_lookback(2.0, 3000).unwrap();
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone(), Some(lookback_2_3000()));
     let mut lb_eng = eng.clone();
     let mut via_js = Vec::new();
     for k in 0..t {
@@ -3194,9 +3201,19 @@ fn js_lookback_matches_the_native_driver() {
     assert!(native == via_js, "libraries differ");
 }
 
+/// The app's look-back: two look-back frames per Discover frame, at most
+/// 3000 frames before a cell's birth.
+#[cfg(feature = "jsbindings")]
+fn lookback_2_3000() -> super::LookbackConfig {
+    super::LookbackConfig {
+        rate: 2.0,
+        max_frames: 3000,
+        ..super::LookbackConfig::default()
+    }
+}
+
 /// Hardening: a visit runner built with other slow-loop options refuses the
-/// job; with look-back on, `observe` needs the stream index and
-/// `enableLookback` must come before the first frame.
+/// job; with look-back on, `observe` needs the stream index.
 #[cfg(feature = "jsbindings")]
 #[test]
 fn lookback_misuse_is_refused() {
@@ -3204,18 +3221,25 @@ fn lookback_misuse_is_refused() {
     let t = 400;
     let (m, seed) = busy_movie(t);
     let n_px = N * N;
-    // The fingerprints the bindings give these two option sets.
-    use crate::params::loose::{slow_loop_config, ClusterArgs};
-    use crate::params::{ClusterSign, ClusterUpdate};
-    let fp = |c| slow_loop_config(10.0, 0.0, c).unwrap().1.fingerprint;
+    // The fingerprints of the default params and of params with the
+    // cluster replay and the merge guard off.
+    use crate::params::engine::Engine;
+    use crate::params::resolve::Context;
+    use crate::params::{CalaParams, ClusterUpdate};
+    let fp = |p: &CalaParams| {
+        let ctx = Context {
+            fps: 20.0,
+            frame: [N as u32, N as u32],
+        };
+        Engine::build(p, ctx).unwrap().slow_loop.fingerprint
+    };
+    let mut off = CalaParams::default();
+    off.discover.cluster.update = ClusterUpdate::Off;
+    off.discover.merge.guard_min_sep_d = None;
     let cfg = SlowLoopConfig {
         joint_update: JointUpdate::All,
         merge_guard_min_sep: 0.6,
-        fingerprint: fp(Some(ClusterArgs {
-            update: ClusterUpdate::All,
-            sign: ClusterSign::All,
-            guard_min_sep_d: Some(0.6),
-        })),
+        fingerprint: fp(&CalaParams::default()),
         ..shard_config()
     };
     let (mut sl, mut eng) = start(cfg.clone(), &seed);
@@ -3225,7 +3249,7 @@ fn lookback_misuse_is_refused() {
         vec![1.0; n_px],
         flattener(),
         SlowLoopConfig {
-            fingerprint: fp(None),
+            fingerprint: fp(&off),
             ..shard_config()
         },
     )
@@ -3247,10 +3271,11 @@ fn lookback_misuse_is_refused() {
     assert!(err.to_string().contains("other options"), "{err}");
 
     // (The JS error paths themselves need a wasm target; their guards:)
-    let (slow, _) = start(cfg, &seed);
-    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    let (slow, _) = start(cfg.clone(), &seed);
+    let js = JsSlowLoop::from_parts(slow, eng.library().clone(), None);
     assert!(js.stream_ok(None));
-    js.enable_lookback(2.0, 3000).unwrap();
+    let (slow, _) = start(cfg, &seed);
+    let js = JsSlowLoop::from_parts(slow, eng.library().clone(), Some(lookback_2_3000()));
     assert!(!js.stream_ok(None));
     assert!(js.stream_ok(Some(0.0)));
 }
@@ -3332,11 +3357,10 @@ fn js_settle_frames_only_feeds_fitting_frames_to_the_statistics() {
     let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
     let n_px = N * N;
     let (slow, mut eng) = start(config(), &seed);
-    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone(), Some(lookback_2_3000()));
     let v = eng.library().version() as f64;
     // Off: nothing to take.
     assert!(js.settle_take(96.0, 16).is_empty());
-    js.enable_lookback(2.0, 3000).unwrap();
     js.enable_settle(16).unwrap();
     // Live frames at stream indices 100.. (frames before the slow loop
     // started get the hashed decision).

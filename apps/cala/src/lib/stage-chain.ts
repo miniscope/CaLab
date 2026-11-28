@@ -18,8 +18,6 @@ const POOL_SIZE = 3;
 
 /** What `StageChain` adds to the pipeline options. */
 export interface StageChainOptions {
-  /** Global flicker correction: 0 off, 1 additive, 2 multiplicative, 3 both (default both). */
-  flickerMode?: number;
   /** Builds the fast loop stage C runs on every batch (absent: no traces). */
   fastLoop?: (setup: FastLoopSetup) => FastLoop;
 }
@@ -36,7 +34,7 @@ export class StageChain {
 
   constructor(reader: FrameReader, options: PipelineOptions = {}, chain: StageChainOptions = {}) {
     // A asks for buffers only from its first `next()`, after the pool exists.
-    this.a = new FrontStage(reader, options, () => this.frontPool.acquire(), chain.flickerMode);
+    this.a = new FrontStage(reader, options, () => this.frontPool.acquire());
     this.plan = this.a.plan;
     const len = this.plan.batchSize * reader.info.width * reader.info.height;
     this.frontPool = new StagePool(POOL_SIZE, len);

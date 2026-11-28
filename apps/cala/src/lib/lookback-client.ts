@@ -58,6 +58,8 @@ export interface LookbackFeed {
   /** Stage C's back-half state (transferred on). */
   backState(session: number, snap: BackStateSnapshot): void;
   flatField(session: number, map: FlatFieldMap | null): void;
+  /** The run's resolved params (`run-params.ts`), once the pipeline has them. */
+  params(session: number, params: string): void;
   /**
    * A Joint run: Discover re-registered session `index` by `transform`
    * (`RunRecord.noteSession`). Call it before that batch's `rows`.
@@ -185,6 +187,8 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
     source: LookbackSource | FactorSource;
     rows: RowsChunk[];
     flat: FlatFieldMap | null | undefined;
+    /** The run's resolved params (undefined: not sent yet). */
+    params: string | undefined;
     /** Session re-registrations so far (a Joint run), in order. */
     sessions: { index: number; transform: SessionTransform }[];
     /**
@@ -244,6 +248,7 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
         source,
         rows: [],
         flat: undefined,
+        params: undefined,
         sessions: [],
         newest: null,
         joining: 0,
@@ -259,6 +264,7 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
         source: { factors },
         rows: [],
         flat: undefined,
+        params: undefined,
         sessions: [],
         newest: null,
         joining: 0,
@@ -314,6 +320,10 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
         run.joining = 0;
       }
     },
+    params(session, params) {
+      if (run?.session === session) run.params = params;
+      postAll(() => [{ type: 'params', session, params }, []]);
+    },
     flatField(session, map) {
       if (run?.session === session) run.flat = map;
       // Copied (the pipeline store keeps its map).
@@ -368,6 +378,8 @@ export function createLookbackClient(o: LookbackClientOptions): LookbackFeed & {
           source: r.source,
           prune: true,
         } satisfies MainToLookback);
+        if (r.params !== undefined)
+          w.postMessage({ type: 'params', session, params: r.params } satisfies MainToLookback);
         // The session warps before the rows (a frame is never served without its own).
         for (const st of r.sessions)
           w.postMessage({ type: 'session', session, ...st } satisfies MainToLookback);

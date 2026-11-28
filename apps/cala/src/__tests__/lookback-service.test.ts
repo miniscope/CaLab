@@ -28,6 +28,7 @@ function fakeReader() {
       back = `back${s[0]}`;
     },
     setSession: () => {},
+    setParams: (p) => events.push(`params:${p}`),
     setFlatField: (m) => {
       flat = m ? `flat${m.dark}` : 'none';
     },
@@ -109,6 +110,31 @@ async function setup() {
 async function settle() {
   for (let k = 0; k < 20; k++) await later();
 }
+
+describe('LookbackService: the run params', () => {
+  it('reach the reader of the run that began and the factor servers', async () => {
+    const f = fakeReader();
+    const seen: string[] = [];
+    const s = new LookbackService({
+      open: () =>
+        Promise.resolve({ server: f.reader, reader: f.reader, pool: new StagePool(1, 4) }),
+      factorServer: () => {
+        throw new Error('no factors here');
+      },
+      params: (p) => seen.push(p),
+      postSlow: () => {},
+      postMain: () => {},
+    });
+    s.handleMain({ type: 'begin', session: 1, source: { entries: [] } });
+    // Sent right after the pipeline resolved them: possibly before the recording is open.
+    s.handleMain({ type: 'params', session: 1, params: 'P1' });
+    // A late message of an earlier run is dropped.
+    s.handleMain({ type: 'params', session: 0, params: 'old' });
+    await settle();
+    expect(f.events).toEqual(['params:P1']);
+    expect(seen).toEqual(['P1']);
+  });
+});
 
 describe('LookbackService: the end settle waits for final inputs', () => {
   /**

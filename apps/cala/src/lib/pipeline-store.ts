@@ -10,7 +10,13 @@
  * Speed control (`speed-control-store.ts`), Background settle (`bg-settle-store.ts`) and the work
  * readout (`work-readout-store.ts`). This store owns the run's lifecycle and wires them.
  */
-import { createSignal, untrack } from 'solid-js';
+import {
+  isBackgroundCap,
+  runParams as parseRunParams,
+  runParamsLayer,
+  type BackgroundCap,
+} from './run-params.ts';
+import { createMemo, createSignal, untrack } from 'solid-js';
 import type { CellStore } from './cell-store.ts';
 import type { CompressStore } from './compress-store.ts';
 import { FACTORS_FILE_JOINT, factorRunPlan } from './factor-run.ts';
@@ -133,6 +139,10 @@ export function createPipelineStore(
 ) {
   const [status, setStatus] = createSignal<PipelineStatus>('idle');
   const [plan, setPlan] = createSignal<PipelinePlan | null>(null);
+  const runParams = createMemo(() => {
+    const p = plan();
+    return p ? parseRunParams(p.params) : null;
+  });
   const [setup, setSetup] = createSignal<SetupProgress | null>(null);
   const [processed, setProcessed] = createSignal(0);
   const [fps, setFps] = createSignal(0);
@@ -566,6 +576,20 @@ export function createPipelineStore(
       // Only an explicit `?factors=file`/`gpu`: the default has no factor route on a Joint run.
       if (factors() && factorsFile() && jointOf()) console.warn(FACTORS_FILE_JOINT);
       runLevel = lb || runPlan.factorSettle ? finalSettleLevelSig() : FINAL_SETTLE_LEVEL_DEFAULT;
+      // The run's params: the settings of this start over the caller's layer. The frame worker
+      // resolves them against the recording; every worker is built from the result.
+      const paramsLayer = runParamsLayer({
+        lookback: lb,
+        factorSettle: runPlan.factorSettle,
+        visitMode: untrack(speed.visitRateSetting) === 'auto' ? 'auto' : 'fixed',
+        flatField: useFlat,
+        finalSettleLevel: runLevel,
+        findNewCells: discover(),
+        qc,
+        repeatable: rep,
+        ...(isBackgroundCap(settleCap()) ? { settleCap: settleCap() as BackgroundCap } : {}),
+        ...(options.paramsLayer ? { base: options.paramsLayer } : {}),
+      });
       if (lb) {
         lookbackSession = session;
         // Without an estimator this session, the flat-field input is final from the start.
@@ -578,7 +602,7 @@ export function createPipelineStore(
         tellSettlePace();
       }
       const p = await client.startPipeline(
-        { ...options, flatField: useFlat },
+        { ...options, paramsLayer, flatField: useFlat },
         {
           session,
           discover: discover(),
@@ -620,6 +644,10 @@ export function createPipelineStore(
       );
       if (gen !== generation) return;
       setPlan(p);
+      const run = runParams();
+      if (run) flatStore.setSchedule(run.engine.fps, run.engine.flat_field.first_frames);
+      // The look-back workers build their motion corrector and trace engines from the run's params.
+      if (lb) lookbackFeed!.params(session, p.params);
       // Joint run with the session fix: judge each boundary (observers only).
       if (p.sessionFix && p.boundaries.length > 0)
         boundaryMonitor = new BoundaryMonitor({
@@ -915,6 +943,8 @@ export function createPipelineStore(
     setDisplayLog: playbackCtl.setDisplayLog,
     displayLog: playbackCtl.displayLog,
     plan,
+    /** The current run's resolved params (null before its pipeline is ready). */
+    runParams,
     setup,
     processed,
     previews,

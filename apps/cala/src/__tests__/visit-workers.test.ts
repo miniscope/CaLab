@@ -17,6 +17,8 @@ import { VISIT_RATE } from '../lib/visit-rate.ts';
 import { lcgClassic } from './blob-movie.ts';
 import { initTestWasm } from './wasm-test.ts';
 import { fakeLib, INIT, stubSlowLoop } from './slow-fixtures.ts';
+import { DEFAULT_PARAMS, engineLayer, resolvedParams } from './params-fixtures.ts';
+import { paramsHandle } from '../lib/params-handle.ts';
 
 beforeAll(initTestWasm);
 
@@ -186,8 +188,7 @@ describe('parallel tile visits over the real WASM bindings', () => {
         height: H,
         batchSize: 8,
         session: 1,
-        cellDiameterPx: 6,
-        flattenSigmaPx: 0,
+        params: resolvedParams(engineLayer(6)),
         startFrame: 8,
         budget: 1e8,
         qc: false,
@@ -195,9 +196,9 @@ describe('parallel tile visits over the real WASM bindings', () => {
       { postMessage: (msg) => toSlow.push(msg) },
       {
         libraryFromBytes: (b) => TraceLibrary.fromBytes(b),
-        newEngine: (l) => new TraceEngine(l as TraceLibrary, 0, 0),
+        newEngine: (l, p) => new TraceEngine(l as TraceLibrary, paramsHandle(p)),
         newQc: (q) => {
-          const m = new QcMonitor(q.width, q.height, q.fov, q.noise, q.fps, 0);
+          const m = new QcMonitor(q.width, q.height, q.fov, q.noise, paramsHandle(q.params));
           return {
             processFrames: (e, f, n) => m.processFrames(e as TraceEngine, f, n),
             setNoise: (n) => m.setNoise(n),
@@ -225,8 +226,7 @@ describe('parallel tile visits over the real WASM bindings', () => {
             msg.height,
             msg.fov,
             msg.noise,
-            msg.cellDiameterPx,
-            msg.flattenSigmaPx,
+            paramsHandle(msg.params),
           );
         } else if (msg.type === 'noise') workers[i]!.setNoise(msg.noise);
         else if (msg.type === 'job') {
@@ -236,8 +236,7 @@ describe('parallel tile visits over the real WASM bindings', () => {
       }
     };
     const slow = new SlowRunner({
-      create: (i) =>
-        new SlowLoop(i.width, i.height, i.fov, i.noise, i.cellDiameterPx, i.flattenSigmaPx),
+      create: (i) => new SlowLoop(i.width, i.height, i.fov, i.noise, paramsHandle(i.params)),
       toFast: { postMessage: (msg) => toFast.push(msg) },
       toMain: { postMessage: (msg) => toMain.push(msg) },
       visits: [0, 1].map((i) => ({ postMessage: (m: OwnerToVisit) => inbox[i].push(m) })),
@@ -298,9 +297,9 @@ describe('SlowRunner and the Discover visit cap', () => {
     return { setVisitSchedule, status: st.type === 'status' ? st.status : null };
   }
 
-  it('starts the schedule the init asks for', () => {
-    expect(run('auto').setVisitSchedule).toHaveBeenCalledWith(true);
-    expect(run('fixed').setVisitSchedule).toHaveBeenCalledWith(false);
+  it('starts the params schedule when the init asks for one', () => {
+    expect(run('auto').setVisitSchedule).toHaveBeenCalledWith();
+    expect(run('fixed').setVisitSchedule).toHaveBeenCalledWith();
   });
 
   it('reports the cap counters', () => {
@@ -319,16 +318,26 @@ describe('SlowRunner and the Discover visit cap', () => {
 
   it('the WASM slow loop has the cap', () => {
     const n = 64 * 64;
-    const s = new SlowLoop(64, 64, new Uint8Array(n).fill(1), new Float32Array(n).fill(1), 10, 0);
+    const fov = new Uint8Array(n).fill(1);
+    const noise = new Float32Array(n).fill(1);
+    const s = new SlowLoop(64, 64, fov, noise, paramsHandle(DEFAULT_PARAMS));
     expect(Array.from(s.visitRateStats())).toEqual(new Array(16).fill(0));
     expect(Array.from(s.visitSchedule())).toEqual([]);
     s.setVisitRate(0.5);
     expect(s.visitRateStats()[0]).toBe(0.5);
     // A bare cap: its target is the cap, no schedule.
     expect(s.visitRateStats()[7]).toBe(0.5);
-    // Auto (opt-in): the cap at 4/3 of the 0.15 target, the hold's floor at 2/3.
-    s.setVisitSchedule(true);
-    const c = visitRateCounters(s.visitRateStats(), s.visitSchedule());
+    // Auto (opt-in, `discover.visit.mode`): the cap at 4/3 of the 0.15 target, the hold's floor at 2/3.
+    const auto = new SlowLoop(
+      64,
+      64,
+      fov,
+      noise,
+      paramsHandle(resolvedParams({ discover: { visit: { mode: 'auto' } } })),
+    );
+    auto.setVisitRate(0.5);
+    auto.setVisitSchedule();
+    const c = visitRateCounters(auto.visitRateStats(), auto.visitSchedule());
     expect(c.rate).toBeCloseTo(0.2, 12);
     expect(c.target).toBeCloseTo(VISIT_RATE.target, 12);
     expect(c.holdFloor).toBeCloseTo(VISIT_RATE.floor, 12);
@@ -339,7 +348,8 @@ describe('SlowRunner and the Discover visit cap', () => {
     expect(c.schedule?.[1]).toBeCloseTo(VISIT_RATE.target, 12);
     expect(c.schedule?.[8]).toBeCloseTo(VISIT_RATE.autoFloor, 12);
     expect((c.schedule?.[1] ?? 0) * (c.schedule?.[7] ?? 0)).toBeCloseTo(VISIT_RATE.cap, 12);
-    s.setVisitSchedule(false);
+    auto.free();
+    s.setVisitSchedule();
     expect(visitRateCounters(s.visitRateStats()).auto).toBe(false);
     s.free();
   });

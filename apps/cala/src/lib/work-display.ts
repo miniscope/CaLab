@@ -132,7 +132,7 @@ export function formatDuration(sec: number | null | undefined): string {
   return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`;
 }
 
-/** The Final settle's planned frames: the recording, at most the settle's cap (`SETTLE.maxFrames`). */
+/** The Final settle's planned frames: the recording, at most the settle's cap (the run's `settle.final.max_s`, frames). */
 export function plannedSettleFrames(recordingFrames: number, cap: number): number {
   return Number.isFinite(recordingFrames) ? Math.min(recordingFrames, cap) : 0;
 }

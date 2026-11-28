@@ -74,9 +74,10 @@ const result = await page.evaluate(
       return f;
     }
     function makeCorrector() {
-      const o = new wasm.MotionOptions();
-      const m = new wasm.MotionCorrector(W, H, o);
-      o.free();
+      // The default params at 20 fps.
+      const p = wasm.resolveParams('{}', JSON.stringify({ fps: 20, frame: [W, H] }));
+      const m = new wasm.MotionCorrector(W, H, p);
+      p.free();
       m.setFovMask(new Uint8Array(px).fill(1));
       return m;
     }

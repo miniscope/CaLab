@@ -17,6 +17,7 @@ import type {
   VisitToOwner,
 } from '../workers/slow-types.ts';
 import { fakeLib, INIT, stubSlowLoop } from './slow-fixtures.ts';
+import { DEFAULT_PARAMS } from './params-fixtures.ts';
 
 describe('ApplyBarrier', () => {
   it('applies in hand-out order at the due frame, whatever order answers arrive in', () => {
@@ -449,8 +450,7 @@ describe('FastLoop stamped libraries', () => {
         height: 2,
         batchSize: 8,
         session: 5,
-        cellDiameterPx: 10,
-        flattenSigmaPx: 0,
+        params: DEFAULT_PARAMS,
         poolSize: 2,
         qc: false,
       },

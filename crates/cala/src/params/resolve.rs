@@ -23,7 +23,7 @@ use super::{
 };
 
 /// What [`resolve`] needs to know of the recording.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Context {
     /// The recording's frame rate, Hz (before `time.fps_override`).
     pub fps: f64,

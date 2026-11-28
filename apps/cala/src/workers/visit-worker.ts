@@ -28,7 +28,7 @@ function handle(msg: OwnerToVisit): void {
     worker?.free();
     worker = null;
     session = msg.session;
-    // The slow loop's options (`new VisitWorker(..)` unless the run has look-back).
+    // Built from the slow loop's init, so its options match the loop's (`buildSlowLoop`).
     if (msg.type === 'init') worker = buildSlowLoop(VisitWorker, msg);
     return;
   }

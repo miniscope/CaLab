@@ -12,12 +12,6 @@ import { median } from './stats.ts';
 
 /** The settle's settings. */
 export const SETTLE = {
-  /**
-   * Frames fed at most: one pass over a recording up to this length; a
-   * longer one is sampled in `block`-frame blocks spread evenly over it.
-   * About three half-lives of the footprint statistics (6000 frames).
-   */
-  maxFrames: 18_000,
   /** Frames read in a row (the look-back block; a gap restarts the back half's preprocessor). */
   block: 64,
   /** Frames per request to the look-back worker (each earns its visits after it is observed). */
@@ -79,14 +73,11 @@ export interface FrameRun {
 
 /**
  * The frames the settle feeds for a recording of `total` frames: all of
- * them when `total <= cap`, else about `cap` frames in whole `block`-frame
- * blocks spread evenly over the recording (adjacent blocks merged).
+ * them when `total <= cap` (the run's `settle.final.max_s` in frames), else
+ * about `cap` frames in whole `block`-frame blocks spread evenly over the
+ * recording (adjacent blocks merged).
  */
-export function settlePlan(
-  total: number,
-  cap: number = SETTLE.maxFrames,
-  block: number = SETTLE.block,
-): FrameRun[] {
+export function settlePlan(total: number, cap: number, block: number = SETTLE.block): FrameRun[] {
   if (!(total > 0)) return [];
   if (total <= cap) return [{ start: 0, end: total }];
   const blocks = Math.ceil(total / block);

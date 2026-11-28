@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { compressFeedOptions, fastLoopOptions, normalizeRunCells } from '../lib/run-cells.ts';
+import { DEFAULT_PARAMS, DEFAULT_RUN } from './params-fixtures.ts';
 
-const SETUP = { width: 4, height: 3, batchSize: 8, cellDiameterPx: 10, flattenSigmaPx: 0, fps: 20 };
+const SETUP = { width: 4, height: 3, batchSize: 8, params: DEFAULT_PARAMS };
 
 describe('normalizeRunCells', () => {
   it('keeps look-back options only with look-back', () => {
@@ -104,10 +105,12 @@ describe('fastLoopOptions', () => {
 
 describe('compressFeedOptions', () => {
   it('maps the compress settings, leaving defaults absent', () => {
-    expect(compressFeedOptions({ session: 1, discover: true, compress: true }, 4, 3)).toEqual({
+    expect(compressFeedOptions({ session: 1, discover: true, compress: true }, SETUP)).toEqual({
       width: 4,
       height: 3,
       session: 1,
+      window: DEFAULT_RUN.engine.factors.window_frames,
+      params: DEFAULT_PARAMS,
     });
     expect(
       compressFeedOptions(
@@ -122,11 +125,12 @@ describe('compressFeedOptions', () => {
           compressGpu: true,
           compressGpuCheck: 2,
         },
-        4,
-        3,
+        SETUP,
       ),
     ).toEqual({
       width: 4,
+      window: DEFAULT_RUN.engine.factors.window_frames,
+      params: DEFAULT_PARAMS,
       height: 3,
       session: 1,
       tiling: 'offset',

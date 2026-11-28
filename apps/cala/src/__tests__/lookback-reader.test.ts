@@ -12,6 +12,7 @@ import type { SessionTransform } from '../lib/session-boundary.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import { buildAvi, expectedPixels, makeFile } from './synth-avi.ts';
 import { initTestWasm } from './wasm-test.ts';
+import { DEFAULT_PARAMS } from './params-fixtures.ts';
 
 beforeAll(initTestWasm);
 
@@ -77,6 +78,7 @@ describe('LookbackReader', () => {
     ]);
     const src = await openAvi();
     const reader = new LookbackReader(src);
+    reader.setParams(DEFAULT_PARAMS);
     for (const s of batches)
       reader.pushRows(s.start, s.dy, s.dx, s.flags, s.flickerOffset, s.flickerGain);
     // Block 1 starts at frame 24 from C's state before that batch: 3 frames forward.
@@ -134,6 +136,7 @@ describe('LookbackReader', () => {
     const open = async () => {
       const src = await openAvi();
       const reader = new LookbackReader(src);
+      reader.setParams(DEFAULT_PARAMS);
       for (const s of batches)
         reader.pushRows(s.start, s.dy, s.dx, s.flags, s.flickerOffset, s.flickerGain);
       reader.setBackState(live.before.get(24)!);
@@ -203,6 +206,7 @@ describe('LookbackReader', () => {
     const open = async () => {
       const src = await openAvi();
       const reader = new LookbackReader(src);
+      reader.setParams(DEFAULT_PARAMS);
       for (const s of batches)
         reader.pushRows(s.start, s.dy, s.dx, s.flags, s.flickerOffset, s.flickerGain);
       return { src, reader };
@@ -284,6 +288,7 @@ describe('LookbackReader', () => {
     const batches = live.steps.filter((s) => s.kind === 'batch');
     const src = await openAvi();
     const reader = new LookbackReader(src);
+    reader.setParams(DEFAULT_PARAMS);
     for (const s of batches)
       reader.pushRows(s.start, s.dy, s.dx, s.flags, s.flickerOffset, s.flickerGain);
     reader.setBackState(live.before.get(24)!);
@@ -306,6 +311,7 @@ describe('LookbackReader', () => {
     const batches = live.steps.filter((s) => s.kind === 'batch');
     const src = await openAvi();
     const reader = new LookbackReader(src);
+    reader.setParams(DEFAULT_PARAMS);
     for (const s of batches)
       reader.pushRows(s.start, s.dy, s.dx, s.flags, s.flickerOffset, s.flickerGain);
     reader.setBackState(live.before.get(24)!);
@@ -336,6 +342,7 @@ describe('LookbackReader', () => {
     const batches = live.steps.filter((s) => s.kind === 'batch');
     const src = await openAvi();
     const reader = new LookbackReader(src);
+    reader.setParams(DEFAULT_PARAMS);
     reader.setBackState(live.before.get(16)!);
     const first = batches[0];
     if (first.kind !== 'batch') throw new Error('no batch');
@@ -370,6 +377,7 @@ describe('LookbackReader', () => {
     if (!first || first.kind !== 'batch') throw new Error('no batch');
     const src = await openAvi();
     const reader = new LookbackReader(src);
+    reader.setParams(DEFAULT_PARAMS);
     reader.pushRows(
       first.start,
       first.dy,
@@ -422,7 +430,7 @@ describe('LookbackReader', () => {
       const len = OPTIONS.batchSize * W * H;
       const frontPool = new StagePool(3, len);
       const outPool = new StagePool(3, len);
-      const a = new FrontStage(src, OPTIONS, () => frontPool.acquire(), undefined, replay);
+      const a = new FrontStage(src, OPTIONS, () => frontPool.acquire(), replay);
       const b = new MotionStage(a.setup, () => outPool.acquire());
       const c = new BackStage(a.setup, null, null, 16);
       const total = src.info.frameCount;
@@ -463,6 +471,7 @@ describe('LookbackReader', () => {
     it("maps a global frame to its session and reads it from that session's file", async () => {
       const src = await openJoint();
       const reader = new LookbackReader(src);
+      reader.setParams(DEFAULT_PARAMS);
       expect(reader.sessionOf(0)).toBe(0);
       expect(reader.sessionOf(S0 - 1)).toBe(0);
       expect(reader.sessionOf(S0)).toBe(1);
@@ -477,6 +486,7 @@ describe('LookbackReader', () => {
       // A recording without sessions is one session.
       const plain = await openAvi();
       const one = new LookbackReader(plain);
+      one.setParams(DEFAULT_PARAMS);
       expect([0, FRAMES - 1].map((f) => one.sessionOf(f))).toEqual([0, 0]);
       one.dispose();
       plain.dispose();
@@ -497,7 +507,9 @@ describe('LookbackReader', () => {
         readFrames: src.readFrames.bind(src),
       };
       const pool = new LookbackReader(three, { keepSessions: 2 });
+      pool.setParams(DEFAULT_PARAMS);
       const all = new LookbackReader(three);
+      all.setParams(DEFAULT_PARAMS);
       const held = (r: LookbackReader) =>
         [...(r as unknown as { backStates: Map<number, Uint8Array> }).backStates.keys()].sort();
       for (const [frame, v] of [
@@ -532,6 +544,7 @@ describe('LookbackReader', () => {
       expect(join?.kind === 'batch' && join.session).toMatchObject({ frame: S0, transform: T1 });
       expect(join?.kind === 'batch' && join.session?.fitted).toBeUndefined();
       const reader = new LookbackReader(src);
+      reader.setParams(DEFAULT_PARAMS);
       for (const s of replay.batches)
         if (s.kind === 'batch')
           reader.pushRows(s.start, s.dy, s.dx, s.flags, s.flickerOffset, s.flickerGain);
@@ -557,6 +570,7 @@ describe('LookbackReader', () => {
 
       // The check has teeth: without the session's warp the frame is not what Extract saw.
       const bare = new LookbackReader(src);
+      bare.setParams(DEFAULT_PARAMS);
       for (const s of replay.batches)
         if (s.kind === 'batch')
           bare.pushRows(s.start, s.dy, s.dx, s.flags, s.flickerOffset, s.flickerGain);
@@ -565,6 +579,7 @@ describe('LookbackReader', () => {
       expect(Array.from(z)).not.toEqual(Array.from(replay.out.subarray(56 * px, 57 * px)));
       // Nor with session 0's state: a session-1 frame never borrows it.
       const other = new LookbackReader(src);
+      other.setParams(DEFAULT_PARAMS);
       for (const s of replay.batches)
         if (s.kind === 'batch')
           other.pushRows(s.start, s.dy, s.dx, s.flags, s.flickerOffset, s.flickerGain);

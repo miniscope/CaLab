@@ -22,6 +22,7 @@
  * `null` until its feature fills it; add fields under the slot, and bump
  * `RUN_RECORD_VERSION` only when an existing field changes meaning.
  */
+import type { RunParams } from './run-params.ts';
 import type { VisitRateSummary } from './visit-rate.ts';
 import type { SettleVisits } from '../workers/lookback-types.ts';
 import { FINAL_SETTLE_LEVELS, type FinalSettleLevel } from './settle.ts';
@@ -574,6 +575,8 @@ export interface RunRecordInput {
   settings: Record<string, unknown>;
   /** Fixed engine tunables worth keeping (`CSETTLE`, `GOVERNOR`, `SETTLE`). */
   tunables?: Record<string, unknown>;
+  /** The run's resolved params (`run-params.ts`; absent: no run started yet). */
+  params?: { fingerprint: string; context: unknown; values: unknown };
   input: {
     label: string;
     live: boolean;
@@ -645,6 +648,7 @@ export function buildRunRecord(i: RunRecordInput): Record<string, unknown> {
     },
     settings: i.settings,
     ...(i.tunables ? { tunables: i.tunables } : {}),
+    ...(i.params ? { params: i.params } : {}),
     url_flags: flags,
     input: i.input,
     runtime: i.runtime,
@@ -774,7 +778,17 @@ export interface RunRecordSources {
   /** The settle pool's size S on this machine (`settlePoolSize`; started or not), and visit workers. */
   lookbackPoolSize(): number;
   visitWorkers(): number;
-  tunables?: Record<string, unknown>;
+  /** Read at each gather: it may depend on the run's params. */
+  tunables?(): Record<string, unknown>;
+  /** The current run's resolved params (null: none yet). */
+  params?(): RunParams | null;
+}
+
+/** The record's `params` block of a run's resolved params (empty: none). */
+function paramsOf(run: RunParams | null): Pick<RunRecordInput, 'params'> {
+  return run
+    ? { params: { fingerprint: run.fingerprint, context: run.context, values: run.params } }
+    : {};
 }
 
 /** Settings that live in a panel rather than a store (`RunPanel`, the session setup). */
@@ -876,7 +890,8 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
         : {}),
       ...(extras.passQcOnly !== undefined ? { export_pass_qc_only: extras.passQcOnly } : {}),
     },
-    ...(src.tunables ? { tunables: src.tunables } : {}),
+    ...(src.tunables ? { tunables: src.tunables() } : {}),
+    ...paramsOf(src.params?.() ?? null),
     input: {
       label: src.label(),
       live: info?.live !== undefined,

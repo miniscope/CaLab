@@ -36,8 +36,10 @@ export interface CompressFeedOptions {
   tiling?: CompressTiling;
   /** Which frames these are (default Discover's). */
   source?: CompressSource;
-  /** Frames per window. */
-  window?: number;
+  /** Frames per window (the run's `factors.window_s`, frames). */
+  window: number;
+  /** The run's resolved params (`run-params.ts`), for the compress worker's trace solver. */
+  params: string;
   /** Quantized values are `round(value * quant)`: 1/64 grey level, ±512 grey levels. */
   quant?: number;
   /** Compress workers while the recording runs and after its end (absent: one and one). */
@@ -57,9 +59,9 @@ export interface CompressFeedOptions {
 /** Discover stops waiting for a GPU compressor that made no progress for this long, s. */
 export const GPU_STALL_S = 30;
 
+/** Defaults of `CompressFeedOptions` (the window comes from the run's params). */
 export const COMPRESS_DEFAULTS = {
   tile: 64,
-  window: 600,
   quant: 64,
   tiling: 'plain',
   source: 'discover',
@@ -147,6 +149,7 @@ export class CompressFeed implements CompressFeedLike {
       session,
       width,
       height,
+      params,
       tile,
       window,
       quant,
@@ -164,6 +167,7 @@ export class CompressFeed implements CompressFeedLike {
         session,
         width,
         height,
+        params,
         tile,
         window,
         quant,

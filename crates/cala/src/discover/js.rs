@@ -25,12 +25,11 @@ use wasm_bindgen::prelude::*;
 
 use super::{
     EditScope, HeldOutRecord, LookBack, LookbackNext, LookbackOutcome, SettleSched, SlowLoop,
-    VisitJob, VisitResult, VisitRunner, VISIT_HOLD_FLOOR_RATIO,
+    VisitJob, VisitResult, VisitRunner, VisitSchedule, VISIT_HOLD_FLOOR_RATIO,
 };
 use crate::compress::review::footprints_from_wire;
 use crate::js_util::{init_panic_hook, js_err};
-use crate::params::loose::{self, ClusterArgs};
-use crate::params::{ClusterSign, ClusterUpdate};
+use crate::params::js::ResolvedParams;
 use crate::preprocess::flatten::GlowFlattener;
 use crate::preprocess::fov::FovMask;
 use crate::preprocess::Dims;
@@ -53,8 +52,10 @@ pub struct JsSlowLoop {
     traces: FrameTraces,
     /// Held-out decision per stream frame (`observe` with `stream`).
     held: HeldOutRecord,
-    /// Look-back (concurrent Refine; off unless `enableLookback`).
+    /// Look-back (concurrent Refine; on when the params' `lookback.enabled`).
     lookback: Option<LookBack>,
+    /// The params' Discover visit schedule (`setVisitSchedule` installs it).
+    visit: VisitSchedule,
     lb: LbCounts,
     /// The concurrent settle, frames only (off unless `enableSettle`): its
     /// frame picker, the chunks started, and its counters.
@@ -85,107 +86,26 @@ struct LbCounts {
     floor: usize,
 }
 
-/// Slow-loop options the app can set (see `SlowLoop.withConfig`).
-fn slow_config(
-    func: &str,
-    joint_update: &str,
-    joint_sign: &str,
-    merge_guard_min_sep: f32,
-) -> Result<ClusterArgs, JsError> {
-    let update = match joint_update {
-        "off" => ClusterUpdate::Off,
-        "refine" => ClusterUpdate::Refine,
-        "all" => ClusterUpdate::All,
-        o => {
-            return Err(js_err(
-                func,
-                format!("jointUpdate: off|refine|all, not {o:?}"),
-            ))
-        }
-    };
-    let sign = match joint_sign {
-        "off" => ClusterSign::Off,
-        "own" => ClusterSign::Own,
-        "all" => ClusterSign::All,
-        o => return Err(js_err(func, format!("jointSign: off|own|all, not {o:?}"))),
-    };
-    if !(merge_guard_min_sep >= 0.0) {
-        return Err(js_err(
-            func,
-            "mergeGuardMinSep must be >= 0 (Infinity = off)",
-        ));
-    }
-    Ok(ClusterArgs {
-        update,
-        sign,
-        guard_min_sep_d: loose::guard_min_sep(merge_guard_min_sep),
-    })
-}
-
 #[wasm_bindgen(js_class = SlowLoop)]
 impl JsSlowLoop {
     /// `fov` and `noise` (per-pixel σ of the preprocessed frames) come from
-    /// the preprocessor; `cell_diameter_px` and `flatten_sigma_px` (0 =
-    /// derived from the diameter) must match its flattening settings.
+    /// the preprocessor, which must have been built from the same `params`
+    /// (the slow loop's flattening copies its). Look-back is on when the
+    /// params turn it on; `observe` then needs the stream index of every
+    /// frame (its held-out decision is recorded).
     #[wasm_bindgen(constructor)]
     pub fn new(
         width: u32,
         height: u32,
         fov: &[u8],
         noise: &[f32],
-        cell_diameter_px: f32,
-        flatten_sigma_px: f32,
+        params: &ResolvedParams,
     ) -> Result<JsSlowLoop, JsError> {
-        let (inner, empty) = build(
-            "SlowLoop",
-            width,
-            height,
-            fov,
-            noise,
-            cell_diameter_px,
-            flatten_sigma_px,
-            None,
-        )?;
-        Ok(JsSlowLoop::wrap(inner, Arc::new(empty)))
-    }
-
-    /// As the constructor, with the slow-loop options look-back runs with:
-    /// `jointUpdate` (`off` = the default, `refine`, `all`: the cluster
-    /// history replay), `jointSign` (`off`, `own`, `all` = the default) and
-    /// `mergeGuardMinSep` (cell diameters; `Infinity` = the default, off).
-    /// Visit workers must be built with the same options
-    /// (`VisitWorker.withConfig`). The validated look-back configuration is
-    /// `all`, `all`, 0.6.
-    #[wasm_bindgen(js_name = withConfig)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_config(
-        width: u32,
-        height: u32,
-        fov: &[u8],
-        noise: &[f32],
-        cell_diameter_px: f32,
-        flatten_sigma_px: f32,
-        joint_update: &str,
-        joint_sign: &str,
-        merge_guard_min_sep: f32,
-    ) -> Result<JsSlowLoop, JsError> {
-        let set = Some(slow_config(
-            "SlowLoop",
-            joint_update,
-            joint_sign,
-            merge_guard_min_sep,
-        )?);
-        let (inner, empty) = build(
-            "SlowLoop",
-            width,
-            height,
-            fov,
-            noise,
-            cell_diameter_px,
-            flatten_sigma_px,
-            set,
-        )?;
-        Ok(JsSlowLoop::wrap(inner, Arc::new(empty)))
+        let (inner, empty) = build("SlowLoop", width, height, fov, noise, params)?;
+        let e = params.engine();
+        let mut out = JsSlowLoop::wrap(inner, Arc::new(empty), e.visit);
+        out.lookback = e.lookback.clone().map(LookBack::new);
+        Ok(out)
     }
 
     /// Hand out the next tile visit for a `VisitWorker` (bytes), or
@@ -217,11 +137,12 @@ impl JsSlowLoop {
         self.inner.set_visit_rate(rate);
     }
 
-    /// Run the Discover visit cap from the app's schedule: the fixed
-    /// rate (the default) or Auto (`VisitSchedule::fixed` / `auto`).
+    /// Run the Discover visit cap from the params' schedule
+    /// (`discover.visit`: fixed or Auto, and its target). Without this call
+    /// there is no schedule.
     #[wasm_bindgen(js_name = setVisitSchedule)]
-    pub fn set_visit_schedule(&mut self, auto: bool) {
-        self.inner.set_visit_schedule(loose::visit_schedule(auto));
+    pub fn set_visit_schedule(&mut self) {
+        self.inner.set_visit_schedule(self.visit);
     }
 
     /// The schedule in force (empty: none): `[auto, target, steps,
@@ -360,28 +281,6 @@ impl JsSlowLoop {
     // `observeLookback`. Feed Discover's frames with `observe(.., stream)`
     // so re-read frames keep their held-out decision.
 
-    /// Turn look-back on: `rate` look-back frames per Discover frame, at
-    /// most `maxFrames` frames before its birth per cell (validated: 2,
-    /// 3000). Only before the first observed frame; from then on `observe`
-    /// must be given the stream index (so every re-read frame keeps the
-    /// held-out decision `observe` made, or the hashed one for frames the
-    /// slow loop never saw).
-    #[wasm_bindgen(js_name = enableLookback)]
-    pub fn enable_lookback(&mut self, rate: f64, max_frames: u32) -> Result<(), JsError> {
-        if !(rate > 0.0) || max_frames == 0 {
-            return Err(js_err("enableLookback", "rate and maxFrames must be > 0"));
-        }
-        if self.inner.frames() > 0 {
-            // Earlier frames' held-out decisions were not recorded.
-            return Err(js_err(
-                "enableLookback",
-                "call it before the first observed frame",
-            ));
-        }
-        self.lookback = Some(LookBack::new(loose::lookback_config(rate, max_frames)));
-        Ok(())
-    }
-
     /// Discover has seen stream frames `0..seen`, `frames` of them new
     /// since the last call: note births in the newest published library and
     /// add `rate * frames` of look-back budget.
@@ -487,12 +386,12 @@ impl JsSlowLoop {
 
     /// Turn the concurrent settle on: saved frames are
     /// re-read `chunk` in a row, the chunks spread evenly over the history
-    /// (`SettleSched`). Needs look-back (`enableLookback`), whose record
+    /// (`SettleSched`). Needs look-back (on in the params), whose record
     /// holds every stream frame's held-out decision.
     #[wasm_bindgen(js_name = enableSettle)]
     pub fn enable_settle(&mut self, chunk: u32) -> Result<(), JsError> {
         if self.lookback.is_none() {
-            return Err(js_err("enableSettle", "call enableLookback first"));
+            return Err(js_err("enableSettle", "look-back is off in the params"));
         }
         if chunk == 0 {
             return Err(js_err("enableSettle", "chunk must be > 0"));
@@ -779,25 +678,21 @@ impl JsSlowLoop {
     }
 }
 
-/// The slow loop and the empty version-0 library, from the app's settings
-/// (resolved as params: [`loose::slow_loop_config`]).
-#[allow(clippy::too_many_arguments)]
+/// The slow loop and the empty version-0 library, from the params.
 fn build(
     func: &str,
     width: u32,
     height: u32,
     fov: &[u8],
     noise: &[f32],
-    cell_diameter_px: f32,
-    flatten_sigma_px: f32,
-    cluster: Option<ClusterArgs>,
+    params: &ResolvedParams,
 ) -> Result<(SlowLoop, Library), JsError> {
     init_panic_hook();
     let dims = Dims::new(width as usize, height as usize).map_err(|e| js_err(func, e))?;
     let mask = FovMask::from_mask(dims, fov).map_err(|e| js_err(func, e))?;
-    let (fcfg, cfg) = loose::slow_loop_config(cell_diameter_px, flatten_sigma_px, cluster)
-        .map_err(|e| js_err(func, e))?;
-    let mut flat = GlowFlattener::new(&mask, &fcfg).map_err(|e| js_err(func, e))?;
+    let e = params.engine();
+    let cfg = e.slow_loop.clone();
+    let mut flat = GlowFlattener::new(&mask, &e.preprocess.flatten).map_err(|e| js_err(func, e))?;
     let empty = LibraryBuilder::new(dims)
         .fov(fov.to_vec())
         .noise(noise.to_vec())
@@ -820,61 +715,17 @@ pub struct JsVisitWorker {
 
 #[wasm_bindgen(js_class = VisitWorker)]
 impl JsVisitWorker {
+    /// The arguments of the `SlowLoop` it serves, and the same `params`
+    /// (a job from a loop with another fingerprint is refused).
     #[wasm_bindgen(constructor)]
     pub fn new(
         width: u32,
         height: u32,
         fov: &[u8],
         noise: &[f32],
-        cell_diameter_px: f32,
-        flatten_sigma_px: f32,
+        params: &ResolvedParams,
     ) -> Result<JsVisitWorker, JsError> {
-        let (inner, _) = build(
-            "VisitWorker",
-            width,
-            height,
-            fov,
-            noise,
-            cell_diameter_px,
-            flatten_sigma_px,
-            None,
-        )?;
-        Ok(JsVisitWorker {
-            inner: VisitRunner::new(inner),
-        })
-    }
-
-    /// As the constructor, with the slow loop's options
-    /// (`SlowLoop.withConfig`; they must match).
-    #[wasm_bindgen(js_name = withConfig)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_config(
-        width: u32,
-        height: u32,
-        fov: &[u8],
-        noise: &[f32],
-        cell_diameter_px: f32,
-        flatten_sigma_px: f32,
-        joint_update: &str,
-        joint_sign: &str,
-        merge_guard_min_sep: f32,
-    ) -> Result<JsVisitWorker, JsError> {
-        let set = Some(slow_config(
-            "VisitWorker",
-            joint_update,
-            joint_sign,
-            merge_guard_min_sep,
-        )?);
-        let (inner, _) = build(
-            "VisitWorker",
-            width,
-            height,
-            fov,
-            noise,
-            cell_diameter_px,
-            flatten_sigma_px,
-            set,
-        )?;
+        let (inner, _) = build("VisitWorker", width, height, fov, noise, params)?;
         Ok(JsVisitWorker {
             inner: VisitRunner::new(inner),
         })
@@ -907,13 +758,14 @@ impl JsVisitWorker {
 }
 
 impl JsSlowLoop {
-    fn wrap(inner: SlowLoop, start: Arc<Library>) -> JsSlowLoop {
+    fn wrap(inner: SlowLoop, start: Arc<Library>, visit: VisitSchedule) -> JsSlowLoop {
         JsSlowLoop {
             inner,
             libs: vec![start],
             traces: FrameTraces::default(),
             held: HeldOutRecord::default(),
             lookback: None,
+            visit,
             lb: LbCounts::default(),
             settle: None,
             cs: CsCounts::default(),
@@ -927,10 +779,17 @@ impl JsSlowLoop {
         self.lookback.is_none() || stream.is_some()
     }
 
-    /// A loop built from parts (tests: another config, a seeded library).
+    /// A loop built from parts (tests: another config, a seeded library),
+    /// with look-back when `lookback` is given.
     #[cfg(test)]
-    pub(crate) fn from_parts(inner: SlowLoop, start: Arc<Library>) -> JsSlowLoop {
-        JsSlowLoop::wrap(inner, start)
+    pub(crate) fn from_parts(
+        inner: SlowLoop,
+        start: Arc<Library>,
+        lookback: Option<super::LookbackConfig>,
+    ) -> JsSlowLoop {
+        let mut out = JsSlowLoop::wrap(inner, start, VisitSchedule::fixed());
+        out.lookback = lookback.map(LookBack::new);
+        out
     }
 
     /// `self.traces` from a JS frame's traces and background.
