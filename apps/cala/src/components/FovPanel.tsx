@@ -741,16 +741,19 @@ export function FovPanel(props: {
     for (const sh of g.shapes)
       counts.set(sh.id, countOnsets(props.cells.history().range(sh.id, 0, end)));
     const top = Math.max(1, ...counts.values());
+    // Live activity (picked, or the run's default) has gone dark by now: the portrait colours
+    // each cell by its onsets over the run instead. A scheme the user picked is kept.
     const sc = untrack(mode);
-    // Live activity has gone dark by now: the portrait colours each cell by its onsets instead.
+    const byActivity = sc === 'activity' || untrack(chosen) === null;
     const style = untrack(schemeStyle);
-    const color =
-      sc === 'activity' ? (id: number) => activityColor((counts.get(id) ?? 0) / top) : style.color;
+    const color = byActivity
+      ? (id: number) => activityColor((counts.get(id) ?? 0) / top)
+      : style.color;
     setPortrait({
       geometry: g,
       color,
-      glow: style.glow,
-      scheme: sc === 'activity' ? 'activity over the run' : schemeInfo(sc).label,
+      glow: byActivity || style.glow,
+      scheme: byActivity ? 'activity over the run' : schemeInfo(sc).label,
       stats: {
         cells: g.shapes.length,
         runMs: p.runMs,

@@ -9,6 +9,7 @@ import {
   SYNC_SHARE,
   soul,
 } from '../lib/soul.ts';
+import { ONSET_K } from '../lib/activity.ts';
 
 const COLS = Math.round(RIBBON_SPAN_S / RIBBON_BIN_S);
 const HEIGHT = 26;
@@ -82,7 +83,7 @@ export function ActivityRibbon(props: {
       <div class="cala-ribbon__head">
         <span
           class="cala-ribbon__title"
-          title={`Population onsets: each column is ${RIBBON_BIN_S} s of recording, its height the share of cells with an onset then (a rise past half the cell's own range, above its noise). Fixed range 0 to ${Math.round(RIBBON_MAX_SHARE * 100)}% of cells; warm columns are ${Math.round(SYNC_SHARE * 100)}% or more at once (a burst, or motion). Last ${RIBBON_SPAN_S} s; empty columns were not read.`}
+          title={`Population onsets: each column is ${RIBBON_BIN_S} s of recording, its height the share of cells with an onset then (its trace rising ${ONSET_K} noise sigmas over its baseline). Fixed range 0 to ${Math.round(RIBBON_MAX_SHARE * 100)}% of cells; warm columns are ${Math.round(SYNC_SHARE * 100)}% or more at once (a burst, or motion). Last ${RIBBON_SPAN_S} s; empty columns were not read.`}
         >
           Onsets
         </span>
@@ -119,7 +120,7 @@ export function ActivityRibbon(props: {
           now
         </span>
         <span class="cala-ribbon__axis cala-ribbon__axis--top" aria-hidden="true">
-          {Math.round(RIBBON_MAX_SHARE * 100)}% of cells
+          {Math.round(RIBBON_MAX_SHARE * 100)}%
         </span>
       </div>
     </div>

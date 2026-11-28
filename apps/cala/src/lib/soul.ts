@@ -28,15 +28,17 @@ export const binFrames = (fps: number): number =>
 
 /**
  * Onsets per column of recording time. Columns are fixed blocks of `bin` stream frames; each
- * keeps its onset count, the cells in the library when it was read, and whether any of its
- * frames were read at all (a column the sampler skipped, at a speed above its window, is a
- * gap, not a quiet stretch). Old columns are dropped past `keep`.
+ * keeps the cells whose solved trace was read over it and the cells with an onset in it, so its
+ * share is "cells that fired, of the cells read there" (a column the sampler never read, at a
+ * speed above its window, is a gap, not a quiet stretch). Frames may arrive late (a trace the
+ * slow loop has not solved yet is read on a later tick) and land in their own columns. Old
+ * columns are dropped past `keep`; a jump far back starts afresh.
  */
 export class OnsetRibbon {
   readonly bin: number;
   readonly keep: number;
-  private counts = new Map<number, number>();
-  private cells = new Map<number, number>();
+  private read = new Map<number, Set<number>>();
+  private fired = new Map<number, Set<number>>();
   /** Newest frame read (exclusive end), -1 before any. */
   end = -1;
 
@@ -45,39 +47,45 @@ export class OnsetRibbon {
     this.keep = keep;
   }
 
-  /** Frames [lo, hi) were read with `cells` cells in the library; onsets at `frames`. */
-  add(lo: number, hi: number, cells: number, frames: readonly number[]): void {
-    if (hi <= lo) return;
-    if (hi < this.end) this.clear();
-    const b0 = Math.floor(lo / this.bin);
-    const b1 = Math.floor((hi - 1) / this.bin);
-    for (let b = b0; b <= b1; b++) {
-      if (!this.counts.has(b)) this.counts.set(b, 0);
-      this.cells.set(b, Math.max(this.cells.get(b) ?? 0, cells));
+  private col(m: Map<number, Set<number>>, b: number): Set<number> {
+    let s = m.get(b);
+    if (!s) m.set(b, (s = new Set()));
+    return s;
+  }
+
+  /** One tick's reads (each cell's solved frames [from, to)) and onsets. */
+  add(
+    reads: readonly { id: number; from: number; to: number }[],
+    onsets: readonly { id: number; frame: number }[],
+  ): void {
+    let hi = -1;
+    for (const r of reads) hi = Math.max(hi, r.to);
+    if (hi <= 0) return;
+    if (hi < this.end - this.keep * this.bin) this.clear();
+    const oldest = Math.floor((Math.max(hi, this.end) - 1) / this.bin) - this.keep;
+    for (const r of reads) {
+      if (r.to <= r.from) continue;
+      const b0 = Math.max(oldest, Math.floor(r.from / this.bin));
+      const b1 = Math.floor((r.to - 1) / this.bin);
+      for (let b = b0; b <= b1; b++) this.col(this.read, b).add(r.id);
     }
-    for (const f of frames) {
-      const b = Math.floor(f / this.bin);
-      this.counts.set(b, (this.counts.get(b) ?? 0) + 1);
+    for (const o of onsets) {
+      const b = Math.floor(o.frame / this.bin);
+      if (b >= oldest) this.col(this.fired, b).add(o.id);
     }
     this.end = Math.max(this.end, hi);
-    const oldest = b1 - this.keep;
-    for (const b of this.counts.keys()) {
-      if (b < oldest) {
-        this.counts.delete(b);
-        this.cells.delete(b);
-      }
-    }
+    for (const m of [this.read, this.fired]) for (const b of m.keys()) if (b < oldest) m.delete(b);
   }
 
   clear(): void {
-    this.counts.clear();
-    this.cells.clear();
+    this.read.clear();
+    this.fired.clear();
     this.end = -1;
   }
 
   /**
-   * The newest `n` columns ending at the newest frame read, oldest first: the share of cells with
-   * an onset in each (NaN: not read), and the raw counts.
+   * The newest `n` columns ending at the newest frame read, oldest first: the share of the cells
+   * read there with an onset (NaN: not read), and the number of cells with an onset.
    */
   columns(n: number): { share: Float32Array; count: Int32Array } {
     const share = new Float32Array(n).fill(NaN);
@@ -86,11 +94,11 @@ export class OnsetRibbon {
     const last = Math.floor((this.end - 1) / this.bin);
     for (let i = 0; i < n; i++) {
       const b = last - (n - 1 - i);
-      const c = this.counts.get(b);
-      if (c === undefined) continue;
-      const cells = this.cells.get(b) ?? 0;
+      const r = this.read.get(b);
+      if (!r || r.size === 0) continue;
+      const c = this.fired.get(b)?.size ?? 0;
       count[i] = c;
-      share[i] = cells > 0 ? c / cells : 0;
+      share[i] = c / r.size;
     }
     return { share, count };
   }
@@ -119,7 +127,7 @@ export function ribbonCaption(share: Float32Array, count: Int32Array, recentCols
   if (read === 0) return 'Waiting for frames';
   if (sync) return 'Many cells at once: a burst, or motion';
   if (sum === 0) return 'Quiet';
-  return `${sum.toLocaleString('en-US')} onset${sum === 1 ? '' : 's'} in the last ${Math.round(read * RIBBON_BIN_S)} s`;
+  return `${sum.toLocaleString('en-US')} cell onset${sum === 1 ? '' : 's'} in the last ${Math.round(read * RIBBON_BIN_S)} s`;
 }
 
 // ---- Heartbeat ----
@@ -343,8 +351,8 @@ export function createSoul() {
     },
     /** One activity tick (the field of view's sampler). */
     tick(t: ActivityTick) {
-      if (t.hi > t.lo) {
-        ribbon.add(t.lo, t.hi, t.cells, t.onsetFrames);
+      if (t.reads.length > 0) {
+        ribbon.add(t.reads, t.onsets);
         setRibbonVersion((v) => v + 1);
       }
       setBeat((b) => ({ seq: b.seq + 1, strength: beatStrength(t.fired.length, t.cells) }));

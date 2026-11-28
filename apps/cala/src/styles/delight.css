@@ -784,6 +784,7 @@
 
 .cala-ribbon__axis {
   position: absolute;
+  text-shadow: 0 0 2px var(--inset);
   font-size: 10px;
   line-height: 1;
   color: var(--ink-3);
@@ -801,7 +802,7 @@
 }
 
 .cala-ribbon__axis--top {
-  left: 3px;
+  right: 3px;
   top: 2px;
 }
 

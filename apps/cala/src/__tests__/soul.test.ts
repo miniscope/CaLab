@@ -16,7 +16,7 @@ import {
   shapeCentre,
   SYNC_SHARE,
 } from '../lib/soul.ts';
-import { countOnsets, emptyActivity, scanOnsets, stepActivity } from '../lib/activity.ts';
+import { countOnsets, emptyActivity, scanOnsets, seedOf, stepActivity } from '../lib/activity.ts';
 import { HOT_FPS, isHot, trackEdges } from '../lib/juice.ts';
 import { nextSpikeS, NEAR_ISI_S, REST_ISI_S } from '../components/NeuronSketch.tsx';
 import type { CellShape } from '../lib/cell-overlay.ts';
@@ -73,30 +73,90 @@ describe('per-frame onsets', () => {
   });
 });
 
+describe('per-frame onsets do not depend on the speed', () => {
+  it('the same trace read 5 or 170 frames per tick gives the same onsets', () => {
+    const n = 3000;
+    const at: number[] = [];
+    for (let f = 40; f < n; f += 97 + ((f * 13) % 50)) at.push(f);
+    const v = trace(n, at);
+    // Transients of varying height (a cell's events are not all alike).
+    for (const a of at) for (let k = 0; k < 3; k++) v[a + k] *= 0.6 + 0.4 * Math.abs(Math.sin(a));
+    // Small bumps (a fifth of the big events) between them: still well above the noise.
+    for (const a of at) for (let k = 0; k < 4; k++) if (a + 45 + k < n) v[a + 45 + k] = 2;
+    const run = (step: number): number[] => {
+      const st = emptyActivity();
+      const got: number[] = [];
+      for (let lo = 0; lo < n; lo += step) {
+        const hi = Math.min(n, lo + step);
+        const w = v.subarray(lo, hi);
+        stepActivity(
+          st,
+          [1],
+          () => Math.max(...w),
+          () => seedOf(v.subarray(Math.max(0, hi - 1000), hi)),
+          { window: () => w, onset: (_id, k) => got.push(lo + k), end: hi },
+        );
+      }
+      return got;
+    };
+    const slow = run(5);
+    const fast = run(170);
+    expect(slow.length).toBeGreaterThan(at.length * 1.6);
+    expect(Math.abs(slow.length - fast.length)).toBeLessThanOrEqual(Math.ceil(at.length * 0.05));
+  });
+});
+
 describe('activity ribbon', () => {
-  it('bins onsets by recording frames, as a share of the cells', () => {
+  const cellsRead = (n: number, from: number, to: number) =>
+    Array.from({ length: n }, (_, id) => ({ id, from, to }));
+
+  it('bins onsets by recording frames, as a share of the cells read there', () => {
     const r = new OnsetRibbon(10, 100);
-    r.add(0, 30, 20, [3, 4, 15]);
+    r.add(cellsRead(20, 0, 30), [
+      { id: 1, frame: 3 },
+      { id: 2, frame: 4 },
+      { id: 1, frame: 15 },
+    ]);
     const { share, count } = r.columns(3);
     expect(Array.from(count)).toEqual([2, 1, 0]);
     expect(share[0]).toBeCloseTo(0.1);
     expect(share[2]).toBe(0);
   });
 
-  it('a column never read is NaN (a gap), not quiet', () => {
+  it('a cell with two onsets in one column counts once', () => {
     const r = new OnsetRibbon(10, 100);
-    r.add(0, 10, 5, []);
-    r.add(40, 50, 5, [41]);
-    const { share } = r.columns(5);
+    r.add(cellsRead(4, 0, 10), [
+      { id: 0, frame: 1 },
+      { id: 0, frame: 7 },
+    ]);
+    expect(r.columns(1).share[0]).toBeCloseTo(0.25);
+  });
+
+  it('a column never read is NaN (a gap), not quiet; late frames fill their own column', () => {
+    const r = new OnsetRibbon(10, 100);
+    r.add(cellsRead(5, 0, 10), []);
+    r.add(cellsRead(5, 40, 50), [{ id: 3, frame: 41 }]);
+    let { share } = r.columns(5);
     expect(share[0]).toBe(0);
     expect(Number.isNaN(share[1])).toBe(true);
     expect(share[4]).toBeCloseTo(0.2);
+    // A lagging trace solved later: frames 10..20 of two cells, one onset.
+    r.add(cellsRead(2, 10, 20), [{ id: 1, frame: 12 }]);
+    ({ share } = r.columns(5));
+    expect(share[1]).toBeCloseTo(0.5);
   });
 
-  it('a jump back (a new run) starts it afresh; old columns are dropped', () => {
+  it('a share counts only the cells read in that column (an unsolved trace is not quiet)', () => {
+    const r = new OnsetRibbon(10, 100);
+    // 10 cells in the library, only 4 with a solved trace over the column.
+    r.add(cellsRead(4, 0, 10), [{ id: 0, frame: 2 }]);
+    expect(r.columns(1).share[0]).toBeCloseTo(0.25);
+  });
+
+  it('a jump far back starts it afresh; old columns are dropped', () => {
     const r = new OnsetRibbon(1, 5);
-    r.add(0, 100, 1, [99]);
-    r.add(0, 3, 1, [1]);
+    r.add(cellsRead(1, 0, 100), [{ id: 0, frame: 99 }]);
+    r.add(cellsRead(1, 0, 3), [{ id: 0, frame: 1 }]);
     expect(r.end).toBe(3);
     expect(Array.from(r.columns(3).count)).toEqual([0, 1, 0]);
   });
@@ -118,7 +178,7 @@ describe('activity ribbon', () => {
     const i = (a: number[]) => Int32Array.from(a);
     expect(ribbonCaption(f([NaN, NaN]), i([0, 0]), 4)).toBe('Waiting for frames');
     expect(ribbonCaption(f([0, 0]), i([0, 0]), 4)).toBe('Quiet');
-    expect(ribbonCaption(f([0.05, 0.01]), i([3, 1]), 4)).toBe('4 onsets in the last 1 s');
+    expect(ribbonCaption(f([0.05, 0.01]), i([3, 1]), 4)).toBe('4 cell onsets in the last 1 s');
     expect(ribbonCaption(f([SYNC_SHARE, 0]), i([30, 0]), 4)).toMatch(/burst, or motion/);
   });
 });
@@ -199,7 +259,15 @@ describe('heartbeat, births, portrait', () => {
     createRoot((dispose) => {
       const s = createSoul();
       s.setFps(20);
-      s.tick({ fired: [1, 2], onsetFrames: [3, 4], cells: 10, lo: 0, hi: 20 });
+      s.tick({
+        fired: [1, 2],
+        onsets: [
+          { id: 1, frame: 3 },
+          { id: 2, frame: 4 },
+        ],
+        reads: Array.from({ length: 10 }, (_, id) => ({ id, from: 0, to: 20 })),
+        cells: 10,
+      });
       expect(s.beat().strength).toBe(1);
       expect(s.ribbon().columns(2).count[1]).toBe(0);
       expect(s.ribbon().columns(2).count[0]).toBe(2);

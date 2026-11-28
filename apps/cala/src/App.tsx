@@ -3,6 +3,7 @@ import { clearResultExported, leaveWarning, resultExported } from './lib/export-
 import { createEffect, createSignal, For, on, onCleanup, Show, untrack } from 'solid-js';
 import { Badge, CompactHeader, DashboardShell, MeterRow } from '@calab/ui';
 import { ThemeMenu } from './components/ThemeMenu.tsx';
+import { soul } from './lib/soul.ts';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
 import {
   authLoading,
@@ -603,6 +604,8 @@ const App: Component = () => {
   if (flags.debug) {
     (globalThis as { __cala?: unknown }).__cala = {
       cells,
+      /** The ambient-life hub (the activity ribbon's columns, the heartbeat). */
+      soul: soul(),
       pipeline,
       pass2,
       stageLog,

@@ -53,12 +53,23 @@ export interface CellActivity extends ActivitySeed {
   /** Display glow 0..1. */
   glow: number;
   ticks: number;
-  /** Frame-level onset latch: a new onset needs the level to fall under `REARM` first. */
+  /** Frame-level onset latch: a new onset needs the trace to fall under `REARM_K` sigmas first. */
   armed?: boolean;
+  /** Stream frame (exclusive end) of the last seed, for the frame-based re-read. */
+  seededAt?: number;
 }
 
-/** After an onset, the level must fall under this share of the cell's range before the next. */
-export const REARM = ONSET / 2;
+/** With per-frame onsets, a cell's seed is re-read every this many stream frames too. */
+export const RESEED_FRAMES = 200;
+
+/**
+ * Per-frame onsets (the ribbon, the portrait) are gated by noise alone: a rise to `ONSET_K`
+ * noise sigmas over the baseline, re-armed once the trace is back under `REARM_K`. Unlike the
+ * glow's level, no running peak: the threshold must not depend on how much of a cell's history
+ * was read (which differs with the speed), nor on how big its events are.
+ */
+export const ONSET_K = 8;
+export const REARM_K = 4;
 
 /**
  * Level 0..1 of one sample `x` of a cell: 0 within `NOISE_K` sigmas of the baseline, else its
@@ -72,20 +83,26 @@ export function levelOf(c: ActivitySeed, x: number): number {
 }
 
 /**
- * Frame offsets in `v` where the cell has an onset: its level reaches `ONSET` while armed (it
- * re-arms below `REARM`). Updates `c.armed`. Non-finite samples are skipped.
+ * Frame offsets in `v` where the cell has an onset: the trace reaches `ONSET_K` noise sigmas over
+ * its baseline while armed (it re-arms under `REARM_K`). Updates `c.armed`. Non-finite samples
+ * are skipped; a cell without a noise estimate never has one.
  */
-export function scanOnsets(c: ActivitySeed & { armed?: boolean }, v: ArrayLike<number>): number[] {
+export function scanOnsets(
+  c: Pick<ActivitySeed, 'base' | 'noise'> & { armed?: boolean },
+  v: ArrayLike<number>,
+): number[] {
   const out: number[] = [];
+  if (!(c.noise > 0)) return out;
+  const on = c.base + ONSET_K * c.noise;
+  const off = c.base + REARM_K * c.noise;
   let armed = c.armed ?? true;
   for (let k = 0; k < v.length; k++) {
     const x = v[k];
     if (!Number.isFinite(x)) continue;
-    const l = levelOf(c, x);
-    if (armed && l >= ONSET) {
+    if (armed && x >= on) {
       out.push(k);
       armed = false;
-    } else if (!armed && l < REARM) armed = true;
+    } else if (!armed && x < off) armed = true;
   }
   c.armed = armed;
   return out;
@@ -93,7 +110,7 @@ export function scanOnsets(c: ActivitySeed & { armed?: boolean }, v: ArrayLike<n
 
 /**
  * Onsets of one cell over a whole trace (the session portrait's "most active cell"): its
- * baseline, noise and peak read from the trace itself, then `scanOnsets`. 0 for too few samples.
+ * baseline and noise read from the trace itself, then `scanOnsets`. 0 for too few samples.
  */
 export function countOnsets(v: ArrayLike<number>): number {
   const sd = seedOf(v);
@@ -116,9 +133,9 @@ export function finiteMax(v: ArrayLike<number>): number {
 }
 
 /**
- * One tick: `windowMax(id)` is the cell's largest trace value over the frames shown since the
- * last tick (NaN: no samples); `seed(id)` reads its recent baseline and noise (on first sight
- * and every `RESEED_TICKS`). A value within `NOISE_K` sigmas of the baseline is level 0; above
+ * One tick: `windowMax(id)` is the cell's largest trace value over the frames read since the
+ * last tick (NaN: no samples); `seed(id)` reads its recent baseline and noise (on first sight,
+ * every `RESEED_TICKS`, and with `frames` every `RESEED_FRAMES`). A value within `NOISE_K` sigmas of the baseline is level 0; above
  * it the level is the height over the baseline against the cell's running peak. Updates `st`
  * (dropping cells not in `ids`) and returns the ids that fired, i.e. crossed `ONSET` from below.
  */
@@ -127,10 +144,14 @@ export function stepActivity(
   ids: readonly number[],
   windowMax: (id: number) => number,
   seed: (id: number) => ActivitySeed | null = () => null,
-  /** Per-frame onsets: the cell's window samples, and where to report each onset's offset. */
+  /**
+   * Per-frame onsets: the cell's window samples, where to report each onset's offset, and the
+   * stream frame the read ends at (seeds are then also re-read every `RESEED_FRAMES`).
+   */
   frames?: {
     window: (id: number) => ArrayLike<number> | null;
     onset: (id: number, k: number) => void;
+    end?: number;
   },
 ): number[] {
   const fired: number[] = [];
@@ -143,7 +164,12 @@ export function stepActivity(
       if (c) c.glow *= GLOW_DECAY;
       continue;
     }
-    if (!c || (c.ticks + id) % RESEED_TICKS === 0) {
+    const end = frames?.end;
+    const due =
+      !c ||
+      (c.ticks + id) % RESEED_TICKS === 0 ||
+      (end !== undefined && end - (c.seededAt ?? -Infinity) >= RESEED_FRAMES);
+    if (due) {
       const sd = seed(id);
       if (!c) {
         if (!sd) continue;
@@ -154,19 +180,30 @@ export function stepActivity(
         c.noise = sd.noise;
         c.peak = Math.max(c.peak, sd.peak);
       }
+      if (sd) c.seededAt = end;
     }
+    if (!c) continue;
     c.ticks++;
     c.peak = Math.max(v, c.base + (c.peak - c.base) * PEAK_RELAX);
     const lvl = levelOf(c, v);
     if (frames) {
       const w = frames.window(id);
-      if (w) for (const k of scanOnsets(c, w)) frames.onset(id, k);
+      if (w) {
+        for (const k of scanOnsets(c, w)) frames.onset(id, k);
+      }
     }
     if (lvl >= ONSET && c.level < ONSET) fired.push(id);
     c.level = lvl;
     c.glow = Math.max(c.glow * GLOW_DECAY, lvl);
   }
   return fired;
+}
+
+/** The first `n` samples of `v` (a typed array's view, or a copy of a plain array). */
+function subarray(v: ArrayLike<number>, n: number): ArrayLike<number> {
+  if (n >= v.length) return v;
+  const t = v as Float32Array;
+  return typeof t.subarray === 'function' ? t.subarray(0, n) : Array.prototype.slice.call(v, 0, n);
 }
 
 /** Ticks per second of the sampler (the 2 Hz limit of every live fun touch). */
@@ -192,13 +229,12 @@ export interface ActivitySource {
 export interface ActivityTick {
   /** Cells that crossed `ONSET` this tick (one per cell at most). */
   fired: number[];
-  /** Stream frame of every per-frame onset this tick (a cell may have several). */
-  onsetFrames: number[];
-  /** Cells read. */
+  /** Every per-frame onset this tick: the cell and its stream frame. */
+  onsets: { id: number; frame: number }[];
+  /** What each cell had read this tick: stream frames [from, to) with a solved trace. */
+  reads: { id: number; from: number; to: number }[];
+  /** Cells in the library. */
   cells: number;
-  /** Frames read this tick, [lo, hi) (lo === hi: nothing new on screen). */
-  lo: number;
-  hi: number;
 }
 
 export function createActivity(
@@ -211,33 +247,63 @@ export function createActivity(
   const [version, setVersion] = createSignal(0);
   let last: number | null = null;
   let timer: ReturnType<typeof setInterval> | undefined;
+  /**
+   * Per cell, the next stream frame to read. A window ends at the cell's newest finite sample, so
+   * frames whose trace is not solved yet (the slow loop lags the frames shown, more so at high
+   * speed) are read on a later tick instead of being lost: the onsets do not depend on the speed.
+   */
+  const next = new Map<number, number>();
   const tick = () => {
     const ids = Array.from(src.ids() ?? []);
     const f = src.frame();
-    if (f === null || last === null || f <= last) {
-      // Nothing new on screen (paused, or a jump back): fade only.
+    if (f === null || last === null || f < last) {
+      // Nothing on screen yet, or a jump back: start reading afresh from here; fade only.
       stepActivity(st, ids, () => NaN);
-      if (f !== null && (last === null || f < last)) last = f;
-      onTick?.({ fired: [], onsetFrames: [], cells: ids.length, lo: 0, hi: 0 });
+      if (f !== null) last = f;
+      next.clear();
+      onTick?.({ fired: [], onsets: [], reads: [], cells: ids.length });
     } else {
-      const lo = Math.max(last + 1, f + 1 - MAX_WINDOW);
-      const windows = new Map<number, ArrayLike<number>>();
+      const floor = f + 1 - MAX_WINDOW;
+      const start = last + 1;
+      const windows = new Map<number, { from: number; v: ArrayLike<number> }>();
+      const reads: { id: number; from: number; to: number }[] = [];
       const win = (id: number) => {
         let w = windows.get(id);
-        if (!w) windows.set(id, (w = src.range(id, lo, f + 1)));
+        if (!w) {
+          const from = Math.max(floor, next.get(id) ?? start);
+          const v = from <= f ? src.range(id, from, f + 1) : new Float32Array(0);
+          let end = -1;
+          for (let k = v.length - 1; k >= 0; k--) {
+            if (Number.isFinite(v[k])) {
+              end = k + 1;
+              break;
+            }
+          }
+          w = { from, v: end > 0 ? subarray(v, end) : new Float32Array(0) };
+          windows.set(id, w);
+          if (end > 0) {
+            next.set(id, from + end);
+            reads.push({ id, from, to: from + end });
+          }
+        }
         return w;
       };
-      const onsetFrames: number[] = [];
+      const onsets: { id: number; frame: number }[] = [];
       const fired = stepActivity(
         st,
         ids,
-        (id) => finiteMax(win(id)),
+        (id) => finiteMax(win(id).v),
         (id) => seedOf(src.range(id, f + 1 - SEED_FRAMES, f + 1)),
-        { window: win, onset: (_id, k) => onsetFrames.push(lo + k) },
+        {
+          window: (id) => win(id).v,
+          onset: (id, k) => onsets.push({ id, frame: win(id).from + k }),
+          end: f + 1,
+        },
       );
+      for (const id of next.keys()) if (!st.has(id) && !windows.has(id)) next.delete(id);
       last = f;
       if (fired.length > 0) onFire?.(fired);
-      onTick?.({ fired, onsetFrames, cells: ids.length, lo, hi: f + 1 });
+      onTick?.({ fired, onsets, reads, cells: ids.length });
     }
     setVersion((v) => v + 1);
   };
@@ -247,6 +313,7 @@ export function createActivity(
       timer = undefined;
       last = null;
       st.clear();
+      next.clear();
       return;
     }
     timer ??= setInterval(tick, ACTIVITY_MS);

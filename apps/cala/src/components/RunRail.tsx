@@ -285,6 +285,8 @@ export function RunRail(props: RunRailProps): JSX.Element {
 
   /** A stage that just finished in this session (its check eases in), or 'all' when Extract did. */
   const [flash, setFlash] = createSignal<string | null>(null);
+  /** Where the sparks of a finished stage fly from (track shares), while `flash` holds. */
+  const [bursts, setBursts] = createSignal<number[]>([]);
   /** A stage that just took over from the one before (its segment lights up). */
   const [handoff, setHandoff] = createSignal<string | null>(null);
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
@@ -299,19 +301,28 @@ export function RunRail(props: RunRailProps): JSX.Element {
     const done = Object.keys(now).filter(
       (k) => now[k] === 'done' && (prev[k] === 'running' || prev[k] === 'paused'),
     );
+    // A later stage taking over (Discover starts the run; it is no handoff).
     const started = Object.keys(now).filter(
-      (k) => now[k] === 'running' && prev[k] !== 'running' && prev[k] !== 'paused',
+      (k) =>
+        k !== 'discover' && now[k] === 'running' && prev[k] !== 'running' && prev[k] !== 'paused',
     );
-    if (started.length > 0 && done.length > 0) {
+    if (started.length > 0) {
       setHandoff(started[0]);
       clearTimeout(handoffTimer);
       handoffTimer = setTimeout(() => setHandoff(null), 1800);
     }
     if (done.length === 0) return;
     const all = done.includes('extract');
-    setFlash(all ? 'all' : done[done.length - 1]);
+    const f = all ? 'all' : done[done.length - 1];
+    setFlash(f);
+    // Sparks from the finished segments' ends, placed once (the 2 Hz figures never restart them).
+    const ends = untrack(edges).ends;
+    setBursts((all ? ends : ends.filter((e) => e.id === f)).map((e) => e.at));
     clearTimeout(flashTimer);
-    flashTimer = setTimeout(() => setFlash(null), 2600);
+    flashTimer = setTimeout(() => {
+      setFlash(null);
+      setBursts([]);
+    }, 2600);
     if (all) life.showPortrait(runStart === null ? null : performance.now() - runStart);
   });
   onCleanup(() => {
@@ -394,25 +405,21 @@ export function RunRail(props: RunRailProps): JSX.Element {
               <i />
             </span>
           </Show>
-          <Show when={flash()} keyed>
-            {(f) => (
-              <For each={f === 'all' ? edges().ends : edges().ends.filter((e) => e.id === f)}>
-                {(e, i) => (
-                  <span
-                    class="cala-burst"
-                    style={{ left: `${e.at * 100}%`, 'animation-delay': `${i() * 160}ms` }}
-                  >
-                    <i />
-                    <i />
-                    <i />
-                    <i />
-                    <i />
-                    <i />
-                  </span>
-                )}
-              </For>
+          <For each={bursts()}>
+            {(at, i) => (
+              <span
+                class="cala-burst"
+                style={{ left: `${at * 100}%`, 'animation-delay': `${i() * 160}ms` }}
+              >
+                <i />
+                <i />
+                <i />
+                <i />
+                <i />
+                <i />
+              </span>
             )}
-          </Show>
+          </For>
         </div>
       </div>
       <div class="cala-rail__line">
