@@ -5,6 +5,10 @@ Versions correspond to git tags (`v*`) and apply to the entire monorepo.
 
 ## [Unreleased]
 
+### Added
+
+- Cala (developers): **one definition of the run parameters.** `CalaParams` (`crates/cala/src/params`) holds every setting a user, a config file or `qc_eval` may set, at today's values, each with a label, help text, unit, range and level (main / advanced / internal). The cell diameter can be given in µm with the microscope's optics (sensor pixel size, magnification, binning) or in pixels directly; the default stays 10 px. `npm run gen:params` writes the JSON Schema (`crates/cala/schema/cala-params.schema.json`), the TS types (`apps/cala/src/params/cala-params.d.ts`) and golden files of the values the engine uses at 20 and 30 fps; cargo and vitest tests fail when any of them, or the app's constants, drift from the structs. A migration mechanism for later layout versions is in place. Nothing reads the params yet: runs and results are unchanged.
+
 ### Removed
 
 - Cala: the single-worker pipeline (`?pipeline=0`) is gone; every run uses the frame, motion and trace workers. That path had no flat field, look-back, Final settle, Extract or factors. A `?pipeline=` in the URL is ignored and the run record lists it under `url_flags.other_flags`; older records that list `pipeline` under `url_flags.flags` still open.
