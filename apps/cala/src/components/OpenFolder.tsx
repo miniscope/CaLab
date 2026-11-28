@@ -14,17 +14,12 @@ import { roleLabel } from '../lib/device-roles.ts';
 import {
   chooseKind,
   discoverKinds,
-  RESULTS_DIR,
   sessionsForKind,
   type SeriesKind,
   type SessionCandidate,
 } from '../lib/sessions.ts';
-import {
-  PROJECT_INDEX_FILE,
-  projectSessionId,
-  suggestSplit,
-  type SplitGroup,
-} from '../lib/project-index.ts';
+import { PROJECT_DIR, PROJECT_FILE } from '@calab/project';
+import { projectSessionId, suggestSplit, type SplitGroup } from '../lib/project-index.ts';
 import type { ProjectOpen } from '../lib/project-store.ts';
 import type { ReadDirLike } from '../lib/project-io.ts';
 import type { RecentProject } from '../lib/recent-projects.ts';
@@ -225,9 +220,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
     sessions: SessionCandidate[],
   ) {
     const root = rootOf(entries);
-    const hasIndex = entries.some(
-      (e) => e.relPath === `${root}/${RESULTS_DIR}/${PROJECT_INDEX_FILE}`,
-    );
+    const hasIndex = entries.some((e) => e.relPath === `${root}/${PROJECT_DIR}/${PROJECT_FILE}`);
     const groups = hasIndex ? null : suggestSplit(sessions.map((s) => projectSessionId(s.dir)));
     if (groups) {
       setSplit({ entries, handle, sessions, groups });

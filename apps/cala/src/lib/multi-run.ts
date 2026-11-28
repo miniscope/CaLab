@@ -1,7 +1,12 @@
 /**
  * Drives a multi-session run (`session-run.ts`): opens the sessions, starts
- * Extract when it is due, writes each session's results
- * (`session-export.ts`) and, in Separate mode, moves on to the next session.
+ * Extract when it is due, writes each session's results and the run file
+ * (`run-file.ts`) and, in Separate mode, moves on to the next session.
+ *
+ * One library per run: a Joint chain is one run (one run folder, one
+ * `calab-run.json`, one result per session); Separate sessions are one run
+ * each. A run's file is written before its first frame (`beforeFrames`), after
+ * each export, and when the run finishes or stops.
  *
  * The stores that run the stages stay as they are; this store only watches
  * them and calls their actions, through the narrow `MultiRunDeps`.
@@ -12,7 +17,8 @@ import type { ExportInput } from './export.ts';
 import { writeCalaExport } from './export.ts';
 import type { FrameSourceInfo } from './frame-source.ts';
 import type { QcSnapshot } from './qc.ts';
-import { RUN_RECORD_FILE } from './run-provenance.ts';
+import { fileText, RUN_FILE, type RunFile, type RunPlanRef } from '@calab/project';
+import { calaRunFile, CALA_EXPORT_FILE, type RunFileSession } from './run-file.ts';
 import { sessionBoundaries } from './frame-source.ts';
 import type { StageActivity, StageName, StageRun } from './run-stages.ts';
 import {
@@ -21,16 +27,7 @@ import {
   type AutoAction,
   type RunSettings,
 } from './session-run.ts';
-import {
-  exportSessionBlock,
-  runManifest,
-  RUN_MANIFEST_FILE,
-  SESSION_EXPORT_FILE,
-  SESSION_META_FILE,
-  sessionMetadata,
-  type ResultsSink,
-  type SessionRecord,
-} from './session-export.ts';
+import { exportSessionBlock, type ResultsSink, type SessionRecord } from './session-export.ts';
 import type { SessionCandidate } from './sessions.ts';
 import { errMsg } from './errors.ts';
 
@@ -44,46 +41,47 @@ export interface PlannedSession {
   startMs: number | null;
   /** Its results folder below the run folder. */
   resultsPath: string;
+  /** Its stream ref, relative to the data root (`docs/projects.md`). */
+  stream: string;
+}
+
+/** A run's folder, opened for writing. */
+export interface OpenedRun {
+  id: string;
+  sink: ResultsSink;
+  /** The run folder relative to the project folder (`runs/<id>`). */
+  folder: string;
+  /** The project's id, written into the run file. */
+  project: string | null;
 }
 
 export interface MultiRunPlan {
   sessions: PlannedSession[];
   settings: RunSettings;
-  /** Opens the results location (asked for when the run starts); null after a failure. */
-  openSink: () => Promise<ResultsSink>;
+  /**
+   * Opens the folder of run `index` (Joint: one run, 0; Separate: one per session), when that
+   * run starts. Write permission is already granted.
+   */
+  openRun: (index: number) => Promise<OpenedRun>;
+  /** The plan step run `index` was made for (null: none). */
+  planRef?: (index: number) => RunPlanRef | null;
   /** For the panel: where results go. */
   locationLabel: string;
-  /** A run plan's group (project view), written into the run manifest. */
-  planInfo?: { id: string; group: number; groups: number };
   /**
-   * Told each time results are written (after each session in Separate, after
-   * all in Joint), when the run ends and when it stops. The project view
-   * updates its index here. Failures are reported, never stop the run.
+   * Told each time a run file is written: before the first frame, after each export, and when
+   * the run finishes or stops. The project updates its index here. Failures are reported, never
+   * stop the run.
    */
   onProgress?: (p: RunProgress) => Promise<void>;
 }
 
 /** What `onProgress` is told. */
 export interface RunProgress {
-  settings: RunSettings;
-  /** Every session's record, as in the run manifest. */
-  records: SessionRecord[];
-  /** Record indices whose results were just written. */
-  written: number[];
-  /** The stage log now (the sessions just written, or the one that stopped). */
-  stages: readonly StageRun[];
-  /** Record indices `stages` is about. */
-  stagesFor: number[];
-  /** Cell ids of the written results, and the library version they belong to. */
-  cellIds: number[] | null;
-  libraryVersion: number | null;
-  /** The run folder's name, once it exists. */
-  root: string | null;
-  createdAt: string;
-  updatedAt: string;
-  finished: boolean;
-  /** Why the run stopped, when it did. */
-  stopped: string | null;
+  /** The run file as just written. */
+  run: RunFile;
+  /** Its folder relative to the project folder. */
+  folder: string;
+  sink: ResultsSink;
 }
 
 export interface MultiRunDeps {
@@ -110,7 +108,7 @@ export interface MultiRunDeps {
   info(): FrameSourceInfo | null;
   /** Joint: Discover's session-boundary flags (`boundary-flags.ts`), written with each session's results. */
   boundaryFlags?(): readonly BoundaryFlag[];
-  /** The run record (`run-provenance.ts`) of the run so far; written beside the manifest and into each export. */
+  /** The run record (`run-provenance.ts`) of the run so far; folded into the run file. */
   runRecord?(settings: RunSettings, sessionIndex?: number): Record<string, unknown>;
   version: string;
   now?: () => Date;
@@ -129,14 +127,23 @@ export function createMultiRun(deps: MultiRunDeps) {
   const [finished, setFinished] = createSignal(false);
   const [stopped, setStopped] = createSignal<string | null>(null);
   const [progressError, setProgressError] = createSignal<string | null>(null);
-  let sink: ResultsSink | null = null;
-  /** The Joint run's record as gathered for the last export (reused by the manifest write). */
-  let jointRecord: Record<string, unknown> | null = null;
-  let createdAt = '';
+  /** The run being written: its folder, and what each of its sessions' exports hold. */
+  let run:
+    | (OpenedRun & {
+        index: number;
+        created: string;
+        /** The planned run file is on disk (before the first frame). */
+        planned: boolean;
+        written: Map<number, NonNullable<RunFileSession['written']>>;
+      })
+    | null = null;
+  /** The last record gathered for the run (reused by later writes of its file). */
+  let lastRecord: Record<string, unknown> | null = null;
   /** The last action started, so an effect re-run does not start it twice. */
   let dispatched = '';
 
   const active = () => plan() !== null;
+  const joint = () => plan()?.settings.mode === 'joint';
 
   function recordsFor(p: MultiRunPlan): SessionRecord[] {
     let start = 0;
@@ -162,153 +169,140 @@ export function createMultiRun(deps: MultiRunDeps) {
     setRecords(records().map((r) => (r.index === index ? { ...r, ...patch } : r)));
   }
 
-  async function progress(
-    p: Omit<RunProgress, 'settings' | 'records' | 'root' | 'createdAt' | 'updatedAt'>,
-  ): Promise<void> {
-    const pl = plan();
-    if (!pl?.onProgress) return;
-    try {
-      await pl.onProgress({
-        ...p,
-        settings: pl.settings,
-        records: records(),
-        root: sink?.root ?? null,
-        createdAt,
-        updatedAt: now().toISOString(),
-      });
-    } catch (err) {
-      setProgressError(errMsg(err));
-    }
+  /** Open the folder of run `index` (Joint: 0, the only one; Separate: session `index`). */
+  async function openRun(index: number): Promise<void> {
+    const p = plan()!;
+    const opened = await p.openRun(index);
+    run = { ...opened, index, created: now().toISOString(), planned: false, written: new Map() };
+    lastRecord = null;
+    setRoot(opened.sink.root);
   }
 
-  async function writeManifest(done: boolean): Promise<void> {
-    const p = plan();
-    if (!p || !sink) return;
-    const info = deps.info();
-    const text = JSON.stringify(
-      runManifest({
-        version: deps.version,
-        settings: p.settings,
-        sessions: records(),
-        boundaries: p.settings.mode === 'joint' && info ? sessionBoundaries(info) : [],
-        root: sink.root,
-        createdAt,
-        updatedAt: now().toISOString(),
-        finished: done,
-        ...(stopped() ? { stopped: stopped()! } : {}),
-        ...(p.planInfo ? { plan: p.planInfo } : {}),
-      }),
-      null,
-      2,
-    );
-    await sink.writeText(RUN_MANIFEST_FILE, text);
-    // Joint: one chain, one record at the root. Separate: each session's record sits beside its
-    // results (`exportResults`), since every session is a run of its own.
-    if (deps.runRecord && p.settings.mode === 'joint') {
-      const rec = jointRecord ?? deps.runRecord(p.settings);
-      await sink.writeText(RUN_RECORD_FILE, JSON.stringify(rec, null, 2));
+  /** The current run's file, as it is now. */
+  function runDoc(status: RunFile['run']['status'], stoppedReason: string | null = null): RunFile {
+    const p = plan()!;
+    const r = run!;
+    const mine = joint() ? records() : records().filter((x) => x.index === r.index);
+    return calaRunFile({
+      id: r.id,
+      project: r.project,
+      plan: p.planRef?.(r.index) ?? null,
+      status,
+      stopped: stoppedReason,
+      created: r.created,
+      updated: now().toISOString(),
+      version: deps.version,
+      joint: joint(),
+      record: lastRecord,
+      sessions: mine.map((rec) => ({
+        record: rec,
+        stream: p.sessions[rec.index].stream,
+        info: p.sessions[rec.index].info,
+        ...(r.written.has(rec.index) ? { written: r.written.get(rec.index)! } : {}),
+      })),
+    });
+  }
+
+  /** Write the current run's file and tell the project. */
+  async function writeRun(
+    status: RunFile['run']['status'],
+    reason: string | null = null,
+  ): Promise<RunFile> {
+    const r = run!;
+    const pl = plan();
+    const doc = runDoc(status, reason);
+    await r.sink.writeText(RUN_FILE, fileText('run', doc));
+    if (pl?.onProgress) {
+      try {
+        await pl.onProgress({ run: doc, folder: r.folder, sink: r.sink });
+      } catch (err) {
+        setProgressError(errMsg(err));
+      }
     }
+    return doc;
+  }
+
+  /**
+   * Before the run's first frame (the pipeline awaits this once its params are resolved): the
+   * run file goes to disk with status `planned`, its config complete. A Restart of the same run
+   * writes nothing new.
+   */
+  async function beforeFrames(): Promise<void> {
+    const p = plan();
+    if (!p || !run || run.planned || finished() || stopped()) return;
+    lastRecord = deps.runRecord?.(p.settings, joint() ? undefined : run.index) ?? null;
+    await writeRun('planned');
+    run.planned = true;
   }
 
   /** Write the results that are final now: one session (Separate) or all (Joint). */
   async function exportResults(): Promise<void> {
     // The stage log ends Extract in an effect of its own on the same change
-    // that starts this export: let it run first, or `stages_run` would say
+    // that starts this export: let it run first, or the stages would say
     // Extract is still running.
     await new Promise((resolve) => setTimeout(resolve, 0));
     const p = plan();
     const base = deps.exportInput();
-    if (!p || !base) throw new Error('There is no Extract result to write.');
-    if (!sink) {
-      sink = await p.openSink();
-      setRoot(sink.root);
-    }
-    const joint = p.settings.mode === 'joint';
+    if (!p || !base || !run) throw new Error('There is no Extract result to write.');
+    const r = run;
+    const isJoint = joint();
     const info = deps.info();
-    const boundaries = joint && info ? sessionBoundaries(info) : [];
     // Joint: the spans of the recording as opened are the authority.
-    if (joint && info?.sessions)
+    if (isJoint && info?.sessions)
       for (const span of info.sessions)
         patchRecord(span.index, { startFrame: span.startFrame, frames: span.frameCount });
-    if (joint) for (const f of deps.boundaryFlags?.() ?? []) patchRecord(f.index, { boundary: f });
-    const which = joint ? records() : records().filter((r) => r.index === current());
-    const runs = deps.stages().runs;
+    if (isJoint)
+      for (const f of deps.boundaryFlags?.() ?? []) patchRecord(f.index, { boundary: f });
+    const which = isJoint ? records() : records().filter((x) => x.index === current());
     // Gathered here, at write time, once for the files written now.
-    const jointRec = joint ? deps.runRecord?.(p.settings) : undefined;
-    if (jointRec) jointRecord = jointRec;
-    for (const r of which) {
-      const runRecord = joint ? jointRec : deps.runRecord?.(p.settings, r.index);
-      const fps = r.fps ?? base.fps;
-      const range = joint
-        ? { start: r.startFrame, end: r.startFrame + r.frames }
+    lastRecord = deps.runRecord?.(p.settings, isJoint ? undefined : r.index) ?? lastRecord;
+    const created = now().toISOString();
+    for (const rec of which) {
+      const fps = rec.fps ?? base.fps;
+      const range = isJoint
+        ? { start: rec.startFrame, end: rec.startFrame + rec.frames }
         : { start: 0, end: base.result.frames };
       const qc = deps.sessionQc ? await deps.sessionQc(range, fps) : base.qc;
+      // The copy in the export shows its own result as written.
+      r.written.set(rec.index, {
+        cells: base.result.ids.length,
+        libraryVersion: base.result.version,
+        created,
+      });
+      patchRecord(rec.index, { status: 'written' });
       const input: ExportInput = {
         ...base,
-        label: r.name,
+        label: rec.name,
         fps,
         qc,
-        ...(joint ? { frameRange: { start: r.startFrame, end: r.startFrame + r.frames } } : {}),
-        session: exportSessionBlock(r, p.settings.mode, p.sessions.length),
-        ...(runRecord ? { runRecord } : {}),
+        ...(isJoint
+          ? { frameRange: { start: rec.startFrame, end: rec.startFrame + rec.frames } }
+          : {}),
+        session: exportSessionBlock(rec, p.settings.mode, p.sessions.length),
+        runFile: runDoc('running'),
       };
-      await sink.writeFile(`${r.resultsPath}/${SESSION_EXPORT_FILE}`, (s) =>
-        writeCalaExport(input, s),
-      );
-      const meta = sessionMetadata({
-        version: deps.version,
-        settings: p.settings,
-        session: r,
-        sessions: p.sessions.length,
-        boundaries,
-        stages: runs,
-        libraryVersion: base.result.version,
-        cells: base.result.ids.length,
-        sharedCellIds: joint ? Array.from(base.result.ids) : null,
-        cellIds: Array.from(base.result.ids),
-        createdAt: now().toISOString(),
-      });
-      await sink.writeText(`${r.resultsPath}/${SESSION_META_FILE}`, JSON.stringify(meta, null, 2));
-      if (runRecord && !joint)
-        await sink.writeText(
-          `${r.resultsPath}/${RUN_RECORD_FILE}`,
-          JSON.stringify(runRecord, null, 2),
-        );
-      patchRecord(r.index, { status: 'written' });
+      const path =
+        rec.resultsPath === '.' || rec.resultsPath === ''
+          ? CALA_EXPORT_FILE
+          : `${rec.resultsPath}/${CALA_EXPORT_FILE}`;
+      await r.sink.writeFile(path, (s) => writeCalaExport(input, s));
     }
-    await writeManifest(false);
-    const written = which.map((r) => r.index);
-    await progress({
-      written,
-      stages: runs,
-      stagesFor: written,
-      cellIds: Array.from(base.result.ids),
-      libraryVersion: base.result.version,
-      finished: false,
-      stopped: null,
-    });
+    await writeRun('running');
+  }
+
+  /** The current run is over: its file says so and its folder is closed (a zip is offered). */
+  async function closeRun(
+    status: 'finished' | 'stopped',
+    reason: string | null = null,
+  ): Promise<void> {
+    if (!run) return;
+    await writeRun(status, reason);
+    await run.sink.finish();
   }
 
   async function finish(skipped?: string): Promise<void> {
     if (skipped) patchRecord(current(), { status: 'skipped', note: skipped });
-    if (!sink) {
-      const p = plan();
-      if (p) {
-        sink = await p.openSink();
-        setRoot(sink.root);
-      }
-    }
-    await writeManifest(true);
-    await progress({
-      written: [],
-      stages: deps.stages().runs,
-      stagesFor: skipped ? [current()] : [],
-      cellIds: null,
-      libraryVersion: null,
-      finished: true,
-      stopped: null,
-    });
-    await sink?.finish();
+    await closeRun('finished');
     setFinished(true);
   }
 
@@ -317,40 +311,22 @@ export function createMultiRun(deps: MultiRunDeps) {
     const p = plan();
     if (!p) return;
     setStopped(reason);
-    const joint = p.settings.mode === 'joint';
     const open = records().filter(
-      (r) => r.status === 'pending' && (joint || r.index === current()),
+      (r) => r.status === 'pending' && (joint() || r.index === current()),
     );
     for (const r of open) patchRecord(r.index, { status: 'failed', note: reason });
-    if (sink) await writeManifest(false);
-    await progress({
-      written: [],
-      stages: deps.stages().runs,
-      stagesFor: open.map((r) => r.index),
-      cellIds: null,
-      libraryVersion: null,
-      finished: false,
-      stopped: reason,
-    });
+    if (run) await writeRun('stopped', reason);
   }
 
+  /** Separate: the session's run is done; the next session is a run of its own. */
   async function nextSession(skipped?: string): Promise<void> {
     const p = plan()!;
-    if (skipped) {
-      patchRecord(current(), { status: 'skipped', note: skipped });
-      await progress({
-        written: [],
-        stages: deps.stages().runs,
-        stagesFor: [current()],
-        cellIds: null,
-        libraryVersion: null,
-        finished: false,
-        stopped: null,
-      });
-    }
+    if (skipped) patchRecord(current(), { status: 'skipped', note: skipped });
+    await closeRun('finished');
     const next = current() + 1;
     setCurrent(next);
     setExported(false);
+    await openRun(next);
     await deps.openOne(p.sessions[next], next);
   }
 
@@ -363,6 +339,7 @@ export function createMultiRun(deps: MultiRunDeps) {
         await job();
       } catch (err) {
         setError(errMsg(err));
+        if (run) await writeRun('stopped', errMsg(err)).catch(() => {});
       }
     })();
   }
@@ -428,9 +405,8 @@ export function createMultiRun(deps: MultiRunDeps) {
 
   /** Start a run: Joint opens every session at once, Separate the first. */
   async function start(p: MultiRunPlan): Promise<void> {
-    sink = null;
+    run = null;
     dispatched = '';
-    createdAt = now().toISOString();
     setRoot(null);
     setError(null);
     setStopped(null);
@@ -440,13 +416,22 @@ export function createMultiRun(deps: MultiRunDeps) {
     setCurrent(0);
     setPlan(p);
     setRecords(recordsFor(p));
+    try {
+      await openRun(0);
+    } catch (err) {
+      setError(errMsg(err));
+      return;
+    }
     if (p.settings.mode === 'joint') await deps.openJoint(p.sessions);
     else await deps.openOne(p.sessions[0], 0);
   }
 
+  /** Leave the run (Back to project, a new folder): an unfinished run's file says it stopped. */
   function cancel(): void {
+    if (run && plan() && !finished() && !stopped() && !error())
+      void writeRun('stopped', 'The run was left before it finished.').catch(() => {});
     setPlan(null);
-    sink = null;
+    run = null;
   }
 
   return {
@@ -474,8 +459,12 @@ export function createMultiRun(deps: MultiRunDeps) {
     progressError,
     exporting,
     finished,
-    /** The run folder's name once the first results are written. */
+    /** The run folder, once the run has started. */
     root,
+    /** The current run's file as it is now (null: no run). */
+    runFile: (): RunFile | null =>
+      run && plan() ? runDoc(run.planned ? 'running' : 'planned') : null,
+    beforeFrames,
     start,
     stop: cancel,
   };

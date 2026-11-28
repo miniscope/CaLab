@@ -19,6 +19,7 @@ import {
   runIdFor,
   splitStreamRef,
   streamRef,
+  timeId,
 } from '../model.ts';
 import {
   addSteps,
@@ -78,6 +79,7 @@ describe('stream refs and ids', () => {
       '2026-11-28_09-14-03_cala_2',
     );
     expect(idSpaceOf('cala', 'r1')).toBe('cala:r1');
+    expect(timeId(t)).toBe('2026-11-28_09-14-03');
   });
 });
 

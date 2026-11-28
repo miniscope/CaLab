@@ -171,17 +171,13 @@ import { fovDisplayRanges } from './fov-display.ts';
 import type { RunSpan } from './run-record.ts';
 import type { StageRun } from './run-stages.ts';
 import type { HistoryExport } from '@calab/compute';
+import type { RunFile } from '@calab/project';
 
-/** The format of an export without the factor fields (see `exportFormatVersion`). */
-export const EXPORT_FORMAT_VERSION = 6;
-
-/** Version 7 adds optional fields (`traces_live`, `notes`, the stages' sources); an export without them stays 6. */
-export function exportFormatVersion(
-  input: Pick<ExportInput, 'liveTraces' | 'notes' | 'stages'>,
-): 6 | 7 {
-  const sourced = (input.stages ?? []).some((r) => r.settleSource || r.source);
-  return input.liveTraces || (input.notes?.length ?? 0) > 0 || sourced ? 7 : 6;
-}
+/**
+ * The export format this build writes. Version 8 carries the run file as `meta_json.run`; the
+ * optional fields of version 7 (`traces_live`, `notes`, the stages' sources) stay optional.
+ */
+export const EXPORT_FORMAT_VERSION = 8;
 
 export const FACTORS_EXPORT_NOTE =
   "Settle and Extract read the factors Discover wrote during the stream; there was no file to re-read. Extract's traces (traces, traces_signed) are solved on low-rank frames and carry less per-frame noise than the live traces (traces_live).";
@@ -240,8 +236,12 @@ export interface ExportInput {
   frameRange?: { start: number; end: number };
   /** Extra `meta_json.session` block (a multi-session run; see `session-export.ts`). */
   session?: Record<string, unknown>;
-  /** The run record (`run-provenance.ts`), written as `meta_json.run_record`. */
-  runRecord?: Record<string, unknown>;
+  /**
+   * The run file (`run-file.ts`) as it is when this export is written, as `meta_json.run`:
+   * `run.id` names the run folder's `calab-run.json`, and the copy keeps a lone export
+   * self-describing.
+   */
+  runFile?: RunFile;
 }
 
 /** Options of the writers. */
@@ -475,7 +475,7 @@ export async function writeCalaExport(
   const ranges = fovDisplayRanges(input.bitDepth ?? 8);
   const meta = {
     format: 'cala-export',
-    format_version: exportFormatVersion(input),
+    format_version: EXPORT_FORMAT_VERSION,
     app: 'cala',
     app_version: input.version,
     created: input.createdAt ?? new Date().toISOString(),
@@ -504,7 +504,7 @@ export async function writeCalaExport(
     footprints: 'sparse CSR over flat pixel index row * width + column, unfiltered weights',
     extract_seconds: result.seconds,
     stages: (input.stages ?? []).map(stageMeta),
-    ...(input.runRecord ? { run_record: input.runRecord } : {}),
+    ...(input.runFile ? { run: input.runFile } : {}),
     ...(input.flatField && input.flatField.length > 0
       ? {
           flat_field: {
@@ -687,10 +687,10 @@ export async function writeCaDeconExport(
     'sampling_rate_hz.npy',
     npy(Float32Array.of(input.fps > 0 ? input.fps : 0), [1]),
   );
-  // The run record as a vector beside the traces (a matrix among vectors stays the one candidate).
-  if (input.runRecord) {
-    const rec = new TextEncoder().encode(JSON.stringify(input.runRecord));
-    await zip.addFile('run_record_json.npy', npy(rec, [rec.length]));
+  // The run file as a vector beside the traces (a matrix among vectors stays the one candidate).
+  if (input.runFile) {
+    const rec = new TextEncoder().encode(JSON.stringify(input.runFile));
+    await zip.addFile('run_json.npy', npy(rec, [rec.length]));
   }
   await zip.finish();
 }

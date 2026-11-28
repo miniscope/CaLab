@@ -38,12 +38,18 @@ export function newProjectId(random: () => number = Math.random): string {
   return `p-${hex}`;
 }
 
+/** The local time as an id: `YYYY-MM-DD_HH-MM-SS` (a plan's id). */
+export function timeId(now: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}` +
+    `_${p(now.getHours())}-${p(now.getMinutes())}-${p(now.getSeconds())}`
+  );
+}
+
 /** A run id: the local time and the app, `YYYY-MM-DD_HH-MM-SS_<app>`, unique among `taken`. */
 export function runIdFor(now: Date, app: string, taken: ReadonlySet<string>): string {
-  const p = (n: number) => String(n).padStart(2, '0');
-  const base =
-    `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}` +
-    `_${p(now.getHours())}-${p(now.getMinutes())}-${p(now.getSeconds())}_${app}`;
+  const base = `${timeId(now)}_${app}`;
   let id = base;
   for (let n = 2; taken.has(id); n++) id = `${base}_${n}`;
   return id;
