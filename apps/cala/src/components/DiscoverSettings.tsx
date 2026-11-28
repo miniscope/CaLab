@@ -5,17 +5,20 @@ import { FINAL_SETTLE_LEVELS, type FinalSettleLevel } from '../lib/settle.ts';
 /**
  * Where the Discover settings are shown, which decides when a change takes effect:
  * - `setup`: before a multi-session run (the session list, a project's run plan);
+ * - `prerun`: the pre-run sheet of one recording, before its first Run;
  * - `single`: the Run tab of one recording (the next Discover start);
  * - `separate`: a Separate session run (each session starts Discover again: the next session);
  * - `joint`: a Joint session run (one Discover over every session: the next run).
  */
-export type SettingsContext = 'setup' | 'single' | 'separate' | 'joint';
+export type SettingsContext = 'setup' | 'prerun' | 'single' | 'separate' | 'joint';
 
 /** When a change to a start-time setting applies, in words. */
 export function appliesText(ctx: SettingsContext): string {
   switch (ctx) {
     case 'setup':
       return 'Used by every session of this run. In a Separate run it can still be changed between sessions from the Run tab.';
+    case 'prerun':
+      return 'Read when Discover starts (Run).';
     case 'separate':
       return 'Read when Discover starts: in this Separate run a change applies from the next session.';
     case 'joint':

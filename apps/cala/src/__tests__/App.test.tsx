@@ -170,6 +170,12 @@ async function pick(root: HTMLElement, files: File[]): Promise<void> {
   await vi.waitFor(() => expect(fake.open).toHaveBeenCalled());
 }
 
+/** Press Run on the pre-run sheet (opening a recording does not start Discover). */
+async function run(root: HTMLElement): Promise<void> {
+  await vi.waitFor(() => expect(root.querySelector('[data-testid="run-start"]')).not.toBeNull());
+  root.querySelector<HTMLButtonElement>('[data-testid="run-start"]')!.click();
+}
+
 describe('App', () => {
   it('opens on the folder picker with a directory input', () => {
     const root = mount();
@@ -219,11 +225,23 @@ describe('App', () => {
     expect(root.querySelector('[data-testid="frame-readout"]')?.textContent).toContain('26 / 50');
   });
 
-  it('runs the pipeline on open and shows progress and the history', async () => {
+  it('shows the pre-run sheet on open, runs on Run, and shows progress and the history', async () => {
     fake.open.mockResolvedValue(INFO);
     fake.readFrame.mockImplementation(async () => new Uint8Array(12));
     const root = mount();
     await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
+    // Opening loads the recording only: the sheet with its settings, hidden slots and Run.
+    await vi.waitFor(() =>
+      expect(root.querySelector('[data-testid="prerun-sheet"]')).not.toBeNull(),
+    );
+    expect(fake.startPipeline).not.toHaveBeenCalled();
+    expect(root.querySelector('[data-testid="discover-settings"]')).not.toBeNull();
+    for (const slot of ['repeatable', 'seed', 'crop'])
+      expect(root.querySelector<HTMLElement>(`[data-testid="prerun-slot-${slot}"]`)?.hidden).toBe(
+        true,
+      );
+    expect(root.querySelector('[data-testid="run-strip-stage"]')?.textContent).toBe('Ready');
+    await run(root);
     await vi.waitFor(() => expect(fake.startPipeline).toHaveBeenCalledTimes(1));
     const status = () => root.querySelector('[data-testid="pipeline-status"]')?.textContent;
     await vi.waitFor(() => expect(status()).toMatch(/^(Discover done|Done)$/));
@@ -242,9 +260,25 @@ describe('App', () => {
     expect(root.querySelector('[data-testid="history-imaging"]')).not.toBeNull();
     expect(root.querySelectorAll('[data-testid="cells-view"]')).toHaveLength(1);
 
+    // Done: the settings fold to a summary line, and Discover is one line in its hue with ✓.
+    expect(root.querySelector('[data-testid="settings-summary"]')).not.toBeNull();
+    expect(root.querySelector('[data-testid="prerun-sheet"]')).toBeNull();
+    const discover = root.querySelector('[data-testid="step-panel-discover"]')!;
+    expect(discover.getAttribute('data-state')).toBe('done');
+    expect(discover.textContent).toMatch(/^Discover0 cells/);
+
     // Opening another folder stops the worker-side pipeline.
     root.querySelectorAll<HTMLButtonElement>('.compact-header__actions button')[0].click();
     expect(fake.stopPipeline).toHaveBeenCalled();
+    // The next recording opens on its own pre-run sheet, with nothing of the last run.
+    await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
+    await vi.waitFor(() =>
+      expect(root.querySelector('[data-testid="prerun-sheet"]')).not.toBeNull(),
+    );
+    expect(fake.startPipeline).toHaveBeenCalledTimes(1);
+    expect(root.querySelector('[data-testid="run-export"]')).toBeNull();
+    expect(root.querySelector('[data-testid="pipeline-status"]')).toBeNull();
+    expect(root.querySelector('[data-testid="run-strip-stage"]')?.textContent).toBe('Ready');
   });
 
   it('puts the run rail over one row of tabs, keyboard-operable and remembered', async () => {
@@ -252,6 +286,7 @@ describe('App', () => {
     fake.readFrame.mockImplementation(async () => new Uint8Array(12));
     const root = mount();
     await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
+    await run(root);
     const stage = () => root.querySelector('[data-testid="run-strip-stage"]')?.textContent;
     await vi.waitFor(() => expect(stage()).toBe('Discover done'));
     // The rail: the stage track with Discover done, and Cells at 0 on this cell-less recording.
@@ -300,16 +335,19 @@ describe('App', () => {
     expect(localStorage.getItem('cala.sideTab.run')).toBe('recording');
   });
 
-  it('opens on the remembered tab', async () => {
+  it('opens a recording on the Run tab for its sheet, and keeps the remembered tab', async () => {
     localStorage.setItem('cala.sideTab.run', 'qc');
     fake.open.mockResolvedValue(INFO);
     fake.readFrame.mockImplementation(async () => new Uint8Array(12));
     const root = mount();
     await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
-    await vi.waitFor(() => expect(root.querySelector('[data-testid="qc-table"]')).not.toBeNull());
-    expect(root.querySelector('[data-testid="tab-qc"]')?.getAttribute('aria-selected')).toBe(
+    await vi.waitFor(() =>
+      expect(root.querySelector('[data-testid="prerun-sheet"]')).not.toBeNull(),
+    );
+    expect(root.querySelector('[data-testid="tab-run"]')?.getAttribute('aria-selected')).toBe(
       'true',
     );
+    expect(localStorage.getItem('cala.sideTab.run')).toBe('qc');
   });
 
   it('toggles play and pause', async () => {

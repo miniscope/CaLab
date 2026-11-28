@@ -1,82 +1,142 @@
-/** The Run panel's line on a look-back run. */
+/**
+ * A look-back run's figures for the Run tab, as data: the components draw them as meter rows
+ * (`Steps.tsx`). Pure, so the figures are tested without a DOM.
+ */
 import type { CsettleStatus, LookbackStatus, SettleStatus } from '../workers/lookback-types.ts';
 import { SETTLE } from './settle.ts';
-
-/** "N of C cells still moving (more than 2x their noise)" at the settle's last checkpoint ('' before it). */
-function movingText(st: SettleStatus): string {
-  const m = st.moving;
-  if (!m || m.cells === 0) return '';
-  const share = m.above / m.cells;
-  const verdict = share > SETTLE.movingShare ? ' (not settled yet)' : '';
-  return ` · ${m.above} of ${m.cells} cells still moving${verdict}`;
-}
-
-/** The settle's frames: "12,000 of 18,000 frames" (and the recording's length when it was sampled). */
-function settleFrames(st: SettleStatus): string {
-  const of = `${st.fed.toLocaleString()} of ${st.total.toLocaleString()} frames`;
-  return st.total < st.recording ? `${of} (spread over ${st.recording.toLocaleString()})` : of;
-}
-
-/**
- * " · 0.40 visits/frame" while the settle runs at a visit rate, the visits it made per frame once
- * done (on the visit workers; '' without a rate).
- */
-function visitsText(st: SettleStatus, done: boolean): string {
-  const v = st.visits;
-  if (!v || !(v.rate > 0)) return '';
-  if (!done || !(st.fed > 0)) return ` · ${v.rate.toFixed(2)} visits/frame`;
-  return ` · ${(v.handed / st.fed).toFixed(2)} visits/frame`;
-}
 
 /** Frames the settle during Discover has re-read (fitted, held out or dropped: every frame that came back). */
 export function csettleReread(cs: CsettleStatus): number {
   return cs.fit + cs.heldOut + cs.dropped;
 }
 
-/** "0.42" re-read frames per live frame so far ('' before the first live frame). */
-function perLive(cs: CsettleStatus): string {
-  if (!(cs.live > 0)) return '';
-  const r = csettleReread(cs) / cs.live;
-  return `${r >= 0.995 ? r.toFixed(1) : r.toFixed(2)} per live frame`;
+/** Background settle (settle during Discover). */
+export interface CsettleFacts {
+  /** Saved frames re-read so far. */
+  reread: number;
+  /** Re-read frames per live frame so far (null before the first live frame). */
+  perLive: number | null;
+  /** The ceiling on `perLive` in force (re-read frames per live frame). */
+  ceiling: number;
+}
+
+/** Where the Final settle reads its frames: the factors, or the file (and why). Null: the recording, as usual. */
+export type SettleSource = { kind: 'factors' } | { kind: 'file'; reason: string } | null;
+
+/** The Final settle. */
+export interface SettleFacts {
+  /** Frames fed of the planned total. */
+  fed: number;
+  total: number;
+  /** The recording's frames; above `total` when the settle samples them. */
+  recording: number;
+  source: SettleSource;
+  /** Waiting for the last factor window before it can start. */
+  waiting: boolean;
+  /**
+   * Visits per settle frame: the rate in force while it runs, the visits made per frame once
+   * done (null without a rate, or before a frame once done).
+   */
+  visitsPerFrame: number | null;
+  /** Cells still moving more than `SETTLE.movingK` times their noise at the last checkpoint (null before one). */
+  moving: { above: number; cells: number } | null;
+  /** Stopped by the user before its plan. */
+  stopped: boolean;
+}
+
+/** Where a look-back run is. */
+export type LookbackPhase = 'discover' | 'settling' | 'done' | 'skipped';
+
+/** A look-back run's figures. */
+export interface LookbackFacts {
+  phase: LookbackPhase;
+  /** Frames re-read for new cells, and the cells born with that data. */
+  reread: number;
+  births: number;
+  /** Cells still waiting for look-back data. */
+  inNeed: number;
+  /** Null when Background settle is off. */
+  csettle: CsettleFacts | null;
+  /** Null before the Final settle reports, and when it was skipped. */
+  settle: SettleFacts | null;
+  /** Why the Final settle was skipped (`phase` 'skipped'). */
+  skipped: string | null;
+  /** Look-back stopped with this error (null: running or ended normally). */
+  error: string | null;
+}
+
+function csettleFacts(cs: CsettleStatus | undefined): CsettleFacts | null {
+  if (!cs) return null;
+  return {
+    reread: csettleReread(cs),
+    perLive: cs.live > 0 ? csettleReread(cs) / cs.live : null,
+    ceiling: cs.rate,
+  };
+}
+
+function settleFacts(st: SettleStatus, done: boolean): SettleFacts {
+  const v = st.visits;
+  const visitsPerFrame =
+    !v || !(v.rate > 0) ? null : !done ? v.rate : st.fed > 0 ? v.handed / st.fed : null;
+  const source: SettleSource =
+    st.source === 'factors'
+      ? { kind: 'factors' }
+      : st.source === 'file' && st.fileReason
+        ? { kind: 'file', reason: st.fileReason }
+        : null;
+  return {
+    fed: st.fed,
+    total: st.total,
+    recording: st.recording,
+    source,
+    waiting: st.waiting === true,
+    visitsPerFrame,
+    moving: st.moving && st.moving.cells > 0 ? { ...st.moving } : null,
+    stopped: st.stopped,
+  };
+}
+
+/** The figures of a look-back run; `final`: the final library is out. */
+export function lookbackFacts(lb: LookbackStatus, final: boolean): LookbackFacts {
+  const st = lb.settle;
+  const phase: LookbackPhase = lb.settling
+    ? 'settling'
+    : final && st?.error
+      ? 'skipped'
+      : final
+        ? 'done'
+        : 'discover';
+  return {
+    phase,
+    reread: lb.pushed,
+    births: lb.births,
+    inNeed: lb.inNeed,
+    csettle: csettleFacts(lb.csettle),
+    settle: st && phase !== 'skipped' ? settleFacts(st, phase === 'done') : null,
+    skipped: phase === 'skipped' ? (st?.error ?? null) : null,
+    error: lb.error ?? null,
+  };
+}
+
+/** More than `SETTLE.movingShare` of the cells still move: not settled yet. */
+export function notSettled(m: { above: number; cells: number }): boolean {
+  return m.cells > 0 && m.above / m.cells > SETTLE.movingShare;
 }
 
 /**
- * The settle during Discover ('' when off): while Discover runs, the frames
- * re-read so far against the ceiling; afterwards, how many were re-read
- * during Discover.
+ * The one short note beside the Final settle's figures: where it reads and why, a wait, a stop
+ * or an error ('' when there is nothing to say).
  */
-export function csettleText(cs: CsettleStatus | undefined, running: boolean): string {
-  if (!cs) return '';
-  const n = csettleReread(cs).toLocaleString();
-  const rate = perLive(cs);
-  if (running)
-    return ` · Background settle: ${n} saved frames re-read (${rate ? `${rate}, ` : ''}ceiling ${cs.rate})`;
-  return ` · ${n} frames re-read by the Background settle${rate ? ` (${rate})` : ''}`;
-}
-
-/** One line on a look-back run: what it re-read, and the settle after the last frame. */
-export function lookbackText(lb: LookbackStatus, final: boolean): string {
-  const err = lb.error ? ` · look-back stopped: ${lb.error}` : '';
-  const st = lb.settle;
-  const on =
-    st?.source === 'factors'
-      ? ' on the factors'
-      : st?.source === 'file' && st.fileReason
-        ? ` (re-reads the file: ${st.fileReason})`
-        : '';
-  if (lb.settling && st?.waiting)
-    return `Final settle: waiting for the last factor window${csettleText(lb.csettle, false)}${err}`;
-  if (lb.settling && st)
-    return `Final settle${on}: ${settleFrames(st)}${visitsText(st, false)}${movingText(st)}${csettleText(lb.csettle, false)}${err}`;
-  if (lb.settling) return `Final settle${csettleText(lb.csettle, false)}${err}`;
-  const read = `${lb.pushed.toLocaleString()} frames re-read for ${lb.births} new cells`;
-  if (final && st?.error)
-    return `Look-back: ${read}${csettleText(lb.csettle, false)} · Final settle skipped: ${st.error}${err}`;
-  if (final && st) {
-    const end = st.stopped
-      ? `final settle stopped by you after ${settleFrames(st)}`
-      : `final settle${on} over ${settleFrames(st)}${visitsText(st, true)}`;
-    return `Look-back: ${read}${csettleText(lb.csettle, false)} · ${end}${movingText(st)}${err}`;
-  }
-  return `Look-back: ${read} · ${lb.inNeed} cells still need data${csettleText(lb.csettle, true)}${err}`;
+export function settleNote(f: LookbackFacts): string {
+  const parts: string[] = [];
+  const s = f.settle;
+  if (f.phase === 'skipped') parts.push(`Final settle skipped: ${f.skipped}`);
+  if (s?.waiting && f.phase === 'settling') parts.push('waiting for the last factor window');
+  if (s?.source?.kind === 'factors') parts.push('on the factors');
+  if (s?.source?.kind === 'file') parts.push(`re-reads the file: ${s.source.reason}`);
+  if (s && s.total > 0 && s.total < s.recording)
+    parts.push(`spread over ${s.recording.toLocaleString('en-US')} frames`);
+  if (s?.stopped) parts.push('stopped by you');
+  if (f.error) parts.push(`look-back stopped: ${f.error}`);
+  return parts.join(' · ');
 }

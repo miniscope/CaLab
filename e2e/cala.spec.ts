@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from './fixtures.ts';
 import { buildAvi, pixelAt } from '../apps/cala/src/__tests__/synth-avi.ts';
+import { startRun } from './cala-helpers.ts';
 
 /**
  * Cala is a beta app: a landing card, built at /CaLab/Cala/. This drives
@@ -56,7 +57,11 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await expect(info).toContainText('20.00 Hz from metaData.json');
   await expect(info).toContainText('60.0 Hz (declared by the writer, ignored)');
 
-  // Opening also runs preprocessing and motion correction in the worker.
+  // Opening loads the recording only: the pre-run sheet waits for Run.
+  await page.getByRole('tab', { name: 'Run', exact: true }).click();
+  await expect(page.getByTestId('prerun-sheet')).toBeVisible();
+  await expect(page.getByTestId('pipeline-status')).toHaveCount(0);
+  await startRun(page);
   // Discover finished; Extract may not follow on a recording with no cells.
   await expect(page.getByTestId('pipeline-status')).toHaveText(/^(Discover done|Done)$/, {
     timeout: 20_000,
@@ -177,6 +182,7 @@ test('Cala: long-session cell overview stays compact and navigates beyond retain
   writeFileSync(join(folder, '0.avi'), buildAvi({ width: 24, height: 16, frames: 6 }));
   writeFileSync(join(folder, 'metaData.json'), '{"frameRate":"20FPS"}');
   await page.getByTestId('folder-input').setInputFiles(folder);
+  await startRun(page);
   await expect(page.getByTestId('pipeline-status')).toHaveText(/^(Discover done|Done)$/);
   // Seed the display stores, not the solver: this exercises chart rendering and
   // navigation late in a recording without processing a million video frames.

@@ -609,12 +609,14 @@ await page.evaluate((withRelease) => {
 const single = args.includes('--single');
 await page.setInputFiles('[data-testid=folder-input]', data);
 if (single) {
-  // One recording folder: Discover starts by itself.
+  // One recording folder: it opens on the pre-run sheet; Discover starts on Run.
+  await page.click('[data-testid=run-start]', { timeout: 120000 });
   await page.waitForFunction(() => window.__cala?.pipeline.status() === 'running', null, {
     timeout: 120000,
   });
   if (lookback && toggle) {
-    // The user's path: tick the checkbox, then restart Discover from frame 0.
+    // The user's path: open the settings line, tick the checkbox, then restart Discover from frame 0.
+    await page.click('[data-testid=settings-summary]');
     L(
       'toggle: ' +
         (await page.$eval(

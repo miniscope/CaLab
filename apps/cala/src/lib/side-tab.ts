@@ -37,6 +37,8 @@ export interface SideTab {
   active: Accessor<string>;
   /** Choose a tab and remember it. */
   set: (id: string) => void;
+  /** Show a tab without remembering it (the remembered one stays for the next visit). */
+  show: (id: string) => void;
 }
 
 /** A viewer's tab: starts on the remembered one, `fallback` when that is missing or not offered. */
@@ -55,6 +57,7 @@ export function createSideTab(
       setChosen(id);
       saveSideTab(viewer, id);
     },
+    show: (id) => setChosen(id),
   };
 }
 

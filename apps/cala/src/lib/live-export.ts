@@ -5,7 +5,10 @@
  * like an Extract result. A cell's frames before it was found, and frames a
  * bounded history does not hold, are NaN.
  */
+import { createEffect, createSignal, type Accessor } from 'solid-js';
 import type { CellStore } from './cell-store.ts';
+import { errMsg } from './errors.ts';
+import type { PipelineStore } from './pipeline-store.ts';
 import type { Pass2Result } from './pass2-store.ts';
 import { MAX_MEMORY_TRACE_BYTES, MemoryBackend, TraceFile } from './trace-file.ts';
 
@@ -54,4 +57,39 @@ export async function liveTraceResult(
     library,
     seconds,
   };
+}
+
+/** A live run's export result and why it could not be built (`createLiveResult`). */
+export interface LiveResult {
+  /** The live traces once the run is done and its final library is out (null otherwise). */
+  result: Accessor<Pass2Result | null>;
+  /** Why the live traces could not be gathered (null: no error). */
+  error: Accessor<string | null>;
+}
+
+/**
+ * The live traces of a live run, gathered once the run is done and its final library is out;
+ * null again as soon as a new run starts. Always null for a recording (`live()` false). Must
+ * run inside a reactive owner.
+ */
+export function createLiveResult(
+  pipeline: Pick<PipelineStore, 'status' | 'processed'>,
+  cells: Pick<CellStore, 'library' | 'history' | 'status'>,
+  live: () => boolean,
+): LiveResult {
+  const [result, setResult] = createSignal<Pass2Result | null>(null);
+  const [error, setError] = createSignal<string | null>(null);
+  createEffect(() => {
+    if (!live()) return;
+    const done = pipeline.status() === 'done';
+    const final = cells.status()?.final ?? true;
+    const frames = pipeline.processed();
+    cells.library();
+    if (!done || !final) {
+      setResult(null);
+      return;
+    }
+    liveTraceResult(cells, frames, 0).then(setResult, (err: unknown) => setError(errMsg(err)));
+  });
+  return { result, error };
 }

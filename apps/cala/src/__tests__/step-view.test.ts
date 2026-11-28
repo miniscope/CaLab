@@ -15,7 +15,6 @@ const base: StepInput = {
   settleTotal: 1000,
   settleFps: 0,
   finalLibrary: false,
-  inNeed: null,
   extract: 'idle',
   extractDone: 0,
   extractTotal: 0,
@@ -64,12 +63,12 @@ describe('stepViews', () => {
       lookbackRun: true,
       processed: 250,
       discoverFps: 100,
-      inNeed: 3,
     });
     expect(d.fraction).toBeCloseTo(0.25, 10);
     expect(d.fps).toBe(100);
     expect(d.secondsLeft).toBeCloseTo(7.5, 10);
-    expect(d.note).toContain('3 cells waiting');
+    // The cells waiting are a meter row of their own (one reading), not in the sub-line.
+    expect(d.note).toBe('with look-back and Background settle');
     expect(s.fps).toBeNull();
     const settle = stepViews({
       ...base,

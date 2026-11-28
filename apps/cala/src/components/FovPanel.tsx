@@ -117,9 +117,11 @@ export function pipelineFovSource(store: PipelineStore): FovSource {
     setResidual: (on) => store.setResidual(on),
     setPlayView: (v) => store.setPlayView(v),
     emptyText: (v) =>
-      v === 'residual'
-        ? 'The residual comes with the frames processed while the model has cells: it shows from the next batch of a running pass.'
-        : null,
+      store.status() === 'idle'
+        ? 'The frames show here once the run starts: pick the settings in the Run tab, then Run.'
+        : v === 'residual'
+          ? 'The residual comes with the frames processed while the model has cells: it shows from the next batch of a running pass.'
+          : null,
   };
 }
 

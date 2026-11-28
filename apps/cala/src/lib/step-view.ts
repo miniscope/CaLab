@@ -52,8 +52,6 @@ export interface StepInput {
   settleFps: number;
   /** The final library is out (after the Final settle, or right after Discover without it). */
   finalLibrary: boolean;
-  /** Look-back sub-line: cells still waiting for look-back data (null: none). */
-  inNeed: number | null;
   /** Extract: idle, running, done, error, cancelled; frames solved of its total; rate. */
   extract: string;
   extractDone: number;
@@ -97,7 +95,7 @@ export function stepViews(i: StepInput): StepView[] {
     note: i.live
       ? 'live stream'
       : i.lookbackRun && busy
-        ? `with look-back${i.inNeed !== null && i.inNeed > 0 ? ` (${i.inNeed.toLocaleString('en-US')} cells waiting)` : ''} and Background settle`
+        ? 'with look-back and Background settle'
         : '',
   };
   if (busy && !i.live && i.visitHold != null && i.visitHold > 0) {
@@ -168,3 +166,37 @@ export const STATE_WORD: Record<StepState, string> = {
   off: 'off',
   error: 'stopped',
 };
+
+/**
+ * Wall time each step took, from its first running (or paused) view to its first done view.
+ * A step that runs again after done (Extract again) starts its clock over; `reset` forgets all.
+ */
+export class StepClock {
+  private readonly start = new Map<StepKey, number>();
+  private readonly end = new Map<StepKey, number>();
+
+  reset(): void {
+    this.start.clear();
+    this.end.clear();
+  }
+
+  /** Note the steps' states at `nowMs` (any monotonic ms clock). */
+  note(views: readonly StepView[], nowMs: number): void {
+    for (const v of views) {
+      const active = v.state === 'running' || v.state === 'paused';
+      if (active && (!this.start.has(v.key) || this.end.has(v.key))) {
+        this.start.set(v.key, nowMs);
+        this.end.delete(v.key);
+      } else if (v.state === 'done' && this.start.has(v.key) && !this.end.has(v.key)) {
+        this.end.set(v.key, nowMs);
+      }
+    }
+  }
+
+  /** Seconds the step took (null: not run to done while noted). */
+  seconds(key: StepKey): number | null {
+    const a = this.start.get(key);
+    const b = this.end.get(key);
+    return a === undefined || b === undefined ? null : (b - a) / 1000;
+  }
+}

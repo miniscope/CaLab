@@ -1800,3 +1800,207 @@
   stroke-width: 1;
   stroke-dasharray: 1 3;
 }
+
+/* ---- Pre-run sheet: settings, the slots for further pre-run choices, and Run ---- */
+.cala-sheet {
+  gap: var(--space-3);
+}
+
+.cala-sheet__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.cala-sheet__titles {
+  flex: 1;
+  min-width: 0;
+}
+
+.cala-sheet__title {
+  margin: 0;
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  color: var(--ink-1);
+}
+
+.cala-sheet__lede {
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-size-sm);
+  color: var(--ink-2);
+}
+
+.cala-sheet__run {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.cala-sheet__slot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--line);
+}
+
+.cala-sheet__slot[hidden] {
+  display: none;
+}
+
+.cala-sheet__slot-title {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--ink-1);
+}
+
+/* ---- Settings after Run: one line of chips that opens to the fields ---- */
+.cala-run__summary > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.cala-run__summary > summary::-webkit-details-marker {
+  display: none;
+}
+
+.cala-run__summary-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  font-size: var(--font-size-sm);
+}
+
+.cala-run__summary-name {
+  font-weight: var(--font-weight-semibold);
+  color: var(--ink-1);
+}
+
+.cala-run__summary-name::before {
+  content: '▸ ';
+  color: var(--ink-3);
+}
+
+.cala-run__summary[open] .cala-run__summary-name::before {
+  content: '▾ ';
+}
+
+.cala-run__summary-applies {
+  margin-left: auto;
+  font-size: var(--font-size-xs);
+  color: var(--ink-2);
+}
+
+.cala-run__summary-body {
+  padding-top: var(--space-2);
+}
+
+/* ---- The step list: the running step's panel, every other step one line ---- */
+.cala-run__steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.cala-step__rows {
+  gap: var(--space-1);
+}
+
+.cala-step__rows .meter-row {
+  font-size: var(--font-size-sm);
+}
+
+.cala-stepline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 24px;
+  padding: 0 var(--space-2);
+  font-size: var(--font-size-sm);
+  color: var(--ink-2);
+}
+
+.cala-stepline__mark {
+  flex: none;
+  display: inline-flex;
+  width: 14px;
+  justify-content: center;
+  color: var(--step-ink);
+}
+
+.cala-stepline__swatch {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--step-ink);
+  opacity: 0.45;
+}
+
+.cala-stepline__name {
+  flex: none;
+  font-weight: var(--font-weight-semibold);
+  color: var(--ink-2);
+}
+
+.cala-stepline--done .cala-stepline__name {
+  color: var(--step-ink);
+}
+
+.cala-stepline--off .cala-stepline__swatch {
+  background: var(--track);
+  opacity: 1;
+}
+
+.cala-stepline--error .cala-stepline__mark {
+  color: var(--status-critical);
+}
+
+.cala-stepline__facts {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  gap: 0 var(--space-1);
+}
+
+.cala-stepline__fact + .cala-stepline__fact::before {
+  content: '· ';
+  color: var(--ink-3);
+}
+
+/* ---- Export on the run rail ---- */
+.cala-rail__export:empty {
+  display: none;
+}
+
+.cala-export {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.cala-export__note {
+  min-width: 0;
+  font-size: var(--font-size-xs);
+  color: var(--ink-2);
+}
+
+/* On the rail the menu opens downward, over the tabs. */
+.cala-rail .cala-menu__body {
+  top: calc(100% + 4px);
+  bottom: auto;
+  z-index: 20;
+}
+
+/* Discover's rows have no chart: no room is kept for one. */
+.cala-step__body.cala-step__rows--discover {
+  min-height: 0;
+}
+
+.cala-run__window-label {
+  font-size: var(--font-size-xs);
+  color: var(--ink-2);
+}
