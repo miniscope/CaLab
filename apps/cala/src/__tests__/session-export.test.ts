@@ -1,14 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  directoryResultsSink,
   exportSessionBlock,
-  runManifest,
-  sessionMetadata,
+  sinkInDirectory,
   zipResultsSink,
   type SessionRecord,
 } from '../lib/session-export.ts';
-import { stageMeta } from '../lib/export.ts';
-import type { StageRun } from '../lib/run-stages.ts';
 import { MemDir } from './mem-dir.ts';
 
 const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({
@@ -22,84 +18,6 @@ const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({
   recordingStartMs: Date.UTC(2026, 10, 10, 14, 2, 33),
   status: 'written',
   ...over,
-});
-
-const stage: StageRun = {
-  stage: 'discover',
-  index: 1,
-  startedAt: '2026-11-10T14:00:00.000Z',
-  endedAt: '2026-11-10T14:05:00.000Z',
-  outcome: 'done',
-  frames: 150,
-  cells: 7,
-  libraryVersion: 3,
-  adds: 7,
-};
-
-const settings = { mode: 'joint' } as const;
-
-describe('sessionMetadata', () => {
-  const base = {
-    version: '2.14.0',
-    settings,
-    session: record(),
-    sessions: 3,
-    boundaries: [50, 100],
-    stages: [stage],
-    libraryVersion: 3,
-    cells: 7,
-    sharedCellIds: [4, 9] as number[] | null,
-    createdAt: '2026-11-10T15:00:00.000Z',
-  };
-
-  it('uses snake_case keys and derived fields', () => {
-    const m = sessionMetadata(base);
-    expect(m).toMatchObject({
-      format: 'cala-session',
-      format_version: 1,
-      app: 'cala',
-      app_version: '2.14.0',
-      created: base.createdAt,
-      mode: 'joint',
-      session_index: 1,
-      session_count: 3,
-      session_name: 'My_V4_Miniscope',
-      session_path: 'Data/2026_11_10/14_02_33/My_V4_Miniscope',
-      recording_start: '2026-11-10T14:02:33.000Z',
-      frames: 50,
-      sampling_rate_hz: 30,
-      frame_range_in_run: [100, 150],
-      boundary_frames: [50, 100],
-      library_version: 3,
-      cells: 7,
-      shared_cell_ids: [4, 9],
-      export_file: 'cala-export.npz',
-    });
-    expect(m.stages_run).toEqual([stageMeta(stage)]);
-    expect((m.stages_run as Record<string, unknown>[])[0]).toMatchObject({
-      stage: 'discover',
-      library_version: 3,
-      adds: 7,
-    });
-  });
-
-  it('null recording start and shared ids', () => {
-    const m = sessionMetadata({
-      ...base,
-      session: record({ recordingStartMs: null, fps: null }),
-      sharedCellIds: null,
-    });
-    expect(m.recording_start).toBeNull();
-    expect(m.sampling_rate_hz).toBeNull();
-    expect(m.shared_cell_ids).toBeNull();
-  });
-
-  it('copies boundaries', () => {
-    const b = [5];
-    const m = sessionMetadata({ ...base, boundaries: b });
-    expect(m.boundary_frames).toEqual([5]);
-    expect(m.boundary_frames).not.toBe(b);
-  });
 });
 
 describe('exportSessionBlock', () => {
@@ -116,89 +34,20 @@ describe('exportSessionBlock', () => {
   });
 });
 
-describe('runManifest', () => {
-  const base = {
-    version: '2.14.0',
-    settings,
-    sessions: [
-      record(),
-      record({ index: 2, recordingStartMs: null, status: 'skipped', note: 'no cells were found' }),
-    ],
-    boundaries: [50],
-    root: 'cala-results',
-    createdAt: 'c',
-    updatedAt: 'u',
-    finished: false,
-  };
-
-  it('has snake_case keys and per-session entries', () => {
-    const m = runManifest({ ...base, pipeline: { flat_field: true } });
-    expect(m).toMatchObject({
-      format: 'cala-run',
-      app_version: '2.14.0',
-      created: 'c',
-      updated: 'u',
-      finished: false,
-      results_folder: 'cala-results',
-      mode: 'joint',
-      settings: { flat_field: true },
-      boundary_frames: [50],
-    });
-    const [a, b] = m.sessions as Record<string, unknown>[];
-    expect(a).toMatchObject({
-      index: 1,
-      results_path: '2026_11_10/14_02_33/My_V4_Miniscope',
-      start_frame: 100,
-      sampling_rate_hz: 30,
-      recording_start: '2026-11-10T14:02:33.000Z',
-      status: 'written',
-    });
-    expect('note' in a).toBe(false);
-    expect(b.recording_start).toBeNull();
-    expect(b.note).toBe('no cells were found');
-  });
-
-  it('settings without pipeline is empty', () => {
-    expect(runManifest(base).settings).toEqual({});
-  });
-});
-
-// ---- directory sink ----
-
-describe('directoryResultsSink', () => {
-  const now = new Date(2026, 10, 12, 9, 5, 7);
-
-  it('uses cala-results when absent', async () => {
-    const loc = new MemDir('data');
-    const sink = await directoryResultsSink(loc, now);
-    expect(sink.root).toBe('cala-results');
-    expect(sink.method).toBe('directory');
-    expect(loc.dirs.has('cala-results')).toBe(true);
-  });
-
-  it('timestamps the run folder when cala-results exists', async () => {
-    const loc = new MemDir('data');
-    await loc.getDirectoryHandle('cala-results', { create: true });
-    const sink = await directoryResultsSink(loc, now);
-    expect(sink.root).toBe('cala-results_2026-11-12_09-05-07');
-    expect(loc.dirs.has('cala-results_2026-11-12_09-05-07')).toBe(true);
-    // the old folder is untouched
-    expect([...loc.dirs.get('cala-results')!.files.keys()]).toEqual([]);
-  });
-
+describe('sinkInDirectory', () => {
   it('writes nested paths, bytes and text', async () => {
     const loc = new MemDir('data');
-    const sink = await directoryResultsSink(loc, now);
-    const path = '2026_11_10/14_02_33/My_V4_Miniscope/cala-session.json';
+    const sink = sinkInDirectory(loc, 'data/calab-project/runs/r1');
+    const path = '2026_11_10/14_02_33/My_V4_Miniscope/calab-run.json';
     await sink.writeText(path, '{"a":1}');
     await sink.writeFile('2026_11_10/cala-export.npz', async (s) => {
       await s.write(Uint8Array.of(1, 2));
       await s.write(Uint8Array.of(3));
     });
     await sink.finish();
-    const run = loc.dirs.get('cala-results')!;
+    const run = loc;
     const leaf = run.dirs.get('2026_11_10')!.dirs.get('14_02_33')!.dirs.get('My_V4_Miniscope')!;
-    expect(leaf.files.get('cala-session.json')).toBe('{"a":1}');
+    expect(leaf.files.get('calab-run.json')).toBe('{"a":1}');
     const dated = run.dirs.get('2026_11_10')!;
     const npz = dated.files.get('cala-export.npz')!;
     expect([...npz].map((c) => c.charCodeAt(0))).toEqual([1, 2, 3]);
@@ -207,20 +56,20 @@ describe('directoryResultsSink', () => {
 
   it('aborts and rejects when the write callback throws', async () => {
     const loc = new MemDir('data');
-    const sink = await directoryResultsSink(loc, now);
+    const sink = sinkInDirectory(loc, 'data/calab-project/runs/r1');
     await expect(
       sink.writeFile('a/b.bin', async () => {
         throw new Error('boom');
       }),
     ).rejects.toThrow('boom');
-    const dir = loc.dirs.get('cala-results')!.dirs.get('a')!;
+    const dir = loc.dirs.get('a')!;
     expect(dir.aborts).toEqual(['b.bin']);
     expect(dir.writes).toEqual([]);
   });
 
   it('rejects bad paths', async () => {
     const loc = new MemDir('data');
-    const sink = await directoryResultsSink(loc, now);
+    const sink = sinkInDirectory(loc, 'data/calab-project/runs/r1');
     await expect(sink.writeText('../escape.txt', 'x')).rejects.toThrow(/Not a results path/);
     await expect(sink.writeText('a/../b.txt', 'x')).rejects.toThrow(/Not a results path/);
     await expect(sink.writeText('', 'x')).rejects.toThrow(/Not a results path/);
@@ -255,40 +104,40 @@ function readZip(buf: ArrayBuffer): Map<string, Uint8Array> {
 }
 
 describe('zipResultsSink', () => {
-  it('delivers cala-results.zip with the tree under cala-results/', async () => {
+  it('delivers the run folder and the project files under calab-project/', async () => {
     let got: { name: string; blob: Blob } | null = null;
-    const sink = zipResultsSink((name, blob) => {
+    const sink = zipResultsSink('runs/r1_cala', (name, blob) => {
       got = { name, blob };
     });
-    expect(sink.root).toBe('cala-results');
+    expect(sink.root).toBe('calab-project/runs/r1_cala');
     expect(sink.method).toBe('zip');
-    await sink.writeText('cala-run.json', 'first');
-    await sink.writeText('cala-run.json', 'second');
+    await sink.writeText('calab-run.json', 'first');
+    await sink.writeText('calab-run.json', 'second');
     await sink.writeFile('s1/cala-export.npz', async (s) => {
       await s.write(Uint8Array.of(9, 8));
       await s.write(Uint8Array.of(7));
     });
-    await sink.writeText('/s1//cala-session.json', '{}');
+    await sink.writeProjectText!('calab-project.json', '{}');
     expect(got).toBeNull();
     await sink.finish();
     expect(got).not.toBeNull();
     const { name, blob } = got as unknown as { name: string; blob: Blob };
-    expect(name).toBe('cala-results.zip');
+    expect(name).toBe('calab-project_r1_cala.zip');
     expect(blob.type).toBe('application/zip');
     const entries = readZip(await blob.arrayBuffer());
     expect([...entries.keys()].sort()).toEqual([
-      'cala-results/cala-run.json',
-      'cala-results/s1/cala-export.npz',
-      'cala-results/s1/cala-session.json',
+      'calab-project/calab-project.json',
+      'calab-project/runs/r1_cala/calab-run.json',
+      'calab-project/runs/r1_cala/s1/cala-export.npz',
     ]);
-    expect(new TextDecoder().decode(entries.get('cala-results/cala-run.json')!)).toBe('second');
-    expect([...entries.get('cala-results/s1/cala-export.npz')!]).toEqual([9, 8, 7]);
-    expect(new TextDecoder().decode(entries.get('cala-results/s1/cala-session.json')!)).toBe('{}');
+    const text = (k: string) => new TextDecoder().decode(entries.get(k)!);
+    expect(text('calab-project/runs/r1_cala/calab-run.json')).toBe('second');
+    expect([...entries.get('calab-project/runs/r1_cala/s1/cala-export.npz')!]).toEqual([9, 8, 7]);
   });
 
   it('lets go of the files once the zip is delivered', async () => {
     const blobs: Blob[] = [];
-    const sink = zipResultsSink((_, blob) => blobs.push(blob));
+    const sink = zipResultsSink('runs/r', (_, blob) => blobs.push(blob));
     await sink.writeFile('s1/cala-export.npz', async (s) => {
       await s.write(new Uint8Array(1000));
     });
@@ -299,7 +148,7 @@ describe('zipResultsSink', () => {
   });
 
   it('rejects bad paths', async () => {
-    const sink = zipResultsSink(() => {});
+    const sink = zipResultsSink('runs/r', () => {});
     await expect(sink.writeText('../x', 'y')).rejects.toThrow(/Not a results path/);
   });
 });

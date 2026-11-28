@@ -12,7 +12,7 @@
  * them and calls their actions, through the narrow `MultiRunDeps`.
  */
 import type { BoundaryFlag } from './boundary-flags.ts';
-import { createEffect, createSignal, on, untrack } from 'solid-js';
+import { batch, createEffect, createSignal, on, untrack } from 'solid-js';
 import type { ExportInput } from './export.ts';
 import { writeCalaExport } from './export.ts';
 import type { FrameSourceInfo } from './frame-source.ts';
@@ -323,9 +323,12 @@ export function createMultiRun(deps: MultiRunDeps) {
     if (skipped) patchRecord(current(), { status: 'skipped', note: skipped });
     await closeRun('finished');
     const next = current() + 1;
-    setCurrent(next);
-    setExported(false);
+    // The next run's folder is open before the session changes, so nothing is written to the last.
     await openRun(next);
+    batch(() => {
+      setCurrent(next);
+      setExported(false);
+    });
     await deps.openOne(p.sessions[next], next);
   }
 

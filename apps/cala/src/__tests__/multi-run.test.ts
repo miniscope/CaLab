@@ -20,6 +20,7 @@ function session(i: number): PlannedSession {
     error: null,
     startMs: i,
     resultsPath: `s${i}`,
+    stream: `day${i}/scope`,
   };
 }
 
@@ -39,7 +40,7 @@ function harness(
   mode: 'joint' | 'separate',
   n = 3,
   opts: {
-    sink?: ResultsSink;
+    sink?: (run: number) => ResultsSink;
     runRecord?: (s: { mode: string }, sessionIndex?: number) => Record<string, unknown>;
   } = {},
 ) {
@@ -82,8 +83,15 @@ function harness(
   let multi!: ReturnType<typeof createMultiRun>;
   const dispose = createRoot((d) => {
     multi = createMultiRun({
-      openJoint: async () => startDiscover(),
-      openOne: async () => startDiscover(),
+      // As the pipeline does: the run file before the first frame, then Discover.
+      openJoint: async () => {
+        await multi.beforeFrames();
+        startDiscover();
+      },
+      openOne: async () => {
+        await multi.beforeFrames();
+        startDiscover();
+      },
       stages: () => ({
         discover: discover(),
         extract: extract(),
@@ -113,7 +121,13 @@ function harness(
     multi.start({
       sessions: Array.from({ length: n }, (_, i) => session(i)),
       settings: { mode },
-      openSink: async () => opts.sink ?? sink,
+      openRun: async (i: number) => ({
+        id: `r${i}_cala`,
+        sink: opts.sink?.(i) ?? sink,
+        folder: `runs/r${i}_cala`,
+        project: 'p-1',
+      }),
+      planRef: (i: number) => ({ id: 'plan', step: String.fromCharCode(97 + i), kind: mode }),
       locationLabel: '',
     });
   return { multi, start, done, dispose };
@@ -132,61 +146,128 @@ describe('multi-session run stages', () => {
   });
 });
 
-describe('run record in the results', () => {
-  it('writes cala-run-record.json beside the manifest and hands the record to every export', async () => {
-    const texts = new Map<string, string>();
-    const exported: unknown[] = [];
-    const rec = {
-      format: 'cala-run-record',
-      record_version: 1,
-    };
-    const writing = sinkWith({
-      writeFile: async (path: string) => {
-        exported.push(path);
-      },
-      writeText: async (path: string, text: string) => {
-        texts.set(path, text);
-      },
-    });
-    const calls: unknown[] = [];
-    const h = harness('joint', 2, {
-      sink: writing,
-      runRecord: (st) => {
-        calls.push(st);
-        return { ...rec, settings: { library_mode: st.mode } };
-      },
-    });
+describe('run files', () => {
+  /** Every text each run's sink got, in order, by run. */
+  const recording = () => {
+    const texts = new Map<number, { path: string; text: string }[]>();
+    const sinkFor = (i: number) =>
+      sinkWith({
+        writeText: async (path: string, text: string) => {
+          texts.set(i, [...(texts.get(i) ?? []), { path, text }]);
+        },
+      });
+    const runFiles = (i: number) =>
+      (texts.get(i) ?? [])
+        .filter((t) => t.path === 'calab-run.json')
+        .map((t) => JSON.parse(t.text));
+    return { texts, sinkFor, runFiles };
+  };
+  const record = (s: { mode: string }, index?: number) => ({
+    record_version: 2,
+    software: { app_version: 'v9', git_commit: 'abc', engine_version: '1.0' },
+    params: {
+      fingerprint: 'sha256:x',
+      values: { a: 1 },
+      requested: { a: 1 },
+      sources: { '/a': 'ui' },
+      ignored: ['/b'],
+      context: { fps: 20 },
+    },
+    stages: [{ stage: 'discover', outcome: 'done' }],
+    input: { live: false },
+    settings: { mode: s.mode, index: index ?? null },
+  });
+
+  it('a Joint run is one run: planned before its first frame, then running, then finished', async () => {
+    const r = recording();
+    const h = harness('joint', 2, { sink: r.sinkFor, runRecord: record });
     await h.start();
     await h.done();
-    expect(texts.has('cala-run.json')).toBe(true);
-    const parsed = JSON.parse(texts.get('cala-run-record.json')!);
-    expect(parsed).toMatchObject({
-      format: 'cala-run-record',
-      settings: { library_mode: 'joint' },
+    const files = r.runFiles(0);
+    expect(files.map((f) => f.run.status)).toEqual(['planned', 'running', 'finished']);
+    expect(r.texts.has(1)).toBe(false);
+    const last = files[2];
+    expect(last.run).toMatchObject({
+      id: 'r0_cala',
+      app: 'cala',
+      app_version: 'v9',
+      project: 'p-1',
+      plan: { id: 'plan', step: 'a', kind: 'joint' },
     });
-    expect(calls.length).toBeGreaterThan(0);
-    expect(exported.length).toBe(2);
+    expect(
+      last.inputs.map((i: { stream: string; start_frame: number }) => [i.stream, i.start_frame]),
+    ).toEqual([
+      ['day0/scope', 0],
+      ['day1/scope', 100],
+    ]);
+    // The record is folded in: params -> config, the rest -> record (no format string of its own).
+    expect(last.config).toMatchObject({
+      requested: { a: 1 },
+      sources: { '/a': 'ui' },
+      ignored: ['/b'],
+      resolved: { a: 1 },
+      fingerprint: 'sha256:x',
+    });
+    expect(last.record).toMatchObject({
+      record_version: 2,
+      settings: { mode: 'joint' },
+      params: { context: { fps: 20 } },
+    });
+    expect(last.record.input).toBeUndefined();
+    expect(
+      last.results.map((x: { status: string; path: string; id_space: string }) => [
+        x.status,
+        x.path,
+        x.id_space,
+      ]),
+    ).toEqual([
+      ['written', 's0/cala-export.npz', 'cala:r0_cala'],
+      ['written', 's1/cala-export.npz', 'cala:r0_cala'],
+    ]);
     h.dispose();
   });
-});
 
-describe('run record in a Separate run', () => {
-  it('writes one record beside the results of each session and none at the root', async () => {
-    const texts = new Map<string, string>();
-    const writing = sinkWith({
-      writeText: async (path: string, text: string) => {
-        texts.set(path, text);
-      },
-    });
-    const h = harness('separate', 2, {
-      sink: writing,
-      runRecord: (st, index) => ({ format: 'cala-run-record', session_index: index ?? null }),
-    });
+  it('Separate sessions are one run each, with a run file of their own', async () => {
+    const r = recording();
+    const h = harness('separate', 2, { sink: r.sinkFor, runRecord: record });
     await h.start();
     await h.done();
-    expect(texts.has('cala-run-record.json')).toBe(false);
-    expect(JSON.parse(texts.get('s0/cala-run-record.json')!).session_index).toBe(0);
-    expect(JSON.parse(texts.get('s1/cala-run-record.json')!).session_index).toBe(1);
+    for (const i of [0, 1]) {
+      const files = r.runFiles(i);
+      expect(files.map((f) => f.run.status)).toEqual(['planned', 'running', 'finished']);
+      expect(files[2].run.plan.step).toBe(String.fromCharCode(97 + i));
+      expect(files[2].results).toHaveLength(1);
+      expect(files[2].results[0]).toMatchObject({
+        stream: `day${i}/scope`,
+        id_space: `cala:r${i}_cala`,
+        cells: 3,
+      });
+      expect(files[2].record.settings.index).toBe(i);
+    }
+    h.dispose();
+  });
+
+  it('hands each export the run file as it is when written', async () => {
+    const got: unknown[] = [];
+    const s = sinkWith({
+      writeFile: async (
+        _p: string,
+        write: (b: { write: (c: Uint8Array) => Promise<void> }) => Promise<void>,
+      ) => {
+        await write({ write: async () => {} });
+      },
+    });
+    const writeSpy = vi
+      .spyOn(await import('../lib/export.ts'), 'writeCalaExport')
+      .mockImplementation(async (input) => {
+        got.push(input.runFile);
+      });
+    const h = harness('joint', 2, { sink: () => s, runRecord: record });
+    await h.start();
+    await h.done();
+    expect(got).toHaveLength(2);
+    expect(got[0]).toMatchObject({ format: 'calab-run', run: { status: 'running' } });
+    writeSpy.mockRestore();
     h.dispose();
   });
 });

@@ -9,7 +9,6 @@ import {
   buildCalaExport,
   cadeconCells,
   EXPORT_FORMAT_VERSION,
-  exportFormatVersion,
   FACTORS_EXPORT_NOTE,
   factorTailNote,
   fileStem,
@@ -121,24 +120,22 @@ describe('run record', () => {
 });
 
 describe('export', () => {
-  it('embeds the run record in meta_json', async () => {
-    const runRecord = {
-      format: 'cala-run-record',
-      record_version: 1,
-      settings: { lookback: true },
-    };
-    const z = parseNpz(await buildCalaExport({ ...(await input()), runRecord }));
+  it('embeds the run file in meta_json', async () => {
+    const runFile = { format: 'calab-run', version: 1, record: { settings: { lookback: true } } };
+    const withRun = { ...(await input()), runFile: runFile as never };
+    const z = parseNpz(await buildCalaExport(withRun));
     const meta = JSON.parse(new TextDecoder().decode(z.arrays.meta_json.data as Uint8Array));
-    expect(meta.run_record).toEqual(runRecord);
+    expect(meta.run).toEqual(runFile);
+    expect('run_record' in meta).toBe(false);
     // The CaDecon file carries it as a vector and keeps the traces matrix its one candidate.
-    const cd = parseNpz(await buildCaDeconExport({ ...(await input()), runRecord }, true));
-    expect(
-      JSON.parse(new TextDecoder().decode(cd.arrays.run_record_json.data as Uint8Array)),
-    ).toEqual(runRecord);
+    const cd = parseNpz(await buildCaDeconExport(withRun, true));
+    expect(JSON.parse(new TextDecoder().decode(cd.arrays.run_json.data as Uint8Array))).toEqual(
+      runFile,
+    );
     expect(traceCandidates(cd)).toEqual(['traces']);
     const bare = parseNpz(await buildCalaExport(await input()));
     const bareMeta = JSON.parse(new TextDecoder().decode(bare.arrays.meta_json.data as Uint8Array));
-    expect(bareMeta.run_record).toBeUndefined();
+    expect(bareMeta.run).toBeUndefined();
   });
 
   it('reads cells and frames back from the trace file', async () => {
@@ -313,7 +310,7 @@ describe('export', () => {
     expect('pass2_seconds' in meta).toBe(false);
   });
 
-  it("a ?factors stream keeps the live traces beside Extract's and names its sources (format 7)", async () => {
+  it("a ?factors stream keeps the live traces beside Extract's and names its sources (format 8)", async () => {
     const inp = await input();
     const live = new Float32Array(T * 3);
     for (let f = 0; f < T; f++) for (let c = 0; c < 3; c++) live[f * 3 + c] = 7 + 100 * c + f;
@@ -350,7 +347,6 @@ describe('export', () => {
       notes: [FACTORS_EXPORT_NOTE, factorTailNote(T - 1, T)],
       stages,
     };
-    expect(exportFormatVersion(withFactors)).toBe(7);
     const a = parseNpz(await buildCalaExport(withFactors)).arrays;
     expect(a.traces_live.shape).toEqual([3, T]);
     expect([...processNpyResult(a.traces_live).data.slice(T, 2 * T)]).toEqual([
@@ -361,7 +357,7 @@ describe('export', () => {
       100, 101, 102, 103, 104, 105, 106,
     ]);
     const meta = JSON.parse(new TextDecoder().decode(a.meta_json.data as Uint8Array));
-    expect(meta.format_version).toBe(7);
+    expect(meta.format_version).toBe(8);
     expect(meta.notes).toEqual([FACTORS_EXPORT_NOTE, factorTailNote(T - 1, T)]);
     expect(meta.traces_live).toBeTypeOf('string');
     expect(meta.stages[0].settle_source).toBe('factors');
@@ -373,13 +369,11 @@ describe('export', () => {
     });
   });
 
-  it('an export without the factor fields stays format 6 with the same entries', async () => {
+  it('an export without the factor fields is format 8 with the same entries', async () => {
     const inp = await input();
-    expect(exportFormatVersion({})).toBe(6);
-    expect(exportFormatVersion({ notes: [] })).toBe(6);
     const z = parseNpz(await buildCalaExport(inp));
     const meta = JSON.parse(new TextDecoder().decode(z.arrays.meta_json.data as Uint8Array));
-    expect(meta.format_version).toBe(6);
+    expect(meta.format_version).toBe(8);
     expect('notes' in meta).toBe(false);
     expect('traces_live' in z.arrays).toBe(false);
     expect(Object.keys(z.arrays).sort()).toEqual(
@@ -494,7 +488,7 @@ describe('export of a ?factors=file recording', () => {
       ),
     );
 
-  it('records each stage source and reason, notes what each read, and is format 7', async () => {
+  it('records each stage source and reason, notes what each read, and is format 8', async () => {
     const stages: StageRun[] = [
       {
         ...stage('discover'),
@@ -514,7 +508,7 @@ describe('export of a ?factors=file recording', () => {
       },
     ];
     const meta = await metaOf({ ...(await input()), stages, notes: fileFactorNotes(stages) });
-    expect(meta.format_version).toBe(7);
+    expect(meta.format_version).toBe(8);
     expect(meta.stages[0]).toMatchObject({
       settle_source: 'file',
       settle_source_reason: expect.stringContaining('4,210'),
@@ -542,7 +536,7 @@ describe('export of a ?factors=file recording', () => {
       stage('extract'),
     ];
     const meta = await metaOf({ ...(await input()), stages, notes: fileFactorNotes(stages) });
-    expect(meta.format_version).toBe(7);
+    expect(meta.format_version).toBe(8);
     expect(meta.stages[0]).toMatchObject({
       compress_workers: 1,
       compress_workers_after: 3,
@@ -604,7 +598,7 @@ describe('export of a ?factors=file recording', () => {
       },
     ];
     const meta = await metaOf({ ...(await input()), stages, notes: fileFactorNotes(stages) });
-    expect(meta.format_version).toBe(7);
+    expect(meta.format_version).toBe(8);
     expect(meta.stages[1]).toMatchObject({
       extract_engine: 'factors',
       factor_windows_projected: 118,
@@ -629,11 +623,11 @@ describe('export of a ?factors=file recording', () => {
     expect(meta.notes).toHaveLength(1);
   });
 
-  it('an export without stage sources stays 6 and has no notes', async () => {
+  it('an export without stage sources is format 8 and has no notes', async () => {
     const stages = [stage('discover'), stage('extract')];
     expect(fileFactorNotes(stages)).toEqual([]);
     const meta = await metaOf({ ...(await input()), stages });
-    expect(meta.format_version).toBe(6);
+    expect(meta.format_version).toBe(8);
     expect(meta.notes).toBeUndefined();
   });
 });
