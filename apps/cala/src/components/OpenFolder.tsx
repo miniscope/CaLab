@@ -121,9 +121,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
     setPickError(null);
     try {
       if (!(await ensurePermission(r.handle, 'read'))) {
-        setPickError(
-          `The browser did not allow reading ${r.name}. Open its folder again.`,
-        );
+        setPickError(`The browser did not allow reading ${r.name}. Open its folder again.`);
         return;
       }
       reopenResults =
@@ -334,29 +332,29 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
             Recent projects
           </h2>
           <ul class="cala-recent" data-testid="recent-projects">
-              <For each={props.recent}>
-                {(r) => (
-                  <li class="cala-recent__item" data-testid="recent-project">
-                    <button
-                      type="button"
-                      class="btn-secondary btn-small"
-                      data-testid="recent-open"
-                      onClick={() => void reopen(r)}
-                    >
-                      {r.name}
-                    </button>{' '}
-                    <span class="cala-muted">opened {new Date(r.openedAt).toLocaleString()}</span>{' '}
-                    <button
-                      type="button"
-                      class="btn-link btn-small"
-                      aria-label={`Forget ${r.name}`}
-                      onClick={() => props.onForget?.(r)}
-                    >
-                      Forget
-                    </button>
-                  </li>
-                )}
-              </For>
+            <For each={props.recent}>
+              {(r) => (
+                <li class="cala-recent__item" data-testid="recent-project">
+                  <button
+                    type="button"
+                    class="btn-secondary btn-small"
+                    data-testid="recent-open"
+                    onClick={() => void reopen(r)}
+                  >
+                    {r.name}
+                  </button>{' '}
+                  <span class="cala-muted">opened {new Date(r.openedAt).toLocaleString()}</span>{' '}
+                  <button
+                    type="button"
+                    class="btn-link btn-small"
+                    aria-label={`Forget ${r.name}`}
+                    onClick={() => props.onForget?.(r)}
+                  >
+                    Forget
+                  </button>
+                </li>
+              )}
+            </For>
           </ul>
         </section>
       </Show>

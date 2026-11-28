@@ -72,8 +72,7 @@ const NO_CELLS = 'No cells were found.';
 
 /** The next step of an automatic run. */
 export function nextAutoAction(i: AutoInput): AutoAction {
-  if (i.mode === 'apply')
-    return { kind: 'stopped', reason: 'Apply is not available yet.' };
+  if (i.mode === 'apply') return { kind: 'stopped', reason: 'Apply is not available yet.' };
   const running = [i.discover, i.extract].includes('running');
   if (running || i.exporting) return { kind: 'wait' };
   for (const [name, st] of [

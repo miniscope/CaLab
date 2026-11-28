@@ -1077,7 +1077,13 @@ const App: Component = () => {
    * run starts at once, and its files go into a zip at the end.
    */
   async function openLive(url: string) {
-    await project.open({ rootName: 'live stream', entries: [], handle: null, sessions: [], live: url });
+    await project.open({
+      rootName: 'live stream',
+      entries: [],
+      handle: null,
+      sessions: [],
+      live: url,
+    });
     if (!(await project.runStreams(['.']))) setScreen('project');
   }
   const liveParam = flags.live;

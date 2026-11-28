@@ -464,7 +464,12 @@ describe('one-session projects', () => {
     await store.open(
       o.live
         ? { rootName: 'live stream', entries: [], handle: null, sessions: [], live: o.live }
-        : { rootName: 'My_V4_Miniscope', entries, handle: root as unknown as ReadDirLike, sessions },
+        : {
+            rootName: 'My_V4_Miniscope',
+            entries,
+            handle: root as unknown as ReadDirLike,
+            sessions,
+          },
     );
     return { store, fake, root };
   }
@@ -489,7 +494,11 @@ describe('one-session projects', () => {
     expect(savedProject(root).plan.id).not.toBeNull();
     const run = await plan.openRun(0);
     expect(run.folder).toMatch(/^runs\/2026-11-28_\d\d-00-00_cala$/);
-    await plan.onProgress!({ run: runDoc(plan, run, 'planned'), folder: run.folder, sink: run.sink });
+    await plan.onProgress!({
+      run: runDoc(plan, run, 'planned'),
+      folder: run.folder,
+      sink: run.sink,
+    });
     expect(savedIndex(root).runs.map((r) => r.id)).toEqual([run.id]);
   });
 
@@ -503,7 +512,11 @@ describe('one-session projects', () => {
     await again.store.runStreams(['.']);
     const plan = again.fake.plans[0];
     const run = await plan.openRun(0);
-    await plan.onProgress!({ run: runDoc(plan, run, 'finished'), folder: run.folder, sink: run.sink });
+    await plan.onProgress!({
+      run: runDoc(plan, run, 'finished'),
+      folder: run.folder,
+      sink: run.sink,
+    });
     expect(again.store.plan()).toEqual([]);
     expect(await again.store.runStreams(['.'])).toBe(true);
     expect(again.fake.plans).toHaveLength(2);
