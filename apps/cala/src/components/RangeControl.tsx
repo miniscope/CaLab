@@ -91,7 +91,7 @@ export function RangeControl(props: { held: HeldRange; label: string }): JSX.Ele
         type="button"
         class="cala-icon-btn cala-range__refit"
         data-testid="range-refit"
-        aria-label={`Re-fit the ${props.label} display range`}
+        aria-label={`Re-fit the ${props.label} range`}
         title="Re-fit the display range once, from the most recent frames"
         onClick={() => props.held.refit()}
       >
