@@ -194,7 +194,7 @@ export interface SettleAnswer {
  * Visit slots per visit worker in a repeatable Final settle (`Settle.bar`): a worker has up to this
  * many visits queued, so a result is applied a longer lag after its hand-out (`settleVisitLag`)
  * while the worker starts its next queued visit as soon as one is done (with one slot it would idle
- * from its result's arrival to the apply). See tools/cala-eval/results/2026-11-28-repeatable-settle-slots.md.
+ * from its result's arrival to the apply). See tools/cala-eval/results/2026-11-28-repeatable-pins-and-slots.md.
  */
 export const SETTLE_VISIT_DEPTH = 2;
 
