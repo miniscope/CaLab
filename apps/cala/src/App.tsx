@@ -1266,7 +1266,11 @@ const App: Component = () => {
     const ids = tabs.map((t) => t.id);
     const tab = createSideTab('run', 'run', () => ids);
     // A recording opened for a new run shows the Run tab, where its pre-run sheet and Run are.
-    if (untrack(pipeline.status) === 'idle' && !untrack(multiRun.plan) && !lp.info.live)
+    if (
+      untrack(pipeline.status) === 'idle' &&
+      !untrack(multiRun.plan) &&
+      !untrack(() => lp.info.live)
+    )
       tab.show('run');
     // Expanding swaps History into the large area and shows the FOV in the History tab.
     createEffect(
