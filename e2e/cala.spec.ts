@@ -45,6 +45,13 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   writeFileSync(join(folder, 'metaData.json'), '{"frameRate":"20FPS","framesPerFile":3}');
   await page.getByTestId('folder-input').setInputFiles(folder);
 
+  // Opening shows the setup page: the session and the settings; nothing runs before Run.
+  await expect(page.getByTestId('setup-settings')).toBeVisible();
+  await expect(page.getByTestId('project-row')).toHaveCount(1);
+  await expect(page.getByTestId('pipeline-status')).toHaveCount(0);
+  // Run opens the run page, which starts at once.
+  await startRun(page);
+
   // The raw-file player and the recording facts live in tabs under More.
   await openMoreTab(page, 'Raw file');
   await expect(page.getByTestId('frame-readout')).toContainText('1 / 6');
@@ -57,11 +64,6 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await expect(info).toContainText('20.00 Hz from metaData.json');
   await expect(info).toContainText('60.0 Hz (declared by the writer, ignored)');
 
-  // Opening loads the recording only: the pre-run sheet waits for Run.
-  await page.getByRole('tab', { name: 'Run', exact: true }).click();
-  await expect(page.getByTestId('prerun-sheet')).toBeVisible();
-  await expect(page.getByTestId('pipeline-status')).toHaveCount(0);
-  await startRun(page);
   // Discover finished; Extract may not follow on a recording with no cells.
   await expect(page.getByTestId('pipeline-status')).toHaveText(/^(Discover done|Done)$/, {
     timeout: 20_000,
@@ -180,7 +182,16 @@ test('Cala: a phone-wide window stacks the rail above the image, with no sideway
   mkdirSync(folder);
   writeFileSync(join(folder, '0.avi'), buildAvi({ width: 24, height: 16, frames: 3 }));
   await page.getByTestId('folder-input').setInputFiles(folder);
-  await expect(page.getByTestId('prerun-sheet')).toBeVisible();
+  // The setup page fits the phone width too, with Run reachable.
+  await expect(page.getByTestId('setup-settings')).toBeVisible();
+  const setup = await page.evaluate(() =>
+    ['html', '.cala-project'].map((sel) => {
+      const el = document.querySelector(sel)!;
+      return { sel, scroll: el.scrollWidth, client: el.clientWidth };
+    }),
+  );
+  for (const w of setup) expect(w.scroll, w.sel).toBeLessThanOrEqual(w.client);
+  await startRun(page);
 
   await expect(page.locator('.cala-main')).toHaveClass(/cala-main--narrow/);
   const rail = (await page.locator('.cala-main__rail').boundingBox())!;
@@ -206,6 +217,27 @@ test('Cala: a phone-wide window stacks the rail above the image, with no sideway
   await expect(page.locator('[data-panel-id="info"]')).toContainText('24 × 16 px');
   // The missing frame rate is a warning pair (tint, icon, text) above the facts.
   await expect(page.getByTestId('recording-warnings')).toContainText('No frame rate found');
+});
+
+test('Cala: a target speed chosen on the setup page is what the run starts with', async ({
+  page,
+}) => {
+  await page.goto('Cala/?debug');
+  const folder = mkdtempSync(join(tmpdir(), 'cala-setup-speed-e2e-'));
+  writeFileSync(join(folder, '0.avi'), buildAvi({ width: 24, height: 16, frames: 6 }));
+  writeFileSync(join(folder, 'metaData.json'), '{"frameRate":"20FPS"}');
+  await page.getByTestId('folder-input').setInputFiles(folder);
+  const speed = page.getByTestId('setup-speed');
+  await speed.getByRole('radio', { name: 'Fixed' }).click();
+  await startRun(page);
+  await expect(page.getByTestId('pipeline-status')).toHaveText(/^(Discover done|Done)$/);
+  const first = await page.evaluate(() => {
+    const rec = JSON.stringify(
+      (window as unknown as { __cala: { runRecord(): unknown } }).__cala.runRecord(),
+    );
+    return /"target_speed":\{"changes":\[\{[^}]*"fps":([0-9.]+)/.exec(rec)?.[1] ?? null;
+  });
+  expect(Number(first)).toBeGreaterThan(0);
 });
 
 test('Cala: a folder without Miniscope videos reports an error', async ({ page }) => {

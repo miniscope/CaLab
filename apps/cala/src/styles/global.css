@@ -953,6 +953,20 @@
 .cala-project .cala-project__card {
   max-width: 76rem;
 }
+.cala-project__card.cala-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.cala-project__card.cala-sheet .cala-sessions__title {
+  margin: 0;
+}
+.cala-project__run {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
 .cala-project__where code {
   overflow-wrap: anywhere;
 }

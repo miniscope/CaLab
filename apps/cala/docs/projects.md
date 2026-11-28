@@ -8,17 +8,24 @@ over any mix of sessions, and every result kept together in `calab-project/`.
 There is one way in. Whatever is opened becomes a project through the same
 code path and writes the same files:
 
-| Opened                                            | Project                                                                                        | First screen                          |
-| ------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------- |
-| An animal folder of sessions                      | one session per recording folder                                                               | the session table                     |
-| One recording folder (or files picked one by one) | one session, id `.`; its plan is one Separate step                                             | the recording, with its pre-run sheet |
-| A live stream                                     | one session, id `.`, whose stream has the role `live` and no files; no folder (zip at the end) | the recording, running                |
+| Opened                                            | Project                                                                                        | First screen                            |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------- | --------------------------------------- |
+| An animal folder of sessions                      | one session per recording folder                                                               | the setup page: table, settings, plan   |
+| One recording folder (or files picked one by one) | one session, id `.`; its plan is one Separate step                                             | the setup page: one row, settings, Run  |
+| A live stream                                     | one session, id `.`, whose stream has the role `live` and no files; no folder (zip at the end) | the setup page (`?live=<url>`: running) |
 
-A one-session project never shows its table unless asked (**Project** in the
-header). **Run** on its pre-run sheet starts that step: permission to write is
+Every project opens on the **setup page** (`ProjectView`): its sessions, the
+settings every run started there reads (`SetupSettings`), and **Run** (one
+session) or the run plan with **Run plan** (several). Nothing is opened or run
+before that click. **Run** starts the one-session step: permission to write is
 asked, the project file and the run file (`planned`) are written before the
-first frame, and the run's results go into its run folder like any other
-run's. **Restart** after a run ended starts a new run of the same step.
+first frame, the recording is opened and the run page shows it running; its
+results go into its run folder like any other run's. The run page shows the
+settings used read-only (with their sources); **Restart** after a run ended
+starts a new run of the same step with the same settings, and **Back to setup**
+or **Change settings and run again** return to the setup page with the settings
+kept. When the recording or stream cannot be opened, the setup page says why
+and no run is left going.
 
 The project files are app-neutral: `@calab/project` (`packages/project`) owns
 their schemas, reading, refusal, the index and the plan, so a later CaDecon,
@@ -168,12 +175,16 @@ rebuild:
 partial cala params (any subset of `crates/cala/schema/cala-params.schema.json`).
 A run's params resolve, lowest first: schema defaults → project `defaults` →
 step `params` → the stream's `overrides` (only when the run has that one
-stream: a Separate run, not a Joint one) → a loaded config file → the sheet's
-edits. The run file's `config.sources` names the layer of each requested value
-(`project`, `step`, `stream`, `file:<name>`, `ui`). In the sheet, **Save as
-project defaults** merges the sheet's edits and a loaded file's values into
-`defaults` (and drops those keys from the open session's override); with **This
-session only** they go into the open stream's `overrides` instead. A block that
+stream: a Separate run, not a Joint one) → a loaded config file → the setup
+page's edits. The run file's `config.sources` names the layer of each requested
+value (`project`, `step`, `stream`, `file:<name>`, `ui`). On the setup page,
+**Save as project defaults** merges the edits and a loaded file's values into
+`defaults` (and, in a one-session project, drops those keys from its session's
+override); with **This session only** (one-session projects) they go into the
+stream's `overrides` instead. With several sessions the setup page shows the
+project's defaults as its base; a session with values of its own is marked
+"(own settings)" in the table, and an edit made on the page still wins over
+them in every run (the edits are the top layer). A block that
 breaks the schema, or `defaults` of another params version, is named in a
 warning and not used.
 
@@ -186,16 +197,16 @@ session is a run of its own. It is written **before the run's first frame**
 (`running`), and when the run ends (`finished`, or `stopped` with the reason,
 also when the run is left or fails).
 
-| Key       | What                                                                                                                                                                                                                               |
-| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `run`     | `id` (`<local time>_cala`, its folder name), `app`, `app_version`, `engine_version`, `git_commit`, `project`, `plan` (`{id, step, kind}`), `status`, `stopped`, `created`, `updated`                                               |
-| `inputs`  | one per stream read: `role` (`video`, `live`), `stream`, `recording_start`, `frames`, `files`, `width`, `height`, `bit_depth`, `fps` (`{value, source}`), `start_frame` on the run's frame axis                                    |
-| `links`   | other runs this one reads (empty for cala today)                                                                                                                                                                                   |
-| `config`  | `schema` (`cala-params`), `params_version`, `requested` (what the sheet or a config file asked for), `sources` (pointer → `ui`, `file:<name>`), `ignored` (unknown keys of a config file), `resolved` (every param), `fingerprint` |
-| `derived` | values read from the data (`/time/fps`)                                                                                                                                                                                            |
-| `stages`  | the stage log (Discover, Extract) with outcomes and times; a Discover-only run ends it with Extract `skipped`                                                                                                                      |
-| `results` | one per stream: `status` (`pending`, `written`, `skipped`, `failed`), `note`, `path` (below the run folder), `id_space`, `cells`, `library_version`, `frame_range`, `boundary`, `created`                                          |
-| `record`  | the rest of the run record ([run-record.md](run-record.md))                                                                                                                                                                        |
+| Key       | What                                                                                                                                                                                                                                    |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run`     | `id` (`<local time>_cala`, its folder name), `app`, `app_version`, `engine_version`, `git_commit`, `project`, `plan` (`{id, step, kind}`), `status`, `stopped`, `created`, `updated`                                                    |
+| `inputs`  | one per stream read: `role` (`video`, `live`), `stream`, `recording_start`, `frames`, `files`, `width`, `height`, `bit_depth`, `fps` (`{value, source}`), `start_frame` on the run's frame axis                                         |
+| `links`   | other runs this one reads (empty for cala today)                                                                                                                                                                                        |
+| `config`  | `schema` (`cala-params`), `params_version`, `requested` (what the setup page or a config file asked for), `sources` (pointer → `ui`, `file:<name>`), `ignored` (unknown keys of a config file), `resolved` (every param), `fingerprint` |
+| `derived` | values read from the data (`/time/fps`)                                                                                                                                                                                                 |
+| `stages`  | the stage log (Discover, Extract) with outcomes and times; a Discover-only run ends it with Extract `skipped`                                                                                                                           |
+| `results` | one per stream: `status` (`pending`, `written`, `skipped`, `failed`), `note`, `path` (below the run folder), `id_space`, `cells`, `library_version`, `frame_range`, `boundary`, `created`                                               |
+| `record`  | the rest of the run record ([run-record.md](run-record.md))                                                                                                                                                                             |
 
 Every `cala-export.npz` carries the run file as it was when the export was
 written, as `meta_json.run`, so a lone export still says how it was made.
@@ -234,7 +245,7 @@ edges; `own` marks a session with ids of its own.
   current** in a row's results writes the pick to `calab-project.json`.
 - **Plan on disk.** Each plan edit (add, move, remove, clear, re-plan) is
   written to `calab-project.json` at once when the browser already allows
-  writing; else it is kept in memory and written at **Start plan**, which asks
+  writing; else it is kept in memory and written at **Run plan**, which asks
   for permission and writes the plan (with its id) before the first step runs.
   A step starts with its run (`running`, its run id in `runs`), leaves the plan
   when the run finishes (its run file keeps a copy), and stays, `stopped`, when
@@ -274,7 +285,7 @@ normal viewer, read-only, looking as the app did right after a run on that
 session: the field of view with the footprints and contours, the QC table and
 colours, the selected cell's footprint and trace, the History plots and event
 log, the stages that ran, and the flat field. There are no Discover or
-Extract controls (a new run starts from the table); **Back to project** returns
+Extract controls (a new run starts from the table); **Back to setup** returns
 to it.
 
 Code: `src/lib/result-file.ts` (reading an export), `src/components/ResultView.tsx`
@@ -323,12 +334,12 @@ Selected rows go into the **plan** as steps:
 
 A session is in one pending step at most (adding it again moves it), and a
 Joint step of one session is a Separate step. Steps can be reordered and
-removed. **Start plan** asks for permission to write, writes the plan, then
+removed. **Run plan** asks for permission to write, writes the plan, then
 runs the steps one after another; each step is one run (its run file's
 `run.plan` names the plan and step), and each session's current result updates
 as its results are written. If a stage fails or is cancelled the plan stops:
 results already written stay, and the steps not finished stay in the plan to
-start again. **Back to project** in the viewer's header returns to the table
+start again. **Back to setup** in the viewer's header returns to the table
 (stopping a running plan).
 
 ## Live streams

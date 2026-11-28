@@ -623,29 +623,17 @@ await page.evaluate((withRelease) => {
 const single = args.includes('--single');
 await page.setInputFiles('[data-testid=folder-input]', data);
 if (single) {
-  // One recording folder: it opens on the pre-run sheet; Discover starts on Run.
+  // One recording folder: it opens on its setup page; Run opens the run page and starts.
+  if (lookback && toggle) {
+    // The user's path: tick the checkbox on the setup page before Run.
+    await page.waitForSelector('[data-testid=lookback-toggle]', { timeout: 120000 });
+    await page.check('[data-testid=lookback-toggle]', { timeout: 10000 });
+    L('toggle: look-back ticked on the setup page');
+  }
   await page.click('[data-testid=run-start]', { timeout: 120000 });
   await page.waitForFunction(() => window.__cala?.pipeline.status() === 'running', null, {
     timeout: 120000,
   });
-  if (lookback && toggle) {
-    // The user's path: open the settings line, tick the checkbox, then restart Discover from frame 0.
-    await page.click('[data-testid=settings-summary]');
-    L(
-      'toggle: ' +
-        (await page.$eval(
-          '[data-testid=lookback-toggle]',
-          (e) => `disabled=${e.disabled} title=${e.closest('label')?.title}`,
-        )),
-    );
-    await page.check('[data-testid=lookback-toggle]', { timeout: 10000 });
-    await page.click('button[aria-label=Restart]');
-    await page.waitForFunction(() => window.__cala?.lookbackOn() === true, null, {
-      timeout: 60000,
-    });
-    t0 = Date.now();
-    L('toggle: look-back on after restart');
-  }
 } else {
   await page.waitForSelector('[data-testid=session-item]', { timeout: 120000 });
   await page.waitForTimeout(3000);

@@ -19,7 +19,8 @@ import { metaText } from './cala-helpers.ts';
  *
  * With CALA_E2E_EVIDENCE set, the unzipped tree is copied to
  * ~/Projects/cala-data/runs/params-audit/pr5/example-tree/ (exports included), and screenshots of
- * the open flow (one recording, an animal folder; 1440 and 400 px wide) go to `…/pr6/`.
+ * the setup page (one session, three; light and dark; 1440 and 400 px wide) go to
+ * ~/Projects/cala-data/runs/cleanup-2026-11-27/prerun-move/.
  */
 const EVIDENCE = process.env.CALA_E2E_EVIDENCE
   ? join(homedir(), 'Projects/cala-data/runs/params-audit')
@@ -88,9 +89,13 @@ async function noFileSystemAccess(page: Page): Promise<void> {
   });
 }
 
-/** Screenshots of the open flow, loaded at 1440 and at 400 px wide (evidence only). */
-test('Cala: the open flow, as screenshots', async ({ page }) => {
+/**
+ * Screenshots of the setup page (one session, three sessions), light and dark, loaded at 1440
+ * and at 400 px wide (evidence only).
+ */
+test('Cala: the setup page, as screenshots', async ({ page }) => {
   test.skip(!EVIDENCE, 'evidence only (CALA_E2E_EVIDENCE)');
+  test.setTimeout(120_000);
   const base = mkdtempSync(join(tmpdir(), 'cala-shots-e2e-'));
   const single = join(base, 'My_V4_Miniscope');
   mkdirSync(single);
@@ -99,22 +104,42 @@ test('Cala: the open flow, as screenshots', async ({ page }) => {
   const animal = join(base, 'mouse1');
   writeAnimal(animal);
   await noFileSystemAccess(page);
-  const shot = (name: string, width: number) =>
-    page.screenshot({ path: join(EVIDENCE!, 'pr6', `${name}-${width}.png`), fullPage: true });
-  for (const width of [1440, 400]) {
-    await page.setViewportSize({ width, height: 900 });
+  const dir = join(homedir(), 'Projects/cala-data/runs/cleanup-2026-11-27/prerun-move');
+  mkdirSync(dir, { recursive: true });
+  const shot = (name: string) =>
+    page.screenshot({ path: join(dir, `${name}.png`), fullPage: true });
+  for (const scheme of ['light', 'dark'] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
+    for (const width of [1440, 400]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto('Cala/');
+      await page.getByTestId('folder-input').setInputFiles(single);
+      await expect(page.getByTestId('setup-settings')).toBeVisible();
+      await expect(page.getByTestId('project-row')).toHaveCount(1);
+      await shot(`setup-single-${scheme}-${width}`);
+      await page.goto('Cala/');
+      await page.getByTestId('folder-input').setInputFiles(animal);
+      await expect(page.getByTestId('project-row')).toHaveCount(3);
+      await page.getByTestId('select-all').check();
+      await page.getByTestId('plan-chain').click();
+      await expect(page.getByTestId('plan-group')).toHaveCount(1);
+      await shot(`setup-multi-${scheme}-${width}`);
+    }
+  }
+  // The run page's read-only Settings used, opened, from the one-session project (last: a run
+  // cut short here leaves a saved run file in browser storage, which the setup page then lists).
+  await page.setViewportSize({ width: 1440, height: 900 });
+  for (const scheme of ['light', 'dark'] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
     await page.goto('Cala/');
-    await shot('start', width);
     await page.getByTestId('folder-input').setInputFiles(single);
-    await expect(page.getByTestId('prerun-sheet')).toBeVisible();
-    await shot('single-recording', width);
-    await page.getByTestId('back-to-project').click();
-    await expect(page.getByTestId('project-row')).toHaveCount(1);
-    await shot('single-recording-project', width);
-    await page.goto('Cala/');
-    await page.getByTestId('folder-input').setInputFiles(animal);
-    await expect(page.getByTestId('project-row')).toHaveCount(3);
-    await shot('animal-folder', width);
+    await page.getByTestId('run-start').click();
+    await expect(page.getByTestId('pipeline-status')).toHaveText(/^(Discover done|Done)$/, {
+      timeout: 30_000,
+    });
+    await page.getByTestId('settings-summary').click();
+    await expect(page.getByTestId('change-settings')).toBeVisible();
+    await shot(`run-settings-used-${scheme}-1440`);
   }
   rmSync(base, { recursive: true, force: true });
 });
@@ -138,11 +163,11 @@ test('Cala: one recording is a one-session project; Run writes its run into cala
 
   await page.goto('Cala/');
   await page.getByTestId('folder-input').setInputFiles(folder);
-  // No table: the recording opens on its pre-run sheet; the project is one click away.
-  await expect(page.getByTestId('prerun-sheet')).toBeVisible();
-  await expect(page.getByTestId('project-row')).toHaveCount(0);
-  await expect(page.getByTestId('back-to-project')).toHaveText('Project');
+  // The setup page, as for a project of many sessions: its one session, the settings, Run.
+  await expect(page.getByTestId('setup-settings')).toBeVisible();
+  await expect(page.getByTestId('project-row')).toHaveCount(1);
   await page.getByTestId('run-start').click();
+  await expect(page.getByTestId('back-to-project')).toHaveText('Back to setup');
   await expect(page.getByTestId('session-run-root')).toContainText('calab-project/runs/');
   await expect.poll(() => downloads.length, { timeout: 360_000, intervals: [2000] }).toBe(1);
   expect(downloads[0].suggestedFilename()).toMatch(/^calab-project_.+_cala\.zip$/);
@@ -378,9 +403,9 @@ function writeRecording(base: string, name: string): string {
   return folder;
 }
 
-/** Set a number field of the sheet (Advanced opened first) and leave it. */
+/** Set a number field of the setup page's settings (Advanced opened first) and leave it. */
 async function setField(page: Page, pointer: string, value: string): Promise<void> {
-  const sheet = page.getByTestId('run-settings');
+  const sheet = page.getByTestId('setup-settings');
   const advanced = sheet.getByTestId('params-advanced');
   if (!(await advanced.evaluate((el) => (el as HTMLDetailsElement).open)))
     await advanced.locator('summary').click();
@@ -412,7 +437,7 @@ test("Cala: project defaults and a session's own value reach the run file; its e
 
   await page.goto('Cala/');
   await page.getByTestId('folder-input').setInputFiles(folder);
-  await expect(page.getByTestId('prerun-sheet')).toBeVisible();
+  await expect(page.getByTestId('setup-settings')).toBeVisible();
   // Two values saved as the project's defaults; then this session's own diameter over one.
   await setField(page, '/scales/cell_diameter_px', '12');
   await setField(page, '/motion/template_tau_s', '30');
@@ -431,7 +456,7 @@ test("Cala: project defaults and a session's own value reach the run file; its e
   // picked again.
   await page.reload();
   await page.getByTestId('folder-input').setInputFiles(folder);
-  await expect(page.getByTestId('prerun-sheet')).toBeVisible();
+  await expect(page.getByTestId('setup-settings')).toBeVisible();
   await page.getByTestId('params-advanced').locator('summary').click();
   await expect(badge(page, '/scales/cell_diameter_px')).toHaveText('stream');
   await expect(badge(page, '/motion/template_tau_s')).toHaveText('project');
@@ -466,7 +491,7 @@ test("Cala: project defaults and a session's own value reach the run file; its e
   const other = writeRecording(base, 'Other_Miniscope');
   await page.goto('Cala/');
   await page.getByTestId('folder-input').setInputFiles(other);
-  await expect(page.getByTestId('prerun-sheet')).toBeVisible();
+  await expect(page.getByTestId('setup-settings')).toBeVisible();
   await expect(page.getByTestId('config-count')).toHaveText('All defaults');
   await page
     .getByTestId('config-load-input')

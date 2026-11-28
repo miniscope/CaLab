@@ -430,7 +430,7 @@ async function fileRun(browser) {
   // What the origin may store at the start (the compress pool's cap reads the same).
   const storage = await page.evaluate(() => navigator.storage.estimate()).catch(() => null);
   await page.setInputFiles('[data-testid=folder-input]', folder);
-  // The recording opens on the pre-run sheet; Discover starts on Run.
+  // The folder opens on its setup page; Run opens the run page, which starts at once.
   await page.click('[data-testid=run-start]', { timeout: 60_000 });
   const t0 = Date.now();
   // One sample a second until Extract is over (the factor summary reads it).

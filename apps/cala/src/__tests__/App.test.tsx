@@ -183,10 +183,23 @@ function mount(): HTMLElement {
   return root;
 }
 
-async function pick(root: HTMLElement, files: File[]): Promise<void> {
+/** Pick a folder: its setup page shows (sessions, settings, Run); nothing is opened yet. */
+async function pickSetup(root: HTMLElement, files: File[]): Promise<void> {
   const input = root.querySelector<HTMLInputElement>('[data-testid="folder-input"]')!;
   Object.defineProperty(input, 'files', { value: files, configurable: true });
   input.dispatchEvent(new Event('change', { bubbles: true }));
+  await vi.waitFor(() => expect(root.querySelector('[data-testid="run-start"]')).not.toBeNull());
+}
+
+/** Press Run on the setup page: the run page opens its recording and runs. */
+function run(root: HTMLElement): void {
+  root.querySelector<HTMLButtonElement>('[data-testid="run-start"]')!.click();
+}
+
+/** Pick a one-recording folder and press Run on its setup page. */
+async function pick(root: HTMLElement, files: File[]): Promise<void> {
+  await pickSetup(root, files);
+  run(root);
   await vi.waitFor(() => expect(fake.open).toHaveBeenCalled());
 }
 
@@ -195,12 +208,6 @@ function leave(root: HTMLElement): void {
   [...root.querySelectorAll<HTMLButtonElement>('.compact-header__actions button')]
     .find((b) => b.textContent?.startsWith('Open another'))!
     .click();
-}
-
-/** Press Run on the pre-run sheet (opening a recording does not start Discover). */
-async function run(root: HTMLElement): Promise<void> {
-  await vi.waitFor(() => expect(root.querySelector('[data-testid="run-start"]')).not.toBeNull());
-  root.querySelector<HTMLButtonElement>('[data-testid="run-start"]')!.click();
 }
 
 describe('App', () => {
@@ -252,15 +259,18 @@ describe('App', () => {
     expect(root.querySelector('[data-testid="frame-readout"]')?.textContent).toContain('26 / 50');
   });
 
-  it('shows the pre-run sheet on open, runs on Run, and shows progress and the history', async () => {
+  it('shows the settings on the setup page, runs on Run, and shows progress and the history', async () => {
     fake.open.mockResolvedValue(INFO);
     fake.readFrame.mockImplementation(async () => new Uint8Array(12));
     const root = mount();
-    await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
-    // Opening loads the recording only: the sheet with its settings, hidden slots and Run.
-    await vi.waitFor(() =>
-      expect(root.querySelector('[data-testid="prerun-sheet"]')).not.toBeNull(),
-    );
+    await pickSetup(root, [makeFile('0.avi', new Uint8Array(4))]);
+    // The setup page: the one session, the settings with their hidden slots, and Run. Nothing
+    // is opened or started before Run.
+    expect(root.querySelector('[data-testid="setup-settings"]')).not.toBeNull();
+    expect(root.querySelectorAll('[data-testid="project-row"]')).toHaveLength(1);
+    expect(root.querySelector('[data-testid="plan-start"]')).toBeNull();
+    expect(root.querySelector('.dashboard-shell')).toBeNull();
+    expect(fake.open).not.toHaveBeenCalled();
     expect(fake.startPipeline).not.toHaveBeenCalled();
     // The settings come from the params schema: the main fields, and Advanced folded.
     const main = root.querySelector('[data-testid="params-main"]');
@@ -275,9 +285,10 @@ describe('App', () => {
       expect(root.querySelector<HTMLElement>(`[data-testid="prerun-slot-${slot}"]`)?.hidden).toBe(
         true,
       );
-    expect(root.querySelector('[data-testid="run-strip-stage"]')?.textContent).toBe('Ready');
-    await run(root);
+    // Run opens the run page, which starts at once.
+    run(root);
     await vi.waitFor(() => expect(fake.startPipeline).toHaveBeenCalledTimes(1));
+    expect(root.querySelector('[data-testid="setup-settings"]')).toBeNull();
     const status = () => root.querySelector('[data-testid="pipeline-status"]')?.textContent;
     await vi.waitFor(() => expect(status()).toMatch(/^(Discover done|Done)$/));
     expect(root.querySelector('[data-testid="pipeline-readout"]')?.textContent).toContain(
@@ -296,9 +307,12 @@ describe('App', () => {
     expect(root.querySelector('[data-testid="history-imaging"]')).not.toBeNull();
     expect(root.querySelectorAll('[data-testid="cells-view"]')).toHaveLength(1);
 
-    // Done: the settings fold to a summary line, and Discover is one line in its hue with ✓.
+    // The settings used are a read-only line; Discover is one line in its hue with ✓.
     expect(root.querySelector('[data-testid="settings-summary"]')).not.toBeNull();
-    expect(root.querySelector('[data-testid="prerun-sheet"]')).toBeNull();
+    expect(
+      root.querySelector('[data-testid="settings-used"] [data-testid="params-main"]'),
+    ).toBeNull();
+    expect(root.querySelector('[data-testid="change-settings"]')).not.toBeNull();
     const discover = root.querySelector('[data-testid="step-panel-discover"]')!;
     expect(discover.getAttribute('data-state')).toBe('done');
     expect(discover.textContent).toMatch(/^Discover0 cells/);
@@ -306,15 +320,40 @@ describe('App', () => {
     // Opening another folder stops the worker-side pipeline.
     leave(root);
     expect(fake.stopPipeline).toHaveBeenCalled();
-    // The next recording opens on its own pre-run sheet, with nothing of the last run.
-    await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
-    await vi.waitFor(() =>
-      expect(root.querySelector('[data-testid="prerun-sheet"]')).not.toBeNull(),
-    );
+    // The next recording opens on its own setup page; its run shows nothing of the last run.
+    await pickSetup(root, [makeFile('0.avi', new Uint8Array(4))]);
     expect(fake.startPipeline).toHaveBeenCalledTimes(1);
     expect(root.querySelector('[data-testid="run-export"]')).toBeNull();
     expect(root.querySelector('[data-testid="pipeline-status"]')).toBeNull();
-    expect(root.querySelector('[data-testid="run-strip-stage"]')?.textContent).toBe('Ready');
+  });
+
+  it('Change settings and run again returns to the setup page with the settings kept', async () => {
+    fake.open.mockResolvedValue(INFO);
+    fake.readFrame.mockImplementation(async () => new Uint8Array(12));
+    const root = mount();
+    await pickSetup(root, [makeFile('0.avi', new Uint8Array(4))]);
+    const px = root.querySelector<HTMLInputElement>('[data-testid="cell-diameter-px"]')!;
+    px.value = '12';
+    px.dispatchEvent(new Event('change', { bubbles: true }));
+    run(root);
+    const status = () => root.querySelector('[data-testid="pipeline-status"]')?.textContent;
+    await vi.waitFor(() => expect(status()).toMatch(/^(Discover done|Done)$/));
+    // The run page names what was asked for and where it came from.
+    const row = root.querySelector(
+      '[data-testid="settings-used-row"][data-ptr="/scales/cell_diameter_px"]',
+    );
+    expect(row?.textContent).toContain('12');
+    expect(row?.textContent).toContain('Set on the setup page');
+    root.querySelector<HTMLButtonElement>('[data-testid="change-settings"]')!.click();
+    await vi.waitFor(() =>
+      expect(root.querySelector('[data-testid="setup-settings"]')).not.toBeNull(),
+    );
+    expect(root.querySelector<HTMLInputElement>('[data-testid="cell-diameter-px"]')!.value).toBe(
+      '12',
+    );
+    // Run again: a second run with the same settings.
+    run(root);
+    await vi.waitFor(() => expect(fake.startPipeline).toHaveBeenCalledTimes(2));
   });
 
   it('puts the run rail over one row of tabs, keyboard-operable and remembered', async () => {
@@ -322,7 +361,6 @@ describe('App', () => {
     fake.readFrame.mockImplementation(async () => new Uint8Array(12));
     const root = mount();
     await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
-    await run(root);
     const stage = () => root.querySelector('[data-testid="run-strip-stage"]')?.textContent;
     await vi.waitFor(() => expect(stage()).toBe('Discover done'));
     // The rail: the stage track with Discover done, and Cells at 0 on this cell-less recording.
@@ -394,16 +432,14 @@ describe('App', () => {
     expect(localStorage.getItem('cala.sideTab.run')).toBe('recording');
   });
 
-  it('opens a recording on the Run tab for its sheet, and keeps the remembered tab', async () => {
+  it('opens the run page on the remembered tab', async () => {
     localStorage.setItem('cala.sideTab.run', 'qc');
     fake.open.mockResolvedValue(INFO);
     fake.readFrame.mockImplementation(async () => new Uint8Array(12));
     const root = mount();
     await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
-    await vi.waitFor(() =>
-      expect(root.querySelector('[data-testid="prerun-sheet"]')).not.toBeNull(),
-    );
-    expect(root.querySelector('[data-testid="tab-run"]')?.getAttribute('aria-selected')).toBe(
+    await vi.waitFor(() => expect(root.querySelector('[data-testid="tab-qc"]')).not.toBeNull());
+    expect(root.querySelector('[data-testid="tab-qc"]')?.getAttribute('aria-selected')).toBe(
       'true',
     );
     expect(localStorage.getItem('cala.sideTab.run')).toBe('qc');
@@ -426,13 +462,19 @@ describe('App', () => {
     expect(play.getAttribute('aria-label')).toBe('Play');
   });
 
-  it('shows an error from the frame source and stays on the picker', async () => {
+  it('shows an error from the frame source and stays on the setup page', async () => {
     fake.open.mockRejectedValue(new Error('0.avi: compressed codec MJPG'));
     const root = mount();
     await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
-    await vi.waitFor(() => expect(root.querySelector('.error-card')).not.toBeNull());
-    expect(root.querySelector('.error-card')?.textContent).toContain('MJPG');
-    expect(root.querySelector('.drop-zone')).not.toBeNull();
+    await vi.waitFor(() =>
+      expect(root.querySelector('[data-testid="run-refused"]')?.textContent).toContain('MJPG'),
+    );
+    expect(root.querySelector('[data-testid="project-view"]')).not.toBeNull();
+    expect(root.querySelector('.dashboard-shell')).toBeNull();
+    // No run is left going: Run can be pressed again.
+    expect(root.querySelector<HTMLButtonElement>('[data-testid="run-start"]')!.disabled).toBe(
+      false,
+    );
   });
 
   it('returns to the picker from "Open another folder"', async () => {
@@ -530,6 +572,9 @@ describe('App: video series chooser', () => {
     expect(options.every((o) => o.tagName === 'BUTTON' && o.type === 'button')).toBe(true);
 
     options[1].click();
+    await vi.waitFor(() => expect(root.querySelector('[data-testid="run-start"]')).not.toBeNull());
+    expect(fake.open).not.toHaveBeenCalled();
+    run(root);
     await vi.waitFor(() => expect(fake.open).toHaveBeenCalled());
     const opened = fake.open.mock.calls[0][0] as { relPath: string }[];
     expect(opened.map((e) => e.relPath)).toEqual(a.map((f) => `rec/${f.name}`));
@@ -585,7 +630,7 @@ describe('App: one open path', () => {
     expect(root.querySelector('[data-testid="session-setup"]')).toBeNull();
   });
 
-  it('one recording opens on its pre-run sheet; Run starts its project run', async () => {
+  it('one recording opens on its setup page; Run starts its project run', async () => {
     // As shipped: look-back and the flat field on (jsdom has the workers of neither).
     lookback.blocked = null;
     const flat = fake as { subscribeFlatField?: () => () => void };
@@ -597,18 +642,18 @@ describe('App: one open path', () => {
     fake.open.mockResolvedValue(INFO);
     fake.readFrame.mockImplementation(async () => new Uint8Array(12));
     const root = mount();
-    await pick(root, v4('day1', 2));
-    await vi.waitFor(() =>
-      expect(root.querySelector('[data-testid="prerun-sheet"]')).not.toBeNull(),
-    );
+    await pickSetup(root, v4('day1', 2));
     expect(fake.probe).toHaveBeenCalledTimes(1);
-    expect(root.querySelector('[data-testid="project-row"]')).toBeNull();
-    // The header names the project; its table is one click away.
-    expect(root.querySelector('[data-testid="back-to-project"]')!.textContent).toBe('Project');
-    await run(root);
+    // The same setup page as a project of many sessions: its one session, the settings, Run.
+    expect(root.querySelectorAll('[data-testid="project-row"]')).toHaveLength(1);
+    expect(root.querySelector('[data-testid="setup-settings"]')).not.toBeNull();
+    expect(fake.open).not.toHaveBeenCalled();
+    run(root);
     await vi.waitFor(() => expect(fake.startPipeline).toHaveBeenCalled());
-    // The recording is not opened a second time for its run.
     expect(fake.open).toHaveBeenCalledTimes(1);
+    expect(root.querySelector('[data-testid="back-to-project"]')!.textContent).toBe(
+      'Back to setup',
+    );
     // The project's run builds the engine the default settings always built.
     await initTestWasm();
     const { paramsLayer } = fake.startPipeline.mock.calls[0][0] as { paramsLayer: ParamsLayer };
@@ -723,6 +768,12 @@ describe('App: animal project', () => {
     expect(second.querySelector('[data-testid="cell-current"]')!.textContent).toBe('—');
     expect(root.querySelector('[data-testid="project-warning"]')).toBeNull();
     expect(fake.open).not.toHaveBeenCalled();
+    // The same setup page as one recording: the settings, with Save as project defaults.
+    expect(root.querySelector('[data-testid="setup-settings"]')).not.toBeNull();
+    expect(root.querySelector('[data-testid="config-save-defaults"]')).not.toBeNull();
+    expect(root.querySelector('[data-testid="config-session-only"]')).toBeNull();
+    expect(root.querySelector('[data-testid="run-start"]')).toBeNull();
+    expect(root.querySelector('[data-testid="plan-start"]')!.textContent).toBe('Run plan');
   });
 
   it('sets an older result current from the details', async () => {

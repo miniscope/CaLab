@@ -97,6 +97,7 @@ import type { LibraryView } from './workers/slow-types.ts';
 import { DISCOVER_ONLY_EXPORT_NOTE, type ExportInput } from './lib/export.ts';
 import type { ProjectResult } from './lib/project-index.ts';
 import { openResult, type LoadedResult } from './lib/result-file.ts';
+import { isRefusal, readConfigFile } from './lib/config-file.ts';
 import { ResultView, type ResultOrigin } from './components/ResultView.tsx';
 import { DonatePanel, MyDonationsEntry } from './components/DonatePanel.tsx';
 import { BrowseDonationsEntry } from './components/BrowseDonations.tsx';
@@ -667,10 +668,9 @@ const App: Component = () => {
 
   /** The session whose recording is open on its own (null: none, a Joint run's, or a stream). */
   let openCandidate: SessionCandidate | null = null;
-  // Opening a session loads its recording and nothing else: a one-session project shows the Run
-  // tab's pre-run sheet, and Discover starts on its Run button. The previous recording's Extract
-  // result, stage log, run history and export mark are dropped, so nothing of it shows or exports
-  // under the new label.
+  // Opening a session loads its recording (a run's session, from Run on the setup page). The
+  // previous recording's Extract result, stage log, run history and export mark are dropped, so
+  // nothing of it shows or exports under the new label.
   async function openRecording(candidate: SessionCandidate, label: string) {
     pipeline.stop();
     pass2.clear();
@@ -692,7 +692,7 @@ const App: Component = () => {
   }
 
   // ---- Runs of plan steps (docs/stages.md, "Sessions") ----
-  /** The start screen, or the project table. A one-session project opens on its recording. */
+  /** The start screen, or the setup page (`ProjectView`) of the open project. */
   const [screen, setScreen] = createSignal<'open' | 'project'>('open');
   const version = import.meta.env.VITE_APP_VERSION || 'dev';
   // ---- Run record (docs/run-record.md): how this run was made, saved with every result ----
@@ -927,6 +927,8 @@ const App: Component = () => {
   const [viewing, setViewing] = createSignal<{
     result: LoadedResult;
     origin: ResultOrigin;
+    /** The export file, to load its settings back for another run. */
+    file: File;
   } | null>(null);
   const [viewState, setViewState] = createSignal<{ busy: boolean; error: string | null }>({
     busy: false,
@@ -939,6 +941,7 @@ const App: Component = () => {
       const result = await openResult(file, r.session);
       setViewing({
         result,
+        file,
         origin: {
           session: r.session,
           run: r.run,
@@ -955,12 +958,33 @@ const App: Component = () => {
     }
   }
 
-  /** From the viewer back to the open project (a running plan stops). */
+  /**
+   * From the run page back to the setup page (a running plan stops). The settings stay as they
+   * were, so a changed run starts from them.
+   */
   function backToProject(): void {
     pipeline.stop();
     multiRun.stop();
     store.close();
+    setRunRefused(null);
     setScreen('project');
+    project.setupLayers();
+    void project.refresh();
+  }
+
+  /** Why loading a saved result's settings failed (null: it did not). */
+  const [rerunError, setRerunError] = createSignal<string | null>(null);
+  /** From the result viewer to the setup page with that result's settings loaded. */
+  async function rerunFromResult(file: File): Promise<void> {
+    const r = await readConfigFile(file);
+    if (isRefusal(r)) {
+      setRerunError(`${file.name}: ${r.message}`);
+      return;
+    }
+    setRerunError(null);
+    pipeline.params.load(r);
+    setViewing(null);
+    project.setupLayers();
     void project.refresh();
   }
 
@@ -970,21 +994,15 @@ const App: Component = () => {
   const exportRunFile = (): RunFile | null => multiRun.runFile();
 
   /**
-   * Open what was picked (`docs/projects.md`): the project's files are read or made in memory; a
-   * one-session project opens on its recording (the pre-run sheet), a larger one on its table.
+   * Open what was picked (`docs/projects.md`): the project's files are read or made in memory and
+   * the setup page shows its sessions (one or many) and the settings. Nothing is opened or run
+   * until Run.
    */
   async function openProject(o: ProjectOpen): Promise<void> {
     leaveRun();
     setScreen('project');
     await project.open(o);
     loadRecent();
-    const one = project.single();
-    if (!one || project.error()) return;
-    await openRecording(one.candidate, o.rootName);
-    if (!store.info()) {
-      project.close();
-      setScreen('open');
-    }
   }
 
   /** The sheet's Save as project defaults / This session only (DESIGN §3.5). */
@@ -1000,6 +1018,18 @@ const App: Component = () => {
 
   /** Why the last Run or Restart did not start a run (null: it did, or none was asked for). */
   const [runRefused, setRunRefused] = createSignal<string | null>(null);
+  /** A Run was clicked and its first recording or stream is being opened. */
+  const [starting, setStarting] = createSignal(false);
+  /** Why the setup page's last Run did not open the run page (null: none). */
+  const setupError = () => runRefused() ?? (store.info() ? null : store.error());
+  /**
+   * After a Run on the setup page: the run page shows once its first recording or stream is
+   * open. When it could not be opened, no run is left going and the setup page says why.
+   */
+  function afterSetupRun(): void {
+    setStarting(false);
+    if (!store.info() && multiRun.plan()) multiRun.stop();
+  }
   /** Start a run of `refs` through the project; when it cannot start, say why. */
   async function runProject(refs: string[], kind: 'joint' | 'separate' = 'separate') {
     setRunRefused(null);
@@ -1010,17 +1040,28 @@ const App: Component = () => {
         : (project.planErrors()[0] ?? project.error() ?? 'The run could not start.'),
     );
   }
+  /** The setup page's Run (one session; inside the click): the run page opens and runs. */
+  function runFromSetup(): void {
+    const one = project.single();
+    if (!one) return;
+    setStarting(true);
+    void runProject([one.planned.stream]).finally(afterSetupRun);
+  }
+  /** The setup page's Run plan (several sessions; inside the click). */
+  async function startPlanFromSetup(): Promise<boolean> {
+    setRunRefused(null);
+    setStarting(true);
+    try {
+      return await project.startPlan();
+    } finally {
+      afterSetupRun();
+    }
+  }
   /** Leave the current run (a new source is opened): an unfinished run's file says it stopped. */
   function leaveRun(): void {
     pipeline.stop();
     multiRun.stop();
     setRunRefused(null);
-  }
-
-  /** Run: the open recording's run, a new run of its project step (inside the click). */
-  function runOpen(): void {
-    const one = project.single();
-    if (one) void runProject([one.planned.stream]);
   }
 
   /**
@@ -1129,11 +1170,13 @@ const App: Component = () => {
     if (store.info()) void pipeline.start();
   }
   /**
-   * A live stream is a one-session project with no folder (`?live=<url>` connects on load): its
-   * run starts at once, and its files go into a zip at the end.
+   * A live stream is a one-session project with no folder; its files go into a zip at the end.
+   * Connecting from the start screen opens its setup page (settings, then Run); `?live=<url>`
+   * connects and runs at once.
    */
-  async function openLive(url: string) {
+  async function openLive(url: string, runNow = false) {
     leaveRun();
+    setScreen('project');
     await project.open({
       rootName: 'live stream',
       entries: [],
@@ -1141,11 +1184,13 @@ const App: Component = () => {
       sessions: [],
       live: url,
     });
+    if (!runNow) return;
     await project.runStreams(['.']);
     // Not connected (the error shows on the start screen): no run is going.
     if (!store.info()) {
       multiRun.stop();
       project.close();
+      setScreen('open');
     }
   }
   const liveParam = flags.live;
@@ -1363,9 +1408,8 @@ const App: Component = () => {
               onStopSettling={() => slow.stopSettling(cells.session())}
               sessionMode={multiRun.plan()?.kind ?? null}
               sessions={multiRun.plan()?.sessions.length ?? 1}
-              onRun={runOpen}
               onRestart={restart}
-              projectParams={projectParams}
+              onChangeSettings={backToProject}
               visible={tab.active() === 'run'}
             />
             <SessionRunStatus />
@@ -1410,13 +1454,6 @@ const App: Component = () => {
     /* eslint-enable solid/reactivity */
     const ids = tabs.map((t) => t.id);
     const tab = createSideTab('run', 'run', () => ids);
-    // A recording opened for a new run shows the Run tab, where its pre-run sheet and Run are.
-    if (
-      untrack(pipeline.status) === 'idle' &&
-      !untrack(multiRun.plan) &&
-      !untrack(() => lp.info.live)
-    )
-      tab.show('run');
     // Expanding swaps History into the large area and shows the FOV in the History tab.
     createEffect(
       on(historyUi.expanded, (x) => {
@@ -1481,10 +1518,10 @@ const App: Component = () => {
       </div>
     );
   }
-  if (liveParam) void openLive(liveParam);
+  if (liveParam) void openLive(liveParam, true);
 
   /** A saved result in the viewer (read-only), with Back to project. */
-  const resultScreen = (v: { result: LoadedResult; origin: ResultOrigin }) => (
+  const resultScreen = (v: { result: LoadedResult; origin: ResultOrigin; file: File }) => (
     <DashboardShell
       header={
         <CompactHeader
@@ -1507,14 +1544,23 @@ const App: Component = () => {
             <>
               <button
                 class="btn-secondary btn-small"
+                data-testid="rerun-from-result"
+                title="Back to the setup page with the settings this run asked for loaded, to change them and run again"
+                onClick={() => void rerunFromResult(v.file)}
+              >
+                Run again with these settings
+              </button>
+              <button
+                class="btn-secondary btn-small"
                 data-testid="back-to-project"
-                title="Back to the project's session table"
+                title="Back to the setup page: the project's sessions, settings and results"
                 onClick={() => {
+                  setRerunError(null);
                   setViewing(null);
                   void project.refresh();
                 }}
               >
-                Back to project
+                Back to setup
               </button>
               <ThemeToggle />
               <FeedbackMenu appId={__APP_ID__} />
@@ -1524,6 +1570,13 @@ const App: Component = () => {
         />
       }
     >
+      <Show when={rerunError()}>
+        {(m) => (
+          <div class="error-card" role="alert" data-testid="rerun-error">
+            <span>{m()}</span>
+          </div>
+        )}
+      </Show>
       <ResultView result={v.result} origin={v.origin} />
     </DashboardShell>
   );
@@ -1581,6 +1634,12 @@ const App: Component = () => {
               <ProjectView
                 project={project}
                 pipeline={pipeline}
+                cells={cells}
+                projectParams={projectParams}
+                onRun={runFromSetup}
+                onStartPlan={startPlanFromSetup}
+                starting={starting()}
+                runError={setupError()}
                 onView={(r) => void viewResult(r)}
                 onClose={() => {
                   setViewState({ busy: false, error: null });
@@ -1618,10 +1677,10 @@ const App: Component = () => {
                       <button
                         class="btn-secondary btn-small"
                         data-testid="back-to-project"
-                        title="The project's session table, its plan and its results (a running plan stops)"
+                        title="The setup page: the project's sessions, settings and results (a running run stops)"
                         onClick={backToProject}
                       >
-                        {project.single() ? 'Project' : 'Back to project'}
+                        Back to setup
                       </button>
                     </Show>
                     <button

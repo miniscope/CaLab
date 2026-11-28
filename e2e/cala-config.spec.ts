@@ -47,8 +47,8 @@ test('Cala: a config file sets the cell diameter, and the run carries it', async
   });
   await page.goto('Cala/');
   await page.getByTestId('folder-input').setInputFiles(writeMovie(dir));
-  await page.getByRole('tab', { name: 'Run', exact: true }).click();
-  const sheet = page.getByTestId('run-settings');
+  // The settings are on the setup page, before Run.
+  const sheet = page.getByTestId('setup-settings');
   await expect(sheet.getByTestId('derived-diameter')).toContainText('the run uses 10 px');
 
   await sheet.getByTestId('config-load-input').setInputFiles(config);

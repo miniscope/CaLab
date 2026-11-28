@@ -1,7 +1,8 @@
 /**
- * The Run tab's settings: before the first run, the pre-run sheet (the params' main fields and
- * an Advanced section rendered from the schema, config files, and the Run button); after it, one
- * summary line of chips that opens to the same fields, whose changes apply on Restart.
+ * The run's settings. The setup page (`SetupSettings`) edits them before Run: the params' main
+ * fields and an Advanced section rendered from the schema, and config files. The Run tab shows
+ * what the run started with, read-only (`SettingsSummary`): one line of chips that opens to each
+ * value asked for and where it came from.
  */
 import { createSignal, For, Show, type JSX } from 'solid-js';
 import { Badge, formatParam, Icon, ParamForm, type ParamFieldExtras } from '@calab/ui';
@@ -46,8 +47,8 @@ const DIAMETER_UM = '/scales/expected_cell_diameter_um';
 
 const px1 = (v: number): string => (Math.round(v * 10) / 10).toString();
 
-/** The setting fields, shared by the sheet and the summary's disclosure. */
-function RunSettingsFields(props: RunSettingsProps): JSX.Element {
+/** The setting fields of the setup page. */
+export function RunSettingsFields(props: RunSettingsProps): JSX.Element {
   const s = () => props.pipeline;
   const params = () => s().params;
   const blocked = () => (props.context === 'setup' ? null : s().lookbackBlocked());
@@ -182,7 +183,10 @@ function RunSettingsFields(props: RunSettingsProps): JSX.Element {
  * Load config / Save config, the loaded file, and what Load found in it; with a project, Save as
  * project defaults (or for this session only).
  */
-function ConfigBar(props: { pipeline: PipelineStore; projectParams?: ProjectParams }): JSX.Element {
+export function ConfigBar(props: {
+  pipeline: PipelineStore;
+  projectParams?: ProjectParams;
+}): JSX.Element {
   const params = () => props.pipeline.params;
   const [refusal, setRefusal] = createSignal<ConfigRefusal | null>(null);
   /** The run file or export loaded last, to load again with or without the data's values. */
@@ -400,52 +404,13 @@ export function SheetSlot(props: {
   );
 }
 
-/** Before the first run: config files, the settings, the slots for further pre-run choices, and Run. */
-export function PreRunSheet(
-  props: RunSettingsProps & { onRun: () => void; children?: JSX.Element },
-): JSX.Element {
-  const issues = () => props.pipeline.params.diameter(props.frameWidth).issues;
-  return (
-    <section
-      class="cala-run__section cala-sheet"
-      aria-labelledby="run-settings"
-      data-testid="run-settings"
-    >
-      <div class="cala-sheet__head" data-testid="prerun-sheet">
-        <div class="cala-sheet__titles">
-          <h3 id="run-settings" class="cala-sheet__title">
-            Before the run
-          </h3>
-          <p class="cala-sheet__lede">Settings are read when Discover starts.</p>
-        </div>
-        <button
-          type="button"
-          class="btn-primary cala-sheet__run"
-          data-testid="run-start"
-          disabled={issues().length > 0}
-          title={issues()[0]?.message}
-          onClick={() => props.onRun()}
-        >
-          <Icon name="play" size={14} /> Run
-        </button>
-      </div>
-      <ConfigBar pipeline={props.pipeline} projectParams={props.projectParams} />
-      <RunSettingsFields {...props} />
-      <SheetSlot id="repeatable" title="Repeatable runs" />
-      <SheetSlot id="seed" title="Start from footprints of a past run" />
-      <SheetSlot id="crop" title="Crop region" />
-      {props.children}
-    </section>
-  );
-}
-
 /** Where a requested value came from, for a chip's tooltip. */
 export function sourceText(src: string): string {
   if (src.startsWith('file:')) return `From ${src.slice(5)}`;
   if (src === 'project') return "From the project's defaults";
   if (src === 'step') return 'From the plan step';
   if (src === 'stream') return "This session's own value";
-  return 'Set in the sheet';
+  return 'Set on the setup page';
 }
 
 /** The fields the summary line names with chips of its own. */
@@ -457,40 +422,46 @@ const SUMMARY_OWN = new Set([
 ]);
 
 /**
- * After Run: the settings the run started with as chips (one per further value it asked for),
- * and a disclosure with the fields. Start-time settings apply on Restart (in a Separate session
- * run, from the next session).
+ * The settings the run started with, read-only: chips on one line (one per further value it
+ * asked for), opening to each asked-for value with its source. They are changed on the setup
+ * page (`onChangeSettings`); only Find new cells applies to the running pipeline at once.
  */
-export function SettingsSummary(props: RunSettingsProps): JSX.Element {
+export function SettingsSummary(
+  props: RunSettingsProps & {
+    /** Back to the setup page with these settings, to change them and run again. */
+    onChangeSettings?: () => void;
+  },
+): JSX.Element {
   const s = () => props.pipeline;
   const lookbackOn = () => s().lookbackRun();
   const level = () =>
     FINAL_SETTLE_LEVELS[s().runFinalSettleLevel() as FinalSettleLevel]?.label ?? '';
-  const appliesOn = () =>
-    props.context === 'separate' ? 'applies from the next session' : 'applies on Restart';
   const fields = new Map(schemaFields(PARAMS_SCHEMA).map((f) => [f.pointer, f]));
+  /** Every value the run asked for (not a default), with where it came from. */
   const asked = () => {
     const r = s().runRequest();
     if (!r) return [];
     return Object.keys(r.sources)
-      .filter((ptr) => !SUMMARY_OWN.has(ptr) && fields.has(ptr))
+      .filter((ptr) => fields.has(ptr))
       .map((ptr) => {
         const f = fields.get(ptr)!;
-        const src = r.sources[ptr];
         return {
-          text: `${f.title} ${formatParam(f, getAt(r.requested, ptr))}`,
-          title: sourceText(src),
+          ptr,
+          own: SUMMARY_OWN.has(ptr),
+          title: f.title,
+          value: formatParam(f, getAt(r.requested, ptr)),
+          source: sourceText(r.sources[ptr]),
         };
       });
   };
   return (
     <details
       class="cala-run__section cala-run__summary"
-      aria-label="Settings"
+      aria-label="Settings used"
       data-testid="run-settings"
     >
       <summary class="cala-run__summary-line" data-testid="settings-summary">
-        <span class="cala-run__summary-name">Settings</span>
+        <span class="cala-run__summary-name">Settings used</span>
         <Badge tone="neutral" testid="settings-chip-lookback">
           Look-back {lookbackOn() ? 'on' : 'off'}
         </Badge>
@@ -503,20 +474,64 @@ export function SettingsSummary(props: RunSettingsProps): JSX.Element {
         <Show when={!s().discover()}>
           <Badge tone="neutral">No new cells</Badge>
         </Show>
-        <For each={asked()}>
+        <For each={asked().filter((a) => !a.own)}>
           {(c) => (
-            <span title={c.title}>
+            <span title={c.source}>
               <Badge tone="neutral" testid="settings-chip-param">
-                {c.text}
+                {c.title} {c.value}
               </Badge>
             </span>
           )}
         </For>
-        <span class="cala-run__summary-applies">{appliesOn()}</span>
       </summary>
-      <div class="cala-run__summary-body">
-        <ConfigBar pipeline={props.pipeline} projectParams={props.projectParams} />
-        <RunSettingsFields {...props} />
+      <div class="cala-run__summary-body" data-testid="settings-used">
+        <Show
+          when={asked().length > 0}
+          fallback={<p class="cala-muted">Every setting at its default.</p>}
+        >
+          <dl class="cala-run__used">
+            <For each={asked()}>
+              {(a) => (
+                <div class="cala-run__used-row" data-testid="settings-used-row" data-ptr={a.ptr}>
+                  <dt>{a.title}</dt>
+                  <dd>
+                    {a.value} <span class="cala-muted">({a.source})</span>
+                  </dd>
+                </div>
+              )}
+            </For>
+          </dl>
+        </Show>
+        <div class="cala-run__footer">
+          <label
+            class="cala-check"
+            title={
+              props.extractRunning
+                ? 'Extract is running.'
+                : 'Applies to the running Discover at once: off, no new cells are added.'
+            }
+          >
+            <input
+              type="checkbox"
+              data-testid="run-more-settings"
+              disabled={props.extractRunning === true}
+              checked={s().discover()}
+              onChange={(e) => s().setDiscover(e.currentTarget.checked)}
+            />
+            Find new cells
+          </label>
+          <Show when={props.onChangeSettings}>
+            <button
+              type="button"
+              class="btn-secondary btn-small"
+              data-testid="change-settings"
+              title="Back to the setup page with these settings, to change them and run again (a running run stops)"
+              onClick={() => props.onChangeSettings?.()}
+            >
+              Change settings and run again
+            </button>
+          </Show>
+        </div>
       </div>
     </details>
   );
