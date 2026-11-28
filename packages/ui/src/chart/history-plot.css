@@ -64,36 +64,9 @@
   height: 4px;
 }
 
-.history-help {
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: 1px solid var(--border-default);
-  border-radius: 50%;
-  background: transparent;
-  color: var(--text-tertiary);
-  font: 600 11px var(--font-body);
-  cursor: pointer;
-}
-
-.history-help:hover,
-.history-help[aria-expanded='true'] {
-  color: var(--text-primary);
-  border-color: var(--text-secondary);
-}
-
 .history-legend {
-  position: absolute;
-  z-index: 20;
   top: 26px;
   left: 40px;
-  padding: 6px 10px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md, 4px);
-  box-shadow: var(--shadow-elevated, 0 2px 8px rgba(0, 0, 0, 0.12));
-  font: 11px var(--font-body);
-  color: var(--text-secondary);
   line-height: 1.6;
 }
 

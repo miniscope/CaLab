@@ -830,6 +830,8 @@ export function createPipelineStore(
     setAutoBudget: speed.setAutoBudget,
     /** What this run's Auto decided so far (null: not an Auto run), for the run record. */
     autoNow: speed.autoNow,
+    /** The Auto time budget and how much of it Discover has used, s (null: not an Auto run, or not known yet). */
+    autoBudgetUse: speed.autoBudgetUse,
     /** Called when Auto arms and after each decision it makes (the run record's copy). */
     onAutoChange: speed.onAutoChange,
     /** The curve the run follows after the minimum-step rule (null: none armed), with the steps merged; a signal. */

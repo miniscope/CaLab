@@ -496,3 +496,26 @@ describe('Okabe-Ito', () => {
     expect(CHART_OKABE_ITO).toBe(OKABE_ITO);
   });
 });
+
+describe('HelpTip', () => {
+  it('opens on click, closes on Escape and on a press outside', async () => {
+    const { HelpTip } = await import('../HelpTip.tsx');
+    const host = mount(() => (
+      <div>
+        <HelpTip label="About the squares" testid="tip">
+          <p>Each square is one worker.</p>
+        </HelpTip>
+        <span class="outside">x</span>
+      </div>
+    ));
+    const btn = q<HTMLButtonElement>(host, '[data-testid="tip"]');
+    expect(btn.getAttribute('aria-expanded')).toBe('false');
+    btn.click();
+    expect(q(host, '.help-tip__pop').textContent).toContain('one worker');
+    btn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(host.querySelector('.help-tip__pop')).toBeNull();
+    btn.click();
+    q(host, '.outside').dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    expect(host.querySelector('.help-tip__pop')).toBeNull();
+  });
+});

@@ -150,14 +150,14 @@ describe('HistoryPlot DOM', () => {
   it('toggles the legend; compact hides the button', () => {
     const h = makeHistory();
     const host = mount(() => <HistoryPlot {...base} history={() => h} keys={['cells']} />);
-    const help = host.querySelector<HTMLButtonElement>('.history-help')!;
+    const help = host.querySelector<HTMLButtonElement>('.help-tip')!;
     expect(host.querySelector('.history-legend')).toBeNull();
     help.click();
     expect(host.querySelector('.history-legend')).toBeTruthy();
     dispose?.();
     document.body.replaceChildren();
     const c = mount(() => <HistoryPlot {...base} history={() => h} keys={['cells']} compact />);
-    expect(c.querySelector('.history-help')).toBeNull();
+    expect(c.querySelector('.help-tip')).toBeNull();
   });
 
   it('renders without a history', () => {

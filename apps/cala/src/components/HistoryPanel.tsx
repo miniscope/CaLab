@@ -142,17 +142,27 @@ export function GroupPlot(props: {
   );
 }
 
-/** The whole-run strip: the full run, the window as a rectangle; drag to brush. */
-export function RunStrip(props: { ui: HistoryUi }): JSX.Element {
+/**
+ * The whole-run strip: the full run, the window as a rectangle; drag to brush. By default it
+ * follows the run per batch; a caller that samples (the Run tab's time strip) passes its own
+ * end, now, window and tick.
+ */
+export function RunStrip(props: {
+  ui: HistoryUi;
+  end?: () => number;
+  now?: () => number;
+  window?: () => { t0: number; t1: number };
+  tick?: () => number;
+}): JSX.Element {
   const r = () => props.ui.run;
   return (
     <WholeRunStrip
       history={() => r().history()}
       seriesKey="cells"
-      runEnd={props.ui.axisEnd}
-      now={() => r().now()}
-      window={props.ui.span}
-      tick={() => r().tick()}
+      runEnd={props.end ?? props.ui.axisEnd}
+      now={props.now ?? (() => r().now())}
+      window={props.window ?? props.ui.span}
+      tick={props.tick ?? (() => r().tick())}
       onBrush={(a, b) => props.ui.window.setBrush(a, b)}
       onResetWindow={() => props.ui.window.setRun()}
       testid="history-strip"

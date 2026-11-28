@@ -501,6 +501,9 @@ export function createSpeedControl(deps: SpeedControlDeps) {
     },
     /** What this run's Auto decided so far (null: not an Auto run). */
     autoNow: (): { extraTimeShare: number; decisions: AutoDecision[] } | null => autoSnapshot(),
+    /** This run's Auto time budget and the share of it used so far, s (null: not known yet). */
+    autoBudgetUse: (): { usedS: number; budgetS: number } | null =>
+      autoPolicy?.budgetUse(pauseClock.now(clock()) / 1000) ?? null,
     /** Called when Auto arms and after each decision it makes. */
     onAutoChange: (cb: (a: { extraTimeShare: number; decisions: AutoDecision[] }) => void) => {
       autoListeners.push(cb);

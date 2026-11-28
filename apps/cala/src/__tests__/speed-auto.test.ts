@@ -135,6 +135,19 @@ describe('Auto budget', () => {
   });
 });
 
+describe('Auto budget use', () => {
+  it('is unknown until the budget is worked out, then counts the time since the first look', () => {
+    const p = new AutoPolicy(1);
+    expect(p.budgetUse(5)).toBeNull();
+    first(p);
+    // 12000 frames at Max 200 fps is 60 s; +100 % is a 120 s budget, from wall 0.
+    expect(p.budgetUse(30)).toEqual({ usedS: 30, budgetS: 120 });
+    // Reading it changes nothing.
+    expect(p.current()).toBe(100);
+    expect(p.decisions).toHaveLength(1);
+  });
+});
+
 describe('Auto measures Max before it trusts it', () => {
   it('holds Max until five unpaced batches, ignoring a slow warm-up reading less than that', () => {
     const p = new AutoPolicy(1);

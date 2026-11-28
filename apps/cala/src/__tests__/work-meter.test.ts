@@ -255,6 +255,26 @@ describe('WorkRater carry', () => {
   });
 });
 
+describe('WorkRater short interval', () => {
+  it('closes an interval shorter than its period when asked, never an empty one', () => {
+    const rater = new WorkRater(1000);
+    rater.push(snap(0, () => {}));
+    expect(rater.push(snap(300, (w) => (w.visitBusyMs = [150, 0])))).toBeNull();
+    const a = rater.push(
+      snap(300, (w) => (w.visitBusyMs = [150, 0])),
+      200,
+    );
+    expect(a!.visit[0]).toBeCloseTo(0.5);
+    // The reference moved to 300 ms: the same snapshot again is an empty interval.
+    expect(
+      rater.push(
+        snap(300, (w) => (w.visitBusyMs = [150, 0])),
+        0,
+      ),
+    ).toBeNull();
+  });
+});
+
 describe('WorkRater with a look-back pool', () => {
   it('holds up to one share per worker: the settle by S, the total by S + 1, each worker by 1', () => {
     const rater = new WorkRater(1000);
