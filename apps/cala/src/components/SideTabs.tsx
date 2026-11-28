@@ -4,13 +4,13 @@ import type { CellStore } from '../lib/cell-store.ts';
 import type { FrameSourceInfo } from '../lib/frame-source.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { ViewerStore } from '../lib/viewer-store.ts';
-import { TimingText } from './CellsPanel.tsx';
 import { CorrDistancePanel } from './CorrDistancePanel.tsx';
 import { FlatFieldPanel } from './FlatFieldPanel.tsx';
 import { FrameViewer } from './FrameViewer.tsx';
 import { HistoryTab, type HistoryUi } from './HistoryPanel.tsx';
 import { InfoPanel } from './InfoPanel.tsx';
 import { QcTable, type QcTableState } from './QcTable.tsx';
+import { TimingPanel } from './TimingPanel.tsx';
 
 /**
  * The right-hand column under the run rail: one row of tabs (Run, Cell, QC,
@@ -133,7 +133,7 @@ export function detailTabs(props: {
             label: 'Timing',
             testid: 'tab-timing',
             more: true,
-            content: () => <TimingText store={store} cells={props.cells} />,
+            content: () => <TimingPanel store={store} cells={props.cells} />,
           },
         ]
       : []),

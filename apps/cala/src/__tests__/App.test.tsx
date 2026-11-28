@@ -215,7 +215,7 @@ describe('App', () => {
 
     openTab(root, 'recording');
     const info = root.querySelector('[data-panel-id="info"]')!.textContent!;
-    expect(info).toContain('4 x 3 px, 8-bit (GREY)');
+    expect(info).toContain('4 × 3 px, 8-bit (GREY)');
     expect(info).toContain('20.00 Hz from timeStamps.csv');
     expect(info).toContain('60.0 Hz (declared by the writer, ignored)');
     expect(info).toContain('0.avi');
@@ -255,9 +255,10 @@ describe('App', () => {
     expect(root.querySelector('[data-testid="history-convergence"]')).not.toBeNull();
     // Batch timings (3 ms of motion per 25 frames, twice) are averaged per frame.
     openTab(root, 'timing');
-    expect(root.querySelector('[data-testid="pipeline-stages"]')?.textContent).toContain(
-      'motion 0.1',
+    const motion = root.querySelector(
+      '[data-testid="pipeline-stages"] [data-testid="timing-stage-motion"]',
     );
+    expect(motion?.textContent).toBe('motion0.12');
     openTab(root, 'history');
     expect(root.querySelector('[data-testid="history-tab"]')).not.toBeNull();
     expect(root.querySelector('[data-testid="history-imaging"]')).not.toBeNull();
@@ -381,16 +382,16 @@ describe('App', () => {
     fake.readFrame.mockImplementation(async () => new Uint8Array(12));
     const root = mount();
     await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
-    await vi.waitFor(() => expect(root.querySelector('.cala-play')).not.toBeNull());
+    await vi.waitFor(() => expect(root.querySelector('.cala-viewer__play')).not.toBeNull());
 
-    const play = root.querySelector<HTMLButtonElement>('.cala-play')!;
-    expect(play.textContent).toBe('Play');
+    const play = root.querySelector<HTMLButtonElement>('.cala-viewer__play')!;
+    expect(play.getAttribute('aria-label')).toBe('Play');
     play.click();
-    expect(play.textContent).toBe('Pause');
+    expect(play.getAttribute('aria-label')).toBe('Pause');
     // Playback advances through the worker at the recording's frame rate.
     await vi.waitFor(() => expect(fake.readFrame).toHaveBeenCalledWith(2), { timeout: 2000 });
     play.click();
-    expect(play.textContent).toBe('Play');
+    expect(play.getAttribute('aria-label')).toBe('Play');
   });
 
   it('shows an error from the frame source and stays on the picker', async () => {
