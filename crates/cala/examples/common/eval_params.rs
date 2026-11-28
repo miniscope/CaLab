@@ -1,13 +1,15 @@
 //! `qc_eval`'s run parameters: [`CalaParams`] from `--params FILE` and the
 //! config flags, which are overrides of params fields applied on top.
 //!
-//! With neither, `qc_eval` runs the app's shipped configuration (the
-//! [`CalaParams`] default). `tools/cala-eval/presets/qc-eval-legacy.json`
+//! With neither, the params are the app's defaults ([`CalaParams`]); the
+//! run-control flags (visit schedule, budget, settle model, ...) are not
+//! params and keep `qc_eval`'s own defaults. `tools/cala-eval/presets/qc-eval-legacy.json`
 //! is the engine's own configuration (cluster replay, merge guard and
 //! look-back off, non-rigid motion), the no-flag arm of older results notes.
 //!
 //! Each config flag maps to the params fields in [`PARAM_FLAGS`]; a flag
-//! keeps the meaning it had as a direct engine setting. A params file is
+//! keeps the meaning it had as a direct engine setting (`--motion` turns
+//! on non-rigid motion correction). A params file is
 //! a partial params object (any subset of keys, at any depth, with an
 //! optional `params_version`); a key that is not a params field is an
 //! error, since an ignored key in an eval arm is a wrong measurement.

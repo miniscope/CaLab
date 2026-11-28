@@ -721,8 +721,8 @@ fn the_fingerprint_follows_the_results_fields_only() {
 
 // ---- the loose-argument entry points (the wasm bindings) ----
 //
-// Each `loose::*` function against the construction its binding inlined
-// before it went through params, over frame rates and argument values.
+// Each `loose::*` function against the engine's own construction from the
+// same arguments, over frame rates and argument values.
 
 const BINDING_FPS: [f32; 9] = [0.0, -1.0, f32::NAN, 19.98, 20.0, 23.976, 29.97, 30.0, 60.0];
 

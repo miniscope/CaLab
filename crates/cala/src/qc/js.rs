@@ -7,7 +7,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use super::{CellQc, GlobalQc, QcConfig, QcMonitor};
+use super::{CellQc, GlobalQc, QcMonitor};
 use crate::js_util::{init_panic_hook, js_err};
 use crate::params::loose;
 use crate::preprocess::Dims;
@@ -132,7 +132,7 @@ impl JsQcMonitor {
     /// as zero, no fallback σ). Values in `spanStatsFields` order.
     #[wasm_bindgen(js_name = spanStats)]
     pub fn span_stats(trace: &[f32], model_sigma: f32, fps: f32) -> Result<Vec<f64>, JsError> {
-        let cfg = QcConfig::for_fps(fps);
+        let cfg = loose::qc_config(fps, 0);
         cfg.validate().map_err(|e| js_err("spanStats", e))?;
         let st = cfg.trace_stats(trace, model_sigma, &mut Vec::new());
         let f = |v: f32| f64::from(v);
@@ -151,7 +151,7 @@ impl JsQcMonitor {
     /// The window the monitor reads at frame rate `fps`, frames.
     #[wasm_bindgen(js_name = windowFrames)]
     pub fn window_frames(fps: f32) -> u32 {
-        QcConfig::for_fps(fps).window_frames as u32
+        loose::qc_config(fps, 0).window_frames as u32
     }
 
     /// Comma-separated names of the per-cell fields.

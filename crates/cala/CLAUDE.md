@@ -69,9 +69,11 @@ Each module's WASM binding is its `js.rs`; the Python stub is `src/py_api.rs`. T
 
 - `examples/` (`qc_eval`, `discover_eval`, `motion_eval`, `compress_bench`, ...) and
   `tools/cala-eval` are the measurement record. `qc_eval` silently ignores unknown flags.
-- `qc_eval` runs `CalaParams`: with no flags, the app's shipped configuration. `--params FILE`
-  layers a partial params file on top (a key that is not a params field is an error), its
-  config flags are overrides of params fields (`PARAM_FLAGS` in `examples/common/eval_params.rs`),
+- `qc_eval` runs `CalaParams`: with no flags, the app's default params (its run-control flags,
+  such as the visit schedule, budget and settle model, keep their own defaults; `--motion` means
+  non-rigid correction). `--params FILE` layers a partial params file on top (a key that is not a
+  params field is an error), its config flags are overrides of params fields (`PARAM_FLAGS` in
+  `examples/common/eval_params.rs`),
   and `--dump-params` prints the params, their fingerprint and the engine view, then stops. A new
   result-changing switch is a params field plus a row in `PARAM_FLAGS`.
   `tools/cala-eval/presets/qc-eval-legacy.json` is the engine's own configuration (cluster replay,
