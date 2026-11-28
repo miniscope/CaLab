@@ -409,16 +409,19 @@
         {
           "type": "string",
           "const": "off",
+          "title": "Off",
           "description": "The expected diameter is used as set."
         },
         {
           "type": "string",
           "const": "global",
+          "title": "Global",
           "description": "One diameter for the field of view, estimated during the run."
         },
         {
           "type": "string",
           "const": "local",
+          "title": "Local",
           "description": "A diameter per region of the field of view."
         }
       ],
@@ -558,16 +561,19 @@
         {
           "type": "string",
           "const": "all",
+          "title": "All",
           "description": "Every cell."
         },
         {
           "type": "string",
           "const": "qc_pass",
+          "title": "Cells that pass QC",
           "description": "The cells that pass QC."
         },
         {
           "type": "string",
           "const": "ids",
+          "title": "Listed ids",
           "description": "The cells listed in `ids`."
         }
       ],
@@ -676,21 +682,25 @@
         {
           "type": "string",
           "const": "off",
+          "title": "Off",
           "description": "None."
         },
         {
           "type": "string",
           "const": "additive",
+          "title": "Additive",
           "description": "The per-frame offset."
         },
         {
           "type": "string",
           "const": "multiplicative",
+          "title": "Multiplicative",
           "description": "The per-frame gain."
         },
         {
           "type": "string",
           "const": "both",
+          "title": "Both",
           "description": "Offset and gain."
         }
       ],
@@ -701,21 +711,25 @@
         {
           "type": "string",
           "const": "off",
+          "title": "Off",
           "description": "None."
         },
         {
           "type": "string",
           "const": "rows",
+          "title": "Rows",
           "description": "Per-frame row noise."
         },
         {
           "type": "string",
           "const": "columns",
+          "title": "Columns",
           "description": "The static column pattern."
         },
         {
           "type": "string",
           "const": "both",
+          "title": "Both",
           "description": "Rows and columns."
         }
       ],
@@ -1396,11 +1410,13 @@
         {
           "type": "string",
           "const": "legacy",
+          "title": "Legacy",
           "description": "The held-out test alone."
         },
         {
           "type": "string",
           "const": "split_half",
+          "title": "Split-half",
           "description": "The held-out test, plus the same measured shape for a pair whose footprints do not largely coincide."
         }
       ],
@@ -1519,16 +1535,19 @@
         {
           "type": "string",
           "const": "off",
+          "title": "Off",
           "description": "Per-cell statistics only."
         },
         {
           "type": "string",
           "const": "refine",
+          "title": "Refine",
           "description": "In refinement-only visits (the Final settle)."
         },
         {
           "type": "string",
           "const": "all",
+          "title": "All",
           "description": "In every visit."
         }
       ],
@@ -1539,16 +1558,19 @@
         {
           "type": "string",
           "const": "off",
+          "title": "Off",
           "description": "A plain joint least-squares fit."
         },
         {
           "type": "string",
           "const": "own",
+          "title": "Own",
           "description": "Non-negative where the member's current footprint is positive."
         },
         {
           "type": "string",
           "const": "all",
+          "title": "All",
           "description": "Non-negative on the member's whole disk."
         }
       ],
@@ -1559,11 +1581,13 @@
         {
           "type": "string",
           "const": "cluster",
+          "title": "Cluster",
           "description": "Every significant member, on the cluster's summed evidence."
         },
         {
           "type": "string",
           "const": "member",
+          "title": "Member",
           "description": "Each member on its own evidence."
         }
       ],
@@ -1635,11 +1659,13 @@
         {
           "type": "string",
           "const": "fixed",
+          "title": "Fixed",
           "description": "Always the target rate."
         },
         {
           "type": "string",
           "const": "auto",
+          "title": "Auto",
           "description": "The target while visits find new cells, lower after."
         }
       ],
@@ -1679,11 +1705,13 @@
         {
           "type": "string",
           "const": "legacy",
+          "title": "Legacy",
           "description": "The estimate disagrees with the footprint beyond its χ² null."
         },
         {
           "type": "string",
           "const": "split_half",
+          "title": "Split-half",
           "description": "The change exceeds the estimate's own split-half noise."
         }
       ],
@@ -1694,11 +1722,13 @@
         {
           "type": "string",
           "const": "none",
+          "title": "None",
           "description": "No local background."
         },
         {
           "type": "string",
           "const": "ring",
+          "title": "Ring",
           "description": "A ring around each footprint (`discover.ring`)."
         }
       ],
@@ -1868,16 +1898,19 @@
         {
           "type": "string",
           "const": "thorough",
+          "title": "Thorough",
           "description": "The full pass."
         },
         {
           "type": "string",
           "const": "standard",
+          "title": "Standard",
           "description": "Most of the pass."
         },
         {
           "type": "string",
           "const": "quick",
+          "title": "Quick",
           "description": "A shorter pass."
         }
       ],
@@ -2049,26 +2082,31 @@
         {
           "type": "string",
           "const": "auto",
+          "title": "Auto",
           "description": "The app's choice: factor files on the GPU for a recording, stream factors for a live stream."
         },
         {
           "type": "string",
           "const": "off",
+          "title": "Off",
           "description": "No factors."
         },
         {
           "type": "string",
           "const": "plain",
+          "title": "Plain",
           "description": "Factors on the CPU, kept in memory."
         },
         {
           "type": "string",
           "const": "file",
+          "title": "File",
           "description": "Factors on the CPU, kept in files."
         },
         {
           "type": "string",
           "const": "gpu",
+          "title": "GPU",
           "description": "Factors on the GPU."
         }
       ],
@@ -2207,6 +2245,7 @@
           "x-affects": "compute",
           "x-widget": "speed",
           "enum": [0.5, 1.0, 2.0],
+          "x-enum-labels": ["+50 %", "+100 %", "+200 %"],
           "x-scope": "run"
         }
       },
@@ -2217,21 +2256,25 @@
         {
           "type": "string",
           "const": "max",
+          "title": "Max",
           "description": "As fast as the machine goes."
         },
         {
           "type": "string",
           "const": "fixed",
+          "title": "Fixed",
           "description": "A fixed target frame rate."
         },
         {
           "type": "string",
           "const": "curve",
+          "title": "Curve",
           "description": "A target that follows a preset curve."
         },
         {
           "type": "string",
           "const": "auto",
+          "title": "Auto",
           "description": "A time budget over a Max run."
         }
       ],
@@ -2242,11 +2285,13 @@
         {
           "type": "string",
           "const": "find-fast",
+          "title": "Find fast, then settle",
           "description": "Max for the first half, while most cells are found, then the floor."
         },
         {
           "type": "string",
           "const": "step-down",
+          "title": "Step down",
           "description": "Max for the first third, every-frame-seen speed to two thirds, then the floor."
         }
       ],

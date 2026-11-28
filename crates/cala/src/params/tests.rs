@@ -139,13 +139,26 @@ fn every_field_has_its_metadata() {
         if let Some(w) = f.get("x-when") {
             one_of(ptr, "x-when", w, WHEN);
         }
-        if let Some(labels) = f.get("x-enum-labels") {
-            let n = f["enum"].as_array().map(Vec::len);
+        // Every choice has a label: `x-enum-labels` beside an `enum`, a
+        // `title` on each `oneOf` variant of an enum type.
+        if let Some(values) = f.get("enum") {
             assert_eq!(
-                n,
-                labels.as_array().map(Vec::len),
+                values.as_array().map(Vec::len),
+                f.get("x-enum-labels")
+                    .and_then(Value::as_array)
+                    .map(Vec::len),
                 "{ptr}: one label per enum value"
             );
+        }
+        if let Some(r) = f.get("$ref").and_then(Value::as_str) {
+            let def = &schema["$defs"][r.trim_start_matches("#/$defs/")];
+            for v in def["oneOf"].as_array().into_iter().flatten() {
+                assert!(
+                    v.get("title").is_some(),
+                    "{ptr}: choice {} has no title",
+                    v["const"]
+                );
+            }
         }
         // Every number has a range or a list of choices.
         let types = value_types(f, &schema["$defs"]);

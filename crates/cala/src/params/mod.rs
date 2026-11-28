@@ -14,8 +14,9 @@
 //!   durations.
 //! * Cell-scale pixel sizes are multiples of the cell diameter (`_d`,
 //!   `_per_d`); absolute pixel sizes end in `_px`.
-//! * `null` means "derived" or "off", as the field's description says; no
-//!   field uses a numeric sentinel.
+//! * `null` means "derived" or "off", as the field's description says.
+//!   The one number that means off is `settle.background.cap: 0`, a
+//!   labelled choice of its enum.
 //! * Every block is `#[serde(default)]`: a partial params object (any subset
 //!   of keys, at any depth) deserialises to the defaults plus what it sets.
 //!   Unknown keys are ignored by serde; the app lists them to the user.
@@ -225,10 +226,13 @@ impl Default for Scales {
 #[serde(rename_all = "snake_case")]
 pub enum ScaleAdapt {
     /// The expected diameter is used as set.
+    #[schemars(title = "Off")]
     Off,
     /// One diameter for the field of view, estimated during the run.
+    #[schemars(title = "Global")]
     Global,
     /// A diameter per region of the field of view.
+    #[schemars(title = "Local")]
     Local,
 }
 
@@ -328,10 +332,13 @@ pub struct Seed {
 pub enum SeedSelect {
     /// Every cell.
     #[default]
+    #[schemars(title = "All")]
     All,
     /// The cells that pass QC.
+    #[schemars(title = "Cells that pass QC")]
     QcPass,
     /// The cells listed in `ids`.
+    #[schemars(title = "Listed ids")]
     Ids,
 }
 
@@ -423,12 +430,16 @@ impl Default for Preprocess {
 #[serde(rename_all = "snake_case")]
 pub enum Flicker {
     /// None.
+    #[schemars(title = "Off")]
     Off,
     /// The per-frame offset.
+    #[schemars(title = "Additive")]
     Additive,
     /// The per-frame gain.
+    #[schemars(title = "Multiplicative")]
     Multiplicative,
     /// Offset and gain.
+    #[schemars(title = "Both")]
     Both,
 }
 
@@ -437,12 +448,16 @@ pub enum Flicker {
 #[serde(rename_all = "snake_case")]
 pub enum Lines {
     /// None.
+    #[schemars(title = "Off")]
     Off,
     /// Per-frame row noise.
+    #[schemars(title = "Rows")]
     Rows,
     /// The static column pattern.
+    #[schemars(title = "Columns")]
     Columns,
     /// Rows and columns.
+    #[schemars(title = "Both")]
     Both,
 }
 
@@ -934,9 +949,11 @@ impl Default for Merge {
 #[serde(rename_all = "snake_case")]
 pub enum MergeRule {
     /// The held-out test alone.
+    #[schemars(title = "Legacy")]
     Legacy,
     /// The held-out test, plus the same measured shape for a pair whose
     /// footprints do not largely coincide.
+    #[schemars(title = "Split-half")]
     SplitHalf,
 }
 
@@ -1021,10 +1038,13 @@ impl Default for Cluster {
 #[serde(rename_all = "snake_case")]
 pub enum ClusterUpdate {
     /// Per-cell statistics only.
+    #[schemars(title = "Off")]
     Off,
     /// In refinement-only visits (the Final settle).
+    #[schemars(title = "Refine")]
     Refine,
     /// In every visit.
+    #[schemars(title = "All")]
     All,
 }
 
@@ -1033,10 +1053,13 @@ pub enum ClusterUpdate {
 #[serde(rename_all = "snake_case")]
 pub enum ClusterSign {
     /// A plain joint least-squares fit.
+    #[schemars(title = "Off")]
     Off,
     /// Non-negative where the member's current footprint is positive.
+    #[schemars(title = "Own")]
     Own,
     /// Non-negative on the member's whole disk.
+    #[schemars(title = "All")]
     All,
 }
 
@@ -1045,8 +1068,10 @@ pub enum ClusterSign {
 #[serde(rename_all = "snake_case")]
 pub enum ClusterAdmit {
     /// Every significant member, on the cluster's summed evidence.
+    #[schemars(title = "Cluster")]
     Cluster,
     /// Each member on its own evidence.
+    #[schemars(title = "Member")]
     Member,
 }
 
@@ -1110,8 +1135,10 @@ impl Default for Visit {
 #[serde(rename_all = "snake_case")]
 pub enum VisitMode {
     /// Always the target rate.
+    #[schemars(title = "Fixed")]
     Fixed,
     /// The target while visits find new cells, lower after.
+    #[schemars(title = "Auto")]
     Auto,
 }
 
@@ -1146,8 +1173,10 @@ impl Default for Refine {
 #[serde(rename_all = "snake_case")]
 pub enum RefineGate {
     /// The estimate disagrees with the footprint beyond its χ² null.
+    #[schemars(title = "Legacy")]
     Legacy,
     /// The change exceeds the estimate's own split-half noise.
+    #[schemars(title = "Split-half")]
     SplitHalf,
 }
 
@@ -1156,8 +1185,10 @@ pub enum RefineGate {
 #[serde(rename_all = "snake_case")]
 pub enum BackgroundModel {
     /// No local background.
+    #[schemars(title = "None")]
     None,
     /// A ring around each footprint (`discover.ring`).
+    #[schemars(title = "Ring")]
     Ring,
 }
 
@@ -1307,10 +1338,13 @@ impl Default for FinalSettle {
 #[serde(rename_all = "snake_case")]
 pub enum FinalSettleLevel {
     /// The full pass.
+    #[schemars(title = "Thorough")]
     Thorough,
     /// Most of the pass.
+    #[schemars(title = "Standard")]
     Standard,
     /// A shorter pass.
+    #[schemars(title = "Quick")]
     Quick,
 }
 
@@ -1469,14 +1503,19 @@ impl Default for Factors {
 pub enum FactorsMode {
     /// The app's choice: factor files on the GPU for a recording, stream
     /// factors for a live stream.
+    #[schemars(title = "Auto")]
     Auto,
     /// No factors.
+    #[schemars(title = "Off")]
     Off,
     /// Factors on the CPU, kept in memory.
+    #[schemars(title = "Plain")]
     Plain,
     /// Factors on the CPU, kept in files.
+    #[schemars(title = "File")]
     File,
     /// Factors on the GPU.
+    #[schemars(title = "GPU")]
     Gpu,
 }
 
@@ -1599,7 +1638,8 @@ pub struct Speed {
             "x-level" = "main",
             "x-affects" = "compute",
             "x-widget" = "speed",
-            "enum" = [0.5, 1.0, 2.0]
+            "enum" = [0.5, 1.0, 2.0],
+            "x-enum-labels" = ["+50 %", "+100 %", "+200 %"]
         )
     )]
     pub auto_budget: f64,
@@ -1621,12 +1661,16 @@ impl Default for Speed {
 #[serde(rename_all = "snake_case")]
 pub enum SpeedMode {
     /// As fast as the machine goes.
+    #[schemars(title = "Max")]
     Max,
     /// A fixed target frame rate.
+    #[schemars(title = "Fixed")]
     Fixed,
     /// A target that follows a preset curve.
+    #[schemars(title = "Curve")]
     Curve,
     /// A time budget over a Max run.
+    #[schemars(title = "Auto")]
     Auto,
 }
 
@@ -1635,8 +1679,10 @@ pub enum SpeedMode {
 #[serde(rename_all = "kebab-case")]
 pub enum SpeedCurve {
     /// Max for the first half, while most cells are found, then the floor.
+    #[schemars(title = "Find fast, then settle")]
     FindFast,
     /// Max for the first third, every-frame-seen speed to two thirds, then
     /// the floor.
+    #[schemars(title = "Step down")]
     StepDown,
 }
