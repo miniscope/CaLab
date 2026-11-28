@@ -39,7 +39,9 @@
  *    request goes to a fixed worker, and so does every later one.
  *  - Visits go out between pieces and their results are applied in hand-out
  *    order at a fixed number of settle frames later (`settleVisitLag`), waiting
- *    there for a late one (`ApplyBarrier`, clocked in frames fed). The hold for
+ *    there for a late one (`ApplyBarrier`, clocked in frames fed). Each visit
+ *    worker has `SETTLE_VISIT_DEPTH` slots, so its next visit waits in its queue
+ *    rather than for the apply. The hold for
  *    visits owed applies the oldest visit out instead of the first back. The
  *    pay-at-end, the last round and a Stop apply a round once all of it is back.
  */
@@ -80,7 +82,9 @@ export interface FinalSettleHost {
   /** The Final settle's visit rate, visits per settle frame fed (0: none). */
   readonly settleRate: number;
   readonly parallel: boolean;
+  /** Per visit slot: a visit is out (slot `i` is on visit worker `i % visitWorkers`). */
   readonly busy: readonly boolean[];
+  readonly visitWorkers: number;
   readonly jobs: number;
   readonly lbPort: PortLike<SlowToLookback> | null;
   readonly lbReqs: readonly (LookbackReq | null)[];
@@ -107,6 +111,8 @@ export interface FinalSettleHost {
   finish(): void;
   housekeep(): void;
   dispatch(limit?: number): number;
+  /** `depth` visit slots per visit worker from now on (see `SETTLE_VISIT_DEPTH`). */
+  setVisitDepth(depth: number): void;
   /** A visit result held by the settle's barrier: slot `i` is free again and the result applied. */
   applyVisit(i: number, msg: VisitToOwner): void;
   /** Determinism log (`?debug&detlog`): a settle answer is taken up. */
@@ -171,6 +177,8 @@ export interface Settle {
   payFrom: number | null;
   /** Every tile was made due to pay what the pass owed. */
   allDue: boolean;
+  /** Under `bar`: the last `settleBarrierStep` held for the visits owed, not for one due. */
+  holdOwed: boolean;
 }
 
 /** A settle answer observed in pieces (`Settle.answers`). */
@@ -183,13 +191,28 @@ export interface SettleAnswer {
 }
 
 /**
+ * Visit slots per visit worker in a repeatable Final settle (`Settle.bar`): a worker has up to this
+ * many visits queued, so a result is applied a longer lag after its hand-out (`settleVisitLag`)
+ * while the worker starts its next queued visit as soon as one is done (with one slot it would idle
+ * from its result's arrival to the apply). See tools/cala-eval/results/2026-11-28-repeatable-pins-and-slots.md.
+ */
+export const SETTLE_VISIT_DEPTH = 2;
+
+/**
+ * The visit slots' capacity over the settle's visit rate that `settleVisitLag` keeps: a slot applied
+ * at its due point goes out again at once, so with no margin every late result would push the
+ * visits owed up for the rest of the pass; with it, the slots catch up after one.
+ */
+export const SETTLE_VISIT_HEADROOM = 1.25;
+
+/**
  * Settle frames between a visit's hand-out and the apply of its result under a repeatable run
- * (`Settle.bar`): whole pieces, as many as keep `slots` visit workers able to make `rate` visits
- * per frame fed (`slots / lag >= rate`), at least one piece.
+ * (`Settle.bar`): whole pieces, as many as keep `slots` visit slots able to make
+ * `SETTLE_VISIT_HEADROOM x rate` visits per frame fed (`slots / lag >= 1.25 rate`), at least one piece.
  */
 export function settleVisitLag(slots: number, rate: number): number {
   const piece = SETTLE.observePiece;
-  const pieces = rate > 0 ? Math.floor(slots / (rate * piece) + 1e-9) : 1;
+  const pieces = rate > 0 ? Math.floor(slots / (rate * SETTLE_VISIT_HEADROOM * piece) + 1e-9) : 1;
   return piece * Math.max(1, pieces);
 }
 
@@ -281,12 +304,16 @@ export class FinalSettleDriver {
       holdSince: null,
       payFrom: null,
       allDue: false,
+      holdOwed: false,
       ordered: this.r.repeatable,
-      bar:
-        this.r.repeatable && this.r.parallel
-          ? new ApplyBarrier<VisitToOwner>(settleVisitLag(this.r.busy.length, this.r.settleRate))
-          : null,
+      bar: null,
     };
+    if (this.r.repeatable && this.r.parallel) {
+      this.r.setVisitDepth(SETTLE_VISIT_DEPTH);
+      this.state.bar = new ApplyBarrier<VisitToOwner>(
+        settleVisitLag(this.r.busy.length, this.r.settleRate),
+      );
+    }
     // The look-back worker solves with the library Discover ended with
     // (qc_eval publishes it before the settle); the first checkpoint's reference.
     this.state.prev = this.checkpointLibrary(loop);
@@ -418,14 +445,18 @@ export class FinalSettleDriver {
     this.finishFinalSettle();
   }
 
-  /** `dispatch`, and under `Settle.bar` the visits handed out go on its ledger (in slot order, as handed out). */
+  /**
+   * `dispatch`, and under `Settle.bar` the visits handed out go on its ledger in slot order (the
+   * order handed out), keyed by visit worker with the slot as `id`: a worker answers its queue in
+   * order, so a result is the oldest not back on its worker (`visitArrived`).
+   */
   private handOut(d: Settle, limit?: number): number {
     const bar = d.bar;
     if (!bar) return this.r.dispatch(limit);
     const idle = this.r.busy.map((b) => !b);
     const n = this.r.dispatch(limit);
     this.r.busy.forEach((b, i) => {
-      if (b && idle[i]) bar.issue('visit', i, d.fed);
+      if (b && idle[i]) bar.issue('visit', i % this.r.visitWorkers, d.fed, i);
     });
     return n;
   }
@@ -449,7 +480,7 @@ export class FinalSettleDriver {
    */
   private applyHeld(d: Settle, fed: number): boolean {
     const due = d.bar!.takeDue(fed);
-    for (const it of due) this.r.applyVisit(it.key, it.result!);
+    for (const it of due) this.r.applyVisit(it.id, it.result!);
     if (due.length > 0) this.r.housekeep();
     return due.length > 0;
   }
@@ -462,12 +493,16 @@ export class FinalSettleDriver {
    */
   private settleBarrierStep(d: Settle): boolean {
     const bar = d.bar!;
+    d.holdOwed = false;
     if (!bar.ready(d.fed)) return false;
     // Handed out only after an apply: how often this step is re-entered depends on timing.
     if (this.applyHeld(d, d.fed)) this.settleDispatch(d);
     while (this.settleOwedTooMuch(d)) {
       const oldest = bar.nextDue();
-      if (!bar.ready(oldest)) return false;
+      if (!bar.ready(oldest)) {
+        d.holdOwed = true;
+        return false;
+      }
       this.applyHeld(d, oldest);
       this.settleDispatch(d);
     }
@@ -475,8 +510,9 @@ export class FinalSettleDriver {
   }
 
   /**
-   * A visit result in the Final settle of a repeatable run: held on the ledger (false: not one of
-   * its visits, the caller applies it). A settle that waits for it goes on.
+   * A visit result from visit worker `i` in the Final settle of a repeatable run: held on the
+   * ledger as the oldest visit out on that worker (false: not one of its visits, the caller applies
+   * it). A settle that waits for it goes on.
    */
   visitArrived(i: number, msg: VisitToOwner): boolean {
     const d = this.state;
@@ -646,6 +682,7 @@ export class FinalSettleDriver {
           if (d.holdSince === null) {
             d.holdSince = this.r.now();
             d.v.holds++;
+            if (d.holdOwed) d.v.holdsOwed = (d.v.holdsOwed ?? 0) + 1;
           }
           return;
         }
@@ -744,6 +781,8 @@ export class FinalSettleDriver {
   private finishFinalSettle(): void {
     const d = this.state;
     if (d) this.r.settleStatus = this.r.settleView(d, true);
+    // Every visit is back and applied (`drained`): one slot per worker again.
+    if (d?.bar) this.r.setVisitDepth(1);
     this.state = null;
     this.r.finish();
   }

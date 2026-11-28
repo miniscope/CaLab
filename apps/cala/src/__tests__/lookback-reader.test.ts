@@ -108,6 +108,49 @@ describe('LookbackReader', () => {
     src.dispose();
   });
 
+  it('a pinned request uses the snapshot and map it names, waiting for them, whatever came since', async () => {
+    const live = await liveRun();
+    const batches = live.steps.filter((s) => s.kind === 'batch');
+    const src = await openAvi();
+    const reader = new LookbackReader(src);
+    reader.setParams(DEFAULT_PARAMS);
+    for (const s of batches)
+      reader.pushRows(s.start, s.dy, s.dx, s.flags, s.flickerOffset, s.flickerGain);
+    const px = W * H;
+    const map = {
+      gain: new Float32Array(px).fill(0.5),
+      offset: new Float32Array(0),
+      dark: 0,
+      binsUsed: 1,
+      framesUsed: 1,
+      gainSd: 0,
+    };
+    reader.setBackState(live.before.get(24)!, 24);
+    // Newer inputs than the request names: a later snapshot and a first estimator map.
+    reader.setBackState(live.before.get(48)!, 48);
+    reader.setFlatField(map, 1);
+    const y = new Float32Array(3 * px);
+    const frames = [24, 25, 26].map((frame) => ({ frame, block: 1 }));
+    reader.solve(await reader.prepare(frames, y, { flat: 0, state: 24 }));
+    expect(Array.from(y)).toEqual(Array.from(live.out.subarray(24 * px, 27 * px)));
+    // Unpinned, the same frames come from the newest inputs: not what Discover saw.
+    const z = new Float32Array(px);
+    await reader.serve([{ frame: 24, block: 2 }], z);
+    expect(Array.from(z)).not.toEqual(Array.from(live.out.subarray(24 * px, 25 * px)));
+    // A snapshot that has not come yet is waited for.
+    let done = false;
+    const later = reader
+      .prepare([{ frame: 56, block: 3 }], z, { flat: 0, state: 56 })
+      .then(() => (done = true));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(done).toBe(false);
+    reader.setBackState(live.before.get(56)!, 56);
+    await later;
+    expect(Array.from(z)).toEqual(Array.from(live.out.subarray(56 * px, 57 * px)));
+    reader.dispose();
+    src.dispose();
+  });
+
   it('prepare then solve gives what serve gives, solved with the library applied in between', async () => {
     const live = await liveRun();
     const batches = live.steps.filter((s) => s.kind === 'batch');

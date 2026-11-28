@@ -30,6 +30,9 @@
  *  - The flat field is the newest map for every frame; Discover corrected
  *    frames before its first map not at all, and later ones with the map of
  *    their time (the same choice as Extract).
+ *  - A repeatable run's request names "newest" as of the batch end it was
+ *    issued at (`LookbackPins`: the snapshot and the map in force there), so
+ *    it does not depend on what reached this worker before its turn.
  *  - The warp runs in WASM; Discover may have warped on the GPU (WebGPU),
  *    which can differ in the last bits.
  *
@@ -72,6 +75,7 @@ import { frontReplay, rigidRecords } from './pipeline-stages.ts';
 import { RunRecord } from './run-record.ts';
 import type { SessionTransform } from './session-boundary.ts';
 import type { LookbackTiming } from './work-meter.ts';
+import type { LookbackPins } from '../workers/lookback-types.ts';
 
 /**
  * Where look-back reads raw frames from: a recording's `FrameSource`, or
@@ -107,6 +111,13 @@ const SETTLE_BLOCK_MAX = -1_000_000;
  * few are enough.
  */
 const PENDING_LIBRARIES_MAX = 8;
+
+/**
+ * Back-state snapshots and flat-field maps kept for pinned requests: a request names the newest at
+ * the batch end it was issued at, and waits behind at most a couple of batches of others.
+ */
+const SNAPSHOTS_KEPT = 4;
+const MAPS_KEPT = 4;
 
 /** Raw frames read at once around a requested one (the scheduler serves 64-frame blocks forward). */
 export const LOOKBACK_READ_SPAN = 64;
@@ -155,6 +166,17 @@ export class LookbackReader {
   private rowWaiters: { frame: number; resolve: () => void; reject: (e: Error) => void }[] = [];
   /** The newest back state of each session (one session: index 0), and requests waiting for one. */
   private backStates = new Map<number, Uint8Array>();
+  /** Per session, its newest few snapshots by stream frame (a pinned request names one). */
+  private snapshots = new Map<number, Map<number, Uint8Array>>();
+  /** Maps by seq (a pinned request names one), and the seq of the newest. */
+  private flats = new Map<number, FlatFieldMap | null>();
+  private flatNewest = 0;
+  /** The seq of the map the front half has, and the pins of the request being prepared. */
+  private frontSeq = -1;
+  private pins: LookbackPins | null = null;
+  /** Waiting for a snapshot or a map a pinned request names. */
+  private pinWaiters: { ready: () => boolean; resolve: () => void; reject: (e: Error) => void }[] =
+    [];
   private backWaiters: { session: number; resolve: () => void; reject: (e: Error) => void }[] = [];
   /** Session re-registrations Discover applied (by session index; absent: identity). */
   private readonly transforms: (SessionTransform | undefined)[] = [];
@@ -229,12 +251,23 @@ export class LookbackReader {
   setBackState(state: Uint8Array, frame?: number): void {
     const session = frame === undefined ? 0 : this.sessionOf(Math.max(0, frame - 1));
     this.backStates.set(session, state);
+    if (frame !== undefined) {
+      const kept = this.snapshots.get(session) ?? new Map<number, Uint8Array>();
+      kept.set(frame, state);
+      for (const k of [...kept.keys()].sort((a, b) => a - b).slice(0, -SNAPSHOTS_KEPT))
+        kept.delete(k);
+      this.snapshots.set(session, kept);
+    }
     const keep = this.opts.keepSessions;
     if (keep !== undefined) {
       const newest = Math.max(...this.backStates.keys());
       for (const k of [...this.backStates.keys()])
-        if (k <= newest - keep) this.backStates.delete(k);
+        if (k <= newest - keep) {
+          this.backStates.delete(k);
+          this.snapshots.delete(k);
+        }
     }
+    this.wakePins();
     this.backWaiters = this.backWaiters.filter((w) => {
       if (w.session !== session) return true;
       w.resolve();
@@ -258,10 +291,34 @@ export class LookbackReader {
     return sessionOfFrame(this.source.info, frame);
   }
 
-  /** The newest flat-field map (null: none known; the calibration's own stays). */
-  setFlatField(map: FlatFieldMap | null): void {
-    this.flat = map;
-    this.flatDirty = true;
+  /**
+   * A flat-field map (null: none known; the calibration's own stays) and its seq (0: the map in
+   * force from the first frame). An unpinned request uses the newest; a pinned one the seq it names.
+   */
+  setFlatField(map: FlatFieldMap | null, seq = this.flatNewest + 1): void {
+    this.flats.set(seq, map);
+    for (const k of [...this.flats.keys()].sort((a, b) => a - b).slice(0, -MAPS_KEPT))
+      this.flats.delete(k);
+    if (seq >= this.flatNewest) {
+      this.flatNewest = seq;
+      this.flat = map;
+      this.flatDirty = true;
+    }
+    this.wakePins();
+  }
+
+  private wakePins(): void {
+    this.pinWaiters = this.pinWaiters.filter((w) => {
+      if (!w.ready()) return true;
+      w.resolve();
+      return false;
+    });
+  }
+
+  /** Resolves once `ready()` holds (re-checked as snapshots and maps arrive). */
+  private untilPinned(ready: () => boolean): Promise<void> {
+    if (ready()) return Promise.resolve();
+    return new Promise((resolve, reject) => this.pinWaiters.push({ ready, resolve, reject }));
   }
 
   /** A library the slow loop published (applied before the next solve). */
@@ -293,11 +350,16 @@ export class LookbackReader {
    * Nothing here reads the library, so a request can be prepared ahead and
    * solved later (`solve`) with the library it is due.
    */
-  async prepare(frames: LookbackFrame[], out: Float32Array): Promise<LookbackPrepared> {
+  async prepare(
+    frames: LookbackFrame[],
+    out: Float32Array,
+    pins?: LookbackPins,
+  ): Promise<LookbackPrepared> {
     if (out.length < frames.length * this.px)
       throw new RangeError(`look-back: a buffer of ${out.length} for ${frames.length} frames`);
     const t0 = performance.now();
     this.timing = emptyTiming();
+    this.pins = pins ?? null;
     for (let i = 0; i < frames.length; i++) {
       const { frame, block } = frames[i];
       await this.preprocess(frame, block, out.subarray(i * this.px, (i + 1) * this.px));
@@ -345,9 +407,11 @@ export class LookbackReader {
     await this.rows(frame);
     const session = this.sessionOf(frame);
     const state = await this.state(session);
+    const pinned = await this.pinnedState(session);
+    await this.pinnedFlat();
     const t1 = performance.now();
-    const pre = this.blockPre(block, session, state);
-    const front = this.frontPre(state);
+    const pre = this.blockPre(block, session, pinned ?? state);
+    const front = this.frontPre(pinned ?? state);
     const t2 = performance.now();
     const raw = await this.rawFrame(frame);
     const t3 = performance.now();
@@ -381,6 +445,30 @@ export class LookbackReader {
         reject,
       }),
     );
+  }
+
+  /**
+   * A pinned request (`LookbackPins.state`) on a frame of the pinned snapshot's session: that
+   * snapshot (waited for). Null: not pinned, or a frame of another session (its newest state).
+   */
+  private async pinnedState(session: number): Promise<Uint8Array | null> {
+    const p = this.pins;
+    if (!p || p.state <= 0 || this.sessionOf(p.state - 1) !== session) return null;
+    const kept = () => this.snapshots.get(session);
+    // (Already dropped as too old: the oldest kept, with a warning; it cannot happen within the
+    // few batches a request waits.)
+    const passed = () => Math.min(...(kept()?.keys() ?? [])) > p.state;
+    await this.untilPinned(() => kept()?.has(p.state) === true || passed());
+    const exact = kept()!.get(p.state);
+    if (exact) return exact;
+    console.warn(`cala look-back: back state of frame ${p.state} no longer kept`);
+    return kept()!.get(Math.min(...kept()!.keys()))!;
+  }
+
+  /** A pinned request (`LookbackPins.flat`): waits for the map it names. */
+  private async pinnedFlat(): Promise<void> {
+    const p = this.pins;
+    if (p) await this.untilPinned(() => this.flats.has(p.flat) || p.flat === 0);
   }
 
   /**
@@ -422,15 +510,28 @@ export class LookbackReader {
     return a;
   }
 
+  /**
+   * The front half with the map the request uses: the one it pins, else the newest. A map
+   * cannot be taken off a preprocessor, so going to an older one (or to none) starts afresh.
+   */
   private frontPre(state: Uint8Array): Preprocessor {
+    const p = this.pins;
+    const seq = p ? p.flat : this.flatNewest;
+    const map = p ? (this.flats.get(p.flat) ?? null) : this.flat;
+    if (this.front && (seq < this.frontSeq || (p && !map && this.frontSeq > 0))) {
+      this.front.free();
+      this.front = null;
+    }
     if (!this.front) {
       this.front = Preprocessor.fromState(state);
       this.flatDirty = true;
+      this.frontSeq = -1;
     }
-    if (this.flatDirty) {
+    if (this.flatDirty || seq !== this.frontSeq) {
       this.flatDirty = false;
-      const m = this.flat;
-      if (m) this.front.setFlatField(m.gain, m.offset.length > 0 ? m.offset : undefined, m.dark);
+      this.frontSeq = seq;
+      if (map)
+        this.front.setFlatField(map.gain, map.offset.length > 0 ? map.offset : undefined, map.dark);
     }
     return this.front;
   }
@@ -498,6 +599,7 @@ export class LookbackReader {
     for (const w of this.rowWaiters) w.reject(new Error('look-back stopped'));
     this.rowWaiters = [];
     for (const w of this.backWaiters.splice(0)) w.reject(new Error('look-back stopped'));
+    for (const w of this.pinWaiters.splice(0)) w.reject(new Error('look-back stopped'));
     this.block?.pre.free();
     this.block = null;
     this.settleBlock?.pre.free();

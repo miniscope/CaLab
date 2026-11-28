@@ -72,6 +72,7 @@ export class FlatFieldRunner {
     this.fps = run.engine.fps;
     this.firstFrames = run.engine.flat_field.first_frames;
     this.reportedSecond = -1;
+    this.seq = 0;
     const seed = msg.seed;
     this.est = new FlatFieldEstimator(
       msg.width,
@@ -84,6 +85,9 @@ export class FlatFieldRunner {
       seed?.framesUsed ?? 0,
     );
   }
+
+  /** The sequence number of the newest map delivered this session (0: none). */
+  seq = 0;
 
   /** Push a batch and refine when due. A failure is reported, not thrown. */
   push(b: FlatFieldBatch): void {
@@ -133,6 +137,7 @@ export class FlatFieldRunner {
       max: est.changeMax,
     };
     const seq = est.updates;
+    this.seq = seq;
     this.deliver(this.session, seq, { ...map, gain: map.gain.slice(), offset: map.offset.slice() });
     this.emit({ type: 'map', session: this.session, seq, map, change });
   }

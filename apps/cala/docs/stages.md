@@ -125,14 +125,23 @@ look-back worker's trace solve warm-starts from the frame it solved last, so wit
 in arrival order the next request went to whichever worker answered first, and the same
 request came back with different traces. In request order every request goes to a fixed
 worker. Its visits go out between pieces of 4 settle frames and are applied in hand-out
-order a fixed number of settle frames later (`settleVisitLag`: whole pieces, as many as let
-the visit workers keep up with the settle's visit rate; 8 frames with 4 visit workers),
-waiting there for a late one; when too many visits are owed, the oldest out is applied
-before the next piece instead of the first back. The pay-at-end, the last round and a Stop
-apply a round once all of it is back. The waits are counted in the settle's
-`visits.holds` / `heldMs`. Not covered: look-back answers during Discover are
-preprocessed from whichever back state and flat-field map the look-back worker holds (no
-difference was seen on 1,000-frame clips, which never get a flat-field map).
+order a fixed number of settle frames later, waiting there for a late one. Each visit worker
+has `SETTLE_VISIT_DEPTH` (2) visit slots: its second visit waits in its queue, so it starts
+work as soon as the first is done instead of when the first is applied. The lag
+(`settleVisitLag`) is whole pieces, as many as let the slots make 1.25 x the settle's visit
+rate (16 frames with 4 visit workers, 8 slots). When too many visits are owed, the oldest out
+is applied before the next piece instead of the first back. The pay-at-end, the last round
+and a Stop apply a round once all of it is back. The waits are counted in the settle's
+`visits.holds` / `heldMs`.
+
+The live inputs of look-back are pinned too. Stage A feeds every batch to the flat-field
+estimator (no batch is dropped for a full queue) and puts each map in force at a frame set by
+the batch whose push made it, `FLAT_APPLY_LAG` (128) frames after that batch's end, waiting
+there for the estimator if it is late (after 30 s without an answer maps apply as they
+arrive). Stage C stamps each batch with the map in force and the newest back-state snapshot,
+and the look-back requests issued at that batch end name both (`LookbackPins`): the look-back
+worker preprocesses them with exactly that snapshot and map, waiting for them, whatever newer
+one came meanwhile.
 
 ## Order
 

@@ -27,7 +27,10 @@
  *   solved with another library; `traces` only: preprocessed from another back state);
  * - `batch version` first: the fast loop used another library for that batch;
  * - `batch work` only dates the divergence: the first batch the slow loop reached with a
- *   different amount of work done.
+ *   different amount of work done;
+ * - `batch frames`/`noise` first: the live pipeline preprocessed that batch differently (its
+ *   input, before the slow loop: e.g. a flat-field map in force from another frame);
+ *   `batch traces` alone: the fast loop solved the same frames differently.
  */
 import { readFileSync } from 'node:fs';
 
@@ -41,11 +44,11 @@ const withSettle = args.includes('--settle');
 
 /** Fields after `[kind, observed]`, by kind (`src/lib/detlog.ts`). */
 const FIELDS = {
-  batch: ['start', 'count', 'version', 'work'],
+  batch: ['start', 'count', 'version', 'work', 'frames', 'traces', 'noise'],
   take: ['seq', 'worker', 'job'],
   apply: ['seq', 'worker', 'result', 'work'],
   pub: ['version', 'bytes'],
-  req: ['id', 'port', 'kind', 'frames', 'list'],
+  req: ['id', 'port', 'kind', 'frames', 'list', 'flat', 'state'],
   ans: ['id', 'port', 'kind', 'version', 'traces'],
   end: [],
   final: [],

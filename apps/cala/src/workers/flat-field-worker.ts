@@ -49,6 +49,13 @@ async function handle(msg: FlatFieldDown): Promise<void> {
       // and a refine can take a second while the next ones arrive.
       port?.postMessage({ type: 'ack', session: msg.session } satisfies FlatFieldUp);
       if (msg.session === session) runner.push(msg);
+      // After the push (and any map it made): stage A of a repeatable run schedules maps by this.
+      port?.postMessage({
+        type: 'pushed',
+        session: msg.session,
+        start: msg.start,
+        seq: msg.session === session ? runner.seq : 0,
+      } satisfies FlatFieldUp);
       break;
     case 'finish':
       // In queue order, after every batch before it (a refine runs inside `push`): no map of

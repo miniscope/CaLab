@@ -9,7 +9,11 @@
  * follows arrival shows up in the call log.
  */
 import { describe, expect, it } from 'vitest';
-import { settleVisitLag } from '../lib/final-settle-driver.ts';
+import {
+  SETTLE_VISIT_DEPTH,
+  SETTLE_VISIT_HEADROOM,
+  settleVisitLag,
+} from '../lib/final-settle-driver.ts';
 import { SETTLE } from '../lib/settle.ts';
 import { FRAMES, settleRun, type Schedule } from './settle-fixtures.ts';
 
@@ -79,6 +83,27 @@ describe('repeatable Final settle', () => {
     }
   }, 60_000);
 
+  it('queues visits on each worker and keeps the order when one worker is much slower', async () => {
+    const slow = (sch: Schedule): Schedule => ({ ...sch, visitMsOf: (i) => (i === 0 ? 30 : 1) });
+    const scheds = timings({ pool: true, visitWorkers: 4, repeatable: true }).map(slow);
+    const runs = [];
+    for (const sch of scheds) runs.push(await settleRun(sch));
+    for (const r of runs.slice(1)) expect(r.log).toEqual(runs[0].log);
+    for (const r of runs) {
+      // A worker gets its next visit before its result is applied, up to its slots.
+      expect(Math.max(...r.queuedMax)).toBe(SETTLE_VISIT_DEPTH);
+      expect(r.st.visits!.handed).toBe(Math.floor(SETTLE.visitRate * FRAMES + 1e-9));
+      expect(r.pass.over).toBe(0);
+    }
+  }, 60_000);
+
+  it('without repeatable each visit worker has one visit at a time', async () => {
+    for (const sch of timings({ pool: true, visitWorkers: 4 })) {
+      const { queuedMax } = await settleRun(sch);
+      expect(Math.max(...queuedMax)).toBe(1);
+    }
+  }, 60_000);
+
   it('without repeatable the order follows the timing (the fakes can tell)', async () => {
     const runs = await logs(timings({ pool: true, visitWorkers: 4 }));
     expect(runs.some((log) => JSON.stringify(log) !== JSON.stringify(runs[0]))).toBe(true);
@@ -100,8 +125,9 @@ describe('repeatable Final settle', () => {
 });
 
 describe('settleVisitLag', () => {
-  it('is whole pieces that let the slots keep up with the rate, at least one piece', () => {
+  it('is whole pieces that let the slots keep up with the rate and a margin, at least one piece', () => {
     const p = SETTLE.observePiece;
+    expect(settleVisitLag(8, 0.4)).toBe(4 * p);
     expect(settleVisitLag(4, 0.4)).toBe(2 * p);
     expect(settleVisitLag(2, 0.4)).toBe(p);
     expect(settleVisitLag(1, 0.4)).toBe(p);
@@ -110,7 +136,8 @@ describe('settleVisitLag', () => {
       for (const rate of [0.1, 0.25, 0.4, 1]) {
         const lag = settleVisitLag(slots, rate);
         expect(lag % p).toBe(0);
-        if (lag > p) expect(slots / lag).toBeGreaterThanOrEqual(rate - 1e-9);
+        if (lag > p)
+          expect(slots / lag).toBeGreaterThanOrEqual(rate * SETTLE_VISIT_HEADROOM - 1e-9);
       }
   });
 });

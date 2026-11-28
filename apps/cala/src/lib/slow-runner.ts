@@ -67,6 +67,7 @@
 import type {
   CsettleStatus,
   FactorSource,
+  LookbackPins,
   LookbackStatus,
   LookbackToSlow,
   SettleStatus,
@@ -346,7 +347,11 @@ export class SlowRunner {
   private run = 0;
   private scope: EditScopeName = 'all';
   private statusAt = -Infinity;
-  /** Per visit worker: a visit is out. */
+  /**
+   * Per visit slot: a visit is out. Slot `i` posts to visit worker `i % visits.length`; there is one
+   * slot per worker, except in a repeatable Final settle (`setVisitDepth`), where each worker has
+   * `depth` slots and its jobs wait in its queue, served in the order they were posted.
+   */
   private busy: boolean[];
   /** The Final settle's visit rate, visits per settle frame fed (`SlowInit.settleVisitRate`; 0: none). */
   private settleRate = 0;
@@ -361,7 +366,7 @@ export class SlowRunner {
   private readonly clock: DutyClock<SlowDuty>;
   private workT0: number;
   private visitBusy: number[];
-  /** Per visit worker: whether the job out was handed out in the Final settle. */
+  /** Per visit slot: whether the job out was handed out in the Final settle. */
   private jobSettle: boolean[];
   /** Per visit worker: the busy ms of its Final-settle visits (`WorkStatus.settleVisitBusyMs`). */
   private settleVisitBusy: number[];
@@ -437,7 +442,7 @@ export class SlowRunner {
   private det: DetLog | null = null;
   /** Visit jobs handed out this run (the determinism log's take sequence). */
   private takeSeq = 0;
-  /** Per visit worker: the take sequence of the job out (determinism log). */
+  /** Per visit slot: the take sequence of the job out (determinism log). */
   private slotSeq: number[] = [];
   /** Per look-back worker: epoch ms the request out was sent (relay timing). */
   private lbSentAt: number[] = [];
@@ -452,6 +457,8 @@ export class SlowRunner {
   private lbBarTimers = new Map<number, () => void>();
   /** The last stream frame of the batch being observed (the barrier's clock). */
   private batchEnd = 0;
+  /** The live inputs after that batch (`FastToSlow` `pins`), named by the requests issued at its end. */
+  private pins: LookbackPins | null = null;
   /** A repeatable run: batch ends that waited for something late, and the wait, ms. */
   private barrierWaits = 0;
   private barrierWaitMs = 0;
@@ -518,6 +525,9 @@ export class SlowRunner {
       },
       get busy() {
         return r.busy;
+      },
+      get visitWorkers() {
+        return r.visits.length;
       },
       get jobs() {
         return r.jobs;
@@ -612,6 +622,7 @@ export class SlowRunner {
       finish: () => r.finish(),
       housekeep: () => r.housekeep(),
       dispatch: (limit?: number) => r.dispatch(limit),
+      setVisitDepth: (depth: number) => r.setVisitDepth(depth),
       applyVisit: (i: number, msg: VisitToOwner) => {
         r.busy[i] = false;
         if (msg.type === 'result') r.applyVisit(i, msg);
@@ -1013,6 +1024,19 @@ export class SlowRunner {
     }
   }
 
+  /**
+   * `depth` visit slots per visit worker (`busy`): set as a repeatable Final settle starts (a
+   * worker then has up to `depth` jobs queued) and back to 1 as it ends; a run's reset makes it 1
+   * too. Throws with a visit out (the slots would lose track of it).
+   */
+  private setVisitDepth(depth: number): void {
+    if (this.busy.some((b) => b)) throw new Error('visit slots changed with a visit out');
+    const n = this.visits.length * Math.max(1, Math.floor(depth));
+    this.busy = new Array<boolean>(n).fill(false);
+    this.jobSettle = new Array<boolean>(n).fill(false);
+    this.slotSeq = [];
+  }
+
   /** A visit's result into the slow loop (no housekeeping, no hand-out). */
   private applyVisit(i: number, msg: Extract<VisitToOwner, { type: 'result' }>): void {
     const loop = this.loop!;
@@ -1023,8 +1047,9 @@ export class SlowRunner {
     this.jobs++;
     this.visitMsSum += msg.ms;
     this.visitMsN++;
-    this.visitBusy[i] = (this.visitBusy[i] ?? 0) + msg.ms;
-    if (this.jobSettle[i]) this.settleVisitBusy[i] = (this.settleVisitBusy[i] ?? 0) + msg.ms;
+    const w = i % this.visits.length;
+    this.visitBusy[w] = (this.visitBusy[w] ?? 0) + msg.ms;
+    if (this.jobSettle[i]) this.settleVisitBusy[w] = (this.settleVisitBusy[w] ?? 0) + msg.ms;
   }
 
   private fail(err: unknown): void {
@@ -1059,6 +1084,7 @@ export class SlowRunner {
     if (this.batchEnd > 0 && msg.start > this.batchEnd && this.barrierOn)
       this.barrierLostAt = this.batchEnd;
     this.batchEnd = msg.start + msg.count;
+    this.pins = msg.pins ?? null;
     if (msg.lateLibraries !== undefined)
       this.lateLibraries = Math.max(this.lateLibraries, msg.lateLibraries);
     let maxStep = 0;
@@ -1085,7 +1111,17 @@ export class SlowRunner {
     beginLive();
     try {
       if (loop && init) {
-        this.det?.row('batch', this.observed, msg.start, msg.count, msg.version, loop.work);
+        this.det?.row(
+          'batch',
+          this.observed,
+          msg.start,
+          msg.count,
+          msg.version,
+          loop.work,
+          fnvBytes(msg.frames.subarray(0, msg.count * init.width * init.height)),
+          fnvBytes(msg.traces),
+          msg.noise ? fnvBytes(msg.noise) : 0,
+        );
         if (msg.noise) {
           this.tm('live.setNoise', () => loop.setNoise(msg.noise!));
           for (const v of this.visits)
@@ -1199,8 +1235,8 @@ export class SlowRunner {
   }
 
   /**
-   * A tile visit to every idle visit worker, while any is due (at most `limit`); returns how many
-   * were handed out.
+   * A tile visit to every idle visit slot in slot order, while any is due (at most `limit`);
+   * returns how many were handed out.
    */
   private dispatch(limit = Infinity): number {
     const loop = this.loop;
@@ -1209,7 +1245,7 @@ export class SlowRunner {
     const settling = this.finalSettle.state !== null;
     return this.clock.span('visit', () => {
       let handed = 0;
-      for (let i = 0; i < this.visits.length && handed < limit; i++) {
+      for (let i = 0; i < this.busy.length && handed < limit; i++) {
         if (this.busy[i]) continue;
         const t0 = this.now();
         const bytes = this.tm('visit.take', () => loop.takeJob());
@@ -1223,9 +1259,10 @@ export class SlowRunner {
         if (this.barrierOn) this.bar.issue('visit', i, this.batchEnd);
         handed++;
         const tp = this.now();
-        this.visits[i].postMessage({ type: 'job', session: this.session, bytes }, [
-          bytes.buffer as ArrayBuffer,
-        ]);
+        this.visits[i % this.visits.length].postMessage(
+          { type: 'job', session: this.session, bytes },
+          [bytes.buffer as ArrayBuffer],
+        );
         this.dt?.add('visit.post', this.now() - tp);
         this.jobOwnerMs += this.now() - t0;
       }
@@ -1305,7 +1342,18 @@ export class SlowRunner {
     const req: LookbackReq = { id, port, kind, items, ...(skip ? { skip } : {}) };
     // Under the barrier a request may wait behind others, so it names the library to solve with.
     const barrier = !hold && kind !== 'end' && this.barrierOn;
-    this.det?.row('req', this.detAt, id, port, kind, items.length, fnvBytes(flat));
+    const pins = barrier ? this.pins : null;
+    this.det?.row(
+      'req',
+      this.detAt,
+      id,
+      port,
+      kind,
+      items.length,
+      fnvBytes(flat),
+      pins?.flat ?? -1,
+      pins?.state ?? -1,
+    );
     // `flat` is a fresh array (from WASM or built here): transferred as is; `skip` is copied.
     this.clock.span(kind, () =>
       this.lbPorts[port]!.postMessage(
@@ -1320,6 +1368,7 @@ export class SlowRunner {
           ...(kind === 'end' && !this.factorLive ? { final: true } : {}),
           ...(hold ? { hold: true } : {}),
           ...(barrier ? { version: this.version } : {}),
+          ...(pins ? { pins: { ...pins } } : {}),
         },
         [flat.buffer as ArrayBuffer],
       ),

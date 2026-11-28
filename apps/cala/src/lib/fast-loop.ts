@@ -12,6 +12,7 @@
  */
 import type { CompressToFast } from '../workers/compress-types.ts';
 import type { FastToSlow, PortLike, SlowToFast } from '../workers/slow-types.ts';
+import type { LookbackPins } from '../workers/lookback-types.ts';
 import type { CompressFeedLike } from './compress-feed.ts';
 import { ForwardPool } from './forward-pool.ts';
 import { runParams } from './run-params.ts';
@@ -544,6 +545,12 @@ export class FastLoop {
     }
   }
 
+  /**
+   * Look-back runs: the flat-field map and back-state snapshot in force after the next batch
+   * (stage C), sent with it to the slow worker (`FastToSlow` `pins`).
+   */
+  pins: LookbackPins | null = null;
+
   private forward(
     batch: Float32Array,
     start: number,
@@ -605,6 +612,7 @@ export class FastLoop {
         ...(noise ? { noise } : {}),
         sentAt: performance.timeOrigin + performance.now(),
         ...(this.lateLibraries > 0 ? { lateLibraries: this.lateLibraries } : {}),
+        ...(this.pins ? { pins: { ...this.pins } } : {}),
       },
       transfer,
     );

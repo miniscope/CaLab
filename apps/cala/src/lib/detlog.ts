@@ -16,11 +16,13 @@ export type DetLogRow = [DetLogKind, number, ...(number | string)[]];
 
 /**
  * Row kinds and their fields after `observed`:
- * - `batch`: start, count, library version the fast loop used, `SlowLoop.work` before the batch;
+ * - `batch`: start, count, library version the fast loop used, `SlowLoop.work` before the batch,
+ *   hashes of the batch's preprocessed frames, its traces and its noise map (0: none);
  * - `take`: take sequence, visit worker, hash of the job bytes;
  * - `apply`: take sequence, visit worker, hash of the result bytes, `SlowLoop.work` before;
  * - `pub`: library version, hash of the library bytes;
- * - `req`: request id, look-back worker, request kind, frames, hash of the request's frame list;
+ * - `req`: request id, look-back worker, request kind, frames, hash of the request's frame list,
+ *   and its pinned flat-field map and back-state frame (-1: not pinned);
  * - `ans`: request id, look-back worker, request kind, library version solved with (-1: an
  *   error), hash of the answer's traces;
  * - `end`: Discover's last frame is in (`SlowRunner.end`);

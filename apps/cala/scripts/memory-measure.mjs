@@ -160,7 +160,8 @@ page.on('response', (r) => {
   if (r.status() >= 400) L(`[http ${r.status()}] ${r.url().slice(0, 200)}`);
 });
 page.on('console', (m) => {
-  if (m.type() === 'error' || m.type() === 'warning')
+  // (and the app's own `cala ...` notes, e.g. the flat-field waits of a repeatable run)
+  if (m.type() === 'error' || m.type() === 'warning' || m.text().startsWith('cala '))
     L(`[console.${m.type()}] ${m.text().slice(0, 300)}`);
 });
 let downloads = 0;
