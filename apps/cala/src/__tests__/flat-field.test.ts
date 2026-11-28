@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  flatFieldBadge,
   flatFieldChangeLine,
   flatFieldKey,
   flatFieldStatusLine,
@@ -638,6 +639,26 @@ describe('flat-field status line', () => {
     });
     expect(skipped).toBe('skipped: too little motion (keeping the previous map)');
     expect(flatFieldStatusLine({ ...base, supported: false })).toMatch(/^off/);
+  });
+
+  it('gives each state a badge, with progress only while the first map is estimated', () => {
+    const b = (s: Partial<typeof base>) => flatFieldBadge({ ...base, ...s });
+    expect(b({ enabled: false })).toEqual({ label: 'Off', tone: 'neutral', estimating: false });
+    expect(b({ supported: false }).estimating).toBe(false);
+    expect(b({ error: 'boom' }).tone).toBe('critical');
+    expect(b({ frames: 1000, fps: 20 })).toEqual({
+      label: 'Estimating',
+      tone: 'neutral',
+      estimating: true,
+    });
+    expect(b({ skipped: 'too little motion: x' })).toMatchObject({
+      tone: 'warning',
+      estimating: true,
+    });
+    expect(b({ map, skipped: 'too little motion: x' }).estimating).toBe(false);
+    expect(b({ map, updates: 1 })).toMatchObject({ label: 'Estimated', tone: 'ok' });
+    expect(b({ map, reused: true, key }).label).toBe('Reused');
+    expect(b({ map, reused: true, key, updates: 2 }).label).toBe('Reused + refined');
   });
 
   it('reports the change and shows the gain at a fixed range', () => {

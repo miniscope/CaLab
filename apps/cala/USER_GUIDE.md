@@ -288,11 +288,22 @@ a row to select the cell; its sort, filter and columns stay while you look at ot
 **Correlation** (the
 pairwise trace correlation against distance plot; see below), **Flat field**,
 **Timing** (per-stage times and the slow loop's counters), **Raw file** (scrub the
-recording as read from disk) and **Recording**.
+recording as read from disk) and **Recording** (the recording's facts, with any warning
+about them, such as a missing frame rate, as an amber line with a ⚠ above them).
 
-**Correlation tab.** A check for incomplete demixing of neighbouring cells. Press
-**Compute** (once, on demand; it never runs with the pipeline, and **Recompute**
-repeats it): for every pair of cells it takes the Pearson correlation of their traces
+**Timing tab.** Where the time per frame goes, as rows on one fixed log axis in ms
+(0.01 to 1,000): the pipeline stages (one dot each, the mean per frame), then the fast
+loop, online QC and slow loop over recent batches, each a bar from the mean to the max
+with a dot at the 99th percentile and the figures mean · p99 · max beside it. The dashed
+line on per-frame rows is the frame budget, the time one frame lasts at the recording's
+frame rate: a stage to its right is slower than real time. A series with no samples is a
+grey dash. Under them are the slow loop's counts (working set, adds, merges, refines,
+rejects, library versions, reservoir size) and a meter of the frames it dropped. The tab
+refreshes at most twice a second.
+
+**Correlation tab.** A check for incomplete demixing of neighbouring cells. Until you
+press **Compute** the tab shows the plot's empty axes. Press **Compute** (once, on
+demand; it never runs with the pipeline, and **Recompute** repeats it): for every pair of cells it takes the Pearson correlation of their traces
 (each minus a 15 s moving average) and plots the median per bin of centre distance,
 in soma diameters D (the median equivalent diameter of the footprints at half
 maximum), with the interquartile range as bars, over a faint scatter of the individual
@@ -571,7 +582,10 @@ estimates the pattern from the recording's own motion:
   frames before that are uncorrected, and the frame where the map switches on is
   recorded in the run (Flat field tab, export `meta_json`). Later refinements come about
   every 60 s and are small.
-- The **Flat field** tab shows the map on a fixed 0.9 to 1.1 scale and its status.
+- The **Flat field** tab shows the map on a fixed 0.9 to 1.1 scale, with a badge for its
+  state (Estimating, Estimated, Reused, Skipped, Off). Until there is a map the image is a
+  striped placeholder and a **First map** meter counts the seconds of recording seen,
+  out of 150.
   The flat field is on by default. To run without it, untick **Divide out the
   sensor gain map** (takes effect at the next Restart) or open the page with
   `?flatfield=0`.

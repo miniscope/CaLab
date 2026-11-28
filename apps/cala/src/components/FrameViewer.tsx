@@ -1,11 +1,15 @@
 import { Show, type JSX } from 'solid-js';
-import { DashboardPanel } from '@calab/ui';
+import { DashboardPanel, Icon } from '@calab/ui';
 import type { ViewerStore } from '../lib/viewer-store.ts';
 import { FALLBACK_PLAYBACK_FPS } from '../lib/viewer-store.ts';
 import { createHeldRange, RangeControl } from './RangeControl.tsx';
 import { FrameCanvas } from './FrameCanvas.tsx';
 
-/** Frame canvas with a scrubber, play/pause and a fixed-range toggle. */
+/**
+ * The Raw file tab: the recording's frames as stored, with play/pause, a frame scrubber and
+ * the display range (fitted once and held, or the full bit depth). The readout follows the
+ * scrubber at once: it is the control's own feedback, not a live figure.
+ */
 export function FrameViewer(props: { store: ViewerStore }): JSX.Element {
   const store = () => props.store;
   const held = createHeldRange();
@@ -13,8 +17,8 @@ export function FrameViewer(props: { store: ViewerStore }): JSX.Element {
   const seconds = () => store().frameIndex() / (info().fps ?? FALLBACK_PLAYBACK_FPS);
 
   return (
-    <DashboardPanel id="viewer" variant="flush">
-      <div class="cala-stage">
+    <DashboardPanel id="viewer" variant="flush" class="cala-viewer">
+      <div class="cala-stage cala-viewer__stage">
         <FrameCanvas
           width={info().width}
           height={info().height}
@@ -24,14 +28,15 @@ export function FrameViewer(props: { store: ViewerStore }): JSX.Element {
           held={held}
         />
       </div>
-      <div class="cala-controls">
+      <div class="cala-viewer__transport">
         <button
           type="button"
-          class="btn-secondary btn-small cala-play"
+          class="btn-secondary btn-small cala-viewer__play"
           aria-label={store().playing() ? 'Pause' : 'Play'}
+          title={store().playing() ? 'Pause' : 'Play'}
           onClick={() => store().togglePlay()}
         >
-          {store().playing() ? 'Pause' : 'Play'}
+          <Icon name={store().playing() ? 'pause' : 'play'} size={14} />
         </button>
         <input
           type="range"
@@ -46,10 +51,14 @@ export function FrameViewer(props: { store: ViewerStore }): JSX.Element {
             store().showFrame(Number(e.currentTarget.value));
           }}
         />
-        <span class="cala-readout" data-testid="frame-readout">
-          {store().frameIndex() + 1} / {info().frameCount.toLocaleString()}
-          <Show when={info().fps !== null}> &middot; {seconds().toFixed(2)} s</Show>
+        <span class="cala-viewer__readout num" data-testid="frame-readout">
+          {(store().frameIndex() + 1).toLocaleString()} / {info().frameCount.toLocaleString()}
+          <Show when={info().fps !== null}>
+            <span class="unit"> · {seconds().toFixed(2)} s</span>
+          </Show>
         </span>
+      </div>
+      <div class="cala-viewer__display">
         <label class="cala-contrast">
           <input
             type="checkbox"

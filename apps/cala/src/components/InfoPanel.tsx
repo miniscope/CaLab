@@ -1,5 +1,5 @@
 import { For, Show, type JSX } from 'solid-js';
-import { DashboardPanel } from '@calab/ui';
+import { DashboardPanel, StatusNote } from '@calab/ui';
 import type { FrameSourceInfo } from '../lib/frame-source.ts';
 import { ASSUMED_FPS } from '../lib/miniscope-meta.ts';
 
@@ -22,10 +22,16 @@ export function InfoPanel(props: { info: FrameSourceInfo }): JSX.Element {
   return (
     <DashboardPanel id="info" variant="flush">
       <h2 class="panel-label">Recording</h2>
-      <dl class="cala-info">
+      {/* Warnings first: they qualify the facts below. */}
+      <Show when={i().warnings.length > 0}>
+        <div class="cala-info__warnings" data-testid="recording-warnings">
+          <For each={i().warnings}>{(w) => <StatusNote>{w}</StatusNote>}</For>
+        </div>
+      </Show>
+      <dl class="cala-info num">
         <dt>Frame size</dt>
         <dd>
-          {i().width} x {i().height} px, {i().bitDepth}-bit ({i().fourcc})
+          {i().width} × {i().height} px, {i().bitDepth}-bit ({i().fourcc})
         </dd>
         <dt>Frames</dt>
         <dd>{i().live ? 'live stream (no end known)' : i().frameCount.toLocaleString()}</dd>
@@ -67,7 +73,6 @@ export function InfoPanel(props: { info: FrameSourceInfo }): JSX.Element {
           selection not used.
         </p>
       </Show>
-      <For each={i().warnings}>{(w) => <p class="cala-warning">{w}</p>}</For>
     </DashboardPanel>
   );
 }

@@ -53,7 +53,7 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await expect(header.getByText('6 frames')).toBeVisible();
   await openMoreTab(page, 'Recording');
   const info = page.locator('[data-panel-id="info"]');
-  await expect(info).toContainText('24 x 16 px, 8-bit (GREY)');
+  await expect(info).toContainText('24 × 16 px, 8-bit (GREY)');
   await expect(info).toContainText('20.00 Hz from metaData.json');
   await expect(info).toContainText('60.0 Hz (declared by the writer, ignored)');
 
@@ -203,7 +203,9 @@ test('Cala: a phone-wide window stacks the rail above the image, with no sideway
   await expect(page.getByRole('tab')).toHaveText(['Run', 'Cell', 'QC', 'History', /^More/]);
   await openMoreTab(page, 'Recording');
   await expect(page.getByTestId('tab-more')).toHaveText(/^Recording/);
-  await expect(page.locator('[data-panel-id="info"]')).toContainText('24 x 16 px');
+  await expect(page.locator('[data-panel-id="info"]')).toContainText('24 × 16 px');
+  // The missing frame rate is a warning pair (tint, icon, text) above the facts.
+  await expect(page.getByTestId('recording-warnings')).toContainText('No frame rate found');
 });
 
 test('Cala: a folder without Miniscope videos reports an error', async ({ page }) => {
