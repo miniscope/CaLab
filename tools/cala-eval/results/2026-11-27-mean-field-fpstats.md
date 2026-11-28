@@ -117,7 +117,16 @@ excludes 0 and at least 2/3 of sims agree), all of them cost rows:
 - "worse": slow loop `step` ms/frame, 5.889 → 5.899, +0.2 %;
 - "worse": peak RSS, 1.26 → 1.29 GB, +0.04 [0.01, 0.07].
 
-Leak and trace crosstalk: LEAK_SECTION.
+Leak and trace crosstalk, from a rerun of all 20 runs with `--dump`, so the traces are available (`runs-dump/`, `demix-dump.md`). Every run's
+`final.tsv` is byte-identical to its first run, so both builds are deterministic and `--dump` changes nothing.
+
+- trace-correlation excess < 1 D (headline): −0.001 → −0.001, diff −0.000 [−0.006, +0.006];
+- `leak_sd` median < 1 D: 0.0170 → 0.0173, +0.0003 [−0.0012, 0.0022];
+- `leak_sd` share > 0.1: 0.078 → 0.081, +0.003 [−0.013, 0.020];
+- median trace r with GT: 0.9802 → 0.9802.
+
+All are within noise. Of the 67 metrics, 63 are within noise. The report flags the slow loop ms/frame and `observe` ms
+as "better" and peak RSS (+0.02 GB [0.01, 0.03]) as "worse".
 
 One non-gated difference: on motion, the share of cells whose footprint still changes late (`conv_share4`,
 `conv_big4`) is up 0.016 ± 0.013 and 0.013 ± 0.011. On static it is +0.002 ± 0.012 and −0.005 ± 0.009. These are
