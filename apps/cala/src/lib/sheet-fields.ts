@@ -15,7 +15,8 @@ export const SHEET_OMITS: Record<string, string> = {
   '/input/crop': 'its slot (crop region)',
   '/seed/': 'its slot (footprints of a past run)',
   '/flat_field/enabled': 'decided per device by the flat-field store',
-  '/discover/visit/mode': "the Speed block's visit-rate setting",
+  '/discover/visit/':
+    "the Speed block's visit-rate setting; the app's visit floor and cap follow the default target",
   '/qc/enabled': "the page's QC switch",
   '/factors/mode': 'the factor run plan (`?factors`)',
   '/discover/merge/guard_min_sep_d': 'follows Look-back',

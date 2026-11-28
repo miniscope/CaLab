@@ -318,7 +318,7 @@ describe('every field the pre-run sheet renders reaches the run', () => {
     const fields = schemaFields(PARAMS_SCHEMA).filter(
       (f) => (f.level === 'main' || f.level === 'advanced') && sheetShows(f, true),
     );
-    expect(fields.length).toBeGreaterThan(20);
+    expect(fields).toHaveLength(31);
     for (const f of fields) {
       // A µm diameter needs the optics; 30 µm at 2 µm per pixel is 15 px.
       const v = f.pointer === '/scales/expected_cell_diameter_um' ? 30 : nonDefault(f);
