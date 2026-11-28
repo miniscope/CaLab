@@ -75,7 +75,6 @@ export function createSteps(src: () => StepSources): () => StepView[] {
       settleTotal,
       settleFps: s.work()?.lookback.kinds.end.framesPerS ?? 0,
       finalLibrary: o.cells.status()?.final ?? false,
-      inNeed: lb && s.lookbackRun() ? lb.inNeed : null,
       extract: p.status(),
       extractDone: p.processed(),
       extractTotal: p.total(),
@@ -275,16 +274,20 @@ export function DiscoverBody(props: {
   step: StepView;
   children?: JSX.Element;
 }): JSX.Element {
-  const facts = createLookbackFacts(
-    () => props.cells,
-    () => props.step.state,
-  );
-  const cellCount = createSampled(
-    () => props.cells.library()?.ids.length ?? 0,
+  // One reading for the look-back figures and the cell count, so the rows always agree.
+  const snap = createSampled(
+    () => {
+      const st = props.cells.status();
+      return {
+        facts: st?.lookback ? lookbackFacts(st.lookback, st.final ?? false) : null,
+        cells: props.cells.library()?.ids.length ?? 0,
+      };
+    },
     () => props.step.state,
     SAMPLE_MS,
   );
-  const shown = () => (props.pipeline.lookbackRun() ? facts() : null);
+  const cellCount = () => snap().cells;
+  const shown = () => (props.pipeline.lookbackRun() ? snap().facts : null);
   return (
     <div
       class="cala-step__body cala-step__rows cala-step__rows--discover"
@@ -297,8 +300,8 @@ export function DiscoverBody(props: {
               label="Cells waiting for data"
               value={f().inNeed}
               min={0}
-              max={Math.max(1, cellCount())}
-              display={`${n0(f().inNeed)} / ${n0(cellCount())}`}
+              max={Math.max(1, cellCount(), f().inNeed)}
+              display={`${n0(f().inNeed)} / ${n0(Math.max(cellCount(), f().inNeed))}`}
               tone="discover"
               size="sm"
               format={(v) => `${n0(v)} of ${n0(cellCount())} cells waiting for look-back data`}

@@ -190,7 +190,7 @@ Discover or stop the live run, and the tab shows, in the order you use them:
   Every other step is one line: a finished step is its stage colour with ✓ and its result
   and time ("✓ Discover · 383 cells · 0:48"), a waiting one says waiting, one that will
   not run says off and why. Above the steps the status line (Discover done, the motion
-  badge); under them the time-window control (**Run** and, when the run is long enough,
+  badge); under them the **Plot window** control (**Whole run** and, when the run is long enough,
   **24 h**, **1 h**, **10 min**, **1 min**), the whole-run strip and one overlaid plot of
   the convergence metrics (cells at frame, new cells per minute, churn, stable, explained,
   residual). **Cells at frame** is the count at each QC snapshot (once per second of

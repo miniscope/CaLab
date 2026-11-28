@@ -29,7 +29,6 @@ const step: StepInput = {
   settleTotal: 1000,
   settleFps: 0,
   finalLibrary: false,
-  inNeed: null,
   extract: 'idle',
   extractDone: 0,
   extractTotal: 0,

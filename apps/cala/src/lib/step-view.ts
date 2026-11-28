@@ -52,8 +52,6 @@ export interface StepInput {
   settleFps: number;
   /** The final library is out (after the Final settle, or right after Discover without it). */
   finalLibrary: boolean;
-  /** Look-back sub-line: cells still waiting for look-back data (null: none). */
-  inNeed: number | null;
   /** Extract: idle, running, done, error, cancelled; frames solved of its total; rate. */
   extract: string;
   extractDone: number;
@@ -97,7 +95,7 @@ export function stepViews(i: StepInput): StepView[] {
     note: i.live
       ? 'live stream'
       : i.lookbackRun && busy
-        ? `with look-back${i.inNeed !== null && i.inNeed > 0 ? ` (${i.inNeed.toLocaleString('en-US')} cells waiting)` : ''} and Background settle`
+        ? 'with look-back and Background settle'
         : '',
   };
   if (busy && !i.live && i.visitHold != null && i.visitHold > 0) {

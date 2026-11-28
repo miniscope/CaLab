@@ -222,7 +222,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     return st.mode;
   };
   const windowOptions = () => [
-    { value: 'run', label: 'Run', title: 'The whole run (a file: to its end; live: to now)' },
+    { value: 'run', label: 'Whole run', title: 'The whole run (a file: to its end; live: to now)' },
     ...presets().map((p) => ({
       value: `last-${p.s}`,
       label: p.label,
@@ -493,6 +493,9 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           </div>
           <div class="cala-run__timeline">
             <div class="cala-run__window">
+              <span class="cala-run__window-label" id="run-plot-window">
+                Plot window
+              </span>
               <SegmentedControl
                 options={windowOptions()}
                 value={windowValue()}

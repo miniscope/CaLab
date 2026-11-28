@@ -1999,3 +1999,8 @@
 .cala-step__body.cala-step__rows--discover {
   min-height: 0;
 }
+
+.cala-run__window-label {
+  font-size: var(--font-size-xs);
+  color: var(--ink-2);
+}
