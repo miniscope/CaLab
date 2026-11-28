@@ -19,8 +19,10 @@ import {
 } from '../lib/boundary-flags.ts';
 import type { SessionStart } from '../lib/session-boundary.ts';
 import { sessionStart } from '../lib/session-boundary.ts';
-import { exportSessionBlock, runManifest, sessionMetadata } from '../lib/session-export.ts';
-import { emptyIndex, findRuns, mergeRuns, sessionStatus } from '../lib/project-index.ts';
+import { exportSessionBlock } from '../lib/session-export.ts';
+import { sessionStatus } from '../lib/project-index.ts';
+import { calaRunFile } from '../lib/run-file.ts';
+import { fileText, findRunFiles, rebuildIndex } from '@calab/project';
 
 const start = (o: Partial<SessionStart> = {}): SessionStart => ({
   index: 1,
@@ -302,7 +304,7 @@ describe('persistence', () => {
     expect(parseBoundaryFlag(null)).toBeNull();
   });
 
-  it('goes into the export block, cala-session.json, the run manifest and the index', () => {
+  it('goes into the export block, the run file and the index', () => {
     const rec = {
       index: 1,
       name: 's2',
@@ -318,50 +320,37 @@ describe('persistence', () => {
     expect((exportSessionBlock(rec, 'joint', 2).boundary as { severity: string }).severity).toBe(
       'failed',
     );
-    const settings = { mode: 'joint' as const };
-    const meta = sessionMetadata({
+    const first = { ...rec, index: 0, name: 's1', dir: 'mouse1/s1', resultsPath: 's1' };
+    delete (first as { boundary?: unknown }).boundary;
+    const run = calaRunFile({
+      id: 'r1_cala',
+      project: null,
+      plan: null,
+      status: 'finished',
+      stopped: null,
+      created: '2026-11-13T00:00:00.000Z',
+      updated: '2026-11-13T00:00:00.000Z',
       version: 'dev',
-      settings,
-      session: rec,
-      sessions: 2,
-      boundaries: [1000],
-      stages: [],
-      libraryVersion: 3,
-      cells: 2,
-      sharedCellIds: [1, 2],
-      createdAt: '2026-11-13T00:00:00.000Z',
-    });
-    expect((meta.boundary as { severity: string }).severity).toBe('failed');
-    const manifest = runManifest({
-      version: 'dev',
-      settings,
+      joint: true,
+      record: null,
       sessions: [
-        { ...rec, index: 0, name: 's1', dir: 'mouse1/s1', resultsPath: 's1', boundary: undefined },
-        rec,
+        { record: first, stream: 's1', info: null },
+        { record: rec, stream: 's2', info: null },
       ],
-      boundaries: [1000],
-      root: 'runs/r1',
-      createdAt: '2026-11-13T00:00:00.000Z',
-      updatedAt: '2026-11-13T00:00:00.000Z',
-      finished: true,
     });
-    const sessions = manifest.sessions as Record<string, unknown>[];
-    expect(sessions[0].boundary).toBeUndefined();
-    expect((sessions[1].boundary as { severity: string }).severity).toBe('failed');
-    // Rebuilt from the run folder, the session table reads it back.
-    const files = [
-      { path: 'runs/r1/cala-run.json', text: JSON.stringify(manifest) },
-      { path: 'runs/r1/s2/cala-session.json', text: JSON.stringify(meta) },
-    ];
-    const idx = mergeRuns(
-      emptyIndex('mouse1', { kind: 'default', label: 'x' }, new Date(0)),
-      findRuns(files).runs,
-    ).index;
-    const sid = idx.runs[0].sessions[1].id;
-    const st = sessionStatus(idx, sid);
+    expect(run.results[0].boundary).toBeNull();
+    expect((run.results[1].boundary as { severity: string }).severity).toBe('failed');
+    // Read back from the run folder, the session table shows it.
+    const found = findRunFiles([
+      { path: 'runs/r1_cala/calab-run.json', text: fileText('run', run) },
+    ]);
+    expect(found.refused).toEqual([]);
+    const idx = rebuildIndex(found.runs, [], new Date(0));
+    const st = sessionStatus(idx, {}, 's2');
     expect(st.boundary?.severity).toBe('failed');
+    expect(st.boundary?.checks[0].value).toBeCloseTo(0.4, 6);
     expect(st.runMode).toBe('joint');
-    expect(st.runSessions).toHaveLength(2);
+    expect(st.runSessions).toEqual(['s1', 's2']);
   });
 });
 

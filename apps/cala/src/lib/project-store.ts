@@ -525,7 +525,8 @@ export function createProjectStore(deps: ProjectDeps) {
       tableRows().some((r) => r.session.id === id && r.row),
     );
     if (ids.length === 0) return;
-    void edit((p) => ({ ...p, plan: addSteps(p.plan, CALA_APP, kind, ids, order()) }));
+    const rowOrder = order();
+    void edit((p) => ({ ...p, plan: addSteps(p.plan, CALA_APP, kind, ids, rowOrder) }));
     setSelected(new Set<string>());
   }
 
@@ -536,7 +537,8 @@ export function createProjectStore(deps: ProjectDeps) {
   function replanSeparate(ids: readonly string[]): void {
     const keep = ids.filter((id) => tableRows().some((r) => r.session.id === id && r.row));
     if (keep.length === 0) return;
-    void edit((p) => ({ ...p, plan: addSteps(p.plan, CALA_APP, 'separate', keep, order()) }));
+    const rowOrder = order();
+    void edit((p) => ({ ...p, plan: addSteps(p.plan, CALA_APP, 'separate', keep, rowOrder) }));
   }
 
   /** Problems that keep the plan from starting, per step. */
@@ -717,14 +719,15 @@ export async function sessionSetupProject(o: {
       frames: s.info?.frameCount ?? null,
     })),
   ).project;
-  const before = new Set(project.plan.steps.map((s) => s.id));
   const plan = addSteps(project.plan, CALA_APP, o.mode, refs, refs);
+  // The new steps are appended (ids freed by earlier steps can be used again).
+  const added = o.mode === 'joint' && refs.length > 1 ? 1 : refs.length;
   project = {
     ...project,
     plan: { ...plan, id: timeId(t) },
     project: { ...project.project, updated: t.toISOString() },
   };
-  const steps = project.plan.steps.filter((s) => !before.has(s.id));
+  const steps = project.plan.steps.slice(project.plan.steps.length - added);
   const rows = o.sessions.map((planned) => ({ candidate: planned.candidate, planned }));
   const index = rebuildIndex(findRunFiles(files).runs, indexStreams(project, rows), t);
   const writer = new ProjectWriter(project, index, {

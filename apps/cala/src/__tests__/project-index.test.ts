@@ -1,443 +1,228 @@
 import { describe, expect, it } from 'vitest';
+import { rebuildIndex, type IndexStream, type RunFile } from '@calab/project';
 import {
-  addResult,
-  currentResult,
-  emptyIndex,
-  findRuns,
-  matchSession,
-  mergeRuns,
-  parseIndex,
   projectSessionId,
-  rebuildIndex,
-  reconcileSessions,
-  runIdFor,
-  serializeIndex,
-  sharedIdGroups,
   sessionStatus,
-  setCurrent,
+  sharedIdGroups,
   suggestSplit,
-  upsertRun,
-  validateIndex,
-  type ProjectIndex,
-  type ProjectRun,
-  type ResultsFile,
-  type ScannedSession,
 } from '../lib/project-index.ts';
-import { runManifest, sessionMetadata, type SessionRecord } from '../lib/session-export.ts';
-import type { StageRun } from '../lib/run-stages.ts';
+import { calaRunFile } from '../lib/run-file.ts';
+import type { SessionRecord } from '../lib/session-export.ts';
+import type { BoundaryFlag } from '../lib/boundary-flags.ts';
 
-const LOC = { kind: 'default' as const, label: 'mouse1/cala-results' };
-const NOW = new Date('2026-11-13T12:00:00Z');
-const T1 = Date.parse('2026-11-10T09:00:00Z');
-const T2 = Date.parse('2026-11-11T09:00:00Z');
-const T3 = Date.parse('2026-11-12T09:00:00Z');
-
-const scan = (id: string, startMs: number | null, frames = 800): ScannedSession => ({
-  id,
-  startMs,
-  frames,
-  fps: 20,
-  width: 600,
-  height: 600,
-  bitDepth: 8,
-});
+/**
+ * cala's view of a project index (`@calab/project` builds and reads the index; its own tests
+ * cover rebuilds, renames and current results): what the session table shows per stream, which
+ * streams share cell ids, and the several-animals split of the open dialog.
+ */
 const S1 = '2026_11_10/09_00_00/My_V4_Miniscope';
 const S2 = '2026_11_11/09_00_00/My_V4_Miniscope';
 const S3 = '2026_11_12/09_00_00/My_V4_Miniscope';
-const SCANNED = [scan(S1, T1), scan(S2, T2), scan(S3, T3)];
+const NOW = new Date('2026-11-28T12:00:00Z');
 
-const stage = (
-  stage: StageRun['stage'],
-  index = 1,
-  outcome: StageRun['outcome'] = 'done',
-): StageRun => ({
-  stage,
-  index,
-  startedAt: '2026-11-12T10:00:00.000Z',
-  endedAt: '2026-11-12T10:05:00.000Z',
-  outcome,
-  frames: 800,
-  cells: 12,
-  libraryVersion: 3,
+const stream = (ref: string, previous: string[] = []): IndexStream => ({
+  ref,
+  role: 'miniscope',
+  start: null,
+  frames: 100,
+  fps: 20,
+  width: 64,
+  height: 64,
+  bit_depth: 8,
+  missing: false,
+  previous_refs: previous,
 });
-const STAGES = [stage('discover'), stage('refine'), stage('refine', 2), stage('extract')];
+const STREAMS = [stream(S1), stream(S2), stream(S3)];
 
-/** A results tree as #377 wrote it (`multi-run.ts`), picked at the animal folder. */
-function tree377(
-  folder: string,
-  mode: 'joint' | 'separate',
-  sessions: { id: string; start: number; status?: SessionRecord['status'] }[],
-  created: string,
-): ResultsFile[] {
-  const records: SessionRecord[] = sessions.map((s, index) => ({
-    index,
-    name: s.id,
-    dir: `mouse1/${s.id}`,
-    resultsPath: s.id,
-    startFrame: mode === 'joint' ? index * 800 : 0,
-    frames: 800,
-    fps: 20,
-    recordingStartMs: s.start,
-    status: s.status ?? 'written',
-  }));
-  const settings = { mode };
-  const prefix = folder ? `${folder}/` : '';
-  const files: ResultsFile[] = [
-    {
-      path: `${prefix}cala-run.json`,
-      text: JSON.stringify(
-        runManifest({
-          version: 'v2.14.0',
-          settings,
-          sessions: records,
-          boundaries: [],
-          root: 'cala-results',
-          createdAt: created,
-          updatedAt: created,
-          finished: true,
-        }),
-      ),
-    },
-  ];
-  for (const r of records.filter((x) => x.status === 'written')) {
-    files.push({
-      path: `${prefix}${r.resultsPath}/cala-session.json`,
-      text: JSON.stringify(
-        sessionMetadata({
-          version: 'v2.14.0',
-          settings,
-          session: r,
-          sessions: records.length,
-          boundaries: [],
-          stages: STAGES,
-          libraryVersion: 3,
-          cells: 3,
-          sharedCellIds: mode === 'joint' ? [1, 2, 5] : null,
-          createdAt: created,
-        }),
-      ),
-    });
-  }
-  return files;
+interface Sess {
+  stream: string;
+  status?: SessionRecord['status'];
+  note?: string;
+  boundary?: BoundaryFlag;
 }
 
-describe('index read, write and validate', () => {
-  it('round-trips an index', () => {
-    const idx = reconcileSessions(emptyIndex('mouse1', LOC, NOW), SCANNED).index;
-    const read = parseIndex(serializeIndex(idx));
-    expect(read.ok).toBe(true);
-    if (read.ok) expect(read.index).toEqual(idx);
+/** A cala run file of `sessions`, through the app's own builder. */
+function run(
+  id: string,
+  created: string,
+  sessions: Sess[],
+  opts: {
+    joint?: boolean;
+    status?: RunFile['run']['status'];
+    stopped?: string | null;
+    stages?: { stage: string; outcome: string }[];
+  } = {},
+): { folder: string; run: RunFile } {
+  const joint = opts.joint ?? sessions.length > 1;
+  const doc = calaRunFile({
+    id,
+    project: 'p-1',
+    plan: null,
+    status: opts.status ?? 'finished',
+    stopped: opts.stopped ?? null,
+    created,
+    updated: created,
+    version: 'test',
+    joint,
+    record: {
+      stages: opts.stages ?? [
+        { stage: 'discover', outcome: 'done' },
+        { stage: 'extract', outcome: 'done' },
+      ],
+    },
+    sessions: sessions.map((s, index) => {
+      const status = s.status ?? 'written';
+      return {
+        stream: s.stream,
+        info: null,
+        record: {
+          index,
+          name: s.stream,
+          dir: s.stream,
+          resultsPath: s.stream,
+          startFrame: index * 100,
+          frames: 100,
+          fps: 20,
+          recordingStartMs: null,
+          status,
+          ...(s.note ? { note: s.note } : {}),
+          ...(s.boundary ? { boundary: s.boundary } : {}),
+        },
+        ...(status === 'written' ? { written: { cells: 3, libraryVersion: 2, created } } : {}),
+      };
+    }),
   });
+  return { folder: `runs/${id}`, run: doc };
+}
 
-  it('reports corrupt JSON and bad fields', () => {
-    expect(parseIndex('{"format": "cala-proj').ok).toBe(false);
-    const idx = reconcileSessions(emptyIndex('mouse1', LOC, NOW), SCANNED).index;
-    const bad = JSON.parse(serializeIndex(idx));
-    bad.sessions[1].frames = 'many';
-    const r = validateIndex(bad);
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toContain('sessions[1].frames');
-    expect(validateIndex({ ...JSON.parse(serializeIndex(idx)), format: 'x' }).ok).toBe(false);
-    expect(validateIndex([]).ok).toBe(false);
-  });
+const index = (...runs: { folder: string; run: RunFile }[]) => rebuildIndex(runs, STREAMS, NOW);
 
-  it('flags a newer schema instead of guessing', () => {
-    const idx = { ...emptyIndex('mouse1', LOC, NOW), schema_version: 99 };
-    const r = validateIndex(idx);
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.newer).toBe(true);
-  });
-
-  it('gives a session id relative to the animal folder', () => {
-    expect(projectSessionId('mouse1/2026_11_10/09_00_00/My_V4_Miniscope')).toBe(
-      '2026_11_10/09_00_00/My_V4_Miniscope',
-    );
+describe('stream refs of the open dialog', () => {
+  it('drops the picked folder name; a loose recording is "."', () => {
+    expect(projectSessionId(`mouse1/${S1}`)).toBe(S1);
     expect(projectSessionId('mouse1')).toBe('.');
   });
 });
 
-describe('rebuild from run folders', () => {
-  it('rebuilds a #377 tree at the results root', () => {
-    const files = tree377(
-      '',
-      'joint',
-      [
-        { id: S1, start: T1 },
-        { id: S2, start: T2 },
-      ],
-      '2026-11-12T10:00:00.000Z',
-    );
-    const { index, unreadable } = rebuildIndex('mouse1', LOC, SCANNED, files, NOW);
-    expect(unreadable).toEqual([]);
-    expect(index.sessions.map((s) => s.id)).toEqual([S1, S2, S3]);
-    expect(index.runs).toHaveLength(1);
-    const run = index.runs[0];
-    expect(run.folder).toBe('');
-    expect(run.id).toMatch(/^legacy-/);
-    expect(run.mode).toBe('joint');
-    expect(run.sessions.map((s) => [s.id, s.status])).toEqual([
-      [S1, 'written'],
-      [S2, 'written'],
-    ]);
-    expect(index.results.map((r) => [r.session, r.export_path, r.current])).toEqual([
-      [S1, `${S1}/cala-export.npz`, true],
-      [S2, `${S2}/cala-export.npz`, true],
-    ]);
-    expect(index.results[0].cell_ids).toEqual([1, 2, 5]);
-    // A Joint run: one id space, shared by its sessions.
-    expect(index.results.map((r) => r.id_space)).toEqual([`run:${run.id}`, `run:${run.id}`]);
-    expect(index.results[0].library_version).toBe(3);
-    expect(sessionStatus(index, S1)).toMatchObject({
-      discover: 'done',
-      extract: 'done',
-      run: run.id,
-    });
-    expect(validateIndex(JSON.parse(serializeIndex(index))).ok).toBe(true);
-  });
-
-  it('rebuilds project runs under runs/ next to a legacy run; the newest is current', () => {
-    const files = [
-      ...tree377('', 'joint', [{ id: S1, start: T1 }], '2026-11-12T10:00:00.000Z'),
-      ...tree377(
-        'runs/2026-11-13_08-00-00',
-        'separate',
-        [
-          { id: S1, start: T1 },
-          { id: S3, start: T3, status: 'skipped' },
-        ],
-        '2026-11-13T08:00:00.000Z',
-      ),
-    ];
-    const { index } = rebuildIndex('mouse1', LOC, SCANNED, files, NOW);
-    expect(index.runs.map((r) => r.id)).toEqual([index.runs[0].id, '2026-11-13_08-00-00']);
-    expect(currentResult(index, S1)?.run).toBe('2026-11-13_08-00-00');
-    expect(index.results.filter((r) => r.session === S1)).toHaveLength(2);
-    // A session the run skipped has no result, and says why.
-    expect(sessionStatus(index, S3).note).toBe('skipped');
-    expect(sessionStatus(index, S3).current).toBeNull();
-  });
-
-  it('assigns session files to the nearest run manifest', () => {
-    const files = [
-      ...tree377('', 'joint', [{ id: S1, start: T1 }], '2026-11-12T10:00:00.000Z'),
-      ...tree377('runs/a', 'separate', [{ id: S2, start: T2 }], '2026-11-13T08:00:00.000Z'),
-    ];
-    const { runs } = findRuns(files);
-    expect(runs.map((r) => [r.folder, r.sessions.map((s) => s.dir)])).toEqual([
-      ['', [S1]],
-      ['runs/a', [S2]],
-    ]);
-  });
-
-  it('reports unreadable files and skips them', () => {
-    const files = [
-      ...tree377('', 'joint', [{ id: S1, start: T1 }], '2026-11-12T10:00:00.000Z'),
-      { path: 'runs/x/cala-run.json', text: '{oops' },
-    ];
-    const { index, unreadable } = rebuildIndex('mouse1', LOC, SCANNED, files, NOW);
-    expect(unreadable).toEqual(['runs/x/cala-run.json']);
-    expect(index.runs).toHaveLength(1);
-  });
-
-  it('matches a run picked one folder up, and by start time and frames', () => {
-    const sessions = reconcileSessions(emptyIndex('mouse1', LOC, NOW), SCANNED).index.sessions;
-    expect(matchSession(`exp/mouse1/${S2}`, null, null, sessions)).toBe(S2);
-    expect(matchSession('other/renamed', new Date(T3).toISOString(), 800, sessions)).toBe(S3);
-    expect(matchSession('other/unknown', null, null, sessions)).toBe('unknown');
-  });
-
-  it('merges only runs the index does not hold', () => {
-    const files = tree377(
-      'runs/r1',
-      'separate',
-      [{ id: S1, start: T1 }],
-      '2026-11-13T08:00:00.000Z',
-    );
-    const { index } = rebuildIndex('mouse1', LOC, SCANNED, files, NOW);
-    const again = mergeRuns(index, findRuns(files).runs);
-    expect(again.added).toEqual([]);
-    expect(again.index).toEqual(index);
-  });
-});
-
-describe('renamed folders', () => {
-  const base = () => reconcileSessions(emptyIndex('mouse1', LOC, NOW), SCANNED).index;
-
-  it('follows a rename by start time and frame count, results included', () => {
-    let idx = base();
-    idx = addResult(idx, {
-      session: S2,
-      run: 'r1',
-      export_path: 'runs/r1/x.npz',
-      cells: 3,
-      cell_ids: null,
-      id_space: 'run:r1',
-      library_version: 3,
-      created: '2026-11-13T00:00:00Z',
-    });
-    const renamed = 'day2/09_00_00/My_V4_Miniscope';
-    const rec = reconcileSessions(idx, [scan(S1, T1), scan(renamed, T2), scan(S3, T3)]);
-    expect(rec.renamed).toEqual([[S2, renamed]]);
-    expect(rec.missing).toEqual([]);
-    expect(rec.added).toEqual([]);
-    const s = rec.index.sessions.find((x) => x.id === renamed)!;
-    expect(s.previous_ids).toEqual([S2]);
-    expect(currentResult(rec.index, renamed)?.run).toBe('r1');
-  });
-
-  it('flags a folder that is gone, and does not match on a different frame count', () => {
-    const rec = reconcileSessions(base(), [scan(S1, T1), scan('other', T2, 900), scan(S3, T3)]);
-    expect(rec.renamed).toEqual([]);
-    expect(rec.missing).toEqual([S2]);
-    expect(rec.added).toEqual(['other']);
-    expect(rec.index.sessions.find((x) => x.id === S2)?.missing).toBe(true);
-  });
-
-  it('does not guess between two candidates', () => {
-    const rec = reconcileSessions(base(), [
-      scan(S1, T1),
-      scan('a', T2),
-      scan('b', T2),
-      scan(S3, T3),
-    ]);
-    expect(rec.renamed).toEqual([]);
-    expect(rec.missing).toEqual([S2]);
-  });
-
-  it('clears missing when the folder comes back', () => {
-    const gone = reconcileSessions(base(), [scan(S1, T1), scan(S3, T3)]).index;
-    const back = reconcileSessions(gone, SCANNED).index;
-    expect(back.sessions.every((s) => !s.missing)).toBe(true);
-  });
-});
-
-describe('current result', () => {
-  const res = (run: string, created: string) => ({
-    session: S1,
-    run,
-    export_path: `runs/${run}/x.npz`,
-    cells: 1,
-    cell_ids: [1],
-    id_space: `run:${run}`,
-    library_version: 1,
-    created,
-  });
-
-  it('the newest result is current; an older one found later is not', () => {
-    let idx = emptyIndex('mouse1', LOC, NOW);
-    idx = addResult(idx, res('a', '2026-11-12T00:00:00Z'));
-    idx = addResult(idx, res('b', '2026-11-13T00:00:00Z'));
-    expect(currentResult(idx, S1)?.run).toBe('b');
-    idx = addResult(idx, res('old', '2026-11-01T00:00:00Z'));
-    expect(currentResult(idx, S1)?.run).toBe('b');
-    expect(idx.results.filter((r) => r.current)).toHaveLength(1);
-  });
-
-  it('set current picks an older one; unknown runs are refused', () => {
-    let idx = emptyIndex('mouse1', LOC, NOW);
-    idx = addResult(idx, res('a', '2026-11-12T00:00:00Z'));
-    idx = addResult(idx, res('b', '2026-11-13T00:00:00Z'));
-    idx = setCurrent(idx, S1, 'a');
-    expect(currentResult(idx, S1)?.run).toBe('a');
-    expect(idx.results.filter((r) => r.current)).toHaveLength(1);
-    expect(() => setCurrent(idx, S1, 'zzz')).toThrow();
-  });
-
-  it('a result written again for the same run replaces the old entry', () => {
-    let idx = emptyIndex('mouse1', LOC, NOW);
-    idx = addResult(idx, res('a', '2026-11-12T00:00:00Z'));
-    idx = addResult(idx, { ...res('a', '2026-11-12T00:00:01Z'), cells: 9 });
-    expect(idx.results).toHaveLength(1);
-    expect(idx.results[0].cells).toBe(9);
-  });
-});
-
 describe('session table status', () => {
-  const run = (id: string, created: string, extra: Partial<ProjectRun> = {}): ProjectRun => ({
-    id,
-    folder: `runs/${id}`,
-    mode: 'separate',
-    sessions: [],
-    settings: {},
-    app_version: 'dev',
-    created,
-    updated: created,
-    finished: true,
-    library_in: null,
-    library_out: null,
-    ...extra,
-  });
-  const meta = (s: StageRun) => ({
-    stage: s.stage,
-    outcome: s.outcome,
-    started_at: s.startedAt,
-    ended_at: s.endedAt,
-  });
-
-  it('is blank for a session never run', () => {
-    const idx = reconcileSessions(emptyIndex('mouse1', LOC, NOW), SCANNED).index;
-    expect(sessionStatus(idx, S1)).toMatchObject({
+  it('is blank for a stream never run', () => {
+    expect(sessionStatus(index(), {}, S1)).toEqual({
       discover: 'none',
       extract: 'none',
       run: null,
       current: null,
+      results: [],
       note: null,
+      boundary: null,
+      runMode: null,
+      runSessions: [],
     });
   });
 
   it("follows the current result's run, not a newer failed one", () => {
-    let idx: ProjectIndex = reconcileSessions(emptyIndex('mouse1', LOC, NOW), SCANNED).index;
-    idx = upsertRun(
-      idx,
-      run('good', '2026-11-12T00:00:00Z', {
-        sessions: [{ id: S1, status: 'written', stages: STAGES.map(meta) }],
-      }),
+    const good = run('good', '2026-11-12T00:00:00Z', [{ stream: S1 }]);
+    const bad = run(
+      'bad',
+      '2026-11-13T00:00:00Z',
+      [{ stream: S1, status: 'failed', note: 'Extract was cancelled.' }],
+      {
+        status: 'stopped',
+        stopped: 'Extract was cancelled.',
+        stages: [
+          { stage: 'discover', outcome: 'done' },
+          { stage: 'extract', outcome: 'cancelled' },
+        ],
+      },
     );
-    idx = addResult(idx, {
+    const st = sessionStatus(index(good, bad), {}, S1);
+    expect(st).toMatchObject({ run: 'good', discover: 'done', extract: 'done', note: null });
+    expect(st.runMode).toBe('separate');
+    expect(st.runSessions).toEqual([S1]);
+    expect(st.current).toMatchObject({
       session: S1,
       run: 'good',
-      export_path: 'runs/good/x.npz',
+      export_path: `runs/good/${S1}/cala-export.npz`,
       cells: 3,
-      cell_ids: null,
-      id_space: 'run:good/x',
-      library_version: 3,
-      created: '2026-11-12T00:00:00Z',
+      id_space: 'cala:good',
+      library_version: 2,
+      current: true,
     });
-    idx = upsertRun(
-      idx,
-      run('bad', '2026-11-13T00:00:00Z', {
-        finished: false,
-        stopped: 'Extract was cancelled.',
-        sessions: [
-          {
-            id: S1,
-            status: 'failed',
-            note: 'Extract was cancelled.',
-            stages: [stage('discover'), stage('extract', 1, 'cancelled')].map(meta),
-          },
-        ],
-      }),
-    );
-    const st = sessionStatus(idx, S1);
-    expect(st.run).toBe('good');
-    expect(st.extract).toBe('done');
-    // With no result, the failed run is what shows.
-    idx = upsertRun(
-      idx,
-      run('bad2', '2026-11-13T00:00:00Z', {
-        sessions: [
-          {
-            id: S2,
-            status: 'failed',
-            note: 'Extract was cancelled.',
-            stages: [stage('discover'), stage('extract', 1, 'cancelled')].map(meta),
-          },
-        ],
-      }),
-    );
-    const st2 = sessionStatus(idx, S2);
-    expect(st2).toMatchObject({ discover: 'done', extract: 'cancelled', run: 'bad2' });
+    // With no result, the failed run is what shows, with its note.
+    const st2 = sessionStatus(index(bad), {}, S1);
+    expect(st2).toMatchObject({ discover: 'done', extract: 'cancelled', run: 'bad' });
     expect(st2.note).toBe('failed: Extract was cancelled.');
+  });
+
+  it('says why a stream of a stopped or unfinished run has no result', () => {
+    const stopped = run('stop', '2026-11-12T00:00:00Z', [{ stream: S1, status: 'pending' }], {
+      status: 'stopped',
+      stopped: 'Discover stopped with an error.',
+      stages: [{ stage: 'discover', outcome: 'error' }],
+    });
+    expect(sessionStatus(index(stopped), {}, S1)).toMatchObject({
+      discover: 'error',
+      extract: 'none',
+      note: 'stopped: Discover stopped with an error.',
+    });
+    const open = run('open', '2026-11-12T00:00:00Z', [{ stream: S1, status: 'pending' }], {
+      status: 'running',
+      stages: [
+        { stage: 'discover', outcome: 'running' },
+        { stage: 'extract', outcome: 'odd' },
+      ],
+    });
+    expect(sessionStatus(index(open), {}, S1)).toMatchObject({
+      discover: 'running',
+      extract: 'none',
+      note: 'not finished',
+    });
+    const skipped = run('skip', '2026-11-12T00:00:00Z', [{ stream: S1, status: 'skipped' }]);
+    expect(sessionStatus(index(skipped), {}, S1).note).toBe('skipped');
+  });
+
+  it("a hand-set current result picks an older run, with its run's streams and boundary", () => {
+    const flag = {
+      index: 1,
+      frame: 100,
+      severity: 'warning',
+      pending: false,
+      reason: 'The field of view moved.',
+      checks: [],
+    } as unknown as BoundaryFlag;
+    const joint = run('j', '2026-11-12T00:00:00Z', [
+      { stream: S1 },
+      { stream: S2, boundary: flag },
+    ]);
+    const later = run('s', '2026-11-14T00:00:00Z', [{ stream: S2 }]);
+    const idx = index(joint, later);
+    // The newest is current by default.
+    expect(sessionStatus(idx, {}, S2)).toMatchObject({ run: 's', boundary: null });
+    const st = sessionStatus(idx, { cala: { [S2]: 'j' } }, S2);
+    expect(st.run).toBe('j');
+    expect(st.runMode).toBe('joint');
+    expect(st.runSessions).toEqual([S1, S2]);
+    expect(st.boundary).toMatchObject({ index: 1, severity: 'warning', frame: 100 });
+    expect(st.results.map((r) => [r.run, r.current])).toEqual([
+      ['s', false],
+      ['j', true],
+    ]);
+  });
+
+  it('finds the runs of a renamed stream under its previous ref', () => {
+    const old = run('old', '2026-11-12T00:00:00Z', [{ stream: 'renamed/x' }]);
+    const idx = rebuildIndex([old], [stream(S1, ['renamed/x'])], NOW);
+    expect(sessionStatus(idx, {}, S1)).toMatchObject({ run: 'old', extract: 'done' });
+  });
+});
+
+describe('shared cell ids', () => {
+  it('groups streams whose current results share an id space', () => {
+    const joint = run('j', '2026-11-12T00:00:00Z', [{ stream: S1 }, { stream: S2 }]);
+    const own = run('s', '2026-11-13T00:00:00Z', [{ stream: S3 }]);
+    const g = sharedIdGroups(index(joint, own), {});
+    expect(g.get(S1)).toEqual({ space: 'cala:j', label: 'A', sessions: [S1, S2], colour: 0 });
+    expect(g.get(S2)).toEqual(g.get(S1));
+    expect(g.get(S3)).toEqual({ space: 'cala:s', label: '', sessions: [S3], colour: -1 });
   });
 });
 
@@ -466,38 +251,5 @@ describe('several animals in one folder', () => {
   it('needs two animals', () => {
     expect(suggestSplit([`m1/${S1}`, `m1/${S2}`, `m2/${S1}`])).toBeNull();
     expect(suggestSplit(['.'])).toBeNull();
-  });
-});
-
-describe('run ids', () => {
-  it('are timestamps, unique', () => {
-    const t = new Date(2026, 10, 13, 14, 2, 3);
-    expect(runIdFor(t, new Set())).toBe('2026-11-13_14-02-03');
-    expect(runIdFor(t, new Set(['2026-11-13_14-02-03']))).toBe('2026-11-13_14-02-03_2');
-  });
-});
-
-describe('shared cell ids', () => {
-  it('groups sessions whose current results share an id space', () => {
-    const files = [
-      ...tree377(
-        'runs/j',
-        'joint',
-        [
-          { id: S1, start: T1 },
-          { id: S2, start: T2 },
-        ],
-        '2026-11-12T10:00:00.000Z',
-      ),
-      ...tree377('runs/s', 'separate', [{ id: S3, start: T3 }], '2026-11-13T08:00:00.000Z'),
-    ];
-    const { index } = rebuildIndex('mouse1', LOC, SCANNED, files, NOW);
-    expect(index.results.map((r) => r.id_space)).toEqual(['run:j', 'run:j', `run:s/${S3}`]);
-    const g = sharedIdGroups(index);
-    expect(g.get(S1)).toMatchObject({ label: 'A', colour: 0, sessions: [S1, S2] });
-    expect(g.get(S2)?.space).toBe('run:j');
-    expect(g.get(S3)).toMatchObject({ label: '', colour: -1 });
-    // Cross-session matching of Separate results is reserved, not made.
-    expect(index.cell_matches).toEqual([]);
   });
 });
