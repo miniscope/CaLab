@@ -77,8 +77,14 @@ export interface RunPanelProps {
   visible?: boolean;
   /** Stop a look-back run's settling: the footprints refined so far become the final library. */
   onStopSettling?: () => void;
-  /** The mode of the multi-session run this recording is part of (null or absent: none). */
+  /** The kind of the plan step whose run this is (null or absent: no run has started). */
   sessionMode?: LibraryMode | null;
+  /** How many sessions that run has (1: a single recording or a stream). */
+  sessions?: number;
+  /** Run on the pre-run sheet: starts the open recording's run (absent: Discover alone). */
+  onRun?: () => void;
+  /** Restart (absent: Discover again in place). */
+  onRestart?: () => void;
 }
 
 /**
@@ -114,7 +120,13 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
   const prerun = () => s().status() === 'idle' && !inSessionRun() && !props.live;
   /** When a change to a start-time setting takes effect (`DiscoverSettings`). */
   const settingsContext = (): SettingsContext =>
-    props.sessionMode === 'separate' ? 'separate' : props.sessionMode ? 'joint' : 'single';
+    (props.sessions ?? 1) < 2
+      ? 'single'
+      : props.sessionMode === 'separate'
+        ? 'separate'
+        : props.sessionMode
+          ? 'joint'
+          : 'single';
 
   // ---- Extract ----
   /** Extract runs in this run: a recording, or a stream whose factors it solves on. */
@@ -281,7 +293,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             class="btn-secondary btn-small cala-icon-btn"
             aria-label="Restart"
             title="Start Discover again from frame 0 with the settings as they are now (a new run: Extract starts over)"
-            onClick={() => void s().start()}
+            onClick={() => (props.onRestart ? props.onRestart() : void s().start())}
           >
             <Icon name="restart" size={14} />
           </button>
@@ -327,7 +339,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             onAutoExtract={setExtractAfterDiscover}
             sessionRun={false}
             frameWidth={props.frameWidth}
-            onRun={() => void s().start()}
+            onRun={() => (props.onRun ? props.onRun() : void s().start())}
           />
         </Show>
       </Show>

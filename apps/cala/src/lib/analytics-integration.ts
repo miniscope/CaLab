@@ -21,12 +21,14 @@ import { EXPORT_FORMAT_VERSION } from './export.ts';
 import { startMemoryCollector, totalWasmHeapBytes } from './memory-telemetry.ts';
 import { median } from './stats.ts';
 
-export type RunMode = 'joint' | 'separate' | 'apply' | 'single';
+/** A run's plan step kind; a single recording and a live stream are one-session `separate` runs. */
+export type RunMode = 'joint' | 'separate' | 'apply';
 export type ErrorCategory = 'out_of_memory' | 'webgpu' | 'decode' | 'worker' | 'unknown';
 
 /** Fields each event may carry. Anything else is dropped before sending. */
 export const ALLOWED_FIELDS = {
   file_imported: ['extension'],
+  project_opened: ['sessions', 'live', 'existing'],
   run_started: ['stage', 'mode', 'sessions', 'plan_sessions', 'frames', 'fps', 'width', 'height'],
   run_finished: [
     'stage',
@@ -223,11 +225,16 @@ export interface AnalyticsDeps {
   track?: (name: AnalyticsEventName, data?: Record<string, unknown>) => void | Promise<void>;
   stageRuns(): readonly StageRun[];
   info(): FrameSourceInfo | null;
-  /** The multi-session plan (null: a single folder, run by hand). */
+  /** The plan step being run (null: no run has started yet). */
   plan(): {
-    settings: { mode: 'joint' | 'separate' | 'apply' };
+    kind: RunMode;
     sessions: readonly unknown[];
   } | null;
+  /**
+   * The open project (null: none): its session count, whether it is a live stream, and whether
+   * its project file was already there. A new object for each open.
+   */
+  project?(): { sessions: number; live: boolean; existing: boolean } | null;
   /** Current throughput of a stage, frames per second (0: idle). */
   throughput(stage: RecordedStageName): number;
   /** Why a stage stopped (raw; only its category and error class are ever sent). */
@@ -299,6 +306,18 @@ export function setupAnalyticsEffects(deps: AnalyticsDeps): void {
     .catch(() => send('webgpu_info', { adapter: 'none' }))
     .finally(sendDevice);
 
+  // ---- project_opened: once per open of a project (a folder, files or a live stream) ----
+  if (deps.project) {
+    let lastProject: object | null = null;
+    createEffect(
+      on(deps.project, (p) => {
+        if (!p || p === lastProject) return;
+        lastProject = p;
+        send('project_opened', { sessions: p.sessions, live: p.live, existing: p.existing });
+      }),
+    );
+  }
+
   // ---- file_imported ----
   let lastInfo: FrameSourceInfo | null = null;
   let lastPlan: object | null = null;
@@ -329,12 +348,12 @@ export function setupAnalyticsEffects(deps: AnalyticsDeps): void {
   function context(): Record<string, unknown> {
     const info = deps.info();
     const plan = deps.plan();
-    const mode = (plan?.settings.mode ?? 'single') satisfies RunMode;
+    const mode: RunMode = plan?.kind ?? 'separate';
     return {
       mode,
       // Sessions this stage run processed: a Joint run is one run over every
-      // session; a Separate plan runs each session on its own (and a single
-      // folder is one). `plan_sessions` is the size of the plan they came from.
+      // session; a Separate step runs each session on its own (a single
+      // recording is a step of one). `plan_sessions` is the size of the step.
       sessions: mode === 'joint' ? (plan?.sessions.length ?? 1) : 1,
       ...(plan ? { plan_sessions: plan.sessions.length } : {}),
       ...(info && !info.live ? { frames: info.frameCount } : {}),
@@ -420,7 +439,7 @@ export function setupAnalyticsEffects(deps: AnalyticsDeps): void {
     if (!plan || endedPlan === plan) return;
     endedPlan = plan;
     const written = deps.sessionsWritten();
-    if (plan.settings.mode === 'joint') {
+    if (plan.kind === 'joint') {
       const flags = deps.boundaryFlags();
       if (flags.length > 0)
         send('boundary_summary', {

@@ -1,9 +1,11 @@
 /**
- * The open project (an animal folder; `docs/projects.md`): its sessions, as scanned and probed,
- * its project file (intent: the plan, hand-set current results), the index (a cache rebuilt
- * from the run files) and the actions of the project view. Runs go through the multi-session
- * runner (`multi-run.ts`), one plan step at a time; `ProjectWriter` keeps the files in line as
- * each run file is written.
+ * The open project (`docs/projects.md`): every source cala opens is one. An animal folder of
+ * sessions, a single recording (a project with one session) and a live stream (one session whose
+ * stream has the role `live` and no files) differ only in how many streams they have. The store
+ * holds the project's sessions, as scanned and probed, its project file (intent: the plan,
+ * hand-set current results), the index (a cache rebuilt from the run files) and the actions of
+ * the project view. Runs go through the step runner (`multi-run.ts`), one plan step at a time;
+ * `ProjectWriter` keeps the files in line as each run file is written.
  */
 import { createEffect, createSignal, on, untrack } from 'solid-js';
 import {
@@ -59,22 +61,44 @@ import {
   writeProject,
   type ReadDirLike,
 } from './project-io.ts';
-import { readStartMs, toSessionInput } from './session-list.ts';
 import type { WritableDirLike } from './session-export.ts';
 import { ensurePermission } from './fs-handles.ts';
-import { uniqueResultsPaths, validateSessions, type SessionCandidate } from './sessions.ts';
+import {
+  readStartMs,
+  toSessionInput,
+  validateSessions,
+  type SessionCandidate,
+} from './sessions.ts';
 import { rememberProject, type RecentStore } from './recent-projects.ts';
 import { CALA_APP } from './run-file.ts';
 import { errMsg } from './errors.ts';
 
+/** What `openProject` opens: a picked folder (or files), or a live stream. */
 export interface ProjectOpen {
   rootName: string;
   entries: FolderEntry[];
-  /** The animal folder (File System Access API); null when picked through a file input. */
+  /** The picked folder (File System Access API); null when picked through a file input. */
   handle: ReadDirLike | null;
   sessions: SessionCandidate[];
   /** A results folder chosen earlier (recent projects): it holds the project files. */
   resultsHandle?: ReadDirLike | null;
+  /**
+   * A live stream's URL: the project has one session, `.`, whose stream has the role `live` and
+   * no files (`sessions` and `entries` are empty). It has no folder, so its files go into a zip.
+   */
+  live?: string;
+}
+
+/** The session candidate of a live stream: no files, no folder. */
+export function liveCandidate(): SessionCandidate {
+  return {
+    id: 'live',
+    dir: '',
+    name: 'live stream',
+    series: { key: 'live', dir: '', prefix: '', ext: '', files: [] },
+    entries: [],
+    metaEntries: [],
+  };
 }
 
 /** One table row's session: what the scan and the probe found. */
@@ -214,6 +238,12 @@ export function createProjectStore(deps: ProjectDeps) {
   /** The steps of the plan that is running (or ran last). */
   const [running, setRunning] = createSignal<PlanStep[] | null>(null);
   const [resultsHandle, setResultsHandle] = createSignal<ReadDirLike | null>(null);
+  /** What was opened, for analytics: a new object for each open (null: none, or it failed). */
+  const [summary, setSummary] = createSignal<{
+    sessions: number;
+    live: boolean;
+    existing: boolean;
+  } | null>(null);
   let writer: ProjectWriter | null = null;
 
   const location = () => {
@@ -283,7 +313,7 @@ export function createProjectStore(deps: ProjectDeps) {
   function scanned(): ScannedStream[] {
     return rows().map(({ planned: p }) => ({
       ref: p.stream,
-      role: 'miniscope',
+      role: p.live ? 'live' : 'miniscope',
       startMs: p.startMs,
       frames: p.info?.frameCount ?? null,
     }));
@@ -302,8 +332,11 @@ export function createProjectStore(deps: ProjectDeps) {
     });
   }
 
-  /** Read the project file and the run files; rebuild the index; bring both in line with the scan. */
-  async function load(): Promise<void> {
+  /**
+   * Read the project file and the run files; rebuild the index; bring both in line with the scan.
+   * Resolves whether the folder had a project file.
+   */
+  async function load(): Promise<boolean> {
     const o = opened()!;
     const files = await readFiles();
     const notes: string[] = [];
@@ -348,8 +381,19 @@ export function createProjectStore(deps: ProjectDeps) {
     setIndex(idx);
     setWarnings(notes);
     setDirty(changed);
+    // A one-stream project's plan is that stream's run: one Separate step, kept when it is there.
+    const one = single();
+    if (one && !readOnly()) {
+      const before = writer.project.plan;
+      writer.project = { ...writer.project, plan: withStepFor([one.planned.stream], before) };
+      if (writer.project.plan !== before) {
+        setProject(writer.project);
+        setDirty(true);
+      }
+    }
     // Saved at once when writing is already allowed (a reopened project), else at the next change.
     if (canWrite() && (await hasReadwrite(resultsHandle() ?? o.handle))) await persist();
+    return pf !== undefined;
   }
 
   /** Write the files now if this browser may, else keep them for the next write. */
@@ -373,32 +417,58 @@ export function createProjectStore(deps: ProjectDeps) {
     setPlanState({ kind: 'idle' });
     setProject(null);
     setIndex(null);
+    setSummary(null);
     writer = null;
     try {
-      const [starts, probed] = await Promise.all([
-        Promise.all(o.sessions.map(readStartMs)),
-        deps
-          .probe(o.sessions.map(toSessionInput))
-          .catch((err: unknown) => o.sessions.map(() => ({ error: errMsg(err) }))),
-      ]);
-      const paths = uniqueResultsPaths(o.sessions.map((c) => c.dir));
-      setRows(
-        o.sessions.map((candidate, i) => {
-          const r = probed[i];
-          return {
+      if (o.live) {
+        // A live stream is probed by connecting to it, when its run starts.
+        const candidate = liveCandidate();
+        setRows([
+          {
             candidate,
             planned: {
               candidate,
-              info: r && 'info' in r ? r.info : null,
-              error: r && 'error' in r ? r.error : null,
-              startMs: starts[i],
-              resultsPath: paths[i],
-              stream: projectSessionId(candidate.dir),
+              info: null,
+              error: null,
+              startMs: null,
+              resultsPath: '.',
+              stream: '.',
+              live: o.live,
             },
-          };
-        }),
-      );
-      await load();
+          },
+        ]);
+      } else {
+        const [starts, probed] = await Promise.all([
+          Promise.all(o.sessions.map(readStartMs)),
+          deps
+            .probe(o.sessions.map(toSessionInput))
+            .catch((err: unknown) => o.sessions.map(() => ({ error: errMsg(err) }))),
+        ]);
+        setRows(
+          o.sessions.map((candidate, i) => {
+            const r = probed[i];
+            const stream = projectSessionId(candidate.dir);
+            return {
+              candidate,
+              planned: {
+                candidate,
+                info: r && 'info' in r ? r.info : null,
+                error: r && 'error' in r ? r.error : null,
+                startMs: starts[i],
+                // A run folder holds each stream's results at its stream ref.
+                resultsPath: stream,
+                stream,
+              },
+            };
+          }),
+        );
+      }
+      const existing = await load();
+      setSummary({
+        sessions: projectStreamRefs(writer!.project).length,
+        live: o.live !== undefined,
+        existing,
+      });
       if (o.handle && deps.recent)
         await rememberProject(deps.recent, o.handle, o.resultsHandle ?? null, now());
     } catch (err) {
@@ -571,9 +641,57 @@ export function createProjectStore(deps: ProjectDeps) {
 
   function plannedFor(ids: readonly string[]): PlannedSession[] {
     const byId = new Map(rows().map((r) => [r.planned.stream, r.planned]));
-    const list = ids.map((id) => byId.get(id)!).filter(Boolean);
-    const paths = uniqueResultsPaths(list.map((p) => p.candidate.dir));
-    return list.map((p, i) => ({ ...p, resultsPath: paths[i] }));
+    return ids.map((id) => byId.get(id)!).filter(Boolean);
+  }
+
+  /**
+   * The project's one stream when it has exactly one (a single recording or a live stream) and
+   * it is here; null otherwise. Such a project opens on its recording, not on the table.
+   */
+  function single(): ProjectSessionRow | null {
+    const p = writer?.project ?? project();
+    if (!p || rows().length !== 1) return null;
+    return projectStreamRefs(p).length === 1 ? rows()[0] : null;
+  }
+
+  /** The runnable step of `kind` over exactly `refs` (a single stream: `separate`), if any. */
+  function stepFor(
+    refs: readonly string[],
+    plan: ProjectFile['plan'],
+    kind: 'joint' | 'separate',
+  ): PlanStep | undefined {
+    const want = refs.length > 1 ? kind : 'separate';
+    return runnableSteps(plan).find(
+      (s) =>
+        s.kind === want &&
+        s.streams.length === refs.length &&
+        s.streams.every((r, i) => r === refs[i]),
+    );
+  }
+
+  /** `plan` with a runnable step of `kind` over exactly `refs` (the one there, or a new one). */
+  function withStepFor(
+    refs: readonly string[],
+    plan: ProjectFile['plan'],
+    kind: 'joint' | 'separate' = 'separate',
+  ): ProjectFile['plan'] {
+    if (stepFor(refs, plan, kind)) return plan;
+    return addSteps(plan, CALA_APP, refs.length > 1 ? kind : 'separate', refs, refs);
+  }
+
+  /**
+   * Run `refs` as one step now: the Run button of an open recording, or Restart after its run
+   * ended (a new run each time). Inside the click: `readwrite` is asked for first.
+   */
+  async function runStreams(
+    refs: readonly string[],
+    kind: 'joint' | 'separate' = 'separate',
+  ): Promise<boolean> {
+    if (!writer || readOnly() || refs.length === 0) return false;
+    writer.project = { ...writer.project, plan: withStepFor(refs, writer.project.plan, kind) };
+    setProject(writer.project);
+    const step = stepFor(refs, writer.project.plan, kind);
+    return step ? startPlan([step.id]) : false;
   }
 
   async function startStep(steps: PlanStep[], k: number): Promise<void> {
@@ -583,7 +701,7 @@ export function createProjectStore(deps: ProjectDeps) {
     setPlanState({ kind: 'running', step: k });
     await deps.multiRun.start({
       sessions: plannedFor(step.streams),
-      settings: { mode: modeOf(step) },
+      kind: modeOf(step),
       // The sink's root is the full path (`<animal>/calab-project/runs/<id>`).
       locationLabel: canWrite() ? '' : 'a zip download: ',
       planRef: () => ({ id: planId, step: step.id, kind: step.kind }),
@@ -595,9 +713,12 @@ export function createProjectStore(deps: ProjectDeps) {
   /**
    * Start the plan (inside the Start click: `readwrite` is asked for first). The plan is written
    * to the project file before its first step runs. Resolves false when writing was refused.
+   * `only`: run just these steps (by id), in plan order.
    */
-  async function startPlan(): Promise<boolean> {
-    const steps = runnableSteps(project()?.plan ?? { id: null, steps: [] });
+  async function startPlan(only?: readonly string[]): Promise<boolean> {
+    const steps = runnableSteps(project()?.plan ?? { id: null, steps: [] }).filter(
+      (s) => !only || only.includes(s.id),
+    );
     if (!writer || steps.length === 0 || planErrors().length > 0) return false;
     if (!(await grant())) return false;
     const t = now();
@@ -668,6 +789,9 @@ export function createProjectStore(deps: ProjectDeps) {
     planState,
     running,
     startPlan,
+    runStreams,
+    single,
+    summary,
     setCurrent,
     open,
     refresh,
@@ -679,62 +803,3 @@ export function createProjectStore(deps: ProjectDeps) {
 }
 
 export type ProjectStore = ReturnType<typeof createProjectStore>;
-
-/**
- * The project folder of a multi-session run started from the session setup (outside the
- * project view): `<location>/calab-project/`, made or added to, with one plan step per run
- * (Joint: one; Separate: one per session) written before the first run starts. Throws when the
- * folder's project file cannot be read: it is never replaced.
- */
-export async function sessionSetupProject(o: {
-  /** Where the project folder goes (null: no File System Access API; the files go into a zip). */
-  location: WritableDirLike | null;
-  name: string;
-  sessions: readonly PlannedSession[];
-  mode: 'joint' | 'separate';
-  now: () => Date;
-}): Promise<{ writer: ProjectWriter; steps: PlanStep[] }> {
-  const t = o.now();
-  const dir = o.location
-    ? await o.location.getDirectoryHandle(PROJECT_DIR, { create: true })
-    : null;
-  const files = dir ? await readProjectFiles(dir as unknown as ReadDirLike) : [];
-  let project = emptyProject(o.name, t);
-  const pf = files.find((f) => f.path === PROJECT_FILE);
-  if (pf) {
-    const r = readProjectFile(pf.text);
-    if (!r.ok)
-      throw new Error(
-        `${PROJECT_DIR}/${PROJECT_FILE} could not be read (${r.error}); nothing was written.`,
-      );
-    project = r.value;
-  }
-  const refs = o.sessions.map((s) => s.stream);
-  project = reconcileStreams(
-    project,
-    o.sessions.map((s) => ({
-      ref: s.stream,
-      role: 'miniscope',
-      startMs: s.startMs,
-      frames: s.info?.frameCount ?? null,
-    })),
-  ).project;
-  const plan = addSteps(project.plan, CALA_APP, o.mode, refs, refs);
-  // The new steps are appended (ids freed by earlier steps can be used again).
-  const added = o.mode === 'joint' && refs.length > 1 ? 1 : refs.length;
-  project = {
-    ...project,
-    plan: { ...plan, id: timeId(t) },
-    project: { ...project.project, updated: t.toISOString() },
-  };
-  const steps = project.plan.steps.slice(project.plan.steps.length - added);
-  const rows = o.sessions.map((planned) => ({ candidate: planned.candidate, planned }));
-  const index = rebuildIndex(findRunFiles(files).runs, indexStreams(project, rows), t);
-  const writer = new ProjectWriter(project, index, {
-    dir: dir ? async () => dir : null,
-    label: `${o.location?.name ?? ''}/${PROJECT_DIR}`,
-    now: o.now,
-  });
-  await writer.save();
-  return { writer, steps };
-}

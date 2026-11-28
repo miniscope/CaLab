@@ -14,7 +14,7 @@ function input(over: Partial<AutoInput> & { mode?: LibraryMode } = {}): AutoInpu
     extract: null,
   };
   return {
-    settings: { mode: mode ?? 'separate' },
+    mode: mode ?? 'separate',
     discover: 'done',
     extract: 'idle',
     availability,
@@ -29,6 +29,18 @@ function input(over: Partial<AutoInput> & { mode?: LibraryMode } = {}): AutoInpu
 const act = (s: StageActivity) => s;
 
 describe('nextAutoAction', () => {
+  it('a live stream without Extract writes its live traces once they are gathered', () => {
+    const noExtract = { discover: null, extract: 'A live stream runs Discover only.' };
+    const live = (state: 'ready' | 'empty' | 'waiting', exported = false) =>
+      nextAutoAction(input({ sessions: 1, live: state, availability: noExtract, exported }));
+    expect(live('waiting')).toEqual({ kind: 'wait' });
+    expect(live('ready')).toEqual({ kind: 'export' });
+    expect(live('ready', true)).toEqual({ kind: 'finished' });
+    expect(live('empty')).toEqual({ kind: 'finished', skipped: 'no cells were found' });
+    // A stream whose Extract runs on its factors goes the recording's way.
+    expect(nextAutoAction(input({ sessions: 1, live: 'waiting' }))).toEqual({ kind: 'extract' });
+  });
+
   it('waits while any stage runs', () => {
     for (const stage of ['discover', 'extract'] as const) {
       expect(nextAutoAction(input({ [stage]: act('running') }))).toEqual({ kind: 'wait' });

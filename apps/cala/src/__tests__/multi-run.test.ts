@@ -41,7 +41,7 @@ function harness(
   n = 3,
   opts: {
     sink?: (run: number) => ResultsSink;
-    runRecord?: (s: { mode: string }, sessionIndex?: number) => Record<string, unknown>;
+    runRecord?: (kind: string, sessionIndex?: number) => Record<string, unknown>;
     /**
      * As the app does: a new Discover leaves the Extract store as it was (its last outcome
      * stays until Extract runs again), and a session takes a while to open.
@@ -131,7 +131,7 @@ function harness(
   const start = () =>
     multi.start({
       sessions: Array.from({ length: n }, (_, i) => session(i)),
-      settings: { mode },
+      kind: mode,
       openRun: async (i: number) => ({
         id: `r${i}_cala`,
         sink: opts.sink?.(i) ?? sink,
@@ -173,7 +173,7 @@ describe('run files', () => {
         .map((t) => JSON.parse(t.text));
     return { texts, sinkFor, runFiles };
   };
-  const record = (s: { mode: string }, index?: number) => ({
+  const record = (kind: string, index?: number) => ({
     record_version: 2,
     software: { app_version: 'v9', git_commit: 'abc', engine_version: '1.0' },
     params: {
@@ -186,7 +186,7 @@ describe('run files', () => {
     },
     stages: [{ stage: 'discover', outcome: 'done' }],
     input: { live: false },
-    settings: { mode: s.mode, index: index ?? null },
+    settings: { mode: kind, index: index ?? null },
   });
 
   it('a Joint run is one run: planned before its first frame, then running, then finished', async () => {

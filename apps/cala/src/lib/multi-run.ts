@@ -1,7 +1,8 @@
 /**
- * Drives a multi-session run (`session-run.ts`): opens the sessions, starts
+ * Drives the run of a plan step (`session-run.ts`): opens the sessions, starts
  * Extract when it is due, writes each session's results and the run file
- * (`run-file.ts`) and, in Separate mode, moves on to the next session.
+ * (`run-file.ts`) and, in Separate mode, moves on to the next session. A
+ * single recording and a live stream are one-session steps of their project.
  *
  * One library per run: a Joint chain is one run (one run folder, one
  * `calab-run.json`, one result per session); Separate sessions are one run
@@ -24,7 +25,8 @@ import {
   autoStatusText,
   nextAutoAction,
   type AutoAction,
-  type RunSettings,
+  type LibraryMode,
+  type LiveResultState,
 } from './session-run.ts';
 import { exportSessionBlock, type ResultsSink, type SessionRecord } from './session-export.ts';
 import type { SessionCandidate } from './sessions.ts';
@@ -42,6 +44,8 @@ export interface PlannedSession {
   resultsPath: string;
   /** Its stream ref, relative to the data root (`docs/projects.md`). */
   stream: string;
+  /** A live stream: the source's URL (its candidate has no files). */
+  live?: string;
 }
 
 /** A run's folder, opened for writing. */
@@ -56,7 +60,8 @@ export interface OpenedRun {
 
 export interface MultiRunPlan {
   sessions: PlannedSession[];
-  settings: RunSettings;
+  /** The plan step's kind (one session: `separate`). */
+  kind: LibraryMode;
   /**
    * Opens the folder of run `index` (Joint: one run, 0; Separate: one per session), when that
    * run starts. Write permission is already granted.
@@ -108,7 +113,9 @@ export interface MultiRunDeps {
   /** Joint: Discover's session-boundary flags (`boundary-flags.ts`), written with each session's results. */
   boundaryFlags?(): readonly BoundaryFlag[];
   /** The run record (`run-provenance.ts`) of the run so far; folded into the run file. */
-  runRecord?(settings: RunSettings, sessionIndex?: number): Record<string, unknown>;
+  runRecord?(kind: LibraryMode, sessionIndex?: number): Record<string, unknown>;
+  /** A live stream's traces at the end of its Discover (null: a recording). */
+  liveResult?(): LiveResultState | null;
   version: string;
   now?: () => Date;
 }
@@ -148,7 +155,7 @@ export function createMultiRun(deps: MultiRunDeps) {
   let dispatched = '';
 
   const active = () => plan() !== null;
-  const joint = () => plan()?.settings.mode === 'joint';
+  const joint = () => plan()?.kind === 'joint';
 
   function recordsFor(p: MultiRunPlan): SessionRecord[] {
     let start = 0;
@@ -159,7 +166,7 @@ export function createMultiRun(deps: MultiRunDeps) {
         name: s.candidate.name,
         dir: s.candidate.dir,
         resultsPath: s.resultsPath,
-        startFrame: p.settings.mode === 'joint' ? start : 0,
+        startFrame: p.kind === 'joint' ? start : 0,
         frames,
         fps: s.info?.fps ?? null,
         recordingStartMs: s.startMs,
@@ -202,7 +209,8 @@ export function createMultiRun(deps: MultiRunDeps) {
       sessions: mine.map((rec) => ({
         record: rec,
         stream: p.sessions[rec.index].stream,
-        info: p.sessions[rec.index].info,
+        // A live stream is probed by connecting: its info is the open source's.
+        info: p.sessions[rec.index].info ?? (p.sessions[rec.index].live ? deps.info() : null),
         ...(r.written.has(rec.index) ? { written: r.written.get(rec.index)! } : {}),
       })),
     });
@@ -235,7 +243,7 @@ export function createMultiRun(deps: MultiRunDeps) {
   async function beforeFrames(): Promise<void> {
     const p = plan();
     if (!p || !run || run.planned || finished() || stopped()) return;
-    lastRecord = deps.runRecord?.(p.settings, joint() ? undefined : run.index) ?? null;
+    lastRecord = deps.runRecord?.(p.kind, joint() ? undefined : run.index) ?? null;
     await writeRun('planned');
     run.planned = true;
   }
@@ -258,9 +266,12 @@ export function createMultiRun(deps: MultiRunDeps) {
         patchRecord(span.index, { startFrame: span.startFrame, frames: span.frameCount });
     if (isJoint)
       for (const f of deps.boundaryFlags?.() ?? []) patchRecord(f.index, { boundary: f });
+    // A live stream's length is known only now.
+    if (p.sessions[current()]?.live)
+      patchRecord(current(), { frames: base.result.frames, fps: info?.fps ?? null });
     const which = isJoint ? records() : records().filter((x) => x.index === current());
     // Gathered here, at write time, once for the files written now.
-    lastRecord = deps.runRecord?.(p.settings, isJoint ? undefined : r.index) ?? lastRecord;
+    lastRecord = deps.runRecord?.(p.kind, isJoint ? undefined : r.index) ?? lastRecord;
     const created = now().toISOString();
     for (const rec of which) {
       const fps = rec.fps ?? base.fps;
@@ -283,7 +294,7 @@ export function createMultiRun(deps: MultiRunDeps) {
         ...(isJoint
           ? { frameRange: { start: rec.startFrame, end: rec.startFrame + rec.frames } }
           : {}),
-        session: exportSessionBlock(rec, p.settings.mode, p.sessions.length),
+        session: exportSessionBlock(rec, p.kind, p.sessions.length),
         runFile: runDoc('running'),
       };
       const path =
@@ -365,7 +376,8 @@ export function createMultiRun(deps: MultiRunDeps) {
     const extract =
       st.extract === 'done' && !st.runs.some((r) => r.stage === 'extract') ? 'idle' : st.extract;
     const input = {
-      settings: p.settings,
+      mode: p.kind,
+      live: p.sessions[current()]?.live ? (deps.liveResult?.() ?? 'waiting') : null,
       discover: st.discover,
       extract,
       availability: st.availability,
@@ -438,7 +450,7 @@ export function createMultiRun(deps: MultiRunDeps) {
       setError(errMsg(err));
       return;
     }
-    if (p.settings.mode === 'joint') await deps.openJoint(p.sessions);
+    if (p.kind === 'joint') await deps.openJoint(p.sessions);
     else await deps.openOne(p.sessions[0], 0);
     setSessionOpen(true);
   }
@@ -462,11 +474,14 @@ export function createMultiRun(deps: MultiRunDeps) {
       if (!p) return '';
       if (error()) return `Stopped: ${error()}`;
       if (stopped()) return `Stopped: ${stopped()}`;
-      if (finished()) return 'All sessions done; results written.';
+      if (finished())
+        return p.sessions.length === 1
+          ? 'Done; results written.'
+          : 'All sessions done; results written.';
       return autoStatusText(action(), {
         session: current(),
         sessions: p.sessions.length,
-        joint: p.settings.mode === 'joint',
+        joint: p.kind === 'joint',
       });
     },
     error,
