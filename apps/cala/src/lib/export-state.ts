@@ -7,12 +7,13 @@ export const resultExported = exported;
 export const markResultExported = (): void => void setExported(true);
 export const clearResultExported = (): void => void setExported(false);
 
-/** The warning shown before a finished, unexported result is dropped; null when there is nothing to lose. */
+/** The warning shown before a finished, unsaved result is dropped; null when there is nothing to lose. */
 export function leaveWarning(o: {
   extractDone: boolean;
   exported: boolean;
-  multiSession: boolean;
+  /** Its run wrote the result into the run folder (or its zip). */
+  written: boolean;
 }): string | null {
-  if (!o.extractDone || o.exported || o.multiSession) return null;
+  if (!o.extractDone || o.exported || o.written) return null;
   return 'The result of this run has not been exported. Leave without exporting it?';
 }

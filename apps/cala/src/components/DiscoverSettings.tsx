@@ -4,7 +4,7 @@ import { FINAL_SETTLE_LEVELS, type FinalSettleLevel } from '../lib/settle.ts';
 
 /**
  * Where the Discover settings are shown, which decides when a change takes effect:
- * - `setup`: before a multi-session run (the session list, a project's run plan);
+ * - `setup`: before a project's run plan starts (the project view);
  * - `prerun`: the pre-run sheet of one recording, before its first Run;
  * - `single`: the Run tab of one recording (the next Discover start);
  * - `separate`: a Separate session run (each session starts Discover again: the next session);

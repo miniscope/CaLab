@@ -7,7 +7,7 @@ import {
   type IndexFile,
   type ProjectFile,
 } from '@calab/project';
-import { createProjectStore, sessionSetupProject } from '../lib/project-store.ts';
+import { createProjectStore } from '../lib/project-store.ts';
 import type { MultiRun, MultiRunPlan, OpenedRun } from '../lib/multi-run.ts';
 import type { FrameSourceInfo } from '../lib/frame-source.ts';
 import { entriesFromFiles } from '../lib/frame-source.ts';
@@ -130,7 +130,7 @@ function runDoc(p: MultiRunPlan, run: OpenedRun, status: 'planned' | 'running' |
     created: '2026-11-28T12:00:00.000Z',
     updated: '2026-11-28T12:00:00.000Z',
     version: 'test',
-    joint: p.settings.mode === 'joint',
+    joint: p.kind === 'joint',
     record: { stages: [{ stage: 'discover', outcome: 'done' }] },
     sessions: p.sessions.map((s, index) => ({
       stream: s.stream,
@@ -231,7 +231,7 @@ describe('project store', () => {
     expect(before.plan.steps.map((s) => s.status)).toEqual(['pending', 'pending']);
     expect(fake.plans).toHaveLength(1);
     const g1 = fake.plans[0];
-    expect(g1.settings).toEqual({ mode: 'joint' });
+    expect(g1.kind).toBe('joint');
     expect(g1.sessions.map((s) => s.stream)).toEqual([ids[0], ids[1]]);
     expect(g1.planRef!(0)).toEqual({ id: before.plan.id, step: 'a', kind: 'joint' });
     const run1 = await g1.openRun(0);
@@ -272,7 +272,7 @@ describe('project store', () => {
     await vi.waitFor(() => expect(fake.plans).toHaveLength(2));
     expect(store.planState()).toEqual({ kind: 'running', step: 1 });
     const g2 = fake.plans[1];
-    expect(g2.settings.mode).toBe('separate');
+    expect(g2.kind).toBe('separate');
     expect(g2.planRef!(0)).toMatchObject({ step: 'b', kind: 'separate' });
     const run2 = await g2.openRun(0);
     expect(run2.id).not.toBe(run1.id);
@@ -434,72 +434,127 @@ describe('project store', () => {
   });
 });
 
-describe('session setup project', () => {
-  const planned = () => {
-    const { sessions } = animal();
-    return sessions.map((candidate, i) => ({
-      candidate,
-      info: INFO,
-      error: null,
-      startMs: Date.UTC(2026, 10, 10 + i, 9),
-      resultsPath: ids[i],
-      stream: ids[i],
-    }));
-  };
+describe('one-session projects', () => {
+  /** One recording folder: the videos and metaData.json directly in it. */
+  function recording() {
+    const files = [
+      makeFile('0.avi', new Uint8Array(4), 'My_V4_Miniscope'),
+      makeFile(
+        'metaData.json',
+        JSON.stringify({ recordingStartTime: { msecSinceEpoch: Date.UTC(2026, 10, 10, 9) } }),
+        'My_V4_Miniscope',
+      ),
+    ];
+    const entries = entriesFromFiles(files);
+    return { entries, sessions: discoverSessions(entries).sessions! };
+  }
 
-  it('adds the run as plan steps and writes the project before it starts', async () => {
-    const loc = new MemDir('data');
-    const now = () => new Date('2026-11-28T12:00:00Z');
-    const { writer, steps } = await sessionSetupProject({
-      location: loc,
-      name: 'mouse1',
-      sessions: planned(),
-      mode: 'separate',
-      now,
-    });
-    expect(steps.map((s) => [s.id, s.streams])).toEqual(
-      ids.map((x, i) => [String.fromCharCode(97 + i), [x]]),
-    );
-    const saved = readProjectFile(loc.dirs.get('calab-project')!.files.get('calab-project.json')!);
-    expect(saved.ok && saved.value.plan.steps).toHaveLength(3);
-    const run = await writer.openRun('r1_cala');
-    expect(run.folder).toBe('runs/r1_cala');
-    // A second Joint run adds a step to the same project.
-    const again = await sessionSetupProject({
-      location: loc,
-      name: 'mouse1',
-      sessions: planned().slice(0, 2),
-      mode: 'joint',
-      now,
-    });
-    expect(again.steps).toHaveLength(1);
-    expect(again.writer.project.project.id).toBe(writer.project.project.id);
-  });
-
-  it('never replaces a project file it cannot read', async () => {
-    const loc = new MemDir('data');
-    await loc.put('calab-project/calab-project.json', '{bad');
-    await expect(
-      sessionSetupProject({
-        location: loc,
-        name: 'mouse1',
-        sessions: planned(),
-        mode: 'joint',
-        now: () => new Date(),
+  async function single(o: { root?: MemDir; live?: string } = {}) {
+    const fake = fakeRunner();
+    const root = o.root ?? animalDir(true);
+    const { entries, sessions } = recording();
+    const store = createRoot(() =>
+      createProjectStore({
+        probe: async (s) => s.map(() => ({ info: INFO })),
+        multiRun: fake.runner,
+        version: 'test',
+        now: () => new Date('2026-11-28T12:00:00Z'),
       }),
-    ).rejects.toThrow('nothing was written');
-    expect(loc.dirs.get('calab-project')!.files.get('calab-project.json')).toBe('{bad');
+    );
+    await store.open(
+      o.live
+        ? { rootName: 'live stream', entries: [], handle: null, sessions: [], live: o.live }
+        : {
+            rootName: 'My_V4_Miniscope',
+            entries,
+            handle: root as unknown as ReadDirLike,
+            sessions,
+          },
+    );
+    return { store, fake, root };
+  }
+
+  it('a recording folder is a project of one session, its plan one Separate step', async () => {
+    const { store, root } = await single();
+    expect(store.single()?.planned).toMatchObject({ stream: '.', resultsPath: '.' });
+    expect(store.plan().map((s) => [s.kind, s.streams])).toEqual([['separate', ['.']]]);
+    const p = savedProject(root);
+    expect(p.sessions).toMatchObject([{ id: '.', streams: [{ id: '.', role: 'miniscope' }] }]);
+    expect(p.plan.steps).toHaveLength(1);
+    expect(store.summary()).toEqual({ sessions: 1, live: false, existing: false });
   });
 
-  it('without a folder the project files go into the run zip', async () => {
-    const { writer } = await sessionSetupProject({
-      location: null,
-      name: 'mouse1',
-      sessions: planned(),
-      mode: 'joint',
-      now: () => new Date(),
+  it('Run starts that step: the plan is on disk first, results at the run folder root', async () => {
+    const { store, fake, root } = await single();
+    expect(await store.runStreams(['.'])).toBe(true);
+    expect(fake.plans).toHaveLength(1);
+    const plan = fake.plans[0];
+    expect(plan.kind).toBe('separate');
+    expect(plan.sessions.map((s) => [s.stream, s.resultsPath])).toEqual([['.', '.']]);
+    expect(savedProject(root).plan.id).not.toBeNull();
+    const run = await plan.openRun(0);
+    expect(run.folder).toMatch(/^runs\/2026-11-28_\d\d-00-00_cala$/);
+    await plan.onProgress!({
+      run: runDoc(plan, run, 'planned'),
+      folder: run.folder,
+      sink: run.sink,
     });
-    const run = await writer.openRun('r1_cala');
+    expect(savedIndex(root).runs.map((r) => r.id)).toEqual([run.id]);
+  });
+
+  it('reopening keeps the pending step; a run after the last makes a new step', async () => {
+    const first = await single();
+    const again = await single({ root: first.root });
+    expect(again.store.summary()?.existing).toBe(true);
+    expect(again.store.plan()).toHaveLength(1);
+    expect(again.store.plan()[0].id).toBe(first.store.plan()[0].id);
+    // The step ran and finished: it left the plan; Restart runs the stream again as a new step.
+    await again.store.runStreams(['.']);
+    const plan = again.fake.plans[0];
+    const run = await plan.openRun(0);
+    await plan.onProgress!({
+      run: runDoc(plan, run, 'finished'),
+      folder: run.folder,
+      sink: run.sink,
+    });
+    expect(again.store.plan()).toEqual([]);
+    expect(await again.store.runStreams(['.'])).toBe(true);
+    expect(again.fake.plans).toHaveLength(2);
+    expect(again.store.plan()).toHaveLength(1);
+  });
+
+  it('a declined permission still runs: into a zip, the folder left as it was', async () => {
+    const root = animalDir(false);
+    const { store, fake } = await single({ root });
+    expect(store.canWrite()).toBe(true);
+    expect(await store.runStreams(['.'])).toBe(true);
+    expect(store.declined()).toBe(true);
+    expect(store.canWrite()).toBe(false);
+    const run = await fake.plans[0].openRun(0);
     expect(run.sink.method).toBe('zip');
+    expect(projectDir(root)).toBeUndefined();
+  });
+
+  it('an unreadable project file: Run refuses, and the file is never written over', async () => {
+    const root = animalDir(true);
+    await root.put('calab-project/calab-project.json', '{bad');
+    const { store, fake } = await single({ root });
+    expect(store.readOnly()).toBe(true);
+    expect(store.warnings()[0]).toContain('could not be read');
+    expect(await store.runStreams(['.'])).toBe(false);
+    expect(fake.plans).toHaveLength(0);
+    expect(projectDir(root)!.files.get('calab-project.json')).toBe('{bad');
+  });
+
+  it('a live stream is a one-session project with a live stream and no folder: its run is a zip', async () => {
+    const { store, fake } = await single({ live: 'ws://127.0.0.1:8765' });
+    expect(store.single()?.planned).toMatchObject({ stream: '.', live: 'ws://127.0.0.1:8765' });
+    expect(store.project()!.sessions[0].streams[0].role).toBe('live');
+    expect(store.canWrite()).toBe(false);
+    expect(store.summary()).toEqual({ sessions: 1, live: true, existing: false });
+    expect(await store.runStreams(['.'])).toBe(true);
+    const run = await fake.plans[0].openRun(0);
+    expect(run.sink.method).toBe('zip');
+    expect(run.project).toBe(store.project()!.project.id);
   });
 });

@@ -771,7 +771,7 @@
   font-size: 0.9rem;
 }
 
-/* ---- Multi-session run: the session list (SessionSetup) ---- */
+/* ---- Session lists (ProjectView) ---- */
 .cala-sessions__card {
   max-width: 46rem;
   margin: var(--space-lg, 1rem) auto;

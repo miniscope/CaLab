@@ -17,7 +17,7 @@
  * `discoverKinds`), else from the names. Apart from `discoverKinds`, pure
  * functions on names and strings; nothing reads a file.
  */
-import type { FolderEntry } from './frame-source.ts';
+import type { FolderEntry, SessionInput } from './frame-source.ts';
 import { readDeviceRoles, roleFromName, type RoleInfo, type RoleSource } from './device-roles.ts';
 import { naturalCompare } from './natural-sort.ts';
 import { baseOf, detectSeries, dirOf, seriesLabel, type VideoSeries } from './video-series.ts';
@@ -366,4 +366,22 @@ export function uniqueResultsPaths(dirs: readonly string[]): string[] {
     used.add(p);
     return p;
   });
+}
+
+/** `recordingStartTime` from the nearest metaData.json that has one. */
+export async function readStartMs(c: SessionCandidate): Promise<number | null> {
+  for (const e of c.metaEntries) {
+    try {
+      const ms = parseRecordingStart(await e.file.text());
+      if (ms !== null) return ms;
+    } catch {
+      // unreadable: try the next one
+    }
+  }
+  return null;
+}
+
+/** The probe input of a discovered session candidate. */
+export function toSessionInput(c: SessionCandidate): SessionInput {
+  return { name: c.name, dir: c.dir, entries: c.entries };
 }

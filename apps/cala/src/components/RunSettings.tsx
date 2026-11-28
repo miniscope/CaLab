@@ -108,7 +108,7 @@ function RunSettingsFields(props: RunSettingsProps): JSX.Element {
         return {
           testid: 'extract-after-discover',
           disabled: props.sessionRun
-            ? 'A session run always Extracts each session once its Discover is done.'
+            ? 'A run always Extracts each session once its Discover is done, and writes the results.'
             : null,
         };
       case '/stages/find_new_cells':
