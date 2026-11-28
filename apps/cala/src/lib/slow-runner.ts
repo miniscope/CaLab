@@ -564,6 +564,9 @@ export class SlowRunner {
       get barrierOn() {
         return r.barrierOn;
       },
+      get repeatable() {
+        return r.settleRepeatable;
+      },
       get pace() {
         return r.pace;
       },
@@ -609,6 +612,12 @@ export class SlowRunner {
       finish: () => r.finish(),
       housekeep: () => r.housekeep(),
       dispatch: (limit?: number) => r.dispatch(limit),
+      applyVisit: (i: number, msg: VisitToOwner) => {
+        r.busy[i] = false;
+        if (msg.type === 'result') r.applyVisit(i, msg);
+      },
+      detAnswer: (req: LookbackReq, msg: Extract<LookbackToSlow, { type: 'frames' }>) =>
+        r.detAnswer(req, msg),
       settlePorts: () => r.settlePorts(),
       sendRequest: (
         port: number,
@@ -973,8 +982,10 @@ export class SlowRunner {
     if (msg.session !== this.session || !this.loop) return;
     try {
       if (msg.type === 'error') throw new Error(`visit worker ${i}: ${msg.message}`);
-      // A repeatable run: held until its batch end (`applyDue`).
+      // A repeatable run: held until its batch end (`applyDue`), or in the Final settle until
+      // its frames-fed point (`FinalSettleDriver.visitArrived`).
       if (this.bar.arrive('visit', i, msg)) return;
+      if (this.finalSettle.visitArrived(i, msg)) return;
       this.busy[i] = false;
       this.applyVisit(i, msg);
       // (A visit handed out before a repeatable run's barrier began: nothing more on arrival.)
@@ -1005,7 +1016,7 @@ export class SlowRunner {
   /** A visit's result into the slow loop (no housekeeping, no hand-out). */
   private applyVisit(i: number, msg: Extract<VisitToOwner, { type: 'result' }>): void {
     const loop = this.loop!;
-    this.det?.row('apply', this.observed, this.slotSeq[i], i, fnvBytes(msg.bytes), loop.work);
+    this.det?.row('apply', this.detAt, this.slotSeq[i], i, fnvBytes(msg.bytes), loop.work);
     const t0 = this.now();
     this.clock.span('visit', () => this.tm('visit.apply', () => loop.applyJob(msg.bytes)));
     this.jobOwnerMs += this.now() - t0;
@@ -1205,7 +1216,7 @@ export class SlowRunner {
         if (!bytes) break;
         if (this.det) {
           this.slotSeq[i] = ++this.takeSeq;
-          this.det.row('take', this.observed, this.takeSeq, i, fnvBytes(bytes));
+          this.det.row('take', this.detAt, this.takeSeq, i, fnvBytes(bytes));
         }
         this.busy[i] = true;
         this.jobSettle[i] = settling;
@@ -1294,7 +1305,7 @@ export class SlowRunner {
     const req: LookbackReq = { id, port, kind, items, ...(skip ? { skip } : {}) };
     // Under the barrier a request may wait behind others, so it names the library to solve with.
     const barrier = !hold && kind !== 'end' && this.barrierOn;
-    this.det?.row('req', this.observed, id, port, kind, items.length, fnvBytes(flat));
+    this.det?.row('req', this.detAt, id, port, kind, items.length, fnvBytes(flat));
     // `flat` is a fresh array (from WASM or built here): transferred as is; `skip` is copied.
     this.clock.span(kind, () =>
       this.lbPorts[port]!.postMessage(
@@ -1316,6 +1327,29 @@ export class SlowRunner {
     if (hold) this.lbHeld = req;
     else if (barrier) this.awaitBarrier(req);
     else this.awaitAnswer(req);
+  }
+
+  /** Determinism log: settle answer `msg` to `req` is taken up (`FinalSettleDriver.settleObserve`). */
+  private detAnswer(req: LookbackReq, msg: Extract<LookbackToSlow, { type: 'frames' }>): void {
+    this.det?.row('ans', this.detAt, req.id, req.port, req.kind, msg.version, fnvBytes(msg.traces));
+  }
+
+  /** The determinism log's clock: live frames observed, plus the Final settle's frames fed. */
+  private get detAt(): number {
+    return this.observed + (this.finalSettle.state?.fed ?? 0);
+  }
+
+  /**
+   * The Final settle is repeatable (`FinalSettleDriver`): a repeatable run whose Discover was
+   * paced and kept its apply barrier to its last frame (a run at Max stays as it was).
+   */
+  private get settleRepeatable(): boolean {
+    return (
+      this.init?.repeatable === true &&
+      this.barrierLostAt === null &&
+      this.pace.fps > 0 &&
+      this.run === 1
+    );
   }
 
   /** `req` went out under the barrier: held there until due, at most `LOOKBACK.timeoutMs`. */
@@ -1454,15 +1488,17 @@ export class SlowRunner {
     loop: SlowLoopLike,
   ): void {
     if (this.lbReqs[port]?.id === req.id) this.lbReqs[port] = null;
-    this.det?.row(
-      'ans',
-      this.observed,
-      req.id,
-      port,
-      req.kind,
-      msg.type === 'frames' ? msg.version : -1,
-      msg.type === 'frames' ? fnvBytes(msg.traces) : 0,
-    );
+    // (A repeatable Final settle logs its answers as it takes them up, in request order.)
+    if (!(req.kind === 'end' && this.finalSettle.state?.ordered && msg.type === 'frames'))
+      this.det?.row(
+        'ans',
+        this.detAt,
+        req.id,
+        port,
+        req.kind,
+        msg.type === 'frames' ? msg.version : -1,
+        msg.type === 'frames' ? fnvBytes(msg.traces) : 0,
+      );
     if (this.dt && msg.type === 'frames') {
       // Relay timing: request sent -> this handler (round trip), and answer posted -> here (queued).
       const at = this.epochNow();
@@ -1510,9 +1546,8 @@ export class SlowRunner {
           if (msg.count !== req.items.length)
             throw new Error(`settle: ${msg.count} frames for a request of ${req.items.length}`);
           settle.served.add(req.port);
-          // Observed in arrival order, one answer at a time (its buffer goes back after its last piece).
-          settle.answers.push({ msg, req, next: 0, begun: false });
-          if (settle.answers.length === 1) this.finalSettle.settleObserve(loop, settle);
+          // One answer at a time (its buffer goes back after its last piece).
+          this.finalSettle.settleAnswer(loop, settle, { msg, req, next: 0, begun: false });
           return;
         } else if (req.kind === 'need') this.observeLookback(loop, msg, req.items);
         // A settle answer that came when Discover could not use it: counted as dropped.
@@ -1736,7 +1771,7 @@ export class SlowRunner {
     if (!loop || this.final) return;
     this.final = true;
     this.clock.span('publish', () => this.publish(loop.finalize()));
-    this.det?.row('final', this.observed);
+    this.det?.row('final', this.detAt);
     this.status(0, 0);
   }
 
@@ -1749,7 +1784,7 @@ export class SlowRunner {
         const tb = this.dt ? this.now() : 0;
         const bytes = lib.toBytes();
         this.dt?.add('publish.toBytes', this.now() - tb);
-        this.det?.row('pub', this.observed, version, fnvBytes(bytes));
+        this.det?.row('pub', this.detAt, version, fnvBytes(bytes));
         this.dt?.add('publish.libraries', 1);
         // The main thread keeps the newest library's bytes for Extract.
         const mainBytes = bytes.slice();

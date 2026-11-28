@@ -1,6 +1,7 @@
 /**
  * The determinism log (`?debug&detlog`, measurement only): one row per state-changing call of the
- * slow worker during a run, stamped with the live frames observed at that moment, so two runs of
+ * slow worker during a run, stamped with the live frames observed at that moment (in the Final
+ * settle, plus the settle frames fed), so two runs of
  * the same recording at the same settings can be diffed (`apps/cala/scripts/detlog-diff.mjs`)
  * and the first divergence named. Logging changes no decision; hashing costs the slow worker a
  * little time, so a logged run is compared only with other logged runs.
@@ -10,7 +11,7 @@
  * matched across runs whatever order the messages arrived in.
  */
 
-/** One row: kind, live frames observed so far, then the kind's fields (see `DetLogKind`). */
+/** One row: kind, live frames observed so far (plus Final settle frames fed), then the kind's fields (see `DetLogKind`). */
 export type DetLogRow = [DetLogKind, number, ...(number | string)[]];
 
 /**

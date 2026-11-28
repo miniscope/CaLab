@@ -29,6 +29,19 @@
  * factors are the frames Discover preprocessed itself, complete before the
  * settle starts (the wait for `factors`), so back state and flat field play
  * no part; and the pooled settle keeps one plain request out per worker.
+ *
+ * A repeatable run (`SlowInit.repeatable`, whose Discover kept its apply
+ * barrier to the end, `FinalSettleHost.repeatable`) makes the settle's
+ * order independent of timing:
+ *  - Answers are observed in request order. A look-back worker's trace solve
+ *    warm-starts from the frame it solved last, so an answer depends on the
+ *    request that worker served before; with answers in request order the next
+ *    request goes to a fixed worker, and so does every later one.
+ *  - Visits go out between pieces and their results are applied in hand-out
+ *    order at a fixed number of settle frames later (`settleVisitLag`), waiting
+ *    there for a late one (`ApplyBarrier`, clocked in frames fed). The hold for
+ *    visits owed applies the oldest visit out instead of the first back. The
+ *    pay-at-end, the last round and a Stop apply a round once all of it is back.
  */
 import { runParams } from './run-params.ts';
 import type {
@@ -51,6 +64,8 @@ import {
 } from './settle.ts';
 import type { LookbackItem, LookbackReq, PublishedLibrary, SlowLoopLike } from './slow-runner.ts';
 import type { DetailTimer, DutyClock, SlowDuty } from './work-meter.ts';
+import { ApplyBarrier } from './apply-barrier.ts';
+import type { VisitToOwner } from '../workers/slow-types.ts';
 
 /** What the Final settle needs of its `SlowRunner` (the runner's own state, read live). */
 export interface FinalSettleHost {
@@ -75,6 +90,8 @@ export interface FinalSettleHost {
   readonly lbError: string | undefined;
   readonly factorLive: boolean;
   readonly factorSource: FactorSource['factors'] | null;
+  /** The run is repeatable and Discover kept its apply barrier to its last frame (read as the settle starts). */
+  readonly repeatable: boolean;
   /** The settle's last status, kept for the final status after it ends. */
   settleStatus: SettleStatus | undefined;
   /** The newest checkpoint's "still moving" hint, sent with the next status. */
@@ -90,6 +107,10 @@ export interface FinalSettleHost {
   finish(): void;
   housekeep(): void;
   dispatch(limit?: number): number;
+  /** A visit result held by the settle's barrier: slot `i` is free again and the result applied. */
+  applyVisit(i: number, msg: VisitToOwner): void;
+  /** Determinism log (`?debug&detlog`): a settle answer is taken up. */
+  detAnswer(req: LookbackReq, msg: Extract<LookbackToSlow, { type: 'frames' }>): void;
   settlePorts(): number[];
   sendRequest(
     port: number,
@@ -133,10 +154,17 @@ export interface Settle {
   /** The settle's visits (`SETTLE.visitRate`; counted with visit workers only). */
   v: SettleVisits;
   /**
-   * Settle answers being observed, oldest first: the head is observed in pieces
-   * (`settleObserve`), the rest wait for it (one answer at a time, in arrival order).
+   * Settle answers being observed: the head is observed in pieces (`settleObserve`), the rest
+   * wait for it (one answer at a time; in arrival order, or in request order when `bar` is set).
    */
   answers: SettleAnswer[];
+  /**
+   * A repeatable run's visits out, applied in hand-out order at a fixed number of frames fed
+   * after they went out (null: results are applied as they arrive).
+   */
+  bar: ApplyBarrier<VisitToOwner> | null;
+  /** A repeatable run's settle (`FinalSettleHost.repeatable` at its start): answers in request order. */
+  ordered: boolean;
   /** The head answer waits between pieces for the visits owed (`settleObserve`); since when (null: not). */
   holdSince: number | null;
   /** Visits handed out when the pass's last answer was in (null: before; the rest is paid at the end). */
@@ -152,6 +180,17 @@ export interface SettleAnswer {
   /** Frames observed so far; whether its observation began (its worker's next request went out). */
   next: number;
   begun: boolean;
+}
+
+/**
+ * Settle frames between a visit's hand-out and the apply of its result under a repeatable run
+ * (`Settle.bar`): whole pieces, as many as keep `slots` visit workers able to make `rate` visits
+ * per frame fed (`slots / lag >= rate`), at least one piece.
+ */
+export function settleVisitLag(slots: number, rate: number): number {
+  const piece = SETTLE.observePiece;
+  const pieces = rate > 0 ? Math.floor(slots / (rate * piece) + 1e-9) : 1;
+  return piece * Math.max(1, pieces);
 }
 
 /** The Final settle of the current run, driven by `SlowRunner`'s messages. */
@@ -242,6 +281,11 @@ export class FinalSettleDriver {
       holdSince: null,
       payFrom: null,
       allDue: false,
+      ordered: this.r.repeatable,
+      bar:
+        this.r.repeatable && this.r.parallel
+          ? new ApplyBarrier<VisitToOwner>(settleVisitLag(this.r.busy.length, this.r.settleRate))
+          : null,
     };
     // The look-back worker solves with the library Discover ended with
     // (qc_eval publishes it before the settle); the first checkpoint's reference.
@@ -324,7 +368,7 @@ export class FinalSettleDriver {
         d.v.heldMs += this.r.now() - d.holdSince;
         d.holdSince = null;
       }
-      if (!this.r.busy.some((b) => b)) this.finishFinalSettle();
+      if (this.drained(d)) this.finishFinalSettle();
       return;
     }
     if (d.phase === 'sweep') {
@@ -355,7 +399,7 @@ export class FinalSettleDriver {
       } else return;
     }
     // The last round of visits.
-    if (this.r.busy.some((b) => b)) return;
+    if (!this.drained(d)) return;
     if (this.r.parallel) {
       this.r.housekeep();
       // The same cap as without workers (`SETTLE.finalSteps` budgets of work):
@@ -363,7 +407,7 @@ export class FinalSettleDriver {
       const capped =
         loop.work - d.finalWork0 >= init.budget * SETTLE.finalSteps ||
         this.r.jobs - d.finalJobs0 >= SETTLE.finalVisitsMax;
-      const n = capped ? 0 : this.r.dispatch();
+      const n = capped ? 0 : this.handOut(d);
       d.v.finalRound += n;
       if (n > 0) return;
     } else if (d.finalSteps === 0) {
@@ -372,6 +416,104 @@ export class FinalSettleDriver {
       if (lib) this.r.publish(lib);
     }
     this.finishFinalSettle();
+  }
+
+  /** `dispatch`, and under `Settle.bar` the visits handed out go on its ledger (in slot order, as handed out). */
+  private handOut(d: Settle, limit?: number): number {
+    const bar = d.bar;
+    if (!bar) return this.r.dispatch(limit);
+    const idle = this.r.busy.map((b) => !b);
+    const n = this.r.dispatch(limit);
+    this.r.busy.forEach((b, i) => {
+      if (b && idle[i]) bar.issue('visit', i, d.fed);
+    });
+    return n;
+  }
+
+  /**
+   * No visit is out: true at once without `Settle.bar` when no visit worker is busy; under it,
+   * once every visit out is back, they are applied in hand-out order first (false until then;
+   * `visitArrived` resumes the settle).
+   */
+  private drained(d: Settle): boolean {
+    const bar = d.bar;
+    if (!bar) return !this.r.busy.some((b) => b);
+    if (!bar.ready(Infinity)) return false;
+    this.applyHeld(d, Infinity);
+    return true;
+  }
+
+  /**
+   * Apply the visits due by `fed` frames, in hand-out order (all of them are back), then
+   * housekeep. Returns whether any was applied.
+   */
+  private applyHeld(d: Settle, fed: number): boolean {
+    const due = d.bar!.takeDue(fed);
+    for (const it of due) this.r.applyVisit(it.key, it.result!);
+    if (due.length > 0) this.r.housekeep();
+    return due.length > 0;
+  }
+
+  /**
+   * Under `Settle.bar`, before the next piece: the visits due by the frames fed so far are
+   * applied and their workers handed the next at once, then, while too many visits are owed
+   * (`settleOwedTooMuch`), the oldest out is applied and the next handed out. False when one of
+   * them is not back yet (the settle holds; `visitArrived` resumes it).
+   */
+  private settleBarrierStep(d: Settle): boolean {
+    const bar = d.bar!;
+    if (!bar.ready(d.fed)) return false;
+    // Handed out only after an apply: how often this step is re-entered depends on timing.
+    if (this.applyHeld(d, d.fed)) this.settleDispatch(d);
+    while (this.settleOwedTooMuch(d)) {
+      const oldest = bar.nextDue();
+      if (!bar.ready(oldest)) return false;
+      this.applyHeld(d, oldest);
+      this.settleDispatch(d);
+    }
+    return true;
+  }
+
+  /**
+   * A visit result in the Final settle of a repeatable run: held on the ledger (false: not one of
+   * its visits, the caller applies it). A settle that waits for it goes on.
+   */
+  visitArrived(i: number, msg: VisitToOwner): boolean {
+    const d = this.state;
+    if (!d?.bar || !d.bar.arrive('visit', i, msg)) return false;
+    const loop = this.r.loop;
+    if (!loop) return true;
+    if (d.holdSince !== null) this.r.clock.span('end', () => this.settleObserve(loop, d));
+    else if (d.answers.length === 0 && d.bar.ready(Infinity)) this.settlePump();
+    return true;
+  }
+
+  /**
+   * The head answer may be observed: always, except in a repeatable run: once no Final
+   * settle request sent before it is still unanswered (answers in request order).
+   */
+  private headReady(a: SettleAnswer): boolean {
+    if (!this.state?.ordered) return true;
+    const id = a.req.id;
+    if (this.r.lbHeld && this.r.lbHeld.id < id) return false;
+    return !this.r.lbReqs.some((q) => q?.kind === 'end' && q.id < id);
+  }
+
+  /**
+   * A settle answer came: queued (in request order under a repeatable run), and observed now if
+   * nothing is being observed.
+   */
+  settleAnswer(loop: SlowLoopLike, d: Settle, a: SettleAnswer): void {
+    if (!d.ordered) {
+      d.answers.push(a);
+      if (d.answers.length === 1) this.settleObserve(loop, d);
+      return;
+    }
+    const at = d.answers.findIndex((x) => x.req.id > a.req.id);
+    if (at < 0) d.answers.push(a);
+    else d.answers.splice(at, 0, a);
+    const head = d.answers[0];
+    if (!head.begun && d.holdSince === null) this.settleObserve(loop, d);
   }
 
   /** The settle counts its visits against a rate (`SETTLE.visitRate`; visit workers only). */
@@ -394,7 +536,7 @@ export class FinalSettleDriver {
   settleDispatch(d: Settle): void {
     if (d.stop) return;
     const owed = this.settleOwed(d);
-    const n = this.r.dispatch(owed);
+    const n = this.handOut(d, owed);
     if (!this.settleMetered(d)) return;
     d.v.handed += n;
     const left = owed - n;
@@ -413,7 +555,7 @@ export class FinalSettleDriver {
       this.settleMetered(d) &&
       !d.stop &&
       this.settleOwed(d) > d.v.rate * SETTLE.visitOwedFrames &&
-      this.r.busy.some((b) => b)
+      (d.bar ? d.bar.size > 0 : this.r.busy.some((b) => b))
     );
   }
 
@@ -424,6 +566,7 @@ export class FinalSettleDriver {
    */
   private settlePaid(loop: SlowLoopLike, d: Settle): boolean {
     if (!this.settleMetered(d) || d.stop) return true;
+    if (d.bar && !this.drained(d)) return false;
     d.payFrom ??= d.v.handed;
     const done = (): boolean => {
       d.v.paidAtEnd = d.v.handed - (d.payFrom ?? d.v.handed);
@@ -492,11 +635,14 @@ export class FinalSettleDriver {
         return;
       }
       if (!a.begun) {
+        // (A later request's answer waits for the earlier one; its arrival resumes here.)
+        if (!this.headReady(a)) return;
         a.begun = true;
+        if (d.ordered) this.r.detAnswer(a.req, a.msg);
         this.settleNextFor(d, a.req.port);
       }
       while (a.next < a.msg.count) {
-        if (this.settleOwedTooMuch(d)) {
+        if (d.bar ? !this.settleBarrierStep(d) : this.settleOwedTooMuch(d)) {
           if (d.holdSince === null) {
             d.holdSince = this.r.now();
             d.v.holds++;

@@ -117,9 +117,22 @@ solved with a newer library that came meanwhile. At Max (no target) results appl
 they arrive, and so they do from the first batch the fast loop drops (a target the machine
 cannot hold: the run is no longer repeatable, and waiting would only drop more; lockstep at
 the source is the planned answer). The slow worker's status reports the batch ends that waited and the libraries
-the fast loop adopted late (`SlowStatus.repeatable`). Not covered yet: look-back answers are
-preprocessed from whichever back state the look-back worker holds, and the Final settle
-observes pooled answers in arrival order.
+the fast loop adopted late (`SlowStatus.repeatable`).
+
+The Final settle of a repeatable run whose Discover kept its barrier to the end is
+repeatable too (`FinalSettleDriver`). Its answers are observed in request order: a
+look-back worker's trace solve warm-starts from the frame it solved last, so with answers
+in arrival order the next request went to whichever worker answered first, and the same
+request came back with different traces. In request order every request goes to a fixed
+worker. Its visits go out between pieces of 4 settle frames and are applied in hand-out
+order a fixed number of settle frames later (`settleVisitLag`: whole pieces, as many as let
+the visit workers keep up with the settle's visit rate; 8 frames with 4 visit workers),
+waiting there for a late one; when too many visits are owed, the oldest out is applied
+before the next piece instead of the first back. The pay-at-end, the last round and a Stop
+apply a round once all of it is back. The waits are counted in the settle's
+`visits.holds` / `heldMs`. Not covered: look-back answers during Discover are
+preprocessed from whichever back state and flat-field map the look-back worker holds (no
+difference was seen on 1,000-frame clips, which never get a flat-field map).
 
 ## Order
 

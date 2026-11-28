@@ -13,6 +13,9 @@
  * run, and the first position where the two logs handle different rows (`log order`, e.g. a
  * visit result and a look-back answer between the same two batches in the other order); the
  * findings are ranked by that observed frame. Discover only (rows before the `end` row) unless `--settle` (the Final settle).
+ * In the Final settle the `observed` column is the live frames plus the settle frames fed, and a
+ * repeatable run logs `ans end` rows in request order (as answers are taken up), so they match by
+ * ordinal; without repeatable they are in arrival order.
  *
  * Reading it (mechanisms as in the cala repeatability diagnosis):
  * - `req csettle` first: Background settle asked for other frames or at another frame
