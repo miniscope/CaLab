@@ -1,4 +1,5 @@
 import { createSignal, For, Show, type JSX } from 'solid-js';
+import { ThemeToggle } from '@calab/ui';
 import { ImportFeedbackLinks } from '@calab/community-ui';
 import { AnalyticsNotice } from './AnalyticsNotice.tsx';
 import { filesFromDrop } from '../lib/dropped-files.ts';
@@ -316,8 +317,9 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
 
   return (
     <div class="import-container cala-open">
-      <div class="app-header">
+      <div class="app-header cala-app-header">
         <h1 class="app-header__title">Cala</h1>
+        <ThemeToggle />
         <p class="app-header__subtitle">
           Streaming calcium imaging from raw 1-photon Miniscope video
         </p>

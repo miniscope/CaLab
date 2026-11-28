@@ -612,7 +612,7 @@ export function TimeStrip(props: TimeStripProps): JSX.Element {
               <path class="cala-tstrip__line cala-tstrip__line--achieved" d={snap().achieved} />
             </g>
             <For each={snap().bands}>
-              {(b) => <path d={b.d} fill={kindFill(b.kind, 'svg')} data-kind={b.kind} />}
+              {(b) => <path d={b.d} style={{ fill: kindFill(b.kind, 'svg') }} data-kind={b.kind} />}
             </For>
             <For each={snap().marks}>
               {(m) => (

@@ -50,16 +50,13 @@ const STATE_WORD: Record<StageState, string> = {
   error: 'error',
 };
 
-/** Label ink over a stage's full hue: white on Discover and Final settle, the text ink on Extract's orange. */
-const ON_FILL: Record<StageHue, string> = {
-  discover: 'var(--ink-on-fill)',
-  settle: 'var(--ink-on-fill)',
-  extract: 'var(--ink-1)',
-};
-
 function colours(h: StageSegment['hue']): { color: string; tint: string; ink: string } {
   if (typeof h !== 'string') return h;
-  return { color: `var(--stage-${h})`, tint: `var(--stage-${h}-tint)`, ink: ON_FILL[h] };
+  return {
+    color: `var(--stage-${h})`,
+    tint: `var(--stage-${h}-tint)`,
+    ink: `var(--stage-${h}-ink)`,
+  };
 }
 
 /** True when the segment is a progress bar: not off, and with a known end. */

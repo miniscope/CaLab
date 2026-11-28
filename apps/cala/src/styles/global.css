@@ -1,27 +1,56 @@
 /* App-specific styles and design token overrides */
 
-/* Cala's accent: violet, so it reads apart from CaTune (blue) and CaDecon
-   (teal) at a glance. 7.6:1 on white, 6.7:1 on the grey chrome. It marks
-   selection and focus only: run stages use the --stage-* hues, status the
-   --status-* colours. */
+/* Cala's accent: violet, so it reads apart from CaTune (blue) and CaDecon (teal) at a glance.
+   At least 4.5:1 on the surfaces of its theme. It marks selection and focus only: run stages
+   use the --stage-* hues, status the --status-* colours. */
 :root {
   --accent: #6a3d9a;
   --accent-hover: #573182;
   --accent-muted: rgba(106, 61, 154, 0.1);
+  /* Work kinds that are not a stage hue (`KIND_COLOR` in lib/work-meter.ts): Read frames a light
+     step of Discover blue, Look-back a teal, idle worker time a neutral. */
+  --work-read: #84b9f3;
+  --work-lookback: #00a888;
+  --work-idle: #e9e9e9;
   /* Joint-run id groups (project view): Okabe-Ito in its fixed order, each with the label ink
      that reaches 4.5:1 on it. Validated as a set (dataviz palette validator, all pairs). */
   --ids-0: #0072b2;
   --ids-0-ink: var(--ink-on-fill);
   --ids-1: #d55e00;
-  --ids-1-ink: var(--ink-1);
+  --ids-1-ink: var(--ink-on-bright);
   --ids-2: #009e73;
-  --ids-2-ink: var(--ink-1);
+  --ids-2-ink: var(--ink-on-bright);
   --ids-3: #cc79a7;
-  --ids-3-ink: var(--ink-1);
+  --ids-3-ink: var(--ink-on-bright);
   --ids-4: #e69f00;
-  --ids-4-ink: var(--ink-1);
+  --ids-4-ink: var(--ink-on-bright);
   --ids-5: #56b4e9;
-  --ids-5-ink: var(--ink-1);
+  --ids-5-ink: var(--ink-on-bright);
+}
+
+/* Dark values of cala's own tokens, on the selectors of the shared dark set (tokens.css); the
+   two blocks are identical. The work steps are validated with the dark stage hues as one set
+   on the dark surface; Joint id 0 takes a lighter blue so the dark label ink reaches 4.5:1. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --accent: #a98bd6;
+    --accent-hover: #bda5e0;
+    --accent-muted: rgba(169, 139, 214, 0.16);
+    --work-read: #8abcf0;
+    --work-lookback: #40c99a;
+    --work-idle: #3a3a3a;
+    --ids-0: #2a8fd6;
+  }
+}
+
+:root[data-theme='dark'] {
+  --accent: #a98bd6;
+  --accent-hover: #bda5e0;
+  --accent-muted: rgba(169, 139, 214, 0.16);
+  --work-read: #8abcf0;
+  --work-lookback: #40c99a;
+  --work-idle: #3a3a3a;
+  --ids-0: #2a8fd6;
 }
 
 .cala-hidden-input {
@@ -1097,7 +1126,7 @@
   border: 1px solid var(--success);
   border-radius: var(--radius-md);
   background: var(--success);
-  color: #fff;
+  color: var(--ink-on-fill);
   font-weight: 600;
   cursor: pointer;
 }
@@ -1313,4 +1342,15 @@
 
 .cala-flatfield__note {
   margin: 0;
+}
+
+/* Start, session and project screens: the theme toggle sits at the header's top right. */
+.cala-app-header {
+  position: relative;
+}
+
+.cala-app-header > .theme-toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
 }

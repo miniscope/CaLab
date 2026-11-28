@@ -4,7 +4,8 @@
  * It is plain HTML with inline CSS: no bundle, so it loads before any app.
  * Its colours, type, spacing and radii come from the apps' own design tokens,
  * packages/ui/src/styles/tokens.css, inlined at build time, so the page tracks
- * the apps instead of keeping a copy of their values.
+ * the apps instead of keeping a copy of their values. The page pins the light
+ * set (data-theme="light"); its dark rendering has not been checked.
  *
  * Everything about an app comes from its `calab` block (discoverApps() in
  * scripts/lib/apps.mjs); nothing here names an app. Released apps (stable,
@@ -171,7 +172,7 @@ ${upcoming.map(renderUpcoming).join('\n')}
     : '';
 
   return `<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />

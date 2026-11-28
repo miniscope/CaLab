@@ -7,7 +7,7 @@
  * 0.1, when a bin's quartile falls outside it.
  */
 import { createEffect, createMemo, createSignal, For, Show, type JSX } from 'solid-js';
-import { HelpTip, Legend, StatusNote } from '@calab/ui';
+import { HelpTip, Legend, StatusNote, createThemeVersion } from '@calab/ui';
 import { OKABE_ITO } from '@calab/ui/palette';
 import type { CellStore } from '../lib/cell-store.ts';
 import { corrRequest, runCorrDistance } from '../lib/corr-distance-client.ts';
@@ -139,7 +139,9 @@ export function CorrDistancePlot(props: { result: CorrDistanceResult }): JSX.Ele
   const y = (v: number) => yv(v, range());
   const sel = createMemo(() => selectScatter(props.result, SCATTER_X_MAX, range()));
   let canvas: HTMLCanvasElement | undefined;
+  const themeVersion = createThemeVersion();
   createEffect(() => {
+    themeVersion();
     const s = sel();
     const res = props.result;
     const [lo, hi] = range();
