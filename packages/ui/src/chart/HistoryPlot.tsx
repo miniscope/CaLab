@@ -14,6 +14,7 @@ import {
   normalise,
   rangeText,
 } from './history-geometry.ts';
+import { HelpTip } from '../HelpTip.tsx';
 import './history-plot.css';
 
 export interface HistoryEvent {
@@ -56,11 +57,19 @@ export interface HistoryPlotProps {
   label?: string;
   /** Measures draw cost, ms. */
   onDraw?: (ms: number) => void;
+  /**
+   * Draw the time-axis labels under the plot (default true). False leaves them to a plot
+   * drawn below on the same x (`HISTORY_GUTTER_PX`, no right margin, `timeTicks`).
+   */
+  timeAxis?: boolean;
 }
 
 const LANE_H = 12;
 const AXIS_H = 14;
 const AX = 40;
+
+/** Left gutter of the plot area, px (y labels); the plot runs from here to the right edge. */
+export const HISTORY_GUTTER_PX = AX;
 const PAD = 3;
 
 interface Colors {
@@ -136,7 +145,7 @@ export function HistoryPlot(props: HistoryPlotProps) {
   const clipTop: number[] = [];
   const clipBot: number[] = [];
 
-  const totalH = () => LANE_H + props.height + AXIS_H;
+  const totalH = () => LANE_H + props.height + (props.timeAxis === false ? 0 : AXIS_H);
 
   // ---------- chips ----------
   function chipValue(key: string): string {
@@ -436,15 +445,17 @@ export function HistoryPlot(props: HistoryPlotProps) {
     }
 
     // time axis
-    ctx.fillStyle = C.muted;
-    const axisY = plotTop + plotH + 10;
-    for (const tk of ticks) {
-      const x = X(tk.t);
-      const w = ctx.measureText(tk.label).width;
-      ctx.textAlign = x < AX + w / 2 ? 'left' : x > W - w / 2 ? 'right' : 'center';
-      ctx.fillText(tk.label, x, axisY);
+    if (props.timeAxis !== false) {
+      ctx.fillStyle = C.muted;
+      const axisY = plotTop + plotH + 10;
+      for (const tk of ticks) {
+        const x = X(tk.t);
+        const w = ctx.measureText(tk.label).width;
+        ctx.textAlign = x < AX + w / 2 ? 'left' : x > W - w / 2 ? 'right' : 'center';
+        ctx.fillText(tk.label, x, axisY);
+      }
+      ctx.textAlign = 'left';
     }
-    ctx.textAlign = 'left';
 
     drawLane(ctx, events, C, W, X);
     canvasEl.dataset.bins = binTitle;
@@ -994,35 +1005,29 @@ export function HistoryPlot(props: HistoryPlotProps) {
           )}
         </For>
         <Show when={!props.compact}>
-          <button
-            type="button"
-            class="history-help"
-            aria-label="Legend"
-            aria-expanded={helpOpen()}
+          <HelpTip
+            label="Legend"
             title="what the marks mean"
-            onClick={() => setHelpOpen((o) => !o)}
+            open={helpOpen()}
+            onOpenChange={setHelpOpen}
+            popClass="history-legend"
           >
-            ?
-          </button>
+            <For each={legendRows}>
+              {([glyph, color, text]) => (
+                <div class="history-legend__row">
+                  <span class="history-legend__glyph" style={{ color }}>
+                    {glyph}
+                  </span>
+                  {text}
+                </div>
+              )}
+            </For>
+            <div class="history-legend__row history-legend__hint">
+              hover a chip: range and unit; hover the axis: bin size
+            </div>
+          </HelpTip>
         </Show>
       </div>
-      <Show when={helpOpen()}>
-        <div class="history-legend" role="dialog" aria-label="History legend">
-          <For each={legendRows}>
-            {([glyph, color, text]) => (
-              <div class="history-legend__row">
-                <span class="history-legend__glyph" style={{ color }}>
-                  {glyph}
-                </span>
-                {text}
-              </div>
-            )}
-          </For>
-          <div class="history-legend__row history-legend__hint">
-            hover a chip: range and unit; hover the axis: bin size
-          </div>
-        </div>
-      </Show>
       <div class="history-wrap" ref={wrapEl} tabindex="0" style={{ height: `${totalH()}px` }}>
         <canvas
           ref={canvasEl}

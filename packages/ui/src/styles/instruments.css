@@ -11,6 +11,48 @@
 }
 
 /* ========================
+   HelpTip: the "?" button and its popover (placed by the caller's positioned ancestor)
+   ======================== */
+.help-tip {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border-default);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  font: 600 var(--font-size-xs) var(--font-body);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.help-tip:hover,
+.help-tip[aria-expanded='true'] {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+
+.help-tip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.help-tip__pop {
+  position: absolute;
+  z-index: 20;
+  max-width: 340px;
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control, 3px);
+  box-shadow: var(--shadow-elevated, 0 2px 8px rgba(0, 0, 0, 0.12));
+  font: var(--font-size-xs) var(--font-body);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* ========================
    Meter
    ======================== */
 .meter {
