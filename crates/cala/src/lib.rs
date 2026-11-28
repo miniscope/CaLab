@@ -18,6 +18,9 @@
 //! * [`qc`]: online quality control of traces, footprints and demixing,
 //!   computed alongside the fast loop from the data alone.
 //!
+//! [`params`] defines the run parameters ([`params::CalaParams`]) and their
+//! JSON Schema.
+//!
 //! Errors are typed ([`AviError`]); nothing on a public path panics, because a
 //! panic is a trap that leaves the WASM module unusable in its worker.
 
@@ -25,6 +28,7 @@ pub mod avi;
 pub mod compress;
 pub mod discover;
 pub mod motion;
+pub mod params;
 pub mod preprocess;
 pub mod qc;
 pub mod timing;
