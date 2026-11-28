@@ -16,6 +16,7 @@ The cala engine (`calab-cala`): raw 1-photon video to footprints and traces, com
 | `trace`      | the fast loop: traces from a swappable footprint library                                 |
 | `compress`   | windowed low-rank factors, factor files, history review, Extract on factors              |
 | `qc`         | online QC of traces, footprints and demixing                                             |
+| `params`     | `CalaParams`: the run parameters, their schema, migrations and engine-unit view          |
 
 Each module's WASM binding is its `js.rs`; the Python stub is `src/py_api.rs`. Tests: unit tests in
 `*/tests.rs`, integration and property tests in `tests/` (shared helpers in `tests/common/`).
@@ -29,6 +30,8 @@ Each module's WASM binding is its `js.rs`; the Python stub is `src/py_api.rs`. T
 --no-default-features --features <jsbindings|pybindings|diagnostics> -- -D warnings`;
   `cargo test --no-default-features --features jsbindings`; and
   `cargo test --no-default-features --features diagnostics --lib discover::diagnostics`.
+- `npm run gen:params` (repo root) regenerates the params schema, the golden engine views and
+  the TS types after a change in `src/params`; the drift tests fail until it is run.
 - `npm run build:wasm` (repo root) builds `pkg/` with wasm-pack and `+simd128` (`.cargo/config.toml`).
 
 ## WASM bindings

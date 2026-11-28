@@ -112,6 +112,30 @@ pub struct SlowStats {
     pub support_no_se: u64,
 }
 
+/// One tile visit made by [`SlowLoop::step`](super::SlowLoop::step)
+/// (`diagnostics` builds, after
+/// [`SlowLoop::set_visit_log`](super::SlowLoop::set_visit_log)). Visits run
+/// as jobs (`step_via`, `take_job`) are not recorded.
+#[cfg(feature = "diagnostics")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisitRecord {
+    /// Frames observed when the visit was made.
+    pub frame: u64,
+    /// The tile visited (index into [`SlowLoop::tile_cores`](super::SlowLoop::tile_cores)).
+    pub tile: u32,
+    /// The edit scope could add cells (a Discover visit, not a settle one).
+    pub grows: bool,
+    /// Work units the visit spent, and its wall time in ns (0 on wasm).
+    pub work: u64,
+    pub ns: u64,
+    /// Add proposals made, proposals that passed the held-out pre-test,
+    /// cells added, and candidates absorbed into an existing cell.
+    pub proposals: u32,
+    pub pretest_pass: u32,
+    pub adds: u32,
+    pub absorbs: u32,
+}
+
 /// Counters of the concurrent settle ([`SlowLoop::observe_settle`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SettleStats {

@@ -222,6 +222,18 @@ export function TimeStrip(props: TimeStripProps): JSX.Element {
         if (any) points.push({ x: xOfT(Math.min(t, a1)), values });
       }
     }
+    // The interval still open since the last reading, up to the playhead: the band ends within
+    // one snapshot of now instead of one reading behind it (readings close about once a second).
+    const peek = r.now() <= a1 ? s().workPeek() : null;
+    if (peek) {
+      const x = xOfT(r.now());
+      if (points.length === 0 || x > points[points.length - 1].x) {
+        const v = workByKind(peek).totals;
+        const values = emptyValues();
+        for (const k of WORK_KINDS) values[k] = v[k];
+        points.push({ x, values });
+      }
+    }
     const open = r.workStart();
     if (open !== null && points.length > 0) {
       const x0 = xOfT(Math.max(open, a0));

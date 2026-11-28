@@ -19,6 +19,7 @@
     "build:apps": "node scripts/build-apps.mjs",
     "build:pages": "CALAB_PAGES=1 npm run build && node scripts/combine-dist.mjs && node scripts/check-apps-manifest.mjs",
     "build:site": "CALAB_RELATIVE_BASE=1 npm run build && node scripts/combine-dist.mjs && node scripts/check-apps-manifest.mjs",
+    "gen:params": "cd crates/cala && cargo run --quiet --example params_schema && cd ../.. && prettier --write crates/cala/schema crates/cala/tests/golden && node apps/cala/scripts/gen-params-dts.mjs",
     "build:wasm": "cd crates/solver && wasm-pack build --target web --release && cd ../cala && wasm-pack build --target web --release",
     "pretest": "npm run ensure-wasm",
     "test": "npm run test --workspaces --if-present",
