@@ -19,7 +19,6 @@ import type { FrameSourceInfo } from './frame-source.ts';
 import type { QcSnapshot } from './qc.ts';
 import { fileText, RUN_FILE, type RunFile, type RunPlanRef } from '@calab/project';
 import { calaRunFile, CALA_EXPORT_FILE, type RunFileSession } from './run-file.ts';
-import { sessionBoundaries } from './frame-source.ts';
 import type { StageActivity, StageName, StageRun } from './run-stages.ts';
 import {
   autoStatusText,
