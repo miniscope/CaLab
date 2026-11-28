@@ -1,0 +1,112 @@
+{
+  "fps": 30.0,
+  "legacy_frame_fps": 20.0,
+  "frame": [600, 600],
+  "cell_diameter": {
+    "px": 10.0,
+    "source": "px",
+    "um_per_px": null
+  },
+  "preprocess": {
+    "warmup_frames": 200,
+    "flicker": "both",
+    "lines": "both",
+    "fov_rel_threshold": 0.15,
+    "fov_fit_disk": false,
+    "fov_margin_px": 0,
+    "hot_pixel_k_sigma": 5.0,
+    "background_boxcar": 5,
+    "background_relax_frames": 3600.0,
+    "flatten_cell_diameter_px": 10.0,
+    "flatten_sigma_px": 20.0
+  },
+  "motion": {
+    "max_shift": 15.0,
+    "template_tau": 400.0,
+    "template_refresh": 20,
+    "warmup_frames": 200,
+    "nonrigid": null,
+    "session_fix": true
+  },
+  "flat_field": {
+    "enabled": true,
+    "half_life_frames": 216000,
+    "offset_half_life_frames": 3600,
+    "first_frames": 4500,
+    "refine_every_frames": 1800
+  },
+  "slow_loop": {
+    "cell_diameter_px": 10.0,
+    "psf_sigma_px": 1.5,
+    "tile_px": 64,
+    "margin_px": 24,
+    "frames_per_tile": 128,
+    "reservoir_max_bytes": 1610612736,
+    "event_half_life_frames": 2000,
+    "accept_z": 5.0,
+    "event_z": 4.0,
+    "min_events": 2,
+    "merge_corr": 0.6,
+    "commit_interval_frames": 100,
+    "reject_cooldown_frames": 400,
+    "event_frames": 3,
+    "probation_frames": 4800,
+    "probe_gap_frames": 100,
+    "stats_half_life_frames": 6000,
+    "support_alpha": 0.05,
+    "refine_z": 0.0,
+    "refine_gate": "split_half",
+    "merge_rule": "split_half",
+    "reservoir_refine_frames": 2400,
+    "merge_z": 2.0,
+    "merge_guard_max_ovl": 0.5,
+    "merge_refit_max_ovl": 0.5,
+    "merge_guard_min_sep": 0.6,
+    "warm_start": true,
+    "joint_neighbours": false,
+    "joint_update": "all",
+    "cluster_rho_min": 0.05,
+    "cluster_max": 6,
+    "joint_sign_rule": "all",
+    "joint_iters": 1,
+    "joint_admit": "cluster",
+    "joint_carry": false,
+    "joint_l1": 0.0,
+    "churn_readd_window_frames": 4800,
+    "churn_frames": 2400,
+    "background": "ring",
+    "ring_px": [12.0, 20.0],
+    "seed": 0,
+    "budget": 30000000.0
+  },
+  "visit": {
+    "auto": false,
+    "target": 0.15
+  },
+  "lookback": {
+    "enabled": true,
+    "rate": 2.0,
+    "max_frames": 3000
+  },
+  "settle": {
+    "background_cap": 2.0,
+    "final_level": "thorough",
+    "final_max_frames": 18000,
+    "on_factors_joint_update": "refine",
+    "on_factors_merge_guard_min_sep": null
+  },
+  "trace": {
+    "tol": 0.05,
+    "max_sweeps": 200
+  },
+  "qc": {
+    "enabled": true,
+    "min_snr": 5.0,
+    "pair_r": 0.8,
+    "motion_r2_flag": 0.2
+  },
+  "factors": {
+    "mode": "auto",
+    "window_frames": 600
+  }
+}

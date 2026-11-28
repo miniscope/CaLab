@@ -29,6 +29,14 @@ realfft = "3"
 rustfft = { version = "6", features = ["wasm_simd"] }
 # Float32 GEMMs of the compression (has a wasm simd128 kernel).
 matrixmultiply = "0.3"
+# The run parameters (`src/params`): serde for the JSON they are stored
+# and passed as, schemars for the JSON Schema generated from the structs.
+# `preserve_order` keeps the fields in declaration order (the form order).
+# The schema is built only by the generator example and the tests, so the
+# release wasm keeps none of it.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = { version = "1", features = ["preserve_order"] }
 wasm-bindgen = { version = "0.2", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 # Same pyo3 pin and abi3 rationale as crates/solver/Cargo.toml.
@@ -38,6 +46,10 @@ pyo3 = { version = "0.30", features = ["extension-module", "abi3-py311"], option
 # Property tests (tests/*_proptest.rs: fft, avi, motion, preprocess). `std` only,
 # same as crates/solver.
 proptest = { version = "1", default-features = false, features = ["std"] }
+
+# Writes the checked-in params schema (`npm run gen:params`).
+[[example]]
+name = "params_schema"
 
 # qc_eval's unit tests (GT frame alignment) run with `cargo test`.
 [[example]]
