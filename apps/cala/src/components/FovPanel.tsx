@@ -177,9 +177,11 @@ export function pipelineFovSource(store: PipelineStore): FovSource {
     emptyText: (v) =>
       store.status() === 'idle'
         ? 'The frames show here once the run starts: pick the settings in the Run tab, then Run.'
-        : v === 'residual'
-          ? 'The residual comes with the frames processed while the model has cells: it shows from the next batch of a running pass.'
-          : null,
+        : store.status() === 'starting'
+          ? 'Warming up: the first frames show in a moment.'
+          : v === 'residual'
+            ? 'The residual comes with the frames processed while the model has cells: it shows from the next batch of a running pass.'
+            : null,
   };
 }
 
@@ -671,9 +673,31 @@ export function FovPanel(props: {
     at: { x: number; y: number; d: number } | null;
   } | null>(null);
   let momentTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Moments waiting: several in a moment (a fast run) each get at least `MOMENT_MIN_MS`. */
+  const waiting: NonNullable<ReturnType<typeof shownMoment>>[] = [];
+  let shownAt = 0;
+  const MOMENT_MS = 2800;
+  const MOMENT_MIN_MS = 1300;
+  const showNext = () => {
+    clearTimeout(momentTimer);
+    const m = waiting.shift();
+    if (!m) {
+      setShownMoment(null);
+      return;
+    }
+    setShownMoment(m);
+    shownAt = performance.now();
+    momentTimer = setTimeout(showNext, waiting.length > 0 ? MOMENT_MIN_MS : MOMENT_MS);
+  };
   createEffect(() => {
     const m = life.moment();
-    if (!m || !untrack(fun.on)) return;
+    if (!m) {
+      waiting.length = 0;
+      clearTimeout(momentTimer);
+      setShownMoment(null);
+      return;
+    }
+    if (!untrack(fun.on)) return;
     const at =
       m.kind === 'milestone' && newest
         ? {
@@ -682,9 +706,13 @@ export function FovPanel(props: {
             d: ((newest.r * 7) / props.width) * 100,
           }
         : null;
-    setShownMoment({ ...m, at });
+    waiting.push({ ...m, at });
+    if (waiting.length > 3) waiting.splice(0, waiting.length - 3);
+    const current = untrack(shownMoment);
+    if (!current) return showNext();
+    // One is showing: cut it short to the minimum, then the next.
     clearTimeout(momentTimer);
-    momentTimer = setTimeout(() => setShownMoment(null), 2800);
+    momentTimer = setTimeout(showNext, Math.max(0, MOMENT_MIN_MS - (performance.now() - shownAt)));
   });
   onCleanup(() => clearTimeout(momentTimer));
 
@@ -725,6 +753,7 @@ export function FovPanel(props: {
   const [portrait, setPortrait] = createSignal<{
     geometry: CellGeometry;
     color: (id: number) => Rgb;
+    fill: (id: number) => number;
     glow: boolean;
     scheme: string;
     stats: PortraitStats;
@@ -752,6 +781,7 @@ export function FovPanel(props: {
     setPortrait({
       geometry: g,
       color,
+      fill: byActivity ? (id: number) => 0.12 + 0.5 * ((counts.get(id) ?? 0) / top) : () => 0.3,
       glow: byActivity || style.glow,
       scheme: byActivity ? 'activity over the run' : schemeInfo(sc).label,
       stats: {
@@ -933,6 +963,7 @@ export function FovPanel(props: {
               <SessionPortrait
                 geometry={p().geometry}
                 color={p().color}
+                fill={p().fill}
                 glow={p().glow}
                 scheme={p().scheme}
                 stats={p().stats}

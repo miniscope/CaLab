@@ -55,6 +55,12 @@ import { clock, soul } from '../lib/soul.ts';
 import { createTween } from '../lib/tween.ts';
 import { isHot, trackEdges } from '../lib/juice.ts';
 
+/** What a stage taking over says over the field of view (short, and true to what it does). */
+const HANDOFF: Record<string, { title: string; note: string }> = {
+  settle: { title: 'Final settle', note: 'the cell set is frozen; footprints refine once more' },
+  extract: { title: 'Extract', note: 'traces for every cell, against the final footprints' },
+};
+
 /** Live figures refresh at most this often, ms (2 Hz). */
 const SAMPLE_MS = 500;
 
@@ -308,6 +314,8 @@ export function RunRail(props: RunRailProps): JSX.Element {
     );
     if (started.length > 0) {
       setHandoff(started[0]);
+      const said = HANDOFF[started[0]];
+      if (said) life.say('handoff', said.title, said.note);
       clearTimeout(handoffTimer);
       handoffTimer = setTimeout(() => setHandoff(null), 1800);
     }
@@ -323,7 +331,11 @@ export function RunRail(props: RunRailProps): JSX.Element {
       setFlash(null);
       setBursts([]);
     }, 2600);
-    if (all) life.showPortrait(runStart === null ? null : performance.now() - runStart);
+    if (all) {
+      const n = untrack(snap).cells;
+      if (n !== null) life.say('finished', `Done: ${n0(n)} cells`, 'ready to export');
+      life.showPortrait(runStart === null ? null : performance.now() - runStart);
+    }
   });
   onCleanup(() => {
     clearTimeout(flashTimer);

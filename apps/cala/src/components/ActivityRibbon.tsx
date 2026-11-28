@@ -87,6 +87,7 @@ export function ActivityRibbon(props: {
         >
           Onsets
         </span>
+        <span class="cala-ribbon__scale">0–{Math.round(RIBBON_MAX_SHARE * 100)}% of cells</span>
         <span class="cala-ribbon__caption" data-testid="activity-ribbon-caption">
           {caption()}
         </span>
@@ -118,9 +119,6 @@ export function ActivityRibbon(props: {
         </span>
         <span class="cala-ribbon__axis cala-ribbon__axis--r" aria-hidden="true">
           now
-        </span>
-        <span class="cala-ribbon__axis cala-ribbon__axis--top" aria-hidden="true">
-          {Math.round(RIBBON_MAX_SHARE * 100)}%
         </span>
       </div>
     </div>

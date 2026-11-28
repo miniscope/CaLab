@@ -395,6 +395,13 @@
   }
 }
 
+/* Fire colours of the rail's juice and the ribbon's synchronous columns: fixed, like a flame
+   (the theme's warm accent is near-black in the light theme). */
+:root {
+  --cala-ember: #ff9f2e;
+  --cala-ember-hot: #fff6c8;
+}
+
 /* ======================================================================================
    Ambient life (`lib/soul.ts`): births, the run's moments over the field of view, the hover
    halo, the session portrait and the activity ribbon. Overlay only: the image, its display
@@ -498,8 +505,9 @@
   border-radius: 50%;
   background: radial-gradient(
     closest-side,
-    transparent 62%,
-    rgba(255, 255, 255, 0.35) 78%,
+    transparent 58%,
+    rgba(255, 255, 255, 0.55) 76%,
+    rgba(255, 255, 255, 0.15) 88%,
     transparent
   );
 }
@@ -589,7 +597,7 @@
   color: transparent;
 }
 
-.cala-fov__moment[data-kind='converged'] .cala-fov__moment-title {
+.cala-fov__moment:is([data-kind='converged'], [data-kind='handoff']) .cala-fov__moment-title {
   font-size: clamp(16px, 4cqi, 26px);
 }
 
@@ -721,7 +729,7 @@
 /* ---- Activity ribbon under the field of view (a data view: shown with the switch off too) ---- */
 .cala-ribbon {
   --cala-ribbon-ink: var(--stage-discover);
-  --cala-ribbon-hot: var(--accent-warm);
+  --cala-ribbon-hot: var(--cala-ember);
   --cala-ribbon-base: var(--track);
   flex: none;
   display: grid;
@@ -742,6 +750,11 @@
   font-weight: var(--font-weight-semibold);
   color: var(--ink-1);
   cursor: help;
+}
+
+.cala-ribbon__scale {
+  color: var(--ink-3);
+  white-space: nowrap;
 }
 
 .cala-ribbon__caption {
@@ -799,11 +812,6 @@
 .cala-ribbon__axis--r {
   right: 3px;
   bottom: 4px;
-}
-
-.cala-ribbon__axis--top {
-  right: 3px;
-  top: 2px;
 }
 
 /* ======================================================================================
@@ -904,12 +912,17 @@
 
 .cala-embers i {
   position: absolute;
-  left: -2px;
-  bottom: -2px;
-  width: 4px;
-  height: 4px;
+  left: -3px;
+  bottom: -3px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: radial-gradient(circle, #fff6c8, var(--accent-warm) 60%, transparent 70%);
+  background: radial-gradient(
+    circle,
+    var(--cala-ember-hot),
+    var(--cala-ember) 55%,
+    transparent 72%
+  );
   opacity: 0;
 }
 
@@ -924,7 +937,7 @@
   border-radius: 50%;
   background: radial-gradient(
     closest-side,
-    color-mix(in srgb, var(--accent-warm) 70%, transparent),
+    color-mix(in srgb, var(--cala-ember) 75%, transparent),
     transparent
   );
 }
@@ -969,7 +982,7 @@
   }
   100% {
     opacity: 0;
-    transform: translate(var(--dx, 2px), -20px) scale(0.3);
+    transform: translate(var(--dx, 2px), -26px) scale(0.3);
   }
 }
 
@@ -988,8 +1001,8 @@
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: var(--accent-warm);
-  box-shadow: 0 0 4px #fff6c8;
+  background: var(--cala-ember);
+  box-shadow: 0 0 4px var(--cala-ember-hot);
   opacity: 0;
 }
 

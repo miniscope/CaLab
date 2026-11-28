@@ -10,6 +10,7 @@ const PNG_W = 1200;
 function drawFootprints(
   g: CellGeometry,
   color: (id: number) => Rgb,
+  fill: (id: number) => number,
   glow: boolean,
 ): HTMLCanvasElement {
   const c = document.createElement('canvas');
@@ -17,7 +18,7 @@ function drawFootprints(
   c.height = g.height;
   const ctx = c.getContext('2d');
   if (!ctx) return c;
-  const rgba = renderOverlay(g, { mode: 'both', selected: null, glow, color, fill: () => 0.25 });
+  const rgba = renderOverlay(g, { mode: 'both', selected: null, glow, color, fill });
   ctx.putImageData(new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, g.width, g.height), 0, 0);
   return c;
 }
@@ -30,6 +31,8 @@ function drawFootprints(
 export function SessionPortrait(props: {
   geometry: CellGeometry;
   color: (id: number) => Rgb;
+  /** Fill opacity of each cell's outline region (0..1). */
+  fill: (id: number) => number;
   glow: boolean;
   /** The scheme the cells are coloured by (its label). */
   scheme: string;
@@ -42,7 +45,7 @@ export function SessionPortrait(props: {
   let closeBtn!: HTMLButtonElement;
   // The geometry is the final library's: drawn once.
   // eslint-disable-next-line solid/reactivity
-  const art = drawFootprints(props.geometry, props.color, props.glow);
+  const art = drawFootprints(props.geometry, props.color, props.fill, props.glow);
   onMount(() => {
     view.width = art.width;
     view.height = art.height;
