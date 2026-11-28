@@ -109,9 +109,11 @@ Libraries are published at batch ends only and stamped with that batch's last fr
 fast loop adopts each one forward-buffer-count + 1 batches after it (`FastLoop.adoptFrame`),
 which is before the slow worker can have freed the buffer for that batch, so it is never
 late while no batch is dropped. At Discover's end the visits out are applied in order and
-look-back answers not yet applied are dropped. Each visit slot and each look-back worker has
-one item out at a time, so a slot makes at most one visit per two batches and need-driven
-look-back reads at most one request per two batches. At Max (no target) results apply as
+look-back answers not yet applied are dropped. Each visit slot has one visit out at a time,
+so it makes at most one visit per two batches. Each look-back worker gets a request at every
+batch end (so two are out on it at once), as many as it would read answering on arrival; a
+request names the library version it is solved with, so one waiting behind another is not
+solved with a newer library that came meanwhile. At Max (no target) results apply as
 they arrive, and so they do from the first batch the fast loop drops (a target the machine
 cannot hold: the run is no longer repeatable, and waiting would only drop more; lockstep at
 the source is the planned answer). The slow worker's status reports the batch ends that waited and the libraries
