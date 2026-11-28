@@ -115,6 +115,9 @@ workerScope.onmessage = (e) => {
   if (pool) r.setSettlePool(pool.session, pool.workers);
   lookbackPorts.forEach((_, i) => connectLookback(i));
   toFast.onmessage = (ev: MessageEvent<FastToSlow>) => {
+    // Not only queued: a batch may be waiting at a repeatable run's barrier for an answer that a
+    // reset look-back or visit worker will never send.
+    if (ev.data.type === 'reset' || ev.data.type === 'init') r.abortBarrier(ev.data.session);
     queue = queue
       .then(() => initCalaWasm())
       .then(() => r.handleAsync(ev.data, pause))

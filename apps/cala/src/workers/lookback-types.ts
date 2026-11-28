@@ -49,6 +49,11 @@ export type SlowToLookback =
        * answered) or `drop` (never answered).
        */
       hold?: boolean;
+      /**
+       * A repeatable run's request (it may wait behind others): solve with this library version,
+       * not a newer one that came meanwhile. Absent: the newest in hand.
+       */
+      version?: number;
     }
   /** Solve the `hold` request `id` now, with the newest library that came before this message. */
   | { type: 'solve'; session: number; id: number }

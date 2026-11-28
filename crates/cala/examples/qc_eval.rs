@@ -419,6 +419,14 @@
 //! [`write_fp_history`]) and, built with `--features diagnostics`,
 //! `tests.tsv` (every held-out refine / merge / split / absorb test,
 //! accepted or not).
+//!
+//! `--tile-visits` (needs `--features diagnostics`; changes no other output)
+//! adds `tile_visits.tsv` (one row per tile visit made by `SlowLoop::step`:
+//! frames, tile, whether the visit could add cells, its work and wall time,
+//! add proposals, proposals past the pre-test, adds, absorbs), `tiles.tsv`
+//! (every Discover tile's core and stored patch) and `fov.tsv` (the FOV
+//! mask's covered fraction and bounding box). Summary:
+//! `tools/cala-eval/tile_visits.py`.
 
 use std::collections::HashMap;
 #[path = "common/oracle.rs"]
@@ -3895,6 +3903,75 @@ impl Timed {
     }
 }
 
+/// `--tile-visits`: append the visits `sl` recorded since the last call to
+/// `log` (`rf` maps a slow-loop frame to its recording frame).
+fn write_visit_log(sl: &mut SlowLoop, rf: &dyn Fn(u64) -> u32, log: &mut Option<String>) {
+    #[cfg(feature = "diagnostics")]
+    if let Some(log) = log.as_mut() {
+        for v in sl.take_visit_log() {
+            let _ = writeln!(
+                log,
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                v.frame,
+                rf(v.frame),
+                v.tile,
+                u8::from(v.grows),
+                v.work,
+                v.ns,
+                v.proposals,
+                v.pretest_pass,
+                v.adds,
+                v.absorbs
+            );
+        }
+    }
+    #[cfg(not(feature = "diagnostics"))]
+    let _ = (sl, rf, log);
+}
+
+/// `--tile-visits`: `tiles.tsv`, every Discover tile's core and stored
+/// patch (pixels; the core is what `tile_visits.py` assigns cells to).
+#[cfg(feature = "diagnostics")]
+fn write_tiles(path: &Path, sl: &SlowLoop) {
+    let mut t = String::from("tile\ty0\tx0\th\tw\tpy0\tpx0\tph\tpw\n");
+    for (i, (c, r)) in sl.tile_cores().iter().enumerate() {
+        let _ = writeln!(
+            t,
+            "{i}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            c[0], c[1], c[2], c[3], r[0], r[1], r[2], r[3]
+        );
+    }
+    std::fs::write(path, t).unwrap();
+}
+
+/// `--tile-visits`: `fov.tsv`, the FOV mask's covered fraction of the
+/// sensor and its bounding box (inclusive pixel bounds) with the box's
+/// fraction of the sensor.
+fn write_fov(path: &Path, fov: &[u8], dims: Dims) {
+    let (mut n, mut y0, mut y1, mut x0, mut x1) = (0usize, usize::MAX, 0, usize::MAX, 0);
+    for (i, _) in fov.iter().enumerate().filter(|(_, &v)| v != 0) {
+        let (y, x) = (i / dims.width, i % dims.width);
+        n += 1;
+        y0 = y0.min(y);
+        y1 = y1.max(y);
+        x0 = x0.min(x);
+        x1 = x1.max(x);
+    }
+    let px = dims.pixels() as f64;
+    let bbox = if n > 0 {
+        ((y1 + 1 - y0) * (x1 + 1 - x0)) as f64 / px
+    } else {
+        0.0
+    };
+    let t = format!(
+        "height\twidth\tcovered\ty0\ty1\tx0\tx1\tbbox_frac\n{}\t{}\t{:.4}\t{y0}\t{y1}\t{x0}\t{x1}\t{bbox:.4}\n",
+        dims.height,
+        dims.width,
+        n as f64 / px
+    );
+    std::fs::write(path, t).unwrap();
+}
+
 /// Move the slow loop's add and removal logs into the TSV buffers.
 fn write_logs(
     sl: &mut SlowLoop,
@@ -4984,6 +5061,9 @@ fn main() {
             std::env::set_var("CALA_MERGE_LOG", out_dir.join("merges.jsonl"));
         }
     }
+    let tile_visits = args.iter().any(|a| a == "--tile-visits");
+    #[cfg(not(feature = "diagnostics"))]
+    assert!(!tile_visits, "--tile-visits needs --features diagnostics");
     let has_gt = mode == "sim" || mode == "oracle";
     let oracle_mode = mode == "oracle";
     let motion = args.iter().any(|a| a == "--motion");
@@ -5282,6 +5362,9 @@ fn main() {
     drop(warm);
     let cal = Calibration::from_warmup(&acc, &cfg).unwrap();
     let fov = cal.fov().mask().to_vec();
+    if tile_visits {
+        write_fov(&out_dir.join("fov.tsv"), &fov, dims);
+    }
     let mut pre0 = Preprocessor::new(cal.clone(), &cfg).unwrap();
     let mut online_ff: Option<OnlineFlatField> = None;
     let drift = arg_value(&args, "--inject-drift").map(|d| Drift::parse(&d, dims, frames));
@@ -5520,6 +5603,11 @@ fn main() {
     );
     let mut edit_log = String::from("frame\trecording_frame\tkind\tid\tother\tcy\tcx\tmargin\n");
     let mut test_log = String::from("frame\trecording_frame\tkind\tid\tother\taccepted\tz\n");
+    let mut visit_log = tile_visits.then(|| {
+        String::from(
+            "frame\trecording_frame\ttile\tdiscover\twork\tns\tproposals\tpretest_pass\tadds\tabsorbs\n",
+        )
+    });
     let mut fp_hist: Option<BufWriter<File>> = churn_log.then(|| {
         let mut f = BufWriter::new(File::create(out_dir.join("fp_history.bin")).unwrap());
         f.write_all(b"CALAFH01").unwrap();
@@ -5861,6 +5949,8 @@ fn main() {
                         slow = Some(mk());
                         if let Some(s) = slow.as_mut() {
                             s.publish_tap = lib_hash_tap();
+                            #[cfg(feature = "diagnostics")]
+                            s.set_visit_log(tile_visits);
                             s.set_visit_rate(visit_rate);
                             if let Some(vs) = visit_schedule {
                                 s.set_visit_schedule(vs);
@@ -6057,6 +6147,7 @@ fn main() {
                         tm.advance(now, sl, &mut slow_rec, &mut |_| None);
                         let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
                         write_logs(sl, &rf, &mut add_log, &mut rem_log);
+                        write_visit_log(sl, &rf, &mut visit_log);
                         if churn_log {
                             write_churn_logs(sl, &rf, &mut edit_log, &mut test_log);
                         }
@@ -6171,6 +6262,7 @@ fn main() {
                         }
                         let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(t as u32);
                         write_logs(sl, &rf, &mut add_log, &mut rem_log);
+                        write_visit_log(sl, &rf, &mut visit_log);
                         if churn_log {
                             write_churn_logs(sl, &rf, &mut edit_log, &mut test_log);
                         }
@@ -6933,6 +7025,16 @@ fn main() {
         std::fs::write(out_dir.join("boundary_null.tsv"), &null_log).unwrap();
     }
     std::fs::write(out_dir.join("adds.tsv"), &add_log).unwrap();
+    #[cfg(feature = "diagnostics")]
+    if let (true, Some(sl)) = (visit_log.is_some(), slow.as_mut()) {
+        let last = slow_rec.last().copied().unwrap_or(0);
+        let rf = |f: u64| slow_rec.get(f as usize).copied().unwrap_or(last);
+        write_visit_log(sl, &rf, &mut visit_log);
+        write_tiles(&out_dir.join("tiles.tsv"), sl);
+    }
+    if let Some(log) = &visit_log {
+        std::fs::write(out_dir.join("tile_visits.tsv"), log).unwrap();
+    }
     #[cfg(feature = "diagnostics")]
     calab_cala::discover::merge_log_flush();
     std::fs::write(out_dir.join("removals.tsv"), &rem_log).unwrap();

@@ -263,6 +263,8 @@ pub use config::{
     EditScope, JointAdmit, JointSign, JointUpdate, MergeRule, RefineGate, SlowLoopConfig,
     PSF_SIGMA_PX,
 };
+#[cfg(feature = "diagnostics")]
+pub use counters::VisitRecord;
 pub use counters::{DueDiag, ReplayStats, ReservoirPlan, SettleStats, SlowStats};
 pub use ledger::{
     CellInfo, CellStatus, DeleteReason, DeletedCell, EditCounts, EditEvent, EditKind, TestEvent,
@@ -378,6 +380,10 @@ pub struct SlowLoop {
     /// Held-out edit tests since the last `take_test_log` (bounded).
     #[cfg(feature = "diagnostics")]
     test_log: Vec<TestEvent>,
+    /// Visits made by `step` since the last `take_visit_log` (`None`: not
+    /// recorded).
+    #[cfg(feature = "diagnostics")]
+    pub(super) visit_log: Option<Vec<VisitRecord>>,
     /// DIAG: pixels to sample in `finish_basin` and the samples (h, the
     /// smoothed target, q, tol, in S0, in X, the inverted light before
     /// normalisation, on the mask).
@@ -626,6 +632,8 @@ impl SlowLoop {
             #[cfg(feature = "diagnostics")]
             test_log: Vec::new(),
             #[cfg(feature = "diagnostics")]
+            visit_log: None,
+            #[cfg(feature = "diagnostics")]
             probe: None,
             fpstats: HashMap::new(),
             clusters: Vec::new(),
@@ -740,6 +748,34 @@ impl SlowLoop {
     pub fn tile_fresh(&self, out: &mut Vec<u32>) {
         out.clear();
         out.extend(self.tiles.iter().map(|t| t.fresh));
+    }
+
+    /// Diagnostics: record every visit `step` makes ([`VisitRecord`]) from
+    /// now on (`true`), or stop and drop the records (`false`).
+    #[cfg(feature = "diagnostics")]
+    pub fn set_visit_log(&mut self, on: bool) {
+        self.visit_log = on.then(Vec::new);
+    }
+
+    /// Diagnostics: the visits recorded since the last call (empty when
+    /// recording is off).
+    #[cfg(feature = "diagnostics")]
+    pub fn take_visit_log(&mut self) -> Vec<VisitRecord> {
+        self.visit_log
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
+    /// Diagnostics: every tile's core (the pixels its candidates are centred
+    /// on) and stored patch, as `[y0, x0, h, w]` in pixels, in tile order.
+    #[cfg(feature = "diagnostics")]
+    pub fn tile_cores(&self) -> Vec<([usize; 4], [usize; 4])> {
+        let r = |r: &Rect| [r.y0, r.x0, r.h, r.w];
+        self.tiles
+            .iter()
+            .map(|t| (r(&t.core), r(&t.rect)))
+            .collect()
     }
 
     /// The count of new reservoir slots that makes a tile due for a visit.

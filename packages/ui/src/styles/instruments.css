@@ -1,4 +1,4 @@
-/* Instrument primitives: Icon, Meter, MeterRow, Sparkline, SegmentedBar, RangeBar, Legend,
+/* Instrument primitives: Icon, Meter, MeterRow, Sparkline, SegmentedBar, RangeBar, StatusNote, Legend,
    Badge, StageTrack, and the MetricTile status dot and meter slot. Colours come from tokens
    only, so the dark theme follows the tokens. No decorative motion: fills snap to the value. */
 
@@ -196,6 +196,14 @@
   border-right: none;
 }
 
+.segmented-bar__part--faded {
+  opacity: 0.35;
+}
+
+.segmented-bar__part--clickable {
+  cursor: pointer;
+}
+
 .segmented-bar__part--hatched {
   background-image: repeating-linear-gradient(
     45deg,
@@ -251,6 +259,44 @@
   width: 0;
   margin-left: -1px;
   border-left: 2px dashed var(--ink-2);
+}
+
+/* ========================
+   StatusNote: a status sentence as a block (tint, icon, ink)
+   ======================== */
+.status-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-control);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+}
+
+.status-note .icon {
+  margin-top: 1px;
+}
+
+.status-note__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.status-note--ok {
+  color: var(--status-ok);
+  background: var(--status-ok-tint);
+}
+
+.status-note--warning {
+  color: var(--status-warning);
+  background: var(--status-warning-tint);
+}
+
+.status-note--critical {
+  color: var(--status-critical);
+  background: var(--status-critical-tint);
 }
 
 /* ========================

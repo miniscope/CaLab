@@ -590,6 +590,7 @@ await page.evaluate((withRelease) => {
         visitMode: c.pipeline.visitMode?.() ?? null,
         consumed: st?.consumed ?? null,
         visitRate: st?.visitRate ?? null,
+        repeatable: st?.repeatable ?? null,
         fwd: b?.forwardedFrames ?? 0,
         drop: b?.droppedFrames ?? 0,
         lb: lb ? JSON.parse(JSON.stringify(lb)) : null,

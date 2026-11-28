@@ -46,6 +46,7 @@
 .cala-main__rail {
   grid-area: rail;
   min-width: 0;
+  container: rail / inline-size;
 }
 
 .cala-main__side {
@@ -70,6 +71,12 @@
 .cala-main--narrow .cala-main__side {
   min-height: auto;
   overflow: visible;
+}
+
+/* Stacked: the view picker wraps rather than run past a phone-wide panel. */
+.cala-main--narrow .cala-fov__toolbar .segmented {
+  flex-wrap: wrap;
+  max-width: 100%;
 }
 
 /* Stacked: the image keeps the window's height in view. */
@@ -110,6 +117,7 @@
 }
 
 .cala-fov__stage {
+  container: fov-stage / inline-size;
   position: relative;
   width: min(100cqw, calc(100cqh * var(--cala-aspect, 1)));
   background: #000;
@@ -175,24 +183,75 @@
 .cala-fov__card {
   top: var(--space-sm);
   left: var(--space-sm);
-  max-width: min(330px, calc(100% - 2 * var(--space-sm)));
-  padding: var(--space-xs) var(--space-sm);
+  max-width: min(300px, calc(100% - 2 * var(--space-sm)));
+  padding: 2px;
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
   cursor: default;
 }
 
-.cala-fov__card-head {
-  display: flex;
+/* The legend chip: the colour-by mode's marks and name; it opens and closes the card. */
+.cala-fov__chip {
+  display: inline-flex;
   align-items: center;
-  gap: var(--space-xs);
+  align-self: flex-start;
+  gap: var(--space-1);
+  max-width: 100%;
+  padding: 1px var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink-1);
+  font: inherit;
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+}
+
+.cala-fov__chip:hover {
+  background: var(--inset);
+}
+
+.cala-fov__chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.cala-fov__chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cala-fov__chip-caret {
+  color: var(--ink-2);
+}
+
+.cala-fov__chip-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.cala-fov__chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+
+.cala-fov__chip-ramp {
+  width: 24px;
+  height: 8px;
+  border-radius: 1px;
 }
 
 .cala-fov__card-body {
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
+  padding: 0 var(--space-xs) var(--space-xs);
 }
 
 .cala-fov__card-body[hidden] {
@@ -276,6 +335,13 @@
   font-family: var(--font-mono);
   color: var(--text-primary);
   pointer-events: none;
+}
+
+/* An image too narrow for the readout and the zoom bar side by side: the readout sits above the bar. */
+@container fov-stage (max-width: 460px) {
+  .cala-fov__hud {
+    bottom: calc(2 * var(--space-sm) + 26px);
+  }
 }
 
 .cala-fov__minimap {
@@ -457,6 +523,19 @@
 
 .cala-fig + .cala-fig {
   border-left: 1px solid var(--line);
+}
+
+/* A phone-wide rail puts the four figures in two rows of two. */
+@container rail (max-width: 400px) {
+  .cala-rail__figs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: var(--space-2);
+  }
+
+  .cala-fig:nth-child(odd) {
+    padding-left: 0;
+    border-left: none;
+  }
 }
 
 .cala-fig__name {
@@ -856,7 +935,9 @@
   overflow: visible;
 }
 
+/* Stacked, the panel takes its content's height (a zero flex basis would collapse it). */
 .cala-main--narrow .cala-side-tabs__panel {
+  flex: none;
   overflow: visible;
 }
 
@@ -872,16 +953,166 @@
   flex: none;
 }
 
-.cala-tab-note {
-  margin: var(--space-xs) 0 0;
+/* Timing tab (components/TimingPanel.tsx): rows of label, bar on the shared log axis, figure. */
+.cala-timing {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  overflow-y: auto;
+  font-size: var(--font-size-md);
 }
 
-.cala-timing p {
-  margin: 0 0 var(--space-sm);
+.cala-timing__intro {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
 }
 
-.cala-block {
-  display: block;
+.cala-timing__help {
+  top: 24px;
+  right: 0;
+}
+
+.cala-timing__help p {
+  margin: 0;
+}
+
+.cala-timing__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.cala-timing__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.cala-timing__title {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--ink-2);
+}
+
+.cala-timing__aside {
+  font-size: var(--font-size-xs);
+  color: var(--ink-3);
+}
+
+.cala-timing__row {
+  display: grid;
+  /* Fixed shares, not content widths: the bars of every group line up on one axis. */
+  grid-template-columns: 34% minmax(48px, 1fr) 7.5rem;
+  grid-template-areas: 'label bar fig';
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 20px;
+}
+
+.cala-timing__label {
+  grid-area: label;
+  color: var(--ink-2);
+  font-size: var(--font-size-sm);
+}
+
+.cala-timing__row > .range-bar,
+.cala-timing__row > .meter,
+.cala-timing__ticks {
+  grid-area: bar;
+}
+
+.cala-timing__fig,
+.cala-timing__unit {
+  grid-area: fig;
+}
+
+.cala-timing__fig {
+  text-align: right;
+  white-space: nowrap;
+  font-size: var(--font-size-sm);
+}
+
+.cala-timing__axis {
+  min-height: 14px;
+}
+
+.cala-timing__ticks {
+  position: relative;
+  height: 14px;
+}
+
+.cala-timing__tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-size: var(--font-size-xs);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.cala-timing__tick:first-child {
+  transform: none;
+}
+
+.cala-timing__unit {
+  font-size: var(--font-size-xs);
+  color: var(--ink-3);
+  text-align: right;
+}
+
+.cala-timing__facts {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--ink-2);
+}
+
+.cala-timing__counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+}
+
+.cala-timing__counts > div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.cala-timing__counts dt {
+  color: var(--ink-2);
+  font-size: var(--font-size-sm);
+}
+
+.cala-timing__counts dd {
+  margin: 0;
+  text-align: right;
+}
+
+.cala-dash {
+  color: var(--ink-3);
+}
+
+/* A narrow column: label and figure on one line, the bar under them at full width. */
+@container (max-width: 480px) {
+  .cala-timing__row {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      'label fig'
+      'bar bar';
+    row-gap: 2px;
+  }
+
+  .cala-timing__axis {
+    grid-template-areas: 'bar fig';
+  }
 }
 
 .cala-wrap {
@@ -902,7 +1133,7 @@
 }
 
 .cala-run__status .cala-readout,
-.cala-run__footer .cala-readout,
+.cala-run__footer .cala-muted,
 .cala-run__line {
   font-size: 0.78rem;
 }
@@ -1147,6 +1378,88 @@
   max-width: 80ch;
 }
 
+/* The selected cell's QC metrics: bullet bars on fixed ranges, two columns where there is room. */
+.cala-cellqc__bars {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 2px var(--space-4);
+}
+
+.cala-cellqc__bars .meter-row {
+  grid-template-columns: 7.5rem minmax(48px, 1fr) 3.5rem;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+  min-height: 20px;
+}
+
+.cala-cellqc__bars .meter-row__label {
+  color: var(--ink-2);
+}
+
+.cala-selected__help {
+  position: relative;
+}
+
+.cala-selected__help-pop {
+  top: 22px;
+  left: 0;
+}
+
+.cala-selected__help-pop p {
+  margin: 0;
+}
+
+/* The empty Cell tab: the cells with the highest SNR, each a button. */
+.cala-top-cells {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.cala-top-cells__lead {
+  margin: 0;
+}
+
+.cala-top-cells__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-width: 420px;
+}
+
+.cala-top-cells__row {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(48px, 1fr) 3rem;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 2px var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink-1);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.cala-top-cells__row:hover {
+  background: var(--inset);
+}
+
+.cala-top-cells__row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.cala-top-cells__row .num:last-child {
+  text-align: right;
+}
+
 .cala-footprint-zoom {
   width: 150px;
   height: 150px;
@@ -1218,7 +1531,7 @@
 }
 
 .cala-corr__far {
-  stroke: #d55e00;
+  stroke: var(--corr-far);
   stroke-width: 1.25;
   stroke-dasharray: 2 3;
 }
@@ -1226,6 +1539,64 @@
 .cala-corr__tick {
   fill: var(--text-tertiary);
   font-size: 9px;
+}
+
+.cala-corr__scatter {
+  color: var(--mark-neutral);
+}
+
+.cala-corr__median {
+  fill: none;
+  stroke: var(--corr-series);
+  stroke-width: 2;
+}
+
+.cala-corr__iqr {
+  stroke: var(--corr-series);
+  stroke-width: 1.5;
+}
+
+.cala-corr__dot {
+  fill: var(--corr-series);
+  stroke: var(--surface);
+  stroke-width: 1;
+}
+
+.cala-corr__bar {
+  position: relative;
+}
+
+.cala-corr__title {
+  margin: 0;
+}
+
+.cala-corr__compute {
+  margin-left: auto;
+}
+
+.cala-corr__help {
+  top: 28px;
+  left: 0;
+}
+
+.cala-corr__help p {
+  margin: 0 0 var(--space-1);
+}
+
+/* Before Compute: the axes drawn faint, the message in the plot area. */
+.cala-corr__ghost-axes {
+  opacity: 0.55;
+}
+
+.cala-corr__ghost-text {
+  fill: var(--ink-3);
+  font-size: 11px;
+}
+
+.cala-corr__readout {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--ink-2);
 }
 
 /* ---- Speed control (components/SpeedControl.tsx) ---- */
@@ -2083,4 +2454,13 @@
 /* Discover's rows have no chart: no room is kept for one. */
 .cala-step__body.cala-step__rows--discover {
   min-height: 0;
+}
+
+/* The trace's key for the shaded frames before the cell was found. */
+.cala-trace-before-found {
+  display: inline-block;
+  width: 12px;
+  height: 8px;
+  border-radius: 1px;
+  vertical-align: -1px;
 }

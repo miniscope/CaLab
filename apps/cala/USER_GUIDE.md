@@ -76,14 +76,17 @@ few batches of frames is plenty.
 
 The field of view fills the left of the window, as tall as the window allows. The
 right-hand column has the **run rail** at the top, always in view, and below it one
-row of tabs: **Run**, **Cell**, **QC**, **History**, **Correlation**, **Flat field**,
-**Timing**, **Raw file** and **Recording**. One tab shows at a time, with the column's whole
-height. Selecting a cell (in the field of view, the QC table or a neighbour link)
-opens the **Cell** tab. The arrow keys move between the tabs (Home and End to the
-first and last), and the app remembers the tab you were on. A 1024 px window keeps the
-image and the column side by side (the column is at least 440 px wide). Narrower, or in a
-portrait window, the page stacks the run rail, the image and the tabs, in that order, and
-scrolls, so the run's state stays at the top.
+row of tabs: **Run**, **Cell**, **QC** and **History**, then **More ▾**, a menu of the
+diagnostics: **Correlation**, **Flat field**, **Timing**, **Raw file** and **Recording**.
+While one of those is shown, the More tab carries its name. One tab shows at a time, with
+the column's whole height. Selecting a cell (in the field of view, the QC table or a
+neighbour link) opens the **Cell** tab. The arrow keys move between the tabs (Home and End
+to the first and last); on **More**, Down, Enter or Space opens its menu, Up and Down move
+in it and Escape closes it. The app remembers the tab you were on. A 1024 px window keeps
+the image and the column side by side (the column is at least 440 px wide). Narrower, or in
+a portrait window, the page stacks the run rail, the image and the tabs, in that order, and
+scrolls up and down (never sideways), so the run's state is at the top. On a phone-wide
+window the rail's four figures sit in two rows of two.
 
 **Run rail.** Above the tabs, one place for every live figure of the run:
 
@@ -142,16 +145,20 @@ inside Discover.
   frame minus every footprint times its trace: light that no cell explains yet. It is
   computed only while you look at it, from the next batch of a running pass once the
   model has cells.
-- **Display range**: each view has its own fixed range. It is fitted once from the
-  first frames and then held: changes in brightness stay visible. Type a range, or
-  press **Re-fit range** to fit once more from the most recent frames.
-- **Overlay** (card on the image): **Off**, **Contours** (the outline at 35% of each
+- **Display range** (toolbar, right): each view has its own fixed range, drawn as a
+  grey colour bar between its two end values. It is fitted once from the first frames
+  and then held: changes in brightness stay visible. Type an end value to change it,
+  or press the re-fit icon (four corners) to fit once more from the most recent
+  frames. Nothing else changes it.
+- **Overlay legend** (a chip in the image's top left: the colour mode's marks and
+  name). Click it to open the card: **Off**, **Contours** (the outline at 35% of each
   cell's peak, the default), **Footprints** (each footprint over its full extent,
   opacity = value over its own peak, no threshold) or **Both**. **Colour by** picks
   the colouring (when found, slow-loop status, QC pass/fail, peak SNR, trace fidelity,
   crosstalk, footprint error). The legend shows the scale, which is fixed per mode.
   **Residual heat map** lays the per-block residual (noise units, log scale) over the
-  image. The **-** button folds the card away.
+  image. Click the chip again to fold the card. On a narrow image (a phone-wide
+  window) the card starts folded so it does not cover the cells.
 - **Zoom and pan**: scroll to zoom around the pointer, or use **-**, **+**, **Fit** and
   **1:1** (one recording pixel per screen pixel). Drag to pan. While zoomed, a minimap
   in the top right shows where you are; click it to jump. Click a cell to select it.
@@ -205,9 +212,10 @@ Discover or stop the live run, and the tab shows, in the order you use them:
   - **fps** on a fixed 10 to 500 log scale: the target dashed (Max at the top), the speed
     achieved solid, the floor dotted, and in Curve mode the plan in long dashes; a thin
     line marks each change of target.
-  - **Workers busy, by kind**, 0 to the number of workers: each reading covers the time
-    since the reading before it, so the bands are steps; the colours are the worker
-    squares' (below).
+  - **Workers busy, by kind**, 0 to the number of workers: each reading (about once a
+    second) covers the time since the reading before it, so the bands are steps; the
+    interval since the last reading is drawn up to the playhead and settles when its
+    reading comes in. The colours are the worker squares' (below).
 
   A recording with look-back adds a **Final settle** column on the right, on its own axis
   (the frames it re-read, 0 to its plan), because no recording time passes then: its
@@ -251,24 +259,51 @@ the results written (and, for a project's plan, of its groups), and one row per 
 with its state (written ✓, running, pending, skipped, failed) and, in a Joint run, each
 boundary's health badge.
 
-**Cell tab.** The selected cell's footprint over its full extent (its own peak = 1,
-no threshold), on a **linear** or **log** scale (the log scale spans the 2.4 decades
-the stored 8-bit footprint holds). The white line is its support and the grey lines
-are its neighbours' outlines. The slider steps through the footprint's versions. Next
-to it are the QC verdict and numbers. The **Trace** / **Demixing** switch picks the
-view below: **Trace** shows the whole session as an overview with a live detail
-window that takes the rest of the tab's height; **Demixing** shows the overlapping
-neighbours. The arrows step through the cells by id.
+**Cell tab.** From top to bottom:
 
-**The other tabs.** **QC** (the cell table: click a row to select the cell; its sort
-and filter stay while you look at other tabs), **History** (see below), **Correlation** (the
+- The selected cell's **footprint** over its full extent (its own peak = 1, no
+  threshold), on a **linear** or **log** scale (the log scale spans the 2.4 decades the
+  stored 8-bit footprint holds). The white line is its support and the grey lines are
+  its neighbours' outlines. The slider steps through the footprint's versions. Next to
+  it: the QC verdict (one status mark and a short label, with the reasons), where the
+  cell sits, and the frame at which it was found.
+- Its **QC metrics as bullet bars**, each on a fixed range; where a rule has a
+  threshold, a tick marks it: peak SNR (log scale 1 to 100, tick at the pass level 5),
+  neighbour r (tick at 0.8, the pair level), motion R² (tick at 0.2, the motion flag),
+  then trace fidelity, crosstalk (vif) and max overlap (no threshold). Footprint error
+  and events per minute have no absolute scale, so they are figures only. A grey dash
+  means not measured yet.
+- The **Trace** / **Demixing** switch picks the view below: **Trace** shows the whole
+  session as an overview with a live detail window that takes the rest of the tab's
+  height. The frames before the cell was found are shaded grey on both. **Demixing**
+  shows the overlapping neighbours.
+
+The arrows step through the cells by id. With no cell selected, the tab lists the
+cells with the highest peak SNR, each with its status mark and SNR bar; click one to
+select it.
+
+**The other tabs.** **QC** (the cell table, see
+[Reading the quality-control indicators](#reading-the-quality-control-indicators); click
+a row to select the cell; its sort, filter and columns stay while you look at other tabs), **History** (see below), and under **More**:
+**Correlation** (the
 pairwise trace correlation against distance plot; see below), **Flat field**,
 **Timing** (per-stage times and the slow loop's counters), **Raw file** (scrub the
-recording as read from disk) and **Recording**.
+recording as read from disk) and **Recording** (the recording's facts, with any warning
+about them, such as a missing frame rate, as an amber line with a ⚠ above them).
 
-**Correlation tab.** A check for incomplete demixing of neighbouring cells. Press
-**Compute** (once, on demand; it never runs with the pipeline, and **Recompute**
-repeats it): for every pair of cells it takes the Pearson correlation of their traces
+**Timing tab.** Where the time per frame goes, as rows on one fixed log axis in ms
+(0.01 to 1,000): the pipeline stages (one dot each, the mean per frame), then the fast
+loop, online QC and slow loop over recent batches, each a bar from the mean to the max
+with a dot at the 99th percentile and the figures mean · p99 · max beside it. The dashed
+line on per-frame rows is the frame budget, the time one frame lasts at the recording's
+frame rate: a stage to its right is slower than real time. A series with no samples is a
+grey dash. Under them are the slow loop's counts (working set, adds, merges, refines,
+rejects, library versions, reservoir size) and a meter of the frames it dropped. The tab
+refreshes at most twice a second.
+
+**Correlation tab.** A check for incomplete demixing of neighbouring cells. Until you
+press **Compute** the tab shows the plot's empty axes. Press **Compute** (once, on
+demand; it never runs with the pipeline, and **Recompute** repeats it): for every pair of cells it takes the Pearson correlation of their traces
 (each minus a 15 s moving average) and plots the median per bin of centre distance,
 in soma diameters D (the median equivalent diameter of the footprints at half
 maximum), with the interquartile range as bars, over a faint scatter of the individual
@@ -510,8 +545,16 @@ no new cells appear.
   library per minute, over the last two minutes. The rate of new cells is shown but
   never blocks this. It says nothing about cells Cala cannot see.
 
-**QC tab.** One row per cell, failing cells first. A cell is **not measured
-yet** until it has about a minute of trace history. The pass/fail rule is: peak SNR of
+**QC tab.** At the top, a bar splits the cells into **pass**, **fail** and **not
+measured**; the buttons under it carry the counts and filter the table (click the
+active one again, or **All**, to show every cell; a click on the bar's part does the
+same). One row per cell, failing cells first: the cell id with its status mark (a
+dot: pass, a diamond: fail, a ring: not measured), its peak SNR as a bar with the pass
+threshold tick, then four key columns: **Flag** (why it is flagged: low SNR,
+duplicate?, pair, motion), neighbour r (with a link to that neighbour), trace fidelity
+(proj r) and motion R². **Columns ▾** adds the others (vif, footprint error, events
+per minute, age, still moving, slow-loop status). Figures are right-aligned. A cell is
+**not measured yet** until it has about a minute of trace history. The pass/fail rule is: peak SNR of
 at least 5, and not the weaker of two overlapping cells whose traces correlate above
 0.8. During Discover the peak SNR is read on each cell's last minute of trace (in
 seconds, at the recording's frame rate). After Extract, it is
@@ -539,7 +582,10 @@ estimates the pattern from the recording's own motion:
   frames before that are uncorrected, and the frame where the map switches on is
   recorded in the run (Flat field tab, export `meta_json`). Later refinements come about
   every 60 s and are small.
-- The **Flat field** tab shows the map on a fixed 0.9 to 1.1 scale and its status.
+- The **Flat field** tab shows the map on a fixed 0.9 to 1.1 scale, with a badge for its
+  state (Estimating, Estimated, Reused, Skipped, Off). Until there is a map the image is a
+  striped placeholder and a **First map** meter counts the seconds of recording seen,
+  out of 150.
   The flat field is on by default. To run without it, untick **Divide out the
   sensor gain map** (takes effect at the next Restart) or open the page with
   `?flatfield=0`.

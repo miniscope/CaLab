@@ -39,25 +39,54 @@
 .cala-canvas {
   display: block;
   max-width: 100%;
-  max-height: 150px;
+  max-height: 100%;
   width: auto;
   height: auto;
   image-rendering: pixelated;
 }
 
-.cala-controls {
+/* Raw file tab (components/FrameViewer.tsx): the frame fills the panel's width up to a
+   height that leaves the controls in view. */
+.cala-viewer__stage .cala-canvas {
+  width: 100%;
+  height: auto;
+  max-height: min(48vh, 480px);
+  object-fit: contain;
+}
+
+.cala-viewer__transport {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.cala-viewer__play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  padding: 0;
+}
+
+.cala-viewer__readout {
+  flex: none;
+  font-size: var(--font-size-md);
+  color: var(--ink-1);
+  white-space: nowrap;
+}
+
+.cala-viewer__display {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: var(--space-xs) var(--space-md);
-  margin-top: var(--space-md);
-}
-
-.cala-play {
-  min-width: 4.5rem;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  margin-top: var(--space-2);
 }
 
 .cala-slider {
+  accent-color: var(--ink-2);
   flex: 1 1 160px;
   min-width: 120px;
 }
@@ -256,48 +285,185 @@
 .cala-qc-table {
   display: flex;
   flex-direction: column;
+  gap: var(--space-xs);
   height: 195px;
+}
+
+/* The summary: a segmented bar of pass / fail / not measured, its filter buttons, the column picker. */
+.cala-qc-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  font-size: var(--font-size-sm);
+}
+
+.cala-qc-summary .segmented-bar {
+  max-width: 420px;
+}
+
+.cala-qc-summary__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.cala-qc-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 1px var(--space-sm);
+  border: 1px solid var(--line-control);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink-1);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cala-qc-filter .num {
+  color: var(--ink-2);
+}
+
+.cala-qc-filter[aria-pressed='true'] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.cala-qc-columns {
+  position: relative;
+  margin-left: auto;
+}
+
+.cala-qc-columns > summary {
+  padding: 1px var(--space-sm);
+  border: 1px solid var(--line-control);
+  border-radius: var(--radius-sm);
+  color: var(--ink-2);
+  cursor: pointer;
+  list-style: none;
+}
+
+.cala-qc-columns > summary::after {
+  content: ' ▾';
+}
+
+.cala-qc-columns__menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 2px);
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-sm);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-elevated);
+}
+
+/* One status mark: dot = pass, diamond = fail, hollow ring = not measured (shape and colour). */
+.cala-qc-dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-right: var(--space-xs);
+  border-radius: 50%;
+  vertical-align: 0;
+}
+
+.cala-qc-dot--pass {
+  background: var(--status-ok);
+}
+
+.cala-qc-dot--fail {
+  background: var(--status-critical);
+  border-radius: 1px;
+  transform: rotate(45deg) scale(0.9);
+}
+
+.cala-qc-dot--unmeasured {
+  border: 1.5px solid var(--mark-neutral);
 }
 
 .cala-qc-table__scroll {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  margin-top: var(--space-xs);
 }
 
 .cala-qc-table table,
 .cala-demix__table {
   border-collapse: collapse;
-  font-size: 0.8rem;
-  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
   width: 100%;
+}
+
+.cala-demix__table {
+  font-family: var(--font-mono);
 }
 
 .cala-qc-table th {
   position: sticky;
   top: 0;
-  background: var(--bg-elevated, var(--bg-primary, #fff));
+  background: var(--surface);
   z-index: 1;
   text-align: left;
+  font-weight: var(--font-weight-normal);
 }
 
-.cala-qc-table th button {
+.cala-qc-table th button,
+.cala-qc-table__th {
   background: none;
   border: none;
-  padding: 2px 6px 2px 0;
+  padding: 2px 0;
   font: inherit;
-  color: var(--text-secondary);
+  color: var(--ink-2);
   cursor: pointer;
   white-space: nowrap;
 }
 
+.cala-qc-table__th {
+  cursor: default;
+}
+
+.cala-qc-table th,
 .cala-qc-table td,
 .cala-demix__table td,
 .cala-demix__table th {
-  padding: 1px 6px 1px 0;
+  padding: 1px var(--space-sm) 1px 0;
   white-space: nowrap;
   text-align: left;
+}
+
+/* Figures: right-aligned tabular numbers. */
+.cala-qc-table th.num,
+.cala-qc-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.cala-qc-table__id {
+  font-variant-numeric: tabular-nums;
+}
+
+/* SNR: a 4 px bullet bar on its fixed scale (tick = the pass threshold), then the figure. */
+.cala-qc-table__snr {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+}
+
+.cala-qc-table__snr .meter {
+  width: 64px;
+  flex: none;
+}
+
+.cala-qc-table__snr > span {
+  min-width: 2.6em;
 }
 
 .cala-qc-table tbody tr {
@@ -305,7 +471,7 @@
 }
 
 .cala-qc-table tbody tr:hover {
-  background: var(--bg-hover, rgba(0, 0, 0, 0.05));
+  background: var(--inset);
 }
 
 .cala-qc-row--selected {
@@ -358,25 +524,9 @@
 }
 
 .cala-cellqc__verdict .cala-qc-badge {
-  font-size: 0.85rem;
-}
-
-.cala-cellqc__grid {
-  display: grid;
-  /* Values capped at 6em so each label keeps its value close on a wide column. */
-  grid-template-columns: repeat(3, max-content minmax(3.5em, 6em));
-  gap: 0 var(--space-sm);
-  margin: var(--space-xs) 0 0;
-  font-size: 0.8rem;
-}
-
-.cala-cellqc__grid dt {
-  color: var(--text-secondary);
-}
-
-.cala-cellqc__grid dd {
-  margin: 0;
-  font-family: var(--font-mono);
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--font-size-md);
 }
 
 .cala-cellqc__note {
@@ -425,24 +575,60 @@
   width: auto;
 }
 
-/* Fixed display range control (lo / hi / re-fit) */
+/* Fixed display range: a grey colour bar between its end values, then the re-fit icon. */
 .cala-range {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-xs);
+  gap: var(--space-1);
   margin-left: auto;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  color: var(--ink-2);
 }
 
+/* End values read as figures; the control's border shows on hover and focus. */
 .cala-range__input {
-  width: 4.5rem;
-  padding: 1px 4px;
-  border: 1px solid var(--border-default);
+  width: 3.6rem;
+  padding: 1px 2px;
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font-size: 0.75rem;
+  background: transparent;
+  color: var(--ink-1);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.cala-range__input:first-child {
+  text-align: right;
+}
+
+.cala-range__input:hover,
+.cala-range__input:focus {
+  border-color: var(--line-control);
+  background: var(--surface);
+}
+
+.cala-range__input::-webkit-inner-spin-button,
+.cala-range__input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.cala-range__bar {
+  display: inline-block;
+  width: 64px;
+  height: 8px;
+  border: 1px solid var(--line-control);
+  border-radius: 1px;
+  background: linear-gradient(90deg, #000, #fff);
+}
+
+.cala-range__refit {
+  margin-left: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* Live source row on the open screen. */
@@ -1051,4 +1237,80 @@
 }
 .cala-donate__preset select {
   max-width: 100%;
+}
+
+/* Recording tab (components/InfoPanel.tsx): the warning pairs above the facts. */
+.cala-info__warnings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-3);
+}
+
+/* Flat field tab (components/FlatFieldPanel.tsx): a badge by the title, a hatched placeholder
+   over the canvas until there is a map. */
+.cala-flatfield__head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.cala-flatfield__head .panel-label {
+  margin: 0;
+}
+
+.cala-flatfield__help {
+  top: 24px;
+  left: 0;
+}
+
+.cala-flatfield__help p {
+  margin: 0;
+}
+
+.cala-flatfield__frame {
+  position: relative;
+}
+
+.cala-flatfield__frame .cala-flat__canvas {
+  display: block;
+}
+
+.cala-flatfield__frame[data-state='empty'] .cala-flat__canvas {
+  background: transparent;
+}
+
+.cala-flatfield__placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: repeating-linear-gradient(-45deg, var(--inset) 0 6px, var(--surface) 6px 12px);
+  border: 1px solid var(--line);
+  color: var(--ink-3);
+  font-size: var(--font-size-sm);
+}
+
+.cala-flatfield__status {
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-size-sm);
+  color: var(--ink-2);
+}
+
+.cala-flatfield .cala-flat__text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.cala-flatfield .cala-flat__text .cala-info {
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+
+.cala-flatfield__note {
+  margin: 0;
 }

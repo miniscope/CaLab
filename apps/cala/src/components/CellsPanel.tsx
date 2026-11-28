@@ -1,17 +1,13 @@
-import { createEffect, createMemo, createSignal, on, Show, type JSX } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, on, Show, type JSX } from 'solid-js';
 import type { BoundarySeverity } from '../lib/boundary-flags.ts';
-import { SegmentedControl } from '@calab/ui';
+import { HelpTip, Meter, SegmentedControl } from '@calab/ui';
 import { viridisRGB } from '@calab/ui/chart';
-import { summarize, type CellStore, type Summary } from '../lib/cell-store.ts';
-import type { PipelineStore } from '../lib/pipeline-store.ts';
+import type { CellStore } from '../lib/cell-store.ts';
 import { CellTraceViewer } from './CellTraceViewer.tsx';
-import { CellQcSummary, DemixView } from './CellQcView.tsx';
+import { CellMetricBars, CellQcSummary, DemixView } from './CellQcView.tsx';
+import { QcDot } from './QcDot.tsx';
+import { metricText, qcMetric, qcStatus, topBySnr } from '../lib/qc-view.ts';
 import { SidePanel } from './SidePanel.tsx';
-
-function fmt(s: Summary): string {
-  if (s.n === 0) return 'n/a';
-  return `${s.mean.toFixed(1)} / ${s.p99.toFixed(1)} / ${s.max.toFixed(1)} ms (${s.n} batches)`;
-}
 
 export type FootprintScale = 'linear' | 'log';
 
@@ -227,24 +223,32 @@ function SelectedCell(props: {
         />
         <div class="cala-selected__side">
           <CellQcSummary cells={c()} id={props.id} />
-          <div class="cala-muted cala-selected__facts">
+          <div class="cala-muted cala-selected__facts" data-testid="cell-facts">
             <Show when={info()} fallback={<div>No longer in the library (merged or removed).</div>}>
               {(i) => (
-                <div>
-                  centre ({i().x.toFixed(0)}, {i().y.toFixed(0)}) px, support r {i().r.toFixed(1)}{' '}
-                  px &middot; found after frame {c().firstSeen(props.id)?.toLocaleString() ?? '?'}
+                <div class="num">
+                  centre ({i().x.toFixed(0)}, {i().y.toFixed(0)}) px &middot; support r{' '}
+                  {i().r.toFixed(1)} px &middot; found at frame{' '}
+                  {c().firstSeen(props.id)?.toLocaleString() ?? '–'}
                 </div>
               )}
             </Show>
-            <Show when={inLibrary()}>
-              <div>
-                Footprint: full extent, its own peak = 1, no threshold ({props.scale}). White = its
-                support, grey = neighbours. The slider steps through its versions.
-              </div>
-            </Show>
           </div>
+          <Show when={inLibrary()}>
+            <div class="cala-selected__help">
+              <HelpTip label="About the footprint" popClass="cala-selected__help-pop">
+                <p>
+                  The footprint at its full extent, its own peak = 1, no threshold ({props.scale}{' '}
+                  scale). White = its support, grey = its neighbours. The slider steps through its
+                  versions. The bars below are its QC metrics, each on a fixed range; the tick is
+                  the rule's threshold.
+                </p>
+              </HelpTip>
+            </div>
+          </Show>
         </div>
       </div>
+      <CellMetricBars cells={c()} id={props.id} />
       {/* One view at a time, switched in place (the column's tabs are the only tab row). */}
       <SegmentedControl
         class="cala-selected__views"
@@ -277,6 +281,58 @@ function SelectedCell(props: {
           <DemixView cells={c()} id={props.id} />
         </Show>
       </div>
+    </div>
+  );
+}
+
+/** Cells the empty Cell tab lists. */
+const TOP_CELLS = 8;
+
+/**
+ * The Cell tab with nothing selected: the cells with the highest peak SNR,
+ * each a button that selects it (with its status mark and SNR bar). Reads
+ * `qc()`, a snapshot about once a second.
+ */
+function TopCells(props: { cells: CellStore }): JSX.Element {
+  const top = createMemo(() => topBySnr(props.cells.qc()?.rows ?? [], TOP_CELLS));
+  const snr = qcMetric('peakSnr');
+  return (
+    <div class="cala-top-cells" data-testid="cell-empty">
+      <p class="cala-muted cala-top-cells__lead">
+        Click a cell in the field of view or the QC table
+        <Show when={top().length > 0}>, or one of the cells with the highest SNR</Show>.
+      </p>
+      <Show when={top().length > 0}>
+        <ol class="cala-top-cells__list" data-testid="cell-top-list">
+          <For each={top()}>
+            {(r) => (
+              <li>
+                <button
+                  type="button"
+                  class="cala-top-cells__row"
+                  onClick={() => props.cells.select(r.id)}
+                  data-testid="cell-top-row"
+                >
+                  <span class="cala-top-cells__id num">
+                    <QcDot status={qcStatus(r)} />#{r.id}
+                  </span>
+                  <Meter
+                    value={r.peakSnr}
+                    min={snr.range!.min}
+                    scale={snr.range!.scale}
+                    max={snr.range!.max}
+                    target={snr.threshold}
+                    label={`Cell ${r.id} peak SNR`}
+                    format={(v) => v.toFixed(1)}
+                    size="sm"
+                  />
+                  <span class="num">{metricText(snr, r.peakSnr)}</span>
+                </button>
+              </li>
+            )}
+          </For>
+        </ol>
+      </Show>
     </div>
   );
 }
@@ -357,15 +413,7 @@ export function SelectedCellPanel(props: {
         </>
       }
     >
-      <Show
-        when={props.cells.selected()}
-        fallback={
-          <p class="cala-muted">
-            Click a cell in the field of view (or a row of the cell table) to see its footprint and
-            trace.
-          </p>
-        }
-      >
+      <Show when={props.cells.selected()} fallback={<TopCells cells={props.cells} />}>
         {(id) => (
           <SelectedCell
             cells={props.cells}
@@ -379,109 +427,5 @@ export function SelectedCellPanel(props: {
         )}
       </Show>
     </SidePanel>
-  );
-}
-
-/** The slow loop's counters as text (kept from the old Cells tab). */
-function SlowCounters(props: { cells: CellStore }): JSX.Element {
-  const c = () => props.cells;
-  const changes = () => {
-    const ev = c().events();
-    let added = 0;
-    let removed = 0;
-    for (const e of ev) {
-      added += e.added;
-      removed += e.removed;
-    }
-    return { added, removed, versions: ev.length };
-  };
-  const dropPct = () => {
-    const b = c().batch();
-    if (!b) return 0;
-    const all = b.forwardedFrames + b.droppedFrames;
-    return all > 0 ? (100 * b.droppedFrames) / all : 0;
-  };
-  return (
-    <p class="cala-muted cala-tab-note" data-testid="cells-counters">
-      <Show when={c().status()} fallback="The slow loop starts after frame 50.">
-        {(st) => (
-          <>
-            working set {st().cells} &middot; adds {st().counters.adds}, merges{' '}
-            {st().counters.merges}, refines {st().counters.refines}, rejects {st().counters.rejects}{' '}
-            &middot; versions {changes().versions} (+{changes().added} / -{changes().removed} cells)
-            &middot; dropped {dropPct().toFixed(0)}% of frames &middot; reservoir{' '}
-            {(st().reservoirBytes / 1048576).toFixed(0)} MB
-            <Show when={st().framesPerTile > 0}>, {st().framesPerTile} frames per tile</Show>
-            <Show when={st().reservoirWarning}>
-              {(w) => (
-                <span class="cala-warning cala-block" data-testid="reservoir-warning">
-                  {w()}
-                </span>
-              )}
-            </Show>
-          </>
-        )}
-      </Show>
-    </p>
-  );
-}
-
-/** Per-stage and per-loop timing as text. */
-export function TimingText(props: { store: PipelineStore; cells: CellStore }): JSX.Element {
-  const s = () => props.store;
-  const c = () => props.cells;
-  const timing = createMemo(() => {
-    c().tick();
-    const t = c().timing();
-    return {
-      on: summarize(t.on),
-      off: summarize(t.off),
-      solveOn: summarize(t.solveOn),
-      solveOff: summarize(t.solveOff),
-      solveQc: summarize(t.solveQc),
-      solveNoQc: summarize(t.solveNoQc),
-      qcBuild: summarize(t.qcBuildMs),
-      slowStep: summarize(c().slowTiming().stepMs),
-      slowBatch: summarize(c().slowTiming().batchMs),
-    };
-  });
-  return (
-    <div class="cala-timing">
-      <SlowCounters cells={props.cells} />
-      <p class="cala-muted" data-testid="pipeline-stages">
-        Pipeline ms/frame: read {s().stageMs().readMs.toFixed(1)},{' '}
-        {s().stageBusy().length > 0 ? 'preprocess front' : 'preprocess'}{' '}
-        {s().stageMs().preprocessMs.toFixed(1)}, motion {s().stageMs().motionMs.toFixed(1)}
-        <Show when={s().stageBusy().length > 0}>
-          {' '}
-          | pipelined stage busy ms/frame: frame+preprocess {s().stageBusy()[0].toFixed(1)}, motion{' '}
-          {s().stageBusy()[1].toFixed(1)}, back+trace {s().stageBusy()[2].toFixed(1)};{' '}
-          {s().fps().toFixed(1)} fps
-        </Show>
-      </p>
-      <p class="cala-muted" data-testid="fast-timing">
-        Over recent batches (mean / p99 / max): fast loop per frame, discovery on:{' '}
-        {fmt(timing().on)}; off: {fmt(timing().off)}. Trace solve per frame, on:{' '}
-        {fmt(timing().solveOn)}; off: {fmt(timing().solveOff)}.
-      </p>
-      <p class="cala-muted" data-testid="qc-timing">
-        Trace solve per frame with online QC: {fmt(timing().solveQc)}; without:{' '}
-        {fmt(timing().solveNoQc)}. QC snapshot (about once a second): {fmt(timing().qcBuild)}.
-        <Show when={timing().slowBatch.n > 0}>
-          {' '}
-          Slow loop per batch: {fmt(timing().slowBatch)}; longest step per batch:{' '}
-          {fmt(timing().slowStep)}.
-        </Show>
-        <Show when={(c().status()?.visitWorkers ?? 0) > 0 ? c().status() : undefined}>
-          {(st) => (
-            <span data-testid="visit-timing">
-              {' '}
-              Tile visits on {st().visitWorkers} workers: {st().jobs} so far, {st().jobsInFlight}{' '}
-              out now, {st().visitMs.toFixed(0)} ms each (latest).
-            </span>
-          )}
-        </Show>
-      </p>
-    </div>
   );
 }

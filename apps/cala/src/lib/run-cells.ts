@@ -68,6 +68,13 @@ export interface RunCells {
    * is free (`?debug&settlevisits=off`).
    */
   settleVisitRate?: number;
+  /**
+   * A repeatable run (recordings; absent = off, as for live streams): while paced, the slow
+   * worker hands out visits and look-back requests at batch ends only and applies their results
+   * a fixed number of frames later, in hand-out order (`ApplyBarrier`), and the fast loop adopts
+   * each library at the frame it is stamped with. Off: results are applied as they arrive.
+   */
+  repeatable?: boolean;
 }
 
 /**
@@ -99,6 +106,7 @@ export function normalizeRunCells(c: RunCells): RunCells {
     c.settleVisitRate > 0
       ? { settleVisitRate: c.settleVisitRate }
       : {}),
+    ...(c.repeatable === true ? { repeatable: true } : {}),
   };
 }
 

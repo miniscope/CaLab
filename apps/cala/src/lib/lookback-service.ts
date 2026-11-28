@@ -58,7 +58,7 @@ export interface LookbackReaderLike extends FrameServer {
   setBackState(state: Uint8Array, frame?: number): void;
   setSession(index: number, transform: SessionTransform): void;
   setFlatField(map: FlatFieldMap | null): void;
-  applyLibrary(): void;
+  applyLibrary(upTo?: number): void;
   prepare(frames: { frame: number; block: number }[], out: Float32Array): Promise<LookbackPrepared>;
   solve(p: LookbackPrepared, skip?: ArrayLike<number>): LookbackSolved;
 }
@@ -348,8 +348,9 @@ export class LookbackService {
           finalWaitMs = this.now() - t0;
         }
         out = await pool.acquire();
-        // (Any other request: the libraries in hand once it has a buffer, as `serve` does.)
-        if (!final && !msg.hold) reader.applyLibrary();
+        // (Any other request: the libraries in hand once it has a buffer, as `serve` does, up to
+        // the version it names.)
+        if (!final && !msg.hold) reader.applyLibrary(msg.version);
         let prepared: LookbackPrepared | null = null;
         let failed: unknown = null;
         try {

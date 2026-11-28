@@ -18,7 +18,7 @@ const later = (ms = 0) => new Promise<void>((r) => setTimeout(r, ms));
 function fakeReader() {
   let back = 'none';
   let flat = 'none';
-  let pending = 0;
+  let pending: number[] = [];
   let version = 0;
   const prepared: { frames: number[]; back: string; flat: string }[] = [];
   const events: string[] = [];
@@ -32,11 +32,11 @@ function fakeReader() {
       flat = m ? `flat${m.dark}` : 'none';
     },
     setLibrary: (v) => {
-      if (v > version && v > pending) pending = v;
+      if (v > (pending.at(-1) ?? version)) pending.push(v);
     },
-    applyLibrary: () => {
-      if (pending > version) version = pending;
-      pending = 0;
+    applyLibrary: (upTo = Infinity) => {
+      for (const v of pending) if (v <= upTo) version = v;
+      pending = pending.filter((v) => v > upTo);
     },
     async prepare(frames, out): Promise<LookbackPrepared> {
       // Reading takes a while (the file), as in the worker.
@@ -89,7 +89,10 @@ async function setup() {
   // (The worker has taken in the `begin` before any request: the main thread sent it at the start.)
   await settle();
   let id = 0;
-  const request = (frames: number[], opts: { final?: boolean; hold?: boolean } = {}) => {
+  const request = (
+    frames: number[],
+    opts: { final?: boolean; hold?: boolean; version?: number } = {},
+  ) => {
     const items = Float64Array.from(frames.flatMap((fr) => [fr, -1, 0]));
     const m: SlowToLookback = { type: 'request', session: 1, id: ++id, items, ...opts };
     s.handleSlow(m);
@@ -173,6 +176,28 @@ describe('LookbackService: the end settle waits for final inputs', () => {
     t.s.handleSlow({ type: 'request', session: 2, id: 9, items: Float64Array.of(5, -1, 0) });
     await settle();
     expect(t.toSlow.map((m) => [m.type, m.id])).toEqual([['frames', 9]]);
+  });
+});
+
+describe('LookbackService: requests that name their library', () => {
+  it('a request waiting behind another is solved with its library, not a newer one that came meanwhile', async () => {
+    const t = await setup();
+    const lib = (version: number) =>
+      t.s.handleSlow({ type: 'library', session: 1, version, bytes: new Uint8Array(0) });
+    lib(1);
+    // (Without a version a request takes the newest in hand when its turn comes: `c`.)
+    const first = t.request([0], { version: 1 });
+    const a = t.request([8], { version: 1 });
+    lib(2);
+    const b = t.request([16], { version: 2 });
+    const c = t.request([24]);
+    await settle();
+    expect(t.toSlow.map((m) => [m.id, m.type === 'frames' && m.version])).toEqual([
+      [first, 1],
+      [a, 1],
+      [b, 2],
+      [c, 2],
+    ]);
   });
 });
 

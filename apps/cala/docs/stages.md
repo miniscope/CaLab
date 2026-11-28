@@ -98,6 +98,29 @@ behaviour before the fixed rate (no cap, no hold); qc_eval's `--visit-rate auto|
 runs the same schedule (with the cap at the target, as a held Max run sits, unless
 `--visit-cap-ratio` says otherwise) and `--visit-rate R` a bare cap of R.
 
+## Repeatable runs
+
+A recording's Discover at a target speed is repeatable in its timing (`RunCells.repeatable`,
+on for recordings, off for live streams; `?debug&repeatable=0` turns it off). The slow
+worker hands out tile visits and look-back requests (need-driven and Background settle)
+only at batch ends, and applies what comes back two batches (16 frames) later, in the order
+it went out (`ApplyBarrier`, `src/lib/apply-barrier.ts`); it waits there for anything late.
+Libraries are published at batch ends only and stamped with that batch's last frame; the
+fast loop adopts each one forward-buffer-count + 1 batches after it (`FastLoop.adoptFrame`),
+which is before the slow worker can have freed the buffer for that batch, so it is never
+late while no batch is dropped. At Discover's end the visits out are applied in order and
+look-back answers not yet applied are dropped. Each visit slot has one visit out at a time,
+so it makes at most one visit per two batches. Each look-back worker gets a request at every
+batch end (so two are out on it at once), as many as it would read answering on arrival; a
+request names the library version it is solved with, so one waiting behind another is not
+solved with a newer library that came meanwhile. At Max (no target) results apply as
+they arrive, and so they do from the first batch the fast loop drops (a target the machine
+cannot hold: the run is no longer repeatable, and waiting would only drop more; lockstep at
+the source is the planned answer). The slow worker's status reports the batch ends that waited and the libraries
+the fast loop adopted late (`SlowStatus.repeatable`). Not covered yet: look-back answers are
+preprocessed from whichever back state the look-back worker holds, and the Final settle
+observes pooled answers in arrival order.
+
 ## Order
 
 - Extract runs only after Discover has finished and the slow loop has

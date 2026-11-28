@@ -21,6 +21,13 @@ export interface SegmentedBarProps {
   label: string;
   /** Formats amounts in the accessible text and tooltips (default String). */
   format?: (v: number) => string;
+  /** The part a caller's filter has picked: every other part is drawn faded. */
+  active?: string;
+  /**
+   * Called with a part's id when the pointer clicks it. A shortcut for pointer users only: the
+   * bar stays an image to assistive tech, so the caller also offers the same choice as buttons.
+   */
+  onPartClick?: (id: string) => void;
   class?: string;
   testid?: string;
 }
@@ -66,7 +73,12 @@ export function SegmentedBar(p: SegmentedBarProps): JSX.Element {
         {(s) => (
           <span
             class="segmented-bar__part"
-            classList={{ 'segmented-bar__part--hatched': !!s.part.hatched }}
+            classList={{
+              'segmented-bar__part--hatched': !!s.part.hatched,
+              'segmented-bar__part--faded': p.active !== undefined && p.active !== s.part.id,
+              'segmented-bar__part--clickable': !!p.onPartClick,
+            }}
+            onClick={() => p.onPartClick?.(s.part.id)}
             style={{ width: pct(s.width), 'background-color': s.part.color }}
             title={`${s.part.label}: ${fmt(s.part.value)}`}
             data-part={s.part.id}

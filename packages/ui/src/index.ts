@@ -32,7 +32,7 @@ export { MetricTile, sparkRange, sparkPath } from './MetricTile.tsx';
 export type { SparkLine, MetricTileProps } from './MetricTile.tsx';
 
 export { OKABE_ITO } from './palette.ts';
-export { assertRange, rangePosition } from './range.ts';
+export { assertRange, pct, rangePosition } from './range.ts';
 export type { FixedRange, RangePosition, RangeScale } from './range.ts';
 export { isStatusTone, STATUS_ICON, toneColor, toneTint } from './tones.ts';
 export type { StageHue, StatusTone, Tone } from './tones.ts';
@@ -42,6 +42,8 @@ export { Badge } from './Badge.tsx';
 export { HelpTip } from './HelpTip.tsx';
 export type { HelpTipProps } from './HelpTip.tsx';
 export type { BadgeProps } from './Badge.tsx';
+export { StatusNote } from './StatusNote.tsx';
+export type { StatusNoteProps } from './StatusNote.tsx';
 export { Meter, MeterRow } from './Meter.tsx';
 export type { MeterProps, MeterRowProps } from './Meter.tsx';
 export { Sparkline } from './Sparkline.tsx';

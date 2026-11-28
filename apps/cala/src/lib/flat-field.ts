@@ -204,7 +204,7 @@ export function flatFieldStatusLine(s: FlatFieldState): string {
       : `skipped: ${reason} (still estimating)`;
   }
   if (!s.map) {
-    const k = s.fps > 0 ? s.frames / s.fps : 0;
+    const k = flatFieldSeconds(s);
     return `estimating (${Math.floor(k)} / ${FLAT_FIELD_FIRST_S} s of frames)`;
   }
   if (s.reused) {
@@ -213,6 +213,32 @@ export function flatFieldStatusLine(s: FlatFieldState): string {
       : `reused from this browser${s.key ? ` (device key ${s.key.key})` : ''}`;
   }
   return `estimated (${s.map.binsUsed} shift bins, ${Math.round(s.map.framesUsed)} frames, gain SD ${(100 * s.map.gainSd).toFixed(1)}%)`;
+}
+
+/** The flat field's state as a short word and its colour role (the panel's badge). */
+export interface FlatFieldBadge {
+  label: string;
+  tone: 'neutral' | 'ok' | 'warning' | 'critical';
+  /** True while the first map is still being estimated (the panel shows its progress). */
+  estimating: boolean;
+}
+
+/** Badge of the flat field panel; the same precedence as `flatFieldStatusLine`. */
+export function flatFieldBadge(s: FlatFieldState): FlatFieldBadge {
+  if (!s.enabled) return { label: 'Off', tone: 'neutral', estimating: false };
+  if (!s.supported) return { label: 'No estimator', tone: 'neutral', estimating: false };
+  if (s.error) return { label: 'Error', tone: 'critical', estimating: false };
+  if (s.skipped) return { label: 'Skipped', tone: 'warning', estimating: !s.map };
+  if (!s.map) return { label: 'Estimating', tone: 'neutral', estimating: true };
+  if (s.reused) {
+    return { label: s.updates > 0 ? 'Reused + refined' : 'Reused', tone: 'ok', estimating: false };
+  }
+  return { label: 'Estimated', tone: 'ok', estimating: false };
+}
+
+/** Seconds of frames the estimator has received (0 before the frame rate is known). */
+export function flatFieldSeconds(s: Pick<FlatFieldState, 'frames' | 'fps'>): number {
+  return s.fps > 0 ? s.frames / s.fps : 0;
 }
 
 /** `median 0.07 sigma, p99 0.33 sigma` for the last update, or null before one. */

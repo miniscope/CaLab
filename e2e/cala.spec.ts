@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from './fixtures.ts';
 import { buildAvi, pixelAt } from '../apps/cala/src/__tests__/synth-avi.ts';
-import { startRun } from './cala-helpers.ts';
+import { openMoreTab, startRun } from './cala-helpers.ts';
 
 /**
  * Cala is a beta app: a landing card, built at /CaLab/Cala/. This drives
@@ -45,15 +45,15 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   writeFileSync(join(folder, 'metaData.json'), '{"frameRate":"20FPS","framesPerFile":3}');
   await page.getByTestId('folder-input').setInputFiles(folder);
 
-  // The raw-file player and the recording facts live in tabs under the video.
-  await page.getByRole('tab', { name: 'Raw file' }).click();
+  // The raw-file player and the recording facts live in tabs under More.
+  await openMoreTab(page, 'Raw file');
   await expect(page.getByTestId('frame-readout')).toContainText('1 / 6');
   const header = page.getByRole('banner');
   await expect(header.getByText('24 × 16')).toBeVisible();
   await expect(header.getByText('6 frames')).toBeVisible();
-  await page.getByRole('tab', { name: 'Recording' }).click();
+  await openMoreTab(page, 'Recording');
   const info = page.locator('[data-panel-id="info"]');
-  await expect(info).toContainText('24 x 16 px, 8-bit (GREY)');
+  await expect(info).toContainText('24 × 16 px, 8-bit (GREY)');
   await expect(info).toContainText('20.00 Hz from metaData.json');
   await expect(info).toContainText('60.0 Hz (declared by the writer, ignored)');
 
@@ -113,8 +113,12 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await expect(page.getByTestId('work-plan')).toHaveCount(0);
   // Quality control: the convergence strip, the cell table and the overlay modes.
   await expect(page.getByTestId('convergence-status')).toContainText('Waiting for cells');
+  await page.getByRole('tab', { name: 'Cell', exact: true }).click();
+  await expect(page.getByTestId('cell-empty')).toContainText('Click a cell');
   await page.getByRole('tab', { name: 'QC', exact: true }).click();
   await expect(page.getByTestId('qc-counts')).toContainText('QC starts once');
+  // A wide image opens with the overlay legend card open.
+  await expect(page.getByTestId('fov-legend-chip')).toHaveAttribute('aria-expanded', 'true');
   await page.getByTestId('color-mode').selectOption('peakSnr');
   await expect(page.getByTestId('color-legend')).toContainText('drives pass/fail');
   await page.getByTestId('residual-toggle').check();
@@ -144,7 +148,7 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await expect(page.getByTestId('fov-minimap')).toHaveCount(0);
 
   // Raw gray levels: fitted range off (full scale), scrub to global frame 4 (file 1).
-  await page.getByRole('tab', { name: 'Raw file' }).click();
+  await openMoreTab(page, 'Raw file');
   await page.getByLabel('Fixed range (fitted once, held)').uncheck();
   await page.getByRole('slider', { name: 'Frame' }).fill('4');
   await expect(page.getByTestId('frame-readout')).toContainText('5 / 6');
@@ -164,6 +168,44 @@ test('Cala: a Miniscope folder opens, scrubs and plays from the worker', async (
   await page.getByRole('button', { name: 'Play' }).click();
   await expect(page.getByTestId('frame-readout')).toContainText('6 / 6', { timeout: 10_000 });
   await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
+});
+
+test('Cala: a phone-wide window stacks the rail above the image, with no sideways scroll', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 400, height: 860 });
+  await page.goto('Cala/');
+  const dir = mkdtempSync(join(tmpdir(), 'cala-e2e-'));
+  const folder = join(dir, 'My_V4_Miniscope');
+  mkdirSync(folder);
+  writeFileSync(join(folder, '0.avi'), buildAvi({ width: 24, height: 16, frames: 3 }));
+  await page.getByTestId('folder-input').setInputFiles(folder);
+  await expect(page.getByTestId('prerun-sheet')).toBeVisible();
+
+  await expect(page.locator('.cala-main')).toHaveClass(/cala-main--narrow/);
+  const rail = (await page.locator('.cala-main__rail').boundingBox())!;
+  const fov = (await page.locator('.cala-main__fov').boundingBox())!;
+  expect(rail.y + rail.height).toBeLessThanOrEqual(fov.y);
+  const widths = await page.evaluate(() =>
+    ['html', '.cala-main', '.compact-header', '.cala-side-tabs__bar'].map((sel) => {
+      const el = document.querySelector(sel)!;
+      return { sel, scroll: el.scrollWidth, client: el.clientWidth };
+    }),
+  );
+  for (const w of widths) expect(w.scroll, w.sel).toBeLessThanOrEqual(w.client);
+  // On a phone-wide image the overlay legend starts as its one-line chip, not a card over the image.
+  const chip = page.getByTestId('fov-legend-chip');
+  await expect(chip).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByTestId('color-mode')).toBeHidden();
+  await chip.click();
+  await expect(page.getByTestId('color-mode')).toBeVisible();
+  // Run, Cell, QC and History in the row; the diagnostics behind More.
+  await expect(page.getByRole('tab')).toHaveText(['Run', 'Cell', 'QC', 'History', /^More/]);
+  await openMoreTab(page, 'Recording');
+  await expect(page.getByTestId('tab-more')).toHaveText(/^Recording/);
+  await expect(page.locator('[data-panel-id="info"]')).toContainText('24 × 16 px');
+  // The missing frame rate is a warning pair (tint, icon, text) above the facts.
+  await expect(page.getByTestId('recording-warnings')).toContainText('No frame rate found');
 });
 
 test('Cala: a folder without Miniscope videos reports an error', async ({ page }) => {

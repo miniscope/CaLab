@@ -8,6 +8,7 @@ import { SegmentedBar } from '../SegmentedBar.tsx';
 import { RangeBar } from '../RangeBar.tsx';
 import { Legend } from '../Legend.tsx';
 import { Badge } from '../Badge.tsx';
+import { StatusNote } from '../StatusNote.tsx';
 import { Icon, ICON_NAMES } from '../Icon.tsx';
 import { StageTrack, stageFill, type StageSegment } from '../StageTrack.tsx';
 import { MetricTile } from '../MetricTile.tsx';
@@ -241,6 +242,29 @@ describe('SegmentedBar', () => {
     expect(widths).toEqual(['80%', '20%']);
     expect(q(host, '.segmented-bar').dataset.clamped).toBe('over');
   });
+
+  it('fades every part but the active one and reports clicked parts', () => {
+    const clicked: string[] = [];
+    const host = mount(() => (
+      <SegmentedBar
+        label="x"
+        total={10}
+        active="b"
+        onPartClick={(id) => clicked.push(id)}
+        parts={[
+          { id: 'a', label: 'A', value: 4, color: 'red' },
+          { id: 'b', label: 'B', value: 4, color: 'blue' },
+        ]}
+      />
+    ));
+    const parts = Array.from(host.querySelectorAll<HTMLElement>('.segmented-bar__part'));
+    expect(parts.map((p) => p.classList.contains('segmented-bar__part--faded'))).toEqual([
+      true,
+      false,
+    ]);
+    parts[0].click();
+    expect(clicked).toEqual(['a']);
+  });
 });
 
 describe('RangeBar', () => {
@@ -426,6 +450,27 @@ describe('Badge', () => {
   });
 });
 
+describe('StatusNote', () => {
+  it('pairs the status tint with its icon and the text, warning by default', () => {
+    const host = mount(() => (
+      <>
+        <StatusNote testid="w">Frame count differs from the timestamps.</StatusNote>
+        <StatusNote tone="critical" role="alert">
+          Failed.
+        </StatusNote>
+      </>
+    ));
+    const [warn, crit] = Array.from(host.querySelectorAll('.status-note'));
+    expect(warn.classList.contains('status-note--warning')).toBe(true);
+    expect(warn.querySelector('.icon--warning')).not.toBeNull();
+    expect(warn.getAttribute('data-testid')).toBe('w');
+    expect(warn.hasAttribute('role')).toBe(false);
+    expect(warn.textContent).toBe('Frame count differs from the timestamps.');
+    expect(crit.querySelector('.icon--cross')).not.toBeNull();
+    expect(crit.getAttribute('role')).toBe('alert');
+  });
+});
+
 describe('Icon', () => {
   it('is decorative without a label and an image with one', () => {
     const host = mount(() => (
@@ -454,7 +499,17 @@ describe('Icon', () => {
       expect(svg.querySelectorAll('path').length).toBeGreaterThan(0);
     }
     expect(ICON_NAMES).toEqual(
-      expect.arrayContaining(['pause', 'play', 'stop', 'restart', 'check', 'cross', 'info', 'gpu']),
+      expect.arrayContaining([
+        'pause',
+        'play',
+        'stop',
+        'restart',
+        'fit',
+        'check',
+        'cross',
+        'info',
+        'gpu',
+      ]),
     );
   });
 });

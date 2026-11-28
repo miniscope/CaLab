@@ -6,6 +6,8 @@ const PATHS = {
   pause: ['M5.5 3.5v9', 'M10.5 3.5v9'],
   stop: ['M4 4h8v8H4z'],
   restart: ['M3.5 8a4.5 4.5 0 1 0 1.3-3.2', 'M3.5 2.5v2.8h2.8'],
+  /** Fit to the data: four corner brackets (e.g. re-fit a display range). */
+  fit: ['M2.5 5.5v-3h3', 'M10.5 2.5h3v3', 'M13.5 10.5v3h-3', 'M5.5 13.5h-3v-3'],
   check: ['M3.5 8.5l3 3 6-7'],
   cross: ['M4.5 4.5l7 7', 'M11.5 4.5l-7 7'],
   info: ['M8 1.75a6.25 6.25 0 1 0 0 12.5a6.25 6.25 0 1 0 0-12.5z', 'M8 7.25v4', 'M8 4.75v.5'],

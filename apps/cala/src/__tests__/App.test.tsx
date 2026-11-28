@@ -151,9 +151,12 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-/** Click a tab of the right-hand column. */
+/** Click a tab of the right-hand column (a diagnostics tab through the More menu). */
 function openTab(root: HTMLElement, id: string): void {
-  root.querySelector<HTMLButtonElement>(`[data-testid="tab-${id}"]`)!.click();
+  const sel = `[data-testid="tab-${id}"]`;
+  if (!root.querySelector(sel))
+    root.querySelector<HTMLButtonElement>('[data-testid="tab-more"]')!.click();
+  root.querySelector<HTMLButtonElement>(sel)!.click();
 }
 
 function mount(): HTMLElement {
@@ -212,7 +215,7 @@ describe('App', () => {
 
     openTab(root, 'recording');
     const info = root.querySelector('[data-panel-id="info"]')!.textContent!;
-    expect(info).toContain('4 x 3 px, 8-bit (GREY)');
+    expect(info).toContain('4 × 3 px, 8-bit (GREY)');
     expect(info).toContain('20.00 Hz from timeStamps.csv');
     expect(info).toContain('60.0 Hz (declared by the writer, ignored)');
     expect(info).toContain('0.avi');
@@ -252,9 +255,10 @@ describe('App', () => {
     expect(root.querySelector('[data-testid="history-convergence"]')).not.toBeNull();
     // Batch timings (3 ms of motion per 25 frames, twice) are averaged per frame.
     openTab(root, 'timing');
-    expect(root.querySelector('[data-testid="pipeline-stages"]')?.textContent).toContain(
-      'motion 0.1',
+    const motion = root.querySelector(
+      '[data-testid="pipeline-stages"] [data-testid="timing-stage-motion"]',
     );
+    expect(motion?.textContent).toBe('motion0.12');
     openTab(root, 'history');
     expect(root.querySelector('[data-testid="history-tab"]')).not.toBeNull();
     expect(root.querySelector('[data-testid="history-imaging"]')).not.toBeNull();
@@ -297,21 +301,16 @@ describe('App', () => {
     expect(root.querySelector('[data-testid="pipeline-readout"]')?.textContent).toMatch(
       /^frame 50 \/ 50 · /,
     );
-    // One tab row (the cell's Trace / Demixing is a switch, not a second row).
+    // One tab row (the cell's Trace / Demixing is a switch, not a second row): Run, Cell, QC and
+    // History, then More with the diagnostics.
     const lists = root.querySelectorAll('[role="tablist"]');
     expect(lists).toHaveLength(1);
     const tabs = [...lists[0].querySelectorAll<HTMLButtonElement>('[role="tab"]')];
-    expect(tabs.map((t) => t.textContent)).toEqual([
-      'Run',
-      'Cell',
-      'QC',
-      'History',
-      'Correlation',
-      'Flat field',
-      'Timing',
-      'Raw file',
-      'Recording',
-    ]);
+    expect(tabs.map((t) => t.textContent)).toEqual(['Run', 'Cell', 'QC', 'History', 'More▾']);
+    const more = root.querySelector<HTMLButtonElement>('[data-testid="tab-more"]')!;
+    expect(more).toBe(tabs[4]);
+    expect(more.getAttribute('aria-haspopup')).toBe('menu');
+    expect(root.querySelector('[data-testid="tab-more-menu"]')).toBeNull();
     const selected = () => tabs.find((t) => t.getAttribute('aria-selected') === 'true');
     expect(selected()?.textContent).toBe('Run');
     expect(selected()?.tabIndex).toBe(0);
@@ -328,8 +327,36 @@ describe('App', () => {
     tabs[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     expect(selected()?.textContent).toBe('QC');
     expect(root.querySelector('[data-testid="qc-table"]')).not.toBeNull();
+    // End reaches More without opening it; Enter opens its menu of the diagnostics.
     tabs[2].dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
-    expect(selected()?.textContent).toBe('Recording');
+    expect(selected()?.textContent).toBe('QC');
+    more.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    const menu = root.querySelector('[data-testid="tab-more-menu"]')!;
+    expect(menu.getAttribute('role')).toBe('menu');
+    const items = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')];
+    expect(items.map((t) => t.textContent)).toEqual([
+      'Correlation',
+      'Flat field',
+      'Timing',
+      'Raw file',
+      'Recording',
+    ]);
+    expect(items.map((t) => t.dataset.testid)).toEqual([
+      'tab-corr',
+      'tab-flatfield',
+      'tab-timing',
+      'tab-raw',
+      'tab-recording',
+    ]);
+    items[4].click();
+    // The menu closes; More is the selected tab and shows the diagnostics tab it holds.
+    expect(root.querySelector('[data-testid="tab-more-menu"]')).toBeNull();
+    expect(selected()).toBe(more);
+    expect(more.textContent).toBe('Recording▾');
+    expect(more.tabIndex).toBe(0);
+    expect(document.getElementById(more.getAttribute('aria-controls')!)?.dataset.tab).toBe(
+      'recording',
+    );
     // Run stays mounted (hidden) while another tab is shown: its state is kept.
     expect(root.querySelector('[data-testid="pipeline-status"]')).not.toBeNull();
     expect(localStorage.getItem('cala.sideTab.run')).toBe('recording');
@@ -355,16 +382,16 @@ describe('App', () => {
     fake.readFrame.mockImplementation(async () => new Uint8Array(12));
     const root = mount();
     await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
-    await vi.waitFor(() => expect(root.querySelector('.cala-play')).not.toBeNull());
+    await vi.waitFor(() => expect(root.querySelector('.cala-viewer__play')).not.toBeNull());
 
-    const play = root.querySelector<HTMLButtonElement>('.cala-play')!;
-    expect(play.textContent).toBe('Play');
+    const play = root.querySelector<HTMLButtonElement>('.cala-viewer__play')!;
+    expect(play.getAttribute('aria-label')).toBe('Play');
     play.click();
-    expect(play.textContent).toBe('Pause');
+    expect(play.getAttribute('aria-label')).toBe('Pause');
     // Playback advances through the worker at the recording's frame rate.
     await vi.waitFor(() => expect(fake.readFrame).toHaveBeenCalledWith(2), { timeout: 2000 });
     play.click();
-    expect(play.textContent).toBe('Play');
+    expect(play.getAttribute('aria-label')).toBe('Play');
   });
 
   it('shows an error from the frame source and stays on the picker', async () => {

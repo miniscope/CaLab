@@ -56,6 +56,13 @@
  * The pooled Final settle is order-dependent: answers are observed in the
  * order they complete, so footprints can differ slightly from run to run;
  * each pool worker keeps its own factor cache.
+ *
+ * A repeatable run (`SlowInit.repeatable`, while paced, in Discover): visits and Discover's
+ * look-back requests go out at batch ends only, and what comes back is held and applied at a
+ * fixed later batch end in the order it went out (`ApplyBarrier`); this worker waits there for
+ * anything late. Libraries are published at batch ends only and stamped with that batch's last
+ * frame, so the fast loop adopts each at a fixed frame (`FastLoop.adoptFrame`). At Discover's
+ * end the visits out are applied in order and look-back answers not yet applied are dropped.
  */
 import type {
   CsettleStatus,
@@ -80,6 +87,7 @@ import type {
   VisitToOwner,
 } from '../workers/slow-types.ts';
 import { libraryViewTransferables, visitRateCounters } from '../workers/slow-types.ts';
+import { APPLY_LAG_BATCHES, ApplyBarrier } from './apply-barrier.ts';
 import { DetLog, fnvBytes } from './detlog.ts';
 import { errMsg } from './errors.ts';
 import { BgSettleDriver, type BgSettleHost, type BgSettle } from './bg-settle-driver.ts';
@@ -375,6 +383,9 @@ function lookbackItems(flat: ArrayLike<number>): LookbackItem[] {
   return out;
 }
 
+/** What a visit worker or a look-back worker sent back, held by the apply barrier. */
+type BarrierResult = VisitToOwner | LookbackToSlow;
+
 /** Wall time between cell-status updates to the main thread, ms. */
 export const CELL_STATUS_EVERY_MS = 1000;
 
@@ -492,6 +503,28 @@ export class SlowRunner {
   private slotSeq: number[] = [];
   /** Per look-back worker: epoch ms the request out was sent (relay timing). */
   private lbSentAt: number[] = [];
+  /** A repeatable run's visits and look-back requests out, and the answers held until due. */
+  private bar = new ApplyBarrier<BarrierResult>();
+  /**
+   * A repeatable run's look-back requests out under the barrier, by id, and their timeouts'
+   * cancels. A worker gets one at every batch end, so up to `APPLY_LAG_BATCHES` are out on it at
+   * once (`lbReqs` holds the one request out on the arrival path).
+   */
+  private lbBar = new Map<number, LookbackReq>();
+  private lbBarTimers = new Map<number, () => void>();
+  /** The last stream frame of the batch being observed (the barrier's clock). */
+  private batchEnd = 0;
+  /** A repeatable run: batch ends that waited for something late, and the wait, ms. */
+  private barrierWaits = 0;
+  private barrierWaitMs = 0;
+  /** The fast loop's count of libraries adopted after their stamped frame (`FastToSlow` `lateLibraries`). */
+  private lateLibraries = 0;
+  /**
+   * A repeatable run that lost a batch (the fast loop dropped it): the stream frame where the
+   * gap was seen. From there results apply as they arrive, as at Max (the run is not repeatable
+   * any more, and waiting at the barrier would only drop more).
+   */
+  private barrierLostAt: number | null = null;
   private readonly defer: (fn: () => void) => void;
   private readonly timer: (fn: () => void, ms: number) => () => void;
 
@@ -589,6 +622,9 @@ export class SlowRunner {
       },
       get lookbackLive() {
         return r.lookbackLive;
+      },
+      get barrierOn() {
+        return r.barrierOn;
       },
       get pace() {
         return r.pace;
@@ -814,6 +850,32 @@ export class SlowRunner {
   }
 
   /**
+   * Discover of a repeatable run at a target speed: hand-outs at batch ends, answers applied at
+   * the apply barrier (`ApplyBarrier`). At Max nothing waits: results apply as they arrive.
+   */
+  private get barrierOn(): boolean {
+    return (
+      this.init?.repeatable === true &&
+      this.barrierLostAt === null &&
+      this.pace.fps > 0 &&
+      this.run === 1 &&
+      this.scope === 'all' &&
+      !this.ending &&
+      !this.final &&
+      this.finalSettle.state === null &&
+      this.factorWait === null
+    );
+  }
+
+  /**
+   * A reset or a new run is on its way (not queued: a batch may be waiting at the barrier for an
+   * answer that will never come). Nothing more is waited for in this run.
+   */
+  abortBarrier(session: number): void {
+    if (session >= this.session) this.bar.abort();
+  }
+
+  /**
    * `handle`, but a batch of frames gives way between frames (`pause`) while
    * visits are out, so their results are applied and the next visits handed
    * out without waiting for the whole batch (the slow worker's way of
@@ -821,14 +883,60 @@ export class SlowRunner {
    */
   async handleAsync(msg: FastToSlow, pause: () => Promise<void>): Promise<void> {
     if (msg.type !== 'frames' || msg.session !== this.session) {
+      if (msg.type === 'end' && msg.session === this.session && this.bar.size > 0)
+        await this.barrierEnd();
       this.handle(msg);
       return;
     }
     try {
       const steps = this.frameSteps(msg);
-      while (!this.handlerSpan('fast', () => steps.next()).done) await pause();
+      for (;;) {
+        const step = this.handlerSpan('fast', () => steps.next());
+        if (step.done) break;
+        await (step.value ?? pause());
+      }
     } catch (err) {
       this.fail(err);
+    }
+  }
+
+  /**
+   * Discover's last frame is in: the visits out are waited for and applied in hand-out order;
+   * look-back answers not yet applied are dropped (their requests count as cut short, as without
+   * the barrier).
+   */
+  private async barrierEnd(): Promise<void> {
+    try {
+      this.dropBarrierRequests();
+      const t0 = this.now();
+      if (!this.bar.ready(Infinity)) {
+        this.barrierWaits++;
+        await this.bar.wait(Infinity);
+        this.barrierWaitMs += this.now() - t0;
+      }
+      const loop = this.loop;
+      if (this.bar.aborted || !loop) return;
+      this.applyDue(loop, Infinity);
+      if (this.parallel) this.housekeep();
+    } catch (err) {
+      this.fail(err);
+    }
+  }
+
+  /** Apply what the barrier holds due by stream frame `frame`, in hand-out order. */
+  private applyDue(loop: SlowLoopLike, frame: number): void {
+    for (const it of this.bar.takeDue(frame)) {
+      const m = it.result!;
+      if (it.kind === 'visit') {
+        this.busy[it.key] = false;
+        if (m.type === 'result') this.applyVisit(it.key, m);
+        continue;
+      }
+      const lm = m as LookbackToSlow;
+      const req = this.lbBar.get(it.id);
+      this.lbBar.delete(it.id);
+      if (req) this.lookbackAnswer(lm, it.key, req, loop);
+      else if (lm.type === 'frames') this.releaseFrames(lm, it.key);
     }
   }
 
@@ -861,6 +969,7 @@ export class SlowRunner {
           ...(run.csettle ? { csettle: true } : {}),
           ...(run.settleFraction !== undefined ? { settleFraction: run.settleFraction } : {}),
           ...(run.sessionStarts ? { sessionStarts: run.sessionStarts } : {}),
+          ...(run.repeatable ? { repeatable: true } : {}),
         };
         this.loop = this.clock.span('setup', () => this.deps.create(this.init!));
         // The Discover visit rate's schedule (`fixed` or `auto`; `discover/visitrate.rs`) sets
@@ -908,7 +1017,8 @@ export class SlowRunner {
     try {
       this.reviewed.push(msg.candidates);
       this.addReviewed();
-      this.dispatch();
+      // A repeatable run hands out visits at batch ends only.
+      if (!this.barrierOn) this.dispatch();
     } catch (err) {
       this.fail(err);
     }
@@ -926,23 +1036,12 @@ export class SlowRunner {
     if (msg.session !== this.session || !this.loop) return;
     try {
       if (msg.type === 'error') throw new Error(`visit worker ${i}: ${msg.message}`);
+      // A repeatable run: held until its batch end (`applyDue`).
+      if (this.bar.arrive('visit', i, msg)) return;
       this.busy[i] = false;
-      this.det?.row(
-        'apply',
-        this.observed,
-        this.slotSeq[i],
-        i,
-        fnvBytes(msg.bytes),
-        this.loop.work,
-      );
-      const t0 = this.now();
-      this.clock.span('visit', () => this.tm('visit.apply', () => this.loop!.applyJob(msg.bytes)));
-      this.jobOwnerMs += this.now() - t0;
-      this.jobs++;
-      this.visitMsSum += msg.ms;
-      this.visitMsN++;
-      this.visitBusy[i] = (this.visitBusy[i] ?? 0) + msg.ms;
-      if (this.jobSettle[i]) this.settleVisitBusy[i] = (this.settleVisitBusy[i] ?? 0) + msg.ms;
+      this.applyVisit(i, msg);
+      // (A visit handed out before a repeatable run's barrier began: nothing more on arrival.)
+      if (this.barrierOn) return;
       this.housekeep();
       if (this.finalSettle.state) {
         // The settle keeps its visit workers busy, within the visits its frames earned; a request
@@ -966,6 +1065,20 @@ export class SlowRunner {
     }
   }
 
+  /** A visit's result into the slow loop (no housekeeping, no hand-out). */
+  private applyVisit(i: number, msg: Extract<VisitToOwner, { type: 'result' }>): void {
+    const loop = this.loop!;
+    this.det?.row('apply', this.observed, this.slotSeq[i], i, fnvBytes(msg.bytes), loop.work);
+    const t0 = this.now();
+    this.clock.span('visit', () => this.tm('visit.apply', () => loop.applyJob(msg.bytes)));
+    this.jobOwnerMs += this.now() - t0;
+    this.jobs++;
+    this.visitMsSum += msg.ms;
+    this.visitMsN++;
+    this.visitBusy[i] = (this.visitBusy[i] ?? 0) + msg.ms;
+    if (this.jobSettle[i]) this.settleVisitBusy[i] = (this.settleVisitBusy[i] ?? 0) + msg.ms;
+  }
+
   private fail(err: unknown): void {
     this.deps.toMain.postMessage({
       type: 'error',
@@ -976,7 +1089,8 @@ export class SlowRunner {
   }
 
   private frames(msg: Extract<FastToSlow, { type: 'frames' }>): void {
-    for (const _ of this.frameSteps(msg));
+    for (const wait of this.frameSteps(msg))
+      if (wait) throw new Error('a repeatable run waits at its batch ends (`handleAsync`)');
   }
 
   /**
@@ -987,10 +1101,18 @@ export class SlowRunner {
    * slow worker can observe them (a settle never drops a batch) its visit workers would sit idle
    * and make fewer visits per frame.
    */
-  private *frameSteps(msg: Extract<FastToSlow, { type: 'frames' }>): Generator<void, void> {
+  private *frameSteps(
+    msg: Extract<FastToSlow, { type: 'frames' }>,
+  ): Generator<Promise<void> | void, void> {
     const loop = this.loop;
     const init = this.init;
     let observed = 0;
+    // A gap before this batch: the fast loop dropped one, so the run cannot be repeated.
+    if (this.batchEnd > 0 && msg.start > this.batchEnd && this.barrierOn)
+      this.barrierLostAt = this.batchEnd;
+    this.batchEnd = msg.start + msg.count;
+    if (msg.lateLibraries !== undefined)
+      this.lateLibraries = Math.max(this.lateLibraries, msg.lateLibraries);
     let maxStep = 0;
     const t0 = this.now();
     // The wait in the inbox: sent by the fast worker (epoch clock) until processing starts here.
@@ -1060,10 +1182,29 @@ export class SlowRunner {
           maxStep = Math.max(maxStep, this.now() - s);
           if (lib) this.publish(lib);
         }
+        // A repeatable run: what is due by this batch end, waited for and applied in hand-out
+        // order (also the rest, once the barrier is off: the target went to Max).
+        if (this.bar.size > 0 && !this.bar.aborted) {
+          const until = this.barrierOn ? this.batchEnd : Infinity;
+          if (!this.bar.ready(until)) {
+            endLive();
+            const tw = this.now();
+            this.barrierWaits++;
+            yield this.bar.wait(until);
+            this.barrierWaitMs += this.now() - tw;
+            // Dropped meanwhile (a failure, a reset or a new run).
+            if (this.loop !== loop || this.bar.aborted) return;
+            beginLive();
+          }
+          this.applyDue(loop, until);
+        }
         if (this.parallel) {
           const s = this.now();
           this.housekeep();
           maxStep = this.now() - s;
+          // History-review candidates wait for every visit out; under the barrier the last one is
+          // applied here, not on arrival.
+          if (this.barrierOn) this.addReviewed();
           this.dispatch();
         }
         if (this.lookbackLive) {
@@ -1131,6 +1272,7 @@ export class SlowRunner {
         }
         this.busy[i] = true;
         this.jobSettle[i] = settling;
+        if (this.barrierOn) this.bar.issue('visit', i, this.batchEnd);
         handed++;
         const tp = this.now();
         this.visits[i].postMessage({ type: 'job', session: this.session, bytes }, [
@@ -1173,18 +1315,29 @@ export class SlowRunner {
     bgs?.gov.update(this.epochNow(), this.version > 0);
     const pool = this.settlePorts();
     let sent = false;
-    if (this.lbPort && !this.lbReqs[0]) {
+    if (this.lbPort && this.lbRoom(0)) {
       // With a settle pool, worker 0 is need-driven only.
       if (pool.length > 0 || !bgs) sent = this.needRequest(loop);
       else sent = this.bgSettle.turnRequest(loop, bgs);
     }
     if (bgs)
       for (const i of pool) {
-        if (this.lbReqs[i]) continue;
+        if (!this.lbRoom(i)) continue;
         if (!this.bgSettle.bgSettleRequest(loop, bgs, i)) break;
         sent = true;
       }
     return sent;
+  }
+
+  /**
+   * Look-back worker `port` can take a request now: none out on it, or under the barrier fewer
+   * than `APPLY_LAG_BATCHES` (one goes out per batch end, and each is applied that many batches
+   * later, so the count depends on frames only).
+   */
+  private lbRoom(port: number): boolean {
+    let out = this.lbReqs[port] ? 1 : 0;
+    for (const q of this.lbBar.values()) if (q.port === port) out++;
+    return out < (this.barrierOn ? APPLY_LAG_BATCHES : 1);
   }
 
   /**
@@ -1202,6 +1355,8 @@ export class SlowRunner {
   ): void {
     const id = this.lbNextId++;
     const req: LookbackReq = { id, port, kind, items, ...(skip ? { skip } : {}) };
+    // Under the barrier a request may wait behind others, so it names the library to solve with.
+    const barrier = !hold && kind !== 'end' && this.barrierOn;
     this.det?.row('req', this.observed, id, port, kind, items.length, fnvBytes(flat));
     // `flat` is a fresh array (from WASM or built here): transferred as is; `skip` is copied.
     this.clock.span(kind, () =>
@@ -1216,12 +1371,31 @@ export class SlowRunner {
           // (Not on factors: they hold Discover's own preprocessed frames, see `relayed`.)
           ...(kind === 'end' && !this.factorLive ? { final: true } : {}),
           ...(hold ? { hold: true } : {}),
+          ...(barrier ? { version: this.version } : {}),
         },
         [flat.buffer as ArrayBuffer],
       ),
     );
     if (hold) this.lbHeld = req;
+    else if (barrier) this.awaitBarrier(req);
     else this.awaitAnswer(req);
+  }
+
+  /** `req` went out under the barrier: held there until due, at most `LOOKBACK.timeoutMs`. */
+  private awaitBarrier(req: LookbackReq): void {
+    const { port, id } = req;
+    this.lbBar.set(id, req);
+    this.bar.issue('lookback', port, this.batchEnd, id);
+    this.lbSentAt[port] = this.epochNow();
+    this.lbBarTimers.set(
+      id,
+      this.timer(() => {
+        if (!this.lbBar.delete(id)) return;
+        this.lbBarTimers.delete(id);
+        this.bar.cancel('lookback', port, id);
+        this.timedOut(req);
+      }, LOOKBACK.timeoutMs),
+    );
   }
 
   /**
@@ -1256,15 +1430,20 @@ export class SlowRunner {
       if (failed?.id !== id) return;
       this.lbTimers[port] = null;
       this.lbReqs[port] = null;
-      const why = `no answer within ${LOOKBACK.timeoutMs / 1000} s`;
-      // The settle's own request only turns the settle off; look-back and the Final settle go on.
-      if (failed.kind === 'csettle') this.bgSettle.bgSettleFailed(failed, why);
-      else if (failed.kind === 'end' && port > 0)
-        this.finalSettle.finalSettlePortFailed(failed, why);
-      else this.lookbackFailed(why);
-      if (this.finalSettle.state) this.finalSettle.settlePump();
-      else if (this.lookbackLive) this.lookbackRequest();
+      this.timedOut(failed);
     }, LOOKBACK.timeoutMs);
+  }
+
+  /** `failed` got no answer in time (its late answer is ignored). */
+  private timedOut(failed: LookbackReq): void {
+    const why = `no answer within ${LOOKBACK.timeoutMs / 1000} s`;
+    // The settle's own request only turns the settle off; look-back and the Final settle go on.
+    if (failed.kind === 'csettle') this.bgSettle.bgSettleFailed(failed, why);
+    else if (failed.kind === 'end' && failed.port > 0)
+      this.finalSettle.finalSettlePortFailed(failed, why);
+    else this.lookbackFailed(why);
+    if (this.finalSettle.state) this.finalSettle.settlePump();
+    else if (this.lookbackLive && !this.barrierOn) this.lookbackRequest();
   }
 
   /**
@@ -1309,6 +1488,14 @@ export class SlowRunner {
       this.lbPortBusy[port] = (this.lbPortBusy[port] ?? 0) + busy;
       if (req?.kind === 'end') this.lbPortEndBusy[port] = (this.lbPortEndBusy[port] ?? 0) + busy;
     }
+    // A request out under the barrier: held until its batch end (`applyDue`).
+    const held = msg.session === this.session ? this.lbBar.get(msg.id) : undefined;
+    if (loop && held?.port === port) {
+      this.lbBarTimers.get(msg.id)?.();
+      this.lbBarTimers.delete(msg.id);
+      this.bar.arrive('lookback', port, msg, msg.id);
+      return;
+    }
     if (msg.session !== this.session || !loop || !req || msg.id !== req.id) {
       // Its time was spent all the same: counted apart (only this session's).
       if (msg.type === 'frames' && msg.session === this.session)
@@ -1317,9 +1504,19 @@ export class SlowRunner {
       if (msg.type === 'frames') this.releaseFrames(msg, port);
       return;
     }
-    this.lbReqs[port] = null;
     this.lbTimers[port]?.();
     this.lbTimers[port] = null;
+    this.lookbackAnswer(msg, port, req, loop);
+  }
+
+  /** An answer to `req`, out on `port`: fed to the slow loop, then the next request. */
+  private lookbackAnswer(
+    msg: LookbackToSlow,
+    port: number,
+    req: LookbackReq,
+    loop: SlowLoopLike,
+  ): void {
+    if (this.lbReqs[port]?.id === req.id) this.lbReqs[port] = null;
     this.det?.row(
       'ans',
       this.observed,
@@ -1392,7 +1589,8 @@ export class SlowRunner {
       return;
     }
     if (this.finalSettle.state) this.finalSettle.settlePump();
-    else if (this.lookbackLive) this.lookbackRequest();
+    // (A repeatable run asks at its batch ends only.)
+    else if (this.lookbackLive && !this.barrierOn) this.lookbackRequest();
   }
 
   private observeLookback(
@@ -1437,6 +1635,7 @@ export class SlowRunner {
    */
   private cancelRequests(): void {
     this.dropHeld();
+    this.dropBarrierRequests();
     for (let i = 0; i < this.lbReqs.length; i++) {
       const req = this.lbReqs[i];
       if (!req) continue;
@@ -1446,6 +1645,23 @@ export class SlowRunner {
       this.lbTimers[i]?.();
       this.lbTimers[i] = null;
     }
+  }
+
+  /**
+   * The look-back requests out under the barrier stop being waited for (as `cancelRequests`):
+   * answers held give their buffers back, late ones are ignored on arrival.
+   */
+  private dropBarrierRequests(): void {
+    for (const it of this.bar.removeKind('lookback')) {
+      const m = it.result;
+      if (m && m.type === 'frames') this.releaseFrames(m, it.key);
+    }
+    for (const req of this.lbBar.values())
+      if (req.kind === 'csettle' && this.bgSettle.bgs)
+        this.bgSettle.bgs.dropped += req.items.length;
+    for (const cancel of this.lbBarTimers.values()) cancel();
+    this.lbBar.clear();
+    this.lbBarTimers.clear();
   }
 
   /** The user's "Stop settling": publish the final library at once, with what was refined. */
@@ -1616,9 +1832,18 @@ export class SlowRunner {
           const after = this.settlePorts().length;
           if (after !== before) this.bgSettle.bgs?.gov.setWorkers(after);
         }
-        this.deps.toFast.postMessage({ type: 'library', session: this.session, version, bytes }, [
-          bytes.buffer as ArrayBuffer,
-        ]);
+        // A repeatable run: stamped with the batch it was published at (the fast loop adopts it a
+        // fixed number of frames later).
+        this.deps.toFast.postMessage(
+          {
+            type: 'library',
+            session: this.session,
+            version,
+            bytes,
+            ...(this.barrierOn ? { frame: this.batchEnd } : {}),
+          },
+          [bytes.buffer as ArrayBuffer],
+        );
         const init = this.init!;
         const library: LibraryView = {
           version,
@@ -1730,6 +1955,16 @@ export class SlowRunner {
       editScope: this.scope,
       ...(this.lbOn || this.factorOn ? { lookback: this.lookbackStatus(loop) } : {}),
       visitRate: visitRateCounters(loop.visitRateStats(), loop.visitSchedule()),
+      ...(this.init?.repeatable
+        ? {
+            repeatable: {
+              barrierWaits: this.barrierWaits,
+              barrierWaitMs: this.barrierWaitMs,
+              lateLibraries: this.lateLibraries,
+              lostAt: this.barrierLostAt,
+            },
+          }
+        : {}),
     };
     // Last, so the snapshot includes the time spent building this status.
     status.accounting = this.workStatus();
@@ -1805,6 +2040,9 @@ export class SlowRunner {
     this.askTimer?.();
     this.askTimer = null;
     this.lbReqs = [];
+    for (const cancel of this.lbBarTimers.values()) cancel();
+    this.lbBar.clear();
+    this.lbBarTimers.clear();
     // (The look-back worker's run is reset too, which lets a held request go.)
     this.lbHeld = null;
     this.lbPortOff = [];
@@ -1820,5 +2058,13 @@ export class SlowRunner {
     this.bgSettle.bgs = null;
     this.settleStatus = undefined;
     this.stillMoving = null;
+    // A batch waiting at the barrier goes on (and sees the loop gone).
+    this.bar.abort();
+    this.bar = new ApplyBarrier();
+    this.batchEnd = 0;
+    this.barrierWaits = 0;
+    this.barrierWaitMs = 0;
+    this.lateLibraries = 0;
+    this.barrierLostAt = null;
   }
 }

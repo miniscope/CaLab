@@ -87,3 +87,17 @@ export function visibleRect(view: FovView): [number, number, number, number] {
   const s = 1 / view.zoom;
   return [view.u - s / 2, view.v - s / 2, s, s];
 }
+
+/**
+ * Narrowest image (CSS px) on which the overlay legend card starts open. Below it the card
+ * would cover a large share of the image, so it starts as its one-line chip.
+ */
+export const LEGEND_OPEN_MIN_PX = 480;
+
+/**
+ * Whether the overlay legend card starts open on an image `stageWidthPx` wide. A stage not
+ * laid out yet (width 0) counts as wide. Decided once per mount; the user's toggle wins after.
+ */
+export function legendStartsOpen(stageWidthPx: number): boolean {
+  return !(stageWidthPx > 0) || stageWidthPx >= LEGEND_OPEN_MIN_PX;
+}

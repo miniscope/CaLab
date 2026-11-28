@@ -222,6 +222,15 @@ export class FastLoop {
   private qcFrame = 0;
   private qcRefreshDeferred = false;
   private pendingLibrary: Uint8Array | null = null;
+  /**
+   * A repeatable run: stamped libraries waiting for their adoption frame (`adoptFrame`), oldest
+   * first. An unstamped one goes to `pendingLibrary`.
+   */
+  private stamped: { version: number; bytes: Uint8Array; at: number }[] = [];
+  /** Stream frame the next batch starts at (the end of the last one solved). */
+  private nextStart = 0;
+  /** Stamped libraries that came after their adoption frame had been solved. */
+  private lateLibraries = 0;
   private initSent = false;
   private lastNoise = 0;
   private slowFrame = 0;
@@ -302,12 +311,29 @@ export class FastLoop {
       this.pool.release(msg.frames);
       this.slowFrame = Math.max(this.slowFrame, msg.start + msg.count);
     } else if (msg.type === 'library') {
+      if (msg.frame !== undefined) {
+        const at = this.adoptFrame(msg.frame);
+        // Too late for its frame: adopted at the next batch, and counted.
+        if (at < this.nextStart) this.lateLibraries++;
+        if (msg.version > this.version)
+          this.stamped.push({ version: msg.version, bytes: msg.bytes, at });
+      }
       // Only the newest matters: an older pending version is replaced.
-      if (msg.version > this.version) this.pendingLibrary = msg.bytes;
+      else if (msg.version > this.version) this.pendingLibrary = msg.bytes;
       // The compress worker back-fills with the newest library, also the
       // final one, which arrives after the last batch and is never applied here.
       this.feed?.library(msg.version, msg.bytes);
     }
+  }
+
+  /**
+   * A repeatable run: the first stream frame solved with a library published at the batch that
+   * ended at stream frame `frame`. One batch more than the forward buffers can hold: while no
+   * batch is dropped the fast loop has not started that batch when the library arrives, as the
+   * slow worker sends it before the ack that frees a buffer.
+   */
+  adoptFrame(frame: number): number {
+    return frame + (this.o.poolSize + 1) * this.o.batchSize;
   }
 
   /**
@@ -323,7 +349,9 @@ export class FastLoop {
     registered?: RegisteredPreprocessor,
   ): CellsBatch {
     const t0 = now();
+    this.takeStamped(start);
     this.applyPendingLibrary();
+    this.nextStart = start + count;
     const t1 = now();
     const n = count * this.px;
     const batch = frames.subarray(0, n);
@@ -487,6 +515,16 @@ export class FastLoop {
     this.engine?.free();
     this.engine = null;
     this.pendingLibrary = null;
+    this.stamped = [];
+  }
+
+  /** The newest stamped library due by the batch at `start` becomes the pending one (older ones go). */
+  private takeStamped(start: number): void {
+    let k = 0;
+    while (k < this.stamped.length && this.stamped[k].at <= start) k++;
+    if (k === 0) return;
+    const newest = this.stamped.splice(0, k).pop()!;
+    if (newest.version > this.version) this.pendingLibrary = newest.bytes;
   }
 
   private applyPendingLibrary(): void {
@@ -570,6 +608,7 @@ export class FastLoop {
         ...(background ? { background } : {}),
         ...(noise ? { noise } : {}),
         sentAt: performance.timeOrigin + performance.now(),
+        ...(this.lateLibraries > 0 ? { lateLibraries: this.lateLibraries } : {}),
       },
       transfer,
     );
