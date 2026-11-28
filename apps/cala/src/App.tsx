@@ -968,8 +968,7 @@ const App: Component = () => {
     store.close();
     setRunRefused(null);
     setScreen('project');
-    project.setupLayers();
-    void project.refresh();
+    void project.refresh().then(() => project.setupLayers());
   }
 
   /** Why loading a saved result's settings failed (null: it did not). */
@@ -984,8 +983,7 @@ const App: Component = () => {
     setRerunError(null);
     pipeline.params.load(r);
     setViewing(null);
-    project.setupLayers();
-    void project.refresh();
+    void project.refresh().then(() => project.setupLayers());
   }
 
   // A run writes its run file before its first frame.
@@ -1000,6 +998,7 @@ const App: Component = () => {
    */
   async function openProject(o: ProjectOpen): Promise<void> {
     leaveRun();
+    store.close();
     setScreen('project');
     await project.open(o);
     loadRecent();
@@ -1020,15 +1019,17 @@ const App: Component = () => {
   const [runRefused, setRunRefused] = createSignal<string | null>(null);
   /** A Run was clicked and its first recording or stream is being opened. */
   const [starting, setStarting] = createSignal(false);
-  /** Why the setup page's last Run did not open the run page (null: none). */
-  const setupError = () => runRefused() ?? (store.info() ? null : store.error());
   /**
    * After a Run on the setup page: the run page shows once its first recording or stream is
-   * open. When it could not be opened, no run is left going and the setup page says why.
+   * open. When it could not be opened (or its run file not written), no run is left going and
+   * the setup page says why.
    */
   function afterSetupRun(): void {
     setStarting(false);
-    if (!store.info() && multiRun.plan()) multiRun.stop();
+    if (store.info()) return;
+    const why = multiRun.error() ?? store.error();
+    if (multiRun.plan()) multiRun.stop();
+    if (why && !runRefused()) setRunRefused(why);
   }
   /** Start a run of `refs` through the project; when it cannot start, say why. */
   async function runProject(refs: string[], kind: 'joint' | 'separate' = 'separate') {
@@ -1176,6 +1177,7 @@ const App: Component = () => {
    */
   async function openLive(url: string, runNow = false) {
     leaveRun();
+    store.close();
     setScreen('project');
     await project.open({
       rootName: 'live stream',
@@ -1639,10 +1641,12 @@ const App: Component = () => {
                 onRun={runFromSetup}
                 onStartPlan={startPlanFromSetup}
                 starting={starting()}
-                runError={setupError()}
+                runError={runRefused()}
                 onView={(r) => void viewResult(r)}
                 onClose={() => {
                   setViewState({ busy: false, error: null });
+                  setRunRefused(null);
+                  store.close();
                   project.close();
                   setScreen('open');
                   loadRecent();

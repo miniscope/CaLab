@@ -1165,17 +1165,6 @@
   color: var(--text-secondary);
 }
 
-.cala-run__settings {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 2px var(--space-sm);
-}
-
-.cala-check--off {
-  color: var(--text-tertiary);
-}
-
 .cala-run__more {
   font-size: 0.8125rem;
 }
@@ -2261,35 +2250,10 @@
   gap: var(--space-3);
 }
 
-.cala-sheet__head {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-}
-
-.cala-sheet__titles {
-  flex: 1;
-  min-width: 0;
-}
-
-.cala-sheet__title {
-  margin: 0;
-  font-size: var(--font-size-title);
-  font-weight: var(--font-weight-semibold);
-  color: var(--ink-1);
-}
-
 .cala-sheet__lede {
   margin: var(--space-1) 0 0;
   font-size: var(--font-size-sm);
   color: var(--ink-2);
-}
-
-.cala-sheet__run {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
 }
 
 .cala-sheet__slot {

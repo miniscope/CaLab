@@ -428,6 +428,8 @@ const SUMMARY_OWN = new Set([
  */
 export function SettingsSummary(
   props: RunSettingsProps & {
+    /** A live stream: its Extract (if any) is the factor run's, so no Extract chip. */
+    live?: boolean;
     /** Back to the setup page with these settings, to change them and run again. */
     onChangeSettings?: () => void;
   },
@@ -468,9 +470,11 @@ export function SettingsSummary(
         <Show when={lookbackOn()}>
           <Badge tone="neutral">Final settle {level()}</Badge>
         </Show>
-        <Badge tone="neutral" testid="settings-chip-extract">
-          {s().extractRun() ? 'Extract after Discover' : 'Discover only'}
-        </Badge>
+        <Show when={!props.live}>
+          <Badge tone="neutral" testid="settings-chip-extract">
+            {s().extractRun() ? 'Extract after Discover' : 'Discover only'}
+          </Badge>
+        </Show>
         <Show when={!s().discover()}>
           <Badge tone="neutral">No new cells</Badge>
         </Show>

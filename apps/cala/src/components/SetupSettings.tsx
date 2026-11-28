@@ -7,7 +7,6 @@
 import { type JSX } from 'solid-js';
 import type { CellStore } from '../lib/cell-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
-import { extractAfterDiscover, setExtractAfterDiscover } from '../lib/run-stages.ts';
 import { ConfigBar, RunSettingsFields, SheetSlot, type ProjectParams } from './RunSettings.tsx';
 import { SpeedControl } from './SpeedControl.tsx';
 
@@ -45,9 +44,6 @@ export function SetupSettings(props: SetupSettingsProps): JSX.Element {
       <RunSettingsFields
         pipeline={props.pipeline}
         context="setup"
-        autoExtract={extractAfterDiscover()}
-        onAutoExtract={setExtractAfterDiscover}
-        sessionRun={true}
         frameWidth={props.frameWidth}
         projectParams={props.projectParams}
       />

@@ -126,6 +126,16 @@ test('Cala: the setup page, as screenshots', async ({ page }) => {
       await shot(`setup-multi-${scheme}-${width}`);
     }
   }
+  // A live stream's setup page (connecting opens it; nothing connects before Run).
+  for (const scheme of ['light', 'dark'] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('Cala/');
+    await page.getByTestId('live-url').fill('ws://127.0.0.1:9');
+    await page.getByTestId('live-connect').click();
+    await expect(page.getByTestId('setup-settings')).toBeVisible();
+    await shot(`setup-live-${scheme}-1440`);
+  }
   // The run page's read-only Settings used, opened, from the one-session project (last: a run
   // cut short here leaves a saved run file in browser storage, which the setup page then lists).
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -514,6 +524,22 @@ test("Cala: project defaults and a session's own value reach the run file; its e
     '/scales/cell_diameter_px': 'file:cala-export.npz',
     '/motion/template_tau_s': 'file:cala-export.npz',
   });
+
+  // From a saved result back to the setup page with its settings: the first recording opened
+  // again with its unzipped tree, its current result viewed, then Run again with these settings.
+  const again = join(base, 'again', 'My_V4_Miniscope');
+  cpSync(folder, again, { recursive: true });
+  cpSync(tree, join(again, 'calab-project'), { recursive: true });
+  await page.goto('Cala/');
+  await page.getByTestId('folder-input').setInputFiles(again);
+  await page.getByTestId('view-current').click();
+  await expect(page.getByTestId('result-badge')).toBeVisible();
+  await page.getByTestId('rerun-from-result').click();
+  await expect(page.getByTestId('setup-settings')).toBeVisible();
+  await expect(page.getByTestId('config-file')).toContainText('cala-export.npz');
+  await page.getByTestId('params-advanced').locator('summary').click();
+  await expect(badge(page, '/scales/cell_diameter_px')).toHaveText('file');
+  await expect(page.getByTestId('run-refused')).toHaveCount(0);
   rmSync(base, { recursive: true, force: true });
 });
 

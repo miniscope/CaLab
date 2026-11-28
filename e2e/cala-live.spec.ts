@@ -132,6 +132,9 @@ test('Cala: an unreachable live source reports an error', async ({ page }) => {
   await page.getByTestId('folder-input').setInputFiles(folder);
   await expect(page.getByTestId('setup-settings')).toBeVisible();
   await expect(page.getByTestId('project-row')).toHaveCount(1);
+  // The stream's error is not carried over to the new project.
+  await expect(page.getByTestId('run-refused')).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
 test('Cala: a live stream settles and extracts on its factors after it ends, by default', async ({
