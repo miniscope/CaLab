@@ -64,6 +64,9 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
   50k px and the pass-k / pass-1 ratios (S2.1). Needs numpy.
 - `demix_suite.py`, `demix_metrics.py`, `demix_report.py`, `make_pair_spec.py`: the demixing suite
   (next section). `test_demix.py` tests the metric and report code (numpy and scipy; skipped without).
+- `tile_visits.py RUN...  [--md]`: share of Discover visits, visit time and work on tiles whose core (and 8-tile
+  ring) never hosts a cell, overall and per tenth of the recording, from `qc_eval --tile-visits` runs (diagnostics
+  build; `results/2026-11-28-discover-visits-on-empty-tiles.md`).
 - `test_summarize.py`: `python -m unittest discover tools/cala-eval`.
 
 ## Run
