@@ -100,6 +100,13 @@ fixed when the page loads, so reload with the record's `url_flags` for those; wh
 the record's `lookback_pool.planned_S` differs from the page's, `applyRunRecord`
 warns and returns the mismatch in `warnings`.
 
+`?debug&detlog` (measurement only, changes no decision) keeps the slow worker's
+determinism log on the page (`__calaDetlog`, `src/lib/detlog.ts`): one row per batch,
+visit take and apply, library published, look-back request and answer, each stamped
+with the live frames observed so far. `scripts/memory-measure.mjs --detlog` saves it as
+`<tag>-detlog.json`, and `scripts/detlog-diff.mjs a.json b.json` names where two runs
+first differ. It is listed in `url_flags` like the other flags.
+
 A record of a `curve` or `auto` run also gives `curve` (`settingsFromRecord`): its
 realised `target_speed.changes` as `{ points: [{ at, fps }] }`, `at` the share of the
 recording (0 to 1) and `fps` a number or `'max'`, repeats merged. With `?debug`,

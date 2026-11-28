@@ -293,7 +293,7 @@ export function createCellStore(
       } else if (st.stillMoving) setStillMoving(stillMovingMap(st.stillMoving));
       setStatus(st);
       for (const fn of statusListeners) fn(st);
-    } else setError(msg.message);
+    } else if (msg.type === 'error') setError(msg.message);
   }
 
   /**

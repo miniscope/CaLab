@@ -43,6 +43,10 @@
  *   each work reading and logged. `--lbpool S` overrides the pool size (`?debug&lbpool=S`, 0
  *   included); `--needfirst`: one worker, need-driven look-back first (`?debug&needfirst`);
  *   `--csettle-off`: no Background settle (`&csettle=0`).
+ *   `--detlog`: the slow worker's determinism log (`?debug&detlog`), saved as `<tag>-detlog.json`
+ *   once Discover has settled (`scripts/detlog-diff.mjs` names where two runs first differ).
+ *   Every run prints the page URL it opened and fails when `--pacefps`, `visits=` or `--lbpool`
+ *   did not take effect (`FLAGS_CHECK`).
  *   `--headed` runs system Chrome with a real GPU (headless SwiftShader hides memory behaviour).
  *   `--profile-slow d20:10,s5:10` (measurement): CPU profiles of the slow worker, each
  *   `d<start>:<len>` seconds after Discover started or `s<start>:<len>` seconds after its last
@@ -113,6 +117,9 @@ const csQuery0 = csettle
 // `--smooth 0`: smooth playback off (the comparison run).
 const smoothOpt = opt('--smooth', '');
 const lbPool = opt('--lbpool', '');
+// `--detlog`: the slow worker's determinism log (`?debug&detlog`), saved as `<tag>-detlog.json`
+// once Discover has settled; `scripts/detlog-diff.mjs` compares two of them.
+const detlog = args.includes('--detlog');
 // `--query '&a=b'`: extra URL parameters as given (e.g. `&visitrate=off`).
 const extraQuery = opt('--query', '');
 const csQuery =
@@ -122,7 +129,8 @@ const csQuery =
   (smoothOpt ? `&smooth=${smoothOpt}` : '') +
   (lbPool !== '' ? `&lbpool=${lbPool}` : '') +
   (args.includes('--needfirst') ? '&needfirst' : '') +
-  (args.includes('--csettle-off') ? '&csettle=0' : '');
+  (args.includes('--csettle-off') ? '&csettle=0' : '') +
+  (detlog ? '&detlog' : '');
 mkdirSync(out, { recursive: true });
 const udd = join(out, `udd-${tag}`);
 rmSync(udd, { recursive: true, force: true });
@@ -372,7 +380,12 @@ const fmt = (r) => {
 };
 
 let t0 = Date.now();
-await page.goto(`${url}?debug${lookback && !toggle ? '' : '&lookback=0'}${csQuery}`);
+const pageUrl = `${url}?debug${lookback && !toggle ? '' : '&lookback=0'}${csQuery}`;
+L(`URL ${pageUrl}`);
+await page.goto(pageUrl);
+const pageHref = await page.evaluate(() => window.location.href);
+L(`PAGE_URL ${pageHref}`);
+if (pageHref !== pageUrl) throw new Error(`the page opened ${pageHref}, not ${pageUrl}`);
 await attachPage();
 
 // ---- `--profile-slow`: CPU profiles of the slow worker (measurement only) ----
@@ -832,6 +845,36 @@ async function saveWork() {
     writeFileSync(join(out, `${tag}-display.json`), JSON.stringify(d));
 }
 
+/**
+ * Whether the page runs with the asked speed and visit workers, from its first work reading that
+ * has a pace readout (false: no such reading yet). Throws on a mismatch, so a run whose URL flags
+ * did not take effect never passes as the configuration it was asked for.
+ */
+async function checkFlags() {
+  const w = await page.evaluate(() => window.__calaWork?.at(-1) ?? null).catch(() => null);
+  if (!w?.work) return false;
+  const visitsAsked = new URLSearchParams(csQuery).get('visits');
+  const got = { pace: w.pace?.target ?? null, visitWorkers: w.work.visit?.length ?? null };
+  L(`FLAGS_CHECK ${JSON.stringify(got)}`);
+  if (paceFps && got.pace !== Number(paceFps))
+    throw new Error(`--pacefps ${paceFps} asked, the page paces at ${got.pace}`);
+  if (visitsAsked !== null && got.visitWorkers !== Number(visitsAsked))
+    throw new Error(`visits=${visitsAsked} asked, the page has ${got.visitWorkers} visit workers`);
+  return true;
+}
+
+/** The page's determinism log (`__calaDetlog`), as `<tag>-detlog.json`. */
+async function saveDetlog() {
+  const d = await page.evaluate(() => window.__calaDetlog ?? null).catch(() => null);
+  if (!d) {
+    L('DETLOG none');
+    return;
+  }
+  writeFileSync(join(out, `${tag}-detlog.json`), JSON.stringify(d));
+  L(`DETLOG ${d.rows.length} rows (session ${d.session})`);
+}
+
+let flagsChecked = false;
 let finishedEarly = false;
 let pacedLater = false;
 let poolJoinLogged = false;
@@ -850,6 +893,7 @@ while (!stop) {
     .evaluate(() => document.querySelector('[data-testid=work-debug]')?.textContent ?? '')
     .catch(() => '');
   if (wtxt) L(`WORK ${r.t.toFixed(0)}s\n${wtxt}`);
+  if (!flagsChecked) flagsChecked = await checkFlags();
   if (paceAfter.length === 2 && r.st?.pst === 'running' && r.t > paceAfter[0] && !pacedLater) {
     pacedLater = true;
     L(`PACE_AFTER ${r.t.toFixed(1)}s -> ${paceAfter[1]} fps`);
@@ -898,6 +942,13 @@ while (!stop) {
     if (settled && discoverDoneAt === null) {
       discoverDoneAt = r.t;
       L(`DISCOVER_SETTLED ${r.t.toFixed(1)}s ${JSON.stringify(r.st.lb)}`);
+      // `--lbpool S`: the Final settle runs on worker 0 and the S pool workers.
+      const settleWorkers = r.st.lb?.settle?.workers;
+      if (lbPool !== '' && round === 1 && settleWorkers !== Number(lbPool) + 1)
+        throw new Error(
+          `--lbpool ${lbPool} asked, the Final settle ran on ${settleWorkers} workers`,
+        );
+      if (detlog && round === 1) await saveDetlog();
       if (round === 1) await probeReport();
       if (extract) {
         extractClicked = true;
