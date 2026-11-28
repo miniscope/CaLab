@@ -9,20 +9,20 @@ in those folders). Human docs: `README.md`, `docs/ARCHITECTURE.md`, `docs/CONTRI
 
 ## What lives where
 
-| Path                | What it is                                                                                                |
-| ------------------- | --------------------------------------------------------------------------------------------------------- |
-| `apps/catune`       | CaTune: interactive deconvolution parameter tuning (SolidJS)                                              |
-| `apps/cadecon`      | CaDecon: automated InDeCa deconvolution                                                                   |
-| `apps/cala`         | cala: streaming raw 1-photon video to footprints and traces, in the browser (WASM + WebGPU)               |
-| `apps/cabana`       | CaBaNA: behavioural and neural analysis (placeholder)                                                     |
-| `apps/admin`        | Admin: community submissions and analytics                                                                |
-| `apps/_template`    | Scaffold for `npm run new-app` (see `docs/NEW_APP.md`)                                                    |
+| Path                | What it is                                                                                                           |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `apps/catune`       | CaTune: interactive deconvolution parameter tuning (SolidJS)                                                         |
+| `apps/cadecon`      | CaDecon: automated InDeCa deconvolution                                                                              |
+| `apps/cala`         | cala: streaming raw 1-photon video to footprints and traces, in the browser (WASM + WebGPU)                          |
+| `apps/cabana`       | CaBaNA: behavioural and neural analysis (placeholder)                                                                |
+| `apps/admin`        | Admin: community submissions and analytics                                                                           |
+| `apps/_template`    | Scaffold for `npm run new-app` (see `docs/NEW_APP.md`)                                                               |
 | `packages/*`        | Shared TS (`@calab/core`, `compute`, `io`, `project`, `ui`, `community`, `community-ui`, `tutorials`, `vite-config`) |
-| `crates/solver`     | Rust deconvolution solver: WASM (`jsbindings`) and the Python extension (`pybindings`)                    |
-| `crates/cala`       | Rust cala engine (WASM); eval binaries in `crates/cala/examples`                                          |
-| `python/`           | `calab` Python package: a bridge only (data in and out of the browser apps, PyO3 of the solver)           |
-| `tools/cala-eval`   | Paired multi-seed evaluation of cala; `results/` holds the dated results notes                            |
-| `e2e/`, `supabase/` | Playwright smoke tests; Supabase migrations, RLS tests and edge functions                                 |
+| `crates/solver`     | Rust deconvolution solver: WASM (`jsbindings`) and the Python extension (`pybindings`)                               |
+| `crates/cala`       | Rust cala engine (WASM); eval binaries in `crates/cala/examples`                                                     |
+| `python/`           | `calab` Python package: a bridge only (data in and out of the browser apps, PyO3 of the solver)                      |
+| `tools/cala-eval`   | Paired multi-seed evaluation of cala; `results/` holds the dated results notes                                       |
+| `e2e/`, `supabase/` | Playwright smoke tests; Supabase migrations, RLS tests and edge functions                                            |
 
 Packages are consumed as TS source (`main`/`exports` point at `src/`). Module boundaries are
 ESLint-enforced: only `packages/core/src/wasm-adapter.ts` imports `crates/solver/pkg/`, only
