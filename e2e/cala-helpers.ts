@@ -2,7 +2,16 @@ import { readFileSync } from 'node:fs';
 import type { Page } from '@playwright/test';
 import { expect } from './fixtures.ts';
 
-/** The .npz export of the run, as downloaded bytes. */
+/**
+ * Press Run on the pre-run sheet: opening a recording loads it and shows the sheet, and
+ * Discover starts only on Run. The sheet is in the Run tab, which this selects first.
+ */
+export async function startRun(page: Page): Promise<void> {
+  await page.getByRole('tab', { name: 'Run', exact: true }).click();
+  await page.getByTestId('run-start').click();
+}
+
+/** The .npz export of the run (the run rail's Export menu), as downloaded bytes. */
 export async function exportNpz(page: Page): Promise<Buffer> {
   // A second export finds the menu still open: a click on its summary would close it.
   const menu = page.getByTestId('export-menu');
