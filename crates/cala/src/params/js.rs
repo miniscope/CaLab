@@ -43,7 +43,8 @@ struct Wire {
     context: Context,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fingerprint: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Written for TS readers, never read back (it is rebuilt).
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     engine: Option<EngineView>,
 }
 

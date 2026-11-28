@@ -11,7 +11,6 @@ import { CSETTLE } from '../lib/settle.ts';
 import type { LookbackToSlow, SlowToLookback } from '../workers/lookback-types.ts';
 import type { FastToSlow, SlowInit, SlowToFast, SlowToMain } from '../workers/slow-types.ts';
 import { fakeLib, INIT as BASE_INIT, stubSlowLoop } from './slow-fixtures.ts';
-import { DEFAULT_PARAMS } from './params-fixtures.ts';
 
 const INIT: Extract<FastToSlow, { type: 'init' }> = { ...BASE_INIT, lookback: true };
 

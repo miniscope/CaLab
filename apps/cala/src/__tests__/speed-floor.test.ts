@@ -5,7 +5,6 @@ import {
   FLOOR_LADDER,
   FloorMeter,
   FloorTracker,
-  NEED_RATE,
   floorText,
   snapToLadder,
   speedFloor,
@@ -13,7 +12,6 @@ import {
   type FloorInputs,
 } from '../lib/speed-floor.ts';
 import { emptyLookbackWork, emptyWork, type WorkStatus } from '../lib/work-meter.ts';
-import { LOOKBACK } from '../lib/slow-runner.ts';
 
 const base: FloorInputs = {
   cap: 2,

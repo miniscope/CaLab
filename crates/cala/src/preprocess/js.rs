@@ -574,7 +574,7 @@ impl JsFlatFieldEstimator {
         init_panic_hook();
         let dims = Dims::new(width as usize, height as usize)
             .map_err(|e| js_err("FlatFieldEstimator", e))?;
-        let cfg = params.engine().flat_field.clone();
+        let cfg = params.engine().flat_field;
         let seed = seed_gain.map(|gain| FlatFieldSeed {
             gain,
             offset: seed_offset,

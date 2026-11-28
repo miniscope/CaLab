@@ -13,7 +13,7 @@ import type {
   VisitToOwner,
 } from '../workers/slow-types.ts';
 import { fakeLib, INIT, stubSlowLoop } from './slow-fixtures.ts';
-import { DEFAULT_PARAMS, DEFAULT_RUN } from './params-fixtures.ts';
+import { DEFAULT_RUN } from './params-fixtures.ts';
 
 function frames(start: number, count = 2): Extract<FastToSlow, { type: 'frames' }> {
   return {

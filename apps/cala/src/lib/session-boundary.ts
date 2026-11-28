@@ -5,7 +5,7 @@
  * The pipeline engines call `onSessionBoundary` when the batch they are
  * about to process starts a session (the plan cuts batches at boundaries),
  * before any of it is preprocessed. The hook itself is for observers; the
- * boundary handling runs in the stages when `PipelineOptions.sessionFix` is
+ * boundary handling runs in the stages when the params' `motion.session_fix` is
  * on (the default), measured in
  * `tools/cala-eval/results/2026-11-13-session-boundary-fix.md`:
  *
