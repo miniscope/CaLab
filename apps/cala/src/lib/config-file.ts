@@ -1,6 +1,7 @@
 /**
- * cala's config files (`calab-config`, `apps/cala/docs/config-files.md`): the params a user asked
- * for, without session ids, so one file moves between recordings and animals.
+ * cala's config files (`calab-config`; USER_GUIDE.md "Config files", example in
+ * `apps/cala/docs/example-config.json`): the params a user asked for, without session ids, so one
+ * file moves between recordings and animals.
  *
  * A file is JSON; `//` and block comments are accepted on read and never written. Its `params`
  * is a partial params object: missing keys take their defaults. Load checks it against the schema:
