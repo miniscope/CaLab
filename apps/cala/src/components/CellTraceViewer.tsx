@@ -169,6 +169,11 @@ export function CellTraceViewer(props: {
   }
   const markerTime = () =>
     props.markerFrame === null || props.markerFrame === undefined ? null : props.markerFrame / fs();
+  /**
+   * `foundTime()` as of the last `data` evaluation. The chart's draw hooks read this copy, not
+   * `props.id`: a draw can run after the cell is deselected, when the selection is stale.
+   */
+  let drawnFoundTime: number | null = null;
   /** When the cell was found, seconds; null when unknown or found at the first frame. */
   const foundTime = () => {
     const f = props.cells.firstSeen(props.id);
@@ -176,8 +181,14 @@ export function CellTraceViewer(props: {
   };
   // Read when the chart draws (a data change redraws it, see `data`).
   /* eslint-disable solid/reactivity */
+  // A memo of the component, like `span`: an inline conditional in the prop would make a memo
+  // inside the overview's own effect, which can read the selection after it went stale.
+  const beforeFoundZones = createMemo(() => {
+    const t = foundTime();
+    return t === null ? undefined : [{ startTime: 0, endTime: t, color: BEFORE_FOUND_FILL }];
+  });
   const plugins = [
-    beforeFoundPlugin(foundTime),
+    beforeFoundPlugin(() => drawnFoundTime),
     markerPlugin(markerTime),
     boundaryPlugin(() =>
       (props.boundaries ?? []).map((f) => ({
@@ -249,7 +260,7 @@ export function CellTraceViewer(props: {
 
   const data = createMemo((): uPlot.AlignedData => {
     markerTime(); // new data redraws the chart, and with it the marker and the shading
-    foundTime();
+    drawnFoundTime = foundTime();
     props.cells.tick();
     const [s, e] = view();
     const retained = span();
@@ -308,11 +319,7 @@ export function CellTraceViewer(props: {
           zoomStart={view()[0]}
           zoomEnd={view()[1]}
           onZoomChange={onZoom}
-          highlightZones={
-            foundTime() === null
-              ? undefined
-              : [{ startTime: 0, endTime: foundTime()!, color: BEFORE_FOUND_FILL }]
-          }
+          highlightZones={beforeFoundZones()}
         />
         <p class="cala-muted cala-hint" data-testid="cell-trace-history-note">
           Whole-session overview: min/max envelope.{' '}
