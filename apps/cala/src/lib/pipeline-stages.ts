@@ -1100,9 +1100,8 @@ export class BackStage {
     this.fast?.end();
   }
 
-  /** `keepSlow`: see `FastLoop.dispose`. */
-  dispose(keepSlow = false): void {
-    this.fast?.dispose(keepSlow);
+  dispose(): void {
+    this.fast?.dispose();
     this.pre?.free();
     this.pre = null;
   }

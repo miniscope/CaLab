@@ -39,14 +39,13 @@ const LOOKBACK_SNAPSHOT_EVERY = 256;
 let slowSession = -1;
 
 /**
- * Stop the running stage. `keepSlow`: a replay stage (Extract) follows or is
- * stopped, so the slow loop is not reset; otherwise it is dropped, also when the stage was an
- * Extract run, which never talks to it (the slow worker may be ended by then: see `FastLoop.dispose`).
+ * Stop the running stage and drop the slow loop, also when the stage was an Extract run, which
+ * never talks to it (the slow worker may be ended by then: see `FastLoop.dispose`).
  */
-function stopStage(keepSlow = false): void {
-  stage?.dispose(keepSlow);
+function stopStage(): void {
+  stage?.dispose();
   stage = null;
-  if (!keepSlow && slowSession >= 0) {
+  if (slowSession >= 0) {
     slowPort?.postMessage({ type: 'reset', session: slowSession } satisfies FastToSlow);
     slowSession = -1;
   }
@@ -56,8 +55,7 @@ async function handle(msg: StageMsg): Promise<void> {
   switch (msg.type) {
     case 'start': {
       const cells = msg.cells;
-      // A replay stage (Extract) keeps the slow loop and is not connected to it.
-      stopStage(cells?.library !== undefined);
+      stopStage();
       const port = cells?.library ? null : slowPort;
       if (port && !cells?.library && (cells?.discover ?? true)) slowSession = cells?.session ?? 0;
       const options = fastLoopOptions(msg.fast, cells, msg.setup.boundaries, port !== null);
@@ -112,7 +110,7 @@ async function handle(msg: StageMsg): Promise<void> {
       break;
     }
     case 'stop':
-      stopStage(msg.keepSlow === true);
+      stopStage();
       break;
   }
 }

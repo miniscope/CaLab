@@ -23,8 +23,7 @@ export type StageMsg =
   | { type: 'job'; epoch: number; id: number; job: StageJob }
   /** The recording is exhausted: C answers the request `id` with `done`. */
   | { type: 'end'; epoch: number; id: number }
-  /** `keepSlow`: see `pipeline-stop`. */
-  | { type: 'stop'; epoch: number; keepSlow?: boolean };
+  | { type: 'stop'; epoch: number };
 
 /** Upstream: a pooled buffer is free again. */
 export interface StageFree {

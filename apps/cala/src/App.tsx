@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js';
-import { leaveWarning, resultExported } from './lib/export-state.ts';
+import { clearResultExported, leaveWarning, resultExported } from './lib/export-state.ts';
 import { createEffect, createSignal, For, on, onCleanup, Show, untrack } from 'solid-js';
-import { CompactHeader, DashboardShell } from '@calab/ui';
+import { Badge, CompactHeader, DashboardShell, MeterRow } from '@calab/ui';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
 import {
   authLoading,
@@ -55,7 +55,10 @@ import { detailTabs, SideColumn } from './components/SideTabs.tsx';
 import { createQcTableState } from './components/QcTable.tsx';
 import { createSideTab, showPickedCell } from './lib/side-tab.ts';
 import { OpenFolder } from './components/OpenFolder.tsx';
-import { RunPanel, RunStatusStrip } from './components/RunPanel.tsx';
+import { RunPanel } from './components/RunPanel.tsx';
+import { ExportMenu } from './components/ExportMenu.tsx';
+import { createLiveResult } from './lib/live-export.ts';
+import { RunRail, type RailSession } from './components/RunRail.tsx';
 import { createFovLayout } from './lib/fov-layout.ts';
 import { createRunHistory } from './lib/run-history.ts';
 import { createHistoryUi, HistoryExpanded } from './components/HistoryPanel.tsx';
@@ -659,12 +662,24 @@ const App: Component = () => {
   /** The open recording's files, for a donation (null: live, or nothing open). */
   const [donationSource, setDonationSource] = createSignal<DonationSource | null>(null);
 
-  // Opening a folder starts preprocessing and motion correction right away.
+  // Opening a folder loads the recording and nothing else: the Run tab shows the pre-run sheet,
+  // and Discover starts on its Run button. The previous recording's Extract result, stage log,
+  // run history and export mark are dropped, so nothing of it shows or exports under the new label.
   async function open(files: Parameters<typeof store.openFiles>[0], label: string) {
     pipeline.stop();
+    pass2.clear();
+    stageLog.reset();
+    clearResultExported();
     await store.openFiles(files, label);
-    setDonationSource(store.info() ? { entries: files } : null);
-    if (store.info()) void pipeline.start();
+    const info = store.info();
+    if (info)
+      runHistory.reset({
+        fps: info.fps ?? 0,
+        live: false,
+        frameCount: info.frameCount,
+        workers: 0,
+      });
+    setDonationSource(info ? { entries: files } : null);
   }
 
   // ---- Multi-session runs (docs/stages.md, "Sessions") ----
@@ -983,7 +998,8 @@ const App: Component = () => {
     const i = store.info();
     return i ? sessionBoundaries(i) : [];
   };
-  // So does connecting to a live source (`?live=<url>` connects on load).
+  // Connecting to a live source starts Discover at once: its frames arrive whether or not a run
+  // reads them (`?live=<url>` connects on load).
   async function openLive(url: string) {
     pipeline.stop();
     setDonationSource(null);
@@ -1002,77 +1018,165 @@ const App: Component = () => {
     return `Session ${(info ? sessionOfFrame(info, pipeline.processed()) : 0) + 1}/${n}`;
   };
 
+  /** The rail's session ribbon: each session's state in a multi-session run (null: not one). */
+  const railSessions = (): { label: string; items: RailSession[] } | null => {
+    const label = sessionLabel();
+    const p = multiRun.plan();
+    if (!label || !p) return null;
+    const joint = p.settings.mode === 'joint';
+    const info = store.info();
+    const now = joint
+      ? info
+        ? sessionOfFrame(info, pipeline.processed())
+        : 0
+      : multiRun.current();
+    return {
+      label,
+      items: multiRun.records().map((r) => ({
+        name: r.name,
+        status: `${r.status}${r.note ? ` (${r.note})` : ''}`,
+        state:
+          r.status === 'written'
+            ? 'done'
+            : r.status === 'failed'
+              ? 'error'
+              : r.status === 'skipped'
+                ? 'off'
+                : r.index === now
+                  ? 'running'
+                  : r.index < now
+                    ? 'done'
+                    : 'waiting',
+      })),
+    };
+  };
+
+  /** A session's state word and badge tone in the session list. */
+  const sessionBadge = (r: { status: string; index: number }, current: boolean, read: boolean) => {
+    if (r.status === 'written')
+      return { tone: 'neutral' as const, icon: 'check' as const, word: 'written' };
+    if (r.status === 'failed')
+      return { tone: 'critical' as const, icon: undefined, word: 'failed' };
+    if (r.status === 'skipped')
+      return { tone: 'neutral' as const, icon: undefined, word: 'skipped' };
+    if (current) return { tone: 'discover' as const, icon: undefined, word: 'running' };
+    // A Joint run writes every session at its end; a session Discover has read past is read.
+    if (read) return { tone: 'neutral' as const, icon: 'check' as const, word: 'read' };
+    return { tone: 'neutral' as const, icon: undefined, word: r.status };
+  };
+
   /** A multi-session run's state, in the Run tab under the Run panel. */
   function SessionRunStatus() {
     return (
       <Show when={multiRun.plan()}>
-        {(p) => (
-          <section class="cala-session-run" data-testid="session-run" aria-label="Sessions">
-            <div class="cala-session-run__head">
-              <strong>
-                {LIBRARY_MODE_LABEL[p().settings.mode]} run, {p().sessions.length} sessions
-              </strong>{' '}
-              <span class="cala-muted" data-testid="session-run-status">
-                {multiRun.statusText()}
-              </span>
-            </div>
-            <Show when={project.running() && project.planState().kind === 'running'}>
-              <p class="cala-muted" data-testid="plan-progress">
-                Plan: group {(project.planState() as { group: number }).group + 1} of{' '}
-                {project.running()!.length}
-              </p>
-            </Show>
-            <ol class="cala-session-run__list">
-              <For each={multiRun.records()}>
-                {(r) => (
-                  <li
-                    classList={{
-                      'cala-session-run__current':
-                        p().settings.mode === 'separate' && r.index === multiRun.current(),
-                    }}
-                    data-testid="session-run-item"
-                  >
-                    {r.name}{' '}
-                    <span class="cala-muted">
-                      {r.status}
-                      {r.note ? ` (${r.note})` : ''}
+        {(p) => {
+          const joint = () => p().settings.mode === 'joint';
+          const nowIndex = () => {
+            const info = store.info();
+            return joint()
+              ? info
+                ? sessionOfFrame(info, pipeline.processed())
+                : 0
+              : multiRun.current();
+          };
+          const written = () => multiRun.records().filter((r) => r.status === 'written').length;
+          return (
+            <section class="cala-session-run" data-testid="session-run" aria-label="Sessions">
+              <div class="cala-session-run__head">
+                <h3 class="cala-session-run__title">Sessions</h3>
+                <Badge tone="neutral">{LIBRARY_MODE_LABEL[p().settings.mode]}</Badge>
+                <span class="cala-session-run__status" data-testid="session-run-status">
+                  {multiRun.statusText()}
+                </span>
+              </div>
+              <MeterRow
+                label="Results written"
+                value={written()}
+                min={0}
+                max={Math.max(1, p().sessions.length)}
+                display={`${written()} / ${p().sessions.length}`}
+                size="sm"
+                format={(v) => `${v} of ${p().sessions.length} sessions written`}
+              />
+              <Show when={project.running() && project.planState().kind === 'running'}>
+                <MeterRow
+                  label="Plan groups"
+                  value={(project.planState() as { group: number }).group + 1}
+                  min={0}
+                  max={Math.max(1, project.running()!.length)}
+                  display={`${(project.planState() as { group: number }).group + 1} / ${project.running()!.length}`}
+                  size="sm"
+                  testid="plan-progress"
+                  format={(v) => `Plan: group ${v} of ${project.running()!.length}`}
+                />
+              </Show>
+              <ol class="cala-session-run__list">
+                <For each={multiRun.records()}>
+                  {(r) => {
+                    const current = () =>
+                      r.status !== 'written' &&
+                      r.status !== 'failed' &&
+                      r.status !== 'skipped' &&
+                      r.index === nowIndex() &&
+                      pipeline.status() !== 'idle';
+                    const badge = () =>
+                      sessionBadge(
+                        r,
+                        current(),
+                        joint() && r.status === 'pending' && r.index < nowIndex(),
+                      );
+                    return (
+                      <li
+                        class="cala-session-run__item"
+                        classList={{ 'cala-session-run__current': current() }}
+                        data-testid="session-run-item"
+                      >
+                        <span class="cala-session-run__index num">{r.index + 1}</span>
+                        <span class="cala-session-run__name" title={r.name}>
+                          {r.name}
+                        </span>
+                        <Badge tone={badge().tone} icon={badge().icon} title={r.note ?? undefined}>
+                          {badge().word}
+                        </Badge>
+                        <Show when={r.note}>
+                          <span class="cala-session-run__note">{r.note}</span>
+                        </Show>
+                        <Show
+                          when={
+                            joint() && pipeline.boundaryFlags().find((f) => f.index === r.index)
+                          }
+                        >
+                          {(f) => <BoundaryBadge flag={f()} />}
+                        </Show>
+                      </li>
+                    );
+                  }}
+                </For>
+              </ol>
+              <Show when={multiRun.root()}>
+                {(root) => (
+                  <p class="cala-session-run__root" data-testid="session-run-root">
+                    Results:{' '}
+                    <span class="cala-session-run__path">
+                      {p().locationLabel}
+                      {root()}/
                     </span>
-                    <Show
-                      when={
-                        p().settings.mode === 'joint' &&
-                        pipeline.boundaryFlags().find((f) => f.index === r.index)
-                      }
-                    >
-                      {(f) => (
-                        <>
-                          {' '}
-                          <BoundaryBadge flag={f()} />
-                        </>
-                      )}
-                    </Show>
-                  </li>
+                  </p>
                 )}
-              </For>
-            </ol>
-            <Show when={multiRun.root()}>
-              {(root) => (
-                <p class="cala-muted" data-testid="session-run-root">
-                  Results: {p().locationLabel}
-                  {root()}/
-                </p>
-              )}
-            </Show>
-          </section>
-        )}
+              </Show>
+            </section>
+          );
+        }}
       </Show>
     );
   }
 
   /**
    * One screen, no page scroll: the field of view, square-ish and as tall as
-   * the window, on the left; on the right the run strip over one row of tabs
+   * the window, on the left; on the right the run rail over one row of tabs
    * (Run, Cell, QC, History, details), one panel with the column's height.
-   * Narrow windows stack the column under the image and scroll.
+   * Narrow windows stack rail, image and tabs, in that order, and scroll. The
+   * rail is one element in both layouts (CSS places it), so its history stays.
    */
   function Layout(lp: { info: NonNullable<ReturnType<typeof store.info>> }) {
     let main!: HTMLDivElement;
@@ -1082,6 +1186,8 @@ const App: Component = () => {
     );
     const expanded = () => historyUi.expanded() && !layout().narrow;
     const qcState = createQcTableState();
+    // A live run's traces for its export, once it has ended.
+    const liveResult = createLiveResult(pipeline, cells, () => lp.info.live !== undefined);
     const fov = () => (
       <FovPanel
         source={pipelineFovSource(pipeline)}
@@ -1107,18 +1213,13 @@ const App: Component = () => {
               availability={availability()}
               cells={cells}
               live={lp.info.live !== undefined}
-              label={store.label()}
-              width={lp.info.width}
-              height={lp.info.height}
+              liveResult={liveResult.result}
               fps={lp.info.fps ?? 0}
-              bitDepth={lp.info.bitDepth}
-              narrow={layout().narrow}
               ui={historyUi}
               factorRun={pipeline.factorRun()}
               compress={pipeline.compressRun() ? compress : undefined}
               review={review}
               onStopSettling={() => slow.stopSettling(cells.session())}
-              runRecord={runRecord}
               sessionMode={multiRun.plan()?.settings.mode ?? null}
               visible={tab.active() === 'run'}
             />
@@ -1164,6 +1265,13 @@ const App: Component = () => {
     /* eslint-enable solid/reactivity */
     const ids = tabs.map((t) => t.id);
     const tab = createSideTab('run', 'run', () => ids);
+    // A recording opened for a new run shows the Run tab, where its pre-run sheet and Run are.
+    if (
+      untrack(pipeline.status) === 'idle' &&
+      !untrack(multiRun.plan) &&
+      !untrack(() => lp.info.live)
+    )
+      tab.show('run');
     // Expanding swaps History into the large area and shows the FOV in the History tab.
     createEffect(
       on(historyUi.expanded, (x) => {
@@ -1191,22 +1299,37 @@ const App: Component = () => {
             <HistoryExpanded ui={historyUi} />
           </Show>
         </div>
-        <div class="cala-main__side">
-          <SideColumn
-            strip={
-              <RunStatusStrip
+        <div class="cala-main__rail">
+          <RunRail
+            pipeline={pipeline}
+            pass2={pass2}
+            cells={cells}
+            live={lp.info.live !== undefined}
+            fps={lp.info.fps ?? 0}
+            sessions={railSessions()}
+            onStopSettling={() => slow.stopSettling(cells.session())}
+            export={
+              <ExportMenu
                 pipeline={pipeline}
                 pass2={pass2}
-                stages={stageLog}
                 cells={cells}
+                stages={stageLog}
+                ui={historyUi}
                 live={lp.info.live !== undefined}
-                session={sessionLabel()}
+                liveResult={liveResult.result}
+                liveError={liveResult.error}
+                label={store.label()}
+                width={lp.info.width}
+                height={lp.info.height}
+                fps={lp.info.fps ?? 0}
+                bitDepth={lp.info.bitDepth}
+                runRecord={runRecord}
               />
             }
-            tabs={tabs}
-            active={tab.active()}
-            onActive={tab.set}
           />
+        </div>
+        <div class="cala-main__side">
+          <SideColumn tabs={tabs} active={tab.active()} onActive={tab.set} />
         </div>
       </div>
     );

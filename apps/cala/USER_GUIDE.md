@@ -75,21 +75,53 @@ few batches of frames is plenty.
 ## The screen
 
 The field of view fills the left of the window, as tall as the window allows. The
-right-hand column has the **run strip** at the top, always in view, and below it one
+right-hand column has the **run rail** at the top, always in view, and below it one
 row of tabs: **Run**, **Cell**, **QC**, **History**, **Correlation**, **Flat field**,
 **Timing**, **Raw file** and **Recording**. One tab shows at a time, with the column's whole
 height. Selecting a cell (in the field of view, the QC table or a neighbour link)
 opens the **Cell** tab. The arrow keys move between the tabs (Home and End to the
-first and last), and the app remembers the tab you were on. Below about 1000 px of
-width, or in a portrait window, the column moves under the image and the page scrolls.
+first and last), and the app remembers the tab you were on. A 1024 px window keeps the
+image and the column side by side (the column is at least 440 px wide). Narrower, or in a
+portrait window, the page stacks the run rail, the image and the tabs, in that order, and
+scrolls, so the run's state stays at the top.
 
-**Run strip.** Above the tabs, three boxes with arrows show the run's main steps:
-**Discover** → **Final settle** → **Extract**. Each fills with its own progress and shows
-its percent and, while it runs, its frames per second. Each step has its own colour
-(Discover blue, Final settle plum, Extract orange): the running step has an edge in that
-colour and moving stripes, a finished one is filled with it and has a ✓ (green is kept
-for QC pass and other status), and a step that will not run (look-back off, Extract
-unticked) is dimmed. A live stream gets the Final settle and Extract after it
+**Run rail.** Above the tabs, one place for every live figure of the run:
+
+- **Stage track**: one bar in three segments, **Discover**, **Final settle** and
+  **Extract**, each sized by how long it is expected to take and filling with its own
+  progress in its own colour (Discover blue, Final settle plum, Extract orange). A waiting
+  stage shows its pale tint, the running one has an edge in its colour, a finished one is
+  filled with its colour and has a ✓ (green is kept for QC pass and other status), a stage
+  that will not run (look-back off, Extract unticked, a live stream) is hatched grey, and
+  one stopped by an error has a red outline and ✕. The hatched start of Discover is the
+  setup (**Calibrating**, **Motion template**). Hover a segment for its exact frames and
+  percent. In a multi-session run a thin ribbon above it shows each session (done ✓,
+  running, waiting) and "Session 2/3".
+- **The line under it**: where the current stage is (frame 824 / 1,000, Final settle
+  300 / 1,000, Extract frame 400 / 1,000) and the whole run's time left, estimated from
+  the current stage's speed. Beside it, the stage's controls: pause and end for Discover
+  (stop for a live stream), stop for the Final settle, cancel for Extract.
+- **Cells**: the cell count of the live library, with a sparkline of it along the run
+  (the same left-to-right as the stage track). Its range starts at 0 and ends at the
+  number printed beside it (10, 20, 50, 100, ...): it rounds up and never shrinks during a
+  run. The dot is the convergence state (blue while cells are still changing, a green ✓
+  once converged, grey once Discover has ended without converging); hover for the reason,
+  the library version and its lag.
+- **Speed**: the speed achieved now, on a fixed log scale from 10 to 500 fps. The black
+  tick is the target (none at Max), the grey tick the floor (the slowest speed that still
+  gains anything).
+- **Workers busy**: how many workers' worth of time was in use over the last second, of N,
+  the most workers counted so far in this run. N never drops during a run; it grows once
+  when the Final settle starts its pool of look-back workers.
+- **Refinement**: Discover's refinement visits per frame, on a fixed 0 to 0.5 scale, with
+  the target tick and its allowed band (2/3 to 4/3 of the target) shaded. It turns amber
+  with ⚠ while the run is held slower than your Speed setting to keep refinement up.
+- **Memory**: the WebAssembly memory of the page and its workers together, on a fixed
+  0 to 4 GB scale. It is not the tab's whole footprint (JavaScript heaps in the workers,
+  transferred buffers and GPU memory are invisible to the page) and it never shrinks
+  during a run; hover the ⓘ for these limits.
+
+The figures update at most twice a second; a grey dash means not measured. A live stream gets the Final settle and Extract after it
 ends, on the factors it wrote. A recording's frames are compressed on the GPU while Discover runs (the GPU
 route, by default; `?factors=gpu` asks for the same), and its Final settle and Extract read those factors
 when they are complete; when not they say "re-reads the file" with the reason. Without WebGPU or with too
@@ -100,11 +132,7 @@ panel and the export say "the GPU compressor made Discover wait N % of its time;
 export's `compress_wait_s` says how long Discover waited. `?factors=0` turns factors off for streams and
 recordings: Discover only for a stream, and a recording's settle and Extract read the file, as before.
 `?factors=file` (experimental) compresses a recording's factors on the CPU instead. Look-back and Background settle run
-inside Discover. The cell count, the session (in a multi-session run) and the pause and
-stop controls sit beside the boxes.
-
-While a run sets up (**Calibrating**, **Motion template**) the setup progress shows
-beside the boxes, and Extract has a **Cancel** button there.
+inside Discover.
 
 **Field of view.**
 
@@ -128,24 +156,47 @@ beside the boxes, and Extract has a **Cancel** button there.
   **1:1** (one recording pixel per screen pixel). Drag to pan. While zoomed, a minimap
   in the top right shows where you are; click it to jump. Click a cell to select it.
 
-**Run tab.** The header has the convergence status and icon buttons to pause (⏸),
-restart (↻) and end Discover or stop the live run (■). Below it, three sections in the
-order you use them:
+**Run tab.** Opening a recording does not start the run. The Run tab first shows the
+**pre-run sheet**: the settings read when Discover starts, then **Speed**, and the **Run**
+button at the top of the sheet. Discover starts only when you press **Run** (the image
+stays empty until then; the **Raw file** tab already plays the recording). The settings
+are **Look-back**, **Final settle** (Thorough, Standard, Quick), **Extract after
+Discover** and **Find new cells** (on by default; off, Discover keeps tracking the cells
+it has but finds no new ones; this one applies at once, also during a run). A live stream
+has no sheet: connecting starts it. A multi-session run starts from its own **Start**
+button (the session list, or a project's run plan) and has no sheet either.
 
-- **Settings**: **Look-back**, **Final settle** (Thorough, Standard, Quick) and
-  **Extract after Discover**. Look-back and the Final settle level are read when
-  Discover starts: change them, then restart (↻); in a Separate multi-session run a
-  change applies from the next session. **More settings** holds **Find new cells**
-  (on by default; off, Discover keeps tracking the cells it has but finds no new ones).
-- **Progress**: one panel per step, **Discover**, **Final settle** and **Extract**, each
-  with the same header (name, state, percent, frames per second, time left) and bar.
-  Discover's panel has the status line (percent read, frame, frames per second), the
-  time-window control (**Run** and, when the run is long enough, **24 h**, **1 h**,
-  **10 min**, **1 min**), the whole-run strip and one overlaid plot of the convergence
-  metrics (cells, new cells per minute, churn, stable, explained, residual). The Final
-  settle and Extract panels each have a frames-per-second trace over the step (fixed
-  10 to 500 fps, log) and their facts: cells still moving and footprints settled, or
-  the traces solved so far. Then **Speed** and **Workers**. Workers is a grid of small
+Once the run has started, the header has icon buttons to pause, restart (↻) and end
+Discover or stop the live run, and the tab shows, in the order you use them:
+
+- **Settings**: one line of chips with the settings the run started with (for example
+  "Look-back on · Final settle Thorough · Extract after Discover"). Click it to open the
+  same fields. Changes to Look-back and the Final settle level **apply on Restart** (↻); in
+  a Separate multi-session run they apply from the next session.
+- **Progress**: one row per step, **Discover**, **Final settle** and **Extract**. The
+  running step is a panel with its header (name, state, percent, frames per second, time
+  left), its bar and its meter rows, each on a fixed range:
+  - Discover (with look-back): **Cells waiting for data** (of the cells found),
+    **Look-back re-read** (frames) and **Background settle** (saved frames re-read per live
+    frame, 0 to 2, the tick at the ceiling in force).
+  - Final settle: a frames-per-second trace over the step (fixed 10 to 500 fps, log),
+    **Frames re-read** (of its plan), **Cells still moving** (the tick marks where the
+    footprints count as settled), **Footprints settled** and **Visits per frame** (0 to 1),
+    with a note when it reads the factors or re-reads the file (and why), and **Stop Final
+    settle**.
+  - Extract: its frames-per-second trace, **Frames solved**, **Speed** (10 to 500 fps,
+    log) and the number of cells it solves.
+
+  Every other step is one line: a finished step is its stage colour with ✓ and its result
+  and time ("✓ Discover · 383 cells · 0:48"), a waiting one says waiting, one that will
+  not run says off and why. Above the steps the status line (Discover done, the motion
+  badge); under them the **Plot window** control (**Whole run** and, when the run is long enough,
+  **24 h**, **1 h**, **10 min**, **1 min**), the whole-run strip and one overlaid plot of
+  the convergence metrics (cells at frame, new cells per minute, churn, stable, explained,
+  residual). **Cells at frame** is the count at each QC snapshot (once per second of
+  recording); it stops at the end of Discover, so afterwards the rail's **Cells** is the
+  current count. The rows update at most twice a second. Then **Speed** and **Workers**.
+  Workers is a grid of small
   squares, one per worker (a browser thread), grouped as Frame loop, Cell model,
   Footprint helpers and Look-back and settle. Each square fills from the bottom with
   one colour per job (**Read frames** light blue and **Find cells** blue, the Discover
@@ -156,13 +207,18 @@ order you use them:
   Discover; while the Final settle runs, all the work shown (the cell model's, the
   footprint helpers' and every look-back worker's) is Final settle. Extract runs after it
   and is not in the grid.
-- **Results**: **Extract** and the **Export** menu.
 
-In a narrow window the stages
-show as a stepper (Calibrate, Discover, Extract, Export) and the metrics as
-small tiles on the same fixed ranges. A live stream with `?factors=0` shows Discover only. In a
-multi-session run the session list (with each boundary's health badge in a Joint run)
-follows.
+- **Results**: **Extract** (or **Extract again**) and Extract's status line.
+
+**Export** is on the run rail: once there is a result (Extract done, or a live run ended)
+the rail shows the **Export** button, with "Includes the run record" beside it. Its menu has
+**Export (.npz)** and **Export for CaDecon**.
+
+A live stream with `?factors=0` shows Discover only. In a
+multi-session run the **Sessions** block follows: the mode, the run's status, a meter of
+the results written (and, for a project's plan, of its groups), and one row per session
+with its state (written ✓, running, pending, skipped, failed) and, in a Joint run, each
+boundary's health badge.
 
 **Cell tab.** The selected cell's footprint over its full extent (its own peak = 1,
 no threshold), on a **linear** or **log** scale (the log scale spans the 2.4 decades
@@ -236,7 +292,8 @@ Every quantity the run tracks is kept over the whole run, from a 5-minute file t
 A run has two named stages: **Discover** and **Extract** (see
 [docs/stages.md](docs/stages.md)).
 
-1. **Opening starts Discover.** The recording is walked in batches. Preprocessing and
+1. **Run starts Discover.** Opening a recording loads it and shows the pre-run sheet in
+   the Run tab; pick the settings and press **Run**. The recording is walked in batches. Preprocessing and
    motion correction run in workers, so the page stays responsive. The field of view
    shows the frame being processed at the stage you pick, with the cells over it.
 2. **Discover finds cells.** A slow loop looks for new cells and prunes bad ones
@@ -274,7 +331,7 @@ A run has two named stages: **Discover** and **Extract** (see
 4. **Extract extracts traces.** It replays the recording with the final library, using
    the motion and flicker recorded during Discover, so a cell found late has a trace from
    frame 0. Run it with **Extract** once the footprints have settled. It starts by itself when Discover (and its Final settle) ends while **Extract after Discover** is on (the default); turn it off to inspect the footprints first.
-5. **Export.** Once Extract has finished, the **Export** menu has **Export (.npz)**, which writes the main file: traces (cells x frames), cell
+5. **Export.** Once Extract has finished, the **Export** button on the run rail opens a menu with **Export (.npz)**, which writes the main file: traces (cells x frames), cell
    ids and centroids, sparse footprints, per-frame motion and flicker, per-cell QC,
    and a JSON block with the run's provenance and the stages that ran. It holds two
    trace matrices: `traces`, which never goes below 0 (a quiet cell sits at exactly 0),

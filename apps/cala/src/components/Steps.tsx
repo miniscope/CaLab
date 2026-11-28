@@ -1,15 +1,20 @@
 /**
- * The run's three main steps (Discover, Final settle, Extract): the stepper above the tabs and
- * the step panels in the Run tab share one view (`lib/step-view.ts`), so they always agree.
+ * The run's three main steps (Discover, Final settle, Extract): the run rail's stage track and
+ * the Run tab's step list share one view (`lib/step-view.ts`), so they always agree. In the
+ * list the running step is a panel with its meter rows; every other step is one line.
  */
-import { Icon } from '@calab/ui';
+import { Icon, MeterRow } from '@calab/ui';
+import { formatElapsed } from '@calab/ui/chart';
 import { visitHoldText } from '../lib/visit-rate.ts';
 import { createEffect, createSignal, For, on, Show, type JSX } from 'solid-js';
 import type { CellStore } from '../lib/cell-store.ts';
 import type { Pass2Store } from '../lib/pass2-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { extractAfterDiscover } from '../lib/run-stages.ts';
-import { SETTLE } from '../lib/settle.ts';
+import { CSETTLE, SETTLE } from '../lib/settle.ts';
+import { lookbackFacts, notSettled, settleNote, type LookbackFacts } from '../lib/lookback-text.ts';
+import { RAIL_SPEED_RANGE } from '../lib/rail-view.ts';
+import { createSampled } from '../lib/sampled.ts';
 import {
   STATE_WORD,
   stepNumbers,
@@ -25,6 +30,17 @@ import {
   settlednessFromHints,
   speedPos,
 } from '../lib/work-display.ts';
+
+/** The step rows refresh at most this often, ms (2 Hz). */
+const SAMPLE_MS = 500;
+
+/** The Final settle's visits-per-frame row: declared range. */
+const SETTLE_VISIT_RANGE = { min: 0, max: 1 } as const;
+
+/** The Background settle row: re-read frames per live frame, up to the highest ceiling a user can pick. */
+const CSETTLE_RANGE = { min: 0, max: Math.max(...CSETTLE.rates) } as const;
+
+const n0 = (v: number): string => Math.round(v).toLocaleString('en-US');
 
 export interface StepSources {
   pipeline: PipelineStore;
@@ -59,7 +75,6 @@ export function createSteps(src: () => StepSources): () => StepView[] {
       settleTotal,
       settleFps: s.work()?.lookback.kinds.end.framesPerS ?? 0,
       finalLibrary: o.cells.status()?.final ?? false,
-      inNeed: lb && s.lookbackRun() ? lb.inNeed : null,
       extract: p.status(),
       extractDone: p.processed(),
       extractTotal: p.total(),
@@ -70,53 +85,6 @@ export function createSteps(src: () => StepSources): () => StepView[] {
       visitHold: visitHoldText(s.visitHold(), s.paceTarget()) !== null ? s.visitHold() : null,
     });
   };
-}
-
-const pct = (v: StepView): string =>
-  v.state === 'off' ? 'off' : v.fraction !== null ? `${Math.floor(100 * v.fraction)} %` : '';
-
-/** The stepper: three boxes with arrows, each filling with its own progress. Fixed size. */
-export function StepStepper(props: { steps: StepView[] }): JSX.Element {
-  return (
-    <ol class="cala-steps" data-testid="run-steps" aria-label="Steps">
-      <For each={props.steps}>
-        {(v, i) => (
-          <>
-            <Show when={i() > 0}>
-              <li class="cala-steps__arrow" aria-hidden="true">
-                →
-              </li>
-            </Show>
-            <li
-              class={`cala-steps__box cala-steps__box--${v.state} cala-stage--${v.key}`}
-              data-testid={`run-step-${v.key}`}
-              data-state={v.state}
-              title={`${v.label}: ${STATE_WORD[v.state]}${v.note ? ` (${v.note})` : ''}`}
-            >
-              <span
-                class="cala-steps__fill"
-                style={{
-                  width: `${100 * (v.state === 'off' ? 0 : (v.fraction ?? (v.state === 'running' ? 1 : 0)))}%`,
-                }}
-              />
-              <span class="cala-steps__text">
-                <span class="cala-steps__name">
-                  <Show when={v.state === 'done'}>
-                    <Icon name="check" size={12} />{' '}
-                  </Show>
-                  {v.label}
-                </span>
-                <span class="cala-steps__num cala-num">
-                  {pct(v)}
-                  {v.fps !== null ? ` · ${Math.round(v.fps)} fps` : ''}
-                </span>
-              </span>
-            </li>
-          </>
-        )}
-      </For>
-    </ol>
-  );
 }
 
 /** A frames/s trace over a step's progress (x 0..1), on the fixed 10 to 500 fps log scale. */
@@ -149,7 +117,30 @@ function RateChart(props: { samples: { x: number; fps: number }[]; testid: strin
   );
 }
 
-/** One step's panel: header (name, state, %, frames/s, time left), a bar, then its own body. */
+/** A row with a figure and no meter (a count with no declared end), aligned with the meter rows. */
+function FactRow(props: {
+  label: string;
+  value: number | null;
+  unit?: string;
+  title?: string;
+}): JSX.Element {
+  return (
+    <div class="meter-row cala-fact-row" title={props.title}>
+      <span class="meter-row__label">{props.label}</span>
+      <span aria-hidden="true" />
+      <span class="meter-row__value num">
+        <Show when={props.value !== null} fallback={<span class="meter-row__dash">–</span>}>
+          {n0(props.value!)}
+          <Show when={props.unit}>
+            <span class="unit"> {props.unit}</span>
+          </Show>
+        </Show>
+      </span>
+    </div>
+  );
+}
+
+/** The running step's panel: header (name, state, %, frames/s, time left), a bar, then its body. */
 export function StepPanel(props: { step: StepView; children?: JSX.Element }): JSX.Element {
   const v = () => props.step;
   const measured = () => v().fraction != null && (v().state === 'running' || v().state === 'done');
@@ -157,16 +148,12 @@ export function StepPanel(props: { step: StepView; children?: JSX.Element }): JS
     <section
       class={`cala-step cala-step--${v().state} cala-stage--${v().key}`}
       data-testid={`step-panel-${v().key}`}
+      data-state={v().state}
       aria-label={v().label}
     >
       <div class="cala-step__head">
         <strong class="cala-step__name">{v().label}</strong>
-        <span class="cala-step__state">
-          <Show when={v().state === 'done'}>
-            <Icon name="check" size={12} />{' '}
-          </Show>
-          {STATE_WORD[v().state]}
-        </span>
+        <span class="cala-step__state">{STATE_WORD[v().state]}</span>
         <span class="cala-step__nums cala-num">{stepNumbers(v(), formatDuration)}</span>
       </div>
       <div
@@ -180,14 +167,179 @@ export function StepPanel(props: { step: StepView; children?: JSX.Element }): JS
       >
         <i style={{ width: `${100 * (v().state === 'off' ? 0 : (v().fraction ?? 0))}%` }} />
       </div>
-      {/* Always one line, so the panel keeps its height when the note comes and goes. */}
-      <p class="cala-step__note">{v().note || ' '}</p>
+      <Show when={v().note}>
+        <p class="cala-step__note">{v().note}</p>
+      </Show>
       {props.children}
     </section>
   );
 }
 
-/** The Final settle's body: its rate over the pass, cells still moving, and footprints settled. */
+/**
+ * A step that is not running, in one line: done is the stage hue with ✓ and its result
+ * ("✓ Discover · 383 cells · 0:48"), stopped has ✕, waiting and off are a swatch and a word.
+ */
+export function StepLine(props: {
+  step: StepView;
+  /** What the step produced (shown when done), after the name, joined by " · ". */
+  facts?: string[];
+  /** Wall seconds the step took (done only; null: not timed). */
+  seconds?: number | null;
+  children?: JSX.Element;
+}): JSX.Element {
+  const v = () => props.step;
+  const facts = (): string[] => {
+    const st = v().state;
+    if (st === 'done') {
+      const out = [...(props.facts ?? [])];
+      if (props.seconds != null) out.push(formatElapsed(props.seconds));
+      return out;
+    }
+    if (st === 'off' || st === 'error') return [STATE_WORD[st], ...(v().note ? [v().note] : [])];
+    return [STATE_WORD[st]];
+  };
+  return (
+    <div
+      class={`cala-stepline cala-stepline--${v().state} cala-stage--${v().key}`}
+      data-testid={`step-panel-${v().key}`}
+      data-state={v().state}
+      role="group"
+      aria-label={v().label}
+    >
+      <span class="cala-stepline__mark" aria-hidden="true">
+        <Show
+          when={v().state === 'done'}
+          fallback={
+            <Show when={v().state === 'error'} fallback={<i class="cala-stepline__swatch" />}>
+              <Icon name="cross" size={12} />
+            </Show>
+          }
+        >
+          <Icon name="check" size={12} />
+        </Show>
+      </span>
+      <strong class="cala-stepline__name">{v().label}</strong>
+      <span class="cala-stepline__facts cala-num">
+        <For each={facts()}>{(f) => <span class="cala-stepline__fact">{f}</span>}</For>
+        {props.children}
+      </span>
+    </div>
+  );
+}
+
+/** A step in the list: its panel while it runs (or is paused), else its one line. */
+export function StepBlock(props: {
+  step: StepView;
+  /** The panel's body while the step runs. */
+  body: JSX.Element;
+  facts?: string[];
+  seconds?: number | null;
+  /** Extra content on the one line (a note). */
+  line?: JSX.Element;
+}): JSX.Element {
+  const open = () => props.step.state === 'running' || props.step.state === 'paused';
+  return (
+    <Show
+      when={open()}
+      fallback={
+        <StepLine step={props.step} facts={props.facts} seconds={props.seconds}>
+          {props.line}
+        </StepLine>
+      }
+    >
+      <StepPanel step={props.step}>{props.body}</StepPanel>
+    </Show>
+  );
+}
+
+/** The look-back figures of the run now, sampled at 2 Hz (null: no look-back status). */
+export function createLookbackFacts(
+  cells: () => CellStore,
+  key: () => string,
+): () => LookbackFacts | null {
+  return createSampled(
+    () => {
+      const st = cells().status();
+      return st?.lookback ? lookbackFacts(st.lookback, st.final ?? false) : null;
+    },
+    key,
+    SAMPLE_MS,
+  );
+}
+
+/** Discover's rows on a look-back run: cells waiting for data, frames re-read, Background settle. */
+export function DiscoverBody(props: {
+  pipeline: PipelineStore;
+  cells: CellStore;
+  step: StepView;
+  children?: JSX.Element;
+}): JSX.Element {
+  // One reading for the look-back figures and the cell count, so the rows always agree.
+  const snap = createSampled(
+    () => {
+      const st = props.cells.status();
+      return {
+        facts: st?.lookback ? lookbackFacts(st.lookback, st.final ?? false) : null,
+        cells: props.cells.library()?.ids.length ?? 0,
+      };
+    },
+    () => props.step.state,
+    SAMPLE_MS,
+  );
+  const cellCount = () => snap().cells;
+  const shown = () => (props.pipeline.lookbackRun() ? snap().facts : null);
+  return (
+    <div
+      class="cala-step__body cala-step__rows cala-step__rows--discover"
+      data-testid="discover-rows"
+    >
+      <Show when={shown()}>
+        {(f) => (
+          <>
+            <MeterRow
+              label="Cells waiting for data"
+              value={f().inNeed}
+              min={0}
+              max={Math.max(1, cellCount(), f().inNeed)}
+              display={`${n0(f().inNeed)} / ${n0(Math.max(cellCount(), f().inNeed))}`}
+              tone="discover"
+              size="sm"
+              format={(v) => `${n0(v)} of ${n0(cellCount())} cells waiting for look-back data`}
+            />
+            <FactRow
+              label="Look-back re-read"
+              value={f().reread}
+              unit="frames"
+              title={`${n0(f().reread)} past frames re-read for ${n0(f().births)} new cells`}
+            />
+            <Show when={f().csettle}>
+              {(cs) => (
+                <MeterRow
+                  label="Background settle"
+                  value={cs().perLive}
+                  min={CSETTLE_RANGE.min}
+                  max={CSETTLE_RANGE.max}
+                  target={cs().ceiling}
+                  tone="settle"
+                  size="sm"
+                  display={cs().perLive !== null ? cs().perLive!.toFixed(2) : undefined}
+                  unit="/ live frame"
+                  format={(v) =>
+                    `${v.toFixed(2)} saved frames re-read per live frame, ceiling ${cs().ceiling}`
+                  }
+                />
+              )}
+            </Show>
+            <Show when={settleNote(f())}>{(note) => <p class="cala-step__note">{note()}</p>}</Show>
+          </>
+        )}
+      </Show>
+      {props.children}
+    </div>
+  );
+}
+
+/** The Final settle's body: its rate over the pass and its rows. */
 export function SettleBody(props: {
   pipeline: PipelineStore;
   cells: CellStore;
@@ -215,38 +367,80 @@ export function SettleBody(props: {
       { defer: true },
     ),
   );
-  const moving = () => {
-    const m = props.cells.status()?.lookback?.settle?.moving;
-    return m && m.cells > 0
-      ? `${m.above.toLocaleString('en-US')} of ${m.cells.toLocaleString('en-US')} cells still moving`
-      : 'cells still moving: not measured yet';
-  };
-  const settled = () =>
-    settledSummary(
-      settlednessFromHints(
-        Array.from(props.cells.library()?.ids ?? []),
-        props.cells.stillMoving(),
-        SETTLE.movingK,
+  const facts = createLookbackFacts(
+    () => props.cells,
+    () => props.step.state,
+  );
+  const settled = createSampled(
+    () =>
+      settledSummary(
+        settlednessFromHints(
+          Array.from(props.cells.library()?.ids ?? []),
+          props.cells.stillMoving(),
+          SETTLE.movingK,
+        ),
       ),
-    );
+    () => props.step.state,
+    SAMPLE_MS,
+  );
+  const s = () => facts()?.settle ?? null;
+  const moving = () => s()?.moving ?? null;
   return (
-    <div class="cala-step__body">
+    <div class="cala-step__body cala-step__rows" data-testid="settle-facts">
       <RateChart samples={samples()} testid="settle-rate" />
-      <div class="cala-step__facts cala-num" data-testid="settle-facts">
-        <span>{props.step.state === 'off' ? '–' : moving()}</span>
-        <span>
-          footprints settled:{' '}
-          {settled()
-            ? `${settled()!.settled.toLocaleString('en-US')} of ${settled()!.total.toLocaleString('en-US')}`
-            : 'not measured yet'}
-        </span>
-      </div>
+      <MeterRow
+        label="Frames re-read"
+        value={s() && s()!.total > 0 ? s()!.fed : null}
+        min={0}
+        max={Math.max(1, s()?.total ?? 1)}
+        display={s() ? `${n0(s()!.fed)} / ${n0(s()!.total)}` : undefined}
+        tone="settle"
+        size="sm"
+        format={(v) => `${n0(v)} of ${n0(s()?.total ?? 0)} frames`}
+      />
+      <MeterRow
+        label="Cells still moving"
+        value={moving()?.above ?? null}
+        min={0}
+        max={Math.max(1, moving()?.cells ?? 1)}
+        target={moving() ? SETTLE.movingShare * moving()!.cells : undefined}
+        display={
+          moving()
+            ? `${n0(moving()!.above)} / ${n0(moving()!.cells)}${notSettled(moving()!) ? '' : ' ✓'}`
+            : undefined
+        }
+        tone="settle"
+        size="sm"
+        format={(v) =>
+          `${n0(v)} of ${n0(moving()?.cells ?? 0)} cells still moving more than ${SETTLE.movingK}x their noise; settled below the tick`
+        }
+      />
+      <MeterRow
+        label="Footprints settled"
+        value={settled()?.settled ?? null}
+        min={0}
+        max={Math.max(1, settled()?.total ?? 1)}
+        display={settled() ? `${n0(settled()!.settled)} / ${n0(settled()!.total)}` : undefined}
+        tone="settle"
+        size="sm"
+        format={(v) => `${n0(v)} of ${n0(settled()?.total ?? 0)} footprints settled`}
+      />
+      <MeterRow
+        label="Visits per frame"
+        value={s()?.visitsPerFrame ?? null}
+        min={SETTLE_VISIT_RANGE.min}
+        max={SETTLE_VISIT_RANGE.max}
+        display={s()?.visitsPerFrame != null ? s()!.visitsPerFrame!.toFixed(2) : undefined}
+        tone="settle"
+        size="sm"
+        format={(v) => `${v.toFixed(2)} refinement visits per settle frame`}
+      />
       {props.children}
     </div>
   );
 }
 
-/** Extract's body: its rate over the recording and the traces solved so far. */
+/** Extract's body: its rate over the recording and its rows. */
 export function ExtractBody(props: {
   pipeline: PipelineStore;
   pass2: Pass2Store;
@@ -278,16 +472,52 @@ export function ExtractBody(props: {
       { defer: true },
     ),
   );
-  const cells = () => p().result()?.cells ?? props.cells.library()?.ids.length ?? 0;
+  const snap = createSampled(
+    () => ({
+      done: p().processed(),
+      total: p().total(),
+      fps: p().status() === 'running' && p().fps() > 0 ? p().fps() : null,
+      cells: p().result()?.cells ?? props.cells.library()?.ids.length ?? 0,
+      gpu: p().motionBackend() === 'webgpu',
+    }),
+    () => p().status(),
+    SAMPLE_MS,
+  );
   return (
-    <div class="cala-step__body">
+    <div class="cala-step__body cala-step__rows" data-testid="extract-facts">
       <RateChart samples={samples()} testid="extract-rate" />
-      <div class="cala-step__facts cala-num" data-testid="extract-facts">
-        <span>
-          traces: {cells().toLocaleString('en-US')} cells ×{' '}
-          {p().processed().toLocaleString('en-US')} frames solved
-        </span>
+      <div data-testid="pass2-readout">
+        <MeterRow
+          label="Frames solved"
+          value={snap().total > 0 ? snap().done : null}
+          min={0}
+          max={Math.max(1, snap().total)}
+          display={`${n0(snap().done)} / ${n0(snap().total)}`}
+          tone="extract"
+          size="sm"
+          format={(v) => `${n0(v)} of ${n0(snap().total)} frames solved`}
+        />
       </div>
+      <MeterRow
+        label="Speed"
+        value={snap().fps}
+        min={RAIL_SPEED_RANGE.min}
+        max={RAIL_SPEED_RANGE.max}
+        scale="log"
+        tone="extract"
+        size="sm"
+        unit="fps"
+        display={snap().fps !== null ? n0(snap().fps!) : undefined}
+        format={(v) =>
+          `${v.toFixed(1)} frames per second${snap().gpu ? ', warp on WebGPU' : ''}; fixed range 10 to 500, log`
+        }
+      />
+      <FactRow
+        label="Traces"
+        value={snap().cells}
+        unit="cells"
+        title="Cells whose traces Extract solves, every frame of the recording"
+      />
       {props.children}
     </div>
   );

@@ -64,7 +64,7 @@ export const EXTRACT_AFTER_DISCOVER_DEFAULT = true;
 
 /**
  * The "Extract after Discover" setting, shared by the Run tab (which sets it and acts on it) and
- * the step stepper above the tabs (which shows Extract as off when it is unticked).
+ * the run rail's stage track (which shows Extract as off when it is unticked).
  */
 export const [extractAfterDiscover, setExtractAfterDiscover] = createSignal(
   EXTRACT_AFTER_DISCOVER_DEFAULT,

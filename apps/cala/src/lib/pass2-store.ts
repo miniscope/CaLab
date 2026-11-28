@@ -472,7 +472,7 @@ export function createPass2Store(
     void discard();
     // A factor run (waiting or solving) has no replay pipeline to stop.
     if (factorMode) factorJob?.cancel();
-    else void client.stopPipeline({ keepSlow: true }).catch(() => {});
+    else void client.stopPipeline().catch(() => {});
   }
 
   /** Forget the result (Discover restarted, or another recording opened). */

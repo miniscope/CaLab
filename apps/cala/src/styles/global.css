@@ -222,48 +222,6 @@
   white-space: nowrap;
 }
 
-.cala-conv-chip {
-  align-self: flex-start;
-  font-size: 0.85rem;
-  font-weight: var(--font-weight-medium, 500);
-  padding: 1px 8px;
-  border-radius: 10px;
-  border: 1px solid currentColor;
-}
-
-.cala-conv-chip--waiting {
-  color: var(--text-secondary);
-}
-
-/* After Discover the chip names the current stage: neutral (stage progress is the strip's job). */
-.cala-conv-chip--stage {
-  color: var(--ink-1);
-}
-
-/* In progress: the stage's tint and hue edge, the label in the text ink. */
-.cala-conv-chip--discovering {
-  color: var(--ink-1);
-  border-color: var(--stage-discover);
-  background: var(--stage-discover-tint);
-}
-
-.cala-conv-chip--settling {
-  color: var(--ink-1);
-  border-color: var(--stage-settle);
-  background: var(--stage-settle-tint);
-}
-
-/* Converged is a status (ok): its ink on its tint, with a check mark. */
-.cala-conv-chip--converged {
-  color: var(--status-ok);
-  background: var(--status-ok-tint);
-}
-
-.cala-conv-chip .icon {
-  vertical-align: -0.15em;
-  margin-right: 2px;
-}
-
 /* Overlay modes */
 .cala-heat-layer {
   position: absolute;
@@ -678,21 +636,78 @@
   }
 }
 .cala-session-run {
-  padding: 0.5rem 0.75rem;
-  border: 1px solid var(--border-default);
-  border-radius: 6px;
-  font-size: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-radius);
+  background: var(--surface);
+  font-size: var(--font-size-sm);
+}
+.cala-session-run__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+.cala-session-run__title {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--ink-1);
+}
+.cala-session-run__status {
+  color: var(--ink-2);
 }
 .cala-session-run__list {
-  margin: 0.25rem 0 0;
-  padding-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
 }
-.cala-session-run__current {
-  font-weight: 600;
+.cala-session-run__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 26px;
+  border-bottom: 1px solid var(--line);
 }
-.cala-session-run p {
-  margin: 0.25rem 0 0;
+.cala-session-run__index {
+  flex: none;
+  width: 1.5rem;
+  text-align: right;
+  color: var(--ink-3);
+}
+.cala-session-run__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-1);
+}
+.cala-session-run__current .cala-session-run__name {
+  font-weight: var(--font-weight-semibold);
+}
+.cala-session-run__note {
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-xs);
+  color: var(--ink-2);
+}
+.cala-session-run__root {
+  margin: 0;
+  color: var(--ink-2);
   overflow-wrap: anywhere;
+}
+.cala-session-run__path {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
 }
 
 /* ---- Animal projects (ProjectView, start screen) ---- */

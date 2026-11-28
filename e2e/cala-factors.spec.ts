@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures.ts';
 import { buildAvi, cellMovie } from '../apps/cala/src/__tests__/synth-avi.ts';
-import { exportNpz, hasEntry, metaText } from './cala-helpers.ts';
+import { exportNpz, hasEntry, metaText, startRun } from './cala-helpers.ts';
 
 // Shorter than one compress window (600 frames): its only window is the last one, so the
 // settle reads the factors whatever the machine's speed (slice 3 plan, decision 2).
@@ -33,6 +33,7 @@ async function openAndExtract(page: Page, query: string): Promise<void> {
   });
   await page.goto(`Cala/${query}`);
   await page.getByTestId('folder-input').setInputFiles(writeMovie());
+  await startRun(page);
   await expect(page.getByTestId('pass2-status')).toContainText('Extract done', {
     timeout: 180_000,
   });

@@ -13,23 +13,21 @@ import { InfoPanel } from './InfoPanel.tsx';
 import { QcTable, type QcTableState } from './QcTable.tsx';
 
 /**
- * The right-hand column: the run strip, always in view, over one row of tabs
- * (Run, Cell, QC, History and the pipeline details), one panel at a time with
- * the column's whole height. Arrow keys move between the tabs.
+ * The right-hand column under the run rail: one row of tabs (Run, Cell, QC,
+ * History and the pipeline details), one panel at a time with the column's
+ * whole height. Arrow keys move between the tabs.
  *
  * Panels mount only while shown, except those whose state would be lost
  * (`keepMounted` on the tab): Run (the run's controls and export), Cell (the
  * trace window, the footprint version) and Raw file (its held display range).
  */
 export function SideColumn(props: {
-  strip: JSX.Element;
   tabs: TabItem[];
   active: string;
   onActive: (id: string) => void;
 }): JSX.Element {
   return (
     <>
-      {props.strip}
       <DashboardPanel id="side-tabs" variant="data" class="cala-side-tabs">
         <Tabs
           tabs={props.tabs}
