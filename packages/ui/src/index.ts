@@ -56,3 +56,5 @@ export { Legend } from './Legend.tsx';
 export type { LegendItem, LegendProps } from './Legend.tsx';
 export { StageTrack, stageFill, stageMeasured } from './StageTrack.tsx';
 export type { StageSegment, StageState, StageTrackProps } from './StageTrack.tsx';
+export { ParamForm, formatParam, unitText } from './ParamForm.tsx';
+export type { ParamFormProps, ParamFieldExtras, ParamSourceTag } from './ParamForm.tsx';

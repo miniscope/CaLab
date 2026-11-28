@@ -2464,3 +2464,85 @@
   border-radius: 1px;
   vertical-align: -1px;
 }
+
+/* ---- The sheet's fields, Advanced section and config files ---- */
+.cala-sheet__fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.cala-sheet__advanced > summary {
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--ink-2);
+}
+
+.cala-sheet__advanced[open] > summary {
+  margin-bottom: var(--space-2);
+}
+
+.cala-sheet__issue {
+  color: var(--status-critical);
+}
+
+.cala-sheet__config {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.cala-sheet__config-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  font-size: var(--font-size-sm);
+}
+
+.cala-sheet__config-file {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.cala-sheet__config-clear {
+  padding: 0 var(--space-1);
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cala-sheet__config-count {
+  margin-left: auto;
+  font-size: var(--font-size-xs);
+  color: var(--ink-3);
+}
+
+.cala-sheet__config-warn,
+.cala-sheet__config-error {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-control);
+  font-size: var(--font-size-xs);
+  overflow-wrap: anywhere;
+}
+
+.cala-sheet__config-warn {
+  list-style: none;
+  background: var(--status-warning-tint);
+  color: var(--status-warning);
+}
+
+.cala-sheet__config-error {
+  background: var(--status-critical-tint);
+  color: var(--status-critical);
+}

@@ -1,0 +1,169 @@
+/* ParamForm: fields rendered from a params schema, grouped by block. Colours and spacing come
+   from tokens only, so the dark theme follows the tokens. */
+
+.param-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.param-form__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.param-form__legend {
+  padding: 0;
+  margin-bottom: var(--space-1);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.param-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.param-form__field--off {
+  color: var(--text-tertiary);
+}
+
+.param-form__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-height: 26px;
+  font-size: var(--font-size-md);
+}
+
+.param-form__label {
+  flex: 1 1 10em;
+  min-width: 0;
+  color: var(--text-primary);
+}
+
+.param-form__field--off .param-form__label {
+  color: var(--text-tertiary);
+}
+
+.param-form__check {
+  flex: 1 1 10em;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.param-form__number {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.param-form__input,
+.param-form__select {
+  height: 26px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: var(--font-size-md) var(--font-body);
+}
+
+.param-form__input {
+  width: 7ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.param-form__input:focus-visible,
+.param-form__select:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.param-form__input--invalid {
+  border-color: var(--status-critical);
+}
+
+.param-form__unit {
+  min-width: 2ch;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.param-form__error {
+  flex-basis: 100%;
+  font-size: var(--font-size-xs);
+  color: var(--status-critical);
+  text-align: right;
+}
+
+.param-form__aside {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  min-width: 18px;
+}
+
+/* Where a value comes from: quiet, so a sheet of defaults shows no badges and a changed value
+   is findable without shouting. */
+.param-form__source {
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  font-size: var(--font-size-xs);
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+.param-form__reset {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-sm);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.param-form__reset:hover {
+  color: var(--text-primary);
+}
+
+.param-form__reset:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.param-form__help {
+  display: inline-flex;
+}
+
+.param-form__pop {
+  top: calc(100% + var(--space-1));
+  right: 0;
+  width: min(320px, 80vw);
+}
+
+.param-form__note {
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
