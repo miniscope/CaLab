@@ -143,7 +143,8 @@ export interface EngineView {
   /** The frame rate in force, Hz. */
   fps: number;
   frame: [number, number];
-  cell_diameter: { px: number };
+  /** The cell diameter in force: from `scales.cell_diameter_px` (`px`) or from µm through the optics. */
+  cell_diameter: { px: number; source: 'px' | 'optics'; um_per_px: number | null };
   preprocess: { warmup_frames: number; flatten_cell_diameter_px: number };
   motion: { warmup_frames: number; session_fix: boolean };
   flat_field: { enabled: boolean; first_frames: number; refine_every_frames: number };

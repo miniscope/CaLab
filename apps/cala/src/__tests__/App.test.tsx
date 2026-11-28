@@ -240,7 +240,15 @@ describe('App', () => {
       expect(root.querySelector('[data-testid="prerun-sheet"]')).not.toBeNull(),
     );
     expect(fake.startPipeline).not.toHaveBeenCalled();
-    expect(root.querySelector('[data-testid="discover-settings"]')).not.toBeNull();
+    // The settings come from the params schema: the main fields, and Advanced folded.
+    const main = root.querySelector('[data-testid="params-main"]');
+    expect(main?.querySelector('[data-testid="expected-cell-diameter"]')).not.toBeNull();
+    expect(main?.querySelector('[data-testid="lookback-toggle"]')).not.toBeNull();
+    expect(main?.querySelector('[data-testid="extract-after-discover"]')).not.toBeNull();
+    expect(main?.querySelector('[data-testid="cell-diameter-px"]')).toBeNull();
+    expect(
+      root.querySelector('[data-testid="params-advanced"] [data-testid="cell-diameter-px"]'),
+    ).not.toBeNull();
     for (const slot of ['repeatable', 'seed', 'crop'])
       expect(root.querySelector<HTMLElement>(`[data-testid="prerun-slot-${slot}"]`)?.hidden).toBe(
         true,

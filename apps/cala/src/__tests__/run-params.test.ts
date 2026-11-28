@@ -18,7 +18,7 @@ import type { PipelineClient } from '../lib/frame-client.ts';
 import type { LookbackFeed } from '../lib/lookback-client.ts';
 import { paramsHandle, resolveRunParams } from '../lib/params-handle.ts';
 import type { PipelineOptions } from '../lib/pipeline-plan.ts';
-import { createPipelineStore } from '../lib/pipeline-store.ts';
+import { createPipelineStore, type PipelineStore } from '../lib/pipeline-store.ts';
 import { fastLoopOptions } from '../lib/run-cells.ts';
 import { runParams, runParamsLayer, type ParamsLayer } from '../lib/run-params.ts';
 import { buildSlowLoop } from '../lib/slow-runner.ts';
@@ -27,6 +27,9 @@ import type { FastToSlow, SlowInit } from '../workers/slow-types.ts';
 import { blobMovie } from './blob-movie.ts';
 import { testPlan } from './params-fixtures.ts';
 import { initTestWasm } from './wasm-test.ts';
+import { getAt, schemaFields, type ParamField } from '@calab/core';
+import { PARAMS_SCHEMA } from '../lib/config-file.ts';
+import { sheetShows } from '../lib/sheet-fields.ts';
 
 beforeAll(initTestWasm);
 
@@ -55,7 +58,10 @@ function lookbackFeed(): LookbackFeed {
 }
 
 /** The pipeline options the store's Discover start sends with `options` (its caller's). */
-async function startOptions(options: PipelineOptions = {}): Promise<PipelineOptions> {
+async function startOptions(
+  options: PipelineOptions = {},
+  prepare?: (store: PipelineStore) => void,
+): Promise<PipelineOptions> {
   const startPipeline = vi.fn(async () => testPlan(100));
   const client: PipelineClient = {
     startPipeline,
@@ -76,6 +82,7 @@ async function startOptions(options: PipelineOptions = {}): Promise<PipelineOpti
     undefined,
     lookbackFeed(),
   );
+  prepare?.(store);
   await store.start();
   const sent = startPipeline.mock.calls[0] as unknown as [PipelineOptions];
   return sent[0];
@@ -291,5 +298,43 @@ describe('a params field set in the app reaches the engine', () => {
     const motion = new MotionCorrector(48, 40, p);
     const qc = new QcMonitor(48, 40, init!.fov, init!.noise, p);
     for (const o of [loop, visit, motion, qc]) o.free();
+  });
+});
+
+/** A valid value of `f` other than its default. */
+function nonDefault(f: ParamField): unknown {
+  if (f.kind === 'boolean') return f.default !== true;
+  if (f.kind === 'enum') return f.choices!.find((c) => c.value !== f.default)!.value;
+  const min = f.minimum ?? 0;
+  const max = f.maximum ?? min + 100;
+  const d = typeof f.default === 'number' ? f.default : null;
+  let v = d === null ? min + (max - min) / 4 : d < max ? d + (max - d) / 2 : (min + d) / 2;
+  if (f.kind === 'integer') v = Math.round(v);
+  return v;
+}
+
+describe('every field the pre-run sheet renders reaches the run', () => {
+  it('a value set in the sheet is in the params the run resolves', async () => {
+    const fields = schemaFields(PARAMS_SCHEMA).filter(
+      (f) => (f.level === 'main' || f.level === 'advanced') && sheetShows(f, true),
+    );
+    expect(fields.length).toBeGreaterThan(20);
+    for (const f of fields) {
+      // A µm diameter needs the optics; 30 µm at 2 µm per pixel is 15 px.
+      const v = f.pointer === '/scales/expected_cell_diameter_um' ? 30 : nonDefault(f);
+      const options = await startOptions({}, (store) => {
+        if (f.pointer === '/scales/expected_cell_diameter_um') {
+          store.params.set('/optics/sensor_pixel_um', 2);
+          store.params.set('/optics/magnification', 1);
+        }
+        store.params.set(f.pointer, v);
+      });
+      const run = runParams(
+        resolveRunParams(options.paramsLayer ?? {}, { fps: 20, width: 600, height: 600 }),
+      );
+      expect(getAt(run.params, f.pointer), f.pointer).toEqual(v);
+      if (f.pointer === '/scales/expected_cell_diameter_um')
+        expect(run.engine.cell_diameter).toEqual({ px: 15, source: 'optics', um_per_px: 2 });
+    }
   });
 });

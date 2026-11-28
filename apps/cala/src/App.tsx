@@ -797,6 +797,7 @@ const App: Component = () => {
       };
     },
     params: () => pipeline.runParams(),
+    request: () => pipeline.runRequest(),
   };
   const runRecord = (extras?: RunRecordExtras) => gatherRunRecord(runRecordSources, extras);
   const multiRun = createMultiRun({
@@ -1233,6 +1234,7 @@ const App: Component = () => {
               live={lp.info.live !== undefined}
               liveResult={liveResult.result}
               fps={lp.info.fps ?? 0}
+              frameWidth={lp.info.width}
               ui={historyUi}
               factorRun={pipeline.factorRun()}
               compress={pipeline.compressRun() ? compress : undefined}

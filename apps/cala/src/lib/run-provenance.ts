@@ -576,7 +576,17 @@ export interface RunRecordInput {
   /** Fixed engine tunables worth keeping (`CSETTLE`, `GOVERNOR`, `SETTLE`). */
   tunables?: Record<string, unknown>;
   /** The run's resolved params (`run-params.ts`; absent: no run started yet). */
-  params?: { fingerprint: string; context: unknown; values: unknown };
+  params?: {
+    fingerprint: string;
+    context: unknown;
+    values: unknown;
+    /** The values the user asked for (pre-run sheet, config file); every other value is a default. */
+    requested?: Record<string, unknown>;
+    /** JSON pointer → where each requested value came from (`ui`, `file:<name>`). */
+    sources?: Record<string, string>;
+    /** The cell diameter in force: px, and whether it came from µm through the optics. */
+    cell_diameter: unknown;
+  };
   input: {
     label: string;
     live: boolean;
@@ -782,12 +792,25 @@ export interface RunRecordSources {
   tunables?(): Record<string, unknown>;
   /** The current run's resolved params (null: none yet). */
   params?(): RunParams | null;
+  /** What the current run asked for and the source of each value (null: none yet). */
+  request?(): { requested: Record<string, unknown>; sources: Record<string, string> } | null;
 }
 
 /** The record's `params` block of a run's resolved params (empty: none). */
-function paramsOf(run: RunParams | null): Pick<RunRecordInput, 'params'> {
+function paramsOf(
+  run: RunParams | null,
+  request: { requested: Record<string, unknown>; sources: Record<string, string> } | null,
+): Pick<RunRecordInput, 'params'> {
   return run
-    ? { params: { fingerprint: run.fingerprint, context: run.context, values: run.params } }
+    ? {
+        params: {
+          fingerprint: run.fingerprint,
+          context: run.context,
+          values: run.params,
+          ...(request ? { requested: request.requested, sources: request.sources } : {}),
+          cell_diameter: run.engine.cell_diameter,
+        },
+      }
     : {};
 }
 
@@ -891,7 +914,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
       ...(extras.passQcOnly !== undefined ? { export_pass_qc_only: extras.passQcOnly } : {}),
     },
     ...(src.tunables ? { tunables: src.tunables() } : {}),
-    ...paramsOf(src.params?.() ?? null),
+    ...paramsOf(src.params?.() ?? null, src.request?.() ?? null),
     input: {
       label: src.label(),
       live: info?.live !== undefined,

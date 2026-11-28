@@ -160,7 +160,10 @@ export function ParamForm(p: ParamFormProps): JSX.Element {
 }
 
 function FieldRow(props: { form: ParamFormProps; field: ParamField }): JSX.Element {
+  // A row lives as long as its `For` item: the field and the form's props object never change.
+  // eslint-disable-next-line solid/reactivity
   const f = props.field;
+  // eslint-disable-next-line solid/reactivity
   const p = props.form;
   const extras = () => p.extras?.(f);
   const source = () => p.source?.(f.pointer) ?? 'default';
@@ -253,7 +256,10 @@ function FieldRow(props: { form: ParamFormProps; field: ParamField }): JSX.Eleme
 }
 
 function EnumInput(props: { form: ParamFormProps; field: ParamField; id: string }): JSX.Element {
+  // A row lives as long as its `For` item: the field and the form's props object never change.
+  // eslint-disable-next-line solid/reactivity
   const f = props.field;
+  // eslint-disable-next-line solid/reactivity
   const p = props.form;
   const extras = () => p.extras?.(f);
   const choices = f.choices ?? [];
@@ -298,7 +304,10 @@ function EnumInput(props: { form: ParamFormProps; field: ParamField; id: string 
 }
 
 function NumberInput(props: { form: ParamFormProps; field: ParamField; id: string }): JSX.Element {
+  // A row lives as long as its `For` item: the field and the form's props object never change.
+  // eslint-disable-next-line solid/reactivity
   const f = props.field;
+  // eslint-disable-next-line solid/reactivity
   const p = props.form;
   const extras = () => p.extras?.(f);
   const shown = () => {

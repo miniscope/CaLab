@@ -63,6 +63,8 @@ export interface RunPanelProps {
   liveResult?: () => Pass2Result | null;
   /** Frame rate, Hz (0 when unknown). */
   fps: number;
+  /** Frame width, px (the optics' binning may follow it). */
+  frameWidth: number;
   /** The run's history views (shared time window and cursor). */
   ui: HistoryUi;
   /** A live stream with `?factors`: its settle and Extract read the stream's own factors. */
@@ -314,6 +316,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               onAutoExtract={setExtractAfterDiscover}
               sessionRun={inSessionRun()}
               extractRunning={p().status() === 'running'}
+              frameWidth={props.frameWidth}
             />
           }
         >
@@ -323,6 +326,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             autoExtract={auto()}
             onAutoExtract={setExtractAfterDiscover}
             sessionRun={false}
+            frameWidth={props.frameWidth}
             onRun={() => void s().start()}
           />
         </Show>
