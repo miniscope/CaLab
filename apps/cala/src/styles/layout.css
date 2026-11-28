@@ -174,7 +174,7 @@
 .cala-fov__zoom,
 .cala-fov__hud {
   position: absolute;
-  background: rgba(255, 255, 255, 0.94);
+  background: var(--surface-float);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   font-size: 0.75rem;
@@ -695,21 +695,20 @@
   padding-block: 1px;
 }
 
-/* Each step's colours: its stage hue, tint, and the label ink over the full hue (white on
-   Discover and Final settle, the text ink on Extract's orange). */
+/* Each step's colours: its stage hue, and the label ink over the full hue (`--stage-*-ink`). */
 .cala-stage--discover {
   --step-ink: var(--stage-discover);
-  --step-on-fill: var(--ink-on-fill);
+  --step-on-fill: var(--stage-discover-ink);
 }
 
 .cala-stage--settle {
   --step-ink: var(--stage-settle);
-  --step-on-fill: var(--ink-on-fill);
+  --step-on-fill: var(--stage-settle-ink);
 }
 
 .cala-stage--extract {
   --step-ink: var(--stage-extract);
-  --step-on-fill: var(--ink-1);
+  --step-on-fill: var(--stage-extract-ink);
 }
 
 /* ---- The step panels in the Run tab: one structure for all three ---- */
@@ -781,7 +780,7 @@
 .cala-step__chart {
   width: 100%;
   height: 36px;
-  background: var(--bg-secondary, #f7f7f7);
+  background: var(--bg-secondary);
   border-radius: 3px;
 }
 
@@ -2218,7 +2217,7 @@
   height: 28px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-control);
-  background: var(--kind-idle);
+  background: var(--work-idle);
   overflow: hidden;
 }
 
@@ -2243,7 +2242,7 @@
 }
 
 .cala-work__sq--stopped {
-  background: repeating-linear-gradient(45deg, var(--kind-idle) 0 3px, var(--ink-3) 3px 4px);
+  background: repeating-linear-gradient(45deg, var(--work-idle) 0 3px, var(--ink-3) 3px 4px);
 }
 
 .cala-work__empty {

@@ -64,6 +64,10 @@ thread, which needs no WASM plugin.
   `apps/cadecon/src/lib/bridge-effects.ts`. The bridge finds the app's URL in
   `apps.json`; the shape of the results it sends back is declared by an
   `AppSpec` entry in `python/src/calab/_bridge/_registry.py`.
+- **Dark theme**: `index.html` pins the light token set (`<html data-theme="light">`).
+  Once every screen reads well in dark, remove the attribute so the app follows the OS
+  setting, and add `ThemeToggle` from `@calab/ui` to the header if it should offer a choice.
+  Canvas code resolves token colours with `resolveCssColor` and redraws on `onThemeChange`.
 - **More `@calab/*` packages**: add `"@calab/<pkg>": "*"` to `dependencies` and
   run `npm install`. No Vite alias or tsconfig path is needed.
 

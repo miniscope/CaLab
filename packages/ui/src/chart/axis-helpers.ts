@@ -3,16 +3,16 @@
 // every chart.
 
 import type uPlot from 'uplot';
-import { AXIS_TEXT, AXIS_GRID, AXIS_TICK } from './theme-colors.ts';
+import { axisGrid, axisText, axisTick } from './theme-colors.ts';
 
 const LABEL_FONT = '10px sans-serif';
 
-/** Base axis chrome (theme stroke / grid / ticks), merged with `overrides`. */
+/** Base axis chrome (theme stroke / grid / ticks, read from the tokens at draw time), merged with `overrides`. */
 export function chartAxis(overrides: uPlot.Axis = {}): uPlot.Axis {
   return {
-    stroke: AXIS_TEXT,
-    grid: { stroke: AXIS_GRID },
-    ticks: { stroke: AXIS_TICK },
+    stroke: axisText,
+    grid: { stroke: axisGrid },
+    ticks: { stroke: axisTick },
     ...overrides,
   };
 }

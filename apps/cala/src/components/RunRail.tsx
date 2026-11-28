@@ -246,7 +246,7 @@ export function RunRail(props: RunRailProps): JSX.Element {
                 hue: {
                   color: 'var(--ink-2)',
                   tint: 'var(--inset)',
-                  ink: 'var(--ink-on-fill)',
+                  ink: 'var(--surface)',
                 },
                 weight: 1,
                 state: it.state,

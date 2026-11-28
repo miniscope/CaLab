@@ -80,8 +80,10 @@ Pipeline wiring: `src/lib/pipeline-stages.ts`. Message conventions:
 - Lead with visuals for numbers that change during a run (meters, bars, sparklines), not prose;
   at most one sentence per state, explanations in "?" popovers. Live figures update at most at 2 Hz.
 - Every range is fixed and declared; "not measured" is a grey dash.
-- Stage hues: Discover `#1f75d7`, Final settle `#b8407e`, Extract `#e0701f` (`--stage-*` tokens;
-  `STAGE_HUES` in `@calab/ui/palette` for canvas). Work kinds take their stage's hue (`KIND_COLOR`). **Done = the stage's
+- Stage hues: Discover blue, Final settle plum, Extract orange (`--stage-*` tokens, light and dark
+  values in `tokens.css`). Work kinds take their stage's hue (`KIND_COLOR`, CSS variable references).
+  Canvas code resolves token colours with `resolveCssColor` and redraws on `onThemeChange`
+  (`@calab/ui`); no colour literals in charts. The FOV image and its overlay roles do not change with the theme. **Done = the stage's
   full hue + ✓, never green** (green means QC pass / ok). The app accent (violet) is for
   selection and focus only. Status colours always come with an icon and a label.
 - No pulsing or decorative motion; respect `prefers-reduced-motion`.

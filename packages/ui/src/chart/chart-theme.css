@@ -1,7 +1,6 @@
 /*
- * CaLab shared light theme overrides for uPlot.
- * Import after uPlot.min.css to override default light theme.
- * References CSS custom properties from each app's global.css.
+ * CaLab theme overrides for uPlot, in tokens (they follow the light and dark sets).
+ * Import after uPlot.min.css.
  */
 
 /* Chart wrapper — clean white with thin border */
@@ -25,18 +24,18 @@
 
 /* Axis tick marks */
 .u-axis .u-tick {
-  stroke: rgba(0, 0, 0, 0.15);
+  stroke: var(--chart-tick);
 }
 
 /* Grid lines — subtle */
 .u-grid .u-stroke {
-  stroke: rgba(0, 0, 0, 0.06);
+  stroke: var(--line);
 }
 
 /* Cursor crosshair lines */
 .u-cursor-x,
 .u-cursor-y {
-  border-color: rgba(0, 0, 0, 0.3) !important;
+  border-color: var(--ink-3) !important;
 }
 
 /* Legend text — mono font */

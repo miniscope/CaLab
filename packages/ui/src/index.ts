@@ -37,6 +37,19 @@ export type { FixedRange, RangePosition, RangeScale } from './range.ts';
 export { isStatusTone, STATUS_ICON, toneColor, toneTint } from './tones.ts';
 export type { StageHue, StatusTone, Tone } from './tones.ts';
 export { Icon, ICON_NAMES } from './Icon.tsx';
+export { ThemeToggle } from './ThemeToggle.tsx';
+export type { ThemeToggleProps } from './ThemeToggle.tsx';
+export {
+  THEMES,
+  THEME_STORAGE_KEY,
+  applyThemeChoice,
+  createThemeVersion,
+  onThemeChange,
+  readThemeChoice,
+  resolveCssColor,
+  saveThemeChoice,
+} from './theme.ts';
+export type { Theme, ThemeChoice } from './theme.ts';
 export type { IconName, IconProps } from './Icon.tsx';
 export { Badge } from './Badge.tsx';
 export { HelpTip } from './HelpTip.tsx';

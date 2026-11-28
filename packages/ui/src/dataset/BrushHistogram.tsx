@@ -221,7 +221,7 @@ export function BrushHistogram(props: BrushHistogramProps): JSX.Element {
                   y={y()(bin.ids.length)}
                   width={bw()}
                   height={H() - M.b - y()(bin.ids.length)}
-                  fill={props.binColor?.(bin, k()) ?? 'var(--accent)'}
+                  style={{ fill: props.binColor?.(bin, k()) ?? 'var(--accent)' }}
                 >
                   <title>
                     {formatTick(bin.x0)}–{formatTick(bin.x1)}: {bin.ids.length} cells
