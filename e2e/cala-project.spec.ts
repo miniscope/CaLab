@@ -237,7 +237,8 @@ test('Cala: Discover only (Extract after Discover off) writes the footprints and
 
   await page.goto('Cala/');
   await page.getByTestId('folder-input').setInputFiles(folder);
-  await expect(page.getByTestId('prerun-sheet')).toBeVisible();
+  // Chosen on the setup page, before Run.
+  await expect(page.getByTestId('setup-settings')).toBeVisible();
   const extractBox = page.getByTestId('extract-after-discover');
   await expect(extractBox).toBeChecked();
   await expect(extractBox).toBeEnabled();
@@ -271,11 +272,12 @@ test('Cala: Discover only (Extract after Discover off) writes the footprints and
   expect(meta.traces_signed).toBeUndefined();
   expect(meta.cells).toBe(run.results[0].cells);
   expect(meta.frames).toBe(FRAMES);
-  // The project table (rebuilt on the way back; the run is in a zip, not the folder) says
-  // Extract was skipped.
+  // The setup page's table (rebuilt on the way back; the run is in a zip, not the folder) says
+  // Extract was skipped, and the setting is kept for the next run.
   await page.getByTestId('back-to-project').click();
   await expect(page.getByTestId('cell-discover')).toHaveText('done');
   await expect(page.getByTestId('cell-extract')).toHaveText('skipped (Discover only)');
+  await expect(page.getByTestId('extract-after-discover')).not.toBeChecked();
   rmSync(base, { recursive: true, force: true });
 });
 
