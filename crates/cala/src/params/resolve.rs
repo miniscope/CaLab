@@ -326,7 +326,7 @@ pub fn resolve(p: &CalaParams, ctx: Context) -> Result<EngineView, ResolveError>
             template_tau: lf(m.template_tau_s) as f64,
             template_refresh: lf(m.template_refresh_s),
             warmup_frames: lf(m.warmup_s),
-            nonrigid: m.nonrigid.enabled.then(|| NonRigidView {
+            nonrigid: m.nonrigid.enabled.then_some(NonRigidView {
                 grid: [m.nonrigid.grid, m.nonrigid.grid],
                 max_patch_shift: m.nonrigid.max_patch_shift_px,
             }),
