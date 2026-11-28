@@ -117,6 +117,7 @@
 }
 
 .cala-fov__stage {
+  container: fov-stage / inline-size;
   position: relative;
   width: min(100cqw, calc(100cqh * var(--cala-aspect, 1)));
   background: #000;
@@ -283,6 +284,13 @@
   font-family: var(--font-mono);
   color: var(--text-primary);
   pointer-events: none;
+}
+
+/* An image too narrow for the readout and the zoom bar side by side: the readout sits above the bar. */
+@container fov-stage (max-width: 460px) {
+  .cala-fov__hud {
+    bottom: calc(2 * var(--space-sm) + 26px);
+  }
 }
 
 .cala-fov__minimap {
