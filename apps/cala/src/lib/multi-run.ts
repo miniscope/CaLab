@@ -126,6 +126,12 @@ export function createMultiRun(deps: MultiRunDeps) {
   const [finished, setFinished] = createSignal(false);
   const [stopped, setStopped] = createSignal<string | null>(null);
   const [progressError, setProgressError] = createSignal<string | null>(null);
+  /**
+   * The current session's recording is open and its stages are its own. While a session opens,
+   * the stage stores still hold the last session's finished stages; the automatic run waits, or it
+   * would export (and write the next run's file) once more for a result it already wrote.
+   */
+  const [sessionOpen, setSessionOpen] = createSignal(false);
   /** The run being written: its folder, and what each of its sessions' exports hold. */
   let run:
     | (OpenedRun & {
@@ -326,10 +332,12 @@ export function createMultiRun(deps: MultiRunDeps) {
     // The next run's folder is open before the session changes, so nothing is written to the last.
     await openRun(next);
     batch(() => {
+      setSessionOpen(false);
       setCurrent(next);
       setExported(false);
     });
     await deps.openOne(p.sessions[next], next);
+    setSessionOpen(true);
   }
 
   /** Run `job` once for `key`; failures stop the automatic run with a message. */
@@ -349,12 +357,15 @@ export function createMultiRun(deps: MultiRunDeps) {
   // The automatic run: one step whenever a stage's state changes.
   createEffect(() => {
     const p = plan();
-    if (!p || finished() || error() || stopped()) return;
+    if (!p || !sessionOpen() || finished() || error() || stopped()) return;
     const st = deps.stages();
+    // The Extract store keeps the last session's outcome until it runs again; the stage log
+    // starts over with each Discover. An Extract the log does not hold is not this session's.
+    const extract = st.runs.some((r) => r.stage === 'extract') ? st.extract : 'idle';
     const input = {
       settings: p.settings,
       discover: st.discover,
-      extract: st.extract,
+      extract,
       availability: st.availability,
       exported: exported(),
       exporting: exporting(),
@@ -414,6 +425,7 @@ export function createMultiRun(deps: MultiRunDeps) {
     setStopped(null);
     setProgressError(null);
     setFinished(false);
+    setSessionOpen(false);
     setExported(false);
     setCurrent(0);
     setPlan(p);
@@ -426,6 +438,7 @@ export function createMultiRun(deps: MultiRunDeps) {
     }
     if (p.settings.mode === 'joint') await deps.openJoint(p.sessions);
     else await deps.openOne(p.sessions[0], 0);
+    setSessionOpen(true);
   }
 
   /** Leave the run (Back to project, a new folder): an unfinished run's file says it stopped. */

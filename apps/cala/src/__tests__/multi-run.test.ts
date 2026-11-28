@@ -42,6 +42,11 @@ function harness(
   opts: {
     sink?: (run: number) => ResultsSink;
     runRecord?: (s: { mode: string }, sessionIndex?: number) => Record<string, unknown>;
+    /**
+     * As the app does: a new Discover leaves the Extract store as it was (its last outcome
+     * stays until Extract runs again), and a session takes a while to open.
+     */
+    appLike?: boolean;
   } = {},
 ) {
   const [discover, setDiscover] = createSignal<StageActivity>('idle');
@@ -72,7 +77,7 @@ function harness(
   const startDiscover = () => {
     // A new Discover starts the stage log over, as the app does.
     setRuns([]);
-    setExtract('idle');
+    if (!opts.appLike) setExtract('idle');
     begin('discover', setDiscover);
   };
   const availability = (): Record<StageName, string | null> => {
@@ -89,6 +94,7 @@ function harness(
         startDiscover();
       },
       openOne: async () => {
+        if (opts.appLike) await new Promise((r) => setTimeout(r, 5));
         await multi.beforeFrames();
         startDiscover();
       },
@@ -268,6 +274,24 @@ describe('run files', () => {
     expect(got).toHaveLength(2);
     expect(got[0]).toMatchObject({ format: 'calab-run', run: { status: 'running' } });
     writeSpy.mockRestore();
+    h.dispose();
+  });
+
+  it('switching Separate sessions neither reuses the last Extract nor writes a run file twice', async () => {
+    const r = recording();
+    const h = harness('separate', 3, { sink: r.sinkFor, runRecord: record, appLike: true });
+    await h.start();
+    // Each session runs its own Extract, though the Extract store still says `done`.
+    expect(await h.done()).toEqual([
+      'discover',
+      'extract',
+      'discover',
+      'extract',
+      'discover',
+      'extract',
+    ]);
+    for (const i of [0, 1, 2])
+      expect(r.runFiles(i).map((f) => f.run.status)).toEqual(['planned', 'running', 'finished']);
     h.dispose();
   });
 });
