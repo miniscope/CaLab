@@ -6,7 +6,7 @@
 //! ```text
 //! cargo run --release --no-default-features --features timing --example fpstats_bench -- \
 //!     RUN_DIR [--frames 600] [--margin 4] [--nan-border 0] [--version-every 100] \
-//!     [--repeats 3] [--cells N]
+//!     [--repeats 3] [--cells N] [--clusters]
 //! ```
 //!
 //! `RUN_DIR` holds a `qc_eval` run's `footprints.bin` (`CALAFP01`) and
@@ -16,8 +16,15 @@
 //! trace is zero on a share of frames equal to its `zero_frac` in the last
 //! QC row of `cells.tsv`. `--cells N` repeats or truncates the cell list to
 //! N cells. Prints one TSV header and one row.
+//!
+//! `--clusters` benchmarks the cluster stores' push instead (plain against
+//! mean-field, `discover::bench::cluster_bench`): the cells are clustered as
+//! the slow loop does (normalised footprint overlaps, `--rho-min 0.05`,
+//! `--k-max 6`), each cluster on the union of its members' statistics
+//! disks, with ring levels; every `--version-every` frames each cluster
+//! takes new columns.
 
-use calab_cala::discover::bench::{fpstats_bench, BenchCell};
+use calab_cala::discover::bench::{bench_clusters, cluster_bench, fpstats_bench, BenchCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -121,6 +128,40 @@ fn main() {
             }
         })
         .collect();
+    if args.iter().any(|a| a == "--clusters") {
+        let pix: Vec<Vec<u32>> = fp.iter().map(|c| c.1.clone()).collect();
+        let vals: Vec<Vec<f32>> = fp.iter().map(|c| c.2.clone()).collect();
+        let groups = bench_clusters(
+            &pix,
+            &vals,
+            arg(&args, "--rho-min", 0.05),
+            arg(&args, "--k-max", 6),
+        );
+        let rep = cluster_bench(
+            w,
+            h,
+            &cells,
+            &groups,
+            arg(&args, "--frames", 600),
+            arg(&args, "--version-every", 8),
+            arg(&args, "--repeats", 3),
+            1,
+        );
+        println!("clusters\tmembers\tpx_mean\trank_mean\tzero_share\told_ms\tnew_ms\tspeedup\tmax_rel_diff");
+        println!(
+            "{}\t{}\t{:.1}\t{:.2}\t{:.3}\t{:.4}\t{:.4}\t{:.2}\t{:.2e}",
+            rep.clusters,
+            rep.members,
+            rep.px_mean,
+            rep.rank_mean,
+            rep.zero_share,
+            rep.old_ms,
+            rep.new_ms,
+            rep.old_ms / rep.new_ms,
+            rep.max_rel_diff
+        );
+        return;
+    }
     let want: usize = arg(&args, "--cells", cells.len());
     let base = cells.clone();
     cells = (0..want).map(|i| base[i % base.len()].clone()).collect();
