@@ -1,6 +1,7 @@
 /**
  * The params a user asks for before a run: a loaded config file under the edits made in the
- * pre-run sheet (`config.requested` of DESIGN §3.5, layers 5 and 6), with the source of each value.
+ * pre-run sheet, with the source of each value. The request persists across recordings and is
+ * the base layer of every Discover start (single, multi-session and live).
  *
  * Some fields have a setting elsewhere in the app that the run reads directly (look-back, the
  * Final settle level, Find new cells, Extract after Discover). For those, the form and a loaded
@@ -8,9 +9,9 @@
  * where it came from.
  *
  * The cell diameter: `scales.cell_diameter_px` (default 10) overrides the diameter derived from
- * `scales.expected_cell_diameter_um` through the optics. When a user asks for a µm diameter and the
- * optics give µm per pixel, and nothing they set asks for a pixel diameter, the run's layer clears
- * the pixel default so the µm diameter is used (`runLayer`).
+ * `scales.expected_cell_diameter_um` through the optics. When a user asks for a µm diameter and
+ * nothing they set asks for a pixel diameter, the run's layer clears the pixel default so the µm
+ * diameter is used (`runLayer`); without the optics the engine then refuses the run.
  */
 import { createSignal } from 'solid-js';
 import {
@@ -120,17 +121,13 @@ export function diameterPlan(requested: ParamsLayer, frameWidth: number): Diamet
 }
 
 /**
- * `requested` as the run resolves it: the pixel default cleared when a µm diameter is asked for,
- * the optics give µm per pixel, and no pixel diameter is asked for. Without the optics the pixel
- * diameter stays in force (`diameterPlan` reports the missing optics, and the sheet holds Run).
+ * `requested` as the run resolves it: the pixel default cleared when a µm diameter is asked for
+ * and no pixel diameter is. A µm diameter is never silently replaced by the default pixels: with
+ * the optics missing, `resolve` refuses the layer.
  */
 export function runLayer(requested: ParamsLayer): ParamsLayer {
   const um = getAt(requested, DIAMETER_UM);
-  const optics =
-    typeof getAt(requested, '/optics/sensor_pixel_um') === 'number' &&
-    typeof getAt(requested, '/optics/magnification') === 'number';
-  if (typeof um !== 'number' || !optics || getAt(requested, DIAMETER_PX) !== undefined)
-    return requested;
+  if (typeof um !== 'number' || getAt(requested, DIAMETER_PX) !== undefined) return requested;
   return setAt(requested as Record<string, unknown>, DIAMETER_PX, null) as ParamsLayer;
 }
 
@@ -184,6 +181,15 @@ export function createParamLayers(bindings: Bindings = {}) {
 
   /** Use a loaded file: its values replace earlier edits of the same fields. */
   function load(cfg: LoadedConfig): void {
+    // The outgoing file's bound settings that neither the new file nor an edit sets go back to
+    // their defaults, like its other values.
+    const prev = file();
+    if (prev) {
+      for (const ptr of layerEntries(PARAMS_SCHEMA, prev.layer).keys()) {
+        if (bindings[ptr] && getAt(cfg.layer, ptr) === undefined && getAt(ui(), ptr) === undefined)
+          bindings[ptr].set(defaultAt(ptr));
+      }
+    }
     let u = ui() as Record<string, unknown>;
     for (const [ptr, v] of layerEntries(PARAMS_SCHEMA, cfg.layer)) {
       u = deleteAt(u, ptr);
@@ -222,9 +228,24 @@ export function createParamLayers(bindings: Bindings = {}) {
     return out;
   }
 
+  /**
+   * The requested values that `sent` (the layer a start sends) does not carry: the app's own
+   * settings set those fields at each start. Pointer → the value asked for and the value used.
+   */
+  function overridden(sent: ParamsLayer): Record<string, { asked: unknown; used: unknown }> {
+    const out: Record<string, { asked: unknown; used: unknown }> = {};
+    for (const [ptr, asked] of layerEntries(PARAMS_SCHEMA, runLayer(requested()))) {
+      const used = getAt(sent, ptr);
+      if (!same(asked, used))
+        out[ptr] = { asked, used: used === undefined ? defaultAt(ptr) : used };
+    }
+    return out;
+  }
+
   return {
     file,
     value,
+    overridden,
     source,
     set,
     reset,

@@ -27,9 +27,10 @@ import type { FastToSlow, SlowInit } from '../workers/slow-types.ts';
 import { blobMovie } from './blob-movie.ts';
 import { testPlan } from './params-fixtures.ts';
 import { initTestWasm } from './wasm-test.ts';
-import { getAt, schemaFields, type ParamField } from '@calab/core';
+import { getAt, schemaFields, setAt, type ParamField } from '@calab/core';
+import { runLayer } from '../lib/param-layers.ts';
 import { PARAMS_SCHEMA } from '../lib/config-file.ts';
-import { sheetShows } from '../lib/sheet-fields.ts';
+import { LOOKBACK_OFF_SETS, SET_AT_START, sheetShows } from '../lib/sheet-fields.ts';
 
 beforeAll(initTestWasm);
 
@@ -336,5 +337,81 @@ describe('every field the pre-run sheet renders reaches the run', () => {
       if (f.pointer === '/scales/expected_cell_diameter_um')
         expect(run.engine.cell_diameter).toEqual({ px: 15, source: 'optics', um_per_px: 2 });
     }
+  });
+});
+
+describe('every field a config file sets reaches the run or is reported as replaced', () => {
+  it("is in the resolved params, or the app's own settings set it and the record says so", async () => {
+    const fields = schemaFields(PARAMS_SCHEMA).filter(
+      (f) => f.level !== 'internal' && f.kind !== 'other' && !f.widget,
+    );
+    for (const f of fields) {
+      const v = f.pointer === '/scales/expected_cell_diameter_um' ? 30 : nonDefault(f);
+      let store: PipelineStore | undefined;
+      const options = await startOptions({}, (s) => {
+        store = s;
+        const layer: Record<string, unknown> = {};
+        let l = setAt(layer, f.pointer, v);
+        if (f.pointer === '/scales/expected_cell_diameter_um')
+          l = setAt(setAt(l, '/optics/sensor_pixel_um', 2), '/optics/magnification', 1);
+        s.params.load({
+          name: 'c.json',
+          layer: l as ParamsLayer,
+          unknown: [],
+          ignored: {},
+          kind: 'config',
+        });
+      });
+      const run = runParams(
+        resolveRunParams(options.paramsLayer ?? {}, { fps: 20, width: 600, height: 600 }),
+      );
+      const req = store!.runRequest()!;
+      if (req.overridden[f.pointer]) {
+        // Replaced: named in the sheet when the file loads, and in the record; not a source.
+        const lookbackOff = run.params.lookback.enabled === false;
+        expect(
+          f.pointer in SET_AT_START || (lookbackOff && LOOKBACK_OFF_SETS.includes(f.pointer)),
+          f.pointer,
+        ).toBe(true);
+        expect(req.sources[f.pointer]).toBeUndefined();
+      } else {
+        expect(getAt(run.params, f.pointer), f.pointer).toEqual(v);
+        expect(req.sources[f.pointer], f.pointer).toBe('file:c.json');
+      }
+      // The bound settings (e.g. Extract after Discover) are page-wide: back to the defaults.
+      store!.params.clear();
+    }
+  });
+});
+
+describe('a µm cell diameter is never replaced by the default pixels', () => {
+  it('without the optics the start refuses, and no run starts', async () => {
+    const startPipeline = vi.fn(async () => testPlan(100));
+    const store = createPipelineStore(
+      {
+        startPipeline,
+        stepPipeline: () => new Promise(() => {}),
+        stopPipeline: async () => {},
+        subscribeFlatField: () => () => {},
+      },
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      undefined,
+      lookbackFeed(),
+    );
+    store.params.set('/scales/expected_cell_diameter_um', 30);
+    await store.start();
+    expect(startPipeline).not.toHaveBeenCalled();
+    expect(store.status()).toBe('error');
+    expect(store.error()).toMatch(/sensor pixel size/);
+    expect(runLayer(store.params.requested()).scales).toEqual({
+      expected_cell_diameter_um: 30,
+      cell_diameter_px: null,
+    });
   });
 });

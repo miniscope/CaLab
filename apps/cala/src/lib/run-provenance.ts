@@ -584,6 +584,8 @@ export interface RunRecordInput {
     requested?: Record<string, unknown>;
     /** JSON pointer → where each requested value came from (`ui`, `file:<name>`). */
     sources?: Record<string, string>;
+    /** Asked for, but set by the app's own settings at the start: pointer → `{ asked, used }`. */
+    overridden?: Record<string, unknown>;
     /** The cell diameter in force: px, and whether it came from µm through the optics. */
     cell_diameter: unknown;
   };
@@ -793,13 +795,21 @@ export interface RunRecordSources {
   /** The current run's resolved params (null: none yet). */
   params?(): RunParams | null;
   /** What the current run asked for and the source of each value (null: none yet). */
-  request?(): { requested: Record<string, unknown>; sources: Record<string, string> } | null;
+  request?(): {
+    requested: Record<string, unknown>;
+    sources: Record<string, string>;
+    overridden: Record<string, unknown>;
+  } | null;
 }
 
 /** The record's `params` block of a run's resolved params (empty: none). */
 function paramsOf(
   run: RunParams | null,
-  request: { requested: Record<string, unknown>; sources: Record<string, string> } | null,
+  request: {
+    requested: Record<string, unknown>;
+    sources: Record<string, string>;
+    overridden: Record<string, unknown>;
+  } | null,
 ): Pick<RunRecordInput, 'params'> {
   return run
     ? {
@@ -807,7 +817,13 @@ function paramsOf(
           fingerprint: run.fingerprint,
           context: run.context,
           values: run.params,
-          ...(request ? { requested: request.requested, sources: request.sources } : {}),
+          ...(request
+            ? {
+                requested: request.requested,
+                sources: request.sources,
+                overridden: request.overridden,
+              }
+            : {}),
           cell_diameter: run.engine.cell_diameter,
         },
       }

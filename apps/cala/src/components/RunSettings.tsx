@@ -5,12 +5,12 @@
  */
 import { createSignal, For, Show, type JSX } from 'solid-js';
 import { Badge, formatParam, Icon, ParamForm, type ParamFieldExtras } from '@calab/ui';
-import { getAt, schemaFields, type ParamField } from '@calab/core';
+import { getAt, layerEntries, schemaFields, type ParamField } from '@calab/core';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { FINAL_SETTLE_LEVELS, type FinalSettleLevel } from '../lib/settle.ts';
 import { appliesText, type SettingsContext } from './DiscoverSettings.tsx';
 import { isRefusal, PARAMS_SCHEMA, readConfig, type ConfigRefusal } from '../lib/config-file.ts';
-import { sheetShows } from '../lib/sheet-fields.ts';
+import { SET_AT_START, sheetShows } from '../lib/sheet-fields.ts';
 
 export interface RunSettingsProps {
   pipeline: PipelineStore;
@@ -183,6 +183,14 @@ function ConfigBar(props: { pipeline: PipelineStore }): JSX.Element {
     setTimeout(() => URL.revokeObjectURL(a.href), 0);
   };
   const count = () => Object.keys(params().sources()).length;
+  /** The loaded file's values that the app's own settings replace at each start. */
+  const appSet = () => {
+    const f = params().file();
+    if (!f) return [];
+    return [...layerEntries(PARAMS_SCHEMA, f.layer).keys()]
+      .filter((ptr) => SET_AT_START[ptr])
+      .map((ptr) => ({ ptr, why: SET_AT_START[ptr] }));
+  };
   return (
     <div class="cala-sheet__config" data-testid="config-bar">
       <div class="cala-sheet__config-row">
@@ -238,6 +246,18 @@ function ConfigBar(props: { pipeline: PipelineStore }): JSX.Element {
           {count() === 0 ? 'All defaults' : `${count()} set`}
         </span>
       </div>
+      <Show when={appSet().length > 0}>
+        <ul class="cala-sheet__config-warn" data-testid="config-app-set" role="status">
+          <For each={appSet()}>
+            {(a) => (
+              <li>
+                <Icon name="warning" size={12} /> <code>{a.ptr}</code> is set by {a.why} at each
+                start; the file's value is not used.
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
       <Show when={params().unknown().length > 0}>
         <ul class="cala-sheet__config-warn" data-testid="config-warnings" role="status">
           <For each={params().unknown()}>

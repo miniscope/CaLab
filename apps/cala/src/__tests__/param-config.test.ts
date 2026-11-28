@@ -141,7 +141,10 @@ describe('the cell diameter', () => {
 
   it('a µm diameter without the optics, or out of range in pixels, is an issue', () => {
     const noOptics: ParamsLayer = { scales: { expected_cell_diameter_um: 30 } };
-    expect(runLayer(noOptics)).toEqual(noOptics);
+    expect(runLayer(noOptics)).toEqual({
+      scales: { expected_cell_diameter_um: 30, cell_diameter_px: null },
+    });
+    expect(() => engineOf(runLayer(noOptics))).toThrow();
     expect(diameterPlan(noOptics, 600).issues[0].message).toMatch(/sensor pixel size/);
     const big: ParamsLayer = {
       optics: { sensor_pixel_um: 1, magnification: 1 },

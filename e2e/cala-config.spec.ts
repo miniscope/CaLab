@@ -5,7 +5,8 @@ import { test, expect } from './fixtures.ts';
 import { buildAvi, cellMovie } from '../apps/cala/src/__tests__/synth-avi.ts';
 import { exportNpz, metaText, startRun } from './cala-helpers.ts';
 
-const FRAMES = 300;
+// As long as the factors spec's runs, so Discover finds the cells and Extract follows.
+const FRAMES = 590;
 
 function writeMovie(dir: string): string {
   const folder = join(dir, 'My_V4_Miniscope');
@@ -27,15 +28,15 @@ function writeMovie(dir: string): string {
 test('Cala: a config file sets the cell diameter, and the run carries it', async ({ page }) => {
   test.setTimeout(240_000);
   const dir = mkdtempSync(join(tmpdir(), 'cala-config-e2e-'));
-  const config = join(dir, 'cala-d16.json');
+  const config = join(dir, 'cala-d12.json');
   writeFileSync(
     config,
-    `// 2 µm per pixel: 32 µm is 16 px.
+    `// 2 µm per pixel: 24 µm is 12 px, about the size of the movie's cells.
 {
   "format": "calab-config", "version": 1, "app": "cala", "params_version": 1,
   "params": {
     "optics": { "sensor_pixel_um": 4, "magnification": 2 },
-    "scales": { "expected_cell_diameter_um": 32 },
+    "scales": { "expected_cell_diameter_um": 24 },
     "discover": { "acept_z": 4 }
   }
 }`,
@@ -51,9 +52,9 @@ test('Cala: a config file sets the cell diameter, and the run carries it', async
   await expect(sheet.getByTestId('derived-diameter')).toContainText('the run uses 10 px');
 
   await sheet.getByTestId('config-load-input').setInputFiles(config);
-  await expect(sheet.getByTestId('config-file')).toContainText('cala-d16.json');
-  await expect(sheet.getByTestId('derived-diameter')).toContainText('16 px');
-  await expect(sheet.getByTestId('expected-cell-diameter')).toHaveValue('32');
+  await expect(sheet.getByTestId('config-file')).toContainText('cala-d12.json');
+  await expect(sheet.getByTestId('derived-diameter')).toContainText('12 px');
+  await expect(sheet.getByTestId('expected-cell-diameter')).toHaveValue('24');
   await expect(sheet.getByTestId('param-source-scales-expected_cell_diameter_um')).toHaveText(
     'file',
   );
@@ -65,10 +66,10 @@ test('Cala: a config file sets the cell diameter, and the run carries it', async
   await expect(page.getByTestId('pass2-status')).toContainText('Extract done', {
     timeout: 180_000,
   });
-  await expect(page.getByTestId('settings-summary')).toContainText('Expected cell diameter 32 µm');
+  await expect(page.getByTestId('settings-summary')).toContainText('Expected cell diameter 24 µm');
   const meta = metaText(await exportNpz(page));
-  expect(meta).toContain('"cell_diameter":{"px":16,"source":"optics","um_per_px":2}');
-  expect(meta).toContain('"/scales/expected_cell_diameter_um":"file:cala-d16.json"');
+  expect(meta).toContain('"cell_diameter":{"px":12,"source":"optics","um_per_px":2}');
+  expect(meta).toContain('"/scales/expected_cell_diameter_um":"file:cala-d12.json"');
   expect(meta).toContain('"requested":{"optics":{"sensor_pixel_um":4,"magnification":2}');
   expect(meta).not.toContain('acept_z');
 });
