@@ -717,6 +717,8 @@ export interface RunRecordSources {
     lookback(): boolean;
     /** Look-back actually ran in the current run (the setting can be on while it is blocked). */
     lookbackRun?(): boolean;
+    /** The current run is repeatable (`RunCells.repeatable`). */
+    repeatableRun?(): boolean;
     csettle(): boolean;
     csettleCeiling(): number;
     csettleYield(): number;
@@ -854,6 +856,7 @@ export function gatherRunRecord(src: RunRecordSources, extras: RunRecordExtras =
             : 'off',
       settle_yield_frames: p.csettleYield(),
       need_first: p.csettleNeedFirst(),
+      ...(p.repeatableRun ? { repeatable: p.repeatableRun() } : {}),
       // The pool actually started (a run that stayed at Max: started_S 0, started_at_frame null).
       lookback_pool: {
         planned_S: src.lookbackPoolSize(),
@@ -980,6 +983,8 @@ export interface AppliedSettings {
   csettleCeiling?: number;
   csettleYield?: number;
   csettleNeedFirst?: boolean;
+  /** Repeatable runs (`RunCells.repeatable`; recordings only). */
+  repeatable?: boolean;
   finalSettleLevel?: FinalSettleLevel;
   paceFps?: number;
   smoothPlayback?: boolean;
@@ -1068,6 +1073,7 @@ export function settingsFromRecord(rec: unknown): AppliedSettings | null {
       out.csettleCeiling = o.settle_cap;
     }
     bool('need_first', 'csettleNeedFirst');
+    bool('repeatable', 'repeatable');
     const pool = o.lookback_pool as Record<string, unknown> | null | undefined;
     if (pool && typeof pool === 'object' && finite(pool.planned_S))
       out.lookbackPoolPlanned = pool.planned_S;

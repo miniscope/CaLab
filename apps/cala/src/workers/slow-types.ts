@@ -71,6 +71,11 @@ export type FastToSlow =
        * of its processing. Absent: unknown.
        */
       sentAt?: number;
+      /**
+       * A repeatable run: libraries the fast loop adopted after their stamped frame so far (the
+       * message came too late; that run is not repeatable). Absent: none.
+       */
+      lateLibraries?: number;
     }
   /** The recording ended: publish what is pending. */
   | { type: 'end'; session: number }
@@ -89,8 +94,12 @@ export type SlowToFast =
       /** Frames of the batch the slow loop observed (others came from a version it does not hold). */
       observed: number;
     }
-  /** A published library, `TraceLibrary.toBytes()`. */
-  | { type: 'library'; session: number; version: number; bytes: Uint8Array };
+  /**
+   * A published library, `TraceLibrary.toBytes()`. `frame` (a repeatable run): the last stream
+   * frame of the batch it was published at; the fast loop adopts it at a fixed lead after that
+   * (`FastLoop.adoptFrame`). Absent: adopted at the next batch.
+   */
+  | { type: 'library'; session: number; version: number; bytes: Uint8Array; frame?: number };
 
 /** Slow-loop counters (`SlowLoop.stats()`). */
 export interface SlowCounters {
@@ -195,6 +204,12 @@ export function visitRateCounters(
 export interface SlowStatus {
   /** The Discover visit cap's counters (absent: not reported). */
   visitRate?: VisitRateCounters;
+  /**
+   * A repeatable run (`SlowInit.repeatable`): batch ends that waited at the apply barrier for a
+   * late visit or answer and the time waited (ms), and the libraries the fast loop adopted after
+   * their stamped frame (any above 0: this run was not repeatable). Absent: not a repeatable run.
+   */
+  repeatable?: { barrierWaits: number; barrierWaitMs: number; lateLibraries: number };
   /** Stream index after the last observed frame. */
   frame: number;
   /** Stream index after the last batch received, observed or not (a Refine run's backpressure). */

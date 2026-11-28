@@ -38,6 +38,11 @@ export interface BgSettleHost {
   readonly lbFloor: number;
   /** Discover is running and look-back works. */
   readonly lookbackLive: boolean;
+  /**
+   * A repeatable run's apply barrier is on: answers are fed at batch ends (whole), and requests
+   * and hand-outs wait for the batch end too.
+   */
+  readonly barrierOn: boolean;
   /** The pacer's target live fps (0: Max) and pause. */
   readonly pace: { fps: number; paused: boolean };
   /** The settle's cap, re-read frames per live frame (0 = Off). */
@@ -265,6 +270,11 @@ export class BgSettleDriver {
       throw new Error(`settle: ${msg.count} frames for a request of ${req.items.length}`);
     const work: BgSettleWork = { msg, req, next: 0 };
     bgs.answers++;
+    if (this.r.barrierOn) {
+      this.bgSettleFeed(loop, bgs, work, msg.count);
+      this.r.releaseFrames(msg, req.port);
+      return;
+    }
     if (bgs.yieldFrames > 0) {
       bgs.works.push(work);
       // Need-driven look-back may use the worker meanwhile.
@@ -336,7 +346,7 @@ export class BgSettleDriver {
     }
     if (skipped > 0) loop.settleSkipped(skipped);
     work.next = end;
-    if (this.r.parallel) {
+    if (this.r.parallel && !this.r.barrierOn) {
       this.r.housekeep();
       this.r.dispatch();
     }
