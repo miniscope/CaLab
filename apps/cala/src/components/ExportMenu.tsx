@@ -7,8 +7,8 @@ import type { ByteSink } from '@calab/io';
 import type { CellStore } from '../lib/cell-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import type { Pass2Result, Pass2Store } from '../lib/pass2-store.ts';
-import type { RunRecordExtras } from '../lib/run-provenance.ts';
-import { extractAfterDiscover, type StageLog } from '../lib/run-stages.ts';
+import type { RunFile } from '@calab/project';
+import type { StageLog } from '../lib/run-stages.ts';
 import { markResultExported } from '../lib/export-state.ts';
 import { reportResultsExported } from '../lib/analytics-integration.ts';
 import { fileFactorNotes } from '../lib/factor-run.ts';
@@ -18,7 +18,7 @@ import {
   cadeconIsClassic,
   calaExportBytes,
   FACTORS_EXPORT_NOTE,
-  exportFormatVersion,
+  EXPORT_FORMAT_VERSION,
   factorTailNote,
   fileStem,
   saveExport,
@@ -48,8 +48,8 @@ export interface ExportMenuProps {
   fps: number;
   /** Bits per pixel of the recording (the exported images' display ranges). */
   bitDepth?: number;
-  /** The run record with this menu's settings added; written into each export. */
-  runRecord?: (extras: RunRecordExtras) => Record<string, unknown>;
+  /** The run file of the result being exported: its run's, as it is now (null: no run). */
+  runFile?: () => RunFile | null;
 }
 
 /** The export (see the module comment); renders nothing before there is a result. */
@@ -134,14 +134,7 @@ export function ExportMenu(props: ExportMenuProps): JSX.Element {
         bins: props.ui.run.history().toExport(),
         eventsJson: props.ui.run.events().toJSON(),
       },
-      ...(withRecord && props.runRecord
-        ? {
-            runRecord: props.runRecord({
-              extractAfterDiscover: extractAfterDiscover(),
-              passQcOnly: passOnly(),
-            }),
-          }
-        : {}),
+      ...(withRecord && props.runFile?.() ? { runFile: props.runFile()! } : {}),
       version: import.meta.env.VITE_APP_VERSION || 'dev',
     };
   };
@@ -165,8 +158,8 @@ export function ExportMenu(props: ExportMenuProps): JSX.Element {
               disabled={!exportResult() || exporting() !== null}
               title={
                 props.live
-                  ? 'Footprints, the live traces, motion, flicker, cell metadata and the run record (NumPy .npz).'
-                  : "Footprints, Extract's traces, motion, flicker, the stages run, cell metadata and the run record (NumPy .npz)."
+                  ? 'Footprints, the live traces, motion, flicker, cell metadata and the run file (NumPy .npz).'
+                  : "Footprints, Extract's traces, motion, flicker, the stages run, cell metadata and the run file (NumPy .npz)."
               }
               onClick={() => {
                 const input = exportInput(true);
@@ -175,7 +168,7 @@ export function ExportMenu(props: ExportMenuProps): JSX.Element {
                     `${fileStem(props.label)}_cala.npz`,
                     calaExportBytes(input),
                     (sink, prog) => writeCalaExport(input, sink, { onProgress: prog }),
-                    exportFormatVersion(input),
+                    EXPORT_FORMAT_VERSION,
                   );
               }}
             >

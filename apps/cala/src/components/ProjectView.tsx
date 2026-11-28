@@ -1,13 +1,8 @@
 import { createSignal, For, Show, type JSX } from 'solid-js';
 import { ThemeMenu } from './ThemeMenu.tsx';
 import type { ProjectStore } from '../lib/project-store.ts';
-import {
-  sharedIdGroups,
-  type IdGroup,
-  type SessionStatus,
-  type StageState,
-} from '../lib/project-index.ts';
-import { planSummary } from '../lib/run-plan.ts';
+import { type IdGroup, type SessionStatus, type StageState } from '../lib/project-index.ts';
+import { planSummary } from '@calab/project';
 import { LIBRARY_MODE_LABEL } from '../lib/session-run.ts';
 import { isPickerAbort, showPicker, supportsDirectoryPicker } from '../lib/directory-picker.ts';
 import type { ReadDirLike } from '../lib/project-io.ts';
@@ -73,10 +68,7 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
   const [details, setDetails] = createSignal<string | null>(null);
   const [startError, setStartError] = createSignal<string | null>(null);
   const rows = () => p().tableRows();
-  const idGroups = () => {
-    const idx = p().index();
-    return idx ? sharedIdGroups(idx) : new Map<string, IdGroup>();
-  };
+  const idGroups = (): Map<string, IdGroup> => p().idGroups();
   const idGroup = (id: string) => idGroups().get(id) ?? null;
   const selectable = () => rows().filter((r) => r.row !== null);
   const allSelected = () =>
@@ -118,7 +110,7 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
         </h2>
         <p class="cala-sessions__row cala-project__where" data-testid="project-results">
           Results: <code>{p().location().label}/</code>
-          {p().location().kind === 'default' ? ' (in the animal folder)' : ' (chosen folder)'}{' '}
+          {p().location().kind === 'default' ? ' (next to the data)' : ' (chosen folder)'}{' '}
           <Show when={supportsDirectoryPicker() && p().canWrite()}>
             <button type="button" class="btn-secondary btn-small" onClick={chooseResults}>
               Choose another folder...
@@ -127,8 +119,10 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
           <Show when={!p().canWrite()}>
             <span class="cala-muted">
               {' '}
-              This browser cannot write to the folder: each run downloads a zip of its run folder,
-              and changes to the index are not saved.
+              {p().declined()
+                ? 'Writing to the folder was declined'
+                : 'This browser cannot write to the folder'}
+              : each run downloads a zip of its run folder, and changes to the index are not saved.
             </span>
           </Show>
         </p>
@@ -392,8 +386,8 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
           fallback={
             <p class="cala-muted">
               Select sessions above, then <strong>Run selected jointly</strong> (one Joint run, one
-              library across them) or <strong>Run selected separately</strong>. Groups run one after
-              another.
+              library across them) or <strong>Run selected separately</strong> (one run each). Steps
+              run one after another.
             </p>
           }
         >
@@ -405,16 +399,16 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
                   <div class="cala-sessions__body">
                     <strong>
                       {g.kind === 'joint'
-                        ? `${LIBRARY_MODE_LABEL.joint}: ${g.sessions.length} sessions`
-                        : `${LIBRARY_MODE_LABEL.separate}: ${g.sessions.length} ${g.sessions.length === 1 ? 'session' : 'sessions'}`}
+                        ? `${LIBRARY_MODE_LABEL.joint}: ${g.streams.length} sessions`
+                        : `${LIBRARY_MODE_LABEL.separate}: ${g.streams.length} ${g.streams.length === 1 ? 'session' : 'sessions'}`}
                     </strong>
-                    <span class="cala-sessions__path">{g.sessions.join(', ')}</span>
+                    <span class="cala-sessions__path">{g.streams.join(', ')}</span>
                   </div>
                   <div class="cala-sessions__actions">
                     <button
                       type="button"
                       class="btn-secondary btn-small"
-                      aria-label={`Move group ${i() + 1} up`}
+                      aria-label={`Move step ${i() + 1} up`}
                       disabled={i() === 0}
                       onClick={() => p().moveGroup(i(), i() - 1)}
                     >
@@ -424,7 +418,7 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
                       type="button"
                       class="btn-secondary btn-small"
                       data-testid="plan-remove"
-                      aria-label={`Remove group ${i() + 1}`}
+                      aria-label={`Remove step ${i() + 1}`}
                       onClick={() => p().removeGroup(i())}
                     >
                       Remove
@@ -453,11 +447,11 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
         <Show when={p().planState().kind === 'stopped'}>
           <p class="cala-sessions__warning" data-testid="plan-stopped">
             The last plan stopped: {(p().planState() as { reason?: string }).reason ?? ''}. Results
-            already written are kept; the groups not finished are left in the plan.
+            already written are kept; the steps not finished are left in the plan.
           </p>
         </Show>
         <p class="cala-muted cala-sessions__note">
-          Each group is one run, written to <code>{p().location().label}/runs/&lt;run&gt;/</code> as
+          Each step is one run, written to <code>{p().location().label}/runs/&lt;run&gt;/</code> as
           each session finishes; that session's newest result becomes its current one. Data folders
           are only read.
         </p>

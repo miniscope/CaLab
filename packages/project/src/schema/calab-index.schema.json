@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "calab-index.schema.json",
+  "title": "IndexFile",
+  "description": "`calab-index.json`: a cache of the run files and the stream scan. Safe to delete: it is rebuilt from `runs/*/calab-run.json`.",
+  "type": "object",
+  "required": ["format", "version", "built", "streams", "runs", "results"],
+  "properties": {
+    "format": { "const": "calab-index" },
+    "version": { "type": "integer", "minimum": 1 },
+    "built": { "type": "string", "description": "ISO time." },
+    "streams": { "type": "array", "items": { "$ref": "#/$defs/IndexStream" } },
+    "runs": { "type": "array", "items": { "$ref": "#/$defs/IndexRun" } },
+    "results": { "type": "array", "items": { "$ref": "#/$defs/IndexResult" } }
+  },
+  "$defs": {
+    "IndexStream": {
+      "type": "object",
+      "required": [
+        "ref",
+        "role",
+        "start",
+        "frames",
+        "fps",
+        "width",
+        "height",
+        "bit_depth",
+        "missing",
+        "previous_refs"
+      ],
+      "properties": {
+        "ref": { "type": "string" },
+        "role": { "type": "string" },
+        "start": { "type": ["string", "null"] },
+        "frames": { "type": ["integer", "null"] },
+        "fps": { "type": ["number", "null"] },
+        "width": { "type": ["integer", "null"] },
+        "height": { "type": ["integer", "null"] },
+        "bit_depth": { "type": ["integer", "null"] },
+        "missing": {
+          "type": "boolean",
+          "description": "Its folder is gone and no renamed folder matched it."
+        },
+        "previous_refs": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "IndexRun": {
+      "type": "object",
+      "required": [
+        "id",
+        "app",
+        "kind",
+        "status",
+        "folder",
+        "plan",
+        "fingerprint",
+        "created",
+        "updated",
+        "stopped",
+        "links",
+        "streams",
+        "stages"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "app": { "type": "string" },
+        "kind": { "enum": ["separate", "joint", "apply"] },
+        "status": { "enum": ["planned", "running", "finished", "stopped"] },
+        "folder": { "type": "string", "description": "Relative to the project folder." },
+        "plan": {
+          "anyOf": [
+            {
+              "type": "object",
+              "required": ["id", "step"],
+              "properties": { "id": { "type": "string" }, "step": { "type": "string" } }
+            },
+            { "type": "null" }
+          ]
+        },
+        "fingerprint": { "type": ["string", "null"] },
+        "created": { "type": "string" },
+        "updated": { "type": "string" },
+        "stopped": { "type": ["string", "null"] },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["role", "run", "stream"],
+            "properties": {
+              "role": { "type": "string" },
+              "run": { "type": "string" },
+              "stream": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "streams": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/IndexRunStream" },
+          "description": "The run's inputs with what became of each."
+        },
+        "stages": {
+          "type": "array",
+          "items": { "type": "object" },
+          "description": "The run's stage log, as its run file has it."
+        }
+      }
+    },
+    "IndexRunStream": {
+      "type": "object",
+      "required": ["stream", "status"],
+      "properties": {
+        "stream": { "type": "string" },
+        "status": { "enum": ["pending", "written", "skipped", "failed"] },
+        "note": { "type": "string" },
+        "boundary": { "type": ["object", "null"] }
+      }
+    },
+    "IndexResult": {
+      "type": "object",
+      "required": [
+        "run",
+        "app",
+        "stream",
+        "path",
+        "id_space",
+        "cells",
+        "library_version",
+        "created"
+      ],
+      "properties": {
+        "run": { "type": "string" },
+        "app": { "type": "string", "description": "The app of the run that wrote it." },
+        "stream": { "type": "string" },
+        "path": {
+          "type": "string",
+          "description": "The artifact, relative to the project folder."
+        },
+        "id_space": { "type": "string" },
+        "cells": { "type": ["integer", "null"] },
+        "library_version": { "type": ["integer", "null"] },
+        "created": { "type": "string" }
+      }
+    }
+  }
+}

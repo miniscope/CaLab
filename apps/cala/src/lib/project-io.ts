@@ -1,63 +1,43 @@
 /**
- * Reading and writing a project's results folder (`docs/projects.md`):
- * the JSON files a rebuild needs, the index (written whole, then swapped in),
- * and the folder of a new run. Through a directory handle (File System Access
- * API) or, read-only, from the files of a picked folder.
+ * Reading and writing a project folder (`calab-project/`, `docs/projects.md`): the JSON files a
+ * project needs, the folder of a new run, and the files of a result. Through a directory handle
+ * (File System Access API) or, read-only, from the files of a picked folder. The envelope files
+ * are read and written through `@calab/project`.
  */
-import type { FolderEntry } from './frame-source.ts';
 import {
-  PROJECT_INDEX_FILE,
-  RUN_FILE,
+  PROJECT_DIR,
   RUNS_DIR,
-  SESSION_FILE,
-  serializeIndex,
-  type ProjectIndex,
-  type ResultsFile,
-} from './project-index.ts';
+  readTree,
+  writeProjectDoc,
+  type IndexFile,
+  type ProjectFile,
+  type ProjectTextFile,
+  type ReadDirLike,
+} from '@calab/project';
+import type { FolderEntry } from './frame-source.ts';
 import {
   sinkInDirectory,
   zipResultsSink,
   type ResultsSink,
   type WritableDirLike,
 } from './session-export.ts';
-import { RESULTS_DIR } from './sessions.ts';
 
-const WANTED = new Set([PROJECT_INDEX_FILE, RUN_FILE, SESSION_FILE]);
-/** Deeper than any results tree: session paths are a few levels, plus `runs/<id>`. */
-const MAX_DEPTH = 16;
+export type { ReadDirLike };
 
-/** The slice of a directory handle a results walk uses (a mock in tests). */
-export interface ReadDirLike {
-  kind: 'directory';
-  name: string;
-  values(): AsyncIterable<ReadDirLike | { kind: 'file'; name: string; getFile(): Promise<File> }>;
-  getDirectoryHandle?(name: string, options?: { create?: boolean }): Promise<ReadDirLike>;
+const isJson = (name: string) => name.endsWith('.json');
+
+/** The JSON files under a project folder, read through its handle (paths relative to it). */
+export function readProjectFiles(dir: ReadDirLike): Promise<ProjectTextFile[]> {
+  return readTree(dir, isJson);
 }
 
-/** The index and run files under a results folder, read through its handle. */
-export async function readResultsFiles(dir: ReadDirLike): Promise<ResultsFile[]> {
-  const out: ResultsFile[] = [];
-  const walk = async (d: ReadDirLike, prefix: string, depth: number): Promise<void> => {
-    for await (const child of d.values()) {
-      const path = prefix ? `${prefix}/${child.name}` : child.name;
-      if (child.kind === 'directory') {
-        if (depth < MAX_DEPTH) await walk(child, path, depth + 1);
-      } else if (WANTED.has(child.name)) {
-        out.push({ path, text: await (await child.getFile()).text() });
-      }
-    }
-  };
-  await walk(dir, '', 0);
-  return out.sort((a, b) => (a.path < b.path ? -1 : 1));
-}
-
-/** The same, from the files of a picked folder (`<root>/cala-results/...`). */
-export async function resultsFilesFromEntries(
+/** The same, from the files of a picked folder (`<root>/calab-project/...`). */
+export async function projectFilesFromEntries(
   entries: readonly FolderEntry[],
   rootName: string,
-): Promise<ResultsFile[]> {
-  const prefix = `${rootName}/${RESULTS_DIR}/`;
-  const picked = entries.filter((e) => e.relPath.startsWith(prefix) && WANTED.has(e.file.name));
+): Promise<ProjectTextFile[]> {
+  const prefix = `${rootName}/${PROJECT_DIR}/`;
+  const picked = entries.filter((e) => e.relPath.startsWith(prefix) && isJson(e.file.name));
   const out = await Promise.all(
     picked.map(async (e) => ({ path: e.relPath.slice(prefix.length), text: await e.file.text() })),
   );
@@ -65,8 +45,8 @@ export async function resultsFilesFromEntries(
 }
 
 /**
- * A file under a results folder, by its path relative to it (a result's
- * `export_path`), read through the folder's handle. Throws when it is gone.
+ * A file under a project folder, by its path relative to it (a result's `export_path`), read
+ * through the folder's handle. Throws when it is gone.
  */
 export async function fileAt(dir: ReadDirLike, path: string): Promise<File> {
   const parts = path.split('/').filter((p) => p !== '' && p !== '.');
@@ -80,12 +60,12 @@ export async function fileAt(dir: ReadDirLike, path: string): Promise<File> {
         next = child;
         break;
       }
-    if (!next) throw new Error(`${path} is not in the results folder (no ${p}/).`);
+    if (!next) throw new Error(`${path} is not in the project folder (no ${p}/).`);
     d = next;
   }
   for await (const child of d.values())
     if (child.kind === 'file' && child.name === name) return child.getFile();
-  throw new Error(`${path} is not in the results folder.`);
+  throw new Error(`${path} is not in the project folder.`);
 }
 
 /** The same from the files of a folder picked through a file input. */
@@ -94,13 +74,13 @@ export function fileInEntries(
   rootName: string,
   path: string,
 ): File {
-  const want = `${rootName}/${RESULTS_DIR}/${path}`;
+  const want = `${rootName}/${PROJECT_DIR}/${path}`;
   const e = entries.find((x) => x.relPath === want);
   if (!e) throw new Error(`${path} is not among the files picked; pick the animal folder again.`);
   return e.file;
 }
 
-/** A results folder's handle when it exists (no write needed); null when not. */
+/** A folder's handle when it exists (no write needed); null when not. */
 export async function existingDir(parent: ReadDirLike, name: string): Promise<ReadDirLike | null> {
   if (!parent.getDirectoryHandle) return null;
   try {
@@ -110,56 +90,37 @@ export async function existingDir(parent: ReadDirLike, name: string): Promise<Re
   }
 }
 
-async function writeText(dir: WritableDirLike, name: string, text: string): Promise<void> {
-  const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
-  try {
-    await w.write(text);
-    await w.close();
-  } catch (err) {
-    await w.abort?.().catch(() => {});
-    throw err;
-  }
-}
-
-/**
- * Write the index. The File System Access API has no rename, but a writable
- * stream writes to a swap file that replaces the file only on `close()`, so a
- * reader sees the old index or the new one, never half of one. An unreadable
- * index found on open is kept beside it (`cala-project.corrupt-<time>.json`)
- * before the first write replaces it.
- */
-export async function writeIndex(
-  resultsDir: WritableDirLike,
-  index: ProjectIndex,
-  corrupt?: { text: string; stamp: string } | null,
+/** Write the project file and the index (each whole, then swapped in). */
+export async function writeProject(
+  dir: WritableDirLike,
+  project: ProjectFile | null,
+  index: IndexFile,
 ): Promise<void> {
-  if (corrupt)
-    await writeText(resultsDir, `cala-project.corrupt-${corrupt.stamp}.json`, corrupt.text);
-  await writeText(resultsDir, PROJECT_INDEX_FILE, serializeIndex(index));
+  if (project) await writeProjectDoc(dir, 'project', project);
+  await writeProjectDoc(dir, 'index', index);
 }
 
 /**
- * The folder of a new run, `<results>/runs/<id>/`. An existing folder is never
- * reused: a suffix is added. Returns the sink and the folder relative to the
- * results folder.
+ * The folder of a new run, `<project>/runs/<id>/`. An existing folder is never reused: a suffix
+ * is added, and the folder's name is the run's id.
  */
 export async function projectRunSink(
-  resultsDir: WritableDirLike,
+  projectDir: WritableDirLike,
   runId: string,
-  resultsLabel: string,
-): Promise<{ sink: ResultsSink; folder: string }> {
-  const runs = await resultsDir.getDirectoryHandle(RUNS_DIR, { create: true });
+  label: string,
+): Promise<{ id: string; sink: ResultsSink; folder: string }> {
+  const runs = await projectDir.getDirectoryHandle(RUNS_DIR, { create: true });
   const existing = new Set<string>();
   for await (const name of runs.keys()) existing.add(name);
-  let name = runId;
-  for (let n = 2; existing.has(name); n++) name = `${runId}_${n}`;
-  const dir = await runs.getDirectoryHandle(name, { create: true });
-  const folder = `${RUNS_DIR}/${name}`;
-  return { sink: sinkInDirectory(dir, `${resultsLabel}/${folder}`), folder };
+  let id = runId;
+  for (let n = 2; existing.has(id); n++) id = `${runId}_${n}`;
+  const dir = await runs.getDirectoryHandle(id, { create: true });
+  const folder = `${RUNS_DIR}/${id}`;
+  return { id, sink: sinkInDirectory(dir, `${label}/${folder}`), folder };
 }
 
-/** No File System Access API: the run's tree as a zip, `cala-results/runs/<id>/...`. */
-export function projectZipSink(runId: string): { sink: ResultsSink; folder: string } {
+/** No File System Access API: the run's tree (and the project files) as a zip. */
+export function projectZipSink(runId: string): { id: string; sink: ResultsSink; folder: string } {
   const folder = `${RUNS_DIR}/${runId}`;
-  return { sink: zipResultsSink(undefined, folder), folder };
+  return { id: runId, sink: zipResultsSink(folder), folder };
 }

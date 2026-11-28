@@ -17,7 +17,7 @@
  * `discoverKinds`), else from the names. Apart from `discoverKinds`, pure
  * functions on names and strings; nothing reads a file.
  */
-import type { FolderEntry } from './frame-source.ts';
+import type { FolderEntry, SessionInput } from './frame-source.ts';
 import { readDeviceRoles, roleFromName, type RoleInfo, type RoleSource } from './device-roles.ts';
 import { naturalCompare } from './natural-sort.ts';
 import { baseOf, detectSeries, dirOf, seriesLabel, type VideoSeries } from './video-series.ts';
@@ -343,9 +343,6 @@ export function validateSessions(
   return { errors, warnings };
 }
 
-/** The default name of the results folder. */
-export const RESULTS_DIR = 'cala-results';
-
 function sanitizeSegment(seg: string): string {
   const s = seg.replace(/[^A-Za-z0-9._ -]/g, '_');
   return s === '.' || s === '..' ? '_' : s;
@@ -371,15 +368,20 @@ export function uniqueResultsPaths(dirs: readonly string[]): string[] {
   });
 }
 
-/** The run folder: `cala-results`, or a timestamped sibling when that name is taken. */
-export function runFolderName(existing: ReadonlySet<string>, now: Date): string {
-  if (!existing.has(RESULTS_DIR)) return RESULTS_DIR;
-  const p = (n: number) => String(n).padStart(2, '0');
-  const stamp =
-    `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}` +
-    `_${p(now.getHours())}-${p(now.getMinutes())}-${p(now.getSeconds())}`;
-  const base = `${RESULTS_DIR}_${stamp}`;
-  let name = base;
-  for (let n = 2; existing.has(name); n++) name = `${base}_${n}`;
-  return name;
+/** `recordingStartTime` from the nearest metaData.json that has one. */
+export async function readStartMs(c: SessionCandidate): Promise<number | null> {
+  for (const e of c.metaEntries) {
+    try {
+      const ms = parseRecordingStart(await e.file.text());
+      if (ms !== null) return ms;
+    } catch {
+      // unreadable: try the next one
+    }
+  }
+  return null;
+}
+
+/** The probe input of a discovered session candidate. */
+export function toSessionInput(c: SessionCandidate): SessionInput {
+  return { name: c.name, dir: c.dir, entries: c.entries };
 }

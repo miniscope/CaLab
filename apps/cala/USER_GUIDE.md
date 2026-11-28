@@ -113,7 +113,7 @@ stay but nothing moves.
   that will not run (look-back off, Extract unticked, a live stream) is hatched grey, and
   one stopped by an error has a red outline and ✕. The hatched start of Discover is the
   setup (**Calibrating**, **Motion template**). Hover a segment for its exact frames and
-  percent. In a multi-session run a thin ribbon above it shows each session (done ✓,
+  percent. In a run of several sessions a thin ribbon above it shows each session (done ✓,
   running, waiting) and "Session 2/3".
 - **The line under it**: where the current stage is (frame 824 / 1,000, Final settle
   300 / 1,000, Extract frame 400 / 1,000) and the whole run's time left, estimated from
@@ -221,8 +221,8 @@ its range are in `crates/cala/schema/cala-params.schema.json`. The export's run 
 holds what was asked for, where each value came from, and the cell diameter in pixels the
 run used.
 
-A live stream has no sheet: connecting starts it. A multi-session run starts from its own
-**Start** button (the session list, or a project's run plan) and has no sheet either.
+A live stream has no sheet: connecting starts it. A project's run plan starts from its
+**Start plan** button and has no sheet either.
 
 Once the run has started, the header has icon buttons to pause, restart (↻) and end
 Discover or stop the live run, and the tab shows, in the order you use them:
@@ -230,8 +230,8 @@ Discover or stop the live run, and the tab shows, in the order you use them:
 - **Settings**: one line of chips with the settings the run started with (for example
   "Look-back on · Final settle Thorough · Extract after Discover"), and one chip per further
   value the run asked for ("Expected cell diameter 32 µm"). Click it to open the same fields
-  and the config buttons. Changes **apply on Restart** (↻); in a Separate multi-session run
-  they apply from the next session.
+  and the config buttons. Changes **apply on Restart** (↻); in a Separate run of several
+  sessions they apply from the next session.
 - **Progress**: one row per step, **Discover**, **Final settle** and **Extract**. The
   running step is a panel with its header (name, state, percent, frames per second, time
   left), its bar and its meter rows, each on a fixed range:
@@ -305,8 +305,8 @@ Discover or stop the live run, and the tab shows, in the order you use them:
 the rail shows the **Export** button, with "Includes the run record" beside it. Its menu has
 **Export (.npz)** and **Export for CaDecon**.
 
-A live stream with `?factors=0` shows Discover only. In a
-multi-session run the **Sessions** block follows: the mode, the run's status, a meter of
+A live stream with `?factors=0` shows Discover only. Every run then shows the
+**Sessions** block, with where its results go; in a run of several sessions it holds the mode, the run's status, a meter of
 the results written (and, for a project's plan, of its groups), and one row per session
 with its state (written ✓, running, pending, skipped, failed) and, in a Joint run, each
 boundary's health badge.
@@ -465,12 +465,23 @@ A run has two named stages: **Discover** and **Extract** (see
    (`history_L0` … `history_L4`) and event log (`run_events_json`); see
    [Reading the run history in Python](#reading-the-run-history-in-python).
 
-## An animal's sessions: projects
+## Projects: one recording, an animal's sessions, a live stream
 
-Most experiments are many sessions from one animal. **Open animal project** on the
-start screen opens the animal's folder (for a Miniscope V4 tree, the folder that holds
-`date/time/My_V4_Miniscope/`) as a project: one table of all its sessions, what cala
-has done with each, and every result kept in `<animal>/cala-results/`.
+Everything Cala opens is a **project**, and every run writes its results the same way,
+into the project's `calab-project/` folder next to the data (raw data folders are only
+read). What you open decides how big the project is:
+
+- **One recording folder** is a project with one session. It opens on the recording with
+  its pre-run sheet; **Run** asks (in Chrome and Edge) for permission to save into the
+  folder, then runs Discover, Extract and writes the results. **Project** in the header
+  shows its table and results; **Restart** (↻) after a run ended starts a new run.
+- **An animal folder** (for a Miniscope V4 tree, the folder that holds
+  `date/time/My_V4_Miniscope/`) is a project with one session per recording folder, at
+  any depth; behaviour cameras are left out (see above). It opens on its session table.
+- **A live stream** (the live-source field) is a project with one session and no folder:
+  its run starts on connect, and its results download as a zip when it ends.
+
+The project's table:
 
 - **If the folder holds several animals** (an experiment folder with one subfolder per
   animal, each with several sessions), the app offers to open one animal at a time.
@@ -483,15 +494,19 @@ has done with each, and every result kept in `<animal>/cala-results/`.
   are its own (a Separate run). **Results** on a row lists every result of that session
   with its run, date, cell count and file path.
 - **Run plan.** Tick sessions, then **Run selected jointly** (one Joint run through them: one
-  library, shared cell ids) or **Run selected separately** (each its own run). Repeat to
+  library, shared cell ids; Discover runs through all sessions in order, look-back re-reads
+  frames of the session it is in, the Final settle at the end covers every session, and
+  Extract solves each session with the final library) or **Run selected separately** (each
+  its own run). Sessions of a Joint run must have the same size and bit depth. Repeat to
   build a plan, e.g. sessions 1 to 3 chained, 4 and 5 separately, 6 to 8 chained; and
   **Start plan**. **Discover settings** (Look-back, Final settle) under the plan are used
   by every run in it; choose them before **Start plan**. Chrome and Edge ask
-  once for permission to save into the animal folder. The groups run one after another;
+  once for permission to save into the animal folder. The steps run one after another;
   each session's results are written, and its current result updated, as soon as it is
   done. If a stage fails or is cancelled the plan stops, keeps what is written, and
-  leaves the unfinished groups in the plan. **Back to project** in the header returns to
-  the table.
+  leaves the unfinished steps in the plan. **Back to project** in the header returns to
+  the table. A rig with two Miniscopes gives one session per Miniscope; run those as
+  **Separate**.
 - **Current result.** A session's newest result is its current one. Older results are
   kept; **Set current** in its results makes an older one current again.
 - **View results.** Opens a result in the viewer as it looked right after its run:
@@ -502,65 +517,36 @@ has done with each, and every result kept in `<animal>/cala-results/`.
   from the table. **Back to project** returns to the table. Results saved by older
   versions open too; what they lack (the images, the History) says "not in this
   export".
-- **Where results go.** Each run gets its own folder, `cala-results/runs/<date>_<time>/`,
-  laid out like a multi-session run's results, and `cala-results/cala-project.json`
-  indexes them. Raw data folders are only read. **Choose another folder...** saves the
-  results elsewhere. If the index is lost or damaged it is rebuilt from the run folders
-  (with a note), and results written by a multi-session run before projects existed are
-  picked up the same way. A renamed session folder is recognised by its start time and
-  frame count; a folder that is gone is marked missing.
+- **Where results go.** Each run gets its own folder below `calab-project/runs/`, with
+  each session's export at the session's path (a single recording's at the run folder's
+  root):
+
+  ```
+  calab-project/
+    calab-project.json                     the project: its sessions and the plan
+    calab-index.json                       a cache of the runs (rebuilt when lost)
+    runs/2026-11-28_09-14-03_cala/
+      calab-run.json                       the run: settings, inputs, stages, results, record
+      2026_11_10/14_02_33/My_V4_Miniscope/
+        cala-export.npz                    the usual export, for this session's frames
+  ```
+
+  **Choose another folder...** saves the results elsewhere. A renamed session folder is
+  recognised by its start time and frame count; a folder that is gone is marked missing.
+  Results of older Cala versions (`cala-results/`) are named in a warning and not read.
+
 - **Reopening.** Chrome and Edge list **Recent projects** on the start screen: one click
   (and a permission prompt) reopens one. Other browsers pick the folder again; there each
-  run downloads a zip of its run folder, to unpack into the animal folder.
+  run downloads a zip of its run folder (with the project file), to unpack into the
+  picked folder.
 
 Saved libraries (applying one session's cells to another) and matching cells across
 Separate runs come in later versions. Details:
 [docs/projects.md](docs/projects.md).
 
-## Several sessions of one animal
+### Joint runs: session boundaries
 
-To track the same cells across days, run the sessions together instead of
-renumbering files into one folder. An animal project (above) does the same from its
-session table and keeps the results indexed; the steps below are the one-off route.
-
-1. **Pick the parent folder** (for a Miniscope V4 tree, the animal's folder that holds
-   `date/time/My_V4_Miniscope/`). Every recording folder in it, at any depth, becomes a
-   session; behaviour cameras are left out (see above). A rig with two Miniscopes
-   gives one session per Miniscope; run those as **Separate**. If the kind of
-   recording is unclear, the app asks which one is the Miniscope. Or click **Multi-session run** on the start
-   screen and **Add session** for each folder.
-2. **Review the session list.** Each session shows its path, frames, frame rate,
-   size and recording start (from `metaData.json`). The default order is the
-   recording start, else the path. **Up**, **Down** and **Remove** change the list;
-   **Add session** appends more folders. Sessions must have the same size and bit
-   depth (an error); a different frame rate is a warning.
-3. **Choose the library mode.** **Joint**: one library. Discover runs through all
-   sessions in order (look-back re-reads frames of the session it is in, and the Final
-   settle at the end covers every session), and Extract solves
-   each session with the final library, so a cell has the same id in every session. **Separate**:
-   each session is its own run, one after another.
-4. **Results location.** By default the results go next to the data, in
-   `<picked folder>/cala-results/`; **Choose...** picks another folder. Chrome and
-   Edge ask once for permission to save there when you press **Start**. Other browsers
-   download one `cala-results.zip` with the same layout when the run ends.
-5. **Start.** The run is automatic. The panel above the cell shows the mode, the
-   session being run and each session's state. Each session's results are written
-   as soon as they are final: after its Extract (Separate), or for all sessions after
-   the Extract (Joint).
-
-The results mirror each session's path, so nothing is ever written into a data folder:
-
-```
-cala-results/
-  cala-run.json                          the run: mode, settings, sessions, boundaries
-  cala-run-record.json                   how the run was made (settings, flags, versions, stages, machine)
-  2026_11_10/14_02_33/My_V4_Miniscope/
-    cala-export.npz                      the usual export, for this session's frames
-    cala-session.json                    the session: index, path, stages run, cell ids
-```
-
-If `cala-results` already exists, a new `cala-results_<date>_<time>` folder is made
-instead. In a Joint run the History plots and the cell trace mark where each session
+In a Joint run the History plots and the cell trace mark where each session
 starts. At each boundary cala lines the new session up with the previous one (it
 finds a rotation of up to 3° and a shift of up to 40 px), and adjusts its background
 and noise estimates to the new session's brightness, so a change of LED level or a

@@ -57,24 +57,19 @@ import { OpenFolder } from './components/OpenFolder.tsx';
 import { RunPanel } from './components/RunPanel.tsx';
 import { ExportMenu } from './components/ExportMenu.tsx';
 import { createLiveResult } from './lib/live-export.ts';
+import type { LiveResultState } from './lib/session-run.ts';
 import { RunRail, type RailSession } from './components/RunRail.tsx';
 import { createFovLayout } from './lib/fov-layout.ts';
 import { createRunHistory } from './lib/run-history.ts';
 import { createHistoryUi, HistoryExpanded } from './components/HistoryPanel.tsx';
-import { SessionSetup } from './components/SessionSetup.tsx';
-import { createSessionList, toSessionInput } from './lib/session-list.ts';
+import { toSessionInput, type SessionCandidate } from './lib/sessions.ts';
 import { createMultiRun } from './lib/multi-run.ts';
 import { setupAnalyticsEffects } from './lib/analytics-integration.ts';
 import { sessionBoundaries, sessionOfFrame } from './lib/frame-source.ts';
-import {
-  directoryResultsSink,
-  zipResultsSink,
-  type WritableDirLike,
-} from './lib/session-export.ts';
-import { ensurePermission } from './lib/fs-handles.ts';
 import { supportsDirectoryPicker } from './lib/directory-picker.ts';
 import { ProjectView } from './components/ProjectView.tsx';
-import { createProjectStore } from './lib/project-store.ts';
+import { createProjectStore, type ProjectOpen } from './lib/project-store.ts';
+import type { RunFile } from '@calab/project';
 import {
   createIndexedDbRecentStore,
   rememberProject,
@@ -667,32 +662,35 @@ const App: Component = () => {
   /** The open recording's files, for a donation (null: live, or nothing open). */
   const [donationSource, setDonationSource] = createSignal<DonationSource | null>(null);
 
-  // Opening a folder loads the recording and nothing else: the Run tab shows the pre-run sheet,
-  // and Discover starts on its Run button. The previous recording's Extract result, stage log,
-  // run history and export mark are dropped, so nothing of it shows or exports under the new label.
-  async function open(files: Parameters<typeof store.openFiles>[0], label: string) {
+  /** The session whose recording is open on its own (null: none, a Joint run's, or a stream). */
+  let openCandidate: SessionCandidate | null = null;
+  // Opening a session loads its recording and nothing else: a one-session project shows the Run
+  // tab's pre-run sheet, and Discover starts on its Run button. The previous recording's Extract
+  // result, stage log, run history and export mark are dropped, so nothing of it shows or exports
+  // under the new label.
+  async function openRecording(candidate: SessionCandidate, label: string) {
     pipeline.stop();
     pass2.clear();
     stageLog.reset();
     clearResultExported();
-    await store.openFiles(files, label);
+    openCandidate = null;
+    await store.openFiles(candidate.entries, label);
     const info = store.info();
-    if (info)
+    if (info) {
+      openCandidate = candidate;
       runHistory.reset({
         fps: info.fps ?? 0,
         live: false,
         frameCount: info.frameCount,
         workers: 0,
       });
-    setDonationSource(info ? { entries: files } : null);
+    }
+    setDonationSource(info ? { entries: candidate.entries } : null);
   }
 
-  // ---- Multi-session runs (docs/stages.md, "Sessions") ----
-  /** The start screen: open a folder, the session list, or adding to the list. */
-  const [screen, setScreen] = createSignal<'open' | 'sessions' | 'add' | 'project'>('open');
-  const sessionList = createSessionList((s) =>
-    client.probe ? client.probe(s) : Promise.reject(new Error('Sessions cannot be read here.')),
-  );
+  // ---- Runs of plan steps (docs/stages.md, "Sessions") ----
+  /** The start screen, or the project table. A one-session project opens on its recording. */
+  const [screen, setScreen] = createSignal<'open' | 'project'>('open');
   const version = import.meta.env.VITE_APP_VERSION || 'dev';
   // ---- Run record (docs/run-record.md): how this run was made, saved with every result ----
   const runTrace = new RunTrace();
@@ -801,10 +799,21 @@ const App: Component = () => {
     request: () => pipeline.runRequest(),
   };
   const runRecord = (extras?: RunRecordExtras) => gatherRunRecord(runRecordSources, extras);
+  // A live run's traces, once it has ended: what its run writes when it has no Extract.
+  const liveResult = createLiveResult(pipeline, cells, () => store.info()?.live !== undefined);
+  const liveState = (): LiveResultState | null => {
+    if (!store.info()?.live) return null;
+    if (liveResult.result()) return 'ready';
+    const ended = pipeline.status() === 'done' && (cells.status()?.final ?? true);
+    return ended && (cells.library()?.ids.length ?? 0) === 0 ? 'empty' : 'waiting';
+  };
   const multiRun = createMultiRun({
-    runRecord: (settings) => runRecord({ mode: settings.mode }),
+    // Every run Extracts after its Discover.
+    runRecord: (kind) => runRecord({ mode: kind, extractAfterDiscover: true }),
+    liveResult: liveState,
     async openJoint(sessions) {
       pipeline.stop();
+      openCandidate = null;
       const n = sessions.length;
       const inputs = sessions.map((s) => toSessionInput(s.candidate));
       await store.openSessions(
@@ -815,13 +824,20 @@ const App: Component = () => {
       if (store.info()) void pipeline.start();
     },
     async openOne(session, index) {
-      pipeline.stop();
+      if (session.live) {
+        await connectLive(session.live);
+        return;
+      }
       const n = multiRun.plan()?.sessions.length ?? 1;
-      await store.openFiles(
-        session.candidate.entries,
-        `Session ${index + 1} of ${n}: ${session.candidate.name}`,
-      );
-      setDonationSource(store.info() ? { entries: session.candidate.entries } : null);
+      // The recording a one-session project shows before its Run is already open.
+      if (openCandidate === session.candidate && store.info()) pipeline.stop();
+      else
+        await openRecording(
+          session.candidate,
+          n === 1
+            ? (project.opened()?.rootName ?? session.candidate.name)
+            : `Session ${index + 1} of ${n}: ${session.candidate.name}`,
+        );
       if (store.info()) void pipeline.start();
     },
     stages: () => ({
@@ -834,8 +850,8 @@ const App: Component = () => {
     sessionQc: (range, fps) => extractQcFor(range, fps),
     boundaryFlags: () => pipeline.boundaryFlags(),
     exportInput: (): ExportInput | null => {
-      const r = pass2.result();
       const i = store.info();
+      const r = pass2.result() ?? (i?.live ? liveResult.result() : null);
       if (!r || !i) return null;
       return {
         label: store.label(),
@@ -865,6 +881,7 @@ const App: Component = () => {
     stageRuns: () => stageLog.runs(),
     info: () => store.info(),
     plan: () => multiRun.plan(),
+    project: () => project.summary(),
     throughput: (stage) => (stage === 'discover' ? pipeline.fps() : pass2.fps()),
     stageError: (stage) => (stage === 'discover' ? pipeline.error() : pass2.error()),
     boundaryFlags: () => pipeline.boundaryFlags(),
@@ -924,22 +941,74 @@ const App: Component = () => {
     void project.refresh();
   }
 
-  /** Ask for `readwrite` on the results location; inside the Start click. */
-  async function grantResults(): Promise<boolean> {
-    if (!supportsDirectoryPicker()) return true;
-    const loc = sessionList.location();
-    return loc?.handle ? ensurePermission(loc.handle, 'readwrite') : false;
+  // A run writes its run file before its first frame.
+  pipeline.setBeforeFrames(() => multiRun.beforeFrames());
+  /** The run file a manual export carries: the run's own (null: no run has started). */
+  const exportRunFile = (): RunFile | null => multiRun.runFile();
+
+  /**
+   * Open what was picked (`docs/projects.md`): the project's files are read or made in memory; a
+   * one-session project opens on its recording (the pre-run sheet), a larger one on its table.
+   */
+  async function openProject(o: ProjectOpen): Promise<void> {
+    leaveRun();
+    setScreen('project');
+    await project.open(o);
+    loadRecent();
+    const one = project.single();
+    if (!one || project.error()) return;
+    await openRecording(one.candidate, o.rootName);
+    if (!store.info()) {
+      project.close();
+      setScreen('open');
+    }
   }
-  function startSessions(settings: Parameters<typeof multiRun.start>[0]['settings']): void {
-    const loc = sessionList.location();
-    const handle = loc?.handle as unknown as WritableDirLike | null | undefined;
-    void multiRun.start({
-      sessions: sessionList.items(),
-      settings,
-      locationLabel: handle ? `${handle.name}/` : 'a zip download',
-      openSink: () => (handle ? directoryResultsSink(handle) : Promise.resolve(zipResultsSink())),
-    });
+
+  /** Why the last Run or Restart did not start a run (null: it did, or none was asked for). */
+  const [runRefused, setRunRefused] = createSignal<string | null>(null);
+  /** Start a run of `refs` through the project; when it cannot start, say why. */
+  async function runProject(refs: string[], kind: 'joint' | 'separate' = 'separate') {
+    setRunRefused(null);
+    if (await project.runStreams(refs, kind)) return;
+    setRunRefused(
+      project.readOnly()
+        ? (project.warnings()[0] ?? 'The project file could not be read; nothing runs here.')
+        : (project.planErrors()[0] ?? project.error() ?? 'The run could not start.'),
+    );
   }
+  /** Leave the current run (a new source is opened): an unfinished run's file says it stopped. */
+  function leaveRun(): void {
+    pipeline.stop();
+    multiRun.stop();
+    setRunRefused(null);
+  }
+
+  /** Run: the open recording's run, a new run of its project step (inside the click). */
+  function runOpen(): void {
+    const one = project.single();
+    if (one) void runProject([one.planned.stream]);
+  }
+
+  /**
+   * Restart: Discover again from frame 0. While a run is going it is the same run; once it has
+   * ended it is a new run of the same streams (Separate: the session that is open).
+   */
+  function restart(): void {
+    const p = multiRun.plan();
+    if (p && !multiRun.finished() && !multiRun.stopped()) {
+      void pipeline.start();
+      return;
+    }
+    const refs = p
+      ? p.kind === 'joint'
+        ? p.sessions.map((x) => x.stream)
+        : [p.sessions[multiRun.current()].stream]
+      : project.single()
+        ? [project.single()!.planned.stream]
+        : [];
+    if (refs.length > 0) void runProject(refs, p?.kind === 'joint' ? 'joint' : 'separate');
+  }
+
   // Joint: each session boundary goes into the run's event log as Discover reaches it.
   const loggedBoundaries = new Set<number>();
   createEffect(
@@ -970,7 +1039,6 @@ const App: Component = () => {
   if (flags.debug) {
     Object.assign((globalThis as { __cala?: object }).__cala ?? {}, {
       multiRun,
-      sessionList,
       project,
       /** The run record of the run so far (a JSON object). */
       runRecord: () => runRecord(),
@@ -1018,22 +1086,42 @@ const App: Component = () => {
     const i = store.info();
     return i ? sessionBoundaries(i) : [];
   };
-  // Connecting to a live source starts Discover at once: its frames arrive whether or not a run
-  // reads them (`?live=<url>` connects on load).
-  async function openLive(url: string) {
+  /** Connect to a live source and start Discover: its frames arrive whether or not a run reads them. */
+  async function connectLive(url: string) {
     pipeline.stop();
+    openCandidate = null;
     setDonationSource(null);
     await store.openLive(url);
     if (store.info()) void pipeline.start();
   }
+  /**
+   * A live stream is a one-session project with no folder (`?live=<url>` connects on load): its
+   * run starts at once, and its files go into a zip at the end.
+   */
+  async function openLive(url: string) {
+    leaveRun();
+    await project.open({
+      rootName: 'live stream',
+      entries: [],
+      handle: null,
+      sessions: [],
+      live: url,
+    });
+    await project.runStreams(['.']);
+    // Not connected (the error shows on the start screen): no run is going.
+    if (!store.info()) {
+      multiRun.stop();
+      project.close();
+    }
+  }
   const liveParam = flags.live;
 
-  /** "Session 3/8" in a multi-session run: the session being read (Joint: the one the frame is in). */
+  /** "Session 3/8" in a run of several sessions: the session being read (Joint: the one the frame is in). */
   const sessionLabel = (): string | null => {
     const p = multiRun.plan();
-    if (!p) return null;
+    if (!p || p.sessions.length < 2) return null;
     const n = p.sessions.length;
-    if (p.settings.mode !== 'joint') return `Session ${multiRun.current() + 1}/${n}`;
+    if (p.kind !== 'joint') return `Session ${multiRun.current() + 1}/${n}`;
     const info = store.info();
     return `Session ${(info ? sessionOfFrame(info, pipeline.processed()) : 0) + 1}/${n}`;
   };
@@ -1043,7 +1131,7 @@ const App: Component = () => {
     const label = sessionLabel();
     const p = multiRun.plan();
     if (!label || !p) return null;
-    const joint = p.settings.mode === 'joint';
+    const joint = p.kind === 'joint';
     const info = store.info();
     const now = joint
       ? info
@@ -1090,7 +1178,7 @@ const App: Component = () => {
     return (
       <Show when={multiRun.plan()}>
         {(p) => {
-          const joint = () => p().settings.mode === 'joint';
+          const joint = () => p().kind === 'joint';
           const nowIndex = () => {
             const info = store.info();
             return joint()
@@ -1104,7 +1192,7 @@ const App: Component = () => {
             <section class="cala-session-run" data-testid="session-run" aria-label="Sessions">
               <div class="cala-session-run__head">
                 <h3 class="cala-session-run__title">Sessions</h3>
-                <Badge tone="neutral">{LIBRARY_MODE_LABEL[p().settings.mode]}</Badge>
+                <Badge tone="neutral">{LIBRARY_MODE_LABEL[p().kind]}</Badge>
                 <span class="cala-session-run__status" data-testid="session-run-status">
                   {multiRun.statusText()}
                 </span>
@@ -1121,13 +1209,13 @@ const App: Component = () => {
               <Show when={project.running() && project.planState().kind === 'running'}>
                 <MeterRow
                   label="Plan groups"
-                  value={(project.planState() as { group: number }).group + 1}
+                  value={(project.planState() as { step: number }).step + 1}
                   min={0}
                   max={Math.max(1, project.running()!.length)}
-                  display={`${(project.planState() as { group: number }).group + 1} / ${project.running()!.length}`}
+                  display={`${(project.planState() as { step: number }).step + 1} / ${project.running()!.length}`}
                   size="sm"
                   testid="plan-progress"
-                  format={(v) => `Plan: group ${v} of ${project.running()!.length}`}
+                  format={(v) => `Plan: step ${v} of ${project.running()!.length}`}
                 />
               </Show>
               <ol class="cala-session-run__list">
@@ -1206,8 +1294,6 @@ const App: Component = () => {
     );
     const expanded = () => historyUi.expanded() && !layout().narrow;
     const qcState = createQcTableState();
-    // A live run's traces for its export, once it has ended.
-    const liveResult = createLiveResult(pipeline, cells, () => lp.info.live !== undefined);
     const fov = () => (
       <FovPanel
         source={pipelineFovSource(pipeline)}
@@ -1241,7 +1327,10 @@ const App: Component = () => {
               compress={pipeline.compressRun() ? compress : undefined}
               review={review}
               onStopSettling={() => slow.stopSettling(cells.session())}
-              sessionMode={multiRun.plan()?.settings.mode ?? null}
+              sessionMode={multiRun.plan()?.kind ?? null}
+              sessions={multiRun.plan()?.sessions.length ?? 1}
+              onRun={runOpen}
+              onRestart={restart}
               visible={tab.active() === 'run'}
             />
             <SessionRunStatus />
@@ -1308,9 +1397,9 @@ const App: Component = () => {
         classList={{ 'cala-main--narrow': layout().narrow }}
         style={layout().narrow ? {} : { '--cala-fov-w': `${layout().fovWidth}px` }}
       >
-        <Show when={store.error()}>
+        <Show when={store.error() ?? runRefused()}>
           {(message) => (
-            <div class="error-card cala-main__error" role="alert">
+            <div class="error-card cala-main__error" role="alert" data-testid="run-refused">
               <span>{message()}</span>
             </div>
           )}
@@ -1344,7 +1433,7 @@ const App: Component = () => {
                 height={lp.info.height}
                 fps={lp.info.fps ?? 0}
                 bitDepth={lp.info.bitDepth}
-                runRecord={runRecord}
+                runFile={exportRunFile}
               />
             }
           />
@@ -1414,14 +1503,11 @@ const App: Component = () => {
         when={store.info()}
         fallback={
           <Show
-            when={screen() === 'sessions' || screen() === 'project'}
+            when={screen() === 'project'}
             fallback={
               <>
                 <OpenFolder
-                  onProject={(o) => {
-                    setScreen('project');
-                    void project.open(o).then(loadRecent);
-                  }}
+                  onProject={(o) => void openProject(o)}
                   onAnimals={(handles) =>
                     void (async () => {
                       for (const h of handles)
@@ -1431,17 +1517,10 @@ const App: Component = () => {
                   }
                   recent={supportsDirectoryPicker() ? recent() : []}
                   onForget={(r) => void recentStore.remove(r.id).then(loadRecent)}
-                  loading={store.loading()}
-                  error={store.error()}
-                  onOpen={(files, label) => void open(files, label)}
-                  onOpenLive={screen() === 'add' ? undefined : (url) => void openLive(url)}
+                  loading={store.loading() || project.loading()}
+                  error={store.error() ?? project.error()}
+                  onOpenLive={(url) => void openLive(url)}
                   liveUrl={liveParam ?? undefined}
-                  addMode={screen() === 'add'}
-                  onCancel={() => setScreen('sessions')}
-                  onSessions={(found, handle) => {
-                    setScreen('sessions');
-                    void sessionList.add(found, handle);
-                  }}
                 />
                 <Show when={donation && screen() === 'open'}>
                   <>
@@ -1452,22 +1531,7 @@ const App: Component = () => {
               </>
             }
           >
-            <Show
-              when={screen() === 'project'}
-              fallback={
-                <SessionSetup
-                  list={sessionList}
-                  pipeline={pipeline}
-                  onAdd={() => setScreen('add')}
-                  onCancel={() => {
-                    sessionList.clear();
-                    setScreen('open');
-                  }}
-                  grant={grantResults}
-                  onStart={startSessions}
-                />
-              }
-            >
+            <>
               <Show when={viewState().busy || viewState().error}>
                 <div
                   class={viewState().error ? 'error-card' : 'cala-muted'}
@@ -1488,7 +1552,7 @@ const App: Component = () => {
                   loadRecent();
                 }}
               />
-            </Show>
+            </>
           </Show>
         }
       >
@@ -1517,10 +1581,10 @@ const App: Component = () => {
                       <button
                         class="btn-secondary btn-small"
                         data-testid="back-to-project"
-                        title="Back to the project's session table (a running plan stops)"
+                        title="The project's session table, its plan and its results (a running plan stops)"
                         onClick={backToProject}
                       >
-                        Back to project
+                        {project.single() ? 'Project' : 'Back to project'}
                       </button>
                     </Show>
                     <button
@@ -1529,12 +1593,11 @@ const App: Component = () => {
                         const warn = leaveWarning({
                           extractDone: pass2.status() === 'done',
                           exported: resultExported(),
-                          multiSession: sessionList.items().length > 1,
+                          written: multiRun.records().some((r) => r.status === 'written'),
                         });
                         if (warn && !window.confirm(warn)) return;
                         pipeline.stop();
                         multiRun.stop();
-                        sessionList.clear();
                         project.close();
                         setScreen('open');
                         store.close();

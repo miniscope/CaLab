@@ -1,10 +1,12 @@
-import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, onTestFinished, vi } from 'vitest';
 import { render } from 'solid-js/web';
 import type { FrameSourceInfo } from '../lib/frame-source.ts';
 import type { FrameClient } from '../lib/frame-client.ts';
 import type { PipelineStepResult } from '../lib/pipeline-types.ts';
 import type { PipelinePlan } from '../lib/pipeline-plan.ts';
 import { makeFile } from './synth-avi.ts';
+import { fileText } from '@calab/project';
+import { calaRunFile } from '../lib/run-file.ts';
 
 // uPlot needs a real browser (matchMedia); the shared barrels pull it in but
 // this app draws no charts.
@@ -71,12 +73,16 @@ vi.mock('../lib/compress-client.ts', () => ({
   }),
 }));
 
-// Look-back is on by default for recordings but needs worker threads, which jsdom has not.
+// Look-back is on by default for recordings but needs worker threads, which jsdom has not; a test
+// that checks the run's params as shipped lifts the block (`lookback.blocked = null`).
+const lookback = vi.hoisted(() => ({ blocked: 'No look-back worker in jsdom.' as string | null }));
 vi.mock('../lib/lookback-client.ts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/lookback-client.ts')>()),
   createLookbackClient: () => ({
-    blocked: () => 'No look-back worker in jsdom.',
-    begin: () => false,
+    blocked: () => lookback.blocked,
+    begin: () => lookback.blocked === null,
+    params() {},
+    cap() {},
     rows() {},
     flatField() {},
     backState() {},
@@ -86,6 +92,11 @@ vi.mock('../lib/lookback-client.ts', async (importOriginal) => ({
 }));
 
 import App from '../App.tsx';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { resolveRunParams } from '../lib/params-handle.ts';
+import { runParams, type ParamsLayer } from '../lib/run-params.ts';
+import { initTestWasm } from './wasm-test.ts';
 import { DEFAULT_PARAMS } from './params-fixtures.ts';
 
 HTMLCanvasElement.prototype.getContext = (() =>
@@ -112,6 +123,10 @@ function fakePipeline(): void {
     return PLAN;
   });
   fake.stopPipeline.mockResolvedValue(undefined);
+  // Opening probes each session of the project (one for a recording folder).
+  fake.probe.mockImplementation(async (sessions: unknown[]) =>
+    sessions.map(() => ({ info: INFO })),
+  );
   fake.stepPipeline.mockImplementation(async (): Promise<PipelineStepResult> => {
     const timings = { readMs: 1, preprocessMs: 2, motionMs: 3, otherMs: 0, traceMs: 0 };
     if (next === 0) {
@@ -173,6 +188,13 @@ async function pick(root: HTMLElement, files: File[]): Promise<void> {
   Object.defineProperty(input, 'files', { value: files, configurable: true });
   input.dispatchEvent(new Event('change', { bubbles: true }));
   await vi.waitFor(() => expect(fake.open).toHaveBeenCalled());
+}
+
+/** "Open another folder" in the header. */
+function leave(root: HTMLElement): void {
+  [...root.querySelectorAll<HTMLButtonElement>('.compact-header__actions button')]
+    .find((b) => b.textContent?.startsWith('Open another'))!
+    .click();
 }
 
 /** Press Run on the pre-run sheet (opening a recording does not start Discover). */
@@ -282,7 +304,7 @@ describe('App', () => {
     expect(discover.textContent).toMatch(/^Discover0 cells/);
 
     // Opening another folder stops the worker-side pipeline.
-    root.querySelectorAll<HTMLButtonElement>('.compact-header__actions button')[0].click();
+    leave(root);
     expect(fake.stopPipeline).toHaveBeenCalled();
     // The next recording opens on its own pre-run sheet, with nothing of the last run.
     await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
@@ -419,7 +441,7 @@ describe('App', () => {
     const root = mount();
     await pick(root, [makeFile('0.avi', new Uint8Array(4))]);
     await vi.waitFor(() => expect(root.querySelector('.dashboard-shell')).not.toBeNull());
-    root.querySelectorAll<HTMLButtonElement>('.compact-header__actions button')[0].click();
+    leave(root);
     expect(root.querySelector('.drop-zone')).not.toBeNull();
   });
 });
@@ -526,7 +548,7 @@ describe('App: video series chooser', () => {
   });
 });
 
-describe('App: multi-session run', () => {
+describe('App: one open path', () => {
   const v4 = (day: string, n: number) => [
     ...Array.from({ length: n }, (_, i) =>
       makeFile(`${i}.avi`, new Uint8Array(4), `data/${day}/12_00_00/My_V4_Miniscope`),
@@ -538,60 +560,76 @@ describe('App: multi-session run', () => {
       `data/${day}/12_00_00`,
     ),
   ];
-  const pickSessions = (root: HTMLElement, files: File[]) => {
+  const pickFolder = (root: HTMLElement, files: File[]) => {
     const input = root.querySelector<HTMLInputElement>('[data-testid="folder-input"]')!;
     Object.defineProperty(input, 'files', { value: files, configurable: true });
     input.dispatchEvent(new Event('change', { bubbles: true }));
   };
 
-  it('lists the sessions of a parent folder, ordered by start time, and checks them', async () => {
+  it('a parent folder of sessions opens as a project table', async () => {
     fake.probe.mockImplementation(async (sessions: unknown[]) =>
       sessions.map((_, i) => ({ info: { ...INFO, width: i === 0 ? 4 : 5 } })),
     );
     const root = mount();
-    pickSessions(root, [...v4('day1', 2), ...v4('day2', 3)]);
-    const items = await vi.waitFor(() => {
-      const el = root.querySelectorAll('[data-testid="session-item"]');
+    pickFolder(root, [...v4('day1', 2), ...v4('day2', 3)]);
+    const rows = await vi.waitFor(() => {
+      const el = root.querySelectorAll('[data-testid="project-row"]');
       expect(el).toHaveLength(2);
       return [...el];
     });
     expect(fake.open).not.toHaveBeenCalled();
-    // day2 started first (metaData.json recordingStartTime).
-    expect(items[0].textContent).toContain('day2/12_00_00/My_V4_Miniscope');
-    expect(items[0].textContent).toContain('cala-results/day2/12_00_00/My_V4_Miniscope');
-    // The behaviour camera is not a session; the two sizes differ: an error, no start.
-    await vi.waitFor(() =>
-      expect(root.querySelector('[data-testid="session-error"]')?.textContent).toContain(
-        'all sessions must match',
-      ),
-    );
-    expect(root.querySelector<HTMLButtonElement>('[data-testid="sessions-start"]')!.disabled).toBe(
-      true,
-    );
-    // Removing one leaves a valid one-session list.
-    root.querySelectorAll<HTMLButtonElement>('[data-testid="session-remove"]')[1].click();
-    await vi.waitFor(() =>
-      expect(root.querySelectorAll('[data-testid="session-item"]')).toHaveLength(1),
-    );
-    expect(root.querySelector('[data-testid="session-error"]')).toBeNull();
+    // The behaviour camera is not a session.
+    const text = rows.map((r) => r.textContent).join(' ');
+    expect(text).toContain('day1/12_00_00/My_V4_Miniscope');
+    expect(text).toContain('day2/12_00_00/My_V4_Miniscope');
+    expect(root.querySelector('[data-testid="session-setup"]')).toBeNull();
   });
 
-  it('opens one session as a plain folder, as before', async () => {
+  it('one recording opens on its pre-run sheet; Run starts its project run', async () => {
+    // As shipped: look-back and the flat field on (jsdom has the workers of neither).
+    lookback.blocked = null;
+    const flat = fake as { subscribeFlatField?: () => () => void };
+    flat.subscribeFlatField = () => () => {};
+    onTestFinished(() => {
+      lookback.blocked = 'No look-back worker in jsdom.';
+      delete flat.subscribeFlatField;
+    });
     fake.open.mockResolvedValue(INFO);
+    fake.readFrame.mockImplementation(async () => new Uint8Array(12));
     const root = mount();
     await pick(root, v4('day1', 2));
-    expect(root.querySelector('[data-testid="session-setup"]')).toBeNull();
-    expect(fake.probe).not.toHaveBeenCalled();
-  });
-
-  it('offers an empty session list from the start screen', async () => {
-    const root = mount();
-    root.querySelector<HTMLButtonElement>('[data-testid="multi-session"]')!.click();
     await vi.waitFor(() =>
-      expect(root.querySelector('[data-testid="session-setup"]')).not.toBeNull(),
+      expect(root.querySelector('[data-testid="prerun-sheet"]')).not.toBeNull(),
     );
-    root.querySelector<HTMLButtonElement>('[data-testid="session-add"]')!.click();
-    await vi.waitFor(() => expect(root.querySelector('[data-testid="add-cancel"]')).not.toBeNull());
+    expect(fake.probe).toHaveBeenCalledTimes(1);
+    expect(root.querySelector('[data-testid="project-row"]')).toBeNull();
+    // The header names the project; its table is one click away.
+    expect(root.querySelector('[data-testid="back-to-project"]')!.textContent).toBe('Project');
+    await run(root);
+    await vi.waitFor(() => expect(fake.startPipeline).toHaveBeenCalled());
+    // The recording is not opened a second time for its run.
+    expect(fake.open).toHaveBeenCalledTimes(1);
+    // The project's run builds the engine the default settings always built.
+    await initTestWasm();
+    const { paramsLayer } = fake.startPipeline.mock.calls[0][0] as { paramsLayer: ParamsLayer };
+    const json = resolveRunParams(paramsLayer, { fps: 20, width: 600, height: 600 });
+    expect(runParams(json).engine).toEqual(
+      JSON.parse(
+        readFileSync(
+          resolve(
+            import.meta.dirname,
+            '../../../../crates/cala/tests/golden/engine-view-fps20.json',
+          ),
+          'utf8',
+        ),
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(root.querySelector('[data-testid="session-run-root"]')?.textContent).toContain(
+        'calab-project/runs/',
+      ),
+    );
+    expect(root.querySelector('[data-testid="multi-session"]')).toBeNull();
   });
 });
 
@@ -607,41 +645,57 @@ describe('App: animal project', () => {
         `mouse1/${d}/09_00_00`,
       ),
     ]);
-  /** Two earlier separate runs of the first session, as their folders hold them. */
+  /** Two earlier separate runs of the first session, as their run folders hold them. */
   const runFiles = () =>
     [
       ['r1', '2026-11-12T00:00:00.000Z'],
       ['r2', '2026-11-13T00:00:00.000Z'],
-    ].flatMap(([run, created]) => [
+    ].map(([run, created]) =>
       makeFile(
-        'cala-run.json',
-        JSON.stringify({
-          format: 'cala-run',
-          created,
-          mode: 'separate',
-          sessions: [
-            { path: `mouse1/${sid(days[0])}`, results_path: sid(days[0]), status: 'written' },
-          ],
-        }),
-        `mouse1/cala-results/runs/${run}`,
+        'calab-run.json',
+        fileText(
+          'run',
+          calaRunFile({
+            id: run,
+            project: null,
+            plan: null,
+            status: 'finished',
+            stopped: null,
+            created,
+            updated: created,
+            version: 'test',
+            joint: false,
+            record: {
+              stages: [
+                { stage: 'discover', outcome: 'done' },
+                { stage: 'extract', outcome: 'done' },
+              ],
+            },
+            sessions: [
+              {
+                stream: sid(days[0]),
+                info: null,
+                record: {
+                  index: 0,
+                  name: sid(days[0]),
+                  dir: `mouse1/${sid(days[0])}`,
+                  resultsPath: sid(days[0]),
+                  startFrame: 0,
+                  frames: 800,
+                  fps: 20,
+                  recordingStartMs: null,
+                  status: 'written',
+                },
+                written: { cells: 4, libraryVersion: 2, created },
+              },
+            ],
+          }),
+        ),
+        `mouse1/calab-project/runs/${run}`,
       ),
-      makeFile(
-        'cala-session.json',
-        JSON.stringify({
-          format: 'cala-session',
-          created,
-          cells: 4,
-          stages_run: [
-            { stage: 'discover', outcome: 'done' },
-            { stage: 'refine', outcome: 'done' },
-            { stage: 'extract', outcome: 'done' },
-          ],
-        }),
-        `mouse1/cala-results/runs/${run}/${sid(days[0])}`,
-      ),
-    ]);
+    );
   const openProject = (root: HTMLElement, files: File[]) => {
-    const input = root.querySelector<HTMLInputElement>('[data-testid="project-input"]')!;
+    const input = root.querySelector<HTMLInputElement>('[data-testid="folder-input"]')!;
     Object.defineProperty(input, 'files', { value: files, configurable: true });
     input.dispatchEvent(new Event('change', { bubbles: true }));
   };
@@ -657,7 +711,6 @@ describe('App: animal project', () => {
 
   it('shows every session with its status, current result and shared ids', async () => {
     const root = mount();
-    expect(root.querySelector('[data-testid="open-project"]')).not.toBeNull();
     openProject(root, [...animalFiles(), ...runFiles()]);
     await vi.waitFor(() => expect(rows(root)).toHaveLength(3));
     const [first, second] = rows(root);
@@ -668,9 +721,7 @@ describe('App: animal project', () => {
     expect(first.querySelector('[data-testid="cell-current"]')!.textContent).toContain('run r2');
     expect(first.querySelector('[data-testid="cell-ids"]')!.textContent).toBe('own');
     expect(second.querySelector('[data-testid="cell-current"]')!.textContent).toBe('—');
-    expect(root.querySelector('[data-testid="project-warning"]')!.textContent).toContain(
-      '2 existing run folders',
-    );
+    expect(root.querySelector('[data-testid="project-warning"]')).toBeNull();
     expect(fake.open).not.toHaveBeenCalled();
   });
 
@@ -685,7 +736,7 @@ describe('App: animal project', () => {
       return el;
     });
     expect(items[0].textContent).toContain('run r2 (current)');
-    expect(items[0].textContent).toContain('mouse1/cala-results/runs/r2/');
+    expect(items[0].textContent).toContain('mouse1/calab-project/runs/r2/');
     items[1].querySelector<HTMLButtonElement>('[data-testid="set-current"]')!.click();
     await vi.waitFor(() =>
       expect(rows(root)[0].querySelector('[data-testid="cell-current"]')!.textContent).toContain(
@@ -726,9 +777,7 @@ describe('App: animal project', () => {
       expect(root.querySelectorAll('[data-testid="plan-group"]')).toHaveLength(1),
     );
     root.querySelector<HTMLButtonElement>('[data-testid="project-close"]')!.click();
-    await vi.waitFor(() =>
-      expect(root.querySelector('[data-testid="open-project"]')).not.toBeNull(),
-    );
+    await vi.waitFor(() => expect(root.querySelector('.drop-zone')).not.toBeNull());
   });
 
   it('offers one project per animal for an experiment folder', async () => {

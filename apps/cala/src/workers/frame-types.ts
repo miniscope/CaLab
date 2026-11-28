@@ -69,7 +69,7 @@ export type FrameRequest =
   | { type: 'open'; id: number; entries: FolderEntry[] }
   /** Open several sessions as one recording, in order (a Joint run; `FrameSource.openSessions`). */
   | { type: 'open-sessions'; id: number; sessions: SessionInput[] }
-  /** Read each session's headers and sidecars for the session list, without keeping any open. */
+  /** Read each session's headers and sidecars for the project's table, without keeping any open. */
   | { type: 'probe'; id: number; sessions: SessionInput[] }
   /** Connect to a live source (`lib/live-source.ts`) at a WebSocket URL. */
   | { type: 'open-live'; id: number; url: string }

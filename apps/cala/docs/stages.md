@@ -206,7 +206,7 @@ before/after contrast, not as absolute leak. The plot data is not in the export.
 
 A run can hold several recording sessions of one animal (`src/lib/sessions.ts`,
 `src/lib/session-run.ts`). The **library-flow mode** says how the stages above
-compose with the sessions. It is a run setting, chosen on the session list.
+compose with the sessions. It is the kind of a plan step, chosen in the project table.
 
 | Mode         | Discover                                        | Extract                          | Cell ids              |
 | ------------ | ----------------------------------------------- | -------------------------------- | --------------------- |
@@ -235,12 +235,15 @@ compose with the sessions. It is a run setting, chosen on the session list.
   and the Final settle) and Extract on it before the next.
 - **Apply** is not built. It needs a starting library from a file (the
   `LibrarySource` `file` variant below); `LibraryMode` has the slot.
-- A multi-session run is automatic. After Discover (and its Final settle) it
-  runs Extract, then writes the results. In
-  Separate mode it then opens the next session. A failed or cancelled stage
-  stops the automatic run. A session where Discover finds no cells is skipped
-  and marked so in the manifest.
-- A single folder with one recording stays a one-session run with no automation.
+- Every run is the run of a plan step and is automatic. After Discover (and its
+  Final settle) it runs Extract, then writes the results into its run folder
+  ([projects.md](projects.md)). In Separate mode it then opens the next session.
+  A failed or cancelled stage stops the automatic run. A session where Discover
+  finds no cells is skipped and marked so in the run file.
+- A single recording is a project of one session: its run is a Separate step
+  of one, automatic like any other. A live stream is the same with a live
+  stream as its one session; when it has no Extract (no factors) its run writes
+  the traces solved as the frames came in.
 
 ### Boundaries
 
@@ -343,9 +346,9 @@ recording; the few fixed choices are in `BOUNDARY_FLAG_RULES` (one place).
 - **Where it shows.** A History event ("boundary check": a `warning` for a
   warning or failed boundary, a `setting` for ok) each time a verdict changes;
   the boundary line on the cell trace (orange for a warning, vermillion with a
-  "!" for failed); a badge in the multi-session run's list; the export
-  (`meta_json.session.boundary`, export format 6), `cala-session.json`, the run
-  manifest and the project index (`runs[].sessions[].boundary`), so the
+  "!" for failed); a badge in the run's session list; the export
+  (`meta_json.session.boundary`), the run file (`calab-run.json`,
+  `results[].boundary`) and the project index (`runs[].streams[].boundary`), so the
   session table and View results show it.
 - **What to do.** A failed boundary suggests running those sessions Separate.
   The session table's **Re-plan as Separate** puts the chain's sessions into
@@ -358,30 +361,25 @@ recording; the few fixed choices are in `BOUNDARY_FLAG_RULES` (one place).
 
 ### Results
 
-Each session's results are written when they are final: after its Extract
-(Separate), or for all sessions after the final Extract (Joint). They go to a
-tree parallel to the data, never into a data folder:
+One library per run: a Joint chain is one run, and each Separate session is a run of its own.
+Each run gets its own folder in the project ([projects.md](projects.md)), and its run file
+(`calab-run.json`) is written there before the run's first frame. Each session's results are
+written when they are final: after its Extract (Separate), or for all sessions after the final
+Extract (Joint). They go to a tree parallel to the data, never into a data folder:
 
 ```
-<results location>/cala-results/              (cala-results_<date>_<time> if it exists)
-  cala-run.json                               mode, settings, sessions, boundaries
-  2026_11_10/14_02_33/My_V4_Miniscope/        the session's path below the picked folder
-    cala-export.npz                           export format 3, meta_json.session added
-    cala-session.json                         app version, mode, stages run, session index
-                                              and path, boundary frames, library version,
-                                              shared cell ids (Joint)
+<animal>/calab-project/
+  calab-project.json, calab-index.json
+  runs/2026-11-28_09-14-03_cala/              one run
+    calab-run.json                            config, inputs, stages, results, record
+    2026_11_10/14_02_33/My_V4_Miniscope/      the stream ref as a path
+      cala-export.npz                         export format 8; meta_json.run is the run file
 ```
 
-The location defaults to the picked data folder; `readwrite` is asked for
-when the run starts. Without the File System Access API the same tree
-downloads as `cala-results.zip` when the run ends (each file is built in
-memory first). A manual Extract after the run writes nothing automatically;
-use Export.
-
-An animal project ([projects.md](projects.md)) runs the same flows from its
-session table as a run plan of Joint chains and Separate sets, writes each run
-to `cala-results/runs/<run id>/` with the same layout, and indexes them in
-`cala-results/cala-project.json`.
+`readwrite` is asked for when the run starts. Without the File System Access API each run
+downloads as `calab-project_<run id>.zip` when it ends (each file is built in memory first),
+with the project file and the index as they were then. A manual Extract after the run writes
+nothing automatically; use Export.
 
 ## Deferred
 

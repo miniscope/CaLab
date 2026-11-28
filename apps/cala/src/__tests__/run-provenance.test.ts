@@ -126,7 +126,7 @@ describe('urlFlags', () => {
 describe('buildRunRecord', () => {
   it('has the versioned layout with every block', () => {
     const r = buildRunRecord(input()) as Rec;
-    expect(r.format).toBe('cala-run-record');
+    expect('format' in r).toBe(false);
     expect(r.record_version).toBe(2);
     expect(r.software).toMatchObject({
       app: 'cala',
@@ -544,6 +544,10 @@ describe('settingsFromRecord', () => {
     expect(settingsFromRecord(JSON.parse(JSON.stringify(odd)))).toEqual({});
     expect(settingsFromRecord(null)).toBeNull();
     expect(settingsFromRecord({ format: 'other' })).toBeNull();
+    // A whole run file carries the record inside.
+    expect(settingsFromRecord({ format: 'calab-run', record: rec })).toEqual(
+      settingsFromRecord(rec),
+    );
     expect(settingsFromRecord({ ...rec, record_version: 99 })).toBeNull();
   });
 
@@ -579,7 +583,6 @@ describe('settingsFromRecord', () => {
 
   it('still reads v1 records: settle during Discover false is the cap Off, true the default', () => {
     const v1 = (settings: Record<string, unknown>) => ({
-      format: 'cala-run-record',
       record_version: 1,
       settings: { lookback: true, settle_yield_frames: 0, target_speed_fps: 60, ...settings },
     });

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from './fixtures.ts';
@@ -44,7 +44,9 @@ async function startSim(folder: string, extra: string[] = []): Promise<void> {
   });
 }
 
-test('Cala: a live source streams through the pipeline to the end', async ({ page }) => {
+test('Cala: a live source streams through the pipeline to the end, as a one-session project', async ({
+  page,
+}) => {
   const folder = mkdtempSync(join(tmpdir(), 'cala-live-e2e-'));
   // 450 frames: past the two 200-frame warm-ups, so frames are processed live.
   writeFileSync(join(folder, '0.avi'), buildAvi({ width: 32, height: 24, frames: 450 }));
@@ -52,6 +54,8 @@ test('Cala: a live source streams through the pipeline to the end', async ({ pag
   // Frame 7 is never sent: the stream stays contiguous, the gap is counted.
   await startSim(folder, ['--drop', '7']);
 
+  // A stream has no folder: its run (project file, run file, export) is a zip at the end.
+  const download = page.waitForEvent('download', { timeout: 60_000 });
   // `factors=0`: the stream as before the factor default (it ends at Discover's library).
   await page.goto(`Cala/?live=ws://127.0.0.1:${PORT}&factors=0&debug`);
   const header = page.getByRole('banner');
@@ -76,6 +80,21 @@ test('Cala: a live source streams through the pipeline to the end', async ({ pag
     return c.pipeline.live() as { received: number; missed: number; dropped: number };
   });
   expect(live).toMatchObject({ received: 449, missed: 1, dropped: 0 });
+  const zip = readFileSync((await (await download).path())!);
+  const text = (name: string) => {
+    const at = zip.indexOf(name);
+    expect(at, name).toBeGreaterThan(-1);
+    const start = zip.indexOf('{', at);
+    return JSON.parse(zip.toString('utf8', start, zip.indexOf('\n}', start) + 2));
+  };
+  const project = text('calab-project/calab-project.json');
+  expect(project.sessions).toMatchObject([{ id: '.', streams: [{ id: '.', role: 'live' }] }]);
+  const run = text('/calab-run.json');
+  expect(run.run).toMatchObject({ app: 'cala', status: 'finished', project: project.project.id });
+  // The live traces are the run's result, at the run folder's root.
+  expect(run.inputs).toMatchObject([{ role: 'live', stream: '.', frames: 449 }]);
+  expect(run.results).toMatchObject([{ stream: '.', status: 'written', path: 'cala-export.npz' }]);
+  expect(zip.indexOf(`runs/${run.run.id}/cala-export.npz`)).toBeGreaterThan(-1);
 });
 
 test('Cala: a live run can be stopped, and reconnects on restart', async ({ page }) => {
@@ -100,6 +119,11 @@ test('Cala: an unreachable live source reports an error', async ({ page }) => {
   await page.getByTestId('live-url').fill(`ws://127.0.0.1:${PORT + 50}`);
   await page.getByTestId('live-connect').click();
   await expect(page.getByRole('alert')).toContainText('Could not connect', { timeout: 15_000 });
+  // No run is left going: a recording opened next shows its own pre-run sheet.
+  const folder = mkdtempSync(join(tmpdir(), 'cala-after-live-e2e-'));
+  writeFileSync(join(folder, '0.avi'), buildAvi({ width: 24, height: 16, frames: 3 }));
+  await page.getByTestId('folder-input').setInputFiles(folder);
+  await expect(page.getByTestId('prerun-sheet')).toBeVisible();
 });
 
 test('Cala: a live stream settles and extracts on its factors after it ends, by default', async ({
@@ -153,7 +177,7 @@ test('Cala: a live stream settles and extracts on its factors after it ends, by 
   for (const name of ['traces.npy', 'traces_signed.npy', 'traces_live.npy'])
     expect(hasEntry(npz, name), name).toBe(true);
   const meta = metaText(npz);
-  expect(meta).toContain('"format_version":7');
+  expect(meta).toContain('"format_version":8');
   expect(meta).toContain('"settle_source":"factors"');
   expect(meta).toContain('"source":"factors"');
   expect(meta).toContain('there was no file to re-read');

@@ -5,7 +5,7 @@ import { ImportFeedbackLinks } from '@calab/community-ui';
 import { AnalyticsNotice } from './AnalyticsNotice.tsx';
 import { filesFromDrop } from '../lib/dropped-files.ts';
 import { entriesFromFiles, type FolderEntry } from '../lib/frame-source.ts';
-import { detectSeries, entriesForSeries, seriesLabel } from '../lib/video-series.ts';
+import { seriesLabel } from '../lib/video-series.ts';
 import {
   entriesFromDirectoryHandle,
   pickDirectoryWithHandle,
@@ -16,17 +16,12 @@ import { roleLabel } from '../lib/device-roles.ts';
 import {
   chooseKind,
   discoverKinds,
-  RESULTS_DIR,
   sessionsForKind,
   type SeriesKind,
   type SessionCandidate,
 } from '../lib/sessions.ts';
-import {
-  PROJECT_INDEX_FILE,
-  projectSessionId,
-  suggestSplit,
-  type SplitGroup,
-} from '../lib/project-index.ts';
+import { PROJECT_DIR, PROJECT_FILE } from '@calab/project';
+import { projectSessionId, suggestSplit, type SplitGroup } from '../lib/project-index.ts';
 import type { ProjectOpen } from '../lib/project-store.ts';
 import type { ReadDirLike } from '../lib/project-io.ts';
 import type { RecentProject } from '../lib/recent-projects.ts';
@@ -43,23 +38,15 @@ export function subfolderEntries(entries: FolderEntry[], root: string, sub: stri
 interface OpenFolderProps {
   loading: boolean;
   error: string | null;
-  /** Called with every file picked or dropped, and a label for the header. */
-  onOpen: (entries: FolderEntry[], label: string) => void;
   /** Connect to a live source (a WebSocket URL, see `lib/live-source.ts`). */
   onOpenLive?: (url: string) => void;
   /** The URL offered in the live-source field. */
   liveUrl?: string;
   /**
-   * More than one session found (a parent folder of several recordings), or
-   * the user asked for the session list: review them before a multi-session
-   * run. `handle` is the picked folder (File System Access API), if any.
+   * Open what was picked as a project (`docs/projects.md`): a recording folder (one session),
+   * an animal folder of sessions, or files picked one by one.
    */
-  onSessions?: (sessions: SessionCandidate[], handle: DirHandleLike | null) => void;
-  /** Label of the add button when this screen adds sessions to a list. */
-  addMode?: boolean;
-  onCancel?: () => void;
-  /** Open an animal folder as a project (`docs/projects.md`). */
-  onProject?: (open: ProjectOpen) => void;
+  onProject: (open: ProjectOpen) => void;
   /** Several animals in the picked folder, opened one by one: remember the others. */
   onAnimals?: (handles: ReadDirLike[]) => void;
   /** Recent projects (Chrome, Edge), most recent first. */
@@ -78,7 +65,7 @@ export const LIVE_URL_PLACEHOLDER = 'ws://host:port';
 export const LIVE_HELP_URL =
   'https://github.com/miniscope/CaLab/blob/main/apps/cala/USER_GUIDE.md#testing-with-a-simulated-stream';
 
-/** The folder name for the header: the picked directory, else the first file's name. */
+/** The project's name: the picked directory, else the first file's name. */
 function labelFor(entries: FolderEntry[]): string {
   const rel = entries[0].relPath;
   if (rel.includes('/')) return rel.split('/')[0];
@@ -98,7 +85,6 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
   const [liveUrl, setLiveUrl] = createSignal(props.liveUrl ?? '');
   let folderInput!: HTMLInputElement;
   let filesInput!: HTMLInputElement;
-  let projectInput!: HTMLInputElement;
 
   const [pickError, setPickError] = createSignal<string | null>(null);
 
@@ -107,8 +93,6 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
     entries: FolderEntry[];
     handle: DirHandleLike | null;
     candidates: SeriesKind[];
-    /** Picked with "Open animal project". */
-    project?: boolean;
   } | null>(null);
   // An experiment folder of several animals: which one to open.
   const [split, setSplit] = createSignal<{
@@ -119,56 +103,15 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
   } | null>(null);
   let chooserHeading: HTMLHeadingElement | undefined;
 
-  /**
-   * Open what was picked. The video series are grouped into kinds (the
-   * Miniscope of each session, a behaviour camera, ...; `lib/sessions.ts`),
-   * with each device's role read from its metaData.json. One session opens as
-   * before; several go to the session list; several plausible kinds ask the
-   * user first.
-   */
-  const submit = async (entries: FolderEntry[], handle: DirHandleLike | null = null) => {
-    if (entries.length === 0) return;
-    const { chosen, candidates } = chooseKind(await discoverKinds(entries));
-    if (chosen) {
-      openKind(entries, handle, chosen);
-      return;
-    }
-    if (candidates.length === 0) {
-      setPending(null);
-      if (props.addMode) props.onSessions?.([], handle);
-      else props.onOpen(entries, labelFor(entries));
-      return;
-    }
-    setPending({ entries, handle, candidates });
-    queueMicrotask(() => chooserHeading?.focus());
-  };
-
-  function openKind(
-    entries: FolderEntry[],
-    handle: DirHandleLike | null,
-    kind: SeriesKind,
-    project = false,
-  ) {
+  function openKind(entries: FolderEntry[], handle: DirHandleLike | null, kind: SeriesKind) {
     setPending(null);
-    if (project) {
-      openProject(entries, handle, sessionsForKind(entries, kind));
-      return;
-    }
-    const sessions = sessionsForKind(entries, kind);
-    if ((sessions.length > 1 || props.addMode) && props.onSessions) {
-      props.onSessions(sessions, handle);
-      return;
-    }
-    // One session: open it as a plain folder, as before multi-session runs.
-    const all = detectSeries(entries);
-    const chosen = kind.series.length === 1 && all.length > 1 ? kind.series[0] : null;
-    props.onOpen(chosen ? entriesForSeries(entries, all, chosen) : entries, labelFor(entries));
+    openProject(entries, handle, sessionsForKind(entries, kind));
   }
 
   const choose = (picked: SeriesKind) => {
     const p = pending();
     if (!p) return;
-    openKind(p.entries, p.handle, picked, p.project);
+    openKind(p.entries, p.handle, picked);
   };
 
   /** A results folder chosen earlier for the project being reopened. */
@@ -179,9 +122,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
     setPickError(null);
     try {
       if (!(await ensurePermission(r.handle, 'read'))) {
-        setPickError(
-          `The browser did not allow reading ${r.name}. Open it with "Open animal project".`,
-        );
+        setPickError(`The browser did not allow reading ${r.name}. Open its folder again.`);
         return;
       }
       reopenResults =
@@ -197,12 +138,17 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
     }
   }
 
-  const rootOf = (entries: FolderEntry[]) => entries[0]?.relPath.split('/')[0] ?? '';
+  /** The picked folder's name (files picked one by one: the first video's). */
+  const rootOf = (entries: FolderEntry[]) =>
+    entries[0]?.relPath.includes('/') ? entries[0].relPath.split('/')[0] : labelFor(entries);
 
   /**
-   * "Open animal project": the picked folder is the animal. A folder that
-   * holds several animals (and no project index of its own) is offered as
-   * one project per animal first.
+   * Open what was picked as a project. The video series are grouped into kinds (the Miniscope of
+   * each session, a behaviour camera, ...; `lib/sessions.ts`), with each device's role read from
+   * its metaData.json; several plausible kinds ask the user first. Each recording folder of the
+   * chosen kind is one session: one makes a one-session project, several an animal project. A
+   * folder that holds several animals (and no project file of its own) is offered as one project
+   * per animal first.
    */
   const submitProject = async (entries: FolderEntry[], handle: DirHandleLike | null = null) => {
     setSplit(null);
@@ -210,14 +156,14 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
     if (entries.length === 0) return;
     const { chosen, candidates } = chooseKind(await discoverKinds(entries));
     if (chosen) {
-      openKind(entries, handle, chosen, true);
+      openKind(entries, handle, chosen);
       return;
     }
     if (candidates.length === 0) {
-      setPickError('No Miniscope recordings were found in this folder.');
+      setPickError('No Miniscope video found in what was picked.');
       return;
     }
-    setPending({ entries, handle, candidates, project: true });
+    setPending({ entries, handle, candidates });
     queueMicrotask(() => chooserHeading?.focus());
   };
 
@@ -227,15 +173,13 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
     sessions: SessionCandidate[],
   ) {
     const root = rootOf(entries);
-    const hasIndex = entries.some(
-      (e) => e.relPath === `${root}/${RESULTS_DIR}/${PROJECT_INDEX_FILE}`,
-    );
+    const hasIndex = entries.some((e) => e.relPath === `${root}/${PROJECT_DIR}/${PROJECT_FILE}`);
     const groups = hasIndex ? null : suggestSplit(sessions.map((s) => projectSessionId(s.dir)));
     if (groups) {
       setSplit({ entries, handle, sessions, groups });
       return;
     }
-    props.onProject?.({
+    props.onProject({
       rootName: root,
       entries,
       handle: handle as unknown as ReadDirLike | null,
@@ -251,7 +195,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
     if (!sp) return;
     setSplit(null);
     if (sub === null) {
-      props.onProject?.({
+      props.onProject({
         rootName: rootOf(sp.entries),
         entries: sp.entries,
         handle: sp.handle as unknown as ReadDirLike | null,
@@ -279,27 +223,13 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
     }
     const { chosen, candidates } = chooseKind(await discoverKinds(entries));
     const kind = chosen ?? candidates[0];
-    props.onProject?.({
+    props.onProject({
       rootName: sub,
       entries,
       handle,
       sessions: kind ? sessionsForKind(entries, kind) : [],
     });
   }
-
-  const openProjectFolder = () => {
-    setPickError(null);
-    reopenResults = null;
-    if (!supportsDirectoryPicker()) {
-      projectInput.click();
-      return;
-    }
-    pickDirectoryWithHandle()
-      .then((picked) => (picked ? submitProject(picked.entries, picked.handle) : undefined))
-      .catch((err: unknown) => {
-        setPickError(`Could not open the folder: ${err instanceof Error ? err.message : err}`);
-      });
-  };
 
   // Chrome and Edge: the read-only directory picker ("view files"). Elsewhere
   // the hidden webkitdirectory input, whose prompt says "upload".
@@ -310,7 +240,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
       return;
     }
     pickDirectoryWithHandle()
-      .then((picked) => (picked ? submit(picked.entries, picked.handle) : undefined))
+      .then((picked) => (picked ? submitProject(picked.entries, picked.handle) : undefined))
       .catch((err: unknown) => {
         setPickError(`Could not open the folder: ${err instanceof Error ? err.message : err}`);
       });
@@ -350,7 +280,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
             setDragging(false);
             if (e.dataTransfer) {
               void filesFromDrop(e.dataTransfer)
-                .then((files) => submit(files))
+                .then((files) => submitProject(files))
                 .catch((err: unknown) => {
                   setPickError(
                     `Could not open the files: ${err instanceof Error ? err.message : err}`,
@@ -361,14 +291,13 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
         >
           <NeuronSketch class="cala-neuron--drop" />
           <p class="drop-zone__text">
-            <strong>{props.addMode ? 'Add a session folder' : 'Open a Miniscope folder'}</strong> or
-            drop it here
+            <strong>Open a Miniscope folder</strong> or drop it here
           </p>
           <p class="drop-zone__subtext">
-            The folder with the numbered videos (0.avi, 1.avi, ... or msCam0.avi, msCam1.avi, ...)
-            and metaData.json, timeStamps.csv, or a parent folder of several sessions (each
-            recording folder becomes one session). Videos are read frame by frame from disk, never
-            loaded whole, and never uploaded.
+            A recording folder (0.avi, 1.avi, ... or msCam0.avi, ..., with metaData.json and
+            timeStamps.csv) or an animal folder of sessions. Either opens as a project; results go
+            to its <code>calab-project</code> folder. Videos are read frame by frame from disk and
+            never uploaded.
           </p>
         </div>
         <input
@@ -376,19 +305,6 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
           type="file"
           class="cala-hidden-input"
           data-testid="folder-input"
-          // @ts-expect-error webkitdirectory is not in lib.dom's input attributes
-          webkitdirectory=""
-          multiple
-          onChange={(e) => {
-            void submit(entriesFromFiles(Array.from(e.currentTarget.files ?? [])));
-            e.currentTarget.value = '';
-          }}
-        />
-        <input
-          ref={projectInput}
-          type="file"
-          class="cala-hidden-input"
-          data-testid="project-input"
           // @ts-expect-error webkitdirectory is not in lib.dom's input attributes
           webkitdirectory=""
           multiple
@@ -405,56 +321,42 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
           multiple
           accept=".avi,.json,.csv"
           onChange={(e) => {
-            void submit(entriesFromFiles(Array.from(e.currentTarget.files ?? [])));
+            void submitProject(entriesFromFiles(Array.from(e.currentTarget.files ?? [])));
             e.currentTarget.value = '';
           }}
         />
       </div>
 
-      <Show when={props.onProject && !props.addMode}>
+      <Show when={(props.recent ?? []).length > 0}>
         <section class="cala-projects-entry" aria-labelledby="projects-entry-title">
           <h2 id="projects-entry-title" class="cala-sessions__title">
-            Animal projects
+            Recent projects
           </h2>
-          <p class="file-info">
-            <button
-              type="button"
-              class="btn-primary"
-              data-testid="open-project"
-              title="An animal folder of sessions: see every session's cala status, run them, and keep the results together"
-              onClick={openProjectFolder}
-            >
-              Open animal project
-            </button>
-          </p>
-          <Show when={(props.recent ?? []).length > 0}>
-            <p class="cala-muted cala-recent__title">Recent projects</p>
-            <ul class="cala-recent" data-testid="recent-projects">
-              <For each={props.recent}>
-                {(r) => (
-                  <li class="cala-recent__item" data-testid="recent-project">
-                    <button
-                      type="button"
-                      class="btn-secondary btn-small"
-                      data-testid="recent-open"
-                      onClick={() => void reopen(r)}
-                    >
-                      {r.name}
-                    </button>{' '}
-                    <span class="cala-muted">opened {new Date(r.openedAt).toLocaleString()}</span>{' '}
-                    <button
-                      type="button"
-                      class="btn-link btn-small"
-                      aria-label={`Forget ${r.name}`}
-                      onClick={() => props.onForget?.(r)}
-                    >
-                      Forget
-                    </button>
-                  </li>
-                )}
-              </For>
-            </ul>
-          </Show>
+          <ul class="cala-recent" data-testid="recent-projects">
+            <For each={props.recent}>
+              {(r) => (
+                <li class="cala-recent__item" data-testid="recent-project">
+                  <button
+                    type="button"
+                    class="btn-secondary btn-small"
+                    data-testid="recent-open"
+                    onClick={() => void reopen(r)}
+                  >
+                    {r.name}
+                  </button>{' '}
+                  <span class="cala-muted">opened {new Date(r.openedAt).toLocaleString()}</span>{' '}
+                  <button
+                    type="button"
+                    class="btn-link btn-small"
+                    aria-label={`Forget ${r.name}`}
+                    onClick={() => props.onForget?.(r)}
+                  >
+                    Forget
+                  </button>
+                </li>
+              )}
+            </For>
+          </ul>
         </section>
       </Show>
 
@@ -481,7 +383,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
               </For>
             </ul>
             <p class="cala-muted">
-              Each animal becomes its own project with its own <code>cala-results</code> folder
+              Each animal becomes its own project with its own <code>calab-project</code> folder
               {supportsDirectoryPicker() ? '; the others are added to Recent projects' : ''}.
             </p>
             <button
@@ -500,29 +402,6 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
         <button type="button" class="btn-secondary btn-small" onClick={() => filesInput.click()}>
           Choose individual files
         </button>
-        <Show when={props.onSessions && !props.addMode}>
-          {' '}
-          <button
-            type="button"
-            class="btn-secondary btn-small"
-            data-testid="multi-session"
-            title="Run several sessions of one animal, with one footprint library across them or one per session"
-            onClick={() => props.onSessions?.([], null)}
-          >
-            Multi-session run
-          </button>
-        </Show>
-        <Show when={props.addMode && props.onCancel}>
-          {' '}
-          <button
-            type="button"
-            class="btn-secondary btn-small"
-            data-testid="add-cancel"
-            onClick={() => props.onCancel?.()}
-          >
-            Back to the session list
-          </button>
-        </Show>
       </p>
       <p class="file-info" data-testid="local-note">
         Files are read locally and never leave your computer.

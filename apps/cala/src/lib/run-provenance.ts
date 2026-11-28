@@ -1,9 +1,10 @@
 /**
  * The run record: everything needed to know exactly how a processing run was
- * made and to reproduce it. A versioned JSON document saved with every
- * result: `meta_json.run_record` inside each `cala-export.npz`, and as
- * `cala-run-record.json` at the root of an automatic run's results folder
- * (`multi-run.ts`). Documented in docs/run-record.md.
+ * made and to reproduce it. It is folded into the run file (`run-file.ts`):
+ * its `params` block becomes the run file's `config`, its stages and input the
+ * run file's `stages` and `inputs`, and the rest its `record` block, saved in
+ * `calab-run.json` and as `meta_json.run` in every `cala-export.npz`.
+ * Documented in docs/run-record.md.
  *
  * Three parts:
  *
@@ -36,8 +37,6 @@ import { median } from './stats.ts';
 import type { SpeedCurve } from './speed-schedule.ts';
 import type { AutoDecision } from './speed-auto.ts';
 
-export const RUN_RECORD_FILE = 'cala-run-record.json';
-export const RUN_RECORD_FORMAT = 'cala-run-record';
 /** Bump when an existing field changes meaning (adding fields does not). */
 export const RUN_RECORD_VERSION = 2;
 
@@ -586,6 +585,8 @@ export interface RunRecordInput {
     sources?: Record<string, string>;
     /** Asked for, but set by the app's own settings at the start: pointer → `{ asked, used }`. */
     overridden?: Record<string, unknown>;
+    /** Pointers of loaded keys that are not params fields (never resolved). */
+    ignored?: string[];
     /** The cell diameter in force: px, and whether it came from µm through the optics. */
     cell_diameter: unknown;
   };
@@ -647,7 +648,6 @@ export function buildRunRecord(i: RunRecordInput): Record<string, unknown> {
   for (const k of WORK_SLIDER_SLOTS) slots[k] = i.slots?.[k] ?? null;
   const gov = i.governor;
   return {
-    format: RUN_RECORD_FORMAT,
     record_version: RUN_RECORD_VERSION,
     created: i.createdAt,
     software: {
@@ -799,6 +799,7 @@ export interface RunRecordSources {
     requested: Record<string, unknown>;
     sources: Record<string, string>;
     overridden: Record<string, unknown>;
+    ignored?: string[];
   } | null;
 }
 
@@ -809,6 +810,7 @@ function paramsOf(
     requested: Record<string, unknown>;
     sources: Record<string, string>;
     overridden: Record<string, unknown>;
+    ignored?: string[];
   } | null,
 ): Pick<RunRecordInput, 'params'> {
   return run
@@ -822,6 +824,7 @@ function paramsOf(
                 requested: request.requested,
                 sources: request.sources,
                 overridden: request.overridden,
+                ignored: request.ignored ?? [],
               }
             : {}),
           cell_diameter: run.engine.cell_diameter,
@@ -830,7 +833,7 @@ function paramsOf(
     : {};
 }
 
-/** Settings that live in a panel rather than a store (`RunPanel`, the session setup). */
+/** Settings that live in a panel rather than a store (`RunPanel`, the plan step). */
 export interface RunRecordExtras {
   /** Joint or Separate (a recording of several sessions). */
   mode?: string;
@@ -1096,8 +1099,9 @@ export function curveFromChanges(
 
 export function settingsFromRecord(rec: unknown): AppliedSettings | null {
   if (!rec || typeof rec !== 'object') return null;
-  const r = rec as Record<string, unknown>;
-  if (r.format !== RUN_RECORD_FORMAT) return null;
+  let r = rec as Record<string, unknown>;
+  // A whole run file (`calab-run.json`, or an export's `meta_json.run`) carries the record inside.
+  if (r.format === 'calab-run') r = (r.record ?? {}) as Record<string, unknown>;
   const v = r.record_version;
   if (typeof v !== 'number' || v < 1 || v > RUN_RECORD_VERSION) return null;
   const s = r.settings;

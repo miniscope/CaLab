@@ -1,23 +1,34 @@
 # Run record
 
-Every saved result says how it was made. The run record is a versioned JSON
-document (`format: "cala-run-record"`, `record_version: 2`) with the settings,
-flags, versions, input, stages and machine of the run, enough to know exactly
-what happened and to repeat it. Code: `src/lib/run-provenance.ts`.
+Every saved result says how it was made. The run record is the part of a run's
+file (`calab-run.json`, [projects.md](projects.md#calab-runjson-one-run)) that
+holds the settings, flags, versions, machine and the rest of what happened, enough
+to know exactly what happened and to repeat it. It is versioned by its own
+`record_version` (2). Code: `src/lib/run-provenance.ts` (gathering it) and
+`src/lib/run-file.ts` (folding it into the run file).
 
 ## Where it is saved
 
-- `meta_json.run_record` inside every `cala-export.npz` (single export, each
-  session of an automatic run), and `run_record_json.npy` (a UTF-8 JSON byte
-  vector) inside the CaDecon `.npz` export.
-- Joint automatic runs: `cala-run-record.json` at the root of the results
-  folder, rewritten with `cala-run.json`.
-- Separate automatic runs: `cala-run-record.json` beside each session's
-  results (each session is a run of its own; `input.session_index` says which),
-  and none at the root.
+The record is folded into the run file, not written as a file of its own:
+
+| Record block                                                               | In `calab-run.json`                                                                             |
+| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `software`                                                                 | the `run` header: `app_version`, `engine_version`, `git_commit`                                 |
+| `params.requested`, `sources`, `values`, `fingerprint`, `ignored`          | `config.requested`, `config.sources`, `config.resolved`, `config.fingerprint`, `config.ignored` |
+| `stages`                                                                   | `stages`                                                                                        |
+| `input`                                                                    | `inputs` (one per stream)                                                                       |
+| everything else (`params.context`, `cell_diameter`, `overridden` included) | `record`                                                                                        |
+
+- `runs/<run id>/calab-run.json` in the project folder: written before the
+  run's first frame, after each export and when the run ends.
+- `meta_json.run` inside every `cala-export.npz`: the run file as it was when
+  that export was written (export format 8). A single export outside a project
+  carries one too.
+- `run_json.npy` (a UTF-8 JSON byte vector) inside the CaDecon `.npz` export.
 
 The record is gathered when files are written. A Joint run writes the same
-record into every session's export.
+record into every session's export. An older export's `meta_json.run_record`
+(format 7 and before) is not read as a run file.
 Nothing here is sent anywhere; no analytics field was added.
 
 ## Blocks
@@ -90,11 +101,12 @@ A record maps to settings like this (`settingsFromRecord`):
 | `final_settle_level`     | Final settle: `thorough` (full pass), `standard` (87 %), `quick` (60 %)                                                                                           | the Final settle select     |
 | `target_speed_fps`       | target speed at the start of the run (0: Max)                                                                                                                     | `?debug&pacefps=`           |
 | `smooth_playback`        | smooth playback                                                                                                                                                   | `?debug&smooth=0`           |
-| `library_mode`           | Joint or Separate (the session setup)                                                                                                                             |                             |
-| `extract_after_discover` | "Extract after Discover" (Run tab)                                                                                                                                |                             |
-| `export_pass_qc_only`    | export only cells that pass QC (Run tab)                                                                                                                          |                             |
+| `library_mode`           | Joint or Separate (the plan step's kind; a single recording is Separate)                                                                                          |                             |
+| `extract_after_discover` | every run Extracts after Discover (true)                                                                                                                          |                             |
+| `export_pass_qc_only`    | export only cells that pass QC (not written by the app's runs)                                                                                                    |                             |
 
-With `?debug`, `__cala.applyRunRecord(recordOrJsonText)` re-applies the store
+With `?debug`, `__cala.applyRunRecord(recordOrJsonText)` (a record, a whole
+`calab-run.json` or an export's `meta_json.run`) re-applies the store
 settings (everything with a URL flag above, plus flat field and Discover) before
 the next Discover start and returns what it applied (null if it is not a run
 record). Pool size (`?debug&lbpool=`) and the visit-worker count (`?visits=`) are
@@ -121,5 +133,4 @@ Version 1 records are still read: `settle_during_discover: false` is the cap Off
 `true` Background settle as now (the default) at the recorded
 `settle_ceiling_per_live_frame`; `settle_governor` is ignored (the governor is the
 only dose rule since version 2). The
-session setup setting (`library_mode`) is chosen in the setup
-screen. Records from before Refine was removed also hold `refine_runs` (the Refine runs the plan asked for); it is no longer written. `__cala.runRecord()` returns the record of the run so far.
+library mode (`library_mode`) is the kind of the plan step the run was made for. Records from before Refine was removed also hold `refine_runs` (the Refine runs the plan asked for); it is no longer written. `__cala.runRecord()` returns the record of the run so far.

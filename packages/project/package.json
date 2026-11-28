@@ -1,0 +1,16 @@
+{
+  "name": "@calab/project",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "gen:types": "node scripts/gen-types.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@calab/core": "*"
+  }
+}

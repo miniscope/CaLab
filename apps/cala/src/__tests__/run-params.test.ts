@@ -104,6 +104,7 @@ describe('the params layer of a Discover start', () => {
       discover: { visit: { mode: 'fixed' } },
       flat_field: { enabled: true },
       settle: { final: { level: 'thorough' } },
+      stages: { extract: true },
     });
   });
 
@@ -316,10 +317,14 @@ function nonDefault(f: ParamField): unknown {
 
 describe('every field the pre-run sheet renders reaches the run', () => {
   it('a value set in the sheet is in the params the run resolves', async () => {
+    // Extract after Discover is shown (on, held) but set at each start: every run Extracts.
     const fields = schemaFields(PARAMS_SCHEMA).filter(
-      (f) => (f.level === 'main' || f.level === 'advanced') && sheetShows(f, true),
+      (f) =>
+        (f.level === 'main' || f.level === 'advanced') &&
+        sheetShows(f, true) &&
+        !SET_AT_START[f.pointer],
     );
-    expect(fields).toHaveLength(31);
+    expect(fields).toHaveLength(30);
     for (const f of fields) {
       // A µm diameter needs the optics; 30 µm at 2 µm per pixel is 15 px.
       const v = f.pointer === '/scales/expected_cell_diameter_um' ? 30 : nonDefault(f);
@@ -413,5 +418,68 @@ describe('a µm cell diameter is never replaced by the default pixels', () => {
       expected_cell_diameter_um: 30,
       cell_diameter_px: null,
     });
+  });
+});
+
+describe('the run file goes to disk before the first frame', () => {
+  const make = () => {
+    const startPipeline = vi.fn(async () => testPlan(100));
+    const stepPipeline = vi.fn(() => new Promise<never>(() => {}));
+    const store = createPipelineStore(
+      {
+        startPipeline,
+        stepPipeline,
+        stopPipeline: async () => {},
+        subscribeFlatField: () => () => {},
+      },
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      undefined,
+      lookbackFeed(),
+    );
+    return { store, startPipeline, stepPipeline };
+  };
+
+  it('awaits the hook once the params are resolved, and pumps no frame until it is done', async () => {
+    const { store, startPipeline, stepPipeline } = make();
+    let release!: () => void;
+    const seen: { params: boolean; steps: number; status: string }[] = [];
+    store.setBeforeFrames(async () => {
+      seen.push({
+        params: store.runRequest() !== null,
+        steps: stepPipeline.mock.calls.length,
+        status: store.status(),
+      });
+      await new Promise<void>((r) => (release = r));
+    });
+    const started = store.start();
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    expect(startPipeline).toHaveBeenCalledTimes(1);
+    expect(seen[0]).toEqual({ params: true, steps: 0, status: 'starting' });
+    expect(stepPipeline).not.toHaveBeenCalled();
+    release();
+    await started;
+    expect(store.status()).toBe('running');
+    await vi.waitFor(() => expect(stepPipeline).toHaveBeenCalled());
+  });
+
+  it('a failed hook stops the start: no frame is read', async () => {
+    const { store, stepPipeline } = make();
+    store.setBeforeFrames(async () => {
+      throw new Error('the run folder could not be written');
+    });
+    await store.start();
+    expect(store.status()).toBe('error');
+    expect(store.error()).toContain('could not be written');
+    expect(stepPipeline).not.toHaveBeenCalled();
+    // Without a hook, frames start at once.
+    store.setBeforeFrames(null);
+    await store.start();
+    expect(store.status()).toBe('running');
   });
 });
