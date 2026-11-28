@@ -110,7 +110,7 @@ export function ProjectView(props: ProjectViewProps): JSX.Element {
         </h2>
         <p class="cala-sessions__row cala-project__where" data-testid="project-results">
           Results: <code>{p().location().label}/</code>
-          {p().location().kind === 'default' ? ' (in the animal folder)' : ' (chosen folder)'}{' '}
+          {p().location().kind === 'default' ? ' (next to the data)' : ' (chosen folder)'}{' '}
           <Show when={supportsDirectoryPicker() && p().canWrite()}>
             <button type="button" class="btn-secondary btn-small" onClick={chooseResults}>
               Choose another folder...

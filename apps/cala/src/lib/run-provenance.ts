@@ -833,7 +833,7 @@ function paramsOf(
     : {};
 }
 
-/** Settings that live in a panel rather than a store (`RunPanel`, the session setup). */
+/** Settings that live in a panel rather than a store (`RunPanel`, the plan step). */
 export interface RunRecordExtras {
   /** Joint or Separate (a recording of several sessions). */
   mode?: string;
