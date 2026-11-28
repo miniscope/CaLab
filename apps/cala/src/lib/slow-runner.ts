@@ -464,8 +464,6 @@ export class SlowRunner {
   private lbPortEndBusy: number[] = [];
   /** The pacer's target and pause (`setPace`; kept across runs: the main thread sends it when it changes). */
   private pace = { fps: 0, paused: false };
-  /** Stream index after the last live batch of this run (-1: none yet): a gap is a forward-pool drop. */
-  private liveEnd = -1;
   /**
    * A Joint run: the first frame of the current session (`SlowInit.sessionStarts`).
    * Look-back and Background settle never re-read a frame before it.
@@ -879,7 +877,6 @@ export class SlowRunner {
           this.bgSettle.bgArm = {
             yieldFrames: Math.max(0, Math.floor(run.csettleYield ?? 0)),
             needFirst: run.csettleNeedFirst === true,
-            forwardPool: Math.max(2, Math.floor(msg.csettlePool ?? 2)),
           };
           this.bgSettle.armSettle();
         }
@@ -996,12 +993,10 @@ export class SlowRunner {
     let observed = 0;
     let maxStep = 0;
     const t0 = this.now();
-    let batchWait = 0;
     // The wait in the inbox: sent by the fast worker (epoch clock) until processing starts here.
     if (msg.sentAt !== undefined) {
       // Not clamped: a negative reading would mean the two workers' clocks disagree.
       const wait = this.epochNow() - msg.sentAt;
-      batchWait = wait;
       this.waitN++;
       this.waitSum += wait;
       this.waitLast = wait;
@@ -1076,19 +1071,11 @@ export class SlowRunner {
           this.sessionFloor(loop, msg.start);
           loop.lookbackNote(msg.start + msg.count, observed);
           this.dt?.add('live.lookbackNote', this.now() - tn);
-          if (this.bgSettle.bgs) {
-            this.bgSettle.bgs.live += observed;
-            // A batch that does not follow the last one: the forward pool dropped the ones between.
-            const gap = this.liveEnd >= 0 && msg.start > this.liveEnd;
-            this.bgSettle.bgs.gov.liveBatch(
-              msg.sentAt ?? this.epochNow(),
-              msg.start + msg.count,
-              msg.count,
-              batchWait,
-              gap,
-            );
+          const bgs = this.bgSettle.bgs;
+          if (bgs) {
+            bgs.gov.liveBatch(msg.sentAt ?? this.epochNow(), msg.start + msg.count);
+            this.bgSettle.liveFrames(loop, bgs, observed);
           }
-          this.liveEnd = Math.max(this.liveEnd, msg.start + msg.count);
           this.tm('live.lookbackRequest', () => this.lookbackRequest());
         }
       }
@@ -1182,7 +1169,7 @@ export class SlowRunner {
     const loop = this.loop;
     if (!loop || !this.lbOn || this.lbError !== undefined || this.factorWait) return false;
     const bgs = this.bgSettle.bgs;
-    // The governor checks (once a second) and earns up to now before any request.
+    // The governor's readout (once a second); requests depend on the chunks queued only.
     bgs?.gov.update(this.epochNow(), this.version > 0);
     const pool = this.settlePorts();
     let sent = false;
@@ -1826,7 +1813,6 @@ export class SlowRunner {
     this.lbRun = [];
     this.lbLib = [];
     this.bgSettle.bgArm = null;
-    this.liveEnd = -1;
     this.lbFloor = 0;
     this.lbError = undefined;
     this.finalSettle.state = null;

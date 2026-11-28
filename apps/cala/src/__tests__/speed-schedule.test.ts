@@ -90,10 +90,10 @@ describe('sanitizing a curve', () => {
 describe('the minimum step', () => {
   it('is 20 s plus twice the settle climb, from the governor ramp', () => {
     expect(MIN_STEP.baseS).toBe(20);
-    // 8 re-read frames per second per second: cap 2 at 60 fps needs 120 / 8 = 15 s.
-    expect(climbSeconds(60, 2)).toBeCloseTo((2 * 60) / GOVERNOR.stepFps);
+    // Cap 2 is reached after 2 x 450 live frames: 15 s at 60 fps, 6.67 s at 135 fps.
+    expect(climbSeconds(60, 2)).toBeCloseTo((2 * GOVERNOR.rampFrames) / 60);
     expect(minStepSeconds(60, 2)).toBeCloseTo(20 + 2 * 15);
-    expect(minStepSeconds(135, 2)).toBeCloseTo(20 + 2 * 33.75);
+    expect(minStepSeconds(135, 2)).toBeCloseTo(20 + (2 * 900) / 135);
     // The cap Off means nothing to climb to.
     expect(minStepSeconds(60, 0)).toBe(20);
   });
@@ -145,18 +145,21 @@ describe('merging short steps', () => {
   });
 
   it('counts a step paced above Max at Max speed (when Max is known)', () => {
-    const slow = plan({ totalFrames: 12000, maxFps: 50 });
-    // 120 fps asked, 50 reached: 6000 / 50 = 120 s, over its 80 s; at 120 fps it would be 50 s.
+    const slow = plan({ totalFrames: 7000, maxFps: 50 });
+    // 120 fps asked, 50 reached: 3500 / 50 = 70 s, over its 56 s (20 + 2 x 900 / 50); at 120 fps
+    // it would be 29 s, under its 35 s.
     expect(normalizeCurve(c([0, 60], [0.5, 120]), slow).merged).toBe(0);
-    expect(normalizeCurve(c([0, 60], [0.5, 120]), plan({ maxFps: null })).merged).toBe(1);
+    expect(
+      normalizeCurve(c([0, 60], [0.5, 120]), plan({ totalFrames: 7000, maxFps: null })).merged,
+    ).toBe(1);
   });
 
   it('judges a symbol by what it resolves to now', () => {
     const r = normalizeCurve(
       c([0, 'max'], [0.5, 'floor']),
-      plan({ floorFps: 30, totalFrames: 3000 }),
+      plan({ floorFps: 30, totalFrames: 4800 }),
     );
-    // 1500 frames at 30 fps = 50 s: exactly its minimum (20 + 2 x 7.5 = 35 s) is met.
+    // 2400 frames at 30 fps = 80 s: exactly its minimum (20 + 2 x 900 / 30 = 80 s) is met.
     expect(r.merged).toBe(0);
     expect(
       normalizeCurve(c([0, 'max'], [0.5, 'floor']), plan({ floorFps: 30, totalFrames: 600 }))

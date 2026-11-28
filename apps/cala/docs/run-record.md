@@ -47,7 +47,7 @@ Nothing here is sent anywhere; no analytics field was added.
   | `dose_per_live_frame`            | re-read frames Background settle delivered per Discover frame                                     |
   | `frames_missed_by_slow_loop`     | live frames the slow loop never observed                                                          |
   | `forward_drops`                  | frames the fast loop did not forward to the slow loop                                             |
-  | `halvings`, `slow_halvings`      | the governor's halvings, and those a batch wait or a forward-pool drop caused                     |
+  | `halvings`, `slow_halvings`      | halvings of the settle dose; 0 (the dose is counted per live frame and does not back off)         |
   | `limit_shares`                   | share of about-one-second readings each governor limit held (sums to 1; empty without a governor) |
   | `pace_late_ms`, `pace_reanchors` | lateness the pacer dropped at re-anchors, and how often it re-anchored                            |
   | `max_fps_median`                 | median of the live Max estimate over the run (with the visit rate on, what the visits allow)      |

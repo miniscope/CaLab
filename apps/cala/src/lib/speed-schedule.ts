@@ -35,18 +35,18 @@ export const MAX_CURVE_POINTS = 8;
 
 /**
  * A paced step must last at least `baseS` plus `rampFactor` times the Background settle's climb from
- * 0 to its cap (the governor climbs `GOVERNOR.stepFps` re-read frames per second, once a second), or
+ * 0 to its cap (`climbSeconds`), or
  * it is merged into its neighbour. A Max step has no pacer to re-anchor and no governor to climb,
  * so it is exempt.
  */
 export const MIN_STEP = { baseS: 20, rampFactor: 2 } as const;
 
-/** The governor's climb, re-read frames per second per second. */
-const RAMP_PER_S = (GOVERNOR.stepFps * 1000) / GOVERNOR.checkMs;
-
-/** Seconds the Background settle takes to climb to `cap` x `fps` re-read frames per second. */
+/**
+ * Seconds the Background settle takes to climb to its cap read at `fps`: `cap x
+ * GOVERNOR.rampFrames` live frames.
+ */
 export function climbSeconds(fps: number, cap: number): number {
-  return cap > 0 && fps > 0 ? (cap * fps) / RAMP_PER_S : 0;
+  return cap > 0 && fps > 0 ? (cap * GOVERNOR.rampFrames) / fps : 0;
 }
 
 /** The shortest a step paced at `fps` may last, seconds. */

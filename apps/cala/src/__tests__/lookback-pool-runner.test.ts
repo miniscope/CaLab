@@ -386,21 +386,23 @@ describe('settle governor in the runner', () => {
     expect(t.requests(1).length).toBeGreaterThan(20);
   });
 
-  it('halves on a forward-pool drop (a gap in the stream)', () => {
-    const t = setup({ pool: 1, csettle: 2 });
-    for (let k = 0; k < 120; k++) {
-      t.live(1, 267);
-      while (t.pending(1)) t.answer(1);
-    }
-    const before = t.status().lookback!.csettle!.governor!.rate;
-    t.skip(8);
-    for (let k = 0; k < 5; k++) {
-      t.live(1, 267);
-      while (t.pending(1)) t.answer(1);
-    }
-    const g = t.status().lookback!.csettle!.governor!;
-    expect(g.halvings).toBe(1);
-    expect(g.rate).toBeLessThan(before);
+  it('asks for the same frames in the same order whenever the answers come back', () => {
+    const asked = (lag: number, ms: number) => {
+      const t = setup({ pool: 1, csettle: 2 });
+      for (let k = 0; k < 200; k++) {
+        t.live(1, ms);
+        // Answers held back for `lag` batches at a time.
+        if (k % lag === 0) while (t.pending(1)) t.answer(1);
+      }
+      expect(t.status().lookback!.csettle!.governor!.slipped).toBe(0);
+      return t.requests(1).map((q) => Array.from(q.items));
+    };
+    const prompt = asked(1, 267);
+    expect(prompt.length).toBeGreaterThan(20);
+    // Late answers and another wall-clock period: the requests that went out are the same.
+    const late = asked(3, 120);
+    expect(late).toEqual(prompt.slice(0, late.length));
+    expect(late.length).toBeGreaterThan(prompt.length - 4);
   });
 
   it('taking turns, worker 0 need-driven time counts towards the settle busy share', () => {

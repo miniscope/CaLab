@@ -31,6 +31,7 @@ const gov = (o: Partial<GovernorStatus> = {}): GovernorStatus => ({
   credit: 0,
   halvings: 0,
   slowHalvings: 0,
+  slipped: 0,
   ...o,
 });
 

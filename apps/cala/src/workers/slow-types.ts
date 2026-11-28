@@ -34,8 +34,6 @@ export interface SlowInit extends RunCells {
   flattenSigmaPx: number;
   /** Slow-loop work units per observed frame (about multiply-adds). */
   budget: number;
-  /** With `csettle`: batches the forward pool holds in flight to this worker (the governor's batch-wait guard scales with it; absent: 2). */
-  csettlePool?: number;
 }
 
 /** Fast worker -> slow worker. */
