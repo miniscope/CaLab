@@ -19,6 +19,7 @@ import type { LookbackToSlow, SlowToLookback } from '../workers/lookback-types.t
 import type { FastToSlow, OwnerToVisit, SlowToMain, VisitToOwner } from '../workers/slow-types.ts';
 import { lcg } from './blob-movie.ts';
 import { fakeLib, stubSlowLoop } from './slow-fixtures.ts';
+import { DEFAULT_PARAMS } from './params-fixtures.ts';
 
 /** A port: in order, each message a random 0..`maxMs` ms after the one before is delivered. */
 function port<T>(deliver: (m: T) => void, rand: () => number, maxMs: number) {
@@ -73,6 +74,7 @@ function fakeReader(rand: () => number) {
     setBackState: () => {},
     setSession: () => {},
     setFlatField: () => {},
+    setParams: () => {},
     setLibrary: (v) => {
       if (v > version && v > pending) pending = v;
     },
@@ -182,8 +184,7 @@ async function settleRun(seed: number, finalDelayMs: number, visitWorkers = 0) {
     height: 1,
     fov: Uint8Array.of(1, 1),
     noise: Float32Array.of(1, 1),
-    cellDiameterPx: 10,
-    flattenSigmaPx: 0,
+    params: DEFAULT_PARAMS,
     budget: 1,
     ...(visitWorkers > 0 ? { settleVisitRate: 0.4 } : {}),
     lookback: true,

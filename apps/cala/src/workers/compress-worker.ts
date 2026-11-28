@@ -9,6 +9,7 @@
  * A recording's GPU run (the default) compresses its windows on the GPU (`openGpuCompressor`).
  */
 /// <reference types="@webgpu/types" />
+import { paramsHandle } from '../lib/params-handle.ts';
 import {
   FactorExtractor,
   FactorWindow,
@@ -132,12 +133,11 @@ workerScope.onmessage = (e) => {
     layout: tileLayout,
     header: factorHeader,
     create: (quant) => new TileCompressor(quant),
-    engine: (bytes, signed) => {
+    engine: (bytes, signed, params) => {
       const lib = TraceLibrary.fromBytes(bytes);
       try {
-        // 0, 0: the solver's default tolerance and sweep cap. The engine
-        // holds its own reference to the library.
-        const engine = new TraceEngine(lib, 0, 0);
+        // The engine holds its own reference to the library.
+        const engine = new TraceEngine(lib, paramsHandle(params));
         if (signed) engine.setSigned(true);
         const ids = lib.ids();
         return {
@@ -156,8 +156,8 @@ workerScope.onmessage = (e) => {
     toFast: { postMessage: (m) => fastPort.postMessage(m) },
     pool: tilePool,
     windows,
-    extractor: (bytes, signed) => {
-      const x = new FactorExtractor(bytes, 0, 0);
+    extractor: (bytes, signed, params) => {
+      const x = new FactorExtractor(bytes, paramsHandle(params));
       if (signed) x.setSigned(true);
       return x;
     },

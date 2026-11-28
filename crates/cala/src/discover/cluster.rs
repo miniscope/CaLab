@@ -20,6 +20,12 @@
 //! footprints jointly per pixel on those traces: one alternation of batch
 //! NMF on the stored window, in bounded memory (K f32 per member per frame,
 //! `stats_half_life_frames` fitting frames).
+//!
+//! The per-frame push keeps `Σ w r̃` and `Σ w r̃ ĉᵀ` in mean-field form
+//! ([`Pending`]): per pixel it reads only the loop's residual `y − model`;
+//! the level and own-signal parts are scalars, folded in when a member's
+//! column changes. Same estimator, different rounding
+//! (`tools/cala-eval/results/2026-11-28-mean-field-clusters.md`).
 
 use std::collections::HashMap;
 
@@ -275,9 +281,14 @@ pub(crate) struct ClusterStore {
     rank: usize,
     /// The stored frames' coordinates in the basis (see [`ClusterHistory`]).
     hist: RingHistory,
-    /// Cache of `pix` as contiguous row runs (empty until
-    /// [`ClusterStore::push_frame`] first needs it).
+    /// Cache of `pix` as contiguous row runs (empty until a push first
+    /// needs it), and the bit mask of the members that own a pixel.
     runs: Vec<(u32, u32)>,
+    owned: u8,
+    /// The part of `cy` and `sr` not yet folded in ([`Pending`]).
+    pend: Pending,
+    /// The basis applied to the residual pieces ([`Proj`]).
+    proj: Proj,
     /// Frames pushed.
     pub k: u64,
     /// The store's own last joint estimate, whitened (pixel-major `n x K`),
@@ -291,6 +302,63 @@ pub(crate) struct ClusterStore {
     /// On a runner: the visited tile owns this cluster (a visit may change
     /// its flag and store), so the result reports it.
     touched: bool,
+}
+
+/// The sums of the mean-field push (`ClusterStore::push_mean`) not yet
+/// folded into `cy` and `sr`. With `d = y − model`, the ring level `lv` and
+/// the members' columns `a` (unchanged since the last fold), the whitened
+/// residual is `r̃ = is·(d − lv_owner + Σ_l a_l c_l)`, so
+///
+/// ```text
+/// Σ w r̃      = is·(Σ w d     − Σ w lv_owner     + Σ_l a_l Σ w c_l)
+/// Σ w c_k r̃  = is·(Σ w c_k d − Σ w c_k lv_owner + Σ_l a_l Σ w c_k c_l)
+/// ```
+///
+/// Per frame only the `d` sums are per pixel (`cy`'s only for members with a
+/// non-zero trace); the rest are `K` and `K x K` scalars. The own-signal
+/// scalars are kept per column `l` (`Σ w c_l`, `Σ w c_k c_l` since member
+/// `l`'s column last changed) and folded when it changes
+/// ([`ClusterStore::set_col`]); everything is folded when the store moves
+/// ([`ClusterStore::fold`]) and read through [`ClusterStore::folded`]. Same
+/// terms as the plain push, summed in a different order.
+#[derive(Debug, Clone, Default)]
+struct Pending {
+    /// `Σ w d` per pixel, and `Σ w c_k d` (member-major).
+    srx: Vec<f32>,
+    cyx: Vec<f32>,
+    /// `Σ w lv_l`, `Σ w c_k lv_l` (`[k·K + l]`), `Σ w c_l`, `Σ w c_k c_l`.
+    lv: Vec<f64>,
+    clv: Vec<f64>,
+    sc: Vec<f64>,
+    scc: Vec<f64>,
+    /// Whether any push is pending.
+    any: bool,
+}
+
+impl Pending {
+    fn new(n: usize, kk: usize) -> Pending {
+        Pending {
+            srx: vec![0.0; n],
+            cyx: vec![0.0; n * kk],
+            lv: vec![0.0; kk],
+            clv: vec![0.0; kk * kk],
+            sc: vec![0.0; kk],
+            scc: vec![0.0; kk * kk],
+            any: false,
+        }
+    }
+}
+
+/// The basis applied to the pieces of `r̃` ([`Pending`]): `v_j = Σ uis_j d −
+/// Σ_l lv_l own[j][l] + Σ_k c_k col[j][k]`, with `uis_j = u_j·is` per pixel,
+/// `own[j][l] = Σ_{owner = l} uis_j` and `col[j][k] = Σ uis_j a_k`. Stale
+/// (`ok` false) after a new basis or new columns.
+#[derive(Debug, Clone, Default)]
+struct Proj {
+    uis: Vec<f32>,
+    own: Vec<f64>,
+    col: Vec<f64>,
+    ok: bool,
 }
 
 /// Per pixel of `pix`: the member whose ring level is subtracted there (the
@@ -378,6 +446,9 @@ impl ClusterStore {
             rank: 0,
             hist: RingHistory::new(cap, kk),
             runs: Vec::new(),
+            owned: 0,
+            pend: Pending::new(n, kk),
+            proj: Proj::default(),
             k: 0,
             est: None,
             visited: false,
@@ -399,6 +470,7 @@ impl ClusterStore {
             .collect();
         self.u = u;
         self.rank = rank;
+        self.proj.ok = false;
     }
 
     /// Stored frames.
@@ -406,10 +478,17 @@ impl ClusterStore {
         self.hist.stored()
     }
 
+    /// The basis rank (benchmark access).
+    #[cfg(feature = "timing")]
+    pub fn rank(&self) -> usize {
+        self.rank
+    }
+
     /// Bytes held (for the memory report).
     pub fn bytes(&self) -> usize {
         self.hist.bytes()
             + (self.cy.len() + self.sr.len() + self.ut.len()) * 4
+            + (self.pend.srx.len() + self.pend.cyx.len() + self.proj.uis.len()) * 4
             + self.u.len() * 8
             + self.cols.len() * 4
             + self.pix.len() * 10
@@ -443,11 +522,234 @@ impl ClusterStore {
         self.sc.iter_mut().for_each(|v| *v *= f);
         self.scc.iter_mut().for_each(|v| *v *= f);
         self.sw *= f;
+        let p = &mut self.pend;
+        p.srx.iter_mut().for_each(|v| *v *= f32_);
+        p.cyx.iter_mut().for_each(|v| *v *= f32_);
+        for v in [&mut p.lv, &mut p.clv, &mut p.sc, &mut p.scc] {
+            v.iter_mut().for_each(|x| *x *= f);
+        }
+    }
+
+    /// `cy` and `sr` with the pending sums folded in (see [`Pending`]).
+    fn folded(&self) -> (std::borrow::Cow<'_, [f32]>, std::borrow::Cow<'_, [f32]>) {
+        use std::borrow::Cow;
+        if !self.pend.any {
+            return (Cow::Borrowed(&self.cy), Cow::Borrowed(&self.sr));
+        }
+        let (mut cy, mut sr) = (self.cy.clone(), self.sr.clone());
+        self.fold_into(&mut cy, &mut sr);
+        (Cow::Owned(cy), Cow::Owned(sr))
+    }
+
+    /// Add the pending sums to `cy` and `sr` (this store's layout), under the
+    /// current columns.
+    fn fold_into(&self, cy: &mut [f32], sr: &mut [f32]) {
+        let (n, kk) = (self.pix.len(), self.ids.len());
+        let p = &self.pend;
+        let mut a = vec![0.0f64; kk];
+        for i in 0..n {
+            for (l, al) in a.iter_mut().enumerate() {
+                *al = f64::from(self.cols[l * n + i]);
+            }
+            let (is, o) = (f64::from(self.is[i]), self.owner[i] as usize);
+            let own: f64 = (0..kk).map(|l| a[l] * p.sc[l]).sum();
+            sr[i] = (f64::from(sr[i]) + is * (f64::from(p.srx[i]) - p.lv[o] + own)) as f32;
+            for k in 0..kk {
+                let own: f64 = (0..kk).map(|l| a[l] * p.scc[k * kk + l]).sum();
+                let x = f64::from(p.cyx[k * n + i]) - p.clv[k * kk + o] + own;
+                cy[k * n + i] = (f64::from(cy[k * n + i]) + is * x) as f32;
+            }
+        }
+    }
+
+    /// Fold the pending sums into `cy` and `sr` (see [`Pending`]).
+    fn fold(&mut self) {
+        if !self.pend.any {
+            return;
+        }
+        let (mut cy, mut sr) = (std::mem::take(&mut self.cy), std::mem::take(&mut self.sr));
+        self.fold_into(&mut cy, &mut sr);
+        (self.cy, self.sr) = (cy, sr);
+        self.pend = Pending::new(self.pix.len(), self.ids.len());
+    }
+
+    /// A new column of member `l` on `pix` (a library version that changed
+    /// it): the pending own-signal sums of the old column are folded into
+    /// `cy` and `sr` first. The `d` and level sums do not depend on the
+    /// columns and stay pending.
+    pub fn set_col(&mut self, l: usize, col: &[f32]) {
+        let (n, kk) = (self.pix.len(), self.ids.len());
+        let p = &mut self.pend;
+        if p.sc[l] != 0.0 || (0..kk).any(|k| p.scc[k * kk + l] != 0.0) {
+            let wl: Vec<f32> = self.cols[l * n..(l + 1) * n]
+                .iter()
+                .zip(&self.is)
+                .map(|(&a, &is)| a * is)
+                .collect();
+            let x = p.sc[l] as f32;
+            for (s, &a) in self.sr.iter_mut().zip(&wl) {
+                *s += x * a;
+            }
+            for k in 0..kk {
+                let x = p.scc[k * kk + l] as f32;
+                for (s, &a) in self.cy[k * n..(k + 1) * n].iter_mut().zip(&wl) {
+                    *s += x * a;
+                }
+                p.scc[k * kk + l] = 0.0;
+            }
+            p.sc[l] = 0.0;
+        }
+        self.cols[l * n..(l + 1) * n].copy_from_slice(col);
+        if self.proj.ok {
+            for j in 0..self.rank {
+                self.proj.col[j * kk + l] =
+                    f64::from(dot_lanes(&self.proj.uis[j * n..(j + 1) * n], col));
+            }
+        }
+    }
+
+    /// Build the row runs of `pix` and the owner mask when they are missing.
+    fn ensure_runs(&mut self) {
+        if self.runs.is_empty() && !self.pix.is_empty() {
+            self.runs = super::fpstats::pixel_runs(&self.pix);
+            self.owned = self.owner.iter().fold(0u8, |m, &o| m | (1 << o));
+        }
+    }
+
+    /// Recompute [`Proj`] for the current basis and columns.
+    fn refresh_proj(&mut self) {
+        let (n, kk, r) = (self.pix.len(), self.ids.len(), self.rank);
+        let mut uis = vec![0.0f32; r * n];
+        let mut own = vec![0.0f64; r * kk];
+        let mut col = vec![0.0f64; r * kk];
+        for i in 0..n {
+            let (is, o) = (f64::from(self.is[i]), self.owner[i] as usize);
+            for j in 0..r {
+                let x = self.u[i * r + j] * is;
+                uis[j * n + i] = x as f32;
+                own[j * kk + o] += x;
+            }
+        }
+        for j in 0..r {
+            for k in 0..kk {
+                col[j * kk + k] = f64::from(dot_lanes(
+                    &uis[j * n..(j + 1) * n],
+                    &self.cols[k * n..(k + 1) * n],
+                ));
+            }
+        }
+        self.proj = Proj {
+            uis,
+            own,
+            col,
+            ok: true,
+        };
+    }
+
+    /// The slow loop's push of one fitting frame in mean-field form: the
+    /// same statistics as [`ClusterStore::push_frame`] (to rounding), from
+    /// the frame's residual `d = y − model` (`resid`), the members' ring
+    /// levels `lv` (`None` without a ring background) and traces `c`. Per
+    /// pixel it only reads `d` (see [`Pending`] and [`Proj`]). `false`
+    /// (nothing pushed) when a sample of `d` on the store, an owning
+    /// member's level or a trace is not finite. `buf` is scratch.
+    pub fn push_mean(
+        &mut self,
+        resid: &super::fpstats::Residual,
+        lv: Option<&[f32]>,
+        c: &[f32],
+        w: f64,
+        buf: &mut Vec<f32>,
+    ) -> bool {
+        let (n, kk) = (self.pix.len(), self.ids.len());
+        self.ensure_runs();
+        if !c.iter().all(|v| v.is_finite())
+            || lv.is_some_and(|lv| {
+                lv.iter()
+                    .enumerate()
+                    .any(|(l, v)| self.owned & (1 << l) != 0 && !v.is_finite())
+            })
+            || resid.missing_in(&self.runs)
+        {
+            return false;
+        }
+        if !self.proj.ok {
+            self.refresh_proj();
+        }
+        self.sw += w;
+        let p = &mut self.pend;
+        p.any = true;
+        for k in 0..kk {
+            let ck = f64::from(c[k]);
+            self.sc[k] += w * ck;
+            p.sc[k] += w * ck;
+            for l in 0..kk {
+                let x = w * ck * f64::from(c[l]);
+                self.scc[k * kk + l] += x;
+                p.scc[k * kk + l] += x;
+            }
+        }
+        let owned = self.owned;
+        let owns = |l: usize| owned & (1 << l) != 0;
+        if let Some(lv) = lv {
+            for l in (0..kk).filter(|&l| owns(l)) {
+                let x = f64::from(lv[l]);
+                p.lv[l] += w * x;
+                for k in 0..kk {
+                    p.clv[k * kk + l] += w * f64::from(c[k]) * x;
+                }
+            }
+        }
+        // `d` on the store's pixels (packed), and `Σ w d` with it.
+        if buf.len() < n {
+            buf.resize(n, 0.0);
+        }
+        let buf = &mut buf[..n];
+        let wf = w as f32;
+        let mut i = 0;
+        for &(s, len) in &self.runs {
+            let (s, len) = (s as usize, len as usize);
+            let d = &resid.d[s..s + len];
+            buf[i..i + len].copy_from_slice(d);
+            for (a, &x) in p.srx[i..i + len].iter_mut().zip(d) {
+                *a += wf * x;
+            }
+            i += len;
+        }
+        assert_eq!(i, n, "runs cover the pixels");
+        for k in 0..kk {
+            let a = wf * c[k];
+            if a != 0.0 {
+                for (s, &x) in p.cyx[k * n..(k + 1) * n].iter_mut().zip(buf.iter()) {
+                    *s += a * x;
+                }
+            }
+        }
+        let pj = &self.proj;
+        let v: Vec<f32> = (0..self.rank)
+            .map(|j| {
+                let mut x = f64::from(dot_lanes(&pj.uis[j * n..(j + 1) * n], buf));
+                if let Some(lv) = lv {
+                    for l in (0..kk).filter(|&l| owns(l)) {
+                        x -= f64::from(lv[l]) * pj.own[j * kk + l];
+                    }
+                }
+                for k in 0..kk {
+                    x += f64::from(c[k]) * pj.col[j * kk + k];
+                }
+                x as f32
+            })
+            .collect();
+        self.hist
+            .append(&v, self.k, (self.k / 256).is_multiple_of(2));
+        self.k += 1;
+        true
     }
 
     /// Add one fitting frame: `r` the whitened cluster residual on `pix`
     /// (finite), `c` the members' fast-loop traces, `w` the forgetting
     /// weight of the running statistics.
+    #[cfg(any(test, feature = "timing"))]
     pub fn push(&mut self, r: &[f32], c: &[f32], w: f64) {
         let (n, kk) = (self.pix.len(), self.ids.len());
         debug_assert_eq!(r.len(), n);
@@ -480,10 +782,12 @@ impl ClusterStore {
         self.k += 1;
     }
 
-    /// Test access: the running sums `cy`, `sr` and the stored coordinates.
-    #[cfg(test)]
-    pub fn sums(&self) -> (&[f32], &[f32], &[f32]) {
-        (&self.cy, &self.sr, &self.hist.v)
+    /// Test and benchmark access: the running sums `cy`, `sr` (folded) and
+    /// the stored coordinates.
+    #[cfg(any(test, feature = "timing"))]
+    pub fn sums(&self) -> (Vec<f32>, Vec<f32>, &[f32]) {
+        let (cy, sr) = self.folded();
+        (cy.into_owned(), sr.into_owned(), &self.hist.v)
     }
 
     /// The slow loop's push of one fitting frame: the whitened cluster
@@ -492,7 +796,9 @@ impl ClusterStore {
     /// `c` the members' traces. Element by element the same arithmetic as
     /// building `r̃` and calling [`ClusterStore::push`], read in contiguous
     /// row runs. `false` (nothing pushed) when `r̃` or `c` is not finite.
-    /// `buf` is scratch.
+    /// `buf` is scratch. The reference [`ClusterStore::push_mean`] is
+    /// checked and benchmarked against.
+    #[cfg(any(test, feature = "timing"))]
     pub fn push_frame(
         &mut self,
         frame: &[f32],
@@ -503,9 +809,7 @@ impl ClusterStore {
         buf: &mut Vec<f32>,
     ) -> bool {
         let n = self.pix.len();
-        if self.runs.is_empty() && n > 0 {
-            self.runs = super::fpstats::pixel_runs(&self.pix);
-        }
+        self.ensure_runs();
         // Scratch of at least `n` (grown only: no fill per call).
         if buf.len() < n {
             buf.resize(n, 0.0);
@@ -576,6 +880,7 @@ impl ClusterStore {
     fn cy_basis(&self) -> (Vec<f64>, usize) {
         let (n, kk) = (self.pix.len(), self.ids.len());
         let a = self.white_cols();
+        let (cy, sr) = self.folded();
         let mut b = vec![0.0f64; n * kk];
         for k in 0..kk {
             let var = if self.sw > 0.0 {
@@ -586,7 +891,7 @@ impl ClusterStore {
             let use_cy = var > 0.0;
             for i in 0..n {
                 b[i * kk + k] = if use_cy {
-                    f64::from(self.cy[k * n + i]) - f64::from(self.sr[i]) * self.sc[k] / self.sw
+                    f64::from(cy[k * n + i]) - f64::from(sr[i]) * self.sc[k] / self.sw
                 } else {
                     a[i * kk + k]
                 };
@@ -620,6 +925,7 @@ impl ClusterStore {
         if n1 == 0 || r0 == 0 {
             return false;
         }
+        self.fold();
         // Least-squares traces of a stored frame: c = P v, P = (BᵀB)⁻¹ Bᵀ,
         // B = Uᵀ A (A the current whitened columns).
         let a0 = self.white_cols();
@@ -699,6 +1005,7 @@ impl ClusterStore {
         self.cols = cols;
         self.cy = cy;
         self.sr = sr;
+        self.pend = Pending::new(n1, kk);
         self.est = est;
         // The basis on the new pixels, and every stored frame in it:
         // v' = U'ᵀ Rc v.
@@ -1095,9 +1402,18 @@ impl SlowLoop {
             }
             let st = &mut self.clusters[ci];
             if st.version != version {
-                st.cols.clear();
+                let mut cols = Vec::with_capacity(st.cols.len());
                 for &s in &slots {
-                    st.cols.extend(column_on(lib, s, &st.pix));
+                    cols.extend(column_on(lib, s, &st.pix));
+                }
+                // Only a member whose column changed folds (another cell's
+                // change, or a look-back frame's library, folds nothing).
+                let n = st.pix.len();
+                for k in 0..slots.len() {
+                    let new = &cols[k * n..(k + 1) * n];
+                    if new != &st.cols[k * n..(k + 1) * n] {
+                        st.set_col(k, new);
+                    }
                 }
                 st.version = version;
             }
@@ -1105,14 +1421,26 @@ impl SlowLoop {
             let lv: Option<Vec<f32>> =
                 ring.then(|| slots.iter().map(|&s| traces.background[s]).collect());
             let n = st.pix.len();
-            if !st.push_frame(
-                frame,
-                &self.model,
-                lv.as_deref(),
-                &c,
-                f64::from(w),
-                &mut cbuf,
-            ) {
+            #[cfg(test)]
+            let pushed = if self.stats_plain {
+                st.push_frame(
+                    frame,
+                    &self.model,
+                    lv.as_deref(),
+                    &c,
+                    f64::from(w),
+                    &mut cbuf,
+                )
+            } else {
+                st.push_mean(&self.resid, lv.as_deref(), &c, f64::from(w), &mut cbuf)
+            };
+            // `frame` is read only by the tests' plain reference push.
+            #[cfg(not(test))]
+            let pushed = {
+                let _ = frame;
+                st.push_mean(&self.resid, lv.as_deref(), &c, f64::from(w), &mut cbuf)
+            };
+            if !pushed {
                 self.replay_stats.skipped_frames += 1;
                 continue;
             }
@@ -1968,6 +2296,9 @@ impl ClusterStore {
             rank: 0,
             hist: RingHistory::new(1, kk),
             runs: Vec::new(),
+            owned: 0,
+            pend: Pending::new(0, kk),
+            proj: Proj::default(),
             k: 0,
             est: None,
             visited: false,
@@ -2051,8 +2382,9 @@ impl ClusterStore {
         self.cover.iter().for_each(|&b| w.u8(b));
         w.u64(self.version);
         w.f32s(&self.cols);
-        w.f32s(&self.cy);
-        w.f32s(&self.sr);
+        let (cy, sr) = self.folded();
+        w.f32s(&cy);
+        w.f32s(&sr);
         w.f64s(&self.sc);
         w.f64s(&self.scc);
         w.f64(self.sw);
@@ -2134,6 +2466,9 @@ impl ClusterStore {
             rank: 0,
             hist,
             runs: Vec::new(),
+            owned: 0,
+            pend: Pending::new(n, kk),
+            proj: Proj::default(),
             k,
             est,
             visited: false,
@@ -2999,6 +3334,7 @@ mod push_frame_tests {
     fn state(st: &ClusterStore) -> String {
         let mut s = st.clone();
         s.runs.clear();
+        s.owned = 0;
         format!("{s:?}")
     }
 
@@ -3078,6 +3414,139 @@ mod push_frame_tests {
                 assert_eq!(state(&a), state(&b), "ring {ring} t {t}");
             }
             assert!(a.k > 590);
+        }
+    }
+
+    /// Largest `|x − y|` relative to the largest `|x|`.
+    fn rel(x: &[f32], y: &[f32]) -> f64 {
+        assert_eq!(x.len(), y.len());
+        let top = x.iter().fold(0.0f64, |m, v| m.max(f64::from(v.abs())));
+        let d = x
+            .iter()
+            .zip(y)
+            .fold(0.0f64, |m, (a, b)| m.max(f64::from((a - b).abs())));
+        d / top.max(1e-12)
+    }
+
+    /// The mean-field push keeps the plain push's statistics to rounding:
+    /// `cy`, `sr`, the stored coordinates and a replay's output, through
+    /// new columns, unchanged columns, rescales, a moved store, zero and NaN
+    /// traces, a non-finite ring level and missing samples (skipped
+    /// frames), with and without ring levels. A store with pending sums
+    /// round-trips through the job encoding exactly.
+    #[test]
+    fn push_mean_matches_the_plain_push() {
+        let (wd, ht) = (48usize, 40usize);
+        let mut fov = vec![1u8; wd * ht];
+        fov[18 * wd + 20] = 0;
+        let disks = vec![
+            ((18.0, 18.0), 8.0),
+            ((20.0, 25.0), 8.0),
+            ((24.0, 20.0), 7.0),
+        ];
+        for ring in [false, true] {
+            let (pix, is, cols) = geometry(&disks, wd, ht, &fov, 1);
+            let mut a = ClusterStore::new(vec![1, 2, 3], disks.clone(), pix, is, wd, 1, cols, 300);
+            // Member 2 owns no pixel until the store moves: its level is
+            // never read (a NaN one at frame 150 is not a skipped frame).
+            a.owner.iter_mut().for_each(|o| *o = (*o).min(1));
+            let mut b = a.clone();
+            let (mut buf, mut res) = (Vec::new(), crate::discover::fpstats::Residual::default());
+            let mut skipped = 0;
+            for t in 0..900u64 {
+                let mut frame: Vec<f32> = (0..wd * ht)
+                    .map(|i| 3.0 * u(t * 9000 + i as u64) + 4.0)
+                    .collect();
+                let model: Vec<f32> = (0..wd * ht)
+                    .map(|i| u(t * 9000 + i as u64 + 55) + 4.0)
+                    .collect();
+                if t == 200 {
+                    frame[20 * wd + 22] = f32::NAN;
+                }
+                let mut c: Vec<f32> = (0..3).map(|k| 2.0 * u(t * 3 + k) + 0.6).collect();
+                if t % 5 == 0 {
+                    c[1] = 0.0;
+                }
+                if t % 3 == 0 {
+                    c[0] = 0.0;
+                }
+                if t == 77 {
+                    c[2] = f32::NAN;
+                }
+                let mut lv: Vec<f32> = (0..3)
+                    .map(|k| if ring { 0.3 * u(t * 11 + k) } else { 0.0 })
+                    .collect();
+                if ring && t == 123 {
+                    lv[0] = f32::NAN;
+                }
+                if ring && t == 150 {
+                    lv[2] = f32::NAN;
+                }
+                if t % 50 == 25 {
+                    // New columns (a version that changed them); every
+                    // other time the same columns again.
+                    let n = a.pix.len();
+                    let cols: Vec<f32> = if t % 100 == 25 {
+                        (0..3 * n).map(|i| u(t * 31 + i as u64).max(0.0)).collect()
+                    } else {
+                        a.cols.clone()
+                    };
+                    a.cols = cols.clone();
+                    for k in 0..3 {
+                        let new = &cols[k * n..(k + 1) * n];
+                        if new != &b.cols[k * n..(k + 1) * n] {
+                            b.set_col(k, new);
+                        }
+                    }
+                }
+                if t == 333 {
+                    a.scale(0.5);
+                    b.scale(0.5);
+                }
+                if t == 400 {
+                    let moved = vec![
+                        ((19.0, 18.0), 9.0),
+                        ((20.0, 26.0), 8.0),
+                        ((24.0, 20.0), 7.0),
+                    ];
+                    let (pix, is, cols) = geometry(&moved, wd, ht, &fov, 2);
+                    let ok_a =
+                        a.move_to(moved.clone(), pix.clone(), is.clone(), wd, 1, cols.clone());
+                    let ok_b = b.move_to(moved, pix, is, wd, 1, cols);
+                    assert!(ok_a && ok_b);
+                }
+                let w = 1.0 + t as f64 * 1e-3;
+                let lvo = ring.then_some(&lv[..]);
+                let ra = a.push_frame(&frame, &model, lvo, &c, w, &mut buf);
+                res.fill(&frame, &model);
+                let rb = b.push_mean(&res, lvo, &c, w, &mut buf);
+                assert_eq!(ra, rb, "ring {ring} t {t}");
+                skipped += usize::from(!ra);
+                if t % 100 == 99 || t == 399 {
+                    let ((cya, sra, va), (cyb, srb, vb)) = (a.sums(), b.sums());
+                    assert!(rel(&cya, &cyb) < 1e-5, "cy ring {ring} t {t}");
+                    assert!(rel(&sra, &srb) < 1e-5, "sr ring {ring} t {t}");
+                    assert!(rel(va, vb) < 1e-5, "v ring {ring} t {t}");
+                    assert_eq!(a.k, b.k);
+                    assert!((a.sw - b.sw).abs() <= 1e-12 * a.sw);
+                }
+            }
+            assert_eq!(skipped, if ring { 3 } else { 2 });
+            assert!(b.pend.any);
+            // Replays agree to rounding, and the pending store round-trips.
+            let mut wr = Writer::default();
+            b.encode(&mut wr);
+            let mut back = ClusterStore::decode(&mut Reader::new(&wr.buf)).expect("decode");
+            let (mut a2, mut b2) = (a.clone(), b.clone());
+            let ra = a2.replay(0.99, JointSign::All, 1, true, 0.0).expect("a");
+            let rb = b2.replay(0.99, JointSign::All, 1, true, 0.0).expect("b");
+            let rc = back.replay(0.99, JointSign::All, 1, true, 0.0).expect("c");
+            for k in 0..3 {
+                assert!(rel(&ra.h[k], &rb.h[k]) < 1e-4, "h ring {ring} k {k}");
+                assert_eq!(rb.h[k], rc.h[k]);
+                assert_eq!((&rb.ha[k], &rb.hb[k]), (&rc.ha[k], &rc.hb[k]));
+            }
+            assert_eq!((rb.se, rb.sa, rb.sb), (rc.se, rc.sa, rc.sb));
         }
     }
 }

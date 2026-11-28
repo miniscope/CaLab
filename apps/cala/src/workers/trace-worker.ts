@@ -65,7 +65,7 @@ async function handle(msg: StageMsg): Promise<void> {
         traceBackend,
         cells?.compress && compressPort
           ? new CompressFeed(
-              compressFeedOptions(cells, msg.fast.width, msg.fast.height),
+              compressFeedOptions(cells, msg.fast),
               compressPort as { postMessage(m: FastToCompress, t?: Transferable[]): void },
             )
           : null,

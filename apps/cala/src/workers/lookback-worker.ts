@@ -15,6 +15,7 @@ import { FactorReader } from '../lib/factor-reader.ts';
 import { FactorWindow, TraceEngine, TraceLibrary } from '../lib/cala-wasm.ts';
 import { LookbackReader } from '../lib/lookback-reader.ts';
 import { LookbackService } from '../lib/lookback-service.ts';
+import { paramsHandle } from '../lib/params-handle.ts';
 import { LOOKBACK } from '../lib/slow-runner.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import { factorFiles } from '../lib/window-store.ts';
@@ -40,6 +41,8 @@ const workerScope = globalThis as unknown as {
 const BUFFERS = { pool: 2, worker0: 3 };
 
 let slow: MessagePort | null = null;
+/** The run's resolved params (`MainToLookback` `params`); the factor servers' solvers use them. */
+let runParams: string | null = null;
 
 /** A frame server on a run's factors (it reads only the windows the compress status listed). */
 function factorServer(f: FactorSource['factors']): FactorReader {
@@ -48,8 +51,8 @@ function factorServer(f: FactorSource['factors']): FactorReader {
     solver: (bytes) => {
       const lib = TraceLibrary.fromBytes(bytes);
       try {
-        // 0, 0: the solver's default tolerance and sweep cap (as the fast loop's engine).
-        const engine = new TraceEngine(lib, 0, 0);
+        if (runParams === null) throw new Error("look-back: the run's params have not arrived.");
+        const engine = new TraceEngine(lib, paramsHandle(runParams));
         return {
           cells: lib.ids().length,
           processFrames: (y, n) => engine.processFrames(y, n),
@@ -85,6 +88,9 @@ const service = new LookbackService({
     return { server: reader, reader, pool, dispose: () => src.dispose() };
   },
   factorServer,
+  params(p) {
+    runParams = p;
+  },
   postSlow(msg: LookbackToSlow, transfer: Transferable[]) {
     // When the answer left (epoch ms): the slow worker's `?debug` relay timing reads it.
     if (msg.type === 'frames') msg.postedAt = performance.timeOrigin + performance.now();

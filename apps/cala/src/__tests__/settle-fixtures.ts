@@ -15,6 +15,7 @@ import type { LookbackToSlow, SettleStatus, SlowToLookback } from '../workers/lo
 import type { FastToSlow, OwnerToVisit, SlowToMain } from '../workers/slow-types.ts';
 import { lcg } from './blob-movie.ts';
 import { fakeLib, stubSlowLoop } from './slow-fixtures.ts';
+import { DEFAULT_PARAMS } from './params-fixtures.ts';
 
 /** A port: in order, each message a random 0..`maxMs` ms after the one before is delivered. */
 export function port<T>(deliver: (m: T) => void, rand: () => number, maxMs: number) {
@@ -200,8 +201,7 @@ export async function settleRun(sch: Schedule) {
     height: 1,
     fov: Uint8Array.of(1, 1),
     noise: Float32Array.of(1, 1),
-    cellDiameterPx: 10,
-    flattenSigmaPx: 0,
+    params: DEFAULT_PARAMS,
     budget: 1,
     lookback: true,
     ...(sch.pool ? { factorFile: true } : {}),

@@ -1,0 +1,18 @@
+// An example cala config file (Load config... in the Run tab's pre-run sheet).
+// Only the values you list are set; every other setting keeps its default.
+// Comments like these are allowed when the file is read; Save config writes plain JSON.
+{
+  "format": "calab-config",
+  "version": 1,
+  "app": "cala",
+  "params_version": 1,
+  "note": "Example optics, not a specific microscope: use your sensor and lens.",
+  "params": {
+    // 4 µm sensor pixels, 2x magnification, no binning: 2 µm per frame pixel.
+    "optics": { "sensor_pixel_um": 4.0, "magnification": 2.0, "binning": 1 },
+    // The largest cells you expect, at the sample: 32 µm = 16 px here.
+    "scales": { "expected_cell_diameter_um": 32 },
+    // An Advanced setting: the registration template's running average, seconds.
+    "motion": { "template_tau_s": 30 }
+  }
+}

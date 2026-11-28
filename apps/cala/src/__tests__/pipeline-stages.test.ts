@@ -14,6 +14,7 @@ import { StagePool } from '../lib/stage-pool.ts';
 import type { FastToSlow } from '../workers/slow-types.ts';
 import { blobMovie } from './blob-movie.ts';
 import { initTestWasm } from './wasm-test.ts';
+import type { Flicker } from '../params/cala-params.d.ts';
 
 beforeAll(initTestWasm);
 
@@ -296,12 +297,12 @@ describe('pipeline stages', () => {
     // A 4 % LED gain flicker at 4 Hz (5 frames per period at 20 fps).
     const m = (f: number) => 0.04 * Math.sin((2 * Math.PI * f) / 5);
     const shifts: [number, number][] = Array.from({ length: 80 }, () => [0, 0]);
-    const run = async (flickerMode?: number) => {
+    const run = async (flicker?: Flicker) => {
       const chain = new StageChain(
         shiftedMovie(shifts, (f) => 1 + m(f)),
-        SHIFTED_OPTIONS,
         {
-          ...(flickerMode !== undefined ? { flickerMode } : {}),
+          ...SHIFTED_OPTIONS,
+          ...(flicker !== undefined ? { paramsLayer: { preprocess: { flicker } } } : {}),
         },
       );
       const batches = (await runAll(chain)).filter((r) => r.kind === 'batch');
@@ -313,7 +314,7 @@ describe('pipeline stages', () => {
     };
     // Gain only (2): the estimate follows the injected gain. It is relative to
     // the running mean of the frames, which the zero-mean flicker barely moves.
-    const mult = await run(2);
+    const mult = await run('multiplicative');
     expect(mult.gain).toHaveLength(80);
     for (let f = 20; f < 80; f++) expect(mult.gain[f]).toBeCloseTo(m(f), 2);
     expect(mult.offset.every((a) => a === 0)).toBe(true);
@@ -325,7 +326,7 @@ describe('pipeline stages', () => {
       expect(both.offset[f] + 120 * both.gain[f]).toBeCloseTo(120 * m(f), -0.5);
     }
     // Off (0): nothing is reported.
-    const off = await run(0);
+    const off = await run('off');
     expect(off.gain.every((g) => g === 0) && off.offset.every((a) => a === 0)).toBe(true);
     // Three runs: slow under coverage instrumentation in CI.
   }, 30_000);

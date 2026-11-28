@@ -6,9 +6,9 @@ import type { FlatFieldCache, FlatFieldRecord } from '../lib/flat-field-cache.ts
 import { FLAT_FIELD_SOLVER_VERSION } from '../lib/flat-field-cache.ts';
 import type { PipelineClient } from '../lib/frame-client.ts';
 import type { PipelineStepResult } from '../lib/pipeline-types.ts';
-import { makePlan } from '../lib/pipeline-plan.ts';
 import { createPipelineStore } from '../lib/pipeline-store.ts';
 import { stepBatch } from './step-fixtures.ts';
+import { testPlan } from './params-fixtures.ts';
 
 const W = 4;
 const H = 3;
@@ -54,7 +54,7 @@ function batchStep(
 /** A pipelined-looking client: flat-field events are pushed by the test. */
 function fakeClient(steps: PipelineStepResult[]) {
   let listener: ((e: FlatFieldEvent) => void) | null = null;
-  const startPipeline = vi.fn(async () => makePlan(100));
+  const startPipeline = vi.fn(async () => testPlan(100));
   let i = 0;
   const client: PipelineClient = {
     startPipeline: startPipeline as unknown as PipelineClient['startPipeline'],
@@ -107,9 +107,15 @@ describe('flat field in the pipeline store', () => {
       expect(args[3]).toBeUndefined();
       expect(flatFieldStatusLine(store.flatField())).toBe('estimating (0 / 150 s of frames)');
 
-      emit({ type: 'progress', session: sid(startPipeline), frames: 400, fps: 20 });
+      emit({
+        type: 'progress',
+        session: sid(startPipeline),
+        frames: 400,
+        fps: 20,
+        firstFrames: 3000,
+      });
       // An event of another session is ignored.
-      emit({ type: 'progress', session: 99, frames: 1, fps: 20 });
+      emit({ type: 'progress', session: 99, frames: 1, fps: 20, firstFrames: 3000 });
       expect(flatFieldStatusLine(store.flatField())).toBe('estimating (20 / 150 s of frames)');
       emit({
         type: 'map',
@@ -357,7 +363,7 @@ describe('flat field in the pipeline store', () => {
 
   it('works without a cache or an estimator (a client without a flat-field worker)', async () => {
     const client: PipelineClient = {
-      startPipeline: async () => makePlan(100),
+      startPipeline: async () => testPlan(100),
       stepPipeline: async () => ({ kind: 'done' }),
       stopPipeline: async () => {},
     };

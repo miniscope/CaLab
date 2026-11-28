@@ -20,19 +20,23 @@ import {
   finalSettleLevel,
   footprintChanges,
 } from '../lib/settle.ts';
+import { DEFAULT_RUN } from './params-fixtures.ts';
+
+/** The default Final settle cap, frames (`settle.final.max_s` at 20 fps). */
+const CAP = DEFAULT_RUN.engine.settle.final_max_frames;
 
 describe('settlePlan', () => {
   it('one pass over a recording up to the cap', () => {
-    expect(settlePlan(0)).toEqual([]);
-    expect(settlePlan(9600)).toEqual([{ start: 0, end: 9600 }]);
-    expect(settlePlan(SETTLE.maxFrames)).toEqual([{ start: 0, end: SETTLE.maxFrames }]);
+    expect(settlePlan(0, CAP)).toEqual([]);
+    expect(settlePlan(9600, CAP)).toEqual([{ start: 0, end: 9600 }]);
+    expect(settlePlan(CAP, CAP)).toEqual([{ start: 0, end: CAP }]);
   });
 
   it('a longer recording: whole blocks spread evenly, about the cap in total', () => {
     const total = 23_700;
-    const runs = settlePlan(total);
+    const runs = settlePlan(total, CAP);
     const n = planFrames(runs);
-    expect(Math.abs(n - SETTLE.maxFrames)).toBeLessThanOrEqual(SETTLE.block);
+    expect(Math.abs(n - CAP)).toBeLessThanOrEqual(SETTLE.block);
     // Blocks start on block boundaries, inside the recording, in order, not overlapping.
     let end = -1;
     for (const r of runs) {
@@ -47,9 +51,9 @@ describe('settlePlan', () => {
   });
 
   it('a days-long recording keeps the cap', () => {
-    const runs = settlePlan(5_000_000);
-    expect(planFrames(runs)).toBe(Math.round(SETTLE.maxFrames / SETTLE.block) * SETTLE.block);
-    expect(runs.length).toBe(Math.round(SETTLE.maxFrames / SETTLE.block));
+    const runs = settlePlan(5_000_000, CAP);
+    expect(planFrames(runs)).toBe(Math.round(CAP / SETTLE.block) * SETTLE.block);
+    expect(runs.length).toBe(Math.round(CAP / SETTLE.block));
   });
 });
 
@@ -213,7 +217,7 @@ describe('Final-settle levels', () => {
   });
 
   it('truncatePlan: a fraction of 1 returns the plan itself', () => {
-    const plan = settlePlan(23_700);
+    const plan = settlePlan(23_700, CAP);
     expect(truncatePlan(plan, 1)).toBe(plan);
     expect(truncatePlan(plan, Number.NaN)).toBe(plan);
   });
@@ -236,7 +240,7 @@ describe('Final-settle levels', () => {
   });
 
   it('truncatePlan on a real plan feeds the first 60 % of a pass', () => {
-    const feed = new SettleFeed(truncatePlan(settlePlan(9600), 0.6));
+    const feed = new SettleFeed(truncatePlan(settlePlan(9600, CAP), 0.6));
     expect(feed.total).toBe(5760);
     expect(feed.take(5)[0].frame).toBe(0);
   });

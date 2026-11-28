@@ -18,14 +18,7 @@
  * (buffers transferred, a small credit-based pool per link); the stages
  * themselves are transport-free, so Node tests chain them directly.
  */
-import {
-  MotionCorrector,
-  MotionOptions,
-  Preprocessor,
-  PreprocessConfig,
-  PreprocessWarmup,
-  SessionAligner,
-} from './cala-wasm.ts';
+import { MotionCorrector, Preprocessor, PreprocessWarmup, SessionAligner } from './cala-wasm.ts';
 import type { FastLoop } from './fast-loop.ts';
 import { type FlatFieldApplied, type FlatFieldMap, type FlatFieldSource } from './flat-field.ts';
 import type { FlatFieldSink } from './flat-field-runner.ts';
@@ -70,6 +63,8 @@ import {
 import { ImagingSampler } from './imaging-stats.ts';
 import type { RunSpan } from './run-record.ts';
 import type { FovProjector } from './fov-projection.ts';
+import { paramsHandle, resolveRunParams } from './params-handle.ts';
+import { runParams, type RunParams } from './run-params.ts';
 
 const now = (): number => performance.now();
 
@@ -192,6 +187,8 @@ export interface StageSetup {
   width: number;
   height: number;
   plan: PipelinePlan;
+  /** The run's resolved params (`ResolvedParams.toJson`): every stage's engine objects are built from them. */
+  params: string;
   /** Extract: motion shifts come with the jobs and are applied, not estimated. */
   replay?: boolean;
   /** First frames of sessions 1.. of a multi-session recording (absent or empty for one). */
@@ -201,6 +198,8 @@ export interface StageSetup {
 /** Stage A: read, calibrate, and run the preprocessing front half. */
 export class FrontStage {
   readonly plan: PipelinePlan;
+  /** The run's resolved params: resolved here once, at the start (Discover), or Discover's (Extract). */
+  readonly params: RunParams;
   /** What the fast loop in stage C is built from. */
   readonly fastSetup: FastLoopSetup;
   private readonly cursor: PipelineCursor;
@@ -238,13 +237,12 @@ export class FrontStage {
     private readonly reader: FrameReader,
     options: PipelineOptions,
     private readonly acquireFront: () => Promise<Float32Array>,
-    flickerMode?: number,
     /** Extract: replay the recorded flicker and motion over the first `replay.frameCount` frames. */
     private readonly replay?: ReplayInput,
     /** Discover: the sensor flat field (estimator sink, stored map). Extract uses `replay.flatField`. */
     private readonly flat?: FlatFieldRun,
   ) {
-    const { width, height, bitDepth, frameCount: recorded, fps } = reader.info;
+    const { width, height, bitDepth, frameCount: recorded } = reader.info;
     const frameCount = replay ? replay.frameCount : recorded;
     if (replay && (replay.frameCount < 1 || replay.frameCount > recorded))
       throw new RangeError(
@@ -253,33 +251,22 @@ export class FrontStage {
     for (const k of ['dy', 'dx', 'flags', 'flickerOffset', 'flickerGain'] as const)
       if (replay && replay[k].length < replay.frameCount)
         throw new RangeError(`Replay: the recorded ${k} has fewer values than frames.`);
-    this.flatOn = options.flatField !== false;
+    this.params = runParams(
+      options.resolvedParams ?? resolveRunParams(options.paramsLayer ?? {}, reader.info),
+    );
+    this.flatOn = options.flatField !== false && this.params.engine.flat_field.enabled;
     this.flatSink = this.flatOn && !replay ? flat?.sink : undefined;
     this.flatInitial = this.flatOn ? ((replay ? replay.flatField : flat?.initial) ?? null) : null;
     this.boundaries = sessionBoundaries(reader.info);
-    this.plan = makePlan(frameCount, options, this.boundaries);
+    this.plan = makePlan(frameCount, this.params, options, this.boundaries);
     this.cursor = new PipelineCursor(this.plan);
     this.width = width;
     this.height = height;
     this.px = width * height;
     this.sixteen = bitDepth === 16;
     this.factor = previewFactor(width, height, this.plan.previewMaxSide);
-    const config = new PreprocessConfig(fps ?? 0);
-    config.warmupFrames = this.plan.calibrationFrames;
-    if (flickerMode !== undefined) config.flickerMode = flickerMode;
-    try {
-      this.warmup = new PreprocessWarmup(width, height, config);
-      this.fastSetup = {
-        width,
-        height,
-        batchSize: this.plan.batchSize,
-        cellDiameterPx: config.cellDiameterPx,
-        flattenSigmaPx: config.flattenSigmaPx,
-        fps: fps ?? 0,
-      };
-    } finally {
-      config.free();
-    }
+    this.warmup = new PreprocessWarmup(width, height, paramsHandle(this.params.json));
+    this.fastSetup = { width, height, batchSize: this.plan.batchSize, params: this.params.json };
     this.raw = this.sixteen ? new Uint16Array(0) : new Uint8Array(0);
   }
 
@@ -299,6 +286,7 @@ export class FrontStage {
       width: this.width,
       height: this.height,
       plan: this.plan,
+      params: this.params.json,
       ...(this.replay ? { replay: true } : {}),
       ...(this.boundaries.length > 0 ? { boundaries: this.boundaries } : {}),
     };
@@ -517,7 +505,7 @@ export class FrontStage {
       width: this.width,
       height: this.height,
       fovMask: pre.fovMask(),
-      fps: this.fastSetup.fps,
+      params: this.params.json,
       sixteen: this.sixteen,
       ...(this.flat?.initial ? { seed: this.flat.initial } : {}),
     });
@@ -890,12 +878,11 @@ export class MotionStage {
 
   private async initMotion(fovMask: Uint8Array): Promise<void> {
     this.motion?.free();
-    const opts = new MotionOptions();
-    try {
-      this.motion = new MotionCorrector(this.setup.width, this.setup.height, opts);
-    } finally {
-      opts.free();
-    }
+    this.motion = new MotionCorrector(
+      this.setup.width,
+      this.setup.height,
+      paramsHandle(this.setup.params),
+    );
     this.motion.setFovMask(fovMask);
     this.aligner?.free();
     const plan = this.setup.plan;

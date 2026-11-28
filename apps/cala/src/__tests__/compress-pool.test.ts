@@ -357,7 +357,7 @@ describe('WindowPool', () => {
   it('width 3, answers in reverse: emitted in window order, once each', async () => {
     const { pool, windows } = windowPoolWith(3);
     pool.setWidth(3);
-    pool.begin(1, Uint8Array.of(9), true, 4);
+    pool.begin(1, Uint8Array.of(9), true, 4, 'P');
     const x = io();
     const done = pool.runJob(1, 7, x);
     let answered = 0;
@@ -395,7 +395,7 @@ describe('WindowPool', () => {
     const { pool } = windowPoolWith(1);
     pool.setWidth(2);
     pool.lost(0);
-    pool.begin(1, Uint8Array.of(9), true, 4);
+    pool.begin(1, Uint8Array.of(9), true, 4, 'P');
     const posted: CoordinatorToHelper[] = [];
     pool.revive(0, { postMessage: (m: CoordinatorToHelper) => posted.push(m) });
     expect(pool.width()).toBe(0);
@@ -404,7 +404,7 @@ describe('WindowPool', () => {
     expect(x.here).toEqual([0, 1]);
     pool.end(1);
     expect(pool.width()).toBe(1);
-    pool.begin(2, Uint8Array.of(9), true, 4);
+    pool.begin(2, Uint8Array.of(9), true, 4, 'P');
     expect(posted.map((m) => m.type)).toEqual(['extract-begin']);
   });
 

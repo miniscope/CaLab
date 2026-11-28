@@ -2,7 +2,7 @@ import { createEffect, Show, type JSX } from 'solid-js';
 import { Badge, DashboardPanel, HelpTip, MeterRow } from '@calab/ui';
 import {
   FLAT_FIELD_DISPLAY_RANGE,
-  FLAT_FIELD_FIRST_S,
+  flatFieldFirstSeconds,
   flatFieldBadge,
   flatFieldChangeLine,
   flatFieldSeconds,
@@ -105,17 +105,17 @@ export function FlatFieldPanel(props: {
           </div>
         </div>
         <div class="cala-flat__text">
-          <Show when={badge().estimating}>
+          <Show when={badge().estimating && flatFieldFirstSeconds(state()) > 0}>
             <MeterRow
               label="First map"
               value={flatFieldSeconds(state())}
               min={0}
-              max={FLAT_FIELD_FIRST_S}
+              max={flatFieldFirstSeconds(state())}
               format={(v) => Math.floor(v).toLocaleString()}
               display={
                 <>
                   {Math.floor(flatFieldSeconds(state()))}
-                  <span class="unit"> / {FLAT_FIELD_FIRST_S}</span>
+                  <span class="unit"> / {Math.round(flatFieldFirstSeconds(state()))}</span>
                 </>
               }
               unit="s"

@@ -6,6 +6,7 @@
 import { vi } from 'vitest';
 import type { PublishedLibrary, SlowLoopLike } from '../lib/slow-runner.ts';
 import type { FastToSlow } from '../workers/slow-types.ts';
+import { DEFAULT_PARAMS } from './params-fixtures.ts';
 
 /** A published library of one cell (id 1, one pixel); `toBytes` is `[version]`. */
 export function fakeLib(version: number): PublishedLibrary {
@@ -30,8 +31,7 @@ export const INIT: Extract<FastToSlow, { type: 'init' }> = {
   height: 1,
   fov: Uint8Array.of(1, 1),
   noise: Float32Array.of(1, 1),
-  cellDiameterPx: 10,
-  flattenSigmaPx: 0,
+  params: DEFAULT_PARAMS,
   budget: 123,
 };
 
@@ -65,7 +65,6 @@ export function stubSlowLoop(over: Partial<SlowLoopLike> = {}): SlowLoopLike {
     work: 0,
     stats: vi.fn(() => new Float64Array(17)),
     cellStatus: vi.fn(() => new Float64Array(0)),
-    enableLookback: vi.fn(),
     lookbackNote: vi.fn(),
     setLookbackFloor: vi.fn(),
     lookbackTake: vi.fn(() => new Float64Array(0)),

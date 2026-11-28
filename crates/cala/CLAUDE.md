@@ -32,6 +32,11 @@ Each module's WASM binding is its `js.rs`; the Python stub is `src/py_api.rs`. T
   `cargo test --no-default-features --features diagnostics --lib discover::diagnostics`.
 - `npm run gen:params` (repo root) regenerates the params schema, the golden engine views and
   the TS types after a change in `src/params`; the drift tests fail until it is run.
+- The engine's config structs (`SlowLoopConfig`, `PreprocessConfig`, `MotionConfig`, ...) are
+  built from params by `params::engine::Engine`. Every wasm constructor that needs a config takes
+  a `ResolvedParams` handle (`params/js.rs`: `resolveParams`, `ResolvedParams.fromJson`), never
+  loose arguments; `qc_eval`'s flags become params with `params::loose`. A config built by hand
+  (tests) skips that and has fingerprint 0.
 - `npm run build:wasm` (repo root) builds `pkg/` with wasm-pack and `+simd128` (`.cargo/config.toml`).
 
 ## WASM bindings
@@ -41,9 +46,8 @@ Each module's WASM binding is its `js.rs`; the Python stub is `src/py_api.rs`. T
 - Errors cross the boundary as `JsError` through one helper (`js_err`, in `src/js_util.rs` if
   present); do not add another per-module copy. Public paths return typed errors and never panic:
   a panic traps and leaves the module unusable in its worker.
-- No binding without a caller in `apps/cala` (or a script that loads `pkg/`). Exception: the
-  motion and preprocess option setters (`MotionOptions`, `PreprocessConfig`) are a capability
-  surface kept on purpose for features still to be wired; do not trim them.
+- No binding without a caller in `apps/cala` (or a script that loads `pkg/`). A setting the app
+  can change is a params field read through `ResolvedParams`, not a binding argument or setter.
 - Changing a binding means changing, in the same PR: `apps/cala/src/lib/cala-wasm.ts` (the only
   import point), hand-written TS mirrors such as `SlowLoopLike` in `src/lib/slow-runner.ts`,
   and the test fakes that implement them. Then run `npm run typecheck` and the cala tests.
@@ -66,6 +70,16 @@ Each module's WASM binding is its `js.rs`; the Python stub is `src/py_api.rs`. T
 
 - `examples/` (`qc_eval`, `discover_eval`, `motion_eval`, `compress_bench`, ...) and
   `tools/cala-eval` are the measurement record. `qc_eval` silently ignores unknown flags.
+- `qc_eval` runs `CalaParams`: with no flags, the app's default params (its run-control flags,
+  such as the visit schedule, budget and settle model, keep their own defaults; `--motion` means
+  non-rigid correction). `--params FILE` layers a partial params file on top (a key that is not a
+  params field is an error), its config flags are overrides of params fields (`PARAM_FLAGS` in
+  `examples/common/eval_params.rs`),
+  and `--dump-params` prints the params, their fingerprint and the engine view, then stops. A new
+  result-changing switch is a params field plus a row in `PARAM_FLAGS`.
+  `tools/cala-eval/presets/qc-eval-legacy.json` is the engine's own configuration (cluster replay,
+  merge guard and look-back off, non-rigid motion), the no-flag arm of older results notes: pass
+  it to reproduce one.
 - Before removing an example flag, an arm or a code path it reaches, grep `tools/`,
   `tools/cala-eval/results/` and `apps/cala/scripts/` for it. If a results note relies on it, it
   stays unless the experiment is concluded and the removal PR says so.

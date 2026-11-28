@@ -465,13 +465,13 @@ export class WindowPool {
   }
 
   /** A job starts: every live helper gets its library (any of them may take a window). */
-  begin(job: number, library: Uint8Array, signed: boolean, px: number): void {
+  begin(job: number, library: Uint8Array, signed: boolean, px: number, params: string): void {
     this.job = job;
     if (this.width() === 0) return;
     for (const h of this.helpers) {
       if (!h.alive) continue;
       const copy = library.slice();
-      h.port.postMessage({ type: 'extract-begin', job, library: copy, signed, px }, [
+      h.port.postMessage({ type: 'extract-begin', job, library: copy, signed, px, params }, [
         copy.buffer as ArrayBuffer,
       ]);
     }

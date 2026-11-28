@@ -30,7 +30,7 @@
  * last frame the run settles instead of ending at once, as part of Discover,
  * with the cell set frozen (`refine` scope): the settle pass (`settle.ts`,
  * qc_eval's `--settle-frames N --settle-batch 16`) has the look-back worker
- * re-read the recording once (at most `SETTLE.maxFrames` frames) and feeds
+ * re-read the recording once (at most the params' `settle.final.max_s`) and feeds
  * every frame to the ordinary `observe`, as a Refine pass does, with the
  * visits those frames earn; then a last round of visits on every tile, and
  * only then the final library.
@@ -93,6 +93,8 @@ import { errMsg } from './errors.ts';
 import { BgSettleDriver, type BgSettleHost, type BgSettle } from './bg-settle-driver.ts';
 import { FinalSettleDriver, type FinalSettleHost, type Settle } from './final-settle-driver.ts';
 import { normalizeRunCells } from './run-cells.ts';
+import type { ResolvedParams } from './cala-wasm.ts';
+import { paramsHandle } from './params-handle.ts';
 import {
   cellStatusView,
   counters,
@@ -153,8 +155,8 @@ export interface SlowLoopLike {
   setNoise(noise: Float32Array): void;
   /** Restrict the structural edits. */
   setEditScope(scope: string): void;
-  /** The Discover visit rate's schedule: Auto (`true`) or fixed. */
-  setVisitSchedule(auto: boolean): void;
+  /** Run the Discover visit rate's schedule of the params (`discover.visit`). */
+  setVisitSchedule(): void;
   /** The schedule's parameters (`visitRateCounters`' `schedule`; empty: none). */
   visitSchedule(): Float64Array | number[];
   /** `[rate, credit, frames, visits, cappedFrames, dueTiles, earned, target, holdFloor, auto, rung, yieldSlow, yieldFast, fedVisits, fedNew, rungChanges]` (`visitRateCounters`). */
@@ -177,8 +179,7 @@ export interface SlowLoopLike {
   stats(): Float64Array;
   /** `(id, established, transients)` triples. */
   cellStatus(): Float64Array;
-  // Look-back (see `SlowLoop.enableLookback`).
-  enableLookback(rate: number, maxFrames: number): void;
+  // Look-back (on when the params turn it on).
   lookbackNote(seen: number, frames: number): void;
   /** Never re-read a frame before `frame` again (a Joint run's current session). */
   setLookbackFloor(frame: number): void;
@@ -224,97 +225,34 @@ export const FACTOR_ASK_MS = 150_000;
 export const FACTOR_NO_ANSWER = `No answer about the factors within ${FACTOR_ASK_MS / 1000} s.`;
 
 /**
- * The validated look-back configuration (qc_eval `COMBO`): the slow-loop
- * options it runs with (the cluster history replay, joint sign rule `all`,
- * merge guard at 0.6 cell diameters), two look-back frames per Discover
- * frame, at most 3000 frames before a cell's birth.
+ * Look-back's run control on this side (its engine settings are the params' `lookback` and
+ * `discover` blocks: `run-params.ts`).
  */
 export const LOOKBACK = {
-  jointUpdate: 'all',
-  jointSign: 'all',
-  mergeGuardMinSep: 0.6,
-  rate: 2,
-  maxFrames: 3000,
   /** Frames per request to the look-back worker (Discover's look-back and the settle). */
   takeMax: 16,
   /** A request unanswered this long stops look-back for the run (settling must end). */
   timeoutMs: 60_000,
 } as const;
 
-/** The constructors of `SlowLoop` or `VisitWorker` (the WASM classes, or fakes). */
+/** The constructor of `SlowLoop` or `VisitWorker` (the WASM classes, or fakes). */
 export interface SlowLoopCtor<T> {
   new (
     width: number,
     height: number,
     fov: Uint8Array,
     noise: Float32Array,
-    cellDiameterPx: number,
-    flattenSigmaPx: number,
-  ): T;
-  withConfig(
-    width: number,
-    height: number,
-    fov: Uint8Array,
-    noise: Float32Array,
-    cellDiameterPx: number,
-    flattenSigmaPx: number,
-    jointUpdate: string,
-    jointSign: string,
-    mergeGuardMinSep: number,
+    params: ResolvedParams,
   ): T;
 }
 
 /**
- * The slow-loop options of a live stream with `?factors`:
- * the cluster history replay in refine-scope visits only, so in the Final
- * settle on factors; Discover's visits are as without it (no merge guard,
- * the default sign rule). qc_eval's arm `STR-F`.
- */
-export const FACTOR_SETTLE = {
-  jointUpdate: 'refine',
-  jointSign: 'all',
-  mergeGuardMinSep: Infinity,
-} as const;
-
-/**
- * Build a `SlowLoop` or `VisitWorker` from the slow loop's settings: the
- * plain constructor, unless `init.lookback`, then with the look-back options (`LOOKBACK`; a slow loop
- * and its visit workers must agree on them).
+ * Build a `SlowLoop` or `VisitWorker` from the slow loop's init: every option (look-back, the
+ * cluster replay, the merge guard, the flattening) comes from the run's resolved params, so a
+ * slow loop and its visit workers built from the same init agree on them.
  */
 export function buildSlowLoop<T>(ctor: SlowLoopCtor<T>, init: SlowInit): T {
-  const { width, height, fov, noise, cellDiameterPx, flattenSigmaPx } = init;
-  if (!init.lookback) {
-    if (!init.factorSettle)
-      return new ctor(width, height, fov, noise, cellDiameterPx, flattenSigmaPx);
-    return ctor.withConfig(
-      width,
-      height,
-      fov,
-      noise,
-      cellDiameterPx,
-      flattenSigmaPx,
-      FACTOR_SETTLE.jointUpdate,
-      FACTOR_SETTLE.jointSign,
-      FACTOR_SETTLE.mergeGuardMinSep,
-    );
-  }
-  const loop = ctor.withConfig(
-    width,
-    height,
-    fov,
-    noise,
-    cellDiameterPx,
-    flattenSigmaPx,
-    LOOKBACK.jointUpdate,
-    LOOKBACK.jointSign,
-    LOOKBACK.mergeGuardMinSep,
-  );
-  const lb = loop as T & {
-    enableLookback?(rate: number, maxFrames: number): void;
-  };
-  lb.enableLookback?.(LOOKBACK.rate, LOOKBACK.maxFrames);
-  // (Background settle is enabled by `SlowRunner` when it is armed, below Max.)
-  return loop;
+  return new ctor(init.width, init.height, init.fov, init.noise, paramsHandle(init.params));
 }
 
 /** What a `SlowRunner` needs from its environment (workers, clocks, timers). */
@@ -960,7 +898,7 @@ export class SlowRunner {
       if (msg.type === 'reset')
         for (const v of this.visits) v.postMessage({ type: 'reset', session: msg.session });
       if (msg.type === 'init') {
-        const { width, height, fov, noise, cellDiameterPx, flattenSigmaPx, budget } = msg;
+        const { width, height, fov, noise, params, budget } = msg;
         // Tests feed raw inits here: the run's rules apply as in every other layer.
         const run = normalizeRunCells(msg);
         const lookback = run.lookback === true;
@@ -970,8 +908,7 @@ export class SlowRunner {
           height,
           fov,
           noise,
-          cellDiameterPx,
-          flattenSigmaPx,
+          params,
           budget,
           ...(lookback ? { lookback } : {}),
           ...(run.factorSettle ? { factorSettle: true } : {}),
@@ -984,7 +921,7 @@ export class SlowRunner {
         // The Discover visit rate's schedule (`fixed` or `auto`; `discover/visitrate.rs`) sets
         // the cap on ordinary visits in Discover's edit scope (the Final settle and Refine runs
         // are not held); without one, no cap.
-        if (run.visitSchedule) this.loop.setVisitSchedule(run.visitSchedule === 'auto');
+        if (run.visitSchedule) this.loop.setVisitSchedule();
         this.settleRate = run.settleVisitRate ?? 0;
         this.run = 1;
         this.lbOn = lookback;

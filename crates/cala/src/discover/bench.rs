@@ -289,3 +289,241 @@ pub fn fpstats_bench(
     }
     rep
 }
+
+/// Milliseconds per fitting frame of the cluster push, plain
+/// ([`ClusterStore::push_frame`]) against mean-field
+/// ([`ClusterStore::push_mean`] plus the column folds).
+#[derive(Debug, Clone, Default)]
+pub struct ClusterBenchReport {
+    pub clusters: usize,
+    pub members: usize,
+    pub px_mean: f64,
+    pub rank_mean: f64,
+    pub zero_share: f64,
+    pub old_ms: f64,
+    pub new_ms: f64,
+    /// Largest difference between the arms' `cy`, `sr` and stored
+    /// coordinates at the end, relative to each array's largest value.
+    pub max_rel_diff: f64,
+}
+
+/// Clusters of `cells` as the slow loop forms them (normalised overlaps of
+/// the footprints `vals` on `pix`, greedy, `rho_min`, at most `k_max`
+/// members), each with its member indices.
+pub fn bench_clusters(
+    pix: &[Vec<u32>],
+    vals: &[Vec<f32>],
+    rho_min: f32,
+    k_max: usize,
+) -> Vec<Vec<usize>> {
+    use std::collections::HashMap;
+    let n = pix.len();
+    let mut at: HashMap<u32, Vec<(usize, f32)>> = HashMap::new();
+    let mut diag = vec![0.0f64; n];
+    for i in 0..n {
+        for (&p, &v) in pix[i].iter().zip(&vals[i]) {
+            at.entry(p).or_default().push((i, v));
+            diag[i] += f64::from(v) * f64::from(v);
+        }
+    }
+    let mut g: HashMap<(usize, usize), f64> = HashMap::new();
+    for list in at.values() {
+        for (x, &(i, a)) in list.iter().enumerate() {
+            for &(j, b) in &list[x + 1..] {
+                let key = (i.min(j), i.max(j));
+                *g.entry(key).or_default() += f64::from(a) * f64::from(b);
+            }
+        }
+    }
+    let mut e: Vec<(f32, u32, u32)> = g
+        .into_iter()
+        .filter_map(|((i, j), v)| {
+            let d = (diag[i] * diag[j]).sqrt();
+            (d > 0.0 && v > 0.0).then(|| ((v / d) as f32, i as u32, j as u32))
+        })
+        .collect();
+    e.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    super::cluster::greedy_clusters(n, &e, rho_min, k_max).0
+}
+
+/// Run both cluster arms over `frames` fitting frames (`repeats` times each,
+/// alternating), with ring levels. Every `version_every` frames each
+/// cluster takes new columns for every member (made before the timers). The residual pass is not charged to the
+/// mean-field arm: the loop computes it once for the ledger and the
+/// footprint statistics.
+#[allow(clippy::too_many_arguments)]
+pub fn cluster_bench(
+    width: usize,
+    height: usize,
+    cells: &[BenchCell],
+    groups: &[Vec<usize>],
+    frames: usize,
+    version_every: usize,
+    repeats: usize,
+    seed: u64,
+) -> ClusterBenchReport {
+    use super::cluster::ClusterStore;
+    use super::fpstats::disk_pixels;
+    let n_px = width * height;
+    let fov = vec![1u8; n_px];
+    let nf = 8;
+    let frame_pool: Vec<Vec<f32>> = (0..nf)
+        .map(|f| {
+            (0..n_px)
+                .map(|p| 3.0 * unif(seed ^ ((f * n_px + p) as u64)))
+                .collect()
+        })
+        .collect();
+    let model_pool: Vec<Vec<f32>> = (0..nf)
+        .map(|f| {
+            (0..n_px)
+                .map(|p| unif(seed.wrapping_add(7) ^ ((f * n_px + p) as u64)))
+                .collect()
+        })
+        .collect();
+    let trace = |t: usize, i: usize| -> f32 {
+        let k = (t * cells.len() + i) as u64;
+        if unif(seed.wrapping_add(11) ^ k) + 0.5 < cells[i].zero_share {
+            0.0
+        } else {
+            2.0 * unif(seed.wrapping_add(13) ^ k).abs() + 0.05
+        }
+    };
+    let level = |t: usize, i: usize| 0.1 * unif(seed.wrapping_add(17) ^ (t * 65_537 + i) as u64);
+    let w_of = |t: usize| 1.0 + t as f64 * 1e-3;
+    let fresh = || -> Vec<ClusterStore> {
+        groups
+            .iter()
+            .enumerate()
+            .map(|(g, m)| {
+                let disks: Vec<((f32, f32), f32)> = m
+                    .iter()
+                    .map(|&i| (cells[i].center, cells[i].disk_radius))
+                    .collect();
+                let mut pix: Vec<u32> = disks
+                    .iter()
+                    .flat_map(|d| disk_pixels(d.0, d.1, width, height, &fov))
+                    .collect();
+                pix.sort_unstable();
+                pix.dedup();
+                let n = pix.len();
+                let is = (0..n)
+                    .map(|k| 1.0 + 0.2 * unif(seed.wrapping_add(23) ^ (g * 100_003 + k) as u64))
+                    .collect();
+                let cols = (0..n * m.len())
+                    .map(|k| 0.5 + unif(seed ^ ((g * 1_000_003 + k) as u64)))
+                    .collect();
+                let ids = m.iter().map(|&i| i as u64).collect();
+                ClusterStore::new(ids, disks, pix, is, width, 0, cols, 600)
+            })
+            .collect()
+    };
+    let cols_of = |st: &ClusterStore, g: usize, v: usize| -> Vec<f32> {
+        (0..st.cols.len())
+            .map(|k| 0.5 + unif(seed ^ ((g * 1_000_003 + v * 7919 + k) as u64)))
+            .collect()
+    };
+    let inputs = |t: usize, m: &[usize]| -> (Vec<f32>, Vec<f32>) {
+        (
+            m.iter().map(|&i| trace(t, i)).collect(),
+            m.iter().map(|&i| level(t, i)).collect(),
+        )
+    };
+    // Every version's columns, made before the timers (the loop's
+    // `column_on` is the same in both arms).
+    let base = fresh();
+    let versions: Vec<Vec<Vec<f32>>> = (1..=frames / version_every.max(1))
+        .map(|v| {
+            base.iter()
+                .enumerate()
+                .map(|(g, st)| cols_of(st, g, v))
+                .collect()
+        })
+        .collect();
+    let run_old = || -> (Vec<ClusterStore>, f64) {
+        let mut sts = fresh();
+        let mut buf = Vec::new();
+        let mut ms = 0.0;
+        for t in 0..frames {
+            let (fr, md) = (&frame_pool[t % nf], &model_pool[t % nf]);
+            let t0 = Instant::now();
+            for (g, st) in sts.iter_mut().enumerate() {
+                if t > 0 && t % version_every == 0 {
+                    st.cols.copy_from_slice(&versions[t / version_every - 1][g]);
+                }
+                let (c, lv) = inputs(t, &groups[g]);
+                st.push_frame(fr, md, Some(&lv), &c, w_of(t), &mut buf);
+            }
+            ms += t0.elapsed().as_secs_f64() * 1e3;
+        }
+        (sts, ms)
+    };
+    let run_new = || -> (Vec<ClusterStore>, f64) {
+        let mut sts = fresh();
+        let mut resid = Residual::default();
+        let mut buf = Vec::new();
+        let mut ms = 0.0;
+        for t in 0..frames {
+            resid.fill(&frame_pool[t % nf], &model_pool[t % nf]);
+            let t0 = Instant::now();
+            for (g, st) in sts.iter_mut().enumerate() {
+                if t > 0 && t % version_every == 0 {
+                    let cols = &versions[t / version_every - 1][g];
+                    let n = st.pix.len();
+                    for k in 0..groups[g].len() {
+                        st.set_col(k, &cols[k * n..(k + 1) * n]);
+                    }
+                }
+                let (c, lv) = inputs(t, &groups[g]);
+                st.push_mean(&resid, Some(&lv), &c, w_of(t), &mut buf);
+            }
+            ms += t0.elapsed().as_secs_f64() * 1e3;
+        }
+        (sts, ms)
+    };
+    let members: usize = groups.iter().map(Vec::len).sum();
+    let (mut o, mut n) = (vec![], vec![]);
+    let mut last = None;
+    for _ in 0..repeats.max(1) {
+        let (a, ms) = run_old();
+        o.push(ms);
+        let (b, ms) = run_new();
+        n.push(ms);
+        last = Some((a, b));
+    }
+    let (a, b) = last.expect("one repeat");
+    let f = frames as f64;
+    let mut zeros = 0usize;
+    for t in 0..frames {
+        for m in groups {
+            zeros += m.iter().filter(|&&i| trace(t, i) == 0.0).count();
+        }
+    }
+    let rel = |x: &[f32], y: &[f32]| -> f64 {
+        let top = x.iter().fold(0.0f64, |m, v| m.max(f64::from(v.abs())));
+        let d = x
+            .iter()
+            .zip(y)
+            .fold(0.0f64, |m, (p, q)| m.max(f64::from((p - q).abs())));
+        d / top.max(1e-12)
+    };
+    let mut max_rel_diff = 0.0f64;
+    for (sa, sb) in a.iter().zip(&b) {
+        let ((cya, sra, va), (cyb, srb, vb)) = (sa.sums(), sb.sums());
+        max_rel_diff = max_rel_diff
+            .max(rel(&cya, &cyb))
+            .max(rel(&sra, &srb))
+            .max(rel(va, vb));
+    }
+    let nc = groups.len().max(1) as f64;
+    ClusterBenchReport {
+        clusters: groups.len(),
+        members,
+        px_mean: a.iter().map(|s| s.pix.len() as f64).sum::<f64>() / nc,
+        rank_mean: a.iter().map(|s| s.rank() as f64).sum::<f64>() / nc,
+        zero_share: zeros as f64 / (frames * members).max(1) as f64,
+        old_ms: median(o) / f,
+        new_ms: median(n) / f,
+        max_rel_diff,
+    }
+}

@@ -19,11 +19,9 @@ import { createPipelineStore } from './lib/pipeline-store.ts';
 import { createCellStore } from './lib/cell-store.ts';
 import { extractQc, QC_SCOPE_DEFAULT } from './lib/extract-qc.ts';
 import { loadSpanStats } from './lib/extract-qc-wasm.ts';
-import { ASSUMED_FPS } from './lib/miniscope-meta.ts';
 import type { QcSnapshot } from './lib/qc.ts';
 import { createCompressClient } from './lib/compress-client.ts';
 import { helpersFor } from './lib/compress-pool.ts';
-import { COMPRESS_DEFAULTS } from './lib/compress-feed.ts';
 import {
   createCompressStore,
   fileFactorsBlocked,
@@ -444,9 +442,11 @@ const App: Component = () => {
     fps: number,
   ): Promise<QcSnapshot | null> {
     const r = pass2.result();
-    if (!r) return null;
-    const backend = await loadSpanStats();
-    const rate = fps > 0 ? fps : ASSUMED_FPS;
+    const run = pipeline.runParams();
+    if (!r || !run) return null;
+    const backend = await loadSpanStats(run.json);
+    // A session's own rate when its file has one, else the run's (the params' fallback).
+    const rate = fps > 0 ? fps : run.engine.fps;
     return extractQc(r.traces, r.ids, range, rate, QC_SCOPE_DEFAULT, qcBase, backend);
   }
   // Extract: its store's status, into the stage log.
@@ -553,6 +553,8 @@ const App: Component = () => {
       });
       if (a.kind === 'begin') {
         lookbackClient.beginFactors?.(a.session, a.factors);
+        const run = pipeline.runParams();
+        if (run) lookbackClient.params(a.session, run.json);
         slow.factorsReady(a.session, a.frames);
       } else if (a.kind === 'fail') slow.factorsFailed(a.session, a.reason);
       else if (a.kind === 'release') lookbackClient.reset(a.session);
@@ -565,7 +567,7 @@ const App: Component = () => {
         reason: fileFactorsBlocked(fileState, compress.status(), compress.error(), frames),
         info: compress.factorInfo(),
         behind: compress.behind(frames),
-        window: COMPRESS_DEFAULTS.window,
+        window: pipeline.runParams()?.engine.factors.window_frames ?? 0,
         msPerFrame: compress.status()?.msPerFrame ?? 0,
         workers: pipeline.runPool()?.after ?? 1,
         // A GPU run is never more than a window and its slack behind: wait for its last window.
@@ -775,14 +777,27 @@ const App: Component = () => {
     },
     lookbackPoolSize: () => lbPool,
     visitWorkers: () => slow.visitWorkers,
-    tunables: {
-      settle: SETTLE,
-      csettle: CSETTLE,
-      governor: GOVERNOR,
-      lookback: LOOKBACK,
-      pacer: { PACE_BATCH, PACE_SLACK },
-      floor: { FLOOR, TRACKER },
+    // The engine values among them come from the run's resolved params.
+    tunables: () => {
+      const e = pipeline.runParams()?.engine;
+      return {
+        settle: { ...SETTLE, maxFrames: e?.settle.final_max_frames ?? null },
+        csettle: CSETTLE,
+        governor: GOVERNOR,
+        lookback: {
+          ...LOOKBACK,
+          jointUpdate: e?.slow_loop.joint_update ?? null,
+          jointSign: e?.slow_loop.joint_sign_rule ?? null,
+          mergeGuardMinSep: e ? (e.slow_loop.merge_guard_min_sep ?? Infinity) : null,
+          rate: e?.lookback.rate ?? null,
+          maxFrames: e?.lookback.max_frames ?? null,
+        },
+        pacer: { PACE_BATCH, PACE_SLACK },
+        floor: { FLOOR, TRACKER },
+      };
     },
+    params: () => pipeline.runParams(),
+    request: () => pipeline.runRequest(),
   };
   const runRecord = (extras?: RunRecordExtras) => gatherRunRecord(runRecordSources, extras);
   const multiRun = createMultiRun({
@@ -1219,6 +1234,7 @@ const App: Component = () => {
               live={lp.info.live !== undefined}
               liveResult={liveResult.result}
               fps={lp.info.fps ?? 0}
+              frameWidth={lp.info.width}
               ui={historyUi}
               factorRun={pipeline.factorRun()}
               compress={pipeline.compressRun() ? compress : undefined}

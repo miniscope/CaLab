@@ -570,3 +570,272 @@ fn defaults_resolve_to_the_engines_values() {
         assert_eq!(v.qc.motion_r2_flag as f32, qc.motion_r2_flag);
     }
 }
+
+// ---- engine configs built from params ----
+
+/// Frame rates the builders are checked at: integer and non-integer, and
+/// one where the two groups of durations differ.
+const BUILD_FPS: [f32; 6] = [19.98, 20.0, 23.976, 29.97, 30.0, 60.0];
+
+fn engine_at(p: &CalaParams, fps: f32) -> super::engine::Engine {
+    super::engine::Engine::build(
+        p,
+        Context {
+            fps: f64::from(fps),
+            frame: [600, 600],
+        },
+    )
+    .unwrap()
+}
+
+/// The engine's own configuration, as params, builds exactly the configs
+/// the engine's `Default` and `for_fps` give, at any frame rate.
+#[test]
+fn engine_params_build_the_engines_configs() {
+    use super::loose::engine_params;
+    use crate::discover::{LookbackConfig, SlowLoopConfig, VisitSchedule};
+    use crate::motion::{MotionConfig, NonRigidConfig};
+    use crate::preprocess::flatfield::OnlineFlatFieldConfig;
+    use crate::preprocess::PreprocessConfig;
+    use crate::qc::QcConfig;
+    use crate::trace::SolverConfig;
+
+    for fps in BUILD_FPS {
+        let e = engine_at(&engine_params(), fps);
+        assert_eq!(e.preprocess, PreprocessConfig::for_fps(fps), "{fps}");
+        assert_eq!(e.flat_field, OnlineFlatFieldConfig::for_fps(fps), "{fps}");
+        assert_eq!(e.qc, QcConfig::for_fps(fps), "{fps}");
+        assert_eq!(e.qc_at(20.0), QcConfig::default());
+        assert_eq!(e.motion, MotionConfig::default());
+        assert_eq!(e.motion_warmup_frames, 200);
+        assert_eq!(e.solver, SolverConfig::default());
+        assert_eq!(e.visit, VisitSchedule::fixed());
+        assert!(e.lookback.is_none());
+        assert_ne!(e.slow_loop.fingerprint, 0);
+        assert_eq!(
+            e.slow_loop,
+            SlowLoopConfig {
+                fingerprint: e.slow_loop.fingerprint,
+                ..SlowLoopConfig::default()
+            },
+            "{fps}"
+        );
+        let mut p = engine_params();
+        p.motion.nonrigid.enabled = true;
+        p.lookback.enabled = true;
+        let e = engine_at(&p, fps);
+        assert_eq!(
+            e.motion,
+            MotionConfig {
+                nonrigid: Some(NonRigidConfig::default()),
+                ..MotionConfig::default()
+            }
+        );
+        let lb = e.lookback.unwrap();
+        let d = LookbackConfig::default();
+        assert_eq!(
+            (lb.rate, lb.max_frames, lb.order, lb.target),
+            (d.rate, d.max_frames, d.order, d.target)
+        );
+    }
+}
+
+/// The default params differ from the engine's configuration only in the
+/// cluster replay, the merge guard and look-back.
+#[test]
+fn default_params_are_the_engine_params_plus_the_apps_look_back() {
+    use crate::discover::{JointUpdate, SlowLoopConfig};
+    let e = engine_at(&CalaParams::default(), 20.0);
+    assert_eq!(e.slow_loop.joint_update, JointUpdate::All);
+    assert_eq!(e.slow_loop.merge_guard_min_sep, 0.6);
+    assert_eq!(
+        e.slow_loop,
+        SlowLoopConfig {
+            joint_update: JointUpdate::All,
+            merge_guard_min_sep: 0.6,
+            fingerprint: e.slow_loop.fingerprint,
+            ..SlowLoopConfig::default()
+        }
+    );
+    let lb = e.lookback.unwrap();
+    assert_eq!((lb.rate, lb.max_frames), (2.0, 3000));
+}
+
+/// The loose-argument entry points keep the ring and the margin at their
+/// pixel sizes at any diameter, exactly.
+#[test]
+fn a_fixed_ring_is_exact_at_any_diameter() {
+    use super::loose::{engine_params, set_diameter_fixed_ring};
+    use crate::trace::BackgroundModel as EBg;
+    let mut ds: Vec<f64> = (2..=128).map(f64::from).collect();
+    ds.extend([2.5, 6.4, 7.3, 9.99, 10.5, 12.7, 14.5, 15.9, 33.3]);
+    ds.extend((1..200).map(|k| 2.0 + f64::from(k) * 0.317));
+    for d in ds {
+        let mut p = engine_params();
+        set_diameter_fixed_ring(&mut p, f64::from(d as f32));
+        let s = engine_at(&p, 20.0).slow_loop;
+        assert_eq!(s.cell_diameter_px, d as f32);
+        assert_eq!(s.margin_px, 24, "{d}");
+        assert_eq!(
+            s.background,
+            EBg::Ring {
+                inner_px: 12.0,
+                outer_px: 20.0
+            },
+            "{d}"
+        );
+    }
+}
+
+/// A flattening σ is passed explicitly only when it is not the default
+/// multiple of the diameter, as the engine's own configs do.
+#[test]
+fn the_flattening_sigma_stays_derived_by_default() {
+    let mut p = CalaParams::default();
+    assert_eq!(engine_at(&p, 20.0).preprocess.flatten.sigma_px, None);
+    p.scales.flatten_sigma_px = Some(20.0);
+    assert_eq!(engine_at(&p, 20.0).preprocess.flatten.sigma_px, Some(20.0));
+    p.scales.flatten_sigma_px = None;
+    p.scales.flatten_sigma_per_d = 3.0;
+    assert_eq!(engine_at(&p, 20.0).preprocess.flatten.sigma_px, Some(30.0));
+}
+
+/// The fingerprint covers what changes results and nothing else.
+#[test]
+fn the_fingerprint_follows_the_results_fields_only() {
+    use super::engine::{fingerprint, fingerprint_hex};
+    let a = CalaParams::default();
+    assert_eq!(fingerprint(&a), fingerprint(&a.clone()));
+    assert_eq!(fingerprint_hex(&a).len(), 64);
+    let mut b = a.clone();
+    b.discover.merge.guard_min_sep_d = None;
+    assert_ne!(fingerprint(&a), fingerprint(&b));
+    let mut c = a.clone();
+    c.compute.repeatable = !c.compute.repeatable;
+    assert_ne!(fingerprint(&a), fingerprint(&c));
+    let mut d = a.clone();
+    d.compute.batch_frames += 1;
+    d.export.pass_qc_only = !d.export.pass_qc_only;
+    assert_eq!(fingerprint(&a), fingerprint(&d));
+}
+
+// ---- the app's configurations (the wasm bindings) ----
+//
+// The app sends one params layer per run (`apps/cala/src/lib/run-params.ts`);
+// the bindings build every engine object from it. Each shape the app sends
+// builds the configs the engine's own `Default` and `for_fps` give, plus
+// the options of that shape.
+
+/// The layers the app sends: look-back on (the defaults), look-back off,
+/// and a live stream with factors (the Final settle on factors).
+const APP_LOOKBACK_ON: &str = "{}";
+const APP_LOOKBACK_OFF: &str = r#"{"lookback": {"enabled": false},
+    "discover": {"cluster": {"update": "off"}, "merge": {"guard_min_sep_d": null}}}"#;
+const APP_FACTOR_SETTLE: &str = r#"{"lookback": {"enabled": false},
+    "discover": {"cluster": {"update": "refine"}, "merge": {"guard_min_sep_d": null}}}"#;
+
+fn app_params(layer: &str) -> CalaParams {
+    super::layer::params_from_layer(&serde_json::from_str(layer).unwrap()).unwrap()
+}
+
+#[test]
+fn the_apps_slow_loop_shapes_build_the_engines_configs() {
+    use crate::discover::{JointUpdate, SlowLoopConfig};
+    use crate::preprocess::flatten::FlattenConfig;
+    for fps in BUILD_FPS {
+        for (layer, update, guard, lookback) in [
+            (APP_LOOKBACK_ON, JointUpdate::All, 0.6, true),
+            (APP_LOOKBACK_OFF, JointUpdate::Off, f32::INFINITY, false),
+            (APP_FACTOR_SETTLE, JointUpdate::Refine, f32::INFINITY, false),
+        ] {
+            let e = engine_at(&app_params(layer), fps);
+            assert_eq!(
+                e.slow_loop,
+                SlowLoopConfig {
+                    joint_update: update,
+                    merge_guard_min_sep: guard,
+                    fingerprint: e.slow_loop.fingerprint,
+                    ..SlowLoopConfig::default()
+                },
+                "{layer} {fps}"
+            );
+            assert_eq!(
+                e.preprocess.flatten,
+                FlattenConfig {
+                    cell_diameter_px: 10.0,
+                    sigma_px: None,
+                    ..FlattenConfig::default()
+                }
+            );
+            let lb = e.lookback.map(|l| (l.rate, l.max_frames));
+            assert_eq!(lb, lookback.then_some((2.0, 3000)), "{layer}");
+        }
+    }
+}
+
+#[test]
+fn the_apps_other_configs_are_the_engines() {
+    use crate::discover::VisitSchedule;
+    use crate::motion::MotionConfig;
+    use crate::preprocess::flatfield::OnlineFlatFieldConfig;
+    use crate::preprocess::PreprocessConfig;
+    use crate::qc::QcConfig;
+    use crate::trace::SolverConfig;
+    for fps in BUILD_FPS {
+        let e = engine_at(&app_params(APP_LOOKBACK_ON), fps);
+        assert_eq!(e.preprocess, PreprocessConfig::for_fps(fps), "{fps}");
+        assert_eq!(e.flat_field, OnlineFlatFieldConfig::for_fps(fps), "{fps}");
+        assert_eq!(e.qc, QcConfig::for_fps(fps), "{fps}");
+        assert_eq!(e.solver, SolverConfig::default());
+        assert_eq!(e.motion, MotionConfig::default());
+        assert_eq!(e.motion_warmup_frames, 200);
+        assert_eq!(e.visit, VisitSchedule::fixed());
+    }
+    let auto = app_params(r#"{"discover": {"visit": {"mode": "auto"}}}"#);
+    assert_eq!(engine_at(&auto, 20.0).visit, VisitSchedule::auto());
+}
+
+#[test]
+fn a_layer_names_its_unknown_keys() {
+    use super::layer::params_from_layer;
+    let e = params_from_layer(&json!({"discover": {"acept_z": 4}})).unwrap_err();
+    assert_eq!(e.pointer, "/discover/acept_z");
+    assert!(params_from_layer(&json!({"discover": {"accept_z": "x"}})).is_err());
+    assert!(params_from_layer(&json!([1])).is_err());
+    let p = params_from_layer(&json!({"scales": {"cell_diameter_px": 16.0}})).unwrap();
+    assert_eq!(p.scales.cell_diameter_px, Some(16.0));
+    assert_eq!(p.discover, Discover::default());
+}
+
+/// A slow loop and its visit workers built from the same params share a
+/// fingerprint; other results params give another one.
+#[test]
+fn the_same_params_give_the_same_fingerprint() {
+    let fp = |layer: &str| engine_at(&app_params(layer), 20.0).slow_loop.fingerprint;
+    assert_eq!(fp(APP_LOOKBACK_ON), fp(APP_LOOKBACK_ON));
+    assert_ne!(fp(APP_LOOKBACK_ON), fp(APP_LOOKBACK_OFF));
+    assert_ne!(fp(APP_LOOKBACK_OFF), fp(APP_FACTOR_SETTLE));
+}
+
+/// What a worker rebuilds from the resolved JSON is what was resolved.
+#[cfg(feature = "jsbindings")]
+#[test]
+fn resolved_params_round_trip_through_json() {
+    use super::js::ResolvedParams;
+    let mut p = CalaParams::default();
+    p.scales.cell_diameter_px = Some(16.0);
+    let ctx = Context {
+        fps: 29.97,
+        frame: [608, 608],
+    };
+    let r = ResolvedParams::new(p, ctx).unwrap();
+    let json = r.to_json();
+    let back = ResolvedParams::from_json(&json).unwrap();
+    assert_eq!(back.to_json(), json);
+    assert_eq!(back.engine().slow_loop, r.engine().slow_loop);
+    assert_eq!(back.engine().preprocess, r.engine().preprocess);
+    assert_eq!(back.engine().slow_loop.cell_diameter_px, 16.0);
+    let v: Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["engine"]["cell_diameter"]["px"], 16.0);
+    assert_eq!(v["fingerprint"].as_str().unwrap().len(), 64);
+}

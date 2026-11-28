@@ -36,6 +36,7 @@ import { RunRecord } from '../lib/run-record.ts';
 import { StagePool } from '../lib/stage-pool.ts';
 import { blobMovie } from './blob-movie.ts';
 import { initTestWasm } from './wasm-test.ts';
+import { resolvedParams } from './params-fixtures.ts';
 
 beforeAll(initTestWasm);
 
@@ -126,7 +127,6 @@ async function chain(args: {
     args.movie ?? makeMovie(args.frames ?? FRAMES),
     args.options ?? OPTIONS,
     () => frontPool.acquire(),
-    undefined,
     args.replay,
     args.flat,
   );
@@ -224,16 +224,9 @@ describe('flat field in the stages', () => {
     const sink = new RecordingSink();
     const len = OPTIONS.batchSize * PX;
     const pool = new StagePool(3, len);
-    const a = new FrontStage(
-      makeMovie(FRAMES),
-      OPTIONS,
-      () => pool.acquire(),
-      undefined,
-      undefined,
-      {
-        sink,
-      },
-    );
+    const a = new FrontStage(makeMovie(FRAMES), OPTIONS, () => pool.acquire(), undefined, {
+      sink,
+    });
     const events: (FlatFieldApplied | undefined)[] = [];
     let n = 0;
     for (;;) {
@@ -350,10 +343,8 @@ describe('flat-field runner (the estimator driver)', () => {
       width: W,
       height: H,
       fovMask: fov,
-      fps: 20,
+      params: resolvedParams({ flat_field: { first_map_s: 20, refine_every_s: 10 } }, 20, W, H),
       sixteen: false,
-      firstS: 20,
-      refineS: 10,
     });
     // Frames of a scene panned over four positions, 20 frames each.
     const positions: [number, number][] = [
@@ -614,7 +605,7 @@ describe('flat-field cache', () => {
 });
 
 describe('flat-field status line', () => {
-  const base = { ...initialFlatFieldState(), supported: true };
+  const base = { ...initialFlatFieldState(), supported: true, firstFrames: 3000 };
   const map: FlatFieldMap = { ...halfMap(), binsUsed: 5, framesUsed: 4321.4, gainSd: 0.0523 };
   const key = flatFieldKey({ width: W, height: H, device: { serial: 'S9' }, folder: 'f' });
 

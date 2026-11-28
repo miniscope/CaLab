@@ -18,6 +18,8 @@ import {
 import { memoryTraceFile } from '../lib/trace-file.ts';
 import { lcg } from './blob-movie.ts';
 import { initTestWasm } from './wasm-test.ts';
+import { paramsHandle } from '../lib/params-handle.ts';
+import { DEFAULT_PARAMS } from './params-fixtures.ts';
 
 beforeAll(initTestWasm);
 
@@ -107,8 +109,8 @@ describe('extract QC', () => {
   });
 
   it('windows are durations at the recording rate', () => {
-    expect(QcMonitor.windowFrames(20)).toBe(1200);
-    expect(QcMonitor.windowFrames(30)).toBe(1800);
+    expect(QcMonitor.windowFrames(paramsHandle(DEFAULT_PARAMS), 20)).toBe(1200);
+    expect(QcMonitor.windowFrames(paramsHandle(DEFAULT_PARAMS), 30)).toBe(1800);
     expect(statsSpan({ start: 100, end: 5000 }, 'window', 1800)).toEqual({
       start: 3200,
       end: 5000,
@@ -125,9 +127,13 @@ describe('extract QC', () => {
     const b = trace(3000, 90, 0, 1000, 2);
     const file = await memoryTraceFile(matrix([a, b]), 3000, 2);
     const span = { start: 500, end: 2600 };
-    const got = await spanStatsOf(file, span, 20, spanStatsWasm);
-    expect(got[0].peakSnr).toBe(spanStatsWasm.stats(a.slice(500, 2600), 20).peakSnr);
-    expect(got[1].peakSnr).toBe(spanStatsWasm.stats(b.slice(500, 2600), 20).peakSnr);
+    const got = await spanStatsOf(file, span, 20, spanStatsWasm(DEFAULT_PARAMS));
+    expect(got[0].peakSnr).toBe(
+      spanStatsWasm(DEFAULT_PARAMS).stats(a.slice(500, 2600), 20).peakSnr,
+    );
+    expect(got[1].peakSnr).toBe(
+      spanStatsWasm(DEFAULT_PARAMS).stats(b.slice(500, 2600), 20).peakSnr,
+    );
   });
 
   it('a cell quiet in the last minute fails on the window and passes on its session', async () => {
@@ -137,8 +143,24 @@ describe('extract QC', () => {
     const ids = new Uint32Array([5]);
     const range = { start: 0, end: 4000 };
     const base = snapshot([row(5)]);
-    const win = await extractQc(file, ids, range, 20, 'window', base, spanStatsWasm);
-    const all = await extractQc(file, ids, range, 20, 'session', base, spanStatsWasm);
+    const win = await extractQc(
+      file,
+      ids,
+      range,
+      20,
+      'window',
+      base,
+      spanStatsWasm(DEFAULT_PARAMS),
+    );
+    const all = await extractQc(
+      file,
+      ids,
+      range,
+      20,
+      'session',
+      base,
+      spanStatsWasm(DEFAULT_PARAMS),
+    );
     expect(win.byId.get(5)!.pass).toBe(false);
     expect(win.byId.get(5)!.frames).toBe(1200);
     expect(all.byId.get(5)!.pass).toBe(true);
@@ -158,7 +180,7 @@ describe('extract QC', () => {
       20,
       'window',
       null,
-      spanStatsWasm,
+      spanStatsWasm(DEFAULT_PARAMS),
     );
     const s1 = await extractQc(
       file,
@@ -167,7 +189,7 @@ describe('extract QC', () => {
       20,
       'window',
       null,
-      spanStatsWasm,
+      spanStatsWasm(DEFAULT_PARAMS),
     );
     expect(s0.byId.get(1)!.pass).toBe(true);
     expect(s1.byId.get(1)!.pass).toBe(false);

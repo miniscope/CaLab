@@ -27,8 +27,9 @@ use super::{
     chol_inv_upper, compress_tile, quantize, quantize_tiles, tile_config, CompressConfig,
     TileFactors, WindowFactors, WindowStats,
 };
+use crate::params::js::ResolvedParams;
 use crate::preprocess::Dims;
-use crate::trace::{FrameTraces, Library, SolverConfig, TraceState};
+use crate::trace::{FrameTraces, Library, TraceState};
 
 fn js_err(func: &str, e: impl std::fmt::Display) -> JsError {
     JsError::new(&format!("{func}: {e}"))
@@ -551,19 +552,13 @@ pub struct JsFactorExtractor {
 
 #[wasm_bindgen(js_class = FactorExtractor)]
 impl JsFactorExtractor {
-    /// `library`: `TraceLibrary.toBytes()`. `tol` (noise units) and
-    /// `max_sweeps`: 0 = defaults.
+    /// `library`: `TraceLibrary.toBytes()`. The solver's settings come
+    /// from `params` (`trace`).
     #[wasm_bindgen(constructor)]
-    pub fn new(library: &[u8], tol: f32, max_sweeps: u32) -> Result<JsFactorExtractor, JsError> {
+    pub fn new(library: &[u8], params: &ResolvedParams) -> Result<JsFactorExtractor, JsError> {
         console_error_panic_hook::set_once();
         let lib = Library::from_bytes(library).map_err(|e| js_err("FactorExtractor", e))?;
-        let mut cfg = SolverConfig::default();
-        if tol > 0.0 {
-            cfg.tol = tol;
-        }
-        if max_sweeps > 0 {
-            cfg.max_sweeps = max_sweeps;
-        }
+        let cfg = params.engine().solver;
         let ids = lib.ids().iter().map(|&v| v as u32).collect();
         let inner =
             FactorExtractor::new(Arc::new(lib), cfg).map_err(|e| js_err("FactorExtractor", e))?;
