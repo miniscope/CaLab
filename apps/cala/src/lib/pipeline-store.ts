@@ -162,6 +162,14 @@ export function createPipelineStore(
    */
   const [lookback, setLookback] = createSignal(true);
   const [lookbackRun, setLookbackRun] = createSignal(false);
+  /**
+   * Repeatable runs (recordings; `?debug&repeatable=0` turns it off for the next start): at a
+   * target speed, the slow worker applies results at batch barriers and the fast loop adopts
+   * libraries at stamped frames (`RunCells.repeatable`). A live stream never is.
+   */
+  const [repeatable, setRepeatable] = createSignal(true);
+  /** The current run is repeatable (a recording with `repeatable` on at its start). */
+  const [repeatableRun, setRepeatableRun] = createSignal(false);
   const [factors, setFactors] = createSignal(false);
   const [factorRun, setFactorRun] = createSignal(false);
   const [factorsFile, setFactorsFile] = createSignal(false);
@@ -485,6 +493,7 @@ export function createPipelineStore(
     if (lookbackSession) lookbackFeed?.reset(lookbackSession);
     lookbackSession = 0;
     setLookbackRun(false);
+    setRepeatableRun(false);
     setFactorRun(false);
     setFactorFileRun(false);
     setGpuFactorRun(false);
@@ -533,8 +542,11 @@ export function createPipelineStore(
       const seed = flatStore.seed(rec);
       // Look-back (on by default for recordings): from this start on, if the recording allows it.
       const lb = lookback() && discover() && lookbackFeed?.begin(session) === true;
+      const live = flat.identity?.()?.live === true;
+      const rep = repeatable() && !live;
+      setRepeatableRun(rep);
       const runPlan = factorRunPlan({
-        live: flat.identity?.()?.live === true,
+        live,
         factors: factors(),
         factorsFile: factorsFile(),
         factorsGpu: factorsGpu(),
@@ -586,6 +598,7 @@ export function createPipelineStore(
               : {}),
             // The Final settle's visit rate (a recording's or a stream's settle; with visit workers).
             ...(discover() ? { settleVisitRate: settleVisits } : {}),
+            repeatable: rep,
           }),
           qc,
           residual: residual(),
@@ -756,6 +769,9 @@ export function createPipelineStore(
     lookbackBlocked: () =>
       lookbackFeed ? lookbackFeed.blocked() : 'Look-back is not available here.',
     lookbackRun,
+    repeatable,
+    setRepeatable,
+    repeatableRun,
     /** How much of the final settle pass is read (Thorough, Standard, Quick); the setting for the next Discover start. */
     finalSettleLevel: finalSettleLevelSig,
     /** The level the current run started with (the selection before any run); what the run record names. */

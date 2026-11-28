@@ -60,6 +60,8 @@ export interface PageFlags {
   csettle: PageCsettle | null;
   /** `?debug&needfirst` (not `=0`): need-driven look-back goes first. */
   needFirst: boolean;
+  /** `?debug&repeatable=0`: a recording's run is not repeatable (results apply as they arrive). */
+  repeatableOff: boolean;
   /** `?debug&visitrate=off|auto|...` (null: not set). */
   visitRate: VisitRateSetting | null;
   /** `?debug&settlevisits=R` (null: not set). */
@@ -107,6 +109,7 @@ export function parsePageFlags(search: string | URLSearchParams): PageFlags {
           }
         : null,
     needFirst: debug && p.has('needfirst') && p.get('needfirst') !== '0',
+    repeatableOff: debug && p.get('repeatable') === '0',
     visitRate: debug && p.has('visitrate') ? visitRateSetting(p.get('visitrate')) : null,
     settleVisits: debug && p.has('settlevisits') ? settleVisitRate(p.get('settlevisits')) : null,
     paceFps: debug && p.has('pacefps') ? Number(p.get('pacefps')) : null,
@@ -139,6 +142,7 @@ export const KNOWN_FLAGS = [
   'detlog',
   'gpucheck',
   'needfirst',
+  'repeatable',
   'smooth',
   'gpu',
   'flatfield',
@@ -195,6 +199,8 @@ function inEffect(name: string, p: URLSearchParams): boolean {
       return f.gpucheck > 0;
     case 'needfirst':
       return f.needFirst;
+    case 'repeatable':
+      return f.repeatableOff;
     case 'smooth':
       return f.smoothOff;
     case 'gpu':

@@ -302,6 +302,8 @@ const App: Component = () => {
   // `?debug&needfirst` (measurement only): with one look-back worker, need-driven look-back
   // goes first and Background settle asks only when it has nothing to ask.
   if (flags.needFirst) pipeline.setCsettleNeedFirst(true);
+  // `?debug&repeatable=0` (measurement only): results applied as they arrive, as for a live stream.
+  if (flags.repeatableOff) pipeline.setRepeatable(false);
   // `?debug&visitrate=off|auto` (measurement only): no Discover visit cap and no hold (the
   // behaviour before the fixed visit rate), or the opt-in Auto schedule instead of the fixed rate (`lib/visit-rate.ts`).
   if (flags.visitRate !== null) pipeline.setVisitRateSetting(flags.visitRate);
@@ -742,6 +744,7 @@ const App: Component = () => {
       residual: pipeline.residual,
       lookback: pipeline.lookback,
       lookbackRun: pipeline.lookbackRun,
+      repeatableRun: pipeline.repeatableRun,
       csettle: pipeline.csettle,
       csettleCeiling: pipeline.csettleCeiling,
       csettleYield: pipeline.csettleYield,
@@ -969,6 +972,7 @@ const App: Component = () => {
         if (a.csettleCeiling !== undefined) pipeline.setCsettleCeiling(a.csettleCeiling);
         if (a.csettleYield !== undefined) pipeline.setCsettleYield(a.csettleYield);
         if (a.csettleNeedFirst !== undefined) pipeline.setCsettleNeedFirst(a.csettleNeedFirst);
+        if (a.repeatable !== undefined) pipeline.setRepeatable(a.repeatable);
         if (a.finalSettleLevel !== undefined) pipeline.setFinalSettleLevel(a.finalSettleLevel);
         if (a.paceFps !== undefined) pipeline.setPaceFps(a.paceFps, 'run record');
         // A Curve or Auto run replays as a curve: exactly its realised steps (the pace above is

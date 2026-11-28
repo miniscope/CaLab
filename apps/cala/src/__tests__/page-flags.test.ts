@@ -127,6 +127,9 @@ describe('urlFlags', () => {
     expect(inEffect('?debug&smooth=1', 'smooth')).toBe(false);
     expect(inEffect('?debug&smooth', 'smooth')).toBe(false);
     expect(inEffect('?debug&needfirst=0', 'needfirst')).toBe(false);
+    expect(inEffect('?debug&repeatable=1', 'repeatable')).toBe(false);
+    expect(inEffect('?repeatable=0', 'repeatable')).toBe(false);
+    expect(inEffect('?debug&repeatable=0', 'repeatable')).toBe(true);
     expect(inEffect('?debug&visitrate=fixed', 'visitrate')).toBe(false);
     expect(inEffect('?debug&cbacklog=0', 'cbacklog')).toBe(false);
     expect(inEffect('?debug&gpucheck=0', 'gpucheck')).toBe(false);
