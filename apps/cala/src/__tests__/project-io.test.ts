@@ -1,114 +1,125 @@
 import { describe, expect, it } from 'vitest';
-import { addGroup, afterGroup, moveGroup, removeGroup, planSummary } from '../lib/run-plan.ts';
+import { emptyIndex, emptyProject, readIndexFile, readProjectFile } from '@calab/project';
 import {
+  existingDir,
+  fileAt,
+  fileInEntries,
+  projectFilesFromEntries,
   projectRunSink,
-  readResultsFiles,
-  resultsFilesFromEntries,
-  writeIndex,
+  projectZipSink,
+  readProjectFiles,
+  writeProject,
 } from '../lib/project-io.ts';
-import { emptyIndex, parseIndex } from '../lib/project-index.ts';
 import { createMemoryRecentStore, MAX_RECENT, rememberProject } from '../lib/recent-projects.ts';
 import { MemDir } from './mem-dir.ts';
 
-describe('run plan', () => {
-  const order = ['a', 'b', 'c', 'd', 'e', 'f'];
-
-  it('builds a mixed plan: a chain, separate runs, another chain', () => {
-    let plan = addGroup([], 'joint', ['c', 'a', 'b'], order);
-    plan = addGroup(plan, 'separate', ['d', 'e'], order);
-    plan = addGroup(plan, 'joint', ['f'], order);
-    expect(plan).toEqual([
-      { kind: 'joint', sessions: ['a', 'b', 'c'] },
-      { kind: 'separate', sessions: ['d', 'e'] },
-      // A one-session chain is a Separate run.
-      { kind: 'separate', sessions: ['f'] },
-    ]);
-    expect(planSummary(plan)).toBe('3 groups, 6 sessions');
-  });
-
-  it('moves a session to its new group; empty groups go', () => {
-    let plan = addGroup([], 'joint', ['a', 'b'], order);
-    plan = addGroup(plan, 'separate', ['c'], order);
-    plan = addGroup(plan, 'joint', ['b', 'c'], order);
-    expect(plan).toEqual([
-      { kind: 'separate', sessions: ['a'] },
-      { kind: 'joint', sessions: ['b', 'c'] },
-    ]);
-  });
-
-  it('removes and moves groups', () => {
-    const plan = addGroup(addGroup([], 'joint', ['a', 'b'], order), 'separate', ['c'], order);
-    expect(removeGroup(plan, 0)).toEqual([{ kind: 'separate', sessions: ['c'] }]);
-    expect(moveGroup(plan, 1, 0).map((g) => g.kind)).toEqual(['separate', 'joint']);
-  });
-
-  it('runs groups in turn and stops on a stopped group', () => {
-    expect(afterGroup(3, 0, { finished: true })).toEqual({ kind: 'running', group: 1 });
-    expect(afterGroup(3, 2, { finished: true })).toEqual({ kind: 'done' });
-    expect(afterGroup(3, 1, { stopped: 'Extract was cancelled.' })).toEqual({
-      kind: 'stopped',
-      group: 1,
-      reason: 'Extract was cancelled.',
-    });
-  });
+const NOW = new Date('2026-11-28T12:00:00Z');
+const entry = (path: string, text: string) => ({
+  file: new File([text], path.split('/').pop()!),
+  relPath: path,
 });
 
 describe('project files', () => {
-  it('reads the index and run files under a results folder, not the exports', async () => {
-    const dir = new MemDir('cala-results');
-    await dir.put('cala-project.json', '{}');
-    await dir.put('cala-run.json', '{"a":1}');
-    await dir.put('d/s/cala-session.json', '{"b":2}');
-    await dir.put('d/s/cala-export.npz', 'binary');
-    await dir.put('runs/r1/cala-run.json', '{}');
-    const files = await readResultsFiles(dir);
+  it('reads the JSON files under the project folder, not the exports', async () => {
+    const dir = new MemDir('calab-project');
+    await dir.put('calab-project.json', '{}');
+    await dir.put('calab-index.json', '{"a":1}');
+    await dir.put('runs/r1_cala/calab-run.json', '{"b":2}');
+    await dir.put('runs/r1_cala/d/s/cala-export.npz', 'binary');
+    const files = await readProjectFiles(dir);
     expect(files.map((f) => f.path)).toEqual([
-      'cala-project.json',
-      'cala-run.json',
-      'd/s/cala-session.json',
-      'runs/r1/cala-run.json',
+      'calab-index.json',
+      'calab-project.json',
+      'runs/r1_cala/calab-run.json',
     ]);
     expect(files[2].text).toBe('{"b":2}');
   });
 
   it('reads them from the files of a picked folder', async () => {
-    const f = (path: string, text: string) => ({
-      file: new File([text], path.split('/').pop()!),
-      relPath: path,
-    });
-    const files = await resultsFilesFromEntries(
+    const files = await projectFilesFromEntries(
       [
-        f('mouse1/cala-results/cala-run.json', '{}'),
-        f('mouse1/cala-results/a/cala-session.json', '{}'),
-        f('mouse1/a/0.avi', ''),
-        f('mouse1/a/metaData.json', '{}'),
+        entry('mouse1/calab-project/runs/r/calab-run.json', '{}'),
+        entry('mouse1/calab-project/calab-project.json', '{}'),
+        entry('mouse1/calab-project/runs/r/s/cala-export.npz', ''),
+        entry('mouse1/a/0.avi', ''),
+        entry('mouse1/a/metaData.json', '{}'),
       ],
       'mouse1',
     );
-    expect(files.map((x) => x.path)).toEqual(['a/cala-session.json', 'cala-run.json']);
+    expect(files.map((x) => x.path)).toEqual(['calab-project.json', 'runs/r/calab-run.json']);
   });
 
-  it('writes the index whole, keeping a corrupt one beside it first', async () => {
-    const dir = new MemDir('cala-results');
-    const idx = emptyIndex('mouse1', { kind: 'default', label: 'mouse1/cala-results' }, new Date());
-    await writeIndex(dir, idx, { text: '{broken', stamp: 'T' });
-    expect(dir.writes).toEqual(['cala-project.corrupt-T.json', 'cala-project.json']);
-    expect(dir.files.get('cala-project.corrupt-T.json')).toBe('{broken');
-    const back = parseIndex(dir.files.get('cala-project.json')!);
-    expect(back.ok && back.index).toEqual(idx);
+  it('finds a result file by its path in the project folder, or says what is missing', async () => {
+    const dir = new MemDir('calab-project');
+    await dir.put('runs/r1/s/cala-export.npz', 'npz');
+    expect(await (await fileAt(dir, 'runs/r1/s/cala-export.npz')).text()).toBe('npz');
+    expect(await (await fileAt(dir, './runs//r1/s/cala-export.npz')).text()).toBe('npz');
+    await expect(fileAt(dir, '')).rejects.toThrow('No file was named.');
+    await expect(fileAt(dir, 'runs/r2/s/cala-export.npz')).rejects.toThrow('(no r2/)');
+    await expect(fileAt(dir, 'runs/r1/s/other.npz')).rejects.toThrow(
+      'runs/r1/s/other.npz is not in the project folder.',
+    );
+    // A file where a folder is expected is not a folder.
+    await expect(fileAt(dir, 'runs/r1/s/cala-export.npz/x')).rejects.toThrow('(no cala-export');
+  });
+
+  it('finds a result among the files of a picked folder', () => {
+    const files = [entry('mouse1/calab-project/runs/r/s/cala-export.npz', 'x')];
+    expect(fileInEntries(files, 'mouse1', 'runs/r/s/cala-export.npz').name).toBe('cala-export.npz');
+    expect(() => fileInEntries(files, 'mouse1', 'runs/q/cala-export.npz')).toThrow(
+      'pick the animal folder again',
+    );
+  });
+
+  it('opens a folder only when it exists', async () => {
+    const dir = new MemDir('mouse1');
+    await dir.put('calab-project/calab-project.json', '{}');
+    expect((await existingDir(dir, 'calab-project'))?.name).toBe('calab-project');
+    expect(await existingDir(dir, 'other')).toBeNull();
+    expect(dir.dirs.has('other')).toBe(false);
+    expect(await existingDir({ kind: 'directory', name: 'x', values: dir.values }, 'a')).toBeNull();
+  });
+
+  it('writes the project file and the index, each checked and whole', async () => {
+    const dir = new MemDir('calab-project');
+    const project = emptyProject('mouse1', NOW, 'p-1');
+    await writeProject(dir, project, emptyIndex(NOW));
+    expect(dir.writes).toEqual(['calab-project.json', 'calab-index.json']);
+    const p = readProjectFile(dir.files.get('calab-project.json')!);
+    expect(p.ok && p.value).toEqual(project);
+    expect(readIndexFile(dir.files.get('calab-index.json')!).ok).toBe(true);
+    // A refused project file is never written over: only the index is.
+    await writeProject(dir, null, emptyIndex(NOW));
+    expect(dir.writes).toEqual(['calab-project.json', 'calab-index.json', 'calab-index.json']);
+    // Nothing invalid reaches the disk.
+    await expect(
+      writeProject(dir, { ...project, version: 'x' } as never, emptyIndex(NOW)),
+    ).rejects.toThrow();
+    expect(dir.writes).toHaveLength(3);
   });
 
   it('makes a new run folder, never reusing one', async () => {
-    const dir = new MemDir('cala-results');
-    await dir.put('runs/r1/cala-run.json', 'old');
-    const { sink, folder } = await projectRunSink(dir, 'r1', 'mouse1/cala-results');
-    expect(folder).toBe('runs/r1_2');
-    expect(sink.root).toBe('mouse1/cala-results/runs/r1_2');
-    await sink.writeText('a/cala-session.json', '{}');
-    expect(dir.dirs.get('runs')!.dirs.get('r1')!.files.get('cala-run.json')).toBe('old');
-    expect(
-      dir.dirs.get('runs')!.dirs.get('r1_2')!.dirs.get('a')!.files.get('cala-session.json'),
-    ).toBe('{}');
+    const dir = new MemDir('calab-project');
+    await dir.put('runs/r1/calab-run.json', 'old');
+    const { id, sink, folder } = await projectRunSink(dir, 'r1', 'mouse1');
+    expect([id, folder]).toEqual(['r1_2', 'runs/r1_2']);
+    expect(sink.root).toBe('mouse1/runs/r1_2');
+    await sink.writeText('calab-run.json', '{}');
+    expect(dir.dirs.get('runs')!.dirs.get('r1')!.files.get('calab-run.json')).toBe('old');
+    expect(dir.dirs.get('runs')!.dirs.get('r1_2')!.files.get('calab-run.json')).toBe('{}');
+    // The runs folder is made when there is none.
+    const fresh = await projectRunSink(new MemDir('calab-project'), 'r1', 'mouse1');
+    expect(fresh.folder).toBe('runs/r1');
+  });
+
+  it('without the File System Access API, a run is a zip of its project tree', () => {
+    const z = projectZipSink('r1_cala');
+    expect([z.id, z.folder, z.sink.root, z.sink.method]).toEqual([
+      'r1_cala',
+      'runs/r1_cala',
+      'calab-project/runs/r1_cala',
+      'zip',
+    ]);
   });
 });
 

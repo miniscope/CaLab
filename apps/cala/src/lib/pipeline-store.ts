@@ -231,7 +231,14 @@ export function createPipelineStore(
     sources: Record<string, RequestSource>;
     /** Asked for but set by the app's own settings at this start: pointer → asked and used. */
     overridden: Record<string, { asked: unknown; used: unknown }>;
+    /** Keys of the loaded config file that are not params fields (never resolved), as pointers. */
+    ignored: string[];
   } | null>(null);
+  /**
+   * Awaited after the run's params are resolved and before the first frame is sent (the run file
+   * is written here). A rejection fails the start.
+   */
+  let beforeFrames: (() => Promise<void>) | null = null;
   /** The Final settle level the current run started with (null: no run yet), so the run record names what ran. */
   let runLevel: ReturnType<typeof finalSettleLevel> | null = null;
   /** Session of the current run with look-back (0: none). */
@@ -630,7 +637,12 @@ export function createPipelineStore(
         requested = deleteAt(requested, ptr);
         delete sources[ptr];
       }
-      setRunRequest({ requested, sources, overridden });
+      setRunRequest({
+        requested,
+        sources,
+        overridden,
+        ignored: params.unknown().map((u) => u.pointer),
+      });
       if (lb) {
         lookbackSession = session;
         // Without an estimator this session, the flat-field input is final from the start.
@@ -704,6 +716,10 @@ export function createPipelineStore(
         // workers and a settle pool are added when the first work reading counts them.
         workers: 4 + (lookbackRun() ? 1 : 0),
       });
+      if (beforeFrames) {
+        await beforeFrames();
+        if (gen !== generation) return;
+      }
       workReadout.start();
       setStatus('running');
       syncFramePreview(0);
@@ -796,6 +812,10 @@ export function createPipelineStore(
     params,
     /** What the current run asked for and where each value came from (null: no run yet). */
     runRequest,
+    /** Set the hook awaited before a run's first frame (null: none). */
+    setBeforeFrames: (fn: (() => Promise<void>) | null) => {
+      beforeFrames = fn;
+    },
     /** The residual preview is being produced (the residual view is shown). */
     residual,
     /**

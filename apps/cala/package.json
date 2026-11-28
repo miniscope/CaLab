@@ -34,9 +34,10 @@
   },
   "dependencies": {
     "@calab/community": "*",
-    "@calab/compute": "*",
     "@calab/community-ui": "*",
+    "@calab/compute": "*",
     "@calab/io": "*",
+    "@calab/project": "*",
     "@calab/tutorials": "*",
     "@calab/ui": "*",
     "@dschz/solid-uplot": "^0.5.2",

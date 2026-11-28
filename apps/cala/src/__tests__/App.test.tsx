@@ -5,6 +5,8 @@ import type { FrameClient } from '../lib/frame-client.ts';
 import type { PipelineStepResult } from '../lib/pipeline-types.ts';
 import type { PipelinePlan } from '../lib/pipeline-plan.ts';
 import { makeFile } from './synth-avi.ts';
+import { fileText } from '@calab/project';
+import { calaRunFile } from '../lib/run-file.ts';
 
 // uPlot needs a real browser (matchMedia); the shared barrels pull it in but
 // this app draws no charts.
@@ -558,7 +560,9 @@ describe('App: multi-session run', () => {
     expect(fake.open).not.toHaveBeenCalled();
     // day2 started first (metaData.json recordingStartTime).
     expect(items[0].textContent).toContain('day2/12_00_00/My_V4_Miniscope');
-    expect(items[0].textContent).toContain('cala-results/day2/12_00_00/My_V4_Miniscope');
+    expect(items[0].textContent).toContain(
+      'calab-project/runs/<run>/day2/12_00_00/My_V4_Miniscope',
+    );
     // The behaviour camera is not a session; the two sizes differ: an error, no start.
     await vi.waitFor(() =>
       expect(root.querySelector('[data-testid="session-error"]')?.textContent).toContain(
@@ -607,39 +611,55 @@ describe('App: animal project', () => {
         `mouse1/${d}/09_00_00`,
       ),
     ]);
-  /** Two earlier separate runs of the first session, as their folders hold them. */
+  /** Two earlier separate runs of the first session, as their run folders hold them. */
   const runFiles = () =>
     [
       ['r1', '2026-11-12T00:00:00.000Z'],
       ['r2', '2026-11-13T00:00:00.000Z'],
-    ].flatMap(([run, created]) => [
+    ].map(([run, created]) =>
       makeFile(
-        'cala-run.json',
-        JSON.stringify({
-          format: 'cala-run',
-          created,
-          mode: 'separate',
-          sessions: [
-            { path: `mouse1/${sid(days[0])}`, results_path: sid(days[0]), status: 'written' },
-          ],
-        }),
-        `mouse1/cala-results/runs/${run}`,
+        'calab-run.json',
+        fileText(
+          'run',
+          calaRunFile({
+            id: run,
+            project: null,
+            plan: null,
+            status: 'finished',
+            stopped: null,
+            created,
+            updated: created,
+            version: 'test',
+            joint: false,
+            record: {
+              stages: [
+                { stage: 'discover', outcome: 'done' },
+                { stage: 'extract', outcome: 'done' },
+              ],
+            },
+            sessions: [
+              {
+                stream: sid(days[0]),
+                info: null,
+                record: {
+                  index: 0,
+                  name: sid(days[0]),
+                  dir: `mouse1/${sid(days[0])}`,
+                  resultsPath: sid(days[0]),
+                  startFrame: 0,
+                  frames: 800,
+                  fps: 20,
+                  recordingStartMs: null,
+                  status: 'written',
+                },
+                written: { cells: 4, libraryVersion: 2, created },
+              },
+            ],
+          }),
+        ),
+        `mouse1/calab-project/runs/${run}`,
       ),
-      makeFile(
-        'cala-session.json',
-        JSON.stringify({
-          format: 'cala-session',
-          created,
-          cells: 4,
-          stages_run: [
-            { stage: 'discover', outcome: 'done' },
-            { stage: 'refine', outcome: 'done' },
-            { stage: 'extract', outcome: 'done' },
-          ],
-        }),
-        `mouse1/cala-results/runs/${run}/${sid(days[0])}`,
-      ),
-    ]);
+    );
   const openProject = (root: HTMLElement, files: File[]) => {
     const input = root.querySelector<HTMLInputElement>('[data-testid="project-input"]')!;
     Object.defineProperty(input, 'files', { value: files, configurable: true });
@@ -668,9 +688,7 @@ describe('App: animal project', () => {
     expect(first.querySelector('[data-testid="cell-current"]')!.textContent).toContain('run r2');
     expect(first.querySelector('[data-testid="cell-ids"]')!.textContent).toBe('own');
     expect(second.querySelector('[data-testid="cell-current"]')!.textContent).toBe('—');
-    expect(root.querySelector('[data-testid="project-warning"]')!.textContent).toContain(
-      '2 existing run folders',
-    );
+    expect(root.querySelector('[data-testid="project-warning"]')).toBeNull();
     expect(fake.open).not.toHaveBeenCalled();
   });
 
@@ -685,7 +703,7 @@ describe('App: animal project', () => {
       return el;
     });
     expect(items[0].textContent).toContain('run r2 (current)');
-    expect(items[0].textContent).toContain('mouse1/cala-results/runs/r2/');
+    expect(items[0].textContent).toContain('mouse1/calab-project/runs/r2/');
     items[1].querySelector<HTMLButtonElement>('[data-testid="set-current"]')!.click();
     await vi.waitFor(() =>
       expect(rows(root)[0].querySelector('[data-testid="cell-current"]')!.textContent).toContain(

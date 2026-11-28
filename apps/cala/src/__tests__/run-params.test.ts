@@ -415,3 +415,66 @@ describe('a µm cell diameter is never replaced by the default pixels', () => {
     });
   });
 });
+
+describe('the run file goes to disk before the first frame', () => {
+  const make = () => {
+    const startPipeline = vi.fn(async () => testPlan(100));
+    const stepPipeline = vi.fn(() => new Promise<never>(() => {}));
+    const store = createPipelineStore(
+      {
+        startPipeline,
+        stepPipeline,
+        stopPipeline: async () => {},
+        subscribeFlatField: () => () => {},
+      },
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      undefined,
+      lookbackFeed(),
+    );
+    return { store, startPipeline, stepPipeline };
+  };
+
+  it('awaits the hook once the params are resolved, and pumps no frame until it is done', async () => {
+    const { store, startPipeline, stepPipeline } = make();
+    let release!: () => void;
+    const seen: { params: boolean; steps: number; status: string }[] = [];
+    store.setBeforeFrames(async () => {
+      seen.push({
+        params: store.runRequest() !== null,
+        steps: stepPipeline.mock.calls.length,
+        status: store.status(),
+      });
+      await new Promise<void>((r) => (release = r));
+    });
+    const started = store.start();
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    expect(startPipeline).toHaveBeenCalledTimes(1);
+    expect(seen[0]).toEqual({ params: true, steps: 0, status: 'starting' });
+    expect(stepPipeline).not.toHaveBeenCalled();
+    release();
+    await started;
+    expect(store.status()).toBe('running');
+    await vi.waitFor(() => expect(stepPipeline).toHaveBeenCalled());
+  });
+
+  it('a failed hook stops the start: no frame is read', async () => {
+    const { store, stepPipeline } = make();
+    store.setBeforeFrames(async () => {
+      throw new Error('the run folder could not be written');
+    });
+    await store.start();
+    expect(store.status()).toBe('error');
+    expect(store.error()).toContain('could not be written');
+    expect(stepPipeline).not.toHaveBeenCalled();
+    // Without a hook, frames start at once.
+    store.setBeforeFrames(null);
+    await store.start();
+    expect(store.status()).toBe('running');
+  });
+});

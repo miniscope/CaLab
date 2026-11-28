@@ -22,8 +22,8 @@ function writeMovie(dir: string): string {
 
 /**
  * A config file sets the cell diameter the way the sheet leads with: µm at the sample through
- * the microscope's optics. The run then carries it: the export's run record has the request,
- * where it came from, and the diameter in pixels the engine used.
+ * the microscope's optics. The run then carries it: the export's run file (`meta_json.run`) has
+ * the request, where it came from, and the diameter in pixels the engine used.
  */
 test('Cala: a config file sets the cell diameter, and the run carries it', async ({ page }) => {
   test.setTimeout(240_000);
@@ -71,5 +71,9 @@ test('Cala: a config file sets the cell diameter, and the run carries it', async
   expect(meta).toContain('"cell_diameter":{"px":12,"source":"optics","um_per_px":2}');
   expect(meta).toContain('"/scales/expected_cell_diameter_um":"file:cala-d12.json"');
   expect(meta).toContain('"requested":{"optics":{"sensor_pixel_um":4,"magnification":2}');
-  expect(meta).not.toContain('acept_z');
+  // The misspelt key is kept in the run file's config as ignored, and nowhere else.
+  const run = JSON.parse(meta).run;
+  expect(run.format).toBe('calab-run');
+  expect(run.config.ignored).toEqual(['/discover/acept_z']);
+  expect(meta.split('acept_z')).toHaveLength(2);
 });

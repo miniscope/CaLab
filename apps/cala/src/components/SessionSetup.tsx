@@ -9,7 +9,7 @@ import {
   type LibraryMode,
   type RunSettings,
 } from '../lib/session-run.ts';
-import { RESULTS_DIR } from '../lib/sessions.ts';
+import { PROJECT_DIR } from '@calab/project';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { DiscoverSettings } from './DiscoverSettings.tsx';
 import { isPickerAbort, showPicker, supportsDirectoryPicker } from '../lib/directory-picker.ts';
@@ -133,7 +133,7 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
                       </Show>
                     </span>
                     <span class="cala-sessions__out">
-                      results: {RESULTS_DIR}/{s().resultsPath}
+                      results: {PROJECT_DIR}/runs/&lt;run&gt;/{s().resultsPath}
                     </span>
                   </div>
                   <div class="cala-sessions__actions">
@@ -247,8 +247,8 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
             when={supportsDirectoryPicker()}
             fallback={
               <span>
-                downloaded as one <code>{RESULTS_DIR}.zip</code> when the run ends (this browser
-                cannot write to a folder; Chrome and Edge can).
+                downloaded as a <code>{PROJECT_DIR}_&lt;run&gt;.zip</code> when each run ends (this
+                browser cannot write to a folder; Chrome and Edge can).
               </span>
             }
           >
@@ -259,7 +259,7 @@ export function SessionSetup(props: SessionSetupProps): JSX.Element {
               {(loc) => (
                 <span>
                   <code>
-                    {loc().label}/{RESULTS_DIR}/
+                    {loc().label}/{PROJECT_DIR}/
                   </code>
                   {loc().chosen ? '' : ' (the data folder)'}
                 </span>

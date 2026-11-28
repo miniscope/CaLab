@@ -1,7 +1,6 @@
 /**
  * The page's URL flags, in one place: what each one does to a run (`parsePageFlags`, read once by
- * `App.tsx`) and how the run record lists them (`urlFlags`, `cala-run-record.json`
- * `url_flags`). Debug-only flags take effect only with `?debug`.
+ * `App.tsx`) and how the run record lists them (`urlFlags`, `record.url_flags` of `calab-run.json`). Debug-only flags take effect only with `?debug`.
  *
  * `urlFlags` derives each flag's `in_effect` from `parsePageFlags`, so the record says what the
  * run did: a flag is in effect when the app's reading of it differs from the default.
