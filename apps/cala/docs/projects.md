@@ -162,6 +162,21 @@ rebuild:
 }
 ```
 
+#### Settings layers
+
+`defaults.cala.params`, a step's `params` and a stream's `overrides.cala` are
+partial cala params (any subset of `crates/cala/schema/cala-params.schema.json`).
+A run's params resolve, lowest first: schema defaults → project `defaults` →
+step `params` → the stream's `overrides` (only when the run has that one
+stream: a Separate run, not a Joint one) → a loaded config file → the sheet's
+edits. The run file's `config.sources` names the layer of each requested value
+(`project`, `step`, `stream`, `file:<name>`, `ui`). In the sheet, **Save as
+project defaults** merges the sheet's edits and a loaded file's values into
+`defaults` (and drops those keys from the open session's override); with **This
+session only** they go into the open stream's `overrides` instead. A block that
+breaks the schema, or `defaults` of another params version, is named in a
+warning and not used.
+
 ### `calab-run.json`: one run
 
 The truth of one run, never edited by hand. One run is one config and one
@@ -335,8 +350,19 @@ start screen reopens one with a click (the browser asks for permission again).
 Other browsers pick the folder again; each run downloads as
 `calab-project_<run id>.zip`, the run's folder with the project file and the
 index as they were when it ended, to unpack into the animal folder; the next
-open reads it. A plan edited there lives in the project file of the next run's
-zip only.
+open reads it.
+
+Until the project file is written to the folder (no permission yet, or no File
+System Access API), its draft is kept in IndexedDB (`calab-drafts`, keyed by
+the folder name and each stream with its first video's size and date). The
+next open of the same folder uses the draft when the folder has no project
+file, or when the draft is newer than the folder's file of the same project; a
+warning says so. The draft is removed once the file is written to the folder.
+
+A run that goes into a zip keeps its `calab-run.json` in OPFS
+(`calab-saved-runs/`) until it ends. If the tab closes or crashes first, the
+next open of the project offers **Download run file**, and a step left
+`running` is marked `stopped` so it can start again.
 
 ## Session boundaries in Joint runs
 
@@ -359,10 +385,12 @@ the flag of the result's session.
 
 ## Not yet (later PRs)
 
-- `defaults`, per-stream `overrides` and step `params` in `calab-project.json`
-  are kept and written back, but not yet applied as layers to a run's params.
-- Without write permission the draft project is not mirrored in IndexedDB, and
-  without the File System Access API there is no OPFS copy of the run file.
+- A Joint run takes no stream `overrides`.
+- The plan view has no editor for a step's `params` (hand-edit the file).
+- Safari before `createWritable` in OPFS keeps no copy of the run file (the draft
+  project file is kept).
+- "When defaults have moved": a loaded run file is not compared against today's
+  defaults.
 - A live stream's results folder cannot be picked before it starts: its run is
   always a zip.
 - Saved library files, **Apply**, extending a Joint run from its library, the

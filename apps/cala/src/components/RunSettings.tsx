@@ -9,7 +9,13 @@ import { getAt, layerEntries, schemaFields, type ParamField } from '@calab/core'
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { FINAL_SETTLE_LEVELS, type FinalSettleLevel } from '../lib/settle.ts';
 import { appliesText, type SettingsContext } from './DiscoverSettings.tsx';
-import { isRefusal, PARAMS_SCHEMA, readConfig, type ConfigRefusal } from '../lib/config-file.ts';
+import {
+  isRefusal,
+  PARAMS_SCHEMA,
+  readConfigFile,
+  type ConfigRefusal,
+} from '../lib/config-file.ts';
+import type { ParamsLayer } from '../lib/run-params.ts';
 import { SET_AT_START, sheetShows } from '../lib/sheet-fields.ts';
 
 export interface RunSettingsProps {
@@ -23,6 +29,18 @@ export interface RunSettingsProps {
   extractRunning?: boolean;
   /** Width of the recording's frames, px (0: none open); the optics' binning may follow it. */
   frameWidth: number;
+  /** Saving the sheet's values into the open project (absent: no project). */
+  projectParams?: ProjectParams;
+}
+
+/** Saving the sheet's values into the project file (`docs/projects.md`, "Settings layers"). */
+export interface ProjectParams {
+  /** The values can be saved (a project is open and can be changed). */
+  canSave: () => boolean;
+  /** The session "This session only" saves to (null: the run has several streams). */
+  session: () => string | null;
+  /** Save `layer` as project defaults, or as the session's own values. */
+  save: (scope: 'project' | 'stream', layer: ParamsLayer) => Promise<boolean>;
 }
 
 const GROUP_TITLES = { scales: 'Cell size', optics: 'Microscope', stages: 'Stages' };
@@ -160,19 +178,36 @@ function RunSettingsFields(props: RunSettingsProps): JSX.Element {
   );
 }
 
-/** Load config / Save config, the loaded file, and what Load found in it. */
-function ConfigBar(props: { pipeline: PipelineStore }): JSX.Element {
+/**
+ * Load config / Save config, the loaded file, and what Load found in it; with a project, Save as
+ * project defaults (or for this session only).
+ */
+function ConfigBar(props: { pipeline: PipelineStore; projectParams?: ProjectParams }): JSX.Element {
   const params = () => props.pipeline.params;
   const [refusal, setRefusal] = createSignal<ConfigRefusal | null>(null);
+  /** The run file or export loaded last, to load again with or without the data's values. */
+  const [lastFile, setLastFile] = createSignal<File | null>(null);
+  const [pin, setPin] = createSignal(false);
+  const [sessionOnly, setSessionOnly] = createSignal(false);
   let input: HTMLInputElement | undefined;
-  const load = async (file: File) => {
-    const r = readConfig(await file.text(), file.name);
+  const load = async (file: File, pinDerived = false) => {
+    const r = await readConfigFile(file, { pinDerived });
     if (isRefusal(r)) {
       setRefusal({ ...r, message: `${file.name}: ${r.message}` });
       return;
     }
     setRefusal(null);
+    setLastFile(r.derived ? file : null);
+    setPin(pinDerived);
     params().load(r);
+  };
+  const edits = () => Object.keys(params().edits()).length;
+  const pp = () => props.projectParams;
+  const saveToProject = async () => {
+    const p = pp();
+    if (!p) return;
+    const scope = sessionOnly() && p.session() !== null ? 'stream' : 'project';
+    if (await p.save(scope, params().edits())) params().dropEdits();
   };
   const save = () => {
     const blob = new Blob([params().saveText()], { type: 'application/json' });
@@ -198,7 +233,7 @@ function ConfigBar(props: { pipeline: PipelineStore }): JSX.Element {
           type="button"
           class="btn-secondary btn-small"
           data-testid="config-load"
-          title="Load settings from a config file (calab-config JSON)."
+          title="Load settings from a config file (calab-config JSON), a run file (calab-run.json) or a past export (.npz): what that run asked for."
           onClick={() => input?.click()}
         >
           Load config…
@@ -206,7 +241,7 @@ function ConfigBar(props: { pipeline: PipelineStore }): JSX.Element {
         <input
           ref={input}
           type="file"
-          accept=".json,application/json"
+          accept=".json,.npz,application/json"
           hidden
           data-testid="config-load-input"
           onChange={(e) => {
@@ -246,6 +281,53 @@ function ConfigBar(props: { pipeline: PipelineStore }): JSX.Element {
           {count() === 0 ? 'All defaults' : `${count()} set`}
         </span>
       </div>
+      <Show when={lastFile() && params().file()?.derived}>
+        {(derived) => (
+          <div class="cala-sheet__config-row">
+            <label
+              class="param-form__check"
+              title="Off: the run measures these again from its own data. On: they are set to the values the loaded run measured (an exact repeat)."
+            >
+              <input
+                type="checkbox"
+                data-testid="config-pin-derived"
+                checked={pin()}
+                onChange={(e) => void load(lastFile()!, e.currentTarget.checked)}
+              />
+              Also pin what the data set ({Object.keys(derived()).join(', ')})
+            </label>
+          </div>
+        )}
+      </Show>
+      <Show when={pp()?.canSave()}>
+        <div class="cala-sheet__config-row">
+          <button
+            type="button"
+            class="btn-secondary btn-small"
+            data-testid="config-save-defaults"
+            disabled={edits() === 0}
+            title={
+              sessionOnly()
+                ? "Save the values set here (and the loaded file's) as this session's own: they apply to its runs only."
+                : "Save the values set here (and the loaded file's) as the project's defaults: every run of the project starts from them."
+            }
+            onClick={() => void saveToProject()}
+          >
+            {sessionOnly() ? 'Save for this session' : 'Save as project defaults'}
+          </button>
+          <Show when={pp()!.session() !== null}>
+            <label class="param-form__check">
+              <input
+                type="checkbox"
+                data-testid="config-session-only"
+                checked={sessionOnly()}
+                onChange={(e) => setSessionOnly(e.currentTarget.checked)}
+              />
+              This session only
+            </label>
+          </Show>
+        </div>
+      </Show>
       <Show when={appSet().length > 0}>
         <ul class="cala-sheet__config-warn" data-testid="config-app-set" role="status">
           <For each={appSet()}>
@@ -347,7 +429,7 @@ export function PreRunSheet(
           <Icon name="play" size={14} /> Run
         </button>
       </div>
-      <ConfigBar pipeline={props.pipeline} />
+      <ConfigBar pipeline={props.pipeline} projectParams={props.projectParams} />
       <RunSettingsFields {...props} />
       <SheetSlot id="repeatable" title="Repeatable runs" />
       <SheetSlot id="seed" title="Start from footprints of a past run" />
@@ -355,6 +437,15 @@ export function PreRunSheet(
       {props.children}
     </section>
   );
+}
+
+/** Where a requested value came from, for a chip's tooltip. */
+export function sourceText(src: string): string {
+  if (src.startsWith('file:')) return `From ${src.slice(5)}`;
+  if (src === 'project') return "From the project's defaults";
+  if (src === 'step') return 'From the plan step';
+  if (src === 'stream') return "This session's own value";
+  return 'Set in the sheet';
 }
 
 /** The fields the summary line names with chips of its own. */
@@ -388,7 +479,7 @@ export function SettingsSummary(props: RunSettingsProps): JSX.Element {
         const src = r.sources[ptr];
         return {
           text: `${f.title} ${formatParam(f, getAt(r.requested, ptr))}`,
-          title: src.startsWith('file:') ? `From ${src.slice(5)}` : 'Set in the sheet',
+          title: sourceText(src),
         };
       });
   };
@@ -424,7 +515,7 @@ export function SettingsSummary(props: RunSettingsProps): JSX.Element {
         <span class="cala-run__summary-applies">{appliesOn()}</span>
       </summary>
       <div class="cala-run__summary-body">
-        <ConfigBar pipeline={props.pipeline} />
+        <ConfigBar pipeline={props.pipeline} projectParams={props.projectParams} />
         <RunSettingsFields {...props} />
       </div>
     </details>

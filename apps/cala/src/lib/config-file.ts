@@ -13,6 +13,7 @@ import {
   getAt,
   layerEntries,
   parseJsonWithComments,
+  schemaFields,
   setAt,
   type ParamIssue,
   type ParamSchema,
@@ -20,6 +21,8 @@ import {
 } from '@calab/core';
 import { CALA_PARAMS_SCHEMA, CALA_PARAMS_VERSION } from '../params/schema.ts';
 import type { ParamsLayer } from './run-params.ts';
+import { exportRunFile } from './result-file.ts';
+import { errMsg } from './errors.ts';
 
 /** The `format` string of a config file. */
 export const CONFIG_FORMAT = 'calab-config';
@@ -29,8 +32,11 @@ export const CONFIG_VERSION = 1;
 /** The params schema as the shared helpers type it. */
 export const PARAMS_SCHEMA = CALA_PARAMS_SCHEMA as unknown as ParamSchema;
 
-/** A source tag of a requested value: set in the sheet, or from a loaded file. */
-export type RequestSource = 'ui' | `file:${string}`;
+/**
+ * A source tag of a requested value (`docs/projects.md`, "Settings layers"): the project's defaults, the plan step, the
+ * stream's overrides, a loaded file, or set in the sheet.
+ */
+export type RequestSource = 'project' | 'step' | 'stream' | 'ui' | `file:${string}`;
 
 /** A config file as read. */
 export interface LoadedConfig {
@@ -46,6 +52,33 @@ export interface LoadedConfig {
   note?: string;
   /** What the file was: a config, a run file's request, or a bare params object. */
   kind: 'config' | 'run' | 'params';
+  /**
+   * A run file (or an export's): the values the data set (`derived`) that can be pinned as
+   * settings, pointer → value. Absent: none.
+   */
+  derived?: Record<string, unknown>;
+  /** The derived values pinned into `layer` (Load with "also pin what the data set"). */
+  pinned?: string[];
+}
+
+/** How a run file's `derived` pointer is pinned as a setting (others: the same pointer). */
+const DERIVED_SETTING: Record<string, string> = { '/time/fps': '/time/fps_override' };
+
+/**
+ * The settings a run file's `derived` values can be pinned as: pointer of the setting → value.
+ * A derived value whose pointer is not a setting, or that is not a plain value, is left out.
+ */
+export function derivedSettings(run: Record<string, unknown>): Record<string, unknown> {
+  const derived = isObject(run.derived) ? run.derived : {};
+  const fields = new Set(schemaFields(PARAMS_SCHEMA).map((f) => f.pointer));
+  const out: Record<string, unknown> = {};
+  for (const [ptr, d] of Object.entries(derived)) {
+    const value = isObject(d) ? d.value : undefined;
+    const target = DERIVED_SETTING[ptr] ?? ptr;
+    if (fields.has(target) && (typeof value === 'number' || typeof value === 'boolean'))
+      out[target] = value;
+  }
+  return out;
 }
 
 /** Why a file could not be loaded. */
@@ -90,7 +123,7 @@ function paramsOf(
       return { params: file.params ?? {}, kind: 'config', version: file.params_version };
     case 'calab-run': {
       const config = isObject(file.config) ? file.config : {};
-      return { params: config.requested ?? {}, kind: 'run', version: file.params_version };
+      return { params: config.requested ?? {}, kind: 'run', version: config.params_version };
     }
     case undefined: {
       // A config written by hand without its envelope keys.
@@ -106,13 +139,29 @@ function paramsOf(
 }
 
 /** Read a config file's text. */
-export function readConfig(text: string, name: string): LoadedConfig | ConfigRefusal {
+export function readConfig(
+  text: string,
+  name: string,
+  opts: { pinDerived?: boolean } = {},
+): LoadedConfig | ConfigRefusal {
   let json: unknown;
   try {
     json = parseJsonWithComments(text);
   } catch (e) {
     return refuse(`Not JSON: ${e instanceof Error ? e.message : String(e)}`);
   }
+  return readConfigJson(json, name, opts);
+}
+
+/**
+ * Read a parsed config: a `calab-config`, a run file (its `config.requested`; with `pinDerived`
+ * also the values the data set, as settings), or a bare params object.
+ */
+export function readConfigJson(
+  json: unknown,
+  name: string,
+  opts: { pinDerived?: boolean } = {},
+): LoadedConfig | ConfigRefusal {
   if (!isObject(json)) return refuse('Not a JSON object.');
   const got = paramsOf(json);
   if ('message' in got) return got;
@@ -122,7 +171,11 @@ export function readConfig(text: string, name: string): LoadedConfig | ConfigRef
     );
   }
   if (!isObject(got.params)) return refuse('Its params are not an object.');
-  const check = checkLayer(PARAMS_SCHEMA, got.params);
+  const derived = got.kind === 'run' ? derivedSettings(json) : {};
+  const pinned = opts.pinDerived ? Object.keys(derived) : [];
+  let params: Record<string, unknown> = got.params;
+  for (const ptr of pinned) params = setAt(params, ptr, derived[ptr]);
+  const check = checkLayer(PARAMS_SCHEMA, params);
   if (check.errors.length > 0) {
     return refuse('Some values are outside what the settings allow.', check.errors);
   }
@@ -130,7 +183,7 @@ export function readConfig(text: string, name: string): LoadedConfig | ConfigRef
     return refuse('No cala settings in this file.');
   }
   let ignored: Record<string, unknown> = {};
-  for (const u of check.unknown) ignored = setAt(ignored, u.pointer, getAt(got.params, u.pointer));
+  for (const u of check.unknown) ignored = setAt(ignored, u.pointer, getAt(params, u.pointer));
   return {
     name,
     layer: check.known as ParamsLayer,
@@ -138,7 +191,32 @@ export function readConfig(text: string, name: string): LoadedConfig | ConfigRef
     ignored,
     ...(typeof json.note === 'string' ? { note: json.note } : {}),
     kind: got.kind,
+    ...(Object.keys(derived).length > 0 ? { derived } : {}),
+    ...(pinned.length > 0 ? { pinned } : {}),
   };
+}
+
+/**
+ * Read a config from a dropped file: JSON (a config, a run file or params), or a cala export
+ * (`.npz`), whose `meta_json.run` is the run file it was written with.
+ */
+export async function readConfigFile(
+  file: File,
+  opts: { pinDerived?: boolean } = {},
+): Promise<LoadedConfig | ConfigRefusal> {
+  if (!file.name.toLowerCase().endsWith('.npz'))
+    return readConfig(await file.text(), file.name, opts);
+  let run: Record<string, unknown> | null;
+  try {
+    run = await exportRunFile(file);
+  } catch (e) {
+    return refuse(errMsg(e));
+  }
+  if (!run)
+    return refuse(
+      'This export is older than the run file (format 8): it does not carry its settings.',
+    );
+  return readConfigJson(run, file.name, opts);
 }
 
 /** True when `readConfig` refused the file. */
@@ -177,4 +255,22 @@ function mergeIgnored(
     out[k] = isObject(v) && isObject(out[k]) ? mergeIgnored(out[k], v) : v;
   }
   return out;
+}
+
+/**
+ * The config file of a run (its run file's `config.requested`, tagged with the run's sources):
+ * what the run asked for, without what the data set. Null when the run file has no usable
+ * request.
+ */
+export function runConfigText(run: object, note?: string): string | null {
+  const r = readConfigJson(run, 'run');
+  if (isRefusal(r)) return null;
+  const config = (run as { config?: { sources?: unknown } }).config;
+  const sources = isObject(config?.sources)
+    ? (config.sources as Record<string, RequestSource>)
+    : {};
+  return configText(r.layer, sources, {
+    ...(note ? { note } : {}),
+    ...(Object.keys(r.ignored).length > 0 ? { ignored: r.ignored } : {}),
+  });
 }

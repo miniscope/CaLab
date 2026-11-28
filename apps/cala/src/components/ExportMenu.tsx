@@ -13,10 +13,12 @@ import { markResultExported } from '../lib/export-state.ts';
 import { reportResultsExported } from '../lib/analytics-integration.ts';
 import { fileFactorNotes } from '../lib/factor-run.ts';
 import { errMsg } from '../lib/errors.ts';
+import { runConfigText } from '../lib/config-file.ts';
 import {
   cadeconCells,
   cadeconIsClassic,
   calaExportBytes,
+  downloadBlob,
   FACTORS_EXPORT_NOTE,
   EXPORT_FORMAT_VERSION,
   factorTailNote,
@@ -192,6 +194,24 @@ export function ExportMenu(props: ExportMenuProps): JSX.Element {
               }}
             >
               Export for CaDecon{exportResult() ? ` (${keptForCaDecon()} cells)` : ''}
+            </button>
+            <button
+              type="button"
+              class="btn-secondary btn-small"
+              data-testid="export-config"
+              disabled={!props.runFile?.()}
+              title="The settings this run asked for, as a config file (Load config takes it, or this run's .npz, in another recording)."
+              onClick={() => {
+                const run = props.runFile?.();
+                const text = run ? runConfigText(run, `Settings of run ${run.run.id}`) : null;
+                if (!text) return;
+                downloadBlob(
+                  `${fileStem(props.label)}_cala-config.json`,
+                  new Blob([text], { type: 'application/json' }),
+                );
+              }}
+            >
+              Config (.json)
             </button>
             <label class="cala-check">
               <input

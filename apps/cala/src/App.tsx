@@ -68,6 +68,8 @@ import { sessionBoundaries, sessionOfFrame } from './lib/frame-source.ts';
 import { supportsDirectoryPicker } from './lib/directory-picker.ts';
 import { ProjectView } from './components/ProjectView.tsx';
 import { createProjectStore, type ProjectOpen } from './lib/project-store.ts';
+import { createIdbDraftStore, createOpfsRunCopyStore } from './lib/browser-store.ts';
+import { SavedRuns } from './components/SavedRuns.tsx';
 import type { RunFile } from '@calab/project';
 import {
   createIndexedDbRecentStore,
@@ -897,6 +899,9 @@ const App: Component = () => {
       client.probe ? client.probe(s) : Promise.reject(new Error('Sessions cannot be read here.')),
     multiRun,
     recent: recentStore,
+    drafts: createIdbDraftStore(),
+    runCopies: createOpfsRunCopyStore(),
+    setBase: (layers) => pipeline.params.setBase(layers),
     version,
   });
   // ---- View results (docs/projects.md): a saved export, read-only ----
@@ -962,6 +967,17 @@ const App: Component = () => {
       setScreen('open');
     }
   }
+
+  /** The sheet's Save as project defaults / This session only (DESIGN §3.5). */
+  const projectParams = {
+    canSave: () => project.project() !== null && !project.readOnly() && !!project.layersFor(),
+    session: () => {
+      const refs = project.layersFor()?.refs ?? [];
+      return refs.length === 1 ? refs[0] : null;
+    },
+    save: (scope: 'project' | 'stream', layer: Record<string, unknown>) =>
+      project.saveParams(scope, layer),
+  };
 
   /** Why the last Run or Restart did not start a run (null: it did, or none was asked for). */
   const [runRefused, setRunRefused] = createSignal<string | null>(null);
@@ -1330,6 +1346,7 @@ const App: Component = () => {
               sessions={multiRun.plan()?.sessions.length ?? 1}
               onRun={runOpen}
               onRestart={restart}
+              projectParams={projectParams}
               visible={tab.active() === 'run'}
             />
             <SessionRunStatus />
@@ -1403,6 +1420,7 @@ const App: Component = () => {
             </div>
           )}
         </Show>
+        <SavedRuns project={project} />
         <div class="cala-main__fov">
           <Show when={expanded()} fallback={fov()}>
             <HistoryExpanded ui={historyUi} />

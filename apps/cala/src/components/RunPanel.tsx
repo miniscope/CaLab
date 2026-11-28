@@ -23,7 +23,7 @@ import { StepClock } from '../lib/step-view.ts';
 import type { HistoryUi } from './HistoryPanel.tsx';
 import { FACTORS_LIVE_NOTE } from '../lib/factor-run.ts';
 import type { SettingsContext } from './DiscoverSettings.tsx';
-import { PreRunSheet, SettingsSummary } from './RunSettings.tsx';
+import { PreRunSheet, SettingsSummary, type ProjectParams } from './RunSettings.tsx';
 import { SidePanel } from './SidePanel.tsx';
 import { Compute } from './Compute.tsx';
 import { TimeStrip } from './TimeStrip.tsx';
@@ -85,6 +85,8 @@ export interface RunPanelProps {
   onRun?: () => void;
   /** Restart (absent: Discover again in place). */
   onRestart?: () => void;
+  /** Saving the sheet's values into the open project (absent: no project). */
+  projectParams?: ProjectParams;
 }
 
 /**
@@ -329,6 +331,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               sessionRun={inSessionRun()}
               extractRunning={p().status() === 'running'}
               frameWidth={props.frameWidth}
+              projectParams={props.projectParams}
             />
           }
         >
@@ -339,6 +342,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             onAutoExtract={setExtractAfterDiscover}
             sessionRun={props.onRun !== undefined}
             frameWidth={props.frameWidth}
+            projectParams={props.projectParams}
             onRun={() => (props.onRun ? props.onRun() : void s().start())}
           />
         </Show>
