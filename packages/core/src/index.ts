@@ -61,3 +61,29 @@ export type { FitMetricsResult } from './metrics/solver-metrics.ts';
 
 // Spectrum
 export { computePeriodogram } from './spectrum/fft.ts';
+
+// Params schemas and partial params layers
+export {
+  blockTitle,
+  checkField,
+  checkLayer,
+  deleteAt,
+  getAt,
+  layerEntries,
+  mergeLayer,
+  parseJsonWithComments,
+  pointerPath,
+  schemaFields,
+  setAt,
+  stripJsonComments,
+} from './params-schema.ts';
+export type {
+  LayerCheck,
+  ParamChoice,
+  ParamField,
+  ParamIssue,
+  ParamLevel,
+  ParamSchema,
+  ParamSchemaNode,
+  UnknownParam,
+} from './params-schema.ts';
