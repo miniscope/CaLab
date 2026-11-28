@@ -92,6 +92,8 @@ export interface TimeStripProps {
 
 interface Snapshot {
   span: { t0: number; t1: number };
+  /** End of the whole-run axis (`HistoryUi.axisEnd`). */
+  end: number;
   now: number;
   tick: number;
   width: number;
@@ -283,7 +285,12 @@ export function TimeStrip(props: TimeStripProps): JSX.Element {
       c().status()?.lookback?.settle?.total || plannedSettleFrames(total(), SETTLE.maxFrames);
     if (fin) {
       candidates.push({ x: fin.x0, text: '0', anchor: 'start', priority: 1 });
-      candidates.push({ x: fin.x1, text: `${n0(settleTotal)} fr`, anchor: 'end', priority: 1 });
+      candidates.push({
+        x: fin.x1 - 2,
+        text: `${n0(settleTotal)} fr`,
+        anchor: 'end',
+        priority: 1,
+      });
     }
     const labels = placeAxisLabels(candidates, { x0: 0, x1: W, charPx: 6, gap: 6 });
 
@@ -293,6 +300,7 @@ export function TimeStrip(props: TimeStripProps): JSX.Element {
     const processed = s().processed();
     last = {
       span: { t0: a0, t1: a1 },
+      end: props.ui.axisEnd(),
       now: r.now(),
       tick: r.tick(),
       width: W,
@@ -409,7 +417,13 @@ export function TimeStrip(props: TimeStripProps): JSX.Element {
         />
       </div>
       <Show when={shown()}>
-        <RunStrip ui={props.ui} />
+        <RunStrip
+          ui={props.ui}
+          end={() => snap().end}
+          now={() => snap().now}
+          window={() => snap().span}
+          tick={() => snap().tick}
+        />
       </Show>
       <div class="cala-tstrip__body" ref={bindHost}>
         <Show when={shown() && !props.ui.expanded() && snap().width > 0 && keys().length > 0}>

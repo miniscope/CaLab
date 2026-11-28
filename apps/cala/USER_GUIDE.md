@@ -63,7 +63,7 @@ A **Miniscope recording folder**: a numbered series of `.avi` files, plus the si
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Chrome, Edge (desktop) | Recommended. WebGPU motion correction when a GPU is available, and a save dialog that writes exports straight to a file you choose.                                             |
 | Firefox, Safari        | Run the full pipeline with motion correction on the CPU (Safari itself has not been tested). Exports are built in the browser's private file system and handed to the download. |
-| Any browser, no WebGPU | Motion correction falls back to the CPU. The badge in the Run tab says **Motion: CPU** or **Motion: WebGPU**. Throughput is lower; the method is the same.                      |
+| Any browser, no WebGPU | Motion correction falls back to the CPU. The chip in the Run tab's Compute block says **CPU motion** or **GPU motion**. Throughput is lower; the method is the same.            |
 
 Needed in any browser: WebAssembly, module Web Workers, and a folder picker
 (`showDirectoryPicker` in Chrome and Edge, else `<input webkitdirectory>`). Several CPU cores help: cell discovery uses the spare
@@ -179,8 +179,7 @@ Discover or stop the live run, and the tab shows, in the order you use them:
   - Discover (with look-back): **Cells waiting for data** (of the cells found),
     **Look-back re-read** (frames) and **Background settle** (saved frames re-read per live
     frame, 0 to 2, the tick at the ceiling in force).
-  - Final settle: a frames-per-second trace over the step (fixed 10 to 500 fps, log),
-    **Frames re-read** (of its plan), **Cells still moving** (the tick marks where the
+  - Final settle: **Frames re-read** (of its plan), **Cells still moving** (the tick marks where the
     footprints count as settled), **Footprints settled** and **Visits per frame** (0 to 1),
     with a note when it reads the factors or re-reads the file (and why), and **Stop Final
     settle**.
@@ -197,7 +196,7 @@ Discover or stop the live run, and the tab shows, in the order you use them:
   the same time axis, so a moment lines up in all of them, and one set of time labels under
   the last row (stream time, m:ss). The **Plot window** control (**Whole run** and, when the
   run is long enough, **24 h**, **1 h**, **10 min**, **1 min**) and the whole-run strip
-  above it set the window for all three rows; click a row to inspect a time, drag to brush
+  above it set the window for all three rows; click the convergence plot to inspect a time (the other rows mark it), drag on it or on the whole-run strip to brush
   one.
   - The convergence plot: the overlaid metrics (cells at frame, new cells per minute,
     churn, stable, explained, residual). **Cells at frame** is the count at each QC
@@ -212,7 +211,7 @@ Discover or stop the live run, and the tab shows, in the order you use them:
 
   A recording with look-back adds a **Final settle** column on the right, on its own axis
   (the frames it re-read, 0 to its plan), because no recording time passes then: its
-  frames per second and its work by kind. The strip redraws at most twice a second.
+  frames per second (fixed 10 to 500, log) and its work by kind. The strip redraws at most twice a second.
 
 - **Compute**: where the run's machine time goes. The header shows where motion
   correction runs (**GPU motion** or **CPU motion**; amber with a warning icon if WebGPU

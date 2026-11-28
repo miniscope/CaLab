@@ -8,7 +8,7 @@ import { Icon } from '@calab/ui';
 import type { CellStore } from '../lib/cell-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { workByKind } from '../lib/work-meter.ts';
-import { busyWorkers } from '../lib/work-display.ts';
+import { busyWorkers, displayState } from '../lib/work-display.ts';
 import { SpeedControl } from './SpeedControl.tsx';
 import { WorkerSquares } from './WorkDisplay.tsx';
 
@@ -51,7 +51,15 @@ export function Compute(props: ComputeProps): JSX.Element {
     const by = workByKind(r);
     return { busy: busyWorkers(by.totals, by.count), count: by.count };
   };
-  const running = () => s().status() === 'running' || s().status() === 'paused';
+  /** A stage runs (Discover, or the Final settle after it): the reading is a measurement. */
+  const running = () => {
+    const st = displayState({
+      status: s().status(),
+      live: props.live === true,
+      settling: props.cells.status()?.lookback?.settling === true,
+    });
+    return st === 'running' || st === 'streaming' || st === 'final-settle' || st === 'paused';
+  };
   return (
     <section class="cala-compute" aria-labelledby="run-compute" data-testid="compute">
       <div class="cala-compute__head">

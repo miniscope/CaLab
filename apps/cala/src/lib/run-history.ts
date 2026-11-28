@@ -707,13 +707,19 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
 
   /**
    * The work shares of the last second or so (`WorkRates`) and the fast loop's top-speed estimate.
-   * Pushed at the stream time Discover has reached. The caller stops after the first reading
+   * Pushed at the stream time Discover has reached; `kindsOnly` writes only the work by kind
+   * (the reading that closes Discover's last interval, after the speed target was let go). The
+   * caller stops after the first reading
    * that follows Discover's last frame (the Final settle's accounting lives in the `?debug`
    * readout and the `-work.json` log only: stream time stands still then and every sample would
    * land in one bin).
    */
-  function work(r: WorkRates, maxFps: number): void {
+  function work(r: WorkRates, maxFps: number, kindsOnly = false): void {
     const t = processedS;
+    if (kindsOnly) {
+      pushKinds(r, t);
+      return;
+    }
     const s = r.slow;
     history.push('work_live', t, s.live);
     history.push('work_visit', t, s.visit);
@@ -731,6 +737,11 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
       r.lookback.busy / Math.max(1, r.lookback.capacity ?? r.lookback.workers.length),
     );
     if (maxFps > 0) history.push('fast_max_fps', t, maxFps);
+    pushKinds(r, t);
+  }
+
+  /** The work-by-kind series of one reading at `t`. */
+  function pushKinds(r: WorkRates, t: number): void {
     const { totals: byKind, count } = workByKind(r);
     // The pool can grow mid-run: widen the (fixed) range before a value needs it.
     for (const k of WORK_KINDS) history.widenFixedRange(kindSeriesKey(k), count);

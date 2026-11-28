@@ -166,8 +166,11 @@ export function createWorkReadout(deps: WorkReadoutDeps) {
       setWorkMaxVisitLimited(max > 0 && max < fast);
     }
     // Not after Discover's last frame, but for the tail (stream time stands still; see `RunHistory.work`).
-    if (!done || tail) {
-      tailClosed ||= tail;
+    if (tail) {
+      // Only the work by kind: the target and the top speed were let go at the last frame.
+      tailClosed = true;
+      runHistory?.work(rates, maxFpsEstimator.estimate(), true);
+    } else if (!done) {
       // The history's series is the fast loop's own top speed (`fast_max_fps`).
       runHistory?.work(rates, maxFpsEstimator.estimate());
       runHistory?.target(gatePace());

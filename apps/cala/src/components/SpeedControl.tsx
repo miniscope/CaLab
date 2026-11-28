@@ -69,12 +69,15 @@ const MODE_TITLES: Record<SpeedMode, string> = {
 };
 
 /**
- * The Speed block of the Run panel (Max and Fixed): a fixed log track from 10
- * to 500 fps with a separate Max stop, the floor and "max now" marks, the
- * status line, and the Background settle cap. Curve mode swaps the thumb for a preset (a step
- * schedule of the target over the recording, `lib/speed-schedule.ts`). Every change goes through the
- * store (`setPaceFps` logs the run-record event; the cap goes to the worker). Auto mode is a time
- * budget (`lib/speed-auto.ts`): the track gives way to a choice of extra time over a Max run.
+ * The Speed block of the Compute block (and the pre-run sheet). Max and Fixed: a fixed log track
+ * from 10 to 500 fps with a separate Max stop (the thumb sits on it at Max), the floor and max
+ * marks with collision-free labels, and the speed achieved. Curve: a preset (a step schedule of
+ * the target over the recording, `lib/speed-schedule.ts`) and its plan drawn in place of the
+ * track. Auto: a time budget (`lib/speed-auto.ts`), drawn as a bar before the run and as the
+ * budget used during it. While Discover runs, a Refinement gauge on the rail's range and band.
+ * Live marks are sampled at most twice a second. Every change goes through the store
+ * (`setPaceFps` logs the run-record event; the cap goes to the worker); the Background settle
+ * cap is under Advanced.
  */
 export function SpeedControl(props: {
   pipeline: PipelineStore;
@@ -265,6 +268,7 @@ export function SpeedControl(props: {
       const t = visitOn ? (s().visitTarget() ?? VISIT_RATE.target) : null;
       return {
         floor: floorFps(),
+        floorPrior: s().floor().prior,
         maxNow: maxNow(),
         achieved: achieved(),
         visits: {
@@ -312,7 +316,10 @@ export function SpeedControl(props: {
     const inner = Math.max(1, w - 2 * TRACK_INSET_PX);
     const at = (fps: number) => TRACK_INSET_PX + inner * fpsToPos(fps);
     const v = live();
-    const out = [{ x: at(v.floor), text: `floor ${v.floor}`, priority: 1 }];
+    // "≈" while the floor is only the prior (not measured yet).
+    const out = [
+      { x: at(v.floor), text: `floor ${v.floorPrior ? '≈' : ''}${v.floor}`, priority: 1 },
+    ];
     if (v.maxNow !== null) out.push({ x: at(v.maxNow), text: `max ${v.maxNow}`, priority: 2 });
     return placeAxisLabels(out, { x0: 0, x1: w, charPx: 6.2, gap: 6 });
   });
