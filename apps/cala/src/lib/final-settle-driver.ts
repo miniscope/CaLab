@@ -177,6 +177,8 @@ export interface Settle {
   payFrom: number | null;
   /** Every tile was made due to pay what the pass owed. */
   allDue: boolean;
+  /** Under `bar`: the last `settleBarrierStep` held for the visits owed, not for one due. */
+  holdOwed: boolean;
 }
 
 /** A settle answer observed in pieces (`Settle.answers`). */
@@ -302,6 +304,7 @@ export class FinalSettleDriver {
       holdSince: null,
       payFrom: null,
       allDue: false,
+      holdOwed: false,
       ordered: this.r.repeatable,
       bar: null,
     };
@@ -490,12 +493,16 @@ export class FinalSettleDriver {
    */
   private settleBarrierStep(d: Settle): boolean {
     const bar = d.bar!;
+    d.holdOwed = false;
     if (!bar.ready(d.fed)) return false;
     // Handed out only after an apply: how often this step is re-entered depends on timing.
     if (this.applyHeld(d, d.fed)) this.settleDispatch(d);
     while (this.settleOwedTooMuch(d)) {
       const oldest = bar.nextDue();
-      if (!bar.ready(oldest)) return false;
+      if (!bar.ready(oldest)) {
+        d.holdOwed = true;
+        return false;
+      }
       this.applyHeld(d, oldest);
       this.settleDispatch(d);
     }
@@ -675,6 +682,7 @@ export class FinalSettleDriver {
           if (d.holdSince === null) {
             d.holdSince = this.r.now();
             d.v.holds++;
+            if (d.holdOwed) d.v.holdsOwed = (d.v.holdsOwed ?? 0) + 1;
           }
           return;
         }

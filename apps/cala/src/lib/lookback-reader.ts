@@ -30,6 +30,9 @@
  *  - The flat field is the newest map for every frame; Discover corrected
  *    frames before its first map not at all, and later ones with the map of
  *    their time (the same choice as Extract).
+ *  - A repeatable run's request names "newest" as of the batch end it was
+ *    issued at (`LookbackPins`: the snapshot and the map in force there), so
+ *    it does not depend on what reached this worker before its turn.
  *  - The warp runs in WASM; Discover may have warped on the GPU (WebGPU),
  *    which can differ in the last bits.
  *

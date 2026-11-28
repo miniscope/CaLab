@@ -247,6 +247,11 @@ export interface SettleVisits {
   /** Waits of the settle's observation while the visits owed were above `SETTLE.visitOwedFrames`' worth, and their time, ms. */
   holds: number;
   heldMs: number;
+  /**
+   * A repeatable settle: of `holds`, those that waited to apply the oldest visit out before its
+   * due point because too many were owed (the rest waited for a visit at its due point).
+   */
+  holdsOwed?: number;
   /** Times credit was owed with no visit out and no tile due (it was carried to later frames). */
   starved: number;
   /** Visits handed out in the last round (every tile due; under its own caps, not the rate). */

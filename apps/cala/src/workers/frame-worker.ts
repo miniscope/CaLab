@@ -246,6 +246,11 @@ async function handle(req: FrameRequest): Promise<void> {
           flushPaceStats();
           // The flat-field estimator gets no more batches: it says when its last map is out.
           flatSink?.finish();
+          // A repeatable run's batches that waited for the estimator (`FLAT_APPLY_LAG`).
+          if (front.flatWaits > 0)
+            console.info(
+              `cala flat field: ${front.flatWaits} batches waited ${front.flatWaitMs.toFixed(0)} ms for the estimator`,
+            );
           down.postMessage({ type: 'end', epoch, id: req.id } satisfies StageMsg);
         } else {
           down.postMessage(
