@@ -134,7 +134,7 @@ export function settleNote(f: LookbackFacts): string {
   if (s?.waiting && f.phase === 'settling') parts.push('waiting for the last factor window');
   if (s?.source?.kind === 'factors') parts.push('on the factors');
   if (s?.source?.kind === 'file') parts.push(`re-reads the file: ${s.source.reason}`);
-  if (s && s.total < s.recording)
+  if (s && s.total > 0 && s.total < s.recording)
     parts.push(`spread over ${s.recording.toLocaleString('en-US')} frames`);
   if (s?.stopped) parts.push('stopped by you');
   if (f.error) parts.push(`look-back stopped: ${f.error}`);

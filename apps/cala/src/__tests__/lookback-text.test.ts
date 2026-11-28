@@ -120,6 +120,12 @@ describe('lookbackFacts', () => {
       settle: { ...lb.settle!, source: undefined, fileReason: undefined, waiting: true },
     };
     expect(settleNote(lookbackFacts(waiting, false))).toBe('waiting for the last factor window');
+    // Before its plan is known (total 0) the settle is not said to sample the recording.
+    const unplanned: LookbackStatus = {
+      ...waiting,
+      settle: { ...waiting.settle!, total: 0, fed: 0 },
+    };
+    expect(settleNote(lookbackFacts(unplanned, false))).toBe('waiting for the last factor window');
   });
 
   it('a look-back error is in the note', () => {

@@ -286,7 +286,10 @@ export function DiscoverBody(props: {
   );
   const shown = () => (props.pipeline.lookbackRun() ? facts() : null);
   return (
-    <div class="cala-step__body cala-step__rows" data-testid="discover-rows">
+    <div
+      class="cala-step__body cala-step__rows cala-step__rows--discover"
+      data-testid="discover-rows"
+    >
       <Show when={shown()}>
         {(f) => (
           <>
@@ -384,7 +387,7 @@ export function SettleBody(props: {
       <RateChart samples={samples()} testid="settle-rate" />
       <MeterRow
         label="Frames re-read"
-        value={s()?.fed ?? null}
+        value={s() && s()!.total > 0 ? s()!.fed : null}
         min={0}
         max={Math.max(1, s()?.total ?? 1)}
         display={s() ? `${n0(s()!.fed)} / ${n0(s()!.total)}` : undefined}

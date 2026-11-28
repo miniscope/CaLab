@@ -1044,7 +1044,7 @@ const App: Component = () => {
   };
 
   /** A session's state word and badge tone in the session list. */
-  const sessionBadge = (r: { status: string; index: number }, current: boolean) => {
+  const sessionBadge = (r: { status: string; index: number }, current: boolean, read: boolean) => {
     if (r.status === 'written')
       return { tone: 'neutral' as const, icon: 'check' as const, word: 'written' };
     if (r.status === 'failed')
@@ -1052,6 +1052,8 @@ const App: Component = () => {
     if (r.status === 'skipped')
       return { tone: 'neutral' as const, icon: undefined, word: 'skipped' };
     if (current) return { tone: 'discover' as const, icon: undefined, word: 'running' };
+    // A Joint run writes every session at its end; a session Discover has read past is read.
+    if (read) return { tone: 'neutral' as const, icon: 'check' as const, word: 'read' };
     return { tone: 'neutral' as const, icon: undefined, word: r.status };
   };
 
@@ -1109,7 +1111,12 @@ const App: Component = () => {
                       r.status !== 'skipped' &&
                       r.index === nowIndex() &&
                       pipeline.status() !== 'idle';
-                    const badge = () => sessionBadge(r, current());
+                    const badge = () =>
+                      sessionBadge(
+                        r,
+                        current(),
+                        joint() && r.status === 'pending' && r.index < nowIndex(),
+                      );
                     return (
                       <li
                         class="cala-session-run__item"

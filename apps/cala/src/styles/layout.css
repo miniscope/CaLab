@@ -1994,3 +1994,8 @@
   bottom: auto;
   z-index: 20;
 }
+
+/* Discover's rows have no chart: no room is kept for one. */
+.cala-step__body.cala-step__rows--discover {
+  min-height: 0;
+}
