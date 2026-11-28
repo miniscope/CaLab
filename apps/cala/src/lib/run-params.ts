@@ -22,6 +22,14 @@ export type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends object | null ? DeepPartial<T[K]> | null : T[K];
 };
 
+/** `settle.background.cap`'s choices. */
+export type BackgroundCap = CalaParams['settle']['background']['cap'];
+
+/** True for a value `settle.background.cap` takes. */
+export function isBackgroundCap(v: number): v is BackgroundCap {
+  return v === 0 || v === 0.5 || v === 1 || v === 2;
+}
+
 /** A partial params object: the keys it leaves out keep their default. */
 export type ParamsLayer = DeepPartial<CalaParams>;
 
@@ -44,6 +52,14 @@ export interface RunParamsSettings {
   flatField: boolean;
   /** The Final settle's level (`settle.final.level`). */
   finalSettleLevel?: FinalSettleLevel;
+  /** Find new cells (`stages.find_new_cells`; absent: the default). */
+  findNewCells?: boolean;
+  /** Online QC of the traces (`qc.enabled`; absent: the default). */
+  qc?: boolean;
+  /** A repeatable run (`compute.repeatable`; absent: the default). */
+  repeatable?: boolean;
+  /** Background settle's cap (`settle.background.cap`; absent: the default). */
+  settleCap?: BackgroundCap;
   /** Global flicker correction (`preprocess.flicker`; absent: the default). */
   flicker?: Flicker;
   /** A layer under the settings (absent: none): its keys apply unless a setting sets them. */
@@ -82,7 +98,17 @@ export function runParamsLayer(s: RunParamsSettings): ParamsLayer {
         : {}),
     },
     flat_field: { enabled: s.flatField },
-    ...(s.finalSettleLevel ? { settle: { final: { level: s.finalSettleLevel } } } : {}),
+    ...(s.finalSettleLevel || s.settleCap !== undefined
+      ? {
+          settle: {
+            ...(s.finalSettleLevel ? { final: { level: s.finalSettleLevel } } : {}),
+            ...(s.settleCap !== undefined ? { background: { cap: s.settleCap } } : {}),
+          },
+        }
+      : {}),
+    ...(s.findNewCells !== undefined ? { stages: { find_new_cells: s.findNewCells } } : {}),
+    ...(s.qc !== undefined ? { qc: { enabled: s.qc } } : {}),
+    ...(s.repeatable !== undefined ? { compute: { repeatable: s.repeatable } } : {}),
     ...(s.flicker ? { preprocess: { flicker: s.flicker } } : {}),
   };
   return mergeLayers(s.base ?? {}, settings);

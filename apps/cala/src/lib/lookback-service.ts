@@ -163,8 +163,10 @@ export class LookbackService {
         this.withReader(msg.session, (reader) => reader.setSession(msg.index, msg.transform));
         return;
       case 'params':
-        this.deps.params?.(msg.params);
-        this.withReader(msg.session, (reader) => reader.setParams(msg.params));
+        this.withRun(msg.session, (_, o) => {
+          this.deps.params?.(msg.params);
+          o.reader?.setParams(msg.params);
+        });
         return;
       case 'flat':
         this.withReader(msg.session, (reader) => reader.setFlatField(msg.map));

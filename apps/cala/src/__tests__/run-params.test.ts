@@ -153,6 +153,41 @@ describe("the app's params resolved", () => {
     },
   );
 
+  it.each([
+    ['look-back on', true, false, 'all', 0.6],
+    ['look-back off', false, false, 'off', null],
+    ['a settle on factors', false, true, 'refine', null],
+  ] as const)(
+    '%s: the slow loop runs the cluster replay and merge guard of its shape',
+    (_, lookback, factorSettle, update, guard) => {
+      const layer = runParamsLayer({ lookback, factorSettle, visitMode: 'fixed', flatField: true });
+      const e = runParams(resolveRunParams(layer, { fps: 20, width: 64, height: 64 })).engine;
+      expect(e.slow_loop.joint_update).toBe(update);
+      expect(e.slow_loop.joint_sign_rule).toBe('all');
+      expect(e.slow_loop.merge_guard_min_sep).toBe(guard);
+      expect(e.lookback.enabled).toBe(lookback);
+    },
+  );
+
+  it('the look-back workers get the run params of a look-back run', async () => {
+    const feed = lookbackFeed();
+    const startPipeline = vi.fn(async () => testPlan(100));
+    const store = createPipelineStore(
+      { startPipeline, stepPipeline: () => new Promise(() => {}), stopPipeline: async () => {} },
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      undefined,
+      feed,
+    );
+    await store.start();
+    expect(feed.params).toHaveBeenCalledWith(expect.any(Number), testPlan(100).params);
+  });
+
   it('a recording without a frame rate resolves at the declared fallback', () => {
     const json = resolveRunParams({}, { fps: null, width: 32, height: 32 });
     expect(runParams(json).context.fps).toBe(20);

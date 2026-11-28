@@ -19,7 +19,6 @@ import { createPipelineStore } from './lib/pipeline-store.ts';
 import { createCellStore } from './lib/cell-store.ts';
 import { extractQc, QC_SCOPE_DEFAULT } from './lib/extract-qc.ts';
 import { loadSpanStats } from './lib/extract-qc-wasm.ts';
-import { ASSUMED_FPS } from './lib/miniscope-meta.ts';
 import type { QcSnapshot } from './lib/qc.ts';
 import { createCompressClient } from './lib/compress-client.ts';
 import { helpersFor } from './lib/compress-pool.ts';
@@ -446,7 +445,8 @@ const App: Component = () => {
     const run = pipeline.runParams();
     if (!r || !run) return null;
     const backend = await loadSpanStats(run.json);
-    const rate = fps > 0 ? fps : ASSUMED_FPS;
+    // A session's own rate when its file has one, else the run's (the params' fallback).
+    const rate = fps > 0 ? fps : run.engine.fps;
     return extractQc(r.traces, r.ids, range, rate, QC_SCOPE_DEFAULT, qcBase, backend);
   }
   // Extract: its store's status, into the stage log.

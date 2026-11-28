@@ -10,7 +10,12 @@
  * Speed control (`speed-control-store.ts`), Background settle (`bg-settle-store.ts`) and the work
  * readout (`work-readout-store.ts`). This store owns the run's lifecycle and wires them.
  */
-import { runParams as parseRunParams, runParamsLayer } from './run-params.ts';
+import {
+  isBackgroundCap,
+  runParams as parseRunParams,
+  runParamsLayer,
+  type BackgroundCap,
+} from './run-params.ts';
 import { createMemo, createSignal, untrack } from 'solid-js';
 import type { CellStore } from './cell-store.ts';
 import type { CompressStore } from './compress-store.ts';
@@ -579,6 +584,10 @@ export function createPipelineStore(
         visitMode: untrack(speed.visitRateSetting) === 'auto' ? 'auto' : 'fixed',
         flatField: useFlat,
         finalSettleLevel: runLevel,
+        findNewCells: discover(),
+        qc,
+        repeatable: rep,
+        ...(isBackgroundCap(settleCap()) ? { settleCap: settleCap() as BackgroundCap } : {}),
         ...(options.paramsLayer ? { base: options.paramsLayer } : {}),
       });
       if (lb) {
