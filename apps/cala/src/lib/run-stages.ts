@@ -56,19 +56,27 @@ export const LIVE_NOTE =
   'A live stream runs Discover only: there is no file to replay. Save the stream and load it as a recording later to Extract.';
 
 /**
- * "Extract after Discover" default for recordings: on. Discover (with look-back
- * and its Final settle) hands over settled footprints, so Extract follows it
- * directly. Nothing persists the option.
+ * "Extract after Discover" (`stages.extract`) default for recordings: on. Discover (with
+ * look-back and its Final settle) hands over settled footprints, so Extract follows it
+ * directly. Off: a Discover-only run. The value is a params field, so config files and the
+ * project's layers carry it.
  */
 export const EXTRACT_AFTER_DISCOVER_DEFAULT = true;
 
 /**
- * The "Extract after Discover" setting, shared by the Run tab (which sets it and acts on it) and
- * the run rail's stage track (which shows Extract as off when it is unticked).
+ * The "Extract after Discover" setting for the next start (the sheet's `/stages/extract`
+ * binding). A started run reads its own resolved value (`PipelineStore.extractRun`).
  */
 export const [extractAfterDiscover, setExtractAfterDiscover] = createSignal(
   EXTRACT_AFTER_DISCOVER_DEFAULT,
 );
+
+/**
+ * A Discover-only run (`stages.extract` off): the footprints are written with the traces
+ * Discover solved as it read; there is no Extract.
+ */
+export const DISCOVER_ONLY_NOTE =
+  'Discover only: this run writes the footprints with the traces Discover solved as it read, and skips Extract. Restart with Extract after Discover on for the final traces.';
 
 export const NEXT_STEP_HINT = 'Extract to solve the final traces with the settled footprints.';
 

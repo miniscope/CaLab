@@ -112,3 +112,19 @@ describe('stepViews and the visit hold', () => {
     expect(stepViews({ ...base, discover: 'done', visitHold: 40 })[0].note).toBe('');
   });
 });
+
+describe('a Discover-only run', () => {
+  it('shows Extract off, never waiting or stopped', () => {
+    for (const discover of ['idle', 'running', 'done'] as const) {
+      const v = stepViews({
+        ...base,
+        discover,
+        finalLibrary: discover === 'done',
+        autoExtract: false,
+      });
+      expect(v[2].state).toBe('off');
+      expect(v[2].note).toBe('Discover only');
+      expect(v[2].fraction).toBeNull();
+    }
+  });
+});

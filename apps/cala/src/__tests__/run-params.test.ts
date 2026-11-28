@@ -104,8 +104,32 @@ describe('the params layer of a Discover start', () => {
       discover: { visit: { mode: 'fixed' } },
       flat_field: { enabled: true },
       settle: { final: { level: 'thorough' } },
-      stages: { extract: true },
     });
+  });
+
+  it('carries Extract after Discover as set: off makes a Discover-only run', () => {
+    const l = (extract?: boolean) =>
+      runParamsLayer({
+        lookback: true,
+        factorSettle: false,
+        visitMode: 'fixed',
+        flatField: true,
+        ...(extract !== undefined ? { extract } : {}),
+      }).stages;
+    expect(l(false)).toEqual({ extract: false });
+    expect(l(true)).toEqual({ extract: true });
+    expect(l()).toBeUndefined();
+    // The setting wins over a layer under it, as every setting does.
+    expect(
+      runParamsLayer({
+        lookback: true,
+        factorSettle: false,
+        visitMode: 'fixed',
+        flatField: true,
+        extract: true,
+        base: { stages: { extract: false } },
+      }).stages,
+    ).toEqual({ extract: true });
   });
 
   it('look-back off drops the cluster replay and the merge guard it runs with', () => {

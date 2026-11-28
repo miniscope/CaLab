@@ -21,10 +21,6 @@ import { SET_AT_START, sheetShows } from '../lib/sheet-fields.ts';
 export interface RunSettingsProps {
   pipeline: PipelineStore;
   context: SettingsContext;
-  /** Extract after Discover: the setting, and whether a session run forces it on. */
-  autoExtract: boolean;
-  onAutoExtract: (on: boolean) => void;
-  sessionRun: boolean;
   /** Extract is running: Find new cells cannot change under it. */
   extractRunning?: boolean;
   /** Width of the recording's frames, px (0: none open); the optics' binning may follow it. */
@@ -66,7 +62,6 @@ function RunSettingsFields(props: RunSettingsProps): JSX.Element {
     s().runFinalSettleLevel() !== s().finalSettleLevel();
 
   const value = (ptr: string): unknown => {
-    if (ptr === '/stages/extract') return props.autoExtract || props.sessionRun;
     if (ptr === '/lookback/enabled') return lookbackOn();
     // The pixel field is empty while the µm diameter gives the pixels.
     if (ptr === DIAMETER_PX && plan().source === 'optics') return null;
@@ -125,9 +120,14 @@ function RunSettingsFields(props: RunSettingsProps): JSX.Element {
       case '/stages/extract':
         return {
           testid: 'extract-after-discover',
-          disabled: props.sessionRun
-            ? 'A run always Extracts each session once its Discover is done, and writes the results.'
-            : null,
+          note: (
+            <Show when={!s().params.value('/stages/extract')}>
+              <span data-testid="discover-only-note">
+                Discover only: the run writes the footprints with the traces Discover solved as it
+                read, and no Extract.
+              </span>
+            </Show>
+          ),
         };
       case '/stages/find_new_cells':
         return {
@@ -497,8 +497,8 @@ export function SettingsSummary(props: RunSettingsProps): JSX.Element {
         <Show when={lookbackOn()}>
           <Badge tone="neutral">Final settle {level()}</Badge>
         </Show>
-        <Badge tone="neutral">
-          {props.autoExtract || props.sessionRun ? 'Extract after Discover' : 'Extract by hand'}
+        <Badge tone="neutral" testid="settings-chip-extract">
+          {s().extractRun() ? 'Extract after Discover' : 'Discover only'}
         </Badge>
         <Show when={!s().discover()}>
           <Badge tone="neutral">No new cells</Badge>

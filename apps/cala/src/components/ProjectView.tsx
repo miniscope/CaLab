@@ -55,6 +55,7 @@ const STATE_TEXT: Record<StageState, string> = {
   error: 'error',
   cancelled: 'cancelled',
   running: 'not finished',
+  skipped: 'skipped (Discover only)',
   none: '—',
 };
 

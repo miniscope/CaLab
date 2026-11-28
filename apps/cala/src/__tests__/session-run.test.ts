@@ -172,3 +172,40 @@ describe('autoStatusText', () => {
     );
   });
 });
+
+describe('nextAutoAction of a Discover-only run', () => {
+  const only = (over: Partial<AutoInput> = {}) =>
+    nextAutoAction(input({ discoverOnly: true, live: 'waiting', ...over }));
+
+  it('never starts Extract, though Extract could run', () => {
+    expect(only()).toEqual({ kind: 'wait' });
+    expect(only({ live: null })).toEqual({ kind: 'wait' });
+    expect(only({ discover: 'running' })).toEqual({ kind: 'wait' });
+  });
+
+  it("writes Discover's traces, then goes on", () => {
+    expect(only({ live: 'ready' })).toEqual({ kind: 'export' });
+    // Separate, not the last session: the next one.
+    expect(only({ live: 'ready', exported: true })).toEqual({ kind: 'next-session' });
+    expect(only({ live: 'ready', exported: true, session: 2 })).toEqual({ kind: 'finished' });
+    // One session (a single recording), and Joint.
+    expect(only({ live: 'ready', exported: true, sessions: 1 })).toEqual({ kind: 'finished' });
+    expect(only({ mode: 'joint', live: 'ready' })).toEqual({ kind: 'export' });
+    expect(only({ mode: 'joint', live: 'ready', exported: true })).toEqual({ kind: 'finished' });
+  });
+
+  it('skips a session without cells and stops when the traces cannot be gathered', () => {
+    expect(only({ live: 'empty' })).toEqual({
+      kind: 'next-session',
+      skipped: 'no cells were found',
+    });
+    expect(only({ live: 'empty', session: 2 })).toEqual({
+      kind: 'finished',
+      skipped: 'no cells were found',
+    });
+    expect(only({ live: 'failed', liveError: 'too large' })).toEqual({
+      kind: 'stopped',
+      reason: "Discover's traces could not be gathered: too large",
+    });
+  });
+});

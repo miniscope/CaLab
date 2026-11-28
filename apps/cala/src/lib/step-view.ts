@@ -57,7 +57,7 @@ export interface StepInput {
   extractDone: number;
   extractTotal: number;
   extractFps: number;
-  /** Extract follows Discover by itself (the setting, or always in a session run). */
+  /** Extract follows Discover in this run (`stages.extract`; off: a Discover-only run). */
   autoExtract: boolean;
   /** A `?factors` stream: its Final settle and Extract run on the stream's own factors. */
   factorRun?: boolean;
@@ -140,7 +140,7 @@ export function stepViews(i: StepInput): StepView[] {
       i.live && !i.factorRun
         ? 'not for a live stream'
         : eState === 'off'
-          ? 'run it from Results'
+          ? 'Discover only'
           : i.extract === 'cancelled'
             ? 'cancelled'
             : '',

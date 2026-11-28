@@ -119,8 +119,14 @@ export interface MultiRunDeps {
   boundaryFlags?(): readonly BoundaryFlag[];
   /** The run record (`run-provenance.ts`) of the run so far; folded into the run file. */
   runRecord?(kind: LibraryMode, sessionIndex?: number): Record<string, unknown>;
-  /** A live stream's traces at the end of its Discover (null: a recording). */
+  /**
+   * Discover's traces at its end: a live stream's, or a Discover-only run's (null: neither).
+   */
   liveResult?(): LiveResultState | null;
+  /** Why Discover's traces could not be gathered (null: no error). */
+  liveError?(): string | null;
+  /** The current run is Discover only (`stages.extract` off; absent: never). */
+  discoverOnly?(): boolean;
   version: string;
   now?: () => Date;
 }
@@ -389,9 +395,12 @@ export function createMultiRun(deps: MultiRunDeps) {
     // (An Extract refused before it starts goes to `error` without a log entry: that one stays.)
     const extract =
       st.extract === 'done' && !st.runs.some((r) => r.stage === 'extract') ? 'idle' : st.extract;
+    const discoverOnly = deps.discoverOnly?.() === true;
     const input = {
       mode: p.kind,
-      live: p.sessions[current()]?.live ? (deps.liveResult?.() ?? 'waiting') : null,
+      live: p.sessions[current()]?.live || discoverOnly ? (deps.liveResult?.() ?? 'waiting') : null,
+      discoverOnly,
+      liveError: deps.liveError?.() ?? null,
       discover: st.discover,
       extract,
       availability: st.availability,

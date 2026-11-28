@@ -94,7 +94,7 @@ import {
   type RunRecordSources,
 } from './lib/run-provenance.ts';
 import type { LibraryView } from './workers/slow-types.ts';
-import type { ExportInput } from './lib/export.ts';
+import { DISCOVER_ONLY_EXPORT_NOTE, type ExportInput } from './lib/export.ts';
 import type { ProjectResult } from './lib/project-index.ts';
 import { openResult, type LoadedResult } from './lib/result-file.ts';
 import { ResultView, type ResultOrigin } from './components/ResultView.tsx';
@@ -438,6 +438,8 @@ const App: Component = () => {
     range: { start: number; end: number },
     fps: number,
   ): Promise<QcSnapshot | null> {
+    // A Discover-only run has no Extract: its export carries Discover's online QC.
+    if (discoverOnly()) return cells.qc();
     const r = pass2.result();
     const run = pipeline.runParams();
     if (!r || !run) return null;
@@ -800,18 +802,30 @@ const App: Component = () => {
     request: () => pipeline.runRequest(),
   };
   const runRecord = (extras?: RunRecordExtras) => gatherRunRecord(runRecordSources, extras);
-  // A live run's traces, once it has ended: what its run writes when it has no Extract.
-  const liveResult = createLiveResult(pipeline, cells, () => store.info()?.live !== undefined);
+  // A Discover-only run of a recording (`stages.extract` off): it writes Discover's traces.
+  const discoverOnly = (): boolean => {
+    const i = store.info();
+    return i !== null && i.live === undefined && !pipeline.extractRun();
+  };
+  // Discover's traces once its run has ended: what a live run writes when it has no Extract,
+  // and what a Discover-only run writes.
+  const liveResult = createLiveResult(
+    pipeline,
+    cells,
+    () => store.info()?.live !== undefined || discoverOnly(),
+  );
   const liveState = (): LiveResultState | null => {
-    if (!store.info()?.live) return null;
+    if (!store.info()?.live && !discoverOnly()) return null;
     if (liveResult.result()) return 'ready';
+    if (liveResult.error()) return 'failed';
     const ended = pipeline.status() === 'done' && (cells.status()?.final ?? true);
     return ended && (cells.library()?.ids.length ?? 0) === 0 ? 'empty' : 'waiting';
   };
   const multiRun = createMultiRun({
-    // Every run Extracts after its Discover.
-    runRecord: (kind) => runRecord({ mode: kind, extractAfterDiscover: true }),
+    runRecord: (kind) => runRecord({ mode: kind, extractAfterDiscover: !discoverOnly() }),
     liveResult: liveState,
+    liveError: () => liveResult.error(),
+    discoverOnly,
     async openJoint(sessions) {
       pipeline.stop();
       openCandidate = null;
@@ -852,7 +866,11 @@ const App: Component = () => {
     boundaryFlags: () => pipeline.boundaryFlags(),
     exportInput: (): ExportInput | null => {
       const i = store.info();
-      const r = pass2.result() ?? (i?.live ? liveResult.result() : null);
+      // A Discover-only run writes Discover's traces, never an Extract result left from before.
+      const only = discoverOnly();
+      const r = only
+        ? liveResult.result()
+        : (pass2.result() ?? (i?.live ? liveResult.result() : null));
       if (!r || !i) return null;
       return {
         label: store.label(),
@@ -872,6 +890,7 @@ const App: Component = () => {
           eventsJson: runHistory.events().toJSON(),
         },
         version,
+        ...(only ? { notes: [DISCOVER_ONLY_EXPORT_NOTE] } : {}),
       };
     },
     info: () => store.info(),
@@ -1445,6 +1464,7 @@ const App: Component = () => {
                 live={lp.info.live !== undefined}
                 liveResult={liveResult.result}
                 liveError={liveResult.error}
+                discoverOnly={discoverOnly()}
                 label={store.label()}
                 width={lp.info.width}
                 height={lp.info.height}

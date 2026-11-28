@@ -3,7 +3,8 @@
  * is no Extract: the traces exported are the ones the fast loop solved as the
  * frames came in (the trace history), laid out frames x cells from frame 0
  * like an Extract result. A cell's frames before it was found, and frames a
- * bounded history does not hold, are NaN.
+ * bounded history does not hold, are NaN. A Discover-only run of a recording
+ * (`stages.extract` off) exports the same.
  */
 import { createEffect, createSignal, type Accessor } from 'solid-js';
 import type { CellStore } from './cell-store.ts';
@@ -68,9 +69,9 @@ export interface LiveResult {
 }
 
 /**
- * The live traces of a live run, gathered once the run is done and its final library is out;
- * null again as soon as a new run starts. Always null for a recording (`live()` false). Must
- * run inside a reactive owner.
+ * The live traces of a live run, or of a Discover-only run of a recording (`stages.extract`
+ * off), gathered once the run is done and its final library is out; null again as soon as a new
+ * run starts. Always null while `live()` is false. Must run inside a reactive owner.
  */
 export function createLiveResult(
   pipeline: Pick<PipelineStore, 'status' | 'processed'>,
@@ -87,6 +88,7 @@ export function createLiveResult(
     cells.library();
     if (!done || !final) {
       setResult(null);
+      setError(null);
       return;
     }
     liveTraceResult(cells, frames, 0).then(setResult, (err: unknown) => setError(errMsg(err)));

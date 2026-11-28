@@ -16,9 +16,10 @@
  *
  * Every run is automatic: after Discover (and its Final settle) it runs
  * Extract, then writes the results into its run folder (`session-export.ts`),
- * and in Separate mode opens the next session. A live stream with no Extract
- * writes the traces solved as its frames came in. This module is the pure
- * part: what to do next given the stages' states.
+ * and in Separate mode opens the next session. A live stream with no Extract,
+ * and a Discover-only run (`stages.extract` off), write the traces solved as
+ * the frames were read instead. This module is the pure part: what to do next
+ * given the stages' states.
  */
 import type { StageActivity, StageName } from './run-stages.ts';
 
@@ -33,17 +34,25 @@ export const LIBRARY_MODE_LABEL: Record<LibraryMode, string> = {
 };
 
 /**
- * A live stream's traces at the end of its Discover (`live-export.ts`): `ready` to write,
- * `empty` (no cells were found), `waiting` (not gathered yet).
+ * Discover's traces at its end (`live-export.ts`), what a live stream or a Discover-only run
+ * writes: `ready` to write, `empty` (no cells were found), `waiting` (not gathered yet),
+ * `failed` (they could not be gathered).
  */
-export type LiveResultState = 'ready' | 'empty' | 'waiting';
+export type LiveResultState = 'ready' | 'empty' | 'waiting' | 'failed';
 
 /** What the automatic run looks at. */
 export interface AutoInput {
   /** The plan step's kind (one session: `separate`). */
   mode: LibraryMode;
-  /** A live stream (null: a recording): its traces stand in for Extract's when it cannot run. */
+  /**
+   * Discover's traces (null: not used): a live stream's stand in for Extract's when it cannot
+   * run, a Discover-only run's always.
+   */
   live?: LiveResultState | null;
+  /** A Discover-only run (`stages.extract` off): it writes Discover's traces and never Extracts. */
+  discoverOnly?: boolean;
+  /** Why Discover's traces could not be gathered (with `live: 'failed'`). */
+  liveError?: string | null;
   discover: StageActivity;
   extract: StageActivity;
   /** Why each stage cannot start now (`stageAvailability`). */
@@ -85,16 +94,28 @@ export function nextAutoAction(i: AutoInput): AutoAction {
   if (i.discover !== 'done') return { kind: 'wait' };
   const last = i.mode === 'joint' || i.session >= i.sessions - 1;
   const why = i.availability.extract;
-  // A live stream whose Extract cannot run writes the traces solved as the frames came in.
-  const liveTraces = i.live != null && why !== null && i.extract !== 'done';
+  // A live stream whose Extract cannot run, and a Discover-only run, write the traces solved
+  // as the frames came in.
+  const liveTraces =
+    i.live != null && (i.discoverOnly === true || why !== null) && i.extract !== 'done';
   if (i.extract === 'done' || (liveTraces && i.live === 'ready')) {
     if (!i.exported) return { kind: 'export' };
     return last ? { kind: 'finished' } : { kind: 'next-session' };
   }
   if (liveTraces) {
-    if (i.live === 'empty') return { kind: 'finished', skipped: 'no cells were found' };
+    if (i.live === 'empty') {
+      const skipped = 'no cells were found';
+      return last ? { kind: 'finished', skipped } : { kind: 'next-session', skipped };
+    }
+    if (i.live === 'failed')
+      return {
+        kind: 'stopped',
+        reason: `Discover's traces could not be gathered${i.liveError ? `: ${i.liveError}` : '.'}`,
+      };
     return { kind: 'wait' };
   }
+  // A Discover-only run never Extracts.
+  if (i.discoverOnly) return { kind: 'wait' };
   if (why === null) return { kind: 'extract' };
   if (why === NO_CELLS) {
     // Nothing to Extract. Separate mode goes on with the next session.

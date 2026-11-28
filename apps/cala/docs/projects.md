@@ -193,7 +193,7 @@ also when the run is left or fails).
 | `links`   | other runs this one reads (empty for cala today)                                                                                                                                                                                   |
 | `config`  | `schema` (`cala-params`), `params_version`, `requested` (what the sheet or a config file asked for), `sources` (pointer → `ui`, `file:<name>`), `ignored` (unknown keys of a config file), `resolved` (every param), `fingerprint` |
 | `derived` | values read from the data (`/time/fps`)                                                                                                                                                                                            |
-| `stages`  | the stage log (Discover, Extract) with outcomes and times                                                                                                                                                                          |
+| `stages`  | the stage log (Discover, Extract) with outcomes and times; a Discover-only run ends it with Extract `skipped`                                                                                                                      |
 | `results` | one per stream: `status` (`pending`, `written`, `skipped`, `failed`), `note`, `path` (below the run folder), `id_space`, `cells`, `library_version`, `frame_range`, `boundary`, `created`                                          |
 | `record`  | the rest of the run record ([run-record.md](run-record.md))                                                                                                                                                                        |
 
@@ -260,7 +260,7 @@ edges; `own` marks a session with ids of its own.
 ## The session table
 
 Columns: the session, its date (`recordingStartTime`), its length (frames and
-duration), then **Discover** and **Extract**, from the current result's run (else the latest run with that
+duration), then **Discover** and **Extract** ("skipped (Discover only)" for a Discover-only run), from the current result's run (else the latest run with that
 session, with a note when it was skipped or failed), **Cell IDs**, **Library**
 (a placeholder until saved libraries), and the **current result** (run and
 cell count). **Results** opens a row's results: each run, when it was made, its

@@ -19,6 +19,7 @@ import {
   cadeconIsClassic,
   calaExportBytes,
   downloadBlob,
+  DISCOVER_ONLY_EXPORT_NOTE,
   FACTORS_EXPORT_NOTE,
   EXPORT_FORMAT_VERSION,
   factorTailNote,
@@ -43,6 +44,8 @@ export interface ExportMenuProps {
   liveResult: () => Pass2Result | null;
   /** Why a live run's traces could not be gathered (null: no error). */
   liveError?: () => string | null;
+  /** A Discover-only run of a recording: the export takes Discover's traces (`liveResult`). */
+  discoverOnly?: boolean;
   label: string;
   width: number;
   height: number;
@@ -60,7 +63,8 @@ export function ExportMenu(props: ExportMenuProps): JSX.Element {
   const [passOnly, setPassOnly] = createSignal(true);
   const [exporting, setExporting] = createSignal<string | null>(null);
   const [exportError, setExportError] = createSignal<string | null>(null);
-  const exportResult = () => props.pass2.result() ?? props.liveResult();
+  const exportResult = () =>
+    props.discoverOnly ? props.liveResult() : (props.pass2.result() ?? props.liveResult());
   const failure = () => exportError() ?? props.liveError?.() ?? null;
 
   /** Stream one export to disk (see `saveExport`), with progress and errors beside the button. */
@@ -94,6 +98,7 @@ export function ExportMenu(props: ExportMenuProps): JSX.Element {
   const factorExport = (
     r: Pass2Result,
   ): Pick<ExportInput, 'liveTraces' | 'notes' | 'frameRange'> | null => {
+    if (props.discoverOnly) return { notes: [DISCOVER_ONLY_EXPORT_NOTE] };
     if (!props.live) {
       // A recording's factor run (GPU or `?factors=file`): notes on what the settle and Extract read.
       const notes = fileFactorNotes(props.stages.runs());
@@ -159,7 +164,7 @@ export function ExportMenu(props: ExportMenuProps): JSX.Element {
               data-testid="export-npz"
               disabled={!exportResult() || exporting() !== null}
               title={
-                props.live
+                props.live || props.discoverOnly
                   ? 'Footprints, the live traces, motion, flicker, cell metadata and the run file (NumPy .npz).'
                   : "Footprints, Extract's traces, motion, flicker, the stages run, cell metadata and the run file (NumPy .npz)."
               }

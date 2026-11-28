@@ -47,7 +47,6 @@ export const SET_AT_START: Record<string, string> = {
   '/qc/enabled': "the page's QC switch",
   '/compute/repeatable': 'the Repeatable setting',
   '/settle/background/cap': 'the Speed block',
-  '/stages/extract': 'every run (it always Extracts after Discover)',
 };
 
 /** Fields a Discover start with look-back off sets: the options look-back is validated with. */
