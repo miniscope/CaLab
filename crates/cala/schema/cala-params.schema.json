@@ -1,0 +1,2257 @@
+{
+  "type": "object",
+  "properties": {
+    "optics": {
+      "$ref": "#/$defs/Optics",
+      "title": "Optics",
+      "description": "The microscope's optics: they turn sizes at the sample into pixels.",
+      "default": {
+        "sensor_pixel_um": null,
+        "magnification": null,
+        "binning": null,
+        "sensor_width_px": null
+      }
+    },
+    "scales": {
+      "$ref": "#/$defs/Scales",
+      "title": "Scales",
+      "description": "Spatial scales: the expected cell diameter and the sizes that follow it.",
+      "default": {
+        "expected_cell_diameter_um": null,
+        "cell_diameter_px": 10.0,
+        "adapt": "off",
+        "psf_sigma_px": 1.5,
+        "flatten_sigma_per_d": 2.0,
+        "flatten_sigma_px": null
+      }
+    },
+    "time": {
+      "$ref": "#/$defs/Time",
+      "title": "Time",
+      "description": "The recording's frame rate.",
+      "default": {
+        "fps_override": null,
+        "legacy_frame_fps": 20.0
+      }
+    },
+    "input": {
+      "$ref": "#/$defs/Input",
+      "title": "Input",
+      "description": "Which part of the frame is processed.",
+      "default": {
+        "crop": null
+      }
+    },
+    "seed": {
+      "$ref": "#/$defs/Seed",
+      "title": "Seed footprints",
+      "description": "Footprints a run starts from.",
+      "default": {
+        "from": null,
+        "select": "all",
+        "ids": []
+      }
+    },
+    "stages": {
+      "$ref": "#/$defs/Stages",
+      "title": "Stages",
+      "description": "Which stages run.",
+      "default": {
+        "find_new_cells": true,
+        "extract": true
+      }
+    },
+    "preprocess": {
+      "$ref": "#/$defs/Preprocess",
+      "title": "Preprocessing",
+      "description": "Calibration, flicker, line and background corrections of each frame.",
+      "default": {
+        "warmup_s": 10.0,
+        "flicker": "both",
+        "lines": "both",
+        "fov": {
+          "rel_threshold": 0.15,
+          "fit_disk": false,
+          "margin_px": 0
+        },
+        "hot_pixel_k_sigma": 5.0,
+        "background": {
+          "boxcar_s": 0.25,
+          "relax_s": 120.0
+        }
+      }
+    },
+    "motion": {
+      "$ref": "#/$defs/Motion",
+      "title": "Motion correction",
+      "description": "Motion correction.",
+      "default": {
+        "max_shift_px": 15.0,
+        "template_tau_s": 20.0,
+        "template_refresh_s": 1.0,
+        "warmup_s": 10.0,
+        "nonrigid": {
+          "enabled": false,
+          "grid": 4,
+          "max_patch_shift_px": 3.0
+        },
+        "session_fix": true
+      }
+    },
+    "flat_field": {
+      "$ref": "#/$defs/FlatField",
+      "title": "Flat field",
+      "description": "The sensor flat field estimated from the recording's own motion.",
+      "default": {
+        "enabled": true,
+        "gain_half_life_s": 7200.0,
+        "offset_half_life_s": 120.0,
+        "first_map_s": 150.0,
+        "refine_every_s": 60.0
+      }
+    },
+    "discover": {
+      "$ref": "#/$defs/Discover",
+      "title": "Discover",
+      "description": "Cell discovery (the slow loop).",
+      "default": {
+        "accept_z": 5.0,
+        "event_z": 4.0,
+        "min_events": 2,
+        "event_s": 0.15,
+        "probation_s": 240.0,
+        "stats_half_life_s": 300.0,
+        "reject_cooldown_s": 20.0,
+        "event_half_life_s": 100.0,
+        "probe_gap_s": 5.0,
+        "reservoir_refine_s": 120.0,
+        "merge": {
+          "corr": 0.6,
+          "z": 2.0,
+          "rule": "split_half",
+          "guard_min_sep_d": 0.6,
+          "guard_max_ovl": 0.5,
+          "refit_max_ovl": 0.5
+        },
+        "cluster": {
+          "update": "all",
+          "sign": "all",
+          "rho_min": 0.05,
+          "max": 6,
+          "iters": 1,
+          "admit": "cluster",
+          "carry": false,
+          "l1": 0.0,
+          "neighbours": false
+        },
+        "ring": {
+          "inner_per_d": 1.2,
+          "outer_per_d": 2.0
+        },
+        "tile_px": 64,
+        "margin_px": null,
+        "frames_per_tile": 128,
+        "reservoir_max_mb": 1536,
+        "visit": {
+          "mode": "fixed",
+          "target": 0.15
+        },
+        "budget": 30000000.0,
+        "commit_interval_frames": 100,
+        "seed": 0,
+        "support_alpha": 0.05,
+        "refine": {
+          "gate": "split_half",
+          "z": 0.0
+        },
+        "background": "ring",
+        "warm_start": true,
+        "churn": {
+          "readd_window_s": 240.0,
+          "churn_s": 120.0
+        }
+      }
+    },
+    "lookback": {
+      "$ref": "#/$defs/Lookback",
+      "title": "Look-back",
+      "description": "Re-reading past frames for the slow loop during Discover.",
+      "default": {
+        "enabled": true,
+        "horizon_s": 150.0,
+        "rate": 2.0
+      }
+    },
+    "settle": {
+      "$ref": "#/$defs/Settle",
+      "title": "Settle",
+      "description": "Background settle and Final settle.",
+      "default": {
+        "background": {
+          "cap": 2.0
+        },
+        "final": {
+          "level": "thorough",
+          "max_s": null
+        },
+        "on_factors": {
+          "cluster_update": "refine",
+          "guard_min_sep_d": null
+        }
+      }
+    },
+    "trace": {
+      "$ref": "#/$defs/Trace",
+      "title": "Traces",
+      "description": "The per-frame trace solve.",
+      "default": {
+        "tol": 0.05,
+        "max_sweeps": 200
+      }
+    },
+    "qc": {
+      "$ref": "#/$defs/Qc",
+      "title": "Quality control",
+      "description": "Online quality control of the cells.",
+      "default": {
+        "enabled": true,
+        "pass": {
+          "min_snr": 5.0,
+          "pair_r": 0.8,
+          "motion_r2_flag": 0.2
+        }
+      }
+    },
+    "factors": {
+      "$ref": "#/$defs/Factors",
+      "title": "Factors",
+      "description": "Windowed low-rank factors of the preprocessed frames.",
+      "default": {
+        "mode": "auto",
+        "window_s": 30.0
+      }
+    },
+    "export": {
+      "$ref": "#/$defs/Export",
+      "title": "Export",
+      "description": "What is written to the export.",
+      "default": {
+        "pass_qc_only": true
+      }
+    },
+    "compute": {
+      "$ref": "#/$defs/Compute",
+      "title": "Compute",
+      "description": "How much compute the run uses, and whether its results may depend on it.",
+      "default": {
+        "repeatable": false,
+        "speed": {
+          "mode": "max",
+          "fps": 30.0,
+          "curve": "find-fast",
+          "auto_budget": 1.0
+        },
+        "visit_workers": null,
+        "settle_pool": null,
+        "batch_frames": 8
+      }
+    }
+  },
+  "title": "cala parameters",
+  "description": "All run parameters of cala.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Optics": {
+      "type": "object",
+      "properties": {
+        "sensor_pixel_um": {
+          "type": ["number", "null"],
+          "format": "double",
+          "title": "Sensor pixel size",
+          "description": "Side of one sensor pixel. `null`: not known.",
+          "minimum": 0.1,
+          "maximum": 100.0,
+          "default": null,
+          "x-unit": "um",
+          "x-level": "main",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "magnification": {
+          "type": ["number", "null"],
+          "format": "double",
+          "title": "Magnification",
+          "description": "Magnification from the sample to the sensor. `null`: not known.",
+          "minimum": 0.01,
+          "maximum": 1000.0,
+          "default": null,
+          "x-unit": "ratio",
+          "x-level": "main",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "binning": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 1,
+          "title": "Binning",
+          "description": "Sensor pixels per frame pixel along each side. `null`: the sensor width over the frame width when the sensor width is known, else 1.",
+          "maximum": 16,
+          "default": null,
+          "x-unit": "count",
+          "x-level": "main",
+          "x-derived": "optics.sensor_width_px ÷ the frame width",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "sensor_width_px": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 1,
+          "title": "Sensor width",
+          "description": "Width of the full sensor. `null`: not known.",
+          "maximum": 65535,
+          "default": null,
+          "x-unit": "px",
+          "x-level": "main",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "The microscope's optics. The size of one frame pixel at the sample is `sensor_pixel_um × binning ÷ magnification`."
+    },
+    "Scales": {
+      "type": "object",
+      "properties": {
+        "expected_cell_diameter_um": {
+          "type": ["number", "null"],
+          "format": "double",
+          "title": "Expected cell diameter",
+          "description": "The diameter of the largest cells you expect, at the sample. With the optics known it gives the diameter in pixels; it is used when `cell_diameter_px` is `null`. `null`: not given.",
+          "minimum": 1.0,
+          "maximum": 200.0,
+          "default": null,
+          "x-unit": "um",
+          "x-level": "main",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "cell_diameter_px": {
+          "type": ["number", "null"],
+          "format": "double",
+          "title": "Expected cell diameter in pixels",
+          "description": "The expected cell diameter in pixels, set directly. When set it overrides the diameter derived from `expected_cell_diameter_um` and the optics. Flattening, detection and every cell-scale radius follow the resolved diameter. `null`: derived from the physical diameter.",
+          "minimum": 4.0,
+          "maximum": 64.0,
+          "default": 10.0,
+          "x-unit": "px",
+          "x-level": "advanced",
+          "x-refined-by": "data",
+          "x-derived": "scales.expected_cell_diameter_um ÷ optics µm per pixel",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "adapt": {
+          "$ref": "#/$defs/ScaleAdapt",
+          "title": "Adapt the cell diameter",
+          "description": "Whether the cell diameter is estimated from the data during the run; the expected diameter is then its starting value.",
+          "default": "off",
+          "x-unit": "none",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "psf_sigma_px": {
+          "type": "number",
+          "format": "double",
+          "title": "Point-spread σ",
+          "description": "The optics' point-spread σ: light is smoothed at this scale before a footprint's support is traced.",
+          "minimum": 0.6,
+          "maximum": 8.0,
+          "default": 1.5,
+          "x-unit": "px",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "flatten_sigma_per_d": {
+          "type": "number",
+          "format": "double",
+          "title": "Flatten σ per diameter",
+          "description": "σ of the flattening low-pass, in cell diameters.",
+          "minimum": 0.5,
+          "maximum": 8.0,
+          "default": 2.0,
+          "x-unit": "d",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "flatten_sigma_px": {
+          "type": ["number", "null"],
+          "format": "double",
+          "title": "Flatten σ",
+          "description": "σ of the flattening low-pass in pixels; overrides the rule above. `null`: `flatten_sigma_per_d` × the cell diameter.",
+          "minimum": 1.0,
+          "maximum": 256.0,
+          "default": null,
+          "x-unit": "px",
+          "x-level": "internal",
+          "x-derived": "scales.flatten_sigma_per_d × scales.cell_diameter_px",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "Spatial scales. Every cell-scale pixel size in the engine follows the expected cell diameter."
+    },
+    "ScaleAdapt": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "off",
+          "description": "The expected diameter is used as set."
+        },
+        {
+          "type": "string",
+          "const": "global",
+          "description": "One diameter for the field of view, estimated during the run."
+        },
+        {
+          "type": "string",
+          "const": "local",
+          "description": "A diameter per region of the field of view."
+        }
+      ],
+      "description": "How the cell diameter follows the data."
+    },
+    "Time": {
+      "type": "object",
+      "properties": {
+        "fps_override": {
+          "type": ["number", "null"],
+          "format": "double",
+          "title": "Frame rate override",
+          "description": "The frame rate to use instead of the one read from the file; for a file that has none or a wrong one. `null`: the file's frame rate.",
+          "minimum": 1.0,
+          "maximum": 1000.0,
+          "default": null,
+          "x-unit": "Hz",
+          "x-level": "advanced",
+          "x-scope": "stream",
+          "x-affects": "results"
+        },
+        "legacy_frame_fps": {
+          "type": ["number", "null"],
+          "format": "double",
+          "title": "Legacy frame-count rate",
+          "description": "The frame rate at which the durations the engine counts in fixed frames are converted. `null`: the recording's frame rate.",
+          "minimum": 1.0,
+          "maximum": 1000.0,
+          "default": 20.0,
+          "x-unit": "Hz",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "The recording's frame rate."
+    },
+    "Input": {
+      "type": "object",
+      "properties": {
+        "crop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CropRect"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Crop",
+          "description": "The rectangle of the motion-corrected frame that is processed. `null`: the full frame.",
+          "default": null,
+          "x-unit": "px",
+          "x-level": "main",
+          "x-widget": "crop-rect",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "Which part of the frame is processed."
+    },
+    "CropRect": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Left edge, px."
+        },
+        "y": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Top edge, px."
+        },
+        "width": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "description": "Width, px."
+        },
+        "height": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "description": "Height, px."
+        }
+      },
+      "required": ["x", "y", "width", "height"],
+      "description": "A rectangle of the frame, in pixels from the top-left corner."
+    },
+    "Seed": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": ["string", "null"],
+          "title": "Start from run",
+          "description": "The past run whose footprints the run starts from. `null`: start from an empty library.",
+          "default": null,
+          "x-unit": "none",
+          "x-level": "main",
+          "x-widget": "seed-picker",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "select": {
+          "$ref": "#/$defs/SeedSelect",
+          "title": "Cells taken",
+          "description": "Which of that run's cells are taken.",
+          "default": "all",
+          "x-unit": "none",
+          "x-level": "main",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "title": "Cell ids",
+          "description": "The cell ids taken when `select` is `ids`.",
+          "default": [],
+          "x-unit": "none",
+          "x-level": "main",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "Footprints a run starts from."
+    },
+    "SeedSelect": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "all",
+          "description": "Every cell."
+        },
+        {
+          "type": "string",
+          "const": "qc_pass",
+          "description": "The cells that pass QC."
+        },
+        {
+          "type": "string",
+          "const": "ids",
+          "description": "The cells listed in `ids`."
+        }
+      ],
+      "description": "Which cells of a seed run are taken."
+    },
+    "Stages": {
+      "type": "object",
+      "properties": {
+        "find_new_cells": {
+          "type": "boolean",
+          "title": "Find new cells",
+          "description": "Look for new cells during Discover. Off: only the seed footprints are refined and traced.",
+          "default": true,
+          "x-unit": "none",
+          "x-level": "main",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "extract": {
+          "type": "boolean",
+          "title": "Extract after Discover",
+          "description": "Run Extract after Discover: final traces of every frame with the footprints frozen.",
+          "default": true,
+          "x-unit": "none",
+          "x-level": "main",
+          "x-when": "recording",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "Which stages run."
+    },
+    "Preprocess": {
+      "type": "object",
+      "properties": {
+        "warmup_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Calibration time",
+          "description": "Time at the start of the recording used for the calibration (field of view, hot pixels, first noise map).",
+          "minimum": 0.5,
+          "maximum": 600.0,
+          "default": 10.0,
+          "x-unit": "s",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "flicker": {
+          "$ref": "#/$defs/Flicker",
+          "title": "Flicker",
+          "description": "Which flicker components are removed from each frame.",
+          "default": "both",
+          "x-unit": "none",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "lines": {
+          "$ref": "#/$defs/Lines",
+          "title": "Line artifacts",
+          "description": "Which line artifacts are removed from each frame.",
+          "default": "both",
+          "x-unit": "none",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "fov": {
+          "$ref": "#/$defs/Fov",
+          "title": "Field of view",
+          "description": "The lens field of view.",
+          "default": {
+            "rel_threshold": 0.15,
+            "fit_disk": false,
+            "margin_px": 0
+          }
+        },
+        "hot_pixel_k_sigma": {
+          "type": "number",
+          "format": "double",
+          "title": "Hot-pixel threshold",
+          "description": "A pixel is hot or cold when it differs from its neighbourhood by this many noise σ.",
+          "minimum": 1.0,
+          "maximum": 50.0,
+          "default": 5.0,
+          "x-unit": "sigma",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "background": {
+          "$ref": "#/$defs/Background",
+          "title": "Background floor",
+          "description": "The background floor subtracted from each pixel.",
+          "default": {
+            "boxcar_s": 0.25,
+            "relax_s": 120.0
+          }
+        }
+      },
+      "description": "Calibration, flicker, line and background corrections of each frame."
+    },
+    "Flicker": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "off",
+          "description": "None."
+        },
+        {
+          "type": "string",
+          "const": "additive",
+          "description": "The per-frame offset."
+        },
+        {
+          "type": "string",
+          "const": "multiplicative",
+          "description": "The per-frame gain."
+        },
+        {
+          "type": "string",
+          "const": "both",
+          "description": "Offset and gain."
+        }
+      ],
+      "description": "Which flicker components are removed."
+    },
+    "Lines": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "off",
+          "description": "None."
+        },
+        {
+          "type": "string",
+          "const": "rows",
+          "description": "Per-frame row noise."
+        },
+        {
+          "type": "string",
+          "const": "columns",
+          "description": "The static column pattern."
+        },
+        {
+          "type": "string",
+          "const": "both",
+          "description": "Rows and columns."
+        }
+      ],
+      "description": "Which line artifacts are removed."
+    },
+    "Fov": {
+      "type": "object",
+      "properties": {
+        "rel_threshold": {
+          "type": "number",
+          "format": "double",
+          "title": "Field-of-view threshold",
+          "description": "A pixel is inside the field of view when its mean brightness is at least this share of the bright end of the frame.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.15,
+          "x-unit": "ratio",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "fit_disk": {
+          "type": "boolean",
+          "title": "Fit a disk",
+          "description": "Fit a disk to the field of view instead of keeping its traced shape.",
+          "default": false,
+          "x-unit": "none",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "margin_px": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "title": "Edge margin",
+          "description": "Pixels removed from the field of view's edge.",
+          "maximum": 256,
+          "default": 0,
+          "x-unit": "px",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "The lens field of view."
+    },
+    "Background": {
+      "type": "object",
+      "properties": {
+        "boxcar_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Background boxcar",
+          "description": "Length of the running-mean boxcar the floor is tracked on.",
+          "minimum": 0.0,
+          "maximum": 10.0,
+          "default": 0.25,
+          "x-unit": "s",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "relax_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Background relaxation",
+          "description": "Time constant of the floor's upward relaxation.",
+          "minimum": 1.0,
+          "maximum": 3600.0,
+          "default": 120.0,
+          "x-unit": "s",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "The background floor subtracted from each pixel."
+    },
+    "Motion": {
+      "type": "object",
+      "properties": {
+        "max_shift_px": {
+          "type": "number",
+          "format": "double",
+          "title": "Largest shift",
+          "description": "The largest rigid shift searched.",
+          "minimum": 1.0,
+          "maximum": 128.0,
+          "default": 15.0,
+          "x-unit": "px",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "template_tau_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Template time constant",
+          "description": "Time constant of the registration template's running average. 0 keeps the warm-up template.",
+          "minimum": 0.0,
+          "maximum": 3600.0,
+          "default": 20.0,
+          "x-unit": "s",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "template_refresh_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Template refresh",
+          "description": "Time between updates of the registration template.",
+          "minimum": 0.05,
+          "maximum": 600.0,
+          "default": 1.0,
+          "x-unit": "s",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "warmup_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Template warm-up",
+          "description": "Time averaged into the first registration template.",
+          "minimum": 0.5,
+          "maximum": 600.0,
+          "default": 10.0,
+          "x-unit": "s",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "nonrigid": {
+          "$ref": "#/$defs/NonRigid",
+          "title": "Non-rigid",
+          "description": "Piecewise-rigid registration on a grid of patches.",
+          "default": {
+            "enabled": false,
+            "grid": 4,
+            "max_patch_shift_px": 3.0
+          }
+        },
+        "session_fix": {
+          "type": "boolean",
+          "title": "Align sessions",
+          "description": "At a session boundary of a Joint run, re-register the new session and carry the preprocessing state into it.",
+          "default": true,
+          "x-unit": "none",
+          "x-level": "advanced",
+          "x-when": "joint",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "Motion correction."
+    },
+    "NonRigid": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Non-rigid registration",
+          "description": "Refine the rigid shift per patch.",
+          "default": false,
+          "x-unit": "none",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "grid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 2,
+          "title": "Patch grid",
+          "description": "Patches per side of the grid.",
+          "maximum": 16,
+          "default": 4,
+          "x-unit": "count",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "max_patch_shift_px": {
+          "type": "number",
+          "format": "double",
+          "title": "Largest patch shift",
+          "description": "The largest shift of a patch beyond the rigid shift.",
+          "minimum": 0.0,
+          "maximum": 32.0,
+          "default": 3.0,
+          "x-unit": "px",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "Piecewise-rigid registration on a grid of patches."
+    },
+    "FlatField": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Flat field",
+          "description": "Estimate the sensor's per-pixel gain and divide it out.",
+          "default": true,
+          "x-unit": "none",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "gain_half_life_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Gain half-life",
+          "description": "Half-life of the gain estimate's forgetting.",
+          "minimum": 1.0,
+          "maximum": 86400.0,
+          "default": 7200.0,
+          "x-unit": "s",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "offset_half_life_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Offset half-life",
+          "description": "Half-life of the offset estimate's forgetting.",
+          "minimum": 1.0,
+          "maximum": 86400.0,
+          "default": 120.0,
+          "x-unit": "s",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "first_map_s": {
+          "type": "number",
+          "format": "double",
+          "title": "First map after",
+          "description": "Recording time before the first gain map.",
+          "minimum": 1.0,
+          "maximum": 3600.0,
+          "default": 150.0,
+          "x-unit": "s",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "refine_every_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Refit every",
+          "description": "Recording time between later gain maps.",
+          "minimum": 1.0,
+          "maximum": 3600.0,
+          "default": 60.0,
+          "x-unit": "s",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "The sensor flat field estimated from the recording's own motion."
+    },
+    "Discover": {
+      "type": "object",
+      "properties": {
+        "accept_z": {
+          "type": "number",
+          "format": "double",
+          "title": "Add threshold",
+          "description": "A new cell must improve the held-out fit over a noise column by this many standard deviations of that null.",
+          "minimum": 0.0,
+          "maximum": 50.0,
+          "default": 5.0,
+          "x-unit": "sigma",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "event_z": {
+          "type": "number",
+          "format": "double",
+          "title": "Event threshold",
+          "description": "A trace value counts as an event above this many noise σ.",
+          "minimum": 0.0,
+          "maximum": 50.0,
+          "default": 4.0,
+          "x-unit": "sigma",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "min_events": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "title": "Events to add a cell",
+          "description": "Held-out events a new cell needs.",
+          "maximum": 100,
+          "default": 2,
+          "x-unit": "count",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "event_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Shortest event",
+          "description": "Shortest transient that counts as an event.",
+          "minimum": 0.0,
+          "maximum": 10.0,
+          "default": 0.15,
+          "x-unit": "s",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "probation_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Probation",
+          "description": "A cell with no event in this time after its birth is deleted.",
+          "minimum": 1.0,
+          "maximum": 36000.0,
+          "default": 240.0,
+          "x-unit": "s",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "stats_half_life_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Footprint statistics half-life",
+          "description": "Half-life of the running footprint statistics.",
+          "minimum": 1.0,
+          "maximum": 36000.0,
+          "default": 300.0,
+          "x-unit": "s",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "reject_cooldown_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Reject cooldown",
+          "description": "Base cooldown of a spot where a proposed cell was rejected.",
+          "minimum": 0.0,
+          "maximum": 3600.0,
+          "default": 20.0,
+          "x-unit": "s",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "event_half_life_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Event-slot half-life",
+          "description": "Half-life of an event slot's priority in the reservoir.",
+          "minimum": 0.05,
+          "maximum": 36000.0,
+          "default": 100.0,
+          "x-unit": "s",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "probe_gap_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Probe gap",
+          "description": "Shortest time between two keep-test probes of one cell.",
+          "minimum": 0.0,
+          "maximum": 3600.0,
+          "default": 5.0,
+          "x-unit": "s",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "reservoir_refine_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Reservoir refine window",
+          "description": "A cell is refined from the reservoir only within this time after its birth; later, from its running statistics alone.",
+          "minimum": 0.0,
+          "maximum": 36000.0,
+          "default": 120.0,
+          "x-unit": "s",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "merge": {
+          "$ref": "#/$defs/Merge",
+          "title": "Merge",
+          "description": "Merge tests.",
+          "default": {
+            "corr": 0.6,
+            "z": 2.0,
+            "rule": "split_half",
+            "guard_min_sep_d": 0.6,
+            "guard_max_ovl": 0.5,
+            "refit_max_ovl": 0.5
+          }
+        },
+        "cluster": {
+          "$ref": "#/$defs/Cluster",
+          "title": "Clusters",
+          "description": "The joint footprint update of overlapping cells.",
+          "default": {
+            "update": "all",
+            "sign": "all",
+            "rho_min": 0.05,
+            "max": 6,
+            "iters": 1,
+            "admit": "cluster",
+            "carry": false,
+            "l1": 0.0,
+            "neighbours": false
+          }
+        },
+        "ring": {
+          "$ref": "#/$defs/Ring",
+          "title": "Background ring",
+          "description": "The local background ring of each footprint.",
+          "default": {
+            "inner_per_d": 1.2,
+            "outer_per_d": 2.0
+          }
+        },
+        "tile_px": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 8,
+          "title": "Tile side",
+          "description": "Side of a slow-loop tile.",
+          "maximum": 1024,
+          "default": 64,
+          "x-unit": "px",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "margin_px": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0,
+          "title": "Tile margin",
+          "description": "Margin stored around each tile. `null`: derived from the cell diameter.",
+          "maximum": 512,
+          "default": null,
+          "x-unit": "px",
+          "x-level": "internal",
+          "x-derived": "max(24, ceil(2.4 × cell diameter in px))",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "frames_per_tile": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 2,
+          "title": "Frames per tile",
+          "description": "Frames stored per tile for the add, merge and keep tests.",
+          "maximum": 4096,
+          "default": 128,
+          "x-unit": "frames",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "reservoir_max_mb": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "title": "Reservoir memory",
+          "description": "Memory cap of the frame reservoir; fewer frames per tile are kept when the full count does not fit.",
+          "maximum": 65536,
+          "default": 1536,
+          "x-unit": "MB",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "visit": {
+          "$ref": "#/$defs/Visit",
+          "title": "Visit rate",
+          "description": "How often tiles are visited.",
+          "default": {
+            "mode": "fixed",
+            "target": 0.15
+          }
+        },
+        "budget": {
+          "type": "number",
+          "format": "double",
+          "title": "Work per frame",
+          "description": "Fast-loop work units per frame the slow loop paces itself against.",
+          "minimum": 1.0,
+          "maximum": 1000000000000.0,
+          "default": 30000000.0,
+          "x-unit": "work_per_frame",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "commit_interval_frames": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "title": "Commit interval",
+          "description": "Fewest frames between two published library versions.",
+          "maximum": 100000,
+          "default": 100,
+          "x-unit": "frames",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "seed": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "title": "Random seed",
+          "description": "Seed of the held-out split and the reservoir's random sample.",
+          "maximum": 4294967295,
+          "default": 0,
+          "x-unit": "none",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "support_alpha": {
+          "type": "number",
+          "format": "double",
+          "title": "Support error rate",
+          "description": "Family-wise error rate of one support construction: the chance that it admits at least one pixel without light.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.05,
+          "x-unit": "ratio",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "refine": {
+          "$ref": "#/$defs/Refine",
+          "title": "Refine",
+          "description": "Refinements from the running statistics.",
+          "default": {
+            "gate": "split_half",
+            "z": 0.0
+          }
+        },
+        "background": {
+          "$ref": "#/$defs/BackgroundModel",
+          "title": "Background model",
+          "description": "The background model of the published libraries.",
+          "default": "ring",
+          "x-unit": "none",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "warm_start": {
+          "type": "boolean",
+          "title": "Warm starts",
+          "description": "Start each solve in a visit's comparisons at the reference model's solution.",
+          "default": true,
+          "x-unit": "none",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "churn": {
+          "$ref": "#/$defs/Churn",
+          "title": "Churn",
+          "description": "Classification of adds as new, re-added or churned (display only).",
+          "default": {
+            "readd_window_s": 240.0,
+            "churn_s": 120.0
+          }
+        }
+      },
+      "description": "Cell discovery (the slow loop)."
+    },
+    "Merge": {
+      "type": "object",
+      "properties": {
+        "corr": {
+          "type": "number",
+          "format": "double",
+          "title": "Merge correlation",
+          "description": "Trace correlation above which a merge of two cells is tested.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.6,
+          "x-unit": "r",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "z": {
+          "type": "number",
+          "format": "double",
+          "title": "Keep-apart threshold",
+          "description": "Two cells are kept apart when separating them beats the best single cell on held-out frames by this many standard deviations.",
+          "minimum": 0.0,
+          "maximum": 50.0,
+          "default": 2.0,
+          "x-unit": "sigma",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "rule": {
+          "$ref": "#/$defs/MergeRule",
+          "title": "Merge rule",
+          "description": "Which merge tests may merge.",
+          "default": "split_half",
+          "x-unit": "none",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "guard_min_sep_d": {
+          "type": ["number", "null"],
+          "format": "double",
+          "title": "Merge guard separation",
+          "description": "Pairs whose centres are at least this many cell diameters apart get the shape gate whatever their overlap. `null`: off.",
+          "minimum": 0.0,
+          "maximum": 10.0,
+          "default": 0.6,
+          "x-unit": "d",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "guard_max_ovl": {
+          "type": "number",
+          "format": "double",
+          "title": "Merge guard overlap",
+          "description": "The neighbour guards of a merge test apply to pairs whose footprints overlap (cosine) by less than this.",
+          "minimum": 0.0,
+          "maximum": 2.0,
+          "default": 0.5,
+          "x-unit": "ratio",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "refit_max_ovl": {
+          "type": "number",
+          "format": "double",
+          "title": "Refit guard overlap",
+          "description": "The same bound for the refitted-pair baseline alone.",
+          "minimum": 0.0,
+          "maximum": 2.0,
+          "default": 0.5,
+          "x-unit": "ratio",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "Merge tests."
+    },
+    "MergeRule": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "legacy",
+          "description": "The held-out test alone."
+        },
+        {
+          "type": "string",
+          "const": "split_half",
+          "description": "The held-out test, plus the same measured shape for a pair whose footprints do not largely coincide."
+        }
+      ],
+      "description": "Which merge tests may merge."
+    },
+    "Cluster": {
+      "type": "object",
+      "properties": {
+        "update": {
+          "$ref": "#/$defs/ClusterUpdate",
+          "title": "Joint update",
+          "description": "Where overlapping cells are refitted jointly from a replay of their stored history.",
+          "default": "all",
+          "x-unit": "none",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "sign": {
+          "$ref": "#/$defs/ClusterSign",
+          "title": "Sign rule",
+          "description": "Sign rule of the joint footprint step.",
+          "default": "all",
+          "x-unit": "none",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "rho_min": {
+          "type": "number",
+          "format": "double",
+          "title": "Cluster overlap",
+          "description": "Cells join a cluster along whitened overlaps of at least this.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.05,
+          "x-unit": "r",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "max": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 2,
+          "title": "Cluster size",
+          "description": "Most cells per cluster.",
+          "maximum": 8,
+          "default": 6,
+          "x-unit": "cells",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "iters": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "title": "Replay alternations",
+          "description": "Alternations per replay.",
+          "maximum": 100,
+          "default": 1,
+          "x-unit": "count",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "admit": {
+          "$ref": "#/$defs/ClusterAdmit",
+          "title": "Admission",
+          "description": "Which members of a replayed cluster are proposed.",
+          "default": "cluster",
+          "x-unit": "none",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "carry": {
+          "type": "boolean",
+          "title": "Carry estimate",
+          "description": "Carry the store's own joint estimate from one replay to the next.",
+          "default": false,
+          "x-unit": "none",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "l1": {
+          "type": "number",
+          "format": "double",
+          "title": "Replay L1 weight",
+          "description": "L1 weight of the replay's trace step, in trace-noise σ.",
+          "minimum": 0.0,
+          "maximum": 100.0,
+          "default": 0.0,
+          "x-unit": "sigma",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "neighbours": {
+          "type": "boolean",
+          "title": "Joint neighbour test",
+          "description": "In the add test, also check the candidate's trace against the nearby cells' traces jointly.",
+          "default": false,
+          "x-unit": "none",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "The joint footprint update of overlapping cells."
+    },
+    "ClusterUpdate": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "off",
+          "description": "Per-cell statistics only."
+        },
+        {
+          "type": "string",
+          "const": "refine",
+          "description": "In refinement-only visits (the Final settle)."
+        },
+        {
+          "type": "string",
+          "const": "all",
+          "description": "In every visit."
+        }
+      ],
+      "description": "Where overlapping cells are refitted jointly."
+    },
+    "ClusterSign": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "off",
+          "description": "A plain joint least-squares fit."
+        },
+        {
+          "type": "string",
+          "const": "own",
+          "description": "Non-negative where the member's current footprint is positive."
+        },
+        {
+          "type": "string",
+          "const": "all",
+          "description": "Non-negative on the member's whole disk."
+        }
+      ],
+      "description": "Sign rule of the joint footprint step."
+    },
+    "ClusterAdmit": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "cluster",
+          "description": "Every significant member, on the cluster's summed evidence."
+        },
+        {
+          "type": "string",
+          "const": "member",
+          "description": "Each member on its own evidence."
+        }
+      ],
+      "description": "Which members of a replayed cluster are proposed."
+    },
+    "Ring": {
+      "type": "object",
+      "properties": {
+        "inner_per_d": {
+          "type": "number",
+          "format": "double",
+          "title": "Ring inner radius",
+          "description": "Inner radius of the ring, in cell diameters.",
+          "minimum": 0.1,
+          "maximum": 10.0,
+          "default": 1.2,
+          "x-unit": "d",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "outer_per_d": {
+          "type": "number",
+          "format": "double",
+          "title": "Ring outer radius",
+          "description": "Outer radius of the ring, in cell diameters.",
+          "minimum": 0.2,
+          "maximum": 20.0,
+          "default": 2.0,
+          "x-unit": "d",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "The local background ring of each footprint."
+    },
+    "Visit": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/VisitMode",
+          "title": "Visit schedule",
+          "description": "Fixed: always the target rate. Auto: lower while visits stop finding new cells.",
+          "default": "fixed",
+          "x-unit": "none",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "target": {
+          "type": "number",
+          "format": "double",
+          "title": "Visit rate",
+          "description": "Tile visits per Discover frame.",
+          "minimum": 0.01,
+          "maximum": 4.0,
+          "default": 0.15,
+          "x-unit": "visits_per_frame",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "How often tiles are visited."
+    },
+    "VisitMode": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "fixed",
+          "description": "Always the target rate."
+        },
+        {
+          "type": "string",
+          "const": "auto",
+          "description": "The target while visits find new cells, lower after."
+        }
+      ],
+      "description": "The Discover visit schedule."
+    },
+    "Refine": {
+      "type": "object",
+      "properties": {
+        "gate": {
+          "$ref": "#/$defs/RefineGate",
+          "title": "Refine gate",
+          "description": "When the statistics path proposes a refinement.",
+          "default": "split_half",
+          "x-unit": "none",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "z": {
+          "type": "number",
+          "format": "double",
+          "title": "Refine threshold",
+          "description": "A refinement is accepted when its held-out gains have a paired z above this.",
+          "minimum": -10.0,
+          "maximum": 50.0,
+          "default": 0.0,
+          "x-unit": "sigma",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "Refinements from the running statistics."
+    },
+    "RefineGate": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "legacy",
+          "description": "The estimate disagrees with the footprint beyond its χ² null."
+        },
+        {
+          "type": "string",
+          "const": "split_half",
+          "description": "The change exceeds the estimate's own split-half noise."
+        }
+      ],
+      "description": "When the statistics path proposes a refinement."
+    },
+    "BackgroundModel": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "none",
+          "description": "No local background."
+        },
+        {
+          "type": "string",
+          "const": "ring",
+          "description": "A ring around each footprint (`discover.ring`)."
+        }
+      ],
+      "description": "The background model of the published libraries."
+    },
+    "Churn": {
+      "type": "object",
+      "properties": {
+        "readd_window_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Re-add window",
+          "description": "Removed cells are remembered this long for the re-add test.",
+          "minimum": 0.0,
+          "maximum": 36000.0,
+          "default": 240.0,
+          "x-unit": "s",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "churn_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Churn window",
+          "description": "A cell removed within this time of its add is churn.",
+          "minimum": 0.0,
+          "maximum": 36000.0,
+          "default": 120.0,
+          "x-unit": "s",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "Classification of adds (display only; changes no decision)."
+    },
+    "Lookback": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Look-back",
+          "description": "Re-read earlier frames of the recording for each new cell.",
+          "default": true,
+          "x-unit": "none",
+          "x-level": "main",
+          "x-when": "recording",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "horizon_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Look-back horizon",
+          "description": "How far before a cell's birth its frames are re-read.",
+          "minimum": 0.0,
+          "maximum": 36000.0,
+          "default": 150.0,
+          "x-unit": "s",
+          "x-level": "advanced",
+          "x-when": "lookback",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "rate": {
+          "type": "number",
+          "format": "double",
+          "title": "Look-back rate",
+          "description": "Look-back frames read per Discover frame.",
+          "minimum": 0.0,
+          "maximum": 64.0,
+          "default": 2.0,
+          "x-unit": "ratio",
+          "x-level": "internal",
+          "x-when": "lookback",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "Re-reading past frames for the slow loop during Discover."
+    },
+    "Settle": {
+      "type": "object",
+      "properties": {
+        "background": {
+          "$ref": "#/$defs/BackgroundSettle",
+          "title": "Background settle",
+          "description": "Background settle during Discover.",
+          "default": {
+            "cap": 2.0
+          }
+        },
+        "final": {
+          "$ref": "#/$defs/FinalSettle",
+          "title": "Final settle",
+          "description": "The Final settle at the end of Discover.",
+          "default": {
+            "level": "thorough",
+            "max_s": null
+          }
+        },
+        "on_factors": {
+          "$ref": "#/$defs/OnFactors",
+          "title": "Settle on factors",
+          "description": "The slow-loop options of a Final settle on factors.",
+          "default": {
+            "cluster_update": "refine",
+            "guard_min_sep_d": null
+          }
+        }
+      },
+      "description": "Background settle and Final settle."
+    },
+    "BackgroundSettle": {
+      "type": "object",
+      "properties": {
+        "cap": {
+          "type": "number",
+          "format": "double",
+          "title": "Background settle cap",
+          "description": "Most frames re-read per live frame to settle footprints. 0: off.",
+          "default": 2.0,
+          "x-unit": "ratio",
+          "x-level": "main",
+          "enum": [0.0, 0.5, 1.0, 2.0],
+          "x-enum-labels": ["Off", "0.5×", "1×", "2×"],
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "Background settle during Discover."
+    },
+    "FinalSettle": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "$ref": "#/$defs/FinalSettleLevel",
+          "title": "Final settle",
+          "description": "How much of the final settle pass is read.",
+          "default": "thorough",
+          "x-unit": "none",
+          "x-level": "main",
+          "x-when": "recording",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "max_s": {
+          "type": ["number", "null"],
+          "format": "double",
+          "title": "Final settle length",
+          "description": "The most recording time the pass reads; a longer recording is sampled in blocks. `null`: three footprint-statistics half-lives.",
+          "minimum": 1.0,
+          "maximum": 360000.0,
+          "default": null,
+          "x-unit": "s",
+          "x-level": "internal",
+          "x-derived": "3 × discover.stats_half_life_s",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "The Final settle at the end of Discover."
+    },
+    "FinalSettleLevel": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "thorough",
+          "description": "The full pass."
+        },
+        {
+          "type": "string",
+          "const": "standard",
+          "description": "Most of the pass."
+        },
+        {
+          "type": "string",
+          "const": "quick",
+          "description": "A shorter pass."
+        }
+      ],
+      "description": "How much of the final settle pass is read."
+    },
+    "OnFactors": {
+      "type": "object",
+      "properties": {
+        "cluster_update": {
+          "$ref": "#/$defs/ClusterUpdate",
+          "title": "Joint update on factors",
+          "description": "Where overlapping cells are refitted jointly.",
+          "default": "refine",
+          "x-unit": "none",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "guard_min_sep_d": {
+          "type": ["number", "null"],
+          "format": "double",
+          "title": "Merge guard separation on factors",
+          "description": "The merge guard separation on factors. `null`: off.",
+          "minimum": 0.0,
+          "maximum": 10.0,
+          "default": null,
+          "x-unit": "d",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "The slow-loop options of a Final settle on factors."
+    },
+    "Trace": {
+      "type": "object",
+      "properties": {
+        "tol": {
+          "type": "number",
+          "format": "double",
+          "title": "Solve tolerance",
+          "description": "A solve has converged when a sweep moves no trace by more than this share of its noise σ.",
+          "minimum": 0.0001,
+          "maximum": 1.0,
+          "default": 0.05,
+          "x-unit": "ratio",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "max_sweeps": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "title": "Most sweeps",
+          "description": "Most sweeps per frame.",
+          "maximum": 100000,
+          "default": 200,
+          "x-unit": "count",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "The per-frame trace solve."
+    },
+    "Qc": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Quality control",
+          "description": "Compute the per-cell QC during the run.",
+          "default": true,
+          "x-unit": "none",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "pass": {
+          "$ref": "#/$defs/PassRule",
+          "title": "Pass rule",
+          "description": "The per-cell pass rule.",
+          "default": {
+            "min_snr": 5.0,
+            "pair_r": 0.8,
+            "motion_r2_flag": 0.2
+          }
+        }
+      },
+      "description": "Online quality control of the cells."
+    },
+    "PassRule": {
+      "type": "object",
+      "properties": {
+        "min_snr": {
+          "type": "number",
+          "format": "double",
+          "title": "Minimum SNR",
+          "description": "Smallest peak SNR of a passing cell.",
+          "minimum": 0.0,
+          "maximum": 1000.0,
+          "default": 5.0,
+          "x-unit": "ratio",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "pair_r": {
+          "type": "number",
+          "format": "double",
+          "title": "Pair correlation",
+          "description": "Trace correlation above which two overlapping cells are a correlated pair.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.8,
+          "x-unit": "r",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "motion_r2_flag": {
+          "type": "number",
+          "format": "double",
+          "title": "Follows-motion flag",
+          "description": "Share of a trace's variance explained by the frame's shift above which the cell is flagged as following motion.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.2,
+          "x-unit": "ratio",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "The per-cell pass rule."
+    },
+    "Factors": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/FactorsMode",
+          "title": "Factors",
+          "description": "Where factors come from and how they are used.",
+          "default": "auto",
+          "x-unit": "none",
+          "x-level": "advanced",
+          "x-scope": "run",
+          "x-affects": "results"
+        },
+        "window_s": {
+          "type": "number",
+          "format": "double",
+          "title": "Factor window",
+          "description": "Length of one factor window.",
+          "minimum": 1.0,
+          "maximum": 3600.0,
+          "default": 30.0,
+          "x-unit": "s",
+          "x-level": "internal",
+          "x-scope": "run",
+          "x-affects": "results"
+        }
+      },
+      "description": "Windowed low-rank factors of the preprocessed frames."
+    },
+    "FactorsMode": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "auto",
+          "description": "The app's choice: factor files on the GPU for a recording, stream factors for a live stream."
+        },
+        {
+          "type": "string",
+          "const": "off",
+          "description": "No factors."
+        },
+        {
+          "type": "string",
+          "const": "plain",
+          "description": "Factors on the CPU, kept in memory."
+        },
+        {
+          "type": "string",
+          "const": "file",
+          "description": "Factors on the CPU, kept in files."
+        },
+        {
+          "type": "string",
+          "const": "gpu",
+          "description": "Factors on the GPU."
+        }
+      ],
+      "description": "Where factors come from and how they are used."
+    },
+    "Export": {
+      "type": "object",
+      "properties": {
+        "pass_qc_only": {
+          "type": "boolean",
+          "title": "Only cells that pass QC",
+          "description": "Export only the cells that pass QC.",
+          "default": true,
+          "x-unit": "none",
+          "x-level": "main",
+          "x-affects": "output",
+          "x-scope": "run"
+        }
+      },
+      "description": "What is written to the export."
+    },
+    "Compute": {
+      "type": "object",
+      "properties": {
+        "repeatable": {
+          "type": "boolean",
+          "title": "Repeatable",
+          "description": "The run does the same work at any speed and on any machine, so the same input and settings give the same result.",
+          "default": false,
+          "x-unit": "none",
+          "x-level": "main",
+          "x-affects": "results",
+          "x-scope": "run"
+        },
+        "speed": {
+          "$ref": "#/$defs/Speed",
+          "title": "Speed",
+          "description": "The target processing speed.",
+          "default": {
+            "mode": "max",
+            "fps": 30.0,
+            "curve": "find-fast",
+            "auto_budget": 1.0
+          },
+          "x-widget": "speed"
+        },
+        "visit_workers": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0,
+          "title": "Visit workers",
+          "description": "Visit workers. `null`: from the machine's core count.",
+          "maximum": 64,
+          "default": null,
+          "x-unit": "count",
+          "x-level": "internal",
+          "x-affects": "compute",
+          "x-scope": "run"
+        },
+        "settle_pool": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0,
+          "title": "Settle pool",
+          "description": "Settle look-back workers besides the first. `null`: from the machine's core count.",
+          "maximum": 4,
+          "default": null,
+          "x-unit": "count",
+          "x-level": "internal",
+          "x-affects": "compute",
+          "x-scope": "run"
+        },
+        "batch_frames": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "title": "Batch size",
+          "description": "Frames per processing batch.",
+          "maximum": 256,
+          "default": 8,
+          "x-unit": "frames",
+          "x-level": "internal",
+          "x-affects": "compute",
+          "x-scope": "run"
+        }
+      },
+      "description": "How much compute the run uses."
+    },
+    "Speed": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/SpeedMode",
+          "title": "Speed mode",
+          "description": "Max: as fast as the machine goes. Fixed: a target frame rate. Curve: a target that follows a preset curve. Auto: a time budget over Max.",
+          "default": "max",
+          "x-unit": "none",
+          "x-level": "main",
+          "x-affects": "compute",
+          "x-widget": "speed",
+          "x-scope": "run"
+        },
+        "fps": {
+          "type": "number",
+          "format": "double",
+          "title": "Target speed",
+          "description": "The target in Fixed mode.",
+          "minimum": 1.0,
+          "maximum": 1000.0,
+          "default": 30.0,
+          "x-unit": "Hz",
+          "x-level": "main",
+          "x-affects": "compute",
+          "x-widget": "speed",
+          "x-scope": "run"
+        },
+        "curve": {
+          "$ref": "#/$defs/SpeedCurve",
+          "title": "Speed curve",
+          "description": "The preset curve of Curve mode.",
+          "default": "find-fast",
+          "x-unit": "none",
+          "x-level": "main",
+          "x-affects": "compute",
+          "x-widget": "speed",
+          "x-scope": "run"
+        },
+        "auto_budget": {
+          "type": "number",
+          "format": "double",
+          "title": "Auto time budget",
+          "description": "Auto's time budget: extra time over a Max run, as a share of it.",
+          "default": 1.0,
+          "x-unit": "ratio",
+          "x-level": "main",
+          "x-affects": "compute",
+          "x-widget": "speed",
+          "enum": [0.5, 1.0, 2.0],
+          "x-scope": "run"
+        }
+      },
+      "description": "The target processing speed."
+    },
+    "SpeedMode": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "max",
+          "description": "As fast as the machine goes."
+        },
+        {
+          "type": "string",
+          "const": "fixed",
+          "description": "A fixed target frame rate."
+        },
+        {
+          "type": "string",
+          "const": "curve",
+          "description": "A target that follows a preset curve."
+        },
+        {
+          "type": "string",
+          "const": "auto",
+          "description": "A time budget over a Max run."
+        }
+      ],
+      "description": "The speed mode."
+    },
+    "SpeedCurve": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "find-fast",
+          "description": "Max for the first half, while most cells are found, then the floor."
+        },
+        {
+          "type": "string",
+          "const": "step-down",
+          "description": "Max for the first third, every-frame-seen speed to two thirds, then the floor."
+        }
+      ],
+      "description": "The preset curves of Curve mode."
+    }
+  },
+  "x-params-version": 1
+}
