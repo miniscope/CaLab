@@ -172,19 +172,51 @@ inside Discover.
 **pre-run sheet**: the settings read when Discover starts, then **Speed**, and the **Run**
 button at the top of the sheet. Discover starts only when you press **Run** (the image
 stays empty until then; the **Raw file** tab already plays the recording). The settings
-are **Look-back**, **Final settle** (Thorough, Standard, Quick), **Extract after
-Discover** and **Find new cells** (on by default; off, Discover keeps tracking the cells
-it has but finds no new ones; this one applies at once, also during a run). A live stream
-has no sheet: connecting starts it. A multi-session run starts from its own **Start**
-button (the session list, or a project's run plan) and has no sheet either.
+are grouped:
+
+- **Cell size**: **Expected cell diameter** in µm at the sample, the largest cells you
+  expect. Under it the sheet shows the diameter in pixels it gives ("= 16 px at 2.00 µm per
+  pixel"). Left empty, the run uses 10 px.
+- **Microscope**: **Sensor pixel size** (µm), **Magnification**, **Binning** and **Sensor
+  width** (px). One frame pixel is sensor pixel size × binning ÷ magnification at the
+  sample; with the sensor width and no binning given, the binning is the sensor width over
+  the frame width. The µm diameter needs at least the sensor pixel size and the
+  magnification; until they are set, Run stays off and the field says why.
+- **Look-back**, **Final settle** (Thorough, Standard, Quick), and under **Stages**,
+  **Find new cells** (on by default; off, Discover keeps tracking the cells it has but finds
+  no new ones; this one applies at once, also during a run) and **Extract after Discover**.
+- **Advanced** (folded): the diameter in pixels set directly (it then overrides the µm
+  diameter, and the run record says so), motion correction (largest shift, the template
+  time constant), preprocessing, the cell finder's thresholds and memory, the look-back
+  horizon and the QC pass rule. Each field's **?** explains it and gives its range; a value
+  outside the range is refused with a message under the field.
+
+A setting that is not its default shows where it came from (**set** here, or **file**) and a
+↺ to return it to its default. Settings set elsewhere in the app (Speed, the Background settle
+cap, the flat field, the QC pass/fail export filter) are not repeated in the sheet.
+
+**Config files.** **Save config…** writes the values you set (not the defaults) and where
+each came from to `cala-config.json`; **Load config…** reads one back, for another
+recording or another animal. A config file is JSON, may carry `//` comments, and may list
+only some settings: the rest keep their defaults. Load refuses a file with a value outside
+a setting's range and names it; a key that is not a setting is listed (with the setting it
+probably meant) and kept in the file, but not used. **Clear** returns every setting to its
+default. An example is in `apps/cala/docs/example-config.json`; every setting, its unit and
+its range are in `crates/cala/schema/cala-params.schema.json`. The export's run record
+holds what was asked for, where each value came from, and the cell diameter in pixels the
+run used.
+
+A live stream has no sheet: connecting starts it. A multi-session run starts from its own
+**Start** button (the session list, or a project's run plan) and has no sheet either.
 
 Once the run has started, the header has icon buttons to pause, restart (↻) and end
 Discover or stop the live run, and the tab shows, in the order you use them:
 
 - **Settings**: one line of chips with the settings the run started with (for example
-  "Look-back on · Final settle Thorough · Extract after Discover"). Click it to open the
-  same fields. Changes to Look-back and the Final settle level **apply on Restart** (↻); in
-  a Separate multi-session run they apply from the next session.
+  "Look-back on · Final settle Thorough · Extract after Discover"), and one chip per further
+  value the run asked for ("Expected cell diameter 32 µm"). Click it to open the same fields
+  and the config buttons. Changes **apply on Restart** (↻); in a Separate multi-session run
+  they apply from the next session.
 - **Progress**: one row per step, **Discover**, **Final settle** and **Extract**. The
   running step is a panel with its header (name, state, percent, frames per second, time
   left), its bar and its meter rows, each on a fixed range:

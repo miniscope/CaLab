@@ -58,6 +58,8 @@ export interface LookbackReaderLike extends FrameServer {
   setBackState(state: Uint8Array, frame?: number): void;
   setSession(index: number, transform: SessionTransform): void;
   setFlatField(map: FlatFieldMap | null): void;
+  /** The run's resolved params (`run-params.ts`): its motion corrector and trace engine follow them. */
+  setParams(params: string): void;
   applyLibrary(upTo?: number): void;
   prepare(frames: { frame: number; block: number }[], out: Float32Array): Promise<LookbackPrepared>;
   solve(p: LookbackPrepared, skip?: ArrayLike<number>): LookbackSolved;
@@ -82,6 +84,8 @@ export interface LookbackServiceDeps {
   }>;
   /** A frame server on a run's factors (`factors` from the slow worker). */
   factorServer(f: FactorSource['factors']): FrameServer;
+  /** The run's resolved params arrived (the factor servers' solvers are built from them). */
+  params?(params: string): void;
   postSlow(msg: LookbackToSlow, transfer: Transferable[]): void;
   postMain(msg: LookbackToMain): void;
   now?: () => number;
@@ -157,6 +161,12 @@ export class LookbackService {
         return;
       case 'session':
         this.withReader(msg.session, (reader) => reader.setSession(msg.index, msg.transform));
+        return;
+      case 'params':
+        this.withRun(msg.session, (_, o) => {
+          this.deps.params?.(msg.params);
+          o.reader?.setParams(msg.params);
+        });
         return;
       case 'flat':
         this.withReader(msg.session, (reader) => reader.setFlatField(msg.map));

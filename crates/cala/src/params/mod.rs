@@ -21,11 +21,18 @@
 //!   of keys, at any depth) deserialises to the defaults plus what it sets.
 //!   Unknown keys are ignored by serde; the app lists them to the user.
 //!
-//! The defaults are the app's shipped configuration. Nothing in the engine
-//! reads these structs yet; [`resolve::EngineView`] is the engine-unit view
-//! they will be built into, pinned by the golden files in
-//! `tests/golden/`.
+//! The defaults are the app's shipped configuration. [`resolve::resolve`]
+//! turns params into [`resolve::EngineView`], the engine-unit view pinned by
+//! the golden files in `tests/golden/`, and [`engine::Engine`] builds the
+//! engine's config structs from it. The wasm bindings take a resolved
+//! handle (`js::ResolvedParams`); `qc_eval`'s flags are turned into params
+//! with the help of [`loose`].
 
+pub mod engine;
+#[cfg(feature = "jsbindings")]
+pub mod js;
+pub mod layer;
+pub mod loose;
 pub mod meta;
 pub mod migrate;
 pub mod resolve;

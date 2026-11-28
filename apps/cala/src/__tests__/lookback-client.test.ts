@@ -131,9 +131,11 @@ describe('look-back client', () => {
     expect(none.pools).toEqual([]);
   });
 
-  it('a pool started mid-run gets the run so far: begin, every row joined, the newest flat field', () => {
+  it('a pool started mid-run gets the run so far: begin, params, every row joined, the newest flat field', () => {
     const t = setup(null, 2);
     t.client.begin(1);
+    t.client.params(1, 'P');
+    expect(t.sent.filter((x) => x.msg.type === 'params').map((x) => x.worker)).toEqual([0]);
     const rows = (start: number, n: number) => {
       const a = Float32Array.from({ length: n }, (_, k) => start + k);
       t.client.rows(1, start, a, a, new Uint8Array(n), a, a);
@@ -149,8 +151,9 @@ describe('look-back client', () => {
     expect(t.pools).toEqual([]);
     for (const w of [1, 2]) {
       const mine = t.sent.filter((x) => x.worker === w).map((x) => x.msg);
-      expect(mine.map((m) => m.type)).toEqual(['connect', 'begin', 'rows', 'flat']);
-      const r = mine[2] as Extract<MainToLookback, { type: 'rows' }>;
+      expect(mine.map((m) => m.type)).toEqual(['connect', 'begin', 'params', 'rows', 'flat']);
+      expect(mine[2]).toEqual({ type: 'params', session: 1, params: 'P' });
+      const r = mine[3] as Extract<MainToLookback, { type: 'rows' }>;
       expect(r.start).toBe(0);
       expect(Array.from(r.dy)).toEqual(Array.from({ length: 16 }, (_, k) => k));
     }

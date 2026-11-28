@@ -18,6 +18,7 @@
  *   - shape metrics (rise/decay, skew, slow share, zero share, event rate,
  *     footprint size and stability) are descriptive only, never a failure.
  */
+import { schemaDefaults } from '../params/schema.ts';
 
 /** `FLAG_*` bits of `CellQc.flags` (crates/cala/src/qc/mod.rs). */
 export const FLAG_LOW_SNR = 1;
@@ -27,18 +28,21 @@ export const FLAG_UNMEASURED = 8;
 /** Trace follows the frame's rigid shift (motion_r2 above MOTION_R2_FLAG). Display only, not in `pass`. */
 export const FLAG_FOLLOWS_MOTION = 16;
 
+/** The default pass rule (`qc.pass` of the params schema; the engine applies the run's own). */
+const PASS_RULE = schemaDefaults().qc.pass;
+
 /** `motion_r2` above which a cell is flagged "follows motion" (sensor-gain shimmer or motion artifact). */
-export const MOTION_R2_FLAG = 0.2;
+export const MOTION_R2_FLAG: number = PASS_RULE.motion_r2_flag;
 
 /** True when the cell's trace follows motion (from the value, so old wire formats without the flag bit work too). */
 export function followsMotion(r: Pick<CellQcRow, 'motionR2' | 'flags'>): boolean {
   return (r.flags & FLAG_FOLLOWS_MOTION) !== 0 || r.motionR2 > MOTION_R2_FLAG;
 }
 
-/** Peak SNR below which a cell fails (the Rust `PassRule.min_snr`). */
-export const MIN_SNR = 5;
-/** Trace r above which two overlapping cells are a correlated pair. */
-export const PAIR_R = 0.8;
+/** Peak SNR below which a cell fails (`qc.pass.min_snr`). */
+export const MIN_SNR: number = PASS_RULE.min_snr;
+/** Trace r above which two overlapping cells are a correlated pair (`qc.pass.pair_r`). */
+export const PAIR_R: number = PASS_RULE.pair_r;
 
 /** A QC snapshot as the fast worker sends it (buffers are transferred). */
 export interface QcWire {

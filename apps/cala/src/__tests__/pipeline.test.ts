@@ -6,7 +6,7 @@ import { frameClientOn } from './fake-workers.ts';
 import { MAX_FRAMES_PER_READ } from '../lib/frame-source.ts';
 import type { PaceStats } from '../lib/frame-pacer.ts';
 import type { PipelineStepResult } from '../lib/pipeline-types.ts';
-import { makePlan, PipelineCursor, type PipelineStep } from '../lib/pipeline-plan.ts';
+import { PipelineCursor, type PipelineStep } from '../lib/pipeline-plan.ts';
 import { createPipelineStore, MAX_IN_FLIGHT, ThroughputMeter } from '../lib/pipeline-store.ts';
 import { downsampleFrame, previewFactor } from '../lib/preview.ts';
 import { createRunHistory } from '../lib/run-history.ts';
@@ -15,6 +15,7 @@ import type { LookbackFeed } from '../lib/lookback-client.ts';
 import { FINAL_SETTLE_LEVEL_DEFAULT } from '../lib/settle.ts';
 import { VISIT_RATE } from '../lib/visit-rate.ts';
 import type { FrameRequest, FrameResponse } from '../workers/frame-types.ts';
+import { testPlan } from './params-fixtures.ts';
 
 function walk(cursor: PipelineCursor): PipelineStep[] {
   const steps: PipelineStep[] = [];
@@ -24,16 +25,16 @@ function walk(cursor: PipelineCursor): PipelineStep[] {
 
 describe('pipeline plan', () => {
   it('clamps the warm-ups to the recording and the batch to one read', () => {
-    const p = makePlan(50, { batchSize: 1000 });
+    const p = testPlan(50, { batchSize: 1000 });
     expect(p.calibrationFrames).toBe(50);
     expect(p.motionWarmupFrames).toBe(50);
     expect(p.batchSize).toBe(MAX_FRAMES_PER_READ);
-    expect(() => makePlan(0)).toThrow(RangeError);
-    expect(() => makePlan(10, { batchSize: 0 })).toThrow(RangeError);
+    expect(() => testPlan(0)).toThrow(RangeError);
+    expect(() => testPlan(10, { batchSize: 0 })).toThrow(RangeError);
   });
 
   it('walks calibrate, motion warm-up, then every frame in batches', () => {
-    const plan = makePlan(150, { calibrationFrames: 130, motionWarmupFrames: 20, batchSize: 64 });
+    const plan = testPlan(150, { calibrationFrames: 130, motionWarmupFrames: 20, batchSize: 64 });
     const cursor = new PipelineCursor(plan);
     const steps = walk(cursor);
     expect(steps).toEqual([
@@ -50,7 +51,7 @@ describe('pipeline plan', () => {
   });
 
   it('ends the recording early when truncated', () => {
-    const cursor = new PipelineCursor(makePlan(100, { calibrationFrames: 8, batchSize: 8 }));
+    const cursor = new PipelineCursor(testPlan(100, { calibrationFrames: 8, batchSize: 8 }));
     let processed = 0;
     for (let s = cursor.next(); s; s = cursor.next()) {
       if (s.phase !== 'process') continue;
@@ -63,7 +64,7 @@ describe('pipeline plan', () => {
   });
 
   it('cuts process batches at session boundaries, so each session starts a batch', () => {
-    const plan = makePlan(
+    const plan = testPlan(
       30,
       { batchSize: 8, calibrationFrames: 4, motionWarmupFrames: 4 },
       [13, 13, 0, 40, 21],
@@ -81,11 +82,11 @@ describe('pipeline plan', () => {
       [29, 1],
     ]);
     // Warm-ups are not cut.
-    expect(makePlan(30, {}, [3]).boundaries).toEqual([3]);
+    expect(testPlan(30, {}, [3]).boundaries).toEqual([3]);
   });
 
   it('processes each frame exactly once, in order, never more than a batch at a time', () => {
-    const plan = makePlan(1001, { batchSize: 7 });
+    const plan = testPlan(1001, { batchSize: 7 });
     const process = walk(new PipelineCursor(plan)).filter((s) => s.phase === 'process');
     let next = 0;
     for (const s of process) {
@@ -139,7 +140,7 @@ function manualClient() {
   return {
     steps,
     client: {
-      startPipeline: vi.fn(async () => makePlan(100)),
+      startPipeline: vi.fn(async () => testPlan(100)),
       stepPipeline: vi.fn(
         () => new Promise<PipelineStepResult>((resolve, reject) => steps.push({ resolve, reject })),
       ),
@@ -656,6 +657,7 @@ describe('pipeline store backpressure', () => {
         rows: () => {},
         backState: () => {},
         flatField: () => {},
+        params: () => {},
         reset: () => {},
       };
       const args = [undefined, undefined, undefined, undefined, {}, undefined, undefined] as const;
@@ -755,6 +757,7 @@ describe('pipeline store: Background settle and the settle pool', () => {
       rows: () => {},
       backState: () => {},
       flatField: () => {},
+      params: () => {},
       reset: () => {},
       pace: (fps, paused) => {
         order.push('pace');
@@ -791,7 +794,7 @@ describe('pipeline store: Background settle and the settle pool', () => {
     const { client } = manualClient();
     client.startPipeline.mockImplementation(async () => {
       order.push('start');
-      return makePlan(100);
+      return testPlan(100);
     });
     await createRoot(async (dispose) => {
       const store = make(feed, client);
@@ -855,6 +858,7 @@ describe('pipeline store: Background settle and the settle pool', () => {
         ...feedSpy([]).feed,
         backState: () => void log.push('back'),
         flatField: () => void log.push('flat'),
+        params: () => {},
         final: () => void log.push('final'),
       };
       const { client, steps } = manualClient();
@@ -908,7 +912,7 @@ describe('pipeline store: Background settle and the settle pool', () => {
     const { client } = manualClient();
     client.startPipeline.mockImplementation(async () => {
       order.push('start');
-      return makePlan(100);
+      return testPlan(100);
     });
     await createRoot(async (dispose) => {
       const store = make(feed, client);
@@ -929,6 +933,7 @@ describe('pipeline store: look-back and Final settle are the default (no Refine 
     rows: () => {},
     backState: () => {},
     flatField: () => {},
+    params: () => {},
     reset: () => {},
   });
   const make = (f: LookbackFeed, client: ReturnType<typeof manualClient>['client']) =>
@@ -1016,7 +1021,7 @@ describe('pipeline store: look-back and Final settle are the default (no Refine 
 
 describe('pipeline message protocol', () => {
   it('pairs start/step/stop requests with their responses by id', async () => {
-    const plan = makePlan(10);
+    const plan = testPlan(10);
     const { worker, sent } = fakeWorker((req) => {
       switch (req.type) {
         case 'pipeline-start':

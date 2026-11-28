@@ -51,8 +51,10 @@ const throughputFrames = Number(option('--throughput', '5000'));
 // Frames run through the preprocess + motion pipeline (0 = skip).
 const motionFrames = Number(option('--motion', '300'));
 const motionBatch = Number(option('--batch', '8'));
+// Global flicker correction (`preprocess.flicker`): 0 off, 1 additive, 2 multiplicative, 3 both.
 const flickerModeArg = option('--flicker-mode', undefined);
-const flickerMode = flickerModeArg === undefined ? undefined : Number(flickerModeArg);
+const FLICKER = ['off', 'additive', 'multiplicative', 'both'];
+const flicker = flickerModeArg === undefined ? undefined : FLICKER[Number(flickerModeArg)];
 function flag(name) {
   const on = args.includes(name);
   if (on) args.splice(args.indexOf(name), 1);
@@ -115,11 +117,11 @@ function stats(xs) {
 
 // The app's preprocess + motion pipeline, headless, over the first frames.
 if (motionFrames > 0) {
-  const chain = new StageChain(
-    source,
-    { batchSize: motionBatch, flatField: false },
-    flickerMode === undefined ? {} : { flickerMode },
-  );
+  const chain = new StageChain(source, {
+    batchSize: motionBatch,
+    flatField: false,
+    ...(flicker === undefined ? {} : { paramsLayer: { preprocess: { flicker } } }),
+  });
   const plan = chain.plan;
   const want = Math.min(motionFrames, plan.frameCount);
   console.log(

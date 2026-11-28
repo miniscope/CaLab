@@ -10,7 +10,14 @@
  * Speed control (`speed-control-store.ts`), Background settle (`bg-settle-store.ts`) and the work
  * readout (`work-readout-store.ts`). This store owns the run's lifecycle and wires them.
  */
-import { createSignal, untrack } from 'solid-js';
+import {
+  isBackgroundCap,
+  runParams as parseRunParams,
+  mergeLayers,
+  runParamsLayer,
+  type BackgroundCap,
+} from './run-params.ts';
+import { createMemo, createSignal, untrack } from 'solid-js';
 import type { CellStore } from './cell-store.ts';
 import type { CompressStore } from './compress-store.ts';
 import { FACTORS_FILE_JOINT, factorRunPlan } from './factor-run.ts';
@@ -29,6 +36,10 @@ import type {
 import type { PipelineOptions, PipelinePhase, PipelinePlan } from './pipeline-plan.ts';
 import { createPlaybackController } from './playback-controller.ts';
 import { RunRecord } from './run-record.ts';
+import { createParamLayers } from './param-layers.ts';
+import { deleteAt } from '@calab/core';
+import type { RequestSource } from './config-file.ts';
+import { extractAfterDiscover, setExtractAfterDiscover } from './run-stages.ts';
 import { BoundaryMonitor, severityLabel, type BoundaryFlag } from './boundary-flags.ts';
 import type { SessionStart } from './session-boundary.ts';
 import type { RunHistory } from './run-history.ts';
@@ -133,6 +144,10 @@ export function createPipelineStore(
 ) {
   const [status, setStatus] = createSignal<PipelineStatus>('idle');
   const [plan, setPlan] = createSignal<PipelinePlan | null>(null);
+  const runParams = createMemo(() => {
+    const p = plan();
+    return p ? parseRunParams(p.params) : null;
+  });
   const [setup, setSetup] = createSignal<SetupProgress | null>(null);
   const [processed, setProcessed] = createSignal(0);
   const [fps, setFps] = createSignal(0);
@@ -194,6 +209,29 @@ export function createPipelineStore(
   let jointOf: () => boolean = () => false;
   /** Final settle level (under look-back; the setting for the next Discover start). */
   const [finalSettleLevelSig, setFinalSettleLevelSig] = createSignal(FINAL_SETTLE_LEVEL_DEFAULT);
+  /**
+   * The params the user asked for in the pre-run sheet or a config file. The fields with a
+   * setting of their own here write through to it.
+   */
+  const params = createParamLayers({
+    '/lookback/enabled': { get: () => lookback(), set: (v) => setLookback(v === true) },
+    '/settle/final/level': {
+      get: () => finalSettleLevelSig(),
+      set: (v) => setFinalSettleLevelSig(finalSettleLevel(v)),
+    },
+    '/stages/find_new_cells': { get: () => discover(), set: (v) => setDiscover(v === true) },
+    '/stages/extract': {
+      get: () => extractAfterDiscover(),
+      set: (v) => setExtractAfterDiscover(v === true),
+    },
+  });
+  /** What the current run asked for (null: no run yet): the requested values and their sources. */
+  const [runRequest, setRunRequest] = createSignal<{
+    requested: Record<string, unknown>;
+    sources: Record<string, RequestSource>;
+    /** Asked for but set by the app's own settings at this start: pointer → asked and used. */
+    overridden: Record<string, { asked: unknown; used: unknown }>;
+  } | null>(null);
   /** The Final settle level the current run started with (null: no run yet), so the run record names what ran. */
   let runLevel: ReturnType<typeof finalSettleLevel> | null = null;
   /** Session of the current run with look-back (0: none). */
@@ -566,6 +604,33 @@ export function createPipelineStore(
       // Only an explicit `?factors=file`/`gpu`: the default has no factor route on a Joint run.
       if (factors() && factorsFile() && jointOf()) console.warn(FACTORS_FILE_JOINT);
       runLevel = lb || runPlan.factorSettle ? finalSettleLevelSig() : FINAL_SETTLE_LEVEL_DEFAULT;
+      // The run's params: the settings of this start over the caller's layer. The frame worker
+      // resolves them against the recording; every worker is built from the result.
+      const paramsLayer = runParamsLayer({
+        lookback: lb,
+        factorSettle: runPlan.factorSettle,
+        visitMode: untrack(speed.visitRateSetting) === 'auto' ? 'auto' : 'fixed',
+        flatField: useFlat,
+        finalSettleLevel: runLevel,
+        findNewCells: discover(),
+        qc,
+        repeatable: rep,
+        ...(isBackgroundCap(settleCap()) ? { settleCap: settleCap() as BackgroundCap } : {}),
+        base: mergeLayers(options.paramsLayer ?? {}, params.runLayer()),
+      });
+      // A µm diameter the optics cannot turn into pixels, or that gives pixels out of range,
+      // refuses the run (the sheet holds Run; other starts land here).
+      const diameterIssue = params.diameter(flat.identity?.()?.width ?? 0).issues[0];
+      if (diameterIssue) throw new Error(diameterIssue.message);
+      // What was asked for and is used; a value the app's own settings replaced is listed apart.
+      const overridden = params.overridden(paramsLayer);
+      let requested = params.requested() as Record<string, unknown>;
+      const sources = { ...params.sources() };
+      for (const ptr of Object.keys(overridden)) {
+        requested = deleteAt(requested, ptr);
+        delete sources[ptr];
+      }
+      setRunRequest({ requested, sources, overridden });
       if (lb) {
         lookbackSession = session;
         // Without an estimator this session, the flat-field input is final from the start.
@@ -578,7 +643,7 @@ export function createPipelineStore(
         tellSettlePace();
       }
       const p = await client.startPipeline(
-        { ...options, flatField: useFlat },
+        { ...options, paramsLayer, flatField: useFlat },
         {
           session,
           discover: discover(),
@@ -620,6 +685,10 @@ export function createPipelineStore(
       );
       if (gen !== generation) return;
       setPlan(p);
+      const run = runParams();
+      if (run) flatStore.setSchedule(run.engine.fps, run.engine.flat_field.first_frames);
+      // The look-back workers build their motion corrector and trace engines from the run's params.
+      if (lb) lookbackFeed!.params(session, p.params);
       // Joint run with the session fix: judge each boundary (observers only).
       if (p.sessionFix && p.boundaries.length > 0)
         boundaryMonitor = new BoundaryMonitor({
@@ -723,6 +792,10 @@ export function createPipelineStore(
     status,
     discover,
     setDiscover,
+    /** The params asked for before a run (the pre-run sheet, a config file). */
+    params,
+    /** What the current run asked for and where each value came from (null: no run yet). */
+    runRequest,
     /** The residual preview is being produced (the residual view is shown). */
     residual,
     /**
@@ -915,6 +988,8 @@ export function createPipelineStore(
     setDisplayLog: playbackCtl.setDisplayLog,
     displayLog: playbackCtl.displayLog,
     plan,
+    /** The current run's resolved params (null before its pipeline is ready). */
+    runParams,
     setup,
     processed,
     previews,

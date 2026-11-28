@@ -29,9 +29,8 @@ export interface SlowInit extends RunCells {
   fov: Uint8Array;
   /** Per-pixel noise sigma of the preprocessed frames. */
   noise: Float32Array;
-  cellDiameterPx: number;
-  /** Flattening sigma, px (0 = derived from the cell diameter). */
-  flattenSigmaPx: number;
+  /** The run's resolved params (`run-params.ts`): the slow loop and its visit workers are built from them. */
+  params: string;
   /** Slow-loop work units per observed frame (about multiply-adds). */
   budget: number;
 }

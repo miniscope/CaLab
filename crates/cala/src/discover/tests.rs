@@ -951,16 +951,26 @@ fn visit_reuse_matches_the_plain_computation_without_warm_starts() {
 }
 
 /// Warm starts change the visits' numbers, so visit workers must be built
-/// with the slow loop's setting: it is part of the visit fingerprint.
+/// with the slow loop's setting: it is part of the fingerprint the configs
+/// built from params carry.
 #[test]
 fn warm_start_is_a_visit_option() {
-    let on = shard_config();
-    let off = SlowLoopConfig {
-        warm_start: false,
-        ..shard_config()
+    use crate::params::engine::Engine;
+    use crate::params::resolve::Context;
+    use crate::params::CalaParams;
+    let ctx = Context {
+        fps: 20.0,
+        frame: [64, 64],
     };
-    assert!(on.warm_start);
-    assert_ne!(on.visit_fingerprint(), off.visit_fingerprint());
+    let on = CalaParams::default();
+    let mut off = on.clone();
+    off.discover.warm_start = false;
+    let (on, off) = (
+        Engine::build(&on, ctx).unwrap().slow_loop,
+        Engine::build(&off, ctx).unwrap().slow_loop,
+    );
+    assert!(on.warm_start && !off.warm_start);
+    assert_ne!(on.fingerprint, off.fingerprint);
 }
 
 fn visit_reuse_matches_the_plain_computation(warm_start: bool) {
@@ -2232,8 +2242,16 @@ fn js_observe_with_background_levels_matches_native() {
     let js = |cfg: &SlowLoopConfig| {
         let (s, e) = start(cfg.clone(), &seed);
         let lib = e.library().clone();
-        let eng = JsTraceEngine::new(&JsTraceLibrary::from_arc(lib.clone()), 0.0, 0).unwrap();
-        (super::js::JsSlowLoop::from_parts(s, lib), eng)
+        let params = crate::params::js::ResolvedParams::new(
+            crate::params::CalaParams::default(),
+            crate::params::resolve::Context {
+                fps: 20.0,
+                frame: [N as u32, N as u32],
+            },
+        )
+        .unwrap();
+        let eng = JsTraceEngine::new(&JsTraceLibrary::from_arc(lib.clone()), &params).unwrap();
+        (super::js::JsSlowLoop::from_parts(s, lib, None), eng)
     };
     let (mut b, mut eb) = js(&cfg);
     let (mut c, mut ec) = js(&cfg);
@@ -2369,7 +2387,7 @@ fn refine_js(
     use super::js::JsSlowLoop;
     let n_px = N * N;
     let (slow, mut eng) = start(shard_config(), seed);
-    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone(), None);
     let feed = |js: &mut JsSlowLoop, eng: &mut TraceEngine, out: &mut Vec<Vec<u8>>, keep: bool| {
         for k in 0..t {
             let f = &m[k * n_px..(k + 1) * n_px];
@@ -3113,8 +3131,7 @@ fn js_lookback_matches_the_native_driver() {
 
     // JS surface.
     let (slow, mut eng) = start(cfg, seed);
-    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
-    js.enable_lookback(2.0, 3000).unwrap();
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone(), Some(lookback_2_3000()));
     let mut lb_eng = eng.clone();
     let mut via_js = Vec::new();
     for k in 0..t {
@@ -3184,9 +3201,19 @@ fn js_lookback_matches_the_native_driver() {
     assert!(native == via_js, "libraries differ");
 }
 
+/// The app's look-back: two look-back frames per Discover frame, at most
+/// 3000 frames before a cell's birth.
+#[cfg(feature = "jsbindings")]
+fn lookback_2_3000() -> super::LookbackConfig {
+    super::LookbackConfig {
+        rate: 2.0,
+        max_frames: 3000,
+        ..super::LookbackConfig::default()
+    }
+}
+
 /// Hardening: a visit runner built with other slow-loop options refuses the
-/// job; with look-back on, `observe` needs the stream index and
-/// `enableLookback` must come before the first frame.
+/// job; with look-back on, `observe` needs the stream index.
 #[cfg(feature = "jsbindings")]
 #[test]
 fn lookback_misuse_is_refused() {
@@ -3194,9 +3221,25 @@ fn lookback_misuse_is_refused() {
     let t = 400;
     let (m, seed) = busy_movie(t);
     let n_px = N * N;
+    // The fingerprints of the default params and of params with the
+    // cluster replay and the merge guard off.
+    use crate::params::engine::Engine;
+    use crate::params::resolve::Context;
+    use crate::params::{CalaParams, ClusterUpdate};
+    let fp = |p: &CalaParams| {
+        let ctx = Context {
+            fps: 20.0,
+            frame: [N as u32, N as u32],
+        };
+        Engine::build(p, ctx).unwrap().slow_loop.fingerprint
+    };
+    let mut off = CalaParams::default();
+    off.discover.cluster.update = ClusterUpdate::Off;
+    off.discover.merge.guard_min_sep_d = None;
     let cfg = SlowLoopConfig {
         joint_update: JointUpdate::All,
         merge_guard_min_sep: 0.6,
+        fingerprint: fp(&CalaParams::default()),
         ..shard_config()
     };
     let (mut sl, mut eng) = start(cfg.clone(), &seed);
@@ -3205,7 +3248,10 @@ fn lookback_misuse_is_refused() {
         vec![1; n_px],
         vec![1.0; n_px],
         flattener(),
-        shard_config(),
+        SlowLoopConfig {
+            fingerprint: fp(&off),
+            ..shard_config()
+        },
     )
     .unwrap();
     let mut runner = VisitRunner::new(plain);
@@ -3225,10 +3271,11 @@ fn lookback_misuse_is_refused() {
     assert!(err.to_string().contains("other options"), "{err}");
 
     // (The JS error paths themselves need a wasm target; their guards:)
-    let (slow, _) = start(cfg, &seed);
-    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    let (slow, _) = start(cfg.clone(), &seed);
+    let js = JsSlowLoop::from_parts(slow, eng.library().clone(), None);
     assert!(js.stream_ok(None));
-    js.enable_lookback(2.0, 3000).unwrap();
+    let (slow, _) = start(cfg, &seed);
+    let js = JsSlowLoop::from_parts(slow, eng.library().clone(), Some(lookback_2_3000()));
     assert!(!js.stream_ok(None));
     assert!(js.stream_ok(Some(0.0)));
 }
@@ -3310,11 +3357,10 @@ fn js_settle_frames_only_feeds_fitting_frames_to_the_statistics() {
     let seed: Vec<Footprint> = cells.iter().map(|(f, _)| f.clone()).collect();
     let n_px = N * N;
     let (slow, mut eng) = start(config(), &seed);
-    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone());
+    let mut js = JsSlowLoop::from_parts(slow, eng.library().clone(), Some(lookback_2_3000()));
     let v = eng.library().version() as f64;
     // Off: nothing to take.
     assert!(js.settle_take(96.0, 16).is_empty());
-    js.enable_lookback(2.0, 3000).unwrap();
     js.enable_settle(16).unwrap();
     // Live frames at stream indices 100.. (frames before the slow loop
     // started get the hashed decision).
@@ -3852,6 +3898,150 @@ fn mean_field_statistics_match_the_plain_sums() {
     assert!(plain_seen && sm.fpstats[&2].pm.is_some());
     assert!(sm.fpstats[&1].mf.is_some());
     assert!(sm.stats_gen > 0 && sm.fpstats[&1].k > 600);
+}
+
+/// The cluster stores of a loop on the mean-field push hold what a loop on
+/// the plain push accumulates, to rounding: overlapping cells (two
+/// clusters), live frames on one library interleaved with look-back frames
+/// on another (a moved member: its columns change at every alternation;
+/// the other cluster's columns do not), look-back pushes to a subset,
+/// missing samples on a cluster's pixels (skipped frames), forgetting
+/// rescales, and a new live library with a moved member. (Moved stores are
+/// covered by `cluster::push_frame_tests::push_mean_matches_the_plain_push`.)
+#[test]
+fn mean_field_cluster_stores_match_the_plain_push() {
+    let t = 900;
+    let mut rng = Lcg(5);
+    let cells = vec![
+        (blob_w(0, 30.0, 30.0, 2.5), trace(&mut rng, t, 0.05, 6.0)),
+        (blob_w(1, 30.0, 34.0, 2.5), trace(&mut rng, t, 0.05, 6.0)),
+        (blob_w(2, 70.0, 66.0, 2.5), trace(&mut rng, t, 0.05, 6.0)),
+        (blob_w(3, 70.0, 70.0, 2.5), trace(&mut rng, t, 0.05, 6.0)),
+    ];
+    let n_px = N * N;
+    let mut m = movie(&cells, t, 4);
+    for k in 0..t {
+        if (300..310).contains(&k) {
+            m[k * n_px + 70 * N + 68] = f32::NAN;
+        }
+    }
+    let ring = crate::trace::BackgroundModel::Ring {
+        inner_px: 12.0,
+        outer_px: 20.0,
+    };
+    let build = |fps: Vec<Footprint>, v: u64| {
+        let mut b = LibraryBuilder::new(dims())
+            .background(ring.clone())
+            .version(v);
+        for fp in fps {
+            b = b.footprint(fp);
+        }
+        Arc::new(b.build(&mut flattener()).unwrap())
+    };
+    let live_a = build(
+        vec![
+            blob_w(0, 30.0, 30.0, 2.5),
+            blob_w(1, 30.0, 34.0, 2.5),
+            blob_w(2, 70.0, 66.0, 2.5),
+            blob_w(3, 70.0, 70.0, 2.5),
+        ],
+        1,
+    );
+    let back = build(
+        vec![
+            blob_w(0, 31.0, 30.0, 2.5),
+            blob_w(1, 30.0, 34.0, 2.5),
+            blob_w(2, 70.0, 66.0, 2.5),
+            blob_w(3, 70.0, 70.0, 2.5),
+        ],
+        2,
+    );
+    let live_b = build(
+        vec![
+            blob_w(0, 31.0, 30.0, 2.5),
+            blob_w(1, 30.0, 34.0, 2.5),
+            blob_w(2, 70.0, 66.0, 2.5),
+            blob_w(3, 70.0, 73.0, 2.5),
+        ],
+        3,
+    );
+    let cfg = SlowLoopConfig {
+        stats_half_life_frames: 40.0,
+        joint_update: JointUpdate::All,
+        ..config()
+    };
+    let new_loop = || {
+        SlowLoop::new(
+            dims(),
+            vec![1; n_px],
+            vec![1.0; n_px],
+            flattener(),
+            cfg.clone(),
+        )
+    };
+    let (mut sm, mut sp) = (new_loop().unwrap(), new_loop().unwrap());
+    sp.stats_plain = true;
+    let mut eng_a = TraceEngine::new(live_a.clone(), SolverConfig::default()).unwrap();
+    let mut eng_b = TraceEngine::new(live_b.clone(), SolverConfig::default()).unwrap();
+    let mut eng_back = TraceEngine::new(back.clone(), SolverConfig::default()).unwrap();
+    let frame = |k: usize| &m[k * n_px..(k + 1) * n_px];
+    let rel = |x: &[f32], y: &[f32]| -> f32 {
+        let top = y.iter().fold(0.0f32, |a, v| a.max(v.abs())).max(1e-6);
+        x.iter()
+            .zip(y)
+            .fold(0.0f32, |a, (p, q)| a.max((p - q).abs()))
+            / top
+    };
+    let check = |sm: &SlowLoop, sp: &SlowLoop, at: usize| {
+        assert_eq!(sm.clusters.len(), sp.clusters.len(), "frame {at}");
+        for (a, b) in sm.clusters.iter().zip(&sp.clusters) {
+            assert_eq!(a.ids, b.ids);
+            assert_eq!((a.k, &a.pix), (b.k, &b.pix), "frame {at}");
+            let ((cya, sra, va), (cyb, srb, vb)) = (a.sums(), b.sums());
+            assert!(rel(&cya, &cyb) < 1e-5, "cy {:?} frame {at}", a.ids);
+            assert!(rel(&sra, &srb) < 1e-5, "sr {:?} frame {at}", a.ids);
+            assert!(rel(va, vb) < 1e-5, "v {:?} frame {at}", a.ids);
+        }
+        assert_eq!(
+            sm.replay_stats.skipped_frames,
+            sp.replay_stats.skipped_frames
+        );
+    };
+    for k in 0..t {
+        let (eng, lib) = if k < 500 {
+            (&mut eng_a, &live_a)
+        } else {
+            (&mut eng_b, &live_b)
+        };
+        let tr = eng.process(frame(k)).unwrap();
+        sm.observe(frame(k), lib, &tr).unwrap();
+        sp.observe(frame(k), lib, &tr).unwrap();
+        if k >= 50 {
+            let j = k - 50;
+            let tr = eng_back.process(frame(j)).unwrap();
+            let only = [2u64];
+            let only = (k % 3 == 0).then_some(&only[..]);
+            sm.observe_lookback(frame(j), &back, &tr, j as u64, only)
+                .unwrap();
+            sp.observe_lookback(frame(j), &back, &tr, j as u64, only)
+                .unwrap();
+        }
+        if k % 100 == 99 {
+            check(&sm, &sp, k);
+        }
+    }
+    check(&sm, &sp, t);
+    // The paths the test is meant to cover were taken.
+    eprintln!(
+        "clusters {} skipped {} moves {} k {:?}",
+        sm.clusters.len(),
+        sm.replay_stats.skipped_frames,
+        sm.replay_stats.moves,
+        sm.clusters.iter().map(|c| c.k).collect::<Vec<_>>()
+    );
+    assert!(!sm.clusters.is_empty());
+    assert!(sm.replay_stats.skipped_frames > 0);
+    assert!(sm.clusters.iter().all(|c| c.k > 600));
 }
 
 /// The ledger's run-wise eight-lane sum is the serial sum to rounding, and

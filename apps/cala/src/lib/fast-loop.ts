@@ -14,7 +14,7 @@ import type { CompressToFast } from '../workers/compress-types.ts';
 import type { FastToSlow, PortLike, SlowToFast } from '../workers/slow-types.ts';
 import type { CompressFeedLike } from './compress-feed.ts';
 import { ForwardPool } from './forward-pool.ts';
-import { ASSUMED_FPS } from './miniscope-meta.ts';
+import { runParams } from './run-params.ts';
 import type { QcWire } from './qc.ts';
 import { normalizeRunCells, type RunCells } from './run-cells.ts';
 
@@ -72,13 +72,15 @@ export interface QcSetup {
   height: number;
   fov: Uint8Array;
   noise: Float32Array;
-  fps: number;
+  /** The run's resolved params (`run-params.ts`). */
+  params: string;
 }
 
 /** Constructors of the WASM objects (the real ones, or fakes in tests). */
 export interface TraceBackend {
   libraryFromBytes(bytes: Uint8Array): TraceLibraryLike;
-  newEngine(lib: TraceLibraryLike): TraceEngineLike;
+  /** A trace engine on `lib`, with the solver settings of `params` (the run's resolved params). */
+  newEngine(lib: TraceLibraryLike, params: string): TraceEngineLike;
   /** Online QC (absent: no QC). */
   newQc?(setup: QcSetup): QcMonitorLike;
   /** `QcMonitor.cellFields()` / `globalFields()`, comma-separated. */
@@ -118,11 +120,11 @@ export interface FastLoopOptions extends RunCells {
   /** Frames per batch: the size of the forwarded buffers. */
   batchSize: number;
   session: number;
-  cellDiameterPx: number;
-  flattenSigmaPx: number;
+  /** The run's resolved params (`run-params.ts`): its frame rate, QC and slow loop. */
+  params: string;
   /** Run cell discovery (forward frames to the slow worker). */
   discover?: boolean;
-  /** Slow-loop work units per observed frame. */
+  /** Slow-loop work units per observed frame (default the params' `discover.budget`). */
   budget?: number;
   /** First frame the slow loop sees (the noise map needs a few frames). */
   startFrame?: number;
@@ -132,8 +134,6 @@ export interface FastLoopOptions extends RunCells {
   poolSize?: number;
   /** Run online quality control on the traces (when the backend has it). */
   qc?: boolean;
-  /** Frame rate of the recording (QC rates are per minute). */
-  fps?: number;
   /** Stream time between QC snapshots sent to the main thread, s (paced by frames, not the wall clock). */
   qcEveryS?: number;
   /** Solve with this library (`TraceLibrary.toBytes()`) from the first frame (Extract: the final library). */
@@ -147,16 +147,13 @@ export interface FastLoopOptions extends RunCells {
   signed?: boolean;
 }
 
-/** Defaults of `FastLoopOptions`. */
+/** Defaults of `FastLoopOptions` (the params set the rest). */
 export const FAST_LOOP_DEFAULTS = {
-  // The slow loop's default work per frame (see `SlowInit.budget`).
-  budget: 3e7,
   startFrame: 50,
   noiseEvery: 200,
   // One batch being observed, one queued.
   poolSize: 2,
   qc: true,
-  fps: ASSUMED_FPS,
   qcEveryS: 1,
   residual: false,
   signed: false,
@@ -204,7 +201,11 @@ export interface CellsBatch {
 const now = (): number => performance.now();
 
 export class FastLoop {
-  private readonly o: Required<Omit<FastLoopOptions, 'initialLibrary' | keyof RunCells>>;
+  private readonly o: Required<Omit<FastLoopOptions, 'initialLibrary' | 'budget' | keyof RunCells>>;
+  /** The run's frame rate, Hz (the params' `fps`: the recording's or the declared fallback). */
+  private readonly fps: number;
+  /** Slow-loop work units per observed frame. */
+  private readonly budget: number;
   /** The slow loop's run options, normalized; sent as they are in its `init`. */
   private readonly run: RunCells;
   private readonly frozenReplay: boolean;
@@ -245,18 +246,14 @@ export class FastLoop {
     /** The feed to the compress worker (`null`: no compression). */
     private readonly feed: CompressFeedLike | null = null,
   ) {
-    const { initialLibrary, ...rest } = options;
+    const { initialLibrary, budget, ...rest } = options;
     this.run = normalizeRunCells(rest);
     this.o = { ...FAST_LOOP_DEFAULTS, discover: true, ...rest };
+    const engine = runParams(options.params).engine;
+    this.fps = engine.fps;
+    this.budget = budget ?? engine.slow_loop.budget;
     this.pendingLibrary = initialLibrary ?? null;
     this.frozenReplay = initialLibrary !== undefined;
-    if (!(this.o.fps > 0)) {
-      // The recording gave no rate (its warnings say so); QC durations assume this one.
-      console.warn(
-        `cala fast loop: no frame rate; QC durations assume ${FAST_LOOP_DEFAULTS.fps} Hz.`,
-      );
-      this.o.fps = FAST_LOOP_DEFAULTS.fps;
-    }
     this.px = options.width * options.height;
     this.port = port;
     this.backend = backend;
@@ -438,7 +435,7 @@ export class FastLoop {
         height: this.o.height,
         fov: calibration.fovMask(),
         noise: calibration.noiseSigma(),
-        fps: this.o.fps,
+        params: this.o.params,
       });
       this.qcNoise = start;
       this.qcRefreshDeferred = deferNoise;
@@ -458,7 +455,7 @@ export class FastLoop {
   private qcSnapshot(): QcWire | undefined {
     const qc = this.qc;
     const fields = this.qcFields;
-    if (!qc || !fields || this.qcFrame - this.qcLastFrame < this.o.qcEveryS * this.o.fps)
+    if (!qc || !fields || this.qcFrame - this.qcLastFrame < this.o.qcEveryS * this.fps)
       return undefined;
     this.qcLastFrame = this.qcFrame;
     const t = now();
@@ -535,7 +532,7 @@ export class FastLoop {
     try {
       if (this.engine) this.engine.setLibrary(lib);
       else {
-        this.engine = this.backend.newEngine(lib);
+        this.engine = this.backend.newEngine(lib, this.o.params);
         if (this.frozenReplay) this.engine.setConsolidatedRingGradient?.(true);
         if (this.o.signed) this.engine.setSigned?.(true);
       }
@@ -568,9 +565,8 @@ export class FastLoop {
           height: this.o.height,
           fov: calibration.fovMask(),
           noise: calibration.noiseSigma(),
-          cellDiameterPx: this.o.cellDiameterPx,
-          flattenSigmaPx: this.o.flattenSigmaPx,
-          budget: this.o.budget,
+          params: this.o.params,
+          budget: this.budget,
           ...this.run,
         },
         [],

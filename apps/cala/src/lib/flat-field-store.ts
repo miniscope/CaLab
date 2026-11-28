@@ -123,7 +123,7 @@ export function createFlatFieldStore(deps: FlatFieldDeps) {
         deps.onFinal();
         return;
       case 'progress':
-        patchFlat({ frames: e.frames, fps: e.fps });
+        patchFlat({ frames: e.frames, fps: e.fps, firstFrames: e.firstFrames });
         return;
       case 'skipped':
         patchFlat({ skipped: e.message });
@@ -220,6 +220,10 @@ export function createFlatFieldStore(deps: FlatFieldDeps) {
     flatField,
     /** The newest map of this run (null: none). */
     flatFieldMap: () => flatLatest,
+    /** The run's frame rate and frames before the first map (its resolved params), for the progress. */
+    setSchedule(fps: number, firstFrames: number): void {
+      patchFlat({ fps, firstFrames });
+    },
     flushFlatField,
     noteApplied,
     reset,

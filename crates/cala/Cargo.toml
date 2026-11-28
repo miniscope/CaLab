@@ -37,6 +37,8 @@ matrixmultiply = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = { version = "1", features = ["preserve_order"] }
+# SHA-256 of the canonical params JSON: the run fingerprint (`params::engine`).
+sha2 = { version = "0.10", default-features = false }
 wasm-bindgen = { version = "0.2", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 # Same pyo3 pin and abi3 rationale as crates/solver/Cargo.toml.

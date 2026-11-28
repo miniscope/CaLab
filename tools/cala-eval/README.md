@@ -28,6 +28,11 @@ Design: sections 3.2 to 3.5 of the cala overhaul plan (not in the repo).
   13 Nov 2026). `qc_eval sim ... --rescore RUN` rescores an earlier `--churn-log` run's checkpoint
   footprints both ways (`rescore.tsv`) without running the loops
   (`results/2026-11-13-motion-offset.md`).
+- `presets/qc-eval-legacy.json`: the engine's own configuration as a params file (cluster replay
+  and merge guard off, no look-back, non-rigid motion), the no-flag arm of results notes written
+  before `qc_eval`'s flags were `CalaParams` overrides. With no flags `qc_eval` runs the app's default params (run-control flags keep their own defaults); pass
+  `--params tools/cala-eval/presets/qc-eval-legacy.json` to reproduce an older note's no-flag arm.
+  `--dump-params` prints what a command line resolves to.
 - `gen_sims.py`: generates `<sims>/<arm>_s<seed>` (600 px, 480 s, 9600 frames).
   Existing recordings whose `spec.json` is byte-identical to what the generator
   would write are symlinked (`--reuse <dir>`) instead of regenerated. At most 2

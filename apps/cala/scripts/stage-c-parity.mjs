@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import init, {
-  PreprocessConfig,
+  resolveParams,
   PreprocessWarmup,
   Preprocessor,
   TraceLibraryBuilder,
@@ -24,8 +24,9 @@ const raw = Uint8Array.from({ length: N * 24 }, (_, i) => {
     x = p % W;
   return (y - 24) ** 2 + (x - 32) ** 2 < 22 ** 2 ? 100 + ((i * 7) % 40) : 2;
 });
-const config = new PreprocessConfig(20);
-const warm = new PreprocessWarmup(W, H, config);
+// The default params at 20 fps.
+const params = resolveParams('{}', JSON.stringify({ fps: 20, frame: [W, H] }));
+const warm = new PreprocessWarmup(W, H, params);
 warm.pushFrames(raw, 24);
 const seed = warm.finish(),
   state = seed.state();
@@ -46,12 +47,12 @@ let batches = 0;
 for (const withQc of [false, true]) {
   const a = Preprocessor.fromState(state),
     b = Preprocessor.fromState(state);
-  const ea = new TraceEngine(lib, 0, 0),
-    eb = new TraceEngine(lib, 0, 0);
+  const ea = new TraceEngine(lib, params),
+    eb = new TraceEngine(lib, params);
   ea.setSigned(true);
   eb.setSigned(true);
-  const qa = withQc ? new QcMonitor(W, H, a.fovMask(), a.noiseSigma(), 20, 0) : null;
-  const qb = withQc ? new QcMonitor(W, H, b.fovMask(), b.noiseSigma(), 20, 0) : null;
+  const qa = withQc ? new QcMonitor(W, H, a.fovMask(), a.noiseSigma(), params) : null;
+  const qb = withQc ? new QcMonitor(W, H, b.fovMask(), b.noiseSigma(), params) : null;
   for (let j = 0; j < 30; j++) {
     const count = j === 29 ? 3 : B;
     const x = Float32Array.from(
@@ -91,7 +92,7 @@ for (const withQc of [false, true]) {
   b.free();
 }
 seed.free();
-config.free();
+params.free();
 lib.free();
 console.log(
   `${batches} fused/unfused batches identical, with and without QC, signed/background outputs, partial batches, and forced memory.grow`,

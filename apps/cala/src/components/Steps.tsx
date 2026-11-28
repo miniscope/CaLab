@@ -62,7 +62,9 @@ export function createSteps(src: () => StepSources): () => StepView[] {
     const total = s.plan()?.frameCount ?? 0;
     const settleTotal =
       lb?.settle?.total ??
-      (Number.isFinite(total) ? plannedSettleFrames(total, SETTLE.maxFrames) : 0);
+      (Number.isFinite(total)
+        ? plannedSettleFrames(total, s.runParams()?.engine.settle.final_max_frames ?? 0)
+        : 0);
     return stepViews({
       live: o.live === true,
       discover: s.status(),
@@ -276,7 +278,7 @@ export function DiscoverBody(props: {
   pipeline: PipelineStore;
   cells: CellStore;
   step: StepView;
-  /** The recording's frame rate, Hz (0: unknown, `ASSUMED_FPS` is used). */
+  /** The recording's frame rate, Hz (0: unknown, the run's params' rate is used). */
   fps?: number;
   children?: JSX.Element;
 }): JSX.Element {
@@ -295,7 +297,10 @@ export function DiscoverBody(props: {
     SAMPLE_MS,
   );
   const cellCount = () => snap().cells;
-  const fps = () => (props.fps && props.fps > 0 ? props.fps : ASSUMED_FPS);
+  const fps = () =>
+    props.fps && props.fps > 0
+      ? props.fps
+      : (props.pipeline.runParams()?.engine.fps ?? ASSUMED_FPS);
   const shown = () => (props.pipeline.lookbackRun() ? snap().facts : null);
   return (
     <div

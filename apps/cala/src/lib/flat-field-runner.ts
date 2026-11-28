@@ -5,13 +5,9 @@
  * call it directly. Runs only off the frame path (see `workers/flat-field-worker.ts`).
  */
 import { FlatFieldEstimator } from './cala-wasm.ts';
-import {
-  FLAT_FIELD_FIRST_S,
-  FLAT_FIELD_REFINE_S,
-  type FlatFieldChange,
-  type FlatFieldEvent,
-  type FlatFieldMap,
-} from './flat-field.ts';
+import { paramsHandle } from './params-handle.ts';
+import { runParams } from './run-params.ts';
+import { type FlatFieldChange, type FlatFieldEvent, type FlatFieldMap } from './flat-field.ts';
 import type { FramePixels } from './frame-source.ts';
 import { errMsg } from './errors.ts';
 
@@ -22,13 +18,11 @@ export interface FlatFieldStart {
   width: number;
   height: number;
   fovMask: Uint8Array;
-  fps: number;
+  /** The run's resolved params (`run-params.ts`): the estimator's half-lives and schedule. */
+  params: string;
   sixteen: boolean;
   /** A stored map of this sensor: in force from the first frame, blended into every solve. */
   seed?: FlatFieldMap;
-  /** Seconds of frames before the first map and between refinements (tests; default the library's). */
-  firstS?: number;
-  refineS?: number;
 }
 
 /** Stage A -> estimator: a batch of raw frames with the shifts stage B registered them by. */
@@ -57,7 +51,8 @@ export class FlatFieldRunner {
   private est: FlatFieldEstimator | null = null;
   private session = 0;
   private sixteen = false;
-  private fps = 20;
+  private fps = 0;
+  private firstFrames = 0;
   private reportedSecond = -1;
 
   /**
@@ -73,18 +68,16 @@ export class FlatFieldRunner {
     this.stop();
     this.session = msg.session;
     this.sixteen = msg.sixteen;
-    this.fps = msg.fps > 0 ? msg.fps : 20;
+    const run = runParams(msg.params);
+    this.fps = run.engine.fps;
+    this.firstFrames = run.engine.flat_field.first_frames;
     this.reportedSecond = -1;
     const seed = msg.seed;
     this.est = new FlatFieldEstimator(
       msg.width,
       msg.height,
       msg.fovMask,
-      this.fps,
-      NaN,
-      NaN,
-      msg.firstS ?? FLAT_FIELD_FIRST_S,
-      msg.refineS ?? FLAT_FIELD_REFINE_S,
+      paramsHandle(msg.params),
       seed?.gain,
       seed && seed.offset.length > 0 ? seed.offset : undefined,
       seed?.dark ?? 0,
@@ -102,7 +95,13 @@ export class FlatFieldRunner {
       const second = Math.floor(est.frames / this.fps);
       if (second !== this.reportedSecond) {
         this.reportedSecond = second;
-        this.emit({ type: 'progress', session: this.session, frames: est.frames, fps: this.fps });
+        this.emit({
+          type: 'progress',
+          session: this.session,
+          frames: est.frames,
+          fps: this.fps,
+          firstFrames: this.firstFrames,
+        });
       }
       if (est.due) this.refine(est);
     } catch (err) {

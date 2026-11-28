@@ -33,6 +33,8 @@ import type { CompressToReview, ReviewStatus, ReviewToMain } from '../workers/re
 import type { FastToSlow, OwnerToVisit, SlowToMain, VisitToOwner } from '../workers/slow-types.ts';
 import { initTestWasm } from './wasm-test.ts';
 import { fakeLib, INIT, stubSlowLoop } from './slow-fixtures.ts';
+import { paramsHandle } from '../lib/params-handle.ts';
+import { DEFAULT_PARAMS } from './params-fixtures.ts';
 
 beforeAll(initTestWasm);
 
@@ -262,7 +264,16 @@ describe('CompressRunner feeding the review worker', () => {
   function run(every: number, tiling: 'plain' | 'offset' = 'plain') {
     const sent: FastToCompress[] = [];
     const feed = new CompressFeed(
-      { width: W, height: H, session: 7, tile: 16, window: 10, quant: 64, tiling },
+      {
+        width: W,
+        height: H,
+        session: 7,
+        tile: 16,
+        window: 10,
+        quant: 64,
+        params: DEFAULT_PARAMS,
+        tiling,
+      },
       { postMessage: (m) => sent.push(m) },
     );
     const toReview: CompressToReview[] = [];
@@ -624,7 +635,15 @@ describe('history review on real factors (WASM)', () => {
     ];
     const sent: FastToCompress[] = [];
     const feed = new CompressFeed(
-      { width: N, height: N, session: 1, tile: 64, window: WINDOW, quant: 64 },
+      {
+        width: N,
+        height: N,
+        session: 1,
+        params: DEFAULT_PARAMS,
+        tile: 64,
+        window: WINDOW,
+        quant: 64,
+      },
       { postMessage: (m) => sent.push(m) },
     );
     const BATCH = 50;
@@ -695,7 +714,7 @@ describe('history review on real factors (WASM)', () => {
 
     const fov = new Uint8Array(N * N).fill(1);
     const noise = new Float32Array(N * N).fill(1);
-    const slow = new SlowLoop(N, N, fov, noise, 10, 0);
+    const slow = new SlowLoop(N, N, fov, noise, paramsHandle(DEFAULT_PARAMS));
     try {
       expect(slow.addReviewed(c)).toBe(1);
       expect(slow.cellCount).toBe(1);

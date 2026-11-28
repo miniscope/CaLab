@@ -10,6 +10,7 @@
  * hysteresis) and `FloorMeter` (the glue the `?debug` readout uses).
  * The floor itself sets no speed; the Speed control and the curves read it.
  */
+import { schemaDefaults } from '../params/schema.ts';
 
 import { LOOKBACK_KINDS, type LookbackWork, type WorkStatus } from './work-meter.ts';
 
@@ -446,8 +447,8 @@ export class FloorTracker {
 
 // ---- the glue for the `?debug` readout ----
 
-/** Need-driven frames asked per observed frame: mirrors `LOOKBACK.rate` in `slow-runner.ts` (a test keeps them equal). */
-export const NEED_RATE = 2;
+/** Need-driven frames asked per observed frame by default (`lookback.rate`; a run's own is in its params). */
+export const NEED_RATE: number = schemaDefaults().lookback.rate;
 
 /** What a slow status gives the meter besides its accounting. */
 export interface FloorFeed {

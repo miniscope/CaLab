@@ -15,14 +15,12 @@
 use wasm_bindgen::prelude::*;
 
 use crate::js_util::{init_panic_hook, js_err};
+use crate::params::js::ResolvedParams;
 use crate::qc::js::JsQcMonitor;
 use crate::trace::js::JsTraceEngine;
 
-use super::flatfield::{
-    FlatFieldSeed, FlatFieldUpdate, OnlineFlatField, OnlineFlatFieldConfig, RefineOutcome,
-};
-use super::flicker::{FlickerMode, FlickerRecord};
-use super::lines::LineMode;
+use super::flatfield::{FlatFieldSeed, FlatFieldUpdate, OnlineFlatField, RefineOutcome};
+use super::flicker::FlickerRecord;
 use super::warmup::WarmupAccumulator;
 use super::{Calibration, Dims, PreprocessConfig, PreprocessState, Preprocessor, RawPixel};
 
@@ -44,117 +42,6 @@ fn check_batch(func: &str, len: usize, count: u32, n: usize) -> Result<usize, Js
     }
 }
 
-/// Settings for every stage; the defaults are the documented ones.
-#[wasm_bindgen(js_name = PreprocessConfig)]
-#[derive(Clone)]
-pub struct JsPreprocessConfig {
-    inner: PreprocessConfig,
-}
-
-#[wasm_bindgen(js_class = PreprocessConfig)]
-impl JsPreprocessConfig {
-    /// Defaults for a recording at `fps` frames per second (0 = 20 fps).
-    #[wasm_bindgen(constructor)]
-    pub fn new(fps: f32) -> JsPreprocessConfig {
-        init_panic_hook();
-        JsPreprocessConfig {
-            inner: PreprocessConfig::for_fps(fps),
-        }
-    }
-
-    #[wasm_bindgen(setter, js_name = warmupFrames)]
-    pub fn set_warmup_frames(&mut self, v: u32) {
-        self.inner.warmup_frames = v as usize;
-    }
-
-    #[wasm_bindgen(getter, js_name = warmupFrames)]
-    pub fn warmup_frames(&self) -> u32 {
-        self.inner.warmup_frames as u32
-    }
-
-    /// Expected soma diameter in pixels (sets the flattening σ = 2x this).
-    #[wasm_bindgen(setter, js_name = cellDiameterPx)]
-    pub fn set_cell_diameter_px(&mut self, v: f32) {
-        self.inner.flatten.cell_diameter_px = v;
-    }
-
-    #[wasm_bindgen(getter, js_name = cellDiameterPx)]
-    pub fn cell_diameter_px(&self) -> f32 {
-        self.inner.flatten.cell_diameter_px
-    }
-
-    /// Explicit flattening σ in pixels; 0 = derive from the cell diameter.
-    #[wasm_bindgen(setter, js_name = flattenSigmaPx)]
-    pub fn set_flatten_sigma_px(&mut self, v: f32) {
-        self.inner.flatten.sigma_px = (v > 0.0).then_some(v);
-    }
-
-    #[wasm_bindgen(getter, js_name = flattenSigmaPx)]
-    pub fn flatten_sigma_px(&self) -> f32 {
-        self.inner.flatten.sigma()
-    }
-
-    /// 0 off, 1 rows, 2 columns, 3 both.
-    #[wasm_bindgen(setter, js_name = lineMode)]
-    pub fn set_line_mode(&mut self, v: u8) {
-        self.inner.lines = LineMode::from_code(v).unwrap_or(LineMode::Off);
-    }
-
-    /// Global flicker correction: 0 off, 1 additive (sensor offset), 2
-    /// multiplicative (LED gain), 3 both (default).
-    #[wasm_bindgen(setter, js_name = flickerMode)]
-    pub fn set_flicker_mode(&mut self, v: u8) {
-        self.inner.flicker.mode = FlickerMode::from_code(v).unwrap_or(FlickerMode::Off);
-    }
-
-    #[wasm_bindgen(getter, js_name = flickerMode)]
-    pub fn flicker_mode(&self) -> u8 {
-        self.inner.flicker.mode.code()
-    }
-
-    /// Time constant of the flicker reference image, frames.
-    #[wasm_bindgen(setter, js_name = flickerTauFrames)]
-    pub fn set_flicker_tau_frames(&mut self, v: f32) {
-        self.inner.flicker.tau_frames = v;
-    }
-
-    #[wasm_bindgen(getter, js_name = flickerTauFrames)]
-    pub fn flicker_tau_frames(&self) -> f32 {
-        self.inner.flicker.tau_frames
-    }
-
-    #[wasm_bindgen(setter, js_name = hotPixelKSigma)]
-    pub fn set_hot_k_sigma(&mut self, v: f32) {
-        self.inner.hot.k_sigma = v;
-    }
-
-    #[wasm_bindgen(setter, js_name = fovRelThreshold)]
-    pub fn set_fov_rel_threshold(&mut self, v: f32) {
-        self.inner.fov.rel_threshold = v;
-    }
-
-    #[wasm_bindgen(setter, js_name = fovFitDisk)]
-    pub fn set_fov_fit_disk(&mut self, v: bool) {
-        self.inner.fov.fit_disk = v;
-    }
-
-    #[wasm_bindgen(setter, js_name = backgroundBoxcar)]
-    pub fn set_background_boxcar(&mut self, v: u32) {
-        self.inner.background.boxcar = v as usize;
-    }
-
-    /// Upward relaxation time constant in frames (0 = pure running minimum).
-    #[wasm_bindgen(setter, js_name = backgroundRelaxFrames)]
-    pub fn set_background_relax_frames(&mut self, v: f32) {
-        self.inner.background.relax_frames = v;
-    }
-
-    #[wasm_bindgen(setter, js_name = backgroundSnapshotEvery)]
-    pub fn set_background_snapshot_every(&mut self, v: u32) {
-        self.inner.background.snapshot_every = v;
-    }
-}
-
 /// Accumulates the warm-up frames, then builds a [`JsPreprocessor`].
 #[wasm_bindgen(js_name = PreprocessWarmup)]
 pub struct JsWarmup {
@@ -164,18 +51,17 @@ pub struct JsWarmup {
 
 #[wasm_bindgen(js_class = PreprocessWarmup)]
 impl JsWarmup {
+    /// Every stage's settings come from `params` (`ResolvedParams`).
     #[wasm_bindgen(constructor)]
-    pub fn new(width: u32, height: u32, config: &JsPreprocessConfig) -> Result<JsWarmup, JsError> {
+    pub fn new(width: u32, height: u32, params: &ResolvedParams) -> Result<JsWarmup, JsError> {
         init_panic_hook();
         let dims = Dims::new(width as usize, height as usize)
             .map_err(|e| js_err("PreprocessWarmup", e))?;
-        config
-            .inner
-            .validate()
-            .map_err(|e| js_err("PreprocessWarmup", e))?;
+        let cfg = params.engine().preprocess;
+        cfg.validate().map_err(|e| js_err("PreprocessWarmup", e))?;
         Ok(JsWarmup {
             acc: WarmupAccumulator::new(dims),
-            cfg: config.inner,
+            cfg,
         })
     }
 
@@ -668,10 +554,8 @@ pub struct JsFlatFieldEstimator {
 
 #[wasm_bindgen(js_class = FlatFieldEstimator)]
 impl JsFlatFieldEstimator {
-    /// `fovMask`: the calibration's (1 inside). `fps` converts the default
-    /// half-lives and schedule (seconds). Optional overrides, seconds
-    /// (negative or NaN: default): gain half-life, offset half-life (0: no
-    /// offset model), first map, refinement period. A seed (`seedGain`,
+    /// `fovMask`: the calibration's (1 inside). The half-lives and the
+    /// schedule come from `params` (`flat_field`). A seed (`seedGain`,
     /// optional `seedOffset`, `seedDark`, `seedFrames`) is a stored map of
     /// the same sensor: in force from the first frame and blended into
     /// every solve by its weight, which decays with the gain half-life.
@@ -681,11 +565,7 @@ impl JsFlatFieldEstimator {
         width: u32,
         height: u32,
         fov_mask: &[u8],
-        fps: f32,
-        gain_half_life_s: f32,
-        offset_half_life_s: f32,
-        first_s: f32,
-        refine_s: f32,
+        params: &ResolvedParams,
         seed_gain: Option<Vec<f32>>,
         seed_offset: Option<Vec<f32>>,
         seed_dark: f32,
@@ -694,25 +574,7 @@ impl JsFlatFieldEstimator {
         init_panic_hook();
         let dims = Dims::new(width as usize, height as usize)
             .map_err(|e| js_err("FlatFieldEstimator", e))?;
-        let mut cfg = OnlineFlatFieldConfig::for_fps(fps);
-        let rate = if fps.is_finite() && fps > 0.0 {
-            fps
-        } else {
-            20.0
-        };
-        let set = |s: f32| (s.is_finite() && s >= 0.0).then(|| (s * rate).round());
-        if let Some(v) = set(gain_half_life_s) {
-            cfg.estimator.half_life_frames = f64::from(v);
-        }
-        if let Some(v) = set(offset_half_life_s) {
-            cfg.estimator.offset_half_life_frames = f64::from(v);
-        }
-        if let Some(v) = set(first_s) {
-            cfg.first_frames = (v as u64).max(1);
-        }
-        if let Some(v) = set(refine_s) {
-            cfg.refine_every_frames = (v as u64).max(1);
-        }
+        let cfg = params.engine().flat_field;
         let seed = seed_gain.map(|gain| FlatFieldSeed {
             gain,
             offset: seed_offset,

@@ -43,6 +43,8 @@ import type {
   FastToCompress,
 } from '../workers/compress-types.ts';
 import { initTestWasm } from './wasm-test.ts';
+import { paramsHandle } from '../lib/params-handle.ts';
+import { DEFAULT_PARAMS } from './params-fixtures.ts';
 
 beforeAll(initTestWasm);
 
@@ -79,7 +81,7 @@ function batch(start: number, count: number): Float32Array {
 function collectingFeed(window: number) {
   const sent: FastToCompress[] = [];
   const feed = new CompressFeed(
-    { width: W, height: H, session: 7, tile: TILE, window, quant: QUANT },
+    { width: W, height: H, session: 7, params: DEFAULT_PARAMS, tile: TILE, window, quant: QUANT },
     { postMessage: (m) => sent.push(m) },
   );
   return { feed, sent };
@@ -95,7 +97,7 @@ function runner(store = memoryStore()) {
     create: (quant) => new TileCompressor(quant),
     engine: (bytes) => {
       const lib = TraceLibrary.fromBytes(bytes);
-      const engine = new TraceEngine(lib, 0, 0);
+      const engine = new TraceEngine(lib, paramsHandle(DEFAULT_PARAMS));
       const ids = lib.ids();
       lib.free();
       return {
@@ -276,7 +278,16 @@ describe('CompressRunner', () => {
   function feedWith(options: Partial<ConstructorParameters<typeof CompressFeed>[0]>) {
     const sent: FastToCompress[] = [];
     const feed = new CompressFeed(
-      { width: W, height: H, session: 7, tile: TILE, window: 50, quant: QUANT, ...options },
+      {
+        width: W,
+        height: H,
+        session: 7,
+        params: DEFAULT_PARAMS,
+        tile: TILE,
+        window: 50,
+        quant: QUANT,
+        ...options,
+      },
       { postMessage: (m) => sent.push(m) },
     );
     return { feed, sent };
@@ -396,7 +407,16 @@ describe('CompressRunner', () => {
     const n = 33;
     const sent: FastToCompress[] = [];
     const feed = new CompressFeed(
-      { width: n, height: n, session: 7, tile: 16, window: 20, quant: QUANT, tiling: 'offset' },
+      {
+        width: n,
+        height: n,
+        session: 7,
+        params: DEFAULT_PARAMS,
+        tile: 16,
+        window: 20,
+        quant: QUANT,
+        tiling: 'offset',
+      },
       { postMessage: (m) => sent.push(m) },
     );
     const frames = new Float32Array(20 * n * n);
@@ -491,7 +511,15 @@ describe('the compress pool and the cap on waiting windows', () => {
 
     const again: FastToCompress[] = [];
     const next = new CompressFeed(
-      { width: W, height: H, session: 8, tile: TILE, window: 50, quant: QUANT },
+      {
+        width: W,
+        height: H,
+        session: 8,
+        params: DEFAULT_PARAMS,
+        tile: TILE,
+        window: 50,
+        quant: QUANT,
+      },
       { postMessage: (m) => again.push(m) },
     );
     next.push(batch(0, 10), 0, 10);
@@ -528,6 +556,7 @@ describe('the compress pool and the cap on waiting windows', () => {
         width: W,
         height: H,
         session: 7,
+        params: DEFAULT_PARAMS,
         tile: TILE,
         window: 50,
         quant: QUANT,
@@ -782,7 +811,7 @@ describe('Extract on the factor extractor (slice 6)', () => {
       create: (quant) => new TileCompressor(quant),
       engine: (bytes, signed) => {
         const lib = TraceLibrary.fromBytes(bytes);
-        const engine = new TraceEngine(lib, 0, 0);
+        const engine = new TraceEngine(lib, paramsHandle(DEFAULT_PARAMS));
         if (signed) engine.setSigned(true);
         const ids = lib.ids();
         lib.free();
@@ -797,7 +826,7 @@ describe('Extract on the factor extractor (slice 6)', () => {
       ...(o.extractor
         ? {
             extractor: (bytes: Uint8Array, signed: boolean) => {
-              const x = new FactorExtractor(bytes, 0, 0);
+              const x = new FactorExtractor(bytes, paramsHandle(DEFAULT_PARAMS));
               if (signed) x.setSigned(true);
               return x;
             },
@@ -822,6 +851,7 @@ describe('Extract on the factor extractor (slice 6)', () => {
         width: W,
         height: H,
         session: 7,
+        params: DEFAULT_PARAMS,
         tile: TILE,
         window: 50,
         quant: QUANT,
@@ -909,7 +939,7 @@ describe('Extract on the factor extractor (slice 6)', () => {
     const ports = [0, 1, 2].map((k) => ({
       postMessage: (m: CoordinatorToHelper) => {
         if (m.type === 'extract-begin') {
-          const x = new FactorExtractor(m.library, 0, 0);
+          const x = new FactorExtractor(m.library, paramsHandle(m.params));
           if (m.signed) x.setSigned(true);
           xs.set(k, { x, px: m.px });
         } else if (m.type === 'extract-window') pending.push({ k, m });
@@ -1032,6 +1062,7 @@ describe('a recording compressed on the GPU', () => {
         width: GW,
         height: GH,
         session,
+        params: DEFAULT_PARAMS,
         tile: GTILE,
         tiling: 'offset',
         window: 30,
@@ -1266,6 +1297,7 @@ describe('a recording compressed on the GPU', () => {
           width: GW,
           height: GH,
           session: 7,
+          params: DEFAULT_PARAMS,
           tile: GTILE,
           tiling: 'offset',
           window: 30,
@@ -1516,7 +1548,16 @@ describe('a recording compressed on the GPU', () => {
       const sent: FastToCompress[] = [];
       let clock = 0;
       const feed = new CompressFeed(
-        { width: GW, height: GH, session: 7, tile: GTILE, window: 30, quant: QUANT, gpu: true },
+        {
+          width: GW,
+          height: GH,
+          session: 7,
+          params: DEFAULT_PARAMS,
+          tile: GTILE,
+          window: 30,
+          quant: QUANT,
+          gpu: true,
+        },
         { postMessage: (m) => sent.push(m) },
         () => clock,
       );
@@ -1549,7 +1590,16 @@ describe('a recording compressed on the GPU', () => {
     it('a release before the wait: no batch of the run waits again', async () => {
       const sent: FastToCompress[] = [];
       const feed = new CompressFeed(
-        { width: GW, height: GH, session: 7, tile: GTILE, window: 30, quant: QUANT, gpu: true },
+        {
+          width: GW,
+          height: GH,
+          session: 7,
+          params: DEFAULT_PARAMS,
+          tile: GTILE,
+          window: 30,
+          quant: QUANT,
+          gpu: true,
+        },
         { postMessage: (m) => sent.push(m) },
       );
       feed.answer({ type: 'room', session: 7, ring: 63, window: 50, keepFrom: 0 });
@@ -1565,7 +1615,16 @@ describe('a recording compressed on the GPU', () => {
       // After the end, a release changes nothing: the windows are the record of the run.
       const after: FastToCompress[] = [];
       const ended = new CompressFeed(
-        { width: GW, height: GH, session: 7, tile: GTILE, window: 30, quant: QUANT, gpu: true },
+        {
+          width: GW,
+          height: GH,
+          session: 7,
+          params: DEFAULT_PARAMS,
+          tile: GTILE,
+          window: 30,
+          quant: QUANT,
+          gpu: true,
+        },
         { postMessage: (m) => after.push(m) },
       );
       ended.push(new Float32Array(10 * GW * GH), 0, 10);
@@ -1578,7 +1637,16 @@ describe('a recording compressed on the GPU', () => {
       vi.useFakeTimers();
       const sent: FastToCompress[] = [];
       const feed = new CompressFeed(
-        { width: GW, height: GH, session: 7, tile: GTILE, window: 30, quant: QUANT, gpu: true },
+        {
+          width: GW,
+          height: GH,
+          session: 7,
+          params: DEFAULT_PARAMS,
+          tile: GTILE,
+          window: 30,
+          quant: QUANT,
+          gpu: true,
+        },
         { postMessage: (m) => sent.push(m) },
         () => Date.now(),
       );
@@ -1760,6 +1828,7 @@ describe('a recording compressed on the GPU', () => {
           width: GW,
           height: GH,
           session: 7,
+          params: DEFAULT_PARAMS,
           tile: GTILE,
           tiling: 'offset',
           window: 30,

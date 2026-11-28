@@ -11,6 +11,7 @@ import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { RunRecord } from '../lib/run-record.ts';
 import type { LibraryView } from '../workers/slow-types.ts';
 import { stepBatch } from './step-fixtures.ts';
+import { DEFAULT_PARAMS } from './params-fixtures.ts';
 
 const PLAN: PipelinePlan = {
   frameCount: 100,
@@ -20,6 +21,7 @@ const PLAN: PipelinePlan = {
   previewMaxSide: 32,
   boundaries: [],
   sessionFix: true,
+  params: DEFAULT_PARAMS,
 };
 const IDS = Uint32Array.of(3, 8);
 
@@ -121,6 +123,7 @@ describe('Extract (pass 2) store', () => {
       library: Uint8Array.of(1, 2, 3),
     });
     expect(started[0].options).toEqual({
+      resolvedParams: DEFAULT_PARAMS,
       batchSize: 4,
       calibrationFrames: 4,
       motionWarmupFrames: 4,
