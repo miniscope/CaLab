@@ -17,7 +17,7 @@ in those folders). Human docs: `README.md`, `docs/ARCHITECTURE.md`, `docs/CONTRI
 | `apps/cabana`       | CaBaNA: behavioural and neural analysis (placeholder)                                                     |
 | `apps/admin`        | Admin: community submissions and analytics                                                                |
 | `apps/_template`    | Scaffold for `npm run new-app` (see `docs/NEW_APP.md`)                                                    |
-| `packages/*`        | Shared TS (`@calab/core`, `compute`, `io`, `ui`, `community`, `community-ui`, `tutorials`, `vite-config`) |
+| `packages/*`        | Shared TS (`@calab/core`, `compute`, `io`, `project`, `ui`, `community`, `community-ui`, `tutorials`, `vite-config`) |
 | `crates/solver`     | Rust deconvolution solver: WASM (`jsbindings`) and the Python extension (`pybindings`)                    |
 | `crates/cala`       | Rust cala engine (WASM); eval binaries in `crates/cala/examples`                                          |
 | `python/`           | `calab` Python package: a bridge only (data in and out of the browser apps, PyO3 of the solver)           |
