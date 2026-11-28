@@ -10,8 +10,9 @@ use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
 use super::library::{IdentityFilter, Library, LibraryBuilder};
-use super::{Footprint, FrameTraces, SolverConfig, TraceEngine, TraceError};
+use super::{Footprint, FrameTraces, TraceEngine, TraceError};
 use crate::js_util::{init_panic_hook, js_err};
+use crate::params::loose;
 use crate::preprocess::Dims;
 
 /// Collects footprints and settings for a [`JsTraceLibrary`].
@@ -206,13 +207,7 @@ impl JsTraceEngine {
         max_sweeps: u32,
     ) -> Result<JsTraceEngine, JsError> {
         init_panic_hook();
-        let mut cfg = SolverConfig::default();
-        if tol > 0.0 {
-            cfg.tol = tol;
-        }
-        if max_sweeps > 0 {
-            cfg.max_sweeps = max_sweeps;
-        }
+        let cfg = loose::solver_config(tol, max_sweeps);
         let inner =
             TraceEngine::new(library.inner.clone(), cfg).map_err(|e| js_err("TraceEngine", e))?;
         Ok(JsTraceEngine {

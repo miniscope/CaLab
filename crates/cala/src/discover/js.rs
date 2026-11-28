@@ -24,13 +24,14 @@ use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
 use super::{
-    EditScope, HeldOutRecord, JointSign, JointUpdate, LookBack, LookbackConfig, LookbackNext,
-    LookbackOutcome, SettleSched, SlowLoop, SlowLoopConfig, VisitJob, VisitResult, VisitRunner,
-    VisitSchedule, VISIT_HOLD_FLOOR_RATIO,
+    EditScope, HeldOutRecord, LookBack, LookbackNext, LookbackOutcome, SettleSched, SlowLoop,
+    VisitJob, VisitResult, VisitRunner, VISIT_HOLD_FLOOR_RATIO,
 };
 use crate::compress::review::footprints_from_wire;
 use crate::js_util::{init_panic_hook, js_err};
-use crate::preprocess::flatten::{FlattenConfig, GlowFlattener};
+use crate::params::loose::{self, ClusterArgs};
+use crate::params::{ClusterSign, ClusterUpdate};
+use crate::preprocess::flatten::GlowFlattener;
 use crate::preprocess::fov::FovMask;
 use crate::preprocess::Dims;
 use crate::trace::js::JsTraceLibrary;
@@ -90,11 +91,11 @@ fn slow_config(
     joint_update: &str,
     joint_sign: &str,
     merge_guard_min_sep: f32,
-) -> Result<impl Fn(&mut SlowLoopConfig), JsError> {
-    let ju = match joint_update {
-        "off" => JointUpdate::Off,
-        "refine" => JointUpdate::Refine,
-        "all" => JointUpdate::All,
+) -> Result<ClusterArgs, JsError> {
+    let update = match joint_update {
+        "off" => ClusterUpdate::Off,
+        "refine" => ClusterUpdate::Refine,
+        "all" => ClusterUpdate::All,
         o => {
             return Err(js_err(
                 func,
@@ -102,10 +103,10 @@ fn slow_config(
             ))
         }
     };
-    let js = match joint_sign {
-        "off" => JointSign::Off,
-        "own" => JointSign::Own,
-        "all" => JointSign::All,
+    let sign = match joint_sign {
+        "off" => ClusterSign::Off,
+        "own" => ClusterSign::Own,
+        "all" => ClusterSign::All,
         o => return Err(js_err(func, format!("jointSign: off|own|all, not {o:?}"))),
     };
     if !(merge_guard_min_sep >= 0.0) {
@@ -114,10 +115,10 @@ fn slow_config(
             "mergeGuardMinSep must be >= 0 (Infinity = off)",
         ));
     }
-    Ok(move |c: &mut SlowLoopConfig| {
-        c.joint_update = ju;
-        c.joint_sign_rule = js;
-        c.merge_guard_min_sep = merge_guard_min_sep;
+    Ok(ClusterArgs {
+        update,
+        sign,
+        guard_min_sep_d: loose::guard_min_sep(merge_guard_min_sep),
     })
 }
 
@@ -143,7 +144,7 @@ impl JsSlowLoop {
             noise,
             cell_diameter_px,
             flatten_sigma_px,
-            |_| {},
+            None,
         )?;
         Ok(JsSlowLoop::wrap(inner, Arc::new(empty)))
     }
@@ -168,7 +169,12 @@ impl JsSlowLoop {
         joint_sign: &str,
         merge_guard_min_sep: f32,
     ) -> Result<JsSlowLoop, JsError> {
-        let set = slow_config("SlowLoop", joint_update, joint_sign, merge_guard_min_sep)?;
+        let set = Some(slow_config(
+            "SlowLoop",
+            joint_update,
+            joint_sign,
+            merge_guard_min_sep,
+        )?);
         let (inner, empty) = build(
             "SlowLoop",
             width,
@@ -215,11 +221,7 @@ impl JsSlowLoop {
     /// rate (the default) or Auto (`VisitSchedule::fixed` / `auto`).
     #[wasm_bindgen(js_name = setVisitSchedule)]
     pub fn set_visit_schedule(&mut self, auto: bool) {
-        self.inner.set_visit_schedule(if auto {
-            VisitSchedule::auto()
-        } else {
-            VisitSchedule::fixed()
-        });
+        self.inner.set_visit_schedule(loose::visit_schedule(auto));
     }
 
     /// The schedule in force (empty: none): `[auto, target, steps,
@@ -376,11 +378,7 @@ impl JsSlowLoop {
                 "call it before the first observed frame",
             ));
         }
-        self.lookback = Some(LookBack::new(LookbackConfig {
-            rate,
-            max_frames: max_frames as usize,
-            ..LookbackConfig::default()
-        }));
+        self.lookback = Some(LookBack::new(loose::lookback_config(rate, max_frames)));
         Ok(())
     }
 
@@ -781,7 +779,8 @@ impl JsSlowLoop {
     }
 }
 
-/// The slow loop and the empty version-0 library, from the app's settings.
+/// The slow loop and the empty version-0 library, from the app's settings
+/// (resolved as params: [`loose::slow_loop_config`]).
 #[allow(clippy::too_many_arguments)]
 fn build(
     func: &str,
@@ -791,22 +790,14 @@ fn build(
     noise: &[f32],
     cell_diameter_px: f32,
     flatten_sigma_px: f32,
-    set: impl Fn(&mut SlowLoopConfig),
+    cluster: Option<ClusterArgs>,
 ) -> Result<(SlowLoop, Library), JsError> {
     init_panic_hook();
     let dims = Dims::new(width as usize, height as usize).map_err(|e| js_err(func, e))?;
     let mask = FovMask::from_mask(dims, fov).map_err(|e| js_err(func, e))?;
-    let fcfg = FlattenConfig {
-        cell_diameter_px,
-        sigma_px: (flatten_sigma_px > 0.0).then_some(flatten_sigma_px),
-        ..FlattenConfig::default()
-    };
+    let (fcfg, cfg) = loose::slow_loop_config(cell_diameter_px, flatten_sigma_px, cluster)
+        .map_err(|e| js_err(func, e))?;
     let mut flat = GlowFlattener::new(&mask, &fcfg).map_err(|e| js_err(func, e))?;
-    let mut cfg = SlowLoopConfig {
-        cell_diameter_px,
-        ..SlowLoopConfig::default()
-    };
-    set(&mut cfg);
     let empty = LibraryBuilder::new(dims)
         .fov(fov.to_vec())
         .noise(noise.to_vec())
@@ -846,7 +837,7 @@ impl JsVisitWorker {
             noise,
             cell_diameter_px,
             flatten_sigma_px,
-            |_| {},
+            None,
         )?;
         Ok(JsVisitWorker {
             inner: VisitRunner::new(inner),
@@ -868,7 +859,12 @@ impl JsVisitWorker {
         joint_sign: &str,
         merge_guard_min_sep: f32,
     ) -> Result<JsVisitWorker, JsError> {
-        let set = slow_config("VisitWorker", joint_update, joint_sign, merge_guard_min_sep)?;
+        let set = Some(slow_config(
+            "VisitWorker",
+            joint_update,
+            joint_sign,
+            merge_guard_min_sep,
+        )?);
         let (inner, _) = build(
             "VisitWorker",
             width,

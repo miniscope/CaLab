@@ -951,16 +951,26 @@ fn visit_reuse_matches_the_plain_computation_without_warm_starts() {
 }
 
 /// Warm starts change the visits' numbers, so visit workers must be built
-/// with the slow loop's setting: it is part of the visit fingerprint.
+/// with the slow loop's setting: it is part of the fingerprint the configs
+/// built from params carry.
 #[test]
 fn warm_start_is_a_visit_option() {
-    let on = shard_config();
-    let off = SlowLoopConfig {
-        warm_start: false,
-        ..shard_config()
+    use crate::params::engine::Engine;
+    use crate::params::resolve::Context;
+    use crate::params::CalaParams;
+    let ctx = Context {
+        fps: 20.0,
+        frame: [64, 64],
     };
-    assert!(on.warm_start);
-    assert_ne!(on.visit_fingerprint(), off.visit_fingerprint());
+    let on = CalaParams::default();
+    let mut off = on.clone();
+    off.discover.warm_start = false;
+    let (on, off) = (
+        Engine::build(&on, ctx).unwrap().slow_loop,
+        Engine::build(&off, ctx).unwrap().slow_loop,
+    );
+    assert!(on.warm_start && !off.warm_start);
+    assert_ne!(on.fingerprint, off.fingerprint);
 }
 
 fn visit_reuse_matches_the_plain_computation(warm_start: bool) {
@@ -3194,9 +3204,18 @@ fn lookback_misuse_is_refused() {
     let t = 400;
     let (m, seed) = busy_movie(t);
     let n_px = N * N;
+    // The fingerprints the bindings give these two option sets.
+    use crate::params::loose::{slow_loop_config, ClusterArgs};
+    use crate::params::{ClusterSign, ClusterUpdate};
+    let fp = |c| slow_loop_config(10.0, 0.0, c).unwrap().1.fingerprint;
     let cfg = SlowLoopConfig {
         joint_update: JointUpdate::All,
         merge_guard_min_sep: 0.6,
+        fingerprint: fp(Some(ClusterArgs {
+            update: ClusterUpdate::All,
+            sign: ClusterSign::All,
+            guard_min_sep_d: Some(0.6),
+        })),
         ..shard_config()
     };
     let (mut sl, mut eng) = start(cfg.clone(), &seed);
@@ -3205,7 +3224,10 @@ fn lookback_misuse_is_refused() {
         vec![1; n_px],
         vec![1.0; n_px],
         flattener(),
-        shard_config(),
+        SlowLoopConfig {
+            fingerprint: fp(None),
+            ..shard_config()
+        },
     )
     .unwrap();
     let mut runner = VisitRunner::new(plain);

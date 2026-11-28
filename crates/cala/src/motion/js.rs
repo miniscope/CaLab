@@ -13,6 +13,7 @@ use super::{
     NonRigidConfig, Warper,
 };
 use crate::js_util::{init_panic_hook, js_err};
+use crate::params::loose::{self, MotionArgs};
 
 /// Motion-correction options; `new MotionOptions()` gives the defaults.
 #[wasm_bindgen]
@@ -83,29 +84,31 @@ impl Default for MotionOptions {
 }
 
 impl MotionOptions {
+    /// The motion config: the params fields resolved as params
+    /// ([`loose::motion_config`]), the other options set on the result.
     fn to_config(self) -> MotionConfig {
-        MotionConfig {
+        let mut c = loose::motion_config(MotionArgs {
             max_shift: self.max_shift,
-            roi_max_side: self.roi_max_side as usize,
-            dog_sigma_small: self.dog_sigma_small,
-            dog_sigma_large: self.dog_sigma_large,
-            upsample: self.upsample,
-            warmup_iterations: self.warmup_iterations as usize,
             template_tau: self.template_tau,
-            anchor_weight: self.anchor_weight,
-            nonrigid: self.nonrigid.then(|| NonRigidConfig {
-                grid: (self.grid_rows as usize, self.grid_cols as usize),
-                max_patch_shift: self.max_patch_shift,
-                temporal_alpha: self.temporal_alpha,
-                ..NonRigidConfig::default()
-            }),
-            interpolation: if self.bilinear {
-                Interpolation::Bilinear
-            } else {
-                Interpolation::Bicubic
-            },
-            ..MotionConfig::default()
+            nonrigid: self.nonrigid,
+            grid: (self.grid_rows as usize, self.grid_cols as usize),
+            max_patch_shift: self.max_patch_shift,
+        });
+        c.roi_max_side = self.roi_max_side as usize;
+        c.dog_sigma_small = self.dog_sigma_small;
+        c.dog_sigma_large = self.dog_sigma_large;
+        c.upsample = self.upsample;
+        c.warmup_iterations = self.warmup_iterations as usize;
+        c.anchor_weight = self.anchor_weight;
+        if let Some(n) = c.nonrigid.as_mut() {
+            n.temporal_alpha = self.temporal_alpha;
         }
+        c.interpolation = if self.bilinear {
+            Interpolation::Bilinear
+        } else {
+            Interpolation::Bicubic
+        };
+        c
     }
 }
 

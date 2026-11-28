@@ -411,6 +411,12 @@ pub struct SlowLoopConfig {
     /// Background model of the published libraries.
     pub background: BackgroundModel,
     pub seed: u64,
+    /// The first 8 bytes of the fingerprint of the params this config was
+    /// built from ([`crate::params::engine::fingerprint`]); 0 for a config
+    /// built by hand. A [`VisitRunner`] refuses jobs from a loop whose
+    /// fingerprint differs from its own, so a visit cannot run with other
+    /// settings than its slow loop.
+    pub fingerprint: u64,
 }
 
 impl Default for SlowLoopConfig {
@@ -482,31 +488,12 @@ impl Default for SlowLoopConfig {
                 outer_px: 20.0,
             },
             seed: 0,
+            fingerprint: 0,
         }
     }
 }
 
 impl SlowLoopConfig {
-    /// The options a visit job must be run with that the job does not
-    /// carry (`withConfig` in the app): the cluster replay mode, its sign
-    /// rule and the merge guard. A [`VisitRunner`] refuses jobs from a loop
-    /// whose fingerprint differs from its own.
-    pub fn visit_fingerprint(&self) -> u64 {
-        let ju = match self.joint_update {
-            JointUpdate::Off => 0u64,
-            JointUpdate::Refine => 1,
-            JointUpdate::All => 2,
-        };
-        let js = match self.joint_sign_rule {
-            JointSign::Off => 0u64,
-            JointSign::Own => 1,
-            JointSign::All => 2,
-        };
-        ju | js << 4
-            | u64::from(self.merge_guard_min_sep.to_bits()) << 8
-            | u64::from(self.warm_start) << 40
-    }
-
     /// The held-out split: slow-loop frame `frame` (0 = the first frame
     /// the loop observes) is a test frame. A hash of the frame index and
     /// `seed`, one frame in `holdout_every`. Public so evaluation code can
