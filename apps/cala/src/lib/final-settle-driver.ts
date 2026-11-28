@@ -30,6 +30,7 @@
  * settle starts (the wait for `factors`), so back state and flat field play
  * no part; and the pooled settle keeps one plain request out per worker.
  */
+import { runParams } from './run-params.ts';
 import type {
   LookbackToSlow,
   SettleStatus,
@@ -207,9 +208,9 @@ export class FinalSettleDriver {
     // Requests of Discover's look-back still out are dropped (their late answers are ignored).
     this.r.cancelRequests();
     // The frames Discover forwarded: the recording (stream index = file frame).
-    const feed = new SettleFeed(
-      truncatePlan(settlePlan(recording), this.r.init?.settleFraction ?? 1),
-    );
+    const init = this.r.init;
+    const cap = init ? runParams(init.params).engine.settle.final_max_frames : 0;
+    const feed = new SettleFeed(truncatePlan(settlePlan(recording, cap), init?.settleFraction ?? 1));
     this.state = {
       phase: 'sweep',
       feed,

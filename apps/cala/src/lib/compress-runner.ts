@@ -194,7 +194,8 @@ export interface CompressRunnerDeps {
   ): Uint8Array;
   create(quant: number): TileCompressorLike;
   /** For the back-fill (absent: `backfill` does nothing). */
-  engine?(library: Uint8Array, signed?: boolean): BackfillEngineLike;
+  /** A trace engine on `library` with the solver settings of `params` (the run's resolved params). */
+  engine?(library: Uint8Array, signed: boolean, params: string): BackfillEngineLike;
   factors?(file: Uint8Array): FactorWindowLike;
   toMain: PortLike<CompressToMain>;
   /** The fast worker, on the port its chunks come from: room in the GPU's ring (absent: never told). */
@@ -202,7 +203,7 @@ export interface CompressRunnerDeps {
   /** The tile pool (absent: the worker compresses every tile itself). */
   pool?: TilePoolLike;
   /** Extract on factors through the `FactorExtractor` (absent: rebuilt frames, one engine). */
-  extractor?(library: Uint8Array, signed: boolean): FactorExtractorLike;
+  extractor?(library: Uint8Array, signed: boolean, params: string): FactorExtractorLike;
   /** The helpers that solve Extract's windows (absent: none, the worker solves them). */
   windows?: WindowPool;
   /** What the origin may store (`navigator.storage.estimate`; absent: the cap is `BACKLOG_MAX_BYTES`). */
@@ -632,7 +633,7 @@ export class CompressRunner {
 
   private async runBackfill(
     lib: { version: number; bytes: Uint8Array },
-    makeEngine: (library: Uint8Array) => BackfillEngineLike,
+    makeEngine: NonNullable<CompressRunnerDeps['engine']>,
     openFactors: (file: Uint8Array) => FactorWindowLike,
   ): Promise<void> {
     const init = this.init;
@@ -641,7 +642,7 @@ export class CompressRunner {
     const session = this.session;
     const t0 = this.now();
     const px = init.width * init.height;
-    const engine = makeEngine(lib.bytes);
+    const engine = makeEngine(lib.bytes, false, init.params);
     try {
       const ids = engine.ids();
       if (ids.length === 0) return;
@@ -707,7 +708,7 @@ export class CompressRunner {
     const live = (): boolean => epoch === this.epoch && this.job === job;
     const t0 = this.now();
     const px = init.width * init.height;
-    const engine = makeEngine(job.library, true);
+    const engine = makeEngine(job.library, true, init.params);
     try {
       const ids = engine.ids();
       const buf = new Float32Array(BACKFILL_BATCH * px);
@@ -790,10 +791,10 @@ export class CompressRunner {
     const px = init.width * init.height;
     const list = [...this.done];
     let local: FactorExtractorLike | null = null;
-    const here = (): FactorExtractorLike => (local ??= makeExtractor(job.library, true));
+    const here = (): FactorExtractorLike => (local ??= makeExtractor(job.library, true, init.params));
     this.windowPool.setWidth(this.widths.extract ?? this.widths.after);
     const workers = Math.max(1, this.windowPool.width());
-    this.windowPool.begin(job.id, job.library, true, px);
+    this.windowPool.begin(job.id, job.library, true, px, init.params);
     let frames = 0;
     let projected = 0;
     let rebuilt = 0;

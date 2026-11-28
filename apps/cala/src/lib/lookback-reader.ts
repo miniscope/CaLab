@@ -60,13 +60,13 @@
  */
 import {
   MotionCorrector,
-  MotionOptions,
   Preprocessor,
   SessionAligner,
   TraceEngine,
   TraceLibrary,
 } from './cala-wasm.ts';
 import type { FlatFieldMap } from './flat-field.ts';
+import { paramsHandle } from './params-handle.ts';
 import { sessionOfFrame, type FrameSourceInfo, type FramePixels } from './frame-source.ts';
 import { frontReplay, rigidRecords } from './pipeline-stages.ts';
 import { RunRecord } from './run-record.ts';
@@ -163,6 +163,7 @@ export class LookbackReader {
   private alignerSession = -1;
   private flat: FlatFieldMap | null = null;
   private flatDirty = false;
+  private params: string | null = null;
   /** Front half (calibration and flat field only; replayed, so stateless). */
   private front: Preprocessor | null = null;
   private motion: MotionCorrector | null = null;
@@ -434,13 +435,19 @@ export class LookbackReader {
     return this.front;
   }
 
+  /** The run's resolved params (`setParams`); no frame is served before they arrive. */
+  setParams(params: string): void {
+    this.params = params;
+  }
+
+  private runParams(): string {
+    if (this.params === null) throw new Error('look-back: the run\'s params have not arrived.');
+    return this.params;
+  }
+
   private newMotion(): MotionCorrector {
-    const opts = new MotionOptions();
-    try {
-      return new MotionCorrector(this.source.info.width, this.source.info.height, opts);
-    } finally {
-      opts.free();
-    }
+    const { width, height } = this.source.info;
+    return new MotionCorrector(width, height, paramsHandle(this.runParams()));
   }
 
   /** One raw frame, from a span of `LOOKBACK_READ_SPAN` read at once. */
@@ -478,8 +485,7 @@ export class LookbackReader {
     const lib = TraceLibrary.fromBytes(p.bytes);
     try {
       if (this.engine) this.engine.setLibrary(lib);
-      // 0, 0: the solver's default tolerance and sweep cap (as the fast loop's engine).
-      else this.engine = new TraceEngine(lib, 0, 0);
+      else this.engine = new TraceEngine(lib, paramsHandle(this.runParams()));
       this.version = lib.version;
       this.cells = lib.ids().length;
     } finally {

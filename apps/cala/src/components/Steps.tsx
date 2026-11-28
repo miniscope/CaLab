@@ -62,7 +62,7 @@ export function createSteps(src: () => StepSources): () => StepView[] {
     const total = s.plan()?.frameCount ?? 0;
     const settleTotal =
       lb?.settle?.total ??
-      (Number.isFinite(total) ? plannedSettleFrames(total, SETTLE.maxFrames) : 0);
+      (Number.isFinite(total) ? plannedSettleFrames(total, s.runParams()?.engine.settle.final_max_frames ?? 0) : 0);
     return stepViews({
       live: o.live === true,
       discover: s.status(),

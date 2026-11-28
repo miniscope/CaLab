@@ -15,47 +15,43 @@
  *    front half, motion correction, back half.
  */
 import { MAX_FRAMES_PER_READ } from './frame-source.ts';
+import type { ParamsLayer, RunParams } from './run-params.ts';
 
-/** Run options of the pipeline (absent: `PIPELINE_DEFAULTS`). */
+/**
+ * Run options of the pipeline. The run's params set the plan (`PlanDefaults`); the numeric
+ * fields here override them for tests and scripts (the app passes none).
+ */
 export interface PipelineOptions {
+  /** Discover: the run's params layer, resolved against the recording at the start. */
+  paramsLayer?: ParamsLayer;
+  /** Extract: the resolved params of the Discover run it replays (used as they are). */
+  resolvedParams?: string;
   /** Frames per processing batch (one preview and one message each). */
   batchSize?: number;
   /** Raw frames for the preprocessing calibration. */
   calibrationFrames?: number;
   /** Preprocessed frames averaged into the motion warm-up template. */
   motionWarmupFrames?: number;
-  /** Longest side of the preview images sent to the UI, px. */
+  /** Longest side of the preview images sent to the UI, px (default `PREVIEW_MAX_SIDE`). */
   previewMaxSide?: number;
   /**
-   * Divide out the sensor gain map estimated online from the recording's own
-   * motion (default on).
+   * The online sensor flat field may run (default on; the params' `flat_field.enabled` must
+   * allow it too). The frame client starts its estimator worker only when this is on.
    */
   flatField?: boolean;
-  /**
-   * At a session boundary of a Joint run, re-register the new session and
-   * carry the preprocessing state into it (default on; see
-   * `session-boundary.ts`). Off: the run goes straight across.
-   */
-  sessionFix?: boolean;
 }
 
-/** The default of every `PipelineOptions` field. */
-export const PIPELINE_DEFAULTS: Required<PipelineOptions> = {
-  batchSize: 8,
-  calibrationFrames: 200,
-  // The Rust default (~200). The corrector keeps these frames band-passed and
-  // cropped inside WASM until the template is built, never as full f32 frames.
-  motionWarmupFrames: 200,
-  previewMaxSide: 320,
-  flatField: true,
-  sessionFix: true,
-};
+/** Longest side of the preview images sent to the UI, px. */
+export const PREVIEW_MAX_SIDE = 320;
+
 
 /** The walks over the recording, in order. */
 export type PipelinePhase = 'calibrate' | 'motion-warmup' | 'process';
 
 /** The resolved options and frame counts of one run. */
 export interface PipelinePlan {
+  /** The run's resolved params (`run-params.ts`), as every worker gets them. */
+  params: string;
   frameCount: number;
   batchSize: number;
   calibrationFrames: number;
@@ -67,7 +63,11 @@ export interface PipelinePlan {
    * cut short, so each session starts a batch.
    */
   boundaries: number[];
-  /** `PipelineOptions.sessionFix`. */
+  /**
+   * At a session boundary of a Joint run, re-register the new session and carry the
+   * preprocessing state into it (`motion.session_fix`; see `session-boundary.ts`). Off: the run
+   * goes straight across.
+   */
   sessionFix: boolean;
 }
 
@@ -89,22 +89,31 @@ function positiveInt(name: string, v: number): number {
 export const UNBOUNDED = Infinity;
 
 /**
- * Resolve the options against a recording of `frameCount` frames
- * (`UNBOUNDED`: a stream whose length is learnt only when it ends; see
- * `limitPlan`).
+ * The plan of a recording of `frameCount` frames (`UNBOUNDED`: a stream whose length is learnt
+ * only when it ends; see `limitPlan`) under the run's resolved params: the batch
+ * (`compute.batch_frames`), the warm-ups and the session fix come from them, `options` over
+ * the batch and warm-ups.
  */
 export function makePlan(
   frameCount: number,
+  run: Pick<RunParams, 'json' | 'params' | 'engine'>,
   options: PipelineOptions = {},
   boundaries: readonly number[] = [],
 ): PipelinePlan {
-  const o = { ...PIPELINE_DEFAULTS, ...options };
+  const o = {
+    previewMaxSide: PREVIEW_MAX_SIDE,
+    batchSize: run.params.compute.batch_frames,
+    calibrationFrames: run.engine.preprocess.warmup_frames,
+    motionWarmupFrames: run.engine.motion.warmup_frames,
+    ...options,
+  };
   const n = frameCount === UNBOUNDED ? UNBOUNDED : positiveInt('frameCount', frameCount);
   return {
     boundaries: [...new Set(boundaries)]
       .filter((b) => Number.isInteger(b) && b > 0 && b < n)
       .sort((a, b) => a - b),
-    sessionFix: o.sessionFix,
+    params: run.json,
+    sessionFix: run.engine.motion.session_fix,
     frameCount: n,
     batchSize: Math.min(positiveInt('batchSize', o.batchSize), MAX_FRAMES_PER_READ),
     calibrationFrames: Math.min(positiveInt('calibrationFrames', o.calibrationFrames), n),

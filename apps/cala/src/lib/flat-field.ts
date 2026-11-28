@@ -9,10 +9,6 @@
  * (the estimator driver) and `pipeline-stages.ts` (where the map is applied).
  */
 
-/** Seconds of frames before the first map (the library default, shown in the UI). */
-export const FLAT_FIELD_FIRST_S = 150;
-/** Seconds of frames between refinements (the library default). */
-export const FLAT_FIELD_REFINE_S = 60;
 /** Gain range shown as black..white in the UI (fixed: no auto-contrast). */
 export const FLAT_FIELD_DISPLAY_RANGE: readonly [number, number] = [0.9, 1.1];
 /** Batches the estimator may have in flight before stage A drops frames for it. */
@@ -56,7 +52,14 @@ export interface FlatFieldApplied {
 
 /** Estimator -> main thread. */
 export type FlatFieldEvent =
-  | { type: 'progress'; session: number; frames: number; fps: number }
+  | {
+      type: 'progress';
+      session: number;
+      frames: number;
+      fps: number;
+      /** Frames before the first map (the run's `flat_field.first_map_s`). */
+      firstFrames: number;
+    }
   | {
       type: 'map';
       session: number;
@@ -158,9 +161,10 @@ export interface FlatFieldState {
   enabled: boolean;
   /** A stored map seeded this run. */
   reused: boolean;
-  /** Frames the estimator has received and the frame rate (for the progress). */
+  /** Frames the estimator has received, the frame rate and the frames before the first map (for the progress). */
   frames: number;
   fps: number;
+  firstFrames: number;
   /** Maps the estimator produced this run. */
   updates: number;
   map: FlatFieldMap | null;
@@ -182,6 +186,7 @@ export function initialFlatFieldState(): FlatFieldState {
     reused: false,
     frames: 0,
     fps: 0,
+    firstFrames: 0,
     updates: 0,
     map: null,
     lastChange: null,
@@ -205,7 +210,7 @@ export function flatFieldStatusLine(s: FlatFieldState): string {
   }
   if (!s.map) {
     const k = flatFieldSeconds(s);
-    return `estimating (${Math.floor(k)} / ${FLAT_FIELD_FIRST_S} s of frames)`;
+    return `estimating (${Math.floor(k)} / ${Math.round(flatFieldFirstSeconds(s))} s of frames)`;
   }
   if (s.reused) {
     return s.updates > 0
@@ -239,6 +244,11 @@ export function flatFieldBadge(s: FlatFieldState): FlatFieldBadge {
 /** Seconds of frames the estimator has received (0 before the frame rate is known). */
 export function flatFieldSeconds(s: Pick<FlatFieldState, 'frames' | 'fps'>): number {
   return s.fps > 0 ? s.frames / s.fps : 0;
+}
+
+/** Seconds of frames before the first map (0 before the estimator's first report). */
+export function flatFieldFirstSeconds(s: Pick<FlatFieldState, 'firstFrames' | 'fps'>): number {
+  return s.fps > 0 ? s.firstFrames / s.fps : 0;
 }
 
 /** `median 0.07 sigma, p99 0.33 sigma` for the last update, or null before one. */

@@ -123,8 +123,9 @@ impl JsQcMonitor {
     }
 
     /// The monitor's trace statistics of one cell, on any span of its trace
-    /// (chronological): `QcConfig::trace_stats` with the run's QC config
-    /// (`params`). After Extract the app calls it on each session's frames
+    /// (chronological), at frame rate `fps`: `QcConfig::trace_stats` with
+    /// the QC config of `params` at `fps` (a session of a Joint run keeps its
+    /// own rate). After Extract the app calls it on each session's frames
     /// (the whole span, or its last window). `modelSigma`: the cell's model
     /// trace noise, or NaN when unknown (exact zeros count as zero, no
     /// fallback σ). Values in `spanStatsFields` order.
@@ -133,13 +134,13 @@ impl JsQcMonitor {
         trace: &[f32],
         model_sigma: f32,
         params: &ResolvedParams,
+        fps: f32,
     ) -> Result<Vec<f64>, JsError> {
-        let e = params.engine();
-        let cfg = &e.qc;
+        let cfg = params.engine().qc_at(fps);
         cfg.validate().map_err(|e| js_err("spanStats", e))?;
         let st = cfg.trace_stats(trace, model_sigma, &mut Vec::new());
         let f = |v: f32| f64::from(v);
-        let minutes = trace.len() as f64 / f64::from(e.view.fps as f32) / 60.0;
+        let minutes = trace.len() as f64 / f64::from(fps) / 60.0;
         Ok(vec![
             f(st.peak_snr),
             f(st.sigma),
@@ -151,10 +152,10 @@ impl JsQcMonitor {
         ])
     }
 
-    /// The window the monitor reads with `params`, frames.
+    /// The window the monitor reads with `params` at frame rate `fps`, frames.
     #[wasm_bindgen(js_name = windowFrames)]
-    pub fn window_frames(params: &ResolvedParams) -> u32 {
-        params.engine().qc.window_frames as u32
+    pub fn window_frames(params: &ResolvedParams, fps: f32) -> u32 {
+        params.engine().qc_at(fps).window_frames as u32
     }
 
     /// Comma-separated names of the per-cell fields.

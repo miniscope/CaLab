@@ -43,6 +43,7 @@
  * `?debug&visitrate=auto` selects the Auto schedule (the default is the fixed rate).
  * Pure: the clock is passed in; unit-tested in `visit-rate.test.ts`.
  */
+import { schemaDefaults } from '../params/schema.ts';
 
 /**
  * The constants in one place. `floor`, `target` and `cap` are the fixed schedule's values and
@@ -57,8 +58,8 @@
 export const VISIT_RATE = {
   /** Visits per Discover frame read: the least the governor accepts (2/3 of the target). */
   floor: 0.1,
-  /** Visits per Discover frame read: what the governor holds the speed for (Auto's top). */
-  target: 0.15,
+  /** Visits per Discover frame read: what the governor holds the speed for (Auto's top; `discover.visit.target`). */
+  target: schemaDefaults().discover.visit.target,
   /** Visits per observed Discover frame at most (the engine's credit; 4/3 of the target). */
   cap: 0.2,
   /** Auto's lowest target (the engine's `VisitSchedule::auto().floor()`). */

@@ -99,7 +99,7 @@ workerScope.onmessage = (e) => {
   visits = data.visits ?? [];
   const toFast = port;
   runner = new SlowRunner({
-    // `new SlowLoop(..)` unless the run has look-back (`buildSlowLoop`).
+    // Every option from the run's resolved params (`buildSlowLoop`).
     create: (init): SlowLoopLike => buildSlowLoop(SlowLoop, init),
     toFast,
     toMain: { postMessage: (m, t) => workerScope.postMessage(m, t) },

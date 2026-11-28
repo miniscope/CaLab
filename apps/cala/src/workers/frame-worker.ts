@@ -214,7 +214,6 @@ async function handle(req: FrameRequest): Promise<void> {
           src,
           req.options,
           () => frontPool!.acquire(),
-          undefined,
           req.replay,
           {
             session: flatSession,

@@ -127,6 +127,11 @@ export type MainToLookback =
    * stream frame `frame`: a look-back block starts from the newest one.
    */
   | { type: 'back-state'; session: number; frame: number; state: Uint8Array }
+  /**
+   * The run's resolved params (`run-params.ts`), sent once the pipeline resolved them, before
+   * any request: the motion corrector and trace engines are built from them.
+   */
+  | { type: 'params'; session: number; params: string }
   /** The newest flat-field map (null: none). */
   | { type: 'flat'; session: number; map: FlatFieldMap | null }
   /**
@@ -233,10 +238,10 @@ export interface SettleVisits {
 
 /** The settle pass of a look-back run (`lib/settle.ts`). */
 export interface SettleStatus {
-  /** Frames fed through `observe`, of the frames planned (one pass, at most `SETTLE.maxFrames`). */
+  /** Frames fed through `observe`, of the frames planned (one pass, at most the params' `settle.final.max_s`). */
   fed: number;
   total: number;
-  /** Frames in the recording (the plan samples it when longer than `SETTLE.maxFrames`). */
+  /** Frames in the recording (the plan samples it when longer than that cap). */
   recording: number;
   /**
    * At the last checkpoint: cells with a noise estimate, and of those the

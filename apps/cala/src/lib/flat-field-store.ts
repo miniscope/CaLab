@@ -123,7 +123,7 @@ export function createFlatFieldStore(deps: FlatFieldDeps) {
         deps.onFinal();
         return;
       case 'progress':
-        patchFlat({ frames: e.frames, fps: e.fps });
+        patchFlat({ frames: e.frames, fps: e.fps, firstFrames: e.firstFrames });
         return;
       case 'skipped':
         patchFlat({ skipped: e.message });

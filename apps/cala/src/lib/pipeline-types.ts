@@ -22,11 +22,8 @@ export interface FastLoopSetup {
   width: number;
   height: number;
   batchSize: number;
-  /** The preprocessing's flattening settings (the slow loop must match them). */
-  cellDiameterPx: number;
-  flattenSigmaPx: number;
-  /** Frame rate of the recording (0 when unknown). */
-  fps: number;
+  /** The run's resolved params (`run-params.ts`; the slow loop's flattening must match the preprocessing's). */
+  params: string;
 }
 
 /** A live source's view of the batch just read (see `lib/live-source.ts`). */

@@ -13,6 +13,8 @@ export function startReplayPipeline(
 ): Promise<PipelinePlan> {
   return client.startPipeline(
     {
+      // Discover's resolved params, as they are: Extract runs the same engine settings.
+      resolvedParams: plan.params,
       batchSize: plan.batchSize,
       calibrationFrames: plan.calibrationFrames,
       motionWarmupFrames: plan.motionWarmupFrames,

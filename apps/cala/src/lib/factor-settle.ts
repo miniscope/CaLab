@@ -87,7 +87,7 @@ export interface FileSettleInput {
   info: FactorInfo | null;
   /** Frames Discover read minus frames compressed (`CompressStore.behind`). */
   behind: number;
-  /** Frames per window (`COMPRESS_DEFAULTS.window`). */
+  /** Frames per window (the run's `factors.window_s`, frames). */
   window: number;
   /** The compressor's last ms per frame (for the reason's seconds). */
   msPerFrame: number;

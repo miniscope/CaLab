@@ -36,7 +36,6 @@ import {
   type RailTrackInput,
 } from '../lib/rail-view.ts';
 import { createSampled } from '../lib/sampled.ts';
-import { SETTLE } from '../lib/settle.ts';
 import { achievedSpeed } from '../lib/speed-track.ts';
 import { fmtVisitRate, visitHoldText } from '../lib/visit-rate.ts';
 import { workByKind } from '../lib/work-meter.ts';
@@ -124,7 +123,7 @@ export function RunRail(props: RunRailProps): JSX.Element {
   const read = (): Snapshot => {
     const lb = c().status()?.lookback;
     const total = s().plan()?.frameCount ?? 0;
-    const settleFrames = plannedSettleFrames(total, SETTLE.maxFrames);
+    const settleFrames = plannedSettleFrames(total, s().runParams()?.engine.settle.final_max_frames ?? 0);
     const st = steps();
     const running = s().status() === 'running' || s().status() === 'paused';
     const target = s().paceTarget();

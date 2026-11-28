@@ -5,6 +5,7 @@
  * them through `normalizeRunCells`, so a rule holds the same in each thread and for tests that
  * feed a layer directly.
  */
+import { runParams } from './run-params.ts';
 import type { CellsSettings } from '../workers/frame-types.ts';
 import type { CompressFeedOptions } from './compress-feed.ts';
 import type { FastLoopOptions } from './fast-loop.ts';
@@ -138,15 +139,13 @@ export function fastLoopOptions(
 }
 
 /** The `CompressFeed` options of a run that feeds the compress worker (`cells.compress`). */
-export function compressFeedOptions(
-  cells: CellsSettings,
-  width: number,
-  height: number,
-): CompressFeedOptions {
+export function compressFeedOptions(cells: CellsSettings, setup: FastLoopSetup): CompressFeedOptions {
   return {
-    width,
-    height,
+    width: setup.width,
+    height: setup.height,
     session: cells.session,
+    window: runParams(setup.params).engine.factors.window_frames,
+    params: setup.params,
     ...(cells.compressTiling ? { tiling: cells.compressTiling } : {}),
     ...(cells.compressPool ? { pool: cells.compressPool } : {}),
     ...(cells.compressBacklogCap !== undefined ? { backlogCap: cells.compressBacklogCap } : {}),

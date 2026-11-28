@@ -25,7 +25,6 @@ import type { CellStore } from '../lib/cell-store.ts';
 import type { PipelineStore } from '../lib/pipeline-store.ts';
 import { groupKeys, kindSeriesKey } from '../lib/run-history.ts';
 import { createSampled } from '../lib/sampled.ts';
-import { SETTLE } from '../lib/settle.ts';
 import { normalizeCurve, planLine } from '../lib/speed-schedule.ts';
 import { WORK_KINDS, workByKind, type WorkKind } from '../lib/work-meter.ts';
 import {
@@ -294,7 +293,7 @@ export function TimeStrip(props: TimeStripProps): JSX.Element {
     const ticks = timeTicks(a0, a1, pw);
     const candidates: AxisLabelCandidate[] = ticks.map((tk) => ({ x: xOfT(tk.t), text: tk.label }));
     const settleTotal =
-      c().status()?.lookback?.settle?.total || plannedSettleFrames(total(), SETTLE.maxFrames);
+      c().status()?.lookback?.settle?.total || plannedSettleFrames(total(), s().runParams()?.engine.settle.final_max_frames ?? 0);
     if (fin) {
       candidates.push({ x: fin.x0, text: '0', anchor: 'start', priority: 1 });
       candidates.push({

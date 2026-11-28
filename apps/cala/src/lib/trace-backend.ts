@@ -1,15 +1,14 @@
 /** The real WASM trace solver and QC monitor, as the fast loop builds them. */
 import { Preprocessor, QcMonitor, TraceEngine, TraceLibrary } from './cala-wasm.ts';
 import type { TraceBackend } from './fast-loop.ts';
+import { paramsHandle } from './params-handle.ts';
 
 /** The fast loop's trace backend, built on the WASM solver and QC monitor. */
 export const traceBackend: TraceBackend = {
   libraryFromBytes: (bytes) => TraceLibrary.fromBytes(bytes),
-  // 0, 0: the solver's default tolerance and sweep cap.
-  newEngine: (lib) => new TraceEngine(lib as TraceLibrary, 0, 0),
-  // 0: the default trace window (one minute).
+  newEngine: (lib, params) => new TraceEngine(lib as TraceLibrary, paramsHandle(params)),
   newQc: (s) => {
-    const qc = new QcMonitor(s.width, s.height, s.fov, s.noise, s.fps, 0);
+    const qc = new QcMonitor(s.width, s.height, s.fov, s.noise, paramsHandle(s.params));
     return {
       raw: qc,
       processFrames: (engine, frames, count) =>
