@@ -286,11 +286,8 @@ export function CorrDistancePanel(props: { cells: CellStore }): JSX.Element {
             the traces held now: run Extract first for the whole recording.
           </p>
           <p>
-            Grey points: individual pairs. Blue dots: median r per distance bin, at the bin&apos;s
-            median distance; bars: interquartile range. Dotted line: median r of far pairs (1.5-3
-            soma diameters apart), the level expected with no leak between cells. When there are too
-            many pairs to draw, they are thinned uniformly at random, with the same keep-probability
-            at every distance.
+            The dotted line is the median r of far pairs (1.5-3 soma diameters apart), the level
+            expected with no leak between cells.
           </p>
         </HelpTip>
         <button
