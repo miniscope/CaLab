@@ -256,48 +256,185 @@
 .cala-qc-table {
   display: flex;
   flex-direction: column;
+  gap: var(--space-xs);
   height: 195px;
+}
+
+/* The summary: a segmented bar of pass / fail / not measured, its filter buttons, the column picker. */
+.cala-qc-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  font-size: var(--font-size-sm);
+}
+
+.cala-qc-summary .segmented-bar {
+  max-width: 420px;
+}
+
+.cala-qc-summary__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.cala-qc-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 1px var(--space-sm);
+  border: 1px solid var(--line-control);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink-1);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cala-qc-filter .num {
+  color: var(--ink-2);
+}
+
+.cala-qc-filter[aria-pressed='true'] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.cala-qc-columns {
+  position: relative;
+  margin-left: auto;
+}
+
+.cala-qc-columns > summary {
+  padding: 1px var(--space-sm);
+  border: 1px solid var(--line-control);
+  border-radius: var(--radius-sm);
+  color: var(--ink-2);
+  cursor: pointer;
+  list-style: none;
+}
+
+.cala-qc-columns > summary::after {
+  content: ' ▾';
+}
+
+.cala-qc-columns__menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 2px);
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-sm);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-elevated);
+}
+
+/* One status mark: dot = pass, diamond = fail, hollow ring = not measured (shape and colour). */
+.cala-qc-dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-right: var(--space-xs);
+  border-radius: 50%;
+  vertical-align: 0;
+}
+
+.cala-qc-dot--pass {
+  background: var(--status-ok);
+}
+
+.cala-qc-dot--fail {
+  background: var(--status-critical);
+  border-radius: 1px;
+  transform: rotate(45deg) scale(0.9);
+}
+
+.cala-qc-dot--unmeasured {
+  border: 1.5px solid var(--mark-neutral);
 }
 
 .cala-qc-table__scroll {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  margin-top: var(--space-xs);
 }
 
 .cala-qc-table table,
 .cala-demix__table {
   border-collapse: collapse;
-  font-size: 0.8rem;
-  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
   width: 100%;
+}
+
+.cala-demix__table {
+  font-family: var(--font-mono);
 }
 
 .cala-qc-table th {
   position: sticky;
   top: 0;
-  background: var(--bg-elevated, var(--bg-primary, #fff));
+  background: var(--surface);
   z-index: 1;
   text-align: left;
+  font-weight: var(--font-weight-normal);
 }
 
-.cala-qc-table th button {
+.cala-qc-table th button,
+.cala-qc-table__th {
   background: none;
   border: none;
-  padding: 2px 6px 2px 0;
+  padding: 2px 0;
   font: inherit;
-  color: var(--text-secondary);
+  color: var(--ink-2);
   cursor: pointer;
   white-space: nowrap;
 }
 
+.cala-qc-table__th {
+  cursor: default;
+}
+
+.cala-qc-table th,
 .cala-qc-table td,
 .cala-demix__table td,
 .cala-demix__table th {
-  padding: 1px 6px 1px 0;
+  padding: 1px var(--space-sm) 1px 0;
   white-space: nowrap;
   text-align: left;
+}
+
+/* Figures: right-aligned tabular numbers. */
+.cala-qc-table th.num,
+.cala-qc-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.cala-qc-table__id {
+  font-variant-numeric: tabular-nums;
+}
+
+/* SNR: a 4 px bullet bar on its fixed scale (tick = the pass threshold), then the figure. */
+.cala-qc-table__snr {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+}
+
+.cala-qc-table__snr .meter {
+  width: 64px;
+  flex: none;
+}
+
+.cala-qc-table__snr > span {
+  min-width: 2.6em;
 }
 
 .cala-qc-table tbody tr {
@@ -305,7 +442,7 @@
 }
 
 .cala-qc-table tbody tr:hover {
-  background: var(--bg-hover, rgba(0, 0, 0, 0.05));
+  background: var(--inset);
 }
 
 .cala-qc-row--selected {

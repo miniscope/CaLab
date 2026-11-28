@@ -241,6 +241,29 @@ describe('SegmentedBar', () => {
     expect(widths).toEqual(['80%', '20%']);
     expect(q(host, '.segmented-bar').dataset.clamped).toBe('over');
   });
+
+  it('fades every part but the active one and reports clicked parts', () => {
+    const clicked: string[] = [];
+    const host = mount(() => (
+      <SegmentedBar
+        label="x"
+        total={10}
+        active="b"
+        onPartClick={(id) => clicked.push(id)}
+        parts={[
+          { id: 'a', label: 'A', value: 4, color: 'red' },
+          { id: 'b', label: 'B', value: 4, color: 'blue' },
+        ]}
+      />
+    ));
+    const parts = Array.from(host.querySelectorAll<HTMLElement>('.segmented-bar__part'));
+    expect(parts.map((p) => p.classList.contains('segmented-bar__part--faded'))).toEqual([
+      true,
+      false,
+    ]);
+    parts[0].click();
+    expect(clicked).toEqual(['a']);
+  });
 });
 
 describe('RangeBar', () => {
