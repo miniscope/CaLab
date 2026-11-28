@@ -34,6 +34,7 @@ import {
   streamRef,
   timeId,
   withRun,
+  type FoundRun,
   type IndexFile,
   type IndexStream,
   type PlanState,
@@ -223,6 +224,8 @@ export class ProjectWriter {
       mirror?: (project: ProjectFile | null) => Promise<void>;
       /** A run file that went into a zip: keep its copy (`text`), or drop it (null: it ended). */
       runCopy?: (id: string, text: string | null) => Promise<void>;
+      /** A run file that went into a zip, as written now (the folder never holds it). */
+      zipRun?: (run: FoundRun) => void;
     },
   ) {}
 
@@ -275,6 +278,7 @@ export class ProjectWriter {
         };
     }
     if (p.sink.writeProjectText) {
+      this.o.zipRun?.({ run: p.run, folder: p.folder });
       this.o.onChange?.();
       if (!this.o.readOnly)
         await p.sink.writeProjectText(PROJECT_FILE, fileText('project', this.project));
@@ -336,6 +340,8 @@ export function createProjectStore(deps: ProjectDeps) {
   const [rows, setRows] = createSignal<ProjectSessionRow[]>([]);
   const [project, setProject] = createSignal<ProjectFile | null>(null);
   const [index, setIndex] = createSignal<IndexFile | null>(null);
+  /** The run files this page wrote into zips since the project was opened, by run id. */
+  const zipRuns = new Map<string, FoundRun>();
   const [warnings, setWarnings] = createSignal<string[]>([]);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
@@ -471,6 +477,7 @@ export function createProjectStore(deps: ProjectDeps) {
         if (proj) await deps.drafts.put(key, proj);
         else await deps.drafts.remove(key);
       },
+      zipRun: (r) => zipRuns.set(r.run.run.id, r),
       runCopy: async (id, text) => {
         const key = storeKey();
         if (!key || !deps.runCopies) return;
@@ -573,7 +580,11 @@ export function createProjectStore(deps: ProjectDeps) {
     for (const f of found.refused) notes.push(`${f.path}: ${f.error}`);
     // Only at an open: on a refresh a zip run of this page may be going, its copy current.
     if (fresh) await loadSavedRuns(new Set(found.runs.map((r) => r.run.run.id)));
-    const idx = rebuildIndex(found.runs, indexStreams(p, rows()), t);
+    // Runs this page wrote into zips are in no folder it can read: a refresh keeps them.
+    if (fresh) zipRuns.clear();
+    const onDisk = new Set(found.runs.map((r) => r.run.run.id));
+    const runs = [...found.runs, ...[...zipRuns.values()].filter((r) => !onDisk.has(r.run.run.id))];
+    const idx = rebuildIndex(runs, indexStreams(p, rows()), t);
     if (changed) p = { ...p, project: { ...p.project, updated: t.toISOString() } };
     writer = makeWriter(p, idx);
     setProject(p);

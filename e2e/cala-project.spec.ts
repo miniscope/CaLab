@@ -236,8 +236,10 @@ test('Cala: Discover only (Extract after Discover off) writes the footprints and
   expect(meta.traces_signed).toBeUndefined();
   expect(meta.cells).toBe(run.results[0].cells);
   expect(meta.frames).toBe(FRAMES);
-  // The project table says Extract was skipped.
+  // The project table (rebuilt on the way back; the run is in a zip, not the folder) says
+  // Extract was skipped.
   await page.getByTestId('back-to-project').click();
+  await expect(page.getByTestId('cell-discover')).toHaveText('done');
   await expect(page.getByTestId('cell-extract')).toHaveText('skipped (Discover only)');
   rmSync(base, { recursive: true, force: true });
 });
