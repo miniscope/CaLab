@@ -25,6 +25,7 @@ export default defineConfig({
       thresholds: {
         'packages/core/src/**': { lines: 98, statements: 97, functions: 98, branches: 93 },
         'packages/io/src/**': { lines: 87, statements: 86, functions: 78, branches: 80 },
+        'packages/project/src/**': { lines: 98, statements: 97, functions: 97, branches: 87 },
         'packages/compute/src/**': { lines: 77, statements: 74, functions: 84, branches: 67 },
         'packages/community/src/**': { lines: 43, statements: 38, functions: 46, branches: 21 },
         'packages/ui/src/**': { lines: 25, statements: 27, functions: 36, branches: 14 },

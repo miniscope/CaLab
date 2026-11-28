@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "calab-run.schema.json",
+  "title": "RunFile",
+  "description": "`calab-run.json`: the truth of one run of one app (one config, one library). Written before the first frame and at each change; never edited by hand. `run`, `inputs`, `links`, `config`, `stages` and `results` are app-neutral; `derived`, `frame` and `record` belong to the app.",
+  "type": "object",
+  "required": [
+    "format",
+    "version",
+    "run",
+    "inputs",
+    "links",
+    "config",
+    "derived",
+    "stages",
+    "results",
+    "record"
+  ],
+  "properties": {
+    "format": { "const": "calab-run" },
+    "version": { "type": "integer", "minimum": 1, "description": "Envelope version." },
+    "run": { "$ref": "#/$defs/RunHeader" },
+    "inputs": { "type": "array", "items": { "$ref": "#/$defs/RunInput" } },
+    "links": { "type": "array", "items": { "$ref": "#/$defs/RunLink" } },
+    "config": { "$ref": "#/$defs/RunConfig" },
+    "derived": {
+      "type": "object",
+      "description": "JSON pointer -> what the data set for that param during the run (app-specific)."
+    },
+    "frame": {
+      "type": ["object", "null"],
+      "description": "The frame the results are stored in (app-specific; cala: sensor size and crop)."
+    },
+    "stages": { "type": "array", "items": { "$ref": "#/$defs/RunStage" } },
+    "results": { "type": "array", "items": { "$ref": "#/$defs/RunResult" } },
+    "record": {
+      "type": "object",
+      "description": "How the run was made beyond its config: machine, flags, speed, work (app-specific)."
+    }
+  },
+  "$defs": {
+    "RunHeader": {
+      "type": "object",
+      "required": [
+        "id",
+        "app",
+        "app_version",
+        "engine_version",
+        "git_commit",
+        "project",
+        "plan",
+        "status",
+        "stopped",
+        "created",
+        "updated"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "`<local time>_<app>`, e.g. `2026-11-28_09-14-03_cala`; the run folder's name."
+        },
+        "app": { "type": "string" },
+        "app_version": { "type": "string" },
+        "engine_version": { "type": ["string", "null"] },
+        "git_commit": { "type": ["string", "null"] },
+        "project": {
+          "type": ["string", "null"],
+          "description": "The project's id; null outside a project."
+        },
+        "plan": {
+          "anyOf": [{ "$ref": "#/$defs/RunPlanRef" }, { "type": "null" }],
+          "description": "The plan step the run was made for."
+        },
+        "status": { "enum": ["planned", "running", "finished", "stopped"] },
+        "stopped": { "type": ["string", "null"], "description": "Why the run stopped." },
+        "created": { "type": "string", "description": "ISO time." },
+        "updated": { "type": "string", "description": "ISO time." }
+      }
+    },
+    "RunPlanRef": {
+      "type": "object",
+      "required": ["id", "step", "kind"],
+      "properties": {
+        "id": { "type": "string" },
+        "step": { "type": "string" },
+        "kind": { "enum": ["separate", "joint", "apply"] }
+      }
+    },
+    "RunInput": {
+      "type": "object",
+      "required": [
+        "role",
+        "stream",
+        "recording_start",
+        "frames",
+        "width",
+        "height",
+        "bit_depth",
+        "fps",
+        "start_frame"
+      ],
+      "properties": {
+        "role": { "type": "string", "description": "`video`, `live`, ..." },
+        "stream": { "type": "string", "description": "Stream ref, relative to the data root." },
+        "recording_start": { "type": ["string", "null"] },
+        "frames": { "type": ["integer", "null"] },
+        "files": { "type": ["integer", "null"] },
+        "width": { "type": ["integer", "null"] },
+        "height": { "type": ["integer", "null"] },
+        "bit_depth": { "type": ["integer", "null"] },
+        "fps": {
+          "anyOf": [{ "$ref": "#/$defs/RunFps" }, { "type": "null" }]
+        },
+        "start_frame": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "First frame of this stream on the run's frame axis."
+        }
+      }
+    },
+    "RunFps": {
+      "type": "object",
+      "required": ["value", "source"],
+      "properties": {
+        "value": { "type": ["number", "null"], "description": "Unit: Hz." },
+        "source": { "type": "string", "description": "`timestamps`, `metadata`, `none`, `live`." }
+      }
+    },
+    "RunLink": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["role", "run", "stream"],
+      "description": "A typed edge to something an earlier run made. Apps may add fields (`select`, `alignment`, ...).",
+      "properties": {
+        "role": { "enum": ["seed", "library", "traces", "config"] },
+        "run": { "type": "string" },
+        "stream": { "type": ["string", "null"] },
+        "artifact": { "type": "string" },
+        "id_space": { "type": "string" },
+        "source_fingerprint": { "type": ["string", "null"] }
+      }
+    },
+    "RunConfig": {
+      "type": "object",
+      "required": [
+        "schema",
+        "params_version",
+        "requested",
+        "sources",
+        "ignored",
+        "resolved",
+        "fingerprint"
+      ],
+      "properties": {
+        "schema": {
+          "type": "string",
+          "description": "The app's params schema, e.g. `cala-params`."
+        },
+        "params_version": { "type": "integer", "minimum": 1 },
+        "requested": {
+          "type": "object",
+          "description": "Every value any layer set (partial params), including values equal to their default."
+        },
+        "sources": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "JSON pointer -> the layer that set it (`default`, `project`, `step`, `stream`, `file:<name>`, `ui`, `url`)."
+        },
+        "ignored": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "JSON pointers of requested keys that are not params of the schema."
+        },
+        "resolved": {
+          "type": "object",
+          "description": "The complete params the run was built with."
+        },
+        "fingerprint": {
+          "type": ["string", "null"],
+          "description": "Hash of the result-affecting part of `resolved`."
+        }
+      }
+    },
+    "RunStage": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["stage", "outcome"],
+      "properties": {
+        "stage": { "type": "string" },
+        "outcome": { "type": "string" },
+        "started_at": { "type": ["string", "null"] },
+        "ended_at": { "type": ["string", "null"] }
+      }
+    },
+    "RunResult": {
+      "type": "object",
+      "required": [
+        "stream",
+        "status",
+        "path",
+        "id_space",
+        "cells",
+        "library_version",
+        "frame_range",
+        "boundary"
+      ],
+      "properties": {
+        "stream": { "type": "string" },
+        "status": { "enum": ["pending", "written", "skipped", "failed"] },
+        "note": { "type": "string", "description": "Why it was skipped or failed." },
+        "path": {
+          "type": ["string", "null"],
+          "description": "The artifact, relative to the run folder; null until written."
+        },
+        "id_space": {
+          "type": "string",
+          "description": "Where the result's cell ids come from: `<app>:<run id>` for the run's own ids."
+        },
+        "cells": { "type": ["integer", "null"] },
+        "library_version": { "type": ["integer", "null"] },
+        "frame_range": {
+          "anyOf": [
+            { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
+            { "type": "null" }
+          ],
+          "description": "[start, end) on the run's frame axis."
+        },
+        "boundary": {
+          "type": ["object", "null"],
+          "description": "Joint, streams 2..: the health flag of the boundary the stream starts with."
+        },
+        "created": { "type": ["string", "null"], "description": "When it was written, ISO." }
+      }
+    }
+  }
+}

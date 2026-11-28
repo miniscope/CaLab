@@ -782,7 +782,7 @@ export class BoundaryMonitor {
   }
 }
 
-// ---- Persistence (export meta_json.session.boundary, cala-session.json, the project index) ----
+// ---- Persistence (export meta_json.session.boundary, calab-run.json results, the project index) ----
 
 /** The JSON form (snake_case, as the export's metadata). */
 export function boundaryFlagJson(f: BoundaryFlag): Record<string, unknown> {

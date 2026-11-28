@@ -4,6 +4,7 @@
  * size and rate, ordered (recording start time, else path), reordered and
  * removed by the user, and checked (`validateSessions`).
  */
+import { projectSessionId } from './project-index.ts';
 import { createSignal } from 'solid-js';
 import type { SessionInput } from './frame-source.ts';
 import type { DirHandleLike } from './directory-picker.ts';
@@ -88,6 +89,7 @@ export function createSessionList(probe: (s: SessionInput[]) => Promise<SessionP
           info: r && 'info' in r ? r.info : null,
           error: r && 'error' in r ? r.error : null,
           startMs: starts[i],
+          stream: projectSessionId(candidate.dir),
           resultsPath: '',
         };
       });

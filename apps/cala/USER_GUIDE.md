@@ -88,6 +88,11 @@ a portrait window, the page stacks the run rail, the image and the tabs, in that
 scrolls up and down (never sideways), so the run's state is at the top. On a phone-wide
 window the rail's four figures sit in two rows of two.
 
+**Theme.** The three small buttons at the top right of every screen choose the colour
+theme: follow the system (the default), light or dark. The choice is remembered in this
+browser. The theme changes only the page around the image: the field of view keeps its
+fixed display range and its overlay colours in both themes.
+
 **Run rail.** Above the tabs, one place for every live figure of the run:
 
 - **Stage track**: one bar in three segments, **Discover**, **Final settle** and

@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js';
 import { clearResultExported, leaveWarning, resultExported } from './lib/export-state.ts';
 import { createEffect, createSignal, For, on, onCleanup, Show, untrack } from 'solid-js';
-import { Badge, CompactHeader, DashboardShell, MeterRow } from '@calab/ui';
+import { Badge, CompactHeader, DashboardShell, MeterRow, ThemeToggle } from '@calab/ui';
 import { AuthCallback, CommunityAuthMenu, FeedbackMenu, isAuthCallback } from '@calab/community-ui';
 import {
   authLoading,
@@ -65,15 +65,13 @@ import { createSessionList, toSessionInput } from './lib/session-list.ts';
 import { createMultiRun } from './lib/multi-run.ts';
 import { setupAnalyticsEffects } from './lib/analytics-integration.ts';
 import { sessionBoundaries, sessionOfFrame } from './lib/frame-source.ts';
-import {
-  directoryResultsSink,
-  zipResultsSink,
-  type WritableDirLike,
-} from './lib/session-export.ts';
+import type { WritableDirLike } from './lib/session-export.ts';
 import { ensurePermission } from './lib/fs-handles.ts';
 import { supportsDirectoryPicker } from './lib/directory-picker.ts';
 import { ProjectView } from './components/ProjectView.tsx';
-import { createProjectStore } from './lib/project-store.ts';
+import { createProjectStore, sessionSetupProject } from './lib/project-store.ts';
+import { runIdFor, type PlanStep, type RunFile } from '@calab/project';
+import { calaRunFile, CALA_APP } from './lib/run-file.ts';
 import {
   createIndexedDbRecentStore,
   rememberProject,
@@ -932,13 +930,82 @@ const App: Component = () => {
   function startSessions(settings: Parameters<typeof multiRun.start>[0]['settings']): void {
     const loc = sessionList.location();
     const handle = loc?.handle as unknown as WritableDirLike | null | undefined;
+    const sessions = sessionList.items();
+    const mode = settings.mode === 'joint' ? 'joint' : 'separate';
+    let made: ReturnType<typeof sessionSetupProject> | null = null;
+    let steps: PlanStep[] = [];
+    let planId = '';
+    const now = () => new Date();
     void multiRun.start({
-      sessions: sessionList.items(),
+      sessions,
       settings,
-      locationLabel: handle ? `${handle.name}/` : 'a zip download',
-      openSink: () => (handle ? directoryResultsSink(handle) : Promise.resolve(zipResultsSink())),
+      locationLabel: handle ? `${handle.name}/` : 'a zip download: ',
+      planRef: (i) => {
+        const step = steps[mode === 'joint' ? 0 : i];
+        return step ? { id: planId, step: step.id, kind: step.kind } : null;
+      },
+      // The project folder is made (or added to) when the first run starts; one run per step.
+      openRun: async () => {
+        made ??= sessionSetupProject({
+          location: handle ?? null,
+          name: handle?.name ?? sessions[0]?.candidate.name ?? 'cala',
+          sessions,
+          mode,
+          now,
+        });
+        const { writer, steps: s } = await made;
+        steps = s;
+        planId = writer.project.plan.id ?? '';
+        return writer.openRun(
+          runIdFor(now(), CALA_APP, new Set(writer.index.runs.map((r) => r.id))),
+        );
+      },
+      onProgress: async (p) => (await made)?.writer.record(p),
     });
   }
+  // A multi-session run writes its run file before the first frame of each run.
+  pipeline.setBeforeFrames(() => multiRun.beforeFrames());
+  /**
+   * The run file a manual export carries: the multi-session run's own, else one for the open
+   * recording (no run folder; its id names the export's run).
+   */
+  const exportRunFile = (extras: RunRecordExtras): RunFile => {
+    const own = multiRun.runFile();
+    if (own) return own;
+    const info = store.info();
+    const t = new Date().toISOString();
+    return calaRunFile({
+      id: runIdFor(new Date(), CALA_APP, new Set()),
+      project: null,
+      plan: null,
+      status: pipeline.status() === 'idle' ? 'planned' : 'running',
+      stopped: null,
+      created: t,
+      updated: t,
+      version: import.meta.env.VITE_APP_VERSION || 'dev',
+      joint: false,
+      record: runRecord(extras),
+      sessions: info
+        ? [
+            {
+              record: {
+                index: 0,
+                name: store.label(),
+                dir: store.label(),
+                resultsPath: '.',
+                startFrame: 0,
+                frames: info.frameCount,
+                fps: info.fps,
+                recordingStartMs: null,
+                status: 'pending',
+              },
+              stream: '.',
+              info,
+            },
+          ]
+        : [],
+    });
+  };
   // Joint: each session boundary goes into the run's event log as Discover reaches it.
   const loggedBoundaries = new Set<number>();
   createEffect(
@@ -1120,13 +1187,13 @@ const App: Component = () => {
               <Show when={project.running() && project.planState().kind === 'running'}>
                 <MeterRow
                   label="Plan groups"
-                  value={(project.planState() as { group: number }).group + 1}
+                  value={(project.planState() as { step: number }).step + 1}
                   min={0}
                   max={Math.max(1, project.running()!.length)}
-                  display={`${(project.planState() as { group: number }).group + 1} / ${project.running()!.length}`}
+                  display={`${(project.planState() as { step: number }).step + 1} / ${project.running()!.length}`}
                   size="sm"
                   testid="plan-progress"
-                  format={(v) => `Plan: group ${v} of ${project.running()!.length}`}
+                  format={(v) => `Plan: step ${v} of ${project.running()!.length}`}
                 />
               </Show>
               <ol class="cala-session-run__list">
@@ -1343,7 +1410,7 @@ const App: Component = () => {
                 height={lp.info.height}
                 fps={lp.info.fps ?? 0}
                 bitDepth={lp.info.bitDepth}
-                runRecord={runRecord}
+                runFile={exportRunFile}
               />
             }
           />
@@ -1389,6 +1456,7 @@ const App: Component = () => {
               >
                 Back to project
               </button>
+              <ThemeToggle />
               <FeedbackMenu appId={__APP_ID__} />
               <CommunityAuthMenu />
             </>
@@ -1540,6 +1608,7 @@ const App: Component = () => {
                     >
                       {info().live ? 'Open another source' : 'Open another folder'}
                     </button>
+                    <ThemeToggle />
                     <FeedbackMenu appId={__APP_ID__} />
                     <CommunityAuthMenu />
                   </>

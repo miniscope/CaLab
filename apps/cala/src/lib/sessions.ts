@@ -343,9 +343,6 @@ export function validateSessions(
   return { errors, warnings };
 }
 
-/** The default name of the results folder. */
-export const RESULTS_DIR = 'cala-results';
-
 function sanitizeSegment(seg: string): string {
   const s = seg.replace(/[^A-Za-z0-9._ -]/g, '_');
   return s === '.' || s === '..' ? '_' : s;
@@ -369,17 +366,4 @@ export function uniqueResultsPaths(dirs: readonly string[]): string[] {
     used.add(p);
     return p;
   });
-}
-
-/** The run folder: `cala-results`, or a timestamped sibling when that name is taken. */
-export function runFolderName(existing: ReadonlySet<string>, now: Date): string {
-  if (!existing.has(RESULTS_DIR)) return RESULTS_DIR;
-  const p = (n: number) => String(n).padStart(2, '0');
-  const stamp =
-    `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}` +
-    `_${p(now.getHours())}-${p(now.getMinutes())}-${p(now.getSeconds())}`;
-  const base = `${RESULTS_DIR}_${stamp}`;
-  let name = base;
-  for (let n = 2; existing.has(name); n++) name = `${base}_${n}`;
-  return name;
 }

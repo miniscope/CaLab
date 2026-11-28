@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "calab-project.schema.json",
+  "title": "ProjectFile",
+  "description": "`calab-project.json`: the intent of a CaLab project (one animal). Authoritative and hand-editable: identity, per-app default params, per-stream overrides, the plan, hand-set current results and the cell-match files.",
+  "type": "object",
+  "required": [
+    "format",
+    "version",
+    "project",
+    "sessions",
+    "defaults",
+    "plan",
+    "current",
+    "identity"
+  ],
+  "properties": {
+    "format": { "const": "calab-project" },
+    "version": { "type": "integer", "minimum": 1, "description": "Envelope version." },
+    "project": { "$ref": "#/$defs/ProjectIdentity" },
+    "sessions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ProjectSession" },
+      "description": "Every session of the animal, in start-time order."
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/AppDefaults" },
+      "description": "Per app: the project's default params (a partial params object of that app's schema)."
+    },
+    "plan": { "$ref": "#/$defs/Plan" },
+    "current": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": { "type": "string" }
+      },
+      "description": "Per app: stream ref -> run id of the result picked by hand. A stream not listed takes the app's newest result."
+    },
+    "identity": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Cell-match files under `identity/`, by path relative to the project folder."
+    }
+  },
+  "$defs": {
+    "ProjectIdentity": {
+      "type": "object",
+      "required": ["id", "name", "subject", "created", "updated"],
+      "properties": {
+        "id": { "type": "string", "description": "Random, made once (`p-` and 8 hex digits)." },
+        "name": {
+          "type": "string",
+          "description": "For people: the animal folder's name by default."
+        },
+        "subject": { "$ref": "#/$defs/Subject" },
+        "created": { "type": "string", "description": "ISO time." },
+        "updated": { "type": "string", "description": "ISO time." }
+      }
+    },
+    "Subject": {
+      "type": "object",
+      "required": ["id", "species", "notes"],
+      "properties": {
+        "id": { "type": ["string", "null"] },
+        "species": { "type": ["string", "null"] },
+        "notes": { "type": "string" }
+      }
+    },
+    "ProjectSession": {
+      "type": "object",
+      "required": ["id", "start", "label", "streams"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The recording folder below the data root, e.g. `2026_11_10/09_00_00`; `.` for the root."
+        },
+        "start": { "type": ["string", "null"], "description": "`recordingStartTime`, ISO." },
+        "label": { "type": ["string", "null"], "description": "Typed by the user." },
+        "streams": { "type": "array", "items": { "$ref": "#/$defs/ProjectStream" } }
+      }
+    },
+    "ProjectStream": {
+      "type": "object",
+      "required": ["id", "role", "frames", "previous_ids"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The device folder below the session folder; `.` when the session folder holds the videos."
+        },
+        "role": {
+          "type": "string",
+          "description": "`miniscope`, `behavior_camera`, `live`, ..."
+        },
+        "frames": { "type": ["integer", "null"] },
+        "previous_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Stream refs it had before a renamed folder was matched to it."
+        },
+        "overrides": {
+          "type": "object",
+          "additionalProperties": { "type": "object" },
+          "description": "Per app: partial params for runs of this stream alone."
+        }
+      }
+    },
+    "AppDefaults": {
+      "type": "object",
+      "required": ["params_version", "params"],
+      "properties": {
+        "params_version": { "type": "integer", "minimum": 1 },
+        "params": { "type": "object" }
+      }
+    },
+    "Plan": {
+      "type": "object",
+      "required": ["id", "steps"],
+      "properties": {
+        "id": { "type": ["string", "null"], "description": "Set when the plan is first started." },
+        "steps": { "type": "array", "items": { "$ref": "#/$defs/PlanStep" } }
+      }
+    },
+    "PlanStep": {
+      "type": "object",
+      "required": ["id", "app", "kind", "streams", "status", "runs"],
+      "properties": {
+        "id": { "type": "string", "description": "Unique within the plan (`a`, `b`, ...)." },
+        "app": { "type": "string" },
+        "kind": {
+          "enum": ["separate", "joint", "apply"],
+          "description": "separate: one stream; joint: one library through several streams; apply: a library from a linked run."
+        },
+        "streams": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "Stream refs, in run order."
+        },
+        "params": {
+          "type": "object",
+          "description": "Partial params of the app's schema for this step."
+        },
+        "links": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/StepLink" },
+          "description": "What the step's run will link to: a run id, or an earlier step of this plan."
+        },
+        "status": {
+          "enum": ["pending", "running", "stopped"],
+          "description": "A finished step leaves the plan; its run file keeps a copy of the step."
+        },
+        "runs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Runs started for this step (a stopped step keeps its stopped run)."
+        }
+      }
+    },
+    "StepLink": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["role"],
+      "properties": {
+        "role": { "enum": ["seed", "library", "traces", "config"] },
+        "run": { "type": "string" },
+        "step": { "type": "string" },
+        "stream": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

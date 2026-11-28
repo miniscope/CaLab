@@ -8,7 +8,6 @@ import {
   moveItem,
   parseRecordingStart,
   removeItem,
-  runFolderName,
   sessionResultsPath,
   seriesKindKey,
   uniqueResultsPaths,
@@ -272,19 +271,5 @@ describe('results paths', () => {
       'a/Mini_3',
       'b',
     ]);
-  });
-});
-
-describe('runFolderName', () => {
-  const now = new Date(2026, 10, 13, 9, 5, 7);
-  it('uses cala-results when free', () => {
-    expect(runFolderName(new Set(['other']), now)).toBe('cala-results');
-  });
-  it('adds a local timestamp when taken', () => {
-    expect(runFolderName(new Set(['cala-results']), now)).toBe('cala-results_2026-11-13_09-05-07');
-  });
-  it('adds _2 when the timestamped name is taken too', () => {
-    const ex = new Set(['cala-results', 'cala-results_2026-11-13_09-05-07']);
-    expect(runFolderName(ex, now)).toBe('cala-results_2026-11-13_09-05-07_2');
   });
 });

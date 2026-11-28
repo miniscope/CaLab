@@ -153,7 +153,7 @@ test('Cala: a live stream settles and extracts on its factors after it ends, by 
   for (const name of ['traces.npy', 'traces_signed.npy', 'traces_live.npy'])
     expect(hasEntry(npz, name), name).toBe(true);
   const meta = metaText(npz);
-  expect(meta).toContain('"format_version":7');
+  expect(meta).toContain('"format_version":8');
   expect(meta).toContain('"settle_source":"factors"');
   expect(meta).toContain('"source":"factors"');
   expect(meta).toContain('there was no file to re-read');

@@ -1,4 +1,5 @@
 import { createSignal, For, Show, type JSX } from 'solid-js';
+import { ThemeToggle } from '@calab/ui';
 import { ImportFeedbackLinks } from '@calab/community-ui';
 import { AnalyticsNotice } from './AnalyticsNotice.tsx';
 import { filesFromDrop } from '../lib/dropped-files.ts';
@@ -14,17 +15,12 @@ import { roleLabel } from '../lib/device-roles.ts';
 import {
   chooseKind,
   discoverKinds,
-  RESULTS_DIR,
   sessionsForKind,
   type SeriesKind,
   type SessionCandidate,
 } from '../lib/sessions.ts';
-import {
-  PROJECT_INDEX_FILE,
-  projectSessionId,
-  suggestSplit,
-  type SplitGroup,
-} from '../lib/project-index.ts';
+import { PROJECT_DIR, PROJECT_FILE } from '@calab/project';
+import { projectSessionId, suggestSplit, type SplitGroup } from '../lib/project-index.ts';
 import type { ProjectOpen } from '../lib/project-store.ts';
 import type { ReadDirLike } from '../lib/project-io.ts';
 import type { RecentProject } from '../lib/recent-projects.ts';
@@ -225,9 +221,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
     sessions: SessionCandidate[],
   ) {
     const root = rootOf(entries);
-    const hasIndex = entries.some(
-      (e) => e.relPath === `${root}/${RESULTS_DIR}/${PROJECT_INDEX_FILE}`,
-    );
+    const hasIndex = entries.some((e) => e.relPath === `${root}/${PROJECT_DIR}/${PROJECT_FILE}`);
     const groups = hasIndex ? null : suggestSplit(sessions.map((s) => projectSessionId(s.dir)));
     if (groups) {
       setSplit({ entries, handle, sessions, groups });
@@ -316,8 +310,9 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
 
   return (
     <div class="import-container cala-open">
-      <div class="app-header">
+      <div class="app-header cala-app-header">
         <h1 class="app-header__title">Cala</h1>
+        <ThemeToggle />
         <p class="app-header__subtitle">
           Streaming calcium imaging from raw 1-photon Miniscope video
         </p>
@@ -477,7 +472,7 @@ export function OpenFolder(props: OpenFolderProps): JSX.Element {
               </For>
             </ul>
             <p class="cala-muted">
-              Each animal becomes its own project with its own <code>cala-results</code> folder
+              Each animal becomes its own project with its own <code>calab-project</code> folder
               {supportsDirectoryPicker() ? '; the others are added to Recent projects' : ''}.
             </p>
             <button

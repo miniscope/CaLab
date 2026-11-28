@@ -847,11 +847,11 @@ describe('run history display series', () => {
         hist.spec(kindSeriesKey(k))!.color,
       ]),
     ).toEqual([
-      ['Work: Read frames', '#84b9f3'],
-      ['Work: Find cells', '#1f75d7'],
-      ['Work: Look-back', '#00a888'],
-      ['Work: Background settle', '#b8407e'],
-      ['Work: Final settle', '#b8407e'],
+      ['Work: Read frames', 'var(--work-read)'],
+      ['Work: Find cells', 'var(--stage-discover)'],
+      ['Work: Look-back', 'var(--work-lookback)'],
+      ['Work: Background settle', 'var(--stage-settle)'],
+      ['Work: Final settle', 'var(--stage-settle)'],
     ]);
     // Background settle shares the Final settle hue; only its dash tells the lines apart.
     expect(hist.spec(kindSeriesKey('bgSettle'))!.dash).toEqual([4, 3]);

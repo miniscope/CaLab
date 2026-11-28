@@ -5,6 +5,7 @@
  * edges to resize it (or its body to move it), double-click to reset to Run.
  */
 import { createEffect, onCleanup, onMount } from 'solid-js';
+import { onThemeChange } from '../theme.ts';
 import type { StreamHistory } from '@calab/compute';
 import { normalise } from './history-geometry.ts';
 import './history-plot.css';
@@ -219,7 +220,9 @@ export function WholeRunStrip(props: WholeRunStripProps) {
       });
       ro.observe(wrapEl);
     }
+    const offTheme = onThemeChange(schedule);
     onCleanup(() => {
+      offTheme();
       ro?.disconnect();
       if (raf) cancelAnimationFrame(raf);
     });

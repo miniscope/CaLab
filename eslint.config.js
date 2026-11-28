@@ -78,6 +78,7 @@ export default tseslint.config(
     files: [
       'scripts/**/*.{js,mjs,cjs,ts}',
       'apps/*/scripts/**/*.{js,mjs,cjs,ts}',
+      'packages/*/scripts/**/*.{js,mjs,cjs,ts}',
       'e2e/**/*.{js,mjs,cjs,ts}',
     ],
     languageOptions: {

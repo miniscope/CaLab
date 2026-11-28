@@ -15,6 +15,7 @@ import {
   rangeText,
 } from './history-geometry.ts';
 import { HelpTip } from '../HelpTip.tsx';
+import { onThemeChange, resolveCssColor } from '../theme.ts';
 import './history-plot.css';
 
 export interface HistoryEvent {
@@ -81,6 +82,12 @@ interface Colors {
   muted: string;
   secondary: string;
   bg: string;
+  /** A paused span over the plot. */
+  dim: string;
+  /** The drag-select band. */
+  band: string;
+  /** Flat-field rug ticks in the event lane. */
+  rug: string;
 }
 
 function readColors(el: Element): Colors {
@@ -95,6 +102,9 @@ function readColors(el: Element): Colors {
     muted: v('--text-tertiary', '#9e9e9e'),
     secondary: v('--text-secondary', '#616161'),
     bg: v('--bg-primary', '#ffffff'),
+    dim: v('--chart-dim', 'rgba(0,0,0,0.05)'),
+    band: v('--accent-muted', 'rgba(106,61,154,0.12)'),
+    rug: v('--line-control', '#cfcfcf'),
   };
 }
 
@@ -134,6 +144,16 @@ export function HistoryPlot(props: HistoryPlotProps) {
   let tipEl!: HTMLDivElement;
   let cssW = 0;
   let colors: Colors | null = null;
+  /** Series colours (`var(--x)` references) resolved against the current theme. */
+  const seriesColors = new Map<string, string>();
+  const seriesColor = (c: string): string => {
+    let v = seriesColors.get(c);
+    if (v === undefined) {
+      v = resolveCssColor(wrapEl, c);
+      seriesColors.set(c, v);
+    }
+    return v;
+  };
   let hatch: CanvasPattern | null = null;
   let raf = 0;
   let hoverT: number | null = null;
@@ -262,7 +282,7 @@ export function HistoryPlot(props: HistoryPlotProps) {
         const a = Math.max(AX, X(e.t));
         const b = Math.min(W, Math.max(X(e.t) + 1.5, X(e.t1)));
         if (b > a) {
-          ctx.fillStyle = 'rgba(0,0,0,0.05)';
+          ctx.fillStyle = C.dim;
           ctx.fillRect(a, plotTop, b - a, plotH);
         }
       }
@@ -404,7 +424,7 @@ export function HistoryPlot(props: HistoryPlotProps) {
         const val = binDisplayValue(spec.kind, b);
         if (!Number.isFinite(val)) continue;
         const u = Math.min(1, Math.max(0, normalise(val, hist.displayRange(keys[i]))));
-        ctx.fillStyle = spec.color;
+        ctx.fillStyle = seriesColor(spec.color);
         ctx.strokeStyle = C.bg;
         ctx.beginPath();
         ctx.arc(x, yTop + (1 - u) * yH, keys[i] === sel ? 3 : 2, 0, Math.PI * 2);
@@ -416,7 +436,7 @@ export function HistoryPlot(props: HistoryPlotProps) {
     if (drag) {
       const a = Math.min(drag.x0, drag.x1);
       const b = Math.max(drag.x0, drag.x1);
-      ctx.fillStyle = 'rgba(106,61,154,0.12)';
+      ctx.fillStyle = C.band;
       ctx.strokeStyle = C.accent;
       ctx.lineWidth = 1;
       ctx.fillRect(a, plotTop, b - a, plotH);
@@ -435,7 +455,7 @@ export function HistoryPlot(props: HistoryPlotProps) {
           ctx.fillText(formatTick(r.lo + u * (r.hi - r.lo)), AX - 4, yTop + (1 - u) * yH + 3.5);
         }
         if (spec.unit) {
-          ctx.fillStyle = spec.color;
+          ctx.fillStyle = seriesColor(spec.color);
           ctx.font = '600 9.5px system-ui, sans-serif';
           ctx.fillText(spec.unit, AX - 4, Math.min(plotTop + plotH - 2, yTop + yH / 2 + 15));
           ctx.font = '10px system-ui, sans-serif';
@@ -486,7 +506,7 @@ export function HistoryPlot(props: HistoryPlotProps) {
     const { yTop, yH, plotTop, plotH, X, now, C } = env;
     const inv = 1 / Math.max(1e-12, range.hi - range.lo);
     const n = v.n;
-    const color = spec.color;
+    const color = seriesColor(spec.color);
     clipTop.length = 0;
     clipBot.length = 0;
     const yOf = (val: number, x: number) => {
@@ -637,7 +657,7 @@ export function HistoryPlot(props: HistoryPlotProps) {
     let ffCount = 0;
     for (const e of events) if (e.kind === 'ff') ffCount++;
     if (ffCount) {
-      ctx.strokeStyle = '#bdbdbd';
+      ctx.strokeStyle = C.rug;
       ctx.lineWidth = 1;
       if ((W - AX) / ffCount >= 3) {
         ctx.beginPath();
@@ -655,7 +675,7 @@ export function HistoryPlot(props: HistoryPlotProps) {
           const px = Math.floor(X(e.t));
           if (px >= 0 && px < per.length) per[px]++;
         }
-        ctx.fillStyle = '#bdbdbd';
+        ctx.fillStyle = C.rug;
         for (let x = AX; x < per.length; x++) {
           if (!per[x]) continue;
           ctx.globalAlpha = Math.min(1, per[x] / 6);
@@ -922,24 +942,16 @@ export function HistoryPlot(props: HistoryPlotProps) {
       });
       ro.observe(wrapEl);
     }
-    const themeChanged = () => {
+    const offTheme = onThemeChange(() => {
       colors = null;
       hatch = null;
+      seriesColors.clear();
       schedule();
-    };
-    const mq = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: dark)') : null;
-    mq?.addEventListener?.('change', themeChanged);
-    const mo =
-      typeof MutationObserver !== 'undefined' ? new MutationObserver(themeChanged) : undefined;
-    mo?.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['data-theme', 'class'],
     });
     wrapEl.addEventListener('wheel', onWheel, { passive: false });
     onCleanup(() => {
       ro?.disconnect();
-      mo?.disconnect();
-      mq?.removeEventListener?.('change', themeChanged);
+      offTheme();
       wrapEl.removeEventListener('wheel', onWheel);
       if (raf) cancelAnimationFrame(raf);
     });

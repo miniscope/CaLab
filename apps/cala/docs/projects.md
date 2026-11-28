@@ -1,15 +1,19 @@
 # Animal projects
 
 Most Miniscope experiments are many sessions from one animal. Cala opens
-the animal's folder as a **project**: one table of every session, with its
-recording facts and cala status, runs over any mix of sessions, and every
-result kept together in `cala-results/`.
+the animal's folder as a **project**, the unit of work: one table of every
+session, with its recording facts and cala status, a plan of runs over any mix
+of sessions, and every result kept together in `calab-project/`.
 
-Code: `src/lib/project-index.ts` (the index, pure), `src/lib/project-io.ts`
-(reading and writing the results folder), `src/lib/project-store.ts` (the open
-project and its run plan), `src/lib/run-plan.ts`, `src/lib/recent-projects.ts`,
-`src/components/ProjectView.tsx`. Runs go through the multi-session runner
-(`src/lib/multi-run.ts`, [stages.md](stages.md), "Sessions").
+The project files are app-neutral: `@calab/project` (`packages/project`) owns
+their schemas, reading, refusal, the index and the plan, so a later CaDecon,
+CaBaNA or behaviour run writes into the same tree. Code on the cala side:
+`src/lib/run-file.ts` (cala's run file), `src/lib/project-index.ts` (what the
+table shows), `src/lib/project-io.ts` (reading and writing the folder),
+`src/lib/project-store.ts` (the open project, its plan and `ProjectWriter`),
+`src/lib/recent-projects.ts`, `src/components/ProjectView.tsx`. Runs go
+through the multi-session runner (`src/lib/multi-run.ts`, [stages.md](stages.md),
+"Sessions").
 
 ## The project root is the animal folder
 
@@ -51,195 +55,176 @@ offers one project per animal first (`suggestSplit`): at least two top-level
 subfolders that each hold at least two sessions and are not named like a
 date (`2026_11_10`, `20261110`), a time (`14_02_33`) or a numbered session
 (`day3`, `session2`, `7`). The user picks the animal to open, or opens it all as
-one project. A folder that already holds `cala-results/cala-project.json` is
+one project. A folder that already holds `calab-project/calab-project.json` is
 never offered a split. With the File System Access API the other animals are
 added to Recent projects.
 
-## Results location
-
-Results go to `<animal>/cala-results/` by default. **Choose another folder...**
-on the project view writes them to a folder the user picks instead; that folder
-then plays the role of `cala-results` (the index lives in it), the index records
-it (`project.results_location`), and Recent projects keeps its handle. A raw
-data folder is only ever read: nothing is written outside the results folder.
-
-Each run of the project view writes to its own folder,
-`cala-results/runs/<run id>/`, laid out as a multi-session run's results
-(`cala-run.json` at its root, then each session's path holding `cala-export.npz`
-and `cala-session.json`). A run folder is never reused (a suffix is added).
+## The three files
 
 ```
-mouse1/                                     the animal (only read)
-  2026_11_10/14_02_33/My_V4_Miniscope/...
-  cala-results/
-    cala-project.json                       the project index
-    runs/2026-11-13_14-02-33/               one run (a run plan's group)
-      cala-run.json
-      2026_11_10/14_02_33/My_V4_Miniscope/
-        cala-export.npz
-        cala-session.json
-    cala-run.json, 2026_11_10/...           a run written before projects existed (#377), if any
+mouse1/                                        data root: only ever read
+  2026_11_10/09_00_00/My_V4_Miniscope/0.avi ...
+  calab-project/                               the project folder (default here; or one the user picks)
+    calab-project.json                         intent: the project, its sessions, the plan, current picks
+    calab-index.json                           cache of the run folders (safe to delete)
+    runs/
+      2026-11-28_09-14-03_cala/                one run, one library
+        calab-run.json                         config, inputs, stages, results, record
+        2026_11_10/09_00_00/My_V4_Miniscope/   the stream ref as a path
+          cala-export.npz
 ```
 
-## The index: `cala-results/cala-project.json`
+All three are JSON with an envelope: `format` (`calab-project`, `calab-run`,
+`calab-index`) and an integer `version`. Each has a JSON Schema in
+`packages/project/src/schema/`; the TypeScript types are generated from them
+(`npm run gen:types -w @calab/project`) and a drift test keeps the two in line.
+Every file is checked against its schema when read and before it is written.
 
-The index is a cache of the run folders. It can always be made again from them
-(`rebuildIndex`), so losing it loses only which result was set current by hand.
+A **stream** is one device's recording in a session; its **ref** is its folder
+below the animal folder (`2026_11_10/09_00_00/My_V4_Miniscope`), the session id
+plus the stream id. Refs are how every file names a recording.
 
-| Key              | What                                                                                           |
-| ---------------- | ---------------------------------------------------------------------------------------------- |
-| `format`         | `"cala-project"`                                                                               |
-| `schema_version` | `1`                                                                                            |
-| `project`        | `root_name`, `results_location` (`{kind: "default" \| "custom", label}`), `created`, `updated` |
-| `sessions[]`     | one per session (below)                                                                        |
-| `runs[]`         | append-only, one per run (below)                                                               |
-| `results[]`      | one per session a run wrote (below)                                                            |
-| `cell_matches`   | reserved for cross-session matching of Separate results; always `[]` in version 1              |
+### `calab-project.json`: intent
 
-**Session:** `id` (path relative to the animal folder; `"."` for videos in the
-root), `start` (`recordingStartTime`, ISO), `frames`, `fps`, `width`, `height`,
-`bit_depth` (from the videos), `missing` (the folder is gone), `previous_ids`
-(names it had before a rename was matched). Only what `metaData.json` and the
-videos say; there are no hand-typed columns.
+Small and hand-editable. It holds what the user decided, which nothing else can
+rebuild:
 
-**Run:** `id` (its folder name, a local timestamp; `legacy-...` for a run found
-at the results root), `folder` (relative to the results folder; `""` for a #377
-tree at its root), `mode` (`joint` | `separate`), `sessions[]` (`id`, `status`
-`pending | written | skipped | failed`, `note`, `stages`: the stage runs as
-the export's `stages_run` records them, with times and outcomes, and for the
-later sessions of a Joint run `boundary`: the health flag of the boundary the
-session starts with), `settings`
-(empty; older runs hold `refine_runs`), `app_version`, `created`, `updated`, `finished`, `stopped` (why
-it stopped), `plan` (`{id, group, groups}` for a run plan's group), and
-`library_in` / `library_out` (`null`; saved libraries come in PR 2).
+| Key        | What                                                                                                                                       |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `project`  | `id` (`p-` and 8 hex), `name` (the animal folder), `subject` (`id`, `species`, `notes`), `created`, `updated`                              |
+| `sessions` | one per session: `id`, `start`, `label`, `streams[]` (`id`, `role`, `frames`, `previous_ids` after a rename, `overrides` per app)          |
+| `defaults` | per-app default params (`{cala: {params_version, params}}`)                                                                                |
+| `plan`     | `id` (set at Start) and `steps[]`: `id`, `app`, `kind` (`joint`, `separate`, `apply`), `streams`, `params`, `status`, `runs` (its run ids) |
+| `current`  | hand-set current results, per app: `{cala: {<stream ref>: <run id>}}`                                                                      |
+| `identity` | the list of cell-identity files (reserved)                                                                                                 |
 
-**Result:** `session`, `run`, `export_path` (relative to the results folder),
-`cells`, `cell_ids`, `id_space`, `library_version`, `created`, `current`.
+```json
+{
+  "format": "calab-project",
+  "version": 1,
+  "project": {
+    "id": "p-7f3a9c21",
+    "name": "mouse1",
+    "subject": { "id": null, "species": null, "notes": "" },
+    "created": "2026-11-28T09:10:02.000Z",
+    "updated": "2026-11-28T09:13:40.000Z"
+  },
+  "sessions": [
+    {
+      "id": "2026_11_10/09_00_00",
+      "start": "2026-11-10T09:00:00.000Z",
+      "label": null,
+      "streams": [
+        { "id": "My_V4_Miniscope", "role": "miniscope", "frames": 18000, "previous_ids": [] }
+      ]
+    },
+    {
+      "id": "2026_11_11/09_05_12",
+      "start": "2026-11-11T09:05:12.000Z",
+      "label": null,
+      "streams": [
+        { "id": "My_V4_Miniscope", "role": "miniscope", "frames": 18000, "previous_ids": [] }
+      ]
+    }
+  ],
+  "defaults": {},
+  "plan": {
+    "id": "2026-11-28_09-13-40",
+    "steps": [
+      {
+        "id": "a",
+        "app": "cala",
+        "kind": "joint",
+        "streams": ["2026_11_10/09_00_00/My_V4_Miniscope", "2026_11_11/09_05_12/My_V4_Miniscope"],
+        "status": "running",
+        "runs": ["2026-11-28_09-14-03_cala"]
+      }
+    ]
+  },
+  "current": {},
+  "identity": []
+}
+```
+
+### `calab-run.json`: one run
+
+The truth of one run, never edited by hand. One run is one config and one
+library: a Joint chain is one run whatever its length, and each Separate
+session is a run of its own. It is written **before the run's first frame**
+(`status: "planned"`, its config complete), after each result is written
+(`running`), and when the run ends (`finished`, or `stopped` with the reason,
+also when the run is left or fails).
+
+| Key       | What                                                                                                                                                                                                                               |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run`     | `id` (`<local time>_cala`, its folder name), `app`, `app_version`, `engine_version`, `git_commit`, `project`, `plan` (`{id, step, kind}`), `status`, `stopped`, `created`, `updated`                                               |
+| `inputs`  | one per stream read: `role` (`video`, `live`), `stream`, `recording_start`, `frames`, `files`, `width`, `height`, `bit_depth`, `fps` (`{value, source}`), `start_frame` on the run's frame axis                                    |
+| `links`   | other runs this one reads (empty for cala today)                                                                                                                                                                                   |
+| `config`  | `schema` (`cala-params`), `params_version`, `requested` (what the sheet or a config file asked for), `sources` (pointer → `ui`, `file:<name>`), `ignored` (unknown keys of a config file), `resolved` (every param), `fingerprint` |
+| `derived` | values read from the data (`/time/fps`)                                                                                                                                                                                            |
+| `stages`  | the stage log (Discover, Extract) with outcomes and times                                                                                                                                                                          |
+| `results` | one per stream: `status` (`pending`, `written`, `skipped`, `failed`), `note`, `path` (below the run folder), `id_space`, `cells`, `library_version`, `frame_range`, `boundary`, `created`                                          |
+| `record`  | the rest of the run record ([run-record.md](run-record.md))                                                                                                                                                                        |
+
+Every `cala-export.npz` carries the run file as it was when the export was
+written, as `meta_json.run`, so a lone export still says how it was made.
+
+### `calab-index.json`: the cache
+
+The streams the scan found (`ref`, `role`, `start`, `frames`, `fps`, size, bit
+depth, `missing`, `previous_refs`), a summary of every run (`id`, `app`,
+`kind`, `status`, `folder`, `plan`, `fingerprint`, `streams` with their status
+and boundary, `stages`, `links`) and every written result (`run`, `app`,
+`stream`, `path` relative to the project folder, `id_space`, `cells`,
+`library_version`, `created`). It is rebuilt from the run files and the scan on
+every open (`rebuildIndex`), and updated after each run-file write; deleting it
+loses nothing.
 
 ### Cell identity
 
-`id_space` says where a result's cell ids come from. Results with the same id
-space share cell ids: cell 7 is the same neuron in each.
-
-- A **Joint** run is one id space across its sessions: `run:<run id>`.
-- A **Separate** run gives each session its own: `run:<run id>/<session id>`.
-  Matching cells across Separate results (registration, footprint matching) is
-  not built; `cell_matches` is where it will go.
-- A saved library (PR 2) will be its own id space, `library:<id>`, shared by
-  every session it is applied to.
+`id_space` says where a result's cell ids come from: `cala:<run id>`. A run is
+one library, so all its results share one id space; a Joint chain's sessions
+share cell ids (cell 7 is the same neuron in each), and each Separate session
+has its own. Matching cells across id spaces is not built; `identity/` in the
+project folder is where it will go.
 
 The session table's **Cell IDs** column letters the id spaces that several
 sessions' current results share (`A`, `B`, ...) and colours those rows'
 edges; `own` marks a session with ids of its own.
 
-### Example
-
-```json
-{
-  "format": "cala-project",
-  "schema_version": 1,
-  "project": {
-    "root_name": "mouse1",
-    "results_location": { "kind": "default", "label": "mouse1/cala-results" },
-    "created": "2026-11-13T14:01:50.000Z",
-    "updated": "2026-11-13T14:20:12.000Z"
-  },
-  "sessions": [
-    {
-      "id": "2026_11_10/09_00_00/My_V4_Miniscope",
-      "start": "2026-11-10T09:00:00.000Z",
-      "frames": 1000,
-      "fps": 20,
-      "width": 600,
-      "height": 600,
-      "bit_depth": 8,
-      "missing": false,
-      "previous_ids": []
-    }
-  ],
-  "runs": [
-    {
-      "id": "2026-11-13_14-02-33",
-      "folder": "runs/2026-11-13_14-02-33",
-      "mode": "joint",
-      "sessions": [
-        {
-          "id": "2026_11_10/09_00_00/My_V4_Miniscope",
-          "status": "written",
-          "stages": [
-            {
-              "stage": "discover",
-              "index": 1,
-              "started_at": "2026-11-13T14:02:34.000Z",
-              "ended_at": "2026-11-13T14:08:10.000Z",
-              "outcome": "done",
-              "frames": 2000,
-              "cells": 41,
-              "library_version": 57
-            }
-          ]
-        }
-      ],
-      "settings": {},
-      "app_version": "v2.14.0",
-      "created": "2026-11-13T14:02:33.000Z",
-      "updated": "2026-11-13T14:20:12.000Z",
-      "finished": true,
-      "plan": { "id": "2026-11-13_14-02-33", "group": 1, "groups": 2 },
-      "library_in": null,
-      "library_out": null
-    }
-  ],
-  "results": [
-    {
-      "session": "2026_11_10/09_00_00/My_V4_Miniscope",
-      "run": "2026-11-13_14-02-33",
-      "export_path": "runs/2026-11-13_14-02-33/2026_11_10/09_00_00/My_V4_Miniscope/cala-export.npz",
-      "cells": 41,
-      "cell_ids": [1, 2, 4],
-      "id_space": "run:2026-11-13_14-02-33",
-      "library_version": 57,
-      "created": "2026-11-13T14:20:12.000Z",
-      "current": true
-    }
-  ],
-  "cell_matches": []
-}
-```
-
 ### Rules
 
-- **Current result.** When a run writes a session's result, that result
-  becomes current if it is at least as new as the session's current one (so a
-  new run's result is current, and an older run folder found later is not).
-  Older results are kept; **Set current** in a row's results makes any of them
-  current again.
-- **Updated as sessions finish.** The project view hands the runner an
-  `onProgress` callback (`MultiRunPlan.onProgress`); the index is written each
-  time a session's results are (Separate: after each session; Joint: after the
-  final Extract), when a session is skipped, when a run ends and when it stops.
-- **Written whole, then swapped in.** The File System Access API has no
-  rename, but a writable stream writes to a swap file that replaces the file
-  only on `close()`, so a reader sees the old index or the new one, never half.
-- **Validated on read.** A missing or unreadable index is rebuilt from the run
-  folders, with a warning; the unreadable file is kept as
-  `cala-project.corrupt-<time>.json` at the next write. An index with a newer
-  `schema_version` is shown (rebuilt in memory) but never overwritten.
-- **Rebuildable.** `rebuildIndex` finds every `cala-run.json` under the results
-  folder and gives each `cala-session.json` to the nearest run manifest above
-  it; this covers `runs/<id>/` and a #377 tree at the results root. A run
-  manifest's session path (which starts with the folder that run was picked at)
-  maps to a project session by id, else by an id it ends with (picked one level
-  up), else by start time and frame count. On every open, run folders the index
-  does not hold are merged in the same way.
-- **Renamed folders.** A session in the index whose folder is gone is matched
-  to a new folder with the same `recordingStartTime` and frame count (exactly
-  one candidate); its results follow it and the old id goes to `previous_ids`.
-  Unmatched, it stays in the table flagged missing.
-- **When it is written.** Opening a project asks only to read. The index is
-  written at the first change (a run, Set current), when Chrome asks for
-  permission to save; a reopened project that already has that permission
-  saves a refreshed index straight away.
+- **The project folder.** `<animal>/calab-project/` by default. **Choose
+  another folder...** writes to a folder the user picks instead, which then
+  plays its role; Recent projects keeps its handle. A raw data folder is only
+  ever read.
+- **Current result.** Per app and per stream: the one `current` picks by hand
+  when that run still has a result for the stream, else the newest. **Set
+  current** in a row's results writes the pick to `calab-project.json`.
+- **Plan on disk.** Each plan edit (add, move, remove, clear, re-plan) is
+  written to `calab-project.json` at once when the browser already allows
+  writing; else it is kept in memory and written at **Start plan**, which asks
+  for permission and writes the plan (with its id) before the first step runs.
+  A step starts with its run (`running`, its run id in `runs`), leaves the plan
+  when the run finishes (its run file keeps a copy), and stays, `stopped`, when
+  the run stops, to start again.
+- **A run folder is never reused.** A suffix is added when the id is taken.
+- **Written whole, then swapped in.** A writable stream writes to a swap file
+  that replaces the file only on `close()`, so a reader sees the old file or
+  the new one, never half.
+- **Refusal, never migration of old formats.** A file of an older cala
+  (`cala-project.json`, `cala-run.json`, `cala-session.json`,
+  `cala-run-record.json`) and an old `<animal>/cala-results/` tree are named in
+  a warning and not read; run the sessions again to make new results. A
+  `calab-project.json` that cannot be read (bad JSON, a schema error, a newer
+  `version`) opens the project read-only: the table shows the runs, nothing
+  runs, and the file is never written over. A run file that cannot be read is
+  named and left out of the index. Version upgrades of the new files go
+  through the migration table in `@calab/project` (empty in version 1).
+- **Renamed folders.** A session whose folder is gone is matched to a new
+  folder with the same start time and frame count (exactly one candidate); its
+  results follow it and the old id goes to `previous_ids`. Unmatched, it stays
+  in the table flagged missing.
 
 ## The session table
 
@@ -298,30 +283,33 @@ folder's handle, or among the files of a folder picked through a file input).
 
 ## Run plans
 
-Selected rows go into a **run plan** as groups:
+Selected rows go into the **plan** as steps:
 
-- **Run selected jointly**: one Joint run through those sessions in start-time order
-  (one library, cell ids shared).
-- **Run selected separately**: a Separate run of each (a library per session).
+- **Run selected jointly**: one Joint step through those sessions in start-time
+  order: one run, one library, cell ids shared.
+- **Run selected separately**: one Separate step per session: a run and a
+  library each.
 
-A session is in one group at most (adding it again moves it), and a chain of
-one session is a Separate run. Groups can be reordered and removed. **Start
-plan** asks for permission to write, then runs the groups one after another;
-each group is one run in the index (`plan` records the plan and group), and
-each session's current result updates as its results are written. If a stage
-fails or is cancelled the plan stops: results already written stay, and the
-groups not finished stay in the plan to start again. **Back to project** in the
-viewer's header returns to the table (stopping a running plan).
+A session is in one pending step at most (adding it again moves it), and a
+Joint step of one session is a Separate step. Steps can be reordered and
+removed. **Start plan** asks for permission to write, writes the plan, then
+runs the steps one after another; each step is one run (its run file's
+`run.plan` names the plan and step), and each session's current result updates
+as its results are written. If a stage fails or is cancelled the plan stops:
+results already written stay, and the steps not finished stay in the plan to
+start again. **Back to project** in the viewer's header returns to the table
+(stopping a running plan).
 
 ## Reopening
 
-Chrome and Edge keep the animal folder's handle (and a chosen results
+Chrome and Edge keep the animal folder's handle (and a chosen project
 folder's) in IndexedDB (`cala-projects`, `recent`); **Recent projects** on the
 start screen reopens one with a click (the browser asks for permission again).
-Other browsers pick the folder again; their runs download a zip of the run's
-folder (`cala-results/runs/<id>/...`) to unpack into the animal folder, and the
-next open merges it into the index. Changes to the index (Set current) are not
-saved there.
+Other browsers pick the folder again; each run downloads as
+`calab-project_<run id>.zip`, the run's folder with the project file and the
+index as they were when it ended, to unpack into the animal folder; the next
+open reads it. A plan edited there lives in the project file of the next run's
+zip only.
 
 ## Session boundaries in Joint runs
 
@@ -333,9 +321,9 @@ and noise map into the new session's brightness. See
 need none of this.
 
 Each boundary also gets a health flag (ok, warning or failed, with the reason;
-[stages.md](stages.md#boundary-flags)). It is stored with the session's run
-entry in the index (`runs[].sessions[].boundary`, the export's JSON form; read
-back from `cala-session.json` or `cala-run.json` when the index is rebuilt),
+[stages.md](stages.md#boundary-flags)). It is stored with the session's result in
+the run file (`results[].boundary`, the export's JSON form) and so in the index
+(`runs[].streams[].boundary`),
 and the session table shows it as a badge on the row of the session that
 starts at that boundary, with the reason as its tooltip. A failed boundary's
 badge offers **Re-plan as Separate**: the chain's sessions go into the run plan
@@ -344,9 +332,12 @@ the flag of the result's session.
 
 ## Not yet (later PRs)
 
-- Saved library files, **Apply** (a library to other sessions), extending a
-  Joint run from its library: `library_in` / `library_out` on runs, the
-  **Library** column, and the `library:<id>` id space are the places.
-- Cross-session matching for Separate results: `cell_matches`.
-- Pixel size and a scale bar.
+- `defaults`, per-stream `overrides` and step `params` in `calab-project.json`
+  are kept and written back, but not yet applied as layers to a run's params.
+- Without write permission the draft project is not mirrored in IndexedDB.
+- The session setup (a folder of sessions opened outside a project) still
+  exists; it writes the same tree. A single recording writes no run folder.
+- Saved library files, **Apply**, extending a Joint run from its library, the
+  **Library** column.
+- Cross-session cell matching (`identity/`).
 - Opening a single `.npz` export outside a project.

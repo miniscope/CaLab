@@ -8,23 +8,23 @@ The engine is `crates/cala` (its own `CLAUDE.md`); the only WASM import point is
 
 ## Glossary (one term each; use it in code, UI and docs)
 
-| Term                  | Meaning                                                                                                           | Not                                                                                          |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| **Discover**          | Stage 1: finds cells and builds footprints from an empty library, with live traces                                | pass 1                                                                                       |
-| **Final settle**      | End of Discover (recordings): footprints converge with the cell set frozen; levels Thorough/Standard/Quick        | drain, end settle                                                                            |
-| **Extract**           | Stage 2: final traces of every frame with footprints frozen                                                       | pass 2 (`pass2` survives in identifiers and keys only)                                       |
-| **Refine**            | an edit inside Discover's slow loop. There is no Refine stage                                                     | a stage name                                                                                 |
-| **fast loop**         | per-frame trace solve against the current library (`FastLoop`, trace worker)                                      |                                                                                              |
-| **slow loop**         | cell discovery: add, merge, refine; publishes library versions (`SlowLoop`, slow worker)                          |                                                                                              |
-| **visit**             | one slow-loop pass over a tile; the visit rate is visits per Discover frame (`VISIT_RATE`)                        |                                                                                              |
-| **look-back**         | re-reading past frames of the recording for the slow loop (look-back workers)                                     | reservoir replay                                                                             |
-| **Background settle** | look-back that settles footprints during Discover when the target speed is below Max. New identifiers: `bgSettle` | concurrent settle, `csettle` (being renamed in code; URL flag and record key `csettle` stay) |
-| **footprint**         | a cell's spatial weight map: one contiguous, single-peaked somatic blob                                           | ROI, mask                                                                                    |
-| **library**           | the immutable, versioned set of footprints the fast loop solves against                                           |                                                                                              |
-| **factors**           | windowed low-rank compression of preprocessed frames, kept in OPFS so past frames can be rebuilt                  | SVD files                                                                                    |
-| **run record**        | the reproducibility JSON in every export (`src/lib/run-provenance.ts`, `apps/cala/docs/run-record.md`)            | provenance blob                                                                              |
-| **session**           | one recording of a multi-session run; modes **Separate**, **Joint**, **Apply** (`apps/cala/docs/stages.md`)       |                                                                                              |
-| **Speed / target**    | the user-set target fps; **Max** = unpaced                                                                        |                                                                                              |
+| Term                  | Meaning                                                                                                                                                | Not                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| **Discover**          | Stage 1: finds cells and builds footprints from an empty library, with live traces                                                                     | pass 1                                                                                       |
+| **Final settle**      | End of Discover (recordings): footprints converge with the cell set frozen; levels Thorough/Standard/Quick                                             | drain, end settle                                                                            |
+| **Extract**           | Stage 2: final traces of every frame with footprints frozen                                                                                            | pass 2 (`pass2` survives in identifiers and keys only)                                       |
+| **Refine**            | an edit inside Discover's slow loop. There is no Refine stage                                                                                          | a stage name                                                                                 |
+| **fast loop**         | per-frame trace solve against the current library (`FastLoop`, trace worker)                                                                           |                                                                                              |
+| **slow loop**         | cell discovery: add, merge, refine; publishes library versions (`SlowLoop`, slow worker)                                                               |                                                                                              |
+| **visit**             | one slow-loop pass over a tile; the visit rate is visits per Discover frame (`VISIT_RATE`)                                                             |                                                                                              |
+| **look-back**         | re-reading past frames of the recording for the slow loop (look-back workers)                                                                          | reservoir replay                                                                             |
+| **Background settle** | look-back that settles footprints during Discover when the target speed is below Max. New identifiers: `bgSettle`                                      | concurrent settle, `csettle` (being renamed in code; URL flag and record key `csettle` stay) |
+| **footprint**         | a cell's spatial weight map: one contiguous, single-peaked somatic blob                                                                                | ROI, mask                                                                                    |
+| **library**           | the immutable, versioned set of footprints the fast loop solves against                                                                                |                                                                                              |
+| **factors**           | windowed low-rank compression of preprocessed frames, kept in OPFS so past frames can be rebuilt                                                       | SVD files                                                                                    |
+| **run record**        | the reproducibility block folded into `calab-run.json` (`src/lib/run-provenance.ts`, `apps/cala/docs/run-record.md`)                                   | provenance blob                                                                              |
+| **session**           | one recording (a stream) of a project; a plan step runs **Joint** (one run, one library) or **Separate** (one run each) (`apps/cala/docs/projects.md`) |                                                                                              |
+| **Speed / target**    | the user-set target fps; **Max** = unpaced                                                                                                             |                                                                                              |
 
 ## Workers (`src/workers`, one owner per job)
 
@@ -65,7 +65,7 @@ Pipeline wiring: `src/lib/pipeline-stages.ts`. Message conventions:
   the fast loop is never blocked by the slow loop.
 - **Reproducibility record in every export.** A new setting, tunable or URL flag that changes
   results is added to the run record (`src/lib/run-provenance.ts`) and `apps/cala/docs/run-record.md`.
-- **Raw data is read-only.** Results go to the project's `cala-results` tree, never into raw folders.
+- **Raw data is read-only.** Results go to the project's `calab-project/` tree, never into raw folders.
 - **Analytics privacy** (`docs/analytics.md`): no file or folder names, paths, animal or session
   names, trace or footprint data, error text or stacks. New events need an entry in that doc.
 - **URL flags**: parsed in one place (`src/lib/page-flags.ts` if present; else `KNOWN_FLAGS` /
@@ -80,8 +80,10 @@ Pipeline wiring: `src/lib/pipeline-stages.ts`. Message conventions:
 - Lead with visuals for numbers that change during a run (meters, bars, sparklines), not prose;
   at most one sentence per state, explanations in "?" popovers. Live figures update at most at 2 Hz.
 - Every range is fixed and declared; "not measured" is a grey dash.
-- Stage hues: Discover `#1f75d7`, Final settle `#b8407e`, Extract `#e0701f` (`--stage-*` tokens;
-  `STAGE_HUES` in `@calab/ui/palette` for canvas). Work kinds take their stage's hue (`KIND_COLOR`). **Done = the stage's
+- Stage hues: Discover blue, Final settle plum, Extract orange (`--stage-*` tokens, light and dark
+  values in `tokens.css`). Work kinds take their stage's hue (`KIND_COLOR`, CSS variable references).
+  Canvas code resolves token colours with `resolveCssColor` and redraws on `onThemeChange`
+  (`@calab/ui`); no colour literals in charts. The FOV image and its overlay roles do not change with the theme. **Done = the stage's
   full hue + ✓, never green** (green means QC pass / ok). The app accent (violet) is for
   selection and focus only. Status colours always come with an icon and a label.
 - No pulsing or decorative motion; respect `prefers-reduced-motion`.
