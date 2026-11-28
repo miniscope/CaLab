@@ -707,9 +707,10 @@ export function createRunHistory(clock: () => number = () => Date.now()) {
 
   /**
    * The work shares of the last second or so (`WorkRates`) and the fast loop's top-speed estimate.
-   * Pushed at the stream time Discover has reached, so the caller stops after its last frame (the
-   * final settle's accounting lives in the `?debug` readout and the `-work.json` log only: stream
-   * time stands still then and every sample would land in one bin).
+   * Pushed at the stream time Discover has reached. The caller stops after the first reading
+   * that follows Discover's last frame (the Final settle's accounting lives in the `?debug`
+   * readout and the `-work.json` log only: stream time stands still then and every sample would
+   * land in one bin).
    */
   function work(r: WorkRates, maxFps: number): void {
     const t = processedS;

@@ -197,8 +197,12 @@ export function TimeStrip(props: TimeStripProps): JSX.Element {
     const count = Math.max(1, workerCount);
     const maxBins = Math.max(8, Math.min(240, Math.floor((seg.x1 - seg.x0) / 2)));
 
-    // Work by kind: each reading drawn as a step back to the one before.
-    const views = WORK_KINDS.map((k) => h.view(kindSeriesKey(k), a0, a1, maxBins));
+    // Work by kind: each reading drawn as a step back to the one before. A reading is stamped
+    // at the stream time reached, which lands in the store's open bin just past the window's
+    // end (always so for the one after the last frame), so the query reaches two bins further
+    // and those points are drawn at the end.
+    const reach = (2 * (a1 - a0)) / maxBins;
+    const views = WORK_KINDS.map((k) => h.view(kindSeriesKey(k), a0, a1 + reach, maxBins));
     const first = views.find((v) => v !== null) ?? null;
     const points: StackPoint[] = [];
     if (first) {
@@ -213,7 +217,7 @@ export function TimeStrip(props: TimeStripProps): JSX.Element {
             any = true;
           }
         });
-        if (any) points.push({ x: xOfT(t), values });
+        if (any) points.push({ x: xOfT(Math.min(t, a1)), values });
       }
     }
     const open = r.workStart();
