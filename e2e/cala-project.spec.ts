@@ -165,13 +165,23 @@ test('Cala: a 3-session project runs a Joint step and a Separate step into calab
     }
   }
 
+  // The example tree, kept before anything else can fail.
+  if (process.env.CALA_E2E_EVIDENCE) {
+    const dest = join(homedir(), 'Projects/cala-data/runs/params-audit/pr5/example-tree');
+    rmSync(dest, { recursive: true, force: true });
+    cpSync(tree, join(dest, 'calab-project'), { recursive: true });
+  }
+
   // Opened again: the data, the unzipped tree, and an old results folder.
   const again = join(base, 'again', 'mouse1');
   cpSync(animal, again, { recursive: true });
   cpSync(tree, join(again, 'calab-project'), { recursive: true });
   mkdirSync(join(again, 'cala-results'));
   writeFileSync(join(again, 'cala-results', 'cala-project.json'), '{"format":"cala-project"}');
-  await page.getByTestId('project-close').click();
+  // The plan ran in the viewer: back to the table, then close the project.
+  const back = page.getByTestId('back-to-project');
+  if (await back.isVisible()) await back.click({ timeout: 15_000 });
+  await page.getByTestId('project-close').click({ timeout: 15_000 });
   await page.getByTestId('project-input').setInputFiles(again);
   await expect(page.getByTestId('project-row')).toHaveCount(3);
   await expect(page.getByTestId('project-warning')).toContainText(
@@ -184,10 +194,5 @@ test('Cala: a 3-session project runs a Joint step and a Separate step into calab
     await rows.nth(1).getByTestId('cell-ids').innerText(),
   );
 
-  if (process.env.CALA_E2E_EVIDENCE) {
-    const dest = join(homedir(), 'Projects/cala-data/runs/params-audit/pr5/example-tree');
-    rmSync(dest, { recursive: true, force: true });
-    cpSync(tree, join(dest, 'calab-project'), { recursive: true });
-  }
   rmSync(base, { recursive: true, force: true });
 });

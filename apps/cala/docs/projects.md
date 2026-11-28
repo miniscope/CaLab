@@ -91,7 +91,7 @@ rebuild:
 
 | Key        | What                                                                                                                                       |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `project`  | `id` (`p-` and 8 hex), `name` (the animal folder), `subject`, `created`, `updated`                                                         |
+| `project`  | `id` (`p-` and 8 hex), `name` (the animal folder), `subject` (`id`, `species`, `notes`), `created`, `updated`                              |
 | `sessions` | one per session: `id`, `start`, `label`, `streams[]` (`id`, `role`, `frames`, `previous_ids` after a rename, `overrides` per app)          |
 | `defaults` | per-app default params (`{cala: {params_version, params}}`)                                                                                |
 | `plan`     | `id` (set at Start) and `steps[]`: `id`, `app`, `kind` (`joint`, `separate`, `apply`), `streams`, `params`, `status`, `runs` (its run ids) |
@@ -105,7 +105,7 @@ rebuild:
   "project": {
     "id": "p-7f3a9c21",
     "name": "mouse1",
-    "subject": null,
+    "subject": { "id": null, "species": null, "notes": "" },
     "created": "2026-11-28T09:10:02.000Z",
     "updated": "2026-11-28T09:13:40.000Z"
   },

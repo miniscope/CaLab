@@ -359,9 +359,11 @@ export function createMultiRun(deps: MultiRunDeps) {
     const p = plan();
     if (!p || !sessionOpen() || finished() || error() || stopped()) return;
     const st = deps.stages();
-    // The Extract store keeps the last session's outcome until it runs again; the stage log
-    // starts over with each Discover. An Extract the log does not hold is not this session's.
-    const extract = st.runs.some((r) => r.stage === 'extract') ? st.extract : 'idle';
+    // The Extract store keeps the last session's `done` until it runs again; the stage log
+    // starts over with each Discover. A `done` the log does not hold is not this session's.
+    // (An Extract refused before it starts goes to `error` without a log entry: that one stays.)
+    const extract =
+      st.extract === 'done' && !st.runs.some((r) => r.stage === 'extract') ? 'idle' : st.extract;
     const input = {
       settings: p.settings,
       discover: st.discover,

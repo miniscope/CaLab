@@ -47,6 +47,8 @@ function harness(
      * stays until Extract runs again), and a session takes a while to open.
      */
     appLike?: boolean;
+    /** Extract is refused before it starts: `error`, with no stage log entry (as the app's). */
+    extractRefused?: boolean;
   } = {},
 ) {
   const [discover, setDiscover] = createSignal<StageActivity>('idle');
@@ -104,7 +106,10 @@ function harness(
         availability: availability(),
         runs: runs(),
       }),
-      runExtract: () => begin('extract', setExtract),
+      runExtract: () =>
+        opts.extractRefused
+          ? setTimeout(() => setExtract('error'), 0)
+          : begin('extract', setExtract),
       exportInput: () =>
         ({
           result: { frames: 100, ids: new Uint32Array(3), version: 1 },
@@ -292,6 +297,22 @@ describe('run files', () => {
     ]);
     for (const i of [0, 1, 2])
       expect(r.runFiles(i).map((f) => f.run.status)).toEqual(['planned', 'running', 'finished']);
+    h.dispose();
+  });
+
+  it('an Extract refused before it starts stops the run, and its file says so', async () => {
+    const r = recording();
+    const h = harness('separate', 2, {
+      sink: r.sinkFor,
+      runRecord: record,
+      appLike: true,
+      extractRefused: true,
+    });
+    await h.start();
+    await h.done();
+    expect(h.multi.stopped()).toBe('Extract stopped with an error.');
+    expect(r.runFiles(0).map((f) => f.run.status)).toEqual(['planned', 'stopped']);
+    expect(r.texts.has(1)).toBe(false);
     h.dispose();
   });
 });
